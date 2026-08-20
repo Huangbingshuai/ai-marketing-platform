@@ -7,3 +7,21 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+enum ProjectStatus {
+  DRAFT
+  ACTIVE
+  COMPLETED
+}
+
+model Project {
+  id          String        @id @default(uuid()) @db.Uuid
+  name        String        @db.VarChar(120)
+  description String?       @db.VarChar(500)
+  status      ProjectStatus @default(ACTIVE)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([updatedAt])
+  @@map("projects")
+}
