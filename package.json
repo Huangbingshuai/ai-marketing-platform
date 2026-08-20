@@ -1,0 +1,42 @@
+{
+  "name": "ai-marketing-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "公司内部 AI 营销视频素材生产平台",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22.12.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm build:packages && pnpm --parallel --filter @ai-marketing/api --filter @ai-marketing/web dev",
+    "dev:web": "pnpm build:packages && pnpm --filter @ai-marketing/web dev",
+    "dev:api": "pnpm build:packages && pnpm --filter @ai-marketing/api dev",
+    "build:packages": "pnpm --filter @ai-marketing/contracts build",
+    "build": "pnpm -r --if-present build",
+    "build:web": "pnpm build:packages && pnpm --filter @ai-marketing/web build",
+    "build:api": "pnpm build:packages && pnpm --filter @ai-marketing/api build",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "pnpm -r --if-present test",
+    "check": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm build",
+    "db:generate": "pnpm --filter @ai-marketing/api db:generate",
+    "db:migrate": "pnpm --filter @ai-marketing/api db:migrate",
+    "db:studio": "pnpm --filter @ai-marketing/api db:studio",
+    "postinstall": "pnpm db:generate"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.2.0",
+    "eslint": "10.8.1",
+    "eslint-plugin-vue": "10.10.0",
+    "globals": "17.3.0",
+    "prettier": "3.9.6",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.67.0",
+    "vitest": "4.1.11",
+    "vue-eslint-parser": "10.4.0"
+  }
+}

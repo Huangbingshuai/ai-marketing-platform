@@ -1,0 +1,35 @@
+{
+  "name": "@ai-marketing/api",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "nest start --watch",
+    "start": "node dist/main.js",
+    "build": "nest build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:studio": "prisma studio"
+  },
+  "dependencies": {
+    "@ai-marketing/contracts": "workspace:*",
+    "@nestjs/common": "11.2.1",
+    "@nestjs/config": "4.0.4",
+    "@nestjs/core": "11.2.1",
+    "@nestjs/platform-express": "11.2.1",
+    "@prisma/adapter-pg": "7.9.1",
+    "@prisma/client": "7.9.1",
+    "class-transformer": "0.5.1",
+    "class-validator": "0.15.1",
+    "pg": "8.23.0",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "11.0.14",
+    "@types/pg": "8.23.1",
+    "prisma": "7.9.1"
+  }
+}
