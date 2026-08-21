@@ -42,7 +42,44 @@ services:
       timeout: 5s
       retries: 10
 
+  docling-model-init:
+    profiles: ['effect-extraction']
+    build:
+      context: ./workers/effect-extraction
+    command: ['/app/.venv/bin/effect-extraction-download-models']
+    environment:
+      DOCLING_ARTIFACTS_PATH: /root/.cache/docling/models
+    volumes:
+      - docling-models:/root/.cache/docling/models
+    restart: 'no'
+
+  effect-extraction-worker:
+    profiles: ['effect-extraction']
+    build:
+      context: ./workers/effect-extraction
+    environment:
+      INTERNAL_API_BASE_URL: http://host.docker.internal:3000/api
+      EFFECT_EXTRACTION_WORKER_TOKEN: ${EFFECT_EXTRACTION_WORKER_TOKEN:-local-effect-extraction-worker-token}
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      EFFECT_EXTRACTION_QUEUE: effect.extraction.requested
+      EXTRACTION_AI_PROVIDER: ${EXTRACTION_AI_PROVIDER:-mock}
+      ARK_BASE_URL: ${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      ARK_API_KEY: ${ARK_API_KEY:-}
+      ARK_MODEL: ${ARK_MODEL:-}
+      DOCLING_ARTIFACTS_PATH: /root/.cache/docling/models
+      DOCLING_DEVICE: cpu
+      OMP_NUM_THREADS: ${DOCLING_NUM_THREADS:-4}
+    volumes:
+      - docling-models:/root/.cache/docling/models:ro
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      docling-model-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
 volumes:
   postgres-data:
   redis-data:
   rabbitmq-data:
+  docling-models:

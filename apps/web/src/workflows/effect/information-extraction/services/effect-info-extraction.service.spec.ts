@@ -1,93 +1,66 @@
-import type { EffectVideoConfig } from '@ai-marketing/contracts';
+import type { EffectExtractionRun } from '@ai-marketing/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { EffectExtractionResult } from '../effect-info-extraction-state';
-import {
-  mockEffectInfoExtractionService,
-  type EffectExtractionContext,
-  type EffectExtractionSourceProduct,
-} from './effect-info-extraction.service';
+import { pollEffectExtractionRun } from './effect-info-extraction.service';
 
-const config: EffectVideoConfig = {
-  aspectRatio: '9:16',
-  durationSeconds: 15,
-  resolution: '1080P',
-  frameRate: 30,
-  subtitleStrategy: '跟随口播',
-  voiceoverStrategy: 'AI 女声',
-  bgmStrategy: '自动匹配',
-  styleTone: '自然生活',
-  deliveryChannel: '抖音',
-  disabledElements: ['绝对化用语'],
-};
-
-const product = (id: string): EffectExtractionSourceProduct => ({
-  id,
-  name: `测试产品 ${id}`,
-  category: '食品',
-  effectiveConfig: config,
-  materials: [{ id: `material-${id}`, status: 'READY', updatedAt: '2026-08-20' }],
+const run = (status: EffectExtractionRun['status'], progress: number): EffectExtractionRun => ({
+  id: 'run-1',
+  projectId: 'project-1',
+  draftId: 'draft-1',
+  productId: 'product-1',
+  status,
+  progress,
+  currentNode: status === 'RUNNING' ? '文档解析' : null,
+  warnings: [],
+  errorMessage: null,
+  extractResultId: status === 'COMPLETED' ? 'result-1' : null,
+  createdAt: '2026-08-21T00:00:00.000Z',
+  updatedAt: '2026-08-21T00:00:01.000Z',
 });
 
-const context: EffectExtractionContext = {
-  projectId: 'project-service-spec',
-  draftId: 'draft-service-spec',
-  mode: 'BATCH',
-};
-
-afterEach(() => vi.useRealTimers());
-
-describe('mock effect info extraction service', () => {
-  it('creates independent initial states for a batch workspace', async () => {
-    const states = await mockEffectInfoExtractionService.loadWorkspace(context, [
-      product('a'),
-      product('b'),
-      product('c'),
-      product('d'),
-    ]);
-    expect(states.map((item) => item.status)).toEqual([
-      'COMPLETED',
-      'NOT_GENERATED',
-      'FAILED',
-      'STALE',
-    ]);
+const response = (value: EffectExtractionRun): Response =>
+  new Response(JSON.stringify({ success: true, data: { run: value } }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
   });
 
-  it('supports a failed extraction followed by a successful retry', async () => {
-    vi.useFakeTimers();
-    const retryContext = { ...context, draftId: 'draft-retry-spec' };
-    const products = [product('first'), product('retry')];
-    await mockEffectInfoExtractionService.loadWorkspace(retryContext, products);
-    const firstAttempt = mockEffectInfoExtractionService.extractProduct(retryContext, products[1]!);
-    await vi.advanceTimersByTimeAsync(900);
-    expect((await firstAttempt).status).toBe('FAILED');
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
-    const retry = mockEffectInfoExtractionService.extractProduct(retryContext, products[1]!);
-    await vi.advanceTimersByTimeAsync(900);
-    const completed = await retry;
-    expect(completed.status).toBe('COMPLETED');
-    expect(completed.result).toMatchObject({
-      productCategory: '食品',
-      productName: '测试产品 retry',
-      priceRange: '价格以商品资料与当前投放活动为准',
+describe('effect info extraction polling service', () => {
+  it('reports progress until the run reaches a terminal status', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(response(run('RUNNING', 35)))
+      .mockResolvedValueOnce(response(run('COMPLETED', 100)));
+    vi.stubGlobal('fetch', fetchMock);
+    const updates: number[] = [];
+
+    const polling = pollEffectExtractionRun('project-1', 'run-1', {
+      intervalMs: 100,
+      onUpdate: (value) => updates.push(value.progress),
     });
-    expect(completed.result?.coreSpecification).toContain('1 项产品资料已识别');
-    expect(completed.result?.visualFeatures).toContain('测试产品 retry');
+    await vi.advanceTimersByTimeAsync(100);
+
+    await expect(polling).resolves.toMatchObject({ status: 'COMPLETED', progress: 100 });
+    expect(updates).toEqual([35, 100]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('persists an edited draft without changing another product', async () => {
+  it('cancels the delay and stops polling when its signal is aborted', async () => {
     vi.useFakeTimers();
-    const saveContext = { ...context, draftId: 'draft-save-spec' };
-    const products = [product('saved'), product('untouched')];
-    const initial = await mockEffectInfoExtractionService.loadWorkspace(saveContext, products);
-    const edited = {
-      ...initial[0]!.result,
-      marketingGoal: '人工修订后的目标',
-    } as EffectExtractionResult;
-    const saving = mockEffectInfoExtractionService.saveDraft(saveContext, products[0]!, edited);
-    await vi.advanceTimersByTimeAsync(260);
-    expect((await saving).result?.marketingGoal).toBe('人工修订后的目标');
-    const reloaded = await mockEffectInfoExtractionService.loadWorkspace(saveContext, products);
-    expect(reloaded[1]!.result).toBeNull();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(run('RUNNING', 20))));
+    const controller = new AbortController();
+    const polling = pollEffectExtractionRun('project-1', 'run-1', {
+      intervalMs: 5_000,
+      signal: controller.signal,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+
+    await expect(polling).rejects.toMatchObject({ name: 'AbortError' });
   });
 });

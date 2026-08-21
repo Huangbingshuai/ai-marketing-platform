@@ -15,20 +15,27 @@ import {
   Plus,
   RefreshCw,
   Save,
-  Sparkles,
   Trash2,
 } from '@lucide/vue';
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 
+import { ApiClientError, isAbortError } from '../../../api/http-client';
+
 import {
   cloneExtractionProductState,
+  cloneExtractionResult,
   EFFECT_EXTRACTION_STATUS_META,
   isExtractionReadyForNext,
+  isExtractionRunning,
+  toExtractionProductState,
   type EffectExtractionProductState,
   type EffectExtractionResult,
 } from './effect-info-extraction-state';
 import {
-  mockEffectInfoExtractionService,
+  beginEffectExtraction,
+  loadEffectExtractionWorkspace,
+  pollEffectExtractionRun,
+  saveEffectExtractionResult,
   type EffectExtractionContext,
 } from './services/effect-info-extraction.service';
 
@@ -49,15 +56,18 @@ const productStates = ref<Record<string, EffectExtractionProductState>>({});
 const currentProductId = ref('');
 const loading = ref(true);
 const loadingError = ref('');
-const batchBusy = ref(false);
+const sourceRevision = ref(0);
+const pollingErrors = ref<Record<string, string>>({});
 const newDisabledElement = ref('');
 let loadGeneration = 0;
 let disposed = false;
+let workspaceController: AbortController | null = null;
+let saveController: AbortController | null = null;
+const activeRunControllers = new Map<string, { controller: AbortController; runId: string }>();
 
 const context = computed<EffectExtractionContext>(() => ({
   projectId: props.projectId,
   draftId: props.draftId,
-  mode: props.mode,
 }));
 
 const sourceSignature = computed(() =>
@@ -87,9 +97,12 @@ const currentStatusMeta = computed(() =>
     : EFFECT_EXTRACTION_STATUS_META.NOT_GENERATED,
 );
 const readyForNext = computed(() => isExtractionReadyForNext(currentState.value));
-const extractionTargets = computed(() =>
-  props.products.filter((product) => productStates.value[product.id]?.status !== 'COMPLETED'),
-);
+const currentRunning = computed(() => isExtractionRunning(currentState.value));
+const currentProgressLabel = computed(() => {
+  if (!currentState.value) return '';
+  if (currentState.value.status === 'QUEUED') return '等待异步 Worker 接收任务';
+  return currentState.value.currentNode || '正在分析产品资料';
+});
 type ProductBaseField = keyof Pick<
   EffectExtractionResult,
   'productCategory' | 'productName' | 'coreSpecification' | 'priceRange' | 'visualFeatures'
@@ -109,9 +122,7 @@ const emptyExtractionResult: EffectExtractionResult = {
   disabledElements: [],
 };
 const visibleResult = computed(() => currentState.value?.result ?? emptyExtractionResult);
-const baseFieldsReadonly = computed(
-  () => !currentState.value?.result || currentState.value.status === 'PROCESSING',
-);
+const baseFieldsReadonly = computed(() => !currentState.value?.result || currentRunning.value);
 const saveStateLabel = computed(() => {
   const state = currentState.value?.saveState ?? 'CLEAN';
   return {
@@ -124,7 +135,7 @@ const saveStateLabel = computed(() => {
 });
 const currentActionLabel = computed(() => {
   if (!currentState.value) return '开始 AI 提取';
-  if (currentState.value.status === 'PROCESSING') return 'AI 提取中…';
+  if (isExtractionRunning(currentState.value)) return 'AI 提取中…';
   if (currentState.value.status === 'NOT_GENERATED') return '开始 AI 提取';
   return '重新 AI 提取';
 });
@@ -133,6 +144,22 @@ const stateLabel = (productId: string): string => {
   const status = productStates.value[productId]?.status ?? 'NOT_GENERATED';
   return EFFECT_EXTRACTION_STATUS_META[status].label;
 };
+
+const warningBranchLabel = (branch: string | null): string =>
+  (
+    ({
+      DOCUMENT: '文档',
+      IMAGE: '图片',
+      COMMERCE: '电商链接',
+      FORM: '表单配置',
+      FUSION: '多源融合',
+      NORMALIZATION: '标准化',
+    }) as Record<string, string>
+  )[branch ?? ''] ?? '系统';
+
+const saveConflict = computed(() =>
+  Boolean(currentState.value?.saveErrorMessage?.includes('其他窗口更新')),
+);
 
 const replaceState = (state: EffectExtractionProductState): void => {
   productStates.value = {
@@ -150,55 +177,192 @@ const patchProductState = (
   replaceState({ ...existing, ...patch });
 };
 
+const stopProductPoll = (productId: string): void => {
+  activeRunControllers.get(productId)?.controller.abort();
+  activeRunControllers.delete(productId);
+};
+
+const stopAllRequests = (): void => {
+  workspaceController?.abort();
+  workspaceController = null;
+  saveController?.abort();
+  saveController = null;
+  activeRunControllers.forEach(({ controller }) => controller.abort());
+  activeRunControllers.clear();
+};
+
+const applyWorkspace = (
+  workspace: Awaited<ReturnType<typeof loadEffectExtractionWorkspace>>,
+  preserveLocalEdits: boolean,
+): void => {
+  sourceRevision.value = workspace.sourceRevision;
+  const next = Object.fromEntries(
+    workspace.products.map((product) => {
+      const state = toExtractionProductState(product);
+      const previous = productStates.value[product.productId];
+      if (
+        preserveLocalEdits &&
+        previous?.result &&
+        previous.resultId === state.resultId &&
+        (previous.saveState === 'DIRTY' || previous.saveState === 'SAVE_FAILED')
+      ) {
+        state.result = cloneExtractionResult(previous.result);
+        state.saveState = previous.saveState;
+        state.saveErrorMessage = previous.saveErrorMessage;
+      }
+      return [state.productId, state];
+    }),
+  );
+  productStates.value = next;
+};
+
+const patchFromRun = (
+  productId: string,
+  run: Awaited<ReturnType<typeof beginEffectExtraction>>,
+): void => {
+  const status =
+    run.status === 'QUEUED' ? 'QUEUED' : run.status === 'RUNNING' ? 'PROCESSING' : run.status;
+  patchProductState(productId, {
+    status,
+    runId: run.id,
+    resultId: run.extractResultId ?? productStates.value[productId]?.resultId ?? null,
+    progress: run.progress,
+    currentNode: run.currentNode,
+    warnings: run.warnings,
+    errorMessage: run.errorMessage,
+    updatedAt: run.updatedAt,
+  });
+};
+
+const refreshProductFromWorkspace = async (
+  productId: string,
+  signal: AbortSignal,
+): Promise<void> => {
+  const workspace = await loadEffectExtractionWorkspace(context.value, signal);
+  if (disposed || signal.aborted) return;
+  sourceRevision.value = workspace.sourceRevision;
+  const product = workspace.products.find((item) => item.productId === productId);
+  if (product) replaceState(toExtractionProductState(product));
+};
+
+const monitorProductRun = async (
+  productId: string,
+  runId: string,
+  controller = new AbortController(),
+): Promise<void> => {
+  const active = activeRunControllers.get(productId);
+  if (active && active.controller !== controller) active.controller.abort();
+  activeRunControllers.set(productId, { controller, runId });
+  pollingErrors.value = { ...pollingErrors.value, [productId]: '' };
+  try {
+    const terminal = await pollEffectExtractionRun(props.projectId, runId, {
+      signal: controller.signal,
+      onUpdate: (run) => {
+        if (!disposed && !controller.signal.aborted) patchFromRun(productId, run);
+      },
+    });
+    if (terminal.status === 'COMPLETED') {
+      await refreshProductFromWorkspace(productId, controller.signal);
+    }
+  } catch (error) {
+    if (!isAbortError(error) && !disposed) {
+      pollingErrors.value = {
+        ...pollingErrors.value,
+        [productId]: error instanceof Error ? error.message : '任务进度查询失败',
+      };
+    }
+  } finally {
+    if (activeRunControllers.get(productId)?.controller === controller) {
+      activeRunControllers.delete(productId);
+    }
+  }
+};
+
+const resumeWorkspaceRuns = (): void => {
+  Object.values(productStates.value).forEach((state) => {
+    if (isExtractionRunning(state) && state.runId)
+      void monitorProductRun(state.productId, state.runId);
+  });
+};
+
 const loadWorkspace = async (): Promise<void> => {
   const generation = ++loadGeneration;
+  stopAllRequests();
+  const controller = new AbortController();
+  workspaceController = controller;
   loading.value = true;
   loadingError.value = '';
   try {
-    const states = await mockEffectInfoExtractionService.loadWorkspace(
-      context.value,
-      props.products,
-    );
-    if (disposed || generation !== loadGeneration) return;
-    productStates.value = Object.fromEntries(states.map((state) => [state.productId, state]));
+    const workspace = await loadEffectExtractionWorkspace(context.value, controller.signal);
+    if (disposed || controller.signal.aborted || generation !== loadGeneration) return;
+    applyWorkspace(workspace, true);
     if (!props.products.some((product) => product.id === currentProductId.value)) {
       currentProductId.value = props.products[0]?.id ?? '';
     }
+    resumeWorkspaceRuns();
   } catch (error) {
-    if (disposed || generation !== loadGeneration) return;
+    if (isAbortError(error) || disposed || generation !== loadGeneration) return;
     loadingError.value = error instanceof Error ? error.message : '提炼工作区加载失败';
   } finally {
     if (!disposed && generation === loadGeneration) loading.value = false;
+    if (workspaceController === controller) workspaceController = null;
   }
 };
 
 const runCurrentExtraction = async (): Promise<void> => {
   const product = currentProduct.value;
   const state = currentState.value;
-  if (!product || !state || state.status === 'PROCESSING') return;
-  patchProductState(product.id, { status: 'PROCESSING', errorMessage: null });
-  const result = await mockEffectInfoExtractionService.extractProduct(context.value, product);
-  if (!disposed) replaceState(result);
+  if (!product || !state || isExtractionRunning(state)) return;
+  stopProductPoll(product.id);
+  const controller = new AbortController();
+  activeRunControllers.set(product.id, { controller, runId: '' });
+  pollingErrors.value = { ...pollingErrors.value, [product.id]: '' };
+  patchProductState(product.id, {
+    status: 'QUEUED',
+    runId: null,
+    progress: 0,
+    currentNode: null,
+    warnings: [],
+    errorMessage: null,
+  });
+  try {
+    const run = await beginEffectExtraction(
+      context.value,
+      product.id,
+      sourceRevision.value,
+      controller.signal,
+    );
+    if (disposed || controller.signal.aborted) return;
+    patchFromRun(product.id, run);
+    void monitorProductRun(product.id, run.id, controller);
+  } catch (error) {
+    if (isAbortError(error) || disposed) return;
+    if (error instanceof ApiClientError && error.status === 409) {
+      await loadWorkspace();
+      return;
+    }
+    patchProductState(product.id, {
+      status: 'FAILED',
+      errorMessage: error instanceof Error ? error.message : 'AI 信息提炼启动失败',
+    });
+    if (activeRunControllers.get(product.id)?.controller === controller) {
+      activeRunControllers.delete(product.id);
+    }
+  }
 };
 
-const runBatchExtraction = async (): Promise<void> => {
-  const targets = extractionTargets.value;
-  if (!targets.length || batchBusy.value) return;
-  batchBusy.value = true;
-  targets.forEach((product) =>
-    patchProductState(product.id, { status: 'PROCESSING', errorMessage: null }),
-  );
-  try {
-    const states = await mockEffectInfoExtractionService.extractAll(context.value, targets);
-    if (!disposed) states.forEach(replaceState);
-  } finally {
-    if (!disposed) batchBusy.value = false;
-  }
+const resumeCurrentPolling = (): void => {
+  const state = currentState.value;
+  if (!state?.runId) return;
+  void monitorProductRun(state.productId, state.runId);
 };
 
 const markDirty = (): void => {
   if (!currentState.value?.result || currentState.value.saveState === 'SAVING') return;
   currentState.value.saveState = 'DIRTY';
+  if (!currentState.value.saveErrorMessage?.includes('其他窗口更新')) {
+    currentState.value.saveErrorMessage = null;
+  }
 };
 
 const productBaseValue = (field: ProductBaseField): string => {
@@ -243,20 +407,60 @@ const removeDisabledElement = (index: number): void => {
 };
 
 const saveDraft = async (): Promise<void> => {
-  const product = currentProduct.value;
   const state = currentState.value;
-  if (!product || !state?.result || state.saveState === 'SAVING') return;
-  state.saveState = 'SAVING';
+  if (
+    !state?.result ||
+    !state.resultId ||
+    state.resultRevision === null ||
+    state.saveState === 'SAVING' ||
+    saveConflict.value
+  )
+    return;
+  saveController?.abort();
+  const controller = new AbortController();
+  saveController = controller;
+  const productId = state.productId;
+  const resultId = state.resultId;
+  const revision = state.resultRevision;
+  const snapshot = cloneExtractionResult(state.result);
+  patchProductState(productId, { saveState: 'SAVING', saveErrorMessage: null });
   try {
-    const saved = await mockEffectInfoExtractionService.saveDraft(
-      context.value,
-      product,
-      state.result,
+    const saved = await saveEffectExtractionResult(
+      props.projectId,
+      resultId,
+      revision,
+      snapshot,
+      controller.signal,
     );
-    if (!disposed) replaceState(saved);
-  } catch {
-    if (!disposed) state.saveState = 'SAVE_FAILED';
+    if (disposed || controller.signal.aborted) return;
+    const latest = productStates.value[productId];
+    if (!latest || latest.resultId !== resultId || !latest.result) return;
+    const editedWhileSaving = JSON.stringify(latest.result) !== JSON.stringify(snapshot);
+    patchProductState(productId, {
+      resultRevision: saved.revision,
+      result: editedWhileSaving ? latest.result : cloneExtractionResult(saved.result),
+      saveState: editedWhileSaving ? 'DIRTY' : 'SAVED',
+      saveErrorMessage: null,
+      updatedAt: saved.savedAt,
+    });
+  } catch (error) {
+    if (isAbortError(error) || disposed) return;
+    patchProductState(productId, {
+      saveState: 'SAVE_FAILED',
+      saveErrorMessage:
+        error instanceof ApiClientError && error.status === 409
+          ? '该提炼结果已在其他窗口更新。当前编辑仍保留，请主动加载最新结果后再编辑。'
+          : error instanceof Error
+            ? error.message
+            : '提炼草稿保存失败',
+    });
+  } finally {
+    if (saveController === controller) saveController = null;
   }
+};
+
+const loadLatestResult = (): void => {
+  void loadWorkspace();
 };
 
 const selectProduct = (event: Event): void => {
@@ -273,6 +477,7 @@ watch(
 onBeforeUnmount(() => {
   disposed = true;
   loadGeneration += 1;
+  stopAllRequests();
 });
 </script>
 
@@ -317,21 +522,11 @@ onBeforeUnmount(() => {
           <button
             class="secondary-button"
             type="button"
-            :disabled="currentState.status === 'PROCESSING' || batchBusy"
+            :disabled="currentRunning"
             @click="runCurrentExtraction"
           >
-            <LoaderCircle v-if="currentState.status === 'PROCESSING'" class="spin" :size="14" />
+            <LoaderCircle v-if="currentRunning" class="spin" :size="14" />
             <RefreshCw v-else :size="14" />{{ currentActionLabel }}
-          </button>
-          <button
-            v-if="mode === 'BATCH'"
-            class="primary-button"
-            type="button"
-            :disabled="!extractionTargets.length || batchBusy"
-            @click="runBatchExtraction"
-          >
-            <LoaderCircle v-if="batchBusy" class="spin" :size="14" />
-            <Sparkles v-else :size="14" />全部提炼
           </button>
         </div>
       </header>
@@ -357,11 +552,59 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
+      <div v-if="currentRunning" class="state-alert running" role="status">
+        <LoaderCircle class="spin" :size="17" />
+        <div>
+          <strong>{{
+            currentState.status === 'QUEUED' ? '任务已进入处理队列' : '正在提炼产品资料'
+          }}</strong>
+          <p>{{ currentProgressLabel }} · {{ currentState.progress }}%</p>
+          <span class="run-progress" aria-hidden="true">
+            <i :style="{ width: `${currentState.progress}%` }" />
+          </span>
+        </div>
+      </div>
+
+      <div v-if="pollingErrors[currentState.productId]" class="state-alert danger" role="alert">
+        <AlertCircle :size="17" />
+        <div>
+          <strong>任务进度暂时无法更新</strong>
+          <p>{{ pollingErrors[currentState.productId] }}</p>
+        </div>
+        <button type="button" @click="resumeCurrentPolling">
+          <RefreshCw :size="13" />恢复查询
+        </button>
+      </div>
+
+      <div v-if="currentState.warnings.length" class="state-alert warning extraction-warnings">
+        <AlertCircle :size="17" />
+        <div>
+          <strong>部分来源有提示，已使用其余有效资料完成提炼</strong>
+          <p
+            v-for="(warning, index) in currentState.warnings"
+            :key="`${warning.code}-${warning.sourceId}-${index}`"
+          >
+            {{ warningBranchLabel(warning.branch) }}：{{ warning.message }}
+          </p>
+        </div>
+      </div>
+
+      <div v-if="currentState.saveErrorMessage" class="state-alert danger" role="alert">
+        <AlertCircle :size="17" />
+        <div>
+          <strong>{{ saveConflict ? '提炼草稿存在版本冲突' : '提炼草稿保存失败' }}</strong>
+          <p>{{ currentState.saveErrorMessage }}</p>
+        </div>
+        <button v-if="saveConflict" type="button" @click="loadLatestResult">
+          <RefreshCw :size="13" />加载最新结果
+        </button>
+      </div>
+
       <div class="product-info-layout">
         <section
           class="content-block product-base-card"
-          :class="{ processing: currentState.status === 'PROCESSING' }"
-          :aria-busy="currentState.status === 'PROCESSING'"
+          :class="{ processing: currentRunning }"
+          :aria-busy="currentRunning"
         >
           <h3>产品基础层</h3>
           <div class="base-fields">
@@ -432,9 +675,9 @@ onBeforeUnmount(() => {
         class="result-grid"
         :class="{
           muted: currentState.status === 'FAILED',
-          processing: currentState.status === 'PROCESSING',
+          processing: currentRunning,
         }"
-        :aria-busy="currentState.status === 'PROCESSING'"
+        :aria-busy="currentRunning"
       >
         <section class="content-block">
           <div class="block-heading">
@@ -569,7 +812,11 @@ onBeforeUnmount(() => {
         <em :class="currentState.saveState.toLowerCase()">{{ saveStateLabel }}</em>
         <button
           type="button"
-          :disabled="currentState.saveState === 'SAVING' || currentState.saveState === 'SAVED'"
+          :disabled="
+            currentState.saveState === 'SAVING' ||
+            currentState.saveState === 'SAVED' ||
+            saveConflict
+          "
           @click="saveDraft"
         >
           <LoaderCircle v-if="currentState.saveState === 'SAVING'" class="spin" :size="14" />
@@ -780,6 +1027,29 @@ button:disabled {
   color: #956315;
   background: #fff8e8;
   border: 1px solid #f2dfb4;
+}
+.state-alert.running {
+  color: #2559a7;
+  background: #eef4ff;
+  border: 1px solid #cfe0ff;
+}
+.run-progress {
+  display: block;
+  height: 4px;
+  margin-top: 7px;
+  overflow: hidden;
+  background: #dbe7fb;
+  border-radius: 999px;
+}
+.run-progress i {
+  display: block;
+  height: 100%;
+  background: #2563eb;
+  border-radius: inherit;
+  transition: width 0.2s ease;
+}
+.extraction-warnings p + p {
+  margin-top: 2px;
 }
 .product-info-layout {
   display: grid;

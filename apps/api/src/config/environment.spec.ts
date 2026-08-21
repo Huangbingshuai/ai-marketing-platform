@@ -29,4 +29,21 @@ describe('validateEnvironment', () => {
       'API_PORT',
     );
   });
+
+  it('requires the extraction worker token in production', () => {
+    expect(() => validateEnvironment({ ...validEnvironment, APP_ENV: 'production' })).toThrow(
+      'EFFECT_EXTRACTION_WORKER_TOKEN',
+    );
+
+    expect(
+      validateEnvironment({
+        ...validEnvironment,
+        APP_ENV: 'production',
+        EFFECT_EXTRACTION_WORKER_TOKEN: 'production-worker-secret',
+      }),
+    ).toMatchObject({
+      APP_ENV: 'production',
+      EFFECT_EXTRACTION_WORKER_TOKEN: 'production-worker-secret',
+    });
+  });
 });

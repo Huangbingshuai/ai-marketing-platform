@@ -54,3 +54,4 @@ export type {
   ProjectWorkflowSpaces,
 } from './project';
 export * from './effect-import';
+export * from './effect-extraction';

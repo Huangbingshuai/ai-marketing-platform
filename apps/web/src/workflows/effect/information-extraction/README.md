@@ -1,88 +1,56 @@
 # 效果类工作流：AI 信息提炼节点
 
-本目录实现效果类工作流第 02 步“AI 信息提炼”的前端页面、状态模型、本地 Mock Service 与单元测试。
+本目录实现效果类工作流第 02 步“AI 信息提炼”的 Vue 页面、真实 API 客户端、异步任务轮询与前端测试。
 
 ## 原型基准
 
 - 业务页面与工作流画布：`references/prototypes/effect/effect-workflow.html`
 - 系统外壳与公共容器：`references/prototypes/integrated/system-integrated-demo.html`
-- 具体参考区域：效果类工作流画布、第 02 步“AI 信息提炼”、产品信息卡、提炼结果表单、底部节点导航与状态反馈。
+- 参考区域：第 02 步、产品信息卡、提炼结果表单、状态反馈和底部节点导航。
 
-正式页面复刻原型的蓝白视觉、卡片层级、尺寸、间距、字体、圆角、按钮层级和提示条。工作流画布允许自由切换六个节点；第 03–06 步仅保留范围占位，不在本模块实现 Prompt、渲染、混剪和导出业务。
+页面保留冻结原型的蓝白视觉、卡片层级、内容密度、间距、圆角和按钮层级。第 03–06 步仍不在本模块实现。
 
 ## 功能范围
 
-- 接收资料包导入节点提供的单产品或多品类、多产品数据。
-- 切换当前产品，各产品独立保存提炼结果、保存状态和处理状态。
-- 支持单产品提炼、重新提炼及全部产品批量提炼。
-- 展示未生成、生成中、已完成、失败、待更新五种处理状态。
-- 产品基础层和营销信息层始终作为同一组 AI 提取表单展示；未提炼时字段为空且只读，不额外展示底部空状态卡或提取按钮。
-- 顶部“AI 提取 / 重新 AI 提取”是当前产品的唯一提取入口，会同步生成或刷新品类、产品名称、核心规格、价格带、核心外观特征、目标人群、营销目标、核心卖点、使用场景、投放渠道、品牌调性和禁用元素。
-- 提炼完成后，整组结果均可直接编辑并保存草稿。
-- 支持保存草稿，切换产品后不会丢失已编辑内容。
-- 失败状态展示错误原因，并允许重新提炼。
-- 信息提炼页底部的“下一步”按钮仅在当前产品完成提炼后可用；顶部工作流画布不锁定节点，可自由查看其他步骤。
-- 全部异步过程由本地 Mock Service 完成，不发起真实网络请求。
+- 从资料包导入节点接收当前项目、草稿和产品列表。
+- 产品下拉框只决定当前查看和操作的产品；每次只启动当前产品的提炼任务，不提供批量提炼。
+- 通过 NestJS API 加载工作区、启动异步任务、轮询任务进度和保存人工修订，前端不直接调用模型。
+- 刷新或重新进入页面时恢复 `QUEUED` / `PROCESSING` 任务并继续轮询。
+- 展示未生成、排队中、生成中、已完成、失败和待更新状态，以及当前节点、进度和来源级告警。
+- `STALE` 结果仍可查看和编辑，但必须重新提炼后才能进入下一节点；前端不自行计算来源指纹。
+- 完整映射共享契约中的 12 个标准字段，完成后可人工编辑并使用 `expectedRevision` 保存。
+- 保存遇到 HTTP 409 时保留本地编辑，明确提示版本冲突；只有用户点击“加载最新结果”才用服务端版本替换本地内容。
 
 ## 目录结构
 
 ```text
 information-extraction/
-├─ EffectInfoExtractionNodePage.vue          # 页面结构、表单与交互编排
-├─ effect-info-extraction-layout.spec.ts      # 结果表单与唯一提取入口布局测试
-├─ effect-info-extraction-state.ts            # 状态、结果类型与纯函数
-├─ effect-info-extraction-state.spec.ts       # 状态模型单元测试
-├─ services/
-│  ├─ effect-info-extraction.service.ts       # 可替换 Service 接口与本地 Mock 实现
-│  └─ effect-info-extraction.service.spec.ts  # Service 单元测试
-└─ README.md
+├─ EffectInfoExtractionNodePage.vue
+├─ effect-info-extraction-state.ts
+├─ effect-info-extraction-layout.spec.ts
+├─ effect-info-extraction-state.spec.ts
+├─ api/
+│  ├─ effect-info-extraction.api.ts
+│  └─ effect-info-extraction.api.spec.ts
+└─ services/
+   ├─ effect-info-extraction.service.ts
+   └─ effect-info-extraction.service.spec.ts
 ```
 
-工作流入口与画布位于：
+共享请求、响应和标准结果类型来自 `@ai-marketing/contracts` 的 `effect-extraction` 契约。本目录只维护 Vue 需要的草稿保存状态，不复制后端业务契约。
 
-- `apps/web/src/workflows/effect/source-import/EffectImportNodePage.vue`
-- `apps/web/src/workflows/effect/source-import/components/EffectWorkflowCanvas.vue`
+## 状态和请求生命周期
 
-## 状态模型
+| 状态            | 页面行为                               |
+| --------------- | -------------------------------------- |
+| `NOT_GENERATED` | 字段为空且只读，可启动提炼             |
+| `QUEUED`        | 展示排队进度并轮询                     |
+| `PROCESSING`    | 展示当前 LangGraph 节点和进度并轮询    |
+| `COMPLETED`     | 结果可编辑、保存并进入下一节点         |
+| `FAILED`        | 展示后端错误，可重新提炼               |
+| `STALE`         | 保留旧结果但锁定下一节点，要求重新提炼 |
 
-处理状态定义在 `effect-info-extraction-state.ts`：
-
-| 状态            | 页面含义                           |
-| --------------- | ---------------------------------- |
-| `NOT_GENERATED` | 尚未生成提炼结果                   |
-| `PROCESSING`    | 本地 Mock 正在执行提炼             |
-| `COMPLETED`     | 已生成结果，可编辑并进入下一步     |
-| `FAILED`        | 提炼失败，展示原因并支持重试       |
-| `STALE`         | 上游资料发生变化，当前结果需要更新 |
-
-草稿保存状态独立于处理状态，包含 `CLEAN`、`DIRTY`、`SAVING`、`SAVED` 和 `SAVE_FAILED`。
-
-每个产品通过以下组合键隔离状态：
-
-```text
-projectId:draftId:productId
-```
-
-Service 会根据产品名称、品类、有效视频配置和素材摘要生成来源指纹。上游数据变化后，已完成结果会转为 `STALE`，避免继续把旧结果当作最新结果使用。
-
-## Service 替换约定
-
-页面仅依赖 `EffectInfoExtractionService`，当前注入的是单例 `mockEffectInfoExtractionService`。接口包含：
-
-- `loadWorkspace`：恢复全部产品状态。
-- `extractProduct`：提炼或重新提炼单个产品。
-- `extractAll`：批量提炼全部产品。
-- `saveDraft`：保存当前产品的编辑结果。
-
-后续接入真实后端时，应新增正式 Service 实现并保持上述方法语义，页面组件无需散落网络请求、定时器或固定 Mock 数据。真实请求仍应通过前端 HTTP API 客户端调用 NestJS，禁止前端直接调用模型服务。
-
-## 本地 Mock 规则
-
-- 单产品默认进入未生成状态。
-- 批量模式预置已完成、首次失败、待更新等演示状态，覆盖主要验收场景。
-- 单次提炼约 900ms，保存草稿约 260ms。
-- Mock 结果根据当前产品和有效视频配置生成，不写死在 Vue 组件内。
-- Mock 状态保存在当前页面会话的 Service 单例中，不使用浏览器持久化存储。
+组件切换项目、草稿或卸载时会取消工作区请求、保存请求和全部轮询，避免旧响应写入新上下文。来源告警不会把已完成任务改成失败，也不会阻止人工编辑和保存。
 
 ## 开发与验收
 
@@ -94,18 +62,17 @@ pnpm --filter @ai-marketing/web test
 pnpm build:web
 ```
 
-主要交互验收项：
+主要验收项：
 
-1. 六个工作流节点均可点击，画布样式与冻结原型一致。
-2. 单产品可完成提炼、编辑、保存草稿和重新提炼；重新提炼会同时刷新产品基础层与营销信息字段。
-3. 多产品切换后，各产品结果和状态互不串联。
-4. 批量提炼能同时更新多个产品，并正确展示失败与重试状态。
-5. 修改上游资料后，对应已完成结果标记为待更新。
-6. 当前产品未完成时，信息提炼页底部下一步按钮不可用；完成后可进入下一节点。
+1. 页面结构与冻结原型一致，12 个结果字段完整可见。
+2. 页面不存在“全部提炼”，只处理下拉框当前产品。
+3. 排队、执行、完成、失败、来源告警和 STALE 状态正确展示。
+4. 产品切换和刷新后任务、结果与状态不串联，并能恢复轮询。
+5. 人工修改可保存；409 冲突不会丢失本地编辑。
+6. 只有当前产品处于 `COMPLETED` 时，底部下一步按钮可用。
 
 ## 当前边界
 
-- 本模块不修改后端、数据库和共享接口契约。
-- 本模块不发起真实网络请求。
-- 本模块不实现 Prompt、片段渲染、自动混剪和校验导出业务。
-- 本地 Mock 状态在浏览器刷新后会重新初始化；正式持久化由后续后端 Service 承担。
+- 不实现 Prompt、片段渲染、模板混剪和成片导出。
+- 不自动把提炼结果创建为正式项目资产。
+- 电商链接抓取暂未实现时，页面仅展示后端返回的来源告警。

@@ -1,0 +1,59 @@
+[project]
+name = "effect-extraction-worker"
+version = "0.1.0"
+description = "LangGraph worker for the effect workflow information-extraction node"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "aio-pika>=9.5.7,<10",
+  "docling==2.117.0",
+  "httpx>=0.28.1,<1",
+  "langgraph>=1.0.6,<2",
+  "pillow>=11.3.0,<13",
+  "pydantic>=2.12.5,<3",
+  "pydantic-settings>=2.12.0,<3",
+]
+
+[project.scripts]
+effect-extraction-worker = "effect_extraction.main:main"
+effect-extraction-download-models = "effect_extraction.model_init:main"
+
+[dependency-groups]
+dev = [
+  "mypy>=1.18.2,<2",
+  "pytest>=8.4.2,<10",
+  "pytest-asyncio>=1.2.0,<2",
+]
+
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/effect_extraction"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+markers = [
+  "integration: requires local Docling model artifacts and may be slow",
+]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["effect_extraction"]
+mypy_path = ["src"]
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["aio_pika.*", "docling.*"]
+ignore_missing_imports = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]

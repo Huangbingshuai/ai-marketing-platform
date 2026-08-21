@@ -55,6 +55,23 @@ describe('EffectSourceImportRepository project isolation', () => {
     });
   });
 
+  it('protects objects held by either publishing or extraction runs', async () => {
+    const publishCount = vi.fn().mockResolvedValue(0);
+    const extractionCount = vi.fn().mockResolvedValue(1);
+    const repository = new EffectSourceImportRepository({
+      effectImportPublishFileHold: { count: publishCount },
+      effectExtractionFileHold: { count: extractionCount },
+    } as unknown as PrismaService);
+
+    await expect(repository.isStorageHeld('project-a', 'source/object')).resolves.toBe(true);
+    expect(publishCount).toHaveBeenCalledWith({
+      where: { projectId: 'project-a', storageKey: 'source/object' },
+    });
+    expect(extractionCount).toHaveBeenCalledWith({
+      where: { projectId: 'project-a', storageKey: 'source/object' },
+    });
+  });
+
   it('uses the compound project key for product mutations', async () => {
     const update = vi.fn().mockResolvedValue({ id: 'product-a', materials: [] });
     const transaction = {

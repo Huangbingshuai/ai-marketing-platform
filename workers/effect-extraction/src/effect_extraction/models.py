@@ -1,0 +1,204 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from enum import StrEnum
+from typing import Any, Literal, NotRequired, TypedDict
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+def to_camel(value: str) -> str:
+    head, *tail = value.split("_")
+    return head + "".join(part.capitalize() for part in tail)
+
+
+class ApiModel(BaseModel):
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        extra="forbid",
+    )
+
+
+class InputState(TypedDict):
+    project_id: str
+
+
+class OutputState(TypedDict):
+    extract_result_id: str
+
+
+class GraphState(TypedDict):
+    project_id: str
+    extract_result_id: NotRequired[str]
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeContext:
+    run_id: str
+    project_id: str
+    draft_id: str
+    product_id: str
+    request_id: str
+    attempt_token: str
+    source_fingerprint: str
+
+
+class ExtractionRequest(ApiModel):
+    schema_version: Literal[1] = 1
+    run_id: str
+    project_id: str
+    request_id: str
+
+
+class VideoConfig(ApiModel):
+    aspect_ratio: str
+    duration_seconds: int
+    resolution: str
+    frame_rate: int
+    subtitle_strategy: str
+    voiceover_strategy: str
+    bgm_strategy: str
+    style_tone: str
+    delivery_channel: str
+    disabled_elements: list[str] = Field(default_factory=list)
+
+
+class SnapshotMaterial(ApiModel):
+    id: str
+    type: str
+    original_file_name: str
+    mime_type: str
+    size_bytes: int = Field(ge=0)
+    updated_at: datetime | None = None
+    storage_key: str | None = Field(default=None, exclude=True)
+
+
+class SnapshotProduct(ApiModel):
+    id: str
+    name: str
+    category: str
+    sku: str
+    commerce_url: str | None = None
+    effective_config: VideoConfig
+
+
+class ExtractionSnapshot(ApiModel):
+    schema_version: Literal[1] = 1
+    project_id: str
+    draft_id: str
+    mode: Literal["SINGLE", "BATCH"]
+    source_revision: int
+    product: SnapshotProduct
+    materials: list[SnapshotMaterial] = Field(default_factory=list)
+
+class ClaimResponse(ApiModel):
+    terminal: bool
+    run_id: str
+    source_fingerprint: str | None = None
+    attempt_token: str | None = None
+    input: ExtractionSnapshot | None = None
+
+
+class ExtractionCandidate(ApiModel):
+    """All properties are present for strict structured output; values may be null."""
+
+    product_category: str | None
+    product_name: str | None
+    core_specification: str | None
+    price_range: str | None
+    visual_features: str | None
+    target_audience: str | None
+    marketing_goal: str | None
+    core_selling_points: list[str] | None
+    usage_scenarios: str | None
+    delivery_channels: str | None
+    brand_tone: str | None
+    disabled_elements: list[str] | None
+
+    @classmethod
+    def empty(cls) -> ExtractionCandidate:
+        return cls(**{name: None for name in cls.model_fields})
+
+
+class ExtractionResult(ApiModel):
+    product_category: str
+    product_name: str
+    core_specification: str
+    price_range: str
+    visual_features: str
+    target_audience: str
+    marketing_goal: str
+    core_selling_points: list[str]
+    usage_scenarios: str
+    delivery_channels: str
+    brand_tone: str
+    disabled_elements: list[str]
+
+
+class BranchName(StrEnum):
+    DOCUMENT = "DOCUMENT"
+    IMAGE = "IMAGE"
+    COMMERCE = "COMMERCE"
+    FORM = "FORM"
+    FUSION = "FUSION"
+    NORMALIZATION = "NORMALIZATION"
+
+
+class BranchStatus(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    PARTIAL = "PARTIAL"
+    SKIPPED = "SKIPPED"
+    FAILED = "FAILED"
+
+
+class BranchItem(ApiModel):
+    source_id: str
+    status: BranchStatus
+    candidate: ExtractionCandidate | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    artifact_storage_key: str | None = None
+    warning: str | None = None
+
+
+class BranchOutput(ApiModel):
+    branch: BranchName
+    status: BranchStatus
+    source_fingerprint: str
+    candidate: ExtractionCandidate | None = None
+    items: list[BranchItem] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class FinalizePayload(ApiModel):
+    result: ExtractionResult
+    provenance: dict[str, str]
+    conflict_report: list[str]
+    warnings: list[str]
+
+
+class FinalizeResponse(ApiModel):
+    extract_result_id: str
+
+
+class ArtifactResponse(ApiModel):
+    artifact_id: str
+    storage_key: str
+    size_bytes: int = Field(ge=0)
+    replayed: bool
+
+
+class FailurePayload(ApiModel):
+    error_code: str
+    error_message: str
+    retryable: bool = False
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ProgressPayload(ApiModel):
+    progress: int = Field(ge=0, le=99)
+    current_node: str

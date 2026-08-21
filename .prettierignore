@@ -4,3 +4,7 @@ coverage
 pnpm-lock.yaml
 references
 apps/api/src/generated
+.tmp
+**/.venv
+**/.pytest_cache
+**/__pycache__

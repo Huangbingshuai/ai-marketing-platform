@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   cloneExtractionResult,
   isExtractionReadyForNext,
+  isExtractionRunning,
+  toExtractionProductState,
   type EffectExtractionProductState,
   type EffectExtractionResult,
 } from './effect-info-extraction-state';
@@ -23,16 +25,24 @@ const result: EffectExtractionResult = {
 };
 
 const state = (status: EffectExtractionProductState['status']): EffectExtractionProductState => ({
+  projectId: 'project-1',
+  draftId: 'draft-1',
   productId: 'product-1',
   status,
-  saveState: 'CLEAN',
+  runId: null,
+  resultId: 'result-1',
+  resultRevision: 2,
   result,
+  progress: status === 'COMPLETED' ? 100 : 0,
+  currentNode: null,
+  warnings: [],
   errorMessage: null,
   sourceFingerprint: 'source',
-  attempt: 1,
-  savedAt: null,
   updatedAt: '2026-08-20T00:00:00.000Z',
+  saveState: 'SAVED',
+  saveErrorMessage: null,
 });
+
 describe('effect info extraction state', () => {
   it('only unlocks the next node for a completed product', () => {
     expect(isExtractionReadyForNext(state('COMPLETED'))).toBe(true);
@@ -41,11 +51,27 @@ describe('effect info extraction state', () => {
     expect(isExtractionReadyForNext(null)).toBe(false);
   });
 
-  it('clones editable array fields', () => {
+  it('treats queued and processing products as active runs', () => {
+    expect(isExtractionRunning(state('QUEUED'))).toBe(true);
+    expect(isExtractionRunning(state('PROCESSING'))).toBe(true);
+    expect(isExtractionRunning(state('COMPLETED'))).toBe(false);
+  });
+
+  it('clones editable array fields and server warnings', () => {
     const cloned = cloneExtractionResult(result);
     cloned.coreSellingPoints.push('卖点二');
     cloned.disabledElements.push('新增禁用词');
     expect(result.coreSellingPoints).toEqual(['卖点一']);
     expect(result.disabledElements).toEqual(['禁用元素']);
+
+    const view = toExtractionProductState({
+      ...state('COMPLETED'),
+      warnings: [
+        { code: 'COMMERCE_SKIPPED', message: '暂未抓取', branch: 'COMMERCE', sourceId: null },
+      ],
+    });
+    view.warnings[0]!.message = '已修改';
+    expect(view.saveState).toBe('SAVED');
+    expect(view.saveErrorMessage).toBeNull();
   });
 });

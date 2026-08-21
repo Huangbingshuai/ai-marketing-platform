@@ -10,3 +10,8 @@ coverage/
 .idea/
 apps/api/src/generated/
 .local-storage/
+.tmp/
+.venv/
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/

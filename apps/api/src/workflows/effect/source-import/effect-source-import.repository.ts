@@ -859,10 +859,11 @@ export class EffectSourceImportRepository {
   }
 
   async isStorageHeld(projectId: string, storageKey: string): Promise<boolean> {
-    return (
-      (await this.prisma.effectImportPublishFileHold.count({ where: { projectId, storageKey } })) >
-      0
-    );
+    const [publishHolds, extractionHolds] = await Promise.all([
+      this.prisma.effectImportPublishFileHold.count({ where: { projectId, storageKey } }),
+      this.prisma.effectExtractionFileHold.count({ where: { projectId, storageKey } }),
+    ]);
+    return publishHolds + extractionHolds > 0;
   }
 
   releaseExpiredPublishHolds(projectId: string, failedBefore: Date) {

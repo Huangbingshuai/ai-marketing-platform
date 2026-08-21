@@ -9,6 +9,7 @@ export type EnvironmentVariables = {
   DATABASE_URL: string;
   REDIS_URL: string;
   RABBITMQ_URL: string;
+  EFFECT_EXTRACTION_WORKER_TOKEN: string | undefined;
   TOS_ENDPOINT: string | undefined;
   TOS_REGION: string | undefined;
   TOS_BUCKET: string | undefined;
@@ -59,24 +60,33 @@ const parseEnvironment = (value: unknown): AppEnvironment => {
   return environment;
 };
 
-export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVariables => ({
-  APP_ENV: parseEnvironment(raw.APP_ENV),
-  API_PORT: parsePort(raw.API_PORT),
-  WEB_ORIGIN: requiredString(raw.WEB_ORIGIN ?? 'http://localhost:5173', 'WEB_ORIGIN'),
-  LOCAL_STORAGE_ROOT: optionalString(raw.LOCAL_STORAGE_ROOT),
-  MAX_UPLOAD_BYTES: parsePositiveInteger(
-    raw.MAX_UPLOAD_BYTES,
-    'MAX_UPLOAD_BYTES',
-    512 * 1024 * 1024,
-  ),
-  DATABASE_URL: requiredString(raw.DATABASE_URL, 'DATABASE_URL'),
-  REDIS_URL: requiredString(raw.REDIS_URL, 'REDIS_URL'),
-  RABBITMQ_URL: requiredString(raw.RABBITMQ_URL, 'RABBITMQ_URL'),
-  TOS_ENDPOINT: optionalString(raw.TOS_ENDPOINT),
-  TOS_REGION: optionalString(raw.TOS_REGION),
-  TOS_BUCKET: optionalString(raw.TOS_BUCKET),
-  TOS_ACCESS_KEY_ID: optionalString(raw.TOS_ACCESS_KEY_ID),
-  TOS_SECRET_ACCESS_KEY: optionalString(raw.TOS_SECRET_ACCESS_KEY),
-  SEEDANCE_BASE_URL: optionalString(raw.SEEDANCE_BASE_URL),
-  SEEDANCE_API_KEY: optionalString(raw.SEEDANCE_API_KEY),
-});
+export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVariables => {
+  const appEnvironment = parseEnvironment(raw.APP_ENV);
+  const effectExtractionWorkerToken = optionalString(raw.EFFECT_EXTRACTION_WORKER_TOKEN);
+  if (appEnvironment === 'production') {
+    requiredString(effectExtractionWorkerToken, 'EFFECT_EXTRACTION_WORKER_TOKEN');
+  }
+
+  return {
+    APP_ENV: appEnvironment,
+    API_PORT: parsePort(raw.API_PORT),
+    WEB_ORIGIN: requiredString(raw.WEB_ORIGIN ?? 'http://localhost:5173', 'WEB_ORIGIN'),
+    LOCAL_STORAGE_ROOT: optionalString(raw.LOCAL_STORAGE_ROOT),
+    MAX_UPLOAD_BYTES: parsePositiveInteger(
+      raw.MAX_UPLOAD_BYTES,
+      'MAX_UPLOAD_BYTES',
+      512 * 1024 * 1024,
+    ),
+    DATABASE_URL: requiredString(raw.DATABASE_URL, 'DATABASE_URL'),
+    REDIS_URL: requiredString(raw.REDIS_URL, 'REDIS_URL'),
+    RABBITMQ_URL: requiredString(raw.RABBITMQ_URL, 'RABBITMQ_URL'),
+    EFFECT_EXTRACTION_WORKER_TOKEN: effectExtractionWorkerToken,
+    TOS_ENDPOINT: optionalString(raw.TOS_ENDPOINT),
+    TOS_REGION: optionalString(raw.TOS_REGION),
+    TOS_BUCKET: optionalString(raw.TOS_BUCKET),
+    TOS_ACCESS_KEY_ID: optionalString(raw.TOS_ACCESS_KEY_ID),
+    TOS_SECRET_ACCESS_KEY: optionalString(raw.TOS_SECRET_ACCESS_KEY),
+    SEEDANCE_BASE_URL: optionalString(raw.SEEDANCE_BASE_URL),
+    SEEDANCE_API_KEY: optionalString(raw.SEEDANCE_API_KEY),
+  };
+};

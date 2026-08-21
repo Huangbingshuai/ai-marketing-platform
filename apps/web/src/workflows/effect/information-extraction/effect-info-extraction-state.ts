@@ -1,48 +1,26 @@
-export const EFFECT_EXTRACTION_STATUSES = [
-  'NOT_GENERATED',
-  'PROCESSING',
-  'COMPLETED',
-  'FAILED',
-  'STALE',
-] as const;
+import type {
+  EffectExtractionProductState as EffectExtractionProductDto,
+  EffectExtractionProductStatus,
+  EffectExtractionResult,
+} from '@ai-marketing/contracts';
 
-export type EffectExtractionStatus = (typeof EFFECT_EXTRACTION_STATUSES)[number];
+export type { EffectExtractionResult } from '@ai-marketing/contracts';
 
 export type EffectExtractionSaveState = 'CLEAN' | 'DIRTY' | 'SAVING' | 'SAVED' | 'SAVE_FAILED';
 
-export type EffectExtractionResult = {
-  productCategory: string;
-  productName: string;
-  coreSpecification: string;
-  priceRange: string;
-  visualFeatures: string;
-  targetAudience: string;
-  marketingGoal: string;
-  coreSellingPoints: string[];
-  usageScenarios: string;
-  deliveryChannels: string;
-  brandTone: string;
-  disabledElements: string[];
-};
-
-export type EffectExtractionProductState = {
-  productId: string;
-  status: EffectExtractionStatus;
+export type EffectExtractionProductState = EffectExtractionProductDto & {
   saveState: EffectExtractionSaveState;
-  result: EffectExtractionResult | null;
-  errorMessage: string | null;
-  sourceFingerprint: string;
-  attempt: number;
-  savedAt: string | null;
-  updatedAt: string;
+  saveErrorMessage: string | null;
 };
 
 export const EFFECT_EXTRACTION_STATUS_META: Record<
-  EffectExtractionStatus,
+  EffectExtractionProductStatus,
   { label: string; tone: 'danger' | 'neutral' | 'running' | 'success' | 'warning' }
 > = {
   NOT_GENERATED: { label: '未生成', tone: 'neutral' },
+  QUEUED: { label: '排队中', tone: 'running' },
   PROCESSING: { label: '生成中', tone: 'running' },
+  CANCELLED: { label: '已取消', tone: 'neutral' },
   COMPLETED: { label: '已完成', tone: 'success' },
   FAILED: { label: '失败', tone: 'danger' },
   STALE: { label: '待更新', tone: 'warning' },
@@ -58,8 +36,22 @@ export const cloneExtractionProductState = (
   value: EffectExtractionProductState,
 ): EffectExtractionProductState => ({
   ...value,
+  warnings: value.warnings.map((warning) => ({ ...warning })),
   result: value.result ? cloneExtractionResult(value.result) : null,
 });
+
+export const toExtractionProductState = (
+  value: EffectExtractionProductDto,
+): EffectExtractionProductState => ({
+  ...value,
+  warnings: value.warnings.map((warning) => ({ ...warning })),
+  result: value.result ? cloneExtractionResult(value.result) : null,
+  saveState: value.result ? 'SAVED' : 'CLEAN',
+  saveErrorMessage: null,
+});
+
+export const isExtractionRunning = (state: EffectExtractionProductState | null): boolean =>
+  state?.status === 'QUEUED' || state?.status === 'PROCESSING';
 
 export const isExtractionReadyForNext = (state: EffectExtractionProductState | null): boolean =>
   state?.status === 'COMPLETED';
