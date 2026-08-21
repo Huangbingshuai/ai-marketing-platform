@@ -25,6 +25,7 @@ import {
   EFFECT_EXTRACTION_STATUS_META,
   isExtractionReadyForNext,
   type EffectExtractionProductState,
+  type EffectExtractionResult,
 } from './effect-info-extraction-state';
 import {
   mockEffectInfoExtractionService,
@@ -65,7 +66,6 @@ const sourceSignature = computed(() =>
       id: product.id,
       name: product.name,
       category: product.category,
-      sku: product.sku,
       effectiveConfig: product.effectiveConfig,
       materials: product.materials.map((material) => ({
         id: material.id,
@@ -80,9 +80,7 @@ const currentProduct = computed(
   () => props.products.find((product) => product.id === currentProductId.value) ?? null,
 );
 const currentState = computed(() => productStates.value[currentProductId.value] ?? null);
-const currentConfig = computed(
-  () => currentProduct.value?.effectiveConfig ?? props.globalConfig,
-);
+const currentConfig = computed(() => currentProduct.value?.effectiveConfig ?? props.globalConfig);
 const currentStatusMeta = computed(() =>
   currentState.value
     ? EFFECT_EXTRACTION_STATUS_META[currentState.value.status]
@@ -92,8 +90,27 @@ const readyForNext = computed(() => isExtractionReadyForNext(currentState.value)
 const extractionTargets = computed(() =>
   props.products.filter((product) => productStates.value[product.id]?.status !== 'COMPLETED'),
 );
-const readyMaterialCount = computed(
-  () => currentProduct.value?.materials.filter((material) => material.status === 'READY').length ?? 0,
+type ProductBaseField = keyof Pick<
+  EffectExtractionResult,
+  'productCategory' | 'productName' | 'coreSpecification' | 'priceRange' | 'visualFeatures'
+>;
+const emptyExtractionResult: EffectExtractionResult = {
+  productCategory: '',
+  productName: '',
+  coreSpecification: '',
+  priceRange: '',
+  visualFeatures: '',
+  targetAudience: '',
+  marketingGoal: '',
+  coreSellingPoints: [''],
+  usageScenarios: '',
+  deliveryChannels: '',
+  brandTone: '',
+  disabledElements: [],
+};
+const visibleResult = computed(() => currentState.value?.result ?? emptyExtractionResult);
+const baseFieldsReadonly = computed(
+  () => !currentState.value?.result || currentState.value.status === 'PROCESSING',
 );
 const saveStateLabel = computed(() => {
   const state = currentState.value?.saveState ?? 'CLEAN';
@@ -106,10 +123,10 @@ const saveStateLabel = computed(() => {
   }[state];
 });
 const currentActionLabel = computed(() => {
-  if (!currentState.value) return '开始 AI 提炼';
-  if (currentState.value.status === 'PROCESSING') return 'AI 提炼中…';
-  if (currentState.value.status === 'NOT_GENERATED') return '开始 AI 提炼';
-  return '重新 AI 提炼';
+  if (!currentState.value) return '开始 AI 提取';
+  if (currentState.value.status === 'PROCESSING') return 'AI 提取中…';
+  if (currentState.value.status === 'NOT_GENERATED') return '开始 AI 提取';
+  return '重新 AI 提取';
 });
 
 const stateLabel = (productId: string): string => {
@@ -182,6 +199,17 @@ const runBatchExtraction = async (): Promise<void> => {
 const markDirty = (): void => {
   if (!currentState.value?.result || currentState.value.saveState === 'SAVING') return;
   currentState.value.saveState = 'DIRTY';
+};
+
+const productBaseValue = (field: ProductBaseField): string => {
+  return currentState.value?.result?.[field] ?? '';
+};
+
+const updateProductBaseField = (field: ProductBaseField, event: Event): void => {
+  const result = currentState.value?.result;
+  if (!result) return;
+  result[field] = (event.target as HTMLInputElement | HTMLTextAreaElement).value;
+  markDirty();
 };
 
 const addSellingPoint = (): void => {
@@ -274,7 +302,7 @@ onBeforeUnmount(() => {
           <span>02</span>
           <div>
             <h2 id="effect-extraction-title">产品素材制作信息卡</h2>
-            <p>AI 结果可逐项修订，每个产品独立保存提炼状态与草稿</p>
+            <p>全部字段均可人工修订，红色标签为合规风险词</p>
           </div>
         </div>
         <div class="extraction-heading__actions">
@@ -282,29 +310,17 @@ onBeforeUnmount(() => {
             <span class="visually-hidden">当前产品</span>
             <select :value="currentProductId" @change="selectProduct">
               <option v-for="product in products" :key="product.id" :value="product.id">
-                {{ product.name || product.sku }} · {{ stateLabel(product.id) }}
+                {{ product.name || '未命名产品' }} · {{ stateLabel(product.id) }}
               </option>
             </select>
           </label>
-          <span class="status-pill" :class="currentStatusMeta.tone">
-            <LoaderCircle
-              v-if="currentState.status === 'PROCESSING'"
-              class="spin"
-              :size="12"
-            />
-            {{ currentStatusMeta.label }}
-          </span>
           <button
             class="secondary-button"
             type="button"
             :disabled="currentState.status === 'PROCESSING' || batchBusy"
             @click="runCurrentExtraction"
           >
-            <LoaderCircle
-              v-if="currentState.status === 'PROCESSING'"
-              class="spin"
-              :size="14"
-            />
+            <LoaderCircle v-if="currentState.status === 'PROCESSING'" class="spin" :size="14" />
             <RefreshCw v-else :size="14" />{{ currentActionLabel }}
           </button>
           <button
@@ -342,138 +358,203 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="product-info-layout">
-        <section class="content-block product-base-card">
+        <section
+          class="content-block product-base-card"
+          :class="{ processing: currentState.status === 'PROCESSING' }"
+          :aria-busy="currentState.status === 'PROCESSING'"
+        >
           <h3>产品基础层</h3>
           <div class="base-fields">
-            <label><span>品类</span><input :value="currentProduct.category || '未填写'" readonly /></label>
-            <label><span>产品名称</span><input :value="currentProduct.name || '未填写'" readonly /></label>
-            <label><span>SKU</span><input :value="currentProduct.sku || '未填写'" readonly /></label>
             <label
-              ><span>资料完整度</span
+              ><span>品类</span
               ><input
-                :value="`${readyMaterialCount} / ${currentProduct.materials.length} 项资料可用`"
-                readonly
+                :value="productBaseValue('productCategory')"
+                :readonly="baseFieldsReadonly"
+                @input="updateProductBaseField('productCategory', $event)"
+            /></label>
+            <label
+              ><span>产品名称</span
+              ><input
+                :value="productBaseValue('productName')"
+                :readonly="baseFieldsReadonly"
+                @input="updateProductBaseField('productName', $event)"
+            /></label>
+            <label
+              ><span>核心规格</span
+              ><input
+                :value="productBaseValue('coreSpecification')"
+                :readonly="baseFieldsReadonly"
+                @input="updateProductBaseField('coreSpecification', $event)"
+            /></label>
+            <label
+              ><span>价格带</span
+              ><input
+                :value="productBaseValue('priceRange')"
+                :readonly="baseFieldsReadonly"
+                @input="updateProductBaseField('priceRange', $event)"
             /></label>
             <label class="wide"
-              ><span>资料概况</span
+              ><span>核心外观特征</span
               ><textarea
-                :value="currentProduct.materials.length ? currentProduct.materials.map((material) => material.originalFileName || material.expectedFileName || '待补充资料').join('、') : '尚未上传产品资料'"
-                readonly
-            /></label>
+                :value="productBaseValue('visualFeatures')"
+                :readonly="baseFieldsReadonly"
+                @input="updateProductBaseField('visualFeatures', $event)"
+              />
+            </label>
           </div>
         </section>
         <aside class="inherit-card">
           <span>继承自步骤 1 · 只读</span>
           <h3>统一制作规则</h3>
           <dl>
-            <div><dt>画幅</dt><dd>{{ currentConfig.aspectRatio }}</dd></div>
-            <div><dt>时长</dt><dd>{{ currentConfig.durationSeconds }} 秒</dd></div>
-            <div><dt>风格</dt><dd>{{ currentConfig.styleTone }}</dd></div>
-            <div><dt>渠道</dt><dd>{{ currentConfig.deliveryChannel }}</dd></div>
+            <div>
+              <dt>画幅</dt>
+              <dd>{{ currentConfig.aspectRatio }}</dd>
+            </div>
+            <div>
+              <dt>时长</dt>
+              <dd>{{ currentConfig.durationSeconds }} 秒</dd>
+            </div>
+            <div>
+              <dt>风格</dt>
+              <dd>{{ currentConfig.styleTone }}</dd>
+            </div>
+            <div>
+              <dt>渠道</dt>
+              <dd>{{ currentConfig.deliveryChannel }}</dd>
+            </div>
           </dl>
-          <p>如需修改，请返回步骤 1；变更后当前产品会标记为待更新。</p>
+          <p>如需修改，请返回步骤 1，后续将按影响范围增量更新。</p>
         </aside>
       </div>
 
-      <section v-if="currentState.status === 'PROCESSING'" class="processing-card" role="status">
-        <span><LoaderCircle class="spin" :size="24" /></span>
-        <div>
-          <h3>正在提炼当前产品信息</h3>
-          <p>本地 Mock 正在整理目标人群、卖点、场景、渠道与合规信息。</p>
-        </div>
-        <div class="processing-lines"><i /><i /><i /></div>
-      </section>
-
-      <section v-else-if="!currentState.result" class="empty-result-card">
-        <span><Sparkles :size="25" /></span>
-        <h3>{{ currentState.status === 'FAILED' ? '等待重新提炼' : '尚未生成提炼结果' }}</h3>
-        <p>点击“开始 AI 提炼”，本地 Mock 将为当前产品生成可编辑的信息卡。</p>
-        <button type="button" @click="runCurrentExtraction">
-          <Sparkles :size="14" />开始 AI 提炼
-        </button>
-      </section>
-
-      <div v-else class="result-grid" :class="{ muted: currentState.status === 'FAILED' }">
+      <div
+        class="result-grid"
+        :class="{
+          muted: currentState.status === 'FAILED',
+          processing: currentState.status === 'PROCESSING',
+        }"
+        :aria-busy="currentState.status === 'PROCESSING'"
+      >
         <section class="content-block">
           <div class="block-heading">
-            <div><h3>用户与目标</h3><p>明确本轮营销沟通对象与转化方向</p></div>
-          </div>
-          <label class="field-label">
-            <span>目标人群</span>
-            <textarea v-model="currentState.result.targetAudience" @input="markDirty" />
-          </label>
-          <label class="field-label">
-            <span>营销目标</span>
-            <textarea v-model="currentState.result.marketingGoal" @input="markDirty" />
-          </label>
-        </section>
-
-        <section class="content-block">
-          <div class="block-heading">
-            <div><h3>卖点分层</h3><p>核心卖点建议保留 1–3 个</p></div>
+            <div>
+              <h3>卖点分层</h3>
+              <p>核心卖点建议 1–3 个</p>
+            </div>
             <button
               type="button"
-              :disabled="currentState.result.coreSellingPoints.length >= 3"
+              :disabled="baseFieldsReadonly || visibleResult.coreSellingPoints.length >= 3"
               @click="addSellingPoint"
-            ><Plus :size="13" />添加卖点</button>
+            >
+              <Plus :size="13" />添加卖点
+            </button>
           </div>
           <div class="selling-points">
             <div
-              v-for="(_point, index) in currentState.result.coreSellingPoints"
+              v-for="(_point, index) in visibleResult.coreSellingPoints"
               :key="index"
               class="selling-point-row"
             >
               <span>核心卖点</span>
-              <input v-model="currentState.result.coreSellingPoints[index]" @input="markDirty" />
+              <input
+                v-model="visibleResult.coreSellingPoints[index]"
+                :readonly="baseFieldsReadonly"
+                @input="markDirty"
+              />
               <button
                 type="button"
                 aria-label="删除卖点"
-                :disabled="currentState.result.coreSellingPoints.length <= 1"
+                :disabled="baseFieldsReadonly || visibleResult.coreSellingPoints.length <= 1"
                 @click="removeSellingPoint(index)"
-              ><Trash2 :size="14" /></button>
+              >
+                <Trash2 :size="14" />
+              </button>
             </div>
           </div>
         </section>
 
         <section class="content-block">
-          <div class="block-heading">
-            <div><h3>场景与投放</h3><p>统一使用情境与内容分发方向</p></div>
+          <div class="block-heading compact">
+            <div><h3>用户层</h3></div>
           </div>
           <label class="field-label">
-            <span>使用场景</span>
-            <textarea v-model="currentState.result.usageScenarios" @input="markDirty" />
+            <span>目标受众画像</span>
+            <textarea
+              v-model="visibleResult.targetAudience"
+              :readonly="baseFieldsReadonly"
+              @input="markDirty"
+            />
+          </label>
+          <label class="field-label">
+            <span>营销目标</span>
+            <textarea
+              v-model="visibleResult.marketingGoal"
+              :readonly="baseFieldsReadonly"
+              @input="markDirty"
+            />
+          </label>
+        </section>
+
+        <section class="content-block">
+          <div class="block-heading compact">
+            <div><h3>场景层</h3></div>
+          </div>
+          <label class="field-label">
+            <span>核心使用场景</span>
+            <input
+              v-model="visibleResult.usageScenarios"
+              :readonly="baseFieldsReadonly"
+              @input="markDirty"
+            />
           </label>
           <label class="field-label">
             <span>投放渠道</span>
-            <input v-model="currentState.result.deliveryChannels" @input="markDirty" />
+            <input
+              v-model="visibleResult.deliveryChannels"
+              :readonly="baseFieldsReadonly"
+              @input="markDirty"
+            />
+          </label>
+          <label class="field-label">
+            <span>品牌调性</span>
+            <input
+              v-model="visibleResult.brandTone"
+              :readonly="baseFieldsReadonly"
+              @input="markDirty"
+            />
           </label>
         </section>
 
         <section class="content-block">
           <div class="block-heading">
-            <div><h3>品牌与合规</h3><p>禁用元素沿用原型标签式编辑</p></div>
+            <div>
+              <h3>合规与画面禁用词</h3>
+              <p>高风险文字将标红提醒</p>
+            </div>
           </div>
-          <label class="field-label">
-            <span>品牌调性</span>
-            <input v-model="currentState.result.brandTone" @input="markDirty" />
-          </label>
           <div class="field-label disabled-field">
-            <span>禁用元素</span>
             <div class="disabled-tags">
               <button
-                v-for="(element, index) in currentState.result.disabledElements"
+                v-for="(element, index) in visibleResult.disabledElements"
                 :key="`${element}-${index}`"
                 type="button"
+                :disabled="baseFieldsReadonly"
                 @click="removeDisabledElement(index)"
-              >{{ element }} <b>×</b></button>
+              >
+                {{ element }} <b>×</b>
+              </button>
             </div>
             <div class="disabled-input-row">
               <input
                 v-model="newDisabledElement"
-                placeholder="输入新禁用元素"
+                placeholder="输入新禁用词"
+                :disabled="baseFieldsReadonly"
                 @keydown.enter.prevent="addDisabledElement"
               />
-              <button type="button" @click="addDisabledElement">添加</button>
+              <button type="button" :disabled="baseFieldsReadonly" @click="addDisabledElement">
+                添加
+              </button>
             </div>
           </div>
         </section>
@@ -511,7 +592,9 @@ onBeforeUnmount(() => {
           type="button"
           :disabled="!readyForNext"
           @click="emit('next')"
-        >下一步：Prompt 生成<ArrowRight :size="14" /></button>
+        >
+          下一步：Prompt 生成<ArrowRight :size="14" />
+        </button>
       </footer>
     </template>
   </section>
@@ -572,10 +655,10 @@ onBeforeUnmount(() => {
   margin-left: auto;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 10px;
 }
 .product-switcher select {
-  width: 220px;
+  width: 230px;
   height: 40px;
   padding: 0 32px 0 12px;
   color: #42526a;
@@ -584,6 +667,9 @@ onBeforeUnmount(() => {
   border-radius: 10px;
   outline: 0;
   font-size: 12px;
+}
+.extraction-heading__actions .secondary-button {
+  min-width: 139px;
 }
 .product-switcher select:focus,
 input:focus,
@@ -607,15 +693,30 @@ textarea:focus {
   font-weight: 650;
   white-space: nowrap;
 }
-.status-pill.success { color: #0f8a68; background: #eefaf6; border-color: #ccebdc; }
-.status-pill.running { color: #2563eb; background: #eef4ff; border-color: #cfe0ff; }
-.status-pill.warning { color: #b7791f; background: #fff8e8; border-color: #f2dfb4; }
-.status-pill.danger { color: #dc3f52; background: #fff1f2; border-color: #f7c8ce; }
+.status-pill.success {
+  color: #0f8a68;
+  background: #eefaf6;
+  border-color: #ccebdc;
+}
+.status-pill.running {
+  color: #2563eb;
+  background: #eef4ff;
+  border-color: #cfe0ff;
+}
+.status-pill.warning {
+  color: #b7791f;
+  background: #fff8e8;
+  border-color: #f2dfb4;
+}
+.status-pill.danger {
+  color: #dc3f52;
+  background: #fff1f2;
+  border-color: #f7c8ce;
+}
 .secondary-button,
 .primary-button,
 .extraction-page-state button,
-.state-alert button,
-.empty-result-card button {
+.state-alert button {
   display: inline-flex;
   height: 40px;
   padding: 0 14px;
@@ -630,8 +731,7 @@ textarea:focus {
   font-weight: 700;
   white-space: nowrap;
 }
-.primary-button,
-.empty-result-card button {
+.primary-button {
   color: #fff;
   background: #2563eb;
   border-color: #2563eb;
@@ -656,12 +756,31 @@ button:disabled {
   flex: 1;
 }
 .state-alert strong,
-.state-alert p { margin: 0; }
-.state-alert strong { font-size: 12px; }
-.state-alert p { margin-top: 3px; font-size: 10px; line-height: 1.5; }
-.state-alert button { height: 32px; padding: 0 10px; }
-.state-alert.danger { color: #a53d4b; background: #fff1f2; border: 1px solid #f7c8ce; }
-.state-alert.warning { color: #956315; background: #fff8e8; border: 1px solid #f2dfb4; }
+.state-alert p {
+  margin: 0;
+}
+.state-alert strong {
+  font-size: 12px;
+}
+.state-alert p {
+  margin-top: 3px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.state-alert button {
+  height: 32px;
+  padding: 0 10px;
+}
+.state-alert.danger {
+  color: #a53d4b;
+  background: #fff1f2;
+  border: 1px solid #f7c8ce;
+}
+.state-alert.warning {
+  color: #956315;
+  background: #fff8e8;
+  border: 1px solid #f2dfb4;
+}
 .product-info-layout {
   display: grid;
   grid-template-columns: minmax(0, 3fr) minmax(240px, 1fr);
@@ -679,25 +798,46 @@ button:disabled {
   min-height: 346px;
 }
 .content-block h3,
-.inherit-card h3 { margin: 0; color: #263247; font-size: 15px; }
+.inherit-card h3 {
+  margin: 0;
+  color: #263247;
+  font-size: 15px;
+}
 .base-fields {
   display: grid;
-  margin-top: 16px;
+  margin-top: 0;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  column-gap: 16px;
+  row-gap: 18px;
 }
-.base-fields label,
+.base-fields label {
+  display: grid;
+  gap: 8px;
+  color: #596278;
+  font-size: 14px;
+  font-weight: 650;
+}
+.base-fields label > span {
+  line-height: 22px;
+}
 .field-label {
   display: grid;
   gap: 8px;
   color: #596278;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 650;
 }
-.base-fields label.wide { grid-column: 1 / -1; }
+.field-label > span {
+  line-height: 22px;
+}
+.base-fields label.wide {
+  grid-column: 1 / -1;
+}
 input,
 textarea,
-select { font: inherit; }
+select {
+  font: inherit;
+}
 .base-fields input,
 .base-fields textarea,
 .field-label input,
@@ -710,17 +850,48 @@ select { font: inherit; }
   border: 1px solid #dce3ec;
   border-radius: 10px;
   outline: 0;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 400;
 }
-.base-fields input,
 .field-label input,
 .selling-point-row input,
-.disabled-input-row input { height: 40px; padding: 0 11px; }
-.base-fields textarea,
-.field-label textarea { min-height: 58px; padding: 8px 11px; line-height: 1.6; resize: vertical; }
+.disabled-input-row input {
+  height: 42px;
+  padding: 0 11px;
+}
+.selling-point-row input {
+  height: 40px;
+}
+.field-label textarea {
+  height: 56px;
+  min-height: 56px;
+  padding: 5px 11px;
+  line-height: 23px;
+  resize: none;
+}
+.base-fields input {
+  height: 42px;
+  padding: 0 11px;
+  font-size: 14px;
+}
+.base-fields textarea {
+  height: 56px;
+  min-height: 56px;
+  padding: 5px 11px;
+  font-size: 14px;
+  line-height: 23px;
+  resize: none;
+}
 .base-fields input[readonly],
-.base-fields textarea[readonly] { color: #66758c; background: #fafbfd; }
+.base-fields textarea[readonly] {
+  color: #606266;
+  background: #fff;
+}
+.product-base-card.processing .base-fields input,
+.product-base-card.processing .base-fields textarea {
+  color: #2563eb;
+  background: #f5f8ff;
+}
 .inherit-card {
   background: linear-gradient(145deg, #fffdfb, #fff6f2);
   border-color: #f7d6c7;
@@ -731,11 +902,16 @@ select { font: inherit; }
   color: #d9574e;
   background: #fff;
   border-radius: 999px;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 800;
 }
-.inherit-card h3 { margin: 14px 0 10px; }
-.inherit-card dl { margin: 0; }
+.inherit-card h3 {
+  margin: 14px 0 12px;
+  font-size: 16px;
+}
+.inherit-card dl {
+  margin: 0;
+}
 .inherit-card dl > div {
   display: flex;
   min-height: 34px;
@@ -744,48 +920,23 @@ select { font: inherit; }
   gap: 10px;
   border-bottom: 1px solid #f2ddd5;
 }
-.inherit-card dt { color: #927d76; font-size: 10px; }
-.inherit-card dd { margin: 0; color: #37435a; font-size: 10px; font-weight: 800; text-align: right; }
-.inherit-card p { margin: 12px 0 0; color: #a08377; font-size: 9px; line-height: 1.7; }
-.processing-card,
-.empty-result-card {
-  display: flex;
-  min-height: 310px;
-  margin-top: 18px;
-  padding: 34px;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
-  color: #77879e;
-  background: #fbfdff;
-  border: 1px dashed #bfcde0;
-  border-radius: 20px;
-  text-align: center;
+.inherit-card dt {
+  color: #8e7a70;
+  font-size: 12px;
 }
-.processing-card > span,
-.empty-result-card > span {
-  display: grid;
-  width: 52px;
-  height: 52px;
-  place-items: center;
-  color: #2563eb;
-  background: #eaf2ff;
-  border-radius: 16px;
+.inherit-card dd {
+  margin: 0;
+  color: #253047;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: right;
 }
-.processing-card h3,
-.empty-result-card h3 { margin: 13px 0 5px; color: #34445c; font-size: 15px; }
-.processing-card p,
-.empty-result-card p { margin: 0; font-size: 10px; }
-.empty-result-card button { margin-top: 16px; }
-.processing-lines {
-  display: grid;
-  width: min(380px, 90%);
-  margin-top: 20px;
-  gap: 7px;
+.inherit-card p {
+  margin: 12px 0 0;
+  color: #a08377;
+  font-size: 11px;
+  line-height: 1.65;
 }
-.processing-lines i { height: 7px; background: linear-gradient(90deg, #dce8fb, #f3f7fd, #dce8fb); border-radius: 999px; animation: shimmer 1.2s ease-in-out infinite alternate; }
-.processing-lines i:nth-child(2) { width: 78%; }
-.processing-lines i:nth-child(3) { width: 60%; }
 .result-grid {
   display: grid;
   margin-top: 18px;
@@ -793,9 +944,14 @@ select { font: inherit; }
   gap: 18px;
 }
 .result-grid .content-block {
-  min-height: 305px;
+  min-height: 332px;
 }
-.result-grid.muted { opacity: 0.78; }
+.result-grid .content-block:nth-child(-n + 2) {
+  min-height: 374px;
+}
+.result-grid.muted {
+  opacity: 0.78;
+}
 .block-heading {
   display: flex;
   margin-bottom: 15px;
@@ -804,26 +960,40 @@ select { font: inherit; }
   gap: 12px;
 }
 .block-heading h3,
-.block-heading p { margin: 0; }
-.block-heading p { margin-top: 4px; color: #909aaa; font-size: 9px; }
+.block-heading p {
+  margin: 0;
+}
+.block-heading p {
+  margin-top: 4px;
+  color: #9198a7;
+  font-size: 12px;
+}
+.block-heading.compact {
+  margin-bottom: 0;
+}
 .block-heading button {
   display: inline-flex;
-  height: 32px;
-  padding: 0 10px;
+  height: 40px;
+  padding: 0 18px;
   align-items: center;
   gap: 5px;
   color: #42526a;
   background: #fff;
   border: 1px solid #dbe4f6;
-  border-radius: 9px;
-  font-size: 9px;
+  border-radius: 10px;
+  font-size: 14px;
   font-weight: 700;
 }
-.field-label + .field-label { margin-top: 14px; }
-.selling-points { display: grid; gap: 10px; }
+.field-label + .field-label {
+  margin-top: 18px;
+}
+.selling-points {
+  display: grid;
+  gap: 10px;
+}
 .selling-point-row {
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr) 36px;
+  grid-template-columns: 112px minmax(0, 1fr) 38px;
   gap: 8px;
 }
 .selling-point-row > span {
@@ -835,12 +1005,12 @@ select { font: inherit; }
   background: #f8fafc;
   border: 1px solid #dce3ec;
   border-radius: 10px;
-  font-size: 10px;
+  font-size: 14px;
   font-weight: 650;
 }
 .selling-point-row button {
   display: grid;
-  width: 36px;
+  width: 38px;
   height: 40px;
   padding: 0;
   place-items: center;
@@ -849,8 +1019,15 @@ select { font: inherit; }
   border: 1px solid #dbe4f6;
   border-radius: 10px;
 }
-.disabled-field { margin-top: 14px; }
-.disabled-tags { display: flex; min-height: 28px; flex-wrap: wrap; gap: 6px; }
+.disabled-field {
+  margin-top: 14px;
+}
+.disabled-tags {
+  display: flex;
+  min-height: 28px;
+  flex-wrap: wrap;
+  gap: 6px;
+}
 .disabled-tags button {
   display: inline-flex;
   min-height: 24px;
@@ -861,16 +1038,22 @@ select { font: inherit; }
   background: #fff1f2;
   border: 1px solid #f7c8ce;
   border-radius: 7px;
-  font-size: 9px;
+  font-size: 11px;
 }
-.disabled-tags b { font-size: 12px; }
-.disabled-input-row { display: grid; grid-template-columns: minmax(0, 1fr) 58px; gap: 8px; }
+.disabled-tags b {
+  font-size: 12px;
+}
+.disabled-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 58px;
+  gap: 8px;
+}
 .disabled-input-row button {
   color: #42526a;
   background: #fff;
   border: 1px solid #dbe4f6;
   border-radius: 10px;
-  font-size: 10px;
+  font-size: 14px;
   font-weight: 700;
 }
 .draft-save-bar {
@@ -884,16 +1067,54 @@ select { font: inherit; }
   border: 1px solid #d8e3f3;
   border-radius: 14px;
 }
-.draft-save-bar__icon { display: grid; width: 38px; height: 38px; place-items: center; color: #2563eb; background: #e8f1ff; border-radius: 11px; }
-.draft-save-bar > div { min-width: 0; flex: 1; }
+.draft-save-bar__icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  color: #2563eb;
+  background: #e8f1ff;
+  border-radius: 11px;
+}
+.draft-save-bar > div {
+  min-width: 0;
+  flex: 1;
+}
 .draft-save-bar strong,
-.draft-save-bar small { display: block; }
-.draft-save-bar strong { font-size: 12px; }
-.draft-save-bar small { margin-top: 3px; overflow: hidden; color: #7d899f; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
-.draft-save-bar em { padding: 5px 9px; color: #68768c; background: #eef2f7; border-radius: 999px; font-size: 9px; font-style: normal; }
-.draft-save-bar em.dirty { color: #b7791f; background: #fff8e8; }
-.draft-save-bar em.saved { color: #0f8a68; background: #eefaf6; }
-.draft-save-bar em.save_failed { color: #dc3f52; background: #fff1f2; }
+.draft-save-bar small {
+  display: block;
+}
+.draft-save-bar strong {
+  font-size: 12px;
+}
+.draft-save-bar small {
+  margin-top: 3px;
+  overflow: hidden;
+  color: #7d899f;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.draft-save-bar em {
+  padding: 5px 9px;
+  color: #68768c;
+  background: #eef2f7;
+  border-radius: 999px;
+  font-size: 9px;
+  font-style: normal;
+}
+.draft-save-bar em.dirty {
+  color: #b7791f;
+  background: #fff8e8;
+}
+.draft-save-bar em.saved {
+  color: #0f8a68;
+  background: #eefaf6;
+}
+.draft-save-bar em.save_failed {
+  color: #dc3f52;
+  background: #fff1f2;
+}
 .draft-save-bar button {
   display: inline-flex;
   height: 36px;
@@ -934,43 +1155,141 @@ select { font: inherit; }
   font-size: 10px;
   font-weight: 700;
 }
-.extraction-footer > button:last-child { justify-self: end; color: #fff; background: #2563eb; border-color: #2563eb; }
-.extraction-footer__status { display: flex; align-items: center; justify-content: center; gap: 8px; color: #718096; text-align: left; }
-.extraction-footer__status.ready { color: #0f8a68; }
+.extraction-footer > button:last-child {
+  justify-self: end;
+  color: #fff;
+  background: #2563eb;
+  border-color: #2563eb;
+}
+.extraction-footer__status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #718096;
+  text-align: left;
+}
+.extraction-footer__status.ready {
+  color: #0f8a68;
+}
 .extraction-footer__status strong,
-.extraction-footer__status small { display: block; }
-.extraction-footer__status strong { color: #41516a; font-size: 10px; }
-.extraction-footer__status small { margin-top: 3px; font-size: 8px; }
-.extraction-page-state { display: flex; min-height: 430px; padding: 30px; align-items: center; justify-content: center; flex-direction: column; color: #7f8da2; text-align: center; }
-.extraction-page-state > svg { color: #2563eb; }
-.extraction-page-state h2 { margin: 13px 0 5px; color: #34445c; font-size: 18px; }
-.extraction-page-state p { margin: 0; font-size: 11px; }
-.extraction-page-state button { margin-top: 15px; }
-.extraction-page-state.error > svg { color: #dc3f52; }
-.visually-hidden { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-.spin { animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-@keyframes shimmer { to { opacity: 0.45; transform: scaleX(0.92); } }
+.extraction-footer__status small {
+  display: block;
+}
+.extraction-footer__status strong {
+  color: #41516a;
+  font-size: 10px;
+}
+.extraction-footer__status small {
+  margin-top: 3px;
+  font-size: 8px;
+}
+.extraction-page-state {
+  display: flex;
+  min-height: 430px;
+  padding: 30px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  color: #7f8da2;
+  text-align: center;
+}
+.extraction-page-state > svg {
+  color: #2563eb;
+}
+.extraction-page-state h2 {
+  margin: 13px 0 5px;
+  color: #34445c;
+  font-size: 18px;
+}
+.extraction-page-state p {
+  margin: 0;
+  font-size: 11px;
+}
+.extraction-page-state button {
+  margin-top: 15px;
+}
+.extraction-page-state.error > svg {
+  color: #dc3f52;
+}
+.visually-hidden {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.spin {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes shimmer {
+  to {
+    opacity: 0.45;
+    transform: scaleX(0.92);
+  }
+}
 @media (max-width: 1120px) {
-  .extraction-heading { align-items: flex-start; flex-direction: column; }
-  .extraction-heading__actions { width: 100%; margin-left: 0; justify-content: flex-start; flex-wrap: wrap; }
-  .product-switcher { flex: 1; }
-  .product-switcher select { width: 100%; }
+  .extraction-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .extraction-heading__actions {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+  .product-switcher {
+    flex: 1;
+  }
+  .product-switcher select {
+    width: 100%;
+  }
 }
 @media (max-width: 860px) {
   .product-info-layout,
-  .result-grid { grid-template-columns: 1fr; }
-  .extraction-footer { grid-template-columns: 1fr 1fr; }
-  .extraction-footer__status { grid-column: 1 / -1; grid-row: 1; }
+  .result-grid {
+    grid-template-columns: 1fr;
+  }
+  .extraction-footer {
+    grid-template-columns: 1fr 1fr;
+  }
+  .extraction-footer__status {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
 }
 @media (max-width: 620px) {
-  .effect-extraction-node { padding: 16px; }
-  .base-fields { grid-template-columns: 1fr; }
-  .base-fields label.wide { grid-column: auto; }
-  .extraction-heading__title { min-width: 0; }
-  .extraction-heading__actions > button { flex: 1; }
-  .draft-save-bar { align-items: flex-start; flex-wrap: wrap; }
-  .draft-save-bar > div { width: calc(100% - 52px); flex: none; }
-  .draft-save-bar button { margin-left: auto; }
+  .effect-extraction-node {
+    padding: 16px;
+  }
+  .base-fields {
+    grid-template-columns: 1fr;
+  }
+  .base-fields label.wide {
+    grid-column: auto;
+  }
+  .extraction-heading__title {
+    min-width: 0;
+  }
+  .extraction-heading__actions > button {
+    flex: 1;
+  }
+  .draft-save-bar {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .draft-save-bar > div {
+    width: calc(100% - 52px);
+    flex: none;
+  }
+  .draft-save-bar button {
+    margin-left: auto;
+  }
 }
 </style>

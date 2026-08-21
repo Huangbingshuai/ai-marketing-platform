@@ -25,7 +25,6 @@ const product = (id: string): EffectExtractionSourceProduct => ({
   id,
   name: `测试产品 ${id}`,
   category: '食品',
-  sku: `SKU-${id}`,
   effectiveConfig: config,
   materials: [{ id: `material-${id}`, status: 'READY', updatedAt: '2026-08-20' }],
 });
@@ -65,7 +64,15 @@ describe('mock effect info extraction service', () => {
 
     const retry = mockEffectInfoExtractionService.extractProduct(retryContext, products[1]!);
     await vi.advanceTimersByTimeAsync(900);
-    expect((await retry).status).toBe('COMPLETED');
+    const completed = await retry;
+    expect(completed.status).toBe('COMPLETED');
+    expect(completed.result).toMatchObject({
+      productCategory: '食品',
+      productName: '测试产品 retry',
+      priceRange: '价格以商品资料与当前投放活动为准',
+    });
+    expect(completed.result?.coreSpecification).toContain('1 项产品资料已识别');
+    expect(completed.result?.visualFeatures).toContain('测试产品 retry');
   });
 
   it('persists an edited draft without changing another product', async () => {
@@ -73,7 +80,10 @@ describe('mock effect info extraction service', () => {
     const saveContext = { ...context, draftId: 'draft-save-spec' };
     const products = [product('saved'), product('untouched')];
     const initial = await mockEffectInfoExtractionService.loadWorkspace(saveContext, products);
-    const edited = { ...initial[0]!.result, marketingGoal: '人工修订后的目标' } as EffectExtractionResult;
+    const edited = {
+      ...initial[0]!.result,
+      marketingGoal: '人工修订后的目标',
+    } as EffectExtractionResult;
     const saving = mockEffectInfoExtractionService.saveDraft(saveContext, products[0]!, edited);
     await vi.advanceTimersByTimeAsync(260);
     expect((await saving).result?.marketingGoal).toBe('人工修订后的目标');

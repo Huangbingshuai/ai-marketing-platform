@@ -8,6 +8,11 @@ import {
 } from './effect-info-extraction-state';
 
 const result: EffectExtractionResult = {
+  productCategory: '测试品类',
+  productName: '测试产品',
+  coreSpecification: '标准规格',
+  priceRange: '主流价格带',
+  visualFeatures: '包装主体清晰、颜色醒目',
   targetAudience: '目标人群',
   marketingGoal: '营销目标',
   coreSellingPoints: ['卖点一'],

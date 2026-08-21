@@ -11,7 +11,6 @@ export type EffectExtractionSourceProduct = {
   id: string;
   name: string;
   category: string;
-  sku: string;
   effectiveConfig: EffectVideoConfig;
   materials: Array<{
     id: string;
@@ -62,7 +61,6 @@ const sourceFingerprint = (product: EffectExtractionSourceProduct): string =>
     config: product.effectiveConfig,
     materials: product.materials.map(({ id, status, updatedAt }) => ({ id, status, updatedAt })),
     name: product.name,
-    sku: product.sku,
   });
 
 const normalizeCategory = (category: string): string => category.trim() || '当前品类';
@@ -76,12 +74,22 @@ const buildMockResult = (
   const channel = product.effectiveConfig.deliveryChannel || '抖音信息流';
   const tone = product.effectiveConfig.styleTone || '自然、可信、有生活感';
   return {
+    productCategory: category,
+    productName: name,
+    coreSpecification:
+      product.materials.length > 0
+        ? `${product.materials.length} 项产品资料已识别，具体净含量与包装规格以导入资料为准`
+        : '标准规格待人工补充',
+    priceRange: '价格以商品资料与当前投放活动为准',
+    visualFeatures: `${name}主体与包装清晰，重点展示${category}的质感、细节与使用状态`,
     targetAudience: `关注${category}品质与使用效率的 25–45 岁消费人群，兼顾家庭决策者与节庆送礼用户`,
     marketingGoal: `围绕“${name}”建立清晰产品认知，强化购买理由并提升${channel}场景下的点击与转化`,
     coreSellingPoints: [
       `${name}核心产品特征清晰，重点信息可在前三秒被快速识别`,
       `真实使用场景与细节展示结合，降低消费者理解与决策成本`,
-      attempt > 1 ? '结合最新资料重新校准卖点顺序，突出差异化购买理由' : '规格、体验与使用方式表达完整，适合短视频转化链路',
+      attempt > 1
+        ? '结合最新资料重新校准卖点顺序，突出差异化购买理由'
+        : '规格、体验与使用方式表达完整，适合短视频转化链路',
     ],
     usageScenarios: '日常使用、家庭分享、节庆送礼、即时决策与内容种草场景',
     deliveryChannels: channel,

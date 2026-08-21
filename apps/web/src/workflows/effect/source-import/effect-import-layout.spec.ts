@@ -8,6 +8,15 @@ import overrideDialogSource from './components/ProductConfigOverrideDialog.vue?r
 import { EFFECT_IMPORT_PROTOTYPE_STYLE_TONES } from './effect-import-options';
 
 describe('effect import single-product prototype grid', () => {
+  it('creates an upload target automatically instead of showing an empty-state gate', () => {
+    expect(pageSource).toContain('await ensureUploadTarget()');
+    expect(pageSource).not.toContain('尚未创建单产品资料包');
+    expect(pageSource).not.toContain('开始填写产品资料');
+    expect(pageSource).not.toContain('批量草稿还是空的');
+    expect(pageSource).not.toContain('>导入产品清单</button>');
+    expect(pageSource).toContain('正在准备素材上传区…');
+  });
+
   it('keeps upload and global configuration in the same stretched first row', () => {
     expect(pageSource).toMatch(
       /\.import-layout:not\(\.batch-mode\)[\s\S]*:deep\(\.upload-source-card\)[\s\S]*grid-column:\s*1;[\s\S]*grid-row:\s*1;/,
@@ -79,10 +88,46 @@ describe('effect import prototype video configuration', () => {
 });
 
 describe('effect import identity boundary', () => {
-  it('leaves product name and category extraction to the next AI node', () => {
-    expect(productEditorSource).not.toContain('产品名称');
+  it('requires a product name in both single and batch editors while leaving category to AI', () => {
+    expect(productEditorSource.match(/placeholder="请输入产品名称"/g)).toHaveLength(2);
+    expect(productEditorSource).toContain("changeField('name', $event)");
+    expect(productEditorSource).toContain(':aria-invalid="!product.name.trim()"');
+    expect(productEditorSource).toContain('请先填写产品名称，再上传产品资料');
+    expect(productEditorSource).toContain(':disabled="uploadDisabled"');
     expect(productEditorSource).not.toContain('品类');
     expect(manifestDialogSource).not.toContain('<th>产品名称</th>');
     expect(manifestDialogSource).not.toContain('<th>品类</th>');
+  });
+
+  it('keeps validation, publishing and next-step access locked until every product has a name', () => {
+    expect(pageSource).toContain('const unnamedProductCount = computed(');
+    expect(pageSource).toMatch(
+      /const validatedCurrentRevision[\s\S]*unnamedProductCount\.value === 0/,
+    );
+    expect(pageSource.match(/if \(unnamedProductCount\.value\)/g)).toHaveLength(2);
+    expect(pageSource).toContain('个产品未填写名称');
+  });
+});
+
+describe('effect import material previews', () => {
+  it('renders product images from the project-scoped content URL instead of an extension badge', () => {
+    expect(productEditorSource).toContain("material.type === 'PRODUCT_IMAGE'");
+    expect(productEditorSource).toContain(':src="thumbnailUrl(material)!"');
+    expect(productEditorSource).toContain('@error="markThumbnailFailed(material.id)"');
+    expect(productEditorSource).toMatch(/v-else class="file-extension"/);
+  });
+});
+
+describe('effect import asset publishing', () => {
+  it('validates automatically before publishing and refreshes project asset statistics', () => {
+    expect(pageSource).toMatch(
+      /const publishDraft[\s\S]*flushPendingEdits\(\)[\s\S]*validateEffectImportDraft[\s\S]*publishEffectImportDraft/,
+    );
+    expect(pageSource).toContain('projectContext.reload()');
+    expect(pageSource).toContain("publishPhase.value === 'validating'");
+    expect(pageSource).toContain("publishPhase.value === 'publishing'");
+    expect(pageSource).toMatch(
+      /class="asset-publish-bar"[\s\S]*:disabled="\s*!draft \|\| publishPhase !== 'idle'/,
+    );
   });
 });

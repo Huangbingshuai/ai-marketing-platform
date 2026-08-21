@@ -84,6 +84,7 @@ import {
 
 type PageStatus = 'error' | 'idle' | 'loading' | 'success';
 type EditableProductSnapshot = ReturnType<typeof editableProductSnapshot>;
+type PublishPhase = 'idle' | 'publishing' | 'validating';
 
 const projectContext = inject(projectContextKey);
 if (!projectContext) throw new Error('EffectImportNodePage must be used inside project context');
@@ -94,7 +95,9 @@ const workspace = ref<EffectImportWorkspace | null>(null);
 const draft = ref<EffectImportDraft | null>(null);
 const listedProducts = ref<EffectImportProduct[]>([]);
 const saveState = ref<EffectImportSaveState>('clean');
+const publishPhase = ref<PublishPhase>('idle');
 const transitioning = ref(false);
+const uploadTargetInitializing = ref(false);
 const activeStep = ref(0);
 const downstreamBoundaries = [
   { title: 'Prompt 生成', description: '批量生成差异化提示词' },
@@ -150,11 +153,15 @@ const singleProduct = computed(() => draft.value?.products[0] ?? null);
 const validationErrors = computed(
   () => draft.value?.validationIssues.filter((issue) => issue.severity === 'ERROR') ?? [],
 );
+const unnamedProductCount = computed(
+  () => draft.value?.products.filter((product) => !product.name.trim()).length ?? 0,
+);
 const validatedCurrentRevision = computed(
   () =>
     Boolean(draft.value) &&
     draft.value?.validatedRevision === draft.value?.revision &&
-    validationErrors.value.length === 0,
+    validationErrors.value.length === 0 &&
+    unnamedProductCount.value === 0,
 );
 const selectedCount = computed(() => selectedProductIds.value.size);
 const failedProductCount = computed(
@@ -172,12 +179,19 @@ const saveStateLabel = computed(
   () =>
     ({
       clean: '草稿已加载',
-      conflict: '检测到版本冲突，已重新加载',
+      conflict: '检测到草稿冲突，已重新加载',
       dirty: '有未保存修改',
       saveError: '保存失败',
       saved: '草稿已保存',
       saving: '正在保存…',
     })[saveState.value],
+);
+const publishButtonLabel = computed(() =>
+  publishPhase.value === 'validating'
+    ? '正在校验…'
+    : publishPhase.value === 'publishing'
+      ? '正在入库…'
+      : '保存到项目资产库',
 );
 
 const showNotice = (text: string, kind: 'error' | 'success' | 'warning' = 'success'): void => {
@@ -366,7 +380,7 @@ const runWrite = async <T,>(
     if (isRevisionConflict(error)) {
       saveState.value = 'conflict';
       await reloadCurrentDraft('conflict');
-      showNotice('草稿已被更新，已载入服务端最新版本', 'warning');
+      showNotice('草稿已被更新，已载入服务端最新内容', 'warning');
       return null;
     }
     saveState.value = 'saveError';
@@ -449,9 +463,10 @@ const loadProject = async (projectId: string): Promise<void> => {
     if (!isCurrentContext(projectId, generation)) return;
     setDraft(draftResponse.data);
     activeStep.value = workspace.value.currentNode === 'AI_INFO_EXTRACTION' ? 1 : 0;
-    pageStatus.value = 'success';
     saveState.value = 'clean';
     if (workspace.value.currentMode === 'BATCH') await refreshProductList();
+    await ensureUploadTarget();
+    pageStatus.value = 'success';
     const backgroundMode: EffectImportMode =
       workspace.value.currentMode === 'SINGLE' ? 'BATCH' : 'SINGLE';
     void getEffectImportDraft(projectId, backgroundMode, pageController.signal)
@@ -510,7 +525,8 @@ const switchMode = async (mode: EffectImportMode): Promise<void> => {
     selectedProductIds.value = new Set();
     setDraft(response.data.draft);
     saveState.value = 'clean';
-    if (mode === 'BATCH') void refreshProductList();
+    if (mode === 'BATCH') await refreshProductList();
+    await ensureUploadTarget();
   } catch (error) {
     if (isAbortError(error)) return;
     if (workspace.value && previousDraft) {
@@ -669,6 +685,21 @@ const createProduct = async (): Promise<void> => {
   if (currentMode.value === 'BATCH') await refreshProductList();
 };
 
+const ensureUploadTarget = async (): Promise<void> => {
+  if (!draft.value || uploadTargetInitializing.value) return;
+  const hasUploadTarget =
+    currentMode.value === 'SINGLE'
+      ? Boolean(singleProduct.value)
+      : Boolean(listedProducts.value.length || keyword.value);
+  if (hasUploadTarget) return;
+  uploadTargetInitializing.value = true;
+  try {
+    await createProduct();
+  } finally {
+    uploadTargetInitializing.value = false;
+  }
+};
+
 const deleteProduct = async (product: EffectImportProduct): Promise<void> => {
   if (!window.confirm(`确定删除“${product.name || '未命名产品'}”及其草稿资料吗？`)) return;
   await runWrite(
@@ -694,6 +725,9 @@ const deleteProduct = async (product: EffectImportProduct): Promise<void> => {
       markDraftMutation(response.data.revision);
     },
   );
+  if (currentMode.value === 'BATCH' && !keyword.value && !listedProducts.value.length) {
+    await ensureUploadTarget();
+  }
 };
 
 const toggleSelected = (product: EffectImportProduct, selected: boolean): void => {
@@ -729,6 +763,7 @@ const batchDelete = async (): Promise<void> => {
       markDraftMutation(response.data.revision);
     },
   );
+  if (!keyword.value && !listedProducts.value.length) await ensureUploadTarget();
 };
 
 const retryProducts = async (productIds: string[]): Promise<void> => {
@@ -771,6 +806,11 @@ const uploadMaterials = async (
   type: EffectImportMaterialType,
   files: File[],
 ): Promise<void> => {
+  if (!product.name.trim()) {
+    showNotice('请先填写产品名称，再上传产品资料', 'warning');
+    return;
+  }
+  if (!(await flushProduct(product.id))) return;
   const busyKey = `${product.id}:${type}`;
   setMaterialBusy(busyKey, true);
   for (const file of files) {
@@ -802,6 +842,11 @@ const replaceMaterialFile = async (event: Event): Promise<void> => {
   const target = replacementTarget.value;
   replacementTarget.value = null;
   if (!file || !target) return;
+  if (!target.product.name.trim()) {
+    showNotice('请先填写产品名称，再重新上传资料', 'warning');
+    return;
+  }
+  if (!(await flushProduct(target.product.id))) return;
   setMaterialBusy(target.material.id, true);
   await runWrite(
     (expectedRevision, signal) =>
@@ -984,6 +1029,11 @@ const downloadTemplate = async (format: EffectManifestFormat): Promise<void> => 
 };
 
 const validateDraft = async (): Promise<void> => {
+  if (publishPhase.value !== 'idle') return;
+  if (unnamedProductCount.value) {
+    showNotice(`请先填写全部产品名称，当前还有 ${unnamedProductCount.value} 个未填写`, 'warning');
+    return;
+  }
   if (!(await flushPendingEdits())) {
     showNotice('仍有修改保存失败，请保存后再校验', 'error');
     return;
@@ -1004,21 +1054,55 @@ const validateDraft = async (): Promise<void> => {
 };
 
 const publishDraft = async (): Promise<void> => {
-  if (!draft.value) return;
-  const publishContext = publishContextKey();
-  const idempotencyKey = publishKeys.getOrCreate(publishContext);
-  const response = await runWrite((expectedRevision, signal) =>
-    publishEffectImportDraft(
-      loadedProjectId.value,
-      currentMode.value,
-      { expectedRevision, idempotencyKey },
-      signal,
-    ),
-  );
-  if (response) {
+  if (!draft.value || publishPhase.value !== 'idle') return;
+  if (unnamedProductCount.value) {
+    showNotice(`请先填写全部产品名称，当前还有 ${unnamedProductCount.value} 个未填写`, 'warning');
+    return;
+  }
+  publishPhase.value = 'validating';
+  beginTransition();
+  try {
+    if (!(await flushPendingEdits())) {
+      showNotice('仍有修改保存失败，请修复后再保存到项目资产库', 'error');
+      return;
+    }
+    const validationResponse = await runWrite(
+      (expectedRevision, signal) =>
+        validateEffectImportDraft(
+          loadedProjectId.value,
+          currentMode.value,
+          { expectedRevision },
+          signal,
+        ),
+      (result) => setDraft(result.data.draft),
+    );
+    if (!validationResponse) return;
+    if (!validationResponse.data.validation.valid) {
+      showNotice(
+        `发现 ${validationResponse.data.validation.issues.length} 项问题，未保存任何正式资产`,
+        'warning',
+      );
+      return;
+    }
+
+    publishPhase.value = 'publishing';
+    const publishContext = publishContextKey();
+    const idempotencyKey = publishKeys.getOrCreate(publishContext);
+    const response = await runWrite((expectedRevision, signal) =>
+      publishEffectImportDraft(
+        loadedProjectId.value,
+        currentMode.value,
+        { expectedRevision, idempotencyKey },
+        signal,
+      ),
+    );
+    if (!response) return;
     publishKeys.forget(publishContext);
     showNotice(`已保存 ${response.data.summary.assetCount} 项资产到当前项目资产库`);
-    await reloadCurrentDraft();
+    await Promise.all([reloadCurrentDraft(), projectContext.reload()]);
+  } finally {
+    publishPhase.value = 'idle';
+    endTransition();
   }
 };
 
@@ -1187,13 +1271,9 @@ onBeforeUnmount(() => {
           >
             <template v-if="currentMode === 'SINGLE'">
               <section class="import-source-column">
-                <div v-if="!singleProduct" class="empty-products">
-                  <PackageOpen :size="31" />
-                  <h3>尚未创建单产品资料包</h3>
-                  <p>创建后直接上传商品图片和产品文档，产品信息将在下一节点由 AI 提炼。</p>
-                  <button type="button" @click="createProduct">
-                    <Plus :size="14" />开始填写产品资料
-                  </button>
+                <div v-if="!singleProduct" class="upload-target-preparing" role="status">
+                  <LoaderCircle class="spin" :size="24" />
+                  <span>正在准备素材上传区…</span>
                 </div>
                 <ProductImportEditor
                   v-else
@@ -1222,14 +1302,14 @@ onBeforeUnmount(() => {
                 <header class="batch-panel-head">
                   <div>
                     <h3>商品卡片列表</h3>
-                    <p>每个商品独立维护资料、链接与覆盖配置，产品信息由下一节点 AI 提炼</p>
+                    <p>每个商品独立填写产品名称，并维护资料、链接与覆盖配置</p>
                   </div>
                   <div class="batch-toolbar">
                     <label class="batch-search"
                       ><Search :size="14" /><input
                         v-model="keyword"
                         type="search"
-                        placeholder="搜索电商链接或资料文件"
+                        placeholder="搜索产品名称、电商链接或资料文件"
                     /></label>
                     <button type="button" @click="manifestOpen = true">
                       <FileSpreadsheet :size="14" />清单导入
@@ -1257,17 +1337,12 @@ onBeforeUnmount(() => {
                     <Trash2 :size="13" />批量删除
                   </button>
                 </section>
-                <div v-if="!products.length" class="empty-products">
-                  <PackageOpen :size="31" />
-                  <h3>{{ keyword ? '没有匹配的资料包' : '批量草稿还是空的' }}</h3>
-                  <p>
-                    {{
-                      keyword ? '请调整搜索条件。' : '可以逐个新增产品，或导入 CSV / Excel 清单。'
-                    }}
-                  </p>
-                  <button v-if="!keyword" type="button" @click="manifestOpen = true">
-                    <FileSpreadsheet :size="14" />导入产品清单
-                  </button>
+                <div v-if="!products.length && keyword" class="batch-search-empty">
+                  没有匹配的商品，请调整搜索条件。
+                </div>
+                <div v-else-if="!products.length" class="upload-target-preparing" role="status">
+                  <LoaderCircle class="spin" :size="24" />
+                  <span>正在准备素材上传区…</span>
                 </div>
                 <div v-else class="batch-product-list">
                   <ProductImportEditor
@@ -1321,15 +1396,18 @@ onBeforeUnmount(() => {
             <span class="asset-publish-icon"><CloudUpload :size="18" /></span>
             <div>
               <strong>保存完整资料包到项目资产库</strong>
-              <small>当前模式的商品资料与有效视频配置将创建新的资产版本</small>
+              <small>当前模式的商品资料与有效视频配置将删除上一批并重新入库</small>
             </div>
-            <em>{{ draft?.lastPublish ? '已入库，可再次保存新版本' : '待入库' }}</em>
+            <em>{{ draft?.lastPublish ? '已入库，再次保存将重建' : '待入库' }}</em>
             <button
               type="button"
-              :disabled="!validatedCurrentRevision || saveState === 'saving'"
+              :disabled="
+                !draft || publishPhase !== 'idle' || transitioning || saveState === 'saving'
+              "
               @click="publishDraft"
             >
-              <CloudUpload :size="14" />保存到项目资产库
+              <LoaderCircle v-if="publishPhase !== 'idle'" class="spin" :size="14" />
+              <CloudUpload v-else :size="14" />{{ publishButtonLabel }}
             </button>
           </section>
 
@@ -1345,17 +1423,23 @@ onBeforeUnmount(() => {
                   >revision {{ draft?.revision ?? 0 }} ·
                   {{ draft?.productCount ?? 0 }} 个产品<template v-if="failedProductCount">
                     · {{ failedProductCount }} 个产品存在失败资料</template
+                  ><template v-if="unnamedProductCount">
+                    · {{ unnamedProductCount }} 个产品未填写名称</template
                   ></small
                 ></span
               >
             </div>
-            <button type="button" :disabled="saveState === 'saving'" @click="validateDraft">
+            <button
+              type="button"
+              :disabled="transitioning || saveState === 'saving'"
+              @click="validateDraft"
+            >
               <CheckCircle2 :size="14" />完成校验
             </button>
             <button
               class="primary"
               type="button"
-              :disabled="!validatedCurrentRevision || saveState === 'saving'"
+              :disabled="transitioning || !validatedCurrentRevision || saveState === 'saving'"
               @click="advanceDraft"
             >
               下一步：AI 信息提炼<ArrowRight :size="15" />
@@ -1633,44 +1717,35 @@ onBeforeUnmount(() => {
   grid-column: 1 / -1;
   grid-row: 4;
 }
-.empty-products {
+.upload-target-preparing {
   display: flex;
-  min-height: 330px;
+  min-height: 240px;
   padding: 30px;
   align-items: center;
   justify-content: center;
   flex-direction: column;
+  gap: 10px;
   color: #8090a6;
   background: #fff;
   border: 1px dashed #bfcde0;
   border-radius: 18px;
   text-align: center;
 }
-.empty-products svg {
-  color: #7297d8;
+.upload-target-preparing svg {
+  color: #2563eb;
 }
-.empty-products h3 {
-  margin: 12px 0 5px;
-  color: #40506a;
-  font-size: 14px;
+.upload-target-preparing span {
+  font-size: 11px;
+  font-weight: 700;
 }
-.empty-products p {
-  margin: 0;
-  font-size: 10px;
-}
-.empty-products button {
-  display: inline-flex;
-  height: 34px;
-  margin-top: 15px;
-  padding: 0 12px;
-  align-items: center;
-  gap: 5px;
-  color: #fff;
-  background: #2563eb;
-  border: 0;
-  border-radius: 8px;
-  font-size: 10px;
-  font-weight: 800;
+.batch-search-empty {
+  padding: 52px 20px;
+  color: #8090a6;
+  background: #fff;
+  border: 1px dashed #bfcde0;
+  border-radius: 18px;
+  font-size: 11px;
+  text-align: center;
 }
 .batch-toolbar {
   display: flex;

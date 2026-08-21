@@ -40,7 +40,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   blur: [product: EffectImportProduct];
-  change: [product: EffectImportProduct, field: 'commerceUrl', value: string];
+  change: [product: EffectImportProduct, field: 'commerceUrl' | 'name', value: string];
   delete: [product: EffectImportProduct];
   deleteMaterial: [product: EffectImportProduct, material: EffectImportMaterial];
   override: [product: EffectImportProduct];
@@ -60,23 +60,27 @@ const materialTypes: {
   { type: 'PRODUCT_DOCUMENT', icon: FileText, accept: '.doc,.docx,.xls,.xlsx,.pdf,.txt,.md' },
 ];
 const selectedMaterialType = ref<EffectImportUploadMaterialType>('PRODUCT_IMAGE');
+const failedThumbnailIds = ref<ReadonlySet<string>>(new Set());
+const hasProductName = computed(() => props.product.name.trim().length > 0);
+const uploadDisabled = computed(() => props.disabled || !hasProductName.value);
 const selectedType = computed(() =>
   materialTypes.find((item) => item.type === selectedMaterialType.value)!,
 );
 const completion = computed(() => {
-  return props.product.materials.some(
+  const hasName = props.product.name.trim().length > 0;
+  const hasReadyImage = props.product.materials.some(
     (item) => item.type === 'PRODUCT_IMAGE' && item.status === 'READY',
-  )
-    ? 100
-    : 0;
+  );
+  return Number(hasName) * 50 + Number(hasReadyImage) * 50;
 });
-const changeField = (field: 'commerceUrl', event: Event): void =>
+const changeField = (field: 'commerceUrl' | 'name', event: Event): void =>
   emit('change', props.product, field, (event.target as HTMLInputElement).value);
 const chooseFiles = (event: Event): void => {
   const input = event.target as HTMLInputElement;
   const files = Array.from(input.files ?? []);
   input.value = '';
-  if (files.length) emit('upload', props.product, selectedMaterialType.value, files);
+  if (!uploadDisabled.value && files.length)
+    emit('upload', props.product, selectedMaterialType.value, files);
 };
 const formatBytes = (value: number | null): string =>
   value === null
@@ -85,8 +89,22 @@ const formatBytes = (value: number | null): string =>
       ? `${Math.max(1, Math.round(value / 1024))} KB`
       : `${(value / 1048576).toFixed(1)} MB`;
 const extension = (material: EffectImportMaterial): string => {
-  const name = material.originalFileName || material.expectedFileName || '';
+  const name = materialName(material);
   return name.includes('.') ? name.split('.').pop()!.slice(0, 5).toUpperCase() : 'FILE';
+};
+const materialName = (material: EffectImportMaterial): string =>
+  material.originalFileName || material.expectedFileName || '待补传文件';
+const thumbnailUrl = (material: EffectImportMaterial): string | null =>
+  material.type === 'PRODUCT_IMAGE' &&
+  material.status === 'READY' &&
+  material.contentUrl &&
+  !failedThumbnailIds.value.has(material.id)
+    ? material.contentUrl
+    : null;
+const markThumbnailFailed = (materialId: string): void => {
+  const next = new Set(failedThumbnailIds.value);
+  next.add(materialId);
+  failedThumbnailIds.value = next;
 };
 const statusText = (material: EffectImportMaterial): string =>
   props.busyMaterialIds.has(material.id)
@@ -105,7 +123,22 @@ const statusText = (material: EffectImportMaterial): string =>
         @change="emit('select', product, ($event.target as HTMLInputElement).checked)"
       />
       <span class="batch-card-no">商品 {{ String(position).padStart(2, '0') }}</span>
-      <strong class="batch-card-name">商品资料包</strong>
+      <label class="batch-card-name">
+        <span class="visually-hidden">产品名称</span>
+        <input
+          :value="product.name"
+          :disabled="disabled"
+          type="text"
+          required
+          maxlength="120"
+          autocomplete="off"
+          placeholder="请输入产品名称"
+          aria-label="产品名称"
+          :aria-invalid="!product.name.trim()"
+          @input="changeField('name', $event)"
+          @blur="emit('blur', product)"
+        />
+      </label>
       <em class="completion-badge" :class="{ complete: completion === 100 }"
         >完整度 {{ completion }}%</em
       >
@@ -137,12 +170,27 @@ const statusText = (material: EffectImportMaterial): string =>
           <p>支持商品主图、细节图、场景图与产品文本资料</p>
         </div>
       </header>
+      <label class="product-name-field">
+        <span>产品名称 <em>*</em></span>
+        <input
+          :value="product.name"
+          :disabled="disabled"
+          type="text"
+          required
+          maxlength="120"
+          autocomplete="off"
+          placeholder="请输入产品名称"
+          :aria-invalid="!product.name.trim()"
+          @input="changeField('name', $event)"
+          @blur="emit('blur', product)"
+        />
+      </label>
       <div class="material-type-tabs">
         <button
           v-for="item in materialTypes"
           :key="item.type"
           type="button"
-          :disabled="disabled"
+          :disabled="uploadDisabled"
           :class="{ active: selectedMaterialType === item.type }"
           @click="selectedMaterialType = item.type"
         >
@@ -151,19 +199,22 @@ const statusText = (material: EffectImportMaterial): string =>
           }}
         </button>
       </div>
-      <label class="source-dropzone">
+      <label class="source-dropzone" :class="{ disabled: uploadDisabled }">
         <span class="dropzone-plus"><Plus :size="25" /></span>
         <strong
           >点击或将{{ EFFECT_IMPORT_MATERIAL_TYPE_LABELS[selectedMaterialType] }}拖拽到此处</strong
         >
-        <small>当前资料类型：{{ EFFECT_IMPORT_MATERIAL_TYPE_LABELS[selectedMaterialType] }}</small>
+        <small v-if="!hasProductName">请先填写产品名称，再上传产品资料</small>
+        <small v-else
+          >当前资料类型：{{ EFFECT_IMPORT_MATERIAL_TYPE_LABELS[selectedMaterialType] }}</small
+        >
         <small>图片支持 JPG/PNG/PSD/WebP，文档支持 Word/Excel/PDF/纯文本</small>
         <input
           type="file"
           hidden
           :multiple="selectedMaterialType === 'PRODUCT_IMAGE'"
           :accept="selectedType.accept"
-          :disabled="disabled"
+          :disabled="uploadDisabled"
           @change="chooseFiles"
         />
       </label>
@@ -175,24 +226,26 @@ const statusText = (material: EffectImportMaterial): string =>
           v-for="item in materialTypes"
           :key="item.type"
           type="button"
-          :disabled="disabled"
+          :disabled="uploadDisabled"
           :class="{ active: selectedMaterialType === item.type }"
           @click="selectedMaterialType = item.type"
         >
           {{ EFFECT_IMPORT_MATERIAL_TYPE_LABELS[item.type] }}
         </button>
       </div>
-      <label class="source-dropzone batch-dropzone">
+      <label class="source-dropzone batch-dropzone" :class="{ disabled: uploadDisabled }">
         <span class="dropzone-plus"><Plus :size="20" /></span
         ><strong
           >点击或拖拽上传{{ EFFECT_IMPORT_MATERIAL_TYPE_LABELS[selectedMaterialType] }}</strong
-        ><small>支持多文件，系统将保存到当前商品资料包</small>
+        ><small>{{
+          hasProductName ? '支持多文件，系统将保存到当前商品资料包' : '请先填写产品名称'
+        }}</small>
         <input
           type="file"
           hidden
           :multiple="selectedMaterialType === 'PRODUCT_IMAGE'"
           :accept="selectedType.accept"
-          :disabled="disabled"
+          :disabled="uploadDisabled"
           @change="chooseFiles"
         />
       </label>
@@ -241,11 +294,20 @@ const statusText = (material: EffectImportMaterial): string =>
         class="material-file-row"
         :class="material.status.toLowerCase()"
       >
-        <span class="file-extension">{{ extension(material) }}</span>
+        <span v-if="material.type === 'PRODUCT_IMAGE'" class="material-thumbnail">
+          <img
+            v-if="thumbnailUrl(material)"
+            :src="thumbnailUrl(material)!"
+            :alt="`${materialName(material)} 缩略图`"
+            loading="lazy"
+            decoding="async"
+            @error="markThumbnailFailed(material.id)"
+          />
+          <small v-else>{{ material.status === 'UPLOADING' ? '上传中' : '暂无预览' }}</small>
+        </span>
+        <span v-else class="file-extension">{{ extension(material) }}</span>
         <span class="file-copy"
-          ><strong>{{
-            material.originalFileName || material.expectedFileName || '待补传文件'
-          }}</strong
+          ><strong>{{ materialName(material) }}</strong
           ><small
             >{{ EFFECT_IMPORT_MATERIAL_TYPE_LABELS[material.type] }} ·
             {{ formatBytes(material.sizeBytes)
@@ -272,7 +334,7 @@ const statusText = (material: EffectImportMaterial): string =>
         </button>
         <button
           type="button"
-          :disabled="disabled || busyMaterialIds.has(material.id)"
+          :disabled="uploadDisabled || busyMaterialIds.has(material.id)"
           @click="emit('replace', product, material)"
         >
           重传
@@ -364,6 +426,42 @@ const statusText = (material: EffectImportMaterial): string =>
   display: flex;
   flex-direction: column;
 }
+.product-name-field {
+  display: grid;
+  gap: 7px;
+}
+.product-name-field span {
+  color: #4d596f;
+  font-size: 11px;
+  font-weight: 700;
+}
+.product-name-field em {
+  color: #d84c4f;
+  font-style: normal;
+}
+.product-name-field input,
+.batch-card-name input {
+  width: 100%;
+  box-sizing: border-box;
+  color: #263247;
+  background: #fff;
+  border: 1px solid #e2d9d4;
+  outline: none;
+}
+.product-name-field input {
+  height: 40px;
+  padding: 0 12px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+.product-name-field input:focus,
+.batch-card-name input:focus {
+  border-color: #93b4ff;
+  box-shadow: 0 0 0 3px #2563eb10;
+}
+.product-name-field input[aria-invalid='true'] {
+  border-color: #f2c9bd;
+}
 .commerce-input-row input {
   width: 100%;
   box-sizing: border-box;
@@ -421,6 +519,14 @@ const statusText = (material: EffectImportMaterial): string =>
 .source-dropzone:hover {
   background: #fffaf8;
   border-color: #ff9e8b;
+}
+.source-dropzone.disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+.source-dropzone.disabled:hover {
+  background: #fff;
+  border-color: #f1d6ce;
 }
 .source-dropzone input[type='file'] {
   display: none !important;
@@ -532,6 +638,32 @@ const statusText = (material: EffectImportMaterial): string =>
   font-size: 9px;
   font-weight: 900;
 }
+.material-thumbnail {
+  display: flex;
+  width: 48px;
+  height: 48px;
+  box-sizing: border-box;
+  flex: 0 0 48px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: #a4aab6;
+  background: #f8f5f3;
+  border: 1px solid #f0e3dc;
+  border-radius: 9px;
+}
+.material-thumbnail img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.material-thumbnail small {
+  padding: 4px;
+  text-align: center;
+  font-size: 8px;
+  line-height: 1.25;
+}
 .file-copy {
   min-width: 0;
   flex: 1;
@@ -606,11 +738,27 @@ const statusText = (material: EffectImportMaterial): string =>
 .batch-card-name {
   min-width: 0;
   flex: 1;
+}
+.batch-card-name input {
+  height: 30px;
+  padding: 0 9px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.batch-card-name input[aria-invalid='true'] {
+  background: #fffaf8;
+  border-color: #f2c9bd;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
   overflow: hidden;
-  color: #263247;
-  text-overflow: ellipsis;
+  clip: rect(0, 0, 0, 0);
   white-space: nowrap;
-  font-size: 13px;
+  border: 0;
 }
 .completion-badge {
   padding: 3px 7px;

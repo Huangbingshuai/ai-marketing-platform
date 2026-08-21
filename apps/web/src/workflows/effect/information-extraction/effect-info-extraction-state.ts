@@ -8,14 +8,14 @@ export const EFFECT_EXTRACTION_STATUSES = [
 
 export type EffectExtractionStatus = (typeof EFFECT_EXTRACTION_STATUSES)[number];
 
-export type EffectExtractionSaveState =
-  | 'CLEAN'
-  | 'DIRTY'
-  | 'SAVING'
-  | 'SAVED'
-  | 'SAVE_FAILED';
+export type EffectExtractionSaveState = 'CLEAN' | 'DIRTY' | 'SAVING' | 'SAVED' | 'SAVE_FAILED';
 
 export type EffectExtractionResult = {
+  productCategory: string;
+  productName: string;
+  coreSpecification: string;
+  priceRange: string;
+  visualFeatures: string;
   targetAudience: string;
   marketingGoal: string;
   coreSellingPoints: string[];
@@ -48,9 +48,7 @@ export const EFFECT_EXTRACTION_STATUS_META: Record<
   STALE: { label: '待更新', tone: 'warning' },
 };
 
-export const cloneExtractionResult = (
-  value: EffectExtractionResult,
-): EffectExtractionResult => ({
+export const cloneExtractionResult = (value: EffectExtractionResult): EffectExtractionResult => ({
   ...value,
   coreSellingPoints: [...value.coreSellingPoints],
   disabledElements: [...value.disabledElements],
@@ -63,6 +61,5 @@ export const cloneExtractionProductState = (
   result: value.result ? cloneExtractionResult(value.result) : null,
 });
 
-export const isExtractionReadyForNext = (
-  state: EffectExtractionProductState | null,
-): boolean => state?.status === 'COMPLETED';
+export const isExtractionReadyForNext = (state: EffectExtractionProductState | null): boolean =>
+  state?.status === 'COMPLETED';
