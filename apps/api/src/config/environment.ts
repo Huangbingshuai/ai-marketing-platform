@@ -4,6 +4,8 @@ export type EnvironmentVariables = {
   APP_ENV: AppEnvironment;
   API_PORT: number;
   WEB_ORIGIN: string;
+  LOCAL_STORAGE_ROOT: string | undefined;
+  MAX_UPLOAD_BYTES: number;
   DATABASE_URL: string;
   REDIS_URL: string;
   RABBITMQ_URL: string;
@@ -37,6 +39,16 @@ const parsePort = (value: unknown): number => {
   return port;
 };
 
+const parsePositiveInteger = (value: unknown, key: string, defaultValue: number): number => {
+  const parsed = Number(value ?? defaultValue);
+
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`环境变量 ${key} 必须是正整数`);
+  }
+
+  return parsed;
+};
+
 const parseEnvironment = (value: unknown): AppEnvironment => {
   const environment = value ?? 'development';
 
@@ -51,6 +63,12 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
   APP_ENV: parseEnvironment(raw.APP_ENV),
   API_PORT: parsePort(raw.API_PORT),
   WEB_ORIGIN: requiredString(raw.WEB_ORIGIN ?? 'http://localhost:5173', 'WEB_ORIGIN'),
+  LOCAL_STORAGE_ROOT: optionalString(raw.LOCAL_STORAGE_ROOT),
+  MAX_UPLOAD_BYTES: parsePositiveInteger(
+    raw.MAX_UPLOAD_BYTES,
+    'MAX_UPLOAD_BYTES',
+    512 * 1024 * 1024,
+  ),
   DATABASE_URL: requiredString(raw.DATABASE_URL, 'DATABASE_URL'),
   REDIS_URL: requiredString(raw.REDIS_URL, 'REDIS_URL'),
   RABBITMQ_URL: requiredString(raw.RABBITMQ_URL, 'RABBITMQ_URL'),

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createProject } from './project.api';
+import { createProject, listProjects } from './project.api';
 
 const project = {
   id: '5db5821d-10ac-4dc0-88d3-3cd33f48fc97',
@@ -16,6 +16,34 @@ afterEach(() => {
 });
 
 describe('project API', () => {
+  it('loads projects from the shared project endpoint', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ success: true, data: [project] })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(listProjects()).resolves.toMatchObject({ data: [project] });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/projects');
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'GET' });
+  });
+
+  it('serializes project library workflow and space filters', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ success: true, data: [project] })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await listProjects({ keyword: '夏季 投放', workflow: 'FISSION', space: 'FISSION_CLONE' });
+
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]), 'http://test.local');
+    expect(url.pathname).toBe('/api/projects');
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      keyword: '夏季 投放',
+      workflow: 'FISSION',
+      space: 'FISSION_CLONE',
+    });
+  });
+
   it('posts a project payload as JSON', async () => {
     const fetchMock = vi
       .fn()

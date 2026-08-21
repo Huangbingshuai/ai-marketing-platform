@@ -14,7 +14,14 @@ describe('validateEnvironment', () => {
       APP_ENV: 'development',
       API_PORT: 3000,
       WEB_ORIGIN: 'http://localhost:5173',
+      MAX_UPLOAD_BYTES: 512 * 1024 * 1024,
     });
+  });
+
+  it('rejects an invalid upload size', () => {
+    expect(() => validateEnvironment({ ...validEnvironment, MAX_UPLOAD_BYTES: '0' })).toThrow(
+      'MAX_UPLOAD_BYTES',
+    );
   });
 
   it('rejects an invalid API port', () => {

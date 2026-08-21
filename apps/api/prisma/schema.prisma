@@ -14,14 +14,426 @@ enum ProjectStatus {
   COMPLETED
 }
 
+enum AssetDirectory {
+  SOURCE_MATERIALS
+  SOURCE_VIDEOS
+  SCRIPTS
+  PROMPTS
+  VISUAL_ASSETS
+  AUDIO_ASSETS
+  VIDEO_MATERIALS
+  SUBTITLES
+  INSIGHTS
+  EDITING_PROJECTS
+  REPLACEMENT_PLANS
+  REPLACEMENT_CONFIGS
+  REPLACEMENT_REFERENCES
+  ARCHIVES
+  FINAL_VIDEOS
+  REPORTS_DELIVERABLES
+}
+
+enum AssetType {
+  DIGITAL_HUMAN_CHARACTER
+  AVATAR_REFERENCE
+  PERSON_ASSET
+  PRODUCT_ASSET
+  SCENE_BACKGROUND
+  VISUAL_ASSET
+  GENERIC_VIDEO
+  REFERENCE_VIDEO
+  SOURCE_VIDEO
+  VIDEO_MATERIAL
+  FINAL_VIDEO
+  VOICE_AUDIO
+  VOICE_PROFILE
+  SUBTITLE
+  PROMPT
+  SCRIPT_COPY
+  STORYBOARD_SCRIPT
+  SOURCE_MATERIAL
+  VIDEO_CONFIG
+  INSIGHT_RESULT
+  MIX_TEMPLATE
+  TIMELINE_PROJECT
+  EDITING_PROJECT
+  ARCHIVE_DELIVERABLE
+  REPLACEMENT_MAPPING
+  REPLACEMENT_CONFIGURATION
+  REFERENCE_SET
+  DELIVERY_MANIFEST
+  ANALYSIS_QUALITY_REPORT
+}
+
+enum AssetWorkflow {
+  EFFECT
+  CUSTOMIZED
+  FISSION
+}
+
+enum AssetWorkflowSpace {
+  EFFECT
+  CUSTOMIZED_PROJECT
+  CUSTOMIZED_VOICE_LIBRARY
+  FISSION_CLONE
+  FISSION_AVATAR
+  FISSION_LOCAL_REPLACE
+}
+
+enum AssetStatus {
+  AVAILABLE
+  PENDING_REVIEW
+  QUALITY_WARNING
+  UNAVAILABLE
+}
+
+enum EffectImportMode {
+  SINGLE
+  BATCH
+}
+
+enum EffectImportDraftStatus {
+  DRAFT
+  VALID
+  COMPLETED
+}
+
+enum EffectImportMaterialType {
+  PRODUCT_IMAGE
+  PRODUCT_DOCUMENT
+  BRAND_GUIDELINE
+  REFERENCE_VIDEO
+}
+
+enum EffectImportMaterialStatus {
+  MISSING
+  UPLOADING
+  READY
+  FAILED
+}
+
+enum EffectImportFailureDisposition {
+  RETRYABLE
+  REQUIRES_NEW_FILE
+}
+
+enum EffectManifestImportStatus {
+  PREVIEW
+  COMMITTED
+  CANCELLED
+  EXPIRED
+}
+
+enum EffectManifestFormat {
+  csv
+  xlsx
+}
+
+enum EffectManifestFileMatchStatus {
+  MATCHED
+  MISSING
+  AMBIGUOUS
+}
+
+enum EffectImportPublishOperationStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
 model Project {
-  id          String        @id @default(uuid()) @db.Uuid
-  name        String        @db.VarChar(120)
-  description String?       @db.VarChar(500)
-  status      ProjectStatus @default(ACTIVE)
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  id                     String                  @id @default(uuid()) @db.Uuid
+  name                   String                  @db.VarChar(120)
+  description            String?                 @db.VarChar(500)
+  client                 String?                 @db.VarChar(120)
+  productName            String?                 @db.VarChar(120)
+  iconKey                String?                 @db.VarChar(80)
+  defaultWorkflow        AssetWorkflow?
+  defaultSpace           AssetWorkflowSpace?
+  status                 ProjectStatus           @default(ACTIVE)
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  assets                 Asset[]
+  assetVersions          AssetVersion[]
+  effectImportWorkspace  EffectImportWorkspace?
+  assetOperationReceipts AssetOperationReceipt[]
+  storageCleanupTasks    StorageCleanupTask[]
 
   @@index([updatedAt])
   @@map("projects")
+}
+
+model Asset {
+  id               String             @id @default(uuid()) @db.Uuid
+  projectId        String             @db.Uuid
+  name             String             @db.VarChar(120)
+  directory        AssetDirectory
+  type             AssetType
+  storageWorkflow  AssetWorkflow      @default(EFFECT)
+  workflowSpace    AssetWorkflowSpace @default(EFFECT)
+  status           AssetStatus        @default(AVAILABLE)
+  qualityStatus    AssetStatus        @default(AVAILABLE)
+  currentVersion   Int                @default(1)
+  tags             String[]           @default([])
+  notes            String?            @db.VarChar(2000)
+  originalFileName String             @db.VarChar(255)
+  mimeType         String             @db.VarChar(120)
+  sizeBytes        Int
+  storageKey       String             @db.VarChar(500)
+  hasFile          Boolean            @default(true)
+  assetClass       String?            @db.VarChar(120)
+  businessType     String?            @db.VarChar(160)
+  contentKind      String?            @db.VarChar(160)
+  content          Json?
+  businessData     Json?
+  views            String[]           @default([])
+  sourceArtifactId String?            @db.VarChar(255)
+  sourceRunId      String?            @db.VarChar(255)
+  sourceNode       String?            @db.VarChar(255)
+  sourceShot       String?            @db.VarChar(255)
+  idempotencyKey   String?            @db.VarChar(500)
+  sourceProjectId  String?            @db.Uuid
+  sourceAssetId    String?            @db.Uuid
+  sourceVersion    Int?
+  importedAt       DateTime?
+  dependencies     Json?
+  archivedAt       DateTime?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  project          Project            @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  versions         AssetVersion[]
+
+  @@unique([projectId, storageWorkflow, workflowSpace, idempotencyKey], map: "assets_project_workflow_space_idempotency_key")
+  @@index([projectId, archivedAt, updatedAt])
+  @@index([projectId, directory, type, archivedAt])
+  @@index([projectId, storageWorkflow, workflowSpace, archivedAt])
+  @@map("assets")
+}
+
+model AssetVersion {
+  id               String      @id @default(uuid()) @db.Uuid
+  projectId        String      @db.Uuid
+  assetId          String      @db.Uuid
+  version          Int
+  changeNote       String      @db.VarChar(2000)
+  status           AssetStatus
+  qualityStatus    AssetStatus
+  content          Json?
+  businessData     Json?
+  originalFileName String      @db.VarChar(255)
+  mimeType         String      @db.VarChar(120)
+  sizeBytes        Int
+  storageKey       String      @db.VarChar(500)
+  createdAt        DateTime    @default(now())
+  project          Project     @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  asset            Asset       @relation(fields: [assetId], references: [id], onDelete: Restrict)
+
+  @@unique([projectId, assetId, version])
+  @@index([projectId, assetId, createdAt])
+  @@map("asset_versions")
+}
+
+model AssetOperationReceipt {
+  id             String   @id @default(uuid()) @db.Uuid
+  projectId      String   @db.Uuid
+  operationKey   String   @db.VarChar(500)
+  assetId        String   @db.Uuid
+  assetVersionId String   @db.Uuid
+  version        Int
+  createdAt      DateTime @default(now())
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Restrict)
+
+  @@unique([projectId, operationKey])
+  @@index([projectId, assetId])
+  @@map("asset_operation_receipts")
+}
+
+model EffectImportWorkspace {
+  id          String              @id @default(uuid()) @db.Uuid
+  projectId   String              @unique @db.Uuid
+  currentMode EffectImportMode    @default(SINGLE)
+  revision    Int                 @default(1)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  project     Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  drafts      EffectImportDraft[]
+
+  @@unique([projectId, id])
+  @@map("effect_import_workspaces")
+}
+
+model EffectImportDraft {
+  id                String                         @id @default(uuid()) @db.Uuid
+  projectId         String                         @db.Uuid
+  workspaceId       String                         @db.Uuid
+  mode              EffectImportMode
+  status            EffectImportDraftStatus        @default(DRAFT)
+  globalConfig      Json
+  revision          Int                            @default(1)
+  validatedRevision Int?
+  validationIssues  Json
+  validatedAt       DateTime?
+  completedAt       DateTime?
+  lastPublish       Json?
+  createdAt         DateTime                       @default(now())
+  updatedAt         DateTime                       @updatedAt
+  workspace         EffectImportWorkspace          @relation(fields: [projectId, workspaceId], references: [projectId, id], onDelete: Cascade)
+  products          EffectImportProduct[]
+  manifestImports   EffectManifestImport[]
+  publishOperations EffectImportPublishOperation[]
+
+  @@unique([projectId, mode])
+  @@unique([projectId, id])
+  @@index([projectId, updatedAt])
+  @@map("effect_import_drafts")
+}
+
+model EffectImportProduct {
+  id                      String                 @id @default(uuid()) @db.Uuid
+  projectId               String                 @db.Uuid
+  draftId                 String                 @db.Uuid
+  name                    String                 @default("") @db.VarChar(120)
+  category                String                 @default("") @db.VarChar(120)
+  sku                     String                 @default("") @db.VarChar(160)
+  normalizedSku           String                 @default("") @db.VarChar(160)
+  commerceUrl             String?                @db.VarChar(2000)
+  configOverride          Json
+  sortOrder               Int                    @default(0)
+  sourceManifestImportId  String?                @db.Uuid
+  sourceManifestRowNumber Int?
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
+  draft                   EffectImportDraft      @relation(fields: [projectId, draftId], references: [projectId, id], onDelete: Cascade)
+  sourceManifestImport    EffectManifestImport?  @relation(fields: [projectId, sourceManifestImportId], references: [projectId, id], onDelete: Restrict)
+  materials               EffectImportMaterial[]
+
+  @@unique([projectId, id])
+  @@index([projectId, draftId, sortOrder])
+  @@index([projectId, draftId, normalizedSku])
+  @@map("effect_import_products")
+}
+
+model EffectImportMaterial {
+  id                 String                          @id @default(uuid()) @db.Uuid
+  projectId          String                          @db.Uuid
+  productId          String                          @db.Uuid
+  type               EffectImportMaterialType
+  status             EffectImportMaterialStatus      @default(UPLOADING)
+  expectedFileName   String?                         @db.VarChar(255)
+  originalFileName   String?                         @db.VarChar(255)
+  mimeType           String?                         @db.VarChar(120)
+  sizeBytes          Int?
+  storageKey         String?                         @db.VarChar(500)
+  failureDisposition EffectImportFailureDisposition?
+  errorCode          String?                         @db.VarChar(120)
+  errorMessage       String?                         @db.VarChar(500)
+  retryCount         Int                             @default(0)
+  createdAt          DateTime                        @default(now())
+  updatedAt          DateTime                        @updatedAt
+  product            EffectImportProduct             @relation(fields: [projectId, productId], references: [projectId, id], onDelete: Cascade)
+
+  @@unique([projectId, id])
+  @@index([projectId, productId, type])
+  @@map("effect_import_materials")
+}
+
+model EffectManifestImport {
+  id                   String                     @id @default(uuid()) @db.Uuid
+  projectId            String                     @db.Uuid
+  draftId              String                     @db.Uuid
+  status               EffectManifestImportStatus @default(PREVIEW)
+  format               EffectManifestFormat
+  originalFileName     String                     @db.VarChar(255)
+  rowCount             Int
+  previewRows          Json
+  issues               Json
+  idempotencyKey       String?                    @db.VarChar(500)
+  commitIdempotencyKey String?                    @db.VarChar(500)
+  expiresAt            DateTime
+  committedAt          DateTime?
+  cancelledAt          DateTime?
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+  draft                EffectImportDraft          @relation(fields: [projectId, draftId], references: [projectId, id], onDelete: Cascade)
+  stagedFiles          EffectManifestStagedFile[]
+  products             EffectImportProduct[]
+
+  @@unique([projectId, id])
+  @@unique([projectId, draftId, idempotencyKey])
+  @@index([projectId, draftId, status, expiresAt])
+  @@map("effect_manifest_imports")
+}
+
+model EffectImportPublishOperation {
+  id             String                             @id @default(uuid()) @db.Uuid
+  projectId      String                             @db.Uuid
+  draftId        String                             @db.Uuid
+  revision       Int
+  idempotencyKey String                             @db.VarChar(500)
+  snapshot       Json
+  status         EffectImportPublishOperationStatus @default(RUNNING)
+  attemptToken   String                             @db.Uuid
+  result         Json?
+  errorMessage   String?                            @db.VarChar(500)
+  completedAt    DateTime?
+  createdAt      DateTime                           @default(now())
+  updatedAt      DateTime                           @updatedAt
+  draft          EffectImportDraft                  @relation(fields: [projectId, draftId], references: [projectId, id], onDelete: Cascade)
+  fileHolds      EffectImportPublishFileHold[]
+
+  @@unique([projectId, idempotencyKey])
+  @@unique([projectId, id])
+  @@index([projectId, draftId, status, updatedAt], map: "effect_import_publish_operations_projectId_draftId_status_updat")
+  @@map("effect_import_publish_operations")
+}
+
+model EffectImportPublishFileHold {
+  id          String                       @id @default(uuid()) @db.Uuid
+  projectId   String                       @db.Uuid
+  operationId String                       @db.Uuid
+  storageKey  String                       @db.VarChar(500)
+  createdAt   DateTime                     @default(now())
+  operation   EffectImportPublishOperation @relation(fields: [projectId, operationId], references: [projectId, id], onDelete: Cascade)
+
+  @@unique([projectId, operationId, storageKey], map: "effect_import_publish_file_holds_projectId_operationId_storageK")
+  @@index([projectId, storageKey])
+  @@map("effect_import_publish_file_holds")
+}
+
+model StorageCleanupTask {
+  id            String   @id @default(uuid()) @db.Uuid
+  projectId     String   @db.Uuid
+  storageKey    String   @db.VarChar(500)
+  reason        String   @db.VarChar(120)
+  attempts      Int      @default(0)
+  lastError     String?  @db.VarChar(500)
+  nextAttemptAt DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, storageKey])
+  @@index([projectId, nextAttemptAt])
+  @@map("storage_cleanup_tasks")
+}
+
+model EffectManifestStagedFile {
+  id                  String                        @id @default(uuid()) @db.Uuid
+  projectId           String                        @db.Uuid
+  manifestImportId    String                        @db.Uuid
+  originalFileName    String                        @db.VarChar(255)
+  mimeType            String                        @db.VarChar(120)
+  sizeBytes           Int
+  storageKey          String                        @db.VarChar(500)
+  matchedRowNumbers   Int[]                         @default([])
+  matchedMaterialType EffectImportMaterialType?
+  matchStatus         EffectManifestFileMatchStatus
+  transferredAt       DateTime?
+  createdAt           DateTime                      @default(now())
+  updatedAt           DateTime                      @updatedAt
+  manifestImport      EffectManifestImport          @relation(fields: [projectId, manifestImportId], references: [projectId, id], onDelete: Cascade)
+
+  @@unique([projectId, id])
+  @@index([projectId, manifestImportId])
+  @@map("effect_manifest_staged_files")
 }

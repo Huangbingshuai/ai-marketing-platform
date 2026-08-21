@@ -12,6 +12,9 @@ export default defineConfig(({ mode }) => {
   return {
     envDir,
     plugins: [vue()],
+    optimizeDeps: {
+      include: ['@ai-marketing/contracts'],
+    },
     server: {
       port: 5173,
       proxy: {

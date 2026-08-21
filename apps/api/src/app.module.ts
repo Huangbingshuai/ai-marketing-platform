@@ -6,7 +6,9 @@ import { ConfigModule } from '@nestjs/config';
 import { validateEnvironment } from './config/environment';
 import { PrismaModule } from './database/prisma.module';
 import { HealthModule } from './platform/health/health.module';
+import { AssetModule } from './platform/asset/asset.module';
 import { ProjectModule } from './platform/project/project.module';
+import { EffectSourceImportModule } from './workflows/effect/source-import/effect-source-import.module';
 
 @Module({
   imports: [
@@ -19,6 +21,8 @@ import { ProjectModule } from './platform/project/project.module';
     PrismaModule,
     HealthModule,
     ProjectModule,
+    AssetModule,
+    EffectSourceImportModule,
   ],
 })
 export class AppModule {}

@@ -31,6 +31,173 @@
 
 开发环境中，Vite 将 `/api` 请求代理到 NestJS；生产环境可以分别部署前端静态资源和后端 API。若端口 `3000` 已被占用，只需修改根目录 `.env` 的 `API_PORT`，代理会自动跟随；也可以通过 `VITE_API_PROXY_TARGET` 单独覆盖代理目标。
 
+## 已落地：项目创建能力
+
+项目创建最小能力已在提交 `71d8676` 中落地。该次实现只负责创建项目，不包含资产库和具体业务工作流。
+
+### 功能范围
+
+- 前端按照 `references/prototypes/integrated/system-integrated-demo.html` 的系统顶栏、蓝白配色和公共弹窗重新实现。
+- 页面提供单一“创建项目”入口，弹窗包含项目名称和项目说明。
+- 创建过程区分初始、提交中、失败和成功状态；失败信息来自后端统一 API 响应。
+- 前端通过 HTTP 调用 NestJS，不保存组件内写死的项目数据。
+- 后端通过 `ProjectController → ProjectService → ProjectRepository → PrismaService` 写入 PostgreSQL。
+- 前后端共享的项目类型和创建请求类型统一放在 `packages/contracts/src/project.ts`。
+
+本次能力对应的主要目录：
+
+```text
+apps/web/src/platform/project/            # 创建按钮、弹窗和前端 API 客户端
+apps/api/src/platform/project/            # Controller、Service、Repository 和 DTO
+apps/api/prisma/schema.prisma             # Project 数据模型
+apps/api/prisma/migrations/               # PostgreSQL 迁移
+packages/contracts/src/project.ts         # 前后端共享契约
+```
+
+### 创建接口
+
+```http
+POST /api/projects
+Content-Type: application/json
+```
+
+请求体：
+
+```json
+{
+  "name": "广味食品 · 夏季投放",
+  "description": "夏季短视频素材生产项目"
+}
+```
+
+字段规则：
+
+- `name`：必填，去除首尾空格后不能为空，最长 120 个字符。
+- `description`：可选，最长 500 个字符；空字符串按 `null` 入库。
+- 新项目默认状态为 `ACTIVE`。
+
+成功响应遵循统一结构：
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "项目 UUID",
+    "name": "广味食品 · 夏季投放",
+    "description": "夏季短视频素材生产项目",
+    "status": "ACTIVE",
+    "createdAt": "ISO 8601 时间",
+    "updatedAt": "ISO 8601 时间"
+  }
+}
+```
+
+本地联调示例：
+
+```powershell
+$body = @{
+  name = '广味食品 · 夏季投放'
+  description = '夏季短视频素材生产项目'
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri 'http://localhost:3000/api/projects' `
+  -ContentType 'application/json' `
+  -Body $body
+```
+
+### 数据落库
+
+项目数据写入 PostgreSQL 的 `projects` 表，核心字段包括：
+
+- `id`：UUID 主键。
+- `name`：项目名称。
+- `description`：可选项目说明。
+- `status`：`DRAFT`、`ACTIVE` 或 `COMPLETED`，创建时默认为 `ACTIVE`。
+- `createdAt`、`updatedAt`：创建与更新时间。
+
+修改 Prisma 模型后执行：
+
+```powershell
+pnpm db:migrate
+pnpm db:generate
+```
+
+### 验证
+
+```powershell
+# 项目模块测试
+pnpm --filter @ai-marketing/api test
+pnpm --filter @ai-marketing/web test
+
+# 全仓质量检查
+pnpm check
+```
+
+项目创建的 Service 测试覆盖字段归一化、默认状态和空说明入库；前端 API 测试覆盖 POST 请求体与后端错误信息透传。
+
+## 已落地：效果类工作流“资料包导入”
+
+效果类工作流第 01 步已使用 Vue、NestJS、Prisma 和共享契约正式实现。页面视觉与交互以以下冻结原型为基准：
+
+- `references/prototypes/integrated/system-integrated-demo.html`：系统顶栏、项目上下文和公共入口。
+- `references/prototypes/effect/effect-workflow.html`：效果类工作流画布和资料包导入节点。
+
+完整实施约束、接口、数据模型和验收矩阵见 [效果类工作流-资料包导入节点实施方案](docs/效果类工作流-资料包导入节点实施方案.md)。
+
+### 已实现能力
+
+- 支持“单产品导入”和“多品类批量导入”，两种模式的产品、全局配置、校验和 revision 分别保存，切换不丢数据。
+- 支持产品名称、品类、商品图片、产品文档、品牌规范、电商链接和参考视频。
+- SKU 是后端生成的内部唯一标识，前端表单、清单模板和用户校验不要求填写 SKU。
+- 支持 CSV/XLSX 清单预览、配套文件匹配、错误行提交与后续修复。
+- 支持上传、删除、重传、服务端内容重试以及必须重新选择文件的失败处理。
+- 批量模式支持搜索、品类筛选、新增商品、批量删除和批量重试。
+- 全局视频配置包含画幅、时长、分辨率、帧率、字幕、口播、BGM、风格基调、投放渠道和禁用元素；产品可独立覆盖并恢复继承。
+- 所有下拉选项支持搜索和自定义，选项层向上展开。
+- 草稿、文件和配置全部保存到后端，刷新可恢复，不同项目按 `projectId` 严格隔离。
+- 只有服务端权威校验通过后才能推进到下一节点。
+
+### 数据与并发策略
+
+- `EffectImportWorkspace` 记录项目当前导入模式。
+- `EffectImportDraft` 按项目和模式分别保存草稿、配置、revision 和校验结果。
+- `EffectImportProduct` 和 `EffectImportMaterial` 保存产品与资料状态。
+- `EffectManifestImport` 和 `EffectManifestStagedFile` 保存清单预览、幂等键和阶段文件。
+- 所有写接口使用 revision/`If-Match`；前端通过项目级单飞队列、AbortController 和代数门禁避免丢更新或串项目。
+- 页面会后台预取另一种导入模式的草稿，切换时优先使用缓存即时展示，并在后台完成服务端切换。
+
+### 正式资产入库
+
+工作流草稿不会自动成为项目资产。用户点击“保存到项目资产库”后，效果类模块通过平台 `AssetService` 复制正式文件并创建 `Asset/AssetVersion`。同一资料包再次主动入库会创建新版本；同一次网络重试使用幂等键恢复，不会重复创建版本。
+
+开发环境默认使用 `LocalStorageAdapter`，文件保存到 `.local-storage/`；生产 TOS Adapter 不在本节点的实现范围内。
+
+### 主要 API
+
+基础路径：
+
+```text
+/api/projects/:projectId/workflows/effect/source-import
+```
+
+该路径下提供工作区与草稿加载、模式切换、产品 CRUD、资料上传/重传/重试/删除、清单模板/预览/提交/取消、权威校验、正式资产入库和节点推进接口。统一响应结构为 `ApiResponse<T>`。
+
+### 质量验证
+
+```powershell
+pnpm --filter @ai-marketing/contracts test
+pnpm --filter @ai-marketing/api test
+pnpm --filter @ai-marketing/web test
+pnpm --filter @ai-marketing/api typecheck
+pnpm --filter @ai-marketing/web typecheck
+pnpm build:api
+pnpm build:web
+```
+
+当前测试覆盖项目隔离、revision 冲突、清单解析、文件签名、上传补偿、失败重试、正式入库幂等与版本化、前端请求队列、草稿缓冲和原型布局约束。
+
 ## 本地准备
 
 要求：
@@ -80,7 +247,7 @@ pnpm check
 
 该命令会执行共享契约构建、ESLint、Prettier 校验、全仓类型检查、测试和生产构建。独立执行 `pnpm typecheck` 时也会先生成 `packages/contracts/dist`，因此可在干净检出后直接运行。
 
-Prisma Client 会在 `pnpm install` 后自动生成。首个正式数据模型进入开发后，再通过 `pnpm db:migrate` 创建迁移；当前底座不提前定义业务表。
+Prisma Client 会在 `pnpm install` 后自动生成。当前工程已经包含正式业务模型和迁移；修改数据模型后通过 `pnpm db:migrate` 创建新迁移，并通过 `pnpm db:generate` 重新生成 Prisma Client。
 
 ## 目录结构
 

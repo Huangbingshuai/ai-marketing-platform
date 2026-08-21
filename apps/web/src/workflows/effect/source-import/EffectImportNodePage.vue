@@ -1132,10 +1132,7 @@ onBeforeUnmount(() => {
     </section>
 
     <template v-else>
-      <EffectWorkflowCanvas
-        :active-step="activeStep"
-        @select="selectWorkflowStep"
-      />
+      <EffectWorkflowCanvas :active-step="activeStep" @select="selectWorkflowStep" />
 
       <EffectInfoExtractionNodePage
         v-if="activeStep === 1"

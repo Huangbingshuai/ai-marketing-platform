@@ -1,0 +1,2 @@
+ALTER INDEX "assets_projectId_storageWorkflow_workflowSpace_idempotencyKey_k"
+  RENAME TO "assets_project_workflow_space_idempotency_key";

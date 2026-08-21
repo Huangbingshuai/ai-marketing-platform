@@ -56,7 +56,6 @@ const nodeState = (index: number): NodeState => {
   if (index < props.activeStep) return 'completed';
   return 'ready';
 };
-
 </script>
 
 <template>
@@ -68,7 +67,8 @@ const nodeState = (index: number): NodeState => {
         <p>{{ currentNode.description }}</p>
       </div>
       <div class="effect-flow__progress" aria-label="当前步骤">
-        <strong>{{ currentStepLabel }}</strong><span>/ 06</span>
+        <strong>{{ currentStepLabel }}</strong
+        ><span>/ 06</span>
       </div>
     </header>
 
@@ -175,7 +175,10 @@ const nodeState = (index: number): NodeState => {
   border-radius: 13px;
   box-sizing: border-box;
   overflow: hidden;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease;
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    background-color 0.18s ease;
 }
 .effect-flow__node.current {
   background: #fbfdff;
