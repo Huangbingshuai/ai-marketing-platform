@@ -62,7 +62,6 @@ import {
   validateEffectImportLink,
 } from './api/effect-import.api';
 import BatchManifestImportDialog from './components/BatchManifestImportDialog.vue';
-import EffectUpwardCreatableSelect from './components/EffectUpwardCreatableSelect.vue';
 import EffectWorkflowCanvas from './components/EffectWorkflowCanvas.vue';
 import GlobalVideoConfigPanel from './components/GlobalVideoConfigPanel.vue';
 import ProductConfigOverrideDialog from './components/ProductConfigOverrideDialog.vue';
@@ -94,7 +93,6 @@ const pageError = ref('');
 const workspace = ref<EffectImportWorkspace | null>(null);
 const draft = ref<EffectImportDraft | null>(null);
 const listedProducts = ref<EffectImportProduct[]>([]);
-const categoryOptions = ref<string[]>([]);
 const saveState = ref<EffectImportSaveState>('clean');
 const transitioning = ref(false);
 const activeStep = ref(0);
@@ -106,7 +104,6 @@ const downstreamBoundaries = [
 ] as const;
 const activeDownstreamBoundary = computed(() => downstreamBoundaries[activeStep.value - 2]);
 const keyword = ref('');
-const category = ref('');
 const selectedProductIds = ref(new Set<string>());
 const busyMaterialIds = ref(new Set<string>());
 const notice = ref<{ kind: 'error' | 'success' | 'warning'; text: string } | null>(null);
@@ -165,10 +162,6 @@ const failedProductCount = computed(
     products.value.filter((product) => product.materials.some((item) => item.status === 'FAILED'))
       .length,
 );
-const categoryFilterOptions = computed(() => [
-  { label: '全部品类', value: '' },
-  ...categoryOptions.value.map((value) => ({ label: value, value })),
-]);
 const manifestCommitIdempotencyKey = computed(() =>
   manifestPreview.value ? manifestCommitKeys.getOrCreate(manifestPreview.value.id) : '',
 );
@@ -250,12 +243,9 @@ const setDraft = (value: EffectImportDraft): void => {
   }
   draft.value = value;
   draftCache.set(value.mode, value);
-  if (value.mode === 'SINGLE' || (!keyword.value && !category.value)) {
+  if (value.mode === 'SINGLE' || !keyword.value) {
     listedProducts.value = value.products;
   }
-  categoryOptions.value = Array.from(
-    new Set(value.products.map((product) => product.category).filter(Boolean)),
-  );
   syncWorkspaceSummary();
 };
 
@@ -397,7 +387,6 @@ const refreshProductList = async (): Promise<void> => {
       'BATCH',
       {
         keyword: keyword.value || undefined,
-        category: category.value || undefined,
         page: 1,
         pageSize: 100,
       },
@@ -405,7 +394,6 @@ const refreshProductList = async (): Promise<void> => {
     );
     if (!isCurrentContext(projectId, generation)) return;
     listedProducts.value = response.data.items;
-    categoryOptions.value = response.data.categoryOptions;
     productDraftBuffer.keys().forEach((productId) => {
       const pending = productDraftBuffer.get(productId);
       if (pending) syncEditableProductSnapshot(productId, pending.value);
@@ -505,7 +493,6 @@ const switchMode = async (mode: EffectImportMode): Promise<void> => {
     if (cachedDraft) {
       workspace.value.currentMode = mode;
       keyword.value = '';
-      category.value = '';
       selectedProductIds.value = new Set();
       setDraft(cachedDraft);
       saveState.value = 'clean';
@@ -520,7 +507,6 @@ const switchMode = async (mode: EffectImportMode): Promise<void> => {
     if (!isCurrentContext(projectId, generation)) return;
     workspace.value = response.data.workspace;
     keyword.value = '';
-    category.value = '';
     selectedProductIds.value = new Set();
     setDraft(response.data.draft);
     saveState.value = 'clean';
@@ -645,7 +631,7 @@ const flushProduct = async (productOrId: EffectImportProduct | string): Promise<
     syncEditableProductSnapshot(productId, latest.value);
     saveState.value = 'dirty';
   } else saveState.value = resolveSuccessfulWriteSaveState(hasPendingDraftEdits());
-  if (currentMode.value === 'BATCH' && (keyword.value || category.value)) {
+  if (currentMode.value === 'BATCH' && keyword.value) {
     await refreshProductList();
   }
   return true;
@@ -668,8 +654,6 @@ const createProduct = async (): Promise<void> => {
         loadedProjectId.value,
         currentMode.value,
         {
-          name: '',
-          category: '',
           commerceUrl: null,
           configOverride: {},
           expectedRevision,
@@ -1089,7 +1073,7 @@ const handleProjectSelection = async (projectId: string): Promise<void> => {
 };
 
 watch(currentProjectId, (projectId) => void handleProjectSelection(projectId), { immediate: true });
-watch([keyword, category], () => {
+watch(keyword, () => {
   if (currentMode.value !== 'BATCH') return;
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => void refreshProductList(), 300);
@@ -1158,235 +1142,226 @@ onBeforeUnmount(() => {
       </section>
 
       <template v-else>
-        <section class="node-heading">
-          <span>01</span>
-          <div>
-            <h1>资料包导入</h1>
-            <p>汇集产品身份、图片、文档、品牌规范、链接与参考视频，统一视频生产规格</p>
-          </div>
-          <div class="save-indicator" :class="saveState">
-            <CloudUpload :size="14" />{{ saveStateLabel }}
-          </div>
-          <button type="button" @click="downloadTemplate('csv')">
-            <FileSpreadsheet :size="14" />下载资料包模板
-          </button>
-        </section>
-
-        <section class="import-mode-segment" aria-label="导入模式">
-          <strong>导入模式</strong>
-          <div>
-            <button
-              type="button"
-              :class="{ active: currentMode === 'SINGLE' }"
-              :disabled="transitioning"
-              @click="switchMode('SINGLE')"
-            >
-              <FolderInput :size="13" />单产品导入
+        <section class="import-workspace-card">
+          <section class="node-heading">
+            <span>01</span>
+            <div>
+              <h1>资料包导入</h1>
+              <p>汇集商品图片、产品文本资料与电商链接，统一视频生产规格</p>
+            </div>
+            <div class="save-indicator" :class="saveState">
+              <CloudUpload :size="14" />{{ saveStateLabel }}
+            </div>
+            <button type="button" @click="downloadTemplate('csv')">
+              <FileSpreadsheet :size="14" />下载资料包模板
             </button>
-            <button
-              type="button"
-              :class="{ active: currentMode === 'BATCH' }"
-              :disabled="transitioning"
-              @click="switchMode('BATCH')"
-            >
-              <FileSpreadsheet :size="13" />多品类批量导入
-            </button>
-          </div>
-        </section>
+          </section>
 
-        <div
-          class="import-layout"
-          :class="{ 'batch-mode': currentMode === 'BATCH' }"
-          :inert="transitioning"
-          :aria-busy="transitioning"
-        >
-          <template v-if="currentMode === 'SINGLE'">
-            <section class="import-source-column">
-              <div v-if="!singleProduct" class="empty-products">
-                <PackageOpen :size="31" />
-                <h3>尚未创建单产品资料包</h3>
-                <p>创建后可填写产品名称、品类并上传四类资料。</p>
-                <button type="button" @click="createProduct">
-                  <Plus :size="14" />开始填写产品资料
-                </button>
-              </div>
-              <ProductImportEditor
-                v-else
-                :product="singleProduct"
-                :busy-material-ids="busyMaterialIds"
+          <section class="import-mode-segment" aria-label="导入模式">
+            <strong>导入模式</strong>
+            <div>
+              <button
+                type="button"
+                :class="{ active: currentMode === 'SINGLE' }"
                 :disabled="transitioning"
-                @change="updateProductField"
-                @blur="flushProduct"
-                @upload="uploadMaterials"
-                @replace="requestReplacement"
-                @delete-material="removeMaterial"
-                @retry="(product) => retryProducts([product.id])"
-                @override="openOverride"
-                @validate-link="checkCommerceLink"
-              />
-            </section>
-            <GlobalVideoConfigPanel
-              :config="draft?.globalConfig ?? DEFAULT_EFFECT_VIDEO_CONFIG"
-              :disabled="transitioning || saveState === 'saving'"
-              @update:config="updateGlobalConfig"
-            />
-          </template>
+                @click="switchMode('SINGLE')"
+              >
+                <FolderInput :size="13" />单产品导入
+              </button>
+              <button
+                type="button"
+                :class="{ active: currentMode === 'BATCH' }"
+                :disabled="transitioning"
+                @click="switchMode('BATCH')"
+              >
+                <FileSpreadsheet :size="13" />多品类批量导入
+              </button>
+            </div>
+          </section>
 
-          <template v-else>
-            <section class="batch-panel">
-              <header class="batch-panel-head">
-                <div>
-                  <h3>商品卡片列表</h3>
-                  <p>每个商品独立维护身份、资料、链接与覆盖配置</p>
-                </div>
-                <div class="batch-toolbar">
-                  <label class="batch-search"
-                    ><Search :size="14" /><input
-                      v-model="keyword"
-                      type="search"
-                      placeholder="搜索产品名称、品类"
-                  /></label>
-                  <div class="batch-category">
-                    <EffectUpwardCreatableSelect
-                      field-label="品类筛选"
-                      :model-value="category"
-                      :options="categoryFilterOptions"
-                      :disabled="transitioning"
-                      @update:model-value="category = String($event)"
-                    />
-                  </div>
-                  <button type="button" @click="manifestOpen = true">
-                    <FileSpreadsheet :size="14" />清单导入
-                  </button>
-                  <button class="primary" type="button" @click="createProduct">
-                    <Plus :size="14" />新增商品
+          <div
+            class="import-layout"
+            :class="{ 'batch-mode': currentMode === 'BATCH' }"
+            :inert="transitioning"
+            :aria-busy="transitioning"
+          >
+            <template v-if="currentMode === 'SINGLE'">
+              <section class="import-source-column">
+                <div v-if="!singleProduct" class="empty-products">
+                  <PackageOpen :size="31" />
+                  <h3>尚未创建单产品资料包</h3>
+                  <p>创建后直接上传商品图片和产品文档，产品信息将在下一节点由 AI 提炼。</p>
+                  <button type="button" @click="createProduct">
+                    <Plus :size="14" />开始填写产品资料
                   </button>
                 </div>
-              </header>
-              <section class="batch-actions">
-                <span>当前 {{ products.length }} 个产品 · 已选 {{ selectedCount }} 个</span>
-                <button
-                  type="button"
-                  :disabled="!selectedCount"
-                  @click="retryProducts([...selectedProductIds])"
-                >
-                  <RefreshCw :size="13" />失败重试
-                </button>
-                <button
-                  class="danger"
-                  type="button"
-                  :disabled="!selectedCount"
-                  @click="batchDelete"
-                >
-                  <Trash2 :size="13" />批量删除
-                </button>
-              </section>
-              <div v-if="!products.length" class="empty-products">
-                <PackageOpen :size="31" />
-                <h3>{{ keyword || category ? '没有匹配的产品' : '批量草稿还是空的' }}</h3>
-                <p>
-                  {{
-                    keyword || category
-                      ? '请调整搜索或品类筛选条件。'
-                      : '可以逐个新增产品，或导入 CSV / Excel 清单。'
-                  }}
-                </p>
-                <button v-if="!keyword && !category" type="button" @click="manifestOpen = true">
-                  <FileSpreadsheet :size="14" />导入产品清单
-                </button>
-              </div>
-              <div v-else class="batch-product-list">
                 <ProductImportEditor
-                  v-for="product in products"
-                  :key="product.id"
-                  batch
-                  :position="products.indexOf(product) + 1"
-                  :product="product"
-                  :disabled="transitioning"
-                  :selected="selectedProductIds.has(product.id)"
+                  v-else
+                  :product="singleProduct"
                   :busy-material-ids="busyMaterialIds"
-                  @select="toggleSelected"
+                  :disabled="transitioning"
                   @change="updateProductField"
                   @blur="flushProduct"
-                  @delete="deleteProduct"
                   @upload="uploadMaterials"
                   @replace="requestReplacement"
                   @delete-material="removeMaterial"
-                  @retry="(item) => retryProducts([item.id])"
+                  @retry="(product) => retryProducts([product.id])"
                   @override="openOverride"
                   @validate-link="checkCommerceLink"
                 />
-              </div>
-            </section>
-            <GlobalVideoConfigPanel
-              class="batch-global-config"
-              :config="draft?.globalConfig ?? DEFAULT_EFFECT_VIDEO_CONFIG"
-              :disabled="transitioning || saveState === 'saving'"
-              @update:config="updateGlobalConfig"
-            />
-          </template>
-        </div>
+              </section>
+              <GlobalVideoConfigPanel
+                :config="draft?.globalConfig ?? DEFAULT_EFFECT_VIDEO_CONFIG"
+                :disabled="transitioning || saveState === 'saving'"
+                @update:config="updateGlobalConfig"
+              />
+            </template>
 
-        <section v-if="validationErrors.length" class="validation-panel">
-          <header>
-            <AlertCircle :size="16" /><span
-              >校验未通过，共 {{ validationErrors.length }} 项需要处理</span
-            >
-          </header>
-          <div>
-            <p
-              v-for="(issue, index) in validationErrors.slice(0, 8)"
-              :key="`${issue.code}-${index}`"
-            >
-              {{ issue.productId ? '产品资料：' : '' }}{{ issue.message }}
-            </p>
+            <template v-else>
+              <section class="batch-panel">
+                <header class="batch-panel-head">
+                  <div>
+                    <h3>商品卡片列表</h3>
+                    <p>每个商品独立维护资料、链接与覆盖配置，产品信息由下一节点 AI 提炼</p>
+                  </div>
+                  <div class="batch-toolbar">
+                    <label class="batch-search"
+                      ><Search :size="14" /><input
+                        v-model="keyword"
+                        type="search"
+                        placeholder="搜索电商链接或资料文件"
+                    /></label>
+                    <button type="button" @click="manifestOpen = true">
+                      <FileSpreadsheet :size="14" />清单导入
+                    </button>
+                    <button class="primary" type="button" @click="createProduct">
+                      <Plus :size="14" />新增商品
+                    </button>
+                  </div>
+                </header>
+                <section class="batch-actions">
+                  <span>当前 {{ products.length }} 个产品 · 已选 {{ selectedCount }} 个</span>
+                  <button
+                    type="button"
+                    :disabled="!selectedCount"
+                    @click="retryProducts([...selectedProductIds])"
+                  >
+                    <RefreshCw :size="13" />失败重试
+                  </button>
+                  <button
+                    class="danger"
+                    type="button"
+                    :disabled="!selectedCount"
+                    @click="batchDelete"
+                  >
+                    <Trash2 :size="13" />批量删除
+                  </button>
+                </section>
+                <div v-if="!products.length" class="empty-products">
+                  <PackageOpen :size="31" />
+                  <h3>{{ keyword ? '没有匹配的资料包' : '批量草稿还是空的' }}</h3>
+                  <p>
+                    {{
+                      keyword ? '请调整搜索条件。' : '可以逐个新增产品，或导入 CSV / Excel 清单。'
+                    }}
+                  </p>
+                  <button v-if="!keyword" type="button" @click="manifestOpen = true">
+                    <FileSpreadsheet :size="14" />导入产品清单
+                  </button>
+                </div>
+                <div v-else class="batch-product-list">
+                  <ProductImportEditor
+                    v-for="product in products"
+                    :key="product.id"
+                    batch
+                    :position="products.indexOf(product) + 1"
+                    :product="product"
+                    :disabled="transitioning"
+                    :selected="selectedProductIds.has(product.id)"
+                    :busy-material-ids="busyMaterialIds"
+                    @select="toggleSelected"
+                    @change="updateProductField"
+                    @blur="flushProduct"
+                    @delete="deleteProduct"
+                    @upload="uploadMaterials"
+                    @replace="requestReplacement"
+                    @delete-material="removeMaterial"
+                    @retry="(item) => retryProducts([item.id])"
+                    @override="openOverride"
+                    @validate-link="checkCommerceLink"
+                  />
+                </div>
+              </section>
+              <GlobalVideoConfigPanel
+                class="batch-global-config"
+                :config="draft?.globalConfig ?? DEFAULT_EFFECT_VIDEO_CONFIG"
+                :disabled="transitioning || saveState === 'saving'"
+                @update:config="updateGlobalConfig"
+              />
+            </template>
           </div>
+
+          <section v-if="validationErrors.length" class="validation-panel">
+            <header>
+              <AlertCircle :size="16" /><span
+                >校验未通过，共 {{ validationErrors.length }} 项需要处理</span
+              >
+            </header>
+            <div>
+              <p
+                v-for="(issue, index) in validationErrors.slice(0, 8)"
+                :key="`${issue.code}-${index}`"
+              >
+                {{ issue.productId ? '产品资料：' : '' }}{{ issue.message }}
+              </p>
+            </div>
+          </section>
+
+          <section class="asset-publish-bar">
+            <span class="asset-publish-icon"><CloudUpload :size="18" /></span>
+            <div>
+              <strong>保存完整资料包到项目资产库</strong>
+              <small>当前模式的商品资料与有效视频配置将创建新的资产版本</small>
+            </div>
+            <em>{{ draft?.lastPublish ? '已入库，可再次保存新版本' : '待入库' }}</em>
+            <button
+              type="button"
+              :disabled="!validatedCurrentRevision || saveState === 'saving'"
+              @click="publishDraft"
+            >
+              <CloudUpload :size="14" />保存到项目资产库
+            </button>
+          </section>
+
+          <footer class="node-footer">
+            <div class="node-footer__status" :class="{ valid: validatedCurrentRevision }">
+              <ShieldCheck v-if="validatedCurrentRevision" :size="17" />
+              <FileCheck2 v-else :size="17" />
+              <span
+                ><strong>{{
+                  validatedCurrentRevision ? '当前草稿校验通过' : '进入下一节点前需要完成校验'
+                }}</strong
+                ><small
+                  >revision {{ draft?.revision ?? 0 }} ·
+                  {{ draft?.productCount ?? 0 }} 个产品<template v-if="failedProductCount">
+                    · {{ failedProductCount }} 个产品存在失败资料</template
+                  ></small
+                ></span
+              >
+            </div>
+            <button type="button" :disabled="saveState === 'saving'" @click="validateDraft">
+              <CheckCircle2 :size="14" />完成校验
+            </button>
+            <button
+              class="primary"
+              type="button"
+              :disabled="!validatedCurrentRevision || saveState === 'saving'"
+              @click="advanceDraft"
+            >
+              下一步：AI 信息提炼<ArrowRight :size="15" />
+            </button>
+          </footer>
         </section>
-
-        <section class="asset-publish-bar">
-          <span class="asset-publish-icon"><CloudUpload :size="18" /></span>
-          <div>
-            <strong>保存完整资料包到项目资产库</strong>
-            <small>当前模式的商品资料与有效视频配置将创建新的资产版本</small>
-          </div>
-          <em>{{ draft?.lastPublish ? '已入库，可再次保存新版本' : '待入库' }}</em>
-          <button
-            type="button"
-            :disabled="!validatedCurrentRevision || saveState === 'saving'"
-            @click="publishDraft"
-          >
-            <CloudUpload :size="14" />保存到项目资产库
-          </button>
-        </section>
-
-        <footer class="node-footer">
-          <div class="node-footer__status" :class="{ valid: validatedCurrentRevision }">
-            <ShieldCheck v-if="validatedCurrentRevision" :size="17" />
-            <FileCheck2 v-else :size="17" />
-            <span
-              ><strong>{{
-                validatedCurrentRevision ? '当前草稿校验通过' : '进入下一节点前需要完成校验'
-              }}</strong
-              ><small
-                >revision {{ draft?.revision ?? 0 }} ·
-                {{ draft?.productCount ?? 0 }} 个产品<template v-if="failedProductCount">
-                  · {{ failedProductCount }} 个产品存在失败资料</template
-                ></small
-              ></span
-            >
-          </div>
-          <button type="button" :disabled="saveState === 'saving'" @click="validateDraft">
-            <CheckCircle2 :size="14" />完成校验
-          </button>
-          <button
-            class="primary"
-            type="button"
-            :disabled="!validatedCurrentRevision || saveState === 'saving'"
-            @click="advanceDraft"
-          >
-            下一步：AI 信息提炼<ArrowRight :size="15" />
-          </button>
-        </footer>
       </template>
     </template>
 
@@ -1503,11 +1478,19 @@ onBeforeUnmount(() => {
 .page-state.error > svg {
   color: #d65355;
 }
+.import-workspace-card {
+  margin-top: 18px;
+  padding: 22px;
+  background: #fff;
+  border: 1px solid #f0e3dc;
+  border-radius: 24px;
+  box-shadow: 0 8px 25px #7a4e3b0c;
+}
 .node-heading {
   display: flex;
   min-height: 78px;
-  margin-bottom: 14px;
-  padding: 15px 18px;
+  margin-bottom: 12px;
+  padding: 0;
   align-items: center;
   gap: 12px;
   background: #fff;
@@ -1574,7 +1557,7 @@ onBeforeUnmount(() => {
 }
 .import-mode-segment {
   display: flex;
-  margin: 0 0 20px;
+  margin: 0 0 16px;
   align-items: center;
   gap: 12px;
   color: #596278;
@@ -1718,9 +1701,6 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   outline: 0;
   font-size: 10px;
-}
-.batch-category {
-  width: 132px;
 }
 .batch-toolbar > button,
 .batch-actions button {
@@ -2047,6 +2027,13 @@ onBeforeUnmount(() => {
     padding: 14px;
     border-radius: 20px;
   }
+  .import-workspace-card {
+    padding: 14px;
+    border-radius: 18px;
+  }
+  .import-mode-segment {
+    margin-left: 0;
+  }
   .node-heading > div:nth-child(2) {
     width: calc(100% - 60px);
   }
@@ -2059,9 +2046,6 @@ onBeforeUnmount(() => {
   .batch-search {
     width: 100%;
     flex-basis: 100%;
-  }
-  .batch-category {
-    flex: 1;
   }
   .validation-panel div {
     grid-template-columns: 1fr;

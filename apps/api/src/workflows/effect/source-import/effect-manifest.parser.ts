@@ -15,8 +15,6 @@ import ExcelJS from 'exceljs';
 const MATERIAL_COLUMNS: ReadonlyArray<[EffectManifestColumn, EffectImportMaterialType]> = [
   ['商品图片', 'PRODUCT_IMAGE'],
   ['产品文档', 'PRODUCT_DOCUMENT'],
-  ['品牌规范', 'BRAND_GUIDELINE'],
-  ['参考视频', 'REFERENCE_VIDEO'],
 ];
 
 const issue = (
@@ -185,24 +183,10 @@ export async function parseEffectManifest(
   const rows = productRows.map(({ row, rowNumber }): EffectManifestPreviewRow => {
     const get = (column: EffectManifestColumn): string =>
       (row[headerIndexes.get(column) ?? -1] ?? '').trim();
-    const rawName = get('产品名称');
-    const rawCategory = get('品类');
     const rawCommerceUrl = get('电商链接');
-    const name = rawName.slice(0, 120);
-    const category = rawCategory.slice(0, 120);
     const commerceUrl = rawCommerceUrl.slice(0, 2000) || null;
     const rowIssues: EffectImportValidationIssue[] = [];
-    for (const [field, value] of [
-      ['name', name],
-      ['category', category],
-    ] as const) {
-      if (!value) rowIssues.push(issue('REQUIRED_FIELD', `${field} 为必填字段`, rowNumber, field));
-    }
-    for (const [field, value, limit] of [
-      ['name', rawName, 120],
-      ['category', rawCategory, 120],
-      ['commerceUrl', rawCommerceUrl, 2000],
-    ] as const) {
+    for (const [field, value, limit] of [['commerceUrl', rawCommerceUrl, 2000]] as const) {
       if (value.length > limit) {
         rowIssues.push(
           issue('FIELD_TOO_LONG', `${field} 超过 ${limit} 个字符，已安全截断`, rowNumber, field),
@@ -240,8 +224,8 @@ export async function parseEffectManifest(
     );
     return {
       rowNumber,
-      name,
-      category,
+      name: '',
+      category: '',
       sku: '',
       normalizedSku: '',
       commerceUrl,

@@ -1,14 +1,8 @@
 <script setup lang="ts">
 import {
   EFFECT_IMPORT_ASPECT_RATIOS,
-  EFFECT_IMPORT_BGM_STRATEGIES,
   EFFECT_IMPORT_DELIVERY_CHANNELS,
   EFFECT_IMPORT_DURATION_OPTIONS,
-  EFFECT_IMPORT_FRAME_RATE_OPTIONS,
-  EFFECT_IMPORT_RESOLUTIONS,
-  EFFECT_IMPORT_STYLE_TONES,
-  EFFECT_IMPORT_SUBTITLE_STRATEGIES,
-  EFFECT_IMPORT_VOICEOVER_STRATEGIES,
   type EffectImportProduct,
   type EffectVideoConfig,
   type EffectVideoConfigOverride,
@@ -16,6 +10,7 @@ import {
 import { RotateCcw, SlidersHorizontal, X } from '@lucide/vue';
 import { computed, ref, watch } from 'vue';
 
+import { EFFECT_IMPORT_PROTOTYPE_STYLE_TONES } from '../effect-import-options';
 import EffectUpwardCreatableSelect from './EffectUpwardCreatableSelect.vue';
 
 const props = defineProps<{
@@ -34,40 +29,35 @@ const numbers = (values: readonly number[], suffix: string) =>
   values.map((value) => ({ label: `${value}${suffix}`, value }));
 
 const fields = [
-  { key: 'aspectRatio' as const, label: '画幅', options: strings(EFFECT_IMPORT_ASPECT_RATIOS) },
   {
     key: 'durationSeconds' as const,
-    label: '时长',
+    label: '视频时长',
     options: numbers(EFFECT_IMPORT_DURATION_OPTIONS, ' 秒'),
   },
-  { key: 'resolution' as const, label: '分辨率', options: strings(EFFECT_IMPORT_RESOLUTIONS) },
   {
-    key: 'frameRate' as const,
-    label: '帧率',
-    options: numbers(EFFECT_IMPORT_FRAME_RATE_OPTIONS, ' FPS'),
+    key: 'aspectRatio' as const,
+    label: '画幅比例',
+    options: strings(EFFECT_IMPORT_ASPECT_RATIOS),
   },
   {
-    key: 'subtitleStrategy' as const,
-    label: '字幕策略',
-    options: strings(EFFECT_IMPORT_SUBTITLE_STRATEGIES),
+    key: 'styleTone' as const,
+    label: '风格基调',
+    options: strings(EFFECT_IMPORT_PROTOTYPE_STYLE_TONES),
   },
-  {
-    key: 'voiceoverStrategy' as const,
-    label: '口播策略',
-    options: strings(EFFECT_IMPORT_VOICEOVER_STRATEGIES),
-  },
-  {
-    key: 'bgmStrategy' as const,
-    label: 'BGM 策略',
-    options: strings(EFFECT_IMPORT_BGM_STRATEGIES),
-  },
-  { key: 'styleTone' as const, label: '风格基调', options: strings(EFFECT_IMPORT_STYLE_TONES) },
   {
     key: 'deliveryChannel' as const,
     label: '投放渠道',
     options: strings(EFFECT_IMPORT_DELIVERY_CHANNELS),
   },
 ];
+
+const visibleOverrideKeys = [
+  'durationSeconds',
+  'aspectRatio',
+  'styleTone',
+  'deliveryChannel',
+  'disabledElements',
+] as const;
 
 const localOverride = ref<EffectVideoConfigOverride>({});
 const disabledElementsText = ref('');
@@ -76,14 +66,15 @@ const enabledKeys = ref(new Set<keyof EffectVideoConfig>());
 const overrideCount = computed(() => enabledKeys.value.size);
 
 const resetLocal = (): void => {
-  localOverride.value = props.product
-    ? {
-        ...props.product.configOverride,
-        ...(props.product.configOverride.disabledElements
-          ? { disabledElements: [...props.product.configOverride.disabledElements] }
-          : {}),
-      }
-    : {};
+  const next: EffectVideoConfigOverride = {};
+  if (props.product) {
+    for (const key of visibleOverrideKeys) {
+      const value = props.product.configOverride[key];
+      if (value !== undefined)
+        Object.assign(next, { [key]: Array.isArray(value) ? [...value] : value });
+    }
+  }
+  localOverride.value = next;
   enabledKeys.value = new Set(Object.keys(localOverride.value) as (keyof EffectVideoConfig)[]);
   disabledElementsText.value = localOverride.value.disabledElements?.join('、') ?? '';
 };

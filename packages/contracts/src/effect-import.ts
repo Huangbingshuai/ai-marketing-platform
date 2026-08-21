@@ -28,6 +28,9 @@ export const EFFECT_IMPORT_MATERIAL_TYPES = [
 ] as const;
 export type EffectImportMaterialType = (typeof EFFECT_IMPORT_MATERIAL_TYPES)[number];
 
+export const EFFECT_IMPORT_UPLOAD_MATERIAL_TYPES = ['PRODUCT_IMAGE', 'PRODUCT_DOCUMENT'] as const;
+export type EffectImportUploadMaterialType = (typeof EFFECT_IMPORT_UPLOAD_MATERIAL_TYPES)[number];
+
 export const EFFECT_IMPORT_MATERIAL_TYPE_LABELS: Record<EffectImportMaterialType, string> = {
   PRODUCT_IMAGE: '商品图片',
   PRODUCT_DOCUMENT: '产品文档',
@@ -75,11 +78,22 @@ export const EFFECT_IMPORT_BGM_STRATEGIES = [
   '无 BGM',
 ] as const;
 export const EFFECT_IMPORT_STYLE_TONES = [
-  '清爽明亮',
-  '高级质感',
-  '自然生活',
-  '活力年轻',
-  '专业可信',
+  '烟火食欲感',
+  '高端电影感',
+  '自然电影感',
+  '户外电影感',
+  '清透冰感',
+  '居家纪实',
+  '香槟金电影感',
+  '专业测评感',
+  '温馨生活感',
+  '国潮新中式',
+  '清新田园',
+  '复古胶片',
+  '赛博霓虹',
+  '极简商务',
+  '治愈暖光',
+  '夜景氛围',
 ] as const;
 export const EFFECT_IMPORT_DELIVERY_CHANNELS = [
   '抖音',
@@ -114,7 +128,7 @@ export const DEFAULT_EFFECT_VIDEO_CONFIG: EffectVideoConfig = {
   subtitleStrategy: '跟随口播',
   voiceoverStrategy: 'AI 女声',
   bgmStrategy: '自动匹配',
-  styleTone: '清爽明亮',
+  styleTone: '烟火食欲感',
   deliveryChannel: '抖音',
   disabledElements: [],
 };
@@ -125,7 +139,6 @@ export const EFFECT_IMPORT_LIMITS = {
   maxManifestRows: 100,
   maxImageBytes: 50 * 1024 * 1024,
   maxDocumentBytes: 100 * 1024 * 1024,
-  maxReferenceVideoBytes: 512 * 1024 * 1024,
   maxDisabledElements: 50,
   minDurationSeconds: 1,
   maxDurationSeconds: 300,
@@ -317,8 +330,10 @@ export type EffectImportProductListData = {
 };
 
 export type CreateEffectImportProductRequest = {
-  name: string;
-  category: string;
+  /** Reserved for AI extraction in the next node; source import does not require user input. */
+  name?: string | undefined;
+  /** Reserved for AI extraction in the next node; source import does not require user input. */
+  category?: string | undefined;
   commerceUrl?: string | null | undefined;
   configOverride?: EffectVideoConfigOverride | undefined;
   expectedRevision: number;
@@ -398,15 +413,7 @@ export type EffectImportMaterialMutationData = {
 export const EFFECT_MANIFEST_FORMATS = ['csv', 'xlsx'] as const;
 export type EffectManifestFormat = (typeof EFFECT_MANIFEST_FORMATS)[number];
 
-export const EFFECT_MANIFEST_COLUMNS = [
-  '产品名称',
-  '品类',
-  '电商链接',
-  '商品图片',
-  '产品文档',
-  '品牌规范',
-  '参考视频',
-] as const;
+export const EFFECT_MANIFEST_COLUMNS = ['电商链接', '商品图片', '产品文档'] as const;
 export type EffectManifestColumn = (typeof EFFECT_MANIFEST_COLUMNS)[number];
 
 export const EFFECT_MANIFEST_IMPORT_STATUSES = [

@@ -178,8 +178,7 @@ watch(
                 <thead>
                   <tr>
                     <th>行</th>
-                    <th>产品名称</th>
-                    <th>品类</th>
+                    <th>电商链接</th>
                     <th>资料匹配</th>
                     <th>状态</th>
                   </tr>
@@ -188,8 +187,7 @@ watch(
                   <template v-for="row in preview.rows" :key="row.rowNumber">
                     <tr>
                       <td>{{ row.rowNumber }}</td>
-                      <td>{{ row.name || '—' }}</td>
-                      <td>{{ row.category || '—' }}</td>
+                      <td>{{ row.commerceUrl || '—' }}</td>
                       <td>
                         {{
                           row.materialReferences.filter((item) => item.matchStatus === 'MATCHED')
@@ -215,7 +213,7 @@ watch(
                       </td>
                     </tr>
                     <tr v-if="expandedRows.has(row.rowNumber)" class="manifest-row-issues">
-                      <td colspan="6">
+                      <td colspan="4">
                         <p v-for="(issue, index) in row.issues" :key="`${issue.code}-${index}`">
                           <AlertTriangle :size="13" />
                           <span>{{ issue.message }}</span>

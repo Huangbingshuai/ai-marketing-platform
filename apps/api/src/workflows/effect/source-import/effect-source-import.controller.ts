@@ -55,8 +55,8 @@ const revision = (bodyRevision: number | undefined, header: string | undefined):
 const disposition = (fileName: string, inline = false): string =>
   `${inline ? 'inline' : 'attachment'}; filename="download"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
 
-const EFFECT_IMPORT_MANIFEST_COMPANION_MAX_BYTES = 512 * 1024 * 1024;
-const EFFECT_IMPORT_SINGLE_UPLOAD_MAX_BYTES = 512 * 1024 * 1024;
+const EFFECT_IMPORT_MANIFEST_COMPANION_MAX_BYTES = 100 * 1024 * 1024;
+const EFFECT_IMPORT_SINGLE_UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
 
 @Controller('projects/:projectId/workflows/effect/source-import')
 export class EffectSourceImportController {

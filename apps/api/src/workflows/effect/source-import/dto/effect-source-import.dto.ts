@@ -1,5 +1,5 @@
 import {
-  EFFECT_IMPORT_MATERIAL_TYPES,
+  EFFECT_IMPORT_UPLOAD_MATERIAL_TYPES,
   EFFECT_IMPORT_MODES,
   type EffectImportMaterialType,
   type EffectImportMode,
@@ -42,8 +42,8 @@ export class ListProductsQueryDto {
 }
 
 export class CreateProductDto extends ExpectedRevisionDto {
-  @IsString() @MaxLength(120) name!: string;
-  @IsString() @MaxLength(120) category!: string;
+  @IsOptional() @IsString() @MaxLength(120) name?: string;
+  @IsOptional() @IsString() @MaxLength(120) category?: string;
   @IsOptional() @IsString() @MaxLength(2000) commerceUrl?: string | null;
   @IsOptional() @Allow() configOverride?: EffectVideoConfigOverride;
 }
@@ -64,7 +64,7 @@ export class ValidateLinkDto {
 }
 
 export class CreateMaterialDto extends ExpectedRevisionDto {
-  @IsIn([...EFFECT_IMPORT_MATERIAL_TYPES]) type!: EffectImportMaterialType;
+  @IsIn([...EFFECT_IMPORT_UPLOAD_MATERIAL_TYPES]) type!: EffectImportMaterialType;
   @IsOptional() @IsString() @MaxLength(255) expectedFileName?: string;
 }
 

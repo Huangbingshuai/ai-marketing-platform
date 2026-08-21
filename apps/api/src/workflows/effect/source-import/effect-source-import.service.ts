@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import {
   DEFAULT_EFFECT_VIDEO_CONFIG,
   EFFECT_IMPORT_LIMITS,
+  EFFECT_IMPORT_UPLOAD_MATERIAL_TYPES,
   EFFECT_MANIFEST_COLUMNS,
   mergeEffectVideoConfig,
   normalizeEffectImportSku,
@@ -69,7 +70,11 @@ export type EffectMaterialContent = StoredStream & {
 
 const badRequest = (
   message: string,
-  code: 'VALIDATION_ERROR' | 'FILE_REQUIRED' | 'FILE_TOO_LARGE' = 'VALIDATION_ERROR',
+  code:
+    | 'VALIDATION_ERROR'
+    | 'FILE_REQUIRED'
+    | 'FILE_TOO_LARGE'
+    | 'FILE_TYPE_UNSUPPORTED' = 'VALIDATION_ERROR',
 ) =>
   new ApiHttpException(
     message,
@@ -102,7 +107,7 @@ const createSystemSku = (): string =>
   `SYS-${randomUUID().replaceAll('-', '').slice(0, 16).toUpperCase()}`;
 const MANIFEST_COMPANION_COUNT_LIMIT = 20;
 export const EFFECT_MANIFEST_UPLOAD_TOTAL_BYTES =
-  EFFECT_IMPORT_LIMITS.maxReferenceVideoBytes + EFFECT_IMPORT_LIMITS.maxManifestBytes;
+  512 * 1024 * 1024 + EFFECT_IMPORT_LIMITS.maxManifestBytes;
 
 const validationIssue = (
   code: EffectImportValidationIssue['code'],
@@ -444,8 +449,8 @@ export class EffectSourceImportService {
     projectId: string,
     modeValue: string,
     input: {
-      name: string;
-      category: string;
+      name?: string;
+      category?: string;
       commerceUrl?: string | null;
       configOverride?: EffectVideoConfigOverride;
       expectedRevision: number;
@@ -467,8 +472,8 @@ export class EffectSourceImportService {
       draft.id,
       input.expectedRevision,
       {
-        name: input.name.trim(),
-        category: input.category.trim(),
+        name: input.name?.trim() ?? '',
+        category: input.category?.trim() ?? '',
         sku,
         normalizedSku: normalizeEffectImportSku(sku),
         commerceUrl: input.commerceUrl?.trim() || null,
@@ -588,36 +593,40 @@ export class EffectSourceImportService {
     file: UploadedEffectFile | undefined,
     type: EffectImportMaterialType,
   ): Promise<UploadedEffectFile> {
+    if (!EFFECT_IMPORT_UPLOAD_MATERIAL_TYPES.some((candidate) => candidate === type))
+      throw badRequest('当前只支持商品图片和产品文档', 'FILE_TYPE_UNSUPPORTED');
     if (!file || file.size < 1) throw badRequest('请选择非空文件', 'FILE_REQUIRED');
     const max =
       type === 'PRODUCT_IMAGE'
         ? EFFECT_IMPORT_LIMITS.maxImageBytes
-        : type === 'REFERENCE_VIDEO'
-          ? EFFECT_IMPORT_LIMITS.maxReferenceVideoBytes
-          : EFFECT_IMPORT_LIMITS.maxDocumentBytes;
+        : EFFECT_IMPORT_LIMITS.maxDocumentBytes;
     if (file.size > max) throw badRequest('文件大小超过该资料类型限制', 'FILE_TOO_LARGE');
     const extension = file.originalname.toLowerCase().match(/\.[a-z0-9]+$/)?.[0] ?? '';
     const allowed =
       type === 'PRODUCT_IMAGE'
-        ? ['.jpg', '.jpeg', '.png', '.webp']
-        : type === 'REFERENCE_VIDEO'
-          ? ['.mp4', '.mov', '.webm', '.mkv']
-          : ['.pdf', '.doc', '.docx', '.txt', '.md'];
+        ? ['.jpg', '.jpeg', '.png', '.psd', '.webp']
+        : ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.txt', '.md'];
     if (!allowed.includes(extension)) throw badRequest('文件扩展名与资料类型不匹配');
     const mimeType = safeMime(file.mimetype);
     const allowedMimeTypes =
       type === 'PRODUCT_IMAGE'
-        ? ['image/jpeg', 'image/png', 'image/webp']
-        : type === 'REFERENCE_VIDEO'
-          ? ['video/mp4', 'video/quicktime', 'video/webm', 'video/x-matroska']
-          : [
-              'application/pdf',
-              'application/msword',
-              'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-              'text/plain',
-              'text/markdown',
-              'application/octet-stream',
-            ];
+        ? [
+            'image/jpeg',
+            'image/png',
+            'image/vnd.adobe.photoshop',
+            'image/webp',
+            'application/octet-stream',
+          ]
+        : [
+            'application/pdf',
+            'application/msword',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'application/vnd.ms-excel',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'text/plain',
+            'text/markdown',
+            'application/octet-stream',
+          ];
     if (!allowedMimeTypes.includes(mimeType)) throw badRequest('文件 MIME 与资料类型不匹配');
     const handle = await open(file.path, 'r');
     const buffer = Buffer.alloc(16);
@@ -632,18 +641,16 @@ export class EffectSourceImportService {
           buffer
             .subarray(0, 8)
             .equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) ||
+          buffer.subarray(0, 4).toString('ascii') === '8BPS' ||
           (buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
             buffer.subarray(8, 12).toString('ascii') === 'WEBP')
-        : type === 'REFERENCE_VIDEO'
-          ? buffer.subarray(4, 8).toString('ascii') === 'ftyp' ||
-            buffer.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))
-          : extension === '.txt' ||
-            extension === '.md' ||
-            buffer.subarray(0, 4).toString('ascii') === '%PDF' ||
-            buffer.subarray(0, 2).toString('ascii') === 'PK' ||
-            buffer
-              .subarray(0, 8)
-              .equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]));
+        : extension === '.txt' ||
+          extension === '.md' ||
+          buffer.subarray(0, 4).toString('ascii') === '%PDF' ||
+          buffer.subarray(0, 2).toString('ascii') === 'PK' ||
+          buffer
+            .subarray(0, 8)
+            .equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]));
     if (!signature) throw badRequest('文件签名与资料类型不匹配');
     return file;
   }
@@ -663,8 +670,10 @@ export class EffectSourceImportService {
       let stored: { key: string; sizeBytes: number } | null = null;
       try {
         stored = await this.storage.put({
+          projectId,
           stream: createReadStream(validFile.path),
           sizeBytes: validFile.size,
+          contentType: safeMime(validFile.mimetype),
         });
       } catch {
         const failed = await this.repository.createMaterial(
@@ -752,8 +761,10 @@ export class EffectSourceImportService {
       let stored: { key: string; sizeBytes: number } | null = null;
       try {
         stored = await this.storage.put({
+          projectId,
           stream: createReadStream(validFile.path),
           sizeBytes: validFile.size,
+          contentType: safeMime(validFile.mimetype),
         });
       } catch {
         // Replacement is a two-phase swap: a failed write must leave the
@@ -1000,8 +1011,10 @@ export class EffectSourceImportService {
       for (const file of files) {
         if (file.size < 1) continue;
         const object = await this.storage.put({
+          projectId,
           stream: createReadStream(file.path),
           sizeBytes: file.size,
+          contentType: safeMime(file.mimetype),
         });
         stored.push({ file, key: object.key, id: randomUUID() });
       }
@@ -1253,15 +1266,7 @@ export class EffectSourceImportService {
     format: 'csv' | 'xlsx',
   ): Promise<{ buffer: Buffer; fileName: string; contentType: string }> {
     if (format === 'csv') {
-      const example = [
-        '示例产品',
-        '护肤',
-        'https://example.com/item/1',
-        'front.jpg|back.jpg',
-        'manual.pdf',
-        'brand.pdf',
-        'reference.mp4',
-      ];
+      const example = ['https://example.com/item/1', 'front.jpg|back.jpg', 'manual.pdf'];
       return {
         buffer: Buffer.from(
           `\uFEFF${EFFECT_MANIFEST_COLUMNS.join(',')}\r\n${example.join(',')}\r\n`,
@@ -1274,15 +1279,7 @@ export class EffectSourceImportService {
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('资料包清单');
     sheet.addRow([...EFFECT_MANIFEST_COLUMNS]);
-    sheet.addRow([
-      '示例产品',
-      '护肤',
-      'https://example.com/item/1',
-      'front.jpg|back.jpg',
-      'manual.pdf',
-      'brand.pdf',
-      'reference.mp4',
-    ]);
+    sheet.addRow(['https://example.com/item/1', 'front.jpg|back.jpg', 'manual.pdf']);
     sheet.getRow(1).font = { bold: true };
     sheet.columns.forEach((column) => {
       column.width = 22;
@@ -1307,17 +1304,6 @@ export class EffectSourceImportService {
     if (!isValidConfig(draft.globalConfig))
       issues.push(validationIssue('INVALID_VIDEO_CONFIG', '全局视频配置无效', 'DRAFT'));
     for (const product of draft.products) {
-      for (const [field, value] of [
-        ['name', product.name],
-        ['category', product.category],
-      ] as const)
-        if (!value.trim())
-          issues.push(
-            validationIssue('REQUIRED_FIELD', `${field} 为必填字段`, 'PRODUCT', {
-              productId: product.id,
-              field,
-            }),
-          );
       if (product.commerceUrl && !normalizedCommerceUrl(product.commerceUrl))
         issues.push(
           validationIssue('INVALID_COMMERCE_URL', '电商链接格式无效', 'PRODUCT', {

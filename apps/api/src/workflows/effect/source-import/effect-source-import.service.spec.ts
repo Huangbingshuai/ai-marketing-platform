@@ -99,9 +99,32 @@ const publishableDraft = (): EffectImportDraft =>
   });
 
 describe('EffectSourceImportService', () => {
-  it('allows one maximum reference video plus one maximum manifest in the aggregate budget', () => {
+  it('caps the manifest and companion aggregate budget at 522 MiB', () => {
     expect(EFFECT_MANIFEST_UPLOAD_TOTAL_BYTES).toBe(522 * 1024 * 1024);
   });
+
+  it('生成只包含商品图片和产品文档的标准清单模板', async () => {
+    const template = await serviceWith().template('csv');
+    const [header, example] = template.buffer
+      .toString('utf8')
+      .replace(/^\uFEFF/, '')
+      .split('\r\n');
+
+    expect(header).toBe('电商链接,商品图片,产品文档');
+    expect(example?.split(',')).toHaveLength(3);
+  });
+
+  it('不把产品名称和品类作为资料导入节点的校验条件', () => {
+    const service = serviceWith() as unknown as {
+      collectValidation(draft: EffectImportDraft): Array<{ field?: string | null }>;
+    };
+    const draft = publishableDraft();
+    draft.products[0]!.name = '';
+    draft.products[0]!.category = '';
+
+    expect(service.collectValidation(draft)).toEqual([]);
+  });
+
   it('accepts only absolute HTTP(S) commerce links without credentials', () => {
     const service = serviceWith();
     expect(service.validateLink(' https://shop.example.com/item/1#details ')).toMatchObject({
@@ -296,6 +319,57 @@ describe('EffectSourceImportService', () => {
           'PRODUCT_DOCUMENT',
         ),
       ).rejects.toMatchObject({ status: 400 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts PSD/Excel sources and rejects retired material categories', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'effect-standardized-material-'));
+    const psdPath = join(directory, 'hero.psd');
+    const xlsxPath = join(directory, 'product.xlsx');
+    await writeFile(psdPath, Buffer.concat([Buffer.from('8BPS'), Buffer.alloc(12)]));
+    await writeFile(xlsxPath, Buffer.concat([Buffer.from('PK'), Buffer.alloc(14)]));
+    const service = serviceWith();
+    const assertFile = (
+      service as unknown as {
+        assertMaterialFile: (
+          file: { path: string; originalname: string; mimetype: string; size: number } | undefined,
+          type: 'BRAND_GUIDELINE' | 'PRODUCT_DOCUMENT' | 'PRODUCT_IMAGE' | 'REFERENCE_VIDEO',
+        ) => Promise<unknown>;
+      }
+    ).assertMaterialFile.bind(service);
+    try {
+      await expect(
+        assertFile(
+          {
+            path: psdPath,
+            originalname: 'hero.psd',
+            mimetype: 'image/vnd.adobe.photoshop',
+            size: 16,
+          },
+          'PRODUCT_IMAGE',
+        ),
+      ).resolves.toBeDefined();
+      await expect(
+        assertFile(
+          {
+            path: xlsxPath,
+            originalname: 'product.xlsx',
+            mimetype: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            size: 16,
+          },
+          'PRODUCT_DOCUMENT',
+        ),
+      ).resolves.toBeDefined();
+      await expect(assertFile(undefined, 'BRAND_GUIDELINE')).rejects.toMatchObject({
+        status: 400,
+        response: { code: 'FILE_TYPE_UNSUPPORTED' },
+      });
+      await expect(assertFile(undefined, 'REFERENCE_VIDEO')).rejects.toMatchObject({
+        status: 400,
+        response: { code: 'FILE_TYPE_UNSUPPORTED' },
+      });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

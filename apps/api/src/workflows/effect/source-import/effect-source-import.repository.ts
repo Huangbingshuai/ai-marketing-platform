@@ -151,6 +151,17 @@ export class EffectSourceImportRepository {
               { name: { contains: keyword, mode: 'insensitive' } },
               { category: { contains: keyword, mode: 'insensitive' } },
               { sku: { contains: keyword, mode: 'insensitive' } },
+              { commerceUrl: { contains: keyword, mode: 'insensitive' } },
+              {
+                materials: {
+                  some: {
+                    OR: [
+                      { originalFileName: { contains: keyword, mode: 'insensitive' } },
+                      { expectedFileName: { contains: keyword, mode: 'insensitive' } },
+                    ],
+                  },
+                },
+              },
             ],
           }
         : {}),

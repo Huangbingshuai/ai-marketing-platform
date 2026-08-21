@@ -4,6 +4,7 @@ import {
   type EffectImportMaterial,
   type EffectImportMaterialType,
   type EffectImportProduct,
+  type EffectImportUploadMaterialType,
 } from '@ai-marketing/contracts';
 import {
   AlertTriangle,
@@ -16,7 +17,6 @@ import {
   Settings2,
   Trash2,
   Upload,
-  Video,
 } from '@lucide/vue';
 import { computed, ref } from 'vue';
 
@@ -40,7 +40,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   blur: [product: EffectImportProduct];
-  change: [product: EffectImportProduct, field: 'category' | 'commerceUrl' | 'name', value: string];
+  change: [product: EffectImportProduct, field: 'commerceUrl', value: string];
   delete: [product: EffectImportProduct];
   deleteMaterial: [product: EffectImportProduct, material: EffectImportMaterial];
   override: [product: EffectImportProduct];
@@ -51,27 +51,26 @@ const emit = defineEmits<{
   validateLink: [product: EffectImportProduct];
 }>();
 
-const materialTypes: { accept: string; icon: typeof Image; type: EffectImportMaterialType }[] = [
-  { type: 'PRODUCT_IMAGE', icon: Image, accept: '.jpg,.jpeg,.png,.webp' },
-  { type: 'PRODUCT_DOCUMENT', icon: FileText, accept: '.doc,.docx,.xls,.xlsx,.pdf,.txt' },
-  { type: 'BRAND_GUIDELINE', icon: Settings2, accept: '.doc,.docx,.pdf,.txt' },
-  { type: 'REFERENCE_VIDEO', icon: Video, accept: '.mp4,.mov,.webm' },
+const materialTypes: {
+  accept: string;
+  icon: typeof Image;
+  type: EffectImportUploadMaterialType;
+}[] = [
+  { type: 'PRODUCT_IMAGE', icon: Image, accept: '.jpg,.jpeg,.png,.psd,.webp' },
+  { type: 'PRODUCT_DOCUMENT', icon: FileText, accept: '.doc,.docx,.xls,.xlsx,.pdf,.txt,.md' },
 ];
-const selectedMaterialType = ref<EffectImportMaterialType>('PRODUCT_IMAGE');
+const selectedMaterialType = ref<EffectImportUploadMaterialType>('PRODUCT_IMAGE');
 const selectedType = computed(() =>
   materialTypes.find((item) => item.type === selectedMaterialType.value)!,
 );
 const completion = computed(() => {
-  const checks = [
-    props.product.name.trim(),
-    props.product.category.trim(),
-    props.product.materials.some(
-      (item) => item.type === 'PRODUCT_IMAGE' && item.status === 'READY',
-    ),
-  ];
-  return Math.round((checks.filter(Boolean).length / checks.length) * 100);
+  return props.product.materials.some(
+    (item) => item.type === 'PRODUCT_IMAGE' && item.status === 'READY',
+  )
+    ? 100
+    : 0;
 });
-const changeField = (field: 'category' | 'commerceUrl' | 'name', event: Event): void =>
+const changeField = (field: 'commerceUrl', event: Event): void =>
   emit('change', props.product, field, (event.target as HTMLInputElement).value);
 const chooseFiles = (event: Event): void => {
   const input = event.target as HTMLInputElement;
@@ -102,11 +101,11 @@ const statusText = (material: EffectImportMaterial): string =>
         type="checkbox"
         :checked="selected"
         :disabled="disabled"
-        :aria-label="`选择产品 ${product.name || '未命名'}`"
+        :aria-label="`选择商品资料包 ${position}`"
         @change="emit('select', product, ($event.target as HTMLInputElement).checked)"
       />
       <span class="batch-card-no">商品 {{ String(position).padStart(2, '0') }}</span>
-      <strong class="batch-card-name">{{ product.name || '未命名商品' }}</strong>
+      <strong class="batch-card-name">商品资料包</strong>
       <em class="completion-badge" :class="{ complete: completion === 100 }"
         >完整度 {{ completion }}%</em
       >
@@ -135,31 +134,9 @@ const statusText = (material: EffectImportMaterial): string =>
         <span class="panel-heading-icon"><Upload :size="20" /></span>
         <div>
           <h3>上传产品资料</h3>
-          <p>支持商品图片、产品文档、品牌规范与参考视频</p>
+          <p>支持商品主图、细节图、场景图与产品文本资料</p>
         </div>
       </header>
-      <div class="product-identity">
-        <label
-          ><span>产品名称<b>*</b></span
-          ><input
-            :value="product.name"
-            :disabled="disabled"
-            type="text"
-            placeholder="请输入产品名称"
-            @input="changeField('name', $event)"
-            @blur="emit('blur', product)"
-        /></label>
-        <label
-          ><span>品类<b>*</b></span
-          ><input
-            :value="product.category"
-            :disabled="disabled"
-            type="text"
-            placeholder="请输入品类"
-            @input="changeField('category', $event)"
-            @blur="emit('blur', product)"
-        /></label>
-      </div>
       <div class="material-type-tabs">
         <button
           v-for="item in materialTypes"
@@ -180,9 +157,10 @@ const statusText = (material: EffectImportMaterial): string =>
           >点击或将{{ EFFECT_IMPORT_MATERIAL_TYPE_LABELS[selectedMaterialType] }}拖拽到此处</strong
         >
         <small>当前资料类型：{{ EFFECT_IMPORT_MATERIAL_TYPE_LABELS[selectedMaterialType] }}</small>
-        <small>图片最大 50 MiB，文档 100 MiB，视频最大 512 MiB</small>
+        <small>图片支持 JPG/PNG/PSD/WebP，文档支持 Word/Excel/PDF/纯文本</small>
         <input
           type="file"
+          hidden
           :multiple="selectedMaterialType === 'PRODUCT_IMAGE'"
           :accept="selectedType.accept"
           :disabled="disabled"
@@ -192,28 +170,6 @@ const statusText = (material: EffectImportMaterial): string =>
     </section>
 
     <template v-else>
-      <div class="product-identity batch-identity">
-        <label
-          ><span>产品名称<b>*</b></span
-          ><input
-            :value="product.name"
-            :disabled="disabled"
-            type="text"
-            placeholder="产品名称"
-            @input="changeField('name', $event)"
-            @blur="emit('blur', product)"
-        /></label>
-        <label
-          ><span>品类<b>*</b></span
-          ><input
-            :value="product.category"
-            :disabled="disabled"
-            type="text"
-            placeholder="品类"
-            @input="changeField('category', $event)"
-            @blur="emit('blur', product)"
-        /></label>
-      </div>
       <div class="material-type-tabs compact">
         <button
           v-for="item in materialTypes"
@@ -233,6 +189,7 @@ const statusText = (material: EffectImportMaterial): string =>
         ><small>支持多文件，系统将保存到当前商品资料包</small>
         <input
           type="file"
+          hidden
           :multiple="selectedMaterialType === 'PRODUCT_IMAGE'"
           :accept="selectedType.accept"
           :disabled="disabled"
@@ -403,30 +360,10 @@ const statusText = (material: EffectImportMaterial): string =>
   color: #9198a7;
   font-size: 12px;
 }
-.product-identity {
-  display: grid;
-  grid-template-columns: 1.35fr 1fr;
-  gap: 10px;
-}
-.product-identity label,
-.product-identity label > span {
+.upload-source-card {
   display: flex;
-}
-.product-identity label {
-  min-width: 0;
   flex-direction: column;
-  gap: 6px;
 }
-.product-identity label > span {
-  color: #596278;
-  gap: 2px;
-  font-size: 11px;
-  font-weight: 700;
-}
-.product-identity b {
-  color: #e05356;
-}
-.product-identity input,
 .commerce-input-row input {
   width: 100%;
   box-sizing: border-box;
@@ -435,13 +372,6 @@ const statusText = (material: EffectImportMaterial): string =>
   border: 1px solid #e2d9d4;
   outline: none;
 }
-.product-identity input {
-  height: 38px;
-  padding: 0 11px;
-  border-radius: 10px;
-  font-size: 12px;
-}
-.product-identity input:focus,
 .commerce-input-row:focus-within {
   border-color: #93b4ff;
   box-shadow: 0 0 0 3px #2563eb10;
@@ -449,7 +379,7 @@ const statusText = (material: EffectImportMaterial): string =>
 .material-type-tabs {
   display: grid;
   margin: 15px 0 10px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
 }
 .material-type-tabs button {
@@ -474,7 +404,7 @@ const statusText = (material: EffectImportMaterial): string =>
 .source-dropzone {
   position: relative;
   display: flex;
-  min-height: 286px;
+  min-height: 160px;
   padding: 20px;
   box-sizing: border-box;
   align-items: center;
@@ -492,11 +422,8 @@ const statusText = (material: EffectImportMaterial): string =>
   background: #fffaf8;
   border-color: #ff9e8b;
 }
-.source-dropzone input {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  cursor: pointer;
+.source-dropzone input[type='file'] {
+  display: none !important;
 }
 .dropzone-plus {
   display: grid;
@@ -578,6 +505,7 @@ const statusText = (material: EffectImportMaterial): string =>
   color: #a4aab6;
   border: 1px dashed #f0e3dc;
   border-radius: 12px;
+  flex: 1;
   text-align: center;
   font-size: 11px;
 }
@@ -753,10 +681,6 @@ input:disabled {
   }
 }
 @media (max-width: 780px) {
-  .product-identity,
-  .batch-identity {
-    grid-template-columns: 1fr;
-  }
   .material-type-tabs {
     grid-template-columns: repeat(2, 1fr);
   }

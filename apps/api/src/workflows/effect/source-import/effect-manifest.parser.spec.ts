@@ -18,13 +18,13 @@ describe('effect manifest parser', () => {
     await rm(directory, { recursive: true, force: true });
   });
 
-  it('parses BOM CSV and quoted newlines without requiring a SKU column', async () => {
+  it('parses a BOM CSV without requiring product identity columns', async () => {
     const path = join(directory, 'products.csv');
     await writeFile(
       path,
-      '\uFEFF产品名称,品类,电商链接,商品图片,产品文档,品牌规范,参考视频\r\n' +
-        '"产品\n一",护肤,https://example.com,a.jpg|b.jpg,,,\r\n' +
-        '产品二,食品,,,,,\r\n',
+      '\uFEFF电商链接,商品图片,产品文档\r\n' +
+        'https://example.com,a.jpg|b.jpg,\r\n' +
+        ',,manual.pdf\r\n',
       'utf8',
     );
 
@@ -32,7 +32,8 @@ describe('effect manifest parser', () => {
 
     expect(result.rows).toHaveLength(2);
     expect(result.rows[0]).toMatchObject({
-      name: '产品\n一',
+      name: '',
+      category: '',
       normalizedSku: '',
       materialReferences: [
         { type: 'PRODUCT_IMAGE', expectedFileName: 'a.jpg' },
@@ -45,16 +46,16 @@ describe('effect manifest parser', () => {
   it('rejects formula cells without evaluating them', async () => {
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('清单');
-    sheet.addRow(['产品名称', '品类', '电商链接', '商品图片', '产品文档', '品牌规范', '参考视频']);
-    sheet.addRow([{ formula: 'CONCAT("危","险")', result: '危险' }, '食品', '', '', '', '', '']);
+    sheet.addRow(['电商链接', '商品图片', '产品文档']);
+    sheet.addRow([{ formula: 'CONCAT("危","险")', result: '危险' }, 'front.jpg', '']);
     const path = join(directory, 'products.xlsx');
     await workbook.xlsx.writeFile(path);
 
     const result = await parseEffectManifest(path, 'products.xlsx');
 
     expect(result.rows[0]?.name).toBe('');
-    expect(result.rows[0]?.issues.map((issue) => issue.code)).toEqual(
-      expect.arrayContaining(['MANIFEST_FORMULA_UNSUPPORTED', 'REQUIRED_FIELD']),
+    expect(result.rows[0]?.issues.map((issue) => issue.code)).toContain(
+      'MANIFEST_FORMULA_UNSUPPORTED',
     );
   });
 
@@ -66,14 +67,15 @@ describe('effect manifest parser', () => {
     const path = join(directory, 'oversized.csv');
     await writeFile(
       path,
-      '产品名称,品类,电商链接,商品图片,产品文档,品牌规范,参考视频\n' +
-        `${'名'.repeat(121)},食品,https://example.com,${'a'.repeat(256)}.jpg,,,\n`,
+      '电商链接,商品图片,产品文档\n' + `${'h'.repeat(2001)},${'a'.repeat(256)}.jpg,\n`,
       'utf8',
     );
 
     const result = await parseEffectManifest(path, 'oversized.csv');
 
-    expect(result.rows[0]?.name).toHaveLength(120);
+    expect(result.rows[0]?.name).toBe('');
+    expect(result.rows[0]?.category).toBe('');
+    expect(result.rows[0]?.commerceUrl).toHaveLength(2000);
     expect(result.rows[0]?.sku).toBe('');
     expect(result.rows[0]?.materialReferences[0]?.expectedFileName).toHaveLength(255);
     expect(result.rows[0]?.issues.map((item) => item.code)).toContain('FIELD_TOO_LONG');
