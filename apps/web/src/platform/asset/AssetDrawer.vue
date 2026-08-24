@@ -842,10 +842,11 @@ onBeforeUnmount(() => {
             </section>
 
             <ProjectWorkspaceOverview
-              v-if="view === 'current' && activeProject"
+              v-if="activeProject"
               :project="activeProject"
               :workflow="workflow"
               :space="space"
+              :can-resume="activeProject.id === currentProject?.id"
               @resume-node="emit('resumeNode', $event)"
             />
             <section v-else class="asset-space">

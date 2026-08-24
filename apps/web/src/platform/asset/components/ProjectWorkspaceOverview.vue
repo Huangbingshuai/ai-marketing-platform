@@ -32,11 +32,15 @@ import { listAssets, listAssetVersions } from '../api/asset.api';
 import { SPACE_LABELS, WORKFLOW_META, typeLabel } from '../asset-v4';
 import AssetPreview from './AssetPreview.vue';
 
-const props = defineProps<{
-  project: Project;
-  workflow: AssetWorkflow;
-  space: AssetWorkflowSpace;
-}>();
+const props = withDefaults(
+  defineProps<{
+    project: Project;
+    workflow: AssetWorkflow;
+    space: AssetWorkflowSpace;
+    canResume?: boolean;
+  }>(),
+  { canResume: false },
+);
 const emit = defineEmits<{ resumeNode: [nodeId: string] }>();
 
 type LoadStatus = 'loading' | 'success' | 'error';
@@ -277,7 +281,7 @@ onBeforeUnmount(() => controller?.abort());
               v-for="(definition, index) in workflowNodes"
               :key="definition.id"
               type="button"
-              :disabled="!stateByNode.has(definition.id)"
+              :disabled="!stateByNode.has(definition.id) || !canResume"
               @click="emit('resumeNode', definition.id)"
             >
               <span class="step-index">{{ index + 1 }}</span>
@@ -291,9 +295,12 @@ onBeforeUnmount(() => controller?.abort());
               <em :class="{ active: definition.id === latestState?.nodeId }">{{
                 nodeStatus(definition)
               }}</em>
-              <ArrowRight v-if="stateByNode.has(definition.id)" :size="14" />
+              <ArrowRight v-if="stateByNode.has(definition.id) && canResume" :size="14" />
             </button>
           </div>
+          <p v-if="run && !canResume" class="resume-hint">
+            只有当前绑定项目可以直接返回节点继续编辑。
+          </p>
         </section>
 
         <section class="overview-panel artifacts-panel">
@@ -583,6 +590,11 @@ onBeforeUnmount(() => controller?.abort());
 .draft-list em.active {
   color: #2563eb;
   font-weight: 900;
+}
+.resume-hint {
+  margin: 9px 4px 0;
+  color: #8490a5;
+  font-size: 9px;
 }
 .artifact-grid {
   display: grid;

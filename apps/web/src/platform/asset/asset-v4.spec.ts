@@ -126,12 +126,15 @@ describe('V4 asset center mapping', () => {
   });
 
   it('separates project drafts, working artifacts, archived assets and global publication', () => {
+    expect(assetDrawerSource).toContain('v-if="activeProject"');
+    expect(assetDrawerSource).toContain(':can-resume="activeProject.id === currentProject?.id"');
     expect(projectWorkspaceOverviewSource).toContain('工作流草稿');
     expect(projectWorkspaceOverviewSource).toContain('工作区产物');
     expect(projectWorkspaceOverviewSource).toContain('已归档资产');
     expect(projectWorkspaceOverviewSource).toContain('全局发布资产');
     expect(projectWorkspaceOverviewSource).toContain('尚未实现“完成工作流并归档”');
     expect(projectWorkspaceOverviewSource).toContain('全局发布能力暂未实现');
+    expect(projectWorkspaceOverviewSource).toContain('只有当前绑定项目可以直接返回节点继续编辑');
     expect(projectWorkspaceOverviewSource).not.toContain('保存到项目资产库');
   });
 });
