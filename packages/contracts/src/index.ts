@@ -26,6 +26,7 @@ export type {
   AssetListQuery,
   AssetPagination,
   AssetPreviewKind,
+  AssetProductFacet,
   AssetStatus,
   AssetTagFacet,
   AssetType,
@@ -55,3 +56,4 @@ export type {
 } from './project';
 export * from './effect-import';
 export * from './effect-extraction';
+export * from './workflow-working';

@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { projectMatchesSpace, typeLabel, typesForSpace, uploadAccept } from './asset-v4';
+import assetDrawerSource from './AssetDrawer.vue?raw';
+import assetPreviewSource from './components/AssetPreview.vue?raw';
+import {
+  isImageFileAsset,
+  isCurrentOnlyEffectImportAsset,
+  projectMatchesSpace,
+  typeLabel,
+  typesForSpace,
+  uploadAccept,
+  videoConfigFields,
+} from './asset-v4';
 
 describe('V4 asset center mapping', () => {
   it('keeps the frozen type order for each workflow space', () => {
@@ -40,5 +50,77 @@ describe('V4 asset center mapping', () => {
   it('always renders a visible label for expanded V4 asset types', () => {
     expect(typeLabel('VIDEO_CONFIG')).toBe('视频配置');
     expect(typeLabel('INSIGHT_RESULT')).toBe('提炼结果');
+  });
+
+  it('uses file preview metadata so image source materials render as images', () => {
+    expect(isImageFileAsset({ hasFile: true, previewKind: 'IMAGE' })).toBe(true);
+    expect(isImageFileAsset({ hasFile: true, previewKind: 'DOWNLOAD' })).toBe(false);
+    expect(isImageFileAsset({ hasFile: false, previewKind: 'IMAGE' })).toBe(false);
+    expect(assetPreviewSource).toContain('v-if="isImageFile"');
+    expect(assetPreviewSource).toContain(':src="asset.contentUrl"');
+    expect(assetPreviewSource).toContain('图片暂不可预览');
+  });
+
+  it('marks effect source-import assets as current-only and hides version controls', () => {
+    expect(
+      isCurrentOnlyEffectImportAsset({
+        storageWorkflow: 'EFFECT',
+        workflowSpace: 'EFFECT',
+        sourceNode: 'SOURCE_IMPORT',
+      }),
+    ).toBe(true);
+    expect(
+      isCurrentOnlyEffectImportAsset({
+        storageWorkflow: 'EFFECT',
+        workflowSpace: 'EFFECT',
+        sourceNode: 'PROMPT',
+      }),
+    ).toBe(false);
+    expect(assetDrawerSource).toContain(
+      "view !== 'current' && !isCurrentOnlyEffectImportAsset(asset)",
+    );
+    expect(assetDrawerSource).toContain('listWorkingArtifacts(');
+    expect(assetDrawerSource).toContain("view === 'current' ? '尚未归档'");
+    expect(assetDrawerSource).toContain('v-else-if="!currentOnlyDetail"');
+    expect(assetPreviewSource).toContain('v-if="!isCurrentOnly"');
+  });
+
+  it('presents persisted video configuration fields in cards and asset details', () => {
+    expect(
+      videoConfigFields({
+        type: 'VIDEO_CONFIG',
+        businessData: null,
+        content: {
+          durationSeconds: 50,
+          aspectRatio: '9:16',
+          resolution: '1080P',
+          frameRate: 30,
+          styleTone: '烟火食欲感',
+          deliveryChannel: '抖音',
+          subtitleStrategy: '跟随口播',
+          voiceoverStrategy: 'AI 女声',
+          bgmStrategy: '自动匹配',
+          disabledElements: ['世界第一'],
+        },
+      }),
+    ).toEqual([
+      { key: 'durationSeconds', label: '视频时长', value: '50 秒' },
+      { key: 'aspectRatio', label: '画幅比例', value: '9:16' },
+      { key: 'styleTone', label: '风格基调', value: '烟火食欲感' },
+      { key: 'deliveryChannel', label: '投放渠道', value: '抖音' },
+      { key: 'disabledElements', label: '禁用元素', value: '世界第一' },
+    ]);
+    expect(assetPreviewSource).toContain('v-else-if="isVideoConfig"');
+    expect(assetPreviewSource).toContain('previewConfigFields');
+    expect(assetDrawerSource).toContain('视频配置详情');
+    expect(assetDrawerSource).toContain('detailVideoConfigFields');
+  });
+
+  it('isolates effect source assets by a product-name selector backed by product id', () => {
+    expect(assetDrawerSource).toContain('按产品隔离');
+    expect(assetDrawerSource).toContain('aria-label="按产品名称筛选资产"');
+    expect(assetDrawerSource).toContain(
+      '...(productId.value ? { productId: productId.value } : {})',
+    );
   });
 });

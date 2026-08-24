@@ -7,20 +7,13 @@ export const EFFECT_EXTRACTION_PRODUCT_STATUSES = [
   'NOT_GENERATED',
   'QUEUED',
   'PROCESSING',
-  'CANCELLED',
   'COMPLETED',
   'FAILED',
   'STALE',
 ] as const;
 export type EffectExtractionProductStatus = (typeof EFFECT_EXTRACTION_PRODUCT_STATUSES)[number];
 
-export const EFFECT_EXTRACTION_RUN_STATUSES = [
-  'QUEUED',
-  'RUNNING',
-  'COMPLETED',
-  'FAILED',
-  'CANCELLED',
-] as const;
+export const EFFECT_EXTRACTION_RUN_STATUSES = ['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED'] as const;
 export type EffectExtractionRunStatus = (typeof EFFECT_EXTRACTION_RUN_STATUSES)[number];
 
 export const EFFECT_EXTRACTION_BRANCHES = [

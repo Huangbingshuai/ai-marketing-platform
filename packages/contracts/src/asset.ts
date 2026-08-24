@@ -250,11 +250,14 @@ export type AssetVersion = {
 
 export type AssetFacetOption<T extends string> = { value: T; label: string; count: number };
 export type AssetTagFacet = { value: string; count: number };
+export type AssetProductFacet = { value: string; label: string; count: number };
 export type AssetListFacets = {
   directories: AssetFacetOption<AssetDirectory>[];
   types: AssetFacetOption<AssetType>[];
   statuses?: AssetFacetOption<AssetStatus>[];
   tags: AssetTagFacet[];
+  /** Product packages are displayed by name but filtered by their stable product id. */
+  products?: AssetProductFacet[];
 };
 export type AssetPagination = { page: number; pageSize: number; pageCount: number };
 export type AssetListData = {
@@ -271,6 +274,7 @@ export type AssetListQuery = {
   workflow?: AssetWorkflow | undefined;
   space?: AssetWorkflowSpace | undefined;
   status?: AssetStatus | undefined;
+  productId?: string | undefined;
   page?: number | undefined;
   pageSize?: number | undefined;
 };

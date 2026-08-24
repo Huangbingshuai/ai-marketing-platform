@@ -99,12 +99,12 @@ describe('effect import identity boundary', () => {
     expect(manifestDialogSource).not.toContain('<th>品类</th>');
   });
 
-  it('keeps validation, publishing and next-step access locked until every product has a name', () => {
+  it('keeps validation and next-step access locked until every product has a name', () => {
     expect(pageSource).toContain('const unnamedProductCount = computed(');
     expect(pageSource).toMatch(
       /const validatedCurrentRevision[\s\S]*unnamedProductCount\.value === 0/,
     );
-    expect(pageSource.match(/if \(unnamedProductCount\.value\)/g)).toHaveLength(2);
+    expect(pageSource.match(/if \(unnamedProductCount\.value\)/g)).toHaveLength(1);
     expect(pageSource).toContain('个产品未填写名称');
   });
 });
@@ -118,16 +118,13 @@ describe('effect import material previews', () => {
   });
 });
 
-describe('effect import asset publishing', () => {
-  it('validates automatically before publishing and refreshes project asset statistics', () => {
-    expect(pageSource).toMatch(
-      /const publishDraft[\s\S]*flushPendingEdits\(\)[\s\S]*validateEffectImportDraft[\s\S]*publishEffectImportDraft/,
-    );
-    expect(pageSource).toContain('projectContext.reload()');
-    expect(pageSource).toContain("publishPhase.value === 'validating'");
-    expect(pageSource).toContain("publishPhase.value === 'publishing'");
-    expect(pageSource).toMatch(
-      /class="asset-publish-bar"[\s\S]*:disabled="\s*!draft \|\| publishPhase !== 'idle'/,
-    );
+describe('effect import automatic draft saving', () => {
+  it('debounces node-state saving and removes node-level asset publishing', () => {
+    expect(pageSource).toContain('putWorkflowNodeState(');
+    expect(pageSource).toContain('setTimeout(() => void flushProduct(productId), 1000)');
+    expect(pageSource).toContain('defineExpose({ flushPendingEdits })');
+    expect(pageSource).not.toContain('publishEffectImportDraft');
+    expect(pageSource).not.toContain('asset-publish-bar');
+    expect(pageSource).not.toContain('保存到项目资产库');
   });
 });

@@ -16,17 +16,19 @@
 
 ## 资产查询与维护
 
-| 方法    | 路径                                           | 请求                                                                                              | 响应数据           |
-| ------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------ |
-| `GET`   | `/projects/:projectId/assets`                  | `keyword?`、`directory?`、`type?`、`tag?`、`workflow?`、`space?`、`status?`、`page?`、`pageSize?` | `AssetListData`    |
-| `GET`   | `/projects/:projectId/assets/:assetId`         | -                                                                                                 | `Asset`            |
-| `PATCH` | `/projects/:projectId/assets/:assetId`         | `UpdateAssetRequest`                                                                              | `Asset`            |
-| `POST`  | `/projects/:projectId/assets/:assetId/archive` | -                                                                                                 | `ArchiveAssetData` |
-| `GET`   | `/projects/:projectId/assets/:assetId/content` | `download?`，可带 Range                                                                           | 原文件流           |
+| 方法    | 路径                                           | 请求                                                                                                            | 响应数据           |
+| ------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------ |
+| `GET`   | `/projects/:projectId/assets`                  | `keyword?`、`directory?`、`type?`、`tag?`、`workflow?`、`space?`、`status?`、`productId?`、`page?`、`pageSize?` | `AssetListData`    |
+| `GET`   | `/projects/:projectId/assets/:assetId`         | -                                                                                                               | `Asset`            |
+| `PATCH` | `/projects/:projectId/assets/:assetId`         | `UpdateAssetRequest`                                                                                            | `Asset`            |
+| `POST`  | `/projects/:projectId/assets/:assetId/archive` | -                                                                                                               | `ArchiveAssetData` |
+| `GET`   | `/projects/:projectId/assets/:assetId/content` | `download?`，可带 Range                                                                                         | 原文件流           |
 
 列表按 `updatedAt DESC, id DESC` 稳定排序。传入分页字段时返回分页元数据；
 `pageSize` 最大 96。facets 基于当前项目、当前工作流和当前二级空间的全部未归档
-资产计算，不受关键词、目录、类型、标签和状态筛选影响。
+资产计算，不受关键词、目录、类型、标签、状态和产品筛选影响。效果类资料包资产的
+`facets.products` 以产品名称作为标签、以稳定 `productId` 作为筛选值；同名产品不会
+合并为同一个筛选条件，且所有查询仍先受 `projectId + workflow + space` 约束。
 
 ## 上传、版本与跨项目快照
 

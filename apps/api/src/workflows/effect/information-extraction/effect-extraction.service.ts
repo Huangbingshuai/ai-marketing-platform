@@ -14,7 +14,7 @@ import { HttpStatus, Inject, Injectable, Optional } from '@nestjs/common';
 
 import { ApiHttpException } from '../../../common/api-http-exception';
 import { ProjectService } from '../../../platform/project/project.service';
-import { AssetService } from '../../../platform/asset/asset.service';
+import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import { JOB_PROGRESS_STORE } from '../../../platform/job/job.constants';
 import type { JobProgressStore } from '../../../platform/job/job.ports';
 import { STORAGE_PORT, type StoragePort } from '../../../platform/file/storage.port';
@@ -57,7 +57,7 @@ const presentRun = (
     projectId: string;
     draftId: string;
     productId: string;
-    status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+    status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED';
     progress: number;
     currentNode: string | null;
     warnings: unknown;
@@ -88,10 +88,12 @@ export class EffectExtractionService {
     @Inject(ProjectService) private readonly projects: ProjectService,
     @Inject(JOB_PROGRESS_STORE) private readonly progressStore: JobProgressStore,
     @Inject(STORAGE_PORT) private readonly storage: StoragePort,
-    @Optional() @Inject(AssetService) private readonly assets?: AssetService,
+    @Optional()
+    @Inject(WorkflowWorkingService)
+    private readonly workingService?: WorkflowWorkingService,
   ) {}
 
-  private async syncCurrentResult(record: {
+  private async syncWorkingResult(record: {
     id: string;
     projectId: string;
     draftId: string;
@@ -101,27 +103,50 @@ export class EffectExtractionService {
     draftResult: unknown;
   }): Promise<void> {
     const product = await this.repository.product(record.projectId, record.productId);
-    if (!this.assets || !product?.name.trim()) return;
+    const workflow = await this.repository.workflowRunForDraft(record.projectId, record.draftId);
+    if (!product?.name.trim() || !workflow || !this.workingService) return;
     const productName = product.name.trim();
-    await this.assets.storeWorkflowArtifact(
+    await this.workingService.upsertArtifact(
       record.projectId,
-      'EFFECT',
-      'EFFECT',
+      workflow.workspace.workflowRunId,
+      'INFORMATION_EXTRACTION',
+      `product:${record.productId}:result`,
       {
-        idempotencyKey: `effect-extraction:${record.draftId}:product:${record.productId}:result`,
+        kind: 'STRUCTURED',
         name: `${productName} AI 信息提炼`.slice(0, 120),
         directory: 'INSIGHTS',
         type: 'INSIGHT_RESULT',
         tags: [productName, product.category, product.sku].filter(Boolean).slice(0, 20),
-        notes: '效果类当前项目 AI 信息提炼结果',
         sourceArtifactId: record.id,
         sourceRunId: record.runId,
-        sourceNode: 'INFORMATION_EXTRACTION',
-        contentKind: 'EFFECT_EXTRACTION_RESULT',
-        businessData: { productId: product.id, productName },
-        content: record.draftResult,
+        metadata: { productId: product.id, productName, contentKind: 'EFFECT_EXTRACTION_RESULT' },
+        payload: record.draftResult,
       },
-      `current:${record.draftId}:extraction:${record.id}:r${record.revision}`,
+    );
+    const existingState = await this.workingService.getNodeStateOrNull(
+      record.projectId,
+      workflow.workspace.workflowRunId,
+      'INFORMATION_EXTRACTION',
+    );
+    const existingPayload =
+      existingState?.state && typeof existingState.state === 'object'
+        ? (existingState.state as { products?: Record<string, unknown> })
+        : {};
+    await this.workingService.replaceNodeStateBaseline(
+      record.projectId,
+      workflow.workspace.workflowRunId,
+      'INFORMATION_EXTRACTION',
+      {
+        ...existingPayload,
+        products: {
+          ...(existingPayload.products ?? {}),
+          [record.productId]: {
+            resultId: record.id,
+            result: record.draftResult,
+            sourceResultRevision: record.revision,
+          },
+        },
+      },
     );
   }
 
@@ -170,19 +195,6 @@ export class EffectExtractionService {
         })),
     };
     return extractionSourceFingerprint(snapshot);
-  }
-
-  async cancelProjectRuns(projectId: string): Promise<{ cancelled: number }> {
-    const cancelled = await this.repository.cancelProjectRuns(projectId);
-    await Promise.all(
-      cancelled.runIds.map((runId) =>
-        this.progressStore.delete(projectId, runId).catch(() => undefined),
-      ),
-    );
-    await Promise.all(
-      cancelled.storageKeys.map((key) => this.storage.delete(key).catch(() => undefined)),
-    );
-    return { cancelled: cancelled.runIds.length };
   }
 
   async workspace(projectId: string, draftId: string): Promise<GetEffectExtractionWorkspaceData> {
@@ -287,7 +299,6 @@ export class EffectExtractionService {
       result,
     );
     if (!updated) throw conflict('提炼结果已被其他操作更新，请刷新后重试');
-    await this.syncCurrentResult(updated);
     return {
       projectId,
       productId: updated.productId,
@@ -399,11 +410,24 @@ export class EffectExtractionService {
         replayed: true,
       };
     }
+    const project = await this.projects.get(projectId);
+    const snapshot = run.inputSnapshot as EffectExtractionInputSnapshot;
     let stored: { key: string; sizeBytes: number } | null = null;
     try {
       stored = await this.storage.put({
+        projectId,
         stream: createReadStream(file.path),
         sizeBytes: file.size,
+        contentType: file.mimetype || 'text/markdown',
+        keyContext: {
+          projectName: project.name,
+          workflow: 'EFFECT',
+          lifecycle: 'staging',
+          productId: run.productId,
+          productName: snapshot.product.name,
+          category: 'AI提炼中间产物',
+          originalFileName: fileName,
+        },
       });
       try {
         const artifact = await this.repository.createArtifact(projectId, runId, attemptToken, {
@@ -448,7 +472,7 @@ export class EffectExtractionService {
     const result = await this.repository.complete(projectId, runId, attemptToken, input);
     if (result.kind === 'NOT_FOUND') throw notFound('提炼任务不存在');
     if (result.kind === 'LEASE_CONFLICT') throw conflict('Worker 租约已失效');
-    await this.syncCurrentResult(result.result);
+    await this.syncWorkingResult(result.result);
     try {
       await this.progressStore.delete(projectId, runId);
     } catch {

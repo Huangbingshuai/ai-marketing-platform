@@ -15,12 +15,16 @@ import {
 } from '@lucide/vue';
 import { computed, ref } from 'vue';
 
+import { isCurrentOnlyEffectImportAsset, isImageFileAsset, videoConfigFields } from '../asset-v4';
+
 const props = withDefaults(defineProps<{ asset: Asset; compact?: boolean }>(), { compact: false });
 const mediaFailed = ref(false);
 const kind = computed(() => props.asset.type);
-const views = computed(() =>
-  props.asset.views?.length ? props.asset.views.slice(0, 3) : ['内容预览', '文件规格', '版本记录'],
-);
+const isCurrentOnly = computed(() => isCurrentOnlyEffectImportAsset(props.asset));
+const views = computed(() => {
+  if (props.asset.views?.length) return props.asset.views.slice(0, 3);
+  return isCurrentOnly.value ? ['内容预览', '文件规格'] : ['内容预览', '文件规格', '版本记录'];
+});
 const contentSummary = computed(() => {
   const content = props.asset.content ?? props.asset.businessData;
   if (typeof content === 'string') return content;
@@ -31,6 +35,11 @@ const contentSummary = computed(() => {
   }
   return props.asset.notes || props.asset.originalFileName || props.asset.name;
 });
+const isImageFile = computed(() => isImageFileAsset(props.asset));
+const isVideoConfig = computed(() => kind.value === 'VIDEO_CONFIG');
+const previewConfigFields = computed(() =>
+  videoConfigFields(props.asset).slice(0, props.compact ? 4 : 6),
+);
 const isDocument = computed(() => ['SOURCE_MATERIAL', 'ARCHIVE_DELIVERABLE'].includes(kind.value));
 const isText = computed(() => ['PROMPT', 'SCRIPT_COPY'].includes(kind.value));
 const isStoryboard = computed(() => kind.value === 'STORYBOARD_SCRIPT');
@@ -62,7 +71,31 @@ const isVisual = computed(() =>
 
 <template>
   <div class="v4-preview" :class="{ detail: !compact }">
-    <div v-if="isDocument" class="preview-document">
+    <div v-if="isImageFile" class="preview-source-image">
+      <img
+        v-if="!mediaFailed"
+        :src="asset.contentUrl"
+        :alt="`${asset.name} 缩略图`"
+        loading="lazy"
+        decoding="async"
+        @error="mediaFailed = true"
+      />
+      <span v-else><Image :size="compact ? 28 : 42" /><small>图片暂不可预览</small></span>
+    </div>
+    <div v-else-if="isVideoConfig" class="preview-config">
+      <header>
+        <span><Settings2 :size="compact ? 15 : 20" /><b>视频配置</b></span
+        ><em v-if="!isCurrentOnly">v{{ asset.currentVersion ?? 1 }}</em>
+      </header>
+      <div v-if="previewConfigFields.length" class="config-grid">
+        <span v-for="field in previewConfigFields" :key="field.key"
+          ><small>{{ field.label }}</small
+          ><strong>{{ field.value }}</strong></span
+        >
+      </div>
+      <div v-else class="config-empty"><Settings2 :size="compact ? 26 : 38" />暂无配置内容</div>
+    </div>
+    <div v-else-if="isDocument" class="preview-document">
       <div class="document-cover">
         <FileText :size="compact ? 17 : 24" /><i>DOC</i><strong>{{ asset.name }}</strong
         ><small>{{ asset.originalFileName || '项目资料' }}</small>
@@ -223,6 +256,96 @@ const isVisual = computed(() =>
   color: #718097;
   font-size: 7px;
   font-style: normal;
+}
+.preview-source-image {
+  width: 100%;
+  height: 100%;
+  background: #e9eef6;
+}
+.preview-source-image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.preview-source-image > span {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+  color: #718097;
+}
+.preview-source-image small {
+  font-size: 9px;
+}
+.preview-config {
+  height: 100%;
+  padding: 12px 14px;
+  background: linear-gradient(145deg, #f7faff, #e9f1ff);
+}
+.preview-config header span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #2766ed;
+}
+.config-grid {
+  display: grid;
+  margin-top: 9px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.config-grid > span {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid #d9e5f7;
+  border-radius: 7px;
+  background: rgb(255 255 255 / 82%);
+}
+.config-grid small,
+.config-grid strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.config-grid small {
+  color: #7d8ba0;
+  font-size: 7px;
+}
+.config-grid strong {
+  margin-top: 3px;
+  color: #354968;
+  font-size: 9px;
+}
+.config-empty {
+  height: calc(100% - 24px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 7px;
+  color: #7486a1;
+  font-size: 9px;
+}
+.detail .preview-config {
+  padding: 18px 20px;
+}
+.detail .config-grid {
+  margin-top: 13px;
+  gap: 9px;
+}
+.detail .config-grid > span {
+  padding: 11px 12px;
+}
+.detail .config-grid small {
+  font-size: 9px;
+}
+.detail .config-grid strong {
+  margin-top: 5px;
+  font-size: 12px;
 }
 .detail header b {
   font-size: 13px;

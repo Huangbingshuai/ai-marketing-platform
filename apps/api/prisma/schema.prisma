@@ -135,18 +135,21 @@ enum EffectManifestFileMatchStatus {
   AMBIGUOUS
 }
 
-enum EffectImportPublishOperationStatus {
-  RUNNING
-  COMPLETED
-  FAILED
-}
-
 enum EffectExtractionRunStatus {
   QUEUED
   RUNNING
   COMPLETED
   FAILED
-  CANCELLED
+}
+
+enum WorkflowRunStatus {
+  ACTIVE
+  COMPLETED
+}
+
+enum WorkingArtifactKind {
+  FILE
+  STRUCTURED
 }
 
 enum EffectExtractionBranch {
@@ -193,6 +196,9 @@ model Project {
   effectExtractionResults   EffectExtractionResult[]
   jobOutboxEntries          JobOutbox[]
   effectExtractionFileHolds EffectExtractionFileHold[]
+  workflowRuns              WorkflowRun[]
+  workflowNodeStates        WorkflowNodeState[]
+  workingArtifacts          WorkingArtifact[]
 
   @@index([updatedAt])
   @@map("projects")
@@ -245,6 +251,77 @@ model Asset {
   @@map("assets")
 }
 
+model WorkflowRun {
+  id               String             @id @default(uuid()) @db.Uuid
+  projectId        String             @db.Uuid
+  workflow         AssetWorkflow
+  workflowSpace    AssetWorkflowSpace
+  status           WorkflowRunStatus  @default(ACTIVE)
+  activeKey        String?            @default("ACTIVE") @db.VarChar(32)
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  completedAt      DateTime?
+  project          Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  nodeStates       WorkflowNodeState[]
+  workingArtifacts WorkingArtifact[]
+  effectWorkspace  EffectImportWorkspace?
+
+  @@unique([projectId, workflow, workflowSpace, activeKey])
+  @@unique([projectId, id])
+  @@index([projectId, workflow, workflowSpace, status])
+  @@map("workflow_runs")
+}
+
+model WorkflowNodeState {
+  id            String      @id @default(uuid()) @db.Uuid
+  projectId     String      @db.Uuid
+  workflowRunId String      @db.Uuid
+  nodeId        String      @db.VarChar(160)
+  schemaVersion Int         @default(1)
+  revision      Int         @default(1)
+  contentHash   String      @db.Char(64)
+  state         Json
+  savedAt       DateTime    @default(now())
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  project       Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workflowRun   WorkflowRun @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
+
+  @@unique([projectId, workflowRunId, nodeId])
+  @@index([projectId, updatedAt])
+  @@map("workflow_node_states")
+}
+
+model WorkingArtifact {
+  id               String              @id @default(uuid()) @db.Uuid
+  projectId        String              @db.Uuid
+  workflowRunId    String              @db.Uuid
+  nodeId           String              @db.VarChar(160)
+  artifactKey      String              @db.VarChar(500)
+  kind             WorkingArtifactKind
+  name             String              @db.VarChar(120)
+  directory        AssetDirectory
+  type             AssetType
+  tags             String[]            @default([])
+  payload          Json?
+  metadata         Json?
+  originalFileName String?              @db.VarChar(255)
+  mimeType         String?              @db.VarChar(120)
+  sizeBytes        Int?
+  storageKey       String?              @db.VarChar(500)
+  sourceRunId      String?              @db.VarChar(255)
+  sourceArtifactId String?              @db.VarChar(255)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  project          Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workflowRun      WorkflowRun           @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
+
+  @@unique([projectId, workflowRunId, nodeId, artifactKey])
+  @@unique([projectId, id])
+  @@index([projectId, workflowRunId, nodeId, updatedAt])
+  @@map("working_artifacts")
+}
+
 model AssetVersion {
   id               String      @id @default(uuid()) @db.Uuid
   projectId        String      @db.Uuid
@@ -286,14 +363,17 @@ model AssetOperationReceipt {
 model EffectImportWorkspace {
   id          String              @id @default(uuid()) @db.Uuid
   projectId   String              @unique @db.Uuid
+  workflowRunId String             @unique @db.Uuid
   currentMode EffectImportMode    @default(SINGLE)
   revision    Int                 @default(1)
   createdAt   DateTime            @default(now())
   updatedAt   DateTime            @updatedAt
   project     Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workflowRun WorkflowRun         @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
   drafts      EffectImportDraft[]
 
   @@unique([projectId, id])
+  @@unique([projectId, workflowRunId])
   @@map("effect_import_workspaces")
 }
 
@@ -309,13 +389,11 @@ model EffectImportDraft {
   validationIssues  Json
   validatedAt       DateTime?
   completedAt       DateTime?
-  lastPublish       Json?
   createdAt         DateTime                       @default(now())
   updatedAt         DateTime                       @updatedAt
   workspace         EffectImportWorkspace          @relation(fields: [projectId, workspaceId], references: [projectId, id], onDelete: Cascade)
   products          EffectImportProduct[]
   manifestImports   EffectManifestImport[]
-  publishOperations EffectImportPublishOperation[]
   extractionRuns    EffectExtractionRun[]
   extractionResults EffectExtractionResult[]
 
@@ -403,41 +481,6 @@ model EffectManifestImport {
   @@map("effect_manifest_imports")
 }
 
-model EffectImportPublishOperation {
-  id             String                             @id @default(uuid()) @db.Uuid
-  projectId      String                             @db.Uuid
-  draftId        String                             @db.Uuid
-  revision       Int
-  idempotencyKey String                             @db.VarChar(500)
-  snapshot       Json
-  status         EffectImportPublishOperationStatus @default(RUNNING)
-  attemptToken   String                             @db.Uuid
-  result         Json?
-  errorMessage   String?                            @db.VarChar(500)
-  completedAt    DateTime?
-  createdAt      DateTime                           @default(now())
-  updatedAt      DateTime                           @updatedAt
-  draft          EffectImportDraft                  @relation(fields: [projectId, draftId], references: [projectId, id], onDelete: Cascade)
-  fileHolds      EffectImportPublishFileHold[]
-
-  @@unique([projectId, idempotencyKey])
-  @@unique([projectId, id])
-  @@index([projectId, draftId, status, updatedAt], map: "effect_import_publish_operations_projectId_draftId_status_updat")
-  @@map("effect_import_publish_operations")
-}
-
-model EffectImportPublishFileHold {
-  id          String                       @id @default(uuid()) @db.Uuid
-  projectId   String                       @db.Uuid
-  operationId String                       @db.Uuid
-  storageKey  String                       @db.VarChar(500)
-  createdAt   DateTime                     @default(now())
-  operation   EffectImportPublishOperation @relation(fields: [projectId, operationId], references: [projectId, id], onDelete: Cascade)
-
-  @@unique([projectId, operationId, storageKey], map: "effect_import_publish_file_holds_projectId_operationId_storageK")
-  @@index([projectId, storageKey])
-  @@map("effect_import_publish_file_holds")
-}
 
 model StorageCleanupTask {
   id            String   @id @default(uuid()) @db.Uuid

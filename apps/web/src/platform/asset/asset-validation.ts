@@ -50,10 +50,18 @@ export const assetMatchesFilters = (asset: Asset, filters: AssetListQuery): bool
       value.toLocaleLowerCase('zh-CN').includes(keyword),
     ) ||
     asset.tags.includes(trimmedKeyword ?? '');
+  const businessData =
+    asset.businessData &&
+    typeof asset.businessData === 'object' &&
+    !Array.isArray(asset.businessData)
+      ? asset.businessData
+      : null;
+  const assetProductId = businessData ? Reflect.get(businessData, 'productId') : undefined;
   return (
     (!filters.directory || asset.directory === filters.directory) &&
     (!filters.type || asset.type === filters.type) &&
     (!filters.tag || asset.tags.includes(filters.tag)) &&
+    (!filters.productId || assetProductId === filters.productId) &&
     keywordMatches
   );
 };

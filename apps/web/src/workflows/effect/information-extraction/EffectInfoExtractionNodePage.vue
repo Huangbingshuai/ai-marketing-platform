@@ -14,12 +14,15 @@ import {
   LoaderCircle,
   Plus,
   RefreshCw,
-  Save,
   Trash2,
 } from '@lucide/vue';
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import { ApiClientError, isAbortError } from '../../../api/http-client';
+import {
+  getWorkflowNodeState,
+  putWorkflowNodeState,
+} from '../../../platform/workflow/api/workflow-working.api';
 
 import {
   cloneExtractionProductState,
@@ -35,12 +38,12 @@ import {
   beginEffectExtraction,
   loadEffectExtractionWorkspace,
   pollEffectExtractionRun,
-  saveEffectExtractionResult,
   type EffectExtractionContext,
 } from './services/effect-info-extraction.service';
 
 const props = defineProps<{
   projectId: string;
+  workflowRunId: string;
   draftId: string;
   mode: EffectImportMode;
   products: EffectImportProduct[];
@@ -63,6 +66,9 @@ let loadGeneration = 0;
 let disposed = false;
 let workspaceController: AbortController | null = null;
 let saveController: AbortController | null = null;
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+const nodeStateRevision = ref(0);
+let lastSavedNodeState = '';
 const activeRunControllers = new Map<string, { controller: AbortController; runId: string }>();
 
 const context = computed<EffectExtractionContext>(() => ({
@@ -126,10 +132,10 @@ const baseFieldsReadonly = computed(() => !currentState.value?.result || current
 const saveStateLabel = computed(() => {
   const state = currentState.value?.saveState ?? 'CLEAN';
   return {
-    CLEAN: '尚未保存',
+    CLEAN: '工作副本已更新',
     DIRTY: '有未保存修改',
     SAVING: '正在保存…',
-    SAVED: '草稿已保存',
+    SAVED: '已自动保存',
     SAVE_FAILED: '保存失败',
   }[state];
 });
@@ -216,6 +222,89 @@ const applyWorkspace = (
   productStates.value = next;
 };
 
+type ExtractionNodeDraft = {
+  products?: Record<
+    string,
+    { resultId: string | null; result: EffectExtractionResult; sourceResultRevision: number | null }
+  >;
+};
+
+const nodeStatePayload = (): ExtractionNodeDraft => ({
+  products: Object.fromEntries(
+    Object.values(productStates.value)
+      .filter((state) => state.result)
+      .map((state) => [
+        state.productId,
+        {
+          resultId: state.resultId,
+          result: cloneExtractionResult(state.result!),
+          sourceResultRevision: state.resultRevision,
+        },
+      ]),
+  ),
+});
+
+const applyNodeState = (value: unknown): void => {
+  if (!value || typeof value !== 'object') return;
+  const products = (value as ExtractionNodeDraft).products;
+  if (!products) return;
+  for (const [productId, saved] of Object.entries(products)) {
+    const current = productStates.value[productId];
+    if (!current || !saved?.result || current.resultId !== saved.resultId) continue;
+    patchProductState(productId, {
+      result: cloneExtractionResult(saved.result),
+      saveState: 'SAVED',
+      saveErrorMessage: null,
+    });
+  }
+};
+
+const persistNodeState = async (keepalive = false): Promise<boolean> => {
+  if (!props.projectId || !props.workflowRunId) return true;
+  const state = nodeStatePayload();
+  const serialized = JSON.stringify(state);
+  if (serialized === lastSavedNodeState) return true;
+  const productId = currentProductId.value;
+  if (productId) patchProductState(productId, { saveState: 'SAVING', saveErrorMessage: null });
+  saveController?.abort();
+  const controller = new AbortController();
+  saveController = controller;
+  try {
+    const response = await putWorkflowNodeState(
+      props.projectId,
+      props.workflowRunId,
+      'INFORMATION_EXTRACTION',
+      { expectedRevision: nodeStateRevision.value, state },
+      { keepalive, ...(!keepalive ? { signal: controller.signal } : {}) },
+    );
+    if (disposed || controller.signal.aborted) return false;
+    nodeStateRevision.value = response.data.nodeState.revision;
+    lastSavedNodeState = serialized;
+    if (productId && productStates.value[productId]?.saveState === 'SAVING')
+      patchProductState(productId, {
+        saveState: 'SAVED',
+        saveErrorMessage: null,
+        updatedAt: response.data.nodeState.savedAt,
+      });
+    return true;
+  } catch (error) {
+    if (isAbortError(error) || disposed) return false;
+    if (productId)
+      patchProductState(productId, {
+        saveState: 'SAVE_FAILED',
+        saveErrorMessage:
+          error instanceof ApiClientError && error.status === 409
+            ? '该节点草稿已在其他窗口更新。当前编辑仍保留，请加载最新结果后再编辑。'
+            : error instanceof Error
+              ? error.message
+              : '提炼草稿自动保存失败',
+      });
+    return false;
+  } finally {
+    if (saveController === controller) saveController = null;
+  }
+};
+
 const patchFromRun = (
   productId: string,
   run: Awaited<ReturnType<typeof beginEffectExtraction>>,
@@ -263,6 +352,15 @@ const monitorProductRun = async (
     });
     if (terminal.status === 'COMPLETED') {
       await refreshProductFromWorkspace(productId, controller.signal);
+      const saved = await getWorkflowNodeState(
+        props.projectId,
+        props.workflowRunId,
+        'INFORMATION_EXTRACTION',
+        controller.signal,
+      );
+      nodeStateRevision.value = saved.data.revision;
+      applyNodeState(saved.data.state);
+      lastSavedNodeState = JSON.stringify(saved.data.state);
     }
   } catch (error) {
     if (!isAbortError(error) && !disposed) {
@@ -296,6 +394,21 @@ const loadWorkspace = async (): Promise<void> => {
     const workspace = await loadEffectExtractionWorkspace(context.value, controller.signal);
     if (disposed || controller.signal.aborted || generation !== loadGeneration) return;
     applyWorkspace(workspace, true);
+    try {
+      const saved = await getWorkflowNodeState(
+        props.projectId,
+        props.workflowRunId,
+        'INFORMATION_EXTRACTION',
+        controller.signal,
+      );
+      nodeStateRevision.value = saved.data.revision;
+      applyNodeState(saved.data.state);
+      lastSavedNodeState = JSON.stringify(saved.data.state);
+    } catch (error) {
+      if (!(error instanceof ApiClientError && error.status === 404)) throw error;
+      nodeStateRevision.value = 0;
+      lastSavedNodeState = JSON.stringify(nodeStatePayload());
+    }
     if (!props.products.some((product) => product.id === currentProductId.value)) {
       currentProductId.value = props.products[0]?.id ?? '';
     }
@@ -313,6 +426,7 @@ const runCurrentExtraction = async (): Promise<void> => {
   const product = currentProduct.value;
   const state = currentState.value;
   if (!product || !state || isExtractionRunning(state)) return;
+  if (!(await flushPendingEdits())) return;
   stopProductPoll(product.id);
   const controller = new AbortController();
   activeRunControllers.set(product.id, { controller, runId: '' });
@@ -363,6 +477,8 @@ const markDirty = (): void => {
   if (!currentState.value.saveErrorMessage?.includes('其他窗口更新')) {
     currentState.value.saveErrorMessage = null;
   }
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => void saveDraft(), 1000);
 };
 
 const productBaseValue = (field: ProductBaseField): string => {
@@ -406,75 +522,61 @@ const removeDisabledElement = (index: number): void => {
   markDirty();
 };
 
-const saveDraft = async (): Promise<void> => {
+const saveDraft = async (): Promise<boolean> => {
+  clearTimeout(saveTimer);
+  saveTimer = undefined;
   const state = currentState.value;
-  if (
-    !state?.result ||
-    !state.resultId ||
-    state.resultRevision === null ||
-    state.saveState === 'SAVING' ||
-    saveConflict.value
-  )
-    return;
-  saveController?.abort();
-  const controller = new AbortController();
-  saveController = controller;
-  const productId = state.productId;
-  const resultId = state.resultId;
-  const revision = state.resultRevision;
-  const snapshot = cloneExtractionResult(state.result);
-  patchProductState(productId, { saveState: 'SAVING', saveErrorMessage: null });
-  try {
-    const saved = await saveEffectExtractionResult(
-      props.projectId,
-      resultId,
-      revision,
-      snapshot,
-      controller.signal,
-    );
-    if (disposed || controller.signal.aborted) return;
-    const latest = productStates.value[productId];
-    if (!latest || latest.resultId !== resultId || !latest.result) return;
-    const editedWhileSaving = JSON.stringify(latest.result) !== JSON.stringify(snapshot);
-    patchProductState(productId, {
-      resultRevision: saved.revision,
-      result: editedWhileSaving ? latest.result : cloneExtractionResult(saved.result),
-      saveState: editedWhileSaving ? 'DIRTY' : 'SAVED',
-      saveErrorMessage: null,
-      updatedAt: saved.savedAt,
-    });
-  } catch (error) {
-    if (isAbortError(error) || disposed) return;
-    patchProductState(productId, {
-      saveState: 'SAVE_FAILED',
-      saveErrorMessage:
-        error instanceof ApiClientError && error.status === 409
-          ? '该提炼结果已在其他窗口更新。当前编辑仍保留，请主动加载最新结果后再编辑。'
-          : error instanceof Error
-            ? error.message
-            : '提炼草稿保存失败',
-    });
-  } finally {
-    if (saveController === controller) saveController = null;
-  }
+  if (!state?.result || state.saveState === 'SAVING') return state?.saveState !== 'SAVE_FAILED';
+  if (state.saveState !== 'DIRTY' && state.saveState !== 'SAVE_FAILED') return true;
+  if (saveConflict.value) return false;
+  return persistNodeState();
 };
+
+async function flushPendingEdits(): Promise<boolean> {
+  clearTimeout(saveTimer);
+  saveTimer = undefined;
+  const dirty = Object.values(productStates.value).some(
+    (state) => state.saveState === 'DIRTY' || state.saveState === 'SAVE_FAILED',
+  );
+  return dirty ? persistNodeState() : true;
+}
 
 const loadLatestResult = (): void => {
   void loadWorkspace();
 };
 
-const selectProduct = (event: Event): void => {
-  currentProductId.value = (event.target as HTMLSelectElement).value;
+const selectProduct = async (event: Event): Promise<void> => {
+  const nextProductId = (event.target as HTMLSelectElement).value;
+  if (!(await flushPendingEdits())) return;
+  currentProductId.value = nextProductId;
   newDisabledElement.value = '';
 };
 
 watch(
-  [() => props.projectId, () => props.draftId, () => props.mode, sourceSignature],
+  [
+    () => props.projectId,
+    () => props.workflowRunId,
+    () => props.draftId,
+    () => props.mode,
+    sourceSignature,
+  ],
   () => void loadWorkspace(),
   { immediate: true },
 );
 
+const warnBeforeUnload = (event: BeforeUnloadEvent): void => {
+  if (!Object.values(productStates.value).some((state) => state.saveState === 'DIRTY')) return;
+  event.preventDefault();
+  void persistNodeState(true);
+};
+
+onMounted(() => window.addEventListener('beforeunload', warnBeforeUnload));
+
+defineExpose({ flushPendingEdits });
+
 onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', warnBeforeUnload);
+  clearTimeout(saveTimer);
   disposed = true;
   loadGeneration += 1;
   stopAllRequests();
@@ -482,7 +584,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="effect-extraction-node" aria-labelledby="effect-extraction-title">
+  <section
+    class="effect-extraction-node"
+    aria-labelledby="effect-extraction-title"
+    @focusout="saveDraft"
+  >
     <section v-if="loading" class="extraction-page-state" role="status">
       <LoaderCircle class="spin" :size="31" />
       <h2>正在准备 AI 信息提炼</h2>
@@ -807,21 +913,9 @@ onBeforeUnmount(() => {
         <span class="draft-save-bar__icon"><FileText :size="18" /></span>
         <div>
           <strong>AI 营销信息提炼草稿</strong>
-          <small>{{ currentProduct.name }} · {{ projectId }} · 当前产品独立保存</small>
+          <small>{{ currentProduct.name }} · 已自动保存到节点草稿 · 尚未归档</small>
         </div>
         <em :class="currentState.saveState.toLowerCase()">{{ saveStateLabel }}</em>
-        <button
-          type="button"
-          :disabled="
-            currentState.saveState === 'SAVING' ||
-            currentState.saveState === 'SAVED' ||
-            saveConflict
-          "
-          @click="saveDraft"
-        >
-          <LoaderCircle v-if="currentState.saveState === 'SAVING'" class="spin" :size="14" />
-          <Save v-else :size="14" />保存草稿
-        </button>
       </section>
 
       <footer class="extraction-footer">

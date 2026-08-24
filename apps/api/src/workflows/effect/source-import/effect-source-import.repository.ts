@@ -1,16 +1,21 @@
+import { randomUUID } from 'node:crypto';
+
 import type { EffectImportMode, EffectVideoConfig } from '@ai-marketing/contracts';
 import { Inject, Injectable } from '@nestjs/common';
-import {
+import type {
   Prisma,
-  type EffectImportDraft,
-  type EffectImportMaterial,
-  type EffectImportProduct,
-  type EffectImportPublishOperation,
-  type EffectManifestImport,
-  type EffectManifestStagedFile,
+  EffectImportDraft,
+  EffectImportMaterial,
+  EffectImportProduct,
+  EffectManifestImport,
+  EffectManifestStagedFile,
 } from '../../../generated/prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
+import {
+  WorkflowWorkingRepository,
+  type WorkingArtifactUpsertInput,
+} from '../../../platform/workflow/workflow-working.repository';
 
 const draftInclude = {
   products: {
@@ -25,52 +30,41 @@ export type EffectWorkspaceRecord = Prisma.EffectImportWorkspaceGetPayload<{
 }>;
 export type EffectProductRecord = EffectImportProduct & { materials: EffectImportMaterial[] };
 export type ManifestRecord = EffectManifestImport & { stagedFiles: EffectManifestStagedFile[] };
-export type PublishOperationClaim = {
-  operation: EffectImportPublishOperation;
-  owner: boolean;
-  requestMatches: boolean;
+export type WorkingMaterialProjection = {
+  workflowRunId: string;
+  nodeId: string;
+  artifactKey: string;
+  input: WorkingArtifactUpsertInput;
 };
-export type PublishDraftSnapshot = {
-  id: string;
-  projectId: string;
-  mode: EffectImportMode;
-  revision: number;
-  globalConfig: unknown;
-  products: Array<{
-    id: string;
-    name: string;
-    category: string;
-    sku: string;
-    commerceUrl: string | null;
-    configOverride: unknown;
-    materials: Array<{
-      id: string;
-      type: EffectImportMaterial['type'];
-      status: EffectImportMaterial['status'];
-      originalFileName: string | null;
-      mimeType: string | null;
-      sizeBytes: number | null;
-      storageKey: string | null;
-    }>;
-  }>;
-};
-
 const json = (value: unknown): Prisma.InputJsonValue => value as Prisma.InputJsonValue;
 
 class ManifestCommitRevisionConflict extends Error {}
-class PublishCompletionConflict extends Error {}
 
 @Injectable()
 export class EffectSourceImportRepository {
-  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(WorkflowWorkingRepository)
+    private readonly workingRepository: WorkflowWorkingRepository,
+  ) {}
 
   async initialize(projectId: string, config: EffectVideoConfig): Promise<EffectWorkspaceRecord> {
     return this.prisma.$transaction(async (transaction) => {
-      const workspace = await transaction.effectImportWorkspace.upsert({
-        where: { projectId },
-        create: { projectId },
-        update: {},
-      });
+      let workspace = await transaction.effectImportWorkspace.findUnique({ where: { projectId } });
+      if (!workspace) {
+        const workflowRunId = randomUUID();
+        await transaction.workflowRun.create({
+          data: {
+            id: workflowRunId,
+            projectId,
+            workflow: 'EFFECT',
+            workflowSpace: 'EFFECT',
+          },
+        });
+        workspace = await transaction.effectImportWorkspace.create({
+          data: { projectId, workflowRunId },
+        });
+      }
       await transaction.effectImportDraft.createMany({
         data: (['SINGLE', 'BATCH'] as const).map((mode) => ({
           projectId,
@@ -339,6 +333,51 @@ export class EffectSourceImportRepository {
     });
   }
 
+  async createMaterialWithArtifact(
+    projectId: string,
+    draftId: string,
+    productId: string,
+    expectedRevision: number,
+    data: Prisma.EffectImportMaterialUncheckedCreateWithoutProductInput,
+    artifact: WorkingMaterialProjection,
+  ): Promise<{
+    material: EffectImportMaterial;
+    previousArtifactStorageKey: string | null;
+  } | null> {
+    return this.prisma.$transaction(async (transaction) => {
+      if (
+        (await transaction.effectImportProduct.count({
+          where: { projectId, draftId, id: productId },
+        })) === 0
+      )
+        return null;
+      const bumped = await transaction.effectImportDraft.updateMany({
+        where: { projectId, id: draftId, revision: expectedRevision },
+        data: {
+          revision: { increment: 1 },
+          validatedRevision: null,
+          validationIssues: json([]),
+          validatedAt: null,
+          status: 'DRAFT',
+          completedAt: null,
+        },
+      });
+      if (bumped.count === 0) return null;
+      const material = await transaction.effectImportMaterial.create({
+        data: { ...data, projectId, productId },
+      });
+      const working = await this.workingRepository.upsertArtifactInTransaction(
+        transaction,
+        projectId,
+        artifact.workflowRunId,
+        artifact.nodeId,
+        artifact.artifactKey,
+        artifact.input,
+      );
+      return { material, previousArtifactStorageKey: working.previousStorageKey };
+    });
+  }
+
   async replaceMaterial(
     projectId: string,
     draftId: string,
@@ -370,6 +409,53 @@ export class EffectSourceImportRepository {
         where: { projectId_id: { projectId, id: materialId } },
         data,
       });
+    });
+  }
+
+  async replaceMaterialWithArtifact(
+    projectId: string,
+    draftId: string,
+    productId: string,
+    materialId: string,
+    expectedRevision: number,
+    data: Prisma.EffectImportMaterialUncheckedUpdateInput,
+    artifact: WorkingMaterialProjection,
+  ): Promise<{
+    material: EffectImportMaterial;
+    previousArtifactStorageKey: string | null;
+  } | null> {
+    return this.prisma.$transaction(async (transaction) => {
+      if (
+        (await transaction.effectImportMaterial.count({
+          where: { projectId, productId, id: materialId, product: { draftId } },
+        })) === 0
+      )
+        return null;
+      const bumped = await transaction.effectImportDraft.updateMany({
+        where: { projectId, id: draftId, revision: expectedRevision },
+        data: {
+          revision: { increment: 1 },
+          validatedRevision: null,
+          validationIssues: json([]),
+          validatedAt: null,
+          status: 'DRAFT',
+          completedAt: null,
+        },
+      });
+      if (bumped.count === 0) return null;
+      const material = await transaction.effectImportMaterial.update({
+        where: { projectId_id: { projectId, id: materialId } },
+        data,
+      });
+      const working = await this.workingRepository.upsertArtifactInTransaction(
+        transaction,
+        projectId,
+        artifact.workflowRunId,
+        artifact.nodeId,
+        artifact.artifactKey,
+        artifact.input,
+      );
+      return { material, previousArtifactStorageKey: working.previousStorageKey };
     });
   }
 
@@ -693,163 +779,6 @@ export class EffectSourceImportRepository {
     });
   }
 
-  async startPublishOperation(
-    projectId: string,
-    draftId: string,
-    revision: number,
-    idempotencyKey: string,
-    attemptToken: string,
-  ): Promise<PublishOperationClaim | null> {
-    return this.prisma.$transaction(async (transaction) => {
-      const present = async (operation: EffectImportPublishOperation) => {
-        const requestMatches = operation.draftId === draftId && operation.revision === revision;
-        if (!requestMatches || operation.status === 'COMPLETED') {
-          return { operation, owner: false, requestMatches };
-        }
-        if (operation.status === 'RUNNING' && operation.attemptToken === attemptToken) {
-          return { operation, owner: true, requestMatches: true };
-        }
-        const staleBefore = new Date(Date.now() - 5 * 60 * 1000);
-        const claimed = await transaction.effectImportPublishOperation.updateMany({
-          where: {
-            projectId,
-            id: operation.id,
-            OR: [{ status: 'FAILED' }, { status: 'RUNNING', updatedAt: { lt: staleBefore } }],
-          },
-          data: { status: 'RUNNING', attemptToken, errorMessage: null },
-        });
-        if (claimed.count !== 1) return { operation, owner: false, requestMatches: true };
-        return {
-          operation: await transaction.effectImportPublishOperation.findUniqueOrThrow({
-            where: { projectId_id: { projectId, id: operation.id } },
-          }),
-          owner: true,
-          requestMatches: true,
-        };
-      };
-
-      const existing = await transaction.effectImportPublishOperation.findUnique({
-        where: { projectId_idempotencyKey: { projectId, idempotencyKey } },
-      });
-      if (existing) return present(existing);
-
-      const locked = await transaction.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-        SELECT "id"
-        FROM "effect_import_drafts"
-        WHERE "projectId" = ${projectId}::uuid
-          AND "id" = ${draftId}::uuid
-          AND "revision" = ${revision}
-          AND "validatedRevision" = ${revision}
-        FOR UPDATE
-      `);
-      if (locked.length !== 1) return null;
-      // Re-check after the row lock: another request with the same key may
-      // have committed while this transaction was waiting.
-      const raced = await transaction.effectImportPublishOperation.findUnique({
-        where: { projectId_idempotencyKey: { projectId, idempotencyKey } },
-      });
-      if (raced) return present(raced);
-      const lockedDraft = await transaction.effectImportDraft.findUniqueOrThrow({
-        where: { projectId_id: { projectId, id: draftId } },
-        include: draftInclude,
-      });
-      const snapshot: PublishDraftSnapshot = {
-        id: lockedDraft.id,
-        projectId: lockedDraft.projectId,
-        mode: lockedDraft.mode,
-        revision: lockedDraft.revision,
-        globalConfig: lockedDraft.globalConfig,
-        products: lockedDraft.products.map((product) => ({
-          id: product.id,
-          name: product.name,
-          category: product.category,
-          sku: product.sku,
-          commerceUrl: product.commerceUrl,
-          configOverride: product.configOverride,
-          materials: product.materials.map((material) => ({
-            id: material.id,
-            type: material.type,
-            status: material.status,
-            originalFileName: material.originalFileName,
-            mimeType: material.mimeType,
-            sizeBytes: material.sizeBytes,
-            storageKey: material.storageKey,
-          })),
-        })),
-      };
-      const operation = await transaction.effectImportPublishOperation.create({
-        data: {
-          projectId,
-          draftId,
-          revision,
-          idempotencyKey,
-          snapshot: json(snapshot),
-          attemptToken,
-          status: 'RUNNING',
-        },
-      });
-      const heldStorageKeys = [
-        ...new Set(
-          snapshot.products.flatMap((product) =>
-            product.materials
-              .filter((material) => material.status === 'READY' && material.storageKey)
-              .map((material) => material.storageKey!),
-          ),
-        ),
-      ];
-      if (heldStorageKeys.length > 0) {
-        await transaction.effectImportPublishFileHold.createMany({
-          data: heldStorageKeys.map((storageKey) => ({
-            projectId,
-            operationId: operation.id,
-            storageKey,
-          })),
-        });
-      }
-      return { operation, owner: true, requestMatches: true };
-    });
-  }
-
-  publishOperationByKey(projectId: string, idempotencyKey: string) {
-    return this.prisma.effectImportPublishOperation.findUnique({
-      where: { projectId_idempotencyKey: { projectId, idempotencyKey } },
-    });
-  }
-
-  async completePublishOperation(
-    projectId: string,
-    operationId: string,
-    attemptToken: string,
-    result: unknown,
-    lastPublish: unknown,
-  ): Promise<boolean> {
-    try {
-      return await this.prisma.$transaction(async (transaction) => {
-        const operation = await transaction.effectImportPublishOperation.findFirst({
-          where: { projectId, id: operationId, status: 'RUNNING', attemptToken },
-        });
-        if (!operation) return false;
-        const draft = await transaction.effectImportDraft.updateMany({
-          where: { projectId, id: operation.draftId },
-          data: { lastPublish: json(lastPublish) },
-        });
-        if (draft.count !== 1) throw new PublishCompletionConflict();
-        const updated = await transaction.effectImportPublishOperation.updateMany({
-          where: { projectId, id: operationId, status: 'RUNNING', attemptToken },
-          data: { status: 'COMPLETED', result: json(result), completedAt: new Date() },
-        });
-        if (updated.count !== 1) throw new PublishCompletionConflict();
-        await transaction.effectImportPublishFileHold.deleteMany({
-          where: { projectId, operationId },
-        });
-        return true;
-      });
-    } catch (error) {
-      if (error instanceof PublishCompletionConflict) return false;
-      throw error;
-    }
-  }
-
   enqueueStorageCleanup(projectId: string, storageKey: string, reason: string) {
     return this.prisma.storageCleanupTask.upsert({
       where: { projectId_storageKey: { projectId, storageKey } },
@@ -859,20 +788,9 @@ export class EffectSourceImportRepository {
   }
 
   async isStorageHeld(projectId: string, storageKey: string): Promise<boolean> {
-    const [publishHolds, extractionHolds] = await Promise.all([
-      this.prisma.effectImportPublishFileHold.count({ where: { projectId, storageKey } }),
-      this.prisma.effectExtractionFileHold.count({ where: { projectId, storageKey } }),
-    ]);
-    return publishHolds + extractionHolds > 0;
-  }
-
-  releaseExpiredPublishHolds(projectId: string, failedBefore: Date) {
-    return this.prisma.effectImportPublishFileHold.deleteMany({
-      where: {
-        projectId,
-        operation: { status: 'FAILED', updatedAt: { lt: failedBefore } },
-      },
-    });
+    return (
+      (await this.prisma.effectExtractionFileHold.count({ where: { projectId, storageKey } })) > 0
+    );
   }
 
   storageCleanupTasks(projectId: string) {
@@ -895,18 +813,6 @@ export class EffectSourceImportRepository {
         lastError: message.slice(0, 500),
         nextAttemptAt: new Date(Date.now() + 60_000),
       },
-    });
-  }
-
-  async failPublishOperation(
-    projectId: string,
-    operationId: string,
-    attemptToken: string,
-    message: string,
-  ): Promise<void> {
-    await this.prisma.effectImportPublishOperation.updateMany({
-      where: { projectId, id: operationId, status: 'RUNNING', attemptToken },
-      data: { status: 'FAILED', errorMessage: message.slice(0, 500) },
     });
   }
 

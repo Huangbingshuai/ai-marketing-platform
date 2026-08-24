@@ -4,7 +4,6 @@ import {
   deleteEffectImportProduct,
   listEffectImportProducts,
   previewEffectManifest,
-  publishEffectImportDraft,
   updateEffectImportDraft,
 } from './effect-import.api';
 
@@ -80,23 +79,5 @@ describe('effect import API', () => {
     expect(form.getAll('files')).toEqual([image]);
     expect(form.get('expectedRevision')).toBe('3');
     expect(form.get('idempotencyKey')).toBe('idem-1');
-  });
-
-  it('sends the stable publish idempotency key with the revision', async () => {
-    const fetchMock = vi.fn().mockImplementation(async () => ok());
-    vi.stubGlobal('fetch', fetchMock);
-
-    await publishEffectImportDraft('p1', 'BATCH', {
-      expectedRevision: 12,
-      idempotencyKey: 'publish-retry-key',
-    });
-
-    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
-    expect(init.method).toBe('POST');
-    expect(new Headers(init.headers).get('If-Match')).toBe('12');
-    expect(JSON.parse(String(init.body))).toEqual({
-      expectedRevision: 12,
-      idempotencyKey: 'publish-retry-key',
-    });
   });
 });

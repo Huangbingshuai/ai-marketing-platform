@@ -21,8 +21,6 @@ import type {
   EffectManifestFormat,
   GetEffectImportWorkspaceData,
   PreviewEffectManifestData,
-  PublishEffectImportDraftData,
-  PublishEffectImportDraftRequest,
   ReplaceEffectImportMaterialContentRequest,
   SwitchEffectImportModeData,
   SwitchEffectImportModeRequest,
@@ -345,20 +343,6 @@ export const validateEffectImportDraft = (
     body: input,
     headers: revisionHeaders(input.expectedRevision),
     operation: '校验资料包',
-    signal,
-  });
-
-export const publishEffectImportDraft = (
-  projectId: string,
-  mode: EffectImportMode,
-  input: PublishEffectImportDraftRequest,
-  signal?: AbortSignal,
-): Promise<ApiResponse<PublishEffectImportDraftData>> =>
-  requestJson(`${draftPath(projectId, mode)}/publish`, {
-    method: 'POST',
-    body: input,
-    headers: revisionHeaders(input.expectedRevision),
-    operation: '保存到项目资产库',
     signal,
   });
 

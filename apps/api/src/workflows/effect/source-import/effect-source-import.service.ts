@@ -23,12 +23,10 @@ import {
   type EffectImportProduct,
   type EffectImportProductListData,
   type EffectImportProductMutationData,
-  type EffectImportPublishedAsset,
   type EffectImportValidationIssue,
   type EffectManifestPreviewRow,
   type GetEffectImportWorkspaceData,
   type PreviewEffectManifestData,
-  type PublishEffectImportDraftData,
   type SwitchEffectImportModeData,
   type UpdateEffectImportDraftData,
   type ValidateEffectImportDraftData,
@@ -41,17 +39,18 @@ import ExcelJS from 'exceljs';
 import type { Prisma } from '../../../generated/prisma/client';
 
 import { ApiHttpException } from '../../../common/api-http-exception';
-import { AssetService } from '../../../platform/asset/asset.service';
 import type { StoredStream, StoragePort } from '../../../platform/file/storage.port';
 import { STORAGE_PORT } from '../../../platform/file/storage.port';
+import { safeOriginalFileName } from '../../../platform/file/file-name';
 import { ProjectService } from '../../../platform/project/project.service';
+import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import {
   EffectSourceImportRepository,
   type EffectDraftRecord,
   type EffectProductRecord,
   type EffectWorkspaceRecord,
   type ManifestRecord,
-  type PublishDraftSnapshot,
+  type WorkingMaterialProjection,
 } from './effect-source-import.repository';
 import { normalizeManifestFileName, parseEffectManifest } from './effect-manifest.parser';
 
@@ -85,16 +84,8 @@ const notFound = () =>
   new ApiHttpException('资料包实体不存在', HttpStatus.NOT_FOUND, 'ASSET_NOT_FOUND');
 const conflict = () =>
   new ApiHttpException('草稿已被其他操作更新，请刷新后重试', HttpStatus.CONFLICT, 'CONFLICT');
-const safeFileName = (value: string): string =>
-  (
-    [...(value.split(/[\\/]/).at(-1) ?? 'file')]
-      .filter((character) => {
-        const codePoint = character.codePointAt(0) ?? 0;
-        return codePoint > 31 && codePoint !== 127;
-      })
-      .join('')
-      .trim() || 'file'
-  ).slice(0, 255);
+export { normalizeMultipartFileName } from '../../../platform/file/file-name';
+const safeFileName = safeOriginalFileName;
 const safeMime = (value: string): string =>
   (/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(value.trim())
     ? value.trim().toLowerCase()
@@ -103,6 +94,13 @@ const safeMime = (value: string): string =>
 const assetSafeName = (value: string): string => (value.trim() || '未命名资料').slice(0, 120);
 const assetSafeTags = (...values: string[]): string[] =>
   [...new Set(values.map((value) => value.trim().slice(0, 40)).filter(Boolean))].slice(0, 20);
+const normalizeProductName = (value: string): string =>
+  value.normalize('NFKC').trim().replace(/\s+/g, ' ');
+const requiredProductName = (value: string, message = '产品名称不能为空'): string => {
+  const name = normalizeProductName(value);
+  if (!name) throw badRequest(message);
+  return name;
+};
 const createSystemSku = (): string =>
   `SYS-${randomUUID().replaceAll('-', '').slice(0, 16).toUpperCase()}`;
 const MANIFEST_COMPANION_COUNT_LIMIT = 20;
@@ -191,7 +189,7 @@ export class EffectSourceImportService {
   constructor(
     @Inject(EffectSourceImportRepository) private readonly repository: EffectSourceImportRepository,
     @Inject(ProjectService) private readonly projectService: ProjectService,
-    @Inject(AssetService) private readonly assetService: AssetService,
+    @Inject(WorkflowWorkingService) private readonly workingService: WorkflowWorkingService,
     @Inject(STORAGE_PORT) private readonly storage: StoragePort,
   ) {}
 
@@ -233,6 +231,70 @@ export class EffectSourceImportService {
     }
   }
 
+  private workingMaterialProjection(
+    workspace: EffectWorkspaceRecord,
+    product: EffectProductRecord,
+    material: {
+      id: string;
+      type: EffectImportMaterialType;
+      originalFileName: string;
+      mimeType: string;
+      sizeBytes: number;
+      storageKey: string;
+    },
+  ): WorkingMaterialProjection {
+    const productName = normalizeProductName(product.name);
+    if (!productName) throw badRequest('请先填写产品名称，再上传产品资料');
+    const tags = assetSafeTags(productName, product.category, product.sku);
+    const originalFileName = safeFileName(material.originalFileName);
+    return {
+      workflowRunId: workspace.workflowRunId,
+      nodeId: 'SOURCE_IMPORT',
+      artifactKey: `material:${material.id}`,
+      input: {
+        kind: 'FILE',
+        name: assetSafeName(`${productName} · ${originalFileName}`),
+        directory: 'SOURCE_MATERIALS',
+        type: material.type === 'REFERENCE_VIDEO' ? 'REFERENCE_VIDEO' : 'SOURCE_MATERIAL',
+        tags,
+        originalFileName,
+        mimeType: material.mimeType,
+        sizeBytes: material.sizeBytes,
+        storageKey: material.storageKey,
+        metadata: {
+          productId: product.id,
+          productName,
+          materialId: material.id,
+          materialType: material.type,
+        },
+        sourceArtifactId: material.id,
+      },
+    };
+  }
+
+  private async removeCurrentMaterial(projectId: string, _draftId: string, materialId: string) {
+    const workspace = await this.repository.workspace(projectId);
+    if (!workspace) return false;
+    return this.workingService.removeArtifact(
+      projectId,
+      workspace.workflowRunId,
+      'SOURCE_IMPORT',
+      `material:${materialId}`,
+    );
+  }
+
+  private async removeCurrentProduct(
+    projectId: string,
+    draftId: string,
+    product: Pick<EffectImportProduct, 'materials'>,
+  ): Promise<void> {
+    await Promise.all(
+      product.materials.map((material) =>
+        this.removeCurrentMaterial(projectId, draftId, material.id),
+      ),
+    );
+  }
+
   private assertMode(value: string): asserts value is EffectImportMode {
     if (value !== 'SINGLE' && value !== 'BATCH') throw badRequest('导入模式无效');
   }
@@ -248,7 +310,7 @@ export class EffectSourceImportService {
       type: record.type,
       status: record.status,
       expectedFileName: record.expectedFileName,
-      originalFileName: record.originalFileName,
+      originalFileName: record.originalFileName ? safeFileName(record.originalFileName) : null,
       mimeType: record.mimeType,
       sizeBytes: record.sizeBytes,
       contentUrl: record.status === 'READY' ? materialContentUrl(record, mode) : null,
@@ -299,7 +361,6 @@ export class EffectSourceImportService {
       productCount: record._count.products,
       issueCount: issues.length,
       completedAt: record.completedAt?.toISOString() ?? null,
-      lastPublish: record.lastPublish ? parseJson(record.lastPublish) : null,
       updatedAt: record.updatedAt.toISOString(),
     };
   }
@@ -317,7 +378,6 @@ export class EffectSourceImportService {
       productCount: record.products.length,
       issueCount: issues.length,
       completedAt: record.completedAt?.toISOString() ?? null,
-      lastPublish: record.lastPublish ? parseJson(record.lastPublish) : null,
       updatedAt: record.updatedAt.toISOString(),
       globalConfig,
       validationIssues: issues,
@@ -340,6 +400,7 @@ export class EffectSourceImportService {
     return {
       id: record.id,
       projectId: record.projectId,
+      workflowRunId: record.workflowRunId,
       currentMode: record.currentMode,
       revision: record.revision,
       drafts: { SINGLE: this.summary(single), BATCH: this.summary(batch) },
@@ -359,10 +420,6 @@ export class EffectSourceImportService {
     const expired = await this.repository.expireManifestPreviews(projectId);
     await Promise.all(
       expired.map((file) => this.deleteOrQueue(projectId, file.storageKey, 'MANIFEST_EXPIRED')),
-    );
-    await this.repository.releaseExpiredPublishHolds(
-      projectId,
-      new Date(Date.now() - 24 * 60 * 60 * 1000),
     );
     await this.drainStorageCleanup(projectId);
     return workspace;
@@ -467,12 +524,13 @@ export class EffectSourceImportService {
     if (!isValidConfig(mergeEffectVideoConfig(draft.globalConfig, configOverride)))
       throw badRequest('单品视频配置无效');
     const sku = createSystemSku();
+    const name = input.name === undefined ? '' : requiredProductName(input.name);
     const product = await this.repository.createProduct(
       projectId,
       draft.id,
       input.expectedRevision,
       {
-        name: input.name?.trim() ?? '',
+        name,
         category: input.category?.trim() ?? '',
         sku,
         normalizedSku: normalizeEffectImportSku(sku),
@@ -508,7 +566,7 @@ export class EffectSourceImportService {
     if (!isValidConfig(mergeEffectVideoConfig(draft.globalConfig, override)))
       throw badRequest('单品视频配置无效');
     const data: Prisma.EffectImportProductUncheckedUpdateInput = {};
-    if (input.name !== undefined) data.name = input.name.trim();
+    if (input.name !== undefined) data.name = requiredProductName(input.name);
     if (input.category !== undefined) data.category = input.category.trim();
     if (input.commerceUrl !== undefined) data.commerceUrl = input.commerceUrl?.trim() || null;
     if (input.configOverride !== undefined)
@@ -535,6 +593,7 @@ export class EffectSourceImportService {
   ): Promise<BatchDeleteEffectImportProductsData> {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
+    const deleting = draft.products.filter((product) => productIds.includes(product.id));
     const result = await this.repository.deleteProducts(
       projectId,
       draft.id,
@@ -547,6 +606,9 @@ export class EffectSourceImportService {
     }
     await Promise.all(
       result.storageKeys.map((key) => this.deleteOrQueue(projectId, key, 'PRODUCT_DELETED')),
+    );
+    await Promise.all(
+      deleting.map((product) => this.removeCurrentProduct(projectId, draft.id, product)),
     );
     return { deletedProductIds: result.deletedIds, revision: result.revision };
   }
@@ -664,7 +726,10 @@ export class EffectSourceImportService {
   ): Promise<EffectImportMaterialMutationData> {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
-    if (!(await this.repository.product(projectId, draft.id, productId))) throw notFound();
+    const product = await this.repository.product(projectId, draft.id, productId);
+    if (!product) throw notFound();
+    const productName = requiredProductName(product.name, '请先填写产品名称，再上传产品资料');
+    const project = await this.projectService.get(projectId);
     try {
       const validFile = await this.assertMaterialFile(file, input.type);
       let stored: { key: string; sizeBytes: number } | null = null;
@@ -674,6 +739,15 @@ export class EffectSourceImportService {
           stream: createReadStream(validFile.path),
           sizeBytes: validFile.size,
           contentType: safeMime(validFile.mimetype),
+          keyContext: {
+            projectName: project.name,
+            workflow: 'EFFECT',
+            lifecycle: 'staging',
+            productId,
+            productName,
+            category: input.type === 'PRODUCT_IMAGE' ? '商品图片' : '产品文档',
+            originalFileName: safeFileName(validFile.originalname),
+          },
         });
       } catch {
         const failed = await this.repository.createMaterial(
@@ -699,6 +773,7 @@ export class EffectSourceImportService {
           revision: input.expectedRevision + 1,
         };
       }
+      let databaseCommitted = false;
       try {
         let processingReady = true;
         try {
@@ -707,35 +782,62 @@ export class EffectSourceImportService {
         } catch {
           processingReady = false;
         }
-        const material = await this.repository.createMaterial(
-          projectId,
-          draft.id,
-          productId,
-          input.expectedRevision,
-          {
-            type: input.type,
-            status: processingReady ? 'READY' : 'FAILED',
-            expectedFileName: input.expectedFileName?.trim() || null,
-            originalFileName: safeFileName(validFile.originalname),
-            mimeType: safeMime(validFile.mimetype),
-            sizeBytes: stored.sizeBytes,
-            storageKey: stored.key,
-            ...(processingReady
-              ? {}
-              : {
-                  failureDisposition: 'RETRYABLE' as const,
-                  errorCode: 'STORED_CONTENT_PROCESSING_FAILED',
-                  errorMessage: '文件已保留，服务端处理失败，可直接重试',
-                }),
-          },
-        );
+        const materialId = randomUUID();
+        const materialData = {
+          id: materialId,
+          type: input.type,
+          status: processingReady ? ('READY' as const) : ('FAILED' as const),
+          expectedFileName: input.expectedFileName?.trim() || null,
+          originalFileName: safeFileName(validFile.originalname),
+          mimeType: safeMime(validFile.mimetype),
+          sizeBytes: stored.sizeBytes,
+          storageKey: stored.key,
+          ...(processingReady
+            ? {}
+            : {
+                failureDisposition: 'RETRYABLE' as const,
+                errorCode: 'STORED_CONTENT_PROCESSING_FAILED',
+                errorMessage: '文件已保留，服务端处理失败，可直接重试',
+              }),
+        };
+        const workspace = await this.repository.workspace(projectId);
+        if (!workspace) throw notFound();
+        const result = processingReady
+          ? await this.repository.createMaterialWithArtifact(
+              projectId,
+              draft.id,
+              productId,
+              input.expectedRevision,
+              materialData,
+              this.workingMaterialProjection(workspace, product, {
+                id: materialId,
+                type: input.type,
+                originalFileName: materialData.originalFileName,
+                mimeType: materialData.mimeType,
+                sizeBytes: materialData.sizeBytes,
+                storageKey: materialData.storageKey,
+              }),
+            )
+          : {
+              material: await this.repository.createMaterial(
+                projectId,
+                draft.id,
+                productId,
+                input.expectedRevision,
+                materialData,
+              ),
+              previousArtifactStorageKey: null,
+            };
+        const material = result?.material;
         if (!material) throw conflict();
+        databaseCommitted = true;
         return {
           material: this.material(material, modeValue),
           revision: input.expectedRevision + 1,
         };
       } catch (error) {
-        await this.deleteOrQueue(projectId, stored.key, 'MATERIAL_CREATE_ROLLBACK');
+        if (!databaseCommitted)
+          await this.deleteOrQueue(projectId, stored.key, 'MATERIAL_CREATE_ROLLBACK');
         throw error;
       }
     } finally {
@@ -754,8 +856,10 @@ export class EffectSourceImportService {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
     const current = await this.repository.material(projectId, productId, materialId);
-    if (!current || !(await this.repository.product(projectId, draft.id, productId)))
-      throw notFound();
+    const product = await this.repository.product(projectId, draft.id, productId);
+    if (!current || !product) throw notFound();
+    const productName = requiredProductName(product.name, '请先填写产品名称，再重新上传资料');
+    const project = await this.projectService.get(projectId);
     try {
       const validFile = await this.assertMaterialFile(file, current.type);
       let stored: { key: string; sizeBytes: number } | null = null;
@@ -765,6 +869,15 @@ export class EffectSourceImportService {
           stream: createReadStream(validFile.path),
           sizeBytes: validFile.size,
           contentType: safeMime(validFile.mimetype),
+          keyContext: {
+            projectName: project.name,
+            workflow: 'EFFECT',
+            lifecycle: 'staging',
+            productId,
+            productName,
+            category: current.type === 'PRODUCT_IMAGE' ? '商品图片' : '产品文档',
+            originalFileName: safeFileName(validFile.originalname),
+          },
         });
       } catch {
         // Replacement is a two-phase swap: a failed write must leave the
@@ -775,6 +888,7 @@ export class EffectSourceImportService {
           'STORAGE_WRITE_FAILED',
         );
       }
+      let databaseCommitted = false;
       try {
         let processingReady = true;
         try {
@@ -783,33 +897,58 @@ export class EffectSourceImportService {
         } catch {
           processingReady = false;
         }
-        const material = await this.repository.replaceMaterial(
+        if (!processingReady)
+          throw new ApiHttpException(
+            '新文件校验失败，原资料已保留，请重新上传',
+            HttpStatus.INTERNAL_SERVER_ERROR,
+            'INTERNAL_ERROR',
+          );
+        const workspace = await this.repository.workspace(projectId);
+        if (!workspace) throw notFound();
+        const materialData = {
+          status: 'READY' as const,
+          originalFileName: safeFileName(validFile.originalname),
+          mimeType: safeMime(validFile.mimetype),
+          sizeBytes: stored.sizeBytes,
+          storageKey: stored.key,
+          failureDisposition: null,
+          errorCode: null,
+          errorMessage: null,
+          retryCount: { increment: 1 },
+        };
+        const result = await this.repository.replaceMaterialWithArtifact(
           projectId,
           draft.id,
           productId,
           materialId,
           expectedRevision,
-          {
-            status: processingReady ? 'READY' : 'FAILED',
-            originalFileName: safeFileName(validFile.originalname),
-            mimeType: safeMime(validFile.mimetype),
-            sizeBytes: stored.sizeBytes,
-            storageKey: stored.key,
-            failureDisposition: processingReady ? null : 'RETRYABLE',
-            errorCode: processingReady ? null : 'STORED_CONTENT_PROCESSING_FAILED',
-            errorMessage: processingReady ? null : '文件已保留，服务端处理失败，可直接重试',
-            retryCount: { increment: 1 },
-          },
+          materialData,
+          this.workingMaterialProjection(workspace, product, {
+            id: materialId,
+            type: current.type,
+            originalFileName: materialData.originalFileName,
+            mimeType: materialData.mimeType,
+            sizeBytes: materialData.sizeBytes,
+            storageKey: materialData.storageKey,
+          }),
         );
+        const material = result?.material;
         if (!material) throw conflict();
-        if (current.storageKey && current.storageKey !== stored.key)
-          await this.deleteOrQueue(projectId, current.storageKey, 'MATERIAL_REPLACED');
+        databaseCommitted = true;
+        const replacedKeys = new Set(
+          [current.storageKey, result.previousArtifactStorageKey].filter((key): key is string =>
+            Boolean(key && key !== stored.key),
+          ),
+        );
+        for (const key of replacedKeys)
+          await this.deleteOrQueue(projectId, key, 'MATERIAL_REPLACED');
         return {
           material: this.material(material, modeValue),
           revision: expectedRevision + 1,
         };
       } catch (error) {
-        await this.deleteOrQueue(projectId, stored.key, 'MATERIAL_REPLACE_ROLLBACK');
+        if (!databaseCommitted)
+          await this.deleteOrQueue(projectId, stored.key, 'MATERIAL_REPLACE_ROLLBACK');
         throw error;
       }
     } finally {
@@ -839,6 +978,7 @@ export class EffectSourceImportService {
     }
     if (result.storageKey)
       await this.deleteOrQueue(projectId, result.storageKey, 'MATERIAL_DELETED');
+    await this.removeCurrentMaterial(projectId, draft.id, materialId);
     return { deleted: true, revision: result.revision };
   }
 
@@ -881,7 +1021,7 @@ export class EffectSourceImportService {
     return {
       ...(await this.storage.open(material.storageKey, range)),
       mimeType: material.mimeType,
-      originalFileName: material.originalFileName,
+      originalFileName: safeFileName(material.originalFileName),
       partial: range !== undefined,
     };
   }
@@ -941,14 +1081,14 @@ export class EffectSourceImportService {
       draftId: record.draftId,
       status: record.status,
       format: record.format,
-      originalFileName: record.originalFileName,
+      originalFileName: safeFileName(record.originalFileName),
       rowCount: record.rowCount,
       rows: parseJson(record.previewRows),
       stagedFiles: record.stagedFiles.map((file) => ({
         id: file.id,
         projectId: file.projectId,
         manifestImportId: file.manifestImportId,
-        originalFileName: file.originalFileName,
+        originalFileName: safeFileName(file.originalFileName),
         mimeType: file.mimeType,
         sizeBytes: file.sizeBytes,
         matchedRowNumbers: file.matchedRowNumbers,
@@ -969,6 +1109,7 @@ export class EffectSourceImportService {
     files: UploadedEffectFile[],
   ): Promise<PreviewEffectManifestData> {
     const draft = await this.getDraft(projectId, 'BATCH');
+    const project = await this.projectService.get(projectId);
     if (draft.revision !== expectedRevision) throw conflict();
     if (!manifest || manifest.size < 1) throw badRequest('请选择清单文件', 'FILE_REQUIRED');
     if (manifest.size > EFFECT_IMPORT_LIMITS.maxManifestBytes)
@@ -1015,6 +1156,13 @@ export class EffectSourceImportService {
           stream: createReadStream(file.path),
           sizeBytes: file.size,
           contentType: safeMime(file.mimetype),
+          keyContext: {
+            projectName: project.name,
+            workflow: 'EFFECT',
+            lifecycle: 'manifest',
+            category: '清单配套文件',
+            originalFileName: safeFileName(file.originalname),
+          },
         });
         stored.push({ file, key: object.key, id: randomUUID() });
       }
@@ -1304,6 +1452,13 @@ export class EffectSourceImportService {
     if (!isValidConfig(draft.globalConfig))
       issues.push(validationIssue('INVALID_VIDEO_CONFIG', '全局视频配置无效', 'DRAFT'));
     for (const product of draft.products) {
+      if (!normalizeProductName(product.name))
+        issues.push(
+          validationIssue('REQUIRED_FIELD', '请填写产品名称', 'PRODUCT', {
+            productId: product.id,
+            field: 'name',
+          }),
+        );
       if (product.commerceUrl && !normalizedCommerceUrl(product.commerceUrl))
         issues.push(
           validationIssue('INVALID_COMMERCE_URL', '电商链接格式无效', 'PRODUCT', {
@@ -1388,187 +1543,6 @@ export class EffectSourceImportService {
         validatedAt,
       },
     };
-  }
-
-  async publish(
-    projectId: string,
-    modeValue: string,
-    expectedRevision: number,
-    idempotencyKeyValue: string,
-  ): Promise<PublishEffectImportDraftData> {
-    this.assertMode(modeValue);
-    const draft = await this.getDraft(projectId, modeValue);
-    const idempotencyKey = idempotencyKeyValue.trim();
-    if (!idempotencyKey || idempotencyKey.length > 500)
-      throw badRequest('发布幂等键长度必须为 1 到 500 个字符');
-    const existingOperation = await this.repository.publishOperationByKey(
-      projectId,
-      idempotencyKey,
-    );
-    if (
-      !existingOperation &&
-      (draft.revision !== expectedRevision ||
-        draft.validatedRevision !== draft.revision ||
-        this.collectValidation(draft).length > 0)
-    )
-      throw conflict();
-    const attemptToken = randomUUID();
-    if (existingOperation && existingOperation.draftId !== draft.id) throw conflict();
-    const claimRevision = existingOperation?.revision ?? expectedRevision;
-    const claim = await this.repository.startPublishOperation(
-      projectId,
-      draft.id,
-      claimRevision,
-      idempotencyKey,
-      attemptToken,
-    );
-    if (!claim || !claim.requestMatches) throw conflict();
-    if (claim.operation.status === 'COMPLETED' && claim.operation.result) {
-      return parseJson<PublishEffectImportDraftData>(claim.operation.result);
-    }
-    if (!claim.owner) throw conflict();
-    const snapshot = parseJson<PublishDraftSnapshot>(claim.operation.snapshot);
-    const globalConfig = snapshot.globalConfig as EffectVideoConfig;
-    try {
-      const publishedAssets: EffectImportPublishedAsset[] = [];
-      for (const product of snapshot.products) {
-        const baseName = product.name || product.sku || '未命名产品';
-        const tags = assetSafeTags(product.category, product.sku);
-        const metadata = await this.assetService.storeWorkflowArtifact(
-          projectId,
-          'EFFECT',
-          'EFFECT',
-          {
-            idempotencyKey: `effect-import:${snapshot.id}:product:${product.id}:metadata`,
-            name: assetSafeName(`${baseName} 产品资料`),
-            directory: 'SOURCE_MATERIALS',
-            type: 'SOURCE_MATERIAL',
-            tags,
-            notes: '效果类资料包产品元数据',
-            sourceArtifactId: product.id,
-            sourceNode: 'SOURCE_IMPORT',
-            contentKind: 'EFFECT_IMPORT_PRODUCT',
-            content: {
-              name: product.name,
-              category: product.category,
-              sku: product.sku,
-              commerceUrl: product.commerceUrl,
-            },
-          },
-          `${claim.operation.id}:product:${product.id}:metadata`,
-        );
-        publishedAssets.push({
-          assetId: metadata.asset.id,
-          assetVersionId: metadata.assetVersionId,
-          version: metadata.version,
-          productId: product.id,
-          materialId: null,
-          kind: 'PRODUCT_METADATA',
-        });
-        const config = await this.assetService.storeWorkflowArtifact(
-          projectId,
-          'EFFECT',
-          'EFFECT',
-          {
-            idempotencyKey: `effect-import:${snapshot.id}:product:${product.id}:config`,
-            name: assetSafeName(`${baseName} 视频配置`),
-            directory: 'SOURCE_MATERIALS',
-            type: 'VIDEO_CONFIG',
-            tags,
-            notes: '效果类资料包视频配置',
-            sourceArtifactId: product.id,
-            sourceNode: 'SOURCE_IMPORT',
-            contentKind: 'EFFECT_VIDEO_CONFIG',
-            content: mergeEffectVideoConfig(
-              globalConfig,
-              product.configOverride as EffectVideoConfigOverride,
-            ),
-          },
-          `${claim.operation.id}:product:${product.id}:config`,
-        );
-        publishedAssets.push({
-          assetId: config.asset.id,
-          assetVersionId: config.assetVersionId,
-          version: config.version,
-          productId: product.id,
-          materialId: null,
-          kind: 'VIDEO_CONFIG',
-        });
-        for (const material of product.materials.filter((item) => item.status === 'READY')) {
-          const source = material;
-          if (
-            !source?.storageKey ||
-            !source.originalFileName ||
-            !source.mimeType ||
-            !source.sizeBytes
-          )
-            throw conflict();
-          const stored = await this.assetService.storeWorkflowFileOperation(projectId, {
-            name: assetSafeName(`${baseName} · ${source.originalFileName}`),
-            directory: 'SOURCE_MATERIALS',
-            type: source.type === 'REFERENCE_VIDEO' ? 'REFERENCE_VIDEO' : 'SOURCE_MATERIAL',
-            originalFileName: source.originalFileName,
-            mimeType: source.mimeType,
-            sizeBytes: source.sizeBytes,
-            sourceStorageKey: source.storageKey,
-            workflow: 'EFFECT',
-            space: 'EFFECT',
-            idempotencyKey: `effect-import:${snapshot.id}:material:${source.id}`,
-            operationKey: `${claim.operation.id}:material:${source.id}`,
-            tags,
-            notes: '效果类资料包文件',
-            businessData: {
-              productId: product.id,
-              materialId: source.id,
-              materialType: source.type,
-            },
-            sourceArtifactId: source.id,
-            sourceNode: 'SOURCE_IMPORT',
-          });
-          publishedAssets.push({
-            assetId: stored.asset.id,
-            assetVersionId: stored.assetVersionId,
-            version: stored.version,
-            productId: product.id,
-            materialId: source.id,
-            kind: 'MATERIAL',
-          });
-        }
-      }
-      const summary = {
-        publishedAt: new Date().toISOString(),
-        assetCount: new Set(publishedAssets.map((item) => item.assetId)).size,
-        assetVersionCount: publishedAssets.length,
-      };
-      const result: PublishEffectImportDraftData = {
-        projectId,
-        draftId: snapshot.id,
-        mode: snapshot.mode,
-        revision: snapshot.revision,
-        publishedAssets,
-        summary,
-      };
-      if (
-        !(await this.repository.completePublishOperation(
-          projectId,
-          claim.operation.id,
-          attemptToken,
-          result,
-          summary,
-        ))
-      )
-        throw conflict();
-      await this.drainStorageCleanup(projectId);
-      return result;
-    } catch (error) {
-      await this.repository.failPublishOperation(
-        projectId,
-        claim.operation.id,
-        attemptToken,
-        error instanceof Error ? error.message : '正式入库失败',
-      );
-      throw error;
-    }
   }
 
   async advance(

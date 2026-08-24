@@ -8,6 +8,7 @@ import { PrismaModule } from './database/prisma.module';
 import { HealthModule } from './platform/health/health.module';
 import { AssetModule } from './platform/asset/asset.module';
 import { ProjectModule } from './platform/project/project.module';
+import { WorkflowModule } from './platform/workflow/workflow.module';
 import { EffectExtractionModule } from './workflows/effect/information-extraction/effect-extraction.module';
 import { EffectSourceImportModule } from './workflows/effect/source-import/effect-source-import.module';
 
@@ -23,6 +24,7 @@ import { EffectSourceImportModule } from './workflows/effect/source-import/effec
     HealthModule,
     ProjectModule,
     AssetModule,
+    WorkflowModule,
     EffectSourceImportModule,
     EffectExtractionModule,
   ],

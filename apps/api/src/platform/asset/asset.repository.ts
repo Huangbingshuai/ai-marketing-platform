@@ -9,7 +9,7 @@ import type {
   StoreArtifactInput,
 } from '@ai-marketing/contracts';
 import { Inject, Injectable } from '@nestjs/common';
-import type { Asset as AssetRecord, AssetVersion, Prisma } from '../../generated/prisma/client';
+import type { Prisma, Asset as AssetRecord, AssetVersion } from '../../generated/prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 
 export type CreateAssetRecord = {
@@ -74,6 +74,9 @@ const filteredWhere = (projectId: string, filters: AssetListQuery): Prisma.Asset
     ...(filters.space ? { workflowSpace: filters.space } : {}),
     ...(filters.status ? { status: filters.status } : {}),
     ...(filters.tag?.trim() ? { tags: { has: filters.tag.trim() } } : {}),
+    ...(filters.productId?.trim()
+      ? { businessData: { path: ['productId'], equals: filters.productId.trim() } }
+      : {}),
     ...(keyword
       ? {
           OR: [
@@ -113,14 +116,14 @@ export class AssetRepository {
   listForFacets(
     projectId: string,
     filters: Pick<AssetListQuery, 'workflow' | 'space'> = {},
-  ): Promise<Pick<AssetRecord, 'directory' | 'type' | 'status' | 'tags'>[]> {
+  ): Promise<Pick<AssetRecord, 'directory' | 'type' | 'status' | 'tags' | 'businessData'>[]> {
     return this.prisma.asset.findMany({
       where: {
         ...activeWhere(projectId),
         ...(filters.workflow ? { storageWorkflow: filters.workflow } : {}),
         ...(filters.space ? { workflowSpace: filters.space } : {}),
       },
-      select: { directory: true, type: true, status: true, tags: true },
+      select: { directory: true, type: true, status: true, tags: true, businessData: true },
     });
   }
 
@@ -381,6 +384,74 @@ export class AssetRepository {
         });
       }
       return updated;
+    });
+  }
+
+  /** Replaces current content in place and retains one v1 compatibility row. */
+  async recreateCurrent(
+    projectId: string,
+    assetId: string,
+    data: CreateAssetRecord,
+    changeNote: string,
+    operationKey?: string,
+  ): Promise<AssetRecord | null> {
+    return this.prisma.$transaction(async (transaction) => {
+      if (operationKey) {
+        const receipt = await transaction.assetOperationReceipt.findUnique({
+          where: { projectId_operationKey: { projectId, operationKey } },
+        });
+        if (receipt) {
+          return transaction.asset.findFirst({
+            where: { projectId, id: receipt.assetId, archivedAt: null },
+          });
+        }
+      }
+      const current = await transaction.asset.findFirst({
+        where: { projectId, id: assetId, archivedAt: null },
+      });
+      if (!current) return null;
+      await transaction.assetOperationReceipt.deleteMany({ where: { projectId, assetId } });
+      await transaction.assetVersion.deleteMany({ where: { projectId, assetId } });
+      const { content, businessData, dependencies, ...assetFields } = data;
+      const recreated = await transaction.asset.update({
+        where: { id: current.id },
+        data: compact({
+          ...assetFields,
+          currentVersion: 1,
+          archivedAt: null,
+          ...jsonField('content', content),
+          ...jsonField('businessData', businessData),
+          ...jsonField('dependencies', dependencies),
+        }) as Prisma.AssetUncheckedUpdateInput,
+      });
+      const compatibilityVersion = await transaction.assetVersion.create({
+        data: compact({
+          projectId,
+          assetId: recreated.id,
+          version: 1,
+          changeNote,
+          status: recreated.status,
+          qualityStatus: recreated.qualityStatus,
+          ...jsonField('content', recreated.content),
+          ...jsonField('businessData', recreated.businessData),
+          originalFileName: recreated.originalFileName,
+          mimeType: recreated.mimeType,
+          sizeBytes: recreated.sizeBytes,
+          storageKey: recreated.storageKey,
+        }) as Prisma.AssetVersionUncheckedCreateInput,
+      });
+      if (operationKey) {
+        await transaction.assetOperationReceipt.create({
+          data: {
+            projectId,
+            operationKey,
+            assetId: recreated.id,
+            assetVersionId: compatibilityVersion.id,
+            version: 1,
+          },
+        });
+      }
+      return recreated;
     });
   }
 

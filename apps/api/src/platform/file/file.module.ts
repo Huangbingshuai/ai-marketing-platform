@@ -6,6 +6,12 @@ import { ConfigService } from '@nestjs/config';
 import { MulterModule } from '@nestjs/platform-express';
 
 import { LocalStorageAdapter, resolveLocalStorageRoot } from './local-storage.adapter';
+import {
+  createMinioClient,
+  MINIO_CLIENT,
+  MinioStorageAdapter,
+  selectStorageAdapter,
+} from './minio-storage.adapter';
 import { STORAGE_PORT } from './storage.port';
 import { UploadTemporaryFileCleanupInterceptor } from './upload-temporary-file-cleanup.interceptor';
 
@@ -28,8 +34,18 @@ import { UploadTemporaryFileCleanupInterceptor } from './upload-temporary-file-c
   ],
   providers: [
     LocalStorageAdapter,
+    MinioStorageAdapter,
+    {
+      provide: MINIO_CLIENT,
+      inject: [ConfigService],
+      useFactory: createMinioClient,
+    },
     UploadTemporaryFileCleanupInterceptor,
-    { provide: STORAGE_PORT, useExisting: LocalStorageAdapter },
+    {
+      provide: STORAGE_PORT,
+      inject: [ConfigService, LocalStorageAdapter, MinioStorageAdapter],
+      useFactory: selectStorageAdapter,
+    },
   ],
   exports: [MulterModule, STORAGE_PORT, UploadTemporaryFileCleanupInterceptor],
 })

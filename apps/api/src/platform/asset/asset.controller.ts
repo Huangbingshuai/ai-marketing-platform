@@ -29,6 +29,7 @@ import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 
 import { RawResponse } from '../../common/raw-response.decorator';
 import { UploadTemporaryFileCleanupInterceptor } from '../file/upload-temporary-file-cleanup.interceptor';
+import { fileContentDisposition } from '../file/content-disposition';
 import {
   AssetRangeNotSatisfiableError,
   AssetService,
@@ -53,9 +54,18 @@ import { ImportAssetSnapshotDto } from './dto/import-asset-snapshot.dto';
 import { BatchArchiveAssetsDto, BatchTagAssetsDto } from './dto/batch-assets.dto';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import { StoreArtifactsDto } from './dto/store-artifacts.dto';
+const SAFE_DOCUMENT_MIME_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+]);
 
-const contentDisposition = (disposition: 'inline' | 'attachment', fileName: string): string =>
-  `${disposition}; filename="asset"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+const responseContentType = (mimeType: string, previewKind: Asset['previewKind']): string =>
+  previewKind !== 'DOWNLOAD' || SAFE_DOCUMENT_MIME_TYPES.has(mimeType)
+    ? mimeType
+    : 'application/octet-stream';
 
 @Controller('projects/:projectId/assets')
 export class AssetController {
@@ -150,14 +160,11 @@ export class AssetController {
     const download = query.download === 'true';
     const inline = !download && content.previewKind !== 'DOWNLOAD';
     response.statusCode = content.partial ? 206 : 200;
-    response.setHeader(
-      'content-type',
-      content.previewKind === 'DOWNLOAD' ? 'application/octet-stream' : content.mimeType,
-    );
+    response.setHeader('content-type', responseContentType(content.mimeType, content.previewKind));
     response.setHeader('content-length', String(content.contentLength));
     response.setHeader(
       'content-disposition',
-      contentDisposition(inline ? 'inline' : 'attachment', content.originalFileName),
+      fileContentDisposition(inline ? 'inline' : 'attachment', content.originalFileName),
     );
     response.setHeader(
       'accept-ranges',

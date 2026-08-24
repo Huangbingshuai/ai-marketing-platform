@@ -34,6 +34,7 @@ export const listAssets = (
   if (query.workflow) search.set('workflow', query.workflow);
   if (query.space) search.set('space', query.space);
   if (query.status) search.set('status', query.status);
+  if (query.productId) search.set('productId', query.productId);
   if (query.page) search.set('page', String(query.page));
   if (query.pageSize) search.set('pageSize', String(query.pageSize));
   const suffix = search.size ? `?${search.toString()}` : '';

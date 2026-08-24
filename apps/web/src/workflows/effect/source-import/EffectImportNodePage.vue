@@ -33,10 +33,14 @@ import {
   Sparkles,
   Trash2,
 } from '@lucide/vue';
-import { computed, inject, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import { ApiClientError, isAbortError } from '../../../api/http-client';
 import { projectContextKey } from '../../../platform/project/project-context';
+import {
+  getWorkflowNodeState,
+  putWorkflowNodeState,
+} from '../../../platform/workflow/api/workflow-working.api';
 import EffectInfoExtractionNodePage from '../information-extraction/EffectInfoExtractionNodePage.vue';
 import {
   advanceEffectImportDraft,
@@ -52,7 +56,6 @@ import {
   getEffectImportWorkspace,
   listEffectImportProducts,
   previewEffectManifest,
-  publishEffectImportDraft,
   replaceEffectImportMaterial,
   switchEffectImportMode,
   updateEffectImportDraft,
@@ -74,7 +77,6 @@ import {
   createVersionedDraftBuffer,
   drainPendingEdits,
   editableProductSnapshot,
-  invalidateIdempotencyKeyOnRevisionChange,
   isRevisionConflict,
   resolveReloadSaveState,
   resolveSuccessfulWriteSaveState,
@@ -84,7 +86,6 @@ import {
 
 type PageStatus = 'error' | 'idle' | 'loading' | 'success';
 type EditableProductSnapshot = ReturnType<typeof editableProductSnapshot>;
-type PublishPhase = 'idle' | 'publishing' | 'validating';
 
 const projectContext = inject(projectContextKey);
 if (!projectContext) throw new Error('EffectImportNodePage must be used inside project context');
@@ -95,10 +96,10 @@ const workspace = ref<EffectImportWorkspace | null>(null);
 const draft = ref<EffectImportDraft | null>(null);
 const listedProducts = ref<EffectImportProduct[]>([]);
 const saveState = ref<EffectImportSaveState>('clean');
-const publishPhase = ref<PublishPhase>('idle');
 const transitioning = ref(false);
 const uploadTargetInitializing = ref(false);
 const activeStep = ref(0);
+const infoExtractionNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
 const downstreamBoundaries = [
   { title: 'Prompt 生成', description: '批量生成差异化提示词' },
   { title: '片段渲染', description: 'AI 视频片段批量渲染' },
@@ -132,7 +133,6 @@ const createClientIdempotencyKey = (): string =>
   globalThis.crypto?.randomUUID?.() ??
   `effect-import-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const manifestCommitKeys = createIdempotencyKeyRegistry(createClientIdempotencyKey);
-const publishKeys = createIdempotencyKeyRegistry(createClientIdempotencyKey);
 const loadedProjectId = ref('');
 let activeGeneration = 0;
 let projectSelectionSequence = 0;
@@ -143,6 +143,8 @@ let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 let configTimer: ReturnType<typeof setTimeout> | undefined;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 const productTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const nodeStateRevision = ref(0);
+let lastSavedNodeState = '';
 
 const currentProjectId = computed(() => projectContext.currentProject.value?.id ?? '');
 const currentMode = computed<EffectImportMode>(() => workspace.value?.currentMode ?? 'SINGLE');
@@ -172,26 +174,16 @@ const failedProductCount = computed(
 const manifestCommitIdempotencyKey = computed(() =>
   manifestPreview.value ? manifestCommitKeys.getOrCreate(manifestPreview.value.id) : '',
 );
-const publishContextKey = (value: EffectImportDraft | null = draft.value): string =>
-  value ? `${loadedProjectId.value}:${value.mode}:${value.id}` : '';
-
 const saveStateLabel = computed(
   () =>
     ({
-      clean: '草稿已加载',
+      clean: '已自动保存',
       conflict: '检测到草稿冲突，已重新加载',
       dirty: '有未保存修改',
       saveError: '保存失败',
-      saved: '草稿已保存',
+      saved: '已自动保存',
       saving: '正在保存…',
     })[saveState.value],
-);
-const publishButtonLabel = computed(() =>
-  publishPhase.value === 'validating'
-    ? '正在校验…'
-    : publishPhase.value === 'publishing'
-      ? '正在入库…'
-      : '保存到项目资产库',
 );
 
 const showNotice = (text: string, kind: 'error' | 'success' | 'warning' = 'success'): void => {
@@ -219,6 +211,46 @@ const endTransition = (): void => {
 
 const hasPendingDraftEdits = (): boolean => globalDraftBuffer.has() || productDraftBuffer.has();
 
+const nodeStateSnapshot = () => ({
+  mode: currentMode.value,
+  globalConfig: draft.value?.globalConfig ?? DEFAULT_EFFECT_VIDEO_CONFIG,
+  products: (draft.value?.products ?? [])
+    .map((product) => ({
+      id: product.id,
+      name: product.name,
+      category: product.category,
+      commerceUrl: product.commerceUrl,
+      configOverride: product.configOverride,
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id)),
+});
+
+const saveWorkflowNodeState = async (keepalive = false): Promise<boolean> => {
+  if (!loadedProjectId.value || !workspace.value) return true;
+  const state = nodeStateSnapshot();
+  const serialized = JSON.stringify(state);
+  if (serialized === lastSavedNodeState) return true;
+  saveState.value = 'saving';
+  try {
+    const response = await putWorkflowNodeState(
+      loadedProjectId.value,
+      workspace.value.workflowRunId,
+      'SOURCE_IMPORT',
+      { expectedRevision: nodeStateRevision.value, state },
+      { keepalive, ...(!keepalive && pageController ? { signal: pageController.signal } : {}) },
+    );
+    nodeStateRevision.value = response.data.nodeState.revision;
+    lastSavedNodeState = serialized;
+    saveState.value = 'saved';
+    return true;
+  } catch (error) {
+    if (isAbortError(error)) return false;
+    saveState.value = 'saveError';
+    showNotice(error instanceof Error ? error.message : '节点草稿自动保存失败', 'error');
+    return false;
+  }
+};
+
 const isCurrentContext = (projectId: string, generation: number): boolean =>
   loadedProjectId.value === projectId && generationGate.current(generation);
 
@@ -228,6 +260,8 @@ const relockDownstreamNode = (): void => {
   workspace.value.nodeStatuses.SOURCE_IMPORT = 'CURRENT';
   workspace.value.nodeStatuses.AI_INFO_EXTRACTION = 'LOCKED';
   activeStep.value = 0;
+  nodeStateRevision.value = 0;
+  lastSavedNodeState = '';
 };
 
 const syncWorkspaceSummary = (): void => {
@@ -240,21 +274,11 @@ const syncWorkspaceSummary = (): void => {
     productCount: draft.value.productCount,
     issueCount: draft.value.validationIssues.length,
     completedAt: draft.value.completedAt,
-    lastPublish: draft.value.lastPublish,
     updatedAt: draft.value.updatedAt,
   });
 };
 
 const setDraft = (value: EffectImportDraft): void => {
-  const previous = draft.value;
-  if (previous?.id === value.id) {
-    invalidateIdempotencyKeyOnRevisionChange(
-      publishKeys,
-      publishContextKey(previous),
-      previous.revision,
-      value.revision,
-    );
-  }
   draft.value = value;
   draftCache.set(value.mode, value);
   if (value.mode === 'SINGLE' || !keyword.value) {
@@ -265,12 +289,6 @@ const setDraft = (value: EffectImportDraft): void => {
 
 const markDraftMutation = (revision: number): void => {
   if (!draft.value) return;
-  invalidateIdempotencyKeyOnRevisionChange(
-    publishKeys,
-    publishContextKey(),
-    draft.value.revision,
-    revision,
-  );
   draft.value.revision = revision;
   draft.value.validatedRevision = null;
   draft.value.status = 'DRAFT';
@@ -413,12 +431,6 @@ const refreshProductList = async (): Promise<void> => {
       if (pending) syncEditableProductSnapshot(productId, pending.value);
     });
     if (draft.value && response.data.revision > draft.value.revision) {
-      invalidateIdempotencyKeyOnRevisionChange(
-        publishKeys,
-        publishContextKey(),
-        draft.value.revision,
-        response.data.revision,
-      );
       draft.value.revision = response.data.revision;
     }
   } catch (error) {
@@ -462,6 +474,19 @@ const loadProject = async (projectId: string): Promise<void> => {
     );
     if (!isCurrentContext(projectId, generation)) return;
     setDraft(draftResponse.data);
+    lastSavedNodeState = JSON.stringify(nodeStateSnapshot());
+    try {
+      const stateResponse = await getWorkflowNodeState(
+        projectId,
+        workspace.value.workflowRunId,
+        'SOURCE_IMPORT',
+        pageController.signal,
+      );
+      nodeStateRevision.value = stateResponse.data.revision;
+    } catch (error) {
+      if (!(error instanceof ApiClientError && error.status === 404)) throw error;
+      nodeStateRevision.value = 0;
+    }
     activeStep.value = workspace.value.currentNode === 'AI_INFO_EXTRACTION' ? 1 : 0;
     saveState.value = 'clean';
     if (workspace.value.currentMode === 'BATCH') await refreshProductList();
@@ -551,10 +576,10 @@ const updateGlobalConfig = (config: EffectVideoConfig): void => {
   relockDownstreamNode();
   saveState.value = 'dirty';
   clearTimeout(configTimer);
-  configTimer = setTimeout(() => void flushGlobalConfig(), 600);
+  configTimer = setTimeout(() => void flushGlobalConfig(), 1000);
 };
 
-const flushGlobalConfig = async (): Promise<boolean> => {
+const flushGlobalConfig = async (persistNodeState = true): Promise<boolean> => {
   clearTimeout(configTimer);
   configTimer = undefined;
   const pending = globalDraftBuffer.get('global');
@@ -586,7 +611,7 @@ const flushGlobalConfig = async (): Promise<boolean> => {
     if (latest && draft.value) draft.value.globalConfig = cloneVideoConfig(latest.value);
     saveState.value = 'dirty';
   } else saveState.value = resolveSuccessfulWriteSaveState(hasPendingDraftEdits());
-  return true;
+  return persistNodeState ? saveWorkflowNodeState() : true;
 };
 
 const scheduleProductSave = (productId: string, snapshot: EditableProductSnapshot): void => {
@@ -597,7 +622,7 @@ const scheduleProductSave = (productId: string, snapshot: EditableProductSnapsho
   clearTimeout(productTimers.get(productId));
   productTimers.set(
     productId,
-    setTimeout(() => void flushProduct(productId), 600),
+    setTimeout(() => void flushProduct(productId), 1000),
   );
 };
 
@@ -614,7 +639,10 @@ const updateProductField = (
   scheduleProductSave(product.id, snapshot);
 };
 
-const flushProduct = async (productOrId: EffectImportProduct | string): Promise<boolean> => {
+const flushProduct = async (
+  productOrId: EffectImportProduct | string,
+  persistNodeState = true,
+): Promise<boolean> => {
   const productId = typeof productOrId === 'string' ? productOrId : productOrId.id;
   clearTimeout(productTimers.get(productId));
   productTimers.delete(productId);
@@ -650,17 +678,21 @@ const flushProduct = async (productOrId: EffectImportProduct | string): Promise<
   if (currentMode.value === 'BATCH' && keyword.value) {
     await refreshProductList();
   }
-  return true;
+  return persistNodeState ? saveWorkflowNodeState() : true;
 };
 
 async function flushPendingEdits(): Promise<boolean> {
-  return drainPendingEdits(hasPendingDraftEdits, async () => {
-    if (globalDraftBuffer.has() && !(await flushGlobalConfig())) return false;
+  const flushed = await drainPendingEdits(hasPendingDraftEdits, async () => {
+    if (globalDraftBuffer.has() && !(await flushGlobalConfig(false))) return false;
     for (const productId of productDraftBuffer.keys()) {
-      if (!(await flushProduct(productId))) return false;
+      if (!(await flushProduct(productId, false))) return false;
     }
     return true;
   });
+  if (!flushed || !(await saveWorkflowNodeState())) return false;
+  if (activeStep.value === 1 && infoExtractionNode.value)
+    return infoExtractionNode.value.flushPendingEdits();
+  return true;
 }
 
 const createProduct = async (): Promise<void> => {
@@ -1029,7 +1061,7 @@ const downloadTemplate = async (format: EffectManifestFormat): Promise<void> => 
 };
 
 const validateDraft = async (): Promise<void> => {
-  if (publishPhase.value !== 'idle') return;
+  if (transitioning.value) return;
   if (unnamedProductCount.value) {
     showNotice(`请先填写全部产品名称，当前还有 ${unnamedProductCount.value} 个未填写`, 'warning');
     return;
@@ -1053,59 +1085,6 @@ const validateDraft = async (): Promise<void> => {
     showNotice(`发现 ${response.data.validation.issues.length} 项问题，请修复后重试`, 'warning');
 };
 
-const publishDraft = async (): Promise<void> => {
-  if (!draft.value || publishPhase.value !== 'idle') return;
-  if (unnamedProductCount.value) {
-    showNotice(`请先填写全部产品名称，当前还有 ${unnamedProductCount.value} 个未填写`, 'warning');
-    return;
-  }
-  publishPhase.value = 'validating';
-  beginTransition();
-  try {
-    if (!(await flushPendingEdits())) {
-      showNotice('仍有修改保存失败，请修复后再保存到项目资产库', 'error');
-      return;
-    }
-    const validationResponse = await runWrite(
-      (expectedRevision, signal) =>
-        validateEffectImportDraft(
-          loadedProjectId.value,
-          currentMode.value,
-          { expectedRevision },
-          signal,
-        ),
-      (result) => setDraft(result.data.draft),
-    );
-    if (!validationResponse) return;
-    if (!validationResponse.data.validation.valid) {
-      showNotice(
-        `发现 ${validationResponse.data.validation.issues.length} 项问题，未保存任何正式资产`,
-        'warning',
-      );
-      return;
-    }
-
-    publishPhase.value = 'publishing';
-    const publishContext = publishContextKey();
-    const idempotencyKey = publishKeys.getOrCreate(publishContext);
-    const response = await runWrite((expectedRevision, signal) =>
-      publishEffectImportDraft(
-        loadedProjectId.value,
-        currentMode.value,
-        { expectedRevision, idempotencyKey },
-        signal,
-      ),
-    );
-    if (!response) return;
-    publishKeys.forget(publishContext);
-    showNotice(`已保存 ${response.data.summary.assetCount} 项资产到当前项目资产库`);
-    await Promise.all([reloadCurrentDraft(), projectContext.reload()]);
-  } finally {
-    publishPhase.value = 'idle';
-    endTransition();
-  }
-};
-
 const advanceDraft = async (): Promise<void> => {
   if (!validatedCurrentRevision.value) return;
   const response = await runWrite((expectedRevision, signal) =>
@@ -1124,16 +1103,22 @@ const advanceDraft = async (): Promise<void> => {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 };
 
-const selectWorkflowStep = (step: number): void => {
-  if (step < 0 || step > 5) return;
-  activeStep.value = step;
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+const selectWorkflowStep = async (step: number): Promise<void> => {
+  if (step < 0 || step > 5 || step === activeStep.value || transitioning.value) return;
+  beginTransition();
+  try {
+    if (!(await flushPendingEdits())) {
+      showNotice('节点草稿保存失败，已阻止切换', 'error');
+      return;
+    }
+    activeStep.value = step;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } finally {
+    endTransition();
+  }
 };
 
-const enterPromptBoundary = (): void => {
-  activeStep.value = 2;
-  window.scrollTo({ top: 0, behavior: 'smooth' });
-};
+const enterPromptBoundary = (): void => void selectWorkflowStep(2);
 
 const handleProjectSelection = async (projectId: string): Promise<void> => {
   const sequence = ++projectSelectionSequence;
@@ -1163,7 +1148,18 @@ watch(keyword, () => {
   searchTimer = setTimeout(() => void refreshProductList(), 300);
 });
 
+const warnBeforeUnload = (event: BeforeUnloadEvent): void => {
+  if (!hasPendingDraftEdits() && saveState.value !== 'saveError') return;
+  event.preventDefault();
+  void saveWorkflowNodeState(true);
+};
+
+onMounted(() => window.addEventListener('beforeunload', warnBeforeUnload));
+
+defineExpose({ flushPendingEdits });
+
 onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', warnBeforeUnload);
   clearPendingTimers();
   clearTimeout(noticeTimer);
   pageController?.abort();
@@ -1204,12 +1200,14 @@ onBeforeUnmount(() => {
 
       <EffectInfoExtractionNodePage
         v-if="activeStep === 1"
+        ref="infoExtractionNode"
         :project-id="currentProjectId"
+        :workflow-run-id="workspace?.workflowRunId ?? ''"
         :draft-id="draft?.id ?? ''"
         :mode="currentMode"
         :products="draft?.products ?? []"
         :global-config="draft?.globalConfig ?? DEFAULT_EFFECT_VIDEO_CONFIG"
-        @back="activeStep = 0"
+        @back="selectWorkflowStep(0)"
         @next="enterPromptBoundary"
       />
 
@@ -1294,6 +1292,7 @@ onBeforeUnmount(() => {
                 :config="draft?.globalConfig ?? DEFAULT_EFFECT_VIDEO_CONFIG"
                 :disabled="transitioning || saveState === 'saving'"
                 @update:config="updateGlobalConfig"
+                @focusout="flushGlobalConfig"
               />
             </template>
 
@@ -1372,6 +1371,7 @@ onBeforeUnmount(() => {
                 :config="draft?.globalConfig ?? DEFAULT_EFFECT_VIDEO_CONFIG"
                 :disabled="transitioning || saveState === 'saving'"
                 @update:config="updateGlobalConfig"
+                @focusout="flushGlobalConfig"
               />
             </template>
           </div>
@@ -1390,25 +1390,6 @@ onBeforeUnmount(() => {
                 {{ issue.productId ? '产品资料：' : '' }}{{ issue.message }}
               </p>
             </div>
-          </section>
-
-          <section class="asset-publish-bar">
-            <span class="asset-publish-icon"><CloudUpload :size="18" /></span>
-            <div>
-              <strong>保存完整资料包到项目资产库</strong>
-              <small>当前模式的商品资料与有效视频配置将删除上一批并重新入库</small>
-            </div>
-            <em>{{ draft?.lastPublish ? '已入库，再次保存将重建' : '待入库' }}</em>
-            <button
-              type="button"
-              :disabled="
-                !draft || publishPhase !== 'idle' || transitioning || saveState === 'saving'
-              "
-              @click="publishDraft"
-            >
-              <LoaderCircle v-if="publishPhase !== 'idle'" class="spin" :size="14" />
-              <CloudUpload v-else :size="14" />{{ publishButtonLabel }}
-            </button>
           </section>
 
           <footer class="node-footer">
@@ -1893,67 +1874,6 @@ onBeforeUnmount(() => {
   border-radius: 20px;
   box-shadow: 0 8px 25px #7a4e3b12;
 }
-.asset-publish-bar {
-  display: flex;
-  min-height: 66px;
-  margin-top: 18px;
-  padding: 12px 15px;
-  box-sizing: border-box;
-  align-items: center;
-  gap: 11px;
-  color: #1e2b43;
-  background: linear-gradient(90deg, #f4f8ff, #fff);
-  border: 1px solid #d8e3f3;
-  border-radius: 13px;
-}
-.asset-publish-icon {
-  display: grid;
-  width: 38px;
-  height: 38px;
-  flex: 0 0 38px;
-  place-items: center;
-  color: #2766ed;
-  background: #e8f1ff;
-  border-radius: 11px;
-}
-.asset-publish-bar > div {
-  min-width: 0;
-  flex: 1;
-}
-.asset-publish-bar strong,
-.asset-publish-bar small {
-  display: block;
-}
-.asset-publish-bar strong {
-  font-size: 13px;
-}
-.asset-publish-bar small {
-  margin-top: 3px;
-  color: #7d899f;
-  font-size: 10px;
-}
-.asset-publish-bar em {
-  padding: 5px 9px;
-  color: #68768c;
-  background: #eef2f7;
-  border-radius: 999px;
-  font-size: 10px;
-  font-style: normal;
-  white-space: nowrap;
-}
-.asset-publish-bar button {
-  display: inline-flex;
-  height: 36px;
-  padding: 0 14px;
-  align-items: center;
-  gap: 5px;
-  color: #fff;
-  background: #2766ed;
-  border: 1px solid #2766ed;
-  border-radius: 9px;
-  font-size: 10px;
-  font-weight: 800;
-}
 .node-footer__status {
   display: flex;
   min-width: 220px;
@@ -2139,16 +2059,6 @@ onBeforeUnmount(() => {
   }
   .import-mode-segment button small {
     display: none;
-  }
-  .asset-publish-bar {
-    align-items: flex-start;
-    flex-wrap: wrap;
-  }
-  .asset-publish-bar > div {
-    width: calc(100% - 52px);
-  }
-  .asset-publish-bar button {
-    margin-left: auto;
   }
 }
 </style>

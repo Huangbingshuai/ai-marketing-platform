@@ -88,4 +88,35 @@ describe('AssetController content response', () => {
     expect(response.headers.get('content-disposition')).toContain('attachment');
     expect(response.headers.get('accept-ranges')).toBe('none');
   });
+
+  it('keeps the Word MIME type and .docx fallback name for attachment downloads', async () => {
+    const content = vi.fn().mockResolvedValue({
+      stream: Readable.from(Buffer.from('PK')),
+      sizeBytes: 2,
+      start: 0,
+      end: 1,
+      contentLength: 2,
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      originalFileName: '广式腊肠资料包.docx',
+      previewKind: 'DOWNLOAD',
+      partial: false,
+    });
+    const controller = new AssetController({ content } as unknown as AssetService);
+    const response = new RecordingResponse();
+
+    await controller.content(
+      'ea77ed70-8a2c-4548-91cb-28987657aa1b',
+      'bb157bde-c253-4d02-91c2-e2f550d29df1',
+      undefined,
+      { download: 'true' },
+      response as unknown as ServerResponse,
+    );
+
+    expect(response.headers.get('content-type')).toBe(
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    );
+    expect(response.headers.get('content-disposition')).toContain('filename="download.docx"');
+    expect(response.headers.get('content-disposition')).toContain("filename*=UTF-8''");
+    expect(Buffer.concat(response.chunks)).toEqual(Buffer.from('PK'));
+  });
 });

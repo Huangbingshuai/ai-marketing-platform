@@ -35,6 +35,7 @@ import { ConfigService } from '@nestjs/config';
 import type { Asset as AssetRecord } from '../../generated/prisma/client';
 
 import { ApiHttpException } from '../../common/api-http-exception';
+import { normalizeMultipartFileName, safeOriginalFileName } from '../file/file-name';
 import type { StoragePort, StorageRange, StoredStream } from '../file/storage.port';
 import { STORAGE_PORT } from '../file/storage.port';
 import { ProjectService } from '../project/project.service';
@@ -78,6 +79,12 @@ export type StoredWorkflowAsset = {
   asset: Asset;
   assetVersionId: string;
   version: number;
+  replacedStorageKey?: string;
+};
+
+type StoredWorkflowFileResult = {
+  asset: Asset;
+  replacedStorageKey?: string;
 };
 
 export class AssetRangeNotSatisfiableError extends ApiHttpException {
@@ -160,16 +167,17 @@ const normalizeNotes = (notes: string | null | undefined): string | null => {
   return normalized === '' ? null : normalized;
 };
 
-const safeOriginalFileName = (name: string): string => {
-  const lastSegment = name.split(/[\\/]/).at(-1) ?? 'file';
-  const sanitized = [...lastSegment]
-    .filter((character) => {
-      const codePoint = character.codePointAt(0) ?? 0;
-      return codePoint > 31 && codePoint !== 127;
-    })
-    .join('')
-    .trim();
-  return (sanitized || 'file').slice(0, 255);
+const storageProductContext = (value: unknown): { productId?: string; productName?: string } => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const data = value as Record<string, unknown>;
+  return {
+    ...(typeof data.productId === 'string' && data.productId.trim()
+      ? { productId: data.productId }
+      : {}),
+    ...(typeof data.productName === 'string' && data.productName.trim()
+      ? { productName: data.productName }
+      : {}),
+  };
 };
 
 const safeMimeType = (mimeType: string): string => {
@@ -186,12 +194,12 @@ const toAsset = (record: AssetRecord, sourceCurrentVersion: number | null = null
   return {
     id: record.id,
     projectId: record.projectId,
-    name: record.name,
+    name: record.hasFile ? normalizeMultipartFileName(record.name) : record.name,
     directory: record.directory,
     type: record.type,
     tags: record.tags,
     notes: record.notes,
-    originalFileName: record.originalFileName,
+    originalFileName: safeOriginalFileName(record.originalFileName),
     mimeType: record.mimeType,
     sizeBytes: record.sizeBytes,
     hasFile: record.hasFile,
@@ -230,17 +238,38 @@ const toAsset = (record: AssetRecord, sourceCurrentVersion: number | null = null
 };
 
 const buildFacets = (
-  records: Pick<AssetRecord, 'directory' | 'type' | 'status' | 'tags'>[],
+  records: Pick<AssetRecord, 'directory' | 'type' | 'status' | 'tags' | 'businessData'>[],
 ): AssetListFacets => {
   const directoryCounts = new Map<AssetDirectory, number>();
   const typeCounts = new Map<AssetType, number>();
   const tagCounts = new Map<string, number>();
   const statusCounts = new Map<AssetStatus, number>();
+  const productCounts = new Map<string, { label: string; count: number }>();
   for (const record of records) {
     directoryCounts.set(record.directory, (directoryCounts.get(record.directory) ?? 0) + 1);
     typeCounts.set(record.type, (typeCounts.get(record.type) ?? 0) + 1);
     statusCounts.set(record.status, (statusCounts.get(record.status) ?? 0) + 1);
     for (const tag of record.tags) tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+    if (
+      record.businessData &&
+      typeof record.businessData === 'object' &&
+      !Array.isArray(record.businessData)
+    ) {
+      const productId = Reflect.get(record.businessData, 'productId');
+      const productName = Reflect.get(record.businessData, 'productName');
+      if (
+        typeof productId === 'string' &&
+        productId.trim() &&
+        typeof productName === 'string' &&
+        productName.trim()
+      ) {
+        const current = productCounts.get(productId);
+        productCounts.set(productId, {
+          label: productName.trim(),
+          count: (current?.count ?? 0) + 1,
+        });
+      }
+    }
   }
   return {
     directories: ASSET_DIRECTORIES.filter((value) => directoryCounts.has(value)).map((value) => ({
@@ -261,6 +290,9 @@ const buildFacets = (
     tags: [...tagCounts.entries()]
       .sort(([left], [right]) => left.localeCompare(right, 'zh-CN'))
       .map(([value, count]) => ({ value, count })),
+    products: [...productCounts.entries()]
+      .sort(([, left], [, right]) => left.label.localeCompare(right.label, 'zh-CN'))
+      .map(([value, product]) => ({ value, label: product.label, count: product.count })),
   };
 };
 
@@ -376,7 +408,7 @@ export class AssetService {
           'FILE_TOO_LARGE',
         );
       }
-      await this.assertProject(projectId);
+      const project = await this.projectService.get(projectId);
       assertWorkflowSpace(metadata.storageWorkflow ?? 'EFFECT', metadata.workflowSpace ?? 'EFFECT');
       assertDirectoryType(metadata.directory, metadata.type);
       const normalized = {
@@ -393,8 +425,17 @@ export class AssetService {
       let stored;
       try {
         stored = await this.storage.put({
+          projectId,
           stream: createReadStream(file.path),
           sizeBytes: file.size,
+          contentType: normalized.mimeType,
+          keyContext: {
+            projectName: project.name,
+            workflow: metadata.storageWorkflow ?? 'EFFECT',
+            lifecycle: 'assets',
+            category: ASSET_TYPE_LABELS[metadata.type],
+            originalFileName: normalized.originalFileName,
+          },
         });
       } catch {
         throw new ApiHttpException(
@@ -465,7 +506,7 @@ export class AssetService {
     return {
       ...stored,
       mimeType: record.mimeType,
-      originalFileName: record.originalFileName,
+      originalFileName: safeOriginalFileName(record.originalFileName),
       previewKind,
       partial: range !== undefined,
     };
@@ -478,7 +519,7 @@ export class AssetService {
   ): Promise<Asset[]> {
     if (!files.length)
       throw new ApiHttpException('请选择要导入的文件', HttpStatus.BAD_REQUEST, 'FILE_REQUIRED');
-    await this.assertProject(projectId);
+    const project = await this.projectService.get(projectId);
     assertWorkflowSpace(metadata.workflow, metadata.space);
     const directory = ASSET_DIRECTORIES.find((value) =>
       (ASSET_DIRECTORY_TYPES[value] as readonly AssetType[]).includes(metadata.type),
@@ -513,8 +554,17 @@ export class AssetService {
         let stored;
         try {
           stored = await this.storage.put({
+            projectId,
             stream: createReadStream(file.path),
             sizeBytes: file.size,
+            contentType: mimeType,
+            keyContext: {
+              projectName: project.name,
+              workflow: metadata.workflow,
+              lifecycle: 'assets',
+              category: ASSET_TYPE_LABELS[metadata.type],
+              originalFileName,
+            },
           });
         } catch {
           throw new ApiHttpException(
@@ -576,7 +626,7 @@ export class AssetService {
       qualityStatus: version.qualityStatus,
       content: version.content,
       businessData: version.businessData,
-      originalFileName: version.originalFileName,
+      originalFileName: safeOriginalFileName(version.originalFileName),
       mimeType: version.mimeType,
       sizeBytes: version.sizeBytes,
       createdAt: version.createdAt.toISOString(),
@@ -722,8 +772,11 @@ export class AssetService {
     return { items, created, versioned };
   }
 
-  async storeWorkflowFile(projectId: string, input: StoreWorkflowFileInput): Promise<Asset> {
-    await this.assertProject(projectId);
+  async storeWorkflowFile(
+    projectId: string,
+    input: StoreWorkflowFileInput,
+  ): Promise<StoredWorkflowFileResult> {
+    const project = await this.projectService.get(projectId);
     assertWorkflowSpace(input.workflow, input.space);
     assertDirectoryType(input.directory, input.type);
     const idempotencyKey = input.idempotencyKey.trim();
@@ -732,10 +785,17 @@ export class AssetService {
     }
     if (input.operationKey) {
       const completed = await this.repository.findOperation(projectId, input.operationKey);
-      if (completed) return this.present(completed.asset);
+      if (completed) return { asset: await this.present(completed.asset) };
     }
     const originalFileName = safeOriginalFileName(input.originalFileName);
     const mimeType = safeMimeType(input.mimeType);
+    const productContext = storageProductContext(input.businessData);
+    const existing = await this.repository.findByIdempotency(
+      projectId,
+      input.workflow,
+      input.space,
+      idempotencyKey,
+    );
     let source: StoredStream;
     try {
       source = await this.storage.open(input.sourceStorageKey);
@@ -749,9 +809,22 @@ export class AssetService {
     if (source.sizeBytes !== input.sizeBytes) {
       throw new ApiHttpException('工作流暂存文件大小校验失败', HttpStatus.CONFLICT, 'CONFLICT');
     }
-    let copied;
+    let stored;
     try {
-      copied = await this.storage.put({ stream: source.stream, sizeBytes: source.sizeBytes });
+      stored = await this.storage.put({
+        projectId,
+        stream: source.stream,
+        sizeBytes: source.sizeBytes,
+        contentType: mimeType,
+        keyContext: {
+          projectName: project.name,
+          workflow: input.workflow,
+          lifecycle: 'assets',
+          ...productContext,
+          category: ASSET_TYPE_LABELS[input.type],
+          originalFileName,
+        },
+      });
     } catch {
       throw new ApiHttpException(
         '工作流文件正式入库失败',
@@ -759,13 +832,27 @@ export class AssetService {
         'STORAGE_WRITE_FAILED',
       );
     }
+    const recordData = {
+      name: normalizeName(input.name),
+      directory: input.directory,
+      type: input.type,
+      tags: normalizeTags(input.tags ?? []),
+      notes: normalizeNotes(input.notes),
+      originalFileName,
+      mimeType,
+      sizeBytes: stored.sizeBytes,
+      storageKey: stored.key,
+      hasFile: true,
+      storageWorkflow: input.workflow,
+      workflowSpace: input.space,
+      status: 'PENDING_REVIEW' as const,
+      qualityStatus: 'PENDING_REVIEW' as const,
+      idempotencyKey,
+      sourceArtifactId: input.sourceArtifactId ?? null,
+      sourceNode: input.sourceNode ?? null,
+      ...(input.businessData === undefined ? {} : { businessData: input.businessData as never }),
+    };
     try {
-      const existing = await this.repository.findByIdempotency(
-        projectId,
-        input.workflow,
-        input.space,
-        idempotencyKey,
-      );
       const record = existing
         ? await this.repository.createFileVersion(
             projectId,
@@ -773,42 +860,26 @@ export class AssetService {
             {
               originalFileName,
               mimeType,
-              sizeBytes: copied.sizeBytes,
-              storageKey: copied.key,
+              sizeBytes: stored.sizeBytes,
+              storageKey: stored.key,
             },
             input.operationKey,
           )
         : await this.repository.create(
             projectId,
-            {
-              name: normalizeName(input.name),
-              directory: input.directory,
-              type: input.type,
-              tags: normalizeTags(input.tags ?? []),
-              notes: normalizeNotes(input.notes),
-              originalFileName,
-              mimeType,
-              sizeBytes: copied.sizeBytes,
-              storageKey: copied.key,
-              hasFile: true,
-              storageWorkflow: input.workflow,
-              workflowSpace: input.space,
-              status: 'PENDING_REVIEW',
-              qualityStatus: 'PENDING_REVIEW',
-              idempotencyKey,
-              sourceArtifactId: input.sourceArtifactId ?? null,
-              sourceNode: input.sourceNode ?? null,
-              ...(input.businessData === undefined
-                ? {}
-                : { businessData: input.businessData as never }),
-            },
+            recordData,
             input.notes?.trim() || '工作流文件正式入库',
             input.operationKey,
           );
       if (!record) throw assetNotFound();
-      return this.present(record);
+      return {
+        asset: await this.present(record),
+        ...(existing && existing.storageKey !== stored.key
+          ? { replacedStorageKey: existing.storageKey }
+          : {}),
+      };
     } catch (error) {
-      await this.storage.delete(copied.key).catch(() => undefined);
+      await this.storage.delete(stored.key).catch(() => undefined);
       throw error;
     }
   }
@@ -817,7 +888,7 @@ export class AssetService {
     projectId: string,
     input: StoreWorkflowFileInput & { operationKey: string },
   ): Promise<StoredWorkflowAsset> {
-    const asset = await this.storeWorkflowFile(projectId, input);
+    const stored = await this.storeWorkflowFile(projectId, input);
     const receipt = await this.repository.findOperation(projectId, input.operationKey);
     if (!receipt)
       throw new ApiHttpException(
@@ -825,7 +896,12 @@ export class AssetService {
         HttpStatus.INTERNAL_SERVER_ERROR,
         'INTERNAL_ERROR',
       );
-    return { asset, assetVersionId: receipt.assetVersionId, version: receipt.version };
+    return {
+      asset: stored.asset,
+      assetVersionId: receipt.assetVersionId,
+      version: receipt.version,
+      ...(stored.replacedStorageKey ? { replacedStorageKey: stored.replacedStorageKey } : {}),
+    };
   }
 
   async storeWorkflowArtifact(

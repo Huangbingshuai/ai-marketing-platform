@@ -24,6 +24,7 @@ import { AnyFilesInterceptor, FileInterceptor } from '@nestjs/platform-express';
 import { ApiHttpException } from '../../../common/api-http-exception';
 import { RawResponse } from '../../../common/raw-response.decorator';
 import { UploadTemporaryFileCleanupInterceptor } from '../../../platform/file/upload-temporary-file-cleanup.interceptor';
+import { fileContentDisposition } from '../../../platform/file/content-disposition';
 // DTO classes must remain runtime imports so Nest can emit validation metadata.
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import {
@@ -35,7 +36,6 @@ import {
   ListProductsQueryDto,
   ManifestTemplateQueryDto,
   PreviewManifestDto,
-  PublishDraftDto,
   SwitchModeDto,
   UpdateDraftDto,
   UpdateProductDto,
@@ -51,9 +51,6 @@ const revision = (bodyRevision: number | undefined, header: string | undefined):
   }
   return value!;
 };
-
-const disposition = (fileName: string, inline = false): string =>
-  `${inline ? 'inline' : 'attachment'}; filename="download"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
 
 const EFFECT_IMPORT_MANIFEST_COMPANION_MAX_BYTES = 100 * 1024 * 1024;
 const EFFECT_IMPORT_SINGLE_UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
@@ -274,7 +271,10 @@ export class EffectSourceImportController {
     response.statusCode = content.partial ? 206 : 200;
     response.setHeader('content-type', content.mimeType);
     response.setHeader('content-length', String(content.contentLength));
-    response.setHeader('content-disposition', disposition(content.originalFileName, true));
+    response.setHeader(
+      'content-disposition',
+      fileContentDisposition('inline', content.originalFileName),
+    );
     response.setHeader('accept-ranges', 'bytes');
     response.setHeader('x-content-type-options', 'nosniff');
     response.setHeader('cache-control', 'private, no-store');
@@ -350,7 +350,7 @@ export class EffectSourceImportController {
     response.statusCode = 200;
     response.setHeader('content-type', file.contentType);
     response.setHeader('content-length', String(file.buffer.length));
-    response.setHeader('content-disposition', disposition(file.fileName));
+    response.setHeader('content-disposition', fileContentDisposition('attachment', file.fileName));
     response.end(file.buffer);
   }
 
@@ -362,21 +362,6 @@ export class EffectSourceImportController {
     @Body() body: ExpectedRevisionDto,
   ) {
     return this.service.validate(projectId, mode, revision(body.expectedRevision, match));
-  }
-
-  @Post('drafts/:mode/publish')
-  publish(
-    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
-    @Param('mode') mode: string,
-    @Headers('if-match') match: string | undefined,
-    @Body() body: PublishDraftDto,
-  ) {
-    return this.service.publish(
-      projectId,
-      mode,
-      revision(body.expectedRevision, match),
-      body.idempotencyKey,
-    );
   }
 
   @Post('drafts/:mode/advance')

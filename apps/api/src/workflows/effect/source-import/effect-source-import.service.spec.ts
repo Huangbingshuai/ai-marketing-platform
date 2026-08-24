@@ -1,23 +1,20 @@
-import {
-  DEFAULT_EFFECT_VIDEO_CONFIG,
-  type EffectImportDraft,
-  type PublishEffectImportDraftData,
-} from '@ai-marketing/contracts';
+import { DEFAULT_EFFECT_VIDEO_CONFIG, type EffectImportDraft } from '@ai-marketing/contracts';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { AssetService } from '../../../platform/asset/asset.service';
 import type { StoragePort } from '../../../platform/file/storage.port';
 import type { ProjectService } from '../../../platform/project/project.service';
+import type { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import type { EffectSourceImportRepository } from './effect-source-import.repository';
 import {
   EFFECT_MANIFEST_UPLOAD_TOTAL_BYTES,
   EffectSourceImportService,
+  normalizeMultipartFileName,
 } from './effect-source-import.service';
 
 const serviceWith = (
   repository: Partial<EffectSourceImportRepository> = {},
   storage: Partial<StoragePort> = {},
-  assetService: Partial<AssetService> = {},
+  workingService: Partial<WorkflowWorkingService> = {},
 ) =>
   new EffectSourceImportService(
     {
@@ -27,13 +24,28 @@ const serviceWith = (
       enqueueStorageCleanup: vi.fn().mockResolvedValue(undefined),
       deleteStorageCleanup: vi.fn().mockResolvedValue(undefined),
       failStorageCleanup: vi.fn().mockResolvedValue(undefined),
-      releaseExpiredPublishHolds: vi.fn().mockResolvedValue({ count: 0 }),
       ...repository,
     } as EffectSourceImportRepository,
-    { exists: vi.fn().mockResolvedValue(true) } as unknown as ProjectService,
-    assetService as AssetService,
+    {
+      exists: vi.fn().mockResolvedValue(true),
+      get: vi.fn().mockResolvedValue({ id: 'project-1', name: '测试项目' }),
+    } as unknown as ProjectService,
+    workingService as WorkflowWorkingService,
     storage as StoragePort,
   );
+
+describe('normalizeMultipartFileName', () => {
+  it('recovers UTF-8 Chinese file names decoded as latin1 by multipart parsing', () => {
+    const mojibake = Buffer.from('广式腊肠_主图.png', 'utf8').toString('latin1');
+
+    expect(normalizeMultipartFileName(mojibake)).toBe('广式腊肠_主图.png');
+  });
+
+  it('keeps file names that are already valid Unicode or latin1 text', () => {
+    expect(normalizeMultipartFileName('广式腊肠_主图.png')).toBe('广式腊肠_主图.png');
+    expect(normalizeMultipartFileName('café.png')).toBe('café.png');
+  });
+});
 
 const draftValue = (overrides: Partial<EffectImportDraft> = {}): EffectImportDraft => ({
   id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
@@ -45,7 +57,6 @@ const draftValue = (overrides: Partial<EffectImportDraft> = {}): EffectImportDra
   productCount: 0,
   issueCount: 0,
   completedAt: null,
-  lastPublish: null,
   createdAt: '2026-08-20T00:00:00.000Z',
   updatedAt: '2026-08-20T00:00:00.000Z',
   globalConfig: DEFAULT_EFFECT_VIDEO_CONFIG,
@@ -114,7 +125,7 @@ describe('EffectSourceImportService', () => {
     expect(example?.split(',')).toHaveLength(3);
   });
 
-  it('不把产品名称和品类作为资料导入节点的校验条件', () => {
+  it('把产品名称作为资料导入节点必填项，品类仍交给 AI 提炼', () => {
     const service = serviceWith() as unknown as {
       collectValidation(draft: EffectImportDraft): Array<{ field?: string | null }>;
     };
@@ -122,7 +133,33 @@ describe('EffectSourceImportService', () => {
     draft.products[0]!.name = '';
     draft.products[0]!.category = '';
 
-    expect(service.collectValidation(draft)).toEqual([]);
+    expect(service.collectValidation(draft)).toEqual([
+      expect.objectContaining({
+        code: 'REQUIRED_FIELD',
+        field: 'name',
+        productId: draft.products[0]!.id,
+      }),
+    ]);
+  });
+
+  it('rejects a material upload before the product has a name', async () => {
+    const service = serviceWith({
+      product: vi.fn().mockResolvedValue({ id: 'product-1', name: '   ' }),
+    });
+    vi.spyOn(service, 'getDraft').mockResolvedValue(draftValue());
+
+    await expect(
+      service.uploadMaterial(
+        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        'BATCH',
+        'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        { type: 'PRODUCT_IMAGE', expectedRevision: 3 },
+        undefined,
+      ),
+    ).rejects.toMatchObject({
+      status: 400,
+      response: { code: 'VALIDATION_ERROR', message: '请先填写产品名称，再上传产品资料' },
+    });
   });
 
   it('accepts only absolute HTTP(S) commerce links without credentials', () => {
@@ -150,7 +187,6 @@ describe('EffectSourceImportService', () => {
       validationIssues: [],
       validatedAt: null,
       completedAt: null,
-      lastPublish: null,
       createdAt: now,
       updatedAt: now,
       _count: { products: 0 },
@@ -158,6 +194,7 @@ describe('EffectSourceImportService', () => {
     const initialize = vi.fn().mockResolvedValue({
       id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
       projectId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      workflowRunId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       currentMode: 'SINGLE',
       revision: 1,
       createdAt: now,
@@ -262,7 +299,7 @@ describe('EffectSourceImportService', () => {
     const service = serviceWith(
       {
         material: vi.fn().mockResolvedValue(current),
-        product: vi.fn().mockResolvedValue({ id: current.productId }),
+        product: vi.fn().mockResolvedValue({ id: current.productId, name: '产品' }),
         replaceMaterial,
       },
       {
@@ -286,6 +323,51 @@ describe('EffectSourceImportService', () => {
       });
       expect(replaceMaterial).not.toHaveBeenCalled();
       expect(deleteObject).not.toHaveBeenCalled();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the old material and removes only the new object when replacement verification fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'effect-replace-verify-'));
+    const path = join(directory, 'front.jpg');
+    await writeFile(path, Buffer.from([0xff, 0xd8, 0xff, 0xe0, ...new Array(20).fill(0)]));
+    const current = {
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      projectId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      productId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      type: 'PRODUCT_IMAGE' as const,
+      status: 'READY' as const,
+      storageKey: '01-working/old.jpg',
+    };
+    const replaceMaterialWithArtifact = vi.fn();
+    const deleteObject = vi.fn().mockResolvedValue(undefined);
+    const service = serviceWith(
+      {
+        material: vi.fn().mockResolvedValue(current),
+        product: vi.fn().mockResolvedValue({ id: current.productId, name: '产品' }),
+        replaceMaterialWithArtifact,
+      },
+      {
+        put: vi.fn().mockResolvedValue({ key: '01-working/new.jpg', sizeBytes: 24 }),
+        open: vi.fn().mockRejectedValue(new Error('cannot read stored object')),
+        delete: deleteObject,
+      },
+    );
+    vi.spyOn(service, 'getDraft').mockResolvedValue(draftValue());
+
+    try {
+      await expect(
+        service.replaceMaterial(current.projectId, 'BATCH', current.productId, current.id, 3, {
+          path,
+          originalname: 'new.jpg',
+          mimetype: 'image/jpeg',
+          size: 24,
+        }),
+      ).rejects.toMatchObject({ status: 500 });
+      expect(replaceMaterialWithArtifact).not.toHaveBeenCalled();
+      expect(deleteObject).toHaveBeenCalledWith('01-working/new.jpg');
+      expect(deleteObject).not.toHaveBeenCalledWith('01-working/old.jpg');
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -399,225 +481,6 @@ describe('EffectSourceImportService', () => {
       'held/source',
       'MATERIAL_DELETED',
     );
-  });
-
-  it('recovers a failed publish from its snapshot after the live draft changes', async () => {
-    const snapshot = {
-      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-      projectId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      mode: 'BATCH',
-      revision: 3,
-      globalConfig: DEFAULT_EFFECT_VIDEO_CONFIG,
-      products: [
-        {
-          id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-          name: '产品',
-          category: '食品',
-          sku: 'SKU-1',
-          commerceUrl: null,
-          configOverride: {},
-          materials: [
-            {
-              id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
-              type: 'PRODUCT_IMAGE',
-              status: 'READY',
-              originalFileName: 'front.jpg',
-              mimeType: 'image/jpeg',
-              sizeBytes: 3,
-              storageKey: 'held/source',
-            },
-          ],
-        },
-      ],
-    };
-    const operation = {
-      id: 'operation-1',
-      draftId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-      revision: 3,
-      status: 'RUNNING',
-      result: null,
-      snapshot,
-    };
-    const startPublishOperation = vi.fn().mockResolvedValue({
-      owner: true,
-      requestMatches: true,
-      operation,
-    });
-    const failPublishOperation = vi.fn().mockResolvedValue(undefined);
-    const completePublishOperation = vi.fn().mockResolvedValue(true);
-    let configFailed = false;
-    const storeWorkflowArtifact = vi
-      .fn()
-      .mockImplementation(
-        async (
-          _projectId: string,
-          _workflow: string,
-          _space: string,
-          artifact: { type: string },
-        ) => {
-          if (artifact.type === 'VIDEO_CONFIG' && !configFailed) {
-            configFailed = true;
-            throw new Error('temporary asset failure');
-          }
-          return {
-            asset: { id: artifact.type === 'VIDEO_CONFIG' ? 'asset-config' : 'asset-metadata' },
-            assetVersionId:
-              artifact.type === 'VIDEO_CONFIG' ? 'version-config' : 'version-metadata',
-            version: 1,
-          };
-        },
-      );
-    const storeWorkflowFileOperation = vi.fn().mockResolvedValue({
-      asset: { id: 'asset-file' },
-      assetVersionId: 'version-file',
-      version: 1,
-    });
-    const service = serviceWith(
-      {
-        publishOperationByKey: vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(operation),
-        startPublishOperation,
-        failPublishOperation,
-        completePublishOperation,
-      },
-      {},
-      { storeWorkflowArtifact, storeWorkflowFileOperation },
-    );
-    vi.spyOn(service, 'getDraft')
-      .mockResolvedValueOnce(publishableDraft())
-      .mockResolvedValueOnce(draftValue({ revision: 4, validatedRevision: null }));
-
-    await expect(
-      service.publish('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'BATCH', 3, 'publish-click-retry'),
-    ).rejects.toThrow('temporary asset failure');
-    const recovered = await service.publish(
-      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      'BATCH',
-      4,
-      'publish-click-retry',
-    );
-
-    expect(recovered.publishedAssets).toHaveLength(3);
-    expect(failPublishOperation).toHaveBeenCalledTimes(1);
-    expect(completePublishOperation).toHaveBeenCalledTimes(1);
-    expect(storeWorkflowArtifact.mock.calls[0]?.[4]).toBe(
-      'operation-1:product:cccccccc-cccc-4ccc-8ccc-cccccccccccc:metadata',
-    );
-    expect(storeWorkflowArtifact.mock.calls[2]?.[4]).toBe(
-      'operation-1:product:cccccccc-cccc-4ccc-8ccc-cccccccccccc:metadata',
-    );
-  });
-
-  it('creates another asset version when the user publishes again with a new key', async () => {
-    const baseSnapshot = {
-      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-      projectId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      mode: 'BATCH',
-      revision: 3,
-      globalConfig: DEFAULT_EFFECT_VIDEO_CONFIG,
-      products: [
-        {
-          id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-          name: '产品',
-          category: '食品',
-          sku: 'SKU-1',
-          commerceUrl: null,
-          configOverride: {},
-          materials: [],
-        },
-      ],
-    };
-    const startPublishOperation = vi
-      .fn()
-      .mockImplementation(
-        async (_project: string, _draft: string, _revision: number, key: string) => ({
-          owner: true,
-          requestMatches: true,
-          operation: {
-            id: key === 'click-1' ? 'operation-1' : 'operation-2',
-            status: 'RUNNING',
-            result: null,
-            snapshot: baseSnapshot,
-          },
-        }),
-      );
-    const storeWorkflowArtifact = vi
-      .fn()
-      .mockImplementation(
-        async (
-          _project: string,
-          _workflow: string,
-          _space: string,
-          artifact: { type: string },
-          operationKey: string,
-        ) => ({
-          asset: { id: `asset-${artifact.type}` },
-          assetVersionId: `version-${operationKey}`,
-          version: operationKey.startsWith('operation-1') ? 1 : 2,
-        }),
-      );
-    const service = serviceWith(
-      {
-        publishOperationByKey: vi.fn().mockResolvedValue(null),
-        startPublishOperation,
-        completePublishOperation: vi.fn().mockResolvedValue(true),
-        failPublishOperation: vi.fn(),
-      },
-      {},
-      { storeWorkflowArtifact },
-    );
-    vi.spyOn(service, 'getDraft').mockResolvedValue(publishableDraft());
-
-    const first = await service.publish(
-      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      'BATCH',
-      3,
-      'click-1',
-    );
-    const second = await service.publish(
-      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      'BATCH',
-      3,
-      'click-2',
-    );
-
-    expect(first.publishedAssets.every((item) => item.version === 1)).toBe(true);
-    expect(second.publishedAssets.every((item) => item.version === 2)).toBe(true);
-    expect(startPublishOperation.mock.calls.map((call) => call[3])).toEqual(['click-1', 'click-2']);
-  });
-
-  it('returns the exact completed publish result without creating another asset version', async () => {
-    const completed: PublishEffectImportDraftData = {
-      projectId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      draftId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-      mode: 'BATCH',
-      revision: 3,
-      publishedAssets: [],
-      summary: { publishedAt: '2026-08-20T00:00:00.000Z', assetCount: 0, assetVersionCount: 0 },
-    };
-    const startPublishOperation = vi.fn().mockResolvedValue({
-      owner: false,
-      requestMatches: true,
-      operation: { status: 'COMPLETED', result: completed },
-    });
-    const storeWorkflowArtifact = vi.fn();
-    const service = serviceWith(
-      {
-        publishOperationByKey: vi.fn().mockResolvedValue({
-          id: 'existing-operation',
-          draftId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-          revision: 3,
-        }),
-        startPublishOperation,
-      },
-      {},
-      { storeWorkflowArtifact },
-    );
-    vi.spyOn(service, 'getDraft').mockResolvedValue(publishableDraft());
-
-    await expect(
-      service.publish('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'BATCH', 3, 'publish-click-1'),
-    ).resolves.toEqual(completed);
-    expect(storeWorkflowArtifact).not.toHaveBeenCalled();
   });
 });
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';

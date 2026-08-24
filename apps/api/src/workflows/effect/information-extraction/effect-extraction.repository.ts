@@ -224,64 +224,6 @@ export class EffectExtractionRepository {
     });
   }
 
-  async cancelProjectRuns(
-    projectId: string,
-    now = new Date(),
-  ): Promise<{ runIds: string[]; storageKeys: string[] }> {
-    return this.prisma.$transaction(async (transaction) => {
-      const runs = await transaction.effectExtractionRun.findMany({
-        where: { projectId, status: { in: ['QUEUED', 'RUNNING'] } },
-        select: { id: true },
-      });
-      const runIds = runs.map((run) => run.id);
-      if (runIds.length === 0) return { runIds: [], storageKeys: [] };
-      const [artifacts, branches] = await Promise.all([
-        transaction.effectExtractionArtifact.findMany({
-          where: { projectId, runId: { in: runIds } },
-          select: { storageKey: true },
-        }),
-        transaction.effectExtractionBranchOutput.findMany({
-          where: { projectId, runId: { in: runIds }, textStorageKey: { not: null } },
-          select: { textStorageKey: true },
-        }),
-      ]);
-      await transaction.effectExtractionRun.updateMany({
-        where: { projectId, id: { in: runIds }, status: { in: ['QUEUED', 'RUNNING'] } },
-        data: {
-          status: 'CANCELLED',
-          currentNode: 'CANCELLED',
-          errorCode: 'PROJECT_EXIT_CANCELLED',
-          errorMessage: '项目退出前已取消任务',
-          attemptToken: null,
-          leaseExpiresAt: null,
-          heartbeatAt: now,
-          completedAt: now,
-        },
-      });
-      await transaction.effectExtractionFileHold.deleteMany({
-        where: { projectId, runId: { in: runIds } },
-      });
-      await transaction.effectExtractionArtifact.deleteMany({
-        where: { projectId, runId: { in: runIds } },
-      });
-      await transaction.effectExtractionBranchOutput.updateMany({
-        where: { projectId, runId: { in: runIds } },
-        data: { textStorageKey: null },
-      });
-      await transaction.jobOutbox.updateMany({
-        where: { projectId, jobType: EFFECT_EXTRACTION_JOB_TYPE, aggregateId: { in: runIds } },
-        data: { status: 'PUBLISHED', dispatchToken: null, publishedAt: now },
-      });
-      return {
-        runIds,
-        storageKeys: [
-          ...artifacts.map((artifact) => artifact.storageKey),
-          ...branches.flatMap((branch) => (branch.textStorageKey ? [branch.textStorageKey] : [])),
-        ],
-      };
-    });
-  }
-
   result(projectId: string, resultId: string) {
     return this.prisma.effectExtractionResult.findFirst({ where: { projectId, id: resultId } });
   }
@@ -290,6 +232,13 @@ export class EffectExtractionRepository {
     return this.prisma.effectImportProduct.findFirst({
       where: { projectId, id: productId },
       select: { id: true, name: true, category: true, sku: true },
+    });
+  }
+
+  workflowRunForDraft(projectId: string, draftId: string) {
+    return this.prisma.effectImportDraft.findFirst({
+      where: { projectId, id: draftId },
+      select: { workspace: { select: { workflowRunId: true } } },
     });
   }
 
@@ -319,7 +268,7 @@ export class EffectExtractionRepository {
         where: { projectId, id: runId },
       });
       if (!run) return { kind: 'NOT_FOUND' as const };
-      if (run.status === 'COMPLETED' || run.status === 'FAILED' || run.status === 'CANCELLED')
+      if (run.status === 'COMPLETED' || run.status === 'FAILED')
         return { kind: 'TERMINAL' as const };
       if (run.status === 'RUNNING' && run.leaseExpiresAt && run.leaseExpiresAt > now)
         return { kind: 'BUSY' as const };
@@ -524,8 +473,7 @@ export class EffectExtractionRepository {
         where: { projectId, id: runId },
       });
       if (!run) return 'NOT_FOUND' as const;
-      if (run.status === 'COMPLETED' || run.status === 'FAILED' || run.status === 'CANCELLED')
-        return 'TERMINAL' as const;
+      if (run.status === 'COMPLETED' || run.status === 'FAILED') return 'TERMINAL' as const;
       if (run.status !== 'RUNNING' || run.attemptToken !== attemptToken)
         return 'LEASE_CONFLICT' as const;
       const retry = input.retryable && run.attemptCount < 3;

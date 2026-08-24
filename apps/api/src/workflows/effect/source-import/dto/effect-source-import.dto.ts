@@ -76,10 +76,6 @@ export class CommitManifestDto extends ExpectedRevisionDto {
   @IsString() @MaxLength(500) idempotencyKey!: string;
 }
 
-export class PublishDraftDto extends ExpectedRevisionDto {
-  @IsString() @MaxLength(500) idempotencyKey!: string;
-}
-
 export class ManifestTemplateQueryDto {
   @IsIn(['csv', 'xlsx']) format!: 'csv' | 'xlsx';
 }

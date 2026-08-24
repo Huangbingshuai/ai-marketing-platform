@@ -7,6 +7,7 @@ import {
   type AssetWorkflow,
   type AssetWorkflowSpace,
   type Project,
+  type WorkingArtifact,
 } from '@ai-marketing/contracts';
 import {
   AlertTriangle,
@@ -23,24 +24,20 @@ import {
   RefreshCw,
   Search,
   Sparkles,
-  Square,
   Target,
   Trash2,
-  UploadCloud,
   X,
 } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 
 import { isAbortError } from '../../api/http-client';
 import { createProject, listProjects as listProjectLibrary } from '../project/api/project.api';
+import { listWorkingArtifacts } from '../workflow/api/workflow-working.api';
 import { presentProjectBinding, useProjectContext } from '../project/project-context';
 import {
   archiveAsset,
-  batchArchiveAssets,
-  batchTagAssets,
   createAssetVersion,
   getAsset,
-  importAssets,
   importAssetSnapshot,
   listAssets,
   listAssetVersions,
@@ -53,12 +50,13 @@ import {
   STATUS_LABELS,
   WORKFLOW_META,
   WORKFLOW_SPACES,
+  isCurrentOnlyEffectImportAsset,
   projectMatchesSpace,
   statusOf,
   typeLabel,
   typesForSpace,
-  uploadAccept,
   versionOf,
+  videoConfigFields,
   type AssetCenterView,
 } from './asset-v4';
 import AssetPreview from './components/AssetPreview.vue';
@@ -97,7 +95,59 @@ const currentProjectEmptyCopy = computed(() => {
 });
 
 type LoadStatus = 'idle' | 'loading' | 'success' | 'error';
-const emptyFacets = (): AssetListFacets => ({ directories: [], types: [], tags: [] });
+const emptyFacets = (): AssetListFacets => ({ directories: [], types: [], tags: [], products: [] });
+const workingArtifactAsAsset = (artifact: WorkingArtifact): Asset => ({
+  id: artifact.id,
+  projectId: artifact.projectId,
+  name: artifact.name,
+  directory: artifact.directory,
+  type: artifact.type,
+  tags: artifact.tags,
+  notes: '工作中 · 尚未归档',
+  originalFileName: artifact.originalFileName ?? '',
+  mimeType: artifact.mimeType ?? 'application/json',
+  sizeBytes: artifact.sizeBytes ?? 0,
+  hasFile: artifact.kind === 'FILE',
+  previewKind: artifact.previewKind,
+  contentUrl: artifact.contentUrl ?? '',
+  downloadUrl: artifact.downloadUrl ?? '',
+  createdAt: artifact.createdAt,
+  updatedAt: artifact.updatedAt,
+  storageWorkflow: 'EFFECT',
+  workflowSpace: 'EFFECT',
+  status: 'PENDING_REVIEW',
+  qualityStatus: 'PENDING_REVIEW',
+  currentVersion: 1,
+  contentKind: artifact.kind === 'STRUCTURED' ? 'WORKING_ARTIFACT' : null,
+  content: artifact.payload,
+  businessData: artifact.metadata,
+  sourceArtifactId: artifact.sourceArtifactId,
+  sourceRunId: artifact.sourceRunId,
+  sourceNode: artifact.nodeId,
+});
+
+const workingFacets = (assets: Asset[]): AssetListFacets => {
+  const typeCounts = new Map<AssetType, number>();
+  const tagCounts = new Map<string, number>();
+  const productCounts = new Map<string, { label: string; count: number }>();
+  for (const asset of assets) {
+    typeCounts.set(asset.type, (typeCounts.get(asset.type) ?? 0) + 1);
+    for (const tag of asset.tags) tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+    const metadata = asset.businessData as Record<string, unknown> | null;
+    const productKey = typeof metadata?.productId === 'string' ? metadata.productId : '';
+    const productName = typeof metadata?.productName === 'string' ? metadata.productName : '';
+    if (productKey && productName) {
+      const current = productCounts.get(productKey);
+      productCounts.set(productKey, { label: productName, count: (current?.count ?? 0) + 1 });
+    }
+  }
+  return {
+    directories: [],
+    types: [...typeCounts].map(([value, count]) => ({ value, label: typeLabel(value), count })),
+    tags: [...tagCounts].map(([value, count]) => ({ value, count })),
+    products: [...productCounts].map(([value, entry]) => ({ value, ...entry })),
+  };
+};
 const view = ref<AssetCenterView>('current');
 const workflow = ref<AssetWorkflow>(props.initialWorkflow);
 const space = ref<AssetWorkflowSpace>(WORKFLOW_SPACES[props.initialWorkflow][0]!);
@@ -109,6 +159,7 @@ const libraryProjectsLoading = ref(false);
 const libraryProjectsError = ref('');
 const keyword = ref('');
 const type = ref<'' | AssetType>('');
+const productId = ref('');
 const page = ref(1);
 const pageSize = ref(24);
 const items = ref<Asset[]>([]);
@@ -122,16 +173,13 @@ const detailStatus = ref<LoadStatus>('idle');
 const detailError = ref('');
 const versions = ref<AssetVersion[]>([]);
 const versionsError = ref('');
-const selectedIds = ref<string[]>([]);
 const actionBusy = ref(false);
 const actionError = ref('');
 const toast = ref('');
 const versionNote = ref('');
-const fileInput = ref<HTMLInputElement | null>(null);
 const drawer = ref<HTMLElement | null>(null);
 let listController: AbortController | undefined;
 let detailController: AbortController | undefined;
-let actionController: AbortController | undefined;
 let keywordTimer: ReturnType<typeof setTimeout> | undefined;
 let projectKeywordTimer: ReturnType<typeof setTimeout> | undefined;
 let projectListController: AbortController | undefined;
@@ -159,6 +207,7 @@ const availableTypes = computed(() =>
     facets.value.types.map((option) => option.value),
   ),
 );
+const productOptions = computed(() => facets.value.products ?? []);
 const matchingProjects = computed(() => {
   const globalNeedle = globalProjectKeyword.value.trim().toLowerCase();
   const needle = (globalNeedle || projectKeyword.value.trim()).toLowerCase();
@@ -180,10 +229,7 @@ const workflowCount = (key: AssetWorkflow): number => {
   }
   const project = currentProject.value;
   if (!project) return 0;
-  return WORKFLOW_SPACES[key].reduce(
-    (sum, workflowSpace) => sum + (project.assetCounts?.[workflowSpace] ?? 0),
-    0,
-  );
+  return key === workflow.value ? total.value : 0;
 };
 const workflowDescription = (key: AssetWorkflow): string => {
   if (view.value === 'library') {
@@ -202,7 +248,7 @@ const contextCopy = computed(() => {
   const project = activeProject.value;
   if (view.value === 'current' && !project) return currentProjectEmptyCopy.value.copy;
   if (view.value === 'current' && project) {
-    return `${project.id} · ${project.status} · 仅展示本项目源资产和已调用引用`;
+    return `${project.id} · ${project.status} · 实时工作副本，尚未归档`;
   }
   if (project) return `${project.id} · ${project.status} · 仅展示该项目在当前工作流的素材`;
   if (GLOBAL_SPACES.has(space.value)) return '全局共享资产空间，不归属具体项目';
@@ -245,11 +291,20 @@ const loadProjectLibrary = async (): Promise<void> => {
     if (!controller.signal.aborted) libraryProjectsLoading.value = false;
   }
 };
-const allPageSelected = computed(
-  () =>
-    items.value.length > 0 && items.value.every((asset) => selectedIds.value.includes(asset.id)),
-);
 const pageCount = computed(() => Math.max(1, paginationPageCount.value));
+const detailVideoConfigFields = computed(() =>
+  detail.value ? videoConfigFields(detail.value) : [],
+);
+const detailStructuredSummary = computed(() => {
+  if (!detail.value || detail.value.hasFile || detail.value.content === undefined) return '';
+  const content = detail.value.content as Record<string, unknown>;
+  const preferred = ['productName', 'productCategory', 'coreSpecification', 'visualFeatures']
+    .map((key) => content?.[key])
+    .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()));
+  const text = preferred.length ? preferred.join(' · ') : JSON.stringify(content);
+  return text.length > 320 ? `${text.slice(0, 320)}…` : text;
+});
+const currentOnlyDetail = computed(() => view.value === 'current');
 const canUseInCurrent = computed(
   () => detail.value && currentProject.value && detail.value.projectId !== currentProject.value.id,
 );
@@ -267,7 +322,6 @@ const resetAssetState = (): void => {
   items.value = [];
   total.value = 0;
   facets.value = emptyFacets();
-  selectedIds.value = [];
   detail.value = null;
   detailStatus.value = 'idle';
   detailError.value = '';
@@ -279,6 +333,7 @@ const resetAssetState = (): void => {
 const assetQuery = () => ({
   ...(keyword.value.trim() ? { keyword: keyword.value.trim() } : {}),
   ...(type.value ? { type: type.value } : {}),
+  ...(productId.value ? { productId: productId.value } : {}),
   workflow: workflow.value,
   space: space.value,
   page: page.value,
@@ -296,10 +351,43 @@ const loadAssets = async (): Promise<void> => {
   listController = controller;
   const requestGeneration = ++generation;
   items.value = [];
-  selectedIds.value = [];
   listStatus.value = 'loading';
   listError.value = '';
   try {
+    if (view.value === 'current') {
+      const response = await listWorkingArtifacts(
+        projectId,
+        { workflow: workflow.value, space: space.value },
+        controller.signal,
+      );
+      if (
+        controller.signal.aborted ||
+        requestGeneration !== generation ||
+        activeProject.value?.id !== projectId
+      )
+        return;
+      const all = response.data.items.map(workingArtifactAsAsset);
+      facets.value = workingFacets(all);
+      const needle = keyword.value.trim().toLocaleLowerCase('zh-CN');
+      const filtered = all.filter((asset) => {
+        const metadata = asset.businessData as Record<string, unknown> | null;
+        return (
+          (!type.value || asset.type === type.value) &&
+          (!productId.value || metadata?.productId === productId.value) &&
+          (!needle ||
+            [asset.name, asset.originalFileName, ...asset.tags]
+              .join(' ')
+              .toLocaleLowerCase('zh-CN')
+              .includes(needle))
+        );
+      });
+      total.value = filtered.length;
+      paginationPageCount.value = Math.max(1, Math.ceil(filtered.length / pageSize.value));
+      const start = (page.value - 1) * pageSize.value;
+      items.value = filtered.slice(start, start + pageSize.value);
+      listStatus.value = 'success';
+      return;
+    }
     const response = await listAssets(projectId, assetQuery(), controller.signal);
     if (
       controller.signal.aborted ||
@@ -333,10 +421,16 @@ const selectAsset = async (asset: Asset): Promise<void> => {
   detailError.value = '';
   versions.value = [];
   versionsError.value = '';
+  if (view.value === 'current') {
+    detailStatus.value = 'success';
+    return;
+  }
   try {
     const [detailResult, versionResult] = await Promise.allSettled([
       getAsset(projectId, assetId, controller.signal),
-      listAssetVersions(projectId, assetId, controller.signal),
+      isCurrentOnlyEffectImportAsset(asset)
+        ? Promise.resolve({ data: [] as AssetVersion[] })
+        : listAssetVersions(projectId, assetId, controller.signal),
     ]);
     if (detailResult.status === 'rejected') throw detailResult.reason;
     if (
@@ -368,6 +462,7 @@ const enterProject = (project: Project): void => {
   browseProjectId.value = project.id;
   keyword.value = '';
   type.value = '';
+  productId.value = '';
   page.value = 1;
 };
 
@@ -391,123 +486,6 @@ const createContextProject = async (): Promise<void> => {
     showToast(`“${response.data.name}”已创建并设为当前项目`);
   } catch (error) {
     actionError.value = error instanceof Error ? error.message : '创建项目失败';
-  } finally {
-    actionBusy.value = false;
-  }
-};
-
-const openUpload = (): void => {
-  if (!type.value) {
-    showToast('请先选择资产类型');
-    return;
-  }
-  fileInput.value?.click();
-};
-
-const uploadFiles = async (event: Event): Promise<void> => {
-  const target = event.target as HTMLInputElement;
-  const files = Array.from(target.files ?? []);
-  const projectId = activeProject.value?.id;
-  if (!files.length || !projectId || !type.value) return;
-  actionController?.abort();
-  const controller = new AbortController();
-  actionController = controller;
-  actionBusy.value = true;
-  actionError.value = '';
-  try {
-    const response = await importAssets(
-      projectId,
-      files,
-      workflow.value,
-      space.value,
-      type.value,
-      controller.signal,
-    );
-    showToast(`已上传 ${response.data.length} 个资产`);
-    await loadAssets();
-    if (response.data[0]) await selectAsset(response.data[0]);
-  } catch (error) {
-    if (!isAbortError(error))
-      actionError.value = error instanceof Error ? error.message : '上传失败';
-  } finally {
-    actionBusy.value = false;
-    target.value = '';
-  }
-};
-
-const toggleSelect = (assetId: string): void => {
-  selectedIds.value = selectedIds.value.includes(assetId)
-    ? selectedIds.value.filter((id) => id !== assetId)
-    : [...selectedIds.value, assetId];
-};
-const togglePage = (): void => {
-  const pageIds = items.value.map((asset) => asset.id);
-  selectedIds.value = allPageSelected.value
-    ? selectedIds.value.filter((id) => !pageIds.includes(id))
-    : [...new Set([...selectedIds.value, ...pageIds])];
-};
-const selectAllFiltered = async (): Promise<void> => {
-  const projectId = activeProject.value?.id;
-  if (!projectId || !total.value) return;
-  actionController?.abort();
-  const controller = new AbortController();
-  actionController = controller;
-  actionBusy.value = true;
-  actionError.value = '';
-  try {
-    const ids: string[] = [];
-    const batchSize = 96;
-    const batchCount = Math.ceil(total.value / batchSize);
-    for (let batchPage = 1; batchPage <= batchCount; batchPage += 1) {
-      const response = await listAssets(
-        projectId,
-        { ...assetQuery(), page: batchPage, pageSize: batchSize },
-        controller.signal,
-      );
-      ids.push(...response.data.items.map((asset) => asset.id));
-    }
-    selectedIds.value = [...new Set(ids)];
-    showToast(`已选择全部 ${selectedIds.value.length} 项筛选结果`);
-  } catch (error) {
-    if (!isAbortError(error)) {
-      actionError.value = error instanceof Error ? error.message : '全选筛选结果失败';
-    }
-  } finally {
-    actionBusy.value = false;
-  }
-};
-
-const runBatchTags = async (): Promise<void> => {
-  const projectId = activeProject.value?.id;
-  const tags = ['批量标记'];
-  if (!projectId || !selectedIds.value.length) return;
-  actionBusy.value = true;
-  try {
-    const response = await batchTagAssets(projectId, { assetIds: selectedIds.value, tags });
-    showToast(`已为 ${response.data.affected} 项添加标签`);
-    await loadAssets();
-  } catch (error) {
-    actionError.value = error instanceof Error ? error.message : '批量打标签失败';
-  } finally {
-    actionBusy.value = false;
-  }
-};
-const runBatchArchive = async (): Promise<void> => {
-  const projectId = activeProject.value?.id;
-  if (
-    !projectId ||
-    !selectedIds.value.length ||
-    !window.confirm('确定移除选中的资产？移除后将不再出现在项目资产中。')
-  )
-    return;
-  actionBusy.value = true;
-  try {
-    const response = await batchArchiveAssets(projectId, { assetIds: selectedIds.value });
-    if (detail.value && selectedIds.value.includes(detail.value.id)) detail.value = null;
-    showToast(`已移除 ${response.data.affected} 项`);
-    await loadAssets();
-  } catch (error) {
-    actionError.value = error instanceof Error ? error.message : '批量移除失败';
   } finally {
     actionBusy.value = false;
   }
@@ -594,6 +572,7 @@ const close = (): void => {
 watch([workflow, space], () => {
   browseProjectId.value = '';
   type.value = '';
+  productId.value = '';
   keyword.value = '';
   page.value = 1;
   resetAssetState();
@@ -608,13 +587,14 @@ watch(
 );
 watch([view, () => currentProject.value?.id, browseProjectId], () => {
   type.value = '';
+  productId.value = '';
   keyword.value = '';
   page.value = 1;
   resetAssetState();
   void loadAssets();
   void loadProjectLibrary();
 });
-watch([type, page, pageSize], () => {
+watch([type, productId, page, pageSize], () => {
   resetAssetState();
   void loadAssets();
 });
@@ -648,7 +628,6 @@ watch(
 onBeforeUnmount(() => {
   listController?.abort();
   detailController?.abort();
-  actionController?.abort();
   projectListController?.abort();
   if (keywordTimer) clearTimeout(keywordTimer);
   if (projectKeywordTimer) clearTimeout(projectKeywordTimer);
@@ -733,9 +712,7 @@ onBeforeUnmount(() => {
                 ><span>{{ contextCopy }}</span>
               </div>
               <button
-                v-if="
-                  view === 'library' && browseProject && browseProject.id !== currentProject?.id
-                "
+                v-if="view === 'library' && browseProject && !currentProject"
                 class="primary-button"
                 type="button"
                 @click="selectProject(browseProject.id)"
@@ -875,6 +852,22 @@ onBeforeUnmount(() => {
                       v-model="keyword"
                       placeholder="搜索名称、Prompt ID、任务ID、镜号或标签"
                   /></label>
+                  <label
+                    v-if="workflow === 'EFFECT' && space === 'EFFECT' && productOptions.length"
+                    class="product-filter"
+                  >
+                    <span>按产品隔离</span>
+                    <select v-model="productId" aria-label="按产品名称筛选资产">
+                      <option value="">全部产品</option>
+                      <option
+                        v-for="option in productOptions"
+                        :key="option.value"
+                        :value="option.value"
+                      >
+                        {{ option.label }}（{{ option.count }}）
+                      </option>
+                    </select>
+                  </label>
                   <div class="type-chips">
                     <button :class="{ active: !type }" type="button" @click="type = ''">
                       全部 <small>{{ total }}</small></button
@@ -891,53 +884,6 @@ onBeforeUnmount(() => {
                       }}</small>
                     </button>
                   </div>
-                  <button
-                    v-if="type"
-                    class="upload-button"
-                    type="button"
-                    :disabled="actionBusy"
-                    @click="openUpload"
-                  >
-                    <UploadCloud :size="14" />上传{{ typeLabel(type) }}
-                  </button>
-                  <label class="select-control"
-                    ><input
-                      type="checkbox"
-                      :checked="allPageSelected"
-                      @change="togglePage"
-                    />全选本页 {{ items.length }} 项</label
-                  >
-                  <label class="select-control"
-                    ><input
-                      type="checkbox"
-                      :checked="selectedIds.length === total && total > 0"
-                      @change="selectAllFiltered"
-                    />全选筛选结果 {{ total }} 项</label
-                  >
-                  <button
-                    class="secondary-button"
-                    type="button"
-                    :disabled="!selectedIds.length || actionBusy"
-                    @click="runBatchTags"
-                  >
-                    批量打标签
-                  </button>
-                  <button
-                    class="secondary-button danger-link"
-                    type="button"
-                    :disabled="!selectedIds.length || actionBusy"
-                    @click="runBatchArchive"
-                  >
-                    批量删除
-                  </button>
-                  <input
-                    ref="fileInput"
-                    class="sr-only"
-                    type="file"
-                    multiple
-                    :accept="type ? uploadAccept(type) : undefined"
-                    @change="uploadFiles"
-                  />
                 </div>
 
                 <div class="workspace" :aria-busy="listStatus === 'loading'">
@@ -962,9 +908,9 @@ onBeforeUnmount(() => {
                       }}</strong>
                       <p>
                         {{
-                          type
-                            ? `可通过“按${typeLabel(type)}上传”添加多个文件。`
-                            : '选择资产类型后即可按类型批量上传。'
+                          view === 'current'
+                            ? '节点上传或生成成功后，最新工作副本会自动显示在这里。'
+                            : '当前筛选条件下暂无正式归档资产。'
                         }}
                       </p>
                     </div>
@@ -975,7 +921,6 @@ onBeforeUnmount(() => {
                         class="asset-card"
                         :class="{
                           selected: detail?.id === asset.id,
-                          checked: selectedIds.includes(asset.id),
                         }"
                         tabindex="0"
                         role="button"
@@ -983,29 +928,20 @@ onBeforeUnmount(() => {
                         @click="selectAsset(asset)"
                         @keydown.enter="selectAsset(asset)"
                       >
-                        <button
-                          class="card-check"
-                          type="button"
-                          :aria-label="`选择${asset.name}`"
-                          @click.stop="toggleSelect(asset.id)"
-                        >
-                          <Check v-if="selectedIds.includes(asset.id)" :size="12" /><Square
-                            v-else
-                            :size="13"
-                          />
-                        </button>
                         <AssetPreview :asset="asset" compact />
                         <div class="card-copy">
                           <div>
                             <span class="type-badge">{{ typeLabel(asset.type) }}</span
                             ><span class="status-dot" :class="STATUS_CLASS[statusOf(asset)]">{{
-                              STATUS_LABELS[statusOf(asset)]
+                              view === 'current' ? '尚未归档' : STATUS_LABELS[statusOf(asset)]
                             }}</span>
                           </div>
                           <strong>{{ asset.name }}</strong>
                           <p>{{ asset.notes || asset.originalFileName }}</p>
                           <footer>
-                            <span>v{{ versionOf(asset) }}</span
+                            <span
+                              v-if="view !== 'current' && !isCurrentOnlyEffectImportAsset(asset)"
+                              >v{{ versionOf(asset) }}</span
                             ><span v-if="asset.isSnapshot || asset.sourceAssetId"
                               ><Link2 :size="10" />快照</span
                             ><span>{{
@@ -1042,7 +978,7 @@ onBeforeUnmount(() => {
                     </button>
                     <div v-if="!detail" class="detail-placeholder">
                       <Boxes :size="34" /><strong>选择一项资产查看详情</strong
-                      ><span>这里会显示内容、来源、依赖与版本记录</span>
+                      ><span>这里会显示内容、来源与依赖信息</span>
                     </div>
                     <div v-else-if="detailStatus === 'error'" class="large-state error">
                       <AlertTriangle :size="25" /><strong>详情加载失败</strong>
@@ -1064,18 +1000,44 @@ onBeforeUnmount(() => {
                         <h2>{{ detail.name }}</h2>
                         <p>{{ detail.notes || '暂无资产说明' }}</p>
                       </header>
+                      <section v-if="detail.type === 'VIDEO_CONFIG'" class="video-config-detail">
+                        <h3>视频配置详情</h3>
+                        <dl v-if="detailVideoConfigFields.length" class="video-config-fields">
+                          <div
+                            v-for="field in detailVideoConfigFields"
+                            :key="field.key"
+                            :class="{ wide: field.key === 'disabledElements' }"
+                          >
+                            <dt>{{ field.label }}</dt>
+                            <dd>{{ field.value }}</dd>
+                          </div>
+                        </dl>
+                        <p v-else class="muted">当前配置没有可展示的字段。</p>
+                      </section>
                       <section>
                         <h3>内容与规格</h3>
                         <dl>
                           <div>
                             <dt>文件</dt>
-                            <dd>{{ detail.originalFileName || '结构化资产' }}</dd>
+                            <dd>
+                              {{
+                                detail.type === 'VIDEO_CONFIG'
+                                  ? '无独立文件'
+                                  : detail.originalFileName || '结构化资产'
+                              }}
+                            </dd>
                           </div>
                           <div>
                             <dt>格式</dt>
-                            <dd>{{ detail.mimeType || detail.contentKind || '结构化内容' }}</dd>
+                            <dd>
+                              {{
+                                detail.type === 'VIDEO_CONFIG'
+                                  ? detail.contentKind || '结构化配置'
+                                  : detail.mimeType || detail.contentKind || '结构化内容'
+                              }}
+                            </dd>
                           </div>
-                          <div>
+                          <div v-if="!currentOnlyDetail">
                             <dt>版本</dt>
                             <dd>v{{ versionOf(detail) }}</dd>
                           </div>
@@ -1088,8 +1050,11 @@ onBeforeUnmount(() => {
                           <span v-for="tag in detail.tags" :key="tag"># {{ tag }}</span
                           ><span v-if="!detail.tags.length">暂无标签</span>
                         </div>
+                        <p v-if="detailStructuredSummary" class="muted">
+                          {{ detailStructuredSummary }}
+                        </p>
                       </section>
-                      <footer class="detail-actions">
+                      <footer v-if="!currentOnlyDetail" class="detail-actions">
                         <button
                           v-if="(detail.isSnapshot || detail.sourceAssetId) && detail.outdated"
                           class="primary-button detail-wide"
@@ -1118,10 +1083,12 @@ onBeforeUnmount(() => {
                         </button>
                       </footer>
                       <details class="detail-fold">
-                        <summary>查看来源、版本与依赖</summary>
+                        <summary>
+                          {{ currentOnlyDetail ? '查看来源与依赖' : '查看来源、版本与依赖' }}
+                        </summary>
                         <section>
                           <dl>
-                            <div>
+                            <div v-if="!currentOnlyDetail">
                               <dt>来源项目</dt>
                               <dd>{{ detail.sourceProjectId || detail.projectId }}</dd>
                             </div>
@@ -1162,8 +1129,11 @@ onBeforeUnmount(() => {
                             >
                           </div>
                           <p v-else class="muted">该资产没有登记上游依赖。</p>
-                          <h3>版本时间线</h3>
-                          <div v-if="versions.length" class="version-timeline">
+                          <h3 v-if="!currentOnlyDetail">版本时间线</h3>
+                          <div
+                            v-if="!currentOnlyDetail && versions.length"
+                            class="version-timeline"
+                          >
                             <article v-for="version in versions" :key="version.id">
                               <strong>v{{ version.version }}</strong
                               ><span>{{ version.changeNote }}</span
@@ -1172,7 +1142,9 @@ onBeforeUnmount(() => {
                               }}</small>
                             </article>
                           </div>
-                          <p v-else class="muted">{{ versionsError || '暂无版本记录' }}</p>
+                          <p v-else-if="!currentOnlyDetail" class="muted">
+                            {{ versionsError || '暂无版本记录' }}
+                          </p>
                         </section>
                       </details>
                       <div v-if="detail.isSnapshot || detail.sourceAssetId" class="snapshot-note">
@@ -1180,7 +1152,7 @@ onBeforeUnmount(() => {
                           >当前项目使用锁定版本；来源升级不会自动改变现有任务。</span
                         >
                       </div>
-                      <details v-else class="detail-fold">
+                      <details v-else-if="!currentOnlyDetail" class="detail-fold">
                         <summary>生成新版本</summary>
                         <section class="version-panel">
                           <textarea
@@ -1943,6 +1915,32 @@ onBeforeUnmount(() => {
   margin: 0 0 7px;
   color: #46566d;
   font-size: 9px;
+}
+.video-config-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+.video-config-fields > div {
+  display: block;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #dce6f5;
+  border-radius: 8px;
+  background: #f6f9fe;
+}
+.video-config-fields > div.wide {
+  grid-column: 1 / -1;
+}
+.video-config-fields dt {
+  font-size: 8px;
+}
+.video-config-fields dd {
+  margin-top: 4px;
+  color: #314867;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.45;
 }
 dl {
   margin: 0;
@@ -2714,6 +2712,28 @@ button:disabled {
   border: 0;
   outline: 0;
   font-size: 9px;
+}
+.product-filter {
+  height: 36px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 0 8px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #d5deeb;
+  border-radius: 9px;
+  color: #6b7890;
+  font-size: 9px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.product-filter select {
+  width: 132px;
+  border: 0;
+  outline: 0;
+  background: #fff;
+  color: #26364d;
+  font-size: 10px;
 }
 .type-chips {
   min-width: 0;

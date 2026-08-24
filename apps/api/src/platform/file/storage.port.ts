@@ -1,8 +1,19 @@
 import type { Readable } from 'node:stream';
 
 export type StoragePutInput = {
+  projectId: string;
   stream: Readable;
   sizeBytes: number;
+  contentType?: string;
+  keyContext: {
+    projectName: string;
+    workflow: string;
+    lifecycle: 'staging' | 'assets' | 'manifest';
+    productId?: string;
+    productName?: string;
+    category: string;
+    originalFileName: string;
+  };
 };
 
 export type StoredObject = {

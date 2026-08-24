@@ -117,6 +117,53 @@ export const typesForSpace = (
 export const statusOf = (asset: Asset): AssetStatus =>
   asset.qualityStatus ?? asset.status ?? 'AVAILABLE';
 
+export const isImageFileAsset = (asset: Pick<Asset, 'hasFile' | 'previewKind'>): boolean =>
+  asset.hasFile === true && asset.previewKind === 'IMAGE';
+
+export const isCurrentOnlyEffectImportAsset = (
+  asset: Pick<Asset, 'storageWorkflow' | 'workflowSpace' | 'sourceNode'>,
+): boolean =>
+  asset.storageWorkflow === 'EFFECT' &&
+  asset.workflowSpace === 'EFFECT' &&
+  asset.sourceNode === 'SOURCE_IMPORT';
+
+export type AssetDisplayField = { key: string; label: string; value: string };
+
+const structuredRecord = (value: unknown): Record<string, unknown> | null =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+export const videoConfigFields = (
+  asset: Pick<Asset, 'type' | 'content' | 'businessData'>,
+): AssetDisplayField[] => {
+  if (asset.type !== 'VIDEO_CONFIG') return [];
+  const config = structuredRecord(asset.content) ?? structuredRecord(asset.businessData);
+  if (!config) return [];
+  const fields: AssetDisplayField[] = [];
+  const append = (key: string, label: string, suffix = ''): void => {
+    const raw = config[key];
+    if ((typeof raw === 'string' && raw.trim()) || typeof raw === 'number') {
+      fields.push({ key, label, value: `${String(raw).trim()}${suffix}` });
+    }
+  };
+  append('durationSeconds', '视频时长', ' 秒');
+  append('aspectRatio', '画幅比例');
+  append('styleTone', '风格基调');
+  append('deliveryChannel', '投放渠道');
+  if (Array.isArray(config.disabledElements)) {
+    const disabledElements = config.disabledElements.filter(
+      (value): value is string => typeof value === 'string' && Boolean(value.trim()),
+    );
+    fields.push({
+      key: 'disabledElements',
+      label: '禁用元素',
+      value: disabledElements.length ? disabledElements.join('、') : '无',
+    });
+  }
+  return fields;
+};
+
 export const STATUS_CLASS: Record<AssetStatus, 'green' | 'orange' | 'red'> = {
   AVAILABLE: 'green',
   PENDING_REVIEW: 'orange',

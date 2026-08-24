@@ -1,11 +1,19 @@
 export type AppEnvironment = 'development' | 'test' | 'production';
+export type StorageDriver = 'local' | 'minio';
 
 export type EnvironmentVariables = {
   APP_ENV: AppEnvironment;
   API_PORT: number;
   WEB_ORIGIN: string;
+  STORAGE_DRIVER: StorageDriver;
   LOCAL_STORAGE_ROOT: string | undefined;
   MAX_UPLOAD_BYTES: number;
+  MINIO_ENDPOINT: string | undefined;
+  MINIO_PORT: number;
+  MINIO_USE_SSL: boolean;
+  MINIO_BUCKET: string | undefined;
+  MINIO_ACCESS_KEY: string | undefined;
+  MINIO_SECRET_KEY: string | undefined;
   DATABASE_URL: string;
   REDIS_URL: string;
   RABBITMQ_URL: string;
@@ -30,14 +38,31 @@ const requiredString = (value: unknown, key: string): string => {
 const optionalString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() !== '' ? value : undefined;
 
-const parsePort = (value: unknown): number => {
-  const port = Number(value ?? 3000);
+const parsePort = (value: unknown, key: string, defaultValue: number): number => {
+  const port = Number(value ?? defaultValue);
 
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error('环境变量 API_PORT 必须是 1 到 65535 之间的整数');
+    throw new Error(`环境变量 ${key} 必须是 1 到 65535 之间的整数`);
   }
 
   return port;
+};
+
+const parseStorageDriver = (value: unknown): StorageDriver => {
+  const driver = value ?? 'local';
+  if (driver !== 'local' && driver !== 'minio') {
+    throw new Error('环境变量 STORAGE_DRIVER 必须是 local 或 minio');
+  }
+  return driver;
+};
+
+const parseBoolean = (value: unknown, key: string, defaultValue: boolean): boolean => {
+  const normalized = String(value ?? defaultValue)
+    .trim()
+    .toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  throw new Error(`环境变量 ${key} 必须是 true 或 false`);
 };
 
 const parsePositiveInteger = (value: unknown, key: string, defaultValue: number): number => {
@@ -62,6 +87,19 @@ const parseEnvironment = (value: unknown): AppEnvironment => {
 
 export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVariables => {
   const appEnvironment = parseEnvironment(raw.APP_ENV);
+  const storageDriver = parseStorageDriver(raw.STORAGE_DRIVER);
+  const minioEndpoint = optionalString(raw.MINIO_ENDPOINT);
+  const minioBucket = optionalString(raw.MINIO_BUCKET);
+  const minioAccessKey = optionalString(raw.MINIO_ACCESS_KEY);
+  const minioSecretKey = optionalString(raw.MINIO_SECRET_KEY);
+
+  if (storageDriver === 'minio') {
+    requiredString(minioEndpoint, 'MINIO_ENDPOINT');
+    requiredString(minioBucket, 'MINIO_BUCKET');
+    requiredString(minioAccessKey, 'MINIO_ACCESS_KEY');
+    requiredString(minioSecretKey, 'MINIO_SECRET_KEY');
+  }
+
   const effectExtractionWorkerToken = optionalString(raw.EFFECT_EXTRACTION_WORKER_TOKEN);
   if (appEnvironment === 'production') {
     requiredString(effectExtractionWorkerToken, 'EFFECT_EXTRACTION_WORKER_TOKEN');
@@ -69,14 +107,21 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
 
   return {
     APP_ENV: appEnvironment,
-    API_PORT: parsePort(raw.API_PORT),
+    API_PORT: parsePort(raw.API_PORT, 'API_PORT', 3000),
     WEB_ORIGIN: requiredString(raw.WEB_ORIGIN ?? 'http://localhost:5173', 'WEB_ORIGIN'),
+    STORAGE_DRIVER: storageDriver,
     LOCAL_STORAGE_ROOT: optionalString(raw.LOCAL_STORAGE_ROOT),
     MAX_UPLOAD_BYTES: parsePositiveInteger(
       raw.MAX_UPLOAD_BYTES,
       'MAX_UPLOAD_BYTES',
       512 * 1024 * 1024,
     ),
+    MINIO_ENDPOINT: minioEndpoint,
+    MINIO_PORT: parsePort(raw.MINIO_PORT, 'MINIO_PORT', 9000),
+    MINIO_USE_SSL: parseBoolean(raw.MINIO_USE_SSL, 'MINIO_USE_SSL', false),
+    MINIO_BUCKET: minioBucket,
+    MINIO_ACCESS_KEY: minioAccessKey,
+    MINIO_SECRET_KEY: minioSecretKey,
     DATABASE_URL: requiredString(raw.DATABASE_URL, 'DATABASE_URL'),
     REDIS_URL: requiredString(raw.REDIS_URL, 'REDIS_URL'),
     RABBITMQ_URL: requiredString(raw.RABBITMQ_URL, 'RABBITMQ_URL'),

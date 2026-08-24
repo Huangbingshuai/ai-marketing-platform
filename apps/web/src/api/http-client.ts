@@ -6,6 +6,7 @@ type JsonRequestOptions = {
   method?: 'DELETE' | 'GET' | 'PATCH' | 'POST' | 'PUT';
   operation?: string;
   signal?: AbortSignal | undefined;
+  keepalive?: boolean;
 };
 
 type ApiErrorPayload = {
@@ -44,6 +45,7 @@ export const requestJson = async <T>(
     method = 'GET',
     operation = '请求',
     signal,
+    keepalive,
   }: JsonRequestOptions = {},
 ): Promise<T> => {
   const headers: Record<string, string> = { Accept: 'application/json', ...customHeaders };
@@ -56,6 +58,7 @@ export const requestJson = async <T>(
     method,
     headers,
     ...(signal ? { signal } : {}),
+    ...(keepalive ? { keepalive: true } : {}),
     ...(body === undefined ? {} : { body: isFormData ? body : JSON.stringify(body) }),
   });
 
@@ -78,6 +81,7 @@ export const requestRaw = async (
     method = 'GET',
     operation = '请求',
     signal,
+    keepalive,
   }: JsonRequestOptions = {},
 ): Promise<Response> => {
   const headers: Record<string, string> = { ...customHeaders };
@@ -89,6 +93,7 @@ export const requestRaw = async (
     method,
     headers,
     ...(signal ? { signal } : {}),
+    ...(keepalive ? { keepalive: true } : {}),
     ...(body === undefined ? {} : { body: isFormData ? body : JSON.stringify(body) }),
   });
   if (!response.ok) {

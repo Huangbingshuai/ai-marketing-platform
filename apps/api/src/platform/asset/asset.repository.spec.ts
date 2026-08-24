@@ -12,7 +12,11 @@ describe('AssetRepository project isolation', () => {
     };
     const repository = new AssetRepository({ asset } as unknown as PrismaService);
 
-    await repository.list('project-a', { keyword: '片', tag: '夏季' });
+    await repository.list('project-a', {
+      keyword: '片',
+      tag: '夏季',
+      productId: '11111111-1111-4111-8111-111111111111',
+    });
     await repository.listForFacets('project-a', {
       workflow: 'CUSTOMIZED',
       space: 'CUSTOMIZED_PROJECT',
@@ -31,6 +35,10 @@ describe('AssetRepository project isolation', () => {
       projectId: 'project-a',
       archivedAt: null,
       tags: { has: '夏季' },
+      businessData: {
+        path: ['productId'],
+        equals: '11111111-1111-4111-8111-111111111111',
+      },
     });
     expect(asset.findMany.mock.calls[0]?.[0].where.OR).toContainEqual({ tags: { has: '片' } });
     expect(asset.findMany.mock.calls[1]?.[0].where).toEqual({
@@ -38,6 +46,13 @@ describe('AssetRepository project isolation', () => {
       archivedAt: null,
       storageWorkflow: 'CUSTOMIZED',
       workflowSpace: 'CUSTOMIZED_PROJECT',
+    });
+    expect(asset.findMany.mock.calls[1]?.[0].select).toEqual({
+      directory: true,
+      type: true,
+      status: true,
+      tags: true,
+      businessData: true,
     });
     expect(asset.findFirst).toHaveBeenCalledWith({
       where: { projectId: 'project-a', archivedAt: null, id: 'asset-a' },

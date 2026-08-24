@@ -14,6 +14,7 @@ import type {
   StoredObject,
   StoredStream,
 } from './storage.port';
+import { buildStorageObjectKey } from './storage-object-key';
 
 export const DEFAULT_LOCAL_STORAGE_ROOT = resolve(__dirname, '../../../../../.local-storage');
 
@@ -43,7 +44,7 @@ export class LocalStorageAdapter implements StoragePort {
 
   async put(input: StoragePutInput): Promise<StoredObject> {
     const objectId = randomUUID();
-    const key = `assets/${objectId.slice(0, 2)}/${objectId}`;
+    const key = buildStorageObjectKey(input, objectId);
     const finalPath = this.objectPath(key);
     const temporaryPath = this.objectPath(`tmp/storage-${randomUUID()}.part`);
 

@@ -47,6 +47,9 @@ const currentProjectId = ref('');
 const assetTrigger = ref<HTMLButtonElement | null>(null);
 const createTrigger = ref<HTMLButtonElement | null>(null);
 const createNameInput = ref<HTMLInputElement | null>(null);
+const effectNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
+const exitBusy = ref(false);
+const exitError = ref('');
 let projectsController: AbortController | undefined;
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 const CURRENT_PROJECT_STORAGE_KEY = 'ai-marketing.current-project-id';
@@ -99,6 +102,10 @@ const selectProject = (projectId: string): void => {
     return;
   }
   if (!projects.value.some((project) => project.id === projectId)) return;
+  if (currentProjectId.value && currentProjectId.value !== projectId) {
+    showCreateToast('请先退出当前项目，再切换到其他项目');
+    return;
+  }
   currentProjectId.value = projectId;
   localStorage.setItem(CURRENT_PROJECT_STORAGE_KEY, projectId);
 };
@@ -164,13 +171,28 @@ const showCreateToast = (message: string): void => {
   }, 3000);
 };
 
-const exitProject = (): void => {
-  selectProject('');
-  showCreateToast('已退出项目，项目与资产数据保持不变');
+const exitProject = async (): Promise<void> => {
+  const project = currentProject.value;
+  if (!project || exitBusy.value) return;
+  exitBusy.value = true;
+  exitError.value = '';
+  try {
+    if (activeWorkflow.value === 'EFFECT') {
+      const flushed = await effectNode.value?.flushPendingEdits();
+      if (flushed === false) throw new Error('仍有编辑未能自动保存，请修复后重试退出');
+    }
+    selectProject('');
+    showCreateToast('草稿已自动保存并退出项目，未创建正式资产');
+  } catch (error) {
+    exitError.value = error instanceof Error ? error.message : '草稿保存失败，请重试';
+    showCreateToast(exitError.value);
+  } finally {
+    exitBusy.value = false;
+  }
 };
 
 const handleProjectAction = (): void => {
-  if (currentProject.value) exitProject();
+  if (currentProject.value) void exitProject();
   else openCreateModal();
 };
 
@@ -237,11 +259,12 @@ onBeforeUnmount(() => {
           ref="createTrigger"
           :class="currentProject ? 'exit-entry' : 'create-entry'"
           type="button"
+          :disabled="exitBusy"
           @click="handleProjectAction"
         >
           <LogOut v-if="currentProject" :size="15" />
           <Plus v-else :size="15" />
-          {{ currentProject ? '退出项目' : '新建项目' }}
+          {{ currentProject ? (exitBusy ? '正在保存草稿…' : '退出项目') : '新建项目' }}
         </button>
         <button
           ref="assetTrigger"
@@ -288,7 +311,7 @@ onBeforeUnmount(() => {
           重新加载项目
         </button>
       </section>
-      <EffectImportNodePage v-else-if="activeWorkflow === 'EFFECT'" />
+      <EffectImportNodePage v-else-if="activeWorkflow === 'EFFECT'" ref="effectNode" />
       <section v-else class="workflow-state workflow-state-ready" role="status">
         <span class="workflow-state-icon">
           <Sparkles v-if="activeWorkflow === 'CUSTOMIZED'" :size="30" />

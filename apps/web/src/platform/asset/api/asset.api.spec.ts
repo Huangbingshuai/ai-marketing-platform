@@ -56,6 +56,7 @@ describe('asset API', () => {
       workflow: 'EFFECT',
       space: 'EFFECT',
       status: 'AVAILABLE',
+      productId: '11111111-1111-4111-8111-111111111111',
       page: 2,
       pageSize: 48,
     });
@@ -71,6 +72,7 @@ describe('asset API', () => {
       workflow: 'EFFECT',
       space: 'EFFECT',
       status: 'AVAILABLE',
+      productId: '11111111-1111-4111-8111-111111111111',
       page: '2',
       pageSize: '48',
     });

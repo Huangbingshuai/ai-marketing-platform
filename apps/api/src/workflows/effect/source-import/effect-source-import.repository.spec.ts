@@ -6,9 +6,12 @@ import { EffectSourceImportRepository } from './effect-source-import.repository'
 describe('EffectSourceImportRepository project isolation', () => {
   it('scopes product lookup by project and draft', async () => {
     const findFirst = vi.fn().mockResolvedValue(null);
-    const repository = new EffectSourceImportRepository({
-      effectImportProduct: { findFirst },
-    } as unknown as PrismaService);
+    const repository = new EffectSourceImportRepository(
+      {
+        effectImportProduct: { findFirst },
+      } as unknown as PrismaService,
+      {} as never,
+    );
 
     await repository.product('project-a', 'draft-a', 'product-a');
 
@@ -20,9 +23,12 @@ describe('EffectSourceImportRepository project isolation', () => {
 
   it('scopes material lookup by project and product', async () => {
     const findFirst = vi.fn().mockResolvedValue(null);
-    const repository = new EffectSourceImportRepository({
-      effectImportMaterial: { findFirst },
-    } as unknown as PrismaService);
+    const repository = new EffectSourceImportRepository(
+      {
+        effectImportMaterial: { findFirst },
+      } as unknown as PrismaService,
+      {} as never,
+    );
 
     await repository.material('project-b', 'product-b', 'material-b');
 
@@ -34,9 +40,12 @@ describe('EffectSourceImportRepository project isolation', () => {
   it('keeps search, count and category facets inside the same project draft', async () => {
     const findMany = vi.fn().mockResolvedValue([]);
     const count = vi.fn().mockResolvedValue(0);
-    const repository = new EffectSourceImportRepository({
-      effectImportProduct: { findMany, count },
-    } as unknown as PrismaService);
+    const repository = new EffectSourceImportRepository(
+      {
+        effectImportProduct: { findMany, count },
+      } as unknown as PrismaService,
+      {} as never,
+    );
 
     await repository.listProducts('project-c', 'draft-c', {
       keyword: 'sku',
@@ -55,18 +64,16 @@ describe('EffectSourceImportRepository project isolation', () => {
     });
   });
 
-  it('protects objects held by either publishing or extraction runs', async () => {
-    const publishCount = vi.fn().mockResolvedValue(0);
+  it('protects objects held by extraction runs', async () => {
     const extractionCount = vi.fn().mockResolvedValue(1);
-    const repository = new EffectSourceImportRepository({
-      effectImportPublishFileHold: { count: publishCount },
-      effectExtractionFileHold: { count: extractionCount },
-    } as unknown as PrismaService);
+    const repository = new EffectSourceImportRepository(
+      {
+        effectExtractionFileHold: { count: extractionCount },
+      } as unknown as PrismaService,
+      {} as never,
+    );
 
     await expect(repository.isStorageHeld('project-a', 'source/object')).resolves.toBe(true);
-    expect(publishCount).toHaveBeenCalledWith({
-      where: { projectId: 'project-a', storageKey: 'source/object' },
-    });
     expect(extractionCount).toHaveBeenCalledWith({
       where: { projectId: 'project-a', storageKey: 'source/object' },
     });
@@ -78,9 +85,12 @@ describe('EffectSourceImportRepository project isolation', () => {
       effectImportProduct: { count: vi.fn().mockResolvedValue(1), update },
       effectImportDraft: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     };
-    const repository = new EffectSourceImportRepository({
-      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
-    } as unknown as PrismaService);
+    const repository = new EffectSourceImportRepository(
+      {
+        $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+      } as unknown as PrismaService,
+      {} as never,
+    );
 
     await repository.updateProduct('project-a', 'draft-a', 'product-a', 3, { name: 'new' });
 
@@ -99,9 +109,12 @@ describe('EffectSourceImportRepository project isolation', () => {
         findUniqueOrThrow,
       },
     };
-    const repository = new EffectSourceImportRepository({
-      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
-    } as unknown as PrismaService);
+    const repository = new EffectSourceImportRepository(
+      {
+        $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+      } as unknown as PrismaService,
+      {} as never,
+    );
 
     await expect(
       repository.cancelManifest('project-a', 'draft-a', 'manifest-a'),
@@ -126,10 +139,13 @@ describe('EffectSourceImportRepository project isolation', () => {
       effectImportDraft: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
       effectImportProduct: { create },
     };
-    const repository = new EffectSourceImportRepository({
-      $transaction: async (callback: (client: typeof transaction) => unknown) =>
-        callback(transaction),
-    } as unknown as PrismaService);
+    const repository = new EffectSourceImportRepository(
+      {
+        $transaction: async (callback: (client: typeof transaction) => unknown) =>
+          callback(transaction),
+      } as unknown as PrismaService,
+      {} as never,
+    );
 
     await expect(
       repository.commitManifest('project-a', 'draft-a', 'manifest-a', 2, 'commit-key', []),
@@ -137,81 +153,54 @@ describe('EffectSourceImportRepository project isolation', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it('locks and snapshots the validated revision while holding READY file objects', async () => {
-    const now = new Date('2026-08-20T00:00:00.000Z');
-    const operation = {
-      id: 'operation-a',
-      projectId: 'project-a',
-      draftId: 'draft-a',
-      revision: 3,
-      idempotencyKey: 'publish-click-a',
-      status: 'RUNNING',
-      attemptToken: 'attempt-a',
-      snapshot: {},
-      result: null,
-      errorMessage: null,
-      completedAt: null,
-      createdAt: now,
-      updatedAt: now,
-    };
-    const findUnique = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(null);
-    const create = vi.fn().mockResolvedValue(operation);
-    const createMany = vi.fn().mockResolvedValue({ count: 1 });
-    const queryRaw = vi.fn().mockResolvedValue([{ id: 'draft-a' }]);
+  it('commits a ready material and its working artifact in the same transaction', async () => {
+    const material = { id: 'material-a', storageKey: '01-working/new.png' };
     const transaction = {
-      $queryRaw: queryRaw,
-      effectImportPublishOperation: { findUnique, create },
-      effectImportDraft: {
-        findUniqueOrThrow: vi.fn().mockResolvedValue({
-          id: 'draft-a',
-          projectId: 'project-a',
-          mode: 'BATCH',
-          revision: 3,
-          globalConfig: {},
-          products: [
-            {
-              id: 'product-a',
-              name: '产品',
-              category: '食品',
-              sku: 'SKU-1',
-              commerceUrl: null,
-              configOverride: {},
-              materials: [
-                {
-                  id: 'material-a',
-                  type: 'PRODUCT_IMAGE',
-                  status: 'READY',
-                  originalFileName: 'front.jpg',
-                  mimeType: 'image/jpeg',
-                  sizeBytes: 3,
-                  storageKey: 'held/source',
-                },
-              ],
-            },
-          ],
-        }),
-      },
-      effectImportPublishFileHold: { createMany },
+      effectImportProduct: { count: vi.fn().mockResolvedValue(1) },
+      effectImportDraft: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      effectImportMaterial: { create: vi.fn().mockResolvedValue(material) },
     };
-    const repository = new EffectSourceImportRepository({
-      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
-    } as unknown as PrismaService);
+    const upsertArtifactInTransaction = vi.fn().mockResolvedValue({
+      record: { id: 'working-a' },
+      previousStorageKey: null,
+    });
+    const repository = new EffectSourceImportRepository(
+      {
+        $transaction: async (callback: (client: typeof transaction) => unknown) =>
+          callback(transaction),
+      } as unknown as PrismaService,
+      { upsertArtifactInTransaction } as never,
+    );
+    const projection = {
+      workflowRunId: 'run-a',
+      nodeId: 'SOURCE_IMPORT',
+      artifactKey: 'material:material-a',
+      input: {
+        kind: 'FILE' as const,
+        name: '产品 A · image.png',
+        directory: 'SOURCE_MATERIALS' as const,
+        type: 'SOURCE_MATERIAL' as const,
+        storageKey: '01-working/new.png',
+      },
+    };
 
     await expect(
-      repository.startPublishOperation('project-a', 'draft-a', 3, 'publish-click-a', 'attempt-a'),
-    ).resolves.toMatchObject({ owner: true, requestMatches: true });
-    expect(queryRaw).toHaveBeenCalledOnce();
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          projectId: 'project-a',
-          idempotencyKey: 'publish-click-a',
-          revision: 3,
-        }),
-      }),
+      repository.createMaterialWithArtifact(
+        'project-a',
+        'draft-a',
+        'product-a',
+        4,
+        { id: 'material-a', type: 'PRODUCT_IMAGE', status: 'READY' },
+        projection,
+      ),
+    ).resolves.toEqual({ material, previousArtifactStorageKey: null });
+    expect(upsertArtifactInTransaction).toHaveBeenCalledWith(
+      transaction,
+      'project-a',
+      'run-a',
+      'SOURCE_IMPORT',
+      'material:material-a',
+      projection.input,
     );
-    expect(createMany).toHaveBeenCalledWith({
-      data: [{ projectId: 'project-a', operationId: 'operation-a', storageKey: 'held/source' }],
-    });
   });
 });

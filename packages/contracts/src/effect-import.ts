@@ -242,12 +242,6 @@ export type EffectImportProduct = {
   updatedAt: string;
 };
 
-export type EffectImportPublishSummary = {
-  publishedAt: string;
-  assetCount: number;
-  assetVersionCount: number;
-};
-
 export type EffectImportDraftSummary = {
   id: string;
   projectId: string;
@@ -258,7 +252,6 @@ export type EffectImportDraftSummary = {
   productCount: number;
   issueCount: number;
   completedAt: string | null;
-  lastPublish: EffectImportPublishSummary | null;
   updatedAt: string;
 };
 
@@ -272,6 +265,7 @@ export type EffectImportDraft = EffectImportDraftSummary & {
 export type EffectImportWorkspace = {
   id: string;
   projectId: string;
+  workflowRunId: string;
   currentMode: EffectImportMode;
   revision: number;
   drafts: Record<EffectImportMode, EffectImportDraftSummary>;
@@ -330,9 +324,9 @@ export type EffectImportProductListData = {
 };
 
 export type CreateEffectImportProductRequest = {
-  /** Reserved for AI extraction in the next node; source import does not require user input. */
+  /** May be omitted only while the UI initializes an empty draft card. Upload requires a name. */
   name?: string | undefined;
-  /** Reserved for AI extraction in the next node; source import does not require user input. */
+  /** Reserved for AI extraction in the next node. */
   category?: string | undefined;
   commerceUrl?: string | null | undefined;
   configOverride?: EffectVideoConfigOverride | undefined;
@@ -512,30 +506,6 @@ export type ValidateEffectImportDraftRequest = {
 export type ValidateEffectImportDraftData = {
   draft: EffectImportDraft;
   validation: EffectImportValidationResult;
-};
-
-export type PublishEffectImportDraftRequest = {
-  expectedRevision: number;
-  /** Stable for retries of one publish click; generate a new key for an intentional new version. */
-  idempotencyKey: string;
-};
-
-export type EffectImportPublishedAsset = {
-  assetId: string;
-  assetVersionId: string;
-  version: number;
-  productId: string;
-  materialId: string | null;
-  kind: 'PRODUCT_METADATA' | 'VIDEO_CONFIG' | 'MATERIAL';
-};
-
-export type PublishEffectImportDraftData = {
-  projectId: string;
-  draftId: string;
-  mode: EffectImportMode;
-  revision: number;
-  publishedAssets: EffectImportPublishedAsset[];
-  summary: EffectImportPublishSummary;
 };
 
 export type AdvanceEffectImportDraftRequest = {

@@ -20,7 +20,6 @@ export const EFFECT_EXTRACTION_STATUS_META: Record<
   NOT_GENERATED: { label: '未生成', tone: 'neutral' },
   QUEUED: { label: '排队中', tone: 'running' },
   PROCESSING: { label: '生成中', tone: 'running' },
-  CANCELLED: { label: '已取消', tone: 'neutral' },
   COMPLETED: { label: '已完成', tone: 'success' },
   FAILED: { label: '失败', tone: 'danger' },
   STALE: { label: '待更新', tone: 'warning' },

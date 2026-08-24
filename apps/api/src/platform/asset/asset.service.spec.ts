@@ -77,7 +77,10 @@ describe('AssetService', () => {
     update: ReturnType<typeof vi.fn>;
     archive: ReturnType<typeof vi.fn>;
   };
-  let projects: { exists: ReturnType<typeof vi.fn> };
+  let projects: {
+    exists: ReturnType<typeof vi.fn>;
+    get: ReturnType<typeof vi.fn>;
+  };
   let storage: {
     put: ReturnType<typeof vi.fn>;
     open: ReturnType<typeof vi.fn>;
@@ -106,7 +109,10 @@ describe('AssetService', () => {
       update: vi.fn(),
       archive: vi.fn(),
     };
-    projects = { exists: vi.fn().mockResolvedValue(true) };
+    projects = {
+      exists: vi.fn().mockResolvedValue(true),
+      get: vi.fn().mockResolvedValue({ id: 'project-1', name: '测试项目' }),
+    };
     storage = {
       put: vi.fn(),
       open: vi.fn(),
@@ -127,8 +133,27 @@ describe('AssetService', () => {
   it('returns filtered items with workflow-space facets and never exposes storageKey', async () => {
     repository.list.mockResolvedValue([record]);
     repository.listForFacets.mockResolvedValue([
-      { directory: record.directory, type: record.type, status: record.status, tags: record.tags },
-      { directory: 'AUDIO_ASSETS', type: 'VOICE_AUDIO', status: 'AVAILABLE', tags: ['夏季'] },
+      {
+        directory: record.directory,
+        type: record.type,
+        status: record.status,
+        tags: record.tags,
+        businessData: { productId: 'product-a', productName: '广式腊肠' },
+      },
+      {
+        directory: 'AUDIO_ASSETS',
+        type: 'VOICE_AUDIO',
+        status: 'AVAILABLE',
+        tags: ['夏季'],
+        businessData: null,
+      },
+      {
+        directory: record.directory,
+        type: record.type,
+        status: record.status,
+        tags: [],
+        businessData: { productId: 'product-b', productName: '广式腊肠' },
+      },
     ]);
 
     const result = await service.list(record.projectId, {
@@ -150,6 +175,10 @@ describe('AssetService', () => {
     expect(result.facets.tags).toEqual([
       { value: '产品', count: 1 },
       { value: '夏季', count: 2 },
+    ]);
+    expect(result.facets.products).toEqual([
+      { value: 'product-a', label: '广式腊肠', count: 1 },
+      { value: 'product-b', label: '广式腊肠', count: 1 },
     ]);
     expect(result.items[0]).not.toHaveProperty('storageKey');
     expect(result.items[0]?.previewKind).toBe('IMAGE');
