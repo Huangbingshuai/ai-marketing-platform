@@ -74,6 +74,13 @@ export const beginEffectExtraction = async (
     )
   ).data.run;
 
+export const loadEffectExtractionRun = async (
+  projectId: string,
+  runId: string,
+  signal?: AbortSignal,
+): Promise<EffectExtractionRun> =>
+  (await getEffectExtractionRun(projectId, runId, signal)).data.run;
+
 export const pollEffectExtractionRun = async (
   projectId: string,
   runId: string,

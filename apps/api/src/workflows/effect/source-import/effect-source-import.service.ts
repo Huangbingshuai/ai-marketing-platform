@@ -1,6 +1,6 @@
 import { createReadStream } from 'node:fs';
 import { open, rm } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import {
   DEFAULT_EFFECT_VIDEO_CONFIG,
@@ -13,6 +13,8 @@ import {
   type BatchDeleteEffectImportProductsData,
   type BatchRetryEffectImportProductsData,
   type CommitEffectManifestData,
+  type CompleteEffectImportUploadSessionData,
+  type CreateEffectImportUploadSessionRequest,
   type EffectImportDeleteData,
   type EffectImportDraft,
   type EffectImportDraftSummary,
@@ -24,6 +26,7 @@ import {
   type EffectImportProductListData,
   type EffectImportProductMutationData,
   type EffectImportValidationIssue,
+  type EffectImportUploadSession,
   type EffectManifestPreviewRow,
   type GetEffectImportWorkspaceData,
   type PreviewEffectManifestData,
@@ -44,9 +47,12 @@ import { STORAGE_PORT } from '../../../platform/file/storage.port';
 import { safeOriginalFileName } from '../../../platform/file/file-name';
 import { ProjectService } from '../../../platform/project/project.service';
 import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
+import type { WorkingArtifactUpsertInput } from '../../../platform/workflow/workflow-working.repository';
 import {
   EffectSourceImportRepository,
   type EffectDraftRecord,
+  type EffectMaterialRecord,
+  type EffectUploadSessionRecord,
   type EffectProductRecord,
   type EffectWorkspaceRecord,
   type ManifestRecord,
@@ -66,6 +72,22 @@ export type EffectMaterialContent = StoredStream & {
   originalFileName: string;
   partial: boolean;
 };
+
+const fileSha256 = (path: string): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const hash = createHash('sha256');
+    const stream = createReadStream(path);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
+const streamSha256 = (stream: NodeJS.ReadableStream): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const hash = createHash('sha256');
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
 
 const badRequest = (
   message: string,
@@ -203,10 +225,14 @@ export class EffectSourceImportService {
     storageKey: string,
     reason: string,
   ): Promise<void> {
-    if (await this.repository.isStorageHeld(projectId, storageKey)) {
-      await this.repository.enqueueStorageCleanup(projectId, storageKey, reason);
-      return;
-    }
+    await this.repository.enqueueStorageCleanup(projectId, storageKey, reason);
+  }
+
+  private async deleteRollbackObject(
+    projectId: string,
+    storageKey: string,
+    reason: string,
+  ): Promise<void> {
     try {
       await this.storage.delete(storageKey);
     } catch {
@@ -220,6 +246,7 @@ export class EffectSourceImportService {
       if (await this.repository.isStorageHeld(projectId, task.storageKey)) continue;
       try {
         await this.storage.delete(task.storageKey);
+        await this.repository.deleteOrphanedFileObject(projectId, task.storageKey);
         await this.repository.deleteStorageCleanup(projectId, task.id);
       } catch (error) {
         await this.repository.failStorageCleanup(
@@ -231,78 +258,288 @@ export class EffectSourceImportService {
     }
   }
 
-  private workingMaterialProjection(
+  private sourcePackageInput(
+    product: EffectProductRecord,
+    files: NonNullable<WorkingArtifactUpsertInput['files']>,
+  ): WorkingArtifactUpsertInput {
+    const productName = normalizeProductName(product.name);
+    if (!productName) throw badRequest('请先填写产品名称，再上传产品资料');
+    return {
+      kind: 'STRUCTURED',
+      name: assetSafeName(`${productName} 原始资料包`),
+      directory: 'SOURCE_MATERIALS',
+      type: 'SOURCE_MATERIAL',
+      tags: assetSafeTags(productName, product.category, product.sku),
+      payload: {
+        productId: product.id,
+        productName,
+        category: product.category,
+        sku: product.sku,
+        commerceUrl: product.commerceUrl,
+        completeness: files.length ? 'WORKING' : 'INCOMPLETE',
+      },
+      metadata: { productId: product.id, productName },
+      files,
+      sourceArtifactId: product.id,
+    };
+  }
+
+  private videoConfigInput(
+    product: EffectProductRecord,
+    globalConfig: EffectVideoConfig,
+  ): WorkingArtifactUpsertInput {
+    const productName = requiredProductName(product.name, '请先填写产品名称');
+    const effectiveConfig = mergeEffectVideoConfig(
+      globalConfig,
+      parseJson<EffectVideoConfigOverride>(product.configOverride),
+    );
+    return {
+      kind: 'STRUCTURED',
+      name: assetSafeName(`${productName} 全局视频配置`),
+      directory: 'SOURCE_MATERIALS',
+      type: 'VIDEO_CONFIG',
+      tags: assetSafeTags(productName, '视频配置'),
+      payload: effectiveConfig,
+      metadata: { productId: product.id, productName },
+      sourceArtifactId: product.id,
+    };
+  }
+
+  private productFileLinks(
+    product: EffectProductRecord,
+  ): NonNullable<WorkingArtifactUpsertInput['files']> {
+    return product.materials
+      .filter((material) => material.status === 'READY' && Boolean(material.fileObject))
+      .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
+      .map((material, sortOrder) => ({
+        fileObjectId: material.fileObject!.id,
+        role: material.type,
+        sortOrder,
+        originalFileName: safeFileName(material.fileObject!.originalFileName),
+        mimeType: material.fileObject!.mimeType,
+        sha256: material.fileObject!.sha256,
+      }));
+  }
+
+  private async syncProductWorkingArtifacts(
+    projectId: string,
+    draft: Pick<EffectDraftRecord, 'globalConfig'>,
+    product: EffectProductRecord,
+    options: { ensurePackage?: boolean } = {},
+  ): Promise<void> {
+    const workspace = await this.repository.workspace(projectId);
+    if (!workspace || !normalizeProductName(product.name)) return;
+    const files = this.productFileLinks(product);
+    const operations: Promise<unknown>[] = [
+      this.workingService.upsertArtifact(
+        projectId,
+        workspace.workflowRunId,
+        'SOURCE_IMPORT',
+        `global-video-config:${product.id}`,
+        this.videoConfigInput(product, parseJson<EffectVideoConfig>(draft.globalConfig)),
+      ),
+    ];
+    if (files.length || options.ensurePackage)
+      operations.push(
+        this.workingService.upsertArtifact(
+          projectId,
+          workspace.workflowRunId,
+          'SOURCE_IMPORT',
+          `source-package:${product.id}`,
+          this.sourcePackageInput(product, files),
+        ),
+      );
+    await Promise.all(operations);
+  }
+
+  private async syncManifestProducts(projectId: string, productIds: string[]): Promise<void> {
+    const workspace = await this.repository.workspace(projectId);
+    const draft = await this.repository.draft(projectId, 'BATCH');
+    if (!workspace || !draft) throw notFound();
+    for (const productId of productIds) {
+      const product = draft.products.find((item) => item.id === productId);
+      if (!product) continue;
+      for (const material of product.materials) {
+        if (
+          material.status !== 'READY' ||
+          material.fileObject ||
+          !material.storageKey ||
+          !material.originalFileName ||
+          !material.mimeType ||
+          !material.sizeBytes
+        )
+          continue;
+        const opened = await this.storage.open(material.storageKey);
+        const sha256 = await streamSha256(opened.stream);
+        await this.repository.attachFileObject(projectId, workspace.workflowRunId, material.id, {
+          id: randomUUID(),
+          nodeId: 'SOURCE_IMPORT',
+          originalFileName: safeFileName(material.originalFileName),
+          mimeType: material.mimeType,
+          sizeBytes: material.sizeBytes,
+          storageKey: material.storageKey,
+          sha256,
+        });
+      }
+      const refreshedProduct = await this.repository.product(projectId, draft.id, productId);
+      if (refreshedProduct)
+        await this.syncProductWorkingArtifacts(projectId, draft, refreshedProduct, {
+          ensurePackage: true,
+        });
+    }
+  }
+
+  private workingPackageProjection(
     workspace: EffectWorkspaceRecord,
     product: EffectProductRecord,
     material: {
       id: string;
+      fileObjectId: string;
       type: EffectImportMaterialType;
       originalFileName: string;
       mimeType: string;
       sizeBytes: number;
       storageKey: string;
+      sha256: string;
     },
+    replacedMaterialId?: string,
   ): WorkingMaterialProjection {
     const productName = normalizeProductName(product.name);
     if (!productName) throw badRequest('请先填写产品名称，再上传产品资料');
-    const tags = assetSafeTags(productName, product.category, product.sku);
     const originalFileName = safeFileName(material.originalFileName);
+    const existingFiles = product.materials
+      .filter(
+        (item) =>
+          item.id !== replacedMaterialId && item.status === 'READY' && Boolean(item.fileObject),
+      )
+      .map((item) => ({
+        fileObjectId: item.fileObject!.id,
+        role: item.type,
+        sortOrder: item.createdAt.getTime(),
+        originalFileName: safeFileName(item.fileObject!.originalFileName),
+        mimeType: item.fileObject!.mimeType,
+        sha256: item.fileObject!.sha256,
+      }));
+    const files = [
+      ...existingFiles,
+      {
+        fileObjectId: material.fileObjectId,
+        role: material.type,
+        sortOrder: Date.now(),
+        originalFileName,
+        mimeType: material.mimeType,
+        sha256: material.sha256,
+      },
+    ].map((file, index) => ({ ...file, sortOrder: index }));
     return {
       workflowRunId: workspace.workflowRunId,
       nodeId: 'SOURCE_IMPORT',
-      artifactKey: `material:${material.id}`,
-      input: {
-        kind: 'FILE',
-        name: assetSafeName(`${productName} · ${originalFileName}`),
-        directory: 'SOURCE_MATERIALS',
-        type: material.type === 'REFERENCE_VIDEO' ? 'REFERENCE_VIDEO' : 'SOURCE_MATERIAL',
-        tags,
+      artifactKey: `source-package:${product.id}`,
+      fileObject: {
+        id: material.fileObjectId,
+        nodeId: 'SOURCE_IMPORT',
         originalFileName,
         mimeType: material.mimeType,
         sizeBytes: material.sizeBytes,
         storageKey: material.storageKey,
-        metadata: {
-          productId: product.id,
-          productName,
-          materialId: material.id,
-          materialType: material.type,
-        },
-        sourceArtifactId: material.id,
+        sha256: material.sha256,
+      },
+      input: {
+        ...this.sourcePackageInput(product, files),
       },
     };
   }
 
-  private async removeCurrentMaterial(projectId: string, _draftId: string, materialId: string) {
-    const workspace = await this.repository.workspace(projectId);
-    if (!workspace) return false;
-    return this.workingService.removeArtifact(
-      projectId,
-      workspace.workflowRunId,
-      'SOURCE_IMPORT',
-      `material:${materialId}`,
+  private uploadSessionValue(record: EffectUploadSessionRecord): EffectImportUploadSession {
+    return {
+      id: record.id,
+      projectId: record.projectId,
+      workflowRunId: record.workflowRunId,
+      draftId: record.draftId,
+      productId: record.productId,
+      expectedRevision: record.expectedRevision,
+      status: record.status,
+      items: record.items.map((item) => ({
+        id: item.id,
+        clientFileId: item.clientFileId,
+        type: item.type,
+        status: item.status,
+        originalFileName: safeFileName(item.originalFileName),
+        mimeType: item.mimeType,
+        sizeBytes: item.sizeBytes,
+        errorCode: item.errorCode,
+        errorMessage: item.errorMessage,
+      })),
+      expiresAt: record.expiresAt.toISOString(),
+      completedAt: record.completedAt?.toISOString() ?? null,
+    };
+  }
+
+  private uploadSessionProjection(
+    product: EffectProductRecord,
+    session: EffectUploadSessionRecord,
+  ): WorkingMaterialProjection {
+    const uploaded = session.items.filter(
+      (item) => item.status === 'UPLOADED' && item.fileObjectId && item.storageKey && item.sha256,
     );
+    const existingFiles = this.productFileLinks(product);
+    const addedFiles = uploaded.map((item, index) => ({
+      fileObjectId: item.fileObjectId!,
+      role: item.type,
+      sortOrder: existingFiles.length + index,
+      originalFileName: safeFileName(item.originalFileName),
+      mimeType: item.mimeType,
+      sha256: item.sha256!,
+    }));
+    const files = [...existingFiles, ...addedFiles].map((item, index) => ({
+      ...item,
+      sortOrder: index,
+    }));
+    return {
+      workflowRunId: session.workflowRunId,
+      nodeId: 'SOURCE_IMPORT',
+      artifactKey: `source-package:${product.id}`,
+      fileObjects: uploaded.map((item) => ({
+        id: item.fileObjectId!,
+        nodeId: 'SOURCE_IMPORT',
+        originalFileName: safeFileName(item.originalFileName),
+        mimeType: item.mimeType,
+        sizeBytes: item.sizeBytes,
+        storageKey: item.storageKey!,
+        sha256: item.sha256!,
+      })),
+      input: this.sourcePackageInput(product, files),
+    };
   }
 
   private async removeCurrentProduct(
     projectId: string,
-    draftId: string,
-    product: Pick<EffectImportProduct, 'materials'>,
+    _draftId: string,
+    product: Pick<EffectImportProduct, 'id'>,
   ): Promise<void> {
-    await Promise.all(
-      product.materials.map((material) =>
-        this.removeCurrentMaterial(projectId, draftId, material.id),
+    const workspace = await this.repository.workspace(projectId);
+    if (!workspace) return;
+    await Promise.all([
+      this.workingService.removeArtifact(
+        projectId,
+        workspace.workflowRunId,
+        'SOURCE_IMPORT',
+        `source-package:${product.id}`,
       ),
-    );
+      this.workingService.removeArtifact(
+        projectId,
+        workspace.workflowRunId,
+        'SOURCE_IMPORT',
+        `global-video-config:${product.id}`,
+      ),
+    ]);
   }
 
   private assertMode(value: string): asserts value is EffectImportMode {
     if (value !== 'SINGLE' && value !== 'BATCH') throw badRequest('导入模式无效');
   }
 
-  private material(
-    record: EffectProductRecord['materials'][number],
-    mode: EffectImportMode,
-  ): EffectImportMaterial {
+  private material(record: EffectMaterialRecord, mode: EffectImportMode): EffectImportMaterial {
     return {
       id: record.id,
       projectId: record.projectId,
@@ -310,9 +547,13 @@ export class EffectSourceImportService {
       type: record.type,
       status: record.status,
       expectedFileName: record.expectedFileName,
-      originalFileName: record.originalFileName ? safeFileName(record.originalFileName) : null,
-      mimeType: record.mimeType,
-      sizeBytes: record.sizeBytes,
+      originalFileName: record.fileObject?.originalFileName
+        ? safeFileName(record.fileObject.originalFileName)
+        : record.originalFileName
+          ? safeFileName(record.originalFileName)
+          : null,
+      mimeType: record.fileObject?.mimeType ?? record.mimeType,
+      sizeBytes: record.fileObject?.sizeBytes ?? record.sizeBytes,
       contentUrl: record.status === 'READY' ? materialContentUrl(record, mode) : null,
       failureDisposition: record.failureDisposition,
       errorCode: record.errorCode,
@@ -468,6 +709,13 @@ export class EffectSourceImportService {
       config,
     );
     if (!record) throw conflict();
+    await Promise.all(
+      record.products.map((product) =>
+        this.syncProductWorkingArtifacts(projectId, record, product, {
+          ensurePackage: product.materials.some((material) => material.status === 'READY'),
+        }),
+      ),
+    );
     return { draft: this.draftValue(record) };
   }
 
@@ -539,6 +787,8 @@ export class EffectSourceImportService {
       },
     );
     if (!product) throw conflict();
+    if (normalizeProductName(product.name))
+      await this.syncProductWorkingArtifacts(projectId, draft, product);
     return {
       product: this.product(product, draft.globalConfig, modeValue),
       revision: input.expectedRevision + 1,
@@ -579,6 +829,9 @@ export class EffectSourceImportService {
       data,
     );
     if (!product) throw conflict();
+    await this.syncProductWorkingArtifacts(projectId, draft, product, {
+      ensurePackage: product.materials.some((material) => material.status === 'READY'),
+    });
     return {
       product: this.product(product, draft.globalConfig, modeValue),
       revision: input.expectedRevision + 1,
@@ -732,6 +985,7 @@ export class EffectSourceImportService {
     const project = await this.projectService.get(projectId);
     try {
       const validFile = await this.assertMaterialFile(file, input.type);
+      const sha256 = await fileSha256(validFile.path);
       let stored: { key: string; sizeBytes: number } | null = null;
       try {
         stored = await this.storage.put({
@@ -783,6 +1037,7 @@ export class EffectSourceImportService {
           processingReady = false;
         }
         const materialId = randomUUID();
+        const fileObjectId = randomUUID();
         const materialData = {
           id: materialId,
           type: input.type,
@@ -792,6 +1047,7 @@ export class EffectSourceImportService {
           mimeType: safeMime(validFile.mimetype),
           sizeBytes: stored.sizeBytes,
           storageKey: stored.key,
+          fileObjectId,
           ...(processingReady
             ? {}
             : {
@@ -809,13 +1065,15 @@ export class EffectSourceImportService {
               productId,
               input.expectedRevision,
               materialData,
-              this.workingMaterialProjection(workspace, product, {
+              this.workingPackageProjection(workspace, product, {
                 id: materialId,
+                fileObjectId,
                 type: input.type,
                 originalFileName: materialData.originalFileName,
                 mimeType: materialData.mimeType,
                 sizeBytes: materialData.sizeBytes,
                 storageKey: materialData.storageKey,
+                sha256,
               }),
             )
           : {
@@ -837,12 +1095,200 @@ export class EffectSourceImportService {
         };
       } catch (error) {
         if (!databaseCommitted)
-          await this.deleteOrQueue(projectId, stored.key, 'MATERIAL_CREATE_ROLLBACK');
+          await this.deleteRollbackObject(projectId, stored.key, 'MATERIAL_CREATE_ROLLBACK');
         throw error;
       }
     } finally {
       if (file) await rm(file.path, { force: true }).catch(() => undefined);
     }
+  }
+
+  async createUploadSession(
+    projectId: string,
+    modeValue: string,
+    productId: string,
+    input: CreateEffectImportUploadSessionRequest,
+  ): Promise<EffectImportUploadSession> {
+    this.assertMode(modeValue);
+    const draft = await this.getDraft(projectId, modeValue);
+    if (draft.revision !== input.expectedRevision) throw conflict();
+    const product = await this.repository.product(projectId, draft.id, productId);
+    if (!product) throw notFound();
+    requiredProductName(product.name, '请先填写产品名称，再上传产品资料');
+    if (!Array.isArray(input.items) || input.items.length === 0 || input.items.length > 100)
+      throw badRequest('批量上传文件清单无效');
+    const clientIds = new Set<string>();
+    const items = input.items.map((item) => {
+      const clientFileId = item.clientFileId?.trim();
+      if (!clientFileId || clientFileId.length > 160 || clientIds.has(clientFileId))
+        throw badRequest('clientFileId 无效或重复');
+      clientIds.add(clientFileId);
+      if (!EFFECT_IMPORT_UPLOAD_MATERIAL_TYPES.includes(item.type))
+        throw badRequest('文件素材类型无效');
+      if (!Number.isSafeInteger(item.sizeBytes) || item.sizeBytes < 1)
+        throw badRequest('文件大小无效');
+      return {
+        id: randomUUID(),
+        clientFileId,
+        type: item.type,
+        expectedFileName: item.expectedFileName?.trim() || null,
+        originalFileName: safeFileName(item.originalFileName),
+        mimeType: safeMime(item.mimeType),
+        sizeBytes: item.sizeBytes,
+      };
+    });
+    const workspace = await this.repository.workspace(projectId);
+    if (!workspace) throw notFound();
+    const session = await this.repository.createUploadSession(
+      projectId,
+      workspace.workflowRunId,
+      draft.id,
+      productId,
+      input.expectedRevision,
+      items,
+    );
+    if (!session) throw conflict();
+    return this.uploadSessionValue(session);
+  }
+
+  async getUploadSession(projectId: string, sessionId: string): Promise<EffectImportUploadSession> {
+    const session = await this.repository.uploadSession(projectId, sessionId);
+    if (!session) throw notFound();
+    return this.uploadSessionValue(session);
+  }
+
+  async uploadSessionItem(
+    projectId: string,
+    sessionId: string,
+    clientFileId: string,
+    file: UploadedEffectFile | undefined,
+  ): Promise<EffectImportUploadSession> {
+    const session = await this.repository.uploadSession(projectId, sessionId);
+    const item = session?.items.find((candidate) => candidate.clientFileId === clientFileId);
+    if (!session || !item || item.status === 'REMOVED' || session.status !== 'UPLOADING')
+      throw notFound();
+    const product = await this.repository.product(projectId, session.draftId, session.productId);
+    if (!product) throw notFound();
+    const project = await this.projectService.get(projectId);
+    const validFile = await this.assertMaterialFile(file, item.type);
+    let newStorageKey: string | null = null;
+    let itemStored = false;
+    try {
+      const sha256 = await fileSha256(validFile.path);
+      const stored = await this.storage.put({
+        projectId,
+        stream: createReadStream(validFile.path),
+        sizeBytes: validFile.size,
+        contentType: safeMime(validFile.mimetype),
+        keyContext: {
+          projectName: project.name,
+          workflow: 'EFFECT',
+          lifecycle: 'staging',
+          productId: product.id,
+          productName: requiredProductName(product.name),
+          category: item.type === 'PRODUCT_IMAGE' ? '商品图片' : '产品文档',
+          originalFileName: safeFileName(validFile.originalname),
+        },
+      });
+      newStorageKey = stored.key;
+      const previousKey = item.storageKey;
+      const updated = await this.repository.storeUploadSessionItem(
+        projectId,
+        sessionId,
+        clientFileId,
+        {
+          originalFileName: safeFileName(validFile.originalname),
+          mimeType: safeMime(validFile.mimetype),
+          sizeBytes: stored.sizeBytes,
+          storageKey: stored.key,
+          sha256,
+          fileObjectId: randomUUID(),
+        },
+      );
+      if (updated.count === 0) {
+        await this.storage.delete(stored.key).catch(() => undefined);
+        newStorageKey = null;
+        throw conflict();
+      }
+      itemStored = true;
+      if (previousKey && previousKey !== stored.key)
+        await this.storage
+          .delete(previousKey)
+          .catch(() =>
+            this.repository.enqueueStorageCleanup(
+              projectId,
+              previousKey,
+              'UPLOAD_SESSION_ITEM_RETRIED',
+            ),
+          );
+      return this.getUploadSession(projectId, sessionId);
+    } catch (error) {
+      if (newStorageKey && !itemStored)
+        await this.storage.delete(newStorageKey).catch(() => undefined);
+      await this.repository.failUploadSessionItem(
+        projectId,
+        sessionId,
+        clientFileId,
+        error instanceof ApiHttpException ? 'UPLOAD_ITEM_REJECTED' : 'STORAGE_WRITE_FAILED',
+        error instanceof Error ? error.message : '文件上传失败',
+      );
+      throw error;
+    } finally {
+      if (file) await rm(file.path, { force: true }).catch(() => undefined);
+    }
+  }
+
+  async removeUploadSessionItem(
+    projectId: string,
+    sessionId: string,
+    clientFileId: string,
+  ): Promise<EffectImportUploadSession> {
+    const session = await this.repository.uploadSession(projectId, sessionId);
+    const item = session?.items.find((candidate) => candidate.clientFileId === clientFileId);
+    if (!session || !item) throw notFound();
+    const removed = await this.repository.removeUploadSessionItem(
+      projectId,
+      sessionId,
+      clientFileId,
+    );
+    if (removed.count === 0) throw conflict();
+    if (item.storageKey) {
+      await this.storage.delete(item.storageKey).catch(() => undefined);
+      await this.repository.enqueueStorageCleanup(
+        projectId,
+        item.storageKey,
+        'UPLOAD_SESSION_ITEM_REMOVED',
+      );
+    }
+    return this.getUploadSession(projectId, sessionId);
+  }
+
+  async completeUploadSession(
+    projectId: string,
+    sessionId: string,
+    completionKey: string,
+  ): Promise<CompleteEffectImportUploadSessionData> {
+    const normalizedCompletionKey = completionKey.trim();
+    if (!normalizedCompletionKey) throw badRequest('完成会话幂等键不能为空');
+    const session = await this.repository.uploadSession(projectId, sessionId);
+    if (!session) throw notFound();
+    const product = await this.repository.product(projectId, session.draftId, session.productId);
+    if (!product) throw notFound();
+    const result = await this.repository.completeUploadSession(
+      projectId,
+      sessionId,
+      normalizedCompletionKey,
+      this.uploadSessionProjection(product, session),
+    );
+    if (!result) throw conflict();
+    const draftIdentity = await this.repository.draftMode(projectId, session.draftId);
+    if (!draftIdentity) throw notFound();
+    return {
+      session: this.uploadSessionValue(result.session),
+      materials: result.materials.map((material) => this.material(material, draftIdentity.mode)),
+      revision: result.revision,
+      unchanged: result.unchanged,
+    };
   }
 
   async replaceMaterial(
@@ -862,6 +1308,7 @@ export class EffectSourceImportService {
     const project = await this.projectService.get(projectId);
     try {
       const validFile = await this.assertMaterialFile(file, current.type);
+      const sha256 = await fileSha256(validFile.path);
       let stored: { key: string; sizeBytes: number } | null = null;
       try {
         stored = await this.storage.put({
@@ -905,12 +1352,14 @@ export class EffectSourceImportService {
           );
         const workspace = await this.repository.workspace(projectId);
         if (!workspace) throw notFound();
+        const fileObjectId = randomUUID();
         const materialData = {
           status: 'READY' as const,
           originalFileName: safeFileName(validFile.originalname),
           mimeType: safeMime(validFile.mimetype),
           sizeBytes: stored.sizeBytes,
           storageKey: stored.key,
+          fileObjectId,
           failureDisposition: null,
           errorCode: null,
           errorMessage: null,
@@ -923,14 +1372,21 @@ export class EffectSourceImportService {
           materialId,
           expectedRevision,
           materialData,
-          this.workingMaterialProjection(workspace, product, {
-            id: materialId,
-            type: current.type,
-            originalFileName: materialData.originalFileName,
-            mimeType: materialData.mimeType,
-            sizeBytes: materialData.sizeBytes,
-            storageKey: materialData.storageKey,
-          }),
+          this.workingPackageProjection(
+            workspace,
+            product,
+            {
+              id: materialId,
+              fileObjectId,
+              type: current.type,
+              originalFileName: materialData.originalFileName,
+              mimeType: materialData.mimeType,
+              sizeBytes: materialData.sizeBytes,
+              storageKey: materialData.storageKey,
+              sha256,
+            },
+            materialId,
+          ),
         );
         const material = result?.material;
         if (!material) throw conflict();
@@ -948,7 +1404,7 @@ export class EffectSourceImportService {
         };
       } catch (error) {
         if (!databaseCommitted)
-          await this.deleteOrQueue(projectId, stored.key, 'MATERIAL_REPLACE_ROLLBACK');
+          await this.deleteRollbackObject(projectId, stored.key, 'MATERIAL_REPLACE_ROLLBACK');
         throw error;
       }
     } finally {
@@ -978,7 +1434,9 @@ export class EffectSourceImportService {
     }
     if (result.storageKey)
       await this.deleteOrQueue(projectId, result.storageKey, 'MATERIAL_DELETED');
-    await this.removeCurrentMaterial(projectId, draft.id, materialId);
+    const product = await this.repository.product(projectId, draft.id, productId);
+    if (product)
+      await this.syncProductWorkingArtifacts(projectId, draft, product, { ensurePackage: true });
     return { deleted: true, revision: result.revision };
   }
 
@@ -993,35 +1451,31 @@ export class EffectSourceImportService {
     const draft = await this.getDraft(projectId, modeValue);
     if (!(await this.repository.product(projectId, draft.id, productId))) throw notFound();
     const material = await this.repository.material(projectId, productId, materialId);
-    if (
-      !material?.storageKey ||
-      !material.originalFileName ||
-      !material.mimeType ||
-      !material.sizeBytes
-    )
-      throw notFound();
+    const storageKey = material?.fileObject?.storageKey ?? material?.storageKey;
+    const originalFileName = material?.fileObject?.originalFileName ?? material?.originalFileName;
+    const mimeType = material?.fileObject?.mimeType ?? material?.mimeType;
+    const sizeBytes = material?.fileObject?.sizeBytes ?? material?.sizeBytes;
+    if (!material || !storageKey || !originalFileName || !mimeType || !sizeBytes) throw notFound();
     let range: { start: number; end: number } | undefined;
     if (rangeHeader && material.type === 'REFERENCE_VIDEO') {
       const match = /^bytes=(\d+)-(\d*)$/.exec(rangeHeader);
       if (!match) throw badRequest('文件范围无效');
       const start = Number(match[1]),
-        end = match[2]
-          ? Math.min(Number(match[2]), material.sizeBytes - 1)
-          : material.sizeBytes - 1;
+        end = match[2] ? Math.min(Number(match[2]), sizeBytes - 1) : sizeBytes - 1;
       if (
         !Number.isSafeInteger(start) ||
         !Number.isSafeInteger(end) ||
         start < 0 ||
         end < start ||
-        start >= material.sizeBytes
+        start >= sizeBytes
       )
         throw badRequest('文件范围无效');
       range = { start, end };
     }
     return {
-      ...(await this.storage.open(material.storageKey, range)),
-      mimeType: material.mimeType,
-      originalFileName: safeFileName(material.originalFileName),
+      ...(await this.storage.open(storageKey, range)),
+      mimeType,
+      originalFileName: safeFileName(originalFileName),
       partial: range !== undefined,
     };
   }
@@ -1285,7 +1739,9 @@ export class EffectSourceImportService {
       return this.manifestPreview(record);
     } catch (error) {
       await Promise.all(
-        stored.map((item) => this.deleteOrQueue(projectId, item.key, 'MANIFEST_PREVIEW_ROLLBACK')),
+        stored.map((item) =>
+          this.deleteRollbackObject(projectId, item.key, 'MANIFEST_PREVIEW_ROLLBACK'),
+        ),
       );
       if (key) {
         const existing = await this.repository.manifestByIdempotency(projectId, draft.id, key);
@@ -1313,6 +1769,7 @@ export class EffectSourceImportService {
       const ids = draft.products
         .filter((item) => item.sourceManifestImportId === importId)
         .map((item) => item.id);
+      await this.syncManifestProducts(projectId, ids);
       return {
         manifestImportId: importId,
         status: 'COMMITTED',
@@ -1360,6 +1817,7 @@ export class EffectSourceImportService {
         const ids = replayDraft.products
           .filter((item) => item.sourceManifestImportId === importId)
           .map((item) => item.id);
+        await this.syncManifestProducts(projectId, ids);
         return {
           manifestImportId: importId,
           status: 'COMMITTED',
@@ -1375,6 +1833,7 @@ export class EffectSourceImportService {
         this.deleteOrQueue(projectId, key, 'MANIFEST_COMMIT_UNMATCHED'),
       ),
     );
+    await this.syncManifestProducts(projectId, result.productIds);
     return {
       manifestImportId: importId,
       status: 'COMMITTED',

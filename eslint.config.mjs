@@ -14,6 +14,7 @@ export default tseslint.config(
       '**/.venv/**',
       '**/.pytest_cache/**',
       '**/__pycache__/**',
+      '.codex-browser-mock.*',
       '.tmp/**',
       'references/**',
     ],

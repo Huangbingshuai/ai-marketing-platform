@@ -30,8 +30,10 @@ import { fileContentDisposition } from '../../../platform/file/content-dispositi
 import {
   BatchProductsDto,
   CommitManifestDto,
+  CompleteUploadSessionDto,
   CreateMaterialDto,
   CreateProductDto,
+  CreateUploadSessionDto,
   ExpectedRevisionDto,
   ListProductsQueryDto,
   ManifestTemplateQueryDto,
@@ -206,6 +208,62 @@ export class EffectSourceImportController {
       { ...body, expectedRevision: revision(body.expectedRevision, match) },
       file,
     );
+  }
+
+  @Post('drafts/:mode/products/:productId/upload-sessions')
+  createUploadSession(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('mode') mode: string,
+    @Param('productId', new ParseUUIDPipe({ version: '4' })) productId: string,
+    @Headers('if-match') match: string | undefined,
+    @Body() body: CreateUploadSessionDto,
+  ) {
+    return this.service.createUploadSession(projectId, mode, productId, {
+      items: body.items,
+      expectedRevision: revision(body.expectedRevision, match),
+    });
+  }
+
+  @Get('upload-sessions/:sessionId')
+  getUploadSession(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('sessionId', new ParseUUIDPipe({ version: '4' })) sessionId: string,
+  ) {
+    return this.service.getUploadSession(projectId, sessionId);
+  }
+
+  @Put('upload-sessions/:sessionId/items/:clientFileId/content')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { files: 1, fileSize: EFFECT_IMPORT_SINGLE_UPLOAD_MAX_BYTES },
+    }),
+    UploadTemporaryFileCleanupInterceptor,
+  )
+  uploadSessionItem(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('sessionId', new ParseUUIDPipe({ version: '4' })) sessionId: string,
+    @Param('clientFileId') clientFileId: string,
+    @UploadedFile() file: UploadedEffectFile | undefined,
+  ) {
+    return this.service.uploadSessionItem(projectId, sessionId, clientFileId, file);
+  }
+
+  @Delete('upload-sessions/:sessionId/items/:clientFileId')
+  removeUploadSessionItem(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('sessionId', new ParseUUIDPipe({ version: '4' })) sessionId: string,
+    @Param('clientFileId') clientFileId: string,
+  ) {
+    return this.service.removeUploadSessionItem(projectId, sessionId, clientFileId);
+  }
+
+  @Post('upload-sessions/:sessionId/complete')
+  completeUploadSession(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('sessionId', new ParseUUIDPipe({ version: '4' })) sessionId: string,
+    @Body() body: CompleteUploadSessionDto,
+  ) {
+    return this.service.completeUploadSession(projectId, sessionId, body.completionKey);
   }
 
   @Put('drafts/:mode/products/:productId/materials/:materialId/content')

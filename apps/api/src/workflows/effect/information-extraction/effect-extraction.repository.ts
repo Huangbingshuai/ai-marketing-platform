@@ -104,7 +104,10 @@ export class EffectExtractionRepository {
       const draft = await transaction.effectImportDraft.findFirst({
         where: { projectId, id: draftId },
         include: {
-          products: { where: { id: productId }, include: { materials: true } },
+          products: {
+            where: { id: productId },
+            include: { materials: { include: { fileObject: true } } },
+          },
         },
       });
       const product = draft?.products[0];
@@ -134,21 +137,53 @@ export class EffectExtractionRepository {
         .filter(
           (material) =>
             material.status === 'READY' &&
-            isSupportedExtractionMaterial(material.mimeType, material.originalFileName) &&
-            material.storageKey &&
-            material.originalFileName &&
-            material.mimeType &&
-            material.sizeBytes,
+            isSupportedExtractionMaterial(
+              material.fileObject?.mimeType ?? material.mimeType,
+              material.fileObject?.originalFileName ?? material.originalFileName,
+            ) &&
+            (material.fileObject?.storageKey ?? material.storageKey) &&
+            (material.fileObject?.originalFileName ?? material.originalFileName) &&
+            (material.fileObject?.mimeType ?? material.mimeType) &&
+            (material.fileObject?.sizeBytes ?? material.sizeBytes),
         )
         .map((material) => ({
           id: material.id,
           type: material.type,
-          originalFileName: material.originalFileName!,
-          mimeType: material.mimeType!,
-          sizeBytes: material.sizeBytes!,
-          storageKey: material.storageKey!,
+          originalFileName: (material.fileObject?.originalFileName ?? material.originalFileName)!,
+          mimeType: (material.fileObject?.mimeType ?? material.mimeType)!,
+          sizeBytes: (material.fileObject?.sizeBytes ?? material.sizeBytes)!,
+          storageKey: (material.fileObject?.storageKey ?? material.storageKey)!,
           updatedAt: material.updatedAt.toISOString(),
         }));
+      const workspace = await transaction.effectImportWorkspace.findUnique({
+        where: { projectId },
+        select: { workflowRunId: true },
+      });
+      if (!workspace) return { kind: 'NOT_FOUND' as const };
+      const upstreamArtifacts = await transaction.workingArtifact.findMany({
+        where: {
+          projectId,
+          workflowRunId: workspace.workflowRunId,
+          nodeId: 'SOURCE_IMPORT',
+          artifactKey: {
+            in: [`source-package:${productId}`, `global-video-config:${productId}`],
+          },
+        },
+      });
+      if (
+        upstreamArtifacts.length !== 2 ||
+        upstreamArtifacts.some((artifact) => artifact.freshness !== 'CURRENT')
+      )
+        return { kind: 'NOT_READY' as const };
+      const nodeState = await transaction.workflowNodeState.findUnique({
+        where: {
+          projectId_workflowRunId_nodeId: {
+            projectId,
+            workflowRunId: workspace.workflowRunId,
+            nodeId: 'INFORMATION_EXTRACTION',
+          },
+        },
+      });
       const snapshot: EffectExtractionInputSnapshot = {
         schemaVersion: EFFECT_EXTRACTION_SCHEMA_VERSION,
         projectId,
@@ -167,6 +202,25 @@ export class EffectExtractionRepository {
           ),
         },
         materials,
+        dependencies: [
+          ...upstreamArtifacts.map((artifact) => ({
+            sourceType: 'WORKING_ARTIFACT' as const,
+            sourceNodeId: artifact.nodeId,
+            sourceArtifactId: artifact.id,
+            sourceKey: artifact.artifactKey,
+            sourceRevision: artifact.revision,
+          })),
+          ...(nodeState
+            ? [
+                {
+                  sourceType: 'NODE_STATE' as const,
+                  sourceNodeId: nodeState.nodeId,
+                  sourceKey: nodeState.nodeId,
+                  sourceRevision: nodeState.revision,
+                },
+              ]
+            : []),
+        ],
       };
       const sourceFingerprint = extractionSourceFingerprint(snapshot);
       const run = await transaction.effectExtractionRun.create({
@@ -220,7 +274,7 @@ export class EffectExtractionRepository {
   run(projectId: string, runId: string) {
     return this.prisma.effectExtractionRun.findFirst({
       where: { projectId, id: runId },
-      include: { result: true },
+      include: { result: true, branches: { orderBy: { createdAt: 'asc' } } },
     });
   }
 

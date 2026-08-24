@@ -144,12 +144,42 @@ enum EffectExtractionRunStatus {
 
 enum WorkflowRunStatus {
   ACTIVE
+  PAUSED
   COMPLETED
 }
 
 enum WorkingArtifactKind {
   FILE
   STRUCTURED
+}
+
+enum WorkingArtifactFreshness {
+  CURRENT
+  STALE
+}
+
+enum WorkingArtifactDependencySourceType {
+  NODE_STATE
+  WORKING_ARTIFACT
+}
+
+enum FileObjectStatus {
+  AVAILABLE
+  ORPHANED
+}
+
+enum EffectImportUploadSessionStatus {
+  UPLOADING
+  COMPLETED
+  FAILED
+  EXPIRED
+}
+
+enum EffectImportUploadItemStatus {
+  PENDING
+  UPLOADED
+  FAILED
+  REMOVED
 }
 
 enum EffectExtractionBranch {
@@ -176,29 +206,31 @@ enum JobOutboxStatus {
 }
 
 model Project {
-  id                        String                     @id @default(uuid()) @db.Uuid
-  name                      String                     @db.VarChar(120)
-  description               String?                    @db.VarChar(500)
-  client                    String?                    @db.VarChar(120)
-  productName               String?                    @db.VarChar(120)
-  iconKey                   String?                    @db.VarChar(80)
-  defaultWorkflow           AssetWorkflow?
-  defaultSpace              AssetWorkflowSpace?
-  status                    ProjectStatus              @default(ACTIVE)
-  createdAt                 DateTime                   @default(now())
-  updatedAt                 DateTime                   @updatedAt
-  assets                    Asset[]
-  assetVersions             AssetVersion[]
-  effectImportWorkspace     EffectImportWorkspace?
-  assetOperationReceipts    AssetOperationReceipt[]
-  storageCleanupTasks       StorageCleanupTask[]
-  effectExtractionRuns      EffectExtractionRun[]
-  effectExtractionResults   EffectExtractionResult[]
-  jobOutboxEntries          JobOutbox[]
-  effectExtractionFileHolds EffectExtractionFileHold[]
-  workflowRuns              WorkflowRun[]
-  workflowNodeStates        WorkflowNodeState[]
-  workingArtifacts          WorkingArtifact[]
+  id                         String                      @id @default(uuid()) @db.Uuid
+  name                       String                      @db.VarChar(120)
+  description                String?                     @db.VarChar(500)
+  client                     String?                     @db.VarChar(120)
+  productName                String?                     @db.VarChar(120)
+  iconKey                    String?                     @db.VarChar(80)
+  defaultWorkflow            AssetWorkflow?
+  defaultSpace               AssetWorkflowSpace?
+  status                     ProjectStatus               @default(ACTIVE)
+  createdAt                  DateTime                    @default(now())
+  updatedAt                  DateTime                    @updatedAt
+  assets                     Asset[]
+  assetVersions              AssetVersion[]
+  effectImportWorkspace      EffectImportWorkspace?
+  assetOperationReceipts     AssetOperationReceipt[]
+  storageCleanupTasks        StorageCleanupTask[]
+  effectExtractionRuns       EffectExtractionRun[]
+  effectExtractionResults    EffectExtractionResult[]
+  jobOutboxEntries           JobOutbox[]
+  effectExtractionFileHolds  EffectExtractionFileHold[]
+  workflowRuns               WorkflowRun[]
+  workflowNodeStates         WorkflowNodeState[]
+  workingArtifacts           WorkingArtifact[]
+  fileObjects                FileObject[]
+  effectImportUploadSessions EffectImportUploadSession[]
 
   @@index([updatedAt])
   @@map("projects")
@@ -252,19 +284,23 @@ model Asset {
 }
 
 model WorkflowRun {
-  id               String             @id @default(uuid()) @db.Uuid
-  projectId        String             @db.Uuid
-  workflow         AssetWorkflow
-  workflowSpace    AssetWorkflowSpace
-  status           WorkflowRunStatus  @default(ACTIVE)
-  activeKey        String?            @default("ACTIVE") @db.VarChar(32)
-  createdAt        DateTime           @default(now())
-  updatedAt        DateTime           @updatedAt
-  completedAt      DateTime?
-  project          Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  nodeStates       WorkflowNodeState[]
-  workingArtifacts WorkingArtifact[]
-  effectWorkspace  EffectImportWorkspace?
+  id                         String                      @id @default(uuid()) @db.Uuid
+  projectId                  String                      @db.Uuid
+  workflow                   AssetWorkflow
+  workflowSpace              AssetWorkflowSpace
+  status                     WorkflowRunStatus           @default(ACTIVE)
+  activeKey                  String?                     @default("ACTIVE") @db.VarChar(32)
+  currentNodeId              String?                     @db.VarChar(160)
+  lastActiveAt               DateTime                    @default(now())
+  createdAt                  DateTime                    @default(now())
+  updatedAt                  DateTime                    @updatedAt
+  completedAt                DateTime?
+  project                    Project                     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  nodeStates                 WorkflowNodeState[]
+  workingArtifacts           WorkingArtifact[]
+  fileObjects                FileObject[]
+  effectImportUploadSessions EffectImportUploadSession[]
+  effectWorkspace            EffectImportWorkspace?
 
   @@unique([projectId, workflow, workflowSpace, activeKey])
   @@unique([projectId, id])
@@ -293,33 +329,101 @@ model WorkflowNodeState {
 }
 
 model WorkingArtifact {
-  id               String              @id @default(uuid()) @db.Uuid
-  projectId        String              @db.Uuid
-  workflowRunId    String              @db.Uuid
-  nodeId           String              @db.VarChar(160)
-  artifactKey      String              @db.VarChar(500)
+  id               String                      @id @default(uuid()) @db.Uuid
+  projectId        String                      @db.Uuid
+  workflowRunId    String                      @db.Uuid
+  nodeId           String                      @db.VarChar(160)
+  artifactKey      String                      @db.VarChar(500)
   kind             WorkingArtifactKind
-  name             String              @db.VarChar(120)
+  name             String                      @db.VarChar(120)
   directory        AssetDirectory
   type             AssetType
-  tags             String[]            @default([])
+  tags             String[]                    @default([])
   payload          Json?
   metadata         Json?
-  originalFileName String?              @db.VarChar(255)
-  mimeType         String?              @db.VarChar(120)
+  originalFileName String?                     @db.VarChar(255)
+  mimeType         String?                     @db.VarChar(120)
   sizeBytes        Int?
-  storageKey       String?              @db.VarChar(500)
-  sourceRunId      String?              @db.VarChar(255)
-  sourceArtifactId String?              @db.VarChar(255)
-  createdAt        DateTime             @default(now())
-  updatedAt        DateTime             @updatedAt
-  project          Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  workflowRun      WorkflowRun           @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
+  storageKey       String?                     @db.VarChar(500)
+  sourceRunId      String?                     @db.VarChar(255)
+  sourceArtifactId String?                     @db.VarChar(255)
+  revision         Int                         @default(1)
+  contentHash      String                      @default("") @db.Char(64)
+  freshness        WorkingArtifactFreshness    @default(CURRENT)
+  createdAt        DateTime                    @default(now())
+  updatedAt        DateTime                    @updatedAt
+  project          Project                     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workflowRun      WorkflowRun                 @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
+  files            WorkingArtifactFile[]
+  dependencies     WorkingArtifactDependency[] @relation("WorkingArtifactDependencies")
 
   @@unique([projectId, workflowRunId, nodeId, artifactKey])
   @@unique([projectId, id])
   @@index([projectId, workflowRunId, nodeId, updatedAt])
   @@map("working_artifacts")
+}
+
+model FileObject {
+  id               String                   @id @default(uuid()) @db.Uuid
+  projectId        String                   @db.Uuid
+  workflowRunId    String                   @db.Uuid
+  nodeId           String                   @db.VarChar(160)
+  originalFileName String                   @db.VarChar(255)
+  mimeType         String                   @db.VarChar(120)
+  sizeBytes        Int
+  storageKey       String                   @db.VarChar(500)
+  sha256           String                   @db.Char(64)
+  status           FileObjectStatus         @default(AVAILABLE)
+  orphanedAt       DateTime?
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+  project          Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workflowRun      WorkflowRun              @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
+  artifactLinks    WorkingArtifactFile[]
+  materials        EffectImportMaterial[]
+  uploadItems      EffectImportUploadItem[]
+
+  @@unique([projectId, storageKey])
+  @@unique([projectId, id])
+  @@index([projectId, workflowRunId, status, updatedAt])
+  @@map("file_objects")
+}
+
+model WorkingArtifactFile {
+  id                String          @id @default(uuid()) @db.Uuid
+  projectId         String          @db.Uuid
+  workflowRunId     String          @db.Uuid
+  workingArtifactId String          @db.Uuid
+  fileObjectId      String          @db.Uuid
+  role              String          @db.VarChar(80)
+  sortOrder         Int             @default(0)
+  createdAt         DateTime        @default(now())
+  workingArtifact   WorkingArtifact @relation(fields: [projectId, workingArtifactId], references: [projectId, id], onDelete: Cascade)
+  fileObject        FileObject      @relation(fields: [projectId, fileObjectId], references: [projectId, id], onDelete: Restrict)
+
+  @@unique([projectId, workingArtifactId, fileObjectId])
+  @@index([projectId, workflowRunId, workingArtifactId, sortOrder])
+  @@index([projectId, fileObjectId])
+  @@map("working_artifact_files")
+}
+
+model WorkingArtifactDependency {
+  id                  String                              @id @default(uuid()) @db.Uuid
+  projectId           String                              @db.Uuid
+  workflowRunId       String                              @db.Uuid
+  dependentArtifactId String                              @db.Uuid
+  sourceType          WorkingArtifactDependencySourceType
+  sourceNodeId        String?                             @db.VarChar(160)
+  sourceArtifactId    String?                             @db.Uuid
+  sourceKey           String                              @db.VarChar(500)
+  sourceRevision      Int
+  createdAt           DateTime                            @default(now())
+  dependentArtifact   WorkingArtifact                     @relation("WorkingArtifactDependencies", fields: [projectId, dependentArtifactId], references: [projectId, id], onDelete: Cascade)
+
+  @@unique([projectId, dependentArtifactId, sourceType, sourceKey])
+  @@index([projectId, workflowRunId, sourceType, sourceKey])
+  @@index([projectId, sourceArtifactId])
+  @@map("working_artifact_dependencies")
 }
 
 model AssetVersion {
@@ -361,16 +465,16 @@ model AssetOperationReceipt {
 }
 
 model EffectImportWorkspace {
-  id          String              @id @default(uuid()) @db.Uuid
-  projectId   String              @unique @db.Uuid
-  workflowRunId String             @unique @db.Uuid
-  currentMode EffectImportMode    @default(SINGLE)
-  revision    Int                 @default(1)
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
-  project     Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  workflowRun WorkflowRun         @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
-  drafts      EffectImportDraft[]
+  id            String              @id @default(uuid()) @db.Uuid
+  projectId     String              @unique @db.Uuid
+  workflowRunId String              @unique @db.Uuid
+  currentMode   EffectImportMode    @default(SINGLE)
+  revision      Int                 @default(1)
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  project       Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workflowRun   WorkflowRun         @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
+  drafts        EffectImportDraft[]
 
   @@unique([projectId, id])
   @@unique([projectId, workflowRunId])
@@ -378,24 +482,25 @@ model EffectImportWorkspace {
 }
 
 model EffectImportDraft {
-  id                String                         @id @default(uuid()) @db.Uuid
-  projectId         String                         @db.Uuid
-  workspaceId       String                         @db.Uuid
+  id                String                      @id @default(uuid()) @db.Uuid
+  projectId         String                      @db.Uuid
+  workspaceId       String                      @db.Uuid
   mode              EffectImportMode
-  status            EffectImportDraftStatus        @default(DRAFT)
+  status            EffectImportDraftStatus     @default(DRAFT)
   globalConfig      Json
-  revision          Int                            @default(1)
+  revision          Int                         @default(1)
   validatedRevision Int?
   validationIssues  Json
   validatedAt       DateTime?
   completedAt       DateTime?
-  createdAt         DateTime                       @default(now())
-  updatedAt         DateTime                       @updatedAt
-  workspace         EffectImportWorkspace          @relation(fields: [projectId, workspaceId], references: [projectId, id], onDelete: Cascade)
+  createdAt         DateTime                    @default(now())
+  updatedAt         DateTime                    @updatedAt
+  workspace         EffectImportWorkspace       @relation(fields: [projectId, workspaceId], references: [projectId, id], onDelete: Cascade)
   products          EffectImportProduct[]
   manifestImports   EffectManifestImport[]
   extractionRuns    EffectExtractionRun[]
   extractionResults EffectExtractionResult[]
+  uploadSessions    EffectImportUploadSession[]
 
   @@unique([projectId, mode])
   @@unique([projectId, id])
@@ -404,25 +509,26 @@ model EffectImportDraft {
 }
 
 model EffectImportProduct {
-  id                      String                   @id @default(uuid()) @db.Uuid
-  projectId               String                   @db.Uuid
-  draftId                 String                   @db.Uuid
-  name                    String                   @default("") @db.VarChar(120)
-  category                String                   @default("") @db.VarChar(120)
-  sku                     String                   @default("") @db.VarChar(160)
-  normalizedSku           String                   @default("") @db.VarChar(160)
-  commerceUrl             String?                  @db.VarChar(2000)
+  id                      String                      @id @default(uuid()) @db.Uuid
+  projectId               String                      @db.Uuid
+  draftId                 String                      @db.Uuid
+  name                    String                      @default("") @db.VarChar(120)
+  category                String                      @default("") @db.VarChar(120)
+  sku                     String                      @default("") @db.VarChar(160)
+  normalizedSku           String                      @default("") @db.VarChar(160)
+  commerceUrl             String?                     @db.VarChar(2000)
   configOverride          Json
-  sortOrder               Int                      @default(0)
-  sourceManifestImportId  String?                  @db.Uuid
+  sortOrder               Int                         @default(0)
+  sourceManifestImportId  String?                     @db.Uuid
   sourceManifestRowNumber Int?
-  createdAt               DateTime                 @default(now())
-  updatedAt               DateTime                 @updatedAt
-  draft                   EffectImportDraft        @relation(fields: [projectId, draftId], references: [projectId, id], onDelete: Cascade)
-  sourceManifestImport    EffectManifestImport?    @relation(fields: [projectId, sourceManifestImportId], references: [projectId, id], onDelete: Restrict)
+  createdAt               DateTime                    @default(now())
+  updatedAt               DateTime                    @updatedAt
+  draft                   EffectImportDraft           @relation(fields: [projectId, draftId], references: [projectId, id], onDelete: Cascade)
+  sourceManifestImport    EffectManifestImport?       @relation(fields: [projectId, sourceManifestImportId], references: [projectId, id], onDelete: Restrict)
   materials               EffectImportMaterial[]
   extractionRuns          EffectExtractionRun[]
   extractionResults       EffectExtractionResult[]
+  uploadSessions          EffectImportUploadSession[]
 
   @@unique([projectId, id])
   @@index([projectId, draftId, sortOrder])
@@ -441,6 +547,7 @@ model EffectImportMaterial {
   mimeType           String?                         @db.VarChar(120)
   sizeBytes          Int?
   storageKey         String?                         @db.VarChar(500)
+  fileObjectId       String?                         @db.Uuid
   failureDisposition EffectImportFailureDisposition?
   errorCode          String?                         @db.VarChar(120)
   errorMessage       String?                         @db.VarChar(500)
@@ -448,10 +555,63 @@ model EffectImportMaterial {
   createdAt          DateTime                        @default(now())
   updatedAt          DateTime                        @updatedAt
   product            EffectImportProduct             @relation(fields: [projectId, productId], references: [projectId, id], onDelete: Cascade)
+  fileObject         FileObject?                     @relation(fields: [fileObjectId], references: [id], onDelete: SetNull)
 
   @@unique([projectId, id])
   @@index([projectId, productId, type])
+  @@index([projectId, fileObjectId])
   @@map("effect_import_materials")
+}
+
+model EffectImportUploadSession {
+  id               String                          @id @default(uuid()) @db.Uuid
+  projectId        String                          @db.Uuid
+  workflowRunId    String                          @db.Uuid
+  draftId          String                          @db.Uuid
+  productId        String                          @db.Uuid
+  expectedRevision Int
+  status           EffectImportUploadSessionStatus @default(UPLOADING)
+  completionKey    String?                         @db.VarChar(500)
+  expiresAt        DateTime
+  completedAt      DateTime?
+  createdAt        DateTime                        @default(now())
+  updatedAt        DateTime                        @updatedAt
+  project          Project                         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workflowRun      WorkflowRun                     @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
+  draft            EffectImportDraft               @relation(fields: [projectId, draftId], references: [projectId, id], onDelete: Cascade)
+  product          EffectImportProduct             @relation(fields: [projectId, productId], references: [projectId, id], onDelete: Cascade)
+  items            EffectImportUploadItem[]
+
+  @@unique([projectId, id])
+  @@unique([projectId, completionKey])
+  @@index([projectId, productId, status, expiresAt])
+  @@map("effect_import_upload_sessions")
+}
+
+model EffectImportUploadItem {
+  id               String                       @id @default(uuid()) @db.Uuid
+  projectId        String                       @db.Uuid
+  sessionId        String                       @db.Uuid
+  clientFileId     String                       @db.VarChar(160)
+  type             EffectImportMaterialType
+  expectedFileName String?                      @db.VarChar(255)
+  status           EffectImportUploadItemStatus @default(PENDING)
+  originalFileName String                       @db.VarChar(255)
+  mimeType         String                       @db.VarChar(120)
+  sizeBytes        Int
+  storageKey       String?                      @db.VarChar(500)
+  sha256           String?                      @db.Char(64)
+  fileObjectId     String?                      @db.Uuid
+  errorCode        String?                      @db.VarChar(120)
+  errorMessage     String?                      @db.VarChar(500)
+  createdAt        DateTime                     @default(now())
+  updatedAt        DateTime                     @updatedAt
+  session          EffectImportUploadSession    @relation(fields: [projectId, sessionId], references: [projectId, id], onDelete: Cascade)
+  fileObject       FileObject?                  @relation(fields: [fileObjectId], references: [id], onDelete: SetNull)
+
+  @@unique([projectId, sessionId, clientFileId])
+  @@index([projectId, fileObjectId])
+  @@map("effect_import_upload_items")
 }
 
 model EffectManifestImport {
@@ -480,7 +640,6 @@ model EffectManifestImport {
   @@index([projectId, draftId, status, expiresAt])
   @@map("effect_manifest_imports")
 }
-
 
 model StorageCleanupTask {
   id            String   @id @default(uuid()) @db.Uuid

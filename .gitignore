@@ -15,3 +15,4 @@ apps/api/src/generated/
 **/.venv/
 **/__pycache__/
 **/.pytest_cache/
+.codex-browser-mock.*

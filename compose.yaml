@@ -82,7 +82,7 @@ services:
       EFFECT_EXTRACTION_WORKER_TOKEN: ${EFFECT_EXTRACTION_WORKER_TOKEN:-local-effect-extraction-worker-token}
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
       EFFECT_EXTRACTION_QUEUE: effect.extraction.requested
-      EXTRACTION_AI_PROVIDER: ${EXTRACTION_AI_PROVIDER:-mock}
+      EXTRACTION_AI_PROVIDER: ${EXTRACTION_AI_PROVIDER:-ark}
       ARK_BASE_URL: ${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
       ARK_API_KEY: ${ARK_API_KEY:-}
       ARK_MODEL: ${ARK_MODEL:-}

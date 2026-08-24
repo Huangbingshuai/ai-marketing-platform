@@ -36,6 +36,38 @@ export const EFFECT_EXTRACTION_BRANCH_STATUSES = [
 ] as const;
 export type EffectExtractionBranchStatus = (typeof EFFECT_EXTRACTION_BRANCH_STATUSES)[number];
 
+export const EFFECT_EXTRACTION_GRAPH_NODES = [
+  { id: 'LOAD_AND_SNAPSHOT', label: '资料快照', group: 'SNAPSHOT' },
+  { id: 'DOCUMENT', label: '文档解析', group: 'PARALLEL' },
+  { id: 'IMAGE', label: '图片识别', group: 'PARALLEL' },
+  { id: 'COMMERCE', label: '电商链接', group: 'PARALLEL' },
+  { id: 'FORM', label: '表单配置', group: 'PARALLEL' },
+  { id: 'FUSION', label: '多源融合', group: 'FUSION' },
+  { id: 'NORMALIZATION', label: '标准化与结果保存', group: 'NORMALIZATION' },
+] as const;
+export type EffectExtractionNodeId = (typeof EFFECT_EXTRACTION_GRAPH_NODES)[number]['id'];
+export type EffectExtractionNodeGroup = (typeof EFFECT_EXTRACTION_GRAPH_NODES)[number]['group'];
+export type EffectExtractionNodeStatus = EffectExtractionBranchStatus;
+
+export const EFFECT_EXTRACTION_GRAPH_EDGES = [
+  { from: 'LOAD_AND_SNAPSHOT', to: 'DOCUMENT' },
+  { from: 'LOAD_AND_SNAPSHOT', to: 'IMAGE' },
+  { from: 'LOAD_AND_SNAPSHOT', to: 'COMMERCE' },
+  { from: 'LOAD_AND_SNAPSHOT', to: 'FORM' },
+  { from: 'DOCUMENT', to: 'FUSION' },
+  { from: 'IMAGE', to: 'FUSION' },
+  { from: 'COMMERCE', to: 'FUSION' },
+  { from: 'FORM', to: 'FUSION' },
+  { from: 'FUSION', to: 'NORMALIZATION' },
+] as const satisfies ReadonlyArray<{ from: EffectExtractionNodeId; to: EffectExtractionNodeId }>;
+
+export type EffectExtractionNodeExecution = {
+  nodeId: EffectExtractionNodeId;
+  status: EffectExtractionNodeStatus;
+  warnings: EffectExtractionWarning[];
+  errorMessage: string | null;
+};
+
 export type EffectExtractionResult = {
   productCategory: string;
   productName: string;
@@ -100,6 +132,7 @@ export type EffectExtractionRun = {
   warnings: EffectExtractionWarning[];
   errorMessage: string | null;
   extractResultId: string | null;
+  nodes: EffectExtractionNodeExecution[];
   createdAt: string;
   updatedAt: string;
 };

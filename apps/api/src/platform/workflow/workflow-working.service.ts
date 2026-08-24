@@ -9,7 +9,6 @@ import type {
   WorkflowRunOverviewData,
 } from '@ai-marketing/contracts';
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
-import type { WorkingArtifact as WorkingArtifactRecord } from '../../generated/prisma/client';
 import { ApiHttpException } from '../../common/api-http-exception';
 import type { StoragePort, StorageRange, StoredStream } from '../file/storage.port';
 import { STORAGE_PORT } from '../file/storage.port';
@@ -17,6 +16,7 @@ import { normalizeMultipartFileName, safeOriginalFileName } from '../file/file-n
 import { ProjectService } from '../project/project.service';
 import {
   WorkflowWorkingRepository,
+  type WorkingArtifactRecord,
   type WorkingArtifactUpsertInput,
 } from './workflow-working.repository';
 import { workflowStateHash } from './workflow-state-hash';
@@ -60,7 +60,9 @@ const toRun = (record: {
   projectId: string;
   workflow: WorkingArtifactListQuery['workflow'];
   workflowSpace: WorkingArtifactListQuery['space'];
-  status: 'ACTIVE' | 'COMPLETED';
+  status: 'ACTIVE' | 'PAUSED' | 'COMPLETED';
+  currentNodeId: string | null;
+  lastActiveAt: Date;
   createdAt: Date;
   updatedAt: Date;
 }) => ({
@@ -69,6 +71,8 @@ const toRun = (record: {
   workflow: record.workflow!,
   workflowSpace: record.workflowSpace!,
   status: record.status,
+  currentNodeId: record.currentNodeId,
+  lastActiveAt: record.lastActiveAt.toISOString(),
   createdAt: record.createdAt.toISOString(),
   updatedAt: record.updatedAt.toISOString(),
 });
@@ -78,6 +82,23 @@ const toArtifact = (record: WorkingArtifactRecord): WorkingArtifact => {
   const originalFileName = record.originalFileName
     ? safeOriginalFileName(record.originalFileName)
     : null;
+  const files = record.files.map(({ fileObject, role, sortOrder }) => {
+    const filePath = `/api/projects/${record.projectId}/file-objects/${fileObject.id}/content`;
+    return {
+      id: fileObject.id,
+      fileObjectId: fileObject.id,
+      role,
+      sortOrder,
+      originalFileName: safeOriginalFileName(fileObject.originalFileName),
+      mimeType: fileObject.mimeType,
+      sizeBytes: fileObject.sizeBytes,
+      sha256: fileObject.sha256,
+      previewKind: previewKind(fileObject.mimeType),
+      previewUrl: filePath,
+      contentUrl: filePath,
+      downloadUrl: `${filePath}?download=true`,
+    };
+  });
   return {
     id: record.id,
     projectId: record.projectId,
@@ -99,6 +120,18 @@ const toArtifact = (record: WorkingArtifactRecord): WorkingArtifact => {
     downloadUrl: record.storageKey ? `${contentPath}?download=true` : null,
     sourceRunId: record.sourceRunId,
     sourceArtifactId: record.sourceArtifactId,
+    revision: record.revision,
+    freshness: record.freshness,
+    dependencies: record.dependencies.map((dependency) => ({
+      sourceType: dependency.sourceType,
+      sourceNodeId: dependency.sourceNodeId,
+      sourceArtifactId: dependency.sourceArtifactId,
+      sourceKey: dependency.sourceKey,
+      sourceRevision: dependency.sourceRevision,
+    })),
+    files,
+    fileCount: files.length,
+    mainPreviewUrl: files.find((file) => file.previewKind === 'IMAGE')?.contentUrl ?? null,
     status: 'WORKING',
     archiveStatus: 'UNARCHIVED',
     createdAt: record.createdAt.toISOString(),
@@ -250,6 +283,37 @@ export class WorkflowWorkingService {
     };
   }
 
+  async pauseRun(projectId: string, workflowRunId: string): Promise<{ paused: true }> {
+    await this.projectService.get(projectId);
+    const result = await this.repository.pauseRun(projectId, workflowRunId);
+    if (result.count === 0)
+      throw new ApiHttpException('工作流运行不存在', HttpStatus.NOT_FOUND, 'ASSET_NOT_FOUND');
+    return { paused: true };
+  }
+
+  async fileObjectContent(
+    projectId: string,
+    fileObjectId: string,
+    rangeHeader?: string,
+  ): Promise<WorkingArtifactContent> {
+    const record = await this.repository.findFileObject(projectId, fileObjectId);
+    if (!record || record.status === 'ORPHANED')
+      throw new ApiHttpException('工作文件不存在', HttpStatus.NOT_FOUND, 'ASSET_NOT_FOUND');
+    const kind = previewKind(record.mimeType);
+    const partialAllowed = kind === 'AUDIO' || kind === 'VIDEO';
+    const opened =
+      rangeHeader && partialAllowed
+        ? await this.storage.open(record.storageKey, parseRange(rangeHeader, record.sizeBytes))
+        : await this.storage.open(record.storageKey);
+    return {
+      ...opened,
+      mimeType: record.mimeType,
+      originalFileName: safeOriginalFileName(record.originalFileName),
+      previewKind: kind,
+      partial: Boolean(rangeHeader && partialAllowed),
+    };
+  }
+
   async upsertArtifact(
     projectId: string,
     workflowRunId: string,
@@ -287,10 +351,6 @@ export class WorkflowWorkingService {
   }
 
   private async deleteOrQueue(projectId: string, storageKey: string, reason: string) {
-    try {
-      await this.storage.delete(storageKey);
-    } catch {
-      await this.repository.enqueueCleanup(projectId, storageKey, reason);
-    }
+    await this.repository.enqueueCleanup(projectId, storageKey, reason);
   }
 }

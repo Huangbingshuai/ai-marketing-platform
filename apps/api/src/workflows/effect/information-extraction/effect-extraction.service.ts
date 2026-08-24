@@ -1,4 +1,8 @@
+import { createReadStream } from 'node:fs';
+import { rm } from 'node:fs/promises';
+
 import type {
+  EffectExtractionNodeExecution,
   EffectExtractionProductState,
   EffectExtractionResult,
   EffectExtractionRun,
@@ -9,7 +13,11 @@ import type {
   StartEffectExtractionRunData,
   UpdateEffectExtractionResultData,
 } from '@ai-marketing/contracts';
-import { EFFECT_EXTRACTION_SCHEMA_VERSION, mergeEffectVideoConfig } from '@ai-marketing/contracts';
+import {
+  EFFECT_EXTRACTION_GRAPH_NODES,
+  EFFECT_EXTRACTION_SCHEMA_VERSION,
+  mergeEffectVideoConfig,
+} from '@ai-marketing/contracts';
 import { HttpStatus, Inject, Injectable, Optional } from '@nestjs/common';
 
 import { ApiHttpException } from '../../../common/api-http-exception';
@@ -51,6 +59,53 @@ const safeFileName = (value: string): string =>
       .join('') || 'artifact.md'
   ).slice(0, 255);
 
+type RunBranchRecord = {
+  branch: 'DOCUMENT' | 'IMAGE' | 'COMMERCE' | 'FORM' | 'FUSION' | 'NORMALIZATION';
+  status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'PARTIAL' | 'SKIPPED' | 'FAILED';
+  warnings: unknown;
+  errorMessage: string | null;
+};
+
+const presentNodes = (record: {
+  status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+  currentNode: string | null;
+  errorMessage: string | null;
+  branches?: RunBranchRecord[];
+}): EffectExtractionNodeExecution[] => {
+  const branches = new Map((record.branches ?? []).map((branch) => [branch.branch, branch]));
+  const snapshotStatus: EffectExtractionNodeExecution['status'] =
+    record.status === 'QUEUED'
+      ? 'PENDING'
+      : record.status === 'FAILED' && branches.size === 0
+        ? 'FAILED'
+        : record.status === 'RUNNING' &&
+            (record.currentNode === 'LOAD_AND_SNAPSHOT' || branches.size === 0)
+          ? 'RUNNING'
+          : 'SUCCEEDED';
+
+  return EFFECT_EXTRACTION_GRAPH_NODES.map(({ id }) => {
+    if (id === 'LOAD_AND_SNAPSHOT') {
+      return {
+        nodeId: id,
+        status: snapshotStatus,
+        warnings: [],
+        errorMessage: snapshotStatus === 'FAILED' ? record.errorMessage : null,
+      };
+    }
+    const branch = branches.get(id);
+    if (!branch) return { nodeId: id, status: 'PENDING', warnings: [], errorMessage: null };
+    const failedWithRun = record.status === 'FAILED' && branch.status === 'RUNNING';
+    return {
+      nodeId: id,
+      status: failedWithRun ? 'FAILED' : branch.status,
+      warnings: parseWarnings(branch.warnings),
+      errorMessage: failedWithRun
+        ? (branch.errorMessage ?? record.errorMessage)
+        : branch.errorMessage,
+    };
+  });
+};
+
 const presentRun = (
   record: {
     id: string;
@@ -62,6 +117,7 @@ const presentRun = (
     currentNode: string | null;
     warnings: unknown;
     errorMessage: string | null;
+    branches?: RunBranchRecord[];
     createdAt: Date;
     updatedAt: Date;
   },
@@ -77,6 +133,7 @@ const presentRun = (
   warnings: parseWarnings(record.warnings),
   errorMessage: record.errorMessage,
   extractResultId,
+  nodes: presentNodes(record),
   createdAt: record.createdAt.toISOString(),
   updatedAt: record.updatedAt.toISOString(),
 });
@@ -106,23 +163,36 @@ export class EffectExtractionService {
     const workflow = await this.repository.workflowRunForDraft(record.projectId, record.draftId);
     if (!product?.name.trim() || !workflow || !this.workingService) return;
     const productName = product.name.trim();
-    await this.workingService.upsertArtifact(
-      record.projectId,
-      workflow.workspace.workflowRunId,
-      'INFORMATION_EXTRACTION',
-      `product:${record.productId}:result`,
-      {
-        kind: 'STRUCTURED',
-        name: `${productName} AI 信息提炼`.slice(0, 120),
-        directory: 'INSIGHTS',
-        type: 'INSIGHT_RESULT',
-        tags: [productName, product.category, product.sku].filter(Boolean).slice(0, 20),
-        sourceArtifactId: record.id,
-        sourceRunId: record.runId,
-        metadata: { productId: product.id, productName, contentKind: 'EFFECT_EXTRACTION_RESULT' },
-        payload: record.draftResult,
-      },
-    );
+    const sourceRun = await this.repository.run(record.projectId, record.runId);
+    const snapshot = sourceRun?.inputSnapshot as EffectExtractionInputSnapshot | undefined;
+    try {
+      await this.workingService.upsertArtifact(
+        record.projectId,
+        workflow.workspace.workflowRunId,
+        'INFORMATION_EXTRACTION',
+        `marketing-insight:${record.productId}`,
+        {
+          kind: 'STRUCTURED',
+          name: `${productName} AI 信息提炼`.slice(0, 120),
+          directory: 'INSIGHTS',
+          type: 'INSIGHT_RESULT',
+          tags: [productName, product.category, product.sku].filter(Boolean).slice(0, 20),
+          sourceArtifactId: record.id,
+          sourceRunId: record.runId,
+          metadata: { productId: product.id, productName, contentKind: 'EFFECT_EXTRACTION_RESULT' },
+          payload: record.draftResult,
+          dependencies: snapshot?.dependencies ?? [],
+        },
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message === 'WORKING_ARTIFACT_DEPENDENCY_CONFLICT' ||
+          error.message === 'WORKFLOW_NODE_STATE_DEPENDENCY_CONFLICT')
+      )
+        return;
+      throw error;
+    }
     const existingState = await this.workingService.getNodeStateOrNull(
       record.projectId,
       workflow.workspace.workflowRunId,
@@ -261,7 +331,9 @@ export class EffectExtractionService {
     if (result.kind === 'KEY_CONFLICT') throw conflict('幂等键已用于其他提炼请求');
     const replay =
       result.kind === 'REPLAYED' ? await this.repository.run(projectId, result.run.id) : null;
-    return { run: presentRun(result.run, replay?.result?.id ?? null) };
+    return {
+      run: presentRun(replay ?? result.run, replay?.result?.id ?? null),
+    };
   }
 
   async run(projectId: string, runId: string): Promise<GetEffectExtractionRunData> {
@@ -299,6 +371,7 @@ export class EffectExtractionService {
       result,
     );
     if (!updated) throw conflict('提炼结果已被其他操作更新，请刷新后重试');
+    await this.syncWorkingResult(updated);
     return {
       projectId,
       productId: updated.productId,
@@ -512,5 +585,3 @@ export class EffectExtractionService {
     return { material, ...(await this.storage.open(material.storageKey)) };
   }
 }
-import { createReadStream } from 'node:fs';
-import { rm } from 'node:fs/promises';

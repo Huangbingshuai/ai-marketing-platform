@@ -26,4 +26,18 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain('currentState.warnings');
     expect(pageSource).toContain('加载最新结果');
   });
+
+  it('opens one accessible real-status workflow dialog without exposing intermediate payloads', () => {
+    expect(pageSource.match(/>查看工作流/g)).toHaveLength(1);
+    expect(pageSource).toContain('role="dialog"');
+    expect(pageSource).toContain('aria-modal="true"');
+    expect(pageSource).toContain('EFFECT_EXTRACTION_GRAPH_EDGES.filter');
+    expect(pageSource).toContain("graphExecution('FUSION')");
+    expect(pageSource).toContain("graphExecution('NORMALIZATION')");
+    expect(pageSource).toContain('ref="graphCloseButton"');
+    expect(pageSource).toContain("graphExecution('FUSION').errorMessage");
+    expect(pageSource).toContain("graphExecution('NORMALIZATION').warnings");
+    expect(pageSource).not.toContain('structuredOutput');
+    expect(pageSource).not.toContain('textStorageKey');
+  });
 });

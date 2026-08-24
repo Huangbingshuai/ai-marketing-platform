@@ -17,7 +17,7 @@ describe('WorkflowWorkingRepository', () => {
         projectId: 'project-a',
         workflow: 'EFFECT',
         workflowSpace: 'EFFECT',
-        status: 'ACTIVE',
+        status: { in: ['ACTIVE', 'PAUSED'] },
       },
       include: { nodeStates: { orderBy: [{ savedAt: 'asc' }, { id: 'asc' }] } },
       orderBy: { createdAt: 'desc' },
@@ -123,16 +123,75 @@ describe('WorkflowWorkingRepository', () => {
     expect(transaction.workflowNodeState.update).not.toHaveBeenCalled();
   });
 
+  it('marks direct and indirect dependents stale without changing their revisions', async () => {
+    const updateArtifacts = vi.fn().mockResolvedValue({ count: 1 });
+    const findDependencies = vi
+      .fn()
+      .mockResolvedValueOnce([{ dependentArtifactId: 'artifact-a' }])
+      .mockResolvedValueOnce([{ dependentArtifactId: 'artifact-b' }])
+      .mockResolvedValueOnce([]);
+    const transaction = {
+      workflowRun: {
+        findFirst: vi.fn().mockResolvedValue({ id: 'run-a' }),
+        update: vi.fn().mockResolvedValue({ id: 'run-a' }),
+      },
+      workflowNodeState: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 'state-a',
+          revision: 2,
+          contentHash: 'old-hash',
+          state: { prompt: 'old' },
+        }),
+        update: vi.fn().mockResolvedValue({ id: 'state-a', revision: 3 }),
+      },
+      workingArtifact: { updateMany: updateArtifacts },
+      workingArtifactDependency: { findMany: findDependencies },
+    };
+    const repository = new WorkflowWorkingRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await repository.saveNodeState(
+      'project-a',
+      'run-a',
+      'AI_INFO_EXTRACTION',
+      'new-hash',
+      { prompt: 'new' },
+      2,
+      1,
+    );
+
+    expect(updateArtifacts).toHaveBeenNthCalledWith(1, {
+      where: { projectId: 'project-a', workflowRunId: 'run-a', id: { in: ['artifact-a'] } },
+      data: { freshness: 'STALE' },
+    });
+    expect(updateArtifacts).toHaveBeenNthCalledWith(2, {
+      where: { projectId: 'project-a', workflowRunId: 'run-a', id: { in: ['artifact-b'] } },
+      data: { freshness: 'STALE' },
+    });
+  });
+
   it('updates a matching working artifact in place and returns the replaced object key', async () => {
-    const previous = { id: 'artifact-a', storageKey: '01-working/old.png' };
-    const updated = { ...previous, storageKey: '01-working/new.png' };
+    const previous = {
+      id: 'artifact-a',
+      storageKey: '01-working/old.png',
+      revision: 2,
+      contentHash: 'old-hash',
+      files: [],
+      dependencies: [],
+    };
+    const updated = { ...previous, storageKey: '01-working/new.png', revision: 3 };
     const transaction = {
       workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: 'run-a' }) },
       workingArtifact: {
         findUnique: vi.fn().mockResolvedValue(previous),
-        update: vi.fn().mockResolvedValue(updated),
+        findUniqueOrThrow: vi.fn().mockResolvedValue(updated),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         create: vi.fn(),
       },
+      workingArtifactFile: { deleteMany: vi.fn() },
+      workingArtifactDependency: { deleteMany: vi.fn(), findMany: vi.fn().mockResolvedValue([]) },
+      fileObject: { updateMany: vi.fn() },
     };
     const repository = new WorkflowWorkingRepository({
       $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
@@ -155,8 +214,71 @@ describe('WorkflowWorkingRepository', () => {
     expect(result.record.id).toBe('artifact-a');
     expect(result.previousStorageKey).toBe('01-working/old.png');
     expect(transaction.workingArtifact.create).not.toHaveBeenCalled();
-    expect(transaction.workingArtifact.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'artifact-a' } }),
+    expect(transaction.workingArtifact.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'artifact-a', revision: 2 } }),
     );
+  });
+
+  it('normalizes a migrated artifact hash without changing its revision or updatedAt', async () => {
+    const previous = {
+      id: 'artifact-a',
+      projectId: 'project-a',
+      workflowRunId: 'run-a',
+      nodeId: 'SOURCE_IMPORT',
+      artifactKey: 'source-package:product-a',
+      kind: 'STRUCTURED' as const,
+      name: '产品 A 原始资料包',
+      directory: 'SOURCE_MATERIALS' as const,
+      type: 'SOURCE_MATERIAL' as const,
+      tags: ['产品 A', '食品'],
+      payload: { productId: 'product-a', productName: '产品 A', completeness: 'INCOMPLETE' },
+      metadata: { productId: 'product-a', productName: '产品 A', legacyArtifactIds: ['old-a'] },
+      originalFileName: null,
+      mimeType: null,
+      sizeBytes: null,
+      storageKey: null,
+      sourceRunId: null,
+      sourceArtifactId: 'product-a',
+      revision: 1,
+      contentHash: 'legacy-migration-hash',
+      freshness: 'CURRENT' as const,
+      createdAt: new Date('2026-08-24T00:00:00Z'),
+      updatedAt: new Date('2026-08-24T00:00:00Z'),
+      files: [],
+      dependencies: [],
+    };
+    const executeRaw = vi.fn().mockResolvedValue(1);
+    const transaction = {
+      workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: 'run-a' }) },
+      workingArtifact: {
+        findUnique: vi.fn().mockResolvedValue(previous),
+        updateMany: vi.fn(),
+      },
+      $executeRaw: executeRaw,
+    };
+    const repository = new WorkflowWorkingRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    const result = await repository.upsertArtifact(
+      'project-a',
+      'run-a',
+      'SOURCE_IMPORT',
+      'source-package:product-a',
+      {
+        kind: 'STRUCTURED',
+        name: '产品 A 原始资料包',
+        directory: 'SOURCE_MATERIALS',
+        type: 'SOURCE_MATERIAL',
+        tags: ['食品', '产品 A'],
+        payload: { productId: 'product-a', productName: '产品 A', completeness: 'INCOMPLETE' },
+        metadata: { productId: 'product-a', productName: '产品 A' },
+        sourceArtifactId: 'product-a',
+      },
+    );
+
+    expect(result).toMatchObject({ unchanged: true, record: { id: 'artifact-a', revision: 1 } });
+    expect(executeRaw).toHaveBeenCalledTimes(1);
+    expect(transaction.workingArtifact.updateMany).not.toHaveBeenCalled();
   });
 });

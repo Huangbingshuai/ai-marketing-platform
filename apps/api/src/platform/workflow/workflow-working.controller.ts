@@ -15,6 +15,7 @@ import {
   Inject,
   Param,
   ParseUUIDPipe,
+  Post,
   Put,
   Query,
   Res,
@@ -92,6 +93,47 @@ export class WorkflowWorkingController {
       fileContentDisposition(inline ? 'inline' : 'attachment', content.originalFileName),
     );
     response.setHeader('accept-ranges', content.previewKind === 'VIDEO' ? 'bytes' : 'none');
+    response.setHeader('x-content-type-options', 'nosniff');
+    response.setHeader('cache-control', 'private, no-store');
+    if (content.partial)
+      response.setHeader(
+        'content-range',
+        `bytes ${content.start}-${content.end}/${content.sizeBytes}`,
+      );
+    await pipeline(content.stream, response);
+  }
+
+  @Post('workflow-runs/:workflowRunId/pause')
+  pauseRun(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('workflowRunId', new ParseUUIDPipe({ version: '4' })) workflowRunId: string,
+  ) {
+    return this.service.pauseRun(projectId, workflowRunId);
+  }
+
+  @Get('file-objects/:fileObjectId/content')
+  @RawResponse()
+  async fileObjectContent(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('fileObjectId', new ParseUUIDPipe({ version: '4' })) fileObjectId: string,
+    @Headers('range') range: string | undefined,
+    @Query() query: ContentQueryDto,
+    @Res() response: ServerResponse,
+  ): Promise<void> {
+    const content = await this.service.fileObjectContent(projectId, fileObjectId, range);
+    const download = query.download === 'true';
+    const inline = !download && content.previewKind !== 'DOWNLOAD';
+    response.statusCode = content.partial ? 206 : 200;
+    response.setHeader('content-type', content.mimeType);
+    response.setHeader('content-length', String(content.contentLength));
+    response.setHeader(
+      'content-disposition',
+      fileContentDisposition(inline ? 'inline' : 'attachment', content.originalFileName),
+    );
+    response.setHeader(
+      'accept-ranges',
+      ['AUDIO', 'VIDEO'].includes(content.previewKind) ? 'bytes' : 'none',
+    );
     response.setHeader('x-content-type-options', 'nosniff');
     response.setHeader('cache-control', 'private, no-store');
     if (content.partial)

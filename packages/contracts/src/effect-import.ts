@@ -404,6 +404,67 @@ export type EffectImportMaterialMutationData = {
   revision: number;
 };
 
+export const EFFECT_IMPORT_UPLOAD_SESSION_STATUSES = [
+  'UPLOADING',
+  'COMPLETED',
+  'FAILED',
+  'EXPIRED',
+] as const;
+export type EffectImportUploadSessionStatus =
+  (typeof EFFECT_IMPORT_UPLOAD_SESSION_STATUSES)[number];
+export const EFFECT_IMPORT_UPLOAD_ITEM_STATUSES = [
+  'PENDING',
+  'UPLOADED',
+  'FAILED',
+  'REMOVED',
+] as const;
+export type EffectImportUploadItemStatus = (typeof EFFECT_IMPORT_UPLOAD_ITEM_STATUSES)[number];
+
+export type CreateEffectImportUploadSessionRequest = {
+  expectedRevision: number;
+  items: Array<{
+    clientFileId: string;
+    type: EffectImportUploadMaterialType;
+    originalFileName: string;
+    mimeType: string;
+    sizeBytes: number;
+    expectedFileName?: string;
+  }>;
+};
+
+export type EffectImportUploadSessionItem = {
+  id: string;
+  clientFileId: string;
+  type: EffectImportMaterialType;
+  status: EffectImportUploadItemStatus;
+  originalFileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  errorCode: string | null;
+  errorMessage: string | null;
+};
+
+export type EffectImportUploadSession = {
+  id: string;
+  projectId: string;
+  workflowRunId: string;
+  draftId: string;
+  productId: string;
+  expectedRevision: number;
+  status: EffectImportUploadSessionStatus;
+  items: EffectImportUploadSessionItem[];
+  expiresAt: string;
+  completedAt: string | null;
+};
+
+export type CompleteEffectImportUploadSessionRequest = { completionKey: string };
+export type CompleteEffectImportUploadSessionData = {
+  session: EffectImportUploadSession;
+  materials: EffectImportMaterial[];
+  revision: number;
+  unchanged: boolean;
+};
+
 export const EFFECT_MANIFEST_FORMATS = ['csv', 'xlsx'] as const;
 export type EffectManifestFormat = (typeof EFFECT_MANIFEST_FORMATS)[number];
 

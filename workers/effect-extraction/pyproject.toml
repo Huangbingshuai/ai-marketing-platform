@@ -36,6 +36,7 @@ addopts = "-q"
 asyncio_mode = "auto"
 markers = [
   "integration: requires local Docling model artifacts and may be slow",
+  "ark_integration: makes paid requests to an explicitly configured real Ark endpoint",
 ]
 testpaths = ["tests"]
 

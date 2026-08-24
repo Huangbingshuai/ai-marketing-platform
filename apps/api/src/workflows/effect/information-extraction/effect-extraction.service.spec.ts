@@ -24,6 +24,20 @@ const runRecord = {
   createdAt: new Date('2026-08-21T00:00:00.000Z'),
   updatedAt: new Date('2026-08-21T00:01:00.000Z'),
   result: null,
+  branches: [
+    {
+      branch: 'DOCUMENT' as const,
+      status: 'SUCCEEDED' as const,
+      warnings: [],
+      errorMessage: null,
+    },
+    {
+      branch: 'IMAGE' as const,
+      status: 'RUNNING' as const,
+      warnings: [],
+      errorMessage: null,
+    },
+  ],
 };
 
 describe('EffectExtractionService', () => {
@@ -41,6 +55,137 @@ describe('EffectExtractionService', () => {
     expect(repository.run).toHaveBeenCalledWith('project-a', 'run-a');
     expect(result.run.progress).toBe(20);
     expect(result.run.currentNode).toBe('DOCUMENT');
+    expect(result.run.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ nodeId: 'LOAD_AND_SNAPSHOT', status: 'SUCCEEDED' }),
+        expect.objectContaining({ nodeId: 'DOCUMENT', status: 'SUCCEEDED' }),
+        expect.objectContaining({ nodeId: 'IMAGE', status: 'RUNNING' }),
+        expect.objectContaining({ nodeId: 'FUSION', status: 'PENDING' }),
+      ]),
+    );
+  });
+
+  it('maps an unfinished branch to failed without exposing its structured output', async () => {
+    const repository = {
+      run: vi.fn().mockResolvedValue({
+        ...runRecord,
+        status: 'FAILED',
+        errorMessage: '模型响应不符合结构',
+        branches: [
+          {
+            branch: 'NORMALIZATION',
+            status: 'RUNNING',
+            warnings: [],
+            errorMessage: null,
+            structuredOutput: { secret: 'must-not-leak' },
+            textStorageKey: 'private/markdown.md',
+          },
+        ],
+      }),
+    } as unknown as EffectExtractionRepository;
+    const service = new EffectExtractionService(
+      repository,
+      projectService(),
+      { get: vi.fn().mockResolvedValue(null) } as unknown as JobProgressStore,
+      storage,
+    );
+
+    const result = await service.run('project-a', 'run-a');
+
+    expect(result.run.nodes.find((node) => node.nodeId === 'NORMALIZATION')).toMatchObject({
+      status: 'FAILED',
+      errorMessage: '模型响应不符合结构',
+    });
+    expect(JSON.stringify(result)).not.toContain('must-not-leak');
+    expect(JSON.stringify(result)).not.toContain('private/markdown.md');
+  });
+
+  it('keeps the snapshot running after claim until a persisted branch starts', async () => {
+    const repository = {
+      run: vi.fn().mockResolvedValue({
+        ...runRecord,
+        currentNode: null,
+        branches: [],
+      }),
+    } as unknown as EffectExtractionRepository;
+    const service = new EffectExtractionService(
+      repository,
+      projectService(),
+      { get: vi.fn().mockResolvedValue(null) } as unknown as JobProgressStore,
+      storage,
+    );
+
+    const result = await service.run('project-a', 'run-a');
+
+    expect(result.run.nodes[0]).toMatchObject({
+      nodeId: 'LOAD_AND_SNAPSHOT',
+      status: 'RUNNING',
+    });
+  });
+
+  it('preserves partial, skipped and failed branch states and their public warnings', async () => {
+    const warning = {
+      code: 'SOURCE_WARNING',
+      message: '部分文档无法解析',
+      branch: 'DOCUMENT' as const,
+      sourceId: 'material-a',
+      structuredOutput: { prompt: 'must-not-leak' },
+      textStorageKey: 'private/source.md',
+    };
+    const repository = {
+      run: vi.fn().mockResolvedValue({
+        ...runRecord,
+        branches: [
+          {
+            branch: 'DOCUMENT',
+            status: 'PARTIAL',
+            warnings: [warning],
+            errorMessage: null,
+          },
+          {
+            branch: 'COMMERCE',
+            status: 'SKIPPED',
+            warnings: [],
+            errorMessage: null,
+          },
+          {
+            branch: 'FORM',
+            status: 'FAILED',
+            warnings: [],
+            errorMessage: '表单缺少产品名称或品类',
+          },
+        ],
+      }),
+    } as unknown as EffectExtractionRepository;
+    const service = new EffectExtractionService(
+      repository,
+      projectService(),
+      { get: vi.fn().mockResolvedValue(null) } as unknown as JobProgressStore,
+      storage,
+    );
+
+    const result = await service.run('project-a', 'run-a');
+
+    expect(result.run.nodes.find((node) => node.nodeId === 'DOCUMENT')).toMatchObject({
+      status: 'PARTIAL',
+      warnings: [
+        {
+          code: 'SOURCE_WARNING',
+          message: '部分文档无法解析',
+          branch: 'DOCUMENT',
+          sourceId: 'material-a',
+        },
+      ],
+    });
+    expect(result.run.nodes.find((node) => node.nodeId === 'COMMERCE')).toMatchObject({
+      status: 'SKIPPED',
+    });
+    expect(result.run.nodes.find((node) => node.nodeId === 'FORM')).toMatchObject({
+      status: 'FAILED',
+      errorMessage: '表单缺少产品名称或品类',
+    });
+    expect(JSON.stringify(result)).not.toContain('must-not-leak');
+    expect(JSON.stringify(result)).not.toContain('private/source.md');
   });
 
   it('uses newer Redis progress without allowing it to lower database progress', async () => {

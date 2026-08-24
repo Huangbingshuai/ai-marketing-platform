@@ -80,8 +80,13 @@ describe('V4 asset center mapping', () => {
     expect(assetDrawerSource).toContain(
       "view !== 'current' && !isCurrentOnlyEffectImportAsset(asset)",
     );
-    expect(assetDrawerSource).toContain('listWorkingArtifacts(');
-    expect(assetDrawerSource).toContain("view === 'current' ? '尚未归档'");
+    expect(assetDrawerSource).not.toContain('workingArtifactAsAsset');
+    expect(assetDrawerSource).toContain(
+      'Do not adapt working copies into fake ProjectAsset records',
+    );
+    expect(projectWorkspaceOverviewSource).toContain('artifact.mainPreviewUrl');
+    expect(projectWorkspaceOverviewSource).toContain('artifact.revision');
+    expect(projectWorkspaceOverviewSource).toContain("artifact.freshness === 'STALE'");
     expect(assetDrawerSource).toContain('v-else-if="!currentOnlyDetail"');
     expect(assetPreviewSource).toContain('v-if="!isCurrentOnly"');
   });

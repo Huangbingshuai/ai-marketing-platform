@@ -14,6 +14,7 @@ const run = (status: EffectExtractionRun['status'], progress: number): EffectExt
   warnings: [],
   errorMessage: null,
   extractResultId: status === 'COMPLETED' ? 'result-1' : null,
+  nodes: [],
   createdAt: '2026-08-21T00:00:00.000Z',
   updatedAt: '2026-08-21T00:00:01.000Z',
 });

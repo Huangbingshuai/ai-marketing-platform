@@ -3,6 +3,7 @@ import {
   EFFECT_IMPORT_MODES,
   type EffectImportMaterialType,
   type EffectImportMode,
+  type EffectImportUploadMaterialType,
   type EffectVideoConfig,
   type EffectVideoConfigOverride,
 } from '@ai-marketing/contracts';
@@ -66,6 +67,21 @@ export class ValidateLinkDto {
 export class CreateMaterialDto extends ExpectedRevisionDto {
   @IsIn([...EFFECT_IMPORT_UPLOAD_MATERIAL_TYPES]) type!: EffectImportMaterialType;
   @IsOptional() @IsString() @MaxLength(255) expectedFileName?: string;
+}
+
+export class CreateUploadSessionDto extends ExpectedRevisionDto {
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(100) @Allow() items!: Array<{
+    clientFileId: string;
+    type: EffectImportUploadMaterialType;
+    originalFileName: string;
+    mimeType: string;
+    sizeBytes: number;
+    expectedFileName?: string;
+  }>;
+}
+
+export class CompleteUploadSessionDto {
+  @IsString() @MaxLength(500) completionKey!: string;
 }
 
 export class PreviewManifestDto extends ExpectedRevisionDto {

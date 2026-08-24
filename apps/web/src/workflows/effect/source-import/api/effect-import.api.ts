@@ -9,8 +9,12 @@ import type {
   CancelEffectManifestData,
   CommitEffectManifestData,
   CommitEffectManifestRequest,
+  CompleteEffectImportUploadSessionData,
+  CompleteEffectImportUploadSessionRequest,
   CreateEffectImportMaterialRequest,
   CreateEffectImportProductRequest,
+  CreateEffectImportUploadSessionRequest,
+  EffectImportUploadSession,
   EffectImportDeleteData,
   EffectImportDraft,
   EffectImportMaterialMutationData,
@@ -217,6 +221,52 @@ export const uploadEffectImportMaterial = (
     },
   );
 };
+
+export const createEffectImportUploadSession = (
+  projectId: string,
+  mode: EffectImportMode,
+  productId: string,
+  input: CreateEffectImportUploadSessionRequest,
+  signal?: AbortSignal,
+): Promise<ApiResponse<EffectImportUploadSession>> =>
+  requestJson(
+    `${draftPath(projectId, mode)}/products/${encodeURIComponent(productId)}/upload-sessions`,
+    {
+      method: 'POST',
+      body: input,
+      headers: revisionHeaders(input.expectedRevision),
+      operation: '创建批量上传会话',
+      signal,
+    },
+  );
+
+export const uploadEffectImportSessionItem = (
+  projectId: string,
+  sessionId: string,
+  clientFileId: string,
+  file: File,
+  signal?: AbortSignal,
+): Promise<ApiResponse<EffectImportUploadSession>> => {
+  const form = new FormData();
+  form.set('file', file);
+  return requestJson(
+    `${basePath(projectId)}/upload-sessions/${encodeURIComponent(sessionId)}/items/${encodeURIComponent(clientFileId)}/content`,
+    { method: 'PUT', body: form, operation: '上传会话文件', signal },
+  );
+};
+
+export const completeEffectImportUploadSession = (
+  projectId: string,
+  sessionId: string,
+  input: CompleteEffectImportUploadSessionRequest,
+  signal?: AbortSignal,
+): Promise<ApiResponse<CompleteEffectImportUploadSessionData>> =>
+  requestJson(`${basePath(projectId)}/upload-sessions/${encodeURIComponent(sessionId)}/complete`, {
+    method: 'POST',
+    body: input,
+    operation: '提交批量上传资料包',
+    signal,
+  });
 
 export const replaceEffectImportMaterial = (
   projectId: string,

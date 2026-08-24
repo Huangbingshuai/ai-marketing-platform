@@ -17,7 +17,7 @@ describe('EffectSourceImportRepository project isolation', () => {
 
     expect(findFirst).toHaveBeenCalledWith({
       where: { projectId: 'project-a', draftId: 'draft-a', id: 'product-a' },
-      include: { materials: true },
+      include: { materials: { include: { fileObject: true } } },
     });
   });
 
@@ -34,6 +34,7 @@ describe('EffectSourceImportRepository project isolation', () => {
 
     expect(findFirst).toHaveBeenCalledWith({
       where: { projectId: 'project-b', productId: 'product-b', id: 'material-b' },
+      include: { fileObject: true },
     });
   });
 
@@ -69,6 +70,11 @@ describe('EffectSourceImportRepository project isolation', () => {
     const repository = new EffectSourceImportRepository(
       {
         effectExtractionFileHold: { count: extractionCount },
+        effectImportMaterial: { count: vi.fn().mockResolvedValue(0) },
+        workingArtifactFile: { count: vi.fn().mockResolvedValue(0) },
+        effectImportUploadItem: { count: vi.fn().mockResolvedValue(0) },
+        asset: { count: vi.fn().mockResolvedValue(0) },
+        assetVersion: { count: vi.fn().mockResolvedValue(0) },
       } as unknown as PrismaService,
       {} as never,
     );
@@ -151,6 +157,139 @@ describe('EffectSourceImportRepository project isolation', () => {
       repository.commitManifest('project-a', 'draft-a', 'manifest-a', 2, 'commit-key', []),
     ).resolves.toBeNull();
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it('creates upload session items explicitly inside the same transaction', async () => {
+    const createSession = vi.fn().mockResolvedValue({ id: 'session-a' });
+    const createMany = vi.fn().mockResolvedValue({ count: 2 });
+    const completedSession = { id: 'session-a', items: [{ id: 'item-a' }, { id: 'item-b' }] };
+    const transaction = {
+      effectImportProduct: { findFirst: vi.fn().mockResolvedValue({ id: 'product-a' }) },
+      effectImportUploadSession: {
+        create: createSession,
+        findUniqueOrThrow: vi.fn().mockResolvedValue(completedSession),
+      },
+      effectImportUploadItem: { createMany },
+    };
+    const repository = new EffectSourceImportRepository(
+      {
+        $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+      } as unknown as PrismaService,
+      {} as never,
+    );
+
+    await expect(
+      repository.createUploadSession('project-a', 'run-a', 'draft-a', 'product-a', 7, [
+        {
+          id: 'item-a',
+          clientFileId: 'client-a',
+          type: 'PRODUCT_IMAGE',
+          expectedFileName: null,
+          originalFileName: 'a.png',
+          mimeType: 'image/png',
+          sizeBytes: 100,
+        },
+        {
+          id: 'item-b',
+          clientFileId: 'client-b',
+          type: 'PRODUCT_DOCUMENT',
+          expectedFileName: null,
+          originalFileName: 'b.docx',
+          mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          sizeBytes: 200,
+        },
+      ]),
+    ).resolves.toEqual(completedSession);
+    expect(createSession).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        projectId: 'project-a',
+        workflowRunId: 'run-a',
+        draftId: 'draft-a',
+        productId: 'product-a',
+        expectedRevision: 7,
+      }),
+    });
+    expect(createMany).toHaveBeenCalledWith({
+      data: expect.arrayContaining([
+        expect.objectContaining({ projectId: 'project-a', sessionId: 'session-a', id: 'item-a' }),
+        expect.objectContaining({ projectId: 'project-a', sessionId: 'session-a', id: 'item-b' }),
+      ]),
+    });
+  });
+
+  it('creates the FileObject before assigning it to an uploaded session item', async () => {
+    const updateItem = vi.fn().mockResolvedValue({ id: 'item-a' });
+    const transaction = {
+      effectImportUploadItem: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: 'item-a',
+          fileObjectId: null,
+          session: { workflowRunId: 'run-a' },
+        }),
+        update: updateItem,
+      },
+      fileObject: { update: vi.fn() },
+    };
+    const upsertFileObjectInTransaction = vi.fn().mockResolvedValue({ id: 'file-a' });
+    const repository = new EffectSourceImportRepository(
+      {
+        $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+      } as unknown as PrismaService,
+      { upsertFileObjectInTransaction } as never,
+    );
+
+    await expect(
+      repository.storeUploadSessionItem('project-a', 'session-a', 'client-a', {
+        originalFileName: '商品.png',
+        mimeType: 'image/png',
+        sizeBytes: 100,
+        storageKey: 'projects/project-a/01-working/file.png',
+        sha256: 'a'.repeat(64),
+        fileObjectId: 'file-a',
+      }),
+    ).resolves.toEqual({ count: 1 });
+    expect(upsertFileObjectInTransaction).toHaveBeenCalledWith(
+      transaction,
+      'project-a',
+      'run-a',
+      expect.objectContaining({ id: 'file-a', nodeId: 'SOURCE_IMPORT' }),
+    );
+    expect(updateItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'item-a' },
+        data: expect.objectContaining({ fileObjectId: 'file-a', status: 'UPLOADED' }),
+      }),
+    );
+  });
+
+  it('detaches and orphans an uploaded FileObject when a session item is removed', async () => {
+    const updateItem = vi.fn().mockResolvedValue({ id: 'item-a' });
+    const orphanFile = vi.fn().mockResolvedValue({ id: 'file-a' });
+    const transaction = {
+      effectImportUploadItem: {
+        findFirst: vi.fn().mockResolvedValue({ id: 'item-a', fileObjectId: 'file-a' }),
+        update: updateItem,
+      },
+      fileObject: { update: orphanFile },
+    };
+    const repository = new EffectSourceImportRepository(
+      {
+        $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+      } as unknown as PrismaService,
+      {} as never,
+    );
+
+    await expect(
+      repository.removeUploadSessionItem('project-a', 'session-a', 'client-a'),
+    ).resolves.toEqual({ count: 1 });
+    expect(updateItem).toHaveBeenCalledWith({
+      where: { id: 'item-a' },
+      data: { status: 'REMOVED', fileObjectId: null },
+    });
+    expect(orphanFile).toHaveBeenCalledWith({
+      where: { id: 'file-a' },
+      data: { status: 'ORPHANED', orphanedAt: expect.any(Date) },
+    });
   });
 
   it('commits a ready material and its working artifact in the same transaction', async () => {

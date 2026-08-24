@@ -58,12 +58,13 @@ materials[]
 - `EFFECT_EXTRACTION_WORKER_TOKEN`
 - `RABBITMQ_URL`
 - `EFFECT_EXTRACTION_QUEUE`，默认 `effect.extraction.requested`
-- `EXTRACTION_AI_PROVIDER=mock|ark`
-- `ARK_BASE_URL`、`ARK_API_KEY`、`ARK_MODEL`（仅 `ark` 必需）
+- `EXTRACTION_AI_PROVIDER=ark|mock`，默认 `ark`
+- `ARK_BASE_URL`，默认 `https://ark.cn-beijing.volces.com/api/v3`
+- `ARK_API_KEY`、`ARK_MODEL=ep-...`（`ark` 必需；`ARK_MODEL` 使用方舟推理接入点 ID）
 
 可选资源限制：`DOCLING_ARTIFACTS_PATH`、`DOCLING_MAX_FILE_SIZE`、`DOCLING_MAX_NUM_PAGES`、`MAX_DOCUMENT_TEXT_CHARS`、`IMAGE_MAX_INPUT_BYTES`、`IMAGE_MAX_DIMENSION`、`IMAGE_MAX_OUTPUT_BYTES`、`OMP_NUM_THREADS`。
 
-`mock` 必须显式配置；生产部署应配置 `ark`。Ark Provider 使用 Responses API 的 `text.format=json_schema` 强制结构化输出，随后仍由 Pydantic 二次校验。
+Worker 默认使用 `ark`，缺少 `ARK_API_KEY` 或 `ARK_MODEL` 时会在消费消息前启动失败，不会静默降级。`mock` 只能通过 `EXTRACTION_AI_PROVIDER=mock` 显式启用，供自动测试和本地无模型联调使用。Ark Provider 使用 Responses API 的 `text.format=json_schema` 强制结构化输出，随后仍由 Pydantic 二次校验。
 
 ## 本地开发与验证
 
@@ -81,3 +82,16 @@ uv run effect-extraction-download-models
 ```
 
 容器部署时将 named volume 挂载到 `/root/.cache/docling/models`，先以同一镜像运行 `effect-extraction-download-models`，成功后再启动 Worker。真实 Docling 集成测试需设置 `RUN_DOCLING_INTEGRATION=1`。
+
+## 真实 Ark 冒烟测试
+
+真实冒烟测试默认跳过，只有显式设置开关才会调用方舟并产生模型费用。测试依次验证文档候选抽取、`input_image` 图片理解和最终严格 Schema 标准化；测试和 Provider 都不会记录请求正文、图片 Base64 或密钥。
+
+```bash
+export RUN_ARK_INTEGRATION=1
+export ARK_API_KEY='<仅保存在本机环境>'
+export ARK_MODEL='ep-...'
+uv run pytest tests/test_ark_integration.py
+```
+
+PowerShell 使用 `$env:RUN_ARK_INTEGRATION='1'` 等同名环境变量。不要把密钥写入 README、测试文件或 Git 跟踪的配置；没有可用 Endpoint 时保持测试跳过。

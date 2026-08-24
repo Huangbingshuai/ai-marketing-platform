@@ -122,9 +122,34 @@ describe('effect import automatic draft saving', () => {
   it('debounces node-state saving and removes node-level asset publishing', () => {
     expect(pageSource).toContain('putWorkflowNodeState(');
     expect(pageSource).toContain('setTimeout(() => void flushProduct(productId), 1000)');
-    expect(pageSource).toContain('defineExpose({ flushPendingEdits, resumeWorkflowNode })');
+    expect(pageSource).toContain('defineExpose({');
+    expect(pageSource).toContain('flushPendingEdits,');
+    expect(pageSource).toContain('resumeWorkflowNode,');
+    expect(pageSource).toContain(
+      "workflowRunId: computed(() => workspace.value?.workflowRunId ?? '')",
+    );
     expect(pageSource).not.toContain('publishEffectImportDraft');
     expect(pageSource).not.toContain('asset-publish-bar');
     expect(pageSource).not.toContain('保存到项目资产库');
+  });
+
+  it('preserves the node-state revision when an edit only relocks downstream nodes', () => {
+    const relockSource = pageSource.match(
+      /const relockDownstreamNode = \(\): void => \{[\s\S]*?\n\};/,
+    )?.[0];
+
+    expect(relockSource).toBeDefined();
+    expect(relockSource).not.toContain('nodeStateRevision.value = 0');
+    expect(relockSource).not.toContain("lastSavedNodeState = ''");
+    expect(pageSource).toMatch(
+      /const loadProject = async[\s\S]*nodeStateRevision\.value = 0;[\s\S]*lastSavedNodeState = '';/,
+    );
+  });
+
+  it('serializes node-state writes with the existing project write queue', () => {
+    expect(pageSource).toContain(
+      'return keepalive ? persist() : writeQueue.enqueue(projectId, persist)',
+    );
+    expect(pageSource).toContain('if (serialized === lastSavedNodeState) return true;');
   });
 });

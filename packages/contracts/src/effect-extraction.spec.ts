@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   EFFECT_EXTRACTION_BRANCHES,
+  EFFECT_EXTRACTION_GRAPH_EDGES,
+  EFFECT_EXTRACTION_GRAPH_NODES,
   EFFECT_EXTRACTION_PRODUCT_STATUSES,
   EFFECT_EXTRACTION_SCHEMA_VERSION,
   type EffectExtractionResult,
@@ -47,5 +49,26 @@ describe('effect extraction contract', () => {
       'FUSION',
       'NORMALIZATION',
     ]);
+  });
+
+  it('exposes one stable execution definition for the seven-node graph', () => {
+    const nodeIds = EFFECT_EXTRACTION_GRAPH_NODES.map((node) => node.id);
+    expect(nodeIds).toHaveLength(7);
+    expect(new Set(nodeIds).size).toBe(nodeIds.length);
+    expect(nodeIds).toEqual([
+      'LOAD_AND_SNAPSHOT',
+      'DOCUMENT',
+      'IMAGE',
+      'COMMERCE',
+      'FORM',
+      'FUSION',
+      'NORMALIZATION',
+    ]);
+    expect(EFFECT_EXTRACTION_GRAPH_EDGES).toHaveLength(9);
+    expect(
+      EFFECT_EXTRACTION_GRAPH_EDGES.every(
+        ({ from, to }) => nodeIds.includes(from) && nodeIds.includes(to),
+      ),
+    ).toBe(true);
   });
 });

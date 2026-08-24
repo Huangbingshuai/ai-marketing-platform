@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 
 import type { EffectExtractionResult, EffectExtractionWarning } from '@ai-marketing/contracts';
+import { EFFECT_EXTRACTION_BRANCHES } from '@ai-marketing/contracts';
 
 const RESULT_KEYS = [
   'productCategory',
@@ -88,8 +89,35 @@ export const isEffectExtractionResult = (value: unknown): value is EffectExtract
   );
 };
 
-export const parseWarnings = (value: unknown): EffectExtractionWarning[] =>
-  Array.isArray(value) ? (value as EffectExtractionWarning[]) : [];
+const safeWarningText = (value: unknown, maxLength: number): string | null => {
+  if (typeof value !== 'string') return null;
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  return normalized ? normalized.slice(0, maxLength) : null;
+};
+
+export const parseWarnings = (value: unknown): EffectExtractionWarning[] => {
+  if (!Array.isArray(value)) return [];
+  const branches = new Set<string>(EFFECT_EXTRACTION_BRANCHES);
+  return value.flatMap((item): EffectExtractionWarning[] => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const record = item as Record<string, unknown>;
+    const code = safeWarningText(record.code, 120);
+    const message = safeWarningText(record.message, 1000);
+    if (!code || !message) return [];
+    const branch =
+      typeof record.branch === 'string' && branches.has(record.branch)
+        ? (record.branch as EffectExtractionWarning['branch'])
+        : null;
+    return [
+      {
+        code,
+        message,
+        branch,
+        sourceId: safeWarningText(record.sourceId, 255),
+      },
+    ];
+  });
+};
 
 export const safeTokenEquals = (actual: string | undefined, expected: string): boolean => {
   if (!actual) return false;

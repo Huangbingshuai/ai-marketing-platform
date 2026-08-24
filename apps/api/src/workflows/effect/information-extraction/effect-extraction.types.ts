@@ -32,6 +32,13 @@ export type EffectExtractionInputSnapshot = {
     effectiveConfig: EffectVideoConfig;
   };
   materials: EffectExtractionSourceMaterial[];
+  dependencies?: Array<{
+    sourceType: 'NODE_STATE' | 'WORKING_ARTIFACT';
+    sourceNodeId?: string;
+    sourceArtifactId?: string;
+    sourceKey: string;
+    sourceRevision: number;
+  }>;
 };
 
 export type BranchOutputInput = {

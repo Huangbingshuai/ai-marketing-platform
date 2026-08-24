@@ -41,7 +41,7 @@ describe('EffectExtractionRepository isolation and idempotency', () => {
 
     expect(findFirst).toHaveBeenCalledWith({
       where: { projectId: 'project-a', id: 'run-a' },
-      include: { result: true },
+      include: { result: true, branches: { orderBy: { createdAt: 'asc' } } },
     });
   });
 

@@ -24,7 +24,7 @@ class WorkerSettings(BaseSettings):
     )
 
     extraction_ai_provider: Literal["mock", "ark"] = Field(
-        default="mock", alias="EXTRACTION_AI_PROVIDER"
+        default="ark", alias="EXTRACTION_AI_PROVIDER"
     )
     ark_base_url: str = Field(
         default="https://ark.cn-beijing.volces.com/api/v3", alias="ARK_BASE_URL"
@@ -58,6 +58,8 @@ class WorkerSettings(BaseSettings):
                 raise ValueError("ARK_API_KEY is required when EXTRACTION_AI_PROVIDER=ark")
             if self.ark_model is None or not self.ark_model.strip():
                 raise ValueError("ARK_MODEL is required when EXTRACTION_AI_PROVIDER=ark")
+            if not self.ark_model.strip().startswith("ep-"):
+                raise ValueError("ARK_MODEL must be an Ark Endpoint ID beginning with 'ep-'")
         if not self.effect_extraction_queue.strip():
             raise ValueError("EFFECT_EXTRACTION_QUEUE cannot be empty")
         return self

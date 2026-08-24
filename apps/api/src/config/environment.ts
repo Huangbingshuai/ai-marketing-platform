@@ -8,6 +8,7 @@ export type EnvironmentVariables = {
   STORAGE_DRIVER: StorageDriver;
   LOCAL_STORAGE_ROOT: string | undefined;
   MAX_UPLOAD_BYTES: number;
+  WORKING_FILE_CLEANUP_GRACE_HOURS: number;
   MINIO_ENDPOINT: string | undefined;
   MINIO_PORT: number;
   MINIO_USE_SSL: boolean;
@@ -115,6 +116,11 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
       raw.MAX_UPLOAD_BYTES,
       'MAX_UPLOAD_BYTES',
       512 * 1024 * 1024,
+    ),
+    WORKING_FILE_CLEANUP_GRACE_HOURS: parsePositiveInteger(
+      raw.WORKING_FILE_CLEANUP_GRACE_HOURS,
+      'WORKING_FILE_CLEANUP_GRACE_HOURS',
+      24,
     ),
     MINIO_ENDPOINT: minioEndpoint,
     MINIO_PORT: parsePort(raw.MINIO_PORT, 'MINIO_PORT', 9000),

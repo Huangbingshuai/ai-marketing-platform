@@ -52,6 +52,15 @@ export const putWorkflowNodeState = (
     },
   );
 
+export const pauseWorkflowRun = (
+  projectId: string,
+  workflowRunId: string,
+): Promise<ApiResponse<{ paused: true }>> =>
+  requestJson(
+    `${projectPath(projectId)}/workflow-runs/${encodeURIComponent(workflowRunId)}/pause`,
+    { method: 'POST', operation: '暂停工作流' },
+  );
+
 export const listWorkingArtifacts = (
   projectId: string,
   query: WorkingArtifactListQuery = {},

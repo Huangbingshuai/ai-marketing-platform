@@ -78,7 +78,9 @@ const latestState = computed(
     )[0],
 );
 const currentNodeIndex = computed(() => {
-  const index = workflowNodes.value.findIndex((node) => node.id === latestState.value?.nodeId);
+  const index = workflowNodes.value.findIndex(
+    (node) => node.id === (run.value?.currentNodeId ?? latestState.value?.nodeId),
+  );
   return index >= 0 ? index : 0;
 });
 const currentNodeLabel = computed(
@@ -118,16 +120,8 @@ const nodeLabel = (nodeId: string): string =>
 const nodeStatus = (definition: WorkflowNodeDefinition): string => {
   const state = stateByNode.value.get(definition.id);
   if (!state) return '尚未开始';
-  if (definition.id === latestState.value?.nodeId) return '编辑中';
+  if (definition.id === (run.value?.currentNodeId ?? latestState.value?.nodeId)) return '编辑中';
   return '已自动保存';
-};
-
-const artifactRevision = (artifact: WorkingArtifact): number =>
-  stateByNode.value.get(artifact.nodeId)?.revision ?? 1;
-
-const artifactNeedsUpdate = (artifact: WorkingArtifact): boolean => {
-  const state = stateByNode.value.get(artifact.nodeId);
-  return Boolean(state && Date.parse(state.savedAt) > Date.parse(artifact.updatedAt));
 };
 
 const artifactSummary = (artifact: WorkingArtifact): string => {
@@ -139,31 +133,18 @@ const artifactSummary = (artifact: WorkingArtifact): string => {
   return text.length > 90 ? `${text.slice(0, 90)}…` : text;
 };
 
-const workingArtifactAsAsset = (artifact: WorkingArtifact): Asset => ({
-  id: artifact.id,
-  projectId: artifact.projectId,
-  name: artifact.name,
-  directory: artifact.directory,
-  type: artifact.type,
-  tags: artifact.tags,
-  notes: '工作中 · 尚未归档',
-  originalFileName: artifact.originalFileName ?? '',
-  mimeType: artifact.mimeType ?? 'application/json',
-  sizeBytes: artifact.sizeBytes ?? 0,
-  hasFile: artifact.kind === 'FILE',
-  previewKind: artifact.previewKind,
-  contentUrl: artifact.contentUrl ?? '',
-  downloadUrl: artifact.downloadUrl ?? '',
-  createdAt: artifact.createdAt,
-  updatedAt: artifact.updatedAt,
-  storageWorkflow: props.workflow,
-  workflowSpace: props.space,
-  status: 'PENDING_REVIEW',
-  currentVersion: 1,
-  content: artifact.payload,
-  businessData: artifact.metadata,
-  sourceNode: artifact.nodeId,
-});
+const configEntries = (artifact: WorkingArtifact): Array<[string, string]> => {
+  if (artifact.type !== 'VIDEO_CONFIG' || !artifact.payload || typeof artifact.payload !== 'object')
+    return [];
+  const payload = artifact.payload as Record<string, unknown>;
+  const fields: Array<[string, string]> = [
+    ['视频时长', `${String(payload.durationSeconds ?? '—')} 秒`],
+    ['画幅比例', String(payload.aspectRatio ?? '—')],
+    ['风格基调', String(payload.styleTone ?? '—')],
+    ['投放渠道', String(payload.deliveryChannel ?? '—')],
+  ];
+  return fields;
+};
 
 const load = async (): Promise<void> => {
   controller?.abort();
@@ -318,16 +299,45 @@ onBeforeUnmount(() => controller?.abort());
           </div>
           <div v-else class="artifact-grid">
             <article v-for="artifact in artifacts" :key="artifact.id">
-              <AssetPreview :asset="workingArtifactAsAsset(artifact)" compact />
+              <div
+                class="working-preview"
+                :class="{ package: artifact.type === 'SOURCE_MATERIAL' }"
+              >
+                <img
+                  v-if="artifact.mainPreviewUrl"
+                  :src="artifact.mainPreviewUrl"
+                  :alt="artifact.name"
+                />
+                <FileText v-else :size="32" />
+                <span v-if="artifact.type === 'SOURCE_MATERIAL'">
+                  {{ artifact.fileCount }} 个文件
+                </span>
+              </div>
               <div class="artifact-copy">
                 <span class="artifact-type">{{ typeLabel(artifact.type) }}</span
                 ><strong>{{ artifact.name }}</strong>
-                <p>{{ artifactSummary(artifact) }}</p>
+                <div v-if="artifact.type === 'SOURCE_MATERIAL'" class="package-files">
+                  <a
+                    v-for="file in artifact.files"
+                    :key="file.id"
+                    :href="file.downloadUrl"
+                    target="_blank"
+                    rel="noreferrer"
+                    >{{ file.originalFileName }}</a
+                  >
+                </div>
+                <dl v-else-if="artifact.type === 'VIDEO_CONFIG'" class="config-summary">
+                  <div v-for="entry in configEntries(artifact)" :key="entry[0]">
+                    <dt>{{ entry[0] }}</dt>
+                    <dd>{{ entry[1] }}</dd>
+                  </div>
+                </dl>
+                <p v-else>{{ artifactSummary(artifact) }}</p>
                 <footer>
-                  <span>revision {{ artifactRevision(artifact) }}</span
+                  <span>revision {{ artifact.revision }}</span
                   ><span>{{ nodeLabel(artifact.nodeId) }}</span
-                  ><em :class="{ stale: artifactNeedsUpdate(artifact) }">{{
-                    artifactNeedsUpdate(artifact) ? '待更新' : '最新'
+                  ><em :class="{ stale: artifact.freshness === 'STALE' }">{{
+                    artifact.freshness === 'STALE' ? '待更新' : '最新'
                   }}</em
                   ><b>尚未归档</b>
                 </footer>
@@ -612,12 +622,74 @@ onBeforeUnmount(() => controller?.abort());
   border-radius: 12px;
   background: #fbfcff;
 }
-.artifact-grid :deep(.asset-preview),
+.working-preview,
 .archived-list :deep(.asset-preview) {
   width: 72px;
   min-width: 72px;
   height: 72px;
   border-radius: 9px;
+}
+.working-preview {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #edf3ff;
+  color: #5474ac;
+}
+.working-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.working-preview span {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: rgb(16 35 68 / 76%);
+  color: white;
+  font-size: 8px;
+}
+.package-files {
+  display: flex;
+  margin: 4px 0;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.package-files a {
+  max-width: 125px;
+  overflow: hidden;
+  color: #52647f;
+  font-size: 8px;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.config-summary {
+  display: grid;
+  margin: 5px 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+}
+.config-summary div {
+  padding: 3px 4px;
+  border-radius: 5px;
+  background: #f0f4fb;
+}
+.config-summary dt,
+.config-summary dd {
+  margin: 0;
+  font-size: 8px;
+}
+.config-summary dt {
+  color: #8793a7;
+}
+.config-summary dd {
+  color: #344b70;
+  font-weight: 800;
 }
 .artifact-copy,
 .archived-list article > div {

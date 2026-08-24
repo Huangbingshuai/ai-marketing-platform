@@ -7,7 +7,6 @@ import {
   type AssetWorkflow,
   type AssetWorkflowSpace,
   type Project,
-  type WorkingArtifact,
 } from '@ai-marketing/contracts';
 import {
   AlertTriangle,
@@ -32,7 +31,6 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 
 import { isAbortError } from '../../api/http-client';
 import { createProject, listProjects as listProjectLibrary } from '../project/api/project.api';
-import { listWorkingArtifacts } from '../workflow/api/workflow-working.api';
 import { presentProjectBinding, useProjectContext } from '../project/project-context';
 import {
   archiveAsset,
@@ -97,58 +95,6 @@ const currentProjectEmptyCopy = computed(() => {
 
 type LoadStatus = 'idle' | 'loading' | 'success' | 'error';
 const emptyFacets = (): AssetListFacets => ({ directories: [], types: [], tags: [], products: [] });
-const workingArtifactAsAsset = (artifact: WorkingArtifact): Asset => ({
-  id: artifact.id,
-  projectId: artifact.projectId,
-  name: artifact.name,
-  directory: artifact.directory,
-  type: artifact.type,
-  tags: artifact.tags,
-  notes: '工作中 · 尚未归档',
-  originalFileName: artifact.originalFileName ?? '',
-  mimeType: artifact.mimeType ?? 'application/json',
-  sizeBytes: artifact.sizeBytes ?? 0,
-  hasFile: artifact.kind === 'FILE',
-  previewKind: artifact.previewKind,
-  contentUrl: artifact.contentUrl ?? '',
-  downloadUrl: artifact.downloadUrl ?? '',
-  createdAt: artifact.createdAt,
-  updatedAt: artifact.updatedAt,
-  storageWorkflow: 'EFFECT',
-  workflowSpace: 'EFFECT',
-  status: 'PENDING_REVIEW',
-  qualityStatus: 'PENDING_REVIEW',
-  currentVersion: 1,
-  contentKind: artifact.kind === 'STRUCTURED' ? 'WORKING_ARTIFACT' : null,
-  content: artifact.payload,
-  businessData: artifact.metadata,
-  sourceArtifactId: artifact.sourceArtifactId,
-  sourceRunId: artifact.sourceRunId,
-  sourceNode: artifact.nodeId,
-});
-
-const workingFacets = (assets: Asset[]): AssetListFacets => {
-  const typeCounts = new Map<AssetType, number>();
-  const tagCounts = new Map<string, number>();
-  const productCounts = new Map<string, { label: string; count: number }>();
-  for (const asset of assets) {
-    typeCounts.set(asset.type, (typeCounts.get(asset.type) ?? 0) + 1);
-    for (const tag of asset.tags) tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
-    const metadata = asset.businessData as Record<string, unknown> | null;
-    const productKey = typeof metadata?.productId === 'string' ? metadata.productId : '';
-    const productName = typeof metadata?.productName === 'string' ? metadata.productName : '';
-    if (productKey && productName) {
-      const current = productCounts.get(productKey);
-      productCounts.set(productKey, { label: productName, count: (current?.count ?? 0) + 1 });
-    }
-  }
-  return {
-    directories: [],
-    types: [...typeCounts].map(([value, count]) => ({ value, label: typeLabel(value), count })),
-    tags: [...tagCounts].map(([value, count]) => ({ value, count })),
-    products: [...productCounts].map(([value, entry]) => ({ value, ...entry })),
-  };
-};
 const view = ref<AssetCenterView>('current');
 const workflow = ref<AssetWorkflow>(props.initialWorkflow);
 const space = ref<AssetWorkflowSpace>(WORKFLOW_SPACES[props.initialWorkflow][0]!);
@@ -356,36 +302,8 @@ const loadAssets = async (): Promise<void> => {
   listError.value = '';
   try {
     if (view.value === 'current') {
-      const response = await listWorkingArtifacts(
-        projectId,
-        { workflow: workflow.value, space: space.value },
-        controller.signal,
-      );
-      if (
-        controller.signal.aborted ||
-        requestGeneration !== generation ||
-        activeProject.value?.id !== projectId
-      )
-        return;
-      const all = response.data.items.map(workingArtifactAsAsset);
-      facets.value = workingFacets(all);
-      const needle = keyword.value.trim().toLocaleLowerCase('zh-CN');
-      const filtered = all.filter((asset) => {
-        const metadata = asset.businessData as Record<string, unknown> | null;
-        return (
-          (!type.value || asset.type === type.value) &&
-          (!productId.value || metadata?.productId === productId.value) &&
-          (!needle ||
-            [asset.name, asset.originalFileName, ...asset.tags]
-              .join(' ')
-              .toLocaleLowerCase('zh-CN')
-              .includes(needle))
-        );
-      });
-      total.value = filtered.length;
-      paginationPageCount.value = Math.max(1, Math.ceil(filtered.length / pageSize.value));
-      const start = (page.value - 1) * pageSize.value;
-      items.value = filtered.slice(start, start + pageSize.value);
+      // ProjectWorkspaceOverview renders WorkflowNodeState and WorkingArtifact
+      // directly. Do not adapt working copies into fake ProjectAsset records.
       listStatus.value = 'success';
       return;
     }

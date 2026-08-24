@@ -1,8 +1,15 @@
 <script setup lang="ts">
 import type {
+  EffectExtractionNodeExecution,
+  EffectExtractionNodeId,
+  EffectExtractionNodeStatus,
   EffectImportMode,
   EffectImportProduct,
   EffectVideoConfig,
+} from '@ai-marketing/contracts';
+import {
+  EFFECT_EXTRACTION_GRAPH_EDGES,
+  EFFECT_EXTRACTION_GRAPH_NODES,
 } from '@ai-marketing/contracts';
 import {
   AlertCircle,
@@ -15,8 +22,10 @@ import {
   Plus,
   RefreshCw,
   Trash2,
+  Workflow,
+  X,
 } from '@lucide/vue';
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import { ApiClientError, isAbortError } from '../../../api/http-client';
 import {
@@ -36,6 +45,7 @@ import {
 } from './effect-info-extraction-state';
 import {
   beginEffectExtraction,
+  loadEffectExtractionRun,
   loadEffectExtractionWorkspace,
   pollEffectExtractionRun,
   type EffectExtractionContext,
@@ -62,10 +72,18 @@ const loadingError = ref('');
 const sourceRevision = ref(0);
 const pollingErrors = ref<Record<string, string>>({});
 const newDisabledElement = ref('');
+const graphDialogOpen = ref(false);
+const graphLoading = ref(false);
+const graphError = ref('');
+const graphNodesByProduct = ref<Record<string, EffectExtractionNodeExecution[]>>({});
+const graphPanel = ref<HTMLElement | null>(null);
+const graphTrigger = ref<HTMLButtonElement | null>(null);
+const graphCloseButton = ref<HTMLButtonElement | null>(null);
 let loadGeneration = 0;
 let disposed = false;
 let workspaceController: AbortController | null = null;
 let saveController: AbortController | null = null;
+let graphController: AbortController | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 const nodeStateRevision = ref(0);
 let lastSavedNodeState = '';
@@ -109,6 +127,47 @@ const currentProgressLabel = computed(() => {
   if (currentState.value.status === 'QUEUED') return '等待异步 Worker 接收任务';
   return currentState.value.currentNode || '正在分析产品资料';
 });
+const pendingGraphNodes = (): EffectExtractionNodeExecution[] =>
+  EFFECT_EXTRACTION_GRAPH_NODES.map(({ id }) => ({
+    nodeId: id,
+    status: 'PENDING',
+    warnings: [],
+    errorMessage: null,
+  }));
+const currentGraphNodes = computed(
+  () => graphNodesByProduct.value[currentProductId.value] ?? pendingGraphNodes(),
+);
+const graphExecution = (nodeId: EffectExtractionNodeId): EffectExtractionNodeExecution =>
+  currentGraphNodes.value.find((node) => node.nodeId === nodeId) ?? {
+    nodeId,
+    status: 'PENDING',
+    warnings: [],
+    errorMessage: null,
+  };
+const graphStatusMeta = (status: EffectExtractionNodeStatus): { label: string; tone: string } =>
+  ({
+    PENDING: { label: '等待中', tone: 'pending' },
+    RUNNING: { label: '执行中', tone: 'running' },
+    SUCCEEDED: { label: '已完成', tone: 'success' },
+    PARTIAL: { label: '部分完成', tone: 'warning' },
+    SKIPPED: { label: '已跳过', tone: 'skipped' },
+    FAILED: { label: '失败', tone: 'danger' },
+  })[status];
+const graphNodeDefinition = (nodeId: EffectExtractionNodeId) =>
+  EFFECT_EXTRACTION_GRAPH_NODES.find((node) => node.id === nodeId)!;
+const graphNodeDescription = (nodeId: EffectExtractionNodeId): string =>
+  ({
+    LOAD_AND_SNAPSHOT: '锁定当前产品、视频配置和资料文件快照',
+    DOCUMENT: 'Docling 解析 PDF/DOCX 并抽取字段候选',
+    IMAGE: '读取图片元数据并进行多模态商品识别',
+    COMMERCE: '检查电商来源；当前版本有链接时提示跳过',
+    FORM: '读取人工填写的产品和视频配置',
+    FUSION: '按来源优先级消歧、合并并稳定去重',
+    NORMALIZATION: '调用模型生成标准 JSON 并保存工作副本',
+  })[nodeId];
+const parallelGraphNodeIds: EffectExtractionNodeId[] = EFFECT_EXTRACTION_GRAPH_EDGES.filter(
+  ({ from }) => from === 'LOAD_AND_SNAPSHOT',
+).map(({ to }) => to);
 type ProductBaseField = keyof Pick<
   EffectExtractionResult,
   'productCategory' | 'productName' | 'coreSpecification' | 'priceRange' | 'visualFeatures'
@@ -193,6 +252,8 @@ const stopAllRequests = (): void => {
   workspaceController = null;
   saveController?.abort();
   saveController = null;
+  graphController?.abort();
+  graphController = null;
   activeRunControllers.forEach(({ controller }) => controller.abort());
   activeRunControllers.clear();
 };
@@ -321,6 +382,13 @@ const patchFromRun = (
     errorMessage: run.errorMessage,
     updatedAt: run.updatedAt,
   });
+  graphNodesByProduct.value = {
+    ...graphNodesByProduct.value,
+    [productId]: (run.nodes ?? pendingGraphNodes()).map((node) => ({
+      ...node,
+      warnings: node.warnings.map((warning) => ({ ...warning })),
+    })),
+  };
 };
 
 const refreshProductFromWorkspace = async (
@@ -386,6 +454,8 @@ const resumeWorkspaceRuns = (): void => {
 const loadWorkspace = async (): Promise<void> => {
   const generation = ++loadGeneration;
   stopAllRequests();
+  closeGraphDialog(false);
+  graphNodesByProduct.value = {};
   const controller = new AbortController();
   workspaceController = controller;
   loading.value = true;
@@ -439,6 +509,10 @@ const runCurrentExtraction = async (): Promise<void> => {
     warnings: [],
     errorMessage: null,
   });
+  graphNodesByProduct.value = {
+    ...graphNodesByProduct.value,
+    [product.id]: pendingGraphNodes(),
+  };
   try {
     const run = await beginEffectExtraction(
       context.value,
@@ -469,6 +543,74 @@ const resumeCurrentPolling = (): void => {
   const state = currentState.value;
   if (!state?.runId) return;
   void monitorProductRun(state.productId, state.runId);
+};
+
+const closeGraphDialog = (restoreFocus = true): void => {
+  graphController?.abort();
+  graphController = null;
+  graphDialogOpen.value = false;
+  graphLoading.value = false;
+  if (restoreFocus) void nextTick(() => graphTrigger.value?.focus());
+};
+
+const openGraphDialog = async (): Promise<void> => {
+  const state = currentState.value;
+  const productId = currentProductId.value;
+  if (!state || !productId) return;
+  graphDialogOpen.value = true;
+  graphError.value = '';
+  void nextTick(() => graphCloseButton.value?.focus());
+  if (!state.runId) return;
+
+  graphController?.abort();
+  const controller = new AbortController();
+  graphController = controller;
+  graphLoading.value = true;
+  try {
+    const run = await loadEffectExtractionRun(props.projectId, state.runId, controller.signal);
+    if (disposed || controller.signal.aborted || currentProductId.value !== productId) return;
+    graphNodesByProduct.value = {
+      ...graphNodesByProduct.value,
+      [productId]: (run.nodes ?? pendingGraphNodes()).map((node) => ({
+        ...node,
+        warnings: node.warnings.map((warning) => ({ ...warning })),
+      })),
+    };
+  } catch (error) {
+    if (!isAbortError(error) && !disposed) {
+      graphError.value = error instanceof Error ? error.message : '工作流状态加载失败';
+    }
+  } finally {
+    if (graphController === controller) graphController = null;
+    if (!controller.signal.aborted) graphLoading.value = false;
+  }
+};
+
+const trapGraphFocus = (event: KeyboardEvent): void => {
+  if (event.key !== 'Tab' || !graphPanel.value) return;
+  const focusable = Array.from(
+    graphPanel.value.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  );
+  if (!focusable.length) return;
+  const first = focusable[0]!;
+  const last = focusable.at(-1)!;
+  const active = document.activeElement as HTMLElement | null;
+  if (!active || !focusable.includes(active)) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  } else if (event.shiftKey && active === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+};
+
+const handlePageKeydown = (event: KeyboardEvent): void => {
+  if (event.key === 'Escape' && graphDialogOpen.value) closeGraphDialog();
 };
 
 const markDirty = (): void => {
@@ -548,6 +690,7 @@ const loadLatestResult = (): void => {
 const selectProduct = async (event: Event): Promise<void> => {
   const nextProductId = (event.target as HTMLSelectElement).value;
   if (!(await flushPendingEdits())) return;
+  closeGraphDialog(false);
   currentProductId.value = nextProductId;
   newDisabledElement.value = '';
 };
@@ -570,12 +713,16 @@ const warnBeforeUnload = (event: BeforeUnloadEvent): void => {
   void persistNodeState(true);
 };
 
-onMounted(() => window.addEventListener('beforeunload', warnBeforeUnload));
+onMounted(() => {
+  window.addEventListener('beforeunload', warnBeforeUnload);
+  window.addEventListener('keydown', handlePageKeydown);
+});
 
 defineExpose({ flushPendingEdits });
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', warnBeforeUnload);
+  window.removeEventListener('keydown', handlePageKeydown);
   clearTimeout(saveTimer);
   disposed = true;
   loadGeneration += 1;
@@ -625,6 +772,15 @@ onBeforeUnmount(() => {
               </option>
             </select>
           </label>
+          <button
+            ref="graphTrigger"
+            class="secondary-button workflow-graph-trigger"
+            type="button"
+            aria-haspopup="dialog"
+            @click="openGraphDialog"
+          >
+            <Workflow :size="14" />查看工作流
+          </button>
           <button
             class="secondary-button"
             type="button"
@@ -937,6 +1093,166 @@ onBeforeUnmount(() => {
           下一步：Prompt 生成<ArrowRight :size="14" />
         </button>
       </footer>
+
+      <Teleport to="body">
+        <div
+          v-if="graphDialogOpen"
+          class="workflow-graph-backdrop"
+          @mousedown.self="closeGraphDialog()"
+        >
+          <section
+            ref="graphPanel"
+            class="workflow-graph-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="workflow-graph-title"
+            tabindex="-1"
+            @keydown="trapGraphFocus"
+          >
+            <header class="workflow-graph-dialog__header">
+              <div>
+                <span class="workflow-graph-dialog__eyebrow">LANGGRAPH · 实时执行状态</span>
+                <h3 id="workflow-graph-title">AI 信息提炼工作流</h3>
+                <p>
+                  {{ currentProduct.name }} · {{ currentStatusMeta.label }} ·
+                  {{ currentState.progress }}%
+                </p>
+              </div>
+              <button
+                ref="graphCloseButton"
+                type="button"
+                aria-label="关闭工作流详情"
+                @click="closeGraphDialog()"
+              >
+                <X :size="18" />
+              </button>
+            </header>
+
+            <div v-if="graphError" class="workflow-graph-dialog__error" role="alert">
+              <AlertCircle :size="16" />
+              <span>{{ graphError }}</span>
+              <button type="button" @click="openGraphDialog"><RefreshCw :size="13" />重试</button>
+            </div>
+            <div v-else-if="graphLoading" class="workflow-graph-dialog__loading" role="status">
+              <LoaderCircle class="spin" :size="16" />正在同步节点状态…
+            </div>
+
+            <div class="workflow-graph-canvas" aria-label="AI 信息提炼节点执行图">
+              <article
+                class="workflow-graph-node workflow-graph-node--single"
+                :class="`is-${graphStatusMeta(graphExecution('LOAD_AND_SNAPSHOT').status).tone}`"
+              >
+                <div class="workflow-graph-node__heading">
+                  <span class="workflow-graph-node__icon"><FileText :size="17" /></span>
+                  <div>
+                    <strong>{{ graphNodeDefinition('LOAD_AND_SNAPSHOT').label }}</strong>
+                    <small>{{ graphNodeDescription('LOAD_AND_SNAPSHOT') }}</small>
+                  </div>
+                  <em>{{ graphStatusMeta(graphExecution('LOAD_AND_SNAPSHOT').status).label }}</em>
+                </div>
+                <p v-if="graphExecution('LOAD_AND_SNAPSHOT').errorMessage" class="node-error">
+                  {{ graphExecution('LOAD_AND_SNAPSHOT').errorMessage }}
+                </p>
+              </article>
+
+              <div class="workflow-graph-connector" aria-hidden="true"><i /></div>
+
+              <div class="workflow-graph-parallel">
+                <article
+                  v-for="nodeId in parallelGraphNodeIds"
+                  :key="nodeId"
+                  class="workflow-graph-node"
+                  :class="`is-${graphStatusMeta(graphExecution(nodeId).status).tone}`"
+                >
+                  <div class="workflow-graph-node__heading">
+                    <span class="workflow-graph-node__status-dot" aria-hidden="true" />
+                    <div>
+                      <strong>{{ graphNodeDefinition(nodeId).label }}</strong>
+                      <small>{{ graphNodeDescription(nodeId) }}</small>
+                    </div>
+                    <em>{{ graphStatusMeta(graphExecution(nodeId).status).label }}</em>
+                  </div>
+                  <p v-if="graphExecution(nodeId).errorMessage" class="node-error">
+                    {{ graphExecution(nodeId).errorMessage }}
+                  </p>
+                  <p
+                    v-for="(warning, index) in graphExecution(nodeId).warnings"
+                    :key="`${warning.code}-${warning.sourceId}-${index}`"
+                    class="node-warning"
+                  >
+                    {{ warning.message }}
+                  </p>
+                </article>
+              </div>
+
+              <div
+                class="workflow-graph-connector workflow-graph-connector--join"
+                aria-hidden="true"
+              >
+                <i />
+              </div>
+
+              <article
+                class="workflow-graph-node workflow-graph-node--single"
+                :class="`is-${graphStatusMeta(graphExecution('FUSION').status).tone}`"
+              >
+                <div class="workflow-graph-node__heading">
+                  <span class="workflow-graph-node__status-dot" aria-hidden="true" />
+                  <div>
+                    <strong>{{ graphNodeDefinition('FUSION').label }}</strong>
+                    <small>{{ graphNodeDescription('FUSION') }}</small>
+                  </div>
+                  <em>{{ graphStatusMeta(graphExecution('FUSION').status).label }}</em>
+                </div>
+                <p
+                  v-for="(warning, index) in graphExecution('FUSION').warnings"
+                  :key="`${warning.code}-${index}`"
+                  class="node-warning"
+                >
+                  {{ warning.message }}
+                </p>
+                <p v-if="graphExecution('FUSION').errorMessage" class="node-error">
+                  {{ graphExecution('FUSION').errorMessage }}
+                </p>
+              </article>
+
+              <div class="workflow-graph-connector" aria-hidden="true"><i /></div>
+
+              <article
+                class="workflow-graph-node workflow-graph-node--single"
+                :class="`is-${graphStatusMeta(graphExecution('NORMALIZATION').status).tone}`"
+              >
+                <div class="workflow-graph-node__heading">
+                  <span class="workflow-graph-node__status-dot" aria-hidden="true" />
+                  <div>
+                    <strong>{{ graphNodeDefinition('NORMALIZATION').label }}</strong>
+                    <small>{{ graphNodeDescription('NORMALIZATION') }}</small>
+                  </div>
+                  <em>{{ graphStatusMeta(graphExecution('NORMALIZATION').status).label }}</em>
+                </div>
+                <p v-if="graphExecution('NORMALIZATION').errorMessage" class="node-error">
+                  {{ graphExecution('NORMALIZATION').errorMessage }}
+                </p>
+                <p
+                  v-for="(warning, index) in graphExecution('NORMALIZATION').warnings"
+                  :key="`${warning.code}-${index}`"
+                  class="node-warning"
+                >
+                  {{ warning.message }}
+                </p>
+              </article>
+            </div>
+
+            <footer class="workflow-graph-dialog__footer">
+              <span><i class="legend-running" />执行中</span>
+              <span><i class="legend-success" />已完成</span>
+              <span><i class="legend-warning" />部分完成 / 跳过</span>
+              <span><i class="legend-danger" />失败</span>
+              <button type="button" @click="closeGraphDialog()">关闭</button>
+            </footer>
+          </section>
+        </div>
+      </Teleport>
     </template>
   </section>
 </template>
@@ -1576,6 +1892,324 @@ select {
 .extraction-page-state.error > svg {
   color: #dc3f52;
 }
+.workflow-graph-backdrop {
+  position: fixed;
+  z-index: 1200;
+  inset: 0;
+  display: grid;
+  padding: 28px;
+  place-items: center;
+  background: #17233f80;
+  backdrop-filter: blur(3px);
+}
+.workflow-graph-dialog {
+  width: min(920px, 100%);
+  max-height: min(820px, calc(100vh - 56px));
+  overflow: auto;
+  color: #253047;
+  background: #f8faff;
+  border: 1px solid #dbe4f6;
+  border-radius: 22px;
+  outline: none;
+  box-shadow: 0 28px 80px #17233f40;
+}
+.workflow-graph-dialog__header {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  display: flex;
+  padding: 20px 22px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  background: #ffffffed;
+  border-bottom: 1px solid #dbe4f6;
+  backdrop-filter: blur(8px);
+}
+.workflow-graph-dialog__header h3,
+.workflow-graph-dialog__header p {
+  margin: 0;
+}
+.workflow-graph-dialog__header h3 {
+  margin-top: 4px;
+  font-size: 19px;
+}
+.workflow-graph-dialog__header p {
+  margin-top: 5px;
+  color: #718096;
+  font-size: 11px;
+}
+.workflow-graph-dialog__eyebrow {
+  color: #2563eb;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.12em;
+}
+.workflow-graph-dialog__header > button {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #5f6d82;
+  background: #f5f8ff;
+  border: 1px solid #dbe4f6;
+  border-radius: 10px;
+}
+.workflow-graph-dialog__loading,
+.workflow-graph-dialog__error {
+  display: flex;
+  margin: 14px 22px 0;
+  padding: 10px 12px;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  border-radius: 10px;
+}
+.workflow-graph-dialog__loading {
+  color: #2563eb;
+  background: #edf4ff;
+}
+.workflow-graph-dialog__error {
+  color: #b83246;
+  background: #fff1f2;
+}
+.workflow-graph-dialog__error span {
+  flex: 1;
+}
+.workflow-graph-dialog__error button {
+  display: inline-flex;
+  padding: 4px 8px;
+  align-items: center;
+  gap: 4px;
+  color: inherit;
+  background: #fff;
+  border: 1px solid #f3c5cc;
+  border-radius: 7px;
+  font-size: 10px;
+}
+.workflow-graph-canvas {
+  padding: 22px;
+}
+.workflow-graph-node {
+  position: relative;
+  min-width: 0;
+  padding: 13px;
+  background: #fff;
+  border: 1px solid #dbe4f6;
+  border-radius: 14px;
+  box-shadow: 0 7px 20px #2f5f9910;
+}
+.workflow-graph-node--single {
+  width: min(440px, 100%);
+  margin: 0 auto;
+}
+.workflow-graph-node__heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+}
+.workflow-graph-node__heading > div {
+  min-width: 0;
+  flex: 1;
+}
+.workflow-graph-node__heading strong,
+.workflow-graph-node__heading small {
+  display: block;
+}
+.workflow-graph-node__heading strong {
+  font-size: 12px;
+}
+.workflow-graph-node__heading small {
+  margin-top: 4px;
+  color: #7d899f;
+  font-size: 9px;
+  line-height: 1.55;
+}
+.workflow-graph-node__heading em {
+  padding: 4px 7px;
+  flex: 0 0 auto;
+  color: #718096;
+  background: #f1f4f8;
+  border-radius: 999px;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 800;
+}
+.workflow-graph-node__icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #2563eb;
+  background: #eaf2ff;
+  border-radius: 9px;
+}
+.workflow-graph-node__status-dot {
+  width: 9px;
+  height: 9px;
+  margin-top: 4px;
+  flex: 0 0 auto;
+  background: #a7b0bf;
+  border: 2px solid #eef1f5;
+  border-radius: 999px;
+  box-sizing: content-box;
+}
+.workflow-graph-node.is-running {
+  background: #f7faff;
+  border-color: #91b7ff;
+  box-shadow: 0 0 0 3px #dbeafe;
+}
+.workflow-graph-node.is-running .workflow-graph-node__status-dot {
+  background: #2563eb;
+  border-color: #dbeafe;
+  animation: pulse-node 1.2s ease-in-out infinite;
+}
+.workflow-graph-node.is-running em {
+  color: #2563eb;
+  background: #eaf2ff;
+}
+.workflow-graph-node.is-success {
+  border-color: #b9e1d5;
+}
+.workflow-graph-node.is-success .workflow-graph-node__status-dot {
+  background: #0f9f78;
+  border-color: #ddf6ee;
+}
+.workflow-graph-node.is-success em {
+  color: #0f8a68;
+  background: #eaf8f3;
+}
+.workflow-graph-node.is-warning {
+  border-color: #efd89a;
+}
+.workflow-graph-node.is-warning .workflow-graph-node__status-dot,
+.workflow-graph-node.is-skipped .workflow-graph-node__status-dot {
+  background: #d99a22;
+  border-color: #fff4d8;
+}
+.workflow-graph-node.is-warning em,
+.workflow-graph-node.is-skipped em {
+  color: #a46b0a;
+  background: #fff5dc;
+}
+.workflow-graph-node.is-danger {
+  border-color: #efb7c0;
+}
+.workflow-graph-node.is-danger .workflow-graph-node__status-dot {
+  background: #dc3f52;
+  border-color: #ffe4e8;
+}
+.workflow-graph-node.is-danger em {
+  color: #c93448;
+  background: #fff0f2;
+}
+.workflow-graph-connector {
+  display: grid;
+  height: 28px;
+  place-items: center;
+}
+.workflow-graph-connector i {
+  display: block;
+  width: 1px;
+  height: 100%;
+  background: #b9c8df;
+}
+.workflow-graph-parallel {
+  position: relative;
+  display: grid;
+  padding-top: 16px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.workflow-graph-parallel::before {
+  position: absolute;
+  top: 0;
+  right: 12.5%;
+  left: 12.5%;
+  height: 1px;
+  content: '';
+  background: #b9c8df;
+}
+.workflow-graph-parallel > article::before {
+  position: absolute;
+  top: -16px;
+  left: 50%;
+  width: 1px;
+  height: 16px;
+  content: '';
+  background: #b9c8df;
+}
+.workflow-graph-connector--join {
+  height: 34px;
+}
+.node-warning,
+.node-error {
+  margin: 8px 0 0;
+  padding: 6px 8px;
+  font-size: 9px;
+  line-height: 1.5;
+  border-radius: 7px;
+}
+.node-warning {
+  color: #956109;
+  background: #fff8e8;
+}
+.node-error {
+  color: #bd3346;
+  background: #fff1f2;
+}
+.workflow-graph-dialog__footer {
+  display: flex;
+  padding: 14px 22px 18px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: #718096;
+  font-size: 9px;
+}
+.workflow-graph-dialog__footer span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.workflow-graph-dialog__footer i {
+  width: 7px;
+  height: 7px;
+  background: #a7b0bf;
+  border-radius: 999px;
+}
+.workflow-graph-dialog__footer .legend-running {
+  background: #2563eb;
+}
+.workflow-graph-dialog__footer .legend-success {
+  background: #0f9f78;
+}
+.workflow-graph-dialog__footer .legend-warning {
+  background: #d99a22;
+}
+.workflow-graph-dialog__footer .legend-danger {
+  background: #dc3f52;
+}
+.workflow-graph-dialog__footer > button {
+  height: 34px;
+  margin-left: auto;
+  padding: 0 16px;
+  color: #fff;
+  background: #2563eb;
+  border: 0;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 800;
+}
+@keyframes pulse-node {
+  50% {
+    opacity: 0.45;
+    transform: scale(0.78);
+  }
+}
 .visually-hidden {
   position: fixed;
   width: 1px;
@@ -1654,6 +2288,30 @@ select {
   }
   .draft-save-bar button {
     margin-left: auto;
+  }
+  .workflow-graph-backdrop {
+    padding: 10px;
+  }
+  .workflow-graph-dialog {
+    max-height: calc(100vh - 20px);
+    border-radius: 16px;
+  }
+  .workflow-graph-dialog__header,
+  .workflow-graph-canvas,
+  .workflow-graph-dialog__footer {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+  .workflow-graph-parallel {
+    padding-top: 0;
+    grid-template-columns: 1fr;
+  }
+  .workflow-graph-parallel::before,
+  .workflow-graph-parallel > article::before {
+    display: none;
+  }
+  .workflow-graph-parallel > article + article {
+    margin-top: 2px;
   }
 }
 </style>

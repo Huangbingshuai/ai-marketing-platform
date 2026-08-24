@@ -48,7 +48,9 @@ import {
   batchRetryEffectImportProducts,
   cancelEffectManifest,
   commitEffectManifest,
+  completeEffectImportUploadSession,
   createEffectImportProduct,
+  createEffectImportUploadSession,
   deleteEffectImportMaterial,
   deleteEffectImportProduct,
   downloadEffectManifestTemplate,
@@ -60,7 +62,7 @@ import {
   switchEffectImportMode,
   updateEffectImportDraft,
   updateEffectImportProduct,
-  uploadEffectImportMaterial,
+  uploadEffectImportSessionItem,
   validateEffectImportDraft,
   validateEffectImportLink,
 } from './api/effect-import.api';
@@ -227,28 +229,40 @@ const nodeStateSnapshot = () => ({
 
 const saveWorkflowNodeState = async (keepalive = false): Promise<boolean> => {
   if (!loadedProjectId.value || !workspace.value) return true;
+  const projectId = loadedProjectId.value;
+  const workflowRunId = workspace.value.workflowRunId;
+  const generation = activeGeneration;
   const state = nodeStateSnapshot();
   const serialized = JSON.stringify(state);
   if (serialized === lastSavedNodeState) return true;
-  saveState.value = 'saving';
-  try {
-    const response = await putWorkflowNodeState(
-      loadedProjectId.value,
-      workspace.value.workflowRunId,
-      'SOURCE_IMPORT',
-      { expectedRevision: nodeStateRevision.value, state },
-      { keepalive, ...(!keepalive && pageController ? { signal: pageController.signal } : {}) },
-    );
-    nodeStateRevision.value = response.data.nodeState.revision;
-    lastSavedNodeState = serialized;
-    saveState.value = 'saved';
-    return true;
-  } catch (error) {
-    if (isAbortError(error)) return false;
-    saveState.value = 'saveError';
-    showNotice(error instanceof Error ? error.message : '节点草稿自动保存失败', 'error');
-    return false;
-  }
+  const persist = async (): Promise<boolean> => {
+    if (
+      !keepalive &&
+      (!isCurrentContext(projectId, generation) || workspace.value?.workflowRunId !== workflowRunId)
+    )
+      return false;
+    if (serialized === lastSavedNodeState) return true;
+    saveState.value = 'saving';
+    try {
+      const response = await putWorkflowNodeState(
+        projectId,
+        workflowRunId,
+        'SOURCE_IMPORT',
+        { expectedRevision: nodeStateRevision.value, state },
+        { keepalive, ...(!keepalive && pageController ? { signal: pageController.signal } : {}) },
+      );
+      nodeStateRevision.value = response.data.nodeState.revision;
+      lastSavedNodeState = serialized;
+      saveState.value = 'saved';
+      return true;
+    } catch (error) {
+      if (isAbortError(error)) return false;
+      saveState.value = 'saveError';
+      showNotice(error instanceof Error ? error.message : '节点草稿自动保存失败', 'error');
+      return false;
+    }
+  };
+  return keepalive ? persist() : writeQueue.enqueue(projectId, persist);
 };
 
 const isCurrentContext = (projectId: string, generation: number): boolean =>
@@ -260,8 +274,6 @@ const relockDownstreamNode = (): void => {
   workspace.value.nodeStatuses.SOURCE_IMPORT = 'CURRENT';
   workspace.value.nodeStatuses.AI_INFO_EXTRACTION = 'LOCKED';
   activeStep.value = 0;
-  nodeStateRevision.value = 0;
-  lastSavedNodeState = '';
 };
 
 const syncWorkspaceSummary = (): void => {
@@ -452,6 +464,8 @@ const loadProject = async (projectId: string): Promise<void> => {
   listedProducts.value = [];
   selectedProductIds.value = new Set();
   activeStep.value = 0;
+  nodeStateRevision.value = 0;
+  lastSavedNodeState = '';
   pageError.value = '';
   if (!projectId) {
     loadedProjectId.value = '';
@@ -838,6 +852,10 @@ const uploadMaterials = async (
   type: EffectImportMaterialType,
   files: File[],
 ): Promise<void> => {
+  if (type !== 'PRODUCT_IMAGE' && type !== 'PRODUCT_DOCUMENT') {
+    showNotice('当前素材类型暂不支持直接上传', 'warning');
+    return;
+  }
   if (!product.name.trim()) {
     showNotice('请先填写产品名称，再上传产品资料', 'warning');
     return;
@@ -845,21 +863,59 @@ const uploadMaterials = async (
   if (!(await flushProduct(product.id))) return;
   const busyKey = `${product.id}:${type}`;
   setMaterialBusy(busyKey, true);
-  for (const file of files) {
+  try {
     await runWrite(
-      (expectedRevision, signal) =>
-        uploadEffectImportMaterial(
+      async (expectedRevision, signal) => {
+        const manifest = files.map((file) => ({
+          file,
+          clientFileId: crypto.randomUUID(),
+        }));
+        const created = await createEffectImportUploadSession(
           loadedProjectId.value,
           currentMode.value,
           product.id,
-          file,
-          { type, expectedRevision },
+          {
+            expectedRevision,
+            items: manifest.map(({ file, clientFileId }) => ({
+              clientFileId,
+              type,
+              originalFileName: file.name,
+              mimeType: file.type || 'application/octet-stream',
+              sizeBytes: file.size,
+            })),
+          },
           signal,
-        ),
-      (response) => applyMaterialMutation(product.id, response.data),
+        );
+        for (const item of manifest)
+          await uploadEffectImportSessionItem(
+            loadedProjectId.value,
+            created.data.id,
+            item.clientFileId,
+            item.file,
+            signal,
+          );
+        return completeEffectImportUploadSession(
+          loadedProjectId.value,
+          created.data.id,
+          { completionKey: crypto.randomUUID() },
+          signal,
+        );
+      },
+      (response) => {
+        const current =
+          listedProducts.value.find((item) => item.id === product.id) ??
+          draft.value?.products.find((item) => item.id === product.id);
+        if (current)
+          replaceProduct({
+            ...current,
+            materials: [...response.data.materials, ...current.materials],
+          });
+        markDraftMutation(response.data.revision);
+      },
     );
+  } finally {
+    setMaterialBusy(busyKey, false);
   }
-  setMaterialBusy(busyKey, false);
 };
 
 const requestReplacement = (product: EffectImportProduct, material: EffectImportMaterial): void => {
@@ -1171,7 +1227,11 @@ const warnBeforeUnload = (event: BeforeUnloadEvent): void => {
 
 onMounted(() => window.addEventListener('beforeunload', warnBeforeUnload));
 
-defineExpose({ flushPendingEdits, resumeWorkflowNode });
+defineExpose({
+  flushPendingEdits,
+  resumeWorkflowNode,
+  workflowRunId: computed(() => workspace.value?.workflowRunId ?? ''),
+});
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', warnBeforeUnload);

@@ -33,6 +33,8 @@ import {
   projectCreationScope,
   resolveBoundProjectId,
 } from './project-context';
+import { pauseWorkflowRun } from '../workflow/api/workflow-working.api';
+import { loadProjectListWithRetry } from './project-load-retry';
 
 const assetDrawerOpen = ref(false);
 const createModalOpen = ref(false);
@@ -50,6 +52,7 @@ const createNameInput = ref<HTMLInputElement | null>(null);
 const effectNode = ref<{
   flushPendingEdits: () => Promise<boolean>;
   resumeWorkflowNode: (nodeId: string) => Promise<boolean>;
+  workflowRunId: string;
 } | null>(null);
 const exitBusy = ref(false);
 const exitError = ref('');
@@ -120,7 +123,10 @@ const loadProjects = async (): Promise<void> => {
   projectsLoading.value = true;
   projectsError.value = '';
   try {
-    const response = await listProjects({}, controller.signal);
+    const response = await loadProjectListWithRetry(
+      () => listProjects({}, controller.signal),
+      controller.signal,
+    );
     if (controller.signal.aborted) return;
     projects.value = response.data;
     const saved = localStorage.getItem(CURRENT_PROJECT_STORAGE_KEY) ?? '';
@@ -190,6 +196,8 @@ const exitProject = async (): Promise<void> => {
     if (activeWorkflow.value === 'EFFECT') {
       const flushed = await effectNode.value?.flushPendingEdits();
       if (flushed === false) throw new Error('仍有编辑未能自动保存，请修复后重试退出');
+      const workflowRunId = effectNode.value?.workflowRunId;
+      if (workflowRunId) await pauseWorkflowRun(project.id, workflowRunId);
     }
     selectProject('');
     showCreateToast('草稿已自动保存并退出项目，未创建正式资产');
