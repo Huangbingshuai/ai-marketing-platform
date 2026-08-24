@@ -4,6 +4,26 @@ import { workflowStateHash } from './workflow-state-hash';
 import { WorkflowWorkingRepository } from './workflow-working.repository';
 
 describe('WorkflowWorkingRepository', () => {
+  it('loads an active workflow overview with project isolation and its node states', async () => {
+    const findFirst = vi.fn().mockResolvedValue(null);
+    const repository = new WorkflowWorkingRepository({
+      workflowRun: { findFirst },
+    } as unknown as PrismaService);
+
+    await repository.findActiveRunWithNodeStates('project-a', 'EFFECT', 'EFFECT');
+
+    expect(findFirst).toHaveBeenCalledWith({
+      where: {
+        projectId: 'project-a',
+        workflow: 'EFFECT',
+        workflowSpace: 'EFFECT',
+        status: 'ACTIVE',
+      },
+      include: { nodeStates: { orderBy: [{ savedAt: 'asc' }, { id: 'asc' }] } },
+      orderBy: { createdAt: 'desc' },
+    });
+  });
+
   it('returns unchanged without incrementing revision when the canonical content hash matches', async () => {
     const current = {
       id: 'state-a',

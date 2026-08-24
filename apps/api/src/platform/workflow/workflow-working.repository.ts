@@ -48,6 +48,18 @@ export class WorkflowWorkingRepository {
     });
   }
 
+  findActiveRunWithNodeStates(
+    projectId: string,
+    workflow: AssetWorkflow,
+    space: AssetWorkflowSpace,
+  ) {
+    return this.prisma.workflowRun.findFirst({
+      where: { projectId, workflow, workflowSpace: space, status: 'ACTIVE' },
+      include: { nodeStates: { orderBy: [{ savedAt: 'asc' }, { id: 'asc' }] } },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
   createRun(projectId: string, workflow: AssetWorkflow, space: AssetWorkflowSpace, id?: string) {
     return this.prisma.workflowRun.create({
       data: { ...(id ? { id } : {}), projectId, workflow, workflowSpace: space },

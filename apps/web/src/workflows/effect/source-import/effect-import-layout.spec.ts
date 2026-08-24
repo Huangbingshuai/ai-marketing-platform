@@ -122,7 +122,7 @@ describe('effect import automatic draft saving', () => {
   it('debounces node-state saving and removes node-level asset publishing', () => {
     expect(pageSource).toContain('putWorkflowNodeState(');
     expect(pageSource).toContain('setTimeout(() => void flushProduct(productId), 1000)');
-    expect(pageSource).toContain('defineExpose({ flushPendingEdits })');
+    expect(pageSource).toContain('defineExpose({ flushPendingEdits, resumeWorkflowNode })');
     expect(pageSource).not.toContain('publishEffectImportDraft');
     expect(pageSource).not.toContain('asset-publish-bar');
     expect(pageSource).not.toContain('保存到项目资产库');

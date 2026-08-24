@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { listWorkingArtifacts, putWorkflowNodeState } from './workflow-working.api';
+import {
+  getActiveWorkflowRunOverview,
+  listWorkingArtifacts,
+  putWorkflowNodeState,
+} from './workflow-working.api';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -45,5 +49,17 @@ describe('workflow working API', () => {
     expect(url).toContain('workflow=EFFECT');
     expect(url).toContain('space=EFFECT');
     expect(url).not.toContain('/assets');
+  });
+
+  it('loads the active run overview with an explicit workflow and space', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(ok());
+    vi.stubGlobal('fetch', fetchMock);
+
+    await getActiveWorkflowRunOverview('project-one', 'EFFECT', 'EFFECT');
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('/projects/project-one/workflow-runs/active/overview?');
+    expect(url).toContain('workflow=EFFECT');
+    expect(url).toContain('space=EFFECT');
   });
 });

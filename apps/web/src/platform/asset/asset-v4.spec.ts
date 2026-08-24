@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import assetDrawerSource from './AssetDrawer.vue?raw';
 import assetPreviewSource from './components/AssetPreview.vue?raw';
+import projectWorkspaceOverviewSource from './components/ProjectWorkspaceOverview.vue?raw';
 import {
   isImageFileAsset,
   isCurrentOnlyEffectImportAsset,
@@ -122,5 +123,15 @@ describe('V4 asset center mapping', () => {
     expect(assetDrawerSource).toContain(
       '...(productId.value ? { productId: productId.value } : {})',
     );
+  });
+
+  it('separates project drafts, working artifacts, archived assets and global publication', () => {
+    expect(projectWorkspaceOverviewSource).toContain('工作流草稿');
+    expect(projectWorkspaceOverviewSource).toContain('工作区产物');
+    expect(projectWorkspaceOverviewSource).toContain('已归档资产');
+    expect(projectWorkspaceOverviewSource).toContain('全局发布资产');
+    expect(projectWorkspaceOverviewSource).toContain('尚未实现“完成工作流并归档”');
+    expect(projectWorkspaceOverviewSource).toContain('全局发布能力暂未实现');
+    expect(projectWorkspaceOverviewSource).not.toContain('保存到项目资产库');
   });
 });

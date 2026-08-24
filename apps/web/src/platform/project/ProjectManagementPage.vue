@@ -47,7 +47,10 @@ const currentProjectId = ref('');
 const assetTrigger = ref<HTMLButtonElement | null>(null);
 const createTrigger = ref<HTMLButtonElement | null>(null);
 const createNameInput = ref<HTMLInputElement | null>(null);
-const effectNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
+const effectNode = ref<{
+  flushPendingEdits: () => Promise<boolean>;
+  resumeWorkflowNode: (nodeId: string) => Promise<boolean>;
+} | null>(null);
 const exitBusy = ref(false);
 const exitError = ref('');
 let projectsController: AbortController | undefined;
@@ -147,6 +150,13 @@ provide(projectContextKey, {
 const closeAssetDrawer = (): void => {
   assetDrawerOpen.value = false;
   void nextTick(() => assetTrigger.value?.focus());
+};
+
+const resumeWorkflowNode = async (nodeId: string): Promise<void> => {
+  if (activeWorkflow.value !== 'EFFECT' || !effectNode.value) return;
+  const resumed = await effectNode.value.resumeWorkflowNode(nodeId);
+  if (!resumed) return;
+  assetDrawerOpen.value = false;
 };
 
 const openCreateModal = (): void => {
@@ -326,6 +336,7 @@ onBeforeUnmount(() => {
       :open="assetDrawerOpen"
       :initial-workflow="activeWorkflow"
       @close="closeAssetDrawer"
+      @resume-node="resumeWorkflowNode"
     />
 
     <Transition name="modal-fade">

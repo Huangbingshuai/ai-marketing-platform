@@ -5,10 +5,24 @@ import type {
   WorkingArtifactListData,
   WorkingArtifactListQuery,
   WorkflowNodeState,
+  WorkflowRunOverviewData,
 } from '@ai-marketing/contracts';
 import { requestJson } from '../../../api/http-client';
 
 const projectPath = (projectId: string): string => `/projects/${encodeURIComponent(projectId)}`;
+
+export const getActiveWorkflowRunOverview = (
+  projectId: string,
+  workflow: WorkingArtifactListQuery['workflow'],
+  space: WorkingArtifactListQuery['space'],
+  signal?: AbortSignal,
+): Promise<ApiResponse<WorkflowRunOverviewData>> => {
+  const search = new URLSearchParams({ workflow: workflow!, space: space! });
+  return requestJson(`${projectPath(projectId)}/workflow-runs/active/overview?${search}`, {
+    operation: '加载项目工作流草稿',
+    signal,
+  });
+};
 
 export const getWorkflowNodeState = (
   projectId: string,

@@ -5,6 +5,7 @@ import type {
   PutWorkflowNodeStateData,
   WorkingArtifactListData,
   WorkflowNodeState,
+  WorkflowRunOverviewData,
 } from '@ai-marketing/contracts';
 import {
   Body,
@@ -25,6 +26,9 @@ import { fileContentDisposition } from '../file/content-disposition';
 import { ContentQueryDto } from '../asset/dto/content-query.dto';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import { ListWorkingArtifactsQueryDto } from './dto/list-working-artifacts-query.dto';
+// DTO classes remain runtime imports so Nest can emit validation metadata.
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
+import { GetWorkflowRunOverviewQueryDto } from './dto/get-workflow-run-overview-query.dto';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import { PutWorkflowNodeStateDto } from './dto/put-workflow-node-state.dto';
 import { WorkflowWorkingService } from './workflow-working.service';
@@ -32,6 +36,14 @@ import { WorkflowWorkingService } from './workflow-working.service';
 @Controller('projects/:projectId')
 export class WorkflowWorkingController {
   constructor(@Inject(WorkflowWorkingService) private readonly service: WorkflowWorkingService) {}
+
+  @Get('workflow-runs/active/overview')
+  getActiveRunOverview(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Query() query: GetWorkflowRunOverviewQueryDto,
+  ): Promise<WorkflowRunOverviewData> {
+    return this.service.getActiveRunOverview(projectId, query.workflow, query.space);
+  }
 
   @Get('workflow-runs/:workflowRunId/nodes/:nodeId/state')
   getNodeState(

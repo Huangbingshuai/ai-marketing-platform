@@ -35,6 +35,11 @@ export type WorkflowNodeState = {
   updatedAt: string;
 };
 
+export type WorkflowRunOverviewData = {
+  run: WorkflowRun | null;
+  nodeStates: WorkflowNodeState[];
+};
+
 export type PutWorkflowNodeStateRequest = {
   expectedRevision: number | null;
   schemaVersion?: number | undefined;

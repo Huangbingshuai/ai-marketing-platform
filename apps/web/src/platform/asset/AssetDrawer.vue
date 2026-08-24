@@ -60,11 +60,12 @@ import {
   type AssetCenterView,
 } from './asset-v4';
 import AssetPreview from './components/AssetPreview.vue';
+import ProjectWorkspaceOverview from './components/ProjectWorkspaceOverview.vue';
 
 const props = withDefaults(defineProps<{ initialWorkflow?: AssetWorkflow; open: boolean }>(), {
   initialWorkflow: 'EFFECT',
 });
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: []; resumeNode: [nodeId: string] }>();
 const {
   currentProject,
   error: projectsError,
@@ -692,7 +693,7 @@ onBeforeUnmount(() => {
                 <span>{{
                   view === 'library'
                     ? '先选择工作流与项目，再浏览该项目素材'
-                    : '管理当前项目自产资产与已调用的锁定版本'
+                    : '查看项目资料、草稿、工作副本、正式资产与发布状态'
                 }}</span>
               </div>
               <button
@@ -840,6 +841,13 @@ onBeforeUnmount(() => {
               </div>
             </section>
 
+            <ProjectWorkspaceOverview
+              v-if="view === 'current' && activeProject"
+              :project="activeProject"
+              :workflow="workflow"
+              :space="space"
+              @resume-node="emit('resumeNode', $event)"
+            />
             <section v-else class="asset-space">
               <div v-if="!activeProject" class="large-state">
                 <FolderKanban :size="35" /><strong>{{ currentProjectEmptyCopy.title }}</strong>

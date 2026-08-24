@@ -6,6 +6,7 @@ import type {
   WorkingArtifactListData,
   WorkingArtifactListQuery,
   WorkflowNodeState,
+  WorkflowRunOverviewData,
 } from '@ai-marketing/contracts';
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import type { WorkingArtifact as WorkingArtifactRecord } from '../../generated/prisma/client';
@@ -51,6 +52,24 @@ const toNodeState = (record: {
 }): WorkflowNodeState => ({
   ...record,
   savedAt: record.savedAt.toISOString(),
+  updatedAt: record.updatedAt.toISOString(),
+});
+
+const toRun = (record: {
+  id: string;
+  projectId: string;
+  workflow: WorkingArtifactListQuery['workflow'];
+  workflowSpace: WorkingArtifactListQuery['space'];
+  status: 'ACTIVE' | 'COMPLETED';
+  createdAt: Date;
+  updatedAt: Date;
+}) => ({
+  id: record.id,
+  projectId: record.projectId,
+  workflow: record.workflow!,
+  workflowSpace: record.workflowSpace!,
+  status: record.status,
+  createdAt: record.createdAt.toISOString(),
   updatedAt: record.updatedAt.toISOString(),
 });
 
@@ -119,6 +138,20 @@ export class WorkflowWorkingService {
     @Inject(ProjectService) private readonly projectService: ProjectService,
     @Inject(STORAGE_PORT) private readonly storage: StoragePort,
   ) {}
+
+  async getActiveRunOverview(
+    projectId: string,
+    workflow: NonNullable<WorkingArtifactListQuery['workflow']>,
+    space: NonNullable<WorkingArtifactListQuery['space']>,
+  ): Promise<WorkflowRunOverviewData> {
+    await this.projectService.get(projectId);
+    const run = await this.repository.findActiveRunWithNodeStates(projectId, workflow, space);
+    if (!run) return { run: null, nodeStates: [] };
+    return {
+      run: toRun(run),
+      nodeStates: run.nodeStates.map(toNodeState),
+    };
+  }
 
   async getNodeState(projectId: string, workflowRunId: string, nodeId: string) {
     await this.projectService.get(projectId);

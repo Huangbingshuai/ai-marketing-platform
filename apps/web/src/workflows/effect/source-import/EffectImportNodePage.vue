@@ -1120,6 +1120,21 @@ const selectWorkflowStep = async (step: number): Promise<void> => {
 
 const enterPromptBoundary = (): void => void selectWorkflowStep(2);
 
+const resumeWorkflowNode = async (nodeId: string): Promise<boolean> => {
+  const stepByNode: Record<string, number> = {
+    SOURCE_IMPORT: 0,
+    INFORMATION_EXTRACTION: 1,
+    PROMPT_GENERATION: 2,
+    SEGMENT_RENDER: 3,
+    TEMPLATE_MIX: 4,
+    FINAL_OUTPUT: 5,
+  };
+  const step = stepByNode[nodeId];
+  if (step === undefined) return false;
+  await selectWorkflowStep(step);
+  return activeStep.value === step;
+};
+
 const handleProjectSelection = async (projectId: string): Promise<void> => {
   const sequence = ++projectSelectionSequence;
   const previousProjectId = loadedProjectId.value;
@@ -1156,7 +1171,7 @@ const warnBeforeUnload = (event: BeforeUnloadEvent): void => {
 
 onMounted(() => window.addEventListener('beforeunload', warnBeforeUnload));
 
-defineExpose({ flushPendingEdits });
+defineExpose({ flushPendingEdits, resumeWorkflowNode });
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', warnBeforeUnload);
