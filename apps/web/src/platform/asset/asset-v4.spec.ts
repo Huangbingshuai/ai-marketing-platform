@@ -135,6 +135,8 @@ describe('V4 asset center mapping', () => {
     expect(projectWorkspaceOverviewSource).toContain('尚未实现“完成工作流并归档”');
     expect(projectWorkspaceOverviewSource).toContain('全局发布能力暂未实现');
     expect(projectWorkspaceOverviewSource).toContain('只有当前绑定项目可以直接返回节点继续编辑');
+    expect(projectWorkspaceOverviewSource).toContain('pageSize: 96');
+    expect(projectWorkspaceOverviewSource).not.toContain('pageSize: 100');
     expect(projectWorkspaceOverviewSource).not.toContain('保存到项目资产库');
   });
 });

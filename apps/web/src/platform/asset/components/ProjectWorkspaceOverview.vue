@@ -187,7 +187,7 @@ const load = async (): Promise<void> => {
       ),
       listAssets(
         props.project.id,
-        { workflow: props.workflow, space: props.space, page: 1, pageSize: 100 },
+        { workflow: props.workflow, space: props.space, page: 1, pageSize: 96 },
         request.signal,
       ),
     ]);
