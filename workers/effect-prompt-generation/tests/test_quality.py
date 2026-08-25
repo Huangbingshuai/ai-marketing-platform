@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from effect_prompt_generation.models import PromptDimensions, PromptItem
+from effect_prompt_generation.models import FragmentType, PromptDimensions, PromptItem
 from effect_prompt_generation.quality import (
     evaluate_candidates,
     pair_rate,
@@ -20,7 +20,9 @@ def _item(identifier: str, dimensions: PromptDimensions, content: str) -> Prompt
         id=identifier,
         code=identifier,
         origin="AI",
-        fragment_type="完整片段",
+        fragment_type=FragmentType.PRODUCT_DISPLAY,
+        material_tags=["产品", "特写"],
+        target_duration_seconds=5,
         dimensions=dimensions,
         content=content,
         manual_edited=False,

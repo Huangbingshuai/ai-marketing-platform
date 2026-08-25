@@ -3,6 +3,7 @@ import type {
   EffectImportProduct,
   EffectPromptBatchSettings,
   EffectPromptDimensions,
+  EffectPromptFragmentType,
   EffectPromptItem,
   EffectPromptNodeExecution,
   EffectPromptNodeId,
@@ -16,6 +17,8 @@ import type {
 import {
   DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_DIMENSIONS,
+  EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
+  EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_GRAPH_EDGES,
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
@@ -78,6 +81,7 @@ const emit = defineEmits<{ back: []; next: [] }>();
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 type Notice = { kind: 'error' | 'success' | 'warning'; text: string };
 type NodeDetail = GetEffectPromptNodeDetailData['detail'];
+type ItemOperation = { itemId: string; kind: 'delete' | 'regenerate' };
 
 const status = ref<EffectPromptPageStatus>('loading');
 const loadError = ref('');
@@ -88,9 +92,10 @@ const currentProductId = ref('');
 const resultData = ref<GetEffectPromptResultData | null>(null);
 const resultLoading = ref(false);
 const keyword = ref('');
+const fragmentTypeFilter = ref<EffectPromptFragmentType | ''>('');
 const page = ref(1);
 const notice = ref<Notice | null>(null);
-const operationItemId = ref('');
+const itemOperation = ref<ItemOperation | null>(null);
 const validating = ref(false);
 const exporting = ref(false);
 
@@ -111,11 +116,20 @@ const editorMode = ref<'add' | 'edit'>('edit');
 const editorItemId = ref('');
 const editorDraft = ref<PromptItemDraft>({
   content: '',
-  fragmentType: '',
+  fragmentType: 'HOOK',
+  materialTags: [],
+  targetDurationSeconds: DEFAULT_EFFECT_PROMPT_SETTINGS.durationSeconds,
   dimensions: emptyDimensions(),
 });
+const editorMaterialTagsText = ref('');
 const editorTrigger = ref<HTMLElement | null>(null);
 const editorCloseButton = ref<HTMLButtonElement | null>(null);
+const promptSearchInput = ref<HTMLInputElement | null>(null);
+
+const deleteDialogOpen = ref(false);
+const deleteCandidate = ref<EffectPromptItem | null>(null);
+const deleteTrigger = ref<HTMLElement | null>(null);
+const deleteConfirmButton = ref<HTMLButtonElement | null>(null);
 
 let disposed = false;
 let workspaceGeneration = 0;
@@ -123,6 +137,8 @@ let resultGeneration = 0;
 let workspaceController: AbortController | null = null;
 let resultController: AbortController | null = null;
 let operationController: AbortController | null = null;
+let itemMutationController: AbortController | null = null;
+let exportController: AbortController | null = null;
 let graphDetailController: AbortController | null = null;
 let settingsTimer: ReturnType<typeof setTimeout> | undefined;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -146,6 +162,26 @@ const currentItems = computed(() => resultData.value?.items ?? []);
 const currentMetrics = computed(
   () => currentResult.value?.metrics ?? currentState.value?.metrics ?? null,
 );
+const fragmentWeightTotal = computed(() =>
+  EFFECT_PROMPT_FRAGMENT_TYPES.reduce(
+    (sum, fragmentType) =>
+      sum + (Number(currentSettings.value.fragmentTypeWeights[fragmentType]) || 0),
+    0,
+  ),
+);
+const executionInvalidSummary = computed(() => {
+  const labels: Record<string, string> = {
+    MULTI_STAGE_STORY: '完整成片结构',
+    ABSTRACT_META_LANGUAGE: '空泛元话语',
+    MISSING_VISIBLE_ACTION: '缺少可见动作',
+    PRODUCT_IDENTITY_DRIFT: '产品外观漂移',
+    UNSUPPORTED_CLAIM: '未确认事实',
+    BURNED_IN_OVERLAY: '烧入文字或转场',
+  };
+  return (currentMetrics.value?.executionInvalidReasons ?? [])
+    .map(({ code, count }) => `${labels[code] ?? '其他不可执行内容'} ${count}`)
+    .join('、');
+});
 const currentRunning = computed(() => isPromptRunActive(currentState.value));
 const currentQualityReady = computed(() => isPromptResultQualityReady(currentResult.value));
 const totalPages = computed(() => promptPageCount(resultData.value?.total ?? 0));
@@ -159,6 +195,20 @@ const allProductsCommitted = computed(
 );
 const currentSaveStatus = computed(
   () => settingsSaveStatuses.value[currentProductId.value] ?? 'idle',
+);
+const additionalDisabledElementsText = computed({
+  get: () => currentSettings.value.additionalDisabledElements.join('\n'),
+  set: (value: string) => {
+    const draft = settingsDrafts.value[currentProductId.value];
+    if (!draft) return;
+    draft.additionalDisabledElements = uniqueTextList(value);
+    queueSettingsSave();
+  },
+});
+const deleteSaving = computed(
+  () =>
+    itemOperation.value?.kind === 'delete' &&
+    itemOperation.value.itemId === deleteCandidate.value?.id,
 );
 const currentGraphNodes = computed<EffectPromptNodeExecution[]>(() =>
   EFFECT_PROMPT_GRAPH_NODES.map(
@@ -191,11 +241,23 @@ const dimensionSuggestions: Record<keyof EffectPromptDimensions, string[]> = {
   camera: ['固定机位＋三段跳切', '广角环绕＋慢推近景', '手持跟拍＋特写', '俯拍全景＋微距切面'],
   emotion: ['温馨治愈', '专业严谨', '活力明快', '焦虑唤醒', '干货科普'],
 };
-const fragmentSuggestions = ['钩子片段', '产品展示片段', '场景种草片段', '口碑测评片段'];
-
 function emptyDimensions(): EffectPromptDimensions {
   return { narrative: '', scene: '', persona: '', sellingPoint: '', camera: '', emotion: '' };
 }
+
+function uniqueTextList(value: string): string[] {
+  return [
+    ...new Set(
+      value
+        .split(/[\n,，；;]/u)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+const fragmentTypeLabel = (fragmentType: EffectPromptFragmentType): string =>
+  EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[fragmentType];
 
 const context = (): EffectPromptContext => ({
   projectId: props.projectId,
@@ -244,6 +306,7 @@ const loadCurrentResult = async (): Promise<void> => {
       productId,
       page.value,
       keyword.value,
+      fragmentTypeFilter.value || undefined,
       controller.signal,
     );
     if (
@@ -380,6 +443,20 @@ watch(
     settingsControllers.forEach((controller) => controller.abort());
     settingsControllers.clear();
     operationController?.abort();
+    itemMutationController?.abort();
+    exportController?.abort();
+    itemOperation.value = null;
+    exporting.value = false;
+    editorOpen.value = false;
+    editorSaving.value = false;
+    editorTrigger.value = null;
+    deleteDialogOpen.value = false;
+    deleteCandidate.value = null;
+    deleteTrigger.value = null;
+    graphDetailController?.abort();
+    graphDetailController = null;
+    graphDetailLoading.value = false;
+    graphDetailError.value = '';
     void reloadWorkspace();
   },
   { immediate: true },
@@ -388,11 +465,30 @@ watch(currentProductId, (next, previous) => {
   if (previous && previous !== next) void flushSettings(previous);
   page.value = 1;
   keyword.value = '';
+  fragmentTypeFilter.value = '';
+  itemMutationController?.abort();
+  exportController?.abort();
+  itemOperation.value = null;
+  exporting.value = false;
+  editorOpen.value = false;
+  editorSaving.value = false;
+  editorTrigger.value = null;
+  deleteDialogOpen.value = false;
+  deleteCandidate.value = null;
+  deleteTrigger.value = null;
+  graphDetailController?.abort();
+  graphDetailController = null;
+  graphDetailLoading.value = false;
   selectedGraphNodeId.value = null;
   graphDetail.value = null;
+  graphDetailError.value = '';
   void loadCurrentResult();
 });
 watch(page, () => void loadCurrentResult());
+watch(fragmentTypeFilter, () => {
+  if (page.value === 1) void loadCurrentResult();
+  else page.value = 1;
+});
 watch(keyword, () => {
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
@@ -401,7 +497,9 @@ watch(keyword, () => {
   }, 350);
 });
 
-const settingRange = (key: keyof EffectPromptBatchSettings): { maximum: number; minimum: number } =>
+type NumericPromptSetting = 'count' | 'durationSeconds' | 'semanticLimit' | 'visualLimit';
+
+const settingRange = (key: NumericPromptSetting): { maximum: number; minimum: number } =>
   ({
     count: { minimum: EFFECT_PROMPT_LIMITS.minCount, maximum: EFFECT_PROMPT_LIMITS.maxCount },
     durationSeconds: {
@@ -425,11 +523,21 @@ const queueSettingsSave = (): void => {
   settingsTimer = setTimeout(() => void flushSettings(currentProductId.value), 700);
 };
 
-const adjustSetting = (key: keyof EffectPromptBatchSettings, delta: number): void => {
+const adjustSetting = (key: NumericPromptSetting, delta: number): void => {
   const draft = settingsDrafts.value[currentProductId.value];
   if (!draft) return;
   const range = settingRange(key);
   draft[key] = Math.min(range.maximum, Math.max(range.minimum, draft[key] + delta));
+  queueSettingsSave();
+};
+
+const updateSellingPointWeight = (index: number, event: Event): void => {
+  const draft = settingsDrafts.value[currentProductId.value];
+  const input = event.target;
+  if (!draft || !(input instanceof HTMLInputElement) || !draft.sellingPointWeights[index]) return;
+  draft.sellingPointWeights = draft.sellingPointWeights.map((item, itemIndex) =>
+    itemIndex === index ? { ...item, weight: Number(input.value) || 0 } : item,
+  );
   queueSettingsSave();
 };
 
@@ -438,6 +546,14 @@ async function flushSettings(productId = currentProductId.value): Promise<boolea
   const state = productStates.value[productId];
   const draft = settingsDrafts.value[productId];
   if (!state || !draft) return true;
+  const draftFragmentWeightTotal = EFFECT_PROMPT_FRAGMENT_TYPES.reduce(
+    (sum, fragmentType) => sum + (Number(draft.fragmentTypeWeights[fragmentType]) || 0),
+    0,
+  );
+  if (draftFragmentWeightTotal !== 100) {
+    settingsSaveStatuses.value = { ...settingsSaveStatuses.value, [productId]: 'error' };
+    return false;
+  }
   const normalized = normalizePromptSettings(draft);
   settingsDrafts.value = { ...settingsDrafts.value, [productId]: normalized };
   if (
@@ -519,11 +635,12 @@ const generateCurrentBatch = async (): Promise<void> => {
 
 const regenerateItem = async (item: EffectPromptItem): Promise<void> => {
   const state = currentState.value;
-  if (!state || currentRunning.value || state.settingsRevision === null) return;
+  if (!state || currentRunning.value || itemOperation.value || state.settingsRevision === null)
+    return;
   operationController?.abort();
   const controller = new AbortController();
   operationController = controller;
-  operationItemId.value = item.id;
+  itemOperation.value = { itemId: item.id, kind: 'regenerate' };
   try {
     const run = await beginEffectPromptRun(
       props.projectId,
@@ -543,7 +660,8 @@ const regenerateItem = async (item: EffectPromptItem): Promise<void> => {
   } catch (error) {
     if (!isAbortError(error)) await handleMutationError(error, '单条 Prompt 重新生成失败');
   } finally {
-    operationItemId.value = '';
+    if (itemOperation.value?.itemId === item.id && itemOperation.value.kind === 'regenerate')
+      itemOperation.value = null;
   }
 };
 
@@ -566,9 +684,12 @@ const openEditor = async (item?: EffectPromptItem, event?: Event): Promise<void>
   editorItemId.value = item?.id ?? '';
   editorDraft.value = {
     content: item?.content ?? '',
-    fragmentType: item?.fragmentType ?? '',
+    fragmentType: item?.fragmentType ?? 'HOOK',
+    materialTags: item ? [...item.materialTags] : [],
+    targetDurationSeconds: item?.targetDurationSeconds ?? currentSettings.value.durationSeconds,
     dimensions: item ? { ...item.dimensions } : emptyDimensions(),
   };
+  editorMaterialTagsText.value = item?.materialTags.join('，') ?? '';
   editorOpen.value = true;
   await nextTick();
   editorCloseButton.value?.focus();
@@ -587,7 +708,7 @@ const commitEditor = async (): Promise<void> => {
   const result = resultData.value;
   const draft = editorDraft.value;
   if (!state?.resultId || !result) return;
-  if (!draft.content.trim() || !draft.fragmentType.trim()) {
+  if (!draft.content.trim()) {
     showNotice('请填写片段类型和 Prompt 内容', 'warning');
     return;
   }
@@ -597,65 +718,159 @@ const commitEditor = async (): Promise<void> => {
     return;
   }
   editorSaving.value = true;
+  itemMutationController?.abort();
+  const controller = new AbortController();
+  itemMutationController = controller;
+  const productId = state.productId;
+  const resultId = state.resultId;
   try {
     await saveEffectPromptItem(
       props.projectId,
-      state.resultId,
+      resultId,
       result.revision,
       {
         content: draft.content.trim(),
-        fragmentType: draft.fragmentType.trim(),
+        fragmentType: draft.fragmentType,
+        materialTags: uniqueTextList(editorMaterialTagsText.value),
+        targetDurationSeconds: Math.min(
+          EFFECT_PROMPT_LIMITS.maxDurationSeconds,
+          Math.max(EFFECT_PROMPT_LIMITS.minDurationSeconds, draft.targetDurationSeconds),
+        ),
         dimensions: Object.fromEntries(
           EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, draft.dimensions[key].trim()]),
         ) as EffectPromptDimensions,
       },
       editorMode.value === 'edit' ? editorItemId.value : undefined,
+      controller.signal,
     );
+    if (controller.signal.aborted || currentProductId.value !== productId) return;
     editorOpen.value = false;
     showNotice(editorMode.value === 'edit' ? 'Prompt 修改已自动保存' : '人工 Prompt 已添加');
     await reloadWorkspace(false);
   } catch (error) {
-    await handleMutationError(error, 'Prompt 保存失败');
+    if (!isAbortError(error)) await handleMutationError(error, 'Prompt 保存失败');
   } finally {
-    editorSaving.value = false;
+    if (itemMutationController === controller) itemMutationController = null;
+    if (!controller.signal.aborted || currentProductId.value === productId)
+      editorSaving.value = false;
   }
 };
 
-const removeItem = async (item: EffectPromptItem): Promise<void> => {
+const restoreDeleteFocus = (): void => {
+  const trigger = deleteTrigger.value;
+  deleteTrigger.value = null;
+  void nextTick(() => {
+    if (trigger?.isConnected) trigger.focus();
+    else promptSearchInput.value?.focus();
+  });
+};
+
+const requestDeleteItem = async (item: EffectPromptItem, event?: Event): Promise<void> => {
+  if (currentRunning.value || itemOperation.value) return;
+  deleteCandidate.value = item;
+  deleteTrigger.value = event?.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  deleteDialogOpen.value = true;
+  await nextTick();
+  deleteConfirmButton.value?.focus();
+};
+
+const closeDeleteDialog = (): void => {
+  if (deleteSaving.value) return;
+  deleteDialogOpen.value = false;
+  deleteCandidate.value = null;
+  restoreDeleteFocus();
+};
+
+const confirmDeleteItem = async (): Promise<void> => {
+  const item = deleteCandidate.value;
   const state = currentState.value;
   const result = resultData.value;
-  if (!state?.resultId || !result || currentRunning.value) return;
-  operationItemId.value = item.id;
+  if (!item || !state?.resultId || !result || currentRunning.value || itemOperation.value) return;
+  itemOperation.value = { itemId: item.id, kind: 'delete' };
+  itemMutationController?.abort();
+  const controller = new AbortController();
+  itemMutationController = controller;
+  const productId = state.productId;
   try {
-    await removeEffectPromptItem(props.projectId, state.resultId, item, result.revision);
+    await removeEffectPromptItem(
+      props.projectId,
+      state.resultId,
+      item,
+      result.revision,
+      controller.signal,
+    );
+    if (controller.signal.aborted || currentProductId.value !== productId) return;
     showNotice(`${item.code} 已从节点草稿删除`, 'warning');
+    deleteDialogOpen.value = false;
+    deleteCandidate.value = null;
+    restoreDeleteFocus();
     await reloadWorkspace(false);
   } catch (error) {
-    await handleMutationError(error, 'Prompt 删除失败');
+    if (!isAbortError(error)) await handleMutationError(error, 'Prompt 删除失败');
   } finally {
-    operationItemId.value = '';
+    if (itemMutationController === controller) itemMutationController = null;
+    if (itemOperation.value?.itemId === item.id && itemOperation.value.kind === 'delete')
+      itemOperation.value = null;
   }
+};
+
+const writeClipboardText = async (value: string): Promise<void> => {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return;
+    }
+  } catch {
+    // Continue to the local selection fallback when clipboard permission is unavailable.
+  }
+  const activeElement =
+    document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.readOnly = true;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  textarea.style.pointerEvents = 'none';
+  document.body.append(textarea);
+  textarea.select();
+  const copied = document.execCommand('copy');
+  textarea.remove();
+  activeElement?.focus();
+  if (!copied) throw new Error('CLIPBOARD_UNAVAILABLE');
 };
 
 const copyItem = async (item: EffectPromptItem): Promise<void> => {
   try {
-    await navigator.clipboard.writeText(item.content);
+    await writeClipboardText(item.content);
     showNotice(`${item.code} 已复制`);
   } catch {
-    showNotice('浏览器未允许写入剪贴板，请在修改窗口手动复制', 'warning');
+    showNotice('浏览器未允许复制，请在修改窗口手动复制', 'warning');
   }
 };
 
 const exportBatch = async (): Promise<void> => {
   const state = currentState.value;
-  if (!state?.resultId || !currentProduct.value) return;
+  if (
+    !state?.resultId ||
+    !resultData.value ||
+    !currentProduct.value ||
+    currentRunning.value ||
+    exporting.value
+  )
+    return;
+  exportController?.abort();
+  const controller = new AbortController();
+  exportController = controller;
+  const productId = state.productId;
   exporting.value = true;
   try {
     const exported = await downloadEffectPromptBatch(
       props.projectId,
       state.resultId,
       currentProduct.value.name,
+      controller.signal,
     );
+    if (controller.signal.aborted || currentProductId.value !== productId) return;
     const url = URL.createObjectURL(exported.blob);
     const anchor = document.createElement('a');
     anchor.href = url;
@@ -664,9 +879,10 @@ const exportBatch = async (): Promise<void> => {
     requestAnimationFrame(() => URL.revokeObjectURL(url));
     showNotice(`已从服务端导出 ${resultData.value?.total ?? 0} 条 Prompt`);
   } catch (error) {
-    showNotice(safeMessage(error, 'Prompt 导出失败'), 'error');
+    if (!isAbortError(error)) showNotice(safeMessage(error, 'Prompt 导出失败'), 'error');
   } finally {
-    exporting.value = false;
+    if (exportController === controller) exportController = null;
+    if (!controller.signal.aborted || currentProductId.value === productId) exporting.value = false;
   }
 };
 
@@ -720,20 +936,78 @@ const graphStatusMeta = (statusValue: EffectPromptStageStatus): { label: string;
 const graphDescription = (nodeId: EffectPromptNodeId): string =>
   ({
     LOAD_AND_SNAPSHOT: '冻结洞察工作副本、批次设置和人工保留内容',
-    STRATEGY_PLANNING: '规划六维候选池并限制事实来源',
-    DIMENSION_COMBINATION: '最大化六维组合之间的正交距离',
-    CANDIDATE_GENERATION: '按分片生成分配好的候选 Prompt',
-    NORMALIZATION: '校验并整理候选结构',
+    STRATEGY_PLANNING: '规划七类素材配额、六维候选池与卖点轮动',
+    DIMENSION_COMBINATION: '分配片段用途并最大化六维正交距离',
+    CANDIDATE_GENERATION: '按分片生成单场景、单动作的素材片段 Prompt',
+    NORMALIZATION: '校验主标签、时长与画面动作的可执行性',
     SEMANTIC_DEDUP: '检测内容意图和文字近似重复',
     VISUAL_DEDUP: '计算场景、人物、镜头和情绪的结构化重合',
-    QUALITY_GATE: '核对数量、差异距离和双重阈值',
-    REPLENISH: '剔除相似候选后按缺口补齐',
+    QUALITY_GATE: '核对配额、卖点覆盖、可执行性和双重阈值',
+    REPLENISH: '按缺少的片段类型和卖点定向补齐',
     RESULT_SAVE: '保存最佳批次草稿和质量结论',
   })[nodeId];
 const graphDependencies = (nodeId: EffectPromptNodeId): string =>
   EFFECT_PROMPT_GRAPH_EDGES.filter((edge) => edge.to === nodeId)
     .map((edge) => graphDefinition(edge.from).label)
     .join('、') || '无';
+
+const graphDetailValue = (value: unknown): string => {
+  if (Array.isArray(value)) {
+    const visible = value.filter(
+      (item): item is string | number | boolean =>
+        typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean',
+    );
+    return visible.length ? visible.map(String).join('\n') : '—';
+  }
+  if (typeof value === 'boolean') return value ? '是' : '否';
+  if (typeof value === 'string') return value.trim() || '—';
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return '—';
+};
+
+const graphDetailValueIsMultiline = (value: unknown): boolean => {
+  const visible = graphDetailValue(value);
+  return Array.isArray(value) || visible.includes('\n') || visible.length > 72;
+};
+
+const formatGraphDetailTime = (value: string | null | undefined): string => {
+  if (!value) return '尚无执行记录';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '更新时间不可用';
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(date);
+};
+
+const localGraphDetail = (nodeId: EffectPromptNodeId): NodeDetail => {
+  const execution = graphExecution(nodeId);
+  return {
+    nodeId,
+    status: execution.status,
+    summary:
+      execution.summary ||
+      (execution.status === 'PENDING'
+        ? '该节点尚未执行，暂无持久化运行数据。'
+        : graphDescription(nodeId)),
+    fields: [],
+    warnings: [...execution.warnings],
+    errorMessage: execution.errorMessage,
+    updatedAt: null,
+  };
+};
+
+const graphDetailEmptyMessage = (detail: NodeDetail): string => {
+  if (detail.status === 'PENDING') return '该节点尚未执行，暂无运行字段。';
+  if (detail.status === 'RUNNING') return '节点正在执行，字段会随持久化进度更新。';
+  if (detail.status === 'SKIPPED') return '该节点本次已跳过，没有可展示的运行字段。';
+  if (detail.status === 'FAILED') return '节点未产出可展示字段，请查看下方错误信息。';
+  return '该节点已完成，服务端未返回额外的安全字段。';
+};
 
 const openGraph = async (event?: Event): Promise<void> => {
   graphTrigger.value =
@@ -759,33 +1033,69 @@ const openGraph = async (event?: Event): Promise<void> => {
 const closeGraph = (): void => {
   graphDialogOpen.value = false;
   graphDetailController?.abort();
+  graphDetailController = null;
+  graphDetailLoading.value = false;
+  selectedGraphNodeId.value = null;
+  graphDetail.value = null;
+  graphDetailError.value = '';
   const trigger = graphTrigger.value;
   graphTrigger.value = null;
   nextTick(() => trigger?.focus());
 };
 
-const selectGraphNode = async (nodeId: EffectPromptNodeId): Promise<void> => {
-  selectedGraphNodeId.value = nodeId;
-  graphDetail.value = null;
+const refreshGraphDetail = async (): Promise<void> => {
+  const nodeId = selectedGraphNodeId.value;
+  const productId = currentProductId.value;
+  const projectId = props.projectId;
+  if (!nodeId || !productId) return;
+
+  graphDetail.value = localGraphDetail(nodeId);
   graphDetailError.value = '';
   const runId = currentRun.value?.id ?? currentState.value?.runId;
-  if (!runId) return;
   graphDetailController?.abort();
+  graphDetailController = null;
+  graphDetailLoading.value = false;
+  if (!runId) return;
+
   const controller = new AbortController();
   graphDetailController = controller;
   graphDetailLoading.value = true;
   try {
-    graphDetail.value = await loadEffectPromptNodeDetail(
+    const detail = await loadEffectPromptNodeDetail(
       props.projectId,
       runId,
       nodeId,
       controller.signal,
     );
+    if (
+      disposed ||
+      controller.signal.aborted ||
+      !graphDialogOpen.value ||
+      props.projectId !== projectId ||
+      currentProductId.value !== productId ||
+      selectedGraphNodeId.value !== nodeId
+    )
+      return;
+    graphDetail.value = detail;
   } catch (error) {
-    if (!isAbortError(error)) graphDetailError.value = safeMessage(error, '节点详情加载失败');
+    if (
+      !isAbortError(error) &&
+      !disposed &&
+      props.projectId === projectId &&
+      currentProductId.value === productId &&
+      selectedGraphNodeId.value === nodeId
+    )
+      graphDetailError.value = safeMessage(error, '节点详情加载失败');
   } finally {
-    if (!controller.signal.aborted) graphDetailLoading.value = false;
+    if (graphDetailController === controller) graphDetailController = null;
+    if (!controller.signal.aborted && selectedGraphNodeId.value === nodeId)
+      graphDetailLoading.value = false;
   }
+};
+
+const selectGraphNode = (nodeId: EffectPromptNodeId): void => {
+  selectedGraphNodeId.value = nodeId;
+  void refreshGraphDetail();
 };
 
 const formatPercent = (value: number | undefined): string => `${(value ?? 0).toFixed(1)}%`;
@@ -800,8 +1110,12 @@ onBeforeUnmount(() => {
   resultController?.abort();
   settingsControllers.forEach((controller) => controller.abort());
   operationController?.abort();
+  itemMutationController?.abort();
+  exportController?.abort();
   graphDetailController?.abort();
   pollControllers.forEach(({ controller }) => controller.abort());
+  deleteDialogOpen.value = false;
+  deleteCandidate.value = null;
   if (settingsTimer) clearTimeout(settingsTimer);
   if (searchTimer) clearTimeout(searchTimer);
   if (noticeTimer) clearTimeout(noticeTimer);
@@ -841,8 +1155,9 @@ onBeforeUnmount(() => {
           <div>
             <h2 id="effect-prompt-title">差异化 Prompt 批量生成</h2>
             <p>
-              默认 {{ currentSettings.count }} 条 ×
-              {{ currentSettings.durationSeconds }} 秒，系统自动执行六维差异化组合与双重去重
+              {{ currentSettings.count }} 条 Prompt =
+              {{ currentSettings.count }} 个可独立渲染的素材片段， 不是
+              {{ currentSettings.count }} 条最终成片
             </p>
           </div>
         </div>
@@ -913,12 +1228,14 @@ onBeforeUnmount(() => {
 
       <section class="effect-prompt-settings" aria-label="批次设置">
         <div class="settings-heading">
-          <h3>批次设置（仅以下参数可调）</h3>
+          <h3>素材片段批次设置</h3>
           <span :class="currentSaveStatus">{{
             currentSaveStatus === 'saving'
               ? '正在保存'
               : currentSaveStatus === 'error'
-                ? '保存失败'
+                ? fragmentWeightTotal !== 100
+                  ? '标签配比需合计 100%'
+                  : '保存失败'
                 : currentState.settingsRevision === null
                   ? '待首次保存'
                   : '已自动保存'
@@ -927,7 +1244,7 @@ onBeforeUnmount(() => {
         <label
           v-for="setting in [
             { key: 'count', label: '生成数量', hint: '默认 50 条' },
-            { key: 'durationSeconds', label: '统一时长', hint: '秒' },
+            { key: 'durationSeconds', label: '统一片段时长', hint: '3–10 秒，默认 5 秒' },
             { key: 'semanticLimit', label: '语义重复度上限', hint: '批内违规 Prompt 对占比' },
             { key: 'visualLimit', label: '画面重合度上限', hint: '生成前结构化代理指标' },
           ] as const"
@@ -968,24 +1285,89 @@ onBeforeUnmount(() => {
           </span>
           <small>{{ setting.hint }}</small>
         </label>
+
+        <label class="setting-wide">
+          <span>风格覆盖</span>
+          <input
+            v-model="settingsDrafts[currentProductId]!.styleOverride"
+            type="text"
+            :disabled="currentRunning"
+            placeholder="留空则继承信息卡视觉规则"
+            @input="queueSettingsSave"
+            @blur="flushSettings()"
+          />
+          <small>只调整可视化风格，不改写产品事实。</small>
+        </label>
+
+        <fieldset class="setting-wide weight-setting">
+          <legend>七类素材标签配比</legend>
+          <p :class="{ 'weight-total-warning': fragmentWeightTotal !== 100 }">
+            用于下游混剪槽位的素材池构成，当前合计 {{ fragmentWeightTotal }}%。
+          </p>
+          <div class="weight-grid">
+            <label v-for="fragmentType in EFFECT_PROMPT_FRAGMENT_TYPES" :key="fragmentType">
+              <span>{{ fragmentTypeLabel(fragmentType) }}</span>
+              <input
+                v-model.number="settingsDrafts[currentProductId]!.fragmentTypeWeights[fragmentType]"
+                type="number"
+                min="0"
+                max="100"
+                :disabled="currentRunning"
+                @input="queueSettingsSave"
+                @blur="flushSettings()"
+              />
+              <small>%</small>
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset class="setting-wide weight-setting">
+          <legend>卖点权重</legend>
+          <p>所有已确认卖点都会至少覆盖一次，权重仅调整后续轮动比例。</p>
+          <div v-if="currentSettings.sellingPointWeights.length" class="weight-grid">
+            <label
+              v-for="(entry, index) in currentSettings.sellingPointWeights"
+              :key="entry.sellingPoint"
+            >
+              <span :title="entry.sellingPoint">{{ entry.sellingPoint }}</span>
+              <input
+                :value="entry.weight"
+                type="number"
+                min="0"
+                max="100"
+                :disabled="currentRunning"
+                @input="updateSellingPointWeight(index, $event)"
+                @blur="flushSettings()"
+              />
+              <small>%</small>
+            </label>
+          </div>
+          <div v-else class="setting-inline-empty">
+            暂无可调卖点，将按信息卡已确认卖点均衡轮动。
+          </div>
+        </fieldset>
+
+        <label class="setting-wide">
+          <span>追加禁用元素</span>
+          <textarea
+            v-model="additionalDisabledElementsText"
+            :disabled="currentRunning"
+            rows="2"
+            placeholder="每行一项；只追加，不覆盖上游禁用规则"
+            @blur="flushSettings()"
+          />
+        </label>
       </section>
 
       <section class="effect-prompt-stats" aria-label="质量统计">
         <article class="coral">
-          <span>已接收 Prompt</span><strong>{{ currentMetrics?.acceptedCount ?? 0 }}</strong
-          ><small>目标 {{ currentSettings.count }} 条</small>
+          <span>可用素材片段 Prompt</span><strong>{{ currentMetrics?.acceptedCount ?? 0 }}</strong
+          ><small>目标 {{ currentSettings.count }} 条，一条对应一个片段</small>
         </article>
         <article class="amber">
-          <span>自动剔除方案</span
-          ><strong>{{
-            (currentMetrics?.removedSemanticDuplicates ?? 0) +
-            (currentMetrics?.removedVisualDuplicates ?? 0) +
-            (currentMetrics?.removedDimensionConflicts ?? 0)
-          }}</strong
-          ><small
-            >补齐 {{ currentMetrics?.replenishmentRounds ?? 0 }} /
-            {{ EFFECT_PROMPT_LIMITS.maxReplenishmentRounds }} 轮</small
-          >
+          <span>执行无效候选</span
+          ><strong>{{ currentMetrics?.removedExecutionInvalid ?? 0 }}</strong
+          ><small>{{ executionInvalidSummary || '暂无执行无效候选' }}</small>
         </article>
         <article class="cyan">
           <span>当前语义重复度</span
@@ -999,19 +1381,61 @@ onBeforeUnmount(() => {
         </article>
       </section>
 
+      <section v-if="currentMetrics" class="quality-breakdown" aria-label="配额与卖点覆盖">
+        <div>
+          <strong>七类标签配额</strong>
+          <span
+            v-for="entry in currentMetrics.fragmentTypeDistribution"
+            :key="entry.fragmentType"
+            :class="{ missing: entry.actualCount < entry.targetCount }"
+          >
+            {{ fragmentTypeLabel(entry.fragmentType) }} {{ entry.actualCount }}/{{
+              entry.targetCount
+            }}
+          </span>
+        </div>
+        <div>
+          <strong>卖点覆盖</strong>
+          <span
+            >{{ currentMetrics.sellingPointCoverage.covered.length }}/{{
+              currentMetrics.sellingPointCoverage.required.length
+            }}
+            已覆盖</span
+          >
+          <em v-if="currentMetrics.sellingPointCoverage.missing.length">
+            待补：{{ currentMetrics.sellingPointCoverage.missing.join('、') }}
+          </em>
+          <em v-else>已覆盖全部确认卖点</em>
+        </div>
+      </section>
+
       <section class="effect-prompt-list" aria-label="Prompt 生成结果">
         <div class="effect-prompt-toolbar">
           <label class="prompt-search"
             ><Search :size="15" /><input
+              ref="promptSearchInput"
               v-model="keyword"
               type="search"
-              placeholder="搜索提示词（ID / 内容 / 六维标签）"
+              placeholder="搜索 ID / 片段画面 / 标签 / 六维"
           /></label>
+          <label class="fragment-filter">
+            <span>主标签</span>
+            <select v-model="fragmentTypeFilter">
+              <option value="">全部片段</option>
+              <option
+                v-for="fragmentType in EFFECT_PROMPT_FRAGMENT_TYPES"
+                :key="fragmentType"
+                :value="fragmentType"
+              >
+                {{ fragmentTypeLabel(fragmentType) }}
+              </option>
+            </select>
+          </label>
           <span class="prompt-result-count">{{ resultData?.total ?? 0 }} 条</span>
           <button
             class="primary-button"
             type="button"
-            :disabled="!currentState.resultId || currentRunning"
+            :disabled="!resultData || currentRunning"
             @click="openEditor(undefined, $event)"
           >
             <Plus :size="15" />人工添加提示词
@@ -1019,7 +1443,7 @@ onBeforeUnmount(() => {
           <button
             class="primary-button"
             type="button"
-            :disabled="!currentState.resultId || exporting"
+            :disabled="!resultData || currentRunning || exporting"
             @click="exportBatch"
           >
             <LoaderCircle v-if="exporting" class="spin" :size="15" /><Download
@@ -1052,16 +1476,24 @@ onBeforeUnmount(() => {
               <strong>{{ item.code }}</strong
               ><span
                 ><i v-if="item.manualEdited || item.origin === 'MANUAL'">人工</i
-                ><em>片段类型 · {{ item.fragmentType }}</em></span
+                ><em class="primary-fragment-tag">{{ fragmentTypeLabel(item.fragmentType) }}</em
+                ><em class="duration-tag">{{ item.targetDurationSeconds }} 秒</em></span
               >
             </header>
-            <div class="prompt-dimensions">
-              <small>差异化标签</small
-              ><span v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key"
-                ><b>{{ dimension.label }}：</b>{{ item.dimensions[dimension.key] }}</span
-              >
+            <div class="material-tags" aria-label="素材次级标签">
+              <small>次级标签</small>
+              <span v-for="tag in item.materialTags" :key="tag">{{ tag }}</span>
+              <em v-if="!item.materialTags.length">暂无</em>
             </div>
             <textarea :value="item.content" readonly aria-label="Prompt 内容" />
+            <details class="prompt-dimension-details">
+              <summary>查看六维差异化设定</summary>
+              <div class="prompt-dimensions">
+                <span v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key"
+                  ><b>{{ dimension.label }}：</b>{{ item.dimensions[dimension.key] }}</span
+                >
+              </div>
+            </details>
           </div>
           <div class="prompt-actions">
             <button type="button" :disabled="currentRunning" @click="openEditor(item, $event)">
@@ -1071,19 +1503,25 @@ onBeforeUnmount(() => {
             <button
               class="danger"
               type="button"
-              :disabled="currentRunning || operationItemId === item.id"
-              @click="removeItem(item)"
+              :disabled="currentRunning || itemOperation !== null"
+              @click="requestDeleteItem(item, $event)"
             >
-              <LoaderCircle v-if="operationItemId === item.id" class="spin" :size="13" /><Trash2
-                v-else
+              <LoaderCircle
+                v-if="itemOperation?.itemId === item.id && itemOperation.kind === 'delete'"
+                class="spin"
                 :size="13"
-              />删除
+              /><Trash2 v-else :size="13" />删除
             </button>
-            <button type="button" :disabled="currentRunning" @click="regenerateItem(item)">
-              <LoaderCircle v-if="operationItemId === item.id" class="spin" :size="13" /><RefreshCw
-                v-else
+            <button
+              type="button"
+              :disabled="currentRunning || itemOperation !== null"
+              @click="regenerateItem(item)"
+            >
+              <LoaderCircle
+                v-if="itemOperation?.itemId === item.id && itemOperation.kind === 'regenerate'"
+                class="spin"
                 :size="13"
-              />重新生成
+              /><RefreshCw v-else :size="13" />重新生成
             </button>
           </div>
         </article>
@@ -1166,18 +1604,35 @@ onBeforeUnmount(() => {
             </button>
           </header>
           <div class="editor-grid">
-            <label
-              ><span>片段类型</span
-              ><input
-                v-model="editorDraft.fragmentType"
-                list="prompt-fragments"
-                placeholder="请选择或输入片段类型" /><datalist id="prompt-fragments">
+            <label>
+              <span>固定主标签</span>
+              <select v-model="editorDraft.fragmentType">
                 <option
-                  v-for="value in fragmentSuggestions"
-                  :key="value"
-                  :value="value"
-                /></datalist
-            ></label>
+                  v-for="fragmentType in EFFECT_PROMPT_FRAGMENT_TYPES"
+                  :key="fragmentType"
+                  :value="fragmentType"
+                >
+                  {{ fragmentTypeLabel(fragmentType) }}
+                </option>
+              </select>
+            </label>
+            <label>
+              <span>目标片段时长</span>
+              <input
+                v-model.number="editorDraft.targetDurationSeconds"
+                type="number"
+                :min="EFFECT_PROMPT_LIMITS.minDurationSeconds"
+                :max="EFFECT_PROMPT_LIMITS.maxDurationSeconds"
+              />
+            </label>
+            <label class="editor-wide-field">
+              <span>次级素材标签</span>
+              <input
+                v-model="editorMaterialTagsText"
+                type="text"
+                placeholder="例如：首帧，特写，实拍演示（逗号分隔）"
+              />
+            </label>
             <label v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key"
               ><span>{{ dimension.label }}</span
               ><input
@@ -1194,8 +1649,12 @@ onBeforeUnmount(() => {
             ></label>
           </div>
           <label class="editor-content"
-            ><span>Prompt 内容</span
-            ><textarea v-model="editorDraft.content" placeholder="请输入结构化视频 Prompt" />
+            ><span>片段生成 Prompt</span
+            ><small>只描述一个可独立渲染的画面片段，不要写完整成片脚本或多镜头时间轴。</small>
+            <textarea
+              v-model="editorDraft.content"
+              placeholder="请写清首帧画面、单一连续动作、产品位置、运镜、光线与结束帧"
+            />
           </label>
           <footer>
             <button type="button" :disabled="editorSaving" @click="closeEditor">取消</button
@@ -1208,6 +1667,44 @@ onBeforeUnmount(() => {
               <LoaderCircle v-if="editorSaving" class="spin" :size="14" />{{
                 editorMode === 'add' ? '添加到节点草稿' : '保存修改'
               }}
+            </button>
+          </footer>
+        </section>
+      </div>
+
+      <div
+        v-if="deleteDialogOpen && deleteCandidate"
+        class="prompt-dialog-backdrop"
+        @mousedown.self="closeDeleteDialog"
+      >
+        <section
+          class="prompt-delete-dialog"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="prompt-delete-title"
+          aria-describedby="prompt-delete-description"
+          @keydown.esc="closeDeleteDialog"
+        >
+          <span class="delete-dialog-icon"><Trash2 :size="20" /></span>
+          <div>
+            <span>删除节点草稿</span>
+            <h2 id="prompt-delete-title">确认删除 {{ deleteCandidate.code }}？</h2>
+            <p id="prompt-delete-description">
+              这会从当前产品的 Prompt
+              节点草稿中删除该条内容，并重新计算数量与去重指标；不会删除已归档资产。
+            </p>
+          </div>
+          <footer>
+            <button type="button" :disabled="deleteSaving" @click="closeDeleteDialog">取消</button>
+            <button
+              ref="deleteConfirmButton"
+              class="danger-button"
+              type="button"
+              :disabled="deleteSaving || currentRunning"
+              @click="confirmDeleteItem"
+            >
+              <LoaderCircle v-if="deleteSaving" class="spin" :size="14" />
+              <Trash2 v-else :size="14" />确认删除
             </button>
           </footer>
         </section>
@@ -1226,7 +1723,7 @@ onBeforeUnmount(() => {
             <div>
               <span>PROMPT SUB-WORKFLOW</span>
               <h2 id="prompt-graph-title">差异化 Prompt 生成子工作流</h2>
-              <p>节点详情仅展示批次数量、分片进度、剔除数量、补齐轮次与安全告警。</p>
+              <p>节点详情展示阶段输入摘要、业务示例、分片进度与质量结论。</p>
             </div>
             <button
               ref="graphCloseButton"
@@ -1265,60 +1762,77 @@ onBeforeUnmount(() => {
                 </div>
               </template>
             </div>
-            <aside class="workflow-node-detail">
+            <aside class="workflow-node-detail" aria-live="polite">
               <div v-if="!selectedGraphNodeId" class="node-detail-empty">
                 <Workflow :size="30" /><strong>选择节点查看安全详情</strong>
                 <p>不会显示模型、Prompt 模板、原始响应或内部存储标识。</p>
               </div>
               <template v-else>
-                <header>
+                <header class="node-detail-header">
                   <div>
                     <span>NODE DETAIL</span
                     ><strong>{{ graphDefinition(selectedGraphNodeId).label }}</strong>
                   </div>
-                  <em>{{ graphStatusMeta(graphExecution(selectedGraphNodeId).status).label }}</em>
+                  <button
+                    type="button"
+                    aria-label="刷新当前节点详情"
+                    :disabled="graphDetailLoading"
+                    @click="refreshGraphDetail"
+                  >
+                    <RefreshCw :class="{ spin: graphDetailLoading }" :size="14" />
+                  </button>
                 </header>
-                <p class="node-summary">
-                  {{
-                    graphDetail?.summary ||
-                    graphExecution(selectedGraphNodeId).summary ||
-                    graphDescription(selectedGraphNodeId)
-                  }}
-                </p>
-                <div v-if="graphDetailLoading" class="graph-message">
-                  <LoaderCircle class="spin" :size="13" />正在加载节点详情…
+                <div v-if="graphDetailLoading" class="node-detail-message loading" role="status">
+                  <LoaderCircle class="spin" :size="13" />正在同步节点安全摘要…
                 </div>
-                <div v-if="graphDetailError" class="graph-message error">
+                <div v-if="graphDetailError" class="node-detail-message error" role="alert">
                   <AlertCircle :size="13" />{{ graphDetailError }}
                 </div>
-                <dl class="node-fields">
-                  <div>
-                    <dt>上游节点</dt>
-                    <dd>{{ graphDependencies(selectedGraphNodeId) }}</dd>
+
+                <template v-if="graphDetail">
+                  <div class="node-detail-status">
+                    <em :class="`is-${graphStatusMeta(graphDetail.status).tone}`">
+                      {{ graphStatusMeta(graphDetail.status).label }}
+                    </em>
+                    <span>
+                      <small>更新时间</small>
+                      <time :datetime="graphDetail.updatedAt ?? undefined">{{
+                        formatGraphDetailTime(graphDetail.updatedAt)
+                      }}</time>
+                    </span>
                   </div>
-                  <div v-for="field in graphDetail?.fields ?? []" :key="field.label">
-                    <dt>{{ field.label }}</dt>
-                    <dd>{{ field.value }}</dd>
+                  <p class="node-summary">{{ graphDetail.summary }}</p>
+                  <p class="node-dependencies">
+                    <strong>执行依赖</strong
+                    ><span>{{ graphDependencies(selectedGraphNodeId) }}</span>
+                  </p>
+
+                  <dl v-if="graphDetail.fields.length" class="node-fields">
+                    <div
+                      v-for="(field, index) in graphDetail.fields"
+                      :key="`${field.label}-${index}`"
+                    >
+                      <dt>
+                        <span>{{ field.label }}</span>
+                        <small v-if="field.description">{{ field.description }}</small>
+                      </dt>
+                      <dd :class="{ 'is-multiline': graphDetailValueIsMultiline(field.value) }">
+                        {{ graphDetailValue(field.value) }}
+                      </dd>
+                    </div>
+                  </dl>
+                  <div v-else class="node-detail-no-fields">
+                    <Workflow :size="16" />
+                    <span>{{ graphDetailEmptyMessage(graphDetail) }}</span>
                   </div>
-                </dl>
-                <div
-                  v-for="warning in graphDetail?.warnings ??
-                  graphExecution(selectedGraphNodeId).warnings"
-                  :key="warning"
-                  class="node-warning"
-                >
-                  <AlertCircle :size="12" />{{ warning }}
-                </div>
-                <div
-                  v-if="
-                    graphDetail?.errorMessage || graphExecution(selectedGraphNodeId).errorMessage
-                  "
-                  class="node-warning error"
-                >
-                  <AlertCircle :size="12" />{{
-                    graphDetail?.errorMessage || graphExecution(selectedGraphNodeId).errorMessage
-                  }}
-                </div>
+
+                  <div v-for="warning in graphDetail.warnings" :key="warning" class="node-warning">
+                    <AlertCircle :size="12" />{{ warning }}
+                  </div>
+                  <div v-if="graphDetail.errorMessage" class="node-warning error">
+                    <AlertCircle :size="12" />{{ graphDetail.errorMessage }}
+                  </div>
+                </template>
               </template>
             </aside>
           </div>
@@ -1649,6 +2163,91 @@ button:disabled {
 .number-control input::-webkit-inner-spin-button {
   appearance: none;
 }
+.setting-wide {
+  display: grid;
+  grid-column: 1 / -1;
+  padding: 12px 14px;
+  gap: 7px;
+  color: #58657a;
+  background: #f8fbff;
+  border: 1px solid #e5eaf2;
+  border-radius: 12px;
+  font-size: 11px;
+}
+.setting-wide > span,
+.weight-setting legend {
+  color: #33415a;
+  font-size: 12px;
+  font-weight: 800;
+}
+.setting-wide > input,
+.setting-wide > textarea {
+  width: 100%;
+  padding: 8px 10px;
+  color: #42526a;
+  background: #fff;
+  border: 1px solid #dfe6f0;
+  border-radius: 8px;
+  outline: none;
+  resize: vertical;
+}
+.setting-wide > small,
+.weight-setting > p {
+  margin: 0;
+  color: #8995a8;
+  font-size: 9px;
+  line-height: 1.55;
+}
+.weight-setting > p.weight-total-warning {
+  color: #a46b0a;
+  font-weight: 700;
+}
+.weight-setting {
+  margin: 0;
+}
+.weight-setting legend {
+  padding: 0;
+}
+.weight-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+.weight-grid label {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) 58px 14px;
+  align-items: center;
+  gap: 5px;
+  color: #5f6d82;
+  font-size: 10px;
+}
+.weight-grid label > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.weight-grid input {
+  width: 58px;
+  height: 30px;
+  padding: 0 5px;
+  color: #42526a;
+  background: #fff;
+  border: 1px solid #dfe6f0;
+  border-radius: 7px;
+  text-align: center;
+}
+.weight-grid small {
+  color: #9aa4b5;
+}
+.setting-inline-empty {
+  padding: 9px 10px;
+  color: #7c899e;
+  background: #fff;
+  border: 1px dashed #d8e1ed;
+  border-radius: 8px;
+  font-size: 10px;
+}
 .effect-prompt-stats {
   display: grid;
   margin-top: 18px;
@@ -1697,6 +2296,42 @@ button:disabled {
   background: #f5f1ff;
   border-color: #e4dbfa;
 }
+.quality-breakdown {
+  display: grid;
+  margin-top: 10px;
+  padding: 12px 14px;
+  grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr);
+  gap: 14px;
+  background: #fff;
+  border: 1px solid #e3e9f2;
+  border-radius: 13px;
+}
+.quality-breakdown > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: #647187;
+  font-size: 9px;
+}
+.quality-breakdown strong {
+  margin-right: 3px;
+  color: #33415a;
+  font-size: 10px;
+}
+.quality-breakdown span,
+.quality-breakdown em {
+  padding: 4px 7px;
+  background: #f2f6fc;
+  border-radius: 999px;
+  font-style: normal;
+}
+.quality-breakdown span.missing,
+.quality-breakdown em:first-of-type:not(:last-child) {
+  color: #a46b0a;
+  background: #fff5dc;
+}
 .effect-prompt-list {
   display: flex;
   margin-top: 18px;
@@ -1730,6 +2365,27 @@ button:disabled {
   border: 0;
   outline: none;
   font-size: 13px;
+}
+.fragment-filter {
+  display: flex;
+  height: 40px;
+  padding: 0 8px 0 11px;
+  align-items: center;
+  gap: 7px;
+  color: #748197;
+  background: #fff;
+  border: 1px solid #dbe4f6;
+  border-radius: 10px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.fragment-filter select {
+  height: 30px;
+  color: #42526a;
+  background: transparent;
+  border: 0;
+  outline: none;
+  font-size: 11px;
 }
 .prompt-result-count {
   margin-right: auto;
@@ -1785,6 +2441,47 @@ button:disabled {
   font-style: normal;
   font-weight: 700;
 }
+.prompt-main > header em.duration-tag {
+  color: #4f6f9f;
+  background: #eef5ff;
+  border-color: #cfdef4;
+}
+.material-tags {
+  display: flex;
+  margin: 7px 0 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.material-tags small {
+  color: #8995a8;
+  font-size: 9px;
+}
+.material-tags span {
+  padding: 3px 6px;
+  color: #4c6f9f;
+  background: #edf4ff;
+  border-radius: 5px;
+  font-size: 9px;
+}
+.material-tags em {
+  color: #a0a8b5;
+  font-size: 9px;
+  font-style: normal;
+}
+.prompt-dimension-details {
+  margin-top: 7px;
+  color: #78869a;
+  font-size: 9px;
+}
+.prompt-dimension-details summary {
+  width: max-content;
+  cursor: pointer;
+  color: #5577a8;
+}
+.prompt-dimension-details .prompt-dimensions {
+  margin: 7px 0 0;
+}
 .prompt-main > header i {
   color: #7658d5;
   background: #f3f0ff;
@@ -1824,7 +2521,7 @@ button:disabled {
 }
 .prompt-main > textarea {
   width: 100%;
-  min-height: 220px;
+  min-height: 132px;
   padding: 10px 14px;
   resize: none;
   overflow: hidden;
@@ -1919,6 +2616,7 @@ button:disabled {
   backdrop-filter: blur(3px);
 }
 .prompt-editor-dialog,
+.prompt-delete-dialog,
 .workflow-graph-dialog {
   width: min(920px, 100%);
   max-height: calc(100vh - 40px);
@@ -1930,6 +2628,69 @@ button:disabled {
 }
 .prompt-editor-dialog {
   padding: 22px;
+}
+.prompt-delete-dialog {
+  display: grid;
+  width: min(520px, 100%);
+  padding: 22px;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 14px;
+}
+.delete-dialog-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  color: #dc2626;
+  background: #fff1f2;
+  border: 1px solid #fecdd3;
+  border-radius: 12px;
+}
+.prompt-delete-dialog > div > span {
+  color: #dc2626;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+.prompt-delete-dialog h2 {
+  margin: 4px 0 7px;
+  color: #1d2940;
+  font-size: 19px;
+}
+.prompt-delete-dialog p {
+  margin: 0;
+  color: #66758c;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.prompt-delete-dialog > footer {
+  display: flex;
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.prompt-delete-dialog > footer button {
+  display: inline-flex;
+  height: 38px;
+  padding: 0 16px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: #536178;
+  background: #fff;
+  border: 1px solid #dbe4f6;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 800;
+}
+.prompt-delete-dialog > footer .danger-button {
+  color: #fff;
+  background: #dc2626;
+  border-color: #dc2626;
+}
+.prompt-delete-dialog > footer button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 .prompt-editor-dialog > header,
 .workflow-graph-dialog > header {
@@ -1969,6 +2730,9 @@ button:disabled {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 11px;
 }
+.editor-wide-field {
+  grid-column: 1 / -1;
+}
 .prompt-editor-dialog label > span {
   display: block;
   margin-bottom: 6px;
@@ -1977,6 +2741,7 @@ button:disabled {
   font-weight: 800;
 }
 .prompt-editor-dialog input,
+.prompt-editor-dialog select,
 .prompt-editor-dialog textarea {
   width: 100%;
   padding: 0 11px;
@@ -1990,6 +2755,12 @@ button:disabled {
 .prompt-editor-dialog input {
   height: 39px;
 }
+.prompt-editor-dialog select {
+  width: 100%;
+  height: 39px;
+  padding: 0 11px;
+  background: #fff;
+}
 .prompt-editor-dialog textarea {
   min-height: 210px;
   padding: 11px;
@@ -2000,7 +2771,15 @@ button:disabled {
   display: block;
   margin-top: 13px;
 }
+.editor-content > small {
+  display: block;
+  margin: -2px 0 7px;
+  color: #8995a8;
+  font-size: 9px;
+  line-height: 1.55;
+}
 .prompt-editor-dialog input:focus,
+.prompt-editor-dialog select:focus,
 .prompt-editor-dialog textarea:focus {
   border-color: #7da4ff;
   box-shadow: 0 0 0 3px #2563eb14;
@@ -2184,57 +2963,197 @@ button:disabled {
   font-size: 10px;
   line-height: 1.65;
 }
-.workflow-node-detail > header {
+.node-detail-header {
   display: flex;
   padding-bottom: 12px;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
   border-bottom: 1px solid #e7edf8;
 }
-.workflow-node-detail > header span,
-.workflow-node-detail > header strong {
+.node-detail-header span,
+.node-detail-header strong {
   display: block;
 }
-.workflow-node-detail > header span {
+.node-detail-header span {
   color: #2563eb;
   font-size: 9px;
   font-weight: 850;
+  letter-spacing: 0.08em;
 }
-.workflow-node-detail > header strong {
+.node-detail-header strong {
   margin-top: 4px;
+  color: #253047;
   font-size: 14px;
 }
-.workflow-node-detail > header em {
-  padding: 4px 7px;
+.node-detail-header button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #2563eb;
   background: #edf4ff;
-  border-radius: 99px;
+  border: 0;
+  border-radius: 8px;
+}
+.node-detail-header button:disabled {
+  opacity: 0.55;
+}
+.node-detail-message {
+  display: flex;
+  margin-top: 10px;
+  padding: 8px 9px;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+  border-radius: 8px;
+}
+.node-detail-message.loading {
+  color: #2563eb;
+  background: #edf4ff;
+}
+.node-detail-message.error {
+  color: #bd3346;
+  background: #fff1f2;
+}
+.node-detail-status {
+  display: flex;
+  margin-top: 13px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.node-detail-status em {
+  padding: 4px 7px;
+  color: #718096;
+  background: #f1f4f8;
+  border-radius: 999px;
   font-size: 8px;
   font-style: normal;
+  font-weight: 800;
+}
+.node-detail-status em.is-running {
+  color: #2563eb;
+  background: #eaf2ff;
+}
+.node-detail-status em.is-success {
+  color: #0f8a68;
+  background: #eaf8f3;
+}
+.node-detail-status em.is-warning,
+.node-detail-status em.is-skipped {
+  color: #a46b0a;
+  background: #fff5dc;
+}
+.node-detail-status em.is-danger {
+  color: #c93448;
+  background: #fff0f2;
+}
+.node-detail-status > span {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  color: #8994a8;
+  font-size: 8px;
+}
+.node-detail-status small,
+.node-detail-status time {
+  font: inherit;
+}
+.node-detail-status time {
+  color: #5f6d82;
+  font-weight: 700;
 }
 .node-summary {
-  color: #5f6d82;
+  margin: 10px 0 0;
+  color: #4d5b72;
   font-size: 10px;
   line-height: 1.65;
 }
+.node-dependencies {
+  display: flex;
+  margin: 10px 0 0;
+  padding-top: 9px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  color: #7b879a;
+  border-top: 1px dashed #dfe7f3;
+  font-size: 8px;
+  line-height: 1.5;
+}
+.node-dependencies strong {
+  flex: 0 0 auto;
+  color: #65738a;
+}
+.node-dependencies span {
+  color: #33415a;
+  text-align: right;
+}
 .node-fields {
   display: grid;
+  margin: 12px 0 0;
   gap: 7px;
 }
 .node-fields > div {
   padding: 8px 9px;
   background: #f7f9fd;
+  border: 1px solid #e8edf6;
   border-radius: 8px;
 }
 .node-fields dt {
+  display: grid;
+  gap: 3px;
   color: #7b879a;
   font-size: 8px;
+}
+.node-fields dt span {
+  color: #65738a;
+  font-weight: 800;
+}
+.node-fields dt small {
+  color: #929db0;
+  font-size: 8px;
+  line-height: 1.45;
 }
 .node-fields dd {
   margin: 5px 0 0;
   overflow-wrap: anywhere;
+  white-space: normal;
   color: #33415a;
   font-size: 10px;
   font-weight: 700;
+  line-height: 1.55;
+}
+.node-fields dd.is-multiline {
+  max-height: 190px;
+  padding: 8px;
+  overflow: auto;
+  white-space: pre-wrap;
+  background: #fff;
+  border: 1px solid #e3e9f3;
+  border-radius: 7px;
+  font-weight: 600;
+}
+.node-detail-no-fields {
+  display: flex;
+  margin-top: 12px;
+  padding: 11px;
+  align-items: flex-start;
+  gap: 8px;
+  color: #6f7d92;
+  background: #f7f9fd;
+  border: 1px dashed #dbe4f1;
+  border-radius: 9px;
+  font-size: 9px;
+  line-height: 1.6;
+}
+.node-detail-no-fields svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: #7da4e8;
 }
 .node-warning {
   display: flex;
@@ -2324,6 +3243,12 @@ button:disabled {
   .effect-prompt-settings {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  .weight-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .quality-breakdown {
+    grid-template-columns: 1fr;
+  }
   .prompt-search {
     width: 100%;
   }
@@ -2367,6 +3292,15 @@ button:disabled {
   .effect-prompt-settings,
   .effect-prompt-stats {
     grid-template-columns: 1fr;
+  }
+  .weight-grid {
+    grid-template-columns: 1fr;
+  }
+  .fragment-filter {
+    width: 100%;
+  }
+  .fragment-filter select {
+    flex: 1;
   }
   .settings-heading {
     grid-column: 1;

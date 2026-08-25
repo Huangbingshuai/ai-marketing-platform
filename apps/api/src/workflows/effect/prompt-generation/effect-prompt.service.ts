@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type {
   EffectPromptBatchResult,
   EffectPromptDimensions,
+  EffectPromptFragmentType,
   EffectPromptItem,
   EffectPromptNodeExecution,
   EffectPromptNodeId,
@@ -19,6 +20,7 @@ import type {
 import {
   DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_DIMENSIONS,
+  EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_SCHEMA_VERSION,
@@ -38,6 +40,7 @@ import { workflowStateHash } from '../../../platform/workflow/workflow-state-has
 import { EffectPromptRepository, type EffectPromptRunRecord } from './effect-prompt.repository';
 import {
   dimensionDistance,
+  effectPromptExecutionIssues,
   isEffectPromptSettings,
   parseEffectPromptBatchResult,
   recomputePromptQuality,
@@ -48,6 +51,7 @@ import type {
   EffectPromptStageInput,
   EffectPromptInputSnapshot,
 } from './effect-prompt.types';
+import { projectEffectPromptNodeMetadata } from './effect-prompt-node-detail';
 
 const badRequest = (message: string) =>
   new ApiHttpException(message, HttpStatus.BAD_REQUEST, 'VALIDATION_ERROR');
@@ -109,6 +113,7 @@ const searchable = (item: EffectPromptItem, query: string): boolean => {
     item.code,
     item.content,
     item.fragmentType,
+    ...item.materialTags,
     ...EFFECT_PROMPT_DIMENSIONS.map(({ key }) => item.dimensions[key]),
   ].some((value) => value.toLocaleLowerCase('zh-CN').includes(target));
 };
@@ -360,21 +365,7 @@ export class EffectPromptService {
     const record = await this.repository.run(projectId, runId);
     if (!record) throw notFound('Prompt 任务不存在');
     const stage = record.stages.find(({ nodeId }) => nodeId === definition.id);
-    const metadata =
-      stage?.metadata && typeof stage.metadata === 'object' && !Array.isArray(stage.metadata)
-        ? (stage.metadata as Record<string, unknown>)
-        : {};
-    const fields = [
-      ['批次数量', metadata.batchSize],
-      ['已完成分片', metadata.completedShards],
-      ['分片总数', metadata.totalShards],
-      ['剔除数量', metadata.removedCount],
-      ['补齐轮次', metadata.replenishmentRound],
-    ]
-      .filter((entry): entry is [string, string | number] =>
-        ['string', 'number'].includes(typeof entry[1]),
-      )
-      .map(([label, value]) => ({ label, value }));
+    const fields = projectEffectPromptNodeMetadata(definition.id, stage?.metadata);
     return {
       detail: {
         nodeId: definition.id,
@@ -395,13 +386,18 @@ export class EffectPromptService {
     page: number,
     pageSize: number,
     query = '',
+    fragmentType?: EffectPromptFragmentType,
   ): Promise<GetEffectPromptResultData> {
     await this.requireWorkflow(projectId, workflowRunId);
     const record = await this.repository.latestResult(projectId, workflowRunId, productId);
     if (!record) throw notFound('Prompt 结果不存在');
+    if (record.schemaVersion !== EFFECT_PROMPT_SCHEMA_VERSION)
+      throw conflict('旧版 Prompt 结果不能继续使用，请执行全量重新生成');
     const draft = parseEffectPromptBatchResult(record.draftResult);
     if (!draft) throw conflict('Prompt 结果结构无效，请重新生成');
-    const filtered = draft.items.filter((item) => searchable(item, query));
+    const filtered = draft.items.filter(
+      (item) => (!fragmentType || item.fragmentType === fragmentType) && searchable(item, query),
+    );
     const offset = (page - 1) * pageSize;
     const summary = {
       schemaVersion: draft.schemaVersion,
@@ -424,13 +420,27 @@ export class EffectPromptService {
 
   private validItemInput(input: {
     content: string;
-    fragmentType: string;
+    fragmentType: EffectPromptFragmentType;
+    materialTags: string[];
+    targetDurationSeconds: number;
     dimensions: EffectPromptDimensions;
   }): boolean {
     return (
       input.content.trim().length > 0 &&
       input.content.length <= 12_000 &&
-      input.fragmentType.trim().length > 0 &&
+      EFFECT_PROMPT_FRAGMENT_TYPES.includes(input.fragmentType) &&
+      Array.isArray(input.materialTags) &&
+      input.materialTags.length > 0 &&
+      input.materialTags.length <= EFFECT_PROMPT_LIMITS.maxMaterialTags &&
+      input.materialTags.every(
+        (tag) => typeof tag === 'string' && tag.trim().length > 0 && tag.length <= 120,
+      ) &&
+      new Set(
+        input.materialTags.map((tag) => tag.normalize('NFC').trim().toLocaleLowerCase('zh-CN')),
+      ).size === input.materialTags.length &&
+      Number.isInteger(input.targetDurationSeconds) &&
+      input.targetDurationSeconds >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
+      input.targetDurationSeconds <= EFFECT_PROMPT_LIMITS.maxDurationSeconds &&
       validateDimensions(input.dimensions)
     );
   }
@@ -458,12 +468,28 @@ export class EffectPromptService {
     projectId: string,
     resultId: string,
     expectedRevision: number,
-    input: { content: string; fragmentType: string; dimensions: EffectPromptDimensions },
+    input: {
+      content: string;
+      fragmentType: EffectPromptFragmentType;
+      materialTags: string[];
+      targetDurationSeconds: number;
+      dimensions: EffectPromptDimensions;
+    },
   ): Promise<UpdateEffectPromptResultData> {
     await this.projects.get(projectId);
     if (!this.validItemInput(input)) throw badRequest('Prompt 内容或六维标签不完整');
     const current = await this.repository.result(projectId, resultId);
     if (!current) throw notFound('Prompt 结果不存在');
+    if (current.schemaVersion !== EFFECT_PROMPT_SCHEMA_VERSION)
+      throw conflict('旧版 Prompt 结果不能编辑，请执行全量重新生成');
+    const rawDraft =
+      current.draftResult &&
+      typeof current.draftResult === 'object' &&
+      !Array.isArray(current.draftResult)
+        ? (current.draftResult as Record<string, unknown>)
+        : null;
+    if (Array.isArray(rawDraft?.items) && rawDraft.items.length >= EFFECT_PROMPT_LIMITS.maxCount)
+      throw badRequest(`Prompt 数量已达到 ${EFFECT_PROMPT_LIMITS.maxCount} 条上限`);
     const parsed = parseEffectPromptBatchResult(current.draftResult);
     if (!parsed) throw conflict('Prompt 结果结构无效，请重新生成');
     const maxCode = parsed.items.reduce((maximum, item) => {
@@ -475,7 +501,9 @@ export class EffectPromptService {
       id: randomUUID(),
       code: `P${String(maxCode + 1).padStart(3, '0')}`,
       origin: 'MANUAL',
-      fragmentType: input.fragmentType.trim(),
+      fragmentType: input.fragmentType,
+      materialTags: input.materialTags.map((tag) => tag.normalize('NFC').trim()),
+      targetDurationSeconds: input.targetDurationSeconds,
       dimensions: Object.fromEntries(
         EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions[key].trim()]),
       ) as EffectPromptDimensions,
@@ -497,17 +525,29 @@ export class EffectPromptService {
     resultId: string,
     itemId: string,
     expectedRevision: number,
-    input: { content: string; fragmentType: string; dimensions: EffectPromptDimensions },
+    input: {
+      content: string;
+      fragmentType: EffectPromptFragmentType;
+      materialTags: string[];
+      targetDurationSeconds: number;
+      dimensions: EffectPromptDimensions;
+    },
   ): Promise<UpdateEffectPromptResultData> {
     await this.projects.get(projectId);
     if (!this.validItemInput(input)) throw badRequest('Prompt 内容或六维标签不完整');
+    const current = await this.repository.result(projectId, resultId);
+    if (!current) throw notFound('Prompt 结果不存在');
+    if (current.schemaVersion !== EFFECT_PROMPT_SCHEMA_VERSION)
+      throw conflict('旧版 Prompt 结果不能编辑，请执行全量重新生成');
     return this.presentMutation(
       await this.repository.mutateResult(projectId, resultId, expectedRevision, {
         kind: 'UPDATE',
         itemId,
         item: {
           content: input.content.trim(),
-          fragmentType: input.fragmentType.trim(),
+          fragmentType: input.fragmentType,
+          materialTags: input.materialTags.map((tag) => tag.normalize('NFC').trim()),
+          targetDurationSeconds: input.targetDurationSeconds,
           dimensions: Object.fromEntries(
             EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions[key].trim()]),
           ) as EffectPromptDimensions,
@@ -541,6 +581,20 @@ export class EffectPromptService {
     if (!record) throw notFound('Prompt 结果不存在');
     if (record.revision !== expectedRevision)
       throw conflict('Prompt 结果已被其他操作更新，请刷新后重试');
+    if (record.schemaVersion !== EFFECT_PROMPT_SCHEMA_VERSION)
+      return {
+        valid: false,
+        issues: [
+          {
+            code: 'LEGACY_SCHEMA',
+            message: '旧版 Prompt 不是片段素材指令，必须执行全量重新生成',
+          },
+        ],
+        productId: record.productId,
+        artifacts: [],
+        allProductsValidated: false,
+        validatedAt: new Date().toISOString(),
+      };
     const draft = parseEffectPromptBatchResult(record.draftResult);
     if (!draft)
       return {
@@ -559,6 +613,22 @@ export class EffectPromptService {
       issues.push({ code: 'SEMANTIC_DUPLICATE', message: '语义重复度超过设置上限' });
     if (verified.metrics.visualOverlapRate > verified.settings.visualLimit)
       issues.push({ code: 'VISUAL_OVERLAP', message: '视觉重合度超过设置上限' });
+    if (
+      verified.metrics.fragmentTypeDistribution.some(
+        ({ targetCount, actualCount }) => targetCount !== actualCount,
+      )
+    )
+      issues.push({ code: 'FRAGMENT_TYPE_DISTRIBUTION', message: '片段标签数量未达到设置权重' });
+    if (verified.metrics.sellingPointCoverage.missing.length)
+      issues.push({ code: 'SELLING_POINT_COVERAGE', message: '仍有必需卖点未被片段覆盖' });
+    if (
+      verified.items.some(
+        (item) =>
+          item.targetDurationSeconds !== verified.settings.durationSeconds ||
+          effectPromptExecutionIssues(item).length > 0,
+      )
+    )
+      issues.push({ code: 'EXECUTION_GATE', message: '存在不能直接用于片段渲染的 Prompt' });
     outer: for (let left = 0; left < verified.items.length; left += 1)
       for (let right = left + 1; right < verified.items.length; right += 1)
         if (dimensionDistance(verified.items[left]!, verified.items[right]!) < 3) {
@@ -648,6 +718,8 @@ export class EffectPromptService {
     await this.projects.get(projectId);
     const record = await this.repository.result(projectId, resultId);
     if (!record) throw notFound('Prompt 结果不存在');
+    if (record.schemaVersion !== EFFECT_PROMPT_SCHEMA_VERSION)
+      throw conflict('旧版 Prompt 结果不能导出，请执行全量重新生成');
     const draft = parseEffectPromptBatchResult(record.draftResult);
     if (!draft) throw conflict('Prompt 结果结构无效，请重新生成');
     return {

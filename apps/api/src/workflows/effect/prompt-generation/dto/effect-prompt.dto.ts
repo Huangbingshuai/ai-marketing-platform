@@ -2,13 +2,21 @@ import type {
   EffectPromptBatchResult,
   EffectPromptBatchSettings,
   EffectPromptDimensions,
+  EffectPromptFragmentType,
   EffectPromptOperation,
   EffectPromptStageStatus,
 } from '@ai-marketing/contracts';
-import { EFFECT_PROMPT_OPERATIONS, EFFECT_PROMPT_STAGE_STATUSES } from '@ai-marketing/contracts';
+import {
+  EFFECT_PROMPT_FRAGMENT_TYPES,
+  EFFECT_PROMPT_LIMITS,
+  EFFECT_PROMPT_OPERATIONS,
+  EFFECT_PROMPT_STAGE_STATUSES,
+} from '@ai-marketing/contracts';
 import { Type } from 'class-transformer';
 import {
   Allow,
+  ArrayMaxSize,
+  ArrayMinSize,
   IsArray,
   IsBoolean,
   IsIn,
@@ -30,6 +38,7 @@ export class PromptResultQueryDto {
   @Type(() => Number) @IsInt() @Min(1) page = 1;
   @Type(() => Number) @IsInt() @Min(1) @Max(100) pageSize = 10;
   @IsOptional() @IsString() @MaxLength(200) query?: string;
+  @IsOptional() @IsIn([...EFFECT_PROMPT_FRAGMENT_TYPES]) fragmentType?: EffectPromptFragmentType;
 }
 
 export class SavePromptSettingsDto {
@@ -48,7 +57,18 @@ export class StartPromptRunDto {
 }
 
 export class PromptItemDto {
-  @IsString() @MaxLength(120) fragmentType!: string;
+  @IsIn([...EFFECT_PROMPT_FRAGMENT_TYPES]) fragmentType!: EffectPromptFragmentType;
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(EFFECT_PROMPT_LIMITS.maxMaterialTags)
+  @IsString({ each: true })
+  @MaxLength(120, { each: true })
+  materialTags!: string[];
+  @Type(() => Number)
+  @IsInt()
+  @Min(EFFECT_PROMPT_LIMITS.minDurationSeconds)
+  @Max(EFFECT_PROMPT_LIMITS.maxDurationSeconds)
+  targetDurationSeconds!: number;
   @Allow() dimensions!: EffectPromptDimensions;
   @IsString() @MaxLength(12_000) content!: string;
   @Type(() => Number) @IsInt() @Min(1) expectedRevision!: number;

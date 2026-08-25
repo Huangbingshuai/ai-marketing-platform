@@ -24,13 +24,13 @@ const nodes = [
     label: 'Prompt',
     status: '就绪',
     title: 'Prompt 生成',
-    description: '通过多维正交组合生成高差异化视频描述',
+    description: '批量生成带用途标签的素材片段 Prompt，不生成完整成片脚本',
   },
   {
     label: '渲染',
     status: '就绪',
     title: '片段渲染',
-    description: '模拟批量生成带业务标签的视频分镜片段',
+    description: '每条 Prompt 渲染为一个可供混剪的视频素材片段',
   },
   {
     label: '混剪',

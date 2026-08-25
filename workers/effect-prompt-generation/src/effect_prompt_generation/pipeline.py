@@ -5,6 +5,7 @@ import math
 import re
 import unicodedata
 import uuid
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
@@ -12,13 +13,21 @@ from typing import Literal
 from pydantic import ValidationError
 
 from .api_client import InternalApi, InternalApiError
-from .combinations import make_shards, plan_combinations
+from .assembly import assemble_fragment_prompt
+from .combinations import (
+    fragment_type_deficits,
+    fragment_type_targets,
+    make_shards,
+    plan_combinations,
+)
 from .models import (
     DimensionPools,
     FailurePayload,
+    FragmentType,
     GeneratedCandidate,
     NodeId,
     PairViolation,
+    PlannedCombination,
     ProgressPayload,
     PromptBatchResult,
     PromptGenerationSnapshot,
@@ -32,7 +41,13 @@ from .models import (
     utc_now,
 )
 from .providers import AiProvider, ProviderError
-from .quality import EvaluationResult, evaluate_candidates, semantic_violations, visual_violations
+from .quality import (
+    EvaluationResult,
+    evaluate_candidates,
+    pair_rate,
+    semantic_violations,
+    visual_violations,
+)
 
 
 MAX_REPLENISHMENT_ROUNDS = 3
@@ -55,6 +70,9 @@ class RunCache:
     candidates: dict[str, GeneratedCandidate] = field(default_factory=dict)
     normalized_items: list[PromptItem] = field(default_factory=list)
     accepted_items: list[PromptItem] = field(default_factory=list)
+    ai_call_count: int = 0
+    total_shards: int = 0
+    execution_invalid_reasons: Counter[str] = field(default_factory=Counter)
 
 
 class PromptGenerationPipeline:
@@ -64,10 +82,12 @@ class PromptGenerationPipeline:
         api: InternalApi,
         provider: AiProvider,
         shard_size: int = 8,
+        max_ai_calls_per_run: int = 129,
     ) -> None:
         self.api = api
         self.provider = provider
         self.shard_size = shard_size
+        self.max_ai_calls_per_run = max_ai_calls_per_run
         self._snapshots: dict[str, PromptGenerationSnapshot] = {}
         self._runs: dict[str, RunCache] = {}
 
@@ -101,6 +121,9 @@ class PromptGenerationPipeline:
         candidates = [candidate for shard in succeeded for candidate in shard.items]
         unique_candidates = _unique_candidates(candidates)
         self._cache(context).candidates = {item.slot_id: item for item in unique_candidates}
+        self._cache(context).execution_invalid_reasons = Counter(
+            reason for item in unique_candidates for reason in item.execution_invalid_reasons
+        )
         loaded = LoadedRun(
             snapshot=snapshot,
             candidates=unique_candidates,
@@ -116,6 +139,26 @@ class PromptGenerationPipeline:
                 "batchSize": snapshot.settings.count,
                 "retainedCount": len(snapshot.retained_manual_items),
                 "resumedShardCount": len(succeeded),
+                "snapshotSummary": _short(
+                    " / ".join(
+                        filter(
+                            None,
+                            [
+                                _insight_text(
+                                    snapshot.insight_artifact.result,
+                                    "productName",
+                                    "product_name",
+                                )
+                                or "该产品",
+                                _insight_text(
+                                    snapshot.insight_artifact.result,
+                                    "productCategory",
+                                    "product_category",
+                                ),
+                            ],
+                        )
+                    )
+                ),
             },
         )
         await self.progress(context, 8, NodeId.LOAD_AND_SNAPSHOT)
@@ -126,6 +169,7 @@ class PromptGenerationPipeline:
     ) -> DimensionPools:
         await self._stage(context, NodeId.STRATEGY_PLANNING, StageStatus.RUNNING, "正在规划六维候选池")
         insight = self.snapshot(context).insight_artifact.result
+        self._reserve_ai_call(context)
         call = await self.provider.plan_strategy(insight, target_count=target_count)
         pools = call.value
         await self._stage(
@@ -140,6 +184,11 @@ class PromptGenerationPipeline:
                 "sellingPointCount": len(pools.selling_points),
                 "cameraCount": len(pools.cameras),
                 "emotionCount": len(pools.emotions),
+                "actionCount": len(pools.actions),
+                "evidencePlanCount": len(pools.evidence_plans),
+                "dimensionExample": _short(
+                    f"{pools.narratives[0]} / {pools.scenes[0]} / {pools.selling_points[0]}"
+                ),
             },
         )
         await self.progress(context, 15, NodeId.STRATEGY_PLANNING)
@@ -158,34 +207,67 @@ class PromptGenerationPipeline:
         node = NodeId.DIMENSION_COMBINATION if round_number == 0 else NodeId.REPLENISH
         await self._stage(context, node, StageStatus.RUNNING, "正在生成正交组合")
         requested = min(289, max(missing_count, math.ceil(missing_count * 1.25)))
+        settings = self.snapshot(context).settings
+        existing = self._cache(context).accepted_items or self.snapshot(context).retained_manual_items
+        actual_types = Counter(item.fragment_type for item in existing)
+        deficits = fragment_type_deficits(
+            settings.count,
+            actual_types,
+            settings.fragment_type_weights,
+        )
         combinations = plan_combinations(
             self._prioritized_pools(context, pools),
             count=requested,
             round_number=round_number,
             ordinal_start=ordinal_start,
+            target_duration_seconds=settings.duration_seconds,
+            fragment_type_weights=settings.fragment_type_weights,
+            selling_point_weights={
+                item.selling_point: item.weight for item in settings.selling_point_weights
+            }
+            or None,
+            fragment_deficits=deficits,
         )
         shards = make_shards(combinations, round_number=round_number, shard_size=self.shard_size)
-        pending = [item for item in shards if item.key not in set(completed_keys)]
+        all_pending = [item for item in shards if item.key not in set(completed_keys)]
+        remaining_calls = max(
+            0, self.max_ai_calls_per_run - self._cache(context).ai_call_count
+        )
+        pending = all_pending[:remaining_calls]
+        stage_metadata: dict[str, int | float | str | bool | None] = {
+            "replenishmentRound": round_number,
+            "plannedCandidateCount": len(combinations),
+            "pendingShardCount": len(pending),
+            "resumedShardCount": len(shards) - len(all_pending),
+            "combinationExample": _combination_example(
+                combinations[0] if combinations else None
+            ),
+        }
+        if node == NodeId.REPLENISH:
+            stage_metadata["missingCount"] = missing_count
         await self._stage(
             context,
             node,
             StageStatus.SUCCEEDED,
             "正交组合已生成" if round_number == 0 else f"第 {round_number} 轮补齐组合已生成",
-            metadata={
-                "replenishmentRound": round_number,
-                "plannedCandidateCount": len(combinations),
-                "pendingShardCount": len(pending),
-                "resumedShardCount": len(shards) - len(pending),
-            },
+            metadata=stage_metadata,
         )
         if round_number == 0:
+            self._cache(context).total_shards = (
+                len(pending) + len(shards) - len(all_pending)
+            )
             await self._stage(
                 context,
                 NodeId.CANDIDATE_GENERATION,
                 StageStatus.RUNNING,
                 "候选 Prompt 分片生成中",
-                metadata={"totalShards": len(shards), "completedShards": len(shards) - len(pending)},
+                metadata={
+                    "totalShards": self._cache(context).total_shards,
+                    "completedShards": len(shards) - len(all_pending),
+                },
             )
+        else:
+            self._cache(context).total_shards += len(pending)
         await self.progress(context, 22 if round_number == 0 else 78, node)
         return pending
 
@@ -201,26 +283,45 @@ class PromptGenerationPipeline:
         await self.api.put_shard(context, running)
         snapshot = self.snapshot(context)
         try:
+            self._reserve_ai_call(context)
             call = await self.provider.generate_candidates(
                 shard.combinations,
                 insight=snapshot.insight_artifact.result,
                 duration_seconds=snapshot.settings.duration_seconds,
+                style_override=snapshot.settings.style_override,
+                additional_disabled_elements=snapshot.settings.additional_disabled_elements,
             )
-            text_by_slot = {item.slot_id: item for item in call.value.items}
+            plan_by_slot = {item.slot_id: item for item in call.value.items}
+            insight = snapshot.insight_artifact.result
+            product_name = _insight_text(insight, "productName", "product_name") or "该产品"
+            aspect_ratio = _insight_text(insight, "aspectRatio", "aspect_ratio") or "以信息卡为准"
+            disabled_elements = _insight_list(
+                insight, "disabledElements", "disabled_elements"
+            ) + snapshot.settings.additional_disabled_elements
             generated_at = utc_now()
-            candidates = [
-                GeneratedCandidate(
+            candidates: list[GeneratedCandidate] = []
+            for plan in shard.combinations:
+                content, invalid_reasons = assemble_fragment_prompt(
+                    plan_by_slot[plan.slot_id].prompt_text,
+                    plan,
+                    product_name=product_name,
+                    aspect_ratio=aspect_ratio,
+                    disabled_elements=disabled_elements,
+                    source_facts=_source_fact_texts(insight),
+                )
+                candidates.append(GeneratedCandidate(
                     slot_id=plan.slot_id,
                     ordinal=plan.ordinal,
                     round=shard.round,
                     shard_index=shard.shard_index,
                     fragment_type=plan.fragment_type,
+                    material_tags=plan.material_tags,
+                    target_duration_seconds=plan.target_duration_seconds,
                     dimensions=plan.dimensions,
-                    content=text_by_slot[plan.slot_id].content,
+                    content=content,
+                    execution_invalid_reasons=invalid_reasons,
                     generated_at=generated_at,
-                )
-                for plan in shard.combinations
-            ]
+                ))
             await self.api.put_shard(
                 context,
                 running.model_copy(update={"status": StageStatus.SUCCEEDED, "items": candidates}),
@@ -228,6 +329,7 @@ class PromptGenerationPipeline:
             cache = self._cache(context)
             for candidate in candidates:
                 cache.candidates[candidate.slot_id] = candidate
+                cache.execution_invalid_reasons.update(candidate.execution_invalid_reasons)
             return candidates
         except Exception as exc:
             await self.api.put_shard(
@@ -245,13 +347,19 @@ class PromptGenerationPipeline:
 
     async def normalize(self, context: RuntimeContext) -> list[PromptItem]:
         await self._stage(context, NodeId.NORMALIZATION, StageStatus.RUNNING, "正在标准化候选 Prompt")
-        unique = _unique_candidates(list(self._cache(context).candidates.values()))
+        unique = [
+            item
+            for item in _unique_candidates(list(self._cache(context).candidates.values()))
+            if not item.execution_invalid_reasons
+        ]
         items = [
             PromptItem(
                 id=_stable_item_id(context.source_fingerprint, candidate.slot_id),
                 code=f"P{candidate.ordinal:03d}",
                 origin="AI",
                 fragment_type=candidate.fragment_type,
+                material_tags=candidate.material_tags,
+                target_duration_seconds=candidate.target_duration_seconds,
                 dimensions=candidate.dimensions,
                 content=candidate.content,
                 manual_edited=False,
@@ -266,14 +374,25 @@ class PromptGenerationPipeline:
             NodeId.CANDIDATE_GENERATION,
             StageStatus.SUCCEEDED,
             "候选 Prompt 分片生成完成",
-            metadata={"completedShards": len({(item.round, item.shard_index) for item in unique})},
+            metadata={
+                "totalShards": self._cache(context).total_shards,
+                "completedShards": len({(item.round, item.shard_index) for item in unique}),
+                "candidateCount": len(unique),
+                "candidateExample": _short(unique[0].content if unique else "暂无可执行素材片段 Prompt"),
+            },
         )
         await self._stage(
             context,
             NodeId.NORMALIZATION,
             StageStatus.SUCCEEDED,
             "候选 Prompt 标准化完成",
-            metadata={"candidateCount": len(items)},
+            metadata={
+                "candidateCount": len(items),
+                "normalizedFieldCount": 11,
+                "structureExample": _short(
+                    "单一场景 + 单一连续动作 + 可见主体/产品 + 镜头/光线/节奏 + 结束状态"
+                ),
+            },
         )
         await self.progress(context, 55, NodeId.NORMALIZATION)
         return items
@@ -282,12 +401,17 @@ class PromptGenerationPipeline:
         await self._stage(context, NodeId.SEMANTIC_DEDUP, StageStatus.RUNNING, "正在计算语义重复代理指标")
         items = self.snapshot(context).retained_manual_items + self._cache(context).normalized_items
         pairs = semantic_violations(items)
+        compared_pairs = len(items) * (len(items) - 1) // 2
         await self._stage(
             context,
             NodeId.SEMANTIC_DEDUP,
             StageStatus.SUCCEEDED,
             "语义重复代理校验完成",
-            metadata={"violatingPairCount": len(pairs)},
+            metadata={
+                "violatingPairCount": len(pairs),
+                "comparedPairCount": compared_pairs,
+                "semanticDuplicateRate": pair_rate(len(pairs), len(items)),
+            },
         )
         return pairs
 
@@ -295,12 +419,17 @@ class PromptGenerationPipeline:
         await self._stage(context, NodeId.VISUAL_DEDUP, StageStatus.RUNNING, "正在计算视觉结构重合代理指标")
         items = self.snapshot(context).retained_manual_items + self._cache(context).normalized_items
         pairs = visual_violations(items)
+        compared_pairs = len(items) * (len(items) - 1) // 2
         await self._stage(
             context,
             NodeId.VISUAL_DEDUP,
             StageStatus.SUCCEEDED,
             "视觉结构重合代理校验完成",
-            metadata={"violatingPairCount": len(pairs)},
+            metadata={
+                "violatingPairCount": len(pairs),
+                "comparedPairCount": compared_pairs,
+                "visualOverlapRate": pair_rate(len(pairs), len(items)),
+            },
         )
         return pairs
 
@@ -321,6 +450,18 @@ class PromptGenerationPipeline:
             round_number=round_number,
             required_selling_points=_core_selling_points(
                 self.snapshot(context).insight_artifact.result
+            ),
+            fragment_type_targets=fragment_type_targets(
+                settings.count,
+                settings.fragment_type_weights,
+            ),
+            generated_candidate_count=len(self._cache(context).candidates),
+            removed_execution_invalid=sum(
+                bool(item.execution_invalid_reasons)
+                for item in self._cache(context).candidates.values()
+            ),
+            execution_invalid_reasons=dict(
+                self._cache(context).execution_invalid_reasons
             ),
         )
         self._cache(context).accepted_items = evaluation.items
@@ -345,8 +486,10 @@ class PromptGenerationPipeline:
                     evaluation.metrics.removed_semantic_duplicates
                     + evaluation.metrics.removed_visual_duplicates
                     + evaluation.metrics.removed_dimension_conflicts
+                    + evaluation.metrics.removed_execution_invalid
                 ),
                 "replenishmentRound": round_number,
+                "qualityStatus": evaluation.quality_status,
             },
         )
         await self.progress(context, 72, NodeId.QUALITY_GATE)
@@ -358,7 +501,6 @@ class PromptGenerationPipeline:
         *,
         metrics: PromptMetrics,
     ) -> str:
-        await self._stage(context, NodeId.RESULT_SAVE, StageStatus.RUNNING, "正在保存权威 Prompt 草稿")
         items = self._cache(context).accepted_items
         retained_ids = {item.id for item in self.snapshot(context).retained_manual_items}
         generated_only = [item for item in items if item.id not in retained_ids]
@@ -371,12 +513,30 @@ class PromptGenerationPipeline:
             len(items) == settings.count
             and metrics.semantic_duplicate_rate <= settings.semantic_limit
             and metrics.visual_overlap_rate <= settings.visual_limit
+            and all(
+                item.actual_count == item.target_count
+                for item in metrics.fragment_type_distribution
+            )
+            and not metrics.selling_point_coverage.missing
         ) else "NEEDS_REVIEW"
         result = PromptBatchResult(
             settings=settings,
             items=renumbered,
             metrics=metrics.model_copy(update={"accepted_count": len(renumbered)}),
             quality_status=quality_status if len(renumbered) == settings.count else "NEEDS_REVIEW",
+        )
+        await self._stage(
+            context,
+            NodeId.RESULT_SAVE,
+            StageStatus.RUNNING,
+            "正在保存权威 Prompt 草稿",
+            metadata={
+                "batchSize": len(items),
+                "qualityStatus": result.quality_status,
+                "saveSummary": _short(
+                    f"已准备保存 {len(items)} 条方案，质量状态 {result.quality_status}"
+                ),
+            },
         )
         return await self.api.complete(context, result)
 
@@ -385,6 +545,12 @@ class PromptGenerationPipeline:
             (item.ordinal for item in self._cache(context).candidates.values()),
             default=len(self.snapshot(context).retained_manual_items),
         ) + 1
+
+    def _reserve_ai_call(self, context: RuntimeContext) -> None:
+        cache = self._cache(context)
+        if cache.ai_call_count >= self.max_ai_calls_per_run:
+            raise PipelineError("Prompt 子工作流 AI 调用次数超过安全上限")
+        cache.ai_call_count += 1
 
     def _prioritized_pools(
         self, context: RuntimeContext, pools: DimensionPools
@@ -493,3 +659,48 @@ def _core_selling_points(insight: Mapping[str, object]) -> list[str]:
 
 def _normalized(value: str) -> str:
     return re.sub(r"\s+", " ", unicodedata.normalize("NFC", value).strip().casefold())
+
+
+def _insight_text(insight: Mapping[str, object], *keys: str) -> str | None:
+    for key in keys:
+        value = insight.get(key)
+        if isinstance(value, str) and (cleaned := " ".join(value.split())):
+            return cleaned
+    return None
+
+
+def _insight_list(insight: Mapping[str, object], *keys: str) -> list[str]:
+    result: list[str] = []
+    for key in keys:
+        value = insight.get(key)
+        if isinstance(value, list):
+            result.extend(
+                cleaned
+                for item in value
+                if isinstance(item, str) and (cleaned := " ".join(item.split()))
+            )
+    return list(dict.fromkeys(result))
+
+
+def _source_fact_texts(insight: Mapping[str, object]) -> list[str]:
+    result: list[str] = []
+    for value in insight.values():
+        if isinstance(value, (str, int, float, bool)):
+            result.append(str(value))
+        elif isinstance(value, list):
+            result.extend(str(item) for item in value if isinstance(item, (str, int, float, bool)))
+    return result
+
+
+def _short(value: str, limit: int = 180) -> str:
+    return " ".join(value.split())[:limit]
+
+
+def _combination_example(value: PlannedCombination | None) -> str:
+    if value is None:
+        return "暂无组合"
+    dims = value.dimensions
+    return _short(
+        f"{dims.narrative} / {dims.scene} / {dims.persona} / {dims.selling_point} / "
+        f"{dims.camera} / {dims.emotion}"
+    )

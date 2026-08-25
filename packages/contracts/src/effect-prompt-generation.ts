@@ -1,6 +1,6 @@
 import type { WorkingArtifactCommitStatus, WorkingArtifactCommitSummary } from './workflow-working';
 
-export const EFFECT_PROMPT_SCHEMA_VERSION = 1 as const;
+export const EFFECT_PROMPT_SCHEMA_VERSION = 2 as const;
 export const EFFECT_PROMPT_API_BASE =
   '/api/projects/:projectId/workflows/effect/prompt-generation' as const;
 
@@ -8,8 +8,9 @@ export const EFFECT_PROMPT_LIMITS = {
   minCount: 10,
   maxCount: 200,
   defaultCount: 50,
-  minDurationSeconds: 10,
-  maxDurationSeconds: 120,
+  minDurationSeconds: 3,
+  maxDurationSeconds: 10,
+  defaultDurationSeconds: 5,
   minSemanticDuplicateRate: 5,
   maxSemanticDuplicateRate: 15,
   defaultSemanticDuplicateRate: 15,
@@ -19,6 +20,10 @@ export const EFFECT_PROMPT_LIMITS = {
   pageSize: 10,
   maxReplenishmentRounds: 3,
   shardSize: 8,
+  maxMaterialTags: 12,
+  maxStyleOverrideLength: 200,
+  maxSellingPointWeights: 50,
+  maxAdditionalDisabledElements: 30,
 } as const;
 
 export const EFFECT_PROMPT_DIMENSIONS = [
@@ -33,18 +38,64 @@ export type EffectPromptDimensionKey = (typeof EFFECT_PROMPT_DIMENSIONS)[number]
 
 export type EffectPromptDimensions = Record<EffectPromptDimensionKey, string>;
 
+export const EFFECT_PROMPT_FRAGMENT_TYPES = [
+  'HOOK',
+  'PAIN',
+  'PRODUCT_DISPLAY',
+  'EFFECT_DEMONSTRATION',
+  'SELLING_POINT_EXPLANATION',
+  'CTA',
+  'OUTRO',
+] as const;
+export type EffectPromptFragmentType = (typeof EFFECT_PROMPT_FRAGMENT_TYPES)[number];
+
+export const EFFECT_PROMPT_FRAGMENT_TYPE_LABELS: Record<EffectPromptFragmentType, string> = {
+  HOOK: '钩子片段',
+  PAIN: '痛点片段',
+  PRODUCT_DISPLAY: '产品展示片段',
+  EFFECT_DEMONSTRATION: '效果展示片段',
+  SELLING_POINT_EXPLANATION: '卖点讲解片段',
+  CTA: '结尾转化片段',
+  OUTRO: '片尾品牌片段',
+};
+
+export type EffectPromptSellingPointWeight = {
+  sellingPoint: string;
+  weight: number;
+};
+
+export type EffectPromptFragmentTypeWeights = Record<EffectPromptFragmentType, number>;
+
+export const DEFAULT_EFFECT_PROMPT_FRAGMENT_TYPE_WEIGHTS: EffectPromptFragmentTypeWeights = {
+  HOOK: 16,
+  PAIN: 14,
+  PRODUCT_DISPLAY: 18,
+  EFFECT_DEMONSTRATION: 18,
+  SELLING_POINT_EXPLANATION: 16,
+  CTA: 10,
+  OUTRO: 8,
+};
+
 export type EffectPromptBatchSettings = {
   count: number;
   durationSeconds: number;
   semanticLimit: number;
   visualLimit: number;
+  styleOverride: string | null;
+  fragmentTypeWeights: EffectPromptFragmentTypeWeights;
+  sellingPointWeights: EffectPromptSellingPointWeight[];
+  additionalDisabledElements: string[];
 };
 
 export const DEFAULT_EFFECT_PROMPT_SETTINGS: EffectPromptBatchSettings = {
   count: EFFECT_PROMPT_LIMITS.defaultCount,
-  durationSeconds: 15,
+  durationSeconds: EFFECT_PROMPT_LIMITS.defaultDurationSeconds,
   semanticLimit: EFFECT_PROMPT_LIMITS.defaultSemanticDuplicateRate,
   visualLimit: EFFECT_PROMPT_LIMITS.defaultVisualOverlapRate,
+  styleOverride: null,
+  fragmentTypeWeights: { ...DEFAULT_EFFECT_PROMPT_FRAGMENT_TYPE_WEIGHTS },
+  sellingPointWeights: [],
+  additionalDisabledElements: [],
 };
 
 export const EFFECT_PROMPT_ITEM_ORIGINS = ['AI', 'MANUAL'] as const;
@@ -54,7 +105,9 @@ export type EffectPromptItem = {
   id: string;
   code: string;
   origin: EffectPromptItemOrigin;
-  fragmentType: string;
+  fragmentType: EffectPromptFragmentType;
+  materialTags: string[];
+  targetDurationSeconds: number;
   dimensions: EffectPromptDimensions;
   content: string;
   manualEdited: boolean;
@@ -72,6 +125,18 @@ export type EffectPromptMetrics = {
   semanticDuplicateRate: number;
   visualOverlapRate: number;
   replenishmentRounds: number;
+  fragmentTypeDistribution: Array<{
+    fragmentType: EffectPromptFragmentType;
+    targetCount: number;
+    actualCount: number;
+  }>;
+  sellingPointCoverage: {
+    required: string[];
+    covered: string[];
+    missing: string[];
+  };
+  removedExecutionInvalid: number;
+  executionInvalidReasons: Array<{ code: string; count: number }>;
 };
 
 export const EFFECT_PROMPT_QUALITY_STATUSES = ['PASS', 'NEEDS_REVIEW'] as const;
@@ -86,7 +151,13 @@ export type EffectPromptBatchResult = {
 };
 
 export type EffectPromptManualOverrides = {
-  edited: Record<string, Pick<EffectPromptItem, 'content' | 'fragmentType' | 'dimensions'>>;
+  edited: Record<
+    string,
+    Pick<
+      EffectPromptItem,
+      'content' | 'fragmentType' | 'materialTags' | 'targetDurationSeconds' | 'dimensions'
+    >
+  >;
   added: EffectPromptItem[];
   deleted: string[];
 };
@@ -199,6 +270,14 @@ export type GetEffectPromptResultData = {
   pageSize: number;
 };
 
+export type GetEffectPromptResultQuery = {
+  workflowRunId: string;
+  page?: number | undefined;
+  pageSize?: number | undefined;
+  query?: string | undefined;
+  fragmentType?: EffectPromptFragmentType | undefined;
+};
+
 export type StartEffectPromptRunRequest = {
   workflowRunId: string;
   operation: EffectPromptOperation;
@@ -222,12 +301,17 @@ export type SaveEffectPromptSettingsData = {
   unchanged: boolean;
 };
 export type GetEffectPromptRunData = { run: EffectPromptRun };
+export type EffectPromptNodeDetailField = {
+  label: string;
+  value: string | number;
+  description?: string | undefined;
+};
 export type GetEffectPromptNodeDetailData = {
   detail: {
     nodeId: EffectPromptNodeId;
     status: EffectPromptStageStatus;
     summary: string;
-    fields: Array<{ label: string; value: string | number }>;
+    fields: EffectPromptNodeDetailField[];
     warnings: string[];
     errorMessage: string | null;
     updatedAt: string | null;
@@ -236,7 +320,7 @@ export type GetEffectPromptNodeDetailData = {
 
 export type UpsertEffectPromptItemRequest = Pick<
   EffectPromptItem,
-  'content' | 'fragmentType' | 'dimensions'
+  'content' | 'fragmentType' | 'materialTags' | 'targetDurationSeconds' | 'dimensions'
 > & { expectedRevision: number };
 
 export type UpdateEffectPromptResultData = {
@@ -261,23 +345,142 @@ export type ValidateEffectPromptResultData = {
 export const effectPromptSettingsNodeId = (productId: string): string =>
   `PROMPT_GENERATION:${productId}`;
 
+const normalizedStringList = (values: readonly string[], maximum: number): string[] => {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of values) {
+    const value = raw.normalize('NFC').trim().replace(/\s+/gu, ' ');
+    const key = value.toLocaleLowerCase('zh-CN');
+    if (!value || seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+    if (result.length >= maximum) break;
+  }
+  return result;
+};
+
+export const effectPromptFragmentTypeTargetCounts = (
+  settings: Pick<EffectPromptBatchSettings, 'count' | 'fragmentTypeWeights'>,
+): Record<EffectPromptFragmentType, number> => {
+  const positiveTypes = EFFECT_PROMPT_FRAGMENT_TYPES.filter(
+    (fragmentType) => settings.fragmentTypeWeights[fragmentType] > 0,
+  );
+  const result = Object.fromEntries(
+    EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => [fragmentType, 0]),
+  ) as Record<EffectPromptFragmentType, number>;
+  let remaining = Math.max(0, Math.round(settings.count));
+  if (remaining >= positiveTypes.length) {
+    for (const fragmentType of positiveTypes) result[fragmentType] = 1;
+    remaining -= positiveTypes.length;
+  }
+  const weighted = positiveTypes.map((fragmentType, order) => {
+    const exact = (remaining * settings.fragmentTypeWeights[fragmentType]) / 100;
+    const base = Math.floor(exact);
+    result[fragmentType] += base;
+    return { fragmentType, order, remainder: exact - base };
+  });
+  let unallocated = Math.max(
+    0,
+    Math.round(settings.count) -
+      EFFECT_PROMPT_FRAGMENT_TYPES.reduce((sum, fragmentType) => sum + result[fragmentType], 0),
+  );
+  weighted
+    .sort((left, right) => right.remainder - left.remainder || left.order - right.order)
+    .forEach(({ fragmentType }) => {
+      if (unallocated <= 0) return;
+      result[fragmentType] += 1;
+      unallocated -= 1;
+    });
+  return result;
+};
+
 export const normalizeEffectPromptSettings = (
   input: EffectPromptBatchSettings,
-): EffectPromptBatchSettings => ({
-  count: Math.min(
-    EFFECT_PROMPT_LIMITS.maxCount,
-    Math.max(EFFECT_PROMPT_LIMITS.minCount, Math.round(input.count)),
-  ),
-  durationSeconds: Math.min(
-    EFFECT_PROMPT_LIMITS.maxDurationSeconds,
-    Math.max(EFFECT_PROMPT_LIMITS.minDurationSeconds, Math.round(input.durationSeconds)),
-  ),
-  semanticLimit: Math.min(
-    EFFECT_PROMPT_LIMITS.maxSemanticDuplicateRate,
-    Math.max(EFFECT_PROMPT_LIMITS.minSemanticDuplicateRate, Math.round(input.semanticLimit)),
-  ),
-  visualLimit: Math.min(
-    EFFECT_PROMPT_LIMITS.maxVisualOverlapRate,
-    Math.max(EFFECT_PROMPT_LIMITS.minVisualOverlapRate, Math.round(input.visualLimit)),
-  ),
-});
+): EffectPromptBatchSettings => {
+  const source = input as Partial<EffectPromptBatchSettings>;
+  const sourceFragmentTypeWeights =
+    source.fragmentTypeWeights && typeof source.fragmentTypeWeights === 'object'
+      ? source.fragmentTypeWeights
+      : DEFAULT_EFFECT_PROMPT_FRAGMENT_TYPE_WEIGHTS;
+  const fragmentTypeWeights = Object.fromEntries(
+    EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => [
+      fragmentType,
+      Math.min(
+        100,
+        Math.max(
+          0,
+          Math.round(
+            sourceFragmentTypeWeights[fragmentType] ??
+              DEFAULT_EFFECT_PROMPT_FRAGMENT_TYPE_WEIGHTS[fragmentType],
+          ),
+        ),
+      ),
+    ]),
+  ) as EffectPromptFragmentTypeWeights;
+  const weightTotal = EFFECT_PROMPT_FRAGMENT_TYPES.reduce(
+    (sum, fragmentType) => sum + fragmentTypeWeights[fragmentType],
+    0,
+  );
+  const sellingPointWeights = (
+    Array.isArray(source.sellingPointWeights) ? source.sellingPointWeights : []
+  )
+    .map(({ sellingPoint, weight }) => ({
+      sellingPoint: sellingPoint.normalize('NFC').trim().replace(/\s+/gu, ' '),
+      weight: Math.min(100, Math.max(1, Math.round(weight))),
+    }))
+    .filter(
+      ({ sellingPoint }, index, items) =>
+        Boolean(sellingPoint) &&
+        items.findIndex(
+          (item) =>
+            item.sellingPoint.toLocaleLowerCase('zh-CN') ===
+            sellingPoint.toLocaleLowerCase('zh-CN'),
+        ) === index,
+    )
+    .slice(0, EFFECT_PROMPT_LIMITS.maxSellingPointWeights);
+  return {
+    count: Math.min(
+      EFFECT_PROMPT_LIMITS.maxCount,
+      Math.max(
+        EFFECT_PROMPT_LIMITS.minCount,
+        Math.round(source.count ?? DEFAULT_EFFECT_PROMPT_SETTINGS.count),
+      ),
+    ),
+    durationSeconds: Math.min(
+      EFFECT_PROMPT_LIMITS.maxDurationSeconds,
+      Math.max(
+        EFFECT_PROMPT_LIMITS.minDurationSeconds,
+        Math.round(source.durationSeconds ?? DEFAULT_EFFECT_PROMPT_SETTINGS.durationSeconds),
+      ),
+    ),
+    semanticLimit: Math.min(
+      EFFECT_PROMPT_LIMITS.maxSemanticDuplicateRate,
+      Math.max(
+        EFFECT_PROMPT_LIMITS.minSemanticDuplicateRate,
+        Math.round(source.semanticLimit ?? DEFAULT_EFFECT_PROMPT_SETTINGS.semanticLimit),
+      ),
+    ),
+    visualLimit: Math.min(
+      EFFECT_PROMPT_LIMITS.maxVisualOverlapRate,
+      Math.max(
+        EFFECT_PROMPT_LIMITS.minVisualOverlapRate,
+        Math.round(source.visualLimit ?? DEFAULT_EFFECT_PROMPT_SETTINGS.visualLimit),
+      ),
+    ),
+    styleOverride:
+      source.styleOverride
+        ?.normalize('NFC')
+        .trim()
+        .replace(/\s+/gu, ' ')
+        .slice(0, EFFECT_PROMPT_LIMITS.maxStyleOverrideLength) || null,
+    fragmentTypeWeights:
+      weightTotal === 100
+        ? fragmentTypeWeights
+        : { ...DEFAULT_EFFECT_PROMPT_FRAGMENT_TYPE_WEIGHTS },
+    sellingPointWeights,
+    additionalDisabledElements: normalizedStringList(
+      Array.isArray(source.additionalDisabledElements) ? source.additionalDisabledElements : [],
+      EFFECT_PROMPT_LIMITS.maxAdditionalDisabledElements,
+    ),
+  };
+};

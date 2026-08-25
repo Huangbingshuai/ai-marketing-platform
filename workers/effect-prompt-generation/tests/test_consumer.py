@@ -108,7 +108,7 @@ async def test_runtime_validation_error_is_persisted_as_safe_failure_and_cache_i
     message = FakeMessage(
         json.dumps(
             {
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "runId": "run-1",
                 "projectId": snapshot.project_id,
                 "requestId": "request-1",

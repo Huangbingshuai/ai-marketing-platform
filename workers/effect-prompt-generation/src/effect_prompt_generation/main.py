@@ -18,7 +18,11 @@ def _provider(settings: WorkerSettings) -> AiProvider:
     return ArkResponsesProvider(
         base_url=settings.ark_base_url,
         api_key=settings.ark_api_key.get_secret_value(),
-        model=settings.resolved_prompt_model,
+        strategy_model=settings.resolved_prompt_strategy_model,
+        candidate_model=settings.resolved_prompt_candidate_model,
+        strategy_max_output_tokens=settings.ark_prompt_strategy_max_output_tokens,
+        candidate_max_output_tokens=settings.ark_prompt_candidate_max_output_tokens,
+        reasoning_effort=settings.ark_prompt_reasoning_effort,
         timeout=settings.ark_timeout_seconds,
     )
 
@@ -34,6 +38,7 @@ async def serve(settings: WorkerSettings) -> None:
         api=api,
         provider=provider,
         shard_size=settings.prompt_shard_size,
+        max_ai_calls_per_run=settings.prompt_max_ai_calls_per_run,
     )
     consumer = PromptGenerationConsumer(
         rabbitmq_url=settings.rabbitmq_url.get_secret_value(),

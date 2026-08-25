@@ -60,17 +60,10 @@ class RuntimeContext:
 
 
 class PromptGenerationRequest(ApiModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     run_id: str
     project_id: str
     request_id: str
-
-
-class PromptBatchSettings(ApiModel):
-    count: int = Field(ge=10, le=200)
-    duration_seconds: int = Field(ge=10, le=120)
-    semantic_limit: int = Field(ge=5, le=15)
-    visual_limit: int = Field(ge=10, le=20)
 
 
 class PromptDimensions(ApiModel):
@@ -90,24 +83,110 @@ class PromptDimensions(ApiModel):
         return cleaned
 
 
+class FragmentType(StrEnum):
+    HOOK = "HOOK"
+    PAIN = "PAIN"
+    PRODUCT_DISPLAY = "PRODUCT_DISPLAY"
+    EFFECT_DEMONSTRATION = "EFFECT_DEMONSTRATION"
+    SELLING_POINT_EXPLANATION = "SELLING_POINT_EXPLANATION"
+    CTA = "CTA"
+    OUTRO = "OUTRO"
+
+
+FRAGMENT_TYPE_LABELS: dict[FragmentType, str] = {
+    FragmentType.HOOK: "钩子片段",
+    FragmentType.PAIN: "痛点片段",
+    FragmentType.PRODUCT_DISPLAY: "产品展示片段",
+    FragmentType.EFFECT_DEMONSTRATION: "效果展示片段",
+    FragmentType.SELLING_POINT_EXPLANATION: "卖点讲解片段",
+    FragmentType.CTA: "结尾转化片段",
+    FragmentType.OUTRO: "片尾品牌片段",
+}
+
+FRAGMENT_TYPE_WEIGHTS: dict[FragmentType, int] = {
+    FragmentType.HOOK: 16,
+    FragmentType.PAIN: 14,
+    FragmentType.PRODUCT_DISPLAY: 18,
+    FragmentType.EFFECT_DEMONSTRATION: 18,
+    FragmentType.SELLING_POINT_EXPLANATION: 16,
+    FragmentType.CTA: 10,
+    FragmentType.OUTRO: 8,
+}
+
+
+class EvidenceMode(StrEnum):
+    VISIBLE_ATTRIBUTE = "VISIBLE_ATTRIBUTE"
+    USAGE_ACTION = "USAGE_ACTION"
+    VISIBLE_RESULT = "VISIBLE_RESULT"
+    PROCESS_ONLY = "PROCESS_ONLY"
+    TEXT_ONLY = "TEXT_ONLY"
+
+
+class SellingPointWeight(ApiModel):
+    selling_point: str = Field(min_length=1, max_length=240)
+    weight: int = Field(ge=0, le=100)
+
+
+class PromptBatchSettings(ApiModel):
+    count: int = Field(ge=10, le=200)
+    duration_seconds: int = Field(ge=3, le=10)
+    semantic_limit: int = Field(ge=5, le=15)
+    visual_limit: int = Field(ge=10, le=20)
+    style_override: str | None
+    fragment_type_weights: dict[FragmentType, int]
+    selling_point_weights: list[SellingPointWeight] = Field(max_length=12)
+    additional_disabled_elements: list[str] = Field(max_length=50)
+
+    @model_validator(mode="after")
+    def selling_point_weights_total(self) -> PromptBatchSettings:
+        if set(self.fragment_type_weights) != set(FragmentType):
+            raise ValueError("fragmentTypeWeights must contain every fragment type")
+        if any(weight < 0 or weight > 100 for weight in self.fragment_type_weights.values()):
+            raise ValueError("fragmentTypeWeights values must be between 0 and 100")
+        if sum(self.fragment_type_weights.values()) != 100:
+            raise ValueError("fragmentTypeWeights must sum to 100")
+        if self.selling_point_weights and sum(item.weight for item in self.selling_point_weights) != 100:
+            raise ValueError("sellingPointWeights must be empty or sum to 100")
+        return self
+
+
 class PromptItem(ApiModel):
     id: str = Field(min_length=1, max_length=160)
     code: str = Field(min_length=1, max_length=40)
     origin: Literal["AI", "MANUAL"]
-    fragment_type: str = Field(min_length=1, max_length=120)
+    fragment_type: FragmentType
+    material_tags: list[str] = Field(min_length=1, max_length=12)
+    target_duration_seconds: int = Field(ge=3, le=10)
     dimensions: PromptDimensions
     content: str = Field(min_length=1, max_length=12_000)
     manual_edited: bool
     created_at: datetime
     updated_at: datetime
 
-    @field_validator("fragment_type", "content")
+    @field_validator("content")
     @classmethod
     def clean_text(cls, value: str) -> str:
         cleaned = "\n".join(line.rstrip() for line in value.strip().splitlines()).strip()
         if not cleaned:
             raise ValueError("text cannot be blank")
         return cleaned
+
+
+class FragmentTypeDistribution(ApiModel):
+    fragment_type: FragmentType
+    target_count: int = Field(ge=0, le=200)
+    actual_count: int = Field(ge=0, le=200)
+
+
+class SellingPointCoverage(ApiModel):
+    required: list[str] = Field(default_factory=list)
+    covered: list[str] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list)
+
+
+class ExecutionInvalidReason(ApiModel):
+    code: str = Field(min_length=1, max_length=120)
+    count: int = Field(ge=1, le=200)
 
 
 class PromptMetrics(ApiModel):
@@ -117,13 +196,17 @@ class PromptMetrics(ApiModel):
     removed_semantic_duplicates: int = Field(ge=0)
     removed_visual_duplicates: int = Field(ge=0)
     removed_dimension_conflicts: int = Field(ge=0)
+    removed_execution_invalid: int = Field(ge=0)
+    execution_invalid_reasons: list[ExecutionInvalidReason] = Field(default_factory=list)
     semantic_duplicate_rate: float = Field(ge=0, le=100)
     visual_overlap_rate: float = Field(ge=0, le=100)
     replenishment_rounds: int = Field(ge=0, le=3)
+    fragment_type_distribution: list[FragmentTypeDistribution] = Field(min_length=7, max_length=7)
+    selling_point_coverage: SellingPointCoverage
 
 
 class PromptBatchResult(ApiModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     settings: PromptBatchSettings
     items: list[PromptItem] = Field(max_length=200)
     metrics: PromptMetrics
@@ -146,7 +229,7 @@ class InsightArtifact(ApiModel):
 
 
 class PromptGenerationSnapshot(ApiModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     project_id: str
     workflow_run_id: str
     product_id: str
@@ -206,6 +289,13 @@ class StageOutput(ApiModel):
     metadata: dict[str, int | float | str | bool | None] = Field(default_factory=dict)
 
 
+class SellingPointEvidence(ApiModel):
+    selling_point: str = Field(min_length=1, max_length=240)
+    evidence_mode: EvidenceMode
+    allowed_visual_evidence: str = Field(min_length=1, max_length=400)
+    forbidden_inference: str = Field(min_length=1, max_length=400)
+
+
 class DimensionPools(ApiModel):
     narratives: list[str] = Field(min_length=1, max_length=24)
     scenes: list[str] = Field(min_length=1, max_length=24)
@@ -213,10 +303,11 @@ class DimensionPools(ApiModel):
     selling_points: list[str] = Field(min_length=1, max_length=12)
     cameras: list[str] = Field(min_length=1, max_length=24)
     emotions: list[str] = Field(min_length=1, max_length=24)
-    fragment_types: list[str] = Field(min_length=1, max_length=12)
+    actions: list[str] = Field(min_length=1, max_length=24)
+    evidence_plans: list[SellingPointEvidence] = Field(min_length=1, max_length=12)
 
     @field_validator(
-        "narratives", "scenes", "personas", "selling_points", "cameras", "emotions", "fragment_types"
+        "narratives", "scenes", "personas", "selling_points", "cameras", "emotions", "actions"
     )
     @classmethod
     def clean_pool(cls, values: list[str]) -> list[str]:
@@ -236,7 +327,13 @@ class DimensionPools(ApiModel):
 class PlannedCombination(ApiModel):
     slot_id: str
     ordinal: int = Field(ge=1)
-    fragment_type: str
+    fragment_type: FragmentType
+    material_tags: list[str] = Field(min_length=1, max_length=12)
+    target_duration_seconds: int = Field(ge=3, le=10)
+    visible_action: str = Field(min_length=1, max_length=400)
+    evidence_mode: EvidenceMode
+    allowed_visual_evidence: str = Field(min_length=1, max_length=400)
+    forbidden_inference: str = Field(min_length=1, max_length=400)
     dimensions: PromptDimensions
 
 
@@ -250,14 +347,13 @@ class ShardPlan(ApiModel):
         return f"{self.round}:{self.shard_index}"
 
 
-class GeneratedText(ApiModel):
+class GeneratedPromptText(ApiModel):
     slot_id: str
-    fragment_type: str
-    content: str = Field(min_length=1, max_length=12_000)
+    prompt_text: str = Field(min_length=120, max_length=600)
 
 
-class GeneratedTextBatch(ApiModel):
-    items: list[GeneratedText] = Field(min_length=1, max_length=8)
+class GeneratedPromptTextBatch(ApiModel):
+    items: list[GeneratedPromptText] = Field(min_length=1, max_length=8)
 
 
 class GeneratedCandidate(ApiModel):
@@ -265,9 +361,12 @@ class GeneratedCandidate(ApiModel):
     ordinal: int = Field(ge=1)
     round: int = Field(ge=0, le=3)
     shard_index: int = Field(ge=0)
-    fragment_type: str
+    fragment_type: FragmentType
+    material_tags: list[str] = Field(min_length=1, max_length=12)
+    target_duration_seconds: int = Field(ge=3, le=10)
     dimensions: PromptDimensions
     content: str = Field(min_length=1, max_length=12_000)
+    execution_invalid_reasons: list[str] = Field(default_factory=list)
     generated_at: datetime
 
 

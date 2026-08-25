@@ -3,6 +3,11 @@ import type {
   EffectPromptItem,
   EffectPromptProductState,
 } from '@ai-marketing/contracts';
+import {
+  DEFAULT_EFFECT_PROMPT_SETTINGS,
+  EFFECT_PROMPT_FRAGMENT_TYPES,
+  effectPromptFragmentTypeTargetCounts,
+} from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -19,7 +24,9 @@ const prompt: EffectPromptItem = {
   id: 'item-1',
   code: 'P001-ABC',
   origin: 'AI',
-  fragmentType: '钩子片段',
+  fragmentType: 'HOOK',
+  materialTags: ['首帧', '痛点'],
+  targetDurationSeconds: 5,
   dimensions: {
     narrative: '痛点前置型',
     scene: '家庭厨房',
@@ -35,8 +42,8 @@ const prompt: EffectPromptItem = {
 };
 
 const batch: EffectPromptBatchResult = {
-  schemaVersion: 1,
-  settings: { count: 10, durationSeconds: 15, semanticLimit: 15, visualLimit: 20 },
+  schemaVersion: 2,
+  settings: { ...DEFAULT_EFFECT_PROMPT_SETTINGS, count: 10 },
   items: Array.from({ length: 10 }, (_, index) => ({ ...prompt, id: `item-${index}` })),
   metrics: {
     targetCount: 10,
@@ -48,32 +55,54 @@ const batch: EffectPromptBatchResult = {
     semanticDuplicateRate: 11.8,
     visualOverlapRate: 16.4,
     replenishmentRounds: 1,
+    fragmentTypeDistribution: EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => {
+      const targetCount = effectPromptFragmentTypeTargetCounts({
+        ...DEFAULT_EFFECT_PROMPT_SETTINGS,
+        count: 10,
+      })[fragmentType];
+      return { fragmentType, targetCount, actualCount: targetCount };
+    }),
+    sellingPointCoverage: {
+      required: ['真空锁鲜'],
+      covered: ['真空锁鲜'],
+      missing: [],
+    },
+    removedExecutionInvalid: 2,
+    executionInvalidReasons: [{ code: 'MULTI_STAGE_STORY', count: 2 }],
   },
   qualityStatus: 'PASS',
 };
 
 describe('effect prompt generation state', () => {
-  it('normalizes all four prototype settings to contract ranges', () => {
+  it('normalizes fragment settings and all advanced controls to contract ranges', () => {
     expect(
       normalizePromptSettings({
+        ...DEFAULT_EFFECT_PROMPT_SETTINGS,
         count: 2,
         durationSeconds: 500,
         semanticLimit: 30,
         visualLimit: 2,
+        styleOverride: '  温暖   实拍  ',
+        additionalDisabledElements: ['  二维码  ', '二维码'],
       }),
     ).toEqual({
+      ...DEFAULT_EFFECT_PROMPT_SETTINGS,
       count: 10,
-      durationSeconds: 120,
+      durationSeconds: 10,
       semanticLimit: 15,
       visualLimit: 10,
+      styleOverride: '温暖 实拍',
+      additionalDisabledElements: ['二维码'],
     });
   });
 
-  it('matches id, content, fragment type and six-dimensional labels', () => {
+  it('matches id, content, fixed and secondary labels and six-dimensional labels', () => {
     expect(promptMatchesKeyword(prompt, 'P001')).toBe(true);
     expect(promptMatchesKeyword(prompt, '广式腊肠')).toBe(true);
     expect(promptMatchesKeyword(prompt, '叙事结构')).toBe(true);
     expect(promptMatchesKeyword(prompt, '温馨治愈')).toBe(true);
+    expect(promptMatchesKeyword(prompt, '钩子片段')).toBe(true);
+    expect(promptMatchesKeyword(prompt, '首帧')).toBe(true);
     expect(promptMatchesKeyword(prompt, '不存在')).toBe(false);
   });
 

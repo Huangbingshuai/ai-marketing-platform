@@ -1,6 +1,7 @@
 import type {
   EffectPromptBatchSettings,
   EffectPromptDimensions,
+  EffectPromptFragmentType,
   EffectPromptItem,
   EffectPromptNodeId,
   EffectPromptRun,
@@ -91,9 +92,20 @@ export const loadEffectPromptResult = async (
   productId: string,
   page: number,
   query: string,
+  fragmentType?: EffectPromptFragmentType,
   signal?: AbortSignal,
 ): Promise<GetEffectPromptResultData> =>
-  (await getEffectPromptResult(projectId, workflowRunId, productId, page, query, signal)).data;
+  (
+    await getEffectPromptResult(
+      projectId,
+      workflowRunId,
+      productId,
+      page,
+      query,
+      fragmentType,
+      signal,
+    )
+  ).data;
 
 export const beginEffectPromptRun = async (
   projectId: string,
@@ -140,7 +152,9 @@ export const loadEffectPromptNodeDetail = async (
 
 export type PromptItemDraft = {
   content: string;
-  fragmentType: string;
+  fragmentType: EffectPromptFragmentType;
+  materialTags: string[];
+  targetDurationSeconds: number;
   dimensions: EffectPromptDimensions;
 };
 

@@ -6,6 +6,7 @@ from importlib.resources import files
 
 
 _VERSION = re.compile(r"^VERSION:\s*(\S+)\s*$", re.MULTILINE)
+_VARIABLE = re.compile(r"\{([a-z][a-z0-9_]*)\}")
 
 
 @lru_cache(maxsize=16)
@@ -24,7 +25,10 @@ def load_prompt_version(name: str) -> str:
 
 def render_prompt(name: str, **values: str) -> str:
     template = load_prompt(name)
-    try:
-        return template.format(**values)
-    except KeyError as exc:
-        raise ValueError(f"missing prompt template variable: {exc.args[0]}") from exc
+    rendered = template
+    for key, value in values.items():
+        rendered = rendered.replace("{" + key + "}", value)
+    missing = _VARIABLE.search(rendered)
+    if missing is not None:
+        raise ValueError(f"missing prompt template variable: {missing.group(1)}")
+    return rendered

@@ -1,6 +1,7 @@
 import type {
   ApiResponse,
   EffectPromptBatchResult,
+  EffectPromptFragmentType,
   GetEffectPromptNodeDetailData,
   GetEffectPromptResultData,
   GetEffectPromptRunData,
@@ -63,6 +64,7 @@ export const getEffectPromptResult = (
   productId: string,
   page: number,
   query: string,
+  fragmentType?: EffectPromptFragmentType,
   signal?: AbortSignal,
 ): Promise<ApiResponse<GetEffectPromptResultData>> => {
   const search = new URLSearchParams({
@@ -71,6 +73,7 @@ export const getEffectPromptResult = (
     pageSize: '10',
   });
   if (query.trim()) search.set('query', query.trim());
+  if (fragmentType) search.set('fragmentType', fragmentType);
   return requestJson(
     `${basePath(projectId)}/products/${encodeURIComponent(productId)}/result?${search.toString()}`,
     { operation: '加载 Prompt 结果', signal },

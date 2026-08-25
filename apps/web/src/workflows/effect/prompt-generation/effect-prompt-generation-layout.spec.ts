@@ -15,23 +15,26 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).toContain('{{ EFFECT_PROMPT_LIMITS.pageSize }} 条/页');
   });
 
-  it('keeps the prototype controls and excludes the rejected extra batch-adjustment fields', () => {
+  it('keeps the core controls and adds fragment-pool batch adjustment fields', () => {
     for (const label of [
       '生成数量',
-      '统一时长',
+      '统一片段时长',
       '语义重复度上限',
       '画面重合度上限',
       '人工添加提示词',
       '批量导出',
+      '风格覆盖',
+      '七类素材标签配比',
+      '卖点权重',
+      '追加禁用元素',
     ])
       expect(pageSource).toContain(label);
     expect(pageSource).toContain("? '重新批量生成'");
     expect(pageSource).toContain(": '开始批量生成'");
     expect(pageSource).not.toContain('一键批量全部刷新');
     expect(pageSource.match(/@click="\s*generateCurrentBatch/g)).toHaveLength(1);
-    expect(pageSource).not.toContain('卖点权重');
-    expect(pageSource).not.toContain('统一风格');
-    expect(pageSource).not.toContain('禁用元素');
+    expect(pageSource).toContain('fragmentTypeWeights');
+    expect(pageSource).toContain('sellingPointWeights');
   });
 
   it('uses working-copy status instead of a node-level asset save action', () => {
@@ -53,8 +56,73 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).toContain('loadEffectPromptNodeDetail');
     expect(pageSource).toContain('pollEffectPromptRun');
     expect(pageSource).toContain('v-for="dimension in EFFECT_PROMPT_DIMENSIONS"');
-    expect(pageSource).toContain('请选择或输入片段类型');
+    expect(pageSource).toContain('固定主标签');
+    expect(pageSource).toContain('次级素材标签');
+    expect(pageSource).toContain('目标片段时长');
     expect(pageSource).toContain('生成前结构化代理指标');
+  });
+
+  it('states the fragment semantics and keeps tags separate from generation copy', () => {
+    expect(pageSource).toContain('条 Prompt =');
+    expect(pageSource).toContain('不是');
+    expect(pageSource).toContain('EFFECT_PROMPT_FRAGMENT_TYPE_LABELS');
+    expect(pageSource).toContain('fragmentTypeFilter');
+    expect(pageSource).toContain('item.materialTags');
+    expect(pageSource).toContain('item.targetDurationSeconds');
+    expect(pageSource).toContain('查看六维差异化设定');
+    expect(pageSource).toContain('fragmentTypeDistribution');
+    expect(pageSource).toContain('sellingPointCoverage');
+    expect(pageSource).toContain('removedExecutionInvalid');
+  });
+
+  it('wires every prompt-list action with safe destructive and busy states', () => {
+    for (const handler of [
+      'openEditor(undefined, $event)',
+      'exportBatch',
+      'openEditor(item, $event)',
+      'copyItem(item)',
+      'requestDeleteItem(item, $event)',
+      'regenerateItem(item)',
+    ])
+      expect(pageSource).toContain(handler);
+
+    expect(pageSource).toContain('role="alertdialog"');
+    expect(pageSource).toContain('@keydown.esc="closeDeleteDialog"');
+    expect(pageSource).toContain('ref="deleteConfirmButton"');
+    expect(pageSource).toContain("itemOperation.kind === 'delete'");
+    expect(pageSource).toContain("itemOperation.kind === 'regenerate'");
+    expect(pageSource).toContain("document.execCommand('copy')");
+    expect(pageSource).toContain('currentRunning || exporting');
+    expect(pageSource).toMatch(/:disabled="!resultData \|\| currentRunning/u);
+  });
+
+  it('renders all ten node details from the safe API contract with recoverable states', () => {
+    for (const nodeId of [
+      'LOAD_AND_SNAPSHOT',
+      'STRATEGY_PLANNING',
+      'DIMENSION_COMBINATION',
+      'CANDIDATE_GENERATION',
+      'NORMALIZATION',
+      'SEMANTIC_DEDUP',
+      'VISUAL_DEDUP',
+      'QUALITY_GATE',
+      'REPLENISH',
+      'RESULT_SAVE',
+    ])
+      expect(pageSource).toContain(`'${nodeId}'`);
+
+    expect(pageSource).toContain('aria-label="刷新当前节点详情"');
+    expect(pageSource).toContain('@click="refreshGraphDetail"');
+    expect(pageSource).toContain('graphStatusMeta(graphDetail.status)');
+    expect(pageSource).toContain('formatGraphDetailTime(graphDetail.updatedAt)');
+    expect(pageSource).toContain('v-for="(field, index) in graphDetail.fields"');
+    expect(pageSource).toContain('v-if="field.description"');
+    expect(pageSource).toContain('graphDetailValueIsMultiline(field.value)');
+    expect(pageSource).toContain('该节点尚未执行，暂无运行字段');
+    expect(pageSource).toMatch(/\.node-fields dd\.is-multiline\s*\{[^}]*white-space:\s*pre-wrap/su);
+    expect(pageSource).not.toMatch(
+      /storageKey|sourceFingerprint|attemptToken|promptVersion|ARK_PROMPT_MODEL/u,
+    );
   });
 
   it('persists server defaults before the first generation run', () => {

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { DEFAULT_EFFECT_PROMPT_SETTINGS } from '@ai-marketing/contracts';
 
 import type { PrismaService } from '../../../database/prisma.service';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
@@ -59,7 +60,9 @@ describe('EffectPromptRepository', () => {
       id,
       code: id,
       origin: index === 2 ? ('MANUAL' as const) : ('AI' as const),
-      fragmentType: '短视频',
+      fragmentType: 'HOOK' as const,
+      materialTags: ['钩子', id],
+      targetDurationSeconds: 5,
       dimensions: {
         narrative: `叙事-${id}`,
         scene: `场景-${id}`,
@@ -74,10 +77,8 @@ describe('EffectPromptRepository', () => {
       updatedAt: now,
     }));
     const result = recomputePromptQuality(items, {
+      ...DEFAULT_EFFECT_PROMPT_SETTINGS,
       count: 10,
-      durationSeconds: 15,
-      semanticLimit: 15,
-      visualLimit: 20,
     });
 
     expect(
@@ -131,7 +132,7 @@ describe('EffectPromptRepository', () => {
       workflowNodeState: {
         findUnique: vi.fn().mockResolvedValue({
           revision: 1,
-          state: { count: 50, durationSeconds: 15, semanticLimit: 15, visualLimit: 20 },
+          state: DEFAULT_EFFECT_PROMPT_SETTINGS,
         }),
       },
       workingArtifact: {
@@ -160,7 +161,7 @@ describe('EffectPromptRepository', () => {
         aggregateId: runId,
         routingKey: 'effect.prompt-generation.requested',
         payload: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           projectId,
           runId,
           requestId: runId,
@@ -177,7 +178,7 @@ describe('EffectPromptRepository', () => {
       workflowNodeState: {
         findUnique: vi.fn().mockResolvedValue({
           revision: 1,
-          state: { count: 50, durationSeconds: 15, semanticLimit: 15, visualLimit: 20 },
+          state: DEFAULT_EFFECT_PROMPT_SETTINGS,
         }),
       },
       workingArtifact: {
@@ -227,10 +228,8 @@ describe('EffectPromptRepository', () => {
   it('closes RESULT_SAVE and skips an untriggered REPLENISH in the completion transaction', async () => {
     const now = new Date('2026-08-25T00:00:00.000Z');
     const candidate = recomputePromptQuality([], {
+      ...DEFAULT_EFFECT_PROMPT_SETTINGS,
       count: 10,
-      durationSeconds: 15,
-      semanticLimit: 15,
-      visualLimit: 20,
     });
     const stageCreate = vi.fn().mockResolvedValue({});
     const stageUpsert = vi.fn().mockResolvedValue({});
@@ -244,7 +243,7 @@ describe('EffectPromptRepository', () => {
           attemptToken: 'attempt-a',
           leaseExpiresAt: new Date('2026-08-25T00:02:00.000Z'),
           inputSnapshot: {
-            schemaVersion: 1,
+            schemaVersion: 2,
             projectId,
             workflowRunId,
             productId,

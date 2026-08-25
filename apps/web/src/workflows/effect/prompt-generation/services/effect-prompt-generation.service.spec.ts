@@ -1,9 +1,14 @@
 import type { EffectPromptRun, GetEffectPromptWorkspaceData } from '@ai-marketing/contracts';
+import {
+  DEFAULT_EFFECT_PROMPT_SETTINGS,
+  EFFECT_PROMPT_FRAGMENT_TYPES,
+} from '@ai-marketing/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   beginEffectPromptRun,
   downloadEffectPromptBatch,
+  loadEffectPromptNodeDetail,
   loadEffectPromptWorkspace,
   pollEffectPromptRun,
   savePromptSettings,
@@ -59,7 +64,7 @@ describe('effect prompt generation HTTP service', () => {
       .mockResolvedValueOnce(
         response({
           productId: 'product-1',
-          settings: { count: 50, durationSeconds: 15, semanticLimit: 15, visualLimit: 20 },
+          settings: DEFAULT_EFFECT_PROMPT_SETTINGS,
           settingsRevision: 4,
           savedAt: '2026-08-25T00:00:00.000Z',
           unchanged: false,
@@ -71,7 +76,7 @@ describe('effect prompt generation HTTP service', () => {
     await savePromptSettings(
       { projectId: 'project-1', workflowRunId: 'workflow-run-1' },
       'product-1',
-      { count: 50, durationSeconds: 15, semanticLimit: 15, visualLimit: 20 },
+      DEFAULT_EFFECT_PROMPT_SETTINGS,
       3,
     );
     const settingsInit = fetchMock.mock.calls[0]![1] as RequestInit;
@@ -103,6 +108,33 @@ describe('effect prompt generation HTTP service', () => {
     expect(updates).toEqual([45, 100]);
   });
 
+  it('loads expanded safe node fields and descriptions without rebuilding details locally', async () => {
+    const detail = {
+      nodeId: 'SEMANTIC_DEDUP' as const,
+      status: 'SUCCEEDED' as const,
+      summary: '语义重复代理校验完成',
+      fields: [
+        {
+          label: '语义重复判定阈值',
+          value: '0.82',
+          description: '内容意图签名相同或三元组 Dice 达到阈值时计为重复。',
+        },
+      ],
+      warnings: [],
+      errorMessage: null,
+      updatedAt: '2026-08-25T00:00:01.000Z',
+    };
+    const fetchMock = vi.fn().mockResolvedValue(response({ detail }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      loadEffectPromptNodeDetail('project-1', 'prompt-run-1', 'SEMANTIC_DEDUP'),
+    ).resolves.toEqual(detail);
+    expect(String(fetchMock.mock.calls[0]![0])).toContain(
+      '/projects/project-1/workflows/effect/prompt-generation/runs/prompt-run-1/nodes/SEMANTIC_DEDUP',
+    );
+  });
+
   it('cancels recoverable polling through AbortSignal', async () => {
     const controller = new AbortController();
     controller.abort();
@@ -114,14 +146,14 @@ describe('effect prompt generation HTTP service', () => {
 
   it('exports the authoritative server payload instead of rebuilding browser state', async () => {
     const exported = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       productId: 'product-1',
       resultId: 'result-1',
       revision: 3,
       exportedAt: '2026-08-25T00:00:00.000Z',
       result: {
-        schemaVersion: 1,
-        settings: { count: 10, durationSeconds: 15, semanticLimit: 15, visualLimit: 20 },
+        schemaVersion: 2,
+        settings: { ...DEFAULT_EFFECT_PROMPT_SETTINGS, count: 10 },
         items: [],
         metrics: {
           targetCount: 10,
@@ -133,6 +165,14 @@ describe('effect prompt generation HTTP service', () => {
           semanticDuplicateRate: 0,
           visualOverlapRate: 0,
           replenishmentRounds: 0,
+          fragmentTypeDistribution: EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => ({
+            fragmentType,
+            targetCount: 0,
+            actualCount: 0,
+          })),
+          sellingPointCoverage: { required: [], covered: [], missing: [] },
+          removedExecutionInvalid: 0,
+          executionInvalidReasons: [],
         },
         qualityStatus: 'NEEDS_REVIEW',
       },

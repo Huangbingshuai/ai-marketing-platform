@@ -7,6 +7,7 @@ import type {
   EffectPromptManualOverrides,
   EffectPromptOperation,
 } from '@ai-marketing/contracts';
+import { EFFECT_PROMPT_SCHEMA_VERSION } from '@ai-marketing/contracts';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Prisma } from '../../../generated/prisma/client';
 
@@ -252,7 +253,7 @@ export class EffectPromptRepository {
       );
       if (manualItems.length > settings.count) return { kind: 'MANUAL_COUNT_EXCEEDED' as const };
       const snapshot: EffectPromptInputSnapshot = {
-        schemaVersion: 1,
+        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
         projectId,
         workflowRunId,
         productId,
@@ -308,7 +309,7 @@ export class EffectPromptRepository {
           aggregateId: run.id,
           routingKey: EFFECT_PROMPT_QUEUE,
           payload: json({
-            schemaVersion: 1,
+            schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
             projectId,
             runId: run.id,
             requestId: run.id,
@@ -567,6 +568,8 @@ export class EffectPromptRepository {
             overrides.edited[item.id] = {
               content: item.content,
               fragmentType: item.fragmentType,
+              materialTags: item.materialTags,
+              targetDurationSeconds: item.targetDurationSeconds,
               dimensions: item.dimensions,
             };
         }
@@ -577,7 +580,7 @@ export class EffectPromptRepository {
           workflowRunId: run.workflowRunId,
           productId: run.productId,
           runId,
-          schemaVersion: 1,
+          schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
           generatedResult: json(generated),
           draftResult: json(draft),
           manualOverrides: json(overrides),
@@ -712,7 +715,10 @@ export class EffectPromptRepository {
       | {
           kind: 'UPDATE';
           itemId: string;
-          item: Pick<EffectPromptItem, 'content' | 'fragmentType' | 'dimensions'>;
+          item: Pick<
+            EffectPromptItem,
+            'content' | 'fragmentType' | 'materialTags' | 'targetDurationSeconds' | 'dimensions'
+          >;
         }
       | { kind: 'DELETE'; itemId: string },
   ) {

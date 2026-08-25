@@ -8,6 +8,12 @@ from itertools import combinations
 
 from .combinations import dimension_distance
 from .models import PairViolation, PromptItem, PromptMetrics
+from .models import (
+    ExecutionInvalidReason,
+    FragmentType,
+    FragmentTypeDistribution,
+    SellingPointCoverage,
+)
 
 
 SEMANTIC_DICE_THRESHOLD = 0.82
@@ -22,7 +28,7 @@ VISUAL_WEIGHTS = {
 _DURATION = re.compile(r"(?:视频)?时长\s*[:：]?\s*\d+\s*(?:秒|s)", re.IGNORECASE)
 _ASPECT = re.compile(r"(?:画幅|比例)\s*[:：]?\s*\d+\s*[:：x×]\s*\d+", re.IGNORECASE)
 _CHANNEL = re.compile(r"(?:投放)?渠道\s*[:：][^。；;\n]+", re.IGNORECASE)
-_COMPLIANCE = re.compile(r"(?:合规|禁用元素|注意事项)\s*[:：][^。；;\n]+", re.IGNORECASE)
+_COMPLIANCE = re.compile(r"(?:合规|禁用元素|注意事项|避免)\s*[:：][^。\n]+", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +43,7 @@ class EvaluationResult:
 
 def semantic_signature(item: PromptItem) -> str:
     parts = (
+        item.fragment_type.value,
         item.dimensions.narrative,
         item.dimensions.selling_point,
         item.dimensions.scene,
@@ -102,14 +109,24 @@ def evaluate_candidates(
     visual_limit: float,
     round_number: int,
     required_selling_points: list[str] | None = None,
+    fragment_type_targets: dict[FragmentType, int] | None = None,
+    generated_candidate_count: int | None = None,
+    removed_execution_invalid: int = 0,
+    execution_invalid_reasons: dict[str, int] | None = None,
 ) -> EvaluationResult:
     accepted = _unique_items(retained)[:target_count]
+    targets = fragment_type_targets or {}
+    actual_types = {item: 0 for item in FragmentType}
+    for item in accepted:
+        actual_types[item.fragment_type] += 1
     removed_semantic = 0
     removed_visual = 0
     removed_dimension = 0
 
     for candidate in _unique_items(candidates):
         if len(accepted) >= target_count or candidate.id in {item.id for item in accepted}:
+            continue
+        if targets and actual_types[candidate.fragment_type] >= targets[candidate.fragment_type]:
             continue
         if any(dimension_distance(candidate.dimensions, item.dimensions) < 3 for item in accepted):
             removed_dimension += 1
@@ -123,6 +140,7 @@ def evaluate_candidates(
             removed_visual += 1
             continue
         accepted.append(candidate)
+        actual_types[candidate.fragment_type] += 1
 
     semantic_pairs = semantic_violations(accepted)
     visual_pairs = visual_violations(accepted)
@@ -138,23 +156,54 @@ def evaluate_candidates(
         for item in dict.fromkeys(required_selling_points or [])
         if _normalized_value(item) not in covered
     ]
+    distribution = [
+        FragmentTypeDistribution(
+            fragment_type=fragment_type,
+            target_count=targets.get(fragment_type, 0),
+            actual_count=actual_types[fragment_type],
+        )
+        for fragment_type in FragmentType
+    ]
+    distribution_valid = not targets or all(
+        item.actual_count == item.target_count for item in distribution
+    )
+    covered_selling_points = [
+        item
+        for item in dict.fromkeys(required_selling_points or [])
+        if _normalized_value(item) in covered
+    ]
     passed = (
         len(accepted) == target_count
         and dimensions_valid
         and semantic_rate <= semantic_limit
         and visual_rate <= visual_limit
         and not missing_selling_points
+        and distribution_valid
     )
     metrics = PromptMetrics(
         target_count=target_count,
         accepted_count=len(accepted),
-        generated_candidate_count=len(_unique_items(candidates)),
+        generated_candidate_count=generated_candidate_count
+        if generated_candidate_count is not None
+        else len(_unique_items(candidates)),
         removed_semantic_duplicates=removed_semantic,
         removed_visual_duplicates=removed_visual,
         removed_dimension_conflicts=removed_dimension,
+        removed_execution_invalid=removed_execution_invalid,
+        execution_invalid_reasons=[
+            ExecutionInvalidReason(code=code, count=count)
+            for code, count in sorted((execution_invalid_reasons or {}).items())
+            if count > 0
+        ],
         semantic_duplicate_rate=semantic_rate,
         visual_overlap_rate=visual_rate,
         replenishment_rounds=round_number,
+        fragment_type_distribution=distribution,
+        selling_point_coverage=SellingPointCoverage(
+            required=list(dict.fromkeys(required_selling_points or [])),
+            covered=covered_selling_points,
+            missing=missing_selling_points,
+        ),
     )
     return EvaluationResult(
         items=accepted,

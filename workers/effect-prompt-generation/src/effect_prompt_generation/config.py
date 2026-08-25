@@ -8,6 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 DEFAULT_ARK_MODEL = "doubao-seed-2-1-turbo-260628"
+DEFAULT_ARK_PROMPT_STRATEGY_MODEL = "doubao-seed-2-0-lite-260428"
 ARK_KEY_PLACEHOLDERS = {
     "replace-with-your-ark-api-key",
     "your-ark-api-key",
@@ -34,9 +35,33 @@ class WorkerSettings(BaseSettings):
     ark_api_key: SecretStr | None = Field(default=None, alias="ARK_API_KEY")
     ark_model: str = Field(default=DEFAULT_ARK_MODEL, alias="ARK_MODEL")
     ark_prompt_model: str | None = Field(default=None, alias="ARK_PROMPT_MODEL")
+    ark_prompt_strategy_model: str | None = Field(
+        default=None, alias="ARK_PROMPT_STRATEGY_MODEL"
+    )
+    ark_prompt_candidate_model: str | None = Field(
+        default=None, alias="ARK_PROMPT_CANDIDATE_MODEL"
+    )
+    ark_prompt_strategy_max_output_tokens: int = Field(
+        default=2048,
+        alias="ARK_PROMPT_STRATEGY_MAX_OUTPUT_TOKENS",
+        ge=512,
+        le=32_768,
+    )
+    ark_prompt_candidate_max_output_tokens: int = Field(
+        default=4096,
+        alias="ARK_PROMPT_CANDIDATE_MAX_OUTPUT_TOKENS",
+        ge=1024,
+        le=65_536,
+    )
+    ark_prompt_reasoning_effort: Literal["minimal", "low", "medium", "high"] = Field(
+        default="minimal", alias="ARK_PROMPT_REASONING_EFFORT"
+    )
 
     prompt_max_concurrency: int = Field(default=3, alias="PROMPT_MAX_CONCURRENCY", ge=1, le=8)
     prompt_shard_size: int = Field(default=8, alias="PROMPT_SHARD_SIZE", ge=1, le=8)
+    prompt_max_ai_calls_per_run: int = Field(
+        default=129, alias="PROMPT_MAX_AI_CALLS_PER_RUN", ge=1, le=256
+    )
     api_timeout_seconds: float = Field(
         default=60.0, alias="INTERNAL_API_TIMEOUT_SECONDS", gt=0
     )
@@ -47,6 +72,12 @@ class WorkerSettings(BaseSettings):
     def validate_provider(self) -> WorkerSettings:
         self.ark_model = self.ark_model.strip()
         self.ark_prompt_model = (self.ark_prompt_model or "").strip() or None
+        self.ark_prompt_strategy_model = (
+            self.ark_prompt_strategy_model or ""
+        ).strip() or None
+        self.ark_prompt_candidate_model = (
+            self.ark_prompt_candidate_model or ""
+        ).strip() or None
         self.effect_prompt_queue = self.effect_prompt_queue.strip()
         if not self.effect_prompt_queue:
             raise ValueError("EFFECT_PROMPT_QUEUE cannot be empty")
@@ -61,8 +92,16 @@ class WorkerSettings(BaseSettings):
         return self
 
     @property
-    def resolved_prompt_model(self) -> str:
-        return self.ark_prompt_model or self.ark_model
+    def resolved_prompt_strategy_model(self) -> str:
+        return (
+            self.ark_prompt_strategy_model
+            or self.ark_prompt_model
+            or DEFAULT_ARK_PROMPT_STRATEGY_MODEL
+        )
+
+    @property
+    def resolved_prompt_candidate_model(self) -> str:
+        return self.ark_prompt_candidate_model or self.ark_prompt_model or self.ark_model
 
 
 @lru_cache(maxsize=1)
