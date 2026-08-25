@@ -24,6 +24,7 @@ const props = withDefaults(
     batch?: boolean;
     busyMaterialIds?: ReadonlySet<string>;
     disabled?: boolean;
+    linkBusy?: boolean;
     position?: number;
     product: EffectImportProduct;
     selected?: boolean;
@@ -32,6 +33,7 @@ const props = withDefaults(
     batch: false,
     busyMaterialIds: () => new Set<string>(),
     disabled: false,
+    linkBusy: false,
     position: 1,
     selected: false,
   },
@@ -257,7 +259,7 @@ const statusText = (material: EffectImportMaterial): string =>
         <span class="panel-heading-icon blue"><Link2 :size="18" /></span>
         <div>
           <h3>电商链接解析</h3>
-          <p>粘贴商品详情页链接，校验格式并保存到资料包</p>
+          <p>当前仅校验链接格式并保存到资料包，暂不抓取页面内容</p>
         </div>
       </header>
       <div class="commerce-input-row">
@@ -270,10 +272,11 @@ const statusText = (material: EffectImportMaterial): string =>
           @blur="emit('blur', product)"
         /><button
           type="button"
-          :disabled="disabled || !product.commerceUrl"
+          :disabled="disabled || linkBusy || !product.commerceUrl?.trim()"
+          :aria-busy="linkBusy"
           @click="emit('validateLink', product)"
         >
-          解析链接
+          {{ linkBusy ? '正在保存…' : '解析链接' }}
         </button>
       </div>
     </section>

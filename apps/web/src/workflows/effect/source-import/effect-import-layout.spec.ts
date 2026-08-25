@@ -138,6 +138,19 @@ describe('effect import material previews', () => {
   });
 });
 
+describe('effect import commerce link placeholder', () => {
+  it('validates and saves the link into the current product package without claiming to parse it', () => {
+    expect(productEditorSource).toContain('当前仅校验链接格式并保存到资料包，暂不抓取页面内容');
+    expect(productEditorSource).toContain(
+      ':disabled="disabled || linkBusy || !product.commerceUrl?.trim()"',
+    );
+    expect(productEditorSource).toContain("{{ linkBusy ? '正在保存…' : '解析链接' }}");
+    expect(pageSource).toContain('busyCommerceProductIds.value.has(product.id)');
+    expect(pageSource).toContain('if (!(await flushProduct(product.id))) return;');
+    expect(pageSource).toContain('电商链接已保存到当前商品资料包，暂未解析页面内容');
+  });
+});
+
 describe('effect import automatic draft saving', () => {
   it('debounces node-state saving and removes node-level asset publishing', () => {
     expect(pageSource).toContain('putWorkflowNodeState(');

@@ -115,6 +115,7 @@ const activeDownstreamBoundary = computed(() => downstreamBoundaries[activeStep.
 const keyword = ref('');
 const selectedProductIds = ref(new Set<string>());
 const busyMaterialIds = ref(new Set<string>());
+const busyCommerceProductIds = ref(new Set<string>());
 const validatingDraft = ref(false);
 const notice = ref<{ kind: 'error' | 'success' | 'warning'; text: string } | null>(null);
 const manifestOpen = ref(false);
@@ -944,6 +945,13 @@ const setMaterialBusy = (key: string, busy: boolean): void => {
   busyMaterialIds.value = next;
 };
 
+const setCommerceLinkBusy = (productId: string, busy: boolean): void => {
+  const next = new Set(busyCommerceProductIds.value);
+  if (busy) next.add(productId);
+  else next.delete(productId);
+  busyCommerceProductIds.value = next;
+};
+
 const uploadMaterials = async (
   product: EffectImportProduct,
   type: EffectImportMaterialType,
@@ -1087,23 +1095,27 @@ const removeMaterial = async (
 };
 
 const checkCommerceLink = async (product: EffectImportProduct): Promise<void> => {
-  if (!product.commerceUrl || !pageController) return;
+  const commerceUrl = product.commerceUrl?.trim();
+  if (!commerceUrl || !pageController || busyCommerceProductIds.value.has(product.id)) return;
+  setCommerceLinkBusy(product.id, true);
   try {
     const response = await validateEffectImportLink(
       loadedProjectId.value,
       currentMode.value,
       product.id,
-      { commerceUrl: product.commerceUrl },
+      { commerceUrl },
       pageController.signal,
     );
     if (response.data.valid && response.data.normalizedUrl) {
       updateProductField(product, 'commerceUrl', response.data.normalizedUrl);
-      await flushProduct(product.id);
-      showNotice('电商链接格式有效');
+      if (!(await flushProduct(product.id))) return;
+      showNotice('电商链接已保存到当前商品资料包，暂未解析页面内容');
     } else showNotice(response.data.issue?.message ?? '电商链接格式不正确', 'error');
   } catch (error) {
     if (!isAbortError(error))
-      showNotice(error instanceof Error ? error.message : '链接校验失败', 'error');
+      showNotice(error instanceof Error ? error.message : '电商链接保存失败', 'error');
+  } finally {
+    setCommerceLinkBusy(product.id, false);
   }
 };
 
@@ -1503,6 +1515,7 @@ onBeforeUnmount(() => {
                   v-else
                   :product="singleProduct"
                   :busy-material-ids="busyMaterialIds"
+                  :link-busy="busyCommerceProductIds.has(singleProduct.id)"
                   :disabled="transitioning"
                   @change="updateProductField"
                   @blur="flushProduct"
@@ -1581,6 +1594,7 @@ onBeforeUnmount(() => {
                     :disabled="transitioning"
                     :selected="selectedProductIds.has(product.id)"
                     :busy-material-ids="busyMaterialIds"
+                    :link-busy="busyCommerceProductIds.has(product.id)"
                     @select="toggleSelected"
                     @change="updateProductField"
                     @blur="flushProduct"
