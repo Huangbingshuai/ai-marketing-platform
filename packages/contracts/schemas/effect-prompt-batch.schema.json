@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-marketing.local/schemas/effect-prompt-batch.v1.json",
+  "title": "EffectPromptBatchResult.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "settings", "items", "metrics", "qualityStatus"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "durationSeconds", "semanticLimit", "visualLimit"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 10, "maximum": 200 },
+        "durationSeconds": { "type": "integer", "minimum": 10, "maximum": 120 },
+        "semanticLimit": { "type": "integer", "minimum": 5, "maximum": 15 },
+        "visualLimit": { "type": "integer", "minimum": 10, "maximum": 20 }
+      }
+    },
+    "items": {
+      "type": "array",
+      "maxItems": 200,
+      "items": { "$ref": "#/$defs/item" }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "targetCount",
+        "acceptedCount",
+        "generatedCandidateCount",
+        "removedSemanticDuplicates",
+        "removedVisualDuplicates",
+        "removedDimensionConflicts",
+        "semanticDuplicateRate",
+        "visualOverlapRate",
+        "replenishmentRounds"
+      ],
+      "properties": {
+        "targetCount": { "type": "integer", "minimum": 10, "maximum": 200 },
+        "acceptedCount": { "type": "integer", "minimum": 0, "maximum": 200 },
+        "generatedCandidateCount": { "type": "integer", "minimum": 0 },
+        "removedSemanticDuplicates": { "type": "integer", "minimum": 0 },
+        "removedVisualDuplicates": { "type": "integer", "minimum": 0 },
+        "removedDimensionConflicts": { "type": "integer", "minimum": 0 },
+        "semanticDuplicateRate": { "type": "number", "minimum": 0, "maximum": 100 },
+        "visualOverlapRate": { "type": "number", "minimum": 0, "maximum": 100 },
+        "replenishmentRounds": { "type": "integer", "minimum": 0, "maximum": 3 }
+      }
+    },
+    "qualityStatus": { "enum": ["PASS", "NEEDS_REVIEW"] }
+  },
+  "$defs": {
+    "dimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["narrative", "scene", "persona", "sellingPoint", "camera", "emotion"],
+      "properties": {
+        "narrative": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "scene": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "persona": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "sellingPoint": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "camera": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "emotion": { "type": "string", "minLength": 1, "maxLength": 120 }
+      }
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "code",
+        "origin",
+        "fragmentType",
+        "dimensions",
+        "content",
+        "manualEdited",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "code": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "origin": { "enum": ["AI", "MANUAL"] },
+        "fragmentType": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "dimensions": { "$ref": "#/$defs/dimensions" },
+        "content": { "type": "string", "minLength": 1, "maxLength": 12000 },
+        "manualEdited": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

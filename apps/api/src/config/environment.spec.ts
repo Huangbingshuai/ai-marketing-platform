@@ -83,20 +83,30 @@ describe('validateEnvironment', () => {
     ).toThrow('MINIO_PORT');
   });
 
-  it('requires the extraction worker token in production', () => {
+  it('requires dedicated extraction and prompt worker tokens in production', () => {
     expect(() => validateEnvironment({ ...validEnvironment, APP_ENV: 'production' })).toThrow(
       'EFFECT_EXTRACTION_WORKER_TOKEN',
     );
+
+    expect(() =>
+      validateEnvironment({
+        ...validEnvironment,
+        APP_ENV: 'production',
+        EFFECT_EXTRACTION_WORKER_TOKEN: 'production-worker-secret',
+      }),
+    ).toThrow('EFFECT_PROMPT_WORKER_TOKEN');
 
     expect(
       validateEnvironment({
         ...validEnvironment,
         APP_ENV: 'production',
         EFFECT_EXTRACTION_WORKER_TOKEN: 'production-worker-secret',
+        EFFECT_PROMPT_WORKER_TOKEN: 'production-prompt-worker-secret',
       }),
     ).toMatchObject({
       APP_ENV: 'production',
       EFFECT_EXTRACTION_WORKER_TOKEN: 'production-worker-secret',
+      EFFECT_PROMPT_WORKER_TOKEN: 'production-prompt-worker-secret',
     });
   });
 });

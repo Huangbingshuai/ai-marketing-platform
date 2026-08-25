@@ -19,6 +19,7 @@ export type EnvironmentVariables = {
   REDIS_URL: string;
   RABBITMQ_URL: string;
   EFFECT_EXTRACTION_WORKER_TOKEN: string | undefined;
+  EFFECT_PROMPT_WORKER_TOKEN: string | undefined;
   TOS_ENDPOINT: string | undefined;
   TOS_REGION: string | undefined;
   TOS_BUCKET: string | undefined;
@@ -102,8 +103,10 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
   }
 
   const effectExtractionWorkerToken = optionalString(raw.EFFECT_EXTRACTION_WORKER_TOKEN);
+  const effectPromptWorkerToken = optionalString(raw.EFFECT_PROMPT_WORKER_TOKEN);
   if (appEnvironment === 'production') {
     requiredString(effectExtractionWorkerToken, 'EFFECT_EXTRACTION_WORKER_TOKEN');
+    requiredString(effectPromptWorkerToken, 'EFFECT_PROMPT_WORKER_TOKEN');
   }
 
   return {
@@ -132,6 +135,7 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
     REDIS_URL: requiredString(raw.REDIS_URL, 'REDIS_URL'),
     RABBITMQ_URL: requiredString(raw.RABBITMQ_URL, 'RABBITMQ_URL'),
     EFFECT_EXTRACTION_WORKER_TOKEN: effectExtractionWorkerToken,
+    EFFECT_PROMPT_WORKER_TOKEN: effectPromptWorkerToken,
     TOS_ENDPOINT: optionalString(raw.TOS_ENDPOINT),
     TOS_REGION: optionalString(raw.TOS_REGION),
     TOS_BUCKET: optionalString(raw.TOS_BUCKET),

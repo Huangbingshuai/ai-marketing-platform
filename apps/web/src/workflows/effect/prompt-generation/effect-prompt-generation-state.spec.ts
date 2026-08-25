@@ -1,34 +1,59 @@
+import type {
+  EffectPromptBatchResult,
+  EffectPromptItem,
+  EffectPromptProductState,
+} from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 
 import {
   EFFECT_PROMPT_LIMITS,
-  isPromptWorkspaceComplete,
+  isPromptProductCommitted,
+  isPromptResultQualityReady,
+  isPromptRunActive,
   normalizePromptSettings,
   promptMatchesKeyword,
   promptPageCount,
-  promptPageItems,
-  type EffectPromptItem,
-  type EffectPromptWorkspace,
 } from './effect-prompt-generation-state';
 
-const item = (index: number): EffectPromptItem => ({
-  id: `item-${index}`,
-  code: `P${String(index).padStart(3, '0')}-ABC`,
+const prompt: EffectPromptItem = {
+  id: 'item-1',
+  code: 'P001-ABC',
+  origin: 'AI',
   fragmentType: '钩子片段',
-  dimensions: [
-    { key: 'narrative', label: '叙事结构', value: '痛点前置型' },
-    { key: 'scene', label: '场景变量', value: '家庭厨房' },
-    { key: 'emotion', label: '情绪基调', value: '温馨治愈' },
-  ],
-  content: `第 ${index} 条广式腊肠 Prompt`,
-  semanticSimilarity: 11.8,
-  visualSimilarity: 16.4,
+  dimensions: {
+    narrative: '痛点前置型',
+    scene: '家庭厨房',
+    persona: '都市白领',
+    sellingPoint: '真空锁鲜',
+    camera: '手持跟拍＋特写',
+    emotion: '温馨治愈',
+  },
+  content: '广式腊肠结构化 Prompt',
+  manualEdited: false,
   createdAt: '2026-08-25T00:00:00.000Z',
   updatedAt: '2026-08-25T00:00:00.000Z',
-});
+};
+
+const batch: EffectPromptBatchResult = {
+  schemaVersion: 1,
+  settings: { count: 10, durationSeconds: 15, semanticLimit: 15, visualLimit: 20 },
+  items: Array.from({ length: 10 }, (_, index) => ({ ...prompt, id: `item-${index}` })),
+  metrics: {
+    targetCount: 10,
+    acceptedCount: 10,
+    generatedCandidateCount: 14,
+    removedSemanticDuplicates: 2,
+    removedVisualDuplicates: 1,
+    removedDimensionConflicts: 1,
+    semanticDuplicateRate: 11.8,
+    visualOverlapRate: 16.4,
+    replenishmentRounds: 1,
+  },
+  qualityStatus: 'PASS',
+};
 
 describe('effect prompt generation state', () => {
-  it('normalizes all four prototype settings to their supported ranges', () => {
+  it('normalizes all four prototype settings to contract ranges', () => {
     expect(
       normalizePromptSettings({
         count: 2,
@@ -36,11 +61,15 @@ describe('effect prompt generation state', () => {
         semanticLimit: 30,
         visualLimit: 2,
       }),
-    ).toEqual({ count: 10, durationSeconds: 120, semanticLimit: 15, visualLimit: 10 });
+    ).toEqual({
+      count: 10,
+      durationSeconds: 120,
+      semanticLimit: 15,
+      visualLimit: 10,
+    });
   });
 
-  it('filters by id, content, dimension labels and dimension values', () => {
-    const prompt = item(1);
+  it('matches id, content, fragment type and six-dimensional labels', () => {
     expect(promptMatchesKeyword(prompt, 'P001')).toBe(true);
     expect(promptMatchesKeyword(prompt, '广式腊肠')).toBe(true);
     expect(promptMatchesKeyword(prompt, '叙事结构')).toBe(true);
@@ -48,37 +77,28 @@ describe('effect prompt generation state', () => {
     expect(promptMatchesKeyword(prompt, '不存在')).toBe(false);
   });
 
-  it('keeps the prototype pagination at ten prompts per page', () => {
-    const items = Array.from({ length: 23 }, (_, index) => item(index + 1));
+  it('keeps server pagination at ten prompts per page', () => {
     expect(EFFECT_PROMPT_LIMITS.pageSize).toBe(10);
-    expect(promptPageCount(items.length)).toBe(3);
-    expect(promptPageItems(items, 2)).toHaveLength(10);
-    expect(promptPageItems(items, 3)).toHaveLength(3);
+    expect(promptPageCount(23)).toBe(3);
+    expect(promptPageCount(0)).toBe(1);
   });
 
-  it('requires target count, three dimensions and both similarity limits', () => {
-    const workspace: EffectPromptWorkspace = {
-      version: 1,
-      hasGenerated: false,
-      settings: { count: 10, durationSeconds: 15, semanticLimit: 15, visualLimit: 20 },
-      items: Array.from({ length: 10 }, (_, index) => item(index + 1)),
-      metrics: {
-        generatedCount: 10,
-        removedDuplicates: 2,
-        semanticSimilarity: 11.8,
-        visualSimilarity: 16.4,
-      },
-      updatedAt: '2026-08-25T00:00:00.000Z',
-    };
-    expect(isPromptWorkspaceComplete(workspace)).toBe(true);
-    expect(isPromptWorkspaceComplete({ ...workspace, items: workspace.items.slice(1) })).toBe(
-      false,
-    );
+  it('uses authoritative quality metrics and commit status for progression', () => {
+    expect(isPromptResultQualityReady(batch)).toBe(true);
     expect(
-      isPromptWorkspaceComplete({
-        ...workspace,
-        metrics: { ...workspace.metrics, semanticSimilarity: 15.1 },
+      isPromptResultQualityReady({
+        ...batch,
+        metrics: { ...batch.metrics, semanticDuplicateRate: 15.1 },
       }),
     ).toBe(false);
+
+    const state = {
+      status: 'COMPLETED',
+      qualityStatus: 'PASS',
+      commitStatus: 'COMMITTED',
+    } as EffectPromptProductState;
+    expect(isPromptProductCommitted(state)).toBe(true);
+    expect(isPromptProductCommitted({ ...state, commitStatus: 'DRAFT_CHANGED' })).toBe(false);
+    expect(isPromptRunActive({ ...state, status: 'PROCESSING' })).toBe(true);
   });
 });

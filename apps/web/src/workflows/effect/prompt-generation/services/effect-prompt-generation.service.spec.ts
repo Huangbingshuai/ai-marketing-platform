@@ -1,156 +1,145 @@
-import type { EffectVideoConfig } from '@ai-marketing/contracts';
-import { describe, expect, it } from 'vitest';
+import type { EffectPromptRun, GetEffectPromptWorkspaceData } from '@ai-marketing/contracts';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { isPromptWorkspaceComplete } from '../effect-prompt-generation-state';
 import {
-  addEffectPrompt,
-  deleteEffectPrompt,
-  generateEffectPromptBatch,
+  beginEffectPromptRun,
+  downloadEffectPromptBatch,
   loadEffectPromptWorkspace,
-  regenerateEffectPrompt,
-  updateEffectPrompt,
-  type EffectPromptContext,
+  pollEffectPromptRun,
+  savePromptSettings,
 } from './effect-prompt-generation.service';
 
-class MemoryStorage implements Storage {
-  private readonly values = new Map<string, string>();
-  get length(): number {
-    return this.values.size;
-  }
-  clear(): void {
-    this.values.clear();
-  }
-  getItem(key: string): string | null {
-    return this.values.get(key) ?? null;
-  }
-  key(index: number): string | null {
-    return [...this.values.keys()][index] ?? null;
-  }
-  removeItem(key: string): void {
-    this.values.delete(key);
-  }
-  setItem(key: string, value: string): void {
-    this.values.set(key, value);
-  }
-}
+const response = (data: unknown): Response =>
+  new Response(JSON.stringify({ success: true, data }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
 
-const config: EffectVideoConfig = {
-  aspectRatio: '9:16',
-  durationSeconds: 15,
-  resolution: '1080P',
-  frameRate: 30,
-  subtitleStrategy: '跟随口播',
-  voiceoverStrategy: 'AI 女声',
-  bgmStrategy: '自动匹配',
-  styleTone: '烟火食欲感',
-  deliveryChannel: '抖音',
-  disabledElements: ['未成年人'],
-};
-
-const product = {
-  id: 'product-1',
-  name: '广式腊肠',
-  category: '腊味食品',
-  sku: 'SKU-001',
-  effectiveConfig: config,
-};
-const context: EffectPromptContext = {
+const run = (status: EffectPromptRun['status'], progress: number): EffectPromptRun => ({
+  id: 'prompt-run-1',
   projectId: 'project-1',
-  workflowRunId: 'run-1',
-  productId: product.id,
-};
+  workflowRunId: 'workflow-run-1',
+  productId: 'product-1',
+  operation: 'BATCH_GENERATE',
+  targetItemId: null,
+  status,
+  progress,
+  currentNode: status === 'COMPLETED' ? 'COMPLETED' : 'CANDIDATE_GENERATION',
+  warnings: [],
+  errorMessage: null,
+  promptResultId: status === 'COMPLETED' ? 'result-1' : null,
+  nodes: [],
+  createdAt: '2026-08-25T00:00:00.000Z',
+  updatedAt: '2026-08-25T00:00:01.000Z',
+});
 
-describe('effect prompt generation mock service', () => {
-  it('creates and restores a complete default batch of fifty prompts', async () => {
-    const storage = new MemoryStorage();
-    const first = await loadEffectPromptWorkspace(context, product, config, undefined, {
-      delayMs: 0,
-      storage,
-    });
-    expect(first.items).toHaveLength(50);
-    expect(first.hasGenerated).toBe(false);
-    expect(first.settings.count).toBe(50);
-    expect(first.metrics.removedDuplicates).toBe(8);
-    expect(first.items.every((item) => item.dimensions.length >= 3)).toBe(true);
-    expect(first.items.every((item) => item.semanticSimilarity <= 15)).toBe(true);
-    expect(first.items.every((item) => item.visualSimilarity <= 20)).toBe(true);
-    expect(isPromptWorkspaceComplete(first)).toBe(true);
+afterEach(() => vi.unstubAllGlobals());
 
-    const edited = updateEffectPrompt(context, first, first.items[0]!.id, '本地恢复内容', {
-      storage,
-    });
-    const restored = await loadEffectPromptWorkspace(context, product, config, undefined, {
-      delayMs: 0,
-      storage,
-    });
-    expect(restored.items[0]!.content).toBe('本地恢复内容');
-    expect(restored.updatedAt).toBe(edited.updatedAt);
+describe('effect prompt generation HTTP service', () => {
+  it('loads the project-isolated workspace without using localStorage', async () => {
+    const workspace: GetEffectPromptWorkspaceData = {
+      projectId: 'project-1',
+      workflowRunId: 'workflow-run-1',
+      products: [],
+    };
+    const fetchMock = vi.fn().mockResolvedValue(response(workspace));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      loadEffectPromptWorkspace({ projectId: 'project-1', workflowRunId: 'workflow-run-1' }),
+    ).resolves.toEqual(workspace);
+    expect(String(fetchMock.mock.calls[0]![0])).toContain(
+      '/projects/project-1/workflows/effect/prompt-generation?workflowRunId=workflow-run-1',
+    );
   });
 
-  it('honors a custom count and replenishes a threshold-safe batch', async () => {
-    const workspace = await generateEffectPromptBatch(
-      context,
-      product,
-      config,
-      { count: 73, durationSeconds: 20, semanticLimit: 10, visualLimit: 14 },
-      undefined,
-      { delayMs: 0, storage: new MemoryStorage() },
-    );
-    expect(workspace.items).toHaveLength(73);
-    expect(workspace.hasGenerated).toBe(true);
-    expect(workspace.items.every((item) => item.semanticSimilarity <= 10)).toBe(true);
-    expect(workspace.items.every((item) => item.visualSimilarity <= 14)).toBe(true);
-    expect(workspace.items.every((item) => item.dimensions.length === 6)).toBe(true);
-  });
+  it('saves settings with CAS revision and starts an idempotent run', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response({
+          productId: 'product-1',
+          settings: { count: 50, durationSeconds: 15, semanticLimit: 15, visualLimit: 20 },
+          settingsRevision: 4,
+          savedAt: '2026-08-25T00:00:00.000Z',
+          unchanged: false,
+        }),
+      )
+      .mockResolvedValueOnce(response({ run: run('QUEUED', 0) }));
+    vi.stubGlobal('fetch', fetchMock);
 
-  it('supports add, edit, delete and single regeneration without touching another product', async () => {
-    const storage = new MemoryStorage();
-    const workspace = await loadEffectPromptWorkspace(context, product, config, undefined, {
-      delayMs: 0,
-      storage,
-    });
-    const added = addEffectPrompt(context, workspace, product, config, '人工添加内容', { storage });
-    expect(added.items).toHaveLength(51);
-    expect(added.items.at(-1)?.content).toBe('人工添加内容');
-
-    const target = added.items[0]!;
-    const regenerated = await regenerateEffectPrompt(
-      context,
-      added,
-      target.id,
-      product,
-      config,
-      undefined,
-      { delayMs: 0, storage },
-    );
-    expect(regenerated.items[0]!.id).not.toBe(target.id);
-    const removed = deleteEffectPrompt(context, regenerated, regenerated.items[0]!.id, {
-      storage,
-    });
-    expect(removed.items).toHaveLength(50);
-
-    const otherContext = { ...context, productId: 'product-2' };
-    const other = await loadEffectPromptWorkspace(
-      otherContext,
-      { ...product, id: 'product-2', name: '另一产品' },
-      config,
-      undefined,
-      { delayMs: 0, storage },
-    );
-    expect(other.items[0]!.content).not.toContain('人工添加内容');
-  });
-
-  it('cancels an in-flight mock generation through AbortSignal', async () => {
-    const controller = new AbortController();
-    const promise = generateEffectPromptBatch(
-      context,
-      product,
-      config,
+    await savePromptSettings(
+      { projectId: 'project-1', workflowRunId: 'workflow-run-1' },
+      'product-1',
       { count: 50, durationSeconds: 15, semanticLimit: 15, visualLimit: 20 },
-      controller.signal,
-      { delayMs: 100, storage: new MemoryStorage() },
+      3,
     );
+    const settingsInit = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(settingsInit.headers).toMatchObject({ 'If-Match': '3' });
+
+    await beginEffectPromptRun('project-1', 'product-1', {
+      workflowRunId: 'workflow-run-1',
+      operation: 'BATCH_GENERATE',
+      expectedSettingsRevision: 4,
+    });
+    const runBody = JSON.parse(String((fetchMock.mock.calls[1]![1] as RequestInit).body)) as {
+      idempotencyKey: string;
+    };
+    expect(runBody.idempotencyKey).toMatch(/^effect-prompt-|^[0-9a-f-]{20,}$/u);
+  });
+
+  it('polls until a terminal result and reports each persisted update', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(response({ run: run('RUNNING', 45) }))
+      .mockResolvedValueOnce(response({ run: run('COMPLETED', 100) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const updates: number[] = [];
+    const finalRun = await pollEffectPromptRun('project-1', 'prompt-run-1', {
+      intervalMs: 0,
+      onUpdate: (nextRun) => updates.push(nextRun.progress),
+    });
+    expect(finalRun.status).toBe('COMPLETED');
+    expect(updates).toEqual([45, 100]);
+  });
+
+  it('cancels recoverable polling through AbortSignal', async () => {
+    const controller = new AbortController();
     controller.abort();
-    await expect(promise).rejects.toMatchObject({ name: 'AbortError' });
+    vi.stubGlobal('fetch', vi.fn());
+    await expect(
+      pollEffectPromptRun('project-1', 'prompt-run-1', { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('exports the authoritative server payload instead of rebuilding browser state', async () => {
+    const exported = {
+      schemaVersion: 1,
+      productId: 'product-1',
+      resultId: 'result-1',
+      revision: 3,
+      exportedAt: '2026-08-25T00:00:00.000Z',
+      result: {
+        schemaVersion: 1,
+        settings: { count: 10, durationSeconds: 15, semanticLimit: 15, visualLimit: 20 },
+        items: [],
+        metrics: {
+          targetCount: 10,
+          acceptedCount: 0,
+          generatedCandidateCount: 0,
+          removedSemanticDuplicates: 0,
+          removedVisualDuplicates: 0,
+          removedDimensionConflicts: 0,
+          semanticDuplicateRate: 0,
+          visualOverlapRate: 0,
+          replenishmentRounds: 0,
+        },
+        qualityStatus: 'NEEDS_REVIEW',
+      },
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(exported)));
+    const download = await downloadEffectPromptBatch('project-1', 'result-1', '广式腊肠');
+    expect(download.fileName).toBe('广式腊肠-差异化Prompt-0条.json');
+    await expect(download.blob.text()).resolves.toContain('"resultId": "result-1"');
   });
 });

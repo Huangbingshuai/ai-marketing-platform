@@ -10,6 +10,7 @@ import { AssetModule } from './platform/asset/asset.module';
 import { ProjectModule } from './platform/project/project.module';
 import { WorkflowModule } from './platform/workflow/workflow.module';
 import { EffectExtractionModule } from './workflows/effect/information-extraction/effect-extraction.module';
+import { EffectPromptModule } from './workflows/effect/prompt-generation/effect-prompt.module';
 import { EffectSourceImportModule } from './workflows/effect/source-import/effect-source-import.module';
 
 @Module({
@@ -27,6 +28,7 @@ import { EffectSourceImportModule } from './workflows/effect/source-import/effec
     WorkflowModule,
     EffectSourceImportModule,
     EffectExtractionModule,
+    EffectPromptModule,
   ],
 })
 export class AppModule {}

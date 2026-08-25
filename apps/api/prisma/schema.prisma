@@ -142,6 +142,32 @@ enum EffectExtractionRunStatus {
   FAILED
 }
 
+enum EffectPromptOperation {
+  BATCH_GENERATE
+  ITEM_REGENERATE
+}
+
+enum EffectPromptRunStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum EffectPromptStageStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  PARTIAL
+  SKIPPED
+  FAILED
+}
+
+enum EffectPromptQualityStatus {
+  PASS
+  NEEDS_REVIEW
+}
+
 enum WorkflowRunStatus {
   ACTIVE
   PAUSED
@@ -236,6 +262,8 @@ model Project {
   storageCleanupTasks        StorageCleanupTask[]
   effectExtractionRuns       EffectExtractionRun[]
   effectExtractionResults    EffectExtractionResult[]
+  effectPromptRuns           EffectPromptRun[]
+  effectPromptResults        EffectPromptResult[]
   jobOutboxEntries           JobOutbox[]
   effectExtractionFileHolds  EffectExtractionFileHold[]
   workflowRuns               WorkflowRun[]
@@ -316,6 +344,8 @@ model WorkflowRun {
   effectImportProducts       EffectImportProduct[]
   effectImportMaterials      EffectImportMaterial[]
   effectImportUploadItems    EffectImportUploadItem[]
+  effectPromptRuns           EffectPromptRun[]
+  effectPromptResults        EffectPromptResult[]
 
   @@unique([projectId, workflow, workflowSpace, activeKey])
   @@unique([projectId, id])
@@ -556,6 +586,8 @@ model EffectImportProduct {
   materials               EffectImportMaterial[]
   extractionRuns          EffectExtractionRun[]
   extractionResults       EffectExtractionResult[]
+  promptRuns              EffectPromptRun[]
+  promptResults           EffectPromptResult[]
   uploadSessions          EffectImportUploadSession[]
 
   @@unique([projectId, id])
@@ -856,4 +888,116 @@ model EffectExtractionArtifact {
   @@unique([projectId, runId, idempotencyKey])
   @@index([projectId, runId, artifactKind])
   @@map("effect_extraction_artifacts")
+}
+
+model EffectPromptRun {
+  id                String                 @id @default(uuid()) @db.Uuid
+  projectId         String                 @db.Uuid
+  workflowRunId     String                 @db.Uuid
+  productId         String                 @db.Uuid
+  operation         EffectPromptOperation
+  targetItemId      String?                @db.Uuid
+  idempotencyKey    String                 @db.VarChar(500)
+  requestHash       String                 @db.Char(64)
+  sourceFingerprint String                 @db.Char(64)
+  settingsHash      String                 @db.Char(64)
+  inputSnapshot     Json
+  status            EffectPromptRunStatus  @default(QUEUED)
+  progress          Int                    @default(0)
+  currentNode       String?                @db.VarChar(120)
+  warnings          Json                   @default("[]")
+  errorCode         String?                @db.VarChar(120)
+  errorMessage      String?                @db.VarChar(1000)
+  attemptCount      Int                    @default(0)
+  attemptToken      String?                @db.Uuid
+  leaseExpiresAt    DateTime?
+  startedAt         DateTime?
+  heartbeatAt       DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+  project           Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workflowRun       WorkflowRun            @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
+  product           EffectImportProduct    @relation(fields: [projectId, workflowRunId, productId], references: [projectId, workflowRunId, id], onDelete: Cascade)
+  stages            EffectPromptStageOutput[]
+  shards            EffectPromptShardOutput[]
+  result            EffectPromptResult?
+
+  @@unique([projectId, id])
+  @@unique([projectId, idempotencyKey])
+  @@index([projectId, workflowRunId, productId, status, updatedAt])
+  @@index([status, leaseExpiresAt])
+  @@map("effect_prompt_runs")
+}
+
+model EffectPromptStageOutput {
+  id           String                  @id @default(uuid()) @db.Uuid
+  projectId    String                  @db.Uuid
+  runId        String                  @db.Uuid
+  nodeId       String                  @db.VarChar(120)
+  status       EffectPromptStageStatus @default(PENDING)
+  summary      String                  @default("") @db.VarChar(500)
+  warnings     Json                    @default("[]")
+  metadata     Json                    @default("{}")
+  errorMessage String?                 @db.VarChar(1000)
+  startedAt    DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime                @default(now())
+  updatedAt    DateTime                @updatedAt
+  run          EffectPromptRun         @relation(fields: [projectId, runId], references: [projectId, id], onDelete: Cascade)
+
+  @@unique([projectId, runId, nodeId])
+  @@index([projectId, runId, updatedAt])
+  @@map("effect_prompt_stage_outputs")
+}
+
+model EffectPromptShardOutput {
+  id              String                  @id @default(uuid()) @db.Uuid
+  projectId       String                  @db.Uuid
+  runId           String                  @db.Uuid
+  round           Int
+  shardIndex      Int
+  status          EffectPromptStageStatus @default(PENDING)
+  combinationPlan Json                    @default("[]")
+  items           Json                    @default("[]")
+  warnings        Json                    @default("[]")
+  errorCode       String?                 @db.VarChar(120)
+  errorMessage    String?                 @db.VarChar(1000)
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+  run             EffectPromptRun         @relation(fields: [projectId, runId], references: [projectId, id], onDelete: Cascade)
+
+  @@unique([projectId, runId, round, shardIndex])
+  @@index([projectId, runId, round, shardIndex])
+  @@map("effect_prompt_shard_outputs")
+}
+
+model EffectPromptResult {
+  id                String                    @id @default(uuid()) @db.Uuid
+  projectId         String                    @db.Uuid
+  workflowRunId     String                    @db.Uuid
+  productId         String                    @db.Uuid
+  runId             String                    @unique @db.Uuid
+  schemaVersion     Int                       @default(1)
+  generatedResult   Json
+  draftResult       Json
+  manualOverrides   Json                      @default("{}")
+  qualityStatus     EffectPromptQualityStatus
+  sourceFingerprint String                    @db.Char(64)
+  settingsHash      String                    @db.Char(64)
+  revision          Int                       @default(1)
+  savedAt           DateTime?
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+  project           Project                   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workflowRun       WorkflowRun               @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
+  product           EffectImportProduct       @relation(fields: [projectId, workflowRunId, productId], references: [projectId, workflowRunId, id], onDelete: Cascade)
+  run               EffectPromptRun           @relation(fields: [projectId, runId], references: [projectId, id], onDelete: Cascade)
+
+  @@unique([projectId, id])
+  @@unique([projectId, runId])
+  @@index([projectId, workflowRunId, productId, createdAt])
+  @@map("effect_prompt_results")
 }
