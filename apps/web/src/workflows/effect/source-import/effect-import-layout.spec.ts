@@ -149,6 +149,17 @@ describe('effect import commerce link placeholder', () => {
     expect(pageSource).toContain('if (!(await flushProduct(product.id))) return;');
     expect(pageSource).toContain('电商链接已保存到当前商品资料包，暂未解析页面内容');
   });
+
+  it('renders a saved commerce URL as an imported package item', () => {
+    expect(productEditorSource).toContain('const importedItemCount = computed(');
+    expect(productEditorSource).toContain('{{ importedItemCount }} 项资料');
+    expect(productEditorSource).toContain('v-if="savedCommerceUrl"');
+    expect(productEditorSource).toContain('<strong>电商商品链接</strong>');
+    expect(productEditorSource).toContain(
+      '<small :title="savedCommerceUrl">{{ savedCommerceUrl }}</small>',
+    );
+    expect(productEditorSource).toContain("{{ linkBusy ? '保存中' : '已保存' }}");
+  });
 });
 
 describe('effect import automatic draft saving', () => {

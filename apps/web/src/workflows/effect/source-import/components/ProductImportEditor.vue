@@ -62,6 +62,10 @@ const materialTypes: {
 const selectedMaterialType = ref<EffectImportUploadMaterialType>('PRODUCT_IMAGE');
 const failedThumbnailIds = ref<ReadonlySet<string>>(new Set());
 const hasProductName = computed(() => props.product.name.trim().length > 0);
+const savedCommerceUrl = computed(() => props.product.commerceUrl?.trim() ?? '');
+const importedItemCount = computed(
+  () => props.product.materials.length + Number(Boolean(savedCommerceUrl.value)),
+);
 const uploadDisabled = computed(() => props.disabled || !hasProductName.value);
 const selectedType = computed(() =>
   materialTypes.find((item) => item.type === selectedMaterialType.value)!,
@@ -285,12 +289,12 @@ const statusText = (material: EffectImportMaterial): string =>
       <header>
         <div>
           <strong>已导入素材</strong
-          ><small>{{ batch ? '当前商品资料' : '文件将在服务端安全保存' }}</small>
+          ><small>{{ batch ? '当前商品资料' : '文件与链接将在服务端安全保存' }}</small>
         </div>
-        <span>{{ product.materials.length }} 个文件</span>
+        <span>{{ importedItemCount }} 项资料</span>
       </header>
-      <div v-if="!product.materials.length" class="materials-empty">
-        暂无已导入资料，可从上方拖拽区上传
+      <div v-if="!importedItemCount" class="materials-empty">
+        暂无已导入资料，可从上方上传文件或保存电商链接
       </div>
       <div
         v-for="material in product.materials"
@@ -352,6 +356,18 @@ const statusText = (material: EffectImportMaterial): string =>
         >
           <Trash2 :size="13" />
         </button>
+      </div>
+      <div v-if="savedCommerceUrl" class="material-file-row commerce-link-row">
+        <span class="commerce-link-badge"><Link2 :size="18" /></span>
+        <span class="file-copy">
+          <strong>电商商品链接</strong>
+          <small :title="savedCommerceUrl">{{ savedCommerceUrl }}</small>
+        </span>
+        <em>
+          <RefreshCw v-if="linkBusy" class="spin" :size="13" />
+          <CheckCircle2 v-else :size="13" />
+          {{ linkBusy ? '保存中' : '已保存' }}
+        </em>
       </div>
     </section>
     <footer v-if="!batch" class="commit-footer">
@@ -654,6 +670,21 @@ const statusText = (material: EffectImportMaterial): string =>
   text-align: center;
   font-size: 9px;
   font-weight: 900;
+}
+.commerce-link-badge {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  box-sizing: border-box;
+  flex: 0 0 48px;
+  place-items: center;
+  color: #2563eb;
+  background: #eef3ff;
+  border: 1px solid #d9e5ff;
+  border-radius: 9px;
+}
+.commerce-link-row .file-copy small {
+  color: #66789c;
 }
 .material-thumbnail {
   display: flex;
