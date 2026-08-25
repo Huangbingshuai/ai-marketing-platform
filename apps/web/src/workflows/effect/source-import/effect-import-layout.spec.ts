@@ -160,6 +160,17 @@ describe('effect import commerce link placeholder', () => {
     );
     expect(productEditorSource).toContain("{{ linkBusy ? '保存中' : '已保存' }}");
   });
+
+  it('supports replacing and deleting the saved commerce URL', () => {
+    expect(productEditorSource).toContain('const replaceCommerceLink = (): void => {');
+    expect(productEditorSource).toContain('commerceInput.value?.select()');
+    expect(productEditorSource).toContain('title="重新填写电商链接"');
+    expect(productEditorSource).toContain('aria-label="删除电商链接"');
+    expect(productEditorSource).toContain("emit('deleteLink', product)");
+    expect(pageSource).toContain('const removeCommerceLink = async');
+    expect(pageSource).toContain('{ commerceUrl: null, expectedRevision }');
+    expect(pageSource).toContain('@delete-link="removeCommerceLink"');
+  });
 });
 
 describe('effect import automatic draft saving', () => {

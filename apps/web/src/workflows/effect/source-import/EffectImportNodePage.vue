@@ -1119,6 +1119,33 @@ const checkCommerceLink = async (product: EffectImportProduct): Promise<void> =>
   }
 };
 
+const removeCommerceLink = async (product: EffectImportProduct): Promise<void> => {
+  if (!product.commerceUrl || busyCommerceProductIds.value.has(product.id)) return;
+  if (!window.confirm('确定删除当前商品资料包中的电商链接吗？')) return;
+  setCommerceLinkBusy(product.id, true);
+  try {
+    if (!(await flushProduct(product.id, false))) return;
+    const result = await runWrite(
+      (expectedRevision, signal) =>
+        updateEffectImportProduct(
+          loadedProjectId.value,
+          currentMode.value,
+          product.id,
+          { commerceUrl: null, expectedRevision },
+          signal,
+        ),
+      (response) => {
+        replaceProduct(response.data.product);
+        markDraftMutation(response.data.revision);
+      },
+    );
+    if (!result || !(await saveWorkflowNodeState())) return;
+    showNotice('电商链接已从当前商品资料包删除');
+  } finally {
+    setCommerceLinkBusy(product.id, false);
+  }
+};
+
 const startManifestPreview = async (
   manifest: File,
   files: File[],
@@ -1522,6 +1549,7 @@ onBeforeUnmount(() => {
                   @upload="uploadMaterials"
                   @replace="requestReplacement"
                   @delete-material="removeMaterial"
+                  @delete-link="removeCommerceLink"
                   @retry="(product) => retryProducts([product.id])"
                   @validate-link="checkCommerceLink"
                 />
@@ -1602,6 +1630,7 @@ onBeforeUnmount(() => {
                     @upload="uploadMaterials"
                     @replace="requestReplacement"
                     @delete-material="removeMaterial"
+                    @delete-link="removeCommerceLink"
                     @retry="(item) => retryProducts([item.id])"
                     @validate-link="checkCommerceLink"
                   />

@@ -43,6 +43,7 @@ const emit = defineEmits<{
   blur: [product: EffectImportProduct];
   change: [product: EffectImportProduct, field: 'commerceUrl' | 'name', value: string];
   delete: [product: EffectImportProduct];
+  deleteLink: [product: EffectImportProduct];
   deleteMaterial: [product: EffectImportProduct, material: EffectImportMaterial];
   replace: [product: EffectImportProduct, material: EffectImportMaterial];
   retry: [product: EffectImportProduct, material: EffectImportMaterial];
@@ -60,6 +61,7 @@ const materialTypes: {
   { type: 'PRODUCT_DOCUMENT', icon: FileText, accept: '.doc,.docx,.xls,.xlsx,.pdf,.txt,.md' },
 ];
 const selectedMaterialType = ref<EffectImportUploadMaterialType>('PRODUCT_IMAGE');
+const commerceInput = ref<HTMLInputElement | null>(null);
 const failedThumbnailIds = ref<ReadonlySet<string>>(new Set());
 const hasProductName = computed(() => props.product.name.trim().length > 0);
 const savedCommerceUrl = computed(() => props.product.commerceUrl?.trim() ?? '');
@@ -118,6 +120,10 @@ const markThumbnailFailed = (materialId: string): void => {
   const next = new Set(failedThumbnailIds.value);
   next.add(materialId);
   failedThumbnailIds.value = next;
+};
+const replaceCommerceLink = (): void => {
+  commerceInput.value?.focus();
+  commerceInput.value?.select();
 };
 const statusText = (material: EffectImportMaterial): string =>
   props.busyMaterialIds.has(material.id)
@@ -268,6 +274,7 @@ const statusText = (material: EffectImportMaterial): string =>
       </header>
       <div class="commerce-input-row">
         <Link2 :size="15" /><input
+          ref="commerceInput"
           :value="product.commerceUrl ?? ''"
           :disabled="disabled"
           type="url"
@@ -368,6 +375,23 @@ const statusText = (material: EffectImportMaterial): string =>
           <CheckCircle2 v-else :size="13" />
           {{ linkBusy ? '保存中' : '已保存' }}
         </em>
+        <button
+          type="button"
+          :disabled="disabled || linkBusy"
+          title="重新填写电商链接"
+          @click="replaceCommerceLink"
+        >
+          重传
+        </button>
+        <button
+          class="file-delete"
+          type="button"
+          :disabled="disabled || linkBusy"
+          aria-label="删除电商链接"
+          @click="emit('deleteLink', product)"
+        >
+          <Trash2 :size="13" />
+        </button>
       </div>
     </section>
     <footer v-if="!batch" class="commit-footer">
