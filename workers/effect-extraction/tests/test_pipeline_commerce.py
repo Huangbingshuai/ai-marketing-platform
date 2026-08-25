@@ -79,7 +79,14 @@ class Fetcher:
             source_host="shop.example",
             page_title="商品详情",
             deterministic_candidate=deterministic,
-            model_metadata={"name": "结构化商品名", "price": "59"},
+            model_metadata={
+                "name": "结构化商品名",
+                "price": "59",
+                "brand": "思香逢",
+                "seller": "思香逢京东自营旗舰店",
+                "deliveryPromise": "预计明天送达",
+                "description": "不应持久化的网页正文",
+            },
             used_renderer=False,
         )
 
@@ -132,7 +139,15 @@ async def test_commerce_success_uploads_markdown_idempotently_and_merges_facts()
     assert output.candidate is not None
     assert output.candidate.product_name == "结构化商品名"
     assert output.candidate.price_range == "CNY 59"
-    assert output.metadata == {"sourceHost": "shop.example"}
+    assert output.metadata == {
+        "sourceHost": "shop.example",
+        "brand": "思香逢",
+        "seller": "思香逢京东自营旗舰店",
+        "deliveryPromise": "预计明天送达",
+    }
+    assert output.items[0].metadata["brand"] == "思香逢"
+    assert output.items[0].metadata["seller"] == "思香逢京东自营旗舰店"
+    assert output.items[0].metadata["deliveryPromise"] == "预计明天送达"
     assert api.uploads[0]["artifact_kind"] == "COMMERCE_MARKDOWN"
     assert api.uploads[0]["idempotency_key"] == "run:commerce:product:fingerprint"
     assert "https://" not in str(output.model_dump())
@@ -151,6 +166,9 @@ async def test_commerce_ai_failure_keeps_structured_facts_as_partial() -> None:
     assert output.warnings == ["商品页面 AI 抽取超时"]
     assert output.metadata == {
         "sourceHost": "shop.example",
+        "brand": "思香逢",
+        "seller": "思香逢京东自营旗舰店",
+        "deliveryPromise": "预计明天送达",
         "failures": [{"type": "AI_TIMEOUT", "attempts": 3, "elapsedMs": 12_345}],
     }
 

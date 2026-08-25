@@ -9,6 +9,7 @@ from .commerce import (
     CommerceErrorType,
     CommerceFetchError,
     CommerceFetcher,
+    CommercePage,
     HttpxCommerceFetcher,
     has_candidate_data,
     merge_commerce_candidates,
@@ -253,6 +254,7 @@ class ExtractionPipeline:
 
         try:
             page = await self.commerce_fetcher.fetch(commerce_url)
+            page_metadata = _commerce_page_metadata(page)
             storage_key = await self.api.upload_artifact(
                 context,
                 artifact_kind="COMMERCE_MARKDOWN",
@@ -282,7 +284,7 @@ class ExtractionPipeline:
                     candidate=candidate,
                     artifact_storage_key=storage_key,
                     metadata={
-                        "sourceHost": page.source_host,
+                        **page_metadata,
                         "pageTitle": page.page_title,
                         "aiCall": ai_call.metadata.as_dict(),
                     },
@@ -293,7 +295,7 @@ class ExtractionPipeline:
                     source_fingerprint=context.source_fingerprint,
                     candidate=candidate,
                     items=[item],
-                    metadata={"sourceHost": page.source_host},
+                    metadata=page_metadata,
                 )
             except ProviderError as exc:
                 if not has_candidate_data(page.deterministic_candidate):
@@ -319,7 +321,7 @@ class ExtractionPipeline:
                         artifact_storage_key=storage_key,
                         warning=warning,
                         metadata={
-                            "sourceHost": page.source_host,
+                            **page_metadata,
                             "pageTitle": page.page_title,
                             "error": error,
                         },
@@ -331,7 +333,7 @@ class ExtractionPipeline:
                         candidate=page.deterministic_candidate,
                         items=[item],
                         warnings=[warning],
-                        metadata={"sourceHost": page.source_host, "failures": [error]},
+                        metadata={**page_metadata, "failures": [error]},
                     )
             except CommerceFetchError as exc:
                 output = _commerce_failed_output(
@@ -624,6 +626,15 @@ def _commerce_failed_output(
 def _safe_error(exc: Exception) -> str:
     message = " ".join(str(exc).split())
     return (message or type(exc).__name__)[:500]
+
+
+def _commerce_page_metadata(page: CommercePage) -> dict[str, object]:
+    metadata: dict[str, object] = {"sourceHost": page.source_host}
+    for key in ("brand", "seller", "deliveryPromise"):
+        value = page.model_metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            metadata[key] = " ".join(value.split())[:500]
+    return metadata
 
 
 def _optional(value: str | None) -> str | None:

@@ -63,7 +63,14 @@ const COMMERCE_CANDIDATE_FIELDS = [
   ['productCategory', '品类'],
   ['priceRange', '价格区间'],
   ['coreSpecification', '核心规格'],
-  ['coreSellingPoints', '卖点'],
+  ['coreSellingPoints', '核心卖点'],
+  ['secondarySellingPoints', '其他卖点'],
+  ['trustBackings', '信任背书'],
+  ['corePainPoints', '解决需求'],
+  ['decisionDrivers', '购买理由'],
+  ['usageScenarios', '使用场景'],
+  ['purchaseScenarios', '购买场景'],
+  ['emotionalScenarios', '情感场景'],
 ] as const;
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -264,7 +271,14 @@ const commerceFields = (
     (metadata.hasCommerceUrl === true ? commerceHost(fallbackUrl) : null);
   return fields([
     field('commerceHost', '来源网站', host),
-    ...COMMERCE_CANDIDATE_FIELDS.map(([key, label]) => field(key, label, record[key])),
+    field('productName', '商品名称', record.productName),
+    field('brand', '品牌', metadata.brand),
+    field('productCategory', '品类', record.productCategory),
+    field('priceRange', '价格区间', record.priceRange),
+    field('coreSpecification', '核心规格', record.coreSpecification),
+    field('seller', '店铺', metadata.seller),
+    field('deliveryPromise', '配送信息', metadata.deliveryPromise),
+    ...COMMERCE_CANDIDATE_FIELDS.slice(4).map(([key, label]) => field(key, label, record[key])),
   ]);
 };
 

@@ -363,10 +363,15 @@ describe('presentExtractionNodeDetail', () => {
                 priceRange: '39～49 元',
                 coreSpecification: '330ml × 12 罐',
                 coreSellingPoints: ['0 糖', '清爽气泡'],
+                secondarySellingPoints: ['便携罐装'],
+                purchaseScenarios: ['聚会囤货'],
                 targetAudience: '不应在此节点展示',
               },
               metadata: {
                 sourceHost: 'SHOP.EXAMPLE.COM',
+                brand: '山泉品牌',
+                seller: '山泉官方旗舰店',
+                deliveryPromise: '预计明天送达',
                 pageUrl: 'https://shop.example.com/private/product?token=secret',
                 httpStatus: 200,
                 fetchMode: 'browser',
@@ -388,10 +393,30 @@ describe('presentExtractionNodeDetail', () => {
     expect(detail.fields).toEqual([
       { key: 'commerceHost', label: '来源网站', value: 'shop.example.com', source: null },
       { key: 'productName', label: '商品名称', value: '山泉气泡水旗舰装', source: null },
+      { key: 'brand', label: '品牌', value: '山泉品牌', source: null },
       { key: 'productCategory', label: '品类', value: '气泡饮料', source: null },
       { key: 'priceRange', label: '价格区间', value: '39～49 元', source: null },
       { key: 'coreSpecification', label: '核心规格', value: '330ml × 12 罐', source: null },
-      { key: 'coreSellingPoints', label: '卖点', value: ['0 糖', '清爽气泡'], source: null },
+      { key: 'seller', label: '店铺', value: '山泉官方旗舰店', source: null },
+      { key: 'deliveryPromise', label: '配送信息', value: '预计明天送达', source: null },
+      {
+        key: 'coreSellingPoints',
+        label: '核心卖点',
+        value: ['0 糖', '清爽气泡'],
+        source: null,
+      },
+      {
+        key: 'secondarySellingPoints',
+        label: '其他卖点',
+        value: ['便携罐装'],
+        source: null,
+      },
+      {
+        key: 'purchaseScenarios',
+        label: '购买场景',
+        value: ['聚会囤货'],
+        source: null,
+      },
     ]);
     const serialized = JSON.stringify(detail);
     for (const secret of [

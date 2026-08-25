@@ -4,11 +4,13 @@ import asyncio
 import importlib
 import ipaddress
 import json
+import re
 import socket
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from html import unescape
 from typing import Any, Protocol, cast
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -110,7 +112,9 @@ async def _default_resolver(host: str, port: int) -> list[str]:
         raise CommerceFetchError(CommerceErrorType.DNS_FAILED, retryable=True) from exc
 
 
-async def validate_public_url(url: str, *, resolver: Resolver = _default_resolver) -> ValidatedUrl:
+async def validate_public_url(
+    url: str, *, resolver: Resolver = _default_resolver
+) -> ValidatedUrl:
     raw = url.strip()
     try:
         parsed = urlsplit(raw)
@@ -250,7 +254,56 @@ class HttpxCommerceFetcher:
         validated = await validate_public_url(url, resolver=self._resolver)
         try:
             html, final = await self._fetch_html(validated)
-            page = extract_commerce_page(html, source_host=final.host, used_renderer=False)
+            if _is_access_restricted_url(final.value):
+                raise CommerceFetchError(
+                    CommerceErrorType.ACCESS_RESTRICTED,
+                    elapsed_ms=_elapsed_ms(started),
+                )
+            page = extract_commerce_page(
+                html, source_host=final.host, used_renderer=False
+            )
+            alternate_was_restricted = False
+            if _needs_renderer(page) or not has_candidate_data(
+                page.deterministic_candidate
+            ):
+                alternate_url = _mobile_alternate_url(
+                    html, final.value
+                ) or _known_mobile_alternate_url(validated.value)
+                if alternate_url is not None:
+                    alternate = await validate_public_url(
+                        alternate_url, resolver=self._resolver
+                    )
+                    if alternate.value != final.value:
+                        alternate_html, alternate_final = await self._fetch_html(
+                            alternate
+                        )
+                        alternate_was_restricted = _is_access_restricted_url(
+                            alternate_final.value
+                        )
+                        if not alternate_was_restricted:
+                            alternate_page = extract_commerce_page(
+                                alternate_html,
+                                source_host=alternate_final.host,
+                                used_renderer=False,
+                            )
+                            if has_candidate_data(
+                                alternate_page.deterministic_candidate
+                            ) or (
+                                _needs_renderer(page)
+                                and len(alternate_page.markdown) > len(page.markdown)
+                            ):
+                                page = alternate_page
+                                final = alternate_final
+            if _lost_product_context(validated, final):
+                error_type = (
+                    CommerceErrorType.ACCESS_RESTRICTED
+                    if alternate_was_restricted
+                    else CommerceErrorType.EMPTY_CONTENT
+                )
+                raise CommerceFetchError(
+                    error_type,
+                    elapsed_ms=_elapsed_ms(started),
+                )
             if _needs_renderer(page) and self._renderer is not None:
                 rendered = await self._renderer.render(final.value)
                 rendered_url = await validate_public_url(
@@ -310,7 +363,8 @@ class HttpxCommerceFetcher:
                     if response.is_error:
                         raise CommerceFetchError(
                             CommerceErrorType.HTTP_STATUS,
-                            retryable=response.status_code == 429 or response.status_code >= 500,
+                            retryable=response.status_code == 429
+                            or response.status_code >= 500,
                         )
                     content_type = response.headers.get("content-type", "").lower()
                     if not (
@@ -334,8 +388,8 @@ def extract_commerce_page(
     document = _html_document(html)
     title = _page_title(document)
     open_graph = _open_graph(document)
-    product = _structured_product(document)
-    model_metadata = _model_metadata(product, open_graph, title)
+    product = _structured_product(document, source_host=source_host)
+    model_metadata = _model_metadata(product, open_graph)
     candidate = _deterministic_candidate(model_metadata)
     markdown = _clean_markdown(html, document, title)[:MAX_CLEAN_TEXT_CHARS]
     return CommercePage(
@@ -360,7 +414,9 @@ def merge_commerce_candidates(
 
 
 def has_candidate_data(candidate: ExtractionCandidate) -> bool:
-    return any(value is not None and value != [] for value in candidate.model_dump().values())
+    return any(
+        value is not None and value != [] for value in candidate.model_dump().values()
+    )
 
 
 def _html_document(html: str) -> Any:
@@ -374,6 +430,44 @@ def _html_document(html: str) -> Any:
 def _page_title(document: Any) -> str | None:
     values = document.xpath("//title/text()")
     return _compact(values[0], 200) if values else None
+
+
+def _mobile_alternate_url(html: str, base_url: str) -> str | None:
+    document = _html_document(html)
+    for element in document.xpath(
+        "//meta[translate(@name, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+        "'abcdefghijklmnopqrstuvwxyz')='mobile-agent'][@content]"
+    ):
+        content = element.get("content")
+        if not isinstance(content, str):
+            continue
+        match = re.search(r"(?:^|;)\s*url\s*=\s*([^;\s]+)", content, re.IGNORECASE)
+        if match:
+            return cast(str, urljoin(base_url, match.group(1).strip("'\"")))
+    return None
+
+
+def _known_mobile_alternate_url(url: str) -> str | None:
+    parsed = urlsplit(url)
+    if parsed.hostname != "item.jd.com":
+        return None
+    match = re.fullmatch(r"/(\d+)\.html", parsed.path)
+    if not match:
+        return None
+    return f"https://item.m.jd.com/product/{match.group(1)}.html"
+
+
+def _is_access_restricted_url(url: str) -> bool:
+    parsed = urlsplit(url)
+    return "risk_handler" in parsed.path.casefold() or parsed.hostname in {
+        "cfe.m.jd.com",
+    }
+
+
+def _lost_product_context(initial: ValidatedUrl, final: ValidatedUrl) -> bool:
+    if _known_mobile_alternate_url(initial.value) is None:
+        return False
+    return final.host not in {"item.jd.com", "item.m.jd.com"}
 
 
 def _open_graph(document: Any) -> dict[str, str]:
@@ -397,7 +491,8 @@ def _open_graph(document: Any) -> dict[str, str]:
     return result
 
 
-def _structured_product(document: Any) -> dict[str, Any]:
+def _structured_product(document: Any, *, source_host: str) -> dict[str, Any]:
+    json_ld_product: dict[str, Any] = {}
     for element in document.xpath("//script[@type='application/ld+json']"):
         raw = element.text
         if not isinstance(raw, str) or not raw.strip():
@@ -408,8 +503,129 @@ def _structured_product(document: Any) -> dict[str, Any]:
             continue
         found = _find_product(payload)
         if found is not None:
-            return found
+            json_ld_product = found
+            break
+
+    embedded_product = _jd_embedded_product(document, source_host=source_host)
+    if not json_ld_product:
+        return embedded_product
+    if not embedded_product:
+        return json_ld_product
+    return {**embedded_product, **json_ld_product}
+
+
+def _jd_embedded_product(document: Any, *, source_host: str) -> dict[str, Any]:
+    if source_host != "jd.com" and not source_host.endswith(".jd.com"):
+        return {}
+
+    item_only = _assigned_json_object(document, "window._itemOnly")
+    item_info = _assigned_json_object(document, "window._itemInfo")
+    only_product = _mapping_value(item_only, "item")
+    info_product = _mapping_value(item_info, "product")
+    if not only_product and not info_product:
+        return {}
+
+    result: dict[str, Any] = {"@type": "Product"}
+    name = _first_string(info_product.get("skuName"), only_product.get("skuName"))
+    brand = _first_string(
+        info_product.get("brandName"),
+        info_product.get("cBrand"),
+        only_product.get("brandName"),
+    )
+    if name:
+        result["name"] = name
+    if brand:
+        result["brand"] = brand
+
+    properties: list[dict[str, str]] = []
+    seen_properties: set[tuple[str, str]] = set()
+
+    def add_property(label: str, value: Any) -> None:
+        normalized = _optional_string(value)
+        if not normalized:
+            return
+        key = (label.casefold(), normalized.casefold())
+        if key in seen_properties:
+            return
+        seen_properties.add(key)
+        properties.append({"name": label, "value": normalized})
+
+    selected_sku = _first_string(info_product.get("skuId"), only_product.get("skuId"))
+    sale_properties = only_product.get("saleProp")
+    variants = only_product.get("newColorSize")
+    if isinstance(variants, list):
+        for variant in variants:
+            if not isinstance(variant, Mapping):
+                continue
+            if selected_sku and _first_string(variant.get("skuId")) != selected_sku:
+                continue
+            for property_id in ("1", "2", "3"):
+                label = (
+                    _first_string(sale_properties.get(property_id))
+                    if isinstance(sale_properties, Mapping)
+                    else None
+                )
+                value = _first_string(variant.get(property_id))
+                if label and value:
+                    add_property(label, value)
+            break
+
+    add_property("型号", info_product.get("model"))
+    add_property("重量", info_product.get("weight"))
+    add_property("产地", info_product.get("productArea"))
+    add_property("商品编码", info_product.get("upc"))
+    if properties:
+        result["additionalProperty"] = properties
+
+    price_floor = _mapping_value(item_info, "priceFloor")
+    price = _first_string(price_floor.get("price"))
+    if price and re.fullmatch(r"\d+(?:\.\d+)?", price):
+        result["offers"] = {"price": price, "priceCurrency": "CNY"}
+
+    stock = _mapping_value(item_info, "stock")
+    seller = _mapping_value(stock, "D")
+    shop_name = _first_string(seller.get("shopName"), seller.get("vender"))
+    delivery_promise = _plain_text(_first_string(stock.get("promiseResult")))
+    extend = _mapping_value(info_product, "extend")
+    features = extend.get("features")
+    short_title = (
+        _first_string(features.get("shortTitle"))
+        if isinstance(features, Mapping)
+        else None
+    )
+    if shop_name:
+        result["seller"] = shop_name
+    if delivery_promise:
+        result["deliveryPromise"] = delivery_promise
+    if short_title:
+        result["shortTitle"] = short_title
+    return result
+
+
+def _assigned_json_object(document: Any, marker: str) -> dict[str, Any]:
+    decoder = json.JSONDecoder()
+    for raw in document.xpath("//script/text()"):
+        if not isinstance(raw, str):
+            continue
+        marker_index = raw.find(marker)
+        if marker_index < 0:
+            continue
+        assignment_index = raw.find("=", marker_index + len(marker))
+        object_index = raw.find("{", assignment_index + 1)
+        if assignment_index < 0 or object_index < 0:
+            continue
+        try:
+            value, _ = decoder.raw_decode(raw[object_index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, Mapping):
+            return dict(value)
     return {}
+
+
+def _mapping_value(value: Mapping[str, Any], key: str) -> Mapping[str, Any]:
+    child = value.get(key)
+    return child if isinstance(child, Mapping) else {}
 
 
 def _find_product(value: Any) -> dict[str, Any] | None:
@@ -435,10 +651,12 @@ def _find_product(value: Any) -> dict[str, Any] | None:
 
 
 def _model_metadata(
-    product: Mapping[str, Any], open_graph: Mapping[str, str], title: str | None
+    product: Mapping[str, Any], open_graph: Mapping[str, str]
 ) -> dict[str, Any]:
     result: dict[str, Any] = {}
-    name = _first_string(product.get("name"), open_graph.get("og:title"), title)
+    name = _first_string(product.get("name"), open_graph.get("og:title"))
+    if name and _is_generic_platform_title(name):
+        name = None
     category = _first_string(product.get("category"))
     description = _first_string(
         product.get("description"),
@@ -451,6 +669,23 @@ def _model_metadata(
         result["category"] = _compact(category, 200)
     if description:
         result["description"] = _compact(description, 4_000)
+
+    brand = product.get("brand")
+    if isinstance(brand, Mapping):
+        brand = _first_string(brand.get("name"))
+    else:
+        brand = _first_string(brand)
+    seller = _first_string(product.get("seller"))
+    delivery_promise = _first_string(product.get("deliveryPromise"))
+    short_title = _first_string(product.get("shortTitle"))
+    if brand:
+        result["brand"] = _compact(brand, 200)
+    if seller:
+        result["seller"] = _compact(seller, 300)
+    if delivery_promise:
+        result["deliveryPromise"] = _compact(delivery_promise, 500)
+    if short_title:
+        result["shortTitle"] = _compact(short_title, 300)
 
     offers = product.get("offers")
     if isinstance(offers, list):
@@ -486,7 +721,9 @@ def _model_metadata(
     rating = product.get("aggregateRating")
     if isinstance(rating, Mapping):
         rating_value = _first_string(rating.get("ratingValue"))
-        review_count = _first_string(rating.get("reviewCount"), rating.get("ratingCount"))
+        review_count = _first_string(
+            rating.get("reviewCount"), rating.get("ratingCount")
+        )
         if rating_value:
             result["ratingValue"] = _compact(rating_value, 40)
         if review_count:
@@ -500,9 +737,10 @@ def _deterministic_candidate(metadata: Mapping[str, Any]) -> ExtractionCandidate
     candidate.product_category = _optional_string(metadata.get("category"))
     specs = metadata.get("specifications")
     if isinstance(specs, list):
-        candidate.core_specification = "；".join(
-            str(item) for item in specs if isinstance(item, str)
-        )[:500] or None
+        candidate.core_specification = (
+            "；".join(str(item) for item in specs if isinstance(item, str))[:500]
+            or None
+        )
     price = _optional_string(metadata.get("price"))
     high = _optional_string(metadata.get("highPrice"))
     currency = _optional_string(metadata.get("currency"))
@@ -536,7 +774,9 @@ def _clean_markdown(html: str, document: Any, title: str | None) -> str:
             if parent is not None:
                 parent.remove(element)
         markdown = "\n".join(
-            text.strip() for text in document.itertext() if isinstance(text, str) and text.strip()
+            text.strip()
+            for text in document.itertext()
+            if isinstance(text, str) and text.strip()
         )
     cleaned = "\n".join(line.rstrip() for line in markdown.splitlines()).strip()
     if title and title.casefold() not in cleaned[:500].casefold():
@@ -545,9 +785,9 @@ def _clean_markdown(html: str, document: Any, title: str | None) -> str:
 
 
 def _needs_renderer(page: CommercePage) -> bool:
-    return len(page.markdown.strip()) < MIN_USEFUL_TEXT_CHARS and not has_candidate_data(
-        page.deterministic_candidate
-    )
+    return len(
+        page.markdown.strip()
+    ) < MIN_USEFUL_TEXT_CHARS and not has_candidate_data(page.deterministic_candidate)
 
 
 def _is_access_restricted(markdown: str) -> bool:
@@ -560,7 +800,26 @@ def _is_access_restricted(markdown: str) -> bool:
         "请登录后查看",
         "滑动验证",
     )
-    return len(compact) < 2_000 and any(indicator in compact for indicator in indicators)
+    return len(compact) < 2_000 and any(
+        indicator in compact for indicator in indicators
+    )
+
+
+def _is_generic_platform_title(value: str) -> bool:
+    compact = re.sub(r"\s+", "", value).casefold()
+    indicators = (
+        "京东(jd.com)-正品低价、品质保障、配送及时、轻松购物",
+        "淘宝网-淘！我喜欢",
+        "天猫tmall.com--理想生活上天猫",
+    )
+    return any(indicator in compact for indicator in indicators)
+
+
+def _plain_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = re.sub(r"<[^>]+>", "", unescape(value))
+    return _compact(cleaned, 500) or None
 
 
 def _first_string(*values: Any) -> str | None:
