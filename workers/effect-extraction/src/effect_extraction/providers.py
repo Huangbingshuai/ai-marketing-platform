@@ -107,7 +107,12 @@ class AiProvider(Protocol):
         image_metadata: Mapping[str, Any],
     ) -> AiCallResult[ExtractionCandidate]: ...
 
-    async def normalize(self, fused: ExtractionCandidate) -> AiCallResult[ExtractionResult]: ...
+    async def normalize(
+        self,
+        fused: ExtractionCandidate,
+        *,
+        protected_input: Mapping[str, Any] | None = None,
+    ) -> AiCallResult[ExtractionResult]: ...
 
 
 def _clean(value: str | None) -> str | None:
@@ -145,20 +150,33 @@ class MockAiProvider:
         candidate.visual_features = f"{source_name}，图像尺寸 {width}×{height}，产品主体清晰"
         return _mock_result(candidate, "IMAGE", IMAGE_ANALYSIS_PROMPT)
 
-    async def normalize(self, fused: ExtractionCandidate) -> AiCallResult[ExtractionResult]:
+    async def normalize(
+        self,
+        fused: ExtractionCandidate,
+        *,
+        protected_input: Mapping[str, Any] | None = None,
+    ) -> AiCallResult[ExtractionResult]:
         result = ExtractionResult(
             product_category=fused.product_category or "待补充",
             product_name=fused.product_name or "待补充",
             core_specification=fused.core_specification or "待补充",
             price_range=fused.price_range or "待补充",
             visual_features=fused.visual_features or "待补充",
+            core_selling_points=(fused.core_selling_points or ["待补充"])[0:3],
+            secondary_selling_points=(fused.secondary_selling_points or [])[0:6],
+            trust_backings=(fused.trust_backings or [])[0:6],
             target_audience=fused.target_audience or "待补充",
+            core_pain_points=(fused.core_pain_points or [])[0:5],
+            decision_drivers=(fused.decision_drivers or [])[0:5],
             marketing_goal=fused.marketing_goal or "待补充",
-            core_selling_points=fused.core_selling_points or [],
-            usage_scenarios=fused.usage_scenarios or "待补充",
+            usage_scenarios=(fused.usage_scenarios or [])[0:5],
+            purchase_scenarios=(fused.purchase_scenarios or [])[0:5],
+            emotional_scenarios=(fused.emotional_scenarios or [])[0:5],
+            duration_seconds=fused.duration_seconds or 20,
+            aspect_ratio=fused.aspect_ratio or "9:16",
             delivery_channels=fused.delivery_channels or "待补充",
-            brand_tone=fused.brand_tone or "待补充",
             disabled_elements=fused.disabled_elements or [],
+            visual_style_baseline=fused.visual_style_baseline or "待补充",
         )
         return _mock_result(result, "NORMALIZATION", RESULT_NORMALIZATION_PROMPT)
 
@@ -237,10 +255,18 @@ class ArkResponsesProvider:
             prompt_version=load_prompt_version(IMAGE_ANALYSIS_PROMPT),
         )
 
-    async def normalize(self, fused: ExtractionCandidate) -> AiCallResult[ExtractionResult]:
+    async def normalize(
+        self,
+        fused: ExtractionCandidate,
+        *,
+        protected_input: Mapping[str, Any] | None = None,
+    ) -> AiCallResult[ExtractionResult]:
         prompt = render_prompt(
             RESULT_NORMALIZATION_PROMPT,
             fused_candidate_json=fused.model_dump_json(by_alias=True),
+            protected_user_input_json=json.dumps(
+                dict(protected_input or {}), ensure_ascii=False, sort_keys=True
+            ),
         )
         return await self._structured(
             [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],

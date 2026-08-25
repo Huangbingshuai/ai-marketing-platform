@@ -18,7 +18,7 @@ export type EffectExtractionSourceMaterial = {
 };
 
 export type EffectExtractionInputSnapshot = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   projectId: string;
   draftId: string;
   mode: EffectImportMode;
@@ -34,6 +34,8 @@ export type EffectExtractionInputSnapshot = {
     effectiveConfig: EffectVideoConfig;
   };
   materials: EffectExtractionSourceMaterial[];
+  /** Field-level user corrections inherited by a later extraction run. */
+  manualOverrides?: Partial<EffectExtractionResult>;
   dependencySnapshot: {
     sourcePackageRevision: number;
     effectiveVideoConfigRevision: number;

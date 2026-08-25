@@ -18,13 +18,21 @@ const result: EffectExtractionResult = {
   coreSpecification: '500g',
   priceRange: '50–80 元',
   visualFeatures: '红色包装',
-  targetAudience: '家庭用户',
-  marketingGoal: '提升转化',
   coreSellingPoints: ['真实原料'],
-  usageScenarios: '家庭聚餐',
+  secondarySellingPoints: ['便于储存'],
+  trustBackings: [],
+  targetAudience: '家庭用户',
+  corePainPoints: ['备餐时间有限'],
+  decisionDrivers: ['规格适合家庭分享'],
+  marketingGoal: '提升转化',
+  usageScenarios: ['家庭聚餐'],
+  purchaseScenarios: ['家庭囤货'],
+  emotionalScenarios: ['家庭分享'],
+  durationSeconds: 20,
+  aspectRatio: '9:16',
   deliveryChannels: '抖音',
-  brandTone: '自然可信',
   disabledElements: ['绝对化用语'],
+  visualStyleBaseline: '自然可信',
 };
 
 describe('effect extraction contract', () => {
@@ -37,8 +45,8 @@ describe('effect extraction contract', () => {
     expect(schema.additionalProperties).toBe(false);
   });
 
-  it('exposes stable v1 statuses and branch names', () => {
-    expect(EFFECT_EXTRACTION_SCHEMA_VERSION).toBe(1);
+  it('exposes stable v2 statuses and branch names', () => {
+    expect(EFFECT_EXTRACTION_SCHEMA_VERSION).toBe(2);
     expect(EFFECT_EXTRACTION_PRODUCT_STATUSES).toContain('STALE');
     expect(EFFECT_EXTRACTION_PRODUCT_STATUSES).toContain('QUEUED');
     expect(EFFECT_EXTRACTION_BRANCHES).toEqual([

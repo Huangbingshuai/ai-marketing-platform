@@ -247,8 +247,10 @@ class ExtractionPipeline:
         # intentionally presents only the five global video fields from the import node.
         candidate.product_name = snapshot.product.name.strip() or None
         candidate.product_category = snapshot.product.category.strip() or None
+        candidate.duration_seconds = config.duration_seconds
+        candidate.aspect_ratio = _optional(config.aspect_ratio)
         candidate.delivery_channels = _optional(config.delivery_channel)
-        candidate.brand_tone = _optional(config.style_tone)
+        candidate.visual_style_baseline = _optional(config.style_tone)
         candidate.disabled_elements = _strings(config.disabled_elements) or None
         return await self._save(
             context,
@@ -297,7 +299,11 @@ class ExtractionPipeline:
         fusion = by_name.get(BranchName.FUSION)
         if fusion is None or fusion.candidate is None:
             raise FusionError("fusion output is missing")
-        ai_call = await self.provider.normalize(fusion.candidate)
+        snapshot = self._snapshot(context)
+        ai_call = await self.provider.normalize(
+            fusion.candidate,
+            protected_input=snapshot.manual_overrides,
+        )
         result = ai_call.value
         form = by_name.get(BranchName.FORM)
         if form and form.candidate:
@@ -452,9 +458,18 @@ def _strings(values: Sequence[str | None]) -> list[str]:
 
 
 def _restore_manual_fields(result: object, form: ExtractionCandidate) -> None:
-    for field in ("product_category", "product_name", "delivery_channels", "brand_tone"):
+    for field in (
+        "product_category",
+        "product_name",
+        "duration_seconds",
+        "aspect_ratio",
+        "delivery_channels",
+        "visual_style_baseline",
+    ):
         value = getattr(form, field)
         if isinstance(value, str) and value.strip():
             setattr(result, field, value.strip())
+        elif isinstance(value, int) and value > 0:
+            setattr(result, field, value)
     if form.disabled_elements:
         setattr(result, "disabled_elements", _strings(form.disabled_elements))

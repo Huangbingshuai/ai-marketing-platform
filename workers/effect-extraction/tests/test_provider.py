@@ -47,7 +47,7 @@ async def test_ark_provider_sends_multimodal_strict_schema_without_store() -> No
     assert result.value.visual_features == "红色包装"
     assert result.metadata.stage == "IMAGE"
     assert result.metadata.model == "doubao-seed-2-1-turbo"
-    assert result.metadata.prompt_version == "1.1.0"
+    assert result.metadata.prompt_version == "2.0.0"
     assert result.metadata.input_tokens is None
     assert result.metadata.output_tokens is None
     assert result.metadata.total_tokens is None
@@ -73,13 +73,21 @@ async def test_ark_provider_routes_each_stage_and_records_usage() -> None:
                 core_specification="500g",
                 price_range="待补充",
                 visual_features="红色包装",
-                target_audience="成年消费者",
-                marketing_goal="商品认知",
                 core_selling_points=["方便"],
-                usage_scenarios="家庭",
+                secondary_selling_points=[],
+                trust_backings=[],
+                target_audience="成年消费者",
+                core_pain_points=[],
+                decision_drivers=[],
+                marketing_goal="商品认知",
+                usage_scenarios=["家庭"],
+                purchase_scenarios=[],
+                emotional_scenarios=[],
+                duration_seconds=20,
+                aspect_ratio="9:16",
                 delivery_channels="短视频",
-                brand_tone="自然",
                 disabled_elements=[],
+                visual_style_baseline="自然",
             ).model_dump_json(by_alias=True)
         else:
             output = ExtractionCandidate.empty().model_dump_json(by_alias=True)

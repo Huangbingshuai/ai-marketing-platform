@@ -11,26 +11,26 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     image = load_prompt_template("image_analysis.prompt.txt")
     normalization = load_prompt_template("result_normalization.prompt.txt")
 
-    assert load_prompt_version("document_extraction.prompt.txt") == "1.0.0"
-    assert load_prompt_version("image_analysis.prompt.txt") == "1.1.0"
-    assert load_prompt_version("result_normalization.prompt.txt") == "1.1.0"
+    assert load_prompt_version("document_extraction.prompt.txt") == "2.0.0"
+    assert load_prompt_version("image_analysis.prompt.txt") == "2.0.0"
+    assert load_prompt_version("result_normalization.prompt.txt") == "2.0.0"
 
-    assert "产品文档信息抽取器" in document.template
+    assert "产品文档事实抽取器" in document.template
     assert "产品图片" in image.template
-    assert "营销信息标准化与策略补全器" in normalization.template
+    assert "产品素材制作信息卡标准化器" in normalization.template
 
     for prompt in (document.template, image.template, normalization.template):
         assert "只输出一个 JSON 对象" in prompt
-        assert "## 输出示例" in prompt
+        assert "## 示例" in prompt
         assert "示例输出：" in prompt
         assert "## 输出前自检" in prompt
         assert '"productCategory"' in prompt
         assert '"coreSellingPoints"' in prompt
         assert '"disabledElements"' in prompt
 
-    assert "无明确证据的字符串字段写 null" in document.template
-    assert "价格、人群、营销目标、场景、品牌调性和创意卖点属于允许补全" in image.template
-    assert "可补全的营销策略字段" in normalization.template
+    assert "无证据的字符串、数字或数组均为 null" in document.template
+    assert "应补充建议价格带、目标受众、痛点、动因、营销目标和场景" in image.template
+    assert "提供有边界、可执行的补全" in normalization.template
     assert "建议" in image.template and "需确认" in image.template
     assert "建议" in normalization.template and "需确认" in normalization.template
     assert '"priceRange": null' in document.template
@@ -60,6 +60,7 @@ def test_effect_extraction_prompts_render_business_inputs() -> None:
     normalization = render_prompt(
         "result_normalization.prompt.txt",
         fused_candidate_json='{"productName":"广式腊肠"}',
+        protected_user_input_json='{"marketingGoal":"人工目标"}',
     )
 
     assert "资料文件名：产品说明.docx" in document
@@ -68,6 +69,7 @@ def test_effect_extraction_prompts_render_business_inputs() -> None:
     assert '本地图像元数据：{"processedWidth":1080}' in image
     assert '<fused_candidate_json>\n{"productName":"广式腊肠"}' in normalization
     assert "</fused_candidate_json>" in normalization
+    assert '<protected_user_input_json>\n{"marketingGoal":"人工目标"}' in normalization
 
 
 def test_effect_extraction_prompt_fails_fast_when_a_variable_is_missing() -> None:

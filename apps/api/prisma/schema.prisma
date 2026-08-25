@@ -784,6 +784,7 @@ model EffectExtractionResult {
   schemaVersion     Int                 @default(1)
   generatedResult   Json
   draftResult       Json
+  manualOverrides   Json                @default("{}")
   provenance        Json
   conflictReport    Json
   sourceFingerprint String              @db.VarChar(64)

@@ -27,9 +27,13 @@ import type {
   EffectExtractionInputSnapshot,
 } from './effect-extraction.types';
 import {
+  applyEffectExtractionManualOverrides,
   canonicalHash,
+  effectExtractionDefaultsFromConfig,
   extractionSourceFingerprint,
   isSupportedExtractionMaterial,
+  manualOverridesForResult,
+  toEffectExtractionResultV2,
 } from './effect-extraction.validation';
 
 const json = (value: unknown): Prisma.InputJsonValue => value as Prisma.InputJsonValue;
@@ -259,6 +263,30 @@ export class EffectExtractionRepository {
           },
         },
       });
+      const previousResult = await transaction.effectExtractionResult.findFirst({
+        where: { projectId, draftId, productId },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        select: { manualOverrides: true, generatedResult: true, draftResult: true },
+      });
+      const resultDefaults = effectExtractionDefaultsFromConfig(
+        mergeEffectVideoConfig(
+          draft.globalConfig as EffectVideoConfig,
+          product.configOverride as EffectVideoConfigOverride,
+        ),
+      );
+      const storedOverrides =
+        previousResult?.manualOverrides &&
+        typeof previousResult.manualOverrides === 'object' &&
+        !Array.isArray(previousResult.manualOverrides)
+          ? (previousResult.manualOverrides as Partial<EffectExtractionResult>)
+          : {};
+      const inheritedOverrides =
+        Object.keys(storedOverrides).length > 0 || !previousResult
+          ? storedOverrides
+          : manualOverridesForResult(
+              toEffectExtractionResultV2(previousResult.generatedResult, resultDefaults),
+              toEffectExtractionResultV2(previousResult.draftResult, resultDefaults),
+            );
       const snapshot: EffectExtractionInputSnapshot = {
         schemaVersion: EFFECT_EXTRACTION_SCHEMA_VERSION,
         projectId,
@@ -278,6 +306,7 @@ export class EffectExtractionRepository {
           ),
         },
         materials,
+        manualOverrides: inheritedOverrides,
         dependencySnapshot: {
           sourcePackageRevision: sourcePackage.revision,
           effectiveVideoConfigRevision: effectiveVideoConfig.revision,
@@ -435,11 +464,18 @@ export class EffectExtractionRepository {
     resultId: string,
     expectedRevision: number,
     result: EffectExtractionResult,
+    manualOverrides: Partial<EffectExtractionResult>,
   ) {
     const savedAt = new Date();
     const updated = await this.prisma.effectExtractionResult.updateMany({
       where: { projectId, id: resultId, revision: expectedRevision },
-      data: { draftResult: json(result), revision: { increment: 1 }, savedAt },
+      data: {
+        schemaVersion: EFFECT_EXTRACTION_SCHEMA_VERSION,
+        draftResult: json(result),
+        manualOverrides: json(manualOverrides),
+        revision: { increment: 1 },
+        savedAt,
+      },
     });
     if (updated.count !== 1) return null;
     return this.result(projectId, resultId);
@@ -663,6 +699,25 @@ export class EffectExtractionRepository {
         run.leaseExpiresAt <= now
       )
         return { kind: 'LEASE_CONFLICT' as const };
+      const snapshot = run.inputSnapshot as EffectExtractionInputSnapshot;
+      const config = snapshot.globalVideoConfig ?? snapshot.product.effectiveConfig;
+      const defaults = effectExtractionDefaultsFromConfig(config);
+      const candidate = toEffectExtractionResultV2(input.result, defaults);
+      const generatedResult: EffectExtractionResult = {
+        ...candidate,
+        productName: snapshot.product.name.trim() || candidate.productName,
+        productCategory: snapshot.product.category.trim() || candidate.productCategory,
+        durationSeconds: config.durationSeconds,
+        aspectRatio: config.aspectRatio,
+        deliveryChannels: config.deliveryChannel,
+        disabledElements: [...new Set([...config.disabledElements, ...candidate.disabledElements])],
+        visualStyleBaseline:
+          config.styleTone && !candidate.visualStyleBaseline.includes(config.styleTone)
+            ? `${config.styleTone}；${candidate.visualStyleBaseline}`.replace(/；$/, '')
+            : candidate.visualStyleBaseline || config.styleTone,
+      };
+      const manualOverrides = snapshot.manualOverrides ?? {};
+      const draftResult = applyEffectExtractionManualOverrides(generatedResult, manualOverrides);
       const result = await transaction.effectExtractionResult.create({
         data: {
           projectId,
@@ -670,8 +725,9 @@ export class EffectExtractionRepository {
           productId: run.productId,
           runId,
           schemaVersion: EFFECT_EXTRACTION_SCHEMA_VERSION,
-          generatedResult: json(input.result),
-          draftResult: json(input.result),
+          generatedResult: json(generatedResult),
+          draftResult: json(draftResult),
+          manualOverrides: json(manualOverrides),
           provenance: json(input.provenance),
           conflictReport: json(input.conflictReport),
           sourceFingerprint: run.sourceFingerprint,

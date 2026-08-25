@@ -15,11 +15,22 @@ SCALAR_FIELDS = (
     "visual_features",
     "target_audience",
     "marketing_goal",
-    "usage_scenarios",
+    "duration_seconds",
+    "aspect_ratio",
     "delivery_channels",
-    "brand_tone",
+    "visual_style_baseline",
 )
-LIST_FIELDS = ("core_selling_points", "disabled_elements")
+LIST_FIELDS = (
+    "core_selling_points",
+    "secondary_selling_points",
+    "trust_backings",
+    "core_pain_points",
+    "decision_drivers",
+    "usage_scenarios",
+    "purchase_scenarios",
+    "emotional_scenarios",
+    "disabled_elements",
+)
 PRIORITY = (
     BranchName.FORM,
     BranchName.DOCUMENT,
@@ -57,6 +68,9 @@ def _branch_candidate(output: BranchOutput) -> ExtractionCandidate | None:
             if isinstance(value, str) and value.strip():
                 setattr(merged, field, value.strip())
                 break
+            if isinstance(value, int) and value > 0:
+                setattr(merged, field, value)
+                break
     for field in LIST_FIELDS:
         list_values: list[str] = []
         seen: set[str] = set()
@@ -91,17 +105,23 @@ def fuse(branches: list[BranchOutput]) -> FusionResult:
     fused = ExtractionCandidate.empty()
     provenance: dict[str, str] = {}
     for field in SCALAR_FIELDS:
-        values: list[tuple[BranchName, str]] = []
+        values: list[tuple[BranchName, str | int]] = []
         for source, candidate in ordered:
             value = getattr(candidate, field)
             if isinstance(value, str) and value.strip():
                 values.append((source, value.strip()))
+            elif isinstance(value, int) and value > 0:
+                values.append((source, value))
         if not values:
             continue
         winner_source, winner = values[0]
         setattr(fused, field, winner)
         provenance[field] = winner_source.value
-        conflicting = [(source, value) for source, value in values[1:] if _key(value) != _key(winner)]
+        conflicting = [
+            (source, value)
+            for source, value in values[1:]
+            if _key(str(value)) != _key(str(winner))
+        ]
         if conflicting:
             warnings.append(
                 f"{field} conflict resolved in favor of {winner_source.value}; "

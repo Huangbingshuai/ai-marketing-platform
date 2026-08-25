@@ -3,7 +3,7 @@ import type { WorkingArtifactCommitStatus, WorkingArtifactCommitSummary } from '
 export const EFFECT_EXTRACTION_API_BASE =
   '/api/projects/:projectId/workflows/effect/information-extraction' as const;
 
-export const EFFECT_EXTRACTION_SCHEMA_VERSION = 1 as const;
+export const EFFECT_EXTRACTION_SCHEMA_VERSION = 2 as const;
 
 export const EFFECT_EXTRACTION_PRODUCT_STATUSES = [
   'NOT_GENERATED',
@@ -106,7 +106,11 @@ export type EffectExtractionNodeDetail = {
   updatedAt: string | null;
 };
 
-export const EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS = 20;
+export const EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS = 3;
+export const EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS = 6;
+export const EFFECT_EXTRACTION_MAX_TRUST_BACKINGS = 6;
+export const EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS = 5;
+export const EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS = 5;
 
 export type EffectExtractionResult = {
   productCategory: string;
@@ -114,13 +118,21 @@ export type EffectExtractionResult = {
   coreSpecification: string;
   priceRange: string;
   visualFeatures: string;
-  targetAudience: string;
-  marketingGoal: string;
   coreSellingPoints: string[];
-  usageScenarios: string;
+  secondarySellingPoints: string[];
+  trustBackings: string[];
+  targetAudience: string;
+  corePainPoints: string[];
+  decisionDrivers: string[];
+  marketingGoal: string;
+  usageScenarios: string[];
+  purchaseScenarios: string[];
+  emotionalScenarios: string[];
+  durationSeconds: number;
+  aspectRatio: string;
   deliveryChannels: string;
-  brandTone: string;
   disabledElements: string[];
+  visualStyleBaseline: string;
 };
 
 export type EffectExtractionWarning = {
@@ -137,8 +149,10 @@ export type EffectExtractionProductState = {
   status: EffectExtractionProductStatus;
   runId: string | null;
   resultId: string | null;
+  resultSchemaVersion: number | null;
   resultRevision: number | null;
   result: EffectExtractionResult | null;
+  manualOverrideFields: string[];
   progress: number;
   currentNode: string | null;
   warnings: EffectExtractionWarning[];

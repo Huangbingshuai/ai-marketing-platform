@@ -14,7 +14,7 @@ def claim_data() -> dict[str, object]:
         "sourceFingerprint": "server-fingerprint",
         "attemptToken": "attempt-1",
         "input": {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "projectId": "project-1",
             "draftId": "draft-1",
             "mode": "SINGLE",

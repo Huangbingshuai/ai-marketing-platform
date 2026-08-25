@@ -11,10 +11,17 @@ import type {
 import {
   EFFECT_EXTRACTION_GRAPH_EDGES,
   EFFECT_EXTRACTION_GRAPH_NODES,
+  EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS,
   EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS,
+  EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS,
+  EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS,
+  EFFECT_EXTRACTION_MAX_TRUST_BACKINGS,
+  EFFECT_IMPORT_ASPECT_RATIOS,
+  EFFECT_IMPORT_DELIVERY_CHANNELS,
+  EFFECT_IMPORT_DURATION_OPTIONS,
   EFFECT_IMPORT_MATERIAL_TYPE_LABELS,
 } from '@ai-marketing/contracts';
-import { WorkflowNodeFooter } from '@ai-marketing/ui';
+import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
 import {
   AlertCircle,
   ArrowLeft,
@@ -34,6 +41,7 @@ import {
   getWorkflowNodeState,
   putWorkflowNodeState,
 } from '../../../platform/workflow/api/workflow-working.api';
+import { EFFECT_IMPORT_PROTOTYPE_STYLE_TONES } from '../source-import/effect-import-options';
 
 import {
   cloneExtractionProductState,
@@ -395,16 +403,43 @@ const emptyExtractionResult: EffectExtractionResult = {
   coreSpecification: '',
   priceRange: '',
   visualFeatures: '',
-  targetAudience: '',
-  marketingGoal: '',
   coreSellingPoints: [''],
-  usageScenarios: '',
+  secondarySellingPoints: [],
+  trustBackings: [],
+  targetAudience: '',
+  corePainPoints: [],
+  decisionDrivers: [],
+  marketingGoal: '',
+  usageScenarios: [],
+  purchaseScenarios: [],
+  emotionalScenarios: [],
+  durationSeconds: props.globalConfig.durationSeconds,
+  aspectRatio: props.globalConfig.aspectRatio,
   deliveryChannels: '',
-  brandTone: '',
   disabledElements: [],
+  visualStyleBaseline: '',
 };
 const visibleResult = computed(() => currentState.value?.result ?? emptyExtractionResult);
 const baseFieldsReadonly = computed(() => !currentState.value?.result || currentRunning.value);
+const durationOptions = computed(() =>
+  [...new Set([...EFFECT_IMPORT_DURATION_OPTIONS, visibleResult.value.durationSeconds])].sort(
+    (left, right) => left - right,
+  ),
+);
+const stringOptionsWithCurrent = (options: readonly string[], current: string): string[] =>
+  current && !options.includes(current) ? [current, ...options] : [...options];
+const aspectRatioOptions = computed(() =>
+  stringOptionsWithCurrent(EFFECT_IMPORT_ASPECT_RATIOS, visibleResult.value.aspectRatio),
+);
+const deliveryChannelOptions = computed(() =>
+  stringOptionsWithCurrent(EFFECT_IMPORT_DELIVERY_CHANNELS, visibleResult.value.deliveryChannels),
+);
+const visualStyleOptions = computed(() =>
+  stringOptionsWithCurrent(
+    EFFECT_IMPORT_PROTOTYPE_STYLE_TONES,
+    visibleResult.value.visualStyleBaseline,
+  ),
+);
 const saveStateLabel = computed(() => {
   const state = currentState.value?.saveState ?? 'CLEAN';
   return {
@@ -415,6 +450,11 @@ const saveStateLabel = computed(() => {
     SAVE_FAILED: '保存失败',
   }[state];
 });
+const draftBarState = computed<'clean' | 'dirty' | 'save_failed' | 'saved' | 'saving'>(
+  () =>
+    (currentState.value?.saveState ?? 'CLEAN').toLowerCase() as
+      'clean' | 'dirty' | 'save_failed' | 'saved' | 'saving',
+);
 const commitStatusLabel = computed(() =>
   currentState.value
     ? {
@@ -436,18 +476,6 @@ const stateLabel = (productId: string): string => {
   const status = productStates.value[productId]?.status ?? 'NOT_GENERATED';
   return EFFECT_EXTRACTION_STATUS_META[status].label;
 };
-
-const warningBranchLabel = (branch: string | null): string =>
-  (
-    ({
-      DOCUMENT: '文档',
-      IMAGE: '图片',
-      COMMERCE: '电商链接',
-      FORM: '表单配置',
-      FUSION: '多源融合',
-      NORMALIZATION: '标准化',
-    }) as Record<string, string>
-  )[branch ?? ''] ?? '系统';
 
 const saveConflict = computed(() =>
   Boolean(currentState.value?.saveErrorMessage?.includes('其他窗口更新')),
@@ -540,7 +568,14 @@ const applyNodeState = (value: unknown): void => {
   if (!products) return;
   for (const [productId, saved] of Object.entries(products)) {
     const current = productStates.value[productId];
-    if (!current || !saved?.result || current.resultId !== saved.resultId) continue;
+    if (
+      !current ||
+      !saved?.result ||
+      !Array.isArray(saved.result.usageScenarios) ||
+      !Array.isArray(saved.result.secondarySellingPoints) ||
+      current.resultId !== saved.resultId
+    )
+      continue;
     patchProductState(productId, {
       result: cloneExtractionResult(saved.result),
       saveState: 'SAVED',
@@ -955,6 +990,56 @@ const removeSellingPoint = (index: number): void => {
   markDirty();
 };
 
+type AdditionalSellingField = 'secondarySellingPoints' | 'trustBackings';
+type UserInsightListField = 'corePainPoints' | 'decisionDrivers';
+type ScenarioListField = 'usageScenarios' | 'purchaseScenarios' | 'emotionalScenarios';
+
+const addAdditionalSellingPoint = (field: AdditionalSellingField): void => {
+  const result = currentState.value?.result;
+  const limit =
+    field === 'secondarySellingPoints'
+      ? EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS
+      : EFFECT_EXTRACTION_MAX_TRUST_BACKINGS;
+  if (!result || result[field].length >= limit) return;
+  result[field].push('');
+  markDirty();
+};
+
+const removeAdditionalSellingPoint = (field: AdditionalSellingField, index: number): void => {
+  const result = currentState.value?.result;
+  if (!result) return;
+  result[field].splice(index, 1);
+  markDirty();
+};
+
+const addUserInsightItem = (field: UserInsightListField): void => {
+  const result = currentState.value?.result;
+  if (!result || result[field].length >= EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS) return;
+  result[field].push('');
+  markDirty();
+};
+
+const removeUserInsightItem = (field: UserInsightListField, index: number): void => {
+  const result = currentState.value?.result;
+  if (!result) return;
+  result[field].splice(index, 1);
+  markDirty();
+};
+
+const addScenarioItem = (field: ScenarioListField): void => {
+  const result = currentState.value?.result;
+  if (!result || result[field].length >= EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS) return;
+  result[field].push('');
+  markDirty();
+};
+
+const removeScenarioItem = (field: ScenarioListField, index: number): void => {
+  const result = currentState.value?.result;
+  if (!result) return;
+  result[field].splice(index, 1);
+  markDirty();
+};
+
 const addDisabledElement = (): void => {
   const result = currentState.value?.result;
   const value = newDisabledElement.value.trim();
@@ -1180,19 +1265,6 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <div v-if="currentState.warnings.length" class="state-alert warning extraction-warnings">
-        <AlertCircle :size="17" />
-        <div>
-          <strong>部分来源有提示，已使用其余有效资料完成提炼</strong>
-          <p
-            v-for="(warning, index) in currentState.warnings"
-            :key="`${warning.code}-${warning.sourceId}-${index}`"
-          >
-            {{ warningBranchLabel(warning.branch) }}：{{ presentWarningMessage(warning.message) }}
-          </p>
-        </div>
-      </div>
-
       <div v-if="currentState.saveErrorMessage" class="state-alert danger" role="alert">
         <AlertCircle :size="17" />
         <div>
@@ -1290,6 +1362,7 @@ onBeforeUnmount(() => {
               <p>核心卖点建议 1–3 个</p>
             </div>
             <button
+              class="selling-add-button"
               type="button"
               :disabled="
                 baseFieldsReadonly ||
@@ -1302,7 +1375,7 @@ onBeforeUnmount(() => {
               "
               @click="addSellingPoint"
             >
-              <Plus :size="13" />添加卖点
+              <Plus :size="13" />添加
             </button>
           </div>
           <div class="selling-points">
@@ -1327,10 +1400,82 @@ onBeforeUnmount(() => {
                 <Trash2 :size="14" />
               </button>
             </div>
+            <div class="selling-subheading">
+              <strong>次要卖点</strong>
+              <button
+                type="button"
+                :disabled="
+                  baseFieldsReadonly ||
+                  visibleResult.secondarySellingPoints.length >=
+                    EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS
+                "
+                @click="addAdditionalSellingPoint('secondarySellingPoints')"
+              >
+                <Plus :size="13" />添加
+              </button>
+            </div>
+            <div
+              v-for="(_point, index) in visibleResult.secondarySellingPoints"
+              :key="`secondary-${index}`"
+              class="selling-point-row"
+            >
+              <span>次要卖点</span>
+              <input
+                v-model="visibleResult.secondarySellingPoints[index]"
+                :readonly="baseFieldsReadonly"
+                placeholder="请输入次要卖点"
+                @input="markDirty"
+              />
+              <button
+                type="button"
+                aria-label="删除次要卖点"
+                :disabled="baseFieldsReadonly"
+                @click="removeAdditionalSellingPoint('secondarySellingPoints', index)"
+              >
+                <Trash2 :size="14" />
+              </button>
+            </div>
+            <div class="selling-subheading">
+              <strong>辅助信任背书</strong>
+              <button
+                type="button"
+                :disabled="
+                  baseFieldsReadonly ||
+                  visibleResult.trustBackings.length >= EFFECT_EXTRACTION_MAX_TRUST_BACKINGS
+                "
+                @click="addAdditionalSellingPoint('trustBackings')"
+              >
+                <Plus :size="13" />添加
+              </button>
+            </div>
+            <p v-if="!visibleResult.trustBackings.length" class="empty-inline">
+              暂无可验证的信任背书
+            </p>
+            <div
+              v-for="(_point, index) in visibleResult.trustBackings"
+              :key="`trust-${index}`"
+              class="selling-point-row"
+            >
+              <span>信任背书</span>
+              <input
+                v-model="visibleResult.trustBackings[index]"
+                :readonly="baseFieldsReadonly"
+                placeholder="仅填写有资料证据的背书"
+                @input="markDirty"
+              />
+              <button
+                type="button"
+                aria-label="删除信任背书"
+                :disabled="baseFieldsReadonly"
+                @click="removeAdditionalSellingPoint('trustBackings', index)"
+              >
+                <Trash2 :size="14" />
+              </button>
+            </div>
           </div>
         </section>
 
-        <section class="content-block">
+        <section class="content-block user-layer-card">
           <div class="block-heading compact">
             <div><h3>用户层</h3></div>
           </div>
@@ -1342,7 +1487,81 @@ onBeforeUnmount(() => {
               @input="markDirty"
             />
           </label>
-          <label class="field-label">
+          <div class="selling-subheading">
+            <strong>核心痛点</strong>
+            <button
+              type="button"
+              :disabled="
+                baseFieldsReadonly ||
+                visibleResult.corePainPoints.length >= EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS
+              "
+              @click="addUserInsightItem('corePainPoints')"
+            >
+              <Plus :size="13" />添加
+            </button>
+          </div>
+          <div class="structured-item-list">
+            <p v-if="!visibleResult.corePainPoints.length" class="empty-inline">暂无核心痛点</p>
+            <div
+              v-for="(_item, index) in visibleResult.corePainPoints"
+              :key="`pain-${index}`"
+              class="selling-point-row"
+            >
+              <span>核心痛点</span>
+              <input
+                v-model="visibleResult.corePainPoints[index]"
+                :readonly="baseFieldsReadonly"
+                placeholder="请输入核心痛点"
+                @input="markDirty"
+              />
+              <button
+                type="button"
+                aria-label="删除核心痛点"
+                :disabled="baseFieldsReadonly"
+                @click="removeUserInsightItem('corePainPoints', index)"
+              >
+                <Trash2 :size="14" />
+              </button>
+            </div>
+          </div>
+          <div class="selling-subheading">
+            <strong>决策动因</strong>
+            <button
+              type="button"
+              :disabled="
+                baseFieldsReadonly ||
+                visibleResult.decisionDrivers.length >= EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS
+              "
+              @click="addUserInsightItem('decisionDrivers')"
+            >
+              <Plus :size="13" />添加
+            </button>
+          </div>
+          <div class="structured-item-list">
+            <p v-if="!visibleResult.decisionDrivers.length" class="empty-inline">暂无决策动因</p>
+            <div
+              v-for="(_item, index) in visibleResult.decisionDrivers"
+              :key="`driver-${index}`"
+              class="selling-point-row"
+            >
+              <span>决策动因</span>
+              <input
+                v-model="visibleResult.decisionDrivers[index]"
+                :readonly="baseFieldsReadonly"
+                placeholder="请输入决策动因"
+                @input="markDirty"
+              />
+              <button
+                type="button"
+                aria-label="删除决策动因"
+                :disabled="baseFieldsReadonly"
+                @click="removeUserInsightItem('decisionDrivers', index)"
+              >
+                <Trash2 :size="14" />
+              </button>
+            </div>
+          </div>
+          <label class="field-label user-marketing-goal">
             <span>营销目标</span>
             <textarea
               v-model="visibleResult.marketingGoal"
@@ -1352,42 +1571,184 @@ onBeforeUnmount(() => {
           </label>
         </section>
 
-        <section class="content-block">
+        <section class="content-block scenario-layer-card">
           <div class="block-heading compact">
             <div><h3>场景层</h3></div>
           </div>
-          <label class="field-label">
-            <span>核心使用场景</span>
-            <input
-              v-model="visibleResult.usageScenarios"
-              :readonly="baseFieldsReadonly"
-              @input="markDirty"
-            />
-          </label>
-          <label class="field-label">
-            <span>投放渠道</span>
-            <input
-              v-model="visibleResult.deliveryChannels"
-              :readonly="baseFieldsReadonly"
-              @input="markDirty"
-            />
-          </label>
-          <label class="field-label">
-            <span>品牌调性</span>
-            <input
-              v-model="visibleResult.brandTone"
-              :readonly="baseFieldsReadonly"
-              @input="markDirty"
-            />
-          </label>
+          <div class="selling-subheading">
+            <strong>核心使用场景</strong>
+            <button
+              type="button"
+              :disabled="
+                baseFieldsReadonly ||
+                visibleResult.usageScenarios.length >= EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS
+              "
+              @click="addScenarioItem('usageScenarios')"
+            >
+              <Plus :size="13" />添加
+            </button>
+          </div>
+          <div class="structured-item-list">
+            <p v-if="!visibleResult.usageScenarios.length" class="empty-inline">暂无核心使用场景</p>
+            <div
+              v-for="(_item, index) in visibleResult.usageScenarios"
+              :key="`usage-${index}`"
+              class="selling-point-row"
+            >
+              <span>使用场景</span>
+              <input
+                v-model="visibleResult.usageScenarios[index]"
+                :readonly="baseFieldsReadonly"
+                placeholder="请输入核心使用场景"
+                @input="markDirty"
+              />
+              <button
+                type="button"
+                aria-label="删除核心使用场景"
+                :disabled="baseFieldsReadonly"
+                @click="removeScenarioItem('usageScenarios', index)"
+              >
+                <Trash2 :size="14" />
+              </button>
+            </div>
+          </div>
+          <div class="selling-subheading">
+            <strong>购买场景</strong>
+            <button
+              type="button"
+              :disabled="
+                baseFieldsReadonly ||
+                visibleResult.purchaseScenarios.length >= EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS
+              "
+              @click="addScenarioItem('purchaseScenarios')"
+            >
+              <Plus :size="13" />添加
+            </button>
+          </div>
+          <div class="structured-item-list">
+            <p v-if="!visibleResult.purchaseScenarios.length" class="empty-inline">暂无购买场景</p>
+            <div
+              v-for="(_item, index) in visibleResult.purchaseScenarios"
+              :key="`purchase-${index}`"
+              class="selling-point-row"
+            >
+              <span>购买场景</span>
+              <input
+                v-model="visibleResult.purchaseScenarios[index]"
+                :readonly="baseFieldsReadonly"
+                placeholder="请输入购买场景"
+                @input="markDirty"
+              />
+              <button
+                type="button"
+                aria-label="删除购买场景"
+                :disabled="baseFieldsReadonly"
+                @click="removeScenarioItem('purchaseScenarios', index)"
+              >
+                <Trash2 :size="14" />
+              </button>
+            </div>
+          </div>
+          <div class="selling-subheading">
+            <strong>情绪共鸣场景</strong>
+            <button
+              type="button"
+              :disabled="
+                baseFieldsReadonly ||
+                visibleResult.emotionalScenarios.length >= EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS
+              "
+              @click="addScenarioItem('emotionalScenarios')"
+            >
+              <Plus :size="13" />添加
+            </button>
+          </div>
+          <div class="structured-item-list">
+            <p v-if="!visibleResult.emotionalScenarios.length" class="empty-inline">
+              暂无情绪共鸣场景
+            </p>
+            <div
+              v-for="(_item, index) in visibleResult.emotionalScenarios"
+              :key="`emotional-${index}`"
+              class="selling-point-row"
+            >
+              <span>情绪场景</span>
+              <input
+                v-model="visibleResult.emotionalScenarios[index]"
+                :readonly="baseFieldsReadonly"
+                placeholder="请输入情绪共鸣场景"
+                @input="markDirty"
+              />
+              <button
+                type="button"
+                aria-label="删除情绪共鸣场景"
+                :disabled="baseFieldsReadonly"
+                @click="removeScenarioItem('emotionalScenarios', index)"
+              >
+                <Trash2 :size="14" />
+              </button>
+            </div>
+          </div>
         </section>
 
         <section class="content-block">
           <div class="block-heading">
             <div>
-              <h3>合规与画面禁用词</h3>
-              <p>高风险文字将标红提醒</p>
+              <h3>制作规则层</h3>
+              <p>初始值继承资料导入节点，可在当前信息卡中调整</p>
             </div>
+          </div>
+          <div class="production-rule-grid">
+            <label class="field-label">
+              <span>统一时长</span>
+              <select
+                v-model.number="visibleResult.durationSeconds"
+                :disabled="baseFieldsReadonly"
+                @change="markDirty"
+              >
+                <option v-for="duration in durationOptions" :key="duration" :value="duration">
+                  {{ duration }} 秒
+                </option>
+              </select>
+            </label>
+            <label class="field-label">
+              <span>画幅</span>
+              <select
+                v-model="visibleResult.aspectRatio"
+                :disabled="baseFieldsReadonly"
+                @change="markDirty"
+              >
+                <option v-for="ratio in aspectRatioOptions" :key="ratio" :value="ratio">
+                  {{ ratio }}
+                </option>
+              </select>
+            </label>
+            <label class="field-label wide">
+              <span>投放渠道</span>
+              <select
+                v-model="visibleResult.deliveryChannels"
+                :disabled="baseFieldsReadonly"
+                @change="markDirty"
+              >
+                <option v-for="channel in deliveryChannelOptions" :key="channel" :value="channel">
+                  {{ channel }}
+                </option>
+              </select>
+            </label>
+          </div>
+          <label class="field-label">
+            <span>视觉风格基线</span>
+            <select
+              v-model="visibleResult.visualStyleBaseline"
+              :disabled="baseFieldsReadonly"
+              @change="markDirty"
+            >
+              <option v-for="style in visualStyleOptions" :key="style" :value="style">
+                {{ style }}
+              </option>
+            </select>
+          </label>
+          <div class="field-label disabled-field">
+            <span>合规禁用词库</span>
           </div>
           <div class="field-label disabled-field">
             <div class="disabled-tags">
@@ -1416,14 +1777,13 @@ onBeforeUnmount(() => {
         </section>
       </div>
 
-      <section v-if="currentState.result" class="draft-save-bar">
-        <span class="draft-save-bar__icon"><FileText :size="18" /></span>
-        <div>
-          <strong>AI 营销信息提炼草稿</strong>
-          <small>{{ currentProduct.name }} · 已自动保存到节点草稿 · {{ commitStatusLabel }}</small>
-        </div>
-        <em :class="currentState.saveState.toLowerCase()">{{ saveStateLabel }}</em>
-      </section>
+      <WorkflowNodeDraftBar
+        v-if="currentState.result"
+        :detail="`${currentProduct.name} · 已自动保存到节点草稿 · ${commitStatusLabel}`"
+        :state="draftBarState"
+        :state-label="saveStateLabel"
+        title="AI 营销信息提炼草稿"
+      />
 
       <p v-if="validationMessage" class="validation-message" aria-live="polite">
         {{ validationMessage }}
@@ -1967,9 +2327,6 @@ button:disabled {
   border-radius: inherit;
   transition: width 0.2s ease;
 }
-.extraction-warnings p + p {
-  margin-top: 2px;
-}
 .product-info-layout {
   display: grid;
   grid-template-columns: minmax(0, 3fr) minmax(240px, 1fr);
@@ -2030,6 +2387,7 @@ select {
 .base-fields input,
 .base-fields textarea,
 .field-label input,
+.field-label select,
 .field-label textarea,
 .selling-point-row input,
 .disabled-input-row input {
@@ -2043,10 +2401,19 @@ select {
   font-weight: 400;
 }
 .field-label input,
+.field-label select,
 .selling-point-row input,
 .disabled-input-row input {
   height: 42px;
   padding: 0 11px;
+}
+.field-label select {
+  cursor: pointer;
+}
+.field-label select:disabled {
+  cursor: not-allowed;
+  color: #8b95a7;
+  background: #f7f9fc;
 }
 .selling-point-row input {
   height: 40px;
@@ -2180,6 +2547,41 @@ select {
   display: grid;
   gap: 10px;
 }
+.selling-subheading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+  color: #304664;
+  font-size: 13px;
+}
+.selling-subheading button,
+.selling-add-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  padding: 0 10px;
+  color: #2f6df6;
+  background: #f5f8ff;
+  border: 1px solid #d6e3ff;
+  border-radius: 9px;
+}
+.empty-inline {
+  margin: 0;
+  color: #8a98ad;
+  font-size: 12px;
+}
+.structured-item-list {
+  display: grid;
+  gap: 10px;
+}
+.selling-subheading + .structured-item-list {
+  margin-top: 10px;
+}
+.user-marketing-goal {
+  margin-top: 18px;
+}
 .selling-point-row {
   display: grid;
   grid-template-columns: 112px minmax(0, 1fr) 38px;
@@ -2210,6 +2612,20 @@ select {
 }
 .disabled-field {
   margin-top: 14px;
+}
+.production-rule-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.production-rule-grid .field-label + .field-label {
+  margin-top: 0;
+}
+.production-rule-grid .wide {
+  grid-column: 1 / -1;
+}
+.production-rule-grid + .field-label {
+  margin-top: 18px;
 }
 .disabled-tags {
   display: flex;
@@ -2244,78 +2660,6 @@ select {
   border-radius: 10px;
   font-size: 14px;
   font-weight: 700;
-}
-.draft-save-bar {
-  display: flex;
-  min-height: 67px;
-  margin-top: 18px;
-  padding: 12px 16px;
-  align-items: center;
-  gap: 12px;
-  background: linear-gradient(90deg, #f4f8ff, #fff);
-  border: 1px solid #d8e3f3;
-  border-radius: 14px;
-}
-.draft-save-bar__icon {
-  display: grid;
-  width: 38px;
-  height: 38px;
-  place-items: center;
-  color: #2563eb;
-  background: #e8f1ff;
-  border-radius: 11px;
-}
-.draft-save-bar > div {
-  min-width: 0;
-  flex: 1;
-}
-.draft-save-bar strong,
-.draft-save-bar small {
-  display: block;
-}
-.draft-save-bar strong {
-  font-size: 12px;
-}
-.draft-save-bar small {
-  margin-top: 3px;
-  overflow: hidden;
-  color: #7d899f;
-  font-size: 9px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.draft-save-bar em {
-  padding: 5px 9px;
-  color: #68768c;
-  background: #eef2f7;
-  border-radius: 999px;
-  font-size: 9px;
-  font-style: normal;
-}
-.draft-save-bar em.dirty {
-  color: #b7791f;
-  background: #fff8e8;
-}
-.draft-save-bar em.saved {
-  color: #0f8a68;
-  background: #eefaf6;
-}
-.draft-save-bar em.save_failed {
-  color: #dc3f52;
-  background: #fff1f2;
-}
-.draft-save-bar button {
-  display: inline-flex;
-  height: 36px;
-  padding: 0 14px;
-  align-items: center;
-  gap: 5px;
-  color: #fff;
-  background: #2563eb;
-  border: 1px solid #2563eb;
-  border-radius: 9px;
-  font-size: 10px;
-  font-weight: 800;
 }
 .extraction-page-state {
   display: flex;
@@ -2999,17 +3343,6 @@ select {
   }
   .extraction-heading__actions > button {
     flex: 1;
-  }
-  .draft-save-bar {
-    align-items: flex-start;
-    flex-wrap: wrap;
-  }
-  .draft-save-bar > div {
-    width: calc(100% - 52px);
-    flex: none;
-  }
-  .draft-save-bar button {
-    margin-left: auto;
   }
   .workflow-graph-backdrop {
     padding: 10px;

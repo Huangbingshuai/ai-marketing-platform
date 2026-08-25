@@ -52,7 +52,7 @@ describe('EffectExtractionRepository isolation and idempotency', () => {
     } as unknown as PrismaService);
 
     await expect(
-      repository.updateResult('project-a', 'result-a', 2, {} as never),
+      repository.updateResult('project-a', 'result-a', 2, {} as never, {}),
     ).resolves.toBeNull();
     expect(updateMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { projectId: 'project-a', id: 'result-a', revision: 2 } }),

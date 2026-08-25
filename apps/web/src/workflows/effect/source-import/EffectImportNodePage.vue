@@ -14,7 +14,7 @@ import {
   type EffectVideoConfig,
   type PreviewEffectManifestData,
 } from '@ai-marketing/contracts';
-import { WorkflowNodeFooter } from '@ai-marketing/ui';
+import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
 import {
   AlertCircle,
   ArrowLeft,
@@ -40,6 +40,7 @@ import {
   putWorkflowNodeState,
 } from '../../../platform/workflow/api/workflow-working.api';
 import EffectInfoExtractionNodePage from '../information-extraction/EffectInfoExtractionNodePage.vue';
+import EffectPromptGenerationNodePage from '../prompt-generation/EffectPromptGenerationNodePage.vue';
 import {
   advanceEffectImportDraft,
   batchDeleteEffectImportProducts,
@@ -103,6 +104,7 @@ const transitioning = ref(false);
 const uploadTargetInitializing = ref(false);
 const activeStep = ref(0);
 const infoExtractionNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
+const promptGenerationNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
 const downstreamBoundaries = [
   { title: 'Prompt 生成', description: '批量生成差异化提示词' },
   { title: '片段渲染', description: 'AI 视频片段批量渲染' },
@@ -185,6 +187,9 @@ const saveStateLabel = computed(
       saved: '已自动保存',
       saving: '正在保存…',
     })[saveState.value],
+);
+const draftBarState = computed<'clean' | 'conflict' | 'dirty' | 'save_failed' | 'saved' | 'saving'>(
+  () => (saveState.value === 'saveError' ? 'save_failed' : saveState.value),
 );
 
 const showNotice = (text: string, kind: 'error' | 'success' | 'warning' = 'success'): void => {
@@ -750,6 +755,8 @@ async function flushPendingEdits(): Promise<boolean> {
   if (!flushed || !(await saveWorkflowNodeState())) return false;
   if (activeStep.value === 1 && infoExtractionNode.value)
     return infoExtractionNode.value.flushPendingEdits();
+  if (activeStep.value === 2 && promptGenerationNode.value)
+    return promptGenerationNode.value.flushPendingEdits();
   return true;
 }
 
@@ -1376,6 +1383,17 @@ onBeforeUnmount(() => {
         @next="enterPromptBoundary"
       />
 
+      <EffectPromptGenerationNodePage
+        v-else-if="activeStep === 2"
+        ref="promptGenerationNode"
+        :project-id="currentProjectId"
+        :workflow-run-id="workspace?.workflowRunId ?? ''"
+        :products="products"
+        :global-config="draft?.globalConfig ?? DEFAULT_EFFECT_VIDEO_CONFIG"
+        @back="selectWorkflowStep(1)"
+        @next="selectWorkflowStep(3)"
+      />
+
       <section v-else-if="activeDownstreamBoundary" class="ai-placeholder">
         <span><Sparkles :size="23" /></span>
         <small>STEP {{ String(activeStep + 1).padStart(2, '0') }}</small>
@@ -1600,6 +1618,13 @@ onBeforeUnmount(() => {
               </p>
             </div>
           </section>
+
+          <WorkflowNodeDraftBar
+            :detail="`${currentMode === 'BATCH' ? '多产品批量导入' : '单产品导入'} · ${draft?.productCount ?? 0} 个产品 · 已自动保存到节点草稿`"
+            :state="draftBarState"
+            :state-label="saveStateLabel"
+            title="产品资料与视频配置草稿"
+          />
 
           <WorkflowNodeFooter
             :complete="validatedCurrentRevision"

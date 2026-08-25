@@ -46,7 +46,7 @@ class RuntimeContext:
 
 
 class ExtractionRequest(ApiModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     run_id: str
     project_id: str
     request_id: str
@@ -100,7 +100,7 @@ class SnapshotDependency(ApiModel):
 
 
 class ExtractionSnapshot(ApiModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     project_id: str
     draft_id: str
     mode: Literal["SINGLE", "BATCH"]
@@ -110,6 +110,7 @@ class ExtractionSnapshot(ApiModel):
     materials: list[SnapshotMaterial] = Field(default_factory=list)
     dependency_snapshot: SnapshotDependencyRevision | None = None
     dependencies: list[SnapshotDependency] = Field(default_factory=list)
+    manual_overrides: dict[str, Any] = Field(default_factory=dict)
 
 class ClaimResponse(ApiModel):
     terminal: bool
@@ -127,13 +128,21 @@ class ExtractionCandidate(ApiModel):
     core_specification: str | None
     price_range: str | None
     visual_features: str | None
-    target_audience: str | None
-    marketing_goal: str | None
     core_selling_points: list[str] | None
-    usage_scenarios: str | None
+    secondary_selling_points: list[str] | None
+    trust_backings: list[str] | None
+    target_audience: str | None
+    core_pain_points: list[str] | None
+    decision_drivers: list[str] | None
+    marketing_goal: str | None
+    usage_scenarios: list[str] | None
+    purchase_scenarios: list[str] | None
+    emotional_scenarios: list[str] | None
+    duration_seconds: int | None
+    aspect_ratio: str | None
     delivery_channels: str | None
-    brand_tone: str | None
     disabled_elements: list[str] | None
+    visual_style_baseline: str | None
 
     @classmethod
     def empty(cls) -> ExtractionCandidate:
@@ -146,13 +155,21 @@ class ExtractionResult(ApiModel):
     core_specification: str
     price_range: str
     visual_features: str
+    core_selling_points: list[str] = Field(min_length=1, max_length=3)
+    secondary_selling_points: list[str] = Field(max_length=6)
+    trust_backings: list[str] = Field(max_length=6)
     target_audience: str
+    core_pain_points: list[str] = Field(max_length=5)
+    decision_drivers: list[str] = Field(max_length=5)
     marketing_goal: str
-    core_selling_points: list[str]
-    usage_scenarios: str
+    usage_scenarios: list[str] = Field(max_length=5)
+    purchase_scenarios: list[str] = Field(max_length=5)
+    emotional_scenarios: list[str] = Field(max_length=5)
+    duration_seconds: int = Field(ge=1, le=3600)
+    aspect_ratio: str
     delivery_channels: str
-    brand_tone: str
     disabled_elements: list[str]
+    visual_style_baseline: str
 
 
 class BranchName(StrEnum):

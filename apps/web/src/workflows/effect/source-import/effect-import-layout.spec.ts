@@ -118,6 +118,8 @@ describe('effect import identity boundary', () => {
       /const validatedCurrentRevision[\s\S]*unnamedProductCount\.value === 0/,
     );
     expect(pageSource).toContain('validateEffectImportDraft(');
+    expect(pageSource).toContain('<WorkflowNodeDraftBar');
+    expect(pageSource).toContain('title="产品资料与视频配置草稿"');
     expect(pageSource).toContain('<WorkflowNodeFooter');
     expect(pageSource).toContain('next-label="下一步：AI 信息提炼"');
     expect(pageSource).toContain('@validate="validateDraft"');

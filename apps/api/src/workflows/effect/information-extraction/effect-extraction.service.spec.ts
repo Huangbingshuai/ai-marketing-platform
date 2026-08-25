@@ -11,6 +11,29 @@ const projectService = (): ProjectService =>
   ({ get: vi.fn().mockResolvedValue({ id: 'project-a' }) }) as unknown as ProjectService;
 const storage = {} as StoragePort;
 
+const extractionResult = {
+  productCategory: '食品',
+  productName: '测试产品',
+  coreSpecification: '100g',
+  priceRange: '建议 10-20 元，需确认',
+  visualFeatures: '红色包装',
+  coreSellingPoints: ['卖点一'],
+  secondarySellingPoints: [],
+  trustBackings: [],
+  targetAudience: '家庭用户',
+  corePainPoints: ['备餐麻烦'],
+  decisionDrivers: ['包装便利'],
+  marketingGoal: '促进转化',
+  usageScenarios: ['家庭聚餐'],
+  purchaseScenarios: ['日常囤货'],
+  emotionalScenarios: ['家庭分享'],
+  durationSeconds: 15,
+  aspectRatio: '9:16',
+  deliveryChannels: '抖音',
+  disabledElements: ['系统禁用词'],
+  visualStyleBaseline: '烟火食欲感',
+};
+
 const runRecord = {
   id: 'run-a',
   projectId: 'project-a',
@@ -398,6 +421,80 @@ describe('EffectExtractionService', () => {
       service.updateResult('project-a', 'result-a', 1, { productName: 'only one field' }),
     ).rejects.toMatchObject({ status: HttpStatus.BAD_REQUEST });
     expect(repository.result).not.toHaveBeenCalled();
+  });
+
+  it('keeps user-selected production rules as field-level overrides', async () => {
+    const config = {
+      aspectRatio: '9:16',
+      durationSeconds: 15,
+      resolution: '1080P',
+      frameRate: 30,
+      subtitleStrategy: '跟随口播',
+      voiceoverStrategy: 'AI 女声',
+      bgmStrategy: '自动匹配',
+      styleTone: '烟火食欲感',
+      deliveryChannel: '抖音',
+      disabledElements: ['系统禁用词'],
+    };
+    const editedResult = {
+      ...extractionResult,
+      durationSeconds: 40,
+      aspectRatio: '3:4',
+      deliveryChannels: '快手',
+      visualStyleBaseline: '国潮新中式',
+      disabledElements: ['人工禁用词'],
+    };
+    const repository = {
+      result: vi.fn().mockResolvedValue({
+        id: 'result-a',
+        runId: 'run-a',
+        generatedResult: extractionResult,
+      }),
+      run: vi.fn().mockResolvedValue({
+        inputSnapshot: {
+          globalVideoConfig: config,
+          product: { effectiveConfig: config },
+        },
+      }),
+      updateResult: vi.fn().mockResolvedValue({
+        id: 'result-a',
+        runId: 'run-a',
+        productId: 'product-a',
+        revision: 2,
+        draftResult: {
+          ...editedResult,
+          disabledElements: ['系统禁用词', '人工禁用词'],
+        },
+        savedAt: new Date('2026-08-25T08:00:00.000Z'),
+      }),
+    } as unknown as EffectExtractionRepository;
+    const service = new EffectExtractionService(
+      repository,
+      projectService(),
+      {} as JobProgressStore,
+      storage,
+    );
+
+    const result = await service.updateResult('project-a', 'result-a', 1, editedResult);
+
+    expect(repository.updateResult).toHaveBeenCalledWith(
+      'project-a',
+      'result-a',
+      1,
+      { ...editedResult, disabledElements: ['系统禁用词', '人工禁用词'] },
+      expect.objectContaining({
+        durationSeconds: 40,
+        aspectRatio: '3:4',
+        deliveryChannels: '快手',
+        visualStyleBaseline: '国潮新中式',
+      }),
+    );
+    expect(result.result).toMatchObject({
+      durationSeconds: 40,
+      aspectRatio: '3:4',
+      deliveryChannels: '快手',
+      visualStyleBaseline: '国潮新中式',
+    });
   });
 
   it('maps a stale revision to a conflict and does not create a response run', async () => {

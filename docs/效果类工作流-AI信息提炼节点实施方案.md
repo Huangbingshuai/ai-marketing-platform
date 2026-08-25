@@ -34,13 +34,21 @@ type EffectExtractionResult = {
   coreSpecification: string;
   priceRange: string;
   visualFeatures: string;
-  targetAudience: string;
-  marketingGoal: string;
   coreSellingPoints: string[];
-  usageScenarios: string;
+  secondarySellingPoints: string[];
+  trustBackings: string[];
+  targetAudience: string;
+  corePainPoints: string[];
+  decisionDrivers: string[];
+  marketingGoal: string;
+  usageScenarios: string[];
+  purchaseScenarios: string[];
+  emotionalScenarios: string[];
+  durationSeconds: number;
+  aspectRatio: string;
   deliveryChannels: string;
-  brandTone: string;
   disabledElements: string[];
+  visualStyleBaseline: string;
 };
 ```
 
@@ -427,3 +435,11 @@ Ark Provider 不再把超时、网络、限流、服务端异常、请求拒绝�
 产品名、规格、配方、产地、认证、功效和销量继续要求明确证据；价格带、目标人群、营销目标、创意卖点、使用场景、渠道、品牌调性和合规风险可以基于已识别品类、视觉特征、规格和场景保守补全。推断价格必须为区间并明确包含“建议、需确认”，不得伪装成用户提供的精确售价；卖点不得升级为无法证明的成分、产地、医疗功效或绝对化承诺。
 
 使用现有广式腊肠主图执行真实“IMAGE Turbo → NORMALIZATION Mini”验收，在不提供文档候选的情况下成功补出建议价格带、目标人群、营销目标、3 项视觉卖点、多个使用场景、品牌调性、建议渠道和合规禁用项；图片无法确认的产品名与规格仍保持“待补充”。两次调用均通过严格 JSON Schema 和 Pydantic 校验，真实 Key 未输出。
+
+## 27. 2026-08-25 产品素材制作信息卡 V2
+
+结果契约升级为 schema v2，并按产品基础、卖点、用户、场景和制作规则五层展示。核心卖点强制 1～3 项，新增次要卖点、辅助信任背书、核心痛点、决策动因、购买场景和情绪共鸣场景；原 `brandTone` 迁移为 `visualStyleBaseline`。时长、画幅、渠道和视觉风格初始继承资料导入节点配置，并允许用户在信息卡中使用下拉框形成字段级人工覆盖；禁用词继续至少包含资料导入节点配置。
+
+DOCUMENT、IMAGE、NORMALIZATION 三份 Prompt 已升级至 `2.0.0`。图片节点负责在不虚构硬事实与信任背书的前提下补充建议价格、人群、痛点、决策动因、营销目标和三类场景；NORMALIZATION 将溢出的核心卖点迁入次要卖点，且通过独立的 `protected_user_input_json` 接收人工覆盖。API 在 Worker 返回后再次确定性恢复表单配置和 `manualOverrides`，模型不能覆盖用户输入。
+
+生成、重新提炼和自动保存仍不提交 WorkingArtifact；只有“完成校验”才按 V2 contentHash 更新 `marketing-insight:{productId}`。历史 V1 JSON 通过读取适配器转换，旧工作副本不会因迁移隐式增加 revision。详细实施与验收记录见 `docs/效果类AI信息提炼-产品素材制作信息卡完善实施方案.md`。

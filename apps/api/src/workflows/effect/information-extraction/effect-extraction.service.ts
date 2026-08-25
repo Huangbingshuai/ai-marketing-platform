@@ -34,10 +34,14 @@ import { EffectExtractionRepository } from './effect-extraction.repository';
 import { presentExtractionNodeDetail } from './effect-extraction-node-detail';
 import type { CompleteRunInput, EffectExtractionInputSnapshot } from './effect-extraction.types';
 import {
+  effectExtractionDefaultsFromConfig,
   extractionSourceFingerprint,
   isSupportedExtractionMaterial,
   isEffectExtractionResult,
+  manualOverrideFieldNames,
+  manualOverridesForResult,
   parseWarnings,
+  toEffectExtractionResultV2,
 } from './effect-extraction.validation';
 
 const notFound = (message = 'AI 提炼实体不存在') =>
@@ -226,6 +230,11 @@ export class EffectExtractionService {
     const snapshotProduct = snapshot?.product;
     if (!activeProduct || !workflow || !snapshot || !snapshotProduct?.name.trim()) return null;
     const productName = snapshotProduct.name.trim();
+    const config = snapshot.globalVideoConfig ?? snapshotProduct.effectiveConfig;
+    const result = toEffectExtractionResultV2(
+      record.draftResult,
+      effectExtractionDefaultsFromConfig(config),
+    );
     return {
       workflowRunId: workflow.workspace.workflowRunId,
       artifactKey: `marketing-insight:${record.productId}`,
@@ -244,7 +253,7 @@ export class EffectExtractionService {
           productName,
           contentKind: 'EFFECT_EXTRACTION_RESULT',
         },
-        payload: record.draftResult,
+        payload: result,
         dependencies: snapshot.dependencies ?? [],
       },
     };
@@ -349,6 +358,16 @@ export class EffectExtractionService {
       draft.products.map(async (product) => {
         const run = product.extractionRuns[0] ?? null;
         const result = run?.result ?? null;
+        const config = mergeEffectVideoConfig(
+          draft.globalConfig as EffectVideoConfig,
+          product.configOverride as EffectVideoConfigOverride,
+        );
+        const resultV2 = result
+          ? toEffectExtractionResultV2(
+              result.draftResult,
+              effectExtractionDefaultsFromConfig(config),
+            )
+          : null;
         const fingerprint = await this.currentFingerprint(draft, product.id);
         const stale = Boolean(result && result.sourceFingerprint !== fingerprint);
         const candidate = result ? await this.workingResultInput(result) : null;
@@ -374,8 +393,10 @@ export class EffectExtractionService {
           status,
           runId: run?.id ?? null,
           resultId: result?.id ?? null,
+          resultSchemaVersion: result?.schemaVersion ?? null,
           resultRevision: result?.revision ?? null,
-          result: (result?.draftResult as EffectExtractionResult | undefined) ?? null,
+          result: resultV2,
+          manualOverrideFields: manualOverrideFieldNames(result?.manualOverrides),
           progress: run?.progress ?? 0,
           currentNode: run?.currentNode ?? null,
           warnings: publicWarnings(run?.warnings),
@@ -466,11 +487,25 @@ export class EffectExtractionService {
     if (!isEffectExtractionResult(result)) throw badRequest('提炼结果不符合标准结构');
     const existing = await this.repository.result(projectId, resultId);
     if (!existing) throw notFound('提炼结果不存在');
+    const sourceRun = await this.repository.run(projectId, existing.runId);
+    const snapshot = sourceRun?.inputSnapshot as EffectExtractionInputSnapshot | undefined;
+    if (!snapshot) throw conflict('提炼输入快照不存在，请重新提炼');
+    const config = snapshot.globalVideoConfig ?? snapshot.product.effectiveConfig;
+    const generated = toEffectExtractionResultV2(
+      existing.generatedResult,
+      effectExtractionDefaultsFromConfig(config),
+    );
+    const editableResult: EffectExtractionResult = {
+      ...result,
+      disabledElements: [...new Set([...config.disabledElements, ...result.disabledElements])],
+    };
+    const manualOverrides = manualOverridesForResult(generated, editableResult);
     const updated = await this.repository.updateResult(
       projectId,
       resultId,
       expectedRevision,
-      result,
+      editableResult,
+      manualOverrides,
     );
     if (!updated) throw conflict('提炼结果已被其他操作更新，请刷新后重试');
     return {
@@ -493,7 +528,15 @@ export class EffectExtractionService {
     if (!existing) throw notFound('提炼结果不存在');
     if (existing.revision !== expectedRevision)
       throw conflict('提炼结果已被其他操作更新，请刷新后重试');
-    if (!isEffectExtractionResult(existing.draftResult))
+    const sourceRun = await this.repository.run(projectId, existing.runId);
+    const snapshot = sourceRun?.inputSnapshot as EffectExtractionInputSnapshot | undefined;
+    if (!snapshot) throw conflict('提炼输入快照不存在，请重新提炼');
+    const config = snapshot.globalVideoConfig ?? snapshot.product.effectiveConfig;
+    const draftResult = toEffectExtractionResultV2(
+      existing.draftResult,
+      effectExtractionDefaultsFromConfig(config),
+    );
+    if (!isEffectExtractionResult(draftResult))
       return {
         valid: false,
         issues: [{ code: 'INVALID_RESULT', message: '提炼结果不符合标准结构' }],
@@ -503,6 +546,7 @@ export class EffectExtractionService {
         allProductsValidated: false,
         validatedAt: new Date().toISOString(),
       };
+    existing.draftResult = draftResult as never;
     if (await this.repository.hasNewerWorkingResult(projectId, existing.productId, existing.runId))
       throw conflict('当前结果已不是最新提炼结果，请刷新后完成校验');
     const candidate = await this.workingResultInput(existing);

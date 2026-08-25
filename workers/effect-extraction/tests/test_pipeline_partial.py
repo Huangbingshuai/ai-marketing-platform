@@ -32,7 +32,7 @@ class ApiStub:
         self.saved: list[BranchOutput] = []
         self.branches: list[BranchOutput] = []
         self.snapshot = ExtractionSnapshot(
-            schema_version=1,
+            schema_version=2,
             project_id="project",
             draft_id="draft",
             mode="SINGLE",
@@ -215,7 +215,9 @@ async def test_form_branch_reads_only_the_global_video_configuration() -> None:
     assert output.candidate.product_name == "商品"
     assert output.candidate.product_category is None
     assert output.candidate.delivery_channels == "视频号"
-    assert output.candidate.brand_tone == "烟火食欲感"
+    assert output.candidate.duration_seconds == 20
+    assert output.candidate.aspect_ratio == "1:1"
+    assert output.candidate.visual_style_baseline == "烟火食欲感"
     assert output.candidate.disabled_elements == ["医疗功效"]
     assert output.metadata == {
         "durationSeconds": 20,

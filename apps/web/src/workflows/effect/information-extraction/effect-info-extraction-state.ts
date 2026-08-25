@@ -28,6 +28,13 @@ export const EFFECT_EXTRACTION_STATUS_META: Record<
 export const cloneExtractionResult = (value: EffectExtractionResult): EffectExtractionResult => ({
   ...value,
   coreSellingPoints: [...value.coreSellingPoints],
+  secondarySellingPoints: [...value.secondarySellingPoints],
+  trustBackings: [...value.trustBackings],
+  corePainPoints: [...value.corePainPoints],
+  decisionDrivers: [...value.decisionDrivers],
+  usageScenarios: [...value.usageScenarios],
+  purchaseScenarios: [...value.purchaseScenarios],
+  emotionalScenarios: [...value.emotionalScenarios],
   disabledElements: [...value.disabledElements],
 });
 

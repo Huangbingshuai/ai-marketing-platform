@@ -19,21 +19,24 @@ describe('effect info extraction result layout', () => {
     expect(pageSource.match(/@click="runCurrentExtraction"/g)).toHaveLength(3);
   });
 
-  it('runs only the selected product and exposes progress, warnings and conflict recovery', () => {
+  it('runs only the selected product and exposes progress and conflict recovery', () => {
     expect(pageSource).not.toContain('全部提炼');
     expect(pageSource).not.toContain('runBatchExtraction');
     expect(pageSource).not.toContain('batchBusy');
     expect(pageSource).toContain('currentState.progress');
-    expect(pageSource).toContain('currentState.warnings');
     expect(pageSource).toContain('加载最新结果');
+    expect(pageSource).not.toContain('部分来源有提示，已使用其余有效资料完成提炼');
+    expect(pageSource).not.toContain('class="state-alert warning extraction-warnings"');
   });
 
   it('uses the same global validation footer as the source import node', () => {
+    expect(pageSource).toContain('<WorkflowNodeDraftBar');
     expect(pageSource).toContain('<WorkflowNodeFooter');
     expect(pageSource).toContain('back-label="上一步"');
     expect(pageSource).toContain('next-label="下一步：Prompt 生成"');
     expect(pageSource).toContain('@validate="validateCurrentResult"');
     expect(pageSource).not.toContain('class="extraction-footer"');
+    expect(pageSource).not.toContain('class="draft-save-bar"');
   });
 
   it('treats a missing first-visit node state as an empty draft without issuing a failing GET', () => {
@@ -87,12 +90,54 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).not.toContain("detailField('frameRate', '帧率'");
   });
 
-  it('treats the recommended selling-point count as guidance instead of a hard limit', () => {
+  it('enforces three core selling points and renders the complete five-layer card', () => {
     expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS');
     expect(pageSource).toContain("result.coreSellingPoints.push('')");
     expect(pageSource).toContain('placeholder="请输入核心卖点"');
-    expect(pageSource).not.toContain('result.coreSellingPoints.length >= 3');
-    expect(pageSource).not.toContain('visibleResult.coreSellingPoints.length >= 3');
+    expect(pageSource).toContain('class="selling-add-button"');
+    for (const field of [
+      'secondarySellingPoints',
+      'trustBackings',
+      'corePainPoints',
+      'decisionDrivers',
+      'purchaseScenarios',
+      'emotionalScenarios',
+      'visualStyleBaseline',
+    ])
+      expect(pageSource).toContain(field);
+    expect(pageSource).toContain('暂无可验证的信任背书');
+    expect(pageSource).toContain('初始值继承资料导入节点，可在当前信息卡中调整');
+    expect(pageSource).toContain('v-model.number="visibleResult.durationSeconds"');
+    expect(pageSource).toContain('v-model="visibleResult.aspectRatio"');
+    expect(pageSource).toContain('v-model="visibleResult.deliveryChannels"');
+    expect(pageSource).toContain('v-model="visibleResult.visualStyleBaseline"');
+    expect(pageSource).toContain('EFFECT_IMPORT_PROTOTYPE_STYLE_TONES');
+    expect(pageSource).toContain('.production-rule-grid .field-label + .field-label');
+    expect(pageSource).toContain('.production-rule-grid + .field-label');
+  });
+
+  it('edits user pain points and decision drivers with the same item rows as selling points', () => {
+    expect(pageSource).toContain("addUserInsightItem('corePainPoints')");
+    expect(pageSource).toContain("addUserInsightItem('decisionDrivers')");
+    expect(pageSource).toContain('v-model="visibleResult.corePainPoints[index]"');
+    expect(pageSource).toContain('v-model="visibleResult.decisionDrivers[index]"');
+    expect(pageSource).toContain('aria-label="删除核心痛点"');
+    expect(pageSource).toContain('aria-label="删除决策动因"');
+    expect(pageSource).toContain('class="structured-item-list"');
+    expect(pageSource).toContain('class="field-label user-marketing-goal"');
+    expect(pageSource).not.toContain('核心痛点（每行一项）');
+    expect(pageSource).not.toContain('决策动因（每行一项）');
+  });
+
+  it('edits all scenario groups as individual rows instead of newline textareas', () => {
+    for (const field of ['usageScenarios', 'purchaseScenarios', 'emotionalScenarios']) {
+      expect(pageSource).toContain(`addScenarioItem('${field}')`);
+      expect(pageSource).toContain(`removeScenarioItem('${field}', index)`);
+      expect(pageSource).toContain(`v-model="visibleResult.${field}[index]"`);
+    }
+    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS');
+    expect(pageSource).not.toContain('textListValue');
+    expect(pageSource).not.toContain('updateTextList');
   });
 
   it('translates internal fusion conflict messages into concise user-facing Chinese', () => {

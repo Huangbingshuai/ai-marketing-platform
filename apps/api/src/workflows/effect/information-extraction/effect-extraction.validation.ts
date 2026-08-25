@@ -1,9 +1,17 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 
-import type { EffectExtractionResult, EffectExtractionWarning } from '@ai-marketing/contracts';
+import type {
+  EffectExtractionResult,
+  EffectExtractionWarning,
+  EffectVideoConfig,
+} from '@ai-marketing/contracts';
 import {
   EFFECT_EXTRACTION_BRANCHES,
+  EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS,
   EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS,
+  EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS,
+  EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS,
+  EFFECT_EXTRACTION_MAX_TRUST_BACKINGS,
 } from '@ai-marketing/contracts';
 
 const RESULT_KEYS = [
@@ -12,14 +20,43 @@ const RESULT_KEYS = [
   'coreSpecification',
   'priceRange',
   'visualFeatures',
-  'targetAudience',
-  'marketingGoal',
   'coreSellingPoints',
+  'secondarySellingPoints',
+  'trustBackings',
+  'targetAudience',
+  'corePainPoints',
+  'decisionDrivers',
+  'marketingGoal',
   'usageScenarios',
+  'purchaseScenarios',
+  'emotionalScenarios',
+  'durationSeconds',
+  'aspectRatio',
   'deliveryChannels',
-  'brandTone',
   'disabledElements',
+  'visualStyleBaseline',
 ] as const;
+
+export type EffectExtractionManualOverrides = Partial<EffectExtractionResult>;
+
+export type EffectExtractionResultDefaults = Pick<
+  EffectExtractionResult,
+  | 'durationSeconds'
+  | 'aspectRatio'
+  | 'deliveryChannels'
+  | 'disabledElements'
+  | 'visualStyleBaseline'
+>;
+
+export const effectExtractionDefaultsFromConfig = (
+  config: EffectVideoConfig,
+): EffectExtractionResultDefaults => ({
+  durationSeconds: config.durationSeconds,
+  aspectRatio: config.aspectRatio,
+  deliveryChannels: config.deliveryChannel,
+  disabledElements: [...config.disabledElements],
+  visualStyleBaseline: config.styleTone,
+});
 
 const canonicalValue = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(canonicalValue);
@@ -69,6 +106,112 @@ const validStringArray = (value: unknown, maxItems: number): value is string[] =
   value.length <= maxItems &&
   value.every((item) => validString(item, 1000));
 
+const compactStrings = (value: unknown, maxItems: number): string[] => {
+  const input = Array.isArray(value)
+    ? value
+    : typeof value === 'string' && value.trim()
+      ? [value]
+      : [];
+  const seen = new Set<string>();
+  return input
+    .flatMap((item) => {
+      if (typeof item !== 'string') return [];
+      const normalized = item.trim();
+      const key = normalized.toLocaleLowerCase();
+      if (!normalized || seen.has(key)) return [];
+      seen.add(key);
+      return [normalized];
+    })
+    .slice(0, maxItems);
+};
+
+const text = (record: Record<string, unknown>, key: string): string =>
+  typeof record[key] === 'string' ? record[key] : '';
+
+export const toEffectExtractionResultV2 = (
+  value: unknown,
+  defaults: EffectExtractionResultDefaults,
+): EffectExtractionResult => {
+  const record =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const allSellingPoints = compactStrings(record.coreSellingPoints, 9);
+  const explicitSecondary = compactStrings(
+    record.secondarySellingPoints,
+    EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS,
+  );
+  return {
+    productCategory: text(record, 'productCategory'),
+    productName: text(record, 'productName'),
+    coreSpecification: text(record, 'coreSpecification'),
+    priceRange: text(record, 'priceRange'),
+    visualFeatures: text(record, 'visualFeatures'),
+    coreSellingPoints: allSellingPoints.slice(0, EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS),
+    secondarySellingPoints: compactStrings(
+      [...allSellingPoints.slice(EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS), ...explicitSecondary],
+      EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS,
+    ),
+    trustBackings: compactStrings(record.trustBackings, EFFECT_EXTRACTION_MAX_TRUST_BACKINGS),
+    targetAudience: text(record, 'targetAudience'),
+    corePainPoints: compactStrings(record.corePainPoints, EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS),
+    decisionDrivers: compactStrings(record.decisionDrivers, EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS),
+    marketingGoal: text(record, 'marketingGoal'),
+    usageScenarios: compactStrings(record.usageScenarios, EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS),
+    purchaseScenarios: compactStrings(
+      record.purchaseScenarios,
+      EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS,
+    ),
+    emotionalScenarios: compactStrings(
+      record.emotionalScenarios,
+      EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS,
+    ),
+    durationSeconds:
+      Number.isInteger(record.durationSeconds) && Number(record.durationSeconds) > 0
+        ? Number(record.durationSeconds)
+        : defaults.durationSeconds,
+    aspectRatio: text(record, 'aspectRatio') || defaults.aspectRatio,
+    deliveryChannels: text(record, 'deliveryChannels') || defaults.deliveryChannels,
+    disabledElements: compactStrings(
+      Array.isArray(record.disabledElements) ? record.disabledElements : defaults.disabledElements,
+      100,
+    ),
+    visualStyleBaseline:
+      text(record, 'visualStyleBaseline') ||
+      text(record, 'brandTone') ||
+      defaults.visualStyleBaseline,
+  };
+};
+
+export const manualOverridesForResult = (
+  generated: EffectExtractionResult,
+  draft: EffectExtractionResult,
+): EffectExtractionManualOverrides =>
+  Object.fromEntries(
+    RESULT_KEYS.flatMap((key) =>
+      canonicalHash(generated[key]) === canonicalHash(draft[key]) ? [] : [[key, draft[key]]],
+    ),
+  ) as EffectExtractionManualOverrides;
+
+export const applyEffectExtractionManualOverrides = (
+  generated: EffectExtractionResult,
+  overrides: unknown,
+): EffectExtractionResult => {
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return generated;
+  const record = overrides as Record<string, unknown>;
+  return Object.fromEntries(
+    RESULT_KEYS.map((key) => [key, key in record ? record[key] : generated[key]]),
+  ) as EffectExtractionResult;
+};
+
+export const manualOverrideFieldNames = (value: unknown): string[] => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  const keys = new Set<string>(RESULT_KEYS);
+  return Object.keys(value as Record<string, unknown>)
+    .filter((key) => keys.has(key))
+    .sort();
+};
+
 export const isEffectExtractionResult = (value: unknown): value is EffectExtractionResult => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
@@ -83,13 +226,29 @@ export const isEffectExtractionResult = (value: unknown): value is EffectExtract
     validString(record.coreSpecification) &&
     validString(record.priceRange) &&
     validString(record.visualFeatures) &&
-    validString(record.targetAudience) &&
-    validString(record.marketingGoal) &&
     validStringArray(record.coreSellingPoints, EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS) &&
-    validString(record.usageScenarios) &&
+    record.coreSellingPoints.length >= 1 &&
+    validStringArray(
+      record.secondarySellingPoints,
+      EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS,
+    ) &&
+    validStringArray(record.trustBackings, EFFECT_EXTRACTION_MAX_TRUST_BACKINGS) &&
+    validString(record.targetAudience) &&
+    validStringArray(record.corePainPoints, EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS) &&
+    validStringArray(record.decisionDrivers, EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS) &&
+    validString(record.marketingGoal) &&
+    validStringArray(record.usageScenarios, EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS) &&
+    validStringArray(record.purchaseScenarios, EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS) &&
+    validStringArray(record.emotionalScenarios, EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS) &&
+    Number.isInteger(record.durationSeconds) &&
+    Number(record.durationSeconds) >= 1 &&
+    Number(record.durationSeconds) <= 3600 &&
+    validString(record.aspectRatio, 50) &&
+    record.aspectRatio.length > 0 &&
     validString(record.deliveryChannels) &&
-    validString(record.brandTone) &&
-    validStringArray(record.disabledElements, 100)
+    validStringArray(record.disabledElements, 100) &&
+    validString(record.visualStyleBaseline) &&
+    true
   );
 };
 
