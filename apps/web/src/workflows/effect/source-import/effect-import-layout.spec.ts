@@ -4,7 +4,6 @@ import pageSource from './EffectImportNodePage.vue?raw';
 import manifestDialogSource from './components/BatchManifestImportDialog.vue?raw';
 import globalConfigSource from './components/GlobalVideoConfigPanel.vue?raw';
 import productEditorSource from './components/ProductImportEditor.vue?raw';
-import overrideDialogSource from './components/ProductConfigOverrideDialog.vue?raw';
 import { EFFECT_IMPORT_PROTOTYPE_STYLE_TONES } from './effect-import-options';
 
 describe('effect import single-product prototype grid', () => {
@@ -15,6 +14,20 @@ describe('effect import single-product prototype grid', () => {
     expect(pageSource).not.toContain('批量草稿还是空的');
     expect(pageSource).not.toContain('>导入产品清单</button>');
     expect(pageSource).toContain('正在准备素材上传区…');
+  });
+
+  it('offers a lightweight 24-hour restore entry without adding a manual asset action', () => {
+    expect(pageSource).toContain('最近删除');
+    expect(pageSource).toContain('24 小时内可恢复');
+    expect(pageSource).toContain('restoreEffectImportProduct');
+    expect(pageSource).not.toContain('保存到项目资产库');
+  });
+
+  it('downloads the standard Word product-package template from the header action', () => {
+    expect(pageSource).toContain('@click="downloadProductPackageTemplate"');
+    expect(pageSource).toContain('downloadEffectProductPackageTemplate(');
+    expect(pageSource).toContain('Word 资料包模板已下载');
+    expect(pageSource).not.toContain('@click="downloadTemplate(\'csv\')"');
   });
 
   it('keeps upload and global configuration in the same stretched first row', () => {
@@ -57,12 +70,12 @@ describe('effect import prototype video configuration', () => {
   it('shows only the five fields confirmed by the prototype', () => {
     for (const label of ['视频时长', '画幅比例', '风格基调', '投放渠道', '禁用元素']) {
       expect(globalConfigSource).toContain(label);
-      expect(overrideDialogSource).toContain(label);
     }
     for (const removed of ['分辨率', '帧率', '字幕策略', '口播策略', 'BGM 策略']) {
       expect(globalConfigSource).not.toContain(removed);
-      expect(overrideDialogSource).not.toContain(removed);
     }
+    expect(pageSource).not.toContain('ProductConfigOverrideDialog');
+    expect(productEditorSource).not.toContain('单品覆盖配置');
   });
 
   it('uses the exact frozen-prototype style tone options in the frontend', () => {
@@ -99,12 +112,17 @@ describe('effect import identity boundary', () => {
     expect(manifestDialogSource).not.toContain('<th>品类</th>');
   });
 
-  it('keeps validation and next-step access locked until every product has a name', () => {
+  it('keeps next-step access locked and places whole-node validation beside next step', () => {
     expect(pageSource).toContain('const unnamedProductCount = computed(');
     expect(pageSource).toMatch(
       /const validatedCurrentRevision[\s\S]*unnamedProductCount\.value === 0/,
     );
-    expect(pageSource.match(/if \(unnamedProductCount\.value\)/g)).toHaveLength(1);
+    expect(pageSource).toContain('validateEffectImportDraft(');
+    expect(pageSource).toContain('<WorkflowNodeFooter');
+    expect(pageSource).toContain('next-label="下一步：AI 信息提炼"');
+    expect(pageSource).toContain('@validate="validateDraft"');
+    expect(pageSource).toContain('@next="advanceDraft"');
+    expect(productEditorSource).not.toContain('完成校验');
     expect(pageSource).toContain('个产品未填写名称');
   });
 });

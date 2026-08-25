@@ -14,6 +14,7 @@ export default defineConfig(({ mode }) => {
     plugins: [vue()],
     optimizeDeps: {
       include: ['@ai-marketing/contracts'],
+      needsInterop: ['@ai-marketing/contracts'],
     },
     server: {
       port: 5173,

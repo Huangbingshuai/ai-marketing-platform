@@ -35,6 +35,10 @@ export class UpdateExtractionResultDto {
   @Allow() result!: EffectExtractionResult;
 }
 
+export class ValidateExtractionResultDto {
+  @Type(() => Number) @IsInt() @Min(1) expectedRevision!: number;
+}
+
 export class WorkerProjectDto {
   @IsUUID('4') projectId!: string;
 }

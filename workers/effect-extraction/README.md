@@ -60,11 +60,29 @@ materials[]
 - `EFFECT_EXTRACTION_QUEUE`，默认 `effect.extraction.requested`
 - `EXTRACTION_AI_PROVIDER=ark|mock`，默认 `ark`
 - `ARK_BASE_URL`，默认 `https://ark.cn-beijing.volces.com/api/v3`
-- `ARK_API_KEY`、`ARK_MODEL=ep-...`（`ark` 必需；`ARK_MODEL` 使用方舟推理接入点 ID）
+- `ARK_API_KEY`（`ark` 必需）
+- `ARK_MODEL`，默认 `doubao-seed-2-1-turbo-260628`，作为所有模型调用的兼容回退
+- `ARK_DOCUMENT_MODEL`，可选，文档长文本候选抽取模型
+- `ARK_IMAGE_MODEL`，可选，图片多模态理解模型
+- `ARK_NORMALIZATION_MODEL`，可选，融合结果结构化标准化模型
 
 可选资源限制：`DOCLING_ARTIFACTS_PATH`、`DOCLING_MAX_FILE_SIZE`、`DOCLING_MAX_NUM_PAGES`、`MAX_DOCUMENT_TEXT_CHARS`、`IMAGE_MAX_INPUT_BYTES`、`IMAGE_MAX_DIMENSION`、`IMAGE_MAX_OUTPUT_BYTES`、`OMP_NUM_THREADS`。
 
-Worker 默认使用 `ark`，缺少 `ARK_API_KEY` 或 `ARK_MODEL` 时会在消费消息前启动失败，不会静默降级。`mock` 只能通过 `EXTRACTION_AI_PROVIDER=mock` 显式启用，供自动测试和本地无模型联调使用。Ark Provider 使用 Responses API 的 `text.format=json_schema` 强制结构化输出，随后仍由 Pydantic 二次校验。
+Worker 默认使用 `ark`。三个专用模型变量为空或未设置时均回退到 `ARK_MODEL`，因此旧环境仍只需提供 `ARK_API_KEY`；缺少 Key 时会在消费消息前启动失败，不会静默降级。专用模型调用失败时不会自动换用回退模型。`mock` 只能通过 `EXTRACTION_AI_PROVIDER=mock` 显式启用，供自动测试和本地无模型联调使用。Ark Provider 使用 Responses API 的 `text.format=json_schema` 强制结构化输出，随后仍由 Pydantic 二次校验。
+
+每次成功调用会把阶段、实际配置模型、提示词版本、Token 用量、总延迟和尝试次数写入内部 Branch metadata 的 `aiCall`。方舟响应不含 usage 时 Token 字段为 `null`，不会影响业务结果。该指标不包含 Prompt、文档正文、图片 Base64、密钥或完整模型输出，也不会通过普通节点详情接口直接返回。
+
+## 提示词管理
+
+提示词统一放在 `src/effect_extraction/prompts/` 目录，每次模型调用对应一个独立文件：
+
+- `document_extraction.prompt.txt`：文档资料抽取。
+- `image_analysis.prompt.txt`：产品图片识别。
+- `result_normalization.prompt.txt`：融合结果标准化。
+
+`prompt_loader.py` 按文件名加载、缓存和渲染提示词，并拒绝目录穿越和非 `.prompt.txt` 文件。`providers.py` 只声明所需文件名并传入资料名、正文、图片元数据和融合候选 JSON。修改模板时不得改名 `$source_name`、`$document_markdown`、`$image_metadata_json` 和 `$fused_candidate_json` 占位符；缺少文件或变量时 Worker 会立即失败。`prompts/` 作为 Python 包内资源会随 Worker wheel 一起发布。
+
+文档抽取保持事实优先；图片分析与结果标准化允许对价格带、目标人群、营销目标、创意卖点、使用场景、渠道、品牌调性和合规风险进行有边界的营销补全。产品名、规格、配方、产地、认证、功效和销量等硬事实不得臆造。推断价格必须使用带“建议、需确认”的区间，不能伪装成用户提供的精确售价。
 
 ## 本地开发与验证
 
@@ -90,8 +108,7 @@ uv run effect-extraction-download-models
 ```bash
 export RUN_ARK_INTEGRATION=1
 export ARK_API_KEY='<仅保存在本机环境>'
-export ARK_MODEL='ep-...'
 uv run pytest tests/test_ark_integration.py
 ```
 
-PowerShell 使用 `$env:RUN_ARK_INTEGRATION='1'` 等同名环境变量。不要把密钥写入 README、测试文件或 Git 跟踪的配置；没有可用 Endpoint 时保持测试跳过。
+PowerShell 使用 `$env:RUN_ARK_INTEGRATION='1'` 等同名环境变量。默认模型无需额外配置；如需独立验收，可设置三个专用变量为已授权的 Model ID 或 Endpoint ID，未设置的阶段仍回退到 `ARK_MODEL`。不要把密钥写入 README、测试文件或 Git 跟踪的配置。

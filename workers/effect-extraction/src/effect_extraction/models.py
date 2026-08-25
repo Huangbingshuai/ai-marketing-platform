@@ -84,14 +84,32 @@ class SnapshotProduct(ApiModel):
     effective_config: VideoConfig
 
 
+class SnapshotDependencyRevision(ApiModel):
+    source_package_revision: int
+    effective_video_config_revision: int
+    execution_input_hash: str
+
+
+class SnapshotDependency(ApiModel):
+    source_type: Literal["NODE_STATE", "WORKING_ARTIFACT", "EXECUTION_INPUT"]
+    source_node_id: str | None = None
+    source_artifact_id: str | None = None
+    source_key: str
+    source_revision: int | None = None
+    source_hash: str | None = None
+
+
 class ExtractionSnapshot(ApiModel):
     schema_version: Literal[1] = 1
     project_id: str
     draft_id: str
     mode: Literal["SINGLE", "BATCH"]
     source_revision: int
+    global_video_config: VideoConfig | None = None
     product: SnapshotProduct
     materials: list[SnapshotMaterial] = Field(default_factory=list)
+    dependency_snapshot: SnapshotDependencyRevision | None = None
+    dependencies: list[SnapshotDependency] = Field(default_factory=list)
 
 class ClaimResponse(ApiModel):
     terminal: bool

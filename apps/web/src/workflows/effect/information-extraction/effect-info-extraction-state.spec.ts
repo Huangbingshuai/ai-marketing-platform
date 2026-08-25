@@ -38,6 +38,8 @@ const state = (status: EffectExtractionProductState['status']): EffectExtraction
   warnings: [],
   errorMessage: null,
   sourceFingerprint: 'source',
+  commitStatus: status === 'COMPLETED' ? 'COMMITTED' : 'UNVALIDATED',
+  workingArtifactRevision: status === 'COMPLETED' ? 1 : null,
   updatedAt: '2026-08-20T00:00:00.000Z',
   saveState: 'SAVED',
   saveErrorMessage: null,

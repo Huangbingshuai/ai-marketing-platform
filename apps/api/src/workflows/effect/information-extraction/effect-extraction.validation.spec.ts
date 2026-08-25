@@ -36,10 +36,52 @@ describe('effect extraction validation', () => {
     );
   });
 
+  it('fingerprints only the authoritative artifact revisions and execution input hash', () => {
+    const dependencySnapshot = {
+      sourcePackageRevision: 3,
+      effectiveVideoConfigRevision: 2,
+      executionInputHash: 'sha256:business-input',
+    };
+    expect(
+      extractionSourceFingerprint({
+        sourceRevision: 8,
+        dependencySnapshot,
+        randomStorageKey: '01-working/random-a',
+      }),
+    ).toBe(
+      extractionSourceFingerprint({
+        sourceRevision: 99,
+        dependencySnapshot,
+        randomStorageKey: '01-working/random-b',
+      }),
+    );
+    expect(extractionSourceFingerprint({ sourceRevision: 8, dependencySnapshot })).not.toBe(
+      extractionSourceFingerprint({
+        sourceRevision: 8,
+        dependencySnapshot: { ...dependencySnapshot, sourcePackageRevision: 4 },
+      }),
+    );
+  });
+
   it('accepts exactly the standard extraction shape', () => {
     expect(isEffectExtractionResult(validResult)).toBe(true);
     expect(isEffectExtractionResult({ ...validResult, unexpected: true })).toBe(false);
     expect(isEffectExtractionResult({ ...validResult, coreSellingPoints: '卖点' })).toBe(false);
+  });
+
+  it('accepts up to twenty core selling points', () => {
+    expect(
+      isEffectExtractionResult({
+        ...validResult,
+        coreSellingPoints: Array.from({ length: 20 }, (_, index) => `卖点${index + 1}`),
+      }),
+    ).toBe(true);
+    expect(
+      isEffectExtractionResult({
+        ...validResult,
+        coreSellingPoints: Array.from({ length: 21 }, (_, index) => `卖点${index + 1}`),
+      }),
+    ).toBe(false);
   });
 
   it('compares worker tokens without accepting missing or different values', () => {

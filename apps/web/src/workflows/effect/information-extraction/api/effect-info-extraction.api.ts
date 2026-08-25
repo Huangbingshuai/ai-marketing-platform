@@ -1,11 +1,14 @@
 import type {
   ApiResponse,
+  GetEffectExtractionNodeDetailData,
   GetEffectExtractionRunData,
   GetEffectExtractionWorkspaceData,
   StartEffectExtractionRunData,
   StartEffectExtractionRunRequest,
   UpdateEffectExtractionResultData,
   UpdateEffectExtractionResultRequest,
+  ValidateEffectExtractionResultData,
+  ValidateEffectExtractionResultRequest,
 } from '@ai-marketing/contracts';
 
 import { requestJson } from '../../../../api/http-client';
@@ -51,6 +54,20 @@ export const getEffectExtractionRun = (
     signal,
   });
 
+export const getEffectExtractionNodeDetail = (
+  projectId: string,
+  runId: string,
+  nodeId: string,
+  signal?: AbortSignal,
+): Promise<ApiResponse<GetEffectExtractionNodeDetailData>> =>
+  requestJson(
+    `${basePath(projectId)}/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}`,
+    {
+      operation: '加载 AI 信息提炼节点详情',
+      signal,
+    },
+  );
+
 export const updateEffectExtractionResult = (
   projectId: string,
   resultId: string,
@@ -62,5 +79,19 @@ export const updateEffectExtractionResult = (
     body: input,
     headers: revisionHeaders(input.expectedRevision),
     operation: '保存 AI 信息提炼草稿',
+    signal,
+  });
+
+export const validateEffectExtractionResult = (
+  projectId: string,
+  resultId: string,
+  input: ValidateEffectExtractionResultRequest,
+  signal?: AbortSignal,
+): Promise<ApiResponse<ValidateEffectExtractionResultData>> =>
+  requestJson(`${basePath(projectId)}/results/${encodeURIComponent(resultId)}/validate`, {
+    method: 'POST',
+    body: input,
+    headers: revisionHeaders(input.expectedRevision),
+    operation: '完成 AI 信息提炼校验',
     signal,
   });

@@ -4,6 +4,7 @@ import os
 
 import pytest
 
+from effect_extraction.config import DEFAULT_ARK_MODEL
 from effect_extraction.models import ExtractionCandidate, ExtractionResult
 from effect_extraction.providers import ArkResponsesProvider
 
@@ -14,7 +15,7 @@ pytestmark = [
     pytest.mark.ark_integration,
     pytest.mark.skipif(
         not _RUN_REAL_ARK,
-        reason="set RUN_ARK_INTEGRATION=1 to call the real Ark endpoint",
+        reason="set RUN_ARK_INTEGRATION=1 to call the real Ark model",
     ),
 ]
 
@@ -39,14 +40,15 @@ def _required_environment(name: str) -> str:
 @pytest.mark.asyncio
 async def test_real_ark_text_image_and_normalization_contracts() -> None:
     api_key = _required_environment("ARK_API_KEY")
-    endpoint = _required_environment("ARK_MODEL")
-    if not endpoint.startswith("ep-"):
-        pytest.fail("ARK_MODEL must be an Ark Endpoint ID beginning with 'ep-'")
+    model = os.getenv("ARK_MODEL", DEFAULT_ARK_MODEL).strip() or DEFAULT_ARK_MODEL
 
     provider = ArkResponsesProvider(
         base_url=os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
         api_key=api_key,
-        model=endpoint,
+        model=model,
+        document_model=os.getenv("ARK_DOCUMENT_MODEL"),
+        image_model=os.getenv("ARK_IMAGE_MODEL"),
+        normalization_model=os.getenv("ARK_NORMALIZATION_MODEL"),
         timeout=float(os.getenv("ARK_TIMEOUT_SECONDS", "120")),
         max_attempts=2,
     )
@@ -79,8 +81,11 @@ async def test_real_ark_text_image_and_normalization_contracts() -> None:
     finally:
         await provider.aclose()
 
-    assert isinstance(document, ExtractionCandidate)
-    assert isinstance(image, ExtractionCandidate)
-    assert isinstance(normalized, ExtractionResult)
-    assert normalized.product_name.strip()
-    assert isinstance(normalized.core_selling_points, list)
+    assert isinstance(document.value, ExtractionCandidate)
+    assert isinstance(image.value, ExtractionCandidate)
+    assert isinstance(normalized.value, ExtractionResult)
+    assert normalized.value.product_name.strip()
+    assert isinstance(normalized.value.core_selling_points, list)
+    assert document.metadata.stage == "DOCUMENT"
+    assert image.metadata.stage == "IMAGE"
+    assert normalized.metadata.stage == "NORMALIZATION"

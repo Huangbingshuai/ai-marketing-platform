@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from effect_extraction.config import WorkerSettings
+from effect_extraction.config import DEFAULT_ARK_MODEL, WorkerSettings
 from effect_extraction.main import _provider
 from effect_extraction.providers import ArkResponsesProvider, MockAiProvider
 
@@ -12,7 +12,14 @@ def _base_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("INTERNAL_API_BASE_URL", "http://api.test/api")
     monkeypatch.setenv("EFFECT_EXTRACTION_WORKER_TOKEN", "worker-token")
     monkeypatch.setenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq.test/")
-    for name in ("EXTRACTION_AI_PROVIDER", "ARK_API_KEY", "ARK_MODEL"):
+    for name in (
+        "EXTRACTION_AI_PROVIDER",
+        "ARK_API_KEY",
+        "ARK_MODEL",
+        "ARK_DOCUMENT_MODEL",
+        "ARK_IMAGE_MODEL",
+        "ARK_NORMALIZATION_MODEL",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -25,14 +32,45 @@ def test_default_provider_fails_fast_without_ark_api_key(
         WorkerSettings()  # type: ignore[call-arg]
 
 
-def test_default_provider_fails_fast_without_ark_endpoint(
+def test_default_provider_rejects_the_documented_key_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _base_environment(monkeypatch)
+    monkeypatch.setenv("ARK_API_KEY", "replace-with-your-ark-api-key")
+
+    with pytest.raises(ValidationError, match="ARK_API_KEY is required"):
+        WorkerSettings()  # type: ignore[call-arg]
+
+
+def test_default_provider_uses_seed_2_1_turbo_model_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _base_environment(monkeypatch)
     monkeypatch.setenv("ARK_API_KEY", "test-key")
 
-    with pytest.raises(ValidationError, match="ARK_MODEL is required"):
-        WorkerSettings()  # type: ignore[call-arg]
+    settings = WorkerSettings()  # type: ignore[call-arg]
+
+    assert settings.ark_model == DEFAULT_ARK_MODEL
+    assert settings.resolved_document_model == DEFAULT_ARK_MODEL
+    assert settings.resolved_image_model == DEFAULT_ARK_MODEL
+    assert settings.resolved_normalization_model == DEFAULT_ARK_MODEL
+
+
+def test_stage_models_support_specific_values_and_blank_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _base_environment(monkeypatch)
+    monkeypatch.setenv("ARK_API_KEY", "test-key")
+    monkeypatch.setenv("ARK_MODEL", "base-model")
+    monkeypatch.setenv("ARK_DOCUMENT_MODEL", " document-model ")
+    monkeypatch.setenv("ARK_IMAGE_MODEL", "   ")
+    monkeypatch.setenv("ARK_NORMALIZATION_MODEL", "normalization-model")
+
+    settings = WorkerSettings()  # type: ignore[call-arg]
+
+    assert settings.resolved_document_model == "document-model"
+    assert settings.resolved_image_model == "base-model"
+    assert settings.resolved_normalization_model == "normalization-model"
 
 
 def test_explicit_mock_is_the_only_credential_free_provider(
@@ -47,12 +85,22 @@ def test_explicit_mock_is_the_only_credential_free_provider(
     assert isinstance(_provider(settings), MockAiProvider)
 
 
-def test_ark_model_must_be_an_endpoint_id(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ark_model_accepts_a_model_id(monkeypatch: pytest.MonkeyPatch) -> None:
     _base_environment(monkeypatch)
     monkeypatch.setenv("ARK_API_KEY", "test-key")
     monkeypatch.setenv("ARK_MODEL", "doubao-seed-2-1-turbo")
 
-    with pytest.raises(ValidationError, match="Ark Endpoint ID"):
+    settings = WorkerSettings()  # type: ignore[call-arg]
+
+    assert settings.ark_model == "doubao-seed-2-1-turbo"
+
+
+def test_ark_provider_rejects_blank_base_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    _base_environment(monkeypatch)
+    monkeypatch.setenv("ARK_API_KEY", "test-key")
+    monkeypatch.setenv("ARK_MODEL", "   ")
+
+    with pytest.raises(ValidationError, match="ARK_MODEL cannot be empty"):
         WorkerSettings()  # type: ignore[call-arg]
 
 

@@ -46,6 +46,8 @@ const toNodeState = (record: {
   schemaVersion: number;
   revision: number;
   contentHash: string;
+  executionInputHash: string;
+  executionInputSchemaVersion: number;
   state: unknown;
   savedAt: Date;
   updatedAt: Date;
@@ -122,12 +124,14 @@ const toArtifact = (record: WorkingArtifactRecord): WorkingArtifact => {
     sourceArtifactId: record.sourceArtifactId,
     revision: record.revision,
     freshness: record.freshness,
+    availability: record.availability,
     dependencies: record.dependencies.map((dependency) => ({
       sourceType: dependency.sourceType,
       sourceNodeId: dependency.sourceNodeId,
       sourceArtifactId: dependency.sourceArtifactId,
       sourceKey: dependency.sourceKey,
       sourceRevision: dependency.sourceRevision,
+      sourceHash: dependency.sourceHash,
     })),
     files,
     fileCount: files.length,
@@ -206,6 +210,8 @@ export class WorkflowWorkingService {
     await this.projectService.get(projectId);
     if (!nodeId.trim() || nodeId.length > 160)
       throw new ApiHttpException('节点标识无效', HttpStatus.BAD_REQUEST, 'VALIDATION_ERROR');
+    const executionInputSchemaVersion = 1;
+    const executionInputHash = this.executionInputHash();
     const result = await this.repository.saveNodeState(
       projectId,
       workflowRunId,
@@ -214,6 +220,8 @@ export class WorkflowWorkingService {
       input.state,
       input.expectedRevision,
       input.schemaVersion ?? 1,
+      executionInputHash,
+      executionInputSchemaVersion,
     );
     if (result.conflict)
       throw new ApiHttpException(
@@ -237,6 +245,8 @@ export class WorkflowWorkingService {
         nodeId,
         workflowStateHash(state),
         state,
+        1,
+        this.executionInputHash(),
       ),
     );
   }
@@ -314,23 +324,29 @@ export class WorkflowWorkingService {
     };
   }
 
-  async upsertArtifact(
+  async commitValidatedArtifacts(
     projectId: string,
     workflowRunId: string,
     nodeId: string,
-    artifactKey: string,
-    input: WorkingArtifactUpsertInput,
-  ): Promise<WorkingArtifact> {
-    const result = await this.repository.upsertArtifact(
+    artifacts: Array<{ artifactKey: string; input: WorkingArtifactUpsertInput }>,
+  ): Promise<Array<{ artifact: WorkingArtifact; unchanged: boolean }>> {
+    const results = await this.repository.commitValidatedArtifacts(
       projectId,
       workflowRunId,
       nodeId,
-      artifactKey,
-      input,
+      artifacts,
     );
-    if (result.previousStorageKey && result.previousStorageKey !== input.storageKey)
-      await this.deleteOrQueue(projectId, result.previousStorageKey, 'WORKING_ARTIFACT_REPLACED');
-    return toArtifact(result.record);
+    for (const result of results) {
+      const input = artifacts.find(
+        (artifact) => artifact.artifactKey === result.artifactKey,
+      )?.input;
+      if (result.previousStorageKey && result.previousStorageKey !== input?.storageKey)
+        await this.deleteOrQueue(projectId, result.previousStorageKey, 'WORKING_ARTIFACT_REPLACED');
+    }
+    return results.map((result) => ({
+      artifact: toArtifact(result.record),
+      unchanged: result.unchanged,
+    }));
   }
 
   async removeArtifact(
@@ -352,5 +368,12 @@ export class WorkflowWorkingService {
 
   private async deleteOrQueue(projectId: string, storageKey: string, reason: string) {
     await this.repository.enqueueCleanup(projectId, storageKey, reason);
+  }
+
+  private executionInputHash(): string {
+    // The extraction node currently has no independent AI execution controls.
+    // Page recovery/UI fields must never enter the execution dependency. When a
+    // real control is introduced it must be added here through an explicit whitelist.
+    return workflowStateHash({ schemaVersion: 1 });
   }
 }

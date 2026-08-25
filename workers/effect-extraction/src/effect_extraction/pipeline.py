@@ -21,7 +21,7 @@ from .models import (
     RuntimeContext,
     SnapshotMaterial,
 )
-from .providers import AiProvider
+from .providers import AiProvider, ProviderError, ProviderErrorType
 
 DOCUMENT_MIME_TYPES = {
     "application/pdf",
@@ -131,19 +131,20 @@ class ExtractionPipeline:
                 )
                 truncated = len(markdown) > self.max_document_text_chars
                 model_text = markdown[: self.max_document_text_chars]
-                candidate = await self.provider.extract_document(
+                ai_call = await self.provider.extract_document(
                     model_text, source_name=material.original_file_name
                 )
                 items.append(
                     BranchItem(
                         source_id=material.id,
                         status=BranchStatus.SUCCEEDED,
-                        candidate=candidate,
+                        candidate=ai_call.value,
                         artifact_storage_key=storage_key,
                         metadata={
                             "markdownChars": len(markdown),
                             "modelInputChars": len(model_text),
                             "modelInputTruncated": truncated,
+                            "aiCall": ai_call.metadata.as_dict(),
                         },
                         warning=(
                             "文档过长，模型候选抽取使用了受限长度文本；完整 Markdown 已保留"
@@ -155,9 +156,9 @@ class ExtractionPipeline:
             except InternalApiError as exc:
                 if exc.retryable:
                     raise
-                items.append(_failed_item(material.id, exc))
+                items.append(_failed_item(material.id, exc, BranchName.DOCUMENT))
             except Exception as exc:
-                items.append(_failed_item(material.id, exc))
+                items.append(_failed_item(material.id, exc, BranchName.DOCUMENT))
 
         return await self._save(context, _aggregate(BranchName.DOCUMENT, context, items))
 
@@ -180,30 +181,41 @@ class ExtractionPipeline:
                 ),
             )
 
-        items: list[BranchItem] = []
-        for material in sources:
-            try:
-                content = await self.api.download_material(context, material.id)
-                processed = await asyncio.to_thread(self.image_processor.process, content)
-                candidate = await self.provider.analyze_image(
-                    processed.data_uri,
-                    source_name=material.original_file_name,
-                    image_metadata=processed.metadata,
-                )
-                items.append(
-                    BranchItem(
+        semaphore = asyncio.Semaphore(3)
+
+        async def process(material: SnapshotMaterial) -> BranchItem | InternalApiError:
+            async with semaphore:
+                try:
+                    content = await self.api.download_material(context, material.id)
+                    processed = await asyncio.to_thread(self.image_processor.process, content)
+                    ai_call = await self.provider.analyze_image(
+                        processed.data_uri,
+                        source_name=material.original_file_name,
+                        image_metadata=processed.metadata,
+                    )
+                    return BranchItem(
                         source_id=material.id,
                         status=BranchStatus.SUCCEEDED,
-                        candidate=candidate,
-                        metadata=processed.metadata,
+                        candidate=ai_call.value,
+                        metadata={**processed.metadata, "aiCall": ai_call.metadata.as_dict()},
                     )
-                )
-            except InternalApiError as exc:
-                if exc.retryable:
-                    raise
-                items.append(_failed_item(material.id, exc))
-            except Exception as exc:
-                items.append(_failed_item(material.id, exc))
+                except InternalApiError as exc:
+                    return (
+                        exc
+                        if exc.retryable
+                        else _failed_item(material.id, exc, BranchName.IMAGE)
+                    )
+                except Exception as exc:
+                    return _failed_item(material.id, exc, BranchName.IMAGE)
+
+        processed_items = await asyncio.gather(*(process(material) for material in sources))
+        retryable_error = next(
+            (item for item in processed_items if isinstance(item, InternalApiError)),
+            None,
+        )
+        if retryable_error is not None:
+            raise retryable_error
+        items = [item for item in processed_items if isinstance(item, BranchItem)]
 
         return await self._save(context, _aggregate(BranchName.IMAGE, context, items))
 
@@ -229,30 +241,29 @@ class ExtractionPipeline:
     async def form_branch(self, context: RuntimeContext) -> BranchOutput:
         snapshot = self._snapshot(context)
         await self._start(context, BranchName.FORM)
-        config = snapshot.product.effective_config
+        config = snapshot.global_video_config or snapshot.product.effective_config
         candidate = ExtractionCandidate.empty()
+        # Product identity remains a manual-priority fusion input, but the public FORM detail
+        # intentionally presents only the five global video fields from the import node.
         candidate.product_name = snapshot.product.name.strip() or None
         candidate.product_category = snapshot.product.category.strip() or None
         candidate.delivery_channels = _optional(config.delivery_channel)
         candidate.brand_tone = _optional(config.style_tone)
         candidate.disabled_elements = _strings(config.disabled_elements) or None
-        status = (
-            BranchStatus.SUCCEEDED
-            if candidate.product_name and candidate.product_category
-            else BranchStatus.FAILED
-        )
-        warnings = [] if status == BranchStatus.SUCCEEDED else ["表单缺少产品名称或品类"]
         return await self._save(
             context,
             BranchOutput(
                 branch=BranchName.FORM,
-                status=status,
+                status=BranchStatus.SUCCEEDED,
                 source_fingerprint=context.source_fingerprint,
                 candidate=candidate,
-                warnings=warnings,
+                warnings=[],
                 metadata={
                     "durationSeconds": config.duration_seconds,
                     "aspectRatio": config.aspect_ratio,
+                    "styleTone": config.style_tone,
+                    "deliveryChannel": config.delivery_channel,
+                    "disabledElements": config.disabled_elements,
                 },
             ),
         )
@@ -286,7 +297,8 @@ class ExtractionPipeline:
         fusion = by_name.get(BranchName.FUSION)
         if fusion is None or fusion.candidate is None:
             raise FusionError("fusion output is missing")
-        result = await self.provider.normalize(fusion.candidate)
+        ai_call = await self.provider.normalize(fusion.candidate)
+        result = ai_call.value
         form = by_name.get(BranchName.FORM)
         if form and form.candidate:
             _restore_manual_fields(result, form.candidate)
@@ -304,6 +316,7 @@ class ExtractionPipeline:
             status=BranchStatus.SUCCEEDED,
             source_fingerprint=context.source_fingerprint,
             candidate=ExtractionCandidate.model_validate(result.model_dump()),
+            metadata={"aiCall": ai_call.metadata.as_dict()},
         )
         await self._save(context, normalization)
         extract_result_id = await self.api.complete(
@@ -364,21 +377,55 @@ def _aggregate(
     else:
         status = BranchStatus.FAILED
     warnings = [item.warning for item in items if item.warning]
+    failure_diagnostics = [
+        error
+        for item in items
+        if item.status == BranchStatus.FAILED
+        and isinstance((error := item.metadata.get("error")), dict)
+    ]
     return BranchOutput(
         branch=branch,
         status=status,
         source_fingerprint=context.source_fingerprint,
         items=items,
         warnings=_strings(warnings),
+        metadata={"failures": failure_diagnostics} if failure_diagnostics else {},
     )
 
 
-def _failed_item(source_id: str, exc: Exception) -> BranchItem:
+def _failed_item(source_id: str, exc: Exception, branch: BranchName) -> BranchItem:
+    if isinstance(exc, ProviderError):
+        return BranchItem(
+            source_id=source_id,
+            status=BranchStatus.FAILED,
+            warning=_provider_error_message(branch, exc.error_type),
+            metadata={
+                "error": {
+                    "type": exc.error_type.value,
+                    "attempts": exc.attempts,
+                    "elapsedMs": exc.elapsed_ms,
+                }
+            },
+        )
     return BranchItem(
         source_id=source_id,
         status=BranchStatus.FAILED,
         warning=_safe_error(exc),
     )
+
+
+def _provider_error_message(branch: BranchName, error_type: ProviderErrorType) -> str:
+    action = "文档 AI 抽取" if branch == BranchName.DOCUMENT else "图片 AI 识别"
+    suffixes = {
+        ProviderErrorType.TIMEOUT: "超时",
+        ProviderErrorType.NETWORK: "连接失败",
+        ProviderErrorType.RATE_LIMIT: "服务繁忙，请稍后重试",
+        ProviderErrorType.SERVICE: "服务暂时不可用",
+        ProviderErrorType.RESPONSE_INVALID: "返回格式异常",
+        ProviderErrorType.REQUEST_REJECTED: "请求被拒绝",
+        ProviderErrorType.UNKNOWN: "失败",
+    }
+    return f"{action}{suffixes[error_type]}"
 
 
 def _safe_error(exc: Exception) -> str:

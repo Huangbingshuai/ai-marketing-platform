@@ -23,6 +23,8 @@ export type EffectExtractionInputSnapshot = {
   draftId: string;
   mode: EffectImportMode;
   sourceRevision: number;
+  /** Global video form captured from the import node. Optional for historical run snapshots. */
+  globalVideoConfig?: EffectVideoConfig;
   product: {
     id: string;
     name: string;
@@ -32,12 +34,18 @@ export type EffectExtractionInputSnapshot = {
     effectiveConfig: EffectVideoConfig;
   };
   materials: EffectExtractionSourceMaterial[];
+  dependencySnapshot: {
+    sourcePackageRevision: number;
+    effectiveVideoConfigRevision: number;
+    executionInputHash: string;
+  };
   dependencies?: Array<{
-    sourceType: 'NODE_STATE' | 'WORKING_ARTIFACT';
+    sourceType: 'NODE_STATE' | 'WORKING_ARTIFACT' | 'EXECUTION_INPUT';
     sourceNodeId?: string;
     sourceArtifactId?: string;
     sourceKey: string;
-    sourceRevision: number;
+    sourceRevision?: number | null;
+    sourceHash?: string | null;
   }>;
 };
 

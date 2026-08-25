@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { StoragePort } from '../../../platform/file/storage.port';
 import type { ProjectService } from '../../../platform/project/project.service';
-import type { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import type { EffectSourceImportRepository } from './effect-source-import.repository';
 import {
   EFFECT_MANIFEST_UPLOAD_TOTAL_BYTES,
@@ -14,7 +13,6 @@ import {
 const serviceWith = (
   repository: Partial<EffectSourceImportRepository> = {},
   storage: Partial<StoragePort> = {},
-  workingService: Partial<WorkflowWorkingService> = {},
 ) =>
   new EffectSourceImportService(
     {
@@ -30,7 +28,6 @@ const serviceWith = (
       exists: vi.fn().mockResolvedValue(true),
       get: vi.fn().mockResolvedValue({ id: 'project-1', name: '测试项目' }),
     } as unknown as ProjectService,
-    workingService as WorkflowWorkingService,
     storage as StoragePort,
   );
 
@@ -73,6 +70,9 @@ const publishableDraft = (): EffectImportDraft =>
         id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
         projectId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
         draftId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        status: 'ACTIVE',
+        removedAt: null,
+        purgeAfter: null,
         name: '产品',
         category: '食品',
         sku: 'SKU-1',
@@ -103,6 +103,9 @@ const publishableDraft = (): EffectImportDraft =>
             updatedAt: '2026-08-20T00:00:00.000Z',
           },
         ],
+        commitStatus: 'COMMITTED',
+        sourcePackageRevision: 1,
+        effectiveVideoConfigRevision: 1,
         createdAt: '2026-08-20T00:00:00.000Z',
         updatedAt: '2026-08-20T00:00:00.000Z',
       },
@@ -123,6 +126,17 @@ describe('EffectSourceImportService', () => {
 
     expect(header).toBe('电商链接,商品图片,产品文档');
     expect(example?.split(',')).toHaveLength(3);
+  });
+
+  it('提供与标准产品资料包一致的 Word 下载模板', async () => {
+    const template = await serviceWith().productPackageTemplate();
+
+    expect(template.fileName).toBe('效果类产品资料包模板.docx');
+    expect(template.contentType).toBe(
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    );
+    expect(template.buffer.subarray(0, 2).toString('ascii')).toBe('PK');
+    expect(template.buffer.length).toBeGreaterThan(10_000);
   });
 
   it('把产品名称作为资料导入节点必填项，品类仍交给 AI 提炼', () => {
@@ -236,6 +250,71 @@ describe('EffectSourceImportService', () => {
     );
   });
 
+  it('soft-deletes a product without deleting its MinIO object immediately', async () => {
+    const deleteObject = vi.fn();
+    const removedAt = new Date('2026-08-24T10:00:00.000Z');
+    const purgeAfter = new Date('2026-08-25T10:00:00.000Z');
+    const service = serviceWith(
+      {
+        deleteProducts: vi.fn().mockResolvedValue({
+          deletedIds: ['product-a'],
+          removedProducts: [{ id: 'product-a', name: '产品 A', removedAt, purgeAfter }],
+          revision: 4,
+        }),
+      },
+      { delete: deleteObject },
+    );
+    vi.spyOn(service, 'getDraft').mockResolvedValue(draftValue({ revision: 3 }));
+
+    await expect(
+      service.deleteProduct('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'BATCH', 'product-a', 3),
+    ).resolves.toMatchObject({
+      deleted: true,
+      revision: 4,
+      removedProduct: {
+        id: 'product-a',
+        removedAt: removedAt.toISOString(),
+        purgeAfter: purgeAfter.toISOString(),
+      },
+    });
+    expect(deleteObject).not.toHaveBeenCalled();
+  });
+
+  it('returns restored products with the new draft revision', async () => {
+    const record = {
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      projectId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      workflowRunId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      draftId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      status: 'ACTIVE' as const,
+      removedAt: null,
+      purgeAfter: null,
+      name: '产品 A',
+      category: '食品',
+      sku: 'SKU-A',
+      normalizedSku: 'SKU-A',
+      commerceUrl: null,
+      configOverride: {},
+      sortOrder: 0,
+      sourceManifestImportId: null,
+      sourceManifestRowNumber: null,
+      createdAt: new Date('2026-08-24T00:00:00.000Z'),
+      updatedAt: new Date('2026-08-24T00:00:00.000Z'),
+      materials: [],
+    };
+    const service = serviceWith({
+      restoreProducts: vi.fn().mockResolvedValue({ products: [record], revision: 5 }),
+    });
+    vi.spyOn(service, 'getDraft').mockResolvedValue(draftValue({ revision: 4 }));
+
+    await expect(
+      service.restoreProducts('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'BATCH', [record.id], 4),
+    ).resolves.toMatchObject({
+      revision: 5,
+      products: [{ id: record.id, status: 'ACTIVE', removedAt: null, purgeAfter: null }],
+    });
+  });
+
   it('reprocesses retained failed content before marking it ready', async () => {
     const retryMaterials = vi.fn().mockResolvedValue([
       {
@@ -340,13 +419,13 @@ describe('EffectSourceImportService', () => {
       status: 'READY' as const,
       storageKey: '01-working/old.jpg',
     };
-    const replaceMaterialWithArtifact = vi.fn();
+    const replaceMaterialWithFileObject = vi.fn();
     const deleteObject = vi.fn().mockResolvedValue(undefined);
     const service = serviceWith(
       {
         material: vi.fn().mockResolvedValue(current),
         product: vi.fn().mockResolvedValue({ id: current.productId, name: '产品' }),
-        replaceMaterialWithArtifact,
+        replaceMaterialWithFileObject,
       },
       {
         put: vi.fn().mockResolvedValue({ key: '01-working/new.jpg', sizeBytes: 24 }),
@@ -365,7 +444,7 @@ describe('EffectSourceImportService', () => {
           size: 24,
         }),
       ).rejects.toMatchObject({ status: 500 });
-      expect(replaceMaterialWithArtifact).not.toHaveBeenCalled();
+      expect(replaceMaterialWithFileObject).not.toHaveBeenCalled();
       expect(deleteObject).toHaveBeenCalledWith('01-working/new.jpg');
       expect(deleteObject).not.toHaveBeenCalledWith('01-working/old.jpg');
     } finally {

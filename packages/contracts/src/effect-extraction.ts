@@ -1,3 +1,5 @@
+import type { WorkingArtifactCommitStatus, WorkingArtifactCommitSummary } from './workflow-working';
+
 export const EFFECT_EXTRACTION_API_BASE =
   '/api/projects/:projectId/workflows/effect/information-extraction' as const;
 
@@ -68,6 +70,44 @@ export type EffectExtractionNodeExecution = {
   errorMessage: string | null;
 };
 
+export type EffectExtractionNodeDetailValue = string | number | boolean | string[] | null;
+
+export type EffectExtractionNodeDetailField = {
+  key: string;
+  label: string;
+  value: EffectExtractionNodeDetailValue;
+  source: string | null;
+};
+
+export type EffectExtractionNodeDetailSource = {
+  name: string;
+  status: EffectExtractionNodeStatus;
+  media?: {
+    kind: 'IMAGE' | 'DOCUMENT' | 'VIDEO' | 'FILE';
+    typeLabel: string;
+    previewUrl: string | null;
+    sizeBytes: number | null;
+  };
+  fields: EffectExtractionNodeDetailField[];
+  warnings: string[];
+};
+
+export type EffectExtractionNodeDetailWarning = Omit<EffectExtractionWarning, 'sourceId'>;
+
+/** Safe, display-only node data. Raw model input/output and storage locations are excluded. */
+export type EffectExtractionNodeDetail = {
+  nodeId: EffectExtractionNodeId;
+  status: EffectExtractionNodeStatus;
+  summary: string;
+  fields: EffectExtractionNodeDetailField[];
+  sources: EffectExtractionNodeDetailSource[];
+  warnings: EffectExtractionNodeDetailWarning[];
+  errorMessage: string | null;
+  updatedAt: string | null;
+};
+
+export const EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS = 20;
+
 export type EffectExtractionResult = {
   productCategory: string;
   productName: string;
@@ -104,6 +144,8 @@ export type EffectExtractionProductState = {
   warnings: EffectExtractionWarning[];
   errorMessage: string | null;
   sourceFingerprint: string;
+  commitStatus: WorkingArtifactCommitStatus;
+  workingArtifactRevision: number | null;
   updatedAt: string;
 };
 
@@ -139,6 +181,7 @@ export type EffectExtractionRun = {
 
 export type StartEffectExtractionRunData = { run: EffectExtractionRun };
 export type GetEffectExtractionRunData = { run: EffectExtractionRun };
+export type GetEffectExtractionNodeDetailData = { detail: EffectExtractionNodeDetail };
 
 export type UpdateEffectExtractionResultRequest = {
   expectedRevision: number;
@@ -152,4 +195,18 @@ export type UpdateEffectExtractionResultData = {
   revision: number;
   result: EffectExtractionResult;
   savedAt: string;
+};
+
+export type ValidateEffectExtractionResultRequest = {
+  expectedRevision: number;
+};
+
+export type ValidateEffectExtractionResultData = {
+  valid: boolean;
+  issues: Array<{ code: string; message: string }>;
+  subjectKey: string;
+  productId: string;
+  artifacts: WorkingArtifactCommitSummary[];
+  allProductsValidated: boolean;
+  validatedAt: string;
 };

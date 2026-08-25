@@ -16,6 +16,7 @@ import {
   ExtractionWorkspaceQueryDto,
   StartExtractionRunDto,
   UpdateExtractionResultDto,
+  ValidateExtractionResultDto,
 } from './dto/effect-extraction.dto';
 // The service class must remain a runtime import for Nest constructor injection metadata.
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
@@ -51,6 +52,15 @@ export class EffectExtractionController {
     return this.service.run(projectId, runId);
   }
 
+  @Get('runs/:runId/nodes/:nodeId')
+  nodeDetail(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string,
+    @Param('nodeId') nodeId: string,
+  ) {
+    return this.service.nodeDetail(projectId, runId, nodeId);
+  }
+
   @Put('results/:resultId')
   updateResult(
     @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
@@ -58,5 +68,14 @@ export class EffectExtractionController {
     @Body() body: UpdateExtractionResultDto,
   ) {
     return this.service.updateResult(projectId, resultId, body.expectedRevision, body.result);
+  }
+
+  @Post('results/:resultId/validate')
+  validateResult(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('resultId', new ParseUUIDPipe({ version: '4' })) resultId: string,
+    @Body() body: ValidateExtractionResultDto,
+  ) {
+    return this.service.validateResult(projectId, resultId, body.expectedRevision);
   }
 }

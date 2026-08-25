@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   deleteEffectImportProduct,
+  downloadEffectProductPackageTemplate,
   listEffectImportProducts,
   previewEffectManifest,
   updateEffectImportDraft,
@@ -79,5 +80,26 @@ describe('effect import API', () => {
     expect(form.getAll('files')).toEqual([image]);
     expect(form.get('expectedRevision')).toBe('3');
     expect(form.get('idempotencyKey')).toBe('idem-1');
+  });
+
+  it('downloads the Word product-package template with its UTF-8 file name', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(new Blob(['docx']), {
+        status: 200,
+        headers: {
+          'Content-Disposition':
+            "attachment; filename*=UTF-8''%E6%95%88%E6%9E%9C%E7%B1%BB%E4%BA%A7%E5%93%81%E8%B5%84%E6%96%99%E5%8C%85%E6%A8%A1%E6%9D%BF.docx",
+        },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const file = await downloadEffectProductPackageTemplate('项目/1');
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      '/api/projects/%E9%A1%B9%E7%9B%AE%2F1/workflows/effect/source-import/product-package-template',
+    );
+    expect(file.fileName).toBe('效果类产品资料包模板.docx');
+    expect(await file.blob.text()).toBe('docx');
   });
 });

@@ -133,6 +133,12 @@ const artifactSummary = (artifact: WorkingArtifact): string => {
   return text.length > 90 ? `${text.slice(0, 90)}…` : text;
 };
 
+const artifactStateLabel = (artifact: WorkingArtifact): string => {
+  if (artifact.availability === 'PENDING_DELETE') return '待删除，可恢复';
+  if (artifact.availability === 'SOURCE_REMOVED') return '来源已删除';
+  return artifact.freshness === 'STALE' ? '待更新' : '最新';
+};
+
 const configEntries = (artifact: WorkingArtifact): Array<[string, string]> => {
   if (artifact.type !== 'VIDEO_CONFIG' || !artifact.payload || typeof artifact.payload !== 'object')
     return [];
@@ -336,9 +342,12 @@ onBeforeUnmount(() => controller?.abort());
                 <footer>
                   <span>revision {{ artifact.revision }}</span
                   ><span>{{ nodeLabel(artifact.nodeId) }}</span
-                  ><em :class="{ stale: artifact.freshness === 'STALE' }">{{
-                    artifact.freshness === 'STALE' ? '待更新' : '最新'
-                  }}</em
+                  ><em
+                    :class="{
+                      stale:
+                        artifact.freshness === 'STALE' || artifact.availability !== 'AVAILABLE',
+                    }"
+                    >{{ artifactStateLabel(artifact) }}</em
                   ><b>尚未归档</b>
                 </footer>
               </div>

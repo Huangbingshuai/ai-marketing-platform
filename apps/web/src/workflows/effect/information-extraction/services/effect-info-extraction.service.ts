@@ -1,4 +1,5 @@
 import type {
+  EffectExtractionNodeDetail,
   EffectExtractionRun,
   EffectExtractionResult,
   GetEffectExtractionWorkspaceData,
@@ -6,6 +7,7 @@ import type {
 } from '@ai-marketing/contracts';
 
 import {
+  getEffectExtractionNodeDetail,
   getEffectExtractionRun,
   getEffectExtractionWorkspace,
   startEffectExtractionRun,
@@ -80,6 +82,14 @@ export const loadEffectExtractionRun = async (
   signal?: AbortSignal,
 ): Promise<EffectExtractionRun> =>
   (await getEffectExtractionRun(projectId, runId, signal)).data.run;
+
+export const loadEffectExtractionNodeDetail = async (
+  projectId: string,
+  runId: string,
+  nodeId: EffectExtractionNodeDetail['nodeId'],
+  signal?: AbortSignal,
+): Promise<EffectExtractionNodeDetail> =>
+  (await getEffectExtractionNodeDetail(projectId, runId, nodeId, signal)).data.detail;
 
 export const pollEffectExtractionRun = async (
   projectId: string,

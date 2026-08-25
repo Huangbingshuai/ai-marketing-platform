@@ -161,6 +161,46 @@ export class EffectSourceImportController {
     );
   }
 
+  @Get('drafts/:mode/products/removed')
+  removedProducts(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('mode') mode: string,
+  ) {
+    return this.service.listRemovedProducts(projectId, mode);
+  }
+
+  @Post('drafts/:mode/products/batch-restore')
+  batchRestore(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('mode') mode: string,
+    @Headers('if-match') match: string | undefined,
+    @Body() body: BatchProductsDto,
+  ) {
+    return this.service.restoreProducts(
+      projectId,
+      mode,
+      body.productIds,
+      revision(body.expectedRevision, match),
+    );
+  }
+
+  @Post('drafts/:mode/products/:productId/restore')
+  async restoreProduct(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('mode') mode: string,
+    @Param('productId', new ParseUUIDPipe({ version: '4' })) productId: string,
+    @Headers('if-match') match: string | undefined,
+    @Body() body: ExpectedRevisionDto,
+  ) {
+    const restored = await this.service.restoreProducts(
+      projectId,
+      mode,
+      [productId],
+      revision(body.expectedRevision, match),
+    );
+    return { product: restored.products[0], revision: restored.revision };
+  }
+
   @Post('drafts/:mode/products/batch-retry')
   batchRetry(
     @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
@@ -412,6 +452,17 @@ export class EffectSourceImportController {
     response.end(file.buffer);
   }
 
+  @Get('product-package-template')
+  @RawResponse()
+  async productPackageTemplate(@Res() response: ServerResponse): Promise<void> {
+    const file = await this.service.productPackageTemplate();
+    response.statusCode = 200;
+    response.setHeader('content-type', file.contentType);
+    response.setHeader('content-length', String(file.buffer.length));
+    response.setHeader('content-disposition', fileContentDisposition('attachment', file.fileName));
+    response.end(file.buffer);
+  }
+
   @Post('drafts/:mode/validate')
   validate(
     @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
@@ -420,6 +471,22 @@ export class EffectSourceImportController {
     @Body() body: ExpectedRevisionDto,
   ) {
     return this.service.validate(projectId, mode, revision(body.expectedRevision, match));
+  }
+
+  @Post('drafts/:mode/products/:productId/validate')
+  validateProduct(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('mode') mode: string,
+    @Param('productId', new ParseUUIDPipe({ version: '4' })) productId: string,
+    @Headers('if-match') match: string | undefined,
+    @Body() body: ExpectedRevisionDto,
+  ) {
+    return this.service.validateProduct(
+      projectId,
+      mode,
+      productId,
+      revision(body.expectedRevision, match),
+    );
   }
 
   @Post('drafts/:mode/advance')

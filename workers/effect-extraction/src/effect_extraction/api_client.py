@@ -125,7 +125,7 @@ class HttpInternalApi:
             json={"projectId": context.project_id, "branch": output.branch.value,
                   "status": output.status.value, "structuredOutput": structured_output,
                   "textStorageKey": text_key, "warnings": _warnings(output.warnings, output.branch),
-                  "errorCode": f"{output.branch.value}_FAILED" if error else None,
+                  "errorCode": _branch_error_code(output) if error else None,
                   "errorMessage": error},
         )
 
@@ -170,6 +170,25 @@ def _warnings(messages: list[str], branch: BranchName | None) -> list[dict[str, 
     return [{"code": "SOURCE_WARNING", "message": message[:1000],
              "branch": branch.value if branch else None, "sourceId": None}
             for message in messages]
+
+
+def _branch_error_code(output: BranchOutput) -> str:
+    failures = output.metadata.get("failures")
+    if isinstance(failures, list) and failures:
+        first = failures[0]
+        if isinstance(first, Mapping):
+            error_type = first.get("type")
+            if error_type in {
+                "AI_TIMEOUT",
+                "AI_NETWORK",
+                "AI_RATE_LIMIT",
+                "AI_SERVICE",
+                "AI_RESPONSE_INVALID",
+                "AI_REQUEST_REJECTED",
+                "AI_UNKNOWN",
+            }:
+                return f"{output.branch.value}_{error_type}"
+    return f"{output.branch.value}_FAILED"
 
 
 def _branch_output(record: Any, source_fingerprint: str) -> BranchOutput:

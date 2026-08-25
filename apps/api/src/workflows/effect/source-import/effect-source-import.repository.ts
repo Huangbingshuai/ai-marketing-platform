@@ -16,18 +16,26 @@ import {
   WorkflowWorkingRepository,
   type FileObjectInput,
   type WorkingArtifactUpsertInput,
+  workingArtifactContentHash,
 } from '../../../platform/workflow/workflow-working.repository';
 
 const draftInclude = {
   products: {
+    where: { status: 'ACTIVE' as const },
     include: { materials: { include: { fileObject: true } } },
     orderBy: [{ sortOrder: 'asc' as const }, { id: 'asc' as const }],
   },
 };
 
+const workspaceInclude = {
+  drafts: {
+    include: { _count: { select: { products: { where: { status: 'ACTIVE' as const } } } } },
+  },
+};
+
 export type EffectDraftRecord = EffectImportDraft & { products: EffectProductRecord[] };
 export type EffectWorkspaceRecord = Prisma.EffectImportWorkspaceGetPayload<{
-  include: { drafts: { include: { _count: { select: { products: true } } } } };
+  include: typeof workspaceInclude;
 }>;
 export type EffectProductRecord = Prisma.EffectImportProductGetPayload<{
   include: { materials: { include: { fileObject: true } } };
@@ -36,13 +44,15 @@ export type EffectMaterialRecord = Prisma.EffectImportMaterialGetPayload<{
   include: { fileObject: true };
 }>;
 export type ManifestRecord = EffectManifestImport & { stagedFiles: EffectManifestStagedFile[] };
-export type WorkingMaterialProjection = {
+export type WorkingFileProjection = {
   workflowRunId: string;
   nodeId: string;
-  artifactKey: string;
-  input: WorkingArtifactUpsertInput;
   fileObject?: FileObjectInput & { id: string };
   fileObjects?: Array<FileObjectInput & { id: string }>;
+};
+export type ValidatedArtifactCandidate = {
+  artifactKey: string;
+  input: WorkingArtifactUpsertInput;
 };
 const uploadSessionInclude = {
   items: { orderBy: [{ createdAt: 'asc' as const }, { id: 'asc' as const }] },
@@ -97,7 +107,7 @@ export class EffectSourceImportRepository {
       });
       return transaction.effectImportWorkspace.findUniqueOrThrow({
         where: { projectId },
-        include: { drafts: { include: { _count: { select: { products: true } } } } },
+        include: workspaceInclude,
       });
     });
   }
@@ -105,7 +115,21 @@ export class EffectSourceImportRepository {
   workspace(projectId: string): Promise<EffectWorkspaceRecord | null> {
     return this.prisma.effectImportWorkspace.findUnique({
       where: { projectId },
-      include: { drafts: { include: { _count: { select: { products: true } } } } },
+      include: workspaceInclude,
+    });
+  }
+
+  sourceWorkingArtifacts(projectId: string, workflowRunId: string) {
+    return this.prisma.workingArtifact.findMany({
+      where: { projectId, workflowRunId, nodeId: 'SOURCE_IMPORT' },
+      select: {
+        id: true,
+        artifactKey: true,
+        contentHash: true,
+        revision: true,
+        freshness: true,
+        availability: true,
+      },
     });
   }
 
@@ -165,6 +189,7 @@ export class EffectSourceImportRepository {
     const where: Prisma.EffectImportProductWhereInput = {
       projectId,
       draftId,
+      status: 'ACTIVE',
       ...(query.category?.trim() ? { category: query.category.trim() } : {}),
       ...(keyword
         ? {
@@ -197,7 +222,7 @@ export class EffectSourceImportRepository {
       }),
       this.prisma.effectImportProduct.count({ where }),
       this.prisma.effectImportProduct.findMany({
-        where: { projectId, draftId, category: { not: '' } },
+        where: { projectId, draftId, status: 'ACTIVE', category: { not: '' } },
         distinct: ['category'],
         select: { category: true },
         orderBy: { category: 'asc' },
@@ -212,7 +237,7 @@ export class EffectSourceImportRepository {
     productId: string,
   ): Promise<EffectProductRecord | null> {
     return this.prisma.effectImportProduct.findFirst({
-      where: { projectId, draftId, id: productId },
+      where: { projectId, draftId, id: productId, status: 'ACTIVE' },
       include: { materials: { include: { fileObject: true } } },
     });
   }
@@ -229,6 +254,11 @@ export class EffectSourceImportRepository {
     },
   ): Promise<EffectProductRecord | null> {
     return this.prisma.$transaction(async (transaction) => {
+      const draft = await transaction.effectImportDraft.findFirst({
+        where: { projectId, id: draftId },
+        select: { workspace: { select: { workflowRunId: true } } },
+      });
+      if (!draft) return null;
       const bumped = await transaction.effectImportDraft.updateMany({
         where: { projectId, id: draftId, revision: expectedRevision },
         data: {
@@ -246,7 +276,13 @@ export class EffectSourceImportRepository {
         _max: { sortOrder: true },
       });
       return transaction.effectImportProduct.create({
-        data: { projectId, draftId, ...data, sortOrder: (tail._max.sortOrder ?? -1) + 1 },
+        data: {
+          projectId,
+          workflowRunId: draft.workspace.workflowRunId,
+          draftId,
+          ...data,
+          sortOrder: (tail._max.sortOrder ?? -1) + 1,
+        },
         include: { materials: { include: { fileObject: true } } },
       });
     });
@@ -261,7 +297,7 @@ export class EffectSourceImportRepository {
   ): Promise<EffectProductRecord | null> {
     return this.prisma.$transaction(async (transaction) => {
       const exists = await transaction.effectImportProduct.count({
-        where: { projectId, draftId, id: productId },
+        where: { projectId, draftId, id: productId, status: 'ACTIVE' },
       });
       if (exists === 0) return null;
       const bumped = await transaction.effectImportDraft.updateMany({
@@ -289,19 +325,20 @@ export class EffectSourceImportRepository {
     draftId: string,
     productIds: string[],
     expectedRevision: number,
-  ): Promise<{ deletedIds: string[]; storageKeys: string[]; revision: number } | null> {
+  ): Promise<{
+    deletedIds: string[];
+    removedProducts: Array<{ id: string; name: string; removedAt: Date; purgeAfter: Date }>;
+    revision: number;
+  } | null> {
     return this.prisma.$transaction(async (transaction) => {
+      const removedAt = new Date();
+      const purgeAfter = new Date(removedAt.getTime() + cleanupGraceMs());
       const products = await transaction.effectImportProduct.findMany({
-        where: { projectId, draftId, id: { in: productIds } },
+        where: { projectId, draftId, id: { in: productIds }, status: 'ACTIVE' },
         select: {
           id: true,
-          materials: {
-            select: {
-              storageKey: true,
-              fileObjectId: true,
-              fileObject: { select: { storageKey: true } },
-            },
-          },
+          name: true,
+          workflowRunId: true,
         },
       });
       const deletedIds = products.map((item) => item.id);
@@ -318,27 +355,192 @@ export class EffectSourceImportRepository {
         },
       });
       if (bumped.count === 0) return null;
-      await transaction.effectImportProduct.deleteMany({
-        where: { projectId, draftId, id: { in: deletedIds } },
+      await transaction.effectImportProduct.updateMany({
+        where: { projectId, draftId, id: { in: deletedIds }, status: 'ACTIVE' },
+        data: { status: 'REMOVED', removedAt, purgeAfter },
       });
-      const fileObjectIds = products.flatMap((item) =>
-        item.materials.flatMap((material) => material.fileObjectId ?? []),
-      );
-      if (fileObjectIds.length)
-        await transaction.fileObject.updateMany({
-          where: { projectId, id: { in: fileObjectIds } },
-          data: { status: 'ORPHANED', orphanedAt: new Date() },
-        });
       return {
         deletedIds,
-        storageKeys: products.flatMap((item) =>
-          item.materials.flatMap(
-            (material) => material.fileObject?.storageKey ?? material.storageKey ?? [],
-          ),
-        ),
+        removedProducts: products.map((product) => ({
+          id: product.id,
+          name: product.name,
+          removedAt,
+          purgeAfter,
+        })),
         revision: expectedRevision + 1,
       };
     });
+  }
+
+  removedProducts(projectId: string, draftId: string) {
+    return this.prisma.effectImportProduct.findMany({
+      where: { projectId, draftId, status: 'REMOVED', purgeAfter: { gt: new Date() } },
+      orderBy: [{ removedAt: 'desc' }, { id: 'asc' }],
+      include: { materials: { include: { fileObject: true } } },
+    });
+  }
+
+  async restoreProducts(
+    projectId: string,
+    draftId: string,
+    productIds: string[],
+    expectedRevision: number,
+  ): Promise<{ products: EffectProductRecord[]; revision: number } | null> {
+    return this.prisma.$transaction(async (transaction) => {
+      const draft = await transaction.effectImportDraft.findFirst({
+        where: { projectId, id: draftId },
+        select: { mode: true },
+      });
+      if (!draft) return null;
+      const removed = await transaction.effectImportProduct.findMany({
+        where: {
+          projectId,
+          draftId,
+          id: { in: [...new Set(productIds)] },
+          status: 'REMOVED',
+          purgeAfter: { gt: new Date() },
+        },
+      });
+      if (removed.length !== new Set(productIds).size) return null;
+      if (
+        draft.mode === 'SINGLE' &&
+        (await transaction.effectImportProduct.count({
+          where: { projectId, draftId, status: 'ACTIVE' },
+        })) > 0
+      )
+        throw new Error('SINGLE_ACTIVE_PRODUCT_CONFLICT');
+      const bumped = await transaction.effectImportDraft.updateMany({
+        where: { projectId, id: draftId, revision: expectedRevision },
+        data: {
+          revision: { increment: 1 },
+          validatedRevision: null,
+          validationIssues: json([]),
+          validatedAt: null,
+          status: 'DRAFT',
+          completedAt: null,
+        },
+      });
+      if (bumped.count === 0) return null;
+      await transaction.effectImportProduct.updateMany({
+        where: { projectId, draftId, id: { in: removed.map((item) => item.id) } },
+        data: { status: 'ACTIVE', removedAt: null, purgeAfter: null },
+      });
+      const products = await transaction.effectImportProduct.findMany({
+        where: { projectId, draftId, id: { in: removed.map((item) => item.id) } },
+        include: { materials: { include: { fileObject: true } } },
+        orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
+      });
+      return { products, revision: expectedRevision + 1 };
+    });
+  }
+
+  private async markDescendantsSourceRemoved(
+    transaction: Prisma.TransactionClient,
+    projectId: string,
+    workflowRunId: string,
+    sourceIds: string[],
+  ): Promise<void> {
+    const seen = new Set(sourceIds);
+    let pending = sourceIds;
+    while (pending.length) {
+      const links = await transaction.workingArtifactDependency.findMany({
+        where: {
+          projectId,
+          workflowRunId,
+          sourceType: 'WORKING_ARTIFACT',
+          sourceArtifactId: { in: pending },
+        },
+        select: { dependentArtifactId: true },
+      });
+      const next = [...new Set(links.map((item) => item.dependentArtifactId))].filter(
+        (id) => !seen.has(id),
+      );
+      if (!next.length) break;
+      next.forEach((id) => seen.add(id));
+      await transaction.workingArtifact.updateMany({
+        where: { projectId, workflowRunId, id: { in: next } },
+        data: { availability: 'SOURCE_REMOVED', freshness: 'STALE' },
+      });
+      pending = next;
+    }
+  }
+
+  private async restoreDescendants(
+    transaction: Prisma.TransactionClient,
+    projectId: string,
+    workflowRunId: string,
+    sourceIds: string[],
+  ): Promise<void> {
+    const seen = new Set(sourceIds);
+    let pending = sourceIds;
+    while (pending.length) {
+      const links = await transaction.workingArtifactDependency.findMany({
+        where: {
+          projectId,
+          workflowRunId,
+          sourceType: 'WORKING_ARTIFACT',
+          sourceArtifactId: { in: pending },
+        },
+        select: { dependentArtifactId: true },
+      });
+      const next = [...new Set(links.map((item) => item.dependentArtifactId))].filter(
+        (id) => !seen.has(id),
+      );
+      if (!next.length) break;
+      next.forEach((id) => seen.add(id));
+      const artifacts = await transaction.workingArtifact.findMany({
+        where: { projectId, workflowRunId, id: { in: next } },
+        include: { dependencies: true },
+      });
+      for (const artifact of artifacts) {
+        let current = true;
+        let sourcesAvailable = true;
+        for (const dependency of artifact.dependencies) {
+          if (dependency.sourceType === 'WORKING_ARTIFACT') {
+            const source = dependency.sourceArtifactId
+              ? await transaction.workingArtifact.findFirst({
+                  where: {
+                    projectId,
+                    workflowRunId,
+                    id: dependency.sourceArtifactId,
+                    revision: dependency.sourceRevision ?? -1,
+                    availability: 'AVAILABLE',
+                  },
+                })
+              : null;
+            if (!source) {
+              current = false;
+              sourcesAvailable = false;
+            }
+          } else {
+            const state = await transaction.workflowNodeState.findUnique({
+              where: {
+                projectId_workflowRunId_nodeId: {
+                  projectId,
+                  workflowRunId,
+                  nodeId: dependency.sourceNodeId ?? dependency.sourceKey,
+                },
+              },
+            });
+            if (
+              !state ||
+              (dependency.sourceType === 'EXECUTION_INPUT'
+                ? state.executionInputHash !== dependency.sourceHash
+                : state.revision !== dependency.sourceRevision)
+            )
+              current = false;
+          }
+        }
+        await transaction.workingArtifact.update({
+          where: { id: artifact.id },
+          data: {
+            availability: sourcesAvailable ? 'AVAILABLE' : 'SOURCE_REMOVED',
+            freshness: current ? 'CURRENT' : 'STALE',
+          },
+        });
+      }
+      pending = next;
+    }
   }
 
   material(
@@ -357,15 +559,14 @@ export class EffectSourceImportRepository {
     draftId: string,
     productId: string,
     expectedRevision: number,
-    data: Prisma.EffectImportMaterialUncheckedCreateWithoutProductInput,
+    data: Omit<Prisma.EffectImportMaterialUncheckedCreateWithoutProductInput, 'workflowRunId'>,
   ): Promise<EffectMaterialRecord | null> {
     return this.prisma.$transaction(async (transaction) => {
-      if (
-        (await transaction.effectImportProduct.count({
-          where: { projectId, draftId, id: productId },
-        })) === 0
-      )
-        return null;
+      const product = await transaction.effectImportProduct.findFirst({
+        where: { projectId, draftId, id: productId, status: 'ACTIVE' },
+        select: { workflowRunId: true },
+      });
+      if (!product) return null;
       const bumped = await transaction.effectImportDraft.updateMany({
         where: { projectId, id: draftId, revision: expectedRevision },
         data: {
@@ -379,7 +580,7 @@ export class EffectSourceImportRepository {
       });
       if (bumped.count === 0) return null;
       return transaction.effectImportMaterial.create({
-        data: { ...data, projectId, productId },
+        data: { ...data, projectId, workflowRunId: product.workflowRunId, productId },
         include: { fileObject: true },
       });
     });
@@ -393,7 +594,13 @@ export class EffectSourceImportRepository {
   ): Promise<boolean> {
     return this.prisma.$transaction(async (transaction) => {
       const material = await transaction.effectImportMaterial.findFirst({
-        where: { projectId, id: materialId, status: 'READY', fileObjectId: null },
+        where: {
+          projectId,
+          workflowRunId,
+          id: materialId,
+          status: 'READY',
+          fileObjectId: null,
+        },
       });
       if (!material) return false;
       await this.workingRepository.upsertFileObjectInTransaction(
@@ -410,24 +617,20 @@ export class EffectSourceImportRepository {
     });
   }
 
-  async createMaterialWithArtifact(
+  async createMaterialWithFileObject(
     projectId: string,
     draftId: string,
     productId: string,
     expectedRevision: number,
-    data: Prisma.EffectImportMaterialUncheckedCreateWithoutProductInput,
-    artifact: WorkingMaterialProjection,
-  ): Promise<{
-    material: EffectMaterialRecord;
-    previousArtifactStorageKey: string | null;
-  } | null> {
+    data: Omit<Prisma.EffectImportMaterialUncheckedCreateWithoutProductInput, 'workflowRunId'>,
+    file: WorkingFileProjection,
+  ): Promise<EffectMaterialRecord | null> {
     return this.prisma.$transaction(async (transaction) => {
-      if (
-        (await transaction.effectImportProduct.count({
-          where: { projectId, draftId, id: productId },
-        })) === 0
-      )
-        return null;
+      const product = await transaction.effectImportProduct.findFirst({
+        where: { projectId, draftId, id: productId, status: 'ACTIVE' },
+        select: { workflowRunId: true },
+      });
+      if (!product) return null;
       const bumped = await transaction.effectImportDraft.updateMany({
         where: { projectId, id: draftId, revision: expectedRevision },
         data: {
@@ -440,32 +643,24 @@ export class EffectSourceImportRepository {
         },
       });
       if (bumped.count === 0) return null;
-      for (const fileObject of artifact.fileObjects ??
-        (artifact.fileObject ? [artifact.fileObject] : []))
+      for (const fileObject of file.fileObjects ?? (file.fileObject ? [file.fileObject] : []))
         await this.workingRepository.upsertFileObjectInTransaction(
           transaction,
           projectId,
-          artifact.workflowRunId,
+          file.workflowRunId,
           fileObject,
         );
       const material = await transaction.effectImportMaterial.create({
         data: {
           ...data,
           projectId,
+          workflowRunId: product.workflowRunId,
           productId,
-          ...(artifact.fileObject ? { fileObjectId: artifact.fileObject.id } : {}),
+          ...(file.fileObject ? { fileObjectId: file.fileObject.id } : {}),
         },
         include: { fileObject: true },
       });
-      const working = await this.workingRepository.upsertArtifactInTransaction(
-        transaction,
-        projectId,
-        artifact.workflowRunId,
-        artifact.nodeId,
-        artifact.artifactKey,
-        artifact.input,
-      );
-      return { material, previousArtifactStorageKey: working.previousStorageKey };
+      return material;
     });
   }
 
@@ -478,12 +673,11 @@ export class EffectSourceImportRepository {
     data: Prisma.EffectImportMaterialUncheckedUpdateInput,
   ): Promise<EffectMaterialRecord | null> {
     return this.prisma.$transaction(async (transaction) => {
-      if (
-        (await transaction.effectImportMaterial.count({
-          where: { projectId, productId, id: materialId, product: { draftId } },
-        })) === 0
-      )
-        return null;
+      const previousMaterial = await transaction.effectImportMaterial.findFirst({
+        where: { projectId, productId, id: materialId, product: { draftId } },
+        select: { fileObjectId: true },
+      });
+      if (!previousMaterial) return null;
       const bumped = await transaction.effectImportDraft.updateMany({
         where: { projectId, id: draftId, revision: expectedRevision },
         data: {
@@ -504,25 +698,21 @@ export class EffectSourceImportRepository {
     });
   }
 
-  async replaceMaterialWithArtifact(
+  async replaceMaterialWithFileObject(
     projectId: string,
     draftId: string,
     productId: string,
     materialId: string,
     expectedRevision: number,
     data: Prisma.EffectImportMaterialUncheckedUpdateInput,
-    artifact: WorkingMaterialProjection,
-  ): Promise<{
-    material: EffectMaterialRecord;
-    previousArtifactStorageKey: string | null;
-  } | null> {
+    file: WorkingFileProjection,
+  ): Promise<EffectMaterialRecord | null> {
     return this.prisma.$transaction(async (transaction) => {
-      if (
-        (await transaction.effectImportMaterial.count({
-          where: { projectId, productId, id: materialId, product: { draftId } },
-        })) === 0
-      )
-        return null;
+      const previousMaterial = await transaction.effectImportMaterial.findFirst({
+        where: { projectId, productId, id: materialId, product: { draftId } },
+        select: { fileObjectId: true },
+      });
+      if (!previousMaterial) return null;
       const bumped = await transaction.effectImportDraft.updateMany({
         where: { projectId, id: draftId, revision: expectedRevision },
         data: {
@@ -535,31 +725,33 @@ export class EffectSourceImportRepository {
         },
       });
       if (bumped.count === 0) return null;
-      for (const fileObject of artifact.fileObjects ??
-        (artifact.fileObject ? [artifact.fileObject] : []))
+      for (const fileObject of file.fileObjects ?? (file.fileObject ? [file.fileObject] : []))
         await this.workingRepository.upsertFileObjectInTransaction(
           transaction,
           projectId,
-          artifact.workflowRunId,
+          file.workflowRunId,
           fileObject,
         );
       const material = await transaction.effectImportMaterial.update({
         where: { projectId_id: { projectId, id: materialId } },
         data: {
           ...data,
-          ...(artifact.fileObject ? { fileObjectId: artifact.fileObject.id } : {}),
+          ...(file.fileObject ? { fileObjectId: file.fileObject.id } : {}),
         },
         include: { fileObject: true },
       });
-      const working = await this.workingRepository.upsertArtifactInTransaction(
-        transaction,
-        projectId,
-        artifact.workflowRunId,
-        artifact.nodeId,
-        artifact.artifactKey,
-        artifact.input,
-      );
-      return { material, previousArtifactStorageKey: working.previousStorageKey };
+      if (
+        previousMaterial.fileObjectId &&
+        previousMaterial.fileObjectId !== file.fileObject?.id &&
+        (await transaction.workingArtifactFile.count({
+          where: { projectId, fileObjectId: previousMaterial.fileObjectId },
+        })) === 0
+      )
+        await transaction.fileObject.update({
+          where: { id: previousMaterial.fileObjectId },
+          data: { status: 'ORPHANED', orphanedAt: new Date() },
+        });
+      return material;
     });
   }
 
@@ -590,7 +782,12 @@ export class EffectSourceImportRepository {
       await transaction.effectImportMaterial.delete({
         where: { projectId_id: { projectId, id: materialId } },
       });
-      if (material.fileObjectId)
+      if (
+        material.fileObjectId &&
+        (await transaction.workingArtifactFile.count({
+          where: { projectId, fileObjectId: material.fileObjectId },
+        })) === 0
+      )
         await transaction.fileObject.update({
           where: { id: material.fileObjectId },
           data: { status: 'ORPHANED', orphanedAt: new Date() },
@@ -621,7 +818,13 @@ export class EffectSourceImportRepository {
   ): Promise<EffectUploadSessionRecord | null> {
     return this.prisma.$transaction(async (transaction) => {
       const product = await transaction.effectImportProduct.findFirst({
-        where: { projectId, draftId, id: productId, draft: { revision: expectedRevision } },
+        where: {
+          projectId,
+          draftId,
+          id: productId,
+          status: 'ACTIVE',
+          draft: { revision: expectedRevision },
+        },
       });
       if (!product) return null;
       const session = await transaction.effectImportUploadSession.create({
@@ -635,7 +838,12 @@ export class EffectSourceImportRepository {
         },
       });
       await transaction.effectImportUploadItem.createMany({
-        data: items.map((item) => ({ ...item, projectId, sessionId: session.id })),
+        data: items.map((item) => ({
+          ...item,
+          projectId,
+          workflowRunId,
+          sessionId: session.id,
+        })),
       });
       return transaction.effectImportUploadSession.findUniqueOrThrow({
         where: { id: session.id },
@@ -755,7 +963,6 @@ export class EffectSourceImportRepository {
     projectId: string,
     sessionId: string,
     completionKey: string,
-    artifact: WorkingMaterialProjection,
   ): Promise<{
     session: EffectUploadSessionRecord;
     materials: EffectMaterialRecord[];
@@ -803,19 +1010,13 @@ export class EffectSourceImportRepository {
         },
       });
       if (bumped.count === 0) return null;
-      for (const fileObject of artifact.fileObjects ?? [])
-        await this.workingRepository.upsertFileObjectInTransaction(
-          transaction,
-          projectId,
-          artifact.workflowRunId,
-          fileObject,
-        );
       const materials: EffectMaterialRecord[] = [];
       for (const item of accepted) {
         materials.push(
           await transaction.effectImportMaterial.create({
             data: {
               projectId,
+              workflowRunId: session.workflowRunId,
               productId: session.productId,
               type: item.type,
               status: 'READY',
@@ -830,14 +1031,6 @@ export class EffectSourceImportRepository {
           }),
         );
       }
-      await this.workingRepository.upsertArtifactInTransaction(
-        transaction,
-        projectId,
-        artifact.workflowRunId,
-        artifact.nodeId,
-        artifact.artifactKey,
-        artifact.input,
-      );
       const completed = await transaction.effectImportUploadSession.update({
         where: { id: session.id },
         data: { status: 'COMPLETED', completionKey, completedAt: new Date() },
@@ -878,6 +1071,82 @@ export class EffectSourceImportRepository {
             })
           ).mode,
         );
+  }
+
+  async commitProductValidation(
+    projectId: string,
+    draftId: string,
+    mode: EffectImportMode,
+    workflowRunId: string,
+    expectedRevision: number,
+    artifacts: ValidatedArtifactCandidate[],
+    allCandidates: ValidatedArtifactCandidate[],
+    issues: unknown[],
+  ): Promise<{
+    draft: EffectDraftRecord;
+    artifacts: Array<{
+      artifactId: string;
+      artifactKey: string;
+      revision: number;
+      unchanged: boolean;
+    }>;
+    allProductsValidated: boolean;
+  } | null> {
+    const committed = await this.prisma.$transaction(async (transaction) => {
+      const draft = await transaction.effectImportDraft.findFirst({
+        where: { projectId, id: draftId, revision: expectedRevision },
+        select: { id: true },
+      });
+      if (!draft) return null;
+      const results = await this.workingRepository.commitValidatedArtifactsInTransaction(
+        transaction,
+        projectId,
+        workflowRunId,
+        'SOURCE_IMPORT',
+        artifacts,
+      );
+      const stored = await transaction.workingArtifact.findMany({
+        where: {
+          projectId,
+          workflowRunId,
+          nodeId: 'SOURCE_IMPORT',
+          artifactKey: { in: allCandidates.map((candidate) => candidate.artifactKey) },
+          freshness: 'CURRENT',
+          availability: 'AVAILABLE',
+        },
+        select: { artifactKey: true, contentHash: true },
+      });
+      const hashes = new Map(
+        stored.map((artifact) => [artifact.artifactKey, artifact.contentHash]),
+      );
+      const allProductsValidated =
+        issues.length === 0 &&
+        allCandidates.every(
+          (candidate) =>
+            hashes.get(candidate.artifactKey) === workingArtifactContentHash(candidate.input),
+        );
+      await transaction.effectImportDraft.update({
+        where: { projectId_id: { projectId, id: draftId } },
+        data: {
+          validatedRevision: allProductsValidated ? expectedRevision : null,
+          validationIssues: json(issues),
+          validatedAt: new Date(),
+          status: allProductsValidated ? 'VALID' : 'DRAFT',
+        },
+      });
+      return {
+        artifacts: results.map((result) => ({
+          artifactId: result.record.id,
+          artifactKey: result.artifactKey,
+          revision: result.record.revision,
+          unchanged: result.unchanged,
+        })),
+        allProductsValidated,
+      };
+    });
+    if (!committed) return null;
+    const draft = await this.draft(projectId, mode);
+    return draft ? { draft, ...committed } : null;
   }
 
   async markCompleted(projectId: string, draftId: string, revision: number): Promise<boolean> {
@@ -963,6 +1232,11 @@ export class EffectSourceImportRepository {
   ): Promise<{ productIds: string[]; revision: number; cleanupStorageKeys: string[] } | null> {
     try {
       return await this.prisma.$transaction(async (transaction) => {
+        const draft = await transaction.effectImportDraft.findFirst({
+          where: { projectId, id: draftId },
+          select: { workspace: { select: { workflowRunId: true } } },
+        });
+        if (!draft) return null;
         const claimed = await transaction.effectManifestImport.updateMany({
           where: {
             projectId,
@@ -998,6 +1272,7 @@ export class EffectSourceImportRepository {
           const product = await transaction.effectImportProduct.create({
             data: {
               projectId,
+              workflowRunId: draft.workspace.workflowRunId,
               draftId,
               name: row.name,
               category: row.category,
@@ -1026,6 +1301,7 @@ export class EffectSourceImportRepository {
               data: staged
                 ? {
                     projectId,
+                    workflowRunId: draft.workspace.workflowRunId,
                     productId: product.id,
                     type: material.type,
                     status: 'READY',
@@ -1037,6 +1313,7 @@ export class EffectSourceImportRepository {
                   }
                 : {
                     projectId,
+                    workflowRunId: draft.workspace.workflowRunId,
                     productId: product.id,
                     type: material.type,
                     status: 'MISSING',
@@ -1141,6 +1418,140 @@ export class EffectSourceImportRepository {
     });
   }
 
+  dueRemovedProducts(limit = 50) {
+    return this.prisma.effectImportProduct.findMany({
+      where: { status: 'REMOVED', purgeAfter: { lte: new Date() } },
+      select: { id: true, projectId: true },
+      orderBy: [{ purgeAfter: 'asc' }, { id: 'asc' }],
+      take: limit,
+    });
+  }
+
+  async purgeRemovedProduct(projectId: string, productId: string): Promise<boolean> {
+    return this.prisma.$transaction(async (transaction) => {
+      const product = await transaction.effectImportProduct.findFirst({
+        where: { projectId, id: productId, status: 'REMOVED', purgeAfter: { lte: new Date() } },
+        include: { materials: true },
+      });
+      if (!product) return false;
+      const [activeRuns, activeUploadSessions] = await Promise.all([
+        transaction.effectExtractionRun.count({
+          where: { projectId, productId, status: { in: ['QUEUED', 'RUNNING'] } },
+        }),
+        transaction.effectImportUploadSession.count({
+          where: { projectId, productId, status: 'UPLOADING' },
+        }),
+      ]);
+      const materialStorageKeys = product.materials
+        .map((material) => material.storageKey)
+        .filter((storageKey): storageKey is string => Boolean(storageKey));
+      const activeFileHolds = materialStorageKeys.length
+        ? await transaction.effectExtractionFileHold.count({
+            where: { projectId, storageKey: { in: materialStorageKeys } },
+          })
+        : 0;
+      if (activeRuns + activeUploadSessions + activeFileHolds > 0) {
+        await transaction.effectImportProduct.update({
+          where: { id: productId },
+          data: { purgeAfter: new Date(Date.now() + 60_000) },
+        });
+        return false;
+      }
+      const direct = await transaction.workingArtifact.findMany({
+        where: {
+          projectId,
+          workflowRunId: product.workflowRunId,
+          artifactKey: {
+            in: [
+              `source-package:${product.id}`,
+              `effective-video-config:${product.id}`,
+              `global-video-config:${product.id}`,
+            ],
+          },
+        },
+        select: { id: true },
+      });
+      const directIds = direct.map((item) => item.id);
+      const levels: string[][] = [directIds];
+      const seen = new Set(directIds);
+      let pending: string[] = directIds;
+      while (pending.length) {
+        const dependencies = await transaction.workingArtifactDependency.findMany({
+          where: {
+            projectId,
+            workflowRunId: product.workflowRunId,
+            sourceType: 'WORKING_ARTIFACT',
+            sourceArtifactId: { in: pending },
+          },
+          select: { dependentArtifactId: true },
+        });
+        const next = [...new Set(dependencies.map((item) => item.dependentArtifactId))].filter(
+          (id) => !seen.has(id),
+        );
+        if (!next.length) break;
+        next.forEach((id) => seen.add(id));
+        levels.push(next);
+        pending = next;
+      }
+      const artifactIds = [...seen];
+      const linkedFiles = artifactIds.length
+        ? await transaction.workingArtifactFile.findMany({
+            where: {
+              projectId,
+              workflowRunId: product.workflowRunId,
+              workingArtifactId: { in: artifactIds },
+            },
+            select: { fileObjectId: true },
+          })
+        : [];
+      const uploadFiles = await transaction.effectImportUploadItem.findMany({
+        where: { projectId, workflowRunId: product.workflowRunId, session: { productId } },
+        select: { fileObjectId: true },
+      });
+      for (const level of [...levels].reverse())
+        if (level.length)
+          await transaction.workingArtifact.deleteMany({
+            where: { projectId, workflowRunId: product.workflowRunId, id: { in: level } },
+          });
+      const fileObjectIds = [
+        ...new Set([
+          ...product.materials.flatMap((material) => material.fileObjectId ?? []),
+          ...linkedFiles.map((file) => file.fileObjectId),
+          ...uploadFiles.flatMap((file) => file.fileObjectId ?? []),
+        ]),
+      ];
+      await transaction.effectImportProduct.delete({ where: { id: product.id } });
+      for (const fileObjectId of fileObjectIds) {
+        const fileObject = await transaction.fileObject.findFirst({
+          where: {
+            projectId,
+            workflowRunId: product.workflowRunId,
+            id: fileObjectId,
+            materials: { none: {} },
+            artifactLinks: { none: {} },
+            uploadItems: { none: { session: { status: 'UPLOADING' } } },
+          },
+        });
+        if (!fileObject) continue;
+        await transaction.fileObject.update({
+          where: { id: fileObject.id },
+          data: { status: 'ORPHANED', orphanedAt: new Date() },
+        });
+        await transaction.storageCleanupTask.upsert({
+          where: { projectId_storageKey: { projectId, storageKey: fileObject.storageKey } },
+          create: {
+            projectId,
+            storageKey: fileObject.storageKey,
+            reason: 'REMOVED_PRODUCT_PURGED',
+            nextAttemptAt: new Date(),
+          },
+          update: { reason: 'REMOVED_PRODUCT_PURGED', nextAttemptAt: new Date() },
+        });
+      }
+      return true;
+    });
+  }
+
   enqueueStorageCleanup(projectId: string, storageKey: string, reason: string) {
     const nextAttemptAt = new Date(Date.now() + cleanupGraceMs());
     return this.prisma.storageCleanupTask.upsert({
@@ -1198,6 +1609,14 @@ export class EffectSourceImportRepository {
   storageCleanupTasks(projectId: string) {
     return this.prisma.storageCleanupTask.findMany({
       where: { projectId, nextAttemptAt: { lte: new Date() } },
+      orderBy: { createdAt: 'asc' },
+      take: 100,
+    });
+  }
+
+  storageCleanupTasksAcrossProjects() {
+    return this.prisma.storageCleanupTask.findMany({
+      where: { nextAttemptAt: { lte: new Date() } },
       orderBy: { createdAt: 'asc' },
       take: 100,
     });

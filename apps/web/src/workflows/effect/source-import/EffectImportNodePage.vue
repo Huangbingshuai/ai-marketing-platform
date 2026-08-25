@@ -8,28 +8,26 @@ import {
   type EffectImportMaterialType,
   type EffectImportMode,
   type EffectImportProduct,
-  type EffectImportProductMutationData,
+  type EffectImportRemovedProduct,
   type EffectImportWorkspace,
   type EffectManifestFormat,
   type EffectVideoConfig,
-  type EffectVideoConfigOverride,
   type PreviewEffectManifestData,
 } from '@ai-marketing/contracts';
+import { WorkflowNodeFooter } from '@ai-marketing/ui';
 import {
   AlertCircle,
   ArrowLeft,
-  ArrowRight,
-  CheckCircle2,
   CloudUpload,
-  FileCheck2,
   FileSpreadsheet,
+  FileText,
   FolderInput,
   LoaderCircle,
   PackageOpen,
   Plus,
+  RotateCcw,
   RefreshCw,
   Search,
-  ShieldCheck,
   Sparkles,
   Trash2,
 } from '@lucide/vue';
@@ -54,11 +52,14 @@ import {
   deleteEffectImportMaterial,
   deleteEffectImportProduct,
   downloadEffectManifestTemplate,
+  downloadEffectProductPackageTemplate,
   getEffectImportDraft,
   getEffectImportWorkspace,
+  listRemovedEffectImportProducts,
   listEffectImportProducts,
   previewEffectManifest,
   replaceEffectImportMaterial,
+  restoreEffectImportProduct,
   switchEffectImportMode,
   updateEffectImportDraft,
   updateEffectImportProduct,
@@ -69,7 +70,6 @@ import {
 import BatchManifestImportDialog from './components/BatchManifestImportDialog.vue';
 import EffectWorkflowCanvas from './components/EffectWorkflowCanvas.vue';
 import GlobalVideoConfigPanel from './components/GlobalVideoConfigPanel.vue';
-import ProductConfigOverrideDialog from './components/ProductConfigOverrideDialog.vue';
 import ProductImportEditor from './components/ProductImportEditor.vue';
 import {
   cloneVideoConfig,
@@ -97,6 +97,7 @@ const pageError = ref('');
 const workspace = ref<EffectImportWorkspace | null>(null);
 const draft = ref<EffectImportDraft | null>(null);
 const listedProducts = ref<EffectImportProduct[]>([]);
+const removedProducts = ref<EffectImportRemovedProduct[]>([]);
 const saveState = ref<EffectImportSaveState>('clean');
 const transitioning = ref(false);
 const uploadTargetInitializing = ref(false);
@@ -112,14 +113,12 @@ const activeDownstreamBoundary = computed(() => downstreamBoundaries[activeStep.
 const keyword = ref('');
 const selectedProductIds = ref(new Set<string>());
 const busyMaterialIds = ref(new Set<string>());
+const validatingDraft = ref(false);
 const notice = ref<{ kind: 'error' | 'success' | 'warning'; text: string } | null>(null);
 const manifestOpen = ref(false);
 const manifestBusy = ref(false);
 const manifestError = ref('');
 const manifestPreview = ref<PreviewEffectManifestData | null>(null);
-const overrideOpen = ref(false);
-const overrideProduct = ref<EffectImportProduct | null>(null);
-const overrideSaving = ref(false);
 const replacementTarget = ref<{
   material: EffectImportMaterial;
   product: EffectImportProduct;
@@ -313,10 +312,24 @@ const markDraftMutation = (revision: number): void => {
 
 const replaceProduct = (product: EffectImportProduct): void => {
   if (!draft.value) return;
+  const previous =
+    draft.value.products.find((item) => item.id === product.id) ??
+    listedProducts.value.find((item) => item.id === product.id);
+  const nextProduct =
+    previous &&
+    product.commitStatus === 'UNVALIDATED' &&
+    (previous.sourcePackageRevision !== null || previous.effectiveVideoConfigRevision !== null)
+      ? {
+          ...product,
+          commitStatus: 'DRAFT_CHANGED' as const,
+          sourcePackageRevision: previous.sourcePackageRevision,
+          effectiveVideoConfigRevision: previous.effectiveVideoConfigRevision,
+        }
+      : product;
   const [draftProducts, visibleProducts] = synchronizeCollectionItemById(
     draft.value.products,
     listedProducts.value,
-    product,
+    nextProduct,
   );
   draft.value.products = draftProducts;
   listedProducts.value = visibleProducts;
@@ -359,7 +372,12 @@ const applyMaterialMutation = (
     index < 0
       ? [value.material, ...product.materials]
       : product.materials.map((item) => (item.id === value.material.id ? value.material : item));
-  replaceProduct({ ...product, materials });
+  replaceProduct({
+    ...product,
+    materials,
+    commitStatus:
+      product.commitStatus === 'UNVALIDATED' ? 'UNVALIDATED' : ('DRAFT_CHANGED' as const),
+  });
   markDraftMutation(value.revision);
 };
 
@@ -373,6 +391,7 @@ const reloadCurrentDraft = async (reason: 'conflict' | 'normal' = 'normal'): Pro
     if (!isCurrentContext(projectId, generation)) return;
     setDraft(response.data);
     if (mode === 'BATCH') await refreshProductList();
+    await refreshRemovedProducts();
     restorePendingDraftEdits();
     saveState.value = resolveReloadSaveState(
       reason,
@@ -451,6 +470,28 @@ const refreshProductList = async (): Promise<void> => {
   }
 };
 
+const refreshRemovedProducts = async (): Promise<void> => {
+  const projectId = loadedProjectId.value;
+  const generation = activeGeneration;
+  const controller = pageController;
+  if (!projectId || !controller) {
+    removedProducts.value = [];
+    return;
+  }
+  try {
+    const response = await listRemovedEffectImportProducts(
+      projectId,
+      currentMode.value,
+      controller.signal,
+    );
+    if (!isCurrentContext(projectId, generation)) return;
+    removedProducts.value = response.data.items;
+  } catch (error) {
+    if (!isAbortError(error))
+      showNotice(error instanceof Error ? error.message : '加载最近删除产品失败', 'error');
+  }
+};
+
 const loadProject = async (projectId: string): Promise<void> => {
   clearPendingTimers();
   globalDraftBuffer.reset();
@@ -462,6 +503,7 @@ const loadProject = async (projectId: string): Promise<void> => {
   draft.value = null;
   draftCache.clear();
   listedProducts.value = [];
+  removedProducts.value = [];
   selectedProductIds.value = new Set();
   activeStep.value = 0;
   nodeStateRevision.value = 0;
@@ -504,6 +546,7 @@ const loadProject = async (projectId: string): Promise<void> => {
     activeStep.value = workspace.value.currentNode === 'AI_INFO_EXTRACTION' ? 1 : 0;
     saveState.value = 'clean';
     if (workspace.value.currentMode === 'BATCH') await refreshProductList();
+    await refreshRemovedProducts();
     await ensureUploadTarget();
     pageStatus.value = 'success';
     const backgroundMode: EffectImportMode =
@@ -565,6 +608,7 @@ const switchMode = async (mode: EffectImportMode): Promise<void> => {
     setDraft(response.data.draft);
     saveState.value = 'clean';
     if (mode === 'BATCH') await refreshProductList();
+    await refreshRemovedProducts();
     await ensureUploadTarget();
   } catch (error) {
     if (isAbortError(error)) return;
@@ -735,8 +779,8 @@ const ensureUploadTarget = async (): Promise<void> => {
   if (!draft.value || uploadTargetInitializing.value) return;
   const hasUploadTarget =
     currentMode.value === 'SINGLE'
-      ? Boolean(singleProduct.value)
-      : Boolean(listedProducts.value.length || keyword.value);
+      ? Boolean(singleProduct.value || removedProducts.value.length)
+      : Boolean(listedProducts.value.length || keyword.value || removedProducts.value.length);
   if (hasUploadTarget) return;
   uploadTargetInitializing.value = true;
   try {
@@ -747,7 +791,8 @@ const ensureUploadTarget = async (): Promise<void> => {
 };
 
 const deleteProduct = async (product: EffectImportProduct): Promise<void> => {
-  if (!window.confirm(`确定删除“${product.name || '未命名产品'}”及其草稿资料吗？`)) return;
+  if (!window.confirm(`确定将“${product.name || '未命名产品'}”移入最近删除吗？24 小时内可恢复。`))
+    return;
   await runWrite(
     (expectedRevision, signal) =>
       deleteEffectImportProduct(
@@ -768,6 +813,12 @@ const deleteProduct = async (product: EffectImportProduct): Promise<void> => {
       productDraftBuffer.discard(product.id);
       clearTimeout(productTimers.get(product.id));
       productTimers.delete(product.id);
+      if (response.data.removedProduct) {
+        removedProducts.value = [
+          response.data.removedProduct,
+          ...removedProducts.value.filter((item) => item.id !== product.id),
+        ];
+      }
       markDraftMutation(response.data.revision);
     },
   );
@@ -785,7 +836,11 @@ const toggleSelected = (product: EffectImportProduct, selected: boolean): void =
 
 const batchDelete = async (): Promise<void> => {
   const ids = [...selectedProductIds.value];
-  if (!ids.length || !window.confirm(`确定批量删除已选择的 ${ids.length} 个产品吗？`)) return;
+  if (
+    !ids.length ||
+    !window.confirm(`确定将已选的 ${ids.length} 个产品移入最近删除吗？24 小时内可恢复。`)
+  )
+    return;
   await runWrite(
     (expectedRevision, signal) =>
       batchDeleteEffectImportProducts(
@@ -806,11 +861,46 @@ const batchDelete = async (): Promise<void> => {
         productTimers.delete(id);
       });
       selectedProductIds.value = new Set();
+      const removedIds = new Set(response.data.removedProducts.map((item) => item.id));
+      removedProducts.value = [
+        ...response.data.removedProducts,
+        ...removedProducts.value.filter((item) => !removedIds.has(item.id)),
+      ];
       markDraftMutation(response.data.revision);
     },
   );
   if (!keyword.value && !listedProducts.value.length) await ensureUploadTarget();
 };
+
+const restoreProduct = async (removedProduct: EffectImportRemovedProduct): Promise<void> => {
+  const result = await runWrite(
+    (expectedRevision, signal) =>
+      restoreEffectImportProduct(
+        loadedProjectId.value,
+        currentMode.value,
+        removedProduct.id,
+        expectedRevision,
+        signal,
+      ),
+    (response) => {
+      replaceProduct(response.data.product);
+      if (draft.value) draft.value.productCount += 1;
+      removedProducts.value = removedProducts.value.filter((item) => item.id !== removedProduct.id);
+      markDraftMutation(response.data.revision);
+    },
+  );
+  if (!result) return;
+  if (currentMode.value === 'BATCH') await refreshProductList();
+  showNotice(`已恢复“${result.data.product.name || '未命名产品'}”`, 'success');
+};
+
+const formatRestoreDeadline = (value: string): string =>
+  new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(value));
 
 const retryProducts = async (productIds: string[]): Promise<void> => {
   if (!productIds.length) return;
@@ -862,42 +952,47 @@ const uploadMaterials = async (
   }
   if (!(await flushProduct(product.id))) return;
   const busyKey = `${product.id}:${type}`;
+  const manifest = files.map((file) => ({
+    file,
+    clientFileId: crypto.randomUUID(),
+  }));
+  const completionKey = crypto.randomUUID();
+  let uploadSessionId = '';
   setMaterialBusy(busyKey, true);
   try {
     await runWrite(
       async (expectedRevision, signal) => {
-        const manifest = files.map((file) => ({
-          file,
-          clientFileId: crypto.randomUUID(),
-        }));
-        const created = await createEffectImportUploadSession(
-          loadedProjectId.value,
-          currentMode.value,
-          product.id,
-          {
-            expectedRevision,
-            items: manifest.map(({ file, clientFileId }) => ({
-              clientFileId,
-              type,
-              originalFileName: file.name,
-              mimeType: file.type || 'application/octet-stream',
-              sizeBytes: file.size,
-            })),
-          },
-          signal,
-        );
-        for (const item of manifest)
-          await uploadEffectImportSessionItem(
+        if (!uploadSessionId) {
+          const created = await createEffectImportUploadSession(
             loadedProjectId.value,
-            created.data.id,
-            item.clientFileId,
-            item.file,
+            currentMode.value,
+            product.id,
+            {
+              expectedRevision,
+              items: manifest.map(({ file, clientFileId }) => ({
+                clientFileId,
+                type,
+                originalFileName: file.name,
+                mimeType: file.type || 'application/octet-stream',
+                sizeBytes: file.size,
+              })),
+            },
             signal,
           );
+          uploadSessionId = created.data.id;
+          for (const item of manifest)
+            await uploadEffectImportSessionItem(
+              loadedProjectId.value,
+              uploadSessionId,
+              item.clientFileId,
+              item.file,
+              signal,
+            );
+        }
         return completeEffectImportUploadSession(
           loadedProjectId.value,
-          created.data.id,
-          { completionKey: crypto.randomUUID() },
+          uploadSessionId,
+          { completionKey },
           signal,
         );
       },
@@ -1005,34 +1100,6 @@ const checkCommerceLink = async (product: EffectImportProduct): Promise<void> =>
   }
 };
 
-const openOverride = (product: EffectImportProduct): void => {
-  overrideProduct.value = product;
-  overrideOpen.value = true;
-};
-
-const saveOverride = async (value: EffectVideoConfigOverride): Promise<void> => {
-  if (!overrideProduct.value) return;
-  overrideSaving.value = true;
-  const product = overrideProduct.value;
-  await runWrite(
-    (expectedRevision, signal) =>
-      updateEffectImportProduct(
-        loadedProjectId.value,
-        currentMode.value,
-        product.id,
-        { configOverride: value, expectedRevision },
-        signal,
-      ),
-    (response) => {
-      replaceProduct((response.data as EffectImportProductMutationData).product);
-      markDraftMutation(response.data.revision);
-      overrideOpen.value = false;
-      showNotice('单品覆盖配置已保存');
-    },
-  );
-  overrideSaving.value = false;
-};
-
 const startManifestPreview = async (
   manifest: File,
   files: File[],
@@ -1116,16 +1183,33 @@ const downloadTemplate = async (format: EffectManifestFormat): Promise<void> => 
   }
 };
 
-const validateDraft = async (): Promise<void> => {
-  if (transitioning.value) return;
-  if (unnamedProductCount.value) {
-    showNotice(`请先填写全部产品名称，当前还有 ${unnamedProductCount.value} 个未填写`, 'warning');
-    return;
+const downloadProductPackageTemplate = async (): Promise<void> => {
+  if (!loadedProjectId.value || !pageController) return;
+  try {
+    const result = await downloadEffectProductPackageTemplate(
+      loadedProjectId.value,
+      pageController.signal,
+    );
+    const url = URL.createObjectURL(result.blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = result.fileName;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    showNotice('Word 资料包模板已下载');
+  } catch (error) {
+    if (!isAbortError(error))
+      showNotice(error instanceof Error ? error.message : '资料包模板下载失败', 'error');
   }
+};
+
+const validateDraft = async (): Promise<void> => {
+  if (transitioning.value || validatingDraft.value) return;
   if (!(await flushPendingEdits())) {
     showNotice('仍有修改保存失败，请保存后再校验', 'error');
     return;
   }
+  validatingDraft.value = true;
   const response = await runWrite(
     (expectedRevision, signal) =>
       validateEffectImportDraft(
@@ -1136,7 +1220,13 @@ const validateDraft = async (): Promise<void> => {
       ),
     (result) => setDraft(result.data.draft),
   );
-  if (response?.data.validation.valid) showNotice('资料包校验通过，可以进入下一节点');
+  validatingDraft.value = false;
+  if (response?.data.validation.valid)
+    showNotice(
+      response.data.artifacts.every((artifact) => artifact.unchanged)
+        ? '内容未变化，工作副本保持不变'
+        : '工作副本已更新，全部产品校验完成',
+    );
   else if (response)
     showNotice(`发现 ${response.data.validation.issues.length} 项问题，请修复后重试`, 'warning');
 };
@@ -1309,8 +1399,8 @@ onBeforeUnmount(() => {
             <div class="save-indicator" :class="saveState">
               <CloudUpload :size="14" />{{ saveStateLabel }}
             </div>
-            <button type="button" @click="downloadTemplate('csv')">
-              <FileSpreadsheet :size="14" />下载资料包模板
+            <button type="button" @click="downloadProductPackageTemplate">
+              <FileText :size="14" />下载资料包模板
             </button>
           </section>
 
@@ -1336,6 +1426,44 @@ onBeforeUnmount(() => {
             </div>
           </section>
 
+          <section v-if="removedProducts.length" class="recently-removed" aria-live="polite">
+            <div class="recently-removed__heading">
+              <span><RotateCcw :size="15" /></span>
+              <div>
+                <strong>最近删除</strong>
+                <small>24 小时内可恢复，工作副本和 MinIO 文件仍保留</small>
+              </div>
+              <button
+                v-if="currentMode === 'SINGLE' && !singleProduct"
+                type="button"
+                :disabled="transitioning"
+                @click="createProduct"
+              >
+                <Plus :size="13" />放弃恢复，新建产品
+              </button>
+            </div>
+            <div class="recently-removed__items">
+              <article v-for="item in removedProducts" :key="item.id">
+                <span>
+                  <strong>{{ item.name || '未命名产品' }}</strong>
+                  <small>{{ formatRestoreDeadline(item.purgeAfter) }} 前可恢复</small>
+                </span>
+                <button
+                  type="button"
+                  :disabled="transitioning || (currentMode === 'SINGLE' && Boolean(singleProduct))"
+                  :title="
+                    currentMode === 'SINGLE' && singleProduct
+                      ? '单产品模式已有活动产品，无法同时恢复'
+                      : '恢复产品'
+                  "
+                  @click="restoreProduct(item)"
+                >
+                  <RotateCcw :size="13" />恢复
+                </button>
+              </article>
+            </div>
+          </section>
+
           <div
             class="import-layout"
             :class="{ 'batch-mode': currentMode === 'BATCH' }"
@@ -1345,8 +1473,13 @@ onBeforeUnmount(() => {
             <template v-if="currentMode === 'SINGLE'">
               <section class="import-source-column">
                 <div v-if="!singleProduct" class="upload-target-preparing" role="status">
-                  <LoaderCircle class="spin" :size="24" />
-                  <span>正在准备素材上传区…</span>
+                  <PackageOpen v-if="removedProducts.length" :size="24" />
+                  <LoaderCircle v-else class="spin" :size="24" />
+                  <span>{{
+                    removedProducts.length
+                      ? '可恢复最近删除的产品，或新建产品'
+                      : '正在准备素材上传区…'
+                  }}</span>
                 </div>
                 <ProductImportEditor
                   v-else
@@ -1359,7 +1492,6 @@ onBeforeUnmount(() => {
                   @replace="requestReplacement"
                   @delete-material="removeMaterial"
                   @retry="(product) => retryProducts([product.id])"
-                  @override="openOverride"
                   @validate-link="checkCommerceLink"
                 />
               </section>
@@ -1376,7 +1508,7 @@ onBeforeUnmount(() => {
                 <header class="batch-panel-head">
                   <div>
                     <h3>商品卡片列表</h3>
-                    <p>每个商品独立填写产品名称，并维护资料、链接与覆盖配置</p>
+                    <p>每个商品独立填写产品名称，并维护资料与电商链接</p>
                   </div>
                   <div class="batch-toolbar">
                     <label class="batch-search"
@@ -1415,8 +1547,11 @@ onBeforeUnmount(() => {
                   没有匹配的商品，请调整搜索条件。
                 </div>
                 <div v-else-if="!products.length" class="upload-target-preparing" role="status">
-                  <LoaderCircle class="spin" :size="24" />
-                  <span>正在准备素材上传区…</span>
+                  <PackageOpen v-if="removedProducts.length" :size="24" />
+                  <LoaderCircle v-else class="spin" :size="24" />
+                  <span>{{
+                    removedProducts.length ? '可从上方恢复最近删除的产品' : '正在准备素材上传区…'
+                  }}</span>
                 </div>
                 <div v-else class="batch-product-list">
                   <ProductImportEditor
@@ -1436,7 +1571,6 @@ onBeforeUnmount(() => {
                     @replace="requestReplacement"
                     @delete-material="removeMaterial"
                     @retry="(item) => retryProducts([item.id])"
-                    @override="openOverride"
                     @validate-link="checkCommerceLink"
                   />
                 </div>
@@ -1467,40 +1601,28 @@ onBeforeUnmount(() => {
             </div>
           </section>
 
-          <footer class="node-footer">
-            <div class="node-footer__status" :class="{ valid: validatedCurrentRevision }">
-              <ShieldCheck v-if="validatedCurrentRevision" :size="17" />
-              <FileCheck2 v-else :size="17" />
-              <span
-                ><strong>{{
-                  validatedCurrentRevision ? '当前草稿校验通过' : '进入下一节点前需要完成校验'
-                }}</strong
-                ><small
-                  >revision {{ draft?.revision ?? 0 }} ·
-                  {{ draft?.productCount ?? 0 }} 个产品<template v-if="failedProductCount">
-                    · {{ failedProductCount }} 个产品存在失败资料</template
-                  ><template v-if="unnamedProductCount">
-                    · {{ unnamedProductCount }} 个产品未填写名称</template
-                  ></small
-                ></span
-              >
-            </div>
-            <button
-              type="button"
-              :disabled="transitioning || saveState === 'saving'"
-              @click="validateDraft"
-            >
-              <CheckCircle2 :size="14" />完成校验
-            </button>
-            <button
-              class="primary"
-              type="button"
-              :disabled="transitioning || !validatedCurrentRevision || saveState === 'saving'"
-              @click="advanceDraft"
-            >
-              下一步：AI 信息提炼<ArrowRight :size="15" />
-            </button>
-          </footer>
+          <WorkflowNodeFooter
+            :complete="validatedCurrentRevision"
+            :status-title="
+              validatedCurrentRevision ? '当前草稿校验通过' : '进入下一节点前需要完成校验'
+            "
+            :status-detail="
+              [
+                `revision ${draft?.revision ?? 0}`,
+                `${draft?.productCount ?? 0} 个产品`,
+                failedProductCount ? `${failedProductCount} 个产品存在失败资料` : '',
+                unnamedProductCount ? `${unnamedProductCount} 个产品未填写名称` : '',
+              ]
+                .filter(Boolean)
+                .join(' · ')
+            "
+            :validating="validatingDraft"
+            :validate-disabled="transitioning || saveState === 'saving' || !draft?.productCount"
+            :next-disabled="transitioning || !validatedCurrentRevision || saveState === 'saving'"
+            next-label="下一步：AI 信息提炼"
+            @validate="validateDraft"
+            @next="advanceDraft"
+          />
         </section>
       </template>
     </template>
@@ -1522,14 +1644,6 @@ onBeforeUnmount(() => {
       @download="downloadTemplate"
       @preview="startManifestPreview"
       @commit="commitManifest"
-    />
-    <ProductConfigOverrideDialog
-      :open="overrideOpen"
-      :product="overrideProduct"
-      :global-config="draft?.globalConfig ?? DEFAULT_EFFECT_VIDEO_CONFIG"
-      :saving="overrideSaving"
-      @close="overrideOpen = false"
-      @save="saveOverride"
     />
   </div>
 </template>
@@ -1728,6 +1842,91 @@ onBeforeUnmount(() => {
   color: #2563eb;
   background: #fff;
   box-shadow: 0 3px 9px #7a4e3b12;
+}
+.recently-removed {
+  margin: -4px 0 16px;
+  padding: 10px 12px;
+  color: #53667f;
+  background: #f7faff;
+  border: 1px solid #dce7f6;
+  border-radius: 12px;
+}
+.recently-removed__heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.recently-removed__heading > span {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  color: #2563eb;
+  background: #eaf1ff;
+  border-radius: 8px;
+}
+.recently-removed__heading > div {
+  display: grid;
+  margin-right: auto;
+  gap: 2px;
+}
+.recently-removed strong {
+  color: #243852;
+  font-size: 10px;
+}
+.recently-removed small {
+  color: #8290a3;
+  font-size: 9px;
+}
+.recently-removed button {
+  display: inline-flex;
+  height: 28px;
+  padding: 0 9px;
+  align-items: center;
+  gap: 5px;
+  color: #2563eb;
+  background: #fff;
+  border: 1px solid #bdd0f1;
+  border-radius: 7px;
+  font-size: 9px;
+  font-weight: 800;
+}
+.recently-removed button:disabled {
+  color: #9aa7b8;
+  background: #f3f5f8;
+  border-color: #dce2ea;
+  cursor: not-allowed;
+}
+.recently-removed__items {
+  display: flex;
+  margin-top: 8px;
+  padding-top: 8px;
+  gap: 7px;
+  overflow-x: auto;
+  border-top: 1px solid #e3ebf7;
+}
+.recently-removed__items article {
+  display: flex;
+  min-width: 190px;
+  padding: 7px 8px;
+  align-items: center;
+  gap: 10px;
+  background: #fff;
+  border: 1px solid #e1e8f2;
+  border-radius: 9px;
+}
+.recently-removed__items article > span {
+  display: grid;
+  min-width: 0;
+  margin-right: auto;
+  gap: 2px;
+}
+.recently-removed__items article strong,
+.recently-removed__items article small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .import-layout {
   display: grid;
@@ -1937,60 +2136,6 @@ onBeforeUnmount(() => {
   margin: 0;
   font-size: 9px;
 }
-.node-footer {
-  display: flex;
-  min-height: 72px;
-  margin-top: 14px;
-  padding: 13px 16px;
-  align-items: center;
-  gap: 8px;
-  background: #fff;
-  border: 1px solid #f0e0d7;
-  border-radius: 20px;
-  box-shadow: 0 8px 25px #7a4e3b12;
-}
-.node-footer__status {
-  display: flex;
-  min-width: 220px;
-  margin-right: auto;
-  align-items: center;
-  gap: 8px;
-  color: #718096;
-}
-.node-footer__status.valid {
-  color: #168361;
-}
-.node-footer__status strong,
-.node-footer__status small {
-  display: block;
-}
-.node-footer__status strong {
-  color: #41516a;
-  font-size: 10px;
-}
-.node-footer__status small {
-  margin-top: 3px;
-  font-size: 8px;
-}
-.node-footer button {
-  display: inline-flex;
-  height: 35px;
-  padding: 0 12px;
-  align-items: center;
-  gap: 5px;
-  color: #41516a;
-  background: #fff;
-  border: 1px solid #d3ddea;
-  border-radius: 8px;
-  font-size: 10px;
-  font-weight: 800;
-}
-.node-footer button.primary {
-  color: #fff;
-  background: #2563eb;
-  border-color: #2563eb;
-}
-.node-footer button:disabled,
 .batch-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
@@ -2068,13 +2213,6 @@ onBeforeUnmount(() => {
   .import-layout {
     grid-template-columns: 1fr;
   }
-  .node-footer {
-    align-items: stretch;
-    flex-wrap: wrap;
-  }
-  .node-footer__status {
-    width: 100%;
-  }
   .node-heading {
     flex-wrap: wrap;
   }
@@ -2119,13 +2257,6 @@ onBeforeUnmount(() => {
   }
   .validation-panel div {
     grid-template-columns: 1fr;
-  }
-  .node-footer button {
-    flex: 1;
-    justify-content: center;
-  }
-  .node-footer button.primary {
-    flex-basis: 100%;
   }
   .effect-notice {
     top: 126px;

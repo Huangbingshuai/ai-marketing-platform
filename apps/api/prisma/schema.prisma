@@ -158,9 +158,21 @@ enum WorkingArtifactFreshness {
   STALE
 }
 
+enum WorkingArtifactAvailability {
+  AVAILABLE
+  SOURCE_REMOVED
+  PENDING_DELETE
+}
+
 enum WorkingArtifactDependencySourceType {
   NODE_STATE
   WORKING_ARTIFACT
+  EXECUTION_INPUT
+}
+
+enum EffectImportProductStatus {
+  ACTIVE
+  REMOVED
 }
 
 enum FileObjectStatus {
@@ -301,6 +313,9 @@ model WorkflowRun {
   fileObjects                FileObject[]
   effectImportUploadSessions EffectImportUploadSession[]
   effectWorkspace            EffectImportWorkspace?
+  effectImportProducts       EffectImportProduct[]
+  effectImportMaterials      EffectImportMaterial[]
+  effectImportUploadItems    EffectImportUploadItem[]
 
   @@unique([projectId, workflow, workflowSpace, activeKey])
   @@unique([projectId, id])
@@ -309,19 +324,21 @@ model WorkflowRun {
 }
 
 model WorkflowNodeState {
-  id            String      @id @default(uuid()) @db.Uuid
-  projectId     String      @db.Uuid
-  workflowRunId String      @db.Uuid
-  nodeId        String      @db.VarChar(160)
-  schemaVersion Int         @default(1)
-  revision      Int         @default(1)
-  contentHash   String      @db.Char(64)
-  state         Json
-  savedAt       DateTime    @default(now())
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
-  project       Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  workflowRun   WorkflowRun @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
+  id                          String      @id @default(uuid()) @db.Uuid
+  projectId                   String      @db.Uuid
+  workflowRunId               String      @db.Uuid
+  nodeId                      String      @db.VarChar(160)
+  schemaVersion               Int         @default(1)
+  revision                    Int         @default(1)
+  contentHash                 String      @db.Char(64)
+  executionInputHash          String      @default("0e9561cfb83d50990a103b3896fe249a11fe27fa28985448187f93ec12116d72") @db.Char(64)
+  executionInputSchemaVersion Int         @default(1)
+  state                       Json
+  savedAt                     DateTime    @default(now())
+  createdAt                   DateTime    @default(now())
+  updatedAt                   DateTime    @updatedAt
+  project                     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workflowRun                 WorkflowRun @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
 
   @@unique([projectId, workflowRunId, nodeId])
   @@index([projectId, updatedAt])
@@ -350,15 +367,18 @@ model WorkingArtifact {
   revision         Int                         @default(1)
   contentHash      String                      @default("") @db.Char(64)
   freshness        WorkingArtifactFreshness    @default(CURRENT)
+  availability     WorkingArtifactAvailability @default(AVAILABLE)
   createdAt        DateTime                    @default(now())
   updatedAt        DateTime                    @updatedAt
   project          Project                     @relation(fields: [projectId], references: [id], onDelete: Cascade)
   workflowRun      WorkflowRun                 @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
   files            WorkingArtifactFile[]
   dependencies     WorkingArtifactDependency[] @relation("WorkingArtifactDependencies")
+  sourceDependents WorkingArtifactDependency[] @relation("WorkingArtifactDependencySources")
 
   @@unique([projectId, workflowRunId, nodeId, artifactKey])
   @@unique([projectId, id])
+  @@unique([projectId, workflowRunId, id])
   @@index([projectId, workflowRunId, nodeId, updatedAt])
   @@map("working_artifacts")
 }
@@ -385,6 +405,7 @@ model FileObject {
 
   @@unique([projectId, storageKey])
   @@unique([projectId, id])
+  @@unique([projectId, workflowRunId, id])
   @@index([projectId, workflowRunId, status, updatedAt])
   @@map("file_objects")
 }
@@ -398,8 +419,8 @@ model WorkingArtifactFile {
   role              String          @db.VarChar(80)
   sortOrder         Int             @default(0)
   createdAt         DateTime        @default(now())
-  workingArtifact   WorkingArtifact @relation(fields: [projectId, workingArtifactId], references: [projectId, id], onDelete: Cascade)
-  fileObject        FileObject      @relation(fields: [projectId, fileObjectId], references: [projectId, id], onDelete: Restrict)
+  workingArtifact   WorkingArtifact @relation(fields: [projectId, workflowRunId, workingArtifactId], references: [projectId, workflowRunId, id], onDelete: Cascade)
+  fileObject        FileObject      @relation(fields: [projectId, workflowRunId, fileObjectId], references: [projectId, workflowRunId, id], onDelete: Restrict)
 
   @@unique([projectId, workingArtifactId, fileObjectId])
   @@index([projectId, workflowRunId, workingArtifactId, sortOrder])
@@ -416,9 +437,11 @@ model WorkingArtifactDependency {
   sourceNodeId        String?                             @db.VarChar(160)
   sourceArtifactId    String?                             @db.Uuid
   sourceKey           String                              @db.VarChar(500)
-  sourceRevision      Int
+  sourceRevision      Int?
+  sourceHash          String?                             @db.Char(64)
   createdAt           DateTime                            @default(now())
-  dependentArtifact   WorkingArtifact                     @relation("WorkingArtifactDependencies", fields: [projectId, dependentArtifactId], references: [projectId, id], onDelete: Cascade)
+  dependentArtifact   WorkingArtifact                     @relation("WorkingArtifactDependencies", fields: [projectId, workflowRunId, dependentArtifactId], references: [projectId, workflowRunId, id], onDelete: Cascade)
+  sourceArtifact      WorkingArtifact?                    @relation("WorkingArtifactDependencySources", fields: [projectId, workflowRunId, sourceArtifactId], references: [projectId, workflowRunId, id], onDelete: Restrict)
 
   @@unique([projectId, dependentArtifactId, sourceType, sourceKey])
   @@index([projectId, workflowRunId, sourceType, sourceKey])
@@ -511,7 +534,11 @@ model EffectImportDraft {
 model EffectImportProduct {
   id                      String                      @id @default(uuid()) @db.Uuid
   projectId               String                      @db.Uuid
+  workflowRunId           String                      @db.Uuid
   draftId                 String                      @db.Uuid
+  status                  EffectImportProductStatus   @default(ACTIVE)
+  removedAt               DateTime?
+  purgeAfter              DateTime?
   name                    String                      @default("") @db.VarChar(120)
   category                String                      @default("") @db.VarChar(120)
   sku                     String                      @default("") @db.VarChar(160)
@@ -524,6 +551,7 @@ model EffectImportProduct {
   createdAt               DateTime                    @default(now())
   updatedAt               DateTime                    @updatedAt
   draft                   EffectImportDraft           @relation(fields: [projectId, draftId], references: [projectId, id], onDelete: Cascade)
+  workflowRun             WorkflowRun                 @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
   sourceManifestImport    EffectManifestImport?       @relation(fields: [projectId, sourceManifestImportId], references: [projectId, id], onDelete: Restrict)
   materials               EffectImportMaterial[]
   extractionRuns          EffectExtractionRun[]
@@ -531,6 +559,8 @@ model EffectImportProduct {
   uploadSessions          EffectImportUploadSession[]
 
   @@unique([projectId, id])
+  @@unique([projectId, workflowRunId, id])
+  @@index([projectId, workflowRunId, status, purgeAfter])
   @@index([projectId, draftId, sortOrder])
   @@index([projectId, draftId, normalizedSku])
   @@map("effect_import_products")
@@ -539,6 +569,7 @@ model EffectImportProduct {
 model EffectImportMaterial {
   id                 String                          @id @default(uuid()) @db.Uuid
   projectId          String                          @db.Uuid
+  workflowRunId      String                          @db.Uuid
   productId          String                          @db.Uuid
   type               EffectImportMaterialType
   status             EffectImportMaterialStatus      @default(UPLOADING)
@@ -555,7 +586,8 @@ model EffectImportMaterial {
   createdAt          DateTime                        @default(now())
   updatedAt          DateTime                        @updatedAt
   product            EffectImportProduct             @relation(fields: [projectId, productId], references: [projectId, id], onDelete: Cascade)
-  fileObject         FileObject?                     @relation(fields: [fileObjectId], references: [id], onDelete: SetNull)
+  workflowRun        WorkflowRun                     @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
+  fileObject         FileObject?                     @relation(fields: [projectId, workflowRunId, fileObjectId], references: [projectId, workflowRunId, id], onDelete: Restrict)
 
   @@unique([projectId, id])
   @@index([projectId, productId, type])
@@ -583,6 +615,7 @@ model EffectImportUploadSession {
   items            EffectImportUploadItem[]
 
   @@unique([projectId, id])
+  @@unique([projectId, workflowRunId, id])
   @@unique([projectId, completionKey])
   @@index([projectId, productId, status, expiresAt])
   @@map("effect_import_upload_sessions")
@@ -591,6 +624,7 @@ model EffectImportUploadSession {
 model EffectImportUploadItem {
   id               String                       @id @default(uuid()) @db.Uuid
   projectId        String                       @db.Uuid
+  workflowRunId    String                       @db.Uuid
   sessionId        String                       @db.Uuid
   clientFileId     String                       @db.VarChar(160)
   type             EffectImportMaterialType
@@ -606,8 +640,9 @@ model EffectImportUploadItem {
   errorMessage     String?                      @db.VarChar(500)
   createdAt        DateTime                     @default(now())
   updatedAt        DateTime                     @updatedAt
-  session          EffectImportUploadSession    @relation(fields: [projectId, sessionId], references: [projectId, id], onDelete: Cascade)
-  fileObject       FileObject?                  @relation(fields: [fileObjectId], references: [id], onDelete: SetNull)
+  session          EffectImportUploadSession    @relation(fields: [projectId, workflowRunId, sessionId], references: [projectId, workflowRunId, id], onDelete: Cascade)
+  workflowRun      WorkflowRun                  @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
+  fileObject       FileObject?                  @relation(fields: [projectId, workflowRunId, fileObjectId], references: [projectId, workflowRunId, id], onDelete: Restrict)
 
   @@unique([projectId, sessionId, clientFileId])
   @@index([projectId, fileObjectId])

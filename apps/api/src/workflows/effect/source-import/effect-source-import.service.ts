@@ -1,6 +1,7 @@
 import { createReadStream } from 'node:fs';
-import { open, rm } from 'node:fs/promises';
+import { open, readFile, rm } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 
 import {
   DEFAULT_EFFECT_VIDEO_CONFIG,
@@ -12,6 +13,7 @@ import {
   type AdvanceEffectImportDraftData,
   type BatchDeleteEffectImportProductsData,
   type BatchRetryEffectImportProductsData,
+  type BatchRestoreEffectImportProductsData,
   type CommitEffectManifestData,
   type CompleteEffectImportUploadSessionData,
   type CreateEffectImportUploadSessionRequest,
@@ -25,6 +27,7 @@ import {
   type EffectImportProduct,
   type EffectImportProductListData,
   type EffectImportProductMutationData,
+  type EffectImportRemovedProductListData,
   type EffectImportValidationIssue,
   type EffectImportUploadSession,
   type EffectManifestPreviewRow,
@@ -33,6 +36,7 @@ import {
   type SwitchEffectImportModeData,
   type UpdateEffectImportDraftData,
   type ValidateEffectImportDraftData,
+  type ValidateEffectImportProductData,
   type ValidateEffectImportLinkData,
   type EffectVideoConfig,
   type EffectVideoConfigOverride,
@@ -46,8 +50,10 @@ import type { StoredStream, StoragePort } from '../../../platform/file/storage.p
 import { STORAGE_PORT } from '../../../platform/file/storage.port';
 import { safeOriginalFileName } from '../../../platform/file/file-name';
 import { ProjectService } from '../../../platform/project/project.service';
-import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
-import type { WorkingArtifactUpsertInput } from '../../../platform/workflow/workflow-working.repository';
+import {
+  workingArtifactContentHash,
+  type WorkingArtifactUpsertInput,
+} from '../../../platform/workflow/workflow-working.repository';
 import {
   EffectSourceImportRepository,
   type EffectDraftRecord,
@@ -56,7 +62,7 @@ import {
   type EffectProductRecord,
   type EffectWorkspaceRecord,
   type ManifestRecord,
-  type WorkingMaterialProjection,
+  type WorkingFileProjection,
 } from './effect-source-import.repository';
 import { normalizeManifestFileName, parseEffectManifest } from './effect-manifest.parser';
 
@@ -88,6 +94,11 @@ const streamSha256 = (stream: NodeJS.ReadableStream): Promise<string> =>
     stream.on('error', reject);
     stream.on('end', () => resolve(hash.digest('hex')));
   });
+const PRODUCT_PACKAGE_TEMPLATE_PATH = join(
+  __dirname,
+  'templates',
+  'effect-product-package-template.docx',
+);
 
 const badRequest = (
   message: string,
@@ -211,7 +222,6 @@ export class EffectSourceImportService {
   constructor(
     @Inject(EffectSourceImportRepository) private readonly repository: EffectSourceImportRepository,
     @Inject(ProjectService) private readonly projectService: ProjectService,
-    @Inject(WorkflowWorkingService) private readonly workingService: WorkflowWorkingService,
     @Inject(STORAGE_PORT) private readonly storage: StoragePort,
   ) {}
 
@@ -295,10 +305,10 @@ export class EffectSourceImportService {
     );
     return {
       kind: 'STRUCTURED',
-      name: assetSafeName(`${productName} 全局视频配置`),
+      name: assetSafeName(`${productName} 生效视频配置`),
       directory: 'SOURCE_MATERIALS',
       type: 'VIDEO_CONFIG',
-      tags: assetSafeTags(productName, '视频配置'),
+      tags: assetSafeTags(productName, '生效视频配置'),
       payload: effectiveConfig,
       metadata: { productId: product.id, productName },
       sourceArtifactId: product.id,
@@ -321,38 +331,36 @@ export class EffectSourceImportService {
       }));
   }
 
-  private async syncProductWorkingArtifacts(
-    projectId: string,
-    draft: Pick<EffectDraftRecord, 'globalConfig'>,
-    product: EffectProductRecord,
-    options: { ensurePackage?: boolean } = {},
-  ): Promise<void> {
-    const workspace = await this.repository.workspace(projectId);
-    if (!workspace || !normalizeProductName(product.name)) return;
-    const files = this.productFileLinks(product);
-    const operations: Promise<unknown>[] = [
-      this.workingService.upsertArtifact(
-        projectId,
-        workspace.workflowRunId,
-        'SOURCE_IMPORT',
-        `global-video-config:${product.id}`,
-        this.videoConfigInput(product, parseJson<EffectVideoConfig>(draft.globalConfig)),
-      ),
-    ];
-    if (files.length || options.ensurePackage)
-      operations.push(
-        this.workingService.upsertArtifact(
-          projectId,
-          workspace.workflowRunId,
-          'SOURCE_IMPORT',
-          `source-package:${product.id}`,
-          this.sourcePackageInput(product, files),
-        ),
-      );
-    await Promise.all(operations);
+  private workingFileProjection(
+    workspace: EffectWorkspaceRecord,
+    material: {
+      id: string;
+      fileObjectId: string;
+      type: EffectImportMaterialType;
+      originalFileName: string;
+      mimeType: string;
+      sizeBytes: number;
+      storageKey: string;
+      sha256: string;
+    },
+  ): WorkingFileProjection {
+    const originalFileName = safeFileName(material.originalFileName);
+    return {
+      workflowRunId: workspace.workflowRunId,
+      nodeId: 'SOURCE_IMPORT',
+      fileObject: {
+        id: material.fileObjectId,
+        nodeId: 'SOURCE_IMPORT',
+        originalFileName,
+        mimeType: material.mimeType,
+        sizeBytes: material.sizeBytes,
+        storageKey: material.storageKey,
+        sha256: material.sha256,
+      },
+    };
   }
 
-  private async syncManifestProducts(projectId: string, productIds: string[]): Promise<void> {
+  private async attachManifestFileObjects(projectId: string, productIds: string[]): Promise<void> {
     const workspace = await this.repository.workspace(projectId);
     const draft = await this.repository.draft(projectId, 'BATCH');
     if (!workspace || !draft) throw notFound();
@@ -381,73 +389,7 @@ export class EffectSourceImportService {
           sha256,
         });
       }
-      const refreshedProduct = await this.repository.product(projectId, draft.id, productId);
-      if (refreshedProduct)
-        await this.syncProductWorkingArtifacts(projectId, draft, refreshedProduct, {
-          ensurePackage: true,
-        });
     }
-  }
-
-  private workingPackageProjection(
-    workspace: EffectWorkspaceRecord,
-    product: EffectProductRecord,
-    material: {
-      id: string;
-      fileObjectId: string;
-      type: EffectImportMaterialType;
-      originalFileName: string;
-      mimeType: string;
-      sizeBytes: number;
-      storageKey: string;
-      sha256: string;
-    },
-    replacedMaterialId?: string,
-  ): WorkingMaterialProjection {
-    const productName = normalizeProductName(product.name);
-    if (!productName) throw badRequest('请先填写产品名称，再上传产品资料');
-    const originalFileName = safeFileName(material.originalFileName);
-    const existingFiles = product.materials
-      .filter(
-        (item) =>
-          item.id !== replacedMaterialId && item.status === 'READY' && Boolean(item.fileObject),
-      )
-      .map((item) => ({
-        fileObjectId: item.fileObject!.id,
-        role: item.type,
-        sortOrder: item.createdAt.getTime(),
-        originalFileName: safeFileName(item.fileObject!.originalFileName),
-        mimeType: item.fileObject!.mimeType,
-        sha256: item.fileObject!.sha256,
-      }));
-    const files = [
-      ...existingFiles,
-      {
-        fileObjectId: material.fileObjectId,
-        role: material.type,
-        sortOrder: Date.now(),
-        originalFileName,
-        mimeType: material.mimeType,
-        sha256: material.sha256,
-      },
-    ].map((file, index) => ({ ...file, sortOrder: index }));
-    return {
-      workflowRunId: workspace.workflowRunId,
-      nodeId: 'SOURCE_IMPORT',
-      artifactKey: `source-package:${product.id}`,
-      fileObject: {
-        id: material.fileObjectId,
-        nodeId: 'SOURCE_IMPORT',
-        originalFileName,
-        mimeType: material.mimeType,
-        sizeBytes: material.sizeBytes,
-        storageKey: material.storageKey,
-        sha256: material.sha256,
-      },
-      input: {
-        ...this.sourcePackageInput(product, files),
-      },
-    };
   }
 
   private uploadSessionValue(record: EffectUploadSessionRecord): EffectImportUploadSession {
@@ -473,66 +415,6 @@ export class EffectSourceImportService {
       expiresAt: record.expiresAt.toISOString(),
       completedAt: record.completedAt?.toISOString() ?? null,
     };
-  }
-
-  private uploadSessionProjection(
-    product: EffectProductRecord,
-    session: EffectUploadSessionRecord,
-  ): WorkingMaterialProjection {
-    const uploaded = session.items.filter(
-      (item) => item.status === 'UPLOADED' && item.fileObjectId && item.storageKey && item.sha256,
-    );
-    const existingFiles = this.productFileLinks(product);
-    const addedFiles = uploaded.map((item, index) => ({
-      fileObjectId: item.fileObjectId!,
-      role: item.type,
-      sortOrder: existingFiles.length + index,
-      originalFileName: safeFileName(item.originalFileName),
-      mimeType: item.mimeType,
-      sha256: item.sha256!,
-    }));
-    const files = [...existingFiles, ...addedFiles].map((item, index) => ({
-      ...item,
-      sortOrder: index,
-    }));
-    return {
-      workflowRunId: session.workflowRunId,
-      nodeId: 'SOURCE_IMPORT',
-      artifactKey: `source-package:${product.id}`,
-      fileObjects: uploaded.map((item) => ({
-        id: item.fileObjectId!,
-        nodeId: 'SOURCE_IMPORT',
-        originalFileName: safeFileName(item.originalFileName),
-        mimeType: item.mimeType,
-        sizeBytes: item.sizeBytes,
-        storageKey: item.storageKey!,
-        sha256: item.sha256!,
-      })),
-      input: this.sourcePackageInput(product, files),
-    };
-  }
-
-  private async removeCurrentProduct(
-    projectId: string,
-    _draftId: string,
-    product: Pick<EffectImportProduct, 'id'>,
-  ): Promise<void> {
-    const workspace = await this.repository.workspace(projectId);
-    if (!workspace) return;
-    await Promise.all([
-      this.workingService.removeArtifact(
-        projectId,
-        workspace.workflowRunId,
-        'SOURCE_IMPORT',
-        `source-package:${product.id}`,
-      ),
-      this.workingService.removeArtifact(
-        projectId,
-        workspace.workflowRunId,
-        'SOURCE_IMPORT',
-        `global-video-config:${product.id}`,
-      ),
-    ]);
   }
 
   private assertMode(value: string): asserts value is EffectImportMode {
@@ -574,6 +456,9 @@ export class EffectSourceImportService {
       id: record.id,
       projectId: record.projectId,
       draftId: record.draftId,
+      status: record.status,
+      removedAt: record.removedAt?.toISOString() ?? null,
+      purgeAfter: record.purgeAfter?.toISOString() ?? null,
       name: record.name,
       category: record.category,
       sku: record.sku,
@@ -585,6 +470,9 @@ export class EffectSourceImportService {
       sourceManifestImportId: record.sourceManifestImportId,
       sourceManifestRowNumber: record.sourceManifestRowNumber,
       materials: record.materials.map((item) => this.material(item, mode)),
+      commitStatus: 'UNVALIDATED',
+      sourcePackageRevision: null,
+      effectiveVideoConfigRevision: null,
       createdAt: record.createdAt.toISOString(),
       updatedAt: record.updatedAt.toISOString(),
     };
@@ -625,6 +513,43 @@ export class EffectSourceImportService {
       products: record.products.map((item) => this.product(item, globalConfig, record.mode)),
       createdAt: record.createdAt.toISOString(),
     };
+  }
+
+  private async draftWithCommitState(record: EffectDraftRecord): Promise<EffectImportDraft> {
+    const value = this.draftValue(record);
+    const workspace = await this.repository.workspace(record.projectId);
+    if (!workspace) return value;
+    const artifacts = await this.repository.sourceWorkingArtifacts(
+      record.projectId,
+      workspace.workflowRunId,
+    );
+    const byKey = new Map(artifacts.map((artifact) => [artifact.artifactKey, artifact]));
+    const globalConfig = parseJson<EffectVideoConfig>(record.globalConfig);
+    for (const product of record.products) {
+      const presented = value.products.find((item) => item.id === product.id);
+      if (!presented || !normalizeProductName(product.name)) continue;
+      const candidates = this.artifactCandidates(product, globalConfig);
+      const source = byKey.get(`source-package:${product.id}`);
+      const config = byKey.get(`effective-video-config:${product.id}`);
+      presented.sourcePackageRevision = source?.revision ?? null;
+      presented.effectiveVideoConfigRevision = config?.revision ?? null;
+      if (!source || !config) presented.commitStatus = 'UNVALIDATED';
+      else if (
+        [source, config].some(
+          (artifact) => artifact.freshness !== 'CURRENT' || artifact.availability !== 'AVAILABLE',
+        )
+      )
+        presented.commitStatus = 'STALE';
+      else
+        presented.commitStatus = candidates.every(
+          (candidate) =>
+            byKey.get(candidate.artifactKey)?.contentHash ===
+            workingArtifactContentHash(candidate.input),
+        )
+          ? 'COMMITTED'
+          : 'DRAFT_CHANGED';
+    }
+    return value;
   }
 
   private workspaceValue(record: EffectWorkspaceRecord): GetEffectImportWorkspaceData['workspace'] {
@@ -682,7 +607,10 @@ export class EffectSourceImportService {
     if (!record) throw conflict();
     const draft = await this.repository.draft(projectId, modeValue);
     if (!draft) throw notFound();
-    return { workspace: this.workspaceValue(record), draft: this.draftValue(draft) };
+    return {
+      workspace: this.workspaceValue(record),
+      draft: await this.draftWithCommitState(draft),
+    };
   }
 
   async getDraft(projectId: string, modeValue: string): Promise<EffectImportDraft> {
@@ -690,7 +618,7 @@ export class EffectSourceImportService {
     await this.initialized(projectId);
     const record = await this.repository.draft(projectId, modeValue);
     if (!record) throw notFound();
-    return this.draftValue(record);
+    return this.draftWithCommitState(record);
   }
 
   async updateDraft(
@@ -709,14 +637,7 @@ export class EffectSourceImportService {
       config,
     );
     if (!record) throw conflict();
-    await Promise.all(
-      record.products.map((product) =>
-        this.syncProductWorkingArtifacts(projectId, record, product, {
-          ensurePackage: product.materials.some((material) => material.status === 'READY'),
-        }),
-      ),
-    );
-    return { draft: this.draftValue(record) };
+    return { draft: await this.draftWithCommitState(record) };
   }
 
   async listProducts(
@@ -734,12 +655,24 @@ export class EffectSourceImportService {
       skip: (page - 1) * pageSize,
       take: pageSize,
     });
+    const commitStates = new Map(draft.products.map((product) => [product.id, product]));
     return {
       projectId,
       draftId: draft.id,
       mode: modeValue,
       revision: draft.revision,
-      items: result.items.map((item) => this.product(item, draft.globalConfig, modeValue)),
+      items: result.items.map((item) => {
+        const product = this.product(item, draft.globalConfig, modeValue);
+        const commit = commitStates.get(item.id);
+        return commit
+          ? {
+              ...product,
+              commitStatus: commit.commitStatus,
+              sourcePackageRevision: commit.sourcePackageRevision,
+              effectiveVideoConfigRevision: commit.effectiveVideoConfigRevision,
+            }
+          : product;
+      }),
       pagination: {
         page,
         pageSize,
@@ -787,8 +720,6 @@ export class EffectSourceImportService {
       },
     );
     if (!product) throw conflict();
-    if (normalizeProductName(product.name))
-      await this.syncProductWorkingArtifacts(projectId, draft, product);
     return {
       product: this.product(product, draft.globalConfig, modeValue),
       revision: input.expectedRevision + 1,
@@ -829,9 +760,6 @@ export class EffectSourceImportService {
       data,
     );
     if (!product) throw conflict();
-    await this.syncProductWorkingArtifacts(projectId, draft, product, {
-      ensurePackage: product.materials.some((material) => material.status === 'READY'),
-    });
     return {
       product: this.product(product, draft.globalConfig, modeValue),
       revision: input.expectedRevision + 1,
@@ -846,7 +774,6 @@ export class EffectSourceImportService {
   ): Promise<BatchDeleteEffectImportProductsData> {
     this.assertMode(modeValue);
     const draft = await this.getDraft(projectId, modeValue);
-    const deleting = draft.products.filter((product) => productIds.includes(product.id));
     const result = await this.repository.deleteProducts(
       projectId,
       draft.id,
@@ -857,13 +784,16 @@ export class EffectSourceImportService {
       if (draft.revision !== expectedRevision) throw conflict();
       throw notFound();
     }
-    await Promise.all(
-      result.storageKeys.map((key) => this.deleteOrQueue(projectId, key, 'PRODUCT_DELETED')),
-    );
-    await Promise.all(
-      deleting.map((product) => this.removeCurrentProduct(projectId, draft.id, product)),
-    );
-    return { deletedProductIds: result.deletedIds, revision: result.revision };
+    return {
+      deletedProductIds: result.deletedIds,
+      removedProducts: result.removedProducts.map((product) => ({
+        id: product.id,
+        name: product.name,
+        removedAt: product.removedAt.toISOString(),
+        purgeAfter: product.purgeAfter.toISOString(),
+      })),
+      revision: result.revision,
+    };
   }
 
   async deleteProduct(
@@ -873,7 +803,71 @@ export class EffectSourceImportService {
     expectedRevision: number,
   ): Promise<EffectImportDeleteData> {
     const result = await this.deleteProducts(projectId, mode, [productId], expectedRevision);
-    return { deleted: true, revision: result.revision };
+    return {
+      deleted: true,
+      revision: result.revision,
+      removedProduct: result.removedProducts[0]!,
+    };
+  }
+
+  async listRemovedProducts(
+    projectId: string,
+    modeValue: string,
+  ): Promise<EffectImportRemovedProductListData> {
+    this.assertMode(modeValue);
+    const draft = await this.getDraft(projectId, modeValue);
+    const products = await this.repository.removedProducts(projectId, draft.id);
+    return {
+      projectId,
+      draftId: draft.id,
+      mode: modeValue,
+      items: products.map((product) => ({
+        id: product.id,
+        name: product.name,
+        removedAt: product.removedAt!.toISOString(),
+        purgeAfter: product.purgeAfter!.toISOString(),
+      })),
+    };
+  }
+
+  async restoreProducts(
+    projectId: string,
+    modeValue: string,
+    productIds: string[],
+    expectedRevision: number,
+  ): Promise<BatchRestoreEffectImportProductsData> {
+    this.assertMode(modeValue);
+    const draft = await this.getDraft(projectId, modeValue);
+    try {
+      const restored = await this.repository.restoreProducts(
+        projectId,
+        draft.id,
+        productIds,
+        expectedRevision,
+      );
+      if (!restored) {
+        if (draft.revision !== expectedRevision) throw conflict();
+        throw new ApiHttpException(
+          '已删除产品不存在或恢复期限已过',
+          HttpStatus.NOT_FOUND,
+          'ASSET_NOT_FOUND',
+        );
+      }
+      return {
+        products: restored.products.map((product) =>
+          this.product(product, parseJson<EffectVideoConfig>(draft.globalConfig), modeValue),
+        ),
+        revision: restored.revision,
+      };
+    } catch (error) {
+      if (error instanceof Error && error.message === 'SINGLE_ACTIVE_PRODUCT_CONFLICT')
+        throw new ApiHttpException(
+          '当前单品草稿已有产品，请先移除当前产品后再恢复',
+          HttpStatus.CONFLICT,
+          'CONFLICT',
+        );
+      throw error;
+    }
   }
 
   validateLink(commerceUrl: string): ValidateEffectImportLinkData {
@@ -1059,13 +1053,13 @@ export class EffectSourceImportService {
         const workspace = await this.repository.workspace(projectId);
         if (!workspace) throw notFound();
         const result = processingReady
-          ? await this.repository.createMaterialWithArtifact(
+          ? await this.repository.createMaterialWithFileObject(
               projectId,
               draft.id,
               productId,
               input.expectedRevision,
               materialData,
-              this.workingPackageProjection(workspace, product, {
+              this.workingFileProjection(workspace, {
                 id: materialId,
                 fileObjectId,
                 type: input.type,
@@ -1084,9 +1078,9 @@ export class EffectSourceImportService {
                 input.expectedRevision,
                 materialData,
               ),
-              previousArtifactStorageKey: null,
             };
-        const material = result?.material;
+        if (!result) throw conflict();
+        const material = 'material' in result ? result.material : result;
         if (!material) throw conflict();
         databaseCommitted = true;
         return {
@@ -1278,7 +1272,6 @@ export class EffectSourceImportService {
       projectId,
       sessionId,
       normalizedCompletionKey,
-      this.uploadSessionProjection(product, session),
     );
     if (!result) throw conflict();
     const draftIdentity = await this.repository.draftMode(projectId, session.draftId);
@@ -1365,39 +1358,26 @@ export class EffectSourceImportService {
           errorMessage: null,
           retryCount: { increment: 1 },
         };
-        const result = await this.repository.replaceMaterialWithArtifact(
+        const material = await this.repository.replaceMaterialWithFileObject(
           projectId,
           draft.id,
           productId,
           materialId,
           expectedRevision,
           materialData,
-          this.workingPackageProjection(
-            workspace,
-            product,
-            {
-              id: materialId,
-              fileObjectId,
-              type: current.type,
-              originalFileName: materialData.originalFileName,
-              mimeType: materialData.mimeType,
-              sizeBytes: materialData.sizeBytes,
-              storageKey: materialData.storageKey,
-              sha256,
-            },
-            materialId,
-          ),
+          this.workingFileProjection(workspace, {
+            id: materialId,
+            fileObjectId,
+            type: current.type,
+            originalFileName: materialData.originalFileName,
+            mimeType: materialData.mimeType,
+            sizeBytes: materialData.sizeBytes,
+            storageKey: materialData.storageKey,
+            sha256,
+          }),
         );
-        const material = result?.material;
         if (!material) throw conflict();
         databaseCommitted = true;
-        const replacedKeys = new Set(
-          [current.storageKey, result.previousArtifactStorageKey].filter((key): key is string =>
-            Boolean(key && key !== stored.key),
-          ),
-        );
-        for (const key of replacedKeys)
-          await this.deleteOrQueue(projectId, key, 'MATERIAL_REPLACED');
         return {
           material: this.material(material, modeValue),
           revision: expectedRevision + 1,
@@ -1432,11 +1412,6 @@ export class EffectSourceImportService {
       if (draft.revision !== expectedRevision) throw conflict();
       throw notFound();
     }
-    if (result.storageKey)
-      await this.deleteOrQueue(projectId, result.storageKey, 'MATERIAL_DELETED');
-    const product = await this.repository.product(projectId, draft.id, productId);
-    if (product)
-      await this.syncProductWorkingArtifacts(projectId, draft, product, { ensurePackage: true });
     return { deleted: true, revision: result.revision };
   }
 
@@ -1769,7 +1744,7 @@ export class EffectSourceImportService {
       const ids = draft.products
         .filter((item) => item.sourceManifestImportId === importId)
         .map((item) => item.id);
-      await this.syncManifestProducts(projectId, ids);
+      await this.attachManifestFileObjects(projectId, ids);
       return {
         manifestImportId: importId,
         status: 'COMMITTED',
@@ -1817,7 +1792,7 @@ export class EffectSourceImportService {
         const ids = replayDraft.products
           .filter((item) => item.sourceManifestImportId === importId)
           .map((item) => item.id);
-        await this.syncManifestProducts(projectId, ids);
+        await this.attachManifestFileObjects(projectId, ids);
         return {
           manifestImportId: importId,
           status: 'COMMITTED',
@@ -1833,7 +1808,7 @@ export class EffectSourceImportService {
         this.deleteOrQueue(projectId, key, 'MANIFEST_COMMIT_UNMATCHED'),
       ),
     );
-    await this.syncManifestProducts(projectId, result.productIds);
+    await this.attachManifestFileObjects(projectId, result.productIds);
     return {
       manifestImportId: importId,
       status: 'COMMITTED',
@@ -1895,6 +1870,18 @@ export class EffectSourceImportService {
       buffer: Buffer.from(await workbook.xlsx.writeBuffer()),
       fileName: 'effect-source-import-template.xlsx',
       contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    };
+  }
+
+  async productPackageTemplate(): Promise<{
+    buffer: Buffer;
+    fileName: string;
+    contentType: string;
+  }> {
+    return {
+      buffer: await readFile(PRODUCT_PACKAGE_TEMPLATE_PATH),
+      fileName: '效果类产品资料包模板.docx',
+      contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     };
   }
 
@@ -1971,23 +1958,125 @@ export class EffectSourceImportService {
     return issues;
   }
 
+  private artifactCandidates(
+    product: EffectProductRecord,
+    globalConfig: EffectVideoConfig,
+  ): Array<{ artifactKey: string; input: WorkingArtifactUpsertInput }> {
+    return [
+      {
+        artifactKey: `source-package:${product.id}`,
+        input: this.sourcePackageInput(product, this.productFileLinks(product)),
+      },
+      {
+        artifactKey: `effective-video-config:${product.id}`,
+        input: this.videoConfigInput(product, globalConfig),
+      },
+    ];
+  }
+
+  async validateProduct(
+    projectId: string,
+    modeValue: string,
+    productId: string,
+    expectedRevision: number,
+  ): Promise<ValidateEffectImportProductData> {
+    this.assertMode(modeValue);
+    await this.initialized(projectId);
+    const draftRecord = await this.repository.draft(projectId, modeValue);
+    const workspace = await this.repository.workspace(projectId);
+    if (!draftRecord || !workspace) throw notFound();
+    if (draftRecord.revision !== expectedRevision) throw conflict();
+    const product = draftRecord.products.find((item) => item.id === productId);
+    if (!product) throw notFound();
+    const draft = this.draftValue(draftRecord);
+    const issues = this.collectValidation(draft);
+    const productIssues = issues.filter(
+      (issue) => issue.productId === productId || issue.productId === null,
+    );
+    const validatedAt = new Date().toISOString();
+    if (productIssues.length > 0) {
+      const record = await this.repository.saveValidation(
+        projectId,
+        draft.id,
+        expectedRevision,
+        issues,
+      );
+      if (!record) throw conflict();
+      return {
+        draft: await this.draftWithCommitState(record),
+        productId,
+        subjectKey: productId,
+        valid: false,
+        issues: productIssues,
+        artifacts: [],
+        allProductsValidated: false,
+        validatedAt,
+      };
+    }
+    const globalConfig = parseJson<EffectVideoConfig>(draftRecord.globalConfig);
+    const committed = await this.repository.commitProductValidation(
+      projectId,
+      draftRecord.id,
+      draftRecord.mode,
+      workspace.workflowRunId,
+      expectedRevision,
+      this.artifactCandidates(product, globalConfig),
+      draftRecord.products.flatMap((item) => this.artifactCandidates(item, globalConfig)),
+      issues,
+    );
+    if (!committed) throw conflict();
+    return {
+      draft: await this.draftWithCommitState(committed.draft),
+      productId,
+      subjectKey: productId,
+      valid: true,
+      issues: [],
+      artifacts: committed.artifacts,
+      allProductsValidated: committed.allProductsValidated,
+      validatedAt,
+    };
+  }
+
   async validate(
     projectId: string,
     modeValue: string,
     expectedRevision: number,
   ): Promise<ValidateEffectImportDraftData> {
     this.assertMode(modeValue);
-    const draft = await this.getDraft(projectId, modeValue);
-    if (draft.revision !== expectedRevision) throw conflict();
+    await this.initialized(projectId);
+    const draftRecord = await this.repository.draft(projectId, modeValue);
+    const workspace = await this.repository.workspace(projectId);
+    if (!draftRecord || !workspace) throw notFound();
+    if (draftRecord.revision !== expectedRevision) throw conflict();
+    const draft = this.draftValue(draftRecord);
     const issues = this.collectValidation(draft);
-    const record = await this.repository.saveValidation(
-      projectId,
-      draft.id,
-      expectedRevision,
-      issues,
-    );
-    if (!record) throw conflict();
-    const value = this.draftValue(record);
+    let artifacts: ValidateEffectImportDraftData['artifacts'] = [];
+    let allProductsValidated = false;
+    let record: EffectDraftRecord | null;
+    if (issues.length === 0) {
+      const globalConfig = parseJson<EffectVideoConfig>(draftRecord.globalConfig);
+      const candidates = draftRecord.products.flatMap((product) =>
+        this.artifactCandidates(product, globalConfig),
+      );
+      const committed = await this.repository.commitProductValidation(
+        projectId,
+        draftRecord.id,
+        draftRecord.mode,
+        workspace.workflowRunId,
+        expectedRevision,
+        candidates,
+        candidates,
+        issues,
+      );
+      if (!committed) throw conflict();
+      record = committed.draft;
+      artifacts = committed.artifacts;
+      allProductsValidated = committed.allProductsValidated;
+    } else {
+      record = await this.repository.saveValidation(projectId, draft.id, expectedRevision, issues);
+      if (!record) throw conflict();
+    }
+    const value = await this.draftWithCommitState(record);
     const validatedAt = new Date().toISOString();
     return {
       draft: value,
@@ -2001,6 +2090,8 @@ export class EffectSourceImportService {
         issues,
         validatedAt,
       },
+      artifacts,
+      allProductsValidated,
     };
   }
 

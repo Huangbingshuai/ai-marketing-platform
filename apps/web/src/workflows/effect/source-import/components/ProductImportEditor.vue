@@ -14,7 +14,6 @@ import {
   Link2,
   Plus,
   RefreshCw,
-  Settings2,
   Trash2,
   Upload,
 } from '@lucide/vue';
@@ -43,7 +42,6 @@ const emit = defineEmits<{
   change: [product: EffectImportProduct, field: 'commerceUrl' | 'name', value: string];
   delete: [product: EffectImportProduct];
   deleteMaterial: [product: EffectImportProduct, material: EffectImportMaterial];
-  override: [product: EffectImportProduct];
   replace: [product: EffectImportProduct, material: EffectImportMaterial];
   retry: [product: EffectImportProduct, material: EffectImportMaterial];
   select: [product: EffectImportProduct, selected: boolean];
@@ -73,6 +71,15 @@ const completion = computed(() => {
   );
   return Number(hasName) * 50 + Number(hasReadyImage) * 50;
 });
+const commitStatusLabel = computed(
+  () =>
+    ({
+      UNVALIDATED: '尚未校验',
+      COMMITTED: '工作副本已提交',
+      DRAFT_CHANGED: '存在未校验修改',
+      STALE: '工作副本待更新',
+    })[props.product.commitStatus],
+);
 const changeField = (field: 'commerceUrl' | 'name', event: Event): void =>
   emit('change', props.product, field, (event.target as HTMLInputElement).value);
 const chooseFiles = (event: Event): void => {
@@ -142,15 +149,9 @@ const statusText = (material: EffectImportMaterial): string =>
       <em class="completion-badge" :class="{ complete: completion === 100 }"
         >完整度 {{ completion }}%</em
       >
-      <button
-        class="icon-button"
-        type="button"
-        :disabled="disabled"
-        title="单品配置覆盖"
-        @click="emit('override', product)"
-      >
-        <Settings2 :size="14" />
-      </button>
+      <small class="commit-status" :class="product.commitStatus.toLowerCase()">{{
+        commitStatusLabel
+      }}</small>
       <button
         class="icon-button danger"
         type="button"
@@ -350,10 +351,10 @@ const statusText = (material: EffectImportMaterial): string =>
         </button>
       </div>
     </section>
-    <footer v-if="!batch" class="override-footer">
-      <button type="button" :disabled="disabled" @click="emit('override', product)">
-        <Settings2 :size="13" />单品覆盖配置
-      </button>
+    <footer v-if="!batch" class="commit-footer">
+      <span class="commit-status" :class="product.commitStatus.toLowerCase()">{{
+        commitStatusLabel
+      }}</span>
     </footer>
   </article>
 </template>
@@ -372,6 +373,19 @@ const statusText = (material: EffectImportMaterial): string =>
   background: #f8fbff;
   border: 1px solid #f0e3dc;
   border-radius: 16px;
+}
+.commit-status {
+  color: #7b879c;
+  font-size: 12px;
+  font-style: normal;
+  white-space: nowrap;
+}
+.commit-status.committed {
+  color: #0b8f68;
+}
+.commit-status.draft_changed,
+.commit-status.stale {
+  color: #c46a20;
 }
 .product-editor.batch.selected {
   border-color: #ffb9aa;
@@ -696,8 +710,7 @@ const statusText = (material: EffectImportMaterial): string =>
 .material-file-row.failed em {
   color: #d84c4f;
 }
-.material-file-row button,
-.override-footer button {
+.material-file-row button {
   display: inline-flex;
   min-height: 26px;
   padding: 0 7px;
@@ -714,7 +727,7 @@ const statusText = (material: EffectImportMaterial): string =>
   color: #a6acb7;
   border-color: transparent;
 }
-.override-footer {
+.commit-footer {
   display: flex;
   justify-content: flex-end;
   margin-top: -8px;

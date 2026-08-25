@@ -41,6 +41,55 @@ const runRecord = {
 };
 
 describe('EffectExtractionService', () => {
+  it('loads node details through the project-scoped run lookup', async () => {
+    const repository = {
+      run: vi.fn().mockResolvedValue({
+        ...runRecord,
+        inputSnapshot: {
+          schemaVersion: 1,
+          projectId: 'project-a',
+          draftId: 'draft-a',
+          mode: 'SINGLE',
+          sourceRevision: 1,
+          product: {
+            id: 'product-a',
+            name: '测试产品',
+            category: '测试品类',
+            sku: '',
+            commerceUrl: null,
+            effectiveConfig: {
+              aspectRatio: '9:16',
+              durationSeconds: 15,
+              resolution: '1080P',
+              frameRate: 30,
+              subtitleStrategy: '跟随口播',
+              voiceoverStrategy: 'AI 女声',
+              bgmStrategy: '自动匹配',
+              styleTone: '清爽明亮',
+              deliveryChannel: '抖音',
+              disabledElements: [],
+            },
+          },
+          materials: [],
+        },
+      }),
+    } as unknown as EffectExtractionRepository;
+    const service = new EffectExtractionService(
+      repository,
+      projectService(),
+      {} as JobProgressStore,
+      storage,
+    );
+
+    const result = await service.nodeDetail('project-a', 'run-a', 'LOAD_AND_SNAPSHOT');
+
+    expect(repository.run).toHaveBeenCalledWith('project-a', 'run-a');
+    expect(result.detail).toMatchObject({
+      nodeId: 'LOAD_AND_SNAPSHOT',
+      status: 'SUCCEEDED',
+    });
+  });
+
   it('keeps run lookup project-scoped and falls back to database progress when Redis fails', async () => {
     const repository = {
       run: vi.fn().mockResolvedValue({ ...runRecord }),
@@ -186,6 +235,136 @@ describe('EffectExtractionService', () => {
     });
     expect(JSON.stringify(result)).not.toContain('must-not-leak');
     expect(JSON.stringify(result)).not.toContain('private/source.md');
+  });
+
+  it('shows a document timeout once and removes duplicate branch warnings', async () => {
+    const timeoutWarning = {
+      code: 'SOURCE_WARNING',
+      message: '文档 AI 抽取超时',
+      branch: 'DOCUMENT' as const,
+      sourceId: null,
+    };
+    const repository = {
+      run: vi.fn().mockResolvedValue({
+        ...runRecord,
+        branches: [
+          {
+            branch: 'DOCUMENT',
+            status: 'FAILED',
+            warnings: [timeoutWarning, timeoutWarning],
+            errorMessage: '文档 AI 抽取超时',
+          },
+        ],
+      }),
+    } as unknown as EffectExtractionRepository;
+    const service = new EffectExtractionService(
+      repository,
+      projectService(),
+      { get: vi.fn().mockResolvedValue(null) } as unknown as JobProgressStore,
+      storage,
+    );
+
+    const result = await service.run('project-a', 'run-a');
+    const document = result.run.nodes.find((node) => node.nodeId === 'DOCUMENT');
+
+    expect(document).toMatchObject({
+      status: 'FAILED',
+      errorMessage: '文档 AI 抽取超时',
+      warnings: [],
+    });
+    expect(JSON.stringify(document).match(/文档 AI 抽取超时/gu)).toHaveLength(1);
+  });
+
+  it('recognizes a legacy generic document error as timeout from its safe duration', async () => {
+    const repository = {
+      run: vi.fn().mockResolvedValue({
+        ...runRecord,
+        branches: [
+          {
+            branch: 'DOCUMENT',
+            status: 'FAILED',
+            warnings: [
+              {
+                code: 'SOURCE_WARNING',
+                message: 'Ark structured-output request failed',
+                branch: 'DOCUMENT',
+                sourceId: null,
+              },
+            ],
+            errorCode: 'DOCUMENT_FAILED',
+            errorMessage: 'Ark structured-output request failed',
+            startedAt: new Date('2026-08-24T09:06:39.000Z'),
+            completedAt: new Date('2026-08-24T09:12:41.000Z'),
+          },
+        ],
+      }),
+    } as unknown as EffectExtractionRepository;
+    const service = new EffectExtractionService(
+      repository,
+      projectService(),
+      { get: vi.fn().mockResolvedValue(null) } as unknown as JobProgressStore,
+      storage,
+    );
+
+    const result = await service.run('project-a', 'run-a');
+    const document = result.run.nodes.find((node) => node.nodeId === 'DOCUMENT');
+
+    expect(document).toMatchObject({
+      status: 'FAILED',
+      errorMessage: '文档 AI 抽取超时',
+    });
+    expect(document?.warnings).toEqual([]);
+    expect(JSON.stringify(document).match(/文档 AI 抽取超时/gu)).toHaveLength(1);
+    expect(JSON.stringify(document)).not.toContain('Ark structured-output request failed');
+  });
+
+  it('presents legacy form-completeness warnings as a successful global-config node', async () => {
+    const retiredWarning = {
+      code: 'SOURCE_WARNING',
+      message: '表单尚未填写品类，将由其他资料补充',
+      branch: 'FORM' as const,
+      sourceId: null,
+    };
+    const repository = {
+      run: vi.fn().mockResolvedValue({
+        ...runRecord,
+        status: 'COMPLETED',
+        progress: 100,
+        warnings: [retiredWarning],
+        branches: [
+          {
+            branch: 'FORM',
+            status: 'PARTIAL',
+            warnings: [retiredWarning],
+            errorMessage: null,
+          },
+          {
+            branch: 'FUSION',
+            status: 'SUCCEEDED',
+            warnings: [{ ...retiredWarning, branch: 'FUSION' }],
+            errorMessage: null,
+          },
+        ],
+      }),
+    } as unknown as EffectExtractionRepository;
+    const service = new EffectExtractionService(
+      repository,
+      projectService(),
+      { get: vi.fn().mockResolvedValue(null) } as unknown as JobProgressStore,
+      storage,
+    );
+
+    const result = await service.run('project-a', 'run-a');
+
+    expect(result.run.warnings).toEqual([]);
+    expect(result.run.nodes.find((node) => node.nodeId === 'FORM')).toMatchObject({
+      status: 'SUCCEEDED',
+      warnings: [],
+    });
+    expect(result.run.nodes.find((node) => node.nodeId === 'FUSION')).toMatchObject({
+      status: 'SUCCEEDED',
+      warnings: [],
+    });
   });
 
   it('uses newer Redis progress without allowing it to lower database progress', async () => {

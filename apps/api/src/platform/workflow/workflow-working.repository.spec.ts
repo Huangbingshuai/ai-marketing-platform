@@ -3,6 +3,9 @@ import type { PrismaService } from '../../database/prisma.service';
 import { workflowStateHash } from './workflow-state-hash';
 import { WorkflowWorkingRepository } from './workflow-working.repository';
 
+const defaultExecutionInputHash =
+  '0e9561cfb83d50990a103b3896fe249a11fe27fa28985448187f93ec12116d72';
+
 describe('WorkflowWorkingRepository', () => {
   it('loads an active workflow overview with project isolation and its node states', async () => {
     const findFirst = vi.fn().mockResolvedValue(null);
@@ -32,6 +35,8 @@ describe('WorkflowWorkingRepository', () => {
       nodeId: 'SOURCE_IMPORT',
       revision: 4,
       contentHash: 'same-hash',
+      executionInputHash: defaultExecutionInputHash,
+      executionInputSchemaVersion: 1,
     };
     const transaction = {
       workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: 'run-a' }) },
@@ -96,6 +101,8 @@ describe('WorkflowWorkingRepository', () => {
       id: 'state-a',
       revision: 1,
       contentHash: 'legacy-migration-hash',
+      executionInputHash: defaultExecutionInputHash,
+      executionInputSchemaVersion: 1,
       state,
     };
     const transaction = {
@@ -140,6 +147,7 @@ describe('WorkflowWorkingRepository', () => {
           id: 'state-a',
           revision: 2,
           contentHash: 'old-hash',
+          executionInputHash: 'old-execution-hash',
           state: { prompt: 'old' },
         }),
         update: vi.fn().mockResolvedValue({ id: 'state-a', revision: 3 }),
@@ -159,6 +167,8 @@ describe('WorkflowWorkingRepository', () => {
       { prompt: 'new' },
       2,
       1,
+      'new-execution-hash',
+      1,
     );
 
     expect(updateArtifacts).toHaveBeenNthCalledWith(1, {
@@ -169,6 +179,46 @@ describe('WorkflowWorkingRepository', () => {
       where: { projectId: 'project-a', workflowRunId: 'run-a', id: { in: ['artifact-b'] } },
       data: { freshness: 'STALE' },
     });
+  });
+
+  it('does not stale artifacts when only page recovery state changes', async () => {
+    const findDependencies = vi.fn();
+    const transaction = {
+      workflowRun: {
+        findFirst: vi.fn().mockResolvedValue({ id: 'run-a' }),
+        update: vi.fn().mockResolvedValue({ id: 'run-a' }),
+      },
+      workflowNodeState: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 'state-a',
+          revision: 2,
+          contentHash: 'old-page-state',
+          executionInputHash: 'same-execution-hash',
+          state: { page: 1, expanded: [] },
+        }),
+        update: vi.fn().mockResolvedValue({ id: 'state-a', revision: 3 }),
+      },
+      workingArtifact: { updateMany: vi.fn() },
+      workingArtifactDependency: { findMany: findDependencies },
+    };
+    const repository = new WorkflowWorkingRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await repository.saveNodeState(
+      'project-a',
+      'run-a',
+      'AI_INFO_EXTRACTION',
+      'new-page-state',
+      { page: 2, expanded: ['product-a'] },
+      2,
+      1,
+      'same-execution-hash',
+      1,
+    );
+
+    expect(findDependencies).not.toHaveBeenCalled();
+    expect(transaction.workingArtifact.updateMany).not.toHaveBeenCalled();
   });
 
   it('updates a matching working artifact in place and returns the replaced object key', async () => {

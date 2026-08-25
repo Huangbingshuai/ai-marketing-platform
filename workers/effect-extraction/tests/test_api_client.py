@@ -19,6 +19,13 @@ def claim_data() -> dict[str, object]:
             "draftId": "draft-1",
             "mode": "SINGLE",
             "sourceRevision": 2,
+            "globalVideoConfig": {
+                "aspectRatio": "1:1", "durationSeconds": 20, "resolution": "720P",
+                "frameRate": 25, "subtitleStrategy": "无字幕",
+                "voiceoverStrategy": "无口播", "bgmStrategy": "轻快",
+                "styleTone": "烟火食欲感", "deliveryChannel": "视频号",
+                "disabledElements": ["医疗功效"],
+            },
             "product": {
                 "id": "product-1", "name": "商品", "category": "食品", "sku": "sku-1",
                 "commerceUrl": None,
@@ -30,6 +37,19 @@ def claim_data() -> dict[str, object]:
                 },
             },
             "materials": [],
+            "dependencySnapshot": {
+                "sourcePackageRevision": 2,
+                "effectiveVideoConfigRevision": 3,
+                "executionInputHash": "input-hash",
+            },
+            "dependencies": [
+                {
+                    "sourceType": "EXECUTION_INPUT",
+                    "sourceKey": "effect-extraction:product-1",
+                    "sourceRevision": 2,
+                    "sourceHash": "input-hash",
+                }
+            ],
         },
     }
 
@@ -62,6 +82,11 @@ async def test_internal_api_claim_and_branch_match_backend_contract() -> None:
     try:
         claim = await api.claim("run-1", "project-1")
         assert claim.input is not None
+        assert claim.input.dependency_snapshot is not None
+        assert claim.input.dependency_snapshot.execution_input_hash == "input-hash"
+        assert claim.input.dependencies[0].source_type == "EXECUTION_INPUT"
+        assert claim.input.global_video_config is not None
+        assert claim.input.global_video_config.delivery_channel == "视频号"
         context = RuntimeContext(
             "run-1", "project-1", "draft-1", "product-1", "request-1", "attempt-1",
             claim.source_fingerprint or "",
@@ -92,3 +117,48 @@ async def test_internal_api_claim_and_branch_match_backend_contract() -> None:
     assert body["status"] == "SUCCEEDED"
     assert requests[2].url.path.endswith("/artifacts")
     assert requests[2].headers["x-attempt-token"] == "attempt-1"
+
+
+@pytest.mark.asyncio
+async def test_internal_api_persists_specific_document_timeout_code() -> None:
+    captured: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"success": True, "data": {"accepted": True}})
+
+    context = RuntimeContext(
+        "run-1", "project-1", "draft-1", "product-1", "request-1", "attempt-1",
+        "server-fingerprint",
+    )
+    api = HttpInternalApi(
+        "http://api.local/api/", "worker-secret", transport=httpx.MockTransport(handler)
+    )
+    try:
+        await api.put_branch(
+            context,
+            BranchOutput(
+                branch=BranchName.DOCUMENT,
+                status=BranchStatus.FAILED,
+                source_fingerprint=context.source_fingerprint,
+                warnings=["文档 AI 抽取超时"],
+                metadata={
+                    "failures": [
+                        {"type": "AI_TIMEOUT", "attempts": 3, "elapsedMs": 361_250}
+                    ]
+                },
+            ),
+        )
+    finally:
+        await api.aclose()
+
+    assert captured["errorCode"] == "DOCUMENT_AI_TIMEOUT"
+    assert captured["errorMessage"] == "文档 AI 抽取超时"
+    assert captured["warnings"] == [
+        {
+            "code": "SOURCE_WARNING",
+            "message": "文档 AI 抽取超时",
+            "branch": "DOCUMENT",
+            "sourceId": None,
+        }
+    ]

@@ -1,7 +1,10 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 
 import type { EffectExtractionResult, EffectExtractionWarning } from '@ai-marketing/contracts';
-import { EFFECT_EXTRACTION_BRANCHES } from '@ai-marketing/contracts';
+import {
+  EFFECT_EXTRACTION_BRANCHES,
+  EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS,
+} from '@ai-marketing/contracts';
 
 const RESULT_KEYS = [
   'productCategory',
@@ -36,10 +39,11 @@ export const canonicalHash = (value: unknown): string =>
     .digest('hex');
 
 export const extractionSourceFingerprint = (
-  snapshot: { sourceRevision: number } & Record<string, unknown>,
+  snapshot: { sourceRevision: number; dependencySnapshot?: unknown } & Record<string, unknown>,
 ): string =>
   canonicalHash(
-    Object.fromEntries(Object.entries(snapshot).filter(([key]) => key !== 'sourceRevision')),
+    snapshot.dependencySnapshot ??
+      Object.fromEntries(Object.entries(snapshot).filter(([key]) => key !== 'sourceRevision')),
   );
 
 export const isSupportedExtractionMaterial = (
@@ -81,7 +85,7 @@ export const isEffectExtractionResult = (value: unknown): value is EffectExtract
     validString(record.visualFeatures) &&
     validString(record.targetAudience) &&
     validString(record.marketingGoal) &&
-    validStringArray(record.coreSellingPoints, 20) &&
+    validStringArray(record.coreSellingPoints, EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS) &&
     validString(record.usageScenarios) &&
     validString(record.deliveryChannels) &&
     validString(record.brandTone) &&

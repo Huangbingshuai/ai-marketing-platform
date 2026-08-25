@@ -1,10 +1,10 @@
 # 产品资料包工作副本与 Revision 整改实施方案
 
-> 状态：已实施并完成本地验收
+> 状态：已完成“完成校验后提交工作副本”代码整改与自动化验收，待真实业务数据全链路验收
 >
 > 权威业务口径：`docs/项目、工作流草稿与资产管理通俗说明.md`
 >
-> 实施范围：效果类资料导入、全局视频配置、AI 信息提炼与当前项目工作区
+> 实施范围：效果类资料导入、产品有效视频配置、AI 信息提炼与当前项目工作区
 >
 > 最后更新：2026-08-24
 
@@ -16,14 +16,15 @@
 每个产品
 ├─ source-package:{productId}          一条产品资料包 WorkingArtifact
 │  └─ 多条 FileObject                  图片、Word、PDF、视频等文件
-├─ global-video-config:{productId}      一条有效视频配置 WorkingArtifact
+├─ effective-video-config:{productId}   一条产品有效视频配置 WorkingArtifact
 └─ marketing-insight:{productId}        一条 AI 信息提炼 WorkingArtifact
 ```
 
 目标是让节点草稿、可供下游使用的工作副本和正式资产各自承担明确职责：
 
 - 页面输入和恢复状态只进入 `WorkflowNodeState`。
-- 文件上传成功、配置有效保存或生成成功后，只更新对应 `WorkingArtifact` 最新工作副本。
+- 单文件上传成功后只创建 `FileObject`；上传会话自动 complete 只建立 Material/FileObject 关系，配置保存、生成成功和人工编辑也只更新领域草稿或结果表。
+- 只有当前产品点击“完成校验”且校验通过后，才批量提交该产品对应的 `WorkingArtifact` 最新工作副本。
 - 同一逻辑产物保留同一个 WorkingArtifact ID，只有有效内容变化才增加 revision。
 - 普通退出、刷新和切换项目不创建 `ProjectAsset`。
 - 当前项目工作区展示真实工作副本，不再伪装成正式资产或正式版本。
@@ -47,7 +48,7 @@
 | 文件模型                 | 每个文件一条独立 FileObject            | 文件信息主要分散在 EffectImportMaterial 和文件型 WorkingArtifact | 无法稳定复用文件引用、计算资料包哈希和延迟清理                 | 新增 FileObject 与 WorkingArtifactFile                           |
 | WorkingArtifact revision | 每个逻辑工作副本拥有独立 revision      | WorkingArtifact 缺少独立 revision；界面曾使用 NodeState revision | 同节点所有素材显示相同 revision，例如三张图片均显示 revision 8 | WorkingArtifact 增加独立 revision，资料包卡只显示资料包 revision |
 | 内容哈希                 | 规范化业务内容 SHA-256，无变化不写入   | WorkingArtifact upsert 缺少完整的 hash no-op 语义                | 重试、重复上传或无效编辑可能产生伪变化                         | 增加 contentHash，并在事务内比较                                 |
-| 视频配置                 | 每个产品一条有效配置工作副本           | 配置主要保存在导入草稿或 NodeState                               | 配置变化与资料文件变化无法独立追踪                             | 维护 `global-video-config:{productId}`                           |
+| 视频配置                 | 每个产品一条有效配置工作副本           | 已使用易误解的 `global-video-config:{productId}`                 | 容易被误认为 WorkflowRun 唯一全局配置                          | 迁移为 `effective-video-config:{productId}`                      |
 | 下游依赖                 | 保存来源逻辑产物及生成时 revision      | 主要通过时间戳或领域表关系间接判断                               | 不能可靠判断提炼结果是否过期                                   | 新增依赖快照及 CURRENT/STALE                                     |
 | AI 提炼输入              | 读取资料包、配置和节点参数的固定快照   | 仍可能直接依赖导入草稿、产品和素材领域表                         | 任务期间上游变化后，迟到结果可能覆盖新状态                     | 任务固定依赖 revision，并以 CAS 写回                             |
 | 自动保存                 | 1 秒防抖、失焦和导航前刷新、无变化不写 | 部分路径已实现，仍存在取消旧请求或基线强制递增的风险             | 产生 409 冲突或无意义 NodeState revision                       | 同节点串行合并，前后端 hash no-op                                |
@@ -59,12 +60,12 @@
 
 ### 3.1 四层生命周期
 
-| 层级              | 保存内容                             | 产生时机                           | 当前项目可见              | 跨项目可选     | 本次是否创建 |
-| ----------------- | ------------------------------------ | ---------------------------------- | ------------------------- | -------------- | ------------ |
-| WorkflowNodeState | 表单、选择、页面恢复状态、未归档编辑 | 首次访问或编辑后自动保存           | 是，显示草稿摘要          | 否             | 是           |
-| WorkingArtifact   | 可供下游读取的最新业务结果           | 文件持久化、配置有效保存或生成成功 | 是，显示“工作中/尚未归档” | 否             | 是           |
-| ProjectAsset      | 完成工作流后归档的正式项目资产       | 未来明确执行“完成工作流并归档”     | 是，显示正式版本          | 可作为复制来源 | 否           |
-| GlobalAsset       | 用户明确发布的全局复用资产           | 未来从正式 ProjectAsset 发布       | 是                        | 是             | 否           |
+| 层级              | 保存内容                             | 产生时机                       | 当前项目可见              | 跨项目可选     | 本次是否创建 |
+| ----------------- | ------------------------------------ | ------------------------------ | ------------------------- | -------------- | ------------ |
+| WorkflowNodeState | 表单、选择、页面恢复状态、未归档编辑 | 首次访问或编辑后自动保存       | 是，显示草稿摘要          | 否             | 是           |
+| WorkingArtifact   | 可供下游读取的最新已校验业务结果     | 当前产品完成校验并提交成功     | 是，显示“工作中/尚未归档” | 否             | 是           |
+| ProjectAsset      | 完成工作流后归档的正式项目资产       | 未来明确执行“完成工作流并归档” | 是，显示正式版本          | 可作为复制来源 | 否           |
+| GlobalAsset       | 用户明确发布的全局复用资产           | 未来从正式 ProjectAsset 发布   | 是                        | 是             | 否           |
 
 ### 3.2 三种 revision
 
@@ -77,7 +78,8 @@
 三种 revision 可以在同一次用户操作中分别变化，也可以只变化其中一种。例如：
 
 - 只修改分页或展开状态：只可能增加 NodeState revision。
-- 删除一张产品图片并成功提交：Draft revision、NodeState revision 和资料包 revision 可以各自增加一次。
+- 删除一张产品图片但尚未校验：Draft revision、NodeState revision 可以变化，资料包 revision 保持不变。
+- 删除图片后完成校验：只有资料包 `contentHash` 真正变化时，资料包 revision 才增加一次。
 - 修改视频画幅并通过校验：配置工作副本 revision 增加，资料包 revision 不变。
 - 上游资料包变化：营销洞察只变为 STALE，洞察 revision 暂不增加。
 
@@ -151,7 +153,7 @@ projectId + workflowRunId + nodeId + artifactKey
 依赖快照至少保存：
 
 - 下游 WorkingArtifact ID。
-- `sourceType: NODE_STATE | WORKING_ARTIFACT`。
+- `sourceType: WORKING_ARTIFACT | EXECUTION_INPUT`；`NODE_STATE` 仅作历史兼容读取，新依赖禁止写入完整 NodeState revision。
 - 上游 nodeId 或 artifactKey。
 - 可空上游实体 ID。
 - 生成时使用的上游 revision。
@@ -168,7 +170,7 @@ projectId + workflowRunId + nodeId + artifactKey
 - 会话：`OPEN | READY_TO_COMPLETE | COMPLETED | FAILED | CANCELLED`
 - 项目：`PENDING | UPLOADING | READY | FAILED | REMOVED`
 
-同一个会话完成后，重复 complete 必须返回原结果，不得再次增加 Draft 或 WorkingArtifact revision。
+同一个会话完成后，重复 complete 必须返回原结果，不得再次增加 Draft revision。complete 不创建、不更新 WorkingArtifact，因此无论首次还是重放都不能改变 WorkingArtifact revision。
 
 ### 4.7 WorkflowRun
 
@@ -188,7 +190,7 @@ ACTIVE 和 PAUSED 都允许后台任务、自动保存和工作副本更新。�
 
 ```text
 source-package:{productId}
-global-video-config:{productId}
+effective-video-config:{productId}
 marketing-insight:{productId}
 ```
 
@@ -255,7 +257,7 @@ artifactKey 使用稳定业务 ID，不使用产品名称。用户改名后卡�
 - 人工修改提炼结果或重新生成出不同结果增加洞察 revision。
 - 已提交后再恢复为某个历史内容，仍属于一次新的有效变化；只和当前快照比较。
 
-删除产品的最后一个文件时不删除资料包，改为空资料包并标记 INCOMPLETE，资料包 revision 增加一次。删除整个产品时才删除该产品的资料包、配置和产品专属下游工作副本。
+删除产品的最后一个文件时不删除资料包，改为空资料包并标记 INCOMPLETE，资料包 revision 增加一次。删除整个产品时先标记 `REMOVED`，资料包与配置进入 `PENDING_DELETE`，下游结果保留为 `SOURCE_REMOVED/STALE`；24 小时内可恢复，宽限期后且无引用时才物理删除。
 
 ## 6. 批量上传协议
 
@@ -272,7 +274,7 @@ artifactKey 使用稳定业务 ID，不使用产品名称。用户改名后卡�
     ↓
 所有未移除项目均 READY
     ↓
-显式 complete(idempotencyKey)
+前端自动 complete(idempotencyKey)
     ↓
 一个事务中建立 Material、文件关系并更新各产品资料包
 ```
@@ -283,6 +285,7 @@ artifactKey 使用稳定业务 ID，不使用产品名称。用户改名后卡�
 - 页面刷新后可通过查询 UploadSession 恢复每项进度和错误。
 - FAILED 项必须重试或由用户明确移除，不能静默提交部分资料包。
 - complete 之前不更新最终资料包 revision。
+- complete 是上传批次提交，不是节点完成，也不是用户手动保存资产；页面不得增加“完成上传”按钮。
 - complete 的同一幂等键重试返回原回执。
 - 事务失败时资料包保持原状态，本次无引用新文件进入即时补偿清理。
 
@@ -296,7 +299,7 @@ artifactKey 使用稳定业务 ID，不使用产品名称。用户改名后卡�
 - 哈希没变化的产品返回 unchanged，不增加 revision。
 - 清单导入 commit 使用同样的按产品聚合逻辑，不能只创建 READY Material 而遗漏资料包。
 
-## 7. 全局视频配置扇出
+## 7. 产品有效视频配置扇出
 
 全局配置改变后，按产品计算有效配置：
 
@@ -323,11 +326,11 @@ effectiveConfig(product) = globalConfig + product.configOverride
 启动 AI 信息提炼时固定读取：
 
 - `source-package:{productId}` 当前 revision。
-- `global-video-config:{productId}` 当前 revision。
+- `effective-video-config:{productId}` 当前 revision。
 - 资料包关联 FileObject 快照。
-- 提炼节点 WorkflowNodeState 的相关 revision 和参数。
+- 提炼节点真正参与 AI 的业务参数哈希 `executionInputHash`。
 
-任务保存以上来源 revision，不在 Worker 完成时重新解释当前输入。
+`WorkflowNodeState.revision` 只用于页面草稿 expectedRevision，搜索、分页、展开、预览和结果编辑草稿变化都不能让洞察待更新。任务只保存资料包 revision、产品有效配置 revision 和 `executionInputHash`，不在 Worker 完成时重新解释整个 NodeState。
 
 ### 8.2 STALE 传播
 
@@ -536,7 +539,7 @@ FileObject 项返回：
    - 否则按 `createdAt + id` 选择最早旧记录保留 ID，并改为资料包 artifactKey。
    - 其他旧文件型工作副本记录审计映射后删除。
 7. 根据当前完整业务快照初始化每个资料包 revision 1；不得继承错误的 NodeState revision 8。
-8. 为每个产品创建 `global-video-config:{productId}` revision 1。
+8. 为每个产品创建或原位迁移 `effective-video-config:{productId}`；内容未变时保留 ID、revision 和 `updatedAt`。
 9. 将旧提炼逻辑键统一迁移为 `marketing-insight:{productId}`。
 10. 洞察 payload 以最新 EffectExtractionResult.draftResult 为准，保留人工编辑。
 11. 能验证 inputSnapshot 的结果重建依赖；无法验证的结果初始化为 STALE。
@@ -600,7 +603,7 @@ FileObject 项返回：
 - 修改全局配置只更新有效值真正变化的产品。
 - 无变化保存返回 unchanged。
 - 删除最后文件后保留 INCOMPLETE 空资料包。
-- 删除产品后移除其产品专属工作副本，文件进入延迟清理。
+- 删除产品后标记 `REMOVED`，上游副本进入 `PENDING_DELETE`，下游保留为 `SOURCE_REMOVED/STALE`；24 小时内恢复不删 MinIO。
 
 ### 16.2 依赖与并发任务
 
@@ -649,7 +652,7 @@ FileObject 项返回：
 
 - 所有 READY Material 均关联 FileObject。
 - FileObject 数量与有效唯一 storageKey 数量一致。
-- 每个有效产品最多一条 source-package 和一条 global-video-config。
+- 每个有效产品最多一条 source-package 和一条 effective-video-config。
 - 迁移后的资料包均从 revision 1 开始，不继承 NodeState revision。
 - 旧人工提炼内容完整保留。
 - 无法重建依赖的旧结果正确标记为 STALE。
@@ -664,11 +667,13 @@ FileObject 项返回：
 
 ### 17.1 代码与迁移
 
-- 实施提交：当前工作树实现完成，本次任务未要求创建 Git 提交。
+- 历史基线提交：`cc79dce`。该基线的测试数据仅表示上一轮实施结果，不作为本轮语义纠偏的最终验收结论。
 - Prisma 迁移名称：
   - `20260824130000_working_artifact_packages_revision`
   - `20260824143000_normalize_migrated_working_packages`
   - `20260824144500_backfill_legacy_product_names`
+  - `20260824160000_working_semantics_expand`
+  - `20260824161000_execution_input_dependency_backfill`
 - 特性开关：未新增运行时开关；通过“先兼容字段和回填、再启用聚合读写”的迁移顺序直接切换，旧 Material 文件字段继续双写保留回滚能力。
 - 实际变更模块：Prisma 模型与迁移、WorkflowWorking 公共服务、效果类资料导入、AI 信息提炼、当前项目工作区、共享契约、MinIO 文件读取与延迟清理。
 - 兼容期开始时间：`2026-08-24`。
@@ -682,7 +687,7 @@ FileObject 项返回：
 | READY Material 数          |        16 |       16 | 缺少 FileObject 的 READY 数为 0                    |
 | 新建/复用 FileObject 数    |        16 |       16 | 16/16 可读取并完成 SHA-256 回填                    |
 | source-package 数          |        16 |       16 | 每产品最多一条，迁移后均从 revision 1 开始         |
-| global-video-config 数     |        16 |       16 | 每产品一条，revision 独立                          |
+| effective-video-config 数  |        16 |       16 | 旧 key 原位迁移，没有遗留 global key               |
 | marketing-insight 数       |         0 |        0 | 当前库没有可迁移的已完成旧洞察                     |
 | 初始化为 STALE 的旧结果数  |         0 |        0 | 当前库没有无法验证的旧洞察                         |
 | 文件读取或哈希失败数       |         0 |        0 | 报告中 failures 为空                               |
@@ -704,34 +709,54 @@ FileObject 项返回：
 
 ### 17.4 测试与构建
 
-| 命令或测试集      | 结果 | 备注                                                      |
-| ----------------- | ---- | --------------------------------------------------------- |
-| Prisma 迁移验证   | 通过 | 本地 PostgreSQL 共识别 13 个迁移，3 个本次迁移均已 deploy |
-| API 单元/集成测试 | 通过 | 23 个测试文件、111 项测试全部通过                         |
-| Worker 测试       | 通过 | 13 项通过，3 项需要外部 Ark 环境的集成测试按条件跳过      |
-| Web 测试          | 通过 | 18 个测试文件、87 项测试全部通过                          |
-| 类型检查          | 通过 | Contracts、UI、API、Web 全部通过                          |
-| API 生产构建      | 通过 | NestJS build 成功                                         |
-| Web 生产构建      | 通过 | Vue typecheck 与 Vite production build 成功               |
-| `pnpm check`      | 通过 | lint、format、typecheck、test、build 全链路成功           |
+| 命令或测试集      | 结果 | 备注                                                         |
+| ----------------- | ---- | ------------------------------------------------------------ |
+| Prisma 迁移验证   | 通过 | 本地 PostgreSQL 共识别 15 个迁移，本轮 2 个纠偏迁移已 deploy |
+| API 单元/集成测试 | 通过 | 24 个测试文件、118 项测试全部通过                            |
+| Worker 测试       | 通过 | 14 项通过，3 项需要外部 Ark 环境的集成测试按条件跳过         |
+| Web 测试          | 通过 | 18 个测试文件、88 项测试全部通过                             |
+| 类型检查          | 通过 | Contracts、UI、API、Web 全部通过                             |
+| API 生产构建      | 通过 | NestJS build 成功                                            |
+| Web 生产构建      | 通过 | Vue typecheck 与 Vite production build 成功                  |
+| `pnpm check`      | 通过 | lint、format、typecheck、test、build 全链路成功              |
 
 ### 17.5 真实验收
 
 - 验收项目：夏季投放（`443dec1d-a3b5-4035-b070-ccdd75feab5e`）。
 - 三张素材聚合为一个资料包：通过；`source-package:a8c019ac-a7ca-4f69-b368-4e128991694c` 一张资料包卡、3 个 FileObject 明细、主缩略图可读。
 - 资料包 revision 独立且正确：通过；迁移后为 revision 1，不再显示 NodeState revision 8。
-- 视频配置 revision 独立且详情正确：通过；`global-video-config:a8c019ac-a7ca-4f69-b368-4e128991694c` 为 revision 1，并返回时长 50 秒、9:16、1080P、30 fps、烟火食欲感、抖音等有效字段。
+- 视频配置 revision 独立且详情正确：通过；`effective-video-config:a8c019ac-a7ca-4f69-b368-4e128991694c` 保留 revision 1，数据含义为全局草稿与产品 override 合并后的产品有效配置。
 - 上游变化触发 STALE：递归传播单元测试通过，更新只修改 freshness，不增加下游 revision；当前验收库没有已完成洞察可做破坏性实测。
 - 普通退出不创建 ProjectAsset：退出改为暂停 WorkflowRun；迁移与联调期间正式 Asset/AssetVersion 数量保持 14/15。
 - 项目隔离和跨项目 404：通过。
 - 批量上传协议：真实完成创建会话、上传、complete 和相同幂等键重放；首次完成 Draft 从 revision 9 增至 10，重放返回 `unchanged=true`，资料包保持同一 ID 与 revision 1。
 - 遗留问题：当前样本库没有 PDF、视频 FileObject 和历史完成态营销洞察，因此这三项仅完成接口/单元回归，未做真实文件或旧洞察迁移验收；最终归档、ProjectAsset 新版本与 GlobalAsset 发布仍明确不在本次范围。
 
+### 17.6 2026-08-24 语义纠偏执行结果
+
+- NodeState 与执行输入已解耦：`WorkflowNodeState.revision` 只用于草稿 CAS，新增后端计算的 `executionInputHash` 与 schema version。当前效果类提炼节点只使用版本化默认输入，全部 UI 状态和结果编辑草稿均被排除。
+- AI 任务快照已收敛为资料包 revision、产品有效配置 revision 和 `executionInputHash`。`sourceFingerprint` 不再包含 Draft/NodeState revision、时间戳和随机 storageKey。旧任务或旧依赖的迟到结果不能覆盖较新 WorkingArtifact。
+- 上传语义已固定：单文件上传只产生 FileObject，前端保留稳定 `completionKey` 并自动 complete；complete 只提交 Material/FileObject 草稿关系，不再更新资料包 WorkingArtifact。
+- 配置 key 迁移已完成：迁移前冲突数 0，16 条 `global-video-config` 原位更名为 `effective-video-config`；迁移后旧 key 0、新 key 16。
+- 软删除已接通：产品进入 `REMOVED`，上游副本进入 `PENDING_DELETE`，下游进入 `SOURCE_REMOVED/STALE`；提供最近删除、单项/批量恢复和 API 启动后周期清理。测试确认删除时不直接删 MinIO，存在 hold/业务引用时周期清理不执行对象删除。
+- 数据库同轮次防线已启用：迁移 dry-run 的跨 workflowRun 错误关联数为 0；7 类核心组合外键已建立。在事务中故意使用错误 workflowRunId 写入 WorkingArtifactFile 时，PostgreSQL 返回外键拒绝，事务已回滚。
+- 运行验收：API `/api/health` 返回 `ok`，MinIO live health 返回 200；项目工作副本接口返回 effective key 且旧 key 为 0。Word FileObject 返回 200、DOCX 正确 MIME、14,597 字节、`504B0304` 文件头和上传时相同 SHA-256；跨项目读取返回 404。
+- 为保护真实业务数据，本轮没有对已有用户产品执行不可见的“等待 24 小时后物理删除”破坏性实测；到期、hold 阻断和无引用删除语义由仓储/周期处理器测试验收。
+
+### 17.7 2026-08-24 完成校验后提交整改
+
+- WorkflowWorking 公共写入边界已收敛为批量校验提交；资料上传、重传、删除、清单 complete、配置编辑、AI 生成和人工编辑路径不再直接 upsert WorkingArtifact。
+- 资料导入新增产品级完成校验，同一事务提交 `source-package:{productId}` 和 `effective-video-config:{productId}`；多产品可逐项校验，全部 ACTIVE 产品候选 hash 与已提交基线一致后才允许下一步。
+- AI 生成只写 `EffectExtractionResult` 并刷新 NodeState 基线；人工编辑只保存结果表和 NodeState。显式校验会重新核对资料包 revision、有效视频配置 revision 和 executionInputHash，然后才提交 `marketing-insight:{productId}`。
+- 相同规范化 contentHash 的重复校验直接返回 `unchanged=true`，不写入记录、不增加 revision、不改变 updatedAt、不传播 STALE；只有 hash 变化才原位更新并递归标记下游。
+- 未校验的素材重传或删除不会立即破坏旧工作副本引用；校验提交切换文件关系后，仅将无 Material、WorkingArtifactFile 和 UploadSessionItem 引用的旧 FileObject 标记为 ORPHANED，由 24 小时延迟清理处理。
+- 本轮验收：`pnpm check` 全链路通过；Contracts 9 项、API 118 项、Web 89 项全部通过，API/Web 生产构建通过。Worker pytest 为 14 项通过、3 项外部环境集成测试按条件跳过，mypy 通过。`docker compose config --quiet` 通过，MinIO 容器 healthy 且 live health 返回 200。
+
 ## 18. 实施默认值
 
 - 更新后的 `docs/项目、工作流草稿与资产管理通俗说明.md` 是本次业务语义的唯一权威来源。
 - 产品资料包是聚合 WorkingArtifact，实际文件由 FileObject 独立管理。
-- 全局视频配置按产品维护独立工作副本。
+- 工作流全局配置仍保存在 Draft；WorkingArtifact 按产品维护合并后的最终生效配置。
 - 文件延迟清理宽限期默认为 24 小时，可通过非敏感环境变量调整。
 - 普通退出将工作轮次暂停或保留为活动状态，但绝不归档。
 - 现有正式资产和正式 MinIO 对象不在本次修改范围。

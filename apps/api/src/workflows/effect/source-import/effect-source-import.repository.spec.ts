@@ -16,7 +16,7 @@ describe('EffectSourceImportRepository project isolation', () => {
     await repository.product('project-a', 'draft-a', 'product-a');
 
     expect(findFirst).toHaveBeenCalledWith({
-      where: { projectId: 'project-a', draftId: 'draft-a', id: 'product-a' },
+      where: { projectId: 'project-a', draftId: 'draft-a', id: 'product-a', status: 'ACTIVE' },
       include: { materials: { include: { fileObject: true } } },
     });
   });
@@ -142,7 +142,10 @@ describe('EffectSourceImportRepository project isolation', () => {
     const create = vi.fn();
     const transaction = {
       effectManifestImport: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
-      effectImportDraft: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      effectImportDraft: {
+        findFirst: vi.fn().mockResolvedValue({ workspace: { workflowRunId: 'workflow-run-a' } }),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
       effectImportProduct: { create },
     };
     const repository = new EffectSourceImportRepository(
@@ -292,39 +295,39 @@ describe('EffectSourceImportRepository project isolation', () => {
     });
   });
 
-  it('commits a ready material and its working artifact in the same transaction', async () => {
+  it('commits a ready material and FileObject without a working artifact', async () => {
     const material = { id: 'material-a', storageKey: '01-working/new.png' };
     const transaction = {
-      effectImportProduct: { count: vi.fn().mockResolvedValue(1) },
+      effectImportProduct: {
+        findFirst: vi.fn().mockResolvedValue({ workflowRunId: 'run-a' }),
+      },
       effectImportDraft: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       effectImportMaterial: { create: vi.fn().mockResolvedValue(material) },
     };
-    const upsertArtifactInTransaction = vi.fn().mockResolvedValue({
-      record: { id: 'working-a' },
-      previousStorageKey: null,
-    });
+    const upsertFileObjectInTransaction = vi.fn().mockResolvedValue({ id: 'file-a' });
     const repository = new EffectSourceImportRepository(
       {
         $transaction: async (callback: (client: typeof transaction) => unknown) =>
           callback(transaction),
       } as unknown as PrismaService,
-      { upsertArtifactInTransaction } as never,
+      { upsertFileObjectInTransaction } as never,
     );
     const projection = {
       workflowRunId: 'run-a',
       nodeId: 'SOURCE_IMPORT',
-      artifactKey: 'material:material-a',
-      input: {
-        kind: 'FILE' as const,
-        name: '产品 A · image.png',
-        directory: 'SOURCE_MATERIALS' as const,
-        type: 'SOURCE_MATERIAL' as const,
+      fileObject: {
+        id: 'file-a',
+        nodeId: 'SOURCE_IMPORT',
+        originalFileName: 'image.png',
+        mimeType: 'image/png',
+        sizeBytes: 100,
         storageKey: '01-working/new.png',
+        sha256: 'a'.repeat(64),
       },
     };
 
     await expect(
-      repository.createMaterialWithArtifact(
+      repository.createMaterialWithFileObject(
         'project-a',
         'draft-a',
         'product-a',
@@ -332,14 +335,80 @@ describe('EffectSourceImportRepository project isolation', () => {
         { id: 'material-a', type: 'PRODUCT_IMAGE', status: 'READY' },
         projection,
       ),
-    ).resolves.toEqual({ material, previousArtifactStorageKey: null });
-    expect(upsertArtifactInTransaction).toHaveBeenCalledWith(
+    ).resolves.toEqual(material);
+    expect(upsertFileObjectInTransaction).toHaveBeenCalledWith(
       transaction,
       'project-a',
       'run-a',
-      'SOURCE_IMPORT',
-      'material:material-a',
-      projection.input,
+      projection.fileObject,
     );
+  });
+
+  it('completes a ten-file upload batch with one draft bump and no package commit', async () => {
+    const items = Array.from({ length: 10 }, (_, index) => ({
+      id: `item-${index}`,
+      projectId: 'project-a',
+      workflowRunId: 'run-a',
+      sessionId: 'session-a',
+      clientFileId: `client-${index}`,
+      type: 'PRODUCT_IMAGE' as const,
+      expectedFileName: null,
+      status: 'UPLOADED' as const,
+      originalFileName: `image-${index}.png`,
+      mimeType: 'image/png',
+      sizeBytes: 100 + index,
+      storageKey: `01-working/image-${index}.png`,
+      sha256: String(index).padStart(64, '0'),
+      fileObjectId: `file-${index}`,
+      errorCode: null,
+      errorMessage: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }));
+    const session = {
+      id: 'session-a',
+      projectId: 'project-a',
+      workflowRunId: 'run-a',
+      draftId: 'draft-a',
+      productId: 'product-a',
+      expectedRevision: 7,
+      status: 'UPLOADING' as const,
+      completionKey: null,
+      expiresAt: new Date(Date.now() + 60_000),
+      completedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      items,
+    };
+    const createMaterial = vi.fn().mockImplementation(({ data }) => ({ id: data.fileObjectId }));
+    const updateDraft = vi.fn().mockResolvedValue({ count: 1 });
+    const transaction = {
+      effectImportUploadSession: {
+        findFirst: vi.fn().mockResolvedValue(session),
+        update: vi.fn().mockResolvedValue({
+          ...session,
+          status: 'COMPLETED',
+          completionKey: 'complete-a',
+          completedAt: new Date(),
+        }),
+      },
+      effectImportDraft: { updateMany: updateDraft },
+      effectImportMaterial: { create: createMaterial },
+    };
+    const upsertFileObjectInTransaction = vi.fn().mockResolvedValue({});
+    const upsertArtifactInTransaction = vi.fn().mockResolvedValue({ record: { id: 'package-a' } });
+    const repository = new EffectSourceImportRepository(
+      {
+        $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+      } as unknown as PrismaService,
+      { upsertFileObjectInTransaction, upsertArtifactInTransaction } as never,
+    );
+    await expect(
+      repository.completeUploadSession('project-a', 'session-a', 'complete-a'),
+    ).resolves.toMatchObject({ revision: 8, unchanged: false });
+    expect(updateDraft).toHaveBeenCalledTimes(1);
+    expect(createMaterial).toHaveBeenCalledTimes(10);
+    expect(upsertFileObjectInTransaction).not.toHaveBeenCalled();
+    expect(upsertArtifactInTransaction).not.toHaveBeenCalled();
   });
 });

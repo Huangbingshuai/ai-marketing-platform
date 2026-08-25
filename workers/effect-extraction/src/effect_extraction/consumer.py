@@ -99,14 +99,15 @@ class ExtractionConsumer:
                 request.run_id if request else "unknown",
                 type(exc).__name__,
             )
-            if _retryable(exc) and not message.redelivered:
-                await message.nack(requeue=True)
-                return
+            retryable = _retryable(exc)
             if context is not None:
                 try:
                     await self._pipeline.mark_failed(context, exc)
                 except Exception:
                     logger.exception("failed to persist terminal extraction failure")
+            if retryable and not message.redelivered:
+                await message.nack(requeue=True)
+                return
             await message.reject(requeue=False)
             return
         await message.ack()
@@ -124,4 +125,4 @@ class ExtractionConsumer:
 def _retryable(exc: Exception) -> bool:
     if isinstance(exc, (InternalApiError, ProviderError)):
         return exc.retryable
-    return not isinstance(exc, (PipelineError, ValueError))
+    return False

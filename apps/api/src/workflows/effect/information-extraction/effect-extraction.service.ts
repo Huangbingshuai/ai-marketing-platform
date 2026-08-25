@@ -3,15 +3,18 @@ import { rm } from 'node:fs/promises';
 
 import type {
   EffectExtractionNodeExecution,
+  EffectExtractionNodeId,
   EffectExtractionProductState,
   EffectExtractionResult,
   EffectExtractionRun,
   EffectVideoConfig,
   EffectVideoConfigOverride,
   GetEffectExtractionRunData,
+  GetEffectExtractionNodeDetailData,
   GetEffectExtractionWorkspaceData,
   StartEffectExtractionRunData,
   UpdateEffectExtractionResultData,
+  ValidateEffectExtractionResultData,
 } from '@ai-marketing/contracts';
 import {
   EFFECT_EXTRACTION_GRAPH_NODES,
@@ -23,10 +26,12 @@ import { HttpStatus, Inject, Injectable, Optional } from '@nestjs/common';
 import { ApiHttpException } from '../../../common/api-http-exception';
 import { ProjectService } from '../../../platform/project/project.service';
 import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
+import { workingArtifactContentHash } from '../../../platform/workflow/workflow-working.repository';
 import { JOB_PROGRESS_STORE } from '../../../platform/job/job.constants';
 import type { JobProgressStore } from '../../../platform/job/job.ports';
 import { STORAGE_PORT, type StoragePort } from '../../../platform/file/storage.port';
 import { EffectExtractionRepository } from './effect-extraction.repository';
+import { presentExtractionNodeDetail } from './effect-extraction-node-detail';
 import type { CompleteRunInput, EffectExtractionInputSnapshot } from './effect-extraction.types';
 import {
   extractionSourceFingerprint,
@@ -63,13 +68,62 @@ type RunBranchRecord = {
   branch: 'DOCUMENT' | 'IMAGE' | 'COMMERCE' | 'FORM' | 'FUSION' | 'NORMALIZATION';
   status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'PARTIAL' | 'SKIPPED' | 'FAILED';
   warnings: unknown;
+  errorCode?: string | null;
   errorMessage: string | null;
+  startedAt?: Date | null;
+  completedAt?: Date | null;
+};
+
+const isRetiredFormCompletenessWarning = (warning: { message: string }): boolean =>
+  /^表单尚未填写.+，将由其他资料补充$/u.test(warning.message);
+
+const comparableMessage = (value: string | null | undefined): string =>
+  (value ?? '').replace(/\s+/gu, ' ').trim();
+
+const publicWarnings = (
+  value: unknown,
+  excludedMessages: Array<string | null | undefined> = [],
+) => {
+  const excluded = new Set(excludedMessages.map(comparableMessage).filter(Boolean));
+  const seen = new Set<string>();
+  return parseWarnings(value).filter((warning) => {
+    if (isRetiredFormCompletenessWarning(warning)) return false;
+    const message = comparableMessage(warning.message);
+    if (!message || excluded.has(message) || seen.has(message)) return false;
+    seen.add(message);
+    return true;
+  });
+};
+
+const publicBranchErrorMessage = (
+  nodeId: EffectExtractionNodeId,
+  branch: RunBranchRecord,
+  fallback: string | null,
+  runCreatedAt?: Date,
+): string | null => {
+  const message = branch.errorMessage ?? fallback;
+  if (nodeId !== 'DOCUMENT' || !message) return message;
+  if (branch.errorCode === 'DOCUMENT_AI_TIMEOUT') return '文档 AI 抽取超时';
+  const branchElapsedMs =
+    branch.startedAt && branch.completedAt
+      ? branch.completedAt.getTime() - branch.startedAt.getTime()
+      : 0;
+  const elapsedMs =
+    branchElapsedMs > 0
+      ? branchElapsedMs
+      : branch.completedAt && runCreatedAt
+        ? branch.completedAt.getTime() - runCreatedAt.getTime()
+        : 0;
+  return message === 'Ark structured-output request failed' && elapsedMs >= 100_000
+    ? '文档 AI 抽取超时'
+    : message;
 };
 
 const presentNodes = (record: {
   status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED';
   currentNode: string | null;
   errorMessage: string | null;
+  createdAt?: Date;
   branches?: RunBranchRecord[];
 }): EffectExtractionNodeExecution[] => {
   const branches = new Map((record.branches ?? []).map((branch) => [branch.branch, branch]));
@@ -95,13 +149,20 @@ const presentNodes = (record: {
     const branch = branches.get(id);
     if (!branch) return { nodeId: id, status: 'PENDING', warnings: [], errorMessage: null };
     const failedWithRun = record.status === 'FAILED' && branch.status === 'RUNNING';
+    const errorMessage = publicBranchErrorMessage(
+      id,
+      branch,
+      failedWithRun ? record.errorMessage : null,
+      record.createdAt,
+    );
+    const warnings = publicWarnings(branch.warnings, [errorMessage, branch.errorMessage]);
+    const retiredPartial =
+      id === 'FORM' && branch.status === 'PARTIAL' && warnings.length === 0 && !branch.errorMessage;
     return {
       nodeId: id,
-      status: failedWithRun ? 'FAILED' : branch.status,
-      warnings: parseWarnings(branch.warnings),
-      errorMessage: failedWithRun
-        ? (branch.errorMessage ?? record.errorMessage)
-        : branch.errorMessage,
+      status: failedWithRun ? 'FAILED' : retiredPartial ? 'SUCCEEDED' : branch.status,
+      warnings,
+      errorMessage,
     };
   });
 };
@@ -130,7 +191,7 @@ const presentRun = (
   status: record.status,
   progress: record.progress,
   currentNode: record.currentNode,
-  warnings: parseWarnings(record.warnings),
+  warnings: publicWarnings(record.warnings),
   errorMessage: record.errorMessage,
   extractResultId,
   nodes: presentNodes(record),
@@ -150,49 +211,55 @@ export class EffectExtractionService {
     private readonly workingService?: WorkflowWorkingService,
   ) {}
 
-  private async syncWorkingResult(record: {
+  private async workingResultInput(record: {
     id: string;
     projectId: string;
     draftId: string;
     productId: string;
     runId: string;
+    draftResult: unknown;
+  }) {
+    const activeProduct = await this.repository.product(record.projectId, record.productId);
+    const workflow = await this.repository.workflowRunForDraft(record.projectId, record.draftId);
+    const sourceRun = await this.repository.run(record.projectId, record.runId);
+    const snapshot = sourceRun?.inputSnapshot as EffectExtractionInputSnapshot | undefined;
+    const snapshotProduct = snapshot?.product;
+    if (!activeProduct || !workflow || !snapshot || !snapshotProduct?.name.trim()) return null;
+    const productName = snapshotProduct.name.trim();
+    return {
+      workflowRunId: workflow.workspace.workflowRunId,
+      artifactKey: `marketing-insight:${record.productId}`,
+      input: {
+        kind: 'STRUCTURED' as const,
+        name: `${productName} AI 信息提炼`.slice(0, 120),
+        directory: 'INSIGHTS' as const,
+        type: 'INSIGHT_RESULT' as const,
+        tags: [productName, snapshotProduct.category, snapshotProduct.sku]
+          .filter(Boolean)
+          .slice(0, 20),
+        sourceArtifactId: record.id,
+        sourceRunId: record.runId,
+        metadata: {
+          productId: record.productId,
+          productName,
+          contentKind: 'EFFECT_EXTRACTION_RESULT',
+        },
+        payload: record.draftResult,
+        dependencies: snapshot.dependencies ?? [],
+      },
+    };
+  }
+
+  private async syncNodeStateBaseline(record: {
+    id: string;
+    projectId: string;
+    draftId: string;
+    productId: string;
     revision: number;
     draftResult: unknown;
   }): Promise<void> {
-    const product = await this.repository.product(record.projectId, record.productId);
     const workflow = await this.repository.workflowRunForDraft(record.projectId, record.draftId);
-    if (!product?.name.trim() || !workflow || !this.workingService) return;
-    const productName = product.name.trim();
-    const sourceRun = await this.repository.run(record.projectId, record.runId);
-    const snapshot = sourceRun?.inputSnapshot as EffectExtractionInputSnapshot | undefined;
-    try {
-      await this.workingService.upsertArtifact(
-        record.projectId,
-        workflow.workspace.workflowRunId,
-        'INFORMATION_EXTRACTION',
-        `marketing-insight:${record.productId}`,
-        {
-          kind: 'STRUCTURED',
-          name: `${productName} AI 信息提炼`.slice(0, 120),
-          directory: 'INSIGHTS',
-          type: 'INSIGHT_RESULT',
-          tags: [productName, product.category, product.sku].filter(Boolean).slice(0, 20),
-          sourceArtifactId: record.id,
-          sourceRunId: record.runId,
-          metadata: { productId: product.id, productName, contentKind: 'EFFECT_EXTRACTION_RESULT' },
-          payload: record.draftResult,
-          dependencies: snapshot?.dependencies ?? [],
-        },
-      );
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        (error.message === 'WORKING_ARTIFACT_DEPENDENCY_CONFLICT' ||
-          error.message === 'WORKFLOW_NODE_STATE_DEPENDENCY_CONFLICT')
-      )
-        return;
-      throw error;
-    }
+    if (!workflow || !this.workingService) return;
     const existingState = await this.workingService.getNodeStateOrNull(
       record.projectId,
       workflow.workspace.workflowRunId,
@@ -220,19 +287,25 @@ export class EffectExtractionService {
     );
   }
 
-  private currentFingerprint(
+  private async currentFingerprint(
     draft: Awaited<ReturnType<EffectExtractionRepository['workspace']>>,
     productId: string,
-  ): string {
+  ): Promise<string> {
     if (!draft) return '';
     const product = draft.products.find((item) => item.id === productId);
     if (!product) return '';
+    const dependencySnapshot = await this.repository.currentDependencySnapshot(
+      draft.projectId,
+      productId,
+    );
+    if (!dependencySnapshot) return '';
     const snapshot: EffectExtractionInputSnapshot = {
       schemaVersion: EFFECT_EXTRACTION_SCHEMA_VERSION,
       projectId: draft.projectId,
       draftId: draft.id,
       mode: draft.mode,
       sourceRevision: draft.revision,
+      globalVideoConfig: draft.globalConfig as EffectVideoConfig,
       product: {
         id: product.id,
         name: product.name,
@@ -263,6 +336,7 @@ export class EffectExtractionService {
           storageKey: material.storageKey!,
           updatedAt: material.updatedAt.toISOString(),
         })),
+      dependencySnapshot,
     };
     return extractionSourceFingerprint(snapshot);
   }
@@ -271,35 +345,48 @@ export class EffectExtractionService {
     await this.projects.get(projectId);
     const draft = await this.repository.workspace(projectId, draftId);
     if (!draft) throw notFound('效果类资料草稿不存在');
-    const products: EffectExtractionProductState[] = draft.products.map((product) => {
-      const run = product.extractionRuns[0] ?? null;
-      const result = run?.result ?? null;
-      const fingerprint = this.currentFingerprint(draft, product.id);
-      const stale = Boolean(result && result.sourceFingerprint !== fingerprint);
-      const status = !run
-        ? 'NOT_GENERATED'
-        : stale
-          ? 'STALE'
-          : run.status === 'RUNNING'
-            ? 'PROCESSING'
-            : run.status;
-      return {
-        projectId,
-        draftId,
-        productId: product.id,
-        status,
-        runId: run?.id ?? null,
-        resultId: result?.id ?? null,
-        resultRevision: result?.revision ?? null,
-        result: (result?.draftResult as EffectExtractionResult | undefined) ?? null,
-        progress: run?.progress ?? 0,
-        currentNode: run?.currentNode ?? null,
-        warnings: parseWarnings(run?.warnings),
-        errorMessage: run?.errorMessage ?? null,
-        sourceFingerprint: fingerprint,
-        updatedAt: (run?.updatedAt ?? product.updatedAt).toISOString(),
-      };
-    });
+    const products: EffectExtractionProductState[] = await Promise.all(
+      draft.products.map(async (product) => {
+        const run = product.extractionRuns[0] ?? null;
+        const result = run?.result ?? null;
+        const fingerprint = await this.currentFingerprint(draft, product.id);
+        const stale = Boolean(result && result.sourceFingerprint !== fingerprint);
+        const candidate = result ? await this.workingResultInput(result) : null;
+        const artifact = await this.repository.insightArtifact(projectId, draftId, product.id);
+        const commitStatus = !artifact
+          ? 'UNVALIDATED'
+          : stale || artifact.freshness !== 'CURRENT' || artifact.availability !== 'AVAILABLE'
+            ? 'STALE'
+            : candidate && artifact.contentHash === workingArtifactContentHash(candidate.input)
+              ? 'COMMITTED'
+              : 'DRAFT_CHANGED';
+        const status = !run
+          ? 'NOT_GENERATED'
+          : stale
+            ? 'STALE'
+            : run.status === 'RUNNING'
+              ? 'PROCESSING'
+              : run.status;
+        return {
+          projectId,
+          draftId,
+          productId: product.id,
+          status,
+          runId: run?.id ?? null,
+          resultId: result?.id ?? null,
+          resultRevision: result?.revision ?? null,
+          result: (result?.draftResult as EffectExtractionResult | undefined) ?? null,
+          progress: run?.progress ?? 0,
+          currentNode: run?.currentNode ?? null,
+          warnings: publicWarnings(run?.warnings),
+          errorMessage: run?.errorMessage ?? null,
+          sourceFingerprint: fingerprint,
+          commitStatus,
+          workingArtifactRevision: artifact?.revision ?? null,
+          updatedAt: (run?.updatedAt ?? product.updatedAt).toISOString(),
+        };
+      }),
+    );
     return {
       projectId,
       draftId,
@@ -354,6 +441,21 @@ export class EffectExtractionService {
     return { run: presentRun(record, record.result?.id ?? null) };
   }
 
+  async nodeDetail(
+    projectId: string,
+    runId: string,
+    rawNodeId: string,
+  ): Promise<GetEffectExtractionNodeDetailData> {
+    await this.projects.get(projectId);
+    const definition = EFFECT_EXTRACTION_GRAPH_NODES.find(({ id }) => id === rawNodeId);
+    if (!definition) throw badRequest('未知的提炼节点');
+    const record = await this.repository.run(projectId, runId);
+    if (!record) throw notFound('提炼任务不存在');
+    const nodeId = definition.id as EffectExtractionNodeId;
+    const execution = presentNodes(record).find((node) => node.nodeId === nodeId)!;
+    return { detail: presentExtractionNodeDetail(record, nodeId, execution) };
+  }
+
   async updateResult(
     projectId: string,
     resultId: string,
@@ -371,7 +473,6 @@ export class EffectExtractionService {
       result,
     );
     if (!updated) throw conflict('提炼结果已被其他操作更新，请刷新后重试');
-    await this.syncWorkingResult(updated);
     return {
       projectId,
       productId: updated.productId,
@@ -379,6 +480,69 @@ export class EffectExtractionService {
       revision: updated.revision,
       result: updated.draftResult as EffectExtractionResult,
       savedAt: updated.savedAt!.toISOString(),
+    };
+  }
+
+  async validateResult(
+    projectId: string,
+    resultId: string,
+    expectedRevision: number,
+  ): Promise<ValidateEffectExtractionResultData> {
+    await this.projects.get(projectId);
+    const existing = await this.repository.result(projectId, resultId);
+    if (!existing) throw notFound('提炼结果不存在');
+    if (existing.revision !== expectedRevision)
+      throw conflict('提炼结果已被其他操作更新，请刷新后重试');
+    if (!isEffectExtractionResult(existing.draftResult))
+      return {
+        valid: false,
+        issues: [{ code: 'INVALID_RESULT', message: '提炼结果不符合标准结构' }],
+        subjectKey: existing.productId,
+        productId: existing.productId,
+        artifacts: [],
+        allProductsValidated: false,
+        validatedAt: new Date().toISOString(),
+      };
+    if (await this.repository.hasNewerWorkingResult(projectId, existing.productId, existing.runId))
+      throw conflict('当前结果已不是最新提炼结果，请刷新后完成校验');
+    const candidate = await this.workingResultInput(existing);
+    if (!candidate) throw conflict('提炼依赖快照不完整，请重新提炼');
+    let committed;
+    try {
+      committed = await this.repository.commitValidatedResult(
+        projectId,
+        resultId,
+        expectedRevision,
+        candidate.workflowRunId,
+        candidate.artifactKey,
+        candidate.input,
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message === 'WORKING_ARTIFACT_DEPENDENCY_CONFLICT' ||
+          error.message === 'WORKFLOW_EXECUTION_INPUT_DEPENDENCY_CONFLICT')
+      )
+        throw conflict('上游资料或提炼参数已经变化，请重新提炼后再校验');
+      throw error;
+    }
+    if (committed.kind !== 'COMMITTED') {
+      if (committed.kind === 'NOT_FOUND') throw notFound('提炼结果不存在');
+      if (committed.kind === 'REVISION_CONFLICT')
+        throw conflict('提炼结果已被其他操作更新，请刷新后重试');
+      throw conflict('当前结果不是最新已完成提炼结果，请重新提炼后再校验');
+    }
+    const workspace = await this.workspace(projectId, existing.draftId);
+    return {
+      valid: true,
+      issues: [],
+      subjectKey: existing.productId,
+      productId: existing.productId,
+      artifacts: [committed.artifact],
+      allProductsValidated: workspace.products.every(
+        (product) => product.commitStatus === 'COMMITTED',
+      ),
+      validatedAt: new Date().toISOString(),
     };
   }
 
@@ -545,7 +709,7 @@ export class EffectExtractionService {
     const result = await this.repository.complete(projectId, runId, attemptToken, input);
     if (result.kind === 'NOT_FOUND') throw notFound('提炼任务不存在');
     if (result.kind === 'LEASE_CONFLICT') throw conflict('Worker 租约已失效');
-    await this.syncWorkingResult(result.result);
+    await this.syncNodeStateBaseline(result.result);
     try {
       await this.progressStore.delete(projectId, runId);
     } catch {

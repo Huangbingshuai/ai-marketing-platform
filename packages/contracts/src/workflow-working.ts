@@ -15,7 +15,33 @@ export type WorkingArtifactKind = (typeof WORKING_ARTIFACT_KINDS)[number];
 export const WORKING_ARTIFACT_FRESHNESSES = ['CURRENT', 'STALE'] as const;
 export type WorkingArtifactFreshness = (typeof WORKING_ARTIFACT_FRESHNESSES)[number];
 
-export const WORKING_ARTIFACT_DEPENDENCY_SOURCE_TYPES = ['NODE_STATE', 'WORKING_ARTIFACT'] as const;
+export const WORKING_ARTIFACT_AVAILABILITIES = [
+  'AVAILABLE',
+  'SOURCE_REMOVED',
+  'PENDING_DELETE',
+] as const;
+export type WorkingArtifactAvailability = (typeof WORKING_ARTIFACT_AVAILABILITIES)[number];
+
+export const WORKING_ARTIFACT_COMMIT_STATUSES = [
+  'UNVALIDATED',
+  'COMMITTED',
+  'DRAFT_CHANGED',
+  'STALE',
+] as const;
+export type WorkingArtifactCommitStatus = (typeof WORKING_ARTIFACT_COMMIT_STATUSES)[number];
+
+export type WorkingArtifactCommitSummary = {
+  artifactId: string;
+  artifactKey: string;
+  revision: number;
+  unchanged: boolean;
+};
+
+export const WORKING_ARTIFACT_DEPENDENCY_SOURCE_TYPES = [
+  'NODE_STATE',
+  'WORKING_ARTIFACT',
+  'EXECUTION_INPUT',
+] as const;
 export type WorkingArtifactDependencySourceType =
   (typeof WORKING_ARTIFACT_DEPENDENCY_SOURCE_TYPES)[number];
 
@@ -24,7 +50,8 @@ export type WorkingArtifactDependency = {
   sourceNodeId: string | null;
   sourceArtifactId: string | null;
   sourceKey: string;
-  sourceRevision: number;
+  sourceRevision: number | null;
+  sourceHash: string | null;
 };
 
 export type WorkingArtifactFile = {
@@ -62,6 +89,8 @@ export type WorkflowNodeState = {
   schemaVersion: number;
   revision: number;
   contentHash: string;
+  executionInputHash: string;
+  executionInputSchemaVersion: number;
   state: unknown;
   savedAt: string;
   updatedAt: string;
@@ -106,6 +135,7 @@ export type WorkingArtifact = {
   sourceArtifactId: string | null;
   revision: number;
   freshness: WorkingArtifactFreshness;
+  availability: WorkingArtifactAvailability;
   dependencies: WorkingArtifactDependency[];
   files: WorkingArtifactFile[];
   fileCount: number;

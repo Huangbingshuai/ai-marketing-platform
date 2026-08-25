@@ -35,11 +35,12 @@ export type WorkingArtifactUpsertInput = {
     sha256: string;
   }>;
   dependencies?: Array<{
-    sourceType: 'NODE_STATE' | 'WORKING_ARTIFACT';
+    sourceType: 'NODE_STATE' | 'WORKING_ARTIFACT' | 'EXECUTION_INPUT';
     sourceNodeId?: string | null;
     sourceArtifactId?: string | null;
     sourceKey: string;
-    sourceRevision: number;
+    sourceRevision?: number | null;
+    sourceHash?: string | null;
   }>;
 };
 
@@ -79,7 +80,10 @@ const semanticMetadata = (value: unknown): unknown => {
   return metadata;
 };
 
-const artifactHash = (input: WorkingArtifactUpsertInput): string =>
+const semanticFileName = (value: string | null | undefined): string | null =>
+  value ? value.normalize('NFC').toLocaleLowerCase('en-US') : null;
+
+export const workingArtifactContentHash = (input: WorkingArtifactUpsertInput): string =>
   workflowStateHash({
     kind: input.kind,
     name: input.name,
@@ -95,8 +99,8 @@ const artifactHash = (input: WorkingArtifactUpsertInput): string =>
     legacyFile: input.files?.length
       ? null
       : {
-          originalFileName: input.originalFileName ?? null,
-          mimeType: input.mimeType ?? null,
+          originalFileName: semanticFileName(input.originalFileName),
+          mimeType: input.mimeType?.trim().toLowerCase() ?? null,
           sizeBytes: input.sizeBytes ?? null,
         },
     files: [...(input.files ?? [])]
@@ -106,8 +110,8 @@ const artifactHash = (input: WorkingArtifactUpsertInput): string =>
       .map(({ role, sortOrder, originalFileName, mimeType, sha256 }) => ({
         role,
         sortOrder,
-        originalFileName,
-        mimeType,
+        originalFileName: semanticFileName(originalFileName),
+        mimeType: mimeType.trim().toLowerCase(),
         sha256,
       })),
     dependencies: [...(input.dependencies ?? [])]
@@ -116,16 +120,17 @@ const artifactHash = (input: WorkingArtifactUpsertInput): string =>
           `${right.sourceType}:${right.sourceKey}`,
         ),
       )
-      .map(({ sourceType, sourceNodeId, sourceKey, sourceRevision }) => ({
+      .map(({ sourceType, sourceNodeId, sourceKey, sourceRevision, sourceHash }) => ({
         sourceType,
         sourceNodeId: sourceNodeId ?? null,
         sourceKey,
-        sourceRevision,
+        sourceRevision: sourceRevision ?? null,
+        sourceHash: sourceHash ?? null,
       })),
   });
 
 const persistedArtifactHash = (record: WorkingArtifactRecord): string =>
-  artifactHash({
+  workingArtifactContentHash({
     kind: record.kind,
     name: record.name,
     directory: record.directory,
@@ -153,6 +158,7 @@ const persistedArtifactHash = (record: WorkingArtifactRecord): string =>
       sourceArtifactId: dependency.sourceArtifactId,
       sourceKey: dependency.sourceKey,
       sourceRevision: dependency.sourceRevision,
+      sourceHash: dependency.sourceHash,
     })),
   });
 
@@ -203,6 +209,8 @@ export class WorkflowWorkingRepository {
     state: unknown,
     expectedRevision: number | null,
     schemaVersion: number,
+    executionInputHash = '0e9561cfb83d50990a103b3896fe249a11fe27fa28985448187f93ec12116d72',
+    executionInputSchemaVersion = 1,
   ): Promise<{ record: WorkflowNodeState; unchanged: boolean; conflict: boolean }> {
     return this.prisma.$transaction(async (transaction) => {
       const run = await transaction.workflowRun.findFirst({
@@ -212,11 +220,28 @@ export class WorkflowWorkingRepository {
       const current = await transaction.workflowNodeState.findUnique({
         where: { projectId_workflowRunId_nodeId: { projectId, workflowRunId, nodeId } },
       });
-      if (
+      const contentUnchanged = Boolean(
         current &&
-        (current.contentHash === contentHash || workflowStateHash(current.state) === contentHash)
-      )
-        return { record: current, unchanged: true, conflict: false };
+        (current.contentHash === contentHash || workflowStateHash(current.state) === contentHash),
+      );
+      if (current && contentUnchanged) {
+        if (
+          current.executionInputHash === executionInputHash &&
+          current.executionInputSchemaVersion === executionInputSchemaVersion
+        )
+          return { record: current, unchanged: true, conflict: false };
+        const record = await transaction.workflowNodeState.update({
+          where: { id: current.id },
+          data: { executionInputHash, executionInputSchemaVersion },
+        });
+        await this.markNodeDependentsStaleInTransaction(
+          transaction,
+          projectId,
+          workflowRunId,
+          nodeId,
+        );
+        return { record, unchanged: true, conflict: false };
+      }
       if (current) {
         if (expectedRevision !== current.revision)
           return { record: current, unchanged: false, conflict: true };
@@ -226,6 +251,8 @@ export class WorkflowWorkingRepository {
             state: jsonValue(state),
             contentHash,
             schemaVersion,
+            executionInputHash,
+            executionInputSchemaVersion,
             revision: { increment: 1 },
             savedAt: new Date(),
           },
@@ -234,12 +261,13 @@ export class WorkflowWorkingRepository {
           where: { id: workflowRunId },
           data: { currentNodeId: nodeId, lastActiveAt: new Date() },
         });
-        await this.markNodeDependentsStaleInTransaction(
-          transaction,
-          projectId,
-          workflowRunId,
-          nodeId,
-        );
+        if (current.executionInputHash !== executionInputHash)
+          await this.markNodeDependentsStaleInTransaction(
+            transaction,
+            projectId,
+            workflowRunId,
+            nodeId,
+          );
         return { record, unchanged: false, conflict: false };
       }
       if (expectedRevision !== null && expectedRevision !== 0)
@@ -256,6 +284,8 @@ export class WorkflowWorkingRepository {
           state: jsonValue(state),
           contentHash,
           schemaVersion,
+          executionInputHash,
+          executionInputSchemaVersion,
         },
       });
       await transaction.workflowRun.update({
@@ -273,6 +303,8 @@ export class WorkflowWorkingRepository {
     contentHash: string,
     state: unknown,
     schemaVersion = 1,
+    executionInputHash = '0e9561cfb83d50990a103b3896fe249a11fe27fa28985448187f93ec12116d72',
+    executionInputSchemaVersion = 1,
   ): Promise<WorkflowNodeState> {
     return this.prisma.$transaction(async (transaction) => {
       const run = await transaction.workflowRun.findFirst({
@@ -283,7 +315,24 @@ export class WorkflowWorkingRepository {
       const current = await transaction.workflowNodeState.findUnique({
         where: { projectId_workflowRunId_nodeId: unique },
       });
-      if (current && current.contentHash === contentHash) return current;
+      if (current && current.contentHash === contentHash) {
+        if (
+          current.executionInputHash === executionInputHash &&
+          current.executionInputSchemaVersion === executionInputSchemaVersion
+        )
+          return current;
+        const record = await transaction.workflowNodeState.update({
+          where: { id: current.id },
+          data: { executionInputHash, executionInputSchemaVersion },
+        });
+        await this.markNodeDependentsStaleInTransaction(
+          transaction,
+          projectId,
+          workflowRunId,
+          nodeId,
+        );
+        return record;
+      }
       const record = current
         ? await transaction.workflowNodeState.update({
             where: { id: current.id },
@@ -291,23 +340,33 @@ export class WorkflowWorkingRepository {
               state: jsonValue(state),
               contentHash,
               schemaVersion,
+              executionInputHash,
+              executionInputSchemaVersion,
               revision: { increment: 1 },
               savedAt: new Date(),
             },
           })
         : await transaction.workflowNodeState.create({
-            data: { ...unique, state: jsonValue(state), contentHash, schemaVersion },
+            data: {
+              ...unique,
+              state: jsonValue(state),
+              contentHash,
+              schemaVersion,
+              executionInputHash,
+              executionInputSchemaVersion,
+            },
           });
       await transaction.workflowRun.update({
         where: { id: workflowRunId },
         data: { currentNodeId: nodeId, lastActiveAt: new Date() },
       });
-      await this.markNodeDependentsStaleInTransaction(
-        transaction,
-        projectId,
-        workflowRunId,
-        nodeId,
-      );
+      if (!current || current.executionInputHash !== executionInputHash)
+        await this.markNodeDependentsStaleInTransaction(
+          transaction,
+          projectId,
+          workflowRunId,
+          nodeId,
+        );
       return record;
     });
   }
@@ -447,7 +506,7 @@ export class WorkflowWorkingRepository {
       include: workingArtifactInclude,
     });
     await this.validateArtifactInputsInTransaction(transaction, projectId, workflowRunId, input);
-    const contentHash = artifactHash(input);
+    const contentHash = workingArtifactContentHash(input);
     if (previous?.contentHash === contentHash)
       return {
         record: previous,
@@ -484,6 +543,7 @@ export class WorkflowWorkingRepository {
       sourceArtifactId: input.sourceArtifactId ?? null,
       contentHash,
       freshness: 'CURRENT' as const,
+      availability: 'AVAILABLE' as const,
     };
     if (input.expectedRevision !== undefined && previous?.revision !== input.expectedRevision)
       throw new Error('WORKING_ARTIFACT_REVISION_CONFLICT');
@@ -532,7 +592,8 @@ export class WorkflowWorkingRepository {
           sourceNodeId: dependency.sourceNodeId ?? null,
           sourceArtifactId: dependency.sourceArtifactId ?? null,
           sourceKey: dependency.sourceKey,
-          sourceRevision: dependency.sourceRevision,
+          sourceRevision: dependency.sourceRevision ?? null,
+          sourceHash: dependency.sourceHash ?? null,
         })),
       });
     if (input.files?.length)
@@ -541,7 +602,16 @@ export class WorkflowWorkingRepository {
         data: { status: 'AVAILABLE', orphanedAt: null },
       });
     const currentFileIds = new Set(input.files?.map((item) => item.fileObjectId) ?? []);
-    const orphanedFileObjectIds = previousFileIds.filter((id) => !currentFileIds.has(id));
+    const replacedFileObjectIds = previousFileIds.filter((id) => !currentFileIds.has(id));
+    const orphanedFileObjectIds: string[] = [];
+    for (const fileObjectId of replacedFileObjectIds) {
+      const [artifactLinks, materials, uploadItems] = await Promise.all([
+        transaction.workingArtifactFile.count({ where: { projectId, fileObjectId } }),
+        transaction.effectImportMaterial.count({ where: { projectId, fileObjectId } }),
+        transaction.effectImportUploadItem.count({ where: { projectId, fileObjectId } }),
+      ]);
+      if (artifactLinks + materials + uploadItems === 0) orphanedFileObjectIds.push(fileObjectId);
+    }
     if (orphanedFileObjectIds.length)
       await transaction.fileObject.updateMany({
         where: { projectId, id: { in: orphanedFileObjectIds } },
@@ -566,6 +636,45 @@ export class WorkflowWorkingRepository {
     };
   }
 
+  async commitValidatedArtifacts(
+    projectId: string,
+    workflowRunId: string,
+    nodeId: string,
+    artifacts: Array<{ artifactKey: string; input: WorkingArtifactUpsertInput }>,
+  ) {
+    return this.prisma.$transaction((transaction) =>
+      this.commitValidatedArtifactsInTransaction(
+        transaction,
+        projectId,
+        workflowRunId,
+        nodeId,
+        artifacts,
+      ),
+    );
+  }
+
+  async commitValidatedArtifactsInTransaction(
+    transaction: Prisma.TransactionClient,
+    projectId: string,
+    workflowRunId: string,
+    nodeId: string,
+    artifacts: Array<{ artifactKey: string; input: WorkingArtifactUpsertInput }>,
+  ) {
+    const results = [];
+    for (const artifact of artifacts) {
+      const result = await this.upsertArtifactInTransaction(
+        transaction,
+        projectId,
+        workflowRunId,
+        nodeId,
+        artifact.artifactKey,
+        artifact.input,
+      );
+      results.push({ artifactKey: artifact.artifactKey, ...result });
+    }
+    return results;
+  }
+
   private async validateArtifactInputsInTransaction(
     transaction: Prisma.TransactionClient,
     projectId: string,
@@ -587,13 +696,17 @@ export class WorkflowWorkingRepository {
                 id: dependency.sourceArtifactId,
                 projectId,
                 workflowRunId,
-                artifactKey: dependency.sourceKey,
               },
             })
           : await transaction.workingArtifact.findFirst({
               where: { projectId, workflowRunId, artifactKey: dependency.sourceKey },
             });
-        if (!source || source.revision !== dependency.sourceRevision)
+        const keyMatches =
+          source?.artifactKey === dependency.sourceKey ||
+          (dependency.sourceKey.startsWith('effective-video-config:') &&
+            source?.artifactKey ===
+              dependency.sourceKey.replace('effective-video-config:', 'global-video-config:'));
+        if (!source || !keyMatches || source.revision !== dependency.sourceRevision)
           throw new Error('WORKING_ARTIFACT_DEPENDENCY_CONFLICT');
       } else {
         const state = await transaction.workflowNodeState.findUnique({
@@ -605,7 +718,11 @@ export class WorkflowWorkingRepository {
             },
           },
         });
-        if (!state || state.revision !== dependency.sourceRevision)
+        if (!state) throw new Error('WORKFLOW_NODE_STATE_DEPENDENCY_CONFLICT');
+        if (dependency.sourceType === 'EXECUTION_INPUT') {
+          if (!dependency.sourceHash || state.executionInputHash !== dependency.sourceHash)
+            throw new Error('WORKFLOW_EXECUTION_INPUT_DEPENDENCY_CONFLICT');
+        } else if (state.revision !== dependency.sourceRevision)
           throw new Error('WORKFLOW_NODE_STATE_DEPENDENCY_CONFLICT');
       }
     }
@@ -621,7 +738,7 @@ export class WorkflowWorkingRepository {
       where: {
         projectId,
         workflowRunId,
-        sourceType: 'NODE_STATE',
+        sourceType: 'EXECUTION_INPUT',
         OR: [{ sourceNodeId: nodeId }, { sourceKey: nodeId }],
       },
       select: { dependentArtifactId: true },

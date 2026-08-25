@@ -6,10 +6,15 @@ import { WorkflowModule } from '../../../platform/workflow/workflow.module';
 import { EffectSourceImportController } from './effect-source-import.controller';
 import { EffectSourceImportRepository } from './effect-source-import.repository';
 import { EffectSourceImportService } from './effect-source-import.service';
+import { EffectWorkingCleanupProcessor } from './effect-working-cleanup.processor';
 
 @Module({
   imports: [FileModule, ProjectModule, WorkflowModule],
   controllers: [EffectSourceImportController],
-  providers: [EffectSourceImportRepository, EffectSourceImportService],
+  providers: [
+    EffectSourceImportRepository,
+    EffectSourceImportService,
+    EffectWorkingCleanupProcessor,
+  ],
 })
 export class EffectSourceImportModule {}

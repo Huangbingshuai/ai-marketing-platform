@@ -5,6 +5,8 @@
  * carries its projectId so callers cannot accidentally lose project scope.
  */
 
+import type { WorkingArtifactCommitStatus, WorkingArtifactCommitSummary } from './workflow-working';
+
 export const EFFECT_IMPORT_API_BASE =
   '/api/projects/:projectId/workflows/effect/source-import' as const;
 
@@ -227,6 +229,9 @@ export type EffectImportProduct = {
   id: string;
   projectId: string;
   draftId: string;
+  status: 'ACTIVE' | 'REMOVED';
+  removedAt: string | null;
+  purgeAfter: string | null;
   name: string;
   category: string;
   sku: string;
@@ -238,6 +243,9 @@ export type EffectImportProduct = {
   sourceManifestImportId: string | null;
   sourceManifestRowNumber: number | null;
   materials: EffectImportMaterial[];
+  commitStatus: WorkingArtifactCommitStatus;
+  sourcePackageRevision: number | null;
+  effectiveVideoConfigRevision: number | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -349,6 +357,14 @@ export type EffectImportProductMutationData = {
 export type EffectImportDeleteData = {
   deleted: true;
   revision: number;
+  removedProduct?: EffectImportRemovedProduct | undefined;
+};
+
+export type EffectImportRemovedProduct = {
+  id: string;
+  name: string;
+  removedAt: string;
+  purgeAfter: string;
 };
 
 export type BatchDeleteEffectImportProductsRequest = {
@@ -359,6 +375,30 @@ export type BatchDeleteEffectImportProductsRequest = {
 export type BatchDeleteEffectImportProductsData = {
   deletedProductIds: string[];
   revision: number;
+  removedProducts: EffectImportRemovedProduct[];
+};
+
+export type RestoreEffectImportProductRequest = { expectedRevision: number };
+export type RestoreEffectImportProductData = {
+  product: EffectImportProduct;
+  revision: number;
+};
+
+export type BatchRestoreEffectImportProductsRequest = {
+  productIds: string[];
+  expectedRevision: number;
+};
+
+export type BatchRestoreEffectImportProductsData = {
+  products: EffectImportProduct[];
+  revision: number;
+};
+
+export type EffectImportRemovedProductListData = {
+  projectId: string;
+  draftId: string;
+  mode: EffectImportMode;
+  items: EffectImportRemovedProduct[];
 };
 
 export type BatchRetryEffectImportProductsRequest = {
@@ -567,6 +607,19 @@ export type ValidateEffectImportDraftRequest = {
 export type ValidateEffectImportDraftData = {
   draft: EffectImportDraft;
   validation: EffectImportValidationResult;
+  artifacts: WorkingArtifactCommitSummary[];
+  allProductsValidated: boolean;
+};
+
+export type ValidateEffectImportProductData = {
+  draft: EffectImportDraft;
+  productId: string;
+  subjectKey: string;
+  valid: boolean;
+  issues: EffectImportValidationIssue[];
+  artifacts: WorkingArtifactCommitSummary[];
+  allProductsValidated: boolean;
+  validatedAt: string;
 };
 
 export type AdvanceEffectImportDraftRequest = {

@@ -6,6 +6,8 @@ import type {
   BatchDeleteEffectImportProductsRequest,
   BatchRetryEffectImportProductsData,
   BatchRetryEffectImportProductsRequest,
+  BatchRestoreEffectImportProductsData,
+  BatchRestoreEffectImportProductsRequest,
   CancelEffectManifestData,
   CommitEffectManifestData,
   CommitEffectManifestRequest,
@@ -22,6 +24,8 @@ import type {
   EffectImportProductListData,
   EffectImportProductListQuery,
   EffectImportProductMutationData,
+  EffectImportRemovedProductListData,
+  RestoreEffectImportProductData,
   EffectManifestFormat,
   GetEffectImportWorkspaceData,
   PreviewEffectManifestData,
@@ -35,6 +39,7 @@ import type {
   ValidateEffectImportDraftRequest,
   ValidateEffectImportLinkData,
   ValidateEffectImportLinkRequest,
+  ValidateEffectImportProductData,
 } from '@ai-marketing/contracts';
 
 import { requestJson, requestRaw } from '../../../../api/http-client';
@@ -168,6 +173,45 @@ export const batchDeleteEffectImportProducts = (
     body: input,
     headers: revisionHeaders(input.expectedRevision),
     operation: '批量删除产品',
+    signal,
+  });
+
+export const listRemovedEffectImportProducts = (
+  projectId: string,
+  mode: EffectImportMode,
+  signal?: AbortSignal,
+): Promise<ApiResponse<EffectImportRemovedProductListData>> =>
+  requestJson(`${draftPath(projectId, mode)}/products/removed`, {
+    operation: '加载最近删除产品',
+    signal,
+  });
+
+export const restoreEffectImportProduct = (
+  projectId: string,
+  mode: EffectImportMode,
+  productId: string,
+  expectedRevision: number,
+  signal?: AbortSignal,
+): Promise<ApiResponse<RestoreEffectImportProductData>> =>
+  requestJson(`${draftPath(projectId, mode)}/products/${encodeURIComponent(productId)}/restore`, {
+    method: 'POST',
+    body: { expectedRevision },
+    headers: revisionHeaders(expectedRevision),
+    operation: '恢复产品',
+    signal,
+  });
+
+export const batchRestoreEffectImportProducts = (
+  projectId: string,
+  mode: EffectImportMode,
+  input: BatchRestoreEffectImportProductsRequest,
+  signal?: AbortSignal,
+): Promise<ApiResponse<BatchRestoreEffectImportProductsData>> =>
+  requestJson(`${draftPath(projectId, mode)}/products/batch-restore`, {
+    method: 'POST',
+    body: input,
+    headers: revisionHeaders(input.expectedRevision),
+    operation: '批量恢复产品',
     signal,
   });
 
@@ -382,6 +426,21 @@ export const downloadEffectManifestTemplate = async (
   return { blob: await response.blob(), fileName };
 };
 
+export const downloadEffectProductPackageTemplate = async (
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<{ blob: Blob; fileName: string }> => {
+  const response = await requestRaw(`${basePath(projectId)}/product-package-template`, {
+    operation: '下载资料包模板',
+    signal,
+  });
+  const disposition = response.headers.get('content-disposition') ?? '';
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1];
+  const plain = /filename="?([^";]+)"?/i.exec(disposition)?.[1];
+  const fileName = encoded ? decodeURIComponent(encoded) : (plain ?? '效果类产品资料包模板.docx');
+  return { blob: await response.blob(), fileName };
+};
+
 export const validateEffectImportDraft = (
   projectId: string,
   mode: EffectImportMode,
@@ -393,6 +452,21 @@ export const validateEffectImportDraft = (
     body: input,
     headers: revisionHeaders(input.expectedRevision),
     operation: '校验资料包',
+    signal,
+  });
+
+export const validateEffectImportProduct = (
+  projectId: string,
+  mode: EffectImportMode,
+  productId: string,
+  input: ValidateEffectImportDraftRequest,
+  signal?: AbortSignal,
+): Promise<ApiResponse<ValidateEffectImportProductData>> =>
+  requestJson(`${draftPath(projectId, mode)}/products/${encodeURIComponent(productId)}/validate`, {
+    method: 'POST',
+    body: input,
+    headers: revisionHeaders(input.expectedRevision),
+    operation: '完成产品资料校验',
     signal,
   });
 

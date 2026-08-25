@@ -9,10 +9,14 @@ import {
   type EffectVideoConfig,
   type EffectVideoConfigOverride,
 } from '@ai-marketing/contracts';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { EffectExtractionRun, Prisma } from '../../../generated/prisma/client';
 
 import { PrismaService } from '../../../database/prisma.service';
+import {
+  WorkflowWorkingRepository,
+  type WorkingArtifactUpsertInput,
+} from '../../../platform/workflow/workflow-working.repository';
 import {
   EFFECT_EXTRACTION_JOB_TYPE,
   EFFECT_EXTRACTION_QUEUE,
@@ -53,13 +57,19 @@ export type ClaimRunResult =
 
 @Injectable()
 export class EffectExtractionRepository {
-  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Optional()
+    @Inject(WorkflowWorkingRepository)
+    private readonly workingRepository?: WorkflowWorkingRepository,
+  ) {}
 
   workspace(projectId: string, draftId: string) {
     return this.prisma.effectImportDraft.findFirst({
       where: { projectId, id: draftId },
       include: {
         products: {
+          where: { status: 'ACTIVE' },
           orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
           include: {
             materials: true,
@@ -72,6 +82,53 @@ export class EffectExtractionRepository {
         },
       },
     });
+  }
+
+  async currentDependencySnapshot(projectId: string, productId: string) {
+    const workspace = await this.prisma.effectImportWorkspace.findUnique({
+      where: { projectId },
+      select: { workflowRunId: true },
+    });
+    if (!workspace) return null;
+    const artifacts = await this.prisma.workingArtifact.findMany({
+      where: {
+        projectId,
+        workflowRunId: workspace.workflowRunId,
+        nodeId: 'SOURCE_IMPORT',
+        artifactKey: {
+          in: [
+            `source-package:${productId}`,
+            `effective-video-config:${productId}`,
+            `global-video-config:${productId}`,
+          ],
+        },
+      },
+    });
+    const sourcePackage = artifacts.find(
+      (artifact) => artifact.artifactKey === `source-package:${productId}`,
+    );
+    const config =
+      artifacts.find(
+        (artifact) => artifact.artifactKey === `effective-video-config:${productId}`,
+      ) ??
+      artifacts.find((artifact) => artifact.artifactKey === `global-video-config:${productId}`);
+    if (!sourcePackage || !config) return null;
+    const nodeState = await this.prisma.workflowNodeState.findUnique({
+      where: {
+        projectId_workflowRunId_nodeId: {
+          projectId,
+          workflowRunId: workspace.workflowRunId,
+          nodeId: 'INFORMATION_EXTRACTION',
+        },
+      },
+    });
+    return {
+      sourcePackageRevision: sourcePackage.revision,
+      effectiveVideoConfigRevision: config.revision,
+      executionInputHash:
+        nodeState?.executionInputHash ??
+        '0e9561cfb83d50990a103b3896fe249a11fe27fa28985448187f93ec12116d72',
+    };
   }
 
   async startRun(
@@ -97,6 +154,7 @@ export class EffectExtractionRepository {
         WHERE "projectId" = ${projectId}::uuid
           AND "draftId" = ${draftId}::uuid
           AND "id" = ${productId}::uuid
+          AND "status" = 'ACTIVE'
         FOR UPDATE
       `;
       if (locked.length !== 1) return { kind: 'NOT_FOUND' as const };
@@ -105,7 +163,7 @@ export class EffectExtractionRepository {
         where: { projectId, id: draftId },
         include: {
           products: {
-            where: { id: productId },
+            where: { id: productId, status: 'ACTIVE' },
             include: { materials: { include: { fileObject: true } } },
           },
         },
@@ -166,13 +224,30 @@ export class EffectExtractionRepository {
           workflowRunId: workspace.workflowRunId,
           nodeId: 'SOURCE_IMPORT',
           artifactKey: {
-            in: [`source-package:${productId}`, `global-video-config:${productId}`],
+            in: [
+              `source-package:${productId}`,
+              `effective-video-config:${productId}`,
+              `global-video-config:${productId}`,
+            ],
           },
         },
       });
+      const sourcePackage = upstreamArtifacts.find(
+        (artifact) => artifact.artifactKey === `source-package:${productId}`,
+      );
+      const effectiveVideoConfig =
+        upstreamArtifacts.find(
+          (artifact) => artifact.artifactKey === `effective-video-config:${productId}`,
+        ) ??
+        upstreamArtifacts.find(
+          (artifact) => artifact.artifactKey === `global-video-config:${productId}`,
+        );
       if (
-        upstreamArtifacts.length !== 2 ||
-        upstreamArtifacts.some((artifact) => artifact.freshness !== 'CURRENT')
+        !sourcePackage ||
+        !effectiveVideoConfig ||
+        [sourcePackage, effectiveVideoConfig].some(
+          (artifact) => artifact.freshness !== 'CURRENT' || artifact.availability !== 'AVAILABLE',
+        )
       )
         return { kind: 'NOT_READY' as const };
       const nodeState = await transaction.workflowNodeState.findUnique({
@@ -190,6 +265,7 @@ export class EffectExtractionRepository {
         draftId,
         mode: draft.mode,
         sourceRevision: draft.revision,
+        globalVideoConfig: draft.globalConfig as EffectVideoConfig,
         product: {
           id: product.id,
           name: product.name,
@@ -202,21 +278,32 @@ export class EffectExtractionRepository {
           ),
         },
         materials,
+        dependencySnapshot: {
+          sourcePackageRevision: sourcePackage.revision,
+          effectiveVideoConfigRevision: effectiveVideoConfig.revision,
+          executionInputHash:
+            nodeState?.executionInputHash ??
+            '0e9561cfb83d50990a103b3896fe249a11fe27fa28985448187f93ec12116d72',
+        },
         dependencies: [
-          ...upstreamArtifacts.map((artifact) => ({
+          ...[sourcePackage, effectiveVideoConfig].map((artifact) => ({
             sourceType: 'WORKING_ARTIFACT' as const,
             sourceNodeId: artifact.nodeId,
             sourceArtifactId: artifact.id,
-            sourceKey: artifact.artifactKey,
+            sourceKey:
+              artifact.id === effectiveVideoConfig.id
+                ? `effective-video-config:${productId}`
+                : artifact.artifactKey,
             sourceRevision: artifact.revision,
           })),
           ...(nodeState
             ? [
                 {
-                  sourceType: 'NODE_STATE' as const,
+                  sourceType: 'EXECUTION_INPUT' as const,
                   sourceNodeId: nodeState.nodeId,
                   sourceKey: nodeState.nodeId,
-                  sourceRevision: nodeState.revision,
+                  sourceRevision: null,
+                  sourceHash: nodeState.executionInputHash,
                 },
               ]
             : []),
@@ -284,7 +371,7 @@ export class EffectExtractionRepository {
 
   product(projectId: string, productId: string) {
     return this.prisma.effectImportProduct.findFirst({
-      where: { projectId, id: productId },
+      where: { projectId, id: productId, status: 'ACTIVE' },
       select: { id: true, name: true, category: true, sku: true },
     });
   }
@@ -294,6 +381,53 @@ export class EffectExtractionRepository {
       where: { projectId, id: draftId },
       select: { workspace: { select: { workflowRunId: true } } },
     });
+  }
+
+  async insightArtifact(projectId: string, draftId: string, productId: string) {
+    const workflow = await this.workflowRunForDraft(projectId, draftId);
+    if (!workflow) return null;
+    return this.prisma.workingArtifact.findUnique({
+      where: {
+        projectId_workflowRunId_nodeId_artifactKey: {
+          projectId,
+          workflowRunId: workflow.workspace.workflowRunId,
+          nodeId: 'INFORMATION_EXTRACTION',
+          artifactKey: `marketing-insight:${productId}`,
+        },
+      },
+    });
+  }
+
+  async hasNewerWorkingResult(
+    projectId: string,
+    productId: string,
+    runId: string,
+  ): Promise<boolean> {
+    const run = await this.prisma.effectExtractionRun.findFirst({
+      where: { projectId, id: runId, productId },
+      select: {
+        createdAt: true,
+        draft: { select: { workspace: { select: { workflowRunId: true } } } },
+      },
+    });
+    if (!run) return true;
+    const artifact = await this.prisma.workingArtifact.findUnique({
+      where: {
+        projectId_workflowRunId_nodeId_artifactKey: {
+          projectId,
+          workflowRunId: run.draft.workspace.workflowRunId,
+          nodeId: 'INFORMATION_EXTRACTION',
+          artifactKey: `marketing-insight:${productId}`,
+        },
+      },
+      select: { sourceRunId: true },
+    });
+    if (!artifact?.sourceRunId || artifact.sourceRunId === runId) return false;
+    const currentSourceRun = await this.prisma.effectExtractionRun.findFirst({
+      where: { projectId, id: artifact.sourceRunId, productId },
+      select: { createdAt: true },
+    });
+    return Boolean(currentSourceRun && currentSourceRun.createdAt > run.createdAt);
   }
 
   async updateResult(
@@ -309,6 +443,64 @@ export class EffectExtractionRepository {
     });
     if (updated.count !== 1) return null;
     return this.result(projectId, resultId);
+  }
+
+  async commitValidatedResult(
+    projectId: string,
+    resultId: string,
+    expectedRevision: number,
+    workflowRunId: string,
+    artifactKey: string,
+    input: WorkingArtifactUpsertInput,
+  ): Promise<
+    | {
+        kind: 'COMMITTED';
+        artifact: { artifactId: string; artifactKey: string; revision: number; unchanged: boolean };
+      }
+    | { kind: 'NOT_FOUND' | 'REVISION_CONFLICT' | 'NOT_READY' }
+  > {
+    return this.prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "effect_extraction_results"
+        WHERE "projectId" = ${projectId}::uuid AND "id" = ${resultId}::uuid
+        FOR UPDATE
+      `;
+      const result = await transaction.effectExtractionResult.findFirst({
+        where: { projectId, id: resultId },
+      });
+      if (!result) return { kind: 'NOT_FOUND' as const };
+      if (result.revision !== expectedRevision) return { kind: 'REVISION_CONFLICT' as const };
+      const latestRun = await transaction.effectExtractionRun.findFirst({
+        where: { projectId, draftId: result.draftId, productId: result.productId },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        include: { result: { select: { id: true } } },
+      });
+      if (
+        !latestRun ||
+        latestRun.status !== 'COMPLETED' ||
+        latestRun.id !== result.runId ||
+        latestRun.result?.id !== result.id
+      )
+        return { kind: 'NOT_READY' as const };
+      if (!this.workingRepository) throw new Error('WORKFLOW_WORKING_REPOSITORY_NOT_AVAILABLE');
+      const [committed] = await this.workingRepository.commitValidatedArtifactsInTransaction(
+        transaction,
+        projectId,
+        workflowRunId,
+        'INFORMATION_EXTRACTION',
+        [{ artifactKey, input }],
+      );
+      if (!committed) throw new Error('WORKING_ARTIFACT_COMMIT_FAILED');
+      return {
+        kind: 'COMMITTED' as const,
+        artifact: {
+          artifactId: committed.record.id,
+          artifactKey,
+          revision: committed.record.revision,
+          unchanged: committed.unchanged,
+        },
+      };
+    });
   }
 
   async claim(projectId: string, runId: string, now = new Date()): Promise<ClaimRunResult> {

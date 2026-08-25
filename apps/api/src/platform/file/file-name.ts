@@ -16,5 +16,5 @@ export const safeOriginalFileName = (value: string): string => {
     })
     .join('')
     .trim();
-  return (sanitized || 'file').slice(0, 255);
+  return (sanitized || 'file').normalize('NFC').slice(0, 255);
 };

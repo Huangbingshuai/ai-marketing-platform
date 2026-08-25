@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  getEffectExtractionNodeDetail,
   getEffectExtractionRun,
   getEffectExtractionWorkspace,
   startEffectExtractionRun,
@@ -22,11 +23,13 @@ describe('effect info extraction API', () => {
 
     await getEffectExtractionWorkspace('项目/1', '草稿/1');
     await getEffectExtractionRun('项目/1', 'run/1');
+    await getEffectExtractionNodeDetail('项目/1', 'run/1', 'DOCUMENT');
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       '/api/projects/%E9%A1%B9%E7%9B%AE%2F1/workflows/effect/information-extraction?draftId=%E8%8D%89%E7%A8%BF%2F1',
     );
     expect(fetchMock.mock.calls[1]?.[0]).toContain('/runs/run%2F1');
+    expect(fetchMock.mock.calls[2]?.[0]).toContain('/runs/run%2F1/nodes/DOCUMENT');
     expect(fetchMock.mock.calls[0]?.[0]).not.toContain('/api/api/');
   });
 

@@ -17,11 +17,13 @@ def _provider(settings: WorkerSettings) -> AiProvider:
     if settings.extraction_ai_provider == "mock":
         return MockAiProvider()
     assert settings.ark_api_key is not None
-    assert settings.ark_model is not None
     return ArkResponsesProvider(
         base_url=str(settings.ark_base_url),
         api_key=settings.ark_api_key.get_secret_value(),
         model=settings.ark_model,
+        document_model=settings.resolved_document_model,
+        image_model=settings.resolved_image_model,
+        normalization_model=settings.resolved_normalization_model,
         timeout=settings.ark_timeout_seconds,
     )
 
