@@ -83,7 +83,7 @@ export type EffectExtractionNodeDetailSource = {
   name: string;
   status: EffectExtractionNodeStatus;
   media?: {
-    kind: 'IMAGE' | 'DOCUMENT' | 'VIDEO' | 'FILE';
+    kind: 'IMAGE' | 'DOCUMENT' | 'VIDEO' | 'FILE' | 'LINK';
     typeLabel: string;
     previewUrl: string | null;
     sizeBytes: number | null;

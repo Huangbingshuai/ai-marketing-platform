@@ -227,6 +227,19 @@ const commerceHost = (value: string | null): string | null => {
   }
 };
 
+const visibleCommerceUrl = (value: string | null): string | null => {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    url.username = '';
+    url.password = '';
+    return url.toString().slice(0, 2000);
+  } catch {
+    return null;
+  }
+};
+
 const structuredCommerceHost = (value: unknown): string | null => {
   if (typeof value !== 'string' || !value.trim()) return null;
   const raw = value.trim();
@@ -298,31 +311,55 @@ const materialCount = (snapshot: EffectExtractionInputSnapshot, type: string): n
   snapshot.materials.filter((material) => material.type === type).length;
 
 const snapshotSummary = (snapshot: EffectExtractionInputSnapshot): string => {
+  const commerceUrl = visibleCommerceUrl(snapshot.product.commerceUrl);
   const counts = [
-    ['图片', materialCount(snapshot, 'PRODUCT_IMAGE')],
-    ['文档', materialCount(snapshot, 'PRODUCT_DOCUMENT')],
-    ['品牌规范', materialCount(snapshot, 'BRAND_GUIDELINE')],
-    ['参考视频', materialCount(snapshot, 'REFERENCE_VIDEO')],
+    ['图片', '份', materialCount(snapshot, 'PRODUCT_IMAGE')],
+    ['文档', '份', materialCount(snapshot, 'PRODUCT_DOCUMENT')],
+    ['品牌规范', '份', materialCount(snapshot, 'BRAND_GUIDELINE')],
+    ['参考视频', '份', materialCount(snapshot, 'REFERENCE_VIDEO')],
+    ['电商链接', '个', commerceUrl ? 1 : 0],
   ] as const;
   const parts = counts
-    .filter(([, count]) => count > 0)
-    .map(([label, count]) => `${count} 份${label}`);
-  return snapshot.materials.length
-    ? `本次共使用 ${snapshot.materials.length} 份资料：${parts.join('、')}`
-    : '本次没有可用资料';
+    .filter(([, , count]) => count > 0)
+    .map(([label, unit, count]) => `${count} ${unit}${label}`);
+  const total = snapshot.materials.length + Number(Boolean(commerceUrl));
+  return total ? `本次共使用 ${total} 项资料：${parts.join('、')}` : '本次没有可用资料';
 };
 
 const snapshotSources = (
   snapshot: EffectExtractionInputSnapshot,
   nodeStatus: EffectExtractionNodeStatus,
-): EffectExtractionNodeDetailSource[] =>
-  snapshot.materials.slice(0, 50).map((material) => ({
-    name: fileName(material.originalFileName),
-    status: nodeStatus === 'PENDING' || nodeStatus === 'RUNNING' ? nodeStatus : 'SUCCEEDED',
-    media: materialMedia(snapshot, material),
-    fields: [],
-    warnings: [],
-  }));
+): EffectExtractionNodeDetailSource[] => {
+  const sourceStatus: EffectExtractionNodeStatus =
+    nodeStatus === 'PENDING' || nodeStatus === 'RUNNING' ? nodeStatus : 'SUCCEEDED';
+  const materialSources: EffectExtractionNodeDetailSource[] = snapshot.materials
+    .slice(0, 50)
+    .map((material) => ({
+      name: fileName(material.originalFileName),
+      status: sourceStatus,
+      media: materialMedia(snapshot, material),
+      fields: [],
+      warnings: [],
+    }));
+  const commerceUrl = visibleCommerceUrl(snapshot.product.commerceUrl);
+  return commerceUrl
+    ? [
+        ...materialSources,
+        {
+          name: commerceUrl,
+          status: sourceStatus,
+          media: {
+            kind: 'LINK',
+            typeLabel: '电商链接',
+            previewUrl: null,
+            sizeBytes: null,
+          },
+          fields: [],
+          warnings: [],
+        },
+      ]
+    : materialSources;
+};
 
 export const presentExtractionNodeDetail = (
   record: ExtractionNodeDetailRecord,

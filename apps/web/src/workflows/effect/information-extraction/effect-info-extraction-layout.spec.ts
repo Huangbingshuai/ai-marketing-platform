@@ -71,6 +71,9 @@ describe('effect info extraction result layout', () => {
   it('renders snapshot materials as import-style cards and explains an unclaimed queued task', () => {
     expect(pageSource).toContain('本次共使用');
     expect(pageSource).toContain("materialCount('PRODUCT_IMAGE')");
+    expect(pageSource).toContain("kind: 'LINK' as const");
+    expect(pageSource).toContain("source.media.kind === 'LINK'");
+    expect(pageSource).toContain("'commerceUrlCount', '电商链接', '个'");
     expect(pageSource).toContain('class="workflow-node-detail__source-visual"');
     expect(pageSource).toContain(':src="graphPreviewUrl(source)!"');
     expect(pageSource).toContain('graphDetailBytes(source.media.sizeBytes)');

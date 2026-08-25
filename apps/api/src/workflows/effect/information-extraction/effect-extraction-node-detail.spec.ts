@@ -207,7 +207,7 @@ describe('presentExtractionNodeDetail', () => {
     expect(JSON.stringify(detail)).not.toContain('AI_TIMEOUT');
   });
 
-  it('shows only material counts and file names for the snapshot node', () => {
+  it('shows material counts, file names, and the saved commerce link for the snapshot node', () => {
     const detail = presentExtractionNodeDetail(
       {
         inputSnapshot: snapshot,
@@ -218,7 +218,7 @@ describe('presentExtractionNodeDetail', () => {
     );
     const serialized = JSON.stringify(detail);
 
-    expect(detail.summary).toBe('本次共使用 2 份资料：1 份图片、1 份文档');
+    expect(detail.summary).toBe('本次共使用 3 项资料：1 份图片、1 份文档、1 个电商链接');
     expect(detail.fields).toEqual([]);
     expect(detail.sources).toEqual(
       expect.arrayContaining([
@@ -241,6 +241,16 @@ describe('presentExtractionNodeDetail', () => {
               '/api/projects/project-a/workflows/effect/source-import/drafts/SINGLE/products/product-a/materials/material-image/content',
             sizeBytes: 1048576,
           }),
+        }),
+        expect.objectContaining({
+          name: 'https://shop.example.com/private/product?id=42',
+          media: {
+            kind: 'LINK',
+            typeLabel: '电商链接',
+            previewUrl: null,
+            sizeBytes: null,
+          },
+          fields: [],
         }),
       ]),
     );

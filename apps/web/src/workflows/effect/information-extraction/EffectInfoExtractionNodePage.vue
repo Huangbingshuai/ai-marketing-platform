@@ -26,6 +26,7 @@ import {
   AlertCircle,
   ArrowLeft,
   FileText,
+  Link2,
   LoaderCircle,
   Plus,
   RefreshCw,
@@ -190,7 +191,7 @@ const graphNodeDefinition = (nodeId: EffectExtractionNodeId) =>
   EFFECT_EXTRACTION_GRAPH_NODES.find((node) => node.id === nodeId)!;
 const graphNodeDescription = (nodeId: EffectExtractionNodeId): string =>
   ({
-    LOAD_AND_SNAPSHOT: '汇总本次提炼使用的图片、文档和视频资料',
+    LOAD_AND_SNAPSHOT: '汇总本次提炼使用的图片、文档、视频和电商链接',
     DOCUMENT: '读取文档中的产品信息',
     IMAGE: '识别图片中的商品信息',
     COMMERCE: '检查商品链接中的信息',
@@ -227,6 +228,18 @@ const safeCommerceHost = (value: string | null): string | null => {
     return new URL(value).hostname;
   } catch {
     return '链接格式不可识别';
+  }
+};
+const safeCommerceUrl = (value: string | null): string | null => {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    url.username = '';
+    url.password = '';
+    return url.toString().slice(0, 2000);
+  } catch {
+    return null;
   }
 };
 const safeLocalText = (value: string, maxLength = 500): string =>
@@ -318,29 +331,46 @@ const localGraphDetail = (nodeId: EffectExtractionNodeId): EffectExtractionNodeD
   const materialCount = (type: EffectImportProduct['materials'][number]['type']): number =>
     product.materials.filter((material) => material.type === type).length;
   const materialCounts = [
-    ['imageCount', '商品图片', materialCount('PRODUCT_IMAGE')],
-    ['documentCount', '产品文档', materialCount('PRODUCT_DOCUMENT')],
-    ['brandGuideCount', '品牌规范', materialCount('BRAND_GUIDELINE')],
-    ['videoCount', '参考视频', materialCount('REFERENCE_VIDEO')],
+    ['imageCount', '商品图片', '份', materialCount('PRODUCT_IMAGE')],
+    ['documentCount', '产品文档', '份', materialCount('PRODUCT_DOCUMENT')],
+    ['brandGuideCount', '品牌规范', '份', materialCount('BRAND_GUIDELINE')],
+    ['videoCount', '参考视频', '份', materialCount('REFERENCE_VIDEO')],
+    ['commerceUrlCount', '电商链接', '个', safeCommerceUrl(product.commerceUrl) ? 1 : 0],
   ] as const;
   const materialSummary = materialCounts
-    .filter(([, , count]) => count > 0)
-    .map(([, label, count]) => `${count} 份${label}`)
+    .filter(([, , , count]) => count > 0)
+    .map(([, label, unit, count]) => `${count} ${unit}${label}`)
     .join('、');
+  const commerceUrl = safeCommerceUrl(product.commerceUrl);
+  const snapshotSourceCount = product.materials.length + Number(Boolean(commerceUrl));
+  const snapshotSources: EffectExtractionNodeDetail['sources'] = [
+    ...materialSources(['PRODUCT_IMAGE', 'PRODUCT_DOCUMENT', 'BRAND_GUIDELINE', 'REFERENCE_VIDEO']),
+    ...(commerceUrl
+      ? [
+          {
+            name: commerceUrl,
+            status: localMaterialStatus(),
+            media: {
+              kind: 'LINK' as const,
+              typeLabel: '电商链接',
+              previewUrl: null,
+              sizeBytes: null,
+            },
+            fields: [],
+            warnings: [],
+          },
+        ]
+      : []),
+  ];
 
   if (nodeId === 'LOAD_AND_SNAPSHOT') {
     return {
       ...base,
-      summary: product.materials.length
-        ? `本次共使用 ${product.materials.length} 份资料：${materialSummary}`
+      summary: snapshotSourceCount
+        ? `本次共使用 ${snapshotSourceCount} 项资料：${materialSummary}`
         : '本次没有可用资料',
       fields: [],
-      sources: materialSources([
-        'PRODUCT_IMAGE',
-        'PRODUCT_DOCUMENT',
-        'BRAND_GUIDELINE',
-        'REFERENCE_VIDEO',
-      ]),
+      sources: snapshotSources,
     };
   }
   if (nodeId === 'DOCUMENT') {
@@ -2064,14 +2094,17 @@ onBeforeUnmount(() => {
                               @error="markGraphPreviewFailed(source.media.previewUrl!)"
                             />
                             <small v-else-if="source.media.kind === 'IMAGE'">暂无预览</small>
+                            <Link2 v-else-if="source.media.kind === 'LINK'" :size="18" />
                             <FileText v-else-if="source.media.kind === 'VIDEO'" :size="18" />
                             <span v-else>{{ graphDetailExtension(source.name) }}</span>
                           </span>
                           <span class="workflow-node-detail__source-copy">
                             <strong>{{ source.name }}</strong>
                             <small v-if="source.media">
-                              {{ source.media.typeLabel }} ·
-                              {{ graphDetailBytes(source.media.sizeBytes) }}
+                              {{ source.media.typeLabel
+                              }}<template v-if="source.media.sizeBytes !== null">
+                                · {{ graphDetailBytes(source.media.sizeBytes) }}</template
+                              >
                             </small>
                           </span>
                         </div>
