@@ -9,17 +9,20 @@ from effect_extraction.prompt_loader import load_prompt_template, load_prompt_ve
 def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     document = load_prompt_template("document_extraction.prompt.txt")
     image = load_prompt_template("image_analysis.prompt.txt")
+    commerce = load_prompt_template("commerce_extraction.prompt.txt")
     normalization = load_prompt_template("result_normalization.prompt.txt")
 
     assert load_prompt_version("document_extraction.prompt.txt") == "2.0.0"
     assert load_prompt_version("image_analysis.prompt.txt") == "2.0.0"
+    assert load_prompt_version("commerce_extraction.prompt.txt") == "1.0.0"
     assert load_prompt_version("result_normalization.prompt.txt") == "2.0.0"
 
     assert "产品文档事实抽取器" in document.template
     assert "产品图片" in image.template
+    assert "公开商品页面信息抽取器" in commerce.template
     assert "产品素材制作信息卡标准化器" in normalization.template
 
-    for prompt in (document.template, image.template, normalization.template):
+    for prompt in (document.template, image.template, commerce.template, normalization.template):
         assert "只输出一个 JSON 对象" in prompt
         assert "## 示例" in prompt
         assert "示例输出：" in prompt
@@ -42,6 +45,7 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     for field_name in candidate_fields:
         assert f'"{field_name}"' in document.template
         assert f'"{field_name}"' in image.template
+        assert f'"{field_name}"' in commerce.template
     for field_name in result_fields:
         assert f'"{field_name}"' in normalization.template
 
@@ -57,6 +61,12 @@ def test_effect_extraction_prompts_render_business_inputs() -> None:
         source_name="产品正面图.png",
         image_metadata_json='{"processedWidth":1080}',
     )
+    commerce = render_prompt(
+        "commerce_extraction.prompt.txt",
+        source_host="shop.example",
+        structured_metadata_json='{"name":"广式腊肠"}',
+        commerce_markdown="# 商品页面",
+    )
     normalization = render_prompt(
         "result_normalization.prompt.txt",
         fused_candidate_json='{"productName":"广式腊肠"}',
@@ -67,6 +77,9 @@ def test_effect_extraction_prompts_render_business_inputs() -> None:
     assert "# 广式腊肠" in document
     assert "图片文件名：产品正面图.png" in image
     assert '本地图像元数据：{"processedWidth":1080}' in image
+    assert "来源站点：shop.example" in commerce
+    assert '<structured_metadata_json>\n{"name":"广式腊肠"}' in commerce
+    assert "<commerce_markdown>\n# 商品页面" in commerce
     assert '<fused_candidate_json>\n{"productName":"广式腊肠"}' in normalization
     assert "</fused_candidate_json>" in normalization
     assert '<protected_user_input_json>\n{"marketingGoal":"人工目标"}' in normalization

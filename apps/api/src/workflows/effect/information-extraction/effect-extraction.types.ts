@@ -7,6 +7,10 @@ import type {
   EffectVideoConfig,
 } from '@ai-marketing/contracts';
 
+export const EFFECT_EXTRACTION_ARTIFACT_KINDS = ['DOCLING_MARKDOWN', 'COMMERCE_MARKDOWN'] as const;
+
+export type EffectExtractionArtifactKind = (typeof EFFECT_EXTRACTION_ARTIFACT_KINDS)[number];
+
 export type EffectExtractionSourceMaterial = {
   id: string;
   type: string;

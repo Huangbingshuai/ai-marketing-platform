@@ -9,7 +9,7 @@
 - 数据源与结果库沿用 PostgreSQL + Prisma，不新增 MySQL。
 - Python 使用 LangGraph 和本地 Docling，但不直接连接数据库或对象存储。
 - NestJS 负责项目隔离、不可变输入快照、任务状态和结果持久化；Python 通过受保护的内部 Worker API 协作。
-- 电商链接抓取本期不实现；有链接时生成来源告警并继续。
+- 电商链接采用 HTTPX 静态抓取、Trafilatura 清洗、隔离 Playwright 动态渲染兜底和 Ark 严格结构化抽取；无链接或页面受限时不阻断其他来源融合。
 - seed-2.1-turbo 通过可配置 Ark Provider 接入；开发与自动测试显式使用同契约 Mock Provider，生产禁止静默 Mock。
 - 提炼生成结果和人工修改先保存在领域结果表与节点草稿中，不自动提交 WorkingArtifact，也不进入正式项目资产库。
 - 当前产品只有点击“完成校验”并通过依赖与结构校验后，才提交 `marketing-insight:{productId}` 工作副本；相同 `contentHash` 不增加 revision。
@@ -438,8 +438,20 @@ Ark Provider 不再把超时、网络、限流、服务端异常、请求拒绝�
 
 ## 27. 2026-08-25 产品素材制作信息卡 V2
 
-结果契约升级为 schema v2，并按产品基础、卖点、用户、场景和制作规则五层展示。核心卖点强制 1～3 项，新增次要卖点、辅助信任背书、核心痛点、决策动因、购买场景和情绪共鸣场景；原 `brandTone` 迁移为 `visualStyleBaseline`。时长、画幅、渠道和视觉风格初始继承资料导入节点配置，并允许用户在信息卡中使用下拉框形成字段级人工覆盖；禁用词继续至少包含资料导入节点配置。
+结果契约升级为 schema v2，并按产品基础、卖点、用户、场景和制作规则五层展示。核心卖点强制 1～3 项，新增次要卖点、辅助信任背书、核心痛点、决策动因、购买场景和情绪共鸣场景；原 `brandTone` 迁移为 `visualStyleBaseline`。时长、画幅、渠道和视觉风格初始继承资料导入节点配置，并直接复用相同的数值输入及可创建自定义值选择控件形成字段级人工覆盖；禁用词继续至少包含资料导入节点配置。
 
 DOCUMENT、IMAGE、NORMALIZATION 三份 Prompt 已升级至 `2.0.0`。图片节点负责在不虚构硬事实与信任背书的前提下补充建议价格、人群、痛点、决策动因、营销目标和三类场景；NORMALIZATION 将溢出的核心卖点迁入次要卖点，且通过独立的 `protected_user_input_json` 接收人工覆盖。API 在 Worker 返回后再次确定性恢复表单配置和 `manualOverrides`，模型不能覆盖用户输入。
 
 生成、重新提炼和自动保存仍不提交 WorkingArtifact；只有“完成校验”才按 V2 contentHash 更新 `marketing-insight:{productId}`。历史 V1 JSON 通过读取适配器转换，旧工作副本不会因迁移隐式增加 revision。详细实施与验收记录见 `docs/效果类AI信息提炼-产品素材制作信息卡完善实施方案.md`。
+
+## 28. 2026-08-25 电商链接解析节点
+
+COMMERCE 分支已从固定 `SKIPPED` 升级为“静态抓取优先、浏览器渲染兜底、Ark 严格结构化抽取”。运行快照仍只接收当前产品的单个 `commerceUrl`，不新增数据库字段或公开 API。HTTPX 以流式方式读取最多 3 MiB 的 HTML，逐次校验最多三次重定向；优先解析 JSON-LD `Product/Offer/AggregateOffer`、OpenGraph 和商品规格，再由 Trafilatura 生成最多 80,000 字符的干净 Markdown。页面仅返回 JavaScript 空壳时，Worker 使用 Bearer Token 调用独立 `commerce-renderer` 服务，由非 root Playwright Chromium 在无 Cookie、禁止下载和 Service Worker 的独立 Context 中渲染，图片、视频和字体在请求前被屏蔽，DOM 上限 2 MiB、总超时 25 秒。
+
+Worker 和 Renderer 均只允许 HTTP/HTTPS 与 80/443 端口，拒绝 URL 凭据、私网、回环、链路本地、保留地址和云元数据地址；主页面、重定向及浏览器子请求均重新执行 DNS 公网地址校验。服务不登录、不注入 Cookie、不处理验证码，也不绕过平台风控。生产部署仍需在容器出口层阻断私网和元数据地址，作为应用校验之外的第二层保护。
+
+网页正文与结构化元数据在 Prompt 中被明确标记为不可信资料，网页内指令不得改变角色或输出契约。确定性 JSON-LD/OG 字段优先于模型推断，Ark 使用 `ExtractionCandidate.v2` 严格 JSON Schema 和 Pydantic 二次验证。`ARK_COMMERCE_MODEL` 为空时依次回退 `ARK_DOCUMENT_MODEL` 和 `ARK_MODEL`，旧环境仍只需提供 Ark API Key。原始 HTML 只存在于内存；清洗 Markdown 通过内部项目隔离、租约保护的产物接口以 `COMMERCE_MARKDOWN` 幂等写入对象存储，Graph state 和 Branch structured output 只保存候选字段、`sourceHost` 与安全诊断。
+
+状态语义固定为：无链接 `SKIPPED`；抓取和模型成功 `SUCCEEDED`；存在确定性商品字段但 AI 失败 `PARTIAL`；页面受限、不可访问或没有可用信息 `FAILED`。除内部 API 持久化失败外，电商来源失败不会中止其他并行分支。节点详情只白名单展示来源网站、商品名称、品类、价格区间、核心规格和卖点；不公开完整 URL、HTTP 状态、抓取模式、耗时、Token、模型、存储键、HTML、正文或其他内部元数据。历史无链接 Run 的旧告警在详情层隐藏，避免与“未提供商品链接，无需解析”摘要重复。
+
+新增隔离服务位于 `workers/effect-commerce-renderer`，Compose 默认以内部地址 `http://commerce-renderer:8080` 连接且不发布宿主端口。Worker 与 Renderer 镜像均已构建，Renderer 健康检查通过，Worker 已使用新镜像重建并恢复 RabbitMQ 消费。定向验证结果：Worker 54 项通过、3 项真实集成门控跳过，mypy 30 个源文件无错误；Renderer 17 项通过且无警告，严格 mypy 通过；API 电商产物、白名单投影和项目隔离测试通过。全仓 `pnpm check` 通过，包含 Lint、Prettier、TypeScript 类型检查、Contracts 9 项、API 141 项、Web 114 项测试及前后端生产构建。浏览器在全新 Vite 依赖环境中确认工作流弹窗可打开、COMMERCE 节点可点击、无链接状态只展示一次用户可理解的跳过摘要；本轮没有提交新的商品链接或触发付费 Ark 请求。

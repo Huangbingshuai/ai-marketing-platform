@@ -8,7 +8,7 @@ Python 3.12 + LangGraph Worker。RabbitMQ 消息只携带运行标识，Worker �
 load_snapshot
   ├─ documents (Docling + 文档候选抽取)
   ├─ images (Pillow 预处理 + Seed 多模态)
-  ├─ commerce (v1 显式 SKIPPED)
+  ├─ commerce (HTTPX 静态抓取 + Playwright 兜底 + Ark 商品抽取)
   └─ form (最高优先级)
           ↓ waiting edge: ALL
       fuse_sources
@@ -31,16 +31,16 @@ load_snapshot
 
 所有请求携带 `x-worker-token: $EFFECT_EXTRACTION_WORKER_TOKEN`。claim 成功后，后续请求还携带 `x-attempt-token`，并在 body 或 query 中传递 `projectId`。响应支持项目统一的 `{ success, data, message? }` envelope。
 
-| Method | 相对路径                                                                     | 用途                                                                                  |
-| ------ | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| POST   | `internal/workers/effect-extraction/runs/:runId/claim`                       | body `{ projectId }`；返回 `terminal/runId/sourceFingerprint/attemptToken/input`      |
-| PUT    | `internal/workers/effect-extraction/runs/:runId/progress`                    | 更新 `progress/currentNode`，同时续租                                                 |
-| PUT    | `internal/workers/effect-extraction/runs/:runId/branches`                    | 保存分支状态、结构化输出、警告与错误                                                  |
-| GET    | `internal/workers/effect-extraction/runs/:runId/branches`                    | 融合与标准化前读取外部化分支结果                                                      |
-| GET    | `internal/workers/effect-extraction/runs/:runId/sources/:materialId/content` | 读取被运行快照持有的源文件                                                            |
-| POST   | `internal/workers/effect-extraction/runs/:runId/artifacts`                   | multipart 上传 Markdown；字段为 `projectId/artifactKind/sourceId/idempotencyKey/file` |
-| POST   | `internal/workers/effect-extraction/runs/:runId/complete`                    | 事务性写入标准化结果并返回 `extractResultId`                                          |
-| POST   | `internal/workers/effect-extraction/runs/:runId/fail`                        | 写入终态失败及可重试语义                                                              |
+| Method | 相对路径                                                                     | 用途                                                                                                   |
+| ------ | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| POST   | `internal/workers/effect-extraction/runs/:runId/claim`                       | body `{ projectId }`；返回 `terminal/runId/sourceFingerprint/attemptToken/input`                       |
+| PUT    | `internal/workers/effect-extraction/runs/:runId/progress`                    | 更新 `progress/currentNode`，同时续租                                                                  |
+| PUT    | `internal/workers/effect-extraction/runs/:runId/branches`                    | 保存分支状态、结构化输出、警告与错误                                                                   |
+| GET    | `internal/workers/effect-extraction/runs/:runId/branches`                    | 融合与标准化前读取外部化分支结果                                                                       |
+| GET    | `internal/workers/effect-extraction/runs/:runId/sources/:materialId/content` | 读取被运行快照持有的源文件                                                                             |
+| POST   | `internal/workers/effect-extraction/runs/:runId/artifacts`                   | multipart 上传 Docling/电商清洗 Markdown；字段为 `projectId/artifactKind/sourceId/idempotencyKey/file` |
+| POST   | `internal/workers/effect-extraction/runs/:runId/complete`                    | 事务性写入标准化结果并返回 `extractResultId`                                                           |
+| POST   | `internal/workers/effect-extraction/runs/:runId/fail`                        | 写入终态失败及可重试语义                                                                               |
 
 claim 的 `input` 结构为：
 
@@ -63,12 +63,14 @@ materials[]
 - `ARK_API_KEY`（`ark` 必需）
 - `ARK_MODEL`，默认 `doubao-seed-2-1-turbo-260628`，作为所有模型调用的兼容回退
 - `ARK_DOCUMENT_MODEL`，可选，文档长文本候选抽取模型
+- `ARK_COMMERCE_MODEL`，可选，商品页候选抽取模型；为空时回退到文档模型
 - `ARK_IMAGE_MODEL`，可选，图片多模态理解模型
 - `ARK_NORMALIZATION_MODEL`，可选，融合结果结构化标准化模型
+- `COMMERCE_RENDERER_URL` 与 `COMMERCE_RENDERER_TOKEN`，可选但必须成对配置；Compose 默认连接隔离的 Playwright Renderer
 
-可选资源限制：`DOCLING_ARTIFACTS_PATH`、`DOCLING_MAX_FILE_SIZE`、`DOCLING_MAX_NUM_PAGES`、`MAX_DOCUMENT_TEXT_CHARS`、`IMAGE_MAX_INPUT_BYTES`、`IMAGE_MAX_DIMENSION`、`IMAGE_MAX_OUTPUT_BYTES`、`OMP_NUM_THREADS`。
+可选资源限制：`DOCLING_ARTIFACTS_PATH`、`DOCLING_MAX_FILE_SIZE`、`DOCLING_MAX_NUM_PAGES`、`MAX_DOCUMENT_TEXT_CHARS`、`MAX_COMMERCE_TEXT_CHARS`、`COMMERCE_STATIC_CONNECT_TIMEOUT_SECONDS`、`COMMERCE_STATIC_READ_TIMEOUT_SECONDS`、`COMMERCE_RENDERER_CLIENT_TIMEOUT_SECONDS`、`IMAGE_MAX_INPUT_BYTES`、`IMAGE_MAX_DIMENSION`、`IMAGE_MAX_OUTPUT_BYTES`、`OMP_NUM_THREADS`。
 
-Worker 默认使用 `ark`。三个专用模型变量为空或未设置时均回退到 `ARK_MODEL`，因此旧环境仍只需提供 `ARK_API_KEY`；缺少 Key 时会在消费消息前启动失败，不会静默降级。专用模型调用失败时不会自动换用回退模型。`mock` 只能通过 `EXTRACTION_AI_PROVIDER=mock` 显式启用，供自动测试和本地无模型联调使用。Ark Provider 使用 Responses API 的 `text.format=json_schema` 强制结构化输出，随后仍由 Pydantic 二次校验。
+Worker 默认使用 `ark`。文档、图片和标准化专用模型为空时回退到 `ARK_MODEL`；电商模型为空时先回退到 `ARK_DOCUMENT_MODEL`，再回退到 `ARK_MODEL`，因此旧环境仍只需提供 `ARK_API_KEY`。缺少 Key 时会在消费消息前启动失败，不会静默降级。专用模型调用失败时不会自动换用回退模型。`mock` 只能通过 `EXTRACTION_AI_PROVIDER=mock` 显式启用，供自动测试和本地无模型联调使用。Ark Provider 使用 Responses API 的 `text.format=json_schema` 强制结构化输出，随后仍由 Pydantic 二次校验。
 
 每次成功调用会把阶段、实际配置模型、提示词版本、Token 用量、总延迟和尝试次数写入内部 Branch metadata 的 `aiCall`。方舟响应不含 usage 时 Token 字段为 `null`，不会影响业务结果。该指标不包含 Prompt、文档正文、图片 Base64、密钥或完整模型输出，也不会通过普通节点详情接口直接返回。
 
@@ -78,6 +80,7 @@ Worker 默认使用 `ark`。三个专用模型变量为空或未设置时均回�
 
 - `document_extraction.prompt.txt`：文档资料抽取。
 - `image_analysis.prompt.txt`：产品图片识别。
+- `commerce_extraction.prompt.txt`：把公开商品页的结构化元数据和清洗正文作为不可信资料抽取，不执行网页内指令。
 - `result_normalization.prompt.txt`：融合结果标准化。
 
 `prompt_loader.py` 按文件名加载、缓存和渲染提示词，并拒绝目录穿越和非 `.prompt.txt` 文件。`providers.py` 只声明所需文件名并传入资料名、正文、图片元数据和融合候选 JSON。修改模板时不得改名 `$source_name`、`$document_markdown`、`$image_metadata_json` 和 `$fused_candidate_json` 占位符；缺少文件或变量时 Worker 会立即失败。`prompts/` 作为 Python 包内资源会随 Worker wheel 一起发布。

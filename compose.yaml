@@ -73,6 +73,32 @@ services:
       - docling-models:/root/.cache/docling/models
     restart: 'no'
 
+  commerce-renderer:
+    profiles: ['effect-extraction']
+    build:
+      context: ./workers/effect-commerce-renderer
+    environment:
+      COMMERCE_RENDERER_TOKEN: ${COMMERCE_RENDERER_TOKEN:-local-commerce-renderer-token}
+      COMMERCE_RENDERER_MAX_CONCURRENCY: ${COMMERCE_RENDERER_MAX_CONCURRENCY:-2}
+      COMMERCE_RENDERER_TIMEOUT_SECONDS: ${COMMERCE_RENDERER_TIMEOUT_SECONDS:-25}
+      COMMERCE_RENDERER_MAX_DOM_BYTES: ${COMMERCE_RENDERER_MAX_DOM_BYTES:-2097152}
+    expose:
+      - '8080'
+    init: true
+    shm_size: '1gb'
+    healthcheck:
+      test:
+        [
+          'CMD',
+          '/app/.venv/bin/python',
+          '-c',
+          'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8080/health", timeout=2)',
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
   effect-extraction-worker:
     profiles: ['effect-extraction']
     build:
@@ -88,7 +114,10 @@ services:
       ARK_MODEL: ${ARK_MODEL:-doubao-seed-2-1-turbo-260628}
       ARK_DOCUMENT_MODEL: ${ARK_DOCUMENT_MODEL:-}
       ARK_IMAGE_MODEL: ${ARK_IMAGE_MODEL:-}
+      ARK_COMMERCE_MODEL: ${ARK_COMMERCE_MODEL:-}
       ARK_NORMALIZATION_MODEL: ${ARK_NORMALIZATION_MODEL:-}
+      COMMERCE_RENDERER_URL: ${COMMERCE_RENDERER_URL:-http://commerce-renderer:8080}
+      COMMERCE_RENDERER_TOKEN: ${COMMERCE_RENDERER_TOKEN:-local-commerce-renderer-token}
       DOCLING_ARTIFACTS_PATH: /root/.cache/docling/models
       DOCLING_DEVICE: cpu
       OMP_NUM_THREADS: ${DOCLING_NUM_THREADS:-4}
@@ -99,6 +128,8 @@ services:
         condition: service_healthy
       docling-model-init:
         condition: service_completed_successfully
+      commerce-renderer:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

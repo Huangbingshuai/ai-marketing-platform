@@ -17,8 +17,15 @@ def _base_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "ARK_API_KEY",
         "ARK_MODEL",
         "ARK_DOCUMENT_MODEL",
+        "ARK_COMMERCE_MODEL",
         "ARK_IMAGE_MODEL",
         "ARK_NORMALIZATION_MODEL",
+        "COMMERCE_RENDERER_URL",
+        "COMMERCE_RENDERER_TOKEN",
+        "COMMERCE_STATIC_CONNECT_TIMEOUT_SECONDS",
+        "COMMERCE_STATIC_READ_TIMEOUT_SECONDS",
+        "COMMERCE_RENDERER_CLIENT_TIMEOUT_SECONDS",
+        "MAX_COMMERCE_TEXT_CHARS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -52,6 +59,7 @@ def test_default_provider_uses_seed_2_1_turbo_model_id(
 
     assert settings.ark_model == DEFAULT_ARK_MODEL
     assert settings.resolved_document_model == DEFAULT_ARK_MODEL
+    assert settings.resolved_commerce_model == DEFAULT_ARK_MODEL
     assert settings.resolved_image_model == DEFAULT_ARK_MODEL
     assert settings.resolved_normalization_model == DEFAULT_ARK_MODEL
 
@@ -63,14 +71,81 @@ def test_stage_models_support_specific_values_and_blank_fallback(
     monkeypatch.setenv("ARK_API_KEY", "test-key")
     monkeypatch.setenv("ARK_MODEL", "base-model")
     monkeypatch.setenv("ARK_DOCUMENT_MODEL", " document-model ")
+    monkeypatch.setenv("ARK_COMMERCE_MODEL", " commerce-model ")
     monkeypatch.setenv("ARK_IMAGE_MODEL", "   ")
     monkeypatch.setenv("ARK_NORMALIZATION_MODEL", "normalization-model")
 
     settings = WorkerSettings()  # type: ignore[call-arg]
 
     assert settings.resolved_document_model == "document-model"
+    assert settings.resolved_commerce_model == "commerce-model"
     assert settings.resolved_image_model == "base-model"
     assert settings.resolved_normalization_model == "normalization-model"
+
+
+@pytest.mark.parametrize(
+    ("commerce_model", "document_model", "expected"),
+    [
+        ("commerce-model", "document-model", "commerce-model"),
+        ("   ", "document-model", "document-model"),
+        ("", "   ", "base-model"),
+    ],
+)
+def test_commerce_model_routes_from_specific_to_document_to_base(
+    monkeypatch: pytest.MonkeyPatch,
+    commerce_model: str,
+    document_model: str,
+    expected: str,
+) -> None:
+    _base_environment(monkeypatch)
+    monkeypatch.setenv("ARK_API_KEY", "test-key")
+    monkeypatch.setenv("ARK_MODEL", "base-model")
+    monkeypatch.setenv("ARK_COMMERCE_MODEL", commerce_model)
+    monkeypatch.setenv("ARK_DOCUMENT_MODEL", document_model)
+
+    settings = WorkerSettings()  # type: ignore[call-arg]
+
+    assert settings.resolved_commerce_model == expected
+
+
+@pytest.mark.parametrize(
+    ("renderer_url", "renderer_token"),
+    [
+        ("http://renderer.test:8080", None),
+        (None, "renderer-token"),
+    ],
+)
+def test_renderer_url_and_token_must_be_configured_together(
+    monkeypatch: pytest.MonkeyPatch,
+    renderer_url: str | None,
+    renderer_token: str | None,
+) -> None:
+    _base_environment(monkeypatch)
+    monkeypatch.setenv("EXTRACTION_AI_PROVIDER", "mock")
+    if renderer_url is not None:
+        monkeypatch.setenv("COMMERCE_RENDERER_URL", renderer_url)
+    if renderer_token is not None:
+        monkeypatch.setenv("COMMERCE_RENDERER_TOKEN", renderer_token)
+
+    with pytest.raises(
+        ValidationError,
+        match="COMMERCE_RENDERER_URL and COMMERCE_RENDERER_TOKEN must be configured together",
+    ):
+        WorkerSettings()  # type: ignore[call-arg]
+
+
+def test_renderer_url_and_token_pair_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _base_environment(monkeypatch)
+    monkeypatch.setenv("EXTRACTION_AI_PROVIDER", "mock")
+    monkeypatch.setenv("COMMERCE_RENDERER_URL", "http://renderer.test:8080")
+    monkeypatch.setenv("COMMERCE_RENDERER_TOKEN", "renderer-token")
+
+    settings = WorkerSettings()  # type: ignore[call-arg]
+
+    assert str(settings.commerce_renderer_url).startswith("http://renderer.test:8080")
+    assert settings.commerce_renderer_token is not None
 
 
 def test_explicit_mock_is_the_only_credential_free_provider(

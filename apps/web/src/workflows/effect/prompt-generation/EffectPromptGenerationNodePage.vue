@@ -423,9 +423,7 @@ onBeforeUnmount(() => {
             <h2 id="effect-prompt-title">差异化 Prompt 批量生成</h2>
             <p>
               默认 {{ currentWorkspace.settings.count }} 条 ×
-              {{
-                currentWorkspace.settings.durationSeconds
-              }}
+              {{ currentWorkspace.settings.durationSeconds }}
               秒，系统自动执行六维差异化组合与双重去重
             </p>
           </div>

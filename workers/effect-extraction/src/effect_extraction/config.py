@@ -40,8 +40,28 @@ class WorkerSettings(BaseSettings):
     ark_api_key: SecretStr | None = Field(default=None, alias="ARK_API_KEY")
     ark_model: str = Field(default=DEFAULT_ARK_MODEL, alias="ARK_MODEL")
     ark_document_model: str | None = Field(default=None, alias="ARK_DOCUMENT_MODEL")
+    ark_commerce_model: str | None = Field(default=None, alias="ARK_COMMERCE_MODEL")
     ark_image_model: str | None = Field(default=None, alias="ARK_IMAGE_MODEL")
     ark_normalization_model: str | None = Field(default=None, alias="ARK_NORMALIZATION_MODEL")
+
+    commerce_renderer_url: AnyHttpUrl | None = Field(
+        default=None, alias="COMMERCE_RENDERER_URL"
+    )
+    commerce_renderer_token: SecretStr | None = Field(
+        default=None, alias="COMMERCE_RENDERER_TOKEN"
+    )
+    commerce_static_connect_timeout_seconds: float = Field(
+        default=5.0, alias="COMMERCE_STATIC_CONNECT_TIMEOUT_SECONDS", gt=0
+    )
+    commerce_static_read_timeout_seconds: float = Field(
+        default=15.0, alias="COMMERCE_STATIC_READ_TIMEOUT_SECONDS", gt=0
+    )
+    commerce_renderer_timeout_seconds: float = Field(
+        default=30.0, alias="COMMERCE_RENDERER_CLIENT_TIMEOUT_SECONDS", gt=0
+    )
+    max_commerce_text_chars: int = Field(
+        default=80_000, alias="MAX_COMMERCE_TEXT_CHARS", ge=1_000, le=200_000
+    )
 
     docling_artifacts_path: str | None = Field(default=None, alias="DOCLING_ARTIFACTS_PATH")
     docling_max_file_size: int = Field(
@@ -67,6 +87,7 @@ class WorkerSettings(BaseSettings):
         self.ark_model = self.ark_model.strip()
         for field_name in (
             "ark_document_model",
+            "ark_commerce_model",
             "ark_image_model",
             "ark_normalization_model",
         ):
@@ -84,6 +105,15 @@ class WorkerSettings(BaseSettings):
                 raise ValueError("ARK_MODEL cannot be empty when EXTRACTION_AI_PROVIDER=ark")
         if not self.effect_extraction_queue.strip():
             raise ValueError("EFFECT_EXTRACTION_QUEUE cannot be empty")
+        renderer_token = (
+            self.commerce_renderer_token.get_secret_value().strip()
+            if self.commerce_renderer_token is not None
+            else ""
+        )
+        if (self.commerce_renderer_url is None) != (not renderer_token):
+            raise ValueError(
+                "COMMERCE_RENDERER_URL and COMMERCE_RENDERER_TOKEN must be configured together"
+            )
         return self
 
     @property
@@ -93,6 +123,10 @@ class WorkerSettings(BaseSettings):
     @property
     def resolved_image_model(self) -> str:
         return self.ark_image_model or self.ark_model
+
+    @property
+    def resolved_commerce_model(self) -> str:
+        return self.ark_commerce_model or self.ark_document_model or self.ark_model
 
     @property
     def resolved_normalization_model(self) -> str:

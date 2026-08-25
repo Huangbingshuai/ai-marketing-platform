@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import viteConfigSource from '../../../../vite.config.ts?raw';
+import creatableSelectSource from '../source-import/components/EffectUpwardCreatableSelect.vue?raw';
 import pageSource from './EffectInfoExtractionNodePage.vue?raw';
 
 describe('effect info extraction result layout', () => {
@@ -107,10 +108,13 @@ describe('effect info extraction result layout', () => {
       expect(pageSource).toContain(field);
     expect(pageSource).toContain('暂无可验证的信任背书');
     expect(pageSource).toContain('初始值继承资料导入节点，可在当前信息卡中调整');
-    expect(pageSource).toContain('v-model.number="visibleResult.durationSeconds"');
-    expect(pageSource).toContain('v-model="visibleResult.aspectRatio"');
-    expect(pageSource).toContain('v-model="visibleResult.deliveryChannels"');
-    expect(pageSource).toContain('v-model="visibleResult.visualStyleBaseline"');
+    expect(pageSource).toContain('EffectUpwardCreatableSelect');
+    expect(pageSource).toContain(':value="visibleResult.durationSeconds"');
+    expect(pageSource).toContain("updateProductionRule('aspectRatio', $event)");
+    expect(pageSource).toContain("updateProductionRule('deliveryChannels', $event)");
+    expect(pageSource).toContain("updateProductionRule('visualStyleBaseline', $event)");
+    expect(creatableSelectSource).toContain("placeholder: '请选择或输入自定义值'");
+    expect(creatableSelectSource).toContain('v-if="canCreate"');
     expect(pageSource).toContain('EFFECT_IMPORT_PROTOTYPE_STYLE_TONES');
     expect(pageSource).toContain('.production-rule-grid .field-label + .field-label');
     expect(pageSource).toContain('.production-rule-grid + .field-label');

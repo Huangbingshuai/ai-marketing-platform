@@ -5,6 +5,14 @@ from collections.abc import Sequence
 from pathlib import PurePath
 
 from .api_client import InternalApi, InternalApiError
+from .commerce import (
+    CommerceErrorType,
+    CommerceFetchError,
+    CommerceFetcher,
+    HttpxCommerceFetcher,
+    has_candidate_data,
+    merge_commerce_candidates,
+)
 from .docling_parser import DocumentParser
 from .fusion import FusionError, fuse
 from .image_processing import ImageProcessor
@@ -43,12 +51,16 @@ class ExtractionPipeline:
         document_parser: DocumentParser,
         image_processor: ImageProcessor,
         max_document_text_chars: int,
+        commerce_fetcher: CommerceFetcher | None = None,
+        max_commerce_text_chars: int = 80_000,
     ) -> None:
         self.api = api
         self.provider = provider
         self.document_parser = document_parser
         self.image_processor = image_processor
         self.max_document_text_chars = max_document_text_chars
+        self.commerce_fetcher = commerce_fetcher or HttpxCommerceFetcher()
+        self.max_commerce_text_chars = max_commerce_text_chars
         self._snapshots: dict[str, ExtractionSnapshot] = {}
         self._progress: dict[str, ProgressPayload] = {}
 
@@ -222,21 +234,132 @@ class ExtractionPipeline:
     async def commerce_branch(self, context: RuntimeContext) -> BranchOutput:
         snapshot = self._snapshot(context)
         await self._start(context, BranchName.COMMERCE)
-        warnings = (
-            ["当前版本暂未解析电商链接，链接已保留在运行快照中"]
-            if snapshot.product.commerce_url
-            else ["未提供电商链接，无需解析"]
-        )
-        return await self._save(
+        await self.report_progress(
             context,
-            BranchOutput(
-                branch=BranchName.COMMERCE,
-                status=BranchStatus.SKIPPED,
-                source_fingerprint=context.source_fingerprint,
-                warnings=warnings,
-                metadata={"hasCommerceUrl": bool(snapshot.product.commerce_url)},
-            ),
+            ProgressPayload(current_node="COMMERCE", progress=15),
         )
+        commerce_url = _optional(snapshot.product.commerce_url)
+        if commerce_url is None:
+            return await self._save(
+                context,
+                BranchOutput(
+                    branch=BranchName.COMMERCE,
+                    status=BranchStatus.SKIPPED,
+                    source_fingerprint=context.source_fingerprint,
+                    warnings=[],
+                    metadata={"hasCommerceUrl": False},
+                ),
+            )
+
+        try:
+            page = await self.commerce_fetcher.fetch(commerce_url)
+            storage_key = await self.api.upload_artifact(
+                context,
+                artifact_kind="COMMERCE_MARKDOWN",
+                source_id=snapshot.product.id,
+                content=page.markdown.encode("utf-8"),
+                content_type="text/markdown; charset=utf-8",
+                idempotency_key=(
+                    f"{context.run_id}:commerce:{snapshot.product.id}:"
+                    f"{context.source_fingerprint}"
+                ),
+            )
+            model_text = page.markdown[: self.max_commerce_text_chars]
+            try:
+                ai_call = await self.provider.extract_commerce(
+                    model_text,
+                    source_host=page.source_host,
+                    structured_metadata=page.model_metadata,
+                )
+                candidate = merge_commerce_candidates(
+                    page.deterministic_candidate, ai_call.value
+                )
+                if not has_candidate_data(candidate):
+                    raise CommerceFetchError(CommerceErrorType.EMPTY_CONTENT)
+                item = BranchItem(
+                    source_id=snapshot.product.id,
+                    status=BranchStatus.SUCCEEDED,
+                    candidate=candidate,
+                    artifact_storage_key=storage_key,
+                    metadata={
+                        "sourceHost": page.source_host,
+                        "pageTitle": page.page_title,
+                        "aiCall": ai_call.metadata.as_dict(),
+                    },
+                )
+                output = BranchOutput(
+                    branch=BranchName.COMMERCE,
+                    status=BranchStatus.SUCCEEDED,
+                    source_fingerprint=context.source_fingerprint,
+                    candidate=candidate,
+                    items=[item],
+                    metadata={"sourceHost": page.source_host},
+                )
+            except ProviderError as exc:
+                if not has_candidate_data(page.deterministic_candidate):
+                    output = _commerce_failed_output(
+                        context,
+                        snapshot.product.id,
+                        exc,
+                        source_host=page.source_host,
+                        page_title=page.page_title,
+                        artifact_storage_key=storage_key,
+                    )
+                else:
+                    warning = _provider_error_message(BranchName.COMMERCE, exc.error_type)
+                    error = {
+                        "type": exc.error_type.value,
+                        "attempts": exc.attempts,
+                        "elapsedMs": exc.elapsed_ms,
+                    }
+                    item = BranchItem(
+                        source_id=snapshot.product.id,
+                        status=BranchStatus.PARTIAL,
+                        candidate=page.deterministic_candidate,
+                        artifact_storage_key=storage_key,
+                        warning=warning,
+                        metadata={
+                            "sourceHost": page.source_host,
+                            "pageTitle": page.page_title,
+                            "error": error,
+                        },
+                    )
+                    output = BranchOutput(
+                        branch=BranchName.COMMERCE,
+                        status=BranchStatus.PARTIAL,
+                        source_fingerprint=context.source_fingerprint,
+                        candidate=page.deterministic_candidate,
+                        items=[item],
+                        warnings=[warning],
+                        metadata={"sourceHost": page.source_host, "failures": [error]},
+                    )
+            except CommerceFetchError as exc:
+                output = _commerce_failed_output(
+                    context,
+                    snapshot.product.id,
+                    exc,
+                    source_host=page.source_host,
+                    page_title=page.page_title,
+                    artifact_storage_key=storage_key,
+                )
+            return await self._save(context, output)
+        except InternalApiError as exc:
+            if exc.retryable:
+                raise
+            return await self._save(
+                context,
+                _commerce_failed_output(context, snapshot.product.id, exc),
+            )
+        except (CommerceFetchError, ProviderError) as exc:
+            return await self._save(
+                context,
+                _commerce_failed_output(context, snapshot.product.id, exc),
+            )
+        except Exception as exc:
+            return await self._save(
+                context,
+                _commerce_failed_output(context, snapshot.product.id, exc),
+            )
 
     async def form_branch(self, context: RuntimeContext) -> BranchOutput:
         snapshot = self._snapshot(context)
@@ -413,6 +536,28 @@ def _failed_item(source_id: str, exc: Exception, branch: BranchName) -> BranchIt
                 }
             },
         )
+    if isinstance(exc, CommerceFetchError):
+        return BranchItem(
+            source_id=source_id,
+            status=BranchStatus.FAILED,
+            warning=str(exc),
+            metadata={
+                "error": {
+                    "type": exc.error_type.value,
+                    "attempts": exc.attempts,
+                    "elapsedMs": exc.elapsed_ms,
+                }
+            },
+        )
+    if branch == BranchName.COMMERCE:
+        return BranchItem(
+            source_id=source_id,
+            status=BranchStatus.FAILED,
+            warning="商品页面解析失败",
+            metadata={
+                "error": {"type": "COMMERCE_UNKNOWN", "attempts": 1, "elapsedMs": 0}
+            },
+        )
     return BranchItem(
         source_id=source_id,
         status=BranchStatus.FAILED,
@@ -421,7 +566,12 @@ def _failed_item(source_id: str, exc: Exception, branch: BranchName) -> BranchIt
 
 
 def _provider_error_message(branch: BranchName, error_type: ProviderErrorType) -> str:
-    action = "文档 AI 抽取" if branch == BranchName.DOCUMENT else "图片 AI 识别"
+    actions = {
+        BranchName.DOCUMENT: "文档 AI 抽取",
+        BranchName.IMAGE: "图片 AI 识别",
+        BranchName.COMMERCE: "商品页面 AI 抽取",
+    }
+    action = actions.get(branch, "AI 处理")
     suffixes = {
         ProviderErrorType.TIMEOUT: "超时",
         ProviderErrorType.NETWORK: "连接失败",
@@ -432,6 +582,43 @@ def _provider_error_message(branch: BranchName, error_type: ProviderErrorType) -
         ProviderErrorType.UNKNOWN: "失败",
     }
     return f"{action}{suffixes[error_type]}"
+
+
+def _commerce_failed_output(
+    context: RuntimeContext,
+    source_id: str,
+    exc: Exception,
+    *,
+    source_host: str | None = None,
+    page_title: str | None = None,
+    artifact_storage_key: str | None = None,
+) -> BranchOutput:
+    item = _failed_item(source_id, exc, BranchName.COMMERCE)
+    if source_host or page_title or artifact_storage_key:
+        item = item.model_copy(
+            update={
+                "artifact_storage_key": artifact_storage_key,
+                "metadata": {
+                    **item.metadata,
+                    **({"sourceHost": source_host} if source_host else {}),
+                    **({"pageTitle": page_title} if page_title else {}),
+                },
+            }
+        )
+    error = item.metadata.get("error")
+    metadata: dict[str, object] = {}
+    if isinstance(error, dict):
+        metadata["failures"] = [error]
+    if source_host:
+        metadata["sourceHost"] = source_host
+    return BranchOutput(
+        branch=BranchName.COMMERCE,
+        status=BranchStatus.FAILED,
+        source_fingerprint=context.source_fingerprint,
+        items=[item],
+        warnings=[item.warning] if item.warning else [],
+        metadata=metadata,
+    )
 
 
 def _safe_error(exc: Exception) -> str:

@@ -20,6 +20,11 @@ import {
   Min,
 } from 'class-validator';
 
+import {
+  EFFECT_EXTRACTION_ARTIFACT_KINDS,
+  type EffectExtractionArtifactKind,
+} from '../effect-extraction.types';
+
 export class ExtractionWorkspaceQueryDto {
   @IsUUID('4') draftId!: string;
 }
@@ -73,7 +78,7 @@ export class WorkerFailDto extends WorkerProjectDto {
 }
 
 export class WorkerArtifactDto extends WorkerProjectDto {
-  @IsIn(['DOCLING_MARKDOWN']) artifactKind!: 'DOCLING_MARKDOWN';
+  @IsIn([...EFFECT_EXTRACTION_ARTIFACT_KINDS]) artifactKind!: EffectExtractionArtifactKind;
   @IsOptional() @IsString() @MaxLength(255) sourceId?: string;
   @IsString() @MaxLength(500) idempotencyKey!: string;
 }

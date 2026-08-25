@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 from .api_client import HttpInternalApi
+from .commerce import HttpCommerceRenderer, HttpxCommerceFetcher
 from .config import WorkerSettings, get_settings
 from .consumer import ExtractionConsumer
 from .docling_parser import LocalDoclingParser
@@ -22,6 +23,7 @@ def _provider(settings: WorkerSettings) -> AiProvider:
         api_key=settings.ark_api_key.get_secret_value(),
         model=settings.ark_model,
         document_model=settings.resolved_document_model,
+        commerce_model=settings.resolved_commerce_model,
         image_model=settings.resolved_image_model,
         normalization_model=settings.resolved_normalization_model,
         timeout=settings.ark_timeout_seconds,
@@ -35,6 +37,14 @@ async def serve(settings: WorkerSettings) -> None:
         timeout=settings.api_timeout_seconds,
     )
     provider = _provider(settings)
+    commerce_renderer = None
+    if settings.commerce_renderer_url is not None:
+        assert settings.commerce_renderer_token is not None
+        commerce_renderer = HttpCommerceRenderer(
+            str(settings.commerce_renderer_url),
+            settings.commerce_renderer_token.get_secret_value(),
+            timeout=settings.commerce_renderer_timeout_seconds,
+        )
     pipeline = ExtractionPipeline(
         api=api,
         provider=provider,
@@ -49,6 +59,12 @@ async def serve(settings: WorkerSettings) -> None:
             max_output_bytes=settings.image_max_output_bytes,
         ),
         max_document_text_chars=settings.max_document_text_chars,
+        commerce_fetcher=HttpxCommerceFetcher(
+            renderer=commerce_renderer,
+            connect_timeout=settings.commerce_static_connect_timeout_seconds,
+            read_timeout=settings.commerce_static_read_timeout_seconds,
+        ),
+        max_commerce_text_chars=settings.max_commerce_text_chars,
     )
     consumer = ExtractionConsumer(
         rabbitmq_url=settings.rabbitmq_url.get_secret_value(),

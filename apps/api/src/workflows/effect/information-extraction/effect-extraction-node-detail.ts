@@ -58,6 +58,14 @@ const CANDIDATE_FIELDS = [
   ['visualStyleBaseline', '视觉风格基线'],
 ] as const;
 
+const COMMERCE_CANDIDATE_FIELDS = [
+  ['productName', '商品名称'],
+  ['productCategory', '品类'],
+  ['priceRange', '价格区间'],
+  ['coreSpecification', '核心规格'],
+  ['coreSellingPoints', '卖点'],
+] as const;
+
 const SOURCE_LABELS: Record<string, string> = {
   FORM: '人工表单',
   DOCUMENT: '文档解析',
@@ -215,7 +223,52 @@ const commerceHost = (value: string | null): string | null => {
   try {
     return new URL(value).hostname.slice(0, 120);
   } catch {
-    return '链接格式不可识别';
+    return null;
+  }
+};
+
+const structuredCommerceHost = (value: unknown): string | null => {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const raw = value.trim();
+  try {
+    const host = new URL(raw.includes('://') ? raw : `https://${raw}`).hostname
+      .toLowerCase()
+      .slice(0, 120);
+    return host || null;
+  } catch {
+    return null;
+  }
+};
+
+const commerceFields = (
+  candidate: unknown,
+  metadata: JsonRecord,
+  fallbackUrl: string | null,
+): EffectExtractionNodeDetailField[] => {
+  const record = isRecord(candidate) ? candidate : {};
+  const host =
+    structuredCommerceHost(metadata.sourceHost) ??
+    (metadata.hasCommerceUrl === true ? commerceHost(fallbackUrl) : null);
+  return fields([
+    field('commerceHost', '来源网站', host),
+    ...COMMERCE_CANDIDATE_FIELDS.map(([key, label]) => field(key, label, record[key])),
+  ]);
+};
+
+const commerceSummary = (nodeStatus: EffectExtractionNodeStatus): string => {
+  switch (nodeStatus) {
+    case 'FAILED':
+      return '商品页面暂时无法读取，已继续使用其他资料';
+    case 'PARTIAL':
+      return '已提取部分商品信息';
+    case 'SUCCEEDED':
+      return '已提取商品页中的产品信息';
+    case 'SKIPPED':
+      return '未提供商品链接，无需解析';
+    case 'RUNNING':
+      return '正在解析商品链接';
+    default:
+      return '等待解析商品链接';
   }
 };
 
@@ -326,13 +379,16 @@ export const presentExtractionNodeDetail = (
   }
 
   if (nodeId === 'COMMERCE') {
+    const visibleFields = commerceFields(
+      output.candidate,
+      output.metadata,
+      snapshot.product.commerceUrl,
+    );
     return {
       ...base,
-      summary: branch ? '已检查商品链接' : '等待检查商品链接',
-      fields: fields([
-        field('hasCommerceUrl', '是否提供电商链接', Boolean(snapshot.product.commerceUrl)),
-        field('commerceHost', '链接域名', commerceHost(snapshot.product.commerceUrl)),
-      ]),
+      warnings: execution.status === 'SKIPPED' ? [] : base.warnings,
+      summary: commerceSummary(execution.status),
+      fields: visibleFields,
       sources: [],
     };
   }

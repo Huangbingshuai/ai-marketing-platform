@@ -1,10 +1,13 @@
 import { HttpStatus } from '@nestjs/common';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { StoragePort } from '../../../platform/file/storage.port';
 import type { JobProgressStore } from '../../../platform/job/job.ports';
 import type { ProjectService } from '../../../platform/project/project.service';
 import type { EffectExtractionRepository } from './effect-extraction.repository';
+import { WorkerArtifactDto } from './dto/effect-extraction.dto';
 import { EffectExtractionService } from './effect-extraction.service';
 
 const projectService = (): ProjectService =>
@@ -573,6 +576,151 @@ describe('EffectExtractionService', () => {
       sizeBytes: 42,
       replayed: true,
     });
+    expect(storagePort.put).not.toHaveBeenCalled();
+  });
+
+  it('accepts COMMERCE_MARKDOWN in the worker artifact DTO', async () => {
+    const dto = plainToInstance(WorkerArtifactDto, {
+      projectId: '2f67a1e4-3ccd-4505-a0aa-0a868d3439c0',
+      artifactKind: 'COMMERCE_MARKDOWN',
+      idempotencyKey: 'commerce:product-a',
+    });
+
+    await expect(validate(dto)).resolves.toEqual([]);
+  });
+
+  it('rejects raw HTML and unknown worker artifact kinds', async () => {
+    const dto = plainToInstance(WorkerArtifactDto, {
+      projectId: '2f67a1e4-3ccd-4505-a0aa-0a868d3439c0',
+      artifactKind: 'COMMERCE_RAW_HTML',
+      idempotencyKey: 'commerce:product-a',
+    });
+
+    const errors = await validate(dto);
+    expect(errors).toEqual([
+      expect.objectContaining({
+        property: 'artifactKind',
+        constraints: expect.objectContaining({ isIn: expect.any(String) }),
+      }),
+    ]);
+  });
+
+  it('replays a project-scoped commerce artifact idempotently', async () => {
+    const repository = {
+      authorizedRun: vi.fn().mockResolvedValue({ inputSnapshot: {}, productId: 'product-a' }),
+      artifactByKey: vi.fn().mockResolvedValue({
+        id: 'artifact-commerce',
+        artifactKind: 'COMMERCE_MARKDOWN',
+        sourceId: null,
+        storageKey: 'stored/commerce.md',
+        sizeBytes: 128,
+      }),
+    } as unknown as EffectExtractionRepository;
+    const storagePort = { put: vi.fn(), delete: vi.fn() } as unknown as StoragePort;
+    const service = new EffectExtractionService(
+      repository,
+      projectService(),
+      {} as JobProgressStore,
+      storagePort,
+    );
+
+    await expect(
+      service.storeArtifact(
+        'project-a',
+        'run-a',
+        'attempt-a',
+        {
+          artifactKind: 'COMMERCE_MARKDOWN',
+          idempotencyKey: 'commerce:product-a',
+        },
+        {
+          path: 'Z:/missing-but-force-removable.md',
+          originalname: 'commerce.md',
+          mimetype: 'text/plain',
+          size: 128,
+        },
+      ),
+    ).resolves.toEqual({
+      artifactId: 'artifact-commerce',
+      storageKey: 'stored/commerce.md',
+      sizeBytes: 128,
+      replayed: true,
+    });
+    expect(repository.authorizedRun).toHaveBeenCalledWith('project-a', 'run-a', 'attempt-a');
+    expect(repository.artifactByKey).toHaveBeenCalledWith(
+      'project-a',
+      'run-a',
+      'commerce:product-a',
+    );
+    expect(storagePort.put).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-text commerce artifacts before storage', async () => {
+    const repository = {
+      authorizedRun: vi.fn(),
+      artifactByKey: vi.fn(),
+    } as unknown as EffectExtractionRepository;
+    const storagePort = { put: vi.fn(), delete: vi.fn() } as unknown as StoragePort;
+    const service = new EffectExtractionService(
+      repository,
+      projectService(),
+      {} as JobProgressStore,
+      storagePort,
+    );
+
+    await expect(
+      service.storeArtifact(
+        'project-a',
+        'run-a',
+        'attempt-a',
+        {
+          artifactKind: 'COMMERCE_MARKDOWN',
+          idempotencyKey: 'commerce:product-a',
+        },
+        {
+          path: 'Z:/missing-commerce.bin',
+          originalname: 'commerce.bin',
+          mimetype: 'application/octet-stream',
+          size: 128,
+        },
+      ),
+    ).rejects.toMatchObject({ status: HttpStatus.BAD_REQUEST });
+    expect(repository.authorizedRun).not.toHaveBeenCalled();
+    expect(storagePort.put).not.toHaveBeenCalled();
+  });
+
+  it('does not access storage when the commerce artifact lease is outside the project scope', async () => {
+    const repository = {
+      authorizedRun: vi.fn().mockResolvedValue(null),
+      artifactByKey: vi.fn(),
+    } as unknown as EffectExtractionRepository;
+    const storagePort = { put: vi.fn(), delete: vi.fn() } as unknown as StoragePort;
+    const service = new EffectExtractionService(
+      repository,
+      projectService(),
+      {} as JobProgressStore,
+      storagePort,
+    );
+
+    await expect(
+      service.storeArtifact(
+        'project-b',
+        'run-a',
+        'attempt-a',
+        {
+          artifactKind: 'COMMERCE_MARKDOWN',
+          idempotencyKey: 'commerce:product-a',
+        },
+        {
+          path: 'Z:/missing-commerce.md',
+          originalname: 'commerce.md',
+          mimetype: 'text/markdown',
+          size: 128,
+        },
+      ),
+    ).rejects.toMatchObject({ status: HttpStatus.CONFLICT });
+    expect(repository.authorizedRun).toHaveBeenCalledWith('project-b', 'run-a', 'attempt-a');
+    expect(repository.artifactByKey).not.toHaveBeenCalled();
     expect(storagePort.put).not.toHaveBeenCalled();
   });
 });

@@ -32,7 +32,12 @@ import type { JobProgressStore } from '../../../platform/job/job.ports';
 import { STORAGE_PORT, type StoragePort } from '../../../platform/file/storage.port';
 import { EffectExtractionRepository } from './effect-extraction.repository';
 import { presentExtractionNodeDetail } from './effect-extraction-node-detail';
-import type { CompleteRunInput, EffectExtractionInputSnapshot } from './effect-extraction.types';
+import {
+  EFFECT_EXTRACTION_ARTIFACT_KINDS,
+  type CompleteRunInput,
+  type EffectExtractionArtifactKind,
+  type EffectExtractionInputSnapshot,
+} from './effect-extraction.types';
 import {
   effectExtractionDefaultsFromConfig,
   extractionSourceFingerprint,
@@ -661,17 +666,21 @@ export class EffectExtractionService {
     projectId: string,
     runId: string,
     attemptToken: string,
-    input: { artifactKind: string; sourceId?: string | undefined; idempotencyKey: string },
+    input: {
+      artifactKind: EffectExtractionArtifactKind;
+      sourceId?: string | undefined;
+      idempotencyKey: string;
+    },
     file: UploadedExtractionArtifact | undefined,
   ) {
     if (!file || file.size < 1) throw badRequest('请选择要上传的提炼产物文件');
     const fileName = safeFileName(file.originalname);
     if (
-      input.artifactKind !== 'DOCLING_MARKDOWN' ||
+      !EFFECT_EXTRACTION_ARTIFACT_KINDS.includes(input.artifactKind) ||
       (!fileName.toLowerCase().endsWith('.md') &&
         !['text/markdown', 'text/plain'].includes(file.mimetype.toLowerCase()))
     )
-      throw badRequest('Docling 产物必须是 Markdown 文本');
+      throw badRequest('提炼产物必须是 Markdown 文本');
     const idempotencyKey = input.idempotencyKey.trim();
     if (!idempotencyKey) throw badRequest('产物幂等键不能为空');
     const run = await this.repository.authorizedRun(projectId, runId, attemptToken);
@@ -730,6 +739,11 @@ export class EffectExtractionService {
       } catch (error) {
         const raced = await this.repository.artifactByKey(projectId, runId, idempotencyKey);
         if (raced) {
+          if (
+            raced.artifactKind !== input.artifactKind ||
+            raced.sourceId !== (input.sourceId?.trim() || null)
+          )
+            throw conflict('产物幂等键已用于其他请求');
           await this.storage.delete(stored.key).catch(() => undefined);
           return {
             artifactId: raced.id,

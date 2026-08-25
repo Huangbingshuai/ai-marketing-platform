@@ -337,7 +337,69 @@ describe('presentExtractionNodeDetail', () => {
     expect(JSON.stringify(detail)).not.toContain('帧率');
   });
 
-  it('shows only the commerce domain and never the full source URL', () => {
+  it('projects only user-facing commerce fields and never leaks crawler internals', () => {
+    const detail = presentExtractionNodeDetail(
+      {
+        inputSnapshot: snapshot,
+        updatedAt: new Date('2026-08-24T00:01:00.000Z'),
+        branches: [
+          {
+            branch: 'COMMERCE',
+            status: 'SUCCEEDED',
+            structuredOutput: {
+              candidate: {
+                productName: '山泉气泡水旗舰装',
+                productCategory: '气泡饮料',
+                priceRange: '39～49 元',
+                coreSpecification: '330ml × 12 罐',
+                coreSellingPoints: ['0 糖', '清爽气泡'],
+                targetAudience: '不应在此节点展示',
+              },
+              metadata: {
+                sourceHost: 'SHOP.EXAMPLE.COM',
+                pageUrl: 'https://shop.example.com/private/product?token=secret',
+                httpStatus: 200,
+                fetchMode: 'browser',
+                elapsedMs: 1234,
+                tokenUsage: 987,
+                model: 'private-model',
+                storageKey: 'private/commerce.md',
+                rawHtml: '<html>private-page-body</html>',
+              },
+            },
+            updatedAt: new Date('2026-08-24T00:01:00.000Z'),
+          },
+        ],
+      },
+      'COMMERCE',
+      execution('COMMERCE'),
+    );
+
+    expect(detail.fields).toEqual([
+      { key: 'commerceHost', label: '来源网站', value: 'shop.example.com', source: null },
+      { key: 'productName', label: '商品名称', value: '山泉气泡水旗舰装', source: null },
+      { key: 'productCategory', label: '品类', value: '气泡饮料', source: null },
+      { key: 'priceRange', label: '价格区间', value: '39～49 元', source: null },
+      { key: 'coreSpecification', label: '核心规格', value: '330ml × 12 罐', source: null },
+      { key: 'coreSellingPoints', label: '卖点', value: ['0 糖', '清爽气泡'], source: null },
+    ]);
+    const serialized = JSON.stringify(detail);
+    for (const secret of [
+      '/private/product',
+      'token=secret',
+      'httpStatus',
+      'fetchMode',
+      'elapsedMs',
+      'tokenUsage',
+      'private-model',
+      'private/commerce.md',
+      'private-page-body',
+      '不应在此节点展示',
+    ])
+      expect(serialized).not.toContain(secret);
+  });
+
+  it('keeps a safe host-only projection for historical skipped commerce output', () => {
     const detail = presentExtractionNodeDetail(
       {
         inputSnapshot: snapshot,
@@ -352,15 +414,52 @@ describe('presentExtractionNodeDetail', () => {
         ],
       },
       'COMMERCE',
-      { ...execution('COMMERCE'), status: 'SKIPPED' },
+      {
+        ...execution('COMMERCE'),
+        status: 'SKIPPED',
+        warnings: [
+          {
+            code: 'SOURCE_WARNING',
+            message: '未提供电商链接，无需解析',
+            branch: 'COMMERCE',
+            sourceId: null,
+          },
+        ],
+      },
     );
 
-    expect(detail.fields).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ key: 'commerceHost', value: 'shop.example.com' }),
-      ]),
-    );
+    expect(detail.fields).toEqual([
+      { key: 'commerceHost', label: '来源网站', value: 'shop.example.com', source: null },
+    ]);
+    expect(detail.warnings).toEqual([]);
     expect(JSON.stringify(detail)).not.toContain('/private/product');
+  });
+
+  it('presents a failed commerce branch as a non-blocking source failure', () => {
+    const detail = presentExtractionNodeDetail(
+      {
+        inputSnapshot: snapshot,
+        updatedAt: new Date('2026-08-24T00:01:00.000Z'),
+        branches: [
+          {
+            branch: 'COMMERCE',
+            status: 'FAILED',
+            structuredOutput: {
+              metadata: { sourceHost: 'shop.example.com', httpStatus: 403 },
+            },
+            updatedAt: new Date('2026-08-24T00:01:00.000Z'),
+          },
+        ],
+      },
+      'COMMERCE',
+      { ...execution('COMMERCE'), status: 'FAILED' },
+    );
+
+    expect(detail.summary).toBe('商品页面暂时无法读取，已继续使用其他资料');
+    expect(detail.fields).toEqual([
+      { key: 'commerceHost', label: '来源网站', value: 'shop.example.com', source: null },
+    ]);
+    expect(JSON.stringify(detail)).not.toContain('403');
   });
 
   it('maps fusion provenance and normalized result fields to display labels', () => {

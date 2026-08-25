@@ -18,7 +18,7 @@ import {
   EFFECT_EXTRACTION_MAX_TRUST_BACKINGS,
   EFFECT_IMPORT_ASPECT_RATIOS,
   EFFECT_IMPORT_DELIVERY_CHANNELS,
-  EFFECT_IMPORT_DURATION_OPTIONS,
+  EFFECT_IMPORT_LIMITS,
   EFFECT_IMPORT_MATERIAL_TYPE_LABELS,
 } from '@ai-marketing/contracts';
 import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
@@ -41,6 +41,7 @@ import {
   getWorkflowNodeState,
   putWorkflowNodeState,
 } from '../../../platform/workflow/api/workflow-working.api';
+import EffectUpwardCreatableSelect from '../source-import/components/EffectUpwardCreatableSelect.vue';
 import { EFFECT_IMPORT_PROTOTYPE_STYLE_TONES } from '../source-import/effect-import-options';
 
 import {
@@ -421,25 +422,11 @@ const emptyExtractionResult: EffectExtractionResult = {
 };
 const visibleResult = computed(() => currentState.value?.result ?? emptyExtractionResult);
 const baseFieldsReadonly = computed(() => !currentState.value?.result || currentRunning.value);
-const durationOptions = computed(() =>
-  [...new Set([...EFFECT_IMPORT_DURATION_OPTIONS, visibleResult.value.durationSeconds])].sort(
-    (left, right) => left - right,
-  ),
-);
-const stringOptionsWithCurrent = (options: readonly string[], current: string): string[] =>
-  current && !options.includes(current) ? [current, ...options] : [...options];
-const aspectRatioOptions = computed(() =>
-  stringOptionsWithCurrent(EFFECT_IMPORT_ASPECT_RATIOS, visibleResult.value.aspectRatio),
-);
-const deliveryChannelOptions = computed(() =>
-  stringOptionsWithCurrent(EFFECT_IMPORT_DELIVERY_CHANNELS, visibleResult.value.deliveryChannels),
-);
-const visualStyleOptions = computed(() =>
-  stringOptionsWithCurrent(
-    EFFECT_IMPORT_PROTOTYPE_STYLE_TONES,
-    visibleResult.value.visualStyleBaseline,
-  ),
-);
+const selectOptions = (values: readonly string[]) =>
+  values.map((value) => ({ label: value, value }));
+const aspectRatioOptions = selectOptions(EFFECT_IMPORT_ASPECT_RATIOS);
+const deliveryChannelOptions = selectOptions(EFFECT_IMPORT_DELIVERY_CHANNELS);
+const visualStyleOptions = selectOptions(EFFECT_IMPORT_PROTOTYPE_STYLE_TONES);
 const saveStateLabel = computed(() => {
   const state = currentState.value?.saveState ?? 'CLEAN';
   return {
@@ -962,6 +949,23 @@ const markDirty = (): void => {
   }
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => void saveDraft(), 1000);
+};
+
+type ProductionRuleField =
+  'aspectRatio' | 'deliveryChannels' | 'durationSeconds' | 'visualStyleBaseline';
+
+const updateProductionRule = (field: ProductionRuleField, value: number | string): void => {
+  const result = currentState.value?.result;
+  if (!result || baseFieldsReadonly.value) return;
+  if (field === 'durationSeconds') {
+    result.durationSeconds = Math.min(
+      EFFECT_IMPORT_LIMITS.maxDurationSeconds,
+      Math.max(EFFECT_IMPORT_LIMITS.minDurationSeconds, Number(value) || 1),
+    );
+  } else {
+    result[field] = String(value);
+  }
+  markDirty();
 };
 
 const productBaseValue = (field: ProductBaseField): string => {
@@ -1700,52 +1704,53 @@ onBeforeUnmount(() => {
           <div class="production-rule-grid">
             <label class="field-label">
               <span>统一时长</span>
-              <select
-                v-model.number="visibleResult.durationSeconds"
-                :disabled="baseFieldsReadonly"
-                @change="markDirty"
-              >
-                <option v-for="duration in durationOptions" :key="duration" :value="duration">
-                  {{ duration }} 秒
-                </option>
-              </select>
+              <div class="production-duration-input">
+                <input
+                  :value="visibleResult.durationSeconds"
+                  type="number"
+                  :min="EFFECT_IMPORT_LIMITS.minDurationSeconds"
+                  :max="EFFECT_IMPORT_LIMITS.maxDurationSeconds"
+                  :disabled="baseFieldsReadonly"
+                  @change="
+                    updateProductionRule(
+                      'durationSeconds',
+                      ($event.target as HTMLInputElement).value,
+                    )
+                  "
+                />
+                <small>秒</small>
+              </div>
             </label>
             <label class="field-label">
               <span>画幅</span>
-              <select
-                v-model="visibleResult.aspectRatio"
+              <EffectUpwardCreatableSelect
+                field-label="画幅"
+                :model-value="visibleResult.aspectRatio"
+                :options="aspectRatioOptions"
                 :disabled="baseFieldsReadonly"
-                @change="markDirty"
-              >
-                <option v-for="ratio in aspectRatioOptions" :key="ratio" :value="ratio">
-                  {{ ratio }}
-                </option>
-              </select>
+                @update:model-value="updateProductionRule('aspectRatio', $event)"
+              />
             </label>
             <label class="field-label wide">
               <span>投放渠道</span>
-              <select
-                v-model="visibleResult.deliveryChannels"
+              <EffectUpwardCreatableSelect
+                field-label="投放渠道"
+                :model-value="visibleResult.deliveryChannels"
+                :options="deliveryChannelOptions"
                 :disabled="baseFieldsReadonly"
-                @change="markDirty"
-              >
-                <option v-for="channel in deliveryChannelOptions" :key="channel" :value="channel">
-                  {{ channel }}
-                </option>
-              </select>
+                @update:model-value="updateProductionRule('deliveryChannels', $event)"
+              />
             </label>
           </div>
           <label class="field-label">
             <span>视觉风格基线</span>
-            <select
-              v-model="visibleResult.visualStyleBaseline"
+            <EffectUpwardCreatableSelect
+              field-label="视觉风格基线"
+              :model-value="visibleResult.visualStyleBaseline"
+              :options="visualStyleOptions"
               :disabled="baseFieldsReadonly"
-              @change="markDirty"
-            >
-              <option v-for="style in visualStyleOptions" :key="style" :value="style">
-                {{ style }}
-              </option>
-            </select>
+              @update:model-value="updateProductionRule('visualStyleBaseline', $event)"
+            />
           </label>
           <div class="field-label disabled-field">
             <span>合规禁用词库</span>
@@ -2387,7 +2392,6 @@ select {
 .base-fields input,
 .base-fields textarea,
 .field-label input,
-.field-label select,
 .field-label textarea,
 .selling-point-row input,
 .disabled-input-row input {
@@ -2401,19 +2405,25 @@ select {
   font-weight: 400;
 }
 .field-label input,
-.field-label select,
 .selling-point-row input,
 .disabled-input-row input {
   height: 42px;
   padding: 0 11px;
 }
-.field-label select {
-  cursor: pointer;
+.production-duration-input {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 8px;
 }
-.field-label select:disabled {
-  cursor: not-allowed;
-  color: #8b95a7;
-  background: #f7f9fc;
+.production-duration-input input {
+  min-width: 0;
+  flex: 1;
+}
+.production-duration-input small {
+  flex: 0 0 auto;
+  color: #7f8ca0;
+  font-size: 12px;
 }
 .selling-point-row input {
   height: 40px;

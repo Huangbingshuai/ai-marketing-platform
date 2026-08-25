@@ -22,6 +22,7 @@ TResult = TypeVar("TResult", bound=BaseModel)
 
 DOCUMENT_EXTRACTION_PROMPT = "document_extraction.prompt.txt"
 IMAGE_ANALYSIS_PROMPT = "image_analysis.prompt.txt"
+COMMERCE_EXTRACTION_PROMPT = "commerce_extraction.prompt.txt"
 RESULT_NORMALIZATION_PROMPT = "result_normalization.prompt.txt"
 LOGGER = logging.getLogger(__name__)
 
@@ -107,6 +108,14 @@ class AiProvider(Protocol):
         image_metadata: Mapping[str, Any],
     ) -> AiCallResult[ExtractionCandidate]: ...
 
+    async def extract_commerce(
+        self,
+        markdown: str,
+        *,
+        source_host: str,
+        structured_metadata: Mapping[str, Any],
+    ) -> AiCallResult[ExtractionCandidate]: ...
+
     async def normalize(
         self,
         fused: ExtractionCandidate,
@@ -150,6 +159,26 @@ class MockAiProvider:
         candidate.visual_features = f"{source_name}，图像尺寸 {width}×{height}，产品主体清晰"
         return _mock_result(candidate, "IMAGE", IMAGE_ANALYSIS_PROMPT)
 
+    async def extract_commerce(
+        self,
+        markdown: str,
+        *,
+        source_host: str,
+        structured_metadata: Mapping[str, Any],
+    ) -> AiCallResult[ExtractionCandidate]:
+        candidate = ExtractionCandidate.empty()
+        name = structured_metadata.get("name")
+        category = structured_metadata.get("category")
+        description = structured_metadata.get("description")
+        candidate.product_name = _clean(name) if isinstance(name, str) else None
+        candidate.product_category = _clean(category) if isinstance(category, str) else None
+        if isinstance(description, str) and (cleaned := _clean(description)):
+            candidate.secondary_selling_points = [cleaned[:240]]
+        if candidate.product_name is None:
+            lines = [_clean(line) for line in markdown.splitlines()]
+            candidate.product_name = next((line[:120] for line in lines if line), None)
+        return _mock_result(candidate, "COMMERCE", COMMERCE_EXTRACTION_PROMPT)
+
     async def normalize(
         self,
         fused: ExtractionCandidate,
@@ -189,6 +218,7 @@ class ArkResponsesProvider:
         api_key: str,
         model: str,
         document_model: str | None = None,
+        commerce_model: str | None = None,
         image_model: str | None = None,
         normalization_model: str | None = None,
         timeout: float = 120.0,
@@ -196,6 +226,7 @@ class ArkResponsesProvider:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._document_model = _specific_model(document_model, model)
+        self._commerce_model = _specific_model(commerce_model, self._document_model)
         self._image_model = _specific_model(image_model, model)
         self._normalization_model = _specific_model(normalization_model, model)
         self._max_attempts = max_attempts
@@ -253,6 +284,30 @@ class ArkResponsesProvider:
             stage="IMAGE",
             model=self._image_model,
             prompt_version=load_prompt_version(IMAGE_ANALYSIS_PROMPT),
+        )
+
+    async def extract_commerce(
+        self,
+        markdown: str,
+        *,
+        source_host: str,
+        structured_metadata: Mapping[str, Any],
+    ) -> AiCallResult[ExtractionCandidate]:
+        prompt = render_prompt(
+            COMMERCE_EXTRACTION_PROMPT,
+            source_host=source_host,
+            structured_metadata_json=json.dumps(
+                dict(structured_metadata), ensure_ascii=False, sort_keys=True
+            ),
+            commerce_markdown=markdown,
+        )
+        return await self._structured(
+            [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+            ExtractionCandidate,
+            schema_name="effect_commerce_candidate",
+            stage="COMMERCE",
+            model=self._commerce_model,
+            prompt_version=load_prompt_version(COMMERCE_EXTRACTION_PROMPT),
         )
 
     async def normalize(
