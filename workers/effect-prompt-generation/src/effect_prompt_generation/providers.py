@@ -102,7 +102,6 @@ class MockAiProvider:
                 retryable=False,
                 error_type=ProviderErrorType.REQUEST_REJECTED,
             )
-        audience = _first_text(insight, "targetAudience", "target_audience") or "目标用户"
         scenes = _text_list(
             insight,
             "usageScenarios",
@@ -112,32 +111,43 @@ class MockAiProvider:
             "emotionalScenarios",
             "emotional_scenarios",
         )
+        concrete_scenes = [_mock_concrete_scene(item) for item in scenes]
         pools = DimensionPools(
             narratives=[
                 "痛点前置型", "效果展示型", "场景代入型", "科普讲解型", "对比测评型", "开箱体验型",
                 "第一视角体验日记", "问题清单逐项解答", "错误做法纠正型", "限时任务挑战型", "微故事转折型",
                 "反常识切入型", "步骤教程型", "细节放大型", "一天使用记录型", "问答访谈型", "使用前后流程型",
             ],
-            scenes=(scenes + [
+            scenes=(concrete_scenes + [
                 "家庭清晨准备", "厨房午后整理", "雨天通勤入口", "地铁换乘间隙", "办公室桌面工作",
                 "会议前快速准备", "午休生活化使用", "户外短途出行", "周末公园休息", "线下门店体验",
                 "明亮实验演示台", "居家夜间收纳", "旅行行李整理", "朋友分享时刻", "极简产品展示台",
             ])[:17],
             personas=[
-                f"一名穿简洁日常服装的{audience}",
-                f"一名清晨赶时间、穿轻便外套的{audience}", f"一名重视细节的{audience}", f"一名理性比较的{audience}",
-                f"一名首次体验产品的{audience}", f"一名长期使用产品的{audience}", f"一名穿轻户外服装的{audience}",
-                f"一名穿商务通勤服装的{audience}", f"一名穿居家休闲服的{audience}", f"一名负责家庭采购的{audience}",
-                f"一名喜欢步骤讲解的{audience}", f"一名关注产品外观的{audience}", f"一名关注使用效率的{audience}",
-                f"一名谨慎验证信息的{audience}", f"一名主动分享体验的{audience}", f"一名追求简单操作的{audience}",
-                f"一名正在移动中的{audience}",
+                "一位35岁左右、穿米色针织家居服的女性",
+                "一位30岁左右、穿深蓝围裙的男性",
+                "一位45岁左右、穿浅灰居家衬衫的女性",
+                "一位28岁左右、穿卡其通勤外套的男性",
+                "一位40岁左右、穿棉麻上衣的女性",
+                "一位33岁左右、穿白色厨师服的男性",
+                "一位50岁左右、穿深色针织衫的女性",
+                "一位26岁左右、穿浅色休闲衬衫的男性",
+                "一双成年人的手，人物不露脸",
+                "一双戴纯色棉质围裙的成年人的手",
+                "无人出镜，产品独立放在桌面中央",
+                "无人出镜，产品与餐具保持静物构图",
+                "一位38岁左右、穿暖棕家居服的男性",
+                "一位42岁左右、穿墨绿针织衫的女性",
+                "一位31岁左右、穿浅蓝衬衫的女性",
+                "一位47岁左右、穿米白围裙的男性",
+                "一双从画面右侧伸入的成年人的手",
             ],
             selling_points=selling_points,
             cameras=[
                 "肩后中近景连续推近产品", "第一视角稳定跟拍", "俯拍近景连续靠近手部", "低机位缓慢推进",
                 "手持纪实侧向跟随", "固定机位保持产品居中", "正面半身镜头连续聚焦局部", "桌面俯视连续长镜头",
-                "侧逆光下缓慢环绕", "快速推近后稳定定格", "广角环境中连续靠近主体", "从人物视线平滑移焦到产品",
-                "贴近手部动作连续跟拍", "前景掠过后连续靠近产品", "轻微横移展示产品轮廓", "静态构图内跟随动作",
+                "侧逆光下缓慢环绕", "快速推近后稳定定格", "全景环境中连续靠近主体", "中近景从人物视线平滑移焦到产品",
+                "贴近手部动作连续跟拍", "中近景让前景掠过后连续靠近产品", "轻微横移展示产品轮廓", "静态构图内跟随动作",
                 "产品主观低机位连续跟随人物",
             ],
             emotions=[
@@ -148,12 +158,23 @@ class MockAiProvider:
                 "安静高级的极简节奏",
             ],
             actions=[
-                f"一名{audience}拿起产品并按下已确认操作位置，动作结束后停住",
-                f"一名{audience}拿起产品缓慢调整朝向，露出外观后平稳放下",
-                f"一名{audience}停下当前动作并指向产品细节，手指保持不动",
-                f"一名{audience}握住产品完成一次连续使用动作，然后自然停下",
-                f"一名{audience}把产品平稳放入当前生活环境并自然走出画面",
-                f"一名{audience}拿起产品指向一个已确认细节，字幕出现后停住",
+                "右手拿起产品并把正面转向镜头，动作结束后停住",
+                "双手取出产品并缓慢调整朝向，露出外观后平稳放下",
+                "食指沿产品边缘移动到已确认细节，随后保持不动",
+                "双手握住产品完成一次连续使用动作，然后自然停下",
+                "右手把产品平稳放入当前环境，随后退出画面",
+                "左手托住产品，右手指向一个已确认细节并停住",
+                "右手将产品从画面侧边平稳移动到中央并停住",
+                "双手托住产品缓慢转动半圈，让正面朝向镜头",
+                "右手从桌面提起产品到胸前高度并保持稳定",
+                "左手扶住产品，右手沿一个真实外观细节缓慢移动",
+                "双手把产品摆到单一场景道具旁并自然松开",
+                "右手托住产品向光源方向轻微倾斜后停住",
+                "双手将产品正面朝上放到桌面中央并离开",
+                "右手拎起产品进入画面，在主体位置保持不动",
+                "左手把产品从背景移到前景，焦点跟随到产品表面",
+                "双手稳定托住产品，只调整一次面向镜头的角度",
+                "右手轻放产品后退出画面，产品保持居中",
             ],
             evidence_plans=[_mock_evidence_plan(item) for item in selling_points],
         )
@@ -472,62 +493,92 @@ def _mock_prompt_text(
     aspect_ratio: str,
 ) -> GeneratedPromptText:
     dims = combination.dimensions
-    prefix = f"{duration_seconds}秒，{aspect_ratio}竖屏。{dims.scene}，{dims.persona}"
-    action = combination.visible_action
+    persona_position = (
+        dims.persona
+        if dims.persona.startswith("无人出镜")
+        else f"{dims.persona}位于画面主体位置"
+    )
+    prefix = f"{duration_seconds}秒，{aspect_ratio}竖屏。{dims.scene}，{persona_position}"
+    action = combination.visible_action.replace("产品", product_name).replace("·", "，")
+    if "腊肠" in product_name:
+        action = {
+            FragmentType.HOOK: f"木筷从蒸汽中夹起一片刚切开的{product_name}，切面朝向镜头并停住",
+            FragmentType.PAIN: f"一只手在拥挤案板上移动未切开的{product_name}，在刀具与餐盘之间停住",
+            FragmentType.PRODUCT_DISPLAY: f"右手从白瓷盘中拿起一根{product_name}，缓慢转动半圈后停住",
+            FragmentType.EFFECT_DEMONSTRATION: f"木筷夹起一片蒸热的{product_name}，平稳转向镜头并停在切面特写位置",
+            FragmentType.SELLING_POINT_EXPLANATION: f"木筷夹起一片{product_name}，让真实切面在暖色侧光下保持清楚",
+            FragmentType.CTA: f"右手把{product_name}包装平稳放到成品餐盘后方，随后退出字幕安全区",
+            FragmentType.OUTRO: f"右手将{product_name}包装扶正一次后离开，产品与餐盘保持稳定定格",
+        }[combination.fragment_type]
     role_text = {
         FragmentType.HOOK: (
-            f"从一个出人意料但真实的手部动作开始，{action}；画面只制造注意力和动作悬念，"
-            f"不解释完整功能。{dims.camera}连续靠近动作焦点"
+            f"首帧从一个反常但真实的动作细节开始：{action}。画面只保留动作悬念，"
+            f"不解释完整功能；{dims.camera}，焦点锁定正在发生的动作"
         ),
         FragmentType.PAIN: (
-            f"正处于与{dims.selling_point}相关的具体不便中，{action}但问题仍未解决，产品不必出现；"
-            f"{dims.camera}持续跟住人物手部与受阻动作"
+            f"首帧呈现一个尚未解决的真实不便，{action}，画面停在受阻状态，不给出解决动作；"
+            f"{dims.camera}，焦点跟住手部与问题状态"
         ),
         FragmentType.PRODUCT_DISPLAY: (
-            f"自然拿起{product_name}并缓慢调整朝向，完整露出已确认外观，{action}；"
-            f"{dims.camera}平滑聚焦产品轮廓和可见细节，不演示额外效果"
+            f"只展示{product_name}的一次连续拿取动作：{action}，产品外观始终清楚可辨；"
+            f"{dims.camera}，焦点落在轮廓与真实表面细节，不演示额外效果"
         ),
         FragmentType.EFFECT_DEMONSTRATION: (
-            f"使用{product_name}只完成一次连续动作：{action}，画面明确呈现{dims.selling_point}允许的"
-            f"可见证据——{combination.allowed_visual_evidence}；{dims.camera}跟随动作且保持产品清晰"
+            f"使用{product_name}只完成一次连续动作：{action}。画面呈现{combination.allowed_visual_evidence}，"
+            f"不增加前后对比或额外结论；{dims.camera}且保持产品清晰"
         ),
         FragmentType.SELLING_POINT_EXPLANATION: (
-            f"手持{product_name}指向一个已确认细节并保持动作连续，{action}；字幕或一句自然口播只写"
-            f"“{dims.selling_point}”，{dims.camera}稳定聚焦讲解位置"
+            f"围绕{product_name}只做一次细节指示：{action}。字幕只出现“{dims.selling_point}”；"
+            f"{dims.camera}，稳定聚焦被指向的位置"
         ),
         FragmentType.CTA: (
-            f"把{product_name}平稳放入当前生活环境并准备离开，{action}；{dims.camera}轻缓后拉并留出"
-            f"干净字幕空间，安全短字幕为“现在去了解”，不出现价格、折扣或销量"
+            f"以{product_name}完成一次收束动作：{action}；{dims.camera}并留出干净字幕安全区，"
+            f"短字幕为“现在去了解”，不出现价格、折扣或销量"
         ),
         FragmentType.OUTRO: (
-            f"将{product_name}正面稳定留在画面中心，人物的手自然离开，{action}；{dims.camera}缓慢停住，"
-            f"只保留产品和品牌收尾画面"
+            f"让{product_name}形成稳定品牌定格：{action}；{dims.camera}缓慢停住，"
+            f"结尾只保留产品与简洁背景"
         ),
     }[combination.fragment_type]
+    if "腊肠" in product_name and combination.fragment_type == FragmentType.EFFECT_DEMONSTRATION:
+        role_text = (
+            f"木筷只完成一次夹取动作：{action}。{product_name}切面、米饭和真实蒸汽保持同框，"
+            f"呈现实际烹饪与佐餐关系，不制作前后对比；右下角短字幕只出现“{dims.selling_point}”，"
+            f"{dims.camera}且焦点始终跟随切面"
+        )
     prompt = (
         f"{prefix}，{role_text}。光线和色彩呈现{dims.emotion}，动作速度与镜头运动保持一致，环境声自然，"
-        "结尾停在单一清晰状态；全片同一地点、同一人物、一个连续视觉事件，不使用分镜列表或场景切换。"
+        "结尾停在主体与产品关系清楚的稳定画面，场景和人物保持一致。"
     )
     return GeneratedPromptText(slot_id=combination.slot_id, prompt_text=prompt)
 
 
 def _mock_evidence_plan(selling_point: str) -> SellingPointEvidence:
     normalized = selling_point.casefold()
-    if any(token in normalized for token in ("开", "关", "按", "操作", "使用", "清洗")):
+    if any(token in normalized for token in ("工艺", "配方", "技术", "理念", "品质", "匠心", "专业", "配比", "比例", "口感", "香味", "酒香", "回甘", "无淀粉", "纯猪肉", "锁鲜")):
+        mode = EvidenceMode.TEXT_ONLY
+        allowed = f"只允许以信息卡原文字幕“{selling_point}”配合真实产品细节"
+    elif any(token in normalized for token in ("开", "关", "按", "操作", "使用", "清洗", "切割", "烹饪", "适配", "便于")):
         mode = EvidenceMode.USAGE_ACTION
         allowed = f"一次可见、连续且不增加结论的{selling_point}使用动作"
     elif any(token in normalized for token in ("外观", "颜色", "轻量", "便携", "尺寸", "设计")):
         mode = EvidenceMode.VISIBLE_ATTRIBUTE
         allowed = f"产品在人物手部或真实场景中的{selling_point}可见属性"
     else:
-        mode = EvidenceMode.VISIBLE_RESULT
-        allowed = f"仅呈现信息卡已经确认的{selling_point}可见结果，不做前后对比扩展"
+        mode = EvidenceMode.TEXT_ONLY
+        allowed = f"只允许以信息卡原文字幕“{selling_point}”配合真实产品细节"
     return SellingPointEvidence(
         selling_point=selling_point,
         evidence_mode=mode,
         allowed_visual_evidence=allowed,
         forbidden_inference=f"不得把{selling_point}扩展为未确认功效、数据、认证或绝对化结论",
     )
+
+
+def _mock_concrete_scene(value: str) -> str:
+    if any(token in value for token in ("烹饪", "蒸制", "炒制", "切配", "佐餐", "食材准备")):
+        return f"家庭厨房的{value}操作台"
+    return f"{value}场景中的暖色木质桌面"
 
 
 def _text_list(payload: Mapping[str, Any], *keys: str) -> list[str]:

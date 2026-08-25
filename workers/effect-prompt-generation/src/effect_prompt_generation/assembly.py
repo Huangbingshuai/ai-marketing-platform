@@ -14,11 +14,12 @@ _SHOT_NUMBERING = re.compile(r"(?:镜头|分镜)\s*[一二三四五六七八九\
 _TIME_RANGE = re.compile(r"\d+(?:\.\d+)?\s*[-—~至]\s*\d+(?:\.\d+)?\s*秒")
 _EDIT_TRANSITION = re.compile(r"切到|切回|转场|第二镜头|下一镜头|随后回到|最后回到")
 _CTA = re.compile(r"立即(?:购买|下单)|马上(?:购买|下单)|限时|折扣|优惠|扫码|销量")
-_CAMERA = re.compile(r"特写|近景|中景|全景|微距|俯拍|仰拍|低机位|高机位|固定机位|肩后|手持|半身|推近|后拉|跟拍|跟随|环绕|横移|聚焦|焦点|景深|主观")
+_CAMERA = re.compile(r"特写|近景|中景|全景|微距|俯拍|俯视|仰拍|低机位|高机位|固定机位|肩后|手持|半身|长镜头|推近|靠近|后拉|跟拍|跟随|环绕|横移|移焦|聚焦|焦点|景深|主观")
 _LIGHT_OR_PACING = re.compile(r"光|色温|色彩|冷调|暖调|节奏|停顿|缓慢|快速|利落|舒缓")
 _ACTION = re.compile(
-    r"拿起|放下|放入|打开|关闭|切开|倒入|按下|按压|摆放|握住|走入|走出|离开|停下|停住|"
-    r"抬起|指向|触碰|擦拭|拉开|推入|调整|拎起|整理|插入|取出|展示|转向|移动|交互"
+    r"拿起|夹起|提起|拎起|托住|扶住|握住|放下|放入|放到|轻放|摆放|打开|关闭|切开|倒入|"
+    r"按下|按压|走入|走出|离开|停下|停住|抬起|指向|触碰|擦拭|拉开|推入|调整|取出|"
+    r"展示|转向|转动|倾斜|移动|移到|交互"
 )
 _STACKED_PERSONA = re.compile(r"两名|多人|一家人|夫妻|情侣|母女|父子|同事们|朋友们|一群|(?:一名|一个).{0,24}(?:和|与)(?:另一名|另一个|一名|一个)")
 _PLACEHOLDER = re.compile(r"<[^>]+>|\{[^}]+\}|以信息卡为准|待补充|待填写|TODO|TBD", re.IGNORECASE)
@@ -47,15 +48,15 @@ def assemble_fragment_prompt(
         aspect_ratio=aspect_ratio,
         source_facts=source_facts,
     )
-    constraints = _unique(
-        [
-            *disabled_elements,
-            combination.forbidden_inference,
-            "不生成认证标识、功效数据、销量角标、价格、二维码或促销贴纸",
-        ]
-    )
+    constraints: list[str] = []
+    if any("未成年人" in item for item in disabled_elements):
+        constraints.append("不出现未成年人")
+    if combination.evidence_mode in {EvidenceMode.PROCESS_ONLY, EvidenceMode.TEXT_ONLY}:
+        constraints.append("不虚构工厂、实验室或生产过程")
+    constraints.append("不添加数据、认证、价格或促销贴纸")
+    constraints = _unique(constraints)
     if constraints:
-        content = f"{content.rstrip('。')}。避免：{'；'.join(constraints)}。"
+        content = f"{content.rstrip('。')}。画面中{'，'.join(constraints)}。"
     return content, reasons
 
 
@@ -117,8 +118,6 @@ def validate_fragment_prompt(
         EvidenceMode.TEXT_ONLY,
     }:
         reasons.append("UNFILMABLE_EVIDENCE")
-    if combination.evidence_mode == EvidenceMode.TEXT_ONLY and combination.fragment_type != FragmentType.SELLING_POINT_EXPLANATION:
-        reasons.append("ROLE_CONFLICT")
     if "FRAGMENT_ROLE_CONFLICT" in reasons:
         reasons.remove("FRAGMENT_ROLE_CONFLICT")
         reasons.append("ROLE_CONFLICT")

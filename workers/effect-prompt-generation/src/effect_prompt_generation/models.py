@@ -186,7 +186,8 @@ class SellingPointCoverage(ApiModel):
 
 class ExecutionInvalidReason(ApiModel):
     code: str = Field(min_length=1, max_length=120)
-    count: int = Field(ge=1, le=200)
+    # 补齐最多会生成目标数量的 1.25 倍候选并重复三轮，原因累计数可高于最终 200 条上限。
+    count: int = Field(ge=1, le=2_000)
 
 
 class PromptMetrics(ApiModel):

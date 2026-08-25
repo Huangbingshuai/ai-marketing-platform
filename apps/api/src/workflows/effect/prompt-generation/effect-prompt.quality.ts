@@ -128,9 +128,9 @@ const META_LANGUAGE =
 const ABSTRACT_PERSONA = /(?:目标人群|受众|消费者|用户群体|家庭决策者|爱好者|全国消费者|人群)/u;
 const FULL_TIMELINE =
   /(?:\d+(?:\.\d+)?\s*[-—~至]\s*\d+(?:\.\d+)?\s*(?:秒|s)|第[一二三四五六\d]+镜|镜头[一二三四五六\d]+|分镜|时间轴|切换|切至|镜头转到|转场|硬切|叠化|闪白|蒙太奇)/iu;
-const PHASE_MARKERS = /(?:前段|中段|后段|开头|随后|然后|接着|最后|结尾|收束)/gu;
+const STRUCTURED_PHASE = /(?:前段|中段|后段)/gu;
 const VISIBLE_ACTION =
-  /(?:拿起|放下|打开|关闭|取出|倒入|切开|撕开|按压|涂抹|喷洒|擦拭|冲洗|折叠|展开|安装|装入|推拉|旋转|搅拌|加热|品尝|摆放|对比|揭开|翻转|挤出|穿戴|使用)/u;
+  /(?:拿起|夹起|提起|拎起|托住|扶住|扶正|握住|放下|放入|放到|轻放|摆放|打开|关闭|取出|倒入|切开|撕开|按下|按压|涂抹|喷洒|擦拭|冲洗|折叠|展开|安装|装入|推拉|旋转|转动|倾斜|移动|移到|搅拌|加热|品尝|对比|揭开|翻转|挤出|穿戴|使用|离开|退出)/u;
 const PLACEHOLDER_TEXT =
   /(?:待补充|以信息卡为准|自然出镜|相关细节|关键特点|适当|高级感|真实使用动作|当前产品名|指定卖点|当前场景|当前人物)/u;
 
@@ -140,8 +140,10 @@ export const effectPromptExecutionIssues = (item: EffectPromptItem): string[] =>
   if (META_LANGUAGE.test(content)) issues.push('META_LANGUAGE');
   if (ABSTRACT_PERSONA.test(`${item.dimensions.persona} ${content}`))
     issues.push('ABSTRACT_PERSONA');
-  const phases = new Set(content.match(PHASE_MARKERS) ?? []);
-  if (FULL_TIMELINE.test(content) || phases.size >= 2) issues.push('FULL_TIMELINE_NOT_FRAGMENT');
+  // “首帧/结尾”是单片段的必要执行信息，不能仅因同时描述起止状态就误判为完整广告。
+  // 多时间段、镜头编号和真实剪辑词仍由 FULL_TIMELINE 硬拒绝。
+  if (FULL_TIMELINE.test(content) || new Set(content.match(STRUCTURED_PHASE) ?? []).size >= 2)
+    issues.push('FULL_TIMELINE_NOT_FRAGMENT');
   if (!VISIBLE_ACTION.test(content)) issues.push('NO_VISIBLE_ACTION');
   if (PLACEHOLDER_TEXT.test(content)) issues.push('PLACEHOLDER_TEXT');
   return issues;

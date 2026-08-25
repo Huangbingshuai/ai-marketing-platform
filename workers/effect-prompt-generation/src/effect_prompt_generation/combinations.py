@@ -152,12 +152,18 @@ def plan_combinations(
         )
         evidence = evidence_by_selling_point[_normalized_value(selling_point)]
         dimensions = PromptDimensions(
-            narrative=_round_value(narratives[a], round_number, 120),
-            scene=_round_value(scenes[b], round_number, 120),
-            persona=_round_value(personas[(a + b) % ORTHOGONAL_ORDER], round_number, 160),
+            narrative=_round_value(narratives[a], round_number, 120, "首帧从局部动作切入"),
+            scene=_round_value(scenes[b], round_number, 120, "背景加入真实生活道具"),
+            persona=_round_value(
+                personas[(a + b) % ORTHOGONAL_ORDER], round_number, 160, "位于画面侧前方"
+            ),
             selling_point=selling_point,
-            camera=_round_value(cameras[(a + 2 * b) % ORTHOGONAL_ORDER], round_number, 160),
-            emotion=_round_value(emotions[(a + 3 * b) % ORTHOGONAL_ORDER], round_number, 120),
+            camera=_round_value(
+                cameras[(a + 2 * b) % ORTHOGONAL_ORDER], round_number, 160, "结束时焦点停在主体"
+            ),
+            emotion=_round_value(
+                emotions[(a + 3 * b) % ORTHOGONAL_ORDER], round_number, 120, "结束前自然停顿"
+            ),
         )
         result.append(
             PlannedCombination(
@@ -167,7 +173,10 @@ def plan_combinations(
                 material_tags=list(_MATERIAL_TAGS[fragment_type]),
                 target_duration_seconds=target_duration_seconds,
                 visible_action=_round_value(
-                    actions[(a + 5 * b) % ORTHOGONAL_ORDER], round_number, 400
+                    actions[(a + 5 * b) % ORTHOGONAL_ORDER],
+                    round_number,
+                    400,
+                    "动作结束后保持稳定",
                 ),
                 evidence_mode=evidence.evidence_mode,
                 allowed_visual_evidence=evidence.allowed_visual_evidence,
@@ -222,6 +231,15 @@ def _eligible_selling_point(
     preferred: str,
     ordinal: int,
 ) -> str:
+    if fragment_type == FragmentType.SELLING_POINT_EXPLANATION:
+        text_only = [
+            item
+            for item in selling_points
+            if evidence_by_selling_point[_normalized_value(item)].evidence_mode
+            in {EvidenceMode.TEXT_ONLY, EvidenceMode.PROCESS_ONLY}
+        ]
+        if text_only:
+            return text_only[(ordinal - 1) % len(text_only)]
     allowed_modes = set(EvidenceMode)
     if fragment_type == FragmentType.EFFECT_DEMONSTRATION:
         allowed_modes = {
@@ -295,11 +313,13 @@ def _expand(values: Sequence[str], max_length: int) -> list[str]:
     return result
 
 
-def _round_value(value: str, round_number: int, max_length: int) -> str:
-    if round_number == 0:
-        return value
-    suffix = f"·补齐策略{round_number}"
-    return value[: max_length - len(suffix)].rstrip("·") + suffix
+def _round_value(value: str, round_number: int, max_length: int, variation: str = "") -> str:
+    # round offset 已经会选择新的正交行；不要把“补齐策略”等内部术语污染六维元数据，
+    # 更不能让候选模型把它抄进最终视频 Prompt。
+    if round_number == 0 or not variation:
+        return value[:max_length].rstrip("·")
+    suffix = f"，{variation}"
+    return value[: max_length - len(suffix)].rstrip("·，") + suffix
 
 
 def _normalized_value(value: str) -> str:

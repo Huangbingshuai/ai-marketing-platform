@@ -162,13 +162,6 @@ const currentItems = computed(() => resultData.value?.items ?? []);
 const currentMetrics = computed(
   () => currentResult.value?.metrics ?? currentState.value?.metrics ?? null,
 );
-const fragmentWeightTotal = computed(() =>
-  EFFECT_PROMPT_FRAGMENT_TYPES.reduce(
-    (sum, fragmentType) =>
-      sum + (Number(currentSettings.value.fragmentTypeWeights[fragmentType]) || 0),
-    0,
-  ),
-);
 const executionInvalidSummary = computed(() => {
   const labels: Record<string, string> = {
     MULTI_STAGE_STORY: '完整成片结构',
@@ -177,6 +170,19 @@ const executionInvalidSummary = computed(() => {
     PRODUCT_IDENTITY_DRIFT: '产品外观漂移',
     UNSUPPORTED_CLAIM: '未确认事实',
     BURNED_IN_OVERLAY: '烧入文字或转场',
+    META_LANGUAGE: '策划元话语',
+    FULL_TIMELINE: '多镜头时间轴',
+    FULL_TIMELINE_NOT_FRAGMENT: '完整成片结构',
+    STACKED_PERSONA: '人物画像堆叠',
+    ABSTRACT_PERSONA: '抽象受众画像',
+    NO_VISIBLE_ACTION: '缺少可见动作',
+    UNFILMABLE_EVIDENCE: '卖点证据不可拍摄',
+    ROLE_CONFLICT: '片段职责冲突',
+    FIELD_DUPLICATION: '内容机械重复',
+    SOURCE_FACT_VIOLATION: '出现未确认事实',
+    BROKEN_TEXT: '存在占位或破损文本',
+    PLACEHOLDER_TEXT: '存在空泛占位文本',
+    DURATION_MISMATCH: '片段时长不一致',
   };
   return (currentMetrics.value?.executionInvalidReasons ?? [])
     .map(({ code, count }) => `${labels[code] ?? '其他不可执行内容'} ${count}`)
@@ -196,15 +202,6 @@ const allProductsCommitted = computed(
 const currentSaveStatus = computed(
   () => settingsSaveStatuses.value[currentProductId.value] ?? 'idle',
 );
-const additionalDisabledElementsText = computed({
-  get: () => currentSettings.value.additionalDisabledElements.join('\n'),
-  set: (value: string) => {
-    const draft = settingsDrafts.value[currentProductId.value];
-    if (!draft) return;
-    draft.additionalDisabledElements = uniqueTextList(value);
-    queueSettingsSave();
-  },
-});
 const deleteSaving = computed(
   () =>
     itemOperation.value?.kind === 'delete' &&
@@ -531,29 +528,11 @@ const adjustSetting = (key: NumericPromptSetting, delta: number): void => {
   queueSettingsSave();
 };
 
-const updateSellingPointWeight = (index: number, event: Event): void => {
-  const draft = settingsDrafts.value[currentProductId.value];
-  const input = event.target;
-  if (!draft || !(input instanceof HTMLInputElement) || !draft.sellingPointWeights[index]) return;
-  draft.sellingPointWeights = draft.sellingPointWeights.map((item, itemIndex) =>
-    itemIndex === index ? { ...item, weight: Number(input.value) || 0 } : item,
-  );
-  queueSettingsSave();
-};
-
 async function flushSettings(productId = currentProductId.value): Promise<boolean> {
   if (settingsTimer) clearTimeout(settingsTimer);
   const state = productStates.value[productId];
   const draft = settingsDrafts.value[productId];
   if (!state || !draft) return true;
-  const draftFragmentWeightTotal = EFFECT_PROMPT_FRAGMENT_TYPES.reduce(
-    (sum, fragmentType) => sum + (Number(draft.fragmentTypeWeights[fragmentType]) || 0),
-    0,
-  );
-  if (draftFragmentWeightTotal !== 100) {
-    settingsSaveStatuses.value = { ...settingsSaveStatuses.value, [productId]: 'error' };
-    return false;
-  }
   const normalized = normalizePromptSettings(draft);
   settingsDrafts.value = { ...settingsDrafts.value, [productId]: normalized };
   if (
@@ -1162,14 +1141,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="effect-prompt-heading__actions">
-          <button
-            ref="graphTrigger"
-            class="secondary-button"
-            type="button"
-            @click="openGraph($event)"
-          >
-            <Workflow :size="14" />查看生成子工作流
-          </button>
           <label class="product-switcher">
             <span>当前商品</span>
             <select v-model="currentProductId">
@@ -1178,6 +1149,15 @@ onBeforeUnmount(() => {
               </option>
             </select>
           </label>
+          <button
+            ref="graphTrigger"
+            class="secondary-button workflow-graph-trigger"
+            type="button"
+            aria-haspopup="dialog"
+            @click="openGraph($event)"
+          >
+            <Workflow :size="14" />查看工作流
+          </button>
           <button
             class="primary-button heading-generate-button"
             type="button"
@@ -1228,14 +1208,12 @@ onBeforeUnmount(() => {
 
       <section class="effect-prompt-settings" aria-label="批次设置">
         <div class="settings-heading">
-          <h3>素材片段批次设置</h3>
+          <h3>批次设置（仅以下参数可调）</h3>
           <span :class="currentSaveStatus">{{
             currentSaveStatus === 'saving'
               ? '正在保存'
               : currentSaveStatus === 'error'
-                ? fragmentWeightTotal !== 100
-                  ? '标签配比需合计 100%'
-                  : '保存失败'
+                ? '保存失败'
                 : currentState.settingsRevision === null
                   ? '待首次保存'
                   : '已自动保存'
@@ -1285,78 +1263,6 @@ onBeforeUnmount(() => {
           </span>
           <small>{{ setting.hint }}</small>
         </label>
-
-        <label class="setting-wide">
-          <span>风格覆盖</span>
-          <input
-            v-model="settingsDrafts[currentProductId]!.styleOverride"
-            type="text"
-            :disabled="currentRunning"
-            placeholder="留空则继承信息卡视觉规则"
-            @input="queueSettingsSave"
-            @blur="flushSettings()"
-          />
-          <small>只调整可视化风格，不改写产品事实。</small>
-        </label>
-
-        <fieldset class="setting-wide weight-setting">
-          <legend>七类素材标签配比</legend>
-          <p :class="{ 'weight-total-warning': fragmentWeightTotal !== 100 }">
-            用于下游混剪槽位的素材池构成，当前合计 {{ fragmentWeightTotal }}%。
-          </p>
-          <div class="weight-grid">
-            <label v-for="fragmentType in EFFECT_PROMPT_FRAGMENT_TYPES" :key="fragmentType">
-              <span>{{ fragmentTypeLabel(fragmentType) }}</span>
-              <input
-                v-model.number="settingsDrafts[currentProductId]!.fragmentTypeWeights[fragmentType]"
-                type="number"
-                min="0"
-                max="100"
-                :disabled="currentRunning"
-                @input="queueSettingsSave"
-                @blur="flushSettings()"
-              />
-              <small>%</small>
-            </label>
-          </div>
-        </fieldset>
-
-        <fieldset class="setting-wide weight-setting">
-          <legend>卖点权重</legend>
-          <p>所有已确认卖点都会至少覆盖一次，权重仅调整后续轮动比例。</p>
-          <div v-if="currentSettings.sellingPointWeights.length" class="weight-grid">
-            <label
-              v-for="(entry, index) in currentSettings.sellingPointWeights"
-              :key="entry.sellingPoint"
-            >
-              <span :title="entry.sellingPoint">{{ entry.sellingPoint }}</span>
-              <input
-                :value="entry.weight"
-                type="number"
-                min="0"
-                max="100"
-                :disabled="currentRunning"
-                @input="updateSellingPointWeight(index, $event)"
-                @blur="flushSettings()"
-              />
-              <small>%</small>
-            </label>
-          </div>
-          <div v-else class="setting-inline-empty">
-            暂无可调卖点，将按信息卡已确认卖点均衡轮动。
-          </div>
-        </fieldset>
-
-        <label class="setting-wide">
-          <span>追加禁用元素</span>
-          <textarea
-            v-model="additionalDisabledElementsText"
-            :disabled="currentRunning"
-            rows="2"
-            placeholder="每行一项；只追加，不覆盖上游禁用规则"
-            @blur="flushSettings()"
-          />
-        </label>
       </section>
 
       <section class="effect-prompt-stats" aria-label="质量统计">
@@ -1397,10 +1303,10 @@ onBeforeUnmount(() => {
         <div>
           <strong>卖点覆盖</strong>
           <span
-            >{{ currentMetrics.sellingPointCoverage.covered.length }}/{{
-              currentMetrics.sellingPointCoverage.required.length
-            }}
-            已覆盖</span
+            >{{
+              currentMetrics.sellingPointCoverage.required.length -
+              currentMetrics.sellingPointCoverage.missing.length
+            }}/{{ currentMetrics.sellingPointCoverage.required.length }} 已覆盖</span
           >
           <em v-if="currentMetrics.sellingPointCoverage.missing.length">
             待补：{{ currentMetrics.sellingPointCoverage.missing.join('、') }}
@@ -1990,7 +1896,9 @@ button:disabled {
 }
 .effect-prompt-heading__actions {
   display: flex;
+  margin-left: auto;
   align-items: center;
+  justify-content: flex-end;
   gap: 10px;
 }
 .product-switcher {
@@ -2003,13 +1911,16 @@ button:disabled {
   white-space: nowrap;
 }
 .product-switcher select {
-  width: 170px;
+  width: 230px;
   height: 40px;
   padding: 0 34px 0 13px;
   color: #42526a;
   background: #fff;
   border: 1px solid #dbe4f6;
   border-radius: 10px;
+}
+.effect-prompt-heading__actions .secondary-button {
+  min-width: 139px;
 }
 .heading-generate-button {
   min-width: 160px;
@@ -2162,91 +2073,6 @@ button:disabled {
 }
 .number-control input::-webkit-inner-spin-button {
   appearance: none;
-}
-.setting-wide {
-  display: grid;
-  grid-column: 1 / -1;
-  padding: 12px 14px;
-  gap: 7px;
-  color: #58657a;
-  background: #f8fbff;
-  border: 1px solid #e5eaf2;
-  border-radius: 12px;
-  font-size: 11px;
-}
-.setting-wide > span,
-.weight-setting legend {
-  color: #33415a;
-  font-size: 12px;
-  font-weight: 800;
-}
-.setting-wide > input,
-.setting-wide > textarea {
-  width: 100%;
-  padding: 8px 10px;
-  color: #42526a;
-  background: #fff;
-  border: 1px solid #dfe6f0;
-  border-radius: 8px;
-  outline: none;
-  resize: vertical;
-}
-.setting-wide > small,
-.weight-setting > p {
-  margin: 0;
-  color: #8995a8;
-  font-size: 9px;
-  line-height: 1.55;
-}
-.weight-setting > p.weight-total-warning {
-  color: #a46b0a;
-  font-weight: 700;
-}
-.weight-setting {
-  margin: 0;
-}
-.weight-setting legend {
-  padding: 0;
-}
-.weight-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 7px;
-}
-.weight-grid label {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: minmax(0, 1fr) 58px 14px;
-  align-items: center;
-  gap: 5px;
-  color: #5f6d82;
-  font-size: 10px;
-}
-.weight-grid label > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.weight-grid input {
-  width: 58px;
-  height: 30px;
-  padding: 0 5px;
-  color: #42526a;
-  background: #fff;
-  border: 1px solid #dfe6f0;
-  border-radius: 7px;
-  text-align: center;
-}
-.weight-grid small {
-  color: #9aa4b5;
-}
-.setting-inline-empty {
-  padding: 9px 10px;
-  color: #7c899e;
-  background: #fff;
-  border: 1px dashed #d8e1ed;
-  border-radius: 8px;
-  font-size: 10px;
 }
 .effect-prompt-stats {
   display: grid;
@@ -3243,9 +3069,6 @@ button:disabled {
   .effect-prompt-settings {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .weight-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
   .quality-breakdown {
     grid-template-columns: 1fr;
   }
@@ -3291,9 +3114,6 @@ button:disabled {
   }
   .effect-prompt-settings,
   .effect-prompt-stats {
-    grid-template-columns: 1fr;
-  }
-  .weight-grid {
     grid-template-columns: 1fr;
   }
   .fragment-filter {

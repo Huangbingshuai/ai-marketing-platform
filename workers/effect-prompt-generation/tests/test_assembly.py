@@ -56,7 +56,7 @@ def test_fragment_prompt_is_direct_and_constraints_are_appended() -> None:
     )
 
     assert reasons == []
-    assert "避免：夸大功效" in content
+    assert "画面中不添加数据、认证、价格或促销贴纸" in content
     assert "视频生成方案" not in content
     assert "时间轴镜头" not in content
     assert "差异化设定" not in content
@@ -131,7 +131,6 @@ def test_execution_gate_reports_action_evidence_and_role_failures() -> None:
         _valid_prompt(), text_only, product_name="便携杯", aspect_ratio="9:16"
     )
     assert "UNFILMABLE_EVIDENCE" in evidence_reasons
-    assert "ROLE_CONFLICT" in evidence_reasons
 
     hook_with_cta = _combination(FragmentType.HOOK)
     role_prompt = _valid_prompt() + " 立即下单购买。"

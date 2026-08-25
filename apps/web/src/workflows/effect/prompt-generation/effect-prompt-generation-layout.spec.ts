@@ -15,7 +15,7 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).toContain('{{ EFFECT_PROMPT_LIMITS.pageSize }} 条/页');
   });
 
-  it('keeps the core controls and adds fragment-pool batch adjustment fields', () => {
+  it('keeps only the four user-adjustable batch controls', () => {
     for (const label of [
       '生成数量',
       '统一片段时长',
@@ -23,18 +23,29 @@ describe('effect prompt generation prototype layout', () => {
       '画面重合度上限',
       '人工添加提示词',
       '批量导出',
-      '风格覆盖',
-      '七类素材标签配比',
-      '卖点权重',
-      '追加禁用元素',
     ])
       expect(pageSource).toContain(label);
     expect(pageSource).toContain("? '重新批量生成'");
     expect(pageSource).toContain(": '开始批量生成'");
     expect(pageSource).not.toContain('一键批量全部刷新');
     expect(pageSource.match(/@click="\s*generateCurrentBatch/g)).toHaveLength(1);
-    expect(pageSource).toContain('fragmentTypeWeights');
-    expect(pageSource).toContain('sellingPointWeights');
+    expect(pageSource).not.toContain('风格覆盖');
+    expect(pageSource).not.toContain('七类素材标签配比');
+    expect(pageSource).not.toContain('卖点权重');
+    expect(pageSource).not.toContain('追加禁用元素');
+  });
+
+  it('matches the extraction heading action order and labels', () => {
+    const productSwitcher = pageSource.indexOf('<label class="product-switcher">');
+    const workflowTrigger = pageSource.indexOf('class="secondary-button workflow-graph-trigger"');
+    const generationTrigger = pageSource.indexOf('class="primary-button heading-generate-button"');
+
+    expect(pageSource).toContain('<span>当前商品</span>');
+    expect(pageSource).toContain('<Workflow :size="14" />查看工作流');
+    expect(pageSource).not.toContain('查看生成子工作流');
+    expect(productSwitcher).toBeGreaterThan(-1);
+    expect(productSwitcher).toBeLessThan(workflowTrigger);
+    expect(workflowTrigger).toBeLessThan(generationTrigger);
   });
 
   it('uses working-copy status instead of a node-level asset save action', () => {

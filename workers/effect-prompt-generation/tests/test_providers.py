@@ -11,7 +11,14 @@ from effect_prompt_generation.models import (
     PlannedCombination,
     PromptDimensions,
 )
-from effect_prompt_generation.providers import ArkResponsesProvider, ProviderError, ProviderErrorType
+from effect_prompt_generation.assembly import assemble_fragment_prompt
+from effect_prompt_generation.combinations import plan_combinations
+from effect_prompt_generation.providers import (
+    ArkResponsesProvider,
+    MockAiProvider,
+    ProviderError,
+    ProviderErrorType,
+)
 
 
 @pytest.mark.asyncio
@@ -149,6 +156,57 @@ async def test_ark_candidate_returns_only_slot_and_direct_prompt() -> None:
     assert "促销贴纸" in prompt
     assert result.value.items[0].prompt_text.startswith("5秒，9:16竖屏")
     assert result.value.items[0].model_dump(by_alias=True).keys() == {"slotId", "promptText"}
+
+
+@pytest.mark.asyncio
+async def test_mock_translates_stacked_audience_into_executable_single_person_fragments() -> None:
+    provider = MockAiProvider()
+    insight = {
+        "productName": "广式腊肠",
+        "coreSellingPoints": ["广府糖酒腌制工艺", "切面油润可见", "便于按需切割"],
+        "targetAudience": "25-45岁家庭厨房决策者，美食爱好者，年货送礼人群，全国消费者",
+        "usageScenarios": ["年节家庭厨房"],
+        "aspectRatio": "3:4",
+    }
+    pools = (await provider.plan_strategy(insight, target_count=50)).value
+    combinations = plan_combinations(
+        pools,
+        count=50,
+        round_number=0,
+        ordinal_start=1,
+        target_duration_seconds=5,
+    )
+    generated_items = []
+    for start in range(0, len(combinations), 8):
+        generated_items.extend(
+            (
+                await provider.generate_candidates(
+                    combinations[start : start + 8],
+                    insight=insight,
+                    duration_seconds=5,
+                    style_override=None,
+                    additional_disabled_elements=[],
+                )
+            ).value.items
+        )
+
+    assert all("家庭厨房决策者" not in item for item in pools.personas)
+    abstract = next(item for item in pools.evidence_plans if item.selling_point == "广府糖酒腌制工艺")
+    assert abstract.evidence_mode == EvidenceMode.TEXT_ONLY
+    invalid: list[tuple[str, list[str]]] = []
+    by_slot = {item.slot_id: item.prompt_text for item in generated_items}
+    for combination in combinations:
+        _, item_reasons = assemble_fragment_prompt(
+            by_slot[combination.slot_id],
+            combination,
+            product_name="广式腊肠",
+            aspect_ratio="3:4",
+            disabled_elements=[],
+            source_facts=["广府糖酒腌制工艺", "切面油润可见", "便于按需切割"],
+        )
+        if item_reasons:
+            invalid.append((combination.dimensions.camera.encode("unicode_escape").decode(), item_reasons))
+    assert invalid == []
 
 
 def _combination() -> PlannedCombination:

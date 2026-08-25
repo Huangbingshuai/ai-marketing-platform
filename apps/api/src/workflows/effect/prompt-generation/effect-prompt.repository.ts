@@ -7,7 +7,11 @@ import type {
   EffectPromptManualOverrides,
   EffectPromptOperation,
 } from '@ai-marketing/contracts';
-import { EFFECT_PROMPT_SCHEMA_VERSION } from '@ai-marketing/contracts';
+import {
+  DEFAULT_EFFECT_PROMPT_SETTINGS,
+  EFFECT_PROMPT_SCHEMA_VERSION,
+  normalizeEffectPromptSettings,
+} from '@ai-marketing/contracts';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Prisma } from '../../../generated/prisma/client';
 
@@ -213,8 +217,32 @@ export class EffectPromptRepository {
       });
       if (!settingsNode || settingsNode.revision !== input.expectedSettingsRevision)
         return { kind: 'SETTINGS_CONFLICT' as const };
-      const settings = settingsNode.state as EffectPromptBatchSettings;
+      const legacySettings = settingsNode.schemaVersion < EFFECT_PROMPT_SCHEMA_VERSION;
+      const settings = normalizeEffectPromptSettings({
+        ...DEFAULT_EFFECT_PROMPT_SETTINGS,
+        ...(settingsNode.state as Partial<EffectPromptBatchSettings>),
+        // V1 的 durationSeconds 表示完整成片时长，不能截断后当成素材片段时长。
+        ...(legacySettings
+          ? { durationSeconds: DEFAULT_EFFECT_PROMPT_SETTINGS.durationSeconds }
+          : {}),
+      });
       const settingsHash = workflowStateHash(settings);
+      if (legacySettings) {
+        await transaction.workflowNodeState.update({
+          where: {
+            projectId_workflowRunId_nodeId: { projectId, workflowRunId, nodeId },
+          },
+          data: {
+            schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
+            revision: { increment: 1 },
+            contentHash: settingsHash,
+            executionInputHash: settingsHash,
+            executionInputSchemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
+            state: json(settings),
+            savedAt: new Date(),
+          },
+        });
+      }
       const insight = await transaction.workingArtifact.findFirst({
         where: {
           projectId,

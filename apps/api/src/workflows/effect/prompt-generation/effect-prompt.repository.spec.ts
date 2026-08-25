@@ -170,6 +170,75 @@ describe('EffectPromptRepository', () => {
     });
   });
 
+  it('migrates V1 full-video settings to V2 fragment defaults before snapshotting', async () => {
+    const created = runRecord();
+    const nodeUpdate = vi.fn().mockResolvedValue({});
+    const runCreate = vi.fn().mockResolvedValue(created);
+    const transaction = {
+      effectPromptRun: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: runCreate,
+      },
+      effectImportProduct: { findFirst: vi.fn().mockResolvedValue({ id: productId }) },
+      workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: workflowRunId }) },
+      workflowNodeState: {
+        findUnique: vi.fn().mockResolvedValue({
+          schemaVersion: 1,
+          revision: 1,
+          state: { count: 50, durationSeconds: 15, semanticLimit: 15, visualLimit: 20 },
+        }),
+        update: nodeUpdate,
+      },
+      workingArtifact: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: '00000000-0000-4000-8000-000000000005',
+          revision: 1,
+          contentHash: 'a'.repeat(64),
+          payload: { productName: '产品' },
+        }),
+      },
+      effectPromptResult: { findFirst: vi.fn().mockResolvedValue(null) },
+      jobOutbox: { create: vi.fn().mockResolvedValue({}) },
+      $queryRaw: vi.fn().mockResolvedValue([{ id: productId }]),
+    };
+    const repository = new EffectPromptRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await expect(repository.startRun(projectId, workflowRunId, productId, input)).resolves.toEqual({
+      kind: 'CREATED',
+      run: created,
+    });
+
+    const expectedSettings = DEFAULT_EFFECT_PROMPT_SETTINGS;
+    const expectedHash = workflowStateHash(expectedSettings);
+    expect(nodeUpdate).toHaveBeenCalledWith({
+      where: {
+        projectId_workflowRunId_nodeId: {
+          projectId,
+          workflowRunId,
+          nodeId: `PROMPT_GENERATION:${productId}`,
+        },
+      },
+      data: expect.objectContaining({
+        schemaVersion: 2,
+        revision: { increment: 1 },
+        state: expectedSettings,
+        contentHash: expectedHash,
+        executionInputHash: expectedHash,
+        executionInputSchemaVersion: 2,
+      }),
+    });
+    expect(runCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        settingsHash: expectedHash,
+        inputSnapshot: expect.objectContaining({ settings: expectedSettings }),
+      }),
+      include: { result: true, stages: true },
+    });
+  });
+
   it('requires result revision CAS when batch generation replaces an existing result', async () => {
     const transaction = {
       effectPromptRun: { findUnique: vi.fn().mockResolvedValue(null) },
