@@ -101,6 +101,47 @@ describe('EffectPromptService settings contract', () => {
       expect(serialized).not.toContain(value);
   });
 
+  it('hides V2 results from the V3 workspace and requests regeneration', async () => {
+    const repository = {
+      workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }),
+      products: vi.fn().mockResolvedValue([
+        {
+          id: 'product-a',
+          promptRuns: [],
+          updatedAt: new Date('2026-08-25T00:00:00.000Z'),
+        },
+      ]),
+      latestResult: vi.fn().mockResolvedValue({
+        id: 'legacy-result',
+        revision: 4,
+        schemaVersion: 2,
+        settingsHash: 'legacy-settings',
+        draftResult: { schemaVersion: 2 },
+      }),
+      settingsNode: vi.fn().mockResolvedValue({
+        revision: 2,
+        schemaVersion: 2,
+        state: { count: 50, durationSeconds: 5, semanticLimit: 15, visualLimit: 20 },
+      }),
+      insightArtifact: vi.fn().mockResolvedValue(null),
+      promptArtifact: vi.fn().mockResolvedValue(null),
+    };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const service = new EffectPromptService(repository as never, projects as never, {} as never);
+
+    const output = await service.workspace('project-a', 'workflow-a');
+
+    expect(output.products[0]).toEqual(
+      expect.objectContaining({
+        resultId: null,
+        resultRevision: null,
+        metrics: null,
+        qualityStatus: null,
+        errorMessage: 'Prompt 生成规则已升级，请重新生成六类素材片段',
+      }),
+    );
+  });
+
   it('rejects manual additions before they can exceed the shared result limit', async () => {
     const timestamp = '2026-08-25T00:00:00.000Z';
     const items = Array.from({ length: EFFECT_PROMPT_LIMITS.maxCount }, (_, index) => ({
@@ -125,7 +166,7 @@ describe('EffectPromptService settings contract', () => {
     }));
     const repository = {
       result: vi.fn().mockResolvedValue({
-        schemaVersion: 2,
+        schemaVersion: 3,
         draftResult: { items },
       }),
       mutateResult: vi.fn(),
@@ -138,7 +179,6 @@ describe('EffectPromptService settings contract', () => {
         content: '新增 Prompt',
         fragmentType: 'HOOK',
         materialTags: ['钩子', '首帧'],
-        targetDurationSeconds: 5,
         dimensions: {
           narrative: '痛点前置型',
           scene: '家庭',
@@ -180,7 +220,7 @@ describe('EffectPromptService settings contract', () => {
         makeItem('hook-outdoor', 'HOOK', '户外草地上人物打开产品并转向镜头'),
         makeItem('cta-kitchen', 'CTA', '家庭厨房中人物摆放产品并展示转化字幕'),
       ],
-      { ...DEFAULT_EFFECT_PROMPT_SETTINGS, count: 10 },
+      DEFAULT_EFFECT_PROMPT_SETTINGS,
     );
     const repository = {
       workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }),
@@ -188,7 +228,7 @@ describe('EffectPromptService settings contract', () => {
         id: 'result-a',
         productId: 'product-a',
         revision: 1,
-        schemaVersion: 2,
+        schemaVersion: 3,
         draftResult,
       }),
     };

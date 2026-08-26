@@ -2,15 +2,14 @@ import { randomUUID } from 'node:crypto';
 
 import type {
   EffectPromptBatchResult,
-  EffectPromptBatchSettings,
   EffectPromptItem,
   EffectPromptManualOverrides,
   EffectPromptOperation,
 } from '@ai-marketing/contracts';
 import {
-  DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_SCHEMA_VERSION,
-  normalizeEffectPromptSettings,
+  effectPromptTargetCount,
+  migrateEffectPromptSettings,
 } from '@ai-marketing/contracts';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Prisma } from '../../../generated/prisma/client';
@@ -218,14 +217,7 @@ export class EffectPromptRepository {
       if (!settingsNode || settingsNode.revision !== input.expectedSettingsRevision)
         return { kind: 'SETTINGS_CONFLICT' as const };
       const legacySettings = settingsNode.schemaVersion < EFFECT_PROMPT_SCHEMA_VERSION;
-      const settings = normalizeEffectPromptSettings({
-        ...DEFAULT_EFFECT_PROMPT_SETTINGS,
-        ...(settingsNode.state as Partial<EffectPromptBatchSettings>),
-        // V1 的 durationSeconds 表示完整成片时长，不能截断后当成素材片段时长。
-        ...(legacySettings
-          ? { durationSeconds: DEFAULT_EFFECT_PROMPT_SETTINGS.durationSeconds }
-          : {}),
-      });
+      const settings = migrateEffectPromptSettings(settingsNode.state, settingsNode.schemaVersion);
       const settingsHash = workflowStateHash(settings);
       if (legacySettings) {
         await transaction.workflowNodeState.update({
@@ -258,16 +250,19 @@ export class EffectPromptRepository {
         where: { projectId, workflowRunId, productId },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       });
-      const currentResult = latest ? parseEffectPromptBatchResult(latest.draftResult) : null;
+      const parsedLatest = latest ? parseEffectPromptBatchResult(latest.draftResult) : null;
+      const latestV3 =
+        latest?.schemaVersion === EFFECT_PROMPT_SCHEMA_VERSION && parsedLatest ? latest : null;
+      const currentResult = latestV3 ? parsedLatest : null;
       if (
         input.expectedResultRevision !== null &&
-        latest?.revision !== input.expectedResultRevision
+        latestV3?.revision !== input.expectedResultRevision
       )
         return { kind: 'RESULT_CONFLICT' as const };
-      if (input.operation === 'BATCH_GENERATE' && latest && input.expectedResultRevision === null)
+      if (input.operation === 'BATCH_GENERATE' && latestV3 && input.expectedResultRevision === null)
         return { kind: 'RESULT_CONFLICT' as const };
       if (input.operation === 'ITEM_REGENERATE') {
-        if (!latest || input.expectedResultRevision === null || !input.targetItemId)
+        if (!latestV3 || input.expectedResultRevision === null || !input.targetItemId)
           return { kind: 'RESULT_CONFLICT' as const };
         if (!currentResult?.items.some((item) => item.id === input.targetItemId))
           return { kind: 'ITEM_NOT_FOUND' as const };
@@ -279,7 +274,8 @@ export class EffectPromptRepository {
         input.targetItemId,
         input.operation,
       );
-      if (manualItems.length > settings.count) return { kind: 'MANUAL_COUNT_EXCEEDED' as const };
+      if (manualItems.length > effectPromptTargetCount(settings))
+        return { kind: 'MANUAL_COUNT_EXCEEDED' as const };
       const snapshot: EffectPromptInputSnapshot = {
         schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
         projectId,
@@ -298,7 +294,7 @@ export class EffectPromptRepository {
         ...(input.operation === 'ITEM_REGENERATE' && targetItem
           ? { targetItem, targetItemIndex }
           : {}),
-        baseResultRevision: latest?.revision ?? null,
+        baseResultRevision: latestV3?.revision ?? null,
       };
       const active = await transaction.effectPromptRun.findFirst({
         where: {

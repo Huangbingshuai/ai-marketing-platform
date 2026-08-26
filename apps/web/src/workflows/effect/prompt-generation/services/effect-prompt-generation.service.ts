@@ -154,7 +154,6 @@ export type PromptItemDraft = {
   content: string;
   fragmentType: EffectPromptFragmentType;
   materialTags: string[];
-  targetDurationSeconds: number;
   dimensions: EffectPromptDimensions;
 };
 

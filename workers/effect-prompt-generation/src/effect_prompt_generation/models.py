@@ -60,7 +60,7 @@ class RuntimeContext:
 
 
 class PromptGenerationRequest(ApiModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     run_id: str
     project_id: str
     request_id: str
@@ -87,7 +87,6 @@ class FragmentType(StrEnum):
     HOOK = "HOOK"
     PAIN = "PAIN"
     PRODUCT_DISPLAY = "PRODUCT_DISPLAY"
-    EFFECT_DEMONSTRATION = "EFFECT_DEMONSTRATION"
     SELLING_POINT_EXPLANATION = "SELLING_POINT_EXPLANATION"
     CTA = "CTA"
     OUTRO = "OUTRO"
@@ -97,20 +96,18 @@ FRAGMENT_TYPE_LABELS: dict[FragmentType, str] = {
     FragmentType.HOOK: "钩子片段",
     FragmentType.PAIN: "痛点片段",
     FragmentType.PRODUCT_DISPLAY: "产品展示片段",
-    FragmentType.EFFECT_DEMONSTRATION: "效果展示片段",
     FragmentType.SELLING_POINT_EXPLANATION: "卖点讲解片段",
     FragmentType.CTA: "结尾转化片段",
     FragmentType.OUTRO: "片尾品牌片段",
 }
 
-FRAGMENT_TYPE_WEIGHTS: dict[FragmentType, int] = {
-    FragmentType.HOOK: 16,
-    FragmentType.PAIN: 14,
-    FragmentType.PRODUCT_DISPLAY: 18,
-    FragmentType.EFFECT_DEMONSTRATION: 18,
-    FragmentType.SELLING_POINT_EXPLANATION: 16,
-    FragmentType.CTA: 10,
-    FragmentType.OUTRO: 8,
+DEFAULT_FRAGMENT_COUNTS: dict[FragmentType, int] = {
+    FragmentType.HOOK: 10,
+    FragmentType.PAIN: 8,
+    FragmentType.PRODUCT_DISPLAY: 12,
+    FragmentType.SELLING_POINT_EXPLANATION: 10,
+    FragmentType.CTA: 6,
+    FragmentType.OUTRO: 4,
 }
 
 
@@ -122,32 +119,27 @@ class EvidenceMode(StrEnum):
     TEXT_ONLY = "TEXT_ONLY"
 
 
-class SellingPointWeight(ApiModel):
-    selling_point: str = Field(min_length=1, max_length=240)
-    weight: int = Field(ge=0, le=100)
+class FragmentConfig(ApiModel):
+    count: int = Field(ge=1, le=200)
+    duration_seconds: int = Field(ge=3, le=10)
 
 
 class PromptBatchSettings(ApiModel):
-    count: int = Field(ge=10, le=200)
-    duration_seconds: int = Field(ge=3, le=10)
+    fragment_configs: dict[FragmentType, FragmentConfig]
     semantic_limit: int = Field(ge=5, le=15)
     visual_limit: int = Field(ge=10, le=20)
-    style_override: str | None
-    fragment_type_weights: dict[FragmentType, int]
-    selling_point_weights: list[SellingPointWeight] = Field(max_length=12)
-    additional_disabled_elements: list[str] = Field(max_length=50)
 
     @model_validator(mode="after")
-    def selling_point_weights_total(self) -> PromptBatchSettings:
-        if set(self.fragment_type_weights) != set(FragmentType):
-            raise ValueError("fragmentTypeWeights must contain every fragment type")
-        if any(weight < 0 or weight > 100 for weight in self.fragment_type_weights.values()):
-            raise ValueError("fragmentTypeWeights values must be between 0 and 100")
-        if sum(self.fragment_type_weights.values()) != 100:
-            raise ValueError("fragmentTypeWeights must sum to 100")
-        if self.selling_point_weights and sum(item.weight for item in self.selling_point_weights) != 100:
-            raise ValueError("sellingPointWeights must be empty or sum to 100")
+    def fragment_config_total(self) -> PromptBatchSettings:
+        if set(self.fragment_configs) != set(FragmentType):
+            raise ValueError("fragmentConfigs must contain every fragment type")
+        if not 10 <= self.target_count <= 200:
+            raise ValueError("fragmentConfigs total count must be between 10 and 200")
         return self
+
+    @property
+    def target_count(self) -> int:
+        return sum(config.count for config in self.fragment_configs.values())
 
 
 class PromptItem(ApiModel):
@@ -202,12 +194,12 @@ class PromptMetrics(ApiModel):
     semantic_duplicate_rate: float = Field(ge=0, le=100)
     visual_overlap_rate: float = Field(ge=0, le=100)
     replenishment_rounds: int = Field(ge=0, le=3)
-    fragment_type_distribution: list[FragmentTypeDistribution] = Field(min_length=7, max_length=7)
+    fragment_type_distribution: list[FragmentTypeDistribution] = Field(min_length=6, max_length=6)
     selling_point_coverage: SellingPointCoverage
 
 
 class PromptBatchResult(ApiModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     settings: PromptBatchSettings
     items: list[PromptItem] = Field(max_length=200)
     metrics: PromptMetrics
@@ -217,8 +209,8 @@ class PromptBatchResult(ApiModel):
     def result_counts_match(self) -> PromptBatchResult:
         if self.metrics.accepted_count != len(self.items):
             raise ValueError("metrics.acceptedCount must equal items length")
-        if self.metrics.target_count != self.settings.count:
-            raise ValueError("metrics.targetCount must equal settings.count")
+        if self.metrics.target_count != self.settings.target_count:
+            raise ValueError("metrics.targetCount must equal fragmentConfigs total")
         return self
 
 
@@ -230,7 +222,7 @@ class InsightArtifact(ApiModel):
 
 
 class PromptGenerationSnapshot(ApiModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     project_id: str
     workflow_run_id: str
     product_id: str
@@ -247,7 +239,7 @@ class PromptGenerationSnapshot(ApiModel):
     def validate_operation(self) -> PromptGenerationSnapshot:
         if self.operation == "ITEM_REGENERATE" and not self.target_item_id:
             raise ValueError("targetItemId is required for ITEM_REGENERATE")
-        if len(self.retained_manual_items) > self.settings.count:
+        if len(self.retained_manual_items) > self.settings.target_count:
             raise ValueError("retained manual items exceed target count")
         return self
 
@@ -264,7 +256,13 @@ class NodeId(StrEnum):
     LOAD_AND_SNAPSHOT = "LOAD_AND_SNAPSHOT"
     STRATEGY_PLANNING = "STRATEGY_PLANNING"
     DIMENSION_COMBINATION = "DIMENSION_COMBINATION"
-    CANDIDATE_GENERATION = "CANDIDATE_GENERATION"
+    FRAGMENT_TYPE_ROUTER = "FRAGMENT_TYPE_ROUTER"
+    GENERATE_HOOK = "GENERATE_HOOK"
+    GENERATE_PAIN = "GENERATE_PAIN"
+    GENERATE_PRODUCT_DISPLAY = "GENERATE_PRODUCT_DISPLAY"
+    GENERATE_SELLING_POINT_EXPLANATION = "GENERATE_SELLING_POINT_EXPLANATION"
+    GENERATE_CTA = "GENERATE_CTA"
+    GENERATE_OUTRO = "GENERATE_OUTRO"
     NORMALIZATION = "NORMALIZATION"
     SEMANTIC_DEDUP = "SEMANTIC_DEDUP"
     VISUAL_DEDUP = "VISUAL_DEDUP"
@@ -342,6 +340,16 @@ class ShardPlan(ApiModel):
     round: int = Field(ge=0, le=3)
     shard_index: int = Field(ge=0)
     combinations: list[PlannedCombination] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def homogeneous_fragment_type(self) -> ShardPlan:
+        if len({item.fragment_type for item in self.combinations}) != 1:
+            raise ValueError("shard combinations must share one fragmentType")
+        return self
+
+    @property
+    def fragment_type(self) -> FragmentType:
+        return self.combinations[0].fragment_type
 
     @property
     def key(self) -> str:

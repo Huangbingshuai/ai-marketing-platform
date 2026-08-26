@@ -7,7 +7,7 @@ import pytest
 from effect_prompt_generation.models import (
     InsightArtifact,
     FragmentType,
-    FRAGMENT_TYPE_WEIGHTS,
+    FragmentConfig,
     PromptBatchSettings,
     PromptDimensions,
     PromptGenerationSnapshot,
@@ -54,14 +54,16 @@ def snapshot() -> PromptGenerationSnapshot:
         product_id="product-1",
         operation="BATCH_GENERATE",
         settings=PromptBatchSettings(
-            count=10,
-            duration_seconds=5,
+            fragment_configs={
+                FragmentType.HOOK: FragmentConfig(count=2, duration_seconds=5),
+                FragmentType.PAIN: FragmentConfig(count=2, duration_seconds=5),
+                FragmentType.PRODUCT_DISPLAY: FragmentConfig(count=2, duration_seconds=5),
+                FragmentType.SELLING_POINT_EXPLANATION: FragmentConfig(count=2, duration_seconds=5),
+                FragmentType.CTA: FragmentConfig(count=1, duration_seconds=5),
+                FragmentType.OUTRO: FragmentConfig(count=1, duration_seconds=5),
+            },
             semantic_limit=15,
             visual_limit=20,
-            style_override=None,
-            fragment_type_weights=dict(FRAGMENT_TYPE_WEIGHTS),
-            selling_point_weights=[],
-            additional_disabled_elements=[],
         ),
         insight_artifact=InsightArtifact(
             id="insight-1",

@@ -22,6 +22,7 @@ import {
   EFFECT_PROMPT_GRAPH_EDGES,
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
+  effectPromptTargetCount,
 } from '@ai-marketing/contracts';
 import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
 import {
@@ -118,7 +119,6 @@ const editorDraft = ref<PromptItemDraft>({
   content: '',
   fragmentType: 'HOOK',
   materialTags: [],
-  targetDurationSeconds: DEFAULT_EFFECT_PROMPT_SETTINGS.durationSeconds,
   dimensions: emptyDimensions(),
 });
 const editorMaterialTagsText = ref('');
@@ -156,12 +156,61 @@ const currentState = computed(() => productStates.value[currentProductId.value] 
 const currentSettings = computed(
   () => settingsDrafts.value[currentProductId.value] ?? DEFAULT_EFFECT_PROMPT_SETTINGS,
 );
+const currentTargetCount = computed(() => effectPromptTargetCount(currentSettings.value));
+const selectedFragmentConfig = computed(() =>
+  fragmentTypeFilter.value ? currentSettings.value.fragmentConfigs[fragmentTypeFilter.value] : null,
+);
+const allDurationValues = computed(() => [
+  ...new Set(
+    EFFECT_PROMPT_FRAGMENT_TYPES.map(
+      (fragmentType) => currentSettings.value.fragmentConfigs[fragmentType].durationSeconds,
+    ),
+  ),
+]);
+const currentDurationSummary = computed(() => {
+  if (selectedFragmentConfig.value) return `${selectedFragmentConfig.value.durationSeconds} 秒`;
+  const durations = allDurationValues.value;
+  return durations.length === 1 ? `统一 ${durations[0]} 秒` : `多值（${durations.join(' / ')} 秒）`;
+});
+const editorTargetDurationSeconds = computed(
+  () => currentSettings.value.fragmentConfigs[editorDraft.value.fragmentType].durationSeconds,
+);
 const currentRun = computed(() => runsByProduct.value[currentProductId.value] ?? null);
 const currentResult = computed(() => resultData.value?.result ?? null);
 const currentItems = computed(() => resultData.value?.items ?? []);
 const currentMetrics = computed(
   () => currentResult.value?.metrics ?? currentState.value?.metrics ?? null,
 );
+const currentFragmentDistribution = computed(() => {
+  const distribution = currentMetrics.value?.fragmentTypeDistribution ?? [];
+  if (!fragmentTypeFilter.value) return distribution;
+  return distribution.filter((entry) => entry.fragmentType === fragmentTypeFilter.value);
+});
+const currentQuotaStats = computed(() => {
+  const fragmentType = fragmentTypeFilter.value;
+  if (!fragmentType) {
+    const targetCount = currentTargetCount.value;
+    const actualCount = currentMetrics.value?.acceptedCount ?? 0;
+    return {
+      label: '全部可用素材片段 Prompt',
+      targetCount,
+      actualCount,
+      missingCount: Math.max(0, targetCount - actualCount),
+    };
+  }
+  const entry = currentMetrics.value?.fragmentTypeDistribution.find(
+    (candidate) => candidate.fragmentType === fragmentType,
+  );
+  const targetCount =
+    entry?.targetCount ?? currentSettings.value.fragmentConfigs[fragmentType].count;
+  const actualCount = entry?.actualCount ?? 0;
+  return {
+    label: `${fragmentTypeLabel(fragmentType)}可用 Prompt`,
+    targetCount,
+    actualCount,
+    missingCount: Math.max(0, targetCount - actualCount),
+  };
+});
 const executionInvalidSummary = computed(() => {
   const labels: Record<string, string> = {
     MULTI_STAGE_STORY: '完整成片结构',
@@ -223,7 +272,15 @@ const graphRows: EffectPromptNodeId[][] = [
   ['LOAD_AND_SNAPSHOT'],
   ['STRATEGY_PLANNING'],
   ['DIMENSION_COMBINATION'],
-  ['CANDIDATE_GENERATION'],
+  ['FRAGMENT_TYPE_ROUTER'],
+  [
+    'GENERATE_HOOK',
+    'GENERATE_PAIN',
+    'GENERATE_PRODUCT_DISPLAY',
+    'GENERATE_SELLING_POINT_EXPLANATION',
+    'GENERATE_CTA',
+    'GENERATE_OUTRO',
+  ],
   ['NORMALIZATION'],
   ['SEMANTIC_DEDUP', 'VISUAL_DEDUP'],
   ['QUALITY_GATE'],
@@ -494,15 +551,11 @@ watch(keyword, () => {
   }, 350);
 });
 
-type NumericPromptSetting = 'count' | 'durationSeconds' | 'semanticLimit' | 'visualLimit';
+type NumericPromptSetting = 'semanticLimit' | 'visualLimit';
+type FragmentConfigKey = 'count' | 'durationSeconds';
 
 const settingRange = (key: NumericPromptSetting): { maximum: number; minimum: number } =>
   ({
-    count: { minimum: EFFECT_PROMPT_LIMITS.minCount, maximum: EFFECT_PROMPT_LIMITS.maxCount },
-    durationSeconds: {
-      minimum: EFFECT_PROMPT_LIMITS.minDurationSeconds,
-      maximum: EFFECT_PROMPT_LIMITS.maxDurationSeconds,
-    },
     semanticLimit: {
       minimum: EFFECT_PROMPT_LIMITS.minSemanticDuplicateRate,
       maximum: EFFECT_PROMPT_LIMITS.maxSemanticDuplicateRate,
@@ -526,6 +579,58 @@ const adjustSetting = (key: NumericPromptSetting, delta: number): void => {
   const range = settingRange(key);
   draft[key] = Math.min(range.maximum, Math.max(range.minimum, draft[key] + delta));
   queueSettingsSave();
+};
+
+const fragmentConfigRange = (key: FragmentConfigKey): { maximum: number; minimum: number } => {
+  if (key === 'durationSeconds')
+    return {
+      minimum: EFFECT_PROMPT_LIMITS.minDurationSeconds,
+      maximum: EFFECT_PROMPT_LIMITS.maxDurationSeconds,
+    };
+  const selectedType = fragmentTypeFilter.value;
+  const otherCount = selectedType
+    ? EFFECT_PROMPT_FRAGMENT_TYPES.reduce(
+        (sum, fragmentType) =>
+          sum +
+          (fragmentType === selectedType
+            ? 0
+            : currentSettings.value.fragmentConfigs[fragmentType].count),
+        0,
+      )
+    : 0;
+  return {
+    minimum: Math.max(
+      EFFECT_PROMPT_LIMITS.minFragmentCount,
+      EFFECT_PROMPT_LIMITS.minCount - otherCount,
+    ),
+    maximum: Math.max(
+      EFFECT_PROMPT_LIMITS.minFragmentCount,
+      EFFECT_PROMPT_LIMITS.maxCount - otherCount,
+    ),
+  };
+};
+
+const updateFragmentConfig = (key: FragmentConfigKey, rawValue: number): void => {
+  const fragmentType = fragmentTypeFilter.value;
+  const draft = settingsDrafts.value[currentProductId.value];
+  if (!fragmentType || !draft) return;
+  const range = fragmentConfigRange(key);
+  draft.fragmentConfigs[fragmentType][key] = Math.min(
+    range.maximum,
+    Math.max(range.minimum, Math.round(Number(rawValue) || range.minimum)),
+  );
+  queueSettingsSave();
+};
+
+const updateFragmentConfigFromEvent = (key: FragmentConfigKey, event: Event): void => {
+  const input = event.target;
+  if (input instanceof HTMLInputElement) updateFragmentConfig(key, input.valueAsNumber);
+};
+
+const adjustFragmentConfig = (key: FragmentConfigKey, delta: number): void => {
+  const fragmentType = fragmentTypeFilter.value;
+  if (!fragmentType) return;
+  updateFragmentConfig(key, currentSettings.value.fragmentConfigs[fragmentType][key] + delta);
 };
 
 async function flushSettings(productId = currentProductId.value): Promise<boolean> {
@@ -665,7 +770,6 @@ const openEditor = async (item?: EffectPromptItem, event?: Event): Promise<void>
     content: item?.content ?? '',
     fragmentType: item?.fragmentType ?? 'HOOK',
     materialTags: item ? [...item.materialTags] : [],
-    targetDurationSeconds: item?.targetDurationSeconds ?? currentSettings.value.durationSeconds,
     dimensions: item ? { ...item.dimensions } : emptyDimensions(),
   };
   editorMaterialTagsText.value = item?.materialTags.join('，') ?? '';
@@ -711,10 +815,6 @@ const commitEditor = async (): Promise<void> => {
         content: draft.content.trim(),
         fragmentType: draft.fragmentType,
         materialTags: uniqueTextList(editorMaterialTagsText.value),
-        targetDurationSeconds: Math.min(
-          EFFECT_PROMPT_LIMITS.maxDurationSeconds,
-          Math.max(EFFECT_PROMPT_LIMITS.minDurationSeconds, draft.targetDurationSeconds),
-        ),
         dimensions: Object.fromEntries(
           EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, draft.dimensions[key].trim()]),
         ) as EffectPromptDimensions,
@@ -915,9 +1015,15 @@ const graphStatusMeta = (statusValue: EffectPromptStageStatus): { label: string;
 const graphDescription = (nodeId: EffectPromptNodeId): string =>
   ({
     LOAD_AND_SNAPSHOT: '冻结洞察工作副本、批次设置和人工保留内容',
-    STRATEGY_PLANNING: '规划七类素材配额、六维候选池与卖点轮动',
+    STRATEGY_PLANNING: '规划六类素材、六维候选池与卖点轮动',
     DIMENSION_COMBINATION: '分配片段用途并最大化六维正交距离',
-    CANDIDATE_GENERATION: '按分片生成单场景、单动作的素材片段 Prompt',
+    FRAGMENT_TYPE_ROUTER: '按选定数量和时长将组合路由到六类生成分支',
+    GENERATE_HOOK: '生成首帧即有注意力触发动作的钩子片段',
+    GENERATE_PAIN: '生成可见问题状态和人物反应的痛点片段',
+    GENERATE_PRODUCT_DISPLAY: '生成产品外观稳定、展示动作单一的片段',
+    GENERATE_SELLING_POINT_EXPLANATION: '生成围绕一个确认卖点的可见讲解或演示片段',
+    GENERATE_CTA: '生成产品清晰、预留安全区的结尾转化片段',
+    GENERATE_OUTRO: '生成可稳定停留的片尾品牌收束片段',
     NORMALIZATION: '校验主标签、时长与画面动作的可执行性',
     SEMANTIC_DEDUP: '检测内容意图和文字近似重复',
     VISUAL_DEDUP: '计算场景、人物、镜头和情绪的结构化重合',
@@ -1134,9 +1240,9 @@ onBeforeUnmount(() => {
           <div>
             <h2 id="effect-prompt-title">差异化 Prompt 批量生成</h2>
             <p>
-              {{ currentSettings.count }} 条 Prompt =
-              {{ currentSettings.count }} 个可独立渲染的素材片段， 不是
-              {{ currentSettings.count }} 条最终成片
+              {{ currentTargetCount }} 条 Prompt =
+              {{ currentTargetCount }} 个可独立渲染的素材片段，不是
+              {{ currentTargetCount }} 条最终成片
             </p>
           </div>
         </div>
@@ -1219,10 +1325,107 @@ onBeforeUnmount(() => {
                   : '已自动保存'
           }}</span>
         </div>
+        <label class="setting-card fragment-type-setting">
+          <span>片段类型</span>
+          <select v-model="fragmentTypeFilter">
+            <option value="">全部片段</option>
+            <option
+              v-for="fragmentType in EFFECT_PROMPT_FRAGMENT_TYPES"
+              :key="fragmentType"
+              :value="fragmentType"
+            >
+              {{ fragmentTypeLabel(fragmentType) }}
+            </option>
+          </select>
+          <small>同时切换该类设置与下方 Prompt 列表</small>
+        </label>
+
+        <label class="setting-card">
+          <span>生成数量</span>
+          <span v-if="fragmentTypeFilter" class="number-control">
+            <button
+              type="button"
+              aria-label="降低当前片段类型生成数量"
+              :disabled="
+                currentRunning ||
+                selectedFragmentConfig!.count <= fragmentConfigRange('count').minimum
+              "
+              @click="adjustFragmentConfig('count', -1)"
+            >
+              −
+            </button>
+            <input
+              :value="selectedFragmentConfig!.count"
+              type="number"
+              :min="fragmentConfigRange('count').minimum"
+              :max="fragmentConfigRange('count').maximum"
+              :disabled="currentRunning"
+              @input="updateFragmentConfigFromEvent('count', $event)"
+              @blur="flushSettings()"
+            />
+            <button
+              type="button"
+              aria-label="提高当前片段类型生成数量"
+              :disabled="
+                currentRunning ||
+                selectedFragmentConfig!.count >= fragmentConfigRange('count').maximum
+              "
+              @click="adjustFragmentConfig('count', 1)"
+            >
+              ＋
+            </button>
+          </span>
+          <output v-else class="setting-readonly-value">{{ currentTargetCount }} 条</output>
+          <small>{{
+            fragmentTypeFilter ? '当前类型独立数量' : '六类片段总量，不可直接修改'
+          }}</small>
+        </label>
+
+        <label class="setting-card">
+          <span>片段时长</span>
+          <span v-if="fragmentTypeFilter" class="number-control">
+            <button
+              type="button"
+              aria-label="缩短当前片段类型时长"
+              :disabled="
+                currentRunning ||
+                selectedFragmentConfig!.durationSeconds <=
+                  fragmentConfigRange('durationSeconds').minimum
+              "
+              @click="adjustFragmentConfig('durationSeconds', -1)"
+            >
+              −
+            </button>
+            <input
+              :value="selectedFragmentConfig!.durationSeconds"
+              type="number"
+              :min="fragmentConfigRange('durationSeconds').minimum"
+              :max="fragmentConfigRange('durationSeconds').maximum"
+              :disabled="currentRunning"
+              @input="updateFragmentConfigFromEvent('durationSeconds', $event)"
+              @blur="flushSettings()"
+            />
+            <button
+              type="button"
+              aria-label="延长当前片段类型时长"
+              :disabled="
+                currentRunning ||
+                selectedFragmentConfig!.durationSeconds >=
+                  fragmentConfigRange('durationSeconds').maximum
+              "
+              @click="adjustFragmentConfig('durationSeconds', 1)"
+            >
+              ＋
+            </button>
+          </span>
+          <output v-else class="setting-readonly-value">{{ currentDurationSummary }}</output>
+          <small>{{
+            fragmentTypeFilter ? '3–10 秒，按当前类型生效' : '全部片段时长摘要，不可直接修改'
+          }}</small>
+        </label>
+
         <label
           v-for="setting in [
-            { key: 'count', label: '生成数量', hint: '默认 50 条' },
-            { key: 'durationSeconds', label: '统一片段时长', hint: '3–10 秒，默认 5 秒' },
             { key: 'semanticLimit', label: '语义重复度上限', hint: '批内违规 Prompt 对占比' },
             { key: 'visualLimit', label: '画面重合度上限', hint: '生成前结构化代理指标' },
           ] as const"
@@ -1267,8 +1470,12 @@ onBeforeUnmount(() => {
 
       <section class="effect-prompt-stats" aria-label="质量统计">
         <article class="coral">
-          <span>可用素材片段 Prompt</span><strong>{{ currentMetrics?.acceptedCount ?? 0 }}</strong
-          ><small>目标 {{ currentSettings.count }} 条，一条对应一个片段</small>
+          <span>{{ currentQuotaStats.label }}</span
+          ><strong>{{ currentQuotaStats.actualCount }}</strong
+          ><small
+            >目标 {{ currentQuotaStats.targetCount }} 条 · 缺口
+            {{ currentQuotaStats.missingCount }} 条，一条对应一个片段</small
+          >
         </article>
         <article class="amber">
           <span>执行无效候选</span
@@ -1289,15 +1496,16 @@ onBeforeUnmount(() => {
 
       <section v-if="currentMetrics" class="quality-breakdown" aria-label="配额与卖点覆盖">
         <div>
-          <strong>七类标签配额</strong>
+          <strong>{{ fragmentTypeFilter ? '当前类型配额' : '六类标签配额' }}</strong>
           <span
-            v-for="entry in currentMetrics.fragmentTypeDistribution"
+            v-for="entry in currentFragmentDistribution"
             :key="entry.fragmentType"
             :class="{ missing: entry.actualCount < entry.targetCount }"
           >
             {{ fragmentTypeLabel(entry.fragmentType) }} {{ entry.actualCount }}/{{
               entry.targetCount
             }}
+            · 缺口 {{ Math.max(0, entry.targetCount - entry.actualCount) }}
           </span>
         </div>
         <div>
@@ -1324,19 +1532,6 @@ onBeforeUnmount(() => {
               type="search"
               placeholder="搜索 ID / 片段画面 / 标签 / 六维"
           /></label>
-          <label class="fragment-filter">
-            <span>主标签</span>
-            <select v-model="fragmentTypeFilter">
-              <option value="">全部片段</option>
-              <option
-                v-for="fragmentType in EFFECT_PROMPT_FRAGMENT_TYPES"
-                :key="fragmentType"
-                :value="fragmentType"
-              >
-                {{ fragmentTypeLabel(fragmentType) }}
-              </option>
-            </select>
-          </label>
           <span class="prompt-result-count">{{ resultData?.total ?? 0 }} 条</span>
           <button
             class="primary-button"
@@ -1524,12 +1719,8 @@ onBeforeUnmount(() => {
             </label>
             <label>
               <span>目标片段时长</span>
-              <input
-                v-model.number="editorDraft.targetDurationSeconds"
-                type="number"
-                :min="EFFECT_PROMPT_LIMITS.minDurationSeconds"
-                :max="EFFECT_PROMPT_LIMITS.maxDurationSeconds"
-              />
+              <input :value="editorTargetDurationSeconds" type="number" readonly />
+              <small>由当前主标签的批次时长自动决定，不可单条修改。</small>
             </label>
             <label class="editor-wide-field">
               <span>次级素材标签</span>
@@ -1650,7 +1841,10 @@ onBeforeUnmount(() => {
             <div class="workflow-graph-canvas">
               <template v-for="(row, rowIndex) in graphRows" :key="rowIndex">
                 <div v-if="rowIndex" class="graph-connector"><i /></div>
-                <div class="graph-row" :class="{ parallel: row.length > 1 }">
+                <div
+                  class="graph-row"
+                  :class="{ parallel: row.length > 1, generation: row.length === 6 }"
+                >
                   <button
                     v-for="nodeId in row"
                     :key="nodeId"
@@ -2040,6 +2234,27 @@ button:disabled {
   color: #98a3b5;
   font-size: 9px;
 }
+.fragment-type-setting select,
+.setting-readonly-value {
+  width: 140px;
+  height: 32px;
+  padding: 0 9px;
+  grid-row: 1/3;
+  grid-column: 2;
+  color: #4d5b72;
+  background: #fff;
+  border: 1px solid #dfe6f0;
+  border-radius: 8px;
+  outline: none;
+  font-size: 11px;
+}
+.setting-readonly-value {
+  display: grid;
+  place-items: center;
+  color: #647187;
+  background: #f6f8fb;
+  font-weight: 800;
+}
 .number-control {
   display: grid;
   height: 32px;
@@ -2191,27 +2406,6 @@ button:disabled {
   border: 0;
   outline: none;
   font-size: 13px;
-}
-.fragment-filter {
-  display: flex;
-  height: 40px;
-  padding: 0 8px 0 11px;
-  align-items: center;
-  gap: 7px;
-  color: #748197;
-  background: #fff;
-  border: 1px solid #dbe4f6;
-  border-radius: 10px;
-  font-size: 10px;
-  white-space: nowrap;
-}
-.fragment-filter select {
-  height: 30px;
-  color: #42526a;
-  background: transparent;
-  border: 0;
-  outline: none;
-  font-size: 11px;
 }
 .prompt-result-count {
   margin-right: auto;
@@ -2566,6 +2760,18 @@ button:disabled {
   font-size: 11px;
   font-weight: 800;
 }
+.prompt-editor-dialog label > small {
+  display: block;
+  margin-top: 5px;
+  color: #8995a8;
+  font-size: 9px;
+  line-height: 1.45;
+}
+.prompt-editor-dialog input[readonly] {
+  color: #6b778b;
+  background: #f4f6f9;
+  cursor: not-allowed;
+}
 .prompt-editor-dialog input,
 .prompt-editor-dialog select,
 .prompt-editor-dialog textarea {
@@ -2678,6 +2884,9 @@ button:disabled {
 }
 .graph-row.parallel {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.graph-row.generation {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 .graph-node {
   display: grid;
@@ -3115,12 +3324,6 @@ button:disabled {
   .effect-prompt-settings,
   .effect-prompt-stats {
     grid-template-columns: 1fr;
-  }
-  .fragment-filter {
-    width: 100%;
-  }
-  .fragment-filter select {
-    flex: 1;
   }
   .settings-heading {
     grid-column: 1;

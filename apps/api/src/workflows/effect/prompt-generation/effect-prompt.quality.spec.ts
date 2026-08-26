@@ -1,4 +1,5 @@
 import type { EffectPromptBatchSettings, EffectPromptItem } from '@ai-marketing/contracts';
+import { DEFAULT_EFFECT_PROMPT_SETTINGS, effectPromptTargetCount } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -13,22 +14,13 @@ import {
 } from './effect-prompt.quality';
 
 const settings: EffectPromptBatchSettings = {
-  count: 10,
-  durationSeconds: 5,
-  semanticLimit: 15,
-  visualLimit: 20,
-  styleOverride: null,
-  fragmentTypeWeights: {
-    HOOK: 16,
-    PAIN: 14,
-    PRODUCT_DISPLAY: 18,
-    EFFECT_DEMONSTRATION: 18,
-    SELLING_POINT_EXPLANATION: 16,
-    CTA: 10,
-    OUTRO: 8,
-  },
-  sellingPointWeights: [],
-  additionalDisabledElements: [],
+  ...DEFAULT_EFFECT_PROMPT_SETTINGS,
+  fragmentConfigs: Object.fromEntries(
+    Object.entries(DEFAULT_EFFECT_PROMPT_SETTINGS.fragmentConfigs).map(([key, value]) => [
+      key,
+      { ...value },
+    ]),
+  ) as EffectPromptBatchSettings['fragmentConfigs'],
 };
 
 const item = (id: string, overrides: Partial<EffectPromptItem> = {}): EffectPromptItem => ({
@@ -101,7 +93,7 @@ describe('effect prompt quality', () => {
     invalid.dimensions.camera = '';
     expect(
       parseEffectPromptBatchResult({
-        schemaVersion: 2,
+        schemaVersion: 3,
         settings,
         items: [invalid],
         metrics: {},
@@ -139,21 +131,20 @@ describe('effect prompt quality', () => {
   });
 
   it('recomputes fragment-label targets and required selling-point coverage', () => {
-    const weightedSettings: EffectPromptBatchSettings = {
-      ...settings,
-      sellingPointWeights: [
-        { sellingPoint: '卖点-one', weight: 50 },
-        { sellingPoint: '待覆盖卖点', weight: 50 },
-      ],
-    };
-    const result = recomputePromptQuality([item('one')], weightedSettings);
+    const result = recomputePromptQuality([item('one')], settings, {
+      sellingPointCoverage: {
+        required: ['卖点-one', '待覆盖卖点'],
+        covered: [],
+        missing: [],
+      },
+    });
 
     expect(
       result.metrics.fragmentTypeDistribution.reduce(
         (sum, distribution) => sum + distribution.targetCount,
         0,
       ),
-    ).toBe(weightedSettings.count);
+    ).toBe(effectPromptTargetCount(settings));
     expect(result.metrics.sellingPointCoverage).toMatchObject({
       required: ['卖点-one', '待覆盖卖点'],
       missing: ['待覆盖卖点'],
@@ -173,6 +164,15 @@ describe('effect prompt quality', () => {
     expect(result.qualityStatus).toBe('NEEDS_REVIEW');
   });
 
+  it('recognizes the natural product-display action 摆到', () => {
+    const prompt = item('display', {
+      fragmentType: 'PRODUCT_DISPLAY',
+      content: '双手把产品摆到木质桌面中央并自然松开，镜头缓慢推近后稳定停住。',
+    });
+
+    expect(effectPromptExecutionIssues(prompt)).not.toContain('NO_VISIBLE_ACTION');
+  });
+
   it('replaces only the requested item while preserving stable order and ids', () => {
     const before = [item('one'), item('target'), item('three')];
     const replacement = item('new', {
@@ -182,7 +182,7 @@ describe('effect prompt quality', () => {
       updatedAt: '2026-08-25T01:00:00.000Z',
     });
     const merged = mergeEffectPromptCompletionItems([replacement], {
-      schemaVersion: 2,
+      schemaVersion: 3,
       projectId: 'project',
       workflowRunId: 'workflow',
       productId: 'product',

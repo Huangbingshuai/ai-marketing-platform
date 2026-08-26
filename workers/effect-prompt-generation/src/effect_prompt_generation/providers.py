@@ -19,16 +19,34 @@ from .models import (
     FragmentType,
     GeneratedPromptText,
     GeneratedPromptTextBatch,
+    NodeId,
     PlannedCombination,
     SellingPointEvidence,
 )
-from .prompt_loader import load_prompt_version, render_prompt
+from .prompt_loader import load_prompt, load_prompt_version, render_prompt
 
 
 TModel = TypeVar("TModel", bound=BaseModel)
 LOGGER = logging.getLogger(__name__)
 STRATEGY_PROMPT = "strategy_planning.prompt.txt"
-CANDIDATE_PROMPT = "candidate_generation.prompt.txt"
+CANDIDATE_BASE_SYSTEM_PROMPT = "candidate_base.system.prompt.txt"
+CANDIDATE_TASK_PROMPT = "candidate_task.user.prompt.txt"
+CANDIDATE_SYSTEM_PROMPTS: dict[FragmentType, str] = {
+    FragmentType.HOOK: "candidate_hook.system.prompt.txt",
+    FragmentType.PAIN: "candidate_pain.system.prompt.txt",
+    FragmentType.PRODUCT_DISPLAY: "candidate_product_display.system.prompt.txt",
+    FragmentType.SELLING_POINT_EXPLANATION: "candidate_selling_point.system.prompt.txt",
+    FragmentType.CTA: "candidate_cta.system.prompt.txt",
+    FragmentType.OUTRO: "candidate_outro.system.prompt.txt",
+}
+CANDIDATE_STAGE_BY_TYPE: dict[FragmentType, str] = {
+    FragmentType.HOOK: NodeId.GENERATE_HOOK.value,
+    FragmentType.PAIN: NodeId.GENERATE_PAIN.value,
+    FragmentType.PRODUCT_DISPLAY: NodeId.GENERATE_PRODUCT_DISPLAY.value,
+    FragmentType.SELLING_POINT_EXPLANATION: NodeId.GENERATE_SELLING_POINT_EXPLANATION.value,
+    FragmentType.CTA: NodeId.GENERATE_CTA.value,
+    FragmentType.OUTRO: NodeId.GENERATE_OUTRO.value,
+}
 
 
 class ProviderErrorType(StrEnum):
@@ -85,9 +103,6 @@ class AiProvider(Protocol):
         combinations: list[PlannedCombination],
         *,
         insight: Mapping[str, Any],
-        duration_seconds: int,
-        style_override: str | None,
-        additional_disabled_elements: list[str],
     ) -> AiCallResult[GeneratedPromptTextBatch]: ...
 
 
@@ -185,24 +200,23 @@ class MockAiProvider:
         combinations: list[PlannedCombination],
         *,
         insight: Mapping[str, Any],
-        duration_seconds: int,
-        style_override: str | None,
-        additional_disabled_elements: list[str],
     ) -> AiCallResult[GeneratedPromptTextBatch]:
+        fragment_type = _homogeneous_fragment_type(combinations)
         product_name = _first_text(insight, "productName", "product_name") or "产品"
         items = []
         for combo in combinations:
-            dims = combo.dimensions
             items.append(
                 _mock_prompt_text(
                     combo,
                     product_name=product_name,
-                    duration_seconds=duration_seconds,
+                    duration_seconds=combo.target_duration_seconds,
                     aspect_ratio=_first_text(insight, "aspectRatio", "aspect_ratio") or "9:16",
                 )
             )
         return _mock_result(
-            GeneratedPromptTextBatch(items=items), "CANDIDATE_GENERATION", CANDIDATE_PROMPT
+            GeneratedPromptTextBatch(items=items),
+            CANDIDATE_STAGE_BY_TYPE[fragment_type],
+            CANDIDATE_SYSTEM_PROMPTS[fragment_type],
         )
 
 
@@ -288,24 +302,17 @@ class ArkResponsesProvider:
         combinations: list[PlannedCombination],
         *,
         insight: Mapping[str, Any],
-        duration_seconds: int,
-        style_override: str | None,
-        additional_disabled_elements: list[str],
     ) -> AiCallResult[GeneratedPromptTextBatch]:
+        fragment_type = _homogeneous_fragment_type(combinations)
         product_context = _candidate_product_context(insight)
         prompt = render_prompt(
-            CANDIDATE_PROMPT,
-            duration_seconds=str(duration_seconds),
+            CANDIDATE_TASK_PROMPT,
             aspect_ratio=_first_text(insight, "aspectRatio", "aspect_ratio") or "以信息卡为准",
             delivery_channels=_first_text(insight, "deliveryChannels", "delivery_channels") or "以信息卡为准",
-            visual_style=style_override
-            or _first_text(insight, "visualStyleBaseline", "visual_style_baseline")
+            visual_style=_first_text(insight, "visualStyleBaseline", "visual_style_baseline")
             or "以信息卡为准",
             disabled_elements_json=json.dumps(
-                [
-                    *_text_list(insight, "disabledElements", "disabled_elements"),
-                    *additional_disabled_elements,
-                ],
+                _text_list(insight, "disabledElements", "disabled_elements"),
                 ensure_ascii=False,
             ),
             product_context_json=json.dumps(
@@ -320,11 +327,19 @@ class ArkResponsesProvider:
         call = await self._structured(
             prompt,
             GeneratedPromptTextBatch,
-            schema_name="effect_prompt_candidate_batch",
-            stage="CANDIDATE_GENERATION",
-            prompt_file=CANDIDATE_PROMPT,
+            schema_name=f"effect_prompt_{fragment_type.value.lower()}_batch",
+            stage=CANDIDATE_STAGE_BY_TYPE[fragment_type],
+            prompt_file=CANDIDATE_SYSTEM_PROMPTS[fragment_type],
             model=self._candidate_model,
-            max_output_tokens=self._candidate_max_output_tokens,
+            max_output_tokens=min(
+                self._candidate_max_output_tokens,
+                max(1024, len(combinations) * 480),
+            ),
+            instructions=(
+                load_prompt(CANDIDATE_BASE_SYSTEM_PROMPT)
+                + "\n\n"
+                + load_prompt(CANDIDATE_SYSTEM_PROMPTS[fragment_type])
+            ),
         )
         expected = {item.slot_id for item in combinations}
         actual = [item.slot_id for item in call.value.items]
@@ -348,6 +363,7 @@ class ArkResponsesProvider:
         prompt_file: str,
         model: str,
         max_output_tokens: int,
+        instructions: str | None = None,
     ) -> AiCallResult[TModel]:
         payload = {
             "model": model,
@@ -364,6 +380,8 @@ class ArkResponsesProvider:
                 }
             },
         }
+        if instructions:
+            payload["instructions"] = instructions
         started_at = time.perf_counter()
         last_error: Exception | None = None
         error_type = ProviderErrorType.UNKNOWN
@@ -485,6 +503,23 @@ def _candidate_product_context(insight: Mapping[str, Any]) -> dict[str, object]:
     return result
 
 
+def _homogeneous_fragment_type(combinations: list[PlannedCombination]) -> FragmentType:
+    if not combinations:
+        raise ProviderError(
+            "candidate shard cannot be empty",
+            retryable=False,
+            error_type=ProviderErrorType.REQUEST_REJECTED,
+        )
+    fragment_types = {item.fragment_type for item in combinations}
+    if len(fragment_types) != 1:
+        raise ProviderError(
+            "candidate shard must contain one fragment type",
+            retryable=False,
+            error_type=ProviderErrorType.REQUEST_REJECTED,
+        )
+    return next(iter(fragment_types))
+
+
 def _mock_prompt_text(
     combination: PlannedCombination,
     *,
@@ -504,8 +539,11 @@ def _mock_prompt_text(
         action = {
             FragmentType.HOOK: f"木筷从蒸汽中夹起一片刚切开的{product_name}，切面朝向镜头并停住",
             FragmentType.PAIN: f"一只手在拥挤案板上移动未切开的{product_name}，在刀具与餐盘之间停住",
-            FragmentType.PRODUCT_DISPLAY: f"右手从白瓷盘中拿起一根{product_name}，缓慢转动半圈后停住",
-            FragmentType.EFFECT_DEMONSTRATION: f"木筷夹起一片蒸热的{product_name}，平稳转向镜头并停在切面特写位置",
+            # 产品展示的 Mock 也必须服从冻结组合中的动作变化，否则补齐轮次会
+            # 反复产出同一段正文，并被确定性语义去重全部剔除。
+            FragmentType.PRODUCT_DISPLAY: combination.visible_action.replace(
+                "产品", product_name
+            ).replace("·", "，"),
             FragmentType.SELLING_POINT_EXPLANATION: f"木筷夹起一片{product_name}，让真实切面在暖色侧光下保持清楚",
             FragmentType.CTA: f"右手把{product_name}包装平稳放到成品餐盘后方，随后退出字幕安全区",
             FragmentType.OUTRO: f"右手将{product_name}包装扶正一次后离开，产品与餐盘保持稳定定格",
@@ -523,10 +561,6 @@ def _mock_prompt_text(
             f"只展示{product_name}的一次连续拿取动作：{action}，产品外观始终清楚可辨；"
             f"{dims.camera}，焦点落在轮廓与真实表面细节，不演示额外效果"
         ),
-        FragmentType.EFFECT_DEMONSTRATION: (
-            f"使用{product_name}只完成一次连续动作：{action}。画面呈现{combination.allowed_visual_evidence}，"
-            f"不增加前后对比或额外结论；{dims.camera}且保持产品清晰"
-        ),
         FragmentType.SELLING_POINT_EXPLANATION: (
             f"围绕{product_name}只做一次细节指示：{action}。字幕只出现“{dims.selling_point}”；"
             f"{dims.camera}，稳定聚焦被指向的位置"
@@ -540,12 +574,6 @@ def _mock_prompt_text(
             f"结尾只保留产品与简洁背景"
         ),
     }[combination.fragment_type]
-    if "腊肠" in product_name and combination.fragment_type == FragmentType.EFFECT_DEMONSTRATION:
-        role_text = (
-            f"木筷只完成一次夹取动作：{action}。{product_name}切面、米饭和真实蒸汽保持同框，"
-            f"呈现实际烹饪与佐餐关系，不制作前后对比；右下角短字幕只出现“{dims.selling_point}”，"
-            f"{dims.camera}且焦点始终跟随切面"
-        )
     prompt = (
         f"{prefix}，{role_text}。光线和色彩呈现{dims.emotion}，动作速度与镜头运动保持一致，环境声自然，"
         "结尾停在主体与产品关系清楚的稳定画面，场景和人物保持一致。"

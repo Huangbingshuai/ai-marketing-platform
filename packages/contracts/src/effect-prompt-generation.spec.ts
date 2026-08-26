@@ -11,8 +11,10 @@ import {
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_SCHEMA_VERSION,
+  effectPromptTargetCount,
   effectPromptSettingsNodeId,
   effectPromptFragmentTypeTargetCounts,
+  migrateEffectPromptSettings,
   normalizeEffectPromptSettings,
 } from './effect-prompt-generation';
 
@@ -47,7 +49,6 @@ describe('effect prompt generation contract', () => {
       'HOOK',
       'PAIN',
       'PRODUCT_DISPLAY',
-      'EFFECT_DEMONSTRATION',
       'SELLING_POINT_EXPLANATION',
       'CTA',
       'OUTRO',
@@ -55,66 +56,108 @@ describe('effect prompt generation contract', () => {
     expect(EFFECT_PROMPT_GRAPH_NODES.map((node) => node.id)).toContain('QUALITY_GATE');
     expect(EFFECT_PROMPT_GRAPH_EDGES).toContainEqual({
       from: 'REPLENISH',
-      to: 'CANDIDATE_GENERATION',
+      to: 'FRAGMENT_TYPE_ROUTER',
     });
+    expect(EFFECT_PROMPT_GRAPH_NODES.filter((node) => node.group === 'GENERATION')).toHaveLength(6);
   });
 
-  it('normalizes prototype settings', () => {
-    expect(DEFAULT_EFFECT_PROMPT_SETTINGS.count).toBe(50);
+  it('normalizes six independent fragment settings', () => {
+    expect(effectPromptTargetCount(DEFAULT_EFFECT_PROMPT_SETTINGS)).toBe(50);
     expect(
       normalizeEffectPromptSettings({
-        count: 2,
-        durationSeconds: 200,
+        fragmentConfigs: {
+          ...DEFAULT_EFFECT_PROMPT_SETTINGS.fragmentConfigs,
+          HOOK: { count: 0, durationSeconds: 200 },
+        },
         semanticLimit: 99,
         visualLimit: 1,
-        styleOverride: '  生活纪实  ',
-        fragmentTypeWeights: DEFAULT_EFFECT_PROMPT_SETTINGS.fragmentTypeWeights,
-        sellingPointWeights: [],
-        additionalDisabledElements: ['  禁止水印  ', '禁止水印'],
       }),
     ).toEqual({
-      count: 10,
-      durationSeconds: 10,
+      fragmentConfigs: {
+        ...DEFAULT_EFFECT_PROMPT_SETTINGS.fragmentConfigs,
+        HOOK: { count: 1, durationSeconds: 10 },
+      },
       semanticLimit: 15,
       visualLimit: 10,
-      styleOverride: '生活纪实',
-      fragmentTypeWeights: DEFAULT_EFFECT_PROMPT_SETTINGS.fragmentTypeWeights,
-      sellingPointWeights: [],
-      additionalDisabledElements: ['禁止水印'],
     });
   });
 
-  it('allocates all seven fragment labels deterministically', () => {
+  it('uses all six explicit fragment counts deterministically', () => {
     const targets = effectPromptFragmentTypeTargetCounts(DEFAULT_EFFECT_PROMPT_SETTINGS);
     expect(Object.values(targets).reduce((sum, count) => sum + count, 0)).toBe(50);
-    expect(Object.values(targets).every((count) => count > 0)).toBe(true);
+    expect(targets).toEqual({
+      HOOK: 10,
+      PAIN: 8,
+      PRODUCT_DISPLAY: 12,
+      SELLING_POINT_EXPLANATION: 10,
+      CTA: 6,
+      OUTRO: 4,
+    });
+  });
+
+  it('migrates V2 total count and duration into six V3 fragment configs', () => {
+    const migrated = migrateEffectPromptSettings(
+      { count: 50, durationSeconds: 7, semanticLimit: 12, visualLimit: 18 },
+      2,
+    );
+
+    expect(effectPromptFragmentTypeTargetCounts(migrated)).toEqual({
+      HOOK: 10,
+      PAIN: 8,
+      PRODUCT_DISPLAY: 12,
+      SELLING_POINT_EXPLANATION: 10,
+      CTA: 6,
+      OUTRO: 4,
+    });
+    expect(
+      EFFECT_PROMPT_FRAGMENT_TYPES.map(
+        (fragmentType) => migrated.fragmentConfigs[fragmentType].durationSeconds,
+      ),
+    ).toEqual([7, 7, 7, 7, 7, 7]);
+  });
+
+  it('does not reuse a V1 full-video duration as a fragment duration', () => {
+    const migrated = migrateEffectPromptSettings(
+      { count: 50, durationSeconds: 15, semanticLimit: 15, visualLimit: 20 },
+      1,
+    );
+
+    expect(
+      EFFECT_PROMPT_FRAGMENT_TYPES.map(
+        (fragmentType) => migrated.fragmentConfigs[fragmentType].durationSeconds,
+      ),
+    ).toEqual([5, 5, 5, 5, 5, 5]);
   });
 
   it('uses a product-scoped internal node-state id', () => {
     expect(effectPromptSettingsNodeId('product-one')).toBe('PROMPT_GENERATION:product-one');
   });
 
-  it('keeps the canonical JSON schema on v2 and rejects the v1 discriminator', () => {
+  it('keeps the canonical JSON schema on v3 and rejects legacy discriminators', () => {
     const schemaVersion = requireSchemaNode(
       batchSchema.properties?.schemaVersion,
       'properties.schemaVersion',
     );
 
-    expect(batchSchema.$id).toMatch(/effect-prompt-batch\.v2\.json$/u);
+    expect(batchSchema.$id).toMatch(/effect-prompt-batch\.v3\.json$/u);
     expect(schemaVersion.const).toBe(EFFECT_PROMPT_SCHEMA_VERSION);
-    expect(schemaVersion.const).not.toBe(1);
+    expect(schemaVersion.const).not.toBe(2);
     expect(batchSchema.additionalProperties).toBe(false);
   });
 
   it('keeps JSON settings and fragment labels aligned with the TypeScript contract', () => {
     const settings = requireSchemaNode(batchSchema.properties?.settings, 'properties.settings');
-    const duration = requireSchemaNode(
-      settings.properties?.durationSeconds,
-      'properties.settings.properties.durationSeconds',
+    const fragmentConfigs = requireSchemaNode(
+      settings.properties?.fragmentConfigs,
+      'properties.settings.properties.fragmentConfigs',
     );
-    const fragmentTypeWeights = requireSchemaNode(
-      settings.properties?.fragmentTypeWeights,
-      'properties.settings.properties.fragmentTypeWeights',
+    const fragmentConfig = requireSchemaNode(
+      batchSchema.$defs?.fragmentConfig,
+      '$defs.fragmentConfig',
+    );
+    const duration = requireSchemaNode(
+      fragmentConfig.properties?.durationSeconds,
+      '$defs.fragmentConfig.durationSeconds',
     );
     const fragmentType = requireSchemaNode(batchSchema.$defs?.fragmentType, '$defs.fragmentType');
 
@@ -124,11 +167,11 @@ describe('effect prompt generation contract', () => {
     expect(duration.minimum).toBe(EFFECT_PROMPT_LIMITS.minDurationSeconds);
     expect(duration.maximum).toBe(EFFECT_PROMPT_LIMITS.maxDurationSeconds);
     expect(fragmentType.enum).toEqual(EFFECT_PROMPT_FRAGMENT_TYPES);
-    expect(fragmentTypeWeights.required).toEqual(EFFECT_PROMPT_FRAGMENT_TYPES);
-    expect(fragmentTypeWeights.additionalProperties).toBe(false);
+    expect(fragmentConfigs.required).toEqual(EFFECT_PROMPT_FRAGMENT_TYPES);
+    expect(fragmentConfigs.additionalProperties).toBe(false);
   });
 
-  it('requires fragment-material fields and the v2 quality metrics', () => {
+  it('requires fragment-material fields and the v3 quality metrics', () => {
     const item = requireSchemaNode(batchSchema.$defs?.item, '$defs.item');
     const materialTags = requireSchemaNode(
       item.properties?.materialTags,

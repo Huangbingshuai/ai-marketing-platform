@@ -17,7 +17,7 @@ _CTA = re.compile(r"立即(?:购买|下单)|马上(?:购买|下单)|限时|折�
 _CAMERA = re.compile(r"特写|近景|中景|全景|微距|俯拍|俯视|仰拍|低机位|高机位|固定机位|肩后|手持|半身|长镜头|推近|靠近|后拉|跟拍|跟随|环绕|横移|移焦|聚焦|焦点|景深|主观")
 _LIGHT_OR_PACING = re.compile(r"光|色温|色彩|冷调|暖调|节奏|停顿|缓慢|快速|利落|舒缓")
 _ACTION = re.compile(
-    r"拿起|夹起|提起|拎起|托住|扶住|握住|放下|放入|放到|轻放|摆放|打开|关闭|切开|倒入|"
+    r"拿起|夹起|提起|拎起|托住|扶住|握住|放下|放入|放到|轻放|摆放|摆到|打开|关闭|切开|倒入|"
     r"按下|按压|走入|走出|离开|停下|停住|抬起|指向|触碰|擦拭|拉开|推入|调整|取出|"
     r"展示|转向|转动|倾斜|移动|移到|交互"
 )
@@ -96,16 +96,15 @@ def validate_fragment_prompt(
         reasons.append("MISSING_LIGHTING_OR_PACING")
     if combination.fragment_type in {
         FragmentType.PRODUCT_DISPLAY,
-        FragmentType.EFFECT_DEMONSTRATION,
         FragmentType.SELLING_POINT_EXPLANATION,
         FragmentType.CTA,
         FragmentType.OUTRO,
     } and product_name not in content:
         reasons.append("MISSING_PRODUCT_ANCHOR")
-    if combination.fragment_type in {
-        FragmentType.EFFECT_DEMONSTRATION,
-        FragmentType.SELLING_POINT_EXPLANATION,
-    } and combination.dimensions.selling_point not in content:
+    if (
+        combination.fragment_type == FragmentType.SELLING_POINT_EXPLANATION
+        and combination.dimensions.selling_point not in content
+    ):
         reasons.append("MISSING_ASSIGNED_SELLING_POINT")
     if combination.fragment_type in {
         FragmentType.HOOK,
@@ -113,11 +112,6 @@ def validate_fragment_prompt(
         FragmentType.PRODUCT_DISPLAY,
     } and _CTA.search(content):
         reasons.append("FRAGMENT_ROLE_CONFLICT")
-    if combination.fragment_type == FragmentType.EFFECT_DEMONSTRATION and combination.evidence_mode in {
-        EvidenceMode.PROCESS_ONLY,
-        EvidenceMode.TEXT_ONLY,
-    }:
-        reasons.append("UNFILMABLE_EVIDENCE")
     if "FRAGMENT_ROLE_CONFLICT" in reasons:
         reasons.remove("FRAGMENT_ROLE_CONFLICT")
         reasons.append("ROLE_CONFLICT")

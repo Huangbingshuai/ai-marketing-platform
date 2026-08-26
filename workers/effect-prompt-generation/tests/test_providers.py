@@ -12,7 +12,7 @@ from effect_prompt_generation.models import (
     PromptDimensions,
 )
 from effect_prompt_generation.assembly import assemble_fragment_prompt
-from effect_prompt_generation.combinations import plan_combinations
+from effect_prompt_generation.combinations import make_shards, plan_combinations
 from effect_prompt_generation.providers import (
     ArkResponsesProvider,
     MockAiProvider,
@@ -96,9 +96,6 @@ async def test_ark_candidate_rejects_missing_slot() -> None:
             await provider.generate_candidates(
                 [_combination()],
                 insight={"coreSellingPoints": ["单手开合"]},
-                duration_seconds=5,
-                style_override=None,
-                additional_disabled_elements=[],
             )
     finally:
         await provider.aclose()
@@ -138,18 +135,17 @@ async def test_ark_candidate_returns_only_slot_and_direct_prompt() -> None:
                 "coreSellingPoints": ["单手开合"],
                 "targetAudience": "通勤人群",
                 "usageScenarios": ["地铁通勤"],
-                "disabledElements": ["医疗功效"],
+                "disabledElements": ["医疗功效", "促销贴纸"],
                 "aspectRatio": "9:16",
             },
-            duration_seconds=5,
-            style_override="明亮纪实",
-            additional_disabled_elements=["促销贴纸"],
         )
     finally:
         await provider.aclose()
 
     assert seen["model"] == "candidate-model"
-    assert seen["max_output_tokens"] == 4096
+    assert seen["max_output_tokens"] == 1024
+    assert "instructions" in seen
+    assert "当前分支只生成卖点讲解素材" in str(seen["instructions"])
     prompt = seen["input"][0]["content"][0]["text"]  # type: ignore[index]
     assert "便携杯" in prompt
     assert "浅蓝色圆柱杯身" in prompt
@@ -174,18 +170,23 @@ async def test_mock_translates_stacked_audience_into_executable_single_person_fr
         count=50,
         round_number=0,
         ordinal_start=1,
-        target_duration_seconds=5,
+        fragment_targets={
+            FragmentType.HOOK: 10,
+            FragmentType.PAIN: 8,
+            FragmentType.PRODUCT_DISPLAY: 12,
+            FragmentType.SELLING_POINT_EXPLANATION: 10,
+            FragmentType.CTA: 6,
+            FragmentType.OUTRO: 4,
+        },
+        fragment_durations={fragment_type: 5 for fragment_type in FragmentType},
     )
     generated_items = []
-    for start in range(0, len(combinations), 8):
+    for shard in make_shards(combinations, round_number=0, shard_size=8):
         generated_items.extend(
             (
                 await provider.generate_candidates(
-                    combinations[start : start + 8],
+                    shard.combinations,
                     insight=insight,
-                    duration_seconds=5,
-                    style_override=None,
-                    additional_disabled_elements=[],
                 )
             ).value.items
         )
@@ -213,8 +214,8 @@ def _combination() -> PlannedCombination:
     return PlannedCombination(
         slot_id="slot-1",
         ordinal=1,
-        fragment_type=FragmentType.EFFECT_DEMONSTRATION,
-        material_tags=["效果", "动作演示"],
+        fragment_type=FragmentType.SELLING_POINT_EXPLANATION,
+        material_tags=["卖点", "口播"],
         target_duration_seconds=5,
         visible_action="一名年轻女性用拇指按下杯盖后停住",
         evidence_mode=EvidenceMode.USAGE_ACTION,

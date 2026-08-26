@@ -12,6 +12,7 @@ import {
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_SCHEMA_VERSION,
   effectPromptFragmentTypeTargetCounts,
+  effectPromptTargetCount,
   normalizeEffectPromptSettings,
 } from '@ai-marketing/contracts';
 import type { EffectPromptInputSnapshot } from './effect-prompt.types';
@@ -130,7 +131,7 @@ const FULL_TIMELINE =
   /(?:\d+(?:\.\d+)?\s*[-—~至]\s*\d+(?:\.\d+)?\s*(?:秒|s)|第[一二三四五六\d]+镜|镜头[一二三四五六\d]+|分镜|时间轴|切换|切至|镜头转到|转场|硬切|叠化|闪白|蒙太奇)/iu;
 const STRUCTURED_PHASE = /(?:前段|中段|后段)/gu;
 const VISIBLE_ACTION =
-  /(?:拿起|夹起|提起|拎起|托住|扶住|扶正|握住|放下|放入|放到|轻放|摆放|打开|关闭|取出|倒入|切开|撕开|按下|按压|涂抹|喷洒|擦拭|冲洗|折叠|展开|安装|装入|推拉|旋转|转动|倾斜|移动|移到|搅拌|加热|品尝|对比|揭开|翻转|挤出|穿戴|使用|离开|退出)/u;
+  /(?:拿起|夹起|提起|拎起|托住|扶住|扶正|握住|放下|放入|放到|轻放|摆放|摆到|打开|关闭|取出|倒入|切开|撕开|按下|按压|涂抹|喷洒|擦拭|冲洗|折叠|展开|安装|装入|推拉|旋转|转动|倾斜|移动|移到|搅拌|加热|品尝|对比|揭开|翻转|挤出|穿戴|使用|离开|退出)/u;
 const PLACEHOLDER_TEXT =
   /(?:待补充|以信息卡为准|自然出镜|相关细节|关键特点|适当|高级感|真实使用动作|当前产品名|指定卖点|当前场景|当前人物)/u;
 
@@ -186,61 +187,38 @@ export const isEffectPromptItem = (value: unknown): value is EffectPromptItem =>
 export const isEffectPromptSettings = (value: unknown): value is EffectPromptBatchSettings => {
   const settings = record(value);
   if (!settings) return false;
-  const fragmentTypeWeights = record(settings.fragmentTypeWeights);
-  if (!fragmentTypeWeights) return false;
+  const fragmentConfigs = record(settings.fragmentConfigs);
+  if (!fragmentConfigs) return false;
+  const validFragmentConfigs =
+    Object.keys(fragmentConfigs).length === EFFECT_PROMPT_FRAGMENT_TYPES.length &&
+    EFFECT_PROMPT_FRAGMENT_TYPES.every((fragmentType) => {
+      const config = record(fragmentConfigs[fragmentType]);
+      return Boolean(
+        config &&
+        Object.keys(config).length === 2 &&
+        Number.isInteger(config.count) &&
+        Number(config.count) >= EFFECT_PROMPT_LIMITS.minFragmentCount &&
+        Number(config.count) <= EFFECT_PROMPT_LIMITS.maxCount &&
+        Number.isInteger(config.durationSeconds) &&
+        Number(config.durationSeconds) >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
+        Number(config.durationSeconds) <= EFFECT_PROMPT_LIMITS.maxDurationSeconds,
+      );
+    });
+  const totalCount = EFFECT_PROMPT_FRAGMENT_TYPES.reduce((total, fragmentType) => {
+    const config = record(fragmentConfigs[fragmentType]);
+    return total + Number(config?.count ?? 0);
+  }, 0);
   return (
-    Object.keys(settings).length === 8 &&
-    Number.isInteger(settings.count) &&
-    Number(settings.count) >= EFFECT_PROMPT_LIMITS.minCount &&
-    Number(settings.count) <= EFFECT_PROMPT_LIMITS.maxCount &&
-    Number.isInteger(settings.durationSeconds) &&
-    Number(settings.durationSeconds) >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
-    Number(settings.durationSeconds) <= EFFECT_PROMPT_LIMITS.maxDurationSeconds &&
+    Object.keys(settings).length === 3 &&
+    validFragmentConfigs &&
+    totalCount >= EFFECT_PROMPT_LIMITS.minCount &&
+    totalCount <= EFFECT_PROMPT_LIMITS.maxCount &&
     Number.isInteger(settings.semanticLimit) &&
     Number(settings.semanticLimit) >= EFFECT_PROMPT_LIMITS.minSemanticDuplicateRate &&
     Number(settings.semanticLimit) <= EFFECT_PROMPT_LIMITS.maxSemanticDuplicateRate &&
     Number.isInteger(settings.visualLimit) &&
     Number(settings.visualLimit) >= EFFECT_PROMPT_LIMITS.minVisualOverlapRate &&
-    Number(settings.visualLimit) <= EFFECT_PROMPT_LIMITS.maxVisualOverlapRate &&
-    (settings.styleOverride === null ||
-      (typeof settings.styleOverride === 'string' &&
-        settings.styleOverride.trim().length > 0 &&
-        settings.styleOverride.length <= EFFECT_PROMPT_LIMITS.maxStyleOverrideLength)) &&
-    Object.keys(fragmentTypeWeights).length === EFFECT_PROMPT_FRAGMENT_TYPES.length &&
-    EFFECT_PROMPT_FRAGMENT_TYPES.every(
-      (fragmentType) =>
-        Number.isInteger(fragmentTypeWeights[fragmentType]) &&
-        Number(fragmentTypeWeights[fragmentType]) >= 0 &&
-        Number(fragmentTypeWeights[fragmentType]) <= 100,
-    ) &&
-    EFFECT_PROMPT_FRAGMENT_TYPES.reduce(
-      (sum, fragmentType) => sum + Number(fragmentTypeWeights[fragmentType]),
-      0,
-    ) === 100 &&
-    Array.isArray(settings.sellingPointWeights) &&
-    settings.sellingPointWeights.length <= EFFECT_PROMPT_LIMITS.maxSellingPointWeights &&
-    settings.sellingPointWeights.every(
-      (item) =>
-        Boolean(record(item)) &&
-        typeof item.sellingPoint === 'string' &&
-        item.sellingPoint.trim().length > 0 &&
-        item.sellingPoint.length <= 240 &&
-        Number.isInteger(item.weight) &&
-        item.weight >= 1 &&
-        item.weight <= 100,
-    ) &&
-    new Set(settings.sellingPointWeights.map(({ sellingPoint }) => normalizedValue(sellingPoint)))
-      .size === settings.sellingPointWeights.length &&
-    (settings.sellingPointWeights.length === 0 ||
-      settings.sellingPointWeights.reduce((sum, item) => sum + item.weight, 0) === 100) &&
-    Array.isArray(settings.additionalDisabledElements) &&
-    settings.additionalDisabledElements.length <=
-      EFFECT_PROMPT_LIMITS.maxAdditionalDisabledElements &&
-    settings.additionalDisabledElements.every(
-      (item) => typeof item === 'string' && item.trim().length > 0 && item.length <= 240,
-    ) &&
-    new Set(settings.additionalDisabledElements.map(normalizedValue)).size ===
-      settings.additionalDisabledElements.length
+    Number(settings.visualLimit) <= EFFECT_PROMPT_LIMITS.maxVisualOverlapRate
   );
 };
 
@@ -354,12 +332,12 @@ export const recomputePromptQuality = (
     actualCount: actualCounts[fragmentType],
   }));
   const previousCoverage = previous?.sellingPointCoverage;
-  const requiredSellingPoints = [
+  const requiredSellingPoints: string[] = [
     ...new Map(
-      (settings.sellingPointWeights.length
-        ? settings.sellingPointWeights.map(({ sellingPoint }) => sellingPoint)
-        : (previousCoverage?.required ?? [])
-      ).map((sellingPoint) => [normalizedValue(sellingPoint), sellingPoint.trim()]),
+      (previousCoverage?.required ?? []).map((sellingPoint) => [
+        normalizedValue(sellingPoint),
+        sellingPoint.trim(),
+      ]),
     ).values(),
   ];
   const coveredSellingPoints = [
@@ -382,7 +360,9 @@ export const recomputePromptQuality = (
   for (const prompt of items) {
     for (const code of effectPromptExecutionIssues(prompt))
       currentExecutionReasonCounts.set(code, (currentExecutionReasonCounts.get(code) ?? 0) + 1);
-    if (prompt.targetDurationSeconds !== settings.durationSeconds)
+    if (
+      prompt.targetDurationSeconds !== settings.fragmentConfigs[prompt.fragmentType].durationSeconds
+    )
       currentExecutionReasonCounts.set(
         'DURATION_MISMATCH',
         (currentExecutionReasonCounts.get('DURATION_MISMATCH') ?? 0) + 1,
@@ -397,7 +377,7 @@ export const recomputePromptQuality = (
     .sort(([left], [right]) => left.localeCompare(right, 'en-US'))
     .map(([code, count]) => ({ code, count }));
   const metrics: EffectPromptMetrics = {
-    targetCount: settings.count,
+    targetCount: effectPromptTargetCount(settings),
     acceptedCount: items.length,
     generatedCandidateCount: Math.max(
       previous?.generatedCandidateCount ?? items.length,
@@ -424,7 +404,7 @@ export const recomputePromptQuality = (
     ({ targetCount, actualCount }) => targetCount === actualCount,
   );
   const qualityStatus =
-    items.length === settings.count &&
+    items.length === effectPromptTargetCount(settings) &&
     dimensionConflicts === 0 &&
     semanticDuplicateRate <= settings.semanticLimit &&
     visualOverlapRate <= settings.visualLimit &&
@@ -469,7 +449,7 @@ export const mergeEffectPromptCompletionItems = (
   if (snapshot.operation === 'BATCH_GENERATE') {
     const merged = new Map(candidateItems.map((item) => [item.id, item]));
     for (const item of snapshot.retainedManualItems) merged.set(item.id, item);
-    return [...merged.values()].slice(0, snapshot.settings.count);
+    return [...merged.values()].slice(0, effectPromptTargetCount(snapshot.settings));
   }
   const target = snapshot.targetItem;
   const targetIndex = snapshot.targetItemIndex;

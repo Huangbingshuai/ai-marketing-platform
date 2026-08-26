@@ -76,10 +76,7 @@ describe('EffectPromptRepository', () => {
       createdAt: now,
       updatedAt: now,
     }));
-    const result = recomputePromptQuality(items, {
-      ...DEFAULT_EFFECT_PROMPT_SETTINGS,
-      count: 10,
-    });
+    const result = recomputePromptQuality(items, DEFAULT_EFFECT_PROMPT_SETTINGS);
 
     expect(
       promptItemsRetainedForRun(result, 'target', 'ITEM_REGENERATE').map(({ id }) => id),
@@ -161,7 +158,7 @@ describe('EffectPromptRepository', () => {
         aggregateId: runId,
         routingKey: 'effect.prompt-generation.requested',
         payload: {
-          schemaVersion: 2,
+          schemaVersion: 3,
           projectId,
           runId,
           requestId: runId,
@@ -170,7 +167,7 @@ describe('EffectPromptRepository', () => {
     });
   });
 
-  it('migrates V1 full-video settings to V2 fragment defaults before snapshotting', async () => {
+  it('migrates V1 full-video settings to V3 six-fragment defaults before snapshotting', async () => {
     const created = runRecord();
     const nodeUpdate = vi.fn().mockResolvedValue({});
     const runCreate = vi.fn().mockResolvedValue(created);
@@ -222,12 +219,12 @@ describe('EffectPromptRepository', () => {
         },
       },
       data: expect.objectContaining({
-        schemaVersion: 2,
+        schemaVersion: 3,
         revision: { increment: 1 },
         state: expectedSettings,
         contentHash: expectedHash,
         executionInputHash: expectedHash,
-        executionInputSchemaVersion: 2,
+        executionInputSchemaVersion: 3,
       }),
     });
     expect(runCreate).toHaveBeenCalledWith({
@@ -259,7 +256,11 @@ describe('EffectPromptRepository', () => {
         }),
       },
       effectPromptResult: {
-        findFirst: vi.fn().mockResolvedValue({ revision: 4, draftResult: {} }),
+        findFirst: vi.fn().mockResolvedValue({
+          schemaVersion: 3,
+          revision: 4,
+          draftResult: recomputePromptQuality([], DEFAULT_EFFECT_PROMPT_SETTINGS),
+        }),
       },
       $queryRaw: vi.fn().mockResolvedValue([{ id: productId }]),
     };
@@ -269,6 +270,62 @@ describe('EffectPromptRepository', () => {
 
     await expect(repository.startRun(projectId, workflowRunId, productId, input)).resolves.toEqual({
       kind: 'RESULT_CONFLICT',
+    });
+  });
+
+  it('starts a fresh V3 batch while preserving a legacy result only for audit', async () => {
+    const created = runRecord();
+    const runCreate = vi.fn().mockResolvedValue(created);
+    const transaction = {
+      effectPromptRun: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: runCreate,
+      },
+      effectImportProduct: { findFirst: vi.fn().mockResolvedValue({ id: productId }) },
+      workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: workflowRunId }) },
+      workflowNodeState: {
+        findUnique: vi.fn().mockResolvedValue({
+          schemaVersion: 3,
+          revision: 1,
+          state: DEFAULT_EFFECT_PROMPT_SETTINGS,
+        }),
+      },
+      workingArtifact: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: '00000000-0000-4000-8000-000000000005',
+          revision: 1,
+          contentHash: 'a'.repeat(64),
+          payload: { productName: '产品' },
+        }),
+      },
+      effectPromptResult: {
+        findFirst: vi.fn().mockResolvedValue({
+          schemaVersion: 2,
+          revision: 9,
+          draftResult: { schemaVersion: 2 },
+        }),
+      },
+      jobOutbox: { create: vi.fn().mockResolvedValue({}) },
+      $queryRaw: vi.fn().mockResolvedValue([{ id: productId }]),
+    };
+    const repository = new EffectPromptRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await expect(repository.startRun(projectId, workflowRunId, productId, input)).resolves.toEqual({
+      kind: 'CREATED',
+      run: created,
+    });
+    expect(runCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        inputSnapshot: expect.objectContaining({
+          schemaVersion: 3,
+          retainedManualItems: [],
+          baseResultRevision: null,
+        }),
+      }),
+      include: { result: true, stages: true },
     });
   });
 
@@ -296,10 +353,7 @@ describe('EffectPromptRepository', () => {
 
   it('closes RESULT_SAVE and skips an untriggered REPLENISH in the completion transaction', async () => {
     const now = new Date('2026-08-25T00:00:00.000Z');
-    const candidate = recomputePromptQuality([], {
-      ...DEFAULT_EFFECT_PROMPT_SETTINGS,
-      count: 10,
-    });
+    const candidate = recomputePromptQuality([], DEFAULT_EFFECT_PROMPT_SETTINGS);
     const stageCreate = vi.fn().mockResolvedValue({});
     const stageUpsert = vi.fn().mockResolvedValue({});
     const createdResult = { id: '00000000-0000-4000-8000-000000000099' };
@@ -312,7 +366,7 @@ describe('EffectPromptRepository', () => {
           attemptToken: 'attempt-a',
           leaseExpiresAt: new Date('2026-08-25T00:02:00.000Z'),
           inputSnapshot: {
-            schemaVersion: 2,
+            schemaVersion: 3,
             projectId,
             workflowRunId,
             productId,

@@ -15,10 +15,11 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).toContain('{{ EFFECT_PROMPT_LIMITS.pageSize }} 条/页');
   });
 
-  it('keeps only the four user-adjustable batch controls', () => {
+  it('uses one type selector for six independent count and duration settings', () => {
     for (const label of [
+      '片段类型',
       '生成数量',
-      '统一片段时长',
+      '片段时长',
       '语义重复度上限',
       '画面重合度上限',
       '人工添加提示词',
@@ -33,6 +34,13 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).not.toContain('七类素材标签配比');
     expect(pageSource).not.toContain('卖点权重');
     expect(pageSource).not.toContain('追加禁用元素');
+    expect(pageSource).toContain('currentSettings.value.fragmentConfigs[fragmentType]');
+    expect(pageSource).toContain('currentTargetCount');
+    expect(pageSource).toContain('currentDurationSummary');
+    expect(pageSource).toContain('EFFECT_PROMPT_LIMITS.minCount - otherCount');
+    expect(pageSource.match(/v-model="fragmentTypeFilter"/gu)).toHaveLength(1);
+    expect(pageSource).not.toContain('v-model="fragmentTypeFilter" :disabled="currentRunning"');
+    expect(pageSource).toContain('fragmentTypeFilter.value || undefined');
   });
 
   it('matches the extraction heading action order and labels', () => {
@@ -70,6 +78,8 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).toContain('固定主标签');
     expect(pageSource).toContain('次级素材标签');
     expect(pageSource).toContain('目标片段时长');
+    expect(pageSource).toContain('editorTargetDurationSeconds');
+    expect(pageSource).toContain('type="number" readonly');
     expect(pageSource).toContain('生成前结构化代理指标');
   });
 
@@ -84,6 +94,9 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).toContain('fragmentTypeDistribution');
     expect(pageSource).toContain('sellingPointCoverage');
     expect(pageSource).toContain('removedExecutionInvalid');
+    expect(pageSource).toContain('currentQuotaStats');
+    expect(pageSource).toContain('currentFragmentDistribution');
+    expect(pageSource).toContain('缺口');
   });
 
   it('wires every prompt-list action with safe destructive and busy states', () => {
@@ -107,12 +120,18 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).toMatch(/:disabled="!resultData \|\| currentRunning/u);
   });
 
-  it('renders all ten node details from the safe API contract with recoverable states', () => {
+  it('renders the conditional router and all six generation branches', () => {
     for (const nodeId of [
       'LOAD_AND_SNAPSHOT',
       'STRATEGY_PLANNING',
       'DIMENSION_COMBINATION',
-      'CANDIDATE_GENERATION',
+      'FRAGMENT_TYPE_ROUTER',
+      'GENERATE_HOOK',
+      'GENERATE_PAIN',
+      'GENERATE_PRODUCT_DISPLAY',
+      'GENERATE_SELLING_POINT_EXPLANATION',
+      'GENERATE_CTA',
+      'GENERATE_OUTRO',
       'NORMALIZATION',
       'SEMANTIC_DEDUP',
       'VISUAL_DEDUP',
@@ -121,6 +140,12 @@ describe('effect prompt generation prototype layout', () => {
       'RESULT_SAVE',
     ])
       expect(pageSource).toContain(`'${nodeId}'`);
+
+    expect(pageSource).not.toContain("'CANDIDATE_GENERATION'");
+    expect(pageSource).not.toContain('GENERATE_EFFECT_DEMONSTRATION');
+    expect(pageSource).toContain(
+      ':class="{ parallel: row.length > 1, generation: row.length === 6 }"',
+    );
 
     expect(pageSource).toContain('aria-label="刷新当前节点详情"');
     expect(pageSource).toContain('@click="refreshGraphDetail"');

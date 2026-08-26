@@ -10,6 +10,8 @@ from effect_prompt_generation.graph import build_graph
 from effect_prompt_generation.models import (
     ClaimResponse,
     FailurePayload,
+    FragmentConfig,
+    FragmentType,
     ProgressPayload,
     PromptBatchResult,
     PromptGenerationSnapshot,
@@ -56,7 +58,36 @@ async def test_mock_graph_runs_send_shards_and_completes(
     snapshot: PromptGenerationSnapshot, runtime: RuntimeContext
 ) -> None:
     snapshot = snapshot.model_copy(
-        update={"settings": snapshot.settings.model_copy(update={"count": 50})}
+        update={
+            "settings": snapshot.settings.model_copy(
+                update={
+                    "fragment_configs": {
+                        FragmentType.HOOK: FragmentConfig(count=10, duration_seconds=5),
+                        FragmentType.PAIN: FragmentConfig(count=8, duration_seconds=5),
+                        FragmentType.PRODUCT_DISPLAY: FragmentConfig(count=12, duration_seconds=5),
+                        FragmentType.SELLING_POINT_EXPLANATION: FragmentConfig(count=10, duration_seconds=5),
+                        FragmentType.CTA: FragmentConfig(count=6, duration_seconds=5),
+                        FragmentType.OUTRO: FragmentConfig(count=4, duration_seconds=5),
+                    }
+                }
+            ),
+            "insight_artifact": snapshot.insight_artifact.model_copy(
+                update={
+                    "result": {
+                        **snapshot.insight_artifact.result,
+                        "productName": "广式腊肠",
+                        "coreSellingPoints": [
+                            "纯猪肉无淀粉",
+                            "广式风味",
+                            "广府糖酒腌制工艺",
+                        ],
+                        "secondarySellingPoints": [],
+                        "usageScenarios": ["煲仔饭烹饪", "蒸制", "年节家宴"],
+                        "aspectRatio": "3:4",
+                    }
+                }
+            ),
+        }
     )
     api = FakeApi()
     pipeline = PromptGenerationPipeline(api=api, provider=MockAiProvider(), shard_size=8)
@@ -74,7 +105,14 @@ async def test_mock_graph_runs_send_shards_and_completes(
     assert len(api.result.items) == 50
     assert all(uuid.UUID(item.id).version == 4 for item in api.result.items)
     assert all(shard.status.value == "SUCCEEDED" for shard in api.shards.values())
-    assert len(api.shards) == 8
+    # 初始九个同类型分片之外，允许按质量缺口定向补齐；真实信息卡中的
+    # 三个抽象卖点会触发补齐，但必须在三轮上限内收敛为 PASS。
+    assert len(api.shards) >= 9
+    assert max(shard.round for shard in api.shards.values()) <= 3
+    assert all(len({item.fragment_type for item in shard.combination_plan}) == 1 for shard in api.shards.values())
+    stage_ids = {stage.node_id.value for stage in api.stages}
+    assert "FRAGMENT_TYPE_ROUTER" in stage_ids
+    assert {f"GENERATE_{fragment_type.value}" for fragment_type in FragmentType} <= stage_ids
 
 
 @pytest.mark.asyncio

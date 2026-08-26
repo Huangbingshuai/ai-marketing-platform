@@ -1,78 +1,39 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ai-marketing.local/schemas/effect-prompt-batch.v2.json",
-  "title": "EffectPromptBatchResult.v2",
+  "$id": "https://ai-marketing.local/schemas/effect-prompt-batch.v3.json",
+  "title": "EffectPromptBatchResult.v3",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "settings", "items", "metrics", "qualityStatus"],
   "properties": {
-    "schemaVersion": { "const": 2 },
+    "schemaVersion": { "const": 3 },
     "settings": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "count",
-        "durationSeconds",
-        "semanticLimit",
-        "visualLimit",
-        "styleOverride",
-        "fragmentTypeWeights",
-        "sellingPointWeights",
-        "additionalDisabledElements"
-      ],
+      "required": ["fragmentConfigs", "semanticLimit", "visualLimit"],
       "properties": {
-        "count": { "type": "integer", "minimum": 10, "maximum": 200 },
-        "durationSeconds": { "type": "integer", "minimum": 3, "maximum": 10 },
-        "semanticLimit": { "type": "integer", "minimum": 5, "maximum": 15 },
-        "visualLimit": { "type": "integer", "minimum": 10, "maximum": 20 },
-        "styleOverride": {
-          "oneOf": [{ "type": "null" }, { "type": "string", "minLength": 1, "maxLength": 200 }]
-        },
-        "fragmentTypeWeights": {
+        "fragmentConfigs": {
           "type": "object",
           "additionalProperties": false,
           "required": [
             "HOOK",
             "PAIN",
             "PRODUCT_DISPLAY",
-            "EFFECT_DEMONSTRATION",
             "SELLING_POINT_EXPLANATION",
             "CTA",
             "OUTRO"
           ],
           "properties": {
-            "HOOK": { "type": "integer", "minimum": 0, "maximum": 100 },
-            "PAIN": { "type": "integer", "minimum": 0, "maximum": 100 },
-            "PRODUCT_DISPLAY": { "type": "integer", "minimum": 0, "maximum": 100 },
-            "EFFECT_DEMONSTRATION": { "type": "integer", "minimum": 0, "maximum": 100 },
-            "SELLING_POINT_EXPLANATION": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 100
-            },
-            "CTA": { "type": "integer", "minimum": 0, "maximum": 100 },
-            "OUTRO": { "type": "integer", "minimum": 0, "maximum": 100 }
+            "HOOK": { "$ref": "#/$defs/fragmentConfig" },
+            "PAIN": { "$ref": "#/$defs/fragmentConfig" },
+            "PRODUCT_DISPLAY": { "$ref": "#/$defs/fragmentConfig" },
+            "SELLING_POINT_EXPLANATION": { "$ref": "#/$defs/fragmentConfig" },
+            "CTA": { "$ref": "#/$defs/fragmentConfig" },
+            "OUTRO": { "$ref": "#/$defs/fragmentConfig" }
           }
         },
-        "sellingPointWeights": {
-          "type": "array",
-          "maxItems": 50,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["sellingPoint", "weight"],
-            "properties": {
-              "sellingPoint": { "type": "string", "minLength": 1, "maxLength": 240 },
-              "weight": { "type": "integer", "minimum": 1, "maximum": 100 }
-            }
-          }
-        },
-        "additionalDisabledElements": {
-          "type": "array",
-          "maxItems": 30,
-          "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1, "maxLength": 240 }
-        }
+        "semanticLimit": { "type": "integer", "minimum": 5, "maximum": 15 },
+        "visualLimit": { "type": "integer", "minimum": 10, "maximum": 20 }
       }
     },
     "items": {
@@ -132,15 +93,16 @@
   "$defs": {
     "fragmentType": {
       "type": "string",
-      "enum": [
-        "HOOK",
-        "PAIN",
-        "PRODUCT_DISPLAY",
-        "EFFECT_DEMONSTRATION",
-        "SELLING_POINT_EXPLANATION",
-        "CTA",
-        "OUTRO"
-      ]
+      "enum": ["HOOK", "PAIN", "PRODUCT_DISPLAY", "SELLING_POINT_EXPLANATION", "CTA", "OUTRO"]
+    },
+    "fragmentConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "durationSeconds"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 1, "maximum": 200 },
+        "durationSeconds": { "type": "integer", "minimum": 3, "maximum": 10 }
+      }
     },
     "dimensions": {
       "type": "object",
@@ -193,8 +155,8 @@
     },
     "fragmentTypeDistribution": {
       "type": "array",
-      "minItems": 7,
-      "maxItems": 7,
+      "minItems": 6,
+      "maxItems": 6,
       "items": {
         "type": "object",
         "additionalProperties": false,

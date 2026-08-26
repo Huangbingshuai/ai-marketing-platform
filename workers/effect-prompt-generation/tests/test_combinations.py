@@ -12,9 +12,18 @@ from effect_prompt_generation.models import (
     DimensionPools,
     EvidenceMode,
     FragmentType,
-    FRAGMENT_TYPE_WEIGHTS,
     SellingPointEvidence,
 )
+
+TARGETS = {
+    FragmentType.HOOK: 10,
+    FragmentType.PAIN: 8,
+    FragmentType.PRODUCT_DISPLAY: 12,
+    FragmentType.SELLING_POINT_EXPLANATION: 10,
+    FragmentType.CTA: 6,
+    FragmentType.OUTRO: 4,
+}
+DURATIONS = {fragment_type: 5 for fragment_type in FragmentType}
 
 
 def _pools() -> DimensionPools:
@@ -44,7 +53,8 @@ def test_linear_code_supports_250_candidates_with_minimum_distance() -> None:
         count=250,
         round_number=0,
         ordinal_start=1,
-        target_duration_seconds=5,
+        fragment_targets=TARGETS,
+        fragment_durations=DURATIONS,
     )
 
     assert len(planned) == 250
@@ -57,27 +67,62 @@ def test_linear_code_supports_250_candidates_with_minimum_distance() -> None:
 
 def test_replenishment_round_is_distinct_and_shards_are_bounded() -> None:
     first = plan_combinations(
-        _pools(), count=20, round_number=0, ordinal_start=1, target_duration_seconds=5
+        _pools(), count=20, round_number=0, ordinal_start=1,
+        fragment_targets=TARGETS, fragment_durations=DURATIONS
     )
     second = plan_combinations(
-        _pools(), count=20, round_number=1, ordinal_start=21, target_duration_seconds=5
+        _pools(), count=20, round_number=1, ordinal_start=21,
+        fragment_targets=TARGETS, fragment_durations=DURATIONS
     )
     shards = make_shards(second, round_number=1, shard_size=8)
 
     assert all(dimension_distance(left.dimensions, right.dimensions) >= 5 for left, right in zip(first, second))
-    assert [len(shard.combinations) for shard in shards] == [8, 8, 4]
+    assert sum(len(shard.combinations) for shard in shards) == 20
+    assert all(len(shard.combinations) <= 8 for shard in shards)
+    assert all(len({item.fragment_type for item in shard.combinations}) == 1 for shard in shards)
 
 
-def test_fragment_type_targets_follow_approved_weights() -> None:
-    targets = fragment_type_targets(50, FRAGMENT_TYPE_WEIGHTS)
+def test_fragment_type_targets_use_explicit_six_type_counts() -> None:
+    targets = fragment_type_targets(TARGETS)
 
     assert targets == {
-        FragmentType.HOOK: 8,
-        FragmentType.PAIN: 7,
-        FragmentType.PRODUCT_DISPLAY: 9,
-        FragmentType.EFFECT_DEMONSTRATION: 9,
-        FragmentType.SELLING_POINT_EXPLANATION: 8,
-        FragmentType.CTA: 5,
+        FragmentType.HOOK: 10,
+        FragmentType.PAIN: 8,
+        FragmentType.PRODUCT_DISPLAY: 12,
+        FragmentType.SELLING_POINT_EXPLANATION: 10,
+        FragmentType.CTA: 6,
         FragmentType.OUTRO: 4,
     }
     assert sum(targets.values()) == 50
+
+
+def test_selling_point_branch_rotates_all_text_only_core_points() -> None:
+    pools = _pools().model_copy(
+        update={
+            "evidence_plans": [
+                SellingPointEvidence(
+                    selling_point=item,
+                    evidence_mode=EvidenceMode.TEXT_ONLY,
+                    allowed_visual_evidence=f"只允许字幕表达{item}",
+                    forbidden_inference=f"不得伪造{item}过程",
+                )
+                for item in ["卖点甲", "卖点乙", "卖点丙"]
+            ]
+        }
+    )
+
+    planned = plan_combinations(
+        pools,
+        count=50,
+        round_number=0,
+        ordinal_start=1,
+        fragment_targets=TARGETS,
+        fragment_durations=DURATIONS,
+    )
+    explanation_points = {
+        item.dimensions.selling_point
+        for item in planned
+        if item.fragment_type == FragmentType.SELLING_POINT_EXPLANATION
+    }
+
+    assert explanation_points == {"卖点甲", "卖点乙", "卖点丙"}

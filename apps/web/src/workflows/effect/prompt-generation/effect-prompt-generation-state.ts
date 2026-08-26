@@ -5,10 +5,10 @@ import type {
   EffectPromptProductState,
 } from '@ai-marketing/contracts';
 import {
-  DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_LIMITS,
+  effectPromptTargetCount,
   normalizeEffectPromptSettings,
 } from '@ai-marketing/contracts';
 
@@ -16,18 +16,14 @@ export { EFFECT_PROMPT_DIMENSIONS, EFFECT_PROMPT_LIMITS };
 export type EffectPromptPageStatus = 'loading' | 'ready' | 'error';
 
 const hydratePromptSettings = (settings: EffectPromptBatchSettings): EffectPromptBatchSettings => ({
-  ...DEFAULT_EFFECT_PROMPT_SETTINGS,
-  ...settings,
-  fragmentTypeWeights: {
-    ...DEFAULT_EFFECT_PROMPT_SETTINGS.fragmentTypeWeights,
-    ...(settings.fragmentTypeWeights ?? {}),
-  },
-  sellingPointWeights: Array.isArray(settings.sellingPointWeights)
-    ? settings.sellingPointWeights.map((item) => ({ ...item }))
-    : [],
-  additionalDisabledElements: Array.isArray(settings.additionalDisabledElements)
-    ? [...settings.additionalDisabledElements]
-    : [],
+  fragmentConfigs: Object.fromEntries(
+    Object.entries(settings.fragmentConfigs).map(([fragmentType, config]) => [
+      fragmentType,
+      { ...config },
+    ]),
+  ) as EffectPromptBatchSettings['fragmentConfigs'],
+  semanticLimit: settings.semanticLimit,
+  visualLimit: settings.visualLimit,
 });
 
 export const normalizePromptSettings = (
@@ -70,7 +66,7 @@ export const isPromptResultQualityReady = (
   Boolean(
     result &&
     result.qualityStatus === 'PASS' &&
-    result.metrics.acceptedCount === result.settings.count &&
+    result.metrics.acceptedCount === effectPromptTargetCount(result.settings) &&
     (!Array.isArray(result.metrics.fragmentTypeDistribution) ||
       result.metrics.fragmentTypeDistribution.every(
         ({ actualCount, targetCount }) => actualCount === targetCount,

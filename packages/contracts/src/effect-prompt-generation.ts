@@ -1,6 +1,6 @@
 import type { WorkingArtifactCommitStatus, WorkingArtifactCommitSummary } from './workflow-working';
 
-export const EFFECT_PROMPT_SCHEMA_VERSION = 2 as const;
+export const EFFECT_PROMPT_SCHEMA_VERSION = 3 as const;
 export const EFFECT_PROMPT_API_BASE =
   '/api/projects/:projectId/workflows/effect/prompt-generation' as const;
 
@@ -8,6 +8,7 @@ export const EFFECT_PROMPT_LIMITS = {
   minCount: 10,
   maxCount: 200,
   defaultCount: 50,
+  minFragmentCount: 1,
   minDurationSeconds: 3,
   maxDurationSeconds: 10,
   defaultDurationSeconds: 5,
@@ -21,9 +22,6 @@ export const EFFECT_PROMPT_LIMITS = {
   maxReplenishmentRounds: 3,
   shardSize: 8,
   maxMaterialTags: 12,
-  maxStyleOverrideLength: 200,
-  maxSellingPointWeights: 50,
-  maxAdditionalDisabledElements: 30,
 } as const;
 
 export const EFFECT_PROMPT_DIMENSIONS = [
@@ -42,7 +40,6 @@ export const EFFECT_PROMPT_FRAGMENT_TYPES = [
   'HOOK',
   'PAIN',
   'PRODUCT_DISPLAY',
-  'EFFECT_DEMONSTRATION',
   'SELLING_POINT_EXPLANATION',
   'CTA',
   'OUTRO',
@@ -53,49 +50,45 @@ export const EFFECT_PROMPT_FRAGMENT_TYPE_LABELS: Record<EffectPromptFragmentType
   HOOK: '钩子片段',
   PAIN: '痛点片段',
   PRODUCT_DISPLAY: '产品展示片段',
-  EFFECT_DEMONSTRATION: '效果展示片段',
   SELLING_POINT_EXPLANATION: '卖点讲解片段',
   CTA: '结尾转化片段',
   OUTRO: '片尾品牌片段',
 };
 
-export type EffectPromptSellingPointWeight = {
-  sellingPoint: string;
-  weight: number;
+export type EffectPromptFragmentConfig = {
+  count: number;
+  durationSeconds: number;
 };
 
-export type EffectPromptFragmentTypeWeights = Record<EffectPromptFragmentType, number>;
+export type EffectPromptFragmentConfigs = Record<
+  EffectPromptFragmentType,
+  EffectPromptFragmentConfig
+>;
 
-export const DEFAULT_EFFECT_PROMPT_FRAGMENT_TYPE_WEIGHTS: EffectPromptFragmentTypeWeights = {
-  HOOK: 16,
-  PAIN: 14,
-  PRODUCT_DISPLAY: 18,
-  EFFECT_DEMONSTRATION: 18,
-  SELLING_POINT_EXPLANATION: 16,
-  CTA: 10,
-  OUTRO: 8,
+export const DEFAULT_EFFECT_PROMPT_FRAGMENT_CONFIGS: EffectPromptFragmentConfigs = {
+  HOOK: { count: 10, durationSeconds: 5 },
+  PAIN: { count: 8, durationSeconds: 5 },
+  PRODUCT_DISPLAY: { count: 12, durationSeconds: 5 },
+  SELLING_POINT_EXPLANATION: { count: 10, durationSeconds: 5 },
+  CTA: { count: 6, durationSeconds: 5 },
+  OUTRO: { count: 4, durationSeconds: 5 },
 };
 
 export type EffectPromptBatchSettings = {
-  count: number;
-  durationSeconds: number;
+  fragmentConfigs: EffectPromptFragmentConfigs;
   semanticLimit: number;
   visualLimit: number;
-  styleOverride: string | null;
-  fragmentTypeWeights: EffectPromptFragmentTypeWeights;
-  sellingPointWeights: EffectPromptSellingPointWeight[];
-  additionalDisabledElements: string[];
 };
 
 export const DEFAULT_EFFECT_PROMPT_SETTINGS: EffectPromptBatchSettings = {
-  count: EFFECT_PROMPT_LIMITS.defaultCount,
-  durationSeconds: EFFECT_PROMPT_LIMITS.defaultDurationSeconds,
+  fragmentConfigs: Object.fromEntries(
+    EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => [
+      fragmentType,
+      { ...DEFAULT_EFFECT_PROMPT_FRAGMENT_CONFIGS[fragmentType] },
+    ]),
+  ) as EffectPromptFragmentConfigs,
   semanticLimit: EFFECT_PROMPT_LIMITS.defaultSemanticDuplicateRate,
   visualLimit: EFFECT_PROMPT_LIMITS.defaultVisualOverlapRate,
-  styleOverride: null,
-  fragmentTypeWeights: { ...DEFAULT_EFFECT_PROMPT_FRAGMENT_TYPE_WEIGHTS },
-  sellingPointWeights: [],
-  additionalDisabledElements: [],
 };
 
 export const EFFECT_PROMPT_ITEM_ORIGINS = ['AI', 'MANUAL'] as const;
@@ -182,7 +175,17 @@ export const EFFECT_PROMPT_GRAPH_NODES = [
   { id: 'LOAD_AND_SNAPSHOT', label: '输入快照', group: 'SNAPSHOT' },
   { id: 'STRATEGY_PLANNING', label: '六维策略规划', group: 'PLANNING' },
   { id: 'DIMENSION_COMBINATION', label: '正交组合', group: 'PLANNING' },
-  { id: 'CANDIDATE_GENERATION', label: '候选生成', group: 'GENERATION' },
+  { id: 'FRAGMENT_TYPE_ROUTER', label: '片段类型条件路由', group: 'ROUTER' },
+  { id: 'GENERATE_HOOK', label: '钩子 Prompt 生成', group: 'GENERATION' },
+  { id: 'GENERATE_PAIN', label: '痛点 Prompt 生成', group: 'GENERATION' },
+  { id: 'GENERATE_PRODUCT_DISPLAY', label: '产品展示 Prompt 生成', group: 'GENERATION' },
+  {
+    id: 'GENERATE_SELLING_POINT_EXPLANATION',
+    label: '卖点讲解 Prompt 生成',
+    group: 'GENERATION',
+  },
+  { id: 'GENERATE_CTA', label: '结尾转化 Prompt 生成', group: 'GENERATION' },
+  { id: 'GENERATE_OUTRO', label: '片尾品牌 Prompt 生成', group: 'GENERATION' },
   { id: 'NORMALIZATION', label: '结构标准化', group: 'NORMALIZATION' },
   { id: 'SEMANTIC_DEDUP', label: '语义去重', group: 'PARALLEL' },
   { id: 'VISUAL_DEDUP', label: '视觉重合校验', group: 'PARALLEL' },
@@ -195,15 +198,26 @@ export type EffectPromptNodeId = (typeof EFFECT_PROMPT_GRAPH_NODES)[number]['id'
 export const EFFECT_PROMPT_GRAPH_EDGES = [
   { from: 'LOAD_AND_SNAPSHOT', to: 'STRATEGY_PLANNING' },
   { from: 'STRATEGY_PLANNING', to: 'DIMENSION_COMBINATION' },
-  { from: 'DIMENSION_COMBINATION', to: 'CANDIDATE_GENERATION' },
-  { from: 'CANDIDATE_GENERATION', to: 'NORMALIZATION' },
+  { from: 'DIMENSION_COMBINATION', to: 'FRAGMENT_TYPE_ROUTER' },
+  { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_HOOK' },
+  { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_PAIN' },
+  { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_PRODUCT_DISPLAY' },
+  { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_SELLING_POINT_EXPLANATION' },
+  { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_CTA' },
+  { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_OUTRO' },
+  { from: 'GENERATE_HOOK', to: 'NORMALIZATION' },
+  { from: 'GENERATE_PAIN', to: 'NORMALIZATION' },
+  { from: 'GENERATE_PRODUCT_DISPLAY', to: 'NORMALIZATION' },
+  { from: 'GENERATE_SELLING_POINT_EXPLANATION', to: 'NORMALIZATION' },
+  { from: 'GENERATE_CTA', to: 'NORMALIZATION' },
+  { from: 'GENERATE_OUTRO', to: 'NORMALIZATION' },
   { from: 'NORMALIZATION', to: 'SEMANTIC_DEDUP' },
   { from: 'NORMALIZATION', to: 'VISUAL_DEDUP' },
   { from: 'SEMANTIC_DEDUP', to: 'QUALITY_GATE' },
   { from: 'VISUAL_DEDUP', to: 'QUALITY_GATE' },
   { from: 'QUALITY_GATE', to: 'REPLENISH' },
   { from: 'QUALITY_GATE', to: 'RESULT_SAVE' },
-  { from: 'REPLENISH', to: 'CANDIDATE_GENERATION' },
+  { from: 'REPLENISH', to: 'FRAGMENT_TYPE_ROUTER' },
 ] as const satisfies ReadonlyArray<{ from: EffectPromptNodeId; to: EffectPromptNodeId }>;
 
 export type EffectPromptNodeExecution = {
@@ -320,7 +334,7 @@ export type GetEffectPromptNodeDetailData = {
 
 export type UpsertEffectPromptItemRequest = Pick<
   EffectPromptItem,
-  'content' | 'fragmentType' | 'materialTags' | 'targetDurationSeconds' | 'dimensions'
+  'content' | 'fragmentType' | 'materialTags' | 'dimensions'
 > & { expectedRevision: number };
 
 export type UpdateEffectPromptResultData = {
@@ -345,45 +359,76 @@ export type ValidateEffectPromptResultData = {
 export const effectPromptSettingsNodeId = (productId: string): string =>
   `PROMPT_GENERATION:${productId}`;
 
-const normalizedStringList = (values: readonly string[], maximum: number): string[] => {
-  const result: string[] = [];
-  const seen = new Set<string>();
-  for (const raw of values) {
-    const value = raw.normalize('NFC').trim().replace(/\s+/gu, ' ');
-    const key = value.toLocaleLowerCase('zh-CN');
-    if (!value || seen.has(key)) continue;
-    seen.add(key);
-    result.push(value);
-    if (result.length >= maximum) break;
-  }
-  return result;
+export const effectPromptFragmentTypeTargetCounts = (
+  settings: Pick<EffectPromptBatchSettings, 'fragmentConfigs'>,
+): Record<EffectPromptFragmentType, number> => {
+  return Object.fromEntries(
+    EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => [
+      fragmentType,
+      settings.fragmentConfigs[fragmentType].count,
+    ]),
+  ) as Record<EffectPromptFragmentType, number>;
 };
 
-export const effectPromptFragmentTypeTargetCounts = (
-  settings: Pick<EffectPromptBatchSettings, 'count' | 'fragmentTypeWeights'>,
-): Record<EffectPromptFragmentType, number> => {
-  const positiveTypes = EFFECT_PROMPT_FRAGMENT_TYPES.filter(
-    (fragmentType) => settings.fragmentTypeWeights[fragmentType] > 0,
+export const effectPromptTargetCount = (
+  settings: Pick<EffectPromptBatchSettings, 'fragmentConfigs'>,
+): number =>
+  EFFECT_PROMPT_FRAGMENT_TYPES.reduce(
+    (total, fragmentType) => total + settings.fragmentConfigs[fragmentType].count,
+    0,
   );
+
+export const normalizeEffectPromptSettings = (
+  input: EffectPromptBatchSettings,
+): EffectPromptBatchSettings => {
+  const fragmentConfigs = Object.fromEntries(
+    EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => {
+      const source = input.fragmentConfigs[fragmentType];
+      return [
+        fragmentType,
+        {
+          count: Math.min(
+            EFFECT_PROMPT_LIMITS.maxCount,
+            Math.max(EFFECT_PROMPT_LIMITS.minFragmentCount, Math.round(source.count)),
+          ),
+          durationSeconds: Math.min(
+            EFFECT_PROMPT_LIMITS.maxDurationSeconds,
+            Math.max(EFFECT_PROMPT_LIMITS.minDurationSeconds, Math.round(source.durationSeconds)),
+          ),
+        },
+      ];
+    }),
+  ) as EffectPromptFragmentConfigs;
+  return {
+    fragmentConfigs,
+    semanticLimit: Math.min(
+      EFFECT_PROMPT_LIMITS.maxSemanticDuplicateRate,
+      Math.max(EFFECT_PROMPT_LIMITS.minSemanticDuplicateRate, Math.round(input.semanticLimit)),
+    ),
+    visualLimit: Math.min(
+      EFFECT_PROMPT_LIMITS.maxVisualOverlapRate,
+      Math.max(EFFECT_PROMPT_LIMITS.minVisualOverlapRate, Math.round(input.visualLimit)),
+    ),
+  };
+};
+
+const legacyFragmentCounts = (totalCount: number): Record<EffectPromptFragmentType, number> => {
   const result = Object.fromEntries(
-    EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => [fragmentType, 0]),
+    EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => [
+      fragmentType,
+      EFFECT_PROMPT_LIMITS.minFragmentCount,
+    ]),
   ) as Record<EffectPromptFragmentType, number>;
-  let remaining = Math.max(0, Math.round(settings.count));
-  if (remaining >= positiveTypes.length) {
-    for (const fragmentType of positiveTypes) result[fragmentType] = 1;
-    remaining -= positiveTypes.length;
-  }
-  const weighted = positiveTypes.map((fragmentType, order) => {
-    const exact = (remaining * settings.fragmentTypeWeights[fragmentType]) / 100;
+  const remaining = totalCount - EFFECT_PROMPT_FRAGMENT_TYPES.length;
+  const weighted = EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType, order) => {
+    const exact =
+      (remaining * DEFAULT_EFFECT_PROMPT_FRAGMENT_CONFIGS[fragmentType].count) /
+      EFFECT_PROMPT_LIMITS.defaultCount;
     const base = Math.floor(exact);
     result[fragmentType] += base;
     return { fragmentType, order, remainder: exact - base };
   });
-  let unallocated = Math.max(
-    0,
-    Math.round(settings.count) -
-      EFFECT_PROMPT_FRAGMENT_TYPES.reduce((sum, fragmentType) => sum + result[fragmentType], 0),
-  );
+  let unallocated = totalCount - Object.values(result).reduce((sum, value) => sum + value, 0);
   weighted
     .sort((left, right) => right.remainder - left.remainder || left.order - right.order)
     .forEach(({ fragmentType }) => {
@@ -394,93 +439,61 @@ export const effectPromptFragmentTypeTargetCounts = (
   return result;
 };
 
-export const normalizeEffectPromptSettings = (
-  input: EffectPromptBatchSettings,
+export const migrateEffectPromptSettings = (
+  value: unknown,
+  sourceSchemaVersion = 1,
 ): EffectPromptBatchSettings => {
-  const source = input as Partial<EffectPromptBatchSettings>;
-  const sourceFragmentTypeWeights =
-    source.fragmentTypeWeights && typeof source.fragmentTypeWeights === 'object'
-      ? source.fragmentTypeWeights
-      : DEFAULT_EFFECT_PROMPT_FRAGMENT_TYPE_WEIGHTS;
-  const fragmentTypeWeights = Object.fromEntries(
-    EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => [
-      fragmentType,
-      Math.min(
-        100,
-        Math.max(
-          0,
-          Math.round(
-            sourceFragmentTypeWeights[fragmentType] ??
-              DEFAULT_EFFECT_PROMPT_FRAGMENT_TYPE_WEIGHTS[fragmentType],
-          ),
-        ),
-      ),
-    ]),
-  ) as EffectPromptFragmentTypeWeights;
-  const weightTotal = EFFECT_PROMPT_FRAGMENT_TYPES.reduce(
-    (sum, fragmentType) => sum + fragmentTypeWeights[fragmentType],
-    0,
-  );
-  const sellingPointWeights = (
-    Array.isArray(source.sellingPointWeights) ? source.sellingPointWeights : []
-  )
-    .map(({ sellingPoint, weight }) => ({
-      sellingPoint: sellingPoint.normalize('NFC').trim().replace(/\s+/gu, ' '),
-      weight: Math.min(100, Math.max(1, Math.round(weight))),
-    }))
-    .filter(
-      ({ sellingPoint }, index, items) =>
-        Boolean(sellingPoint) &&
-        items.findIndex(
-          (item) =>
-            item.sellingPoint.toLocaleLowerCase('zh-CN') ===
-            sellingPoint.toLocaleLowerCase('zh-CN'),
-        ) === index,
-    )
-    .slice(0, EFFECT_PROMPT_LIMITS.maxSellingPointWeights);
-  return {
-    count: Math.min(
-      EFFECT_PROMPT_LIMITS.maxCount,
-      Math.max(
-        EFFECT_PROMPT_LIMITS.minCount,
-        Math.round(source.count ?? DEFAULT_EFFECT_PROMPT_SETTINGS.count),
-      ),
-    ),
-    durationSeconds: Math.min(
-      EFFECT_PROMPT_LIMITS.maxDurationSeconds,
-      Math.max(
-        EFFECT_PROMPT_LIMITS.minDurationSeconds,
-        Math.round(source.durationSeconds ?? DEFAULT_EFFECT_PROMPT_SETTINGS.durationSeconds),
-      ),
-    ),
-    semanticLimit: Math.min(
-      EFFECT_PROMPT_LIMITS.maxSemanticDuplicateRate,
-      Math.max(
-        EFFECT_PROMPT_LIMITS.minSemanticDuplicateRate,
-        Math.round(source.semanticLimit ?? DEFAULT_EFFECT_PROMPT_SETTINGS.semanticLimit),
-      ),
-    ),
-    visualLimit: Math.min(
-      EFFECT_PROMPT_LIMITS.maxVisualOverlapRate,
-      Math.max(
-        EFFECT_PROMPT_LIMITS.minVisualOverlapRate,
-        Math.round(source.visualLimit ?? DEFAULT_EFFECT_PROMPT_SETTINGS.visualLimit),
-      ),
-    ),
-    styleOverride:
-      source.styleOverride
-        ?.normalize('NFC')
-        .trim()
-        .replace(/\s+/gu, ' ')
-        .slice(0, EFFECT_PROMPT_LIMITS.maxStyleOverrideLength) || null,
-    fragmentTypeWeights:
-      weightTotal === 100
-        ? fragmentTypeWeights
-        : { ...DEFAULT_EFFECT_PROMPT_FRAGMENT_TYPE_WEIGHTS },
-    sellingPointWeights,
-    additionalDisabledElements: normalizedStringList(
-      Array.isArray(source.additionalDisabledElements) ? source.additionalDisabledElements : [],
-      EFFECT_PROMPT_LIMITS.maxAdditionalDisabledElements,
-    ),
-  };
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const source = value as Record<string, unknown>;
+    const configs = source.fragmentConfigs;
+    if (configs && typeof configs === 'object' && !Array.isArray(configs)) {
+      const candidate = {
+        fragmentConfigs: configs,
+        semanticLimit: source.semanticLimit,
+        visualLimit: source.visualLimit,
+      } as EffectPromptBatchSettings;
+      try {
+        const normalized = normalizeEffectPromptSettings(candidate);
+        const total = effectPromptTargetCount(normalized);
+        if (total >= EFFECT_PROMPT_LIMITS.minCount && total <= EFFECT_PROMPT_LIMITS.maxCount)
+          return normalized;
+      } catch {
+        // Fall through to the deterministic legacy migration.
+      }
+    }
+    const rawCount = Number(source.count);
+    const totalCount = Number.isInteger(rawCount)
+      ? Math.min(EFFECT_PROMPT_LIMITS.maxCount, Math.max(EFFECT_PROMPT_LIMITS.minCount, rawCount))
+      : EFFECT_PROMPT_LIMITS.defaultCount;
+    const rawDuration = Number(source.durationSeconds);
+    const durationSeconds =
+      sourceSchemaVersion === 2 &&
+      Number.isInteger(rawDuration) &&
+      rawDuration >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
+      rawDuration <= EFFECT_PROMPT_LIMITS.maxDurationSeconds
+        ? rawDuration
+        : EFFECT_PROMPT_LIMITS.defaultDurationSeconds;
+    const counts = legacyFragmentCounts(totalCount);
+    return {
+      fragmentConfigs: Object.fromEntries(
+        EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => [
+          fragmentType,
+          { count: counts[fragmentType], durationSeconds },
+        ]),
+      ) as EffectPromptFragmentConfigs,
+      semanticLimit:
+        Number.isInteger(source.semanticLimit) &&
+        Number(source.semanticLimit) >= EFFECT_PROMPT_LIMITS.minSemanticDuplicateRate &&
+        Number(source.semanticLimit) <= EFFECT_PROMPT_LIMITS.maxSemanticDuplicateRate
+          ? Number(source.semanticLimit)
+          : EFFECT_PROMPT_LIMITS.defaultSemanticDuplicateRate,
+      visualLimit:
+        Number.isInteger(source.visualLimit) &&
+        Number(source.visualLimit) >= EFFECT_PROMPT_LIMITS.minVisualOverlapRate &&
+        Number(source.visualLimit) <= EFFECT_PROMPT_LIMITS.maxVisualOverlapRate
+          ? Number(source.visualLimit)
+          : EFFECT_PROMPT_LIMITS.defaultVisualOverlapRate,
+    };
+  }
+  return normalizeEffectPromptSettings(DEFAULT_EFFECT_PROMPT_SETTINGS);
 };

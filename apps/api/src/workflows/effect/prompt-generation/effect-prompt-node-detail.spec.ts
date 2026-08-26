@@ -25,7 +25,12 @@ describe('projectEffectPromptNodeMetadata', () => {
       expectedLabel: '计划候选数',
     },
     {
-      nodeId: 'CANDIDATE_GENERATION',
+      nodeId: 'FRAGMENT_TYPE_ROUTER',
+      metadata: { fragmentTypeCount: 6, totalShards: 9, routedShards: 9 },
+      expectedLabel: '路由片段类型数',
+    },
+    {
+      nodeId: 'GENERATE_HOOK',
       metadata: { totalShards: 8, completedShards: 5, candidateExample: '片段类型 + 六维 + 正文' },
       expectedLabel: '分片总数',
     },

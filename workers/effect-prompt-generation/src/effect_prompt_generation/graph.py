@@ -15,7 +15,11 @@ from .models import (
     RuntimeContext,
     ShardPlan,
 )
-from .pipeline import MAX_REPLENISHMENT_ROUNDS, PromptGenerationPipeline
+from .pipeline import (
+    GENERATION_NODE_BY_FRAGMENT,
+    MAX_REPLENISHMENT_ROUNDS,
+    PromptGenerationPipeline,
+)
 
 
 def build_graph(
@@ -25,7 +29,7 @@ def build_graph(
         loaded = await pipeline.load_and_snapshot(runtime.context)
         return {
             "round": loaded.highest_round,
-            "target_count": loaded.snapshot.settings.count,
+            "target_count": loaded.snapshot.settings.target_count,
             "retained_count": len(loaded.snapshot.retained_manual_items),
             "completed_shard_keys": loaded.completed_shard_keys,
             "generated_candidate_count": len(loaded.candidates),
@@ -47,6 +51,9 @@ def build_graph(
             completed_keys=state.get("completed_shard_keys", []),
         )
         return {"round": 0, "pending_shards": pending}
+
+    async def router(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, object]:
+        return {}
 
     async def generate(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, object]:
         shard = ShardPlan.model_validate(state["active_shard"])
@@ -106,7 +113,7 @@ def build_graph(
             return "NORMALIZATION"
         return [
             Send(
-                "CANDIDATE_GENERATION",
+                GENERATION_NODE_BY_FRAGMENT[shard.fragment_type].value,
                 {"project_id": state["project_id"], "active_shard": shard.model_dump(mode="json")},
             )
             for shard in pending
@@ -124,7 +131,9 @@ def build_graph(
     builder.add_node(NodeId.LOAD_AND_SNAPSHOT.value, load)
     builder.add_node(NodeId.STRATEGY_PLANNING.value, strategy)
     builder.add_node(NodeId.DIMENSION_COMBINATION.value, combine)
-    builder.add_node(NodeId.CANDIDATE_GENERATION.value, generate)
+    builder.add_node(NodeId.FRAGMENT_TYPE_ROUTER.value, router)
+    for generation_node in GENERATION_NODE_BY_FRAGMENT.values():
+        builder.add_node(generation_node.value, generate)
     builder.add_node(NodeId.NORMALIZATION.value, normalize)
     builder.add_node(NodeId.SEMANTIC_DEDUP.value, semantic)
     builder.add_node(NodeId.VISUAL_DEDUP.value, visual)
@@ -135,12 +144,17 @@ def build_graph(
     builder.add_edge(START, NodeId.LOAD_AND_SNAPSHOT.value)
     builder.add_edge(NodeId.LOAD_AND_SNAPSHOT.value, NodeId.STRATEGY_PLANNING.value)
     builder.add_edge(NodeId.STRATEGY_PLANNING.value, NodeId.DIMENSION_COMBINATION.value)
+    builder.add_edge(NodeId.DIMENSION_COMBINATION.value, NodeId.FRAGMENT_TYPE_ROUTER.value)
     builder.add_conditional_edges(
-        NodeId.DIMENSION_COMBINATION.value,
+        NodeId.FRAGMENT_TYPE_ROUTER.value,
         dispatch_shards,
-        [NodeId.CANDIDATE_GENERATION.value, NodeId.NORMALIZATION.value],
+        [
+            *(node.value for node in GENERATION_NODE_BY_FRAGMENT.values()),
+            NodeId.NORMALIZATION.value,
+        ],
     )
-    builder.add_edge(NodeId.CANDIDATE_GENERATION.value, NodeId.NORMALIZATION.value)
+    for generation_node in GENERATION_NODE_BY_FRAGMENT.values():
+        builder.add_edge(generation_node.value, NodeId.NORMALIZATION.value)
     builder.add_edge(NodeId.NORMALIZATION.value, NodeId.SEMANTIC_DEDUP.value)
     builder.add_edge(NodeId.NORMALIZATION.value, NodeId.VISUAL_DEDUP.value)
     builder.add_edge(
@@ -151,10 +165,6 @@ def build_graph(
         route_quality,
         [NodeId.REPLENISH.value, NodeId.RESULT_SAVE.value],
     )
-    builder.add_conditional_edges(
-        NodeId.REPLENISH.value,
-        dispatch_shards,
-        [NodeId.CANDIDATE_GENERATION.value, NodeId.NORMALIZATION.value],
-    )
+    builder.add_edge(NodeId.REPLENISH.value, NodeId.FRAGMENT_TYPE_ROUTER.value)
     builder.add_edge(NodeId.RESULT_SAVE.value, END)
     return builder.compile()

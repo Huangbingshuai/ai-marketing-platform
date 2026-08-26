@@ -6,6 +6,7 @@ import type {
 import {
   DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
+  effectPromptTargetCount,
   effectPromptFragmentTypeTargetCounts,
 } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
@@ -42,12 +43,12 @@ const prompt: EffectPromptItem = {
 };
 
 const batch: EffectPromptBatchResult = {
-  schemaVersion: 2,
-  settings: { ...DEFAULT_EFFECT_PROMPT_SETTINGS, count: 10 },
-  items: Array.from({ length: 10 }, (_, index) => ({ ...prompt, id: `item-${index}` })),
+  schemaVersion: 3,
+  settings: DEFAULT_EFFECT_PROMPT_SETTINGS,
+  items: Array.from({ length: 50 }, (_, index) => ({ ...prompt, id: `item-${index}` })),
   metrics: {
-    targetCount: 10,
-    acceptedCount: 10,
+    targetCount: 50,
+    acceptedCount: 50,
     generatedCandidateCount: 14,
     removedSemanticDuplicates: 2,
     removedVisualDuplicates: 1,
@@ -56,10 +57,9 @@ const batch: EffectPromptBatchResult = {
     visualOverlapRate: 16.4,
     replenishmentRounds: 1,
     fragmentTypeDistribution: EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => {
-      const targetCount = effectPromptFragmentTypeTargetCounts({
-        ...DEFAULT_EFFECT_PROMPT_SETTINGS,
-        count: 10,
-      })[fragmentType];
+      const targetCount = effectPromptFragmentTypeTargetCounts(DEFAULT_EFFECT_PROMPT_SETTINGS)[
+        fragmentType
+      ];
       return { fragmentType, targetCount, actualCount: targetCount };
     }),
     sellingPointCoverage: {
@@ -74,26 +74,27 @@ const batch: EffectPromptBatchResult = {
 };
 
 describe('effect prompt generation state', () => {
-  it('normalizes fragment settings and all advanced controls to contract ranges', () => {
+  it('normalizes six independent fragment settings to contract ranges', () => {
     expect(
       normalizePromptSettings({
         ...DEFAULT_EFFECT_PROMPT_SETTINGS,
-        count: 2,
-        durationSeconds: 500,
+        fragmentConfigs: {
+          ...DEFAULT_EFFECT_PROMPT_SETTINGS.fragmentConfigs,
+          HOOK: { count: 1, durationSeconds: 500 },
+        },
         semanticLimit: 30,
         visualLimit: 2,
-        styleOverride: '  温暖   实拍  ',
-        additionalDisabledElements: ['  二维码  ', '二维码'],
       }),
     ).toEqual({
       ...DEFAULT_EFFECT_PROMPT_SETTINGS,
-      count: 10,
-      durationSeconds: 10,
+      fragmentConfigs: {
+        ...DEFAULT_EFFECT_PROMPT_SETTINGS.fragmentConfigs,
+        HOOK: { count: 1, durationSeconds: 10 },
+      },
       semanticLimit: 15,
       visualLimit: 10,
-      styleOverride: '温暖 实拍',
-      additionalDisabledElements: ['二维码'],
     });
+    expect(effectPromptTargetCount(DEFAULT_EFFECT_PROMPT_SETTINGS)).toBe(50);
   });
 
   it('matches id, content, fixed and secondary labels and six-dimensional labels', () => {

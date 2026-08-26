@@ -13,14 +13,14 @@ from effect_prompt_generation.models import (
 
 
 def _combination(
-    fragment_type: FragmentType = FragmentType.EFFECT_DEMONSTRATION,
+    fragment_type: FragmentType = FragmentType.SELLING_POINT_EXPLANATION,
     evidence_mode: EvidenceMode = EvidenceMode.USAGE_ACTION,
 ) -> PlannedCombination:
     return PlannedCombination(
         slot_id="slot-1",
         ordinal=1,
         fragment_type=fragment_type,
-        material_tags=["效果", "动作演示"],
+        material_tags=["卖点", "口播"],
         target_duration_seconds=5,
         visible_action="一名通勤女性用拇指按下开盖按键，杯盖打开后停住",
         evidence_mode=evidence_mode,
@@ -79,7 +79,7 @@ def test_execution_gate_rejects_full_ad_timeline_and_internal_dimensions() -> No
     assert "FULL_TIMELINE" in reasons
 
 
-def test_hook_and_pain_may_omit_product_but_effect_cannot() -> None:
+def test_hook_and_pain_may_omit_product_but_selling_point_cannot() -> None:
     base = (
         "5秒，9:16竖屏。雨天办公楼入口，一名年轻男性一手握手机、一手拎雨伞和电脑包，"
         "胸前中近景连续下移到双手特写，他调整包带后仍无法腾出手。冷白自然光下节奏略急，"
@@ -114,7 +114,7 @@ def test_execution_gate_covers_stacked_persona_duplication_fact_and_placeholder(
     assert "BROKEN_TEXT" in reasons
 
 
-def test_execution_gate_reports_action_evidence_and_role_failures() -> None:
+def test_execution_gate_reports_action_selling_point_and_role_failures() -> None:
     no_action = (
         "5秒，9:16竖屏。办公室桌面只有便携杯，固定机位近景聚焦产品，冷白侧光保持清晰轮廓，"
         "画面节奏舒缓，结尾仍停在产品正面，单手按键开盖字幕保持清楚且不出现其他人物。"
@@ -123,14 +123,10 @@ def test_execution_gate_reports_action_evidence_and_role_failures() -> None:
         no_action, _combination(), product_name="便携杯", aspect_ratio="9:16"
     )
 
-    text_only = _combination(
-        FragmentType.EFFECT_DEMONSTRATION,
-        EvidenceMode.TEXT_ONLY,
+    missing_selling_point = _valid_prompt().replace("单手按键开盖", "一次开盖")
+    assert "MISSING_ASSIGNED_SELLING_POINT" in validate_fragment_prompt(
+        missing_selling_point, _combination(), product_name="便携杯", aspect_ratio="9:16"
     )
-    evidence_reasons = validate_fragment_prompt(
-        _valid_prompt(), text_only, product_name="便携杯", aspect_ratio="9:16"
-    )
-    assert "UNFILMABLE_EVIDENCE" in evidence_reasons
 
     hook_with_cta = _combination(FragmentType.HOOK)
     role_prompt = _valid_prompt() + " 立即下单购买。"

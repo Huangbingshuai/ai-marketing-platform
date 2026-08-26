@@ -52,6 +52,15 @@ from .quality import (
 
 MAX_REPLENISHMENT_ROUNDS = 3
 
+GENERATION_NODE_BY_FRAGMENT: dict[FragmentType, NodeId] = {
+    FragmentType.HOOK: NodeId.GENERATE_HOOK,
+    FragmentType.PAIN: NodeId.GENERATE_PAIN,
+    FragmentType.PRODUCT_DISPLAY: NodeId.GENERATE_PRODUCT_DISPLAY,
+    FragmentType.SELLING_POINT_EXPLANATION: NodeId.GENERATE_SELLING_POINT_EXPLANATION,
+    FragmentType.CTA: NodeId.GENERATE_CTA,
+    FragmentType.OUTRO: NodeId.GENERATE_OUTRO,
+}
+
 
 class PipelineError(RuntimeError):
     pass
@@ -136,7 +145,7 @@ class PromptGenerationPipeline:
             StageStatus.SUCCEEDED,
             "输入快照已锁定",
             metadata={
-                "batchSize": snapshot.settings.count,
+                "batchSize": snapshot.settings.target_count,
                 "retainedCount": len(snapshot.retained_manual_items),
                 "resumedShardCount": len(succeeded),
                 "snapshotSummary": _short(
@@ -208,24 +217,25 @@ class PromptGenerationPipeline:
         await self._stage(context, node, StageStatus.RUNNING, "正在生成正交组合")
         requested = min(289, max(missing_count, math.ceil(missing_count * 1.25)))
         settings = self.snapshot(context).settings
+        targets = fragment_type_targets(
+            {fragment_type: settings.fragment_configs[fragment_type].count for fragment_type in FragmentType}
+        )
         existing = self._cache(context).accepted_items or self.snapshot(context).retained_manual_items
         actual_types = Counter(item.fragment_type for item in existing)
         deficits = fragment_type_deficits(
-            settings.count,
+            targets,
             actual_types,
-            settings.fragment_type_weights,
         )
         combinations = plan_combinations(
             self._prioritized_pools(context, pools),
             count=requested,
             round_number=round_number,
             ordinal_start=ordinal_start,
-            target_duration_seconds=settings.duration_seconds,
-            fragment_type_weights=settings.fragment_type_weights,
-            selling_point_weights={
-                item.selling_point: item.weight for item in settings.selling_point_weights
-            }
-            or None,
+            fragment_targets=targets,
+            fragment_durations={
+                fragment_type: settings.fragment_configs[fragment_type].duration_seconds
+                for fragment_type in FragmentType
+            },
             fragment_deficits=deficits,
         )
         shards = make_shards(combinations, round_number=round_number, shard_size=self.shard_size)
@@ -252,19 +262,34 @@ class PromptGenerationPipeline:
             "正交组合已生成" if round_number == 0 else f"第 {round_number} 轮补齐组合已生成",
             metadata=stage_metadata,
         )
+        await self._stage(
+            context,
+            NodeId.FRAGMENT_TYPE_ROUTER,
+            StageStatus.SUCCEEDED,
+            "候选分片已按六类素材用途完成路由",
+            metadata={
+                "fragmentTypeCount": len(FragmentType),
+                "totalShards": len(pending),
+                "routedShards": len(pending),
+            },
+        )
+        pending_by_type = Counter(shard.fragment_type for shard in pending)
+        for fragment_type, generation_node in GENERATION_NODE_BY_FRAGMENT.items():
+            shard_count = pending_by_type[fragment_type]
+            await self._stage(
+                context,
+                generation_node,
+                StageStatus.RUNNING if shard_count else StageStatus.SKIPPED,
+                f"{fragment_type.value} 候选 Prompt 分片生成中" if shard_count else "当前轮次无需生成该类片段",
+                metadata={
+                    "totalShards": shard_count,
+                    "completedShards": 0,
+                    "targetCount": targets[fragment_type],
+                },
+            )
         if round_number == 0:
             self._cache(context).total_shards = (
                 len(pending) + len(shards) - len(all_pending)
-            )
-            await self._stage(
-                context,
-                NodeId.CANDIDATE_GENERATION,
-                StageStatus.RUNNING,
-                "候选 Prompt 分片生成中",
-                metadata={
-                    "totalShards": self._cache(context).total_shards,
-                    "completedShards": len(shards) - len(all_pending),
-                },
             )
         else:
             self._cache(context).total_shards += len(pending)
@@ -287,17 +312,12 @@ class PromptGenerationPipeline:
             call = await self.provider.generate_candidates(
                 shard.combinations,
                 insight=snapshot.insight_artifact.result,
-                duration_seconds=snapshot.settings.duration_seconds,
-                style_override=snapshot.settings.style_override,
-                additional_disabled_elements=snapshot.settings.additional_disabled_elements,
             )
             plan_by_slot = {item.slot_id: item for item in call.value.items}
             insight = snapshot.insight_artifact.result
             product_name = _insight_text(insight, "productName", "product_name") or "该产品"
             aspect_ratio = _insight_text(insight, "aspectRatio", "aspect_ratio") or "以信息卡为准"
-            disabled_elements = _insight_list(
-                insight, "disabledElements", "disabled_elements"
-            ) + snapshot.settings.additional_disabled_elements
+            disabled_elements = _insight_list(insight, "disabledElements", "disabled_elements")
             generated_at = utc_now()
             candidates: list[GeneratedCandidate] = []
             for plan in shard.combinations:
@@ -369,18 +389,20 @@ class PromptGenerationPipeline:
             for candidate in unique
         ]
         self._cache(context).normalized_items = items
-        await self._stage(
-            context,
-            NodeId.CANDIDATE_GENERATION,
-            StageStatus.SUCCEEDED,
-            "候选 Prompt 分片生成完成",
-            metadata={
-                "totalShards": self._cache(context).total_shards,
-                "completedShards": len({(item.round, item.shard_index) for item in unique}),
-                "candidateCount": len(unique),
-                "candidateExample": _short(unique[0].content if unique else "暂无可执行素材片段 Prompt"),
-            },
-        )
+        for fragment_type, generation_node in GENERATION_NODE_BY_FRAGMENT.items():
+            generated = [item for item in unique if item.fragment_type == fragment_type]
+            await self._stage(
+                context,
+                generation_node,
+                StageStatus.SUCCEEDED if generated else StageStatus.SKIPPED,
+                "该类候选 Prompt 分片生成完成" if generated else "当前批次未生成该类片段",
+                metadata={
+                    "totalShards": len({(item.round, item.shard_index) for item in generated}),
+                    "completedShards": len({(item.round, item.shard_index) for item in generated}),
+                    "candidateCount": len(generated),
+                    "targetCount": self.snapshot(context).settings.fragment_configs[fragment_type].count,
+                },
+            )
         await self._stage(
             context,
             NodeId.NORMALIZATION,
@@ -444,7 +466,7 @@ class PromptGenerationPipeline:
         evaluation = evaluate_candidates(
             self.snapshot(context).retained_manual_items,
             self._cache(context).normalized_items,
-            target_count=settings.count,
+            target_count=settings.target_count,
             semantic_limit=settings.semantic_limit,
             visual_limit=settings.visual_limit,
             round_number=round_number,
@@ -452,8 +474,7 @@ class PromptGenerationPipeline:
                 self.snapshot(context).insight_artifact.result
             ),
             fragment_type_targets=fragment_type_targets(
-                settings.count,
-                settings.fragment_type_weights,
+                {fragment_type: settings.fragment_configs[fragment_type].count for fragment_type in FragmentType}
             ),
             generated_candidate_count=len(self._cache(context).candidates),
             removed_execution_invalid=sum(
@@ -510,7 +531,7 @@ class PromptGenerationPipeline:
         ]
         settings = self.snapshot(context).settings
         quality_status: Literal["PASS", "NEEDS_REVIEW"] = "PASS" if (
-            len(items) == settings.count
+            len(items) == settings.target_count
             and metrics.semantic_duplicate_rate <= settings.semantic_limit
             and metrics.visual_overlap_rate <= settings.visual_limit
             and all(
@@ -523,7 +544,7 @@ class PromptGenerationPipeline:
             settings=settings,
             items=renumbered,
             metrics=metrics.model_copy(update={"accepted_count": len(renumbered)}),
-            quality_status=quality_status if len(renumbered) == settings.count else "NEEDS_REVIEW",
+            quality_status=quality_status if len(renumbered) == settings.target_count else "NEEDS_REVIEW",
         )
         await self._stage(
             context,

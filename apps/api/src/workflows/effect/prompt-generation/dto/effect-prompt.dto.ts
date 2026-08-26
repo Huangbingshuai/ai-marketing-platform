@@ -64,11 +64,6 @@ export class PromptItemDto {
   @IsString({ each: true })
   @MaxLength(120, { each: true })
   materialTags!: string[];
-  @Type(() => Number)
-  @IsInt()
-  @Min(EFFECT_PROMPT_LIMITS.minDurationSeconds)
-  @Max(EFFECT_PROMPT_LIMITS.maxDurationSeconds)
-  targetDurationSeconds!: number;
   @Allow() dimensions!: EffectPromptDimensions;
   @IsString() @MaxLength(12_000) content!: string;
   @Type(() => Number) @IsInt() @Min(1) expectedRevision!: number;

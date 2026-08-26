@@ -29,7 +29,7 @@ const run = (status: EffectPromptRun['status'], progress: number): EffectPromptR
   targetItemId: null,
   status,
   progress,
-  currentNode: status === 'COMPLETED' ? 'COMPLETED' : 'CANDIDATE_GENERATION',
+  currentNode: status === 'COMPLETED' ? 'COMPLETED' : 'GENERATE_HOOK',
   warnings: [],
   errorMessage: null,
   promptResultId: status === 'COMPLETED' ? 'result-1' : null,

@@ -41,6 +41,15 @@ const staticField = (
   description?: string,
 ): EffectPromptNodeDetailField => ({ label, value, ...(description ? { description } : {}) });
 
+const generationExamples: Partial<Record<EffectPromptNodeId, string>> = {
+  GENERATE_HOOK: '首秒出现可见动作悬念，只建立注意力，不解释完整卖点',
+  GENERATE_PAIN: '一个真实问题保持未解决，不加入产品演示或转化',
+  GENERATE_PRODUCT_DISPLAY: '产品首帧清楚，只执行一次拿起、摆放或转动动作',
+  GENERATE_SELLING_POINT_EXPLANATION: '真实产品细节配合一条已确认卖点短字幕',
+  GENERATE_CTA: '产品清晰并预留字幕安全区，不虚构价格或促销',
+  GENERATE_OUTRO: '稳定产品或品牌定格，不增加剧情和新卖点',
+};
+
 export const projectEffectPromptNodeMetadata = (
   nodeId: EffectPromptNodeId,
   rawMetadata: unknown,
@@ -73,12 +82,25 @@ export const projectEffectPromptNodeMetadata = (
         numberField(metadata, 'fragmentTypeCount', '片段标签种类'),
         staticField('组合示例', '钩子片段 · 家庭场景 · 活力节奏', '仅展示固定业务示例'),
       ]);
-    case 'CANDIDATE_GENERATION':
+    case 'FRAGMENT_TYPE_ROUTER':
+      return compact([
+        numberField(metadata, 'fragmentTypeCount', '路由片段类型数'),
+        numberField(metadata, 'totalShards', '待路由分片总数'),
+        numberField(metadata, 'routedShards', '已路由分片数'),
+        staticField('路由依据', '冻结组合中的片段主标签', '不允许模型选择生成分支'),
+      ]);
+    case 'GENERATE_HOOK':
+    case 'GENERATE_PAIN':
+    case 'GENERATE_PRODUCT_DISPLAY':
+    case 'GENERATE_SELLING_POINT_EXPLANATION':
+    case 'GENERATE_CTA':
+    case 'GENERATE_OUTRO':
       return compact([
         numberField(metadata, 'totalShards', '分片总数'),
         numberField(metadata, 'completedShards', '已完成分片'),
         numberField(metadata, 'candidateCount', '候选 Prompt 数量'),
-        staticField('候选结构', '起始画面 + 连续动作 + 产品证据 + 镜头执行 + 结束状态'),
+        numberField(metadata, 'targetCount', '目标片段数量'),
+        staticField('合格示例', generationExamples[nodeId] ?? '单场景、单主体、单连续动作'),
       ]);
     case 'NORMALIZATION':
       return compact([

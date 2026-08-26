@@ -55,7 +55,6 @@ describe('effect prompt generation API', () => {
       content: 'Prompt',
       fragmentType: 'HOOK',
       materialTags: ['首帧'],
-      targetDurationSeconds: 3,
       dimensions,
       expectedRevision: 7,
     });
@@ -63,7 +62,6 @@ describe('effect prompt generation API', () => {
       content: 'Prompt',
       fragmentType: 'HOOK',
       materialTags: ['首帧'],
-      targetDurationSeconds: 3,
       dimensions,
       expectedRevision: 8,
     });

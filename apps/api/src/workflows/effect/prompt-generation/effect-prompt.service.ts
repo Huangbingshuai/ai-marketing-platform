@@ -18,13 +18,14 @@ import type {
   ValidateEffectPromptResultData,
 } from '@ai-marketing/contracts';
 import {
-  DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_SCHEMA_VERSION,
+  effectPromptTargetCount,
   effectPromptSettingsNodeId,
+  migrateEffectPromptSettings,
   normalizeEffectPromptSettings,
 } from '@ai-marketing/contracts';
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
@@ -219,12 +220,16 @@ export class EffectPromptService {
         );
         const settings = isEffectPromptSettings(settingsNode?.state)
           ? normalizeEffectPromptSettings(settingsNode.state)
-          : DEFAULT_EFFECT_PROMPT_SETTINGS;
+          : migrateEffectPromptSettings(settingsNode?.state, settingsNode?.schemaVersion ?? 1);
+        const legacyResult = Boolean(
+          resultRecord && resultRecord.schemaVersion !== EFFECT_PROMPT_SCHEMA_VERSION,
+        );
         const insight = await this.repository.insightArtifact(projectId, workflowRunId, product.id);
         const snapshot = resultRun?.inputSnapshot as EffectPromptInputSnapshot | undefined;
         const stale = Boolean(
           resultRecord &&
           (!insight ||
+            legacyResult ||
             insight.freshness !== 'CURRENT' ||
             insight.availability !== 'AVAILABLE' ||
             snapshot?.insightArtifact.id !== insight.id ||
@@ -255,8 +260,8 @@ export class EffectPromptService {
           productId: product.id,
           status,
           runId: runRecord?.id ?? null,
-          resultId: resultRecord?.id ?? null,
-          resultRevision: resultRecord?.revision ?? null,
+          resultId: draft ? (resultRecord?.id ?? null) : null,
+          resultRevision: draft ? (resultRecord?.revision ?? null) : null,
           settings,
           settingsRevision: settingsNode?.revision ?? null,
           metrics: draft?.metrics ?? null,
@@ -265,7 +270,9 @@ export class EffectPromptService {
           workingArtifactRevision: artifact?.revision ?? null,
           progress: runRecord?.progress ?? 0,
           currentNode: runRecord?.currentNode ?? null,
-          errorMessage: runRecord?.errorMessage ?? null,
+          errorMessage: legacyResult
+            ? 'Prompt 生成规则已升级，请重新生成六类素材片段'
+            : (runRecord?.errorMessage ?? null),
           updatedAt: (runRecord?.updatedAt ?? product.updatedAt).toISOString(),
         };
       }),
@@ -422,7 +429,6 @@ export class EffectPromptService {
     content: string;
     fragmentType: EffectPromptFragmentType;
     materialTags: string[];
-    targetDurationSeconds: number;
     dimensions: EffectPromptDimensions;
   }): boolean {
     return (
@@ -438,9 +444,6 @@ export class EffectPromptService {
       new Set(
         input.materialTags.map((tag) => tag.normalize('NFC').trim().toLocaleLowerCase('zh-CN')),
       ).size === input.materialTags.length &&
-      Number.isInteger(input.targetDurationSeconds) &&
-      input.targetDurationSeconds >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
-      input.targetDurationSeconds <= EFFECT_PROMPT_LIMITS.maxDurationSeconds &&
       validateDimensions(input.dimensions)
     );
   }
@@ -472,7 +475,6 @@ export class EffectPromptService {
       content: string;
       fragmentType: EffectPromptFragmentType;
       materialTags: string[];
-      targetDurationSeconds: number;
       dimensions: EffectPromptDimensions;
     },
   ): Promise<UpdateEffectPromptResultData> {
@@ -503,7 +505,7 @@ export class EffectPromptService {
       origin: 'MANUAL',
       fragmentType: input.fragmentType,
       materialTags: input.materialTags.map((tag) => tag.normalize('NFC').trim()),
-      targetDurationSeconds: input.targetDurationSeconds,
+      targetDurationSeconds: parsed.settings.fragmentConfigs[input.fragmentType].durationSeconds,
       dimensions: Object.fromEntries(
         EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions[key].trim()]),
       ) as EffectPromptDimensions,
@@ -529,7 +531,6 @@ export class EffectPromptService {
       content: string;
       fragmentType: EffectPromptFragmentType;
       materialTags: string[];
-      targetDurationSeconds: number;
       dimensions: EffectPromptDimensions;
     },
   ): Promise<UpdateEffectPromptResultData> {
@@ -539,6 +540,8 @@ export class EffectPromptService {
     if (!current) throw notFound('Prompt 结果不存在');
     if (current.schemaVersion !== EFFECT_PROMPT_SCHEMA_VERSION)
       throw conflict('旧版 Prompt 结果不能编辑，请执行全量重新生成');
+    const parsed = parseEffectPromptBatchResult(current.draftResult);
+    if (!parsed) throw conflict('Prompt 结果结构无效，请重新生成');
     return this.presentMutation(
       await this.repository.mutateResult(projectId, resultId, expectedRevision, {
         kind: 'UPDATE',
@@ -547,7 +550,8 @@ export class EffectPromptService {
           content: input.content.trim(),
           fragmentType: input.fragmentType,
           materialTags: input.materialTags.map((tag) => tag.normalize('NFC').trim()),
-          targetDurationSeconds: input.targetDurationSeconds,
+          targetDurationSeconds:
+            parsed.settings.fragmentConfigs[input.fragmentType].durationSeconds,
           dimensions: Object.fromEntries(
             EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions[key].trim()]),
           ) as EffectPromptDimensions,
@@ -607,7 +611,7 @@ export class EffectPromptService {
       };
     const verified = recomputePromptQuality(draft.items, draft.settings, draft.metrics);
     const issues: Array<{ code: string; message: string }> = [];
-    if (verified.items.length !== verified.settings.count)
+    if (verified.items.length !== effectPromptTargetCount(verified.settings))
       issues.push({ code: 'COUNT_MISMATCH', message: 'Prompt 数量尚未达到目标数量' });
     if (verified.metrics.semanticDuplicateRate > verified.settings.semanticLimit)
       issues.push({ code: 'SEMANTIC_DUPLICATE', message: '语义重复度超过设置上限' });
@@ -624,7 +628,8 @@ export class EffectPromptService {
     if (
       verified.items.some(
         (item) =>
-          item.targetDurationSeconds !== verified.settings.durationSeconds ||
+          item.targetDurationSeconds !==
+            verified.settings.fragmentConfigs[item.fragmentType].durationSeconds ||
           effectPromptExecutionIssues(item).length > 0,
       )
     )

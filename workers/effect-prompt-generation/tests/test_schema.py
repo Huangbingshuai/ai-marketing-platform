@@ -6,7 +6,8 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 
 from effect_prompt_generation.models import (
-    FRAGMENT_TYPE_WEIGHTS,
+    FragmentConfig,
+    FragmentType,
     FragmentTypeDistribution,
     PromptBatchResult,
     PromptBatchSettings,
@@ -21,14 +22,16 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
     item = prompt_item
     result = PromptBatchResult(
         settings=PromptBatchSettings(
-            count=10,
-            duration_seconds=5,
+            fragment_configs={
+                FragmentType.HOOK: FragmentConfig(count=2, duration_seconds=5),
+                FragmentType.PAIN: FragmentConfig(count=2, duration_seconds=5),
+                FragmentType.PRODUCT_DISPLAY: FragmentConfig(count=2, duration_seconds=5),
+                FragmentType.SELLING_POINT_EXPLANATION: FragmentConfig(count=2, duration_seconds=5),
+                FragmentType.CTA: FragmentConfig(count=1, duration_seconds=5),
+                FragmentType.OUTRO: FragmentConfig(count=1, duration_seconds=5),
+            },
             semantic_limit=15,
             visual_limit=20,
-            style_override=None,
-            fragment_type_weights=dict(FRAGMENT_TYPE_WEIGHTS),
-            selling_point_weights=[],
-            additional_disabled_elements=[],
         ),
         items=[item],
         metrics=PromptMetrics(
@@ -49,7 +52,16 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
                     target_count=target,
                     actual_count=1 if fragment_type == item.fragment_type else 0,
                 )
-                for fragment_type, target in fragment_type_targets(10).items()
+                for fragment_type, target in fragment_type_targets(
+                    {fragment_type: result_count for fragment_type, result_count in {
+                        FragmentType.HOOK: 2,
+                        FragmentType.PAIN: 2,
+                        FragmentType.PRODUCT_DISPLAY: 2,
+                        FragmentType.SELLING_POINT_EXPLANATION: 2,
+                        FragmentType.CTA: 1,
+                        FragmentType.OUTRO: 1,
+                    }.items()}
+                ).items()
             ],
             selling_point_coverage=SellingPointCoverage(
                 required=[item.dimensions.selling_point],

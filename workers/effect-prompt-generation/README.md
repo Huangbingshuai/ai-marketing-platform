@@ -5,14 +5,14 @@ It consumes lightweight run identifiers from RabbitMQ, claims an immutable snaps
 NestJS internal API, persists every shard, and returns only a schema-versioned batch result.
 
 Schema V2 generates a material pool, not finished advertisements: one Prompt maps to one
-independently renderable video fragment. The worker deterministically allocates the seven
+independently renderable video fragment. The worker deterministically allocates the six
 slot-compatible fragment types (`HOOK`, `PAIN`, `PRODUCT_DISPLAY`,
-`EFFECT_DEMONSTRATION`, `SELLING_POINT_EXPLANATION`, `CTA`, `OUTRO`), stores their
+`SELLING_POINT_EXPLANATION`, `CTA`, `OUTRO`), stores their
 material tags and the user-configured per-fragment duration, and replenishes deficits by type.
 The candidate model returns only `slotId + promptText`; it cannot rewrite type, tags,
 duration, six-dimensional planning, or evidence boundaries.
 
-Only `STRATEGY_PLANNING` and `CANDIDATE_GENERATION` call Ark. Strategy uses the lightweight
+Only `STRATEGY_PLANNING` and the six fragment-specific generation branches call Ark. Strategy uses the lightweight
 model to classify confirmed selling points into `VISIBLE_ATTRIBUTE`, `USAGE_ACTION`,
 `VISIBLE_RESULT`, `PROCESS_ONLY`, or `TEXT_ONLY` evidence modes and to plan concrete
 single-person actions. Combination, execution validation, similarity checks, quotas,
