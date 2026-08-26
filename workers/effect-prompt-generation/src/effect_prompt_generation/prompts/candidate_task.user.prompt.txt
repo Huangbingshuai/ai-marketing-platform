@@ -1,8 +1,8 @@
-VERSION: effect-prompt-candidate-task-v4
+VERSION: effect-prompt-candidate-task-v5
 
 请严格依据系统指令，为以下同一片段类型的冻结任务逐条编写可直接用于视频生成的promptText。
 
-创意表达应自然适配 {delivery_channels}，并参考 {visual_style}。这些信息只用于指导画面表达，不得以参数、字段名或制作说明写进 promptText。时长、画幅、分辨率和统一禁用元素由渲染任务单独传递，promptText 中不得复述。
+创意表达应自然适配 {delivery_channels}，并参考 {visual_style}。这些信息只用于指导画面表达，不得以参数、字段名或制作说明写进 promptText。时长、画幅、分辨率和统一禁用元素由渲染任务单独传递；promptText 的任何位置都不得出现这些参数、参数名称或统一禁用项原文。
 
 安全产品上下文JSON：
 {product_context_json}

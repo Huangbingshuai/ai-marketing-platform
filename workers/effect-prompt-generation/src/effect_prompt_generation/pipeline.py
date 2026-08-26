@@ -395,6 +395,9 @@ class PromptGenerationPipeline:
                     plan,
                     product_name=product_name,
                     source_facts=_source_fact_texts(insight),
+                    forbidden_visible_terms=_insight_list(
+                        insight, "disabledElements", "disabled_elements"
+                    ),
                 )
                 candidates.append(GeneratedCandidate(
                     slot_id=plan.slot_id,
@@ -738,6 +741,11 @@ class PromptGenerationPipeline:
                     combination,
                     product_name=product_name,
                     source_facts=_source_fact_texts(snapshot.insight_artifact.result),
+                    forbidden_visible_terms=_insight_list(
+                        snapshot.insight_artifact.result,
+                        "disabledElements",
+                        "disabled_elements",
+                    ),
                 )
                 if invalid_reasons:
                     self._cache(context).execution_invalid_reasons.update(invalid_reasons)

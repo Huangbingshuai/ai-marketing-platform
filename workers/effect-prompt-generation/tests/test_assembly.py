@@ -140,3 +140,13 @@ def test_execution_gate_rejects_render_metadata_in_visible_prompt() -> None:
         product_name="便携杯",
     )
     assert "TECHNICAL_RENDER_METADATA" in reasons
+
+
+def test_execution_gate_rejects_shared_disabled_elements_in_visible_prompt() -> None:
+    reasons = validate_fragment_prompt(
+        f"{_valid_prompt()} 画面角落出现促销贴纸。",
+        _combination(),
+        product_name="便携杯",
+        forbidden_visible_terms=["促销 贴纸"],
+    )
+    assert "SHARED_CONSTRAINT_LEAK" in reasons

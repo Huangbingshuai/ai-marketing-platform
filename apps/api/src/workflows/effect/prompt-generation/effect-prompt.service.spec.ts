@@ -138,6 +138,69 @@ describe('EffectPromptService settings contract', () => {
     expect(repository.complete).not.toHaveBeenCalled();
   });
 
+  it('rejects manual content that leaks a shared render constraint into the visible Prompt', async () => {
+    const now = '2026-08-26T00:00:00.000Z';
+    const dimensions = {
+      narrative: '产品入画',
+      scene: '家庭厨房',
+      persona: '穿围裙的成年人',
+      sellingPoint: '真实切面',
+      camera: '中近景缓慢推进',
+      emotion: '暖调自然光',
+    };
+    const draft = recomputePromptQuality(
+      [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          code: 'P001',
+          origin: 'AI',
+          fragmentType: 'HOOK',
+          materialTags: ['钩子'],
+          targetDurationSeconds: 5,
+          dimensions,
+          content: '家庭厨房里，穿围裙的成年人拿起产品并转向镜头，镜头缓慢推进。',
+          insightBindings: [],
+          manualEdited: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      DEFAULT_EFFECT_PROMPT_SETTINGS,
+      undefined,
+      {
+        ratio: '9:16',
+        resolution: '1080p',
+        capabilityKey: 'SEEDANCE_2_0',
+        sharedConstraints: {
+          disabledElements: ['促销贴纸'],
+          contentHash: 'a'.repeat(64),
+        },
+      },
+    );
+    const repository = {
+      result: vi.fn().mockResolvedValue({
+        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
+        draftResult: draft,
+      }),
+      mutateResult: vi.fn(),
+    };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const service = new EffectPromptService(repository as never, projects as never, {} as never);
+
+    await expect(
+      service.addItem('project-a', 'result-a', 1, {
+        content: '家庭厨房里，成年人拿起产品，镜头缓慢推进，画面角落出现促销 贴纸。',
+        fragmentType: 'HOOK',
+        materialTags: ['钩子'],
+        dimensions,
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      message: 'Prompt 正文不能包含时长、画幅、分辨率或统一禁用元素',
+    });
+    expect(repository.mutateResult).not.toHaveBeenCalled();
+  });
+
   it('uses the extracted product name for the committed Prompt working artifact', async () => {
     const repository = {
       run: vi.fn().mockResolvedValue({

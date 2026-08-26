@@ -537,10 +537,7 @@ def _candidate_product_context(insight: Mapping[str, Any]) -> dict[str, object]:
         ("usageScenarios", ("usageScenarios", "usage_scenarios")),
         ("purchaseScenarios", ("purchaseScenarios", "purchase_scenarios")),
         ("emotionalScenarios", ("emotionalScenarios", "emotional_scenarios")),
-        ("durationSeconds", ("durationSeconds", "duration_seconds")),
-        ("aspectRatio", ("aspectRatio", "aspect_ratio")),
         ("deliveryChannels", ("deliveryChannels", "delivery_channels")),
-        ("disabledElements", ("disabledElements", "disabled_elements")),
         ("visualStyleBaseline", ("visualStyleBaseline", "visual_style_baseline")),
     )
     result: dict[str, object] = {}

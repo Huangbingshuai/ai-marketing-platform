@@ -158,6 +158,8 @@ async def test_ark_candidate_returns_only_slot_and_direct_prompt() -> None:
                 "usageScenarios": ["地铁通勤"],
                 "disabledElements": ["医疗功效", "促销贴纸"],
                 "aspectRatio": "9:16",
+                "durationSeconds": 5,
+                "resolution": "1080p",
             },
             regeneration_context={
                 "originalPrompt": "旧版 Prompt",
@@ -177,8 +179,11 @@ async def test_ark_candidate_returns_only_slot_and_direct_prompt() -> None:
     assert "产品更早出现" in prompt
     assert "旧版 Prompt" in prompt
     assert "浅蓝色圆柱杯身" in prompt
-    assert "促销贴纸" in prompt
-    assert result.value.items[0].prompt_text.startswith("5秒，9:16竖屏")
+    assert "促销贴纸" not in prompt
+    assert '"aspectRatio"' not in prompt
+    assert '"durationSeconds"' not in prompt
+    assert '"resolution"' not in prompt
+    assert not result.value.items[0].prompt_text.startswith("5秒，9:16竖屏")
     assert result.value.items[0].model_dump(by_alias=True).keys() == {
         "slotId",
         "promptText",
@@ -277,7 +282,7 @@ def _prompt_batch(slot_id: str) -> dict[str, object]:
             {
                 "slotId": slot_id,
                 "promptText": (
-                    "5秒，9:16竖屏。地铁站入口，一名穿深蓝通勤外套的年轻女性右手握便携杯，"
+                    "地铁站入口，一名穿深蓝通勤外套的年轻女性右手握便携杯，"
                     "镜头从肩后中近景连续推近杯盖，她用拇指按下杯盖并完成一次单手开合动作，"
                     "产品始终位于画面中心。明亮自然光勾出浅蓝色杯身，节奏利落，按键声处停顿，"
                     "结尾保持杯盖打开和产品正面清楚可见，不使用切镜或额外人物。"

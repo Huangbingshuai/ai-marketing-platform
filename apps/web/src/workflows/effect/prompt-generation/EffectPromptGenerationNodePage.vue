@@ -304,6 +304,8 @@ const executionInvalidSummary = computed(() => {
     ROLE_CONFLICT: '片段职责冲突',
     FIELD_DUPLICATION: '内容机械重复',
     SOURCE_FACT_VIOLATION: '出现未确认事实',
+    TECHNICAL_RENDER_METADATA: '正文混入渲染参数',
+    SHARED_CONSTRAINT_LEAK: '正文混入统一禁用元素',
     BROKEN_TEXT: '存在占位或破损文本',
     PLACEHOLDER_TEXT: '存在空泛占位文本',
     DURATION_MISMATCH: '片段时长不一致',

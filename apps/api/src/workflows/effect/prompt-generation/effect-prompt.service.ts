@@ -42,6 +42,7 @@ import { EffectPromptRepository, type EffectPromptRunRecord } from './effect-pro
 import {
   dimensionDistance,
   effectPromptExecutionIssues,
+  effectPromptVisibleContentIssues,
   isEffectPromptSettings,
   parseEffectPromptBatchResult,
   parseLegacyV4EffectPromptBatchResultForRead,
@@ -523,6 +524,13 @@ export class EffectPromptService {
       throw badRequest(`Prompt 数量已达到 ${EFFECT_PROMPT_LIMITS.maxCount} 条上限`);
     const parsed = parseEffectPromptBatchResult(current.draftResult);
     if (!parsed) throw conflict('Prompt 结果结构无效，请重新生成');
+    if (
+      effectPromptVisibleContentIssues(
+        input.content,
+        parsed.renderProfile.sharedConstraints.disabledElements,
+      ).length
+    )
+      throw badRequest('Prompt 正文不能包含时长、画幅、分辨率或统一禁用元素');
     const maxCode = parsed.items.reduce((maximum, item) => {
       const number = Number(item.code.replace(/\D+/gu, ''));
       return Number.isFinite(number) ? Math.max(maximum, number) : maximum;
@@ -572,6 +580,13 @@ export class EffectPromptService {
       throw conflict('旧版 Prompt 结果不能编辑，请执行全量重新生成');
     const parsed = parseEffectPromptBatchResult(current.draftResult);
     if (!parsed) throw conflict('Prompt 结果结构无效，请重新生成');
+    if (
+      effectPromptVisibleContentIssues(
+        input.content,
+        parsed.renderProfile.sharedConstraints.disabledElements,
+      ).length
+    )
+      throw badRequest('Prompt 正文不能包含时长、画幅、分辨率或统一禁用元素');
     return this.presentMutation(
       await this.repository.mutateResult(projectId, resultId, expectedRevision, {
         kind: 'UPDATE',
@@ -667,7 +682,10 @@ export class EffectPromptService {
         (item) =>
           item.targetDurationSeconds !==
             verified.settings.fragmentConfigs[item.fragmentType].durationSeconds ||
-          effectPromptExecutionIssues(item).length > 0,
+          effectPromptExecutionIssues(
+            item,
+            verified.renderProfile.sharedConstraints.disabledElements,
+          ).length > 0,
       )
     )
       issues.push({ code: 'EXECUTION_GATE', message: '存在不能直接用于片段渲染的 Prompt' });
@@ -862,6 +880,16 @@ export class EffectPromptService {
   ) {
     const parsed = parseEffectPromptBatchResult(input.result);
     if (!parsed) throw badRequest('Prompt 批次结果不符合统一结构');
+    if (
+      parsed.items.some(
+        (item) =>
+          effectPromptVisibleContentIssues(
+            item.content,
+            parsed.renderProfile.sharedConstraints.disabledElements,
+          ).length > 0,
+      )
+    )
+      throw badRequest('Prompt 正文不能包含时长、画幅、分辨率或统一禁用元素');
     const run = await this.repository.run(projectId, runId);
     const snapshot = run?.inputSnapshot as EffectPromptInputSnapshot | undefined;
     if (
