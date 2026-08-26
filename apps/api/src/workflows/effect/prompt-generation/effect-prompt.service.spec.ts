@@ -9,6 +9,40 @@ import { EffectPromptService } from './effect-prompt.service';
 import { recomputePromptQuality } from './effect-prompt.quality';
 
 describe('EffectPromptService settings contract', () => {
+  it('uses the extracted product name for the committed Prompt working artifact', async () => {
+    const repository = {
+      run: vi.fn().mockResolvedValue({
+        id: 'run-a',
+        inputSnapshot: {
+          productId: 'product-a',
+          insightArtifact: {
+            id: 'insight-a',
+            revision: 1,
+            contentHash: 'a'.repeat(64),
+            result: { productName: '广式腊肠' },
+          },
+        },
+      }),
+    };
+    const service = new EffectPromptService(repository as never, {} as never, {} as never);
+
+    const input = await (
+      service as unknown as {
+        artifactInput: (record: unknown, draft: unknown) => Promise<{ name: string } | null>;
+      }
+    ).artifactInput(
+      {
+        projectId: 'project-a',
+        productId: 'product-a',
+        runId: 'run-a',
+        id: 'result-a',
+      },
+      { qualityStatus: 'PASS' },
+    );
+
+    expect(input?.name).toBe('广式腊肠 差异化 Prompt 批次');
+  });
+
   it('returns the shared settingsRevision field after CAS save', async () => {
     const repository = {
       workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }),

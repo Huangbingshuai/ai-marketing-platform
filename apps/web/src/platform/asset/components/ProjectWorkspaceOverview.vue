@@ -28,6 +28,10 @@ import {
   getActiveWorkflowRunOverview,
   listWorkingArtifacts,
 } from '../../workflow/api/workflow-working.api';
+import {
+  latestWorkflowNodeStateMap,
+  workflowNodeBaseId,
+} from '../../workflow/workflow-node-id';
 import { listAssets, listAssetVersions } from '../api/asset.api';
 import { SPACE_LABELS, WORKFLOW_META, typeLabel } from '../asset-v4';
 import AssetPreview from './AssetPreview.vue';
@@ -68,9 +72,7 @@ let generation = 0;
 const workflowNodes = computed<readonly WorkflowNodeDefinition[]>(() =>
   props.workflow === 'EFFECT' ? EFFECT_NODES : [],
 );
-const stateByNode = computed(
-  () => new Map(nodeStates.value.map((nodeState) => [nodeState.nodeId, nodeState])),
-);
+const stateByNode = computed(() => latestWorkflowNodeStateMap(nodeStates.value));
 const latestState = computed(
   () =>
     [...nodeStates.value].sort(
@@ -79,7 +81,8 @@ const latestState = computed(
 );
 const currentNodeIndex = computed(() => {
   const index = workflowNodes.value.findIndex(
-    (node) => node.id === (run.value?.currentNodeId ?? latestState.value?.nodeId),
+    (node) =>
+      node.id === workflowNodeBaseId(run.value?.currentNodeId ?? latestState.value?.nodeId),
   );
   return index >= 0 ? index : 0;
 });
@@ -120,7 +123,10 @@ const nodeLabel = (nodeId: string): string =>
 const nodeStatus = (definition: WorkflowNodeDefinition): string => {
   const state = stateByNode.value.get(definition.id);
   if (!state) return '尚未开始';
-  if (definition.id === (run.value?.currentNodeId ?? latestState.value?.nodeId)) return '编辑中';
+  if (
+    definition.id === workflowNodeBaseId(run.value?.currentNodeId ?? latestState.value?.nodeId)
+  )
+    return '编辑中';
   return '已自动保存';
 };
 

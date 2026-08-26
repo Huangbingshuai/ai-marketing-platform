@@ -491,6 +491,15 @@ describe('EffectPromptRepository', () => {
         availability: 'AVAILABLE',
       }),
     });
+    expect(transaction.effectPromptRun.findFirst).toHaveBeenCalledWith({
+      where: {
+        projectId,
+        workflowRunId,
+        productId,
+        status: 'COMPLETED',
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
     expect(commit).not.toHaveBeenCalled();
   });
 

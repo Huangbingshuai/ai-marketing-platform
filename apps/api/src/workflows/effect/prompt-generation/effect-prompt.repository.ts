@@ -846,7 +846,12 @@ export class EffectPromptRepository {
       if (!result) return { kind: 'NOT_FOUND' as const };
       if (result.revision !== expectedRevision) return { kind: 'REVISION_CONFLICT' as const };
       const latest = await transaction.effectPromptRun.findFirst({
-        where: { projectId, workflowRunId: result.workflowRunId, productId: result.productId },
+        where: {
+          projectId,
+          workflowRunId: result.workflowRunId,
+          productId: result.productId,
+          status: 'COMPLETED',
+        },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       });
       if (!latest || latest.id !== result.runId || latest.status !== 'COMPLETED')

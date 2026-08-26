@@ -66,6 +66,18 @@ const publicWarnings = (value: unknown): string[] =>
     ? [...new Set(value.filter((item): item is string => typeof item === 'string'))]
     : [];
 
+const promptArtifactProductName = (snapshot: EffectPromptInputSnapshot): string => {
+  const insight = snapshot.insightArtifact.result;
+  if (insight && typeof insight === 'object' && !Array.isArray(insight)) {
+    const record = insight as Record<string, unknown>;
+    const value = [record.productName, record.product_name].find(
+      (item): item is string => typeof item === 'string' && item.trim().length > 0,
+    );
+    if (value) return value.trim().slice(0, 96);
+  }
+  return `产品 ${snapshot.productId}`;
+};
+
 const stageProgress = (nodeId: EffectPromptNodeId, status: string): number => {
   const index = EFFECT_PROMPT_GRAPH_NODES.findIndex(({ id }) => id === nodeId);
   const base = Math.round((Math.max(0, index) / EFFECT_PROMPT_GRAPH_NODES.length) * 95);
@@ -165,7 +177,7 @@ export class EffectPromptService {
     const snapshot = run.inputSnapshot as EffectPromptInputSnapshot;
     return {
       kind: 'STRUCTURED',
-      name: `产品 ${resultRecord.productId} 差异化 Prompt 批次`,
+      name: `${promptArtifactProductName(snapshot)} 差异化 Prompt 批次`,
       directory: 'PROMPTS',
       type: 'PROMPT',
       tags: ['效果类', '差异化Prompt'],
