@@ -1,6 +1,6 @@
 import type { WorkingArtifactCommitStatus, WorkingArtifactCommitSummary } from './workflow-working';
 
-export const EFFECT_PROMPT_SCHEMA_VERSION = 4 as const;
+export const EFFECT_PROMPT_SCHEMA_VERSION = 5 as const;
 export const EFFECT_PROMPT_API_BASE =
   '/api/projects/:projectId/workflows/effect/prompt-generation' as const;
 
@@ -9,8 +9,8 @@ export const EFFECT_PROMPT_LIMITS = {
   maxCount: 200,
   defaultCount: 50,
   minFragmentCount: 1,
-  minDurationSeconds: 3,
-  maxDurationSeconds: 10,
+  minDurationSeconds: 4,
+  maxDurationSeconds: 15,
   defaultDurationSeconds: 5,
   minSemanticDuplicateRate: 5,
   maxSemanticDuplicateRate: 15,
@@ -78,6 +78,71 @@ export type EffectPromptBatchSettings = {
   fragmentConfigs: EffectPromptFragmentConfigs;
   semanticLimit: number;
   visualLimit: number;
+};
+
+export const EFFECT_PROMPT_RENDER_CAPABILITY_KEYS = [
+  'SEEDANCE_2_0',
+  'SEEDANCE_2_0_FAST',
+  'SEEDANCE_1_5_PRO',
+  'SEEDANCE_1_0',
+] as const;
+export type EffectPromptRenderCapabilityKey = (typeof EFFECT_PROMPT_RENDER_CAPABILITY_KEYS)[number];
+
+export const SEEDANCE_RATIOS = ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9', 'adaptive'] as const;
+export type SeedanceRatio = (typeof SEEDANCE_RATIOS)[number];
+export const SEEDANCE_RESOLUTIONS = ['480p', '720p', '1080p'] as const;
+export type SeedanceResolution = (typeof SEEDANCE_RESOLUTIONS)[number];
+
+export type EffectPromptRenderCapability = {
+  key: EffectPromptRenderCapabilityKey;
+  minDurationSeconds: number;
+  maxDurationSeconds: number;
+  ratios: readonly SeedanceRatio[];
+  resolutions: readonly SeedanceResolution[];
+};
+
+export const EFFECT_PROMPT_RENDER_CAPABILITIES: Record<
+  EffectPromptRenderCapabilityKey,
+  EffectPromptRenderCapability
+> = {
+  SEEDANCE_2_0: {
+    key: 'SEEDANCE_2_0',
+    minDurationSeconds: 4,
+    maxDurationSeconds: 15,
+    ratios: SEEDANCE_RATIOS,
+    resolutions: SEEDANCE_RESOLUTIONS,
+  },
+  SEEDANCE_2_0_FAST: {
+    key: 'SEEDANCE_2_0_FAST',
+    minDurationSeconds: 4,
+    maxDurationSeconds: 15,
+    ratios: SEEDANCE_RATIOS,
+    resolutions: ['480p', '720p'],
+  },
+  SEEDANCE_1_5_PRO: {
+    key: 'SEEDANCE_1_5_PRO',
+    minDurationSeconds: 4,
+    maxDurationSeconds: 12,
+    ratios: SEEDANCE_RATIOS,
+    resolutions: SEEDANCE_RESOLUTIONS,
+  },
+  SEEDANCE_1_0: {
+    key: 'SEEDANCE_1_0',
+    minDurationSeconds: 2,
+    maxDurationSeconds: 12,
+    ratios: SEEDANCE_RATIOS,
+    resolutions: SEEDANCE_RESOLUTIONS,
+  },
+};
+
+export type EffectPromptRenderProfile = {
+  ratio: SeedanceRatio;
+  resolution: SeedanceResolution;
+  capabilityKey: EffectPromptRenderCapabilityKey;
+  sharedConstraints: {
+    disabledElements: string[];
+    contentHash: string;
+  };
 };
 
 export const DEFAULT_EFFECT_PROMPT_SETTINGS: EffectPromptBatchSettings = {
@@ -185,6 +250,7 @@ export type EffectPromptMetrics = {
   targetCount: number;
   acceptedCount: number;
   generatedCandidateCount: number;
+  fallbackCount: number;
   removedSemanticDuplicates: number;
   removedVisualDuplicates: number;
   removedDimensionConflicts: number;
@@ -212,6 +278,7 @@ export type EffectPromptQualityStatus = (typeof EFFECT_PROMPT_QUALITY_STATUSES)[
 export type EffectPromptBatchResult = {
   schemaVersion: typeof EFFECT_PROMPT_SCHEMA_VERSION;
   settings: EffectPromptBatchSettings;
+  renderProfile: EffectPromptRenderProfile;
   items: EffectPromptItem[];
   metrics: EffectPromptMetrics;
   qualityStatus: EffectPromptQualityStatus;
@@ -374,6 +441,8 @@ export type StartEffectPromptRunRequest = {
   workflowRunId: string;
   operation: EffectPromptOperation;
   targetItemId?: string | undefined;
+  regenerationInstruction?: string | undefined;
+  replacementDimensions?: EffectPromptDimensions | undefined;
   expectedSettingsRevision: number;
   expectedResultRevision?: number | undefined;
   idempotencyKey: string;

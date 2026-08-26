@@ -51,6 +51,8 @@ export class StartPromptRunDto {
   @IsUUID('4') workflowRunId!: string;
   @IsIn([...EFFECT_PROMPT_OPERATIONS]) operation!: EffectPromptOperation;
   @IsOptional() @IsUUID('4') targetItemId?: string;
+  @IsOptional() @IsString() @MaxLength(500) regenerationInstruction?: string;
+  @IsOptional() @Allow() replacementDimensions?: EffectPromptDimensions;
   @Type(() => Number) @IsInt() @Min(1) expectedSettingsRevision!: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) expectedResultRevision?: number;
   @IsString() @MaxLength(500) idempotencyKey!: string;

@@ -15,7 +15,9 @@ from effect_prompt_generation.models import (
     PromptBatchSettings,
     PromptItem,
     PromptMetrics,
+    RenderProfile,
     SellingPointCoverage,
+    SharedRenderConstraints,
 )
 
 
@@ -34,11 +36,21 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
             semantic_limit=15,
             visual_limit=20,
         ),
+        render_profile=RenderProfile(
+            ratio="9:16",
+            resolution="1080p",
+            capability_key="SEEDANCE_2_0",
+            shared_constraints=SharedRenderConstraints(
+                disabled_elements=["医疗暗示"],
+                content_hash="0" * 64,
+            ),
+        ),
         items=[item],
         metrics=PromptMetrics(
             target_count=10,
             accepted_count=1,
             generated_candidate_count=1,
+            fallback_count=0,
             removed_semantic_duplicates=0,
             removed_visual_duplicates=0,
             removed_dimension_conflicts=0,

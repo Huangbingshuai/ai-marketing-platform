@@ -4,7 +4,6 @@ import json
 
 import httpx
 import pytest
-
 from effect_prompt_generation.assembly import assemble_fragment_prompt
 from effect_prompt_generation.combinations import make_shards, plan_combinations
 from effect_prompt_generation.insight_mapping import map_insight
@@ -23,7 +22,7 @@ from effect_prompt_generation.providers import (
 
 
 @pytest.mark.asyncio
-async def test_ark_strategy_uses_strict_schema_and_preserves_confirmed_selling_points() -> None:
+async def test_ark_strategy_uses_strict_schema_and_fills_missing_evidence_safely() -> None:
     seen: dict[str, object] = {}
     application = map_insight(
         {
@@ -48,6 +47,17 @@ async def test_ark_strategy_uses_strict_schema_and_preserves_confirmed_selling_p
         payload = json.loads(request.content)
         seen.update(payload)
         output = mock_plan.model_dump(mode="json", by_alias=True)
+        output["dimensionPools"]["evidencePlans"] = [
+            output["dimensionPools"]["evidencePlans"][0],
+            {
+                "sellingPoint": "模型擅自增加的卖点",
+                "evidenceMode": "VISIBLE_RESULT",
+                "allowedVisualEvidence": "夸张效果画面",
+                "forbiddenInference": "无",
+            },
+        ]
+        output["relationshipBundles"] = output["relationshipBundles"][:1]
+        output["relationshipBundles"][0]["factIds"] = ["unknown-model-fact"]
         return httpx.Response(200, json={"output_text": json.dumps(output, ensure_ascii=False)})
 
     provider = ArkResponsesProvider(
@@ -73,6 +83,20 @@ async def test_ark_strategy_uses_strict_schema_and_preserves_confirmed_selling_p
     assert seen["reasoning"] == {"effort": "minimal"}
     assert result.value.dimension_pools.selling_points == ["已确认卖点", "次要卖点"]
     assert result.value.dimension_pools.evidence_plans[1].evidence_mode == EvidenceMode.TEXT_ONLY
+    assert result.value.dimension_pools.evidence_plans[1].selling_point == "次要卖点"
+    assert "不得伪造证明画面" in result.value.dimension_pools.evidence_plans[1].allowed_visual_evidence
+    covered_fact_ids = {
+        fact_id for bundle in result.value.relationship_bundles for fact_id in bundle.fact_ids
+    }
+    covered_fragment_types = {
+        fragment_type
+        for bundle in result.value.relationship_bundles
+        for fragment_type in bundle.eligible_fragment_types
+    }
+    assert {fact.fact_id for fact in application.required} <= covered_fact_ids
+    assert covered_fragment_types == set(FragmentType)
+    assert any(bundle.bundle_id.startswith("worker-coverage-") for bundle in result.value.relationship_bundles)
+    assert "unknown-model-fact" not in covered_fact_ids
 
 
 @pytest.mark.asyncio
@@ -135,6 +159,11 @@ async def test_ark_candidate_returns_only_slot_and_direct_prompt() -> None:
                 "disabledElements": ["医疗功效", "促销贴纸"],
                 "aspectRatio": "9:16",
             },
+            regeneration_context={
+                "originalPrompt": "旧版 Prompt",
+                "instruction": "产品更早出现",
+                "lockedFields": {"fragmentType": "SELLING_POINT_EXPLANATION"},
+            },
         )
     finally:
         await provider.aclose()
@@ -145,6 +174,8 @@ async def test_ark_candidate_returns_only_slot_and_direct_prompt() -> None:
     assert "当前分支只生成卖点讲解素材" in str(seen["instructions"])
     prompt = seen["input"][0]["content"][0]["text"]  # type: ignore[index]
     assert "便携杯" in prompt
+    assert "产品更早出现" in prompt
+    assert "旧版 Prompt" in prompt
     assert "浅蓝色圆柱杯身" in prompt
     assert "促销贴纸" in prompt
     assert result.value.items[0].prompt_text.startswith("5秒，9:16竖屏")
@@ -211,8 +242,6 @@ async def test_mock_translates_stacked_audience_into_executable_single_person_fr
             by_slot[combination.slot_id],
             combination,
             product_name="广式腊肠",
-            aspect_ratio="3:4",
-            disabled_elements=[],
             source_facts=["广府糖酒腌制工艺", "切面油润可见", "便于按需切割"],
         )
         if item_reasons:

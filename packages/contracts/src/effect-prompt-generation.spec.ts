@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+import type { StartEffectPromptRunRequest } from './effect-prompt-generation';
 
 import {
   DEFAULT_EFFECT_PROMPT_SETTINGS,
@@ -46,6 +47,29 @@ const requireSchemaNode = (node: JsonSchemaNode | undefined, label: string): Jso
 };
 
 describe('effect prompt generation contract', () => {
+  it('carries optional single-item direction and complete replacement dimensions', () => {
+    const request: StartEffectPromptRunRequest = {
+      workflowRunId: 'workflow-1',
+      operation: 'ITEM_REGENERATE',
+      targetItemId: 'prompt-1',
+      regenerationInstruction: '产品更早出现',
+      replacementDimensions: {
+        narrative: '场景代入型',
+        scene: '家庭餐桌',
+        persona: '仅手部出镜',
+        sellingPoint: '单手开合',
+        camera: '桌面近景缓慢推进',
+        emotion: '温暖舒缓',
+      },
+      expectedSettingsRevision: 1,
+      expectedResultRevision: 2,
+      idempotencyKey: 'regen-1',
+    };
+
+    expect(request.replacementDimensions?.sellingPoint).toBe('单手开合');
+    expect(request.regenerationInstruction).toBe('产品更早出现');
+  });
+
   it('freezes the six dimensions and public graph', () => {
     expect(EFFECT_PROMPT_DIMENSIONS).toHaveLength(6);
     expect(EFFECT_PROMPT_FRAGMENT_TYPES).toEqual([
@@ -89,7 +113,7 @@ describe('effect prompt generation contract', () => {
     ).toEqual({
       fragmentConfigs: {
         ...DEFAULT_EFFECT_PROMPT_SETTINGS.fragmentConfigs,
-        HOOK: { count: 1, durationSeconds: 10 },
+        HOOK: { count: 1, durationSeconds: 15 },
       },
       semanticLimit: 15,
       visualLimit: 10,
@@ -171,13 +195,13 @@ describe('effect prompt generation contract', () => {
     );
   });
 
-  it('keeps the canonical JSON schema on v4 and rejects legacy discriminators', () => {
+  it('keeps the canonical JSON schema on v5 and rejects legacy discriminators', () => {
     const schemaVersion = requireSchemaNode(
       batchSchema.properties?.schemaVersion,
       'properties.schemaVersion',
     );
 
-    expect(batchSchema.$id).toMatch(/effect-prompt-batch\.v4\.json$/u);
+    expect(batchSchema.$id).toMatch(/effect-prompt-batch\.v5\.json$/u);
     expect(schemaVersion.const).toBe(EFFECT_PROMPT_SCHEMA_VERSION);
     expect(schemaVersion.const).not.toBe(2);
     expect(batchSchema.additionalProperties).toBe(false);
@@ -209,7 +233,7 @@ describe('effect prompt generation contract', () => {
     expect(fragmentConfigs.additionalProperties).toBe(false);
   });
 
-  it('requires fragment-material fields and the v4 insight metrics', () => {
+  it('requires fragment-material fields and the v5 insight metrics', () => {
     const item = requireSchemaNode(batchSchema.$defs?.item, '$defs.item');
     const materialTags = requireSchemaNode(
       item.properties?.materialTags,
@@ -251,6 +275,7 @@ describe('effect prompt generation contract', () => {
         'targetCount',
         'acceptedCount',
         'generatedCandidateCount',
+        'fallbackCount',
         'removedSemanticDuplicates',
         'removedVisualDuplicates',
         'removedDimensionConflicts',

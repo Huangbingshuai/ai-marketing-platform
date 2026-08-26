@@ -44,6 +44,7 @@ import {
   effectPromptExecutionIssues,
   isEffectPromptSettings,
   parseEffectPromptBatchResult,
+  parseLegacyV4EffectPromptBatchResultForRead,
   recomputePromptQuality,
 } from './effect-prompt.quality';
 import type {
@@ -224,7 +225,10 @@ export class EffectPromptService {
           resultRecord && resultRecord.runId !== runRecord?.id
             ? await this.repository.run(projectId, resultRecord.runId)
             : runRecord;
-        const draft = resultRecord ? parseEffectPromptBatchResult(resultRecord.draftResult) : null;
+        const draft = resultRecord
+          ? (parseEffectPromptBatchResult(resultRecord.draftResult) ??
+            parseLegacyV4EffectPromptBatchResultForRead(resultRecord.draftResult))
+          : null;
         const settingsNode = await this.repository.settingsNode(
           projectId,
           workflowRunId,
@@ -283,7 +287,7 @@ export class EffectPromptService {
           progress: runRecord?.progress ?? 0,
           currentNode: runRecord?.currentNode ?? null,
           errorMessage: legacyResult
-            ? 'Prompt 生成规则已升级，请重新生成六类素材片段'
+            ? 'Prompt 生成规则已升级；旧的 3 秒设置会在重新生成时调整为当前模型允许的 4 秒'
             : (runRecord?.errorMessage ?? null),
           updatedAt: (runRecord?.updatedAt ?? product.updatedAt).toISOString(),
         };
@@ -335,6 +339,8 @@ export class EffectPromptService {
       workflowRunId: string;
       operation: 'BATCH_GENERATE' | 'ITEM_REGENERATE';
       targetItemId?: string;
+      regenerationInstruction?: string;
+      replacementDimensions?: EffectPromptDimensions;
       expectedSettingsRevision: number;
       expectedResultRevision?: number;
       idempotencyKey: string;
@@ -343,11 +349,31 @@ export class EffectPromptService {
     await this.requireWorkflow(projectId, input.workflowRunId);
     const idempotencyKey = input.idempotencyKey.trim();
     if (!idempotencyKey) throw badRequest('幂等键不能为空');
+    if (
+      input.operation === 'BATCH_GENERATE' &&
+      (input.regenerationInstruction !== undefined || input.replacementDimensions !== undefined)
+    )
+      throw badRequest('批量生成不能携带单条重生成设置');
     if (input.operation === 'ITEM_REGENERATE' && !input.targetItemId)
       throw badRequest('单条重新生成必须指定 Prompt');
+    if ((input.regenerationInstruction?.trim().length ?? 0) > 500)
+      throw badRequest('修改意见不能超过 500 字');
+    if (input.replacementDimensions && !validateDimensions(input.replacementDimensions))
+      throw badRequest('六维设置必须完整填写且不能超过长度限制');
+    const replacementDimensions = input.replacementDimensions
+      ? (Object.fromEntries(
+          EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [
+            key,
+            input.replacementDimensions![key].trim(),
+          ]),
+        ) as EffectPromptDimensions)
+      : null;
+    const regenerationInstruction = input.regenerationInstruction?.trim() || null;
     const result = await this.repository.startRun(projectId, input.workflowRunId, productId, {
       operation: input.operation,
       targetItemId: input.targetItemId ?? null,
+      regenerationInstruction,
+      replacementDimensions,
       expectedSettingsRevision: input.expectedSettingsRevision,
       expectedResultRevision: input.expectedResultRevision ?? null,
       idempotencyKey,
@@ -357,6 +383,8 @@ export class EffectPromptService {
     if (result.kind === 'INSIGHT_NOT_READY') throw conflict('产品信息卡尚未完成校验');
     if (result.kind === 'RESULT_CONFLICT') throw conflict('Prompt 结果已更新，请刷新后重试');
     if (result.kind === 'ITEM_NOT_FOUND') throw notFound('Prompt 不存在');
+    if (result.kind === 'INVALID_SELLING_POINT')
+      throw badRequest('所选卖点不是当前信息卡已确认且适用于该片段类型的卖点');
     if (result.kind === 'MANUAL_COUNT_EXCEEDED')
       throw conflict('人工保留 Prompt 数量已超过目标数量，请先提高生成数量');
     if (result.kind === 'ACTIVE_CONFLICT') throw conflict('当前产品已有进行中的 Prompt 任务');
@@ -398,9 +426,9 @@ export class EffectPromptService {
     await this.requireWorkflow(projectId, workflowRunId);
     const record = await this.repository.latestResult(projectId, workflowRunId, productId);
     if (!record) throw notFound('Prompt 结果不存在');
-    if (record.schemaVersion !== EFFECT_PROMPT_SCHEMA_VERSION)
-      throw conflict('旧版 Prompt 结果不能继续使用，请执行全量重新生成');
-    const draft = parseEffectPromptBatchResult(record.draftResult);
+    const draft =
+      parseEffectPromptBatchResult(record.draftResult) ??
+      parseLegacyV4EffectPromptBatchResultForRead(record.draftResult);
     if (!draft) throw conflict('Prompt 结果结构无效，请重新生成');
     const filtered = draft.items.filter(
       (item) => (!fragmentType || item.fragmentType === fragmentType) && searchable(item, query),
@@ -409,6 +437,7 @@ export class EffectPromptService {
     const summary = {
       schemaVersion: draft.schemaVersion,
       settings: draft.settings,
+      renderProfile: draft.renderProfile,
       metrics: draft.metrics,
       qualityStatus: draft.qualityStatus,
     };
@@ -610,7 +639,12 @@ export class EffectPromptService {
         allProductsValidated: false,
         validatedAt: new Date().toISOString(),
       };
-    const verified = recomputePromptQuality(draft.items, draft.settings, draft.metrics);
+    const verified = recomputePromptQuality(
+      draft.items,
+      draft.settings,
+      draft.metrics,
+      draft.renderProfile,
+    );
     const issues: Array<{ code: string; message: string }> = [];
     if (verified.items.length !== effectPromptTargetCount(verified.settings))
       issues.push({ code: 'COUNT_MISMATCH', message: 'Prompt 数量尚未达到目标数量' });
@@ -828,6 +862,16 @@ export class EffectPromptService {
   ) {
     const parsed = parseEffectPromptBatchResult(input.result);
     if (!parsed) throw badRequest('Prompt 批次结果不符合统一结构');
+    const run = await this.repository.run(projectId, runId);
+    const snapshot = run?.inputSnapshot as EffectPromptInputSnapshot | undefined;
+    if (
+      snapshot?.operation === 'BATCH_GENERATE' &&
+      (parsed.items.length !== effectPromptTargetCount(snapshot.settings) ||
+        parsed.metrics.fragmentTypeDistribution.some(
+          ({ targetCount, actualCount }) => targetCount !== actualCount,
+        ))
+    )
+      throw badRequest('Prompt 成功结果必须严格满足用户设置的总数量和六类片段配额');
     const result = await this.repository.complete(projectId, runId, attemptToken, parsed);
     if (result.kind === 'NOT_FOUND') throw notFound('Prompt 任务不存在');
     if (result.kind === 'LEASE_CONFLICT') throw conflict('Worker 租约已失效');

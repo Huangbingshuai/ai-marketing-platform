@@ -62,7 +62,7 @@ class RuntimeContext:
 
 
 class PromptGenerationRequest(ApiModel):
-    schema_version: Literal[4] = 4
+    schema_version: Literal[5] = 5
     run_id: str
     project_id: str
     request_id: str
@@ -123,7 +123,7 @@ class EvidenceMode(StrEnum):
 
 class FragmentConfig(ApiModel):
     count: int = Field(ge=1, le=200)
-    duration_seconds: int = Field(ge=3, le=10)
+    duration_seconds: int = Field(ge=4, le=15)
 
 
 class PromptBatchSettings(ApiModel):
@@ -233,7 +233,7 @@ class PromptItem(ApiModel):
     origin: Literal["AI", "MANUAL"]
     fragment_type: FragmentType
     material_tags: list[str] = Field(min_length=1, max_length=12)
-    target_duration_seconds: int = Field(ge=3, le=10)
+    target_duration_seconds: int = Field(ge=4, le=15)
     dimensions: PromptDimensions
     content: str = Field(min_length=1, max_length=12_000)
     insight_bindings: list[InsightBinding] = Field(default_factory=list, max_length=16)
@@ -272,6 +272,7 @@ class PromptMetrics(ApiModel):
     target_count: int = Field(ge=10, le=200)
     accepted_count: int = Field(ge=0, le=200)
     generated_candidate_count: int = Field(ge=0)
+    fallback_count: int = Field(ge=0, le=200)
     removed_semantic_duplicates: int = Field(ge=0)
     removed_visual_duplicates: int = Field(ge=0)
     removed_dimension_conflicts: int = Field(ge=0)
@@ -285,9 +286,24 @@ class PromptMetrics(ApiModel):
     insight_coverage: InsightCoverage
 
 
+class SharedRenderConstraints(ApiModel):
+    disabled_elements: list[str] = Field(default_factory=list, max_length=100)
+    content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class RenderProfile(ApiModel):
+    ratio: Literal["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"]
+    resolution: Literal["480p", "720p", "1080p"]
+    capability_key: Literal[
+        "SEEDANCE_2_0", "SEEDANCE_2_0_FAST", "SEEDANCE_1_5_PRO", "SEEDANCE_1_0"
+    ] = "SEEDANCE_2_0"
+    shared_constraints: SharedRenderConstraints
+
+
 class PromptBatchResult(ApiModel):
-    schema_version: Literal[4] = 4
+    schema_version: Literal[5] = 5
     settings: PromptBatchSettings
+    render_profile: RenderProfile
     items: list[PromptItem] = Field(max_length=200)
     metrics: PromptMetrics
     quality_status: Literal["PASS", "NEEDS_REVIEW"]
@@ -309,7 +325,7 @@ class InsightArtifact(ApiModel):
 
 
 class PromptGenerationSnapshot(ApiModel):
-    schema_version: Literal[4] = 4
+    schema_version: Literal[5] = 5
     project_id: str
     workflow_run_id: str
     product_id: str
@@ -321,11 +337,29 @@ class PromptGenerationSnapshot(ApiModel):
     base_result_revision: int | None = Field(default=None, ge=1)
     target_item: PromptItem | None = None
     target_item_index: int | None = Field(default=None, ge=0, le=199)
+    replacement_dimensions: PromptDimensions | None = None
+    regeneration_instruction: str | None = Field(default=None, max_length=500)
+
+    @field_validator("regeneration_instruction")
+    @classmethod
+    def clean_regeneration_instruction(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = " ".join(value.split())
+        return cleaned or None
 
     @model_validator(mode="after")
     def validate_operation(self) -> PromptGenerationSnapshot:
         if self.operation == "ITEM_REGENERATE" and not self.target_item_id:
             raise ValueError("targetItemId is required for ITEM_REGENERATE")
+        if self.operation == "ITEM_REGENERATE" and (
+            self.target_item is None or self.target_item_index is None
+        ):
+            raise ValueError("targetItem and targetItemIndex are required for ITEM_REGENERATE")
+        if self.operation == "BATCH_GENERATE" and (
+            self.replacement_dimensions is not None or self.regeneration_instruction is not None
+        ):
+            raise ValueError("batch generation cannot contain item regeneration settings")
         if len(self.retained_manual_items) > self.settings.target_count:
             raise ValueError("retained manual items exceed target count")
         return self
@@ -431,7 +465,7 @@ class PlannedCombination(ApiModel):
     ordinal: int = Field(ge=1)
     fragment_type: FragmentType
     material_tags: list[str] = Field(min_length=1, max_length=12)
-    target_duration_seconds: int = Field(ge=3, le=10)
+    target_duration_seconds: int = Field(ge=4, le=15)
     visible_action: str = Field(min_length=1, max_length=400)
     evidence_mode: EvidenceMode
     allowed_visual_evidence: str = Field(min_length=1, max_length=400)

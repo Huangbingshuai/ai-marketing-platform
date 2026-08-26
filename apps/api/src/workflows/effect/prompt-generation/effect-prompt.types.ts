@@ -7,7 +7,7 @@ import type {
 } from '@ai-marketing/contracts';
 
 export type EffectPromptInputSnapshot = {
-  schemaVersion: 4;
+  schemaVersion: 5;
   projectId: string;
   workflowRunId: string;
   productId: string;
@@ -24,6 +24,10 @@ export type EffectPromptInputSnapshot = {
   /** Present for ITEM_REGENERATE so the API can preserve stable identity and order. */
   targetItem?: EffectPromptItem | undefined;
   targetItemIndex?: number | undefined;
+  /** Effective dimensions used by ITEM_REGENERATE, including the old-client fallback. */
+  replacementDimensions?: EffectPromptItem['dimensions'] | undefined;
+  /** Trimmed, low-priority user direction. Empty input is persisted as null. */
+  regenerationInstruction?: string | null | undefined;
   baseResultRevision: number | null;
 };
 

@@ -4,13 +4,19 @@ Independent Python 3.12 worker for the effect workflow's differentiated Prompt b
 It consumes lightweight run identifiers from RabbitMQ, claims an immutable snapshot from the
 NestJS internal API, persists every shard, and returns only a schema-versioned batch result.
 
-Schema V4 generates a material pool, not finished advertisements: one Prompt maps to one
+Schema V5 generates a material pool, not finished advertisements: one Prompt maps to one
 independently renderable video fragment. The worker deterministically allocates the six
 slot-compatible fragment types (`HOOK`, `PAIN`, `PRODUCT_DISPLAY`,
 `SELLING_POINT_EXPLANATION`, `CTA`, `OUTRO`), stores their
 material tags and the user-configured per-fragment duration, and replenishes deficits by type.
 The candidate model returns `slotId + promptText + usedFactIds`; it cannot rewrite type, tags,
 duration, six-dimensional planning, insight bindings, or evidence boundaries.
+
+Visible Prompt text contains creative video content only. Duration stays on each item, while
+ratio, resolution, and shared disabled elements live in the batch-level `renderProfile`.
+After three targeted AI replenishment rounds, a validated deterministic fallback fills each
+fragment-type deficit. A batch is completed only when both the total and all six quotas match
+exactly; an unsafe or still-short fallback fails the run without replacing the last valid result.
 
 Before strategy planning, `INSIGHT_MAPPING` classifies every non-empty extraction field as
 required, adaptive, excluded, or a global constraint and gives usable facts stable content-derived
@@ -52,6 +58,11 @@ Optional environment variables:
 - `PROMPT_SHARD_SIZE` (default `8`, range `1..8`)
 - `PROMPT_MAX_AI_CALLS_PER_RUN` (default `129`)
 - `INTERNAL_API_TIMEOUT_SECONDS`, `ARK_TIMEOUT_SECONDS`, `LOG_LEVEL`
+
+The Docker Compose default for `ARK_PROMPT_STRATEGY_MAX_OUTPUT_TOKENS` must stay aligned
+with the worker default (`8192`). V4 strategy responses can exceed the old 2048-token limit.
+The worker rejects invalid relationship bundles individually and restores required coverage
+only from confirmed fact IDs; a missing evidence row falls back to safe `TEXT_ONLY` wording.
 
 `PROMPT_MAX_AI_CALLS_PER_RUN` is an abnormal-loop fuse, not the normal usage budget. Its
 default covers one strategy call plus the theoretical maximum of four 32-shard candidate

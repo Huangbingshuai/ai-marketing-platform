@@ -1,10 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DEFAULT_EFFECT_PROMPT_SETTINGS } from '@ai-marketing/contracts';
+import {
+  DEFAULT_EFFECT_PROMPT_SETTINGS,
+  EFFECT_PROMPT_SCHEMA_VERSION,
+} from '@ai-marketing/contracts';
 
 import type { PrismaService } from '../../../database/prisma.service';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import {
   EffectPromptRepository,
+  isAllowedReplacementSellingPoint,
   promptItemsRetainedForRun,
   type StartPromptRunInput,
 } from './effect-prompt.repository';
@@ -54,6 +58,34 @@ const runRecord = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('EffectPromptRepository', () => {
+  it('only allows confirmed selling points that match the locked fragment responsibility', () => {
+    const insight = {
+      coreSellingPoints: ['单手开合', '轻量便携'],
+      secondarySellingPoints: ['易清洗'],
+    };
+    const target = {
+      fragmentType: 'PRODUCT_DISPLAY' as const,
+      dimensions: {
+        narrative: '产品直观展示',
+        scene: '通勤桌面',
+        persona: '仅手部出镜',
+        sellingPoint: '单手开合',
+        camera: '近景缓慢推进',
+        emotion: '明快自然',
+      },
+    };
+
+    expect(isAllowedReplacementSellingPoint(insight, target, '轻量便携')).toBe(true);
+    expect(isAllowedReplacementSellingPoint(insight, target, '易清洗')).toBe(false);
+    expect(isAllowedReplacementSellingPoint(insight, target, '未确认功效')).toBe(false);
+    expect(
+      isAllowedReplacementSellingPoint(insight, { ...target, fragmentType: 'HOOK' }, '单手开合'),
+    ).toBe(true);
+    expect(
+      isAllowedReplacementSellingPoint(insight, { ...target, fragmentType: 'HOOK' }, '轻量便携'),
+    ).toBe(false);
+  });
+
   it('retains every non-target item only for item regeneration', () => {
     const now = '2026-08-25T00:00:00.000Z';
     const items = ['one', 'target', 'three'].map((id, index) => ({
@@ -159,7 +191,7 @@ describe('EffectPromptRepository', () => {
         aggregateId: runId,
         routingKey: 'effect.prompt-generation.requested',
         payload: {
-          schemaVersion: 4,
+          schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
           projectId,
           runId,
           requestId: runId,
@@ -220,12 +252,12 @@ describe('EffectPromptRepository', () => {
         },
       },
       data: expect.objectContaining({
-        schemaVersion: 4,
+        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
         revision: { increment: 1 },
         state: expectedSettings,
         contentHash: expectedHash,
         executionInputHash: expectedHash,
-        executionInputSchemaVersion: 4,
+        executionInputSchemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
       }),
     });
     expect(runCreate).toHaveBeenCalledWith({
@@ -258,7 +290,7 @@ describe('EffectPromptRepository', () => {
       },
       effectPromptResult: {
         findFirst: vi.fn().mockResolvedValue({
-          schemaVersion: 4,
+          schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
           revision: 4,
           draftResult: recomputePromptQuality([], DEFAULT_EFFECT_PROMPT_SETTINGS),
         }),
@@ -287,7 +319,7 @@ describe('EffectPromptRepository', () => {
       workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: workflowRunId }) },
       workflowNodeState: {
         findUnique: vi.fn().mockResolvedValue({
-          schemaVersion: 4,
+          schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
           revision: 1,
           state: DEFAULT_EFFECT_PROMPT_SETTINGS,
         }),
@@ -321,7 +353,7 @@ describe('EffectPromptRepository', () => {
     expect(runCreate).toHaveBeenCalledWith({
       data: expect.objectContaining({
         inputSnapshot: expect.objectContaining({
-          schemaVersion: 4,
+          schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
           retainedManualItems: [],
           baseResultRevision: null,
         }),

@@ -21,7 +21,7 @@ from effect_prompt_generation.models import (
     StageOutput,
 )
 from effect_prompt_generation.pipeline import PromptGenerationPipeline
-from effect_prompt_generation.providers import MockAiProvider
+from effect_prompt_generation.providers import AiCallResult, MockAiProvider
 
 
 class FakeApi(InternalApi):
@@ -51,6 +51,72 @@ class FakeApi(InternalApi):
 
     async def fail(self, context: RuntimeContext, payload: FailurePayload) -> None:
         raise AssertionError(f"unexpected failure: {payload.error_code}")
+
+
+class TechnicalMetadataProvider(MockAiProvider):
+    async def generate_candidates(
+        self,
+        combinations: list[Any],
+        *,
+        insight: dict[str, Any],
+        regeneration_context: dict[str, Any] | None = None,
+    ) -> AiCallResult[Any]:
+        generated = await super().generate_candidates(
+            combinations,
+            insight=insight,
+            regeneration_context=regeneration_context,
+        )
+        return AiCallResult(
+            value=generated.value.model_copy(
+                update={
+                    "items": [
+                        item.model_copy(
+                            update={
+                                "prompt_text": f"{item.prompt_text} 画幅9:16，分辨率1080p，时长5秒。"
+                            }
+                        )
+                        for item in generated.value.items
+                    ]
+                }
+            ),
+            metadata=generated.metadata,
+        )
+
+
+@pytest.mark.asyncio
+async def test_exact_quota_uses_validated_fallback_after_three_invalid_ai_rounds(
+    snapshot: PromptGenerationSnapshot, runtime: RuntimeContext
+) -> None:
+    api = FakeApi()
+    pipeline = PromptGenerationPipeline(
+        api=api, provider=TechnicalMetadataProvider(), shard_size=8
+    )
+    pipeline.register_snapshot(runtime, snapshot)
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+        config={"max_concurrency": 3},
+    )
+
+    assert api.result is not None
+    assert api.result.quality_status == "PASS"
+    assert len(api.result.items) == snapshot.settings.target_count
+    assert api.result.metrics.fallback_count == snapshot.settings.target_count
+    actual_by_type = {
+        fragment_type: sum(
+            item.fragment_type == fragment_type for item in api.result.items
+        )
+        for fragment_type in FragmentType
+    }
+    assert actual_by_type == {
+        fragment_type: snapshot.settings.fragment_configs[fragment_type].count
+        for fragment_type in FragmentType
+    }
+    visible_content = "\n".join(item.content for item in api.result.items)
+    assert "9:16" not in visible_content
+    assert "1080p" not in visible_content.lower()
+    assert "5秒" not in visible_content
 
 
 @pytest.mark.asyncio

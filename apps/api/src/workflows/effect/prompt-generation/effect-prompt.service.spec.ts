@@ -2,6 +2,7 @@ import {
   DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_LIMITS,
+  EFFECT_PROMPT_SCHEMA_VERSION,
 } from '@ai-marketing/contracts';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -9,6 +10,134 @@ import { EffectPromptService } from './effect-prompt.service';
 import { recomputePromptQuality } from './effect-prompt.quality';
 
 describe('EffectPromptService settings contract', () => {
+  it('normalizes and forwards visual item-regeneration direction without opening a batch path', async () => {
+    const dimensions = {
+      narrative: ' 场景代入型 ',
+      scene: ' 家庭餐桌 ',
+      persona: ' 仅手部出镜 ',
+      sellingPoint: ' 单手开合 ',
+      camera: ' 桌面近景缓慢推进 ',
+      emotion: ' 温暖舒缓 ',
+    };
+    const run = {
+      id: 'run-a',
+      projectId: 'project-a',
+      workflowRunId: 'workflow-a',
+      productId: 'product-a',
+      operation: 'ITEM_REGENERATE',
+      targetItemId: '11111111-1111-4111-8111-111111111111',
+      status: 'QUEUED',
+      progress: 0,
+      currentNode: null,
+      warnings: [],
+      errorMessage: null,
+      stages: [],
+      result: null,
+      createdAt: new Date('2026-08-26T00:00:00.000Z'),
+      updatedAt: new Date('2026-08-26T00:00:00.000Z'),
+    };
+    const repository = {
+      workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }),
+      startRun: vi.fn().mockResolvedValue({ kind: 'CREATED', run }),
+      run: vi.fn().mockResolvedValue(run),
+    };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const service = new EffectPromptService(repository as never, projects as never, {} as never);
+
+    await service.start('project-a', 'product-a', {
+      workflowRunId: 'workflow-a',
+      operation: 'ITEM_REGENERATE',
+      targetItemId: run.targetItemId,
+      regenerationInstruction: '  产品更早出现  ',
+      replacementDimensions: dimensions,
+      expectedSettingsRevision: 2,
+      expectedResultRevision: 3,
+      idempotencyKey: 'regen-a',
+    });
+
+    expect(repository.startRun).toHaveBeenCalledWith(
+      'project-a',
+      'workflow-a',
+      'product-a',
+      expect.objectContaining({
+        operation: 'ITEM_REGENERATE',
+        regenerationInstruction: '产品更早出现',
+        replacementDimensions: {
+          narrative: '场景代入型',
+          scene: '家庭餐桌',
+          persona: '仅手部出镜',
+          sellingPoint: '单手开合',
+          camera: '桌面近景缓慢推进',
+          emotion: '温暖舒缓',
+        },
+      }),
+    );
+  });
+
+  it('rejects item-only regeneration fields on a batch run', async () => {
+    const repository = { workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }) };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const service = new EffectPromptService(repository as never, projects as never, {} as never);
+
+    await expect(
+      service.start('project-a', 'product-a', {
+        workflowRunId: 'workflow-a',
+        operation: 'BATCH_GENERATE',
+        regenerationInstruction: '不应允许',
+        expectedSettingsRevision: 2,
+        idempotencyKey: 'batch-a',
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('rejects a structurally valid batch that is shorter than the saved six-type quota', async () => {
+    const now = '2026-08-26T00:00:00.000Z';
+    const shortResult = recomputePromptQuality(
+      [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          code: 'P001',
+          origin: 'AI',
+          fragmentType: 'HOOK',
+          materialTags: ['钩子'],
+          targetDurationSeconds: 5,
+          dimensions: {
+            narrative: '痛点前置',
+            scene: '家庭厨房',
+            persona: '穿围裙的成年人',
+            sellingPoint: '真实切面',
+            camera: '中近景缓慢推进',
+            emotion: '惊喜发现',
+          },
+          content: '家庭厨房里，穿围裙的成年人拿起产品转向镜头，镜头缓慢推进并停在真实切面。',
+          insightBindings: [],
+          manualEdited: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      DEFAULT_EFFECT_PROMPT_SETTINGS,
+    );
+    const repository = {
+      run: vi.fn().mockResolvedValue({
+        inputSnapshot: {
+          operation: 'BATCH_GENERATE',
+          settings: DEFAULT_EFFECT_PROMPT_SETTINGS,
+        },
+      }),
+      complete: vi.fn(),
+    };
+    const service = new EffectPromptService(repository as never, {} as never, {} as never);
+
+    await expect(
+      service.complete('project-a', 'run-a', 'attempt-a', { result: shortResult }),
+    ).rejects.toMatchObject({
+      status: 400,
+      message: 'Prompt 成功结果必须严格满足用户设置的总数量和六类片段配额',
+    });
+    expect(repository.complete).not.toHaveBeenCalled();
+  });
+
   it('uses the extracted product name for the committed Prompt working artifact', async () => {
     const repository = {
       run: vi.fn().mockResolvedValue({
@@ -174,7 +303,7 @@ describe('EffectPromptService settings contract', () => {
         resultRevision: null,
         metrics: null,
         qualityStatus: null,
-        errorMessage: 'Prompt 生成规则已升级，请重新生成六类素材片段',
+        errorMessage: 'Prompt 生成规则已升级；旧的 3 秒设置会在重新生成时调整为当前模型允许的 4 秒',
       }),
     );
   });
@@ -204,7 +333,7 @@ describe('EffectPromptService settings contract', () => {
     }));
     const repository = {
       result: vi.fn().mockResolvedValue({
-        schemaVersion: 4,
+        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
         draftResult: { items },
       }),
       mutateResult: vi.fn(),
@@ -267,7 +396,7 @@ describe('EffectPromptService settings contract', () => {
         id: 'result-a',
         productId: 'product-a',
         revision: 1,
-        schemaVersion: 4,
+        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
         draftResult,
       }),
     };

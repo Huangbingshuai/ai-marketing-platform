@@ -2,11 +2,13 @@ import { randomUUID } from 'node:crypto';
 
 import type {
   EffectPromptBatchResult,
+  EffectPromptDimensions,
   EffectPromptItem,
   EffectPromptManualOverrides,
   EffectPromptOperation,
 } from '@ai-marketing/contracts';
 import {
+  EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES,
   EFFECT_PROMPT_SCHEMA_VERSION,
   effectPromptTargetCount,
   migrateEffectPromptSettings,
@@ -37,6 +39,41 @@ const json = (value: unknown): Prisma.InputJsonValue => value as Prisma.InputJso
 const leaseDate = (now: Date): Date => new Date(now.getTime() + 90_000);
 const parseStrings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+
+export const isAllowedReplacementSellingPoint = (
+  insight: unknown,
+  target: Pick<EffectPromptItem, 'fragmentType' | 'dimensions'>,
+  replacementSellingPoint: string,
+): boolean => {
+  const insightRecord =
+    insight && typeof insight === 'object' && !Array.isArray(insight)
+      ? (insight as Record<string, unknown>)
+      : {};
+  const readValues = (...keys: string[]): string[] =>
+    keys.flatMap((key) => {
+      const value = insightRecord[key];
+      if (typeof value === 'string') return value.trim() ? [value.trim()] : [];
+      return Array.isArray(value)
+        ? value
+            .filter((item): item is string => typeof item === 'string')
+            .map((item) => item.trim())
+            .filter(Boolean)
+        : [];
+    });
+  const allowed = new Set<string>([target.dimensions.sellingPoint]);
+  if (EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES.CORE_SELLING_POINT?.includes(target.fragmentType))
+    readValues('coreSellingPoints', 'core_selling_points').forEach((value) => allowed.add(value));
+  if (
+    EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES.SECONDARY_SELLING_POINT?.includes(
+      target.fragmentType,
+    )
+  )
+    readValues('secondarySellingPoints', 'secondary_selling_points').forEach((value) =>
+      allowed.add(value),
+    );
+  const normalized = replacementSellingPoint.normalize('NFC').trim();
+  return [...allowed].some((value) => value.normalize('NFC').trim() === normalized);
+};
 
 const promptRunInclude = {
   stages: { orderBy: [{ createdAt: 'asc' as const }, { nodeId: 'asc' as const }] },
@@ -83,6 +120,8 @@ export const promptItemsRetainedForRun = (
 export type StartPromptRunInput = {
   operation: EffectPromptOperation;
   targetItemId: string | null;
+  regenerationInstruction?: string | null;
+  replacementDimensions?: EffectPromptDimensions | null;
   expectedSettingsRevision: number;
   expectedResultRevision: number | null;
   idempotencyKey: string;
@@ -288,6 +327,17 @@ export class EffectPromptRepository {
       }
       const targetItem = currentResult?.items.find(({ id }) => id === input.targetItemId);
       const targetItemIndex = currentResult?.items.findIndex(({ id }) => id === input.targetItemId);
+      if (
+        input.operation === 'ITEM_REGENERATE' &&
+        targetItem &&
+        input.replacementDimensions &&
+        !isAllowedReplacementSellingPoint(
+          insight.payload,
+          targetItem,
+          input.replacementDimensions.sellingPoint,
+        )
+      )
+        return { kind: 'INVALID_SELLING_POINT' as const };
       const manualItems = promptItemsRetainedForRun(
         currentResult,
         input.targetItemId,
@@ -311,7 +361,12 @@ export class EffectPromptRepository {
         },
         retainedManualItems: manualItems,
         ...(input.operation === 'ITEM_REGENERATE' && targetItem
-          ? { targetItem, targetItemIndex }
+          ? {
+              targetItem,
+              targetItemIndex,
+              replacementDimensions: input.replacementDimensions ?? targetItem.dimensions,
+              regenerationInstruction: input.regenerationInstruction ?? null,
+            }
           : {}),
         baseResultRevision: latestCurrent?.revision ?? null,
       };
@@ -328,6 +383,15 @@ export class EffectPromptRepository {
         insight: snapshot.insightArtifact,
         settingsHash,
         retainedManualItems: manualItems,
+        regeneration:
+          snapshot.operation === 'ITEM_REGENERATE'
+            ? {
+                targetItem: snapshot.targetItem,
+                targetItemIndex: snapshot.targetItemIndex,
+                replacementDimensions: snapshot.replacementDimensions,
+                regenerationInstruction: snapshot.regenerationInstruction,
+              }
+            : null,
       });
       const run = await transaction.effectPromptRun.create({
         data: {
@@ -581,11 +645,13 @@ export class EffectPromptRepository {
         candidate.items,
         snapshot.settings,
         candidate.metrics,
+        candidate.renderProfile,
       );
       const draft = recomputePromptQuality(
         mergeEffectPromptCompletionItems(generated.items, snapshot),
         snapshot.settings,
         generated.metrics,
+        generated.renderProfile,
       );
       let overrides = emptyManualOverrides();
       if (snapshot.operation === 'ITEM_REGENERATE' && snapshot.baseResultRevision !== null) {
@@ -810,7 +876,12 @@ export class EffectPromptRepository {
           else overrides.edited[mutation.itemId] = mutation.item;
         }
       }
-      const next = recomputePromptQuality(items, current.settings, current.metrics);
+      const next = recomputePromptQuality(
+        items,
+        current.settings,
+        current.metrics,
+        current.renderProfile,
+      );
       if (workflowStateHash(next) === workflowStateHash(current))
         return { kind: 'UNCHANGED' as const, result: existing, draft: current };
       const updated = await transaction.effectPromptResult.update({

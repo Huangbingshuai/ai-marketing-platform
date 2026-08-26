@@ -146,19 +146,29 @@ describe('effect prompt generation HTTP service', () => {
 
   it('exports the authoritative server payload instead of rebuilding browser state', async () => {
     const exported = {
-      schemaVersion: 2,
+      schemaVersion: 5,
       productId: 'product-1',
       resultId: 'result-1',
       revision: 3,
       exportedAt: '2026-08-25T00:00:00.000Z',
       result: {
-        schemaVersion: 2,
-        settings: { ...DEFAULT_EFFECT_PROMPT_SETTINGS, count: 10 },
+        schemaVersion: 5,
+        settings: DEFAULT_EFFECT_PROMPT_SETTINGS,
+        renderProfile: {
+          ratio: '9:16',
+          resolution: '1080p',
+          capabilityKey: 'SEEDANCE_2_0',
+          sharedConstraints: {
+            disabledElements: ['品牌水印'],
+            contentHash: 'hash-disabled',
+          },
+        },
         items: [],
         metrics: {
           targetCount: 10,
           acceptedCount: 0,
           generatedCandidateCount: 0,
+          fallbackCount: 0,
           removedSemanticDuplicates: 0,
           removedVisualDuplicates: 0,
           removedDimensionConflicts: 0,
@@ -171,6 +181,15 @@ describe('effect prompt generation HTTP service', () => {
             actualCount: 0,
           })),
           sellingPointCoverage: { required: [], covered: [], missing: [] },
+          insightCoverage: {
+            required: [],
+            covered: [],
+            missing: [],
+            adaptive: [],
+            deferred: [],
+            excluded: [],
+            appliedConstraints: [],
+          },
           removedExecutionInvalid: 0,
           executionInvalidReasons: [],
         },
@@ -181,5 +200,6 @@ describe('effect prompt generation HTTP service', () => {
     const download = await downloadEffectPromptBatch('project-1', 'result-1', '广式腊肠');
     expect(download.fileName).toBe('广式腊肠-差异化Prompt-0条.json');
     await expect(download.blob.text()).resolves.toContain('"resultId": "result-1"');
+    await expect(download.blob.text()).resolves.toContain('"disabledElements"');
   });
 });

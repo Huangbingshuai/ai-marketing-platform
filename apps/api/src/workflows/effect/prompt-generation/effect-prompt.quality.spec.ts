@@ -7,6 +7,7 @@ import {
   effectPromptExecutionIssues,
   mergeEffectPromptCompletionItems,
   parseEffectPromptBatchResult,
+  parseLegacyV4EffectPromptBatchResultForRead,
   promptPairViolationRate,
   recomputePromptQuality,
   trigramDice,
@@ -101,6 +102,38 @@ describe('effect prompt quality', () => {
         qualityStatus: 'PASS',
       }),
     ).toBeNull();
+  });
+
+  it('projects V4 audit results for read without mutating their stored payload', () => {
+    const current = recomputePromptQuality([item('legacy-readable')], settings);
+    const legacyMetrics = { ...current.metrics } as Record<string, unknown>;
+    delete legacyMetrics.fallbackCount;
+    const legacySettings = {
+      ...settings,
+      fragmentConfigs: Object.fromEntries(
+        Object.entries(settings.fragmentConfigs).map(([key, value]) => [
+          key,
+          { ...value, durationSeconds: 3 },
+        ]),
+      ),
+    };
+    const legacy = {
+      schemaVersion: 4,
+      settings: legacySettings,
+      items: [{ ...item('legacy-readable'), targetDurationSeconds: 3 }],
+      metrics: legacyMetrics,
+      qualityStatus: 'NEEDS_REVIEW',
+    };
+
+    const projected = parseLegacyV4EffectPromptBatchResultForRead(legacy);
+
+    expect(projected?.schemaVersion).toBe(5);
+    expect(projected?.items[0]?.targetDurationSeconds).toBe(4);
+    expect(projected?.renderProfile).toEqual(
+      expect.objectContaining({ ratio: '9:16', resolution: '1080p' }),
+    );
+    expect(legacy.items[0]?.targetDurationSeconds).toBe(3);
+    expect(legacy).not.toHaveProperty('renderProfile');
   });
 
   it('enforces the shared schema text limits', () => {
@@ -232,12 +265,15 @@ describe('effect prompt quality', () => {
     const before = [item('one'), item('target'), item('three')];
     const replacement = item('new', {
       code: 'NEW',
+      fragmentType: 'CTA',
+      materialTags: ['不应保留'],
+      targetDurationSeconds: 9,
       content: '重新生成的全新内容',
       createdAt: '2026-08-25T01:00:00.000Z',
       updatedAt: '2026-08-25T01:00:00.000Z',
     });
     const merged = mergeEffectPromptCompletionItems([replacement], {
-      schemaVersion: 4,
+      schemaVersion: 5,
       projectId: 'project',
       workflowRunId: 'workflow',
       productId: 'product',
@@ -248,6 +284,10 @@ describe('effect prompt quality', () => {
       retainedManualItems: [before[0]!, before[2]!],
       targetItem: before[1],
       targetItemIndex: 1,
+      replacementDimensions: {
+        ...before[1]!.dimensions,
+        scene: '用户重新选择的家庭餐桌',
+      },
       baseResultRevision: 3,
     });
 
@@ -256,6 +296,13 @@ describe('effect prompt quality', () => {
       id: 'target',
       code: 'target',
       content: '重新生成的全新内容',
+      fragmentType: before[1]!.fragmentType,
+      materialTags: before[1]!.materialTags,
+      targetDurationSeconds: before[1]!.targetDurationSeconds,
+      dimensions: {
+        ...before[1]!.dimensions,
+        scene: '用户重新选择的家庭餐桌',
+      },
       origin: 'AI',
       manualEdited: false,
       createdAt: before[1]!.createdAt,

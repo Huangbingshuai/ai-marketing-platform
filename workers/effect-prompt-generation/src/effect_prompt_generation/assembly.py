@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
-from .models import EvidenceMode, FragmentType, InsightField, PlannedCombination
+from .models import FragmentType, InsightField, PlannedCombination
 
 _INTERNAL_METADATA = re.compile(
     r"创意核心|差异化设定|叙事结构\s*[=:：]|场景变量\s*[=:：]|人物变量\s*[=:：]|"
@@ -22,6 +22,9 @@ _ACTION = re.compile(
 )
 _STACKED_PERSONA = re.compile(r"两名|多人|一家人|夫妻|情侣|母女|父子|同事们|朋友们|一群|(?:一名|一个).{0,24}(?:和|与)(?:另一名|另一个|一名|一个)")
 _PLACEHOLDER = re.compile(r"<[^>]+>|\{[^}]+\}|以信息卡为准|待补充|待填写|TODO|TBD", re.IGNORECASE)
+_TECHNICAL_RENDER_METADATA = re.compile(
+    r"\d+(?:\.\d+)?\s*秒|(?:16\s*[:：]\s*9|4\s*[:：]\s*3|1\s*[:：]\s*1|3\s*[:：]\s*4|9\s*[:：]\s*16|21\s*[:：]\s*9)|(?:480|720|1080)\s*[pP]"
+)
 _SENSITIVE_FACT = re.compile(
     r"\d+(?:\.\d+)?\s*(?:小时|毫升|ml|克|kg|%|折|元|万件)|"
     r"认证|销量(?:第一|领先)?|行业第一|领先|100%|绝对|保证|防漏|保温\s*\d+",
@@ -35,8 +38,6 @@ def assemble_fragment_prompt(
     combination: PlannedCombination,
     *,
     product_name: str,
-    aspect_ratio: str,
-    disabled_elements: Sequence[str],
     source_facts: Sequence[str] = (),
 ) -> tuple[str, list[str]]:
     """Normalize one direct-to-video prompt and return deterministic gate failures."""
@@ -45,27 +46,54 @@ def assemble_fragment_prompt(
         content,
         combination,
         product_name=product_name,
-        aspect_ratio=aspect_ratio,
         source_facts=source_facts,
     )
-    constraints: list[str] = []
-    if any("未成年人" in item for item in disabled_elements):
-        constraints.append("不出现未成年人")
-    if combination.evidence_mode in {EvidenceMode.PROCESS_ONLY, EvidenceMode.TEXT_ONLY}:
-        constraints.append("不虚构工厂、实验室或生产过程")
-    price_confirmed_for_cta = combination.fragment_type == FragmentType.CTA and any(
-        binding.field == InsightField.PRICE_RANGE
-        for binding in combination.insight_bindings
-    )
-    constraints.append(
-        "不添加未确认数据、认证或促销贴纸"
-        if price_confirmed_for_cta
-        else "不添加数据、认证、价格或促销贴纸"
-    )
-    constraints = _unique(constraints)
-    if constraints:
-        content = f"{content.rstrip('。')}。画面中{'，'.join(constraints)}。"
     return content, reasons
+
+
+def assemble_safe_fallback_prompt(
+    combination: PlannedCombination,
+    *,
+    product_name: str,
+    source_facts: Sequence[str] = (),
+) -> tuple[str, list[str]]:
+    """Build a deterministic, renderable creative prompt without technical render metadata."""
+    dims = combination.dimensions
+    persona = dims.persona if dims.persona.startswith("无人出镜") else f"{dims.persona}位于主体位置"
+    action = combination.visible_action.replace("产品", product_name).replace("·", "，")
+    endings = {
+        FragmentType.HOOK: (
+            f"首帧直接捕捉反常但真实的动作细节：{action}，只留下未揭晓的悬念；"
+            f"{dims.camera}跟住动作，{dims.emotion}，柔和光线下停在问题即将发生的状态"
+        ),
+        FragmentType.PAIN: (
+            f"画面呈现尚未解决的不便：{action}，动作受阻后自然停下，不展示解决方案；"
+            f"{dims.camera}聚焦手部和问题状态，{dims.emotion}，节奏克制"
+        ),
+        FragmentType.PRODUCT_DISPLAY: (
+            f"{product_name}清楚出现在画面中心，主体完成一次连续动作：{action}；"
+            f"{dims.camera}展示真实轮廓和表面细节，{dims.emotion}，暖调光线下稳定收束"
+        ),
+        FragmentType.SELLING_POINT_EXPLANATION: (
+            f"围绕{product_name}只讲解“{dims.selling_point}”，主体完成一次可见指示动作：{action}；"
+            f"{dims.camera}聚焦被指向的真实细节，{dims.emotion}，光线清晰，结束时产品保持可辨"
+        ),
+        FragmentType.CTA: (
+            f"{product_name}完成一次明确收束动作：{action}；{dims.camera}保留干净字幕安全区，"
+            f"{dims.emotion}，明亮光线下停在便于继续了解产品的结束状态"
+        ),
+        FragmentType.OUTRO: (
+            f"{product_name}居中完成品牌定格动作：{action}；{dims.camera}缓慢稳定焦点，"
+            f"{dims.emotion}，柔和光线下停在简洁产品轮廓"
+        ),
+    }
+    content = _clean_paragraph(f"{dims.scene}，{persona}。{endings[combination.fragment_type]}。")
+    return content, validate_fragment_prompt(
+        content,
+        combination,
+        product_name=product_name,
+        source_facts=source_facts,
+    )
 
 
 def validate_fragment_prompt(
@@ -73,7 +101,6 @@ def validate_fragment_prompt(
     combination: PlannedCombination,
     *,
     product_name: str,
-    aspect_ratio: str,
     source_facts: Sequence[str] = (),
 ) -> list[str]:
     reasons: list[str] = []
@@ -87,15 +114,13 @@ def validate_fragment_prompt(
         reasons.append("STACKED_PERSONA")
     if _PLACEHOLDER.search(content) or _broken_text(content):
         reasons.append("BROKEN_TEXT")
+    if _TECHNICAL_RENDER_METADATA.search(content):
+        reasons.append("TECHNICAL_RENDER_METADATA")
     if _has_duplicate_clauses(content):
         reasons.append("FIELD_DUPLICATION")
     source_text = "\n".join(source_facts)
     if _has_source_fact_violation(content, source_text):
         reasons.append("SOURCE_FACT_VIOLATION")
-    if not re.search(rf"{combination.target_duration_seconds}\s*秒", content):
-        reasons.append("MISSING_TARGET_DURATION")
-    if aspect_ratio not in content and aspect_ratio.replace(":", "：") not in content:
-        reasons.append("MISSING_ASPECT_RATIO")
     if not _ACTION.search(content):
         reasons.append("NO_VISIBLE_ACTION")
     if not _CAMERA.search(content):
@@ -134,22 +159,6 @@ def validate_fragment_prompt(
 
 def _clean_paragraph(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
-
-
-def _clean(value: str) -> str:
-    return " ".join(value.split()).strip("；;。 ")
-
-
-def _unique(values: Sequence[str]) -> list[str]:
-    result: list[str] = []
-    seen: set[str] = set()
-    for raw in values:
-        value = _clean(raw)
-        key = value.casefold()
-        if value and key not in seen:
-            seen.add(key)
-            result.append(value)
-    return result
 
 
 def _broken_text(value: str) -> bool:

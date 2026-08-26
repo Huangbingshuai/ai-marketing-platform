@@ -195,8 +195,37 @@ export const downloadEffectPromptBatch = async (
   signal?: AbortSignal,
 ): Promise<{ blob: Blob; fileName: string }> => {
   const exported = (await exportEffectPromptResult(projectId, resultId, signal)).data;
+  const renderProfile = exported.result.renderProfile;
+  const fileContent = {
+    schemaVersion: exported.schemaVersion,
+    productId: exported.productId,
+    resultId: exported.resultId,
+    revision: exported.revision,
+    exportedAt: exported.exportedAt,
+    renderProfile: {
+      capabilityKey: renderProfile.capabilityKey,
+      ratio: renderProfile.ratio,
+      resolution: renderProfile.resolution,
+    },
+    sharedConstraints: {
+      disabledElements: renderProfile.sharedConstraints.disabledElements,
+    },
+    items: exported.result.items.map((item) => ({
+      id: item.id,
+      code: item.code,
+      fragmentType: item.fragmentType,
+      content: item.content,
+      targetDurationSeconds: item.targetDurationSeconds,
+      ratio: renderProfile.ratio,
+      resolution: renderProfile.resolution,
+      disabledElements: renderProfile.sharedConstraints.disabledElements,
+      materialTags: item.materialTags,
+      dimensions: item.dimensions,
+      insightBindings: item.insightBindings,
+    })),
+  };
   return {
-    blob: new Blob([JSON.stringify(exported, null, 2)], {
+    blob: new Blob([JSON.stringify(fileContent, null, 2)], {
       type: 'application/json;charset=utf-8',
     }),
     fileName: `${productName.trim() || '当前商品'}-差异化Prompt-${exported.result.items.length}条.json`,

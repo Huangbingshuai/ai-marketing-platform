@@ -102,9 +102,9 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).toContain('生成前结构化代理指标');
   });
 
-  it('states the fragment semantics and keeps tags separate from generation copy', () => {
-    expect(pageSource).toContain('条 Prompt =');
-    expect(pageSource).toContain('不是');
+  it('uses concise generation copy and keeps tags separate from generation copy', () => {
+    expect(pageSource).toContain('基于提炼结果，批量生成差异化视频素材 Prompt');
+    expect(pageSource).not.toContain('条 Prompt =');
     expect(pageSource).toContain('EFFECT_PROMPT_FRAGMENT_TYPE_LABELS');
     expect(pageSource).toContain('fragmentTypeFilter');
     expect(pageSource).toContain('item.materialTags');
@@ -115,7 +115,20 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).toContain('removedExecutionInvalid');
     expect(pageSource).toContain('currentQuotaStats');
     expect(pageSource).toContain('currentFragmentDistribution');
-    expect(pageSource).toContain('缺口');
+    expect(pageSource).toContain('缺少 ');
+    expect(pageSource).toContain('超出 ');
+    expect(pageSource).toContain('数量一致');
+  });
+
+  it('shows batch render parameters once and keeps copy limited to clean content', () => {
+    expect(pageSource).toContain('aria-label="统一渲染设置"');
+    expect(pageSource).toContain('统一禁用元素');
+    expect(pageSource).toContain('currentRenderProfile.ratio');
+    expect(pageSource).toContain('currentRenderProfile.resolution');
+    expect(pageSource).toContain('currentRenderCapability?.minDurationSeconds');
+    expect(pageSource).toContain('currentMetrics.fallbackCount');
+    expect(pageSource).toContain('await writeClipboardText(item.content)');
+    expect(pageSource).not.toContain('writeClipboardText(item.targetDurationSeconds');
   });
 
   it('wires every prompt-list action with safe destructive and busy states', () => {
@@ -125,7 +138,7 @@ describe('effect prompt generation prototype layout', () => {
       'openEditor(item, $event)',
       'copyItem(item)',
       'requestDeleteItem(item, $event)',
-      'regenerateItem(item)',
+      'openRegenerationDialog(item, $event)',
     ])
       expect(pageSource).toContain(handler);
 
@@ -133,7 +146,17 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).toContain('@keydown.esc="closeDeleteDialog"');
     expect(pageSource).toContain('ref="deleteConfirmButton"');
     expect(pageSource).toContain("itemOperation.kind === 'delete'");
-    expect(pageSource).toContain("itemOperation.kind === 'regenerate'");
+    expect(pageSource).toContain('重新生成此条');
+    expect(pageSource).toContain('class="prompt-regeneration-dialog"');
+    expect(pageSource).toContain('已调整 {{ regenerationChangedKeys.length }}/6');
+    expect(pageSource).toContain('恢复原始六维');
+    expect(pageSource).toContain('regenerationInstruction.length }}/500');
+    expect(pageSource).toContain("regenerationHasChanges ? '按当前设置重新生成' : '直接换一版'");
+    expect(pageSource).toContain('replacementDimensions');
+    expect(pageSource).toContain('targetItemId: item.id');
+    expect(pageSource).not.toContain(
+      'graphDialogOpen.value = true;\n    startPolling(state.productId, run)',
+    );
     expect(pageSource).toContain("document.execCommand('copy')");
     expect(pageSource).toContain('currentRunning || exporting');
     expect(pageSource).toMatch(/:disabled="!resultData \|\| currentRunning/u);
@@ -200,6 +223,16 @@ describe('effect prompt generation prototype layout', () => {
 
   it('persists server defaults before the first generation run', () => {
     expect(pageSource).toContain('state.settingsRevision !== null');
+  });
+
+  it('starts batch generation without automatically opening the workflow dialog', () => {
+    const generationStart = pageSource.indexOf('const generateCurrentBatch');
+    const generationEnd = pageSource.indexOf('const regenerateItem', generationStart);
+    const generationSource = pageSource.slice(generationStart, generationEnd);
+
+    expect(generationSource).toContain('startPolling(productId, run)');
+    expect(generationSource).not.toContain('graphDialogOpen.value = true');
+    expect(generationSource).not.toContain('graphCloseButton.value?.focus()');
   });
 
   it('wires only step three and keeps later nodes on their existing placeholder', () => {

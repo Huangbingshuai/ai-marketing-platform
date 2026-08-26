@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ai-marketing.local/schemas/effect-prompt-batch.v4.json",
-  "title": "EffectPromptBatchResult.v4",
+  "$id": "https://ai-marketing.local/schemas/effect-prompt-batch.v5.json",
+  "title": "EffectPromptBatchResult.v5",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "settings", "items", "metrics", "qualityStatus"],
+  "required": ["schemaVersion", "settings", "renderProfile", "items", "metrics", "qualityStatus"],
   "properties": {
-    "schemaVersion": { "const": 4 },
+    "schemaVersion": { "const": 5 },
     "settings": {
       "type": "object",
       "additionalProperties": false,
@@ -36,6 +36,7 @@
         "visualLimit": { "type": "integer", "minimum": 10, "maximum": 20 }
       }
     },
+    "renderProfile": { "$ref": "#/$defs/renderProfile" },
     "items": {
       "type": "array",
       "maxItems": 200,
@@ -48,6 +49,7 @@
         "targetCount",
         "acceptedCount",
         "generatedCandidateCount",
+        "fallbackCount",
         "removedSemanticDuplicates",
         "removedVisualDuplicates",
         "removedDimensionConflicts",
@@ -64,6 +66,7 @@
         "targetCount": { "type": "integer", "minimum": 10, "maximum": 200 },
         "acceptedCount": { "type": "integer", "minimum": 0, "maximum": 200 },
         "generatedCandidateCount": { "type": "integer", "minimum": 0 },
+        "fallbackCount": { "type": "integer", "minimum": 0, "maximum": 200 },
         "removedSemanticDuplicates": { "type": "integer", "minimum": 0 },
         "removedVisualDuplicates": { "type": "integer", "minimum": 0 },
         "removedDimensionConflicts": { "type": "integer", "minimum": 0 },
@@ -103,7 +106,7 @@
       "required": ["count", "durationSeconds"],
       "properties": {
         "count": { "type": "integer", "minimum": 1, "maximum": 200 },
-        "durationSeconds": { "type": "integer", "minimum": 3, "maximum": 10 }
+        "durationSeconds": { "type": "integer", "minimum": 4, "maximum": 15 }
       }
     },
     "dimensions": {
@@ -148,7 +151,7 @@
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1, "maxLength": 120 }
         },
-        "targetDurationSeconds": { "type": "integer", "minimum": 3, "maximum": 10 },
+        "targetDurationSeconds": { "type": "integer", "minimum": 4, "maximum": 15 },
         "dimensions": { "$ref": "#/$defs/dimensions" },
         "content": { "type": "string", "minLength": 1, "maxLength": 12000 },
         "insightBindings": {
@@ -159,6 +162,32 @@
         "manualEdited": { "type": "boolean" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "renderProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ratio", "resolution", "capabilityKey", "sharedConstraints"],
+      "properties": {
+        "ratio": { "enum": ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"] },
+        "resolution": { "enum": ["480p", "720p", "1080p"] },
+        "capabilityKey": {
+          "enum": ["SEEDANCE_2_0", "SEEDANCE_2_0_FAST", "SEEDANCE_1_5_PRO", "SEEDANCE_1_0"]
+        },
+        "sharedConstraints": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["disabledElements", "contentHash"],
+          "properties": {
+            "disabledElements": {
+              "type": "array",
+              "maxItems": 100,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+            },
+            "contentHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+          }
+        }
       }
     },
     "fragmentTypeDistribution": {

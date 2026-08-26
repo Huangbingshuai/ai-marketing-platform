@@ -107,6 +107,7 @@ class AiProvider(Protocol):
         combinations: list[PlannedCombination],
         *,
         insight: Mapping[str, Any],
+        regeneration_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[GeneratedPromptTextBatch]: ...
 
 
@@ -216,6 +217,7 @@ class MockAiProvider:
         combinations: list[PlannedCombination],
         *,
         insight: Mapping[str, Any],
+        regeneration_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[GeneratedPromptTextBatch]:
         fragment_type = _homogeneous_fragment_type(combinations)
         product_name = _first_text(insight, "productName", "product_name") or "产品"
@@ -225,8 +227,6 @@ class MockAiProvider:
                 _mock_prompt_text(
                     combo,
                     product_name=product_name,
-                    duration_seconds=combo.target_duration_seconds,
-                    aspect_ratio=_first_text(insight, "aspectRatio", "aspect_ratio") or "9:16",
                 )
             )
         return _mock_result(
@@ -301,27 +301,31 @@ class ArkResponsesProvider:
             model=self._strategy_model,
             max_output_tokens=self._strategy_max_output_tokens,
         )
+        allowed_by_key = {_normalized_text(item): item for item in allowed}
         evidence_by_point = {
-            _normalized_text(item.selling_point): item
+            key: item.model_copy(update={"selling_point": allowed_by_key[key]})
             for item in call.value.dimension_pools.evidence_plans
+            if (key := _normalized_text(item.selling_point)) in allowed_by_key
         }
-        if set(evidence_by_point) != {_normalized_text(item) for item in allowed}:
-            raise ProviderError(
-                "AI evidence plans do not match the confirmed selling points",
-                retryable=False,
-                error_type=ProviderErrorType.RESPONSE_INVALID,
-                attempts=call.metadata.attempts,
-                elapsed_ms=call.metadata.latency_ms,
-            )
-        protected_evidence = [evidence_by_point[_normalized_text(item)] for item in allowed]
-        _validate_relationship_bundles(call.value.relationship_bundles, application)
+        # Selling-point names are hard facts. A model may omit or rewrite an evidence row even
+        # when strict JSON validation succeeds; keep every confirmed point and fill omissions
+        # with the safest deterministic representation instead of aborting the entire batch.
+        protected_evidence = [
+            evidence_by_point.get(_normalized_text(item), _safe_text_evidence_plan(item))
+            for item in allowed
+        ]
+        protected_bundles = _complete_relationship_bundles(
+            call.value.relationship_bundles,
+            application,
+        )
         # Selling points are protected hard facts; model output cannot add or remove them.
         return AiCallResult(
             value=call.value.model_copy(
                 update={
                     "dimension_pools": call.value.dimension_pools.model_copy(
                         update={"selling_points": allowed, "evidence_plans": protected_evidence}
-                    )
+                    ),
+                    "relationship_bundles": protected_bundles,
                 }
             ),
             metadata=call.metadata,
@@ -332,19 +336,15 @@ class ArkResponsesProvider:
         combinations: list[PlannedCombination],
         *,
         insight: Mapping[str, Any],
+        regeneration_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[GeneratedPromptTextBatch]:
         fragment_type = _homogeneous_fragment_type(combinations)
         product_context = _candidate_product_context(insight)
         prompt = render_prompt(
             CANDIDATE_TASK_PROMPT,
-            aspect_ratio=_first_text(insight, "aspectRatio", "aspect_ratio") or "以信息卡为准",
             delivery_channels=_first_text(insight, "deliveryChannels", "delivery_channels") or "以信息卡为准",
             visual_style=_first_text(insight, "visualStyleBaseline", "visual_style_baseline")
             or "以信息卡为准",
-            disabled_elements_json=json.dumps(
-                _text_list(insight, "disabledElements", "disabled_elements"),
-                ensure_ascii=False,
-            ),
             product_context_json=json.dumps(
                 product_context, ensure_ascii=False, sort_keys=True
             ),
@@ -352,6 +352,9 @@ class ArkResponsesProvider:
                 [item.model_dump(mode="json", by_alias=True) for item in combinations],
                 ensure_ascii=False,
                 sort_keys=True,
+            ),
+            regeneration_context_json=json.dumps(
+                regeneration_context or {}, ensure_ascii=False, sort_keys=True
             ),
         )
         call = await self._structured(
@@ -571,8 +574,6 @@ def _mock_prompt_text(
     combination: PlannedCombination,
     *,
     product_name: str,
-    duration_seconds: int,
-    aspect_ratio: str,
 ) -> GeneratedPromptText:
     dims = combination.dimensions
     persona_position = (
@@ -580,7 +581,7 @@ def _mock_prompt_text(
         if dims.persona.startswith("无人出镜")
         else f"{dims.persona}位于画面主体位置"
     )
-    prefix = f"{duration_seconds}秒，{aspect_ratio}竖屏。{dims.scene}，{persona_position}"
+    prefix = f"{dims.scene}，{persona_position}"
     action = combination.visible_action.replace("产品", product_name).replace("·", "，")
     price = next(
         (
@@ -662,6 +663,15 @@ def _mock_evidence_plan(selling_point: str) -> SellingPointEvidence:
     )
 
 
+def _safe_text_evidence_plan(selling_point: str) -> SellingPointEvidence:
+    return SellingPointEvidence(
+        selling_point=selling_point,
+        evidence_mode=EvidenceMode.TEXT_ONLY,
+        allowed_visual_evidence=f"只允许按信息卡原文表达“{selling_point}”，不得伪造证明画面",
+        forbidden_inference=f"不得把{selling_point}扩展为未确认功效、数据、认证、销量或承诺",
+    )
+
+
 def _mock_relationship_bundles(
     application: InsightApplicationMap,
 ) -> list[MarketingRelationshipBundle]:
@@ -722,6 +732,8 @@ def _mock_relationship_bundles(
 def _validate_relationship_bundles(
     bundles: list[MarketingRelationshipBundle],
     application: InsightApplicationMap,
+    *,
+    require_complete: bool = True,
 ) -> None:
     known = application.by_id
     planned: set[str] = set()
@@ -753,12 +765,63 @@ def _validate_relationship_bundles(
             planned.add(fact_id)
         covered_fragment_types.update(bundle.eligible_fragment_types)
     missing = {fact.fact_id for fact in application.required} - planned
-    if missing or covered_fragment_types != set(FragmentType):
+    if require_complete and (missing or covered_fragment_types != set(FragmentType)):
         raise ProviderError(
             "AI relationship plan does not cover every required fact and fragment type",
             retryable=False,
             error_type=ProviderErrorType.RESPONSE_INVALID,
         )
+
+
+def _complete_relationship_bundles(
+    bundles: list[MarketingRelationshipBundle],
+    application: InsightApplicationMap,
+) -> list[MarketingRelationshipBundle]:
+    # Reject each invalid model bundle independently. Coverage is then repaired only from the
+    # deterministic fact map, so unknown references and responsibility conflicts never survive.
+    completed: list[MarketingRelationshipBundle] = []
+    for bundle in bundles:
+        try:
+            _validate_relationship_bundles([bundle], application, require_complete=False)
+        except ProviderError:
+            continue
+        completed.append(bundle)
+    planned = {fact_id for bundle in completed for fact_id in bundle.fact_ids}
+    covered_types = {
+        fragment_type
+        for bundle in completed
+        for fragment_type in bundle.eligible_fragment_types
+    }
+    missing = {fact.fact_id for fact in application.required} - planned
+    missing_types = set(FragmentType) - covered_types
+    fallbacks = _mock_relationship_bundles(application)
+    fallback_index = 0
+    while missing or missing_types:
+        candidate = max(
+            fallbacks,
+            key=lambda item: len(missing.intersection(item.fact_ids))
+            + len(missing_types.intersection(item.eligible_fragment_types)),
+        )
+        score = len(missing.intersection(candidate.fact_ids)) + len(
+            missing_types.intersection(candidate.eligible_fragment_types)
+        )
+        if score == 0 or len(completed) >= 48:
+            raise ProviderError(
+                "Worker could not complete relationship coverage from confirmed facts",
+                retryable=False,
+                error_type=ProviderErrorType.RESPONSE_INVALID,
+            )
+        fallback_index += 1
+        completed.append(
+            candidate.model_copy(
+                update={"bundle_id": f"worker-coverage-{fallback_index}-{candidate.bundle_id}"}
+            )
+        )
+        missing.difference_update(candidate.fact_ids)
+        missing_types.difference_update(candidate.eligible_fragment_types)
+        fallbacks.remove(candidate)
+    _validate_relationship_bundles(completed, application)
+    return completed
 
 
 def _mock_concrete_scene(value: str) -> str:

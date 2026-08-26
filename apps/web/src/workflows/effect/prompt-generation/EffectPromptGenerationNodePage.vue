@@ -23,6 +23,7 @@ import {
   EFFECT_PROMPT_GRAPH_EDGES,
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
+  EFFECT_PROMPT_RENDER_CAPABILITIES,
   effectPromptTargetCount,
 } from '@ai-marketing/contracts';
 import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
@@ -83,7 +84,7 @@ const emit = defineEmits<{ back: []; next: [] }>();
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 type Notice = { kind: 'error' | 'success' | 'warning'; text: string };
 type NodeDetail = GetEffectPromptNodeDetailData['detail'];
-type ItemOperation = { itemId: string; kind: 'delete' | 'regenerate' };
+type ItemOperation = { itemId: string; kind: 'delete' };
 
 const status = ref<EffectPromptPageStatus>('loading');
 const loadError = ref('');
@@ -126,6 +127,14 @@ const editorMaterialTagsText = ref('');
 const editorTrigger = ref<HTMLElement | null>(null);
 const editorCloseButton = ref<HTMLButtonElement | null>(null);
 const promptSearchInput = ref<HTMLInputElement | null>(null);
+
+const regenerationDialogOpen = ref(false);
+const regenerationCandidate = ref<EffectPromptItem | null>(null);
+const regenerationDimensions = ref<EffectPromptDimensions>(emptyDimensions());
+const regenerationInstruction = ref('');
+const regenerationSaving = ref(false);
+const regenerationTrigger = ref<HTMLElement | null>(null);
+const regenerationCloseButton = ref<HTMLButtonElement | null>(null);
 
 const deleteDialogOpen = ref(false);
 const deleteCandidate = ref<EffectPromptItem | null>(null);
@@ -181,6 +190,24 @@ const currentItems = computed(() => resultData.value?.items ?? []);
 const currentMetrics = computed(
   () => currentResult.value?.metrics ?? currentState.value?.metrics ?? null,
 );
+const currentRenderProfile = computed(() => currentResult.value?.renderProfile ?? null);
+const currentRenderCapability = computed(() => {
+  const key = currentRenderProfile.value?.capabilityKey;
+  return key ? EFFECT_PROMPT_RENDER_CAPABILITIES[key] : null;
+});
+const currentDisabledElements = computed(
+  () => currentRenderProfile.value?.sharedConstraints.disabledElements ?? [],
+);
+const renderCapabilityLabel = computed(() => {
+  const labels = {
+    SEEDANCE_2_0: 'Seedance 2.0',
+    SEEDANCE_2_0_FAST: 'Seedance 2.0 Fast',
+    SEEDANCE_1_5_PRO: 'Seedance 1.5 Pro',
+    SEEDANCE_1_0: 'Seedance 1.0',
+  } as const;
+  const key = currentRenderProfile.value?.capabilityKey;
+  return key ? labels[key] : '当前模型';
+});
 const insightFieldLabels: Record<EffectPromptInsightField, string> = {
   PRODUCT_NAME: '产品名称',
   PRODUCT_CATEGORY: '产品品类',
@@ -237,6 +264,7 @@ const currentQuotaStats = computed(() => {
       targetCount,
       actualCount,
       missingCount: Math.max(0, targetCount - actualCount),
+      excessCount: Math.max(0, actualCount - targetCount),
     };
   }
   const entry = currentMetrics.value?.fragmentTypeDistribution.find(
@@ -250,8 +278,14 @@ const currentQuotaStats = computed(() => {
     targetCount,
     actualCount,
     missingCount: Math.max(0, targetCount - actualCount),
+    excessCount: Math.max(0, actualCount - targetCount),
   };
 });
+const quotaDifferenceLabel = (actualCount: number, targetCount: number): string => {
+  if (actualCount < targetCount) return '缺少 ' + (targetCount - actualCount);
+  if (actualCount > targetCount) return '超出 ' + (actualCount - targetCount);
+  return '数量一致';
+};
 const executionInvalidSummary = computed(() => {
   const labels: Record<string, string> = {
     MULTI_STAGE_STORY: '完整成片结构',
@@ -297,6 +331,11 @@ const deleteSaving = computed(
     itemOperation.value?.kind === 'delete' &&
     itemOperation.value.itemId === deleteCandidate.value?.id,
 );
+const regeneratingItemId = computed(() =>
+  currentRunning.value && currentRun.value?.operation === 'ITEM_REGENERATE'
+    ? currentRun.value.targetItemId
+    : null,
+);
 const currentGraphNodes = computed<EffectPromptNodeExecution[]>(() =>
   EFFECT_PROMPT_GRAPH_NODES.map(
     ({ id }) =>
@@ -338,6 +377,52 @@ const dimensionSuggestions: Record<keyof EffectPromptDimensions, string[]> = {
   camera: ['固定机位＋三段跳切', '广角环绕＋慢推近景', '手持跟拍＋特写', '俯拍全景＋微距切面'],
   emotion: ['温馨治愈', '专业严谨', '活力明快', '焦虑唤醒', '干货科普'],
 };
+const regenerationChangedKeys = computed(() => {
+  const item = regenerationCandidate.value;
+  if (!item) return [] as Array<keyof EffectPromptDimensions>;
+  return EFFECT_PROMPT_DIMENSIONS.map(({ key }) => key).filter(
+    (key) => regenerationDimensions.value[key].trim() !== item.dimensions[key].trim(),
+  );
+});
+const regenerationHasChanges = computed(
+  () => regenerationChangedKeys.value.length > 0 || regenerationInstruction.value.trim().length > 0,
+);
+const regenerationSuggestions = computed<Record<keyof EffectPromptDimensions, string[]>>(() => {
+  const result = {} as Record<keyof EffectPromptDimensions, string[]>;
+  for (const { key } of EFFECT_PROMPT_DIMENSIONS) {
+    const values = [
+      ...dimensionSuggestions[key],
+      ...currentItems.value.map((item) => item.dimensions[key]),
+      ...(regenerationCandidate.value ? [regenerationCandidate.value.dimensions[key]] : []),
+    ];
+    result[key] = [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+  }
+  if (regenerationCandidate.value) {
+    const type = regenerationCandidate.value.fragmentType;
+    const coreSellingPoints = [
+      ...(currentMetrics.value?.sellingPointCoverage.required ?? []),
+      ...currentItems.value.flatMap((item) =>
+        item.insightBindings
+          .filter((binding) => binding.field === 'CORE_SELLING_POINT')
+          .map((binding) => binding.value),
+      ),
+    ];
+    const secondarySellingPoints = currentItems.value.flatMap((item) =>
+      item.insightBindings
+        .filter((binding) => binding.field === 'SECONDARY_SELLING_POINT')
+        .map((binding) => binding.value),
+    );
+    const confirmed = [
+      regenerationCandidate.value.dimensions.sellingPoint,
+      ...(type === 'PRODUCT_DISPLAY' || type === 'SELLING_POINT_EXPLANATION' || type === 'CTA'
+        ? coreSellingPoints
+        : []),
+      ...(type === 'SELLING_POINT_EXPLANATION' ? secondarySellingPoints : []),
+    ];
+    result.sellingPoint = [...new Set(confirmed.map((value) => value.trim()).filter(Boolean))];
+  }
+  return result;
+});
 function emptyDimensions(): EffectPromptDimensions {
   return { narrative: '', scene: '', persona: '', sellingPoint: '', camera: '', emotion: '' };
 }
@@ -547,6 +632,10 @@ watch(
     editorOpen.value = false;
     editorSaving.value = false;
     editorTrigger.value = null;
+    regenerationDialogOpen.value = false;
+    regenerationCandidate.value = null;
+    regenerationSaving.value = false;
+    regenerationTrigger.value = null;
     deleteDialogOpen.value = false;
     deleteCandidate.value = null;
     deleteTrigger.value = null;
@@ -570,8 +659,14 @@ watch(currentProductId, (next, previous) => {
   editorOpen.value = false;
   editorSaving.value = false;
   editorTrigger.value = null;
+  regenerationDialogOpen.value = false;
+  regenerationCandidate.value = null;
+  regenerationSaving.value = false;
+  regenerationTrigger.value = null;
   deleteDialogOpen.value = false;
   deleteCandidate.value = null;
+  regenerationDialogOpen.value = false;
+  regenerationCandidate.value = null;
   deleteTrigger.value = null;
   graphDetailController?.abort();
   graphDetailController = null;
@@ -768,23 +863,67 @@ const generateCurrentBatch = async (): Promise<void> => {
       controller.signal,
     );
     updateRun(productId, run);
-    graphDialogOpen.value = true;
     startPolling(productId, run);
-    await nextTick();
-    graphCloseButton.value?.focus();
   } catch (error) {
     if (!isAbortError(error)) await handleMutationError(error, 'Prompt 批次启动失败');
   }
 };
 
-const regenerateItem = async (item: EffectPromptItem): Promise<void> => {
+const openRegenerationDialog = async (item: EffectPromptItem, event?: Event): Promise<void> => {
+  if (currentRunning.value || itemOperation.value) return;
+  regenerationTrigger.value =
+    event?.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  regenerationCandidate.value = item;
+  regenerationDimensions.value = { ...item.dimensions };
+  regenerationInstruction.value = '';
+  regenerationDialogOpen.value = true;
+  await nextTick();
+  regenerationCloseButton.value?.focus();
+};
+
+const closeRegenerationDialog = (): void => {
+  if (regenerationSaving.value) return;
+  regenerationDialogOpen.value = false;
+  regenerationCandidate.value = null;
+  regenerationDimensions.value = emptyDimensions();
+  regenerationInstruction.value = '';
+  const trigger = regenerationTrigger.value;
+  regenerationTrigger.value = null;
+  nextTick(() => trigger?.focus());
+};
+
+const restoreRegenerationDimensions = (): void => {
+  if (!regenerationCandidate.value) return;
+  regenerationDimensions.value = { ...regenerationCandidate.value.dimensions };
+};
+
+const useRegenerationSuggestion = (key: keyof EffectPromptDimensions, value: string): void => {
+  regenerationDimensions.value = { ...regenerationDimensions.value, [key]: value };
+};
+
+const regenerateItem = async (): Promise<void> => {
   const state = currentState.value;
-  if (!state || currentRunning.value || itemOperation.value || state.settingsRevision === null)
+  const item = regenerationCandidate.value;
+  if (
+    !state ||
+    !item ||
+    currentRunning.value ||
+    itemOperation.value ||
+    state.settingsRevision === null ||
+    regenerationSaving.value
+  )
     return;
+  const replacementDimensions = Object.fromEntries(
+    EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, regenerationDimensions.value[key].trim()]),
+  ) as EffectPromptDimensions;
+  if (EFFECT_PROMPT_DIMENSIONS.some(({ key }) => !replacementDimensions[key])) {
+    showNotice('请完整填写六大维度后再重新生成', 'warning');
+    return;
+  }
   operationController?.abort();
   const controller = new AbortController();
   operationController = controller;
-  itemOperation.value = { itemId: item.id, kind: 'regenerate' };
+  regenerationSaving.value = true;
   try {
     const run = await beginEffectPromptRun(
       props.projectId,
@@ -793,19 +932,23 @@ const regenerateItem = async (item: EffectPromptItem): Promise<void> => {
         workflowRunId: props.workflowRunId,
         operation: 'ITEM_REGENERATE',
         targetItemId: item.id,
+        replacementDimensions,
+        ...(regenerationInstruction.value.trim()
+          ? { regenerationInstruction: regenerationInstruction.value.trim() }
+          : {}),
         expectedSettingsRevision: state.settingsRevision,
         ...(state.resultRevision === null ? {} : { expectedResultRevision: state.resultRevision }),
       },
       controller.signal,
     );
     updateRun(state.productId, run);
-    graphDialogOpen.value = true;
+    regenerationSaving.value = false;
+    closeRegenerationDialog();
     startPolling(state.productId, run);
   } catch (error) {
     if (!isAbortError(error)) await handleMutationError(error, '单条 Prompt 重新生成失败');
   } finally {
-    if (itemOperation.value?.itemId === item.id && itemOperation.value.kind === 'regenerate')
-      itemOperation.value = null;
+    regenerationSaving.value = false;
   }
 };
 
@@ -1372,7 +1515,8 @@ onBeforeUnmount(() => {
         <span>
           {{
             currentState.status === 'STALE'
-              ? '上游信息卡或批次设置已更新，请重新生成当前产品的 Prompt。'
+              ? currentState.errorMessage ||
+                '上游信息卡或批次设置已更新，请重新生成当前产品的 Prompt。'
               : currentState.errorMessage || '本次 Prompt 生成失败，请查看工作流节点后重试。'
           }}
         </span>
@@ -1560,8 +1704,14 @@ onBeforeUnmount(() => {
           <span>{{ currentQuotaStats.label }}</span
           ><strong>{{ currentQuotaStats.actualCount }}</strong
           ><small
-            >目标 {{ currentQuotaStats.targetCount }} 条 · 缺口
-            {{ currentQuotaStats.missingCount }} 条，一条对应一个片段</small
+            >目标 {{ currentQuotaStats.targetCount }} 条 ·
+            {{
+              currentQuotaStats.missingCount
+                ? '缺少 ' + currentQuotaStats.missingCount + ' 条'
+                : currentQuotaStats.excessCount
+                  ? '超出 ' + currentQuotaStats.excessCount + ' 条'
+                  : '数量一致'
+            }}，一条对应一个片段</small
           >
         </article>
         <article class="amber">
@@ -1581,18 +1731,55 @@ onBeforeUnmount(() => {
         </article>
       </section>
 
+      <section v-if="currentRenderProfile" class="unified-render-profile" aria-label="统一渲染设置">
+        <div class="render-profile-heading">
+          <div>
+            <strong>统一渲染设置</strong>
+            <span>渲染时作为独立参数传递，不写入 Prompt 正文</span>
+          </div>
+          <small v-if="currentMetrics?.fallbackCount">
+            本批次规则兜底 {{ currentMetrics.fallbackCount }} 条
+          </small>
+        </div>
+        <div class="render-profile-values">
+          <span
+            ><small>画幅</small><b>{{ currentRenderProfile.ratio }}</b></span
+          >
+          <span
+            ><small>分辨率</small><b>{{ currentRenderProfile.resolution }}</b></span
+          >
+          <span>
+            <small>模型时长范围</small>
+            <b>
+              {{ renderCapabilityLabel }} ·
+              {{ currentRenderCapability?.minDurationSeconds ?? 4 }}～{{
+                currentRenderCapability?.maxDurationSeconds ?? 15
+              }}
+              秒
+            </b>
+          </span>
+        </div>
+        <div class="shared-disabled-elements">
+          <strong>统一禁用元素</strong>
+          <div v-if="currentDisabledElements.length">
+            <span v-for="element in currentDisabledElements" :key="element">{{ element }}</span>
+          </div>
+          <em v-else>未设置</em>
+        </div>
+      </section>
+
       <section v-if="currentMetrics" class="quality-breakdown" aria-label="配额与提炼信息覆盖">
         <div>
           <strong>{{ fragmentTypeFilter ? '当前类型配额' : '六类标签配额' }}</strong>
           <span
             v-for="entry in currentFragmentDistribution"
             :key="entry.fragmentType"
-            :class="{ missing: entry.actualCount < entry.targetCount }"
+            :class="{ missing: entry.actualCount !== entry.targetCount }"
           >
             {{ fragmentTypeLabel(entry.fragmentType) }} {{ entry.actualCount }}/{{
               entry.targetCount
             }}
-            · 缺口 {{ Math.max(0, entry.targetCount - entry.actualCount) }}
+            · {{ quotaDifferenceLabel(entry.actualCount, entry.targetCount) }}
           </span>
         </div>
         <div>
@@ -1735,13 +1922,13 @@ onBeforeUnmount(() => {
             <button
               type="button"
               :disabled="currentRunning || itemOperation !== null"
-              @click="regenerateItem(item)"
+              @click="openRegenerationDialog(item, $event)"
             >
               <LoaderCircle
-                v-if="itemOperation?.itemId === item.id && itemOperation.kind === 'regenerate'"
+                v-if="regeneratingItemId === item.id"
                 class="spin"
                 :size="13"
-              /><RefreshCw v-else :size="13" />重新生成
+              /><RefreshCw v-else :size="13" />重新生成此条
             </button>
           </div>
         </article>
@@ -1884,6 +2071,159 @@ onBeforeUnmount(() => {
                 editorMode === 'add' ? '添加到节点草稿' : '保存修改'
               }}
             </button>
+          </footer>
+        </section>
+      </div>
+
+      <div
+        v-if="regenerationDialogOpen && regenerationCandidate"
+        class="prompt-dialog-backdrop"
+        @mousedown.self="closeRegenerationDialog"
+      >
+        <section
+          class="prompt-regeneration-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="prompt-regeneration-title"
+          @keydown.esc="closeRegenerationDialog"
+        >
+          <header>
+            <div>
+              <span>单条定向重新生成</span>
+              <h2 id="prompt-regeneration-title">重新生成 {{ regenerationCandidate.code }}</h2>
+              <p>
+                <strong>{{ fragmentTypeLabel(regenerationCandidate.fragmentType) }}</strong>
+                <i>{{ regenerationCandidate.targetDurationSeconds }} 秒</i>
+                <i>{{ regenerationCandidate.materialTags.join(' · ') }}</i>
+              </p>
+            </div>
+            <button
+              ref="regenerationCloseButton"
+              type="button"
+              aria-label="关闭单条重新生成窗口"
+              @click="closeRegenerationDialog"
+            >
+              <X :size="18" />
+            </button>
+          </header>
+
+          <details class="regeneration-prompt-preview">
+            <summary>查看当前 Prompt</summary>
+            <p>{{ regenerationCandidate.content }}</p>
+          </details>
+
+          <div class="regeneration-toolbar">
+            <div>
+              <span>六维定向设置</span>
+              <strong>已调整 {{ regenerationChangedKeys.length }}/6</strong>
+            </div>
+            <button
+              type="button"
+              :disabled="regenerationChangedKeys.length === 0 || regenerationSaving"
+              @click="restoreRegenerationDimensions"
+            >
+              <RefreshCw :size="13" />恢复原始六维
+            </button>
+          </div>
+
+          <div class="regeneration-dimension-grid">
+            <article
+              v-for="dimension in EFFECT_PROMPT_DIMENSIONS"
+              :key="dimension.key"
+              class="regeneration-dimension-card"
+              :class="{ changed: regenerationChangedKeys.includes(dimension.key) }"
+            >
+              <header>
+                <span>{{ dimension.label }}</span>
+                <em v-if="regenerationChangedKeys.includes(dimension.key)">已调整</em>
+              </header>
+              <p class="regeneration-original-value">
+                <small>原值</small>{{ regenerationCandidate.dimensions[dimension.key] }}
+              </p>
+              <label>
+                <span>当前值</span>
+                <select
+                  v-if="dimension.key === 'sellingPoint'"
+                  v-model="regenerationDimensions.sellingPoint"
+                >
+                  <option
+                    v-for="value in regenerationSuggestions.sellingPoint"
+                    :key="value"
+                    :value="value"
+                  >
+                    {{ value }}
+                  </option>
+                </select>
+                <input
+                  v-else
+                  v-model="regenerationDimensions[dimension.key]"
+                  :list="`regeneration-dimension-${dimension.key}`"
+                  :maxlength="dimension.key === 'persona' || dimension.key === 'camera' ? 160 : 120"
+                  :placeholder="`搜索建议或自定义${dimension.label}`"
+                />
+                <datalist
+                  v-if="dimension.key !== 'sellingPoint'"
+                  :id="`regeneration-dimension-${dimension.key}`"
+                >
+                  <option
+                    v-for="value in regenerationSuggestions[dimension.key]"
+                    :key="value"
+                    :value="value"
+                  />
+                </datalist>
+              </label>
+              <div
+                v-if="dimension.key !== 'sellingPoint'"
+                class="regeneration-suggestion-list"
+                aria-label="安全候选"
+              >
+                <button
+                  v-for="value in regenerationSuggestions[dimension.key].slice(0, 3)"
+                  :key="value"
+                  type="button"
+                  :class="{ active: regenerationDimensions[dimension.key] === value }"
+                  @click="useRegenerationSuggestion(dimension.key, value)"
+                >
+                  {{ value }}
+                </button>
+              </div>
+              <p v-if="regenerationChangedKeys.includes(dimension.key)" class="regeneration-change">
+                {{ regenerationCandidate.dimensions[dimension.key] }}
+                <ChevronRight :size="12" />
+                <strong>{{ regenerationDimensions[dimension.key] }}</strong>
+              </p>
+              <small v-if="dimension.key === 'sellingPoint'" class="selling-point-note">
+                仅可选择当前信息卡已确认且适用于本片段的卖点。
+              </small>
+            </article>
+          </div>
+
+          <label class="regeneration-instruction">
+            <span>修改意见 <em>可选</em></span>
+            <textarea
+              v-model="regenerationInstruction"
+              maxlength="500"
+              placeholder="例如：产品更早出现、动作节奏更舒缓、减少蒸汽遮挡"
+            />
+            <small>{{ regenerationInstruction.length }}/500</small>
+          </label>
+
+          <footer>
+            <p>只替换当前条目；类型、时长、标签、编号和列表位置保持不变。</p>
+            <div>
+              <button type="button" :disabled="regenerationSaving" @click="closeRegenerationDialog">
+                取消
+              </button>
+              <button
+                class="primary-button"
+                type="button"
+                :disabled="regenerationSaving"
+                @click="regenerateItem"
+              >
+                <LoaderCircle v-if="regenerationSaving" class="spin" :size="14" />
+                {{ regenerationHasChanges ? '按当前设置重新生成' : '直接换一版' }}
+              </button>
+            </div>
           </footer>
         </section>
       </div>
@@ -2678,6 +3018,83 @@ button:disabled {
   background: #f5f1ff;
   border-color: #e4dbfa;
 }
+.unified-render-profile {
+  display: grid;
+  margin-top: 10px;
+  padding: 14px 16px;
+  gap: 12px;
+  background: #f8fbff;
+  border: 1px solid #dae6f7;
+  border-radius: 13px;
+}
+.render-profile-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.render-profile-heading > div {
+  display: grid;
+  gap: 3px;
+}
+.render-profile-heading strong,
+.shared-disabled-elements strong {
+  color: #2f405c;
+  font-size: 11px;
+}
+.render-profile-heading span {
+  color: #7c899d;
+  font-size: 9px;
+}
+.render-profile-heading > small {
+  padding: 4px 8px;
+  color: #805b17;
+  background: #fff4d8;
+  border-radius: 999px;
+  font-size: 9px;
+  white-space: nowrap;
+}
+.render-profile-values {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.7fr) minmax(120px, 0.8fr) minmax(220px, 1.6fr);
+  gap: 8px;
+}
+.render-profile-values > span {
+  display: grid;
+  padding: 9px 11px;
+  gap: 3px;
+  background: #fff;
+  border: 1px solid #e4ebf5;
+  border-radius: 9px;
+}
+.render-profile-values small {
+  color: #8793a6;
+  font-size: 9px;
+}
+.render-profile-values b {
+  color: #3e506d;
+  font-size: 10px;
+}
+.shared-disabled-elements {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.shared-disabled-elements > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.shared-disabled-elements span,
+.shared-disabled-elements em {
+  padding: 4px 8px;
+  color: #5d6d84;
+  background: #edf3fb;
+  border-radius: 999px;
+  font-size: 9px;
+  font-style: normal;
+}
 .quality-breakdown {
   display: grid;
   margin-top: 10px;
@@ -3010,6 +3427,7 @@ button:disabled {
   backdrop-filter: blur(3px);
 }
 .prompt-editor-dialog,
+.prompt-regeneration-dialog,
 .prompt-delete-dialog,
 .workflow-graph-dialog {
   width: min(920px, 100%);
@@ -3022,6 +3440,306 @@ button:disabled {
 }
 .prompt-editor-dialog {
   padding: 22px;
+}
+.prompt-regeneration-dialog {
+  width: min(1040px, 100%);
+  max-height: calc(100vh - 40px);
+  padding: 24px;
+  overflow: auto;
+  background: #fff;
+  border: 1px solid #dbe4f6;
+  border-radius: 22px;
+  box-shadow: 0 24px 70px #0f172a38;
+}
+.prompt-regeneration-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+.prompt-regeneration-dialog > header span {
+  color: #2563eb;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+}
+.prompt-regeneration-dialog > header h2 {
+  margin: 4px 0 7px;
+  color: #17233a;
+  font-size: 22px;
+}
+.prompt-regeneration-dialog > header p {
+  display: flex;
+  margin: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  color: #738198;
+  font-size: 11px;
+}
+.prompt-regeneration-dialog > header p strong,
+.prompt-regeneration-dialog > header p i {
+  padding: 4px 8px;
+  background: #f2f6ff;
+  border: 1px solid #dce7fb;
+  border-radius: 999px;
+  font-style: normal;
+}
+.prompt-regeneration-dialog > header p strong {
+  color: #1d4ed8;
+}
+.prompt-regeneration-dialog > header > button {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #64748b;
+  background: #f7f9fc;
+  border: 1px solid #dfe6f0;
+  border-radius: 10px;
+}
+.regeneration-prompt-preview {
+  margin: 18px 0 14px;
+  padding: 12px 14px;
+  color: #526078;
+  background: #f8faff;
+  border: 1px solid #e1e9f7;
+  border-radius: 13px;
+}
+.regeneration-prompt-preview summary {
+  cursor: pointer;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+}
+.regeneration-prompt-preview p {
+  margin: 10px 0 0;
+  padding-top: 10px;
+  border-top: 1px dashed #dbe4f2;
+  font-size: 12px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+}
+.regeneration-toolbar {
+  display: flex;
+  margin-bottom: 10px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.regeneration-toolbar > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.regeneration-toolbar span {
+  color: #26354d;
+  font-size: 14px;
+  font-weight: 900;
+}
+.regeneration-toolbar strong {
+  padding: 4px 8px;
+  color: #2563eb;
+  background: #eff6ff;
+  border-radius: 999px;
+  font-size: 10px;
+}
+.regeneration-toolbar button,
+.prompt-regeneration-dialog > footer button {
+  display: inline-flex;
+  height: 38px;
+  padding: 0 14px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: #536178;
+  background: #fff;
+  border: 1px solid #dbe4f6;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 800;
+}
+.regeneration-toolbar button:disabled,
+.prompt-regeneration-dialog > footer button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.regeneration-dimension-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 11px;
+}
+.regeneration-dimension-card {
+  min-width: 0;
+  padding: 13px;
+  background: #fbfcff;
+  border: 1px solid #e0e7f2;
+  border-radius: 14px;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+.regeneration-dimension-card.changed {
+  background: #f8fbff;
+  border-color: #6b9cff;
+  box-shadow: 0 0 0 3px #2563eb12;
+}
+.regeneration-dimension-card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.regeneration-dimension-card > header span {
+  color: #26354d;
+  font-size: 12px;
+  font-weight: 900;
+}
+.regeneration-dimension-card > header em {
+  padding: 3px 6px;
+  color: #1d4ed8;
+  background: #eaf2ff;
+  border-radius: 999px;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 800;
+}
+.regeneration-original-value {
+  min-height: 39px;
+  margin: 9px 0;
+  color: #7b879a;
+  font-size: 10px;
+  line-height: 1.45;
+}
+.regeneration-original-value small {
+  display: block;
+  margin-bottom: 2px;
+  color: #a0a9b7;
+  font-size: 8px;
+  font-weight: 800;
+}
+.regeneration-dimension-card label > span,
+.regeneration-instruction > span {
+  display: block;
+  margin-bottom: 5px;
+  color: #536178;
+  font-size: 10px;
+  font-weight: 800;
+}
+.regeneration-dimension-card input,
+.regeneration-dimension-card select,
+.regeneration-instruction textarea {
+  width: 100%;
+  color: #344157;
+  background: #fff;
+  border: 1px solid #d8e2f0;
+  border-radius: 9px;
+  outline: none;
+  font-family: inherit;
+  font-size: 11px;
+}
+.regeneration-dimension-card input,
+.regeneration-dimension-card select {
+  height: 38px;
+  padding: 0 10px;
+}
+.regeneration-dimension-card input:focus,
+.regeneration-dimension-card select:focus,
+.regeneration-instruction textarea:focus {
+  border-color: #6b9cff;
+  box-shadow: 0 0 0 3px #2563eb12;
+}
+.regeneration-suggestion-list {
+  display: flex;
+  margin-top: 8px;
+  overflow: hidden;
+  gap: 5px;
+}
+.regeneration-suggestion-list button {
+  min-width: 0;
+  padding: 4px 7px;
+  overflow: hidden;
+  color: #68768b;
+  background: #fff;
+  border: 1px solid #e0e7f2;
+  border-radius: 999px;
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.regeneration-suggestion-list button.active {
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-color: #93b4ff;
+}
+.regeneration-change {
+  display: flex;
+  margin: 8px 0 0;
+  align-items: center;
+  gap: 4px;
+  color: #94a0b1;
+  font-size: 9px;
+}
+.regeneration-change strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #1d4ed8;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.selling-point-note {
+  display: block;
+  margin-top: 8px;
+  color: #7b879a;
+  font-size: 9px;
+  line-height: 1.45;
+}
+.regeneration-instruction {
+  position: relative;
+  display: block;
+  margin-top: 14px;
+}
+.regeneration-instruction > span em {
+  color: #8b97aa;
+  font-style: normal;
+  font-weight: 500;
+}
+.regeneration-instruction textarea {
+  min-height: 92px;
+  padding: 10px 12px 26px;
+  resize: vertical;
+  line-height: 1.65;
+}
+.regeneration-instruction > small {
+  position: absolute;
+  right: 11px;
+  bottom: 8px;
+  color: #8b97aa;
+  font-size: 9px;
+}
+.prompt-regeneration-dialog > footer {
+  display: flex;
+  margin-top: 16px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.prompt-regeneration-dialog > footer p {
+  margin: 0;
+  color: #77859a;
+  font-size: 10px;
+}
+.prompt-regeneration-dialog > footer > div {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+.prompt-regeneration-dialog > footer .primary-button {
+  min-width: 168px;
+  color: #fff;
+  background: var(--effect-blue);
+  border-color: var(--effect-blue);
 }
 .prompt-delete-dialog {
   display: grid;
@@ -3870,6 +4588,9 @@ button:disabled {
   .quality-breakdown {
     grid-template-columns: 1fr;
   }
+  .render-profile-values {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
   .prompt-search {
     width: 100%;
   }
@@ -3894,6 +4615,9 @@ button:disabled {
   .node-detail-empty {
     min-height: 220px;
   }
+  .regeneration-dimension-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 @media (max-width: 760px) {
   .effect-prompt-node {
@@ -3912,6 +4636,12 @@ button:disabled {
   }
   .effect-prompt-settings,
   .effect-prompt-stats {
+    grid-template-columns: 1fr;
+  }
+  .render-profile-heading {
+    flex-direction: column;
+  }
+  .render-profile-values {
     grid-template-columns: 1fr;
   }
   .fragment-batch-summary,
@@ -3935,8 +4665,20 @@ button:disabled {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .editor-grid,
+  .regeneration-dimension-grid,
   .graph-row.parallel {
     grid-template-columns: 1fr;
+  }
+  .prompt-regeneration-dialog {
+    padding: 18px;
+  }
+  .prompt-regeneration-dialog > footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .prompt-regeneration-dialog > footer > div,
+  .prompt-regeneration-dialog > footer button {
+    width: 100%;
   }
   .prompt-dialog-backdrop {
     padding: 10px;

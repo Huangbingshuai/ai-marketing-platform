@@ -199,6 +199,7 @@ def evaluate_candidates(
         generated_candidate_count=generated_candidate_count
         if generated_candidate_count is not None
         else len(_unique_items(candidates)),
+        fallback_count=0,
         removed_semantic_duplicates=removed_semantic,
         removed_visual_duplicates=removed_visual,
         removed_dimension_conflicts=removed_dimension,

@@ -1,11 +1,14 @@
-VERSION: effect-prompt-candidate-task-v2
+VERSION: effect-prompt-candidate-task-v4
 
 请严格依据系统指令，为以下同一片段类型的冻结任务逐条编写可直接用于视频生成的promptText。
 
-制作约束：画幅 {aspect_ratio}；渠道 {delivery_channels}；视觉基线 {visual_style}；上游强制禁用元素 {disabled_elements_json}。
+创意表达应自然适配 {delivery_channels}，并参考 {visual_style}。这些信息只用于指导画面表达，不得以参数、字段名或制作说明写进 promptText。时长、画幅、分辨率和统一禁用元素由渲染任务单独传递，promptText 中不得复述。
 
 安全产品上下文JSON：
 {product_context_json}
 
 冻结任务JSON：
 {combinations_json}
+
+单条重新生成上下文JSON（批量生成时为空对象）：
+{regeneration_context_json}

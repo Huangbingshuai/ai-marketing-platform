@@ -6,6 +6,7 @@ import type {
 import {
   DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
+  EFFECT_PROMPT_SCHEMA_VERSION,
   effectPromptTargetCount,
   effectPromptFragmentTypeTargetCounts,
 } from '@ai-marketing/contracts';
@@ -44,13 +45,20 @@ const prompt: EffectPromptItem = {
 };
 
 const batch: EffectPromptBatchResult = {
-  schemaVersion: 4,
+  schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
   settings: DEFAULT_EFFECT_PROMPT_SETTINGS,
+  renderProfile: {
+    ratio: '9:16',
+    resolution: '1080p',
+    capabilityKey: 'SEEDANCE_2_0',
+    sharedConstraints: { disabledElements: [], contentHash: 'a'.repeat(64) },
+  },
   items: Array.from({ length: 50 }, (_, index) => ({ ...prompt, id: `item-${index}` })),
   metrics: {
     targetCount: 50,
     acceptedCount: 50,
     generatedCandidateCount: 14,
+    fallbackCount: 0,
     removedSemanticDuplicates: 2,
     removedVisualDuplicates: 1,
     removedDimensionConflicts: 1,
@@ -99,7 +107,7 @@ describe('effect prompt generation state', () => {
       ...DEFAULT_EFFECT_PROMPT_SETTINGS,
       fragmentConfigs: {
         ...DEFAULT_EFFECT_PROMPT_SETTINGS.fragmentConfigs,
-        HOOK: { count: 1, durationSeconds: 10 },
+        HOOK: { count: 1, durationSeconds: 15 },
       },
       semanticLimit: 15,
       visualLimit: 10,
