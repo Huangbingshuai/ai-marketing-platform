@@ -179,6 +179,49 @@ const bindingRole = (field: EffectPromptInsightReference['field']): EffectPrompt
   return 'CONTEXT';
 };
 
+const EXPRESSION_FIELD_PRIORITY: Record<
+  EffectPromptFragmentType,
+  EffectPromptInsightReference['field'][]
+> = {
+  HOOK: [
+    'CORE_PAIN_POINT',
+    'TARGET_AUDIENCE',
+    'DECISION_DRIVER',
+    'USAGE_SCENARIO',
+    'PURCHASE_SCENARIO',
+    'PRODUCT_CATEGORY',
+    'EMOTIONAL_SCENARIO',
+  ],
+  PAIN: ['CORE_PAIN_POINT', 'TARGET_AUDIENCE', 'USAGE_SCENARIO', 'PURCHASE_SCENARIO'],
+  PRODUCT_DISPLAY: [
+    'PRODUCT_NAME',
+    'VISUAL_FEATURES',
+    'CORE_SPECIFICATION',
+    'USAGE_SCENARIO',
+    'CORE_SELLING_POINT',
+    'PRODUCT_CATEGORY',
+  ],
+  SELLING_POINT_EXPLANATION: [
+    'CORE_SELLING_POINT',
+    'SECONDARY_SELLING_POINT',
+    'VISUAL_FEATURES',
+    'CORE_SPECIFICATION',
+    'DECISION_DRIVER',
+    'TRUST_BACKING',
+    'PRODUCT_NAME',
+  ],
+  CTA: [
+    'MARKETING_GOAL',
+    'PRODUCT_NAME',
+    'CORE_SELLING_POINT',
+    'DECISION_DRIVER',
+    'TARGET_AUDIENCE',
+    'PRICE_RANGE',
+    'PURCHASE_SCENARIO',
+  ],
+  OUTRO: ['PRODUCT_NAME', 'VISUAL_FEATURES', 'PRODUCT_CATEGORY', 'EMOTIONAL_SCENARIO'],
+};
+
 export const inferEffectPromptInsightBindings = (
   item: Pick<EffectPromptItem, 'content' | 'dimensions' | 'fragmentType'>,
   coverage?: EffectPromptInsightCoverage,
@@ -186,6 +229,7 @@ export const inferEffectPromptInsightBindings = (
   if (!coverage) return [];
   const haystack = normalizedValue([item.content, ...Object.values(item.dimensions)].join(' '));
   const references = [...coverage.required, ...coverage.adaptive];
+  const priority = EXPRESSION_FIELD_PRIORITY[item.fragmentType];
   return [...new Map(references.map((reference) => [reference.factId, reference])).values()]
     .filter(
       (reference) =>
@@ -193,6 +237,15 @@ export const inferEffectPromptInsightBindings = (
           false) &&
         haystack.includes(normalizedValue(reference.value)),
     )
+    .sort((left, right) => {
+      const leftIndex = priority.indexOf(left.field);
+      const rightIndex = priority.indexOf(right.field);
+      return (
+        (leftIndex < 0 ? priority.length : leftIndex) -
+          (rightIndex < 0 ? priority.length : rightIndex) || left.factId.localeCompare(right.factId)
+      );
+    })
+    .slice(0, 3)
     .map((reference) => ({ ...reference, role: bindingRole(reference.field) }));
 };
 
@@ -206,6 +259,45 @@ const VISIBLE_ACTION =
   /(?:拿起|夹起|提起|拎起|托住|扶住|扶正|握住|放下|放入|放到|轻放|摆放|摆到|打开|关闭|取出|倒入|切开|撕开|按下|按压|涂抹|喷洒|擦拭|冲洗|折叠|展开|安装|装入|推拉|旋转|转动|倾斜|移动|移到|搅拌|加热|品尝|对比|揭开|翻转|挤出|穿戴|使用|离开|退出)/u;
 const PLACEHOLDER_TEXT =
   /(?:待补充|以信息卡为准|自然出镜|相关细节|关键特点|适当|高级感|真实使用动作|当前产品名|指定卖点|当前场景|当前人物)/u;
+const BAKED_TEXT =
+  /(?:字幕|标题文字|屏幕文字|可读文字|价格贴纸|促销贴纸|二维码|购买按钮|销量角标|库存角标)/iu;
+const AUDIO_OVERREACH = /(?:\bBGM\b|背景音乐|配乐|旁白|口播|人声解说|歌词|完整音效设计)/iu;
+const ABSTRACT_VISUAL =
+  /(?:工厂|生产线|实验室|检测设备|专家背书|原料加工|生产过程|制作过程|工艺流程|配方研发|技术原理)/u;
+const PHYSICS_BREAK =
+  /(?:凭空(?:出现|消失|移动|变形)|瞬间变(?:成|形)|自动悬浮|无接触(?:打开|移动|旋转)|穿透|违反重力)/u;
+const REFERENCE_DEPENDENCY =
+  /(?:精准还原|完全一致|一比一还原|包装文字清晰可读|标签文字清晰可读|(?:logo|商标|品牌标识)(?:与参考图)?完全一致)/iu;
+const NEGATIVE_CLAUSE = /(?:不得|禁止|不生成|不出现|不要|避免)[^，,。；;!?！？]{2,80}/gu;
+const CAMERA_MOVEMENTS = [
+  /(?:推近|推进|靠近)/u,
+  /(?:后拉|拉远)/u,
+  /(?:跟拍|跟随|手持)/u,
+  /环绕/u,
+  /(?:横移|侧移)/u,
+  /(?:移焦|焦点从.+(?:移到|转向))/u,
+];
+const CAMERA_CONTEXT =
+  /(?:镜头|机位|特写|近景|中景|全景|微距|俯拍|俯视|仰拍|低机位|高机位|固定|肩后|手持|跟拍|环绕|横移|移焦|聚焦|焦点|景深|主观|推近|后拉|拉远)/u;
+
+const overloadedAction = (content: string): boolean => {
+  const actionCount = content.match(new RegExp(VISIBLE_ACTION.source, 'gu'))?.length ?? 0;
+  const actionClauses = content
+    .split(/[。；;!?！？]/u)
+    .filter((clause) => VISIBLE_ACTION.test(clause)).length;
+  return actionClauses >= 3 || actionCount > 5;
+};
+
+const cameraConflict = (content: string): boolean => {
+  const cameraText = content
+    .split(/[，,。；;!?！？]/u)
+    .filter((chunk) => CAMERA_CONTEXT.test(chunk))
+    .join(' ');
+  const movementCount = CAMERA_MOVEMENTS.filter((pattern) => pattern.test(cameraText)).length;
+  const movingFixedCamera = cameraText.includes('固定机位') && movementCount > 0;
+  return movingFixedCamera || movementCount > 1;
+};
+
 export const effectPromptExecutionIssues = (item: EffectPromptItem): string[] => {
   const issues: string[] = [];
   const content = item.content.normalize('NFC');
@@ -218,6 +310,15 @@ export const effectPromptExecutionIssues = (item: EffectPromptItem): string[] =>
     issues.push('FULL_TIMELINE_NOT_FRAGMENT');
   if (!VISIBLE_ACTION.test(content)) issues.push('NO_VISIBLE_ACTION');
   if (PLACEHOLDER_TEXT.test(content)) issues.push('PLACEHOLDER_TEXT');
+  if (overloadedAction(content)) issues.push('OVERLOADED_ACTION');
+  if (cameraConflict(content)) issues.push('CAMERA_CONFLICT');
+  if (item.insightBindings.length > 3) issues.push('FACT_OVERLOAD');
+  if (BAKED_TEXT.test(content)) issues.push('BAKED_TEXT');
+  if (AUDIO_OVERREACH.test(content)) issues.push('AUDIO_OVERREACH');
+  if (ABSTRACT_VISUAL.test(content)) issues.push('ABSTRACT_VISUAL');
+  if (PHYSICS_BREAK.test(content)) issues.push('PHYSICS_BREAK');
+  if (REFERENCE_DEPENDENCY.test(content)) issues.push('REFERENCE_DEPENDENCY');
+  if ((content.match(NEGATIVE_CLAUSE) ?? []).length >= 3) issues.push('NEGATIVE_TAIL_DUPLICATION');
   return issues;
 };
 

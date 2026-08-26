@@ -22,7 +22,9 @@ from effect_prompt_generation.providers import (
 
 
 @pytest.mark.asyncio
-async def test_ark_strategy_uses_strict_schema_and_fills_missing_evidence_safely() -> None:
+async def test_ark_strategy_uses_strict_schema_and_fills_missing_evidence_safely() -> (
+    None
+):
     seen: dict[str, object] = {}
     application = map_insight(
         {
@@ -41,7 +43,9 @@ async def test_ark_strategy_uses_strict_schema_and_fills_missing_evidence_safely
             "emotionalScenarios": ["从容出门"],
         }
     )
-    mock_plan = (await MockAiProvider().plan_strategy(application, target_count=50)).value
+    mock_plan = (
+        await MockAiProvider().plan_strategy(application, target_count=50)
+    ).value
 
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
@@ -58,7 +62,9 @@ async def test_ark_strategy_uses_strict_schema_and_fills_missing_evidence_safely
         ]
         output["relationshipBundles"] = output["relationshipBundles"][:1]
         output["relationshipBundles"][0]["factIds"] = ["unknown-model-fact"]
-        return httpx.Response(200, json={"output_text": json.dumps(output, ensure_ascii=False)})
+        return httpx.Response(
+            200, json={"output_text": json.dumps(output, ensure_ascii=False)}
+        )
 
     provider = ArkResponsesProvider(
         base_url="https://ark.example/v3",
@@ -82,11 +88,19 @@ async def test_ark_strategy_uses_strict_schema_and_fills_missing_evidence_safely
     assert seen["max_output_tokens"] == 8192
     assert seen["reasoning"] == {"effort": "minimal"}
     assert result.value.dimension_pools.selling_points == ["已确认卖点", "次要卖点"]
-    assert result.value.dimension_pools.evidence_plans[1].evidence_mode == EvidenceMode.TEXT_ONLY
+    assert (
+        result.value.dimension_pools.evidence_plans[1].evidence_mode
+        == EvidenceMode.TEXT_ONLY
+    )
     assert result.value.dimension_pools.evidence_plans[1].selling_point == "次要卖点"
-    assert "不得伪造证明画面" in result.value.dimension_pools.evidence_plans[1].allowed_visual_evidence
+    assert (
+        "结构化元数据"
+        in result.value.dimension_pools.evidence_plans[1].allowed_visual_evidence
+    )
     covered_fact_ids = {
-        fact_id for bundle in result.value.relationship_bundles for fact_id in bundle.fact_ids
+        fact_id
+        for bundle in result.value.relationship_bundles
+        for fact_id in bundle.fact_ids
     }
     covered_fragment_types = {
         fragment_type
@@ -95,7 +109,10 @@ async def test_ark_strategy_uses_strict_schema_and_fills_missing_evidence_safely
     }
     assert {fact.fact_id for fact in application.required} <= covered_fact_ids
     assert covered_fragment_types == set(FragmentType)
-    assert any(bundle.bundle_id.startswith("worker-coverage-") for bundle in result.value.relationship_bundles)
+    assert any(
+        bundle.bundle_id.startswith("worker-coverage-")
+        for bundle in result.value.relationship_bundles
+    )
     assert "unknown-model-fact" not in covered_fact_ids
 
 
@@ -133,7 +150,9 @@ async def test_ark_candidate_returns_only_slot_and_direct_prompt() -> None:
         seen.update(payload)
         return httpx.Response(
             200,
-            json={"output_text": json.dumps(_prompt_batch("slot-1"), ensure_ascii=False)},
+            json={
+                "output_text": json.dumps(_prompt_batch("slot-1"), ensure_ascii=False)
+            },
         )
 
     provider = ArkResponsesProvider(
@@ -173,7 +192,7 @@ async def test_ark_candidate_returns_only_slot_and_direct_prompt() -> None:
     assert seen["model"] == "candidate-model"
     assert seen["max_output_tokens"] == 1024
     assert "instructions" in seen
-    assert "当前分支只生成卖点讲解素材" in str(seen["instructions"])
+    assert "当前分支只生成卖点讲解所需的干净画面素材" in str(seen["instructions"])
     prompt = seen["input"][0]["content"][0]["text"]  # type: ignore[index]
     assert "便携杯" in prompt
     assert "产品更早出现" in prompt
@@ -192,7 +211,9 @@ async def test_ark_candidate_returns_only_slot_and_direct_prompt() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mock_translates_stacked_audience_into_executable_single_person_fragments() -> None:
+async def test_mock_translates_stacked_audience_into_executable_single_person_fragments() -> (
+    None
+):
     provider = MockAiProvider()
     insight = {
         "productName": "广式腊肠",
@@ -230,6 +251,14 @@ async def test_mock_translates_stacked_audience_into_executable_single_person_fr
             ).value.items
         )
 
+    assert all(160 <= len(item.prompt_text) <= 280 for item in generated_items)
+    assert all(
+        forbidden not in item.prompt_text
+        for item in generated_items
+        for forbidden in ("字幕", "口播", "旁白", "BGM", "二维码", "价格贴纸")
+    )
+    assert all(len(item.insight_bindings) <= 3 for item in combinations)
+
     assert all(
         "家庭厨房决策者" not in bundle.persona
         for bundle in strategy.relationship_bundles
@@ -250,7 +279,12 @@ async def test_mock_translates_stacked_audience_into_executable_single_person_fr
             source_facts=["广府糖酒腌制工艺", "切面油润可见", "便于按需切割"],
         )
         if item_reasons:
-            invalid.append((combination.dimensions.camera.encode("unicode_escape").decode(), item_reasons))
+            invalid.append(
+                (
+                    combination.dimensions.camera.encode("unicode_escape").decode(),
+                    item_reasons,
+                )
+            )
     assert invalid == []
 
 

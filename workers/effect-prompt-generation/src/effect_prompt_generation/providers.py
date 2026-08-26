@@ -118,7 +118,8 @@ class MockAiProvider:
         selling_points = [
             fact.value
             for fact in application.usable
-            if fact.field in {InsightField.CORE_SELLING_POINT, InsightField.SECONDARY_SELLING_POINT}
+            if fact.field
+            in {InsightField.CORE_SELLING_POINT, InsightField.SECONDARY_SELLING_POINT}
         ]
         if not selling_points:
             raise ProviderError(
@@ -139,15 +140,44 @@ class MockAiProvider:
         concrete_scenes = [_mock_concrete_scene(item) for item in scenes]
         pools = DimensionPools(
             narratives=[
-                "痛点前置型", "效果展示型", "场景代入型", "科普讲解型", "对比测评型", "开箱体验型",
-                "第一视角体验日记", "问题清单逐项解答", "错误做法纠正型", "限时任务挑战型", "微故事转折型",
-                "反常识切入型", "步骤教程型", "细节放大型", "一天使用记录型", "问答访谈型", "使用前后流程型",
+                "痛点前置型",
+                "效果展示型",
+                "场景代入型",
+                "科普讲解型",
+                "对比测评型",
+                "开箱体验型",
+                "第一视角体验日记",
+                "问题清单逐项解答",
+                "错误做法纠正型",
+                "限时任务挑战型",
+                "微故事转折型",
+                "反常识切入型",
+                "步骤教程型",
+                "细节放大型",
+                "一天使用记录型",
+                "问答访谈型",
+                "使用前后流程型",
             ],
-            scenes=(concrete_scenes + [
-                "家庭清晨准备", "厨房午后整理", "雨天通勤入口", "地铁换乘间隙", "办公室桌面工作",
-                "会议前快速准备", "午休生活化使用", "户外短途出行", "周末公园休息", "线下门店体验",
-                "明亮实验演示台", "居家夜间收纳", "旅行行李整理", "朋友分享时刻", "极简产品展示台",
-            ])[:17],
+            scenes=(
+                concrete_scenes
+                + [
+                    "家庭清晨准备",
+                    "厨房午后整理",
+                    "雨天通勤入口",
+                    "地铁换乘间隙",
+                    "办公室桌面工作",
+                    "会议前快速准备",
+                    "午休生活化使用",
+                    "户外短途出行",
+                    "周末公园休息",
+                    "线下门店体验",
+                    "明亮实验演示台",
+                    "居家夜间收纳",
+                    "旅行行李整理",
+                    "朋友分享时刻",
+                    "极简产品展示台",
+                ]
+            )[:17],
             personas=[
                 "一位35岁左右、穿米色针织家居服的女性",
                 "一位30岁左右、穿深蓝围裙的男性",
@@ -169,17 +199,41 @@ class MockAiProvider:
             ],
             selling_points=selling_points,
             cameras=[
-                "肩后中近景连续推近产品", "第一视角稳定跟拍", "俯拍近景连续靠近手部", "低机位缓慢推进",
-                "手持纪实侧向跟随", "固定机位保持产品居中", "正面半身镜头连续聚焦局部", "桌面俯视连续长镜头",
-                "侧逆光下缓慢环绕", "快速推近后稳定定格", "全景环境中连续靠近主体", "中近景从人物视线平滑移焦到产品",
-                "贴近手部动作连续跟拍", "中近景让前景掠过后连续靠近产品", "轻微横移展示产品轮廓", "静态构图内跟随动作",
+                "肩后中近景连续推近产品",
+                "第一视角稳定跟拍",
+                "俯拍近景连续靠近手部",
+                "低机位缓慢推进",
+                "手持纪实侧向跟随",
+                "固定机位保持产品居中",
+                "正面半身镜头连续聚焦局部",
+                "桌面俯视连续长镜头",
+                "侧逆光下缓慢环绕",
+                "快速推近后稳定定格",
+                "全景环境中连续靠近主体",
+                "中近景从人物视线平滑移焦到产品",
+                "贴近手部动作连续跟拍",
+                "中近景让前景掠过后连续靠近产品",
+                "轻微横移展示产品轮廓",
+                "静态构图内跟随动作",
                 "产品主观低机位连续跟随人物",
             ],
             emotions=[
-                "温馨治愈的舒缓节奏", "专业严谨的克制节奏", "活力明快的快速节奏", "焦虑唤醒后及时缓解",
-                "干货科普的清晰节奏", "轻松可信的生活节奏", "好奇探索的渐进节奏", "从容安心的稳定节奏",
-                "真实纪实的自然停顿", "清爽利落的短句节奏", "细腻专注的慢速观察", "亲切陪伴的温和推进",
-                "理性比较的明确停顿", "惊喜发现的层层递进", "日常松弛的呼吸感", "目标明确的任务节奏",
+                "温馨治愈的舒缓节奏",
+                "专业严谨的克制节奏",
+                "活力明快的快速节奏",
+                "焦虑唤醒后及时缓解",
+                "干货科普的清晰节奏",
+                "轻松可信的生活节奏",
+                "好奇探索的渐进节奏",
+                "从容安心的稳定节奏",
+                "真实纪实的自然停顿",
+                "清爽利落的短句节奏",
+                "细腻专注的慢速观察",
+                "亲切陪伴的温和推进",
+                "理性比较的明确停顿",
+                "惊喜发现的层层递进",
+                "日常松弛的呼吸感",
+                "目标明确的任务节奏",
                 "安静高级的极简节奏",
             ],
             actions=[
@@ -197,7 +251,7 @@ class MockAiProvider:
                 "右手托住产品向光源方向轻微倾斜后停住",
                 "双手将产品正面朝上放到桌面中央并离开",
                 "右手拎起产品进入画面，在主体位置保持不动",
-                "左手把产品从背景移到前景，焦点跟随到产品表面",
+                "左手把产品从背景移到前景并停住",
                 "双手稳定托住产品，只调整一次面向镜头的角度",
                 "右手轻放产品后退出画面，产品保持居中",
             ],
@@ -263,7 +317,10 @@ class ArkResponsesProvider:
             base_url=base_url.rstrip("/") + "/",
             timeout=timeout,
             transport=transport,
-            headers={"authorization": f"Bearer {api_key}", "content-type": "application/json"},
+            headers={
+                "authorization": f"Bearer {api_key}",
+                "content-type": "application/json",
+            },
         )
 
     async def aclose(self) -> None:
@@ -275,7 +332,8 @@ class ArkResponsesProvider:
         allowed = [
             fact.value
             for fact in application.usable
-            if fact.field in {InsightField.CORE_SELLING_POINT, InsightField.SECONDARY_SELLING_POINT}
+            if fact.field
+            in {InsightField.CORE_SELLING_POINT, InsightField.SECONDARY_SELLING_POINT}
         ]
         if not allowed:
             raise ProviderError(
@@ -311,7 +369,9 @@ class ArkResponsesProvider:
         # when strict JSON validation succeeds; keep every confirmed point and fill omissions
         # with the safest deterministic representation instead of aborting the entire batch.
         protected_evidence = [
-            evidence_by_point.get(_normalized_text(item), _safe_text_evidence_plan(item))
+            evidence_by_point.get(
+                _normalized_text(item), _safe_text_evidence_plan(item)
+            )
             for item in allowed
         ]
         protected_bundles = _complete_relationship_bundles(
@@ -323,7 +383,10 @@ class ArkResponsesProvider:
             value=call.value.model_copy(
                 update={
                     "dimension_pools": call.value.dimension_pools.model_copy(
-                        update={"selling_points": allowed, "evidence_plans": protected_evidence}
+                        update={
+                            "selling_points": allowed,
+                            "evidence_plans": protected_evidence,
+                        }
                     ),
                     "relationship_bundles": protected_bundles,
                 }
@@ -342,8 +405,13 @@ class ArkResponsesProvider:
         product_context = _candidate_product_context(insight)
         prompt = render_prompt(
             CANDIDATE_TASK_PROMPT,
-            delivery_channels=_first_text(insight, "deliveryChannels", "delivery_channels") or "以信息卡为准",
-            visual_style=_first_text(insight, "visualStyleBaseline", "visual_style_baseline")
+            delivery_channels=_first_text(
+                insight, "deliveryChannels", "delivery_channels"
+            )
+            or "以信息卡为准",
+            visual_style=_first_text(
+                insight, "visualStyleBaseline", "visual_style_baseline"
+            )
             or "以信息卡为准",
             disabled_elements_json=json.dumps(
                 _text_list(insight, "disabledElements", "disabled_elements"),
@@ -392,11 +460,12 @@ class ArkResponsesProvider:
         combinations_by_slot = {item.slot_id: item for item in combinations}
         for item in call.value.items:
             expected_fact_ids = {
-                binding.fact_id for binding in combinations_by_slot[item.slot_id].insight_bindings
+                binding.fact_id
+                for binding in combinations_by_slot[item.slot_id].insight_bindings
             }
-            if set(item.used_fact_ids) != expected_fact_ids or len(item.used_fact_ids) != len(
-                set(item.used_fact_ids)
-            ):
+            if set(item.used_fact_ids) != expected_fact_ids or len(
+                item.used_fact_ids
+            ) != len(set(item.used_fact_ids)):
                 raise ProviderError(
                     "AI structured response changed the assigned insight facts",
                     retryable=False,
@@ -420,7 +489,9 @@ class ArkResponsesProvider:
     ) -> AiCallResult[TModel]:
         payload = {
             "model": model,
-            "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": prompt}]}
+            ],
             "store": False,
             "max_output_tokens": max_output_tokens,
             "reasoning": {"effort": self._reasoning_effort},
@@ -452,9 +523,13 @@ class ArkResponsesProvider:
                 if not response.is_error:
                     try:
                         response_payload = response.json()
-                        value = model_type.model_validate_json(_output_text(response_payload))
+                        value = model_type.model_validate_json(
+                            _output_text(response_payload)
+                        )
                         usage = _usage(response_payload)
-                        elapsed = max(0, round((time.perf_counter() - started_at) * 1000))
+                        elapsed = max(
+                            0, round((time.perf_counter() - started_at) * 1000)
+                        )
                         LOGGER.info(
                             "Ark call succeeded stage=%s input_tokens=%s output_tokens=%s total_tokens=%s latency_ms=%s attempts=%s",
                             stage,
@@ -480,14 +555,28 @@ class ArkResponsesProvider:
                         last_error, error_type = exc, ProviderErrorType.RESPONSE_INVALID
                         retryable = attempt == 1
                 elif response.status_code == 429:
-                    last_error, error_type, retryable = RuntimeError("rate limited"), ProviderErrorType.RATE_LIMIT, True
+                    last_error, error_type, retryable = (
+                        RuntimeError("rate limited"),
+                        ProviderErrorType.RATE_LIMIT,
+                        True,
+                    )
                 elif response.status_code >= 500:
-                    last_error, error_type, retryable = RuntimeError("service unavailable"), ProviderErrorType.SERVICE, True
+                    last_error, error_type, retryable = (
+                        RuntimeError("service unavailable"),
+                        ProviderErrorType.SERVICE,
+                        True,
+                    )
                 else:
-                    last_error, error_type, retryable = RuntimeError("request rejected"), ProviderErrorType.REQUEST_REJECTED, False
+                    last_error, error_type, retryable = (
+                        RuntimeError("request rejected"),
+                        ProviderErrorType.REQUEST_REJECTED,
+                        False,
+                    )
             if not retryable or attempt >= self._max_attempts:
                 break
-            await asyncio.sleep(min(4.0, 0.4 * (2 ** (attempt - 1))) + random.uniform(0, 0.15))
+            await asyncio.sleep(
+                min(4.0, 0.4 * (2 ** (attempt - 1))) + random.uniform(0, 0.15)
+            )
         elapsed = max(0, round((time.perf_counter() - started_at) * 1000))
         raise ProviderError(
             _safe_provider_message(error_type),
@@ -534,7 +623,10 @@ def _candidate_product_context(insight: Mapping[str, Any]) -> dict[str, object]:
         ("coreSpecification", ("coreSpecification", "core_specification")),
         ("visualFeatures", ("visualFeatures", "visual_features")),
         ("coreSellingPoints", ("coreSellingPoints", "core_selling_points")),
-        ("secondarySellingPoints", ("secondarySellingPoints", "secondary_selling_points")),
+        (
+            "secondarySellingPoints",
+            ("secondarySellingPoints", "secondary_selling_points"),
+        ),
         ("targetAudience", ("targetAudience", "target_audience")),
         ("corePainPoints", ("corePainPoints", "core_pain_points")),
         ("decisionDrivers", ("decisionDrivers", "decision_drivers")),
@@ -551,7 +643,9 @@ def _candidate_product_context(insight: Mapping[str, Any]) -> dict[str, object]:
         if isinstance(value, (str, int, float, bool)) or value is None:
             result[output_key] = value
         elif isinstance(value, list):
-            result[output_key] = [item for item in value if isinstance(item, (str, int, float, bool))]
+            result[output_key] = [
+                item for item in value if isinstance(item, (str, int, float, bool))
+            ]
     return result
 
 
@@ -585,56 +679,44 @@ def _mock_prompt_text(
     )
     prefix = f"{dims.scene}，{persona_position}"
     action = combination.visible_action.replace("产品", product_name).replace("·", "，")
-    price = next(
-        (
-            binding.value
-            for binding in combination.insight_bindings
-            if binding.field == InsightField.PRICE_RANGE
-        ),
-        "",
-    )
-    trust = next(
-        (
-            binding.value
-            for binding in combination.insight_bindings
-            if binding.field == InsightField.TRUST_BACKING
-        ),
-        "",
-    )
+    abstract_selling_point = combination.evidence_mode in {
+        EvidenceMode.TEXT_ONLY,
+        EvidenceMode.PROCESS_ONLY,
+    }
     role_text = {
         FragmentType.HOOK: (
-            f"首帧从一个反常但真实的动作细节开始：{action}。画面只保留动作悬念，"
-            f"不解释完整功能；{dims.camera}，焦点锁定正在发生的动作"
+            f"首帧直接出现动作即将受阻的瞬间：{action}。{dims.camera}，"
+            "焦点锁定尚未完成的动作，结束时悬念仍停在原处"
         ),
         FragmentType.PAIN: (
-            f"首帧呈现一个尚未解决的真实不便，{action}，画面停在受阻状态，不给出解决动作；"
-            f"{dims.camera}，焦点跟住手部与问题状态"
+            f"首帧呈现一个真实不便，{action}，动作受阻后自然停下。"
+            f"{dims.camera}，焦点跟住手部与问题状态，结束画面仍保留未解决状态"
         ),
         FragmentType.PRODUCT_DISPLAY: (
-            f"只展示{product_name}的一次连续拿取动作：{action}，产品外观始终清楚可辨；"
-            f"{dims.camera}，焦点落在轮廓与真实表面细节，不演示额外效果"
+            f"{product_name}在首帧清楚位于主体位置，{action}。{dims.camera}，"
+            "焦点落在产品轮廓和真实表面材质，动作完成后保持正面可辨"
         ),
         FragmentType.SELLING_POINT_EXPLANATION: (
-            f"围绕{product_name}只做一次细节指示：{action}。字幕只出现“{dims.selling_point}”；"
-            f"{dims.camera}，稳定聚焦被指向的位置"
-            + (f"，旁白只按信息卡原文说“{trust}”" if trust else "")
-        ),
-        FragmentType.CTA: (
-            f"以{product_name}完成一次收束动作：{action}；{dims.camera}并留出干净字幕安全区，"
+            f"{product_name}在首帧与使用道具保持清楚关系，{action}。{dims.camera}，"
             + (
-                f"短字幕只写信息卡确认价格“{price}”，不增加折扣、库存或销量"
-                if price
-                else "短字幕为“现在去了解”，不出现价格、折扣或销量"
+                "焦点持续观察产品真实外观和动作接触位置，结束时留下干净画面空间"
+                if abstract_selling_point
+                else f"焦点持续观察与{dims.selling_point}直接相关的真实细节，结束时细节仍清楚可辨"
             )
         ),
+        FragmentType.CTA: (
+            f"{product_name}在首帧位于人物近侧，{action}。{dims.camera}，"
+            "动作收束后产品保持清楚，画面一侧形成稳定、干净的留白区域"
+        ),
         FragmentType.OUTRO: (
-            f"让{product_name}形成稳定品牌定格：{action}；{dims.camera}缓慢停住，"
-            f"结尾只保留产品与简洁背景"
+            f"{product_name}在首帧居中，{action}。{dims.camera}，"
+            "背景运动逐渐安静，结尾停在产品轮廓清楚且构图稳定的画面"
         ),
     }[combination.fragment_type]
     prompt = (
-        f"{prefix}，{role_text}。光线和色彩呈现{dims.emotion}，动作速度与镜头运动保持一致，环境声自然，"
-        "结尾停在主体与产品关系清楚的稳定画面，场景和人物保持一致。"
+        f"{prefix}。{role_text}。光线、色彩和动作节奏呈现{dims.emotion}，"
+        "材质受光变化保持自然，主体、道具和背景的空间关系在整个连续镜头中保持稳定，"
+        "仅保留与动作同步的真实环境声。"
     )
     return GeneratedPromptText(
         slot_id=combination.slot_id,
@@ -645,18 +727,55 @@ def _mock_prompt_text(
 
 def _mock_evidence_plan(selling_point: str) -> SellingPointEvidence:
     normalized = selling_point.casefold()
-    if any(token in normalized for token in ("工艺", "配方", "技术", "理念", "品质", "匠心", "专业", "配比", "比例", "口感", "香味", "酒香", "回甘", "无淀粉", "纯猪肉", "锁鲜")):
+    if any(
+        token in normalized
+        for token in (
+            "工艺",
+            "配方",
+            "技术",
+            "理念",
+            "品质",
+            "匠心",
+            "专业",
+            "配比",
+            "比例",
+            "口感",
+            "香味",
+            "酒香",
+            "回甘",
+            "无淀粉",
+            "纯猪肉",
+            "锁鲜",
+        )
+    ):
         mode = EvidenceMode.TEXT_ONLY
-        allowed = f"只允许以信息卡原文字幕“{selling_point}”配合真实产品细节"
-    elif any(token in normalized for token in ("开", "关", "按", "操作", "使用", "清洗", "切割", "烹饪", "适配", "便于")):
+        allowed = "只生成与该卖点相符的真实产品细节素材，卖点原文保留在结构化元数据中"
+    elif any(
+        token in normalized
+        for token in (
+            "开",
+            "关",
+            "按",
+            "操作",
+            "使用",
+            "清洗",
+            "切割",
+            "烹饪",
+            "适配",
+            "便于",
+        )
+    ):
         mode = EvidenceMode.USAGE_ACTION
         allowed = f"一次可见、连续且不增加结论的{selling_point}使用动作"
-    elif any(token in normalized for token in ("外观", "颜色", "轻量", "便携", "尺寸", "设计")):
+    elif any(
+        token in normalized
+        for token in ("外观", "颜色", "轻量", "便携", "尺寸", "设计")
+    ):
         mode = EvidenceMode.VISIBLE_ATTRIBUTE
         allowed = f"产品在人物手部或真实场景中的{selling_point}可见属性"
     else:
         mode = EvidenceMode.TEXT_ONLY
-        allowed = f"只允许以信息卡原文字幕“{selling_point}”配合真实产品细节"
+        allowed = "只生成与该卖点相符的真实产品细节素材，卖点原文保留在结构化元数据中"
     return SellingPointEvidence(
         selling_point=selling_point,
         evidence_mode=mode,
@@ -669,7 +788,7 @@ def _safe_text_evidence_plan(selling_point: str) -> SellingPointEvidence:
     return SellingPointEvidence(
         selling_point=selling_point,
         evidence_mode=EvidenceMode.TEXT_ONLY,
-        allowed_visual_evidence=f"只允许按信息卡原文表达“{selling_point}”，不得伪造证明画面",
+        allowed_visual_evidence="只生成与该卖点相符的真实产品细节素材，卖点原文保留在结构化元数据中",
         forbidden_inference=f"不得把{selling_point}扩展为未确认功效、数据、认证、销量或承诺",
     )
 
@@ -680,7 +799,9 @@ def _mock_relationship_bundles(
     bundles: list[MarketingRelationshipBundle] = []
     for fragment_type in FragmentType:
         eligible = [
-            fact for fact in application.usable if fragment_type in fact.eligible_fragment_types
+            fact
+            for fact in application.usable
+            if fragment_type in fact.eligible_fragment_types
         ]
         by_field: dict[InsightField, list[InsightFact]] = {}
         for fact in eligible:
@@ -694,7 +815,10 @@ def _mock_relationship_bundles(
                     fact.value
                     for fact in selected
                     if fact.field
-                    in {InsightField.CORE_SELLING_POINT, InsightField.SECONDARY_SELLING_POINT}
+                    in {
+                        InsightField.CORE_SELLING_POINT,
+                        InsightField.SECONDARY_SELLING_POINT,
+                    }
                 ),
                 "不提前展示产品解决方案"
                 if fragment_type in {FragmentType.HOOK, FragmentType.PAIN}
@@ -714,7 +838,11 @@ def _mock_relationship_bundles(
                 "真实生活场景中的简洁桌面",
             )
             audience = next(
-                (fact.value for fact in selected if fact.field == InsightField.TARGET_AUDIENCE),
+                (
+                    fact.value
+                    for fact in selected
+                    if fact.field == InsightField.TARGET_AUDIENCE
+                ),
                 "无人出镜，只展示产品与成年人的手",
             )
             bundles.append(
@@ -784,7 +912,9 @@ def _complete_relationship_bundles(
     completed: list[MarketingRelationshipBundle] = []
     for bundle in bundles:
         try:
-            _validate_relationship_bundles([bundle], application, require_complete=False)
+            _validate_relationship_bundles(
+                [bundle], application, require_complete=False
+            )
         except ProviderError:
             continue
         completed.append(bundle)
@@ -801,8 +931,10 @@ def _complete_relationship_bundles(
     while missing or missing_types:
         candidate = max(
             fallbacks,
-            key=lambda item: len(missing.intersection(item.fact_ids))
-            + len(missing_types.intersection(item.eligible_fragment_types)),
+            key=lambda item: (
+                len(missing.intersection(item.fact_ids))
+                + len(missing_types.intersection(item.eligible_fragment_types))
+            ),
         )
         score = len(missing.intersection(candidate.fact_ids)) + len(
             missing_types.intersection(candidate.eligible_fragment_types)
@@ -816,7 +948,9 @@ def _complete_relationship_bundles(
         fallback_index += 1
         completed.append(
             candidate.model_copy(
-                update={"bundle_id": f"worker-coverage-{fallback_index}-{candidate.bundle_id}"}
+                update={
+                    "bundle_id": f"worker-coverage-{fallback_index}-{candidate.bundle_id}"
+                }
             )
         )
         missing.difference_update(candidate.fact_ids)
@@ -827,7 +961,9 @@ def _complete_relationship_bundles(
 
 
 def _mock_concrete_scene(value: str) -> str:
-    if any(token in value for token in ("烹饪", "蒸制", "炒制", "切配", "佐餐", "食材准备")):
+    if any(
+        token in value for token in ("烹饪", "蒸制", "炒制", "切配", "佐餐", "食材准备")
+    ):
         return f"家庭厨房的{value}操作台"
     return f"{value}场景中的暖色木质桌面"
 
@@ -877,7 +1013,11 @@ def _safe_provider_message(error_type: ProviderErrorType) -> str:
 
 
 def _token(value: Any) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        else None
+    )
 
 
 def _usage(payload: Any) -> dict[str, int | None]:
@@ -904,7 +1044,10 @@ def _output_text(payload: Any) -> str:
                 content = item.get("content")
                 if isinstance(content, list):
                     for part in content:
-                        if isinstance(part, Mapping) and part.get("type") == "output_text":
+                        if (
+                            isinstance(part, Mapping)
+                            and part.get("type") == "output_text"
+                        ):
                             text = part.get("text")
                             if isinstance(text, str) and text.strip():
                                 return text

@@ -1,17 +1,19 @@
-VERSION: effect-prompt-candidate-task-v5
+VERSION: effect-prompt-candidate-task-v6
 
-请严格依据系统指令，为以下同一片段类型的冻结任务逐条编写可直接用于视频生成的promptText。
+请为以下同一片段类型的冻结任务逐条编写可直接用于 Seedance 的纯净素材 promptText。
 
-创意表达应自然适配 {delivery_channels}，并参考 {visual_style}。这些信息只用于指导画面表达，不得以参数、字段名或制作说明写进 promptText。时长、画幅、分辨率和统一禁用元素由渲染任务单独传递；promptText 的任何位置都不得出现这些参数、参数名称或统一禁用项原文。
+交付渠道为 {delivery_channels}，视觉基线为 {visual_style}。二者只影响画面节奏、构图与质感，不得以参数、字段名或制作说明写入正文。时长、画幅、分辨率和统一禁用元素由渲染服务单独传递。
 
-统一禁用元素JSON（只用于主动避开相应画面，不得在 promptText 中复述；即使模型偶尔复述，也不要因此省略其他必要画面信息）：
+统一禁用元素 JSON 只用于避开相应画面，不得在正文逐项复述：
 {disabled_elements_json}
 
-安全产品上下文JSON：
+安全产品上下文 JSON 只用于核对事实，不代表每项都要写进同一片段：
 {product_context_json}
 
-冻结任务JSON：
+冻结任务 JSON 中 insightBindings 已是本条必须实际表达的 1～3 项事实，其他上下文不得进入正文：
 {combinations_json}
 
-单条重新生成上下文JSON（批量生成时为空对象）：
+单条重新生成上下文 JSON；批量生成时为空对象，且其优先级低于冻结任务：
 {regeneration_context_json}
+
+六类模板中的示例只展示动作结构和职责边界，不得复制示例中的品类、人物、桌面、手部动作、道具或运镜。逐条静默检查后，只返回严格 JSON。

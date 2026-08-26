@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from .api_client import InternalApi, InternalApiError
 from .assembly import assemble_fragment_prompt, assemble_safe_fallback_prompt
 from .combinations import (
+    expression_bindings,
     fragment_type_deficits,
     fragment_type_targets,
     make_shards,
@@ -38,9 +39,9 @@ from .models import (
     PromptMetrics,
     RenderProfile,
     RuntimeContext,
-    SharedRenderConstraints,
     ShardPlan,
     ShardRecord,
+    SharedRenderConstraints,
     StageOutput,
     StageStatus,
     StrategyPlan,
@@ -132,15 +133,24 @@ class PromptGenerationPipeline:
             raise PipelineError("run cache is not registered") from exc
 
     async def load_and_snapshot(self, context: RuntimeContext) -> LoadedRun:
-        await self._stage(context, NodeId.LOAD_AND_SNAPSHOT, StageStatus.RUNNING, "正在读取不可变输入快照")
+        await self._stage(
+            context,
+            NodeId.LOAD_AND_SNAPSHOT,
+            StageStatus.RUNNING,
+            "正在读取不可变输入快照",
+        )
         snapshot = self.snapshot(context)
         shards = await self.api.get_shards(context)
         succeeded = [item for item in shards if item.status == StageStatus.SUCCEEDED]
         candidates = [candidate for shard in succeeded for candidate in shard.items]
         unique_candidates = _unique_candidates(candidates)
-        self._cache(context).candidates = {item.slot_id: item for item in unique_candidates}
+        self._cache(context).candidates = {
+            item.slot_id: item for item in unique_candidates
+        }
         self._cache(context).execution_invalid_reasons = Counter(
-            reason for item in unique_candidates for reason in item.execution_invalid_reasons
+            reason
+            for item in unique_candidates
+            for reason in item.execution_invalid_reasons
         )
         loaded = LoadedRun(
             snapshot=snapshot,
@@ -189,7 +199,9 @@ class PromptGenerationPipeline:
         application: InsightApplicationMap,
         target_count: int,
     ) -> StrategyPlan:
-        await self._stage(context, NodeId.STRATEGY_PLANNING, StageStatus.RUNNING, "正在规划营销关系")
+        await self._stage(
+            context, NodeId.STRATEGY_PLANNING, StageStatus.RUNNING, "正在规划营销关系"
+        )
         self._reserve_ai_call(context)
         call = await self.provider.plan_strategy(application, target_count=target_count)
         plan = call.value
@@ -219,7 +231,9 @@ class PromptGenerationPipeline:
         return plan
 
     async def map_insight(self, context: RuntimeContext) -> InsightApplicationMap:
-        await self._stage(context, NodeId.INSIGHT_MAPPING, StageStatus.RUNNING, "正在映射提炼信息用途")
+        await self._stage(
+            context, NodeId.INSIGHT_MAPPING, StageStatus.RUNNING, "正在映射提炼信息用途"
+        )
         application = map_insight(self.snapshot(context).insight_artifact.result)
         if not application.required:
             raise PipelineError("产品素材制作信息卡缺少可用于 Prompt 生成的核心事实")
@@ -261,9 +275,15 @@ class PromptGenerationPipeline:
         )
         settings = snapshot.settings
         targets = fragment_type_targets(
-            {fragment_type: settings.fragment_configs[fragment_type].count for fragment_type in FragmentType}
+            {
+                fragment_type: settings.fragment_configs[fragment_type].count
+                for fragment_type in FragmentType
+            }
         )
-        existing = self._cache(context).accepted_items or self.snapshot(context).retained_manual_items
+        existing = (
+            self._cache(context).accepted_items
+            or self.snapshot(context).retained_manual_items
+        )
         actual_types = Counter(item.fragment_type for item in existing)
         deficits = fragment_type_deficits(
             targets,
@@ -293,7 +313,9 @@ class PromptGenerationPipeline:
                 )
                 for combination in combinations
             ]
-        shards = make_shards(combinations, round_number=round_number, shard_size=self.shard_size)
+        shards = make_shards(
+            combinations, round_number=round_number, shard_size=self.shard_size
+        )
         all_pending = [item for item in shards if item.key not in set(completed_keys)]
         remaining_calls = max(
             0, self.max_ai_calls_per_run - self._cache(context).ai_call_count
@@ -315,7 +337,9 @@ class PromptGenerationPipeline:
             context,
             node,
             StageStatus.SUCCEEDED,
-            "片段蓝图已编排" if round_number == 0 else f"第 {round_number} 轮定向补齐蓝图已编排",
+            "片段蓝图已编排"
+            if round_number == 0
+            else f"第 {round_number} 轮定向补齐蓝图已编排",
             metadata=stage_metadata,
         )
         await self._stage(
@@ -336,7 +360,9 @@ class PromptGenerationPipeline:
                 context,
                 generation_node,
                 StageStatus.RUNNING if shard_count else StageStatus.SKIPPED,
-                f"{fragment_type.value} 候选 Prompt 分片生成中" if shard_count else "当前轮次无需生成该类片段",
+                f"{fragment_type.value} 候选 Prompt 分片生成中"
+                if shard_count
+                else "当前轮次无需生成该类片段",
                 metadata={
                     "totalShards": shard_count,
                     "completedShards": 0,
@@ -386,7 +412,9 @@ class PromptGenerationPipeline:
                 )
             plan_by_slot = {item.slot_id: item for item in call.value.items}
             insight = snapshot.insight_artifact.result
-            product_name = _insight_text(insight, "productName", "product_name") or "该产品"
+            product_name = (
+                _insight_text(insight, "productName", "product_name") or "该产品"
+            )
             generated_at = utc_now()
             candidates: list[GeneratedCandidate] = []
             for plan in shard.combinations:
@@ -396,28 +424,34 @@ class PromptGenerationPipeline:
                     product_name=product_name,
                     source_facts=_source_fact_texts(insight),
                 )
-                candidates.append(GeneratedCandidate(
-                    slot_id=plan.slot_id,
-                    ordinal=plan.ordinal,
-                    round=shard.round,
-                    shard_index=shard.shard_index,
-                    fragment_type=plan.fragment_type,
-                    material_tags=plan.material_tags,
-                    target_duration_seconds=plan.target_duration_seconds,
-                    dimensions=plan.dimensions,
-                    content=content,
-                    insight_bindings=plan.insight_bindings,
-                    execution_invalid_reasons=invalid_reasons,
-                    generated_at=generated_at,
-                ))
+                candidates.append(
+                    GeneratedCandidate(
+                        slot_id=plan.slot_id,
+                        ordinal=plan.ordinal,
+                        round=shard.round,
+                        shard_index=shard.shard_index,
+                        fragment_type=plan.fragment_type,
+                        material_tags=plan.material_tags,
+                        target_duration_seconds=plan.target_duration_seconds,
+                        dimensions=plan.dimensions,
+                        content=content,
+                        insight_bindings=plan.insight_bindings,
+                        execution_invalid_reasons=invalid_reasons,
+                        generated_at=generated_at,
+                    )
+                )
             await self.api.put_shard(
                 context,
-                running.model_copy(update={"status": StageStatus.SUCCEEDED, "items": candidates}),
+                running.model_copy(
+                    update={"status": StageStatus.SUCCEEDED, "items": candidates}
+                ),
             )
             cache = self._cache(context)
             for candidate in candidates:
                 cache.candidates[candidate.slot_id] = candidate
-                cache.execution_invalid_reasons.update(candidate.execution_invalid_reasons)
+                cache.execution_invalid_reasons.update(
+                    candidate.execution_invalid_reasons
+                )
             return candidates
         except Exception as exc:
             await self.api.put_shard(
@@ -434,10 +468,14 @@ class PromptGenerationPipeline:
             raise
 
     async def normalize(self, context: RuntimeContext) -> list[PromptItem]:
-        await self._stage(context, NodeId.NORMALIZATION, StageStatus.RUNNING, "正在标准化候选 Prompt")
+        await self._stage(
+            context, NodeId.NORMALIZATION, StageStatus.RUNNING, "正在标准化候选 Prompt"
+        )
         unique = [
             item
-            for item in _unique_candidates(list(self._cache(context).candidates.values()))
+            for item in _unique_candidates(
+                list(self._cache(context).candidates.values())
+            )
             if not item.execution_invalid_reasons
         ]
         items = [
@@ -464,12 +502,20 @@ class PromptGenerationPipeline:
                 context,
                 generation_node,
                 StageStatus.SUCCEEDED if generated else StageStatus.SKIPPED,
-                "该类候选 Prompt 分片生成完成" if generated else "当前批次未生成该类片段",
+                "该类候选 Prompt 分片生成完成"
+                if generated
+                else "当前批次未生成该类片段",
                 metadata={
-                    "totalShards": len({(item.round, item.shard_index) for item in generated}),
-                    "completedShards": len({(item.round, item.shard_index) for item in generated}),
+                    "totalShards": len(
+                        {(item.round, item.shard_index) for item in generated}
+                    ),
+                    "completedShards": len(
+                        {(item.round, item.shard_index) for item in generated}
+                    ),
                     "candidateCount": len(generated),
-                    "targetCount": self.snapshot(context).settings.fragment_configs[fragment_type].count,
+                    "targetCount": self.snapshot(context)
+                    .settings.fragment_configs[fragment_type]
+                    .count,
                 },
             )
         await self._stage(
@@ -489,8 +535,16 @@ class PromptGenerationPipeline:
         return items
 
     async def semantic_check(self, context: RuntimeContext) -> list[PairViolation]:
-        await self._stage(context, NodeId.SEMANTIC_DEDUP, StageStatus.RUNNING, "正在计算语义重复代理指标")
-        items = self.snapshot(context).retained_manual_items + self._cache(context).normalized_items
+        await self._stage(
+            context,
+            NodeId.SEMANTIC_DEDUP,
+            StageStatus.RUNNING,
+            "正在计算语义重复代理指标",
+        )
+        items = (
+            self.snapshot(context).retained_manual_items
+            + self._cache(context).normalized_items
+        )
         pairs = semantic_violations(items)
         compared_pairs = len(items) * (len(items) - 1) // 2
         await self._stage(
@@ -507,8 +561,16 @@ class PromptGenerationPipeline:
         return pairs
 
     async def visual_check(self, context: RuntimeContext) -> list[PairViolation]:
-        await self._stage(context, NodeId.VISUAL_DEDUP, StageStatus.RUNNING, "正在计算视觉结构重合代理指标")
-        items = self.snapshot(context).retained_manual_items + self._cache(context).normalized_items
+        await self._stage(
+            context,
+            NodeId.VISUAL_DEDUP,
+            StageStatus.RUNNING,
+            "正在计算视觉结构重合代理指标",
+        )
+        items = (
+            self.snapshot(context).retained_manual_items
+            + self._cache(context).normalized_items
+        )
         pairs = visual_violations(items)
         compared_pairs = len(items) * (len(items) - 1) // 2
         await self._stage(
@@ -530,7 +592,9 @@ class PromptGenerationPipeline:
         *,
         round_number: int,
     ) -> EvaluationResult:
-        await self._stage(context, NodeId.QUALITY_GATE, StageStatus.RUNNING, "正在执行批次质量门禁")
+        await self._stage(
+            context, NodeId.QUALITY_GATE, StageStatus.RUNNING, "正在执行批次质量门禁"
+        )
         evaluation = self._cache(context).evaluation
         if evaluation is None:
             evaluation = await self.evaluate_insight_coverage(
@@ -597,7 +661,10 @@ class PromptGenerationPipeline:
             ),
             insight_application=application,
             fragment_type_targets=fragment_type_targets(
-                {fragment_type: settings.fragment_configs[fragment_type].count for fragment_type in FragmentType}
+                {
+                    fragment_type: settings.fragment_configs[fragment_type].count
+                    for fragment_type in FragmentType
+                }
             ),
             generated_candidate_count=len(self._cache(context).candidates),
             removed_execution_invalid=sum(
@@ -638,27 +705,35 @@ class PromptGenerationPipeline:
     ) -> str:
         metrics = await self._ensure_exact_batch(context, metrics)
         items = self._cache(context).accepted_items
-        retained_ids = {item.id for item in self.snapshot(context).retained_manual_items}
+        retained_ids = {
+            item.id for item in self.snapshot(context).retained_manual_items
+        }
         generated_only = [item for item in items if item.id not in retained_ids]
         renumbered = [
             item.model_copy(update={"code": f"P{index:03d}"})
             for index, item in enumerate(generated_only, 1)
         ]
         settings = self.snapshot(context).settings
-        quality_status: Literal["PASS", "NEEDS_REVIEW"] = "PASS" if (
-            len(items) == settings.target_count
-            and metrics.semantic_duplicate_rate <= settings.semantic_limit
-            and metrics.visual_overlap_rate <= settings.visual_limit
-            and all(
-                item.actual_count == item.target_count
-                for item in metrics.fragment_type_distribution
+        quality_status: Literal["PASS", "NEEDS_REVIEW"] = (
+            "PASS"
+            if (
+                len(items) == settings.target_count
+                and metrics.semantic_duplicate_rate <= settings.semantic_limit
+                and metrics.visual_overlap_rate <= settings.visual_limit
+                and all(
+                    item.actual_count == item.target_count
+                    for item in metrics.fragment_type_distribution
+                )
+                and not metrics.selling_point_coverage.missing
+                and not metrics.insight_coverage.missing
             )
-            and not metrics.selling_point_coverage.missing
-            and not metrics.insight_coverage.missing
-        ) else "NEEDS_REVIEW"
+            else "NEEDS_REVIEW"
+        )
         result = PromptBatchResult(
             settings=settings,
-            render_profile=_render_profile(self.snapshot(context).insight_artifact.result),
+            render_profile=_render_profile(
+                self.snapshot(context).insight_artifact.result
+            ),
             items=renumbered,
             metrics=metrics.model_copy(
                 update={
@@ -666,7 +741,9 @@ class PromptGenerationPipeline:
                     "fallback_count": self._cache(context).fallback_count,
                 }
             ),
-            quality_status=quality_status if len(renumbered) == settings.target_count else "NEEDS_REVIEW",
+            quality_status=quality_status
+            if len(renumbered) == settings.target_count
+            else "NEEDS_REVIEW",
         )
         await self._stage(
             context,
@@ -705,9 +782,12 @@ class PromptGenerationPipeline:
         strategy = self._cache(context).strategy_plan
         if application is None or strategy is None:
             raise PipelineError("无法读取安全兜底所需的营销关系规划")
-        product_name = _insight_text(
-            snapshot.insight_artifact.result, "productName", "product_name"
-        ) or "该产品"
+        product_name = (
+            _insight_text(
+                snapshot.insight_artifact.result, "productName", "product_name"
+            )
+            or "该产品"
+        )
         fallback_items: list[PromptItem] = []
         ordinal = self.next_ordinal(context)
         for fallback_round in range(MAX_REPLENISHMENT_ROUNDS + 1, 25):
@@ -725,7 +805,9 @@ class PromptGenerationPipeline:
                 ordinal_start=ordinal,
                 fragment_targets=targets,
                 fragment_durations={
-                    fragment_type: settings.fragment_configs[fragment_type].duration_seconds
+                    fragment_type: settings.fragment_configs[
+                        fragment_type
+                    ].duration_seconds
                     for fragment_type in FragmentType
                 },
                 fragment_deficits=deficits,
@@ -740,11 +822,15 @@ class PromptGenerationPipeline:
                     source_facts=_source_fact_texts(snapshot.insight_artifact.result),
                 )
                 if invalid_reasons:
-                    self._cache(context).execution_invalid_reasons.update(invalid_reasons)
+                    self._cache(context).execution_invalid_reasons.update(
+                        invalid_reasons
+                    )
                     continue
                 round_items.append(
                     PromptItem(
-                        id=_stable_item_id(snapshot.insight_artifact.content_hash, combination.slot_id),
+                        id=_stable_item_id(
+                            snapshot.insight_artifact.content_hash, combination.slot_id
+                        ),
                         code=f"P{combination.ordinal:03d}",
                         origin="AI",
                         fragment_type=combination.fragment_type,
@@ -766,7 +852,9 @@ class PromptGenerationPipeline:
                 semantic_limit=settings.semantic_limit,
                 visual_limit=settings.visual_limit,
                 round_number=MAX_REPLENISHMENT_ROUNDS,
-                required_selling_points=_core_selling_points(snapshot.insight_artifact.result),
+                required_selling_points=_core_selling_points(
+                    snapshot.insight_artifact.result
+                ),
                 insight_application=application,
                 fragment_type_targets=targets,
                 generated_candidate_count=len(self._cache(context).candidates)
@@ -775,7 +863,9 @@ class PromptGenerationPipeline:
                     bool(item.execution_invalid_reasons)
                     for item in self._cache(context).candidates.values()
                 ),
-                execution_invalid_reasons=dict(self._cache(context).execution_invalid_reasons),
+                execution_invalid_reasons=dict(
+                    self._cache(context).execution_invalid_reasons
+                ),
             )
             accepted = evaluation.items
             self._cache(context).accepted_items = accepted
@@ -787,7 +877,9 @@ class PromptGenerationPipeline:
         if not _matches_fragment_targets(accepted, targets):
             raise PipelineError("安全补齐后仍无法满足用户设置的 Prompt 数量与六类配额")
         fallback_ids = {item.id for item in fallback_items}
-        self._cache(context).fallback_count = sum(item.id in fallback_ids for item in accepted)
+        self._cache(context).fallback_count = sum(
+            item.id in fallback_ids for item in accepted
+        )
         await self._stage(
             context,
             NodeId.REPLENISH,
@@ -800,13 +892,18 @@ class PromptGenerationPipeline:
                 "targetCount": settings.target_count,
             },
         )
-        return metrics.model_copy(update={"fallback_count": self._cache(context).fallback_count})
+        return metrics.model_copy(
+            update={"fallback_count": self._cache(context).fallback_count}
+        )
 
     def next_ordinal(self, context: RuntimeContext) -> int:
-        return max(
-            (item.ordinal for item in self._cache(context).candidates.values()),
-            default=len(self.snapshot(context).retained_manual_items),
-        ) + 1
+        return (
+            max(
+                (item.ordinal for item in self._cache(context).candidates.values()),
+                default=len(self.snapshot(context).retained_manual_items),
+            )
+            + 1
+        )
 
     def _reserve_ai_call(self, context: RuntimeContext) -> None:
         cache = self._cache(context)
@@ -826,7 +923,9 @@ class PromptGenerationPipeline:
         )
 
     async def progress(self, context: RuntimeContext, value: int, node: NodeId) -> None:
-        await self.api.heartbeat(context, ProgressPayload(progress=value, current_node=node))
+        await self.api.heartbeat(
+            context, ProgressPayload(progress=value, current_node=node)
+        )
 
     async def heartbeat(self, context: RuntimeContext) -> None:
         await self.api.heartbeat(context, ProgressPayload())
@@ -867,9 +966,9 @@ def _matches_fragment_targets(
 
 
 def _render_profile(insight: Mapping[str, object]) -> RenderProfile:
-    ratio_raw = (_insight_text(insight, "aspectRatio", "aspect_ratio") or "9:16").replace(
-        "：", ":"
-    )
+    ratio_raw = (
+        _insight_text(insight, "aspectRatio", "aspect_ratio") or "9:16"
+    ).replace("：", ":")
     if ratio_raw not in {"16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"}:
         raise PipelineError(f"Seedance 不支持当前画幅：{ratio_raw}")
     resolution_raw = (_insight_text(insight, "resolution") or "1080p").lower()
@@ -901,7 +1000,9 @@ def _unique_candidates(items: list[GeneratedCandidate]) -> list[GeneratedCandida
     by_slot: dict[str, GeneratedCandidate] = {}
     for item in items:
         by_slot.setdefault(item.slot_id, item)
-    return sorted(by_slot.values(), key=lambda item: (item.ordinal, item.round, item.shard_index))
+    return sorted(
+        by_slot.values(), key=lambda item: (item.ordinal, item.round, item.shard_index)
+    )
 
 
 def _safe_error(exc: Exception) -> str:
@@ -979,7 +1080,9 @@ def _source_fact_texts(insight: Mapping[str, object]) -> list[str]:
         if isinstance(value, (str, int, float, bool)):
             result.append(str(value))
         elif isinstance(value, list):
-            result.extend(str(item) for item in value if isinstance(item, (str, int, float, bool)))
+            result.extend(
+                str(item) for item in value if isinstance(item, (str, int, float, bool))
+            )
     return result
 
 
@@ -1018,12 +1121,18 @@ def _freeze_item_regeneration_combination(
     )
     if selling_fact:
         preserved_fact_ids.append(selling_fact.fact_id)
-    bindings = bindings_for_fact_ids(application, preserved_fact_ids, target.fragment_type)
+    bindings = expression_bindings(
+        bindings_for_fact_ids(application, preserved_fact_ids, target.fragment_type),
+        fragment_type=target.fragment_type,
+        occurrence=snapshot.target_item_index or 0,
+        priority_fact_ids={selling_fact.fact_id} if selling_fact else set(),
+    )
     evidence = next(
         (
             item
             for item in strategy.dimension_pools.evidence_plans
-            if " ".join(item.selling_point.split()).casefold() == normalized_selling_point
+            if " ".join(item.selling_point.split()).casefold()
+            == normalized_selling_point
         ),
         None,
     )
@@ -1034,7 +1143,9 @@ def _freeze_item_regeneration_combination(
             "target_duration_seconds": target.target_duration_seconds,
             "dimensions": dimensions,
             "insight_bindings": bindings,
-            "evidence_mode": evidence.evidence_mode if evidence else EvidenceMode.TEXT_ONLY,
+            "evidence_mode": evidence.evidence_mode
+            if evidence
+            else EvidenceMode.TEXT_ONLY,
             "allowed_visual_evidence": (
                 evidence.allowed_visual_evidence
                 if evidence

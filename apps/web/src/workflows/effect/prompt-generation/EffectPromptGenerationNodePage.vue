@@ -288,12 +288,17 @@ const quotaDifferenceLabel = (actualCount: number, targetCount: number): string 
 };
 const executionInvalidSummary = computed(() => {
   const labels: Record<string, string> = {
+    ABSTRACT_VISUAL: '抽象信息被伪造成画面',
     MULTI_STAGE_STORY: '完整成片结构',
     ABSTRACT_META_LANGUAGE: '空泛元话语',
     MISSING_VISIBLE_ACTION: '缺少可见动作',
     PRODUCT_IDENTITY_DRIFT: '产品外观漂移',
     UNSUPPORTED_CLAIM: '未确认事实',
     BURNED_IN_OVERLAY: '烧入文字或转场',
+    BAKED_TEXT: '烧录字幕或界面文字',
+    AUDIO_OVERREACH: '口播或背景音乐越界',
+    CAMERA_CONFLICT: '运镜互相冲突',
+    FACT_OVERLOAD: '单条事实过多',
     META_LANGUAGE: '策划元话语',
     FULL_TIMELINE: '多镜头时间轴',
     FULL_TIMELINE_NOT_FRAGMENT: '完整成片结构',
@@ -307,6 +312,10 @@ const executionInvalidSummary = computed(() => {
     BROKEN_TEXT: '存在占位或破损文本',
     PLACEHOLDER_TEXT: '存在空泛占位文本',
     DURATION_MISMATCH: '片段时长不一致',
+    NEGATIVE_TAIL_DUPLICATION: '重复禁用说明',
+    OVERLOADED_ACTION: '主要动作过多',
+    PHYSICS_BREAK: '物理变化不合理',
+    REFERENCE_DEPENDENCY: '缺少参考图却要求精确还原',
   };
   return (currentMetrics.value?.executionInvalidReasons ?? [])
     .map(({ code, count }) => `${labels[code] ?? '其他不可执行内容'} ${count}`)

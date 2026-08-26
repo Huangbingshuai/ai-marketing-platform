@@ -38,7 +38,11 @@ def _pools() -> DimensionPools:
         selling_points=["卖点甲", "卖点乙", "卖点丙"],
         cameras=["特写推进", "第一视角", "俯拍"],
         emotions=["温馨", "专业", "活力"],
-        actions=["一名人物拿起产品并停住", "一名人物按下按键后停住", "一名人物放下产品后离开"],
+        actions=[
+            "一名人物拿起产品并停住",
+            "一名人物按下按键后停住",
+            "一名人物放下产品后离开",
+        ],
         evidence_plans=[
             SellingPointEvidence(
                 selling_point=item,
@@ -74,7 +78,9 @@ def _strategy(
     bundles = []
     for fragment_type in FragmentType:
         eligible = [
-            fact for fact in application.usable if fragment_type in fact.eligible_fragment_types
+            fact
+            for fact in application.usable
+            if fragment_type in fact.eligible_fragment_types
         ]
         for index, point in enumerate(points):
             selected = [
@@ -94,7 +100,9 @@ def _strategy(
                     else "不提前展示产品解决方案",
                 )
             )
-    return StrategyPlan(dimension_pools=pools or _pools(), relationship_bundles=bundles), application
+    return StrategyPlan(
+        dimension_pools=pools or _pools(), relationship_bundles=bundles
+    ), application
 
 
 def test_linear_code_supports_250_candidates_with_minimum_distance() -> None:
@@ -110,29 +118,67 @@ def test_linear_code_supports_250_candidates_with_minimum_distance() -> None:
     )
 
     assert len(planned) == 250
-    assert min(
-        dimension_distance(left.dimensions, right.dimensions)
-        for left, right in combinations(planned, 2)
-    ) >= 3
+    assert (
+        min(
+            dimension_distance(left.dimensions, right.dimensions)
+            for left, right in combinations(planned, 2)
+        )
+        >= 3
+    )
     assert all(item.insight_bindings for item in planned)
+    assert all(1 <= len(item.insight_bindings) <= 3 for item in planned)
+
+
+def test_expression_facts_rotate_without_overloading_one_short_clip() -> None:
+    strategy, application = _strategy()
+    planned = plan_combinations(
+        strategy,
+        application,
+        count=50,
+        round_number=0,
+        ordinal_start=1,
+        fragment_targets=TARGETS,
+        fragment_durations=DURATIONS,
+        priority_fact_ids=[fact.fact_id for fact in application.required],
+    )
+
+    covered = {binding.fact_id for item in planned for binding in item.insight_bindings}
+    assert {fact.fact_id for fact in application.required} <= covered
+    assert max(len(item.insight_bindings) for item in planned) == 3
 
 
 def test_replenishment_round_is_distinct_and_shards_are_bounded() -> None:
     strategy, application = _strategy()
     first = plan_combinations(
-        strategy, application, count=20, round_number=0, ordinal_start=1,
-        fragment_targets=TARGETS, fragment_durations=DURATIONS
+        strategy,
+        application,
+        count=20,
+        round_number=0,
+        ordinal_start=1,
+        fragment_targets=TARGETS,
+        fragment_durations=DURATIONS,
     )
     second = plan_combinations(
-        strategy, application, count=20, round_number=1, ordinal_start=21,
-        fragment_targets=TARGETS, fragment_durations=DURATIONS
+        strategy,
+        application,
+        count=20,
+        round_number=1,
+        ordinal_start=21,
+        fragment_targets=TARGETS,
+        fragment_durations=DURATIONS,
     )
     shards = make_shards(second, round_number=1, shard_size=8)
 
-    assert all(dimension_distance(left.dimensions, right.dimensions) >= 5 for left, right in zip(first, second))
+    assert all(
+        dimension_distance(left.dimensions, right.dimensions) >= 5
+        for left, right in zip(first, second)
+    )
     assert sum(len(shard.combinations) for shard in shards) == 20
     assert all(len(shard.combinations) <= 8 for shard in shards)
-    assert all(len({item.fragment_type for item in shard.combinations}) == 1 for shard in shards)
+    assert all(
+        len({item.fragment_type for item in shard.combinations}) == 1
+        for shard in shards
+    )
 
 
 def test_fragment_type_targets_use_explicit_six_type_counts() -> None:

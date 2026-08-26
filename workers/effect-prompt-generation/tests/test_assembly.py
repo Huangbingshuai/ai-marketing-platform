@@ -7,6 +7,9 @@ from effect_prompt_generation.assembly import (
 from effect_prompt_generation.models import (
     EvidenceMode,
     FragmentType,
+    InsightBinding,
+    InsightBindingRole,
+    InsightField,
     PlannedCombination,
     PromptDimensions,
 )
@@ -78,6 +81,30 @@ def test_execution_gate_rejects_full_ad_timeline_and_internal_dimensions() -> No
     assert "FULL_TIMELINE" in reasons
 
 
+def test_user_reported_full_video_plan_is_rejected_by_quality_v4() -> None:
+    combination = _combination(evidence_mode=EvidenceMode.TEXT_ONLY).model_copy(
+        update={
+            "dimensions": _combination().dimensions.model_copy(
+                update={"selling_point": "广府糖酒腌制工艺"}
+            )
+        }
+    )
+    content = (
+        "视频生成方案。差异化设定：叙事=痛点前置型；人物变量=25-45岁家庭厨房决策者、"
+        "美食爱好者、年货送礼人群、全国消费者。0-3秒人物拿起产品，3-7秒演示广府糖酒腌制工艺，"
+        "7-11秒展示效果，11-15秒转场到购买引导。低机位缓慢推近，暖色光保持温馨。"
+    )
+
+    reasons = validate_fragment_prompt(content, combination, product_name="广式腊肠")
+
+    assert {
+        "META_LANGUAGE",
+        "FULL_TIMELINE",
+        "STACKED_PERSONA",
+        "ABSTRACT_VISUAL",
+    } <= set(reasons)
+
+
 def test_hook_and_pain_may_omit_product_but_selling_point_cannot() -> None:
     base = (
         "雨天办公楼入口，一名年轻男性一手握手机、一手拎雨伞和电脑包，"
@@ -93,7 +120,9 @@ def test_hook_and_pain_may_omit_product_but_selling_point_cannot() -> None:
     )
 
 
-def test_execution_gate_covers_stacked_persona_duplication_fact_and_placeholder() -> None:
+def test_execution_gate_covers_stacked_persona_duplication_fact_and_placeholder() -> (
+    None
+):
     clause = "一名女性拿起便携杯并按下按键，低机位特写连续推近，冷白光下节奏利落"
     content = (
         f"一名女性和另一名男性在办公室，{clause}；{clause}。"
@@ -141,3 +170,81 @@ def test_render_metadata_is_not_an_execution_failure() -> None:
     )
     assert "TECHNICAL_RENDER_METADATA" not in reasons
     assert "SHARED_CONSTRAINT_LEAK" not in reasons
+
+
+def test_quality_v4_rejects_overloaded_action_camera_text_audio_and_fact_overload() -> (
+    None
+):
+    bindings = [
+        InsightBinding(
+            fact_id=f"fact-{index}",
+            field=InsightField.DECISION_DRIVER,
+            value=f"事实{index}",
+            value_hash=f"{index:x}" * 64,
+            role=InsightBindingRole.CONTEXT,
+        )
+        for index in range(1, 5)
+    ]
+    combination = _combination().model_copy(update={"insight_bindings": bindings})
+    content = (
+        "办公室桌面前，一名成年女性拿起便携杯。她随后打开杯盖并倒入清水。"
+        "最后放下杯子并离开。固定机位环绕推近产品，冷白侧光保持清楚。"
+        "字幕显示卖点，旁白配合BGM讲解。"
+    )
+
+    reasons = validate_fragment_prompt(content, combination, product_name="便携杯")
+
+    assert {
+        "OVERLOADED_ACTION",
+        "CAMERA_CONFLICT",
+        "FACT_OVERLOAD",
+        "BAKED_TEXT",
+        "AUDIO_OVERREACH",
+    } <= set(reasons)
+
+
+def test_quality_v4_rejects_abstract_proof_physics_reference_and_negative_tail() -> (
+    None
+):
+    combination = _combination(evidence_mode=EvidenceMode.TEXT_ONLY).model_copy(
+        update={
+            "dimensions": _combination().dimensions.model_copy(
+                update={"selling_point": "专业配方工艺"}
+            )
+        }
+    )
+    content = (
+        "明亮实验室里，一名成年女性拿起便携杯，生产线在背景展示专业配方工艺。"
+        "近景固定机位聚焦杯身，冷白光保持清晰，杯子随后凭空变形，"
+        "包装文字与Logo完全一致。不得出现促销，不要添加认证，禁止生成价格。"
+    )
+
+    reasons = validate_fragment_prompt(content, combination, product_name="便携杯")
+
+    assert {
+        "ABSTRACT_VISUAL",
+        "PHYSICS_BREAK",
+        "REFERENCE_DEPENDENCY",
+        "NEGATIVE_TAIL_DUPLICATION",
+    } <= set(reasons)
+
+
+def test_text_only_selling_point_uses_clean_visual_without_burning_claim() -> None:
+    combination = _combination(evidence_mode=EvidenceMode.TEXT_ONLY).model_copy(
+        update={
+            "dimensions": _combination().dimensions.model_copy(
+                update={"selling_point": "专业配方工艺"}
+            )
+        }
+    )
+    content = (
+        "午后办公桌旁，一名穿深蓝外套的成年女性握住便携杯，拇指按下杯盖后停住。"
+        "肩后中近景保持固定，焦点落在手指与杯盖接触位置，柔和窗光沿浅蓝杯身移动，"
+        "动作节奏利落，结束时产品保持清楚，右侧留下干净空间，环境中只保留轻微按键声。"
+    )
+
+    reasons = validate_fragment_prompt(content, combination, product_name="便携杯")
+
+    assert "MISSING_ASSIGNED_SELLING_POINT" not in reasons
+    assert "ABSTRACT_VISUAL" not in reasons
+    assert "BAKED_TEXT" not in reasons

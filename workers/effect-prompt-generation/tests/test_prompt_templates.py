@@ -7,7 +7,7 @@ from effect_prompt_generation.prompt_loader import (
 )
 
 
-def test_v4_templates_contain_six_specialized_system_prompts() -> None:
+def test_quality_v4_templates_contain_six_specialized_system_prompts() -> None:
     strategy = load_prompt("strategy_planning.prompt.txt")
     base = load_prompt("candidate_base.system.prompt.txt")
     specialized = [
@@ -19,17 +19,30 @@ def test_v4_templates_contain_six_specialized_system_prompts() -> None:
         "candidate_outro.system.prompt.txt",
     ]
 
-    assert load_prompt_version("strategy_planning.prompt.txt") == "effect-prompt-strategy-v4"
-    assert load_prompt_version("candidate_base.system.prompt.txt") == "effect-prompt-candidate-base-v4"
+    assert (
+        load_prompt_version("strategy_planning.prompt.txt")
+        == "effect-prompt-strategy-v5"
+    )
+    assert (
+        load_prompt_version("candidate_base.system.prompt.txt")
+        == "effect-prompt-candidate-base-v5"
+    )
+    assert (
+        load_prompt_version("candidate_task.user.prompt.txt")
+        == "effect-prompt-candidate-task-v6"
+    )
     assert "evidencePlans" in strategy and "relationshipBundles" in strategy
     assert "usedFactIds" in base
-    assert "低质量反例" in strategy and "提交前逐项自检" in strategy
+    assert "低质量反例" in strategy and "提交前静默检查" in strategy
     assert "产品上下文是唯一事实来源" in base
+    assert "纯净原始素材" in base
+    assert "推荐 160～280" in base
     for template_name in specialized:
         template = load_prompt(template_name)
         assert template.count("合格示例") >= 2
         assert "职责冲突反例" in template
         assert "效果展示片段" not in template
+        assert load_prompt_version(template_name).endswith("-v2")
 
 
 def test_candidate_template_renders_literal_example_json_and_product_context() -> None:

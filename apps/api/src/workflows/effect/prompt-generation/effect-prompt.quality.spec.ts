@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   dimensionDistance,
   effectPromptExecutionIssues,
+  inferEffectPromptInsightBindings,
   mergeEffectPromptCompletionItems,
   parseEffectPromptBatchResult,
   parseLegacyV4EffectPromptBatchResultForRead,
@@ -252,6 +253,46 @@ describe('effect prompt quality', () => {
     expect(result.items.find(({ id }) => id === 'display')?.insightBindings).toEqual([]);
   });
 
+  it('limits manually inferred expression facts to three role-prioritized bindings', () => {
+    const sourceFacts: Array<[EffectPromptItem['insightBindings'][number]['field'], string]> = [
+      ['PRODUCT_NAME', '便携杯'],
+      ['VISUAL_FEATURES', '浅蓝圆柱杯身'],
+      ['CORE_SPECIFICATION', '轻量杯身'],
+      ['CORE_SELLING_POINT', '单手按键开盖'],
+    ];
+    const references = sourceFacts.map(([field, value], index) => ({
+      factId: `${field}:${index}`,
+      field,
+      value,
+      valueHash: String(index + 1).repeat(64),
+    }));
+    const prompt = item('manual-binding-limit', {
+      fragmentType: 'PRODUCT_DISPLAY',
+      content: '便携杯采用浅蓝圆柱杯身和轻量杯身，成年人拿起产品并呈现单手按键开盖。',
+      dimensions: {
+        ...item('manual-binding-limit').dimensions,
+        sellingPoint: '单手按键开盖',
+      },
+    });
+
+    const bindings = inferEffectPromptInsightBindings(prompt, {
+      required: references,
+      covered: [],
+      missing: references,
+      adaptive: [],
+      deferred: [],
+      excluded: [],
+      appliedConstraints: [],
+    });
+
+    expect(bindings).toHaveLength(3);
+    expect(bindings.map(({ field }) => field)).toEqual([
+      'PRODUCT_NAME',
+      'VISUAL_FEATURES',
+      'CORE_SPECIFICATION',
+    ]);
+  });
+
   it('recognizes the natural product-display action 摆到', () => {
     const prompt = item('display', {
       fragmentType: 'PRODUCT_DISPLAY',
@@ -268,6 +309,46 @@ describe('effect prompt quality', () => {
 
     expect(effectPromptExecutionIssues(prompt)).not.toContain('TECHNICAL_RENDER_METADATA');
     expect(effectPromptExecutionIssues(prompt)).not.toContain('SHARED_CONSTRAINT_LEAK');
+  });
+
+  it('rejects overloaded actions, conflicting cameras, baked text, audio and fact overload', () => {
+    const prompt = item('quality-v4-invalid', {
+      content:
+        '办公室桌面前，一位成年人拿起产品。随后打开产品并倒入清水。最后放下产品并离开。固定机位环绕推近产品，字幕显示卖点，旁白配合BGM。',
+      insightBindings: Array.from({ length: 4 }, (_, index) => ({
+        factId: `DECISION_DRIVER:${index}`,
+        field: 'DECISION_DRIVER' as const,
+        value: `确认事实${index}`,
+        valueHash: String(index + 1).repeat(64),
+        role: 'CONTEXT' as const,
+      })),
+    });
+
+    expect(effectPromptExecutionIssues(prompt)).toEqual(
+      expect.arrayContaining([
+        'OVERLOADED_ACTION',
+        'CAMERA_CONFLICT',
+        'FACT_OVERLOAD',
+        'BAKED_TEXT',
+        'AUDIO_OVERREACH',
+      ]),
+    );
+  });
+
+  it('rejects abstract proof, physical jumps, missing-reference claims and negative tails', () => {
+    const prompt = item('quality-v4-risk', {
+      content:
+        '实验室生产线中，成年人拿起产品展示技术原理，近景固定机位保持清楚，产品随后凭空变形，包装文字与Logo完全一致。不得出现促销，不要添加认证，禁止生成价格。',
+    });
+
+    expect(effectPromptExecutionIssues(prompt)).toEqual(
+      expect.arrayContaining([
+        'ABSTRACT_VISUAL',
+        'PHYSICS_BREAK',
+        'REFERENCE_DEPENDENCY',
+        'NEGATIVE_TAIL_DUPLICATION',
+      ]),
+    );
   });
 
   it('replaces only the requested item while preserving stable order and ids', () => {
