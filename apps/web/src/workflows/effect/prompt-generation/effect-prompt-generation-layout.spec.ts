@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
+import viteConfigSource from '../../../../vite.config.ts?raw';
 import parentSource from '../source-import/EffectImportNodePage.vue?raw';
 import pageSource from './EffectPromptGenerationNodePage.vue?raw';
 
 describe('effect prompt generation prototype layout', () => {
+  it('loads the live workspace contract source instead of a stale optimized dependency', () => {
+    expect(viteConfigSource).toContain("'@ai-marketing/contracts': contractsSource");
+    expect(viteConfigSource).toContain("exclude: ['@ai-marketing/contracts']");
+    expect(viteConfigSource).not.toContain("include: ['@ai-marketing/contracts']");
+  });
+
   it('reproduces the four-section prompt workspace and ten-item pagination', () => {
     expect(pageSource).toContain('class="effect-prompt-heading"');
     expect(pageSource).toContain('class="effect-prompt-settings"');
@@ -15,9 +22,10 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).toContain('{{ EFFECT_PROMPT_LIMITS.pageSize }} 条/页');
   });
 
-  it('uses one type selector for six independent count and duration settings', () => {
+  it('shows all six independent configurations without an all-types selector', () => {
     for (const label of [
-      '片段类型',
+      '素材片段总数',
+      '单条成片预计时长',
       '生成数量',
       '片段时长',
       '语义重复度上限',
@@ -36,10 +44,18 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).not.toContain('追加禁用元素');
     expect(pageSource).toContain('currentSettings.value.fragmentConfigs[fragmentType]');
     expect(pageSource).toContain('currentTargetCount');
-    expect(pageSource).toContain('currentDurationSummary');
-    expect(pageSource).toContain('EFFECT_PROMPT_LIMITS.minCount - otherCount');
-    expect(pageSource.match(/v-model="fragmentTypeFilter"/gu)).toHaveLength(1);
-    expect(pageSource).not.toContain('v-model="fragmentTypeFilter" :disabled="currentRunning"');
+    expect(pageSource).toContain('currentFinishedVideoDurationSeconds');
+    expect(pageSource).toContain('currentFinishedVideoDurationLabel');
+    expect(pageSource).toMatch(
+      /total\s*\+\s*currentSettings\.value\.fragmentConfigs\[fragmentType\]\.durationSeconds/su,
+    );
+    expect(pageSource).not.toMatch(/durationSeconds\s*\*\s*[^\n]*\.count/u);
+    expect(pageSource).toMatch(/EFFECT_PROMPT_LIMITS\.minCount\s*-\s*otherCount/su);
+    expect(pageSource).toContain('class="fragment-config-grid"');
+    expect(pageSource).toContain('toggleFragmentTypeFilter(fragmentType)');
+    expect(pageSource).toContain("fragmentTypeFilter.value === fragmentType ? '' : fragmentType");
+    expect(pageSource).not.toContain('v-model="fragmentTypeFilter"');
+    expect(pageSource).not.toContain('<option value="">全部片段</option>');
     expect(pageSource).toContain('fragmentTypeFilter.value || undefined');
   });
 
@@ -69,8 +85,11 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).not.toContain('localStorage');
   });
 
-  it('adds the recoverable sub-workflow and complete six-dimensional editor', () => {
-    expect(pageSource).toContain('差异化 Prompt 生成子工作流');
+  it('adds the recoverable workflow and complete six-dimensional editor', () => {
+    expect(pageSource).toContain('差异化 Prompt 生成工作流');
+    expect(pageSource).toContain('PROMPT WORKFLOW');
+    expect(pageSource).not.toContain('子工作流');
+    expect(pageSource).not.toContain('SUB-WORKFLOW');
     expect(pageSource).toContain('EFFECT_PROMPT_GRAPH_NODES');
     expect(pageSource).toContain('loadEffectPromptNodeDetail');
     expect(pageSource).toContain('pollEffectPromptRun');
@@ -154,8 +173,26 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).toContain('v-for="(field, index) in graphDetail.fields"');
     expect(pageSource).toContain('v-if="field.description"');
     expect(pageSource).toContain('graphDetailValueIsMultiline(field.value)');
-    expect(pageSource).toContain('该节点尚未执行，暂无运行字段');
+    expect(pageSource).toContain('该节点尚未执行，暂无实际产出。');
     expect(pageSource).toMatch(/\.node-fields dd\.is-multiline\s*\{[^}]*white-space:\s*pre-wrap/su);
+    expect(pageSource).toContain('展示本次真实输入、阶段产物和质量结论。');
+    for (const blockKind of [
+      'TAG_LIST',
+      'COMBINATION_LIST',
+      'ROUTE_LIST',
+      'PROMPT_LIST',
+      'PAIR_LIST',
+      'ISSUE_LIST',
+    ])
+      expect(pageSource).toContain(`block.kind === '${blockKind}'`);
+    expect(pageSource).toContain('class="node-prompt-content"');
+    expect(pageSource).toContain('展开全文');
+    expect(pageSource).toContain('展开对比');
+    expect(pageSource).toMatch(
+      /\.workflow-graph-content\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*420px/su,
+    );
+    expect(pageSource).not.toContain('执行依赖');
+    expect(pageSource).not.toContain('仅展示固定业务示例');
     expect(pageSource).not.toMatch(
       /storageKey|sourceFingerprint|attemptToken|promptVersion|ARK_PROMPT_MODEL/u,
     );
