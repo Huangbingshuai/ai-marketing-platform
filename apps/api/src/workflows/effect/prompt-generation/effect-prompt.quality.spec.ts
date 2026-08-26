@@ -61,6 +61,16 @@ describe('effect prompt quality', () => {
     expect(effectPromptExecutionIssues(cta)).not.toContain('CTA_NO_SAFE_AREA');
   });
 
+  it('rejects an unexplained packaged-to-unpacked product state jump', () => {
+    const productDisplay = item('product-state-jump', {
+      fragmentType: 'PRODUCT_DISPLAY',
+      content:
+        '广式腊肠500g真空袋装首帧完整放在浅棕餐垫中央，一只手把旁侧香菌移出画面。近景平视机位缓慢横移后停止，暖柔侧光保持稳定，最终竹蒸笼上的广式腊肠整齐排列，形成稳定产品构图。',
+    });
+
+    expect(effectPromptExecutionIssues(productDisplay)).toContain('PHYSICS_BREAK');
+  });
+
   it('accepts an outro with only observable background stabilization', () => {
     const outro = item('outro-subtle', {
       fragmentType: 'OUTRO',

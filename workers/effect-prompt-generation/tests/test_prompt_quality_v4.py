@@ -232,3 +232,22 @@ def test_cta_accepts_continuous_blank_area_as_safe_composition() -> None:
     )
 
     assert "CTA_NO_SAFE_AREA" not in reasons
+
+
+def test_product_display_rejects_unexplained_packaged_to_unpacked_state_jump() -> None:
+    row = PRODUCTS[0]
+    combination = _combination(row, FragmentType.PRODUCT_DISPLAY)
+    content = (
+        "广式腊肠500g真空袋装首帧完整放在浅棕餐垫中央，一只手把旁侧香菌移出画面。"
+        "近景平视机位缓慢横移后停止，暖柔侧光保持稳定，"
+        "最终竹蒸笼上的广式腊肠整齐排列，形成稳定产品构图。"
+    )
+
+    reasons = validate_fragment_prompt(
+        content,
+        combination,
+        product_name=row["product"],
+        source_facts=[row["selling_point"]],
+    )
+
+    assert "PHYSICS_BREAK" in reasons

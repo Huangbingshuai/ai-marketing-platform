@@ -289,6 +289,10 @@ const PAIN_RESOLVED =
   /(?:(?:使用|拿出|换上|放入).{0,24}(?:解决|完成|恢复|顺利)|问题(?:被|已)?解决|不便消失|轻松完成)/u;
 const PRODUCT_EFFECT_LEAK =
   /(?:使用后|效果对比|前后对比|问题解决|明显改善|立刻见效|满意(?:微笑|点头)|证明(?:效果|功效))/u;
+const PACKAGED_STATE = /(?:真空袋装|袋装|包装|袋身)/u;
+const UNPACKAGED_END_STATE =
+  /(?:最终|结束时|随后|转眼).{0,80}(?:蒸笼|盘中|碗中|切片|散装|裸露)/u;
+const PACKAGE_TRANSITION_ACTION = /(?:打开|拆开|撕开|取出|倒出|拿出)/u;
 const SAFE_AREA = /(?:留白|安全区|干净空间|简洁背景|无遮挡空间|空白墙面|空白区域|干净无遮挡)/u;
 const OUTRO_UNSTABLE =
   /(?:快速|奔跑|跳跃|连续旋转|跟拍|跟随|手持|环绕|横移|侧移|推近|推进|靠近|后拉|拉远)/u;
@@ -358,6 +362,12 @@ export const effectPromptExecutionIssues = (item: EffectPromptItem): string[] =>
     if (productName && !content.slice(0, 80).includes(productName))
       issues.push('PRODUCT_NOT_FIRST_FRAME');
     if (PRODUCT_EFFECT_LEAK.test(content)) issues.push('PRODUCT_ROLE_OVERLOAD');
+    if (
+      PACKAGED_STATE.test(content) &&
+      UNPACKAGED_END_STATE.test(content) &&
+      !PACKAGE_TRANSITION_ACTION.test(content)
+    )
+      issues.push('PHYSICS_BREAK');
   }
   if (
     item.fragmentType === 'SELLING_POINT_EXPLANATION' &&

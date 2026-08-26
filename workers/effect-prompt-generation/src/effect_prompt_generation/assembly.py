@@ -83,6 +83,11 @@ _PAIN_RESOLVED = re.compile(
 _PRODUCT_EFFECT_LEAK = re.compile(
     r"使用后|效果对比|前后对比|问题解决|明显改善|立刻见效|满意(?:微笑|点头)|证明(?:效果|功效)"
 )
+_PACKAGED_STATE = re.compile(r"真空袋装|袋装|包装|袋身")
+_UNPACKAGED_END_STATE = re.compile(
+    r"(?:最终|结束时|随后|转眼).{0,80}(?:蒸笼|盘中|碗中|切片|散装|裸露)"
+)
+_PACKAGE_TRANSITION_ACTION = re.compile(r"打开|拆开|撕开|取出|倒出|拿出")
 _SAFE_AREA = re.compile(
     r"留白|安全区|干净空间|简洁背景|无遮挡空间|空白墙面|空白区域|干净无遮挡"
 )
@@ -302,6 +307,12 @@ def validate_fragment_prompt(
             reasons.append("PRODUCT_NOT_FIRST_FRAME")
         if _PRODUCT_EFFECT_LEAK.search(content):
             reasons.append("PRODUCT_ROLE_OVERLOAD")
+        if (
+            _PACKAGED_STATE.search(content)
+            and _UNPACKAGED_END_STATE.search(content)
+            and not _PACKAGE_TRANSITION_ACTION.search(content)
+        ):
+            reasons.append("PHYSICS_BREAK")
     if combination.fragment_type == FragmentType.CTA and not _SAFE_AREA.search(content):
         reasons.append("CTA_NO_SAFE_AREA")
     if combination.fragment_type == FragmentType.OUTRO:

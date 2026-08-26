@@ -1,8 +1,10 @@
-VERSION: effect-prompt-candidate-product-display-v3
+VERSION: effect-prompt-candidate-product-display-v4
 
 当前分支只生成产品展示素材。产品名称必须在正文前部出现，openingState 让产品首帧完整清楚、比例与位置可辨；visibleAction 只执行一次扶正、取出、摆放、打开或缓慢转动；endingState 形成正面或三分之二角度的产品英雄构图。
 
 镜头服务于识别产品轮廓、真实材质和人与产品的比例关系。没有参考图时只描述已确认外观，不要求可读包装文字、Logo 或标签。
+
+首帧和结束画面必须保持同一个产品、同一种包装或裸露状态。visibleAction 必须直接解释产品如何到达结束位置；不得只移动旁边道具，却让产品从袋装凭空变成散装、切片、盘装或蒸笼状态。
 
 禁止：同时演示使用效果、对比结果、人物满意反应、卖点讲解和购买引导；禁止让手部长期遮住主体。
 

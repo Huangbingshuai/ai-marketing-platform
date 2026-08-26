@@ -49,9 +49,9 @@ def test_quality_v4_templates_contain_six_specialized_system_prompts() -> None:
     assert "纯净原始画面" in base
     assert "4～5 秒为 80～150" in base
     expected_versions = {
-        "candidate_hook.system.prompt.txt": "effect-prompt-candidate-hook-v4",
+        "candidate_hook.system.prompt.txt": "effect-prompt-candidate-hook-v5",
         "candidate_pain.system.prompt.txt": "effect-prompt-candidate-pain-v3",
-        "candidate_product_display.system.prompt.txt": "effect-prompt-candidate-product-display-v3",
+        "candidate_product_display.system.prompt.txt": "effect-prompt-candidate-product-display-v4",
         "candidate_selling_point.system.prompt.txt": "effect-prompt-candidate-selling-point-v4",
         "candidate_cta.system.prompt.txt": "effect-prompt-candidate-cta-v5",
         "candidate_outro.system.prompt.txt": "effect-prompt-candidate-outro-v4",
