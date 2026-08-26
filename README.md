@@ -163,6 +163,8 @@ ARK_API_KEY=<仅保存在本机的真实 Key>
 
 共享或正式环境还应替换 `.env` 中的 MinIO 密码和 `EFFECT_EXTRACTION_WORKER_TOKEN`。前端代码、测试、README、`.env.example` 和 Git 历史中都不得出现真实密钥。
 
+本地非生产环境未显式配置 Worker Token 时，API 与 Docker Compose 使用一致的 `local-*` 开发默认值，避免任务已入队但 claim 持续 401。生产环境没有默认值，仍必须显式配置彼此一致的独立 Token。
+
 ### 2. 启动基础设施
 
 ```powershell
@@ -312,6 +314,8 @@ Remove-Item Env:RUN_ARK_INTEGRATION
 3. `ProjectAsset`：用户完成整个工作流并归档后形成的正式项目资产和版本。
 4. `GlobalAsset`：用户明确选择后发布的跨项目复用资产。
 
+“当前所在节点”和节点草稿分开维护：进入或切换节点只更新 `WorkflowRun.currentNodeId` 与活跃时间，不创建空的 `WorkflowNodeState`，也不增加草稿 revision。项目概览因此可以立即显示正在编辑的业务节点；只有发生真实表单或结果变化时才保存节点草稿，只有达到节点提交边界时才更新 `WorkingArtifact`。
+
 节点中不提供“保存到项目资产库”按钮。刷新、退出和切换项目只保留草稿与工作副本，不自动归档。所有业务数据和查询必须携带 `projectId`，禁止跨项目串读写。
 
 ## 主要目录
@@ -393,6 +397,10 @@ docker compose logs --tail 200 effect-extraction-worker
 ```
 
 如果 RabbitMQ 中有 ready 消息但消费者数量为 0，说明 Worker 没有运行。常见原因是 `ARK_API_KEY` 缺失、内部 Token 不一致或 API 端口配置不一致。
+
+### Prompt 任务一直停在“等待服务接单 / 0%”
+
+先检查 `effect-prompt-generation-worker` 日志中的 claim 状态。开发环境的 API 与 Compose 已统一使用本地 Worker Token 默认值；生产环境仍必须显式配置 `EFFECT_PROMPT_WORKER_TOKEN`。如果规划阶段出现 JSON 截断，还应确认容器中的 `ARK_PROMPT_STRATEGY_MAX_OUTPUT_TOKENS` 为 `8192` 或更高，而不是旧 Compose 默认值 `2048`。
 
 ### Docling 启动后立即停止
 

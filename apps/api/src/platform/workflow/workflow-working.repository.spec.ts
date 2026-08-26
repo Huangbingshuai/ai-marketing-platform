@@ -27,6 +27,28 @@ describe('WorkflowWorkingRepository', () => {
     });
   });
 
+  it('activates a node without creating or revising node state', async () => {
+    const run = { id: 'run-a', projectId: 'project-a', currentNodeId: 'INFORMATION_EXTRACTION' };
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const findFirst = vi.fn().mockResolvedValue(run);
+    const repository = new WorkflowWorkingRepository({
+      workflowRun: { updateMany, findFirst },
+    } as unknown as PrismaService);
+
+    await expect(
+      repository.activateNode('project-a', 'run-a', 'INFORMATION_EXTRACTION'),
+    ).resolves.toBe(run);
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'run-a',
+        projectId: 'project-a',
+        status: { in: ['ACTIVE', 'PAUSED'] },
+      },
+      data: { currentNodeId: 'INFORMATION_EXTRACTION', lastActiveAt: expect.any(Date) },
+    });
+    expect(findFirst).toHaveBeenCalledWith({ where: { id: 'run-a', projectId: 'project-a' } });
+  });
+
   it('returns unchanged without incrementing revision when the canonical content hash matches', async () => {
     const current = {
       id: 'state-a',

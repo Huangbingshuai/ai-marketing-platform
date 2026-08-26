@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  activateWorkflowNode,
   getActiveWorkflowRunOverview,
   listWorkingArtifacts,
   putWorkflowNodeState,
@@ -14,6 +15,20 @@ const ok = (): Response =>
   });
 
 describe('workflow working API', () => {
+  it('activates the visible node without writing a node draft', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(ok());
+    vi.stubGlobal('fetch', fetchMock);
+
+    await activateWorkflowNode('project/one', 'run-one', 'INFORMATION_EXTRACTION');
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain(
+      '/projects/project%2Fone/workflow-runs/run-one/nodes/INFORMATION_EXTRACTION/activate',
+    );
+    expect(init.method).toBe('POST');
+    expect(init.body).toBeUndefined();
+  });
+
   it('saves node state with the expected revision and keepalive option', async () => {
     const fetchMock = vi.fn().mockResolvedValue(ok());
     vi.stubGlobal('fetch', fetchMock);

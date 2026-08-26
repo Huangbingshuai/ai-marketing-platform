@@ -36,9 +36,11 @@ import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ApiClientError, isAbortError } from '../../../api/http-client';
 import { projectContextKey } from '../../../platform/project/project-context';
 import {
-  getWorkflowNodeState,
+  activateWorkflowNode,
+  getActiveWorkflowRunOverview,
   putWorkflowNodeState,
 } from '../../../platform/workflow/api/workflow-working.api';
+import { workflowNodeBaseId } from '../../../platform/workflow/workflow-node-id';
 import EffectInfoExtractionNodePage from '../information-extraction/EffectInfoExtractionNodePage.vue';
 import EffectPromptGenerationNodePage from '../prompt-generation/EffectPromptGenerationNodePage.vue';
 import EffectSegmentRenderNodePage from '../segment-render/EffectSegmentRenderNodePage.vue';
@@ -112,6 +114,14 @@ const downstreamBoundaries = [
   { title: '片段渲染', description: 'AI 视频片段批量渲染' },
   { title: '自动混剪', description: '模板化自动混剪' },
   { title: '校验与导出', description: '质量校验与成片导出' },
+] as const;
+const effectWorkflowNodeIds = [
+  'SOURCE_IMPORT',
+  'INFORMATION_EXTRACTION',
+  'PROMPT_GENERATION',
+  'SEGMENT_RENDER',
+  'TEMPLATE_MIX',
+  'FINAL_OUTPUT',
 ] as const;
 const activeDownstreamBoundary = computed(() => downstreamBoundaries[activeStep.value - 2]);
 const keyword = ref('');
@@ -539,19 +549,39 @@ const loadProject = async (projectId: string): Promise<void> => {
     if (!isCurrentContext(projectId, generation)) return;
     setDraft(draftResponse.data);
     lastSavedNodeState = JSON.stringify(nodeStateSnapshot());
+    const overview = await getActiveWorkflowRunOverview(
+      projectId,
+      'EFFECT',
+      'EFFECT',
+      pageController.signal,
+    );
+    const sourceNodeState = overview.data.nodeStates.find(
+      (item) => item.nodeId === 'SOURCE_IMPORT',
+    );
+    nodeStateRevision.value = sourceNodeState?.revision ?? 0;
+    const restoredNodeId = workflowNodeBaseId(overview.data.run?.currentNodeId);
+    const restoredStep = restoredNodeId
+      ? effectWorkflowNodeIds.findIndex((nodeId) => nodeId === restoredNodeId)
+      : -1;
+    activeStep.value =
+      restoredStep >= 0
+        ? restoredStep
+        : workspace.value.currentNode === 'AI_INFO_EXTRACTION'
+          ? 1
+          : 0;
+    const activeNodeId = effectWorkflowNodeIds[activeStep.value];
     try {
-      const stateResponse = await getWorkflowNodeState(
-        projectId,
-        workspace.value.workflowRunId,
-        'SOURCE_IMPORT',
-        pageController.signal,
-      );
-      nodeStateRevision.value = stateResponse.data.revision;
+      if (activeNodeId)
+        await activateWorkflowNode(
+          projectId,
+          workspace.value.workflowRunId,
+          activeNodeId,
+          pageController.signal,
+        );
     } catch (error) {
-      if (!(error instanceof ApiClientError && error.status === 404)) throw error;
-      nodeStateRevision.value = 0;
+      if (!isAbortError(error))
+        showNotice(error instanceof Error ? error.message : '当前节点状态更新失败', 'error');
     }
-    activeStep.value = workspace.value.currentNode === 'AI_INFO_EXTRACTION' ? 1 : 0;
     saveState.value = 'clean';
     if (workspace.value.currentMode === 'BATCH') await refreshProductList();
     await refreshRemovedProducts();
@@ -1295,6 +1325,16 @@ const advanceDraft = async (): Promise<void> => {
   workspace.value.currentNode = 'AI_INFO_EXTRACTION';
   workspace.value.nodeStatuses.SOURCE_IMPORT = 'COMPLETED';
   workspace.value.nodeStatuses.AI_INFO_EXTRACTION = 'AVAILABLE';
+  try {
+    await activateWorkflowNode(
+      loadedProjectId.value,
+      workspace.value.workflowRunId,
+      'INFORMATION_EXTRACTION',
+    );
+  } catch (error) {
+    showNotice(error instanceof Error ? error.message : '当前节点状态更新失败', 'error');
+    return;
+  }
   activeStep.value = 1;
   window.scrollTo({ top: 0, behavior: 'smooth' });
 };
@@ -1305,6 +1345,15 @@ const selectWorkflowStep = async (step: number): Promise<void> => {
   try {
     if (!(await flushPendingEdits())) {
       showNotice('节点草稿保存失败，已阻止切换', 'error');
+      return;
+    }
+    const workflowRunId = workspace.value?.workflowRunId;
+    const nodeId = effectWorkflowNodeIds[step];
+    if (!workflowRunId || !nodeId) return;
+    try {
+      await activateWorkflowNode(loadedProjectId.value, workflowRunId, nodeId);
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '当前节点状态更新失败', 'error');
       return;
     }
     activeStep.value = step;

@@ -2,6 +2,7 @@ import type { ServerResponse } from 'node:http';
 import { pipeline } from 'node:stream/promises';
 
 import type {
+  ActivateWorkflowNodeData,
   PutWorkflowNodeStateData,
   WorkingArtifactListData,
   WorkflowNodeState,
@@ -63,6 +64,15 @@ export class WorkflowWorkingController {
     @Body() body: PutWorkflowNodeStateDto,
   ): Promise<PutWorkflowNodeStateData> {
     return this.service.putNodeState(projectId, workflowRunId, nodeId, body);
+  }
+
+  @Post('workflow-runs/:workflowRunId/nodes/:nodeId/activate')
+  activateNode(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('workflowRunId', new ParseUUIDPipe({ version: '4' })) workflowRunId: string,
+    @Param('nodeId') nodeId: string,
+  ): Promise<ActivateWorkflowNodeData> {
+    return this.service.activateNode(projectId, workflowRunId, nodeId);
   }
 
   @Get('working-artifacts')

@@ -20,6 +20,22 @@ describe('effect info extraction result layout', () => {
     expect(pageSource.match(/@click="runCurrentExtraction"/g)).toHaveLength(3);
   });
 
+  it('shows the current product label before the selector and keeps the workflow action after it', () => {
+    const productSwitcher = pageSource.indexOf('<label class="product-switcher">');
+    const currentProductLabel = pageSource.indexOf('<span>当前商品</span>', productSwitcher);
+    const productSelect = pageSource.indexOf('<select :value="currentProductId"', productSwitcher);
+    const workflowTrigger = pageSource.indexOf(
+      'class="secondary-button workflow-graph-trigger"',
+      productSwitcher,
+    );
+
+    expect(productSwitcher).toBeGreaterThan(-1);
+    expect(currentProductLabel).toBeGreaterThan(productSwitcher);
+    expect(currentProductLabel).toBeLessThan(productSelect);
+    expect(productSelect).toBeLessThan(workflowTrigger);
+    expect(pageSource).not.toContain('<span class="visually-hidden">当前产品</span>');
+  });
+
   it('runs only the selected product and exposes progress and conflict recovery', () => {
     expect(pageSource).not.toContain('全部提炼');
     expect(pageSource).not.toContain('runBatchExtraction');
@@ -156,7 +172,9 @@ describe('effect info extraction result layout', () => {
     );
   });
 
-  it('keeps CommonJS contracts named exports available in the Vite dev server', () => {
-    expect(viteConfigSource).toContain("needsInterop: ['@ai-marketing/contracts']");
+  it('loads contracts source directly in the Vite dev server', () => {
+    expect(viteConfigSource).toContain("'@ai-marketing/contracts': contractsSource");
+    expect(viteConfigSource).toContain("exclude: ['@ai-marketing/contracts']");
+    expect(viteConfigSource).not.toContain("needsInterop: ['@ai-marketing/contracts']");
   });
 });

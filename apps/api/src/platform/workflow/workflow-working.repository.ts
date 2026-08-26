@@ -201,6 +201,18 @@ export class WorkflowWorkingRepository {
     });
   }
 
+  async activateNode(projectId: string, workflowRunId: string, nodeId: string) {
+    const updated = await this.prisma.workflowRun.updateMany({
+      where: {
+        id: workflowRunId,
+        projectId,
+        status: { in: [...openRunStatuses] },
+      },
+      data: { currentNodeId: nodeId, lastActiveAt: new Date() },
+    });
+    return updated.count > 0 ? this.findRun(projectId, workflowRunId) : null;
+  }
+
   async saveNodeState(
     projectId: string,
     workflowRunId: string,

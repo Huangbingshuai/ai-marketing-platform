@@ -1,4 +1,5 @@
 import type {
+  ActivateWorkflowNodeData,
   AssetPreviewKind,
   PutWorkflowNodeStateData,
   PutWorkflowNodeStateRequest,
@@ -230,6 +231,20 @@ export class WorkflowWorkingService {
         'CONFLICT',
       );
     return { nodeState: toNodeState(result.record), unchanged: result.unchanged };
+  }
+
+  async activateNode(
+    projectId: string,
+    workflowRunId: string,
+    nodeId: string,
+  ): Promise<ActivateWorkflowNodeData> {
+    await this.projectService.get(projectId);
+    if (!nodeId.trim() || nodeId.length > 160)
+      throw new ApiHttpException('节点标识无效', HttpStatus.BAD_REQUEST, 'VALIDATION_ERROR');
+    const run = await this.repository.activateNode(projectId, workflowRunId, nodeId);
+    if (!run)
+      throw new ApiHttpException('工作流运行不存在', HttpStatus.NOT_FOUND, 'ASSET_NOT_FOUND');
+    return { run: toRun(run) };
   }
 
   async replaceNodeStateBaseline(

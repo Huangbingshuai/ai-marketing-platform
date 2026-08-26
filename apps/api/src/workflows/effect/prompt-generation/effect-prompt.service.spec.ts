@@ -417,6 +417,71 @@ describe('EffectPromptService settings contract', () => {
     expect(output.items.map(({ id }) => id)).toEqual(['hook-kitchen']);
   });
 
+  it('groups the default result list by fragment workflow order before pagination', async () => {
+    const timestamp = '2026-08-25T00:00:00.000Z';
+    const makeItem = (
+      id: string,
+      code: string,
+      fragmentType: (typeof EFFECT_PROMPT_FRAGMENT_TYPES)[number],
+    ) => ({
+      id,
+      code,
+      origin: 'AI' as const,
+      fragmentType,
+      materialTags: [fragmentType],
+      targetDurationSeconds: 5,
+      dimensions: {
+        narrative: `叙事-${id}`,
+        scene: `场景-${id}`,
+        persona: `人物-${id}`,
+        sellingPoint: `卖点-${id}`,
+        camera: `镜头-${id}`,
+        emotion: `情绪-${id}`,
+      },
+      content: `人物在场景中拿起产品并完成动作-${id}`,
+      insightBindings: [],
+      manualEdited: false,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const draftResult = recomputePromptQuality(
+      [
+        makeItem('cta', 'P003', 'CTA'),
+        makeItem('hook-later', 'P010', 'HOOK'),
+        makeItem('outro', 'P004', 'OUTRO'),
+        makeItem('product', 'P002', 'PRODUCT_DISPLAY'),
+        makeItem('hook-first', 'P001', 'HOOK'),
+        makeItem('pain', 'P005', 'PAIN'),
+        makeItem('selling-point', 'P006', 'SELLING_POINT_EXPLANATION'),
+      ],
+      DEFAULT_EFFECT_PROMPT_SETTINGS,
+    );
+    const repository = {
+      workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }),
+      latestResult: vi.fn().mockResolvedValue({
+        id: 'result-a',
+        productId: 'product-a',
+        revision: 1,
+        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
+        draftResult,
+      }),
+    };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const service = new EffectPromptService(repository as never, projects as never, {} as never);
+
+    const output = await service.result('project-a', 'workflow-a', 'product-a', 1, 10);
+
+    expect(output.items.map(({ id }) => id)).toEqual([
+      'hook-first',
+      'hook-later',
+      'pain',
+      'product',
+      'selling-point',
+      'cta',
+      'outro',
+    ]);
+  });
+
   it('returns an explicit validation issue for legacy full-video results', async () => {
     const repository = {
       result: vi.fn().mockResolvedValue({

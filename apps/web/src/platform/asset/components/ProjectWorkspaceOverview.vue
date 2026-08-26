@@ -90,6 +90,9 @@ const currentNodeLabel = computed(
   () =>
     workflowNodes.value[currentNodeIndex.value]?.label ?? latestState.value?.nodeId ?? '尚未开始',
 );
+const activeNodeId = computed(() =>
+  workflowNodeBaseId(run.value?.currentNodeId ?? latestState.value?.nodeId),
+);
 const lastSavedAt = computed(() => {
   const timestamps = [
     props.project.updatedAt,
@@ -122,11 +125,8 @@ const nodeLabel = (nodeId: string): string =>
 
 const nodeStatus = (definition: WorkflowNodeDefinition): string => {
   const state = stateByNode.value.get(definition.id);
+  if (definition.id === activeNodeId.value) return '编辑中';
   if (!state) return '尚未开始';
-  if (
-    definition.id === workflowNodeBaseId(run.value?.currentNodeId ?? latestState.value?.nodeId)
-  )
-    return '编辑中';
   return '已自动保存';
 };
 

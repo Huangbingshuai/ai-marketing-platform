@@ -109,4 +109,11 @@ describe('validateEnvironment', () => {
       EFFECT_PROMPT_WORKER_TOKEN: 'production-prompt-worker-secret',
     });
   });
+
+  it('aligns local worker token defaults with Docker Compose', () => {
+    expect(validateEnvironment(validEnvironment)).toMatchObject({
+      EFFECT_EXTRACTION_WORKER_TOKEN: 'local-effect-extraction-worker-token',
+      EFFECT_PROMPT_WORKER_TOKEN: 'local-effect-prompt-worker-token',
+    });
+  });
 });

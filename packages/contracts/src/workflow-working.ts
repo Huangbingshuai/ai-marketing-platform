@@ -101,6 +101,10 @@ export type WorkflowRunOverviewData = {
   nodeStates: WorkflowNodeState[];
 };
 
+export type ActivateWorkflowNodeData = {
+  run: WorkflowRun;
+};
+
 export type PutWorkflowNodeStateRequest = {
   expectedRevision: number | null;
   schemaVersion?: number | undefined;

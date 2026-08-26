@@ -174,6 +174,15 @@ describe('effect import commerce link placeholder', () => {
 });
 
 describe('effect import automatic draft saving', () => {
+  it('activates the selected workflow node independently from node draft persistence', () => {
+    expect(pageSource).toContain('activateWorkflowNode(');
+    expect(pageSource).toContain('getActiveWorkflowRunOverview(');
+    expect(pageSource).toContain('workflowNodeBaseId(overview.data.run?.currentNodeId)');
+    expect(pageSource).toContain("'INFORMATION_EXTRACTION'");
+    expect(pageSource).toContain('effectWorkflowNodeIds[step]');
+    expect(pageSource).toContain('effectWorkflowNodeIds[activeStep.value]');
+  });
+
   it('debounces node-state saving and removes node-level asset publishing', () => {
     expect(pageSource).toContain('putWorkflowNodeState(');
     expect(pageSource).toContain('setTimeout(() => void flushProduct(productId), 1000)');

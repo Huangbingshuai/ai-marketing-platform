@@ -102,8 +102,12 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
     requiredString(minioSecretKey, 'MINIO_SECRET_KEY');
   }
 
-  const effectExtractionWorkerToken = optionalString(raw.EFFECT_EXTRACTION_WORKER_TOKEN);
-  const effectPromptWorkerToken = optionalString(raw.EFFECT_PROMPT_WORKER_TOKEN);
+  const effectExtractionWorkerToken =
+    optionalString(raw.EFFECT_EXTRACTION_WORKER_TOKEN) ??
+    (appEnvironment === 'production' ? undefined : 'local-effect-extraction-worker-token');
+  const effectPromptWorkerToken =
+    optionalString(raw.EFFECT_PROMPT_WORKER_TOKEN) ??
+    (appEnvironment === 'production' ? undefined : 'local-effect-prompt-worker-token');
   if (appEnvironment === 'production') {
     requiredString(effectExtractionWorkerToken, 'EFFECT_EXTRACTION_WORKER_TOKEN');
     requiredString(effectPromptWorkerToken, 'EFFECT_PROMPT_WORKER_TOKEN');

@@ -146,12 +146,13 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).toContain('@keydown.esc="closeDeleteDialog"');
     expect(pageSource).toContain('ref="deleteConfirmButton"');
     expect(pageSource).toContain("itemOperation.kind === 'delete'");
-    expect(pageSource).toContain('重新生成此条');
+    expect(pageSource).toContain('重新生成');
     expect(pageSource).toContain('class="prompt-regeneration-dialog"');
     expect(pageSource).toContain('已调整 {{ regenerationChangedKeys.length }}/6');
     expect(pageSource).toContain('恢复原始六维');
     expect(pageSource).toContain('regenerationInstruction.length }}/500');
     expect(pageSource).toContain("regenerationHasChanges ? '按当前设置重新生成' : '直接换一版'");
+    expect(pageSource).toContain('.prompt-dialog-backdrop {\n  --effect-blue: #2563eb;');
     expect(pageSource).toContain('replacementDimensions');
     expect(pageSource).toContain('targetItemId: item.id');
     expect(pageSource).not.toContain(

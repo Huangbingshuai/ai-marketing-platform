@@ -27,6 +27,7 @@ const result: EffectExtractionResult = {
   emotionalScenarios: ['情绪场景'],
   durationSeconds: 20,
   aspectRatio: '9:16',
+  resolution: '1080p',
   deliveryChannels: '投放渠道',
   disabledElements: ['禁用元素'],
   visualStyleBaseline: '品牌调性',

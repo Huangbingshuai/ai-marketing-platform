@@ -1928,7 +1928,7 @@ onBeforeUnmount(() => {
                 v-if="regeneratingItemId === item.id"
                 class="spin"
                 :size="13"
-              /><RefreshCw v-else :size="13" />重新生成此条
+              /><RefreshCw v-else :size="13" />重新生成
             </button>
           </div>
         </article>
@@ -3417,6 +3417,7 @@ button:disabled {
   min-width: 108px;
 }
 .prompt-dialog-backdrop {
+  --effect-blue: #2563eb;
   position: fixed;
   z-index: 1200;
   inset: 0;

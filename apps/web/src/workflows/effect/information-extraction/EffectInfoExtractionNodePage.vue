@@ -446,6 +446,7 @@ const emptyExtractionResult: EffectExtractionResult = {
   emotionalScenarios: [],
   durationSeconds: props.globalConfig.durationSeconds,
   aspectRatio: props.globalConfig.aspectRatio,
+  resolution: props.globalConfig.resolution,
   deliveryChannels: '',
   disabledElements: [],
   visualStyleBaseline: '',
@@ -1219,7 +1220,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="extraction-heading__actions">
           <label class="product-switcher">
-            <span class="visually-hidden">当前产品</span>
+            <span>当前商品</span>
             <select :value="currentProductId" @change="selectProduct">
               <option v-for="product in products" :key="product.id" :value="product.id">
                 {{ product.name || '未命名产品' }} · {{ stateLabel(product.id) }}
@@ -2220,6 +2221,15 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
+}
+.product-switcher {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #596278;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 .product-switcher select {
   width: 230px;

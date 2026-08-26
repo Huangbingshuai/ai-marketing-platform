@@ -1,4 +1,5 @@
 import type {
+  ActivateWorkflowNodeData,
   ApiResponse,
   PutWorkflowNodeStateData,
   PutWorkflowNodeStateRequest,
@@ -10,6 +11,17 @@ import type {
 import { requestJson } from '../../../api/http-client';
 
 const projectPath = (projectId: string): string => `/projects/${encodeURIComponent(projectId)}`;
+
+export const activateWorkflowNode = (
+  projectId: string,
+  workflowRunId: string,
+  nodeId: string,
+  signal?: AbortSignal,
+): Promise<ApiResponse<ActivateWorkflowNodeData>> =>
+  requestJson(
+    `${projectPath(projectId)}/workflow-runs/${encodeURIComponent(workflowRunId)}/nodes/${encodeURIComponent(nodeId)}/activate`,
+    { method: 'POST', operation: '更新当前工作流节点', signal },
+  );
 
 export const getActiveWorkflowRunOverview = (
   projectId: string,

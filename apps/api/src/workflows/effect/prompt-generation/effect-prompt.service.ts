@@ -132,6 +132,18 @@ const searchable = (item: EffectPromptItem, query: string): boolean => {
   ].some((value) => value.toLocaleLowerCase('zh-CN').includes(target));
 };
 
+const fragmentDisplayOrder = new Map(
+  EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType, index) => [fragmentType, index]),
+);
+
+const comparePromptItemsForDisplay = (left: EffectPromptItem, right: EffectPromptItem): number => {
+  const fragmentOrder =
+    (fragmentDisplayOrder.get(left.fragmentType) ?? EFFECT_PROMPT_FRAGMENT_TYPES.length) -
+    (fragmentDisplayOrder.get(right.fragmentType) ?? EFFECT_PROMPT_FRAGMENT_TYPES.length);
+  if (fragmentOrder !== 0) return fragmentOrder;
+  return left.code.localeCompare(right.code, 'zh-CN', { numeric: true });
+};
+
 const validateDimensions = (dimensions: EffectPromptDimensions): boolean =>
   Boolean(
     dimensions &&
@@ -430,9 +442,11 @@ export class EffectPromptService {
       parseEffectPromptBatchResult(record.draftResult) ??
       parseLegacyV4EffectPromptBatchResultForRead(record.draftResult);
     if (!draft) throw conflict('Prompt 结果结构无效，请重新生成');
-    const filtered = draft.items.filter(
-      (item) => (!fragmentType || item.fragmentType === fragmentType) && searchable(item, query),
-    );
+    const filtered = draft.items
+      .filter(
+        (item) => (!fragmentType || item.fragmentType === fragmentType) && searchable(item, query),
+      )
+      .sort(comparePromptItemsForDisplay);
     const offset = (page - 1) * pageSize;
     const summary = {
       schemaVersion: draft.schemaVersion,
