@@ -4,13 +4,21 @@ Independent Python 3.12 worker for the effect workflow's differentiated Prompt b
 It consumes lightweight run identifiers from RabbitMQ, claims an immutable snapshot from the
 NestJS internal API, persists every shard, and returns only a schema-versioned batch result.
 
-Schema V3 generates a material pool, not finished advertisements: one Prompt maps to one
+Schema V4 generates a material pool, not finished advertisements: one Prompt maps to one
 independently renderable video fragment. The worker deterministically allocates the six
 slot-compatible fragment types (`HOOK`, `PAIN`, `PRODUCT_DISPLAY`,
 `SELLING_POINT_EXPLANATION`, `CTA`, `OUTRO`), stores their
 material tags and the user-configured per-fragment duration, and replenishes deficits by type.
-The candidate model returns only `slotId + promptText`; it cannot rewrite type, tags,
-duration, six-dimensional planning, or evidence boundaries.
+The candidate model returns `slotId + promptText + usedFactIds`; it cannot rewrite type, tags,
+duration, six-dimensional planning, insight bindings, or evidence boundaries.
+
+Before strategy planning, `INSIGHT_MAPPING` classifies every non-empty extraction field as
+required, adaptive, excluded, or a global constraint and gives usable facts stable content-derived
+IDs. Strategy returns relationship bundles that reference only those IDs, preserving the link
+between audience, pain, decision driver, scenario, selling point, evidence, and marketing goal.
+After deduplication, `INSIGHT_COVERAGE` measures the bindings that survived; missing required facts
+drive role-compatible replenishment and block `PASS`, while deferred adaptive facts remain visible
+without blocking the draft.
 
 Only `STRATEGY_PLANNING` and the six fragment-specific generation branches call Ark. Strategy uses the lightweight
 model to classify confirmed selling points into `VISIBLE_ATTRIBUTE`, `USAGE_ACTION`,
@@ -37,7 +45,7 @@ Optional environment variables:
   `doubao-seed-2-0-lite-260428`
 - `ARK_PROMPT_CANDIDATE_MODEL`: candidate-node override; when unset it uses legacy
   `ARK_PROMPT_MODEL`, then `ARK_MODEL` (Seed 2.1 Turbo by default)
-- `ARK_PROMPT_STRATEGY_MAX_OUTPUT_TOKENS` (default `2048`)
+- `ARK_PROMPT_STRATEGY_MAX_OUTPUT_TOKENS` (default `8192`, accommodates V4 relationship bundles)
 - `ARK_PROMPT_CANDIDATE_MAX_OUTPUT_TOKENS` (default `4096`)
 - `ARK_PROMPT_REASONING_EFFORT` (default `minimal`)
 - `PROMPT_MAX_CONCURRENCY` (default `3`, range `1..8`)

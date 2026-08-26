@@ -3,18 +3,22 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from itertools import combinations
 
 from .combinations import dimension_distance
-from .models import PairViolation, PromptItem, PromptMetrics
+from .insight_mapping import insight_coverage
 from .models import (
     ExecutionInvalidReason,
     FragmentType,
     FragmentTypeDistribution,
+    InsightApplicationMap,
+    InsightCoverage,
+    PairViolation,
+    PromptItem,
+    PromptMetrics,
     SellingPointCoverage,
 )
-
 
 SEMANTIC_DICE_THRESHOLD = 0.82
 VISUAL_OVERLAP_THRESHOLD = 0.75
@@ -39,6 +43,7 @@ class EvaluationResult:
     semantic_pairs: list[PairViolation]
     visual_pairs: list[PairViolation]
     missing_selling_points: list[str]
+    missing_fact_ids: list[str]
 
 
 def semantic_signature(item: PromptItem) -> str:
@@ -109,6 +114,7 @@ def evaluate_candidates(
     visual_limit: float,
     round_number: int,
     required_selling_points: list[str] | None = None,
+    insight_application: InsightApplicationMap | None = None,
     fragment_type_targets: dict[FragmentType, int] | None = None,
     generated_candidate_count: int | None = None,
     removed_execution_invalid: int = 0,
@@ -123,7 +129,11 @@ def evaluate_candidates(
     removed_visual = 0
     removed_dimension = 0
 
-    for candidate in _unique_items(candidates):
+    required_fact_ids = {
+        fact.fact_id for fact in insight_application.required
+    } if insight_application else set()
+    candidate_order = _coverage_order(_unique_items(candidates), required_fact_ids)
+    for candidate in candidate_order:
         if len(accepted) >= target_count or candidate.id in {item.id for item in accepted}:
             continue
         if targets and actual_types[candidate.fragment_type] >= targets[candidate.fragment_type]:
@@ -172,12 +182,15 @@ def evaluate_candidates(
         for item in dict.fromkeys(required_selling_points or [])
         if _normalized_value(item) in covered
     ]
+    coverage = insight_coverage(insight_application, accepted) if insight_application else None
+    missing_fact_ids = [item.fact_id for item in coverage.missing] if coverage else []
     passed = (
         len(accepted) == target_count
         and dimensions_valid
         and semantic_rate <= semantic_limit
         and visual_rate <= visual_limit
         and not missing_selling_points
+        and not missing_fact_ids
         and distribution_valid
     )
     metrics = PromptMetrics(
@@ -204,6 +217,7 @@ def evaluate_candidates(
             covered=covered_selling_points,
             missing=missing_selling_points,
         ),
+        insight_coverage=coverage or InsightCoverage(),
     )
     return EvaluationResult(
         items=accepted,
@@ -212,7 +226,30 @@ def evaluate_candidates(
         semantic_pairs=semantic_pairs,
         visual_pairs=visual_pairs,
         missing_selling_points=missing_selling_points,
+        missing_fact_ids=missing_fact_ids,
     )
+
+
+def _coverage_order(items: list[PromptItem], required_fact_ids: set[str]) -> list[PromptItem]:
+    remaining = list(items)
+    uncovered = set(required_fact_ids)
+    ordered: list[PromptItem] = []
+    while remaining and uncovered:
+        best_index, _ = max(
+            enumerate(remaining),
+            key=lambda entry: len(
+                uncovered.intersection(binding.fact_id for binding in entry[1].insight_bindings)
+            ),
+        )
+        score = len(
+            uncovered.intersection(binding.fact_id for binding in remaining[best_index].insight_bindings)
+        )
+        if score == 0:
+            break
+        item = remaining.pop(best_index)
+        ordered.append(item)
+        uncovered.difference_update(binding.fact_id for binding in item.insight_bindings)
+    return [*ordered, *remaining]
 
 
 def _semantic_text(value: str) -> str:

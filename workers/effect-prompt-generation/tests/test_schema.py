@@ -5,17 +5,18 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
+from effect_prompt_generation.combinations import fragment_type_targets
 from effect_prompt_generation.models import (
     FragmentConfig,
     FragmentType,
     FragmentTypeDistribution,
+    InsightCoverage,
     PromptBatchResult,
     PromptBatchSettings,
     PromptItem,
     PromptMetrics,
     SellingPointCoverage,
 )
-from effect_prompt_generation.combinations import fragment_type_targets
 
 
 def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> None:
@@ -68,6 +69,7 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
                 covered=[item.dimensions.selling_point],
                 missing=[],
             ),
+            insight_coverage=InsightCoverage(),
         ),
         quality_status="NEEDS_REVIEW",
     )

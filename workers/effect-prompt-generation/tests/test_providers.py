@@ -5,14 +5,15 @@ import json
 import httpx
 import pytest
 
+from effect_prompt_generation.assembly import assemble_fragment_prompt
+from effect_prompt_generation.combinations import make_shards, plan_combinations
+from effect_prompt_generation.insight_mapping import map_insight
 from effect_prompt_generation.models import (
     EvidenceMode,
     FragmentType,
     PlannedCombination,
     PromptDimensions,
 )
-from effect_prompt_generation.assembly import assemble_fragment_prompt
-from effect_prompt_generation.combinations import make_shards, plan_combinations
 from effect_prompt_generation.providers import (
     ArkResponsesProvider,
     MockAiProvider,
@@ -24,33 +25,29 @@ from effect_prompt_generation.providers import (
 @pytest.mark.asyncio
 async def test_ark_strategy_uses_strict_schema_and_preserves_confirmed_selling_points() -> None:
     seen: dict[str, object] = {}
+    application = map_insight(
+        {
+            "productName": "便携杯",
+            "productCategory": "随行杯",
+            "coreSpecification": "轻量杯身",
+            "visualFeatures": "浅蓝色圆柱杯身",
+            "coreSellingPoints": ["已确认卖点"],
+            "secondarySellingPoints": ["次要卖点"],
+            "targetAudience": "通勤人群",
+            "corePainPoints": ["双手被占用"],
+            "decisionDrivers": ["单手操作"],
+            "marketingGoal": "引导了解",
+            "usageScenarios": ["地铁通勤"],
+            "purchaseScenarios": ["通勤装备选购"],
+            "emotionalScenarios": ["从容出门"],
+        }
+    )
+    mock_plan = (await MockAiProvider().plan_strategy(application, target_count=50)).value
 
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         seen.update(payload)
-        output = {
-            "narratives": ["以受阻动作建立注意力"],
-            "scenes": ["工作日上午的写字楼入口"],
-            "personas": ["一名28-35岁、穿深色通勤外套的办公室职员"],
-            "sellingPoints": ["已确认卖点", "次要卖点"],
-            "cameras": ["胸前中近景连续下移到手部特写"],
-            "emotions": ["冷白自然光、略紧张的快速节奏"],
-            "actions": ["人物一手握手机、一手拎包，调整后停在双手仍被占用的状态"],
-            "evidencePlans": [
-                {
-                    "sellingPoint": "已确认卖点",
-                    "evidenceMode": "USAGE_ACTION",
-                    "allowedVisualEvidence": "一次已确认的连续操作",
-                    "forbiddenInference": "不得推导功效或数据",
-                },
-                {
-                    "sellingPoint": "次要卖点",
-                    "evidenceMode": "TEXT_ONLY",
-                    "allowedVisualEvidence": "只允许原文字幕",
-                    "forbiddenInference": "不得生成视觉效果证明",
-                },
-            ],
-        }
+        output = mock_plan.model_dump(mode="json", by_alias=True)
         return httpx.Response(200, json={"output_text": json.dumps(output, ensure_ascii=False)})
 
     provider = ArkResponsesProvider(
@@ -62,7 +59,7 @@ async def test_ark_strategy_uses_strict_schema_and_preserves_confirmed_selling_p
     )
     try:
         result = await provider.plan_strategy(
-            {"coreSellingPoints": ["已确认卖点"], "secondarySellingPoints": ["次要卖点"]},
+            application,
             target_count=50,
         )
     finally:
@@ -72,10 +69,10 @@ async def test_ark_strategy_uses_strict_schema_and_preserves_confirmed_selling_p
     assert isinstance(text_format, dict)
     assert text_format["format"]["strict"] is True
     assert seen["model"] == "strategy-model"
-    assert seen["max_output_tokens"] == 2048
+    assert seen["max_output_tokens"] == 8192
     assert seen["reasoning"] == {"effort": "minimal"}
-    assert result.value.selling_points == ["已确认卖点", "次要卖点"]
-    assert result.value.evidence_plans[1].evidence_mode == EvidenceMode.TEXT_ONLY
+    assert result.value.dimension_pools.selling_points == ["已确认卖点", "次要卖点"]
+    assert result.value.dimension_pools.evidence_plans[1].evidence_mode == EvidenceMode.TEXT_ONLY
 
 
 @pytest.mark.asyncio
@@ -151,7 +148,11 @@ async def test_ark_candidate_returns_only_slot_and_direct_prompt() -> None:
     assert "浅蓝色圆柱杯身" in prompt
     assert "促销贴纸" in prompt
     assert result.value.items[0].prompt_text.startswith("5秒，9:16竖屏")
-    assert result.value.items[0].model_dump(by_alias=True).keys() == {"slotId", "promptText"}
+    assert result.value.items[0].model_dump(by_alias=True).keys() == {
+        "slotId",
+        "promptText",
+        "usedFactIds",
+    }
 
 
 @pytest.mark.asyncio
@@ -164,9 +165,11 @@ async def test_mock_translates_stacked_audience_into_executable_single_person_fr
         "usageScenarios": ["年节家庭厨房"],
         "aspectRatio": "3:4",
     }
-    pools = (await provider.plan_strategy(insight, target_count=50)).value
+    application = map_insight(insight)
+    strategy = (await provider.plan_strategy(application, target_count=50)).value
     combinations = plan_combinations(
-        pools,
+        strategy,
+        application,
         count=50,
         round_number=0,
         ordinal_start=1,
@@ -191,8 +194,15 @@ async def test_mock_translates_stacked_audience_into_executable_single_person_fr
             ).value.items
         )
 
-    assert all("家庭厨房决策者" not in item for item in pools.personas)
-    abstract = next(item for item in pools.evidence_plans if item.selling_point == "广府糖酒腌制工艺")
+    assert all(
+        "家庭厨房决策者" not in bundle.persona
+        for bundle in strategy.relationship_bundles
+    )
+    abstract = next(
+        item
+        for item in strategy.dimension_pools.evidence_plans
+        if item.selling_point == "广府糖酒腌制工艺"
+    )
     assert abstract.evidence_mode == EvidenceMode.TEXT_ONLY
     invalid: list[tuple[str, list[str]]] = []
     by_slot = {item.slot_id: item.prompt_text for item in generated_items}
@@ -243,6 +253,7 @@ def _prompt_batch(slot_id: str) -> dict[str, object]:
                     "产品始终位于画面中心。明亮自然光勾出浅蓝色杯身，节奏利落，按键声处停顿，"
                     "结尾保持杯盖打开和产品正面清楚可见，不使用切镜或额外人物。"
                 ),
+                "usedFactIds": [],
             }
         ]
     }

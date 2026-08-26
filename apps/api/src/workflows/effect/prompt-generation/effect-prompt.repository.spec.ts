@@ -72,6 +72,7 @@ describe('EffectPromptRepository', () => {
         emotion: `情绪-${id}`,
       },
       content: `内容-${id}`,
+      insightBindings: [],
       manualEdited: index === 2,
       createdAt: now,
       updatedAt: now,
@@ -158,7 +159,7 @@ describe('EffectPromptRepository', () => {
         aggregateId: runId,
         routingKey: 'effect.prompt-generation.requested',
         payload: {
-          schemaVersion: 3,
+          schemaVersion: 4,
           projectId,
           runId,
           requestId: runId,
@@ -167,7 +168,7 @@ describe('EffectPromptRepository', () => {
     });
   });
 
-  it('migrates V1 full-video settings to V3 six-fragment defaults before snapshotting', async () => {
+  it('migrates V1 full-video settings to V4 six-fragment defaults before snapshotting', async () => {
     const created = runRecord();
     const nodeUpdate = vi.fn().mockResolvedValue({});
     const runCreate = vi.fn().mockResolvedValue(created);
@@ -219,12 +220,12 @@ describe('EffectPromptRepository', () => {
         },
       },
       data: expect.objectContaining({
-        schemaVersion: 3,
+        schemaVersion: 4,
         revision: { increment: 1 },
         state: expectedSettings,
         contentHash: expectedHash,
         executionInputHash: expectedHash,
-        executionInputSchemaVersion: 3,
+        executionInputSchemaVersion: 4,
       }),
     });
     expect(runCreate).toHaveBeenCalledWith({
@@ -257,7 +258,7 @@ describe('EffectPromptRepository', () => {
       },
       effectPromptResult: {
         findFirst: vi.fn().mockResolvedValue({
-          schemaVersion: 3,
+          schemaVersion: 4,
           revision: 4,
           draftResult: recomputePromptQuality([], DEFAULT_EFFECT_PROMPT_SETTINGS),
         }),
@@ -273,7 +274,7 @@ describe('EffectPromptRepository', () => {
     });
   });
 
-  it('starts a fresh V3 batch while preserving a legacy result only for audit', async () => {
+  it('starts a fresh V4 batch while preserving a legacy result only for audit', async () => {
     const created = runRecord();
     const runCreate = vi.fn().mockResolvedValue(created);
     const transaction = {
@@ -286,7 +287,7 @@ describe('EffectPromptRepository', () => {
       workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: workflowRunId }) },
       workflowNodeState: {
         findUnique: vi.fn().mockResolvedValue({
-          schemaVersion: 3,
+          schemaVersion: 4,
           revision: 1,
           state: DEFAULT_EFFECT_PROMPT_SETTINGS,
         }),
@@ -320,7 +321,7 @@ describe('EffectPromptRepository', () => {
     expect(runCreate).toHaveBeenCalledWith({
       data: expect.objectContaining({
         inputSnapshot: expect.objectContaining({
-          schemaVersion: 3,
+          schemaVersion: 4,
           retainedManualItems: [],
           baseResultRevision: null,
         }),
@@ -366,7 +367,7 @@ describe('EffectPromptRepository', () => {
           attemptToken: 'attempt-a',
           leaseExpiresAt: new Date('2026-08-25T00:02:00.000Z'),
           inputSnapshot: {
-            schemaVersion: 3,
+            schemaVersion: 4,
             projectId,
             workflowRunId,
             productId,

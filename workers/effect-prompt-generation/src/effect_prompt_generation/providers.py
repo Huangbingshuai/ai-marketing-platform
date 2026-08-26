@@ -19,12 +19,16 @@ from .models import (
     FragmentType,
     GeneratedPromptText,
     GeneratedPromptTextBatch,
+    InsightApplicationMap,
+    InsightFact,
+    InsightField,
+    MarketingRelationshipBundle,
     NodeId,
     PlannedCombination,
     SellingPointEvidence,
+    StrategyPlan,
 )
 from .prompt_loader import load_prompt, load_prompt_version, render_prompt
-
 
 TModel = TypeVar("TModel", bound=BaseModel)
 LOGGER = logging.getLogger(__name__)
@@ -95,8 +99,8 @@ class AiCallResult(Generic[TModel]):
 
 class AiProvider(Protocol):
     async def plan_strategy(
-        self, insight: Mapping[str, Any], *, target_count: int
-    ) -> AiCallResult[DimensionPools]: ...
+        self, application: InsightApplicationMap, *, target_count: int
+    ) -> AiCallResult[StrategyPlan]: ...
 
     async def generate_candidates(
         self,
@@ -108,24 +112,29 @@ class AiProvider(Protocol):
 
 class MockAiProvider:
     async def plan_strategy(
-        self, insight: Mapping[str, Any], *, target_count: int
-    ) -> AiCallResult[DimensionPools]:
-        selling_points = _selling_points(insight)
+        self, application: InsightApplicationMap, *, target_count: int
+    ) -> AiCallResult[StrategyPlan]:
+        selling_points = [
+            fact.value
+            for fact in application.usable
+            if fact.field in {InsightField.CORE_SELLING_POINT, InsightField.SECONDARY_SELLING_POINT}
+        ]
         if not selling_points:
             raise ProviderError(
                 "产品素材制作信息卡缺少已确认卖点",
                 retryable=False,
                 error_type=ProviderErrorType.REQUEST_REJECTED,
             )
-        scenes = _text_list(
-            insight,
-            "usageScenarios",
-            "usage_scenarios",
-            "purchaseScenarios",
-            "purchase_scenarios",
-            "emotionalScenarios",
-            "emotional_scenarios",
-        )
+        scenes = [
+            fact.value
+            for fact in application.usable
+            if fact.field
+            in {
+                InsightField.USAGE_SCENARIO,
+                InsightField.PURCHASE_SCENARIO,
+                InsightField.EMOTIONAL_SCENARIO,
+            }
+        ]
         concrete_scenes = [_mock_concrete_scene(item) for item in scenes]
         pools = DimensionPools(
             narratives=[
@@ -193,7 +202,14 @@ class MockAiProvider:
             ],
             evidence_plans=[_mock_evidence_plan(item) for item in selling_points],
         )
-        return _mock_result(pools, "STRATEGY_PLANNING", STRATEGY_PROMPT)
+        return _mock_result(
+            StrategyPlan(
+                dimension_pools=pools,
+                relationship_bundles=_mock_relationship_bundles(application),
+            ),
+            "STRATEGY_PLANNING",
+            STRATEGY_PROMPT,
+        )
 
     async def generate_candidates(
         self,
@@ -228,7 +244,7 @@ class ArkResponsesProvider:
         api_key: str,
         strategy_model: str,
         candidate_model: str,
-        strategy_max_output_tokens: int = 2048,
+        strategy_max_output_tokens: int = 8192,
         candidate_max_output_tokens: int = 4096,
         reasoning_effort: str = "minimal",
         timeout: float = 120.0,
@@ -254,9 +270,13 @@ class ArkResponsesProvider:
         await self._client.aclose()
 
     async def plan_strategy(
-        self, insight: Mapping[str, Any], *, target_count: int
-    ) -> AiCallResult[DimensionPools]:
-        allowed = _selling_points(insight)
+        self, application: InsightApplicationMap, *, target_count: int
+    ) -> AiCallResult[StrategyPlan]:
+        allowed = [
+            fact.value
+            for fact in application.usable
+            if fact.field in {InsightField.CORE_SELLING_POINT, InsightField.SECONDARY_SELLING_POINT}
+        ]
         if not allowed:
             raise ProviderError(
                 "产品素材制作信息卡缺少已确认卖点",
@@ -266,19 +286,24 @@ class ArkResponsesProvider:
         prompt = render_prompt(
             STRATEGY_PROMPT,
             target_count=str(target_count),
-            insight_json=json.dumps(dict(insight), ensure_ascii=False, sort_keys=True),
+            insight_json=json.dumps(
+                application.model_dump(mode="json", by_alias=True),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
         )
         call = await self._structured(
             prompt,
-            DimensionPools,
-            schema_name="effect_prompt_dimension_pools",
+            StrategyPlan,
+            schema_name="effect_prompt_strategy_plan_v4",
             stage="STRATEGY_PLANNING",
             prompt_file=STRATEGY_PROMPT,
             model=self._strategy_model,
             max_output_tokens=self._strategy_max_output_tokens,
         )
         evidence_by_point = {
-            _normalized_text(item.selling_point): item for item in call.value.evidence_plans
+            _normalized_text(item.selling_point): item
+            for item in call.value.dimension_pools.evidence_plans
         }
         if set(evidence_by_point) != {_normalized_text(item) for item in allowed}:
             raise ProviderError(
@@ -289,10 +314,15 @@ class ArkResponsesProvider:
                 elapsed_ms=call.metadata.latency_ms,
             )
         protected_evidence = [evidence_by_point[_normalized_text(item)] for item in allowed]
+        _validate_relationship_bundles(call.value.relationship_bundles, application)
         # Selling points are protected hard facts; model output cannot add or remove them.
         return AiCallResult(
             value=call.value.model_copy(
-                update={"selling_points": allowed, "evidence_plans": protected_evidence}
+                update={
+                    "dimension_pools": call.value.dimension_pools.model_copy(
+                        update={"selling_points": allowed, "evidence_plans": protected_evidence}
+                    )
+                }
             ),
             metadata=call.metadata,
         )
@@ -351,6 +381,21 @@ class ArkResponsesProvider:
                 attempts=call.metadata.attempts,
                 elapsed_ms=call.metadata.latency_ms,
             )
+        combinations_by_slot = {item.slot_id: item for item in combinations}
+        for item in call.value.items:
+            expected_fact_ids = {
+                binding.fact_id for binding in combinations_by_slot[item.slot_id].insight_bindings
+            }
+            if set(item.used_fact_ids) != expected_fact_ids or len(item.used_fact_ids) != len(
+                set(item.used_fact_ids)
+            ):
+                raise ProviderError(
+                    "AI structured response changed the assigned insight facts",
+                    retryable=False,
+                    error_type=ProviderErrorType.RESPONSE_INVALID,
+                    attempts=call.metadata.attempts,
+                    elapsed_ms=call.metadata.latency_ms,
+                )
         return call
 
     async def _structured(
@@ -484,6 +529,8 @@ def _candidate_product_context(insight: Mapping[str, Any]) -> dict[str, object]:
         ("secondarySellingPoints", ("secondarySellingPoints", "secondary_selling_points")),
         ("targetAudience", ("targetAudience", "target_audience")),
         ("corePainPoints", ("corePainPoints", "core_pain_points")),
+        ("decisionDrivers", ("decisionDrivers", "decision_drivers")),
+        ("marketingGoal", ("marketingGoal", "marketing_goal")),
         ("usageScenarios", ("usageScenarios", "usage_scenarios")),
         ("purchaseScenarios", ("purchaseScenarios", "purchase_scenarios")),
         ("emotionalScenarios", ("emotionalScenarios", "emotional_scenarios")),
@@ -535,19 +582,22 @@ def _mock_prompt_text(
     )
     prefix = f"{duration_seconds}秒，{aspect_ratio}竖屏。{dims.scene}，{persona_position}"
     action = combination.visible_action.replace("产品", product_name).replace("·", "，")
-    if "腊肠" in product_name:
-        action = {
-            FragmentType.HOOK: f"木筷从蒸汽中夹起一片刚切开的{product_name}，切面朝向镜头并停住",
-            FragmentType.PAIN: f"一只手在拥挤案板上移动未切开的{product_name}，在刀具与餐盘之间停住",
-            # 产品展示的 Mock 也必须服从冻结组合中的动作变化，否则补齐轮次会
-            # 反复产出同一段正文，并被确定性语义去重全部剔除。
-            FragmentType.PRODUCT_DISPLAY: combination.visible_action.replace(
-                "产品", product_name
-            ).replace("·", "，"),
-            FragmentType.SELLING_POINT_EXPLANATION: f"木筷夹起一片{product_name}，让真实切面在暖色侧光下保持清楚",
-            FragmentType.CTA: f"右手把{product_name}包装平稳放到成品餐盘后方，随后退出字幕安全区",
-            FragmentType.OUTRO: f"右手将{product_name}包装扶正一次后离开，产品与餐盘保持稳定定格",
-        }[combination.fragment_type]
+    price = next(
+        (
+            binding.value
+            for binding in combination.insight_bindings
+            if binding.field == InsightField.PRICE_RANGE
+        ),
+        "",
+    )
+    trust = next(
+        (
+            binding.value
+            for binding in combination.insight_bindings
+            if binding.field == InsightField.TRUST_BACKING
+        ),
+        "",
+    )
     role_text = {
         FragmentType.HOOK: (
             f"首帧从一个反常但真实的动作细节开始：{action}。画面只保留动作悬念，"
@@ -564,10 +614,15 @@ def _mock_prompt_text(
         FragmentType.SELLING_POINT_EXPLANATION: (
             f"围绕{product_name}只做一次细节指示：{action}。字幕只出现“{dims.selling_point}”；"
             f"{dims.camera}，稳定聚焦被指向的位置"
+            + (f"，旁白只按信息卡原文说“{trust}”" if trust else "")
         ),
         FragmentType.CTA: (
             f"以{product_name}完成一次收束动作：{action}；{dims.camera}并留出干净字幕安全区，"
-            f"短字幕为“现在去了解”，不出现价格、折扣或销量"
+            + (
+                f"短字幕只写信息卡确认价格“{price}”，不增加折扣、库存或销量"
+                if price
+                else "短字幕为“现在去了解”，不出现价格、折扣或销量"
+            )
         ),
         FragmentType.OUTRO: (
             f"让{product_name}形成稳定品牌定格：{action}；{dims.camera}缓慢停住，"
@@ -578,7 +633,11 @@ def _mock_prompt_text(
         f"{prefix}，{role_text}。光线和色彩呈现{dims.emotion}，动作速度与镜头运动保持一致，环境声自然，"
         "结尾停在主体与产品关系清楚的稳定画面，场景和人物保持一致。"
     )
-    return GeneratedPromptText(slot_id=combination.slot_id, prompt_text=prompt)
+    return GeneratedPromptText(
+        slot_id=combination.slot_id,
+        prompt_text=prompt,
+        used_fact_ids=[binding.fact_id for binding in combination.insight_bindings],
+    )
 
 
 def _mock_evidence_plan(selling_point: str) -> SellingPointEvidence:
@@ -603,10 +662,121 @@ def _mock_evidence_plan(selling_point: str) -> SellingPointEvidence:
     )
 
 
+def _mock_relationship_bundles(
+    application: InsightApplicationMap,
+) -> list[MarketingRelationshipBundle]:
+    bundles: list[MarketingRelationshipBundle] = []
+    for fragment_type in FragmentType:
+        eligible = [
+            fact for fact in application.usable if fragment_type in fact.eligible_fragment_types
+        ]
+        by_field: dict[InsightField, list[InsightFact]] = {}
+        for fact in eligible:
+            by_field.setdefault(fact.field, []).append(fact)
+        row_count = max((len(items) for items in by_field.values()), default=1)
+        for index in range(row_count):
+            selected = [items[index % len(items)] for items in by_field.values()]
+            fact_ids = list(dict.fromkeys(fact.fact_id for fact in selected))[:12]
+            selling_point = next(
+                (
+                    fact.value
+                    for fact in selected
+                    if fact.field
+                    in {InsightField.CORE_SELLING_POINT, InsightField.SECONDARY_SELLING_POINT}
+                ),
+                "不提前展示产品解决方案"
+                if fragment_type in {FragmentType.HOOK, FragmentType.PAIN}
+                else "产品身份与真实外观",
+            )
+            scene = next(
+                (
+                    fact.value
+                    for fact in selected
+                    if fact.field
+                    in {
+                        InsightField.USAGE_SCENARIO,
+                        InsightField.PURCHASE_SCENARIO,
+                        InsightField.EMOTIONAL_SCENARIO,
+                    }
+                ),
+                "真实生活场景中的简洁桌面",
+            )
+            audience = next(
+                (fact.value for fact in selected if fact.field == InsightField.TARGET_AUDIENCE),
+                "无人出镜，只展示产品与成年人的手",
+            )
+            bundles.append(
+                MarketingRelationshipBundle(
+                    bundle_id=f"{fragment_type.value.lower()}-{index + 1}",
+                    fact_ids=fact_ids,
+                    eligible_fragment_types=[fragment_type],
+                    scene=_mock_concrete_scene(scene),
+                    persona=_mock_persona(audience),
+                    selling_point=selling_point,
+                )
+            )
+    _validate_relationship_bundles(bundles, application)
+    return bundles
+
+
+def _validate_relationship_bundles(
+    bundles: list[MarketingRelationshipBundle],
+    application: InsightApplicationMap,
+) -> None:
+    known = application.by_id
+    planned: set[str] = set()
+    covered_fragment_types: set[FragmentType] = set()
+    for bundle in bundles:
+        if len(bundle.fact_ids) != len(set(bundle.fact_ids)):
+            raise ProviderError(
+                "AI relationship bundle contains duplicate factId",
+                retryable=False,
+                error_type=ProviderErrorType.RESPONSE_INVALID,
+            )
+        for fact_id in bundle.fact_ids:
+            fact = known.get(fact_id)
+            if not fact:
+                raise ProviderError(
+                    "AI relationship bundle references an unknown factId",
+                    retryable=False,
+                    error_type=ProviderErrorType.RESPONSE_INVALID,
+                )
+            if not all(
+                fragment_type in fact.eligible_fragment_types
+                for fragment_type in bundle.eligible_fragment_types
+            ):
+                raise ProviderError(
+                    "AI relationship bundle assigns an insight fact to an incompatible fragment type",
+                    retryable=False,
+                    error_type=ProviderErrorType.RESPONSE_INVALID,
+                )
+            planned.add(fact_id)
+        covered_fragment_types.update(bundle.eligible_fragment_types)
+    missing = {fact.fact_id for fact in application.required} - planned
+    if missing or covered_fragment_types != set(FragmentType):
+        raise ProviderError(
+            "AI relationship plan does not cover every required fact and fragment type",
+            retryable=False,
+            error_type=ProviderErrorType.RESPONSE_INVALID,
+        )
+
+
 def _mock_concrete_scene(value: str) -> str:
     if any(token in value for token in ("烹饪", "蒸制", "炒制", "切配", "佐餐", "食材准备")):
         return f"家庭厨房的{value}操作台"
     return f"{value}场景中的暖色木质桌面"
+
+
+def _mock_persona(value: str) -> str:
+    if value.startswith("无人出镜"):
+        return value
+    if any(token in value for token in ("家庭", "厨房", "家宴")):
+        return "一位35岁左右、穿米色围裙的家庭烹饪者"
+    if any(token in value for token in ("通勤", "职场", "办公")):
+        return "一位30岁左右、穿深蓝通勤外套的上班族"
+    if any(token in value for token in ("美食", "烹饪", "厨")):
+        return "一位35岁左右、穿纯色围裙的美食爱好者"
+    return "一位30至40岁、穿简洁生活装的成年使用者"
 
 
 def _text_list(payload: Mapping[str, Any], *keys: str) -> list[str]:

@@ -6,7 +6,6 @@ from typing import Literal
 from pydantic import AnyHttpUrl, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 DEFAULT_ARK_MODEL = "doubao-seed-2-1-turbo-260628"
 DEFAULT_ARK_PROMPT_STRATEGY_MODEL = "doubao-seed-2-0-lite-260428"
 ARK_KEY_PLACEHOLDERS = {
@@ -42,7 +41,7 @@ class WorkerSettings(BaseSettings):
         default=None, alias="ARK_PROMPT_CANDIDATE_MODEL"
     )
     ark_prompt_strategy_max_output_tokens: int = Field(
-        default=2048,
+        default=8192,
         alias="ARK_PROMPT_STRATEGY_MAX_OUTPUT_TOKENS",
         ge=512,
         le=32_768,

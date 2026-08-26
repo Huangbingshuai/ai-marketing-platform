@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -106,7 +107,7 @@ async def test_runtime_validation_error_is_persisted_as_safe_failure_and_cache_i
     message = FakeMessage(
         json.dumps(
             {
-                "schemaVersion": 3,
+                    "schemaVersion": 4,
                 "runId": "run-1",
                 "projectId": snapshot.project_id,
                 "requestId": "request-1",

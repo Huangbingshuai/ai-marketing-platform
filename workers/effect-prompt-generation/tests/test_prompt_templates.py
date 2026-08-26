@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from effect_prompt_generation.prompt_loader import load_prompt, load_prompt_version, render_prompt
+from effect_prompt_generation.prompt_loader import (
+    load_prompt,
+    load_prompt_version,
+    render_prompt,
+)
 
 
-def test_v3_templates_contain_six_specialized_system_prompts() -> None:
+def test_v4_templates_contain_six_specialized_system_prompts() -> None:
     strategy = load_prompt("strategy_planning.prompt.txt")
     base = load_prompt("candidate_base.system.prompt.txt")
     specialized = [
@@ -15,9 +19,10 @@ def test_v3_templates_contain_six_specialized_system_prompts() -> None:
         "candidate_outro.system.prompt.txt",
     ]
 
-    assert load_prompt_version("strategy_planning.prompt.txt") == "effect-prompt-strategy-v3"
-    assert load_prompt_version("candidate_base.system.prompt.txt") == "effect-prompt-candidate-base-v1"
-    assert '"evidencePlans"' in strategy and '"actions"' in strategy
+    assert load_prompt_version("strategy_planning.prompt.txt") == "effect-prompt-strategy-v4"
+    assert load_prompt_version("candidate_base.system.prompt.txt") == "effect-prompt-candidate-base-v2"
+    assert "evidencePlans" in strategy and "relationshipBundles" in strategy
+    assert "usedFactIds" in base
     assert "低质量反例" in strategy and "提交前逐项自检" in strategy
     assert "产品上下文是唯一事实来源" in base
     for template_name in specialized:

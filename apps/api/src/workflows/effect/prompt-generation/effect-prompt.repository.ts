@@ -46,6 +46,14 @@ export type EffectPromptRunRecord = Prisma.EffectPromptRunGetPayload<{
   include: typeof promptRunInclude;
 }>;
 
+const promptNodeDetailRunInclude = {
+  ...promptRunInclude,
+  shards: { orderBy: [{ round: 'asc' as const }, { shardIndex: 'asc' as const }] },
+} satisfies Prisma.EffectPromptRunInclude;
+export type EffectPromptNodeDetailRunRecord = Prisma.EffectPromptRunGetPayload<{
+  include: typeof promptNodeDetailRunInclude;
+}>;
+
 const parseOverrides = (value: unknown): EffectPromptManualOverrides => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return emptyManualOverrides();
   const source = value as Partial<EffectPromptManualOverrides>;
@@ -150,6 +158,13 @@ export class EffectPromptRepository {
     });
   }
 
+  runForNodeDetail(projectId: string, runId: string) {
+    return this.prisma.effectPromptRun.findFirst({
+      where: { projectId, id: runId },
+      include: promptNodeDetailRunInclude,
+    });
+  }
+
   result(projectId: string, resultId: string) {
     return this.prisma.effectPromptResult.findFirst({ where: { projectId, id: resultId } });
   }
@@ -251,18 +266,22 @@ export class EffectPromptRepository {
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       });
       const parsedLatest = latest ? parseEffectPromptBatchResult(latest.draftResult) : null;
-      const latestV3 =
+      const latestCurrent =
         latest?.schemaVersion === EFFECT_PROMPT_SCHEMA_VERSION && parsedLatest ? latest : null;
-      const currentResult = latestV3 ? parsedLatest : null;
+      const currentResult = latestCurrent ? parsedLatest : null;
       if (
         input.expectedResultRevision !== null &&
-        latestV3?.revision !== input.expectedResultRevision
+        latestCurrent?.revision !== input.expectedResultRevision
       )
         return { kind: 'RESULT_CONFLICT' as const };
-      if (input.operation === 'BATCH_GENERATE' && latestV3 && input.expectedResultRevision === null)
+      if (
+        input.operation === 'BATCH_GENERATE' &&
+        latestCurrent &&
+        input.expectedResultRevision === null
+      )
         return { kind: 'RESULT_CONFLICT' as const };
       if (input.operation === 'ITEM_REGENERATE') {
-        if (!latestV3 || input.expectedResultRevision === null || !input.targetItemId)
+        if (!latestCurrent || input.expectedResultRevision === null || !input.targetItemId)
           return { kind: 'RESULT_CONFLICT' as const };
         if (!currentResult?.items.some((item) => item.id === input.targetItemId))
           return { kind: 'ITEM_NOT_FOUND' as const };
@@ -294,7 +313,7 @@ export class EffectPromptRepository {
         ...(input.operation === 'ITEM_REGENERATE' && targetItem
           ? { targetItem, targetItemIndex }
           : {}),
-        baseResultRevision: latestV3?.revision ?? null,
+        baseResultRevision: latestCurrent?.revision ?? null,
       };
       const active = await transaction.effectPromptRun.findFirst({
         where: {

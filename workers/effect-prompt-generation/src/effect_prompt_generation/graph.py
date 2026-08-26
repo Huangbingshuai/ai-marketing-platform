@@ -36,19 +36,35 @@ def build_graph(
         }
 
     async def strategy(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, object]:
-        pools = await pipeline.plan_strategy(runtime.context, target_count=state["target_count"])
-        return {"dimension_pools": pools}
+        plan = await pipeline.plan_strategy(
+            runtime.context,
+            application=state["insight_map"],
+            target_count=state["target_count"],
+        )
+        return {"strategy_plan": plan}
+
+    async def map_insight(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, object]:
+        application = await pipeline.map_insight(runtime.context)
+        snapshot = pipeline.snapshot(runtime.context)
+        target_fact_ids = (
+            [binding.fact_id for binding in snapshot.target_item.insight_bindings]
+            if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item
+            else [fact.fact_id for fact in application.required]
+        )
+        return {"insight_map": application, "missing_fact_ids": target_fact_ids}
 
     async def combine(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, object]:
         retained_count = state.get("retained_count", 0)
         missing = max(0, state["target_count"] - retained_count)
         pending = await pipeline.plan_round(
             runtime.context,
-            pools=state["dimension_pools"],
+            strategy=state["strategy_plan"],
+            application=state["insight_map"],
             round_number=0,
             missing_count=missing,
             ordinal_start=retained_count + 1,
             completed_keys=state.get("completed_shard_keys", []),
+            priority_fact_ids=state.get("missing_fact_ids", []),
         )
         return {"round": 0, "pending_shards": pending}
 
@@ -72,6 +88,21 @@ def build_graph(
         pairs = await pipeline.visual_check(runtime.context)
         return {"visual_pairs": pairs}
 
+    async def insight_coverage(
+        state: GraphState, runtime: Runtime[RuntimeContext]
+    ) -> dict[str, object]:
+        evaluation = await pipeline.evaluate_insight_coverage(
+            runtime.context,
+            round_number=state.get("round", 0),
+        )
+        return {
+            "accepted_count": len(evaluation.items),
+            "metrics": evaluation.metrics,
+            "missing_fact_ids": evaluation.missing_fact_ids,
+            "semantic_pairs": evaluation.semantic_pairs,
+            "visual_pairs": evaluation.visual_pairs,
+        }
+
     async def quality(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, object]:
         evaluation = await pipeline.quality_gate(
             runtime.context,
@@ -83,20 +114,25 @@ def build_graph(
             "metrics": evaluation.metrics,
             "semantic_pairs": evaluation.semantic_pairs,
             "visual_pairs": evaluation.visual_pairs,
-            "needs_replenish": missing > 0 and state.get("round", 0) < MAX_REPLENISHMENT_ROUNDS,
+            "missing_fact_ids": evaluation.missing_fact_ids,
+            "needs_replenish": (missing > 0 or bool(evaluation.missing_fact_ids))
+            and state.get("round", 0) < MAX_REPLENISHMENT_ROUNDS,
         }
 
     async def replenish(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, object]:
         next_round = state.get("round", 0) + 1
-        missing = max(0, state["target_count"] - state.get("accepted_count", 0))
+        item_deficit = max(0, state["target_count"] - state.get("accepted_count", 0))
+        missing = max(item_deficit, len(state.get("missing_fact_ids", [])))
         ordinal_start = pipeline.next_ordinal(runtime.context)
         pending = await pipeline.plan_round(
             runtime.context,
-            pools=state["dimension_pools"],
+            strategy=state["strategy_plan"],
+            application=state["insight_map"],
             round_number=next_round,
             missing_count=missing,
             ordinal_start=ordinal_start,
             completed_keys=state.get("completed_shard_keys", []),
+            priority_fact_ids=state.get("missing_fact_ids", []),
         )
         return {"round": next_round, "pending_shards": pending}
 
@@ -129,6 +165,7 @@ def build_graph(
         output_schema=OutputState,
     )
     builder.add_node(NodeId.LOAD_AND_SNAPSHOT.value, load)
+    builder.add_node(NodeId.INSIGHT_MAPPING.value, map_insight)
     builder.add_node(NodeId.STRATEGY_PLANNING.value, strategy)
     builder.add_node(NodeId.DIMENSION_COMBINATION.value, combine)
     builder.add_node(NodeId.FRAGMENT_TYPE_ROUTER.value, router)
@@ -137,12 +174,14 @@ def build_graph(
     builder.add_node(NodeId.NORMALIZATION.value, normalize)
     builder.add_node(NodeId.SEMANTIC_DEDUP.value, semantic)
     builder.add_node(NodeId.VISUAL_DEDUP.value, visual)
+    builder.add_node(NodeId.INSIGHT_COVERAGE.value, insight_coverage)
     builder.add_node(NodeId.QUALITY_GATE.value, quality)
     builder.add_node(NodeId.REPLENISH.value, replenish)
     builder.add_node(NodeId.RESULT_SAVE.value, save)
 
     builder.add_edge(START, NodeId.LOAD_AND_SNAPSHOT.value)
-    builder.add_edge(NodeId.LOAD_AND_SNAPSHOT.value, NodeId.STRATEGY_PLANNING.value)
+    builder.add_edge(NodeId.LOAD_AND_SNAPSHOT.value, NodeId.INSIGHT_MAPPING.value)
+    builder.add_edge(NodeId.INSIGHT_MAPPING.value, NodeId.STRATEGY_PLANNING.value)
     builder.add_edge(NodeId.STRATEGY_PLANNING.value, NodeId.DIMENSION_COMBINATION.value)
     builder.add_edge(NodeId.DIMENSION_COMBINATION.value, NodeId.FRAGMENT_TYPE_ROUTER.value)
     builder.add_conditional_edges(
@@ -158,8 +197,10 @@ def build_graph(
     builder.add_edge(NodeId.NORMALIZATION.value, NodeId.SEMANTIC_DEDUP.value)
     builder.add_edge(NodeId.NORMALIZATION.value, NodeId.VISUAL_DEDUP.value)
     builder.add_edge(
-        [NodeId.SEMANTIC_DEDUP.value, NodeId.VISUAL_DEDUP.value], NodeId.QUALITY_GATE.value
+        [NodeId.SEMANTIC_DEDUP.value, NodeId.VISUAL_DEDUP.value],
+        NodeId.INSIGHT_COVERAGE.value,
     )
+    builder.add_edge(NodeId.INSIGHT_COVERAGE.value, NodeId.QUALITY_GATE.value)
     builder.add_conditional_edges(
         NodeId.QUALITY_GATE.value,
         route_quality,

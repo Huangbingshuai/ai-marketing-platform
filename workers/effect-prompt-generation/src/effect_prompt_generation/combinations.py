@@ -1,20 +1,22 @@
 from __future__ import annotations
 
-from collections import Counter
-from collections.abc import Mapping, Sequence
 import re
 import unicodedata
+from collections import Counter
+from collections.abc import Mapping, Sequence
 
+from .insight_mapping import bindings_for_fact_ids
 from .models import (
-    DimensionPools,
     EvidenceMode,
     FragmentType,
+    InsightApplicationMap,
+    MarketingRelationshipBundle,
     PlannedCombination,
     PromptDimensions,
     SellingPointEvidence,
     ShardPlan,
+    StrategyPlan,
 )
-
 
 ORTHOGONAL_ORDER = 17
 _QUALIFIERS = (
@@ -76,7 +78,8 @@ def fragment_type_deficits(
 
 
 def plan_combinations(
-    pools: DimensionPools,
+    strategy: StrategyPlan,
+    application: InsightApplicationMap,
     *,
     count: int,
     round_number: int,
@@ -84,14 +87,14 @@ def plan_combinations(
     fragment_targets: Mapping[FragmentType, int],
     fragment_durations: Mapping[FragmentType, int],
     fragment_deficits: Mapping[FragmentType, int] | None = None,
+    priority_fact_ids: Sequence[str] = (),
 ) -> list[PlannedCombination]:
-    """Build orthogonal rows and deterministically target missing fragment roles."""
+    """Build role-specific blueprints inside validated marketing relationships."""
     if count < 0 or count > ORTHOGONAL_ORDER**2:
         raise ValueError(f"count must be between 0 and {ORTHOGONAL_ORDER**2}")
 
+    pools = strategy.dimension_pools
     narratives = _expand(pools.narratives, 120)
-    scenes = _expand(pools.scenes, 120)
-    personas = _expand(pools.personas, 160)
     cameras = _expand(pools.cameras, 160)
     emotions = _expand(pools.emotions, 120)
     actions = _expand(pools.actions, 400)
@@ -99,30 +102,55 @@ def plan_combinations(
         _normalized_value(item.selling_point): item for item in pools.evidence_plans
     }
     fragment_sequence = _fragment_sequence(count, fragment_deficits, fragment_targets)
-    selling_point_sequence = _selling_point_sequence(pools.selling_points, count)
     result: list[PlannedCombination] = []
     fragment_occurrences: Counter[FragmentType] = Counter()
+    uncovered = set(priority_fact_ids)
     offset = round_number * 67
     for position in range(count):
         encoded = (offset + position) % (ORTHOGONAL_ORDER**2)
         a, b = divmod(encoded, ORTHOGONAL_ORDER)
         ordinal = ordinal_start + position
-        fragment_type = fragment_sequence[position]
+        fragment_type = _priority_fragment_type(
+            application,
+            uncovered,
+            fragment_occurrences,
+            fragment_targets,
+        ) or fragment_sequence[position]
         fragment_occurrence = fragment_occurrences[fragment_type]
         fragment_occurrences[fragment_type] += 1
-        selling_point = _eligible_selling_point(
-            pools.selling_points,
-            evidence_by_selling_point,
-            fragment_type,
-            selling_point_sequence[position],
-            fragment_occurrence,
+        bundle = _relationship_bundle(
+            strategy.relationship_bundles,
+            fragment_type=fragment_type,
+            occurrence=fragment_occurrence,
+            priority_fact_ids=uncovered,
         )
-        evidence = evidence_by_selling_point[_normalized_value(selling_point)]
+        bindings = bindings_for_fact_ids(application, bundle.fact_ids, fragment_type)
+        if not bindings:
+            raise ValueError(f"relationship bundle {bundle.bundle_id} has no eligible facts")
+        uncovered.difference_update(binding.fact_id for binding in bindings)
+        selling_point = bundle.selling_point
+        evidence = evidence_by_selling_point.get(
+            _normalized_value(selling_point),
+            SellingPointEvidence(
+                selling_point=selling_point,
+                evidence_mode=EvidenceMode.TEXT_ONLY,
+                allowed_visual_evidence="只按片段职责使用已绑定的信息卡原文",
+                forbidden_inference="不得扩展为信息卡未确认的功效、数据、认证或承诺",
+            ),
+        )
         dimensions = PromptDimensions(
             narrative=_round_value(narratives[a], round_number, 120, "首帧从局部动作切入"),
-            scene=_round_value(scenes[b], round_number, 120, "背景加入真实生活道具"),
+            scene=_round_value(
+                _qualified_bundle_value(bundle.scene, b, 120),
+                round_number,
+                120,
+                "背景加入真实生活道具",
+            ),
             persona=_round_value(
-                personas[(a + b) % ORTHOGONAL_ORDER], round_number, 160, "位于画面侧前方"
+                _qualified_bundle_value(bundle.persona, (a + b) % ORTHOGONAL_ORDER, 160),
+                round_number,
+                160,
+                "位于画面侧前方",
             ),
             selling_point=selling_point,
             camera=_round_value(
@@ -148,10 +176,50 @@ def plan_combinations(
                 evidence_mode=evidence.evidence_mode,
                 allowed_visual_evidence=evidence.allowed_visual_evidence,
                 forbidden_inference=evidence.forbidden_inference,
+                relationship_bundle_id=bundle.bundle_id,
+                insight_bindings=bindings,
                 dimensions=dimensions,
             )
         )
     return result
+
+
+def _relationship_bundle(
+    bundles: Sequence[MarketingRelationshipBundle],
+    *,
+    fragment_type: FragmentType,
+    occurrence: int,
+    priority_fact_ids: set[str],
+) -> MarketingRelationshipBundle:
+    eligible = [item for item in bundles if fragment_type in item.eligible_fragment_types]
+    if not eligible:
+        raise ValueError(f"strategy has no relationship bundle for {fragment_type.value}")
+    prioritized = [item for item in eligible if priority_fact_ids.intersection(item.fact_ids)]
+    pool = prioritized or eligible
+    return pool[occurrence % len(pool)]
+
+
+def _priority_fragment_type(
+    application: InsightApplicationMap,
+    priority_fact_ids: set[str],
+    occurrences: Counter[FragmentType],
+    targets: Mapping[FragmentType, int],
+) -> FragmentType | None:
+    eligible: list[FragmentType] = []
+    for fact_id in priority_fact_ids:
+        fact = application.by_id.get(fact_id)
+        if fact:
+            eligible.extend(fact.eligible_fragment_types)
+    if not eligible:
+        return None
+    unique = list(dict.fromkeys(eligible))
+    return min(
+        unique,
+        key=lambda fragment_type: (
+            occurrences[fragment_type] / max(1, targets.get(fragment_type, 1)),
+            list(FragmentType).index(fragment_type),
+        ),
+    )
 
 
 def make_shards(
@@ -265,6 +333,14 @@ def _round_value(value: str, round_number: int, max_length: int, variation: str 
         return value[:max_length].rstrip("·")
     suffix = f"，{variation}"
     return value[: max_length - len(suffix)].rstrip("·，") + suffix
+
+
+def _qualified_bundle_value(value: str, index: int, max_length: int) -> str:
+    qualifier = _QUALIFIERS[index % len(_QUALIFIERS)]
+    if not qualifier:
+        return value[:max_length]
+    suffix = f"·{qualifier}"
+    return value[: max_length - len(suffix)].rstrip("·") + suffix
 
 
 def _normalized_value(value: str) -> str:

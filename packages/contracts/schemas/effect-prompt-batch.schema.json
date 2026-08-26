@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ai-marketing.local/schemas/effect-prompt-batch.v3.json",
-  "title": "EffectPromptBatchResult.v3",
+  "$id": "https://ai-marketing.local/schemas/effect-prompt-batch.v4.json",
+  "title": "EffectPromptBatchResult.v4",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "settings", "items", "metrics", "qualityStatus"],
   "properties": {
-    "schemaVersion": { "const": 3 },
+    "schemaVersion": { "const": 4 },
     "settings": {
       "type": "object",
       "additionalProperties": false,
@@ -57,6 +57,7 @@
         "replenishmentRounds",
         "fragmentTypeDistribution",
         "sellingPointCoverage",
+        "insightCoverage",
         "executionInvalidReasons"
       ],
       "properties": {
@@ -74,6 +75,7 @@
           "$ref": "#/$defs/fragmentTypeDistribution"
         },
         "sellingPointCoverage": { "$ref": "#/$defs/sellingPointCoverage" },
+        "insightCoverage": { "$ref": "#/$defs/insightCoverage" },
         "executionInvalidReasons": {
           "type": "array",
           "items": {
@@ -129,6 +131,7 @@
         "targetDurationSeconds",
         "dimensions",
         "content",
+        "insightBindings",
         "manualEdited",
         "createdAt",
         "updatedAt"
@@ -148,6 +151,11 @@
         "targetDurationSeconds": { "type": "integer", "minimum": 3, "maximum": 10 },
         "dimensions": { "$ref": "#/$defs/dimensions" },
         "content": { "type": "string", "minLength": 1, "maxLength": 12000 },
+        "insightBindings": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/insightBinding" }
+        },
         "manualEdited": { "type": "boolean" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
@@ -187,6 +195,116 @@
           "type": "array",
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1, "maxLength": 240 }
+        }
+      }
+    },
+    "insightField": {
+      "type": "string",
+      "enum": [
+        "PRODUCT_NAME",
+        "PRODUCT_CATEGORY",
+        "CORE_SPECIFICATION",
+        "PRICE_RANGE",
+        "VISUAL_FEATURES",
+        "CORE_SELLING_POINT",
+        "SECONDARY_SELLING_POINT",
+        "TRUST_BACKING",
+        "TARGET_AUDIENCE",
+        "CORE_PAIN_POINT",
+        "DECISION_DRIVER",
+        "MARKETING_GOAL",
+        "USAGE_SCENARIO",
+        "PURCHASE_SCENARIO",
+        "EMOTIONAL_SCENARIO",
+        "SOURCE_DURATION",
+        "ASPECT_RATIO",
+        "DELIVERY_CHANNELS",
+        "DISABLED_ELEMENT",
+        "VISUAL_STYLE_BASELINE"
+      ]
+    },
+    "insightReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["factId", "field", "value", "valueHash"],
+      "properties": {
+        "factId": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "field": { "$ref": "#/$defs/insightField" },
+        "value": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "valueHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "insightBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["factId", "field", "value", "valueHash", "role"],
+      "properties": {
+        "factId": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "field": { "$ref": "#/$defs/insightField" },
+        "value": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "valueHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "role": { "enum": ["PRIMARY", "CONTEXT", "EVIDENCE"] }
+      }
+    },
+    "excludedInsight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["factId", "field", "value", "valueHash", "reason"],
+      "properties": {
+        "factId": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "field": { "$ref": "#/$defs/insightField" },
+        "value": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "valueHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "reason": { "enum": ["UNCERTAIN", "EMPTY", "UNSUPPORTED"] }
+      }
+    },
+    "insightCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "covered",
+        "missing",
+        "adaptive",
+        "deferred",
+        "excluded",
+        "appliedConstraints"
+      ],
+      "properties": {
+        "required": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/insightReference" }
+        },
+        "covered": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/insightReference" }
+        },
+        "missing": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/insightReference" }
+        },
+        "adaptive": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/insightReference" }
+        },
+        "deferred": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/insightReference" }
+        },
+        "excluded": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/excludedInsight" }
+        },
+        "appliedConstraints": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/insightReference" }
         }
       }
     }

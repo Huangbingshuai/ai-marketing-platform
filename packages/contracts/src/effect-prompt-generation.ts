@@ -1,6 +1,6 @@
 import type { WorkingArtifactCommitStatus, WorkingArtifactCommitSummary } from './workflow-working';
 
-export const EFFECT_PROMPT_SCHEMA_VERSION = 3 as const;
+export const EFFECT_PROMPT_SCHEMA_VERSION = 4 as const;
 export const EFFECT_PROMPT_API_BASE =
   '/api/projects/:projectId/workflows/effect/prompt-generation' as const;
 
@@ -94,6 +94,78 @@ export const DEFAULT_EFFECT_PROMPT_SETTINGS: EffectPromptBatchSettings = {
 export const EFFECT_PROMPT_ITEM_ORIGINS = ['AI', 'MANUAL'] as const;
 export type EffectPromptItemOrigin = (typeof EFFECT_PROMPT_ITEM_ORIGINS)[number];
 
+export const EFFECT_PROMPT_INSIGHT_FIELDS = [
+  'PRODUCT_NAME',
+  'PRODUCT_CATEGORY',
+  'CORE_SPECIFICATION',
+  'PRICE_RANGE',
+  'VISUAL_FEATURES',
+  'CORE_SELLING_POINT',
+  'SECONDARY_SELLING_POINT',
+  'TRUST_BACKING',
+  'TARGET_AUDIENCE',
+  'CORE_PAIN_POINT',
+  'DECISION_DRIVER',
+  'MARKETING_GOAL',
+  'USAGE_SCENARIO',
+  'PURCHASE_SCENARIO',
+  'EMOTIONAL_SCENARIO',
+  'SOURCE_DURATION',
+  'ASPECT_RATIO',
+  'DELIVERY_CHANNELS',
+  'DISABLED_ELEMENT',
+  'VISUAL_STYLE_BASELINE',
+] as const;
+export type EffectPromptInsightField = (typeof EFFECT_PROMPT_INSIGHT_FIELDS)[number];
+
+export const EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES: Partial<
+  Record<EffectPromptInsightField, readonly EffectPromptFragmentType[]>
+> = {
+  PRODUCT_NAME: ['PRODUCT_DISPLAY', 'SELLING_POINT_EXPLANATION', 'CTA', 'OUTRO'],
+  PRODUCT_CATEGORY: ['HOOK', 'PRODUCT_DISPLAY', 'OUTRO'],
+  CORE_SPECIFICATION: ['PRODUCT_DISPLAY', 'SELLING_POINT_EXPLANATION'],
+  PRICE_RANGE: ['CTA'],
+  VISUAL_FEATURES: ['PRODUCT_DISPLAY', 'OUTRO'],
+  CORE_SELLING_POINT: ['PRODUCT_DISPLAY', 'SELLING_POINT_EXPLANATION', 'CTA'],
+  SECONDARY_SELLING_POINT: ['SELLING_POINT_EXPLANATION'],
+  TRUST_BACKING: ['SELLING_POINT_EXPLANATION'],
+  TARGET_AUDIENCE: ['HOOK', 'PAIN', 'CTA'],
+  CORE_PAIN_POINT: ['HOOK', 'PAIN'],
+  DECISION_DRIVER: ['HOOK', 'SELLING_POINT_EXPLANATION', 'CTA'],
+  MARKETING_GOAL: ['CTA'],
+  USAGE_SCENARIO: ['HOOK', 'PAIN', 'PRODUCT_DISPLAY'],
+  PURCHASE_SCENARIO: ['HOOK', 'PAIN', 'CTA'],
+  EMOTIONAL_SCENARIO: ['HOOK', 'OUTRO'],
+};
+
+export const EFFECT_PROMPT_INSIGHT_ROLES = ['PRIMARY', 'CONTEXT', 'EVIDENCE'] as const;
+export type EffectPromptInsightRole = (typeof EFFECT_PROMPT_INSIGHT_ROLES)[number];
+
+export type EffectPromptInsightReference = {
+  factId: string;
+  field: EffectPromptInsightField;
+  value: string;
+  valueHash: string;
+};
+
+export type EffectPromptInsightBinding = EffectPromptInsightReference & {
+  role: EffectPromptInsightRole;
+};
+
+export type EffectPromptExcludedInsight = EffectPromptInsightReference & {
+  reason: 'UNCERTAIN' | 'EMPTY' | 'UNSUPPORTED';
+};
+
+export type EffectPromptInsightCoverage = {
+  required: EffectPromptInsightReference[];
+  covered: EffectPromptInsightReference[];
+  missing: EffectPromptInsightReference[];
+  adaptive: EffectPromptInsightReference[];
+  deferred: EffectPromptInsightReference[];
+  excluded: EffectPromptExcludedInsight[];
+  appliedConstraints: EffectPromptInsightReference[];
+};
+
 export type EffectPromptItem = {
   id: string;
   code: string;
@@ -103,6 +175,7 @@ export type EffectPromptItem = {
   targetDurationSeconds: number;
   dimensions: EffectPromptDimensions;
   content: string;
+  insightBindings: EffectPromptInsightBinding[];
   manualEdited: boolean;
   createdAt: string;
   updatedAt: string;
@@ -128,6 +201,7 @@ export type EffectPromptMetrics = {
     covered: string[];
     missing: string[];
   };
+  insightCoverage: EffectPromptInsightCoverage;
   removedExecutionInvalid: number;
   executionInvalidReasons: Array<{ code: string; count: number }>;
 };
@@ -173,8 +247,9 @@ export type EffectPromptStageStatus = (typeof EFFECT_PROMPT_STAGE_STATUSES)[numb
 
 export const EFFECT_PROMPT_GRAPH_NODES = [
   { id: 'LOAD_AND_SNAPSHOT', label: '输入快照', group: 'SNAPSHOT' },
-  { id: 'STRATEGY_PLANNING', label: '六维策略规划', group: 'PLANNING' },
-  { id: 'DIMENSION_COMBINATION', label: '正交组合', group: 'PLANNING' },
+  { id: 'INSIGHT_MAPPING', label: '提炼信息应用映射', group: 'PLANNING' },
+  { id: 'STRATEGY_PLANNING', label: '营销关系规划', group: 'PLANNING' },
+  { id: 'DIMENSION_COMBINATION', label: '片段蓝图编排', group: 'PLANNING' },
   { id: 'FRAGMENT_TYPE_ROUTER', label: '片段类型条件路由', group: 'ROUTER' },
   { id: 'GENERATE_HOOK', label: '钩子 Prompt 生成', group: 'GENERATION' },
   { id: 'GENERATE_PAIN', label: '痛点 Prompt 生成', group: 'GENERATION' },
@@ -189,14 +264,16 @@ export const EFFECT_PROMPT_GRAPH_NODES = [
   { id: 'NORMALIZATION', label: '结构标准化', group: 'NORMALIZATION' },
   { id: 'SEMANTIC_DEDUP', label: '语义去重', group: 'PARALLEL' },
   { id: 'VISUAL_DEDUP', label: '视觉重合校验', group: 'PARALLEL' },
+  { id: 'INSIGHT_COVERAGE', label: '提炼信息覆盖校验', group: 'QUALITY' },
   { id: 'QUALITY_GATE', label: '质量门禁', group: 'QUALITY' },
-  { id: 'REPLENISH', label: '自动补齐', group: 'REPLENISH' },
+  { id: 'REPLENISH', label: '定向补齐', group: 'REPLENISH' },
   { id: 'RESULT_SAVE', label: '结果保存', group: 'RESULT' },
 ] as const;
 export type EffectPromptNodeId = (typeof EFFECT_PROMPT_GRAPH_NODES)[number]['id'];
 
 export const EFFECT_PROMPT_GRAPH_EDGES = [
-  { from: 'LOAD_AND_SNAPSHOT', to: 'STRATEGY_PLANNING' },
+  { from: 'LOAD_AND_SNAPSHOT', to: 'INSIGHT_MAPPING' },
+  { from: 'INSIGHT_MAPPING', to: 'STRATEGY_PLANNING' },
   { from: 'STRATEGY_PLANNING', to: 'DIMENSION_COMBINATION' },
   { from: 'DIMENSION_COMBINATION', to: 'FRAGMENT_TYPE_ROUTER' },
   { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_HOOK' },
@@ -213,8 +290,9 @@ export const EFFECT_PROMPT_GRAPH_EDGES = [
   { from: 'GENERATE_OUTRO', to: 'NORMALIZATION' },
   { from: 'NORMALIZATION', to: 'SEMANTIC_DEDUP' },
   { from: 'NORMALIZATION', to: 'VISUAL_DEDUP' },
-  { from: 'SEMANTIC_DEDUP', to: 'QUALITY_GATE' },
-  { from: 'VISUAL_DEDUP', to: 'QUALITY_GATE' },
+  { from: 'SEMANTIC_DEDUP', to: 'INSIGHT_COVERAGE' },
+  { from: 'VISUAL_DEDUP', to: 'INSIGHT_COVERAGE' },
+  { from: 'INSIGHT_COVERAGE', to: 'QUALITY_GATE' },
   { from: 'QUALITY_GATE', to: 'REPLENISH' },
   { from: 'QUALITY_GATE', to: 'RESULT_SAVE' },
   { from: 'REPLENISH', to: 'FRAGMENT_TYPE_ROUTER' },
@@ -315,17 +393,83 @@ export type SaveEffectPromptSettingsData = {
   unchanged: boolean;
 };
 export type GetEffectPromptRunData = { run: EffectPromptRun };
+export const EFFECT_PROMPT_NODE_DETAIL_LIMITS = {
+  maxSamples: 3,
+  maxTagValues: 8,
+  maxIssues: 8,
+} as const;
+
 export type EffectPromptNodeDetailField = {
   label: string;
   value: string | number;
   description?: string | undefined;
 };
+
+export type EffectPromptNodeDetailPrompt = Pick<
+  EffectPromptItem,
+  'code' | 'fragmentType' | 'materialTags' | 'targetDurationSeconds' | 'dimensions' | 'content'
+>;
+
+export type EffectPromptNodeDetailBlock =
+  | {
+      kind: 'TAG_LIST';
+      title: string;
+      groups: Array<{ label: string; values: string[]; remainingCount: number }>;
+    }
+  | {
+      kind: 'COMBINATION_LIST';
+      title: string;
+      items: Array<{
+        title: string;
+        fragmentType: EffectPromptFragmentType;
+        targetDurationSeconds: number;
+        dimensions: EffectPromptDimensions;
+        visibleAction: string;
+        evidenceMode: string;
+      }>;
+    }
+  | {
+      kind: 'ROUTE_LIST';
+      title: string;
+      items: Array<{
+        fragmentType: EffectPromptFragmentType;
+        targetCount: number;
+        candidateCount: number;
+        totalShards: number;
+        completedShards: number;
+        failedShards: number;
+        status: EffectPromptStageStatus;
+      }>;
+    }
+  | {
+      kind: 'PROMPT_LIST';
+      title: string;
+      items: EffectPromptNodeDetailPrompt[];
+    }
+  | {
+      kind: 'PAIR_LIST';
+      title: string;
+      metric: 'SEMANTIC' | 'VISUAL';
+      items: Array<{
+        score: number;
+        reasons: string[];
+        left: EffectPromptNodeDetailPrompt;
+        right: EffectPromptNodeDetailPrompt;
+      }>;
+    }
+  | {
+      kind: 'ISSUE_LIST';
+      title: string;
+      items: Array<{ code: string; label: string; count: number; examples: string[] }>;
+    };
+
 export type GetEffectPromptNodeDetailData = {
   detail: {
     nodeId: EffectPromptNodeId;
     status: EffectPromptStageStatus;
     summary: string;
     fields: EffectPromptNodeDetailField[];
+    blocks: EffectPromptNodeDetailBlock[];
     warnings: string[];
     errorMessage: string | null;
     updatedAt: string | null;

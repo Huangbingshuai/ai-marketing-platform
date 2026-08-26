@@ -1,4 +1,4 @@
-VERSION: effect-prompt-candidate-task-v1
+VERSION: effect-prompt-candidate-task-v2
 
 请严格依据系统指令，为以下同一片段类型的冻结任务逐条编写可直接用于视频生成的promptText。
 

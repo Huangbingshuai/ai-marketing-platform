@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
 import uuid
+from typing import Any
 
 import pytest
 
@@ -76,13 +76,24 @@ async def test_mock_graph_runs_send_shards_and_completes(
                     "result": {
                         **snapshot.insight_artifact.result,
                         "productName": "广式腊肠",
+                        "productCategory": "广式腊味",
+                        "coreSpecification": "袋装",
+                        "priceRange": "需确认",
+                        "visualFeatures": "红润油亮切面",
                         "coreSellingPoints": [
                             "纯猪肉无淀粉",
                             "广式风味",
                             "广府糖酒腌制工艺",
                         ],
-                        "secondarySellingPoints": [],
+                        "secondarySellingPoints": ["便于切配"],
+                        "trustBackings": ["非遗工艺说明"],
+                        "targetAudience": "25-45岁家庭厨房决策者",
+                        "corePainPoints": ["年货腊味难选", "担心口感和配料不合适"],
+                        "decisionDrivers": ["真实切面", "家庭烹饪适配"],
+                        "marketingGoal": "引导了解广式腊肠",
                         "usageScenarios": ["煲仔饭烹饪", "蒸制", "年节家宴"],
+                        "purchaseScenarios": ["年货选购"],
+                        "emotionalScenarios": ["家庭团聚"],
                         "aspectRatio": "3:4",
                     }
                 }
@@ -103,6 +114,20 @@ async def test_mock_graph_runs_send_shards_and_completes(
     assert api.result is not None
     assert api.result.quality_status == "PASS"
     assert len(api.result.items) == 50
+    assert api.result.metrics.insight_coverage.missing == []
+    required_ids = {
+        fact.fact_id for fact in api.result.metrics.insight_coverage.required
+    }
+    covered_ids = {
+        fact.fact_id for fact in api.result.metrics.insight_coverage.covered
+    }
+    assert required_ids <= covered_ids
+    assert any(
+        fact.field.value == "PRICE_RANGE"
+        and fact.reason == "UNCERTAIN"
+        for fact in api.result.metrics.insight_coverage.excluded
+    )
+    assert "需确认" not in "\n".join(item.content for item in api.result.items)
     assert all(uuid.UUID(item.id).version == 4 for item in api.result.items)
     assert all(shard.status.value == "SUCCEEDED" for shard in api.shards.values())
     # 初始九个同类型分片之外，允许按质量缺口定向补齐；真实信息卡中的
@@ -123,10 +148,14 @@ async def test_load_reuses_succeeded_shards(
     pipeline = PromptGenerationPipeline(api=api, provider=MockAiProvider(), shard_size=8)
     pipeline.register_snapshot(runtime, snapshot)
     first = await pipeline.load_and_snapshot(runtime)
-    pools = await pipeline.plan_strategy(runtime, target_count=10)
+    application = await pipeline.map_insight(runtime)
+    strategy = await pipeline.plan_strategy(
+        runtime, application=application, target_count=10
+    )
     shards = await pipeline.plan_round(
         runtime,
-        pools=pools,
+        strategy=strategy,
+        application=application,
         round_number=0,
         missing_count=10,
         ordinal_start=1,
@@ -215,17 +244,33 @@ async def test_planning_prioritizes_uncovered_core_selling_point(
     api = FakeApi()
     pipeline = PromptGenerationPipeline(api=api, provider=MockAiProvider(), shard_size=8)
     pipeline.register_snapshot(runtime, snapshot)
-    pools = await pipeline.plan_strategy(runtime, target_count=10)
+    application = await pipeline.map_insight(runtime)
+    strategy = await pipeline.plan_strategy(
+        runtime, application=application, target_count=10
+    )
+    missing_fact = next(
+        fact for fact in application.required if fact.value == "轻量便携"
+    )
     shards = await pipeline.plan_round(
         runtime,
-        pools=pools,
+        strategy=strategy,
+        application=application,
         round_number=0,
         missing_count=1,
         ordinal_start=1,
         completed_keys=[],
+        priority_fact_ids=[missing_fact.fact_id],
     )
 
-    assert shards[0].combinations[0].dimensions.selling_point == "轻量便携"
+    prioritized = [
+        combination
+        for shard in shards
+        for combination in shard.combinations
+        if missing_fact.fact_id
+        in {binding.fact_id for binding in combination.insight_bindings}
+    ]
+    assert prioritized
+    assert prioritized[0].dimensions.selling_point == "轻量便携"
     pipeline.unregister(runtime)
     with pytest.raises(Exception, match="not registered"):
         pipeline.snapshot(runtime)

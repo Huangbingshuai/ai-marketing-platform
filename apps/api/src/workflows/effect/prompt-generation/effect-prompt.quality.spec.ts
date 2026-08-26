@@ -39,6 +39,7 @@ const item = (id: string, overrides: Partial<EffectPromptItem> = {}): EffectProm
     emotion: `情绪-${id}`,
   },
   content: `家庭厨房中，一位穿围裙的成年人拿起产品并转向镜头，微距推进展示外观 ${id}`,
+  insightBindings: [],
   manualEdited: false,
   createdAt: '2026-08-25T00:00:00.000Z',
   updatedAt: '2026-08-25T00:00:00.000Z',
@@ -93,7 +94,7 @@ describe('effect prompt quality', () => {
     invalid.dimensions.camera = '';
     expect(
       parseEffectPromptBatchResult({
-        schemaVersion: 3,
+        schemaVersion: 4,
         settings,
         items: [invalid],
         metrics: {},
@@ -131,13 +132,30 @@ describe('effect prompt quality', () => {
   });
 
   it('recomputes fragment-label targets and required selling-point coverage', () => {
-    const result = recomputePromptQuality([item('one')], settings, {
-      sellingPointCoverage: {
-        required: ['卖点-one', '待覆盖卖点'],
-        covered: [],
-        missing: [],
+    const result = recomputePromptQuality(
+      [
+        item('one', {
+          fragmentType: 'PRODUCT_DISPLAY',
+          insightBindings: [
+            {
+              factId: 'CORE_SELLING_POINT:test',
+              field: 'CORE_SELLING_POINT',
+              value: '卖点-one',
+              valueHash: 'a'.repeat(64),
+              role: 'PRIMARY',
+            },
+          ],
+        }),
+      ],
+      settings,
+      {
+        sellingPointCoverage: {
+          required: ['卖点-one', '待覆盖卖点'],
+          covered: [],
+          missing: [],
+        },
       },
-    });
+    );
 
     expect(
       result.metrics.fragmentTypeDistribution.reduce(
@@ -164,6 +182,43 @@ describe('effect prompt quality', () => {
     expect(result.qualityStatus).toBe('NEEDS_REVIEW');
   });
 
+  it('recomputes V4 insight coverage and removes role-incompatible bindings', () => {
+    const reference = {
+      factId: 'CORE_PAIN_POINT:test',
+      field: 'CORE_PAIN_POINT' as const,
+      value: '年货选择困难',
+      valueHash: 'b'.repeat(64),
+    };
+    const result = recomputePromptQuality(
+      [
+        item('pain', {
+          fragmentType: 'PAIN',
+          insightBindings: [{ ...reference, role: 'PRIMARY' }],
+        }),
+        item('display', {
+          fragmentType: 'PRODUCT_DISPLAY',
+          insightBindings: [{ ...reference, role: 'PRIMARY' }],
+        }),
+      ],
+      settings,
+      {
+        insightCoverage: {
+          required: [reference],
+          covered: [],
+          missing: [reference],
+          adaptive: [],
+          deferred: [],
+          excluded: [],
+          appliedConstraints: [],
+        },
+      },
+    );
+
+    expect(result.metrics.insightCoverage.covered).toEqual([reference]);
+    expect(result.metrics.insightCoverage.missing).toEqual([]);
+    expect(result.items.find(({ id }) => id === 'display')?.insightBindings).toEqual([]);
+  });
+
   it('recognizes the natural product-display action 摆到', () => {
     const prompt = item('display', {
       fragmentType: 'PRODUCT_DISPLAY',
@@ -182,7 +237,7 @@ describe('effect prompt quality', () => {
       updatedAt: '2026-08-25T01:00:00.000Z',
     });
     const merged = mergeEffectPromptCompletionItems([replacement], {
-      schemaVersion: 3,
+      schemaVersion: 4,
       projectId: 'project',
       workflowRunId: 'workflow',
       productId: 'product',

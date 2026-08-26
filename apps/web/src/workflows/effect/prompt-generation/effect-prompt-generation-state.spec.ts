@@ -37,13 +37,14 @@ const prompt: EffectPromptItem = {
     emotion: '温馨治愈',
   },
   content: '广式腊肠结构化 Prompt',
+  insightBindings: [],
   manualEdited: false,
   createdAt: '2026-08-25T00:00:00.000Z',
   updatedAt: '2026-08-25T00:00:00.000Z',
 };
 
 const batch: EffectPromptBatchResult = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   settings: DEFAULT_EFFECT_PROMPT_SETTINGS,
   items: Array.from({ length: 50 }, (_, index) => ({ ...prompt, id: `item-${index}` })),
   metrics: {
@@ -66,6 +67,15 @@ const batch: EffectPromptBatchResult = {
       required: ['真空锁鲜'],
       covered: ['真空锁鲜'],
       missing: [],
+    },
+    insightCoverage: {
+      required: [],
+      covered: [],
+      missing: [],
+      adaptive: [],
+      deferred: [],
+      excluded: [],
+      appliedConstraints: [],
     },
     removedExecutionInvalid: 2,
     executionInvalidReasons: [{ code: 'MULTI_STAGE_STORY', count: 2 }],

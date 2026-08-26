@@ -4,9 +4,16 @@ import type {
   EffectPromptDimensions,
   EffectPromptFragmentType,
   EffectPromptItem,
+  EffectPromptInsightBinding,
+  EffectPromptInsightCoverage,
+  EffectPromptInsightReference,
+  EffectPromptInsightRole,
   EffectPromptMetrics,
 } from '@ai-marketing/contracts';
 import {
+  EFFECT_PROMPT_INSIGHT_FIELDS,
+  EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES,
+  EFFECT_PROMPT_INSIGHT_ROLES,
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_LIMITS,
@@ -124,6 +131,64 @@ const validDimensions = (value: unknown): value is EffectPromptDimensions => {
 const validDateTime = (value: unknown): value is string =>
   typeof value === 'string' && !Number.isNaN(Date.parse(value));
 
+const validInsightReference = (value: unknown): value is EffectPromptInsightReference => {
+  const reference = record(value);
+  return Boolean(
+    reference &&
+    Object.keys(reference).length >= 4 &&
+    typeof reference.factId === 'string' &&
+    reference.factId.length > 0 &&
+    reference.factId.length <= 120 &&
+    EFFECT_PROMPT_INSIGHT_FIELDS.includes(reference.field as never) &&
+    typeof reference.value === 'string' &&
+    reference.value.trim().length > 0 &&
+    reference.value.length <= 500 &&
+    typeof reference.valueHash === 'string' &&
+    /^[a-f0-9]{64}$/u.test(reference.valueHash),
+  );
+};
+
+const validInsightBinding = (value: unknown): value is EffectPromptInsightBinding => {
+  const binding = record(value);
+  const role = binding?.role;
+  return Boolean(
+    binding &&
+    Object.keys(binding).length === 5 &&
+    validInsightReference(binding) &&
+    EFFECT_PROMPT_INSIGHT_ROLES.includes(role as never),
+  );
+};
+
+const bindingCompatible = (
+  binding: EffectPromptInsightBinding,
+  fragmentType: EffectPromptFragmentType,
+): boolean =>
+  EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES[binding.field]?.includes(fragmentType) ?? false;
+
+const bindingRole = (field: EffectPromptInsightReference['field']): EffectPromptInsightRole => {
+  if (field === 'TRUST_BACKING') return 'EVIDENCE';
+  if (['CORE_SELLING_POINT', 'CORE_PAIN_POINT', 'MARKETING_GOAL', 'PRICE_RANGE'].includes(field))
+    return 'PRIMARY';
+  return 'CONTEXT';
+};
+
+export const inferEffectPromptInsightBindings = (
+  item: Pick<EffectPromptItem, 'content' | 'dimensions' | 'fragmentType'>,
+  coverage?: EffectPromptInsightCoverage,
+): EffectPromptInsightBinding[] => {
+  if (!coverage) return [];
+  const haystack = normalizedValue([item.content, ...Object.values(item.dimensions)].join(' '));
+  const references = [...coverage.required, ...coverage.adaptive];
+  return [...new Map(references.map((reference) => [reference.factId, reference])).values()]
+    .filter(
+      (reference) =>
+        (EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES[reference.field]?.includes(item.fragmentType) ??
+          false) &&
+        haystack.includes(normalizedValue(reference.value)),
+    )
+    .map((reference) => ({ ...reference, role: bindingRole(reference.field) }));
+};
+
 const META_LANGUAGE =
   /(?:^(?:痛点前置型|效果展示型|场景代入型|科普讲解型|对比测评型|开箱体验型)\s*[：:]|【?(?:叙事结构|场景变量|人物变量|卖点侧重|镜头语言|情绪基调|内容结构|创意核心|差异化设定)】?\s*[：=]|完成(?:单一)?卖点表达|围绕[^。；\n]+表达|产品特点自然出镜|根据(?:以上|要求|信息卡)|本条\s*prompt|视频生成方案|不(?:得|要)添加未经确认|禁止(?:夸大|未确认)|不得发明)/iu;
 const ABSTRACT_PERSONA = /(?:目标人群|受众|消费者|用户群体|家庭决策者|爱好者|全国消费者|人群)/u;
@@ -177,10 +242,15 @@ export const isEffectPromptItem = (value: unknown): value is EffectPromptItem =>
     typeof item.content === 'string' &&
     item.content.trim().length > 0 &&
     item.content.length <= itemTextLimits.content &&
+    Array.isArray(item.insightBindings) &&
+    item.insightBindings.length <= 16 &&
+    item.insightBindings.every(validInsightBinding) &&
+    new Set(item.insightBindings.map((binding) => binding.factId)).size ===
+      item.insightBindings.length &&
     typeof item.manualEdited === 'boolean' &&
     validDateTime(item.createdAt) &&
     validDateTime(item.updatedAt) &&
-    Object.keys(item).length === 11,
+    Object.keys(item).length === 12,
   );
 };
 
@@ -224,7 +294,7 @@ export const isEffectPromptSettings = (value: unknown): value is EffectPromptBat
 
 const validMetrics = (value: unknown): value is EffectPromptMetrics => {
   const metrics = record(value);
-  if (!metrics || Object.keys(metrics).length !== 13) return false;
+  if (!metrics || Object.keys(metrics).length !== 14) return false;
   const integer = (key: keyof EffectPromptMetrics, minimum: number, maximum = Infinity) =>
     Number.isInteger(metrics[key]) &&
     Number(metrics[key]) >= minimum &&
@@ -236,6 +306,7 @@ const validMetrics = (value: unknown): value is EffectPromptMetrics => {
     metrics[key] <= 100;
   const distribution = metrics.fragmentTypeDistribution;
   const coverage = record(metrics.sellingPointCoverage);
+  const insightCoverage = record(metrics.insightCoverage);
   const reasons = metrics.executionInvalidReasons;
   return (
     integer('targetCount', EFFECT_PROMPT_LIMITS.minCount, EFFECT_PROMPT_LIMITS.maxCount) &&
@@ -274,6 +345,26 @@ const validMetrics = (value: unknown): value is EffectPromptMetrics => {
           (coverage[key] as unknown[]).every((item) => typeof item === 'string'),
       ),
     ) &&
+    Boolean(
+      insightCoverage &&
+      Object.keys(insightCoverage).length === 7 &&
+      ['required', 'covered', 'missing', 'adaptive', 'deferred', 'appliedConstraints'].every(
+        (key) =>
+          Array.isArray(insightCoverage[key]) &&
+          (insightCoverage[key] as unknown[]).every(validInsightReference),
+      ) &&
+      Array.isArray(insightCoverage.excluded) &&
+      insightCoverage.excluded.every((item) => {
+        const entry = record(item);
+        const reason = entry?.reason;
+        return Boolean(
+          entry &&
+          Object.keys(entry).length === 5 &&
+          validInsightReference(entry) &&
+          ['UNCERTAIN', 'EMPTY', 'UNSUPPORTED'].includes(String(reason)),
+        );
+      }),
+    ) &&
     integer('removedExecutionInvalid', 0) &&
     Array.isArray(reasons) &&
     reasons.every((item) => {
@@ -300,7 +391,20 @@ export const recomputePromptQuality = (
   'schemaVersion' | 'settings' | 'items' | 'metrics' | 'qualityStatus'
 > => {
   const settings = normalizeEffectPromptSettings(rawSettings);
-  const items = rawItems.filter(isEffectPromptItem);
+  const items = rawItems.filter(isEffectPromptItem).map((item) => {
+    const preserved = item.insightBindings.filter((binding) =>
+      bindingCompatible(binding, item.fragmentType),
+    );
+    const inferred = inferEffectPromptInsightBindings(item, previous?.insightCoverage);
+    return {
+      ...item,
+      insightBindings: [
+        ...new Map(
+          [...preserved, ...inferred].map((binding) => [binding.factId, binding]),
+        ).values(),
+      ].slice(0, 16),
+    };
+  });
   let semanticViolations = 0;
   let visualViolations = 0;
   let dimensionConflicts = 0;
@@ -340,11 +444,14 @@ export const recomputePromptQuality = (
       ]),
     ).values(),
   ];
+  const boundCoreSellingPoints = items.flatMap(({ insightBindings }) =>
+    insightBindings.filter(({ field }) => field === 'CORE_SELLING_POINT').map(({ value }) => value),
+  );
   const coveredSellingPoints = [
     ...new Map(
-      items.map(({ dimensions }) => [
-        normalizedValue(dimensions.sellingPoint),
-        dimensions.sellingPoint.trim(),
+      boundCoreSellingPoints.map((sellingPoint) => [
+        normalizedValue(sellingPoint),
+        sellingPoint.trim(),
       ]),
     ).values(),
   ];
@@ -355,6 +462,24 @@ export const recomputePromptQuality = (
     missing: requiredSellingPoints.filter(
       (sellingPoint) => !coveredKeys.has(normalizedValue(sellingPoint)),
     ),
+  };
+  const previousInsightCoverage = previous?.insightCoverage;
+  const uniqueReferences = (values: EffectPromptInsightReference[] = []) => [
+    ...new Map(values.map((reference) => [reference.factId, reference])).values(),
+  ];
+  const requiredInsightFacts = uniqueReferences(previousInsightCoverage?.required);
+  const adaptiveInsightFacts = uniqueReferences(previousInsightCoverage?.adaptive);
+  const boundFactIds = new Set(
+    items.flatMap(({ insightBindings }) => insightBindings.map(({ factId }) => factId)),
+  );
+  const insightCoverage: EffectPromptInsightCoverage = {
+    required: requiredInsightFacts,
+    covered: requiredInsightFacts.filter(({ factId }) => boundFactIds.has(factId)),
+    missing: requiredInsightFacts.filter(({ factId }) => !boundFactIds.has(factId)),
+    adaptive: adaptiveInsightFacts,
+    deferred: adaptiveInsightFacts.filter(({ factId }) => !boundFactIds.has(factId)),
+    excluded: previousInsightCoverage?.excluded ?? [],
+    appliedConstraints: uniqueReferences(previousInsightCoverage?.appliedConstraints),
   };
   const currentExecutionReasonCounts = new Map<string, number>();
   for (const prompt of items) {
@@ -397,6 +522,7 @@ export const recomputePromptQuality = (
     ),
     fragmentTypeDistribution,
     sellingPointCoverage,
+    insightCoverage,
     removedExecutionInvalid: Math.max(previous?.removedExecutionInvalid ?? 0, 0),
     executionInvalidReasons,
   };
@@ -410,6 +536,7 @@ export const recomputePromptQuality = (
     visualOverlapRate <= settings.visualLimit &&
     fragmentTargetsMet &&
     sellingPointCoverage.missing.length === 0 &&
+    insightCoverage.missing.length === 0 &&
     currentExecutionReasonCounts.size === 0
       ? 'PASS'
       : 'NEEDS_REVIEW';

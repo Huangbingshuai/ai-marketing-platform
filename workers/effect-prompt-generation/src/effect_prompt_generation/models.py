@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import operator
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
@@ -35,7 +35,8 @@ class GraphState(TypedDict):
     round: NotRequired[int]
     target_count: NotRequired[int]
     retained_count: NotRequired[int]
-    dimension_pools: NotRequired[DimensionPools]
+    insight_map: NotRequired[InsightApplicationMap]
+    strategy_plan: NotRequired[StrategyPlan]
     pending_shards: NotRequired[list[ShardPlan]]
     active_shard: NotRequired[dict[str, Any]]
     completed_shard_keys: NotRequired[list[str]]
@@ -45,6 +46,7 @@ class GraphState(TypedDict):
     visual_pairs: NotRequired[list[PairViolation]]
     metrics: NotRequired[PromptMetrics]
     needs_replenish: NotRequired[bool]
+    missing_fact_ids: NotRequired[list[str]]
     prompt_result_id: NotRequired[str]
 
 
@@ -60,7 +62,7 @@ class RuntimeContext:
 
 
 class PromptGenerationRequest(ApiModel):
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     run_id: str
     project_id: str
     request_id: str
@@ -142,6 +144,89 @@ class PromptBatchSettings(ApiModel):
         return sum(config.count for config in self.fragment_configs.values())
 
 
+class InsightField(StrEnum):
+    PRODUCT_NAME = "PRODUCT_NAME"
+    PRODUCT_CATEGORY = "PRODUCT_CATEGORY"
+    CORE_SPECIFICATION = "CORE_SPECIFICATION"
+    PRICE_RANGE = "PRICE_RANGE"
+    VISUAL_FEATURES = "VISUAL_FEATURES"
+    CORE_SELLING_POINT = "CORE_SELLING_POINT"
+    SECONDARY_SELLING_POINT = "SECONDARY_SELLING_POINT"
+    TRUST_BACKING = "TRUST_BACKING"
+    TARGET_AUDIENCE = "TARGET_AUDIENCE"
+    CORE_PAIN_POINT = "CORE_PAIN_POINT"
+    DECISION_DRIVER = "DECISION_DRIVER"
+    MARKETING_GOAL = "MARKETING_GOAL"
+    USAGE_SCENARIO = "USAGE_SCENARIO"
+    PURCHASE_SCENARIO = "PURCHASE_SCENARIO"
+    EMOTIONAL_SCENARIO = "EMOTIONAL_SCENARIO"
+    SOURCE_DURATION = "SOURCE_DURATION"
+    ASPECT_RATIO = "ASPECT_RATIO"
+    DELIVERY_CHANNELS = "DELIVERY_CHANNELS"
+    DISABLED_ELEMENT = "DISABLED_ELEMENT"
+    VISUAL_STYLE_BASELINE = "VISUAL_STYLE_BASELINE"
+
+
+class InsightFactPolicy(StrEnum):
+    REQUIRED = "REQUIRED"
+    ADAPTIVE = "ADAPTIVE"
+    EXCLUDED = "EXCLUDED"
+    CONSTRAINT = "CONSTRAINT"
+
+
+class InsightBindingRole(StrEnum):
+    PRIMARY = "PRIMARY"
+    CONTEXT = "CONTEXT"
+    EVIDENCE = "EVIDENCE"
+
+
+class InsightReference(ApiModel):
+    fact_id: str = Field(min_length=1, max_length=120)
+    field: InsightField
+    value: str = Field(min_length=1, max_length=500)
+    value_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class InsightBinding(InsightReference):
+    role: InsightBindingRole
+
+
+class ExcludedInsight(InsightReference):
+    reason: Literal["UNCERTAIN", "EMPTY", "UNSUPPORTED"]
+
+
+class InsightCoverage(ApiModel):
+    required: list[InsightReference] = Field(default_factory=list)
+    covered: list[InsightReference] = Field(default_factory=list)
+    missing: list[InsightReference] = Field(default_factory=list)
+    adaptive: list[InsightReference] = Field(default_factory=list)
+    deferred: list[InsightReference] = Field(default_factory=list)
+    excluded: list[ExcludedInsight] = Field(default_factory=list)
+    applied_constraints: list[InsightReference] = Field(default_factory=list)
+
+
+class InsightFact(InsightReference):
+    policy: InsightFactPolicy
+    eligible_fragment_types: list[FragmentType] = Field(default_factory=list)
+    preferred_role: InsightBindingRole = InsightBindingRole.CONTEXT
+    exclusion_reason: Literal["UNCERTAIN", "EMPTY", "UNSUPPORTED"] | None = None
+
+
+class InsightApplicationMap(ApiModel):
+    required: list[InsightFact] = Field(default_factory=list)
+    adaptive: list[InsightFact] = Field(default_factory=list)
+    excluded: list[InsightFact] = Field(default_factory=list)
+    constraints: list[InsightFact] = Field(default_factory=list)
+
+    @property
+    def usable(self) -> list[InsightFact]:
+        return [*self.required, *self.adaptive]
+
+    @property
+    def by_id(self) -> dict[str, InsightFact]:
+        return {fact.fact_id: fact for fact in [*self.usable, *self.constraints]}
+
+
 class PromptItem(ApiModel):
     id: str = Field(min_length=1, max_length=160)
     code: str = Field(min_length=1, max_length=40)
@@ -151,6 +236,7 @@ class PromptItem(ApiModel):
     target_duration_seconds: int = Field(ge=3, le=10)
     dimensions: PromptDimensions
     content: str = Field(min_length=1, max_length=12_000)
+    insight_bindings: list[InsightBinding] = Field(default_factory=list, max_length=16)
     manual_edited: bool
     created_at: datetime
     updated_at: datetime
@@ -196,10 +282,11 @@ class PromptMetrics(ApiModel):
     replenishment_rounds: int = Field(ge=0, le=3)
     fragment_type_distribution: list[FragmentTypeDistribution] = Field(min_length=6, max_length=6)
     selling_point_coverage: SellingPointCoverage
+    insight_coverage: InsightCoverage
 
 
 class PromptBatchResult(ApiModel):
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     settings: PromptBatchSettings
     items: list[PromptItem] = Field(max_length=200)
     metrics: PromptMetrics
@@ -222,7 +309,7 @@ class InsightArtifact(ApiModel):
 
 
 class PromptGenerationSnapshot(ApiModel):
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     project_id: str
     workflow_run_id: str
     product_id: str
@@ -254,6 +341,7 @@ class ClaimResponse(ApiModel):
 
 class NodeId(StrEnum):
     LOAD_AND_SNAPSHOT = "LOAD_AND_SNAPSHOT"
+    INSIGHT_MAPPING = "INSIGHT_MAPPING"
     STRATEGY_PLANNING = "STRATEGY_PLANNING"
     DIMENSION_COMBINATION = "DIMENSION_COMBINATION"
     FRAGMENT_TYPE_ROUTER = "FRAGMENT_TYPE_ROUTER"
@@ -266,6 +354,7 @@ class NodeId(StrEnum):
     NORMALIZATION = "NORMALIZATION"
     SEMANTIC_DEDUP = "SEMANTIC_DEDUP"
     VISUAL_DEDUP = "VISUAL_DEDUP"
+    INSIGHT_COVERAGE = "INSIGHT_COVERAGE"
     QUALITY_GATE = "QUALITY_GATE"
     REPLENISH = "REPLENISH"
     RESULT_SAVE = "RESULT_SAVE"
@@ -323,6 +412,20 @@ class DimensionPools(ApiModel):
         return result
 
 
+class MarketingRelationshipBundle(ApiModel):
+    bundle_id: str = Field(min_length=1, max_length=120)
+    fact_ids: list[str] = Field(min_length=1, max_length=12)
+    eligible_fragment_types: list[FragmentType] = Field(min_length=1, max_length=6)
+    scene: str = Field(min_length=1, max_length=120)
+    persona: str = Field(min_length=1, max_length=160)
+    selling_point: str = Field(min_length=1, max_length=240)
+
+
+class StrategyPlan(ApiModel):
+    dimension_pools: DimensionPools
+    relationship_bundles: list[MarketingRelationshipBundle] = Field(min_length=1, max_length=48)
+
+
 class PlannedCombination(ApiModel):
     slot_id: str
     ordinal: int = Field(ge=1)
@@ -333,6 +436,8 @@ class PlannedCombination(ApiModel):
     evidence_mode: EvidenceMode
     allowed_visual_evidence: str = Field(min_length=1, max_length=400)
     forbidden_inference: str = Field(min_length=1, max_length=400)
+    relationship_bundle_id: str = Field(default="legacy-test", min_length=1, max_length=120)
+    insight_bindings: list[InsightBinding] = Field(default_factory=list, max_length=16)
     dimensions: PromptDimensions
 
 
@@ -359,6 +464,7 @@ class ShardPlan(ApiModel):
 class GeneratedPromptText(ApiModel):
     slot_id: str
     prompt_text: str = Field(min_length=120, max_length=600)
+    used_fact_ids: list[str] = Field(default_factory=list, max_length=16)
 
 
 class GeneratedPromptTextBatch(ApiModel):
@@ -375,6 +481,7 @@ class GeneratedCandidate(ApiModel):
     target_duration_seconds: int = Field(ge=3, le=10)
     dimensions: PromptDimensions
     content: str = Field(min_length=1, max_length=12_000)
+    insight_bindings: list[InsightBinding] = Field(default_factory=list, max_length=16)
     execution_invalid_reasons: list[str] = Field(default_factory=list)
     generated_at: datetime
 
@@ -423,4 +530,4 @@ class ProgressPayload(ApiModel):
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)

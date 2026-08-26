@@ -7,7 +7,7 @@ import type {
 } from '@ai-marketing/contracts';
 
 export type EffectPromptInputSnapshot = {
-  schemaVersion: 3;
+  schemaVersion: 4;
   projectId: string;
   workflowRunId: string;
   productId: string;

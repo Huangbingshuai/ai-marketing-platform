@@ -9,7 +9,10 @@ import {
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_GRAPH_EDGES,
   EFFECT_PROMPT_GRAPH_NODES,
+  EFFECT_PROMPT_INSIGHT_FIELDS,
+  EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES,
   EFFECT_PROMPT_LIMITS,
+  EFFECT_PROMPT_NODE_DETAIL_LIMITS,
   EFFECT_PROMPT_SCHEMA_VERSION,
   effectPromptTargetCount,
   effectPromptSettingsNodeId,
@@ -54,11 +57,22 @@ describe('effect prompt generation contract', () => {
       'OUTRO',
     ]);
     expect(EFFECT_PROMPT_GRAPH_NODES.map((node) => node.id)).toContain('QUALITY_GATE');
+    expect(EFFECT_PROMPT_GRAPH_NODES.map((node) => node.id)).toContain('INSIGHT_MAPPING');
+    expect(EFFECT_PROMPT_GRAPH_NODES.map((node) => node.id)).toContain('INSIGHT_COVERAGE');
     expect(EFFECT_PROMPT_GRAPH_EDGES).toContainEqual({
       from: 'REPLENISH',
       to: 'FRAGMENT_TYPE_ROUTER',
     });
     expect(EFFECT_PROMPT_GRAPH_NODES.filter((node) => node.group === 'GENERATION')).toHaveLength(6);
+  });
+
+  it('freezes the V4 insight taxonomy and sensitive role boundaries', () => {
+    expect(EFFECT_PROMPT_INSIGHT_FIELDS).toContain('CORE_PAIN_POINT');
+    expect(EFFECT_PROMPT_INSIGHT_FIELDS).toContain('MARKETING_GOAL');
+    expect(EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES.PRICE_RANGE).toEqual(['CTA']);
+    expect(EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES.TRUST_BACKING).toEqual([
+      'SELLING_POINT_EXPLANATION',
+    ]);
   });
 
   it('normalizes six independent fragment settings', () => {
@@ -95,7 +109,7 @@ describe('effect prompt generation contract', () => {
     });
   });
 
-  it('migrates V2 total count and duration into six V3 fragment configs', () => {
+  it('migrates V2 total count and duration into six V4 fragment configs', () => {
     const migrated = migrateEffectPromptSettings(
       { count: 50, durationSeconds: 7, semanticLimit: 12, visualLimit: 18 },
       2,
@@ -116,6 +130,19 @@ describe('effect prompt generation contract', () => {
     ).toEqual([7, 7, 7, 7, 7, 7]);
   });
 
+  it('preserves valid V3 fragment settings when upgrading to V4', () => {
+    const v3Settings = {
+      ...DEFAULT_EFFECT_PROMPT_SETTINGS,
+      fragmentConfigs: {
+        ...DEFAULT_EFFECT_PROMPT_SETTINGS.fragmentConfigs,
+        HOOK: { count: 11, durationSeconds: 6 },
+        PAIN: { count: 7, durationSeconds: 4 },
+      },
+    };
+
+    expect(migrateEffectPromptSettings(v3Settings, 3)).toEqual(v3Settings);
+  });
+
   it('does not reuse a V1 full-video duration as a fragment duration', () => {
     const migrated = migrateEffectPromptSettings(
       { count: 50, durationSeconds: 15, semanticLimit: 15, visualLimit: 20 },
@@ -133,13 +160,24 @@ describe('effect prompt generation contract', () => {
     expect(effectPromptSettingsNodeId('product-one')).toBe('PROMPT_GENERATION:product-one');
   });
 
-  it('keeps the canonical JSON schema on v3 and rejects legacy discriminators', () => {
+  it('caps real node-detail samples without limiting the six route rows', () => {
+    expect(EFFECT_PROMPT_NODE_DETAIL_LIMITS).toEqual({
+      maxSamples: 3,
+      maxTagValues: 8,
+      maxIssues: 8,
+    });
+    expect(EFFECT_PROMPT_NODE_DETAIL_LIMITS.maxSamples).toBeLessThan(
+      EFFECT_PROMPT_FRAGMENT_TYPES.length,
+    );
+  });
+
+  it('keeps the canonical JSON schema on v4 and rejects legacy discriminators', () => {
     const schemaVersion = requireSchemaNode(
       batchSchema.properties?.schemaVersion,
       'properties.schemaVersion',
     );
 
-    expect(batchSchema.$id).toMatch(/effect-prompt-batch\.v3\.json$/u);
+    expect(batchSchema.$id).toMatch(/effect-prompt-batch\.v4\.json$/u);
     expect(schemaVersion.const).toBe(EFFECT_PROMPT_SCHEMA_VERSION);
     expect(schemaVersion.const).not.toBe(2);
     expect(batchSchema.additionalProperties).toBe(false);
@@ -171,7 +209,7 @@ describe('effect prompt generation contract', () => {
     expect(fragmentConfigs.additionalProperties).toBe(false);
   });
 
-  it('requires fragment-material fields and the v3 quality metrics', () => {
+  it('requires fragment-material fields and the v4 insight metrics', () => {
     const item = requireSchemaNode(batchSchema.$defs?.item, '$defs.item');
     const materialTags = requireSchemaNode(
       item.properties?.materialTags,
@@ -197,6 +235,7 @@ describe('effect prompt generation contract', () => {
         'targetDurationSeconds',
         'dimensions',
         'content',
+        'insightBindings',
         'manualEdited',
         'createdAt',
         'updatedAt',
@@ -220,6 +259,7 @@ describe('effect prompt generation contract', () => {
         'replenishmentRounds',
         'fragmentTypeDistribution',
         'sellingPointCoverage',
+        'insightCoverage',
         'removedExecutionInvalid',
         'executionInvalidReasons',
       ].sort(),

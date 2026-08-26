@@ -20,11 +20,12 @@ from .combinations import (
     make_shards,
     plan_combinations,
 )
+from .insight_mapping import map_insight
 from .models import (
-    DimensionPools,
     FailurePayload,
     FragmentType,
     GeneratedCandidate,
+    InsightApplicationMap,
     NodeId,
     PairViolation,
     PlannedCombination,
@@ -38,6 +39,7 @@ from .models import (
     ShardRecord,
     StageOutput,
     StageStatus,
+    StrategyPlan,
     utc_now,
 )
 from .providers import AiProvider, ProviderError
@@ -48,7 +50,6 @@ from .quality import (
     semantic_violations,
     visual_violations,
 )
-
 
 MAX_REPLENISHMENT_ROUNDS = 3
 
@@ -82,6 +83,9 @@ class RunCache:
     ai_call_count: int = 0
     total_shards: int = 0
     execution_invalid_reasons: Counter[str] = field(default_factory=Counter)
+    insight_application: InsightApplicationMap | None = None
+    strategy_plan: StrategyPlan | None = None
+    evaluation: EvaluationResult | None = None
 
 
 class PromptGenerationPipeline:
@@ -174,18 +178,23 @@ class PromptGenerationPipeline:
         return loaded
 
     async def plan_strategy(
-        self, context: RuntimeContext, *, target_count: int
-    ) -> DimensionPools:
-        await self._stage(context, NodeId.STRATEGY_PLANNING, StageStatus.RUNNING, "正在规划六维候选池")
-        insight = self.snapshot(context).insight_artifact.result
+        self,
+        context: RuntimeContext,
+        *,
+        application: InsightApplicationMap,
+        target_count: int,
+    ) -> StrategyPlan:
+        await self._stage(context, NodeId.STRATEGY_PLANNING, StageStatus.RUNNING, "正在规划营销关系")
         self._reserve_ai_call(context)
-        call = await self.provider.plan_strategy(insight, target_count=target_count)
-        pools = call.value
+        call = await self.provider.plan_strategy(application, target_count=target_count)
+        plan = call.value
+        pools = plan.dimension_pools
+        self._cache(context).strategy_plan = plan
         await self._stage(
             context,
             NodeId.STRATEGY_PLANNING,
             StageStatus.SUCCEEDED,
-            "六维候选池规划完成",
+            "营销关系规划完成",
             metadata={
                 "narrativeCount": len(pools.narratives),
                 "sceneCount": len(pools.scenes),
@@ -195,26 +204,50 @@ class PromptGenerationPipeline:
                 "emotionCount": len(pools.emotions),
                 "actionCount": len(pools.actions),
                 "evidencePlanCount": len(pools.evidence_plans),
+                "relationshipBundleCount": len(plan.relationship_bundles),
                 "dimensionExample": _short(
                     f"{pools.narratives[0]} / {pools.scenes[0]} / {pools.selling_points[0]}"
                 ),
             },
         )
         await self.progress(context, 15, NodeId.STRATEGY_PLANNING)
-        return pools
+        return plan
+
+    async def map_insight(self, context: RuntimeContext) -> InsightApplicationMap:
+        await self._stage(context, NodeId.INSIGHT_MAPPING, StageStatus.RUNNING, "正在映射提炼信息用途")
+        application = map_insight(self.snapshot(context).insight_artifact.result)
+        if not application.required:
+            raise PipelineError("产品素材制作信息卡缺少可用于 Prompt 生成的核心事实")
+        self._cache(context).insight_application = application
+        await self._stage(
+            context,
+            NodeId.INSIGHT_MAPPING,
+            StageStatus.SUCCEEDED,
+            "提炼信息用途映射完成",
+            metadata={
+                "requiredCount": len(application.required),
+                "adaptiveCount": len(application.adaptive),
+                "excludedCount": len(application.excluded),
+                "appliedConstraintCount": len(application.constraints),
+            },
+        )
+        await self.progress(context, 11, NodeId.INSIGHT_MAPPING)
+        return application
 
     async def plan_round(
         self,
         context: RuntimeContext,
         *,
-        pools: DimensionPools,
+        strategy: StrategyPlan,
+        application: InsightApplicationMap,
         round_number: int,
         missing_count: int,
         ordinal_start: int,
         completed_keys: list[str],
+        priority_fact_ids: list[str] | None = None,
     ) -> list[ShardPlan]:
         node = NodeId.DIMENSION_COMBINATION if round_number == 0 else NodeId.REPLENISH
-        await self._stage(context, node, StageStatus.RUNNING, "正在生成正交组合")
+        await self._stage(context, node, StageStatus.RUNNING, "正在编排片段蓝图")
         requested = min(289, max(missing_count, math.ceil(missing_count * 1.25)))
         settings = self.snapshot(context).settings
         targets = fragment_type_targets(
@@ -227,7 +260,8 @@ class PromptGenerationPipeline:
             actual_types,
         )
         combinations = plan_combinations(
-            self._prioritized_pools(context, pools),
+            strategy,
+            application,
             count=requested,
             round_number=round_number,
             ordinal_start=ordinal_start,
@@ -237,6 +271,7 @@ class PromptGenerationPipeline:
                 for fragment_type in FragmentType
             },
             fragment_deficits=deficits,
+            priority_fact_ids=priority_fact_ids or [],
         )
         shards = make_shards(combinations, round_number=round_number, shard_size=self.shard_size)
         all_pending = [item for item in shards if item.key not in set(completed_keys)]
@@ -252,6 +287,7 @@ class PromptGenerationPipeline:
             "combinationExample": _combination_example(
                 combinations[0] if combinations else None
             ),
+            "priorityFactCount": len(priority_fact_ids or []),
         }
         if node == NodeId.REPLENISH:
             stage_metadata["missingCount"] = missing_count
@@ -259,7 +295,7 @@ class PromptGenerationPipeline:
             context,
             node,
             StageStatus.SUCCEEDED,
-            "正交组合已生成" if round_number == 0 else f"第 {round_number} 轮补齐组合已生成",
+            "片段蓝图已编排" if round_number == 0 else f"第 {round_number} 轮定向补齐蓝图已编排",
             metadata=stage_metadata,
         )
         await self._stage(
@@ -339,6 +375,7 @@ class PromptGenerationPipeline:
                     target_duration_seconds=plan.target_duration_seconds,
                     dimensions=plan.dimensions,
                     content=content,
+                    insight_bindings=plan.insight_bindings,
                     execution_invalid_reasons=invalid_reasons,
                     generated_at=generated_at,
                 ))
@@ -382,6 +419,7 @@ class PromptGenerationPipeline:
                 target_duration_seconds=candidate.target_duration_seconds,
                 dimensions=candidate.dimensions,
                 content=candidate.content,
+                insight_bindings=candidate.insight_bindings,
                 manual_edited=False,
                 created_at=candidate.generated_at,
                 updated_at=candidate.generated_at,
@@ -410,7 +448,7 @@ class PromptGenerationPipeline:
             "候选 Prompt 标准化完成",
             metadata={
                 "candidateCount": len(items),
-                "normalizedFieldCount": 11,
+                "normalizedFieldCount": 12,
                 "structureExample": _short(
                     "单一场景 + 单一连续动作 + 可见主体/产品 + 镜头/光线/节奏 + 结束状态"
                 ),
@@ -462,29 +500,12 @@ class PromptGenerationPipeline:
         round_number: int,
     ) -> EvaluationResult:
         await self._stage(context, NodeId.QUALITY_GATE, StageStatus.RUNNING, "正在执行批次质量门禁")
-        settings = self.snapshot(context).settings
-        evaluation = evaluate_candidates(
-            self.snapshot(context).retained_manual_items,
-            self._cache(context).normalized_items,
-            target_count=settings.target_count,
-            semantic_limit=settings.semantic_limit,
-            visual_limit=settings.visual_limit,
-            round_number=round_number,
-            required_selling_points=_core_selling_points(
-                self.snapshot(context).insight_artifact.result
-            ),
-            fragment_type_targets=fragment_type_targets(
-                {fragment_type: settings.fragment_configs[fragment_type].count for fragment_type in FragmentType}
-            ),
-            generated_candidate_count=len(self._cache(context).candidates),
-            removed_execution_invalid=sum(
-                bool(item.execution_invalid_reasons)
-                for item in self._cache(context).candidates.values()
-            ),
-            execution_invalid_reasons=dict(
-                self._cache(context).execution_invalid_reasons
-            ),
-        )
+        evaluation = self._cache(context).evaluation
+        if evaluation is None:
+            evaluation = await self.evaluate_insight_coverage(
+                context,
+                round_number=round_number,
+            )
         self._cache(context).accepted_items = evaluation.items
         passed = evaluation.quality_status == "PASS"
         await self._stage(
@@ -494,8 +515,8 @@ class PromptGenerationPipeline:
             "批次质量门禁通过"
             if passed
             else (
-                "批次缺少核心卖点覆盖"
-                if evaluation.missing_selling_points
+                "批次缺少必须利用的提炼信息"
+                if evaluation.missing_fact_ids
                 else "批次仍需补齐或人工复核"
             ),
             metadata={
@@ -509,11 +530,73 @@ class PromptGenerationPipeline:
                     + evaluation.metrics.removed_dimension_conflicts
                     + evaluation.metrics.removed_execution_invalid
                 ),
+                "missingFactCount": len(evaluation.missing_fact_ids),
                 "replenishmentRound": round_number,
                 "qualityStatus": evaluation.quality_status,
             },
         )
         await self.progress(context, 72, NodeId.QUALITY_GATE)
+        return evaluation
+
+    async def evaluate_insight_coverage(
+        self,
+        context: RuntimeContext,
+        *,
+        round_number: int,
+    ) -> EvaluationResult:
+        await self._stage(
+            context,
+            NodeId.INSIGHT_COVERAGE,
+            StageStatus.RUNNING,
+            "正在核对提炼信息实际利用情况",
+        )
+        settings = self.snapshot(context).settings
+        application = self._cache(context).insight_application
+        if application is None:
+            raise PipelineError("提炼信息应用映射尚未完成")
+        evaluation = evaluate_candidates(
+            self.snapshot(context).retained_manual_items,
+            self._cache(context).normalized_items,
+            target_count=settings.target_count,
+            semantic_limit=settings.semantic_limit,
+            visual_limit=settings.visual_limit,
+            round_number=round_number,
+            required_selling_points=_core_selling_points(
+                self.snapshot(context).insight_artifact.result
+            ),
+            insight_application=application,
+            fragment_type_targets=fragment_type_targets(
+                {fragment_type: settings.fragment_configs[fragment_type].count for fragment_type in FragmentType}
+            ),
+            generated_candidate_count=len(self._cache(context).candidates),
+            removed_execution_invalid=sum(
+                bool(item.execution_invalid_reasons)
+                for item in self._cache(context).candidates.values()
+            ),
+            execution_invalid_reasons=dict(
+                self._cache(context).execution_invalid_reasons
+            ),
+        )
+        self._cache(context).accepted_items = evaluation.items
+        self._cache(context).evaluation = evaluation
+        coverage = evaluation.metrics.insight_coverage
+        await self._stage(
+            context,
+            NodeId.INSIGHT_COVERAGE,
+            StageStatus.SUCCEEDED if not coverage.missing else StageStatus.PARTIAL,
+            "必须利用的提炼信息已全部覆盖"
+            if not coverage.missing
+            else "仍有必须利用的提炼信息待补齐",
+            metadata={
+                "requiredCount": len(coverage.required),
+                "coveredCount": len(coverage.covered),
+                "missingCount": len(coverage.missing),
+                "deferredCount": len(coverage.deferred),
+                "appliedConstraintCount": len(coverage.applied_constraints),
+                "replenishmentRound": round_number,
+            },
+        )
+        await self.progress(context, 68, NodeId.INSIGHT_COVERAGE)
         return evaluation
 
     async def save_result(
@@ -539,6 +622,7 @@ class PromptGenerationPipeline:
                 for item in metrics.fragment_type_distribution
             )
             and not metrics.selling_point_coverage.missing
+            and not metrics.insight_coverage.missing
         ) else "NEEDS_REVIEW"
         result = PromptBatchResult(
             settings=settings,
@@ -572,17 +656,6 @@ class PromptGenerationPipeline:
         if cache.ai_call_count >= self.max_ai_calls_per_run:
             raise PipelineError("Prompt 子工作流 AI 调用次数超过安全上限")
         cache.ai_call_count += 1
-
-    def _prioritized_pools(
-        self, context: RuntimeContext, pools: DimensionPools
-    ) -> DimensionPools:
-        cache = self._cache(context)
-        existing = cache.accepted_items or self.snapshot(context).retained_manual_items
-        covered = {_normalized(item.dimensions.selling_point) for item in existing}
-        required = _core_selling_points(self.snapshot(context).insight_artifact.result)
-        missing = [item for item in required if _normalized(item) not in covered]
-        ordered = list(dict.fromkeys([*missing, *pools.selling_points]))
-        return pools.model_copy(update={"selling_points": ordered})
 
     async def mark_failed(self, context: RuntimeContext, exc: Exception) -> None:
         retryable = isinstance(exc, (InternalApiError, ProviderError)) and exc.retryable

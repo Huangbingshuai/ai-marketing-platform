@@ -5,6 +5,7 @@ import type {
   EffectPromptDimensions,
   EffectPromptFragmentType,
   EffectPromptItem,
+  EffectPromptInsightField,
   EffectPromptNodeExecution,
   EffectPromptNodeId,
   EffectPromptProductState,
@@ -181,6 +182,47 @@ const currentItems = computed(() => resultData.value?.items ?? []);
 const currentMetrics = computed(
   () => currentResult.value?.metrics ?? currentState.value?.metrics ?? null,
 );
+const insightFieldLabels: Record<EffectPromptInsightField, string> = {
+  PRODUCT_NAME: '产品名称',
+  PRODUCT_CATEGORY: '产品品类',
+  CORE_SPECIFICATION: '核心规格',
+  PRICE_RANGE: '确认价格',
+  VISUAL_FEATURES: '视觉特征',
+  CORE_SELLING_POINT: '核心卖点',
+  SECONDARY_SELLING_POINT: '次要卖点',
+  TRUST_BACKING: '信任背书',
+  TARGET_AUDIENCE: '目标受众',
+  CORE_PAIN_POINT: '核心痛点',
+  DECISION_DRIVER: '决策动机',
+  MARKETING_GOAL: '营销目标',
+  USAGE_SCENARIO: '使用场景',
+  PURCHASE_SCENARIO: '购买场景',
+  EMOTIONAL_SCENARIO: '情绪场景',
+  SOURCE_DURATION: '上游时长',
+  ASPECT_RATIO: '画幅',
+  DELIVERY_CHANNELS: '投放渠道',
+  DISABLED_ELEMENT: '禁用元素',
+  VISUAL_STYLE_BASELINE: '视觉基线',
+};
+const insightSummary = (
+  values: Array<{ field: EffectPromptInsightField; value: string }>,
+  limit = 3,
+): string => {
+  if (!values.length) return '无';
+  const visible = values
+    .slice(0, limit)
+    .map(({ field, value }) => `${insightFieldLabels[field]}：${value}`);
+  return `${visible.join('；')}${values.length > limit ? `；另 ${values.length - limit} 项` : ''}`;
+};
+const itemInsightSources = (item: EffectPromptItem) =>
+  [
+    ...new Map(
+      item.insightBindings.map((binding) => [
+        binding.field,
+        { field: binding.field, label: insightFieldLabels[binding.field], value: binding.value },
+      ]),
+    ).values(),
+  ].slice(0, 8);
 const currentFragmentDistribution = computed(() => {
   const distribution = currentMetrics.value?.fragmentTypeDistribution ?? [];
   if (!fragmentTypeFilter.value) return distribution;
@@ -270,6 +312,7 @@ const currentGraphNodes = computed<EffectPromptNodeExecution[]>(() =>
 );
 const graphRows: EffectPromptNodeId[][] = [
   ['LOAD_AND_SNAPSHOT'],
+  ['INSIGHT_MAPPING'],
   ['STRATEGY_PLANNING'],
   ['DIMENSION_COMBINATION'],
   ['FRAGMENT_TYPE_ROUTER'],
@@ -283,6 +326,7 @@ const graphRows: EffectPromptNodeId[][] = [
   ],
   ['NORMALIZATION'],
   ['SEMANTIC_DEDUP', 'VISUAL_DEDUP'],
+  ['INSIGHT_COVERAGE'],
   ['QUALITY_GATE'],
   ['REPLENISH', 'RESULT_SAVE'],
 ];
@@ -1015,8 +1059,9 @@ const graphStatusMeta = (statusValue: EffectPromptStageStatus): { label: string;
 const graphDescription = (nodeId: EffectPromptNodeId): string =>
   ({
     LOAD_AND_SNAPSHOT: '冻结洞察工作副本、批次设置和人工保留内容',
-    STRATEGY_PLANNING: '规划六类素材、六维候选池与卖点轮动',
-    DIMENSION_COMBINATION: '分配片段用途并最大化六维正交距离',
+    INSIGHT_MAPPING: '把已确认的营销洞察映射为片段可用信息',
+    STRATEGY_PLANNING: '连接受众、痛点、场景、卖点与营销目标，形成营销关系束',
+    DIMENSION_COMBINATION: '先分配营销关系束，再在关系内部编排六维差异',
     FRAGMENT_TYPE_ROUTER: '按选定数量和时长将组合路由到六类生成分支',
     GENERATE_HOOK: '生成首帧即有注意力触发动作的钩子片段',
     GENERATE_PAIN: '生成可见问题状态和人物反应的痛点片段',
@@ -1027,15 +1072,11 @@ const graphDescription = (nodeId: EffectPromptNodeId): string =>
     NORMALIZATION: '校验主标签、时长与画面动作的可执行性',
     SEMANTIC_DEDUP: '检测内容意图和文字近似重复',
     VISUAL_DEDUP: '计算场景、人物、镜头和情绪的结构化重合',
-    QUALITY_GATE: '核对配额、卖点覆盖、可执行性和双重阈值',
-    REPLENISH: '按缺少的片段类型和卖点定向补齐',
+    INSIGHT_COVERAGE: '核对必须应用的提炼信息与安全约束',
+    QUALITY_GATE: '核对配额、提炼信息覆盖、可执行性和双重阈值',
+    REPLENISH: '按缺少的片段类型和提炼事实定向补齐',
     RESULT_SAVE: '保存最佳批次草稿和质量结论',
   })[nodeId];
-const graphDependencies = (nodeId: EffectPromptNodeId): string =>
-  EFFECT_PROMPT_GRAPH_EDGES.filter((edge) => edge.to === nodeId)
-    .map((edge) => graphDefinition(edge.from).label)
-    .join('、') || '无';
-
 const graphDetailValue = (value: unknown): string => {
   if (Array.isArray(value)) {
     const visible = value.filter(
@@ -1054,6 +1095,19 @@ const graphDetailValueIsMultiline = (value: unknown): boolean => {
   const visible = graphDetailValue(value);
   return Array.isArray(value) || visible.includes('\n') || visible.length > 72;
 };
+
+const GRAPH_EVIDENCE_MODE_LABELS: Record<string, string> = {
+  VISIBLE_ATTRIBUTE: '可见属性',
+  USAGE_ACTION: '使用动作',
+  VISIBLE_RESULT: '可见结果',
+  PROCESS_ONLY: '过程素材',
+  TEXT_ONLY: '确认字幕',
+};
+
+const graphEvidenceModeLabel = (value: string): string =>
+  GRAPH_EVIDENCE_MODE_LABELS[value] ?? value;
+
+const graphPairScore = (value: number): string => `${(value * 100).toFixed(0)}%`;
 
 const formatGraphDetailTime = (value: string | null | undefined): string => {
   if (!value) return '尚无执行记录';
@@ -1080,6 +1134,7 @@ const localGraphDetail = (nodeId: EffectPromptNodeId): NodeDetail => {
         ? '该节点尚未执行，暂无持久化运行数据。'
         : graphDescription(nodeId)),
     fields: [],
+    blocks: [],
     warnings: [...execution.warnings],
     errorMessage: execution.errorMessage,
     updatedAt: null,
@@ -1087,11 +1142,11 @@ const localGraphDetail = (nodeId: EffectPromptNodeId): NodeDetail => {
 };
 
 const graphDetailEmptyMessage = (detail: NodeDetail): string => {
-  if (detail.status === 'PENDING') return '该节点尚未执行，暂无运行字段。';
-  if (detail.status === 'RUNNING') return '节点正在执行，字段会随持久化进度更新。';
-  if (detail.status === 'SKIPPED') return '该节点本次已跳过，没有可展示的运行字段。';
-  if (detail.status === 'FAILED') return '节点未产出可展示字段，请查看下方错误信息。';
-  return '该节点已完成，服务端未返回额外的安全字段。';
+  if (detail.status === 'PENDING') return '该节点尚未执行，暂无实际产出。';
+  if (detail.status === 'RUNNING') return '节点正在执行，实际结果会随已完成分片更新。';
+  if (detail.status === 'SKIPPED') return '该节点本次已跳过，没有实际产出。';
+  if (detail.status === 'FAILED') return '节点未产出可展示结果，请查看下方错误信息。';
+  return '该节点已完成，本次没有额外的业务结果。';
 };
 
 const openGraph = async (event?: Event): Promise<void> => {
@@ -1494,7 +1549,7 @@ onBeforeUnmount(() => {
         </article>
       </section>
 
-      <section v-if="currentMetrics" class="quality-breakdown" aria-label="配额与卖点覆盖">
+      <section v-if="currentMetrics" class="quality-breakdown" aria-label="配额与提炼信息覆盖">
         <div>
           <strong>{{ fragmentTypeFilter ? '当前类型配额' : '六类标签配额' }}</strong>
           <span
@@ -1520,6 +1575,25 @@ onBeforeUnmount(() => {
             待补：{{ currentMetrics.sellingPointCoverage.missing.join('、') }}
           </em>
           <em v-else>已覆盖全部确认卖点</em>
+        </div>
+        <div class="insight-utilization">
+          <strong>提炼信息利用</strong>
+          <span :class="{ missing: currentMetrics.insightCoverage.missing.length > 0 }">
+            {{ currentMetrics.insightCoverage.covered.length }}/{{
+              currentMetrics.insightCoverage.required.length
+            }}
+            项核心信息已覆盖
+          </span>
+          <em v-if="currentMetrics.insightCoverage.missing.length" class="missing">
+            待补：{{ insightSummary(currentMetrics.insightCoverage.missing) }}
+          </em>
+          <em v-else>核心信息已全部用于合适的片段</em>
+          <span v-if="currentMetrics.insightCoverage.deferred.length" class="adaptive">
+            自适应暂未编排：{{ insightSummary(currentMetrics.insightCoverage.deferred) }}
+          </span>
+          <span class="constraint">
+            已应用 {{ currentMetrics.insightCoverage.appliedConstraints.length }} 项制作约束
+          </span>
         </div>
       </section>
 
@@ -1585,6 +1659,19 @@ onBeforeUnmount(() => {
               <small>次级标签</small>
               <span v-for="tag in item.materialTags" :key="tag">{{ tag }}</span>
               <em v-if="!item.materialTags.length">暂无</em>
+            </div>
+            <div
+              v-if="item.insightBindings.length"
+              class="insight-source-tags"
+              aria-label="该条 Prompt 使用的提炼信息"
+            >
+              <small>提炼来源</small>
+              <span
+                v-for="source in itemInsightSources(item)"
+                :key="source.field"
+                :title="source.value"
+                >{{ source.label }}</span
+              >
             </div>
             <textarea :value="item.content" readonly aria-label="Prompt 内容" />
             <details class="prompt-dimension-details">
@@ -1820,7 +1907,7 @@ onBeforeUnmount(() => {
             <div>
               <span>PROMPT SUB-WORKFLOW</span>
               <h2 id="prompt-graph-title">差异化 Prompt 生成子工作流</h2>
-              <p>节点详情展示阶段输入摘要、业务示例、分片进度与质量结论。</p>
+              <p>展示本次真实输入、阶段产物和质量结论。</p>
             </div>
             <button
               ref="graphCloseButton"
@@ -1902,10 +1989,6 @@ onBeforeUnmount(() => {
                     </span>
                   </div>
                   <p class="node-summary">{{ graphDetail.summary }}</p>
-                  <p class="node-dependencies">
-                    <strong>执行依赖</strong
-                    ><span>{{ graphDependencies(selectedGraphNodeId) }}</span>
-                  </p>
 
                   <dl v-if="graphDetail.fields.length" class="node-fields">
                     <div
@@ -1921,7 +2004,142 @@ onBeforeUnmount(() => {
                       </dd>
                     </div>
                   </dl>
-                  <div v-else class="node-detail-no-fields">
+
+                  <section
+                    v-for="(block, blockIndex) in graphDetail.blocks"
+                    :key="`${block.kind}-${blockIndex}`"
+                    class="node-result-block"
+                  >
+                    <h3>{{ block.title }}</h3>
+
+                    <div v-if="block.kind === 'TAG_LIST'" class="node-tag-groups">
+                      <div v-for="group in block.groups" :key="group.label">
+                        <strong>{{ group.label }}</strong>
+                        <p>
+                          <span v-for="value in group.values" :key="value">{{ value }}</span>
+                          <em v-if="group.remainingCount">＋{{ group.remainingCount }} 项</em>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div v-else-if="block.kind === 'ROUTE_LIST'" class="node-route-list">
+                      <article v-for="route in block.items" :key="route.fragmentType">
+                        <header>
+                          <strong>{{
+                            EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[route.fragmentType]
+                          }}</strong>
+                          <em :class="`is-${graphStatusMeta(route.status).tone}`">{{
+                            graphStatusMeta(route.status).label
+                          }}</em>
+                        </header>
+                        <p>
+                          <span>目标 {{ route.targetCount }}</span
+                          ><span>候选 {{ route.candidateCount }}</span
+                          ><span>分片 {{ route.completedShards }}/{{ route.totalShards }}</span>
+                        </p>
+                        <small v-if="route.failedShards">{{ route.failedShards }} 个分片失败</small>
+                      </article>
+                    </div>
+
+                    <div
+                      v-else-if="block.kind === 'COMBINATION_LIST'"
+                      class="node-combination-list"
+                    >
+                      <article v-for="item in block.items" :key="item.title">
+                        <header>
+                          <strong>{{ item.title }}</strong
+                          ><span>{{ item.targetDurationSeconds }} 秒</span>
+                        </header>
+                        <dl>
+                          <div v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key">
+                            <dt>{{ dimension.label }}</dt>
+                            <dd>{{ item.dimensions[dimension.key] }}</dd>
+                          </div>
+                          <div>
+                            <dt>连续动作</dt>
+                            <dd>{{ item.visibleAction || '未记录' }}</dd>
+                          </div>
+                          <div>
+                            <dt>证据方式</dt>
+                            <dd>{{ graphEvidenceModeLabel(item.evidenceMode) || '未记录' }}</dd>
+                          </div>
+                        </dl>
+                      </article>
+                    </div>
+
+                    <div v-else-if="block.kind === 'PROMPT_LIST'" class="node-prompt-list">
+                      <details v-for="item in block.items" :key="`${item.code}-${item.content}`">
+                        <summary>
+                          <span
+                            ><strong>{{ item.code }}</strong
+                            >{{ EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.fragmentType] }}</span
+                          ><em>{{ item.targetDurationSeconds }} 秒 · 展开全文</em>
+                        </summary>
+                        <div class="node-sample-tags">
+                          <span v-for="tag in item.materialTags" :key="tag">{{ tag }}</span>
+                        </div>
+                        <p class="node-prompt-content">{{ item.content }}</p>
+                        <dl class="node-prompt-dimensions">
+                          <div v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key">
+                            <dt>{{ dimension.label }}</dt>
+                            <dd>{{ item.dimensions[dimension.key] }}</dd>
+                          </div>
+                        </dl>
+                      </details>
+                    </div>
+
+                    <div v-else-if="block.kind === 'PAIR_LIST'" class="node-pair-list">
+                      <details
+                        v-for="(item, pairIndex) in block.items"
+                        :key="`${item.left.code}-${item.right.code}-${pairIndex}`"
+                      >
+                        <summary>
+                          <span
+                            ><strong>{{ item.left.code }} ↔ {{ item.right.code }}</strong
+                            >{{ item.reasons.join('、') }}</span
+                          ><em>{{ graphPairScore(item.score) }} · 展开对比</em>
+                        </summary>
+                        <div class="node-pair-contents">
+                          <article>
+                            <strong
+                              >{{ item.left.code }} ·
+                              {{
+                                EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.left.fragmentType]
+                              }}</strong
+                            >
+                            <p>{{ item.left.content }}</p>
+                          </article>
+                          <article>
+                            <strong
+                              >{{ item.right.code }} ·
+                              {{
+                                EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.right.fragmentType]
+                              }}</strong
+                            >
+                            <p>{{ item.right.content }}</p>
+                          </article>
+                        </div>
+                      </details>
+                    </div>
+
+                    <div v-else-if="block.kind === 'ISSUE_LIST'" class="node-issue-list">
+                      <article v-for="item in block.items" :key="item.code">
+                        <header>
+                          <strong>{{ item.label }}</strong
+                          ><em>{{ item.count }} 条</em>
+                        </header>
+                        <details v-if="item.examples.length">
+                          <summary>查看实际问题示例</summary>
+                          <p v-for="example in item.examples" :key="example">{{ example }}</p>
+                        </details>
+                      </article>
+                    </div>
+                  </section>
+
+                  <div
+                    v-if="!graphDetail.fields.length && !graphDetail.blocks.length"
+                    class="node-detail-no-fields"
+                  >
                     <Workflow :size="16" />
                     <span>{{ graphDetailEmptyMessage(graphDetail) }}</span>
                   </div>
@@ -2369,9 +2587,23 @@ button:disabled {
   font-style: normal;
 }
 .quality-breakdown span.missing,
+.quality-breakdown em.missing,
 .quality-breakdown em:first-of-type:not(:last-child) {
   color: #a46b0a;
   background: #fff5dc;
+}
+.quality-breakdown .insight-utilization {
+  grid-column: 1 / -1;
+  padding-top: 9px;
+  border-top: 1px dashed #e4e9f2;
+}
+.quality-breakdown .insight-utilization .adaptive {
+  color: #6f5aa7;
+  background: #f5f1ff;
+}
+.quality-breakdown .insight-utilization .constraint {
+  color: #28725f;
+  background: #edf9f5;
 }
 .effect-prompt-list {
   display: flex;
@@ -2488,6 +2720,25 @@ button:disabled {
   color: #a0a8b5;
   font-size: 9px;
   font-style: normal;
+}
+.insight-source-tags {
+  display: flex;
+  margin: -2px 0 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.insight-source-tags small {
+  color: #8995a8;
+  font-size: 9px;
+}
+.insight-source-tags span {
+  padding: 3px 6px;
+  color: #28725f;
+  background: #edf9f5;
+  border: 1px solid #d3eee5;
+  border-radius: 5px;
+  font-size: 9px;
 }
 .prompt-dimension-details {
   margin-top: 7px;
@@ -2838,7 +3089,7 @@ button:disabled {
   border-color: var(--effect-blue);
 }
 .workflow-graph-dialog {
-  width: min(1120px, 100%);
+  width: min(1280px, 100%);
   background: #f8faff;
 }
 .workflow-graph-dialog > header {
@@ -2871,7 +3122,7 @@ button:disabled {
 }
 .workflow-graph-content {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(0, 1fr) 420px;
   align-items: start;
 }
 .workflow-graph-canvas {
@@ -3107,26 +3358,6 @@ button:disabled {
   font-size: 10px;
   line-height: 1.65;
 }
-.node-dependencies {
-  display: flex;
-  margin: 10px 0 0;
-  padding-top: 9px;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-  color: #7b879a;
-  border-top: 1px dashed #dfe7f3;
-  font-size: 8px;
-  line-height: 1.5;
-}
-.node-dependencies strong {
-  flex: 0 0 auto;
-  color: #65738a;
-}
-.node-dependencies span {
-  color: #33415a;
-  text-align: right;
-}
 .node-fields {
   display: grid;
   margin: 12px 0 0;
@@ -3171,6 +3402,238 @@ button:disabled {
   border: 1px solid #e3e9f3;
   border-radius: 7px;
   font-weight: 600;
+}
+.node-result-block {
+  display: grid;
+  margin-top: 13px;
+  gap: 8px;
+}
+.node-result-block > h3 {
+  margin: 0;
+  color: #4d5b72;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+.node-tag-groups,
+.node-route-list,
+.node-combination-list,
+.node-prompt-list,
+.node-pair-list,
+.node-issue-list {
+  display: grid;
+  gap: 7px;
+}
+.node-tag-groups > div,
+.node-route-list > article,
+.node-combination-list > article,
+.node-prompt-list > details,
+.node-pair-list > details,
+.node-issue-list > article {
+  min-width: 0;
+  padding: 9px;
+  background: #f7f9fd;
+  border: 1px solid #e4eaf4;
+  border-radius: 9px;
+}
+.node-tag-groups > div > strong {
+  display: block;
+  margin-bottom: 6px;
+  color: #65738a;
+  font-size: 8px;
+}
+.node-tag-groups p,
+.node-sample-tags {
+  display: flex;
+  margin: 0;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.node-tag-groups p span,
+.node-tag-groups p em,
+.node-sample-tags span {
+  padding: 3px 6px;
+  color: #315c9f;
+  background: #eaf2ff;
+  border-radius: 999px;
+  font-size: 8px;
+  font-style: normal;
+  line-height: 1.35;
+}
+.node-tag-groups p em {
+  color: #6f7d92;
+  background: #edf0f5;
+}
+.node-route-list article > header,
+.node-combination-list article > header,
+.node-issue-list article > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.node-route-list article > header strong,
+.node-combination-list article > header strong,
+.node-issue-list article > header strong {
+  min-width: 0;
+  color: #33415a;
+  font-size: 9px;
+  overflow-wrap: anywhere;
+}
+.node-route-list article > header em,
+.node-combination-list article > header span,
+.node-issue-list article > header em {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  color: #64748b;
+  background: #edf0f5;
+  border-radius: 999px;
+  font-size: 8px;
+  font-style: normal;
+}
+.node-route-list article > header em.is-running {
+  color: #2563eb;
+  background: #eaf2ff;
+}
+.node-route-list article > header em.is-success {
+  color: #0f8a68;
+  background: #eaf8f3;
+}
+.node-route-list article > header em.is-warning,
+.node-route-list article > header em.is-skipped {
+  color: #a46b0a;
+  background: #fff5dc;
+}
+.node-route-list article > header em.is-danger {
+  color: #c93448;
+  background: #fff0f2;
+}
+.node-route-list article > p {
+  display: flex;
+  margin: 7px 0 0;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #65738a;
+  font-size: 8px;
+}
+.node-route-list article > small {
+  display: block;
+  margin-top: 6px;
+  color: #c93448;
+  font-size: 8px;
+}
+.node-combination-list article > dl,
+.node-prompt-dimensions {
+  display: grid;
+  margin: 8px 0 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 8px;
+}
+.node-combination-list dl > div,
+.node-prompt-dimensions > div {
+  min-width: 0;
+}
+.node-combination-list dt,
+.node-prompt-dimensions dt {
+  color: #8994a8;
+  font-size: 8px;
+}
+.node-combination-list dd,
+.node-prompt-dimensions dd {
+  margin: 2px 0 0;
+  color: #3d4b62;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.node-prompt-list details > summary,
+.node-pair-list details > summary,
+.node-issue-list details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #33415a;
+  cursor: pointer;
+  list-style: none;
+  outline: none;
+}
+.node-prompt-list details > summary::-webkit-details-marker,
+.node-pair-list details > summary::-webkit-details-marker,
+.node-issue-list details > summary::-webkit-details-marker {
+  display: none;
+}
+.node-prompt-list details > summary:focus-visible,
+.node-pair-list details > summary:focus-visible,
+.node-issue-list details > summary:focus-visible {
+  border-radius: 5px;
+  box-shadow: 0 0 0 3px #2563eb24;
+}
+.node-prompt-list summary > span,
+.node-pair-list summary > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  color: #6f7d92;
+  font-size: 8px;
+  line-height: 1.4;
+}
+.node-prompt-list summary strong,
+.node-pair-list summary strong {
+  color: #33415a;
+  font-size: 9px;
+}
+.node-prompt-list summary > em,
+.node-pair-list summary > em {
+  flex: 0 0 auto;
+  color: #2563eb;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 800;
+}
+.node-sample-tags {
+  margin-top: 9px;
+}
+.node-prompt-content,
+.node-pair-contents article > p {
+  margin: 8px 0 0;
+  padding: 9px;
+  color: #344258;
+  background: #fff;
+  border: 1px solid #e4eaf4;
+  border-radius: 7px;
+  font-size: 9px;
+  line-height: 1.72;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.node-pair-contents {
+  display: grid;
+  margin-top: 9px;
+  gap: 7px;
+}
+.node-pair-contents article > strong {
+  color: #516077;
+  font-size: 8px;
+}
+.node-issue-list article > details {
+  margin-top: 7px;
+}
+.node-issue-list details > summary {
+  justify-content: flex-start;
+  color: #2563eb;
+  font-size: 8px;
+  font-weight: 800;
+}
+.node-issue-list details > p {
+  margin: 7px 0 0;
+  padding: 7px;
+  color: #6f4d16;
+  background: #fff9eb;
+  border-radius: 6px;
+  font-size: 8px;
+  line-height: 1.55;
 }
 .node-detail-no-fields {
   display: flex;

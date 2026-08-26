@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
 import re
+from collections.abc import Sequence
 
-from .models import EvidenceMode, FragmentType, PlannedCombination
-
+from .models import EvidenceMode, FragmentType, InsightField, PlannedCombination
 
 _INTERNAL_METADATA = re.compile(
     r"创意核心|差异化设定|叙事结构\s*[=:：]|场景变量\s*[=:：]|人物变量\s*[=:：]|"
@@ -28,6 +27,7 @@ _SENSITIVE_FACT = re.compile(
     r"认证|销量(?:第一|领先)?|行业第一|领先|100%|绝对|保证|防漏|保温\s*\d+",
     re.IGNORECASE,
 )
+_PRICE = re.compile(r"\d+(?:\.\d+)?\s*(?:元|块)(?:\s*[-—~至]\s*\d+(?:\.\d+)?\s*(?:元|块)?)?")
 
 
 def assemble_fragment_prompt(
@@ -53,7 +53,15 @@ def assemble_fragment_prompt(
         constraints.append("不出现未成年人")
     if combination.evidence_mode in {EvidenceMode.PROCESS_ONLY, EvidenceMode.TEXT_ONLY}:
         constraints.append("不虚构工厂、实验室或生产过程")
-    constraints.append("不添加数据、认证、价格或促销贴纸")
+    price_confirmed_for_cta = combination.fragment_type == FragmentType.CTA and any(
+        binding.field == InsightField.PRICE_RANGE
+        for binding in combination.insight_bindings
+    )
+    constraints.append(
+        "不添加未确认数据、认证或促销贴纸"
+        if price_confirmed_for_cta
+        else "不添加数据、认证、价格或促销贴纸"
+    )
     constraints = _unique(constraints)
     if constraints:
         content = f"{content.rstrip('。')}。画面中{'，'.join(constraints)}。"
@@ -111,6 +119,12 @@ def validate_fragment_prompt(
         FragmentType.PAIN,
         FragmentType.PRODUCT_DISPLAY,
     } and _CTA.search(content):
+        reasons.append("FRAGMENT_ROLE_CONFLICT")
+    price_allowed = combination.fragment_type == FragmentType.CTA and any(
+        binding.field == InsightField.PRICE_RANGE
+        for binding in combination.insight_bindings
+    )
+    if _PRICE.search(content) and not price_allowed:
         reasons.append("FRAGMENT_ROLE_CONFLICT")
     if "FRAGMENT_ROLE_CONFLICT" in reasons:
         reasons.remove("FRAGMENT_ROLE_CONFLICT")

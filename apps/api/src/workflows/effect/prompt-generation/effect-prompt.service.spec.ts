@@ -44,7 +44,7 @@ describe('EffectPromptService settings contract', () => {
 
   it('returns only the node-specific metadata whitelist from the public detail API', async () => {
     const repository = {
-      run: vi.fn().mockResolvedValue({
+      runForNodeDetail: vi.fn().mockResolvedValue({
         id: 'run-a',
         projectId: 'project-a',
         workflowRunId: 'workflow-a',
@@ -58,6 +58,8 @@ describe('EffectPromptService settings contract', () => {
         errorMessage: null,
         createdAt: new Date('2026-08-25T00:00:00.000Z'),
         updatedAt: new Date('2026-08-25T00:01:00.000Z'),
+        inputSnapshot: {},
+        shards: [],
         result: null,
         stages: [
           {
@@ -86,9 +88,10 @@ describe('EffectPromptService settings contract', () => {
 
     const output = await service.nodeDetail('project-a', 'run-a', 'RESULT_SAVE');
     expect(output.detail.fields).toEqual([
-      { label: '已保存 Prompt 数量', value: 50 },
+      { label: '已保存 Prompt', value: 50 },
       { label: '质量状态', value: 'PASS' },
     ]);
+    expect(output.detail.blocks).toEqual([]);
     const serialized = JSON.stringify(output);
     for (const value of [
       'private-model',
@@ -101,7 +104,7 @@ describe('EffectPromptService settings contract', () => {
       expect(serialized).not.toContain(value);
   });
 
-  it('hides V2 results from the V3 workspace and requests regeneration', async () => {
+  it('hides V2 results from the V4 workspace and requests regeneration', async () => {
     const repository = {
       workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }),
       products: vi.fn().mockResolvedValue([
@@ -160,13 +163,14 @@ describe('EffectPromptService settings contract', () => {
         emotion: `情绪-${index}`,
       },
       content: `家庭场景中人物拿起产品并转向镜头，近景展示外观细节 ${index}`,
+      insightBindings: [],
       manualEdited: false,
       createdAt: timestamp,
       updatedAt: timestamp,
     }));
     const repository = {
       result: vi.fn().mockResolvedValue({
-        schemaVersion: 3,
+        schemaVersion: 4,
         draftResult: { items },
       }),
       mutateResult: vi.fn(),
@@ -210,6 +214,7 @@ describe('EffectPromptService settings contract', () => {
         emotion: `情绪-${id}`,
       },
       content,
+      insightBindings: [],
       manualEdited: false,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -228,7 +233,7 @@ describe('EffectPromptService settings contract', () => {
         id: 'result-a',
         productId: 'product-a',
         revision: 1,
-        schemaVersion: 3,
+        schemaVersion: 4,
         draftResult,
       }),
     };

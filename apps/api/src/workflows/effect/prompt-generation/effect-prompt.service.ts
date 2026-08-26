@@ -52,7 +52,7 @@ import type {
   EffectPromptStageInput,
   EffectPromptInputSnapshot,
 } from './effect-prompt.types';
-import { projectEffectPromptNodeMetadata } from './effect-prompt-node-detail';
+import { presentEffectPromptNodeDetail } from './effect-prompt-node-detail';
 
 const badRequest = (message: string) =>
   new ApiHttpException(message, HttpStatus.BAD_REQUEST, 'VALIDATION_ERROR');
@@ -369,21 +369,9 @@ export class EffectPromptService {
     await this.projects.get(projectId);
     const definition = EFFECT_PROMPT_GRAPH_NODES.find(({ id }) => id === rawNodeId);
     if (!definition) throw badRequest('未知的 Prompt 子工作流节点');
-    const record = await this.repository.run(projectId, runId);
+    const record = await this.repository.runForNodeDetail(projectId, runId);
     if (!record) throw notFound('Prompt 任务不存在');
-    const stage = record.stages.find(({ nodeId }) => nodeId === definition.id);
-    const fields = projectEffectPromptNodeMetadata(definition.id, stage?.metadata);
-    return {
-      detail: {
-        nodeId: definition.id,
-        status: stage?.status ?? 'PENDING',
-        summary: stage?.summary ?? '',
-        fields,
-        warnings: publicWarnings(stage?.warnings),
-        errorMessage: stage?.errorMessage ?? null,
-        updatedAt: stage?.updatedAt.toISOString() ?? null,
-      },
-    };
+    return { detail: presentEffectPromptNodeDetail(record, definition.id) };
   }
 
   async result(
@@ -510,6 +498,7 @@ export class EffectPromptService {
         EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions[key].trim()]),
       ) as EffectPromptDimensions,
       content: input.content.trim(),
+      insightBindings: [],
       manualEdited: true,
       createdAt: now,
       updatedAt: now,
@@ -625,6 +614,8 @@ export class EffectPromptService {
       issues.push({ code: 'FRAGMENT_TYPE_DISTRIBUTION', message: '片段标签数量未达到设置权重' });
     if (verified.metrics.sellingPointCoverage.missing.length)
       issues.push({ code: 'SELLING_POINT_COVERAGE', message: '仍有必需卖点未被片段覆盖' });
+    if (verified.metrics.insightCoverage.missing.length)
+      issues.push({ code: 'INSIGHT_COVERAGE', message: '仍有必须利用的提炼信息未被片段覆盖' });
     if (
       verified.items.some(
         (item) =>

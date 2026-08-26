@@ -47,6 +47,7 @@ export const promptMatchesKeyword = (item: EffectPromptItem, keyword: string): b
     ...(Array.isArray(item.materialTags) ? item.materialTags : []),
     ...(Number.isFinite(item.targetDurationSeconds) ? [`${item.targetDurationSeconds}秒`] : []),
     item.content,
+    ...item.insightBindings.flatMap(({ field, value }) => [field, value]),
     ...EFFECT_PROMPT_DIMENSIONS.flatMap(({ key, label }) => [label, item.dimensions[key]]),
   ]
     .join('\n')
@@ -73,6 +74,7 @@ export const isPromptResultQualityReady = (
       )) &&
     (!result.metrics.sellingPointCoverage ||
       result.metrics.sellingPointCoverage.missing.length === 0) &&
+    (!result.metrics.insightCoverage || result.metrics.insightCoverage.missing.length === 0) &&
     result.metrics.semanticDuplicateRate <= result.settings.semanticLimit &&
     result.metrics.visualOverlapRate <= result.settings.visualLimit,
   );

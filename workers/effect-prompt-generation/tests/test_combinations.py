@@ -8,11 +8,15 @@ from effect_prompt_generation.combinations import (
     make_shards,
     plan_combinations,
 )
+from effect_prompt_generation.insight_mapping import map_insight
 from effect_prompt_generation.models import (
     DimensionPools,
     EvidenceMode,
     FragmentType,
+    InsightApplicationMap,
+    MarketingRelationshipBundle,
     SellingPointEvidence,
+    StrategyPlan,
 )
 
 TARGETS = {
@@ -47,9 +51,57 @@ def _pools() -> DimensionPools:
     )
 
 
+def _strategy(
+    pools: DimensionPools | None = None,
+) -> tuple[StrategyPlan, InsightApplicationMap]:
+    application = map_insight(
+        {
+            "productName": "测试产品",
+            "productCategory": "日用品",
+            "coreSpecification": "便携规格",
+            "visualFeatures": "圆角外观",
+            "coreSellingPoints": ["卖点甲", "卖点乙", "卖点丙"],
+            "targetAudience": "通勤人群",
+            "corePainPoints": ["携带不便"],
+            "decisionDrivers": ["操作简单"],
+            "marketingGoal": "引导了解",
+            "usageScenarios": ["办公室"],
+            "purchaseScenarios": ["通勤选购"],
+            "emotionalScenarios": ["从容出门"],
+        }
+    )
+    points = ["卖点甲", "卖点乙", "卖点丙"]
+    bundles = []
+    for fragment_type in FragmentType:
+        eligible = [
+            fact for fact in application.usable if fragment_type in fact.eligible_fragment_types
+        ]
+        for index, point in enumerate(points):
+            selected = [
+                fact
+                for fact in eligible
+                if fact.field.value != "CORE_SELLING_POINT" or fact.value == point
+            ]
+            bundles.append(
+                MarketingRelationshipBundle(
+                    bundle_id=f"{fragment_type.value}-{index}",
+                    fact_ids=[fact.fact_id for fact in selected],
+                    eligible_fragment_types=[fragment_type],
+                    scene=["家庭", "户外", "职场"][index],
+                    persona=["年轻女性", "成熟男性", "专业测评者"][index],
+                    selling_point=point
+                    if any(fact.value == point for fact in selected)
+                    else "不提前展示产品解决方案",
+                )
+            )
+    return StrategyPlan(dimension_pools=pools or _pools(), relationship_bundles=bundles), application
+
+
 def test_linear_code_supports_250_candidates_with_minimum_distance() -> None:
+    strategy, application = _strategy()
     planned = plan_combinations(
-        _pools(),
+        strategy,
+        application,
         count=250,
         round_number=0,
         ordinal_start=1,
@@ -62,16 +114,17 @@ def test_linear_code_supports_250_candidates_with_minimum_distance() -> None:
         dimension_distance(left.dimensions, right.dimensions)
         for left, right in combinations(planned, 2)
     ) >= 3
-    assert {item.dimensions.selling_point for item in planned[:3]} == {"卖点甲", "卖点乙", "卖点丙"}
+    assert all(item.insight_bindings for item in planned)
 
 
 def test_replenishment_round_is_distinct_and_shards_are_bounded() -> None:
+    strategy, application = _strategy()
     first = plan_combinations(
-        _pools(), count=20, round_number=0, ordinal_start=1,
+        strategy, application, count=20, round_number=0, ordinal_start=1,
         fragment_targets=TARGETS, fragment_durations=DURATIONS
     )
     second = plan_combinations(
-        _pools(), count=20, round_number=1, ordinal_start=21,
+        strategy, application, count=20, round_number=1, ordinal_start=21,
         fragment_targets=TARGETS, fragment_durations=DURATIONS
     )
     shards = make_shards(second, round_number=1, shard_size=8)
@@ -111,8 +164,10 @@ def test_selling_point_branch_rotates_all_text_only_core_points() -> None:
         }
     )
 
+    strategy, application = _strategy(pools)
     planned = plan_combinations(
-        pools,
+        strategy,
+        application,
         count=50,
         round_number=0,
         ordinal_start=1,
