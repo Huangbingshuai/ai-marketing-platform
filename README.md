@@ -4,6 +4,10 @@
 
 当前优先建设效果类黄金链路，已完成公共项目底座、资料包导入、AI 信息提炼和素材片段 Prompt 生成；视频渲染、模板混剪和成片导出仍按工作流顺序继续开发。
 
+> 文档状态：与 `main` 分支当前已提交实现同步
+>
+> 最后更新：2026-08-26
+
 ## 当前进度
 
 ```text
@@ -26,9 +30,11 @@
 - Python 3.12 + LangGraph AI 提炼 Worker。
 - 独立 Prompt 生成 Worker：六类素材片段条件路由、分片并发、执行门禁、双重去重和最多三轮定向补齐。
 - Docling 本地解析 PDF/DOCX，模型文件通过 Docker named volume 持久化。
-- 火山方舟 Ark Responses API 文档抽取、图片理解和标准结果生成。
+- 电商链接静态抓取、JSON-LD/OpenGraph/京东内嵌数据解析，以及隔离 Playwright Chromium 动态渲染兜底。
+- 火山方舟 Ark Responses API 文档抽取、图片理解、电商信息补全和标准结果生成。
 - 七节点工作流状态弹窗、节点详情、逐文件处理结果、告警和安全化错误展示。
-- 提炼结果自动保存；完成校验后提交 `WorkingArtifact`，完成整个工作流时才统一归档为 `ProjectAsset`。
+- Result V2《产品素材制作信息卡》五层结构、人工修正、来源追踪、冲突报告和旧版结果兼容。
+- 提炼结果草稿自动保存；只有完成校验后才提交 `WorkingArtifact`，完成整个工作流时才统一归档为 `ProjectAsset`。
 
 ## 系统架构
 
@@ -45,6 +51,7 @@ NestJS API ───── Prisma ───── PostgreSQL
    │ internal API      ▼
    └──────────── Python LangGraph Workers
                          ├─ AI 信息提炼：Docling + Ark Seed 2.1 Turbo
+                         │                 └─ commerce-renderer：隔离 Playwright Chromium
                          └─ Prompt 生成：Seed 2.0 Lite 策略 + Seed 2.1 Turbo 候选
 ```
 
@@ -64,7 +71,7 @@ Step 02 只处理当前下拉框选中的产品，不提供批量提炼入口。
 资料快照
   ├─ 文档解析：Docling → Markdown → Ark 文档字段抽取
   ├─ 图片识别：图片预处理 → Ark 多模态逐图识别
-  ├─ 电商链接：当前版本显式跳过
+  ├─ 电商链接：安全校验 → 静态解析 → Playwright 兜底 → Ark 商品字段抽取
   └─ 表单配置：读取导入节点的全局视频配置
              ↓ 等待四分支完成
           多源融合
@@ -72,7 +79,9 @@ Step 02 只处理当前下拉框选中的产品，不提供批量提炼入口。
        标准化与结果保存
 ```
 
-融合优先级为：人工表单 > 文档 > 电商 > 图片。数组字段采用稳定去重，同级冲突保留安全告警；最终结果经过严格 JSON Schema 和 Pydantic 校验。
+电商分支优先读取 JSON-LD、OpenGraph、商品正文和京东页面内嵌数据；静态内容不足时调用独立 `commerce-renderer`。没有链接时节点为 `SKIPPED`；受到登录、验证码或平台风控限制时，不尝试绕过限制，并以安全化告警继续融合其他资料。
+
+事实字段的融合优先级为：当前人工修正/表单 > 文档 > 电商 > 图片。AI 策略推断只补充缺失的建议字段，不覆盖已经确认的事实。数组字段采用稳定去重，同级冲突保留安全告警；最终结果经过严格 JSON Schema 和 Pydantic 校验。
 
 LangGraph state 只保存小型标识：
 
@@ -83,14 +92,17 @@ OutputState = {"extract_result_id": str}
 
 文档 Markdown、图片处理结果、分支输出和标准化 JSON 均外部化存储，不把大文本塞进 Graph state。
 
-标准结果完整映射前端 12 个字段：
+Result V2 完整映射前端《产品素材制作信息卡》的五层 20 个字段：
 
-- 品类、产品名称、核心规格、价格带。
-- 核心外观特征、目标受众画像、营销目标。
-- 核心卖点、核心使用场景、投放渠道。
-- 品牌调性、禁用元素。
+1. 产品基础：品类、产品名称、核心规格、价格带、核心外观特征。
+2. 卖点与背书：核心卖点、次级卖点、信任背书。
+3. 用户与决策：目标受众、核心痛点、决策因素、营销目标。
+4. 使用与情绪场景：核心使用场景、购买场景、情绪场景。
+5. 制作规则：统一时长、画幅、投放渠道、全局禁用元素、视觉风格基线。
 
-详细设计与验收记录见 [效果类工作流 Step 02「AI 信息提炼」实施方案](docs/效果类工作流-AI信息提炼节点实施方案.md)。
+生成成功和编辑防抖只保存领域结果与页面草稿；用户点击“完成校验”后才提交 `marketing-insight:{productId}` 工作副本。旧版 12 字段结果通过兼容层读取，不要求一次性回填历史数据。
+
+详细设计与验收记录见 [效果类工作流 Step 02「AI 信息提炼」实施方案](docs/效果类工作流-AI信息提炼节点实施方案.md) 和 [产品素材制作信息卡完善实施方案](docs/效果类AI信息提炼-产品素材制作信息卡完善实施方案.md)。
 
 ## 素材片段 Prompt 生成工作流
 
@@ -175,7 +187,8 @@ docker compose --profile effect-extraction up -d --build effect-extraction-worke
 
 1. 构建 CPU 版 Python Worker 镜像。
 2. 运行一次性 `docling-model-init`，把模型下载到 `docling-models` named volume。
-3. 模型初始化成功后启动 `effect-extraction-worker` 消费 RabbitMQ 队列。
+3. 启动仅供 Worker 访问的 `commerce-renderer` 动态页面渲染服务。
+4. 模型初始化和渲染服务健康检查通过后，启动 `effect-extraction-worker` 消费 RabbitMQ 队列。
 
 `docling-model-init` 显示 `Exited (0)` 是正常行为，它是一次性初始化任务，不是常驻服务。Docling 已嵌入 Worker，不需要再单独启动一个 Docling 容器。
 
@@ -184,10 +197,11 @@ docker compose --profile effect-extraction up -d --build effect-extraction-worke
 ```powershell
 docker compose --profile effect-extraction ps
 docker compose logs --tail 100 docling-model-init
+docker compose logs --tail 100 commerce-renderer
 docker compose logs --tail 100 effect-extraction-worker
 ```
 
-Worker 应保持 `Up`，RabbitMQ 队列应出现消费者。真实 Ark 模式缺少 Key 时 Worker会启动失败，不会静默降级为 Mock。
+Worker 和 `commerce-renderer` 应保持 `Up`，RabbitMQ 队列应出现消费者。真实 Ark 模式缺少 Key 时 Worker 会启动失败，不会静默降级为 Mock。
 
 ### 5. 启动素材片段 Prompt Worker
 
@@ -243,7 +257,7 @@ pnpm db:migrate
 pnpm db:studio
 
 # Worker 容器
-docker compose --profile effect-extraction build effect-extraction-worker
+docker compose --profile effect-extraction build commerce-renderer effect-extraction-worker
 docker compose --profile effect-extraction up -d effect-extraction-worker
 docker compose logs -f effect-extraction-worker
 docker compose --profile effect-prompt-generation build effect-prompt-generation-worker
@@ -310,6 +324,7 @@ ai-marketing-platform/
 │  └─ ui/                          # 共享 Vue UI 组件
 ├─ workers/
 │  ├─ effect-extraction/           # LangGraph + Docling + Ark Worker
+│  ├─ effect-commerce-renderer/    # 隔离 Playwright Chromium 渲染服务
 │  ├─ effect-prompt-generation/    # 六类素材片段 Prompt LangGraph Worker
 │  ├─ seedance-worker/             # Seedance 异步 Worker
 │  └─ media-worker/                # 媒体处理 Worker
@@ -378,6 +393,18 @@ docker compose logs --tail 200 effect-extraction-worker
 
 Docling 解析与 Ark 文档字段抽取是两个阶段。该提示表示 Ark 抽取阶段超时，界面只公开安全化的错误类型、尝试次数和耗时，不展示正文或模型请求。
 
+### 电商节点信息较少或读取失败
+
+先检查 Worker 与渲染服务：
+
+```powershell
+docker compose --profile effect-extraction ps
+docker compose logs --tail 200 commerce-renderer
+docker compose logs --tail 200 effect-extraction-worker
+```
+
+系统只解析无需登录的公开商品页，不注入账号 Cookie，也不绕过验证码或平台风控。受限页面可能只返回可验证的名称、品类和规格，或将电商分支标记为失败后继续使用文档、图片和表单资料；这不代表整个提炼任务停止。
+
 ### 模型配置是否需要 Endpoint ID
 
 不需要。当前默认使用已授权的 Seed 2.1 Turbo Model ID。只需在本机 `.env` 填写 `ARK_API_KEY`；`ARK_MODEL`、`ARK_DOCUMENT_MODEL`、`ARK_IMAGE_MODEL` 和 `ARK_NORMALIZATION_MODEL` 都是可选覆盖项。
@@ -397,15 +424,19 @@ Docling 解析与 Ark 文档字段抽取是两个阶段。该提示表示 Ark �
 - [项目、工作流草稿与资产管理通俗说明](docs/项目、工作流草稿与资产管理通俗说明.md)
 - [效果类工作流资料包导入节点实施方案](docs/效果类工作流-资料包导入节点实施方案.md)
 - [效果类工作流 AI 信息提炼节点实施方案](docs/效果类工作流-AI信息提炼节点实施方案.md)
+- [产品素材制作信息卡 Result V2 完善实施方案](docs/效果类AI信息提炼-产品素材制作信息卡完善实施方案.md)
 - [AI 信息提炼分节点模型路由实施方案](docs/效果类AI信息提炼-分节点模型路由实施方案.md)
 - [差异化 Prompt 批量生成节点实施方案](docs/效果类工作流-差异化Prompt批量生成节点实施方案.md)
 - [MinIO 存储与本地部署方案](docs/效果类导入素材-MinIO存储与本地部署方案.md)
 - [AI 信息提炼 Worker 说明](workers/effect-extraction/README.md)
+- [电商动态渲染服务说明](workers/effect-commerce-renderer/README.md)
 - [素材片段 Prompt Worker 说明](workers/effect-prompt-generation/README.md)
 
 ## 当前限制
 
-- 电商链接分支当前固定为 `SKIPPED`，存在链接时给出可见告警但不抓取网页。
+- 电商链接只支持无需登录的公开商品页；不支持登录态、验证码绕过、平台专用逆向接口和跨项目网页结果缓存。
+- 平台反爬或页面数据不完整时，电商分支可能只得到部分确定性字段或失败，但不会阻塞其他资料分支继续融合。
 - AI 信息提炼只处理当前选中的产品，不支持一键批量提炼。
+- Result V2 的自动化回归已完成，真实 Ark 质量验收需显式开启并会产生模型调用费用。
 - Mock Provider 只允许测试或显式本地配置使用，生产默认 Ark 且缺少 Key 时立即失败。
 - Seedance 素材片段渲染、模板混剪和成片导出尚未进入当前实现范围。
