@@ -133,20 +133,11 @@ def test_execution_gate_reports_action_selling_point_and_role_failures() -> None
     )
 
 
-def test_execution_gate_rejects_render_metadata_in_visible_prompt() -> None:
+def test_render_metadata_is_not_an_execution_failure() -> None:
     reasons = validate_fragment_prompt(
         f"5秒，9:16竖屏，1080P。{_valid_prompt()}",
         _combination(),
         product_name="便携杯",
     )
-    assert "TECHNICAL_RENDER_METADATA" in reasons
-
-
-def test_execution_gate_rejects_shared_disabled_elements_in_visible_prompt() -> None:
-    reasons = validate_fragment_prompt(
-        f"{_valid_prompt()} 画面角落出现促销贴纸。",
-        _combination(),
-        product_name="便携杯",
-        forbidden_visible_terms=["促销 贴纸"],
-    )
-    assert "SHARED_CONSTRAINT_LEAK" in reasons
+    assert "TECHNICAL_RENDER_METADATA" not in reasons
+    assert "SHARED_CONSTRAINT_LEAK" not in reasons

@@ -179,7 +179,7 @@ async def test_ark_candidate_returns_only_slot_and_direct_prompt() -> None:
     assert "产品更早出现" in prompt
     assert "旧版 Prompt" in prompt
     assert "浅蓝色圆柱杯身" in prompt
-    assert "促销贴纸" not in prompt
+    assert "促销贴纸" in prompt
     assert '"aspectRatio"' not in prompt
     assert '"durationSeconds"' not in prompt
     assert '"resolution"' not in prompt

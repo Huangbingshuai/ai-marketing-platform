@@ -345,6 +345,11 @@ class ArkResponsesProvider:
             delivery_channels=_first_text(insight, "deliveryChannels", "delivery_channels") or "以信息卡为准",
             visual_style=_first_text(insight, "visualStyleBaseline", "visual_style_baseline")
             or "以信息卡为准",
+            disabled_elements_json=json.dumps(
+                _text_list(insight, "disabledElements", "disabled_elements"),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
             product_context_json=json.dumps(
                 product_context, ensure_ascii=False, sort_keys=True
             ),

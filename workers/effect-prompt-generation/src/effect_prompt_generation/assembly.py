@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import unicodedata
 from collections.abc import Sequence
 
 from .models import FragmentType, InsightField, PlannedCombination
@@ -23,12 +22,6 @@ _ACTION = re.compile(
 )
 _STACKED_PERSONA = re.compile(r"两名|多人|一家人|夫妻|情侣|母女|父子|同事们|朋友们|一群|(?:一名|一个).{0,24}(?:和|与)(?:另一名|另一个|一名|一个)")
 _PLACEHOLDER = re.compile(r"<[^>]+>|\{[^}]+\}|以信息卡为准|待补充|待填写|TODO|TBD", re.IGNORECASE)
-_TECHNICAL_RENDER_METADATA = re.compile(
-    r"\d+(?:\.\d+)?\s*(?:秒|s\b)|"
-    r"(?:16\s*[:：]\s*9|4\s*[:：]\s*3|1\s*[:：]\s*1|3\s*[:：]\s*4|9\s*[:：]\s*16|21\s*[:：]\s*9)|"
-    r"(?:480|720|1080)\s*[pP]|(?:时长|画幅|分辨率)\s*[:：=]|(?:竖屏|横屏)(?:画幅|视频)?",
-    re.IGNORECASE,
-)
 _SENSITIVE_FACT = re.compile(
     r"\d+(?:\.\d+)?\s*(?:小时|毫升|ml|克|kg|%|折|元|万件)|"
     r"认证|销量(?:第一|领先)?|行业第一|领先|100%|绝对|保证|防漏|保温\s*\d+",
@@ -43,7 +36,6 @@ def assemble_fragment_prompt(
     *,
     product_name: str,
     source_facts: Sequence[str] = (),
-    forbidden_visible_terms: Sequence[str] = (),
 ) -> tuple[str, list[str]]:
     """Normalize one direct-to-video prompt and return deterministic gate failures."""
     content = _clean_paragraph(prompt_text)
@@ -52,7 +44,6 @@ def assemble_fragment_prompt(
         combination,
         product_name=product_name,
         source_facts=source_facts,
-        forbidden_visible_terms=forbidden_visible_terms,
     )
     return content, reasons
 
@@ -62,7 +53,6 @@ def assemble_safe_fallback_prompt(
     *,
     product_name: str,
     source_facts: Sequence[str] = (),
-    forbidden_visible_terms: Sequence[str] = (),
 ) -> tuple[str, list[str]]:
     """Build a deterministic, renderable creative prompt without technical render metadata."""
     dims = combination.dimensions
@@ -100,7 +90,6 @@ def assemble_safe_fallback_prompt(
         combination,
         product_name=product_name,
         source_facts=source_facts,
-        forbidden_visible_terms=forbidden_visible_terms,
     )
 
 
@@ -110,7 +99,6 @@ def validate_fragment_prompt(
     *,
     product_name: str,
     source_facts: Sequence[str] = (),
-    forbidden_visible_terms: Sequence[str] = (),
 ) -> list[str]:
     reasons: list[str] = []
     if _INTERNAL_METADATA.search(content):
@@ -123,14 +111,6 @@ def validate_fragment_prompt(
         reasons.append("STACKED_PERSONA")
     if _PLACEHOLDER.search(content) or _broken_text(content):
         reasons.append("BROKEN_TEXT")
-    if _TECHNICAL_RENDER_METADATA.search(content):
-        reasons.append("TECHNICAL_RENDER_METADATA")
-    normalized_content = _normalized_visible_text(content)
-    if any(
-        normalized_term and normalized_term in normalized_content
-        for normalized_term in map(_normalized_visible_text, forbidden_visible_terms)
-    ):
-        reasons.append("SHARED_CONSTRAINT_LEAK")
     if _has_duplicate_clauses(content):
         reasons.append("FIELD_DUPLICATION")
     source_text = "\n".join(source_facts)
@@ -170,10 +150,6 @@ def validate_fragment_prompt(
         reasons.remove("FRAGMENT_ROLE_CONFLICT")
         reasons.append("ROLE_CONFLICT")
     return list(dict.fromkeys(reasons))
-
-
-def _normalized_visible_text(value: str) -> str:
-    return re.sub(r"\s+", "", unicodedata.normalize("NFC", value)).casefold()
 
 
 def _clean_paragraph(value: str) -> str:

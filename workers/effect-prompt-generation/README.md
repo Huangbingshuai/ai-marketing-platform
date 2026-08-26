@@ -14,9 +14,10 @@ duration, six-dimensional planning, insight bindings, or evidence boundaries.
 
 Visible Prompt text contains creative video content only. Duration stays on each item, while
 ratio, resolution, and shared disabled elements live in the batch-level `renderProfile`.
-Batch generation, targeted replenishment, deterministic fallback, and item regeneration all
-reject visible text containing render parameters or any shared disabled-element value; the API
-completion and manual-edit boundaries enforce the same rule again.
+The candidate-model instruction asks the model not to repeat those values in visible text and
+passes shared disabled elements only as avoidance guidance. They are not execution-gate failures:
+if the model still emits them, the item remains usable and the structured `renderProfile` remains
+authoritative for rendering.
 After three targeted AI replenishment rounds, a validated deterministic fallback fills each
 fragment-type deficit. A batch is completed only when both the total and all six quotas match
 exactly; an unsafe or still-short fallback fails the run without replacing the last valid result.

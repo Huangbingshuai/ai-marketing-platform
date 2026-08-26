@@ -5,7 +5,6 @@ import { describe, expect, it } from 'vitest';
 import {
   dimensionDistance,
   effectPromptExecutionIssues,
-  effectPromptVisibleContentIssues,
   mergeEffectPromptCompletionItems,
   parseEffectPromptBatchResult,
   parseLegacyV4EffectPromptBatchResultForRead,
@@ -262,16 +261,13 @@ describe('effect prompt quality', () => {
     expect(effectPromptExecutionIssues(prompt)).not.toContain('NO_VISIBLE_ACTION');
   });
 
-  it('rejects every separated render setting and shared disabled element from visible content', () => {
-    expect(effectPromptVisibleContentIssues('竖屏画幅，分辨率：1080p，时长：5秒')).toContain(
-      'TECHNICAL_RENDER_METADATA',
-    );
-    expect(effectPromptVisibleContentIssues('产品旁边出现促销 贴纸', ['促销贴纸'])).toContain(
-      'SHARED_CONSTRAINT_LEAK',
-    );
-    expect(
-      effectPromptVisibleContentIssues('家庭厨房里，成年人拿起产品并转向镜头。', ['促销贴纸']),
-    ).toEqual([]);
+  it('does not treat render metadata in visible content as an execution failure', () => {
+    const prompt = item('render-metadata', {
+      content: '5秒，9:16竖屏，1080p。家庭厨房里，成年人拿起产品并转向镜头，镜头缓慢推进。',
+    });
+
+    expect(effectPromptExecutionIssues(prompt)).not.toContain('TECHNICAL_RENDER_METADATA');
+    expect(effectPromptExecutionIssues(prompt)).not.toContain('SHARED_CONSTRAINT_LEAK');
   });
 
   it('replaces only the requested item while preserving stable order and ids', () => {

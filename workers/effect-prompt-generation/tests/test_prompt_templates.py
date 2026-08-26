@@ -37,6 +37,7 @@ def test_candidate_template_renders_literal_example_json_and_product_context() -
         "candidate_task.user.prompt.txt",
         delivery_channels="抖音",
         visual_style="明亮生活化",
+        disabled_elements_json='["促销贴纸"]',
         product_context_json='{"productName":"便携杯","coreSellingPoints":["单手开合"]}',
         combinations_json='[{"slotId":"slot-1"}]',
         regeneration_context_json='{"instruction":"产品更早出现"}',
@@ -45,5 +46,6 @@ def test_candidate_template_renders_literal_example_json_and_product_context() -
     assert '"productName":"便携杯"' in rendered
     assert '"slotId":"slot-1"' in rendered
     assert '"instruction":"产品更早出现"' in rendered
+    assert "促销贴纸" in rendered
     assert "9:16" not in rendered
     assert "医疗暗示" not in rendered

@@ -4,6 +4,9 @@ VERSION: effect-prompt-candidate-task-v5
 
 创意表达应自然适配 {delivery_channels}，并参考 {visual_style}。这些信息只用于指导画面表达，不得以参数、字段名或制作说明写进 promptText。时长、画幅、分辨率和统一禁用元素由渲染任务单独传递；promptText 的任何位置都不得出现这些参数、参数名称或统一禁用项原文。
 
+统一禁用元素JSON（只用于主动避开相应画面，不得在 promptText 中复述；即使模型偶尔复述，也不要因此省略其他必要画面信息）：
+{disabled_elements_json}
+
 安全产品上下文JSON：
 {product_context_json}
 

@@ -206,31 +206,7 @@ const VISIBLE_ACTION =
   /(?:拿起|夹起|提起|拎起|托住|扶住|扶正|握住|放下|放入|放到|轻放|摆放|摆到|打开|关闭|取出|倒入|切开|撕开|按下|按压|涂抹|喷洒|擦拭|冲洗|折叠|展开|安装|装入|推拉|旋转|转动|倾斜|移动|移到|搅拌|加热|品尝|对比|揭开|翻转|挤出|穿戴|使用|离开|退出)/u;
 const PLACEHOLDER_TEXT =
   /(?:待补充|以信息卡为准|自然出镜|相关细节|关键特点|适当|高级感|真实使用动作|当前产品名|指定卖点|当前场景|当前人物)/u;
-const TECHNICAL_RENDER_METADATA =
-  /(?:\d+(?:\.\d+)?\s*(?:秒|s\b)|(?:16\s*[:：]\s*9|4\s*[:：]\s*3|1\s*[:：]\s*1|3\s*[:：]\s*4|9\s*[:：]\s*16|21\s*[:：]\s*9)|(?:480|720|1080)\s*[pP]|(?:时长|画幅|分辨率)\s*[:：=]|(?:竖屏|横屏)(?:画幅|视频)?)/iu;
-
-export const effectPromptVisibleContentIssues = (
-  content: string,
-  disabledElements: readonly string[] = [],
-): string[] => {
-  const normalizedContent = content.normalize('NFC');
-  const compactContent = normalizedContent.replace(/\s+/gu, '').toLocaleLowerCase('zh-CN');
-  const issues: string[] = [];
-  if (TECHNICAL_RENDER_METADATA.test(normalizedContent)) issues.push('TECHNICAL_RENDER_METADATA');
-  if (
-    disabledElements.some((raw) => {
-      const value = raw.normalize('NFC').replace(/\s+/gu, '').trim().toLocaleLowerCase('zh-CN');
-      return value.length > 0 && compactContent.includes(value);
-    })
-  )
-    issues.push('SHARED_CONSTRAINT_LEAK');
-  return issues;
-};
-
-export const effectPromptExecutionIssues = (
-  item: EffectPromptItem,
-  disabledElements: readonly string[] = [],
-): string[] => {
+export const effectPromptExecutionIssues = (item: EffectPromptItem): string[] => {
   const issues: string[] = [];
   const content = item.content.normalize('NFC');
   if (META_LANGUAGE.test(content)) issues.push('META_LANGUAGE');
@@ -242,7 +218,6 @@ export const effectPromptExecutionIssues = (
     issues.push('FULL_TIMELINE_NOT_FRAGMENT');
   if (!VISIBLE_ACTION.test(content)) issues.push('NO_VISIBLE_ACTION');
   if (PLACEHOLDER_TEXT.test(content)) issues.push('PLACEHOLDER_TEXT');
-  issues.push(...effectPromptVisibleContentIssues(content, disabledElements));
   return issues;
 };
 
@@ -552,10 +527,7 @@ export const recomputePromptQuality = (
   };
   const currentExecutionReasonCounts = new Map<string, number>();
   for (const prompt of items) {
-    for (const code of effectPromptExecutionIssues(
-      prompt,
-      renderProfile.sharedConstraints.disabledElements,
-    ))
+    for (const code of effectPromptExecutionIssues(prompt))
       currentExecutionReasonCounts.set(code, (currentExecutionReasonCounts.get(code) ?? 0) + 1);
     if (
       prompt.targetDurationSeconds !== settings.fragmentConfigs[prompt.fragmentType].durationSeconds

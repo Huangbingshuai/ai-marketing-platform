@@ -84,7 +84,7 @@ class TechnicalMetadataProvider(MockAiProvider):
 
 
 @pytest.mark.asyncio
-async def test_exact_quota_uses_validated_fallback_after_three_invalid_ai_rounds(
+async def test_render_metadata_does_not_discard_otherwise_valid_candidates(
     snapshot: PromptGenerationSnapshot, runtime: RuntimeContext
 ) -> None:
     api = FakeApi()
@@ -102,7 +102,7 @@ async def test_exact_quota_uses_validated_fallback_after_three_invalid_ai_rounds
     assert api.result is not None
     assert api.result.quality_status == "PASS"
     assert len(api.result.items) == snapshot.settings.target_count
-    assert api.result.metrics.fallback_count == snapshot.settings.target_count
+    assert api.result.metrics.fallback_count == 0
     actual_by_type = {
         fragment_type: sum(
             item.fragment_type == fragment_type for item in api.result.items
@@ -114,9 +114,9 @@ async def test_exact_quota_uses_validated_fallback_after_three_invalid_ai_rounds
         for fragment_type in FragmentType
     }
     visible_content = "\n".join(item.content for item in api.result.items)
-    assert "9:16" not in visible_content
-    assert "1080p" not in visible_content.lower()
-    assert "5秒" not in visible_content
+    assert "9:16" in visible_content
+    assert "1080p" in visible_content.lower()
+    assert "5秒" in visible_content
 
 
 @pytest.mark.asyncio
