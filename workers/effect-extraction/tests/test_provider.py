@@ -85,6 +85,7 @@ async def test_ark_provider_routes_each_stage_and_records_usage() -> None:
                 emotional_scenarios=[],
                 duration_seconds=20,
                 aspect_ratio="9:16",
+                resolution="1080P",
                 delivery_channels="短视频",
                 disabled_elements=[],
                 visual_style_baseline="自然",

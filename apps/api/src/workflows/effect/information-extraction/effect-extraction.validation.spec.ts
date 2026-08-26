@@ -29,6 +29,7 @@ const validResult = {
   emotionalScenarios: ['家庭分享'],
   durationSeconds: 20,
   aspectRatio: '9:16',
+  resolution: '1080P',
   deliveryChannels: '抖音',
   disabledElements: ['绝对化用语'],
   visualStyleBaseline: '可信',
@@ -108,6 +109,7 @@ describe('effect extraction validation', () => {
       {
         durationSeconds: 20,
         aspectRatio: '9:16',
+        resolution: '1080P',
         deliveryChannels: '抖音',
         disabledElements: ['绝对化用语'],
         visualStyleBaseline: '国潮新中式',

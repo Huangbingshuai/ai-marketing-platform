@@ -130,6 +130,7 @@ export type EffectExtractionResult = {
   emotionalScenarios: string[];
   durationSeconds: number;
   aspectRatio: string;
+  resolution: string;
   deliveryChannels: string;
   disabledElements: string[];
   visualStyleBaseline: string;

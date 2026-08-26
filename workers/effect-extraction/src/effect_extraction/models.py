@@ -140,6 +140,7 @@ class ExtractionCandidate(ApiModel):
     emotional_scenarios: list[str] | None
     duration_seconds: int | None
     aspect_ratio: str | None
+    resolution: str | None
     delivery_channels: str | None
     disabled_elements: list[str] | None
     visual_style_baseline: str | None
@@ -167,6 +168,7 @@ class ExtractionResult(ApiModel):
     emotional_scenarios: list[str] = Field(max_length=5)
     duration_seconds: int = Field(ge=1, le=3600)
     aspect_ratio: str
+    resolution: str
     delivery_channels: str
     disabled_elements: list[str]
     visual_style_baseline: str

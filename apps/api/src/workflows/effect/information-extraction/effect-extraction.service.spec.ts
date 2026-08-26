@@ -32,6 +32,7 @@ const extractionResult = {
   emotionalScenarios: ['家庭分享'],
   durationSeconds: 15,
   aspectRatio: '9:16',
+  resolution: '1080p',
   deliveryChannels: '抖音',
   disabledElements: ['系统禁用词'],
   visualStyleBaseline: '烟火食欲感',

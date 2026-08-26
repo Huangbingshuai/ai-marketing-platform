@@ -26,6 +26,7 @@ OUTPUT_CONTRACT: ExtractionCandidate.v2
   "emotionalScenarios": null,
   "durationSeconds": null,
   "aspectRatio": null,
+  "resolution": null,
   "deliveryChannels": null,
   "disabledElements": null,
   "visualStyleBaseline": null
@@ -70,6 +71,7 @@ OUTPUT_CONTRACT: ExtractionCandidate.v2
   "emotionalScenarios": null,
   "durationSeconds": null,
   "aspectRatio": null,
+  "resolution": null,
   "deliveryChannels": null,
   "disabledElements": null,
   "visualStyleBaseline": null

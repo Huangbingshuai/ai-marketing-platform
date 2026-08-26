@@ -26,6 +26,7 @@ OUTPUT_CONTRACT: ExtractionCandidate.v2
   "emotionalScenarios": null,
   "durationSeconds": null,
   "aspectRatio": null,
+  "resolution": null,
   "deliveryChannels": null,
   "disabledElements": null,
   "visualStyleBaseline": null
@@ -67,6 +68,7 @@ OUTPUT_CONTRACT: ExtractionCandidate.v2
   "emotionalScenarios": ["家人围餐的烟火气", "年节团聚与分享"],
   "durationSeconds": null,
   "aspectRatio": null,
+  "resolution": null,
   "deliveryChannels": null,
   "disabledElements": ["医疗功效宣称", "绝对化用语", "无法证明的产地或销量背书"],
   "visualStyleBaseline": "暖色食欲光线、传统节庆红金配色、真实家庭餐桌氛围"

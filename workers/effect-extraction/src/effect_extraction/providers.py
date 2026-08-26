@@ -203,6 +203,7 @@ class MockAiProvider:
             emotional_scenarios=(fused.emotional_scenarios or [])[0:5],
             duration_seconds=fused.duration_seconds or 20,
             aspect_ratio=fused.aspect_ratio or "9:16",
+            resolution=fused.resolution or "1080P",
             delivery_channels=fused.delivery_channels or "待补充",
             disabled_elements=fused.disabled_elements or [],
             visual_style_baseline=fused.visual_style_baseline or "待补充",

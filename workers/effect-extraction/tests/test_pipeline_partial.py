@@ -222,6 +222,7 @@ async def test_form_branch_reads_only_the_global_video_configuration() -> None:
     assert output.metadata == {
         "durationSeconds": 20,
         "aspectRatio": "1:1",
+        "resolution": "720P",
         "styleTone": "烟火食欲感",
         "deliveryChannel": "视频号",
         "disabledElements": ["医疗功效"],

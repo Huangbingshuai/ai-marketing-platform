@@ -709,6 +709,7 @@ export class EffectExtractionRepository {
         productCategory: snapshot.product.category.trim() || candidate.productCategory,
         durationSeconds: config.durationSeconds,
         aspectRatio: config.aspectRatio,
+        resolution: config.resolution,
         deliveryChannels: config.deliveryChannel,
         disabledElements: [...new Set([...config.disabledElements, ...candidate.disabledElements])],
         visualStyleBaseline:

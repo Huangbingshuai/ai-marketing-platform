@@ -32,6 +32,7 @@ const RESULT_KEYS = [
   'emotionalScenarios',
   'durationSeconds',
   'aspectRatio',
+  'resolution',
   'deliveryChannels',
   'disabledElements',
   'visualStyleBaseline',
@@ -43,6 +44,7 @@ export type EffectExtractionResultDefaults = Pick<
   EffectExtractionResult,
   | 'durationSeconds'
   | 'aspectRatio'
+  | 'resolution'
   | 'deliveryChannels'
   | 'disabledElements'
   | 'visualStyleBaseline'
@@ -53,6 +55,7 @@ export const effectExtractionDefaultsFromConfig = (
 ): EffectExtractionResultDefaults => ({
   durationSeconds: config.durationSeconds,
   aspectRatio: config.aspectRatio,
+  resolution: config.resolution,
   deliveryChannels: config.deliveryChannel,
   disabledElements: [...config.disabledElements],
   visualStyleBaseline: config.styleTone,
@@ -171,6 +174,7 @@ export const toEffectExtractionResultV2 = (
         ? Number(record.durationSeconds)
         : defaults.durationSeconds,
     aspectRatio: text(record, 'aspectRatio') || defaults.aspectRatio,
+    resolution: text(record, 'resolution') || defaults.resolution,
     deliveryChannels: text(record, 'deliveryChannels') || defaults.deliveryChannels,
     disabledElements: compactStrings(
       Array.isArray(record.disabledElements) ? record.disabledElements : defaults.disabledElements,
@@ -245,6 +249,8 @@ export const isEffectExtractionResult = (value: unknown): value is EffectExtract
     Number(record.durationSeconds) <= 3600 &&
     validString(record.aspectRatio, 50) &&
     record.aspectRatio.length > 0 &&
+    validString(record.resolution, 50) &&
+    record.resolution.length > 0 &&
     validString(record.deliveryChannels) &&
     validStringArray(record.disabledElements, 100) &&
     validString(record.visualStyleBaseline) &&

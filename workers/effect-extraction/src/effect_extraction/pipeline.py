@@ -374,6 +374,7 @@ class ExtractionPipeline:
         candidate.product_category = snapshot.product.category.strip() or None
         candidate.duration_seconds = config.duration_seconds
         candidate.aspect_ratio = _optional(config.aspect_ratio)
+        candidate.resolution = _optional(config.resolution)
         candidate.delivery_channels = _optional(config.delivery_channel)
         candidate.visual_style_baseline = _optional(config.style_tone)
         candidate.disabled_elements = _strings(config.disabled_elements) or None
@@ -388,6 +389,7 @@ class ExtractionPipeline:
                 metadata={
                     "durationSeconds": config.duration_seconds,
                     "aspectRatio": config.aspect_ratio,
+                    "resolution": config.resolution,
                     "styleTone": config.style_tone,
                     "deliveryChannel": config.delivery_channel,
                     "disabledElements": config.disabled_elements,
@@ -661,6 +663,7 @@ def _restore_manual_fields(result: object, form: ExtractionCandidate) -> None:
         "product_name",
         "duration_seconds",
         "aspect_ratio",
+        "resolution",
         "delivery_channels",
         "visual_style_baseline",
     ):

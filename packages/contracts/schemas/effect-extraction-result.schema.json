@@ -22,6 +22,7 @@
     "emotionalScenarios",
     "durationSeconds",
     "aspectRatio",
+    "resolution",
     "deliveryChannels",
     "disabledElements",
     "visualStyleBaseline"
@@ -44,6 +45,7 @@
     "emotionalScenarios": { "$ref": "#/$defs/fiveItems" },
     "durationSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
     "aspectRatio": { "type": "string", "minLength": 1, "maxLength": 50 },
+    "resolution": { "type": "string", "minLength": 1, "maxLength": 50 },
     "deliveryChannels": { "type": "string", "maxLength": 2000 },
     "disabledElements": {
       "type": "array",

@@ -26,6 +26,7 @@ OUTPUT_CONTRACT: ExtractionResult.v2
   "emotionalScenarios": [],
   "durationSeconds": 20,
   "aspectRatio": "9:16",
+  "resolution": "1080P",
   "deliveryChannels": "待补充",
   "disabledElements": [],
   "visualStyleBaseline": "待补充"
@@ -58,6 +59,7 @@ OUTPUT_CONTRACT: ExtractionResult.v2
   "coreSellingPoints": ["六分瘦四分肥", "天然肠衣", "真空包装", "适合煲仔饭"],
   "durationSeconds": 20,
   "aspectRatio": "9:16",
+  "resolution": "1080P",
   "deliveryChannels": "抖音",
   "disabledElements": ["世界第一"],
   "visualStyleBaseline": "国潮新中式"
@@ -83,6 +85,7 @@ OUTPUT_CONTRACT: ExtractionResult.v2
   "emotionalScenarios": ["家人围餐的烟火气", "年节团聚与分享"],
   "durationSeconds": 20,
   "aspectRatio": "9:16",
+  "resolution": "1080P",
   "deliveryChannels": "抖音",
   "disabledElements": ["世界第一", "医疗功效宣称", "无法证明的销量背书"],
   "visualStyleBaseline": "国潮新中式，暖色食欲光线，真实家庭餐桌氛围"
