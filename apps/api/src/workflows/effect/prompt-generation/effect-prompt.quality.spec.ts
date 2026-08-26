@@ -3,6 +3,8 @@ import { DEFAULT_EFFECT_PROMPT_SETTINGS, effectPromptTargetCount } from '@ai-mar
 import { describe, expect, it } from 'vitest';
 
 import {
+  compileEffectPromptSharedConstraintPrompt,
+  compileEffectPromptSharedPrompt,
   dimensionDistance,
   effectPromptExecutionIssues,
   inferEffectPromptInsightBindings,
@@ -49,6 +51,26 @@ const item = (id: string, overrides: Partial<EffectPromptItem> = {}): EffectProm
 });
 
 describe('effect prompt quality', () => {
+  it('accepts a continuous blank area as a CTA-safe composition', () => {
+    const cta = item('cta-blank-area', {
+      fragmentType: 'CTA',
+      content:
+        '广式腊肠真空袋斜放在浅木纹防油垫偏左处，右侧留着连续空白区域。一只手轻轻扶住袋身上沿，平稳挪向画面下方后收手。侧方近景固定不动，暖调自然光均匀铺开，产品清晰稳定，右侧台面干净无遮挡。',
+    });
+
+    expect(effectPromptExecutionIssues(cta)).not.toContain('CTA_NO_SAFE_AREA');
+  });
+
+  it('accepts an outro with only observable background stabilization', () => {
+    const outro = item('outro-subtle', {
+      fragmentType: 'OUTRO',
+      content:
+        '夜间家庭厨房的木质台面上，广式腊肠稳定居中，背景蒸汽逐渐变缓，固定近景保持产品轮廓清楚，暖色侧光落在真实切面，环境亮度持续稳定，结尾形成上方留白、可持续停留的安静静物构图。',
+    });
+
+    expect(effectPromptExecutionIssues(outro)).not.toContain('NO_VISIBLE_ACTION');
+  });
+
   it('uses Chinese character 3-gram Dice after removing fixed video parameters', () => {
     expect(
       trigramDice(
@@ -135,6 +157,39 @@ describe('effect prompt quality', () => {
     );
     expect(legacy.items[0]?.targetDurationSeconds).toBe(3);
     expect(legacy).not.toHaveProperty('renderProfile');
+  });
+
+  it('compiles one deterministic shared constraint prompt and keeps older V5 results readable', () => {
+    expect(
+      compileEffectPromptSharedConstraintPrompt(['医疗暗示', ' 医疗暗示 ', '无法证明的销量背书']),
+    ).toBe('画面中不得出现以下内容：医疗暗示；无法证明的销量背书。');
+
+    const base = recomputePromptQuality([item('v5-compatible')], settings);
+    const sharedPrompt = compileEffectPromptSharedPrompt([], '所有片段保持自然光质感');
+    const current = recomputePromptQuality(
+      base.items,
+      settings,
+      base.metrics,
+      base.renderProfile,
+      sharedPrompt,
+    );
+    const olderV5 = structuredClone(current) as unknown as Record<string, unknown>;
+    delete olderV5.sharedPrompt;
+
+    expect(parseEffectPromptBatchResult(olderV5)).not.toBeNull();
+    expect(parseEffectPromptBatchResult(current)?.sharedPrompt).toEqual(sharedPrompt);
+    expect(
+      parseEffectPromptBatchResult({
+        ...current,
+        renderProfile: {
+          ...current.renderProfile,
+          sharedConstraints: {
+            ...current.renderProfile.sharedConstraints,
+            prompt: '模型自行补造的禁用要求',
+          },
+        },
+      }),
+    ).toBeNull();
   });
 
   it('enforces the shared schema text limits', () => {

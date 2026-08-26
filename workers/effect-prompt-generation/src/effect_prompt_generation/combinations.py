@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from .insight_mapping import bindings_for_fact_ids
 from .models import (
     EvidenceMode,
+    FragmentStrategyPool,
     FragmentType,
     InsightApplicationMap,
     InsightBinding,
@@ -40,6 +41,49 @@ _QUALIFIERS = (
     "观察视角",
     "极简表达",
 )
+
+_FRAGMENT_VARIANTS: dict[str, tuple[str, ...]] = {
+    "opening": (
+        "",
+        "主体位于画面左侧",
+        "主体位于画面右侧",
+        "主体位于画面中央",
+        "前景保持简洁",
+        "背景层次清楚",
+    ),
+    "action": (
+        "",
+        "动作速度均匀",
+        "动作略慢",
+        "动作在接触处停住",
+        "动作路径保持连续",
+        "动作结束后主体不再移动",
+    ),
+    "camera": (
+        "",
+        "焦点落在主体",
+        "焦点落在动作接触处",
+        "焦点保持产品轮廓清楚",
+        "背景轻微虚化",
+        "景深关系保持稳定",
+    ),
+    "emotion": (
+        "",
+        "色温保持一致",
+        "光线变化克制",
+        "动作结束后自然停顿",
+        "背景亮度保持稳定",
+        "主体受光持续自然",
+    ),
+    "ending": (
+        "",
+        "背景位置保持不变",
+        "主体保持稳定",
+        "前后景关系连续",
+        "结束构图保持清楚",
+        "画面在稳定状态停留",
+    ),
+}
 
 _MATERIAL_TAGS: dict[FragmentType, tuple[str, ...]] = {
     FragmentType.HOOK: ("钩子", "首帧"),
@@ -199,10 +243,6 @@ def plan_combinations(
         raise ValueError(f"count must be between 0 and {ORTHOGONAL_ORDER**2}")
 
     pools = strategy.dimension_pools
-    narratives = _expand(pools.narratives, 120)
-    cameras = _expand(pools.cameras, 160)
-    emotions = _expand(pools.emotions, 120)
-    actions = _expand(pools.actions, 400)
     evidence_by_selling_point = {
         _normalized_value(item.selling_point): item for item in pools.evidence_plans
     }
@@ -226,6 +266,16 @@ def plan_combinations(
         )
         fragment_occurrence = fragment_occurrences[fragment_type]
         fragment_occurrences[fragment_type] += 1
+        fragment_pool = _fragment_strategy_pool(
+            strategy.fragment_strategy_pools, fragment_type
+        )
+        openings = _expand_fragment_values(
+            fragment_pool.opening_states, 240, "opening"
+        )
+        actions = _expand_fragment_values(fragment_pool.action_arcs, 400, "action")
+        cameras = _expand_fragment_values(fragment_pool.cameras, 160, "camera")
+        emotions = _expand_fragment_values(fragment_pool.emotions, 120, "emotion")
+        endings = _expand_fragment_values(fragment_pool.ending_states, 240, "ending")
         bundle = _relationship_bundle(
             strategy.relationship_bundles,
             fragment_type=fragment_type,
@@ -258,7 +308,7 @@ def plan_combinations(
         )
         dimensions = PromptDimensions(
             narrative=_round_value(
-                narratives[a], round_number, 120, "首帧从局部动作切入"
+                openings[a], round_number, 120, "保持该类型的首帧职责"
             ),
             scene=_round_value(
                 _qualified_bundle_value(bundle.scene, b, 120),
@@ -295,11 +345,21 @@ def plan_combinations(
                 fragment_type=fragment_type,
                 material_tags=list(_MATERIAL_TAGS[fragment_type]),
                 target_duration_seconds=fragment_durations[fragment_type],
+                planning_version="six-branch-v1",
+                opening_state=_round_value(
+                    openings[a], round_number, 240, "保持该类型的首帧职责"
+                ),
                 visible_action=_round_value(
                     actions[(a + 5 * b) % ORTHOGONAL_ORDER],
                     round_number,
                     400,
-                    "动作结束后保持稳定",
+                    "动作弧保持连续",
+                ),
+                ending_state=_round_value(
+                    endings[(a + 7 * b) % ORTHOGONAL_ORDER],
+                    round_number,
+                    240,
+                    "结束状态继续符合该类型职责",
                 ),
                 evidence_mode=evidence.evidence_mode,
                 allowed_visual_evidence=evidence.allowed_visual_evidence,
@@ -310,6 +370,17 @@ def plan_combinations(
             )
         )
     return result
+
+
+def _fragment_strategy_pool(
+    pools: Sequence[FragmentStrategyPool], fragment_type: FragmentType
+) -> FragmentStrategyPool:
+    matches = [item for item in pools if item.fragment_type == fragment_type]
+    if len(matches) != 1:
+        raise ValueError(
+            f"strategy must contain one fragment strategy pool for {fragment_type.value}"
+        )
+    return matches[0]
 
 
 def _relationship_bundle(
@@ -458,6 +529,28 @@ def _expand(values: Sequence[str], max_length: int) -> list[str]:
         qualifier = _QUALIFIERS[(index + cycle) % len(_QUALIFIERS)]
         candidate = base if index < len(unique) else f"{base}·{qualifier or '差异表达'}"
         candidate = candidate[:max_length].rstrip("·")
+        if candidate not in result:
+            result.append(candidate)
+        index += 1
+    return result
+
+
+def _expand_fragment_values(
+    values: Sequence[str], max_length: int, kind: str
+) -> list[str]:
+    """Expand a role-specific pool without adding a second action or camera movement."""
+    unique = list(dict.fromkeys(value.strip() for value in values if value.strip()))
+    if not unique:
+        raise ValueError("cannot expand an empty fragment strategy pool")
+    variants = _FRAGMENT_VARIANTS[kind]
+    result: list[str] = []
+    index = 0
+    while len(result) < ORTHOGONAL_ORDER:
+        base = unique[index % len(unique)]
+        cycle = index // len(unique)
+        qualifier = variants[cycle % len(variants)]
+        candidate = base if index < len(unique) or not qualifier else f"{base}，{qualifier}"
+        candidate = candidate[:max_length].rstrip("，。； ")
         if candidate not in result:
             result.append(candidate)
         index += 1

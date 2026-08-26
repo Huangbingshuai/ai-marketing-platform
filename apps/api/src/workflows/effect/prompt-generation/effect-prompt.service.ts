@@ -9,6 +9,7 @@ import type {
   EffectPromptNodeId,
   EffectPromptProductState,
   EffectPromptRun,
+  EffectPromptSharedPrompt,
   GetEffectPromptNodeDetailData,
   GetEffectPromptResultData,
   GetEffectPromptRunData,
@@ -46,6 +47,7 @@ import {
   parseEffectPromptBatchResult,
   parseLegacyV4EffectPromptBatchResultForRead,
   recomputePromptQuality,
+  compileEffectPromptSharedPrompt,
 } from './effect-prompt.quality';
 import type {
   EffectPromptCompleteInput,
@@ -277,11 +279,13 @@ export class EffectPromptService {
               : 'DRAFT_CHANGED';
         const status = !runRecord
           ? 'NOT_GENERATED'
-          : stale
-            ? 'STALE'
+          : runRecord.status === 'QUEUED'
+            ? 'QUEUED'
             : runRecord.status === 'RUNNING'
               ? 'PROCESSING'
-              : runRecord.status;
+              : stale
+                ? 'STALE'
+                : runRecord.status;
         return {
           projectId,
           workflowRunId,
@@ -452,6 +456,7 @@ export class EffectPromptService {
       schemaVersion: draft.schemaVersion,
       settings: draft.settings,
       renderProfile: draft.renderProfile,
+      ...(draft.sharedPrompt ? { sharedPrompt: draft.sharedPrompt } : {}),
       metrics: draft.metrics,
       qualityStatus: draft.qualityStatus,
     };
@@ -619,6 +624,34 @@ export class EffectPromptService {
     );
   }
 
+  async updateSharedPrompt(
+    projectId: string,
+    resultId: string,
+    expectedRevision: number,
+    additionalContent: string,
+  ): Promise<UpdateEffectPromptResultData> {
+    await this.projects.get(projectId);
+    const current = await this.repository.result(projectId, resultId);
+    if (!current) throw notFound('Prompt 结果不存在');
+    if (current.schemaVersion !== EFFECT_PROMPT_SCHEMA_VERSION)
+      throw conflict('旧版 Prompt 结果不能编辑，请执行全量重新生成');
+    const parsed = parseEffectPromptBatchResult(current.draftResult);
+    if (!parsed) throw conflict('Prompt 结果结构无效，请重新生成');
+    const content = additionalContent.trim();
+    if (content.length > 30_000) throw badRequest('补充共用内容不能超过 30000 字');
+    const sharedPrompt: EffectPromptSharedPrompt = compileEffectPromptSharedPrompt(
+      parsed.renderProfile.sharedConstraints.disabledElements,
+      content,
+      parsed.sharedPrompt?.sections,
+    );
+    return this.presentMutation(
+      await this.repository.mutateResult(projectId, resultId, expectedRevision, {
+        kind: 'SHARED_PROMPT',
+        sharedPrompt,
+      }),
+    );
+  }
+
   async validateResult(
     projectId: string,
     resultId: string,
@@ -658,6 +691,7 @@ export class EffectPromptService {
       draft.settings,
       draft.metrics,
       draft.renderProfile,
+      draft.sharedPrompt,
     );
     const issues: Array<{ code: string; message: string }> = [];
     if (verified.items.length !== effectPromptTargetCount(verified.settings))

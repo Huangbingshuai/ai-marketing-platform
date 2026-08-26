@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import uuid
 from typing import Any
 
@@ -17,10 +18,12 @@ from effect_prompt_generation.models import (
     PromptGenerationSnapshot,
     PromptItem,
     RuntimeContext,
+    SharedPrompt,
+    SharedPromptSection,
     ShardRecord,
     StageOutput,
 )
-from effect_prompt_generation.pipeline import PromptGenerationPipeline
+from effect_prompt_generation.pipeline import PipelineError, PromptGenerationPipeline
 from effect_prompt_generation.providers import AiCallResult, MockAiProvider
 
 
@@ -42,7 +45,9 @@ class FakeApi(InternalApi):
     async def get_shards(self, context: RuntimeContext) -> list[ShardRecord]:
         return list(self.shards.values())
 
-    async def heartbeat(self, context: RuntimeContext, payload: ProgressPayload) -> None:
+    async def heartbeat(
+        self, context: RuntimeContext, payload: ProgressPayload
+    ) -> None:
         return None
 
     async def complete(self, context: RuntimeContext, result: PromptBatchResult) -> str:
@@ -59,11 +64,13 @@ class TechnicalMetadataProvider(MockAiProvider):
         combinations: list[Any],
         *,
         insight: dict[str, Any],
+        shared_prompt: SharedPrompt,
         regeneration_context: dict[str, Any] | None = None,
     ) -> AiCallResult[Any]:
         generated = await super().generate_candidates(
             combinations,
             insight=insight,
+            shared_prompt=shared_prompt,
             regeneration_context=regeneration_context,
         )
         return AiCallResult(
@@ -130,8 +137,12 @@ async def test_mock_graph_runs_send_shards_and_completes(
                     "fragment_configs": {
                         FragmentType.HOOK: FragmentConfig(count=10, duration_seconds=5),
                         FragmentType.PAIN: FragmentConfig(count=8, duration_seconds=5),
-                        FragmentType.PRODUCT_DISPLAY: FragmentConfig(count=12, duration_seconds=5),
-                        FragmentType.SELLING_POINT_EXPLANATION: FragmentConfig(count=10, duration_seconds=5),
+                        FragmentType.PRODUCT_DISPLAY: FragmentConfig(
+                            count=12, duration_seconds=5
+                        ),
+                        FragmentType.SELLING_POINT_EXPLANATION: FragmentConfig(
+                            count=10, duration_seconds=5
+                        ),
                         FragmentType.CTA: FragmentConfig(count=6, duration_seconds=5),
                         FragmentType.OUTRO: FragmentConfig(count=4, duration_seconds=5),
                     }
@@ -161,13 +172,16 @@ async def test_mock_graph_runs_send_shards_and_completes(
                         "purchaseScenarios": ["年货选购"],
                         "emotionalScenarios": ["家庭团聚"],
                         "aspectRatio": "3:4",
+                        "disabledElements": ["夸大功效", " 夸大功效 ", "医疗暗示"],
                     }
                 }
             ),
         }
     )
     api = FakeApi()
-    pipeline = PromptGenerationPipeline(api=api, provider=MockAiProvider(), shard_size=8)
+    pipeline = PromptGenerationPipeline(
+        api=api, provider=MockAiProvider(), shard_size=8
+    )
     pipeline.register_snapshot(runtime, snapshot)
 
     result: dict[str, Any] = await build_graph(pipeline).ainvoke(
@@ -184,26 +198,121 @@ async def test_mock_graph_runs_send_shards_and_completes(
     required_ids = {
         fact.fact_id for fact in api.result.metrics.insight_coverage.required
     }
-    covered_ids = {
-        fact.fact_id for fact in api.result.metrics.insight_coverage.covered
-    }
+    covered_ids = {fact.fact_id for fact in api.result.metrics.insight_coverage.covered}
     assert required_ids <= covered_ids
     assert any(
-        fact.field.value == "PRICE_RANGE"
-        and fact.reason == "UNCERTAIN"
+        fact.field.value == "PRICE_RANGE" and fact.reason == "UNCERTAIN"
         for fact in api.result.metrics.insight_coverage.excluded
     )
     assert "需确认" not in "\n".join(item.content for item in api.result.items)
+    assert api.result.render_profile.shared_constraints.disabled_elements == [
+        "夸大功效",
+        "医疗暗示",
+    ]
+    assert (
+        api.result.shared_prompt.compiled_content
+        == "画面中不得出现以下内容：夸大功效；医疗暗示。"
+    )
+    assert all(
+        api.result.shared_prompt.compiled_content not in item.content
+        for item in api.result.items
+    )
+    assert len(api.result.render_profile.shared_constraints.content_hash) == 64
     assert all(uuid.UUID(item.id).version == 4 for item in api.result.items)
     assert all(shard.status.value == "SUCCEEDED" for shard in api.shards.values())
     # 初始九个同类型分片之外，允许按质量缺口定向补齐；真实信息卡中的
     # 三个抽象卖点会触发补齐，但必须在三轮上限内收敛为 PASS。
     assert len(api.shards) >= 9
     assert max(shard.round for shard in api.shards.values()) <= 3
-    assert all(len({item.fragment_type for item in shard.combination_plan}) == 1 for shard in api.shards.values())
+    assert all(
+        len({item.fragment_type for item in shard.combination_plan}) == 1
+        for shard in api.shards.values()
+    )
     stage_ids = {stage.node_id.value for stage in api.stages}
+    assert "SHARED_PROMPT_COMPILATION" in stage_ids
     assert "FRAGMENT_TYPE_ROUTER" in stage_ids
-    assert {f"GENERATE_{fragment_type.value}" for fragment_type in FragmentType} <= stage_ids
+    assert {
+        f"GENERATE_{fragment_type.value}" for fragment_type in FragmentType
+    } <= stage_ids
+
+
+@pytest.mark.asyncio
+async def test_shared_prompt_keeps_editable_section_when_disabled_elements_are_empty(
+    snapshot: PromptGenerationSnapshot, runtime: RuntimeContext
+) -> None:
+    snapshot = snapshot.model_copy(
+        update={
+            "insight_artifact": snapshot.insight_artifact.model_copy(
+                update={
+                    "result": {
+                        **snapshot.insight_artifact.result,
+                        "disabledElements": [],
+                    }
+                }
+            )
+        }
+    )
+    api = FakeApi()
+    pipeline = PromptGenerationPipeline(
+        api=api, provider=MockAiProvider(), shard_size=8
+    )
+    pipeline.register_snapshot(runtime, snapshot)
+
+    prompt = await pipeline.compile_shared_prompt(runtime)
+
+    assert prompt.compiled_content == ""
+    assert [section.key for section in prompt.sections] == [
+        "DISABLED_ELEMENTS",
+        "USER_ADDITIONAL",
+    ]
+    assert api.stages[-1].node_id.value == "SHARED_PROMPT_COMPILATION"
+    assert api.stages[-1].metadata == {
+        "disabledElementCount": 0,
+        "sectionCount": 2,
+        "sharedPromptGenerated": False,
+        "hasUserAdditionalContent": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_shared_prompt_preserves_user_additional_content_for_regeneration(
+    snapshot: PromptGenerationSnapshot, runtime: RuntimeContext
+) -> None:
+    additional = "保持产品外观前后一致。"
+    previous = SharedPrompt(
+        sections=[
+            SharedPromptSection(
+                key="DISABLED_ELEMENTS",
+                title="禁用元素",
+                source="SYSTEM",
+                content="",
+                editable=False,
+                source_hash="1" * 64,
+            ),
+            SharedPromptSection(
+                key="USER_ADDITIONAL",
+                title="补充共用内容",
+                source="USER",
+                content=additional,
+                editable=True,
+                source_hash=hashlib.sha256(additional.encode()).hexdigest(),
+            ),
+        ],
+        compiled_content=additional,
+        content_hash=hashlib.sha256(additional.encode()).hexdigest(),
+    )
+    snapshot = snapshot.model_copy(update={"shared_prompt": previous})
+    api = FakeApi()
+    pipeline = PromptGenerationPipeline(
+        api=api, provider=MockAiProvider(), shard_size=8
+    )
+    pipeline.register_snapshot(runtime, snapshot)
+
+    compiled = await pipeline.compile_shared_prompt(runtime)
+
+    assert compiled.sections[-1].content == additional
+    assert compiled.compiled_content.endswith(additional)
+    assert api.stages[-1].metadata["hasUserAdditionalContent"] is True
 
 
 @pytest.mark.asyncio
@@ -211,10 +320,13 @@ async def test_load_reuses_succeeded_shards(
     snapshot: PromptGenerationSnapshot, runtime: RuntimeContext
 ) -> None:
     api = FakeApi()
-    pipeline = PromptGenerationPipeline(api=api, provider=MockAiProvider(), shard_size=8)
+    pipeline = PromptGenerationPipeline(
+        api=api, provider=MockAiProvider(), shard_size=8
+    )
     pipeline.register_snapshot(runtime, snapshot)
     first = await pipeline.load_and_snapshot(runtime)
     application = await pipeline.map_insight(runtime)
+    await pipeline.compile_shared_prompt(runtime)
     strategy = await pipeline.plan_strategy(
         runtime, application=application, target_count=10
     )
@@ -236,14 +348,56 @@ async def test_load_reuses_succeeded_shards(
 
 
 @pytest.mark.asyncio
+async def test_load_rejects_succeeded_legacy_planning_shard(
+    snapshot: PromptGenerationSnapshot, runtime: RuntimeContext
+) -> None:
+    api = FakeApi()
+    pipeline = PromptGenerationPipeline(
+        api=api, provider=MockAiProvider(), shard_size=8
+    )
+    pipeline.register_snapshot(runtime, snapshot)
+    application = await pipeline.map_insight(runtime)
+    await pipeline.compile_shared_prompt(runtime)
+    strategy = await pipeline.plan_strategy(
+        runtime, application=application, target_count=10
+    )
+    shards = await pipeline.plan_round(
+        runtime,
+        strategy=strategy,
+        application=application,
+        round_number=0,
+        missing_count=10,
+        ordinal_start=1,
+        completed_keys=[],
+    )
+    await pipeline.generate_shard(runtime, shards[0])
+    saved = api.shards["0:0"]
+    api.shards["0:0"] = saved.model_copy(
+        update={
+            "combination_plan": [
+                item.model_copy(update={"planning_version": "legacy"})
+                for item in saved.combination_plan
+            ]
+        }
+    )
+
+    with pytest.raises(PipelineError, match="生成规则已升级"):
+        await pipeline.load_and_snapshot(runtime)
+
+
+@pytest.mark.asyncio
 async def test_item_regeneration_returns_only_one_replacement_candidate(
     snapshot: PromptGenerationSnapshot, runtime: RuntimeContext
 ) -> None:
     first_api = FakeApi()
-    first_pipeline = PromptGenerationPipeline(api=first_api, provider=MockAiProvider(), shard_size=8)
+    first_pipeline = PromptGenerationPipeline(
+        api=first_api, provider=MockAiProvider(), shard_size=8
+    )
     first_pipeline.register_snapshot(runtime, snapshot)
     await build_graph(first_pipeline).ainvoke(
-        {"project_id": runtime.project_id}, context=runtime, config={"max_concurrency": 3}
+        {"project_id": runtime.project_id},
+        context=runtime,
+        config={"max_concurrency": 3},
     )
     assert first_api.result is not None
     target, *retained = first_api.result.items
@@ -308,7 +462,9 @@ async def test_planning_prioritizes_uncovered_core_selling_point(
     )
     snapshot = snapshot.model_copy(update={"retained_manual_items": [covered]})
     api = FakeApi()
-    pipeline = PromptGenerationPipeline(api=api, provider=MockAiProvider(), shard_size=8)
+    pipeline = PromptGenerationPipeline(
+        api=api, provider=MockAiProvider(), shard_size=8
+    )
     pipeline.register_snapshot(runtime, snapshot)
     application = await pipeline.map_insight(runtime)
     strategy = await pipeline.plan_strategy(

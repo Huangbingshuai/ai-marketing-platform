@@ -7,7 +7,10 @@ import {
   type EffectSeedanceCompileError,
   validateEffectSeedanceTaskResult,
 } from './effect-seedance-request.compiler';
-import { recomputePromptQuality } from '../prompt-generation/effect-prompt.quality';
+import {
+  compileEffectPromptSharedPrompt,
+  recomputePromptQuality,
+} from '../prompt-generation/effect-prompt.quality';
 
 const item: EffectPromptItem = {
   id: 'prompt-1',
@@ -32,16 +35,24 @@ const item: EffectPromptItem = {
   updatedAt: '2026-08-26T00:00:00.000Z',
 };
 
-const batch = (capabilityKey: EffectPromptBatchResult['renderProfile']['capabilityKey']) =>
-  recomputePromptQuality([item], DEFAULT_EFFECT_PROMPT_SETTINGS, undefined, {
-    ratio: '9:16',
-    resolution: '1080p',
-    capabilityKey,
-    sharedConstraints: {
-      disabledElements: ['医疗功效', ' 医疗功效。 ', '未成年人'],
-      contentHash: 'a'.repeat(64),
+const batch = (capabilityKey: EffectPromptBatchResult['renderProfile']['capabilityKey']) => {
+  const disabledElements = ['医疗功效', '未成年人'];
+  return recomputePromptQuality(
+    [item],
+    DEFAULT_EFFECT_PROMPT_SETTINGS,
+    undefined,
+    {
+      ratio: '9:16',
+      resolution: '1080p',
+      capabilityKey,
+      sharedConstraints: {
+        disabledElements,
+        contentHash: 'a'.repeat(64),
+      },
     },
-  }) as EffectPromptBatchResult;
+    compileEffectPromptSharedPrompt(disabledElements, '保持产品外观前后一致。'),
+  ) as EffectPromptBatchResult;
+};
 
 describe('effect Seedance request compiler', () => {
   it('keeps technical settings outside the visible prompt and appends shared constraints once', () => {
@@ -51,8 +62,11 @@ describe('effect Seedance request compiler', () => {
       ratio: '9:16',
       resolution: '1080p',
     });
-    expect(compiled.request.content[0].text).toContain('全程避免出现：医疗功效、未成年人。');
+    expect(compiled.request.content[0].text).toContain(
+      '画面中不得出现以下内容：医疗功效；未成年人。\n保持产品外观前后一致。',
+    );
     expect(compiled.request.content[0].text.match(/医疗功效/gu)).toHaveLength(1);
+    expect(compiled.sharedPromptHash).toBe(batch('SEEDANCE_2_0').sharedPrompt?.contentHash);
     expect(item.content).not.toContain('9:16');
   });
 

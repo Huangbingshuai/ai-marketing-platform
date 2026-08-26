@@ -11,6 +11,8 @@ import type {
   EffectPromptInsightRole,
   EffectPromptMetrics,
   EffectPromptRenderProfile,
+  EffectPromptSharedPrompt,
+  EffectPromptSharedPromptSection,
 } from '@ai-marketing/contracts';
 import {
   EFFECT_PROMPT_INSIGHT_FIELDS,
@@ -256,12 +258,14 @@ const FULL_TIMELINE =
   /(?:\d+(?:\.\d+)?\s*[-—~至]\s*\d+(?:\.\d+)?\s*(?:秒|s)|第[一二三四五六\d]+镜|镜头[一二三四五六\d]+|分镜|时间轴|切换|切至|镜头转到|转场|硬切|叠化|闪白|蒙太奇)/iu;
 const STRUCTURED_PHASE = /(?:前段|中段|后段)/gu;
 const VISIBLE_ACTION =
-  /(?:拿起|夹起|提起|拎起|托住|扶住|扶正|握住|放下|放入|放到|轻放|摆放|摆到|打开|关闭|取出|倒入|切开|撕开|按下|按压|涂抹|喷洒|擦拭|冲洗|折叠|展开|安装|装入|推拉|旋转|转动|倾斜|移动|移到|搅拌|加热|品尝|对比|揭开|翻转|挤出|穿戴|使用|离开|退出)/u;
+  /(?:拿起|夹起|提起|拎起|托住|扶住|扶正|握住|放下|放入|放到|轻放|摆放|摆到|打开|关闭|取出|倒入|切开|撕开|按下|按压|涂抹|喷洒|擦拭|冲洗|折叠|展开|安装|装入|推拉|旋转|转动|倾斜|移动|移到|搅拌|加热|品尝|对比|揭开|翻转|挤出|穿戴|使用|离开|退出|触碰|落到|恢复)/u;
 const PLACEHOLDER_TEXT =
   /(?:待补充|以信息卡为准|自然出镜|相关细节|关键特点|适当|高级感|真实使用动作|当前产品名|指定卖点|当前场景|当前人物)/u;
 const BAKED_TEXT =
   /(?:字幕|标题文字|屏幕文字|可读文字|价格贴纸|促销贴纸|二维码|购买按钮|销量角标|库存角标)/iu;
 const AUDIO_OVERREACH = /(?:\bBGM\b|背景音乐|配乐|旁白|口播|人声解说|歌词|完整音效设计)/iu;
+const RENDER_METADATA =
+  /(?:(?:画幅\s*)?(?:16:9|4:3|1:1|3:4|9:16|21:9|9:21)(?:竖屏|横屏)?|(?:分辨率\s*)?(?:480|720|1080)[pP]|(?:时长\s*)?\d+(?:\.\d+)?秒)/gu;
 const ABSTRACT_VISUAL =
   /(?:工厂|生产线|实验室|检测设备|专家背书|原料加工|生产过程|制作过程|工艺流程|配方研发|技术原理)/u;
 const PHYSICS_BREAK =
@@ -279,13 +283,25 @@ const CAMERA_MOVEMENTS = [
 ];
 const CAMERA_CONTEXT =
   /(?:镜头|机位|特写|近景|中景|全景|微距|俯拍|俯视|仰拍|低机位|高机位|固定|肩后|手持|跟拍|环绕|横移|移焦|聚焦|焦点|景深|主观|推近|后拉|拉远)/u;
+const HOOK_RESOLVED =
+  /(?:答案(?:出现|揭晓)|揭晓(?:答案|原因)|原来是|问题(?:被|已)?解决|成功(?:打开|完成)|恢复正常|效果立刻出现)/u;
+const PAIN_RESOLVED =
+  /(?:(?:使用|拿出|换上|放入).{0,24}(?:解决|完成|恢复|顺利)|问题(?:被|已)?解决|不便消失|轻松完成)/u;
+const PRODUCT_EFFECT_LEAK =
+  /(?:使用后|效果对比|前后对比|问题解决|明显改善|立刻见效|满意(?:微笑|点头)|证明(?:效果|功效))/u;
+const SAFE_AREA = /(?:留白|安全区|干净空间|简洁背景|无遮挡空间|空白墙面|空白区域|干净无遮挡)/u;
+const OUTRO_UNSTABLE =
+  /(?:快速|奔跑|跳跃|连续旋转|跟拍|跟随|手持|环绕|横移|侧移|推近|推进|靠近|后拉|拉远)/u;
+const OUTRO_SUBTLE_MOTION =
+  /(?:扶正|离开|收焦|焦点.{0,12}(?:落到|稳定|清楚)|光线.{0,12}(?:稳定|恢复)|蒸汽.{0,12}(?:变缓|减弱|停止)|背景.{0,12}(?:稳定|安静)|轻微变化)/u;
+const ABSTRACT_SELLING_POINT = /(?:工艺|配方|技术|理念|品质|匠心|专业|口感|香味|风味|酒香|回甘)/u;
+const ATTRIBUTE_SELLING_POINT = /(?:外观|颜色|材质|纹理|切面|尺寸|轻量|便携|设计)/u;
+const ATTRIBUTE_CUE = /(?:外观|表面|轮廓|颜色|材质|纹理|切面|接口|细节|受光)/u;
 
 const overloadedAction = (content: string): boolean => {
   const actionCount = content.match(new RegExp(VISIBLE_ACTION.source, 'gu'))?.length ?? 0;
-  const actionClauses = content
-    .split(/[。；;!?！？]/u)
-    .filter((clause) => VISIBLE_ACTION.test(clause)).length;
-  return actionClauses >= 3 || actionCount > 5;
+  const sequenceCount = content.match(/(?:随后|接着|然后|再(?:次)?|最后)/gu)?.length ?? 0;
+  return sequenceCount >= 2 || actionCount > 12;
 };
 
 const cameraConflict = (content: string): boolean => {
@@ -298,9 +314,19 @@ const cameraConflict = (content: string): boolean => {
   return movingFixedCamera || movementCount > 1;
 };
 
+const promptLengthBounds = (durationSeconds: number): readonly [number, number] => {
+  if (durationSeconds <= 5) return [80, 150];
+  if (durationSeconds <= 8) return [110, 200];
+  return [140, 260];
+};
+
 export const effectPromptExecutionIssues = (item: EffectPromptItem): string[] => {
   const issues: string[] = [];
   const content = item.content.normalize('NFC');
+  const [minimumLength, maximumLength] = promptLengthBounds(item.targetDurationSeconds);
+  const creativeContent = content.replace(RENDER_METADATA, '').replace(/[，,。；;\s]+$/gu, '');
+  if (creativeContent.length < minimumLength || creativeContent.length > maximumLength)
+    issues.push('PROMPT_LENGTH_MISMATCH');
   if (META_LANGUAGE.test(content)) issues.push('META_LANGUAGE');
   if (ABSTRACT_PERSONA.test(`${item.dimensions.persona} ${content}`))
     issues.push('ABSTRACT_PERSONA');
@@ -308,7 +334,11 @@ export const effectPromptExecutionIssues = (item: EffectPromptItem): string[] =>
   // 多时间段、镜头编号和真实剪辑词仍由 FULL_TIMELINE 硬拒绝。
   if (FULL_TIMELINE.test(content) || new Set(content.match(STRUCTURED_PHASE) ?? []).size >= 2)
     issues.push('FULL_TIMELINE_NOT_FRAGMENT');
-  if (!VISIBLE_ACTION.test(content)) issues.push('NO_VISIBLE_ACTION');
+  if (
+    !VISIBLE_ACTION.test(content) &&
+    !(item.fragmentType === 'OUTRO' && OUTRO_SUBTLE_MOTION.test(content))
+  )
+    issues.push('NO_VISIBLE_ACTION');
   if (PLACEHOLDER_TEXT.test(content)) issues.push('PLACEHOLDER_TEXT');
   if (overloadedAction(content)) issues.push('OVERLOADED_ACTION');
   if (cameraConflict(content)) issues.push('CAMERA_CONFLICT');
@@ -319,6 +349,33 @@ export const effectPromptExecutionIssues = (item: EffectPromptItem): string[] =>
   if (PHYSICS_BREAK.test(content)) issues.push('PHYSICS_BREAK');
   if (REFERENCE_DEPENDENCY.test(content)) issues.push('REFERENCE_DEPENDENCY');
   if ((content.match(NEGATIVE_CLAUSE) ?? []).length >= 3) issues.push('NEGATIVE_TAIL_DUPLICATION');
+  if (item.fragmentType === 'HOOK' && HOOK_RESOLVED.test(content)) issues.push('HOOK_RESOLVED');
+  if (item.fragmentType === 'PAIN' && PAIN_RESOLVED.test(content)) issues.push('PAIN_RESOLVED');
+  if (item.fragmentType === 'PRODUCT_DISPLAY') {
+    const productName = item.insightBindings.find(
+      (binding) => binding.field === 'PRODUCT_NAME',
+    )?.value;
+    if (productName && !content.slice(0, 80).includes(productName))
+      issues.push('PRODUCT_NOT_FIRST_FRAME');
+    if (PRODUCT_EFFECT_LEAK.test(content)) issues.push('PRODUCT_ROLE_OVERLOAD');
+  }
+  if (
+    item.fragmentType === 'SELLING_POINT_EXPLANATION' &&
+    !ABSTRACT_SELLING_POINT.test(item.dimensions.sellingPoint) &&
+    ATTRIBUTE_SELLING_POINT.test(item.dimensions.sellingPoint) &&
+    !ATTRIBUTE_CUE.test(content)
+  )
+    issues.push('EVIDENCE_MODE_MISMATCH');
+  if (item.fragmentType === 'CTA' && !SAFE_AREA.test(content)) issues.push('CTA_NO_SAFE_AREA');
+  if (item.fragmentType === 'OUTRO') {
+    if (OUTRO_UNSTABLE.test(content)) issues.push('OUTRO_UNSTABLE');
+    const introducesSellingPoint = item.insightBindings.some(
+      (binding) =>
+        ['CORE_SELLING_POINT', 'SECONDARY_SELLING_POINT'].includes(binding.field) &&
+        content.includes(binding.value),
+    );
+    if (introducesSellingPoint) issues.push('OUTRO_NEW_MESSAGE');
+  }
   return issues;
 };
 
@@ -496,9 +553,142 @@ export const defaultEffectPromptRenderProfile = (): EffectPromptRenderProfile =>
   capabilityKey: 'SEEDANCE_2_0',
   sharedConstraints: {
     disabledElements: [],
-    contentHash: createHash('sha256').update('').digest('hex'),
+    contentHash: sha256Json([]),
   },
 });
+
+export const compileEffectPromptSharedConstraintPrompt = (disabledElements: string[]): string => {
+  const normalized = normalizedDisabledElements(disabledElements);
+  return normalized.length ? `画面中不得出现以下内容：${normalized.join('；')}。` : '';
+};
+
+const normalizedDisabledElements = (values: string[]): string[] => {
+  const unique = new Map<string, string>();
+  for (const value of values) {
+    const cleaned = value
+      .trim()
+      .replace(/\s+/gu, ' ')
+      .replace(/[。；;，,]+$/gu, '')
+      .trim();
+    if (!cleaned) continue;
+    const key = cleaned.normalize('NFKC').toLocaleLowerCase('zh-CN');
+    if (!unique.has(key)) unique.set(key, cleaned);
+  }
+  return [...unique.values()];
+};
+
+const sharedConstraintContentHash = (disabledElements: string[], prompt: string): string =>
+  createHash('sha256').update(JSON.stringify({ disabledElements, prompt })).digest('hex');
+
+const sha256Text = (value: string): string => createHash('sha256').update(value).digest('hex');
+const sha256Json = (value: unknown): string => sha256Text(JSON.stringify(value));
+
+export const compileEffectPromptSharedPrompt = (
+  disabledElements: string[],
+  additionalContent = '',
+  existingSections: EffectPromptSharedPromptSection[] = [],
+): EffectPromptSharedPrompt => {
+  const disabled = normalizedDisabledElements(disabledElements);
+  const additional = additionalContent.trim();
+  const knownKeys = new Set(['DISABLED_ELEMENTS', 'USER_ADDITIONAL']);
+  const sections: EffectPromptSharedPromptSection[] = [
+    {
+      key: 'DISABLED_ELEMENTS',
+      title: '禁用元素',
+      source: 'SYSTEM',
+      content: compileEffectPromptSharedConstraintPrompt(disabled),
+      editable: false,
+      sourceHash: sha256Json(disabled),
+    },
+    ...existingSections.filter(({ key }) => !knownKeys.has(key)),
+    {
+      key: 'USER_ADDITIONAL',
+      title: '补充共用内容',
+      source: 'USER',
+      content: additional,
+      editable: true,
+      sourceHash: sha256Text(additional),
+    },
+  ];
+  const compiledContent = sections
+    .map(({ content }) => content.trim())
+    .filter(Boolean)
+    .join('\n');
+  return {
+    schemaVersion: 1,
+    sections,
+    compiledContent,
+    contentHash: sha256Text(compiledContent),
+  };
+};
+
+export const effectPromptAdditionalSharedContent = (
+  sharedPrompt: EffectPromptSharedPrompt | undefined,
+): string =>
+  sharedPrompt?.sections.find(({ key }) => key === 'USER_ADDITIONAL')?.content.trim() ?? '';
+
+export const isEffectPromptSharedPrompt = (
+  value: unknown,
+  disabledElements: string[],
+): value is EffectPromptSharedPrompt => {
+  const prompt = record(value);
+  if (!prompt || !Array.isArray(prompt.sections)) return false;
+  const sections = prompt.sections.map(record);
+  if (
+    prompt.schemaVersion !== 1 ||
+    Object.keys(prompt).length !== 4 ||
+    sections.length < 1 ||
+    sections.length > 20 ||
+    sections.some((section) => !section || Object.keys(section).length !== 6)
+  )
+    return false;
+  const typed = sections as Array<Record<string, unknown>>;
+  if (
+    typed.some(
+      (section) =>
+        typeof section.key !== 'string' ||
+        !/^[A-Z][A-Z0-9_]{0,63}$/u.test(section.key) ||
+        typeof section.title !== 'string' ||
+        section.title.trim().length === 0 ||
+        section.title.length > 120 ||
+        !['SYSTEM', 'USER'].includes(String(section.source)) ||
+        typeof section.content !== 'string' ||
+        section.content.length > 30_000 ||
+        section.content !== section.content.trim() ||
+        typeof section.editable !== 'boolean' ||
+        typeof section.sourceHash !== 'string' ||
+        !/^[a-f0-9]{64}$/u.test(section.sourceHash),
+    ) ||
+    new Set(typed.map(({ key }) => key)).size !== typed.length
+  )
+    return false;
+  const disabled = typed.find(({ key }) => key === 'DISABLED_ELEMENTS');
+  const additional = typed.find(({ key }) => key === 'USER_ADDITIONAL');
+  const normalizedDisabled = normalizedDisabledElements(disabledElements);
+  if (
+    !disabled ||
+    disabled.source !== 'SYSTEM' ||
+    disabled.editable !== false ||
+    disabled.content !== compileEffectPromptSharedConstraintPrompt(normalizedDisabled) ||
+    disabled.sourceHash !== sha256Json(normalizedDisabled) ||
+    !additional ||
+    additional.source !== 'USER' ||
+    additional.editable !== true ||
+    additional.sourceHash !== sha256Text(String(additional.content))
+  )
+    return false;
+  const compiledContent = typed
+    .map(({ content }) => String(content))
+    .filter(Boolean)
+    .join('\n');
+  return (
+    typeof prompt.compiledContent === 'string' &&
+    prompt.compiledContent === compiledContent &&
+    prompt.compiledContent.length <= 60_000 &&
+    typeof prompt.contentHash === 'string' &&
+    prompt.contentHash === sha256Text(compiledContent)
+  );
+};
 
 export const isEffectPromptRenderProfile = (value: unknown): value is EffectPromptRenderProfile => {
   const profile = record(value);
@@ -506,6 +696,14 @@ export const isEffectPromptRenderProfile = (value: unknown): value is EffectProm
   if (!profile || !constraints) return false;
   const capabilityKey = profile.capabilityKey as EffectPromptRenderProfile['capabilityKey'];
   const capability = EFFECT_PROMPT_RENDER_CAPABILITIES[capabilityKey];
+  const disabledElements = Array.isArray(constraints.disabledElements)
+    ? constraints.disabledElements
+    : [];
+  const prompt = constraints.prompt;
+  const hasPrompt = typeof prompt === 'string';
+  const expectedPrompt = compileEffectPromptSharedConstraintPrompt(
+    disabledElements.filter((item): item is string => typeof item === 'string'),
+  );
   return Boolean(
     Object.keys(profile).length === 4 &&
     EFFECT_PROMPT_RENDER_CAPABILITY_KEYS.includes(capabilityKey) &&
@@ -513,16 +711,19 @@ export const isEffectPromptRenderProfile = (value: unknown): value is EffectProm
     SEEDANCE_RESOLUTIONS.includes(profile.resolution as never) &&
     capability.ratios.includes(profile.ratio as never) &&
     capability.resolutions.includes(profile.resolution as never) &&
-    Object.keys(constraints).length === 2 &&
-    Array.isArray(constraints.disabledElements) &&
-    constraints.disabledElements.length <= 100 &&
-    constraints.disabledElements.every(
+    [2, 3].includes(Object.keys(constraints).length) &&
+    disabledElements.length <= 100 &&
+    disabledElements.every(
       (item) => typeof item === 'string' && item.trim().length > 0 && item.length <= 500,
     ) &&
-    new Set(constraints.disabledElements.map((item) => normalizedValue(String(item)))).size ===
-      constraints.disabledElements.length &&
+    new Set(disabledElements.map((item) => normalizedValue(String(item)))).size ===
+      disabledElements.length &&
+    (!hasPrompt || (prompt.length <= 60_000 && prompt === expectedPrompt)) &&
     typeof constraints.contentHash === 'string' &&
-    /^[a-f0-9]{64}$/u.test(constraints.contentHash),
+    /^[a-f0-9]{64}$/u.test(constraints.contentHash) &&
+    (hasPrompt
+      ? constraints.contentHash === sharedConstraintContentHash(disabledElements, prompt)
+      : constraints.contentHash === sha256Json(disabledElements)),
   );
 };
 
@@ -531,9 +732,16 @@ export const recomputePromptQuality = (
   rawSettings: EffectPromptBatchSettings,
   previous?: Partial<EffectPromptMetrics>,
   renderProfile: EffectPromptRenderProfile = defaultEffectPromptRenderProfile(),
+  sharedPrompt?: EffectPromptSharedPrompt,
 ): Pick<
   EffectPromptBatchResult,
-  'schemaVersion' | 'settings' | 'renderProfile' | 'items' | 'metrics' | 'qualityStatus'
+  | 'schemaVersion'
+  | 'settings'
+  | 'renderProfile'
+  | 'sharedPrompt'
+  | 'items'
+  | 'metrics'
+  | 'qualityStatus'
 > => {
   const settings = normalizeEffectPromptSettings(rawSettings);
   const items = rawItems.filter(isEffectPromptItem).map((item) => {
@@ -690,6 +898,7 @@ export const recomputePromptQuality = (
     schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
     settings,
     renderProfile,
+    ...(sharedPrompt ? { sharedPrompt } : {}),
     items,
     metrics,
     qualityStatus,
@@ -707,7 +916,12 @@ export const parseEffectPromptBatchResult = (value: unknown): EffectPromptBatchR
     candidate.items.length > EFFECT_PROMPT_LIMITS.maxCount ||
     !validMetrics(candidate.metrics) ||
     !['PASS', 'NEEDS_REVIEW'].includes(String(candidate.qualityStatus)) ||
-    Object.keys(candidate).length !== 6
+    ![6, 7].includes(Object.keys(candidate).length) ||
+    (candidate.sharedPrompt !== undefined &&
+      !isEffectPromptSharedPrompt(
+        candidate.sharedPrompt,
+        candidate.renderProfile.sharedConstraints.disabledElements,
+      ))
   )
     return null;
   const items = candidate.items.filter(isEffectPromptItem);
@@ -721,6 +935,7 @@ export const parseEffectPromptBatchResult = (value: unknown): EffectPromptBatchR
     candidate.settings,
     record(candidate.metrics) as Partial<EffectPromptMetrics> | undefined,
     candidate.renderProfile,
+    candidate.sharedPrompt,
   );
 };
 
@@ -769,7 +984,11 @@ export const parseLegacyV4EffectPromptBatchResultForRead = (
     capabilityKey: 'SEEDANCE_2_0',
     sharedConstraints: {
       disabledElements,
-      contentHash: createHash('sha256').update(JSON.stringify(disabledElements)).digest('hex'),
+      prompt: compileEffectPromptSharedConstraintPrompt(disabledElements),
+      contentHash: sharedConstraintContentHash(
+        disabledElements,
+        compileEffectPromptSharedConstraintPrompt(disabledElements),
+      ),
     },
   };
   return recomputePromptQuality(

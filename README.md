@@ -121,7 +121,7 @@ Step 03 读取当前产品已提交的 `marketing-insight:{productId}`，生成�
 
 公开子工作流先把已提交信息卡映射为带稳定 `factId` 的提炼事实，再规划“受众—痛点—场景—卖点—证据—营销目标”关系束，并把关系束编排到六类片段蓝图。策略规划调用 Doubao Seed 2.0 Lite，六类候选生成调用 Doubao Seed 2.1 Turbo；事实来源校验、职责校验、执行门禁、语义/视觉去重、提炼信息覆盖门禁和最多三轮定向补齐均为确定性逻辑，不增加第三次模型审查。
 
-最终 Prompt 重点包含可直接执行的场景、主体、连续动作、产品关系、主景别、单一运镜、光线、节奏和结束画面。六维差异、标签、卖点与时长保存在结构化元数据中；画幅、分辨率和统一禁用元素保存在批次级 `renderProfile`。候选模型指令明确要求不复述这些批次参数，但它们不作为候选淘汰或完成校验条件；模型偶尔生成时仍保留正文。第 4 节点提交 Seedance 任务时以结构化时长、画幅和分辨率为准，并把统一禁用元素去重追加一次。
+最终 Prompt 重点包含可直接执行的场景、主体、连续动作、产品关系、主景别、单一运镜、光线、节奏和结束画面。六维差异、标签、卖点与时长保存在结构化元数据中，画幅与分辨率保存在批次级 `renderProfile`；禁用元素和用户补充要求由顶层 `sharedPrompt` 统一编译。候选模型会收到这份共用提示词作为约束但不应复述到单条正文，偶尔出现相关文字时也不会因此单独淘汰。第 4 节点编译 Seedance 请求时独立传递时长、画幅和分辨率，并把同一份 `sharedPrompt.compiledContent` 追加一次，不回写单条 Prompt。
 
 前三轮模型补齐仍不足时，Worker 使用已校验关系束和蓝图生成安全兜底变体；兜底也必须通过同一职责、来源、执行、去重和覆盖门禁。成功批次必须严格等于用户设置的总数及六类配额，否则任务失败且不覆盖上一份有效结果。只有全部门禁通过后，页面才允许“完成校验”并提交 `prompt-batch:{productId}` WorkingArtifact。详细设计、V1～V5 兼容和验收记录见 [差异化 Prompt 批量生成节点实施方案](docs/效果类工作流-差异化Prompt批量生成节点实施方案.md)。
 
@@ -383,7 +383,7 @@ Worker 内部接口由 `x-worker-token` 和 attempt token 保护，不作为浏�
 /api/projects/:projectId/workflows/effect/prompt-generation
 ```
 
-核心接口包括加载产品工作区、保存六类设置、分页筛选结果、启动批量/单条重生成、查询 Run 与安全节点详情、人工增删改、完成校验和权威 JSON 导出。Worker 内部 API 使用独立 `EFFECT_PROMPT_WORKER_TOKEN` 与 attempt token。
+核心接口包括加载产品工作区、保存六类设置、分页筛选结果、启动批量/单条重生成、查询 Run 与安全节点详情、人工增删改、保存批次共用提示词、完成校验和权威 JSON 导出。共用提示词编辑只更新领域草稿并使用 revision 并发控制，再次完成校验后才更新 `prompt-batch:{productId}` WorkingArtifact。Worker 内部 API 使用独立 `EFFECT_PROMPT_WORKER_TOKEN` 与 attempt token。
 
 ## 常见排障
 

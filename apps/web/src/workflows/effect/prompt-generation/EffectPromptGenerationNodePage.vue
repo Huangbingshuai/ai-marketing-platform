@@ -23,7 +23,6 @@ import {
   EFFECT_PROMPT_GRAPH_EDGES,
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
-  EFFECT_PROMPT_RENDER_CAPABILITIES,
   effectPromptTargetCount,
 } from '@ai-marketing/contracts';
 import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
@@ -67,6 +66,7 @@ import {
   pollEffectPromptRun,
   removeEffectPromptItem,
   saveEffectPromptItem,
+  saveEffectPromptSharedPrompt,
   savePromptSettings,
   type EffectPromptContext,
   type PromptItemDraft,
@@ -101,6 +101,9 @@ const notice = ref<Notice | null>(null);
 const itemOperation = ref<ItemOperation | null>(null);
 const validating = ref(false);
 const exporting = ref(false);
+const sharedPromptDraft = ref('');
+const sharedPromptDirty = ref(false);
+const sharedPromptSaving = ref(false);
 
 const graphDialogOpen = ref(false);
 const graphLoading = ref(false);
@@ -148,6 +151,7 @@ let workspaceController: AbortController | null = null;
 let resultController: AbortController | null = null;
 let operationController: AbortController | null = null;
 let itemMutationController: AbortController | null = null;
+let sharedPromptController: AbortController | null = null;
 let exportController: AbortController | null = null;
 let graphDetailController: AbortController | null = null;
 let settingsTimer: ReturnType<typeof setTimeout> | undefined;
@@ -191,23 +195,26 @@ const currentMetrics = computed(
   () => currentResult.value?.metrics ?? currentState.value?.metrics ?? null,
 );
 const currentRenderProfile = computed(() => currentResult.value?.renderProfile ?? null);
-const currentRenderCapability = computed(() => {
-  const key = currentRenderProfile.value?.capabilityKey;
-  return key ? EFFECT_PROMPT_RENDER_CAPABILITIES[key] : null;
-});
-const currentDisabledElements = computed(
-  () => currentRenderProfile.value?.sharedConstraints.disabledElements ?? [],
+const currentSharedPrompt = computed(() => currentResult.value?.sharedPrompt ?? null);
+const currentSystemSharedPromptContent = computed(
+  () =>
+    currentSharedPrompt.value?.sections
+      .find(({ key }) => key === 'DISABLED_ELEMENTS')
+      ?.content.trim() ??
+    currentRenderProfile.value?.sharedConstraints.prompt?.trim() ??
+    '',
 );
-const renderCapabilityLabel = computed(() => {
-  const labels = {
-    SEEDANCE_2_0: 'Seedance 2.0',
-    SEEDANCE_2_0_FAST: 'Seedance 2.0 Fast',
-    SEEDANCE_1_5_PRO: 'Seedance 1.5 Pro',
-    SEEDANCE_1_0: 'Seedance 1.0',
-  } as const;
-  const key = currentRenderProfile.value?.capabilityKey;
-  return key ? labels[key] : '当前模型';
-});
+const currentAdditionalSharedPromptContent = computed(
+  () =>
+    currentSharedPrompt.value?.sections
+      .find(({ key }) => key === 'USER_ADDITIONAL')
+      ?.content.trim() ?? '',
+);
+const currentSharedPromptPreview = computed(() =>
+  [currentSystemSharedPromptContent.value, sharedPromptDraft.value.trim()]
+    .filter(Boolean)
+    .join('\n'),
+);
 const insightFieldLabels: Record<EffectPromptInsightField, string> = {
   PRODUCT_NAME: '产品名称',
   PRODUCT_CATEGORY: '产品品类',
@@ -230,16 +237,6 @@ const insightFieldLabels: Record<EffectPromptInsightField, string> = {
   DISABLED_ELEMENT: '禁用元素',
   VISUAL_STYLE_BASELINE: '视觉基线',
 };
-const insightSummary = (
-  values: Array<{ field: EffectPromptInsightField; value: string }>,
-  limit = 3,
-): string => {
-  if (!values.length) return '无';
-  const visible = values
-    .slice(0, limit)
-    .map(({ field, value }) => `${insightFieldLabels[field]}：${value}`);
-  return `${visible.join('；')}${values.length > limit ? `；另 ${values.length - limit} 项` : ''}`;
-};
 const itemInsightSources = (item: EffectPromptItem) =>
   [
     ...new Map(
@@ -249,11 +246,6 @@ const itemInsightSources = (item: EffectPromptItem) =>
       ]),
     ).values(),
   ].slice(0, 8);
-const currentFragmentDistribution = computed(() => {
-  const distribution = currentMetrics.value?.fragmentTypeDistribution ?? [];
-  if (!fragmentTypeFilter.value) return distribution;
-  return distribution.filter((entry) => entry.fragmentType === fragmentTypeFilter.value);
-});
 const currentQuotaStats = computed(() => {
   const fragmentType = fragmentTypeFilter.value;
   if (!fragmentType) {
@@ -281,11 +273,6 @@ const currentQuotaStats = computed(() => {
     excessCount: Math.max(0, actualCount - targetCount),
   };
 });
-const quotaDifferenceLabel = (actualCount: number, targetCount: number): string => {
-  if (actualCount < targetCount) return '缺少 ' + (targetCount - actualCount);
-  if (actualCount > targetCount) return '超出 ' + (actualCount - targetCount);
-  return '数量一致';
-};
 const executionInvalidSummary = computed(() => {
   const labels: Record<string, string> = {
     ABSTRACT_VISUAL: '抽象信息被伪造成画面',
@@ -298,7 +285,10 @@ const executionInvalidSummary = computed(() => {
     BAKED_TEXT: '烧录字幕或界面文字',
     AUDIO_OVERREACH: '口播或背景音乐越界',
     CAMERA_CONFLICT: '运镜互相冲突',
+    CTA_NO_SAFE_AREA: '转化片段缺少安全留白',
+    EVIDENCE_MODE_MISMATCH: '卖点证据类型不匹配',
     FACT_OVERLOAD: '单条事实过多',
+    HOOK_RESOLVED: '钩子提前揭晓答案',
     META_LANGUAGE: '策划元话语',
     FULL_TIMELINE: '多镜头时间轴',
     FULL_TIMELINE_NOT_FRAGMENT: '完整成片结构',
@@ -314,7 +304,13 @@ const executionInvalidSummary = computed(() => {
     DURATION_MISMATCH: '片段时长不一致',
     NEGATIVE_TAIL_DUPLICATION: '重复禁用说明',
     OVERLOADED_ACTION: '主要动作过多',
+    OUTRO_NEW_MESSAGE: '片尾引入新卖点',
+    OUTRO_UNSTABLE: '片尾无法稳定定格',
+    PAIN_RESOLVED: '痛点在同条中被解决',
     PHYSICS_BREAK: '物理变化不合理',
+    PRODUCT_NOT_FIRST_FRAME: '产品未在首帧清楚出现',
+    PRODUCT_ROLE_OVERLOAD: '产品展示混入效果职责',
+    PROMPT_LENGTH_MISMATCH: '正文长度与片段时长不匹配',
     REFERENCE_DEPENDENCY: '缺少参考图却要求精确还原',
   };
   return (currentMetrics.value?.executionInvalidReasons ?? [])
@@ -360,6 +356,7 @@ const currentGraphNodes = computed<EffectPromptNodeExecution[]>(() =>
 const graphRows: EffectPromptNodeId[][] = [
   ['LOAD_AND_SNAPSHOT'],
   ['INSIGHT_MAPPING'],
+  ['SHARED_PROMPT_COMPILATION'],
   ['STRATEGY_PLANNING'],
   ['DIMENSION_COMBINATION'],
   ['FRAGMENT_TYPE_ROUTER'],
@@ -393,9 +390,6 @@ const regenerationChangedKeys = computed(() => {
     (key) => regenerationDimensions.value[key].trim() !== item.dimensions[key].trim(),
   );
 });
-const regenerationHasChanges = computed(
-  () => regenerationChangedKeys.value.length > 0 || regenerationInstruction.value.trim().length > 0,
-);
 const regenerationSuggestions = computed<Record<keyof EffectPromptDimensions, string[]>>(() => {
   const result = {} as Record<keyof EffectPromptDimensions, string[]>;
   for (const { key } of EFFECT_PROMPT_DIMENSIONS) {
@@ -507,6 +501,11 @@ const loadCurrentResult = async (): Promise<void> => {
     )
       return;
     resultData.value = loaded;
+    if (!sharedPromptDirty.value)
+      sharedPromptDraft.value =
+        loaded.result.sharedPrompt?.sections
+          .find(({ key }) => key === 'USER_ADDITIONAL')
+          ?.content.trim() ?? '';
     if (page.value > promptPageCount(loaded.total)) page.value = promptPageCount(loaded.total);
   } catch (error) {
     if (!isAbortError(error) && generation === resultGeneration)
@@ -635,12 +634,16 @@ watch(
     settingsControllers.clear();
     operationController?.abort();
     itemMutationController?.abort();
+    sharedPromptController?.abort();
     exportController?.abort();
     itemOperation.value = null;
     exporting.value = false;
     editorOpen.value = false;
     editorSaving.value = false;
     editorTrigger.value = null;
+    sharedPromptDirty.value = false;
+    sharedPromptSaving.value = false;
+    sharedPromptDraft.value = '';
     regenerationDialogOpen.value = false;
     regenerationCandidate.value = null;
     regenerationSaving.value = false;
@@ -662,9 +665,13 @@ watch(currentProductId, (next, previous) => {
   keyword.value = '';
   fragmentTypeFilter.value = '';
   itemMutationController?.abort();
+  sharedPromptController?.abort();
   exportController?.abort();
   itemOperation.value = null;
   exporting.value = false;
+  sharedPromptDirty.value = false;
+  sharedPromptSaving.value = false;
+  sharedPromptDraft.value = '';
   editorOpen.value = false;
   editorSaving.value = false;
   editorTrigger.value = null;
@@ -1047,6 +1054,41 @@ const commitEditor = async (): Promise<void> => {
   }
 };
 
+const resetSharedPromptDraft = (): void => {
+  sharedPromptDraft.value = currentAdditionalSharedPromptContent.value;
+  sharedPromptDirty.value = false;
+};
+
+const saveSharedPrompt = async (): Promise<void> => {
+  const state = currentState.value;
+  const result = resultData.value;
+  if (!state?.resultId || !result || sharedPromptSaving.value || !sharedPromptDirty.value) return;
+  sharedPromptController?.abort();
+  const controller = new AbortController();
+  sharedPromptController = controller;
+  sharedPromptSaving.value = true;
+  const productId = state.productId;
+  try {
+    await saveEffectPromptSharedPrompt(
+      props.projectId,
+      state.resultId,
+      result.revision,
+      sharedPromptDraft.value,
+      controller.signal,
+    );
+    if (controller.signal.aborted || currentProductId.value !== productId) return;
+    sharedPromptDirty.value = false;
+    showNotice('共用提示词已保存，完成校验后更新工作副本');
+    await reloadWorkspace(false);
+  } catch (error) {
+    if (!isAbortError(error)) await handleMutationError(error, '共用提示词保存失败');
+  } finally {
+    if (sharedPromptController === controller) sharedPromptController = null;
+    if (!controller.signal.aborted || currentProductId.value === productId)
+      sharedPromptSaving.value = false;
+  }
+};
+
 const restoreDeleteFocus = (): void => {
   const trigger = deleteTrigger.value;
   deleteTrigger.value = null;
@@ -1228,6 +1270,7 @@ const graphDescription = (nodeId: EffectPromptNodeId): string =>
   ({
     LOAD_AND_SNAPSHOT: '冻结洞察工作副本、批次设置和人工保留内容',
     INSIGHT_MAPPING: '把已确认的营销洞察映射为片段可用信息',
+    SHARED_PROMPT_COMPILATION: '编译本批次生成与渲染共同使用的提示词',
     STRATEGY_PLANNING: '连接受众、痛点、场景、卖点与营销目标，形成营销关系束',
     DIMENSION_COMBINATION: '先分配营销关系束，再在关系内部编排六维差异',
     FRAGMENT_TYPE_ROUTER: '按选定数量和时长将组合路由到六类生成分支',
@@ -1419,6 +1462,7 @@ onBeforeUnmount(() => {
   settingsControllers.forEach((controller) => controller.abort());
   operationController?.abort();
   itemMutationController?.abort();
+  sharedPromptController?.abort();
   exportController?.abort();
   graphDetailController?.abort();
   pollControllers.forEach(({ controller }) => controller.abort());
@@ -1740,89 +1784,57 @@ onBeforeUnmount(() => {
         </article>
       </section>
 
-      <section v-if="currentRenderProfile" class="unified-render-profile" aria-label="统一渲染设置">
-        <div class="render-profile-heading">
+      <section v-if="currentRenderProfile" class="shared-prompt-panel" aria-label="共用提示词">
+        <header>
           <div>
-            <strong>统一渲染设置</strong>
-            <span>渲染时作为独立参数传递，不写入 Prompt 正文</span>
+            <strong>共用提示词</strong>
+            <span>生成 Prompt 时统一约束，生成视频时自动追加一次</span>
           </div>
-          <small v-if="currentMetrics?.fallbackCount">
-            本批次规则兜底 {{ currentMetrics.fallbackCount }} 条
-          </small>
-        </div>
-        <div class="render-profile-values">
-          <span
-            ><small>画幅</small><b>{{ currentRenderProfile.ratio }}</b></span
-          >
-          <span
-            ><small>分辨率</small><b>{{ currentRenderProfile.resolution }}</b></span
-          >
-          <span>
-            <small>模型时长范围</small>
-            <b>
-              {{ renderCapabilityLabel }} ·
-              {{ currentRenderCapability?.minDurationSeconds ?? 4 }}～{{
-                currentRenderCapability?.maxDurationSeconds ?? 15
-              }}
-              秒
-            </b>
-          </span>
-        </div>
-        <div class="shared-disabled-elements">
-          <strong>统一禁用元素</strong>
-          <div v-if="currentDisabledElements.length">
-            <span v-for="element in currentDisabledElements" :key="element">{{ element }}</span>
+          <em :class="{ dirty: sharedPromptDirty }">{{
+            sharedPromptSaving ? '正在保存' : sharedPromptDirty ? '有未保存修改' : '已保存'
+          }}</em>
+        </header>
+        <div class="shared-prompt-fields">
+          <div class="shared-prompt-system-content">
+            <span>系统共用内容</span>
+            <p v-if="currentSystemSharedPromptContent">{{ currentSystemSharedPromptContent }}</p>
+            <p v-else class="empty">未设置禁用元素</p>
           </div>
-          <em v-else>未设置</em>
+          <label>
+            <span>补充共用内容</span>
+            <textarea
+              v-model="sharedPromptDraft"
+              rows="3"
+              maxlength="30000"
+              placeholder="可补充后续需要所有视频共同遵守的要求"
+              :disabled="currentRunning || sharedPromptSaving"
+              @input="sharedPromptDirty = true"
+            />
+          </label>
         </div>
-      </section>
-
-      <section v-if="currentMetrics" class="quality-breakdown" aria-label="配额与提炼信息覆盖">
-        <div>
-          <strong>{{ fragmentTypeFilter ? '当前类型配额' : '六类标签配额' }}</strong>
-          <span
-            v-for="entry in currentFragmentDistribution"
-            :key="entry.fragmentType"
-            :class="{ missing: entry.actualCount !== entry.targetCount }"
+        <div class="shared-prompt-preview">
+          <span>最终共用提示词</span>
+          <p v-if="currentSharedPromptPreview">{{ currentSharedPromptPreview }}</p>
+          <p v-else class="empty">当前为空，渲染时不会追加内容</p>
+        </div>
+        <footer>
+          <button
+            class="secondary-button"
+            type="button"
+            :disabled="!sharedPromptDirty || sharedPromptSaving"
+            @click="resetSharedPromptDraft"
           >
-            {{ fragmentTypeLabel(entry.fragmentType) }} {{ entry.actualCount }}/{{
-              entry.targetCount
-            }}
-            · {{ quotaDifferenceLabel(entry.actualCount, entry.targetCount) }}
-          </span>
-        </div>
-        <div>
-          <strong>卖点覆盖</strong>
-          <span
-            >{{
-              currentMetrics.sellingPointCoverage.required.length -
-              currentMetrics.sellingPointCoverage.missing.length
-            }}/{{ currentMetrics.sellingPointCoverage.required.length }} 已覆盖</span
+            取消修改
+          </button>
+          <button
+            class="primary-button"
+            type="button"
+            :disabled="!sharedPromptDirty || sharedPromptSaving || currentRunning"
+            @click="saveSharedPrompt"
           >
-          <em v-if="currentMetrics.sellingPointCoverage.missing.length">
-            待补：{{ currentMetrics.sellingPointCoverage.missing.join('、') }}
-          </em>
-          <em v-else>已覆盖全部确认卖点</em>
-        </div>
-        <div class="insight-utilization">
-          <strong>提炼信息利用</strong>
-          <span :class="{ missing: currentMetrics.insightCoverage.missing.length > 0 }">
-            {{ currentMetrics.insightCoverage.covered.length }}/{{
-              currentMetrics.insightCoverage.required.length
-            }}
-            项核心信息已覆盖
-          </span>
-          <em v-if="currentMetrics.insightCoverage.missing.length" class="missing">
-            待补：{{ insightSummary(currentMetrics.insightCoverage.missing) }}
-          </em>
-          <em v-else>核心信息已全部用于合适的片段</em>
-          <span v-if="currentMetrics.insightCoverage.deferred.length" class="adaptive">
-            自适应暂未编排：{{ insightSummary(currentMetrics.insightCoverage.deferred) }}
-          </span>
-          <span class="constraint">
-            已应用 {{ currentMetrics.insightCoverage.appliedConstraints.length }} 项制作约束
-          </span>
-        </div>
+            <LoaderCircle v-if="sharedPromptSaving" class="spin" :size="14" />保存共用提示词
+          </button>
+        </footer>
       </section>
 
       <section class="effect-prompt-list" aria-label="Prompt 生成结果">
@@ -2230,7 +2242,7 @@ onBeforeUnmount(() => {
                 @click="regenerateItem"
               >
                 <LoaderCircle v-if="regenerationSaving" class="spin" :size="14" />
-                {{ regenerationHasChanges ? '按当前设置重新生成' : '直接换一版' }}
+                重新生成
               </button>
             </div>
           </footer>
@@ -3027,132 +3039,89 @@ button:disabled {
   background: #f5f1ff;
   border-color: #e4dbfa;
 }
-.unified-render-profile {
+.shared-prompt-panel {
   display: grid;
   margin-top: 10px;
   padding: 14px 16px;
   gap: 12px;
-  background: #f8fbff;
-  border: 1px solid #dae6f7;
-  border-radius: 13px;
+  background: #fffaf7;
+  border: 1px solid #f1dfd6;
+  border-radius: 16px;
 }
-.render-profile-heading {
+.shared-prompt-panel > header,
+.shared-prompt-panel > footer {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
-.render-profile-heading > div {
+.shared-prompt-panel > header div {
   display: grid;
   gap: 3px;
 }
-.render-profile-heading strong,
-.shared-disabled-elements strong {
+.shared-prompt-panel strong {
   color: #2f405c;
-  font-size: 11px;
+  font-size: 12px;
 }
-.render-profile-heading span {
-  color: #7c899d;
-  font-size: 9px;
+.shared-prompt-panel span,
+.shared-prompt-panel em {
+  color: #7b8799;
+  font-size: 10px;
+  font-style: normal;
 }
-.render-profile-heading > small {
+.shared-prompt-panel > header em {
   padding: 4px 8px;
-  color: #805b17;
-  background: #fff4d8;
+  color: #39856a;
+  background: #edf8f3;
   border-radius: 999px;
-  font-size: 9px;
   white-space: nowrap;
 }
-.render-profile-values {
+.shared-prompt-panel > header em.dirty {
+  color: #a86a16;
+  background: #fff2d9;
+}
+.shared-prompt-fields {
   display: grid;
-  grid-template-columns: minmax(100px, 0.7fr) minmax(120px, 0.8fr) minmax(220px, 1.6fr);
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
 }
-.render-profile-values > span {
+.shared-prompt-fields > div,
+.shared-prompt-fields > label,
+.shared-prompt-preview {
   display: grid;
-  padding: 9px 11px;
-  gap: 3px;
-  background: #fff;
-  border: 1px solid #e4ebf5;
-  border-radius: 9px;
+  gap: 7px;
 }
-.render-profile-values small {
-  color: #8793a6;
-  font-size: 9px;
-}
-.render-profile-values b {
-  color: #3e506d;
-  font-size: 10px;
-}
-.shared-disabled-elements {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.shared-disabled-elements > div {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.shared-disabled-elements span,
-.shared-disabled-elements em {
-  padding: 4px 8px;
+.shared-prompt-panel p,
+.shared-prompt-panel textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 70px;
+  margin: 0;
+  padding: 10px 12px;
   color: #5d6d84;
-  background: #edf3fb;
-  border-radius: 999px;
-  font-size: 9px;
-  font-style: normal;
-}
-.quality-breakdown {
-  display: grid;
-  margin-top: 10px;
-  padding: 12px 14px;
-  grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr);
-  gap: 14px;
   background: #fff;
-  border: 1px solid #e3e9f2;
-  border-radius: 13px;
-}
-.quality-breakdown > div {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  color: #647187;
-  font-size: 9px;
-}
-.quality-breakdown strong {
-  margin-right: 3px;
-  color: #33415a;
+  border: 1px solid #eadfd9;
+  border-radius: 12px;
   font-size: 10px;
+  line-height: 1.7;
+  white-space: pre-wrap;
 }
-.quality-breakdown span,
-.quality-breakdown em {
-  padding: 4px 7px;
-  background: #f2f6fc;
-  border-radius: 999px;
-  font-style: normal;
+.shared-prompt-panel textarea {
+  resize: vertical;
+  outline: none;
 }
-.quality-breakdown span.missing,
-.quality-breakdown em.missing,
-.quality-breakdown em:first-of-type:not(:last-child) {
-  color: #a46b0a;
-  background: #fff5dc;
+.shared-prompt-panel textarea:focus {
+  border-color: #ff9f80;
+  box-shadow: 0 0 0 3px rgb(255 90 95 / 8%);
 }
-.quality-breakdown .insight-utilization {
-  grid-column: 1 / -1;
-  padding-top: 9px;
-  border-top: 1px dashed #e4e9f2;
+.shared-prompt-panel p.empty {
+  color: #9aa5b5;
 }
-.quality-breakdown .insight-utilization .adaptive {
-  color: #6f5aa7;
-  background: #f5f1ff;
+.shared-prompt-preview p {
+  min-height: auto;
 }
-.quality-breakdown .insight-utilization .constraint {
-  color: #28725f;
-  background: #edf9f5;
+.shared-prompt-panel > footer {
+  justify-content: flex-end;
 }
 .effect-prompt-list {
   display: flex;
@@ -3197,7 +3166,7 @@ button:disabled {
   display: grid;
   min-width: 0;
   padding: 15px;
-  grid-template-columns: 43px minmax(0, 1fr) 134px;
+  grid-template-columns: 43px minmax(0, 1fr) 138px;
   gap: 12px;
   background: #fff;
   border: 1px solid #f0e2db;
@@ -3355,7 +3324,7 @@ button:disabled {
 }
 .prompt-actions {
   display: grid;
-  grid-template-columns: 56px 73px;
+  grid-template-columns: 56px 76px;
   align-content: center;
   gap: 6px;
 }
@@ -3373,6 +3342,7 @@ button:disabled {
   border-radius: 8px;
   font-size: 10px;
   font-weight: 700;
+  white-space: nowrap;
 }
 .prompt-actions button.danger {
   color: #df4d58;
@@ -4595,12 +4565,6 @@ button:disabled {
   .fragment-config-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .quality-breakdown {
-    grid-template-columns: 1fr;
-  }
-  .render-profile-values {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
   .prompt-search {
     width: 100%;
   }
@@ -4648,15 +4612,18 @@ button:disabled {
   .effect-prompt-stats {
     grid-template-columns: 1fr;
   }
-  .render-profile-heading {
+  .fragment-batch-summary,
+  .fragment-config-grid,
+  .shared-prompt-fields {
+    grid-template-columns: 1fr;
+  }
+  .shared-prompt-panel > header,
+  .shared-prompt-panel > footer {
+    align-items: stretch;
     flex-direction: column;
   }
-  .render-profile-values {
-    grid-template-columns: 1fr;
-  }
-  .fragment-batch-summary,
-  .fragment-config-grid {
-    grid-template-columns: 1fr;
+  .shared-prompt-panel > footer button {
+    width: 100%;
   }
   .settings-heading {
     grid-column: 1;

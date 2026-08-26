@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 import unicodedata
@@ -39,6 +40,8 @@ from .models import (
     PromptMetrics,
     RenderProfile,
     RuntimeContext,
+    SharedPrompt,
+    SharedPromptSection,
     ShardPlan,
     ShardRecord,
     SharedRenderConstraints,
@@ -92,6 +95,7 @@ class RunCache:
     strategy_plan: StrategyPlan | None = None
     evaluation: EvaluationResult | None = None
     fallback_count: int = 0
+    shared_prompt: SharedPrompt | None = None
 
 
 class PromptGenerationPipeline:
@@ -142,6 +146,12 @@ class PromptGenerationPipeline:
         snapshot = self.snapshot(context)
         shards = await self.api.get_shards(context)
         succeeded = [item for item in shards if item.status == StageStatus.SUCCEEDED]
+        if any(
+            combination.planning_version != "six-branch-v1"
+            for shard in succeeded
+            for combination in shard.combination_plan
+        ):
+            raise PipelineError("生成规则已升级，请重新生成当前 Prompt 批次")
         candidates = [candidate for shard in succeeded for candidate in shard.items]
         unique_candidates = _unique_candidates(candidates)
         self._cache(context).candidates = {
@@ -206,6 +216,7 @@ class PromptGenerationPipeline:
         call = await self.provider.plan_strategy(application, target_count=target_count)
         plan = call.value
         pools = plan.dimension_pools
+        fragment_pools = plan.fragment_strategy_pools
         self._cache(context).strategy_plan = plan
         await self._stage(
             context,
@@ -213,17 +224,23 @@ class PromptGenerationPipeline:
             StageStatus.SUCCEEDED,
             "营销关系规划完成",
             metadata={
-                "narrativeCount": len(pools.narratives),
                 "sceneCount": len(pools.scenes),
                 "personaCount": len(pools.personas),
                 "sellingPointCount": len(pools.selling_points),
-                "cameraCount": len(pools.cameras),
-                "emotionCount": len(pools.emotions),
-                "actionCount": len(pools.actions),
+                "emotionCount": sum(len(item.emotions) for item in fragment_pools),
+                "fragmentStrategyCount": len(fragment_pools),
+                "openingStateCount": sum(
+                    len(item.opening_states) for item in fragment_pools
+                ),
+                "actionArcCount": sum(len(item.action_arcs) for item in fragment_pools),
+                "cameraPlanCount": sum(len(item.cameras) for item in fragment_pools),
+                "endingStateCount": sum(
+                    len(item.ending_states) for item in fragment_pools
+                ),
                 "evidencePlanCount": len(pools.evidence_plans),
                 "relationshipBundleCount": len(plan.relationship_bundles),
                 "dimensionExample": _short(
-                    f"{pools.narratives[0]} / {pools.scenes[0]} / {pools.selling_points[0]}"
+                    f"{fragment_pools[0].opening_states[0]} / {pools.scenes[0]} / {pools.selling_points[0]}"
                 ),
             },
         )
@@ -252,6 +269,39 @@ class PromptGenerationPipeline:
         )
         await self.progress(context, 11, NodeId.INSIGHT_MAPPING)
         return application
+
+    async def compile_shared_prompt(self, context: RuntimeContext) -> SharedPrompt:
+        await self._stage(
+            context,
+            NodeId.SHARED_PROMPT_COMPILATION,
+            StageStatus.RUNNING,
+            "正在编译批次共用提示词",
+        )
+        disabled = _normalized_disabled_elements(
+            _insight_list(
+                self.snapshot(context).insight_artifact.result,
+                "disabledElements",
+                "disabled_elements",
+            )
+        )
+        existing = self.snapshot(context).shared_prompt
+        additional = _shared_prompt_section_content(existing, "USER_ADDITIONAL")
+        prompt = _compile_shared_prompt(disabled, additional)
+        self._cache(context).shared_prompt = prompt
+        await self._stage(
+            context,
+            NodeId.SHARED_PROMPT_COMPILATION,
+            StageStatus.SUCCEEDED,
+            "批次共用提示词已编译",
+            metadata={
+                "disabledElementCount": len(disabled),
+                "sectionCount": len(prompt.sections),
+                "sharedPromptGenerated": bool(prompt.compiled_content),
+                "hasUserAdditionalContent": bool(additional),
+            },
+        )
+        await self.progress(context, 13, NodeId.SHARED_PROMPT_COMPILATION)
+        return prompt
 
     async def plan_round(
         self,
@@ -395,6 +445,7 @@ class PromptGenerationPipeline:
                 call = await self.provider.generate_candidates(
                     shard.combinations,
                     insight=snapshot.insight_artifact.result,
+                    shared_prompt=self._required_shared_prompt(context),
                     regeneration_context={
                         "originalPrompt": snapshot.target_item.content,
                         "instruction": snapshot.regeneration_instruction or "",
@@ -409,6 +460,7 @@ class PromptGenerationPipeline:
                 call = await self.provider.generate_candidates(
                     shard.combinations,
                     insight=snapshot.insight_artifact.result,
+                    shared_prompt=self._required_shared_prompt(context),
                 )
             plan_by_slot = {item.slot_id: item for item in call.value.items}
             insight = snapshot.insight_artifact.result
@@ -702,6 +754,7 @@ class PromptGenerationPipeline:
         context: RuntimeContext,
         *,
         metrics: PromptMetrics,
+        shared_prompt: SharedPrompt,
     ) -> str:
         metrics = await self._ensure_exact_batch(context, metrics)
         items = self._cache(context).accepted_items
@@ -732,8 +785,9 @@ class PromptGenerationPipeline:
         result = PromptBatchResult(
             settings=settings,
             render_profile=_render_profile(
-                self.snapshot(context).insight_artifact.result
+                self.snapshot(context).insight_artifact.result,
             ),
+            shared_prompt=shared_prompt,
             items=renumbered,
             metrics=metrics.model_copy(
                 update={
@@ -759,6 +813,12 @@ class PromptGenerationPipeline:
             },
         )
         return await self.api.complete(context, result)
+
+    def _required_shared_prompt(self, context: RuntimeContext) -> SharedPrompt:
+        prompt = self._cache(context).shared_prompt
+        if prompt is None:
+            raise PipelineError("批次共用提示词尚未编译")
+        return prompt
 
     async def _ensure_exact_batch(
         self,
@@ -965,6 +1025,71 @@ def _matches_fragment_targets(
     )
 
 
+def _normalized_disabled_elements(values: list[str]) -> list[str]:
+    unique: dict[str, str] = {}
+    for value in values:
+        cleaned = re.sub(r"[。；;，,]+$", "", " ".join(value.split())).strip()
+        if not cleaned:
+            continue
+        key = unicodedata.normalize("NFKC", cleaned).casefold()
+        unique.setdefault(key, cleaned)
+    return list(unique.values())
+
+
+def _compile_disabled_elements_prompt(disabled_elements: list[str]) -> str:
+    if not disabled_elements:
+        return ""
+    return f"画面中不得出现以下内容：{'；'.join(disabled_elements)}。"
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _sha256_json(value: object) -> str:
+    serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return _sha256_text(serialized)
+
+
+def _shared_prompt_section_content(prompt: SharedPrompt | None, key: str) -> str:
+    if prompt is None:
+        return ""
+    return next(
+        (section.content.strip() for section in prompt.sections if section.key == key),
+        "",
+    )
+
+
+def _compile_shared_prompt(
+    disabled_elements: list[str], additional_content: str = ""
+) -> SharedPrompt:
+    additional = additional_content.strip()
+    sections = [
+        SharedPromptSection(
+            key="DISABLED_ELEMENTS",
+            title="禁用元素",
+            source="SYSTEM",
+            content=_compile_disabled_elements_prompt(disabled_elements),
+            editable=False,
+            source_hash=_sha256_json(disabled_elements),
+        ),
+        SharedPromptSection(
+            key="USER_ADDITIONAL",
+            title="补充共用内容",
+            source="USER",
+            content=additional,
+            editable=True,
+            source_hash=_sha256_text(additional),
+        ),
+    ]
+    compiled = "\n".join(section.content for section in sections if section.content)
+    return SharedPrompt(
+        sections=sections,
+        compiled_content=compiled,
+        content_hash=_sha256_text(compiled),
+    )
+
+
 def _render_profile(insight: Mapping[str, object]) -> RenderProfile:
     ratio_raw = (
         _insight_text(insight, "aspectRatio", "aspect_ratio") or "9:16"
@@ -974,14 +1099,10 @@ def _render_profile(insight: Mapping[str, object]) -> RenderProfile:
     resolution_raw = (_insight_text(insight, "resolution") or "1080p").lower()
     if resolution_raw not in {"480p", "720p", "1080p"}:
         raise PipelineError(f"Seedance 不支持当前分辨率：{resolution_raw}")
-    disabled = list(
-        dict.fromkeys(
-            value.strip()
-            for value in _insight_list(insight, "disabledElements", "disabled_elements")
-            if value.strip()
-        )
+    disabled = _normalized_disabled_elements(
+        _insight_list(insight, "disabledElements", "disabled_elements")
     )
-    digest = hashlib.sha256("\n".join(disabled).encode("utf-8")).hexdigest()
+    digest = _sha256_json(disabled)
     return RenderProfile(
         ratio=cast(
             Literal["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],

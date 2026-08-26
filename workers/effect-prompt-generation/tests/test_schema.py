@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -17,6 +18,8 @@ from effect_prompt_generation.models import (
     PromptMetrics,
     RenderProfile,
     SellingPointCoverage,
+    SharedPrompt,
+    SharedPromptSection,
     SharedRenderConstraints,
 )
 
@@ -28,8 +31,12 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
             fragment_configs={
                 FragmentType.HOOK: FragmentConfig(count=2, duration_seconds=5),
                 FragmentType.PAIN: FragmentConfig(count=2, duration_seconds=5),
-                FragmentType.PRODUCT_DISPLAY: FragmentConfig(count=2, duration_seconds=5),
-                FragmentType.SELLING_POINT_EXPLANATION: FragmentConfig(count=2, duration_seconds=5),
+                FragmentType.PRODUCT_DISPLAY: FragmentConfig(
+                    count=2, duration_seconds=5
+                ),
+                FragmentType.SELLING_POINT_EXPLANATION: FragmentConfig(
+                    count=2, duration_seconds=5
+                ),
                 FragmentType.CTA: FragmentConfig(count=1, duration_seconds=5),
                 FragmentType.OUTRO: FragmentConfig(count=1, duration_seconds=5),
             },
@@ -44,6 +51,30 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
                 disabled_elements=["医疗暗示"],
                 content_hash="0" * 64,
             ),
+        ),
+        shared_prompt=SharedPrompt(
+            sections=[
+                SharedPromptSection(
+                    key="DISABLED_ELEMENTS",
+                    title="禁用元素",
+                    source="SYSTEM",
+                    content="画面中不得出现以下内容：医疗暗示。",
+                    editable=False,
+                    source_hash="1" * 64,
+                ),
+                SharedPromptSection(
+                    key="USER_ADDITIONAL",
+                    title="补充共用内容",
+                    source="USER",
+                    content="",
+                    editable=True,
+                    source_hash=hashlib.sha256(b"").hexdigest(),
+                ),
+            ],
+            compiled_content="画面中不得出现以下内容：医疗暗示。",
+            content_hash=hashlib.sha256(
+                "画面中不得出现以下内容：医疗暗示。".encode()
+            ).hexdigest(),
         ),
         items=[item],
         metrics=PromptMetrics(
@@ -66,14 +97,17 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
                     actual_count=1 if fragment_type == item.fragment_type else 0,
                 )
                 for fragment_type, target in fragment_type_targets(
-                    {fragment_type: result_count for fragment_type, result_count in {
-                        FragmentType.HOOK: 2,
-                        FragmentType.PAIN: 2,
-                        FragmentType.PRODUCT_DISPLAY: 2,
-                        FragmentType.SELLING_POINT_EXPLANATION: 2,
-                        FragmentType.CTA: 1,
-                        FragmentType.OUTRO: 1,
-                    }.items()}
+                    {
+                        fragment_type: result_count
+                        for fragment_type, result_count in {
+                            FragmentType.HOOK: 2,
+                            FragmentType.PAIN: 2,
+                            FragmentType.PRODUCT_DISPLAY: 2,
+                            FragmentType.SELLING_POINT_EXPLANATION: 2,
+                            FragmentType.CTA: 1,
+                            FragmentType.OUTRO: 1,
+                        }.items()
+                    }
                 ).items()
             ],
             selling_point_coverage=SellingPointCoverage(
@@ -94,6 +128,6 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
     )
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
-    Draft202012Validator(schema, format_checker=Draft202012Validator.FORMAT_CHECKER).validate(
-        result.model_dump(mode="json", by_alias=True)
-    )
+    Draft202012Validator(
+        schema, format_checker=Draft202012Validator.FORMAT_CHECKER
+    ).validate(result.model_dump(mode="json", by_alias=True))

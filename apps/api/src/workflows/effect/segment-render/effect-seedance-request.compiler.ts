@@ -10,6 +10,7 @@ import {
   EFFECT_PROMPT_RENDER_CAPABILITIES,
   EFFECT_PROMPT_SCHEMA_VERSION,
 } from '@ai-marketing/contracts';
+import { compileEffectPromptSharedConstraintPrompt } from '../prompt-generation/effect-prompt.quality';
 
 export type EffectSeedanceCreateTaskRequest = {
   model: string;
@@ -22,7 +23,7 @@ export type EffectSeedanceCreateTaskRequest = {
 export type EffectSeedanceRequestSnapshot = {
   promptId: string;
   promptContentHash: string;
-  sharedConstraintHash: string;
+  sharedPromptHash: string;
   request: EffectSeedanceCreateTaskRequest;
 };
 
@@ -48,28 +49,12 @@ export class EffectSeedanceCompileError extends Error {
   }
 }
 
-const normalizedUnique = (values: readonly string[]): string[] => {
-  const result: string[] = [];
-  const seen = new Set<string>();
-  for (const raw of values) {
-    const value = raw
-      .normalize('NFC')
-      .replace(/\s+/gu, ' ')
-      .trim()
-      .replace(/[。；;，,]+$/gu, '');
-    const key = value.toLocaleLowerCase('zh-CN');
-    if (value && !seen.has(key)) {
-      seen.add(key);
-      result.push(value);
-    }
-  }
-  return result;
-};
-
-const compileText = (item: EffectPromptItem, disabledElements: readonly string[]): string => {
+const compileText = (item: EffectPromptItem, sharedPrompt: string): string => {
   const content = item.content.trim().replace(/。+$/gu, '');
-  const disabled = normalizedUnique(disabledElements);
-  return disabled.length ? `${content}。全程避免出现：${disabled.join('、')}。` : `${content}。`;
+  const shared = sharedPrompt.trim();
+  if (!shared) return `${content}。`;
+  if (content.endsWith(shared.replace(/。+$/gu, ''))) return `${content}。`;
+  return `${content}。${shared}`;
 };
 
 export const compileEffectSeedanceRequest = (
@@ -95,11 +80,17 @@ export const compileEffectSeedanceRequest = (
     throw new EffectSeedanceCompileError('RATIO_UNSUPPORTED', '当前模型不支持所选画幅');
   if (!capability.resolutions.includes(batch.renderProfile.resolution))
     throw new EffectSeedanceCompileError('RESOLUTION_UNSUPPORTED', '当前模型不支持所选分辨率');
-  const text = compileText(item, batch.renderProfile.sharedConstraints.disabledElements);
+  const sharedPromptContent =
+    batch.sharedPrompt?.compiledContent ??
+    compileEffectPromptSharedConstraintPrompt(
+      batch.renderProfile.sharedConstraints.disabledElements,
+    );
+  const text = compileText(item, sharedPromptContent);
   return {
     promptId: item.id,
     promptContentHash: createHash('sha256').update(item.content).digest('hex'),
-    sharedConstraintHash: batch.renderProfile.sharedConstraints.contentHash,
+    sharedPromptHash:
+      batch.sharedPrompt?.contentHash ?? batch.renderProfile.sharedConstraints.contentHash,
     request: {
       model: model.trim(),
       content: [{ type: 'text', text }],

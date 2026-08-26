@@ -25,7 +25,9 @@ from .pipeline import (
 def build_graph(
     pipeline: PromptGenerationPipeline,
 ) -> CompiledStateGraph[GraphState, RuntimeContext, InputState, OutputState]:
-    async def load(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, object]:
+    async def load(
+        state: GraphState, runtime: Runtime[RuntimeContext]
+    ) -> dict[str, object]:
         loaded = await pipeline.load_and_snapshot(runtime.context)
         return {
             "round": loaded.highest_round,
@@ -35,7 +37,9 @@ def build_graph(
             "generated_candidate_count": len(loaded.candidates),
         }
 
-    async def strategy(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, object]:
+    async def strategy(
+        state: GraphState, runtime: Runtime[RuntimeContext]
+    ) -> dict[str, object]:
         plan = await pipeline.plan_strategy(
             runtime.context,
             application=state["insight_map"],
@@ -43,7 +47,9 @@ def build_graph(
         )
         return {"strategy_plan": plan}
 
-    async def map_insight(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, object]:
+    async def map_insight(
+        state: GraphState, runtime: Runtime[RuntimeContext]
+    ) -> dict[str, object]:
         application = await pipeline.map_insight(runtime.context)
         snapshot = pipeline.snapshot(runtime.context)
         target_fact_ids = (
@@ -53,7 +59,15 @@ def build_graph(
         )
         return {"insight_map": application, "missing_fact_ids": target_fact_ids}
 
-    async def combine(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, object]:
+    async def shared_prompt_compilation(
+        state: GraphState, runtime: Runtime[RuntimeContext]
+    ) -> dict[str, object]:
+        prompt = await pipeline.compile_shared_prompt(runtime.context)
+        return {"shared_prompt": prompt}
+
+    async def combine(
+        state: GraphState, runtime: Runtime[RuntimeContext]
+    ) -> dict[str, object]:
         retained_count = state.get("retained_count", 0)
         missing = max(0, state["target_count"] - retained_count)
         pending = await pipeline.plan_round(
@@ -68,23 +82,33 @@ def build_graph(
         )
         return {"round": 0, "pending_shards": pending}
 
-    async def router(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, object]:
+    async def router(
+        state: GraphState, runtime: Runtime[RuntimeContext]
+    ) -> dict[str, object]:
         return {}
 
-    async def generate(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, object]:
+    async def generate(
+        state: GraphState, runtime: Runtime[RuntimeContext]
+    ) -> dict[str, object]:
         shard = ShardPlan.model_validate(state["active_shard"])
         candidates = await pipeline.generate_shard(runtime.context, shard)
         return {"generated_candidate_count": len(candidates)}
 
-    async def normalize(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, object]:
+    async def normalize(
+        state: GraphState, runtime: Runtime[RuntimeContext]
+    ) -> dict[str, object]:
         await pipeline.normalize(runtime.context)
         return {}
 
-    async def semantic(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, object]:
+    async def semantic(
+        state: GraphState, runtime: Runtime[RuntimeContext]
+    ) -> dict[str, object]:
         pairs = await pipeline.semantic_check(runtime.context)
         return {"semantic_pairs": pairs}
 
-    async def visual(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, object]:
+    async def visual(
+        state: GraphState, runtime: Runtime[RuntimeContext]
+    ) -> dict[str, object]:
         pairs = await pipeline.visual_check(runtime.context)
         return {"visual_pairs": pairs}
 
@@ -103,7 +127,9 @@ def build_graph(
             "visual_pairs": evaluation.visual_pairs,
         }
 
-    async def quality(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, object]:
+    async def quality(
+        state: GraphState, runtime: Runtime[RuntimeContext]
+    ) -> dict[str, object]:
         evaluation = await pipeline.quality_gate(
             runtime.context,
             round_number=state.get("round", 0),
@@ -119,7 +145,9 @@ def build_graph(
             and state.get("round", 0) < MAX_REPLENISHMENT_ROUNDS,
         }
 
-    async def replenish(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, object]:
+    async def replenish(
+        state: GraphState, runtime: Runtime[RuntimeContext]
+    ) -> dict[str, object]:
         next_round = state.get("round", 0) + 1
         item_deficit = max(0, state["target_count"] - state.get("accepted_count", 0))
         missing = max(item_deficit, len(state.get("missing_fact_ids", [])))
@@ -136,10 +164,13 @@ def build_graph(
         )
         return {"round": next_round, "pending_shards": pending}
 
-    async def save(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, object]:
+    async def save(
+        state: GraphState, runtime: Runtime[RuntimeContext]
+    ) -> dict[str, object]:
         result_id = await pipeline.save_result(
             runtime.context,
             metrics=state["metrics"],
+            shared_prompt=state["shared_prompt"],
         )
         return {"prompt_result_id": result_id}
 
@@ -150,7 +181,10 @@ def build_graph(
         return [
             Send(
                 GENERATION_NODE_BY_FRAGMENT[shard.fragment_type].value,
-                {"project_id": state["project_id"], "active_shard": shard.model_dump(mode="json")},
+                {
+                    "project_id": state["project_id"],
+                    "active_shard": shard.model_dump(mode="json"),
+                },
             )
             for shard in pending
         ]
@@ -166,6 +200,7 @@ def build_graph(
     )
     builder.add_node(NodeId.LOAD_AND_SNAPSHOT.value, load)
     builder.add_node(NodeId.INSIGHT_MAPPING.value, map_insight)
+    builder.add_node(NodeId.SHARED_PROMPT_COMPILATION.value, shared_prompt_compilation)
     builder.add_node(NodeId.STRATEGY_PLANNING.value, strategy)
     builder.add_node(NodeId.DIMENSION_COMBINATION.value, combine)
     builder.add_node(NodeId.FRAGMENT_TYPE_ROUTER.value, router)
@@ -181,9 +216,16 @@ def build_graph(
 
     builder.add_edge(START, NodeId.LOAD_AND_SNAPSHOT.value)
     builder.add_edge(NodeId.LOAD_AND_SNAPSHOT.value, NodeId.INSIGHT_MAPPING.value)
-    builder.add_edge(NodeId.INSIGHT_MAPPING.value, NodeId.STRATEGY_PLANNING.value)
+    builder.add_edge(
+        NodeId.INSIGHT_MAPPING.value, NodeId.SHARED_PROMPT_COMPILATION.value
+    )
+    builder.add_edge(
+        NodeId.SHARED_PROMPT_COMPILATION.value, NodeId.STRATEGY_PLANNING.value
+    )
     builder.add_edge(NodeId.STRATEGY_PLANNING.value, NodeId.DIMENSION_COMBINATION.value)
-    builder.add_edge(NodeId.DIMENSION_COMBINATION.value, NodeId.FRAGMENT_TYPE_ROUTER.value)
+    builder.add_edge(
+        NodeId.DIMENSION_COMBINATION.value, NodeId.FRAGMENT_TYPE_ROUTER.value
+    )
     builder.add_conditional_edges(
         NodeId.FRAGMENT_TYPE_ROUTER.value,
         dispatch_shards,

@@ -12,6 +12,7 @@ from effect_prompt_generation.insight_mapping import map_insight
 from effect_prompt_generation.models import (
     DimensionPools,
     EvidenceMode,
+    FragmentStrategyPool,
     FragmentType,
     InsightApplicationMap,
     MarketingRelationshipBundle,
@@ -32,17 +33,9 @@ DURATIONS = {fragment_type: 5 for fragment_type in FragmentType}
 
 def _pools() -> DimensionPools:
     return DimensionPools(
-        narratives=["痛点前置型", "效果展示型", "场景代入型"],
         scenes=["家庭", "户外", "职场"],
         personas=["年轻女性", "成熟男性", "专业测评者"],
         selling_points=["卖点甲", "卖点乙", "卖点丙"],
-        cameras=["特写推进", "第一视角", "俯拍"],
-        emotions=["温馨", "专业", "活力"],
-        actions=[
-            "一名人物拿起产品并停住",
-            "一名人物按下按键后停住",
-            "一名人物放下产品后离开",
-        ],
         evidence_plans=[
             SellingPointEvidence(
                 selling_point=item,
@@ -53,6 +46,40 @@ def _pools() -> DimensionPools:
             for item in ["卖点甲", "卖点乙", "卖点丙"]
         ],
     )
+
+
+def _fragment_strategy_pools() -> list[FragmentStrategyPool]:
+    return [
+        FragmentStrategyPool(
+            fragment_type=fragment_type,
+            opening_states=[
+                f"{fragment_type.value}首帧方案甲",
+                f"{fragment_type.value}首帧方案乙",
+                f"{fragment_type.value}首帧方案丙",
+            ],
+            action_arcs=[
+                f"{fragment_type.value}一名人物拿起产品并停住",
+                f"{fragment_type.value}一名人物按下按键后停住",
+                f"{fragment_type.value}一名人物放下产品后离开",
+            ],
+            cameras=[
+                f"{fragment_type.value}特写推进",
+                f"{fragment_type.value}第一视角固定观察",
+                f"{fragment_type.value}俯拍近景固定观察",
+            ],
+            emotions=[
+                f"{fragment_type.value}自然光与短暂停顿",
+                f"{fragment_type.value}柔和侧光与舒缓节奏",
+                f"{fragment_type.value}中性光与稳定停顿",
+            ],
+            ending_states=[
+                f"{fragment_type.value}结束状态甲",
+                f"{fragment_type.value}结束状态乙",
+                f"{fragment_type.value}结束状态丙",
+            ],
+        )
+        for fragment_type in FragmentType
+    ]
 
 
 def _strategy(
@@ -101,7 +128,9 @@ def _strategy(
                 )
             )
     return StrategyPlan(
-        dimension_pools=pools or _pools(), relationship_bundles=bundles
+        dimension_pools=pools or _pools(),
+        fragment_strategy_pools=_fragment_strategy_pools(),
+        relationship_bundles=bundles,
     ), application
 
 
@@ -127,6 +156,11 @@ def test_linear_code_supports_250_candidates_with_minimum_distance() -> None:
     )
     assert all(item.insight_bindings for item in planned)
     assert all(1 <= len(item.insight_bindings) <= 3 for item in planned)
+    assert all(item.opening_state.startswith(item.fragment_type.value) for item in planned)
+    assert all(item.visible_action.startswith(item.fragment_type.value) for item in planned)
+    assert all(item.dimensions.camera.startswith(item.fragment_type.value) for item in planned)
+    assert all(item.dimensions.emotion.startswith(item.fragment_type.value) for item in planned)
+    assert all(item.planning_version == "six-branch-v1" for item in planned)
 
 
 def test_expression_facts_rotate_without_overloading_one_short_clip() -> None:

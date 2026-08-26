@@ -24,6 +24,7 @@ import {
   saveEffectPromptSettings,
   startEffectPromptRun,
   updateEffectPromptItem,
+  updateEffectPromptSharedPrompt,
   validateEffectPromptResult,
 } from '../api/effect-prompt-generation.api';
 
@@ -180,6 +181,22 @@ export const removeEffectPromptItem = async (
 ): Promise<UpdateEffectPromptResultData> =>
   (await deleteEffectPromptItem(projectId, resultId, item.id, expectedRevision, signal)).data;
 
+export const saveEffectPromptSharedPrompt = async (
+  projectId: string,
+  resultId: string,
+  expectedRevision: number,
+  additionalContent: string,
+  signal?: AbortSignal,
+): Promise<UpdateEffectPromptResultData> =>
+  (
+    await updateEffectPromptSharedPrompt(
+      projectId,
+      resultId,
+      { additionalContent, expectedRevision },
+      signal,
+    )
+  ).data;
+
 export const commitEffectPromptResult = async (
   projectId: string,
   resultId: string,
@@ -207,9 +224,7 @@ export const downloadEffectPromptBatch = async (
       ratio: renderProfile.ratio,
       resolution: renderProfile.resolution,
     },
-    sharedConstraints: {
-      disabledElements: renderProfile.sharedConstraints.disabledElements,
-    },
+    sharedPrompt: exported.result.sharedPrompt ?? null,
     items: exported.result.items.map((item) => ({
       id: item.id,
       code: item.code,
@@ -218,7 +233,6 @@ export const downloadEffectPromptBatch = async (
       targetDurationSeconds: item.targetDurationSeconds,
       ratio: renderProfile.ratio,
       resolution: renderProfile.resolution,
-      disabledElements: renderProfile.sharedConstraints.disabledElements,
       materialTags: item.materialTags,
       dimensions: item.dimensions,
       insightBindings: item.insightBindings,

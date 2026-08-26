@@ -75,6 +75,11 @@ export class DeletePromptItemDto {
   @Type(() => Number) @IsInt() @Min(1) expectedRevision!: number;
 }
 
+export class UpdatePromptSharedPromptDto {
+  @IsString() @MaxLength(30_000) additionalContent!: string;
+  @Type(() => Number) @IsInt() @Min(1) expectedRevision!: number;
+}
+
 export class ValidatePromptResultDto {
   @Type(() => Number) @IsInt() @Min(1) expectedRevision!: number;
 }

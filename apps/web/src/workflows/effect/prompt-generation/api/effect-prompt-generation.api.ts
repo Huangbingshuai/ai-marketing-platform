@@ -11,6 +11,7 @@ import type {
   StartEffectPromptRunData,
   StartEffectPromptRunRequest,
   UpdateEffectPromptResultData,
+  UpdateEffectPromptSharedPromptRequest,
   UpsertEffectPromptItemRequest,
   ValidateEffectPromptResultData,
   ValidateEffectPromptResultRequest,
@@ -164,6 +165,20 @@ export const deleteEffectPromptItem = (
       signal,
     },
   );
+
+export const updateEffectPromptSharedPrompt = (
+  projectId: string,
+  resultId: string,
+  input: UpdateEffectPromptSharedPromptRequest,
+  signal?: AbortSignal,
+): Promise<ApiResponse<UpdateEffectPromptResultData>> =>
+  requestJson(`${basePath(projectId)}/results/${encodeURIComponent(resultId)}/shared-prompt`, {
+    method: 'PUT',
+    body: input,
+    headers: revisionHeaders(input.expectedRevision),
+    operation: '保存批次共用提示词',
+    signal,
+  });
 
 export const validateEffectPromptResult = (
   projectId: string,

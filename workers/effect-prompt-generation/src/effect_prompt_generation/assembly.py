@@ -20,8 +20,9 @@ _LIGHT_OR_PACING = re.compile(r"光|色温|色彩|冷调|暖调|节奏|停顿|�
 _ACTION = re.compile(
     r"拿起|夹起|提起|拎起|托住|扶住|握住|放下|放入|放到|轻放|摆放|摆到|打开|关闭|切开|倒入|"
     r"按下|按压|走入|走出|离开|停下|停住|抬起|指向|触碰|擦拭|拉开|推入|调整|取出|"
-    r"转向|转动|倾斜|移动|移到|交互"
+    r"转向|转动|倾斜|移动|移到|交互|伸向|寻找|尝试|遮住|受阻|退出|扶正|递近|松开|落到|恢复"
 )
+_ACTION_SEQUENCE = re.compile(r"随后|接着|然后|再(?:次)?|最后")
 _STACKED_PERSONA = re.compile(
     r"两名|多人|一家人|夫妻|情侣|母女|父子|同事们|朋友们|一群|(?:一名|一个).{0,24}(?:和|与)(?:另一名|另一个|一名|一个)"
 )
@@ -73,6 +74,39 @@ _PRIMARY_CAMERA_MOVEMENTS: dict[str, re.Pattern[str]] = {
     "SLIDE": re.compile(r"横移|侧移"),
     "RACK_FOCUS": re.compile(r"移焦|焦点从.+(?:移到|转向)"),
 }
+_HOOK_RESOLVED = re.compile(
+    r"答案(?:出现|揭晓)|揭晓(?:答案|原因)|原来是|问题(?:被|已)?解决|成功(?:打开|完成)|恢复正常|效果立刻出现"
+)
+_PAIN_RESOLVED = re.compile(
+    r"(?:使用|拿出|换上|放入).{0,24}(?:解决|完成|恢复|顺利)|问题(?:被|已)?解决|不便消失|轻松完成"
+)
+_PRODUCT_EFFECT_LEAK = re.compile(
+    r"使用后|效果对比|前后对比|问题解决|明显改善|立刻见效|满意(?:微笑|点头)|证明(?:效果|功效)"
+)
+_SAFE_AREA = re.compile(
+    r"留白|安全区|干净空间|简洁背景|无遮挡空间|空白墙面|空白区域|干净无遮挡"
+)
+_OUTRO_UNSTABLE = re.compile(
+    r"快速|奔跑|跳跃|连续旋转|跟拍|跟随|手持|环绕|横移|侧移|推近|推进|靠近|后拉|拉远"
+)
+_OUTRO_SUBTLE_MOTION = re.compile(
+    r"扶正|离开|收焦|焦点.{0,12}(?:落到|稳定|清楚)|光线.{0,12}(?:稳定|恢复)|"
+    r"蒸汽.{0,12}(?:变缓|减弱|停止)|背景.{0,12}(?:稳定|安静)|轻微变化"
+)
+_VISIBLE_ATTRIBUTE_CUE = re.compile(r"外观|表面|轮廓|颜色|材质|纹理|切面|接口|细节|受光")
+_VISIBLE_RESULT_CUE = re.compile(r"完成状态|打开状态|稳定状态|结果可见|保持打开|保持闭合|停在完成")
+_RENDER_METADATA = re.compile(
+    r"(?:画幅\s*)?(?:16:9|4:3|1:1|3:4|9:16|21:9|9:21)(?:竖屏|横屏)?|"
+    r"(?:分辨率\s*)?(?:480|720|1080)[pP]|(?:时长\s*)?\d+(?:\.\d+)?秒"
+)
+
+
+def prompt_length_bounds(duration_seconds: int) -> tuple[int, int]:
+    if duration_seconds <= 5:
+        return 80, 150
+    if duration_seconds <= 8:
+        return 110, 200
+    return 140, 260
 
 
 def assemble_fragment_prompt(
@@ -101,46 +135,55 @@ def assemble_safe_fallback_prompt(
 ) -> tuple[str, list[str]]:
     """Build a deterministic, renderable creative prompt without technical render metadata."""
     dims = combination.dimensions
-    persona = (
-        dims.persona
-        if dims.persona.startswith("无人出镜")
-        else f"{dims.persona}位于主体位置"
+    maximum_length = prompt_length_bounds(combination.target_duration_seconds)[1]
+    budgets = (
+        (18, 20, 18, 25, 18, 12, 22)
+        if maximum_length == 150
+        else (25, 28, 25, 38, 28, 18, 30)
+        if maximum_length == 200
+        else (32, 36, 32, 50, 36, 24, 40)
     )
-    action = combination.visible_action.replace("产品", product_name).replace("·", "，")
-    selling_point_expression = (
-        f"围绕{product_name}的真实产品细节，主体完成一次可见指示动作：{action}"
-        if combination.evidence_mode
-        in {EvidenceMode.TEXT_ONLY, EvidenceMode.PROCESS_ONLY}
-        else f"围绕{product_name}的“{dims.selling_point}”，主体完成一次可见指示动作：{action}"
+    if combination.fragment_type == FragmentType.SELLING_POINT_EXPLANATION:
+        budgets = (
+            (16, 18, 15, 22, 16, 10, 18)
+            if maximum_length == 150
+            else (22, 24, 20, 30, 22, 15, 25)
+            if maximum_length == 200
+            else (28, 32, 28, 42, 30, 20, 34)
+        )
+    scene, persona, opening, action, camera, emotion, ending = (
+        _compact_clause(value, limit)
+        for value, limit in zip(
+            (
+                dims.scene,
+                dims.persona,
+                combination.opening_state,
+                combination.visible_action.replace("产品", product_name),
+                dims.camera,
+                dims.emotion,
+                combination.ending_state,
+            ),
+            budgets,
+            strict=True,
+        )
     )
-    endings = {
-        FragmentType.HOOK: (
-            f"首帧直接捕捉反常但真实的动作细节：{action}，只留下未揭晓的悬念；"
-            f"{dims.camera}跟住动作，{dims.emotion}，柔和光线下停在问题即将发生的状态"
-        ),
-        FragmentType.PAIN: (
-            f"画面呈现尚未解决的不便：{action}，动作受阻后自然停下，不展示解决方案；"
-            f"{dims.camera}聚焦手部和问题状态，{dims.emotion}，节奏克制"
-        ),
-        FragmentType.PRODUCT_DISPLAY: (
-            f"{product_name}清楚出现在画面中心，主体完成一次连续动作：{action}；"
-            f"{dims.camera}展示真实轮廓和表面细节，{dims.emotion}，暖调光线下稳定收束"
-        ),
-        FragmentType.SELLING_POINT_EXPLANATION: (
-            f"{selling_point_expression}；"
-            f"{dims.camera}聚焦被指向的真实细节，{dims.emotion}，光线清晰，结束时产品保持可辨"
-        ),
-        FragmentType.CTA: (
-            f"{product_name}完成一次明确收束动作：{action}；{dims.camera}保留干净留白区，"
-            f"{dims.emotion}，明亮光线下停在便于继续了解产品的结束状态"
-        ),
-        FragmentType.OUTRO: (
-            f"{product_name}居中完成品牌定格动作：{action}；{dims.camera}缓慢稳定焦点，"
-            f"{dims.emotion}，柔和光线下停在简洁产品轮廓"
-        ),
-    }
+    prefix = f"{scene}，{persona}"
+    if combination.fragment_type in {
+        FragmentType.PRODUCT_DISPLAY,
+        FragmentType.SELLING_POINT_EXPLANATION,
+        FragmentType.CTA,
+        FragmentType.OUTRO,
+    }:
+        prefix = f"{scene}，{product_name}首帧清楚可见，{persona}"
+    evidence = {
+        EvidenceMode.VISIBLE_ATTRIBUTE: "，产品真实表面细节保持清楚",
+        EvidenceMode.USAGE_ACTION: "，操作部位和动作关系保持清楚",
+        EvidenceMode.VISIBLE_RESULT: "，停在完成状态且结果可见",
+        EvidenceMode.TEXT_ONLY: "",
+        EvidenceMode.PROCESS_ONLY: "",
+    }[combination.evidence_mode]
     content = _clean_paragraph(
-        f"{dims.scene}，{persona}。{endings[combination.fragment_type]}。"
+        f"{prefix}。{opening}；{action}。{camera}，自然光下{emotion}{evidence}。{ending}。"
     )
     return content, validate_fragment_prompt(
         content,
@@ -148,6 +191,11 @@ def assemble_safe_fallback_prompt(
         product_name=product_name,
         source_facts=source_facts,
     )
+
+
+def _compact_clause(value: str, limit: int) -> str:
+    cleaned = " ".join(value.replace("·", "，").split()).strip("，。； ")
+    return cleaned[:limit].rstrip("，。； ")
 
 
 def validate_fragment_prompt(
@@ -158,6 +206,12 @@ def validate_fragment_prompt(
     source_facts: Sequence[str] = (),
 ) -> list[str]:
     reasons: list[str] = []
+    minimum_length, maximum_length = prompt_length_bounds(
+        combination.target_duration_seconds
+    )
+    creative_content = re.sub(r"[，,。；;\s]+$", "", _RENDER_METADATA.sub("", content))
+    if not minimum_length <= len(creative_content) <= maximum_length:
+        reasons.append("PROMPT_LENGTH_MISMATCH")
     if _INTERNAL_METADATA.search(content):
         reasons.append("META_LANGUAGE")
     if _SHOT_NUMBERING.search(content) or len(_TIME_RANGE.findall(content)) > 1:
@@ -175,7 +229,10 @@ def validate_fragment_prompt(
     source_text = "\n".join(source_facts)
     if _has_source_fact_violation(content, source_text):
         reasons.append("SOURCE_FACT_VIOLATION")
-    if not _ACTION.search(content):
+    if not _ACTION.search(content) and not (
+        combination.fragment_type == FragmentType.OUTRO
+        and _OUTRO_SUBTLE_MOTION.search(content)
+    ):
         reasons.append("NO_VISIBLE_ACTION")
     if not _CAMERA.search(content):
         reasons.append("MISSING_CAMERA_EXECUTION")
@@ -214,13 +271,48 @@ def validate_fragment_prompt(
         and product_name not in content
     ):
         reasons.append("MISSING_PRODUCT_ANCHOR")
+    if combination.fragment_type == FragmentType.SELLING_POINT_EXPLANATION:
+        if (
+            combination.evidence_mode == EvidenceMode.VISIBLE_ATTRIBUTE
+            and not _VISIBLE_ATTRIBUTE_CUE.search(content)
+        ):
+            reasons.append("EVIDENCE_MODE_MISMATCH")
+        if (
+            combination.evidence_mode == EvidenceMode.USAGE_ACTION
+            and not _ACTION.search(content)
+        ):
+            reasons.append("EVIDENCE_MODE_MISMATCH")
+        if (
+            combination.evidence_mode == EvidenceMode.VISIBLE_RESULT
+            and not _VISIBLE_RESULT_CUE.search(content)
+        ):
+            reasons.append("EVIDENCE_MODE_MISMATCH")
     if (
-        combination.fragment_type == FragmentType.SELLING_POINT_EXPLANATION
-        and combination.evidence_mode
-        not in {EvidenceMode.TEXT_ONLY, EvidenceMode.PROCESS_ONLY}
-        and combination.dimensions.selling_point not in content
+        combination.fragment_type == FragmentType.HOOK
+        and _HOOK_RESOLVED.search(content)
     ):
-        reasons.append("MISSING_ASSIGNED_SELLING_POINT")
+        reasons.append("HOOK_RESOLVED")
+    if (
+        combination.fragment_type == FragmentType.PAIN
+        and _PAIN_RESOLVED.search(content)
+    ):
+        reasons.append("PAIN_RESOLVED")
+    if combination.fragment_type == FragmentType.PRODUCT_DISPLAY:
+        if product_name not in content[:80]:
+            reasons.append("PRODUCT_NOT_FIRST_FRAME")
+        if _PRODUCT_EFFECT_LEAK.search(content):
+            reasons.append("PRODUCT_ROLE_OVERLOAD")
+    if combination.fragment_type == FragmentType.CTA and not _SAFE_AREA.search(content):
+        reasons.append("CTA_NO_SAFE_AREA")
+    if combination.fragment_type == FragmentType.OUTRO:
+        if _OUTRO_UNSTABLE.search(content):
+            reasons.append("OUTRO_UNSTABLE")
+        selling_point = combination.dimensions.selling_point
+        if selling_point and selling_point in content and selling_point not in {
+            "产品身份与真实外观",
+            "不提前展示产品解决方案",
+        }:
+            reasons.append("OUTRO_NEW_MESSAGE")
     if combination.fragment_type in {
         FragmentType.HOOK,
         FragmentType.PAIN,
@@ -279,11 +371,8 @@ def _has_duplicate_clauses(value: str) -> bool:
 
 
 def _has_overloaded_action(value: str) -> bool:
-    action_clauses = [
-        item for item in re.split(r"[。；;!?！？]", value) if _ACTION.search(item)
-    ]
     action_count = len(_ACTION.findall(value))
-    return len(action_clauses) >= 3 or action_count > 5
+    return len(_ACTION_SEQUENCE.findall(value)) >= 2 or action_count > 12
 
 
 def _has_camera_conflict(value: str) -> bool:

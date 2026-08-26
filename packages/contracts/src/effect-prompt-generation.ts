@@ -141,8 +141,29 @@ export type EffectPromptRenderProfile = {
   capabilityKey: EffectPromptRenderCapabilityKey;
   sharedConstraints: {
     disabledElements: string[];
+    /** @deprecated Historical V5 compatibility only. New batches use batch-level sharedPrompt. */
+    prompt?: string;
     contentHash: string;
   };
+};
+
+export const EFFECT_PROMPT_SHARED_PROMPT_SOURCES = ['SYSTEM', 'USER'] as const;
+export type EffectPromptSharedPromptSource = (typeof EFFECT_PROMPT_SHARED_PROMPT_SOURCES)[number];
+
+export type EffectPromptSharedPromptSection = {
+  key: string;
+  title: string;
+  source: EffectPromptSharedPromptSource;
+  content: string;
+  editable: boolean;
+  sourceHash: string;
+};
+
+export type EffectPromptSharedPrompt = {
+  schemaVersion: 1;
+  sections: EffectPromptSharedPromptSection[];
+  compiledContent: string;
+  contentHash: string;
 };
 
 export const DEFAULT_EFFECT_PROMPT_SETTINGS: EffectPromptBatchSettings = {
@@ -279,6 +300,8 @@ export type EffectPromptBatchResult = {
   schemaVersion: typeof EFFECT_PROMPT_SCHEMA_VERSION;
   settings: EffectPromptBatchSettings;
   renderProfile: EffectPromptRenderProfile;
+  /** Optional only so historical V5 batches remain readable. New batches always provide it. */
+  sharedPrompt?: EffectPromptSharedPrompt;
   items: EffectPromptItem[];
   metrics: EffectPromptMetrics;
   qualityStatus: EffectPromptQualityStatus;
@@ -315,6 +338,7 @@ export type EffectPromptStageStatus = (typeof EFFECT_PROMPT_STAGE_STATUSES)[numb
 export const EFFECT_PROMPT_GRAPH_NODES = [
   { id: 'LOAD_AND_SNAPSHOT', label: '输入快照', group: 'SNAPSHOT' },
   { id: 'INSIGHT_MAPPING', label: '提炼信息应用映射', group: 'PLANNING' },
+  { id: 'SHARED_PROMPT_COMPILATION', label: '共用提示词编译', group: 'PLANNING' },
   { id: 'STRATEGY_PLANNING', label: '营销关系规划', group: 'PLANNING' },
   { id: 'DIMENSION_COMBINATION', label: '片段蓝图编排', group: 'PLANNING' },
   { id: 'FRAGMENT_TYPE_ROUTER', label: '片段类型条件路由', group: 'ROUTER' },
@@ -340,7 +364,8 @@ export type EffectPromptNodeId = (typeof EFFECT_PROMPT_GRAPH_NODES)[number]['id'
 
 export const EFFECT_PROMPT_GRAPH_EDGES = [
   { from: 'LOAD_AND_SNAPSHOT', to: 'INSIGHT_MAPPING' },
-  { from: 'INSIGHT_MAPPING', to: 'STRATEGY_PLANNING' },
+  { from: 'INSIGHT_MAPPING', to: 'SHARED_PROMPT_COMPILATION' },
+  { from: 'SHARED_PROMPT_COMPILATION', to: 'STRATEGY_PLANNING' },
   { from: 'STRATEGY_PLANNING', to: 'DIMENSION_COMBINATION' },
   { from: 'DIMENSION_COMBINATION', to: 'FRAGMENT_TYPE_ROUTER' },
   { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_HOOK' },
@@ -549,6 +574,11 @@ export type UpsertEffectPromptItemRequest = Pick<
   EffectPromptItem,
   'content' | 'fragmentType' | 'materialTags' | 'dimensions'
 > & { expectedRevision: number };
+
+export type UpdateEffectPromptSharedPromptRequest = {
+  additionalContent: string;
+  expectedRevision: number;
+};
 
 export type UpdateEffectPromptResultData = {
   resultId: string;

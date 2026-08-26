@@ -6,6 +6,7 @@ import type {
   EffectPromptItem,
   EffectPromptManualOverrides,
   EffectPromptOperation,
+  EffectPromptSharedPrompt,
 } from '@ai-marketing/contracts';
 import {
   EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES,
@@ -310,14 +311,10 @@ export class EffectPromptRepository {
       const currentResult = latestCurrent ? parsedLatest : null;
       if (
         input.expectedResultRevision !== null &&
-        latestCurrent?.revision !== input.expectedResultRevision
+        latest?.revision !== input.expectedResultRevision
       )
         return { kind: 'RESULT_CONFLICT' as const };
-      if (
-        input.operation === 'BATCH_GENERATE' &&
-        latestCurrent &&
-        input.expectedResultRevision === null
-      )
+      if (input.operation === 'BATCH_GENERATE' && latest && input.expectedResultRevision === null)
         return { kind: 'RESULT_CONFLICT' as const };
       if (input.operation === 'ITEM_REGENERATE') {
         if (!latestCurrent || input.expectedResultRevision === null || !input.targetItemId)
@@ -360,6 +357,7 @@ export class EffectPromptRepository {
           result: insight.payload,
         },
         retainedManualItems: manualItems,
+        sharedPrompt: currentResult?.sharedPrompt ?? null,
         ...(input.operation === 'ITEM_REGENERATE' && targetItem
           ? {
               targetItem,
@@ -383,6 +381,7 @@ export class EffectPromptRepository {
         insight: snapshot.insightArtifact,
         settingsHash,
         retainedManualItems: manualItems,
+        sharedPrompt: snapshot.sharedPrompt,
         regeneration:
           snapshot.operation === 'ITEM_REGENERATE'
             ? {
@@ -646,12 +645,14 @@ export class EffectPromptRepository {
         snapshot.settings,
         candidate.metrics,
         candidate.renderProfile,
+        candidate.sharedPrompt,
       );
       const draft = recomputePromptQuality(
         mergeEffectPromptCompletionItems(generated.items, snapshot),
         snapshot.settings,
         generated.metrics,
         generated.renderProfile,
+        generated.sharedPrompt,
       );
       let overrides = emptyManualOverrides();
       if (snapshot.operation === 'ITEM_REGENERATE' && snapshot.baseResultRevision !== null) {
@@ -829,7 +830,8 @@ export class EffectPromptRepository {
             'content' | 'fragmentType' | 'materialTags' | 'targetDurationSeconds' | 'dimensions'
           >;
         }
-      | { kind: 'DELETE'; itemId: string },
+      | { kind: 'DELETE'; itemId: string }
+      | { kind: 'SHARED_PROMPT'; sharedPrompt: EffectPromptSharedPrompt },
   ) {
     return this.prisma.$transaction(async (transaction) => {
       await transaction.$queryRaw<Array<{ id: string }>>`
@@ -851,7 +853,7 @@ export class EffectPromptRepository {
           return { kind: 'ITEM_CONFLICT' as const };
         items.push(mutation.item);
         overrides.added.push(mutation.item);
-      } else {
+      } else if (mutation.kind !== 'SHARED_PROMPT') {
         const index = items.findIndex(({ id }) => id === mutation.itemId);
         if (index < 0) return { kind: 'ITEM_NOT_FOUND' as const };
         const previous = items[index]!;
@@ -881,6 +883,7 @@ export class EffectPromptRepository {
         current.settings,
         current.metrics,
         current.renderProfile,
+        mutation.kind === 'SHARED_PROMPT' ? mutation.sharedPrompt : current.sharedPrompt,
       );
       if (workflowStateHash(next) === workflowStateHash(current))
         return { kind: 'UNCHANGED' as const, result: existing, draft: current };

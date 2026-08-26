@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from effect_prompt_generation.assembly import validate_fragment_prompt
+from effect_prompt_generation.assembly import prompt_length_bounds, validate_fragment_prompt
 from effect_prompt_generation.models import (
     EvidenceMode,
     FragmentType,
@@ -123,7 +123,7 @@ def test_eighteen_cross_category_prompts_are_clean_single_shot_material(
         source_facts=[row["selling_point"]],
     )
 
-    assert 120 <= len(prompt) <= 600
+    assert 80 <= len(prompt) <= 150
     assert reasons == []
     assert not {
         "BAKED_TEXT",
@@ -132,3 +132,103 @@ def test_eighteen_cross_category_prompts_are_clean_single_shot_material(
         "CAMERA_CONFLICT",
         "NEGATIVE_TAIL_DUPLICATION",
     }.intersection(reasons)
+
+
+@pytest.mark.parametrize(
+    ("fragment_type", "content", "expected"),
+    [
+        (
+            FragmentType.HOOK,
+            "清晨办公室入口，一名成年女性伸向被文件遮住的物件，近景固定观察她的手部，冷白侧光下短暂停顿，答案随后揭晓，原来是便携杯解决了问题，结尾产品稳定居中。",
+            "HOOK_RESOLVED",
+        ),
+        (
+            FragmentType.PAIN,
+            "雨天写字楼入口，一名成年女性尝试腾出双手，俯拍近景固定观察受阻动作，冷色自然光下节奏迟滞，她拿出便携杯后问题已解决并轻松完成动作，结尾状态恢复正常。",
+            "PAIN_RESOLVED",
+        ),
+        (
+            FragmentType.PRODUCT_DISPLAY,
+            "清晨办公室桌面，背景中的文件、键盘、台灯和窗帘保持清楚，前景纸张与水杯托盘层次分明，窗外冷色天光映入室内，人物先整理散落文件并拿起手机，正面近景保持稳定，画面关系保持连续，便携杯随后进入画面，结尾停在产品正面。",
+            "PRODUCT_NOT_FIRST_FRAME",
+        ),
+        (
+            FragmentType.SELLING_POINT_EXPLANATION,
+            "夜间工作台上，便携杯首帧清楚，一名成年女性按下杯盖按键后停住，肩后近景固定观察动作位置，中性侧光与克制节奏保持稳定，结尾停在产品轮廓和操作关系清楚的画面。",
+            "EVIDENCE_MODE_MISMATCH",
+        ),
+        (
+            FragmentType.CTA,
+            "午后办公室桌面，便携杯首帧清楚，一名成年女性把产品扶正后退出画面，正面近景固定观察产品轮廓，暖色侧光下动作平稳收束，结尾产品居中并占满背景，周围道具紧贴边缘。",
+            "CTA_NO_SAFE_AREA",
+        ),
+        (
+            FragmentType.OUTRO,
+            "夜间工作台上，便携杯首帧居中，一名成年女性扶正产品后离开，镜头快速跟拍并环绕产品，明亮侧光下节奏活跃，画面重新讲解单手按键开盖，结尾继续旋转并引入新的使用剧情。",
+            "OUTRO_UNSTABLE",
+        ),
+    ],
+)
+def test_six_fragment_roles_reject_their_own_conflicts(
+    fragment_type: FragmentType, content: str, expected: str
+) -> None:
+    combination = _combination(PRODUCTS[1], fragment_type)
+    if fragment_type == FragmentType.SELLING_POINT_EXPLANATION:
+        combination = combination.model_copy(update={"evidence_mode": EvidenceMode.VISIBLE_RESULT})
+
+    reasons = validate_fragment_prompt(
+        content,
+        combination,
+        product_name=PRODUCTS[1]["product"],
+        source_facts=[PRODUCTS[1]["selling_point"]],
+    )
+
+    assert expected in reasons
+
+
+@pytest.mark.parametrize(
+    ("duration_seconds", "bounds"),
+    [(4, (80, 150)), (5, (80, 150)), (6, (110, 200)), (8, (110, 200)), (9, (140, 260)), (15, (140, 260))],
+)
+def test_prompt_length_budget_tracks_fragment_duration(
+    duration_seconds: int, bounds: tuple[int, int]
+) -> None:
+    assert prompt_length_bounds(duration_seconds) == bounds
+
+
+def test_outro_accepts_observable_background_stabilization_as_micro_motion() -> None:
+    row = PRODUCTS[0]
+    combination = _combination(row, FragmentType.OUTRO)
+    content = (
+        "夜间家庭厨房的木质台面上，广式腊肠稳定居中，背景蒸汽逐渐变缓，"
+        "固定近景保持产品轮廓清楚，暖色侧光落在真实切面，环境亮度持续稳定，"
+        "结尾形成上方留白、可持续停留的安静静物构图。"
+    )
+
+    reasons = validate_fragment_prompt(
+        content,
+        combination,
+        product_name=row["product"],
+        source_facts=[row["selling_point"]],
+    )
+
+    assert "NO_VISIBLE_ACTION" not in reasons
+
+
+def test_cta_accepts_continuous_blank_area_as_safe_composition() -> None:
+    row = PRODUCTS[0]
+    combination = _combination(row, FragmentType.CTA)
+    content = (
+        "广式腊肠真空袋斜放在浅木纹防油垫偏左处，右侧留着连续空白区域。"
+        "一只手轻轻扶住袋身上沿，平稳挪向画面下方后收手。"
+        "侧方近景固定不动，暖调自然光均匀铺开，产品清晰稳定，右侧台面干净无遮挡。"
+    )
+
+    reasons = validate_fragment_prompt(
+        content,
+        combination,
+        product_name=row["product"],
+        source_facts=[row["selling_point"]],
+    )
+
+    assert "CTA_NO_SAFE_AREA" not in reasons

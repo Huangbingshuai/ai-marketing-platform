@@ -82,7 +82,16 @@ describe('effect prompt generation contract', () => {
     ]);
     expect(EFFECT_PROMPT_GRAPH_NODES.map((node) => node.id)).toContain('QUALITY_GATE');
     expect(EFFECT_PROMPT_GRAPH_NODES.map((node) => node.id)).toContain('INSIGHT_MAPPING');
+    expect(EFFECT_PROMPT_GRAPH_NODES.map((node) => node.id)).toContain('SHARED_PROMPT_COMPILATION');
     expect(EFFECT_PROMPT_GRAPH_NODES.map((node) => node.id)).toContain('INSIGHT_COVERAGE');
+    expect(EFFECT_PROMPT_GRAPH_EDGES).toContainEqual({
+      from: 'INSIGHT_MAPPING',
+      to: 'SHARED_PROMPT_COMPILATION',
+    });
+    expect(EFFECT_PROMPT_GRAPH_EDGES).toContainEqual({
+      from: 'SHARED_PROMPT_COMPILATION',
+      to: 'STRATEGY_PLANNING',
+    });
     expect(EFFECT_PROMPT_GRAPH_EDGES).toContainEqual({
       from: 'REPLENISH',
       to: 'FRAGMENT_TYPE_ROUTER',

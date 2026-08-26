@@ -4,6 +4,7 @@ import type {
   EffectPromptItem,
   EffectPromptManualOverrides,
   EffectPromptOperation,
+  EffectPromptSharedPrompt,
 } from '@ai-marketing/contracts';
 
 export type EffectPromptInputSnapshot = {
@@ -21,6 +22,8 @@ export type EffectPromptInputSnapshot = {
     result: unknown;
   };
   retainedManualItems: EffectPromptItem[];
+  /** Carries user-authored batch-level content into regeneration without copying it to items. */
+  sharedPrompt?: EffectPromptSharedPrompt | null;
   /** Present for ITEM_REGENERATE so the API can preserve stable identity and order. */
   targetItem?: EffectPromptItem | undefined;
   targetItemIndex?: number | undefined;

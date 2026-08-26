@@ -21,6 +21,7 @@ import {
   PromptWorkspaceQueryDto,
   SavePromptSettingsDto,
   StartPromptRunDto,
+  UpdatePromptSharedPromptDto,
   ValidatePromptResultDto,
 } from './dto/effect-prompt.dto';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
@@ -149,6 +150,21 @@ export class EffectPromptController {
       resultId,
       itemId,
       expectedRevision(ifMatch, body.expectedRevision),
+    );
+  }
+
+  @Put('results/:resultId/shared-prompt')
+  updateSharedPrompt(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('resultId', new ParseUUIDPipe({ version: '4' })) resultId: string,
+    @Headers('if-match') ifMatch: string | undefined,
+    @Body() body: UpdatePromptSharedPromptDto,
+  ) {
+    return this.service.updateSharedPrompt(
+      projectId,
+      resultId,
+      expectedRevision(ifMatch, body.expectedRevision),
+      body.additionalContent,
     );
   }
 

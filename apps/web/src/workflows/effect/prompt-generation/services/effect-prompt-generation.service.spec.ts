@@ -163,6 +163,29 @@ describe('effect prompt generation HTTP service', () => {
             contentHash: 'hash-disabled',
           },
         },
+        sharedPrompt: {
+          schemaVersion: 1,
+          sections: [
+            {
+              key: 'DISABLED_ELEMENTS',
+              title: '禁用元素',
+              source: 'SYSTEM',
+              content: '画面中不得出现以下内容：品牌水印。',
+              editable: false,
+              sourceHash: 'hash-source',
+            },
+            {
+              key: 'USER_ADDITIONAL',
+              title: '补充共用内容',
+              source: 'USER',
+              content: '保持产品外观一致。',
+              editable: true,
+              sourceHash: 'hash-user',
+            },
+          ],
+          compiledContent: '画面中不得出现以下内容：品牌水印。\n保持产品外观一致。',
+          contentHash: 'hash-shared',
+        },
         items: [],
         metrics: {
           targetCount: 10,
@@ -200,6 +223,9 @@ describe('effect prompt generation HTTP service', () => {
     const download = await downloadEffectPromptBatch('project-1', 'result-1', '广式腊肠');
     expect(download.fileName).toBe('广式腊肠-差异化Prompt-0条.json');
     await expect(download.blob.text()).resolves.toContain('"resultId": "result-1"');
-    await expect(download.blob.text()).resolves.toContain('"disabledElements"');
+    await expect(download.blob.text()).resolves.toContain('"sharedPrompt"');
+    await expect(download.blob.text()).resolves.toContain(
+      '"compiledContent": "画面中不得出现以下内容：品牌水印。\\n保持产品外观一致。"',
+    );
   });
 });

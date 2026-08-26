@@ -36,6 +36,7 @@ class GraphState(TypedDict):
     target_count: NotRequired[int]
     retained_count: NotRequired[int]
     insight_map: NotRequired[InsightApplicationMap]
+    shared_prompt: NotRequired[SharedPrompt]
     strategy_plan: NotRequired[StrategyPlan]
     pending_shards: NotRequired[list[ShardPlan]]
     active_shard: NotRequired[dict[str, Any]]
@@ -76,7 +77,9 @@ class PromptDimensions(ApiModel):
     camera: str = Field(min_length=1, max_length=160)
     emotion: str = Field(min_length=1, max_length=120)
 
-    @field_validator("narrative", "scene", "persona", "selling_point", "camera", "emotion")
+    @field_validator(
+        "narrative", "scene", "persona", "selling_point", "camera", "emotion"
+    )
     @classmethod
     def clean_dimension(cls, value: str) -> str:
         cleaned = " ".join(value.split())
@@ -244,7 +247,9 @@ class PromptItem(ApiModel):
     @field_validator("content")
     @classmethod
     def clean_text(cls, value: str) -> str:
-        cleaned = "\n".join(line.rstrip() for line in value.strip().splitlines()).strip()
+        cleaned = "\n".join(
+            line.rstrip() for line in value.strip().splitlines()
+        ).strip()
         if not cleaned:
             raise ValueError("text cannot be blank")
         return cleaned
@@ -277,13 +282,46 @@ class PromptMetrics(ApiModel):
     removed_visual_duplicates: int = Field(ge=0)
     removed_dimension_conflicts: int = Field(ge=0)
     removed_execution_invalid: int = Field(ge=0)
-    execution_invalid_reasons: list[ExecutionInvalidReason] = Field(default_factory=list)
+    execution_invalid_reasons: list[ExecutionInvalidReason] = Field(
+        default_factory=list
+    )
     semantic_duplicate_rate: float = Field(ge=0, le=100)
     visual_overlap_rate: float = Field(ge=0, le=100)
     replenishment_rounds: int = Field(ge=0, le=3)
-    fragment_type_distribution: list[FragmentTypeDistribution] = Field(min_length=6, max_length=6)
+    fragment_type_distribution: list[FragmentTypeDistribution] = Field(
+        min_length=6, max_length=6
+    )
     selling_point_coverage: SellingPointCoverage
     insight_coverage: InsightCoverage
+
+
+class SharedPromptSection(ApiModel):
+    key: str = Field(pattern=r"^[A-Z][A-Z0-9_]{0,63}$")
+    title: str = Field(min_length=1, max_length=120)
+    source: Literal["SYSTEM", "USER"]
+    content: str = Field(max_length=30_000)
+    editable: bool
+    source_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class SharedPrompt(ApiModel):
+    schema_version: Literal[1] = 1
+    sections: list[SharedPromptSection] = Field(min_length=1, max_length=20)
+    compiled_content: str = Field(max_length=60_000)
+    content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+    @model_validator(mode="after")
+    def validate_compilation(self) -> SharedPrompt:
+        if len({section.key for section in self.sections}) != len(self.sections):
+            raise ValueError("shared prompt section keys must be unique")
+        expected = "\n".join(
+            section.content.strip()
+            for section in self.sections
+            if section.content.strip()
+        )
+        if self.compiled_content != expected:
+            raise ValueError("compiledContent must match non-empty sections")
+        return self
 
 
 class SharedRenderConstraints(ApiModel):
@@ -304,6 +342,7 @@ class PromptBatchResult(ApiModel):
     schema_version: Literal[5] = 5
     settings: PromptBatchSettings
     render_profile: RenderProfile
+    shared_prompt: SharedPrompt
     items: list[PromptItem] = Field(max_length=200)
     metrics: PromptMetrics
     quality_status: Literal["PASS", "NEEDS_REVIEW"]
@@ -333,7 +372,10 @@ class PromptGenerationSnapshot(ApiModel):
     target_item_id: str | None = None
     settings: PromptBatchSettings
     insight_artifact: InsightArtifact
-    retained_manual_items: list[PromptItem] = Field(default_factory=list, max_length=200)
+    retained_manual_items: list[PromptItem] = Field(
+        default_factory=list, max_length=200
+    )
+    shared_prompt: SharedPrompt | None = None
     base_result_revision: int | None = Field(default=None, ge=1)
     target_item: PromptItem | None = None
     target_item_index: int | None = Field(default=None, ge=0, le=199)
@@ -355,11 +397,16 @@ class PromptGenerationSnapshot(ApiModel):
         if self.operation == "ITEM_REGENERATE" and (
             self.target_item is None or self.target_item_index is None
         ):
-            raise ValueError("targetItem and targetItemIndex are required for ITEM_REGENERATE")
+            raise ValueError(
+                "targetItem and targetItemIndex are required for ITEM_REGENERATE"
+            )
         if self.operation == "BATCH_GENERATE" and (
-            self.replacement_dimensions is not None or self.regeneration_instruction is not None
+            self.replacement_dimensions is not None
+            or self.regeneration_instruction is not None
         ):
-            raise ValueError("batch generation cannot contain item regeneration settings")
+            raise ValueError(
+                "batch generation cannot contain item regeneration settings"
+            )
         if len(self.retained_manual_items) > self.settings.target_count:
             raise ValueError("retained manual items exceed target count")
         return self
@@ -376,6 +423,7 @@ class ClaimResponse(ApiModel):
 class NodeId(StrEnum):
     LOAD_AND_SNAPSHOT = "LOAD_AND_SNAPSHOT"
     INSIGHT_MAPPING = "INSIGHT_MAPPING"
+    SHARED_PROMPT_COMPILATION = "SHARED_PROMPT_COMPILATION"
     STRATEGY_PLANNING = "STRATEGY_PLANNING"
     DIMENSION_COMBINATION = "DIMENSION_COMBINATION"
     FRAGMENT_TYPE_ROUTER = "FRAGMENT_TYPE_ROUTER"
@@ -419,18 +467,12 @@ class SellingPointEvidence(ApiModel):
 
 
 class DimensionPools(ApiModel):
-    narratives: list[str] = Field(min_length=1, max_length=24)
     scenes: list[str] = Field(min_length=1, max_length=24)
     personas: list[str] = Field(min_length=1, max_length=24)
     selling_points: list[str] = Field(min_length=1, max_length=12)
-    cameras: list[str] = Field(min_length=1, max_length=24)
-    emotions: list[str] = Field(min_length=1, max_length=24)
-    actions: list[str] = Field(min_length=1, max_length=24)
     evidence_plans: list[SellingPointEvidence] = Field(min_length=1, max_length=12)
 
-    @field_validator(
-        "narratives", "scenes", "personas", "selling_points", "cameras", "emotions", "actions"
-    )
+    @field_validator("scenes", "personas", "selling_points")
     @classmethod
     def clean_pool(cls, values: list[str]) -> list[str]:
         result: list[str] = []
@@ -446,6 +488,34 @@ class DimensionPools(ApiModel):
         return result
 
 
+class FragmentStrategyPool(ApiModel):
+    fragment_type: FragmentType
+    opening_states: list[str] = Field(min_length=3, max_length=12)
+    action_arcs: list[str] = Field(min_length=3, max_length=12)
+    cameras: list[str] = Field(min_length=3, max_length=12)
+    emotions: list[str] = Field(min_length=3, max_length=12)
+    ending_states: list[str] = Field(min_length=3, max_length=12)
+
+    @field_validator(
+        "opening_states", "action_arcs", "cameras", "emotions", "ending_states"
+    )
+    @classmethod
+    def clean_strategy_pool(cls, values: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for raw in values:
+            value = " ".join(raw.split())
+            key = value.casefold()
+            if value and key not in seen:
+                seen.add(key)
+                result.append(value)
+        if len(result) < 3:
+            raise ValueError(
+                "fragment strategy pool must contain three distinct values"
+            )
+        return result
+
+
 class MarketingRelationshipBundle(ApiModel):
     bundle_id: str = Field(min_length=1, max_length=120)
     fact_ids: list[str] = Field(min_length=1, max_length=12)
@@ -457,7 +527,23 @@ class MarketingRelationshipBundle(ApiModel):
 
 class StrategyPlan(ApiModel):
     dimension_pools: DimensionPools
-    relationship_bundles: list[MarketingRelationshipBundle] = Field(min_length=1, max_length=48)
+    fragment_strategy_pools: list[FragmentStrategyPool] = Field(
+        min_length=6, max_length=6
+    )
+    relationship_bundles: list[MarketingRelationshipBundle] = Field(
+        min_length=1, max_length=48
+    )
+
+    @model_validator(mode="after")
+    def every_fragment_has_one_strategy_pool(self) -> StrategyPlan:
+        fragment_types = [item.fragment_type for item in self.fragment_strategy_pools]
+        if len(set(fragment_types)) != len(fragment_types) or set(
+            fragment_types
+        ) != set(FragmentType):
+            raise ValueError(
+                "fragmentStrategyPools must contain every fragment type exactly once"
+            )
+        return self
 
 
 class PlannedCombination(ApiModel):
@@ -466,11 +552,20 @@ class PlannedCombination(ApiModel):
     fragment_type: FragmentType
     material_tags: list[str] = Field(min_length=1, max_length=12)
     target_duration_seconds: int = Field(ge=4, le=15)
+    planning_version: Literal["legacy", "six-branch-v1"] = "legacy"
+    opening_state: str = Field(
+        default="首帧建立主体与环境关系", min_length=1, max_length=240
+    )
     visible_action: str = Field(min_length=1, max_length=400)
+    ending_state: str = Field(
+        default="动作结束后保持稳定构图", min_length=1, max_length=240
+    )
     evidence_mode: EvidenceMode
     allowed_visual_evidence: str = Field(min_length=1, max_length=400)
     forbidden_inference: str = Field(min_length=1, max_length=400)
-    relationship_bundle_id: str = Field(default="legacy-test", min_length=1, max_length=120)
+    relationship_bundle_id: str = Field(
+        default="legacy-test", min_length=1, max_length=120
+    )
     insight_bindings: list[InsightBinding] = Field(default_factory=list, max_length=16)
     dimensions: PromptDimensions
 
@@ -497,7 +592,7 @@ class ShardPlan(ApiModel):
 
 class GeneratedPromptText(ApiModel):
     slot_id: str
-    prompt_text: str = Field(min_length=120, max_length=600)
+    prompt_text: str = Field(min_length=80, max_length=260)
     used_fact_ids: list[str] = Field(default_factory=list, max_length=16)
 
 

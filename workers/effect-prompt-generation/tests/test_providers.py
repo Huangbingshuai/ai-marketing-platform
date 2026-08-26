@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 
 import httpx
 import pytest
@@ -12,6 +13,8 @@ from effect_prompt_generation.models import (
     FragmentType,
     PlannedCombination,
     PromptDimensions,
+    SharedPrompt,
+    SharedPromptSection,
 )
 from effect_prompt_generation.providers import (
     ArkResponsesProvider,
@@ -19,6 +22,34 @@ from effect_prompt_generation.providers import (
     ProviderError,
     ProviderErrorType,
 )
+
+
+def _shared_prompt() -> SharedPrompt:
+    disabled_content = "画面中不得出现以下内容：医疗功效；促销贴纸。"
+    additional_content = "保持产品外观前后一致。"
+    content = f"{disabled_content}\n{additional_content}"
+    return SharedPrompt(
+        sections=[
+            SharedPromptSection(
+                key="DISABLED_ELEMENTS",
+                title="禁用元素",
+                source="SYSTEM",
+                content=disabled_content,
+                editable=False,
+                source_hash="1" * 64,
+            ),
+            SharedPromptSection(
+                key="USER_ADDITIONAL",
+                title="补充共用内容",
+                source="USER",
+                content=additional_content,
+                editable=True,
+                source_hash=hashlib.sha256(additional_content.encode()).hexdigest(),
+            ),
+        ],
+        compiled_content=content,
+        content_hash=hashlib.sha256(content.encode()).hexdigest(),
+    )
 
 
 @pytest.mark.asyncio
@@ -51,8 +82,13 @@ async def test_ark_strategy_uses_strict_schema_and_fills_missing_evidence_safely
         payload = json.loads(request.content)
         seen.update(payload)
         output = mock_plan.model_dump(mode="json", by_alias=True)
+        first_evidence = {
+            **output["dimensionPools"]["evidencePlans"][0],
+            "evidenceMode": "VISIBLE_RESULT",
+            "allowedVisualEvidence": "模型错误规划的夸张结果",
+        }
         output["dimensionPools"]["evidencePlans"] = [
-            output["dimensionPools"]["evidencePlans"][0],
+            first_evidence,
             {
                 "sellingPoint": "模型擅自增加的卖点",
                 "evidenceMode": "VISIBLE_RESULT",
@@ -60,8 +96,11 @@ async def test_ark_strategy_uses_strict_schema_and_fills_missing_evidence_safely
                 "forbiddenInference": "无",
             },
         ]
-        output["relationshipBundles"] = output["relationshipBundles"][:1]
+        output["relationshipBundles"] = output["relationshipBundles"][:2]
         output["relationshipBundles"][0]["factIds"] = ["unknown-model-fact"]
+        output["relationshipBundles"][1]["persona"] = (
+            "家庭厨房决策者、美食爱好者和全国消费者"
+        )
         return httpx.Response(
             200, json={"output_text": json.dumps(output, ensure_ascii=False)}
         )
@@ -89,6 +128,10 @@ async def test_ark_strategy_uses_strict_schema_and_fills_missing_evidence_safely
     assert seen["reasoning"] == {"effort": "minimal"}
     assert result.value.dimension_pools.selling_points == ["已确认卖点", "次要卖点"]
     assert (
+        result.value.dimension_pools.evidence_plans[0].evidence_mode
+        == EvidenceMode.TEXT_ONLY
+    )
+    assert (
         result.value.dimension_pools.evidence_plans[1].evidence_mode
         == EvidenceMode.TEXT_ONLY
     )
@@ -113,6 +156,11 @@ async def test_ark_strategy_uses_strict_schema_and_fills_missing_evidence_safely
         bundle.bundle_id.startswith("worker-coverage-")
         for bundle in result.value.relationship_bundles
     )
+    assert all(
+        forbidden not in bundle.persona
+        for bundle in result.value.relationship_bundles
+        for forbidden in ("消费者", "人群", "爱好者", "家庭厨房决策者")
+    )
     assert "unknown-model-fact" not in covered_fact_ids
 
 
@@ -134,6 +182,7 @@ async def test_ark_candidate_rejects_missing_slot() -> None:
             await provider.generate_candidates(
                 [_combination()],
                 insight={"coreSellingPoints": ["单手开合"]},
+                shared_prompt=_shared_prompt(),
             )
     finally:
         await provider.aclose()
@@ -180,6 +229,7 @@ async def test_ark_candidate_returns_only_slot_and_direct_prompt() -> None:
                 "durationSeconds": 5,
                 "resolution": "1080p",
             },
+            shared_prompt=_shared_prompt(),
             regeneration_context={
                 "originalPrompt": "旧版 Prompt",
                 "instruction": "产品更早出现",
@@ -190,15 +240,16 @@ async def test_ark_candidate_returns_only_slot_and_direct_prompt() -> None:
         await provider.aclose()
 
     assert seen["model"] == "candidate-model"
-    assert seen["max_output_tokens"] == 1024
+    assert seen["max_output_tokens"] == 768
     assert "instructions" in seen
-    assert "当前分支只生成卖点讲解所需的干净画面素材" in str(seen["instructions"])
+    assert "当前分支只生成一个卖点所需的干净证据画面" in str(seen["instructions"])
     prompt = seen["input"][0]["content"][0]["text"]  # type: ignore[index]
     assert "便携杯" in prompt
     assert "产品更早出现" in prompt
     assert "旧版 Prompt" in prompt
     assert "浅蓝色圆柱杯身" in prompt
     assert "促销贴纸" in prompt
+    assert "保持产品外观前后一致" in prompt
     assert '"aspectRatio"' not in prompt
     assert '"durationSeconds"' not in prompt
     assert '"resolution"' not in prompt
@@ -247,11 +298,12 @@ async def test_mock_translates_stacked_audience_into_executable_single_person_fr
                 await provider.generate_candidates(
                     shard.combinations,
                     insight=insight,
+                    shared_prompt=_shared_prompt(),
                 )
             ).value.items
         )
 
-    assert all(160 <= len(item.prompt_text) <= 280 for item in generated_items)
+    assert all(80 <= len(item.prompt_text) <= 150 for item in generated_items)
     assert all(
         forbidden not in item.prompt_text
         for item in generated_items

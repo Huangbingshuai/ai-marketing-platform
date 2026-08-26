@@ -150,9 +150,9 @@ def test_execution_gate_reports_action_selling_point_and_role_failures() -> None
         no_action, _combination(), product_name="便携杯"
     )
 
-    missing_selling_point = _valid_prompt().replace("单手按键开盖", "一次开盖")
-    assert "MISSING_ASSIGNED_SELLING_POINT" in validate_fragment_prompt(
-        missing_selling_point, _combination(), product_name="便携杯"
+    evidence_without_literal = _valid_prompt().replace("单手按键开盖", "一次开盖")
+    assert "EVIDENCE_MODE_MISMATCH" not in validate_fragment_prompt(
+        evidence_without_literal, _combination(), product_name="便携杯"
     )
 
     hook_with_cta = _combination(FragmentType.HOOK)

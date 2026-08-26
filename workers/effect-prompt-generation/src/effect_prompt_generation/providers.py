@@ -16,6 +16,7 @@ from pydantic import BaseModel, ValidationError
 from .models import (
     DimensionPools,
     EvidenceMode,
+    FragmentStrategyPool,
     FragmentType,
     GeneratedPromptText,
     GeneratedPromptTextBatch,
@@ -25,6 +26,7 @@ from .models import (
     MarketingRelationshipBundle,
     NodeId,
     PlannedCombination,
+    SharedPrompt,
     SellingPointEvidence,
     StrategyPlan,
 )
@@ -107,6 +109,7 @@ class AiProvider(Protocol):
         combinations: list[PlannedCombination],
         *,
         insight: Mapping[str, Any],
+        shared_prompt: SharedPrompt,
         regeneration_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[GeneratedPromptTextBatch]: ...
 
@@ -139,25 +142,6 @@ class MockAiProvider:
         ]
         concrete_scenes = [_mock_concrete_scene(item) for item in scenes]
         pools = DimensionPools(
-            narratives=[
-                "痛点前置型",
-                "效果展示型",
-                "场景代入型",
-                "科普讲解型",
-                "对比测评型",
-                "开箱体验型",
-                "第一视角体验日记",
-                "问题清单逐项解答",
-                "错误做法纠正型",
-                "限时任务挑战型",
-                "微故事转折型",
-                "反常识切入型",
-                "步骤教程型",
-                "细节放大型",
-                "一天使用记录型",
-                "问答访谈型",
-                "使用前后流程型",
-            ],
             scenes=(
                 concrete_scenes
                 + [
@@ -198,68 +182,12 @@ class MockAiProvider:
                 "一双从画面右侧伸入的成年人的手",
             ],
             selling_points=selling_points,
-            cameras=[
-                "肩后中近景连续推近产品",
-                "第一视角稳定跟拍",
-                "俯拍近景连续靠近手部",
-                "低机位缓慢推进",
-                "手持纪实侧向跟随",
-                "固定机位保持产品居中",
-                "正面半身镜头连续聚焦局部",
-                "桌面俯视连续长镜头",
-                "侧逆光下缓慢环绕",
-                "快速推近后稳定定格",
-                "全景环境中连续靠近主体",
-                "中近景从人物视线平滑移焦到产品",
-                "贴近手部动作连续跟拍",
-                "中近景让前景掠过后连续靠近产品",
-                "轻微横移展示产品轮廓",
-                "静态构图内跟随动作",
-                "产品主观低机位连续跟随人物",
-            ],
-            emotions=[
-                "温馨治愈的舒缓节奏",
-                "专业严谨的克制节奏",
-                "活力明快的快速节奏",
-                "焦虑唤醒后及时缓解",
-                "干货科普的清晰节奏",
-                "轻松可信的生活节奏",
-                "好奇探索的渐进节奏",
-                "从容安心的稳定节奏",
-                "真实纪实的自然停顿",
-                "清爽利落的短句节奏",
-                "细腻专注的慢速观察",
-                "亲切陪伴的温和推进",
-                "理性比较的明确停顿",
-                "惊喜发现的层层递进",
-                "日常松弛的呼吸感",
-                "目标明确的任务节奏",
-                "安静高级的极简节奏",
-            ],
-            actions=[
-                "右手拿起产品并把正面转向镜头，动作结束后停住",
-                "双手取出产品并缓慢调整朝向，露出外观后平稳放下",
-                "食指沿产品边缘移动到已确认细节，随后保持不动",
-                "双手握住产品完成一次连续使用动作，然后自然停下",
-                "右手把产品平稳放入当前环境，随后退出画面",
-                "左手托住产品，右手指向一个已确认细节并停住",
-                "右手将产品从画面侧边平稳移动到中央并停住",
-                "双手托住产品缓慢转动半圈，让正面朝向镜头",
-                "右手从桌面提起产品到胸前高度并保持稳定",
-                "左手扶住产品，右手沿一个真实外观细节缓慢移动",
-                "双手把产品摆到单一场景道具旁并自然松开",
-                "右手托住产品向光源方向轻微倾斜后停住",
-                "双手将产品正面朝上放到桌面中央并离开",
-                "右手拎起产品进入画面，在主体位置保持不动",
-                "左手把产品从背景移到前景并停住",
-                "双手稳定托住产品，只调整一次面向镜头的角度",
-                "右手轻放产品后退出画面，产品保持居中",
-            ],
             evidence_plans=[_mock_evidence_plan(item) for item in selling_points],
         )
         return _mock_result(
             StrategyPlan(
                 dimension_pools=pools,
+                fragment_strategy_pools=_mock_fragment_strategy_pools(),
                 relationship_bundles=_mock_relationship_bundles(application),
             ),
             "STRATEGY_PLANNING",
@@ -271,6 +199,7 @@ class MockAiProvider:
         combinations: list[PlannedCombination],
         *,
         insight: Mapping[str, Any],
+        shared_prompt: SharedPrompt,
         regeneration_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[GeneratedPromptTextBatch]:
         fragment_type = _homogeneous_fragment_type(combinations)
@@ -345,7 +274,7 @@ class ArkResponsesProvider:
             STRATEGY_PROMPT,
             target_count=str(target_count),
             insight_json=json.dumps(
-                application.model_dump(mode="json", by_alias=True),
+                _strategy_context(application),
                 ensure_ascii=False,
                 sort_keys=True,
             ),
@@ -353,7 +282,7 @@ class ArkResponsesProvider:
         call = await self._structured(
             prompt,
             StrategyPlan,
-            schema_name="effect_prompt_strategy_plan_v4",
+            schema_name="effect_prompt_strategy_plan_v7",
             stage="STRATEGY_PLANNING",
             prompt_file=STRATEGY_PROMPT,
             model=self._strategy_model,
@@ -368,12 +297,16 @@ class ArkResponsesProvider:
         # Selling-point names are hard facts. A model may omit or rewrite an evidence row even
         # when strict JSON validation succeeds; keep every confirmed point and fill omissions
         # with the safest deterministic representation instead of aborting the entire batch.
-        protected_evidence = [
-            evidence_by_point.get(
-                _normalized_text(item), _safe_text_evidence_plan(item)
+        protected_evidence = []
+        for item in allowed:
+            deterministic = _mock_evidence_plan(item)
+            model_evidence = evidence_by_point.get(_normalized_text(item))
+            protected_evidence.append(
+                deterministic
+                if deterministic.evidence_mode
+                in {EvidenceMode.TEXT_ONLY, EvidenceMode.PROCESS_ONLY}
+                else model_evidence or deterministic
             )
-            for item in allowed
-        ]
         protected_bundles = _complete_relationship_bundles(
             call.value.relationship_bundles,
             application,
@@ -399,6 +332,7 @@ class ArkResponsesProvider:
         combinations: list[PlannedCombination],
         *,
         insight: Mapping[str, Any],
+        shared_prompt: SharedPrompt,
         regeneration_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[GeneratedPromptTextBatch]:
         fragment_type = _homogeneous_fragment_type(combinations)
@@ -413,8 +347,8 @@ class ArkResponsesProvider:
                 insight, "visualStyleBaseline", "visual_style_baseline"
             )
             or "以信息卡为准",
-            disabled_elements_json=json.dumps(
-                _text_list(insight, "disabledElements", "disabled_elements"),
+            shared_prompt_json=json.dumps(
+                shared_prompt.model_dump(mode="json", by_alias=True),
                 ensure_ascii=False,
                 sort_keys=True,
             ),
@@ -439,7 +373,7 @@ class ArkResponsesProvider:
             model=self._candidate_model,
             max_output_tokens=min(
                 self._candidate_max_output_tokens,
-                max(1024, len(combinations) * 480),
+                max(768, len(combinations) * 360),
             ),
             instructions=(
                 load_prompt(CANDIDATE_BASE_SYSTEM_PROMPT)
@@ -672,57 +606,275 @@ def _mock_prompt_text(
     product_name: str,
 ) -> GeneratedPromptText:
     dims = combination.dimensions
-    persona_position = (
-        dims.persona
-        if dims.persona.startswith("无人出镜")
-        else f"{dims.persona}位于画面主体位置"
+    maximum_length = (
+        150
+        if combination.target_duration_seconds <= 5
+        else 200
+        if combination.target_duration_seconds <= 8
+        else 260
     )
-    prefix = f"{dims.scene}，{persona_position}"
-    action = combination.visible_action.replace("产品", product_name).replace("·", "，")
+    budgets = (
+        (18, 20, 18, 25, 18, 12, 22)
+        if maximum_length == 150
+        else (25, 28, 25, 38, 28, 18, 30)
+        if maximum_length == 200
+        else (32, 36, 32, 50, 36, 24, 40)
+    )
+    if combination.fragment_type == FragmentType.SELLING_POINT_EXPLANATION:
+        budgets = (
+            (16, 18, 15, 22, 16, 10, 18)
+            if maximum_length == 150
+            else (22, 24, 20, 30, 22, 15, 25)
+            if maximum_length == 200
+            else (28, 32, 28, 42, 30, 20, 34)
+        )
+    scene = _prompt_clause(dims.scene, budgets[0])
+    persona = _prompt_clause(dims.persona, budgets[1])
+    opening = _prompt_clause(combination.opening_state, budgets[2])
+    action = _prompt_clause(
+        combination.visible_action.replace("产品", product_name).replace("·", "，"),
+        budgets[3],
+    )
+    camera = _prompt_clause(dims.camera, budgets[4])
+    ending = _prompt_clause(combination.ending_state, budgets[6])
+    emotion = _prompt_clause(dims.emotion, budgets[5])
     abstract_selling_point = combination.evidence_mode in {
         EvidenceMode.TEXT_ONLY,
         EvidenceMode.PROCESS_ONLY,
     }
     role_text = {
         FragmentType.HOOK: (
-            f"首帧直接出现动作即将受阻的瞬间：{action}。{dims.camera}，"
-            "焦点锁定尚未完成的动作，结束时悬念仍停在原处"
+            f"{scene}，{persona}。{opening}；{action}。{camera}，自然光下{emotion}。{ending}。"
         ),
         FragmentType.PAIN: (
-            f"首帧呈现一个真实不便，{action}，动作受阻后自然停下。"
-            f"{dims.camera}，焦点跟住手部与问题状态，结束画面仍保留未解决状态"
+            f"{scene}，{persona}。{opening}；{action}。{camera}，自然光下{emotion}。{ending}。"
         ),
         FragmentType.PRODUCT_DISPLAY: (
-            f"{product_name}在首帧清楚位于主体位置，{action}。{dims.camera}，"
-            "焦点落在产品轮廓和真实表面材质，动作完成后保持正面可辨"
+            f"{scene}，{product_name}首帧清楚，{persona}。"
+            f"{opening}；{action}。{camera}，自然光下{emotion}。{ending}。"
         ),
         FragmentType.SELLING_POINT_EXPLANATION: (
-            f"{product_name}在首帧与使用道具保持清楚关系，{action}。{dims.camera}，"
+            f"{scene}，{product_name}首帧对准操作部位，{persona}。"
+            f"{opening}；{action}。{camera}，自然光下{emotion}，"
             + (
-                "焦点持续观察产品真实外观和动作接触位置，结束时留下干净画面空间"
+                f"真实外观和接触位置清楚。{ending}。"
                 if abstract_selling_point
-                else f"焦点持续观察与{dims.selling_point}直接相关的真实细节，结束时细节仍清楚可辨"
+                else {
+                    EvidenceMode.VISIBLE_ATTRIBUTE: f"真实表面细节清楚。{ending}。",
+                    EvidenceMode.USAGE_ACTION: f"操作部位和动作关系清楚。{ending}。",
+                    EvidenceMode.VISIBLE_RESULT: f"停在完成状态且结果可见。{ending}。",
+                }[combination.evidence_mode]
             )
         ),
         FragmentType.CTA: (
-            f"{product_name}在首帧位于人物近侧，{action}。{dims.camera}，"
-            "动作收束后产品保持清楚，画面一侧形成稳定、干净的留白区域"
+            f"{scene}，{product_name}首帧清楚，{persona}。"
+            f"{opening}；{action}。{camera}，自然光下{emotion}。{ending}。"
         ),
         FragmentType.OUTRO: (
-            f"{product_name}在首帧居中，{action}。{dims.camera}，"
-            "背景运动逐渐安静，结尾停在产品轮廓清楚且构图稳定的画面"
+            f"{scene}，{product_name}首帧稳定，{persona}。"
+            f"{opening}；{action}。{camera}，自然光下{emotion}。{ending}。"
         ),
     }[combination.fragment_type]
-    prompt = (
-        f"{prefix}。{role_text}。光线、色彩和动作节奏呈现{dims.emotion}，"
-        "材质受光变化保持自然，主体、道具和背景的空间关系在整个连续镜头中保持稳定，"
-        "仅保留与动作同步的真实环境声。"
-    )
+    prompt = role_text
+    if len(prompt) > maximum_length:
+        prompt = prompt[: maximum_length - 1].rstrip("，；。 ") + "。"
     return GeneratedPromptText(
         slot_id=combination.slot_id,
         prompt_text=prompt,
         used_fact_ids=[binding.fact_id for binding in combination.insight_bindings],
     )
+
+
+def _prompt_clause(value: str, limit: int) -> str:
+    cleaned = " ".join(value.replace("·", "，").split()).strip("，。； ")
+    return cleaned[:limit].rstrip("，。； ")
+
+
+def _mock_fragment_strategy_pools() -> list[FragmentStrategyPool]:
+    values: dict[
+        FragmentType,
+        tuple[list[str], list[str], list[str], list[str], list[str]],
+    ] = {
+        FragmentType.HOOK: (
+            [
+                "首帧只露出一个反常局部，答案仍在画外",
+                "首帧停在主体即将接触道具的瞬间",
+                "首帧由前景遮挡显露一个尚未解释的细节",
+            ],
+            [
+                "主体伸向目标位置，在接触前突然停住",
+                "局部物件开始移动，在关键细节完全露出前停住",
+                "主体缓慢伸向异常细节，刚要确认时停止动作",
+            ],
+            [
+                "低机位近景快速靠近主体后停止",
+                "微距固定机位持续观察局部变化",
+                "肩后中近景稳定跟随主体动作",
+            ],
+            [
+                "高对比侧光与短促停顿",
+                "冷暖反差与快速停住",
+                "局部亮部和紧张停顿",
+            ],
+            [
+                "结束时答案仍未揭晓，动作停在临界位置",
+                "结束画面保留被遮挡的关键信息",
+                "结束时主体保持迟疑，悬念没有被解释",
+            ],
+        ),
+        FragmentType.PAIN: (
+            [
+                "首帧直接呈现操作空间不足的受阻状态",
+                "首帧呈现主体反复寻找落点但仍无法继续",
+                "首帧让凌乱、遮挡或不便关系清楚可见",
+            ],
+            [
+                "主体尝试完成一个动作，遇到阻碍后停下",
+                "主体调整一次手部位置，仍无法继续并保持原状",
+                "主体把道具移向目标位置，因空间冲突而停止",
+            ],
+            [
+                "俯拍近景固定观察问题关系",
+                "胸前中近景稳定跟随受阻动作",
+                "侧面近景固定呈现主体与障碍的位置关系",
+            ],
+            [
+                "冷色自然光与迟滞节奏",
+                "低饱和侧光与克制停顿",
+                "阴天柔光与受阻停顿",
+            ],
+            [
+                "结束时问题仍清楚存在，动作没有完成",
+                "结束画面保持受阻状态，不出现解决动作",
+                "结束时主体停下，空间或道具关系没有改善",
+            ],
+        ),
+        FragmentType.PRODUCT_DISPLAY: (
+            [
+                "首帧产品完整清楚地位于主体位置",
+                "首帧产品正面与真实使用道具同时可辨",
+                "首帧以简洁背景建立产品轮廓和比例",
+            ],
+            [
+                "一只手将产品扶正到正面朝向并退出画面",
+                "主体拿起产品缓慢转动一个角度后停住",
+                "主体把产品从侧边平稳摆到画面中央后松手",
+            ],
+            [
+                "正面近景轻微横移展示产品轮廓",
+                "桌面高度近景缓慢靠近产品后停止",
+                "肩高近景固定观察产品转动动作",
+            ],
+            [
+                "柔和窗光与平稳节奏",
+                "中性侧光与清晰节奏",
+                "轮廓光与从容停顿",
+            ],
+            [
+                "结束时产品正面清楚且轮廓完整",
+                "结束画面停在产品三分之二角度的英雄构图",
+                "结束时产品稳定居中，手部已经退出画面",
+            ],
+        ),
+        FragmentType.SELLING_POINT_EXPLANATION: (
+            [
+                "首帧建立产品、操作部位和道具的真实关系",
+                "首帧聚焦已确认的产品表面或结构细节",
+                "首帧让允许呈现的使用状态清楚可见",
+            ],
+            [
+                "主体只触碰一次已确认部位，完成后保持当前状态",
+                "主体沿一个真实外观细节缓慢移动手指后停住",
+                "主体把允许观察的产品细节转向镜头并保持稳定",
+            ],
+            [
+                "肩后中近景固定观察操作位置",
+                "微距近景缓慢靠近允许呈现的真实细节",
+                "桌面高度近景轻微横移观察材质受光变化",
+            ],
+            [
+                "清晰侧光与克制节奏",
+                "中性光线与专注停顿",
+                "柔和近光与缓慢观察",
+            ],
+            [
+                "结束时允许证据仍清楚可观察，画面一侧保持干净",
+                "结束画面停在动作结果与产品关系清楚的位置",
+                "结束时真实细节保持稳定，不增加推断性结果",
+            ],
+        ),
+        FragmentType.CTA: (
+            [
+                "首帧产品位于主体近侧，背景留有自然空白",
+                "首帧产品与人物手部形成清楚的收束关系",
+                "首帧以简洁环境建立产品和安全留白区",
+            ],
+            [
+                "主体把产品平稳放到主位置后手部退出",
+                "主体托住产品转向镜头并在正面位置停住",
+                "主体将产品轻缓递近到前景后保持不动",
+            ],
+            [
+                "正面中近景缓慢靠近产品后停止",
+                "半身近景固定保持产品与留白关系",
+                "桌面高度近景轻微横移到稳定收束构图",
+            ],
+            [
+                "明亮轮廓光与平稳收束",
+                "暖色侧光与舒缓停顿",
+                "自然逆光与从容静止",
+            ],
+            [
+                "结束时产品清楚，右侧保留完整干净空间",
+                "结束画面在产品下方保留无遮挡安全区",
+                "结束时产品稳定朝向镜头，背景留白自然连续",
+            ],
+        ),
+        FragmentType.OUTRO: (
+            [
+                "首帧产品已处于稳定静物构图中心",
+                "首帧产品轮廓清楚，背景运动接近静止",
+                "首帧以简洁台面和稳定光线建立产品身份",
+            ],
+            [
+                "一只手轻微扶正产品后离开，产品保持不动",
+                "背景光线轻微变化后恢复稳定，产品始终静止",
+                "焦点从产品边缘缓慢落到正面后保持稳定",
+            ],
+            [
+                "固定近景保持产品居中",
+                "正面中近景固定观察背景逐渐安静",
+                "固定近景只进行一次缓慢收焦",
+            ],
+            [
+                "柔和轮廓光与安静节奏",
+                "稳定中性光与缓慢停顿",
+                "暖色侧光与静止氛围",
+            ],
+            [
+                "结束时产品稳定定格，上方保留干净空间",
+                "结束画面保持至少一秒的清楚静物构图",
+                "结束时背景完全安静，不出现新动作或新信息",
+            ],
+        ),
+    }
+    return [
+        FragmentStrategyPool(
+            fragment_type=fragment_type,
+            opening_states=opening_states,
+            action_arcs=action_arcs,
+            cameras=cameras,
+            emotions=emotions,
+            ending_states=ending_states,
+        )
+        for fragment_type, (
+            opening_states,
+            action_arcs,
+            cameras,
+            emotions,
+            ending_states,
+        ) in values.items()
+    ]
 
 
 def _mock_evidence_plan(selling_point: str) -> SellingPointEvidence:
@@ -781,15 +933,6 @@ def _mock_evidence_plan(selling_point: str) -> SellingPointEvidence:
         evidence_mode=mode,
         allowed_visual_evidence=allowed,
         forbidden_inference=f"不得把{selling_point}扩展为未确认功效、数据、认证或绝对化结论",
-    )
-
-
-def _safe_text_evidence_plan(selling_point: str) -> SellingPointEvidence:
-    return SellingPointEvidence(
-        selling_point=selling_point,
-        evidence_mode=EvidenceMode.TEXT_ONLY,
-        allowed_visual_evidence="只生成与该卖点相符的真实产品细节素材，卖点原文保留在结构化元数据中",
-        forbidden_inference=f"不得把{selling_point}扩展为未确认功效、数据、认证、销量或承诺",
     )
 
 
@@ -917,7 +1060,11 @@ def _complete_relationship_bundles(
             )
         except ProviderError:
             continue
-        completed.append(bundle)
+        completed.append(
+            bundle.model_copy(
+                update={"persona": _safe_relationship_persona(bundle.persona)}
+            )
+        )
     planned = {fact_id for bundle in completed for fact_id in bundle.fact_ids}
     covered_types = {
         fragment_type
@@ -976,8 +1123,47 @@ def _mock_persona(value: str) -> str:
     if any(token in value for token in ("通勤", "职场", "办公")):
         return "一位30岁左右、穿深蓝通勤外套的上班族"
     if any(token in value for token in ("美食", "烹饪", "厨")):
-        return "一位35岁左右、穿纯色围裙的美食爱好者"
+        return "一位35岁左右、穿纯色围裙的成年家庭烹饪者"
     return "一位30至40岁、穿简洁生活装的成年使用者"
+
+
+def _safe_relationship_persona(value: str) -> str:
+    audience_markers = (
+        "目标受众",
+        "消费者",
+        "人群",
+        "爱好者",
+        "家庭厨房决策者",
+        "年货送礼",
+        "全国",
+        "用户群体",
+    )
+    if value.startswith(("一位", "一名", "一双", "无人出镜")) and not any(
+        marker in value for marker in audience_markers
+    ):
+        return value
+    return _mock_persona(value)
+
+
+def _strategy_context(application: InsightApplicationMap) -> dict[str, object]:
+    return {
+        "facts": [
+            {
+                "factId": fact.fact_id,
+                "field": fact.field.value,
+                "value": fact.value,
+                "eligibleFragmentTypes": [
+                    fragment_type.value
+                    for fragment_type in fact.eligible_fragment_types
+                ],
+            }
+            for fact in application.usable
+        ],
+        "constraints": [
+            {"field": fact.field.value, "value": fact.value}
+            for fact in application.constraints
+        ],
+    }
 
 
 def _text_list(payload: Mapping[str, Any], *keys: str) -> list[str]:

@@ -37,6 +37,7 @@
       }
     },
     "renderProfile": { "$ref": "#/$defs/renderProfile" },
+    "sharedPrompt": { "$ref": "#/$defs/sharedPrompt" },
     "items": {
       "type": "array",
       "maxItems": 200,
@@ -185,9 +186,39 @@
               "uniqueItems": true,
               "items": { "type": "string", "minLength": 1, "maxLength": 500 }
             },
+            "prompt": { "type": "string", "maxLength": 60000 },
             "contentHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
           }
         }
+      }
+    },
+    "sharedPrompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "sections", "compiledContent", "contentHash"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "sections": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": { "$ref": "#/$defs/sharedPromptSection" }
+        },
+        "compiledContent": { "type": "string", "maxLength": 60000 },
+        "contentHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "sharedPromptSection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "title", "source", "content", "editable", "sourceHash"],
+      "properties": {
+        "key": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "source": { "enum": ["SYSTEM", "USER"] },
+        "content": { "type": "string", "maxLength": 30000 },
+        "editable": { "type": "boolean" },
+        "sourceHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
       }
     },
     "fragmentTypeDistribution": {

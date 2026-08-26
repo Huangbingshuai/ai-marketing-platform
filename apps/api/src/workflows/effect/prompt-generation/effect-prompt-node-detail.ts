@@ -84,13 +84,22 @@ const ISSUE_LABELS: Record<string, string> = {
   FULL_TIMELINE: '包含完整时间轴或多镜头结构',
   FULL_TIMELINE_NOT_FRAGMENT: '包含完整时间轴或多镜头结构',
   CAMERA_CONFLICT: '同一片段包含互相冲突的运镜',
+  CTA_NO_SAFE_AREA: '转化片段没有形成可供后续文案使用的安全留白',
+  EVIDENCE_MODE_MISMATCH: '卖点画面与允许呈现的证据类型不一致',
   FACT_OVERLOAD: '单条片段承载了过多提炼事实',
+  HOOK_RESOLVED: '钩子片段提前揭晓了答案或解决方案',
   META_LANGUAGE: '包含策划元话语',
   MULTI_STAGE_STORY: '片段包含多个叙事阶段',
   NO_VISIBLE_ACTION: '缺少可拍摄的连续动作',
   NEGATIVE_TAIL_DUPLICATION: '重复附加了长篇禁用说明',
   OVERLOADED_ACTION: '单条片段包含多个主要动作',
+  OUTRO_NEW_MESSAGE: '片尾品牌片段重新引入了卖点或新信息',
+  OUTRO_UNSTABLE: '片尾品牌片段仍包含明显运动，无法稳定定格',
+  PAIN_RESOLVED: '痛点片段在同一镜头中完成了解决',
   PLACEHOLDER_TEXT: '正文存在占位描述',
+  PRODUCT_NOT_FIRST_FRAME: '产品展示片段没有在首帧建立清楚产品主体',
+  PRODUCT_ROLE_OVERLOAD: '产品展示片段混入了效果或解决方案',
+  PROMPT_LENGTH_MISMATCH: '正文长度与目标片段时长不匹配',
   ROLE_CONFLICT: '片段承担了互相冲突的职责',
   PHYSICS_BREAK: '画面包含缺乏依据的物理跳变',
   REFERENCE_DEPENDENCY: '没有参考图却要求精确还原包装细节',
@@ -554,6 +563,27 @@ const nodeMetricFields = (
         numberField(metadata, 'requiredCount', '必须应用信息'),
         numberField(metadata, 'adaptiveCount', '自适应信息'),
         numberField(metadata, 'excludedCount', '不适用信息'),
+      ]);
+    case 'SHARED_PROMPT_COMPILATION':
+      return compact([
+        numberField(metadata, 'sectionCount', '共用段落'),
+        numberField(metadata, 'disabledElementCount', '禁用元素'),
+        textField(
+          '共用提示词',
+          metadata.sharedPromptGenerated === true
+            ? '已编译'
+            : metadata.sharedPromptGenerated === false
+              ? '当前为空'
+              : null,
+        ),
+        textField(
+          '用户补充',
+          metadata.hasUserAdditionalContent === true
+            ? '已应用'
+            : metadata.hasUserAdditionalContent === false
+              ? '未设置'
+              : null,
+        ),
       ]);
     case 'STRATEGY_PLANNING':
       return compact([

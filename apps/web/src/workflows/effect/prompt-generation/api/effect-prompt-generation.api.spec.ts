@@ -5,6 +5,7 @@ import {
   deleteEffectPromptItem,
   getEffectPromptResult,
   updateEffectPromptItem,
+  updateEffectPromptSharedPrompt,
   validateEffectPromptResult,
 } from './effect-prompt-generation.api';
 
@@ -66,14 +67,22 @@ describe('effect prompt generation API', () => {
       expectedRevision: 8,
     });
     await deleteEffectPromptItem('project-1', 'result-1', 'item-1', 9);
-    await validateEffectPromptResult('project-1', 'result-1', { expectedRevision: 10 });
+    await updateEffectPromptSharedPrompt('project-1', 'result-1', {
+      additionalContent: '保持产品外观一致',
+      expectedRevision: 10,
+    });
+    await validateEffectPromptResult('project-1', 'result-1', { expectedRevision: 11 });
 
     expect((fetchMock.mock.calls[0]![1] as RequestInit).headers).toMatchObject({ 'If-Match': '7' });
     expect((fetchMock.mock.calls[1]![1] as RequestInit).headers).toMatchObject({ 'If-Match': '8' });
     expect((fetchMock.mock.calls[2]![1] as RequestInit).method).toBe('DELETE');
     expect((fetchMock.mock.calls[2]![1] as RequestInit).headers).toMatchObject({ 'If-Match': '9' });
+    expect(String(fetchMock.mock.calls[3]![0])).toContain('/results/result-1/shared-prompt');
     expect((fetchMock.mock.calls[3]![1] as RequestInit).headers).toMatchObject({
       'If-Match': '10',
+    });
+    expect((fetchMock.mock.calls[4]![1] as RequestInit).headers).toMatchObject({
+      'If-Match': '11',
     });
   });
 });

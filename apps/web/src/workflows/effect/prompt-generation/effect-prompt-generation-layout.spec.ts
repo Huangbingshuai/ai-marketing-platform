@@ -18,7 +18,7 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).toContain('class="effect-prompt-stats"');
     expect(pageSource).toContain('class="effect-prompt-toolbar"');
     expect(pageSource).toContain('class="prompt-card"');
-    expect(pageSource).toMatch(/grid-template-columns:\s*43px\s+minmax\(0,\s*1fr\)\s+134px/u);
+    expect(pageSource).toMatch(/grid-template-columns:\s*43px\s+minmax\(0,\s*1fr\)\s+138px/u);
     expect(pageSource).toContain('{{ EFFECT_PROMPT_LIMITS.pageSize }} 条/页');
   });
 
@@ -114,19 +114,25 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).toContain('sellingPointCoverage');
     expect(pageSource).toContain('removedExecutionInvalid');
     expect(pageSource).toContain('currentQuotaStats');
-    expect(pageSource).toContain('currentFragmentDistribution');
+    expect(pageSource).not.toContain('currentFragmentDistribution');
     expect(pageSource).toContain('缺少 ');
     expect(pageSource).toContain('超出 ');
     expect(pageSource).toContain('数量一致');
   });
 
-  it('shows batch render parameters once and keeps copy limited to clean content', () => {
-    expect(pageSource).toContain('aria-label="统一渲染设置"');
-    expect(pageSource).toContain('统一禁用元素');
-    expect(pageSource).toContain('currentRenderProfile.ratio');
-    expect(pageSource).toContain('currentRenderProfile.resolution');
-    expect(pageSource).toContain('currentRenderCapability?.minDurationSeconds');
-    expect(pageSource).toContain('currentMetrics.fallbackCount');
+  it('shows one editable shared prompt and keeps copy limited to clean item content', () => {
+    expect(pageSource).toContain('aria-label="共用提示词"');
+    expect(pageSource).toContain('currentSharedPromptPreview');
+    expect(pageSource).toContain('补充共用内容');
+    expect(pageSource).toContain('@click="saveSharedPrompt"');
+    expect(pageSource).not.toContain('currentDisabledElements');
+    expect(pageSource).not.toContain('aria-label="配额与提炼信息覆盖"');
+    expect(pageSource).not.toContain('class="quality-breakdown"');
+    expect(pageSource).not.toContain('统一渲染设置');
+    expect(pageSource).not.toContain('currentRenderProfile.ratio');
+    expect(pageSource).not.toContain('currentRenderProfile.resolution');
+    expect(pageSource).not.toContain('模型时长范围');
+    expect(pageSource).not.toContain('currentMetrics.fallbackCount');
     expect(pageSource).toContain('await writeClipboardText(item.content)');
     expect(pageSource).not.toContain('writeClipboardText(item.targetDurationSeconds');
   });
@@ -146,12 +152,20 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).toContain('@keydown.esc="closeDeleteDialog"');
     expect(pageSource).toContain('ref="deleteConfirmButton"');
     expect(pageSource).toContain("itemOperation.kind === 'delete'");
-    expect(pageSource).toContain('重新生成');
+    expect(pageSource).toContain('<RefreshCw v-else :size="13" />重新生成');
+    expect(pageSource).not.toContain('重新生成此条');
+    expect(pageSource).toContain('grid-template-columns: 56px 76px;');
+    expect(pageSource).toContain('font-weight: 700;\n  white-space: nowrap;');
     expect(pageSource).toContain('class="prompt-regeneration-dialog"');
     expect(pageSource).toContain('已调整 {{ regenerationChangedKeys.length }}/6');
     expect(pageSource).toContain('恢复原始六维');
     expect(pageSource).toContain('regenerationInstruction.length }}/500');
-    expect(pageSource).toContain("regenerationHasChanges ? '按当前设置重新生成' : '直接换一版'");
+    expect(pageSource).toContain(
+      '<LoaderCircle v-if="regenerationSaving" class="spin" :size="14" />',
+    );
+    expect(pageSource).toMatch(/@click="regenerateItem"[\s\S]*?重新生成[\s\S]*?<\/button>/u);
+    expect(pageSource).not.toContain('直接换一版');
+    expect(pageSource).not.toContain('按当前设置重新生成');
     expect(pageSource).toContain('.prompt-dialog-backdrop {\n  --effect-blue: #2563eb;');
     expect(pageSource).toContain('replacementDimensions');
     expect(pageSource).toContain('targetItemId: item.id');
@@ -166,6 +180,8 @@ describe('effect prompt generation prototype layout', () => {
   it('renders the conditional router and all six generation branches', () => {
     for (const nodeId of [
       'LOAD_AND_SNAPSHOT',
+      'INSIGHT_MAPPING',
+      'SHARED_PROMPT_COMPILATION',
       'STRATEGY_PLANNING',
       'DIMENSION_COMBINATION',
       'FRAGMENT_TYPE_ROUTER',

@@ -7,7 +7,7 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 
 import { EffectPromptService } from './effect-prompt.service';
-import { recomputePromptQuality } from './effect-prompt.quality';
+import { compileEffectPromptSharedPrompt, recomputePromptQuality } from './effect-prompt.quality';
 
 describe('EffectPromptService settings contract', () => {
   it('normalizes and forwards visual item-regeneration direction without opening a batch path', async () => {
@@ -205,6 +205,57 @@ describe('EffectPromptService settings contract', () => {
     });
   });
 
+  it('saves only the editable shared-prompt section and keeps the batch in draft', async () => {
+    const draft = recomputePromptQuality([], DEFAULT_EFFECT_PROMPT_SETTINGS);
+    const savedAt = new Date('2026-08-26T08:00:00.000Z');
+    const repository = {
+      result: vi.fn().mockResolvedValue({
+        id: 'result-a',
+        productId: 'product-a',
+        revision: 3,
+        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
+        draftResult: draft,
+      }),
+      mutateResult: vi
+        .fn()
+        .mockImplementation(
+          (
+            _projectId: string,
+            _resultId: string,
+            _revision: number,
+            mutation: { sharedPrompt: unknown },
+          ) => ({
+            kind: 'UPDATED',
+            result: {
+              id: 'result-a',
+              productId: 'product-a',
+              revision: 4,
+              savedAt,
+              updatedAt: savedAt,
+            },
+            draft: { ...draft, sharedPrompt: mutation.sharedPrompt },
+          }),
+        ),
+    };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const service = new EffectPromptService(repository as never, projects as never, {} as never);
+
+    const output = await service.updateSharedPrompt(
+      'project-a',
+      'result-a',
+      3,
+      '  保持产品外观前后一致。  ',
+    );
+
+    const expected = compileEffectPromptSharedPrompt([], '保持产品外观前后一致。');
+    expect(repository.mutateResult).toHaveBeenCalledWith('project-a', 'result-a', 3, {
+      kind: 'SHARED_PROMPT',
+      sharedPrompt: expected,
+    });
+    expect(output.result.sharedPrompt).toEqual(expected);
+    expect(output.revision).toBe(4);
+  });
+
   it('returns only the node-specific metadata whitelist from the public detail API', async () => {
     const repository = {
       runForNodeDetail: vi.fn().mockResolvedValue({
@@ -304,6 +355,65 @@ describe('EffectPromptService settings contract', () => {
         metrics: null,
         qualityStatus: null,
         errorMessage: 'Prompt 生成规则已升级；旧的 3 秒设置会在重新生成时调整为当前模型允许的 4 秒',
+      }),
+    );
+  });
+
+  it('keeps a replacement batch visible as processing while its legacy result is stale', async () => {
+    const activeRun = {
+      id: 'run-new',
+      status: 'RUNNING',
+      progress: 11,
+      currentNode: 'STRATEGY_PLANNING',
+      result: null,
+      updatedAt: new Date('2026-08-26T00:01:00.000Z'),
+    };
+    const repository = {
+      workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }),
+      products: vi.fn().mockResolvedValue([
+        {
+          id: 'product-a',
+          promptRuns: [activeRun],
+          updatedAt: new Date('2026-08-26T00:00:00.000Z'),
+        },
+      ]),
+      run: vi.fn().mockImplementation((_projectId: string, id: string) =>
+        Promise.resolve(
+          id === activeRun.id
+            ? activeRun
+            : {
+                id: 'run-old',
+                inputSnapshot: {},
+              },
+        ),
+      ),
+      latestResult: vi.fn().mockResolvedValue({
+        id: 'legacy-result',
+        runId: 'run-old',
+        revision: 4,
+        schemaVersion: 2,
+        settingsHash: 'legacy-settings',
+        draftResult: { schemaVersion: 2 },
+      }),
+      settingsNode: vi.fn().mockResolvedValue({
+        revision: 2,
+        schemaVersion: 2,
+        state: { count: 50, durationSeconds: 5, semanticLimit: 15, visualLimit: 20 },
+      }),
+      insightArtifact: vi.fn().mockResolvedValue(null),
+      promptArtifact: vi.fn().mockResolvedValue(null),
+    };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const service = new EffectPromptService(repository as never, projects as never, {} as never);
+
+    const output = await service.workspace('project-a', 'workflow-a');
+
+    expect(output.products[0]).toEqual(
+      expect.objectContaining({
+        status: 'PROCESSING',
+        runId: 'run-new',
+        progress: 11,
+        currentNode: 'STRATEGY_PLANNING',
       }),
     );
   });

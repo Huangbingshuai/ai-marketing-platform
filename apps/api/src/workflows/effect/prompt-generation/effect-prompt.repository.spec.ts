@@ -12,7 +12,7 @@ import {
   promptItemsRetainedForRun,
   type StartPromptRunInput,
 } from './effect-prompt.repository';
-import { recomputePromptQuality } from './effect-prompt.quality';
+import { compileEffectPromptSharedPrompt, recomputePromptQuality } from './effect-prompt.quality';
 
 const projectId = '00000000-0000-4000-8000-000000000001';
 const workflowRunId = '00000000-0000-4000-8000-000000000002';
@@ -306,7 +306,70 @@ describe('EffectPromptRepository', () => {
     });
   });
 
-  it('starts a fresh V4 batch while preserving a legacy result only for audit', async () => {
+  it('carries the editable shared prompt into a replacement run snapshot', async () => {
+    const created = runRecord();
+    const runCreate = vi.fn().mockResolvedValue(created);
+    const base = recomputePromptQuality([], DEFAULT_EFFECT_PROMPT_SETTINGS);
+    const sharedPrompt = compileEffectPromptSharedPrompt([], '保持产品外观前后一致。');
+    const current = recomputePromptQuality(
+      [],
+      DEFAULT_EFFECT_PROMPT_SETTINGS,
+      base.metrics,
+      base.renderProfile,
+      sharedPrompt,
+    );
+    const transaction = {
+      effectPromptRun: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: runCreate,
+      },
+      effectImportProduct: { findFirst: vi.fn().mockResolvedValue({ id: productId }) },
+      workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: workflowRunId }) },
+      workflowNodeState: {
+        findUnique: vi.fn().mockResolvedValue({
+          schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
+          revision: 1,
+          state: DEFAULT_EFFECT_PROMPT_SETTINGS,
+        }),
+      },
+      workingArtifact: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: '00000000-0000-4000-8000-000000000005',
+          revision: 1,
+          contentHash: 'a'.repeat(64),
+          payload: { productName: '产品' },
+        }),
+      },
+      effectPromptResult: {
+        findFirst: vi.fn().mockResolvedValue({
+          schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
+          revision: 4,
+          draftResult: current,
+        }),
+      },
+      jobOutbox: { create: vi.fn().mockResolvedValue({}) },
+      $queryRaw: vi.fn().mockResolvedValue([{ id: productId }]),
+    };
+    const repository = new EffectPromptRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await expect(
+      repository.startRun(projectId, workflowRunId, productId, {
+        ...input,
+        expectedResultRevision: 4,
+      }),
+    ).resolves.toEqual({ kind: 'CREATED', run: created });
+    expect(runCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        inputSnapshot: expect.objectContaining({ sharedPrompt }),
+      }),
+      include: { result: true, stages: true },
+    });
+  });
+
+  it('starts a fresh V5 batch from a legacy result when its revision still matches', async () => {
     const created = runRecord();
     const runCreate = vi.fn().mockResolvedValue(created);
     const transaction = {
@@ -346,10 +409,12 @@ describe('EffectPromptRepository', () => {
       $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
     } as unknown as PrismaService);
 
-    await expect(repository.startRun(projectId, workflowRunId, productId, input)).resolves.toEqual({
-      kind: 'CREATED',
-      run: created,
-    });
+    await expect(
+      repository.startRun(projectId, workflowRunId, productId, {
+        ...input,
+        expectedResultRevision: 9,
+      }),
+    ).resolves.toEqual({ kind: 'CREATED', run: created });
     expect(runCreate).toHaveBeenCalledWith({
       data: expect.objectContaining({
         inputSnapshot: expect.objectContaining({
