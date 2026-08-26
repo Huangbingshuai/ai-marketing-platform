@@ -4,7 +4,7 @@ Independent Python 3.12 worker for the effect workflow's differentiated Prompt b
 It consumes lightweight run identifiers from RabbitMQ, claims an immutable snapshot from the
 NestJS internal API, persists every shard, and returns only a schema-versioned batch result.
 
-Schema V2 generates a material pool, not finished advertisements: one Prompt maps to one
+Schema V3 generates a material pool, not finished advertisements: one Prompt maps to one
 independently renderable video fragment. The worker deterministically allocates the six
 slot-compatible fragment types (`HOOK`, `PAIN`, `PRODUCT_DISPLAY`,
 `SELLING_POINT_EXPLANATION`, `CTA`, `OUTRO`), stores their

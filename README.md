@@ -2,7 +2,7 @@
 
 公司内部使用的 AI 营销视频素材生产平台。系统以项目为隔离边界，统一管理产品资料、营销洞察、Prompt、生成任务、工作副本和归档资产。
 
-当前优先建设效果类黄金链路，已完成公共项目底座、资料包导入和 AI 信息提炼；Prompt、渲染、混剪和成片导出仍按工作流顺序继续开发。
+当前优先建设效果类黄金链路，已完成公共项目底座、资料包导入、AI 信息提炼和素材片段 Prompt 生成；视频渲染、模板混剪和成片导出仍按工作流顺序继续开发。
 
 ## 当前进度
 
@@ -11,7 +11,7 @@
   └─ 效果类工作流
       ├─ 01 资料包导入        已完成
       ├─ 02 AI 信息提炼       已完成
-      ├─ 03 Prompt            待开发
+      ├─ 03 Prompt            已完成
       ├─ 04 渲染              待开发
       ├─ 05 混剪              待开发
       └─ 06 导出              待开发
@@ -24,6 +24,7 @@
 - 效果类单产品/批量资料包导入、图片与文档上传、全局视频配置、revision 并发控制和刷新恢复。
 - RabbitMQ Outbox 可靠投递、Redis 进度缓存、任务租约和重复消息恢复。
 - Python 3.12 + LangGraph AI 提炼 Worker。
+- 独立 Prompt 生成 Worker：六类素材片段条件路由、分片并发、执行门禁、双重去重和最多三轮定向补齐。
 - Docling 本地解析 PDF/DOCX，模型文件通过 Docker named volume 持久化。
 - 火山方舟 Ark Responses API 文档抽取、图片理解和标准结果生成。
 - 七节点工作流状态弹窗、节点详情、逐文件处理结果、告警和安全化错误展示。
@@ -42,9 +43,9 @@ NestJS API ───── Prisma ───── PostgreSQL
    │  └─ RabbitMQ：异步任务消息
    │                   │
    │ internal API      ▼
-   └──────────── Python LangGraph Worker
-                         ├─ Docling（本地 PDF/DOCX）
-                         └─ VolcEngine Ark（Seed 2.1 Turbo）
+   └──────────── Python LangGraph Workers
+                         ├─ AI 信息提炼：Docling + Ark Seed 2.1 Turbo
+                         └─ Prompt 生成：Seed 2.0 Lite 策略 + Seed 2.1 Turbo 候选
 ```
 
 边界约束：
@@ -90,6 +91,27 @@ OutputState = {"extract_result_id": str}
 - 品牌调性、禁用元素。
 
 详细设计与验收记录见 [效果类工作流 Step 02「AI 信息提炼」实施方案](docs/效果类工作流-AI信息提炼节点实施方案.md)。
+
+## 素材片段 Prompt 生成工作流
+
+Step 03 读取当前产品已提交的 `marketing-insight:{productId}`，生成供后续逐条渲染和模板混剪使用的素材片段 Prompt。一条 Prompt 对应一个短视频素材片段，不是完整广告或最终成片。
+
+默认批次共 50 条，六类片段分别独立配置数量和 3～10 秒目标时长：
+
+| 片段类型 | 默认数量 | 默认时长 |
+| -------- | -------: | -------: |
+| 钩子     |       10 |     5 秒 |
+| 痛点     |        8 |     5 秒 |
+| 产品展示 |       12 |     5 秒 |
+| 卖点讲解 |       10 |     5 秒 |
+| 结尾转化 |        6 |     5 秒 |
+| 片尾品牌 |        4 |     5 秒 |
+
+公开子工作流使用确定性条件路由，把同类型冻结组合发送到六套独立候选生成模板。策略规划调用 Doubao Seed 2.0 Lite，六类候选生成调用 Doubao Seed 2.1 Turbo；组合、执行门禁、语义/视觉去重、质量校验和持久化均为确定性逻辑，不增加第三次模型审查。
+
+最终 Prompt 只包含可直接执行的场景、主体、连续动作、产品关系、主景别、单一运镜、光线、节奏和结束画面。六维差异、标签、卖点与时长保存在结构化元数据中，不把“差异化设定、叙事结构、时间轴镜头”等内部策划语言写进正文。
+
+只有数量、六类配额、核心卖点覆盖、执行有效性、至少三维差异和双重重复度全部通过后，页面才允许“完成校验”并提交 `prompt-batch:{productId}` WorkingArtifact。详细设计、V3 兼容和验收记录见 [差异化 Prompt 批量生成节点实施方案](docs/效果类工作流-差异化Prompt批量生成节点实施方案.md)。
 
 ## 本地环境要求
 
@@ -167,6 +189,28 @@ docker compose logs --tail 100 effect-extraction-worker
 
 Worker 应保持 `Up`，RabbitMQ 队列应出现消费者。真实 Ark 模式缺少 Key 时 Worker会启动失败，不会静默降级为 Mock。
 
+### 5. 启动素材片段 Prompt Worker
+
+正常 Ark 模式：
+
+```powershell
+docker compose --profile effect-prompt-generation up -d --build effect-prompt-generation-worker
+docker compose logs --tail 100 effect-prompt-generation-worker
+```
+
+策略规划使用低成本模型，候选分支使用 Turbo；每片最多 8 条、全图最大并发 3，并按小分片动态限制输出 Token。运行失败不会自动切换模型。
+
+仅在本地回归或自动测试中显式使用 Mock：
+
+```powershell
+$env:PROMPT_AI_PROVIDER='mock'
+docker compose --profile effect-prompt-generation up -d --build --force-recreate effect-prompt-generation-worker
+docker inspect ai-marketing-platform-effect-prompt-generation-worker-1 --format '{{range .Config.Env}}{{println .}}{{end}}' | Select-String '^PROMPT_AI_PROVIDER='
+Remove-Item Env:PROMPT_AI_PROVIDER
+```
+
+启动付费回归前必须先检查容器的 `PROMPT_AI_PROVIDER`，避免根目录 `.env` 中的 `ark` 配置被意外继承。Mock 与 Ark 使用相同的结构化响应契约，但 Mock 结果不能代替真实模型质量验收。
+
 ## 默认访问地址
 
 | 服务            | 地址                               |
@@ -202,6 +246,9 @@ pnpm db:studio
 docker compose --profile effect-extraction build effect-extraction-worker
 docker compose --profile effect-extraction up -d effect-extraction-worker
 docker compose logs -f effect-extraction-worker
+docker compose --profile effect-prompt-generation build effect-prompt-generation-worker
+docker compose --profile effect-prompt-generation up -d effect-prompt-generation-worker
+docker compose logs -f effect-prompt-generation-worker
 ```
 
 Python Worker 本地验证：
@@ -211,6 +258,16 @@ Set-Location workers/effect-extraction
 uv sync --dev
 uv run pytest
 uv run mypy src tests
+```
+
+Prompt Worker 本地验证：
+
+```powershell
+Set-Location workers/effect-prompt-generation
+uv sync --dev
+uv run pytest
+uv run ruff check src tests
+uv run mypy src
 ```
 
 真实 Ark 冒烟默认跳过，只有显式开启才会调用模型并产生费用：
@@ -253,6 +310,7 @@ ai-marketing-platform/
 │  └─ ui/                          # 共享 Vue UI 组件
 ├─ workers/
 │  ├─ effect-extraction/           # LangGraph + Docling + Ark Worker
+│  ├─ effect-prompt-generation/    # 六类素材片段 Prompt LangGraph Worker
 │  ├─ seedance-worker/             # Seedance 异步 Worker
 │  └─ media-worker/                # 媒体处理 Worker
 ├─ infrastructure/minio/           # 固定版本的本地 MinIO 镜像
@@ -290,6 +348,14 @@ AI 信息提炼公开基础路径：
 - 完成校验并提交当前产品营销洞察工作副本。
 
 Worker 内部接口由 `x-worker-token` 和 attempt token 保护，不作为浏览器公开 API。
+
+素材片段 Prompt 公开基础路径：
+
+```text
+/api/projects/:projectId/workflows/effect/prompt-generation
+```
+
+核心接口包括加载产品工作区、保存六类设置、分页筛选结果、启动批量/单条重生成、查询 Run 与安全节点详情、人工增删改、完成校验和权威 JSON 导出。Worker 内部 API 使用独立 `EFFECT_PROMPT_WORKER_TOKEN` 与 attempt token。
 
 ## 常见排障
 
@@ -332,12 +398,14 @@ Docling 解析与 Ark 文档字段抽取是两个阶段。该提示表示 Ark �
 - [效果类工作流资料包导入节点实施方案](docs/效果类工作流-资料包导入节点实施方案.md)
 - [效果类工作流 AI 信息提炼节点实施方案](docs/效果类工作流-AI信息提炼节点实施方案.md)
 - [AI 信息提炼分节点模型路由实施方案](docs/效果类AI信息提炼-分节点模型路由实施方案.md)
+- [差异化 Prompt 批量生成节点实施方案](docs/效果类工作流-差异化Prompt批量生成节点实施方案.md)
 - [MinIO 存储与本地部署方案](docs/效果类导入素材-MinIO存储与本地部署方案.md)
-- [Python Worker 说明](workers/effect-extraction/README.md)
+- [AI 信息提炼 Worker 说明](workers/effect-extraction/README.md)
+- [素材片段 Prompt Worker 说明](workers/effect-prompt-generation/README.md)
 
 ## 当前限制
 
 - 电商链接分支当前固定为 `SKIPPED`，存在链接时给出可见告警但不抓取网页。
 - AI 信息提炼只处理当前选中的产品，不支持一键批量提炼。
 - Mock Provider 只允许测试或显式本地配置使用，生产默认 Ark 且缺少 Key 时立即失败。
-- Prompt、Seedance 渲染、模板混剪和导出尚未进入当前实现范围。
+- Seedance 素材片段渲染、模板混剪和成片导出尚未进入当前实现范围。
