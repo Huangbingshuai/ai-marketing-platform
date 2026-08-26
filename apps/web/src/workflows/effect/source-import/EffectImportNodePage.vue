@@ -41,6 +41,7 @@ import {
 } from '../../../platform/workflow/api/workflow-working.api';
 import EffectInfoExtractionNodePage from '../information-extraction/EffectInfoExtractionNodePage.vue';
 import EffectPromptGenerationNodePage from '../prompt-generation/EffectPromptGenerationNodePage.vue';
+import EffectSegmentRenderNodePage from '../segment-render/EffectSegmentRenderNodePage.vue';
 import {
   advanceEffectImportDraft,
   batchDeleteEffectImportProducts,
@@ -105,6 +106,7 @@ const uploadTargetInitializing = ref(false);
 const activeStep = ref(0);
 const infoExtractionNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
 const promptGenerationNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
+const segmentRenderNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
 const downstreamBoundaries = [
   { title: 'Prompt 生成', description: '批量生成差异化提示词' },
   { title: '片段渲染', description: 'AI 视频片段批量渲染' },
@@ -758,6 +760,8 @@ async function flushPendingEdits(): Promise<boolean> {
     return infoExtractionNode.value.flushPendingEdits();
   if (activeStep.value === 2 && promptGenerationNode.value)
     return promptGenerationNode.value.flushPendingEdits();
+  if (activeStep.value === 3 && segmentRenderNode.value)
+    return segmentRenderNode.value.flushPendingEdits();
   return true;
 }
 
@@ -1431,6 +1435,17 @@ onBeforeUnmount(() => {
         :global-config="draft?.globalConfig ?? DEFAULT_EFFECT_VIDEO_CONFIG"
         @back="selectWorkflowStep(1)"
         @next="selectWorkflowStep(3)"
+      />
+
+      <EffectSegmentRenderNodePage
+        v-else-if="activeStep === 3"
+        ref="segmentRenderNode"
+        :project-id="currentProjectId"
+        :workflow-run-id="workspace?.workflowRunId ?? ''"
+        :products="products"
+        :global-config="draft?.globalConfig ?? DEFAULT_EFFECT_VIDEO_CONFIG"
+        @back="selectWorkflowStep(2)"
+        @next="selectWorkflowStep(4)"
       />
 
       <section v-else-if="activeDownstreamBoundary" class="ai-placeholder">
