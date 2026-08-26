@@ -68,7 +68,7 @@ describe('effect prompt generation API', () => {
     });
     await deleteEffectPromptItem('project-1', 'result-1', 'item-1', 9);
     await updateEffectPromptSharedPrompt('project-1', 'result-1', {
-      additionalContent: '保持产品外观一致',
+      content: '保持产品外观一致',
       expectedRevision: 10,
     });
     await validateEffectPromptResult('project-1', 'result-1', { expectedRevision: 11 });

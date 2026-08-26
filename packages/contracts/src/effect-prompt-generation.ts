@@ -576,7 +576,7 @@ export type UpsertEffectPromptItemRequest = Pick<
 > & { expectedRevision: number };
 
 export type UpdateEffectPromptSharedPromptRequest = {
-  additionalContent: string;
+  content: string;
   expectedRevision: number;
 };
 

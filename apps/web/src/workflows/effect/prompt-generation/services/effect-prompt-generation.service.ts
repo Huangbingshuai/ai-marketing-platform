@@ -185,17 +185,11 @@ export const saveEffectPromptSharedPrompt = async (
   projectId: string,
   resultId: string,
   expectedRevision: number,
-  additionalContent: string,
+  content: string,
   signal?: AbortSignal,
 ): Promise<UpdateEffectPromptResultData> =>
-  (
-    await updateEffectPromptSharedPrompt(
-      projectId,
-      resultId,
-      { additionalContent, expectedRevision },
-      signal,
-    )
-  ).data;
+  (await updateEffectPromptSharedPrompt(projectId, resultId, { content, expectedRevision }, signal))
+    .data;
 
 export const commitEffectPromptResult = async (
   projectId: string,

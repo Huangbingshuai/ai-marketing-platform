@@ -196,24 +196,11 @@ const currentMetrics = computed(
 );
 const currentRenderProfile = computed(() => currentResult.value?.renderProfile ?? null);
 const currentSharedPrompt = computed(() => currentResult.value?.sharedPrompt ?? null);
-const currentSystemSharedPromptContent = computed(
+const currentSharedPromptContent = computed(
   () =>
-    currentSharedPrompt.value?.sections
-      .find(({ key }) => key === 'DISABLED_ELEMENTS')
-      ?.content.trim() ??
+    currentSharedPrompt.value?.compiledContent.trim() ??
     currentRenderProfile.value?.sharedConstraints.prompt?.trim() ??
     '',
-);
-const currentAdditionalSharedPromptContent = computed(
-  () =>
-    currentSharedPrompt.value?.sections
-      .find(({ key }) => key === 'USER_ADDITIONAL')
-      ?.content.trim() ?? '',
-);
-const currentSharedPromptPreview = computed(() =>
-  [currentSystemSharedPromptContent.value, sharedPromptDraft.value.trim()]
-    .filter(Boolean)
-    .join('\n'),
 );
 const insightFieldLabels: Record<EffectPromptInsightField, string> = {
   PRODUCT_NAME: '产品名称',
@@ -503,9 +490,9 @@ const loadCurrentResult = async (): Promise<void> => {
     resultData.value = loaded;
     if (!sharedPromptDirty.value)
       sharedPromptDraft.value =
-        loaded.result.sharedPrompt?.sections
-          .find(({ key }) => key === 'USER_ADDITIONAL')
-          ?.content.trim() ?? '';
+        loaded.result.sharedPrompt?.compiledContent.trim() ??
+        loaded.result.renderProfile.sharedConstraints.prompt?.trim() ??
+        '';
     if (page.value > promptPageCount(loaded.total)) page.value = promptPageCount(loaded.total);
   } catch (error) {
     if (!isAbortError(error) && generation === resultGeneration)
@@ -1055,7 +1042,7 @@ const commitEditor = async (): Promise<void> => {
 };
 
 const resetSharedPromptDraft = (): void => {
-  sharedPromptDraft.value = currentAdditionalSharedPromptContent.value;
+  sharedPromptDraft.value = currentSharedPromptContent.value;
   sharedPromptDirty.value = false;
 };
 
@@ -1794,29 +1781,17 @@ onBeforeUnmount(() => {
             sharedPromptSaving ? '正在保存' : sharedPromptDirty ? '有未保存修改' : '已保存'
           }}</em>
         </header>
-        <div class="shared-prompt-fields">
-          <div class="shared-prompt-system-content">
-            <span>系统共用内容</span>
-            <p v-if="currentSystemSharedPromptContent">{{ currentSystemSharedPromptContent }}</p>
-            <p v-else class="empty">未设置禁用元素</p>
-          </div>
-          <label>
-            <span>补充共用内容</span>
-            <textarea
-              v-model="sharedPromptDraft"
-              rows="3"
-              maxlength="30000"
-              placeholder="可补充后续需要所有视频共同遵守的要求"
-              :disabled="currentRunning || sharedPromptSaving"
-              @input="sharedPromptDirty = true"
-            />
-          </label>
-        </div>
-        <div class="shared-prompt-preview">
-          <span>最终共用提示词</span>
-          <p v-if="currentSharedPromptPreview">{{ currentSharedPromptPreview }}</p>
-          <p v-else class="empty">当前为空，渲染时不会追加内容</p>
-        </div>
+        <label class="shared-prompt-editor">
+          <textarea
+            v-model="sharedPromptDraft"
+            rows="5"
+            maxlength="60000"
+            aria-label="共用提示词内容"
+            placeholder="填写所有视频共同遵守的要求；未设置时渲染不会追加内容"
+            :disabled="currentRunning || sharedPromptSaving"
+            @input="sharedPromptDirty = true"
+          />
+        </label>
         <footer>
           <button
             class="secondary-button"
@@ -3080,22 +3055,13 @@ button:disabled {
   color: #a86a16;
   background: #fff2d9;
 }
-.shared-prompt-fields {
+.shared-prompt-editor {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 10px;
 }
-.shared-prompt-fields > div,
-.shared-prompt-fields > label,
-.shared-prompt-preview {
-  display: grid;
-  gap: 7px;
-}
-.shared-prompt-panel p,
 .shared-prompt-panel textarea {
   box-sizing: border-box;
   width: 100%;
-  min-height: 70px;
+  min-height: 112px;
   margin: 0;
   padding: 10px 12px;
   color: #5d6d84;
@@ -3113,12 +3079,6 @@ button:disabled {
 .shared-prompt-panel textarea:focus {
   border-color: #ff9f80;
   box-shadow: 0 0 0 3px rgb(255 90 95 / 8%);
-}
-.shared-prompt-panel p.empty {
-  color: #9aa5b5;
-}
-.shared-prompt-preview p {
-  min-height: auto;
 }
 .shared-prompt-panel > footer {
   justify-content: flex-end;
@@ -4613,8 +4573,7 @@ button:disabled {
     grid-template-columns: 1fr;
   }
   .fragment-batch-summary,
-  .fragment-config-grid,
-  .shared-prompt-fields {
+  .fragment-config-grid {
     grid-template-columns: 1fr;
   }
   .shared-prompt-panel > header,

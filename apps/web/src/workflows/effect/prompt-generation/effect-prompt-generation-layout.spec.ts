@@ -122,9 +122,12 @@ describe('effect prompt generation prototype layout', () => {
 
   it('shows one editable shared prompt and keeps copy limited to clean item content', () => {
     expect(pageSource).toContain('aria-label="共用提示词"');
-    expect(pageSource).toContain('currentSharedPromptPreview');
-    expect(pageSource).toContain('补充共用内容');
+    expect(pageSource).toContain('aria-label="共用提示词内容"');
+    expect(pageSource).toContain('v-model="sharedPromptDraft"');
     expect(pageSource).toContain('@click="saveSharedPrompt"');
+    expect(pageSource).not.toContain('系统共用内容');
+    expect(pageSource).not.toContain('最终共用提示词');
+    expect(pageSource).not.toContain('shared-prompt-preview');
     expect(pageSource).not.toContain('currentDisabledElements');
     expect(pageSource).not.toContain('aria-label="配额与提炼信息覆盖"');
     expect(pageSource).not.toContain('class="quality-breakdown"');

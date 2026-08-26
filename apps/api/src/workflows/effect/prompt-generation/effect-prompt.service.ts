@@ -628,7 +628,7 @@ export class EffectPromptService {
     projectId: string,
     resultId: string,
     expectedRevision: number,
-    additionalContent: string,
+    content: string,
   ): Promise<UpdateEffectPromptResultData> {
     await this.projects.get(projectId);
     const current = await this.repository.result(projectId, resultId);
@@ -637,11 +637,31 @@ export class EffectPromptService {
       throw conflict('旧版 Prompt 结果不能编辑，请执行全量重新生成');
     const parsed = parseEffectPromptBatchResult(current.draftResult);
     if (!parsed) throw conflict('Prompt 结果结构无效，请重新生成');
-    const content = additionalContent.trim();
-    if (content.length > 30_000) throw badRequest('补充共用内容不能超过 30000 字');
+    const compiledContent = content.trim();
+    if (compiledContent.length > 60_000) throw badRequest('共用提示词不能超过 60000 字');
+    const fixedContent =
+      parsed.sharedPrompt?.sections
+        .filter(({ key }) => key !== 'USER_ADDITIONAL')
+        .map(({ content: sectionContent }) => sectionContent.trim())
+        .filter(Boolean)
+        .join('\n') ??
+      compileEffectPromptSharedPrompt(parsed.renderProfile.sharedConstraints.disabledElements)
+        .sections[0]?.content ??
+      '';
+    const additionalContent = fixedContent
+      ? compiledContent === fixedContent
+        ? ''
+        : compiledContent.startsWith(`${fixedContent}\n`)
+          ? compiledContent.slice(fixedContent.length + 1).trim()
+          : null
+      : compiledContent;
+    if (additionalContent === null)
+      throw badRequest('共用提示词中的系统内容不能删除或修改，请返回资料导入节点调整');
+    if (additionalContent.length > 30_000)
+      throw badRequest('共用提示词中的补充内容不能超过 30000 字');
     const sharedPrompt: EffectPromptSharedPrompt = compileEffectPromptSharedPrompt(
       parsed.renderProfile.sharedConstraints.disabledElements,
-      content,
+      additionalContent,
       parsed.sharedPrompt?.sections,
     );
     return this.presentMutation(

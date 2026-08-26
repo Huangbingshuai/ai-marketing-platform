@@ -76,7 +76,7 @@ export class DeletePromptItemDto {
 }
 
 export class UpdatePromptSharedPromptDto {
-  @IsString() @MaxLength(30_000) additionalContent!: string;
+  @IsString() @MaxLength(60_000) content!: string;
   @Type(() => Number) @IsInt() @Min(1) expectedRevision!: number;
 }
 

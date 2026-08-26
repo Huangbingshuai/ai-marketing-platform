@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
   DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
@@ -205,7 +207,7 @@ describe('EffectPromptService settings contract', () => {
     });
   });
 
-  it('saves only the editable shared-prompt section and keeps the batch in draft', async () => {
+  it('saves the single shared-prompt editor content and keeps the batch in draft', async () => {
     const draft = recomputePromptQuality([], DEFAULT_EFFECT_PROMPT_SETTINGS);
     const savedAt = new Date('2026-08-26T08:00:00.000Z');
     const repository = {
@@ -254,6 +256,70 @@ describe('EffectPromptService settings contract', () => {
     });
     expect(output.result.sharedPrompt).toEqual(expected);
     expect(output.revision).toBe(4);
+  });
+
+  it('preserves the system-owned prefix when saving the single shared-prompt editor', async () => {
+    const renderProfile = {
+      ...recomputePromptQuality([], DEFAULT_EFFECT_PROMPT_SETTINGS).renderProfile,
+      sharedConstraints: {
+        disabledElements: ['品牌水印'],
+        contentHash: createHash('sha256')
+          .update(JSON.stringify(['品牌水印']))
+          .digest('hex'),
+      },
+    };
+    const sharedPrompt = compileEffectPromptSharedPrompt(['品牌水印'], '保持产品外观一致。');
+    const draft = recomputePromptQuality(
+      [],
+      DEFAULT_EFFECT_PROMPT_SETTINGS,
+      undefined,
+      renderProfile,
+      sharedPrompt,
+    );
+    const repository = {
+      result: vi.fn().mockResolvedValue({
+        id: 'result-a',
+        productId: 'product-a',
+        revision: 3,
+        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
+        draftResult: draft,
+      }),
+      mutateResult: vi.fn().mockResolvedValue({
+        kind: 'UPDATED',
+        result: {
+          id: 'result-a',
+          productId: 'product-a',
+          revision: 4,
+          savedAt: new Date('2026-08-26T08:00:00.000Z'),
+          updatedAt: new Date('2026-08-26T08:00:00.000Z'),
+        },
+        draft,
+      }),
+    };
+    const service = new EffectPromptService(
+      repository as never,
+      { get: vi.fn().mockResolvedValue({ id: 'project-a' }) } as never,
+      {} as never,
+    );
+
+    await service.updateSharedPrompt(
+      'project-a',
+      'result-a',
+      3,
+      '画面中不得出现以下内容：品牌水印。\n保持产品外观前后一致，并保持背景简洁。',
+    );
+
+    expect(repository.mutateResult).toHaveBeenCalledWith('project-a', 'result-a', 3, {
+      kind: 'SHARED_PROMPT',
+      sharedPrompt: compileEffectPromptSharedPrompt(
+        ['品牌水印'],
+        '保持产品外观前后一致，并保持背景简洁。',
+        sharedPrompt.sections,
+      ),
+    });
+    await expect(
+      service.updateSharedPrompt('project-a', 'result-a', 3, '保持背景简洁。'),
+    ).rejects.toThrow('共用提示词中的系统内容不能删除或修改');
   });
 
   it('returns only the node-specific metadata whitelist from the public detail API', async () => {

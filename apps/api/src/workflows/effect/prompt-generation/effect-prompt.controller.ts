@@ -164,7 +164,7 @@ export class EffectPromptController {
       projectId,
       resultId,
       expectedRevision(ifMatch, body.expectedRevision),
-      body.additionalContent,
+      body.content,
     );
   }
 
