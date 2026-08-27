@@ -28,10 +28,7 @@ import {
   getActiveWorkflowRunOverview,
   listWorkingArtifacts,
 } from '../../workflow/api/workflow-working.api';
-import {
-  latestWorkflowNodeStateMap,
-  workflowNodeBaseId,
-} from '../../workflow/workflow-node-id';
+import { latestWorkflowNodeStateMap, workflowNodeBaseId } from '../../workflow/workflow-node-id';
 import { listAssets, listAssetVersions } from '../api/asset.api';
 import { SPACE_LABELS, WORKFLOW_META, typeLabel } from '../asset-v4';
 import AssetPreview from './AssetPreview.vue';
@@ -81,8 +78,7 @@ const latestState = computed(
 );
 const currentNodeIndex = computed(() => {
   const index = workflowNodes.value.findIndex(
-    (node) =>
-      node.id === workflowNodeBaseId(run.value?.currentNodeId ?? latestState.value?.nodeId),
+    (node) => node.id === workflowNodeBaseId(run.value?.currentNodeId ?? latestState.value?.nodeId),
   );
   return index >= 0 ? index : 0;
 });
@@ -274,6 +270,8 @@ onBeforeUnmount(() => controller?.abort());
               v-for="(definition, index) in workflowNodes"
               :key="definition.id"
               type="button"
+              :class="{ active: definition.id === activeNodeId }"
+              :aria-current="definition.id === activeNodeId ? 'step' : undefined"
               :disabled="!stateByNode.has(definition.id) || !canResume"
               @click="emit('resumeNode', definition.id)"
             >
@@ -285,7 +283,7 @@ onBeforeUnmount(() => controller?.abort());
                   {{ formatTime(stateByNode.get(definition.id)?.savedAt ?? null) }}</small
                 ><small v-else>暂无已保存内容</small></span
               >
-              <em :class="{ active: definition.id === latestState?.nodeId }">{{
+              <em :class="{ active: definition.id === activeNodeId }">{{
                 nodeStatus(definition)
               }}</em>
               <ArrowRight v-if="stateByNode.has(definition.id) && canResume" :size="14" />
@@ -577,6 +575,21 @@ onBeforeUnmount(() => controller?.abort());
   background: transparent;
   color: inherit;
   text-align: left;
+}
+.draft-list button.active {
+  border-radius: 8px;
+  background: #eff5ff;
+  color: #1d4ed8;
+  box-shadow: inset 3px 0 #2563eb;
+}
+.draft-list button.active .step-index {
+  background: #2563eb;
+  color: #fff;
+}
+.draft-list button.active small,
+.draft-list button.active em,
+.draft-list button.active svg {
+  color: #2563eb;
 }
 .draft-list button:not(:disabled) {
   cursor: pointer;

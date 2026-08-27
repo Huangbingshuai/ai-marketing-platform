@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from typing import Any
+from typing import Any, Mapping
 
 import pytest
 
@@ -13,6 +13,8 @@ from effect_prompt_generation.models import (
     FailurePayload,
     FragmentConfig,
     FragmentType,
+    GeneratedPromptTextBatch,
+    PlannedCombination,
     ProgressPayload,
     PromptBatchResult,
     PromptGenerationSnapshot,
@@ -22,9 +24,14 @@ from effect_prompt_generation.models import (
     SharedPromptSection,
     ShardRecord,
     StageOutput,
+    StrategyCheckpoint,
 )
 from effect_prompt_generation.pipeline import PipelineError, PromptGenerationPipeline
-from effect_prompt_generation.providers import AiCallResult, MockAiProvider
+from effect_prompt_generation.providers import (
+    FRAGMENT_STRATEGY_VERSION,
+    AiCallResult,
+    MockAiProvider,
+)
 
 
 class FakeApi(InternalApi):
@@ -61,12 +68,12 @@ class FakeApi(InternalApi):
 class TechnicalMetadataProvider(MockAiProvider):
     async def generate_candidates(
         self,
-        combinations: list[Any],
+        combinations: list[PlannedCombination],
         *,
-        insight: dict[str, Any],
+        insight: Mapping[str, Any],
         shared_prompt: SharedPrompt,
-        regeneration_context: dict[str, Any] | None = None,
-    ) -> AiCallResult[Any]:
+        regeneration_context: Mapping[str, Any] | None = None,
+    ) -> AiCallResult[GeneratedPromptTextBatch]:
         generated = await super().generate_candidates(
             combinations,
             insight=insight,
@@ -88,6 +95,57 @@ class TechnicalMetadataProvider(MockAiProvider):
             ),
             metadata=generated.metadata,
         )
+
+
+@pytest.mark.asyncio
+async def test_strategy_router_reuses_only_hash_matching_checkpoint(
+    snapshot: PromptGenerationSnapshot, runtime: RuntimeContext
+) -> None:
+    seed_pipeline = PromptGenerationPipeline(api=FakeApi(), provider=MockAiProvider())
+    seed_pipeline.register_snapshot(runtime, snapshot)
+    application = await seed_pipeline.map_insight(runtime)
+    shared_prompt = await seed_pipeline.compile_shared_prompt(runtime)
+    allocations = await seed_pipeline.allocate_strategy_facts(runtime, application)
+    allocation = allocations[FragmentType.HOOK]
+    plan = (
+        await MockAiProvider().plan_fragment_strategy(
+            allocation,
+            application=application,
+            shared_prompt=shared_prompt,
+        )
+    ).value
+    checkpoint = StrategyCheckpoint(
+        node_id="PLAN_HOOK_STRATEGY",
+        source_fingerprint=runtime.source_fingerprint,
+        allocation_hash=allocation.allocation_hash,
+        prompt_version=FRAGMENT_STRATEGY_VERSION,
+        plan=plan,
+    )
+
+    pipeline = PromptGenerationPipeline(api=FakeApi(), provider=MockAiProvider())
+    pipeline.register_snapshot(runtime, snapshot, strategy_checkpoints=[checkpoint])
+    application = await pipeline.map_insight(runtime)
+    await pipeline.compile_shared_prompt(runtime)
+    allocations = await pipeline.allocate_strategy_facts(runtime, application)
+    reusable = await pipeline.prepare_strategy_router(runtime, allocations)
+    assert len(reusable) == 1
+    assert reusable[0].fragment_type == FragmentType.HOOK
+    assert reusable[0].reused_checkpoint is True
+
+    invalid_pipeline = PromptGenerationPipeline(api=FakeApi(), provider=MockAiProvider())
+    invalid_pipeline.register_snapshot(
+        runtime,
+        snapshot,
+        strategy_checkpoints=[checkpoint.model_copy(update={"allocation_hash": "0" * 64})],
+    )
+    invalid_application = await invalid_pipeline.map_insight(runtime)
+    await invalid_pipeline.compile_shared_prompt(runtime)
+    invalid_allocations = await invalid_pipeline.allocate_strategy_facts(
+        runtime, invalid_application
+    )
+    assert (
+        await invalid_pipeline.prepare_strategy_router(runtime, invalid_allocations)
+    ) == []
 
 
 @pytest.mark.asyncio
@@ -230,6 +288,17 @@ async def test_mock_graph_runs_send_shards_and_completes(
     )
     stage_ids = {stage.node_id.value for stage in api.stages}
     assert "SHARED_PROMPT_COMPILATION" in stage_ids
+    assert "GLOBAL_FACT_ALLOCATION" in stage_ids
+    assert "STRATEGY_FRAGMENT_ROUTER" in stage_ids
+    assert "STRATEGY_MERGE_VALIDATION" in stage_ids
+    assert {
+        "PLAN_HOOK_STRATEGY",
+        "PLAN_PAIN_STRATEGY",
+        "PLAN_PRODUCT_DISPLAY_STRATEGY",
+        "PLAN_SELLING_POINT_EXPLANATION_STRATEGY",
+        "PLAN_CTA_STRATEGY",
+        "PLAN_OUTRO_STRATEGY",
+    } <= stage_ids
     assert "FRAGMENT_TYPE_ROUTER" in stage_ids
     assert {
         f"GENERATE_{fragment_type.value}" for fragment_type in FragmentType

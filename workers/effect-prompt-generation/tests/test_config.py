@@ -28,13 +28,17 @@ def test_mock_requires_explicit_provider_and_prompt_model_falls_back() -> None:
 
     assert settings.prompt_ai_provider == "mock"
     assert settings.resolved_prompt_strategy_model == "doubao-seed-2-0-lite-260428"
+    assert settings.resolved_prompt_blueprint_model == "doubao-seed-2-0-lite-260428"
     assert settings.resolved_prompt_candidate_model == "doubao-seed-2-1-turbo-260628"
     assert settings.ark_prompt_strategy_max_output_tokens == 8192
     assert settings.ark_prompt_candidate_max_output_tokens == 4096
     assert settings.ark_prompt_reasoning_effort == "minimal"
-    assert settings.prompt_max_ai_calls_per_run == 129
-    assert settings.prompt_max_concurrency == 3
+    assert settings.prompt_max_ai_calls_per_run == 256
+    assert settings.prompt_max_concurrency == 6
     assert settings.prompt_shard_size == 8
+    assert settings.ark_prompt_strategy_timeout_seconds == 180
+    assert settings.resolved_prompt_candidate_timeout_seconds == 120
+    assert settings.ark_prompt_provider_max_attempts == 1
 
 
 def test_legacy_prompt_model_and_node_specific_overrides_keep_precedence() -> None:
@@ -43,10 +47,26 @@ def test_legacy_prompt_model_and_node_specific_overrides_keep_precedence() -> No
         PROMPT_AI_PROVIDER="mock",
         ARK_PROMPT_MODEL="legacy-model",
         ARK_PROMPT_STRATEGY_MODEL="strategy-model",
+        ARK_PROMPT_BLUEPRINT_MODEL="blueprint-model",
         ARK_PROMPT_CANDIDATE_MODEL="candidate-model",
     )
 
     assert legacy.resolved_prompt_strategy_model == "legacy-model"
     assert legacy.resolved_prompt_candidate_model == "legacy-model"
     assert specific.resolved_prompt_strategy_model == "strategy-model"
+    assert specific.resolved_prompt_blueprint_model == "blueprint-model"
     assert specific.resolved_prompt_candidate_model == "candidate-model"
+
+
+def test_candidate_timeout_prefers_node_override_and_keeps_legacy_fallback() -> None:
+    legacy = _settings(PROMPT_AI_PROVIDER="mock", ARK_TIMEOUT_SECONDS=180)
+    specific = _settings(
+        PROMPT_AI_PROVIDER="mock",
+        ARK_TIMEOUT_SECONDS=180,
+        ARK_PROMPT_CANDIDATE_TIMEOUT_SECONDS=90,
+        ARK_PROMPT_STRATEGY_TIMEOUT_SECONDS=240,
+    )
+
+    assert legacy.resolved_prompt_candidate_timeout_seconds == 180
+    assert specific.resolved_prompt_candidate_timeout_seconds == 90
+    assert specific.ark_prompt_strategy_timeout_seconds == 240

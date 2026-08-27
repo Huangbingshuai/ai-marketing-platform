@@ -6,10 +6,13 @@ import type {
   EffectPromptItem,
   EffectPromptManualOverrides,
   EffectPromptOperation,
+  EffectPromptShardPhase,
   EffectPromptSharedPrompt,
 } from '@ai-marketing/contracts';
 import {
   EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES,
+  CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
+  EFFECT_PROMPT_MAX_RUN_ATTEMPTS,
   EFFECT_PROMPT_SCHEMA_VERSION,
   effectPromptTargetCount,
   migrateEffectPromptSettings,
@@ -35,6 +38,8 @@ import {
   type EffectPromptShardInput,
   type EffectPromptStageInput,
 } from './effect-prompt.types';
+
+const AI_RESPONSE_INVALID_RETRY_LEDGER_NODE = 'INTERNAL_AI_RESPONSE_INVALID_RETRY';
 
 const json = (value: unknown): Prisma.InputJsonValue => value as Prisma.InputJsonValue;
 const leaseDate = (now: Date): Date => new Date(now.getTime() + 90_000);
@@ -86,10 +91,15 @@ export type EffectPromptRunRecord = Prisma.EffectPromptRunGetPayload<{
 
 const promptNodeDetailRunInclude = {
   ...promptRunInclude,
-  shards: { orderBy: [{ round: 'asc' as const }, { shardIndex: 'asc' as const }] },
+  shards: {
+    orderBy: [{ phase: 'asc' as const }, { round: 'asc' as const }, { shardIndex: 'asc' as const }],
+  },
 } satisfies Prisma.EffectPromptRunInclude;
 export type EffectPromptNodeDetailRunRecord = Prisma.EffectPromptRunGetPayload<{
   include: typeof promptNodeDetailRunInclude;
+}>;
+export type EffectPromptPreviewRunRecord = Prisma.EffectPromptRunGetPayload<{
+  include: { shards: true };
 }>;
 
 const parseOverrides = (value: unknown): EffectPromptManualOverrides => {
@@ -202,6 +212,19 @@ export class EffectPromptRepository {
     return this.prisma.effectPromptRun.findFirst({
       where: { projectId, id: runId },
       include: promptNodeDetailRunInclude,
+    });
+  }
+
+  latestFailedRunForPreview(projectId: string, workflowRunId: string, productId: string) {
+    return this.prisma.effectPromptRun.findFirst({
+      where: { projectId, workflowRunId, productId, status: 'FAILED' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      include: {
+        shards: {
+          where: { status: 'SUCCEEDED', phase: 'PROMPT' },
+          orderBy: [{ round: 'asc' }, { shardIndex: 'asc' }],
+        },
+      },
     });
   }
 
@@ -344,6 +367,7 @@ export class EffectPromptRepository {
         return { kind: 'MANUAL_COUNT_EXCEEDED' as const };
       const snapshot: EffectPromptInputSnapshot = {
         schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
+        graphVersion: CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
         projectId,
         workflowRunId,
         productId,
@@ -439,7 +463,7 @@ export class EffectPromptRepository {
         return { kind: 'TERMINAL' as const };
       if (run.status === 'RUNNING' && run.leaseExpiresAt && run.leaseExpiresAt > now)
         return { kind: 'BUSY' as const };
-      if (run.attemptCount >= 3) {
+      if (run.attemptCount >= EFFECT_PROMPT_MAX_RUN_ATTEMPTS) {
         await transaction.effectPromptRun.update({
           where: { projectId_id: { projectId, id: runId } },
           data: {
@@ -469,11 +493,42 @@ export class EffectPromptRepository {
           errorMessage: null,
         },
       });
+      const checkpointStages = await transaction.effectPromptStageOutput.findMany({
+        where: {
+          projectId,
+          runId,
+          status: 'SUCCEEDED',
+          nodeId: {
+            in: [
+              'PLAN_HOOK_STRATEGY',
+              'PLAN_PAIN_STRATEGY',
+              'PLAN_PRODUCT_DISPLAY_STRATEGY',
+              'PLAN_SELLING_POINT_EXPLANATION_STRATEGY',
+              'PLAN_CTA_STRATEGY',
+              'PLAN_OUTRO_STRATEGY',
+              'PLAN_HOOK_RELATIONSHIPS',
+              'PLAN_PAIN_RELATIONSHIPS',
+              'PLAN_PRODUCT_DISPLAY_RELATIONSHIPS',
+              'PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS',
+              'PLAN_CTA_RELATIONSHIPS',
+              'PLAN_OUTRO_RELATIONSHIPS',
+              'PLAN_HOOK_COORDINATES',
+              'PLAN_PAIN_COORDINATES',
+              'PLAN_PRODUCT_DISPLAY_COORDINATES',
+              'PLAN_SELLING_POINT_EXPLANATION_COORDINATES',
+              'PLAN_CTA_COORDINATES',
+              'PLAN_OUTRO_COORDINATES',
+            ],
+          },
+        },
+        select: { nodeId: true, metadata: true },
+      });
       return {
         kind: 'CLAIMED' as const,
         run: claimed,
         attemptToken,
         input: claimed.inputSnapshot as EffectPromptInputSnapshot,
+        checkpointStages,
       };
     });
   }
@@ -548,6 +603,7 @@ export class EffectPromptRepository {
     attemptToken: string,
     round: number,
     shardIndex: number,
+    phase: EffectPromptShardPhase,
     input: EffectPromptShardInput,
     now = new Date(),
   ): Promise<boolean> {
@@ -563,18 +619,27 @@ export class EffectPromptRepository {
         data: { heartbeatAt: now, leaseExpiresAt: leaseDate(now) },
       });
       if (renewed.count !== 1) return false;
+      const plan = phase === 'BLUEPRINT' ? input.blueprintPlan : input.combinationPlan;
+      const items = phase === 'BLUEPRINT' ? input.blueprints : input.items;
       await transaction.effectPromptShardOutput.upsert({
         where: {
-          projectId_runId_round_shardIndex: { projectId, runId, round, shardIndex },
+          projectId_runId_phase_round_shardIndex: {
+            projectId,
+            runId,
+            phase,
+            round,
+            shardIndex,
+          },
         },
         create: {
           projectId,
           runId,
+          phase,
           round,
           shardIndex,
           status: input.status,
-          combinationPlan: json(input.combinationPlan ?? []),
-          items: json(input.items ?? []),
+          combinationPlan: json(plan ?? []),
+          items: json(items ?? []),
           warnings: json(input.warnings),
           errorCode: input.errorCode ?? null,
           errorMessage: input.errorMessage ?? null,
@@ -583,8 +648,8 @@ export class EffectPromptRepository {
         },
         update: {
           status: input.status,
-          combinationPlan: json(input.combinationPlan ?? []),
-          items: json(input.items ?? []),
+          combinationPlan: json(plan ?? []),
+          items: json(items ?? []),
           warnings: json(input.warnings),
           errorCode: input.errorCode ?? null,
           errorMessage: input.errorMessage ?? null,
@@ -595,7 +660,13 @@ export class EffectPromptRepository {
     });
   }
 
-  async shards(projectId: string, runId: string, attemptToken: string, now = new Date()) {
+  async shards(
+    projectId: string,
+    runId: string,
+    attemptToken: string,
+    phase?: EffectPromptShardPhase,
+    now = new Date(),
+  ) {
     const authorized = await this.prisma.effectPromptRun.count({
       where: {
         projectId,
@@ -607,8 +678,8 @@ export class EffectPromptRepository {
     });
     if (authorized !== 1) return null;
     return this.prisma.effectPromptShardOutput.findMany({
-      where: { projectId, runId },
-      orderBy: [{ round: 'asc' }, { shardIndex: 'asc' }],
+      where: { projectId, runId, ...(phase ? { phase } : {}) },
+      orderBy: [{ phase: 'asc' }, { round: 'asc' }, { shardIndex: 'asc' }],
     });
   }
 
@@ -769,7 +840,13 @@ export class EffectPromptRepository {
     projectId: string,
     runId: string,
     attemptToken: string,
-    input: { errorCode: string; errorMessage: string; retryable: boolean; warnings: string[] },
+    input: {
+      errorCode: string;
+      errorMessage: string;
+      retryable: boolean;
+      warnings: string[];
+      currentNode?: string | null;
+    },
     now = new Date(),
   ) {
     return this.prisma.$transaction(async (transaction) => {
@@ -787,12 +864,51 @@ export class EffectPromptRepository {
         run.leaseExpiresAt <= now
       )
         return 'LEASE_CONFLICT' as const;
-      const retry = input.retryable && run.attemptCount < 3;
+      const invalidRetryLedger =
+        input.errorCode === 'AI_RESPONSE_INVALID'
+          ? await transaction.effectPromptStageOutput.findUnique({
+              where: {
+                projectId_runId_nodeId: {
+                  projectId,
+                  runId,
+                  nodeId: AI_RESPONSE_INVALID_RETRY_LEDGER_NODE,
+                },
+              },
+              select: { metadata: true },
+            })
+          : null;
+      const ledgerMetadata =
+        invalidRetryLedger?.metadata &&
+        typeof invalidRetryLedger.metadata === 'object' &&
+        !Array.isArray(invalidRetryLedger.metadata)
+          ? (invalidRetryLedger.metadata as Record<string, unknown>)
+          : {};
+      const invalidRetryCount =
+        typeof ledgerMetadata.count === 'number' && Number.isSafeInteger(ledgerMetadata.count)
+          ? ledgerMetadata.count
+          : 0;
+      const retry =
+        input.retryable &&
+        run.attemptCount < EFFECT_PROMPT_MAX_RUN_ATTEMPTS &&
+        (input.errorCode !== 'AI_RESPONSE_INVALID' || invalidRetryCount < 1);
+      const failedNode = input.currentNode ?? run.currentNode;
+      const retryWarning =
+        input.errorCode === 'AI_TIMEOUT'
+          ? '上一次 Prompt AI 请求超时，任务已自动重新排队'
+          : '上一次 Prompt 生成尝试失败，任务已自动重新排队';
+      const warnings = [
+        ...new Set([
+          ...parseStrings(run.warnings),
+          ...input.warnings,
+          ...(retry ? [retryWarning] : []),
+        ]),
+      ];
       await transaction.effectPromptRun.update({
         where: { projectId_id: { projectId, id: runId } },
         data: {
           status: retry ? 'QUEUED' : 'FAILED',
-          warnings: json(input.warnings),
+          ...(!retry && failedNode ? { currentNode: failedNode } : {}),
+          warnings: json(warnings),
           errorCode: input.errorCode,
           errorMessage: input.errorMessage,
           attemptToken: null,
@@ -801,6 +917,66 @@ export class EffectPromptRepository {
           completedAt: retry ? null : now,
         },
       });
+      if (retry && input.errorCode === 'AI_RESPONSE_INVALID')
+        await transaction.effectPromptStageOutput.upsert({
+          where: {
+            projectId_runId_nodeId: {
+              projectId,
+              runId,
+              nodeId: AI_RESPONSE_INVALID_RETRY_LEDGER_NODE,
+            },
+          },
+          create: {
+            projectId,
+            runId,
+            nodeId: AI_RESPONSE_INVALID_RETRY_LEDGER_NODE,
+            status: 'SKIPPED',
+            summary: '',
+            warnings: json([]),
+            metadata: json({ count: invalidRetryCount + 1 }),
+            startedAt: now,
+            completedAt: now,
+          },
+          update: {
+            metadata: json({ count: invalidRetryCount + 1 }),
+            completedAt: now,
+          },
+        });
+      if (!retry) {
+        await transaction.effectPromptStageOutput.updateMany({
+          where: {
+            projectId,
+            runId,
+            status: 'RUNNING',
+            ...(failedNode ? { nodeId: { not: failedNode } } : {}),
+          },
+          data: {
+            status: 'SKIPPED',
+            summary: '任务已停止，该分支未完成',
+            errorMessage: null,
+            completedAt: now,
+          },
+        });
+        await transaction.effectPromptShardOutput.updateMany({
+          where: { projectId, runId, status: 'RUNNING' },
+          data: {
+            status: 'FAILED',
+            errorCode: 'BATCH_ABORTED',
+            errorMessage: '任务已停止，该分片未完成',
+            completedAt: now,
+          },
+        });
+      }
+      if (!retry && failedNode)
+        await transaction.effectPromptStageOutput.updateMany({
+          where: { projectId, runId, nodeId: failedNode },
+          data: {
+            status: 'FAILED',
+            summary: input.errorMessage,
+            errorMessage: input.errorMessage,
+            completedAt: now,
+          },
+        });
       if (retry)
         await transaction.jobOutbox.updateMany({
           where: { projectId, jobType: EFFECT_PROMPT_JOB_TYPE, aggregateId: runId },
@@ -814,6 +990,84 @@ export class EffectPromptRepository {
         });
       return retry ? ('REQUEUED' as const) : ('FAILED' as const);
     });
+  }
+
+  async recoverExpiredLeases(now = new Date()): Promise<{ requeued: number; failed: number }> {
+    const candidates = await this.prisma.effectPromptRun.findMany({
+      where: { status: 'RUNNING', leaseExpiresAt: { lte: now } },
+      select: { id: true, projectId: true },
+      orderBy: { leaseExpiresAt: 'asc' },
+      take: 50,
+    });
+    let requeued = 0;
+    let failed = 0;
+    for (const candidate of candidates) {
+      const outcome = await this.prisma.$transaction(async (transaction) => {
+        await transaction.$queryRaw<Array<{ id: string }>>`
+          SELECT "id" FROM "effect_prompt_runs"
+          WHERE "projectId" = ${candidate.projectId}::uuid
+            AND "id" = ${candidate.id}::uuid
+          FOR UPDATE
+        `;
+        const run = await transaction.effectPromptRun.findFirst({
+          where: {
+            projectId: candidate.projectId,
+            id: candidate.id,
+            status: 'RUNNING',
+            leaseExpiresAt: { lte: now },
+          },
+        });
+        if (!run) return 'UNCHANGED' as const;
+        const warnings = [
+          ...new Set([...parseStrings(run.warnings), 'Worker 连接中断，Prompt 任务已自动重新排队']),
+        ];
+        if (run.attemptCount >= EFFECT_PROMPT_MAX_RUN_ATTEMPTS) {
+          await transaction.effectPromptRun.update({
+            where: { projectId_id: { projectId: run.projectId, id: run.id } },
+            data: {
+              status: 'FAILED',
+              warnings: json(parseStrings(run.warnings)),
+              errorCode: 'WORKER_LEASE_EXPIRED',
+              errorMessage: 'Worker 多次失联，Prompt 任务已终止',
+              attemptToken: null,
+              leaseExpiresAt: null,
+              completedAt: now,
+            },
+          });
+          return 'FAILED' as const;
+        }
+        await transaction.effectPromptRun.update({
+          where: { projectId_id: { projectId: run.projectId, id: run.id } },
+          data: {
+            status: 'QUEUED',
+            warnings: json(warnings),
+            errorCode: 'WORKER_LEASE_EXPIRED',
+            errorMessage: 'Worker 租约过期，Prompt 任务已重新排队',
+            attemptToken: null,
+            leaseExpiresAt: null,
+            heartbeatAt: now,
+          },
+        });
+        await transaction.jobOutbox.updateMany({
+          where: {
+            projectId: run.projectId,
+            jobType: EFFECT_PROMPT_JOB_TYPE,
+            aggregateId: run.id,
+          },
+          data: {
+            status: 'PENDING',
+            dispatchToken: null,
+            nextAttemptAt: now,
+            publishedAt: null,
+            lastError: null,
+          },
+        });
+        return 'REQUEUED' as const;
+      });
+      if (outcome === 'REQUEUED') requeued += 1;
+      if (outcome === 'FAILED') failed += 1;
+    }
+    return { requeued, failed };
   }
 
   async mutateResult(

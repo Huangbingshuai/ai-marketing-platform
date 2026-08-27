@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import viteConfigSource from '../../../../vite.config.ts?raw';
 import parentSource from '../source-import/EffectImportNodePage.vue?raw';
 import pageSource from './EffectPromptGenerationNodePage.vue?raw';
+import graphSource from './effect-prompt-generation-graph.ts?raw';
 
 describe('effect prompt generation prototype layout', () => {
   it('loads the live workspace contract source instead of a stale optimized dependency', () => {
@@ -93,6 +94,10 @@ describe('effect prompt generation prototype layout', () => {
     expect(pageSource).toContain('EFFECT_PROMPT_GRAPH_NODES');
     expect(pageSource).toContain('loadEffectPromptNodeDetail');
     expect(pageSource).toContain('pollEffectPromptRun');
+    expect(pageSource).toContain('currentAttemptLabel');
+    expect(pageSource).toContain('currentRetryWarning');
+    expect(pageSource).toContain('run.attemptCount');
+    expect(pageSource).toContain('run.maxAttempts');
     expect(pageSource).toContain('v-for="dimension in EFFECT_PROMPT_DIMENSIONS"');
     expect(pageSource).toContain('固定主标签');
     expect(pageSource).toContain('次级素材标签');
@@ -201,18 +206,19 @@ describe('effect prompt generation prototype layout', () => {
       'REPLENISH',
       'RESULT_SAVE',
     ])
-      expect(pageSource).toContain(`'${nodeId}'`);
+      expect(pageSource).toMatch(new RegExp(`\\b${nodeId}\\b`, 'u'));
 
     expect(pageSource).not.toContain("'CANDIDATE_GENERATION'");
     expect(pageSource).not.toContain('GENERATE_EFFECT_DEMONSTRATION');
     expect(pageSource).toContain(
-      ':class="{ parallel: row.length > 1, generation: row.length === 6 }"',
+      `:class="{ parallel: row.length > 1, 'six-branch': row.length === 6 }"`,
     );
+    expect(pageSource).toContain('.graph-row.six-branch');
 
     expect(pageSource).toContain('aria-label="刷新当前节点详情"');
     expect(pageSource).toContain('@click="refreshGraphDetail"');
     expect(pageSource).toContain('graphStatusMeta(graphDetail.status)');
-    expect(pageSource).toContain('formatGraphDetailTime(graphDetail.updatedAt)');
+    expect(pageSource).toContain('formatGraphDetailTime(currentGraphDetailUpdatedAt)');
     expect(pageSource).toContain('v-for="(field, index) in graphDetail.fields"');
     expect(pageSource).toContain('v-if="field.description"');
     expect(pageSource).toContain('graphDetailValueIsMultiline(field.value)');
@@ -241,6 +247,69 @@ describe('effect prompt generation prototype layout', () => {
     );
   });
 
+  it('renders the V10 relationship, coordinate, blueprint and prompt branch groups', () => {
+    expect(pageSource).toContain('CURRENT_EFFECT_PROMPT_GRAPH_VERSION');
+    expect(pageSource).toContain('buildEffectPromptGraphRows(');
+    expect(pageSource).toContain('effectPromptGraphNodeIds(currentGraphVersion.value)');
+    expect(pageSource).toContain('currentGraphEdges.value');
+    expect(graphSource).toContain('sourceIndex < targetIndex');
+
+    for (const nodeId of [
+      'RELATIONSHIP_FRAGMENT_ROUTER',
+      'PLAN_HOOK_RELATIONSHIPS',
+      'PLAN_PAIN_RELATIONSHIPS',
+      'PLAN_PRODUCT_DISPLAY_RELATIONSHIPS',
+      'PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS',
+      'PLAN_CTA_RELATIONSHIPS',
+      'PLAN_OUTRO_RELATIONSHIPS',
+      'RELATIONSHIP_MERGE_VALIDATION',
+      'DIMENSION_COORDINATE_ROUTER',
+      'PLAN_HOOK_COORDINATES',
+      'PLAN_PAIN_COORDINATES',
+      'PLAN_PRODUCT_DISPLAY_COORDINATES',
+      'PLAN_SELLING_POINT_EXPLANATION_COORDINATES',
+      'PLAN_CTA_COORDINATES',
+      'PLAN_OUTRO_COORDINATES',
+      'COORDINATE_MERGE_VALIDATION',
+      'BLUEPRINT_QUOTA_ALLOCATION',
+      'BLUEPRINT_FRAGMENT_ROUTER',
+      'GENERATE_HOOK_BLUEPRINTS',
+      'GENERATE_PAIN_BLUEPRINTS',
+      'GENERATE_PRODUCT_DISPLAY_BLUEPRINTS',
+      'GENERATE_SELLING_POINT_EXPLANATION_BLUEPRINTS',
+      'GENERATE_CTA_BLUEPRINTS',
+      'GENERATE_OUTRO_BLUEPRINTS',
+      'BLUEPRINT_ORTHOGONAL_GATE',
+    ])
+      expect(pageSource).toMatch(new RegExp(`\\b${nodeId}\\b`, 'u'));
+
+    for (const blockKind of [
+      'RELATIONSHIP_LIST',
+      'COORDINATE_LIST',
+      'BLUEPRINT_LIST',
+      'ORTHOGONAL_PAIR_LIST',
+    ])
+      expect(pageSource).toContain(`block.kind === '${blockKind}'`);
+
+    expect(pageSource).toContain('item.blueprintQuota');
+    expect(pageSource).toContain('item.compatibleBundleCount');
+    expect(pageSource).toContain('item.openingState');
+    expect(pageSource).toContain('item.actionArc');
+    expect(pageSource).toContain('item.endingState');
+    expect(pageSource).toContain('差异 {{ item.distance }}/6');
+    expect(pageSource).toContain('item.sameDimensions.map(graphDimensionLabel)');
+    expect(pageSource).toContain(
+      'effectPromptGraphNodeIds(currentGraphVersion.value).includes(nodeId)',
+    );
+    for (const groupTitle of [
+      '六类营销组合并行规划',
+      '六类产品专属坐标并行规划',
+      '六类组合级蓝图并行生成',
+      '六类视频 Prompt 并行生成',
+    ])
+      expect(pageSource).toContain(groupTitle);
+  });
+
   it('persists server defaults before the first generation run', () => {
     expect(pageSource).toContain('state.settingsRevision !== null');
   });
@@ -253,6 +322,40 @@ describe('effect prompt generation prototype layout', () => {
     expect(generationSource).toContain('startPolling(productId, run)');
     expect(generationSource).not.toContain('graphDialogOpen.value = true');
     expect(generationSource).not.toContain('graphCloseButton.value?.focus()');
+  });
+
+  it('acknowledges batch generation immediately and reuses an in-flight settings save', () => {
+    const generationStart = pageSource.indexOf('const generateCurrentBatch');
+    const generationEnd = pageSource.indexOf('const openRegenerationDialog', generationStart);
+    const generationSource = pageSource.slice(generationStart, generationEnd);
+    const buttonStart = pageSource.indexOf('class="primary-button heading-generate-button"');
+    const buttonEnd = pageSource.indexOf('</button>', buttonStart);
+    const buttonSource = pageSource.slice(buttonStart, buttonEnd);
+
+    expect(generationSource.indexOf('batchStartPending.value = true')).toBeLessThan(
+      generationSource.indexOf('await flushSettings(productId)'),
+    );
+    expect(generationSource).toContain('batchStartPending.value = false');
+    expect(pageSource).toContain(
+      'const settingsSavePromises = new Map<string, Promise<boolean>>()',
+    );
+    expect(pageSource).toContain('const pendingSave = settingsSavePromises.get(productId)');
+    expect(buttonSource).toContain(':disabled="currentRunning || batchStartPending"');
+    expect(buttonSource).toContain(':aria-busy="currentRunning || batchStartPending"');
+    expect(buttonSource).toContain("? '正在提交…'");
+    expect(buttonSource).not.toContain("currentSaveStatus === 'saving'");
+  });
+
+  it('shows failed-run Prompt candidates as a copy-only temporary preview', () => {
+    expect(pageSource).toContain('const partialPreview = computed(');
+    expect(pageSource).toContain("(!state?.resultId && state?.status !== 'FAILED')");
+    expect(pageSource).toContain('class="partial-preview-banner"');
+    expect(pageSource).toContain('本次任务未完成，已保留');
+    expect(pageSource).toContain('当前仅支持查看和复制');
+    expect(pageSource).toMatch(/v-if="!partialPreview"[\s\S]*?<Pencil/u);
+    expect(pageSource).toContain(
+      ':validate-disabled="partialPreview || currentRunning || validating',
+    );
   });
 
   it('wires only step three and keeps later nodes on their existing placeholder', () => {

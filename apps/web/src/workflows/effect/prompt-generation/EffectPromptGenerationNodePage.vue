@@ -2,8 +2,10 @@
 import type {
   EffectImportProduct,
   EffectPromptBatchSettings,
+  EffectPromptDimensionKey,
   EffectPromptDimensions,
   EffectPromptFragmentType,
+  EffectPromptGraphVersion,
   EffectPromptItem,
   EffectPromptInsightField,
   EffectPromptNodeExecution,
@@ -16,14 +18,16 @@ import type {
   GetEffectPromptResultData,
 } from '@ai-marketing/contracts';
 import {
+  CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
   DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
-  EFFECT_PROMPT_GRAPH_EDGES,
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
   effectPromptTargetCount,
+  effectPromptGraphEdges,
+  effectPromptGraphNodeIds,
 } from '@ai-marketing/contracts';
 import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
 import {
@@ -46,6 +50,7 @@ import {
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 
 import { ApiClientError, isAbortError } from '../../../api/http-client';
+import { buildEffectPromptGraphRows } from './effect-prompt-generation-graph';
 import {
   clonePromptSettings,
   isPromptProductCommitted,
@@ -101,6 +106,7 @@ const notice = ref<Notice | null>(null);
 const itemOperation = ref<ItemOperation | null>(null);
 const validating = ref(false);
 const exporting = ref(false);
+const batchStartPending = ref(false);
 const sharedPromptDraft = ref('');
 const sharedPromptDirty = ref(false);
 const sharedPromptSaving = ref(false);
@@ -159,6 +165,7 @@ let searchTimer: ReturnType<typeof setTimeout> | undefined;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 const pollControllers = new Map<string, { controller: AbortController; runId: string }>();
 const settingsControllers = new Map<string, AbortController>();
+const settingsSavePromises = new Map<string, Promise<boolean>>();
 
 const activeProducts = computed(() =>
   props.products.filter((product) => product.status === 'ACTIVE'),
@@ -189,8 +196,43 @@ const editorTargetDurationSeconds = computed(
   () => currentSettings.value.fragmentConfigs[editorDraft.value.fragmentType].durationSeconds,
 );
 const currentRun = computed(() => runsByProduct.value[currentProductId.value] ?? null);
+const currentGraphVersion = computed<EffectPromptGraphVersion>(
+  () =>
+    currentRun.value?.graphVersion ??
+    currentState.value?.graphVersion ??
+    CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
+);
+const currentGraphEdges = computed(() => effectPromptGraphEdges(currentGraphVersion.value));
+const currentAttemptLabel = computed(() => {
+  const run = currentRun.value;
+  if (!run) return '';
+  const attempt =
+    run.status === 'QUEUED'
+      ? Math.min(run.maxAttempts, run.attemptCount + 1)
+      : Math.max(1, run.attemptCount);
+  return `第 ${attempt}/${run.maxAttempts} 次尝试`;
+});
+const currentRetryWarning = computed(
+  () => currentRun.value?.warnings.find((warning) => warning.includes('自动重新排队')) ?? '',
+);
+const currentStageLabel = computed(() => {
+  const nodeId = currentRun.value?.currentNode;
+  if (!nodeId || nodeId === 'COMPLETED') return '正在生成候选 Prompt';
+  return (
+    EFFECT_PROMPT_GRAPH_NODES.find((node) => node.id === nodeId)?.label ?? '正在生成候选 Prompt'
+  );
+});
+const selectedGraphNodeIsActive = computed(
+  () =>
+    currentRun.value?.status === 'RUNNING' &&
+    currentRun.value.currentNode === selectedGraphNodeId.value,
+);
+const currentGraphDetailUpdatedAt = computed(() =>
+  selectedGraphNodeIsActive.value ? currentRun.value?.updatedAt : graphDetail.value?.updatedAt,
+);
 const currentResult = computed(() => resultData.value?.result ?? null);
 const currentItems = computed(() => resultData.value?.items ?? []);
+const partialPreview = computed(() => resultData.value?.isPartialPreview ?? false);
 const currentMetrics = computed(
   () => currentResult.value?.metrics ?? currentState.value?.metrics ?? null,
 );
@@ -329,8 +371,8 @@ const regeneratingItemId = computed(() =>
     : null,
 );
 const currentGraphNodes = computed<EffectPromptNodeExecution[]>(() =>
-  EFFECT_PROMPT_GRAPH_NODES.map(
-    ({ id }) =>
+  effectPromptGraphNodeIds(currentGraphVersion.value).map(
+    (id) =>
       currentRun.value?.nodes.find((node) => node.nodeId === id) ?? {
         nodeId: id,
         status: 'PENDING',
@@ -340,27 +382,12 @@ const currentGraphNodes = computed<EffectPromptNodeExecution[]>(() =>
       },
   ),
 );
-const graphRows: EffectPromptNodeId[][] = [
-  ['LOAD_AND_SNAPSHOT'],
-  ['INSIGHT_MAPPING'],
-  ['SHARED_PROMPT_COMPILATION'],
-  ['STRATEGY_PLANNING'],
-  ['DIMENSION_COMBINATION'],
-  ['FRAGMENT_TYPE_ROUTER'],
-  [
-    'GENERATE_HOOK',
-    'GENERATE_PAIN',
-    'GENERATE_PRODUCT_DISPLAY',
-    'GENERATE_SELLING_POINT_EXPLANATION',
-    'GENERATE_CTA',
-    'GENERATE_OUTRO',
-  ],
-  ['NORMALIZATION'],
-  ['SEMANTIC_DEDUP', 'VISUAL_DEDUP'],
-  ['INSIGHT_COVERAGE'],
-  ['QUALITY_GATE'],
-  ['REPLENISH', 'RESULT_SAVE'],
-];
+const graphRows = computed<EffectPromptNodeId[][]>(() =>
+  buildEffectPromptGraphRows(
+    effectPromptGraphNodeIds(currentGraphVersion.value),
+    currentGraphEdges.value,
+  ),
+);
 
 const dimensionSuggestions: Record<keyof EffectPromptDimensions, string[]> = {
   narrative: ['痛点前置型', '效果展示型', '场景代入型', '科普讲解型', '对比测评型', '开箱体验型'],
@@ -467,7 +494,7 @@ const loadCurrentResult = async (): Promise<void> => {
   const generation = ++resultGeneration;
   resultController?.abort();
   resultData.value = null;
-  if (!productId || !state?.resultId) return;
+  if (!productId || (!state?.resultId && state?.status !== 'FAILED')) return;
   const controller = new AbortController();
   resultController = controller;
   resultLoading.value = true;
@@ -641,6 +668,8 @@ watch(
     graphDetailController?.abort();
     graphDetailController = null;
     graphDetailLoading.value = false;
+    selectedGraphNodeId.value = null;
+    graphDetail.value = null;
     graphDetailError.value = '';
     void reloadWorkspace();
   },
@@ -690,6 +719,16 @@ watch(keyword, () => {
     if (page.value === 1) void loadCurrentResult();
     else page.value = 1;
   }, 350);
+});
+watch(currentGraphVersion, () => {
+  const nodeId = selectedGraphNodeId.value;
+  if (!nodeId || effectPromptGraphNodeIds(currentGraphVersion.value).includes(nodeId)) return;
+  graphDetailController?.abort();
+  graphDetailController = null;
+  graphDetailLoading.value = false;
+  selectedGraphNodeId.value = null;
+  graphDetail.value = null;
+  graphDetailError.value = '';
 });
 
 type NumericPromptSetting = 'semanticLimit' | 'visualLimit';
@@ -793,6 +832,11 @@ const toggleFragmentTypeFilter = (fragmentType: EffectPromptFragmentType): void 
 
 async function flushSettings(productId = currentProductId.value): Promise<boolean> {
   if (settingsTimer) clearTimeout(settingsTimer);
+  const pendingSave = settingsSavePromises.get(productId);
+  if (pendingSave) {
+    if (!(await pendingSave)) return false;
+    return flushSettings(productId);
+  }
   const state = productStates.value[productId];
   const draft = settingsDrafts.value[productId];
   if (!state || !draft) return true;
@@ -803,72 +847,88 @@ async function flushSettings(productId = currentProductId.value): Promise<boolea
     JSON.stringify(normalized) === JSON.stringify(state.settings)
   )
     return true;
-  settingsControllers.get(productId)?.abort();
   const controller = new AbortController();
   settingsControllers.set(productId, controller);
   settingsSaveStatuses.value = { ...settingsSaveStatuses.value, [productId]: 'saving' };
+  const savePromise = (async (): Promise<boolean> => {
+    try {
+      const saved = await savePromptSettings(
+        context(),
+        productId,
+        normalized,
+        state.settingsRevision,
+        controller.signal,
+      );
+      if (controller.signal.aborted) return false;
+      productStates.value = {
+        ...productStates.value,
+        [productId]: {
+          ...state,
+          settings: saved.settings,
+          settingsRevision: saved.settingsRevision,
+          commitStatus: state.commitStatus === 'COMMITTED' ? 'DRAFT_CHANGED' : state.commitStatus,
+          updatedAt: saved.savedAt,
+        },
+      };
+      settingsSaveStatuses.value = { ...settingsSaveStatuses.value, [productId]: 'saved' };
+      return true;
+    } catch (error) {
+      if (isAbortError(error)) return false;
+      settingsSaveStatuses.value = { ...settingsSaveStatuses.value, [productId]: 'error' };
+      if (error instanceof ApiClientError && error.status === 409) {
+        showNotice('批次设置已在其他窗口更新，已重新载入最新版本', 'warning');
+        await reloadWorkspace(false);
+      } else showNotice(safeMessage(error, '批次设置保存失败'), 'error');
+      return false;
+    } finally {
+      if (settingsControllers.get(productId) === controller) settingsControllers.delete(productId);
+    }
+  })();
+  settingsSavePromises.set(productId, savePromise);
   try {
-    const saved = await savePromptSettings(
-      context(),
-      productId,
-      normalized,
-      state.settingsRevision,
-      controller.signal,
-    );
-    if (controller.signal.aborted) return false;
-    productStates.value = {
-      ...productStates.value,
-      [productId]: {
-        ...state,
-        settings: saved.settings,
-        settingsRevision: saved.settingsRevision,
-        commitStatus: state.commitStatus === 'COMMITTED' ? 'DRAFT_CHANGED' : state.commitStatus,
-        updatedAt: saved.savedAt,
-      },
-    };
-    settingsSaveStatuses.value = { ...settingsSaveStatuses.value, [productId]: 'saved' };
-    return true;
-  } catch (error) {
-    if (isAbortError(error)) return false;
-    settingsSaveStatuses.value = { ...settingsSaveStatuses.value, [productId]: 'error' };
-    if (error instanceof ApiClientError && error.status === 409) {
-      showNotice('批次设置已在其他窗口更新，已重新载入最新版本', 'warning');
-      await reloadWorkspace(false);
-    } else showNotice(safeMessage(error, '批次设置保存失败'), 'error');
-    return false;
+    return await savePromise;
   } finally {
-    if (settingsControllers.get(productId) === controller) settingsControllers.delete(productId);
+    if (settingsSavePromises.get(productId) === savePromise) settingsSavePromises.delete(productId);
   }
 }
 
 const generateCurrentBatch = async (): Promise<void> => {
   const productId = currentProductId.value;
-  if (!productId || currentRunning.value) return;
-  if (!(await flushSettings(productId))) return;
-  const state = productStates.value[productId];
-  if (state?.settingsRevision === null || state?.settingsRevision === undefined) {
-    showNotice('批次设置尚未保存，请稍后重试', 'warning');
-    return;
-  }
-  operationController?.abort();
-  const controller = new AbortController();
-  operationController = controller;
+  if (!productId || currentRunning.value || batchStartPending.value) return;
+  batchStartPending.value = true;
   try {
-    const run = await beginEffectPromptRun(
-      props.projectId,
-      productId,
-      {
-        workflowRunId: props.workflowRunId,
-        operation: 'BATCH_GENERATE',
-        expectedSettingsRevision: state.settingsRevision,
-        ...(state.resultRevision === null ? {} : { expectedResultRevision: state.resultRevision }),
-      },
-      controller.signal,
-    );
-    updateRun(productId, run);
-    startPolling(productId, run);
-  } catch (error) {
-    if (!isAbortError(error)) await handleMutationError(error, 'Prompt 批次启动失败');
+    if (!(await flushSettings(productId))) return;
+    const state = productStates.value[productId];
+    if (state?.settingsRevision === null || state?.settingsRevision === undefined) {
+      showNotice('批次设置尚未保存，请稍后重试', 'warning');
+      return;
+    }
+    operationController?.abort();
+    const controller = new AbortController();
+    operationController = controller;
+    try {
+      const run = await beginEffectPromptRun(
+        props.projectId,
+        productId,
+        {
+          workflowRunId: props.workflowRunId,
+          operation: 'BATCH_GENERATE',
+          expectedSettingsRevision: state.settingsRevision,
+          ...(state.resultRevision === null
+            ? {}
+            : { expectedResultRevision: state.resultRevision }),
+        },
+        controller.signal,
+      );
+      updateRun(productId, run);
+      startPolling(productId, run);
+    } catch (error) {
+      if (!isAbortError(error)) await handleMutationError(error, 'Prompt 批次启动失败');
+    } finally {
+      if (operationController === controller) operationController = null;
+    }
+  } finally {
+    batchStartPending.value = false;
   }
 };
 
@@ -965,7 +1025,7 @@ async function handleMutationError(error: unknown, fallback: string): Promise<vo
 }
 
 const openEditor = async (item?: EffectPromptItem, event?: Event): Promise<void> => {
-  if (!currentState.value?.resultId || resultData.value === null) {
+  if (partialPreview.value || !currentState.value?.resultId || resultData.value === null) {
     showNotice('请先生成 Prompt 批次，再进行人工编辑', 'warning');
     return;
   }
@@ -996,7 +1056,7 @@ const commitEditor = async (): Promise<void> => {
   const state = currentState.value;
   const result = resultData.value;
   const draft = editorDraft.value;
-  if (!state?.resultId || !result) return;
+  if (!state?.resultId || !result || result.revision === null || partialPreview.value) return;
   if (!draft.content.trim()) {
     showNotice('请填写片段类型和 Prompt 内容', 'warning');
     return;
@@ -1012,11 +1072,12 @@ const commitEditor = async (): Promise<void> => {
   itemMutationController = controller;
   const productId = state.productId;
   const resultId = state.resultId;
+  const resultRevision = result.revision;
   try {
     await saveEffectPromptItem(
       props.projectId,
       resultId,
-      result.revision,
+      resultRevision,
       {
         content: draft.content.trim(),
         fragmentType: draft.fragmentType,
@@ -1049,17 +1110,26 @@ const resetSharedPromptDraft = (): void => {
 const saveSharedPrompt = async (): Promise<void> => {
   const state = currentState.value;
   const result = resultData.value;
-  if (!state?.resultId || !result || sharedPromptSaving.value || !sharedPromptDirty.value) return;
+  if (
+    !state?.resultId ||
+    !result ||
+    result.revision === null ||
+    partialPreview.value ||
+    sharedPromptSaving.value ||
+    !sharedPromptDirty.value
+  )
+    return;
   sharedPromptController?.abort();
   const controller = new AbortController();
   sharedPromptController = controller;
   sharedPromptSaving.value = true;
   const productId = state.productId;
+  const resultRevision = result.revision;
   try {
     await saveEffectPromptSharedPrompt(
       props.projectId,
       state.resultId,
-      result.revision,
+      resultRevision,
       sharedPromptDraft.value,
       controller.signal,
     );
@@ -1105,18 +1175,28 @@ const confirmDeleteItem = async (): Promise<void> => {
   const item = deleteCandidate.value;
   const state = currentState.value;
   const result = resultData.value;
-  if (!item || !state?.resultId || !result || currentRunning.value || itemOperation.value) return;
+  if (
+    !item ||
+    !state?.resultId ||
+    !result ||
+    result.revision === null ||
+    partialPreview.value ||
+    currentRunning.value ||
+    itemOperation.value
+  )
+    return;
   itemOperation.value = { itemId: item.id, kind: 'delete' };
   itemMutationController?.abort();
   const controller = new AbortController();
   itemMutationController = controller;
   const productId = state.productId;
+  const resultRevision = result.revision;
   try {
     await removeEffectPromptItem(
       props.projectId,
       state.resultId,
       item,
-      result.revision,
+      resultRevision,
       controller.signal,
     );
     if (controller.signal.aborted || currentProductId.value !== productId) return;
@@ -1173,6 +1253,7 @@ const exportBatch = async (): Promise<void> => {
   if (
     !state?.resultId ||
     !resultData.value ||
+    partialPreview.value ||
     !currentProduct.value ||
     currentRunning.value ||
     exporting.value
@@ -1209,16 +1290,23 @@ const exportBatch = async (): Promise<void> => {
 const validatePromptBatch = async (): Promise<void> => {
   const state = currentState.value;
   const result = resultData.value;
-  if (!state?.resultId || !result || !currentQualityReady.value) {
+  if (
+    !state?.resultId ||
+    !result ||
+    result.revision === null ||
+    partialPreview.value ||
+    !currentQualityReady.value
+  ) {
     showNotice('当前批次仍未满足数量、六维差异或双重去重门槛', 'warning');
     return;
   }
   validating.value = true;
+  const resultRevision = result.revision;
   try {
     const validation = await commitEffectPromptResult(
       props.projectId,
       state.resultId,
-      result.revision,
+      resultRevision,
     );
     if (!validation.valid) {
       showNotice(
@@ -1253,12 +1341,57 @@ const graphStatusMeta = (statusValue: EffectPromptStageStatus): { label: string;
     SKIPPED: { label: '已跳过', tone: 'skipped' },
     FAILED: { label: '失败', tone: 'danger' },
   })[statusValue];
+const graphRowTitle = (row: EffectPromptNodeId[]): string => {
+  const firstNode = row[0];
+  if (row.length !== EFFECT_PROMPT_FRAGMENT_TYPES.length || !firstNode) return '';
+  const definition = graphDefinition(firstNode);
+  if (definition.group === 'COORDINATE') return '六类产品专属坐标并行规划';
+  if (definition.group === 'BLUEPRINT') return '六类组合级蓝图并行生成';
+  if (definition.group === 'GENERATION') return '六类视频 Prompt 并行生成';
+  if (definition.group === 'STRATEGY')
+    return definition.label.includes('组合') ? '六类营销组合并行规划' : '六类营销规划并行生成';
+  return '六类片段并行处理';
+};
 const graphDescription = (nodeId: EffectPromptNodeId): string =>
   ({
     LOAD_AND_SNAPSHOT: '冻结洞察工作副本、批次设置和人工保留内容',
     INSIGHT_MAPPING: '把已确认的营销洞察映射为片段可用信息',
     SHARED_PROMPT_COMPILATION: '编译本批次生成与渲染共同使用的提示词',
     STRATEGY_PLANNING: '连接受众、痛点、场景、卖点与营销目标，形成营销关系束',
+    GLOBAL_FACT_ALLOCATION: '先为六类片段分配必须事实与可选事实，避免跨职责误用',
+    STRATEGY_FRAGMENT_ROUTER: '并行路由六类营销规划，并复用仍然有效的成功检查点',
+    PLAN_HOOK_STRATEGY: '为钩子片段规划相互关联的场景、人物、动作、镜头和情绪',
+    PLAN_PAIN_STRATEGY: '为痛点片段规划可见问题状态和人物反应',
+    PLAN_PRODUCT_DISPLAY_STRATEGY: '为产品展示规划产品主体、环境和单一展示动作',
+    PLAN_SELLING_POINT_EXPLANATION_STRATEGY: '围绕已确认卖点规划安全、可拍摄的讲解方式',
+    PLAN_CTA_STRATEGY: '根据营销目标和购买动机规划结尾转化画面',
+    PLAN_OUTRO_STRATEGY: '规划稳定、简洁且不引入新承诺的品牌收束画面',
+    STRATEGY_MERGE_VALIDATION: '合并六类创意母版，校验事实来源、职责和全局覆盖',
+    RELATIONSHIP_FRAGMENT_ROUTER: '并行路由六类营销关系规划，保持各类片段职责独立',
+    PLAN_HOOK_RELATIONSHIPS: '组合适用于钩子片段的已确认受众、痛点与场景事实',
+    PLAN_PAIN_RELATIONSHIPS: '组合适用于痛点片段的已确认问题、人物与场景事实',
+    PLAN_PRODUCT_DISPLAY_RELATIONSHIPS: '组合适用于产品展示的产品事实与使用环境',
+    PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS: '组合卖点事实及可用于安全表达的辅助事实',
+    PLAN_CTA_RELATIONSHIPS: '组合营销目标、购买动机与产品收束事实',
+    PLAN_OUTRO_RELATIONSHIPS: '组合产品、品牌与稳定片尾所需的已确认事实',
+    RELATIONSHIP_MERGE_VALIDATION: '合并六类事实关系，核对主要事实、辅助事实与覆盖配额',
+    DIMENSION_COORDINATE_ROUTER: '并行规划六类片段各自的产品专属六维坐标',
+    PLAN_HOOK_COORDINATES: '生成适用于本产品钩子片段的六维候选坐标',
+    PLAN_PAIN_COORDINATES: '生成适用于本产品痛点片段的六维候选坐标',
+    PLAN_PRODUCT_DISPLAY_COORDINATES: '生成适用于本产品展示片段的六维候选坐标',
+    PLAN_SELLING_POINT_EXPLANATION_COORDINATES: '生成适用于本产品卖点讲解的六维候选坐标',
+    PLAN_CTA_COORDINATES: '生成适用于本产品结尾转化的六维候选坐标',
+    PLAN_OUTRO_COORDINATES: '生成适用于本产品片尾品牌的六维候选坐标',
+    COORDINATE_MERGE_VALIDATION: '汇总六份坐标计划，核对来源、适用关系与差异容量',
+    BLUEPRINT_QUOTA_ALLOCATION: '按目标数量和事实覆盖要求为每个营销组合分配蓝图配额',
+    BLUEPRINT_FRAGMENT_ROUTER: '按片段类型和分片并行生成组合级拍摄蓝图',
+    GENERATE_HOOK_BLUEPRINTS: '从钩子坐标中选择协调组合并生成具体首帧、动作与结束状态',
+    GENERATE_PAIN_BLUEPRINTS: '从痛点坐标中选择协调组合并生成未解决的问题画面',
+    GENERATE_PRODUCT_DISPLAY_BLUEPRINTS: '从展示坐标中选择协调组合并生成单一展示动作',
+    GENERATE_SELLING_POINT_EXPLANATION_BLUEPRINTS: '从卖点坐标中选择协调组合并生成可拍摄的证据画面',
+    GENERATE_CTA_BLUEPRINTS: '从转化坐标中选择协调组合并生成带安全留白的收束画面',
+    GENERATE_OUTRO_BLUEPRINTS: '从片尾坐标中选择协调组合并生成稳定品牌定格',
+    BLUEPRINT_ORTHOGONAL_GATE: '比较全批次蓝图，保证类型内与跨类型均至少三维不同',
     DIMENSION_COMBINATION: '先分配营销关系束，再在关系内部编排六维差异',
     FRAGMENT_TYPE_ROUTER: '按选定数量和时长将组合路由到六类生成分支',
     GENERATE_HOOK: '生成首帧即有注意力触发动作的钩子片段',
@@ -1304,6 +1437,9 @@ const GRAPH_EVIDENCE_MODE_LABELS: Record<string, string> = {
 
 const graphEvidenceModeLabel = (value: string): string =>
   GRAPH_EVIDENCE_MODE_LABELS[value] ?? value;
+
+const graphDimensionLabel = (key: EffectPromptDimensionKey): string =>
+  EFFECT_PROMPT_DIMENSIONS.find((dimension) => dimension.key === key)?.label ?? key;
 
 const graphPairScore = (value: number): string => `${(value * 100).toFixed(0)}%`;
 
@@ -1517,18 +1653,21 @@ onBeforeUnmount(() => {
           <button
             class="primary-button heading-generate-button"
             type="button"
-            :disabled="currentRunning || currentSaveStatus === 'saving'"
+            :disabled="currentRunning || batchStartPending"
+            :aria-busy="currentRunning || batchStartPending"
             @click="generateCurrentBatch"
           >
-            <LoaderCircle v-if="currentRunning" class="spin" :size="14" />
+            <LoaderCircle v-if="currentRunning || batchStartPending" class="spin" :size="14" />
             <RefreshCw v-else-if="currentState.resultId" :size="14" />
             <Sparkles v-else :size="14" />
             {{
-              currentRunning
-                ? `处理中 ${currentState.progress}%`
-                : currentState.resultId
-                  ? '重新批量生成'
-                  : '开始批量生成'
+              batchStartPending
+                ? '正在提交…'
+                : currentRunning
+                  ? `处理中 ${currentState.progress}%`
+                  : currentState.resultId
+                    ? '重新批量生成'
+                    : '开始批量生成'
             }}
           </button>
         </div>
@@ -1537,11 +1676,11 @@ onBeforeUnmount(() => {
       <section v-if="currentRunning" class="run-progress" role="status">
         <div><span :style="{ width: `${currentState.progress}%` }" /></div>
         <p>
-          {{
-            currentState.status === 'QUEUED'
-              ? '正在等待 Prompt 生成服务接单'
-              : currentState.currentNode || '正在生成候选 Prompt'
-          }}
+          <span>{{
+            currentState.status === 'QUEUED' ? '正在等待 Prompt 生成服务接单' : currentStageLabel
+          }}</span>
+          <small v-if="currentAttemptLabel">{{ currentAttemptLabel }}</small>
+          <em v-if="currentRetryWarning">{{ currentRetryWarning }}</em>
         </p>
         <button type="button" @click="openGraph($event)">查看节点进度</button>
       </section>
@@ -1771,6 +1910,17 @@ onBeforeUnmount(() => {
         </article>
       </section>
 
+      <section v-if="partialPreview" class="partial-preview-banner" role="status">
+        <AlertCircle :size="18" />
+        <div>
+          <strong>本次任务未完成，已保留 {{ resultData?.total ?? 0 }} 条临时预览</strong>
+          <span
+            >以下 Prompt
+            已生成并通过基础结构检查，不会覆盖上一份有效结果。当前仅支持查看和复制，重新批量生成成功后才能编辑、导出或完成校验。</span
+          >
+        </div>
+      </section>
+
       <section v-if="currentRenderProfile" class="shared-prompt-panel" aria-label="共用提示词">
         <header>
           <div>
@@ -1778,7 +1928,13 @@ onBeforeUnmount(() => {
             <span>生成 Prompt 时统一约束，生成视频时自动追加一次</span>
           </div>
           <em :class="{ dirty: sharedPromptDirty }">{{
-            sharedPromptSaving ? '正在保存' : sharedPromptDirty ? '有未保存修改' : '已保存'
+            partialPreview
+              ? '临时预览'
+              : sharedPromptSaving
+                ? '正在保存'
+                : sharedPromptDirty
+                  ? '有未保存修改'
+                  : '已保存'
           }}</em>
         </header>
         <label class="shared-prompt-editor">
@@ -1788,11 +1944,11 @@ onBeforeUnmount(() => {
             maxlength="60000"
             aria-label="共用提示词内容"
             placeholder="填写所有视频共同遵守的要求；未设置时渲染不会追加内容"
-            :disabled="currentRunning || sharedPromptSaving"
+            :disabled="partialPreview || currentRunning || sharedPromptSaving"
             @input="sharedPromptDirty = true"
           />
         </label>
-        <footer>
+        <footer v-if="!partialPreview">
           <button
             class="secondary-button"
             type="button"
@@ -1802,6 +1958,7 @@ onBeforeUnmount(() => {
             取消修改
           </button>
           <button
+            v-if="!partialPreview"
             class="primary-button"
             type="button"
             :disabled="!sharedPromptDirty || sharedPromptSaving || currentRunning"
@@ -1823,6 +1980,7 @@ onBeforeUnmount(() => {
           /></label>
           <span class="prompt-result-count">{{ resultData?.total ?? 0 }} 条</span>
           <button
+            v-if="!partialPreview"
             class="primary-button"
             type="button"
             :disabled="!resultData || currentRunning"
@@ -1831,6 +1989,7 @@ onBeforeUnmount(() => {
             <Plus :size="15" />人工添加提示词
           </button>
           <button
+            v-if="!partialPreview"
             class="primary-button"
             type="button"
             :disabled="!resultData || currentRunning || exporting"
@@ -1848,12 +2007,18 @@ onBeforeUnmount(() => {
         </div>
         <div v-else-if="!currentItems.length" class="prompt-empty-state">
           <Search :size="25" /><strong>{{
-            currentState.resultId ? '没有匹配的 Prompt' : '尚未生成 Prompt'
+            resultData
+              ? '没有匹配的 Prompt'
+              : currentState.status === 'FAILED'
+                ? '本次任务没有可预览的 Prompt'
+                : '尚未生成 Prompt'
           }}</strong
           ><span>{{
-            currentState.resultId
+            resultData
               ? '请调整搜索词，或人工补充新的 Prompt。'
-              : '完成信息提炼后，点击开始批量生成。'
+              : currentState.status === 'FAILED'
+                ? '请重新批量生成；失败任务不会覆盖已有有效结果。'
+                : '完成信息提炼后，点击开始批量生成。'
           }}</span>
         </div>
 
@@ -1899,11 +2064,17 @@ onBeforeUnmount(() => {
             </details>
           </div>
           <div class="prompt-actions">
-            <button type="button" :disabled="currentRunning" @click="openEditor(item, $event)">
+            <button
+              v-if="!partialPreview"
+              type="button"
+              :disabled="currentRunning"
+              @click="openEditor(item, $event)"
+            >
               <Pencil :size="13" />修改
             </button>
             <button type="button" @click="copyItem(item)"><Copy :size="13" />复制</button>
             <button
+              v-if="!partialPreview"
               class="danger"
               type="button"
               :disabled="currentRunning || itemOperation !== null"
@@ -1916,6 +2087,7 @@ onBeforeUnmount(() => {
               /><Trash2 v-else :size="13" />删除
             </button>
             <button
+              v-if="!partialPreview"
               type="button"
               :disabled="currentRunning || itemOperation !== null"
               @click="openRegenerationDialog(item, $event)"
@@ -1941,26 +2113,34 @@ onBeforeUnmount(() => {
       </section>
 
       <WorkflowNodeDraftBar
-        :detail="`${currentProduct.name} · ${resultData?.total ?? 0} 条 Prompt · ${currentState.commitStatus === 'COMMITTED' ? '已提交工作副本，尚未归档' : '已自动保存到节点草稿，尚未提交工作副本'}`"
+        :detail="
+          partialPreview
+            ? `${currentProduct.name} · ${resultData?.total ?? 0} 条临时预览 · 未保存为节点结果`
+            : `${currentProduct.name} · ${resultData?.total ?? 0} 条 Prompt · ${currentState.commitStatus === 'COMMITTED' ? '已提交工作副本，尚未归档' : '已自动保存到节点草稿，尚未提交工作副本'}`
+        "
         :state="
           currentRunning || currentSaveStatus === 'saving'
             ? 'saving'
-            : currentState.commitStatus === 'COMMITTED'
-              ? 'saved'
-              : 'dirty'
+            : partialPreview
+              ? 'dirty'
+              : currentState.commitStatus === 'COMMITTED'
+                ? 'saved'
+                : 'dirty'
         "
         :state-label="
           currentRunning
             ? '正在生成…'
-            : currentSaveStatus === 'saving'
-              ? '正在保存'
-              : currentState.commitStatus === 'COMMITTED'
-                ? '工作副本已更新'
-                : currentState.commitStatus === 'STALE'
-                  ? '上游更新，结果已过期'
-                  : currentState.qualityStatus === 'NEEDS_REVIEW'
-                    ? '结果需调整'
-                    : '草稿已自动保存'
+            : partialPreview
+              ? '临时预览'
+              : currentSaveStatus === 'saving'
+                ? '正在保存'
+                : currentState.commitStatus === 'COMMITTED'
+                  ? '工作副本已更新'
+                  : currentState.commitStatus === 'STALE'
+                    ? '上游更新，结果已过期'
+                    : currentState.qualityStatus === 'NEEDS_REVIEW'
+                      ? '结果需调整'
+                      : '草稿已自动保存'
         "
         title="差异化 Prompt 批次草稿"
       />
@@ -1972,7 +2152,7 @@ onBeforeUnmount(() => {
           allProductsCommitted ? '全部产品 Prompt 工作副本已更新' : '请逐个完成产品 Prompt 校验'
         "
         :status-detail="`步骤 3 / 6 · ${currentProduct.name} · ${currentState.commitStatus === 'COMMITTED' ? '当前工作副本' : '尚未提交工作副本'}`"
-        :validate-disabled="currentRunning || validating || !currentQualityReady"
+        :validate-disabled="partialPreview || currentRunning || validating || !currentQualityReady"
         :next-disabled="!allProductsCommitted || currentRunning"
         next-label="下一步：片段渲染"
         @back="emit('back')"
@@ -2296,9 +2476,10 @@ onBeforeUnmount(() => {
             <div class="workflow-graph-canvas">
               <template v-for="(row, rowIndex) in graphRows" :key="rowIndex">
                 <div v-if="rowIndex" class="graph-connector"><i /></div>
+                <p v-if="graphRowTitle(row)" class="graph-row-title">{{ graphRowTitle(row) }}</p>
                 <div
                   class="graph-row"
-                  :class="{ parallel: row.length > 1, generation: row.length === 6 }"
+                  :class="{ parallel: row.length > 1, 'six-branch': row.length === 6 }"
                 >
                   <button
                     v-for="nodeId in row"
@@ -2319,8 +2500,8 @@ onBeforeUnmount(() => {
             </div>
             <aside class="workflow-node-detail" aria-live="polite">
               <div v-if="!selectedGraphNodeId" class="node-detail-empty">
-                <Workflow :size="30" /><strong>选择节点查看安全详情</strong>
-                <p>不会显示模型、Prompt 模板、原始响应或内部存储标识。</p>
+                <Workflow :size="30" /><strong>选择节点查看真实结果</strong>
+                <p>展示当前运行的真实业务产物，同时隐藏模型指令、原始响应和内部标识。</p>
               </div>
               <template v-else>
                 <header class="node-detail-header">
@@ -2338,7 +2519,7 @@ onBeforeUnmount(() => {
                   </button>
                 </header>
                 <div v-if="graphDetailLoading" class="node-detail-message loading" role="status">
-                  <LoaderCircle class="spin" :size="13" />正在同步节点安全摘要…
+                  <LoaderCircle class="spin" :size="13" />正在同步节点真实结果…
                 </div>
                 <div v-if="graphDetailError" class="node-detail-message error" role="alert">
                   <AlertCircle :size="13" />{{ graphDetailError }}
@@ -2349,10 +2530,13 @@ onBeforeUnmount(() => {
                     <em :class="`is-${graphStatusMeta(graphDetail.status).tone}`">
                       {{ graphStatusMeta(graphDetail.status).label }}
                     </em>
+                    <small v-if="selectedGraphNodeIsActive" class="node-attempt">
+                      {{ currentAttemptLabel }}
+                    </small>
                     <span>
                       <small>更新时间</small>
-                      <time :datetime="graphDetail.updatedAt ?? undefined">{{
-                        formatGraphDetailTime(graphDetail.updatedAt)
+                      <time :datetime="currentGraphDetailUpdatedAt ?? undefined">{{
+                        formatGraphDetailTime(currentGraphDetailUpdatedAt)
                       }}</time>
                     </span>
                   </div>
@@ -2380,7 +2564,137 @@ onBeforeUnmount(() => {
                   >
                     <h3>{{ block.title }}</h3>
 
-                    <div v-if="block.kind === 'TAG_LIST'" class="node-tag-groups">
+                    <div v-if="block.kind === 'RELATIONSHIP_LIST'" class="node-relationship-list">
+                      <article v-for="item in block.items" :key="item.title">
+                        <header>
+                          <span>
+                            <strong>{{ item.title }}</strong>
+                            <small>{{
+                              EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.fragmentType]
+                            }}</small>
+                          </span>
+                          <em>{{ item.blueprintQuota }} 张蓝图</em>
+                        </header>
+                        <dl>
+                          <div>
+                            <dt>主要事实</dt>
+                            <dd>{{ item.primaryFact }}</dd>
+                          </div>
+                          <div>
+                            <dt>辅助事实</dt>
+                            <dd>
+                              <span v-for="fact in item.auxiliaryFacts" :key="fact">{{
+                                fact
+                              }}</span>
+                              <i v-if="!item.auxiliaryFacts.length">无</i>
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>组合意图</dt>
+                            <dd>{{ item.creativeIntent }}</dd>
+                          </div>
+                        </dl>
+                      </article>
+                    </div>
+
+                    <div v-else-if="block.kind === 'COORDINATE_LIST'" class="node-coordinate-list">
+                      <section v-for="group in block.groups" :key="group.dimension">
+                        <header>
+                          <strong>{{ group.label }}</strong>
+                          <span>{{ group.items.length }} 个候选</span>
+                        </header>
+                        <article v-for="item in group.items" :key="item.value">
+                          <strong>{{ item.value }}</strong>
+                          <p>
+                            <span>适配 {{ item.compatibleBundleCount }} 个营销组合</span>
+                            <span v-if="item.sourceFacts.length">
+                              来源：{{ item.sourceFacts.join('、') }}
+                            </span>
+                          </p>
+                        </article>
+                      </section>
+                    </div>
+
+                    <div v-else-if="block.kind === 'BLUEPRINT_LIST'" class="node-blueprint-list">
+                      <details v-for="item in block.items" :key="item.title">
+                        <summary>
+                          <span>
+                            <strong>{{ item.title }}</strong>
+                            {{ EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.fragmentType] }} ·
+                            {{ item.relationshipTitle }}
+                          </span>
+                          <em>{{ item.targetDurationSeconds }} 秒 · 展开蓝图</em>
+                        </summary>
+                        <dl class="node-blueprint-states">
+                          <div>
+                            <dt>首帧状态</dt>
+                            <dd>{{ item.openingState }}</dd>
+                          </div>
+                          <div>
+                            <dt>连续动作</dt>
+                            <dd>{{ item.actionArc }}</dd>
+                          </div>
+                          <div>
+                            <dt>结束状态</dt>
+                            <dd>{{ item.endingState }}</dd>
+                          </div>
+                        </dl>
+                        <dl class="node-prompt-dimensions">
+                          <div v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key">
+                            <dt>{{ dimension.label }}</dt>
+                            <dd>{{ item.dimensions[dimension.key] }}</dd>
+                          </div>
+                        </dl>
+                      </details>
+                    </div>
+
+                    <div
+                      v-else-if="block.kind === 'ORTHOGONAL_PAIR_LIST'"
+                      class="node-orthogonal-pair-list"
+                    >
+                      <details
+                        v-for="(item, pairIndex) in block.items"
+                        :key="`${item.left.title}-${item.right.title}-${pairIndex}`"
+                      >
+                        <summary>
+                          <span>
+                            <strong>{{ item.left.title }} ↔ {{ item.right.title }}</strong>
+                            相同维度：
+                            {{
+                              item.sameDimensions.length
+                                ? item.sameDimensions.map(graphDimensionLabel).join('、')
+                                : '无'
+                            }}
+                          </span>
+                          <em>差异 {{ item.distance }}/6 · 展开对比</em>
+                        </summary>
+                        <div class="node-blueprint-compare">
+                          <article
+                            v-for="candidate in [item.left, item.right]"
+                            :key="candidate.title"
+                          >
+                            <header>
+                              <strong>{{ candidate.title }}</strong>
+                              <span>{{ candidate.relationshipTitle }}</span>
+                            </header>
+                            <p><b>首帧</b>{{ candidate.openingState }}</p>
+                            <p><b>动作</b>{{ candidate.actionArc }}</p>
+                            <p><b>结束</b>{{ candidate.endingState }}</p>
+                            <dl class="node-prompt-dimensions">
+                              <div
+                                v-for="dimension in EFFECT_PROMPT_DIMENSIONS"
+                                :key="dimension.key"
+                              >
+                                <dt>{{ dimension.label }}</dt>
+                                <dd>{{ candidate.dimensions[dimension.key] }}</dd>
+                              </div>
+                            </dl>
+                          </article>
+                        </div>
+                      </details>
+                    </div>
+
+                    <div v-else-if="block.kind === 'TAG_LIST'" class="node-tag-groups">
                       <div v-for="group in block.groups" :key="group.label">
                         <strong>{{ group.label }}</strong>
                         <p>
@@ -2515,6 +2829,9 @@ onBeforeUnmount(() => {
                   <div v-for="warning in graphDetail.warnings" :key="warning" class="node-warning">
                     <AlertCircle :size="12" />{{ warning }}
                   </div>
+                  <div v-if="selectedGraphNodeIsActive && currentRetryWarning" class="node-warning">
+                    <AlertCircle :size="12" />{{ currentRetryWarning }}
+                  </div>
                   <div v-if="graphDetail.errorMessage" class="node-warning error">
                     <AlertCircle :size="12" />{{ graphDetail.errorMessage }}
                   </div>
@@ -2525,7 +2842,7 @@ onBeforeUnmount(() => {
           <footer>
             <span><i class="running" />执行中</span><span><i class="success" />已完成</span
             ><span><i class="warning" />需关注</span><span><i class="danger" />失败</span
-            ><span class="edge-count">{{ EFFECT_PROMPT_GRAPH_EDGES.length }} 条执行边</span
+            ><span class="edge-count">{{ currentGraphEdges.length }} 条执行边</span
             ><button type="button" @click="closeGraph">
               <CheckCircle2 :size="14" />返回工作区
             </button>
@@ -2732,7 +3049,18 @@ button:disabled {
   transition: width 0.25s;
 }
 .run-progress p {
+  display: grid;
   margin: 0;
+  gap: 2px;
+}
+.run-progress p small {
+  color: #2563eb;
+  font-weight: 800;
+}
+.run-progress p em {
+  color: #956109;
+  font-size: 10px;
+  font-style: normal;
 }
 .run-progress button {
   color: #2563eb;
@@ -3013,6 +3341,33 @@ button:disabled {
   color: #6f50c4;
   background: #f5f1ff;
   border-color: #e4dbfa;
+}
+.partial-preview-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px 16px;
+  color: #8a5a16;
+  background: #fff9eb;
+  border: 1px solid #f2d49a;
+  border-radius: 14px;
+}
+.partial-preview-banner svg {
+  flex: none;
+  margin-top: 1px;
+}
+.partial-preview-banner div {
+  display: grid;
+  gap: 4px;
+}
+.partial-preview-banner strong {
+  font-size: 13px;
+}
+.partial-preview-banner span {
+  color: #8a6b3e;
+  font-size: 11px;
+  line-height: 1.6;
 }
 .shared-prompt-panel {
   display: grid;
@@ -3917,8 +4272,15 @@ button:disabled {
 .graph-row.parallel {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-.graph-row.generation {
+.graph-row.six-branch {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.graph-row-title {
+  margin: 0 0 8px;
+  color: #60708a;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
 }
 .graph-node {
   display: grid;
@@ -4118,6 +4480,12 @@ button:disabled {
   color: #c93448;
   background: #fff0f2;
 }
+.node-detail-status > .node-attempt {
+  margin-right: auto;
+  color: #2563eb;
+  font-size: 8px;
+  font-weight: 800;
+}
 .node-detail-status > span {
   display: grid;
   justify-items: end;
@@ -4197,6 +4565,10 @@ button:disabled {
   letter-spacing: 0.04em;
 }
 .node-tag-groups,
+.node-relationship-list,
+.node-coordinate-list,
+.node-blueprint-list,
+.node-orthogonal-pair-list,
 .node-route-list,
 .node-combination-list,
 .node-prompt-list,
@@ -4206,6 +4578,10 @@ button:disabled {
   gap: 7px;
 }
 .node-tag-groups > div,
+.node-relationship-list > article,
+.node-coordinate-list > section,
+.node-blueprint-list > details,
+.node-orthogonal-pair-list > details,
 .node-route-list > article,
 .node-combination-list > article,
 .node-prompt-list > details,
@@ -4216,6 +4592,101 @@ button:disabled {
   background: #f7f9fd;
   border: 1px solid #e4eaf4;
   border-radius: 9px;
+}
+.node-relationship-list article > header,
+.node-coordinate-list section > header,
+.node-blueprint-compare article > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.node-relationship-list article > header > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+.node-relationship-list article > header strong,
+.node-coordinate-list section > header strong,
+.node-blueprint-compare article > header strong {
+  color: #33415a;
+  font-size: 9px;
+  overflow-wrap: anywhere;
+}
+.node-relationship-list article > header small,
+.node-blueprint-compare article > header span {
+  color: #7b879a;
+  font-size: 8px;
+}
+.node-relationship-list article > header em,
+.node-coordinate-list section > header span {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  color: #315c9f;
+  background: #eaf2ff;
+  border-radius: 999px;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 800;
+}
+.node-relationship-list article > dl,
+.node-blueprint-states {
+  display: grid;
+  margin: 8px 0 0;
+  gap: 7px;
+}
+.node-relationship-list dt,
+.node-blueprint-states dt {
+  color: #8994a8;
+  font-size: 8px;
+}
+.node-relationship-list dd,
+.node-blueprint-states dd {
+  margin: 3px 0 0;
+  color: #3d4b62;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.node-relationship-list dd > span {
+  display: inline-block;
+  margin: 0 4px 4px 0;
+  padding: 3px 6px;
+  color: #315c9f;
+  background: #eaf2ff;
+  border-radius: 999px;
+}
+.node-relationship-list dd > i {
+  color: #8994a8;
+  font-style: normal;
+  font-weight: 600;
+}
+.node-coordinate-list > section {
+  display: grid;
+  gap: 7px;
+}
+.node-coordinate-list section > article {
+  padding: 8px;
+  background: #fff;
+  border: 1px solid #e4eaf4;
+  border-radius: 7px;
+}
+.node-coordinate-list section > article > strong {
+  display: block;
+  color: #33415a;
+  font-size: 8px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.node-coordinate-list section > article > p {
+  display: flex;
+  margin: 5px 0 0;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: #7b879a;
+  font-size: 8px;
+  line-height: 1.45;
 }
 .node-tag-groups > div > strong {
   display: block;
@@ -4330,6 +4801,8 @@ button:disabled {
 }
 .node-prompt-list details > summary,
 .node-pair-list details > summary,
+.node-blueprint-list details > summary,
+.node-orthogonal-pair-list details > summary,
 .node-issue-list details > summary {
   display: flex;
   align-items: center;
@@ -4342,17 +4815,23 @@ button:disabled {
 }
 .node-prompt-list details > summary::-webkit-details-marker,
 .node-pair-list details > summary::-webkit-details-marker,
+.node-blueprint-list details > summary::-webkit-details-marker,
+.node-orthogonal-pair-list details > summary::-webkit-details-marker,
 .node-issue-list details > summary::-webkit-details-marker {
   display: none;
 }
 .node-prompt-list details > summary:focus-visible,
 .node-pair-list details > summary:focus-visible,
+.node-blueprint-list details > summary:focus-visible,
+.node-orthogonal-pair-list details > summary:focus-visible,
 .node-issue-list details > summary:focus-visible {
   border-radius: 5px;
   box-shadow: 0 0 0 3px #2563eb24;
 }
 .node-prompt-list summary > span,
-.node-pair-list summary > span {
+.node-pair-list summary > span,
+.node-blueprint-list summary > span,
+.node-orthogonal-pair-list summary > span {
   display: grid;
   min-width: 0;
   gap: 3px;
@@ -4361,17 +4840,51 @@ button:disabled {
   line-height: 1.4;
 }
 .node-prompt-list summary strong,
-.node-pair-list summary strong {
+.node-pair-list summary strong,
+.node-blueprint-list summary strong,
+.node-orthogonal-pair-list summary strong {
   color: #33415a;
   font-size: 9px;
 }
 .node-prompt-list summary > em,
-.node-pair-list summary > em {
+.node-pair-list summary > em,
+.node-blueprint-list summary > em,
+.node-orthogonal-pair-list summary > em {
   flex: 0 0 auto;
   color: #2563eb;
   font-size: 8px;
   font-style: normal;
   font-weight: 800;
+}
+.node-blueprint-states > div {
+  padding: 7px;
+  background: #fff;
+  border: 1px solid #e4eaf4;
+  border-radius: 7px;
+}
+.node-blueprint-compare {
+  display: grid;
+  margin-top: 9px;
+  gap: 8px;
+}
+.node-blueprint-compare > article {
+  padding: 8px;
+  background: #fff;
+  border: 1px solid #e4eaf4;
+  border-radius: 7px;
+}
+.node-blueprint-compare article > p {
+  display: grid;
+  margin: 7px 0 0;
+  gap: 2px;
+  color: #4d5b72;
+  font-size: 8px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.node-blueprint-compare article > p b {
+  color: #8994a8;
+  font-size: 8px;
 }
 .node-sample-tags {
   margin-top: 9px;

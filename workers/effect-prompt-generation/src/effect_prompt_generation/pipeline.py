@@ -9,7 +9,7 @@ import uuid
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from pydantic import ValidationError
 
@@ -24,9 +24,17 @@ from .combinations import (
 )
 from .insight_mapping import bindings_for_fact_ids, map_insight
 from .models import (
+    BlueprintBundleQuota,
+    BlueprintShardPlan,
+    BlueprintTask,
     EvidenceMode,
     FailurePayload,
     FragmentType,
+    FragmentFactAllocation,
+    FragmentDimensionCoordinatePlan,
+    FragmentMarketingPlan,
+    FragmentRelationshipPlan,
+    GeneratedBlueprint,
     GeneratedCandidate,
     InsightApplicationMap,
     InsightField,
@@ -43,14 +51,39 @@ from .models import (
     SharedPrompt,
     SharedPromptSection,
     ShardPlan,
+    ShardPhase,
     ShardRecord,
     SharedRenderConstraints,
     StageOutput,
     StageStatus,
     StrategyPlan,
+    StrategyCheckpoint,
     utc_now,
 )
-from .providers import AiProvider, ProviderError
+from .providers import (
+    BLUEPRINT_STAGE_BY_TYPE,
+    COORDINATE_STAGE_BY_TYPE,
+    FRAGMENT_STRATEGY_STAGE_BY_TYPE,
+    FRAGMENT_STRATEGY_VERSION,
+    AiProvider,
+    ProviderError,
+    RELATIONSHIP_STAGE_BY_TYPE,
+    V10_COORDINATE_VERSION,
+    V10_RELATIONSHIP_VERSION,
+    merge_fragment_marketing_plans,
+)
+from .strategy_planning import allocate_fragment_facts, validate_fragment_marketing_plan
+from .v10_blueprints import (
+    allocate_blueprint_quotas,
+    blueprint_signature,
+    make_blueprint_shards,
+    make_blueprint_tasks,
+    materialize_blueprint,
+    select_orthogonal_blueprints,
+    validate_coordinate_plan,
+    validate_generated_blueprints,
+    validate_relationship_plan,
+)
 from .quality import (
     EvaluationResult,
     evaluate_candidates,
@@ -69,6 +102,10 @@ GENERATION_NODE_BY_FRAGMENT: dict[FragmentType, NodeId] = {
     FragmentType.CTA: NodeId.GENERATE_CTA,
     FragmentType.OUTRO: NodeId.GENERATE_OUTRO,
 }
+BLUEPRINT_NODE_BY_FRAGMENT: dict[FragmentType, NodeId] = {
+    fragment_type: NodeId(node_id)
+    for fragment_type, node_id in BLUEPRINT_STAGE_BY_TYPE.items()
+}
 
 
 class PipelineError(RuntimeError):
@@ -81,6 +118,7 @@ class LoadedRun:
     candidates: list[GeneratedCandidate]
     completed_shard_keys: list[str]
     highest_round: int
+    completed_blueprint_shard_keys: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -96,6 +134,14 @@ class RunCache:
     evaluation: EvaluationResult | None = None
     fallback_count: int = 0
     shared_prompt: SharedPrompt | None = None
+    strategy_checkpoints: dict[NodeId, StrategyCheckpoint] = field(default_factory=dict)
+    relationship_plans: dict[FragmentType, FragmentRelationshipPlan] = field(default_factory=dict)
+    coordinate_plans: dict[FragmentType, FragmentDimensionCoordinatePlan] = field(default_factory=dict)
+    blueprint_quotas: list[BlueprintBundleQuota] = field(default_factory=list)
+    blueprint_tasks: dict[str, BlueprintTask] = field(default_factory=dict)
+    blueprints: dict[str, GeneratedBlueprint] = field(default_factory=dict)
+    selected_blueprints: dict[str, GeneratedBlueprint] = field(default_factory=dict)
+    completed_blueprint_shard_keys: set[str] = field(default_factory=set)
 
 
 class PromptGenerationPipeline:
@@ -105,7 +151,7 @@ class PromptGenerationPipeline:
         api: InternalApi,
         provider: AiProvider,
         shard_size: int = 8,
-        max_ai_calls_per_run: int = 129,
+        max_ai_calls_per_run: int = 256,
     ) -> None:
         self.api = api
         self.provider = provider
@@ -115,10 +161,17 @@ class PromptGenerationPipeline:
         self._runs: dict[str, RunCache] = {}
 
     def register_snapshot(
-        self, context: RuntimeContext, snapshot: PromptGenerationSnapshot
+        self,
+        context: RuntimeContext,
+        snapshot: PromptGenerationSnapshot,
+        strategy_checkpoints: list[StrategyCheckpoint] | None = None,
     ) -> None:
         self._snapshots[context.run_id] = snapshot
-        self._runs[context.run_id] = RunCache()
+        self._runs[context.run_id] = RunCache(
+            strategy_checkpoints={
+                item.node_id: item for item in strategy_checkpoints or []
+            }
+        )
 
     def unregister(self, context: RuntimeContext) -> None:
         self._snapshots.pop(context.run_id, None)
@@ -145,9 +198,19 @@ class PromptGenerationPipeline:
         )
         snapshot = self.snapshot(context)
         shards = await self.api.get_shards(context)
-        succeeded = [item for item in shards if item.status == StageStatus.SUCCEEDED]
+        succeeded = [
+            item
+            for item in shards
+            if item.status == StageStatus.SUCCEEDED and item.phase == ShardPhase.PROMPT
+        ]
+        succeeded_blueprints = [
+            item
+            for item in shards
+            if item.status == StageStatus.SUCCEEDED and item.phase == ShardPhase.BLUEPRINT
+        ]
         if any(
-            combination.planning_version != "six-branch-v1"
+            combination.planning_version
+            not in {"six-branch-v1", "six-ai-branch-v2"}
             for shard in succeeded
             for combination in shard.combination_plan
         ):
@@ -162,11 +225,22 @@ class PromptGenerationPipeline:
             for item in unique_candidates
             for reason in item.execution_invalid_reasons
         )
+        cache = self._cache(context)
+        cache.blueprints = {
+            item.slot_id: item for shard in succeeded_blueprints for item in shard.blueprints
+        }
+        cache.blueprint_tasks = {
+            item.slot_id: item for shard in succeeded_blueprints for item in shard.blueprint_plan
+        }
+        cache.completed_blueprint_shard_keys = {
+            item.key for item in succeeded_blueprints
+        }
         loaded = LoadedRun(
             snapshot=snapshot,
             candidates=unique_candidates,
             completed_shard_keys=[item.key for item in succeeded],
             highest_round=max((item.round for item in succeeded), default=0),
+            completed_blueprint_shard_keys=[item.key for item in succeeded_blueprints],
         )
         await self._stage(
             context,
@@ -177,6 +251,7 @@ class PromptGenerationPipeline:
                 "batchSize": snapshot.settings.target_count,
                 "retainedCount": len(snapshot.retained_manual_items),
                 "resumedShardCount": len(succeeded),
+                "resumedBlueprintShardCount": len(succeeded_blueprints),
                 "snapshotSummary": _short(
                     " / ".join(
                         filter(
@@ -239,6 +314,19 @@ class PromptGenerationPipeline:
                 ),
                 "evidencePlanCount": len(pools.evidence_plans),
                 "relationshipBundleCount": len(plan.relationship_bundles),
+                "plannedFactCount": len(
+                    {
+                        fact_id
+                        for bundle in plan.relationship_bundles
+                        for fact_id in bundle.fact_ids
+                    }
+                ),
+                "modelRelationshipBundleCount": (
+                    call.metadata.model_relationship_bundle_count
+                ),
+                "workerCompletedRelationshipBundleCount": (
+                    call.metadata.worker_completed_relationship_bundle_count
+                ),
                 "dimensionExample": _short(
                     f"{fragment_pools[0].opening_states[0]} / {pools.scenes[0]} / {pools.selling_points[0]}"
                 ),
@@ -303,6 +391,636 @@ class PromptGenerationPipeline:
         await self.progress(context, 13, NodeId.SHARED_PROMPT_COMPILATION)
         return prompt
 
+    async def allocate_strategy_facts(
+        self, context: RuntimeContext, application: InsightApplicationMap
+    ) -> dict[FragmentType, FragmentFactAllocation]:
+        await self._stage(
+            context,
+            NodeId.GLOBAL_FACT_ALLOCATION,
+            StageStatus.RUNNING,
+            "正在分配六类片段事实",
+        )
+        settings = self.snapshot(context).settings
+        counts = {
+            fragment_type: settings.fragment_configs[fragment_type].count
+            for fragment_type in FragmentType
+        }
+        allocations = allocate_fragment_facts(application, counts)
+        await self._stage(
+            context,
+            NodeId.GLOBAL_FACT_ALLOCATION,
+            StageStatus.SUCCEEDED,
+            "全局事实分配完成",
+            metadata={
+                "fragmentTypeCount": len(allocations),
+                "mandatoryFactCount": len(
+                    {fact_id for row in allocations.values() for fact_id in row.mandatory_fact_ids}
+                ),
+                "bundleTargetCount": sum(row.bundle_target for row in allocations.values()),
+            },
+        )
+        await self.progress(context, 15, NodeId.GLOBAL_FACT_ALLOCATION)
+        return allocations
+
+    async def prepare_strategy_router(
+        self,
+        context: RuntimeContext,
+        allocations: Mapping[FragmentType, FragmentFactAllocation],
+    ) -> list[FragmentMarketingPlan]:
+        await self._stage(
+            context,
+            NodeId.STRATEGY_FRAGMENT_ROUTER,
+            StageStatus.RUNNING,
+            "正在路由六类营销规划",
+        )
+        reusable: list[FragmentMarketingPlan] = []
+        cache = self._cache(context)
+        for allocation in allocations.values():
+            node = NodeId(FRAGMENT_STRATEGY_STAGE_BY_TYPE[allocation.fragment_type])
+            checkpoint = cache.strategy_checkpoints.get(node)
+            if not checkpoint:
+                continue
+            if not isinstance(checkpoint.plan, FragmentMarketingPlan):
+                continue
+            if (
+                checkpoint.source_fingerprint != context.source_fingerprint
+                or checkpoint.allocation_hash != allocation.allocation_hash
+                or checkpoint.prompt_version != FRAGMENT_STRATEGY_VERSION
+            ):
+                continue
+            try:
+                validate_fragment_marketing_plan(checkpoint.plan, allocation, cache.insight_application or self._require_application(context))
+            except ValueError:
+                continue
+            reusable.append(checkpoint.plan.model_copy(update={"reused_checkpoint": True}))
+            await self._stage(
+                context,
+                node,
+                StageStatus.SUCCEEDED,
+                "已复用上一次成功的营销规划",
+                metadata=self._plan_stage_metadata(checkpoint.plan, allocation, reused=True),
+            )
+        await self._stage(
+            context,
+            NodeId.STRATEGY_FRAGMENT_ROUTER,
+            StageStatus.SUCCEEDED,
+            "营销规划分支已路由",
+            metadata={"branchCount": len(allocations), "reusedCheckpointCount": len(reusable)},
+        )
+        return reusable
+
+    async def skip_fragment_strategy(
+        self, context: RuntimeContext, allocation: FragmentFactAllocation, summary: str
+    ) -> None:
+        node = NodeId(FRAGMENT_STRATEGY_STAGE_BY_TYPE[allocation.fragment_type])
+        await self._stage(
+            context,
+            node,
+            StageStatus.SKIPPED,
+            summary,
+            metadata={
+                "targetBundleCount": allocation.bundle_target,
+                "actualBundleCount": 0,
+                "mandatoryFactCount": len(allocation.mandatory_fact_ids),
+                "coveredMandatoryFactCount": 0,
+                "reusedCheckpoint": summary.startswith("已复用"),
+            },
+        )
+
+    async def plan_fragment_strategy(
+        self,
+        context: RuntimeContext,
+        allocation: FragmentFactAllocation,
+    ) -> FragmentMarketingPlan:
+        node = NodeId(FRAGMENT_STRATEGY_STAGE_BY_TYPE[allocation.fragment_type])
+        await self._stage(context, node, StageStatus.RUNNING, "正在生成本类营销创意母版")
+        try:
+            self._reserve_ai_call(context)
+            shared_prompt = self._cache(context).shared_prompt
+            if shared_prompt is None:
+                raise PipelineError("批次共用提示词尚未编译")
+            call = await self.provider.plan_fragment_strategy(
+                allocation,
+                application=self._require_application(context),
+                shared_prompt=shared_prompt,
+            )
+            plan = call.value
+            validate_fragment_marketing_plan(plan, allocation, self._require_application(context))
+        except Exception as exc:
+            setattr(exc, "node_id", node)
+            await self._stage(context, node, StageStatus.FAILED, _safe_error(exc))
+            raise
+        await self._stage(
+            context,
+            node,
+            StageStatus.SUCCEEDED,
+            "本类营销创意母版已完成",
+            metadata={
+                **self._plan_stage_metadata(plan, allocation, reused=False),
+                "checkpoint": {
+                    "nodeId": node.value,
+                    "sourceFingerprint": context.source_fingerprint,
+                    "allocationHash": allocation.allocation_hash,
+                    "promptVersion": plan.prompt_version,
+                    "plan": plan.model_dump(mode="json", by_alias=True),
+                },
+                "latencyMs": call.metadata.latency_ms,
+                "outputTokens": call.metadata.output_tokens,
+            },
+        )
+        return plan
+
+    async def merge_strategy_plans(
+        self,
+        context: RuntimeContext,
+        plans: list[FragmentMarketingPlan],
+    ) -> StrategyPlan:
+        await self._stage(
+            context,
+            NodeId.STRATEGY_MERGE_VALIDATION,
+            StageStatus.RUNNING,
+            "正在合并校验六类营销规划",
+        )
+        expected = self._expected_strategy_fragments(context)
+        plan = merge_fragment_marketing_plans(
+            self._require_application(context), plans, required_fragment_types=expected
+        )
+        self._cache(context).strategy_plan = plan
+        await self._stage(
+            context,
+            NodeId.STRATEGY_MERGE_VALIDATION,
+            StageStatus.SUCCEEDED,
+            "营销规划合并校验完成",
+            metadata={
+                "completedBranchCount": len({item.fragment_type for item in plans}),
+                "relationshipBundleCount": len(plan.relationship_bundles),
+                "plannedFactCount": len({fact_id for row in plan.relationship_bundles for fact_id in row.fact_ids}),
+            },
+        )
+        await self.progress(context, 24, NodeId.STRATEGY_MERGE_VALIDATION)
+        return plan
+
+    async def prepare_relationship_router(
+        self,
+        context: RuntimeContext,
+        allocations: Mapping[FragmentType, FragmentFactAllocation],
+    ) -> list[FragmentRelationshipPlan]:
+        await self._stage(
+            context,
+            NodeId.RELATIONSHIP_FRAGMENT_ROUTER,
+            StageStatus.RUNNING,
+            "正在路由六类营销事实关系",
+        )
+        reusable: list[FragmentRelationshipPlan] = []
+        cache = self._cache(context)
+        for allocation in allocations.values():
+            node = NodeId(RELATIONSHIP_STAGE_BY_TYPE[allocation.fragment_type])
+            checkpoint = cache.strategy_checkpoints.get(node)
+            if not checkpoint or not isinstance(checkpoint.plan, FragmentRelationshipPlan):
+                continue
+            if (
+                checkpoint.source_fingerprint != context.source_fingerprint
+                or checkpoint.allocation_hash != allocation.allocation_hash
+                or checkpoint.prompt_version != V10_RELATIONSHIP_VERSION
+            ):
+                continue
+            try:
+                validate_relationship_plan(checkpoint.plan, allocation, self._require_application(context))
+            except ValueError:
+                continue
+            plan = checkpoint.plan.model_copy(update={"reused_checkpoint": True})
+            reusable.append(plan)
+            cache.relationship_plans[plan.fragment_type] = plan
+        await self._stage(
+            context,
+            NodeId.RELATIONSHIP_FRAGMENT_ROUTER,
+            StageStatus.SUCCEEDED,
+            "营销事实关系分支已路由",
+            metadata={"branchCount": len(allocations), "reusedCheckpointCount": len(reusable)},
+        )
+        return reusable
+
+    async def plan_fragment_relationships(
+        self,
+        context: RuntimeContext,
+        allocation: FragmentFactAllocation,
+    ) -> FragmentRelationshipPlan:
+        node = NodeId(RELATIONSHIP_STAGE_BY_TYPE[allocation.fragment_type])
+        await self._stage(context, node, StageStatus.RUNNING, "正在生成本类营销事实关系")
+        try:
+            self._reserve_ai_call(context)
+            call = await self.provider.plan_fragment_relationships(
+                allocation,
+                application=self._require_application(context),
+                shared_prompt=self._required_shared_prompt(context),
+            )
+            validate_relationship_plan(call.value, allocation, self._require_application(context))
+        except Exception as exc:
+            setattr(exc, "node_id", node)
+            await self._stage(context, node, StageStatus.FAILED, _safe_error(exc))
+            raise
+        plan = call.value
+        self._cache(context).relationship_plans[plan.fragment_type] = plan
+        await self._stage(
+            context,
+            node,
+            StageStatus.SUCCEEDED,
+            "本类营销事实关系已完成",
+            metadata={
+                "targetBundleCount": allocation.bundle_target,
+                "actualBundleCount": len(plan.bundles),
+                "plannedFactCount": len({fact_id for row in plan.bundles for fact_id in row.fact_ids}),
+                "checkpoint": {
+                    "nodeId": node.value,
+                    "sourceFingerprint": context.source_fingerprint,
+                    "allocationHash": allocation.allocation_hash,
+                    "promptVersion": plan.prompt_version,
+                    "plan": plan.model_dump(mode="json", by_alias=True),
+                },
+            },
+        )
+        return plan
+
+    async def merge_relationship_plans(
+        self,
+        context: RuntimeContext,
+        plans: list[FragmentRelationshipPlan],
+    ) -> list[FragmentRelationshipPlan]:
+        await self._stage(
+            context,
+            NodeId.RELATIONSHIP_MERGE_VALIDATION,
+            StageStatus.RUNNING,
+            "正在合并校验六类营销事实关系",
+        )
+        expected = self._expected_strategy_fragments(context)
+        by_type = {item.fragment_type: item for item in plans}
+        if len(by_type) != len(plans) or set(by_type) != expected:
+            raise PipelineError("六类营销事实关系缺失或重复")
+        self._cache(context).relationship_plans = by_type
+        await self._stage(
+            context,
+            NodeId.RELATIONSHIP_MERGE_VALIDATION,
+            StageStatus.SUCCEEDED,
+            "营销事实关系合并校验完成",
+            metadata={
+                "completedBranchCount": len(plans),
+                "relationshipBundleCount": sum(len(item.bundles) for item in plans),
+            },
+        )
+        return plans
+
+    async def prepare_coordinate_router(
+        self,
+        context: RuntimeContext,
+        relationships: list[FragmentRelationshipPlan],
+    ) -> list[FragmentDimensionCoordinatePlan]:
+        await self._stage(
+            context,
+            NodeId.DIMENSION_COORDINATE_ROUTER,
+            StageStatus.RUNNING,
+            "正在路由六类产品专属六维坐标规划",
+        )
+        reusable: list[FragmentDimensionCoordinatePlan] = []
+        cache = self._cache(context)
+        for relationship in relationships:
+            node = NodeId(COORDINATE_STAGE_BY_TYPE[relationship.fragment_type])
+            checkpoint = cache.strategy_checkpoints.get(node)
+            if not checkpoint or not isinstance(checkpoint.plan, FragmentDimensionCoordinatePlan):
+                continue
+            if (
+                checkpoint.source_fingerprint != context.source_fingerprint
+                or checkpoint.prompt_version != V10_COORDINATE_VERSION
+            ):
+                continue
+            try:
+                validate_coordinate_plan(checkpoint.plan, relationship, self._require_application(context))
+            except ValueError:
+                continue
+            plan = checkpoint.plan.model_copy(update={"reused_checkpoint": True})
+            reusable.append(plan)
+            cache.coordinate_plans[plan.fragment_type] = plan
+        await self._stage(
+            context,
+            NodeId.DIMENSION_COORDINATE_ROUTER,
+            StageStatus.SUCCEEDED,
+            "六维坐标规划分支已路由",
+            metadata={"branchCount": len(relationships), "reusedCheckpointCount": len(reusable)},
+        )
+        return reusable
+
+    async def plan_dimension_coordinates(
+        self,
+        context: RuntimeContext,
+        relationship: FragmentRelationshipPlan,
+    ) -> FragmentDimensionCoordinatePlan:
+        node = NodeId(COORDINATE_STAGE_BY_TYPE[relationship.fragment_type])
+        await self._stage(context, node, StageStatus.RUNNING, "正在规划本类产品专属六维坐标")
+        try:
+            self._reserve_ai_call(context)
+            call = await self.provider.plan_dimension_coordinates(
+                relationship,
+                application=self._require_application(context),
+                shared_prompt=self._required_shared_prompt(context),
+                target_count=self.snapshot(context).settings.fragment_configs[
+                    relationship.fragment_type
+                ].count,
+            )
+            validate_coordinate_plan(call.value, relationship, self._require_application(context))
+        except Exception as exc:
+            setattr(exc, "node_id", node)
+            await self._stage(context, node, StageStatus.FAILED, _safe_error(exc))
+            raise
+        plan = call.value
+        self._cache(context).coordinate_plans[plan.fragment_type] = plan
+        coordinate_count = sum(
+            len(values)
+            for values in (
+                plan.narratives,
+                plan.scenes,
+                plan.personas,
+                plan.selling_points,
+                plan.cameras,
+                plan.emotions,
+            )
+        )
+        await self._stage(
+            context,
+            node,
+            StageStatus.SUCCEEDED,
+            "本类产品专属六维坐标已完成",
+            metadata={
+                "coordinateCount": coordinate_count,
+                "bundleCount": len(relationship.bundles),
+                "checkpoint": {
+                    "nodeId": node.value,
+                    "sourceFingerprint": context.source_fingerprint,
+                    "allocationHash": plan.relationship_allocation_hash,
+                    "promptVersion": plan.prompt_version,
+                    "plan": plan.model_dump(mode="json", by_alias=True),
+                },
+            },
+        )
+        return plan
+
+    async def merge_coordinate_plans(
+        self,
+        context: RuntimeContext,
+        plans: list[FragmentDimensionCoordinatePlan],
+    ) -> list[FragmentDimensionCoordinatePlan]:
+        await self._stage(
+            context,
+            NodeId.COORDINATE_MERGE_VALIDATION,
+            StageStatus.RUNNING,
+            "正在合并校验六类六维坐标计划",
+        )
+        expected = self._expected_strategy_fragments(context)
+        by_type = {item.fragment_type: item for item in plans}
+        if len(by_type) != len(plans) or set(by_type) != expected:
+            raise PipelineError("六类六维坐标计划缺失或重复")
+        self._cache(context).coordinate_plans = by_type
+        await self._stage(
+            context,
+            NodeId.COORDINATE_MERGE_VALIDATION,
+            StageStatus.SUCCEEDED,
+            "六维坐标计划合并校验完成",
+            metadata={
+                "completedBranchCount": len(plans),
+                "coordinateCount": sum(
+                    len(item.narratives)
+                    + len(item.scenes)
+                    + len(item.personas)
+                    + len(item.selling_points)
+                    + len(item.cameras)
+                    + len(item.emotions)
+                    for item in plans
+                ),
+            },
+        )
+        return plans
+
+    async def allocate_and_plan_blueprints(
+        self,
+        context: RuntimeContext,
+        *,
+        relationships: list[FragmentRelationshipPlan],
+        round_number: int,
+        ordinal_start: int,
+        deficits: Mapping[str, int] | None = None,
+    ) -> list[BlueprintShardPlan]:
+        await self._stage(
+            context,
+            NodeId.BLUEPRINT_QUOTA_ALLOCATION,
+            StageStatus.RUNNING,
+            "正在分配营销组合蓝图配额",
+        )
+        settings = self.snapshot(context).settings
+        targets = {
+            fragment_type: settings.fragment_configs[fragment_type].count
+            for fragment_type in FragmentType
+        }
+        snapshot = self.snapshot(context)
+        if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item:
+            targets = {snapshot.target_item.fragment_type: 1}
+        quotas = allocate_blueprint_quotas(
+            relationships,
+            targets,
+            round_number=round_number,
+            deficits=deficits,
+            priority_fact_ids={
+                fact.fact_id
+                for fact in self._require_application(context).required
+                if fact.field
+                in {
+                    InsightField.CORE_SELLING_POINT,
+                    InsightField.CORE_SPECIFICATION,
+                    InsightField.PRODUCT_NAME,
+                    InsightField.CORE_PAIN_POINT,
+                }
+            },
+        )
+        if round_number == 0:
+            self._cache(context).blueprint_quotas = quotas
+        tasks = make_blueprint_tasks(
+            relationships,
+            quotas,
+            {
+                fragment_type: settings.fragment_configs[fragment_type].duration_seconds
+                for fragment_type in FragmentType
+            },
+            round_number=round_number,
+            ordinal_start=ordinal_start,
+        )
+        for task in tasks:
+            self._cache(context).blueprint_tasks[task.slot_id] = task
+        shards = make_blueprint_shards(tasks, round_number=round_number, shard_size=self.shard_size)
+        completed = self._cache(context).completed_blueprint_shard_keys
+        pending = [item for item in shards if item.key not in completed]
+        await self._stage(
+            context,
+            NodeId.BLUEPRINT_QUOTA_ALLOCATION,
+            StageStatus.SUCCEEDED,
+            "营销组合蓝图配额与分片已完成",
+            metadata={
+                "round": round_number,
+                "bundleQuotaCount": len(quotas),
+                "plannedBlueprintCount": len(tasks),
+                "blueprintShardCount": len(pending),
+            },
+        )
+        await self._stage(
+            context,
+            NodeId.BLUEPRINT_FRAGMENT_ROUTER,
+            StageStatus.SUCCEEDED,
+            "蓝图分片已按六类素材用途完成路由",
+            metadata={"totalShards": len(pending)},
+        )
+        return pending
+
+    async def generate_blueprint_shard(
+        self,
+        context: RuntimeContext,
+        shard: BlueprintShardPlan,
+    ) -> list[GeneratedBlueprint]:
+        running = ShardRecord(
+            phase=ShardPhase.BLUEPRINT,
+            round=shard.round,
+            shard_index=shard.shard_index,
+            status=StageStatus.RUNNING,
+            blueprint_plan=shard.tasks,
+        )
+        await self.api.put_shard(context, running)
+        node = BLUEPRINT_NODE_BY_FRAGMENT[shard.fragment_type]
+        try:
+            self._reserve_ai_call(context)
+            relationship = self._cache(context).relationship_plans[shard.fragment_type]
+            coordinate_plan = self._cache(context).coordinate_plans[shard.fragment_type]
+            call = await self.provider.generate_blueprints(
+                shard,
+                relationships=relationship,
+                coordinate_plan=coordinate_plan,
+                application=self._require_application(context),
+                shared_prompt=self._required_shared_prompt(context),
+                avoid_signatures=[
+                    blueprint_signature(item, coordinate_plan)
+                    for item in self._cache(context).blueprints.values()
+                    if item.fragment_type == shard.fragment_type
+                    and item.bundle_id in {task.bundle_id for task in shard.tasks}
+                ],
+            )
+            validate_generated_blueprints(call.value.items, shard.tasks, coordinate_plan)
+            await self.api.put_shard(
+                context,
+                running.model_copy(
+                    update={"status": StageStatus.SUCCEEDED, "blueprints": call.value.items}
+                ),
+            )
+            for item in call.value.items:
+                self._cache(context).blueprints[item.slot_id] = item
+            self._cache(context).completed_blueprint_shard_keys.add(shard.key)
+            return call.value.items
+        except Exception as exc:
+            setattr(exc, "node_id", node)
+            await self.api.put_shard(
+                context,
+                running.model_copy(
+                    update={
+                        "status": StageStatus.FAILED,
+                        "warnings": [_safe_error(exc)],
+                        "error_code": _error_code(exc),
+                        "error_message": _safe_error(exc),
+                    }
+                ),
+            )
+            raise
+
+    async def gate_blueprints_and_plan_prompts(
+        self,
+        context: RuntimeContext,
+        *,
+        round_number: int,
+        completed_prompt_keys: list[str],
+    ) -> tuple[list[ShardPlan], dict[str, int]]:
+        await self._stage(
+            context,
+            NodeId.BLUEPRINT_ORTHOGONAL_GATE,
+            StageStatus.RUNNING,
+            "正在执行全批次蓝图六维正交校验",
+        )
+        selected, deficits, rejected = select_orthogonal_blueprints(
+            list(self._cache(context).blueprints.values()),
+            self._cache(context).blueprint_quotas,
+            list(self._cache(context).coordinate_plans.values()),
+        )
+        self._cache(context).selected_blueprints = {item.slot_id: item for item in selected}
+        combinations = [
+            materialize_blueprint(
+                item,
+                self._cache(context).blueprint_tasks[item.slot_id],
+                self._cache(context).coordinate_plans[item.fragment_type],
+                self._require_application(context),
+            )
+            for item in selected
+            if item.slot_id not in self._cache(context).candidates
+        ]
+        snapshot = self.snapshot(context)
+        if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item:
+            combinations = [
+                _freeze_item_regeneration_combination(
+                    combination,
+                    snapshot=snapshot,
+                    strategy=None,
+                    application=self._require_application(context),
+                )
+                for combination in combinations
+            ]
+        shards = make_shards(combinations, round_number=round_number, shard_size=self.shard_size)
+        pending = [item for item in shards if item.key not in set(completed_prompt_keys)]
+        compared = len(selected) * (len(selected) - 1) // 2
+        await self._stage(
+            context,
+            NodeId.BLUEPRINT_ORTHOGONAL_GATE,
+            StageStatus.SUCCEEDED if not deficits else StageStatus.PARTIAL,
+            "全批次蓝图六维正交校验完成",
+            metadata={
+                "acceptedBlueprintCount": len(selected),
+                "rejectedBlueprintCount": rejected,
+                "comparedPairCount": compared,
+                "missingBlueprintCount": sum(deficits.values()),
+            },
+        )
+        return pending, deficits
+
+    def _expected_strategy_fragments(self, context: RuntimeContext) -> set[FragmentType]:
+        snapshot = self.snapshot(context)
+        if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item:
+            return {snapshot.target_item.fragment_type}
+        return set(FragmentType)
+
+    def _require_application(self, context: RuntimeContext) -> InsightApplicationMap:
+        application = self._cache(context).insight_application
+        if application is None:
+            raise PipelineError("提炼信息应用映射尚未完成")
+        return application
+
+    @staticmethod
+    def _plan_stage_metadata(
+        plan: FragmentMarketingPlan,
+        allocation: FragmentFactAllocation,
+        *,
+        reused: bool,
+    ) -> dict[str, Any]:
+        return {
+            "targetBundleCount": allocation.bundle_target,
+            "actualBundleCount": len(plan.bundles),
+            "mandatoryFactCount": len(allocation.mandatory_fact_ids),
+            "coveredMandatoryFactCount": len(
+                set(allocation.mandatory_fact_ids).intersection(
+                    fact_id for row in plan.bundles for fact_id in row.fact_ids
+                )
+            ),
+            "reusedCheckpoint": reused,
+        }
+
     async def plan_round(
         self,
         context: RuntimeContext,
@@ -351,7 +1069,9 @@ class PromptGenerationPipeline:
                 for fragment_type in FragmentType
             },
             fragment_deficits=deficits,
-            priority_fact_ids=priority_fact_ids or [],
+            priority_fact_ids=(
+                [] if snapshot.operation == "ITEM_REGENERATE" else priority_fact_ids or []
+            ),
         )
         if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item:
             combinations = [
@@ -432,6 +1152,7 @@ class PromptGenerationPipeline:
         self, context: RuntimeContext, shard: ShardPlan
     ) -> list[GeneratedCandidate]:
         running = ShardRecord(
+            phase=ShardPhase.PROMPT,
             round=shard.round,
             shard_index=shard.shard_index,
             status=StageStatus.RUNNING,
@@ -506,6 +1227,9 @@ class PromptGenerationPipeline:
                 )
             return candidates
         except Exception as exc:
+            # Parallel fragment branches update progress independently. Attach the
+            # actual failing branch so a slower sibling cannot be reported instead.
+            setattr(exc, "node_id", GENERATION_NODE_BY_FRAGMENT[shard.fragment_type])
             await self.api.put_shard(
                 context,
                 running.model_copy(
@@ -826,6 +1550,10 @@ class PromptGenerationPipeline:
         metrics: PromptMetrics,
     ) -> PromptMetrics:
         snapshot = self.snapshot(context)
+        if snapshot.graph_version == "V10_RELATION_COORDINATE_BLUEPRINT":
+            # V10 never fabricates deterministic Prompt fallbacks. Every missing
+            # item must return through the original relationship's blueprint branch.
+            return metrics.model_copy(update={"fallback_count": 0})
         if snapshot.operation != "BATCH_GENERATE":
             return metrics.model_copy(update={"fallback_count": 0})
         settings = snapshot.settings
@@ -965,6 +1693,41 @@ class PromptGenerationPipeline:
             + 1
         )
 
+    def next_blueprint_ordinal(self, context: RuntimeContext) -> int:
+        return (
+            max(
+                (item.ordinal for item in self._cache(context).blueprint_tasks.values()),
+                default=len(self.snapshot(context).retained_manual_items),
+            )
+            + 1
+        )
+
+    def blueprint_deficits_from_accepted(self, context: RuntimeContext) -> dict[str, int]:
+        cache = self._cache(context)
+        accepted_ids = {item.id for item in cache.accepted_items}
+        accepted_slots = {
+            slot_id
+            for slot_id in cache.selected_blueprints
+            if _stable_item_id(context.source_fingerprint, slot_id) in accepted_ids
+        }
+        actual: Counter[str] = Counter(
+            cache.selected_blueprints[slot_id].bundle_id for slot_id in accepted_slots
+        )
+        # Prompt-level rejection invalidates the originating blueprint. Keep only
+        # accepted blueprints before replenishment so the next orthogonal gate
+        # fills the exact relationship gaps instead of reselecting stale drafts.
+        cache.blueprints = {
+            slot_id: blueprint
+            for slot_id, blueprint in cache.blueprints.items()
+            if slot_id in accepted_slots
+        }
+        cache.selected_blueprints = dict(cache.blueprints)
+        return {
+            quota.bundle_id: quota.target_count - actual[quota.bundle_id]
+            for quota in cache.blueprint_quotas
+            if actual[quota.bundle_id] < quota.target_count
+        }
+
     def _reserve_ai_call(self, context: RuntimeContext) -> None:
         cache = self._cache(context)
         if cache.ai_call_count >= self.max_ai_calls_per_run:
@@ -979,6 +1742,7 @@ class PromptGenerationPipeline:
                 error_code=_error_code(exc),
                 error_message=_safe_error(exc),
                 retryable=retryable,
+                current_node=getattr(exc, "node_id", None),
             ),
         )
 
@@ -997,7 +1761,7 @@ class PromptGenerationPipeline:
         status: StageStatus,
         summary: str,
         *,
-        metadata: dict[str, int | float | str | bool | None] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         await self.api.put_stage(
             context,
@@ -1135,6 +1899,8 @@ def _safe_error(exc: Exception) -> str:
             "AI_NETWORK": "Prompt AI 连接失败",
             "AI_RATE_LIMIT": "Prompt AI 服务繁忙，请稍后重试",
             "AI_SERVICE": "Prompt AI 服务暂时不可用",
+            "AI_OUTPUT_TRUNCATED": "营销关系规划结果超过安全长度，任务已停止",
+            "AI_RESPONSE_INCOMPLETE": "营销关系规划响应未完成，任务已停止",
             "AI_RESPONSE_INVALID": "Prompt AI 返回格式异常",
             "AI_REQUEST_REJECTED": "Prompt AI 请求被拒绝",
             "AI_UNKNOWN": "Prompt AI 生成失败",
@@ -1215,7 +1981,7 @@ def _freeze_item_regeneration_combination(
     combination: PlannedCombination,
     *,
     snapshot: PromptGenerationSnapshot,
-    strategy: StrategyPlan,
+    strategy: StrategyPlan | None,
     application: InsightApplicationMap,
 ) -> PlannedCombination:
     target = snapshot.target_item
@@ -1256,7 +2022,7 @@ def _freeze_item_regeneration_combination(
             == normalized_selling_point
         ),
         None,
-    )
+    ) if strategy is not None else None
     return combination.model_copy(
         update={
             "fragment_type": target.fragment_type,

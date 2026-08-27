@@ -19,6 +19,7 @@ import {
   WorkerFailDto,
   WorkerProjectDto,
   WorkerShardDto,
+  WorkerShardQueryDto,
   WorkerStageDto,
 } from './dto/effect-prompt.dto';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
@@ -58,23 +59,51 @@ export class EffectPromptWorkerController {
   }
 
   @Put('runs/:runId/shards/:round/:shardIndex')
-  shard(
+  legacyPromptShard(
     @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string,
     @Param('round', ParseIntPipe) round: number,
     @Param('shardIndex', ParseIntPipe) shardIndex: number,
     @Headers('x-attempt-token') attemptToken: string,
     @Body() body: WorkerShardDto,
   ) {
-    return this.service.saveShard(body.projectId, runId, attemptToken, round, shardIndex, body);
+    return this.service.saveShard(
+      body.projectId,
+      runId,
+      attemptToken,
+      round,
+      shardIndex,
+      'PROMPT',
+      body,
+    );
+  }
+
+  @Put('runs/:runId/shards/:phase/:round/:shardIndex')
+  shard(
+    @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string,
+    @Param('phase') phase: 'BLUEPRINT' | 'PROMPT',
+    @Param('round', ParseIntPipe) round: number,
+    @Param('shardIndex', ParseIntPipe) shardIndex: number,
+    @Headers('x-attempt-token') attemptToken: string,
+    @Body() body: WorkerShardDto,
+  ) {
+    return this.service.saveShard(
+      body.projectId,
+      runId,
+      attemptToken,
+      round,
+      shardIndex,
+      phase,
+      body,
+    );
   }
 
   @Get('runs/:runId/shards')
   shards(
     @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string,
     @Headers('x-attempt-token') attemptToken: string,
-    @Query() query: WorkerProjectDto,
+    @Query() query: WorkerShardQueryDto,
   ) {
-    return this.service.shards(query.projectId, runId, attemptToken);
+    return this.service.shards(query.projectId, runId, attemptToken, query.phase);
   }
 
   @Post('runs/:runId/complete')

@@ -176,6 +176,98 @@ describe('EffectExtractionService', () => {
     expect(JSON.stringify(result)).not.toContain('private/markdown.md');
   });
 
+  it('maps a completed normalization branch to failed when final result persistence fails', async () => {
+    const repository = {
+      run: vi.fn().mockResolvedValue({
+        ...runRecord,
+        status: 'FAILED',
+        currentNode: 'NORMALIZATION',
+        errorMessage: 'internal API returned HTTP 400',
+        branches: [
+          {
+            branch: 'NORMALIZATION',
+            status: 'SUCCEEDED',
+            warnings: [],
+            errorMessage: null,
+          },
+        ],
+      }),
+    } as unknown as EffectExtractionRepository;
+    const service = new EffectExtractionService(
+      repository,
+      projectService(),
+      { get: vi.fn().mockResolvedValue(null) } as unknown as JobProgressStore,
+      storage,
+    );
+
+    const result = await service.run('project-a', 'run-a');
+
+    expect(result.run.nodes.find((node) => node.nodeId === 'NORMALIZATION')).toMatchObject({
+      status: 'FAILED',
+      errorMessage: '结果保存失败，请重新提炼',
+    });
+    expect(result.run.errorMessage).toBe('结果保存失败，请重新提炼');
+  });
+
+  it('uses the same safe persistence error in the product workspace projection', async () => {
+    const repository = {
+      workspace: vi.fn().mockResolvedValue({
+        id: 'draft-a',
+        projectId: 'project-a',
+        mode: 'SINGLE',
+        revision: 1,
+        globalConfig: {
+          aspectRatio: '9:16',
+          durationSeconds: 15,
+          resolution: '1080P',
+          frameRate: 30,
+          subtitleStrategy: '跟随口播',
+          voiceoverStrategy: 'AI 女声',
+          bgmStrategy: '自动匹配',
+          styleTone: '清爽明亮',
+          deliveryChannel: '抖音',
+          disabledElements: [],
+        },
+        products: [
+          {
+            id: 'product-a',
+            name: '测试产品',
+            category: '测试品类',
+            sku: '',
+            commerceUrl: null,
+            configOverride: {},
+            materials: [],
+            updatedAt: new Date('2026-08-21T00:00:00.000Z'),
+            extractionRuns: [
+              {
+                ...runRecord,
+                status: 'FAILED',
+                progress: 85,
+                currentNode: 'NORMALIZATION',
+                errorMessage: 'internal API returned HTTP 400',
+              },
+            ],
+          },
+        ],
+      }),
+      currentDependencySnapshot: vi.fn().mockResolvedValue(null),
+      insightArtifact: vi.fn().mockResolvedValue(null),
+    } as unknown as EffectExtractionRepository;
+    const service = new EffectExtractionService(
+      repository,
+      projectService(),
+      {} as JobProgressStore,
+      storage,
+    );
+
+    const result = await service.workspace('project-a', 'draft-a');
+
+    expect(result.products[0]).toMatchObject({
+      status: 'FAILED',
+      errorMessage: '结果保存失败，请重新提炼',
+    });
+  });
+
   it('keeps the snapshot running after claim until a persisted branch starts', async () => {
     const repository = {
       run: vi.fn().mockResolvedValue({
@@ -723,5 +815,45 @@ describe('EffectExtractionService', () => {
     expect(repository.authorizedRun).toHaveBeenCalledWith('project-b', 'run-a', 'attempt-a');
     expect(repository.artifactByKey).not.toHaveBeenCalled();
     expect(storagePort.put).not.toHaveBeenCalled();
+  });
+
+  it('completes a legacy schema-v2 worker result without resolution', async () => {
+    const { resolution: _resolution, ...legacyResult } = extractionResult;
+    const storedResult = {
+      id: 'result-a',
+      projectId: 'project-a',
+      draftId: 'draft-a',
+      productId: 'product-a',
+      revision: 1,
+      draftResult: extractionResult,
+    };
+    const repository = {
+      complete: vi.fn().mockResolvedValue({ kind: 'COMPLETED', result: storedResult }),
+      workflowRunForDraft: vi.fn().mockResolvedValue(null),
+    } as unknown as EffectExtractionRepository;
+    const progressStore = {
+      delete: vi.fn().mockResolvedValue(undefined),
+    } as unknown as JobProgressStore;
+    const service = new EffectExtractionService(
+      repository,
+      projectService(),
+      progressStore,
+      storage,
+    );
+
+    await expect(
+      service.complete('project-a', 'run-a', 'attempt-a', {
+        result: legacyResult as typeof extractionResult,
+        provenance: {},
+        conflictReport: [],
+        warnings: [],
+      }),
+    ).resolves.toEqual({ extractResultId: 'result-a' });
+    expect(repository.complete).toHaveBeenCalledWith(
+      'project-a',
+      'run-a',
+      'attempt-a',
+      expect.objectContaining({ result: legacyResult }),
+    );
   });
 });

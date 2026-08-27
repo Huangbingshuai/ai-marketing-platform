@@ -112,15 +112,22 @@ class HttpInternalApi:
     async def put_shard(self, context: RuntimeContext, shard: ShardRecord) -> None:
         await self._json(
             "PUT",
-            f"{self._ROOT}/runs/{context.run_id}/shards/{shard.round}/{shard.shard_index}",
+            f"{self._ROOT}/runs/{context.run_id}/shards/{shard.phase.value}/{shard.round}/{shard.shard_index}",
             headers=self._lease(context),
             json={
                 "projectId": context.project_id,
+                "phase": shard.phase.value,
                 "status": shard.status.value,
                 "combinationPlan": [
                     item.model_dump(mode="json", by_alias=True) for item in shard.combination_plan
                 ],
                 "items": [item.model_dump(mode="json", by_alias=True) for item in shard.items],
+                "blueprintPlan": [
+                    item.model_dump(mode="json", by_alias=True) for item in shard.blueprint_plan
+                ],
+                "blueprints": [
+                    item.model_dump(mode="json", by_alias=True) for item in shard.blueprints
+                ],
                 "warnings": [_safe_text(item, 500) for item in shard.warnings],
                 "errorCode": shard.error_code,
                 "errorMessage": shard.error_message,
@@ -170,6 +177,9 @@ class HttpInternalApi:
                 "errorMessage": _safe_text(payload.error_message, 500),
                 "retryable": payload.retryable,
                 "warnings": [_safe_text(item, 500) for item in payload.warnings],
+                "currentNode": (
+                    payload.current_node.value if payload.current_node else None
+                ),
             },
         )
 

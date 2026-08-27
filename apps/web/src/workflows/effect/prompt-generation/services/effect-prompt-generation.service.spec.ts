@@ -9,6 +9,7 @@ import {
   beginEffectPromptRun,
   downloadEffectPromptBatch,
   loadEffectPromptNodeDetail,
+  loadEffectPromptRun,
   loadEffectPromptWorkspace,
   pollEffectPromptRun,
   savePromptSettings,
@@ -28,9 +29,13 @@ const run = (status: EffectPromptRun['status'], progress: number): EffectPromptR
   operation: 'BATCH_GENERATE',
   targetItemId: null,
   status,
+  graphVersion: 'V9_SIX_BRANCH_STRATEGY',
   progress,
+  attemptCount: 1,
+  maxAttempts: 3,
   currentNode: status === 'COMPLETED' ? 'COMPLETED' : 'GENERATE_HOOK',
   warnings: [],
+  errorCode: null,
   errorMessage: null,
   promptResultId: status === 'COMPLETED' ? 'result-1' : null,
   nodes: [],
@@ -106,6 +111,22 @@ describe('effect prompt generation HTTP service', () => {
     });
     expect(finalRun.status).toBe('COMPLETED');
     expect(updates).toEqual([45, 100]);
+  });
+
+  it('keeps the safe truncation code and terminal message returned by the API', async () => {
+    const failedRun: EffectPromptRun = {
+      ...run('FAILED', 15),
+      currentNode: 'STRATEGY_PLANNING',
+      errorCode: 'AI_OUTPUT_TRUNCATED',
+      errorMessage: '营销关系规划结果超过安全长度，任务已停止',
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ run: failedRun })));
+
+    await expect(loadEffectPromptRun('project-1', 'prompt-run-1')).resolves.toMatchObject({
+      status: 'FAILED',
+      errorCode: 'AI_OUTPUT_TRUNCATED',
+      errorMessage: '营销关系规划结果超过安全长度，任务已停止',
+    });
   });
 
   it('loads expanded safe node fields and descriptions without rebuilding details locally', async () => {

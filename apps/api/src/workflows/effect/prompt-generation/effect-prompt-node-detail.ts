@@ -1,8 +1,11 @@
+import { createHash } from 'node:crypto';
+
 import type {
   EffectPromptBatchSettings,
   EffectPromptDimensions,
   EffectPromptFragmentType,
   EffectPromptNodeDetailBlock,
+  EffectPromptNodeDetailBlueprint,
   EffectPromptNodeDetailField,
   EffectPromptNodeDetailPrompt,
   EffectPromptNodeId,
@@ -63,6 +66,24 @@ type DisplayResult = {
   };
 };
 
+type Relationship = {
+  bundleId: string;
+  fragmentType: EffectPromptFragmentType;
+  primaryFactId: string;
+  factIds: string[];
+  creativeIntent: string;
+  blueprintQuota: number;
+};
+
+type Coordinate = {
+  coordinateId: string;
+  fragmentType: EffectPromptFragmentType;
+  dimension: keyof EffectPromptDimensions;
+  value: string;
+  compatibleBundleIds: string[];
+  sourceFactIds: string[];
+};
+
 const GENERATION_FRAGMENT_BY_NODE: Partial<Record<EffectPromptNodeId, EffectPromptFragmentType>> = {
   GENERATE_HOOK: 'HOOK',
   GENERATE_PAIN: 'PAIN',
@@ -70,6 +91,34 @@ const GENERATION_FRAGMENT_BY_NODE: Partial<Record<EffectPromptNodeId, EffectProm
   GENERATE_SELLING_POINT_EXPLANATION: 'SELLING_POINT_EXPLANATION',
   GENERATE_CTA: 'CTA',
   GENERATE_OUTRO: 'OUTRO',
+};
+
+const RELATIONSHIP_FRAGMENT_BY_NODE: Partial<Record<EffectPromptNodeId, EffectPromptFragmentType>> =
+  {
+    PLAN_HOOK_RELATIONSHIPS: 'HOOK',
+    PLAN_PAIN_RELATIONSHIPS: 'PAIN',
+    PLAN_PRODUCT_DISPLAY_RELATIONSHIPS: 'PRODUCT_DISPLAY',
+    PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS: 'SELLING_POINT_EXPLANATION',
+    PLAN_CTA_RELATIONSHIPS: 'CTA',
+    PLAN_OUTRO_RELATIONSHIPS: 'OUTRO',
+  };
+
+const COORDINATE_FRAGMENT_BY_NODE: Partial<Record<EffectPromptNodeId, EffectPromptFragmentType>> = {
+  PLAN_HOOK_COORDINATES: 'HOOK',
+  PLAN_PAIN_COORDINATES: 'PAIN',
+  PLAN_PRODUCT_DISPLAY_COORDINATES: 'PRODUCT_DISPLAY',
+  PLAN_SELLING_POINT_EXPLANATION_COORDINATES: 'SELLING_POINT_EXPLANATION',
+  PLAN_CTA_COORDINATES: 'CTA',
+  PLAN_OUTRO_COORDINATES: 'OUTRO',
+};
+
+const BLUEPRINT_FRAGMENT_BY_NODE: Partial<Record<EffectPromptNodeId, EffectPromptFragmentType>> = {
+  GENERATE_HOOK_BLUEPRINTS: 'HOOK',
+  GENERATE_PAIN_BLUEPRINTS: 'PAIN',
+  GENERATE_PRODUCT_DISPLAY_BLUEPRINTS: 'PRODUCT_DISPLAY',
+  GENERATE_SELLING_POINT_EXPLANATION_BLUEPRINTS: 'SELLING_POINT_EXPLANATION',
+  GENERATE_CTA_BLUEPRINTS: 'CTA',
+  GENERATE_OUTRO_BLUEPRINTS: 'OUTRO',
 };
 
 const ISSUE_LABELS: Record<string, string> = {
@@ -219,6 +268,7 @@ const promptCode = (ordinal: number): string => `P${String(ordinal).padStart(3, 
 const candidates = (run: EffectPromptNodeDetailRunRecord): Candidate[] => {
   const rows: Candidate[] = [];
   for (const shard of run.shards) {
+    if (shard.phase === 'BLUEPRINT') continue;
     for (const raw of Array.isArray(shard.items) ? shard.items : []) {
       if (!isRecord(raw)) continue;
       const type = fragmentType(raw.fragmentType);
@@ -254,6 +304,7 @@ const candidates = (run: EffectPromptNodeDetailRunRecord): Candidate[] => {
 const combinations = (run: EffectPromptNodeDetailRunRecord): Combination[] => {
   const rows: Combination[] = [];
   for (const shard of run.shards) {
+    if (shard.phase === 'BLUEPRINT') continue;
     for (const raw of Array.isArray(shard.combinationPlan) ? shard.combinationPlan : []) {
       if (!isRecord(raw)) continue;
       const type = fragmentType(raw.fragmentType);
@@ -425,15 +476,18 @@ const routeBlock = (
   run: EffectPromptNodeDetailRunRecord,
   title: string,
   finalCounts?: Partial<Record<EffectPromptFragmentType, number>>,
+  phase: 'BLUEPRINT' | 'PROMPT' = 'PROMPT',
 ): EffectPromptNodeDetailBlock | null => {
   const settings = inputSettings(run);
   if (!settings) return null;
   const allCandidates = candidates(run);
   const rows = EFFECT_PROMPT_FRAGMENT_TYPES.map((type) => {
-    const typeShards = run.shards.filter((shard) =>
-      (Array.isArray(shard.combinationPlan) ? shard.combinationPlan : []).some(
-        (raw) => isRecord(raw) && raw.fragmentType === type,
-      ),
+    const typeShards = run.shards.filter(
+      (shard) =>
+        shard.phase === phase &&
+        (Array.isArray(shard.combinationPlan) ? shard.combinationPlan : []).some(
+          (raw) => isRecord(raw) && raw.fragmentType === type,
+        ),
     );
     const completedShards = typeShards.filter(({ status }) => status === 'SUCCEEDED').length;
     const failedShards = typeShards.filter(({ status }) => status === 'FAILED').length;
@@ -451,7 +505,10 @@ const routeBlock = (
       fragmentType: type,
       targetCount: settings.fragmentConfigs[type].count,
       candidateCount:
-        finalCounts?.[type] ?? allCandidates.filter((item) => item.fragmentType === type).length,
+        finalCounts?.[type] ??
+        (phase === 'BLUEPRINT'
+          ? blueprints(run).filter((item) => item.fragmentType === type).length
+          : allCandidates.filter((item) => item.fragmentType === type).length),
       totalShards: typeShards.length,
       completedShards,
       failedShards,
@@ -482,6 +539,272 @@ const issueBlock = (
 
 const normalizedValue = (value: string): string =>
   value.normalize('NFC').trim().toLocaleLowerCase('zh-CN').replace(/\s+/gu, ' ');
+
+const checkpointPlan = (value: unknown): JsonRecord => {
+  const checkpoint = metadataRecord(metadataRecord(value).checkpoint);
+  return metadataRecord(checkpoint.plan);
+};
+
+const collectStringLeaves = (value: unknown, output: string[] = []): string[] => {
+  if (typeof value === 'string') {
+    const cleaned = publicText(value, 500);
+    if (cleaned) output.push(cleaned);
+    return output;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectStringLeaves(item, output));
+    return output;
+  }
+  if (isRecord(value)) Object.values(value).forEach((item) => collectStringLeaves(item, output));
+  return output;
+};
+
+const factValueLookup = (run: EffectPromptNodeDetailRunRecord): Map<string, string> => {
+  const result = new Map<string, string>();
+  for (const value of collectStringLeaves(insightResult(run))) {
+    const digest = createHash('sha256').update(normalizedValue(value)).digest('hex').slice(0, 20);
+    if (!result.has(digest)) result.set(digest, value);
+  }
+  return result;
+};
+
+const displayFact = (lookup: Map<string, string>, factId: string): string => {
+  const digest = factId.includes(':') ? factId.slice(factId.lastIndexOf(':') + 1) : '';
+  return lookup.get(digest) ?? '已确认事实（当前阶段未提供展示文本）';
+};
+
+const relationships = (run: EffectPromptNodeDetailRunRecord): Relationship[] => {
+  const quotaByBundle = new Map<string, number>();
+  for (const shard of run.shards) {
+    if (shard.phase !== 'BLUEPRINT') continue;
+    for (const raw of Array.isArray(shard.combinationPlan) ? shard.combinationPlan : []) {
+      if (!isRecord(raw)) continue;
+      const bundleId = publicText(raw.bundleId, 120);
+      if (bundleId) quotaByBundle.set(bundleId, (quotaByBundle.get(bundleId) ?? 0) + 1);
+    }
+  }
+  const rows: Relationship[] = [];
+  for (const stage of run.stages) {
+    if (!stage.nodeId.endsWith('_RELATIONSHIPS')) continue;
+    const plan = checkpointPlan(stage.metadata);
+    for (const raw of Array.isArray(plan.bundles) ? plan.bundles : []) {
+      if (!isRecord(raw)) continue;
+      const type = fragmentType(raw.fragmentType);
+      const bundleId = publicText(raw.bundleId, 120);
+      const primaryFactId = publicText(raw.primaryFactId, 120);
+      const factIds = safeStrings(raw.factIds, 8);
+      const creativeIntent = publicText(raw.creativeIntent, 500);
+      if (!type || !bundleId || !primaryFactId || !factIds.length || !creativeIntent) continue;
+      rows.push({
+        bundleId,
+        fragmentType: type,
+        primaryFactId,
+        factIds,
+        creativeIntent,
+        blueprintQuota: quotaByBundle.get(bundleId) ?? 0,
+      });
+    }
+  }
+  return rows.filter(
+    (item, index, items) => items.findIndex(({ bundleId }) => bundleId === item.bundleId) === index,
+  );
+};
+
+const coordinates = (run: EffectPromptNodeDetailRunRecord): Coordinate[] => {
+  const groups: Array<[keyof EffectPromptDimensions, string]> = [
+    ['narrative', 'narratives'],
+    ['scene', 'scenes'],
+    ['persona', 'personas'],
+    ['sellingPoint', 'sellingPoints'],
+    ['camera', 'cameras'],
+    ['emotion', 'emotions'],
+  ];
+  const rows: Coordinate[] = [];
+  for (const stage of run.stages) {
+    if (!stage.nodeId.endsWith('_COORDINATES')) continue;
+    const plan = checkpointPlan(stage.metadata);
+    const type = fragmentType(plan.fragmentType);
+    if (!type) continue;
+    for (const [dimension, key] of groups) {
+      for (const raw of Array.isArray(plan[key]) ? plan[key] : []) {
+        if (!isRecord(raw)) continue;
+        const coordinateId = publicText(raw.coordinateId, 120);
+        const value = publicText(raw.value, 240);
+        const compatibleBundleIds = safeStrings(raw.compatibleBundleIds, 16);
+        if (!coordinateId || !value || !compatibleBundleIds.length) continue;
+        rows.push({
+          coordinateId,
+          fragmentType: type,
+          dimension,
+          value,
+          compatibleBundleIds,
+          sourceFactIds: safeStrings(raw.sourceFactIds, 8),
+        });
+      }
+    }
+  }
+  return rows.filter(
+    (item, index, items) =>
+      items.findIndex(
+        ({ coordinateId, fragmentType: type }) =>
+          coordinateId === item.coordinateId && type === item.fragmentType,
+      ) === index,
+  );
+};
+
+const blueprints = (run: EffectPromptNodeDetailRunRecord): EffectPromptNodeDetailBlueprint[] => {
+  const coordinateById = new Map(
+    coordinates(run).map((item) => [`${item.fragmentType}:${item.coordinateId}`, item]),
+  );
+  const relationshipById = new Map(
+    relationships(run).map((item) => [item.bundleId, item.creativeIntent]),
+  );
+  const rows: EffectPromptNodeDetailBlueprint[] = [];
+  for (const shard of run.shards) {
+    if (shard.phase !== 'BLUEPRINT') continue;
+    const taskBySlot = new Map<string, JsonRecord>();
+    for (const raw of Array.isArray(shard.combinationPlan) ? shard.combinationPlan : []) {
+      if (!isRecord(raw)) continue;
+      const slotId = publicText(raw.slotId, 160);
+      if (slotId) taskBySlot.set(slotId, raw);
+    }
+    for (const raw of Array.isArray(shard.items) ? shard.items : []) {
+      if (!isRecord(raw)) continue;
+      const slotId = publicText(raw.slotId, 160);
+      const type = fragmentType(raw.fragmentType);
+      const task = taskBySlot.get(slotId);
+      const duration = safeNumber(task?.targetDurationSeconds);
+      const ordinal = safeNumber(task?.ordinal);
+      const bundleId = publicText(raw.bundleId, 120);
+      const coordinateIds: Record<keyof EffectPromptDimensions, string> = {
+        narrative: publicText(raw.narrativeCoordinateId, 120),
+        scene: publicText(raw.sceneCoordinateId, 120),
+        persona: publicText(raw.personaCoordinateId, 120),
+        sellingPoint: publicText(raw.sellingPointCoordinateId, 120),
+        camera: publicText(raw.cameraCoordinateId, 120),
+        emotion: publicText(raw.emotionCoordinateId, 120),
+      };
+      const itemDimensions = Object.fromEntries(
+        EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [
+          key,
+          type ? coordinateById.get(`${type}:${coordinateIds[key]}`)?.value : undefined,
+        ]),
+      ) as EffectPromptDimensions;
+      if (
+        !slotId ||
+        !type ||
+        duration === null ||
+        ordinal === null ||
+        EFFECT_PROMPT_DIMENSIONS.some(({ key }) => !itemDimensions[key])
+      )
+        continue;
+      rows.push({
+        title: `蓝图 ${String(ordinal).padStart(3, '0')}`,
+        fragmentType: type,
+        relationshipTitle: relationshipById.get(bundleId) ?? '所属营销组合',
+        targetDurationSeconds: duration,
+        dimensions: itemDimensions,
+        openingState: publicText(raw.openingState, 500),
+        actionArc: publicText(raw.actionArc, 800),
+        endingState: publicText(raw.endingState, 500),
+      });
+    }
+  }
+  return rows.filter(
+    (item, index, items) =>
+      items.findIndex(
+        (candidate) =>
+          candidate.title === item.title && candidate.fragmentType === item.fragmentType,
+      ) === index,
+  );
+};
+
+const blueprintDistance = (
+  left: EffectPromptNodeDetailBlueprint,
+  right: EffectPromptNodeDetailBlueprint,
+): number =>
+  EFFECT_PROMPT_DIMENSIONS.reduce(
+    (total, { key }) =>
+      total +
+      (normalizedValue(left.dimensions[key]) === normalizedValue(right.dimensions[key]) ? 0 : 1),
+    0,
+  );
+
+const relationshipBlock = (
+  run: EffectPromptNodeDetailRunRecord,
+  title: string,
+  items: Relationship[],
+): EffectPromptNodeDetailBlock | null => {
+  const facts = factValueLookup(run);
+  const visible = items.slice(0, EFFECT_PROMPT_NODE_DETAIL_LIMITS.maxSamples).map((item) => ({
+    title: item.creativeIntent,
+    fragmentType: item.fragmentType,
+    primaryFact: displayFact(facts, item.primaryFactId),
+    auxiliaryFacts: item.factIds
+      .filter((factId) => factId !== item.primaryFactId)
+      .map((factId) => displayFact(facts, factId)),
+    creativeIntent: item.creativeIntent,
+    blueprintQuota: item.blueprintQuota,
+  }));
+  return visible.length ? { kind: 'RELATIONSHIP_LIST', title, items: visible } : null;
+};
+
+const coordinateBlock = (
+  run: EffectPromptNodeDetailRunRecord,
+  title: string,
+  items: Coordinate[],
+): EffectPromptNodeDetailBlock | null => {
+  const facts = factValueLookup(run);
+  const groups = EFFECT_PROMPT_DIMENSIONS.flatMap(({ key, label }) => {
+    const coordinatesForDimension = items
+      .filter(({ dimension }) => dimension === key)
+      .slice(0, EFFECT_PROMPT_NODE_DETAIL_LIMITS.maxTagValues)
+      .map((item) => ({
+        value: item.value,
+        compatibleBundleCount: item.compatibleBundleIds.length,
+        sourceFacts: item.sourceFactIds.map((factId) => displayFact(facts, factId)),
+      }));
+    return coordinatesForDimension.length
+      ? [{ dimension: key, label, items: coordinatesForDimension }]
+      : [];
+  });
+  return groups.length ? { kind: 'COORDINATE_LIST', title, groups } : null;
+};
+
+const blueprintBlock = (
+  title: string,
+  items: EffectPromptNodeDetailBlueprint[],
+): EffectPromptNodeDetailBlock | null => {
+  const visible = items.slice(0, EFFECT_PROMPT_NODE_DETAIL_LIMITS.maxSamples);
+  return visible.length ? { kind: 'BLUEPRINT_LIST', title, items: visible } : null;
+};
+
+const orthogonalBlock = (
+  title: string,
+  items: EffectPromptNodeDetailBlueprint[],
+): EffectPromptNodeDetailBlock | null => {
+  const pairs: Extract<EffectPromptNodeDetailBlock, { kind: 'ORTHOGONAL_PAIR_LIST' }>['items'] = [];
+  for (let leftIndex = 0; leftIndex < items.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < items.length; rightIndex += 1) {
+      const left = items[leftIndex]!;
+      const right = items[rightIndex]!;
+      const distance = blueprintDistance(left, right);
+      if (distance >= 3) continue;
+      pairs.push({
+        distance,
+        sameDimensions: EFFECT_PROMPT_DIMENSIONS.flatMap(({ key }) =>
+          normalizedValue(left.dimensions[key]) === normalizedValue(right.dimensions[key])
+            ? [key]
+            : [],
+        ),
+        left,
+        right,
+      });
+    }
+  }
+  const visible = pairs.slice(0, EFFECT_PROMPT_NODE_DETAIL_LIMITS.maxSamples);
+  return visible.length ? { kind: 'ORTHOGONAL_PAIR_LIST', title, items: visible } : null;
+};
 
 const semanticSignature = (item: EffectPromptNodeDetailPrompt): string =>
   [
@@ -587,14 +910,117 @@ const nodeMetricFields = (
       ]);
     case 'STRATEGY_PLANNING':
       return compact([
-        numberField(metadata, 'narrativeCount', '叙事方案'),
-        numberField(metadata, 'sceneCount', '场景方案'),
-        numberField(metadata, 'personaCount', '人物方案'),
-        numberField(metadata, 'sellingPointCount', '卖点方案'),
-        numberField(metadata, 'cameraCount', '镜头方案'),
-        numberField(metadata, 'emotionCount', '情绪方案'),
-        numberField(metadata, 'actionCount', '动作方案'),
-        numberField(metadata, 'evidencePlanCount', '证据方案'),
+        numberField(metadata, 'relationshipBundleCount', '营销关系束'),
+        numberField(metadata, 'modelRelationshipBundleCount', '模型有效规划'),
+        numberField(metadata, 'workerCompletedRelationshipBundleCount', '系统安全补齐'),
+        numberField(metadata, 'plannedFactCount', '已规划事实'),
+      ]);
+    case 'GLOBAL_FACT_ALLOCATION':
+      return compact([
+        numberField(metadata, 'fragmentTypeCount', '已分配片段类型'),
+        numberField(metadata, 'mandatoryFactCount', '必须承载事实'),
+        numberField(metadata, 'bundleTargetCount', '目标创意母版'),
+      ]);
+    case 'STRATEGY_FRAGMENT_ROUTER':
+      return compact([
+        numberField(metadata, 'branchCount', '规划分支'),
+        numberField(metadata, 'reusedCheckpointCount', '复用成功分支'),
+      ]);
+    case 'PLAN_HOOK_STRATEGY':
+    case 'PLAN_PAIN_STRATEGY':
+    case 'PLAN_PRODUCT_DISPLAY_STRATEGY':
+    case 'PLAN_SELLING_POINT_EXPLANATION_STRATEGY':
+    case 'PLAN_CTA_STRATEGY':
+    case 'PLAN_OUTRO_STRATEGY':
+      return compact([
+        numberField(metadata, 'targetBundleCount', '目标母版'),
+        numberField(metadata, 'actualBundleCount', '实际母版'),
+        numberField(metadata, 'mandatoryFactCount', '必须事实'),
+        numberField(metadata, 'coveredMandatoryFactCount', '已覆盖必须事实'),
+        textField('检查点', metadata.reusedCheckpoint === true ? '已复用' : '本次生成'),
+      ]);
+    case 'STRATEGY_MERGE_VALIDATION':
+      return compact([
+        numberField(metadata, 'completedBranchCount', '完成规划分支'),
+        numberField(metadata, 'relationshipBundleCount', '已合并创意母版'),
+        numberField(metadata, 'plannedFactCount', '已规划事实'),
+      ]);
+    case 'RELATIONSHIP_FRAGMENT_ROUTER':
+      return compact([
+        numberField(metadata, 'branchCount', '营销组合分支'),
+        numberField(metadata, 'reusedCheckpointCount', '复用成功分支'),
+      ]);
+    case 'PLAN_HOOK_RELATIONSHIPS':
+    case 'PLAN_PAIN_RELATIONSHIPS':
+    case 'PLAN_PRODUCT_DISPLAY_RELATIONSHIPS':
+    case 'PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS':
+    case 'PLAN_CTA_RELATIONSHIPS':
+    case 'PLAN_OUTRO_RELATIONSHIPS':
+      return compact([
+        numberField(metadata, 'targetBundleCount', '目标营销组合'),
+        numberField(metadata, 'actualBundleCount', '实际营销组合'),
+        numberField(metadata, 'plannedFactCount', '已规划事实'),
+        textField('检查点', metadata.reusedCheckpoint === true ? '已复用' : '本次生成'),
+      ]);
+    case 'RELATIONSHIP_MERGE_VALIDATION':
+      return compact([
+        numberField(metadata, 'completedBranchCount', '完成组合分支'),
+        numberField(metadata, 'relationshipBundleCount', '已合并营销组合'),
+        numberField(metadata, 'plannedFactCount', '已规划事实'),
+      ]);
+    case 'DIMENSION_COORDINATE_ROUTER':
+      return compact([
+        numberField(metadata, 'branchCount', '坐标规划分支'),
+        numberField(metadata, 'reusedCheckpointCount', '复用成功分支'),
+      ]);
+    case 'PLAN_HOOK_COORDINATES':
+    case 'PLAN_PAIN_COORDINATES':
+    case 'PLAN_PRODUCT_DISPLAY_COORDINATES':
+    case 'PLAN_SELLING_POINT_EXPLANATION_COORDINATES':
+    case 'PLAN_CTA_COORDINATES':
+    case 'PLAN_OUTRO_COORDINATES':
+      return compact([
+        numberField(metadata, 'coordinateCount', '六维坐标候选'),
+        numberField(metadata, 'compatibleBundleCount', '适用营销组合'),
+        textField('检查点', metadata.reusedCheckpoint === true ? '已复用' : '本次生成'),
+      ]);
+    case 'COORDINATE_MERGE_VALIDATION':
+      return compact([
+        numberField(metadata, 'completedBranchCount', '完成坐标分支'),
+        numberField(metadata, 'coordinateCount', '已合并坐标候选'),
+        numberField(metadata, 'invalidCoordinateCount', '无效坐标'),
+      ]);
+    case 'BLUEPRINT_QUOTA_ALLOCATION':
+      return compact([
+        numberField(metadata, 'relationshipBundleCount', '参与营销组合'),
+        numberField(metadata, 'targetBlueprintCount', '目标蓝图'),
+        numberField(metadata, 'candidateBlueprintCount', '候选蓝图'),
+      ]);
+    case 'BLUEPRINT_FRAGMENT_ROUTER':
+      return compact([
+        numberField(metadata, 'fragmentTypeCount', '路由类型'),
+        numberField(metadata, 'totalShards', '蓝图分片总数'),
+        numberField(metadata, 'routedShards', '已路由分片'),
+      ]);
+    case 'GENERATE_HOOK_BLUEPRINTS':
+    case 'GENERATE_PAIN_BLUEPRINTS':
+    case 'GENERATE_PRODUCT_DISPLAY_BLUEPRINTS':
+    case 'GENERATE_SELLING_POINT_EXPLANATION_BLUEPRINTS':
+    case 'GENERATE_CTA_BLUEPRINTS':
+    case 'GENERATE_OUTRO_BLUEPRINTS':
+      return compact([
+        numberField(metadata, 'targetCount', '目标蓝图'),
+        numberField(metadata, 'candidateCount', '实际蓝图'),
+        numberField(metadata, 'totalShards', '分片总数'),
+        numberField(metadata, 'completedShards', '完成分片'),
+        numberField(metadata, 'failedShards', '失败分片'),
+      ]);
+    case 'BLUEPRINT_ORTHOGONAL_GATE':
+      return compact([
+        numberField(metadata, 'comparedPairCount', '全批次比较对数'),
+        numberField(metadata, 'acceptedCount', '正交通过蓝图'),
+        numberField(metadata, 'rejectedCount', '差异不足蓝图'),
+        numberField(metadata, 'missingCount', '待补齐蓝图'),
       ]);
     case 'DIMENSION_COMBINATION':
       return compact([
@@ -695,6 +1121,48 @@ const actualFields = (
   }
   const stageFields = nodeMetricFields(nodeId, metadata);
   const allCandidates = candidates(run);
+  const allRelationships = relationships(run);
+  const relationshipType = RELATIONSHIP_FRAGMENT_BY_NODE[nodeId];
+  if (relationshipType) {
+    const planned = allRelationships.filter((item) => item.fragmentType === relationshipType);
+    return [
+      ...stageFields,
+      { label: '实际营销组合', value: planned.length },
+      { label: '分配蓝图', value: planned.reduce((total, item) => total + item.blueprintQuota, 0) },
+    ];
+  }
+  const allCoordinates = coordinates(run);
+  const coordinateType = COORDINATE_FRAGMENT_BY_NODE[nodeId];
+  if (coordinateType) {
+    const planned = allCoordinates.filter((item) => item.fragmentType === coordinateType);
+    return [
+      ...stageFields,
+      { label: '实际坐标候选', value: planned.length },
+      {
+        label: '覆盖维度',
+        value: new Set(planned.map((item) => item.dimension)).size,
+      },
+    ];
+  }
+  const allBlueprints = blueprints(run);
+  const blueprintType = BLUEPRINT_FRAGMENT_BY_NODE[nodeId];
+  if (blueprintType) {
+    const generated = allBlueprints.filter((item) => item.fragmentType === blueprintType);
+    return [...stageFields, { label: '实际生成蓝图', value: generated.length }];
+  }
+  if (nodeId === 'BLUEPRINT_ORTHOGONAL_GATE') {
+    const pairCount = (allBlueprints.length * Math.max(0, allBlueprints.length - 1)) / 2;
+    let conflictCount = 0;
+    for (let left = 0; left < allBlueprints.length; left += 1)
+      for (let right = left + 1; right < allBlueprints.length; right += 1)
+        if (blueprintDistance(allBlueprints[left]!, allBlueprints[right]!) < 3) conflictCount += 1;
+    return [
+      ...stageFields,
+      { label: '实际蓝图', value: allBlueprints.length },
+      { label: '全批次比较对数', value: pairCount },
+      { label: '差异不足对数', value: conflictCount },
+    ];
+  }
   const generationType = GENERATION_FRAGMENT_BY_NODE[nodeId];
   if (generationType) {
     const generated = allCandidates.filter((item) => item.fragmentType === generationType);
@@ -759,6 +1227,9 @@ const actualBlocks = (
   const allCandidates = candidates(run);
   const validCandidates = allCandidates.filter((item) => !item.invalidReasons.length);
   const result = finalResult(run);
+  const allRelationships = relationships(run);
+  const allCoordinates = coordinates(run);
+  const allBlueprints = blueprints(run);
 
   if (nodeId === 'LOAD_AND_SNAPSHOT') {
     blocks.push(
@@ -779,6 +1250,45 @@ const actualBlocks = (
         tagGroup('目标受众', [insightText(insight, 'targetAudience', 'target_audience')]),
         tagGroup('使用场景', insightList(insight, 'usageScenarios', 'usage_scenarios')),
       ]),
+    );
+  } else if (RELATIONSHIP_FRAGMENT_BY_NODE[nodeId]) {
+    const type = RELATIONSHIP_FRAGMENT_BY_NODE[nodeId]!;
+    blocks.push(
+      relationshipBlock(
+        run,
+        `${EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[type]}实际营销组合`,
+        allRelationships.filter((item) => item.fragmentType === type),
+      ),
+    );
+  } else if (nodeId === 'RELATIONSHIP_MERGE_VALIDATION') {
+    blocks.push(relationshipBlock(run, '本批次已校验营销组合', allRelationships));
+  } else if (COORDINATE_FRAGMENT_BY_NODE[nodeId]) {
+    const type = COORDINATE_FRAGMENT_BY_NODE[nodeId]!;
+    blocks.push(
+      coordinateBlock(
+        run,
+        `${EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[type]}实际六维坐标`,
+        allCoordinates.filter((item) => item.fragmentType === type),
+      ),
+    );
+  } else if (nodeId === 'COORDINATE_MERGE_VALIDATION') {
+    blocks.push(coordinateBlock(run, '本批次已校验六维坐标', allCoordinates));
+  } else if (nodeId === 'BLUEPRINT_QUOTA_ALLOCATION') {
+    blocks.push(relationshipBlock(run, '营销组合蓝图配额', allRelationships));
+  } else if (nodeId === 'BLUEPRINT_FRAGMENT_ROUTER') {
+    blocks.push(routeBlock(run, '六类蓝图实际路由结果', undefined, 'BLUEPRINT'));
+  } else if (BLUEPRINT_FRAGMENT_BY_NODE[nodeId]) {
+    const type = BLUEPRINT_FRAGMENT_BY_NODE[nodeId]!;
+    blocks.push(
+      blueprintBlock(
+        `${EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[type]}实际蓝图`,
+        allBlueprints.filter((item) => item.fragmentType === type),
+      ),
+    );
+  } else if (nodeId === 'BLUEPRINT_ORTHOGONAL_GATE') {
+    blocks.push(
+      orthogonalBlock('实际六维差异不足蓝图对', allBlueprints),
+      blueprintBlock('正交校验蓝图样例', allBlueprints),
     );
   } else if (nodeId === 'STRATEGY_PLANNING') {
     blocks.push(
@@ -904,14 +1414,22 @@ export const presentEffectPromptNodeDetail = (
   nodeId: EffectPromptNodeId,
 ): GetEffectPromptNodeDetailData['detail'] => {
   const stage = run.stages.find((item) => item.nodeId === nodeId);
+  const terminalFailure =
+    run.status === 'FAILED' && run.currentNode === nodeId && stage?.status === 'RUNNING';
   return {
     nodeId,
-    status: stage?.status ?? 'PENDING',
+    status: terminalFailure ? 'FAILED' : (stage?.status ?? 'PENDING'),
     summary: publicText(stage?.summary, 500),
     fields: actualFields(run, nodeId, stage?.metadata),
     blocks: actualBlocks(run, nodeId),
     warnings: safeStrings(stage?.warnings, 20),
-    errorMessage: stage?.errorMessage ? publicText(stage.errorMessage, 1000) : null,
-    updatedAt: stage?.updatedAt.toISOString() ?? null,
+    errorMessage: terminalFailure
+      ? publicText(run.errorMessage, 1000)
+      : stage?.errorMessage
+        ? publicText(stage.errorMessage, 1000)
+        : null,
+    updatedAt: terminalFailure
+      ? run.updatedAt.toISOString()
+      : (stage?.updatedAt.toISOString() ?? null),
   };
 };

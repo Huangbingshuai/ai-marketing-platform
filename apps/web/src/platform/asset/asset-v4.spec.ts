@@ -144,4 +144,15 @@ describe('V4 asset center mapping', () => {
     expect(projectWorkspaceOverviewSource).not.toContain('pageSize: 100');
     expect(projectWorkspaceOverviewSource).not.toContain('保存到项目资产库');
   });
+
+  it('highlights only the workflow node that is currently being edited', () => {
+    expect(projectWorkspaceOverviewSource).toContain(
+      ':class="{ active: definition.id === activeNodeId }"',
+    );
+    expect(projectWorkspaceOverviewSource).toContain(
+      ':aria-current="definition.id === activeNodeId ? \'step\' : undefined"',
+    );
+    expect(projectWorkspaceOverviewSource).not.toContain('definition.id === latestState?.nodeId');
+    expect(projectWorkspaceOverviewSource).toContain('.draft-list button.active');
+  });
 });

@@ -6,10 +6,13 @@ import type { StartEffectPromptRunRequest } from './effect-prompt-generation';
 
 import {
   DEFAULT_EFFECT_PROMPT_SETTINGS,
+  CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
   EFFECT_PROMPT_DIMENSIONS,
+  EFFECT_PROMPT_ERROR_CODES,
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_GRAPH_EDGES,
   EFFECT_PROMPT_GRAPH_NODES,
+  EFFECT_PROMPT_SHARD_PHASES,
   EFFECT_PROMPT_INSIGHT_FIELDS,
   EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES,
   EFFECT_PROMPT_LIMITS,
@@ -18,6 +21,8 @@ import {
   effectPromptTargetCount,
   effectPromptSettingsNodeId,
   effectPromptFragmentTypeTargetCounts,
+  effectPromptGraphEdges,
+  effectPromptGraphNodeIds,
   migrateEffectPromptSettings,
   normalizeEffectPromptSettings,
 } from './effect-prompt-generation';
@@ -90,13 +95,51 @@ describe('effect prompt generation contract', () => {
     });
     expect(EFFECT_PROMPT_GRAPH_EDGES).toContainEqual({
       from: 'SHARED_PROMPT_COMPILATION',
-      to: 'STRATEGY_PLANNING',
+      to: 'GLOBAL_FACT_ALLOCATION',
+    });
+    expect(CURRENT_EFFECT_PROMPT_GRAPH_VERSION).toBe('V10_RELATION_COORDINATE_BLUEPRINT');
+    expect(EFFECT_PROMPT_GRAPH_EDGES).toContainEqual({
+      from: 'RELATIONSHIP_FRAGMENT_ROUTER',
+      to: 'PLAN_HOOK_RELATIONSHIPS',
+    });
+    expect(EFFECT_PROMPT_GRAPH_EDGES).toContainEqual({
+      from: 'PLAN_OUTRO_COORDINATES',
+      to: 'COORDINATE_MERGE_VALIDATION',
+    });
+    expect(EFFECT_PROMPT_GRAPH_EDGES).toContainEqual({
+      from: 'BLUEPRINT_ORTHOGONAL_GATE',
+      to: 'FRAGMENT_TYPE_ROUTER',
     });
     expect(EFFECT_PROMPT_GRAPH_EDGES).toContainEqual({
       from: 'REPLENISH',
-      to: 'FRAGMENT_TYPE_ROUTER',
+      to: 'BLUEPRINT_FRAGMENT_ROUTER',
     });
     expect(EFFECT_PROMPT_GRAPH_NODES.filter((node) => node.group === 'GENERATION')).toHaveLength(6);
+    expect(EFFECT_PROMPT_GRAPH_NODES.filter((node) => node.group === 'BLUEPRINT')).toHaveLength(6);
+    expect(EFFECT_PROMPT_SHARD_PHASES).toEqual(['BLUEPRINT', 'PROMPT']);
+  });
+
+  it('freezes V8 and V9 while publishing the V10 topology independently', () => {
+    expect(effectPromptGraphNodeIds('V8_SINGLE_STRATEGY')).toContain('STRATEGY_PLANNING');
+    expect(effectPromptGraphNodeIds('V8_SINGLE_STRATEGY')).not.toContain(
+      'RELATIONSHIP_FRAGMENT_ROUTER',
+    );
+    expect(effectPromptGraphNodeIds('V9_SIX_BRANCH_STRATEGY')).toContain('PLAN_HOOK_STRATEGY');
+    expect(effectPromptGraphNodeIds('V9_SIX_BRANCH_STRATEGY')).not.toContain(
+      'PLAN_HOOK_RELATIONSHIPS',
+    );
+    expect(effectPromptGraphNodeIds('V10_RELATION_COORDINATE_BLUEPRINT')).toContain(
+      'PLAN_HOOK_RELATIONSHIPS',
+    );
+    expect(effectPromptGraphEdges('V9_SIX_BRANCH_STRATEGY')).toContainEqual({
+      from: 'REPLENISH',
+      to: 'FRAGMENT_TYPE_ROUTER',
+    });
+  });
+
+  it('publishes safe incomplete-response error codes', () => {
+    expect(EFFECT_PROMPT_ERROR_CODES).toContain('AI_OUTPUT_TRUNCATED');
+    expect(EFFECT_PROMPT_ERROR_CODES).toContain('AI_RESPONSE_INCOMPLETE');
   });
 
   it('freezes the V4 insight taxonomy and sensitive role boundaries', () => {

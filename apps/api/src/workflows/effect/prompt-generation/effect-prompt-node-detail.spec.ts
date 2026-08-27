@@ -71,7 +71,13 @@ const runRecord = (): EffectPromptNodeDetailRunRecord =>
         summary: '规划完成',
         warnings: [],
         errorMessage: null,
-        metadata: { sceneCount: 17, rawResponse: 'private-response' },
+        metadata: {
+          relationshipBundleCount: 14,
+          modelRelationshipBundleCount: 10,
+          workerCompletedRelationshipBundleCount: 4,
+          plannedFactCount: 22,
+          rawResponse: 'private-response',
+        },
         updatedAt: new Date('2026-08-26T00:00:01.000Z'),
       },
       {
@@ -95,6 +101,7 @@ const runRecord = (): EffectPromptNodeDetailRunRecord =>
     ],
     shards: [
       {
+        phase: 'PROMPT',
         round: 0,
         shardIndex: 0,
         status: 'SUCCEEDED',
@@ -122,6 +129,26 @@ const runRecord = (): EffectPromptNodeDetailRunRecord =>
   }) as unknown as EffectPromptNodeDetailRunRecord;
 
 describe('presentEffectPromptNodeDetail', () => {
+  it('projects a terminal run failure over a stale running stage', () => {
+    const record = runRecord();
+    const failed = {
+      ...record,
+      status: 'FAILED',
+      currentNode: 'STRATEGY_PLANNING',
+      errorMessage: 'Prompt AI 生成超时',
+      updatedAt: new Date('2026-08-26T00:05:00.000Z'),
+      stages: record.stages.map((stage) =>
+        stage.nodeId === 'STRATEGY_PLANNING' ? { ...stage, status: 'RUNNING' } : stage,
+      ),
+    } as EffectPromptNodeDetailRunRecord;
+
+    const detail = presentEffectPromptNodeDetail(failed, 'STRATEGY_PLANNING');
+
+    expect(detail.status).toBe('FAILED');
+    expect(detail.errorMessage).toBe('Prompt AI 生成超时');
+    expect(detail.updatedAt).toBe('2026-08-26T00:05:00.000Z');
+  });
+
   it('loads shard bodies only for the project-scoped node detail query', async () => {
     const findFirst = vi.fn().mockResolvedValue(null);
     const repository = new EffectPromptRepository({
@@ -172,7 +199,10 @@ describe('presentEffectPromptNodeDetail', () => {
 
   it('uses persisted combinations instead of a fixed strategy example', () => {
     const detail = presentEffectPromptNodeDetail(runRecord(), 'STRATEGY_PLANNING');
-    expect(detail.fields).toContainEqual({ label: '场景方案', value: 17 });
+    expect(detail.fields).toContainEqual({ label: '营销关系束', value: 14 });
+    expect(detail.fields).toContainEqual({ label: '模型有效规划', value: 10 });
+    expect(detail.fields).toContainEqual({ label: '系统安全补齐', value: 4 });
+    expect(detail.fields).toContainEqual({ label: '已规划事实', value: 22 });
     expect(JSON.stringify(detail.blocks)).toContain('家庭厨房的煲仔饭操作台');
     expect(JSON.stringify(detail.blocks)).toContain('右手拿起产品并把正面转向镜头');
     expect(JSON.stringify(detail.blocks)).not.toContain('仅展示固定业务示例');
@@ -201,5 +231,158 @@ describe('presentEffectPromptNodeDetail', () => {
     const serialized = JSON.stringify(detail);
     for (const secret of ['private-model', 'private-response', 'private-token', 'private-slot'])
       expect(serialized).not.toContain(secret);
+  });
+
+  it('projects V10 relationship, coordinate, blueprint, and orthogonal results from checkpoints', () => {
+    const base = runRecord();
+    const coreFactId = 'CORE_SELLING_POINT:21e0d2c4d474f48798bd';
+    const plan = {
+      fragmentType: 'HOOK',
+      narratives: [
+        {
+          coordinateId: 'N1',
+          value: '从反常细节建立悬念',
+          compatibleBundleIds: ['H1'],
+          sourceFactIds: [],
+        },
+      ],
+      scenes: [
+        {
+          coordinateId: 'S1',
+          value: '年节家庭厨房',
+          compatibleBundleIds: ['H1'],
+          sourceFactIds: [],
+        },
+      ],
+      personas: [
+        {
+          coordinateId: 'P1',
+          value: '只出现成年人的双手',
+          compatibleBundleIds: ['H1'],
+          sourceFactIds: [],
+        },
+      ],
+      sellingPoints: [
+        {
+          coordinateId: 'SP1',
+          value: '三七肥瘦黄金配比',
+          compatibleBundleIds: ['H1'],
+          sourceFactIds: [coreFactId],
+        },
+      ],
+      cameras: [
+        {
+          coordinateId: 'C1',
+          value: '桌面高度近景平稳靠近',
+          compatibleBundleIds: ['H1'],
+          sourceFactIds: [],
+        },
+      ],
+      emotions: [
+        {
+          coordinateId: 'E1',
+          value: '暖色食欲感',
+          compatibleBundleIds: ['H1'],
+          sourceFactIds: [],
+        },
+      ],
+    };
+    const v10 = {
+      ...base,
+      inputSnapshot: {
+        ...(base.inputSnapshot as Record<string, unknown>),
+        graphVersion: 'V10_RELATION_COORDINATE_BLUEPRINT',
+      },
+      stages: [
+        ...base.stages,
+        {
+          nodeId: 'PLAN_HOOK_RELATIONSHIPS',
+          status: 'SUCCEEDED',
+          summary: '钩子营销组合完成',
+          warnings: [],
+          errorMessage: null,
+          metadata: {
+            checkpoint: {
+              plan: {
+                fragmentType: 'HOOK',
+                bundles: [
+                  {
+                    bundleId: 'H1',
+                    fragmentType: 'HOOK',
+                    primaryFactId: coreFactId,
+                    factIds: [coreFactId],
+                    creativeIntent: '以产品切面细节建立首秒悬念',
+                  },
+                ],
+              },
+            },
+          },
+          updatedAt: new Date('2026-08-27T01:00:00.000Z'),
+        },
+        {
+          nodeId: 'PLAN_HOOK_COORDINATES',
+          status: 'SUCCEEDED',
+          summary: '钩子坐标完成',
+          warnings: [],
+          errorMessage: null,
+          metadata: { checkpoint: { plan } },
+          updatedAt: new Date('2026-08-27T01:00:01.000Z'),
+        },
+        {
+          nodeId: 'BLUEPRINT_ORTHOGONAL_GATE',
+          status: 'SUCCEEDED',
+          summary: '全批次蓝图校验完成',
+          warnings: [],
+          errorMessage: null,
+          metadata: { comparedPairCount: 1, rejectedCount: 1 },
+          updatedAt: new Date('2026-08-27T01:00:02.000Z'),
+        },
+      ],
+      shards: [
+        ...base.shards,
+        {
+          phase: 'BLUEPRINT',
+          round: 0,
+          shardIndex: 0,
+          status: 'SUCCEEDED',
+          combinationPlan: [1, 2].map((ordinal) => ({
+            slotId: `blueprint-private-${ordinal}`,
+            ordinal,
+            fragmentType: 'HOOK',
+            bundleId: 'H1',
+            targetDurationSeconds: 5,
+          })),
+          items: [1, 2].map((ordinal) => ({
+            slotId: `blueprint-private-${ordinal}`,
+            fragmentType: 'HOOK',
+            bundleId: 'H1',
+            narrativeCoordinateId: 'N1',
+            sceneCoordinateId: 'S1',
+            personaCoordinateId: 'P1',
+            sellingPointCoordinateId: 'SP1',
+            cameraCoordinateId: 'C1',
+            emotionCoordinateId: 'E1',
+            openingState: '切开的广式腊肠位于画面中央',
+            actionArc: '木筷夹起切片并停住',
+            endingState: '切面稳定朝向镜头',
+          })),
+        },
+      ],
+    } as unknown as EffectPromptNodeDetailRunRecord;
+
+    const relationship = presentEffectPromptNodeDetail(v10, 'PLAN_HOOK_RELATIONSHIPS');
+    const coordinate = presentEffectPromptNodeDetail(v10, 'PLAN_HOOK_COORDINATES');
+    const blueprint = presentEffectPromptNodeDetail(v10, 'GENERATE_HOOK_BLUEPRINTS');
+    const orthogonal = presentEffectPromptNodeDetail(v10, 'BLUEPRINT_ORTHOGONAL_GATE');
+
+    expect(relationship.blocks).toContainEqual(
+      expect.objectContaining({ kind: 'RELATIONSHIP_LIST' }),
+    );
+    expect(coordinate.blocks).toContainEqual(expect.objectContaining({ kind: 'COORDINATE_LIST' }));
+    expect(blueprint.blocks).toContainEqual(expect.objectContaining({ kind: 'BLUEPRINT_LIST' }));
+    expect(orthogonal.blocks).toContainEqual(
+      expect.objectContaining({ kind: 'ORTHOGONAL_PAIR_LIST' }),
+    );
+    expect(JSON.stringify(blueprint)).not.toContain('blueprint-private');
   });
 });

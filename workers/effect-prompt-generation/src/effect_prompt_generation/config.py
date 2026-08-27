@@ -16,7 +16,9 @@ ARK_KEY_PLACEHOLDERS = {
 
 
 class WorkerSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=None, case_sensitive=True, extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=None, case_sensitive=True, extra="ignore"
+    )
 
     internal_api_base_url: AnyHttpUrl = Field(alias="INTERNAL_API_BASE_URL")
     effect_prompt_worker_token: SecretStr = Field(alias="EFFECT_PROMPT_WORKER_TOKEN")
@@ -40,6 +42,12 @@ class WorkerSettings(BaseSettings):
     ark_prompt_candidate_model: str | None = Field(
         default=None, alias="ARK_PROMPT_CANDIDATE_MODEL"
     )
+    ark_prompt_fragment_strategy_model: str | None = Field(
+        default=None, alias="ARK_PROMPT_FRAGMENT_STRATEGY_MODEL"
+    )
+    ark_prompt_blueprint_model: str | None = Field(
+        default=None, alias="ARK_PROMPT_BLUEPRINT_MODEL"
+    )
     ark_prompt_strategy_max_output_tokens: int = Field(
         default=8192,
         alias="ARK_PROMPT_STRATEGY_MAX_OUTPUT_TOKENS",
@@ -52,19 +60,39 @@ class WorkerSettings(BaseSettings):
         ge=1024,
         le=65_536,
     )
+    ark_prompt_fragment_strategy_max_output_tokens: int = Field(
+        default=3072,
+        alias="ARK_PROMPT_FRAGMENT_STRATEGY_MAX_OUTPUT_TOKENS",
+        ge=1024,
+        le=8192,
+    )
     ark_prompt_reasoning_effort: Literal["minimal", "low", "medium", "high"] = Field(
         default="minimal", alias="ARK_PROMPT_REASONING_EFFORT"
     )
 
-    prompt_max_concurrency: int = Field(default=3, alias="PROMPT_MAX_CONCURRENCY", ge=1, le=8)
+    prompt_max_concurrency: int = Field(
+        default=6, alias="PROMPT_MAX_CONCURRENCY", ge=1, le=8
+    )
     prompt_shard_size: int = Field(default=8, alias="PROMPT_SHARD_SIZE", ge=1, le=8)
     prompt_max_ai_calls_per_run: int = Field(
-        default=129, alias="PROMPT_MAX_AI_CALLS_PER_RUN", ge=1, le=256
+        default=256, alias="PROMPT_MAX_AI_CALLS_PER_RUN", ge=1, le=256
     )
     api_timeout_seconds: float = Field(
         default=60.0, alias="INTERNAL_API_TIMEOUT_SECONDS", gt=0
     )
     ark_timeout_seconds: float = Field(default=120.0, alias="ARK_TIMEOUT_SECONDS", gt=0)
+    ark_prompt_strategy_timeout_seconds: float = Field(
+        default=180.0, alias="ARK_PROMPT_STRATEGY_TIMEOUT_SECONDS", gt=0
+    )
+    ark_prompt_candidate_timeout_seconds: float | None = Field(
+        default=None, alias="ARK_PROMPT_CANDIDATE_TIMEOUT_SECONDS", gt=0
+    )
+    ark_prompt_fragment_strategy_timeout_seconds: float = Field(
+        default=120.0, alias="ARK_PROMPT_FRAGMENT_STRATEGY_TIMEOUT_SECONDS", gt=0
+    )
+    ark_prompt_provider_max_attempts: int = Field(
+        default=1, alias="ARK_PROMPT_PROVIDER_MAX_ATTEMPTS", ge=1, le=3
+    )
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
     @model_validator(mode="after")
@@ -76,6 +104,12 @@ class WorkerSettings(BaseSettings):
         ).strip() or None
         self.ark_prompt_candidate_model = (
             self.ark_prompt_candidate_model or ""
+        ).strip() or None
+        self.ark_prompt_fragment_strategy_model = (
+            self.ark_prompt_fragment_strategy_model or ""
+        ).strip() or None
+        self.ark_prompt_blueprint_model = (
+            self.ark_prompt_blueprint_model or ""
         ).strip() or None
         self.effect_prompt_queue = self.effect_prompt_queue.strip()
         if not self.effect_prompt_queue:
@@ -100,7 +134,21 @@ class WorkerSettings(BaseSettings):
 
     @property
     def resolved_prompt_candidate_model(self) -> str:
-        return self.ark_prompt_candidate_model or self.ark_prompt_model or self.ark_model
+        return (
+            self.ark_prompt_candidate_model or self.ark_prompt_model or self.ark_model
+        )
+
+    @property
+    def resolved_prompt_fragment_strategy_model(self) -> str:
+        return self.ark_prompt_fragment_strategy_model or self.resolved_prompt_candidate_model
+
+    @property
+    def resolved_prompt_blueprint_model(self) -> str:
+        return self.ark_prompt_blueprint_model or self.resolved_prompt_strategy_model
+
+    @property
+    def resolved_prompt_candidate_timeout_seconds(self) -> float:
+        return self.ark_prompt_candidate_timeout_seconds or self.ark_timeout_seconds
 
 
 @lru_cache(maxsize=1)

@@ -10,7 +10,13 @@ from langgraph.graph.state import CompiledStateGraph
 from pydantic import ValidationError
 
 from .api_client import InternalApi, InternalApiError
-from .models import GraphState, InputState, OutputState, PromptGenerationRequest, RuntimeContext
+from .models import (
+    GraphState,
+    InputState,
+    OutputState,
+    PromptGenerationRequest,
+    RuntimeContext,
+)
 from .pipeline import PipelineError, PromptGenerationPipeline
 from .providers import ProviderError
 
@@ -59,9 +65,13 @@ class PromptGenerationConsumer:
         context: RuntimeContext | None = None
         try:
             try:
-                request = PromptGenerationRequest.model_validate(json.loads(message.body))
+                request = PromptGenerationRequest.model_validate(
+                    json.loads(message.body)
+                )
             except (json.JSONDecodeError, ValidationError) as exc:
-                LOGGER.warning("rejecting malformed prompt message error=%s", type(exc).__name__)
+                LOGGER.warning(
+                    "rejecting malformed prompt message error=%s", type(exc).__name__
+                )
                 await message.reject(requeue=False)
                 return
             claim = await self._api.claim(request.run_id, request.project_id)
@@ -69,8 +79,14 @@ class PromptGenerationConsumer:
                 await message.ack()
                 LOGGER.info("ignoring terminal prompt run_id=%s", request.run_id)
                 return
-            if claim.input is None or claim.attempt_token is None or claim.source_fingerprint is None:
-                raise PipelineError("claim response is missing input, attemptToken, or sourceFingerprint")
+            if (
+                claim.input is None
+                or claim.attempt_token is None
+                or claim.source_fingerprint is None
+            ):
+                raise PipelineError(
+                    "claim response is missing input, attemptToken, or sourceFingerprint"
+                )
             snapshot = claim.input
             context = RuntimeContext(
                 run_id=request.run_id,
@@ -81,7 +97,11 @@ class PromptGenerationConsumer:
                 attempt_token=claim.attempt_token,
                 source_fingerprint=claim.source_fingerprint,
             )
-            self._pipeline.register_snapshot(context, snapshot)
+            self._pipeline.register_snapshot(
+                context,
+                snapshot,
+                [*claim.strategy_checkpoints, *claim.stage_checkpoints],
+            )
             try:
                 stop = asyncio.Event()
                 heartbeat = asyncio.create_task(self._heartbeat(context, stop))
@@ -105,11 +125,16 @@ class PromptGenerationConsumer:
                 type(exc).__name__,
             )
             retryable = _retryable(exc)
+            failure_persisted = False
             if context is not None:
                 try:
                     await self._pipeline.mark_failed(context, exc)
+                    failure_persisted = True
                 except Exception:
                     LOGGER.exception("failed to persist prompt-generation failure")
+            if failure_persisted:
+                await message.ack()
+                return
             if retryable and not message.redelivered:
                 await message.nack(requeue=True)
                 return

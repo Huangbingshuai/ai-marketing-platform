@@ -4,12 +4,15 @@ import type {
   EffectPromptDimensions,
   EffectPromptFragmentType,
   EffectPromptOperation,
+  EffectPromptShardPhase,
   EffectPromptStageStatus,
 } from '@ai-marketing/contracts';
 import {
   EFFECT_PROMPT_FRAGMENT_TYPES,
+  EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_OPERATIONS,
+  EFFECT_PROMPT_SHARD_PHASES,
   EFFECT_PROMPT_STAGE_STATUSES,
 } from '@ai-marketing/contracts';
 import { Type } from 'class-transformer';
@@ -88,6 +91,10 @@ export class WorkerProjectDto {
   @IsUUID('4') projectId!: string;
 }
 
+export class WorkerShardQueryDto extends WorkerProjectDto {
+  @IsOptional() @IsIn([...EFFECT_PROMPT_SHARD_PHASES]) phase?: EffectPromptShardPhase;
+}
+
 export class WorkerStageDto extends WorkerProjectDto {
   @IsIn([...EFFECT_PROMPT_STAGE_STATUSES]) status!: EffectPromptStageStatus;
   @IsString() @MaxLength(500) summary = '';
@@ -96,9 +103,12 @@ export class WorkerStageDto extends WorkerProjectDto {
 }
 
 export class WorkerShardDto extends WorkerProjectDto {
+  @IsOptional() @IsIn([...EFFECT_PROMPT_SHARD_PHASES]) phase?: EffectPromptShardPhase;
   @IsIn([...EFFECT_PROMPT_STAGE_STATUSES]) status!: EffectPromptStageStatus;
   @Allow() combinationPlan: unknown = [];
   @Allow() items: unknown = [];
+  @Allow() blueprintPlan: unknown = [];
+  @Allow() blueprints: unknown = [];
   @IsArray() @IsString({ each: true }) @MaxLength(500, { each: true }) warnings: string[] = [];
   @IsOptional() @IsString() @MaxLength(120) errorCode?: string | null;
   @IsOptional() @IsString() @MaxLength(1000) errorMessage?: string | null;
@@ -113,4 +123,5 @@ export class WorkerFailDto extends WorkerProjectDto {
   @IsString() @MaxLength(1000) errorMessage!: string;
   @IsBoolean() retryable!: boolean;
   @IsArray() @IsString({ each: true }) @MaxLength(500, { each: true }) warnings: string[] = [];
+  @IsOptional() @IsIn(EFFECT_PROMPT_GRAPH_NODES.map(({ id }) => id)) currentNode?: string | null;
 }

@@ -190,6 +190,14 @@ def assemble_safe_fallback_prompt(
     content = _clean_paragraph(
         f"{prefix}。{opening}；{action}。{camera}，自然光下{emotion}{evidence}。{ending}。"
     )
+    minimum_length, maximum_length = prompt_length_bounds(
+        combination.target_duration_seconds
+    )
+    if len(content) < minimum_length:
+        padding = "主体、操作位置和背景层次始终清楚，画面保持真实自然与连续稳定。"
+        content = _clean_paragraph(
+            f"{content.rstrip('。')}。{padding}"
+        )[:maximum_length].rstrip("，；。 ") + "。"
     return content, validate_fragment_prompt(
         content,
         combination,

@@ -324,6 +324,19 @@ export type EffectPromptOperation = (typeof EFFECT_PROMPT_OPERATIONS)[number];
 
 export const EFFECT_PROMPT_RUN_STATUSES = ['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED'] as const;
 export type EffectPromptRunStatus = (typeof EFFECT_PROMPT_RUN_STATUSES)[number];
+export const EFFECT_PROMPT_MAX_RUN_ATTEMPTS = 3;
+export const EFFECT_PROMPT_ERROR_CODES = [
+  'AI_TIMEOUT',
+  'AI_NETWORK',
+  'AI_RATE_LIMIT',
+  'AI_SERVICE',
+  'AI_OUTPUT_TRUNCATED',
+  'AI_RESPONSE_INCOMPLETE',
+  'AI_RESPONSE_INVALID',
+  'AI_REQUEST_REJECTED',
+  'AI_UNKNOWN',
+] as const;
+export type EffectPromptErrorCode = (typeof EFFECT_PROMPT_ERROR_CODES)[number];
 
 export const EFFECT_PROMPT_STAGE_STATUSES = [
   'PENDING',
@@ -335,11 +348,85 @@ export const EFFECT_PROMPT_STAGE_STATUSES = [
 ] as const;
 export type EffectPromptStageStatus = (typeof EFFECT_PROMPT_STAGE_STATUSES)[number];
 
+export const EFFECT_PROMPT_SHARD_PHASES = ['BLUEPRINT', 'PROMPT'] as const;
+export type EffectPromptShardPhase = (typeof EFFECT_PROMPT_SHARD_PHASES)[number];
+
+export const EFFECT_PROMPT_GRAPH_VERSIONS = [
+  'V8_SINGLE_STRATEGY',
+  'V9_SIX_BRANCH_STRATEGY',
+  'V10_RELATION_COORDINATE_BLUEPRINT',
+] as const;
+export type EffectPromptGraphVersion = (typeof EFFECT_PROMPT_GRAPH_VERSIONS)[number];
+export const CURRENT_EFFECT_PROMPT_GRAPH_VERSION: EffectPromptGraphVersion =
+  'V10_RELATION_COORDINATE_BLUEPRINT';
+
 export const EFFECT_PROMPT_GRAPH_NODES = [
   { id: 'LOAD_AND_SNAPSHOT', label: '输入快照', group: 'SNAPSHOT' },
   { id: 'INSIGHT_MAPPING', label: '提炼信息应用映射', group: 'PLANNING' },
   { id: 'SHARED_PROMPT_COMPILATION', label: '共用提示词编译', group: 'PLANNING' },
   { id: 'STRATEGY_PLANNING', label: '营销关系规划', group: 'PLANNING' },
+  { id: 'GLOBAL_FACT_ALLOCATION', label: '全局事实分配', group: 'PLANNING' },
+  { id: 'STRATEGY_FRAGMENT_ROUTER', label: '营销规划条件路由', group: 'ROUTER' },
+  { id: 'PLAN_HOOK_STRATEGY', label: '钩子营销规划', group: 'STRATEGY' },
+  { id: 'PLAN_PAIN_STRATEGY', label: '痛点营销规划', group: 'STRATEGY' },
+  { id: 'PLAN_PRODUCT_DISPLAY_STRATEGY', label: '产品展示营销规划', group: 'STRATEGY' },
+  {
+    id: 'PLAN_SELLING_POINT_EXPLANATION_STRATEGY',
+    label: '卖点讲解营销规划',
+    group: 'STRATEGY',
+  },
+  { id: 'PLAN_CTA_STRATEGY', label: '结尾转化营销规划', group: 'STRATEGY' },
+  { id: 'PLAN_OUTRO_STRATEGY', label: '片尾品牌营销规划', group: 'STRATEGY' },
+  { id: 'STRATEGY_MERGE_VALIDATION', label: '营销规划合并校验', group: 'PLANNING' },
+  { id: 'RELATIONSHIP_FRAGMENT_ROUTER', label: '营销组合条件路由', group: 'ROUTER' },
+  { id: 'PLAN_HOOK_RELATIONSHIPS', label: '钩子营销组合', group: 'STRATEGY' },
+  { id: 'PLAN_PAIN_RELATIONSHIPS', label: '痛点营销组合', group: 'STRATEGY' },
+  {
+    id: 'PLAN_PRODUCT_DISPLAY_RELATIONSHIPS',
+    label: '产品展示营销组合',
+    group: 'STRATEGY',
+  },
+  {
+    id: 'PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS',
+    label: '卖点讲解营销组合',
+    group: 'STRATEGY',
+  },
+  { id: 'PLAN_CTA_RELATIONSHIPS', label: '结尾转化营销组合', group: 'STRATEGY' },
+  { id: 'PLAN_OUTRO_RELATIONSHIPS', label: '片尾品牌营销组合', group: 'STRATEGY' },
+  { id: 'RELATIONSHIP_MERGE_VALIDATION', label: '营销组合合并校验', group: 'PLANNING' },
+  { id: 'DIMENSION_COORDINATE_ROUTER', label: '六维坐标条件路由', group: 'ROUTER' },
+  { id: 'PLAN_HOOK_COORDINATES', label: '钩子六维坐标规划', group: 'COORDINATE' },
+  { id: 'PLAN_PAIN_COORDINATES', label: '痛点六维坐标规划', group: 'COORDINATE' },
+  {
+    id: 'PLAN_PRODUCT_DISPLAY_COORDINATES',
+    label: '产品展示六维坐标规划',
+    group: 'COORDINATE',
+  },
+  {
+    id: 'PLAN_SELLING_POINT_EXPLANATION_COORDINATES',
+    label: '卖点讲解六维坐标规划',
+    group: 'COORDINATE',
+  },
+  { id: 'PLAN_CTA_COORDINATES', label: '结尾转化六维坐标规划', group: 'COORDINATE' },
+  { id: 'PLAN_OUTRO_COORDINATES', label: '片尾品牌六维坐标规划', group: 'COORDINATE' },
+  { id: 'COORDINATE_MERGE_VALIDATION', label: '六维坐标合并校验', group: 'PLANNING' },
+  { id: 'BLUEPRINT_QUOTA_ALLOCATION', label: '蓝图配额分配', group: 'PLANNING' },
+  { id: 'BLUEPRINT_FRAGMENT_ROUTER', label: '蓝图类型条件路由', group: 'ROUTER' },
+  { id: 'GENERATE_HOOK_BLUEPRINTS', label: '钩子蓝图生成', group: 'BLUEPRINT' },
+  { id: 'GENERATE_PAIN_BLUEPRINTS', label: '痛点蓝图生成', group: 'BLUEPRINT' },
+  {
+    id: 'GENERATE_PRODUCT_DISPLAY_BLUEPRINTS',
+    label: '产品展示蓝图生成',
+    group: 'BLUEPRINT',
+  },
+  {
+    id: 'GENERATE_SELLING_POINT_EXPLANATION_BLUEPRINTS',
+    label: '卖点讲解蓝图生成',
+    group: 'BLUEPRINT',
+  },
+  { id: 'GENERATE_CTA_BLUEPRINTS', label: '结尾转化蓝图生成', group: 'BLUEPRINT' },
+  { id: 'GENERATE_OUTRO_BLUEPRINTS', label: '片尾品牌蓝图生成', group: 'BLUEPRINT' },
+  { id: 'BLUEPRINT_ORTHOGONAL_GATE', label: '全批次蓝图正交校验', group: 'QUALITY' },
   { id: 'DIMENSION_COMBINATION', label: '片段蓝图编排', group: 'PLANNING' },
   { id: 'FRAGMENT_TYPE_ROUTER', label: '片段类型条件路由', group: 'ROUTER' },
   { id: 'GENERATE_HOOK', label: '钩子 Prompt 生成', group: 'GENERATION' },
@@ -362,7 +449,105 @@ export const EFFECT_PROMPT_GRAPH_NODES = [
 ] as const;
 export type EffectPromptNodeId = (typeof EFFECT_PROMPT_GRAPH_NODES)[number]['id'];
 
-export const EFFECT_PROMPT_GRAPH_EDGES = [
+export const EFFECT_PROMPT_V8_GRAPH_NODE_IDS = [
+  'LOAD_AND_SNAPSHOT',
+  'INSIGHT_MAPPING',
+  'SHARED_PROMPT_COMPILATION',
+  'STRATEGY_PLANNING',
+  'DIMENSION_COMBINATION',
+  'FRAGMENT_TYPE_ROUTER',
+  'GENERATE_HOOK',
+  'GENERATE_PAIN',
+  'GENERATE_PRODUCT_DISPLAY',
+  'GENERATE_SELLING_POINT_EXPLANATION',
+  'GENERATE_CTA',
+  'GENERATE_OUTRO',
+  'NORMALIZATION',
+  'SEMANTIC_DEDUP',
+  'VISUAL_DEDUP',
+  'INSIGHT_COVERAGE',
+  'QUALITY_GATE',
+  'REPLENISH',
+  'RESULT_SAVE',
+] as const satisfies readonly EffectPromptNodeId[];
+
+export const EFFECT_PROMPT_V9_GRAPH_NODE_IDS = [
+  'LOAD_AND_SNAPSHOT',
+  'INSIGHT_MAPPING',
+  'SHARED_PROMPT_COMPILATION',
+  'GLOBAL_FACT_ALLOCATION',
+  'STRATEGY_FRAGMENT_ROUTER',
+  'PLAN_HOOK_STRATEGY',
+  'PLAN_PAIN_STRATEGY',
+  'PLAN_PRODUCT_DISPLAY_STRATEGY',
+  'PLAN_SELLING_POINT_EXPLANATION_STRATEGY',
+  'PLAN_CTA_STRATEGY',
+  'PLAN_OUTRO_STRATEGY',
+  'STRATEGY_MERGE_VALIDATION',
+  'DIMENSION_COMBINATION',
+  'FRAGMENT_TYPE_ROUTER',
+  'GENERATE_HOOK',
+  'GENERATE_PAIN',
+  'GENERATE_PRODUCT_DISPLAY',
+  'GENERATE_SELLING_POINT_EXPLANATION',
+  'GENERATE_CTA',
+  'GENERATE_OUTRO',
+  'NORMALIZATION',
+  'SEMANTIC_DEDUP',
+  'VISUAL_DEDUP',
+  'INSIGHT_COVERAGE',
+  'QUALITY_GATE',
+  'REPLENISH',
+  'RESULT_SAVE',
+] as const satisfies readonly EffectPromptNodeId[];
+
+export const EFFECT_PROMPT_V10_GRAPH_NODE_IDS = [
+  'LOAD_AND_SNAPSHOT',
+  'INSIGHT_MAPPING',
+  'SHARED_PROMPT_COMPILATION',
+  'GLOBAL_FACT_ALLOCATION',
+  'RELATIONSHIP_FRAGMENT_ROUTER',
+  'PLAN_HOOK_RELATIONSHIPS',
+  'PLAN_PAIN_RELATIONSHIPS',
+  'PLAN_PRODUCT_DISPLAY_RELATIONSHIPS',
+  'PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS',
+  'PLAN_CTA_RELATIONSHIPS',
+  'PLAN_OUTRO_RELATIONSHIPS',
+  'RELATIONSHIP_MERGE_VALIDATION',
+  'DIMENSION_COORDINATE_ROUTER',
+  'PLAN_HOOK_COORDINATES',
+  'PLAN_PAIN_COORDINATES',
+  'PLAN_PRODUCT_DISPLAY_COORDINATES',
+  'PLAN_SELLING_POINT_EXPLANATION_COORDINATES',
+  'PLAN_CTA_COORDINATES',
+  'PLAN_OUTRO_COORDINATES',
+  'COORDINATE_MERGE_VALIDATION',
+  'BLUEPRINT_QUOTA_ALLOCATION',
+  'BLUEPRINT_FRAGMENT_ROUTER',
+  'GENERATE_HOOK_BLUEPRINTS',
+  'GENERATE_PAIN_BLUEPRINTS',
+  'GENERATE_PRODUCT_DISPLAY_BLUEPRINTS',
+  'GENERATE_SELLING_POINT_EXPLANATION_BLUEPRINTS',
+  'GENERATE_CTA_BLUEPRINTS',
+  'GENERATE_OUTRO_BLUEPRINTS',
+  'BLUEPRINT_ORTHOGONAL_GATE',
+  'FRAGMENT_TYPE_ROUTER',
+  'GENERATE_HOOK',
+  'GENERATE_PAIN',
+  'GENERATE_PRODUCT_DISPLAY',
+  'GENERATE_SELLING_POINT_EXPLANATION',
+  'GENERATE_CTA',
+  'GENERATE_OUTRO',
+  'NORMALIZATION',
+  'SEMANTIC_DEDUP',
+  'VISUAL_DEDUP',
+  'INSIGHT_COVERAGE',
+  'QUALITY_GATE',
+  'REPLENISH',
+  'RESULT_SAVE',
+] as const satisfies readonly EffectPromptNodeId[];
+
+export const EFFECT_PROMPT_V8_GRAPH_EDGES = [
   { from: 'LOAD_AND_SNAPSHOT', to: 'INSIGHT_MAPPING' },
   { from: 'INSIGHT_MAPPING', to: 'SHARED_PROMPT_COMPILATION' },
   { from: 'SHARED_PROMPT_COMPILATION', to: 'STRATEGY_PLANNING' },
@@ -390,6 +575,153 @@ export const EFFECT_PROMPT_GRAPH_EDGES = [
   { from: 'REPLENISH', to: 'FRAGMENT_TYPE_ROUTER' },
 ] as const satisfies ReadonlyArray<{ from: EffectPromptNodeId; to: EffectPromptNodeId }>;
 
+export const EFFECT_PROMPT_V9_GRAPH_EDGES = [
+  { from: 'LOAD_AND_SNAPSHOT', to: 'INSIGHT_MAPPING' },
+  { from: 'INSIGHT_MAPPING', to: 'SHARED_PROMPT_COMPILATION' },
+  { from: 'SHARED_PROMPT_COMPILATION', to: 'GLOBAL_FACT_ALLOCATION' },
+  { from: 'GLOBAL_FACT_ALLOCATION', to: 'STRATEGY_FRAGMENT_ROUTER' },
+  { from: 'STRATEGY_FRAGMENT_ROUTER', to: 'PLAN_HOOK_STRATEGY' },
+  { from: 'STRATEGY_FRAGMENT_ROUTER', to: 'PLAN_PAIN_STRATEGY' },
+  { from: 'STRATEGY_FRAGMENT_ROUTER', to: 'PLAN_PRODUCT_DISPLAY_STRATEGY' },
+  { from: 'STRATEGY_FRAGMENT_ROUTER', to: 'PLAN_SELLING_POINT_EXPLANATION_STRATEGY' },
+  { from: 'STRATEGY_FRAGMENT_ROUTER', to: 'PLAN_CTA_STRATEGY' },
+  { from: 'STRATEGY_FRAGMENT_ROUTER', to: 'PLAN_OUTRO_STRATEGY' },
+  { from: 'PLAN_HOOK_STRATEGY', to: 'STRATEGY_MERGE_VALIDATION' },
+  { from: 'PLAN_PAIN_STRATEGY', to: 'STRATEGY_MERGE_VALIDATION' },
+  { from: 'PLAN_PRODUCT_DISPLAY_STRATEGY', to: 'STRATEGY_MERGE_VALIDATION' },
+  { from: 'PLAN_SELLING_POINT_EXPLANATION_STRATEGY', to: 'STRATEGY_MERGE_VALIDATION' },
+  { from: 'PLAN_CTA_STRATEGY', to: 'STRATEGY_MERGE_VALIDATION' },
+  { from: 'PLAN_OUTRO_STRATEGY', to: 'STRATEGY_MERGE_VALIDATION' },
+  { from: 'STRATEGY_MERGE_VALIDATION', to: 'DIMENSION_COMBINATION' },
+  { from: 'DIMENSION_COMBINATION', to: 'FRAGMENT_TYPE_ROUTER' },
+  { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_HOOK' },
+  { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_PAIN' },
+  { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_PRODUCT_DISPLAY' },
+  { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_SELLING_POINT_EXPLANATION' },
+  { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_CTA' },
+  { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_OUTRO' },
+  { from: 'GENERATE_HOOK', to: 'NORMALIZATION' },
+  { from: 'GENERATE_PAIN', to: 'NORMALIZATION' },
+  { from: 'GENERATE_PRODUCT_DISPLAY', to: 'NORMALIZATION' },
+  { from: 'GENERATE_SELLING_POINT_EXPLANATION', to: 'NORMALIZATION' },
+  { from: 'GENERATE_CTA', to: 'NORMALIZATION' },
+  { from: 'GENERATE_OUTRO', to: 'NORMALIZATION' },
+  { from: 'NORMALIZATION', to: 'SEMANTIC_DEDUP' },
+  { from: 'NORMALIZATION', to: 'VISUAL_DEDUP' },
+  { from: 'SEMANTIC_DEDUP', to: 'INSIGHT_COVERAGE' },
+  { from: 'VISUAL_DEDUP', to: 'INSIGHT_COVERAGE' },
+  { from: 'INSIGHT_COVERAGE', to: 'QUALITY_GATE' },
+  { from: 'QUALITY_GATE', to: 'REPLENISH' },
+  { from: 'QUALITY_GATE', to: 'RESULT_SAVE' },
+  { from: 'REPLENISH', to: 'FRAGMENT_TYPE_ROUTER' },
+] as const satisfies ReadonlyArray<{ from: EffectPromptNodeId; to: EffectPromptNodeId }>;
+
+export const EFFECT_PROMPT_V10_GRAPH_EDGES = [
+  { from: 'LOAD_AND_SNAPSHOT', to: 'INSIGHT_MAPPING' },
+  { from: 'INSIGHT_MAPPING', to: 'SHARED_PROMPT_COMPILATION' },
+  { from: 'SHARED_PROMPT_COMPILATION', to: 'GLOBAL_FACT_ALLOCATION' },
+  { from: 'GLOBAL_FACT_ALLOCATION', to: 'RELATIONSHIP_FRAGMENT_ROUTER' },
+  { from: 'RELATIONSHIP_FRAGMENT_ROUTER', to: 'PLAN_HOOK_RELATIONSHIPS' },
+  { from: 'RELATIONSHIP_FRAGMENT_ROUTER', to: 'PLAN_PAIN_RELATIONSHIPS' },
+  { from: 'RELATIONSHIP_FRAGMENT_ROUTER', to: 'PLAN_PRODUCT_DISPLAY_RELATIONSHIPS' },
+  {
+    from: 'RELATIONSHIP_FRAGMENT_ROUTER',
+    to: 'PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS',
+  },
+  { from: 'RELATIONSHIP_FRAGMENT_ROUTER', to: 'PLAN_CTA_RELATIONSHIPS' },
+  { from: 'RELATIONSHIP_FRAGMENT_ROUTER', to: 'PLAN_OUTRO_RELATIONSHIPS' },
+  { from: 'PLAN_HOOK_RELATIONSHIPS', to: 'RELATIONSHIP_MERGE_VALIDATION' },
+  { from: 'PLAN_PAIN_RELATIONSHIPS', to: 'RELATIONSHIP_MERGE_VALIDATION' },
+  { from: 'PLAN_PRODUCT_DISPLAY_RELATIONSHIPS', to: 'RELATIONSHIP_MERGE_VALIDATION' },
+  {
+    from: 'PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS',
+    to: 'RELATIONSHIP_MERGE_VALIDATION',
+  },
+  { from: 'PLAN_CTA_RELATIONSHIPS', to: 'RELATIONSHIP_MERGE_VALIDATION' },
+  { from: 'PLAN_OUTRO_RELATIONSHIPS', to: 'RELATIONSHIP_MERGE_VALIDATION' },
+  { from: 'RELATIONSHIP_MERGE_VALIDATION', to: 'DIMENSION_COORDINATE_ROUTER' },
+  { from: 'DIMENSION_COORDINATE_ROUTER', to: 'PLAN_HOOK_COORDINATES' },
+  { from: 'DIMENSION_COORDINATE_ROUTER', to: 'PLAN_PAIN_COORDINATES' },
+  { from: 'DIMENSION_COORDINATE_ROUTER', to: 'PLAN_PRODUCT_DISPLAY_COORDINATES' },
+  {
+    from: 'DIMENSION_COORDINATE_ROUTER',
+    to: 'PLAN_SELLING_POINT_EXPLANATION_COORDINATES',
+  },
+  { from: 'DIMENSION_COORDINATE_ROUTER', to: 'PLAN_CTA_COORDINATES' },
+  { from: 'DIMENSION_COORDINATE_ROUTER', to: 'PLAN_OUTRO_COORDINATES' },
+  { from: 'PLAN_HOOK_COORDINATES', to: 'COORDINATE_MERGE_VALIDATION' },
+  { from: 'PLAN_PAIN_COORDINATES', to: 'COORDINATE_MERGE_VALIDATION' },
+  { from: 'PLAN_PRODUCT_DISPLAY_COORDINATES', to: 'COORDINATE_MERGE_VALIDATION' },
+  {
+    from: 'PLAN_SELLING_POINT_EXPLANATION_COORDINATES',
+    to: 'COORDINATE_MERGE_VALIDATION',
+  },
+  { from: 'PLAN_CTA_COORDINATES', to: 'COORDINATE_MERGE_VALIDATION' },
+  { from: 'PLAN_OUTRO_COORDINATES', to: 'COORDINATE_MERGE_VALIDATION' },
+  { from: 'COORDINATE_MERGE_VALIDATION', to: 'BLUEPRINT_QUOTA_ALLOCATION' },
+  { from: 'BLUEPRINT_QUOTA_ALLOCATION', to: 'BLUEPRINT_FRAGMENT_ROUTER' },
+  { from: 'BLUEPRINT_FRAGMENT_ROUTER', to: 'GENERATE_HOOK_BLUEPRINTS' },
+  { from: 'BLUEPRINT_FRAGMENT_ROUTER', to: 'GENERATE_PAIN_BLUEPRINTS' },
+  { from: 'BLUEPRINT_FRAGMENT_ROUTER', to: 'GENERATE_PRODUCT_DISPLAY_BLUEPRINTS' },
+  {
+    from: 'BLUEPRINT_FRAGMENT_ROUTER',
+    to: 'GENERATE_SELLING_POINT_EXPLANATION_BLUEPRINTS',
+  },
+  { from: 'BLUEPRINT_FRAGMENT_ROUTER', to: 'GENERATE_CTA_BLUEPRINTS' },
+  { from: 'BLUEPRINT_FRAGMENT_ROUTER', to: 'GENERATE_OUTRO_BLUEPRINTS' },
+  { from: 'GENERATE_HOOK_BLUEPRINTS', to: 'BLUEPRINT_ORTHOGONAL_GATE' },
+  { from: 'GENERATE_PAIN_BLUEPRINTS', to: 'BLUEPRINT_ORTHOGONAL_GATE' },
+  { from: 'GENERATE_PRODUCT_DISPLAY_BLUEPRINTS', to: 'BLUEPRINT_ORTHOGONAL_GATE' },
+  {
+    from: 'GENERATE_SELLING_POINT_EXPLANATION_BLUEPRINTS',
+    to: 'BLUEPRINT_ORTHOGONAL_GATE',
+  },
+  { from: 'GENERATE_CTA_BLUEPRINTS', to: 'BLUEPRINT_ORTHOGONAL_GATE' },
+  { from: 'GENERATE_OUTRO_BLUEPRINTS', to: 'BLUEPRINT_ORTHOGONAL_GATE' },
+  { from: 'BLUEPRINT_ORTHOGONAL_GATE', to: 'FRAGMENT_TYPE_ROUTER' },
+  { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_HOOK' },
+  { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_PAIN' },
+  { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_PRODUCT_DISPLAY' },
+  { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_SELLING_POINT_EXPLANATION' },
+  { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_CTA' },
+  { from: 'FRAGMENT_TYPE_ROUTER', to: 'GENERATE_OUTRO' },
+  { from: 'GENERATE_HOOK', to: 'NORMALIZATION' },
+  { from: 'GENERATE_PAIN', to: 'NORMALIZATION' },
+  { from: 'GENERATE_PRODUCT_DISPLAY', to: 'NORMALIZATION' },
+  { from: 'GENERATE_SELLING_POINT_EXPLANATION', to: 'NORMALIZATION' },
+  { from: 'GENERATE_CTA', to: 'NORMALIZATION' },
+  { from: 'GENERATE_OUTRO', to: 'NORMALIZATION' },
+  { from: 'NORMALIZATION', to: 'SEMANTIC_DEDUP' },
+  { from: 'NORMALIZATION', to: 'VISUAL_DEDUP' },
+  { from: 'SEMANTIC_DEDUP', to: 'INSIGHT_COVERAGE' },
+  { from: 'VISUAL_DEDUP', to: 'INSIGHT_COVERAGE' },
+  { from: 'INSIGHT_COVERAGE', to: 'QUALITY_GATE' },
+  { from: 'QUALITY_GATE', to: 'REPLENISH' },
+  { from: 'QUALITY_GATE', to: 'RESULT_SAVE' },
+  { from: 'REPLENISH', to: 'BLUEPRINT_FRAGMENT_ROUTER' },
+] as const satisfies ReadonlyArray<{ from: EffectPromptNodeId; to: EffectPromptNodeId }>;
+
+/** Current topology alias retained for existing consumers. */
+export const EFFECT_PROMPT_GRAPH_EDGES = EFFECT_PROMPT_V10_GRAPH_EDGES;
+
+export const effectPromptGraphNodeIds = (
+  version: EffectPromptGraphVersion,
+): readonly EffectPromptNodeId[] =>
+  version === 'V8_SINGLE_STRATEGY'
+    ? EFFECT_PROMPT_V8_GRAPH_NODE_IDS
+    : version === 'V9_SIX_BRANCH_STRATEGY'
+      ? EFFECT_PROMPT_V9_GRAPH_NODE_IDS
+      : EFFECT_PROMPT_V10_GRAPH_NODE_IDS;
+
+export const effectPromptGraphEdges = (
+  version: EffectPromptGraphVersion,
+): ReadonlyArray<{ from: EffectPromptNodeId; to: EffectPromptNodeId }> =>
+  version === 'V8_SINGLE_STRATEGY'
+    ? EFFECT_PROMPT_V8_GRAPH_EDGES
+    : version === 'V9_SIX_BRANCH_STRATEGY'
+      ? EFFECT_PROMPT_V9_GRAPH_EDGES
+      : EFFECT_PROMPT_V10_GRAPH_EDGES;
+
 export type EffectPromptNodeExecution = {
   nodeId: EffectPromptNodeId;
   status: EffectPromptStageStatus;
@@ -406,9 +738,13 @@ export type EffectPromptRun = {
   operation: EffectPromptOperation;
   targetItemId: string | null;
   status: EffectPromptRunStatus;
+  graphVersion: EffectPromptGraphVersion;
   progress: number;
+  attemptCount: number;
+  maxAttempts: number;
   currentNode: EffectPromptNodeId | 'COMPLETED' | null;
   warnings: string[];
+  errorCode: EffectPromptErrorCode | string | null;
   errorMessage: string | null;
   promptResultId: string | null;
   nodes: EffectPromptNodeExecution[];
@@ -421,6 +757,7 @@ export type EffectPromptProductState = {
   workflowRunId: string;
   productId: string;
   status: 'NOT_GENERATED' | 'QUEUED' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'STALE';
+  graphVersion: EffectPromptGraphVersion;
   runId: string | null;
   resultId: string | null;
   resultRevision: number | null;
@@ -432,6 +769,7 @@ export type EffectPromptProductState = {
   workingArtifactRevision: number | null;
   progress: number;
   currentNode: string | null;
+  errorCode: EffectPromptErrorCode | string | null;
   errorMessage: string | null;
   updatedAt: string;
 };
@@ -445,8 +783,11 @@ export type GetEffectPromptWorkspaceData = {
 export type GetEffectPromptResultData = {
   projectId: string;
   productId: string;
-  resultId: string;
-  revision: number;
+  resultId: string | null;
+  revision: number | null;
+  /** Read-only candidates recovered from a failed run; never a committed short batch. */
+  isPartialPreview: boolean;
+  previewRunId: string | null;
   result: Omit<EffectPromptBatchResult, 'items'>;
   items: EffectPromptItem[];
   total: number;
@@ -504,7 +845,58 @@ export type EffectPromptNodeDetailPrompt = Pick<
   'code' | 'fragmentType' | 'materialTags' | 'targetDurationSeconds' | 'dimensions' | 'content'
 >;
 
+export type EffectPromptNodeDetailBlueprint = {
+  title: string;
+  fragmentType: EffectPromptFragmentType;
+  relationshipTitle: string;
+  targetDurationSeconds: number;
+  dimensions: EffectPromptDimensions;
+  openingState: string;
+  actionArc: string;
+  endingState: string;
+};
+
 export type EffectPromptNodeDetailBlock =
+  | {
+      kind: 'RELATIONSHIP_LIST';
+      title: string;
+      items: Array<{
+        title: string;
+        fragmentType: EffectPromptFragmentType;
+        primaryFact: string;
+        auxiliaryFacts: string[];
+        creativeIntent: string;
+        blueprintQuota: number;
+      }>;
+    }
+  | {
+      kind: 'COORDINATE_LIST';
+      title: string;
+      groups: Array<{
+        dimension: EffectPromptDimensionKey;
+        label: string;
+        items: Array<{
+          value: string;
+          compatibleBundleCount: number;
+          sourceFacts: string[];
+        }>;
+      }>;
+    }
+  | {
+      kind: 'BLUEPRINT_LIST';
+      title: string;
+      items: EffectPromptNodeDetailBlueprint[];
+    }
+  | {
+      kind: 'ORTHOGONAL_PAIR_LIST';
+      title: string;
+      items: Array<{
+        distance: number;
+        sameDimensions: EffectPromptDimensionKey[];
+        left: EffectPromptNodeDetailBlueprint;
+        right: EffectPromptNodeDetailBlueprint;
+      }>;
+    }
   | {
       kind: 'TAG_LIST';
       title: string;

@@ -21,7 +21,7 @@ def test_quality_v4_templates_contain_six_specialized_system_prompts() -> None:
 
     assert (
         load_prompt_version("strategy_planning.prompt.txt")
-        == "effect-prompt-strategy-v7"
+        == "effect-prompt-strategy-v8"
     )
     assert (
         load_prompt_version("candidate_base.system.prompt.txt")
@@ -31,10 +31,11 @@ def test_quality_v4_templates_contain_six_specialized_system_prompts() -> None:
         load_prompt_version("candidate_task.user.prompt.txt")
         == "effect-prompt-candidate-task-v9"
     )
-    assert "evidencePlans" in strategy and "relationshipBundles" in strategy
-    assert "fragmentStrategyPools" in strategy
+    assert "relationshipBundles" in strategy
+    assert "bundleId、fragmentType 和 factIds" in strategy
+    assert "fragmentStrategyPools" not in strategy
     assert all(
-        field in strategy
+        field not in strategy
         for field in (
             "openingStates",
             "actionArcs",
@@ -44,7 +45,7 @@ def test_quality_v4_templates_contain_six_specialized_system_prompts() -> None:
         )
     )
     assert "usedFactIds" in base
-    assert "六类独立动作语法" in strategy and "提交前静默检查" in strategy
+    assert "每类生成 1～4 个关系束" in strategy and "提交前静默检查" in strategy
     assert "产品上下文是唯一事实来源" in base
     assert "纯净原始画面" in base
     assert "4～5 秒为 80～150" in base

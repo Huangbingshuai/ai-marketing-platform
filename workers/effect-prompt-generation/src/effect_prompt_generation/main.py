@@ -19,11 +19,21 @@ def _provider(settings: WorkerSettings) -> AiProvider:
         base_url=settings.ark_base_url,
         api_key=settings.ark_api_key.get_secret_value(),
         strategy_model=settings.resolved_prompt_strategy_model,
+        fragment_strategy_model=settings.resolved_prompt_fragment_strategy_model,
+        blueprint_model=settings.resolved_prompt_blueprint_model,
         candidate_model=settings.resolved_prompt_candidate_model,
         strategy_max_output_tokens=settings.ark_prompt_strategy_max_output_tokens,
         candidate_max_output_tokens=settings.ark_prompt_candidate_max_output_tokens,
+        fragment_strategy_max_output_tokens=(
+            settings.ark_prompt_fragment_strategy_max_output_tokens
+        ),
         reasoning_effort=settings.ark_prompt_reasoning_effort,
-        timeout=settings.ark_timeout_seconds,
+        strategy_timeout=settings.ark_prompt_strategy_timeout_seconds,
+        candidate_timeout=settings.resolved_prompt_candidate_timeout_seconds,
+        fragment_strategy_timeout=(
+            settings.ark_prompt_fragment_strategy_timeout_seconds
+        ),
+        max_attempts=settings.ark_prompt_provider_max_attempts,
     )
 
 

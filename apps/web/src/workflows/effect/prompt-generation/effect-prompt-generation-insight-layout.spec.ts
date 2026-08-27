@@ -12,9 +12,9 @@ describe('effect prompt V4 insight utilization layout', () => {
   });
 
   it('renders the mapping and coverage stages in the public sub-workflow', () => {
-    expect(pageSource).toContain("['INSIGHT_MAPPING']");
-    expect(pageSource).toContain("['SHARED_PROMPT_COMPILATION']");
-    expect(pageSource).toContain("['INSIGHT_COVERAGE']");
+    expect(pageSource).toMatch(/\bINSIGHT_MAPPING\b/u);
+    expect(pageSource).toMatch(/\bSHARED_PROMPT_COMPILATION\b/u);
+    expect(pageSource).toMatch(/\bINSIGHT_COVERAGE\b/u);
     expect(pageSource).toContain('连接受众、痛点、场景、卖点与营销目标');
     expect(pageSource).toContain('按缺少的片段类型和提炼事实定向补齐');
   });

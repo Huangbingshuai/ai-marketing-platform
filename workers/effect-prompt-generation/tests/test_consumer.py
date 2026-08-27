@@ -17,7 +17,11 @@ from effect_prompt_generation.models import (
     StageOutput,
 )
 from effect_prompt_generation.pipeline import PipelineError, PromptGenerationPipeline
-from effect_prompt_generation.providers import MockAiProvider
+from effect_prompt_generation.providers import (
+    MockAiProvider,
+    ProviderError,
+    ProviderErrorType,
+)
 
 
 class ConsumerApi:
@@ -45,7 +49,9 @@ class ConsumerApi:
     async def get_shards(self, context: RuntimeContext) -> list[ShardRecord]:
         return []
 
-    async def heartbeat(self, context: RuntimeContext, payload: ProgressPayload) -> None:
+    async def heartbeat(
+        self, context: RuntimeContext, payload: ProgressPayload
+    ) -> None:
         return None
 
     async def complete(self, context: RuntimeContext, result: PromptBatchResult) -> str:
@@ -53,6 +59,11 @@ class ConsumerApi:
 
     async def fail(self, context: RuntimeContext, payload: FailurePayload) -> None:
         self.failures.append(payload)
+
+
+class FailingPersistenceApi(ConsumerApi):
+    async def fail(self, context: RuntimeContext, payload: FailurePayload) -> None:
+        raise RuntimeError("failure persistence unavailable")
 
 
 class TrackingPipeline(PromptGenerationPipeline):
@@ -69,6 +80,15 @@ class RuntimeValidationGraph:
     async def ainvoke(self, *args: object, **kwargs: object) -> dict[str, str]:
         raise ValidationError.from_exception_data(
             "RuntimeResult", [{"type": "missing", "loc": ("content",), "input": {}}]
+        )
+
+
+class RetryableProviderGraph:
+    async def ainvoke(self, *args: object, **kwargs: object) -> dict[str, str]:
+        raise ProviderError(
+            "AI request timed out",
+            retryable=True,
+            error_type=ProviderErrorType.TIMEOUT,
         )
 
 
@@ -107,7 +127,7 @@ async def test_runtime_validation_error_is_persisted_as_safe_failure_and_cache_i
     message = FakeMessage(
         json.dumps(
             {
-                    "schemaVersion": 5,
+                "schemaVersion": 5,
                 "runId": "run-1",
                 "projectId": snapshot.project_id,
                 "requestId": "request-1",
@@ -117,8 +137,9 @@ async def test_runtime_validation_error_is_persisted_as_safe_failure_and_cache_i
 
     await consumer.handle(message)  # type: ignore[arg-type]
 
-    assert message.rejected is True
-    assert message.acked is False
+    assert message.rejected is False
+    assert message.acked is True
+    assert message.nacked is False
     assert api.failures[0].error_code == "VALIDATION_ERROR"
     assert api.failures[0].error_message == "Prompt 子工作流数据结构校验失败"
     assert pipeline.unregistered is True
@@ -155,3 +176,33 @@ async def test_message_validation_error_is_rejected_without_claim_or_failure(
     assert message.rejected is True
     assert api.claim_count == 0
     assert api.failures == []
+
+
+@pytest.mark.asyncio
+async def test_retryable_message_is_requeued_once_when_failure_cannot_be_persisted(
+    snapshot: PromptGenerationSnapshot,
+) -> None:
+    api = FailingPersistenceApi(snapshot)
+    pipeline = TrackingPipeline(api=api)
+    consumer = PromptGenerationConsumer(
+        rabbitmq_url="amqp://unused",
+        queue_name="unused",
+        api=api,
+        pipeline=pipeline,
+        graph=RetryableProviderGraph(),  # type: ignore[arg-type]
+    )
+    message = FakeMessage(
+        json.dumps(
+            {
+                "schemaVersion": 5,
+                "runId": "run-1",
+                "projectId": snapshot.project_id,
+                "requestId": "request-1",
+            }
+        ).encode()
+    )
+
+    await consumer.handle(message)  # type: ignore[arg-type]
+
+    assert message.rejected is False
+    assert message.nacked is True

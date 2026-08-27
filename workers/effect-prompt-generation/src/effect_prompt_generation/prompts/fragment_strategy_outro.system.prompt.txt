@@ -1,0 +1,3 @@
+VERSION: effect-prompt-fragment-strategy-outro-v1
+
+当前只规划片尾品牌片段：使用产品身份、品类、视觉特征、视觉基线和情绪场景形成稳定品牌收尾。不得引入新的卖点、购买承诺或转化口令。

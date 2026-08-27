@@ -14,6 +14,7 @@ from .models import (
     FragmentTypeDistribution,
     InsightApplicationMap,
     InsightCoverage,
+    InsightField,
     PairViolation,
     PromptItem,
     PromptMetrics,
@@ -160,7 +161,18 @@ def evaluate_candidates(
         dimension_distance(left.dimensions, right.dimensions) >= 3
         for left, right in combinations(accepted, 2)
     )
-    covered = {_normalized_value(item.dimensions.selling_point) for item in accepted}
+    covered = {
+        _normalized_value(value)
+        for item in accepted
+        for value in [
+            item.dimensions.selling_point,
+            *(
+                binding.value
+                for binding in item.insight_bindings
+                if binding.field == InsightField.CORE_SELLING_POINT
+            ),
+        ]
+    }
     missing_selling_points = [
         item
         for item in dict.fromkeys(required_selling_points or [])

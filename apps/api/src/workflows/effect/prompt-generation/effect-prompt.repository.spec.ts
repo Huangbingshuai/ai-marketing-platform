@@ -58,6 +58,58 @@ const runRecord = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('EffectPromptRepository', () => {
+  it('persists blueprint and prompt shards under phase-scoped unique keys', async () => {
+    const upsert = vi.fn().mockResolvedValue({});
+    const transaction = {
+      effectPromptRun: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      effectPromptShardOutput: { upsert },
+    };
+    const repository = new EffectPromptRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+    const input = {
+      status: 'SUCCEEDED' as const,
+      combinationPlan: [],
+      items: [],
+      blueprintPlan: [{ slotId: 'blueprint-task-a' }],
+      blueprints: [{ slotId: 'blueprint-a' }],
+      warnings: [],
+    };
+
+    await repository.saveShard(projectId, runId, 'attempt-a', 0, 0, 'BLUEPRINT', input);
+    await repository.saveShard(projectId, runId, 'attempt-a', 0, 0, 'PROMPT', input);
+
+    expect(upsert.mock.calls.map(([argument]) => argument.where)).toEqual([
+      {
+        projectId_runId_phase_round_shardIndex: {
+          projectId,
+          runId,
+          phase: 'BLUEPRINT',
+          round: 0,
+          shardIndex: 0,
+        },
+      },
+      {
+        projectId_runId_phase_round_shardIndex: {
+          projectId,
+          runId,
+          phase: 'PROMPT',
+          round: 0,
+          shardIndex: 0,
+        },
+      },
+    ]);
+    expect(upsert.mock.calls[0]?.[0].create).toMatchObject({
+      phase: 'BLUEPRINT',
+      combinationPlan: input.blueprintPlan,
+      items: input.blueprints,
+    });
+    expect(upsert.mock.calls[1]?.[0].create).toMatchObject({
+      phase: 'PROMPT',
+      combinationPlan: input.combinationPlan,
+      items: input.items,
+    });
+  });
   it('only allows confirmed selling points that match the locked fragment responsibility', () => {
     const insight = {
       coreSellingPoints: ['单手开合', '轻量便携'],
@@ -263,7 +315,10 @@ describe('EffectPromptRepository', () => {
     expect(runCreate).toHaveBeenCalledWith({
       data: expect.objectContaining({
         settingsHash: expectedHash,
-        inputSnapshot: expect.objectContaining({ settings: expectedSettings }),
+        inputSnapshot: expect.objectContaining({
+          graphVersion: 'V10_RELATION_COORDINATE_BLUEPRINT',
+          settings: expectedSettings,
+        }),
       }),
       include: { result: true, stages: true },
     });
@@ -447,6 +502,256 @@ describe('EffectPromptRepository', () => {
         leaseExpiresAt: expect.any(Date),
       }),
     });
+  });
+
+  it('requeues a retryable timeout through the outbox and keeps a safe retry warning', async () => {
+    const now = new Date('2026-08-26T10:00:00.000Z');
+    const update = vi.fn().mockResolvedValue({});
+    const updateOutbox = vi.fn().mockResolvedValue({ count: 1 });
+    const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([{ id: runId }]),
+      effectPromptRun: {
+        findFirst: vi.fn().mockResolvedValue({
+          ...runRecord(),
+          status: 'RUNNING',
+          attemptCount: 1,
+          attemptToken: 'attempt-a',
+          leaseExpiresAt: new Date('2026-08-26T10:01:00.000Z'),
+        }),
+        update,
+      },
+      jobOutbox: { updateMany: updateOutbox },
+    };
+    const repository = new EffectPromptRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await expect(
+      repository.fail(
+        projectId,
+        runId,
+        'attempt-a',
+        {
+          errorCode: 'AI_TIMEOUT',
+          errorMessage: 'Prompt AI 生成超时',
+          retryable: true,
+          warnings: [],
+        },
+        now,
+      ),
+    ).resolves.toBe('REQUEUED');
+    expect(update).toHaveBeenCalledWith({
+      where: { projectId_id: { projectId, id: runId } },
+      data: expect.objectContaining({
+        status: 'QUEUED',
+        warnings: ['上一次 Prompt AI 请求超时，任务已自动重新排队'],
+        attemptToken: null,
+        leaseExpiresAt: null,
+      }),
+    });
+    expect(updateOutbox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ projectId, aggregateId: runId }),
+        data: expect.objectContaining({ status: 'PENDING', nextAttemptAt: now }),
+      }),
+    );
+  });
+
+  it('fails output truncation immediately and closes the current stage', async () => {
+    const now = new Date('2026-08-27T02:00:00.000Z');
+    const update = vi.fn().mockResolvedValue({});
+    const updateStage = vi.fn().mockResolvedValue({ count: 1 });
+    const updateOutbox = vi.fn();
+    const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([{ id: runId }]),
+      effectPromptRun: {
+        findFirst: vi.fn().mockResolvedValue({
+          ...runRecord(),
+          status: 'RUNNING',
+          currentNode: 'STRATEGY_PLANNING',
+          attemptCount: 1,
+          attemptToken: 'attempt-a',
+          leaseExpiresAt: new Date('2026-08-27T02:01:00.000Z'),
+        }),
+        update,
+      },
+      effectPromptStageOutput: { updateMany: updateStage },
+      effectPromptShardOutput: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      jobOutbox: { updateMany: updateOutbox },
+    };
+    const repository = new EffectPromptRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await expect(
+      repository.fail(
+        projectId,
+        runId,
+        'attempt-a',
+        {
+          errorCode: 'AI_OUTPUT_TRUNCATED',
+          errorMessage: '营销关系规划结果超过安全长度，任务已停止',
+          retryable: false,
+          warnings: [],
+        },
+        now,
+      ),
+    ).resolves.toBe('FAILED');
+    expect(update).toHaveBeenCalledWith({
+      where: { projectId_id: { projectId, id: runId } },
+      data: expect.objectContaining({
+        status: 'FAILED',
+        currentNode: 'STRATEGY_PLANNING',
+        errorCode: 'AI_OUTPUT_TRUNCATED',
+        completedAt: now,
+      }),
+    });
+    expect(updateStage).toHaveBeenCalledWith({
+      where: { projectId, runId, nodeId: 'STRATEGY_PLANNING' },
+      data: {
+        status: 'FAILED',
+        summary: '营销关系规划结果超过安全长度，任务已停止',
+        errorMessage: '营销关系规划结果超过安全长度，任务已停止',
+        completedAt: now,
+      },
+    });
+    expect(updateOutbox).not.toHaveBeenCalled();
+  });
+
+  it('allows one invalid-response retry even after an unrelated earlier attempt', async () => {
+    const now = new Date('2026-08-27T02:00:00.000Z');
+    const updateOutbox = vi.fn().mockResolvedValue({ count: 1 });
+    const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([{ id: runId }]),
+      effectPromptRun: {
+        findFirst: vi
+          .fn()
+          .mockResolvedValueOnce({
+            ...runRecord(),
+            status: 'RUNNING',
+            currentNode: 'STRATEGY_PLANNING',
+            attemptCount: 2,
+            attemptToken: 'attempt-a',
+            leaseExpiresAt: new Date('2026-08-27T02:01:00.000Z'),
+          })
+          .mockResolvedValueOnce({
+            ...runRecord(),
+            status: 'RUNNING',
+            currentNode: 'STRATEGY_PLANNING',
+            attemptCount: 3,
+            attemptToken: 'attempt-b',
+            leaseExpiresAt: new Date('2026-08-27T02:01:00.000Z'),
+          }),
+        update: vi.fn().mockResolvedValue({}),
+      },
+      effectPromptStageOutput: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce({ metadata: { count: 1 } }),
+        upsert: vi.fn().mockResolvedValue({}),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      effectPromptShardOutput: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      jobOutbox: { updateMany: updateOutbox },
+    };
+    const repository = new EffectPromptRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+    const failure = {
+      errorCode: 'AI_RESPONSE_INVALID',
+      errorMessage: 'Prompt AI 返回格式异常',
+      retryable: true,
+      warnings: [],
+    };
+
+    await expect(repository.fail(projectId, runId, 'attempt-a', failure, now)).resolves.toBe(
+      'REQUEUED',
+    );
+    await expect(repository.fail(projectId, runId, 'attempt-b', failure, now)).resolves.toBe(
+      'FAILED',
+    );
+    expect(updateOutbox).toHaveBeenCalledTimes(1);
+    expect(transaction.effectPromptStageOutput.upsert).toHaveBeenCalledTimes(1);
+    expect(transaction.effectPromptStageOutput.updateMany).toHaveBeenCalledTimes(2);
+  });
+
+  it('recovers an expired Prompt worker lease through the same run and outbox', async () => {
+    const now = new Date('2026-08-26T10:00:00.000Z');
+    const expired = {
+      ...runRecord(),
+      status: 'RUNNING',
+      attemptCount: 1,
+      attemptToken: 'expired-attempt',
+      leaseExpiresAt: new Date('2026-08-26T09:59:00.000Z'),
+    };
+    const update = vi.fn().mockResolvedValue({});
+    const updateOutbox = vi.fn().mockResolvedValue({ count: 1 });
+    const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([{ id: runId }]),
+      effectPromptRun: { findFirst: vi.fn().mockResolvedValue(expired), update },
+      jobOutbox: { updateMany: updateOutbox },
+    };
+    const repository = new EffectPromptRepository({
+      effectPromptRun: {
+        findMany: vi.fn().mockResolvedValue([{ id: runId, projectId }]),
+      },
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await expect(repository.recoverExpiredLeases(now)).resolves.toEqual({
+      requeued: 1,
+      failed: 0,
+    });
+    expect(update).toHaveBeenCalledWith({
+      where: { projectId_id: { projectId, id: runId } },
+      data: expect.objectContaining({
+        status: 'QUEUED',
+        attemptToken: null,
+        leaseExpiresAt: null,
+        errorCode: 'WORKER_LEASE_EXPIRED',
+      }),
+    });
+    expect(updateOutbox).toHaveBeenCalledOnce();
+  });
+
+  it('fails an expired Prompt worker lease after the third attempt', async () => {
+    const now = new Date('2026-08-26T10:00:00.000Z');
+    const update = vi.fn().mockResolvedValue({});
+    const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([{ id: runId }]),
+      effectPromptRun: {
+        findFirst: vi.fn().mockResolvedValue({
+          ...runRecord(),
+          status: 'RUNNING',
+          attemptCount: 3,
+          attemptToken: 'expired-attempt',
+          leaseExpiresAt: new Date('2026-08-26T09:59:00.000Z'),
+        }),
+        update,
+      },
+      jobOutbox: { updateMany: vi.fn() },
+    };
+    const repository = new EffectPromptRepository({
+      effectPromptRun: {
+        findMany: vi.fn().mockResolvedValue([{ id: runId, projectId }]),
+      },
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await expect(repository.recoverExpiredLeases(now)).resolves.toEqual({
+      requeued: 0,
+      failed: 1,
+    });
+    expect(update).toHaveBeenCalledWith({
+      where: { projectId_id: { projectId, id: runId } },
+      data: expect.objectContaining({
+        status: 'FAILED',
+        errorMessage: 'Worker 多次失联，Prompt 任务已终止',
+        completedAt: now,
+      }),
+    });
+    expect(transaction.jobOutbox.updateMany).not.toHaveBeenCalled();
   });
 
   it('closes RESULT_SAVE and skips an untriggered REPLENISH in the completion transaction', async () => {

@@ -12,6 +12,46 @@ import { EffectPromptService } from './effect-prompt.service';
 import { compileEffectPromptSharedPrompt, recomputePromptQuality } from './effect-prompt.quality';
 
 describe('EffectPromptService settings contract', () => {
+  it('returns V9-compatible strategy checkpoints and unified V10 stage checkpoints on claim', async () => {
+    const relationshipCheckpoint = {
+      nodeId: 'PLAN_HOOK_RELATIONSHIPS',
+      sourceFingerprint: 'source-a',
+      allocationHash: 'a'.repeat(64),
+      promptVersion: 'v10',
+      plan: {},
+    };
+    const strategyCheckpoint = {
+      nodeId: 'PLAN_HOOK_STRATEGY',
+      sourceFingerprint: 'source-a',
+      allocationHash: 'b'.repeat(64),
+      promptVersion: 'v9',
+      plan: {},
+    };
+    const repository = {
+      claim: vi.fn().mockResolvedValue({
+        kind: 'CLAIMED',
+        run: { sourceFingerprint: 'source-a' },
+        attemptToken: 'attempt-a',
+        input: { graphVersion: 'V10_RELATION_COORDINATE_BLUEPRINT' },
+        checkpointStages: [
+          {
+            nodeId: 'PLAN_HOOK_RELATIONSHIPS',
+            metadata: { checkpoint: relationshipCheckpoint },
+          },
+          { nodeId: 'PLAN_HOOK_STRATEGY', metadata: { checkpoint: strategyCheckpoint } },
+        ],
+      }),
+    };
+    const service = new EffectPromptService(repository as never, {} as never, {} as never);
+
+    const output = await service.claim('project-a', 'run-a');
+
+    expect(output).toMatchObject({
+      terminal: false,
+      stageCheckpoints: [relationshipCheckpoint, strategyCheckpoint],
+      strategyCheckpoints: [strategyCheckpoint],
+    });
+  });
   it('normalizes and forwards visual item-regeneration direction without opening a batch path', async () => {
     const dimensions = {
       narrative: ' 场景代入型 ',
@@ -658,6 +698,94 @@ describe('EffectPromptService settings contract', () => {
     ]);
   });
 
+  it('returns safe generated candidates as a read-only preview when the batch failed', async () => {
+    const generatedAt = '2026-08-27T04:00:00.000Z';
+    const repository = {
+      workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }),
+      latestResult: vi.fn().mockResolvedValue(null),
+      latestFailedRunForPreview: vi.fn().mockResolvedValue({
+        id: 'run-failed',
+        sourceFingerprint: 'f'.repeat(64),
+        inputSnapshot: {
+          schemaVersion: 5,
+          projectId: 'project-a',
+          workflowRunId: 'workflow-a',
+          productId: 'product-a',
+          operation: 'BATCH_GENERATE',
+          targetItemId: null,
+          settings: DEFAULT_EFFECT_PROMPT_SETTINGS,
+          insightArtifact: {
+            id: 'insight-a',
+            revision: 1,
+            contentHash: 'a'.repeat(64),
+            result: { aspectRatio: '9:16', resolution: '1080P', disabledElements: ['品牌水印'] },
+          },
+          retainedManualItems: [],
+          baseResultRevision: null,
+        },
+        shards: [
+          {
+            items: [
+              {
+                slotId: 'r0-s0001',
+                ordinal: 1,
+                fragmentType: 'HOOK',
+                materialTags: ['钩子'],
+                targetDurationSeconds: 5,
+                dimensions: {
+                  narrative: '痛点前置',
+                  scene: '家庭厨房',
+                  persona: '穿围裙的成年人',
+                  sellingPoint: '真实切面',
+                  camera: '中近景缓慢推进',
+                  emotion: '惊喜发现',
+                },
+                content: '家庭厨房中，成年人拿起广式腊肠转向镜头，镜头缓慢推进并停在清晰切面。',
+                insightBindings: [],
+                executionInvalidReasons: [],
+                generatedAt,
+              },
+              {
+                slotId: 'r0-s0002',
+                ordinal: 2,
+                fragmentType: 'HOOK',
+                materialTags: ['钩子'],
+                targetDurationSeconds: 5,
+                dimensions: {
+                  narrative: '悬念引入',
+                  scene: '餐桌',
+                  persona: '成年人',
+                  sellingPoint: '产品外观',
+                  camera: '固定近景',
+                  emotion: '好奇',
+                },
+                content: '餐桌上产品突然漂浮，镜头跟随并展示异常画面。',
+                insightBindings: [],
+                executionInvalidReasons: ['PHYSICS_BREAK'],
+                generatedAt,
+              },
+            ],
+          },
+        ],
+      }),
+    };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const service = new EffectPromptService(repository as never, projects as never, {} as never);
+
+    const output = await service.result('project-a', 'workflow-a', 'product-a', 1, 10);
+
+    expect(output).toMatchObject({
+      resultId: null,
+      revision: null,
+      isPartialPreview: true,
+      previewRunId: 'run-failed',
+      total: 1,
+    });
+    expect(output.items).toHaveLength(1);
+    expect(output.items[0]?.content).toContain('广式腊肠');
+    expect(output.result.qualityStatus).toBe('NEEDS_REVIEW');
+  });
+
   it('returns an explicit validation issue for legacy full-video results', async () => {
     const repository = {
       result: vi.fn().mockResolvedValue({
@@ -674,5 +802,162 @@ describe('EffectPromptService settings contract', () => {
 
     expect(output.valid).toBe(false);
     expect(output.issues).toEqual([expect.objectContaining({ code: 'LEGACY_SCHEMA' })]);
+  });
+
+  it('recognizes a versionless recovered run as V9 when real V9 stages exist', async () => {
+    const now = new Date('2026-08-27T03:00:00.000Z');
+    const record = {
+      id: 'run-a',
+      projectId: 'project-a',
+      workflowRunId: 'workflow-a',
+      productId: 'product-a',
+      operation: 'BATCH_GENERATE',
+      targetItemId: null,
+      inputSnapshot: {},
+      status: 'FAILED',
+      progress: 15,
+      currentNode: 'GLOBAL_FACT_ALLOCATION',
+      warnings: [],
+      errorCode: null,
+      errorMessage: null,
+      attemptCount: 1,
+      stages: [
+        {
+          nodeId: 'GLOBAL_FACT_ALLOCATION',
+          status: 'SUCCEEDED',
+          summary: '全局事实分配完成',
+          warnings: [],
+          errorMessage: null,
+        },
+      ],
+      result: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const repository = { run: vi.fn().mockResolvedValue(record) };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const service = new EffectPromptService(repository as never, projects as never, {} as never);
+
+    const output = await service.run('project-a', 'run-a');
+
+    expect(output.run.graphVersion).toBe('V9_SIX_BRANCH_STRATEGY');
+    expect(output.run.nodes.some(({ nodeId }) => nodeId === 'GLOBAL_FACT_ALLOCATION')).toBe(true);
+    expect(output.run.nodes.some(({ nodeId }) => nodeId === 'STRATEGY_PLANNING')).toBe(false);
+  });
+
+  it('recognizes a versionless recovered run as V10 when V10-only stages exist', async () => {
+    const now = new Date('2026-08-27T03:30:00.000Z');
+    const record = {
+      id: 'run-v10',
+      projectId: 'project-a',
+      workflowRunId: 'workflow-a',
+      productId: 'product-a',
+      operation: 'BATCH_GENERATE',
+      targetItemId: null,
+      inputSnapshot: {},
+      status: 'RUNNING',
+      progress: 30,
+      currentNode: 'PLAN_HOOK_COORDINATES',
+      warnings: [],
+      errorCode: null,
+      errorMessage: null,
+      attemptCount: 1,
+      stages: [
+        {
+          nodeId: 'PLAN_HOOK_COORDINATES',
+          status: 'SUCCEEDED',
+          summary: '钩子六维坐标规划完成',
+          warnings: [],
+          errorMessage: null,
+        },
+      ],
+      result: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const repository = { run: vi.fn().mockResolvedValue(record) };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const service = new EffectPromptService(repository as never, projects as never, {} as never);
+
+    const output = await service.run('project-a', 'run-v10');
+
+    expect(output.run.graphVersion).toBe('V10_RELATION_COORDINATE_BLUEPRINT');
+    expect(output.run.nodes.some(({ nodeId }) => nodeId === 'PLAN_HOOK_COORDINATES')).toBe(true);
+    expect(output.run.nodes.some(({ nodeId }) => nodeId === 'PLAN_HOOK_STRATEGY')).toBe(false);
+  });
+
+  it('rejects node details from a different persisted graph version', async () => {
+    const now = new Date('2026-08-27T03:40:00.000Z');
+    const record = {
+      id: 'run-v9',
+      inputSnapshot: { graphVersion: 'V9_SIX_BRANCH_STRATEGY' },
+      status: 'COMPLETED',
+      currentNode: 'COMPLETED',
+      stages: [],
+      shards: [],
+      result: null,
+      updatedAt: now,
+    };
+    const repository = { runForNodeDetail: vi.fn().mockResolvedValue(record) };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const service = new EffectPromptService(repository as never, projects as never, {} as never);
+
+    await expect(
+      service.nodeDetail('project-a', 'run-v9', 'PLAN_HOOK_COORDINATES'),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('projects the persisted failed branch as the only failure and closes aborted siblings', async () => {
+    const now = new Date('2026-08-27T04:10:00.000Z');
+    const record = {
+      id: 'run-a',
+      projectId: 'project-a',
+      workflowRunId: 'workflow-a',
+      productId: 'product-a',
+      operation: 'BATCH_GENERATE',
+      targetItemId: null,
+      inputSnapshot: { graphVersion: 'V9_SIX_BRANCH_STRATEGY' },
+      status: 'FAILED',
+      progress: 80,
+      currentNode: 'GENERATE_OUTRO',
+      warnings: [],
+      errorCode: 'AI_REQUEST_REJECTED',
+      errorMessage: 'Prompt AI 请求被拒绝',
+      attemptCount: 2,
+      stages: [
+        {
+          nodeId: 'GENERATE_PRODUCT_DISPLAY',
+          status: 'FAILED',
+          summary: 'Prompt AI 请求被拒绝',
+          warnings: [],
+          errorMessage: 'Prompt AI 请求被拒绝',
+        },
+        {
+          nodeId: 'GENERATE_OUTRO',
+          status: 'RUNNING',
+          summary: '正在生成候选 Prompt',
+          warnings: [],
+          errorMessage: null,
+        },
+      ],
+      result: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const repository = { run: vi.fn().mockResolvedValue(record) };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const service = new EffectPromptService(repository as never, projects as never, {} as never);
+
+    const output = await service.run('project-a', 'run-a');
+
+    expect(output.run.currentNode).toBe('GENERATE_PRODUCT_DISPLAY');
+    expect(
+      output.run.nodes.find(({ nodeId }) => nodeId === 'GENERATE_PRODUCT_DISPLAY'),
+    ).toMatchObject({ status: 'FAILED' });
+    expect(output.run.nodes.find(({ nodeId }) => nodeId === 'GENERATE_OUTRO')).toMatchObject({
+      status: 'SKIPPED',
+      summary: '任务已停止，该分支未完成',
+      errorMessage: null,
+    });
   });
 });

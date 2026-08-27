@@ -258,6 +258,21 @@ export const isEffectExtractionResult = (value: unknown): value is EffectExtract
   );
 };
 
+/**
+ * Compatibility guard for schema-v2 workers built before `resolution` became required.
+ * The repository restores the authoritative resolution from the immutable input snapshot.
+ */
+export const isLegacyEffectExtractionResultWithoutResolution = (
+  value: unknown,
+): value is Omit<EffectExtractionResult, 'resolution'> => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    !('resolution' in record) &&
+    isEffectExtractionResult({ ...record, resolution: '__RESTORE_FROM_INPUT_SNAPSHOT__' })
+  );
+};
+
 const safeWarningText = (value: unknown, maxLength: number): string | null => {
   if (typeof value !== 'string') return null;
   const normalized = value.replace(/\s+/g, ' ').trim();

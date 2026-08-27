@@ -11,6 +11,9 @@ from effect_prompt_generation.insight_mapping import map_insight
 from effect_prompt_generation.models import (
     EvidenceMode,
     FragmentType,
+    InsightBinding,
+    InsightBindingRole,
+    InsightField,
     PlannedCombination,
     PromptDimensions,
     SharedPrompt,
@@ -53,10 +56,9 @@ def _shared_prompt() -> SharedPrompt:
 
 
 @pytest.mark.asyncio
-async def test_ark_strategy_uses_strict_schema_and_fills_missing_evidence_safely() -> (
-    None
-):
+async def test_ark_strategy_uses_compact_schema_and_worker_expands_safely() -> None:
     seen: dict[str, object] = {}
+    seen_timeout: dict[str, float] = {}
     application = map_insight(
         {
             "productName": "便携杯",
@@ -74,35 +76,35 @@ async def test_ark_strategy_uses_strict_schema_and_fills_missing_evidence_safely
             "emotionalScenarios": ["从容出门"],
         }
     )
-    mock_plan = (
+    full_plan = (
         await MockAiProvider().plan_strategy(application, target_count=50)
     ).value
 
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         seen.update(payload)
-        output = mock_plan.model_dump(mode="json", by_alias=True)
-        first_evidence = {
-            **output["dimensionPools"]["evidencePlans"][0],
-            "evidenceMode": "VISIBLE_RESULT",
-            "allowedVisualEvidence": "模型错误规划的夸张结果",
-        }
-        output["dimensionPools"]["evidencePlans"] = [
-            first_evidence,
+        seen_timeout.update(request.extensions["timeout"])
+        compact_bundles = [
             {
-                "sellingPoint": "模型擅自增加的卖点",
-                "evidenceMode": "VISIBLE_RESULT",
-                "allowedVisualEvidence": "夸张效果画面",
-                "forbiddenInference": "无",
-            },
+                "bundleId": bundle.bundle_id,
+                "fragmentType": bundle.eligible_fragment_types[0].value,
+                "factIds": bundle.fact_ids[:8],
+            }
+            for bundle in full_plan.relationship_bundles[:8]
         ]
-        output["relationshipBundles"] = output["relationshipBundles"][:2]
-        output["relationshipBundles"][0]["factIds"] = ["unknown-model-fact"]
-        output["relationshipBundles"][1]["persona"] = (
-            "家庭厨房决策者、美食爱好者和全国消费者"
-        )
+        compact_bundles[0]["factIds"] = ["unknown-model-fact"]
+        output = {"relationshipBundles": compact_bundles}
         return httpx.Response(
-            200, json={"output_text": json.dumps(output, ensure_ascii=False)}
+            200,
+            json={
+                "status": "completed",
+                "output_text": json.dumps(output, ensure_ascii=False),
+                "usage": {
+                    "input_tokens": 900,
+                    "output_tokens": 700,
+                    "total_tokens": 1600,
+                },
+            },
         )
 
     provider = ArkResponsesProvider(
@@ -110,6 +112,7 @@ async def test_ark_strategy_uses_strict_schema_and_fills_missing_evidence_safely
         api_key="test-key",
         strategy_model="strategy-model",
         candidate_model="candidate-model",
+        strategy_timeout=234,
         transport=httpx.MockTransport(handler),
     )
     try:
@@ -126,6 +129,12 @@ async def test_ark_strategy_uses_strict_schema_and_fills_missing_evidence_safely
     assert seen["model"] == "strategy-model"
     assert seen["max_output_tokens"] == 8192
     assert seen["reasoning"] == {"effort": "minimal"}
+    assert seen_timeout["read"] == 234
+    schema = text_format["format"]["schema"]
+    assert set(schema["properties"]) == {"relationshipBundles"}
+    prompt = seen["input"][0]["content"][0]["text"]  # type: ignore[index]
+    assert "fragmentStrategyPools" not in prompt
+    assert "dimensionPools" not in prompt
     assert result.value.dimension_pools.selling_points == ["已确认卖点", "次要卖点"]
     assert (
         result.value.dimension_pools.evidence_plans[0].evidence_mode
@@ -162,12 +171,104 @@ async def test_ark_strategy_uses_strict_schema_and_fills_missing_evidence_safely
         for forbidden in ("消费者", "人群", "爱好者", "家庭厨房决策者")
     )
     assert "unknown-model-fact" not in covered_fact_ids
+    assert (result.metadata.model_relationship_bundle_count or 0) >= 1
+    assert (result.metadata.worker_completed_relationship_bundle_count or 0) >= 1
+
+
+@pytest.mark.asyncio
+async def test_ark_output_limit_is_non_retryable_without_provider_retry() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            json={
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output_text": '{"relationshipBundles":[{"bundleId":"cut',
+                "usage": {
+                    "input_tokens": 800,
+                    "output_tokens": 8192,
+                    "total_tokens": 8992,
+                },
+            },
+        )
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.example/v3",
+        api_key="test-key",
+        strategy_model="strategy-model",
+        candidate_model="candidate-model",
+        max_attempts=3,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(ProviderError) as exc_info:
+            await provider.plan_strategy(
+                map_insight(
+                    {
+                        "productName": "便携杯",
+                        "coreSellingPoints": ["单手开合"],
+                        "corePainPoints": ["双手被占用"],
+                        "targetAudience": "通勤人群",
+                        "marketingGoal": "引导了解",
+                    }
+                ),
+                target_count=50,
+            )
+    finally:
+        await provider.aclose()
+
+    assert calls == 1
+    assert exc_info.value.error_type == ProviderErrorType.OUTPUT_TRUNCATED
+    assert exc_info.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_ark_other_incomplete_response_is_non_retryable() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": "incomplete",
+                "incomplete_details": {"reason": "content_filter"},
+                "output_text": "{}",
+            },
+        )
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.example/v3",
+        api_key="test-key",
+        strategy_model="strategy-model",
+        candidate_model="candidate-model",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(ProviderError) as exc_info:
+            await provider.plan_strategy(
+                map_insight(
+                    {
+                        "productName": "便携杯",
+                        "coreSellingPoints": ["单手开合"],
+                    }
+                ),
+                target_count=50,
+            )
+    finally:
+        await provider.aclose()
+
+    assert exc_info.value.error_type == ProviderErrorType.RESPONSE_INCOMPLETE
+    assert exc_info.value.retryable is False
 
 
 @pytest.mark.asyncio
 async def test_ark_candidate_rejects_missing_slot() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"output_text": '{"items":[]}'})
+        return httpx.Response(
+            200, json={"status": "completed", "output_text": '{"items":[]}'}
+        )
 
     provider = ArkResponsesProvider(
         base_url="https://ark.example/v3",
@@ -193,14 +294,17 @@ async def test_ark_candidate_rejects_missing_slot() -> None:
 @pytest.mark.asyncio
 async def test_ark_candidate_returns_only_slot_and_direct_prompt() -> None:
     seen: dict[str, object] = {}
+    seen_timeout: dict[str, float] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         seen.update(payload)
+        seen_timeout.update(request.extensions["timeout"])
         return httpx.Response(
             200,
             json={
-                "output_text": json.dumps(_prompt_batch("slot-1"), ensure_ascii=False)
+                "status": "completed",
+                "output_text": json.dumps(_prompt_batch("slot-1"), ensure_ascii=False),
             },
         )
 
@@ -212,6 +316,7 @@ async def test_ark_candidate_returns_only_slot_and_direct_prompt() -> None:
         strategy_max_output_tokens=1024,
         candidate_max_output_tokens=4096,
         reasoning_effort="minimal",
+        candidate_timeout=87,
         transport=httpx.MockTransport(handler),
     )
     try:
@@ -241,6 +346,7 @@ async def test_ark_candidate_returns_only_slot_and_direct_prompt() -> None:
 
     assert seen["model"] == "candidate-model"
     assert seen["max_output_tokens"] == 768
+    assert seen_timeout["read"] == 87
     assert "instructions" in seen
     assert "当前分支只生成一个卖点所需的干净证据画面" in str(seen["instructions"])
     prompt = seen["input"][0]["content"][0]["text"]  # type: ignore[index]
@@ -259,6 +365,53 @@ async def test_ark_candidate_returns_only_slot_and_direct_prompt() -> None:
         "promptText",
         "usedFactIds",
     }
+
+
+@pytest.mark.asyncio
+async def test_ark_candidate_uses_worker_blueprint_as_fact_binding_authority() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = _prompt_batch("slot-1")
+        payload["items"][0]["usedFactIds"] = ["model-invented-fact"]  # type: ignore[index]
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "output_text": json.dumps(payload, ensure_ascii=False),
+            },
+        )
+
+    fact_value = "单手开合"
+    combination = _combination().model_copy(
+        update={
+            "insight_bindings": [
+                InsightBinding(
+                    fact_id="fact-core-selling-point-1",
+                    field=InsightField.CORE_SELLING_POINT,
+                    value=fact_value,
+                    value_hash=hashlib.sha256(fact_value.encode()).hexdigest(),
+                    role=InsightBindingRole.PRIMARY,
+                )
+            ]
+        }
+    )
+    provider = ArkResponsesProvider(
+        base_url="https://ark.example/v3",
+        api_key="test-key",
+        strategy_model="strategy-model",
+        candidate_model="candidate-model",
+        max_attempts=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await provider.generate_candidates(
+            [combination],
+            insight={"coreSellingPoints": [fact_value]},
+            shared_prompt=_shared_prompt(),
+        )
+    finally:
+        await provider.aclose()
+
+    assert result.value.items[0].used_fact_ids == ["fact-core-selling-point-1"]
 
 
 @pytest.mark.asyncio

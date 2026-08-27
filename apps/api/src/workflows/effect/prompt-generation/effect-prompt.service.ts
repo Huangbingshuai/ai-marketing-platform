@@ -1,14 +1,17 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type {
   EffectPromptBatchResult,
   EffectPromptDimensions,
   EffectPromptFragmentType,
+  EffectPromptGraphVersion,
   EffectPromptItem,
+  EffectPromptRenderProfile,
   EffectPromptNodeExecution,
   EffectPromptNodeId,
   EffectPromptProductState,
   EffectPromptRun,
+  EffectPromptShardPhase,
   EffectPromptSharedPrompt,
   GetEffectPromptNodeDetailData,
   GetEffectPromptResultData,
@@ -22,12 +25,17 @@ import {
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_GRAPH_NODES,
+  EFFECT_PROMPT_GRAPH_VERSIONS,
   EFFECT_PROMPT_LIMITS,
+  EFFECT_PROMPT_MAX_RUN_ATTEMPTS,
   EFFECT_PROMPT_SCHEMA_VERSION,
+  EFFECT_PROMPT_SHARD_PHASES,
+  CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
   effectPromptTargetCount,
   effectPromptSettingsNodeId,
   migrateEffectPromptSettings,
   normalizeEffectPromptSettings,
+  effectPromptGraphNodeIds,
 } from '@ai-marketing/contracts';
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 
@@ -39,10 +47,16 @@ import {
   type WorkingArtifactUpsertInput,
 } from '../../../platform/workflow/workflow-working.repository';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
-import { EffectPromptRepository, type EffectPromptRunRecord } from './effect-prompt.repository';
+import {
+  EffectPromptRepository,
+  type EffectPromptPreviewRunRecord,
+  type EffectPromptRunRecord,
+} from './effect-prompt.repository';
 import {
   dimensionDistance,
+  defaultEffectPromptRenderProfile,
   effectPromptExecutionIssues,
+  isEffectPromptItem,
   isEffectPromptSettings,
   parseEffectPromptBatchResult,
   parseLegacyV4EffectPromptBatchResultForRead,
@@ -81,23 +95,71 @@ const promptArtifactProductName = (snapshot: EffectPromptInputSnapshot): string 
   return `产品 ${snapshot.productId}`;
 };
 
-const stageProgress = (nodeId: EffectPromptNodeId, status: string): number => {
-  const index = EFFECT_PROMPT_GRAPH_NODES.findIndex(({ id }) => id === nodeId);
-  const base = Math.round((Math.max(0, index) / EFFECT_PROMPT_GRAPH_NODES.length) * 95);
+const graphVersionOf = (record: EffectPromptRunRecord): EffectPromptGraphVersion => {
+  const snapshot = record.inputSnapshot as Partial<EffectPromptInputSnapshot> | null;
+  if (
+    snapshot?.graphVersion &&
+    EFFECT_PROMPT_GRAPH_VERSIONS.includes(snapshot.graphVersion as EffectPromptGraphVersion)
+  )
+    return snapshot.graphVersion as EffectPromptGraphVersion;
+  const legacyNodeIds = new Set(effectPromptGraphNodeIds('V8_SINGLE_STRATEGY'));
+  const v9NodeIds = new Set(effectPromptGraphNodeIds('V9_SIX_BRANCH_STRATEGY'));
+  const hasPersistedV10Stage = (record.stages ?? []).some(
+    ({ nodeId }) =>
+      !v9NodeIds.has(nodeId as EffectPromptNodeId) &&
+      effectPromptGraphNodeIds('V10_RELATION_COORDINATE_BLUEPRINT').includes(
+        nodeId as EffectPromptNodeId,
+      ),
+  );
+  if (hasPersistedV10Stage) return 'V10_RELATION_COORDINATE_BLUEPRINT';
+  const hasPersistedV9Stage = (record.stages ?? []).some(
+    ({ nodeId }) =>
+      !legacyNodeIds.has(nodeId as EffectPromptNodeId) &&
+      effectPromptGraphNodeIds('V9_SIX_BRANCH_STRATEGY').includes(nodeId as EffectPromptNodeId),
+  );
+  return hasPersistedV9Stage ? 'V9_SIX_BRANCH_STRATEGY' : 'V8_SINGLE_STRATEGY';
+};
+
+const stageProgress = (
+  nodeId: EffectPromptNodeId,
+  status: string,
+  graphVersion: EffectPromptGraphVersion,
+): number => {
+  const nodeIds = effectPromptGraphNodeIds(graphVersion);
+  const index = nodeIds.indexOf(nodeId);
+  const base = Math.round((Math.max(0, index) / nodeIds.length) * 95);
   return status === 'SUCCEEDED' || status === 'PARTIAL' || status === 'SKIPPED'
-    ? Math.min(99, base + Math.round(95 / EFFECT_PROMPT_GRAPH_NODES.length))
+    ? Math.min(99, base + Math.round(95 / nodeIds.length))
     : Math.max(1, base);
 };
 
+const persistedFailedNode = (record: EffectPromptRunRecord): string | null =>
+  record.stages.find(({ status }) => status === 'FAILED')?.nodeId ?? null;
+
+const effectiveFailedNode = (record: EffectPromptRunRecord): string | null =>
+  record.status === 'FAILED' ? (persistedFailedNode(record) ?? record.currentNode) : null;
+
 const presentNodes = (record: EffectPromptRunRecord): EffectPromptNodeExecution[] =>
-  EFFECT_PROMPT_GRAPH_NODES.map(({ id }) => {
+  effectPromptGraphNodeIds(graphVersionOf(record)).map((id) => {
     const stage = record.stages.find(({ nodeId }) => nodeId === id);
+    const failedNode = effectiveFailedNode(record);
+    const terminalFailure = record.status === 'FAILED' && failedNode === id;
+    const abortedSibling =
+      record.status === 'FAILED' && stage?.status === 'RUNNING' && failedNode !== id;
     return {
       nodeId: id,
-      status: stage?.status ?? 'PENDING',
-      summary: stage?.summary ?? '',
+      status: terminalFailure
+        ? 'FAILED'
+        : abortedSibling
+          ? 'SKIPPED'
+          : (stage?.status ?? 'PENDING'),
+      summary: abortedSibling ? '任务已停止，该分支未完成' : (stage?.summary ?? ''),
       warnings: publicWarnings(stage?.warnings),
-      errorMessage: stage?.errorMessage ?? null,
+      errorMessage: terminalFailure
+        ? (stage?.errorMessage ?? record.errorMessage)
+        : abortedSibling
+          ? null
+          : (stage?.errorMessage ?? null),
     };
   });
 
@@ -109,12 +171,18 @@ const presentRun = (record: EffectPromptRunRecord): EffectPromptRun => ({
   operation: record.operation,
   targetItemId: record.targetItemId,
   status: record.status,
+  graphVersion: graphVersionOf(record),
   progress: record.progress,
+  attemptCount: record.attemptCount,
+  maxAttempts: EFFECT_PROMPT_MAX_RUN_ATTEMPTS,
   currentNode:
     record.currentNode === 'COMPLETED'
       ? 'COMPLETED'
-      : (EFFECT_PROMPT_GRAPH_NODES.find(({ id }) => id === record.currentNode)?.id ?? null),
+      : (EFFECT_PROMPT_GRAPH_NODES.find(
+          ({ id }) => id === (effectiveFailedNode(record) ?? record.currentNode),
+        )?.id ?? null),
   warnings: publicWarnings(record.warnings),
+  errorCode: record.errorCode,
   errorMessage: record.errorMessage,
   promptResultId: record.result?.id ?? null,
   nodes: presentNodes(record),
@@ -144,6 +212,99 @@ const comparePromptItemsForDisplay = (left: EffectPromptItem, right: EffectPromp
     (fragmentDisplayOrder.get(right.fragmentType) ?? EFFECT_PROMPT_FRAGMENT_TYPES.length);
   if (fragmentOrder !== 0) return fragmentOrder;
   return left.code.localeCompare(right.code, 'zh-CN', { numeric: true });
+};
+
+const unknownRecord = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+const previewItemId = (sourceFingerprint: string, slotId: string): string => {
+  const bytes = createHash('sha256')
+    .update(`${sourceFingerprint}:${slotId}`)
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
+
+const promptPreviewItems = (run: EffectPromptPreviewRunRecord): EffectPromptItem[] => {
+  const unique = new Map<string, EffectPromptItem>();
+  for (const shard of run.shards) {
+    for (const value of Array.isArray(shard.items) ? shard.items : []) {
+      const item = unknownRecord(value);
+      if (!item) continue;
+      const invalidReasons = Array.isArray(item.executionInvalidReasons)
+        ? item.executionInvalidReasons
+        : [];
+      if (invalidReasons.length > 0) continue;
+      const slotId = typeof item.slotId === 'string' ? item.slotId : '';
+      const ordinal = typeof item.ordinal === 'number' ? item.ordinal : 0;
+      const generatedAt = typeof item.generatedAt === 'string' ? item.generatedAt : '';
+      if (!slotId || !Number.isSafeInteger(ordinal) || ordinal < 1 || !generatedAt) continue;
+      const candidate = {
+        id: previewItemId(run.sourceFingerprint, slotId),
+        code: `P${String(ordinal).padStart(3, '0')}`,
+        origin: 'AI',
+        fragmentType: item.fragmentType,
+        materialTags: item.materialTags,
+        targetDurationSeconds: item.targetDurationSeconds,
+        dimensions: item.dimensions,
+        content: item.content,
+        insightBindings: item.insightBindings,
+        manualEdited: false,
+        createdAt: generatedAt,
+        updatedAt: generatedAt,
+      };
+      if (isEffectPromptItem(candidate)) unique.set(candidate.id, candidate);
+    }
+  }
+  return [...unique.values()].sort(comparePromptItemsForDisplay);
+};
+
+const previewRenderProfile = (snapshot: EffectPromptInputSnapshot): EffectPromptRenderProfile => {
+  const profile = defaultEffectPromptRenderProfile();
+  const insight = unknownRecord(snapshot.insightArtifact.result);
+  if (!insight) return profile;
+  const ratioRaw = [insight.aspectRatio, insight.aspect_ratio].find(
+    (value): value is string => typeof value === 'string' && value.trim().length > 0,
+  );
+  const resolutionRaw =
+    typeof insight.resolution === 'string' ? insight.resolution.toLowerCase() : '';
+  const ratio = ratioRaw?.replace('：', ':');
+  const supportedRatios: EffectPromptRenderProfile['ratio'][] = [
+    '16:9',
+    '4:3',
+    '1:1',
+    '3:4',
+    '9:16',
+    '21:9',
+    'adaptive',
+  ];
+  const supportedResolutions: EffectPromptRenderProfile['resolution'][] = ['480p', '720p', '1080p'];
+  const disabledRaw = [insight.disabledElements, insight.disabled_elements].find(Array.isArray);
+  const disabledElements = Array.isArray(disabledRaw)
+    ? disabledRaw.filter(
+        (value): value is string => typeof value === 'string' && value.trim().length > 0,
+      )
+    : [];
+  return {
+    ...profile,
+    ratio: supportedRatios.includes(ratio as EffectPromptRenderProfile['ratio'])
+      ? (ratio as EffectPromptRenderProfile['ratio'])
+      : profile.ratio,
+    resolution: supportedResolutions.includes(
+      resolutionRaw as EffectPromptRenderProfile['resolution'],
+    )
+      ? (resolutionRaw as EffectPromptRenderProfile['resolution'])
+      : profile.resolution,
+    sharedConstraints: {
+      disabledElements,
+      contentHash: createHash('sha256').update(JSON.stringify(disabledElements)).digest('hex'),
+    },
+  };
 };
 
 const validateDimensions = (dimensions: EffectPromptDimensions): boolean =>
@@ -291,6 +452,7 @@ export class EffectPromptService {
           workflowRunId,
           productId: product.id,
           status,
+          graphVersion: runRecord ? graphVersionOf(runRecord) : CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
           runId: runRecord?.id ?? null,
           resultId: draft ? (resultRecord?.id ?? null) : null,
           resultRevision: draft ? (resultRecord?.revision ?? null) : null,
@@ -302,6 +464,7 @@ export class EffectPromptService {
           workingArtifactRevision: artifact?.revision ?? null,
           progress: runRecord?.progress ?? 0,
           currentNode: runRecord?.currentNode ?? null,
+          errorCode: runRecord?.errorCode ?? null,
           errorMessage: legacyResult
             ? 'Prompt 生成规则已升级；旧的 3 秒设置会在重新生成时调整为当前模型允许的 4 秒'
             : (runRecord?.errorMessage ?? null),
@@ -427,6 +590,8 @@ export class EffectPromptService {
     if (!definition) throw badRequest('未知的 Prompt 子工作流节点');
     const record = await this.repository.runForNodeDetail(projectId, runId);
     if (!record) throw notFound('Prompt 任务不存在');
+    if (!effectPromptGraphNodeIds(graphVersionOf(record)).includes(definition.id))
+      throw badRequest('该节点不属于当前 Prompt 工作流版本');
     return { detail: presentEffectPromptNodeDetail(record, definition.id) };
   }
 
@@ -441,7 +606,61 @@ export class EffectPromptService {
   ): Promise<GetEffectPromptResultData> {
     await this.requireWorkflow(projectId, workflowRunId);
     const record = await this.repository.latestResult(projectId, workflowRunId, productId);
-    if (!record) throw notFound('Prompt 结果不存在');
+    if (!record) {
+      const failedRun = await this.repository.latestFailedRunForPreview(
+        projectId,
+        workflowRunId,
+        productId,
+      );
+      if (!failedRun) throw notFound('Prompt 结果不存在');
+      const snapshot = failedRun.inputSnapshot as Partial<EffectPromptInputSnapshot> | null;
+      if (!snapshot?.settings || !isEffectPromptSettings(snapshot.settings))
+        throw notFound('Prompt 结果不存在');
+      const items = promptPreviewItems(failedRun);
+      const renderProfile = previewRenderProfile(snapshot as EffectPromptInputSnapshot);
+      const sharedPrompt =
+        snapshot.sharedPrompt ??
+        compileEffectPromptSharedPrompt(renderProfile.sharedConstraints.disabledElements);
+      const preview = recomputePromptQuality(
+        items,
+        snapshot.settings,
+        {
+          generatedCandidateCount: failedRun.shards.reduce(
+            (count, shard) => count + (Array.isArray(shard.items) ? shard.items.length : 0),
+            0,
+          ),
+        },
+        renderProfile,
+        sharedPrompt,
+      );
+      const filtered = preview.items
+        .filter(
+          (item) =>
+            (!fragmentType || item.fragmentType === fragmentType) && searchable(item, query),
+        )
+        .sort(comparePromptItemsForDisplay);
+      const offset = (page - 1) * pageSize;
+      return {
+        projectId,
+        productId,
+        resultId: null,
+        revision: null,
+        isPartialPreview: true,
+        previewRunId: failedRun.id,
+        result: {
+          schemaVersion: preview.schemaVersion,
+          settings: preview.settings,
+          renderProfile: preview.renderProfile,
+          ...(preview.sharedPrompt ? { sharedPrompt: preview.sharedPrompt } : {}),
+          metrics: preview.metrics,
+          qualityStatus: 'NEEDS_REVIEW',
+        },
+        items: filtered.slice(offset, offset + pageSize),
+        total: filtered.length,
+        page,
+        pageSize,
+      };
+    }
     const draft =
       parseEffectPromptBatchResult(record.draftResult) ??
       parseLegacyV4EffectPromptBatchResultForRead(record.draftResult);
@@ -465,6 +684,8 @@ export class EffectPromptService {
       productId,
       resultId: record.id,
       revision: record.revision,
+      isPartialPreview: false,
+      previewRunId: null,
       result: summary,
       items: filtered.slice(offset, offset + pageSize),
       total: filtered.length,
@@ -848,12 +1069,26 @@ export class EffectPromptService {
     if (result.kind === 'BUSY') throw conflict('Prompt 任务已被其他 Worker 认领');
     if (result.kind === 'TERMINAL' || result.kind === 'ATTEMPTS_EXHAUSTED')
       return { terminal: true as const, runId };
+    const checkpoints = result.checkpointStages.flatMap(({ nodeId, metadata }) => {
+      if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return [];
+      const checkpoint = (metadata as Record<string, unknown>).checkpoint;
+      if (!checkpoint || typeof checkpoint !== 'object' || Array.isArray(checkpoint)) return [];
+      const value = checkpoint as Record<string, unknown>;
+      return value.nodeId === nodeId && typeof value.sourceFingerprint === 'string'
+        ? [checkpoint]
+        : [];
+    });
     return {
       terminal: false as const,
       runId,
       sourceFingerprint: result.run.sourceFingerprint,
       attemptToken: result.attemptToken,
       input: result.input,
+      strategyCheckpoints: checkpoints.filter((checkpoint) => {
+        const nodeId = (checkpoint as Record<string, unknown>).nodeId;
+        return typeof nodeId === 'string' && nodeId.endsWith('_STRATEGY');
+      }),
+      stageCheckpoints: checkpoints,
     };
   }
 
@@ -872,6 +1107,9 @@ export class EffectPromptService {
   ) {
     const node = EFFECT_PROMPT_GRAPH_NODES.find(({ id }) => id === rawNodeId);
     if (!node) throw badRequest('未知的 Prompt 子工作流节点');
+    const graphVersion = await this.stageGraphVersion(projectId, runId);
+    if (!effectPromptGraphNodeIds(graphVersion).includes(node.id))
+      throw badRequest('该节点不属于当前 Prompt 工作流版本');
     if (
       !(await this.repository.saveStage(
         projectId,
@@ -879,11 +1117,20 @@ export class EffectPromptService {
         attemptToken,
         node.id,
         input,
-        stageProgress(node.id, input.status),
+        stageProgress(node.id, input.status, graphVersion),
       ))
     )
       throw conflict('Worker 租约已失效');
     return { accepted: true as const };
+  }
+
+  private async stageGraphVersion(
+    projectId: string,
+    runId: string,
+  ): Promise<EffectPromptGraphVersion> {
+    const run = await this.repository.run(projectId, runId);
+    if (!run) throw notFound('Prompt 任务不存在');
+    return graphVersionOf(run);
   }
 
   async saveShard(
@@ -892,28 +1139,55 @@ export class EffectPromptService {
     attemptToken: string,
     round: number,
     shardIndex: number,
+    phase: EffectPromptShardPhase,
     input: EffectPromptShardInput,
   ) {
+    if (!EFFECT_PROMPT_SHARD_PHASES.includes(phase)) throw badRequest('分片阶段无效');
+    const graphVersion = await this.stageGraphVersion(projectId, runId);
+    if (phase === 'BLUEPRINT' && graphVersion !== 'V10_RELATION_COORDINATE_BLUEPRINT')
+      throw badRequest('蓝图分片不属于当前 Prompt 工作流版本');
     if (round < 0 || round > EFFECT_PROMPT_LIMITS.maxReplenishmentRounds || shardIndex < 0)
       throw badRequest('分片标识无效');
     if (
-      !(await this.repository.saveShard(projectId, runId, attemptToken, round, shardIndex, input))
+      !(await this.repository.saveShard(
+        projectId,
+        runId,
+        attemptToken,
+        round,
+        shardIndex,
+        phase,
+        input,
+      ))
     )
       throw conflict('Worker 租约已失效');
     return { accepted: true as const };
   }
 
-  async shards(projectId: string, runId: string, attemptToken: string) {
-    const records = await this.repository.shards(projectId, runId, attemptToken);
+  async shards(
+    projectId: string,
+    runId: string,
+    attemptToken: string,
+    phase?: EffectPromptShardPhase,
+  ) {
+    if (phase && !EFFECT_PROMPT_SHARD_PHASES.includes(phase)) throw badRequest('分片阶段无效');
+    if (phase === 'BLUEPRINT') {
+      const graphVersion = await this.stageGraphVersion(projectId, runId);
+      if (graphVersion !== 'V10_RELATION_COORDINATE_BLUEPRINT')
+        throw badRequest('蓝图分片不属于当前 Prompt 工作流版本');
+    }
+    const records = await this.repository.shards(projectId, runId, attemptToken, phase);
     if (!records) throw conflict('Worker 租约已失效');
     return {
       runId,
       shards: records.map((record) => ({
+        phase: record.phase,
         round: record.round,
         shardIndex: record.shardIndex,
         status: record.status,
-        combinationPlan: record.combinationPlan,
-        items: record.items,
+        combinationPlan: record.phase === 'PROMPT' ? record.combinationPlan : [],
+        items: record.phase === 'PROMPT' ? record.items : [],
+        blueprintPlan: record.phase === 'BLUEPRINT' ? record.combinationPlan : [],
+        blueprints: record.phase === 'BLUEPRINT' ? record.items : [],
         warnings: publicWarnings(record.warnings),
         errorCode: record.errorCode,
         errorMessage: record.errorMessage,
@@ -950,7 +1224,13 @@ export class EffectPromptService {
     projectId: string,
     runId: string,
     attemptToken: string,
-    input: { errorCode: string; errorMessage: string; retryable: boolean; warnings: string[] },
+    input: {
+      errorCode: string;
+      errorMessage: string;
+      retryable: boolean;
+      warnings: string[];
+      currentNode?: string | null;
+    },
   ) {
     const status = await this.repository.fail(projectId, runId, attemptToken, {
       ...input,

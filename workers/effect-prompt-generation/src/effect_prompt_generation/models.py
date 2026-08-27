@@ -32,15 +32,33 @@ class OutputState(TypedDict):
 
 class GraphState(TypedDict):
     project_id: str
+    graph_version: NotRequired[str]
     round: NotRequired[int]
     target_count: NotRequired[int]
     retained_count: NotRequired[int]
     insight_map: NotRequired[InsightApplicationMap]
     shared_prompt: NotRequired[SharedPrompt]
+    fact_allocations: NotRequired[dict[FragmentType, FragmentFactAllocation]]
+    expected_fragment_types: NotRequired[list[FragmentType]]
+    active_strategy_allocation: NotRequired[dict[str, Any]]
+    strategy_checkpoint_types: NotRequired[list[FragmentType]]
+    fragment_strategy_plans: Annotated[list[FragmentMarketingPlan], operator.add]
+    fragment_relationship_plans: Annotated[list[FragmentRelationshipPlan], operator.add]
+    active_relationship_allocation: NotRequired[dict[str, Any]]
+    relationship_checkpoint_types: NotRequired[list[FragmentType]]
+    dimension_coordinate_plans: Annotated[list[FragmentDimensionCoordinatePlan], operator.add]
+    active_coordinate_request: NotRequired[dict[str, Any]]
+    coordinate_checkpoint_types: NotRequired[list[FragmentType]]
+    blueprint_quotas: NotRequired[list[BlueprintBundleQuota]]
+    blueprint_deficits: NotRequired[dict[str, int]]
+    pending_blueprint_shards: NotRequired[list[BlueprintShardPlan]]
+    active_blueprint_shard: NotRequired[dict[str, Any]]
+    generated_blueprints: Annotated[list[GeneratedBlueprint], operator.add]
     strategy_plan: NotRequired[StrategyPlan]
     pending_shards: NotRequired[list[ShardPlan]]
     active_shard: NotRequired[dict[str, Any]]
     completed_shard_keys: NotRequired[list[str]]
+    completed_blueprint_shard_keys: NotRequired[list[str]]
     generated_candidate_count: Annotated[int, operator.add]
     accepted_count: NotRequired[int]
     semantic_pairs: NotRequired[list[PairViolation]]
@@ -365,6 +383,11 @@ class InsightArtifact(ApiModel):
 
 class PromptGenerationSnapshot(ApiModel):
     schema_version: Literal[5] = 5
+    graph_version: Literal[
+        "V8_SINGLE_STRATEGY",
+        "V9_SIX_BRANCH_STRATEGY",
+        "V10_RELATION_COORDINATE_BLUEPRINT",
+    ] = "V9_SIX_BRANCH_STRATEGY"
     project_id: str
     workflow_run_id: str
     product_id: str
@@ -418,6 +441,8 @@ class ClaimResponse(ApiModel):
     source_fingerprint: str | None = None
     attempt_token: str | None = None
     input: PromptGenerationSnapshot | None = None
+    strategy_checkpoints: list[StrategyCheckpoint] = Field(default_factory=list)
+    stage_checkpoints: list[StrategyCheckpoint] = Field(default_factory=list)
 
 
 class NodeId(StrEnum):
@@ -425,6 +450,42 @@ class NodeId(StrEnum):
     INSIGHT_MAPPING = "INSIGHT_MAPPING"
     SHARED_PROMPT_COMPILATION = "SHARED_PROMPT_COMPILATION"
     STRATEGY_PLANNING = "STRATEGY_PLANNING"
+    GLOBAL_FACT_ALLOCATION = "GLOBAL_FACT_ALLOCATION"
+    STRATEGY_FRAGMENT_ROUTER = "STRATEGY_FRAGMENT_ROUTER"
+    PLAN_HOOK_STRATEGY = "PLAN_HOOK_STRATEGY"
+    PLAN_PAIN_STRATEGY = "PLAN_PAIN_STRATEGY"
+    PLAN_PRODUCT_DISPLAY_STRATEGY = "PLAN_PRODUCT_DISPLAY_STRATEGY"
+    PLAN_SELLING_POINT_EXPLANATION_STRATEGY = (
+        "PLAN_SELLING_POINT_EXPLANATION_STRATEGY"
+    )
+    PLAN_CTA_STRATEGY = "PLAN_CTA_STRATEGY"
+    PLAN_OUTRO_STRATEGY = "PLAN_OUTRO_STRATEGY"
+    STRATEGY_MERGE_VALIDATION = "STRATEGY_MERGE_VALIDATION"
+    RELATIONSHIP_FRAGMENT_ROUTER = "RELATIONSHIP_FRAGMENT_ROUTER"
+    PLAN_HOOK_RELATIONSHIPS = "PLAN_HOOK_RELATIONSHIPS"
+    PLAN_PAIN_RELATIONSHIPS = "PLAN_PAIN_RELATIONSHIPS"
+    PLAN_PRODUCT_DISPLAY_RELATIONSHIPS = "PLAN_PRODUCT_DISPLAY_RELATIONSHIPS"
+    PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS = "PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS"
+    PLAN_CTA_RELATIONSHIPS = "PLAN_CTA_RELATIONSHIPS"
+    PLAN_OUTRO_RELATIONSHIPS = "PLAN_OUTRO_RELATIONSHIPS"
+    RELATIONSHIP_MERGE_VALIDATION = "RELATIONSHIP_MERGE_VALIDATION"
+    DIMENSION_COORDINATE_ROUTER = "DIMENSION_COORDINATE_ROUTER"
+    PLAN_HOOK_COORDINATES = "PLAN_HOOK_COORDINATES"
+    PLAN_PAIN_COORDINATES = "PLAN_PAIN_COORDINATES"
+    PLAN_PRODUCT_DISPLAY_COORDINATES = "PLAN_PRODUCT_DISPLAY_COORDINATES"
+    PLAN_SELLING_POINT_EXPLANATION_COORDINATES = "PLAN_SELLING_POINT_EXPLANATION_COORDINATES"
+    PLAN_CTA_COORDINATES = "PLAN_CTA_COORDINATES"
+    PLAN_OUTRO_COORDINATES = "PLAN_OUTRO_COORDINATES"
+    COORDINATE_MERGE_VALIDATION = "COORDINATE_MERGE_VALIDATION"
+    BLUEPRINT_QUOTA_ALLOCATION = "BLUEPRINT_QUOTA_ALLOCATION"
+    BLUEPRINT_FRAGMENT_ROUTER = "BLUEPRINT_FRAGMENT_ROUTER"
+    GENERATE_HOOK_BLUEPRINTS = "GENERATE_HOOK_BLUEPRINTS"
+    GENERATE_PAIN_BLUEPRINTS = "GENERATE_PAIN_BLUEPRINTS"
+    GENERATE_PRODUCT_DISPLAY_BLUEPRINTS = "GENERATE_PRODUCT_DISPLAY_BLUEPRINTS"
+    GENERATE_SELLING_POINT_EXPLANATION_BLUEPRINTS = "GENERATE_SELLING_POINT_EXPLANATION_BLUEPRINTS"
+    GENERATE_CTA_BLUEPRINTS = "GENERATE_CTA_BLUEPRINTS"
+    GENERATE_OUTRO_BLUEPRINTS = "GENERATE_OUTRO_BLUEPRINTS"
+    BLUEPRINT_ORTHOGONAL_GATE = "BLUEPRINT_ORTHOGONAL_GATE"
     DIMENSION_COMBINATION = "DIMENSION_COMBINATION"
     FRAGMENT_TYPE_ROUTER = "FRAGMENT_TYPE_ROUTER"
     GENERATE_HOOK = "GENERATE_HOOK"
@@ -456,7 +517,7 @@ class StageOutput(ApiModel):
     status: StageStatus
     summary: str = Field(max_length=500)
     warnings: list[str] = Field(default_factory=list)
-    metadata: dict[str, int | float | str | bool | None] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class SellingPointEvidence(ApiModel):
@@ -523,6 +584,162 @@ class MarketingRelationshipBundle(ApiModel):
     scene: str = Field(min_length=1, max_length=120)
     persona: str = Field(min_length=1, max_length=160)
     selling_point: str = Field(min_length=1, max_length=240)
+    primary_fact_id: str | None = Field(default=None, max_length=120)
+    creative_intent: str = Field(default="清晰表达当前片段职责", min_length=1, max_length=160)
+    opening_state: str = Field(default="首帧建立主体与环境关系", min_length=1, max_length=240)
+    action_arc: str = Field(default="主体完成一个连续可见动作", min_length=1, max_length=400)
+    camera: str = Field(default="中景稳定记录主体动作", min_length=1, max_length=160)
+    emotion: str = Field(default="真实自然", min_length=1, max_length=120)
+    ending_state: str = Field(default="动作结束后保持稳定构图", min_length=1, max_length=240)
+
+
+class FragmentFactAllocation(ApiModel):
+    fragment_type: FragmentType
+    target_count: int = Field(ge=1, le=200)
+    bundle_target: int = Field(ge=1, le=4)
+    mandatory_fact_ids: list[str] = Field(default_factory=list, max_length=64)
+    candidate_fact_ids: list[str] = Field(min_length=1, max_length=128)
+    allocation_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class FragmentMarketingBundle(ApiModel):
+    bundle_id: str = Field(min_length=1, max_length=120)
+    primary_fact_id: str = Field(min_length=1, max_length=120)
+    fact_ids: list[str] = Field(min_length=1, max_length=8)
+    creative_intent: str = Field(min_length=1, max_length=160)
+    scene: str = Field(min_length=1, max_length=120)
+    persona: str = Field(min_length=1, max_length=160)
+    opening_state: str = Field(min_length=1, max_length=240)
+    action_arc: str = Field(min_length=1, max_length=400)
+    camera: str = Field(min_length=1, max_length=160)
+    emotion: str = Field(min_length=1, max_length=120)
+    ending_state: str = Field(min_length=1, max_length=240)
+
+
+class FragmentMarketingPlan(ApiModel):
+    fragment_type: FragmentType
+    bundles: list[FragmentMarketingBundle] = Field(min_length=1, max_length=4)
+    allocation_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    prompt_version: str = Field(min_length=1, max_length=120)
+    reused_checkpoint: bool = False
+
+
+class FragmentRelationshipBundle(ApiModel):
+    bundle_id: str = Field(min_length=1, max_length=120)
+    fragment_type: FragmentType
+    primary_fact_id: str = Field(min_length=1, max_length=120)
+    fact_ids: list[str] = Field(min_length=1, max_length=8)
+    creative_intent: str = Field(min_length=1, max_length=160)
+
+
+class FragmentRelationshipPlan(ApiModel):
+    fragment_type: FragmentType
+    bundles: list[FragmentRelationshipBundle] = Field(min_length=1, max_length=4)
+    allocation_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    prompt_version: str = Field(min_length=1, max_length=120)
+    reused_checkpoint: bool = False
+
+
+class DimensionCoordinate(ApiModel):
+    coordinate_id: str = Field(min_length=1, max_length=120)
+    value: str = Field(min_length=1, max_length=240)
+    compatible_bundle_ids: list[str] = Field(min_length=1, max_length=16)
+    source_fact_ids: list[str] = Field(default_factory=list, max_length=8)
+    normalized_signature: str = Field(min_length=1, max_length=240)
+
+
+class FragmentDimensionCoordinatePlan(ApiModel):
+    fragment_type: FragmentType
+    relationship_allocation_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    narratives: list[DimensionCoordinate] = Field(min_length=2, max_length=24)
+    scenes: list[DimensionCoordinate] = Field(min_length=2, max_length=24)
+    personas: list[DimensionCoordinate] = Field(min_length=2, max_length=24)
+    selling_points: list[DimensionCoordinate] = Field(min_length=1, max_length=24)
+    cameras: list[DimensionCoordinate] = Field(min_length=2, max_length=24)
+    emotions: list[DimensionCoordinate] = Field(min_length=2, max_length=24)
+    prompt_version: str = Field(min_length=1, max_length=120)
+    reused_checkpoint: bool = False
+
+
+class BlueprintBundleQuota(ApiModel):
+    fragment_type: FragmentType
+    bundle_id: str = Field(min_length=1, max_length=120)
+    primary_fact_id: str = Field(min_length=1, max_length=120)
+    target_count: int = Field(ge=1, le=200)
+    candidate_count: int = Field(ge=1, le=200)
+
+
+class BlueprintTask(ApiModel):
+    slot_id: str = Field(min_length=1, max_length=160)
+    ordinal: int = Field(ge=1)
+    round: int = Field(ge=0, le=3)
+    fragment_type: FragmentType
+    bundle_id: str = Field(min_length=1, max_length=120)
+    primary_fact_id: str = Field(min_length=1, max_length=120)
+    fact_ids: list[str] = Field(min_length=1, max_length=8)
+    target_duration_seconds: int = Field(ge=4, le=15)
+    material_tags: list[str] = Field(min_length=1, max_length=12)
+
+
+class GeneratedBlueprint(ApiModel):
+    slot_id: str = Field(min_length=1, max_length=160)
+    fragment_type: FragmentType
+    bundle_id: str = Field(min_length=1, max_length=120)
+    primary_fact_id: str = Field(min_length=1, max_length=120)
+    used_fact_ids: list[str] = Field(min_length=1, max_length=8)
+    narrative_coordinate_id: str = Field(min_length=1, max_length=120)
+    scene_coordinate_id: str = Field(min_length=1, max_length=120)
+    persona_coordinate_id: str = Field(min_length=1, max_length=120)
+    selling_point_coordinate_id: str = Field(min_length=1, max_length=120)
+    camera_coordinate_id: str = Field(min_length=1, max_length=120)
+    emotion_coordinate_id: str = Field(min_length=1, max_length=120)
+    opening_state: str = Field(min_length=1, max_length=240)
+    action_arc: str = Field(min_length=1, max_length=400)
+    ending_state: str = Field(min_length=1, max_length=240)
+
+
+class GeneratedBlueprintBatch(ApiModel):
+    items: list[GeneratedBlueprint] = Field(min_length=1, max_length=8)
+
+
+class BlueprintShardPlan(ApiModel):
+    round: int = Field(ge=0, le=3)
+    shard_index: int = Field(ge=0)
+    tasks: list[BlueprintTask] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def homogeneous_fragment_type(self) -> BlueprintShardPlan:
+        if len({item.fragment_type for item in self.tasks}) != 1:
+            raise ValueError("blueprint shard tasks must share one fragmentType")
+        return self
+
+    @property
+    def fragment_type(self) -> FragmentType:
+        return self.tasks[0].fragment_type
+
+    @property
+    def key(self) -> str:
+        return f"BLUEPRINT:{self.round}:{self.shard_index}"
+
+
+class StrategyCheckpoint(ApiModel):
+    node_id: NodeId
+    source_fingerprint: str = Field(min_length=1, max_length=128)
+    allocation_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    prompt_version: str = Field(min_length=1, max_length=120)
+    plan: FragmentMarketingPlan | FragmentRelationshipPlan | FragmentDimensionCoordinatePlan
+
+
+class CompactMarketingRelationshipBundle(ApiModel):
+    bundle_id: str = Field(min_length=1, max_length=120)
+    fragment_type: FragmentType
+    fact_ids: list[str] = Field(min_length=1, max_length=8)
+
+
+class CompactStrategyPlan(ApiModel):
+    relationship_bundles: list[CompactMarketingRelationshipBundle] = Field(
+        min_length=1, max_length=24
+    )
 
 
 class StrategyPlan(ApiModel):
@@ -552,7 +769,9 @@ class PlannedCombination(ApiModel):
     fragment_type: FragmentType
     material_tags: list[str] = Field(min_length=1, max_length=12)
     target_duration_seconds: int = Field(ge=4, le=15)
-    planning_version: Literal["legacy", "six-branch-v1"] = "legacy"
+    planning_version: Literal[
+        "legacy", "six-branch-v1", "six-ai-branch-v2", "v10-coordinate-blueprint"
+    ] = "legacy"
     opening_state: str = Field(
         default="首帧建立主体与环境关系", min_length=1, max_length=240
     )
@@ -615,11 +834,19 @@ class GeneratedCandidate(ApiModel):
     generated_at: datetime
 
 
+class ShardPhase(StrEnum):
+    BLUEPRINT = "BLUEPRINT"
+    PROMPT = "PROMPT"
+
+
 class ShardRecord(ApiModel):
+    phase: ShardPhase = ShardPhase.PROMPT
     round: int = Field(ge=0, le=3)
     shard_index: int = Field(ge=0)
     status: StageStatus
     combination_plan: list[PlannedCombination] = Field(default_factory=list)
+    blueprint_plan: list[BlueprintTask] = Field(default_factory=list)
+    blueprints: list[GeneratedBlueprint] = Field(default_factory=list)
     items: list[GeneratedCandidate] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     error_code: str | None = None
@@ -628,7 +855,11 @@ class ShardRecord(ApiModel):
 
     @property
     def key(self) -> str:
-        return f"{self.round}:{self.shard_index}"
+        return (
+            f"BLUEPRINT:{self.round}:{self.shard_index}"
+            if self.phase == ShardPhase.BLUEPRINT
+            else f"{self.round}:{self.shard_index}"
+        )
 
 
 class ShardsResponse(ApiModel):
@@ -651,6 +882,7 @@ class FailurePayload(ApiModel):
     error_message: str
     retryable: bool = False
     warnings: list[str] = Field(default_factory=list)
+    current_node: NodeId | None = None
 
 
 class ProgressPayload(ApiModel):

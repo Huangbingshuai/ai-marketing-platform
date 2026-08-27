@@ -5,10 +5,13 @@ import type {
   EffectPromptManualOverrides,
   EffectPromptOperation,
   EffectPromptSharedPrompt,
+  EffectPromptGraphVersion,
 } from '@ai-marketing/contracts';
 
 export type EffectPromptInputSnapshot = {
   schemaVersion: 5;
+  /** Missing on historical runs, which are presented with the V8 topology. */
+  graphVersion?: EffectPromptGraphVersion;
   projectId: string;
   workflowRunId: string;
   productId: string;
@@ -45,6 +48,8 @@ export type EffectPromptShardInput = {
   status: EffectPromptStageInput['status'];
   combinationPlan: unknown;
   items: unknown;
+  blueprintPlan?: unknown;
+  blueprints?: unknown;
   warnings: string[];
   errorCode?: string | null;
   errorMessage?: string | null;

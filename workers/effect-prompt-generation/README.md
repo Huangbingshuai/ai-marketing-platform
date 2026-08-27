@@ -18,22 +18,33 @@ The candidate-model instruction asks the model not to repeat those values in vis
 passes shared disabled elements only as avoidance guidance. They are not execution-gate failures:
 if the model still emits them, the item remains usable and the structured `renderProfile` remains
 authoritative for rendering.
-After three targeted AI replenishment rounds, a validated deterministic fallback fills each
-fragment-type deficit. A batch is completed only when both the total and all six quotas match
-exactly; an unsafe or still-short fallback fails the run without replacing the last valid result.
+V9 historical runs retain their validated deterministic fallback. V10 never fabricates a
+replacement Prompt: after a Prompt or orthogonal-gate rejection it removes the rejected blueprint,
+returns to the same fragment type and relationship bundle, and generates `ceil(gap * 1.25)` new
+blueprint candidates for at most three rounds. A still-short run preserves the best
+`NEEDS_REVIEW` draft without committing it as a valid batch.
 
-Before strategy planning, `INSIGHT_MAPPING` classifies every non-empty extraction field as
+Before planning, `INSIGHT_MAPPING` classifies every non-empty extraction field as
 required, adaptive, excluded, or a global constraint and gives usable facts stable content-derived
-IDs. Strategy returns relationship bundles that reference only those IDs, preserving the link
-between audience, pain, decision driver, scenario, selling point, evidence, and marketing goal.
+IDs. V10 keeps six independent relationship branches, but each branch now returns facts only:
+`bundleId + fragmentType + primaryFactId + factIds + creativeIntent`. Six further coordinate calls
+produce one product-specific six-dimensional coordinate plan per fragment type. Deterministic quota
+allocation then expands every relationship bundle into exact blueprint tasks; type-homogeneous
+blueprint shards (at most eight tasks) let the Lite model select one coherent six-coordinate tuple
+and define its opening state, continuous action arc, and ending state. A full-batch orthogonal gate
+compares normalized coordinate text across types and requires every accepted pair to differ in at
+least three dimensions. One accepted blueprint produces exactly one Turbo Prompt task.
 After deduplication, `INSIGHT_COVERAGE` measures the bindings that survived; missing required facts
-drive role-compatible replenishment and block `PASS`, while deferred adaptive facts remain visible
-without blocking the draft.
+drive role- and relationship-compatible blueprint replenishment and block `PASS`, while deferred
+adaptive facts remain visible without blocking the draft. V9 remains available only for frozen
+historical runs; new V10 runs use independent `BLUEPRINT` and `PROMPT` shard phases, plus relationship
+and coordinate stage checkpoints.
 
-Only `STRATEGY_PLANNING` and the six fragment-specific generation branches call Ark. Strategy uses the lightweight
-model to classify confirmed selling points into `VISIBLE_ATTRIBUTE`, `USAGE_ACTION`,
-`VISIBLE_RESULT`, `PROCESS_ONLY`, or `TEXT_ONLY` evidence modes and to plan concrete
-single-person actions. Combination, execution validation, similarity checks, quotas,
+Only the six relationship branches, six coordinate branches, type-homogeneous blueprint shards,
+and final Prompt shards call Ark. The Lite model plans fact relationships, coordinates, and
+blueprints; the Turbo model writes the final fragment Prompt. The worker classifies
+evidence into `VISIBLE_ATTRIBUTE`, `USAGE_ACTION`, `VISIBLE_RESULT`, `PROCESS_ONLY`, or
+`TEXT_ONLY`. Combination, execution validation, similarity checks, quotas,
 replenishment, and persistence are deterministic. Prompts containing a full timeline,
 stacked personas, meta-language, unfilmable evidence, role conflicts, field duplication,
 source-fact violations, placeholders, or broken text are removed before similarity checks.
@@ -50,27 +61,39 @@ Optional environment variables:
 - `EFFECT_PROMPT_QUEUE` (default `effect.prompt-generation.requested`)
 - `PROMPT_AI_PROVIDER` (`ark` by default; `mock` must be explicit)
 - `ARK_BASE_URL`, `ARK_MODEL`
-- `ARK_PROMPT_STRATEGY_MODEL`: strategy-node override; when unset it uses legacy
-  `ARK_PROMPT_MODEL`, then the verified lightweight default
-  `doubao-seed-2-0-lite-260428`
+- `ARK_PROMPT_STRATEGY_MODEL`: relationship and coordinate planning override; defaults to
+  Doubao Seed 2.0 Lite
+- `ARK_PROMPT_BLUEPRINT_MODEL`: blueprint override; when unset it follows the strategy model
+- `ARK_PROMPT_FRAGMENT_STRATEGY_MODEL`: six-branch planning override; when unset it follows
+  the candidate Turbo model
 - `ARK_PROMPT_CANDIDATE_MODEL`: candidate-node override; when unset it uses legacy
   `ARK_PROMPT_MODEL`, then `ARK_MODEL` (Seed 2.1 Turbo by default)
-- `ARK_PROMPT_STRATEGY_MAX_OUTPUT_TOKENS` (default `8192`, accommodates V4 relationship bundles)
+- `ARK_PROMPT_FRAGMENT_STRATEGY_MAX_OUTPUT_TOKENS` (default `3072` per branch)
 - `ARK_PROMPT_CANDIDATE_MAX_OUTPUT_TOKENS` (default `4096`)
 - `ARK_PROMPT_REASONING_EFFORT` (default `minimal`)
-- `PROMPT_MAX_CONCURRENCY` (default `3`, range `1..8`)
+- `ARK_PROMPT_FRAGMENT_STRATEGY_TIMEOUT_SECONDS` (default `120` per branch)
+- `ARK_PROMPT_CANDIDATE_TIMEOUT_SECONDS` (default `120`)
+- `ARK_PROMPT_PROVIDER_MAX_ATTEMPTS` (default `1`)
+- `PROMPT_MAX_CONCURRENCY` (default `6`, range `1..8`; allows all six marketing-planning branches to run in parallel)
 - `PROMPT_SHARD_SIZE` (default `8`, range `1..8`)
-- `PROMPT_MAX_AI_CALLS_PER_RUN` (default `129`)
+- `PROMPT_MAX_AI_CALLS_PER_RUN` (default `256`)
 - `INTERNAL_API_TIMEOUT_SECONDS`, `ARK_TIMEOUT_SECONDS`, `LOG_LEVEL`
 
-The Docker Compose default for `ARK_PROMPT_STRATEGY_MAX_OUTPUT_TOKENS` must stay aligned
-with the worker default (`8192`). V4 strategy responses can exceed the old 2048-token limit.
-The worker rejects invalid relationship bundles individually and restores required coverage
-only from confirmed fact IDs; a missing evidence row falls back to safe `TEXT_ONLY` wording.
+The provider checks Ark `status` and
+`incomplete_details` before parsing JSON: output-limit truncation fails immediately with
+`AI_OUTPUT_TRUNCATED` instead of repeating the same oversized request.
+The worker rejects a fragment planning branch when it contains unknown facts, role conflicts,
+duplicate masters, missing mandatory facts, or unsafe evidence. Successful branches are checkpointed
+with source, allocation, and prompt-version hashes so task retry reuses them without storing raw model output.
+Candidate `usedFactIds` are normalized back to the immutable worker blueprint, so a model cannot
+rewrite fact bindings or abort an otherwise valid batch by altering an internal ID.
 
-`PROMPT_MAX_AI_CALLS_PER_RUN` is an abnormal-loop fuse, not the normal usage budget. Its
-default covers one strategy call plus the theoretical maximum of four 32-shard candidate
-rounds for a 200-item request. Deployments may lower it; the pipeline truncates additional
+`PROMPT_MAX_AI_CALLS_PER_RUN` is an abnormal-loop fuse, not the normal usage budget. A default
+50-item V10 run makes 6 relationship + 6 coordinate + 9 blueprint + 9 Prompt calls (30 total).
+At the legal 200-item ceiling, the conservative four-round upper bound is 240 calls:
+12 planning calls, at most 30 initial blueprint and 30 initial Prompt shards, plus three rounds
+of at most 36 replenishment-blueprint and 30 replenishment-Prompt shards. The default 256 leaves
+headroom while keeping the run bounded. Deployments may lower it; the pipeline truncates additional
 shards and preserves the best available `NEEDS_REVIEW` draft instead of throwing away useful
 candidates. Per-call output limits and three replenishment rounds remain the primary cost
 controls. Safe logs keep stage, attempt, latency, and token counts only; there is no hard total

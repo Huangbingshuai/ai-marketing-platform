@@ -1,0 +1,13 @@
+VERSION: effect-prompt-fragment-strategy-task-v1
+
+片段类型：{fragment_type}
+目标 Prompt 数量：{target_count}
+创意母版数量：{bundle_target}
+必须覆盖事实 ID：{mandatory_fact_ids_json}
+可用事实 JSON：{candidate_facts_json}
+批次共用提示词（只遵守，不复述）：{shared_prompt}
+
+请按当前片段职责输出创意母版。顶层字段必须是 fragmentType、bundles、allocationHash、promptVersion；fragmentType 和 allocationHash 必须逐字使用下列值：
+fragmentType={fragment_type}
+allocationHash={allocation_hash}
+promptVersion=effect-prompt-fragment-strategy-v1

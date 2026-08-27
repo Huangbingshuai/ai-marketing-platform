@@ -41,6 +41,7 @@ import {
 import {
   effectExtractionDefaultsFromConfig,
   extractionSourceFingerprint,
+  isLegacyEffectExtractionResultWithoutResolution,
   isSupportedExtractionMaterial,
   isEffectExtractionResult,
   manualOverrideFieldNames,
@@ -104,6 +105,17 @@ const publicWarnings = (
   });
 };
 
+const publicRunErrorMessage = (record: {
+  status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+  currentNode: string | null;
+  errorMessage: string | null;
+}): string | null =>
+  record.status === 'FAILED' &&
+  record.currentNode === 'NORMALIZATION' &&
+  /^internal API returned HTTP \d{3}$/u.test(record.errorMessage ?? '')
+    ? '结果保存失败，请重新提炼'
+    : record.errorMessage;
+
 const publicBranchErrorMessage = (
   nodeId: EffectExtractionNodeId,
   branch: RunBranchRecord,
@@ -136,6 +148,7 @@ const presentNodes = (record: {
   branches?: RunBranchRecord[];
 }): EffectExtractionNodeExecution[] => {
   const branches = new Map((record.branches ?? []).map((branch) => [branch.branch, branch]));
+  const runErrorMessage = publicRunErrorMessage(record);
   const snapshotStatus: EffectExtractionNodeExecution['status'] =
     record.status === 'QUEUED'
       ? 'PENDING'
@@ -152,16 +165,17 @@ const presentNodes = (record: {
         nodeId: id,
         status: snapshotStatus,
         warnings: [],
-        errorMessage: snapshotStatus === 'FAILED' ? record.errorMessage : null,
+        errorMessage: snapshotStatus === 'FAILED' ? runErrorMessage : null,
       };
     }
     const branch = branches.get(id);
     if (!branch) return { nodeId: id, status: 'PENDING', warnings: [], errorMessage: null };
-    const failedWithRun = record.status === 'FAILED' && branch.status === 'RUNNING';
+    const failedWithRun =
+      record.status === 'FAILED' && (branch.status === 'RUNNING' || record.currentNode === id);
     const errorMessage = publicBranchErrorMessage(
       id,
       branch,
-      failedWithRun ? record.errorMessage : null,
+      failedWithRun ? runErrorMessage : null,
       record.createdAt,
     );
     const warnings = publicWarnings(branch.warnings, [errorMessage, branch.errorMessage]);
@@ -201,7 +215,7 @@ const presentRun = (
   progress: record.progress,
   currentNode: record.currentNode,
   warnings: publicWarnings(record.warnings),
-  errorMessage: record.errorMessage,
+  errorMessage: publicRunErrorMessage(record),
   extractResultId,
   nodes: presentNodes(record),
   createdAt: record.createdAt.toISOString(),
@@ -405,7 +419,7 @@ export class EffectExtractionService {
           progress: run?.progress ?? 0,
           currentNode: run?.currentNode ?? null,
           warnings: publicWarnings(run?.warnings),
-          errorMessage: run?.errorMessage ?? null,
+          errorMessage: run ? publicRunErrorMessage(run) : null,
           sourceFingerprint: fingerprint,
           commitStatus,
           workingArtifactRevision: artifact?.revision ?? null,
@@ -763,7 +777,11 @@ export class EffectExtractionService {
   }
 
   async complete(projectId: string, runId: string, attemptToken: string, input: CompleteRunInput) {
-    if (!isEffectExtractionResult(input.result)) throw badRequest('标准化结果不符合统一结构');
+    if (
+      !isEffectExtractionResult(input.result) &&
+      !isLegacyEffectExtractionResultWithoutResolution(input.result)
+    )
+      throw badRequest('标准化结果不符合统一结构');
     const result = await this.repository.complete(projectId, runId, attemptToken, input);
     if (result.kind === 'NOT_FOUND') throw notFound('提炼任务不存在');
     if (result.kind === 'LEASE_CONFLICT') throw conflict('Worker 租约已失效');

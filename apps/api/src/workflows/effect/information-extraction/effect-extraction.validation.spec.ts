@@ -5,6 +5,7 @@ import {
   extractionSourceFingerprint,
   applyEffectExtractionManualOverrides,
   isEffectExtractionResult,
+  isLegacyEffectExtractionResultWithoutResolution,
   isSupportedExtractionMaterial,
   manualOverridesForResult,
   safeTokenEquals,
@@ -79,6 +80,24 @@ describe('effect extraction validation', () => {
     expect(isEffectExtractionResult(validResult)).toBe(true);
     expect(isEffectExtractionResult({ ...validResult, unexpected: true })).toBe(false);
     expect(isEffectExtractionResult({ ...validResult, coreSellingPoints: '卖点' })).toBe(false);
+  });
+
+  it('accepts only the legacy schema-v2 shape that is missing resolution', () => {
+    const { resolution: _resolution, ...legacyResult } = validResult;
+    expect(isLegacyEffectExtractionResultWithoutResolution(legacyResult)).toBe(true);
+    expect(isLegacyEffectExtractionResultWithoutResolution(validResult)).toBe(false);
+    expect(
+      isLegacyEffectExtractionResultWithoutResolution({
+        ...legacyResult,
+        coreSellingPoints: [],
+      }),
+    ).toBe(false);
+    expect(
+      isLegacyEffectExtractionResultWithoutResolution({
+        ...legacyResult,
+        unexpected: true,
+      }),
+    ).toBe(false);
   });
 
   it('accepts at most three core selling points', () => {

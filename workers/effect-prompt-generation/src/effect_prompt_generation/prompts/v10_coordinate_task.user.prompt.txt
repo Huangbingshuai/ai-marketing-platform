@@ -1,0 +1,10 @@
+片段类型：{{fragment_type}}
+目标蓝图数：{{target_count}}
+产品事实：{{facts_json}}
+营销组合：{{relationships_json}}
+片段职责：{{fragment_rules}}
+批次共用约束：{{shared_prompt}}
+relationshipAllocationHash：{{relationship_hash}}
+promptVersion：effect-prompt-v10-coordinate-v1
+
+为全部营销组合生成一份产品专属六维坐标计划。每个维度至少2个真实不同候选，卖点维度至少1个。
