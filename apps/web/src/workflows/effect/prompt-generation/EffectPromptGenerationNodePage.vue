@@ -1297,7 +1297,7 @@ const validatePromptBatch = async (): Promise<void> => {
     partialPreview.value ||
     !currentQualityReady.value
   ) {
-    showNotice('当前批次仍未满足数量、六维差异或双重去重门槛', 'warning');
+    showNotice('当前批次仍未满足数量、类型配额、事实覆盖或用户设置的相似率上限', 'warning');
     return;
   }
   validating.value = true;
@@ -1391,7 +1391,7 @@ const graphDescription = (nodeId: EffectPromptNodeId): string =>
     GENERATE_SELLING_POINT_EXPLANATION_BLUEPRINTS: '从卖点坐标中选择协调组合并生成可拍摄的证据画面',
     GENERATE_CTA_BLUEPRINTS: '从转化坐标中选择协调组合并生成带安全留白的收束画面',
     GENERATE_OUTRO_BLUEPRINTS: '从片尾坐标中选择协调组合并生成稳定品牌定格',
-    BLUEPRINT_ORTHOGONAL_GATE: '比较全批次蓝图，保证类型内与跨类型均至少三维不同',
+    BLUEPRINT_ORTHOGONAL_GATE: '比较全批次蓝图并优先保留差异更大的方案，差异不足时记录告警',
     DIMENSION_COMBINATION: '先分配营销关系束，再在关系内部编排六维差异',
     FRAGMENT_TYPE_ROUTER: '按选定数量和时长将组合路由到六类生成分支',
     GENERATE_HOOK: '生成首帧即有注意力触发动作的钩子片段',

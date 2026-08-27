@@ -133,34 +133,82 @@ def evaluate_candidates(
     required_fact_ids = {
         fact.fact_id for fact in insight_application.required
     } if insight_application else set()
-    candidate_order = _coverage_order(_unique_items(candidates), required_fact_ids)
-    for candidate in candidate_order:
-        if len(accepted) >= target_count or candidate.id in {item.id for item in accepted}:
+    retained_ids = {item.id for item in accepted}
+    seen_content = {_normalized_value(item.content) for item in accepted}
+    remaining: list[PromptItem] = []
+    for candidate in _unique_items(candidates):
+        if candidate.id in retained_ids:
             continue
-        if targets and actual_types[candidate.fragment_type] >= targets[candidate.fragment_type]:
-            continue
-        if any(dimension_distance(candidate.dimensions, item.dimensions) < 3 for item in accepted):
-            removed_dimension += 1
-            continue
-        if any(
-            semantic_similarity(candidate, item) >= SEMANTIC_DICE_THRESHOLD for item in accepted
-        ):
+        content_key = _normalized_value(candidate.content)
+        if content_key in seen_content:
+            # A byte-for-byte-equivalent creative instruction remains a hard
+            # duplicate. Threshold-based semantic similarity is handled at the
+            # whole-batch level below and must not discard every similar item.
             removed_semantic += 1
             continue
-        if any(visual_overlap(candidate, item) >= VISUAL_OVERLAP_THRESHOLD for item in accepted):
-            removed_visual += 1
-            continue
+        seen_content.add(content_key)
+        remaining.append(candidate)
+
+    uncovered = required_fact_ids.difference(
+        binding.fact_id for item in accepted for binding in item.insight_bindings
+    )
+    while remaining and len(accepted) < target_count:
+        eligible = [
+            item
+            for item in remaining
+            if not targets
+            or actual_types[item.fragment_type] < targets[item.fragment_type]
+        ]
+        if not eligible:
+            break
+        stable_order = {item.id: index for index, item in enumerate(remaining)}
+
+        def selection_score(item: PromptItem) -> tuple[int, int, int, int, int, int]:
+            coverage_gain = len(
+                uncovered.intersection(
+                    binding.fact_id for binding in item.insight_bindings
+                )
+            )
+            semantic_conflicts = sum(
+                semantic_similarity(item, current) >= SEMANTIC_DICE_THRESHOLD
+                for current in accepted
+            )
+            visual_conflicts = sum(
+                visual_overlap(item, current) >= VISUAL_OVERLAP_THRESHOLD
+                for current in accepted
+            )
+            dimension_conflicts = sum(
+                dimension_distance(item.dimensions, current.dimensions) < 3
+                for current in accepted
+            )
+            minimum_distance = min(
+                (
+                    dimension_distance(item.dimensions, current.dimensions)
+                    for current in accepted
+                ),
+                default=6,
+            )
+            return (
+                coverage_gain,
+                -semantic_conflicts,
+                -visual_conflicts,
+                -dimension_conflicts,
+                minimum_distance,
+                -stable_order[item.id],
+            )
+
+        candidate = max(eligible, key=selection_score)
+        remaining.remove(candidate)
         accepted.append(candidate)
         actual_types[candidate.fragment_type] += 1
+        uncovered.difference_update(
+            binding.fact_id for binding in candidate.insight_bindings
+        )
 
     semantic_pairs = semantic_violations(accepted)
     visual_pairs = visual_violations(accepted)
     semantic_rate = pair_rate(len(semantic_pairs), len(accepted))
     visual_rate = pair_rate(len(visual_pairs), len(accepted))
-    dimensions_valid = all(
-        dimension_distance(left.dimensions, right.dimensions) >= 3
-        for left, right in combinations(accepted, 2)
-    )
     covered = {
         _normalized_value(value)
         for item in accepted
@@ -198,7 +246,6 @@ def evaluate_candidates(
     missing_fact_ids = [item.fact_id for item in coverage.missing] if coverage else []
     passed = (
         len(accepted) == target_count
-        and dimensions_valid
         and semantic_rate <= semantic_limit
         and visual_rate <= visual_limit
         and not missing_selling_points

@@ -310,6 +310,15 @@ describe('effect prompt generation prototype layout', () => {
       expect(pageSource).toContain(groupTitle);
   });
 
+  it('treats three-dimensional distance as selection evidence instead of a hard quantity gate', () => {
+    expect(pageSource).toContain('比较全批次蓝图并优先保留差异更大的方案，差异不足时记录告警');
+    expect(pageSource).toContain('当前批次仍未满足数量、类型配额、事实覆盖或用户设置的相似率上限');
+    expect(pageSource).not.toContain('保证类型内与跨类型均至少三维不同');
+    expect(pageSource).not.toContain('未满足数量、六维差异或双重去重门槛');
+    expect(pageSource).toContain('目标 ≤ {{ currentSettings.semanticLimit }}%');
+    expect(pageSource).toContain('目标 ≤ {{ currentSettings.visualLimit }}%');
+  });
+
   it('persists server defaults before the first generation run', () => {
     expect(pageSource).toContain('state.settingsRevision !== null');
   });

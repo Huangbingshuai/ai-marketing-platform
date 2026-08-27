@@ -56,6 +56,9 @@ import {
   dimensionDistance,
   defaultEffectPromptRenderProfile,
   effectPromptExecutionIssues,
+  effectPromptExactDuplicatePairs,
+  effectPromptHardExecutionIssues,
+  effectPromptSoftQualityWarnings,
   isEffectPromptItem,
   isEffectPromptSettings,
   parseEffectPromptBatchResult,
@@ -237,9 +240,9 @@ const promptPreviewItems = (run: EffectPromptPreviewRunRecord): EffectPromptItem
       const item = unknownRecord(value);
       if (!item) continue;
       const invalidReasons = Array.isArray(item.executionInvalidReasons)
-        ? item.executionInvalidReasons
+        ? item.executionInvalidReasons.filter((reason): reason is string => typeof reason === 'string')
         : [];
-      if (invalidReasons.length > 0) continue;
+      if (effectPromptHardExecutionIssues(invalidReasons).length > 0) continue;
       const slotId = typeof item.slotId === 'string' ? item.slotId : '';
       const ordinal = typeof item.ordinal === 'number' ? item.ordinal : 0;
       const generatedAt = typeof item.generatedAt === 'string' ? item.generatedAt : '';
@@ -935,8 +938,11 @@ export class EffectPromptService {
       draft.sharedPrompt,
     );
     const issues: Array<{ code: string; message: string }> = [];
+    const warnings: Array<{ code: string; message: string }> = [];
     if (verified.items.length !== effectPromptTargetCount(verified.settings))
       issues.push({ code: 'COUNT_MISMATCH', message: 'Prompt 数量尚未达到目标数量' });
+    if (effectPromptExactDuplicatePairs(verified.items) > 0)
+      issues.push({ code: 'EXACT_DUPLICATE', message: '存在正文完全重复的 Prompt' });
     if (verified.metrics.semanticDuplicateRate > verified.settings.semanticLimit)
       issues.push({ code: 'SEMANTIC_DUPLICATE', message: '语义重复度超过设置上限' });
     if (verified.metrics.visualOverlapRate > verified.settings.visualLimit)
@@ -956,16 +962,40 @@ export class EffectPromptService {
         (item) =>
           item.targetDurationSeconds !==
             verified.settings.fragmentConfigs[item.fragmentType].durationSeconds ||
-          effectPromptExecutionIssues(item).length > 0,
+          effectPromptHardExecutionIssues(effectPromptExecutionIssues(item)).length > 0,
       )
     )
       issues.push({ code: 'EXECUTION_GATE', message: '存在不能直接用于片段渲染的 Prompt' });
-    outer: for (let left = 0; left < verified.items.length; left += 1)
+    let dimensionConflictCount = 0;
+    for (let left = 0; left < verified.items.length; left += 1)
       for (let right = left + 1; right < verified.items.length; right += 1)
-        if (dimensionDistance(verified.items[left]!, verified.items[right]!) < 3) {
-          issues.push({ code: 'DIMENSION_DISTANCE', message: '存在六维差异不足三项的 Prompt' });
-          break outer;
-        }
+        if (dimensionDistance(verified.items[left]!, verified.items[right]!) < 3)
+          dimensionConflictCount += 1;
+    if (dimensionConflictCount > 0)
+      warnings.push({
+        code: 'DIMENSION_DISTANCE',
+        message: `${dimensionConflictCount} 组 Prompt 的六维差异不足三项，已作为质量建议保留`,
+      });
+    const softWarningCodes = new Set(
+      verified.items.flatMap((item) =>
+        effectPromptSoftQualityWarnings(effectPromptExecutionIssues(item)),
+      ),
+    );
+    if (softWarningCodes.size > 0)
+      warnings.push({
+        code: 'SOFT_QUALITY_WARNING',
+        message: `存在 ${softWarningCodes.size} 类非阻塞质量建议，可在后续人工调整`,
+      });
+    if (
+      verified.metrics.semanticDuplicateRate > 0 &&
+      verified.metrics.semanticDuplicateRate <= verified.settings.semanticLimit
+    )
+      warnings.push({ code: 'SEMANTIC_SIMILARITY', message: '存在阈值内的语义相似 Prompt' });
+    if (
+      verified.metrics.visualOverlapRate > 0 &&
+      verified.metrics.visualOverlapRate <= verified.settings.visualLimit
+    )
+      warnings.push({ code: 'VISUAL_SIMILARITY', message: '存在阈值内的画面要素重合' });
     const run = await this.repository.run(projectId, record.runId);
     const snapshot = run?.inputSnapshot as EffectPromptInputSnapshot | undefined;
     const insight = await this.repository.insightArtifact(
@@ -997,6 +1027,7 @@ export class EffectPromptService {
       return {
         valid: false,
         issues,
+        warnings,
         productId: record.productId,
         artifacts: [],
         allProductsValidated: false,
@@ -1036,6 +1067,7 @@ export class EffectPromptService {
     return {
       valid: true,
       issues: [],
+      warnings,
       productId: record.productId,
       artifacts: [committed.artifact],
       allProductsValidated:
@@ -1204,16 +1236,6 @@ export class EffectPromptService {
   ) {
     const parsed = parseEffectPromptBatchResult(input.result);
     if (!parsed) throw badRequest('Prompt 批次结果不符合统一结构');
-    const run = await this.repository.run(projectId, runId);
-    const snapshot = run?.inputSnapshot as EffectPromptInputSnapshot | undefined;
-    if (
-      snapshot?.operation === 'BATCH_GENERATE' &&
-      (parsed.items.length !== effectPromptTargetCount(snapshot.settings) ||
-        parsed.metrics.fragmentTypeDistribution.some(
-          ({ targetCount, actualCount }) => targetCount !== actualCount,
-        ))
-    )
-      throw badRequest('Prompt 成功结果必须严格满足用户设置的总数量和六类片段配额');
     const result = await this.repository.complete(projectId, runId, attemptToken, parsed);
     if (result.kind === 'NOT_FOUND') throw notFound('Prompt 任务不存在');
     if (result.kind === 'LEASE_CONFLICT') throw conflict('Worker 租约已失效');

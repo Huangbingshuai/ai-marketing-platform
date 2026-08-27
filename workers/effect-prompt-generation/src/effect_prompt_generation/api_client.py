@@ -43,6 +43,20 @@ def _unwrap(payload: Any) -> Any:
     return payload
 
 
+def _safe_response_message(response: httpx.Response) -> str | None:
+    """Keep internal API diagnostics useful without echoing arbitrary response bodies."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    raw = payload.get("message")
+    values = raw if isinstance(raw, list) else [raw]
+    cleaned = [" ".join(str(value).split())[:200] for value in values if value]
+    return "; ".join(cleaned[:3])[:500] or None
+
+
 class HttpInternalApi:
     _ROOT = "internal/workers/effect-prompt-generation"
 
@@ -71,8 +85,10 @@ class HttpInternalApi:
             raise InternalApiError("internal API is unavailable", retryable=True) from exc
         if response.is_error:
             retryable = response.status_code == 429 or response.status_code >= 500
+            detail = _safe_response_message(response)
             raise InternalApiError(
-                f"internal API returned HTTP {response.status_code}",
+                f"internal API returned HTTP {response.status_code}"
+                + (f": {detail}" if detail else ""),
                 retryable=retryable,
                 status_code=response.status_code,
             )

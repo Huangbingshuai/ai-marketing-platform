@@ -20,7 +20,8 @@ _LIGHT_OR_PACING = re.compile(r"光|色温|色彩|冷调|暖调|节奏|停顿|�
 _ACTION = re.compile(
     r"拿起|夹起|提起|拎起|托住|扶住|握住|放下|放入|放到|轻放|摆放|摆到|打开|关闭|切开|倒入|"
     r"按下|按压|走入|走出|离开|停下|停住|抬起|指向|触碰|擦拭|拉开|推入|调整|取出|"
-    r"转向|转动|倾斜|移动|移到|交互|伸向|寻找|尝试|遮住|受阻|退出|扶正|递近|松开|落到|恢复"
+    r"转向|转动|倾斜|移动|移到|平移|抬升|扫过|铺撒|夹取|抽出|揭开|摆正|轻推|缓推|交互|"
+    r"伸向|寻找|翻找|翻动|对照|比对|注视|凝视|扫视|变焦|收焦|尝试|遮住|受阻|退出|扶正|递近|松开|落到|恢复"
 )
 _ACTION_SEQUENCE = re.compile(r"随后|接着|然后|再(?:次)?|最后")
 _STACKED_PERSONA = re.compile(
@@ -105,13 +106,27 @@ _RENDER_METADATA = re.compile(
     r"(?:分辨率\s*)?(?:480|720|1080)[pP]|(?:时长\s*)?\d+(?:\.\d+)?秒"
 )
 
+SOFT_EXECUTION_WARNING_CODES = frozenset(
+    {
+        "PROMPT_LENGTH_MISMATCH",
+        "MISSING_LIGHTING_OR_PACING",
+        "MISSING_CAMERA_EXECUTION",
+        "ABSTRACT_PERSONA",
+        "NEGATIVE_TAIL_DUPLICATION",
+    }
+)
+
+
+def hard_execution_reasons(reasons: Sequence[str]) -> list[str]:
+    return [item for item in reasons if item not in SOFT_EXECUTION_WARNING_CODES]
+
 
 def prompt_length_bounds(duration_seconds: int) -> tuple[int, int]:
     if duration_seconds <= 5:
         return 80, 150
     if duration_seconds <= 8:
-        return 110, 200
-    return 140, 260
+        return 90, 200
+    return 100, 260
 
 
 def assemble_fragment_prompt(
@@ -324,7 +339,10 @@ def validate_fragment_prompt(
     if combination.fragment_type == FragmentType.CTA and not _SAFE_AREA.search(content):
         reasons.append("CTA_NO_SAFE_AREA")
     if combination.fragment_type == FragmentType.OUTRO:
-        if _OUTRO_UNSTABLE.search(content):
+        if _OUTRO_UNSTABLE.search(content) and not (
+            re.search(r"极缓慢|缓慢|轻微", content)
+            and re.search(r"停稳|完全静止|定格|稳定构图|最终静止", content)
+        ):
             reasons.append("OUTRO_UNSTABLE")
         selling_point = combination.dimensions.selling_point
         if selling_point and selling_point in content and selling_point not in {

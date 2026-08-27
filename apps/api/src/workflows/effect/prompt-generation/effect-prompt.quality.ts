@@ -258,7 +258,7 @@ const FULL_TIMELINE =
   /(?:\d+(?:\.\d+)?\s*[-—~至]\s*\d+(?:\.\d+)?\s*(?:秒|s)|第[一二三四五六\d]+镜|镜头[一二三四五六\d]+|分镜|时间轴|切换|切至|镜头转到|转场|硬切|叠化|闪白|蒙太奇)/iu;
 const STRUCTURED_PHASE = /(?:前段|中段|后段)/gu;
 const VISIBLE_ACTION =
-  /(?:拿起|夹起|提起|拎起|托住|扶住|扶正|握住|放下|放入|放到|轻放|摆放|摆到|打开|关闭|取出|倒入|切开|撕开|按下|按压|涂抹|喷洒|擦拭|冲洗|折叠|展开|安装|装入|推拉|旋转|转动|倾斜|移动|移到|搅拌|加热|品尝|对比|揭开|翻转|挤出|穿戴|使用|离开|退出|触碰|落到|恢复)/u;
+  /(?:拿起|夹起|提起|拎起|托住|扶住|扶正|握住|放下|放入|放到|轻放|摆放|摆到|打开|关闭|取出|倒入|切开|撕开|按下|按压|涂抹|喷洒|擦拭|冲洗|折叠|展开|安装|装入|推拉|旋转|转动|倾斜|移动|移到|移开|平移|抬升|扫过|铺撒|夹取|抽出|揭开|摆正|轻推|缓推|调整|寻找|翻找|翻动|对照|比对|注视|凝视|扫视|变焦|收焦|尝试|停下|停住|搅拌|加热|品尝|对比|翻转|挤出|穿戴|使用|离开|退出|触碰|落到|恢复)/u;
 const PLACEHOLDER_TEXT =
   /(?:待补充|以信息卡为准|自然出镜|相关细节|关键特点|适当|高级感|真实使用动作|当前产品名|指定卖点|当前场景|当前人物)/u;
 const BAKED_TEXT =
@@ -302,6 +302,26 @@ const ABSTRACT_SELLING_POINT = /(?:工艺|配方|技术|理念|品质|匠心|专
 const ATTRIBUTE_SELLING_POINT = /(?:外观|颜色|材质|纹理|切面|尺寸|轻量|便携|设计)/u;
 const ATTRIBUTE_CUE = /(?:外观|表面|轮廓|颜色|材质|纹理|切面|接口|细节|受光)/u;
 
+/**
+ * These checks describe refinement opportunities rather than an unusable or unsafe prompt.
+ * Unknown/new issue codes deliberately remain hard until they are explicitly reviewed here.
+ */
+export const EFFECT_PROMPT_SOFT_QUALITY_ISSUE_CODES = [
+  'PROMPT_LENGTH_MISMATCH',
+  'MISSING_LIGHTING_OR_PACING',
+  'MISSING_CAMERA_EXECUTION',
+  'ABSTRACT_PERSONA',
+  'NEGATIVE_TAIL_DUPLICATION',
+] as const;
+
+const softQualityIssueCodes = new Set<string>(EFFECT_PROMPT_SOFT_QUALITY_ISSUE_CODES);
+
+export const effectPromptHardExecutionIssues = (issues: readonly string[]): string[] =>
+  issues.filter((code) => !softQualityIssueCodes.has(code));
+
+export const effectPromptSoftQualityWarnings = (issues: readonly string[]): string[] =>
+  issues.filter((code) => softQualityIssueCodes.has(code));
+
 const overloadedAction = (content: string): boolean => {
   const actionCount = content.match(new RegExp(VISIBLE_ACTION.source, 'gu'))?.length ?? 0;
   const sequenceCount = content.match(/(?:随后|接着|然后|再(?:次)?|最后)/gu)?.length ?? 0;
@@ -320,8 +340,8 @@ const cameraConflict = (content: string): boolean => {
 
 const promptLengthBounds = (durationSeconds: number): readonly [number, number] => {
   if (durationSeconds <= 5) return [80, 150];
-  if (durationSeconds <= 8) return [110, 200];
-  return [140, 260];
+  if (durationSeconds <= 8) return [90, 200];
+  return [100, 260];
 };
 
 export const effectPromptExecutionIssues = (item: EffectPromptItem): string[] => {
@@ -378,7 +398,14 @@ export const effectPromptExecutionIssues = (item: EffectPromptItem): string[] =>
     issues.push('EVIDENCE_MODE_MISMATCH');
   if (item.fragmentType === 'CTA' && !SAFE_AREA.test(content)) issues.push('CTA_NO_SAFE_AREA');
   if (item.fragmentType === 'OUTRO') {
-    if (OUTRO_UNSTABLE.test(content)) issues.push('OUTRO_UNSTABLE');
+    if (
+      OUTRO_UNSTABLE.test(content) &&
+      !(
+        /(?:极缓慢|缓慢|轻微)/u.test(content) &&
+        /(?:停稳|完全静止|定格|稳定构图|最终静止)/u.test(content)
+      )
+    )
+      issues.push('OUTRO_UNSTABLE');
     const introducesSellingPoint = item.insightBindings.some(
       (binding) =>
         ['CORE_SELLING_POINT', 'SECONDARY_SELLING_POINT'].includes(binding.field) &&
@@ -387,6 +414,17 @@ export const effectPromptExecutionIssues = (item: EffectPromptItem): string[] =>
     if (introducesSellingPoint) issues.push('OUTRO_NEW_MESSAGE');
   }
   return issues;
+};
+
+const exactPromptContent = (item: EffectPromptItem): string => semanticText(item.content);
+
+export const effectPromptExactDuplicatePairs = (items: readonly EffectPromptItem[]): number => {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    const content = exactPromptContent(item);
+    if (content) counts.set(content, (counts.get(content) ?? 0) + 1);
+  }
+  return [...counts.values()].reduce((pairs, count) => pairs + (count * (count - 1)) / 2, 0);
 };
 
 export const isEffectPromptItem = (value: unknown): value is EffectPromptItem => {
@@ -765,7 +803,7 @@ export const recomputePromptQuality = (
         ...new Map(
           [...preserved, ...inferred].map((binding) => [binding.factId, binding]),
         ).values(),
-      ].slice(0, 16),
+      ].slice(0, 3),
     };
   });
   let semanticViolations = 0;
@@ -786,6 +824,7 @@ export const recomputePromptQuality = (
   }
   const semanticDuplicateRate = promptPairViolationRate(semanticViolations, items.length);
   const visualOverlapRate = promptPairViolationRate(visualViolations, items.length);
+  const exactDuplicatePairs = effectPromptExactDuplicatePairs(items);
   const targetCounts = effectPromptFragmentTypeTargetCounts(settings);
   const actualCounts = Object.fromEntries(
     EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => [
@@ -845,19 +884,27 @@ export const recomputePromptQuality = (
     appliedConstraints: uniqueReferences(previousInsightCoverage?.appliedConstraints),
   };
   const currentExecutionReasonCounts = new Map<string, number>();
+  let currentHardExecutionIssueCount = 0;
   for (const prompt of items) {
-    for (const code of effectPromptExecutionIssues(prompt))
+    const promptIssues = effectPromptExecutionIssues(prompt);
+    const hardPromptIssues = effectPromptHardExecutionIssues(promptIssues);
+    currentHardExecutionIssueCount += hardPromptIssues.length;
+    for (const code of hardPromptIssues)
       currentExecutionReasonCounts.set(code, (currentExecutionReasonCounts.get(code) ?? 0) + 1);
     if (
       prompt.targetDurationSeconds !== settings.fragmentConfigs[prompt.fragmentType].durationSeconds
-    )
+    ) {
+      currentHardExecutionIssueCount += 1;
       currentExecutionReasonCounts.set(
         'DURATION_MISMATCH',
         (currentExecutionReasonCounts.get('DURATION_MISMATCH') ?? 0) + 1,
       );
+    }
   }
   const executionReasonCounts = new Map<string, number>(
-    (previous?.executionInvalidReasons ?? []).map(({ code, count }) => [code, count]),
+    (previous?.executionInvalidReasons ?? [])
+      .filter(({ code }) => effectPromptHardExecutionIssues([code]).length > 0)
+      .map(({ code, count }) => [code, count]),
   );
   for (const [code, count] of currentExecutionReasonCounts)
     executionReasonCounts.set(code, Math.max(executionReasonCounts.get(code) ?? 0, count));
@@ -895,13 +942,13 @@ export const recomputePromptQuality = (
   );
   const qualityStatus =
     items.length === effectPromptTargetCount(settings) &&
-    dimensionConflicts === 0 &&
+    exactDuplicatePairs === 0 &&
     semanticDuplicateRate <= settings.semanticLimit &&
     visualOverlapRate <= settings.visualLimit &&
     fragmentTargetsMet &&
     sellingPointCoverage.missing.length === 0 &&
     insightCoverage.missing.length === 0 &&
-    currentExecutionReasonCounts.size === 0
+    currentHardExecutionIssueCount === 0
       ? 'PASS'
       : 'NEEDS_REVIEW';
   return {

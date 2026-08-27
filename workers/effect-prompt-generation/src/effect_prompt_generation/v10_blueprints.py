@@ -43,8 +43,15 @@ def normalize_coordinate_signature(value: str) -> str:
 
 def normalize_coordinate_plan(
     plan: FragmentDimensionCoordinatePlan,
+    relationships: FragmentRelationshipPlan | None = None,
 ) -> FragmentDimensionCoordinatePlan:
-    """Replace untrusted model signatures with the worker's canonical form."""
+    """Freeze signatures and safely complete model-declared bundle applicability.
+
+    The model still creates every coordinate. When it omits a compatible bundle label, the
+    worker may only attach that bundle to an existing coordinate whose source facts intersect
+    the bundle (or whose visual coordinate is fact-neutral). It never creates or rewrites a
+    coordinate value.
+    """
     updates = {
         field_name: [
             item.model_copy(
@@ -61,7 +68,102 @@ def normalize_coordinate_plan(
             ("emotions", plan.emotions),
         )
     }
+    if relationships is not None:
+        bundles = {item.bundle_id: set(item.fact_ids) for item in relationships.bundles}
+        allowed_fact_ids = {fact_id for fact_ids in bundles.values() for fact_id in fact_ids}
+        for field_name, values in updates.items():
+            cleaned = [
+                item.model_copy(
+                    update={
+                        "compatible_bundle_ids": [
+                            bundle_id
+                            for bundle_id in dict.fromkeys(item.compatible_bundle_ids)
+                            if bundle_id in bundles
+                        ],
+                        "source_fact_ids": [
+                            fact_id
+                            for fact_id in dict.fromkeys(item.source_fact_ids)
+                            if fact_id in allowed_fact_ids
+                        ][:8],
+                    }
+                )
+                for item in values
+            ]
+            covered = {
+                bundle_id
+                for item in cleaned
+                for bundle_id in item.compatible_bundle_ids
+            }
+            for bundle_id in bundles.keys() - covered:
+                bundle_facts = bundles[bundle_id]
+                eligible = [
+                    (index, item)
+                    for index, item in enumerate(cleaned)
+                    if (
+                        bool(bundle_facts.intersection(item.source_fact_ids))
+                        or (field_name != "selling_points" and not item.source_fact_ids)
+                    )
+                ]
+                if not eligible:
+                    continue
+                index, item = max(
+                    eligible,
+                    key=lambda row: (
+                        len(bundle_facts.intersection(row[1].source_fact_ids)),
+                        -len(row[1].compatible_bundle_ids),
+                        -row[0],
+                    ),
+                )
+                cleaned[index] = item.model_copy(
+                    update={
+                        "compatible_bundle_ids": [
+                            *item.compatible_bundle_ids,
+                            bundle_id,
+                        ]
+                    }
+                )
+            updates[field_name] = cleaned
     return plan.model_copy(update=updates)
+
+
+def normalize_generated_blueprints(
+    items: Sequence[GeneratedBlueprint],
+    tasks: Sequence[BlueprintTask],
+) -> list[GeneratedBlueprint]:
+    """Freeze task identity while preserving model-authored coordinates and motion design."""
+
+    if len(items) != len(tasks):
+        raise ValueError("blueprint response item count mismatch")
+    task_by_slot = {task.slot_id: task for task in tasks}
+    unused = list(tasks)
+    normalized: list[GeneratedBlueprint] = []
+    for item in items:
+        task = task_by_slot.get(item.slot_id)
+        if task is None or task not in unused:
+            if not unused:
+                raise ValueError("blueprint response has duplicate task identity")
+            task = unused[0]
+        unused.remove(task)
+        used_fact_ids = [
+            task.primary_fact_id,
+            *(
+                fact_id
+                for fact_id in item.used_fact_ids
+                if fact_id in task.fact_ids and fact_id != task.primary_fact_id
+            ),
+        ][:3]
+        normalized.append(
+            item.model_copy(
+                update={
+                    "slot_id": task.slot_id,
+                    "fragment_type": task.fragment_type,
+                    "bundle_id": task.bundle_id,
+                    "primary_fact_id": task.primary_fact_id,
+                    "used_fact_ids": list(dict.fromkeys(used_fact_ids)),
+                }
+            )
+        )
+    return normalized
 
 
 def blueprint_signature(
@@ -140,6 +242,17 @@ def validate_coordinate_plan(
             covered_bundles.update(value.compatible_bundle_ids)
         if covered_bundles != set(bundles):
             raise ValueError(f"{dimension_name} does not cover every relationship bundle")
+
+
+def coordinate_variant_targets(
+    relationships: FragmentRelationshipPlan,
+    target_count: int,
+) -> dict[str, int]:
+    quotas = allocate_blueprint_quotas(
+        [relationships],
+        {relationships.fragment_type: target_count},
+    )
+    return {quota.bundle_id: quota.target_count for quota in quotas}
 
 
 def allocate_blueprint_quotas(
@@ -281,22 +394,30 @@ def select_orthogonal_blueprints(
     coordinate_plans: Sequence[FragmentDimensionCoordinatePlan],
 ) -> tuple[list[GeneratedBlueprint], dict[str, int], int]:
     quota_by_bundle = {item.bundle_id: item.target_count for item in quotas}
+    plans_by_type = _plan_by_type(coordinate_plans)
     selected: list[GeneratedBlueprint] = []
     counts: Counter[str] = Counter()
-    rejected = 0
     remaining = sorted(blueprints, key=lambda item: item.slot_id)
     while remaining:
+        selected_signatures = {
+            _blueprint_exact_signature(item, plans_by_type[item.fragment_type])
+            for item in selected
+        }
         eligible = [
             item
             for item in remaining
             if counts[item.bundle_id] < quota_by_bundle.get(item.bundle_id, 0)
-            and all(
-                blueprint_distance(item, accepted, coordinate_plans) >= 3
-                for accepted in selected
+            and _blueprint_exact_signature(
+                item,
+                plans_by_type[item.fragment_type],
             )
+            not in selected_signatures
         ]
         if not eligible:
             break
+        # Three-dimensional separation is a ranking preference, not a per-item
+        # rejection rule. This keeps exact quotas whenever the model returns
+        # distinct blueprints while still choosing the most diverse set first.
         candidate = max(
             eligible,
             key=lambda item: (
@@ -321,6 +442,24 @@ def select_orthogonal_blueprints(
         if counts[bundle_id] < target
     }
     return selected, deficits, rejected
+
+
+def _plan_by_type(
+    coordinate_plans: Sequence[FragmentDimensionCoordinatePlan],
+) -> dict[FragmentType, FragmentDimensionCoordinatePlan]:
+    return {item.fragment_type: item for item in coordinate_plans}
+
+
+def _blueprint_exact_signature(
+    item: GeneratedBlueprint,
+    coordinate_plan: FragmentDimensionCoordinatePlan,
+) -> tuple[str, ...]:
+    return (
+        *blueprint_signature(item, coordinate_plan),
+        normalize_coordinate_signature(item.opening_state),
+        normalize_coordinate_signature(item.action_arc),
+        normalize_coordinate_signature(item.ending_state),
+    )
 
 
 def blueprint_distance(

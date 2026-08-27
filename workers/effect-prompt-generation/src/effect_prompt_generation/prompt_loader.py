@@ -25,10 +25,8 @@ def load_prompt_version(name: str) -> str:
 
 def render_prompt(name: str, **values: str) -> str:
     template = load_prompt(name)
-    rendered = template
-    for key, value in values.items():
-        rendered = rendered.replace("{" + key + "}", value)
-    missing = _VARIABLE.search(rendered)
-    if missing is not None:
-        raise ValueError(f"missing prompt template variable: {missing.group(1)}")
-    return rendered
+    required = set(_VARIABLE.findall(template))
+    missing = sorted(required.difference(values))
+    if missing:
+        raise ValueError(f"missing prompt template variable: {missing[0]}")
+    return _VARIABLE.sub(lambda match: values[match.group(1)], template)

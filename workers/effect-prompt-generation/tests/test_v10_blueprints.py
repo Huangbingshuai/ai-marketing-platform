@@ -8,14 +8,18 @@ import pytest
 from effect_prompt_generation.graph import build_graph
 from effect_prompt_generation.insight_mapping import map_insight
 from effect_prompt_generation.models import (
+    BlueprintBundleQuota,
     BlueprintShardPlan,
+    BlueprintTask,
     DimensionCoordinate,
     FragmentDimensionCoordinatePlan,
     FragmentFactAllocation,
     FragmentConfig,
     FragmentRelationshipBundle,
+    FragmentRelationshipModelResponse,
     FragmentRelationshipPlan,
     FragmentType,
+    GeneratedBlueprint,
     InsightApplicationMap,
     PromptGenerationSnapshot,
     RuntimeContext,
@@ -23,16 +27,78 @@ from effect_prompt_generation.models import (
     SharedPrompt,
 )
 from effect_prompt_generation.pipeline import PromptGenerationPipeline
-from effect_prompt_generation.providers import MockAiProvider
+from effect_prompt_generation.providers import (
+    MockAiProvider,
+    ProviderError,
+    ProviderErrorType,
+    _normalize_relationship_model_response,
+)
 from effect_prompt_generation.strategy_planning import allocate_fragment_facts
 from effect_prompt_generation.v10_blueprints import (
     allocate_blueprint_quotas,
+    coordinate_variant_targets,
     make_blueprint_shards,
     make_blueprint_tasks,
     normalize_coordinate_plan,
+    normalize_generated_blueprints,
+    relationship_hash,
+    select_orthogonal_blueprints,
+    validate_coordinate_plan,
 )
 
 from test_graph import FakeApi
+
+
+def test_relationship_transport_freezes_metadata_and_selects_exact_bundle_count() -> None:
+    application = map_insight(
+        {
+            "productName": "便携杯",
+            "coreSellingPoints": ["单手开合"],
+            "corePainPoints": ["双手被占用"],
+            "targetAudience": "通勤人群",
+            "marketingGoal": "引导了解",
+        }
+    )
+    candidate_ids = [fact.fact_id for fact in application.required]
+    allocation = FragmentFactAllocation(
+        fragment_type=FragmentType.PAIN,
+        target_count=8,
+        bundle_target=3,
+        mandatory_fact_ids=candidate_ids[:2],
+        candidate_fact_ids=candidate_ids,
+        allocation_hash="a" * 64,
+    )
+    response = FragmentRelationshipModelResponse(
+        fragment_type=FragmentType.HOOK,
+        bundles=[
+            FragmentRelationshipBundle(
+                bundle_id=f"model-{index}",
+                fragment_type=FragmentType.HOOK,
+                primary_fact_id=fact_id,
+                fact_ids=[fact_id],
+                creative_intent="只呈现一个未解决的受阻状态",
+            )
+            for index, fact_id in enumerate(candidate_ids[:5], 1)
+        ],
+        allocation_hash="model-owned-value",
+        prompt_version="effect-prompt-v10-relationship-base-v1",
+    )
+
+    plan = _normalize_relationship_model_response(response, allocation, application)
+
+    assert len(plan.bundles) == 3
+    assert plan.fragment_type == FragmentType.PAIN
+    assert plan.allocation_hash == allocation.allocation_hash
+    assert plan.prompt_version == "effect-prompt-v10-relationship-v2"
+    assert [bundle.bundle_id for bundle in plan.bundles] == [
+        "PAIN-R1",
+        "PAIN-R2",
+        "PAIN-R3",
+    ]
+    assert set(allocation.mandatory_fact_ids) <= {
+        fact_id for bundle in plan.bundles for fact_id in bundle.fact_ids
+    }
+    assert all(bundle.fragment_type == FragmentType.PAIN for bundle in plan.bundles)
 
 
 class CountingV10Provider(MockAiProvider):
@@ -42,6 +108,7 @@ class CountingV10Provider(MockAiProvider):
         self.blueprint_calls = 0
         self.prompt_calls = 0
         self.blueprint_avoid_signatures: list[list[list[str]]] = []
+        self.call_sequence: list[str] = []
 
     async def plan_fragment_relationships(
         self,
@@ -82,6 +149,7 @@ class CountingV10Provider(MockAiProvider):
         avoid_signatures: list[list[str]] | None = None,
     ):  # type: ignore[no-untyped-def]
         self.blueprint_calls += 1
+        self.call_sequence.append(f"BLUEPRINT:{shard.round}")
         self.blueprint_avoid_signatures.append(avoid_signatures or [])
         return await super().generate_blueprints(
             shard,
@@ -94,7 +162,44 @@ class CountingV10Provider(MockAiProvider):
 
     async def generate_candidates(self, *args: Any, **kwargs: Any):  # type: ignore[no-untyped-def]
         self.prompt_calls += 1
+        combinations = args[0]
+        round_number = combinations[0].slot_id.split("-", 1)[0].removeprefix("r")
+        self.call_sequence.append(f"PROMPT:{round_number}")
         return await super().generate_candidates(*args, **kwargs)
+
+
+class OneInvalidBlueprintProvider(CountingV10Provider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.invalid_blueprint_returned = False
+
+    async def generate_blueprints(
+        self,
+        shard: BlueprintShardPlan,
+        *,
+        relationships: FragmentRelationshipPlan,
+        coordinate_plan: FragmentDimensionCoordinatePlan,
+        application: InsightApplicationMap,
+        shared_prompt: SharedPrompt,
+        avoid_signatures: list[list[str]] | None = None,
+    ):  # type: ignore[no-untyped-def]
+        if not self.invalid_blueprint_returned:
+            self.invalid_blueprint_returned = True
+            self.blueprint_calls += 1
+            self.call_sequence.append(f"BLUEPRINT:{shard.round}")
+            raise ProviderError(
+                "invalid blueprint candidate",
+                retryable=True,
+                error_type=ProviderErrorType.RESPONSE_INVALID,
+            )
+        return await super().generate_blueprints(
+            shard,
+            relationships=relationships,
+            coordinate_plan=coordinate_plan,
+            application=application,
+            shared_prompt=shared_prompt,
+            avoid_signatures=avoid_signatures,
+        )
 
 
 def _relationships(snapshot: PromptGenerationSnapshot) -> list[FragmentRelationshipPlan]:
@@ -124,7 +229,7 @@ def _relationships(snapshot: PromptGenerationSnapshot) -> list[FragmentRelations
                 fragment_type=fragment_type,
                 bundles=bundles,
                 allocation_hash=allocation.allocation_hash,
-                prompt_version="effect-prompt-v10-relationship-v1",
+                prompt_version="effect-prompt-v10-relationship-v2",
             )
         )
     return plans
@@ -261,6 +366,221 @@ def test_coordinate_signatures_are_recomputed_by_worker(
     assert normalized.narratives[0].normalized_signature == "localhook"
 
 
+def test_coordinate_plan_accepts_limited_variation_when_every_dimension_covers_bundle(
+    snapshot: PromptGenerationSnapshot,
+) -> None:
+    relationships = _relationships(snapshot)[0]
+    application = map_insight(snapshot.insight_artifact.result)
+    bundle_ids = [bundle.bundle_id for bundle in relationships.bundles]
+    fact_id = relationships.bundles[0].primary_fact_id
+
+    def rows(prefix: str, size: int) -> list[DimensionCoordinate]:
+        return [
+            DimensionCoordinate(
+                coordinate_id=f"{prefix}{index}",
+                value=f"{prefix}真实候选{index}",
+                compatible_bundle_ids=bundle_ids,
+                source_fact_ids=[fact_id],
+                normalized_signature=f"{prefix.lower()}真实候选{index}",
+            )
+            for index in range(1, size + 1)
+        ]
+
+    plan = FragmentDimensionCoordinatePlan(
+        fragment_type=FragmentType.HOOK,
+        relationship_allocation_hash=relationship_hash(relationships),
+        narratives=rows("N", 2),
+        scenes=rows("S", 2),
+        personas=rows("P", 2),
+        selling_points=rows("SP", 1),
+        cameras=rows("C", 2),
+        emotions=rows("E", 2),
+        prompt_version="test",
+    )
+    plan = normalize_coordinate_plan(plan, relationships)
+    targets = coordinate_variant_targets(relationships, 3)
+
+    assert targets
+    validate_coordinate_plan(plan, relationships, application)
+
+
+def test_coordinate_normalization_completes_only_fact_compatible_bundle_labels(
+    snapshot: PromptGenerationSnapshot,
+) -> None:
+    relationships = _relationships(snapshot)[-1]
+    first_bundle = relationships.bundles[0]
+    second_bundle = first_bundle.model_copy(update={"bundle_id": "OUTRO-R2"})
+    shared_fact = first_bundle.primary_fact_id
+    relationships = relationships.model_copy(
+        update={
+            "bundles": [
+                first_bundle,
+                second_bundle.model_copy(
+                    update={
+                        "primary_fact_id": shared_fact,
+                        "fact_ids": [shared_fact],
+                    }
+                ),
+            ]
+        }
+    )
+    first_id = relationships.bundles[0].bundle_id
+    second_id = relationships.bundles[1].bundle_id
+    coordinate = DimensionCoordinate(
+        coordinate_id="OUTRO-SP01",
+        value="保留真实产品细节的稳定收束",
+        compatible_bundle_ids=[first_id],
+        source_fact_ids=[shared_fact],
+        normalized_signature="model-value",
+    )
+    visual = coordinate.model_copy(
+        update={"coordinate_id": "OUTRO-V01", "source_fact_ids": []}
+    )
+    visual_second = visual.model_copy(
+        update={"coordinate_id": "OUTRO-V02", "value": "另一个视觉候选"}
+    )
+    raw = FragmentDimensionCoordinatePlan(
+        fragment_type=FragmentType.OUTRO,
+        relationship_allocation_hash="b" * 64,
+        narratives=[visual, visual_second],
+        scenes=[visual, visual_second],
+        personas=[visual, visual_second],
+        selling_points=[coordinate],
+        cameras=[visual, visual_second],
+        emotions=[visual, visual_second],
+        prompt_version="model-version",
+    )
+
+    normalized = normalize_coordinate_plan(raw, relationships)
+
+    assert set(normalized.selling_points[0].compatible_bundle_ids) == {
+        first_id,
+        second_id,
+    }
+
+
+def test_blueprint_normalization_freezes_task_identity_and_fact_subset() -> None:
+    task = BlueprintTask(
+        slot_id="HOOK-R1-001",
+        ordinal=1,
+        round=0,
+        fragment_type=FragmentType.HOOK,
+        bundle_id="HOOK-R1",
+        primary_fact_id="fact-primary",
+        fact_ids=["fact-primary", "fact-helper"],
+        target_duration_seconds=5,
+        material_tags=["钩子"],
+    )
+    item = GeneratedBlueprint(
+        slot_id="model-changed-slot",
+        fragment_type=FragmentType.OUTRO,
+        bundle_id="model-bundle",
+        primary_fact_id="model-fact",
+        used_fact_ids=["unknown-fact", "fact-helper"],
+        narrative_coordinate_id="N1",
+        scene_coordinate_id="S1",
+        persona_coordinate_id="P1",
+        selling_point_coordinate_id="SP1",
+        camera_coordinate_id="C1",
+        emotion_coordinate_id="E1",
+        opening_state="首帧建立悬念",
+        action_arc="主体缓慢靠近后停住",
+        ending_state="关键信息仍未揭晓",
+    )
+
+    normalized = normalize_generated_blueprints([item], [task])[0]
+
+    assert normalized.slot_id == task.slot_id
+    assert normalized.fragment_type == task.fragment_type
+    assert normalized.bundle_id == task.bundle_id
+    assert normalized.primary_fact_id == task.primary_fact_id
+    assert normalized.used_fact_ids == ["fact-primary", "fact-helper"]
+
+
+def test_blueprint_distance_is_preference_but_exact_tuple_is_hard_duplicate() -> None:
+    bundle_id = "HOOK-R1"
+
+    def coordinate(identifier: str, value: str) -> DimensionCoordinate:
+        return DimensionCoordinate(
+            coordinate_id=identifier,
+            value=value,
+            compatible_bundle_ids=[bundle_id],
+            source_fact_ids=[],
+            normalized_signature=value.casefold(),
+        )
+
+    first = coordinate("N1", "narrative one")
+    second = coordinate("N2", "narrative two")
+    plan = FragmentDimensionCoordinatePlan(
+        fragment_type=FragmentType.HOOK,
+        relationship_allocation_hash="a" * 64,
+        narratives=[first, second],
+        scenes=[coordinate("S1", "scene one"), coordinate("S2", "scene two")],
+        personas=[coordinate("P1", "persona one"), coordinate("P2", "persona two")],
+        selling_points=[coordinate("SP1", "selling one")],
+        cameras=[coordinate("C1", "camera one"), coordinate("C2", "camera two")],
+        emotions=[coordinate("E1", "emotion one"), coordinate("E2", "emotion two")],
+        prompt_version="test",
+    )
+
+    def blueprint(slot_id: str, narrative_id: str) -> GeneratedBlueprint:
+        return GeneratedBlueprint(
+            slot_id=slot_id,
+            fragment_type=FragmentType.HOOK,
+            bundle_id=bundle_id,
+            primary_fact_id="fact-1",
+            used_fact_ids=["fact-1"],
+            narrative_coordinate_id=narrative_id,
+            scene_coordinate_id="S1",
+            persona_coordinate_id="P1",
+            selling_point_coordinate_id="SP1",
+            camera_coordinate_id="C1",
+            emotion_coordinate_id="E1",
+            opening_state="首帧悬念",
+            action_arc="成年人伸手后停住",
+            ending_state="信息仍未揭晓",
+        )
+
+    selected, deficits, rejected = select_orthogonal_blueprints(
+        [blueprint("slot-a", "N1"), blueprint("slot-b", "N2"), blueprint("slot-c", "N1")],
+        [
+            BlueprintBundleQuota(
+                fragment_type=FragmentType.HOOK,
+                bundle_id=bundle_id,
+                primary_fact_id="fact-1",
+                target_count=2,
+                candidate_count=3,
+            )
+        ],
+        [plan],
+    )
+
+    assert len(selected) == 2
+    assert {item.narrative_coordinate_id for item in selected} == {"N1", "N2"}
+    assert deficits == {}
+    assert rejected == 1
+
+    changed_action = blueprint("slot-d", "N1").model_copy(
+        update={"action_arc": "成年人轻触主体边缘后停住"}
+    )
+    same_coordinates, deficits, rejected = select_orthogonal_blueprints(
+        [blueprint("slot-a", "N1"), changed_action],
+        [
+            BlueprintBundleQuota(
+                fragment_type=FragmentType.HOOK,
+                bundle_id=bundle_id,
+                primary_fact_id="fact-1",
+                target_count=2,
+                candidate_count=2,
+            )
+        ],
+        [plan],
+    )
+    assert len(same_coordinates) == 2
+    assert deficits == {}
+    assert rejected == 0
+
+
 def test_replenishment_only_overgenerates_actual_bundle_gap(
     snapshot: PromptGenerationSnapshot,
 ) -> None:
@@ -306,6 +626,41 @@ async def test_v10_graph_persists_blueprint_and_prompt_phases(
 
 
 @pytest.mark.asyncio
+async def test_invalid_blueprint_shard_becomes_a_replenishment_gap(
+    snapshot: PromptGenerationSnapshot,
+    runtime: RuntimeContext,
+) -> None:
+    snapshot = snapshot.model_copy(
+        update={"graph_version": "V10_RELATION_COORDINATE_BLUEPRINT"}
+    )
+    api = FakeApi()
+    provider = OneInvalidBlueprintProvider()
+    pipeline = PromptGenerationPipeline(api=api, provider=provider, shard_size=8)
+    pipeline.register_snapshot(runtime, snapshot)
+
+    result: dict[str, Any] = await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+        config={"max_concurrency": 6},
+    )
+
+    assert result["prompt_result_id"] == "prompt-result-1"
+    assert any(
+        shard.phase == ShardPhase.BLUEPRINT and shard.status.value == "FAILED"
+        for shard in api.shards.values()
+    )
+    first_prompt = provider.call_sequence.index("PROMPT:0")
+    first_replenishment_blueprint = provider.call_sequence.index("BLUEPRINT:1")
+    assert first_prompt < first_replenishment_blueprint
+    assert any(
+        shard.phase == ShardPhase.BLUEPRINT
+        and shard.round > 0
+        and shard.status.value == "SUCCEEDED"
+        for shard in api.shards.values()
+    )
+
+
+@pytest.mark.asyncio
 async def test_default_50_v10_uses_six_coordinate_calls_and_nine_blueprint_shards(
     snapshot: PromptGenerationSnapshot,
     runtime: RuntimeContext,
@@ -340,11 +695,28 @@ async def test_default_50_v10_uses_six_coordinate_calls_and_nine_blueprint_shard
 
     assert provider.relationship_calls == 6
     assert provider.coordinate_calls == 6
+    prompt_keys = sorted(
+        shard.key
+        for shard in api.shards.values()
+        if shard.phase == ShardPhase.PROMPT and shard.status.value == "SUCCEEDED"
+    )
+    missing_key = prompt_keys[len(prompt_keys) // 2]
+    pending, deficits = await pipeline.gate_blueprints_and_plan_prompts(
+        runtime,
+        round_number=0,
+        completed_prompt_keys=[key for key in prompt_keys if key != missing_key],
+    )
+    assert deficits == {}
+    assert [shard.key for shard in pending] == [missing_key]
     assert provider.blueprint_calls == 9
     assert provider.prompt_calls == 9
     assert any(provider.blueprint_avoid_signatures)
     assert api.result is not None
     assert len(api.result.items) == 50
+    assert api.result.quality_status == "PASS"
+    assert api.result.metrics.insight_coverage.missing == []
+    assert api.result.metrics.fallback_count == 0
+    assert api.result.metrics.execution_invalid_reasons == []
     assert Counter(item.fragment_type for item in api.result.items) == Counter(
         {
             FragmentType.HOOK: 10,

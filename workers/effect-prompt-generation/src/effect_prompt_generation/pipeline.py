@@ -14,7 +14,11 @@ from typing import Any, Literal, cast
 from pydantic import ValidationError
 
 from .api_client import InternalApi, InternalApiError
-from .assembly import assemble_fragment_prompt, assemble_safe_fallback_prompt
+from .assembly import (
+    assemble_fragment_prompt,
+    assemble_safe_fallback_prompt,
+    hard_execution_reasons,
+)
 from .combinations import (
     expression_bindings,
     fragment_type_deficits,
@@ -67,6 +71,7 @@ from .providers import (
     FRAGMENT_STRATEGY_VERSION,
     AiProvider,
     ProviderError,
+    ProviderErrorType,
     RELATIONSHIP_STAGE_BY_TYPE,
     V10_COORDINATE_VERSION,
     V10_RELATIONSHIP_VERSION,
@@ -210,7 +215,11 @@ class PromptGenerationPipeline:
         ]
         if any(
             combination.planning_version
-            not in {"six-branch-v1", "six-ai-branch-v2"}
+            not in {
+                "six-branch-v1",
+                "six-ai-branch-v2",
+                "v10-coordinate-blueprint",
+            }
             for shard in succeeded
             for combination in shard.combination_plan
         ):
@@ -693,7 +702,11 @@ class PromptGenerationPipeline:
             ):
                 continue
             try:
-                validate_coordinate_plan(checkpoint.plan, relationship, self._require_application(context))
+                validate_coordinate_plan(
+                    checkpoint.plan,
+                    relationship,
+                    self._require_application(context),
+                )
             except ValueError:
                 continue
             plan = checkpoint.plan.model_copy(update={"reused_checkpoint": True})
@@ -725,7 +738,11 @@ class PromptGenerationPipeline:
                     relationship.fragment_type
                 ].count,
             )
-            validate_coordinate_plan(call.value, relationship, self._require_application(context))
+            validate_coordinate_plan(
+                call.value,
+                relationship,
+                self._require_application(context),
+            )
         except Exception as exc:
             setattr(exc, "node_id", node)
             await self._stage(context, node, StageStatus.FAILED, _safe_error(exc))
@@ -931,6 +948,11 @@ class PromptGenerationPipeline:
                     }
                 ),
             )
+            if (
+                isinstance(exc, ProviderError)
+                and exc.error_type == ProviderErrorType.RESPONSE_INVALID
+            ):
+                return []
             raise
 
     async def gate_blueprints_and_plan_prompts(
@@ -960,7 +982,6 @@ class PromptGenerationPipeline:
                 self._require_application(context),
             )
             for item in selected
-            if item.slot_id not in self._cache(context).candidates
         ]
         snapshot = self.snapshot(context)
         if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item:
@@ -1241,6 +1262,11 @@ class PromptGenerationPipeline:
                     }
                 ),
             )
+            if (
+                isinstance(exc, ProviderError)
+                and exc.error_type == ProviderErrorType.RESPONSE_INVALID
+            ):
+                return []
             raise
 
     async def normalize(self, context: RuntimeContext) -> list[PromptItem]:
@@ -1252,7 +1278,7 @@ class PromptGenerationPipeline:
             for item in _unique_candidates(
                 list(self._cache(context).candidates.values())
             )
-            if not item.execution_invalid_reasons
+            if not hard_execution_reasons(item.execution_invalid_reasons)
         ]
         items = [
             PromptItem(
@@ -1444,7 +1470,7 @@ class PromptGenerationPipeline:
             ),
             generated_candidate_count=len(self._cache(context).candidates),
             removed_execution_invalid=sum(
-                bool(item.execution_invalid_reasons)
+                bool(hard_execution_reasons(item.execution_invalid_reasons))
                 for item in self._cache(context).candidates.values()
             ),
             execution_invalid_reasons=dict(
@@ -1648,7 +1674,7 @@ class PromptGenerationPipeline:
                 generated_candidate_count=len(self._cache(context).candidates)
                 + len(fallback_items),
                 removed_execution_invalid=sum(
-                    bool(item.execution_invalid_reasons)
+                    bool(hard_execution_reasons(item.execution_invalid_reasons))
                     for item in self._cache(context).candidates.values()
                 ),
                 execution_invalid_reasons=dict(
@@ -1722,6 +1748,14 @@ class PromptGenerationPipeline:
             if slot_id in accepted_slots
         }
         cache.selected_blueprints = dict(cache.blueprints)
+        cache.candidates = {
+            slot_id: candidate
+            for slot_id, candidate in cache.candidates.items()
+            if _stable_item_id(context.source_fingerprint, slot_id) in accepted_ids
+        }
+        cache.normalized_items = [
+            item for item in cache.normalized_items if item.id in accepted_ids
+        ]
         return {
             quota.bundle_id: quota.target_count - actual[quota.bundle_id]
             for quota in cache.blueprint_quotas

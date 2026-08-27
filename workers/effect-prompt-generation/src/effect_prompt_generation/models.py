@@ -632,6 +632,15 @@ class FragmentRelationshipBundle(ApiModel):
     creative_intent: str = Field(min_length=1, max_length=160)
 
 
+class FragmentRelationshipModelResponse(ApiModel):
+    """Permissive transport shape; the provider freezes system-owned fields afterwards."""
+
+    fragment_type: FragmentType
+    bundles: list[FragmentRelationshipBundle] = Field(min_length=1, max_length=12)
+    allocation_hash: str = Field(min_length=1, max_length=120)
+    prompt_version: str = Field(min_length=1, max_length=120)
+
+
 class FragmentRelationshipPlan(ApiModel):
     fragment_type: FragmentType
     bundles: list[FragmentRelationshipBundle] = Field(min_length=1, max_length=4)
@@ -644,7 +653,9 @@ class DimensionCoordinate(ApiModel):
     coordinate_id: str = Field(min_length=1, max_length=120)
     value: str = Field(min_length=1, max_length=240)
     compatible_bundle_ids: list[str] = Field(min_length=1, max_length=16)
-    source_fact_ids: list[str] = Field(default_factory=list, max_length=8)
+    # Ark may over-return transport references even with strict JSON Schema. The provider
+    # filters them to the relationship allocation and caps the persisted plan at eight.
+    source_fact_ids: list[str] = Field(default_factory=list, max_length=32)
     normalized_signature: str = Field(min_length=1, max_length=240)
 
 
@@ -826,7 +837,7 @@ class GeneratedCandidate(ApiModel):
     shard_index: int = Field(ge=0)
     fragment_type: FragmentType
     material_tags: list[str] = Field(min_length=1, max_length=12)
-    target_duration_seconds: int = Field(ge=3, le=10)
+    target_duration_seconds: int = Field(ge=4, le=15)
     dimensions: PromptDimensions
     content: str = Field(min_length=1, max_length=12_000)
     insight_bindings: list[InsightBinding] = Field(default_factory=list, max_length=16)

@@ -21,7 +21,8 @@ authoritative for rendering.
 V9 historical runs retain their validated deterministic fallback. V10 never fabricates a
 replacement Prompt: after a Prompt or orthogonal-gate rejection it removes the rejected blueprint,
 returns to the same fragment type and relationship bundle, and generates `ceil(gap * 1.25)` new
-blueprint candidates for at most three rounds. A still-short run preserves the best
+blueprint candidates for at most three rounds. Only hard execution or exact-duplicate failures
+can create a quantity gap; a still-short run preserves the best
 `NEEDS_REVIEW` draft without committing it as a valid batch.
 
 Before planning, `INSIGHT_MAPPING` classifies every non-empty extraction field as
@@ -31,9 +32,11 @@ IDs. V10 keeps six independent relationship branches, but each branch now return
 produce one product-specific six-dimensional coordinate plan per fragment type. Deterministic quota
 allocation then expands every relationship bundle into exact blueprint tasks; type-homogeneous
 blueprint shards (at most eight tasks) let the Lite model select one coherent six-coordinate tuple
-and define its opening state, continuous action arc, and ending state. A full-batch orthogonal gate
-compares normalized coordinate text across types and requires every accepted pair to differ in at
-least three dimensions. One accepted blueprint produces exactly one Turbo Prompt task.
+and define its opening state, continuous action arc, and ending state. A full-batch diversity gate
+compares normalized coordinate text across types and prefers blueprints whose minimum distance is
+larger, but does not delete an otherwise distinct blueprint merely because one pair differs in fewer
+than three dimensions. Exact fragment counts and relationship quotas come first. One accepted
+blueprint produces exactly one Turbo Prompt task.
 After deduplication, `INSIGHT_COVERAGE` measures the bindings that survived; missing required facts
 drive role- and relationship-compatible blueprint replenishment and block `PASS`, while deferred
 adaptive facts remain visible without blocking the draft. V9 remains available only for frozen
@@ -48,6 +51,8 @@ evidence into `VISIBLE_ATTRIBUTE`, `USAGE_ACTION`, `VISIBLE_RESULT`, `PROCESS_ON
 replenishment, and persistence are deterministic. Prompts containing a full timeline,
 stacked personas, meta-language, unfilmable evidence, role conflicts, field duplication,
 source-fact violations, placeholders, or broken text are removed before similarity checks.
+Semantic and visual similarity are measured across the complete batch against the user-configured
+pair-rate limits; an individual similar pair is not an automatic deletion.
 
 Required environment variables:
 

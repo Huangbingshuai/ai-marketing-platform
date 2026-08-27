@@ -1,10 +1,13 @@
-片段类型：{{fragment_type}}
-目标蓝图数：{{target_count}}
-产品事实：{{facts_json}}
-营销组合：{{relationships_json}}
-片段职责：{{fragment_rules}}
-批次共用约束：{{shared_prompt}}
-relationshipAllocationHash：{{relationship_hash}}
-promptVersion：effect-prompt-v10-coordinate-v1
+片段类型：{fragment_type}
+目标蓝图数：{target_count}
+产品事实：{facts_json}
+营销组合：{relationships_json}
+片段职责：{fragment_rules}
+批次共用约束：{shared_prompt}
+relationshipAllocationHash：{relationship_hash}
+各营销组合首轮蓝图配额：{quota_json}
+全部 bundleId：{bundle_ids_json}
+共享变体数：{shared_variant_count}
+promptVersion：effect-prompt-v10-coordinate-v8
 
-为全部营销组合生成一份产品专属六维坐标计划。每个维度至少2个真实不同候选，卖点维度至少1个。
+为全部营销组合生成一份产品专属六维坐标计划。建议 scenes、cameras、emotions 各提供约 {shared_variant_count} 个真实不同且可复用的候选；真实、适配和六维覆盖优先于数量，不得为达到建议数重复同义候选。其他三个维度按组合事实生成并完整覆盖全部 bundleId。

@@ -409,6 +409,15 @@ async def test_load_reuses_succeeded_shards(
         completed_keys=[],
     )
     candidates = await pipeline.generate_shard(runtime, shards[0])
+    saved = api.shards["0:0"]
+    api.shards["0:0"] = saved.model_copy(
+        update={
+            "combination_plan": [
+                item.model_copy(update={"planning_version": "v10-coordinate-blueprint"})
+                for item in saved.combination_plan
+            ]
+        }
+    )
     second = await pipeline.load_and_snapshot(runtime)
 
     assert first.candidates == []

@@ -1,10 +1,10 @@
-片段类型：{{fragment_type}}
-目标片段数：{{target_count}}
-营销组合数：{{bundle_target}}
-必须覆盖事实ID：{{mandatory_fact_ids_json}}
-允许事实：{{candidate_facts_json}}
-批次共用约束：{{shared_prompt}}
-allocationHash：{{allocation_hash}}
-promptVersion：effect-prompt-v10-relationship-v1
+片段类型：{fragment_type}
+目标片段数：{target_count}
+营销组合数：{bundle_target}
+必须覆盖事实ID：{mandatory_fact_ids_json}
+允许事实：{candidate_facts_json}
+批次共用约束：{shared_prompt}
+allocationHash：{allocation_hash}
+promptVersion：effect-prompt-v10-relationship-v2
 
-请生成本片段类型的事实关系组合。
+请生成本片段类型的事实关系组合。bundles 必须恰好为 {bundle_target} 组。

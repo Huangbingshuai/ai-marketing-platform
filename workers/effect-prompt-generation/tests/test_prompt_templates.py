@@ -6,6 +6,8 @@ from effect_prompt_generation.prompt_loader import (
     render_prompt,
 )
 
+import pytest
+
 
 def test_quality_v4_templates_contain_six_specialized_system_prompts() -> None:
     strategy = load_prompt("strategy_planning.prompt.txt")
@@ -25,7 +27,7 @@ def test_quality_v4_templates_contain_six_specialized_system_prompts() -> None:
     )
     assert (
         load_prompt_version("candidate_base.system.prompt.txt")
-        == "effect-prompt-candidate-base-v8"
+        == "effect-prompt-candidate-base-v9"
     )
     assert (
         load_prompt_version("candidate_task.user.prompt.txt")
@@ -82,3 +84,29 @@ def test_candidate_template_renders_literal_example_json_and_product_context() -
     assert "促销贴纸" in rendered
     assert "9:16" not in rendered
     assert "医疗暗示" not in rendered
+
+
+def test_v10_template_does_not_reparse_inserted_json_or_hash_as_variables() -> None:
+    allocation_hash = "d2ed72ccd1c7367fe0fc8bcb9041653a74f6949dbfde30d3becf4f12734039c0"
+    rendered = render_prompt(
+        "v10_relationship_task.user.prompt.txt",
+        fragment_type="PRODUCT_DISPLAY",
+        target_count="12",
+        bundle_target="4",
+        mandatory_fact_ids_json='["fact-1"]',
+        candidate_facts_json='[{"factId":"fact-1","value":"真空袋装"}]',
+        shared_prompt="保持真实材质",
+        allocation_hash=allocation_hash,
+    )
+
+    assert allocation_hash in rendered
+    assert f"{{{allocation_hash}}}" not in rendered
+    assert '"factId":"fact-1"' in rendered
+
+
+def test_render_prompt_reports_a_template_variable_that_was_not_supplied() -> None:
+    with pytest.raises(ValueError, match="missing prompt template variable: target_count"):
+        render_prompt(
+            "strategy_planning.prompt.txt",
+            insight_json="{}",
+        )

@@ -985,6 +985,8 @@ export type ValidateEffectPromptResultRequest = { expectedRevision: number };
 export type ValidateEffectPromptResultData = {
   valid: boolean;
   issues: Array<{ code: string; message: string }>;
+  /** Non-blocking quality observations. They never prevent committing a complete batch. */
+  warnings?: Array<{ code: string; message: string }>;
   productId: string;
   artifacts: WorkingArtifactCommitSummary[];
   allProductsValidated: boolean;

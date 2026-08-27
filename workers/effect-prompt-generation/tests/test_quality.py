@@ -49,7 +49,7 @@ def test_quality_constants_have_golden_scores(dimensions: PromptDimensions) -> N
     assert semantic_similarity(same_signature, other) == pytest.approx(0.25)
 
 
-def test_evaluation_removes_dimension_conflict_before_other_checks(
+def test_evaluation_keeps_dimension_conflict_as_a_ranking_signal(
     prompt_item: PromptItem,
 ) -> None:
     candidates = [
@@ -64,8 +64,108 @@ def test_evaluation_removes_dimension_conflict_before_other_checks(
         round_number=0,
     )
 
-    assert result.metrics.removed_dimension_conflicts == 1
+    assert result.metrics.removed_dimension_conflicts == 0
+    assert result.metrics.accepted_count == 2
+    assert result.quality_status == "NEEDS_REVIEW"
+
+
+def test_batch_allows_similar_pair_within_configured_rates(
+    prompt_item: PromptItem,
+) -> None:
+    similar = prompt_item.model_copy(
+        update={"id": "similar", "code": "similar", "content": "同坐标但正文不同"}
+    )
+    diverse_contents = [
+        "窗边成年人缓慢扶正产品后停住",
+        "门店展示台上产品在冷光下保持稳定",
+        "户外长椅旁单手轻放主体并退出画面",
+        "厨房木桌旁双手移开遮挡后停下",
+        "玄关矮柜上主体在暖光里保持清楚",
+        "办公桌前成年人触碰产品侧面细节",
+        "卧室收纳区单手取出主体并扶正",
+        "简洁展台中央产品形成稳定结束构图",
+    ]
+    diverse = [
+        prompt_item.model_copy(
+            update={
+                "id": f"diverse-{index}",
+                "code": f"diverse-{index}",
+                "content": diverse_contents[index],
+                "dimensions": prompt_item.dimensions.model_copy(
+                    update={
+                        "narrative": f"叙事{index}",
+                        "scene": f"场景{index}",
+                        "persona": f"人物{index}",
+                        "camera": f"镜头{index}",
+                    }
+                ),
+            }
+        )
+        for index in range(8)
+    ]
+    result = evaluate_candidates(
+        [],
+        [prompt_item, similar, *diverse],
+        target_count=10,
+        semantic_limit=15,
+        visual_limit=20,
+        round_number=0,
+    )
+
+    assert result.metrics.accepted_count == 10
+    assert result.metrics.semantic_duplicate_rate == pytest.approx(2.22)
+    assert result.metrics.visual_overlap_rate == pytest.approx(2.22)
+    assert result.metrics.removed_semantic_duplicates == 0
+    assert result.metrics.removed_visual_duplicates == 0
+    assert result.quality_status == "PASS"
+
+
+def test_exact_prompt_duplicate_remains_a_hard_rejection(
+    prompt_item: PromptItem,
+) -> None:
+    duplicate = prompt_item.model_copy(
+        update={"id": "duplicate", "code": "duplicate"}
+    )
+    result = evaluate_candidates(
+        [],
+        [prompt_item, duplicate],
+        target_count=10,
+        semantic_limit=15,
+        visual_limit=20,
+        round_number=0,
+    )
+
     assert result.metrics.accepted_count == 1
+    assert result.metrics.removed_semantic_duplicates == 1
+    assert result.quality_status == "NEEDS_REVIEW"
+
+
+def test_over_limit_similarity_preserves_exact_quantity_for_review(
+    prompt_item: PromptItem,
+) -> None:
+    candidates = [
+        prompt_item.model_copy(
+            update={
+                "id": f"similar-{index}",
+                "code": f"similar-{index}",
+                "content": f"相同画面关系下的不同动作描述版本 {index}",
+            }
+        )
+        for index in range(10)
+    ]
+    result = evaluate_candidates(
+        [],
+        candidates,
+        target_count=10,
+        semantic_limit=15,
+        visual_limit=20,
+        round_number=3,
+    )
+
+    assert result.metrics.accepted_count == 10
+    assert result.metrics.semantic_duplicate_rate == pytest.approx(100)
+    assert result.metrics.visual_overlap_rate == pytest.approx(100)
+    assert result.metrics.removed_semantic_duplicates == 0
     assert result.quality_status == "NEEDS_REVIEW"
 
 

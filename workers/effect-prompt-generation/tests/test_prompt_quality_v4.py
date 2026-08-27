@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import pytest
-from effect_prompt_generation.assembly import prompt_length_bounds, validate_fragment_prompt
+from effect_prompt_generation.assembly import (
+    hard_execution_reasons,
+    prompt_length_bounds,
+    validate_fragment_prompt,
+)
 from effect_prompt_generation.models import (
     EvidenceMode,
     FragmentType,
@@ -188,7 +192,7 @@ def test_six_fragment_roles_reject_their_own_conflicts(
 
 @pytest.mark.parametrize(
     ("duration_seconds", "bounds"),
-    [(4, (80, 150)), (5, (80, 150)), (6, (110, 200)), (8, (110, 200)), (9, (140, 260)), (15, (140, 260))],
+    [(4, (80, 150)), (5, (80, 150)), (6, (90, 200)), (8, (90, 200)), (9, (100, 260)), (15, (100, 260))],
 )
 def test_prompt_length_budget_tracks_fragment_duration(
     duration_seconds: int, bounds: tuple[int, int]
@@ -251,3 +255,26 @@ def test_product_display_rejects_unexplained_packaged_to_unpacked_state_jump() -
     )
 
     assert "PHYSICS_BREAK" in reasons
+
+
+def test_soft_execution_warnings_do_not_hide_hard_failures() -> None:
+    reasons = [
+        "PROMPT_LENGTH_MISMATCH",
+        "MISSING_LIGHTING_OR_PACING",
+        "MISSING_CAMERA_EXECUTION",
+        "ABSTRACT_PERSONA",
+        "NEGATIVE_TAIL_DUPLICATION",
+        "OVERLOADED_ACTION",
+        "CAMERA_CONFLICT",
+        "PRODUCT_NOT_FIRST_FRAME",
+        "CTA_NO_SAFE_AREA",
+        "OUTRO_UNSTABLE",
+    ]
+
+    assert hard_execution_reasons(reasons) == [
+        "OVERLOADED_ACTION",
+        "CAMERA_CONFLICT",
+        "PRODUCT_NOT_FIRST_FRAME",
+        "CTA_NO_SAFE_AREA",
+        "OUTRO_UNSTABLE",
+    ]

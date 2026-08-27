@@ -6,7 +6,10 @@ import {
   compileEffectPromptSharedConstraintPrompt,
   compileEffectPromptSharedPrompt,
   dimensionDistance,
+  effectPromptExactDuplicatePairs,
   effectPromptExecutionIssues,
+  effectPromptHardExecutionIssues,
+  effectPromptSoftQualityWarnings,
   inferEffectPromptInsightBindings,
   mergeEffectPromptCompletionItems,
   parseEffectPromptBatchResult,
@@ -117,6 +120,104 @@ describe('effect prompt quality', () => {
     expect(result.metrics.semanticDuplicateRate).toBeCloseTo(33.33);
     expect(result.metrics.visualOverlapRate).toBeCloseTo(33.33);
     expect(result.qualityStatus).toBe('NEEDS_REVIEW');
+  });
+
+  it('separates non-blocking refinements from hard execution and safety failures', () => {
+    const soft = item('soft', {
+      content: '厨房里，成年人拿起产品后停稳。',
+    });
+    const unsafe = item('unsafe', {
+      content: '厨房里，成年人拿起产品，随后凭空变形并展示工厂生产过程。',
+    });
+
+    expect(effectPromptSoftQualityWarnings(effectPromptExecutionIssues(soft))).toEqual(
+      expect.arrayContaining(['PROMPT_LENGTH_MISMATCH']),
+    );
+    expect(effectPromptHardExecutionIssues(effectPromptExecutionIssues(soft))).toEqual([]);
+    expect(effectPromptSoftQualityWarnings(['MISSING_CAMERA_EXECUTION'])).toEqual([
+      'MISSING_CAMERA_EXECUTION',
+    ]);
+    expect(effectPromptHardExecutionIssues(['CAMERA_CONFLICT'])).toEqual(['CAMERA_CONFLICT']);
+    expect(effectPromptHardExecutionIssues(effectPromptExecutionIssues(unsafe))).toEqual(
+      expect.arrayContaining(['ABSTRACT_VISUAL', 'PHYSICS_BREAK']),
+    );
+  });
+
+  it('passes a count-complete batch when ordinary similarity and soft warnings remain in limits', () => {
+    const compactSettings: EffectPromptBatchSettings = {
+      fragmentConfigs: {
+        HOOK: { count: 5, durationSeconds: 5 },
+        PAIN: { count: 1, durationSeconds: 5 },
+        PRODUCT_DISPLAY: { count: 1, durationSeconds: 5 },
+        SELLING_POINT_EXPLANATION: { count: 1, durationSeconds: 5 },
+        CTA: { count: 1, durationSeconds: 5 },
+        OUTRO: { count: 1, durationSeconds: 5 },
+      },
+      semanticLimit: 15,
+      visualLimit: 20,
+    };
+    const fragmentTypes: EffectPromptItem['fragmentType'][] = [
+      'HOOK',
+      'HOOK',
+      'HOOK',
+      'HOOK',
+      'HOOK',
+      'PAIN',
+      'PRODUCT_DISPLAY',
+      'SELLING_POINT_EXPLANATION',
+      'CTA',
+      'OUTRO',
+    ];
+    const contents = [
+      '晨光厨房里，成年人拿起杯盖靠近窗边，近景缓慢推进，停在尚未揭晓的局部。',
+      '晨光厨房里，成年人拿起杯盖靠近窗边，近景缓慢推进，停在尚未揭晓的局部细节。',
+      '雨后露台上，一只手扶住湿润花盆，俯视近景保持不动，水珠沿叶缘落下后停住。',
+      '通勤车厢内，成年人握住松动提带尝试调整，侧面近景跟随手腕，提带仍轻轻晃动。',
+      '夜间书桌前，一只手揭开收纳盒一角，微距焦点落在内部阴影，动作停在半开状态。',
+      '狭窄玄关里，成年人尝试把杂乱物品放入抽屉，抽屉受阻停住，问题仍然存在。',
+      '门店展示台上，产品首帧居中，一只手扶正盒身，平视近景保持轮廓清楚后停稳。',
+      '午后餐桌上，成年人转动产品露出表面纹理，微距焦点保持在真实材质并停止动作。',
+      '明亮台面上，一只手把产品轻放在画面左侧，固定近景保持右侧连续留白并停稳。',
+      '安静背景前，产品稳定居中，蒸汽逐渐变缓，固定近景保持上方留白与静物构图。',
+    ];
+    const batch = fragmentTypes.map((fragmentType, index) =>
+      item(`batch-${index}`, {
+        fragmentType,
+        content: contents[index]!,
+        dimensions: {
+          narrative: `叙事-${index}`,
+          scene: index === 1 ? '场景-0' : `场景-${index}`,
+          persona: index === 1 ? '人物-0' : `人物-${index}`,
+          sellingPoint: `抽象品质-${index}`,
+          camera: index === 1 ? '镜头-0' : `镜头-${index}`,
+          emotion: index === 1 ? '情绪-0' : `情绪-${index}`,
+        },
+      }),
+    );
+
+    const result = recomputePromptQuality(batch, compactSettings);
+
+    expect(result.items).toHaveLength(10);
+    expect(result.metrics.semanticDuplicateRate).toBeGreaterThan(0);
+    expect(result.metrics.semanticDuplicateRate).toBeLessThanOrEqual(compactSettings.semanticLimit);
+    expect(result.metrics.visualOverlapRate).toBeLessThanOrEqual(compactSettings.visualLimit);
+    expect(result.metrics.executionInvalidReasons).not.toContainEqual(
+      expect.objectContaining({ code: 'PROMPT_LENGTH_MISMATCH' }),
+    );
+    expect(result.qualityStatus).toBe('PASS');
+  });
+
+  it('keeps completely repeated prompt text as a hard batch failure even below rate limits', () => {
+    const first = item('exact-one');
+    const second = item('exact-two', { content: first.content });
+
+    expect(effectPromptExactDuplicatePairs([first, second])).toBe(1);
+    expect(
+      effectPromptExactDuplicatePairs([
+        first,
+        item('not-exact', { content: `${first.content} 补充一个真实结束状态。` }),
+      ]),
+    ).toBe(0);
   });
 
   it('rounds pair rates half-up identically to the Worker golden vector', () => {
@@ -365,6 +466,64 @@ describe('effect prompt quality', () => {
     });
 
     expect(effectPromptExecutionIssues(prompt)).not.toContain('NO_VISIBLE_ACTION');
+  });
+
+  it('recognizes a visible blocked adjustment action used by pain and hook blueprints', () => {
+    const prompt = item('blocked-adjustment', {
+      fragmentType: 'PAIN',
+      content: '成年人伸手尝试调整主体与障碍物的距离，受阻后停下，固定近景保持自然侧光。',
+    });
+
+    expect(effectPromptExecutionIssues(prompt)).not.toContain('NO_VISIBLE_ACTION');
+  });
+
+  it('caps preserved and inferred expression facts at the three-fact execution budget', () => {
+    const preserved = ['PRODUCT_NAME', 'VISUAL_FEATURES', 'CORE_SPECIFICATION'] as const;
+    const required = [
+      ...preserved.map((field, index) => ({
+        factId: `${field}:${index}`,
+        field,
+        value: ['便携杯', '浅蓝圆柱杯身', '轻量杯身'][index]!,
+        valueHash: String(index + 1).repeat(64),
+      })),
+      {
+        factId: 'CORE_SELLING_POINT:3',
+        field: 'CORE_SELLING_POINT' as const,
+        value: '单手按键开盖',
+        valueHash: '4'.repeat(64),
+      },
+    ];
+    const result = recomputePromptQuality(
+      [
+        item('binding-merge-budget', {
+          fragmentType: 'PRODUCT_DISPLAY',
+          content: '便携杯采用浅蓝圆柱杯身和轻量杯身，成年人拿起产品并呈现单手按键开盖。',
+          dimensions: {
+            ...item('binding-merge-budget').dimensions,
+            sellingPoint: '单手按键开盖',
+          },
+          insightBindings: required.slice(0, 3).map((reference) => ({
+            ...reference,
+            role: 'CONTEXT' as const,
+          })),
+        }),
+      ],
+      settings,
+      {
+        insightCoverage: {
+          required,
+          covered: [],
+          missing: required,
+          adaptive: [],
+          deferred: [],
+          excluded: [],
+          appliedConstraints: [],
+        },
+      },
+    );
+
+    expect(result.items[0]?.insightBindings).toHaveLength(3);
+    expect(effectPromptExecutionIssues(result.items[0]!)).not.toContain('FACT_OVERLOAD');
   });
 
   it('does not treat render metadata in visible content as an execution failure', () => {

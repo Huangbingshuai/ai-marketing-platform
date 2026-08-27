@@ -1,8 +1,8 @@
-产品事实：{{facts_json}}
-营销组合：{{relationships_json}}
-六维坐标计划：{{coordinate_plan_json}}
-蓝图任务：{{tasks_json}}
-批次共用约束：{{shared_prompt}}
-已有坐标签名（补齐时必须避开）：{{avoid_signatures_json}}
+产品事实：{facts_json}
+营销组合：{relationships_json}
+六维坐标计划：{coordinate_plan_json}
+蓝图任务：{tasks_json}
+批次共用约束：{shared_prompt}
+已有坐标签名（补齐时必须避开）：{avoid_signatures_json}
 
 为每个 slotId 生成且仅生成一张完整蓝图。

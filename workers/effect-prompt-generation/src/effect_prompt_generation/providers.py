@@ -8,6 +8,7 @@ import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from itertools import combinations
 from typing import Any, Generic, Protocol, TypeVar
 
 import httpx
@@ -25,6 +26,7 @@ from .models import (
     FragmentMarketingBundle,
     FragmentMarketingPlan,
     FragmentRelationshipBundle,
+    FragmentRelationshipModelResponse,
     FragmentRelationshipPlan,
     FragmentStrategyPool,
     FragmentType,
@@ -45,8 +47,10 @@ from .models import (
 from .prompt_loader import load_prompt, load_prompt_version, render_prompt
 from .strategy_planning import validate_fragment_marketing_plan
 from .v10_blueprints import (
+    coordinate_variant_targets,
     normalize_coordinate_plan,
     normalize_coordinate_signature,
+    normalize_generated_blueprints,
     relationship_hash,
     validate_coordinate_plan,
     validate_generated_blueprints,
@@ -95,8 +99,8 @@ CANDIDATE_STAGE_BY_TYPE: dict[FragmentType, str] = {
     FragmentType.CTA: NodeId.GENERATE_CTA.value,
     FragmentType.OUTRO: NodeId.GENERATE_OUTRO.value,
 }
-V10_RELATIONSHIP_VERSION = "effect-prompt-v10-relationship-v1"
-V10_COORDINATE_VERSION = "effect-prompt-v10-coordinate-v1"
+V10_RELATIONSHIP_VERSION = "effect-prompt-v10-relationship-v2"
+V10_COORDINATE_VERSION = "effect-prompt-v10-coordinate-v8"
 V10_RELATIONSHIP_BASE_PROMPT = "v10_relationship_base.system.prompt.txt"
 V10_RELATIONSHIP_TASK_PROMPT = "v10_relationship_task.user.prompt.txt"
 V10_COORDINATE_BASE_PROMPT = "v10_coordinate_base.system.prompt.txt"
@@ -544,7 +548,7 @@ class ArkResponsesProvider:
         )
         call = await self._structured(
             prompt,
-            FragmentRelationshipPlan,
+            FragmentRelationshipModelResponse,
             schema_name=f"effect_prompt_{allocation.fragment_type.value.lower()}_relationships_v10",
             stage=RELATIONSHIP_STAGE_BY_TYPE[allocation.fragment_type],
             prompt_file=V10_RELATIONSHIP_BASE_PROMPT,
@@ -554,9 +558,10 @@ class ArkResponsesProvider:
             instructions=load_prompt(V10_RELATIONSHIP_BASE_PROMPT),
         )
         try:
-            if call.value.prompt_version != V10_RELATIONSHIP_VERSION:
-                raise ValueError("relationship prompt version mismatch")
-            validate_relationship_plan(call.value, allocation, application)
+            plan = _normalize_relationship_model_response(
+                call.value, allocation, application
+            )
+            validate_relationship_plan(plan, allocation, application)
         except ValueError as exc:
             raise ProviderError(
                 "AI relationship response violated its fact allocation",
@@ -565,7 +570,7 @@ class ArkResponsesProvider:
                 attempts=call.metadata.attempts,
                 elapsed_ms=call.metadata.latency_ms,
             ) from exc
-        return call
+        return AiCallResult(value=plan, metadata=call.metadata)
 
     async def plan_dimension_coordinates(
         self,
@@ -582,6 +587,10 @@ class ArkResponsesProvider:
             )
         ]
         plan_hash = relationship_hash(relationships)
+        variant_targets = coordinate_variant_targets(
+            relationships, target_count
+        )
+        shared_variant_count = min(5, max(variant_targets.values()) + 2)
         prompt = render_prompt(
             V10_COORDINATE_TASK_PROMPT,
             fragment_type=relationships.fragment_type.value,
@@ -593,6 +602,13 @@ class ArkResponsesProvider:
             fragment_rules=_fragment_rule(relationships.fragment_type),
             shared_prompt=shared_prompt.compiled_content or "未设置",
             relationship_hash=plan_hash,
+            quota_json=json.dumps(
+                variant_targets, ensure_ascii=False, sort_keys=True
+            ),
+            bundle_ids_json=json.dumps(
+                list(variant_targets), ensure_ascii=False
+            ),
+            shared_variant_count=str(shared_variant_count),
         )
         call = await self._structured(
             prompt,
@@ -606,10 +622,20 @@ class ArkResponsesProvider:
             instructions=load_prompt(V10_COORDINATE_BASE_PROMPT),
         )
         try:
-            normalized_plan = normalize_coordinate_plan(call.value)
-            if normalized_plan.prompt_version != V10_COORDINATE_VERSION:
-                raise ValueError("coordinate prompt version mismatch")
-            validate_coordinate_plan(normalized_plan, relationships, application)
+            normalized_plan = normalize_coordinate_plan(
+                call.value, relationships
+            ).model_copy(
+                update={
+                    "fragment_type": relationships.fragment_type,
+                    "relationship_allocation_hash": plan_hash,
+                    "prompt_version": V10_COORDINATE_VERSION,
+                }
+            )
+            validate_coordinate_plan(
+                normalized_plan,
+                relationships,
+                application,
+            )
         except ValueError as exc:
             raise ProviderError(
                 "AI coordinate plan violated its relationship allocation",
@@ -663,7 +689,8 @@ class ArkResponsesProvider:
             instructions=load_prompt(V10_BLUEPRINT_BASE_PROMPT),
         )
         try:
-            validate_generated_blueprints(call.value.items, shard.tasks, coordinate_plan)
+            normalized_items = normalize_generated_blueprints(call.value.items, shard.tasks)
+            validate_generated_blueprints(normalized_items, shard.tasks, coordinate_plan)
         except ValueError as exc:
             raise ProviderError(
                 "AI blueprint response changed locked coordinates or facts",
@@ -672,7 +699,10 @@ class ArkResponsesProvider:
                 attempts=call.metadata.attempts,
                 elapsed_ms=call.metadata.latency_ms,
             ) from exc
-        return call
+        return AiCallResult(
+            value=GeneratedBlueprintBatch(items=normalized_items),
+            metadata=call.metadata,
+        )
 
     async def generate_candidates(
         self,
@@ -968,6 +998,83 @@ def _selling_points(insight: Mapping[str, Any]) -> list[str]:
 
 def _normalized_text(value: str) -> str:
     return " ".join(value.split()).casefold()
+
+
+def _normalize_relationship_model_response(
+    response: FragmentRelationshipModelResponse,
+    allocation: FragmentFactAllocation,
+    application: InsightApplicationMap,
+) -> FragmentRelationshipPlan:
+    """Select an exact, safe bundle set while freezing worker-owned metadata.
+
+    Ark's structured output guarantees field shapes but may not enforce array-size
+    annotations consistently. Extra bundles are alternatives, not a reason to repeat every
+    paid branch. The worker never invents facts or relationships here.
+    """
+
+    candidate_ids = set(allocation.candidate_fact_ids)
+    known_ids = set(application.by_id)
+    valid: list[FragmentRelationshipBundle] = []
+    seen_signatures: set[tuple[str, tuple[str, ...]]] = set()
+    for bundle in response.bundles:
+        fact_ids = list(dict.fromkeys(bundle.fact_ids))
+        if (
+            not fact_ids
+            or bundle.primary_fact_id not in fact_ids
+            or any(
+                fact_id not in candidate_ids or fact_id not in known_ids
+                for fact_id in fact_ids
+            )
+        ):
+            continue
+        signature = (bundle.primary_fact_id, tuple(fact_ids))
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+        valid.append(
+            bundle.model_copy(
+                update={
+                    "fragment_type": allocation.fragment_type,
+                    "fact_ids": fact_ids,
+                }
+            )
+        )
+
+    mandatory = set(allocation.mandatory_fact_ids)
+    exact_sets = [
+        rows
+        for rows in combinations(enumerate(valid), allocation.bundle_target)
+        if mandatory.issubset(
+            fact_id for _, bundle in rows for fact_id in bundle.fact_ids
+        )
+    ]
+    if not exact_sets:
+        raise ValueError("relationship model response cannot satisfy the exact allocation")
+    chosen = max(
+        exact_sets,
+        key=lambda rows: (
+            len({fact_id for _, bundle in rows for fact_id in bundle.fact_ids}),
+            sum(len(bundle.fact_ids) for _, bundle in rows),
+            tuple(-index for index, _ in rows),
+        ),
+    )
+    selected = [bundle for _, bundle in chosen]
+
+    frozen = [
+        bundle.model_copy(
+            update={
+                "bundle_id": f"{allocation.fragment_type.value}-R{index + 1}",
+                "fragment_type": allocation.fragment_type,
+            }
+        )
+        for index, bundle in enumerate(selected)
+    ]
+    return FragmentRelationshipPlan(
+        fragment_type=allocation.fragment_type,
+        bundles=frozen,
+        allocation_hash=allocation.allocation_hash,
+        prompt_version=V10_RELATIONSHIP_VERSION,
+    )
 
 
 def _candidate_product_context(insight: Mapping[str, Any]) -> dict[str, object]:
@@ -2094,6 +2201,7 @@ def _mock_blueprints(
         for bundle_id in coordinate.compatible_bundle_ids
     }
     items: list[GeneratedBlueprint] = []
+    bundle_occurrences: dict[str, int] = {}
     for task in shard.tasks:
         # The explicit mock uses the stable global ordinal so a type split over
         # multiple shards cannot repeat the first tuple of a previous shard.
@@ -2104,6 +2212,16 @@ def _mock_blueprints(
         camera = plan.cameras[index % len(plan.cameras)]
         emotion = plan.emotions[index % len(plan.emotions)]
         selling = selling_by_bundle[task.bundle_id]
+        bundle_occurrence = bundle_occurrences.get(task.bundle_id, 0)
+        bundle_occurrences[task.bundle_id] = bundle_occurrence + 1
+        auxiliary_fact_ids = [
+            fact_id for fact_id in task.fact_ids if fact_id != task.primary_fact_id
+        ]
+        selected_auxiliary = [
+            auxiliary_fact_ids[(bundle_occurrence + offset) % len(auxiliary_fact_ids)]
+            for offset in range(min(2, len(auxiliary_fact_ids)))
+        ]
+        used_fact_ids = list(dict.fromkeys([task.primary_fact_id, *selected_auxiliary]))
         opening, action, ending = {
             FragmentType.HOOK: (
                 "首帧让主体局部被真实道具遮挡，关键信息尚未揭晓",
@@ -2142,7 +2260,7 @@ def _mock_blueprints(
                 fragment_type=task.fragment_type,
                 bundle_id=task.bundle_id,
                 primary_fact_id=task.primary_fact_id,
-                used_fact_ids=[task.primary_fact_id],
+                used_fact_ids=used_fact_ids,
                 narrative_coordinate_id=narrative.coordinate_id,
                 scene_coordinate_id=scene.coordinate_id,
                 persona_coordinate_id=persona.coordinate_id,

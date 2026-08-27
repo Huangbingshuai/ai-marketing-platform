@@ -11,6 +11,61 @@ import { describe, expect, it, vi } from 'vitest';
 import { EffectPromptService } from './effect-prompt.service';
 import { compileEffectPromptSharedPrompt, recomputePromptQuality } from './effect-prompt.quality';
 
+const completionGateFixture = (duplicate = false) => {
+  const settings = structuredClone(DEFAULT_EFFECT_PROMPT_SETTINGS);
+  for (const fragmentType of EFFECT_PROMPT_FRAGMENT_TYPES)
+    settings.fragmentConfigs[fragmentType].count = fragmentType === 'HOOK' ? 5 : 1;
+  const fragmentTypes = [
+    'HOOK',
+    'HOOK',
+    'HOOK',
+    'HOOK',
+    'HOOK',
+    'PAIN',
+    'PRODUCT_DISPLAY',
+    'SELLING_POINT_EXPLANATION',
+    'CTA',
+    'OUTRO',
+  ] as const;
+  const contents = [
+    '晨光厨房里，成年人拿起杯盖靠近窗边，近景缓慢推进，停在尚未揭晓的局部。',
+    duplicate
+      ? '晨光厨房里，成年人拿起杯盖靠近窗边，近景缓慢推进，停在尚未揭晓的局部。'
+      : '晨光厨房里，成年人拿起杯盖靠近窗边，近景缓慢推进，停在尚未揭晓的局部细节。',
+    '通勤车厢内，成年人握住松动提带尝试调整，侧面近景跟随手腕，提带仍轻轻晃动。',
+    '夜间书桌前，一只手揭开收纳盒一角，微距焦点落在内部阴影，动作停在半开状态。',
+    '午后阳台上，成年人轻推花架边缘，低位近景保持盆栽轮廓，花架在窗前停住。',
+    '狭窄玄关里，成年人尝试把杂乱物品放入抽屉，抽屉受阻停住，问题仍然存在。',
+    '门店展示台上，产品首帧居中，一只手扶正盒身，平视近景保持轮廓清楚后停稳。',
+    '午后餐桌上，成年人转动产品露出表面纹理，微距焦点保持在真实材质并停止动作。',
+    '明亮台面上，一只手把产品轻放在画面左侧，固定近景保持右侧连续留白并停稳。',
+    '安静背景前，产品稳定居中，蒸汽逐渐变缓，固定近景保持上方留白与静物构图。',
+  ];
+  const now = '2026-08-27T00:00:00.000Z';
+  const items = fragmentTypes.map((fragmentType, index) => ({
+    id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+    code: `P${String(index + 1).padStart(3, '0')}`,
+    origin: 'AI' as const,
+    fragmentType,
+    materialTags: [fragmentType, String(index)],
+    targetDurationSeconds: 5,
+    dimensions: {
+      narrative: `叙事-${index}`,
+      scene: index === 1 ? '场景-0' : `场景-${index}`,
+      persona: index === 1 ? '人物-0' : `人物-${index}`,
+      sellingPoint: `抽象品质-${index}`,
+      camera: index === 1 ? '镜头-0' : `镜头-${index}`,
+      emotion: index === 1 ? '情绪-0' : `情绪-${index}`,
+    },
+    content: contents[index]!,
+    insightBindings: [],
+    manualEdited: false,
+    createdAt: now,
+    updatedAt: now,
+  }));
+  return recomputePromptQuality(items, settings);
+};
+
 describe('EffectPromptService settings contract', () => {
   it('returns V9-compatible strategy checkpoints and unified V10 stage checkpoints on claim', async () => {
     const relationshipCheckpoint = {
@@ -132,7 +187,7 @@ describe('EffectPromptService settings contract', () => {
     ).rejects.toMatchObject({ status: 400 });
   });
 
-  it('rejects a structurally valid batch that is shorter than the saved six-type quota', async () => {
+  it('persists an exhausted incomplete batch as a needs-review draft', async () => {
     const now = '2026-08-26T00:00:00.000Z';
     const shortResult = recomputePromptQuality(
       [
@@ -167,17 +222,19 @@ describe('EffectPromptService settings contract', () => {
           settings: DEFAULT_EFFECT_PROMPT_SETTINGS,
         },
       }),
-      complete: vi.fn(),
+      complete: vi.fn().mockResolvedValue({ kind: 'COMPLETED', result: { id: 'result-a' } }),
     };
     const service = new EffectPromptService(repository as never, {} as never, {} as never);
 
     await expect(
       service.complete('project-a', 'run-a', 'attempt-a', { result: shortResult }),
-    ).rejects.toMatchObject({
-      status: 400,
-      message: 'Prompt 成功结果必须严格满足用户设置的总数量和六类片段配额',
-    });
-    expect(repository.complete).not.toHaveBeenCalled();
+    ).resolves.toEqual({ promptResultId: 'result-a' });
+    expect(repository.complete).toHaveBeenCalledWith(
+      'project-a',
+      'run-a',
+      'attempt-a',
+      expect.objectContaining({ qualityStatus: 'NEEDS_REVIEW' }),
+    );
   });
 
   it('uses the extracted product name for the committed Prompt working artifact', async () => {
@@ -746,6 +803,28 @@ describe('EffectPromptService settings contract', () => {
                 generatedAt,
               },
               {
+                slotId: 'r0-s0003',
+                ordinal: 3,
+                fragmentType: 'HOOK',
+                materialTags: ['钩子'],
+                targetDurationSeconds: 5,
+                dimensions: {
+                  narrative: '细节悬念',
+                  scene: '窗边桌面',
+                  persona: '仅手部',
+                  sellingPoint: '局部质感',
+                  camera: '固定机位缓慢推进',
+                  emotion: '安静好奇',
+                },
+                content: '窗边桌面上，一只手拿起产品，固定机位缓慢推进后停在局部细节。',
+                insightBindings: [],
+                executionInvalidReasons: [
+                  'PROMPT_LENGTH_MISMATCH',
+                  'MISSING_CAMERA_EXECUTION',
+                ],
+                generatedAt,
+              },
+              {
                 slotId: 'r0-s0002',
                 ordinal: 2,
                 fragmentType: 'HOOK',
@@ -779,10 +858,11 @@ describe('EffectPromptService settings contract', () => {
       revision: null,
       isPartialPreview: true,
       previewRunId: 'run-failed',
-      total: 1,
+      total: 2,
     });
-    expect(output.items).toHaveLength(1);
+    expect(output.items).toHaveLength(2);
     expect(output.items[0]?.content).toContain('广式腊肠');
+    expect(output.items.some(({ content }) => content.includes('窗边桌面'))).toBe(true);
     expect(output.result.qualityStatus).toBe('NEEDS_REVIEW');
   });
 
@@ -802,6 +882,96 @@ describe('EffectPromptService settings contract', () => {
 
     expect(output.valid).toBe(false);
     expect(output.issues).toEqual([expect.objectContaining({ code: 'LEGACY_SCHEMA' })]);
+  });
+
+  it('keeps soft prompt refinements as warnings in the completion gate', async () => {
+    const draft = completionGateFixture();
+    expect(draft.qualityStatus).toBe('PASS');
+    const insightSnapshot = {
+      id: 'insight-a',
+      revision: 1,
+      contentHash: 'a'.repeat(64),
+      result: {},
+    };
+    const repository = {
+      result: vi.fn().mockResolvedValue({
+        id: 'result-a',
+        productId: 'product-a',
+        workflowRunId: 'workflow-a',
+        runId: 'run-a',
+        revision: 1,
+        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
+        draftResult: draft,
+        settingsHash: 'settings-current',
+      }),
+      run: vi.fn().mockResolvedValue({
+        status: 'COMPLETED',
+        inputSnapshot: { insightArtifact: insightSnapshot },
+      }),
+      insightArtifact: vi.fn().mockResolvedValue({
+        ...insightSnapshot,
+        freshness: 'CURRENT',
+        availability: 'AVAILABLE',
+      }),
+      settingsNode: vi.fn().mockResolvedValue({ executionInputHash: 'settings-stale' }),
+    };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const service = new EffectPromptService(repository as never, projects as never, {} as never);
+
+    const output = await service.validateResult('project-a', 'result-a', 1);
+
+    expect(output.valid).toBe(false);
+    expect(output.issues).toEqual([expect.objectContaining({ code: 'STALE_RESULT' })]);
+    expect(output.issues).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'EXECUTION_GATE' }),
+        expect.objectContaining({ code: 'DIMENSION_DISTANCE' }),
+      ]),
+    );
+    expect(output.warnings).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'SOFT_QUALITY_WARNING' })]),
+    );
+  });
+
+  it('keeps exact prompt repetition as a blocking completion issue', async () => {
+    const draft = completionGateFixture(true);
+    const insightSnapshot = {
+      id: 'insight-a',
+      revision: 1,
+      contentHash: 'a'.repeat(64),
+      result: {},
+    };
+    const repository = {
+      result: vi.fn().mockResolvedValue({
+        id: 'result-a',
+        productId: 'product-a',
+        workflowRunId: 'workflow-a',
+        runId: 'run-a',
+        revision: 1,
+        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
+        draftResult: draft,
+        settingsHash: 'settings-current',
+      }),
+      run: vi.fn().mockResolvedValue({
+        status: 'COMPLETED',
+        inputSnapshot: { insightArtifact: insightSnapshot },
+      }),
+      insightArtifact: vi.fn().mockResolvedValue({
+        ...insightSnapshot,
+        freshness: 'CURRENT',
+        availability: 'AVAILABLE',
+      }),
+      settingsNode: vi.fn().mockResolvedValue({ executionInputHash: 'settings-stale' }),
+    };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const service = new EffectPromptService(repository as never, projects as never, {} as never);
+
+    const output = await service.validateResult('project-a', 'result-a', 1);
+
+    expect(output.valid).toBe(false);
+    expect(output.issues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'EXACT_DUPLICATE' })]),
+    );
   });
 
   it('recognizes a versionless recovered run as V9 when real V9 stages exist', async () => {

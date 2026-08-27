@@ -434,8 +434,11 @@ def build_graph(
         ]
 
     def route_blueprint_gate(state: GraphState) -> str:
-        if state.get("blueprint_deficits") and state.get("round", 0) < MAX_REPLENISHMENT_ROUNDS:
-            return NodeId.REPLENISH.value
+        # Quantity and quality are decided only after the available blueprints
+        # have produced Prompt candidates. Even when the blueprint gate reports
+        # a gap (for example, exact duplicate coordinates), send the selected
+        # blueprints forward first; QUALITY_GATE then routes the real type and
+        # relationship deficits back to blueprint replenishment.
         return NodeId.FRAGMENT_TYPE_ROUTER.value
 
     def route_replenish(state: GraphState) -> str:
@@ -556,7 +559,7 @@ def build_graph(
     builder.add_conditional_edges(
         NodeId.BLUEPRINT_ORTHOGONAL_GATE.value,
         route_blueprint_gate,
-        [NodeId.REPLENISH.value, NodeId.FRAGMENT_TYPE_ROUTER.value],
+        [NodeId.FRAGMENT_TYPE_ROUTER.value],
     )
     builder.add_conditional_edges(
         NodeId.STRATEGY_FRAGMENT_ROUTER.value,
