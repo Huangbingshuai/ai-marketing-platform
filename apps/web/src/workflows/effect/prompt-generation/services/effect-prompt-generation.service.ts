@@ -1,8 +1,11 @@
 import type {
+  EffectPromptBatchResult,
+  EffectPromptBatchResultV5,
   EffectPromptBatchSettings,
   EffectPromptDimensions,
   EffectPromptFragmentType,
   EffectPromptItem,
+  EffectPromptItemV5,
   EffectPromptNodeId,
   EffectPromptRun,
   GetEffectPromptNodeDetailData,
@@ -11,6 +14,13 @@ import type {
   StartEffectPromptRunRequest,
   UpdateEffectPromptResultData,
   ValidateEffectPromptResultData,
+} from '@ai-marketing/contracts';
+import {
+  EFFECT_PROMPT_FRAGMENT_TYPES,
+  EFFECT_PROMPT_LEGACY_SCHEMA_VERSION,
+  effectPromptTargetCount,
+  migrateEffectPromptSettings,
+  normalizeEffectPromptSettings,
 } from '@ai-marketing/contracts';
 
 import {
@@ -31,6 +41,89 @@ import {
 export type EffectPromptContext = {
   projectId: string;
   workflowRunId: string;
+};
+
+export type EffectPromptViewResultData = Omit<GetEffectPromptResultData, 'items' | 'result'> & {
+  result: Omit<EffectPromptBatchResult, 'items'>;
+  items: EffectPromptItem[];
+};
+
+const legacyItemForView = (item: EffectPromptItemV5): EffectPromptItem => ({
+  ...item,
+  primaryPurpose: item.fragmentType,
+  compatiblePurposes: [item.fragmentType],
+  classificationStatus: 'VERIFIED',
+  productRelevance: 0,
+  dimensions: {
+    narrative: item.dimensions.narrative,
+    scene: item.dimensions.scene,
+    persona: item.dimensions.persona,
+    productRelation: item.dimensions.sellingPoint,
+    camera: item.dimensions.camera,
+    emotion: item.dimensions.emotion,
+  },
+});
+
+const legacyDefaultDuration = (result: Omit<EffectPromptBatchResultV5, 'items'>): number => {
+  const occurrences = new Map<number, number>();
+  for (const config of Object.values(result.settings.fragmentConfigs)) {
+    occurrences.set(config.durationSeconds, (occurrences.get(config.durationSeconds) ?? 0) + 1);
+  }
+  return [...occurrences.entries()]
+    .sort(([leftDuration, leftCount], [rightDuration, rightCount]) => {
+      if (leftCount !== rightCount) return rightCount - leftCount;
+      if (leftDuration === 5) return -1;
+      if (rightDuration === 5) return 1;
+      return leftDuration - rightDuration;
+    })[0]?.[0] ?? 5;
+};
+
+const legacyBatchForView = (
+  result: Omit<EffectPromptBatchResultV5, 'items'>,
+): Omit<EffectPromptBatchResult, 'items'> => {
+  const targetCount = effectPromptTargetCount(result.settings);
+  return {
+    schemaVersion: 6,
+    settings: normalizeEffectPromptSettings({
+      targetCount,
+      defaultDurationSeconds: legacyDefaultDuration(result),
+    }),
+    renderProfile: result.renderProfile,
+    ...(result.sharedPrompt ? { sharedPrompt: result.sharedPrompt } : {}),
+    metrics: {
+      targetCount,
+      candidateTargetCount: targetCount,
+      generatedCandidateCount: result.metrics.generatedCandidateCount,
+      acceptedCount: result.metrics.acceptedCount,
+      rejectedCount:
+        result.metrics.removedSemanticDuplicates +
+        result.metrics.removedVisualDuplicates +
+        result.metrics.removedDimensionConflicts +
+        result.metrics.removedExecutionInvalid,
+      replenishmentRounds: result.metrics.replenishmentRounds,
+      exactDuplicateCount: result.metrics.removedSemanticDuplicates,
+      purposeDistribution: EFFECT_PROMPT_FRAGMENT_TYPES.map((purpose) => {
+        const legacy = result.metrics.fragmentTypeDistribution.find(
+          (entry) => entry.fragmentType === purpose,
+        );
+        return {
+          purpose,
+          primaryCount: legacy?.actualCount ?? 0,
+          compatibleCount: legacy?.actualCount ?? 0,
+        };
+      }),
+      averageScores: {
+        productRelevance: 0,
+        creativeCoherence: 0,
+        visualExecutability: 0,
+        commercialUsefulness: 0,
+        visualClarity: 0,
+      },
+      hardIssueCounts: result.metrics.executionInvalidReasons,
+      warningCounts: [],
+    },
+    qualityStatus: result.qualityStatus,
+  };
 };
 
 export type PollEffectPromptRunOptions = {
@@ -68,8 +161,24 @@ export const isTerminalPromptRun = (run: EffectPromptRun): boolean =>
 export const loadEffectPromptWorkspace = async (
   context: EffectPromptContext,
   signal?: AbortSignal,
-): Promise<GetEffectPromptWorkspaceData> =>
-  (await getEffectPromptWorkspace(context.projectId, context.workflowRunId, signal)).data;
+): Promise<GetEffectPromptWorkspaceData> => {
+  const loaded = (await getEffectPromptWorkspace(context.projectId, context.workflowRunId, signal))
+    .data;
+  return {
+    ...loaded,
+    products: loaded.products.map((state) => ({
+      ...state,
+      // A development tab can briefly receive the pre-V11 workspace projection
+      // while the API process is restarting. Keep the editor usable and migrate
+      // that legacy settings payload deterministically instead of rendering empty
+      // number controls.
+      settings: migrateEffectPromptSettings(
+        state.settings as unknown,
+        EFFECT_PROMPT_LEGACY_SCHEMA_VERSION,
+      ),
+    })),
+  };
+};
 
 export const savePromptSettings = async (
   context: EffectPromptContext,
@@ -93,20 +202,31 @@ export const loadEffectPromptResult = async (
   productId: string,
   page: number,
   query: string,
-  fragmentType?: EffectPromptFragmentType,
+  purpose?: EffectPromptFragmentType,
   signal?: AbortSignal,
-): Promise<GetEffectPromptResultData> =>
-  (
+): Promise<EffectPromptViewResultData> => {
+  const loaded = (
     await getEffectPromptResult(
       projectId,
       workflowRunId,
       productId,
       page,
       query,
-      fragmentType,
+      purpose,
       signal,
     )
   ).data;
+  if (loaded.result.schemaVersion !== EFFECT_PROMPT_LEGACY_SCHEMA_VERSION) {
+    return loaded as EffectPromptViewResultData;
+  }
+  return {
+    ...loaded,
+    result: legacyBatchForView(
+      loaded.result as Omit<EffectPromptBatchResultV5, 'items'>,
+    ),
+    items: loaded.items.map((item) => legacyItemForView(item as EffectPromptItemV5)),
+  };
+};
 
 export const beginEffectPromptRun = async (
   projectId: string,
@@ -153,7 +273,6 @@ export const loadEffectPromptNodeDetail = async (
 
 export type PromptItemDraft = {
   content: string;
-  fragmentType: EffectPromptFragmentType;
   materialTags: string[];
   dimensions: EffectPromptDimensions;
 };
@@ -222,6 +341,9 @@ export const downloadEffectPromptBatch = async (
     items: exported.result.items.map((item) => ({
       id: item.id,
       code: item.code,
+      primaryPurpose: item.primaryPurpose,
+      compatiblePurposes: item.compatiblePurposes,
+      classificationStatus: item.classificationStatus,
       fragmentType: item.fragmentType,
       content: item.content,
       targetDurationSeconds: item.targetDurationSeconds,
@@ -229,6 +351,7 @@ export const downloadEffectPromptBatch = async (
       resolution: renderProfile.resolution,
       materialTags: item.materialTags,
       dimensions: item.dimensions,
+      productRelevance: item.productRelevance,
       insightBindings: item.insightBindings,
     })),
   };

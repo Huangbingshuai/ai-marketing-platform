@@ -22,6 +22,7 @@ import {
   WorkerShardQueryDto,
   WorkerStageDto,
 } from './dto/effect-prompt.dto';
+import type { EffectPromptShardPhase } from '@ai-marketing/contracts';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import { EffectPromptService } from './effect-prompt.service';
 import { EffectPromptWorkerGuard } from './effect-prompt-worker.guard';
@@ -80,7 +81,7 @@ export class EffectPromptWorkerController {
   @Put('runs/:runId/shards/:phase/:round/:shardIndex')
   shard(
     @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string,
-    @Param('phase') phase: 'BLUEPRINT' | 'PROMPT',
+    @Param('phase') phase: EffectPromptShardPhase,
     @Param('round', ParseIntPipe) round: number,
     @Param('shardIndex', ParseIntPipe) shardIndex: number,
     @Headers('x-attempt-token') attemptToken: string,

@@ -15,6 +15,10 @@ def _base() -> dict[str, str]:
 
 
 def _settings(**overrides: object) -> WorkerSettings:
+    if overrides.get("PROMPT_AI_PROVIDER") == "mock":
+        overrides.setdefault(
+            "EFFECT_PROMPT_QUEUE", "effect.prompt-generation.requested.test"
+        )
     return WorkerSettings.model_validate({**_base(), **overrides})
 
 
@@ -39,6 +43,18 @@ def test_mock_requires_explicit_provider_and_prompt_model_falls_back() -> None:
     assert settings.ark_prompt_strategy_timeout_seconds == 180
     assert settings.resolved_prompt_candidate_timeout_seconds == 120
     assert settings.ark_prompt_provider_max_attempts == 1
+    assert settings.resolved_prompt_evaluation_model == settings.resolved_prompt_candidate_model
+
+
+def test_mock_rejects_the_normal_prompt_queue() -> None:
+    with pytest.raises(ValidationError, match="isolated test queue"):
+        WorkerSettings.model_validate(
+            {
+                **_base(),
+                "PROMPT_AI_PROVIDER": "mock",
+                "EFFECT_PROMPT_QUEUE": "effect.prompt-generation.requested",
+            }
+        )
 
 
 def test_legacy_prompt_model_and_node_specific_overrides_keep_precedence() -> None:

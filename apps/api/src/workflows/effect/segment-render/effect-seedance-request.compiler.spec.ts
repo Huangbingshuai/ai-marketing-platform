@@ -1,5 +1,12 @@
-import type { EffectPromptBatchResult, EffectPromptItem } from '@ai-marketing/contracts';
-import { DEFAULT_EFFECT_PROMPT_SETTINGS } from '@ai-marketing/contracts';
+import type {
+  EffectPromptBatchResult,
+  EffectPromptBatchResultV5,
+  EffectPromptItem,
+} from '@ai-marketing/contracts';
+import {
+  DEFAULT_EFFECT_PROMPT_FRAGMENT_CONFIGS,
+  DEFAULT_EFFECT_PROMPT_SETTINGS,
+} from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -17,13 +24,17 @@ const item: EffectPromptItem = {
   code: 'P001',
   origin: 'AI',
   fragmentType: 'PRODUCT_DISPLAY',
+  primaryPurpose: 'PRODUCT_DISPLAY',
+  compatiblePurposes: ['PRODUCT_DISPLAY'],
+  classificationStatus: 'VERIFIED',
+  productRelevance: 95,
   materialTags: ['产品展示'],
   targetDurationSeconds: 5,
   dimensions: {
     narrative: '产品入画',
     scene: '家庭厨房',
     persona: '一名成年女性',
-    sellingPoint: '切面油润可见',
+    productRelation: '切面油润可见',
     camera: '低机位近景缓慢推近',
     emotion: '暖调自然光',
   },
@@ -74,6 +85,86 @@ describe('effect Seedance request compiler', () => {
     expect(() => compileEffectSeedanceRequest(batch('SEEDANCE_2_0_FAST'), item.id, 'fast')).toThrow(
       expect.objectContaining<Partial<EffectSeedanceCompileError>>({
         code: 'RESOLUTION_UNSUPPORTED',
+      }),
+    );
+  });
+
+  it('compiles a committed V5 item without inventing V6 classification data', () => {
+    const current = batch('SEEDANCE_2_0');
+    const currentItem = current.items[0]!;
+    const baseItem = {
+      id: currentItem.id,
+      code: currentItem.code,
+      origin: currentItem.origin,
+      fragmentType: currentItem.fragmentType,
+      materialTags: currentItem.materialTags,
+      targetDurationSeconds: currentItem.targetDurationSeconds,
+      dimensions: currentItem.dimensions,
+      content: currentItem.content,
+      insightBindings: currentItem.insightBindings,
+      manualEdited: currentItem.manualEdited,
+      createdAt: currentItem.createdAt,
+      updatedAt: currentItem.updatedAt,
+    };
+    const legacy: EffectPromptBatchResultV5 = {
+      ...current,
+      schemaVersion: 5,
+      settings: {
+        fragmentConfigs: DEFAULT_EFFECT_PROMPT_FRAGMENT_CONFIGS,
+        semanticLimit: 15,
+        visualLimit: 20,
+      },
+      items: [
+        {
+          ...baseItem,
+          dimensions: {
+            narrative: baseItem.dimensions.narrative,
+            scene: baseItem.dimensions.scene,
+            persona: baseItem.dimensions.persona,
+            sellingPoint: baseItem.dimensions.productRelation,
+            camera: baseItem.dimensions.camera,
+            emotion: baseItem.dimensions.emotion,
+          },
+        },
+      ],
+      metrics: {
+        targetCount: 50,
+        acceptedCount: 1,
+        generatedCandidateCount: 1,
+        fallbackCount: 0,
+        removedSemanticDuplicates: 0,
+        removedVisualDuplicates: 0,
+        removedDimensionConflicts: 0,
+        semanticDuplicateRate: 0,
+        visualOverlapRate: 0,
+        replenishmentRounds: 0,
+        fragmentTypeDistribution: [],
+        sellingPointCoverage: { required: [], covered: [], missing: [] },
+        insightCoverage: {
+          required: [],
+          covered: [],
+          missing: [],
+          adaptive: [],
+          deferred: [],
+          excluded: [],
+          appliedConstraints: [],
+        },
+        removedExecutionInvalid: 0,
+        executionInvalidReasons: [],
+      },
+    };
+    const compiled = compileEffectSeedanceRequest(legacy, item.id, 'seedance-model');
+    expect(compiled.primaryPurpose).toBe('PRODUCT_DISPLAY');
+    expect(compiled.compatiblePurposes).toEqual(['PRODUCT_DISPLAY']);
+    expect(compiled.request.duration).toBe(5);
+  });
+
+  it('rejects a V6 item whose purpose evaluation is pending', () => {
+    const current = batch('SEEDANCE_2_0');
+    current.items[0] = { ...current.items[0]!, classificationStatus: 'PENDING' };
+    expect(() => compileEffectSeedanceRequest(current, item.id, 'seedance-model')).toThrow(
+      expect.objectContaining<Partial<EffectSeedanceCompileError>>({
+        code: 'CLASSIFICATION_PENDING',
       }),
     );
   });

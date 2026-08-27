@@ -8,7 +8,6 @@ import {
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_LIMITS,
-  effectPromptTargetCount,
   normalizeEffectPromptSettings,
 } from '@ai-marketing/contracts';
 
@@ -16,14 +15,8 @@ export { EFFECT_PROMPT_DIMENSIONS, EFFECT_PROMPT_LIMITS };
 export type EffectPromptPageStatus = 'loading' | 'ready' | 'error';
 
 const hydratePromptSettings = (settings: EffectPromptBatchSettings): EffectPromptBatchSettings => ({
-  fragmentConfigs: Object.fromEntries(
-    Object.entries(settings.fragmentConfigs).map(([fragmentType, config]) => [
-      fragmentType,
-      { ...config },
-    ]),
-  ) as EffectPromptBatchSettings['fragmentConfigs'],
-  semanticLimit: settings.semanticLimit,
-  visualLimit: settings.visualLimit,
+  targetCount: settings.targetCount,
+  defaultDurationSeconds: settings.defaultDurationSeconds,
 });
 
 export const normalizePromptSettings = (
@@ -44,6 +37,13 @@ export const promptMatchesKeyword = (item: EffectPromptItem, keyword: string): b
     item.code,
     item.fragmentType,
     EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.fragmentType],
+    item.primaryPurpose,
+    EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.primaryPurpose],
+    ...item.compatiblePurposes.flatMap((purpose) => [
+      purpose,
+      EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[purpose],
+    ]),
+    item.classificationStatus === 'PENDING' ? '待重新评估' : '已完成评估',
     ...(Array.isArray(item.materialTags) ? item.materialTags : []),
     ...(Number.isFinite(item.targetDurationSeconds) ? [`${item.targetDurationSeconds}秒`] : []),
     item.content,
@@ -67,16 +67,7 @@ export const isPromptResultQualityReady = (
   Boolean(
     result &&
     result.qualityStatus === 'PASS' &&
-    result.metrics.acceptedCount === effectPromptTargetCount(result.settings) &&
-    (!Array.isArray(result.metrics.fragmentTypeDistribution) ||
-      result.metrics.fragmentTypeDistribution.every(
-        ({ actualCount, targetCount }) => actualCount === targetCount,
-      )) &&
-    (!result.metrics.sellingPointCoverage ||
-      result.metrics.sellingPointCoverage.missing.length === 0) &&
-    (!result.metrics.insightCoverage || result.metrics.insightCoverage.missing.length === 0) &&
-    result.metrics.semanticDuplicateRate <= result.settings.semanticLimit &&
-    result.metrics.visualOverlapRate <= result.settings.visualLimit,
+    result.metrics.acceptedCount === result.settings.targetCount,
   );
 
 export const isPromptProductCommitted = (state: EffectPromptProductState): boolean =>

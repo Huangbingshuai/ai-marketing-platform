@@ -48,6 +48,9 @@ class WorkerSettings(BaseSettings):
     ark_prompt_blueprint_model: str | None = Field(
         default=None, alias="ARK_PROMPT_BLUEPRINT_MODEL"
     )
+    ark_prompt_evaluation_model: str | None = Field(
+        default=None, alias="ARK_PROMPT_EVALUATION_MODEL"
+    )
     ark_prompt_strategy_max_output_tokens: int = Field(
         default=8192,
         alias="ARK_PROMPT_STRATEGY_MAX_OUTPUT_TOKENS",
@@ -63,6 +66,12 @@ class WorkerSettings(BaseSettings):
     ark_prompt_fragment_strategy_max_output_tokens: int = Field(
         default=3072,
         alias="ARK_PROMPT_FRAGMENT_STRATEGY_MAX_OUTPUT_TOKENS",
+        ge=1024,
+        le=8192,
+    )
+    ark_prompt_evaluation_max_output_tokens: int = Field(
+        default=3072,
+        alias="ARK_PROMPT_EVALUATION_MAX_OUTPUT_TOKENS",
         ge=1024,
         le=8192,
     )
@@ -90,6 +99,9 @@ class WorkerSettings(BaseSettings):
     ark_prompt_fragment_strategy_timeout_seconds: float = Field(
         default=120.0, alias="ARK_PROMPT_FRAGMENT_STRATEGY_TIMEOUT_SECONDS", gt=0
     )
+    ark_prompt_evaluation_timeout_seconds: float = Field(
+        default=120.0, alias="ARK_PROMPT_EVALUATION_TIMEOUT_SECONDS", gt=0
+    )
     ark_prompt_provider_max_attempts: int = Field(
         default=1, alias="ARK_PROMPT_PROVIDER_MAX_ATTEMPTS", ge=1, le=3
     )
@@ -111,6 +123,9 @@ class WorkerSettings(BaseSettings):
         self.ark_prompt_blueprint_model = (
             self.ark_prompt_blueprint_model or ""
         ).strip() or None
+        self.ark_prompt_evaluation_model = (
+            self.ark_prompt_evaluation_model or ""
+        ).strip() or None
         self.effect_prompt_queue = self.effect_prompt_queue.strip()
         if not self.effect_prompt_queue:
             raise ValueError("EFFECT_PROMPT_QUEUE cannot be empty")
@@ -122,6 +137,13 @@ class WorkerSettings(BaseSettings):
             key = self.ark_api_key.get_secret_value().strip()
             if not key or key.casefold() in ARK_KEY_PLACEHOLDERS:
                 raise ValueError("ARK_API_KEY must be a real non-placeholder key")
+        elif not (
+            self.effect_prompt_queue.endswith(".test")
+            or self.effect_prompt_queue.startswith("test.")
+        ):
+            raise ValueError(
+                "PROMPT_AI_PROVIDER=mock requires an isolated test queue"
+            )
         return self
 
     @property
@@ -145,6 +167,10 @@ class WorkerSettings(BaseSettings):
     @property
     def resolved_prompt_blueprint_model(self) -> str:
         return self.ark_prompt_blueprint_model or self.resolved_prompt_strategy_model
+
+    @property
+    def resolved_prompt_evaluation_model(self) -> str:
+        return self.ark_prompt_evaluation_model or self.resolved_prompt_candidate_model
 
     @property
     def resolved_prompt_candidate_timeout_seconds(self) -> float:

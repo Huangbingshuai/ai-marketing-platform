@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Literal
 
 from langgraph.graph import END, START, StateGraph
@@ -36,6 +37,7 @@ def build_graph(
         loaded = await pipeline.load_and_snapshot(runtime.context)
         return {
             "graph_version": loaded.snapshot.graph_version,
+            "operation": loaded.snapshot.operation,
             "round": loaded.highest_round,
             "target_count": loaded.snapshot.settings.target_count,
             "retained_count": len(loaded.snapshot.retained_manual_items),
@@ -192,7 +194,8 @@ def build_graph(
         snapshot = pipeline.snapshot(runtime.context)
         target_fact_ids = (
             [binding.fact_id for binding in snapshot.target_item.insight_bindings]
-            if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item
+            if snapshot.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"}
+            and snapshot.target_item
             else [fact.fact_id for fact in application.required]
         )
         return {"insight_map": application, "missing_fact_ids": target_fact_ids}
@@ -202,6 +205,59 @@ def build_graph(
     ) -> dict[str, object]:
         prompt = await pipeline.compile_shared_prompt(runtime.context)
         return {"shared_prompt": prompt}
+
+    async def coherent_creative_generation(
+        state: GraphState, runtime: Runtime[RuntimeContext]
+    ) -> dict[str, object]:
+        del state
+        pending = await pipeline.plan_v11_creatives(
+            runtime.context,
+            round_number=0,
+        )
+        if pending:
+            await asyncio.gather(
+                *(
+                    pipeline.generate_v11_creative_shard(runtime.context, shard)
+                    for shard in pending
+                )
+            )
+        classifications = await pipeline.plan_v11_classification(
+            runtime.context,
+            round_number=0,
+        )
+        if classifications:
+            await asyncio.gather(
+                *(
+                    pipeline.evaluate_v11_classification_shard(runtime.context, shard)
+                    for shard in classifications
+                )
+            )
+        supplement, needed = await pipeline.select_v11_creatives(
+            runtime.context,
+            round_number=0,
+        )
+        if needed and supplement:
+            await asyncio.gather(
+                *(
+                    pipeline.generate_v11_creative_shard(runtime.context, shard)
+                    for shard in supplement
+                )
+            )
+            classifications = await pipeline.plan_v11_classification(
+                runtime.context,
+                round_number=1,
+            )
+            if classifications:
+                await asyncio.gather(
+                    *(
+                        pipeline.evaluate_v11_classification_shard(
+                            runtime.context, shard
+                        )
+                        for shard in classifications
+                    )
+                )
+            await pipeline.select_v11_creatives(runtime.context, round_number=1)
+        return {}
 
     async def combine(
         state: GraphState, runtime: Runtime[RuntimeContext]
@@ -321,11 +377,14 @@ def build_graph(
     async def save(
         state: GraphState, runtime: Runtime[RuntimeContext]
     ) -> dict[str, object]:
-        result_id = await pipeline.save_result(
-            runtime.context,
-            metrics=state["metrics"],
-            shared_prompt=state["shared_prompt"],
-        )
+        if state.get("graph_version") == "V11_COHERENT_CREATIVE_GENERATION":
+            result_id = await pipeline.save_v11_result(runtime.context)
+        else:
+            result_id = await pipeline.save_result(
+                runtime.context,
+                metrics=state["metrics"],
+                shared_prompt=state["shared_prompt"],
+            )
         return {"prompt_result_id": result_id}
 
     def dispatch_shards(state: GraphState) -> list[Send] | Literal["NORMALIZATION"]:
@@ -391,6 +450,15 @@ def build_graph(
             NodeId.RELATIONSHIP_FRAGMENT_ROUTER.value
             if state.get("graph_version") == "V10_RELATION_COORDINATE_BLUEPRINT"
             else NodeId.STRATEGY_FRAGMENT_ROUTER.value
+        )
+
+    def route_after_shared_prompt(state: GraphState) -> str:
+        if state.get("graph_version") != "V11_COHERENT_CREATIVE_GENERATION":
+            return NodeId.GLOBAL_FACT_ALLOCATION.value
+        return (
+            NodeId.ITEM_EVALUATE.value
+            if state.get("operation") == "ITEM_EVALUATE"
+            else NodeId.COHERENT_CREATIVE_GENERATION.value
         )
 
     def dispatch_relationship_branches(state: GraphState) -> list[Send]:
@@ -499,15 +567,31 @@ def build_graph(
     builder.add_node(NodeId.QUALITY_GATE.value, quality)
     builder.add_node(NodeId.REPLENISH.value, replenish)
     builder.add_node(NodeId.RESULT_SAVE.value, save)
+    builder.add_node(
+        NodeId.COHERENT_CREATIVE_GENERATION.value,
+        coherent_creative_generation,
+    )
+    builder.add_node(NodeId.ITEM_EVALUATE.value, coherent_creative_generation)
 
     builder.add_edge(START, NodeId.LOAD_AND_SNAPSHOT.value)
     builder.add_edge(NodeId.LOAD_AND_SNAPSHOT.value, NodeId.INSIGHT_MAPPING.value)
     builder.add_edge(
         NodeId.INSIGHT_MAPPING.value, NodeId.SHARED_PROMPT_COMPILATION.value
     )
-    builder.add_edge(
-        NodeId.SHARED_PROMPT_COMPILATION.value, NodeId.GLOBAL_FACT_ALLOCATION.value
+    builder.add_conditional_edges(
+        NodeId.SHARED_PROMPT_COMPILATION.value,
+        route_after_shared_prompt,
+        [
+            NodeId.GLOBAL_FACT_ALLOCATION.value,
+            NodeId.COHERENT_CREATIVE_GENERATION.value,
+            NodeId.ITEM_EVALUATE.value,
+        ],
     )
+    builder.add_edge(
+        NodeId.COHERENT_CREATIVE_GENERATION.value,
+        NodeId.RESULT_SAVE.value,
+    )
+    builder.add_edge(NodeId.ITEM_EVALUATE.value, NodeId.RESULT_SAVE.value)
     builder.add_conditional_edges(
         NodeId.GLOBAL_FACT_ALLOCATION.value,
         route_graph_version,

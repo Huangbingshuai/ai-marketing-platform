@@ -18,6 +18,15 @@ from .models import (
     BlueprintShardPlan,
     CompactMarketingRelationshipBundle,
     CompactStrategyPlan,
+    CreativeCandidate,
+    CreativeCandidateBatch,
+    CreativeDimensions,
+    CreativeEvaluation,
+    CreativeEvaluationBatch,
+    CreativeScores,
+    CreativeShardPlan,
+    CreativeTask,
+    FactEvidence,
     DimensionPools,
     DimensionCoordinate,
     EvidenceMode,
@@ -107,6 +116,12 @@ V10_COORDINATE_BASE_PROMPT = "v10_coordinate_base.system.prompt.txt"
 V10_COORDINATE_TASK_PROMPT = "v10_coordinate_task.user.prompt.txt"
 V10_BLUEPRINT_BASE_PROMPT = "v10_blueprint_base.system.prompt.txt"
 V10_BLUEPRINT_TASK_PROMPT = "v10_blueprint_task.user.prompt.txt"
+V11_CREATIVE_VERSION = "effect-prompt-v11-coherent-creative-v1"
+V11_EVALUATION_VERSION = "effect-prompt-v11-creative-evaluation-v1"
+V11_CREATIVE_BASE_PROMPT = "v11_creative_base.system.prompt.txt"
+V11_CREATIVE_TASK_PROMPT = "v11_creative_task.user.prompt.txt"
+V11_EVALUATION_BASE_PROMPT = "v11_evaluation_base.system.prompt.txt"
+V11_EVALUATION_TASK_PROMPT = "v11_evaluation_task.user.prompt.txt"
 
 RELATIONSHIP_STAGE_BY_TYPE: dict[FragmentType, str] = {
     FragmentType.HOOK: NodeId.PLAN_HOOK_RELATIONSHIPS.value,
@@ -183,6 +198,24 @@ class AiCallResult(Generic[TModel]):
 
 
 class AiProvider(Protocol):
+    execution_mode: str
+
+    async def generate_creatives(
+        self,
+        shard: CreativeShardPlan,
+        *,
+        application: InsightApplicationMap,
+        shared_prompt: SharedPrompt,
+        regeneration_context: Mapping[str, Any] | None = None,
+    ) -> AiCallResult[CreativeCandidateBatch]: ...
+
+    async def evaluate_creatives(
+        self,
+        candidates: list[CreativeCandidate],
+        *,
+        application: InsightApplicationMap,
+    ) -> AiCallResult[CreativeEvaluationBatch]: ...
+
     async def plan_strategy(
         self, application: InsightApplicationMap, *, target_count: int
     ) -> AiCallResult[StrategyPlan]: ...
@@ -234,6 +267,37 @@ class AiProvider(Protocol):
 
 
 class MockAiProvider:
+    execution_mode = "MOCK"
+
+    async def generate_creatives(
+        self,
+        shard: CreativeShardPlan,
+        *,
+        application: InsightApplicationMap,
+        shared_prompt: SharedPrompt,
+        regeneration_context: Mapping[str, Any] | None = None,
+    ) -> AiCallResult[CreativeCandidateBatch]:
+        del shared_prompt, regeneration_context
+        items = [
+            _mock_creative_candidate(task, application)
+            for task in shard.tasks
+        ]
+        return _mock_result(CreativeCandidateBatch(items=items), "COHERENT_CREATIVE_GENERATION", V11_CREATIVE_BASE_PROMPT)
+
+    async def evaluate_creatives(
+        self,
+        candidates: list[CreativeCandidate],
+        *,
+        application: InsightApplicationMap,
+    ) -> AiCallResult[CreativeEvaluationBatch]:
+        return _mock_result(
+            CreativeEvaluationBatch(
+                items=[_mock_creative_evaluation(item, application) for item in candidates]
+            ),
+            "CREATIVE_EVALUATION_CLASSIFICATION",
+            V11_EVALUATION_BASE_PROMPT,
+        )
+
     async def plan_strategy(
         self, application: InsightApplicationMap, *, target_count: int
     ) -> AiCallResult[StrategyPlan]:
@@ -359,6 +423,8 @@ class MockAiProvider:
 
 
 class ArkResponsesProvider:
+    execution_mode = "ARK"
+
     def __init__(
         self,
         *,
@@ -368,13 +434,16 @@ class ArkResponsesProvider:
         candidate_model: str,
         fragment_strategy_model: str | None = None,
         blueprint_model: str | None = None,
+        evaluation_model: str | None = None,
         strategy_max_output_tokens: int = 8192,
         candidate_max_output_tokens: int = 4096,
         fragment_strategy_max_output_tokens: int = 3072,
+        evaluation_max_output_tokens: int = 3072,
         reasoning_effort: str = "minimal",
         strategy_timeout: float = 180.0,
         candidate_timeout: float = 120.0,
         fragment_strategy_timeout: float = 120.0,
+        evaluation_timeout: float = 120.0,
         max_attempts: int = 1,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
@@ -386,13 +455,16 @@ class ArkResponsesProvider:
             fragment_strategy_model or candidate_model
         ).strip()
         self._blueprint_model = (blueprint_model or strategy_model).strip()
+        self._evaluation_model = (evaluation_model or candidate_model).strip()
         self._strategy_max_output_tokens = strategy_max_output_tokens
         self._candidate_max_output_tokens = candidate_max_output_tokens
         self._fragment_strategy_max_output_tokens = fragment_strategy_max_output_tokens
+        self._evaluation_max_output_tokens = evaluation_max_output_tokens
         self._reasoning_effort = reasoning_effort
         self._strategy_timeout = strategy_timeout
         self._candidate_timeout = candidate_timeout
         self._fragment_strategy_timeout = fragment_strategy_timeout
+        self._evaluation_timeout = evaluation_timeout
         self._max_attempts = max(1, max_attempts)
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/") + "/",
@@ -406,6 +478,152 @@ class ArkResponsesProvider:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    async def generate_creatives(
+        self,
+        shard: CreativeShardPlan,
+        *,
+        application: InsightApplicationMap,
+        shared_prompt: SharedPrompt,
+        regeneration_context: Mapping[str, Any] | None = None,
+    ) -> AiCallResult[CreativeCandidateBatch]:
+        facts = [
+            fact.model_dump(
+                mode="json",
+                by_alias=True,
+                exclude={"eligible_fragment_types", "exclusion_reason"},
+            )
+            for fact in application.usable
+        ]
+        prompt = render_prompt(
+            V11_CREATIVE_TASK_PROMPT,
+            facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+            tasks_json=json.dumps(
+                [item.model_dump(mode="json", by_alias=True) for item in shard.tasks],
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            shared_prompt_json=json.dumps(
+                shared_prompt.model_dump(mode="json", by_alias=True),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            avoid_semantic_json=json.dumps(shard.avoid_semantic_signatures, ensure_ascii=False),
+            avoid_visual_json=json.dumps(shard.avoid_visual_signatures, ensure_ascii=False),
+            rejection_reasons_json=json.dumps(shard.rejection_reasons, ensure_ascii=False),
+            regeneration_context_json=json.dumps(
+                regeneration_context or {}, ensure_ascii=False, sort_keys=True
+            ),
+        )
+        call = await self._structured(
+            prompt,
+            CreativeCandidateBatch,
+            schema_name="effect_prompt_v11_coherent_creative_batch",
+            stage="COHERENT_CREATIVE_GENERATION",
+            prompt_file=V11_CREATIVE_BASE_PROMPT,
+            model=self._candidate_model,
+            max_output_tokens=min(
+                self._candidate_max_output_tokens,
+                max(1536, len(shard.tasks) * 900),
+            ),
+            request_timeout=self._candidate_timeout,
+            instructions=load_prompt(V11_CREATIVE_BASE_PROMPT),
+        )
+        task_by_slot = {item.slot_id: item for item in shard.tasks}
+        actual = [item.slot_id for item in call.value.items]
+        if len(actual) != len(set(actual)) or set(actual) != set(task_by_slot):
+            raise ProviderError(
+                "AI coherent creative response has missing, duplicate, or unknown slotId",
+                retryable=False,
+                error_type=ProviderErrorType.RESPONSE_INVALID,
+                attempts=call.metadata.attempts,
+                elapsed_ms=call.metadata.latency_ms,
+            )
+        known = {fact.fact_id for fact in application.usable}
+        normalized: list[CreativeCandidate] = []
+        for item in call.value.items:
+            task = task_by_slot[item.slot_id]
+            fact_ids = [fact_id for fact_id in item.declared_fact_ids if fact_id in known]
+            if not fact_ids:
+                raise ProviderError(
+                    "AI coherent creative response did not reference a confirmed fact",
+                    retryable=False,
+                    error_type=ProviderErrorType.RESPONSE_INVALID,
+                    attempts=call.metadata.attempts,
+                    elapsed_ms=call.metadata.latency_ms,
+                )
+            normalized.append(
+                item.model_copy(
+                    update={
+                        "ordinal": task.ordinal,
+                        "round": task.round,
+                        "declared_fact_ids": list(dict.fromkeys(fact_ids)),
+                    }
+                )
+            )
+        return AiCallResult(
+            value=call.value.model_copy(update={"items": normalized}),
+            metadata=call.metadata,
+        )
+
+    async def evaluate_creatives(
+        self,
+        candidates: list[CreativeCandidate],
+        *,
+        application: InsightApplicationMap,
+    ) -> AiCallResult[CreativeEvaluationBatch]:
+        if not candidates or len(candidates) > 10:
+            raise ProviderError(
+                "creative evaluation batch must contain between one and ten items",
+                retryable=False,
+                error_type=ProviderErrorType.REQUEST_REJECTED,
+            )
+        referenced = {
+            fact_id for item in candidates for fact_id in item.declared_fact_ids
+        }
+        facts = [
+            application.by_id[fact_id].model_dump(
+                mode="json",
+                by_alias=True,
+                exclude={"eligible_fragment_types", "exclusion_reason"},
+            )
+            for fact_id in referenced
+            if fact_id in application.by_id
+        ]
+        prompt = render_prompt(
+            V11_EVALUATION_TASK_PROMPT,
+            facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+            candidates_json=json.dumps(
+                [item.model_dump(mode="json", by_alias=True) for item in candidates],
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )
+        call = await self._structured(
+            prompt,
+            CreativeEvaluationBatch,
+            schema_name="effect_prompt_v11_creative_evaluation_batch",
+            stage="CREATIVE_EVALUATION_CLASSIFICATION",
+            prompt_file=V11_EVALUATION_BASE_PROMPT,
+            model=self._evaluation_model,
+            max_output_tokens=min(
+                self._evaluation_max_output_tokens,
+                max(1024, len(candidates) * 520),
+            ),
+            request_timeout=self._evaluation_timeout,
+            instructions=load_prompt(V11_EVALUATION_BASE_PROMPT),
+        )
+        expected = {item.slot_id for item in candidates}
+        actual = [item.slot_id for item in call.value.items]
+        if len(actual) != len(set(actual)) or set(actual) != expected:
+            raise ProviderError(
+                "AI creative evaluation has missing, duplicate, or unknown slotId",
+                retryable=False,
+                error_type=ProviderErrorType.RESPONSE_INVALID,
+                attempts=call.metadata.attempts,
+                elapsed_ms=call.metadata.latency_ms,
+            )
+        return call
 
     async def plan_strategy(
         self, application: InsightApplicationMap, *, target_count: int
@@ -983,6 +1201,124 @@ def _mock_result(
                 worker_completed_relationship_bundle_count
             ),
         ),
+    )
+
+
+def _mock_creative_candidate(
+    task: CreativeTask,
+    application: InsightApplicationMap,
+) -> CreativeCandidate:
+    facts = application.usable
+    creative_facts = [
+        fact
+        for fact in facts
+        if fact.field
+        in {
+            InsightField.PRODUCT_NAME,
+            InsightField.PRODUCT_CATEGORY,
+            InsightField.CORE_SPECIFICATION,
+            InsightField.VISUAL_FEATURES,
+            InsightField.CORE_SELLING_POINT,
+            InsightField.SECONDARY_SELLING_POINT,
+            InsightField.CORE_PAIN_POINT,
+            InsightField.DECISION_DRIVER,
+            InsightField.USAGE_SCENARIO,
+            InsightField.PURCHASE_SCENARIO,
+            InsightField.EMOTIONAL_SCENARIO,
+        }
+    ] or facts
+    preferred = [
+        application.by_id[fact_id]
+        for fact_id in task.preferred_fact_ids
+        if fact_id in application.by_id
+    ]
+    chosen = [item for item in preferred if item in creative_facts] or creative_facts
+    primary = chosen[(task.ordinal - 1) % len(chosen)]
+    product = next(
+        (
+            fact.value
+            for fact in facts
+            if fact.field == InsightField.PRODUCT_NAME
+        ),
+        "当前产品",
+    )
+    scenes = ["家庭厨房料理台", "节日家宴餐桌", "明亮食品展示台", "居家备餐区"]
+    cameras = ["近景缓慢横移", "微距轻推", "中近景固定观察", "俯拍平稳跟随"]
+    scene = scenes[(task.ordinal - 1) % len(scenes)]
+    camera = cameras[((task.ordinal - 1) // len(scenes)) % len(cameras)]
+    actions = [
+        "被切开并整齐摆盘",
+        "由筷子夹起后停在切面细节",
+        "从蒸笼中取出并放到白瓷盘",
+        "包装旁的成品被缓慢转动展示",
+    ]
+    action = actions[
+        ((task.ordinal - 1) // (len(scenes) * len(cameras))) % len(actions)
+    ]
+    content = (
+        f"{scene}内，{product}{action}，画面清楚呈现{primary.value}。"
+        f"{camera}记录一个连续动作，暖色自然光突出真实质感，动作结束后主体稳定停留在画面中央。"
+    )
+    return CreativeCandidate(
+        slot_id=task.slot_id,
+        ordinal=task.ordinal,
+        round=task.round,
+        creative_core=f"用{scene}中的连续动作表现{primary.value}",
+        declared_fact_ids=[primary.fact_id],
+        dimensions=CreativeDimensions(
+            narrative="从准备动作自然推进到产品细节停留",
+            scene=scene,
+            persona="仅一双成年人的手参与动作",
+            product_relation=primary.value,
+            camera=camera,
+            emotion="温暖真实且具有食欲吸引力",
+        ),
+        content=content,
+    )
+
+
+def _mock_creative_evaluation(
+    candidate: CreativeCandidate,
+    application: InsightApplicationMap,
+) -> CreativeEvaluation:
+    evidence = [
+        FactEvidence(fact_id=fact_id, evidence_text=application.by_id[fact_id].value)
+        for fact_id in candidate.declared_fact_ids
+        if fact_id in application.by_id
+        and application.by_id[fact_id].value in candidate.content
+    ]
+    purposes = list(FragmentType)
+    primary = purposes[(candidate.ordinal - 1) % len(purposes)]
+    compatible = [primary]
+    if primary != FragmentType.PRODUCT_DISPLAY:
+        compatible.append(FragmentType.PRODUCT_DISPLAY)
+    hard_issues = [] if evidence else ["MISSING_PRODUCT_RELATION"]
+    return CreativeEvaluation(
+        slot_id=candidate.slot_id,
+        primary_purpose=primary,
+        compatible_purposes=compatible,
+        fact_evidence=evidence,
+        realized_fact_ids=[item.fact_id for item in evidence],
+        scores=CreativeScores(
+            product_relevance=92 if evidence else 20,
+            creative_coherence=88,
+            visual_executability=90,
+            commercial_usefulness=85,
+            visual_clarity=90,
+        ),
+        semantic_signature=normalize_coordinate_signature(candidate.creative_core),
+        visual_signature=normalize_coordinate_signature(
+            "|".join(
+                [
+                    candidate.dimensions.scene,
+                    candidate.dimensions.persona,
+                    candidate.dimensions.product_relation,
+                    candidate.dimensions.camera,
+                ]
+            )
+        ),
+        hard_issues=hard_issues,
+        warnings=[],
     )
 
 

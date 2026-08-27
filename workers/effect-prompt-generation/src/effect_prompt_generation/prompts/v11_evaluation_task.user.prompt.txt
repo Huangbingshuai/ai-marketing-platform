@@ -1,0 +1,9 @@
+VERSION: effect-prompt-v11-creative-evaluation-task-v1
+
+候选声明所引用的已确认事实：
+{facts_json}
+
+待评估候选：
+{candidates_json}
+
+逐条独立核对正文证据、六维一致性、画面可执行性和用途。items 数量与 slotId 必须和输入一致。

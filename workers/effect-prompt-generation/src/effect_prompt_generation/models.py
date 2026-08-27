@@ -33,6 +33,7 @@ class OutputState(TypedDict):
 class GraphState(TypedDict):
     project_id: str
     graph_version: NotRequired[str]
+    operation: NotRequired[str]
     round: NotRequired[int]
     target_count: NotRequired[int]
     retained_count: NotRequired[int]
@@ -67,6 +68,13 @@ class GraphState(TypedDict):
     needs_replenish: NotRequired[bool]
     missing_fact_ids: NotRequired[list[str]]
     prompt_result_id: NotRequired[str]
+    pending_creative_shards: NotRequired[list[CreativeShardPlan]]
+    active_creative_shard: NotRequired[dict[str, Any]]
+    pending_classification_shards: NotRequired[list[ClassificationShardPlan]]
+    active_classification_shard: NotRequired[dict[str, Any]]
+    creative_candidate_count: Annotated[int, operator.add]
+    classified_candidate_count: Annotated[int, operator.add]
+    needs_supplement: NotRequired[bool]
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +105,25 @@ class PromptDimensions(ApiModel):
 
     @field_validator(
         "narrative", "scene", "persona", "selling_point", "camera", "emotion"
+    )
+    @classmethod
+    def clean_dimension(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            raise ValueError("dimension cannot be blank")
+        return cleaned
+
+
+class CreativeDimensions(ApiModel):
+    narrative: str = Field(min_length=1, max_length=120)
+    scene: str = Field(min_length=1, max_length=120)
+    persona: str = Field(min_length=1, max_length=160)
+    product_relation: str = Field(min_length=1, max_length=240)
+    camera: str = Field(min_length=1, max_length=160)
+    emotion: str = Field(min_length=1, max_length=120)
+
+    @field_validator(
+        "narrative", "scene", "persona", "product_relation", "camera", "emotion"
     )
     @classmethod
     def clean_dimension(cls, value: str) -> str:
@@ -163,6 +190,23 @@ class PromptBatchSettings(ApiModel):
     @property
     def target_count(self) -> int:
         return sum(config.count for config in self.fragment_configs.values())
+
+
+class PromptBatchSettingsV6(ApiModel):
+    target_count: int = Field(ge=10, le=200)
+    default_duration_seconds: int = Field(ge=4, le=15)
+
+    @property
+    def fragment_configs(self) -> dict[FragmentType, FragmentConfig]:
+        raise RuntimeError("V11 settings do not define fragmentConfigs")
+
+    @property
+    def semantic_limit(self) -> int:
+        raise RuntimeError("V11 settings do not define semanticLimit")
+
+    @property
+    def visual_limit(self) -> int:
+        raise RuntimeError("V11 settings do not define visualLimit")
 
 
 class InsightField(StrEnum):
@@ -273,6 +317,45 @@ class PromptItem(ApiModel):
         return cleaned
 
 
+class PromptItemV6(ApiModel):
+    id: str = Field(min_length=1, max_length=160)
+    code: str = Field(min_length=1, max_length=40)
+    origin: Literal["AI", "MANUAL"]
+    fragment_type: FragmentType
+    primary_purpose: FragmentType
+    compatible_purposes: list[FragmentType] = Field(min_length=1, max_length=6)
+    classification_status: Literal["PENDING", "VERIFIED"]
+    product_relevance: int = Field(ge=0, le=100)
+    material_tags: list[str] = Field(min_length=1, max_length=12)
+    target_duration_seconds: int = Field(ge=4, le=15)
+    dimensions: CreativeDimensions
+    content: str = Field(min_length=1, max_length=12_000)
+    insight_bindings: list[InsightBinding] = Field(default_factory=list, max_length=16)
+    manual_edited: bool
+    created_at: datetime
+    updated_at: datetime
+
+    @model_validator(mode="after")
+    def validate_purposes(self) -> PromptItemV6:
+        purposes = list(dict.fromkeys(self.compatible_purposes))
+        if self.primary_purpose not in purposes:
+            raise ValueError("compatiblePurposes must include primaryPurpose")
+        if self.fragment_type != self.primary_purpose:
+            raise ValueError("fragmentType must equal primaryPurpose")
+        self.compatible_purposes = purposes
+        return self
+
+    @field_validator("content")
+    @classmethod
+    def clean_text(cls, value: str) -> str:
+        cleaned = "\n".join(
+            line.rstrip() for line in value.strip().splitlines()
+        ).strip()
+        if not cleaned:
+            raise ValueError("text cannot be blank")
+        return cleaned
+
+
 class FragmentTypeDistribution(ApiModel):
     fragment_type: FragmentType
     target_count: int = Field(ge=0, le=200)
@@ -311,6 +394,39 @@ class PromptMetrics(ApiModel):
     )
     selling_point_coverage: SellingPointCoverage
     insight_coverage: InsightCoverage
+
+
+class PurposeDistribution(ApiModel):
+    purpose: FragmentType
+    primary_count: int = Field(ge=0, le=200)
+    compatible_count: int = Field(ge=0, le=200)
+
+
+class CreativeAverageScores(ApiModel):
+    product_relevance: float = Field(ge=0, le=100)
+    creative_coherence: float = Field(ge=0, le=100)
+    visual_executability: float = Field(ge=0, le=100)
+    commercial_usefulness: float = Field(ge=0, le=100)
+    visual_clarity: float = Field(ge=0, le=100)
+
+
+class CountMetric(ApiModel):
+    code: str = Field(min_length=1, max_length=120)
+    count: int = Field(ge=1, le=2_000)
+
+
+class PromptMetricsV6(ApiModel):
+    target_count: int = Field(ge=10, le=200)
+    candidate_target_count: int = Field(ge=10, le=240)
+    generated_candidate_count: int = Field(ge=0)
+    accepted_count: int = Field(ge=0, le=200)
+    rejected_count: int = Field(ge=0)
+    replenishment_rounds: int = Field(ge=0, le=1)
+    exact_duplicate_count: int = Field(ge=0)
+    purpose_distribution: list[PurposeDistribution] = Field(min_length=6, max_length=6)
+    average_scores: CreativeAverageScores
+    hard_issue_counts: list[CountMetric] = Field(default_factory=list)
+    warning_counts: list[CountMetric] = Field(default_factory=list)
 
 
 class SharedPromptSection(ApiModel):
@@ -374,6 +490,24 @@ class PromptBatchResult(ApiModel):
         return self
 
 
+class PromptBatchResultV6(ApiModel):
+    schema_version: Literal[6] = 6
+    settings: PromptBatchSettingsV6
+    render_profile: RenderProfile
+    shared_prompt: SharedPrompt
+    items: list[PromptItemV6] = Field(max_length=200)
+    metrics: PromptMetricsV6
+    quality_status: Literal["PASS", "NEEDS_REVIEW"]
+
+    @model_validator(mode="after")
+    def result_counts_match(self) -> PromptBatchResultV6:
+        if self.metrics.accepted_count != len(self.items):
+            raise ValueError("metrics.acceptedCount must equal items length")
+        if self.metrics.target_count != self.settings.target_count:
+            raise ValueError("metrics.targetCount must equal settings.targetCount")
+        return self
+
+
 class InsightArtifact(ApiModel):
     id: str
     revision: int = Field(ge=1)
@@ -382,27 +516,28 @@ class InsightArtifact(ApiModel):
 
 
 class PromptGenerationSnapshot(ApiModel):
-    schema_version: Literal[5] = 5
+    schema_version: Literal[5, 6] = 5
     graph_version: Literal[
         "V8_SINGLE_STRATEGY",
         "V9_SIX_BRANCH_STRATEGY",
         "V10_RELATION_COORDINATE_BLUEPRINT",
+        "V11_COHERENT_CREATIVE_GENERATION",
     ] = "V9_SIX_BRANCH_STRATEGY"
     project_id: str
     workflow_run_id: str
     product_id: str
-    operation: Literal["BATCH_GENERATE", "ITEM_REGENERATE"]
+    operation: Literal["BATCH_GENERATE", "ITEM_REGENERATE", "ITEM_EVALUATE"]
     target_item_id: str | None = None
-    settings: PromptBatchSettings
+    settings: PromptBatchSettings | PromptBatchSettingsV6
     insight_artifact: InsightArtifact
-    retained_manual_items: list[PromptItem] = Field(
+    retained_manual_items: list[PromptItem | PromptItemV6] = Field(
         default_factory=list, max_length=200
     )
     shared_prompt: SharedPrompt | None = None
     base_result_revision: int | None = Field(default=None, ge=1)
-    target_item: PromptItem | None = None
+    target_item: PromptItem | PromptItemV6 | None = None
     target_item_index: int | None = Field(default=None, ge=0, le=199)
-    replacement_dimensions: PromptDimensions | None = None
+    replacement_dimensions: PromptDimensions | CreativeDimensions | None = None
     regeneration_instruction: str | None = Field(default=None, max_length=500)
 
     @field_validator("regeneration_instruction")
@@ -415,13 +550,13 @@ class PromptGenerationSnapshot(ApiModel):
 
     @model_validator(mode="after")
     def validate_operation(self) -> PromptGenerationSnapshot:
-        if self.operation == "ITEM_REGENERATE" and not self.target_item_id:
-            raise ValueError("targetItemId is required for ITEM_REGENERATE")
-        if self.operation == "ITEM_REGENERATE" and (
+        if self.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"} and not self.target_item_id:
+            raise ValueError("targetItemId is required for item operations")
+        if self.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"} and (
             self.target_item is None or self.target_item_index is None
         ):
             raise ValueError(
-                "targetItem and targetItemIndex are required for ITEM_REGENERATE"
+                "targetItem and targetItemIndex are required for item operations"
             )
         if self.operation == "BATCH_GENERATE" and (
             self.replacement_dimensions is not None
@@ -501,6 +636,10 @@ class NodeId(StrEnum):
     QUALITY_GATE = "QUALITY_GATE"
     REPLENISH = "REPLENISH"
     RESULT_SAVE = "RESULT_SAVE"
+    COHERENT_CREATIVE_GENERATION = "COHERENT_CREATIVE_GENERATION"
+    CREATIVE_EVALUATION_CLASSIFICATION = "CREATIVE_EVALUATION_CLASSIFICATION"
+    EXACT_SELECTION_AND_SUPPLEMENT = "EXACT_SELECTION_AND_SUPPLEMENT"
+    ITEM_EVALUATE = "ITEM_EVALUATE"
 
 
 class StageStatus(StrEnum):
@@ -845,9 +984,120 @@ class GeneratedCandidate(ApiModel):
     generated_at: datetime
 
 
+class CreativeTask(ApiModel):
+    slot_id: str = Field(min_length=1, max_length=160)
+    ordinal: int = Field(ge=1)
+    round: int = Field(ge=0, le=1)
+    target_duration_seconds: int = Field(ge=4, le=15)
+    preferred_fact_ids: list[str] = Field(default_factory=list, max_length=12)
+
+
+class CreativeCandidate(ApiModel):
+    slot_id: str = Field(min_length=1, max_length=160)
+    ordinal: int = Field(ge=1)
+    round: int = Field(ge=0, le=1)
+    creative_core: str = Field(min_length=1, max_length=160)
+    declared_fact_ids: list[str] = Field(min_length=1, max_length=12)
+    dimensions: CreativeDimensions
+    content: str = Field(min_length=20, max_length=600)
+    generated_at: datetime | None = None
+
+    @field_validator("declared_fact_ids")
+    @classmethod
+    def unique_fact_ids(cls, values: list[str]) -> list[str]:
+        result = list(dict.fromkeys(values))
+        if not result:
+            raise ValueError("declaredFactIds cannot be empty")
+        return result
+
+
+class CreativeCandidateBatch(ApiModel):
+    items: list[CreativeCandidate] = Field(min_length=1, max_length=5)
+
+
+class CreativeShardPlan(ApiModel):
+    round: int = Field(ge=0, le=1)
+    shard_index: int = Field(ge=0)
+    tasks: list[CreativeTask] = Field(min_length=1, max_length=5)
+    avoid_semantic_signatures: list[str] = Field(default_factory=list, max_length=200)
+    avoid_visual_signatures: list[str] = Field(default_factory=list, max_length=200)
+    rejection_reasons: list[str] = Field(default_factory=list, max_length=20)
+
+    @property
+    def key(self) -> str:
+        return f"CREATIVE:{self.round}:{self.shard_index}"
+
+
+class FactEvidence(ApiModel):
+    fact_id: str = Field(min_length=1, max_length=120)
+    evidence_text: str = Field(min_length=1, max_length=160)
+
+
+class CreativeScores(ApiModel):
+    product_relevance: float = Field(ge=0, le=100)
+    creative_coherence: float = Field(ge=0, le=100)
+    visual_executability: float = Field(ge=0, le=100)
+    commercial_usefulness: float = Field(ge=0, le=100)
+    visual_clarity: float = Field(ge=0, le=100)
+
+    @property
+    def overall_quality(self) -> float:
+        return round(
+            self.product_relevance * 0.30
+            + self.creative_coherence * 0.25
+            + self.visual_executability * 0.20
+            + self.commercial_usefulness * 0.15
+            + self.visual_clarity * 0.10,
+            4,
+        )
+
+
+class CreativeEvaluation(ApiModel):
+    slot_id: str = Field(min_length=1, max_length=160)
+    primary_purpose: FragmentType
+    compatible_purposes: list[FragmentType] = Field(min_length=1, max_length=6)
+    fact_evidence: list[FactEvidence] = Field(default_factory=list, max_length=12)
+    realized_fact_ids: list[str] = Field(default_factory=list, max_length=12)
+    scores: CreativeScores
+    semantic_signature: str = Field(min_length=1, max_length=240)
+    visual_signature: str = Field(min_length=1, max_length=240)
+    hard_issues: list[str] = Field(default_factory=list, max_length=20)
+    warnings: list[str] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_purposes_and_evidence(self) -> CreativeEvaluation:
+        purposes = list(dict.fromkeys(self.compatible_purposes))
+        if self.primary_purpose not in purposes:
+            raise ValueError("compatiblePurposes must include primaryPurpose")
+        evidence_ids = list(dict.fromkeys(item.fact_id for item in self.fact_evidence))
+        if list(dict.fromkeys(self.realized_fact_ids)) != evidence_ids:
+            raise ValueError("realizedFactIds must match factEvidence")
+        self.compatible_purposes = purposes
+        self.realized_fact_ids = evidence_ids
+        self.hard_issues = list(dict.fromkeys(self.hard_issues))
+        self.warnings = list(dict.fromkeys(self.warnings))
+        return self
+
+
+class CreativeEvaluationBatch(ApiModel):
+    items: list[CreativeEvaluation] = Field(min_length=1, max_length=10)
+
+
+class ClassificationShardPlan(ApiModel):
+    round: int = Field(ge=0, le=1)
+    shard_index: int = Field(ge=0)
+    candidate_ids: list[str] = Field(min_length=1, max_length=10)
+
+    @property
+    def key(self) -> str:
+        return f"CLASSIFICATION:{self.round}:{self.shard_index}"
+
+
 class ShardPhase(StrEnum):
     BLUEPRINT = "BLUEPRINT"
     PROMPT = "PROMPT"
+    CREATIVE = "CREATIVE"
+    CLASSIFICATION = "CLASSIFICATION"
 
 
 class ShardRecord(ApiModel):
@@ -858,6 +1108,10 @@ class ShardRecord(ApiModel):
     combination_plan: list[PlannedCombination] = Field(default_factory=list)
     blueprint_plan: list[BlueprintTask] = Field(default_factory=list)
     blueprints: list[GeneratedBlueprint] = Field(default_factory=list)
+    creative_plan: list[CreativeTask] = Field(default_factory=list)
+    creative_items: list[CreativeCandidate] = Field(default_factory=list)
+    classification_plan: list[str] = Field(default_factory=list)
+    evaluations: list[CreativeEvaluation] = Field(default_factory=list)
     items: list[GeneratedCandidate] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     error_code: str | None = None
@@ -866,11 +1120,13 @@ class ShardRecord(ApiModel):
 
     @property
     def key(self) -> str:
-        return (
-            f"BLUEPRINT:{self.round}:{self.shard_index}"
-            if self.phase == ShardPhase.BLUEPRINT
-            else f"{self.round}:{self.shard_index}"
-        )
+        if self.phase == ShardPhase.BLUEPRINT:
+            return f"BLUEPRINT:{self.round}:{self.shard_index}"
+        if self.phase == ShardPhase.CREATIVE:
+            return f"CREATIVE:{self.round}:{self.shard_index}"
+        if self.phase == ShardPhase.CLASSIFICATION:
+            return f"CLASSIFICATION:{self.round}:{self.shard_index}"
+        return f"{self.round}:{self.shard_index}"
 
 
 class ShardsResponse(ApiModel):

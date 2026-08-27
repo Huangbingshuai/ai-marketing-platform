@@ -4,6 +4,7 @@ import type {
   EffectPromptBatchSettings,
   EffectPromptDimensionKey,
   EffectPromptDimensions,
+  EffectPromptDimensionsV5,
   EffectPromptFragmentType,
   EffectPromptGraphVersion,
   EffectPromptItem,
@@ -15,7 +16,6 @@ import type {
   EffectPromptStageStatus,
   EffectVideoConfig,
   GetEffectPromptNodeDetailData,
-  GetEffectPromptResultData,
 } from '@ai-marketing/contracts';
 import {
   CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
@@ -25,9 +25,10 @@ import {
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
-  effectPromptTargetCount,
   effectPromptGraphEdges,
   effectPromptGraphNodeIds,
+  effectPromptRunGraphEdges,
+  effectPromptRunGraphNodeIds,
 } from '@ai-marketing/contracts';
 import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
 import {
@@ -74,6 +75,7 @@ import {
   saveEffectPromptSharedPrompt,
   savePromptSettings,
   type EffectPromptContext,
+  type EffectPromptViewResultData,
   type PromptItemDraft,
 } from './services/effect-prompt-generation.service';
 
@@ -97,10 +99,10 @@ const productStates = ref<Record<string, EffectPromptProductState>>({});
 const settingsDrafts = ref<Record<string, EffectPromptBatchSettings>>({});
 const settingsSaveStatuses = ref<Record<string, SaveStatus>>({});
 const currentProductId = ref('');
-const resultData = ref<GetEffectPromptResultData | null>(null);
+const resultData = ref<EffectPromptViewResultData | null>(null);
 const resultLoading = ref(false);
 const keyword = ref('');
-const fragmentTypeFilter = ref<EffectPromptFragmentType | ''>('');
+const purposeFilter = ref<EffectPromptFragmentType | ''>('');
 const page = ref(1);
 const notice = ref<Notice | null>(null);
 const itemOperation = ref<ItemOperation | null>(null);
@@ -128,7 +130,6 @@ const editorMode = ref<'add' | 'edit'>('edit');
 const editorItemId = ref('');
 const editorDraft = ref<PromptItemDraft>({
   content: '',
-  fragmentType: 'HOOK',
   materialTags: [],
   dimensions: emptyDimensions(),
 });
@@ -177,24 +178,8 @@ const currentState = computed(() => productStates.value[currentProductId.value] 
 const currentSettings = computed(
   () => settingsDrafts.value[currentProductId.value] ?? DEFAULT_EFFECT_PROMPT_SETTINGS,
 );
-const currentTargetCount = computed(() => effectPromptTargetCount(currentSettings.value));
-const currentFinishedVideoDurationSeconds = computed(() => {
-  return EFFECT_PROMPT_FRAGMENT_TYPES.reduce(
-    (total, fragmentType) =>
-      total + currentSettings.value.fragmentConfigs[fragmentType].durationSeconds,
-    0,
-  );
-});
-const currentFinishedVideoDurationLabel = computed(() => {
-  const totalSeconds = currentFinishedVideoDurationSeconds.value;
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  if (minutes === 0) return `${seconds} 秒`;
-  return seconds === 0 ? `${minutes} 分钟` : `${minutes} 分 ${seconds} 秒`;
-});
-const editorTargetDurationSeconds = computed(
-  () => currentSettings.value.fragmentConfigs[editorDraft.value.fragmentType].durationSeconds,
-);
+const currentTargetCount = computed(() => currentSettings.value.targetCount);
+const editorTargetDurationSeconds = computed(() => currentSettings.value.defaultDurationSeconds);
 const currentRun = computed(() => runsByProduct.value[currentProductId.value] ?? null);
 const currentGraphVersion = computed<EffectPromptGraphVersion>(
   () =>
@@ -202,7 +187,16 @@ const currentGraphVersion = computed<EffectPromptGraphVersion>(
     currentState.value?.graphVersion ??
     CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
 );
-const currentGraphEdges = computed(() => effectPromptGraphEdges(currentGraphVersion.value));
+const currentGraphNodeIds = computed<readonly EffectPromptNodeId[]>(() => {
+  if (currentRun.value)
+    return effectPromptRunGraphNodeIds(currentGraphVersion.value, currentRun.value.operation);
+  return effectPromptGraphNodeIds(currentGraphVersion.value);
+});
+const currentGraphEdges = computed(() => {
+  if (currentRun.value)
+    return effectPromptRunGraphEdges(currentGraphVersion.value, currentRun.value.operation);
+  return effectPromptGraphEdges(currentGraphVersion.value);
+});
 const currentAttemptLabel = computed(() => {
   const run = currentRun.value;
   if (!run) return '';
@@ -275,76 +269,15 @@ const itemInsightSources = (item: EffectPromptItem) =>
       ]),
     ).values(),
   ].slice(0, 8);
-const currentQuotaStats = computed(() => {
-  const fragmentType = fragmentTypeFilter.value;
-  if (!fragmentType) {
-    const targetCount = currentTargetCount.value;
-    const actualCount = currentMetrics.value?.acceptedCount ?? 0;
-    return {
-      label: '全部可用素材片段 Prompt',
-      targetCount,
-      actualCount,
-      missingCount: Math.max(0, targetCount - actualCount),
-      excessCount: Math.max(0, actualCount - targetCount),
-    };
-  }
-  const entry = currentMetrics.value?.fragmentTypeDistribution.find(
-    (candidate) => candidate.fragmentType === fragmentType,
-  );
-  const targetCount =
-    entry?.targetCount ?? currentSettings.value.fragmentConfigs[fragmentType].count;
-  const actualCount = entry?.actualCount ?? 0;
+const currentCountStats = computed(() => {
+  const targetCount = currentTargetCount.value;
+  const actualCount = currentMetrics.value?.acceptedCount ?? resultData.value?.total ?? 0;
   return {
-    label: `${fragmentTypeLabel(fragmentType)}可用 Prompt`,
     targetCount,
     actualCount,
     missingCount: Math.max(0, targetCount - actualCount),
     excessCount: Math.max(0, actualCount - targetCount),
   };
-});
-const executionInvalidSummary = computed(() => {
-  const labels: Record<string, string> = {
-    ABSTRACT_VISUAL: '抽象信息被伪造成画面',
-    MULTI_STAGE_STORY: '完整成片结构',
-    ABSTRACT_META_LANGUAGE: '空泛元话语',
-    MISSING_VISIBLE_ACTION: '缺少可见动作',
-    PRODUCT_IDENTITY_DRIFT: '产品外观漂移',
-    UNSUPPORTED_CLAIM: '未确认事实',
-    BURNED_IN_OVERLAY: '烧入文字或转场',
-    BAKED_TEXT: '烧录字幕或界面文字',
-    AUDIO_OVERREACH: '口播或背景音乐越界',
-    CAMERA_CONFLICT: '运镜互相冲突',
-    CTA_NO_SAFE_AREA: '转化片段缺少安全留白',
-    EVIDENCE_MODE_MISMATCH: '卖点证据类型不匹配',
-    FACT_OVERLOAD: '单条事实过多',
-    HOOK_RESOLVED: '钩子提前揭晓答案',
-    META_LANGUAGE: '策划元话语',
-    FULL_TIMELINE: '多镜头时间轴',
-    FULL_TIMELINE_NOT_FRAGMENT: '完整成片结构',
-    STACKED_PERSONA: '人物画像堆叠',
-    ABSTRACT_PERSONA: '抽象受众画像',
-    NO_VISIBLE_ACTION: '缺少可见动作',
-    UNFILMABLE_EVIDENCE: '卖点证据不可拍摄',
-    ROLE_CONFLICT: '片段职责冲突',
-    FIELD_DUPLICATION: '内容机械重复',
-    SOURCE_FACT_VIOLATION: '出现未确认事实',
-    BROKEN_TEXT: '存在占位或破损文本',
-    PLACEHOLDER_TEXT: '存在空泛占位文本',
-    DURATION_MISMATCH: '片段时长不一致',
-    NEGATIVE_TAIL_DUPLICATION: '重复禁用说明',
-    OVERLOADED_ACTION: '主要动作过多',
-    OUTRO_NEW_MESSAGE: '片尾引入新卖点',
-    OUTRO_UNSTABLE: '片尾无法稳定定格',
-    PAIN_RESOLVED: '痛点在同条中被解决',
-    PHYSICS_BREAK: '物理变化不合理',
-    PRODUCT_NOT_FIRST_FRAME: '产品未在首帧清楚出现',
-    PRODUCT_ROLE_OVERLOAD: '产品展示混入效果职责',
-    PROMPT_LENGTH_MISMATCH: '正文长度与片段时长不匹配',
-    REFERENCE_DEPENDENCY: '缺少参考图却要求精确还原',
-  };
-  return (currentMetrics.value?.executionInvalidReasons ?? [])
-    .map(({ code, count }) => `${labels[code] ?? '其他不可执行内容'} ${count}`)
-    .join('、');
 });
 const currentRunning = computed(() => isPromptRunActive(currentState.value));
 const currentQualityReady = computed(() => isPromptResultQualityReady(currentResult.value));
@@ -370,8 +303,13 @@ const regeneratingItemId = computed(() =>
     ? currentRun.value.targetItemId
     : null,
 );
+const evaluatingItemId = computed(() =>
+  currentRunning.value && currentRun.value?.operation === 'ITEM_EVALUATE'
+    ? currentRun.value.targetItemId
+    : null,
+);
 const currentGraphNodes = computed<EffectPromptNodeExecution[]>(() =>
-  effectPromptGraphNodeIds(currentGraphVersion.value).map(
+  currentGraphNodeIds.value.map(
     (id) =>
       currentRun.value?.nodes.find((node) => node.nodeId === id) ?? {
         nodeId: id,
@@ -383,17 +321,14 @@ const currentGraphNodes = computed<EffectPromptNodeExecution[]>(() =>
   ),
 );
 const graphRows = computed<EffectPromptNodeId[][]>(() =>
-  buildEffectPromptGraphRows(
-    effectPromptGraphNodeIds(currentGraphVersion.value),
-    currentGraphEdges.value,
-  ),
+  buildEffectPromptGraphRows(currentGraphNodeIds.value, currentGraphEdges.value),
 );
 
 const dimensionSuggestions: Record<keyof EffectPromptDimensions, string[]> = {
   narrative: ['痛点前置型', '效果展示型', '场景代入型', '科普讲解型', '对比测评型', '开箱体验型'],
   scene: ['家庭', '户外', '职场', '线下门店', '实验室', '生活化场景'],
   persona: ['都市白领', '新手妈妈', '专业测评人', '年轻情侣', '门店主理人'],
-  sellingPoint: [],
+  productRelation: [],
   camera: ['固定机位＋三段跳切', '广角环绕＋慢推近景', '手持跟拍＋特写', '俯拍全景＋微距切面'],
   emotion: ['温馨治愈', '专业严谨', '活力明快', '焦虑唤醒', '干货科普'],
 };
@@ -415,33 +350,20 @@ const regenerationSuggestions = computed<Record<keyof EffectPromptDimensions, st
     result[key] = [...new Set(values.map((value) => value.trim()).filter(Boolean))];
   }
   if (regenerationCandidate.value) {
-    const type = regenerationCandidate.value.fragmentType;
-    const coreSellingPoints = [
-      ...(currentMetrics.value?.sellingPointCoverage.required ?? []),
+    const confirmed = [
+      regenerationCandidate.value.dimensions.productRelation,
       ...currentItems.value.flatMap((item) =>
         item.insightBindings
-          .filter((binding) => binding.field === 'CORE_SELLING_POINT')
+          .filter((binding) => binding.field !== 'DISABLED_ELEMENT')
           .map((binding) => binding.value),
       ),
     ];
-    const secondarySellingPoints = currentItems.value.flatMap((item) =>
-      item.insightBindings
-        .filter((binding) => binding.field === 'SECONDARY_SELLING_POINT')
-        .map((binding) => binding.value),
-    );
-    const confirmed = [
-      regenerationCandidate.value.dimensions.sellingPoint,
-      ...(type === 'PRODUCT_DISPLAY' || type === 'SELLING_POINT_EXPLANATION' || type === 'CTA'
-        ? coreSellingPoints
-        : []),
-      ...(type === 'SELLING_POINT_EXPLANATION' ? secondarySellingPoints : []),
-    ];
-    result.sellingPoint = [...new Set(confirmed.map((value) => value.trim()).filter(Boolean))];
+    result.productRelation = [...new Set(confirmed.map((value) => value.trim()).filter(Boolean))];
   }
   return result;
 });
 function emptyDimensions(): EffectPromptDimensions {
-  return { narrative: '', scene: '', persona: '', sellingPoint: '', camera: '', emotion: '' };
+  return { narrative: '', scene: '', persona: '', productRelation: '', camera: '', emotion: '' };
 }
 
 function uniqueTextList(value: string): string[] {
@@ -505,7 +427,7 @@ const loadCurrentResult = async (): Promise<void> => {
       productId,
       page.value,
       keyword.value,
-      fragmentTypeFilter.value || undefined,
+      purposeFilter.value || undefined,
       controller.signal,
     );
     if (
@@ -569,10 +491,17 @@ const startPolling = (productId: string, run: EffectPromptRun): void => {
       if (controller.signal.aborted || disposed) return;
       updateRun(productId, finalRun);
       await reloadWorkspace(false);
+      const successMessage =
+        run.operation === 'ITEM_EVALUATE'
+          ? 'Prompt 用途评估完成'
+          : run.operation === 'ITEM_REGENERATE'
+            ? '单条 Prompt 重新生成完成'
+            : 'Prompt 批次处理完成';
       showNotice(
         finalRun.status === 'COMPLETED'
-          ? 'Prompt 批次处理完成'
-          : finalRun.errorMessage || 'Prompt 生成失败',
+          ? successMessage
+          : finalRun.errorMessage ||
+              (run.operation === 'ITEM_EVALUATE' ? 'Prompt 用途评估失败' : 'Prompt 生成失败'),
         finalRun.status === 'COMPLETED' ? 'success' : 'error',
       );
     })
@@ -679,7 +608,7 @@ watch(currentProductId, (next, previous) => {
   if (previous && previous !== next) void flushSettings(previous);
   page.value = 1;
   keyword.value = '';
-  fragmentTypeFilter.value = '';
+  purposeFilter.value = '';
   itemMutationController?.abort();
   sharedPromptController?.abort();
   exportController?.abort();
@@ -709,7 +638,7 @@ watch(currentProductId, (next, previous) => {
   void loadCurrentResult();
 });
 watch(page, () => void loadCurrentResult());
-watch(fragmentTypeFilter, () => {
+watch(purposeFilter, () => {
   if (page.value === 1) void loadCurrentResult();
   else page.value = 1;
 });
@@ -720,9 +649,9 @@ watch(keyword, () => {
     else page.value = 1;
   }, 350);
 });
-watch(currentGraphVersion, () => {
+watch([currentGraphVersion, () => currentRun.value?.operation], () => {
   const nodeId = selectedGraphNodeId.value;
-  if (!nodeId || effectPromptGraphNodeIds(currentGraphVersion.value).includes(nodeId)) return;
+  if (!nodeId || currentGraphNodeIds.value.includes(nodeId)) return;
   graphDetailController?.abort();
   graphDetailController = null;
   graphDetailLoading.value = false;
@@ -731,18 +660,17 @@ watch(currentGraphVersion, () => {
   graphDetailError.value = '';
 });
 
-type NumericPromptSetting = 'semanticLimit' | 'visualLimit';
-type FragmentConfigKey = 'count' | 'durationSeconds';
+type NumericPromptSetting = 'targetCount' | 'defaultDurationSeconds';
 
 const settingRange = (key: NumericPromptSetting): { maximum: number; minimum: number } =>
   ({
-    semanticLimit: {
-      minimum: EFFECT_PROMPT_LIMITS.minSemanticDuplicateRate,
-      maximum: EFFECT_PROMPT_LIMITS.maxSemanticDuplicateRate,
+    targetCount: {
+      minimum: EFFECT_PROMPT_LIMITS.minCount,
+      maximum: EFFECT_PROMPT_LIMITS.maxCount,
     },
-    visualLimit: {
-      minimum: EFFECT_PROMPT_LIMITS.minVisualOverlapRate,
-      maximum: EFFECT_PROMPT_LIMITS.maxVisualOverlapRate,
+    defaultDurationSeconds: {
+      minimum: EFFECT_PROMPT_LIMITS.minDurationSeconds,
+      maximum: EFFECT_PROMPT_LIMITS.maxDurationSeconds,
     },
   })[key];
 
@@ -761,72 +689,8 @@ const adjustSetting = (key: NumericPromptSetting, delta: number): void => {
   queueSettingsSave();
 };
 
-const fragmentConfigRange = (
-  fragmentType: EffectPromptFragmentType,
-  key: FragmentConfigKey,
-): { maximum: number; minimum: number } => {
-  if (key === 'durationSeconds')
-    return {
-      minimum: EFFECT_PROMPT_LIMITS.minDurationSeconds,
-      maximum: EFFECT_PROMPT_LIMITS.maxDurationSeconds,
-    };
-  const otherCount = EFFECT_PROMPT_FRAGMENT_TYPES.reduce(
-    (sum, currentType) =>
-      sum +
-      (currentType === fragmentType ? 0 : currentSettings.value.fragmentConfigs[currentType].count),
-    0,
-  );
-  return {
-    minimum: Math.max(
-      EFFECT_PROMPT_LIMITS.minFragmentCount,
-      EFFECT_PROMPT_LIMITS.minCount - otherCount,
-    ),
-    maximum: Math.max(
-      EFFECT_PROMPT_LIMITS.minFragmentCount,
-      EFFECT_PROMPT_LIMITS.maxCount - otherCount,
-    ),
-  };
-};
-
-const updateFragmentConfig = (
-  fragmentType: EffectPromptFragmentType,
-  key: FragmentConfigKey,
-  rawValue: number,
-): void => {
-  const draft = settingsDrafts.value[currentProductId.value];
-  if (!draft) return;
-  const range = fragmentConfigRange(fragmentType, key);
-  draft.fragmentConfigs[fragmentType][key] = Math.min(
-    range.maximum,
-    Math.max(range.minimum, Math.round(Number(rawValue) || range.minimum)),
-  );
-  queueSettingsSave();
-};
-
-const updateFragmentConfigFromEvent = (
-  fragmentType: EffectPromptFragmentType,
-  key: FragmentConfigKey,
-  event: Event,
-): void => {
-  const input = event.target;
-  if (input instanceof HTMLInputElement)
-    updateFragmentConfig(fragmentType, key, input.valueAsNumber);
-};
-
-const adjustFragmentConfig = (
-  fragmentType: EffectPromptFragmentType,
-  key: FragmentConfigKey,
-  delta: number,
-): void => {
-  updateFragmentConfig(
-    fragmentType,
-    key,
-    currentSettings.value.fragmentConfigs[fragmentType][key] + delta,
-  );
-};
-
-const toggleFragmentTypeFilter = (fragmentType: EffectPromptFragmentType): void => {
-  fragmentTypeFilter.value = fragmentTypeFilter.value === fragmentType ? '' : fragmentType;
+const togglePurposeFilter = (purpose: EffectPromptFragmentType): void => {
+  purposeFilter.value = purposeFilter.value === purpose ? '' : purpose;
   page.value = 1;
 };
 
@@ -1034,7 +898,6 @@ const openEditor = async (item?: EffectPromptItem, event?: Event): Promise<void>
   editorItemId.value = item?.id ?? '';
   editorDraft.value = {
     content: item?.content ?? '',
-    fragmentType: item?.fragmentType ?? 'HOOK',
     materialTags: item ? [...item.materialTags] : [],
     dimensions: item ? { ...item.dimensions } : emptyDimensions(),
   };
@@ -1073,14 +936,14 @@ const commitEditor = async (): Promise<void> => {
   const productId = state.productId;
   const resultId = state.resultId;
   const resultRevision = result.revision;
+  const existingItemIds = new Set(currentItems.value.map((item) => item.id));
   try {
-    await saveEffectPromptItem(
+    const saved = await saveEffectPromptItem(
       props.projectId,
       resultId,
       resultRevision,
       {
         content: draft.content.trim(),
-        fragmentType: draft.fragmentType,
         materialTags: uniqueTextList(editorMaterialTagsText.value),
         dimensions: Object.fromEntries(
           EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, draft.dimensions[key].trim()]),
@@ -1091,14 +954,66 @@ const commitEditor = async (): Promise<void> => {
     );
     if (controller.signal.aborted || currentProductId.value !== productId) return;
     editorOpen.value = false;
-    showNotice(editorMode.value === 'edit' ? 'Prompt 修改已自动保存' : '人工 Prompt 已添加');
     await reloadWorkspace(false);
+    const targetItem =
+      editorMode.value === 'edit'
+        ? saved.result.items.find((item) => item.id === editorItemId.value)
+        : (saved.result.items.find((item) => !existingItemIds.has(item.id)) ??
+          saved.result.items.at(-1));
+    if (!targetItem) {
+      showNotice('Prompt 已保存，等待用途评估', 'warning');
+      return;
+    }
+    showNotice(editorMode.value === 'edit' ? '修改已保存，正在重新评估用途' : 'Prompt 已添加，正在评估用途');
+    await evaluateItem(targetItem);
   } catch (error) {
     if (!isAbortError(error)) await handleMutationError(error, 'Prompt 保存失败');
   } finally {
     if (itemMutationController === controller) itemMutationController = null;
     if (!controller.signal.aborted || currentProductId.value === productId)
       editorSaving.value = false;
+  }
+};
+
+const evaluateItem = async (item: EffectPromptItem): Promise<void> => {
+  const state = currentState.value;
+  const result = resultData.value;
+  if (
+    !state ||
+    !result ||
+    result.revision === null ||
+    state.settingsRevision === null ||
+    currentRunning.value ||
+    partialPreview.value
+  )
+    return;
+  operationController?.abort();
+  const controller = new AbortController();
+  operationController = controller;
+  try {
+    const run = await beginEffectPromptRun(
+      props.projectId,
+      state.productId,
+      {
+        workflowRunId: props.workflowRunId,
+        operation: 'ITEM_EVALUATE',
+        targetItemId: item.id,
+        expectedSettingsRevision: state.settingsRevision,
+        expectedResultRevision: result.revision,
+      },
+      controller.signal,
+    );
+    updateRun(state.productId, run);
+    startPolling(state.productId, run);
+  } catch (error) {
+    if (!isAbortError(error)) {
+      showNotice(
+        safeMessage(error, 'Prompt 已保存，但用途评估未能启动，请稍后重新评估'),
+        'warning',
+      );
+    }
+  } finally {
+    if (operationController === controller) operationController = null;
   }
 };
 
@@ -1357,6 +1272,10 @@ const graphDescription = (nodeId: EffectPromptNodeId): string =>
     LOAD_AND_SNAPSHOT: '冻结洞察工作副本、批次设置和人工保留内容',
     INSIGHT_MAPPING: '把已确认的营销洞察映射为片段可用信息',
     SHARED_PROMPT_COMPILATION: '编译本批次生成与渲染共同使用的提示词',
+    COHERENT_CREATIVE_GENERATION: '基于已确认产品事实同步生成完整六维创意与干净正文',
+    CREATIVE_EVALUATION_CLASSIFICATION: '评估产品关联和创意质量，并标注推荐用途与兼容用途',
+    EXACT_SELECTION_AND_SUPPLEMENT: '按质量与差异择优，缺少时只补充仍需的数量',
+    ITEM_EVALUATE: '重新评估人工修改内容的六维连贯性与素材用途',
     STRATEGY_PLANNING: '连接受众、痛点、场景、卖点与营销目标，形成营销关系束',
     GLOBAL_FACT_ALLOCATION: '先为六类片段分配必须事实与可选事实，避免跨职责误用',
     STRATEGY_FRAGMENT_ROUTER: '并行路由六类营销规划，并复用仍然有效的成功检查点',
@@ -1440,6 +1359,14 @@ const graphEvidenceModeLabel = (value: string): string =>
 
 const graphDimensionLabel = (key: EffectPromptDimensionKey): string =>
   EFFECT_PROMPT_DIMENSIONS.find((dimension) => dimension.key === key)?.label ?? key;
+
+const graphPromptDimensionValue = (
+  item: { dimensions: EffectPromptDimensions | EffectPromptDimensionsV5 },
+  key: EffectPromptDimensionKey,
+): string =>
+  key === 'productRelation' && !('productRelation' in item.dimensions)
+    ? item.dimensions.sellingPoint
+    : (item.dimensions as EffectPromptDimensions)[key];
 
 const graphPairScore = (value: number): string => `${(value * 100).toFixed(0)}%`;
 
@@ -1572,7 +1499,6 @@ const selectGraphNode = (nodeId: EffectPromptNodeId): void => {
   void refreshGraphDetail();
 };
 
-const formatPercent = (value: number | undefined): string => `${(value ?? 0).toFixed(1)}%`;
 const flushPendingEdits = async (): Promise<boolean> => flushSettings();
 defineExpose({ flushPendingEdits });
 
@@ -1715,199 +1641,52 @@ onBeforeUnmount(() => {
                   : '已自动保存'
           }}</span>
         </div>
-        <div class="fragment-batch-summary" aria-label="六类片段汇总">
-          <div>
-            <span>素材片段总数</span>
-            <strong>{{ currentTargetCount }} 条</strong>
-            <small>六类 Prompt 总量</small>
-          </div>
-          <div>
-            <span>单条成片预计时长</span>
-            <strong>{{ currentFinishedVideoDurationLabel }}</strong>
-            <small>六类各取 1 个片段的时长相加</small>
-          </div>
-        </div>
-
-        <div class="fragment-config-grid" aria-label="六类片段独立配置">
-          <article
-            v-for="fragmentType in EFFECT_PROMPT_FRAGMENT_TYPES"
-            :key="fragmentType"
-            class="fragment-config-card"
-            :class="{ active: fragmentTypeFilter === fragmentType }"
+        <div class="simple-setting-grid">
+          <label
+            v-for="setting in [
+              { key: 'targetCount', label: 'Prompt 总数量', hint: '成功批次必须与设置数量完全一致', suffix: '条' },
+              { key: 'defaultDurationSeconds', label: '默认片段时长', hint: '作为独立渲染参数，不写入 Prompt 正文', suffix: '秒' },
+            ] as const"
+            :key="setting.key"
+            class="setting-card"
           >
-            <button
-              type="button"
-              class="fragment-config-card__filter"
-              :aria-pressed="fragmentTypeFilter === fragmentType"
-              @click="toggleFragmentTypeFilter(fragmentType)"
-            >
-              <span>
-                <strong>{{ fragmentTypeLabel(fragmentType) }}</strong>
-                <small>{{
-                  fragmentTypeFilter === fragmentType
-                    ? '正在筛选，再次点击显示全部'
-                    : '点击筛选下方 Prompt'
-                }}</small>
-              </span>
-              <em>{{ currentSettings.fragmentConfigs[fragmentType].count }} 条</em>
-            </button>
-            <div class="fragment-config-card__controls">
-              <label class="fragment-inline-setting">
-                <span>生成数量</span>
-                <span class="number-control">
-                  <button
-                    type="button"
-                    :aria-label="`降低${fragmentTypeLabel(fragmentType)}生成数量`"
-                    :disabled="
-                      currentRunning ||
-                      currentSettings.fragmentConfigs[fragmentType].count <=
-                        fragmentConfigRange(fragmentType, 'count').minimum
-                    "
-                    @click="adjustFragmentConfig(fragmentType, 'count', -1)"
-                  >
-                    −
-                  </button>
-                  <input
-                    :value="currentSettings.fragmentConfigs[fragmentType].count"
-                    type="number"
-                    :aria-label="`${fragmentTypeLabel(fragmentType)}生成数量`"
-                    :min="fragmentConfigRange(fragmentType, 'count').minimum"
-                    :max="fragmentConfigRange(fragmentType, 'count').maximum"
-                    :disabled="currentRunning"
-                    @input="updateFragmentConfigFromEvent(fragmentType, 'count', $event)"
-                    @blur="flushSettings()"
-                  />
-                  <button
-                    type="button"
-                    :aria-label="`提高${fragmentTypeLabel(fragmentType)}生成数量`"
-                    :disabled="
-                      currentRunning ||
-                      currentSettings.fragmentConfigs[fragmentType].count >=
-                        fragmentConfigRange(fragmentType, 'count').maximum
-                    "
-                    @click="adjustFragmentConfig(fragmentType, 'count', 1)"
-                  >
-                    ＋
-                  </button>
-                </span>
-              </label>
-              <label class="fragment-inline-setting">
-                <span>片段时长</span>
-                <span class="number-control">
-                  <button
-                    type="button"
-                    :aria-label="`缩短${fragmentTypeLabel(fragmentType)}时长`"
-                    :disabled="
-                      currentRunning ||
-                      currentSettings.fragmentConfigs[fragmentType].durationSeconds <=
-                        fragmentConfigRange(fragmentType, 'durationSeconds').minimum
-                    "
-                    @click="adjustFragmentConfig(fragmentType, 'durationSeconds', -1)"
-                  >
-                    −
-                  </button>
-                  <input
-                    :value="currentSettings.fragmentConfigs[fragmentType].durationSeconds"
-                    type="number"
-                    :aria-label="`${fragmentTypeLabel(fragmentType)}片段时长（秒）`"
-                    :min="fragmentConfigRange(fragmentType, 'durationSeconds').minimum"
-                    :max="fragmentConfigRange(fragmentType, 'durationSeconds').maximum"
-                    :disabled="currentRunning"
-                    @input="updateFragmentConfigFromEvent(fragmentType, 'durationSeconds', $event)"
-                    @blur="flushSettings()"
-                  />
-                  <button
-                    type="button"
-                    :aria-label="`延长${fragmentTypeLabel(fragmentType)}时长`"
-                    :disabled="
-                      currentRunning ||
-                      currentSettings.fragmentConfigs[fragmentType].durationSeconds >=
-                        fragmentConfigRange(fragmentType, 'durationSeconds').maximum
-                    "
-                    @click="adjustFragmentConfig(fragmentType, 'durationSeconds', 1)"
-                  >
-                    ＋
-                  </button>
-                </span>
-              </label>
-            </div>
-          </article>
+            <span>{{ setting.label }}</span>
+            <span class="number-control">
+              <button
+                type="button"
+                :aria-label="`降低${setting.label}`"
+                :disabled="
+                  currentRunning || currentSettings[setting.key] <= settingRange(setting.key).minimum
+                "
+                @click="adjustSetting(setting.key, -1)"
+              >
+                −
+              </button>
+              <input
+                v-model.number="settingsDrafts[currentProductId]![setting.key]"
+                type="number"
+                :aria-label="setting.label"
+                :min="settingRange(setting.key).minimum"
+                :max="settingRange(setting.key).maximum"
+                :disabled="currentRunning"
+                @input="queueSettingsSave"
+                @blur="flushSettings()"
+              />
+              <span class="number-suffix">{{ setting.suffix }}</span>
+              <button
+                type="button"
+                :aria-label="`提高${setting.label}`"
+                :disabled="
+                  currentRunning || currentSettings[setting.key] >= settingRange(setting.key).maximum
+                "
+                @click="adjustSetting(setting.key, 1)"
+              >
+                ＋
+              </button>
+            </span>
+            <small>{{ setting.hint }}</small>
+          </label>
         </div>
-
-        <label
-          v-for="setting in [
-            { key: 'semanticLimit', label: '语义重复度上限', hint: '批内违规 Prompt 对占比' },
-            { key: 'visualLimit', label: '画面重合度上限', hint: '生成前结构化代理指标' },
-          ] as const"
-          :key="setting.key"
-          class="setting-card"
-        >
-          <span>{{ setting.label }}</span>
-          <span class="number-control">
-            <button
-              type="button"
-              :aria-label="`降低${setting.label}`"
-              :disabled="
-                currentRunning || currentSettings[setting.key] <= settingRange(setting.key).minimum
-              "
-              @click="adjustSetting(setting.key, -1)"
-            >
-              −
-            </button>
-            <input
-              v-model.number="settingsDrafts[currentProductId]![setting.key]"
-              type="number"
-              :min="settingRange(setting.key).minimum"
-              :max="settingRange(setting.key).maximum"
-              :disabled="currentRunning"
-              @input="queueSettingsSave"
-              @blur="flushSettings()"
-            />
-            <button
-              type="button"
-              :aria-label="`提高${setting.label}`"
-              :disabled="
-                currentRunning || currentSettings[setting.key] >= settingRange(setting.key).maximum
-              "
-              @click="adjustSetting(setting.key, 1)"
-            >
-              ＋
-            </button>
-          </span>
-          <small>{{ setting.hint }}</small>
-        </label>
-      </section>
-
-      <section class="effect-prompt-stats" aria-label="质量统计">
-        <article class="coral">
-          <span>{{ currentQuotaStats.label }}</span
-          ><strong>{{ currentQuotaStats.actualCount }}</strong
-          ><small
-            >目标 {{ currentQuotaStats.targetCount }} 条 ·
-            {{
-              currentQuotaStats.missingCount
-                ? '缺少 ' + currentQuotaStats.missingCount + ' 条'
-                : currentQuotaStats.excessCount
-                  ? '超出 ' + currentQuotaStats.excessCount + ' 条'
-                  : '数量一致'
-            }}，一条对应一个片段</small
-          >
-        </article>
-        <article class="amber">
-          <span>执行无效候选</span
-          ><strong>{{ currentMetrics?.removedExecutionInvalid ?? 0 }}</strong
-          ><small>{{ executionInvalidSummary || '暂无执行无效候选' }}</small>
-        </article>
-        <article class="cyan">
-          <span>当前语义重复度</span
-          ><strong>{{ formatPercent(currentMetrics?.semanticDuplicateRate) }}</strong
-          ><small>目标 ≤ {{ currentSettings.semanticLimit }}%</small>
-        </article>
-        <article class="violet">
-          <span>当前画面重合度</span
-          ><strong>{{ formatPercent(currentMetrics?.visualOverlapRate) }}</strong
-          ><small>结构化代理指标 · 目标 ≤ {{ currentSettings.visualLimit }}%</small>
-        </article>
       </section>
 
       <section v-if="partialPreview" class="partial-preview-banner" role="status">
@@ -1976,9 +1755,18 @@ onBeforeUnmount(() => {
               ref="promptSearchInput"
               v-model="keyword"
               type="search"
-              placeholder="搜索 ID / 片段画面 / 标签 / 六维"
+              placeholder="搜索 ID / 画面 / 推荐用途 / 六维创意"
           /></label>
-          <span class="prompt-result-count">{{ resultData?.total ?? 0 }} 条</span>
+          <span class="prompt-result-count">
+            当前 {{ currentCountStats.actualCount }}/{{ currentCountStats.targetCount }} 条 ·
+            {{
+              currentCountStats.missingCount
+                ? `缺少 ${currentCountStats.missingCount} 条`
+                : currentCountStats.excessCount
+                  ? `超出 ${currentCountStats.excessCount} 条`
+                  : '数量一致'
+            }}
+          </span>
           <button
             v-if="!partialPreview"
             class="primary-button"
@@ -2001,6 +1789,26 @@ onBeforeUnmount(() => {
             />批量导出
           </button>
         </div>
+        <nav class="purpose-filter-bar" aria-label="按推荐用途筛选 Prompt">
+          <button
+            type="button"
+            :class="{ active: purposeFilter === '' }"
+            :aria-pressed="purposeFilter === ''"
+            @click="purposeFilter = ''"
+          >
+            全部用途
+          </button>
+          <button
+            v-for="purpose in EFFECT_PROMPT_FRAGMENT_TYPES"
+            :key="purpose"
+            type="button"
+            :class="{ active: purposeFilter === purpose }"
+            :aria-pressed="purposeFilter === purpose"
+            @click="togglePurposeFilter(purpose)"
+          >
+            {{ fragmentTypeLabel(purpose) }}
+          </button>
+        </nav>
 
         <div v-if="resultLoading" class="prompt-empty-state" role="status">
           <LoaderCircle class="spin" :size="25" /><strong>正在加载 Prompt</strong>
@@ -2031,10 +1839,30 @@ onBeforeUnmount(() => {
               <strong>{{ item.code }}</strong
               ><span
                 ><i v-if="item.manualEdited || item.origin === 'MANUAL'">人工</i
-                ><em class="primary-fragment-tag">{{ fragmentTypeLabel(item.fragmentType) }}</em
+                ><em v-if="item.classificationStatus === 'PENDING'" class="classification-pending"
+                  >待重新评估</em
+                ><em v-else class="primary-fragment-tag"
+                  >推荐：{{ fragmentTypeLabel(item.primaryPurpose) }}</em
                 ><em class="duration-tag">{{ item.targetDurationSeconds }} 秒</em></span
               >
             </header>
+            <div
+              v-if="
+                item.classificationStatus === 'VERIFIED' &&
+                item.compatiblePurposes.some((purpose) => purpose !== item.primaryPurpose)
+              "
+              class="compatible-purpose-tags"
+              aria-label="该条 Prompt 的兼容用途"
+            >
+              <small>还适合</small>
+              <span
+                v-for="purpose in item.compatiblePurposes.filter(
+                  (purpose) => purpose !== item.primaryPurpose,
+                )"
+                :key="purpose"
+                >{{ fragmentTypeLabel(purpose) }}</span
+              >
+            </div>
             <div class="material-tags" aria-label="素材次级标签">
               <small>次级标签</small>
               <span v-for="tag in item.materialTags" :key="tag">{{ tag }}</span>
@@ -2055,7 +1883,7 @@ onBeforeUnmount(() => {
             </div>
             <textarea :value="item.content" readonly aria-label="Prompt 内容" />
             <details class="prompt-dimension-details">
-              <summary>查看六维差异化设定</summary>
+              <summary>查看六维创意信息</summary>
               <div class="prompt-dimensions">
                 <span v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key"
                   ><b>{{ dimension.label }}：</b>{{ item.dimensions[dimension.key] }}</span
@@ -2064,6 +1892,18 @@ onBeforeUnmount(() => {
             </details>
           </div>
           <div class="prompt-actions">
+            <button
+              v-if="!partialPreview && item.classificationStatus === 'PENDING'"
+              type="button"
+              :disabled="currentRunning || itemOperation !== null"
+              @click="evaluateItem(item)"
+            >
+              <LoaderCircle
+                v-if="evaluatingItemId === item.id"
+                class="spin"
+                :size="13"
+              /><RefreshCw v-else :size="13" />重新评估
+            </button>
             <button
               v-if="!partialPreview"
               type="button"
@@ -2087,7 +1927,7 @@ onBeforeUnmount(() => {
               /><Trash2 v-else :size="13" />删除
             </button>
             <button
-              v-if="!partialPreview"
+              v-if="!partialPreview && item.classificationStatus === 'VERIFIED'"
               type="button"
               :disabled="currentRunning || itemOperation !== null"
               @click="openRegenerationDialog(item, $event)"
@@ -2188,21 +2028,9 @@ onBeforeUnmount(() => {
           </header>
           <div class="editor-grid">
             <label>
-              <span>固定主标签</span>
-              <select v-model="editorDraft.fragmentType">
-                <option
-                  v-for="fragmentType in EFFECT_PROMPT_FRAGMENT_TYPES"
-                  :key="fragmentType"
-                  :value="fragmentType"
-                >
-                  {{ fragmentTypeLabel(fragmentType) }}
-                </option>
-              </select>
-            </label>
-            <label>
-              <span>目标片段时长</span>
+              <span>默认片段时长</span>
               <input :value="editorTargetDurationSeconds" type="number" readonly />
-              <small>由当前主标签的批次时长自动决定，不可单条修改。</small>
+              <small>由当前批次统一设置，不写入 Prompt 正文。</small>
             </label>
             <label class="editor-wide-field">
               <span>次级素材标签</span>
@@ -2236,6 +2064,7 @@ onBeforeUnmount(() => {
             />
           </label>
           <footer>
+            <p>保存后会异步重新评估推荐用途，评估完成前不能完成校验。</p>
             <button type="button" :disabled="editorSaving" @click="closeEditor">取消</button
             ><button
               class="primary-button"
@@ -2268,7 +2097,7 @@ onBeforeUnmount(() => {
               <span>单条定向重新生成</span>
               <h2 id="prompt-regeneration-title">重新生成 {{ regenerationCandidate.code }}</h2>
               <p>
-                <strong>{{ fragmentTypeLabel(regenerationCandidate.fragmentType) }}</strong>
+                <strong>当前推荐：{{ fragmentTypeLabel(regenerationCandidate.primaryPurpose) }}</strong>
                 <i>{{ regenerationCandidate.targetDurationSeconds }} 秒</i>
                 <i>{{ regenerationCandidate.materialTags.join(' · ') }}</i>
               </p>
@@ -2319,11 +2148,11 @@ onBeforeUnmount(() => {
               <label>
                 <span>当前值</span>
                 <select
-                  v-if="dimension.key === 'sellingPoint'"
-                  v-model="regenerationDimensions.sellingPoint"
+                  v-if="dimension.key === 'productRelation'"
+                  v-model="regenerationDimensions.productRelation"
                 >
                   <option
-                    v-for="value in regenerationSuggestions.sellingPoint"
+                    v-for="value in regenerationSuggestions.productRelation"
                     :key="value"
                     :value="value"
                   >
@@ -2338,7 +2167,7 @@ onBeforeUnmount(() => {
                   :placeholder="`搜索建议或自定义${dimension.label}`"
                 />
                 <datalist
-                  v-if="dimension.key !== 'sellingPoint'"
+                  v-if="dimension.key !== 'productRelation'"
                   :id="`regeneration-dimension-${dimension.key}`"
                 >
                   <option
@@ -2349,7 +2178,7 @@ onBeforeUnmount(() => {
                 </datalist>
               </label>
               <div
-                v-if="dimension.key !== 'sellingPoint'"
+                v-if="dimension.key !== 'productRelation'"
                 class="regeneration-suggestion-list"
                 aria-label="安全候选"
               >
@@ -2368,8 +2197,8 @@ onBeforeUnmount(() => {
                 <ChevronRight :size="12" />
                 <strong>{{ regenerationDimensions[dimension.key] }}</strong>
               </p>
-              <small v-if="dimension.key === 'sellingPoint'" class="selling-point-note">
-                仅可选择当前信息卡已确认且适用于本片段的卖点。
+              <small v-if="dimension.key === 'productRelation'" class="selling-point-note">
+                仅可选择当前信息卡中已确认的产品、场景、痛点或卖点信息。
               </small>
             </article>
           </div>
@@ -2385,7 +2214,7 @@ onBeforeUnmount(() => {
           </label>
 
           <footer>
-            <p>只替换当前条目；类型、时长、标签、编号和列表位置保持不变。</p>
+            <p>只替换当前条目；编号、时长和列表位置保持不变，用途会根据新内容重新判断。</p>
             <div>
               <button type="button" :disabled="regenerationSaving" @click="closeRegenerationDialog">
                 取消
@@ -2455,7 +2284,7 @@ onBeforeUnmount(() => {
             <div>
               <span>PROMPT WORKFLOW</span>
               <h2 id="prompt-graph-title">差异化 Prompt 生成工作流</h2>
-              <p>展示本次真实输入、阶段产物和质量结论。</p>
+              <p>展示本次真实输入、连贯创意生成、用途评估和数量结果。</p>
             </div>
             <button
               ref="graphCloseButton"
@@ -2642,7 +2471,7 @@ onBeforeUnmount(() => {
                         <dl class="node-prompt-dimensions">
                           <div v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key">
                             <dt>{{ dimension.label }}</dt>
-                            <dd>{{ item.dimensions[dimension.key] }}</dd>
+                            <dd>{{ graphPromptDimensionValue(item, dimension.key) }}</dd>
                           </div>
                         </dl>
                       </details>
@@ -2735,7 +2564,7 @@ onBeforeUnmount(() => {
                         <dl>
                           <div v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key">
                             <dt>{{ dimension.label }}</dt>
-                            <dd>{{ item.dimensions[dimension.key] }}</dd>
+                            <dd>{{ graphPromptDimensionValue(item, dimension.key) }}</dd>
                           </div>
                           <div>
                             <dt>连续动作</dt>
@@ -2764,7 +2593,7 @@ onBeforeUnmount(() => {
                         <dl class="node-prompt-dimensions">
                           <div v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key">
                             <dt>{{ dimension.label }}</dt>
-                            <dd>{{ item.dimensions[dimension.key] }}</dd>
+                            <dd>{{ graphPromptDimensionValue(item, dimension.key) }}</dd>
                           </div>
                         </dl>
                       </details>
@@ -3149,6 +2978,22 @@ button:disabled {
   color: #98a3b5;
   font-size: 9px;
 }
+.simple-setting-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.simple-setting-grid .number-control {
+  grid-template-columns: 32px minmax(50px, 1fr) 28px 32px;
+}
+.number-suffix {
+  display: grid;
+  place-items: center;
+  color: #7c8798;
+  background: #fff;
+  border-right: 1px solid #e3e8f0;
+  font-size: 10px;
+}
 .fragment-batch-summary {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3477,6 +3322,27 @@ button:disabled {
   color: #8b95a5;
   font-size: 12px;
 }
+.purpose-filter-bar {
+  display: flex;
+  padding: 8px 0 2px;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.purpose-filter-bar button {
+  min-height: 30px;
+  padding: 0 11px;
+  color: #62728a;
+  background: #f7f9fc;
+  border: 1px solid #e1e7f0;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+}
+.purpose-filter-bar button.active {
+  color: #245fca;
+  background: #edf4ff;
+  border-color: #bcd0f5;
+}
 .prompt-card {
   display: grid;
   min-width: 0;
@@ -3530,6 +3396,30 @@ button:disabled {
   color: #4f6f9f;
   background: #eef5ff;
   border-color: #cfdef4;
+}
+.prompt-main > header em.classification-pending {
+  color: #9a6508;
+  background: #fff7df;
+  border-color: #efd69a;
+}
+.compatible-purpose-tags {
+  display: flex;
+  margin: 7px 0 2px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.compatible-purpose-tags small {
+  color: #8995a8;
+  font-size: 9px;
+}
+.compatible-purpose-tags span {
+  padding: 3px 7px;
+  color: #6656a8;
+  background: #f4f1ff;
+  border: 1px solid #ded6fb;
+  border-radius: 999px;
+  font-size: 9px;
 }
 .material-tags {
   display: flex;
@@ -4206,8 +4096,14 @@ button:disabled {
 .prompt-editor-dialog > footer {
   display: flex;
   margin-top: 16px;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
+}
+.prompt-editor-dialog > footer p {
+  margin: 0 auto 0 0;
+  color: #7e8a9d;
+  font-size: 10px;
 }
 .prompt-editor-dialog > footer button {
   height: 38px;
@@ -5032,10 +4928,7 @@ button:disabled {
     width: 100%;
     flex-wrap: wrap;
   }
-  .effect-prompt-settings {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .fragment-config-grid {
+  .simple-setting-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .prompt-search {
@@ -5082,11 +4975,7 @@ button:disabled {
     flex: 1;
   }
   .effect-prompt-settings,
-  .effect-prompt-stats {
-    grid-template-columns: 1fr;
-  }
-  .fragment-batch-summary,
-  .fragment-config-grid {
+  .simple-setting-grid {
     grid-template-columns: 1fr;
   }
   .shared-prompt-panel > header,
@@ -5127,6 +5016,16 @@ button:disabled {
   }
   .prompt-regeneration-dialog > footer > div,
   .prompt-regeneration-dialog > footer button {
+    width: 100%;
+  }
+  .prompt-editor-dialog > footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .prompt-editor-dialog > footer p {
+    margin-right: 0;
+  }
+  .prompt-editor-dialog > footer button {
     width: 100%;
   }
   .prompt-dialog-backdrop {

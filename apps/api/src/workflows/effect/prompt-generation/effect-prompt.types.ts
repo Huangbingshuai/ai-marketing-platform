@@ -9,7 +9,7 @@ import type {
 } from '@ai-marketing/contracts';
 
 export type EffectPromptInputSnapshot = {
-  schemaVersion: 5;
+  schemaVersion: 6;
   /** Missing on historical runs, which are presented with the V8 topology. */
   graphVersion?: EffectPromptGraphVersion;
   projectId: string;
@@ -50,6 +50,10 @@ export type EffectPromptShardInput = {
   items: unknown;
   blueprintPlan?: unknown;
   blueprints?: unknown;
+  creativePlan?: unknown;
+  creativeItems?: unknown;
+  classificationPlan?: unknown;
+  evaluations?: unknown;
   warnings: string[];
   errorCode?: string | null;
   errorMessage?: string | null;
@@ -57,6 +61,7 @@ export type EffectPromptShardInput = {
 
 export type EffectPromptCompleteInput = {
   result: EffectPromptBatchResult;
+  executionMode: 'ARK' | 'MOCK';
 };
 
 export const emptyManualOverrides = (): EffectPromptManualOverrides => ({

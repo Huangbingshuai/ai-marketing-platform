@@ -1,39 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ai-marketing.local/schemas/effect-prompt-batch.v5.json",
-  "title": "EffectPromptBatchResult.v5",
+  "$id": "https://ai-marketing.local/schemas/effect-prompt-batch.v6.json",
+  "title": "EffectPromptBatchResult.v6",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "settings", "renderProfile", "items", "metrics", "qualityStatus"],
   "properties": {
-    "schemaVersion": { "const": 5 },
+    "schemaVersion": { "const": 6 },
     "settings": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["fragmentConfigs", "semanticLimit", "visualLimit"],
+      "required": ["targetCount", "defaultDurationSeconds"],
       "properties": {
-        "fragmentConfigs": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "HOOK",
-            "PAIN",
-            "PRODUCT_DISPLAY",
-            "SELLING_POINT_EXPLANATION",
-            "CTA",
-            "OUTRO"
-          ],
-          "properties": {
-            "HOOK": { "$ref": "#/$defs/fragmentConfig" },
-            "PAIN": { "$ref": "#/$defs/fragmentConfig" },
-            "PRODUCT_DISPLAY": { "$ref": "#/$defs/fragmentConfig" },
-            "SELLING_POINT_EXPLANATION": { "$ref": "#/$defs/fragmentConfig" },
-            "CTA": { "$ref": "#/$defs/fragmentConfig" },
-            "OUTRO": { "$ref": "#/$defs/fragmentConfig" }
-          }
-        },
-        "semanticLimit": { "type": "integer", "minimum": 5, "maximum": 15 },
-        "visualLimit": { "type": "integer", "minimum": 10, "maximum": 20 }
+        "targetCount": { "type": "integer", "minimum": 10, "maximum": 200 },
+        "defaultDurationSeconds": { "type": "integer", "minimum": 4, "maximum": 15 }
       }
     },
     "renderProfile": { "$ref": "#/$defs/renderProfile" },
@@ -50,48 +30,27 @@
         "targetCount",
         "acceptedCount",
         "generatedCandidateCount",
-        "fallbackCount",
-        "removedSemanticDuplicates",
-        "removedVisualDuplicates",
-        "removedDimensionConflicts",
-        "removedExecutionInvalid",
-        "semanticDuplicateRate",
-        "visualOverlapRate",
+        "candidateTargetCount",
+        "rejectedCount",
         "replenishmentRounds",
-        "fragmentTypeDistribution",
-        "sellingPointCoverage",
-        "insightCoverage",
-        "executionInvalidReasons"
+        "exactDuplicateCount",
+        "purposeDistribution",
+        "averageScores",
+        "hardIssueCounts",
+        "warningCounts"
       ],
       "properties": {
         "targetCount": { "type": "integer", "minimum": 10, "maximum": 200 },
         "acceptedCount": { "type": "integer", "minimum": 0, "maximum": 200 },
+        "candidateTargetCount": { "type": "integer", "minimum": 10, "maximum": 240 },
         "generatedCandidateCount": { "type": "integer", "minimum": 0 },
-        "fallbackCount": { "type": "integer", "minimum": 0, "maximum": 200 },
-        "removedSemanticDuplicates": { "type": "integer", "minimum": 0 },
-        "removedVisualDuplicates": { "type": "integer", "minimum": 0 },
-        "removedDimensionConflicts": { "type": "integer", "minimum": 0 },
-        "removedExecutionInvalid": { "type": "integer", "minimum": 0 },
-        "semanticDuplicateRate": { "type": "number", "minimum": 0, "maximum": 100 },
-        "visualOverlapRate": { "type": "number", "minimum": 0, "maximum": 100 },
-        "replenishmentRounds": { "type": "integer", "minimum": 0, "maximum": 3 },
-        "fragmentTypeDistribution": {
-          "$ref": "#/$defs/fragmentTypeDistribution"
-        },
-        "sellingPointCoverage": { "$ref": "#/$defs/sellingPointCoverage" },
-        "insightCoverage": { "$ref": "#/$defs/insightCoverage" },
-        "executionInvalidReasons": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["code", "count"],
-            "properties": {
-              "code": { "type": "string", "minLength": 1, "maxLength": 120 },
-              "count": { "type": "integer", "minimum": 1 }
-            }
-          }
-        }
+        "rejectedCount": { "type": "integer", "minimum": 0 },
+        "replenishmentRounds": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "exactDuplicateCount": { "type": "integer", "minimum": 0 },
+        "purposeDistribution": { "$ref": "#/$defs/purposeDistribution" },
+        "averageScores": { "$ref": "#/$defs/qualityScores" },
+        "hardIssueCounts": { "$ref": "#/$defs/issueCounts" },
+        "warningCounts": { "$ref": "#/$defs/issueCounts" }
       }
     },
     "qualityStatus": { "enum": ["PASS", "NEEDS_REVIEW"] }
@@ -101,24 +60,15 @@
       "type": "string",
       "enum": ["HOOK", "PAIN", "PRODUCT_DISPLAY", "SELLING_POINT_EXPLANATION", "CTA", "OUTRO"]
     },
-    "fragmentConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["count", "durationSeconds"],
-      "properties": {
-        "count": { "type": "integer", "minimum": 1, "maximum": 200 },
-        "durationSeconds": { "type": "integer", "minimum": 4, "maximum": 15 }
-      }
-    },
     "dimensions": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["narrative", "scene", "persona", "sellingPoint", "camera", "emotion"],
+      "required": ["narrative", "scene", "persona", "productRelation", "camera", "emotion"],
       "properties": {
         "narrative": { "type": "string", "minLength": 1, "maxLength": 120 },
         "scene": { "type": "string", "minLength": 1, "maxLength": 120 },
         "persona": { "type": "string", "minLength": 1, "maxLength": 160 },
-        "sellingPoint": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "productRelation": { "type": "string", "minLength": 1, "maxLength": 240 },
         "camera": { "type": "string", "minLength": 1, "maxLength": 160 },
         "emotion": { "type": "string", "minLength": 1, "maxLength": 120 }
       }
@@ -131,6 +81,10 @@
         "code",
         "origin",
         "fragmentType",
+        "primaryPurpose",
+        "compatiblePurposes",
+        "classificationStatus",
+        "productRelevance",
         "materialTags",
         "targetDurationSeconds",
         "dimensions",
@@ -145,6 +99,16 @@
         "code": { "type": "string", "minLength": 1, "maxLength": 40 },
         "origin": { "enum": ["AI", "MANUAL"] },
         "fragmentType": { "$ref": "#/$defs/fragmentType" },
+        "primaryPurpose": { "$ref": "#/$defs/fragmentType" },
+        "compatiblePurposes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/fragmentType" }
+        },
+        "classificationStatus": { "enum": ["PENDING", "VERIFIED"] },
+        "productRelevance": { "type": "integer", "minimum": 0, "maximum": 100 },
         "materialTags": {
           "type": "array",
           "minItems": 1,
@@ -221,40 +185,48 @@
         "sourceHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
       }
     },
-    "fragmentTypeDistribution": {
+    "purposeDistribution": {
       "type": "array",
       "minItems": 6,
       "maxItems": 6,
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["fragmentType", "targetCount", "actualCount"],
+        "required": ["purpose", "primaryCount", "compatibleCount"],
         "properties": {
-          "fragmentType": { "$ref": "#/$defs/fragmentType" },
-          "targetCount": { "type": "integer", "minimum": 0, "maximum": 200 },
-          "actualCount": { "type": "integer", "minimum": 0, "maximum": 200 }
+          "purpose": { "$ref": "#/$defs/fragmentType" },
+          "primaryCount": { "type": "integer", "minimum": 0, "maximum": 200 },
+          "compatibleCount": { "type": "integer", "minimum": 0, "maximum": 200 }
         }
       }
     },
-    "sellingPointCoverage": {
+    "qualityScores": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["required", "covered", "missing"],
+      "required": [
+        "productRelevance",
+        "creativeCoherence",
+        "visualExecutability",
+        "commercialUsefulness",
+        "visualClarity"
+      ],
       "properties": {
-        "required": {
-          "type": "array",
-          "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1, "maxLength": 240 }
-        },
-        "covered": {
-          "type": "array",
-          "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1, "maxLength": 240 }
-        },
-        "missing": {
-          "type": "array",
-          "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1, "maxLength": 240 }
+        "productRelevance": { "type": "number", "minimum": 0, "maximum": 100 },
+        "creativeCoherence": { "type": "number", "minimum": 0, "maximum": 100 },
+        "visualExecutability": { "type": "number", "minimum": 0, "maximum": 100 },
+        "commercialUsefulness": { "type": "number", "minimum": 0, "maximum": 100 },
+        "visualClarity": { "type": "number", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "issueCounts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "count"],
+        "properties": {
+          "code": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "count": { "type": "integer", "minimum": 1 }
         }
       }
     },

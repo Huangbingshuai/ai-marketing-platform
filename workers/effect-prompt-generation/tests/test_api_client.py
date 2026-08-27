@@ -6,7 +6,15 @@ import httpx
 import pytest
 
 from effect_prompt_generation.api_client import HttpInternalApi, InternalApiError
-from effect_prompt_generation.models import NodeId, ProgressPayload, RuntimeContext, StageOutput, StageStatus
+from effect_prompt_generation.models import (
+    NodeId,
+    ProgressPayload,
+    RuntimeContext,
+    ShardPhase,
+    ShardRecord,
+    StageOutput,
+    StageStatus,
+)
 
 
 @pytest.mark.asyncio
@@ -62,6 +70,40 @@ async def test_get_shards_accepts_backend_run_id_envelope(runtime: RuntimeContex
         assert await api.get_shards(runtime) == []
     finally:
         await api.aclose()
+
+
+@pytest.mark.asyncio
+async def test_put_shard_serializes_v11_phase_fields(runtime: RuntimeContext) -> None:
+    seen: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, json={"success": True, "data": {}})
+
+    api = HttpInternalApi(
+        "http://api.local/api",
+        "worker-token",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        await api.put_shard(
+            runtime,
+            ShardRecord(
+                phase=ShardPhase.CLASSIFICATION,
+                round=1,
+                shard_index=2,
+                status=StageStatus.RUNNING,
+                classification_plan=["creative-1", "creative-2"],
+            ),
+        )
+    finally:
+        await api.aclose()
+
+    assert seen["phase"] == "CLASSIFICATION"
+    assert seen["classificationPlan"] == ["creative-1", "creative-2"]
+    assert seen["creativePlan"] == []
+    assert seen["creativeItems"] == []
+    assert seen["evaluations"] == []
 
 
 @pytest.mark.asyncio

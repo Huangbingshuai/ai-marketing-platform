@@ -31,9 +31,19 @@ from .models import (
     BlueprintBundleQuota,
     BlueprintShardPlan,
     BlueprintTask,
+    ClassificationShardPlan,
+    CountMetric,
+    CreativeAverageScores,
+    CreativeCandidate,
+    CreativeDimensions,
+    CreativeEvaluation,
+    CreativeScores,
+    CreativeShardPlan,
+    CreativeTask,
     EvidenceMode,
     FailurePayload,
     FragmentType,
+    FRAGMENT_TYPE_LABELS,
     FragmentFactAllocation,
     FragmentDimensionCoordinatePlan,
     FragmentMarketingPlan,
@@ -42,14 +52,22 @@ from .models import (
     GeneratedCandidate,
     InsightApplicationMap,
     InsightField,
+    InsightBinding,
     NodeId,
     PairViolation,
     PlannedCombination,
     ProgressPayload,
     PromptBatchResult,
+    PromptBatchSettings,
+    PromptBatchResultV6,
+    PromptBatchSettingsV6,
     PromptGenerationSnapshot,
+    PromptDimensions,
     PromptItem,
+    PromptItemV6,
     PromptMetrics,
+    PromptMetricsV6,
+    PurposeDistribution,
     RenderProfile,
     RuntimeContext,
     SharedPrompt,
@@ -91,10 +109,14 @@ from .v10_blueprints import (
 )
 from .quality import (
     EvaluationResult,
+    CreativeSelectionResult,
+    RankedCreative,
     evaluate_candidates,
     pair_rate,
     semantic_violations,
     visual_violations,
+    select_creatives,
+    validate_creative_evaluation,
 )
 
 MAX_REPLENISHMENT_ROUNDS = 3
@@ -124,6 +146,8 @@ class LoadedRun:
     completed_shard_keys: list[str]
     highest_round: int
     completed_blueprint_shard_keys: list[str] = field(default_factory=list)
+    completed_creative_shard_keys: list[str] = field(default_factory=list)
+    completed_classification_shard_keys: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -147,6 +171,15 @@ class RunCache:
     blueprints: dict[str, GeneratedBlueprint] = field(default_factory=dict)
     selected_blueprints: dict[str, GeneratedBlueprint] = field(default_factory=dict)
     completed_blueprint_shard_keys: set[str] = field(default_factory=set)
+    creatives: dict[str, CreativeCandidate] = field(default_factory=dict)
+    creative_evaluations: dict[str, CreativeEvaluation] = field(default_factory=dict)
+    completed_creative_shard_keys: set[str] = field(default_factory=set)
+    completed_classification_shard_keys: set[str] = field(default_factory=set)
+    selected_creatives: CreativeSelectionResult | None = None
+    accepted_v11_items: list[PromptItemV6] = field(default_factory=list)
+    v11_candidate_target_count: int = 0
+    v11_exact_duplicate_count: int = 0
+    v11_supplemented: bool = False
 
 
 class PromptGenerationPipeline:
@@ -213,6 +246,17 @@ class PromptGenerationPipeline:
             for item in shards
             if item.status == StageStatus.SUCCEEDED and item.phase == ShardPhase.BLUEPRINT
         ]
+        succeeded_creatives = [
+            item
+            for item in shards
+            if item.status == StageStatus.SUCCEEDED and item.phase == ShardPhase.CREATIVE
+        ]
+        succeeded_classifications = [
+            item
+            for item in shards
+            if item.status == StageStatus.SUCCEEDED
+            and item.phase == ShardPhase.CLASSIFICATION
+        ]
         if any(
             combination.planning_version
             not in {
@@ -244,12 +288,34 @@ class PromptGenerationPipeline:
         cache.completed_blueprint_shard_keys = {
             item.key for item in succeeded_blueprints
         }
+        cache.creatives = {
+            item.slot_id: item
+            for shard in succeeded_creatives
+            for item in shard.creative_items
+        }
+        cache.creative_evaluations = {
+            item.slot_id: item
+            for shard in succeeded_classifications
+            for item in shard.evaluations
+        }
+        cache.completed_creative_shard_keys = {item.key for item in succeeded_creatives}
+        cache.completed_classification_shard_keys = {
+            item.key for item in succeeded_classifications
+        }
+        cache.v11_supplemented = any(
+            item.round == 1
+            for item in [*succeeded_creatives, *succeeded_classifications]
+        )
         loaded = LoadedRun(
             snapshot=snapshot,
             candidates=unique_candidates,
             completed_shard_keys=[item.key for item in succeeded],
             highest_round=max((item.round for item in succeeded), default=0),
             completed_blueprint_shard_keys=[item.key for item in succeeded_blueprints],
+            completed_creative_shard_keys=[item.key for item in succeeded_creatives],
+            completed_classification_shard_keys=[
+                item.key for item in succeeded_classifications
+            ],
         )
         await self._stage(
             context,
@@ -261,6 +327,8 @@ class PromptGenerationPipeline:
                 "retainedCount": len(snapshot.retained_manual_items),
                 "resumedShardCount": len(succeeded),
                 "resumedBlueprintShardCount": len(succeeded_blueprints),
+                "resumedCreativeShardCount": len(succeeded_creatives),
+                "resumedClassificationShardCount": len(succeeded_classifications),
                 "snapshotSummary": _short(
                     " / ".join(
                         filter(
@@ -399,6 +467,466 @@ class PromptGenerationPipeline:
         )
         await self.progress(context, 13, NodeId.SHARED_PROMPT_COMPILATION)
         return prompt
+
+    async def plan_v11_creatives(
+        self,
+        context: RuntimeContext,
+        *,
+        round_number: int,
+        missing_count: int | None = None,
+    ) -> list[CreativeShardPlan]:
+        settings = _v11_settings(self.snapshot(context))
+        snapshot = self.snapshot(context)
+        cache = self._cache(context)
+        if snapshot.operation == "ITEM_EVALUATE":
+            if round_number != 0:
+                return []
+            target = snapshot.target_item
+            if not isinstance(target, PromptItemV6):
+                raise PipelineError("V11 item evaluation requires a V6 target item")
+            application = self._require_application(context)
+            declared_ids = list(
+                dict.fromkeys(
+                    [binding.fact_id for binding in target.insight_bindings]
+                    + [fact.fact_id for fact in application.usable]
+                )
+            )[:12]
+            if not declared_ids:
+                raise PipelineError("V11 item evaluation requires confirmed insight facts")
+            candidate = CreativeCandidate(
+                slot_id=target.id,
+                ordinal=(snapshot.target_item_index or 0) + 1,
+                round=0,
+                creative_core=target.dimensions.narrative,
+                declared_fact_ids=declared_ids,
+                dimensions=target.dimensions,
+                content=target.content,
+                generated_at=utc_now(),
+            )
+            cache.creatives[candidate.slot_id] = candidate
+            cache.v11_candidate_target_count = 1
+            return []
+        selection_target = 1 if snapshot.operation == "ITEM_REGENERATE" else max(
+            0, settings.target_count - len(snapshot.retained_manual_items)
+        )
+        if round_number == 0:
+            requested = 3 if snapshot.operation == "ITEM_REGENERATE" else math.ceil(
+                selection_target * 1.2
+            )
+            cache.v11_candidate_target_count = requested
+        else:
+            deficit = max(1, missing_count or selection_target)
+            requested = max(deficit + 1, math.ceil(deficit * 1.2))
+            cache.v11_supplemented = True
+        application = self._require_application(context)
+        usable_ids = [item.fact_id for item in application.usable]
+        preferred = (
+            [binding.fact_id for binding in snapshot.target_item.insight_bindings]
+            if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item
+            else usable_ids
+        ) or usable_ids
+        ordinal_start = (
+            1
+            if round_number == 0
+            else max((item.ordinal for item in cache.creatives.values()), default=0) + 1
+        )
+        tasks = [
+            CreativeTask(
+                slot_id=f"v11-r{round_number}-c{ordinal_start + index:04d}",
+                ordinal=ordinal_start + index,
+                round=round_number,
+                target_duration_seconds=(
+                    snapshot.target_item.target_duration_seconds
+                    if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item
+                    else settings.default_duration_seconds
+                ),
+                preferred_fact_ids=[
+                    preferred[(ordinal_start + index - 1) % len(preferred)]
+                ],
+            )
+            for index in range(requested)
+        ]
+        selected = cache.selected_creatives.selected if cache.selected_creatives else []
+        rejection_reasons = sorted(
+            {
+                issue
+                for evaluation in cache.creative_evaluations.values()
+                for issue in evaluation.hard_issues
+            }
+        )[:20]
+        shards = [
+            CreativeShardPlan(
+                round=round_number,
+                shard_index=index,
+                tasks=tasks[start : start + min(4, self.shard_size)],
+                avoid_semantic_signatures=[
+                    item.evaluation.semantic_signature for item in selected
+                ],
+                avoid_visual_signatures=[
+                    item.evaluation.visual_signature for item in selected
+                ],
+                rejection_reasons=rejection_reasons,
+            )
+            for index, start in enumerate(range(0, len(tasks), min(4, self.shard_size)))
+        ]
+        pending = [
+            item for item in shards if item.key not in cache.completed_creative_shard_keys
+        ]
+        await self._stage(
+            context,
+            NodeId.COHERENT_CREATIVE_GENERATION,
+            StageStatus.RUNNING if pending else StageStatus.SUCCEEDED,
+            "正在生成连贯六维创意" if pending else "连贯六维创意已恢复",
+            metadata={
+                "round": round_number,
+                "candidateTargetCount": requested,
+                "pendingShardCount": len(pending),
+                "shardSize": min(4, self.shard_size),
+            },
+        )
+        return pending
+
+    async def generate_v11_creative_shard(
+        self,
+        context: RuntimeContext,
+        shard: CreativeShardPlan,
+    ) -> list[CreativeCandidate]:
+        running = ShardRecord(
+            phase=ShardPhase.CREATIVE,
+            round=shard.round,
+            shard_index=shard.shard_index,
+            status=StageStatus.RUNNING,
+            creative_plan=shard.tasks,
+        )
+        await self.api.put_shard(context, running)
+        snapshot = self.snapshot(context)
+        try:
+            self._reserve_ai_call(context)
+            call = await self.provider.generate_creatives(
+                shard,
+                application=self._require_application(context),
+                shared_prompt=self._required_shared_prompt(context),
+                regeneration_context=(
+                    {
+                        "originalPrompt": snapshot.target_item.content,
+                        "instruction": snapshot.regeneration_instruction or "",
+                        "replacementDimensions": (
+                            snapshot.replacement_dimensions.model_dump(
+                                mode="json", by_alias=True
+                            )
+                            if snapshot.replacement_dimensions
+                            else None
+                        ),
+                    }
+                    if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item
+                    else None
+                ),
+            )
+            generated_at = utc_now()
+            items = [
+                item.model_copy(update={"generated_at": generated_at})
+                for item in call.value.items
+            ]
+            await self.api.put_shard(
+                context,
+                running.model_copy(
+                    update={"status": StageStatus.SUCCEEDED, "creative_items": items}
+                ),
+            )
+            cache = self._cache(context)
+            cache.creatives.update({item.slot_id: item for item in items})
+            cache.completed_creative_shard_keys.add(shard.key)
+            return items
+        except Exception as exc:
+            setattr(
+                exc,
+                "node_id",
+                NodeId.ITEM_EVALUATE
+                if snapshot.operation == "ITEM_EVALUATE"
+                else NodeId.COHERENT_CREATIVE_GENERATION,
+            )
+            await self.api.put_shard(
+                context,
+                running.model_copy(
+                    update={
+                        "status": StageStatus.FAILED,
+                        "warnings": [_safe_error(exc)],
+                        "error_code": _error_code(exc),
+                        "error_message": _safe_error(exc),
+                    }
+                ),
+            )
+            raise
+
+    async def plan_v11_classification(
+        self,
+        context: RuntimeContext,
+        *,
+        round_number: int,
+    ) -> list[ClassificationShardPlan]:
+        cache = self._cache(context)
+        pending_ids = [
+            item.slot_id
+            for item in sorted(cache.creatives.values(), key=lambda row: row.ordinal)
+            if item.round == round_number and item.slot_id not in cache.creative_evaluations
+        ]
+        shards = [
+            ClassificationShardPlan(
+                round=round_number,
+                shard_index=index,
+                candidate_ids=pending_ids[start : start + 10],
+            )
+            for index, start in enumerate(range(0, len(pending_ids), 10))
+        ]
+        pending = [
+            item
+            for item in shards
+            if item.key not in cache.completed_classification_shard_keys
+        ]
+        node = (
+            NodeId.ITEM_EVALUATE
+            if self.snapshot(context).operation == "ITEM_EVALUATE"
+            else NodeId.CREATIVE_EVALUATION_CLASSIFICATION
+        )
+        await self._stage(
+            context,
+            node,
+            StageStatus.RUNNING if pending else StageStatus.SUCCEEDED,
+            "正在评估创意并标注素材用途" if pending else "创意评估与用途分类已恢复",
+            metadata={
+                "round": round_number,
+                "candidateCount": len(pending_ids),
+                "pendingShardCount": len(pending),
+                "shardSize": 10,
+            },
+        )
+        return pending
+
+    async def evaluate_v11_classification_shard(
+        self,
+        context: RuntimeContext,
+        shard: ClassificationShardPlan,
+    ) -> list[CreativeEvaluation]:
+        cache = self._cache(context)
+        candidates = [cache.creatives[item_id] for item_id in shard.candidate_ids]
+        node = (
+            NodeId.ITEM_EVALUATE
+            if self.snapshot(context).operation == "ITEM_EVALUATE"
+            else NodeId.CREATIVE_EVALUATION_CLASSIFICATION
+        )
+        running = ShardRecord(
+            phase=ShardPhase.CLASSIFICATION,
+            round=shard.round,
+            shard_index=shard.shard_index,
+            status=StageStatus.RUNNING,
+            classification_plan=shard.candidate_ids,
+        )
+        await self.api.put_shard(context, running)
+        try:
+            self._reserve_ai_call(context)
+            call = await self.provider.evaluate_creatives(
+                candidates,
+                application=self._require_application(context),
+            )
+            candidate_by_id = {item.slot_id: item for item in candidates}
+            items = [
+                validate_creative_evaluation(
+                    candidate_by_id[item.slot_id],
+                    item,
+                    self._require_application(context),
+                )
+                for item in call.value.items
+            ]
+            await self.api.put_shard(
+                context,
+                running.model_copy(
+                    update={"status": StageStatus.SUCCEEDED, "evaluations": items}
+                ),
+            )
+            cache.creative_evaluations.update({item.slot_id: item for item in items})
+            cache.completed_classification_shard_keys.add(shard.key)
+            return items
+        except Exception as exc:
+            setattr(exc, "node_id", node)
+            await self.api.put_shard(
+                context,
+                running.model_copy(
+                    update={
+                        "status": StageStatus.FAILED,
+                        "warnings": [_safe_error(exc)],
+                        "error_code": _error_code(exc),
+                        "error_message": _safe_error(exc),
+                    }
+                ),
+            )
+            raise
+
+    async def select_v11_creatives(
+        self,
+        context: RuntimeContext,
+        *,
+        round_number: int,
+    ) -> tuple[list[CreativeShardPlan], bool]:
+        cache = self._cache(context)
+        snapshot = self.snapshot(context)
+        settings = _v11_settings(snapshot)
+        item_operation = snapshot.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"}
+        selection_target = 1 if item_operation else max(
+            0, settings.target_count - len(snapshot.retained_manual_items)
+        )
+        if snapshot.operation == "ITEM_EVALUATE":
+            candidate = next(iter(cache.creatives.values()), None)
+            evaluation = (
+                cache.creative_evaluations.get(candidate.slot_id) if candidate else None
+            )
+            if candidate is None or evaluation is None:
+                raise PipelineError("item evaluation result is incomplete")
+            result = CreativeSelectionResult(
+                selected=[
+                    RankedCreative(
+                        candidate=candidate,
+                        evaluation=evaluation,
+                        quality_score=evaluation.scores.overall_quality,
+                        novelty_score=100.0,
+                        selection_score=evaluation.scores.overall_quality,
+                    )
+                ],
+                rejected=[],
+                exact_duplicate_count=0,
+            )
+        else:
+            result = select_creatives(
+                list(cache.creatives.values()),
+                list(cache.creative_evaluations.values()),
+                target_count=selection_target,
+            )
+        cache.selected_creatives = result
+        cache.v11_exact_duplicate_count = result.exact_duplicate_count
+        items = _v11_prompt_items(
+            context,
+            result,
+            self._require_application(context),
+            settings.default_duration_seconds,
+        )
+        cache.accepted_v11_items = (
+            items
+            if item_operation
+            else [*_retained_v11_items(snapshot.retained_manual_items), *items]
+        )
+        missing = max(0, selection_target - len(items))
+        should_supplement = (
+            missing > 0 and round_number == 0 and snapshot.operation != "ITEM_EVALUATE"
+        )
+        pending = (
+            await self.plan_v11_creatives(
+                context,
+                round_number=1,
+                missing_count=missing,
+            )
+            if should_supplement
+            else []
+        )
+        await self._stage(
+            context,
+            NodeId.EXACT_SELECTION_AND_SUPPLEMENT,
+            StageStatus.PARTIAL if should_supplement else StageStatus.SUCCEEDED,
+            "合格候选不足，正在执行一次定向补充"
+            if should_supplement
+            else "质量优先筛选完成",
+            metadata={
+                "round": round_number,
+                "acceptedCount": len(cache.accepted_v11_items),
+                "targetCount": 1
+                if item_operation
+                else settings.target_count,
+                "missingCount": missing,
+                "exactDuplicateCount": result.exact_duplicate_count,
+                "supplemented": cache.v11_supplemented,
+            },
+        )
+        return pending, should_supplement
+
+    async def save_v11_result(self, context: RuntimeContext) -> str:
+        cache = self._cache(context)
+        snapshot = self.snapshot(context)
+        settings = _v11_settings(snapshot)
+        items = cache.accepted_v11_items
+        item_operation = snapshot.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"}
+        expected = 1 if item_operation else settings.target_count
+        evaluations = list(cache.creative_evaluations.values())
+        selected = cache.selected_creatives.selected if cache.selected_creatives else []
+        score_rows = [item.evaluation.scores for item in selected]
+        hard_counts = Counter(
+            issue for item in evaluations for issue in item.hard_issues
+        )
+        warning_counts = Counter(
+            warning for item in evaluations for warning in item.warnings
+        )
+        average = _average_v11_scores(score_rows)
+        primary_distribution = Counter(item.primary_purpose for item in items)
+        compatible_distribution = Counter(
+            purpose for item in items for purpose in item.compatible_purposes
+        )
+        quality_status: Literal["PASS", "NEEDS_REVIEW"] = (
+            "PASS"
+            if len(items) == expected
+            and all(item.classification_status == "VERIFIED" for item in items)
+            and not any(row.evaluation.hard_issues for row in selected)
+            else "NEEDS_REVIEW"
+        )
+        metrics = PromptMetricsV6(
+            target_count=settings.target_count,
+            candidate_target_count=max(10, cache.v11_candidate_target_count),
+            generated_candidate_count=len(cache.creatives),
+            accepted_count=len(items),
+            rejected_count=max(0, len(cache.creatives) - len(selected)),
+            replenishment_rounds=1 if cache.v11_supplemented else 0,
+            exact_duplicate_count=cache.v11_exact_duplicate_count,
+            purpose_distribution=[
+                PurposeDistribution(
+                    purpose=purpose,
+                    primary_count=primary_distribution[purpose],
+                    compatible_count=compatible_distribution[purpose],
+                )
+                for purpose in FragmentType
+            ],
+            average_scores=average,
+            hard_issue_counts=[
+                CountMetric(code=code, count=count)
+                for code, count in sorted(hard_counts.items())
+            ],
+            warning_counts=[
+                CountMetric(code=code, count=count)
+                for code, count in sorted(warning_counts.items())
+            ],
+        )
+        result = PromptBatchResultV6(
+            settings=settings,
+            render_profile=_render_profile(snapshot.insight_artifact.result),
+            shared_prompt=self._required_shared_prompt(context),
+            items=[
+                item.model_copy(update={"code": f"P{index:03d}"})
+                for index, item in enumerate(items, 1)
+            ],
+            metrics=metrics,
+            quality_status=quality_status,
+        )
+        await self._stage(
+            context,
+            NodeId.RESULT_SAVE,
+            StageStatus.RUNNING,
+            "正在保存 V11 Prompt 草稿",
+            metadata={
+                "batchSize": len(items),
+                "qualityStatus": quality_status,
+                "executionMode": self.provider.execution_mode,
+            },
+        )
+        return await self.api.complete(
+            context,
+            result,
+            execution_mode=self.provider.execution_mode,
+        )
 
     async def allocate_strategy_facts(
         self, context: RuntimeContext, application: InsightApplicationMap
@@ -1343,10 +1871,10 @@ class PromptGenerationPipeline:
             StageStatus.RUNNING,
             "正在计算语义重复代理指标",
         )
-        items = (
-            self.snapshot(context).retained_manual_items
-            + self._cache(context).normalized_items
-        )
+        items = [
+            *cast(list[PromptItem], self.snapshot(context).retained_manual_items),
+            *self._cache(context).normalized_items,
+        ]
         pairs = semantic_violations(items)
         compared_pairs = len(items) * (len(items) - 1) // 2
         await self._stage(
@@ -1369,10 +1897,10 @@ class PromptGenerationPipeline:
             StageStatus.RUNNING,
             "正在计算视觉结构重合代理指标",
         )
-        items = (
-            self.snapshot(context).retained_manual_items
-            + self._cache(context).normalized_items
-        )
+        items = [
+            *cast(list[PromptItem], self.snapshot(context).retained_manual_items),
+            *self._cache(context).normalized_items,
+        ]
         pairs = visual_violations(items)
         compared_pairs = len(items) * (len(items) - 1) // 2
         await self._stage(
@@ -1452,7 +1980,7 @@ class PromptGenerationPipeline:
         if application is None:
             raise PipelineError("提炼信息应用映射尚未完成")
         evaluation = evaluate_candidates(
-            self.snapshot(context).retained_manual_items,
+            cast(list[PromptItem], self.snapshot(context).retained_manual_items),
             self._cache(context).normalized_items,
             target_count=settings.target_count,
             semantic_limit=settings.semantic_limit,
@@ -1516,7 +2044,7 @@ class PromptGenerationPipeline:
             item.model_copy(update={"code": f"P{index:03d}"})
             for index, item in enumerate(generated_only, 1)
         ]
-        settings = self.snapshot(context).settings
+        settings = cast(PromptBatchSettings, self.snapshot(context).settings)
         quality_status: Literal["PASS", "NEEDS_REVIEW"] = (
             "PASS"
             if (
@@ -1808,6 +2336,123 @@ class PromptGenerationPipeline:
         )
 
 
+def _v11_settings(snapshot: PromptGenerationSnapshot) -> PromptBatchSettingsV6:
+    if not isinstance(snapshot.settings, PromptBatchSettingsV6):
+        raise PipelineError("V11 run requires Prompt settings schema V6")
+    return snapshot.settings
+
+
+def _v11_prompt_items(
+    context: RuntimeContext,
+    selection: CreativeSelectionResult,
+    application: InsightApplicationMap,
+    default_duration_seconds: int,
+) -> list[PromptItemV6]:
+    result: list[PromptItemV6] = []
+    for row in selection.selected:
+        candidate = row.candidate
+        evaluation = row.evaluation
+        bindings: list[InsightBinding] = []
+        for fact_id in evaluation.realized_fact_ids:
+            fact = application.by_id.get(fact_id)
+            if fact is None:
+                continue
+            bindings.append(
+                InsightBinding(
+                    fact_id=fact.fact_id,
+                    field=fact.field,
+                    value=fact.value,
+                    value_hash=fact.value_hash,
+                    role=fact.preferred_role,
+                )
+            )
+        timestamp = candidate.generated_at or utc_now()
+        result.append(
+            PromptItemV6(
+                id=_stable_item_id(context.source_fingerprint, candidate.slot_id),
+                code=f"P{candidate.ordinal:03d}",
+                origin="AI",
+                fragment_type=evaluation.primary_purpose,
+                primary_purpose=evaluation.primary_purpose,
+                compatible_purposes=evaluation.compatible_purposes,
+                classification_status="VERIFIED",
+                product_relevance=round(evaluation.scores.product_relevance),
+                material_tags=[
+                    FRAGMENT_TYPE_LABELS[purpose]
+                    for purpose in evaluation.compatible_purposes
+                ],
+                target_duration_seconds=default_duration_seconds,
+                dimensions=candidate.dimensions,
+                content=candidate.content,
+                insight_bindings=bindings,
+                manual_edited=False,
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+        )
+    return result
+
+
+def _retained_v11_items(
+    retained: list[PromptItem | PromptItemV6],
+) -> list[PromptItemV6]:
+    result: list[PromptItemV6] = []
+    for item in retained:
+        if isinstance(item, PromptItemV6):
+            result.append(item)
+            continue
+        result.append(
+            PromptItemV6(
+                id=item.id,
+                code=item.code,
+                origin=item.origin,
+                fragment_type=item.fragment_type,
+                primary_purpose=item.fragment_type,
+                compatible_purposes=[item.fragment_type],
+                classification_status="PENDING",
+                product_relevance=0,
+                material_tags=item.material_tags,
+                target_duration_seconds=item.target_duration_seconds,
+                dimensions=CreativeDimensions(
+                    narrative=item.dimensions.narrative,
+                    scene=item.dimensions.scene,
+                    persona=item.dimensions.persona,
+                    product_relation=item.dimensions.selling_point,
+                    camera=item.dimensions.camera,
+                    emotion=item.dimensions.emotion,
+                ),
+                content=item.content,
+                insight_bindings=item.insight_bindings,
+                manual_edited=item.manual_edited,
+                created_at=item.created_at,
+                updated_at=item.updated_at,
+            )
+        )
+    return result
+
+
+def _average_v11_scores(rows: list[CreativeScores]) -> CreativeAverageScores:
+    if not rows:
+        return CreativeAverageScores(
+            product_relevance=0,
+            creative_coherence=0,
+            visual_executability=0,
+            commercial_usefulness=0,
+            visual_clarity=0,
+        )
+
+    def average(values: list[float]) -> float:
+        return round(sum(values) / len(values), 2)
+
+    return CreativeAverageScores(
+        product_relevance=average([item.product_relevance for item in rows]),
+        creative_coherence=average([item.creative_coherence for item in rows]),
+        visual_executability=average([item.visual_executability for item in rows]),
+        commercial_usefulness=average([item.commercial_usefulness for item in rows]),
+        visual_clarity=average([item.visual_clarity for item in rows]),
+    )
+
+
 def _stable_item_id(source_fingerprint: str, slot_id: str) -> str:
     digest = hashlib.sha256(f"{source_fingerprint}:{slot_id}".encode()).digest()[:16]
     # Set RFC 4122 version/variant bits while retaining deterministic replay identity.
@@ -2021,7 +2666,12 @@ def _freeze_item_regeneration_combination(
     target = snapshot.target_item
     if target is None:
         return combination
-    dimensions = snapshot.replacement_dimensions or target.dimensions
+    if not isinstance(target, PromptItem):
+        raise PipelineError("legacy item regeneration requires a V5 Prompt item")
+    dimensions = cast(
+        PromptDimensions,
+        snapshot.replacement_dimensions or target.dimensions,
+    )
     preserved_fact_ids = [
         binding.fact_id
         for binding in target.insight_bindings

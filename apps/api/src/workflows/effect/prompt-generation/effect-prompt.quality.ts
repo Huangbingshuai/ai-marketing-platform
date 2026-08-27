@@ -2,14 +2,19 @@ import { createHash } from 'node:crypto';
 import type {
   EffectPromptBatchResult,
   EffectPromptBatchSettings,
+  EffectPromptBatchResultV5,
+  EffectPromptBatchSettingsV5,
   EffectPromptDimensions,
+  EffectPromptDimensionsV5,
   EffectPromptFragmentType,
   EffectPromptItem,
+  EffectPromptItemV5,
   EffectPromptInsightBinding,
   EffectPromptInsightCoverage,
   EffectPromptInsightReference,
   EffectPromptInsightRole,
   EffectPromptMetrics,
+  EffectPromptMetricsV5,
   EffectPromptRenderProfile,
   EffectPromptSharedPrompt,
   EffectPromptSharedPromptSection,
@@ -24,12 +29,14 @@ import {
   EFFECT_PROMPT_RENDER_CAPABILITIES,
   EFFECT_PROMPT_RENDER_CAPABILITY_KEYS,
   EFFECT_PROMPT_SCHEMA_VERSION,
+  EFFECT_PROMPT_LEGACY_SCHEMA_VERSION,
+  EFFECT_PROMPT_V5_DIMENSIONS,
   SEEDANCE_RATIOS,
   SEEDANCE_RESOLUTIONS,
-  effectPromptFragmentTypeTargetCounts,
   effectPromptTargetCount,
-  migrateEffectPromptSettings,
+  migrateEffectPromptSettingsV5,
   normalizeEffectPromptSettings,
+  normalizeEffectPromptSettingsV5,
 } from '@ai-marketing/contracts';
 import type { EffectPromptInputSnapshot } from './effect-prompt.types';
 
@@ -48,6 +55,14 @@ const itemTextLimits = {
   content: 12_000,
 } as const;
 const dimensionTextLimits: Record<keyof EffectPromptDimensions, number> = {
+  narrative: 120,
+  scene: 120,
+  persona: 160,
+  productRelation: 240,
+  camera: 160,
+  emotion: 120,
+};
+const dimensionTextLimitsV5: Record<keyof EffectPromptDimensionsV5, number> = {
   narrative: 120,
   scene: 120,
   persona: 160,
@@ -89,11 +104,6 @@ export const trigramDice = (left: string, right: string): number => {
   for (const gram of a) if (b.has(gram)) intersection += 1;
   return (2 * intersection) / (a.size + b.size);
 };
-
-const signature = (item: EffectPromptItem): string =>
-  ['narrative', 'sellingPoint', 'scene']
-    .map((key) => normalizedValue(item.dimensions[key as keyof EffectPromptDimensions]))
-    .join('|');
 
 export const dimensionDistance = (left: EffectPromptItem, right: EffectPromptItem): number =>
   EFFECT_PROMPT_DIMENSIONS.reduce(
@@ -167,12 +177,6 @@ const validInsightBinding = (value: unknown): value is EffectPromptInsightBindin
     EFFECT_PROMPT_INSIGHT_ROLES.includes(role as never),
   );
 };
-
-const bindingCompatible = (
-  binding: EffectPromptInsightBinding,
-  fragmentType: EffectPromptFragmentType,
-): boolean =>
-  EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES[binding.field]?.includes(fragmentType) ?? false;
 
 const bindingRole = (field: EffectPromptInsightReference['field']): EffectPromptInsightRole => {
   if (field === 'TRUST_BACKING') return 'EVIDENCE';
@@ -290,8 +294,7 @@ const PAIN_RESOLVED =
 const PRODUCT_EFFECT_LEAK =
   /(?:使用后|效果对比|前后对比|问题解决|明显改善|立刻见效|满意(?:微笑|点头)|证明(?:效果|功效))/u;
 const PACKAGED_STATE = /(?:真空袋装|袋装|包装|袋身)/u;
-const UNPACKAGED_END_STATE =
-  /(?:最终|结束时|随后|转眼).{0,80}(?:蒸笼|盘中|碗中|切片|散装|裸露)/u;
+const UNPACKAGED_END_STATE = /(?:最终|结束时|随后|转眼).{0,80}(?:蒸笼|盘中|碗中|切片|散装|裸露)/u;
 const PACKAGE_TRANSITION_ACTION = /(?:打开|拆开|撕开|取出|倒出|拿出)/u;
 const SAFE_AREA = /(?:留白|安全区|干净空间|简洁背景|无遮挡空间|空白墙面|空白区域|干净无遮挡)/u;
 const OUTRO_UNSTABLE =
@@ -391,8 +394,8 @@ export const effectPromptExecutionIssues = (item: EffectPromptItem): string[] =>
   }
   if (
     item.fragmentType === 'SELLING_POINT_EXPLANATION' &&
-    !ABSTRACT_SELLING_POINT.test(item.dimensions.sellingPoint) &&
-    ATTRIBUTE_SELLING_POINT.test(item.dimensions.sellingPoint) &&
+    !ABSTRACT_SELLING_POINT.test(item.dimensions.productRelation) &&
+    ATTRIBUTE_SELLING_POINT.test(item.dimensions.productRelation) &&
     !ATTRIBUTE_CUE.test(content)
   )
     issues.push('EVIDENCE_MODE_MISMATCH');
@@ -427,10 +430,22 @@ export const effectPromptExactDuplicatePairs = (items: readonly EffectPromptItem
   return [...counts.values()].reduce((pairs, count) => pairs + (count * (count - 1)) / 2, 0);
 };
 
-export const isEffectPromptItem = (value: unknown): value is EffectPromptItem => {
-  const item = record(value);
+const validDimensionsV5 = (value: unknown): value is EffectPromptDimensionsV5 => {
+  const candidate = record(value);
   return Boolean(
-    item &&
+    candidate &&
+    Object.keys(candidate).length === EFFECT_PROMPT_V5_DIMENSIONS.length &&
+    EFFECT_PROMPT_V5_DIMENSIONS.every(
+      ({ key }) =>
+        typeof candidate[key] === 'string' &&
+        candidate[key].trim().length > 0 &&
+        candidate[key].length <= dimensionTextLimitsV5[key],
+    ),
+  );
+};
+
+const validBaseItem = (item: Record<string, unknown>): boolean =>
+  Boolean(
     typeof item.id === 'string' &&
     item.id.length > 0 &&
     item.id.length <= itemTextLimits.id &&
@@ -450,7 +465,6 @@ export const isEffectPromptItem = (value: unknown): value is EffectPromptItem =>
     Number.isInteger(item.targetDurationSeconds) &&
     Number(item.targetDurationSeconds) >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
     Number(item.targetDurationSeconds) <= EFFECT_PROMPT_LIMITS.maxDurationSeconds &&
-    validDimensions(item.dimensions) &&
     typeof item.content === 'string' &&
     item.content.trim().length > 0 &&
     item.content.length <= itemTextLimits.content &&
@@ -461,12 +475,45 @@ export const isEffectPromptItem = (value: unknown): value is EffectPromptItem =>
       item.insightBindings.length &&
     typeof item.manualEdited === 'boolean' &&
     validDateTime(item.createdAt) &&
-    validDateTime(item.updatedAt) &&
+    validDateTime(item.updatedAt),
+  );
+
+export const isEffectPromptItemV5 = (value: unknown): value is EffectPromptItemV5 => {
+  const item = record(value);
+  return Boolean(
+    item &&
+    validBaseItem(item) &&
+    validDimensionsV5(item.dimensions) &&
     Object.keys(item).length === 12,
   );
 };
 
-export const isEffectPromptSettings = (value: unknown): value is EffectPromptBatchSettings => {
+export const isEffectPromptItem = (value: unknown): value is EffectPromptItem => {
+  const item = record(value);
+  const compatiblePurposes = item?.compatiblePurposes;
+  return Boolean(
+    item &&
+    validBaseItem(item) &&
+    validDimensions(item.dimensions) &&
+    EFFECT_PROMPT_FRAGMENT_TYPES.includes(item.primaryPurpose as EffectPromptFragmentType) &&
+    item.fragmentType === item.primaryPurpose &&
+    Array.isArray(compatiblePurposes) &&
+    compatiblePurposes.length >= 1 &&
+    compatiblePurposes.length <= EFFECT_PROMPT_FRAGMENT_TYPES.length &&
+    compatiblePurposes.every((purpose) =>
+      EFFECT_PROMPT_FRAGMENT_TYPES.includes(purpose as EffectPromptFragmentType),
+    ) &&
+    new Set(compatiblePurposes).size === compatiblePurposes.length &&
+    compatiblePurposes.includes(item.primaryPurpose) &&
+    (item.classificationStatus === 'PENDING' || item.classificationStatus === 'VERIFIED') &&
+    Number.isInteger(item.productRelevance) &&
+    Number(item.productRelevance) >= 0 &&
+    Number(item.productRelevance) <= 100 &&
+    Object.keys(item).length === 16,
+  );
+};
+
+export const isEffectPromptSettingsV5 = (value: unknown): value is EffectPromptBatchSettingsV5 => {
   const settings = record(value);
   if (!settings) return false;
   const fragmentConfigs = record(settings.fragmentConfigs);
@@ -504,10 +551,24 @@ export const isEffectPromptSettings = (value: unknown): value is EffectPromptBat
   );
 };
 
-const validMetrics = (value: unknown): value is EffectPromptMetrics => {
+export const isEffectPromptSettings = (value: unknown): value is EffectPromptBatchSettings => {
+  const settings = record(value);
+  return Boolean(
+    settings &&
+    Object.keys(settings).length === 2 &&
+    Number.isInteger(settings.targetCount) &&
+    Number(settings.targetCount) >= EFFECT_PROMPT_LIMITS.minCount &&
+    Number(settings.targetCount) <= EFFECT_PROMPT_LIMITS.maxCount &&
+    Number.isInteger(settings.defaultDurationSeconds) &&
+    Number(settings.defaultDurationSeconds) >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
+    Number(settings.defaultDurationSeconds) <= EFFECT_PROMPT_LIMITS.maxDurationSeconds,
+  );
+};
+
+const validMetricsV5 = (value: unknown): value is EffectPromptMetricsV5 => {
   const metrics = record(value);
   if (!metrics || Object.keys(metrics).length !== 15) return false;
-  const integer = (key: keyof EffectPromptMetrics, minimum: number, maximum = Infinity) =>
+  const integer = (key: keyof EffectPromptMetricsV5, minimum: number, maximum = Infinity) =>
     Number.isInteger(metrics[key]) &&
     Number(metrics[key]) >= minimum &&
     Number(metrics[key]) <= maximum;
@@ -592,6 +653,75 @@ const validMetrics = (value: unknown): value is EffectPromptMetrics => {
         Number(entry.count) > 0,
       );
     })
+  );
+};
+
+const validIssueCounts = (value: unknown): boolean =>
+  Array.isArray(value) &&
+  value.every((item) => {
+    const entry = record(item);
+    return Boolean(
+      entry &&
+      Object.keys(entry).length === 2 &&
+      typeof entry.code === 'string' &&
+      entry.code.trim().length > 0 &&
+      entry.code.length <= 120 &&
+      Number.isInteger(entry.count) &&
+      Number(entry.count) > 0,
+    );
+  });
+
+const validMetrics = (value: unknown): value is EffectPromptMetrics => {
+  const metrics = record(value);
+  if (!metrics || Object.keys(metrics).length !== 11) return false;
+  const integer = (key: keyof EffectPromptMetrics, minimum: number, maximum = Infinity) =>
+    Number.isInteger(metrics[key]) &&
+    Number(metrics[key]) >= minimum &&
+    Number(metrics[key]) <= maximum;
+  const distribution = metrics.purposeDistribution;
+  const scores = record(metrics.averageScores);
+  return Boolean(
+    integer('targetCount', EFFECT_PROMPT_LIMITS.minCount, EFFECT_PROMPT_LIMITS.maxCount) &&
+    integer('candidateTargetCount', EFFECT_PROMPT_LIMITS.minCount, 240) &&
+    integer('generatedCandidateCount', 0) &&
+    integer('acceptedCount', 0, EFFECT_PROMPT_LIMITS.maxCount) &&
+    integer('rejectedCount', 0) &&
+    integer('replenishmentRounds', 0, 1) &&
+    integer('exactDuplicateCount', 0) &&
+    Array.isArray(distribution) &&
+    distribution.length === EFFECT_PROMPT_FRAGMENT_TYPES.length &&
+    EFFECT_PROMPT_FRAGMENT_TYPES.every(
+      (purpose) => distribution.filter((item) => record(item)?.purpose === purpose).length === 1,
+    ) &&
+    distribution.every((item) => {
+      const entry = record(item);
+      return Boolean(
+        entry &&
+        Object.keys(entry).length === 3 &&
+        EFFECT_PROMPT_FRAGMENT_TYPES.includes(entry.purpose as EffectPromptFragmentType) &&
+        Number.isInteger(entry.primaryCount) &&
+        Number(entry.primaryCount) >= 0 &&
+        Number.isInteger(entry.compatibleCount) &&
+        Number(entry.compatibleCount) >= 0,
+      );
+    }) &&
+    scores &&
+    Object.keys(scores).length === 5 &&
+    [
+      'productRelevance',
+      'creativeCoherence',
+      'visualExecutability',
+      'commercialUsefulness',
+      'visualClarity',
+    ].every(
+      (key) =>
+        typeof scores[key] === 'number' &&
+        Number.isFinite(scores[key]) &&
+        Number(scores[key]) >= 0 &&
+        Number(scores[key]) <= 100,
+    ) &&
+    validIssueCounts(metrics.hardIssueCounts) &&
+    validIssueCounts(metrics.warningCounts),
   );
 };
 
@@ -792,163 +922,68 @@ export const recomputePromptQuality = (
   | 'qualityStatus'
 > => {
   const settings = normalizeEffectPromptSettings(rawSettings);
-  const items = rawItems.filter(isEffectPromptItem).map((item) => {
-    const preserved = item.insightBindings.filter((binding) =>
-      bindingCompatible(binding, item.fragmentType),
-    );
-    const inferred = inferEffectPromptInsightBindings(item, previous?.insightCoverage);
-    return {
-      ...item,
-      insightBindings: [
-        ...new Map(
-          [...preserved, ...inferred].map((binding) => [binding.factId, binding]),
-        ).values(),
-      ].slice(0, 3),
-    };
-  });
-  let semanticViolations = 0;
-  let visualViolations = 0;
-  let dimensionConflicts = 0;
-  for (let left = 0; left < items.length; left += 1) {
-    for (let right = left + 1; right < items.length; right += 1) {
-      if (
-        signature(items[left]!) === signature(items[right]!) ||
-        trigramDice(items[left]!.content, items[right]!.content) >=
-          EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD
-      )
-        semanticViolations += 1;
-      if (visualOverlap(items[left]!, items[right]!) >= EFFECT_PROMPT_VISUAL_OVERLAP_THRESHOLD)
-        visualViolations += 1;
-      if (dimensionDistance(items[left]!, items[right]!) < 3) dimensionConflicts += 1;
-    }
-  }
-  const semanticDuplicateRate = promptPairViolationRate(semanticViolations, items.length);
-  const visualOverlapRate = promptPairViolationRate(visualViolations, items.length);
+  const items = rawItems.filter(isEffectPromptItem);
   const exactDuplicatePairs = effectPromptExactDuplicatePairs(items);
-  const targetCounts = effectPromptFragmentTypeTargetCounts(settings);
-  const actualCounts = Object.fromEntries(
-    EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => [
-      fragmentType,
-      items.filter((item) => item.fragmentType === fragmentType).length,
-    ]),
-  ) as Record<EffectPromptFragmentType, number>;
-  const fragmentTypeDistribution = EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => ({
-    fragmentType,
-    targetCount: targetCounts[fragmentType],
-    actualCount: actualCounts[fragmentType],
+  const purposeDistribution = EFFECT_PROMPT_FRAGMENT_TYPES.map((purpose) => ({
+    purpose,
+    primaryCount: items.filter((item) => item.primaryPurpose === purpose).length,
+    compatibleCount: items.filter((item) => item.compatiblePurposes.includes(purpose)).length,
   }));
-  const previousCoverage = previous?.sellingPointCoverage;
-  const requiredSellingPoints: string[] = [
-    ...new Map(
-      (previousCoverage?.required ?? []).map((sellingPoint) => [
-        normalizedValue(sellingPoint),
-        sellingPoint.trim(),
-      ]),
-    ).values(),
-  ];
-  const boundCoreSellingPoints = items.flatMap(({ insightBindings }) =>
-    insightBindings.filter(({ field }) => field === 'CORE_SELLING_POINT').map(({ value }) => value),
-  );
-  const coveredSellingPoints = [
-    ...new Map(
-      boundCoreSellingPoints.map((sellingPoint) => [
-        normalizedValue(sellingPoint),
-        sellingPoint.trim(),
-      ]),
-    ).values(),
-  ];
-  const coveredKeys = new Set(coveredSellingPoints.map(normalizedValue));
-  const sellingPointCoverage = {
-    required: requiredSellingPoints,
-    covered: coveredSellingPoints,
-    missing: requiredSellingPoints.filter(
-      (sellingPoint) => !coveredKeys.has(normalizedValue(sellingPoint)),
-    ),
-  };
-  const previousInsightCoverage = previous?.insightCoverage;
-  const uniqueReferences = (values: EffectPromptInsightReference[] = []) => [
-    ...new Map(values.map((reference) => [reference.factId, reference])).values(),
-  ];
-  const requiredInsightFacts = uniqueReferences(previousInsightCoverage?.required);
-  const adaptiveInsightFacts = uniqueReferences(previousInsightCoverage?.adaptive);
-  const boundFactIds = new Set(
-    items.flatMap(({ insightBindings }) => insightBindings.map(({ factId }) => factId)),
-  );
-  const insightCoverage: EffectPromptInsightCoverage = {
-    required: requiredInsightFacts,
-    covered: requiredInsightFacts.filter(({ factId }) => boundFactIds.has(factId)),
-    missing: requiredInsightFacts.filter(({ factId }) => !boundFactIds.has(factId)),
-    adaptive: adaptiveInsightFacts,
-    deferred: adaptiveInsightFacts.filter(({ factId }) => !boundFactIds.has(factId)),
-    excluded: previousInsightCoverage?.excluded ?? [],
-    appliedConstraints: uniqueReferences(previousInsightCoverage?.appliedConstraints),
-  };
-  const currentExecutionReasonCounts = new Map<string, number>();
-  let currentHardExecutionIssueCount = 0;
-  for (const prompt of items) {
-    const promptIssues = effectPromptExecutionIssues(prompt);
-    const hardPromptIssues = effectPromptHardExecutionIssues(promptIssues);
-    currentHardExecutionIssueCount += hardPromptIssues.length;
-    for (const code of hardPromptIssues)
-      currentExecutionReasonCounts.set(code, (currentExecutionReasonCounts.get(code) ?? 0) + 1);
-    if (
-      prompt.targetDurationSeconds !== settings.fragmentConfigs[prompt.fragmentType].durationSeconds
-    ) {
-      currentHardExecutionIssueCount += 1;
-      currentExecutionReasonCounts.set(
-        'DURATION_MISMATCH',
-        (currentExecutionReasonCounts.get('DURATION_MISMATCH') ?? 0) + 1,
-      );
-    }
-  }
-  const executionReasonCounts = new Map<string, number>(
-    (previous?.executionInvalidReasons ?? [])
-      .filter(({ code }) => effectPromptHardExecutionIssues([code]).length > 0)
+  const hardIssueCounts = new Map<string, number>(
+    (previous?.hardIssueCounts ?? [])
+      .filter(
+        ({ code }) =>
+          !['CLASSIFICATION_PENDING', 'DURATION_MISMATCH', 'EXACT_DUPLICATE'].includes(code),
+      )
       .map(({ code, count }) => [code, count]),
   );
-  for (const [code, count] of currentExecutionReasonCounts)
-    executionReasonCounts.set(code, Math.max(executionReasonCounts.get(code) ?? 0, count));
-  const executionInvalidReasons = [...executionReasonCounts]
+  for (const prompt of items) {
+    if (prompt.classificationStatus !== 'VERIFIED')
+      hardIssueCounts.set(
+        'CLASSIFICATION_PENDING',
+        (hardIssueCounts.get('CLASSIFICATION_PENDING') ?? 0) + 1,
+      );
+    if (prompt.targetDurationSeconds !== settings.defaultDurationSeconds)
+      hardIssueCounts.set('DURATION_MISMATCH', (hardIssueCounts.get('DURATION_MISMATCH') ?? 0) + 1);
+  }
+  if (exactDuplicatePairs > 0) hardIssueCounts.set('EXACT_DUPLICATE', exactDuplicatePairs);
+  const normalizedHardIssues = [...hardIssueCounts]
+    .filter(([, count]) => count > 0)
     .sort(([left], [right]) => left.localeCompare(right, 'en-US'))
     .map(([code, count]) => ({ code, count }));
+  const averageProductRelevance = items.length
+    ? Math.round(
+        (items.reduce((sum, item) => sum + item.productRelevance, 0) / items.length) * 100,
+      ) / 100
+    : 0;
+  const previousScores = previous?.averageScores;
   const metrics: EffectPromptMetrics = {
-    targetCount: effectPromptTargetCount(settings),
+    targetCount: settings.targetCount,
+    candidateTargetCount: Math.min(240, Math.ceil(settings.targetCount * 1.2)),
     acceptedCount: items.length,
     generatedCandidateCount: Math.max(
       previous?.generatedCandidateCount ?? items.length,
       items.length,
     ),
-    fallbackCount: Math.min(previous?.fallbackCount ?? 0, items.length),
-    removedSemanticDuplicates: Math.max(previous?.removedSemanticDuplicates ?? 0, 0),
-    removedVisualDuplicates: Math.max(previous?.removedVisualDuplicates ?? 0, 0),
-    removedDimensionConflicts: Math.max(
-      previous?.removedDimensionConflicts ?? 0,
-      dimensionConflicts,
-    ),
-    semanticDuplicateRate,
-    visualOverlapRate,
-    replenishmentRounds: Math.min(
-      EFFECT_PROMPT_LIMITS.maxReplenishmentRounds,
-      Math.max(previous?.replenishmentRounds ?? 0, 0),
-    ),
-    fragmentTypeDistribution,
-    sellingPointCoverage,
-    insightCoverage,
-    removedExecutionInvalid: Math.max(previous?.removedExecutionInvalid ?? 0, 0),
-    executionInvalidReasons,
+    rejectedCount: Math.max(previous?.rejectedCount ?? 0, 0),
+    replenishmentRounds: Math.min(1, Math.max(previous?.replenishmentRounds ?? 0, 0)),
+    exactDuplicateCount: exactDuplicatePairs,
+    purposeDistribution,
+    averageScores: {
+      productRelevance: averageProductRelevance,
+      creativeCoherence: previousScores?.creativeCoherence ?? 0,
+      visualExecutability: previousScores?.visualExecutability ?? 0,
+      commercialUsefulness: previousScores?.commercialUsefulness ?? 0,
+      visualClarity: previousScores?.visualClarity ?? 0,
+    },
+    hardIssueCounts: normalizedHardIssues,
+    warningCounts: previous?.warningCounts ?? [],
   };
-  const fragmentTargetsMet = fragmentTypeDistribution.every(
-    ({ targetCount, actualCount }) => targetCount === actualCount,
-  );
   const qualityStatus =
-    items.length === effectPromptTargetCount(settings) &&
+    items.length === settings.targetCount &&
     exactDuplicatePairs === 0 &&
-    semanticDuplicateRate <= settings.semanticLimit &&
-    visualOverlapRate <= settings.visualLimit &&
-    fragmentTargetsMet &&
-    sellingPointCoverage.missing.length === 0 &&
-    insightCoverage.missing.length === 0 &&
-    currentHardExecutionIssueCount === 0
+    normalizedHardIssues.length === 0 &&
+    items.every(({ classificationStatus }) => classificationStatus === 'VERIFIED')
       ? 'PASS'
       : 'NEEDS_REVIEW';
   return {
@@ -996,12 +1031,50 @@ export const parseEffectPromptBatchResult = (value: unknown): EffectPromptBatchR
   );
 };
 
+export const parseEffectPromptBatchResultV5ForRead = (
+  value: unknown,
+): EffectPromptBatchResultV5 | null => {
+  const candidate = record(value);
+  if (
+    !candidate ||
+    candidate.schemaVersion !== EFFECT_PROMPT_LEGACY_SCHEMA_VERSION ||
+    !isEffectPromptSettingsV5(candidate.settings) ||
+    !isEffectPromptRenderProfile(candidate.renderProfile) ||
+    !Array.isArray(candidate.items) ||
+    candidate.items.length > EFFECT_PROMPT_LIMITS.maxCount ||
+    !validMetricsV5(candidate.metrics) ||
+    !['PASS', 'NEEDS_REVIEW'].includes(String(candidate.qualityStatus)) ||
+    ![6, 7].includes(Object.keys(candidate).length) ||
+    (candidate.sharedPrompt !== undefined &&
+      !isEffectPromptSharedPrompt(
+        candidate.sharedPrompt,
+        candidate.renderProfile.sharedConstraints.disabledElements,
+      ))
+  )
+    return null;
+  const items = candidate.items.filter(isEffectPromptItemV5);
+  if (
+    items.length !== candidate.items.length ||
+    new Set(items.map(({ id }) => id)).size !== items.length
+  )
+    return null;
+  return {
+    schemaVersion: EFFECT_PROMPT_LEGACY_SCHEMA_VERSION,
+    settings: normalizeEffectPromptSettingsV5(candidate.settings),
+    renderProfile: candidate.renderProfile,
+    ...(candidate.sharedPrompt ? { sharedPrompt: candidate.sharedPrompt } : {}),
+    items,
+    metrics: candidate.metrics,
+    qualityStatus: candidate.qualityStatus as EffectPromptBatchResultV5['qualityStatus'],
+  };
+};
+
 export const parseLegacyV4EffectPromptBatchResultForRead = (
   value: unknown,
-): EffectPromptBatchResult | null => {
+): EffectPromptBatchResultV5 | null => {
   const candidate = record(value);
   if (!candidate || candidate.schemaVersion !== 4 || !Array.isArray(candidate.items)) return null;
-  const settings = migrateEffectPromptSettings(candidate.settings, 4);
+  const settings = migrateEffectPromptSettingsV5(candidate.settings, 4);
   const items = candidate.items.map((value) => {
     const item = record(value);
     if (!item || typeof item.fragmentType !== 'string') return null;
@@ -1011,7 +1084,7 @@ export const parseLegacyV4EffectPromptBatchResultForRead = (
       ...item,
       targetDurationSeconds: settings.fragmentConfigs[fragmentType].durationSeconds,
     };
-    return isEffectPromptItem(migrated) ? migrated : null;
+    return isEffectPromptItemV5(migrated) ? migrated : null;
   });
   if (
     items.some((item) => item === null) ||
@@ -1048,12 +1121,15 @@ export const parseLegacyV4EffectPromptBatchResultForRead = (
       ),
     },
   };
-  return recomputePromptQuality(
-    items as EffectPromptItem[],
+  if (!validMetricsV5(candidate.metrics)) return null;
+  return {
+    schemaVersion: EFFECT_PROMPT_LEGACY_SCHEMA_VERSION,
     settings,
-    { ...(metrics as Partial<EffectPromptMetrics> | undefined), fallbackCount: 0 },
     renderProfile,
-  );
+    items: items as EffectPromptItemV5[],
+    metrics: candidate.metrics,
+    qualityStatus: candidate.qualityStatus === 'PASS' ? 'PASS' : 'NEEDS_REVIEW',
+  };
 };
 
 export const mergeEffectPromptCompletionItems = (
@@ -1073,18 +1149,28 @@ export const mergeEffectPromptCompletionItems = (
     candidateItems.find(({ id }) => id === target.id) ??
     candidateItems.find(({ id }) => !retainedIds.has(id));
   if (!replacement) return [...snapshot.retainedManualItems];
-  const stableReplacement: EffectPromptItem = {
-    ...replacement,
-    id: target.id,
-    code: target.code,
-    origin: 'AI',
-    fragmentType: target.fragmentType,
-    materialTags: [...target.materialTags],
-    targetDurationSeconds: target.targetDurationSeconds,
-    dimensions: snapshot.replacementDimensions ?? target.dimensions,
-    manualEdited: false,
-    createdAt: target.createdAt,
-  };
+  const stableReplacement: EffectPromptItem =
+    snapshot.operation === 'ITEM_EVALUATE'
+      ? {
+          ...target,
+          fragmentType: replacement.primaryPurpose,
+          primaryPurpose: replacement.primaryPurpose,
+          compatiblePurposes: [...replacement.compatiblePurposes],
+          classificationStatus: replacement.classificationStatus,
+          productRelevance: replacement.productRelevance,
+          insightBindings: [...replacement.insightBindings],
+          updatedAt: replacement.updatedAt,
+        }
+      : {
+          ...replacement,
+          id: target.id,
+          code: target.code,
+          origin: 'AI',
+          materialTags: [...target.materialTags],
+          targetDurationSeconds: target.targetDurationSeconds,
+          manualEdited: false,
+          createdAt: target.createdAt,
+        };
   const merged = [...snapshot.retainedManualItems];
   merged.splice(Math.min(Math.max(targetIndex, 0), merged.length), 0, stableReplacement);
   return merged;

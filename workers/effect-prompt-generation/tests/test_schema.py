@@ -6,18 +6,17 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-from effect_prompt_generation.combinations import fragment_type_targets
 from effect_prompt_generation.models import (
-    FragmentConfig,
+    CreativeAverageScores,
+    CreativeDimensions,
     FragmentType,
-    FragmentTypeDistribution,
-    InsightCoverage,
-    PromptBatchResult,
-    PromptBatchSettings,
+    PromptBatchResultV6,
+    PromptBatchSettingsV6,
     PromptItem,
-    PromptMetrics,
+    PromptItemV6,
+    PromptMetricsV6,
+    PurposeDistribution,
     RenderProfile,
-    SellingPointCoverage,
     SharedPrompt,
     SharedPromptSection,
     SharedRenderConstraints,
@@ -25,24 +24,36 @@ from effect_prompt_generation.models import (
 
 
 def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> None:
-    item = prompt_item
-    result = PromptBatchResult(
-        settings=PromptBatchSettings(
-            fragment_configs={
-                FragmentType.HOOK: FragmentConfig(count=2, duration_seconds=5),
-                FragmentType.PAIN: FragmentConfig(count=2, duration_seconds=5),
-                FragmentType.PRODUCT_DISPLAY: FragmentConfig(
-                    count=2, duration_seconds=5
-                ),
-                FragmentType.SELLING_POINT_EXPLANATION: FragmentConfig(
-                    count=2, duration_seconds=5
-                ),
-                FragmentType.CTA: FragmentConfig(count=1, duration_seconds=5),
-                FragmentType.OUTRO: FragmentConfig(count=1, duration_seconds=5),
-            },
-            semantic_limit=15,
-            visual_limit=20,
+    item = PromptItemV6(
+        id=prompt_item.id,
+        code=prompt_item.code,
+        origin=prompt_item.origin,
+        fragment_type=prompt_item.fragment_type,
+        primary_purpose=prompt_item.fragment_type,
+        compatible_purposes=[
+            prompt_item.fragment_type,
+            FragmentType.SELLING_POINT_EXPLANATION,
+        ],
+        classification_status="VERIFIED",
+        product_relevance=92,
+        material_tags=prompt_item.material_tags,
+        target_duration_seconds=prompt_item.target_duration_seconds,
+        dimensions=CreativeDimensions(
+            narrative=prompt_item.dimensions.narrative,
+            scene=prompt_item.dimensions.scene,
+            persona=prompt_item.dimensions.persona,
+            product_relation=prompt_item.dimensions.selling_point,
+            camera=prompt_item.dimensions.camera,
+            emotion=prompt_item.dimensions.emotion,
         ),
+        content=prompt_item.content,
+        insight_bindings=prompt_item.insight_bindings,
+        manual_edited=prompt_item.manual_edited,
+        created_at=prompt_item.created_at,
+        updated_at=prompt_item.updated_at,
+    )
+    result = PromptBatchResultV6(
+        settings=PromptBatchSettingsV6(target_count=10, default_duration_seconds=5),
         render_profile=RenderProfile(
             ratio="9:16",
             resolution="1080p",
@@ -77,45 +88,31 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
             ).hexdigest(),
         ),
         items=[item],
-        metrics=PromptMetrics(
+        metrics=PromptMetricsV6(
             target_count=10,
+            candidate_target_count=12,
             accepted_count=1,
-            generated_candidate_count=1,
-            fallback_count=0,
-            removed_semantic_duplicates=0,
-            removed_visual_duplicates=0,
-            removed_dimension_conflicts=0,
-            removed_execution_invalid=0,
-            execution_invalid_reasons=[],
-            semantic_duplicate_rate=0,
-            visual_overlap_rate=0,
+            generated_candidate_count=12,
+            rejected_count=11,
             replenishment_rounds=0,
-            fragment_type_distribution=[
-                FragmentTypeDistribution(
-                    fragment_type=fragment_type,
-                    target_count=target,
-                    actual_count=1 if fragment_type == item.fragment_type else 0,
+            exact_duplicate_count=0,
+            purpose_distribution=[
+                PurposeDistribution(
+                    purpose=purpose,
+                    primary_count=1 if purpose == item.primary_purpose else 0,
+                    compatible_count=1 if purpose in item.compatible_purposes else 0,
                 )
-                for fragment_type, target in fragment_type_targets(
-                    {
-                        fragment_type: result_count
-                        for fragment_type, result_count in {
-                            FragmentType.HOOK: 2,
-                            FragmentType.PAIN: 2,
-                            FragmentType.PRODUCT_DISPLAY: 2,
-                            FragmentType.SELLING_POINT_EXPLANATION: 2,
-                            FragmentType.CTA: 1,
-                            FragmentType.OUTRO: 1,
-                        }.items()
-                    }
-                ).items()
+                for purpose in FragmentType
             ],
-            selling_point_coverage=SellingPointCoverage(
-                required=[item.dimensions.selling_point],
-                covered=[item.dimensions.selling_point],
-                missing=[],
+            average_scores=CreativeAverageScores(
+                product_relevance=92,
+                creative_coherence=90,
+                visual_executability=88,
+                commercial_usefulness=86,
+                visual_clarity=91,
             ),
-            insight_coverage=InsightCoverage(),
+            hard_issue_counts=[],
+            warning_counts=[],
         ),
         quality_status="NEEDS_REVIEW",
     )

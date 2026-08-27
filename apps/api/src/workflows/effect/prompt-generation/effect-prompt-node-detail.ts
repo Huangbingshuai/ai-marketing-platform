@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type {
   EffectPromptBatchSettings,
+  EffectPromptBatchSettingsV5,
   EffectPromptDimensions,
   EffectPromptFragmentType,
   EffectPromptNodeDetailBlock,
@@ -23,6 +24,7 @@ import {
   EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD,
   EFFECT_PROMPT_VISUAL_OVERLAP_THRESHOLD,
   isEffectPromptSettings,
+  isEffectPromptSettingsV5,
   trigramDice,
 } from './effect-prompt.quality';
 
@@ -191,7 +193,13 @@ const fragmentType = (value: unknown): EffectPromptFragmentType | null =>
 
 const dimensions = (value: unknown): EffectPromptDimensions | null => {
   if (!isRecord(value)) return null;
-  const entries = EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, publicText(value[key], 240)]);
+  const entries = EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [
+    key,
+    publicText(
+      key === 'productRelation' ? (value.productRelation ?? value.sellingPoint) : value[key],
+      240,
+    ),
+  ]);
   if (entries.some(([, item]) => !item)) return null;
   return Object.fromEntries(entries) as EffectPromptDimensions;
 };
@@ -230,10 +238,22 @@ const enumField = (
 const inputSnapshot = (run: EffectPromptNodeDetailRunRecord): JsonRecord =>
   metadataRecord(run.inputSnapshot);
 
-const inputSettings = (run: EffectPromptNodeDetailRunRecord): EffectPromptBatchSettings | null => {
+const inputSettings = (
+  run: EffectPromptNodeDetailRunRecord,
+): EffectPromptBatchSettings | EffectPromptBatchSettingsV5 | null => {
   const settings = inputSnapshot(run).settings;
-  return isEffectPromptSettings(settings) ? settings : null;
+  return isEffectPromptSettings(settings) || isEffectPromptSettingsV5(settings) ? settings : null;
 };
+
+const dimensionValue = (
+  dimensionsValue: EffectPromptNodeDetailPrompt['dimensions'],
+  key: keyof EffectPromptDimensions,
+): string =>
+  key === 'productRelation'
+    ? 'productRelation' in dimensionsValue
+      ? dimensionsValue.productRelation
+      : dimensionsValue.sellingPoint
+    : dimensionsValue[key];
 
 const insightResult = (run: EffectPromptNodeDetailRunRecord): JsonRecord => {
   const artifact = metadataRecord(inputSnapshot(run).insightArtifact);
@@ -340,7 +360,7 @@ const promptPreview = (item: EffectPromptNodeDetailPrompt): EffectPromptNodeDeta
   materialTags: safeStrings(item.materialTags, 12),
   targetDurationSeconds: item.targetDurationSeconds,
   dimensions: Object.fromEntries(
-    EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, publicText(item.dimensions[key], 240)]),
+    Object.entries(item.dimensions).map(([key, value]) => [key, publicText(value, 240)]),
   ) as EffectPromptDimensions,
   content: publicText(item.content),
 });
@@ -503,7 +523,10 @@ const routeBlock = (
           : 'PENDING';
     return {
       fragmentType: type,
-      targetCount: settings.fragmentConfigs[type].count,
+      targetCount:
+        'fragmentConfigs' in settings
+          ? settings.fragmentConfigs[type].count
+          : Math.ceil(settings.targetCount / EFFECT_PROMPT_FRAGMENT_TYPES.length),
       candidateCount:
         finalCounts?.[type] ??
         (phase === 'BLUEPRINT'
@@ -615,7 +638,7 @@ const coordinates = (run: EffectPromptNodeDetailRunRecord): Coordinate[] => {
     ['narrative', 'narratives'],
     ['scene', 'scenes'],
     ['persona', 'personas'],
-    ['sellingPoint', 'sellingPoints'],
+    ['productRelation', 'sellingPoints'],
     ['camera', 'cameras'],
     ['emotion', 'emotions'],
   ];
@@ -680,7 +703,7 @@ const blueprints = (run: EffectPromptNodeDetailRunRecord): EffectPromptNodeDetai
         narrative: publicText(raw.narrativeCoordinateId, 120),
         scene: publicText(raw.sceneCoordinateId, 120),
         persona: publicText(raw.personaCoordinateId, 120),
-        sellingPoint: publicText(raw.sellingPointCoordinateId, 120),
+        productRelation: publicText(raw.sellingPointCoordinateId, 120),
         camera: publicText(raw.cameraCoordinateId, 120),
         emotion: publicText(raw.emotionCoordinateId, 120),
       };
@@ -810,7 +833,7 @@ const semanticSignature = (item: EffectPromptNodeDetailPrompt): string =>
   [
     item.fragmentType,
     item.dimensions.narrative,
-    item.dimensions.sellingPoint,
+    dimensionValue(item.dimensions, 'productRelation'),
     item.dimensions.scene,
   ]
     .map(normalizedValue)
@@ -848,15 +871,16 @@ const pairBlock = (
       const score = visualKeys.reduce(
         (total, [key]) =>
           total +
-          (normalizedValue(left.dimensions[key]) === normalizedValue(right.dimensions[key])
+          (normalizedValue(dimensionValue(left.dimensions, key)) ===
+          normalizedValue(dimensionValue(right.dimensions, key))
             ? visualWeights[key]
             : 0),
         0,
       );
       if (score < EFFECT_PROMPT_VISUAL_OVERLAP_THRESHOLD) continue;
       const reasons = visualKeys.flatMap(([key, label]) =>
-        normalizedValue(left.dimensions[key as keyof EffectPromptDimensions]) ===
-        normalizedValue(right.dimensions[key as keyof EffectPromptDimensions])
+        normalizedValue(dimensionValue(left.dimensions, key as keyof EffectPromptDimensions)) ===
+        normalizedValue(dimensionValue(right.dimensions, key as keyof EffectPromptDimensions))
           ? [label]
           : [],
       );
@@ -907,6 +931,29 @@ const nodeMetricFields = (
               ? '未设置'
               : null,
         ),
+      ]);
+    case 'COHERENT_CREATIVE_GENERATION':
+      return compact([
+        numberField(metadata, 'targetCount', '目标创意'),
+        numberField(metadata, 'candidateCount', '已生成创意'),
+        numberField(metadata, 'completedShardCount', '完成分片'),
+      ]);
+    case 'CREATIVE_EVALUATION_CLASSIFICATION':
+      return compact([
+        numberField(metadata, 'evaluatedCount', '已评估创意'),
+        numberField(metadata, 'acceptedCount', '通过评估'),
+        numberField(metadata, 'rejectedCount', '未通过评估'),
+      ]);
+    case 'EXACT_SELECTION_AND_SUPPLEMENT':
+      return compact([
+        numberField(metadata, 'targetCount', '目标数量'),
+        numberField(metadata, 'selectedCount', '已择优保留'),
+        numberField(metadata, 'supplementedCount', '补充数量'),
+      ]);
+    case 'ITEM_EVALUATE':
+      return compact([
+        numberField(metadata, 'evaluatedCount', '已评估 Prompt'),
+        enumField(metadata, 'classificationStatus', '用途评估', ['PENDING', 'VERIFIED']),
       ]);
     case 'STRATEGY_PLANNING':
       return compact([
@@ -1108,10 +1155,20 @@ const actualFields = (
     return compact([
       textField('产品名称', insightText(insight, 'productName', 'product_name')),
       textField('产品品类', insightText(insight, 'productCategory', 'product_category')),
-      settings ? { label: '语义重复度上限', value: `${settings.semanticLimit}%` } : null,
-      settings ? { label: '画面重合度上限', value: `${settings.visualLimit}%` } : null,
+      settings && 'semanticLimit' in settings
+        ? { label: '语义重复度上限', value: `${settings.semanticLimit}%` }
+        : null,
+      settings && 'visualLimit' in settings
+        ? { label: '画面重合度上限', value: `${settings.visualLimit}%` }
+        : null,
+      settings && 'targetCount' in settings
+        ? { label: '目标数量', value: `${settings.targetCount} 条` }
+        : null,
+      settings && 'defaultDurationSeconds' in settings
+        ? { label: '统一时长', value: `${settings.defaultDurationSeconds} 秒` }
+        : null,
       { label: '保留人工内容', value: retainedPrompts(run).length },
-      ...(settings
+      ...(settings && 'fragmentConfigs' in settings
         ? EFFECT_PROMPT_FRAGMENT_TYPES.map((type) => ({
             label: EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[type],
             value: `${settings.fragmentConfigs[type].count} 条 · ${settings.fragmentConfigs[type].durationSeconds} 秒`,

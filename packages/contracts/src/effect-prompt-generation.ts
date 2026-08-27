@@ -1,6 +1,7 @@
 import type { WorkingArtifactCommitStatus, WorkingArtifactCommitSummary } from './workflow-working';
 
-export const EFFECT_PROMPT_SCHEMA_VERSION = 5 as const;
+export const EFFECT_PROMPT_LEGACY_SCHEMA_VERSION = 5 as const;
+export const EFFECT_PROMPT_SCHEMA_VERSION = 6 as const;
 export const EFFECT_PROMPT_API_BASE =
   '/api/projects/:projectId/workflows/effect/prompt-generation' as const;
 
@@ -28,13 +29,24 @@ export const EFFECT_PROMPT_DIMENSIONS = [
   { key: 'narrative', label: '叙事结构' },
   { key: 'scene', label: '场景变量' },
   { key: 'persona', label: '人物变量' },
-  { key: 'sellingPoint', label: '卖点侧重' },
+  { key: 'productRelation', label: '产品关联点' },
   { key: 'camera', label: '镜头语言' },
   { key: 'emotion', label: '情绪基调' },
 ] as const;
 export type EffectPromptDimensionKey = (typeof EFFECT_PROMPT_DIMENSIONS)[number]['key'];
 
 export type EffectPromptDimensions = Record<EffectPromptDimensionKey, string>;
+
+export const EFFECT_PROMPT_V5_DIMENSIONS = [
+  { key: 'narrative', label: '叙事结构' },
+  { key: 'scene', label: '场景变量' },
+  { key: 'persona', label: '人物变量' },
+  { key: 'sellingPoint', label: '卖点侧重' },
+  { key: 'camera', label: '镜头语言' },
+  { key: 'emotion', label: '情绪基调' },
+] as const;
+export type EffectPromptV5DimensionKey = (typeof EFFECT_PROMPT_V5_DIMENSIONS)[number]['key'];
+export type EffectPromptDimensionsV5 = Record<EffectPromptV5DimensionKey, string>;
 
 export const EFFECT_PROMPT_FRAGMENT_TYPES = [
   'HOOK',
@@ -74,10 +86,15 @@ export const DEFAULT_EFFECT_PROMPT_FRAGMENT_CONFIGS: EffectPromptFragmentConfigs
   OUTRO: { count: 4, durationSeconds: 5 },
 };
 
-export type EffectPromptBatchSettings = {
+export type EffectPromptBatchSettingsV5 = {
   fragmentConfigs: EffectPromptFragmentConfigs;
   semanticLimit: number;
   visualLimit: number;
+};
+
+export type EffectPromptBatchSettings = {
+  targetCount: number;
+  defaultDurationSeconds: number;
 };
 
 export const EFFECT_PROMPT_RENDER_CAPABILITY_KEYS = [
@@ -167,14 +184,8 @@ export type EffectPromptSharedPrompt = {
 };
 
 export const DEFAULT_EFFECT_PROMPT_SETTINGS: EffectPromptBatchSettings = {
-  fragmentConfigs: Object.fromEntries(
-    EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => [
-      fragmentType,
-      { ...DEFAULT_EFFECT_PROMPT_FRAGMENT_CONFIGS[fragmentType] },
-    ]),
-  ) as EffectPromptFragmentConfigs,
-  semanticLimit: EFFECT_PROMPT_LIMITS.defaultSemanticDuplicateRate,
-  visualLimit: EFFECT_PROMPT_LIMITS.defaultVisualOverlapRate,
+  targetCount: EFFECT_PROMPT_LIMITS.defaultCount,
+  defaultDurationSeconds: EFFECT_PROMPT_LIMITS.defaultDurationSeconds,
 };
 
 export const EFFECT_PROMPT_ITEM_ORIGINS = ['AI', 'MANUAL'] as const;
@@ -252,14 +263,14 @@ export type EffectPromptInsightCoverage = {
   appliedConstraints: EffectPromptInsightReference[];
 };
 
-export type EffectPromptItem = {
+export type EffectPromptItemV5 = {
   id: string;
   code: string;
   origin: EffectPromptItemOrigin;
   fragmentType: EffectPromptFragmentType;
   materialTags: string[];
   targetDurationSeconds: number;
-  dimensions: EffectPromptDimensions;
+  dimensions: EffectPromptDimensionsV5;
   content: string;
   insightBindings: EffectPromptInsightBinding[];
   manualEdited: boolean;
@@ -267,7 +278,7 @@ export type EffectPromptItem = {
   updatedAt: string;
 };
 
-export type EffectPromptMetrics = {
+export type EffectPromptMetricsV5 = {
   targetCount: number;
   acceptedCount: number;
   generatedCandidateCount: number;
@@ -293,8 +304,69 @@ export type EffectPromptMetrics = {
   executionInvalidReasons: Array<{ code: string; count: number }>;
 };
 
+export const EFFECT_PROMPT_CLASSIFICATION_STATUSES = ['PENDING', 'VERIFIED'] as const;
+export type EffectPromptClassificationStatus =
+  (typeof EFFECT_PROMPT_CLASSIFICATION_STATUSES)[number];
+
+export type EffectPromptItem = {
+  id: string;
+  code: string;
+  origin: EffectPromptItemOrigin;
+  /** Compatibility projection for downstream consumers. Always equals primaryPurpose. */
+  fragmentType: EffectPromptFragmentType;
+  primaryPurpose: EffectPromptFragmentType;
+  /** Contains primaryPurpose and any additional compatible purposes. */
+  compatiblePurposes: EffectPromptFragmentType[];
+  classificationStatus: EffectPromptClassificationStatus;
+  productRelevance: number;
+  materialTags: string[];
+  targetDurationSeconds: number;
+  dimensions: EffectPromptDimensions;
+  content: string;
+  insightBindings: EffectPromptInsightBinding[];
+  manualEdited: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type EffectPromptQualityScores = {
+  productRelevance: number;
+  creativeCoherence: number;
+  visualExecutability: number;
+  commercialUsefulness: number;
+  visualClarity: number;
+};
+
+export type EffectPromptMetrics = {
+  targetCount: number;
+  candidateTargetCount: number;
+  generatedCandidateCount: number;
+  acceptedCount: number;
+  rejectedCount: number;
+  replenishmentRounds: number;
+  exactDuplicateCount: number;
+  purposeDistribution: Array<{
+    purpose: EffectPromptFragmentType;
+    primaryCount: number;
+    compatibleCount: number;
+  }>;
+  averageScores: EffectPromptQualityScores;
+  hardIssueCounts: Array<{ code: string; count: number }>;
+  warningCounts: Array<{ code: string; count: number }>;
+};
+
 export const EFFECT_PROMPT_QUALITY_STATUSES = ['PASS', 'NEEDS_REVIEW'] as const;
 export type EffectPromptQualityStatus = (typeof EFFECT_PROMPT_QUALITY_STATUSES)[number];
+
+export type EffectPromptBatchResultV5 = {
+  schemaVersion: typeof EFFECT_PROMPT_LEGACY_SCHEMA_VERSION;
+  settings: EffectPromptBatchSettingsV5;
+  renderProfile: EffectPromptRenderProfile;
+  sharedPrompt?: EffectPromptSharedPrompt;
+  items: EffectPromptItemV5[];
+  metrics: EffectPromptMetricsV5;
+  qualityStatus: EffectPromptQualityStatus;
+};
 
 export type EffectPromptBatchResult = {
   schemaVersion: typeof EFFECT_PROMPT_SCHEMA_VERSION;
@@ -307,19 +379,33 @@ export type EffectPromptBatchResult = {
   qualityStatus: EffectPromptQualityStatus;
 };
 
+export type ReadableEffectPromptBatchResult = EffectPromptBatchResultV5 | EffectPromptBatchResult;
+
 export type EffectPromptManualOverrides = {
   edited: Record<
     string,
     Pick<
       EffectPromptItem,
-      'content' | 'fragmentType' | 'materialTags' | 'targetDurationSeconds' | 'dimensions'
+      | 'content'
+      | 'fragmentType'
+      | 'primaryPurpose'
+      | 'compatiblePurposes'
+      | 'classificationStatus'
+      | 'productRelevance'
+      | 'materialTags'
+      | 'targetDurationSeconds'
+      | 'dimensions'
     >
   >;
   added: EffectPromptItem[];
   deleted: string[];
 };
 
-export const EFFECT_PROMPT_OPERATIONS = ['BATCH_GENERATE', 'ITEM_REGENERATE'] as const;
+export const EFFECT_PROMPT_OPERATIONS = [
+  'BATCH_GENERATE',
+  'ITEM_REGENERATE',
+  'ITEM_EVALUATE',
+] as const;
 export type EffectPromptOperation = (typeof EFFECT_PROMPT_OPERATIONS)[number];
 
 export const EFFECT_PROMPT_RUN_STATUSES = ['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED'] as const;
@@ -348,17 +434,23 @@ export const EFFECT_PROMPT_STAGE_STATUSES = [
 ] as const;
 export type EffectPromptStageStatus = (typeof EFFECT_PROMPT_STAGE_STATUSES)[number];
 
-export const EFFECT_PROMPT_SHARD_PHASES = ['BLUEPRINT', 'PROMPT'] as const;
+export const EFFECT_PROMPT_SHARD_PHASES = [
+  'BLUEPRINT',
+  'PROMPT',
+  'CREATIVE',
+  'CLASSIFICATION',
+] as const;
 export type EffectPromptShardPhase = (typeof EFFECT_PROMPT_SHARD_PHASES)[number];
 
 export const EFFECT_PROMPT_GRAPH_VERSIONS = [
   'V8_SINGLE_STRATEGY',
   'V9_SIX_BRANCH_STRATEGY',
   'V10_RELATION_COORDINATE_BLUEPRINT',
+  'V11_COHERENT_CREATIVE_GENERATION',
 ] as const;
 export type EffectPromptGraphVersion = (typeof EFFECT_PROMPT_GRAPH_VERSIONS)[number];
 export const CURRENT_EFFECT_PROMPT_GRAPH_VERSION: EffectPromptGraphVersion =
-  'V10_RELATION_COORDINATE_BLUEPRINT';
+  'V11_COHERENT_CREATIVE_GENERATION';
 
 export const EFFECT_PROMPT_GRAPH_NODES = [
   { id: 'LOAD_AND_SNAPSHOT', label: '输入快照', group: 'SNAPSHOT' },
@@ -445,6 +537,18 @@ export const EFFECT_PROMPT_GRAPH_NODES = [
   { id: 'INSIGHT_COVERAGE', label: '提炼信息覆盖校验', group: 'QUALITY' },
   { id: 'QUALITY_GATE', label: '质量门禁', group: 'QUALITY' },
   { id: 'REPLENISH', label: '定向补齐', group: 'REPLENISH' },
+  { id: 'COHERENT_CREATIVE_GENERATION', label: '连贯六维创意生成', group: 'GENERATION' },
+  {
+    id: 'CREATIVE_EVALUATION_CLASSIFICATION',
+    label: '创意评估与用途分类',
+    group: 'QUALITY',
+  },
+  {
+    id: 'EXACT_SELECTION_AND_SUPPLEMENT',
+    label: '精确数量择优与补充',
+    group: 'REPLENISH',
+  },
+  { id: 'ITEM_EVALUATE', label: '单条创意重新评估', group: 'QUALITY' },
   { id: 'RESULT_SAVE', label: '结果保存', group: 'RESULT' },
 ] as const;
 export type EffectPromptNodeId = (typeof EFFECT_PROMPT_GRAPH_NODES)[number]['id'];
@@ -544,6 +648,24 @@ export const EFFECT_PROMPT_V10_GRAPH_NODE_IDS = [
   'INSIGHT_COVERAGE',
   'QUALITY_GATE',
   'REPLENISH',
+  'RESULT_SAVE',
+] as const satisfies readonly EffectPromptNodeId[];
+
+export const EFFECT_PROMPT_V11_GRAPH_NODE_IDS = [
+  'LOAD_AND_SNAPSHOT',
+  'INSIGHT_MAPPING',
+  'SHARED_PROMPT_COMPILATION',
+  'COHERENT_CREATIVE_GENERATION',
+  'CREATIVE_EVALUATION_CLASSIFICATION',
+  'EXACT_SELECTION_AND_SUPPLEMENT',
+  'RESULT_SAVE',
+] as const satisfies readonly EffectPromptNodeId[];
+
+export const EFFECT_PROMPT_V11_ITEM_EVALUATE_GRAPH_NODE_IDS = [
+  'LOAD_AND_SNAPSHOT',
+  'INSIGHT_MAPPING',
+  'SHARED_PROMPT_COMPILATION',
+  'ITEM_EVALUATE',
   'RESULT_SAVE',
 ] as const satisfies readonly EffectPromptNodeId[];
 
@@ -701,8 +823,24 @@ export const EFFECT_PROMPT_V10_GRAPH_EDGES = [
   { from: 'REPLENISH', to: 'BLUEPRINT_FRAGMENT_ROUTER' },
 ] as const satisfies ReadonlyArray<{ from: EffectPromptNodeId; to: EffectPromptNodeId }>;
 
+export const EFFECT_PROMPT_V11_GRAPH_EDGES = [
+  { from: 'LOAD_AND_SNAPSHOT', to: 'INSIGHT_MAPPING' },
+  { from: 'INSIGHT_MAPPING', to: 'SHARED_PROMPT_COMPILATION' },
+  { from: 'SHARED_PROMPT_COMPILATION', to: 'COHERENT_CREATIVE_GENERATION' },
+  { from: 'COHERENT_CREATIVE_GENERATION', to: 'CREATIVE_EVALUATION_CLASSIFICATION' },
+  { from: 'CREATIVE_EVALUATION_CLASSIFICATION', to: 'EXACT_SELECTION_AND_SUPPLEMENT' },
+  { from: 'EXACT_SELECTION_AND_SUPPLEMENT', to: 'RESULT_SAVE' },
+] as const satisfies ReadonlyArray<{ from: EffectPromptNodeId; to: EffectPromptNodeId }>;
+
+export const EFFECT_PROMPT_V11_ITEM_EVALUATE_GRAPH_EDGES = [
+  { from: 'LOAD_AND_SNAPSHOT', to: 'INSIGHT_MAPPING' },
+  { from: 'INSIGHT_MAPPING', to: 'SHARED_PROMPT_COMPILATION' },
+  { from: 'SHARED_PROMPT_COMPILATION', to: 'ITEM_EVALUATE' },
+  { from: 'ITEM_EVALUATE', to: 'RESULT_SAVE' },
+] as const satisfies ReadonlyArray<{ from: EffectPromptNodeId; to: EffectPromptNodeId }>;
+
 /** Current topology alias retained for existing consumers. */
-export const EFFECT_PROMPT_GRAPH_EDGES = EFFECT_PROMPT_V10_GRAPH_EDGES;
+export const EFFECT_PROMPT_GRAPH_EDGES = EFFECT_PROMPT_V11_GRAPH_EDGES;
 
 export const effectPromptGraphNodeIds = (
   version: EffectPromptGraphVersion,
@@ -711,7 +849,9 @@ export const effectPromptGraphNodeIds = (
     ? EFFECT_PROMPT_V8_GRAPH_NODE_IDS
     : version === 'V9_SIX_BRANCH_STRATEGY'
       ? EFFECT_PROMPT_V9_GRAPH_NODE_IDS
-      : EFFECT_PROMPT_V10_GRAPH_NODE_IDS;
+      : version === 'V10_RELATION_COORDINATE_BLUEPRINT'
+        ? EFFECT_PROMPT_V10_GRAPH_NODE_IDS
+        : EFFECT_PROMPT_V11_GRAPH_NODE_IDS;
 
 export const effectPromptGraphEdges = (
   version: EffectPromptGraphVersion,
@@ -720,7 +860,25 @@ export const effectPromptGraphEdges = (
     ? EFFECT_PROMPT_V8_GRAPH_EDGES
     : version === 'V9_SIX_BRANCH_STRATEGY'
       ? EFFECT_PROMPT_V9_GRAPH_EDGES
-      : EFFECT_PROMPT_V10_GRAPH_EDGES;
+      : version === 'V10_RELATION_COORDINATE_BLUEPRINT'
+        ? EFFECT_PROMPT_V10_GRAPH_EDGES
+        : EFFECT_PROMPT_V11_GRAPH_EDGES;
+
+export const effectPromptRunGraphNodeIds = (
+  version: EffectPromptGraphVersion,
+  operation: EffectPromptOperation,
+): readonly EffectPromptNodeId[] =>
+  version === 'V11_COHERENT_CREATIVE_GENERATION' && operation === 'ITEM_EVALUATE'
+    ? EFFECT_PROMPT_V11_ITEM_EVALUATE_GRAPH_NODE_IDS
+    : effectPromptGraphNodeIds(version);
+
+export const effectPromptRunGraphEdges = (
+  version: EffectPromptGraphVersion,
+  operation: EffectPromptOperation,
+): ReadonlyArray<{ from: EffectPromptNodeId; to: EffectPromptNodeId }> =>
+  version === 'V11_COHERENT_CREATIVE_GENERATION' && operation === 'ITEM_EVALUATE'
+    ? EFFECT_PROMPT_V11_ITEM_EVALUATE_GRAPH_EDGES
+    : effectPromptGraphEdges(version);
 
 export type EffectPromptNodeExecution = {
   nodeId: EffectPromptNodeId;
@@ -763,7 +921,7 @@ export type EffectPromptProductState = {
   resultRevision: number | null;
   settings: EffectPromptBatchSettings;
   settingsRevision: number | null;
-  metrics: EffectPromptMetrics | null;
+  metrics: EffectPromptMetrics | EffectPromptMetricsV5 | null;
   qualityStatus: EffectPromptQualityStatus | null;
   commitStatus: WorkingArtifactCommitStatus;
   workingArtifactRevision: number | null;
@@ -788,8 +946,8 @@ export type GetEffectPromptResultData = {
   /** Read-only candidates recovered from a failed run; never a committed short batch. */
   isPartialPreview: boolean;
   previewRunId: string | null;
-  result: Omit<EffectPromptBatchResult, 'items'>;
-  items: EffectPromptItem[];
+  result: Omit<ReadableEffectPromptBatchResult, 'items'>;
+  items: Array<EffectPromptItem | EffectPromptItemV5>;
   total: number;
   page: number;
   pageSize: number;
@@ -800,6 +958,8 @@ export type GetEffectPromptResultQuery = {
   page?: number | undefined;
   pageSize?: number | undefined;
   query?: string | undefined;
+  purpose?: EffectPromptFragmentType | undefined;
+  /** @deprecated Use purpose. Retained for historical clients. */
   fragmentType?: EffectPromptFragmentType | undefined;
 };
 
@@ -841,7 +1001,7 @@ export type EffectPromptNodeDetailField = {
 };
 
 export type EffectPromptNodeDetailPrompt = Pick<
-  EffectPromptItem,
+  EffectPromptItem | EffectPromptItemV5,
   'code' | 'fragmentType' | 'materialTags' | 'targetDurationSeconds' | 'dimensions' | 'content'
 >;
 
@@ -964,7 +1124,7 @@ export type GetEffectPromptNodeDetailData = {
 
 export type UpsertEffectPromptItemRequest = Pick<
   EffectPromptItem,
-  'content' | 'fragmentType' | 'materialTags' | 'dimensions'
+  'content' | 'materialTags' | 'dimensions'
 > & { expectedRevision: number };
 
 export type UpdateEffectPromptSharedPromptRequest = {
@@ -997,7 +1157,7 @@ export const effectPromptSettingsNodeId = (productId: string): string =>
   `PROMPT_GENERATION:${productId}`;
 
 export const effectPromptFragmentTypeTargetCounts = (
-  settings: Pick<EffectPromptBatchSettings, 'fragmentConfigs'>,
+  settings: Pick<EffectPromptBatchSettingsV5, 'fragmentConfigs'>,
 ): Record<EffectPromptFragmentType, number> => {
   return Object.fromEntries(
     EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => [
@@ -1008,17 +1168,34 @@ export const effectPromptFragmentTypeTargetCounts = (
 };
 
 export const effectPromptTargetCount = (
-  settings: Pick<EffectPromptBatchSettings, 'fragmentConfigs'>,
+  settings: EffectPromptBatchSettings | EffectPromptBatchSettingsV5,
 ): number =>
-  EFFECT_PROMPT_FRAGMENT_TYPES.reduce(
-    (total, fragmentType) => total + settings.fragmentConfigs[fragmentType].count,
-    0,
-  );
+  'targetCount' in settings
+    ? settings.targetCount
+    : EFFECT_PROMPT_FRAGMENT_TYPES.reduce(
+        (total, fragmentType) => total + settings.fragmentConfigs[fragmentType].count,
+        0,
+      );
 
 export const normalizeEffectPromptSettings = (
   input: EffectPromptBatchSettings,
 ): EffectPromptBatchSettings => {
-  const fragmentConfigs = Object.fromEntries(
+  return {
+    targetCount: Math.min(
+      EFFECT_PROMPT_LIMITS.maxCount,
+      Math.max(EFFECT_PROMPT_LIMITS.minCount, Math.round(input.targetCount)),
+    ),
+    defaultDurationSeconds: Math.min(
+      EFFECT_PROMPT_LIMITS.maxDurationSeconds,
+      Math.max(EFFECT_PROMPT_LIMITS.minDurationSeconds, Math.round(input.defaultDurationSeconds)),
+    ),
+  };
+};
+
+export const normalizeEffectPromptSettingsV5 = (
+  input: EffectPromptBatchSettingsV5,
+): EffectPromptBatchSettingsV5 => ({
+  fragmentConfigs: Object.fromEntries(
     EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => {
       const source = input.fragmentConfigs[fragmentType];
       return [
@@ -1035,19 +1212,16 @@ export const normalizeEffectPromptSettings = (
         },
       ];
     }),
-  ) as EffectPromptFragmentConfigs;
-  return {
-    fragmentConfigs,
-    semanticLimit: Math.min(
-      EFFECT_PROMPT_LIMITS.maxSemanticDuplicateRate,
-      Math.max(EFFECT_PROMPT_LIMITS.minSemanticDuplicateRate, Math.round(input.semanticLimit)),
-    ),
-    visualLimit: Math.min(
-      EFFECT_PROMPT_LIMITS.maxVisualOverlapRate,
-      Math.max(EFFECT_PROMPT_LIMITS.minVisualOverlapRate, Math.round(input.visualLimit)),
-    ),
-  };
-};
+  ) as EffectPromptFragmentConfigs,
+  semanticLimit: Math.min(
+    EFFECT_PROMPT_LIMITS.maxSemanticDuplicateRate,
+    Math.max(EFFECT_PROMPT_LIMITS.minSemanticDuplicateRate, Math.round(input.semanticLimit)),
+  ),
+  visualLimit: Math.min(
+    EFFECT_PROMPT_LIMITS.maxVisualOverlapRate,
+    Math.max(EFFECT_PROMPT_LIMITS.minVisualOverlapRate, Math.round(input.visualLimit)),
+  ),
+});
 
 const legacyFragmentCounts = (totalCount: number): Record<EffectPromptFragmentType, number> => {
   const result = Object.fromEntries(
@@ -1082,18 +1256,40 @@ export const migrateEffectPromptSettings = (
 ): EffectPromptBatchSettings => {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     const source = value as Record<string, unknown>;
+    const rawTargetCount = Number(source.targetCount);
+    const rawDefaultDuration = Number(source.defaultDurationSeconds);
+    if (Number.isFinite(rawTargetCount) && Number.isFinite(rawDefaultDuration))
+      return normalizeEffectPromptSettings({
+        targetCount: rawTargetCount,
+        defaultDurationSeconds: rawDefaultDuration,
+      });
     const configs = source.fragmentConfigs;
     if (configs && typeof configs === 'object' && !Array.isArray(configs)) {
-      const candidate = {
-        fragmentConfigs: configs,
-        semanticLimit: source.semanticLimit,
-        visualLimit: source.visualLimit,
-      } as EffectPromptBatchSettings;
       try {
-        const normalized = normalizeEffectPromptSettings(candidate);
-        const total = effectPromptTargetCount(normalized);
-        if (total >= EFFECT_PROMPT_LIMITS.minCount && total <= EFFECT_PROMPT_LIMITS.maxCount)
-          return normalized;
+        const candidate = normalizeEffectPromptSettingsV5({
+          fragmentConfigs: configs as EffectPromptFragmentConfigs,
+          semanticLimit: Number(source.semanticLimit),
+          visualLimit: Number(source.visualLimit),
+        });
+        const weightedDurations = new Map<number, number>();
+        for (const fragmentType of EFFECT_PROMPT_FRAGMENT_TYPES) {
+          const config = candidate.fragmentConfigs[fragmentType];
+          weightedDurations.set(
+            config.durationSeconds,
+            (weightedDurations.get(config.durationSeconds) ?? 0) + config.count,
+          );
+        }
+        const durationSeconds = [...weightedDurations].sort(
+          ([leftDuration, leftCount], [rightDuration, rightCount]) =>
+            rightCount - leftCount ||
+            Math.abs(leftDuration - EFFECT_PROMPT_LIMITS.defaultDurationSeconds) -
+              Math.abs(rightDuration - EFFECT_PROMPT_LIMITS.defaultDurationSeconds) ||
+            leftDuration - rightDuration,
+        )[0]?.[0];
+        return normalizeEffectPromptSettings({
+          targetCount: effectPromptTargetCount(candidate),
+          defaultDurationSeconds: durationSeconds ?? EFFECT_PROMPT_LIMITS.defaultDurationSeconds,
+        });
       } catch {
         // Fall through to the deterministic legacy migration.
       }
@@ -1110,27 +1306,42 @@ export const migrateEffectPromptSettings = (
       rawDuration <= EFFECT_PROMPT_LIMITS.maxDurationSeconds
         ? rawDuration
         : EFFECT_PROMPT_LIMITS.defaultDurationSeconds;
-    const counts = legacyFragmentCounts(totalCount);
-    return {
+    return normalizeEffectPromptSettings({
+      targetCount: totalCount,
+      defaultDurationSeconds: durationSeconds,
+    });
+  }
+  return normalizeEffectPromptSettings(DEFAULT_EFFECT_PROMPT_SETTINGS);
+};
+
+export const migrateEffectPromptSettingsV5 = (
+  value: unknown,
+  sourceSchemaVersion: number = EFFECT_PROMPT_LEGACY_SCHEMA_VERSION,
+): EffectPromptBatchSettingsV5 => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const source = value as Record<string, unknown>;
+    if (source.fragmentConfigs && typeof source.fragmentConfigs === 'object')
+      return normalizeEffectPromptSettingsV5({
+        fragmentConfigs: source.fragmentConfigs as EffectPromptFragmentConfigs,
+        semanticLimit: Number(source.semanticLimit),
+        visualLimit: Number(source.visualLimit),
+      });
+    const settings = migrateEffectPromptSettings(source, sourceSchemaVersion);
+    const counts = legacyFragmentCounts(settings.targetCount);
+    return normalizeEffectPromptSettingsV5({
       fragmentConfigs: Object.fromEntries(
         EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => [
           fragmentType,
-          { count: counts[fragmentType], durationSeconds },
+          { count: counts[fragmentType], durationSeconds: settings.defaultDurationSeconds },
         ]),
       ) as EffectPromptFragmentConfigs,
-      semanticLimit:
-        Number.isInteger(source.semanticLimit) &&
-        Number(source.semanticLimit) >= EFFECT_PROMPT_LIMITS.minSemanticDuplicateRate &&
-        Number(source.semanticLimit) <= EFFECT_PROMPT_LIMITS.maxSemanticDuplicateRate
-          ? Number(source.semanticLimit)
-          : EFFECT_PROMPT_LIMITS.defaultSemanticDuplicateRate,
-      visualLimit:
-        Number.isInteger(source.visualLimit) &&
-        Number(source.visualLimit) >= EFFECT_PROMPT_LIMITS.minVisualOverlapRate &&
-        Number(source.visualLimit) <= EFFECT_PROMPT_LIMITS.maxVisualOverlapRate
-          ? Number(source.visualLimit)
-          : EFFECT_PROMPT_LIMITS.defaultVisualOverlapRate,
-    };
+      semanticLimit: EFFECT_PROMPT_LIMITS.defaultSemanticDuplicateRate,
+      visualLimit: EFFECT_PROMPT_LIMITS.defaultVisualOverlapRate,
+    });
   }
-  return normalizeEffectPromptSettings(DEFAULT_EFFECT_PROMPT_SETTINGS);
+  return normalizeEffectPromptSettingsV5({
+    fragmentConfigs: DEFAULT_EFFECT_PROMPT_FRAGMENT_CONFIGS,
+    semanticLimit: EFFECT_PROMPT_LIMITS.defaultSemanticDuplicateRate,
+    visualLimit: EFFECT_PROMPT_LIMITS.defaultVisualOverlapRate,
+  });
 };

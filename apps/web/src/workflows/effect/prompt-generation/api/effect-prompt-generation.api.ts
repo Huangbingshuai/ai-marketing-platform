@@ -65,7 +65,7 @@ export const getEffectPromptResult = (
   productId: string,
   page: number,
   query: string,
-  fragmentType?: EffectPromptFragmentType,
+  purpose?: EffectPromptFragmentType,
   signal?: AbortSignal,
 ): Promise<ApiResponse<GetEffectPromptResultData>> => {
   const search = new URLSearchParams({
@@ -74,7 +74,7 @@ export const getEffectPromptResult = (
     pageSize: '10',
   });
   if (query.trim()) search.set('query', query.trim());
-  if (fragmentType) search.set('fragmentType', fragmentType);
+  if (purpose) search.set('purpose', purpose);
   return requestJson(
     `${basePath(projectId)}/products/${encodeURIComponent(productId)}/result?${search.toString()}`,
     { operation: '加载 Prompt 结果', signal },
@@ -91,7 +91,12 @@ export const startEffectPromptRun = (
     method: 'POST',
     body: input,
     headers: revisionHeaders(input.expectedSettingsRevision),
-    operation: input.operation === 'ITEM_REGENERATE' ? '重新生成单条 Prompt' : '生成 Prompt 批次',
+    operation:
+      input.operation === 'ITEM_REGENERATE'
+        ? '重新生成单条 Prompt'
+        : input.operation === 'ITEM_EVALUATE'
+          ? '重新评估单条 Prompt'
+          : '生成 Prompt 批次',
     signal,
   });
 

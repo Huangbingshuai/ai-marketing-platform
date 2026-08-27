@@ -11,6 +11,7 @@ from .models import (
     FailurePayload,
     ProgressPayload,
     PromptBatchResult,
+    PromptBatchResultV6,
     RuntimeContext,
     ShardRecord,
     ShardsResponse,
@@ -31,7 +32,13 @@ class InternalApi(Protocol):
     async def put_shard(self, context: RuntimeContext, shard: ShardRecord) -> None: ...
     async def get_shards(self, context: RuntimeContext) -> list[ShardRecord]: ...
     async def heartbeat(self, context: RuntimeContext, payload: ProgressPayload) -> None: ...
-    async def complete(self, context: RuntimeContext, result: PromptBatchResult) -> str: ...
+    async def complete(
+        self,
+        context: RuntimeContext,
+        result: PromptBatchResult | PromptBatchResultV6,
+        *,
+        execution_mode: str = "ARK",
+    ) -> str: ...
     async def fail(self, context: RuntimeContext, payload: FailurePayload) -> None: ...
 
 
@@ -144,6 +151,16 @@ class HttpInternalApi:
                 "blueprints": [
                     item.model_dump(mode="json", by_alias=True) for item in shard.blueprints
                 ],
+                "creativePlan": [
+                    item.model_dump(mode="json", by_alias=True) for item in shard.creative_plan
+                ],
+                "creativeItems": [
+                    item.model_dump(mode="json", by_alias=True) for item in shard.creative_items
+                ],
+                "classificationPlan": shard.classification_plan,
+                "evaluations": [
+                    item.model_dump(mode="json", by_alias=True) for item in shard.evaluations
+                ],
                 "warnings": [_safe_text(item, 500) for item in shard.warnings],
                 "errorCode": shard.error_code,
                 "errorMessage": shard.error_message,
@@ -170,7 +187,13 @@ class HttpInternalApi:
             json={"projectId": context.project_id},
         )
 
-    async def complete(self, context: RuntimeContext, result: PromptBatchResult) -> str:
+    async def complete(
+        self,
+        context: RuntimeContext,
+        result: PromptBatchResult | PromptBatchResultV6,
+        *,
+        execution_mode: str = "ARK",
+    ) -> str:
         data = await self._json(
             "POST",
             f"{self._ROOT}/runs/{context.run_id}/complete",
@@ -178,6 +201,7 @@ class HttpInternalApi:
             json={
                 "projectId": context.project_id,
                 "result": result.model_dump(mode="json", by_alias=True),
+                "executionMode": execution_mode,
             },
         )
         return CompleteResponse.model_validate(data).prompt_result_id

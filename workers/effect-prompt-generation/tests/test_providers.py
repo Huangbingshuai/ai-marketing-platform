@@ -9,6 +9,8 @@ from effect_prompt_generation.assembly import assemble_fragment_prompt
 from effect_prompt_generation.combinations import make_shards, plan_combinations
 from effect_prompt_generation.insight_mapping import map_insight
 from effect_prompt_generation.models import (
+    CreativeShardPlan,
+    CreativeTask,
     EvidenceMode,
     FragmentType,
     InsightBinding,
@@ -53,6 +55,86 @@ def _shared_prompt() -> SharedPrompt:
         compiled_content=content,
         content_hash=hashlib.sha256(content.encode()).hexdigest(),
     )
+
+
+@pytest.mark.asyncio
+async def test_ark_v11_creative_uses_one_coherent_schema_and_shared_constraints() -> None:
+    seen: dict[str, object] = {}
+    application = map_insight(
+        {"productName": "便携杯", "coreSellingPoints": ["单手开合"]}
+    )
+    fact = next(item for item in application.usable if item.value == "便携杯")
+    shard = CreativeShardPlan(
+        round=0,
+        shard_index=0,
+        tasks=[
+            CreativeTask(
+                slot_id="creative-1",
+                ordinal=1,
+                round=0,
+                target_duration_seconds=5,
+                preferred_fact_ids=[fact.fact_id],
+            )
+        ],
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        seen.update(payload)
+        output = {
+            "items": [
+                {
+                    "slotId": "creative-1",
+                    "ordinal": 99,
+                    "round": 1,
+                    "creativeCore": "通勤途中单手打开便携杯",
+                    "declaredFactIds": [fact.fact_id, "unknown-fact"],
+                    "dimensions": {
+                        "narrative": "动作直接进入产品使用",
+                        "scene": "早高峰地铁站台",
+                        "persona": "单手拿包的成年通勤者",
+                        "productRelation": "便携杯被单手打开",
+                        "camera": "中近景跟随后轻推",
+                        "emotion": "从容利落",
+                    },
+                    "content": "早高峰地铁站台上，成年通勤者单手打开便携杯并喝水，镜头跟随后轻推至杯盖。",
+                    "generatedAt": None,
+                }
+            ]
+        }
+        return httpx.Response(
+            200,
+            json={"status": "completed", "output_text": json.dumps(output, ensure_ascii=False)},
+        )
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.example/v3",
+        api_key="test-key",
+        strategy_model="strategy-model",
+        candidate_model="creative-model",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        call = await provider.generate_creatives(
+            shard,
+            application=application,
+            shared_prompt=_shared_prompt(),
+        )
+    finally:
+        await provider.aclose()
+
+    assert seen["model"] == "creative-model"
+    assert seen["text"]["format"]["strict"] is True  # type: ignore[index]
+    item_schema = seen["text"]["format"]["schema"]["$defs"]["CreativeCandidate"]  # type: ignore[index]
+    assert "creativeCore" in item_schema["properties"]
+    assert "dimensions" in item_schema["properties"]
+    assert "content" in item_schema["properties"]
+    assert "fragmentType" not in item_schema["properties"]
+    prompt = seen["input"][0]["content"][0]["text"]  # type: ignore[index]
+    assert "医疗功效" in prompt
+    assert call.value.items[0].ordinal == 1
+    assert call.value.items[0].round == 0
+    assert call.value.items[0].declared_fact_ids == [fact.fact_id]
 
 
 @pytest.mark.asyncio

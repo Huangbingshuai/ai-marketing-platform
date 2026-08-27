@@ -110,3 +110,21 @@ def test_render_prompt_reports_a_template_variable_that_was_not_supplied() -> No
             "strategy_planning.prompt.txt",
             insight_json="{}",
         )
+
+
+def test_v11_templates_keep_creative_generation_and_evaluation_independent() -> None:
+    creative = load_prompt("v11_creative_base.system.prompt.txt")
+    task = load_prompt("v11_creative_task.user.prompt.txt")
+    evaluation = load_prompt("v11_evaluation_base.system.prompt.txt")
+
+    assert (
+        load_prompt_version("v11_creative_base.system.prompt.txt")
+        == "effect-prompt-v11-coherent-creative-v1"
+    )
+    assert "一次性完成“创意主线、六维创意信息和最终画面正文”" in creative
+    assert "productRelation" in creative
+    assert "不要按钩子、痛点、产品展示、卖点讲解、结尾转化或片尾品牌分组" in task
+    assert "不要输出任何用途分类" in task
+    assert "只评估候选，不改写正文" in evaluation
+    assert "一条素材可以有多个用途" in evaluation
+    assert "evidenceText 必须逐字摘自正文" in evaluation

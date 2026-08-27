@@ -3,6 +3,8 @@ import {
   EFFECT_PROMPT_GRAPH_VERSIONS,
   effectPromptGraphEdges,
   effectPromptGraphNodeIds,
+  effectPromptRunGraphEdges,
+  effectPromptRunGraphNodeIds,
 } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 
@@ -33,6 +35,40 @@ describe('effect prompt generation graph layout', () => {
       .map(([group]) => group);
 
     expect(sixWayGroups).toEqual(['STRATEGY', 'COORDINATE', 'BLUEPRINT', 'GENERATION']);
+  });
+
+  it('renders V11 batch generation as seven ordered stages', () => {
+    const version = 'V11_COHERENT_CREATIVE_GENERATION' as const;
+    expect(effectPromptRunGraphNodeIds(version, 'BATCH_GENERATE')).toEqual([
+      'LOAD_AND_SNAPSHOT',
+      'INSIGHT_MAPPING',
+      'SHARED_PROMPT_COMPILATION',
+      'COHERENT_CREATIVE_GENERATION',
+      'CREATIVE_EVALUATION_CLASSIFICATION',
+      'EXACT_SELECTION_AND_SUPPLEMENT',
+      'RESULT_SAVE',
+    ]);
+    expect(
+      buildEffectPromptGraphRows(
+        effectPromptRunGraphNodeIds(version, 'BATCH_GENERATE'),
+        effectPromptRunGraphEdges(version, 'BATCH_GENERATE'),
+      ),
+    ).toHaveLength(7);
+  });
+
+  it('uses the dedicated five-stage path for asynchronous item evaluation', () => {
+    const version = 'V11_COHERENT_CREATIVE_GENERATION' as const;
+    const nodeIds = effectPromptRunGraphNodeIds(version, 'ITEM_EVALUATE');
+    expect(nodeIds).toEqual([
+      'LOAD_AND_SNAPSHOT',
+      'INSIGHT_MAPPING',
+      'SHARED_PROMPT_COMPILATION',
+      'ITEM_EVALUATE',
+      'RESULT_SAVE',
+    ]);
+    expect(
+      buildEffectPromptGraphRows(nodeIds, effectPromptRunGraphEdges(version, 'ITEM_EVALUATE')).flat(),
+    ).toEqual(nodeIds);
   });
 
   it('ignores only backward replenishment edges when calculating display rows', () => {

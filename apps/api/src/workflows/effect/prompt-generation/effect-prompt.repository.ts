@@ -10,7 +10,6 @@ import type {
   EffectPromptSharedPrompt,
 } from '@ai-marketing/contracts';
 import {
-  EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES,
   CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
   EFFECT_PROMPT_MAX_RUN_ATTEMPTS,
   EFFECT_PROMPT_SCHEMA_VERSION,
@@ -30,6 +29,7 @@ import { workflowStateHash } from '../../../platform/workflow/workflow-state-has
 import {
   mergeEffectPromptCompletionItems,
   parseEffectPromptBatchResult,
+  parseEffectPromptBatchResultV5ForRead,
   recomputePromptQuality,
 } from './effect-prompt.quality';
 import {
@@ -45,6 +45,10 @@ const json = (value: unknown): Prisma.InputJsonValue => value as Prisma.InputJso
 const leaseDate = (now: Date): Date => new Date(now.getTime() + 90_000);
 const parseStrings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+
+type PersistedEffectPromptShardPhase = 'BLUEPRINT' | 'PROMPT';
+const persistedShardPhase = (phase: EffectPromptShardPhase): PersistedEffectPromptShardPhase =>
+  phase === 'CREATIVE' ? 'BLUEPRINT' : phase === 'CLASSIFICATION' ? 'PROMPT' : phase;
 
 export const isAllowedReplacementSellingPoint = (
   insight: unknown,
@@ -66,17 +70,25 @@ export const isAllowedReplacementSellingPoint = (
             .filter(Boolean)
         : [];
     });
-  const allowed = new Set<string>([target.dimensions.sellingPoint]);
-  if (EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES.CORE_SELLING_POINT?.includes(target.fragmentType))
-    readValues('coreSellingPoints', 'core_selling_points').forEach((value) => allowed.add(value));
-  if (
-    EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES.SECONDARY_SELLING_POINT?.includes(
-      target.fragmentType,
-    )
-  )
-    readValues('secondarySellingPoints', 'secondary_selling_points').forEach((value) =>
-      allowed.add(value),
-    );
+  const allowed = new Set<string>([
+    target.dimensions.productRelation,
+    ...readValues(
+      'productName',
+      'product_name',
+      'productCategory',
+      'product_category',
+      'coreSellingPoints',
+      'core_selling_points',
+      'secondarySellingPoints',
+      'secondary_selling_points',
+      'corePainPoints',
+      'core_pain_points',
+      'usageScenarios',
+      'usage_scenarios',
+      'purchaseScenarios',
+      'purchase_scenarios',
+    ),
+  ]);
   const normalized = replacementSellingPoint.normalize('NFC').trim();
   return [...allowed].some((value) => value.normalize('NFC').trim() === normalized);
 };
@@ -125,7 +137,10 @@ export const promptItemsRetainedForRun = (
   (result?.items ?? []).filter(
     (item) =>
       item.id !== targetItemId &&
-      (operation === 'ITEM_REGENERATE' || item.origin === 'MANUAL' || item.manualEdited),
+      (operation === 'ITEM_REGENERATE' ||
+        operation === 'ITEM_EVALUATE' ||
+        item.origin === 'MANUAL' ||
+        item.manualEdited),
   );
 
 export type StartPromptRunInput = {
@@ -329,6 +344,10 @@ export class EffectPromptRepository {
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       });
       const parsedLatest = latest ? parseEffectPromptBatchResult(latest.draftResult) : null;
+      const parsedLatestV5 = latest
+        ? parseEffectPromptBatchResultV5ForRead(latest.draftResult)
+        : null;
+      const readableLatest = parsedLatest ?? parsedLatestV5;
       const latestCurrent =
         latest?.schemaVersion === EFFECT_PROMPT_SCHEMA_VERSION && parsedLatest ? latest : null;
       const currentResult = latestCurrent ? parsedLatest : null;
@@ -339,7 +358,7 @@ export class EffectPromptRepository {
         return { kind: 'RESULT_CONFLICT' as const };
       if (input.operation === 'BATCH_GENERATE' && latest && input.expectedResultRevision === null)
         return { kind: 'RESULT_CONFLICT' as const };
-      if (input.operation === 'ITEM_REGENERATE') {
+      if (input.operation === 'ITEM_REGENERATE' || input.operation === 'ITEM_EVALUATE') {
         if (!latestCurrent || input.expectedResultRevision === null || !input.targetItemId)
           return { kind: 'RESULT_CONFLICT' as const };
         if (!currentResult?.items.some((item) => item.id === input.targetItemId))
@@ -354,7 +373,7 @@ export class EffectPromptRepository {
         !isAllowedReplacementSellingPoint(
           insight.payload,
           targetItem,
-          input.replacementDimensions.sellingPoint,
+          input.replacementDimensions.productRelation,
         )
       )
         return { kind: 'INVALID_SELLING_POINT' as const };
@@ -381,8 +400,9 @@ export class EffectPromptRepository {
           result: insight.payload,
         },
         retainedManualItems: manualItems,
-        sharedPrompt: currentResult?.sharedPrompt ?? null,
-        ...(input.operation === 'ITEM_REGENERATE' && targetItem
+        sharedPrompt: readableLatest?.sharedPrompt ?? null,
+        ...((input.operation === 'ITEM_REGENERATE' || input.operation === 'ITEM_EVALUATE') &&
+        targetItem
           ? {
               targetItem,
               targetItemIndex,
@@ -407,7 +427,7 @@ export class EffectPromptRepository {
         retainedManualItems: manualItems,
         sharedPrompt: snapshot.sharedPrompt,
         regeneration:
-          snapshot.operation === 'ITEM_REGENERATE'
+          snapshot.operation === 'ITEM_REGENERATE' || snapshot.operation === 'ITEM_EVALUATE'
             ? {
                 targetItem: snapshot.targetItem,
                 targetItemIndex: snapshot.targetItemIndex,
@@ -421,7 +441,7 @@ export class EffectPromptRepository {
           projectId,
           workflowRunId,
           productId,
-          operation: input.operation,
+          operation: input.operation === 'ITEM_EVALUATE' ? 'ITEM_REGENERATE' : input.operation,
           targetItemId: input.targetItemId,
           idempotencyKey: input.idempotencyKey,
           requestHash,
@@ -608,6 +628,7 @@ export class EffectPromptRepository {
     now = new Date(),
   ): Promise<boolean> {
     return this.prisma.$transaction(async (transaction) => {
+      const storagePhase = persistedShardPhase(phase);
       const renewed = await transaction.effectPromptRun.updateMany({
         where: {
           projectId,
@@ -619,14 +640,28 @@ export class EffectPromptRepository {
         data: { heartbeatAt: now, leaseExpiresAt: leaseDate(now) },
       });
       if (renewed.count !== 1) return false;
-      const plan = phase === 'BLUEPRINT' ? input.blueprintPlan : input.combinationPlan;
-      const items = phase === 'BLUEPRINT' ? input.blueprints : input.items;
+      const plan =
+        phase === 'BLUEPRINT'
+          ? input.blueprintPlan
+          : phase === 'CREATIVE'
+            ? input.creativePlan
+            : phase === 'CLASSIFICATION'
+              ? input.classificationPlan
+              : input.combinationPlan;
+      const items =
+        phase === 'BLUEPRINT'
+          ? input.blueprints
+          : phase === 'CREATIVE'
+            ? input.creativeItems
+            : phase === 'CLASSIFICATION'
+              ? input.evaluations
+              : input.items;
       await transaction.effectPromptShardOutput.upsert({
         where: {
           projectId_runId_phase_round_shardIndex: {
             projectId,
             runId,
-            phase,
+            phase: storagePhase,
             round,
             shardIndex,
           },
@@ -634,7 +669,7 @@ export class EffectPromptRepository {
         create: {
           projectId,
           runId,
-          phase,
+          phase: storagePhase,
           round,
           shardIndex,
           status: input.status,
@@ -678,7 +713,7 @@ export class EffectPromptRepository {
     });
     if (authorized !== 1) return null;
     return this.prisma.effectPromptShardOutput.findMany({
-      where: { projectId, runId, ...(phase ? { phase } : {}) },
+      where: { projectId, runId, ...(phase ? { phase: persistedShardPhase(phase) } : {}) },
       orderBy: [{ phase: 'asc' }, { round: 'asc' }, { shardIndex: 'asc' }],
     });
   }
@@ -726,7 +761,10 @@ export class EffectPromptRepository {
         generated.sharedPrompt,
       );
       let overrides = emptyManualOverrides();
-      if (snapshot.operation === 'ITEM_REGENERATE' && snapshot.baseResultRevision !== null) {
+      if (
+        (snapshot.operation === 'ITEM_REGENERATE' || snapshot.operation === 'ITEM_EVALUATE') &&
+        snapshot.baseResultRevision !== null
+      ) {
         const previous = await transaction.effectPromptResult.findFirst({
           where: {
             projectId,
@@ -741,6 +779,22 @@ export class EffectPromptRepository {
           delete overrides.edited[snapshot.targetItemId];
           overrides.added = overrides.added.filter(({ id }) => id !== snapshot.targetItemId);
           overrides.deleted = overrides.deleted.filter((id) => id !== snapshot.targetItemId);
+          if (snapshot.operation === 'ITEM_EVALUATE') {
+            const evaluated = draft.items.find(({ id }) => id === snapshot.targetItemId);
+            if (evaluated?.origin === 'MANUAL') overrides.added.push(evaluated);
+            else if (evaluated?.manualEdited)
+              overrides.edited[evaluated.id] = {
+                content: evaluated.content,
+                fragmentType: evaluated.fragmentType,
+                primaryPurpose: evaluated.primaryPurpose,
+                compatiblePurposes: [...evaluated.compatiblePurposes],
+                classificationStatus: evaluated.classificationStatus,
+                productRelevance: evaluated.productRelevance,
+                materialTags: [...evaluated.materialTags],
+                targetDurationSeconds: evaluated.targetDurationSeconds,
+                dimensions: evaluated.dimensions,
+              };
+          }
         }
       } else {
         for (const item of snapshot.retainedManualItems) {
@@ -749,6 +803,10 @@ export class EffectPromptRepository {
             overrides.edited[item.id] = {
               content: item.content,
               fragmentType: item.fragmentType,
+              primaryPurpose: item.primaryPurpose,
+              compatiblePurposes: item.compatiblePurposes,
+              classificationStatus: item.classificationStatus,
+              productRelevance: item.productRelevance,
               materialTags: item.materialTags,
               targetDurationSeconds: item.targetDurationSeconds,
               dimensions: item.dimensions,
@@ -770,25 +828,27 @@ export class EffectPromptRepository {
           settingsHash: run.settingsHash,
         },
       });
-      const replenish = await transaction.effectPromptStageOutput.findUnique({
-        where: {
-          projectId_runId_nodeId: { projectId, runId, nodeId: 'REPLENISH' },
-        },
-      });
-      if (!replenish)
-        await transaction.effectPromptStageOutput.create({
-          data: {
-            projectId,
-            runId,
-            nodeId: 'REPLENISH',
-            status: 'SKIPPED',
-            summary: '本次生成无需自动补齐',
-            warnings: json([]),
-            metadata: json({ replenishmentRound: draft.metrics.replenishmentRounds }),
-            startedAt: now,
-            completedAt: now,
+      if (snapshot.graphVersion !== 'V11_COHERENT_CREATIVE_GENERATION') {
+        const replenish = await transaction.effectPromptStageOutput.findUnique({
+          where: {
+            projectId_runId_nodeId: { projectId, runId, nodeId: 'REPLENISH' },
           },
         });
+        if (!replenish)
+          await transaction.effectPromptStageOutput.create({
+            data: {
+              projectId,
+              runId,
+              nodeId: 'REPLENISH',
+              status: 'SKIPPED',
+              summary: '本次生成无需自动补齐',
+              warnings: json([]),
+              metadata: json({ replenishmentRound: draft.metrics.replenishmentRounds }),
+              startedAt: now,
+              completedAt: now,
+            },
+          });
+      }
       await transaction.effectPromptStageOutput.upsert({
         where: {
           projectId_runId_nodeId: { projectId, runId, nodeId: 'RESULT_SAVE' },
@@ -1081,7 +1141,15 @@ export class EffectPromptRepository {
           itemId: string;
           item: Pick<
             EffectPromptItem,
-            'content' | 'fragmentType' | 'materialTags' | 'targetDurationSeconds' | 'dimensions'
+            | 'content'
+            | 'fragmentType'
+            | 'primaryPurpose'
+            | 'compatiblePurposes'
+            | 'classificationStatus'
+            | 'productRelevance'
+            | 'materialTags'
+            | 'targetDurationSeconds'
+            | 'dimensions'
           >;
         }
       | { kind: 'DELETE'; itemId: string }

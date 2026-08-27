@@ -42,6 +42,7 @@ export class PromptResultQueryDto {
   @Type(() => Number) @IsInt() @Min(1) @Max(100) pageSize = 10;
   @IsOptional() @IsString() @MaxLength(200) query?: string;
   @IsOptional() @IsIn([...EFFECT_PROMPT_FRAGMENT_TYPES]) fragmentType?: EffectPromptFragmentType;
+  @IsOptional() @IsIn([...EFFECT_PROMPT_FRAGMENT_TYPES]) purpose?: EffectPromptFragmentType;
 }
 
 export class SavePromptSettingsDto {
@@ -62,7 +63,6 @@ export class StartPromptRunDto {
 }
 
 export class PromptItemDto {
-  @IsIn([...EFFECT_PROMPT_FRAGMENT_TYPES]) fragmentType!: EffectPromptFragmentType;
   @IsArray()
   @ArrayMinSize(1)
   @ArrayMaxSize(EFFECT_PROMPT_LIMITS.maxMaterialTags)
@@ -109,6 +109,10 @@ export class WorkerShardDto extends WorkerProjectDto {
   @Allow() items: unknown = [];
   @Allow() blueprintPlan: unknown = [];
   @Allow() blueprints: unknown = [];
+  @Allow() creativePlan: unknown = [];
+  @Allow() creativeItems: unknown = [];
+  @Allow() classificationPlan: unknown = [];
+  @Allow() evaluations: unknown = [];
   @IsArray() @IsString({ each: true }) @MaxLength(500, { each: true }) warnings: string[] = [];
   @IsOptional() @IsString() @MaxLength(120) errorCode?: string | null;
   @IsOptional() @IsString() @MaxLength(1000) errorMessage?: string | null;
@@ -116,6 +120,7 @@ export class WorkerShardDto extends WorkerProjectDto {
 
 export class WorkerCompleteDto extends WorkerProjectDto {
   @Allow() result!: EffectPromptBatchResult;
+  @IsIn(['ARK', 'MOCK']) executionMode!: 'ARK' | 'MOCK';
 }
 
 export class WorkerFailDto extends WorkerProjectDto {

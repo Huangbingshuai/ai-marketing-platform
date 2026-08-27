@@ -1,6 +1,7 @@
 import type { EffectPromptRun, GetEffectPromptWorkspaceData } from '@ai-marketing/contracts';
 import {
   DEFAULT_EFFECT_PROMPT_SETTINGS,
+  DEFAULT_EFFECT_PROMPT_FRAGMENT_CONFIGS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
 } from '@ai-marketing/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -9,6 +10,7 @@ import {
   beginEffectPromptRun,
   downloadEffectPromptBatch,
   loadEffectPromptNodeDetail,
+  loadEffectPromptResult,
   loadEffectPromptRun,
   loadEffectPromptWorkspace,
   pollEffectPromptRun,
@@ -61,6 +63,51 @@ describe('effect prompt generation HTTP service', () => {
     expect(String(fetchMock.mock.calls[0]![0])).toContain(
       '/projects/project-1/workflows/effect/prompt-generation?workflowRunId=workflow-run-1',
     );
+  });
+
+  it('migrates a legacy workspace settings payload before rendering the V11 controls', async () => {
+    const workspace = {
+      projectId: 'project-1',
+      workflowRunId: 'workflow-run-1',
+      products: [
+        {
+          projectId: 'project-1',
+          workflowRunId: 'workflow-run-1',
+          productId: 'product-1',
+          status: 'COMPLETED',
+          graphVersion: 'V10_RELATION_COORDINATE_BLUEPRINT',
+          runId: 'run-1',
+          resultId: 'result-1',
+          resultRevision: 1,
+          settings: {
+            fragmentConfigs: DEFAULT_EFFECT_PROMPT_FRAGMENT_CONFIGS,
+            semanticLimit: 15,
+            visualLimit: 20,
+          },
+          settingsRevision: 3,
+          metrics: null,
+          qualityStatus: 'PASS',
+          commitStatus: 'UNVALIDATED',
+          workingArtifactRevision: null,
+          progress: 100,
+          currentNode: 'COMPLETED',
+          errorCode: null,
+          errorMessage: null,
+          updatedAt: '2026-08-25T00:00:01.000Z',
+        },
+      ],
+    } as unknown as GetEffectPromptWorkspaceData;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(workspace)));
+
+    const loaded = await loadEffectPromptWorkspace({
+      projectId: 'project-1',
+      workflowRunId: 'workflow-run-1',
+    });
+
+    expect(loaded.products[0]?.settings).toEqual({
+      targetCount: 50,
+      defaultDurationSeconds: 5,
+    });
   });
 
   it('saves settings with CAS revision and starts an idempotent run', async () => {
@@ -154,6 +201,81 @@ describe('effect prompt generation HTTP service', () => {
     expect(String(fetchMock.mock.calls[0]![0])).toContain(
       '/projects/project-1/workflows/effect/prompt-generation/runs/prompt-run-1/nodes/SEMANTIC_DEDUP',
     );
+  });
+
+  it('adapts historical V5 items for read-only V11 display without writing them back', async () => {
+    const historical = {
+      projectId: 'project-1',
+      productId: 'product-1',
+      resultId: 'result-1',
+      revision: 3,
+      isPartialPreview: false,
+      previewRunId: null,
+      result: {
+        schemaVersion: 5,
+        settings: {
+          fragmentConfigs: {
+            ...DEFAULT_EFFECT_PROMPT_FRAGMENT_CONFIGS,
+            HOOK: { count: 10, durationSeconds: 4 },
+          },
+          semanticLimit: 15,
+          visualLimit: 20,
+        },
+        renderProfile: {
+          ratio: '9:16',
+          resolution: '1080p',
+          capabilityKey: 'SEEDANCE_2_0',
+          sharedConstraints: { disabledElements: [], contentHash: 'hash' },
+        },
+        metrics: {
+          targetCount: 50,
+          acceptedCount: 1,
+          generatedCandidateCount: 1,
+          fallbackCount: 0,
+          removedSemanticDuplicates: 0,
+          removedVisualDuplicates: 0,
+          removedDimensionConflicts: 0,
+          semanticDuplicateRate: 0,
+          visualOverlapRate: 0,
+          replenishmentRounds: 0,
+          fragmentTypeDistribution: EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => ({
+            fragmentType,
+            targetCount: fragmentType === 'HOOK' ? 1 : 0,
+            actualCount: fragmentType === 'HOOK' ? 1 : 0,
+          })),
+          sellingPointCoverage: { required: [], covered: [], missing: [] },
+          insightCoverage: {
+            required: [], covered: [], missing: [], adaptive: [], deferred: [], excluded: [], appliedConstraints: [],
+          },
+          removedExecutionInvalid: 0,
+          executionInvalidReasons: [],
+        },
+        qualityStatus: 'NEEDS_REVIEW',
+      },
+      items: [{
+        id: 'legacy-item', code: 'P001', origin: 'AI', fragmentType: 'HOOK', materialTags: [],
+        targetDurationSeconds: 4,
+        dimensions: {
+          narrative: '悬念', scene: '厨房', persona: '家庭用户', sellingPoint: '广式腊肠切面', camera: '近景', emotion: '温暖',
+        },
+        content: '厨房中切开广式腊肠。', insightBindings: [], manualEdited: false,
+        createdAt: '2026-08-25T00:00:00.000Z', updatedAt: '2026-08-25T00:00:00.000Z',
+      }],
+      total: 1,
+      page: 1,
+      pageSize: 10,
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(historical)));
+
+    const loaded = await loadEffectPromptResult('project-1', 'workflow-run-1', 'product-1', 1, '');
+    expect(loaded.result.schemaVersion).toBe(6);
+    expect(loaded.result.settings).toEqual({ targetCount: 50, defaultDurationSeconds: 5 });
+    expect(loaded.items[0]).toMatchObject({
+      primaryPurpose: 'HOOK',
+      compatiblePurposes: ['HOOK'],
+      classificationStatus: 'VERIFIED',
+      dimensions: { productRelation: '广式腊肠切面' },
+    });
   });
 
   it('cancels recoverable polling through AbortSignal', async () => {

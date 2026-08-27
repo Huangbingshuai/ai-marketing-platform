@@ -12,9 +12,7 @@ import { EffectPromptService } from './effect-prompt.service';
 import { compileEffectPromptSharedPrompt, recomputePromptQuality } from './effect-prompt.quality';
 
 const completionGateFixture = (duplicate = false) => {
-  const settings = structuredClone(DEFAULT_EFFECT_PROMPT_SETTINGS);
-  for (const fragmentType of EFFECT_PROMPT_FRAGMENT_TYPES)
-    settings.fragmentConfigs[fragmentType].count = fragmentType === 'HOOK' ? 5 : 1;
+  const settings = { targetCount: 10, defaultDurationSeconds: 5 };
   const fragmentTypes = [
     'HOOK',
     'HOOK',
@@ -47,13 +45,17 @@ const completionGateFixture = (duplicate = false) => {
     code: `P${String(index + 1).padStart(3, '0')}`,
     origin: 'AI' as const,
     fragmentType,
+    primaryPurpose: fragmentType,
+    compatiblePurposes: [fragmentType],
+    classificationStatus: 'VERIFIED' as const,
+    productRelevance: 85,
     materialTags: [fragmentType, String(index)],
     targetDurationSeconds: 5,
     dimensions: {
       narrative: `叙事-${index}`,
       scene: index === 1 ? '场景-0' : `场景-${index}`,
       persona: index === 1 ? '人物-0' : `人物-${index}`,
-      sellingPoint: `抽象品质-${index}`,
+      productRelation: `产品关联-${index}`,
       camera: index === 1 ? '镜头-0' : `镜头-${index}`,
       emotion: index === 1 ? '情绪-0' : `情绪-${index}`,
     },
@@ -67,6 +69,25 @@ const completionGateFixture = (duplicate = false) => {
 };
 
 describe('EffectPromptService settings contract', () => {
+  it('rejects mock completion unless the deployment explicitly opts in', async () => {
+    const previous = process.env.EFFECT_PROMPT_ALLOW_MOCK_COMPLETION;
+    delete process.env.EFFECT_PROMPT_ALLOW_MOCK_COMPLETION;
+    const repository = { complete: vi.fn() };
+    const service = new EffectPromptService(repository as never, {} as never, {} as never);
+    try {
+      await expect(
+        service.complete('project-a', 'run-a', 'attempt-a', {
+          result: completionGateFixture(),
+          executionMode: 'MOCK',
+        }),
+      ).rejects.toMatchObject({ status: 400 });
+      expect(repository.complete).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env.EFFECT_PROMPT_ALLOW_MOCK_COMPLETION;
+      else process.env.EFFECT_PROMPT_ALLOW_MOCK_COMPLETION = previous;
+    }
+  });
+
   it('returns V9-compatible strategy checkpoints and unified V10 stage checkpoints on claim', async () => {
     const relationshipCheckpoint = {
       nodeId: 'PLAN_HOOK_RELATIONSHIPS',
@@ -112,7 +133,7 @@ describe('EffectPromptService settings contract', () => {
       narrative: ' 场景代入型 ',
       scene: ' 家庭餐桌 ',
       persona: ' 仅手部出镜 ',
-      sellingPoint: ' 单手开合 ',
+      productRelation: ' 单手开合 ',
       camera: ' 桌面近景缓慢推进 ',
       emotion: ' 温暖舒缓 ',
     };
@@ -163,12 +184,72 @@ describe('EffectPromptService settings contract', () => {
           narrative: '场景代入型',
           scene: '家庭餐桌',
           persona: '仅手部出镜',
-          sellingPoint: '单手开合',
+          productRelation: '单手开合',
           camera: '桌面近景缓慢推进',
           emotion: '温暖舒缓',
         },
       }),
     );
+  });
+
+  it('starts ITEM_EVALUATE without accepting regeneration instructions', async () => {
+    const targetItemId = '11111111-1111-4111-8111-111111111111';
+    const run = {
+      id: 'run-evaluate',
+      projectId: 'project-a',
+      workflowRunId: 'workflow-a',
+      productId: 'product-a',
+      operation: 'ITEM_REGENERATE',
+      targetItemId,
+      inputSnapshot: {
+        operation: 'ITEM_EVALUATE',
+        graphVersion: 'V11_COHERENT_CREATIVE_GENERATION',
+      },
+      status: 'QUEUED',
+      progress: 0,
+      currentNode: null,
+      warnings: [],
+      errorMessage: null,
+      errorCode: null,
+      attemptCount: 0,
+      stages: [],
+      result: null,
+      createdAt: new Date('2026-08-27T00:00:00.000Z'),
+      updatedAt: new Date('2026-08-27T00:00:00.000Z'),
+    };
+    const repository = {
+      workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }),
+      startRun: vi.fn().mockResolvedValue({ kind: 'CREATED', run }),
+      run: vi.fn().mockResolvedValue(run),
+    };
+    const service = new EffectPromptService(
+      repository as never,
+      { get: vi.fn().mockResolvedValue({ id: 'project-a' }) } as never,
+      {} as never,
+    );
+
+    const output = await service.start('project-a', 'product-a', {
+      workflowRunId: 'workflow-a',
+      operation: 'ITEM_EVALUATE',
+      targetItemId,
+      expectedSettingsRevision: 2,
+      expectedResultRevision: 3,
+      idempotencyKey: 'evaluate-a',
+    });
+
+    expect(repository.startRun).toHaveBeenCalledWith(
+      'project-a',
+      'workflow-a',
+      'product-a',
+      expect.objectContaining({
+        operation: 'ITEM_EVALUATE',
+        targetItemId,
+        regenerationInstruction: null,
+        replacementDimensions: null,
+      }),
+    );
+    expect(output.run.operation).toBe('ITEM_EVALUATE');
+    expect(output.run.nodes.map(({ nodeId }) => nodeId)).toContain('ITEM_EVALUATE');
   });
 
   it('rejects item-only regeneration fields on a batch run', async () => {
@@ -196,13 +277,17 @@ describe('EffectPromptService settings contract', () => {
           code: 'P001',
           origin: 'AI',
           fragmentType: 'HOOK',
+          primaryPurpose: 'HOOK',
+          compatiblePurposes: ['HOOK'],
+          classificationStatus: 'VERIFIED',
+          productRelevance: 80,
           materialTags: ['钩子'],
           targetDurationSeconds: 5,
           dimensions: {
             narrative: '痛点前置',
             scene: '家庭厨房',
             persona: '穿围裙的成年人',
-            sellingPoint: '真实切面',
+            productRelation: '真实切面',
             camera: '中近景缓慢推进',
             emotion: '惊喜发现',
           },
@@ -227,14 +312,12 @@ describe('EffectPromptService settings contract', () => {
     const service = new EffectPromptService(repository as never, {} as never, {} as never);
 
     await expect(
-      service.complete('project-a', 'run-a', 'attempt-a', { result: shortResult }),
-    ).resolves.toEqual({ promptResultId: 'result-a' });
-    expect(repository.complete).toHaveBeenCalledWith(
-      'project-a',
-      'run-a',
-      'attempt-a',
-      expect.objectContaining({ qualityStatus: 'NEEDS_REVIEW' }),
-    );
+      service.complete('project-a', 'run-a', 'attempt-a', {
+        result: shortResult,
+        executionMode: 'ARK',
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(repository.complete).not.toHaveBeenCalled();
   });
 
   it('uses the extracted product name for the committed Prompt working artifact', async () => {
@@ -517,7 +600,7 @@ describe('EffectPromptService settings contract', () => {
         resultRevision: null,
         metrics: null,
         qualityStatus: null,
-        errorMessage: 'Prompt 生成规则已升级；旧的 3 秒设置会在重新生成时调整为当前模型允许的 4 秒',
+        errorMessage: '当前为历史 Prompt 结果，可继续查看和导出；重新生成后将使用新版创意规则',
       }),
     );
   });
@@ -588,13 +671,19 @@ describe('EffectPromptService settings contract', () => {
       code: `P${String(index + 1).padStart(3, '0')}`,
       origin: 'AI' as const,
       fragmentType: EFFECT_PROMPT_FRAGMENT_TYPES[index % EFFECT_PROMPT_FRAGMENT_TYPES.length]!,
+      primaryPurpose: EFFECT_PROMPT_FRAGMENT_TYPES[index % EFFECT_PROMPT_FRAGMENT_TYPES.length]!,
+      compatiblePurposes: [
+        EFFECT_PROMPT_FRAGMENT_TYPES[index % EFFECT_PROMPT_FRAGMENT_TYPES.length]!,
+      ],
+      classificationStatus: 'VERIFIED' as const,
+      productRelevance: 80,
       materialTags: ['素材片段', `标签-${index}`],
       targetDurationSeconds: 5,
       dimensions: {
         narrative: `叙事-${index}`,
         scene: `场景-${index}`,
         persona: `人物-${index}`,
-        sellingPoint: `卖点-${index}`,
+        productRelation: `产品关联-${index}`,
         camera: `镜头-${index}`,
         emotion: `情绪-${index}`,
       },
@@ -617,13 +706,12 @@ describe('EffectPromptService settings contract', () => {
     await expect(
       service.addItem('project-a', 'result-a', 1, {
         content: '新增 Prompt',
-        fragmentType: 'HOOK',
         materialTags: ['钩子', '首帧'],
         dimensions: {
           narrative: '痛点前置型',
           scene: '家庭',
           persona: '都市白领',
-          sellingPoint: '锁鲜',
+          productRelation: '锁鲜',
           camera: '慢推近景',
           emotion: '温馨治愈',
         },
@@ -639,13 +727,17 @@ describe('EffectPromptService settings contract', () => {
       code: id,
       origin: 'AI' as const,
       fragmentType,
+      primaryPurpose: fragmentType,
+      compatiblePurposes: [fragmentType],
+      classificationStatus: 'VERIFIED' as const,
+      productRelevance: 80,
       materialTags: [fragmentType === 'HOOK' ? '钩子' : '转化'],
       targetDurationSeconds: 5,
       dimensions: {
         narrative: `叙事-${id}`,
         scene: `场景-${id}`,
         persona: `人物-${id}`,
-        sellingPoint: `卖点-${id}`,
+        productRelation: `产品关联-${id}`,
         camera: `镜头-${id}`,
         emotion: `情绪-${id}`,
       },
@@ -701,13 +793,17 @@ describe('EffectPromptService settings contract', () => {
       code,
       origin: 'AI' as const,
       fragmentType,
+      primaryPurpose: fragmentType,
+      compatiblePurposes: [fragmentType],
+      classificationStatus: 'VERIFIED' as const,
+      productRelevance: 80,
       materialTags: [fragmentType],
       targetDurationSeconds: 5,
       dimensions: {
         narrative: `叙事-${id}`,
         scene: `场景-${id}`,
         persona: `人物-${id}`,
-        sellingPoint: `卖点-${id}`,
+        productRelation: `产品关联-${id}`,
         camera: `镜头-${id}`,
         emotion: `情绪-${id}`,
       },
@@ -793,7 +889,7 @@ describe('EffectPromptService settings contract', () => {
                   narrative: '痛点前置',
                   scene: '家庭厨房',
                   persona: '穿围裙的成年人',
-                  sellingPoint: '真实切面',
+                  productRelation: '真实切面',
                   camera: '中近景缓慢推进',
                   emotion: '惊喜发现',
                 },
@@ -812,16 +908,13 @@ describe('EffectPromptService settings contract', () => {
                   narrative: '细节悬念',
                   scene: '窗边桌面',
                   persona: '仅手部',
-                  sellingPoint: '局部质感',
+                  productRelation: '局部质感',
                   camera: '固定机位缓慢推进',
                   emotion: '安静好奇',
                 },
                 content: '窗边桌面上，一只手拿起产品，固定机位缓慢推进后停在局部细节。',
                 insightBindings: [],
-                executionInvalidReasons: [
-                  'PROMPT_LENGTH_MISMATCH',
-                  'MISSING_CAMERA_EXECUTION',
-                ],
+                executionInvalidReasons: ['PROMPT_LENGTH_MISMATCH', 'MISSING_CAMERA_EXECUTION'],
                 generatedAt,
               },
               {
@@ -834,7 +927,7 @@ describe('EffectPromptService settings contract', () => {
                   narrative: '悬念引入',
                   scene: '餐桌',
                   persona: '成年人',
-                  sellingPoint: '产品外观',
+                  productRelation: '产品外观',
                   camera: '固定近景',
                   emotion: '好奇',
                 },
@@ -884,7 +977,7 @@ describe('EffectPromptService settings contract', () => {
     expect(output.issues).toEqual([expect.objectContaining({ code: 'LEGACY_SCHEMA' })]);
   });
 
-  it('keeps soft prompt refinements as warnings in the completion gate', async () => {
+  it('does not recreate removed legacy quality gates during completion', async () => {
     const draft = completionGateFixture();
     expect(draft.qualityStatus).toBe('PASS');
     const insightSnapshot = {
@@ -928,9 +1021,7 @@ describe('EffectPromptService settings contract', () => {
         expect.objectContaining({ code: 'DIMENSION_DISTANCE' }),
       ]),
     );
-    expect(output.warnings).toEqual(
-      expect.arrayContaining([expect.objectContaining({ code: 'SOFT_QUALITY_WARNING' })]),
-    );
+    expect(output.warnings).toEqual([]);
   });
 
   it('keeps exact prompt repetition as a blocking completion issue', async () => {

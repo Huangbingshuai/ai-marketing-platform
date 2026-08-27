@@ -37,7 +37,7 @@ describe('effect prompt generation API', () => {
     expect(url).toContain('pageSize=10');
     expect(url).toContain('workflowRunId=workflow+%2F+1');
     expect(url).toContain('query=%E5%AE%B6%E5%BA%AD+%E5%9C%BA%E6%99%AF');
-    expect(url).toContain('fragmentType=HOOK');
+    expect(url).toContain('purpose=HOOK');
   });
 
   it('uses result CAS for edit, delete and validation mutations', async () => {
@@ -47,21 +47,19 @@ describe('effect prompt generation API', () => {
       narrative: '痛点前置型',
       scene: '家庭',
       persona: '都市白领',
-      sellingPoint: '锁鲜',
+      productRelation: '广式腊肠真空锁鲜',
       camera: '慢推近景',
       emotion: '温馨治愈',
     };
 
     await addEffectPromptItem('project-1', 'result-1', {
       content: 'Prompt',
-      fragmentType: 'HOOK',
       materialTags: ['首帧'],
       dimensions,
       expectedRevision: 7,
     });
     await updateEffectPromptItem('project-1', 'result-1', 'item-1', {
       content: 'Prompt',
-      fragmentType: 'HOOK',
       materialTags: ['首帧'],
       dimensions,
       expectedRevision: 8,

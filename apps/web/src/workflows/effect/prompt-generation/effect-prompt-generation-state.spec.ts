@@ -7,8 +7,6 @@ import {
   DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_SCHEMA_VERSION,
-  effectPromptTargetCount,
-  effectPromptFragmentTypeTargetCounts,
 } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 
@@ -27,13 +25,17 @@ const prompt: EffectPromptItem = {
   code: 'P001-ABC',
   origin: 'AI',
   fragmentType: 'HOOK',
+  primaryPurpose: 'HOOK',
+  compatiblePurposes: ['HOOK', 'PAIN'],
+  classificationStatus: 'VERIFIED',
+  productRelevance: 92,
   materialTags: ['首帧', '痛点'],
   targetDurationSeconds: 5,
   dimensions: {
     narrative: '痛点前置型',
     scene: '家庭厨房',
     persona: '都市白领',
-    sellingPoint: '真空锁鲜',
+    productRelation: '广式腊肠真空锁鲜',
     camera: '手持跟拍＋特写',
     emotion: '温馨治愈',
   },
@@ -56,63 +58,44 @@ const batch: EffectPromptBatchResult = {
   items: Array.from({ length: 50 }, (_, index) => ({ ...prompt, id: `item-${index}` })),
   metrics: {
     targetCount: 50,
+    candidateTargetCount: 65,
     acceptedCount: 50,
-    generatedCandidateCount: 14,
-    fallbackCount: 0,
-    removedSemanticDuplicates: 2,
-    removedVisualDuplicates: 1,
-    removedDimensionConflicts: 1,
-    semanticDuplicateRate: 11.8,
-    visualOverlapRate: 16.4,
+    generatedCandidateCount: 65,
+    rejectedCount: 15,
     replenishmentRounds: 1,
-    fragmentTypeDistribution: EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => {
-      const targetCount = effectPromptFragmentTypeTargetCounts(DEFAULT_EFFECT_PROMPT_SETTINGS)[
-        fragmentType
-      ];
-      return { fragmentType, targetCount, actualCount: targetCount };
-    }),
-    sellingPointCoverage: {
-      required: ['真空锁鲜'],
-      covered: ['真空锁鲜'],
-      missing: [],
+    exactDuplicateCount: 2,
+    purposeDistribution: EFFECT_PROMPT_FRAGMENT_TYPES.map((purpose) => ({
+      purpose,
+      primaryCount: purpose === 'HOOK' ? 50 : 0,
+      compatibleCount: purpose === 'HOOK' || purpose === 'PAIN' ? 50 : 0,
+    })),
+    averageScores: {
+      productRelevance: 92,
+      creativeCoherence: 88,
+      visualExecutability: 90,
+      commercialUsefulness: 86,
+      visualClarity: 91,
     },
-    insightCoverage: {
-      required: [],
-      covered: [],
-      missing: [],
-      adaptive: [],
-      deferred: [],
-      excluded: [],
-      appliedConstraints: [],
-    },
-    removedExecutionInvalid: 2,
-    executionInvalidReasons: [{ code: 'MULTI_STAGE_STORY', count: 2 }],
+    hardIssueCounts: [],
+    warningCounts: [{ code: 'LOW_PURPOSE_CONFIDENCE', count: 2 }],
   },
   qualityStatus: 'PASS',
 };
 
 describe('effect prompt generation state', () => {
-  it('normalizes six independent fragment settings to contract ranges', () => {
+  it('normalizes the simplified total-count and shared-duration settings', () => {
     expect(
       normalizePromptSettings({
-        ...DEFAULT_EFFECT_PROMPT_SETTINGS,
-        fragmentConfigs: {
-          ...DEFAULT_EFFECT_PROMPT_SETTINGS.fragmentConfigs,
-          HOOK: { count: 1, durationSeconds: 500 },
-        },
-        semanticLimit: 30,
-        visualLimit: 2,
+        targetCount: 1,
+        defaultDurationSeconds: 500,
       }),
     ).toEqual({
-      ...DEFAULT_EFFECT_PROMPT_SETTINGS,
-      fragmentConfigs: {
-        ...DEFAULT_EFFECT_PROMPT_SETTINGS.fragmentConfigs,
-        HOOK: { count: 1, durationSeconds: 15 },
-      },
-      semanticLimit: 15,
-      visualLimit: 10,
+      targetCount: 10,
+      defaultDurationSeconds: 15,
     });
-    expect(effectPromptTargetCount(DEFAULT_EFFECT_PROMPT_SETTINGS)).toBe(50);
+    expect(normalizePromptSettings(DEFAULT_EFFECT_PROMPT_SETTINGS)).toEqual(
+      DEFAULT_EFFECT_PROMPT_SETTINGS,
+    );
   });
 
   it('matches id, content, fixed and secondary labels and six-dimensional labels', () => {
@@ -121,6 +104,8 @@ describe('effect prompt generation state', () => {
     expect(promptMatchesKeyword(prompt, '叙事结构')).toBe(true);
     expect(promptMatchesKeyword(prompt, '温馨治愈')).toBe(true);
     expect(promptMatchesKeyword(prompt, '钩子片段')).toBe(true);
+    expect(promptMatchesKeyword(prompt, '痛点片段')).toBe(true);
+    expect(promptMatchesKeyword(prompt, '产品关联点')).toBe(true);
     expect(promptMatchesKeyword(prompt, '首帧')).toBe(true);
     expect(promptMatchesKeyword(prompt, '不存在')).toBe(false);
   });
@@ -136,7 +121,7 @@ describe('effect prompt generation state', () => {
     expect(
       isPromptResultQualityReady({
         ...batch,
-        metrics: { ...batch.metrics, semanticDuplicateRate: 15.1 },
+        metrics: { ...batch.metrics, acceptedCount: 49 },
       }),
     ).toBe(false);
 

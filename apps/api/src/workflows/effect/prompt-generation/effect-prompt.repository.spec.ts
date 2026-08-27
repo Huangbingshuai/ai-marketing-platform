@@ -73,11 +73,17 @@ describe('EffectPromptRepository', () => {
       items: [],
       blueprintPlan: [{ slotId: 'blueprint-task-a' }],
       blueprints: [{ slotId: 'blueprint-a' }],
+      creativePlan: [{ slotId: 'creative-task-a' }],
+      creativeItems: [{ slotId: 'creative-a' }],
+      classificationPlan: ['creative-a'],
+      evaluations: [{ slotId: 'evaluation-a' }],
       warnings: [],
     };
 
     await repository.saveShard(projectId, runId, 'attempt-a', 0, 0, 'BLUEPRINT', input);
     await repository.saveShard(projectId, runId, 'attempt-a', 0, 0, 'PROMPT', input);
+    await repository.saveShard(projectId, runId, 'attempt-a', 1, 0, 'CREATIVE', input);
+    await repository.saveShard(projectId, runId, 'attempt-a', 1, 0, 'CLASSIFICATION', input);
 
     expect(upsert.mock.calls.map(([argument]) => argument.where)).toEqual([
       {
@@ -98,6 +104,24 @@ describe('EffectPromptRepository', () => {
           shardIndex: 0,
         },
       },
+      {
+        projectId_runId_phase_round_shardIndex: {
+          projectId,
+          runId,
+          phase: 'BLUEPRINT',
+          round: 1,
+          shardIndex: 0,
+        },
+      },
+      {
+        projectId_runId_phase_round_shardIndex: {
+          projectId,
+          runId,
+          phase: 'PROMPT',
+          round: 1,
+          shardIndex: 0,
+        },
+      },
     ]);
     expect(upsert.mock.calls[0]?.[0].create).toMatchObject({
       phase: 'BLUEPRINT',
@@ -108,6 +132,16 @@ describe('EffectPromptRepository', () => {
       phase: 'PROMPT',
       combinationPlan: input.combinationPlan,
       items: input.items,
+    });
+    expect(upsert.mock.calls[2]?.[0].create).toMatchObject({
+      phase: 'BLUEPRINT',
+      combinationPlan: input.creativePlan,
+      items: input.creativeItems,
+    });
+    expect(upsert.mock.calls[3]?.[0].create).toMatchObject({
+      phase: 'PROMPT',
+      combinationPlan: input.classificationPlan,
+      items: input.evaluations,
     });
   });
   it('only allows confirmed selling points that match the locked fragment responsibility', () => {
@@ -121,21 +155,21 @@ describe('EffectPromptRepository', () => {
         narrative: '产品直观展示',
         scene: '通勤桌面',
         persona: '仅手部出镜',
-        sellingPoint: '单手开合',
+        productRelation: '单手开合',
         camera: '近景缓慢推进',
         emotion: '明快自然',
       },
     };
 
     expect(isAllowedReplacementSellingPoint(insight, target, '轻量便携')).toBe(true);
-    expect(isAllowedReplacementSellingPoint(insight, target, '易清洗')).toBe(false);
+    expect(isAllowedReplacementSellingPoint(insight, target, '易清洗')).toBe(true);
     expect(isAllowedReplacementSellingPoint(insight, target, '未确认功效')).toBe(false);
     expect(
       isAllowedReplacementSellingPoint(insight, { ...target, fragmentType: 'HOOK' }, '单手开合'),
     ).toBe(true);
     expect(
       isAllowedReplacementSellingPoint(insight, { ...target, fragmentType: 'HOOK' }, '轻量便携'),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('retains every non-target item only for item regeneration', () => {
@@ -145,13 +179,17 @@ describe('EffectPromptRepository', () => {
       code: id,
       origin: index === 2 ? ('MANUAL' as const) : ('AI' as const),
       fragmentType: 'HOOK' as const,
+      primaryPurpose: 'HOOK' as const,
+      compatiblePurposes: ['HOOK' as const],
+      classificationStatus: 'VERIFIED' as const,
+      productRelevance: 80,
       materialTags: ['钩子', id],
       targetDurationSeconds: 5,
       dimensions: {
         narrative: `叙事-${id}`,
         scene: `场景-${id}`,
         persona: `人物-${id}`,
-        sellingPoint: `卖点-${id}`,
+        productRelation: `产品关联-${id}`,
         camera: `镜头-${id}`,
         emotion: `情绪-${id}`,
       },
@@ -316,7 +354,7 @@ describe('EffectPromptRepository', () => {
       data: expect.objectContaining({
         settingsHash: expectedHash,
         inputSnapshot: expect.objectContaining({
-          graphVersion: 'V10_RELATION_COORDINATE_BLUEPRINT',
+          graphVersion: 'V11_COHERENT_CREATIVE_GENERATION',
           settings: expectedSettings,
         }),
       }),
