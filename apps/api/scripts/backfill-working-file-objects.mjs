@@ -11,7 +11,8 @@ const apply = args.has('--apply');
 const reportArgument = process.argv.slice(2).find((value) => value.startsWith('--report='));
 const reportPath = resolve(
   process.cwd(),
-  reportArgument?.slice('--report='.length) ?? '../../docs/working-file-backfill-report.json',
+  reportArgument?.slice('--report='.length) ??
+  '../../docs/project-assets/reports/working-file-backfill-report.json',
 );
 
 const loadEnvFile = async (path) => {

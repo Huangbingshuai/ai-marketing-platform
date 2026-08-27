@@ -74,7 +74,7 @@ LangGraph state 只保存项目 ID、轮次、分片 ID 与计数；正文和完
 - 第 03 步前端已移除 Prompt `localStorage` Mock，接入服务端工作区、设置保存、轮询恢复、分页搜索、六维编辑器、单条重生成、服务端导出和安全化子图详情；片段渲染及后续节点未改动。
 - `pnpm check` 通过：Contracts 12 项、Web 119 项、API 161 项测试全部通过，lint、Prettier、TypeScript 与生产构建通过。
 - Worker `uv run --frozen pytest` 19 项通过，`uv run --frozen mypy src tests` 22 个源文件通过；Compose 配置校验和 Worker 镜像构建通过。
-- 浏览器使用显式 Mock Provider 完成 50 条批量生成、刷新恢复、10 条分页、安全节点详情、单条原位重生成、窄屏弹窗、ESC 与焦点恢复回归；截图见 `docs/browser-regression/effect-prompt-subworkflow-completed.png` 与 `docs/browser-regression/effect-prompt-subworkflow-narrow.png`。回归结果仅保存在领域草稿，未点击“完成校验”，未提交 Prompt WorkingArtifact。
+- 浏览器使用显式 Mock Provider 完成 50 条批量生成、刷新恢复、10 条分页、安全节点详情、单条原位重生成、窄屏弹窗、ESC 与焦点恢复回归；截图见 `docs/workflows/effect/evidence/browser/effect-prompt-subworkflow-completed.png` 与 `docs/workflows/effect/evidence/browser/effect-prompt-subworkflow-narrow.png`。回归结果仅保存在领域草稿，未点击“完成校验”，未提交 Prompt WorkingArtifact。
 - 未执行真实 Ark 付费测试；后续需在用户明确授权且本机 Key 可用时另行执行。
 
 ## 7. 2026-08-25 Prompt 质量与节点详情整改（已被第 9 节纠正）
@@ -232,7 +232,7 @@ LangGraph state 只保存项目 ID、轮次、分片 ID 与计数；正文和完
 - LangGraph 已加入确定性片段类型条件路由和六个 `Send` 分支，分片保持单一类型、每片最多 8 条、全图最大并发 3。六类系统模板独立版本化，每套含公共事实/安全基线、至少两个合格示例和一个职责冲突反例；Ark 候选响应仍严格限制为 `slotId + promptText`，策略规划与候选模型分层保持不变。
 - 组合器修复了“六类循环序号与卖点数量存在公因数时只命中同一卖点”的问题，改为按片段类型内部序号轮询抽象卖点；Mock 产品展示也服从冻结组合动作，不再在补齐轮次重复同一句展示动作。Worker 与 NestJS 的可见动作词表已统一识别自然表达“摆到”。
 - API 修复了旧 V1/V2 审计结果阻断新 V3 Run 的 CAS 问题：新任务只以最新合法 V3 结果作为基础 revision，旧结果继续保留但不进入工作区或执行快照。
-- 显式 Mock 浏览器回归生成 50 条素材片段 Prompt，配额为 `10/8/12/10/6/4`，全部 5 秒，不含效果展示类型；核心卖点覆盖 3/3，执行无效 0，语义重复度 0.0%，视觉结构重合度 0.0%，服务端质量状态为 `PASS`，“完成校验”按钮已解锁。六类设置与六分支子图截图见 `docs/browser-regression/effect-prompt-v3-six-fragment-settings.png`、`docs/browser-regression/effect-prompt-v3-six-branch-workflow.png`。
+- 显式 Mock 浏览器回归生成 50 条素材片段 Prompt，配额为 `10/8/12/10/6/4`，全部 5 秒，不含效果展示类型；核心卖点覆盖 3/3，执行无效 0，语义重复度 0.0%，视觉结构重合度 0.0%，服务端质量状态为 `PASS`，“完成校验”按钮已解锁。六类设置与六分支子图截图见 `docs/workflows/effect/evidence/browser/effect-prompt-v3-six-fragment-settings.png`、`docs/workflows/effect/evidence/browser/effect-prompt-v3-six-branch-workflow.png`。
 - 最终自动验证通过：Contracts 18 项、Web 125 项、NestJS API 185 项、Worker pytest 31 项；ESLint、Prettier、TypeScript/Vue 类型检查、前后端生产构建、Worker ruff/mypy、Compose 配置解析和 Worker 镜像构建均通过。
 - 浏览器验收期间首次容器错误继承了本机 `PROMPT_AI_PROVIDER=ark`，意外发起两次 Ark Responses 请求并因策略 JSON 截断失败，未生成或提交结果。发现后立即强制重建为显式 `mock` 并核验容器环境，后续全部浏览器验收均使用 Mock。该事实保留在实施记录中，不以 Mock 结果冒充真实 Ark 验收。
 - 未开发视频渲染、Seedance、模板混剪、时间轴和最终成片节点；用户已有的 `AGENTS.md` 与 AI 信息提炼修改未纳入本功能提交。
@@ -271,7 +271,7 @@ LangGraph state 只保存项目 ID、轮次、分片 ID 与计数；正文和完
 - Vue 子工作流已删除“执行依赖”和固定业务示例，右侧详情扩展到 420px，支持真实标签组、组合卡、路由统计、Prompt 全文和去重对比的键盘展开；1120px 以下改为上下布局。节点、产品或弹窗切换时会取消旧请求并清理旧内容。
 - 历史 V3 Run 中不存在后续 V4 新增阶段数据时，该两个阶段保持“等待中/暂无实际产出”，旧的 16 个阶段仍全部可查，不用假数据填充新阶段。
 - 定向验证通过：Contracts 11 项、节点投影与专用查询 23 项（含当前全部公开节点逐一投影）、Service 白名单 1 项、Web 布局 11 项，Vue TypeScript 检查和 NestJS 生产构建通过。当前工作树另一项尚未完成的 V4 任务仍有旧 Fixture/断言未升级，因此 API 全量 typecheck/全量测试仍由该独立任务阻断；本次真实详情代码、定向测试和生产构建均已通过。
-- 浏览器实测完成输入快照、候选 Prompt 全文展开和语义对比展开；截图见 `docs/browser-regression/effect-prompt-real-input-detail.png`、`docs/browser-regression/effect-prompt-real-prompt-detail.png`、`docs/browser-regression/effect-prompt-real-semantic-pair.png`。
+- 浏览器实测完成输入快照、候选 Prompt 全文展开和语义对比展开；截图见 `docs/workflows/effect/evidence/browser/effect-prompt-real-input-detail.png`、`docs/workflows/effect/evidence/browser/effect-prompt-real-prompt-detail.png`、`docs/workflows/effect/evidence/browser/effect-prompt-real-semantic-pair.png`。
 
 ## 12. 2026-08-26 提炼信息深度利用与 Prompt 子工作流 V4
 

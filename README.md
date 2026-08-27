@@ -127,7 +127,7 @@ Result V2 完整映射前端《产品素材制作信息卡》的五层 20 个字
 
 生成成功和编辑防抖只保存领域结果与页面草稿；用户点击“完成校验”后才提交 `marketing-insight:{productId}` 工作副本。旧版 12 字段结果通过兼容层读取，不要求一次性回填历史数据。
 
-详细设计与验收记录见 [效果类工作流 Step 02「AI 信息提炼」实施方案](docs/效果类工作流-AI信息提炼节点实施方案.md) 和 [产品素材制作信息卡完善实施方案](docs/效果类AI信息提炼-产品素材制作信息卡完善实施方案.md)。
+详细设计与验收记录见 [效果类工作流 Step 02「AI 信息提炼」实施方案](docs/workflows/effect/plans/效果类工作流-AI信息提炼节点实施方案.md) 和 [产品素材制作信息卡完善实施方案](docs/workflows/effect/plans/效果类AI信息提炼-产品素材制作信息卡完善实施方案.md)。
 
 ## 素材片段 Prompt 生成工作流
 
@@ -150,7 +150,7 @@ V9 六类规划分支默认并行，单支超时 120 秒、输出上限 3072 Tok
 
 最终 Prompt 重点包含可直接执行的场景、主体、连续动作、产品关系、主景别、单一运镜、光线、节奏和结束画面。六维差异、标签、卖点与时长保存在结构化元数据中，画幅与分辨率保存在批次级 `renderProfile`；禁用元素和用户补充要求由顶层 `sharedPrompt` 统一编译。结果区只展示一个完整的“共用提示词”编辑框，内部仍保留系统禁用元素与用户补充来源；系统内容只能返回上游配置修改。候选模型会收到这份共用提示词作为约束但不应复述到单条正文，偶尔出现相关文字时也不会因此单独淘汰。第 4 节点编译 Seedance 请求时独立传递时长、画幅和分辨率，并把同一份 `sharedPrompt.compiledContent` 追加一次，不回写单条 Prompt。
 
-前三轮模型补齐仍不足时，Worker 使用已校验关系束和蓝图生成安全兜底变体；兜底也必须通过同一职责、来源、执行、去重和覆盖门禁。成功批次必须严格等于用户设置的总数及六类配额，否则任务失败且不覆盖上一份有效结果。只有全部门禁通过后，页面才允许“完成校验”并提交 `prompt-batch:{productId}` WorkingArtifact。详细设计、V1～V5 兼容和验收记录见 [差异化 Prompt 批量生成节点实施方案](docs/效果类工作流-差异化Prompt批量生成节点实施方案.md)。
+前三轮模型补齐仍不足时，Worker 使用已校验关系束和蓝图生成安全兜底变体；兜底也必须通过同一职责、来源、执行、去重和覆盖门禁。成功批次必须严格等于用户设置的总数及六类配额，否则任务失败且不覆盖上一份有效结果。只有全部门禁通过后，页面才允许“完成校验”并提交 `prompt-batch:{productId}` WorkingArtifact。详细设计、V1～V5 兼容和验收记录见 [差异化 Prompt 批量生成节点实施方案](docs/workflows/effect/plans/效果类工作流-差异化Prompt批量生成节点实施方案.md)。
 
 ### Prompt 结果与当前项目工作区同步
 
@@ -484,15 +484,16 @@ docker compose logs --tail 200 effect-extraction-worker
 
 ## 文档索引
 
-- [工程架构与边界](docs/architecture.md)
-- [目录结构与前后端边界](docs/目录结构与前后端边界.md)
-- [项目、工作流草稿与资产管理通俗说明](docs/项目、工作流草稿与资产管理通俗说明.md)
-- [效果类工作流资料包导入节点实施方案](docs/效果类工作流-资料包导入节点实施方案.md)
-- [效果类工作流 AI 信息提炼节点实施方案](docs/效果类工作流-AI信息提炼节点实施方案.md)
-- [产品素材制作信息卡 Result V2 完善实施方案](docs/效果类AI信息提炼-产品素材制作信息卡完善实施方案.md)
-- [AI 信息提炼分节点模型路由实施方案](docs/效果类AI信息提炼-分节点模型路由实施方案.md)
-- [差异化 Prompt 批量生成节点实施方案](docs/效果类工作流-差异化Prompt批量生成节点实施方案.md)
-- [MinIO 存储与本地部署方案](docs/效果类导入素材-MinIO存储与本地部署方案.md)
+- [文档导航](docs/README.md)
+- [工程架构与边界](docs/architecture/system-architecture.md)
+- [目录结构与前后端边界](docs/architecture/repository-boundaries.md)
+- [项目、工作流草稿与资产管理通俗说明](docs/project-assets/项目、工作流草稿与资产管理通俗说明.md)
+- [效果类工作流资料包导入节点实施方案](docs/workflows/effect/plans/效果类工作流-资料包导入节点实施方案.md)
+- [效果类工作流 AI 信息提炼节点实施方案](docs/workflows/effect/plans/效果类工作流-AI信息提炼节点实施方案.md)
+- [产品素材制作信息卡 Result V2 完善实施方案](docs/workflows/effect/plans/效果类AI信息提炼-产品素材制作信息卡完善实施方案.md)
+- [AI 信息提炼分节点模型路由实施方案](docs/workflows/effect/plans/效果类AI信息提炼-分节点模型路由实施方案.md)
+- [差异化 Prompt 批量生成节点实施方案](docs/workflows/effect/plans/效果类工作流-差异化Prompt批量生成节点实施方案.md)
+- [MinIO 存储与本地部署方案](docs/workflows/effect/deployment/效果类导入素材-MinIO存储与本地部署方案.md)
 - [AI 信息提炼 Worker 说明](workers/effect-extraction/README.md)
 - [电商动态渲染服务说明](workers/effect-commerce-renderer/README.md)
 - [素材片段 Prompt Worker 说明](workers/effect-prompt-generation/README.md)

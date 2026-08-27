@@ -2,7 +2,7 @@
 
 > 状态：已完成“完成校验后提交工作副本”代码整改与自动化验收，待真实业务数据全链路验收
 >
-> 权威业务口径：`docs/项目、工作流草稿与资产管理通俗说明.md`
+> 权威业务口径：`docs/project-assets/项目、工作流草稿与资产管理通俗说明.md`
 >
 > 实施范围：效果类资料导入、产品有效视频配置、AI 信息提炼与当前项目工作区
 >
@@ -693,7 +693,7 @@ FileObject 项返回：
 | 文件读取或哈希失败数       |         0 |        0 | 报告中 failures 为空                               |
 | 正式 ProjectAsset 数量变化 | 0（预期） |        0 | 校验时 Asset 14、AssetVersion 15；迁移未修改正式表 |
 
-回填报告：`docs/working-file-backfill-dry-run.json` 与 `docs/working-file-backfill-report.json`。真实批量上传验收结束后额外产生 1 个 ORPHANED FileObject，它不属于上述迁移回填数量，已进入 24 小时延迟清理流程。
+回填报告：`docs/project-assets/reports/working-file-backfill-dry-run.json` 与 `docs/project-assets/reports/working-file-backfill-report.json`。真实批量上传验收结束后额外产生 1 个 ORPHANED FileObject，它不属于上述迁移回填数量，已进入 24 小时延迟清理流程。
 
 ### 17.3 MinIO 验证
 
@@ -754,7 +754,7 @@ FileObject 项返回：
 
 ## 18. 实施默认值
 
-- 更新后的 `docs/项目、工作流草稿与资产管理通俗说明.md` 是本次业务语义的唯一权威来源。
+- 更新后的 `docs/project-assets/项目、工作流草稿与资产管理通俗说明.md` 是本次业务语义的唯一权威来源。
 - 产品资料包是聚合 WorkingArtifact，实际文件由 FileObject 独立管理。
 - 工作流全局配置仍保存在 Draft；WorkingArtifact 按产品维护合并后的最终生效配置。
 - 文件延迟清理宽限期默认为 24 小时，可通过非敏感环境变量调整。

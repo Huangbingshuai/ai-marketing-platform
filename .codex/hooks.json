@@ -1,0 +1,17 @@
+{
+  "description": "停止前执行轻量、确定性的项目规则完整性检查。",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .codex/hooks/verify-agent-guardrails.ps1",
+            "timeout": 15,
+            "statusMessage": "检查项目指令分层与 Git 补丁格式"
+          }
+        ]
+      }
+    ]
+  }
+}

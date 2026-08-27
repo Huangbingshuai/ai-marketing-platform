@@ -107,7 +107,7 @@ snapshot
 
 `workers/effect-extraction` 使用 Python 3.12。Docling 嵌入 Worker 容器，默认 CPU 模式；Compose 提供一次性模型初始化服务，将模型下载到持久 volume，Worker 通过 `DOCLING_ARTIFACTS_PATH` 离线复用。
 
-Ark Provider 使用 `ARK_BASE_URL`、`ARK_API_KEY` 和部署级分节点模型路由。`ARK_DOCUMENT_MODEL`、`ARK_IMAGE_MODEL`、`ARK_NORMALIZATION_MODEL` 分别控制文档抽取、图片理解和结果标准化，未配置时回退到 `ARK_MODEL`；FUSION 继续由确定性代码完成。429、5xx 和超时执行有限指数退避；结构校验失败只允许一次修复请求。日志禁止输出密钥、base64、Markdown正文和完整模型输入。详细规则见 `docs/效果类AI信息提炼-分节点模型路由实施方案.md`。
+Ark Provider 使用 `ARK_BASE_URL`、`ARK_API_KEY` 和部署级分节点模型路由。`ARK_DOCUMENT_MODEL`、`ARK_IMAGE_MODEL`、`ARK_NORMALIZATION_MODEL` 分别控制文档抽取、图片理解和结果标准化，未配置时回退到 `ARK_MODEL`；FUSION 继续由确定性代码完成。429、5xx 和超时执行有限指数退避；结构校验失败只允许一次修复请求。日志禁止输出密钥、base64、Markdown正文和完整模型输入。详细规则见 `docs/workflows/effect/plans/效果类AI信息提炼-分节点模型路由实施方案.md`。
 
 ## 8. 实施与多代理边界
 
@@ -148,10 +148,10 @@ Ark Provider 使用 `ARK_BASE_URL`、`ARK_API_KEY` 和部署级分节点模型�
 
 验收截图：
 
-- `docs/验收证据/AI信息提炼-完成态.png`
-- `docs/验收证据/AI信息提炼-STALE态.png`
-- `docs/验收证据/AI信息提炼-409冲突.png`
-- `docs/验收证据/AI信息提炼-重提完成.png`
+- `docs/workflows/effect/evidence/ai-extraction/AI信息提炼-完成态.png`
+- `docs/workflows/effect/evidence/ai-extraction/AI信息提炼-STALE态.png`
+- `docs/workflows/effect/evidence/ai-extraction/AI信息提炼-409冲突.png`
+- `docs/workflows/effect/evidence/ai-extraction/AI信息提炼-重提完成.png`
 
 当前没有 Ark 密钥，因此真实 seed-2.1-turbo 冒烟未执行；Ark 请求体、严格 JSON Schema、重试和修复路径由 MockTransport 契约测试覆盖。提供 `ARK_API_KEY` 后，需再补一次生产 Provider 冒烟。
 
@@ -261,8 +261,8 @@ EXTRACTION_AI_PROVIDER=mock
 
 浏览器验收截图：
 
-- `docs/browser-regression/ai-extraction-workflow-desktop.png`
-- `docs/browser-regression/ai-extraction-workflow-mobile.png`
+- `docs/workflows/effect/evidence/browser/ai-extraction-workflow-desktop.png`
+- `docs/workflows/effect/evidence/browser/ai-extraction-workflow-mobile.png`
 
 真实 Ark 冒烟未执行：当时仓库根目录本机 `.env` 中未检测到真实 `ARK_API_KEY` 和可调用的 `ARK_MODEL`；因此 `RUN_ARK_INTEGRATION` 保持关闭，未发起付费请求。补齐本机真实配置后，需执行 `RUN_ARK_INTEGRATION=1 uv run pytest tests/test_ark_integration.py`，再用实际产品资料包完成最终模型验收。
 
@@ -355,7 +355,7 @@ GET /projects/:projectId/workflows/effect/information-extraction/runs/:runId/nod
 | 浏览器键盘回归        | `Shift+Tab` + Enter、ESC                                                                                           | 通过；键盘选择节点，ESC 后焦点返回“查看工作流”                |
 | 浏览器窄屏回归        | 600×800 视口读取布局                                                                                               | 通过；详情位于拓扑下方，页面无横向溢出                        |
 
-浏览器验收截图：`docs/browser-regression/ai-extraction-node-detail.png`。本轮未启动真实 Ark 任务，也未发起付费模型请求；真实模型端到端验收仍需把本机 `.env` 中的 `ARK_API_KEY` 占位符替换为有效 Key。
+浏览器验收截图：`docs/workflows/effect/evidence/browser/ai-extraction-node-detail.png`。本轮未启动真实 Ark 任务，也未发起付费模型请求；真实模型端到端验收仍需把本机 `.env` 中的 `ARK_API_KEY` 占位符替换为有效 Key。
 
 ## 22. 2026-08-24 QUEUED 任务诊断与用户视角收敛
 
@@ -373,7 +373,7 @@ GET /projects/:projectId/workflows/effect/information-extraction/runs/:runId/nod
 - 节点说明改为“读取文档中的产品信息”“识别图片中的商品信息”“生成可继续编辑的产品信息卡”等业务文案。
 - 1120px 以下将拓扑与详情改为上下布局，保证并行节点标题和说明具有足够宽度。
 
-本轮验证：TypeScript 类型检查、Lint 和生产构建通过；全量测试为 Contracts 9、API 123、Web 92，共 224 项；节点详情 API 定向 14 项、Web 定向 10 项通过。Python 为 21 项通过、3 项真实集成测试按配置跳过，mypy 26 个文件无错误。Compose 展开后的 Ark Provider 为 `ark`，Worker 内部 API 地址为 3100。浏览器确认资料快照只出现“1 份商品图片”和文件名，在 1032px 视口下详情位于拓扑下方且无横向溢出。验收截图已更新为 `docs/browser-regression/ai-extraction-node-detail.png`。
+本轮验证：TypeScript 类型检查、Lint 和生产构建通过；全量测试为 Contracts 9、API 123、Web 92，共 224 项；节点详情 API 定向 14 项、Web 定向 10 项通过。Python 为 21 项通过、3 项真实集成测试按配置跳过，mypy 26 个文件无错误。Compose 展开后的 Ark Provider 为 `ark`，Worker 内部 API 地址为 3100。浏览器确认资料快照只出现“1 份商品图片”和文件名，在 1032px 视口下详情位于拓扑下方且无横向溢出。验收截图已更新为 `docs/workflows/effect/evidence/browser/ai-extraction-node-detail.png`。
 
 后续在 Docker Desktop 恢复后已完成 CPU Worker 镜像刷新，占位 Key 启动拦截、快照契约兼容、表单部分成功、可靠重试和图片受控并发均已固化进当前镜像。`effect-extraction-worker` 已使用真实 Ark 配置持续运行并消费队列，不再存在本节记录的构建限制。
 
@@ -424,7 +424,7 @@ Ark Provider 不再把超时、网络、限流、服务端异常、请求拒绝�
 
 模型配置已从单一 `ARK_MODEL` 扩展为部署级分节点路由：DOCUMENT 使用 `ARK_DOCUMENT_MODEL`，IMAGE 使用 `ARK_IMAGE_MODEL`，NORMALIZATION 使用 `ARK_NORMALIZATION_MODEL`；三个专用变量为空时分别回退到 `ARK_MODEL`。FUSION 继续使用确定性规则，不调用模型。旧环境只配置 `ARK_MODEL` 时保持兼容，运行期失败重试不自动切换模型。
 
-每次模型调用返回独立业务结果和安全 `aiCall` 指标，文档及图片指标写入各自 BranchItem，标准化指标写入 NORMALIZATION Branch。指标包含阶段、实际配置模型、提示词版本、Token、总延迟和尝试次数；usage 缺失或非法时 Token 保存为 null，不影响结果。节点详情继续通过白名单投影，不公开模型标识、Prompt、正文、图片 Base64 或内部调用指标。详细设计和执行记录见 `docs/效果类AI信息提炼-分节点模型路由实施方案.md`。
+每次模型调用返回独立业务结果和安全 `aiCall` 指标，文档及图片指标写入各自 BranchItem，标准化指标写入 NORMALIZATION Branch。指标包含阶段、实际配置模型、提示词版本、Token、总延迟和尝试次数；usage 缺失或非法时 Token 保存为 null，不影响结果。节点详情继续通过白名单投影，不公开模型标识、Prompt、正文、图片 Base64 或内部调用指标。详细设计和执行记录见 `docs/workflows/effect/plans/效果类AI信息提炼-分节点模型路由实施方案.md`。
 
 最终验证：Worker 全量测试 29 项通过、3 项真实集成门控跳过；mypy 27 个源文件无错误；API 节点详情安全投影 6 项通过；Compose 配置校验和 Worker 镜像构建通过；全仓 `pnpm check` 通过，Contracts 9、API 129、Web 96 项测试及 API/Web 生产构建全部通过。用户确认账号可使用全部模型后，DOCUMENT Lite、IMAGE Turbo、NORMALIZATION Mini 的最小真实 Ark 严格 Schema 冒烟通过，真实 Key 未输出或写入文档。
 
@@ -442,7 +442,7 @@ Ark Provider 不再把超时、网络、限流、服务端异常、请求拒绝�
 
 DOCUMENT、IMAGE、NORMALIZATION 三份 Prompt 已升级至 `2.0.0`。图片节点负责在不虚构硬事实与信任背书的前提下补充建议价格、人群、痛点、决策动因、营销目标和三类场景；NORMALIZATION 将溢出的核心卖点迁入次要卖点，且通过独立的 `protected_user_input_json` 接收人工覆盖。API 在 Worker 返回后再次确定性恢复表单配置和 `manualOverrides`，模型不能覆盖用户输入。
 
-生成、重新提炼和自动保存仍不提交 WorkingArtifact；只有“完成校验”才按 V2 contentHash 更新 `marketing-insight:{productId}`。历史 V1 JSON 通过读取适配器转换，旧工作副本不会因迁移隐式增加 revision。详细实施与验收记录见 `docs/效果类AI信息提炼-产品素材制作信息卡完善实施方案.md`。
+生成、重新提炼和自动保存仍不提交 WorkingArtifact；只有“完成校验”才按 V2 contentHash 更新 `marketing-insight:{productId}`。历史 V1 JSON 通过读取适配器转换，旧工作副本不会因迁移隐式增加 revision。详细实施与验收记录见 `docs/workflows/effect/plans/效果类AI信息提炼-产品素材制作信息卡完善实施方案.md`。
 
 ## 28. 2026-08-25 电商链接解析节点
 
