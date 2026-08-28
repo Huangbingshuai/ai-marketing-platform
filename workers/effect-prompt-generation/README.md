@@ -70,7 +70,7 @@ Ark Responses API 在解析 JSON 前检查 `status` 与 `incomplete_details`。�
 - `ARK_PROMPT_CANDIDATE_TIMEOUT_SECONDS`，默认 `120`
 - `ARK_PROMPT_EVALUATION_TIMEOUT_SECONDS`，默认 `120`
 - `ARK_PROMPT_PROVIDER_MAX_ATTEMPTS`，默认 `1`
-- `PROMPT_SIMILARITY_MODE`：`trigram|shadow|vector`，兼容默认 `trigram`
+- `PROMPT_SIMILARITY_MODE`：`trigram|shadow|vector`；部署默认 `vector`，仅历史兼容或故障诊断时显式切回 `trigram/shadow`
 - `ARK_PROMPT_EMBEDDING_MODEL`：火山向量 Model ID 或 Endpoint ID；当前使用 `doubao-embedding-vision-251215`；`shadow/vector` 且使用 Ark 时必填
 - `ARK_PROMPT_EMBEDDING_API_MODE`：`multimodal|text`，默认 `multimodal`；251215 必须使用 `multimodal`
 - `ARK_PROMPT_EMBEDDING_TIMEOUT_SECONDS`，默认 `30`
@@ -98,4 +98,4 @@ uv run --frozen ruff check src tests
 uv run --frozen pytest -q -m ark_integration tests/test_embedding_benchmark.py -s
 ```
 
-自动基准包含食品、日用品和设备三类共 180 组语义对照。真实 251215 验收会从中抽取 3 组正例和 3 组负例，并比较并发 `2` 与 `8` 的耗时；单次测试连同连通性检查严格限制在 20 个付费请求内。新策略只生成正文向量：生产初轮 60 个无参照候选需要 60 次多模态单文本请求，相比历史双向量策略减少 50%；若改用支持批量文本的 Endpoint，Provider 会按配置自动批处理。
+自动基准包含食品、日用品和设备三类共 180 组语义对照，并比较并发 `2` 与 `8` 的耗时。当前 `doubao-embedding-vision-251215` 多模态端点每次最多接收一个文本，因此完整准确率基准约产生 169 次请求；新策略的生产初轮 60 个无参照候选需要 60 次请求，相比历史双向量策略减少 50%。若改用支持批量文本的 Endpoint，Provider 会按配置自动批处理。
