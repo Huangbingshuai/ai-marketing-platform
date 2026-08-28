@@ -1438,6 +1438,47 @@ const graphQualityScoreRows = (scores: {
   { label: '视觉清晰', value: scores.visualClarity },
 ];
 
+const graphDetailSections = (detail: NodeDetail): NodeDetail['sections'] => {
+  const sections = (detail as NodeDetail & { sections?: NodeDetail['sections'] }).sections;
+  if (Array.isArray(sections) && sections.length) return sections;
+  const state =
+    detail.status === 'PENDING'
+      ? 'EXPECTED'
+      : detail.status === 'RUNNING' || detail.status === 'PARTIAL' || detail.status === 'FAILED'
+        ? detail.fields.length || detail.blocks.length
+          ? 'PARTIAL'
+          : 'EMPTY'
+        : detail.fields.length || detail.blocks.length
+          ? 'ACTUAL'
+          : 'EMPTY';
+  return [
+    {
+      kind: 'INPUT',
+      state: 'EMPTY',
+      title: '本次输入',
+      summary: '当前服务返回的是兼容格式，输入明细将在服务更新后显示。',
+      fields: [],
+      blocks: [],
+    },
+    {
+      kind: 'OUTPUT',
+      state,
+      title: state === 'EXPECTED' ? '预计输出' : state === 'PARTIAL' ? '已完成部分' : '本次输出',
+      summary: detail.summary || graphDetailEmptyMessage(detail),
+      fields: detail.fields,
+      blocks: detail.blocks,
+    },
+    {
+      kind: 'EXECUTION',
+      state: detail.status === 'PENDING' ? 'EXPECTED' : 'ACTUAL',
+      title: '执行情况',
+      summary: '状态和更新时间仍以服务端持久化记录为准。',
+      fields: [],
+      blocks: [],
+    },
+  ];
+};
+
 const formatGraphDetailTime = (value: string | null | undefined): string => {
   if (!value) return '尚无执行记录';
   const date = new Date(value);
@@ -1455,17 +1496,18 @@ const formatGraphDetailTime = (value: string | null | undefined): string => {
 const localGraphDetail = (nodeId: EffectPromptNodeId): NodeDetail => {
   const execution = graphExecution(nodeId);
   const expectedOutput =
-    ({
-      LOAD_AND_SNAPSHOT: '将锁定本次商品、营销洞察、数量、时长与共用约束。',
-      INSIGHT_MAPPING: '将营销洞察分为必须应用、自适应应用、排除信息和全局约束。',
-      SHARED_PROMPT_COMPILATION: '将形成生成与渲染共同使用的一段批次级提示词。',
-      COHERENT_CREATIVE_GENERATION: '将同步生成创意主线、六维信息和干净正文。',
-      CREATIVE_EVALUATION_CLASSIFICATION: '将输出质量判断、推荐用途和问题原因。',
-      EXACT_SELECTION_AND_SUPPLEMENT: '将按质量与差异选满目标数量，必要时补充一次。',
-      RESULT_SAVE: '将最佳结果保存为节点草稿，完成校验前不会提交工作副本。',
-      ITEM_EVALUATE: '将重新评估单条 Prompt 的质量和推荐用途。',
-    } as Partial<Record<EffectPromptNodeId, string>>)[nodeId] ??
-    '执行后将在这里展示真实业务结果。';
+    (
+      {
+        LOAD_AND_SNAPSHOT: '将锁定本次商品、营销洞察、数量、时长与共用约束。',
+        INSIGHT_MAPPING: '将营销洞察分为必须应用、自适应应用、排除信息和全局约束。',
+        SHARED_PROMPT_COMPILATION: '将形成生成与渲染共同使用的一段批次级提示词。',
+        COHERENT_CREATIVE_GENERATION: '将同步生成创意主线、六维信息和干净正文。',
+        CREATIVE_EVALUATION_CLASSIFICATION: '将输出质量判断、推荐用途和问题原因。',
+        EXACT_SELECTION_AND_SUPPLEMENT: '将按质量与差异选满目标数量，必要时补充一次。',
+        RESULT_SAVE: '将最佳结果保存为节点草稿，完成校验前不会提交工作副本。',
+        ITEM_EVALUATE: '将重新评估单条 Prompt 的质量和推荐用途。',
+      } as Partial<Record<EffectPromptNodeId, string>>
+    )[nodeId] ?? '执行后将在这里展示真实业务结果。';
   return {
     nodeId,
     status: execution.status,
@@ -2548,7 +2590,7 @@ onBeforeUnmount(() => {
                   <p class="node-summary">{{ graphDetail.summary }}</p>
 
                   <details
-                    v-for="section in graphDetail.sections"
+                    v-for="section in graphDetailSections(graphDetail)"
                     :key="section.kind"
                     class="node-detail-section"
                     :class="`is-${section.kind.toLowerCase()}`"
@@ -2590,327 +2632,360 @@ onBeforeUnmount(() => {
                         :key="`${block.kind}-${blockIndex}`"
                         class="node-result-block"
                       >
-                    <h3>{{ block.title }}</h3>
+                        <h3>{{ block.title }}</h3>
 
-                    <div v-if="block.kind === 'TEXT_CONTENT'" class="node-text-content">
-                      <details>
-                        <summary>
-                          <span>查看完整内容</span><em>{{ block.content.length }} 字</em>
-                        </summary>
-                        <div v-if="block.sourceLabels.length" class="node-sample-tags">
-                          <span v-for="source in block.sourceLabels" :key="source">{{ source }}</span>
-                        </div>
-                        <p>{{ block.content }}</p>
-                      </details>
-                    </div>
-
-                    <div
-                      v-else-if="block.kind === 'CREATIVE_SAMPLE_LIST'"
-                      class="node-creative-list"
-                    >
-                      <p class="node-sample-count">
-                        共 {{ block.totalCount }} 条<span v-if="block.remainingCount"
-                          >，其余 {{ block.remainingCount }} 条未展开</span
-                        >
-                      </p>
-                      <details v-for="item in block.items" :key="`${item.code}-${item.content}`">
-                        <summary>
-                          <span>
-                            <strong>{{ item.code }}</strong>
-                            {{
-                              item.primaryPurpose
-                                ? EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.primaryPurpose]
-                                : '待分类'
-                            }}
-                          </span>
-                          <em :class="`is-${item.outcome.toLowerCase()}`">
-                            {{ graphCreativeOutcomeLabel(item.outcome) }} · 展开
-                          </em>
-                        </summary>
-                        <p class="node-creative-core"><b>创意主线</b>{{ item.creativeCore }}</p>
-                        <div v-if="item.sourceFacts.length" class="node-sample-tags">
-                          <span v-for="source in item.sourceFacts" :key="source">{{ source }}</span>
-                        </div>
-                        <p class="node-prompt-content">{{ item.content }}</p>
-                        <dl class="node-prompt-dimensions">
-                          <div v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key">
-                            <dt>{{ dimension.label }}</dt>
-                            <dd>{{ graphPromptDimensionValue(item, dimension.key) }}</dd>
-                          </div>
-                        </dl>
-                        <div v-if="item.compatiblePurposes.length" class="node-purpose-tags">
-                          <strong>兼容用途</strong>
-                          <span v-for="purpose in item.compatiblePurposes" :key="purpose">
-                            {{ EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[purpose] }}
-                          </span>
-                        </div>
-                        <dl v-if="item.scores" class="node-score-grid">
-                          <div v-for="score in graphQualityScoreRows(item.scores)" :key="score.label">
-                            <dt>{{ score.label }}</dt>
-                            <dd>{{ score.value.toFixed(0) }}</dd>
-                          </div>
-                        </dl>
-                        <p v-if="item.reasons.length" class="node-sample-reasons">
-                          {{ item.reasons.join('；') }}
-                        </p>
-                      </details>
-                    </div>
-
-                    <div
-                      v-else-if="block.kind === 'RELATIONSHIP_LIST'"
-                      class="node-relationship-list"
-                    >
-                      <article v-for="item in block.items" :key="item.title">
-                        <header>
-                          <span>
-                            <strong>{{ item.title }}</strong>
-                            <small>{{
-                              EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.fragmentType]
-                            }}</small>
-                          </span>
-                          <em>{{ item.blueprintQuota }} 张蓝图</em>
-                        </header>
-                        <dl>
-                          <div>
-                            <dt>主要事实</dt>
-                            <dd>{{ item.primaryFact }}</dd>
-                          </div>
-                          <div>
-                            <dt>辅助事实</dt>
-                            <dd>
-                              <span v-for="fact in item.auxiliaryFacts" :key="fact">{{
-                                fact
+                        <div v-if="block.kind === 'TEXT_CONTENT'" class="node-text-content">
+                          <details>
+                            <summary>
+                              <span>查看完整内容</span><em>{{ block.content.length }} 字</em>
+                            </summary>
+                            <div v-if="block.sourceLabels.length" class="node-sample-tags">
+                              <span v-for="source in block.sourceLabels" :key="source">{{
+                                source
                               }}</span>
-                              <i v-if="!item.auxiliaryFacts.length">无</i>
-                            </dd>
-                          </div>
-                          <div>
-                            <dt>组合意图</dt>
-                            <dd>{{ item.creativeIntent }}</dd>
-                          </div>
-                        </dl>
-                      </article>
-                    </div>
+                            </div>
+                            <p>{{ block.content }}</p>
+                          </details>
+                        </div>
 
-                    <div v-else-if="block.kind === 'COORDINATE_LIST'" class="node-coordinate-list">
-                      <section v-for="group in block.groups" :key="group.dimension">
-                        <header>
-                          <strong>{{ group.label }}</strong>
-                          <span>{{ group.items.length }} 个候选</span>
-                        </header>
-                        <article v-for="item in group.items" :key="item.value">
-                          <strong>{{ item.value }}</strong>
-                          <p>
-                            <span>适配 {{ item.compatibleBundleCount }} 个营销组合</span>
-                            <span v-if="item.sourceFacts.length">
-                              来源：{{ item.sourceFacts.join('、') }}
-                            </span>
+                        <div
+                          v-else-if="block.kind === 'CREATIVE_SAMPLE_LIST'"
+                          class="node-creative-list"
+                        >
+                          <p class="node-sample-count">
+                            共 {{ block.totalCount }} 条<span v-if="block.remainingCount"
+                              >，其余 {{ block.remainingCount }} 条未展开</span
+                            >
                           </p>
-                        </article>
-                      </section>
-                    </div>
-
-                    <div v-else-if="block.kind === 'BLUEPRINT_LIST'" class="node-blueprint-list">
-                      <details v-for="item in block.items" :key="item.title">
-                        <summary>
-                          <span>
-                            <strong>{{ item.title }}</strong>
-                            {{ EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.fragmentType] }} ·
-                            {{ item.relationshipTitle }}
-                          </span>
-                          <em>{{ item.targetDurationSeconds }} 秒 · 展开蓝图</em>
-                        </summary>
-                        <dl class="node-blueprint-states">
-                          <div>
-                            <dt>首帧状态</dt>
-                            <dd>{{ item.openingState }}</dd>
-                          </div>
-                          <div>
-                            <dt>连续动作</dt>
-                            <dd>{{ item.actionArc }}</dd>
-                          </div>
-                          <div>
-                            <dt>结束状态</dt>
-                            <dd>{{ item.endingState }}</dd>
-                          </div>
-                        </dl>
-                        <dl class="node-prompt-dimensions">
-                          <div v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key">
-                            <dt>{{ dimension.label }}</dt>
-                            <dd>{{ graphPromptDimensionValue(item, dimension.key) }}</dd>
-                          </div>
-                        </dl>
-                      </details>
-                    </div>
-
-                    <div
-                      v-else-if="block.kind === 'ORTHOGONAL_PAIR_LIST'"
-                      class="node-orthogonal-pair-list"
-                    >
-                      <details
-                        v-for="(item, pairIndex) in block.items"
-                        :key="`${item.left.title}-${item.right.title}-${pairIndex}`"
-                      >
-                        <summary>
-                          <span>
-                            <strong>{{ item.left.title }} ↔ {{ item.right.title }}</strong>
-                            相同维度：
-                            {{
-                              item.sameDimensions.length
-                                ? item.sameDimensions.map(graphDimensionLabel).join('、')
-                                : '无'
-                            }}
-                          </span>
-                          <em>差异 {{ item.distance }}/6 · 展开对比</em>
-                        </summary>
-                        <div class="node-blueprint-compare">
-                          <article
-                            v-for="candidate in [item.left, item.right]"
-                            :key="candidate.title"
+                          <details
+                            v-for="item in block.items"
+                            :key="`${item.code}-${item.content}`"
                           >
-                            <header>
-                              <strong>{{ candidate.title }}</strong>
-                              <span>{{ candidate.relationshipTitle }}</span>
-                            </header>
-                            <p><b>首帧</b>{{ candidate.openingState }}</p>
-                            <p><b>动作</b>{{ candidate.actionArc }}</p>
-                            <p><b>结束</b>{{ candidate.endingState }}</p>
+                            <summary>
+                              <span>
+                                <strong>{{ item.code }}</strong>
+                                {{
+                                  item.primaryPurpose
+                                    ? EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.primaryPurpose]
+                                    : '待分类'
+                                }}
+                              </span>
+                              <em :class="`is-${item.outcome.toLowerCase()}`">
+                                {{ graphCreativeOutcomeLabel(item.outcome) }} · 展开
+                              </em>
+                            </summary>
+                            <p class="node-creative-core"><b>创意主线</b>{{ item.creativeCore }}</p>
+                            <div v-if="item.sourceFacts.length" class="node-sample-tags">
+                              <span v-for="source in item.sourceFacts" :key="source">{{
+                                source
+                              }}</span>
+                            </div>
+                            <p class="node-prompt-content">{{ item.content }}</p>
                             <dl class="node-prompt-dimensions">
                               <div
                                 v-for="dimension in EFFECT_PROMPT_DIMENSIONS"
                                 :key="dimension.key"
                               >
                                 <dt>{{ dimension.label }}</dt>
-                                <dd>{{ candidate.dimensions[dimension.key] }}</dd>
+                                <dd>{{ graphPromptDimensionValue(item, dimension.key) }}</dd>
+                              </div>
+                            </dl>
+                            <div v-if="item.compatiblePurposes.length" class="node-purpose-tags">
+                              <strong>兼容用途</strong>
+                              <span v-for="purpose in item.compatiblePurposes" :key="purpose">
+                                {{ EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[purpose] }}
+                              </span>
+                            </div>
+                            <dl v-if="item.scores" class="node-score-grid">
+                              <div
+                                v-for="score in graphQualityScoreRows(item.scores)"
+                                :key="score.label"
+                              >
+                                <dt>{{ score.label }}</dt>
+                                <dd>{{ score.value.toFixed(0) }}</dd>
+                              </div>
+                            </dl>
+                            <p v-if="item.reasons.length" class="node-sample-reasons">
+                              {{ item.reasons.join('；') }}
+                            </p>
+                          </details>
+                        </div>
+
+                        <div
+                          v-else-if="block.kind === 'RELATIONSHIP_LIST'"
+                          class="node-relationship-list"
+                        >
+                          <article v-for="item in block.items" :key="item.title">
+                            <header>
+                              <span>
+                                <strong>{{ item.title }}</strong>
+                                <small>{{
+                                  EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.fragmentType]
+                                }}</small>
+                              </span>
+                              <em>{{ item.blueprintQuota }} 张蓝图</em>
+                            </header>
+                            <dl>
+                              <div>
+                                <dt>主要事实</dt>
+                                <dd>{{ item.primaryFact }}</dd>
+                              </div>
+                              <div>
+                                <dt>辅助事实</dt>
+                                <dd>
+                                  <span v-for="fact in item.auxiliaryFacts" :key="fact">{{
+                                    fact
+                                  }}</span>
+                                  <i v-if="!item.auxiliaryFacts.length">无</i>
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>组合意图</dt>
+                                <dd>{{ item.creativeIntent }}</dd>
                               </div>
                             </dl>
                           </article>
                         </div>
-                      </details>
-                    </div>
 
-                    <div v-else-if="block.kind === 'TAG_LIST'" class="node-tag-groups">
-                      <div v-for="group in block.groups" :key="group.label">
-                        <strong>{{ group.label }}</strong>
-                        <p>
-                          <span v-for="value in group.values" :key="value">{{ value }}</span>
-                          <em v-if="group.remainingCount">＋{{ group.remainingCount }} 项</em>
-                        </p>
-                      </div>
-                    </div>
-
-                    <div v-else-if="block.kind === 'ROUTE_LIST'" class="node-route-list">
-                      <article v-for="route in block.items" :key="route.fragmentType">
-                        <header>
-                          <strong>{{
-                            EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[route.fragmentType]
-                          }}</strong>
-                          <em :class="`is-${graphStatusMeta(route.status).tone}`">{{
-                            graphStatusMeta(route.status).label
-                          }}</em>
-                        </header>
-                        <p>
-                          <span>目标 {{ route.targetCount }}</span
-                          ><span>候选 {{ route.candidateCount }}</span
-                          ><span>分片 {{ route.completedShards }}/{{ route.totalShards }}</span>
-                        </p>
-                        <small v-if="route.failedShards">{{ route.failedShards }} 个分片失败</small>
-                      </article>
-                    </div>
-
-                    <div
-                      v-else-if="block.kind === 'COMBINATION_LIST'"
-                      class="node-combination-list"
-                    >
-                      <article v-for="item in block.items" :key="item.title">
-                        <header>
-                          <strong>{{ item.title }}</strong
-                          ><span>{{ item.targetDurationSeconds }} 秒</span>
-                        </header>
-                        <dl>
-                          <div v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key">
-                            <dt>{{ dimension.label }}</dt>
-                            <dd>{{ graphPromptDimensionValue(item, dimension.key) }}</dd>
-                          </div>
-                          <div>
-                            <dt>连续动作</dt>
-                            <dd>{{ item.visibleAction || '未记录' }}</dd>
-                          </div>
-                          <div>
-                            <dt>证据方式</dt>
-                            <dd>{{ graphEvidenceModeLabel(item.evidenceMode) || '未记录' }}</dd>
-                          </div>
-                        </dl>
-                      </article>
-                    </div>
-
-                    <div v-else-if="block.kind === 'PROMPT_LIST'" class="node-prompt-list">
-                      <details v-for="item in block.items" :key="`${item.code}-${item.content}`">
-                        <summary>
-                          <span
-                            ><strong>{{ item.code }}</strong
-                            >{{ EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.fragmentType] }}</span
-                          ><em>{{ item.targetDurationSeconds }} 秒 · 展开全文</em>
-                        </summary>
-                        <div class="node-sample-tags">
-                          <span v-for="tag in item.materialTags" :key="tag">{{ tag }}</span>
+                        <div
+                          v-else-if="block.kind === 'COORDINATE_LIST'"
+                          class="node-coordinate-list"
+                        >
+                          <section v-for="group in block.groups" :key="group.dimension">
+                            <header>
+                              <strong>{{ group.label }}</strong>
+                              <span>{{ group.items.length }} 个候选</span>
+                            </header>
+                            <article v-for="item in group.items" :key="item.value">
+                              <strong>{{ item.value }}</strong>
+                              <p>
+                                <span>适配 {{ item.compatibleBundleCount }} 个营销组合</span>
+                                <span v-if="item.sourceFacts.length">
+                                  来源：{{ item.sourceFacts.join('、') }}
+                                </span>
+                              </p>
+                            </article>
+                          </section>
                         </div>
-                        <p class="node-prompt-content">{{ item.content }}</p>
-                        <dl class="node-prompt-dimensions">
-                          <div v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key">
-                            <dt>{{ dimension.label }}</dt>
-                            <dd>{{ graphPromptDimensionValue(item, dimension.key) }}</dd>
-                          </div>
-                        </dl>
-                      </details>
-                    </div>
 
-                    <div v-else-if="block.kind === 'PAIR_LIST'" class="node-pair-list">
-                      <details
-                        v-for="(item, pairIndex) in block.items"
-                        :key="`${item.left.code}-${item.right.code}-${pairIndex}`"
-                      >
-                        <summary>
-                          <span
-                            ><strong>{{ item.left.code }} ↔ {{ item.right.code }}</strong
-                            >{{ item.reasons.join('、') }}</span
-                          ><em>{{ graphPairScore(item.score) }} · 展开对比</em>
-                        </summary>
-                        <div class="node-pair-contents">
-                          <article>
-                            <strong
-                              >{{ item.left.code }} ·
-                              {{
-                                EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.left.fragmentType]
-                              }}</strong
+                        <div
+                          v-else-if="block.kind === 'BLUEPRINT_LIST'"
+                          class="node-blueprint-list"
+                        >
+                          <details v-for="item in block.items" :key="item.title">
+                            <summary>
+                              <span>
+                                <strong>{{ item.title }}</strong>
+                                {{ EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.fragmentType] }} ·
+                                {{ item.relationshipTitle }}
+                              </span>
+                              <em>{{ item.targetDurationSeconds }} 秒 · 展开蓝图</em>
+                            </summary>
+                            <dl class="node-blueprint-states">
+                              <div>
+                                <dt>首帧状态</dt>
+                                <dd>{{ item.openingState }}</dd>
+                              </div>
+                              <div>
+                                <dt>连续动作</dt>
+                                <dd>{{ item.actionArc }}</dd>
+                              </div>
+                              <div>
+                                <dt>结束状态</dt>
+                                <dd>{{ item.endingState }}</dd>
+                              </div>
+                            </dl>
+                            <dl class="node-prompt-dimensions">
+                              <div
+                                v-for="dimension in EFFECT_PROMPT_DIMENSIONS"
+                                :key="dimension.key"
+                              >
+                                <dt>{{ dimension.label }}</dt>
+                                <dd>{{ graphPromptDimensionValue(item, dimension.key) }}</dd>
+                              </div>
+                            </dl>
+                          </details>
+                        </div>
+
+                        <div
+                          v-else-if="block.kind === 'ORTHOGONAL_PAIR_LIST'"
+                          class="node-orthogonal-pair-list"
+                        >
+                          <details
+                            v-for="(item, pairIndex) in block.items"
+                            :key="`${item.left.title}-${item.right.title}-${pairIndex}`"
+                          >
+                            <summary>
+                              <span>
+                                <strong>{{ item.left.title }} ↔ {{ item.right.title }}</strong>
+                                相同维度：
+                                {{
+                                  item.sameDimensions.length
+                                    ? item.sameDimensions.map(graphDimensionLabel).join('、')
+                                    : '无'
+                                }}
+                              </span>
+                              <em>差异 {{ item.distance }}/6 · 展开对比</em>
+                            </summary>
+                            <div class="node-blueprint-compare">
+                              <article
+                                v-for="candidate in [item.left, item.right]"
+                                :key="candidate.title"
+                              >
+                                <header>
+                                  <strong>{{ candidate.title }}</strong>
+                                  <span>{{ candidate.relationshipTitle }}</span>
+                                </header>
+                                <p><b>首帧</b>{{ candidate.openingState }}</p>
+                                <p><b>动作</b>{{ candidate.actionArc }}</p>
+                                <p><b>结束</b>{{ candidate.endingState }}</p>
+                                <dl class="node-prompt-dimensions">
+                                  <div
+                                    v-for="dimension in EFFECT_PROMPT_DIMENSIONS"
+                                    :key="dimension.key"
+                                  >
+                                    <dt>{{ dimension.label }}</dt>
+                                    <dd>{{ candidate.dimensions[dimension.key] }}</dd>
+                                  </div>
+                                </dl>
+                              </article>
+                            </div>
+                          </details>
+                        </div>
+
+                        <div v-else-if="block.kind === 'TAG_LIST'" class="node-tag-groups">
+                          <div v-for="group in block.groups" :key="group.label">
+                            <strong>{{ group.label }}</strong>
+                            <p>
+                              <span v-for="value in group.values" :key="value">{{ value }}</span>
+                              <em v-if="group.remainingCount">＋{{ group.remainingCount }} 项</em>
+                            </p>
+                          </div>
+                        </div>
+
+                        <div v-else-if="block.kind === 'ROUTE_LIST'" class="node-route-list">
+                          <article v-for="route in block.items" :key="route.fragmentType">
+                            <header>
+                              <strong>{{
+                                EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[route.fragmentType]
+                              }}</strong>
+                              <em :class="`is-${graphStatusMeta(route.status).tone}`">{{
+                                graphStatusMeta(route.status).label
+                              }}</em>
+                            </header>
+                            <p>
+                              <span>目标 {{ route.targetCount }}</span
+                              ><span>候选 {{ route.candidateCount }}</span
+                              ><span>分片 {{ route.completedShards }}/{{ route.totalShards }}</span>
+                            </p>
+                            <small v-if="route.failedShards"
+                              >{{ route.failedShards }} 个分片失败</small
                             >
-                            <p>{{ item.left.content }}</p>
-                          </article>
-                          <article>
-                            <strong
-                              >{{ item.right.code }} ·
-                              {{
-                                EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.right.fragmentType]
-                              }}</strong
-                            >
-                            <p>{{ item.right.content }}</p>
                           </article>
                         </div>
-                      </details>
-                    </div>
 
-                    <div v-else-if="block.kind === 'ISSUE_LIST'" class="node-issue-list">
-                      <article v-for="item in block.items" :key="item.code">
-                        <header>
-                          <strong>{{ item.label }}</strong
-                          ><em>{{ item.count }} 条</em>
-                        </header>
-                        <details v-if="item.examples.length">
-                          <summary>查看实际问题示例</summary>
-                          <p v-for="example in item.examples" :key="example">{{ example }}</p>
-                        </details>
-                      </article>
-                    </div>
+                        <div
+                          v-else-if="block.kind === 'COMBINATION_LIST'"
+                          class="node-combination-list"
+                        >
+                          <article v-for="item in block.items" :key="item.title">
+                            <header>
+                              <strong>{{ item.title }}</strong
+                              ><span>{{ item.targetDurationSeconds }} 秒</span>
+                            </header>
+                            <dl>
+                              <div
+                                v-for="dimension in EFFECT_PROMPT_DIMENSIONS"
+                                :key="dimension.key"
+                              >
+                                <dt>{{ dimension.label }}</dt>
+                                <dd>{{ graphPromptDimensionValue(item, dimension.key) }}</dd>
+                              </div>
+                              <div>
+                                <dt>连续动作</dt>
+                                <dd>{{ item.visibleAction || '未记录' }}</dd>
+                              </div>
+                              <div>
+                                <dt>证据方式</dt>
+                                <dd>{{ graphEvidenceModeLabel(item.evidenceMode) || '未记录' }}</dd>
+                              </div>
+                            </dl>
+                          </article>
+                        </div>
+
+                        <div v-else-if="block.kind === 'PROMPT_LIST'" class="node-prompt-list">
+                          <details
+                            v-for="item in block.items"
+                            :key="`${item.code}-${item.content}`"
+                          >
+                            <summary>
+                              <span
+                                ><strong>{{ item.code }}</strong
+                                >{{ EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.fragmentType] }}</span
+                              ><em>{{ item.targetDurationSeconds }} 秒 · 展开全文</em>
+                            </summary>
+                            <div class="node-sample-tags">
+                              <span v-for="tag in item.materialTags" :key="tag">{{ tag }}</span>
+                            </div>
+                            <p class="node-prompt-content">{{ item.content }}</p>
+                            <dl class="node-prompt-dimensions">
+                              <div
+                                v-for="dimension in EFFECT_PROMPT_DIMENSIONS"
+                                :key="dimension.key"
+                              >
+                                <dt>{{ dimension.label }}</dt>
+                                <dd>{{ graphPromptDimensionValue(item, dimension.key) }}</dd>
+                              </div>
+                            </dl>
+                          </details>
+                        </div>
+
+                        <div v-else-if="block.kind === 'PAIR_LIST'" class="node-pair-list">
+                          <details
+                            v-for="(item, pairIndex) in block.items"
+                            :key="`${item.left.code}-${item.right.code}-${pairIndex}`"
+                          >
+                            <summary>
+                              <span
+                                ><strong>{{ item.left.code }} ↔ {{ item.right.code }}</strong
+                                >{{ item.reasons.join('、') }}</span
+                              ><em>{{ graphPairScore(item.score) }} · 展开对比</em>
+                            </summary>
+                            <div class="node-pair-contents">
+                              <article>
+                                <strong
+                                  >{{ item.left.code }} ·
+                                  {{
+                                    EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.left.fragmentType]
+                                  }}</strong
+                                >
+                                <p>{{ item.left.content }}</p>
+                              </article>
+                              <article>
+                                <strong
+                                  >{{ item.right.code }} ·
+                                  {{
+                                    EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.right.fragmentType]
+                                  }}</strong
+                                >
+                                <p>{{ item.right.content }}</p>
+                              </article>
+                            </div>
+                          </details>
+                        </div>
+
+                        <div v-else-if="block.kind === 'ISSUE_LIST'" class="node-issue-list">
+                          <article v-for="item in block.items" :key="item.code">
+                            <header>
+                              <strong>{{ item.label }}</strong
+                              ><em>{{ item.count }} 条</em>
+                            </header>
+                            <details v-if="item.examples.length">
+                              <summary>查看实际问题示例</summary>
+                              <p v-for="example in item.examples" :key="example">{{ example }}</p>
+                            </details>
+                          </article>
+                        </div>
                       </section>
 
                       <div
@@ -2923,7 +2998,10 @@ onBeforeUnmount(() => {
                     </div>
                   </details>
 
-                  <div v-if="!graphDetail.sections.length" class="node-detail-no-fields">
+                  <div
+                    v-if="!graphDetailSections(graphDetail).length"
+                    class="node-detail-no-fields"
+                  >
                     <Workflow :size="16" />
                     <span>{{ graphDetailEmptyMessage(graphDetail) }}</span>
                   </div>

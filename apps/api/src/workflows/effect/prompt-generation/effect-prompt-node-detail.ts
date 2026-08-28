@@ -178,6 +178,18 @@ const publicText = (value: unknown, maxLength = 12_000): string =>
     .trim()
     .slice(0, maxLength);
 
+const publicMultilineText = (value: unknown, maxLength = 30_000): string =>
+  String(value ?? '')
+    .replace(/data:[^\s,]+;base64,[a-z\d+/=]+/giu, '[图片数据已隐藏]')
+    .replace(/[a-z\d+/]{256,}={0,2}/giu, '[Base64 数据已隐藏]')
+    .replace(/(?:https?|tos|s3):\/\/\S+/giu, '[链接已隐藏]')
+    .replace(/[a-z]:\\(?:[^\\\s]+\\)+[^\s]+/giu, '[本地路径已隐藏]')
+    .split(/\r?\n/gu)
+    .map((line) => line.replace(/[\t ]+/gu, ' ').trim())
+    .filter(Boolean)
+    .join('\n')
+    .slice(0, maxLength);
+
 const safeStrings = (value: unknown, limit = 40): string[] =>
   (Array.isArray(value) ? value : [])
     .filter((item): item is string => typeof item === 'string')
@@ -1587,7 +1599,9 @@ const v11EvaluationRows = (run: EffectPromptNodeDetailRunRecord): V11EvaluationR
 const issueLabels = (codes: string[]): string[] =>
   codes.map((code) => ISSUE_LABELS[code] ?? publicText(code, 120));
 
-const creativeSamples = (run: EffectPromptNodeDetailRunRecord): EffectPromptNodeDetailCreativeSample[] => {
+const creativeSamples = (
+  run: EffectPromptNodeDetailRunRecord,
+): EffectPromptNodeDetailCreativeSample[] => {
   const evaluationBySlot = new Map(v11EvaluationRows(run).map((item) => [item.slotId, item]));
   const lookup = factValueLookup(run);
   return v11CreativeRows(run).map((item) => {
@@ -1680,11 +1694,105 @@ const textContentBlock = (
   content: unknown,
   sourceLabels: string[],
 ): EffectPromptNodeDetailBlock | null => {
-  const safeContent = publicText(content, 30_000);
+  const safeContent = publicMultilineText(content, 30_000);
   return safeContent
-    ? { kind: 'TEXT_CONTENT', title, content: safeContent, sourceLabels: safeStrings(sourceLabels, 12) }
+    ? {
+        kind: 'TEXT_CONTENT',
+        title,
+        content: safeContent,
+        sourceLabels: safeStrings(sourceLabels, 12),
+      }
     : null;
 };
+
+const averageQualityScores = (rows: V11EvaluationRow[]): EffectPromptQualityScores | null => {
+  if (!rows.length) return null;
+  const total = rows.reduce(
+    (sum, item) => ({
+      productRelevance: sum.productRelevance + item.scores.productRelevance,
+      creativeCoherence: sum.creativeCoherence + item.scores.creativeCoherence,
+      visualExecutability: sum.visualExecutability + item.scores.visualExecutability,
+      commercialUsefulness: sum.commercialUsefulness + item.scores.commercialUsefulness,
+      visualClarity: sum.visualClarity + item.scores.visualClarity,
+    }),
+    {
+      productRelevance: 0,
+      creativeCoherence: 0,
+      visualExecutability: 0,
+      commercialUsefulness: 0,
+      visualClarity: 0,
+    },
+  );
+  return Object.fromEntries(
+    Object.entries(total).map(([key, value]) => [key, Math.round((value / rows.length) * 10) / 10]),
+  ) as EffectPromptQualityScores;
+};
+
+const scoreFields = (scores: EffectPromptQualityScores | null): EffectPromptNodeDetailField[] =>
+  scores
+    ? [
+        { label: '产品相关性', value: scores.productRelevance },
+        { label: '创意连贯性', value: scores.creativeCoherence },
+        { label: '画面可执行性', value: scores.visualExecutability },
+        { label: '商业素材价值', value: scores.commercialUsefulness },
+        { label: '视觉表达清晰度', value: scores.visualClarity },
+      ]
+    : [];
+
+const v11AdditionalOutputFields = (
+  run: EffectPromptNodeDetailRunRecord,
+  nodeId: EffectPromptNodeId,
+  metadata: JsonRecord,
+): EffectPromptNodeDetailField[] => {
+  const samples = creativeSamples(run);
+  const evaluations = v11EvaluationRows(run);
+  const result = finalV6Record(run);
+  const resultMetrics = metadataRecord(result?.metrics);
+  if (nodeId === 'COHERENT_CREATIVE_GENERATION')
+    return [
+      { label: '实际生成创意', value: samples.length },
+      {
+        label: '完成分片',
+        value: run.shards.filter(
+          (shard) =>
+            shard.phase === 'BLUEPRINT' &&
+            shard.status === 'SUCCEEDED' &&
+            (Array.isArray(shard.items) ? shard.items : []).some(
+              (item) => isRecord(item) && typeof item.creativeCore === 'string',
+            ),
+        ).length,
+      },
+    ];
+  if (nodeId === 'CREATIVE_EVALUATION_CLASSIFICATION' || nodeId === 'ITEM_EVALUATE')
+    return [
+      { label: '实际完成评估', value: evaluations.length },
+      { label: '通过评估', value: evaluations.filter((item) => !item.hardIssues.length).length },
+      { label: '未通过评估', value: evaluations.filter((item) => item.hardIssues.length).length },
+      ...scoreFields(averageQualityScores(evaluations)),
+    ];
+  if (nodeId === 'EXACT_SELECTION_AND_SUPPLEMENT')
+    return compact([
+      numberField(metadata, 'acceptedCount', '已择优保留'),
+      numberField(metadata, 'targetCount', '目标数量'),
+      numberField(metadata, 'missingCount', '当前缺口'),
+      numberField(metadata, 'exactDuplicateCount', '完全重复淘汰'),
+      textField('定向补充', metadata.supplemented === true ? '已执行' : '未触发'),
+    ]);
+  if (nodeId === 'RESULT_SAVE' && result)
+    return compact([
+      { label: '已保存 Prompt', value: (Array.isArray(result.items) ? result.items : []).length },
+      numberField(resultMetrics, 'targetCount', '目标数量'),
+      textField('质量状态', result.qualityStatus),
+      { label: '提交状态', value: '已保存为节点草稿，尚未提交工作副本' },
+      ...scoreFields(qualityScores(resultMetrics.averageScores)),
+    ]);
+  return [];
+};
+
+const uniqueFields = (fields: EffectPromptNodeDetailField[]): EffectPromptNodeDetailField[] =>
+  fields.filter(
+    (field, index, items) => items.findIndex(({ label }) => label === field.label) === index,
+  );
 
 const metadataFactGroups = (metadata: JsonRecord): Array<ReturnType<typeof tagGroup>> => {
   const group = (label: string, key: string) =>
@@ -1704,25 +1812,31 @@ const metadataFactGroups = (metadata: JsonRecord): Array<ReturnType<typeof tagGr
   ];
 };
 
-const sharedPromptData = (run: EffectPromptNodeDetailRunRecord, metadata: JsonRecord): JsonRecord => {
+const sharedPromptData = (
+  run: EffectPromptNodeDetailRunRecord,
+  metadata: JsonRecord,
+): JsonRecord => {
   if (publicText(metadata.compiledContent)) return metadata;
   const resultPrompt = metadataRecord(finalV6Record(run)?.sharedPrompt);
   if (publicText(resultPrompt.compiledContent)) return resultPrompt;
   return metadataRecord(inputSnapshot(run).sharedPrompt);
 };
 
-const purposeDistributionBlock = (run: EffectPromptNodeDetailRunRecord): EffectPromptNodeDetailBlock | null => {
+const purposeDistributionBlock = (
+  run: EffectPromptNodeDetailRunRecord,
+): EffectPromptNodeDetailBlock | null => {
   const metrics = metadataRecord(finalV6Record(run)?.metrics);
-  const distribution = (Array.isArray(metrics.purposeDistribution)
-    ? metrics.purposeDistribution
-    : []
+  const distribution = (
+    Array.isArray(metrics.purposeDistribution) ? metrics.purposeDistribution : []
   ).flatMap((item) => {
     if (!isRecord(item)) return [];
     const purpose = fragmentType(item.purpose);
     const primaryCount = safeNumber(item.primaryCount);
     const compatibleCount = safeNumber(item.compatibleCount);
     return purpose && primaryCount !== null && compatibleCount !== null
-      ? [`${EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[purpose]}：主用途 ${primaryCount} 条，兼容 ${compatibleCount} 条`]
+      ? [
+          `${EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[purpose]}：主用途 ${primaryCount} 条，兼容 ${compatibleCount} 条`,
+        ]
       : [];
   });
   return tagBlock('最终推荐用途分布', [tagGroup('用途分布', distribution)]);
@@ -1743,14 +1857,14 @@ const v11OutputBlocks = (
     blocks.push(mapped ?? actualBlocks(run, nodeId)[0] ?? null);
   } else if (nodeId === 'SHARED_PROMPT_COMPILATION') {
     const prompt = sharedPromptData(run, metadata);
-    const sectionLabels = (Array.isArray(prompt.sections) ? prompt.sections : []).flatMap((item) => {
-      if (!isRecord(item)) return [];
-      const title = publicText(item.title, 120);
-      return title ? [title] : [];
-    });
-    blocks.push(
-      textContentBlock('最终共用提示词', prompt.compiledContent, sectionLabels),
+    const sectionLabels = (Array.isArray(prompt.sections) ? prompt.sections : []).flatMap(
+      (item) => {
+        if (!isRecord(item)) return [];
+        const title = publicText(item.title, 120);
+        return title ? [title] : [];
+      },
     );
+    blocks.push(textContentBlock('最终共用提示词', prompt.compiledContent, sectionLabels));
   } else if (nodeId === 'COHERENT_CREATIVE_GENERATION') {
     blocks.push(creativeSampleBlock('真实创意候选样例', samples, samples.length));
   } else if (nodeId === 'CREATIVE_EVALUATION_CLASSIFICATION' || nodeId === 'ITEM_EVALUATE') {
@@ -1838,8 +1952,9 @@ const v11InputSections = (
   if (nodeId === 'SHARED_PROMPT_COMPILATION') {
     const disabled = insightList(insight, 'disabledElements', 'disabled_elements');
     const existing = metadataRecord(inputSnapshot(run).sharedPrompt);
-    const userContent = (Array.isArray(existing.sections) ? existing.sections : []).flatMap((item) =>
-      isRecord(item) && item.source === 'USER' ? [publicText(item.content, 30_000)] : [],
+    const userContent = (Array.isArray(existing.sections) ? existing.sections : []).flatMap(
+      (item) =>
+        isRecord(item) && item.source === 'USER' ? [publicText(item.content, 30_000)] : [],
     );
     return {
       summary: '接收上游禁用元素和本批次用户补充内容。',
@@ -1863,13 +1978,17 @@ const v11InputSections = (
         settings && 'defaultDurationSeconds' in settings
           ? { label: '统一时长', value: `${settings.defaultDurationSeconds} 秒` }
           : null,
-        { label: '共用约束', value: publicText(sharedPromptData(run, {}).compiledContent) ? '已启用' : '未设置' },
+        {
+          label: '共用约束',
+          value: publicText(sharedPromptData(run, {}).compiledContent) ? '已启用' : '未设置',
+        },
       ]),
       blocks: actualBlocks(run, 'INSIGHT_MAPPING'),
     };
   if (nodeId === 'CREATIVE_EVALUATION_CLASSIFICATION' || nodeId === 'ITEM_EVALUATE')
     return {
-      summary: nodeId === 'ITEM_EVALUATE' ? '接收待重新评估的单条 Prompt。' : '接收已生成的创意候选。',
+      summary:
+        nodeId === 'ITEM_EVALUATE' ? '接收待重新评估的单条 Prompt。' : '接收已生成的创意候选。',
       fields: [{ label: '待评估候选', value: samples.length }],
       blocks: [creativeSampleBlock('待评估创意样例', samples, samples.length)].filter(
         (block): block is EffectPromptNodeDetailBlock => block !== null,
@@ -1891,7 +2010,8 @@ const v11InputSections = (
   }
   if (nodeId === 'RESULT_SAVE') {
     const finalSamples = finalV6Samples(run);
-    const selectedCount = finalSamples.length || evaluations.filter((item) => !item.hardIssues.length).length;
+    const selectedCount =
+      finalSamples.length || evaluations.filter((item) => !item.hardIssues.length).length;
     return {
       summary: '接收已经择优且完成用途评估的 Prompt。',
       fields: compact([
@@ -1899,7 +2019,10 @@ const v11InputSections = (
         settings && 'targetCount' in settings
           ? { label: '目标数量', value: `${settings.targetCount} 条` }
           : null,
-        { label: '共用提示词', value: publicText(sharedPromptData(run, {}).compiledContent) ? '已包含' : '未设置' },
+        {
+          label: '共用提示词',
+          value: publicText(sharedPromptData(run, {}).compiledContent) ? '已包含' : '未设置',
+        },
       ]),
       blocks: [],
     };
@@ -1933,7 +2056,11 @@ const buildDetailSections = (
         fields: nodeId === 'LOAD_AND_SNAPSHOT' ? legacyFields : [],
         blocks: nodeId === 'LOAD_AND_SNAPSHOT' ? legacyBlocks : [],
       };
-  const outputFields = isV11Run(run) ? legacyFields : nodeId === 'LOAD_AND_SNAPSHOT' ? [] : legacyFields;
+  const outputFields = isV11Run(run)
+    ? uniqueFields([...legacyFields, ...v11AdditionalOutputFields(run, nodeId, metadata)])
+    : nodeId === 'LOAD_AND_SNAPSHOT'
+      ? []
+      : legacyFields;
   const outputBlocks = isV11Run(run)
     ? v11OutputBlocks(run, nodeId, metadata)
     : nodeId === 'LOAD_AND_SNAPSHOT'
@@ -1962,11 +2089,13 @@ const buildDetailSections = (
       summary:
         status === 'PENDING'
           ? (expectedOutputSummary[nodeId] ?? '该节点执行后将在这里展示真实业务结果。')
-          : outputHasContent
-            ? publicText(run.stages.find((item) => item.nodeId === nodeId)?.summary, 500)
-            : status === 'FAILED'
-              ? '当前没有可展示的业务输出，请查看下方失败原因。'
-              : '当前阶段没有额外可展示的业务结果。',
+          : nodeId === 'RESULT_SAVE' && outputHasContent
+            ? '结果已保存为节点草稿；只有完成校验后才会提交 Prompt 工作副本。'
+            : outputHasContent
+              ? publicText(run.stages.find((item) => item.nodeId === nodeId)?.summary, 500)
+              : status === 'FAILED'
+                ? '当前没有可展示的业务输出，请查看下方失败原因。'
+                : '当前阶段没有额外可展示的业务结果。',
       fields: outputFields,
       blocks: outputBlocks,
     },
@@ -1974,7 +2103,10 @@ const buildDetailSections = (
       kind: 'EXECUTION',
       state: status === 'PENDING' ? 'EXPECTED' : 'ACTUAL',
       title: '执行情况',
-      summary: status === 'PENDING' ? '任务开始后将展示尝试次数和阶段进度。' : '这里展示安全的运行进度，不包含模型和内部调用信息。',
+      summary:
+        status === 'PENDING'
+          ? '任务开始后将展示尝试次数和阶段进度。'
+          : '这里展示安全的运行进度，不包含模型和内部调用信息。',
       fields: compact([
         safeNumber(run.attemptCount) === null
           ? null

@@ -128,6 +128,231 @@ const runRecord = (): EffectPromptNodeDetailRunRecord =>
     result: null,
   }) as unknown as EffectPromptNodeDetailRunRecord;
 
+const v11RunRecord = (): EffectPromptNodeDetailRunRecord => {
+  const base = runRecord();
+  const creativeDimensions = {
+    narrative: '场景代入型',
+    scene: '家庭厨房蒸锅旁',
+    persona: '准备家宴的成年女性',
+    productRelation: '广式腊肠蒸熟后的油润切面',
+    camera: '桌面高度中近景缓慢推进',
+    emotion: '温暖而有食欲感',
+  };
+  const creativeItems = Array.from({ length: 4 }, (_, index) => ({
+    slotId: `private-v11-slot-${index + 1}`,
+    ordinal: index + 1,
+    round: 0,
+    creativeCore: `家宴上桌前展示广式腊肠切面 ${index + 1}`,
+    declaredFactIds: ['PRODUCT_NAME:private-fact-id'],
+    dimensions: creativeDimensions,
+    content: `蒸锅掀开后，成年女性用木筷夹起第 ${index + 1} 片广式腊肠，油润切面朝向镜头并稳定停留。`,
+  }));
+  const evaluations = creativeItems.map((item, index) => ({
+    slotId: item.slotId,
+    primaryPurpose: index === 0 ? 'HOOK' : 'PRODUCT_DISPLAY',
+    compatiblePurposes: index === 0 ? ['HOOK', 'PRODUCT_DISPLAY'] : ['PRODUCT_DISPLAY'],
+    scores: {
+      productRelevance: 90 - index,
+      creativeCoherence: 86,
+      visualExecutability: 84,
+      commercialUsefulness: 82,
+      visualClarity: 88,
+    },
+    hardIssues: index === 3 ? ['SOURCE_FACT_VIOLATION'] : [],
+    warnings: index === 2 ? ['VISUAL_OVERLAP'] : [],
+  }));
+  const resultItems = creativeItems.slice(0, 3).map((item, index) => ({
+    id: `result-${index + 1}`,
+    code: `P00${index + 1}`,
+    origin: 'AI',
+    fragmentType: index === 0 ? 'HOOK' : 'PRODUCT_DISPLAY',
+    primaryPurpose: index === 0 ? 'HOOK' : 'PRODUCT_DISPLAY',
+    compatiblePurposes: index === 0 ? ['HOOK', 'PRODUCT_DISPLAY'] : ['PRODUCT_DISPLAY'],
+    classificationStatus: 'VERIFIED',
+    productRelevance: 90 - index,
+    materialTags: ['广式腊肠', '家宴'],
+    targetDurationSeconds: 5,
+    dimensions: creativeDimensions,
+    content: item.content,
+    insightBindings: [
+      {
+        factId: 'PRODUCT_NAME:private-fact-id',
+        field: 'PRODUCT_NAME',
+        value: '广式腊肠',
+        valueHash: 'a'.repeat(64),
+        role: 'PRIMARY',
+      },
+    ],
+    manualEdited: false,
+    createdAt: '2026-08-28T01:00:00.000Z',
+    updatedAt: '2026-08-28T01:00:00.000Z',
+  }));
+  const stage = (
+    nodeId: string,
+    summary: string,
+    metadata: Record<string, unknown>,
+    status = 'SUCCEEDED',
+  ) => ({
+    nodeId,
+    status,
+    summary,
+    warnings: [],
+    errorMessage: null,
+    metadata,
+    updatedAt: new Date('2026-08-28T01:00:00.000Z'),
+  });
+  return {
+    ...base,
+    status: 'COMPLETED',
+    attemptCount: 1,
+    inputSnapshot: {
+      schemaVersion: 6,
+      graphVersion: 'V11_COHERENT_CREATIVE_GENERATION',
+      settings: { targetCount: 3, defaultDurationSeconds: 5 },
+      insightArtifact: {
+        result: {
+          productName: '广式腊肠',
+          productCategory: '中式腊味',
+          coreSellingPoints: ['广府糖酒腌制工艺', '蒸熟后油润有光泽'],
+          corePainPoints: ['普通腊味口感偏干'],
+          targetAudience: '准备家庭聚餐的成年人',
+          usageScenarios: ['家庭蒸制', '年夜饭摆盘'],
+          disabledElements: ['虚构医疗功效', '未确认价格'],
+        },
+      },
+      retainedManualItems: [],
+      sharedPrompt: {
+        schemaVersion: 1,
+        sections: [
+          {
+            key: 'USER_ADDITIONAL',
+            title: '用户补充',
+            source: 'USER',
+            content: '保持画面生活化',
+            editable: true,
+            sourceHash: 'b'.repeat(64),
+          },
+        ],
+        compiledContent: '保持画面生活化',
+        contentHash: 'c'.repeat(64),
+      },
+    },
+    stages: [
+      stage('LOAD_AND_SNAPSHOT', '输入快照已锁定', {}),
+      stage('INSIGHT_MAPPING', '提炼信息用途映射完成', {
+        requiredCount: 4,
+        adaptiveCount: 2,
+        excludedCount: 1,
+        appliedConstraintCount: 2,
+        requiredFacts: [
+          { field: 'PRODUCT_NAME', value: '广式腊肠' },
+          { field: 'CORE_SELLING_POINT', value: '广府糖酒腌制工艺' },
+        ],
+        adaptiveFacts: [{ field: 'USAGE_SCENARIO', value: '年夜饭摆盘' }],
+        excludedFacts: [{ field: 'PRICE', value: '价格待确认', reason: 'UNCERTAIN' }],
+        appliedConstraints: [{ field: 'DISABLED_ELEMENT', value: '虚构医疗功效' }],
+      }),
+      stage('SHARED_PROMPT_COMPILATION', '批次共用提示词已编译', {
+        disabledElementCount: 2,
+        sectionCount: 2,
+        sharedPromptGenerated: true,
+        hasUserAdditionalContent: true,
+        compiledContent: '画面中不得出现虚构医疗功效、未确认价格。\n保持画面生活化。',
+        sections: [
+          { title: '系统约束', source: 'SYSTEM', content: '画面中不得出现虚构医疗功效。' },
+          { title: '用户补充', source: 'USER', content: '保持画面生活化。' },
+        ],
+      }),
+      stage('COHERENT_CREATIVE_GENERATION', '连贯六维创意生成完成', {
+        targetCount: 3,
+        candidateCount: 4,
+        completedShardCount: 1,
+      }),
+      stage('CREATIVE_EVALUATION_CLASSIFICATION', '创意质量评估与用途分类完成', {
+        evaluatedCount: 4,
+        acceptedCount: 3,
+        rejectedCount: 1,
+        completedShardCount: 1,
+      }),
+      stage('EXACT_SELECTION_AND_SUPPLEMENT', '质量优先筛选完成', {
+        acceptedCount: 3,
+        targetCount: 3,
+        missingCount: 0,
+        exactDuplicateCount: 0,
+        supplemented: false,
+      }),
+      stage('RESULT_SAVE', 'Prompt 批次结果已保存', {
+        batchSize: 3,
+        qualityStatus: 'PASS',
+      }),
+    ],
+    shards: [
+      {
+        phase: 'BLUEPRINT',
+        round: 0,
+        shardIndex: 0,
+        status: 'SUCCEEDED',
+        combinationPlan: creativeItems.map((item) => ({
+          slotId: item.slotId,
+          ordinal: item.ordinal,
+          round: 0,
+          targetDurationSeconds: 5,
+          preferredFactIds: item.declaredFactIds,
+        })),
+        items: creativeItems,
+      },
+      {
+        phase: 'PROMPT',
+        round: 0,
+        shardIndex: 0,
+        status: 'SUCCEEDED',
+        combinationPlan: creativeItems.map((item) => item.slotId),
+        items: evaluations,
+      },
+    ],
+    result: {
+      draftResult: {
+        schemaVersion: 6,
+        settings: { targetCount: 3, defaultDurationSeconds: 5 },
+        sharedPrompt: {
+          schemaVersion: 1,
+          sections: [],
+          compiledContent: '画面中不得出现虚构医疗功效。\n保持画面生活化。',
+          contentHash: 'd'.repeat(64),
+        },
+        items: resultItems,
+        metrics: {
+          targetCount: 3,
+          candidateTargetCount: 4,
+          generatedCandidateCount: 4,
+          acceptedCount: 3,
+          rejectedCount: 1,
+          replenishmentRounds: 0,
+          exactDuplicateCount: 0,
+          purposeDistribution: [
+            { purpose: 'HOOK', primaryCount: 1, compatibleCount: 1 },
+            { purpose: 'PAIN', primaryCount: 0, compatibleCount: 0 },
+            { purpose: 'PRODUCT_DISPLAY', primaryCount: 2, compatibleCount: 3 },
+            { purpose: 'SELLING_POINT_EXPLANATION', primaryCount: 0, compatibleCount: 0 },
+            { purpose: 'CTA', primaryCount: 0, compatibleCount: 0 },
+            { purpose: 'OUTRO', primaryCount: 0, compatibleCount: 0 },
+          ],
+          averageScores: {
+            productRelevance: 89,
+            creativeCoherence: 86,
+            visualExecutability: 84,
+            commercialUsefulness: 82,
+            visualClarity: 88,
+          },
+          hardIssueCounts: [{ code: 'SOURCE_FACT_VIOLATION', count: 1 }],
+          warningCounts: [{ code: 'VISUAL_OVERLAP', count: 1 }],
+        },
+        qualityStatus: 'PASS',
+      },
+    },
+  } as unknown as EffectPromptNodeDetailRunRecord;
+};
+
 describe('presentEffectPromptNodeDetail', () => {
   it('projects a terminal run failure over a stale running stage', () => {
     const record = runRecord();
@@ -384,5 +609,75 @@ describe('presentEffectPromptNodeDetail', () => {
       expect.objectContaining({ kind: 'ORTHOGONAL_PAIR_LIST' }),
     );
     expect(JSON.stringify(blueprint)).not.toContain('blueprint-private');
+  });
+
+  it.each([
+    'LOAD_AND_SNAPSHOT',
+    'INSIGHT_MAPPING',
+    'SHARED_PROMPT_COMPILATION',
+    'COHERENT_CREATIVE_GENERATION',
+    'CREATIVE_EVALUATION_CLASSIFICATION',
+    'EXACT_SELECTION_AND_SUPPLEMENT',
+    'RESULT_SAVE',
+  ] as const)('projects explicit V11 input and output sections for %s', (nodeId) => {
+    const detail = presentEffectPromptNodeDetail(v11RunRecord(), nodeId);
+    expect(detail.sections.map(({ kind }) => kind)).toEqual(['INPUT', 'OUTPUT', 'EXECUTION']);
+    expect(detail.sections.find(({ kind }) => kind === 'INPUT')?.title).toBe('本次输入');
+    expect(detail.sections.find(({ kind }) => kind === 'OUTPUT')?.state).toBe('ACTUAL');
+    expect(JSON.stringify(detail)).not.toMatch(/private-v11-slot|private-fact-id/u);
+  });
+
+  it('shows the compiled shared prompt and limits V11 creative samples to three', () => {
+    const shared = presentEffectPromptNodeDetail(v11RunRecord(), 'SHARED_PROMPT_COMPILATION');
+    const creative = presentEffectPromptNodeDetail(v11RunRecord(), 'COHERENT_CREATIVE_GENERATION');
+    const sharedBlock = shared.sections
+      .find(({ kind }) => kind === 'OUTPUT')
+      ?.blocks.find((block) => block.kind === 'TEXT_CONTENT');
+    const creativeBlock = creative.sections
+      .find(({ kind }) => kind === 'OUTPUT')
+      ?.blocks.find((block) => block.kind === 'CREATIVE_SAMPLE_LIST');
+    expect(sharedBlock).toMatchObject({
+      kind: 'TEXT_CONTENT',
+      content: expect.stringContaining('虚构医疗功效'),
+    });
+    expect(creativeBlock).toMatchObject({
+      kind: 'CREATIVE_SAMPLE_LIST',
+      totalCount: 4,
+      remainingCount: 1,
+    });
+    if (creativeBlock?.kind !== 'CREATIVE_SAMPLE_LIST') throw new Error('missing V11 samples');
+    expect(creativeBlock.items).toHaveLength(3);
+  });
+
+  it('marks running output as partial and pending output as expected', () => {
+    const runningRecord = v11RunRecord();
+    runningRecord.stages = runningRecord.stages.map((stage) =>
+      stage.nodeId === 'COHERENT_CREATIVE_GENERATION' ? { ...stage, status: 'RUNNING' } : stage,
+    );
+    const pendingRecord = v11RunRecord();
+    pendingRecord.stages = pendingRecord.stages.filter(
+      (stage) => stage.nodeId !== 'EXACT_SELECTION_AND_SUPPLEMENT',
+    );
+    expect(
+      presentEffectPromptNodeDetail(runningRecord, 'COHERENT_CREATIVE_GENERATION').sections.find(
+        ({ kind }) => kind === 'OUTPUT',
+      )?.state,
+    ).toBe('PARTIAL');
+    expect(
+      presentEffectPromptNodeDetail(pendingRecord, 'EXACT_SELECTION_AND_SUPPLEMENT').sections.find(
+        ({ kind }) => kind === 'OUTPUT',
+      )?.state,
+    ).toBe('EXPECTED');
+  });
+
+  it('states that result save is a draft instead of a committed working artifact', () => {
+    const detail = presentEffectPromptNodeDetail(v11RunRecord(), 'RESULT_SAVE');
+    const output = detail.sections.find(({ kind }) => kind === 'OUTPUT');
+    expect(output?.summary).toContain('节点草稿');
+    expect(output?.summary).toContain('完成校验');
+    expect(output?.fields).toContainEqual({
+      label: '提交状态',
+      value: '已保存为节点草稿，尚未提交工作副本',
+    });
   });
 });

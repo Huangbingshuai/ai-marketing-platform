@@ -73,7 +73,7 @@ describe('effect prompt generation V11 layout', () => {
     expect(pageSource).toContain("item.classificationStatus === 'PENDING'");
     expect(pageSource).toContain('待重新评估');
     expect(pageSource).toContain('@click="evaluateItem(item)"');
-    expect(pageSource).toContain('<RefreshCw v-else :size="13" />重新评估');
+    expect(pageSource).toMatch(/<RefreshCw\s+v-else\s+:size="13"\s*\/>\s*重新评估/u);
   });
 
   it('keeps list actions safe while evaluation or regeneration is active', () => {
@@ -104,18 +104,18 @@ describe('effect prompt generation V11 layout', () => {
       'ITEM_EVALUATE',
     ])
       expect(pageSource).toMatch(new RegExp(`\\b${nodeId}\\b`, 'u'));
-    expect(pageSource).toContain(
-      'effectPromptRunGraphNodeIds(currentGraphVersion.value, currentRun.value.operation)',
+    expect(pageSource).toMatch(
+      /effectPromptRunGraphNodeIds\(\s*displayedGraphVersion\.value,\s*displayedGraphRun\.value\.operation,?\s*\)/u,
     );
-    expect(pageSource).toContain(
-      'effectPromptRunGraphEdges(currentGraphVersion.value, currentRun.value.operation)',
+    expect(pageSource).toMatch(
+      /effectPromptRunGraphEdges\(\s*displayedGraphVersion\.value,\s*displayedGraphRun\.value\.operation,?\s*\)/u,
     );
     expect(pageSource).toContain('展示本次真实输入、连贯创意生成、用途评估和数量结果。');
     expect(graphSource).toContain('sourceIndex < targetIndex');
   });
 
   it('retains historical V8-V10 graph detail renderers', () => {
-    expect(pageSource).toContain('effectPromptGraphNodeIds(currentGraphVersion.value)');
+    expect(pageSource).toContain('effectPromptGraphNodeIds(displayedGraphVersion.value)');
     for (const blockKind of [
       'RELATIONSHIP_LIST',
       'COORDINATE_LIST',
