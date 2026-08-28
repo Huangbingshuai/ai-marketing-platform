@@ -42,6 +42,7 @@ from .models import (
     CreativeCandidate,
     CreativeDimensions,
     CreativeEvaluation,
+    CreativeFactAssignment,
     CreativeScores,
     CreativeShardPlan,
     CreativeTask,
@@ -112,6 +113,7 @@ from .v10_blueprints import (
     validate_generated_blueprints,
     validate_relationship_plan,
 )
+from .v11_fact_allocation import allocate_v11_creative_facts
 from .quality import (
     EvaluationResult,
     CreativeSelectionResult,
@@ -185,6 +187,7 @@ class RunCache:
     v11_candidate_target_count: int = 0
     v11_exact_duplicate_count: int = 0
     v11_supplemented: bool = False
+    v11_replenishment_rounds: int = 0
     embedding_vectors: dict[str, tuple[float, ...]] = field(default_factory=dict)
     embedding_stage_metadata: dict[str, Any] = field(default_factory=dict)
     embedding_warning: str | None = None
@@ -318,10 +321,14 @@ class PromptGenerationPipeline:
         cache.completed_classification_shard_keys = {
             item.key for item in succeeded_classifications
         }
-        cache.v11_supplemented = any(
-            item.round == 1
-            for item in [*succeeded_creatives, *succeeded_classifications]
+        cache.v11_replenishment_rounds = max(
+            (
+                item.round
+                for item in [*succeeded_creatives, *succeeded_classifications]
+            ),
+            default=0,
         )
+        cache.v11_supplemented = cache.v11_replenishment_rounds > 0
         loaded = LoadedRun(
             snapshot=snapshot,
             candidates=unique_candidates,
@@ -563,17 +570,26 @@ class PromptGenerationPipeline:
             deficit = max(1, missing_count or selection_target)
             requested = max(deficit + 1, math.ceil(deficit * 1.2))
             cache.v11_supplemented = True
+            cache.v11_replenishment_rounds = max(
+                cache.v11_replenishment_rounds,
+                round_number,
+            )
         application = self._require_application(context)
-        usable_ids = [item.fact_id for item in application.usable]
-        preferred = (
+        preferred_primary_ids = (
             [binding.fact_id for binding in snapshot.target_item.insight_bindings]
             if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item
-            else usable_ids
-        ) or usable_ids
+            else []
+        )
         ordinal_start = (
             1
             if round_number == 0
             else max((item.ordinal for item in cache.creatives.values()), default=0) + 1
+        )
+        fact_assignments = allocate_v11_creative_facts(
+            application,
+            count=requested,
+            ordinal_start=ordinal_start,
+            preferred_primary_fact_ids=preferred_primary_ids,
         )
         tasks = [
             CreativeTask(
@@ -585,9 +601,8 @@ class PromptGenerationPipeline:
                     if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item
                     else settings.default_duration_seconds
                 ),
-                preferred_fact_ids=[
-                    preferred[(ordinal_start + index - 1) % len(preferred)]
-                ],
+                fact_assignment=fact_assignments[index],
+                preferred_fact_ids=[fact_assignments[index].primary_fact_id],
             )
             for index in range(requested)
         ]
@@ -627,6 +642,20 @@ class PromptGenerationPipeline:
                 "candidateTargetCount": requested,
                 "pendingShardCount": len(pending),
                 "shardSize": min(4, self.shard_size),
+                "factSelectionMode": "WORKER_ASSIGNMENT_V1",
+                "primaryFactCount": len(
+                    {
+                        assignment.primary_fact_id
+                        for assignment in fact_assignments
+                    }
+                ),
+                "productAnchorFactCount": len(
+                    {
+                        fact_id
+                        for assignment in fact_assignments
+                        for fact_id in assignment.product_anchor_fact_ids
+                    }
+                ),
             },
         )
         return pending
@@ -1060,12 +1089,14 @@ class PromptGenerationPipeline:
         )
         missing = max(0, selection_target - len(items))
         should_supplement = (
-            missing > 0 and round_number == 0 and snapshot.operation != "ITEM_EVALUATE"
+            missing > 0
+            and round_number < MAX_REPLENISHMENT_ROUNDS
+            and snapshot.operation != "ITEM_EVALUATE"
         )
         pending = (
             await self.plan_v11_creatives(
                 context,
-                round_number=1,
+                round_number=round_number + 1,
                 missing_count=missing,
             )
             if should_supplement
@@ -1127,7 +1158,7 @@ class PromptGenerationPipeline:
             generated_candidate_count=len(cache.creatives),
             accepted_count=len(items),
             rejected_count=max(0, len(cache.creatives) - len(selected)),
-            replenishment_rounds=1 if cache.v11_supplemented else 0,
+            replenishment_rounds=cache.v11_replenishment_rounds,
             exact_duplicate_count=cache.v11_exact_duplicate_count,
             purpose_distribution=[
                 PurposeDistribution(

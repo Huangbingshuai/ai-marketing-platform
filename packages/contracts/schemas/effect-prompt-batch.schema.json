@@ -45,7 +45,7 @@
         "candidateTargetCount": { "type": "integer", "minimum": 10, "maximum": 240 },
         "generatedCandidateCount": { "type": "integer", "minimum": 0 },
         "rejectedCount": { "type": "integer", "minimum": 0 },
-        "replenishmentRounds": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "replenishmentRounds": { "type": "integer", "minimum": 0, "maximum": 3 },
         "exactDuplicateCount": { "type": "integer", "minimum": 0 },
         "purposeDistribution": { "$ref": "#/$defs/purposeDistribution" },
         "averageScores": { "$ref": "#/$defs/qualityScores" },

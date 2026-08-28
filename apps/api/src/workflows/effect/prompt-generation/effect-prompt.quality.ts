@@ -686,7 +686,11 @@ const validMetrics = (value: unknown): value is EffectPromptMetrics => {
     integer('generatedCandidateCount', 0) &&
     integer('acceptedCount', 0, EFFECT_PROMPT_LIMITS.maxCount) &&
     integer('rejectedCount', 0) &&
-    integer('replenishmentRounds', 0, 1) &&
+    integer(
+      'replenishmentRounds',
+      0,
+      EFFECT_PROMPT_LIMITS.maxReplenishmentRounds,
+    ) &&
     integer('exactDuplicateCount', 0) &&
     Array.isArray(distribution) &&
     distribution.length === EFFECT_PROMPT_FRAGMENT_TYPES.length &&
@@ -966,7 +970,10 @@ export const recomputePromptQuality = (
       items.length,
     ),
     rejectedCount: Math.max(previous?.rejectedCount ?? 0, 0),
-    replenishmentRounds: Math.min(1, Math.max(previous?.replenishmentRounds ?? 0, 0)),
+    replenishmentRounds: Math.min(
+      EFFECT_PROMPT_LIMITS.maxReplenishmentRounds,
+      Math.max(previous?.replenishmentRounds ?? 0, 0),
+    ),
     exactDuplicateCount: exactDuplicatePairs,
     purposeDistribution,
     averageScores: {

@@ -95,6 +95,38 @@ class FirstRoundRejectingProvider(MockAiProvider):
         return replace(call, value=call.value.model_copy(update={"items": items}))
 
 
+class FirstTwoRoundsRejectingProvider(MockAiProvider):
+    async def evaluate_creatives(
+        self,
+        candidates: list[CreativeCandidate],
+        *,
+        application: Any,
+    ) -> Any:
+        call = await super().evaluate_creatives(candidates, application=application)
+        items = [
+            item.model_copy(update={"hard_issues": ["TEST_EARLY_ROUND_REJECTION"]})
+            if candidate.round < 2
+            else item
+            for candidate, item in zip(candidates, call.value.items, strict=True)
+        ]
+        return replace(call, value=call.value.model_copy(update={"items": items}))
+
+
+class AlwaysRejectingProvider(MockAiProvider):
+    async def evaluate_creatives(
+        self,
+        candidates: list[CreativeCandidate],
+        *,
+        application: Any,
+    ) -> Any:
+        call = await super().evaluate_creatives(candidates, application=application)
+        items = [
+            item.model_copy(update={"hard_issues": ["TEST_SAFETY_REJECTION"]})
+            for item in call.value.items
+        ]
+        return replace(call, value=call.value.model_copy(update={"items": items}))
+
+
 class FailingEmbeddingProvider(MockEmbeddingProvider):
     cache_namespace = "failing-test-provider"
 
@@ -179,6 +211,34 @@ async def test_v11_graph_generates_120_percent_then_selects_exact_count() -> Non
         "CREATIVE": 3,
         "CLASSIFICATION": 2,
     }
+    mapping_stage = next(
+        stage
+        for stage in reversed(api.stages)
+        if stage.node_id == "INSIGHT_MAPPING"
+    )
+    shared_stage = next(
+        stage
+        for stage in reversed(api.stages)
+        if stage.node_id == "SHARED_PROMPT_COMPILATION"
+    )
+    creative_stage = next(
+        stage
+        for stage in reversed(api.stages)
+        if stage.node_id == "COHERENT_CREATIVE_GENERATION"
+    )
+    classification_stage = next(
+        stage
+        for stage in reversed(api.stages)
+        if stage.node_id == "CREATIVE_EVALUATION_CLASSIFICATION"
+    )
+    assert mapping_stage.metadata["requiredFacts"]
+    assert all("factId" not in item for item in mapping_stage.metadata["requiredFacts"])
+    assert shared_stage.metadata["compiledContent"]
+    assert creative_stage.status == "SUCCEEDED"
+    assert creative_stage.metadata["candidateCount"] == 12
+    assert classification_stage.status == "SUCCEEDED"
+    assert classification_stage.metadata["evaluatedCount"] == 12
+    assert classification_stage.metadata["averageScores"]["productRelevance"] >= 0
 
 
 @pytest.mark.asyncio
@@ -373,7 +433,7 @@ async def test_v11_item_evaluate_preserves_content_and_only_runs_classification(
 
 
 @pytest.mark.asyncio
-async def test_v11_runs_only_one_supplement_round_for_quality_shortage() -> None:
+async def test_v11_stops_supplementing_as_soon_as_exact_quantity_is_reached() -> None:
     api = V11Api()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -398,6 +458,56 @@ async def test_v11_runs_only_one_supplement_round_for_quality_shortage() -> None
         "CREATIVE": 4,
         "CLASSIFICATION": 3,
     }
+
+
+@pytest.mark.asyncio
+async def test_v11_can_run_multiple_supplement_rounds_to_reach_exact_quantity() -> None:
+    api = V11Api()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=FirstTwoRoundsRejectingProvider(),
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _snapshot())
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    assert api.result is not None
+    assert api.result.quality_status == "PASS"
+    assert len(api.result.items) == 10
+    assert api.result.metrics.generated_candidate_count == 36
+    assert api.result.metrics.replenishment_rounds == 2
+    assert Counter(item.phase.value for item in api.shards.values()) == {
+        "CREATIVE": 9,
+        "CLASSIFICATION": 6,
+    }
+
+
+@pytest.mark.asyncio
+async def test_v11_stops_after_three_rounds_when_real_safety_issues_remain() -> None:
+    api = V11Api()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=AlwaysRejectingProvider(),
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _snapshot())
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    assert api.result is not None
+    assert api.result.quality_status == "NEEDS_REVIEW"
+    assert api.result.items == []
+    assert api.result.metrics.generated_candidate_count == 48
+    assert api.result.metrics.replenishment_rounds == 3
 
 
 def test_v11_evaluation_requires_real_text_evidence() -> None:
@@ -440,8 +550,125 @@ def test_v11_evaluation_requires_real_text_evidence() -> None:
 
     validated = validate_creative_evaluation(candidate, evaluation, application)
 
-    assert "FACT_EVIDENCE_NOT_IN_CONTENT" in validated.hard_issues
+    assert "FACT_EVIDENCE_NOT_IN_CONTENT" in validated.warnings
+    assert "FACT_EVIDENCE_NOT_IN_CONTENT" not in validated.hard_issues
     assert "MISSING_PRODUCT_RELATION" in validated.hard_issues
+
+
+def test_v11_discards_bad_evidence_excerpt_without_rejecting_valid_prompt() -> None:
+    application = map_insight(
+        {"productName": "广式腊肠", "coreSellingPoints": ["油润红亮切面"]}
+    )
+    product_fact = next(item for item in application.usable if item.value == "广式腊肠")
+    selling_fact = next(item for item in application.usable if item.value == "油润红亮切面")
+    candidate = CreativeCandidate(
+        slot_id="candidate-valid-product",
+        ordinal=1,
+        round=0,
+        creative_core="切面细节展示",
+        declared_fact_ids=[product_fact.fact_id, selling_fact.fact_id],
+        dimensions=CreativeDimensions(
+            narrative="从摆盘推进到切面停留",
+            scene="家庭餐桌",
+            persona="成年人手部",
+            product_relation="广式腊肠切面",
+            camera="近景缓慢靠近",
+            emotion="温暖真实",
+        ),
+        content="家庭餐桌上，成年人夹起一片广式腊肠，近景缓慢靠近后稳定停留。",
+    )
+    evaluation = CreativeEvaluation(
+        slot_id=candidate.slot_id,
+        primary_purpose=FragmentType.PRODUCT_DISPLAY,
+        compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+        fact_evidence=[
+            FactEvidence(fact_id=product_fact.fact_id, evidence_text="广式腊肠"),
+            FactEvidence(fact_id=selling_fact.fact_id, evidence_text="油亮红润的真实切面"),
+        ],
+        realized_fact_ids=[product_fact.fact_id, selling_fact.fact_id],
+        scores=CreativeScores(
+            product_relevance=90,
+            creative_coherence=90,
+            visual_executability=90,
+            commercial_usefulness=85,
+            visual_clarity=90,
+        ),
+        semantic_signature="ignored",
+        visual_signature="ignored",
+        hard_issues=["FACT_EVIDENCE_NOT_IN_CONTENT"],
+    )
+
+    validated = validate_creative_evaluation(candidate, evaluation, application)
+
+    assert validated.hard_issues == []
+    assert validated.warnings == ["FACT_EVIDENCE_NOT_IN_CONTENT"]
+    assert validated.realized_fact_ids == [product_fact.fact_id]
+
+
+def test_v11_evidence_excerpt_noise_does_not_reduce_a_50_item_batch() -> None:
+    application = map_insight(
+        {"productName": "广式腊肠", "coreSellingPoints": ["油润红亮切面"]}
+    )
+    product_fact = next(item for item in application.usable if item.value == "广式腊肠")
+    selling_fact = next(item for item in application.usable if item.value == "油润红亮切面")
+    candidates: list[CreativeCandidate] = []
+    evaluations: list[CreativeEvaluation] = []
+    for index in range(60):
+        candidate = CreativeCandidate(
+            slot_id=f"candidate-{index:03d}",
+            ordinal=index + 1,
+            round=0,
+            creative_core=f"第{index + 1}种连续展示动作",
+            declared_fact_ids=[product_fact.fact_id, selling_fact.fact_id],
+            dimensions=CreativeDimensions(
+                narrative=f"展示动作{index + 1}",
+                scene=f"家庭餐桌位置{index + 1}",
+                persona=f"成年人手部姿态{index + 1}",
+                product_relation="广式腊肠切面",
+                camera=f"近景机位{index + 1}",
+                emotion=f"温暖氛围{index + 1}",
+            ),
+            content=(
+                f"家庭餐桌位置{index + 1}上，成年人夹起一片广式腊肠，"
+                f"完成第{index + 1}种连续动作后稳定停留。"
+            ),
+        )
+        raw_evaluation = CreativeEvaluation(
+            slot_id=candidate.slot_id,
+            primary_purpose=FragmentType.PRODUCT_DISPLAY,
+            compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+            fact_evidence=[
+                FactEvidence(fact_id=product_fact.fact_id, evidence_text="广式腊肠"),
+                FactEvidence(
+                    fact_id=selling_fact.fact_id,
+                    evidence_text="模型改写后的油润切面摘录",
+                ),
+            ],
+            realized_fact_ids=[product_fact.fact_id, selling_fact.fact_id],
+            scores=CreativeScores(
+                product_relevance=90,
+                creative_coherence=88,
+                visual_executability=90,
+                commercial_usefulness=85,
+                visual_clarity=90,
+            ),
+            semantic_signature="ignored",
+            visual_signature="ignored",
+            hard_issues=["FACT_EVIDENCE_NOT_IN_CONTENT"],
+        )
+        candidates.append(candidate)
+        evaluations.append(
+            validate_creative_evaluation(candidate, raw_evaluation, application)
+        )
+
+    result = select_creatives(candidates, evaluations, target_count=50)
+
+    assert len(result.selected) == 50
+    assert all(not item.evaluation.hard_issues for item in result.selected)
+    assert all(
+        item.evaluation.warnings == ["FACT_EVIDENCE_NOT_IN_CONTENT"]
+        for item in result.selected
+    )
 
 
 def test_v11_selection_uses_quality_80_and_novelty_20() -> None:

@@ -244,20 +244,22 @@ def build_graph(
             runtime.context,
             round_number=0,
         )
-        if needed and supplement:
-            await asyncio.gather(
-                *(
-                    pipeline.generate_v11_creative_shard(runtime.context, shard)
-                    for shard in supplement
+        supplement_round = 1
+        while needed and supplement_round <= MAX_REPLENISHMENT_ROUNDS:
+            if supplement:
+                await asyncio.gather(
+                    *(
+                        pipeline.generate_v11_creative_shard(runtime.context, shard)
+                        for shard in supplement
+                    )
                 )
-            )
             await pipeline.complete_v11_creative_generation(
                 runtime.context,
-                round_number=1,
+                round_number=supplement_round,
             )
             classifications = await pipeline.plan_v11_classification(
                 runtime.context,
-                round_number=1,
+                round_number=supplement_round,
             )
             if classifications:
                 await asyncio.gather(
@@ -270,9 +272,13 @@ def build_graph(
                 )
             await pipeline.complete_v11_classification(
                 runtime.context,
-                round_number=1,
+                round_number=supplement_round,
             )
-            await pipeline.select_v11_creatives(runtime.context, round_number=1)
+            supplement, needed = await pipeline.select_v11_creatives(
+                runtime.context,
+                round_number=supplement_round,
+            )
+            supplement_round += 1
         return {}
 
     async def combine(

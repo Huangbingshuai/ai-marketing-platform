@@ -84,6 +84,12 @@ describe('effect prompt V6 quality contract', () => {
       compatibleCount: 10,
     });
     expect(result.metrics.averageScores.productRelevance).toBe(92);
+    expect(
+      parseEffectPromptBatchResult({
+        ...result,
+        metrics: { ...result.metrics, replenishmentRounds: 3 },
+      })?.metrics.replenishmentRounds,
+    ).toBe(3);
   });
 
   it('keeps duplicate and pending classification as blocking issues', () => {

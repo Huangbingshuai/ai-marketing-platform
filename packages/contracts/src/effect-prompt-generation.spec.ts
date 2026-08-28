@@ -9,6 +9,9 @@ import {
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_LEGACY_SCHEMA_VERSION,
+  EFFECT_PROMPT_LIMITS,
+  EFFECT_PROMPT_NODE_DETAIL_SECTION_KINDS,
+  EFFECT_PROMPT_NODE_DETAIL_SECTION_STATES,
   EFFECT_PROMPT_SCHEMA_VERSION,
   EFFECT_PROMPT_SHARD_PHASES,
   effectPromptGraphNodeIds,
@@ -91,6 +94,16 @@ describe('effect prompt generation contract', () => {
     ]);
   });
 
+  it('publishes additive node-detail input, output, and execution section states', () => {
+    expect(EFFECT_PROMPT_NODE_DETAIL_SECTION_KINDS).toEqual(['INPUT', 'OUTPUT', 'EXECUTION']);
+    expect(EFFECT_PROMPT_NODE_DETAIL_SECTION_STATES).toEqual([
+      'EXPECTED',
+      'ACTUAL',
+      'PARTIAL',
+      'EMPTY',
+    ]);
+  });
+
   it('allows item evaluation without fragment-type input', () => {
     const request: StartEffectPromptRunRequest = {
       workflowRunId: 'workflow-1',
@@ -121,5 +134,8 @@ describe('effect prompt generation contract', () => {
       ]),
     );
     expect(batchSchema.$defs.fragmentType.enum).toEqual(EFFECT_PROMPT_FRAGMENT_TYPES);
+    expect(batchSchema.properties.metrics.properties.replenishmentRounds.maximum).toBe(
+      EFFECT_PROMPT_LIMITS.maxReplenishmentRounds,
+    );
   });
 });

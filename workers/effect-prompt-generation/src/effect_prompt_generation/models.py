@@ -421,7 +421,7 @@ class PromptMetricsV6(ApiModel):
     generated_candidate_count: int = Field(ge=0)
     accepted_count: int = Field(ge=0, le=200)
     rejected_count: int = Field(ge=0)
-    replenishment_rounds: int = Field(ge=0, le=1)
+    replenishment_rounds: int = Field(ge=0, le=3)
     exact_duplicate_count: int = Field(ge=0)
     purpose_distribution: list[PurposeDistribution] = Field(min_length=6, max_length=6)
     average_scores: CreativeAverageScores
@@ -984,18 +984,51 @@ class GeneratedCandidate(ApiModel):
     generated_at: datetime
 
 
+class CreativeFactAssignment(ApiModel):
+    primary_fact_id: str = Field(min_length=1, max_length=120)
+    support_fact_ids: list[str] = Field(default_factory=list, max_length=2)
+    product_anchor_fact_ids: list[str] = Field(min_length=1, max_length=2)
+    assignment_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+    @model_validator(mode="after")
+    def normalize_fact_ids(self) -> CreativeFactAssignment:
+        self.support_fact_ids = [
+            fact_id
+            for fact_id in dict.fromkeys(self.support_fact_ids)
+            if fact_id != self.primary_fact_id
+        ]
+        self.product_anchor_fact_ids = list(
+            dict.fromkeys(self.product_anchor_fact_ids)
+        )
+        return self
+
+    @property
+    def allowed_fact_ids(self) -> list[str]:
+        return list(
+            dict.fromkeys(
+                [
+                    self.primary_fact_id,
+                    *self.support_fact_ids,
+                    *self.product_anchor_fact_ids,
+                ]
+            )
+        )
+
+
 class CreativeTask(ApiModel):
     slot_id: str = Field(min_length=1, max_length=160)
     ordinal: int = Field(ge=1)
-    round: int = Field(ge=0, le=1)
+    round: int = Field(ge=0, le=3)
     target_duration_seconds: int = Field(ge=4, le=15)
+    fact_assignment: CreativeFactAssignment | None = None
+    # Kept only so persisted early-V11 shard plans remain readable.
     preferred_fact_ids: list[str] = Field(default_factory=list, max_length=12)
 
 
 class CreativeCandidate(ApiModel):
     slot_id: str = Field(min_length=1, max_length=160)
     ordinal: int = Field(ge=1)
-    round: int = Field(ge=0, le=1)
+    round: int = Field(ge=0, le=3)
     creative_core: str = Field(min_length=1, max_length=160)
     declared_fact_ids: list[str] = Field(min_length=1, max_length=12)
     dimensions: CreativeDimensions
@@ -1016,7 +1049,7 @@ class CreativeCandidateBatch(ApiModel):
 
 
 class CreativeShardPlan(ApiModel):
-    round: int = Field(ge=0, le=1)
+    round: int = Field(ge=0, le=3)
     shard_index: int = Field(ge=0)
     tasks: list[CreativeTask] = Field(min_length=1, max_length=5)
     avoid_semantic_signatures: list[str] = Field(default_factory=list, max_length=200)
@@ -1084,7 +1117,7 @@ class CreativeEvaluationBatch(ApiModel):
 
 
 class ClassificationShardPlan(ApiModel):
-    round: int = Field(ge=0, le=1)
+    round: int = Field(ge=0, le=3)
     shard_index: int = Field(ge=0)
     candidate_ids: list[str] = Field(min_length=1, max_length=10)
 

@@ -395,14 +395,28 @@ def validate_creative_evaluation(
     declared = set(candidate.declared_fact_ids)
     content_text = _normalized_evidence_text(candidate.content)
     valid_evidence = []
-    issues = list(evaluation.hard_issues)
+    evidence_metadata_codes = {
+        "FACT_EVIDENCE_NOT_IN_CONTENT",
+        "UNKNOWN_OR_UNDECLARED_FACT",
+    }
+    issues = [
+        issue
+        for issue in evaluation.hard_issues
+        if issue not in evidence_metadata_codes
+    ]
+    warnings = [*evaluation.warnings]
+    warnings.extend(
+        issue
+        for issue in evaluation.hard_issues
+        if issue in evidence_metadata_codes
+    )
     for evidence in evaluation.fact_evidence:
         fact = application.by_id.get(evidence.fact_id)
         if fact is None or evidence.fact_id not in declared:
-            issues.append("UNKNOWN_OR_UNDECLARED_FACT")
+            warnings.append("UNKNOWN_OR_UNDECLARED_FACT")
             continue
         if _normalized_evidence_text(evidence.evidence_text) not in content_text:
-            issues.append("FACT_EVIDENCE_NOT_IN_CONTENT")
+            warnings.append("FACT_EVIDENCE_NOT_IN_CONTENT")
             continue
         valid_evidence.append(evidence)
     relevant = [
@@ -436,6 +450,7 @@ def validate_creative_evaluation(
             "semantic_signature": semantic,
             "visual_signature": visual,
             "hard_issues": list(dict.fromkeys(issues)),
+            "warnings": list(dict.fromkeys(warnings)),
         }
     )
 
