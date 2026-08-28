@@ -7,15 +7,19 @@ import type {
   EffectPromptFragmentType,
   EffectPromptNodeDetailBlock,
   EffectPromptNodeDetailBlueprint,
+  EffectPromptNodeDetailCreativeSample,
   EffectPromptNodeDetailField,
   EffectPromptNodeDetailPrompt,
+  EffectPromptNodeDetailSection,
   EffectPromptNodeId,
+  EffectPromptQualityScores,
   GetEffectPromptNodeDetailData,
 } from '@ai-marketing/contracts';
 import {
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
+  EFFECT_PROMPT_MAX_RUN_ATTEMPTS,
   EFFECT_PROMPT_NODE_DETAIL_LIMITS,
 } from '@ai-marketing/contracts';
 
@@ -1466,6 +1470,527 @@ const actualBlocks = (
   return blocks.filter((block): block is EffectPromptNodeDetailBlock => block !== null);
 };
 
+type V11CreativeRow = {
+  slotId: string;
+  ordinal: number;
+  targetDurationSeconds: number;
+  creativeCore: string;
+  declaredFactIds: string[];
+  dimensions: EffectPromptDimensions;
+  content: string;
+};
+
+type V11EvaluationRow = {
+  slotId: string;
+  primaryPurpose: EffectPromptFragmentType;
+  compatiblePurposes: EffectPromptFragmentType[];
+  scores: EffectPromptQualityScores;
+  hardIssues: string[];
+  warnings: string[];
+};
+
+const graphVersion = (run: EffectPromptNodeDetailRunRecord): string =>
+  publicText(inputSnapshot(run).graphVersion, 80);
+
+const isV11Run = (run: EffectPromptNodeDetailRunRecord): boolean =>
+  graphVersion(run) === 'V11_COHERENT_CREATIVE_GENERATION';
+
+const purposeList = (value: unknown): EffectPromptFragmentType[] =>
+  (Array.isArray(value) ? value : [])
+    .map(fragmentType)
+    .filter((item): item is EffectPromptFragmentType => item !== null)
+    .filter((item, index, items) => items.indexOf(item) === index);
+
+const qualityScores = (value: unknown): EffectPromptQualityScores | null => {
+  const raw = metadataRecord(value);
+  const parsed = {
+    productRelevance: safeNumber(raw.productRelevance),
+    creativeCoherence: safeNumber(raw.creativeCoherence),
+    visualExecutability: safeNumber(raw.visualExecutability),
+    commercialUsefulness: safeNumber(raw.commercialUsefulness),
+    visualClarity: safeNumber(raw.visualClarity),
+  };
+  return Object.values(parsed).every((score) => score !== null)
+    ? (parsed as EffectPromptQualityScores)
+    : null;
+};
+
+const v11CreativeRows = (run: EffectPromptNodeDetailRunRecord): V11CreativeRow[] => {
+  const taskBySlot = new Map<string, JsonRecord>();
+  for (const shard of run.shards) {
+    for (const raw of Array.isArray(shard.combinationPlan) ? shard.combinationPlan : []) {
+      if (!isRecord(raw) || !Array.isArray(raw.preferredFactIds)) continue;
+      const slotId = publicText(raw.slotId, 160);
+      if (slotId) taskBySlot.set(slotId, raw);
+    }
+  }
+  const rows: V11CreativeRow[] = [];
+  for (const shard of run.shards) {
+    for (const raw of Array.isArray(shard.items) ? shard.items : []) {
+      if (!isRecord(raw) || typeof raw.creativeCore !== 'string') continue;
+      const slotId = publicText(raw.slotId, 160);
+      const ordinal = safeNumber(raw.ordinal);
+      const itemDimensions = dimensions(raw.dimensions);
+      const content = publicText(raw.content);
+      const task = taskBySlot.get(slotId) ?? {};
+      const duration = safeNumber(task.targetDurationSeconds);
+      const creativeCore = publicText(raw.creativeCore, 300);
+      if (!slotId || ordinal === null || !itemDimensions || !content || duration === null) continue;
+      rows.push({
+        slotId,
+        ordinal,
+        targetDurationSeconds: duration,
+        creativeCore,
+        declaredFactIds: safeStrings(raw.declaredFactIds, 12),
+        dimensions: itemDimensions,
+        content,
+      });
+    }
+  }
+  return rows
+    .filter(
+      (item, index, items) =>
+        items.findIndex(
+          (candidate) => candidate.slotId === item.slotId && candidate.content === item.content,
+        ) === index,
+    )
+    .sort((left, right) => left.ordinal - right.ordinal);
+};
+
+const v11EvaluationRows = (run: EffectPromptNodeDetailRunRecord): V11EvaluationRow[] => {
+  const rows: V11EvaluationRow[] = [];
+  for (const shard of run.shards) {
+    for (const raw of Array.isArray(shard.items) ? shard.items : []) {
+      if (!isRecord(raw) || !isRecord(raw.scores)) continue;
+      const slotId = publicText(raw.slotId, 160);
+      const primaryPurpose = fragmentType(raw.primaryPurpose);
+      const compatiblePurposes = purposeList(raw.compatiblePurposes);
+      const scores = qualityScores(raw.scores);
+      if (!slotId || !primaryPurpose || !scores) continue;
+      rows.push({
+        slotId,
+        primaryPurpose,
+        compatiblePurposes: compatiblePurposes.includes(primaryPurpose)
+          ? compatiblePurposes
+          : [primaryPurpose, ...compatiblePurposes],
+        scores,
+        hardIssues: safeStrings(raw.hardIssues, 20),
+        warnings: safeStrings(raw.warnings, 20),
+      });
+    }
+  }
+  return rows.filter(
+    (item, index, items) => items.findIndex(({ slotId }) => slotId === item.slotId) === index,
+  );
+};
+
+const issueLabels = (codes: string[]): string[] =>
+  codes.map((code) => ISSUE_LABELS[code] ?? publicText(code, 120));
+
+const creativeSamples = (run: EffectPromptNodeDetailRunRecord): EffectPromptNodeDetailCreativeSample[] => {
+  const evaluationBySlot = new Map(v11EvaluationRows(run).map((item) => [item.slotId, item]));
+  const lookup = factValueLookup(run);
+  return v11CreativeRows(run).map((item) => {
+    const evaluation = evaluationBySlot.get(item.slotId);
+    return {
+      code: promptCode(item.ordinal),
+      creativeCore: item.creativeCore,
+      dimensions: item.dimensions,
+      content: item.content,
+      sourceFacts: item.declaredFactIds
+        .map((factId) => displayFact(lookup, factId))
+        .filter((value, index, values) => values.indexOf(value) === index),
+      primaryPurpose: evaluation?.primaryPurpose ?? null,
+      compatiblePurposes: evaluation?.compatiblePurposes ?? [],
+      productRelevance: evaluation?.scores.productRelevance ?? null,
+      scores: evaluation?.scores ?? null,
+      outcome: !evaluation ? 'PENDING' : evaluation.hardIssues.length ? 'REJECTED' : 'ACCEPTED',
+      reasons: evaluation
+        ? issueLabels(evaluation.hardIssues.length ? evaluation.hardIssues : evaluation.warnings)
+        : [],
+    };
+  });
+};
+
+const finalV6Record = (run: EffectPromptNodeDetailRunRecord): JsonRecord | null => {
+  const raw = run.result ? metadataRecord(run.result.draftResult) : {};
+  return raw.schemaVersion === 6 ? raw : null;
+};
+
+const finalV6Samples = (
+  run: EffectPromptNodeDetailRunRecord,
+): EffectPromptNodeDetailCreativeSample[] => {
+  const result = finalV6Record(run);
+  if (!result) return [];
+  return (Array.isArray(result.items) ? result.items : []).flatMap((value) => {
+    if (!isRecord(value)) return [];
+    const itemDimensions = dimensions(value.dimensions);
+    const content = publicText(value.content);
+    const code = publicText(value.code, 40);
+    const primaryPurpose = fragmentType(value.primaryPurpose ?? value.fragmentType);
+    const compatiblePurposes = purposeList(value.compatiblePurposes);
+    const relevance = safeNumber(value.productRelevance);
+    if (!itemDimensions || !content || !code || !primaryPurpose) return [];
+    const bindings = (Array.isArray(value.insightBindings) ? value.insightBindings : []).flatMap(
+      (binding) => {
+        if (!isRecord(binding)) return [];
+        const factValue = publicText(binding.value, 400);
+        return factValue ? [factValue] : [];
+      },
+    );
+    return [
+      {
+        code,
+        creativeCore: itemDimensions.narrative,
+        dimensions: itemDimensions,
+        content,
+        sourceFacts: bindings.filter((item, index, items) => items.indexOf(item) === index),
+        primaryPurpose,
+        compatiblePurposes: compatiblePurposes.includes(primaryPurpose)
+          ? compatiblePurposes
+          : [primaryPurpose, ...compatiblePurposes],
+        productRelevance: relevance,
+        scores: null,
+        outcome: 'SAVED' as const,
+        reasons: [],
+      },
+    ];
+  });
+};
+
+const creativeSampleBlock = (
+  title: string,
+  items: EffectPromptNodeDetailCreativeSample[],
+  totalCount = items.length,
+): EffectPromptNodeDetailBlock | null => {
+  const visible = items.slice(0, EFFECT_PROMPT_NODE_DETAIL_LIMITS.maxSamples);
+  return visible.length
+    ? {
+        kind: 'CREATIVE_SAMPLE_LIST',
+        title,
+        totalCount,
+        remainingCount: Math.max(0, totalCount - visible.length),
+        items: visible,
+      }
+    : null;
+};
+
+const textContentBlock = (
+  title: string,
+  content: unknown,
+  sourceLabels: string[],
+): EffectPromptNodeDetailBlock | null => {
+  const safeContent = publicText(content, 30_000);
+  return safeContent
+    ? { kind: 'TEXT_CONTENT', title, content: safeContent, sourceLabels: safeStrings(sourceLabels, 12) }
+    : null;
+};
+
+const metadataFactGroups = (metadata: JsonRecord): Array<ReturnType<typeof tagGroup>> => {
+  const group = (label: string, key: string) =>
+    tagGroup(
+      label,
+      (Array.isArray(metadata[key]) ? metadata[key] : []).flatMap((item) => {
+        if (!isRecord(item)) return [];
+        const value = publicText(item.value, 400);
+        return value ? [value] : [];
+      }),
+    );
+  return [
+    group('必须应用', 'requiredFacts'),
+    group('自适应应用', 'adaptiveFacts'),
+    group('不参与生成', 'excludedFacts'),
+    group('全局约束', 'appliedConstraints'),
+  ];
+};
+
+const sharedPromptData = (run: EffectPromptNodeDetailRunRecord, metadata: JsonRecord): JsonRecord => {
+  if (publicText(metadata.compiledContent)) return metadata;
+  const resultPrompt = metadataRecord(finalV6Record(run)?.sharedPrompt);
+  if (publicText(resultPrompt.compiledContent)) return resultPrompt;
+  return metadataRecord(inputSnapshot(run).sharedPrompt);
+};
+
+const purposeDistributionBlock = (run: EffectPromptNodeDetailRunRecord): EffectPromptNodeDetailBlock | null => {
+  const metrics = metadataRecord(finalV6Record(run)?.metrics);
+  const distribution = (Array.isArray(metrics.purposeDistribution)
+    ? metrics.purposeDistribution
+    : []
+  ).flatMap((item) => {
+    if (!isRecord(item)) return [];
+    const purpose = fragmentType(item.purpose);
+    const primaryCount = safeNumber(item.primaryCount);
+    const compatibleCount = safeNumber(item.compatibleCount);
+    return purpose && primaryCount !== null && compatibleCount !== null
+      ? [`${EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[purpose]}：主用途 ${primaryCount} 条，兼容 ${compatibleCount} 条`]
+      : [];
+  });
+  return tagBlock('最终推荐用途分布', [tagGroup('用途分布', distribution)]);
+};
+
+const v11OutputBlocks = (
+  run: EffectPromptNodeDetailRunRecord,
+  nodeId: EffectPromptNodeId,
+  metadata: JsonRecord,
+): EffectPromptNodeDetailBlock[] => {
+  const blocks: Array<EffectPromptNodeDetailBlock | null> = [];
+  const samples = creativeSamples(run);
+  const evaluations = v11EvaluationRows(run);
+  if (nodeId === 'LOAD_AND_SNAPSHOT') {
+    blocks.push(...actualBlocks(run, nodeId));
+  } else if (nodeId === 'INSIGHT_MAPPING') {
+    const mapped = tagBlock('提炼信息应用结果', metadataFactGroups(metadata));
+    blocks.push(mapped ?? actualBlocks(run, nodeId)[0] ?? null);
+  } else if (nodeId === 'SHARED_PROMPT_COMPILATION') {
+    const prompt = sharedPromptData(run, metadata);
+    const sectionLabels = (Array.isArray(prompt.sections) ? prompt.sections : []).flatMap((item) => {
+      if (!isRecord(item)) return [];
+      const title = publicText(item.title, 120);
+      return title ? [title] : [];
+    });
+    blocks.push(
+      textContentBlock('最终共用提示词', prompt.compiledContent, sectionLabels),
+    );
+  } else if (nodeId === 'COHERENT_CREATIVE_GENERATION') {
+    blocks.push(creativeSampleBlock('真实创意候选样例', samples, samples.length));
+  } else if (nodeId === 'CREATIVE_EVALUATION_CLASSIFICATION' || nodeId === 'ITEM_EVALUATE') {
+    const accepted = samples.filter((item) => item.outcome === 'ACCEPTED');
+    const rejected = samples.filter((item) => item.outcome === 'REJECTED');
+    const hardCounts = new Map<string, number>();
+    for (const evaluation of evaluations)
+      for (const issue of evaluation.hardIssues)
+        hardCounts.set(issue, (hardCounts.get(issue) ?? 0) + 1);
+    blocks.push(
+      creativeSampleBlock('通过评估的创意样例', accepted, accepted.length),
+      creativeSampleBlock('未通过评估的创意样例', rejected, rejected.length),
+      issueBlock(
+        '未通过原因',
+        [...hardCounts].map(([code, count]) => ({ code, count })),
+      ),
+    );
+  } else if (nodeId === 'EXACT_SELECTION_AND_SUPPLEMENT') {
+    const saved = finalV6Samples(run);
+    const accepted = samples
+      .filter((item) => item.outcome === 'ACCEPTED')
+      .map((item) => ({ ...item, outcome: 'SELECTED' as const }));
+    blocks.push(
+      creativeSampleBlock(
+        saved.length ? '最终择优 Prompt 样例' : '当前合格候选样例',
+        saved.length ? saved.map((item) => ({ ...item, outcome: 'SELECTED' as const })) : accepted,
+        saved.length || accepted.length,
+      ),
+    );
+  } else if (nodeId === 'RESULT_SAVE') {
+    const saved = finalV6Samples(run);
+    blocks.push(
+      purposeDistributionBlock(run),
+      creativeSampleBlock('最终保存 Prompt 样例', saved, saved.length),
+    );
+  }
+  return blocks.filter((block): block is EffectPromptNodeDetailBlock => block !== null);
+};
+
+const expectedOutputSummary: Partial<Record<EffectPromptNodeId, string>> = {
+  LOAD_AND_SNAPSHOT: '将锁定本次商品、营销洞察、数量、时长与共用约束。',
+  INSIGHT_MAPPING: '将营销洞察划分为必须应用、自适应应用、排除信息和全局约束。',
+  SHARED_PROMPT_COMPILATION: '将禁用元素与用户补充内容合并为一段批次共用提示词。',
+  COHERENT_CREATIVE_GENERATION: '将生成围绕同一创意主线的六维信息与干净 Prompt 正文。',
+  CREATIVE_EVALUATION_CLASSIFICATION: '将给出质量判断、推荐主用途、兼容用途和问题原因。',
+  EXACT_SELECTION_AND_SUPPLEMENT: '将按质量与差异选满目标数量，候选不足时执行一次定向补充。',
+  RESULT_SAVE: '将最佳结果保存为节点草稿，完成校验前不会提交工作副本。',
+  ITEM_EVALUATE: '将重新评估当前条目的产品关联、质量与推荐用途。',
+};
+
+const v11InputSections = (
+  run: EffectPromptNodeDetailRunRecord,
+  nodeId: EffectPromptNodeId,
+): Pick<EffectPromptNodeDetailSection, 'summary' | 'fields' | 'blocks'> => {
+  const insight = insightResult(run);
+  const settings = inputSettings(run);
+  const samples = creativeSamples(run);
+  const evaluations = v11EvaluationRows(run);
+  const retainedCount = retainedPrompts(run).length;
+  const base = compact([
+    textField('当前商品', insightText(insight, 'productName', 'product_name')),
+    textField('商品品类', insightText(insight, 'productCategory', 'product_category')),
+  ]);
+  if (nodeId === 'LOAD_AND_SNAPSHOT')
+    return {
+      summary: '读取已提交的营销洞察和本节点批次设置。',
+      fields: [
+        ...base,
+        ...(settings && 'targetCount' in settings
+          ? [
+              { label: '目标数量', value: `${settings.targetCount} 条` },
+              { label: '统一时长', value: `${settings.defaultDurationSeconds} 秒` },
+            ]
+          : []),
+        { label: '保留人工内容', value: retainedCount },
+      ],
+      blocks: [],
+    };
+  if (nodeId === 'INSIGHT_MAPPING')
+    return {
+      summary: '接收上游已确认的产品事实和营销洞察。',
+      fields: base,
+      blocks: actualBlocks(run, 'INSIGHT_MAPPING'),
+    };
+  if (nodeId === 'SHARED_PROMPT_COMPILATION') {
+    const disabled = insightList(insight, 'disabledElements', 'disabled_elements');
+    const existing = metadataRecord(inputSnapshot(run).sharedPrompt);
+    const userContent = (Array.isArray(existing.sections) ? existing.sections : []).flatMap((item) =>
+      isRecord(item) && item.source === 'USER' ? [publicText(item.content, 30_000)] : [],
+    );
+    return {
+      summary: '接收上游禁用元素和本批次用户补充内容。',
+      fields: [
+        { label: '禁用元素', value: disabled.length },
+        { label: '用户补充', value: userContent.some(Boolean) ? '已设置' : '未设置' },
+      ],
+      blocks: [
+        tagBlock('上游禁用元素', [tagGroup('禁用元素', disabled)]),
+        textContentBlock('用户补充内容', userContent.filter(Boolean).join('\n'), ['用户补充']),
+      ].filter((block): block is EffectPromptNodeDetailBlock => block !== null),
+    };
+  }
+  if (nodeId === 'COHERENT_CREATIVE_GENERATION')
+    return {
+      summary: '接收可用营销事实、统一时长和已编译的共用约束。',
+      fields: compact([
+        settings && 'targetCount' in settings
+          ? { label: '最终目标', value: `${settings.targetCount} 条` }
+          : null,
+        settings && 'defaultDurationSeconds' in settings
+          ? { label: '统一时长', value: `${settings.defaultDurationSeconds} 秒` }
+          : null,
+        { label: '共用约束', value: publicText(sharedPromptData(run, {}).compiledContent) ? '已启用' : '未设置' },
+      ]),
+      blocks: actualBlocks(run, 'INSIGHT_MAPPING'),
+    };
+  if (nodeId === 'CREATIVE_EVALUATION_CLASSIFICATION' || nodeId === 'ITEM_EVALUATE')
+    return {
+      summary: nodeId === 'ITEM_EVALUATE' ? '接收待重新评估的单条 Prompt。' : '接收已生成的创意候选。',
+      fields: [{ label: '待评估候选', value: samples.length }],
+      blocks: [creativeSampleBlock('待评估创意样例', samples, samples.length)].filter(
+        (block): block is EffectPromptNodeDetailBlock => block !== null,
+      ),
+    };
+  if (nodeId === 'EXACT_SELECTION_AND_SUPPLEMENT') {
+    const qualified = evaluations.filter((item) => !item.hardIssues.length).length;
+    return {
+      summary: '接收已经完成质量评估的候选池和目标数量。',
+      fields: compact([
+        settings && 'targetCount' in settings
+          ? { label: '目标数量', value: `${settings.targetCount} 条` }
+          : null,
+        { label: '合格候选', value: qualified },
+        { label: '保留人工内容', value: retainedCount },
+      ]),
+      blocks: [],
+    };
+  }
+  if (nodeId === 'RESULT_SAVE') {
+    const finalSamples = finalV6Samples(run);
+    const selectedCount = finalSamples.length || evaluations.filter((item) => !item.hardIssues.length).length;
+    return {
+      summary: '接收已经择优且完成用途评估的 Prompt。',
+      fields: compact([
+        { label: '待保存结果', value: selectedCount },
+        settings && 'targetCount' in settings
+          ? { label: '目标数量', value: `${settings.targetCount} 条` }
+          : null,
+        { label: '共用提示词', value: publicText(sharedPromptData(run, {}).compiledContent) ? '已包含' : '未设置' },
+      ]),
+      blocks: [],
+    };
+  }
+  return { summary: '接收上一阶段已经完成的业务结果。', fields: base, blocks: [] };
+};
+
+const sectionState = (
+  status: GetEffectPromptNodeDetailData['detail']['status'],
+  hasContent: boolean,
+): EffectPromptNodeDetailSection['state'] => {
+  if (status === 'PENDING') return 'EXPECTED';
+  if (status === 'RUNNING' || status === 'PARTIAL' || status === 'FAILED')
+    return hasContent ? 'PARTIAL' : 'EMPTY';
+  return hasContent ? 'ACTUAL' : 'EMPTY';
+};
+
+const buildDetailSections = (
+  run: EffectPromptNodeDetailRunRecord,
+  nodeId: EffectPromptNodeId,
+  status: GetEffectPromptNodeDetailData['detail']['status'],
+  metadataValue: unknown,
+): EffectPromptNodeDetailSection[] => {
+  const metadata = metadataRecord(metadataValue);
+  const legacyFields = actualFields(run, nodeId, metadata);
+  const legacyBlocks = actualBlocks(run, nodeId);
+  const input = isV11Run(run)
+    ? v11InputSections(run, nodeId)
+    : {
+        summary: '接收历史工作流上一阶段已经确认的业务结果。',
+        fields: nodeId === 'LOAD_AND_SNAPSHOT' ? legacyFields : [],
+        blocks: nodeId === 'LOAD_AND_SNAPSHOT' ? legacyBlocks : [],
+      };
+  const outputFields = isV11Run(run) ? legacyFields : nodeId === 'LOAD_AND_SNAPSHOT' ? [] : legacyFields;
+  const outputBlocks = isV11Run(run)
+    ? v11OutputBlocks(run, nodeId, metadata)
+    : nodeId === 'LOAD_AND_SNAPSHOT'
+      ? []
+      : legacyBlocks;
+  const outputHasContent = outputFields.length > 0 || outputBlocks.length > 0;
+  const outputState = sectionState(status, outputHasContent);
+  return [
+    {
+      kind: 'INPUT',
+      state: input.fields.length || input.blocks.length ? 'ACTUAL' : 'EMPTY',
+      title: '本次输入',
+      summary: input.summary,
+      fields: input.fields,
+      blocks: input.blocks,
+    },
+    {
+      kind: 'OUTPUT',
+      state: outputState,
+      title:
+        outputState === 'EXPECTED'
+          ? '预计输出'
+          : outputState === 'PARTIAL'
+            ? '已完成部分'
+            : '本次输出',
+      summary:
+        status === 'PENDING'
+          ? (expectedOutputSummary[nodeId] ?? '该节点执行后将在这里展示真实业务结果。')
+          : outputHasContent
+            ? publicText(run.stages.find((item) => item.nodeId === nodeId)?.summary, 500)
+            : status === 'FAILED'
+              ? '当前没有可展示的业务输出，请查看下方失败原因。'
+              : '当前阶段没有额外可展示的业务结果。',
+      fields: outputFields,
+      blocks: outputBlocks,
+    },
+    {
+      kind: 'EXECUTION',
+      state: status === 'PENDING' ? 'EXPECTED' : 'ACTUAL',
+      title: '执行情况',
+      summary: status === 'PENDING' ? '任务开始后将展示尝试次数和阶段进度。' : '这里展示安全的运行进度，不包含模型和内部调用信息。',
+      fields: compact([
+        safeNumber(run.attemptCount) === null
+          ? null
+          : {
+              label: '任务尝试',
+              value: `${run.attemptCount}/${EFFECT_PROMPT_MAX_RUN_ATTEMPTS}`,
+            },
+        numberField(metadata, 'completedShardCount', '完成分片'),
+        numberField(metadata, 'pendingShardCount', '待处理分片'),
+        numberField(metadata, 'round', '当前轮次'),
+      ]),
+      blocks: [],
+    },
+  ];
+};
+
 export const presentEffectPromptNodeDetail = (
   run: EffectPromptNodeDetailRunRecord,
   nodeId: EffectPromptNodeId,
@@ -1473,10 +1998,12 @@ export const presentEffectPromptNodeDetail = (
   const stage = run.stages.find((item) => item.nodeId === nodeId);
   const terminalFailure =
     run.status === 'FAILED' && run.currentNode === nodeId && stage?.status === 'RUNNING';
+  const status = terminalFailure ? 'FAILED' : (stage?.status ?? 'PENDING');
   return {
     nodeId,
-    status: terminalFailure ? 'FAILED' : (stage?.status ?? 'PENDING'),
+    status,
     summary: publicText(stage?.summary, 500),
+    sections: buildDetailSections(run, nodeId, status, stage?.metadata),
     fields: actualFields(run, nodeId, stage?.metadata),
     blocks: actualBlocks(run, nodeId),
     warnings: safeStrings(stage?.warnings, 20),

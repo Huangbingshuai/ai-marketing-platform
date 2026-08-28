@@ -32,7 +32,10 @@ import {
 } from '@ai-marketing/contracts';
 import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
 import {
+  Activity,
   AlertCircle,
+  ArrowDownToLine,
+  ArrowUpFromLine,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -92,6 +95,7 @@ type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 type Notice = { kind: 'error' | 'success' | 'warning'; text: string };
 type NodeDetail = GetEffectPromptNodeDetailData['detail'];
 type ItemOperation = { itemId: string; kind: 'delete' };
+type GraphViewMode = 'CURRENT' | 'RUN';
 
 const status = ref<EffectPromptPageStatus>('loading');
 const loadError = ref('');
@@ -116,6 +120,7 @@ const sharedPromptSaving = ref(false);
 const graphDialogOpen = ref(false);
 const graphLoading = ref(false);
 const graphError = ref('');
+const graphViewMode = ref<GraphViewMode>('CURRENT');
 const runsByProduct = ref<Record<string, EffectPromptRun>>({});
 const selectedGraphNodeId = ref<EffectPromptNodeId | null>(null);
 const graphDetail = ref<NodeDetail | null>(null);
@@ -181,24 +186,52 @@ const currentSettings = computed(
 const currentTargetCount = computed(() => currentSettings.value.targetCount);
 const editorTargetDurationSeconds = computed(() => currentSettings.value.defaultDurationSeconds);
 const currentRun = computed(() => runsByProduct.value[currentProductId.value] ?? null);
-const currentGraphVersion = computed<EffectPromptGraphVersion>(
+const historicalGraphRunAvailable = computed(
   () =>
-    currentRun.value?.graphVersion ??
-    currentState.value?.graphVersion ??
-    CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
+    Boolean(currentRun.value) &&
+    currentRun.value?.graphVersion !== CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
 );
+const displayedGraphRun = computed(() => {
+  const run = currentRun.value;
+  if (!run) return null;
+  if (run.graphVersion === CURRENT_EFFECT_PROMPT_GRAPH_VERSION) return run;
+  return graphViewMode.value === 'RUN' ? run : null;
+});
+const displayedGraphVersion = computed<EffectPromptGraphVersion>(
+  () => displayedGraphRun.value?.graphVersion ?? CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
+);
+const displayedGraphVersionLabel = computed(() => displayedGraphVersion.value.split('_', 1)[0]);
+const historicalGraphVersionLabel = computed(
+  () => currentRun.value?.graphVersion.split('_', 1)[0] ?? '',
+);
+const viewingCurrentGraphDefinition = computed(
+  () => historicalGraphRunAvailable.value && graphViewMode.value === 'CURRENT',
+);
+const graphDialogDescription = computed(() => {
+  if (viewingCurrentGraphDefinition.value)
+    return '展示当前 V11 七阶段工作流；最近一次历史执行可单独切换查看。';
+  if (historicalGraphRunAvailable.value)
+    return `正在查看 ${historicalGraphVersionLabel.value} 历史执行的真实节点与阶段结果。`;
+  return '展示本次真实输入、连贯创意生成、用途评估和数量结果。';
+});
 const currentGraphNodeIds = computed<readonly EffectPromptNodeId[]>(() => {
-  if (currentRun.value)
-    return effectPromptRunGraphNodeIds(currentGraphVersion.value, currentRun.value.operation);
-  return effectPromptGraphNodeIds(currentGraphVersion.value);
+  if (displayedGraphRun.value)
+    return effectPromptRunGraphNodeIds(
+      displayedGraphVersion.value,
+      displayedGraphRun.value.operation,
+    );
+  return effectPromptGraphNodeIds(displayedGraphVersion.value);
 });
 const currentGraphEdges = computed(() => {
-  if (currentRun.value)
-    return effectPromptRunGraphEdges(currentGraphVersion.value, currentRun.value.operation);
-  return effectPromptGraphEdges(currentGraphVersion.value);
+  if (displayedGraphRun.value)
+    return effectPromptRunGraphEdges(
+      displayedGraphVersion.value,
+      displayedGraphRun.value.operation,
+    );
+  return effectPromptGraphEdges(displayedGraphVersion.value);
 });
 const currentAttemptLabel = computed(() => {
-  const run = currentRun.value;
+  const run = displayedGraphRun.value;
   if (!run) return '';
   const attempt =
     run.status === 'QUEUED'
@@ -207,7 +240,7 @@ const currentAttemptLabel = computed(() => {
   return `第 ${attempt}/${run.maxAttempts} 次尝试`;
 });
 const currentRetryWarning = computed(
-  () => currentRun.value?.warnings.find((warning) => warning.includes('自动重新排队')) ?? '',
+  () => displayedGraphRun.value?.warnings.find((warning) => warning.includes('自动重新排队')) ?? '',
 );
 const currentStageLabel = computed(() => {
   const nodeId = currentRun.value?.currentNode;
@@ -218,11 +251,13 @@ const currentStageLabel = computed(() => {
 });
 const selectedGraphNodeIsActive = computed(
   () =>
-    currentRun.value?.status === 'RUNNING' &&
-    currentRun.value.currentNode === selectedGraphNodeId.value,
+    displayedGraphRun.value?.status === 'RUNNING' &&
+    displayedGraphRun.value.currentNode === selectedGraphNodeId.value,
 );
 const currentGraphDetailUpdatedAt = computed(() =>
-  selectedGraphNodeIsActive.value ? currentRun.value?.updatedAt : graphDetail.value?.updatedAt,
+  selectedGraphNodeIsActive.value
+    ? displayedGraphRun.value?.updatedAt
+    : graphDetail.value?.updatedAt,
 );
 const currentResult = computed(() => resultData.value?.result ?? null);
 const currentItems = computed(() => resultData.value?.items ?? []);
@@ -311,7 +346,7 @@ const evaluatingItemId = computed(() =>
 const currentGraphNodes = computed<EffectPromptNodeExecution[]>(() =>
   currentGraphNodeIds.value.map(
     (id) =>
-      currentRun.value?.nodes.find((node) => node.nodeId === id) ?? {
+      displayedGraphRun.value?.nodes.find((node) => node.nodeId === id) ?? {
         nodeId: id,
         status: 'PENDING',
         summary: '',
@@ -649,7 +684,7 @@ watch(keyword, () => {
     else page.value = 1;
   }, 350);
 });
-watch([currentGraphVersion, () => currentRun.value?.operation], () => {
+watch([displayedGraphVersion, () => displayedGraphRun.value?.operation], () => {
   const nodeId = selectedGraphNodeId.value;
   if (!nodeId || currentGraphNodeIds.value.includes(nodeId)) return;
   graphDetailController?.abort();
@@ -964,7 +999,9 @@ const commitEditor = async (): Promise<void> => {
       showNotice('Prompt 已保存，等待用途评估', 'warning');
       return;
     }
-    showNotice(editorMode.value === 'edit' ? '修改已保存，正在重新评估用途' : 'Prompt 已添加，正在评估用途');
+    showNotice(
+      editorMode.value === 'edit' ? '修改已保存，正在重新评估用途' : 'Prompt 已添加，正在评估用途',
+    );
     await evaluateItem(targetItem);
   } catch (error) {
     if (!isAbortError(error)) await handleMutationError(error, 'Prompt 保存失败');
@@ -1370,6 +1407,37 @@ const graphPromptDimensionValue = (
 
 const graphPairScore = (value: number): string => `${(value * 100).toFixed(0)}%`;
 
+const graphSectionStateLabel = (state: NodeDetail['sections'][number]['state']): string =>
+  ({
+    EXPECTED: '预计',
+    ACTUAL: '实际',
+    PARTIAL: '已完成部分',
+    EMPTY: '暂无数据',
+  })[state];
+
+const graphCreativeOutcomeLabel = (outcome: string): string =>
+  ({
+    PENDING: '待评估',
+    ACCEPTED: '通过评估',
+    REJECTED: '未通过',
+    SELECTED: '已择优',
+    SAVED: '已保存',
+  })[outcome] ?? outcome;
+
+const graphQualityScoreRows = (scores: {
+  productRelevance: number;
+  creativeCoherence: number;
+  visualExecutability: number;
+  commercialUsefulness: number;
+  visualClarity: number;
+}) => [
+  { label: '产品相关', value: scores.productRelevance },
+  { label: '创意连贯', value: scores.creativeCoherence },
+  { label: '画面可执行', value: scores.visualExecutability },
+  { label: '商业价值', value: scores.commercialUsefulness },
+  { label: '视觉清晰', value: scores.visualClarity },
+];
+
 const formatGraphDetailTime = (value: string | null | undefined): string => {
   if (!value) return '尚无执行记录';
   const date = new Date(value);
@@ -1386,6 +1454,18 @@ const formatGraphDetailTime = (value: string | null | undefined): string => {
 
 const localGraphDetail = (nodeId: EffectPromptNodeId): NodeDetail => {
   const execution = graphExecution(nodeId);
+  const expectedOutput =
+    ({
+      LOAD_AND_SNAPSHOT: '将锁定本次商品、营销洞察、数量、时长与共用约束。',
+      INSIGHT_MAPPING: '将营销洞察分为必须应用、自适应应用、排除信息和全局约束。',
+      SHARED_PROMPT_COMPILATION: '将形成生成与渲染共同使用的一段批次级提示词。',
+      COHERENT_CREATIVE_GENERATION: '将同步生成创意主线、六维信息和干净正文。',
+      CREATIVE_EVALUATION_CLASSIFICATION: '将输出质量判断、推荐用途和问题原因。',
+      EXACT_SELECTION_AND_SUPPLEMENT: '将按质量与差异选满目标数量，必要时补充一次。',
+      RESULT_SAVE: '将最佳结果保存为节点草稿，完成校验前不会提交工作副本。',
+      ITEM_EVALUATE: '将重新评估单条 Prompt 的质量和推荐用途。',
+    } as Partial<Record<EffectPromptNodeId, string>>)[nodeId] ??
+    '执行后将在这里展示真实业务结果。';
   return {
     nodeId,
     status: execution.status,
@@ -1394,6 +1474,32 @@ const localGraphDetail = (nodeId: EffectPromptNodeId): NodeDetail => {
       (execution.status === 'PENDING'
         ? '该节点尚未执行，暂无持久化运行数据。'
         : graphDescription(nodeId)),
+    sections: [
+      {
+        kind: 'INPUT',
+        state: 'EXPECTED',
+        title: '预计输入',
+        summary: '将接收上一阶段已经确认的业务结果。',
+        fields: [],
+        blocks: [],
+      },
+      {
+        kind: 'OUTPUT',
+        state: 'EXPECTED',
+        title: '预计输出',
+        summary: expectedOutput,
+        fields: [],
+        blocks: [],
+      },
+      {
+        kind: 'EXECUTION',
+        state: 'EXPECTED',
+        title: '执行情况',
+        summary: '任务开始后将显示尝试次数、分片进度和安全状态。',
+        fields: [],
+        blocks: [],
+      },
+    ],
     fields: [],
     blocks: [],
     warnings: [...execution.warnings],
@@ -1427,8 +1533,25 @@ const openGraph = async (event?: Event): Promise<void> => {
       graphLoading.value = false;
     }
   }
+  graphViewMode.value =
+    currentRun.value?.graphVersion === CURRENT_EFFECT_PROMPT_GRAPH_VERSION ||
+    currentRun.value?.status === 'QUEUED' ||
+    currentRun.value?.status === 'RUNNING'
+      ? 'RUN'
+      : 'CURRENT';
   await nextTick();
   graphCloseButton.value?.focus();
+};
+
+const switchGraphView = (mode: GraphViewMode): void => {
+  if (mode === graphViewMode.value || (mode === 'RUN' && !currentRun.value)) return;
+  graphDetailController?.abort();
+  graphDetailController = null;
+  graphDetailLoading.value = false;
+  selectedGraphNodeId.value = null;
+  graphDetail.value = null;
+  graphDetailError.value = '';
+  graphViewMode.value = mode;
 };
 
 const closeGraph = (): void => {
@@ -1452,7 +1575,7 @@ const refreshGraphDetail = async (): Promise<void> => {
 
   graphDetail.value = localGraphDetail(nodeId);
   graphDetailError.value = '';
-  const runId = currentRun.value?.id ?? currentState.value?.runId;
+  const runId = displayedGraphRun.value?.id;
   graphDetailController?.abort();
   graphDetailController = null;
   graphDetailLoading.value = false;
@@ -1630,7 +1753,7 @@ onBeforeUnmount(() => {
 
       <section class="effect-prompt-settings" aria-label="批次设置">
         <div class="settings-heading">
-          <h3>批次设置（仅以下参数可调）</h3>
+          <h3>批次设置</h3>
           <span :class="currentSaveStatus">{{
             currentSaveStatus === 'saving'
               ? '正在保存'
@@ -1644,8 +1767,18 @@ onBeforeUnmount(() => {
         <div class="simple-setting-grid">
           <label
             v-for="setting in [
-              { key: 'targetCount', label: 'Prompt 总数量', hint: '成功批次必须与设置数量完全一致', suffix: '条' },
-              { key: 'defaultDurationSeconds', label: '默认片段时长', hint: '作为独立渲染参数，不写入 Prompt 正文', suffix: '秒' },
+              {
+                key: 'targetCount',
+                label: 'Prompt 总数量',
+                hint: '成功批次必须与设置数量完全一致',
+                suffix: '条',
+              },
+              {
+                key: 'defaultDurationSeconds',
+                label: '默认片段时长',
+                hint: '作为独立渲染参数，不写入 Prompt 正文',
+                suffix: '秒',
+              },
             ] as const"
             :key="setting.key"
             class="setting-card"
@@ -1656,7 +1789,8 @@ onBeforeUnmount(() => {
                 type="button"
                 :aria-label="`降低${setting.label}`"
                 :disabled="
-                  currentRunning || currentSettings[setting.key] <= settingRange(setting.key).minimum
+                  currentRunning ||
+                  currentSettings[setting.key] <= settingRange(setting.key).minimum
                 "
                 @click="adjustSetting(setting.key, -1)"
               >
@@ -1677,7 +1811,8 @@ onBeforeUnmount(() => {
                 type="button"
                 :aria-label="`提高${setting.label}`"
                 :disabled="
-                  currentRunning || currentSettings[setting.key] >= settingRange(setting.key).maximum
+                  currentRunning ||
+                  currentSettings[setting.key] >= settingRange(setting.key).maximum
                 "
                 @click="adjustSetting(setting.key, 1)"
               >
@@ -1898,11 +2033,10 @@ onBeforeUnmount(() => {
               :disabled="currentRunning || itemOperation !== null"
               @click="evaluateItem(item)"
             >
-              <LoaderCircle
-                v-if="evaluatingItemId === item.id"
-                class="spin"
+              <LoaderCircle v-if="evaluatingItemId === item.id" class="spin" :size="13" /><RefreshCw
+                v-else
                 :size="13"
-              /><RefreshCw v-else :size="13" />重新评估
+              />重新评估
             </button>
             <button
               v-if="!partialPreview"
@@ -2097,7 +2231,9 @@ onBeforeUnmount(() => {
               <span>单条定向重新生成</span>
               <h2 id="prompt-regeneration-title">重新生成 {{ regenerationCandidate.code }}</h2>
               <p>
-                <strong>当前推荐：{{ fragmentTypeLabel(regenerationCandidate.primaryPurpose) }}</strong>
+                <strong
+                  >当前推荐：{{ fragmentTypeLabel(regenerationCandidate.primaryPurpose) }}</strong
+                >
                 <i>{{ regenerationCandidate.targetDurationSeconds }} 秒</i>
                 <i>{{ regenerationCandidate.materialTags.join(' · ') }}</i>
               </p>
@@ -2281,25 +2417,58 @@ onBeforeUnmount(() => {
           @keydown.esc="closeGraph"
         >
           <header>
-            <div>
-              <span>PROMPT WORKFLOW</span>
-              <h2 id="prompt-graph-title">差异化 Prompt 生成工作流</h2>
-              <p>展示本次真实输入、连贯创意生成、用途评估和数量结果。</p>
+            <div class="graph-title-group">
+              <span
+                >PROMPT WORKFLOW <b>{{ displayedGraphVersionLabel }}</b></span
+              >
+              <h2 id="prompt-graph-title">Prompt 生成工作流</h2>
+              <p>{{ graphDialogDescription }}</p>
             </div>
-            <button
-              ref="graphCloseButton"
-              type="button"
-              aria-label="关闭工作流"
-              @click="closeGraph"
-            >
-              <X :size="17" />
-            </button>
+            <div class="graph-header-actions">
+              <div
+                v-if="historicalGraphRunAvailable"
+                class="graph-view-switch"
+                role="group"
+                aria-label="工作流版本视图"
+              >
+                <button
+                  type="button"
+                  :aria-pressed="graphViewMode === 'CURRENT'"
+                  @click="switchGraphView('CURRENT')"
+                >
+                  当前工作流
+                </button>
+                <button
+                  type="button"
+                  :aria-pressed="graphViewMode === 'RUN'"
+                  @click="switchGraphView('RUN')"
+                >
+                  历史执行 · {{ historicalGraphVersionLabel }}
+                </button>
+              </div>
+              <button
+                ref="graphCloseButton"
+                class="graph-close-button"
+                type="button"
+                aria-label="关闭工作流"
+                @click="closeGraph"
+              >
+                <X :size="17" />
+              </button>
+            </div>
           </header>
           <div v-if="graphLoading" class="graph-message">
             <LoaderCircle class="spin" :size="14" />正在恢复真实节点进度…
           </div>
           <div v-if="graphError" class="graph-message error">
             <AlertCircle :size="14" />{{ graphError }}
+          </div>
+          <div v-if="viewingCurrentGraphDefinition" class="graph-version-notice">
+            <Sparkles :size="15" />
+            <span>
+              <strong>当前产品尚未执行 V11 工作流</strong>
+              下方展示最新七阶段流程。启动新一轮批量生成后，节点会显示新的真实执行结果；旧结果仍可在“历史执行”中查看。
+            </span>
           </div>
           <div class="workflow-graph-content">
             <div class="workflow-graph-canvas">
@@ -2329,8 +2498,15 @@ onBeforeUnmount(() => {
             </div>
             <aside class="workflow-node-detail" aria-live="polite">
               <div v-if="!selectedGraphNodeId" class="node-detail-empty">
-                <Workflow :size="30" /><strong>选择节点查看真实结果</strong>
-                <p>展示当前运行的真实业务产物，同时隐藏模型指令、原始响应和内部标识。</p>
+                <Workflow :size="30" /><strong>
+                  {{
+                    viewingCurrentGraphDefinition ? '选择节点查看当前职责' : '选择节点查看真实结果'
+                  }}
+                </strong>
+                <p v-if="viewingCurrentGraphDefinition">
+                  当前产品尚无 V11 执行产物；运行新批次后，这里将展示对应节点的真实结果。
+                </p>
+                <p v-else>展示当前运行的真实业务产物，同时隐藏模型指令、原始响应和内部标识。</p>
               </div>
               <template v-else>
                 <header class="node-detail-header">
@@ -2371,29 +2547,119 @@ onBeforeUnmount(() => {
                   </div>
                   <p class="node-summary">{{ graphDetail.summary }}</p>
 
-                  <dl v-if="graphDetail.fields.length" class="node-fields">
-                    <div
-                      v-for="(field, index) in graphDetail.fields"
-                      :key="`${field.label}-${index}`"
-                    >
-                      <dt>
-                        <span>{{ field.label }}</span>
-                        <small v-if="field.description">{{ field.description }}</small>
-                      </dt>
-                      <dd :class="{ 'is-multiline': graphDetailValueIsMultiline(field.value) }">
-                        {{ graphDetailValue(field.value) }}
-                      </dd>
-                    </div>
-                  </dl>
-
-                  <section
-                    v-for="(block, blockIndex) in graphDetail.blocks"
-                    :key="`${block.kind}-${blockIndex}`"
-                    class="node-result-block"
+                  <details
+                    v-for="section in graphDetail.sections"
+                    :key="section.kind"
+                    class="node-detail-section"
+                    :class="`is-${section.kind.toLowerCase()}`"
+                    :open="section.kind !== 'EXECUTION'"
                   >
+                    <summary class="node-detail-section__heading">
+                      <span class="node-detail-section__icon">
+                        <ArrowDownToLine v-if="section.kind === 'INPUT'" :size="13" />
+                        <ArrowUpFromLine v-else-if="section.kind === 'OUTPUT'" :size="13" />
+                        <Activity v-else :size="13" />
+                      </span>
+                      <span>
+                        <strong>{{ section.title }}</strong>
+                        <small>{{ section.summary }}</small>
+                      </span>
+                      <em :class="`is-${section.state.toLowerCase()}`">
+                        {{ graphSectionStateLabel(section.state) }}
+                      </em>
+                    </summary>
+
+                    <div class="node-detail-section__content">
+                      <dl v-if="section.fields.length" class="node-fields">
+                        <div
+                          v-for="(field, index) in section.fields"
+                          :key="`${field.label}-${index}`"
+                        >
+                          <dt>
+                            <span>{{ field.label }}</span>
+                            <small v-if="field.description">{{ field.description }}</small>
+                          </dt>
+                          <dd :class="{ 'is-multiline': graphDetailValueIsMultiline(field.value) }">
+                            {{ graphDetailValue(field.value) }}
+                          </dd>
+                        </div>
+                      </dl>
+
+                      <section
+                        v-for="(block, blockIndex) in section.blocks"
+                        :key="`${block.kind}-${blockIndex}`"
+                        class="node-result-block"
+                      >
                     <h3>{{ block.title }}</h3>
 
-                    <div v-if="block.kind === 'RELATIONSHIP_LIST'" class="node-relationship-list">
+                    <div v-if="block.kind === 'TEXT_CONTENT'" class="node-text-content">
+                      <details>
+                        <summary>
+                          <span>查看完整内容</span><em>{{ block.content.length }} 字</em>
+                        </summary>
+                        <div v-if="block.sourceLabels.length" class="node-sample-tags">
+                          <span v-for="source in block.sourceLabels" :key="source">{{ source }}</span>
+                        </div>
+                        <p>{{ block.content }}</p>
+                      </details>
+                    </div>
+
+                    <div
+                      v-else-if="block.kind === 'CREATIVE_SAMPLE_LIST'"
+                      class="node-creative-list"
+                    >
+                      <p class="node-sample-count">
+                        共 {{ block.totalCount }} 条<span v-if="block.remainingCount"
+                          >，其余 {{ block.remainingCount }} 条未展开</span
+                        >
+                      </p>
+                      <details v-for="item in block.items" :key="`${item.code}-${item.content}`">
+                        <summary>
+                          <span>
+                            <strong>{{ item.code }}</strong>
+                            {{
+                              item.primaryPurpose
+                                ? EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.primaryPurpose]
+                                : '待分类'
+                            }}
+                          </span>
+                          <em :class="`is-${item.outcome.toLowerCase()}`">
+                            {{ graphCreativeOutcomeLabel(item.outcome) }} · 展开
+                          </em>
+                        </summary>
+                        <p class="node-creative-core"><b>创意主线</b>{{ item.creativeCore }}</p>
+                        <div v-if="item.sourceFacts.length" class="node-sample-tags">
+                          <span v-for="source in item.sourceFacts" :key="source">{{ source }}</span>
+                        </div>
+                        <p class="node-prompt-content">{{ item.content }}</p>
+                        <dl class="node-prompt-dimensions">
+                          <div v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key">
+                            <dt>{{ dimension.label }}</dt>
+                            <dd>{{ graphPromptDimensionValue(item, dimension.key) }}</dd>
+                          </div>
+                        </dl>
+                        <div v-if="item.compatiblePurposes.length" class="node-purpose-tags">
+                          <strong>兼容用途</strong>
+                          <span v-for="purpose in item.compatiblePurposes" :key="purpose">
+                            {{ EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[purpose] }}
+                          </span>
+                        </div>
+                        <dl v-if="item.scores" class="node-score-grid">
+                          <div v-for="score in graphQualityScoreRows(item.scores)" :key="score.label">
+                            <dt>{{ score.label }}</dt>
+                            <dd>{{ score.value.toFixed(0) }}</dd>
+                          </div>
+                        </dl>
+                        <p v-if="item.reasons.length" class="node-sample-reasons">
+                          {{ item.reasons.join('；') }}
+                        </p>
+                      </details>
+                    </div>
+
+                    <div
+                      v-else-if="block.kind === 'RELATIONSHIP_LIST'"
+                      class="node-relationship-list"
+                    >
                       <article v-for="item in block.items" :key="item.title">
                         <header>
                           <span>
@@ -2645,12 +2911,19 @@ onBeforeUnmount(() => {
                         </details>
                       </article>
                     </div>
-                  </section>
+                      </section>
 
-                  <div
-                    v-if="!graphDetail.fields.length && !graphDetail.blocks.length"
-                    class="node-detail-no-fields"
-                  >
+                      <div
+                        v-if="!section.fields.length && !section.blocks.length"
+                        class="node-detail-no-fields"
+                      >
+                        <Workflow :size="16" />
+                        <span>{{ section.summary || graphDetailEmptyMessage(graphDetail) }}</span>
+                      </div>
+                    </div>
+                  </details>
+
+                  <div v-if="!graphDetail.sections.length" class="node-detail-no-fields">
                     <Workflow :size="16" />
                     <span>{{ graphDetailEmptyMessage(graphDetail) }}</span>
                   </div>
@@ -2936,7 +3209,7 @@ button:disabled {
 }
 .settings-heading {
   display: flex;
-  padding: 0 16px;
+  padding: 0 13px;
   grid-column: 1/-1;
   align-items: center;
   justify-content: space-between;
@@ -4137,6 +4410,51 @@ button:disabled {
   color: #718096;
   font-size: 11px;
 }
+.graph-title-group > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.graph-title-group > span b {
+  padding: 3px 7px;
+  color: #2563eb;
+  background: #edf4ff;
+  border-radius: 999px;
+  font-size: 9px;
+  letter-spacing: 0;
+}
+.graph-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.graph-view-switch {
+  display: inline-flex;
+  padding: 3px;
+  background: #f1f5fb;
+  border: 1px solid #dbe4f6;
+  border-radius: 10px;
+}
+.workflow-graph-dialog > header .graph-view-switch button {
+  width: auto;
+  height: 30px;
+  padding: 0 11px;
+  color: #728097;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.workflow-graph-dialog > header .graph-view-switch button[aria-pressed='true'] {
+  color: #235fc9;
+  background: #fff;
+  box-shadow: 0 2px 8px #60708a1f;
+}
+.workflow-graph-dialog > header .graph-close-button {
+  flex: 0 0 auto;
+}
 .graph-message {
   display: flex;
   margin: 12px 16px 0;
@@ -4151,6 +4469,29 @@ button:disabled {
 .graph-message.error {
   color: #b83246;
   background: #fff1f2;
+}
+.graph-version-notice {
+  display: flex;
+  margin: 14px 20px 0;
+  padding: 11px 13px;
+  align-items: flex-start;
+  gap: 9px;
+  color: #536178;
+  background: #eef5ff;
+  border: 1px solid #d5e5ff;
+  border-radius: 11px;
+  font-size: 10px;
+  line-height: 1.6;
+}
+.graph-version-notice svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: #2563eb;
+}
+.graph-version-notice strong {
+  display: block;
+  color: #28446f;
+  font-size: 11px;
 }
 .workflow-graph-content {
   display: grid;
@@ -4403,6 +4744,99 @@ button:disabled {
   font-size: 10px;
   line-height: 1.65;
 }
+.node-detail-section {
+  margin-top: 12px;
+  overflow: hidden;
+  background: #fbfcff;
+  border: 1px solid #e2e9f5;
+  border-radius: 11px;
+}
+.node-detail-section.is-input {
+  background: #f7fbff;
+  border-color: #dce9fb;
+}
+.node-detail-section.is-output {
+  background: #f8fcfa;
+  border-color: #dcefe7;
+}
+.node-detail-section.is-execution {
+  background: #faf9ff;
+  border-color: #e7e2f5;
+}
+.node-detail-section__heading {
+  display: grid;
+  min-height: 48px;
+  padding: 10px;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+.node-detail-section__heading::-webkit-details-marker {
+  display: none;
+}
+.node-detail-section__heading > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+.node-detail-section__heading strong {
+  color: #35435a;
+  font-size: 10px;
+}
+.node-detail-section__heading small {
+  color: #7c899d;
+  font-size: 8px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+.node-detail-section__heading > em {
+  padding: 3px 6px;
+  color: #6f7d92;
+  background: #eef2f7;
+  border-radius: 999px;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.node-detail-section__heading > em.is-actual {
+  color: #0f8a68;
+  background: #e7f7f1;
+}
+.node-detail-section__heading > em.is-partial {
+  color: #2563eb;
+  background: #eaf2ff;
+}
+.node-detail-section__heading > em.is-expected {
+  color: #7b61b5;
+  background: #f0ebff;
+}
+.node-detail-section__icon {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  color: #3973ca;
+  background: #eaf2ff;
+  border-radius: 8px;
+}
+.node-detail-section.is-output .node-detail-section__icon {
+  color: #148064;
+  background: #e6f6f0;
+}
+.node-detail-section.is-execution .node-detail-section__icon {
+  color: #7458ad;
+  background: #eee9fa;
+}
+.node-detail-section__content {
+  padding: 0 10px 10px;
+  border-top: 1px solid #e8edf6;
+}
+.node-detail-section__content > .node-fields {
+  margin-top: 10px;
+}
 .node-fields {
   display: grid;
   margin: 12px 0 0;
@@ -4461,6 +4895,8 @@ button:disabled {
   letter-spacing: 0.04em;
 }
 .node-tag-groups,
+.node-text-content,
+.node-creative-list,
 .node-relationship-list,
 .node-coordinate-list,
 .node-blueprint-list,
@@ -4474,6 +4910,8 @@ button:disabled {
   gap: 7px;
 }
 .node-tag-groups > div,
+.node-text-content > details,
+.node-creative-list > details,
 .node-relationship-list > article,
 .node-coordinate-list > section,
 .node-blueprint-list > details,
@@ -4488,6 +4926,102 @@ button:disabled {
   background: #f7f9fd;
   border: 1px solid #e4eaf4;
   border-radius: 9px;
+}
+.node-text-content summary,
+.node-creative-list > details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #516077;
+  cursor: pointer;
+  font-size: 8px;
+  font-weight: 800;
+}
+.node-text-content summary em,
+.node-creative-list > details > summary em {
+  color: #6c7890;
+  font-size: 8px;
+  font-style: normal;
+  white-space: nowrap;
+}
+.node-text-content > details > p {
+  max-height: 230px;
+  margin: 8px 0 0;
+  padding: 9px;
+  overflow: auto;
+  color: #344258;
+  background: #fff;
+  border: 1px solid #e4eaf4;
+  border-radius: 7px;
+  font-size: 9px;
+  line-height: 1.72;
+  white-space: pre-wrap;
+}
+.node-sample-count {
+  margin: 0;
+  color: #78859a;
+  font-size: 8px;
+}
+.node-creative-core {
+  display: grid;
+  margin: 9px 0 0;
+  gap: 3px;
+  color: #536178;
+  font-size: 9px;
+  line-height: 1.55;
+}
+.node-creative-core b,
+.node-purpose-tags > strong {
+  color: #7b879a;
+  font-size: 8px;
+}
+.node-purpose-tags {
+  display: flex;
+  margin-top: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+.node-purpose-tags span,
+.node-sample-tags span {
+  padding: 3px 6px;
+  color: #315c9f;
+  background: #eaf2ff;
+  border-radius: 999px;
+  font-size: 8px;
+}
+.node-score-grid {
+  display: grid;
+  margin: 8px 0 0;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+}
+.node-score-grid > div {
+  padding: 5px 3px;
+  text-align: center;
+  background: #fff;
+  border: 1px solid #e6ebf4;
+  border-radius: 6px;
+}
+.node-score-grid dt {
+  color: #8792a5;
+  font-size: 7px;
+}
+.node-score-grid dd {
+  margin: 2px 0 0;
+  color: #33415a;
+  font-size: 9px;
+  font-weight: 900;
+}
+.node-sample-reasons {
+  margin: 8px 0 0;
+  padding: 7px;
+  color: #98630d;
+  background: #fff8e8;
+  border-radius: 6px;
+  font-size: 8px;
+  line-height: 1.55;
 }
 .node-relationship-list article > header,
 .node-coordinate-list section > header,
@@ -5030,6 +5564,22 @@ button:disabled {
   }
   .prompt-dialog-backdrop {
     padding: 10px;
+  }
+  .workflow-graph-dialog > header {
+    gap: 14px;
+    flex-direction: column;
+  }
+  .graph-header-actions,
+  .graph-view-switch {
+    width: 100%;
+  }
+  .graph-view-switch button {
+    flex: 1;
+  }
+  .workflow-graph-dialog > header .graph-close-button {
+    position: absolute;
+    top: 14px;
+    right: 14px;
   }
   .workflow-graph-dialog > footer {
     flex-wrap: wrap;

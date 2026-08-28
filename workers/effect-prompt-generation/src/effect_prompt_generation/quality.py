@@ -5,6 +5,7 @@ import unicodedata
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from itertools import combinations
+from typing import Callable
 
 from .combinations import dimension_distance
 from .insight_mapping import insight_coverage
@@ -444,6 +445,7 @@ def select_creatives(
     evaluations: list[CreativeEvaluation],
     *,
     target_count: int,
+    novelty_resolver: Callable[[RankedCreative, RankedCreative], float] | None = None,
 ) -> CreativeSelectionResult:
     candidate_by_id = {item.slot_id: item for item in candidates}
     ranked = [
@@ -481,12 +483,13 @@ def select_creatives(
 
     selected: list[RankedCreative] = []
     remaining = list(unique)
+    resolve_novelty = novelty_resolver or _creative_novelty
     while remaining and len(selected) < target_count:
         scored: list[RankedCreative] = []
         for item in remaining:
             novelty = min(
                 (
-                    _creative_novelty(item, accepted)
+                    resolve_novelty(item, accepted)
                     for accepted in selected
                 ),
                 default=100.0,

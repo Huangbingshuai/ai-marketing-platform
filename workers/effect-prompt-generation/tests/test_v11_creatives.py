@@ -6,6 +6,10 @@ from typing import Any
 
 import pytest
 
+from effect_prompt_generation.embeddings import (
+    EmbeddingProviderError,
+    MockEmbeddingProvider,
+)
 from effect_prompt_generation.graph import build_graph
 from effect_prompt_generation.insight_mapping import map_insight
 from effect_prompt_generation.models import (
@@ -38,6 +42,7 @@ class V11Api:
         self.shards: dict[str, ShardRecord] = {}
         self.result: PromptBatchResultV6 | None = None
         self.execution_mode: str | None = None
+        self.failure: Any | None = None
 
     async def put_stage(self, context: RuntimeContext, output: StageOutput) -> None:
         del context
@@ -69,7 +74,8 @@ class V11Api:
         return "prompt-result-v11"
 
     async def fail(self, context: RuntimeContext, payload: Any) -> None:
-        del context, payload
+        del context
+        self.failure = payload
 
 
 class FirstRoundRejectingProvider(MockAiProvider):
@@ -87,6 +93,14 @@ class FirstRoundRejectingProvider(MockAiProvider):
             for candidate, item in zip(candidates, call.value.items, strict=True)
         ]
         return replace(call, value=call.value.model_copy(update={"items": items}))
+
+
+class FailingEmbeddingProvider(MockEmbeddingProvider):
+    cache_namespace = "failing-test-provider"
+
+    async def embed(self, texts: list[str]):  # type: ignore[no-untyped-def]
+        del texts
+        raise EmbeddingProviderError("向量服务测试不可用", retryable=True)
 
 
 def _snapshot() -> PromptGenerationSnapshot:
@@ -165,6 +179,131 @@ async def test_v11_graph_generates_120_percent_then_selects_exact_count() -> Non
         "CREATIVE": 3,
         "CLASSIFICATION": 2,
     }
+
+
+@pytest.mark.asyncio
+async def test_v11_vector_selection_keeps_exact_count_and_reports_safe_metrics() -> None:
+    api = V11Api()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=MockAiProvider(),
+        embedding_provider=MockEmbeddingProvider(),
+        similarity_mode="vector",
+        embedding_batch_size=64,
+        embedding_max_concurrency=2,
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _snapshot())
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    assert api.result is not None
+    assert len(api.result.items) == 10
+    selection_stage = next(
+        stage
+        for stage in reversed(api.stages)
+        if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
+    )
+    assert selection_stage.metadata["selectionMethod"] == "VECTOR"
+    assert selection_stage.metadata["embeddingInputCount"] == 24
+    assert selection_stage.metadata["embeddingRequestCount"] == 1
+    assert selection_stage.metadata["comparisonCount"] == 66
+    assert "model" not in selection_stage.metadata
+
+
+@pytest.mark.asyncio
+async def test_v11_shadow_selection_reports_comparison_without_changing_result() -> None:
+    baseline_api = V11Api()
+    shadow_api = V11Api()
+    baseline = PromptGenerationPipeline(
+        api=baseline_api,  # type: ignore[arg-type]
+        provider=MockAiProvider(),
+        shard_size=5,
+    )
+    shadow = PromptGenerationPipeline(
+        api=shadow_api,  # type: ignore[arg-type]
+        provider=MockAiProvider(),
+        embedding_provider=MockEmbeddingProvider(),
+        similarity_mode="shadow",
+        shard_size=5,
+    )
+    baseline_runtime = _runtime()
+    shadow_runtime = replace(_runtime(), run_id="run-v11-shadow")
+    baseline.register_snapshot(baseline_runtime, _snapshot())
+    shadow.register_snapshot(shadow_runtime, _snapshot())
+
+    await build_graph(baseline).ainvoke(
+        {"project_id": baseline_runtime.project_id},
+        context=baseline_runtime,
+    )
+    await build_graph(shadow).ainvoke(
+        {"project_id": shadow_runtime.project_id},
+        context=shadow_runtime,
+    )
+
+    assert baseline_api.result is not None
+    assert shadow_api.result is not None
+    assert [item.content for item in shadow_api.result.items] == [
+        item.content for item in baseline_api.result.items
+    ]
+    selection_stage = next(
+        stage
+        for stage in reversed(shadow_api.stages)
+        if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
+    )
+    assert selection_stage.metadata["selectionMethod"] == "TRIGRAM_SHADOW"
+
+
+@pytest.mark.asyncio
+async def test_v11_shadow_embedding_failure_keeps_baseline_with_warning() -> None:
+    api = V11Api()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=MockAiProvider(),
+        embedding_provider=FailingEmbeddingProvider(),
+        similarity_mode="shadow",
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _snapshot())
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    assert api.result is not None
+    assert len(api.result.items) == 10
+    selection_stage = next(
+        stage
+        for stage in reversed(api.stages)
+        if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
+    )
+    assert selection_stage.metadata["selectionMethod"] == "TRIGRAM_SHADOW_UNAVAILABLE"
+    assert selection_stage.warnings == ["向量服务测试不可用"]
+
+
+@pytest.mark.asyncio
+async def test_v11_vector_embedding_failure_is_retryable_and_safely_coded() -> None:
+    api = V11Api()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=MockAiProvider(),
+    )
+
+    await pipeline.mark_failed(
+        _runtime(),
+        EmbeddingProviderError("向量服务暂时不可用", retryable=True),
+    )
+
+    assert api.failure is not None
+    assert api.failure.retryable is True
+    assert api.failure.error_code == "EMBEDDING_SERVICE_UNAVAILABLE"
+    assert api.failure.error_message == "向量服务暂时不可用"
 
 
 @pytest.mark.asyncio

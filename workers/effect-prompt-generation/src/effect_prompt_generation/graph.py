@@ -221,6 +221,10 @@ def build_graph(
                     for shard in pending
                 )
             )
+        await pipeline.complete_v11_creative_generation(
+            runtime.context,
+            round_number=0,
+        )
         classifications = await pipeline.plan_v11_classification(
             runtime.context,
             round_number=0,
@@ -232,6 +236,10 @@ def build_graph(
                     for shard in classifications
                 )
             )
+        await pipeline.complete_v11_classification(
+            runtime.context,
+            round_number=0,
+        )
         supplement, needed = await pipeline.select_v11_creatives(
             runtime.context,
             round_number=0,
@@ -242,6 +250,10 @@ def build_graph(
                     pipeline.generate_v11_creative_shard(runtime.context, shard)
                     for shard in supplement
                 )
+            )
+            await pipeline.complete_v11_creative_generation(
+                runtime.context,
+                round_number=1,
             )
             classifications = await pipeline.plan_v11_classification(
                 runtime.context,
@@ -256,6 +268,10 @@ def build_graph(
                         for shard in classifications
                     )
                 )
+            await pipeline.complete_v11_classification(
+                runtime.context,
+                round_number=1,
+            )
             await pipeline.select_v11_creatives(runtime.context, round_number=1)
         return {}
 

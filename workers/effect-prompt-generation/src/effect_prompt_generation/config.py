@@ -51,6 +51,12 @@ class WorkerSettings(BaseSettings):
     ark_prompt_evaluation_model: str | None = Field(
         default=None, alias="ARK_PROMPT_EVALUATION_MODEL"
     )
+    ark_prompt_embedding_model: str | None = Field(
+        default=None, alias="ARK_PROMPT_EMBEDDING_MODEL"
+    )
+    ark_prompt_embedding_api_mode: Literal["text", "multimodal"] = Field(
+        default="multimodal", alias="ARK_PROMPT_EMBEDDING_API_MODE"
+    )
     ark_prompt_strategy_max_output_tokens: int = Field(
         default=8192,
         alias="ARK_PROMPT_STRATEGY_MAX_OUTPUT_TOKENS",
@@ -82,6 +88,15 @@ class WorkerSettings(BaseSettings):
     prompt_max_concurrency: int = Field(
         default=6, alias="PROMPT_MAX_CONCURRENCY", ge=1, le=8
     )
+    prompt_similarity_mode: Literal["trigram", "shadow", "vector"] = Field(
+        default="trigram", alias="PROMPT_SIMILARITY_MODE"
+    )
+    prompt_embedding_batch_size: int = Field(
+        default=64, alias="PROMPT_EMBEDDING_BATCH_SIZE", ge=1, le=256
+    )
+    prompt_embedding_max_concurrency: int = Field(
+        default=8, alias="PROMPT_EMBEDDING_MAX_CONCURRENCY", ge=1, le=16
+    )
     prompt_shard_size: int = Field(default=8, alias="PROMPT_SHARD_SIZE", ge=1, le=8)
     prompt_max_ai_calls_per_run: int = Field(
         default=256, alias="PROMPT_MAX_AI_CALLS_PER_RUN", ge=1, le=256
@@ -105,6 +120,12 @@ class WorkerSettings(BaseSettings):
     ark_prompt_provider_max_attempts: int = Field(
         default=1, alias="ARK_PROMPT_PROVIDER_MAX_ATTEMPTS", ge=1, le=3
     )
+    ark_prompt_embedding_timeout_seconds: float = Field(
+        default=30.0, alias="ARK_PROMPT_EMBEDDING_TIMEOUT_SECONDS", gt=0
+    )
+    ark_prompt_embedding_max_attempts: int = Field(
+        default=3, alias="ARK_PROMPT_EMBEDDING_MAX_ATTEMPTS", ge=1, le=3
+    )
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
     @model_validator(mode="after")
@@ -126,6 +147,9 @@ class WorkerSettings(BaseSettings):
         self.ark_prompt_evaluation_model = (
             self.ark_prompt_evaluation_model or ""
         ).strip() or None
+        self.ark_prompt_embedding_model = (
+            self.ark_prompt_embedding_model or ""
+        ).strip() or None
         self.effect_prompt_queue = self.effect_prompt_queue.strip()
         if not self.effect_prompt_queue:
             raise ValueError("EFFECT_PROMPT_QUEUE cannot be empty")
@@ -137,6 +161,14 @@ class WorkerSettings(BaseSettings):
             key = self.ark_api_key.get_secret_value().strip()
             if not key or key.casefold() in ARK_KEY_PLACEHOLDERS:
                 raise ValueError("ARK_API_KEY must be a real non-placeholder key")
+            if (
+                self.prompt_similarity_mode != "trigram"
+                and self.ark_prompt_embedding_model is None
+            ):
+                raise ValueError(
+                    "ARK_PROMPT_EMBEDDING_MODEL is required when "
+                    "PROMPT_SIMILARITY_MODE is shadow or vector"
+                )
         elif not (
             self.effect_prompt_queue.endswith(".test")
             or self.effect_prompt_queue.startswith("test.")

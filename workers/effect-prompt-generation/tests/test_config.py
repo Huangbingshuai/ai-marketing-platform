@@ -44,6 +44,11 @@ def test_mock_requires_explicit_provider_and_prompt_model_falls_back() -> None:
     assert settings.resolved_prompt_candidate_timeout_seconds == 120
     assert settings.ark_prompt_provider_max_attempts == 1
     assert settings.resolved_prompt_evaluation_model == settings.resolved_prompt_candidate_model
+    assert settings.prompt_similarity_mode == "trigram"
+    assert settings.prompt_embedding_batch_size == 64
+    assert settings.prompt_embedding_max_concurrency == 8
+    assert settings.ark_prompt_embedding_timeout_seconds == 30
+    assert settings.ark_prompt_embedding_max_attempts == 3
 
 
 def test_mock_rejects_the_normal_prompt_queue() -> None:
@@ -86,3 +91,30 @@ def test_candidate_timeout_prefers_node_override_and_keeps_legacy_fallback() -> 
     assert legacy.resolved_prompt_candidate_timeout_seconds == 180
     assert specific.resolved_prompt_candidate_timeout_seconds == 90
     assert specific.ark_prompt_strategy_timeout_seconds == 240
+
+
+def test_ark_vector_and_shadow_modes_require_explicit_embedding_model() -> None:
+    with pytest.raises(ValidationError, match="ARK_PROMPT_EMBEDDING_MODEL"):
+        _settings(
+            PROMPT_AI_PROVIDER="ark",
+            ARK_API_KEY="real-test-key",
+            PROMPT_SIMILARITY_MODE="shadow",
+        )
+
+    settings = _settings(
+        PROMPT_AI_PROVIDER="ark",
+        ARK_API_KEY="real-test-key",
+        PROMPT_SIMILARITY_MODE="vector",
+        ARK_PROMPT_EMBEDDING_MODEL="embedding-endpoint",
+        ARK_PROMPT_EMBEDDING_API_MODE="multimodal",
+    )
+    assert settings.ark_prompt_embedding_model == "embedding-endpoint"
+    assert settings.ark_prompt_embedding_api_mode == "multimodal"
+
+
+def test_mock_vector_mode_uses_explicit_mock_without_ark_model() -> None:
+    settings = _settings(
+        PROMPT_AI_PROVIDER="mock",
+        PROMPT_SIMILARITY_MODE="vector",
+    )
+    assert settings.prompt_similarity_mode == "vector"

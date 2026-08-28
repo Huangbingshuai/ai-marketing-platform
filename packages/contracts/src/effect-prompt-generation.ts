@@ -1016,7 +1016,57 @@ export type EffectPromptNodeDetailBlueprint = {
   endingState: string;
 };
 
+export const EFFECT_PROMPT_NODE_DETAIL_SECTION_KINDS = ['INPUT', 'OUTPUT', 'EXECUTION'] as const;
+export type EffectPromptNodeDetailSectionKind =
+  (typeof EFFECT_PROMPT_NODE_DETAIL_SECTION_KINDS)[number];
+
+export const EFFECT_PROMPT_NODE_DETAIL_SECTION_STATES = [
+  'EXPECTED',
+  'ACTUAL',
+  'PARTIAL',
+  'EMPTY',
+] as const;
+export type EffectPromptNodeDetailSectionState =
+  (typeof EFFECT_PROMPT_NODE_DETAIL_SECTION_STATES)[number];
+
+export const EFFECT_PROMPT_NODE_DETAIL_CREATIVE_OUTCOMES = [
+  'PENDING',
+  'ACCEPTED',
+  'REJECTED',
+  'SELECTED',
+  'SAVED',
+] as const;
+export type EffectPromptNodeDetailCreativeOutcome =
+  (typeof EFFECT_PROMPT_NODE_DETAIL_CREATIVE_OUTCOMES)[number];
+
+export type EffectPromptNodeDetailCreativeSample = {
+  code: string;
+  creativeCore: string;
+  dimensions: EffectPromptDimensions;
+  content: string;
+  sourceFacts: string[];
+  primaryPurpose: EffectPromptFragmentType | null;
+  compatiblePurposes: EffectPromptFragmentType[];
+  productRelevance: number | null;
+  scores: EffectPromptQualityScores | null;
+  outcome: EffectPromptNodeDetailCreativeOutcome;
+  reasons: string[];
+};
+
 export type EffectPromptNodeDetailBlock =
+  | {
+      kind: 'TEXT_CONTENT';
+      title: string;
+      content: string;
+      sourceLabels: string[];
+    }
+  | {
+      kind: 'CREATIVE_SAMPLE_LIST';
+      title: string;
+      totalCount: number;
+      remainingCount: number;
+      items: EffectPromptNodeDetailCreativeSample[];
+    }
   | {
       kind: 'RELATIONSHIP_LIST';
       title: string;
@@ -1109,11 +1159,21 @@ export type EffectPromptNodeDetailBlock =
       items: Array<{ code: string; label: string; count: number; examples: string[] }>;
     };
 
+export type EffectPromptNodeDetailSection = {
+  kind: EffectPromptNodeDetailSectionKind;
+  state: EffectPromptNodeDetailSectionState;
+  title: string;
+  summary: string;
+  fields: EffectPromptNodeDetailField[];
+  blocks: EffectPromptNodeDetailBlock[];
+};
+
 export type GetEffectPromptNodeDetailData = {
   detail: {
     nodeId: EffectPromptNodeId;
     status: EffectPromptStageStatus;
     summary: string;
+    sections: EffectPromptNodeDetailSection[];
     fields: EffectPromptNodeDetailField[];
     blocks: EffectPromptNodeDetailBlock[];
     warnings: string[];

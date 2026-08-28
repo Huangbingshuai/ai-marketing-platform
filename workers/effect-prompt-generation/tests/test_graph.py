@@ -335,12 +335,26 @@ async def test_shared_prompt_keeps_editable_section_when_disabled_elements_are_e
         "USER_ADDITIONAL",
     ]
     assert api.stages[-1].node_id.value == "SHARED_PROMPT_COMPILATION"
-    assert api.stages[-1].metadata == {
+    metadata = api.stages[-1].metadata
+    assert {
+        key: metadata[key]
+        for key in (
+            "disabledElementCount",
+            "sectionCount",
+            "sharedPromptGenerated",
+            "hasUserAdditionalContent",
+        )
+    } == {
         "disabledElementCount": 0,
         "sectionCount": 2,
         "sharedPromptGenerated": False,
         "hasUserAdditionalContent": False,
     }
+    assert metadata["compiledContent"] == ""
+    assert [section["source"] for section in metadata["sections"]] == [
+        "SYSTEM",
+        "USER",
+    ]
 
 
 @pytest.mark.asyncio

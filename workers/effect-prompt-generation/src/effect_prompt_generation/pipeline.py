@@ -27,6 +27,11 @@ from .combinations import (
     plan_combinations,
 )
 from .insight_mapping import bindings_for_fact_ids, map_insight
+from .embeddings import (
+    EmbeddingProvider,
+    EmbeddingProviderError,
+    build_creative_vector_index,
+)
 from .models import (
     BlueprintBundleQuota,
     BlueprintShardPlan,
@@ -180,6 +185,9 @@ class RunCache:
     v11_candidate_target_count: int = 0
     v11_exact_duplicate_count: int = 0
     v11_supplemented: bool = False
+    embedding_vectors: dict[str, tuple[float, ...]] = field(default_factory=dict)
+    embedding_stage_metadata: dict[str, Any] = field(default_factory=dict)
+    embedding_warning: str | None = None
 
 
 class PromptGenerationPipeline:
@@ -188,11 +196,19 @@ class PromptGenerationPipeline:
         *,
         api: InternalApi,
         provider: AiProvider,
+        embedding_provider: EmbeddingProvider | None = None,
+        similarity_mode: Literal["trigram", "shadow", "vector"] = "trigram",
+        embedding_batch_size: int = 64,
+        embedding_max_concurrency: int = 2,
         shard_size: int = 8,
         max_ai_calls_per_run: int = 256,
     ) -> None:
         self.api = api
         self.provider = provider
+        self.embedding_provider = embedding_provider
+        self.similarity_mode = similarity_mode
+        self.embedding_batch_size = embedding_batch_size
+        self.embedding_max_concurrency = embedding_max_concurrency
         self.shard_size = shard_size
         self.max_ai_calls_per_run = max_ai_calls_per_run
         self._snapshots: dict[str, PromptGenerationSnapshot] = {}
@@ -430,6 +446,26 @@ class PromptGenerationPipeline:
                 "adaptiveCount": len(application.adaptive),
                 "excludedCount": len(application.excluded),
                 "appliedConstraintCount": len(application.constraints),
+                "requiredFacts": [
+                    {"field": fact.field.value, "value": fact.value}
+                    for fact in application.required
+                ],
+                "adaptiveFacts": [
+                    {"field": fact.field.value, "value": fact.value}
+                    for fact in application.adaptive
+                ],
+                "excludedFacts": [
+                    {
+                        "field": fact.field.value,
+                        "value": fact.value,
+                        "reason": fact.exclusion_reason,
+                    }
+                    for fact in application.excluded
+                ],
+                "appliedConstraints": [
+                    {"field": fact.field.value, "value": fact.value}
+                    for fact in application.constraints
+                ],
             },
         )
         await self.progress(context, 11, NodeId.INSIGHT_MAPPING)
@@ -463,6 +499,15 @@ class PromptGenerationPipeline:
                 "sectionCount": len(prompt.sections),
                 "sharedPromptGenerated": bool(prompt.compiled_content),
                 "hasUserAdditionalContent": bool(additional),
+                "compiledContent": prompt.compiled_content,
+                "sections": [
+                    {
+                        "title": section.title,
+                        "source": section.source,
+                        "content": section.content,
+                    }
+                    for section in prompt.sections
+                ],
             },
         )
         await self.progress(context, 13, NodeId.SHARED_PROMPT_COMPILATION)
@@ -658,6 +703,42 @@ class PromptGenerationPipeline:
             )
             raise
 
+    async def complete_v11_creative_generation(
+        self,
+        context: RuntimeContext,
+        *,
+        round_number: int,
+    ) -> None:
+        cache = self._cache(context)
+        snapshot = self.snapshot(context)
+        node = (
+            NodeId.ITEM_EVALUATE
+            if snapshot.operation == "ITEM_EVALUATE"
+            else NodeId.COHERENT_CREATIVE_GENERATION
+        )
+        round_items = [
+            item for item in cache.creatives.values() if item.round == round_number
+        ]
+        await self._stage(
+            context,
+            node,
+            StageStatus.SUCCEEDED,
+            "连贯六维创意生成完成",
+            metadata={
+                "round": round_number,
+                "targetCount": (
+                    1
+                    if snapshot.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"}
+                    else _v11_settings(snapshot).target_count
+                ),
+                "candidateTargetCount": cache.v11_candidate_target_count,
+                "candidateCount": len(cache.creatives),
+                "roundCandidateCount": len(round_items),
+                "completedShardCount": len(cache.completed_creative_shard_keys),
+                "supplemented": cache.v11_supplemented,
+            },
+        )
+
     async def plan_v11_classification(
         self,
         context: RuntimeContext,
@@ -761,6 +842,56 @@ class PromptGenerationPipeline:
             )
             raise
 
+    async def complete_v11_classification(
+        self,
+        context: RuntimeContext,
+        *,
+        round_number: int,
+    ) -> None:
+        cache = self._cache(context)
+        snapshot = self.snapshot(context)
+        node = (
+            NodeId.ITEM_EVALUATE
+            if snapshot.operation == "ITEM_EVALUATE"
+            else NodeId.CREATIVE_EVALUATION_CLASSIFICATION
+        )
+        evaluations = list(cache.creative_evaluations.values())
+        accepted = [item for item in evaluations if not item.hard_issues]
+        hard_counts = Counter(issue for item in evaluations for issue in item.hard_issues)
+        warning_counts = Counter(warning for item in evaluations for warning in item.warnings)
+        purpose_counts = Counter(item.primary_purpose for item in evaluations)
+        await self._stage(
+            context,
+            node,
+            StageStatus.SUCCEEDED,
+            "创意质量评估与用途分类完成",
+            metadata={
+                "round": round_number,
+                "candidateCount": len(cache.creatives),
+                "evaluatedCount": len(evaluations),
+                "acceptedCount": len(accepted),
+                "rejectedCount": len(evaluations) - len(accepted),
+                "completedShardCount": len(
+                    cache.completed_classification_shard_keys
+                ),
+                "averageScores": _average_v11_scores(
+                    [item.scores for item in evaluations]
+                ).model_dump(mode="json", by_alias=True),
+                "purposeDistribution": [
+                    {"purpose": purpose.value, "count": purpose_counts[purpose]}
+                    for purpose in FragmentType
+                ],
+                "hardIssueCounts": [
+                    {"code": code, "count": count}
+                    for code, count in sorted(hard_counts.items())
+                ],
+                "warningCounts": [
+                    {"code": code, "count": count}
+                    for code, count in sorted(warning_counts.items())
+                ],
+            },
+        )
+
     async def select_v11_creatives(
         self,
         context: RuntimeContext,
@@ -795,11 +926,125 @@ class PromptGenerationPipeline:
                 exact_duplicate_count=0,
             )
         else:
-            result = select_creatives(
+            baseline_result = select_creatives(
                 list(cache.creatives.values()),
                 list(cache.creative_evaluations.values()),
                 target_count=selection_target,
             )
+            result = baseline_result
+            cache.embedding_stage_metadata = {
+                "similarityMode": self.similarity_mode,
+                "selectionMethod": "TRIGRAM",
+            }
+            cache.embedding_warning = None
+            eligible_candidates = [
+                candidate
+                for candidate in cache.creatives.values()
+                if (
+                    (evaluation := cache.creative_evaluations.get(candidate.slot_id))
+                    is not None
+                    and not evaluation.hard_issues
+                )
+            ]
+            if self.similarity_mode != "trigram" and len(eligible_candidates) > 1:
+                if self.embedding_provider is None:
+                    raise PipelineError(
+                        "embedding provider is required for shadow or vector similarity"
+                    )
+                try:
+                    insight = snapshot.insight_artifact.result
+                    vector_index = await build_creative_vector_index(
+                        eligible_candidates,
+                        provider=self.embedding_provider,
+                        vector_cache=cache.embedding_vectors,
+                        product_name=_insight_text(
+                            insight,
+                            "productName",
+                            "product_name",
+                        ),
+                        product_category=_insight_text(
+                            insight,
+                            "productCategory",
+                            "product_category",
+                        ),
+                        shared_prompt=self._required_shared_prompt(context),
+                        batch_size=self.embedding_batch_size,
+                        max_concurrency=self.embedding_max_concurrency,
+                    )
+                    vector_result = select_creatives(
+                        list(cache.creatives.values()),
+                        list(cache.creative_evaluations.values()),
+                        target_count=selection_target,
+                        novelty_resolver=lambda left, right: vector_index.dual_novelty(
+                            left.candidate.slot_id,
+                            right.candidate.slot_id,
+                        ),
+                    )
+                    content_result = select_creatives(
+                        list(cache.creatives.values()),
+                        list(cache.creative_evaluations.values()),
+                        target_count=selection_target,
+                        novelty_resolver=lambda left, right: vector_index.content_novelty(
+                            left.candidate.slot_id,
+                            right.candidate.slot_id,
+                        ),
+                    )
+                    baseline_ids = {
+                        item.candidate.slot_id for item in baseline_result.selected
+                    }
+                    vector_ids = {
+                        item.candidate.slot_id for item in vector_result.selected
+                    }
+                    content_ids = {
+                        item.candidate.slot_id for item in content_result.selected
+                    }
+                    denominator = max(1, len(baseline_ids))
+                    stats = vector_index.stats
+                    cache.embedding_stage_metadata = {
+                        "similarityMode": self.similarity_mode,
+                        "selectionMethod": (
+                            "VECTOR" if self.similarity_mode == "vector" else "TRIGRAM_SHADOW"
+                        ),
+                        "embeddingInputCount": stats.input_count,
+                        "embeddingRequestCount": stats.request_count,
+                        "embeddingInputTokens": stats.input_tokens,
+                        "embeddingRetryCount": stats.retry_count,
+                        "embeddingCacheHitCount": stats.cache_hit_count,
+                        "comparisonCount": stats.comparison_count,
+                        "embeddingDurationMs": stats.duration_ms,
+                        "localComparisonMs": stats.local_comparison_ms,
+                        "contentSimilarityP50": stats.content_p50,
+                        "contentSimilarityP95": stats.content_p95,
+                        "creativeSimilarityP50": stats.creative_p50,
+                        "creativeSimilarityP95": stats.creative_p95,
+                        "vectorSelectionOverlapPercent": round(
+                            100.0 * len(baseline_ids & vector_ids) / denominator,
+                            2,
+                        ),
+                        "contentSelectionOverlapPercent": round(
+                            100.0 * len(baseline_ids & content_ids) / denominator,
+                            2,
+                        ),
+                        "highRiskPairs": stats.high_risk_pairs,
+                    }
+                    if self.similarity_mode == "vector":
+                        result = vector_result
+                except EmbeddingProviderError as exc:
+                    if self.similarity_mode == "vector":
+                        setattr(exc, "node_id", NodeId.EXACT_SELECTION_AND_SUPPLEMENT)
+                        raise
+                    cache.embedding_warning = str(exc)
+                    cache.embedding_stage_metadata = {
+                        "similarityMode": "shadow",
+                        "selectionMethod": "TRIGRAM_SHADOW_UNAVAILABLE",
+                        "embeddingWarning": str(exc),
+                    }
+            elif self.similarity_mode != "trigram":
+                cache.embedding_stage_metadata = {
+                    "similarityMode": self.similarity_mode,
+                    "selectionMethod": "SKIPPED_SINGLE_CANDIDATE",
+                    "comparisonCount": 0,
+                }
         cache.selected_creatives = result
         cache.v11_exact_duplicate_count = result.exact_duplicate_count
         items = _v11_prompt_items(
@@ -842,7 +1087,9 @@ class PromptGenerationPipeline:
                 "missingCount": missing,
                 "exactDuplicateCount": result.exact_duplicate_count,
                 "supplemented": cache.v11_supplemented,
+                **cache.embedding_stage_metadata,
             },
+            warnings=[cache.embedding_warning] if cache.embedding_warning else None,
         )
         return pending, should_supplement
 
@@ -2297,7 +2544,10 @@ class PromptGenerationPipeline:
         cache.ai_call_count += 1
 
     async def mark_failed(self, context: RuntimeContext, exc: Exception) -> None:
-        retryable = isinstance(exc, (InternalApiError, ProviderError)) and exc.retryable
+        retryable = isinstance(
+            exc,
+            (InternalApiError, ProviderError, EmbeddingProviderError),
+        ) and exc.retryable
         await self.api.fail(
             context,
             FailurePayload(
@@ -2324,6 +2574,7 @@ class PromptGenerationPipeline:
         summary: str,
         *,
         metadata: dict[str, Any] | None = None,
+        warnings: list[str] | None = None,
     ) -> None:
         await self.api.put_stage(
             context,
@@ -2331,6 +2582,7 @@ class PromptGenerationPipeline:
                 node_id=node,
                 status=status,
                 summary=summary,
+                warnings=warnings or [],
                 metadata=metadata or {},
             ),
         )
@@ -2584,6 +2836,8 @@ def _safe_error(exc: Exception) -> str:
             "AI_REQUEST_REJECTED": "Prompt AI 请求被拒绝",
             "AI_UNKNOWN": "Prompt AI 生成失败",
         }.get(exc.error_type.value, "Prompt AI 生成失败")
+    if isinstance(exc, EmbeddingProviderError):
+        return str(exc)
     if isinstance(exc, InternalApiError):
         return "内部服务暂时不可用" if exc.retryable else "内部服务拒绝了任务更新"
     message = " ".join(str(exc).split())
@@ -2595,6 +2849,12 @@ def _error_code(exc: Exception) -> str:
         return "VALIDATION_ERROR"
     if isinstance(exc, ProviderError):
         return exc.error_type.value
+    if isinstance(exc, EmbeddingProviderError):
+        return (
+            "EMBEDDING_SERVICE_UNAVAILABLE"
+            if exc.retryable
+            else "EMBEDDING_RESPONSE_INVALID"
+        )
     if isinstance(exc, InternalApiError):
         return "INTERNAL_API_UNAVAILABLE" if exc.retryable else "INTERNAL_API_REJECTED"
     return type(exc).__name__.upper()[:100]

@@ -12,6 +12,9 @@ describe('effect prompt generation V11 layout', () => {
   });
 
   it('only exposes total count and one shared duration as batch settings', () => {
+    expect(pageSource).toContain('<h3>批次设置</h3>');
+    expect(pageSource).not.toContain('仅以下参数可调');
+    expect(pageSource).toMatch(/\.settings-heading\s*\{[^}]*padding:\s*0 13px;/u);
     expect(pageSource).toContain('Prompt 总数量');
     expect(pageSource).toContain('默认片段时长');
     expect(pageSource).toContain('currentSettings.value.targetCount');
@@ -25,10 +28,13 @@ describe('effect prompt generation V11 layout', () => {
       'currentSettings.value.fragmentConfigs',
       'currentSettings.semanticLimit',
       'currentSettings.visualLimit',
-    ]) expect(pageSource).not.toContain(removed);
+    ])
+      expect(pageSource).not.toContain(removed);
     expect(pageSource).not.toContain('class="fragment-config-grid"');
     expect(pageSource).not.toContain('class="effect-prompt-stats"');
-    expect(pageSource).toContain("type NumericPromptSetting = 'targetCount' | 'defaultDurationSeconds'");
+    expect(pageSource).toContain(
+      "type NumericPromptSetting = 'targetCount' | 'defaultDurationSeconds'",
+    );
   });
 
   it('keeps one editable shared prompt instead of splitting shared requirements', () => {
@@ -78,7 +84,8 @@ describe('effect prompt generation V11 layout', () => {
       'copyItem(item)',
       'requestDeleteItem(item, $event)',
       'openRegenerationDialog(item, $event)',
-    ]) expect(pageSource).toContain(handler);
+    ])
+      expect(pageSource).toContain(handler);
     expect(pageSource).toContain('role="alertdialog"');
     expect(pageSource).toContain('@keydown.esc="closeDeleteDialog"');
     expect(pageSource).toContain('replacementDimensions');
@@ -95,9 +102,14 @@ describe('effect prompt generation V11 layout', () => {
       'EXACT_SELECTION_AND_SUPPLEMENT',
       'RESULT_SAVE',
       'ITEM_EVALUATE',
-    ]) expect(pageSource).toMatch(new RegExp(`\\b${nodeId}\\b`, 'u'));
-    expect(pageSource).toContain('effectPromptRunGraphNodeIds(currentGraphVersion.value, currentRun.value.operation)');
-    expect(pageSource).toContain('effectPromptRunGraphEdges(currentGraphVersion.value, currentRun.value.operation)');
+    ])
+      expect(pageSource).toMatch(new RegExp(`\\b${nodeId}\\b`, 'u'));
+    expect(pageSource).toContain(
+      'effectPromptRunGraphNodeIds(currentGraphVersion.value, currentRun.value.operation)',
+    );
+    expect(pageSource).toContain(
+      'effectPromptRunGraphEdges(currentGraphVersion.value, currentRun.value.operation)',
+    );
     expect(pageSource).toContain('展示本次真实输入、连贯创意生成、用途评估和数量结果。');
     expect(graphSource).toContain('sourceIndex < targetIndex');
   });
@@ -112,7 +124,8 @@ describe('effect prompt generation V11 layout', () => {
       'TAG_LIST',
       'PROMPT_LIST',
       'ISSUE_LIST',
-    ]) expect(pageSource).toContain(`block.kind === '${blockKind}'`);
+    ])
+      expect(pageSource).toContain(`block.kind === '${blockKind}'`);
     expect(pageSource).toContain('graphPromptDimensionValue(item, dimension.key)');
   });
 
@@ -143,7 +156,9 @@ describe('effect prompt generation V11 layout', () => {
     expect(pageSource).toContain('class="partial-preview-banner"');
     expect(pageSource).toContain('本次任务未完成，已保留');
     expect(pageSource).toContain('当前仅支持查看和复制');
-    expect(pageSource).toContain(':validate-disabled="partialPreview || currentRunning || validating');
+    expect(pageSource).toContain(
+      ':validate-disabled="partialPreview || currentRunning || validating',
+    );
   });
 
   it('wires only effect workflow step three', () => {
