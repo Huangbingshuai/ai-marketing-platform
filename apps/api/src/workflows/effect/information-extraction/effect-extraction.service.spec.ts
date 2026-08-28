@@ -24,6 +24,7 @@ const extractionResult = {
   secondarySellingPoints: [],
   trustBackings: [],
   targetAudience: '家庭用户',
+  targetAudiences: ['家庭用户'],
   corePainPoints: ['备餐麻烦'],
   decisionDrivers: ['包装便利'],
   marketingGoal: '促进转化',

@@ -19,6 +19,7 @@ const result: EffectExtractionResult = {
   secondarySellingPoints: ['卖点二'],
   trustBackings: [],
   targetAudience: '目标人群',
+  targetAudiences: ['目标人群'],
   corePainPoints: ['痛点一'],
   decisionDrivers: ['动因一'],
   marketingGoal: '营销目标',

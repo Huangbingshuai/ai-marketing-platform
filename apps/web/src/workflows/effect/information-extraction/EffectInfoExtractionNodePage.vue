@@ -440,6 +440,7 @@ const emptyExtractionResult: EffectExtractionResult = {
   secondarySellingPoints: [],
   trustBackings: [],
   targetAudience: '',
+  targetAudiences: [],
   corePainPoints: [],
   decisionDrivers: [],
   marketingGoal: '',
@@ -1028,7 +1029,7 @@ const removeSellingPoint = (index: number): void => {
 };
 
 type AdditionalSellingField = 'secondarySellingPoints' | 'trustBackings';
-type UserInsightListField = 'corePainPoints' | 'decisionDrivers';
+type UserInsightListField = 'targetAudiences' | 'corePainPoints' | 'decisionDrivers';
 type ScenarioListField = 'usageScenarios' | 'purchaseScenarios' | 'emotionalScenarios';
 
 const addAdditionalSellingPoint = (field: AdditionalSellingField): void => {
@@ -1512,14 +1513,43 @@ onBeforeUnmount(() => {
           <div class="block-heading compact">
             <div><h3>用户层</h3></div>
           </div>
-          <label class="field-label">
-            <span>目标受众画像</span>
-            <textarea
-              v-model="visibleResult.targetAudience"
-              :readonly="baseFieldsReadonly"
-              @input="markDirty"
-            />
-          </label>
+          <div class="selling-subheading">
+            <strong>目标受众画像</strong>
+            <button
+              type="button"
+              :disabled="
+                baseFieldsReadonly ||
+                visibleResult.targetAudiences.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
+              "
+              @click="addUserInsightItem('targetAudiences')"
+            >
+              <Plus :size="13" />添加
+            </button>
+          </div>
+          <div class="structured-item-list">
+            <p v-if="!visibleResult.targetAudiences.length" class="empty-inline">暂无目标受众</p>
+            <div
+              v-for="(_item, index) in visibleResult.targetAudiences"
+              :key="`audience-${index}`"
+              class="selling-point-row"
+            >
+              <span>目标受众</span>
+              <input
+                v-model="visibleResult.targetAudiences[index]"
+                :readonly="baseFieldsReadonly"
+                placeholder="请输入目标受众"
+                @input="markDirty"
+              />
+              <button
+                type="button"
+                aria-label="删除目标受众"
+                :disabled="baseFieldsReadonly"
+                @click="removeUserInsightItem('targetAudiences', index)"
+              >
+                <Trash2 :size="14" />
+              </button>
+            </div>
+          </div>
           <div class="selling-subheading">
             <strong>核心痛点</strong>
             <button

@@ -22,7 +22,7 @@ export type EffectExtractionSourceMaterial = {
 };
 
 export type EffectExtractionInputSnapshot = {
-  schemaVersion: 2;
+  schemaVersion: 3;
   projectId: string;
   draftId: string;
   mode: EffectImportMode;

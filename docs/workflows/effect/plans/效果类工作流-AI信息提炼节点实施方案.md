@@ -38,6 +38,7 @@ type EffectExtractionResult = {
   secondarySellingPoints: string[];
   trustBackings: string[];
   targetAudience: string;
+  targetAudiences: string[];
   corePainPoints: string[];
   decisionDrivers: string[];
   marketingGoal: string;
@@ -486,3 +487,13 @@ Worker 和 Renderer 均只允许 HTTP/HTTPS 与 80/443 端口，拒绝 URL 凭�
 另以两条同义日常佐餐痛点和煲仔饭、蒸制、炒制三种不同做法执行真实 Mini 冒烟。提示词 `2.1.0` 成功归并同义痛点，同时没有把不同做法放入会删除事实的关系组；该用例已纳入显式付费集成测试。
 
 本轮验证：Worker 72 项通过、4 项显式集成门控跳过，mypy 32 个文件无错误；Contracts 15、API 287、Web 161 项测试全部通过；TypeScript 类型检查、生产构建、Compose 配置检查和 Worker Docker 构建通过。详细设计与历史方案替代关系见 `docs/workflows/effect/plans/效果类AI信息提炼-语义整理节点实施方案.md`。
+
+## 31. 2026-08-28 目标受众列表化
+
+保持既有八节点 LangGraph 拓扑不变，不新增“受众整理”节点。产品素材制作信息卡升级为 schema v3，在用户层新增规范字段 `targetAudiences: string[]`；原 `targetAudience` 保留为服务端根据列表使用中文分号派生的只读兼容摘要，避免历史 Prompt 等消费者立即断裂，前端不再直接编辑该摘要。
+
+现有 NORMALIZATION 调用负责输出受众枚举表达，不增加模型请求。API 对 Worker 或历史 V1/V2 的受众长字符串只按逗号、顿号、分号和换行等明确枚举符确定性拆分，清理空项并稳定去重；数组输入不再二次按标点拆分，避免破坏用户已经确认的单条画像。标准化 Prompt 明确限制 1～5 个受众短语，并禁止新增输入中不存在的年龄、性别、职业和地域属性。
+
+前端将单个“目标受众画像” textarea 改成与核心痛点一致的独立行列表，支持添加、删除和自动保存。人工覆盖只记录 `targetAudiences`，兼容摘要不作为第二个可编辑事实源；历史 `{ targetAudience: string }` 人工覆盖会在读取时迁移为数组，不丢失用户内容。生成、保存与重新提炼仍只更新草稿，只有“完成校验”才提交新的营销洞察 WorkingArtifact revision。
+
+最终验证：当前“广式腊肠”历史 schema v2 结果经真实 API 读取适配后得到 4 条独立受众——“25-45 岁家庭厨房决策者”“美食爱好者”“年货送礼人群”“向往粤式风味的全国消费者”；兼容摘要与数组使用中文分号拼接的结果完全一致，且未引入资料中不存在的“上班族”。Contracts 15、API 291、Web 161 项测试通过，Worker 72 项通过、4 项显式集成门控跳过；TypeScript 类型检查、Python mypy、前后端生产构建、Compose 配置检查和 Worker Docker 构建通过。自动浏览器回归因内置浏览器的本地地址安全策略阻断，未改用其他通道绕过；前端列表布局、增删交互和 API 请求契约已由 Web 测试覆盖。

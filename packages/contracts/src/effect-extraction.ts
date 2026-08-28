@@ -3,7 +3,7 @@ import type { WorkingArtifactCommitStatus, WorkingArtifactCommitSummary } from '
 export const EFFECT_EXTRACTION_API_BASE =
   '/api/projects/:projectId/workflows/effect/information-extraction' as const;
 
-export const EFFECT_EXTRACTION_SCHEMA_VERSION = 2 as const;
+export const EFFECT_EXTRACTION_SCHEMA_VERSION = 3 as const;
 
 export const EFFECT_EXTRACTION_PRODUCT_STATUSES = [
   'NOT_GENERATED',
@@ -129,7 +129,10 @@ export type EffectExtractionResult = {
   coreSellingPoints: string[];
   secondarySellingPoints: string[];
   trustBackings: string[];
+  /** Derived compatibility summary for historical downstream consumers. */
   targetAudience: string;
+  /** Canonical editable audience facts. */
+  targetAudiences: string[];
   corePainPoints: string[];
   decisionDrivers: string[];
   marketingGoal: string;

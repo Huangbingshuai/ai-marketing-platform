@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ai-marketing.local/schemas/effect-extraction-result.schema.json",
-  "title": "EffectExtractionResultV2",
+  "title": "EffectExtractionResultV3",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -14,6 +14,7 @@
     "secondarySellingPoints",
     "trustBackings",
     "targetAudience",
+    "targetAudiences",
     "corePainPoints",
     "decisionDrivers",
     "marketingGoal",
@@ -36,7 +37,12 @@
     "coreSellingPoints": { "$ref": "#/$defs/editableRequiredItems" },
     "secondarySellingPoints": { "$ref": "#/$defs/editableItems" },
     "trustBackings": { "$ref": "#/$defs/editableItems" },
-    "targetAudience": { "type": "string", "maxLength": 4000 },
+    "targetAudience": {
+      "type": "string",
+      "maxLength": 4000,
+      "description": "Derived compatibility summary; targetAudiences is canonical."
+    },
+    "targetAudiences": { "$ref": "#/$defs/editableItems" },
     "corePainPoints": { "$ref": "#/$defs/editableItems" },
     "decisionDrivers": { "$ref": "#/$defs/editableItems" },
     "marketingGoal": { "type": "string", "maxLength": 4000 },

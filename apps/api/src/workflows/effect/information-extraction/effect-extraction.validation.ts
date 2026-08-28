@@ -25,6 +25,7 @@ const RESULT_KEYS = [
   'secondarySellingPoints',
   'trustBackings',
   'targetAudience',
+  'targetAudiences',
   'corePainPoints',
   'decisionDrivers',
   'marketingGoal',
@@ -38,6 +39,9 @@ const RESULT_KEYS = [
   'disabledElements',
   'visualStyleBaseline',
 ] as const;
+
+const EDITABLE_RESULT_KEYS = RESULT_KEYS.filter((key) => key !== 'targetAudience');
+const TARGET_AUDIENCE_SEPARATOR = /[\n,，、;；]+/u;
 
 export type EffectExtractionManualOverrides = Partial<EffectExtractionResult>;
 
@@ -132,6 +136,22 @@ const compactStrings = (value: unknown, maxItems: number): string[] => {
 const text = (record: Record<string, unknown>, key: string): string =>
   typeof record[key] === 'string' ? record[key] : '';
 
+const targetAudienceItems = (record: Record<string, unknown>): string[] => {
+  if (Array.isArray(record.targetAudiences)) {
+    return compactStrings(record.targetAudiences, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS);
+  }
+  const raw =
+    typeof record.targetAudiences === 'string'
+      ? record.targetAudiences
+      : text(record, 'targetAudience');
+  return compactStrings(
+    raw.split(TARGET_AUDIENCE_SEPARATOR),
+    EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
+  );
+};
+
+const targetAudienceSummary = (items: string[]): string => items.join('；');
+
 export const toEffectExtractionResultV2 = (
   value: unknown,
   defaults: EffectExtractionResultDefaults,
@@ -145,6 +165,7 @@ export const toEffectExtractionResultV2 = (
     record.secondarySellingPoints,
     EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS,
   );
+  const targetAudiences = targetAudienceItems(record);
   return {
     productCategory: text(record, 'productCategory'),
     productName: text(record, 'productName'),
@@ -157,7 +178,8 @@ export const toEffectExtractionResultV2 = (
       EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS,
     ),
     trustBackings: compactStrings(record.trustBackings, EFFECT_EXTRACTION_MAX_TRUST_BACKINGS),
-    targetAudience: text(record, 'targetAudience'),
+    targetAudience: targetAudienceSummary(targetAudiences),
+    targetAudiences,
     corePainPoints: compactStrings(record.corePainPoints, EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS),
     decisionDrivers: compactStrings(record.decisionDrivers, EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS),
     marketingGoal: text(record, 'marketingGoal'),
@@ -193,7 +215,7 @@ export const manualOverridesForResult = (
   draft: EffectExtractionResult,
 ): EffectExtractionManualOverrides =>
   Object.fromEntries(
-    RESULT_KEYS.flatMap((key) =>
+    EDITABLE_RESULT_KEYS.flatMap((key) =>
       canonicalHash(generated[key]) === canonicalHash(draft[key]) ? [] : [[key, draft[key]]],
     ),
   ) as EffectExtractionManualOverrides;
@@ -204,17 +226,35 @@ export const applyEffectExtractionManualOverrides = (
 ): EffectExtractionResult => {
   if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return generated;
   const record = overrides as Record<string, unknown>;
-  return Object.fromEntries(
-    RESULT_KEYS.map((key) => [key, key in record ? record[key] : generated[key]]),
-  ) as EffectExtractionResult;
+  const merged = Object.fromEntries(
+    EDITABLE_RESULT_KEYS.map((key) => {
+      if (key === 'targetAudiences' && !(key in record) && 'targetAudience' in record) {
+        return [key, targetAudienceItems(record)];
+      }
+      return [key, key in record ? record[key] : generated[key]];
+    }),
+  ) as Omit<EffectExtractionResult, 'targetAudience'>;
+  const targetAudiences = compactStrings(
+    merged.targetAudiences,
+    EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
+  );
+  return {
+    ...merged,
+    targetAudience: targetAudienceSummary(targetAudiences),
+    targetAudiences,
+  };
 };
 
 export const manualOverrideFieldNames = (value: unknown): string[] => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
-  const keys = new Set<string>(RESULT_KEYS);
-  return Object.keys(value as Record<string, unknown>)
-    .filter((key) => keys.has(key))
-    .sort();
+  const keys = new Set<string>(EDITABLE_RESULT_KEYS);
+  return Array.from(
+    new Set(
+      Object.keys(value as Record<string, unknown>).flatMap((key) =>
+        key === 'targetAudience' ? ['targetAudiences'] : keys.has(key) ? [key] : [],
+      ),
+    ),
+  ).sort();
 };
 
 const hasExactEffectExtractionResultKeys = (value: unknown): value is Record<string, unknown> =>
@@ -240,6 +280,8 @@ export const isEffectExtractionResult = (value: unknown): value is EffectExtract
     validStringArray(record.secondarySellingPoints, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
     validStringArray(record.trustBackings, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
     validString(record.targetAudience) &&
+    validStringArray(record.targetAudiences, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
+    record.targetAudience === targetAudienceSummary(record.targetAudiences) &&
     validStringArray(record.corePainPoints, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
     validStringArray(record.decisionDrivers, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
     validString(record.marketingGoal) &&
@@ -272,6 +314,7 @@ export const toEditableEffectExtractionResultV2 = (
     coreSellingPoints: [...value.coreSellingPoints],
     secondarySellingPoints: [...value.secondarySellingPoints],
     trustBackings: [...value.trustBackings],
+    targetAudiences: [...value.targetAudiences],
     corePainPoints: [...value.corePainPoints],
     decisionDrivers: [...value.decisionDrivers],
     usageScenarios: [...value.usageScenarios],
@@ -290,9 +333,15 @@ export const isLegacyEffectExtractionResultWithoutResolution = (
 ): value is Omit<EffectExtractionResult, 'resolution'> => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
+  const targetAudiences = targetAudienceItems(record);
   return (
     !('resolution' in record) &&
-    isEffectExtractionResult({ ...record, resolution: '__RESTORE_FROM_INPUT_SNAPSHOT__' })
+    isEffectExtractionResult({
+      ...record,
+      targetAudience: targetAudienceSummary(targetAudiences),
+      targetAudiences,
+      resolution: '__RESTORE_FROM_INPUT_SNAPSHOT__',
+    })
   );
 };
 

@@ -21,7 +21,7 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert load_prompt_version("image_analysis.prompt.txt") == "4.0.0"
     assert load_prompt_version("commerce_extraction.prompt.txt") == "1.0.0"
     assert load_prompt_version("semantic_refinement.prompt.txt") == "2.1.0"
-    assert load_prompt_version("result_normalization.prompt.txt") == "2.0.0"
+    assert load_prompt_version("result_normalization.prompt.txt") == "2.1.0"
 
     assert "产品文档事实抽取器" in document.template
     assert "产品图片" in image.template
@@ -44,6 +44,7 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert "不属于本节点" in image.template
     assert "提供有边界、可执行的补全" in normalization.template
     assert "建议" in normalization.template and "需确认" in normalization.template
+    assert "不得新增输入中不存在的年龄、性别、职业或地域属性" in normalization.template
     assert '"priceRange": null' in document.template
     assert '"visualFeatures": "红褐色长条腊肠' in image.template
     assert '"priceRange": "建议零售价 35～59 元/500g' in normalization.template

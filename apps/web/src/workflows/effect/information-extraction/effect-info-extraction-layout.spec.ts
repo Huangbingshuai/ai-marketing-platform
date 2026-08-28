@@ -142,13 +142,17 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain('.production-rule-grid + .field-label');
   });
 
-  it('edits user pain points and decision drivers with the same item rows as selling points', () => {
+  it('edits target audiences, pain points and decision drivers with the same item rows', () => {
+    expect(pageSource).toContain("addUserInsightItem('targetAudiences')");
     expect(pageSource).toContain("addUserInsightItem('corePainPoints')");
     expect(pageSource).toContain("addUserInsightItem('decisionDrivers')");
+    expect(pageSource).toContain('v-model="visibleResult.targetAudiences[index]"');
     expect(pageSource).toContain('v-model="visibleResult.corePainPoints[index]"');
     expect(pageSource).toContain('v-model="visibleResult.decisionDrivers[index]"');
+    expect(pageSource).toContain('aria-label="删除目标受众"');
     expect(pageSource).toContain('aria-label="删除核心痛点"');
     expect(pageSource).toContain('aria-label="删除决策动因"');
+    expect(pageSource).not.toContain('v-model="visibleResult.targetAudience"');
     expect(pageSource).toContain('class="structured-item-list"');
     expect(pageSource).toContain('class="field-label user-marketing-goal"');
     expect(pageSource).not.toContain('核心痛点（每行一项）');

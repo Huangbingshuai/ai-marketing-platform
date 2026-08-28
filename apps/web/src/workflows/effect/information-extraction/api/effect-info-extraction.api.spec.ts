@@ -67,6 +67,7 @@ describe('effect info extraction API', () => {
       secondarySellingPoints: ['便于储存'],
       trustBackings: [],
       targetAudience: '家庭用户',
+      targetAudiences: ['家庭用户'],
       corePainPoints: ['备餐时间有限'],
       decisionDrivers: ['规格合适'],
       marketingGoal: '提升转化',

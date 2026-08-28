@@ -23,6 +23,7 @@ const result: EffectExtractionResult = {
   secondarySellingPoints: ['便于储存'],
   trustBackings: [],
   targetAudience: '家庭用户',
+  targetAudiences: ['家庭用户'],
   corePainPoints: ['备餐时间有限'],
   decisionDrivers: ['规格适合家庭分享'],
   marketingGoal: '提升转化',
@@ -55,8 +56,8 @@ describe('effect extraction contract', () => {
     expect(schema.$defs.editableItems?.maxItems).toBe(EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS);
   });
 
-  it('exposes stable v2 statuses and branch names', () => {
-    expect(EFFECT_EXTRACTION_SCHEMA_VERSION).toBe(2);
+  it('exposes stable v3 statuses and branch names', () => {
+    expect(EFFECT_EXTRACTION_SCHEMA_VERSION).toBe(3);
     expect(EFFECT_EXTRACTION_PRODUCT_STATUSES).toContain('STALE');
     expect(EFFECT_EXTRACTION_PRODUCT_STATUSES).toContain('QUEUED');
     expect(EFFECT_EXTRACTION_BRANCHES).toEqual([

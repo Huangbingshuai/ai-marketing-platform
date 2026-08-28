@@ -24,6 +24,7 @@ const validResult = {
   secondarySellingPoints: ['卖点二'],
   trustBackings: [],
   targetAudience: '家庭用户',
+  targetAudiences: ['家庭用户'],
   corePainPoints: ['备餐麻烦'],
   decisionDrivers: ['包装便利'],
   marketingGoal: '转化',
@@ -86,7 +87,9 @@ describe('effect extraction validation', () => {
 
   it('accepts only the legacy schema-v2 shape that is missing resolution', () => {
     const legacyResult = Object.fromEntries(
-      Object.entries(validResult).filter(([key]) => key !== 'resolution'),
+      Object.entries(validResult).filter(
+        ([key]) => key !== 'resolution' && key !== 'targetAudiences',
+      ),
     );
     expect(isLegacyEffectExtractionResultWithoutResolution(legacyResult)).toBe(true);
     expect(isLegacyEffectExtractionResultWithoutResolution(validResult)).toBe(false);
@@ -192,12 +195,68 @@ describe('effect extraction validation', () => {
     expect(adapted.visualStyleBaseline).toBe('温暖烟火气');
   });
 
+  it('splits a legacy target audience summary into canonical audience facts', () => {
+    const adapted = toEffectExtractionResultV2(
+      {
+        ...validResult,
+        targetAudience: '25-45岁家庭厨房决策者，美食爱好者，年货送礼人群，向往粤式风味的全国消费者',
+        targetAudiences: undefined,
+      },
+      {
+        durationSeconds: 20,
+        aspectRatio: '9:16',
+        resolution: '1080P',
+        deliveryChannels: '抖音',
+        disabledElements: [],
+        visualStyleBaseline: '烟火食欲感',
+      },
+    );
+
+    expect(adapted.targetAudiences).toEqual([
+      '25-45岁家庭厨房决策者',
+      '美食爱好者',
+      '年货送礼人群',
+      '向往粤式风味的全国消费者',
+    ]);
+    expect(adapted.targetAudience).toBe(
+      '25-45岁家庭厨房决策者；美食爱好者；年货送礼人群；向往粤式风味的全国消费者',
+    );
+    expect(adapted.targetAudiences).not.toContain('上班族');
+  });
+
   it('keeps field-level manual values, including explicit empty arrays', () => {
-    const draft = { ...validResult, targetAudience: '人工受众', trustBackings: [] };
-    const generated = { ...validResult, targetAudience: '模型受众', trustBackings: ['模型背书'] };
+    const draft = {
+      ...validResult,
+      targetAudience: '人工受众一；人工受众二',
+      targetAudiences: ['人工受众一', '人工受众二'],
+      trustBackings: [],
+    };
+    const generated = {
+      ...validResult,
+      targetAudience: '模型受众',
+      targetAudiences: ['模型受众'],
+      trustBackings: ['模型背书'],
+    };
     const overrides = manualOverridesForResult(generated, draft);
-    expect(overrides).toEqual({ targetAudience: '人工受众', trustBackings: [] });
+    expect(overrides).toEqual({ targetAudiences: ['人工受众一', '人工受众二'], trustBackings: [] });
     expect(applyEffectExtractionManualOverrides(generated, overrides)).toEqual(draft);
+  });
+
+  it('migrates a historical targetAudience manual override without losing it', () => {
+    const generated = {
+      ...validResult,
+      targetAudience: '模型受众',
+      targetAudiences: ['模型受众'],
+    };
+
+    expect(
+      applyEffectExtractionManualOverrides(generated, {
+        targetAudience: '家庭厨房决策者、美食爱好者',
+      }),
+    ).toMatchObject({
+      targetAudience: '家庭厨房决策者；美食爱好者',
+      targetAudiences: ['家庭厨房决策者', '美食爱好者'],
+    });
   });
 
   it('compares worker tokens without accepting missing or different values', () => {
