@@ -6,7 +6,6 @@ import type {
   EffectPromptDimensions,
   EffectPromptDimensionsV5,
   EffectPromptFragmentType,
-  EffectPromptGraphVersion,
   EffectPromptItem,
   EffectPromptInsightField,
   EffectPromptNodeExecution,
@@ -95,7 +94,6 @@ type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 type Notice = { kind: 'error' | 'success' | 'warning'; text: string };
 type NodeDetail = GetEffectPromptNodeDetailData['detail'];
 type ItemOperation = { itemId: string; kind: 'delete' };
-type GraphViewMode = 'CURRENT' | 'RUN';
 
 const status = ref<EffectPromptPageStatus>('loading');
 const loadError = ref('');
@@ -120,7 +118,6 @@ const sharedPromptSaving = ref(false);
 const graphDialogOpen = ref(false);
 const graphLoading = ref(false);
 const graphError = ref('');
-const graphViewMode = ref<GraphViewMode>('CURRENT');
 const runsByProduct = ref<Record<string, EffectPromptRun>>({});
 const selectedGraphNodeId = ref<EffectPromptNodeId | null>(null);
 const graphDetail = ref<NodeDetail | null>(null);
@@ -186,49 +183,26 @@ const currentSettings = computed(
 const currentTargetCount = computed(() => currentSettings.value.targetCount);
 const editorTargetDurationSeconds = computed(() => currentSettings.value.defaultDurationSeconds);
 const currentRun = computed(() => runsByProduct.value[currentProductId.value] ?? null);
-const historicalGraphRunAvailable = computed(
-  () =>
-    Boolean(currentRun.value) &&
-    currentRun.value?.graphVersion !== CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
-);
 const displayedGraphRun = computed(() => {
   const run = currentRun.value;
-  if (!run) return null;
-  if (run.graphVersion === CURRENT_EFFECT_PROMPT_GRAPH_VERSION) return run;
-  return graphViewMode.value === 'RUN' ? run : null;
+  return run?.graphVersion === CURRENT_EFFECT_PROMPT_GRAPH_VERSION ? run : null;
 });
-const displayedGraphVersion = computed<EffectPromptGraphVersion>(
-  () => displayedGraphRun.value?.graphVersion ?? CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
-);
-const displayedGraphVersionLabel = computed(() => displayedGraphVersion.value.split('_', 1)[0]);
-const historicalGraphVersionLabel = computed(
-  () => currentRun.value?.graphVersion.split('_', 1)[0] ?? '',
-);
-const viewingCurrentGraphDefinition = computed(
-  () => historicalGraphRunAvailable.value && graphViewMode.value === 'CURRENT',
-);
-const graphDialogDescription = computed(() => {
-  if (viewingCurrentGraphDefinition.value)
-    return '展示当前 V11 七阶段工作流；最近一次历史执行可单独切换查看。';
-  if (historicalGraphRunAvailable.value)
-    return `正在查看 ${historicalGraphVersionLabel.value} 历史执行的真实节点与阶段结果。`;
-  return '展示本次真实输入、连贯创意生成、用途评估和数量结果。';
-});
+const graphDialogDescription = '展示本次真实输入、连贯创意生成、用途评估和数量结果。';
 const currentGraphNodeIds = computed<readonly EffectPromptNodeId[]>(() => {
   if (displayedGraphRun.value)
     return effectPromptRunGraphNodeIds(
-      displayedGraphVersion.value,
+      CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
       displayedGraphRun.value.operation,
     );
-  return effectPromptGraphNodeIds(displayedGraphVersion.value);
+  return effectPromptGraphNodeIds(CURRENT_EFFECT_PROMPT_GRAPH_VERSION);
 });
 const currentGraphEdges = computed(() => {
   if (displayedGraphRun.value)
     return effectPromptRunGraphEdges(
-      displayedGraphVersion.value,
+      CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
       displayedGraphRun.value.operation,
     );
-  return effectPromptGraphEdges(displayedGraphVersion.value);
+  return effectPromptGraphEdges(CURRENT_EFFECT_PROMPT_GRAPH_VERSION);
 });
 const currentAttemptLabel = computed(() => {
   const run = displayedGraphRun.value;
@@ -684,7 +658,7 @@ watch(keyword, () => {
     else page.value = 1;
   }, 350);
 });
-watch([displayedGraphVersion, () => displayedGraphRun.value?.operation], () => {
+watch([() => displayedGraphRun.value?.id, () => displayedGraphRun.value?.operation], () => {
   const nodeId = selectedGraphNodeId.value;
   if (!nodeId || currentGraphNodeIds.value.includes(nodeId)) return;
   graphDetailController?.abort();
@@ -1308,6 +1282,8 @@ const graphDescription = (nodeId: EffectPromptNodeId): string =>
   ({
     LOAD_AND_SNAPSHOT: '冻结洞察工作副本、批次设置和人工保留内容',
     INSIGHT_MAPPING: '把已确认的营销洞察映射为片段可用信息',
+    FACT_VISUAL_STRATEGY_COMPILATION:
+      '判断哪些事实可以成为画面任务，哪些只作为商业背景或禁止视觉证明',
     SHARED_PROMPT_COMPILATION: '编译本批次生成与渲染共同使用的提示词',
     COHERENT_CREATIVE_GENERATION: '基于已确认产品事实同步生成完整六维创意与干净正文',
     CREATIVE_EVALUATION_CLASSIFICATION: '评估产品关联和创意质量，并标注推荐用途与兼容用途',
@@ -1500,6 +1476,8 @@ const localGraphDetail = (nodeId: EffectPromptNodeId): NodeDetail => {
       {
         LOAD_AND_SNAPSHOT: '将锁定本次商品、营销洞察、数量、时长与共用约束。',
         INSIGHT_MAPPING: '将营销洞察分为必须应用、自适应应用、排除信息和全局约束。',
+        FACT_VISUAL_STRATEGY_COMPILATION:
+          '将已确认事实编译为可见任务、商业背景与禁止视觉证明的安全角色。',
         SHARED_PROMPT_COMPILATION: '将形成生成与渲染共同使用的一段批次级提示词。',
         COHERENT_CREATIVE_GENERATION: '将同步生成创意主线、六维信息和干净正文。',
         CREATIVE_EVALUATION_CLASSIFICATION: '将输出质量判断、推荐用途和问题原因。',
@@ -1575,25 +1553,8 @@ const openGraph = async (event?: Event): Promise<void> => {
       graphLoading.value = false;
     }
   }
-  graphViewMode.value =
-    currentRun.value?.graphVersion === CURRENT_EFFECT_PROMPT_GRAPH_VERSION ||
-    currentRun.value?.status === 'QUEUED' ||
-    currentRun.value?.status === 'RUNNING'
-      ? 'RUN'
-      : 'CURRENT';
   await nextTick();
   graphCloseButton.value?.focus();
-};
-
-const switchGraphView = (mode: GraphViewMode): void => {
-  if (mode === graphViewMode.value || (mode === 'RUN' && !currentRun.value)) return;
-  graphDetailController?.abort();
-  graphDetailController = null;
-  graphDetailLoading.value = false;
-  selectedGraphNodeId.value = null;
-  graphDetail.value = null;
-  graphDetailError.value = '';
-  graphViewMode.value = mode;
 };
 
 const closeGraph = (): void => {
@@ -2460,34 +2421,11 @@ onBeforeUnmount(() => {
         >
           <header>
             <div class="graph-title-group">
-              <span
-                >PROMPT WORKFLOW <b>{{ displayedGraphVersionLabel }}</b></span
-              >
+              <span>PROMPT WORKFLOW</span>
               <h2 id="prompt-graph-title">Prompt 生成工作流</h2>
               <p>{{ graphDialogDescription }}</p>
             </div>
             <div class="graph-header-actions">
-              <div
-                v-if="historicalGraphRunAvailable"
-                class="graph-view-switch"
-                role="group"
-                aria-label="工作流版本视图"
-              >
-                <button
-                  type="button"
-                  :aria-pressed="graphViewMode === 'CURRENT'"
-                  @click="switchGraphView('CURRENT')"
-                >
-                  当前工作流
-                </button>
-                <button
-                  type="button"
-                  :aria-pressed="graphViewMode === 'RUN'"
-                  @click="switchGraphView('RUN')"
-                >
-                  历史执行 · {{ historicalGraphVersionLabel }}
-                </button>
-              </div>
               <button
                 ref="graphCloseButton"
                 class="graph-close-button"
@@ -2505,11 +2443,11 @@ onBeforeUnmount(() => {
           <div v-if="graphError" class="graph-message error">
             <AlertCircle :size="14" />{{ graphError }}
           </div>
-          <div v-if="viewingCurrentGraphDefinition" class="graph-version-notice">
+          <div v-if="!displayedGraphRun" class="graph-version-notice">
             <Sparkles :size="15" />
             <span>
-              <strong>当前产品尚未执行 V11 工作流</strong>
-              下方展示最新七阶段流程。启动新一轮批量生成后，节点会显示新的真实执行结果；旧结果仍可在“历史执行”中查看。
+              <strong>当前产品尚未执行 Prompt 工作流</strong>
+              下方展示当前流程。启动新一轮批量生成后，节点会显示本次真实执行结果。
             </span>
           </div>
           <div class="workflow-graph-content">
@@ -2540,13 +2478,9 @@ onBeforeUnmount(() => {
             </div>
             <aside class="workflow-node-detail" aria-live="polite">
               <div v-if="!selectedGraphNodeId" class="node-detail-empty">
-                <Workflow :size="30" /><strong>
-                  {{
-                    viewingCurrentGraphDefinition ? '选择节点查看当前职责' : '选择节点查看真实结果'
-                  }}
-                </strong>
-                <p v-if="viewingCurrentGraphDefinition">
-                  当前产品尚无 V11 执行产物；运行新批次后，这里将展示对应节点的真实结果。
+                <Workflow :size="30" /><strong>选择节点查看真实结果</strong>
+                <p v-if="!displayedGraphRun">
+                  当前产品尚无执行产物；运行新批次后，这里将展示对应节点的真实结果。
                 </p>
                 <p v-else>展示当前运行的真实业务产物，同时隐藏模型指令、原始响应和内部标识。</p>
               </div>
@@ -4493,42 +4427,10 @@ button:disabled {
   align-items: center;
   gap: 7px;
 }
-.graph-title-group > span b {
-  padding: 3px 7px;
-  color: #2563eb;
-  background: #edf4ff;
-  border-radius: 999px;
-  font-size: 9px;
-  letter-spacing: 0;
-}
 .graph-header-actions {
   display: flex;
   align-items: center;
   gap: 10px;
-}
-.graph-view-switch {
-  display: inline-flex;
-  padding: 3px;
-  background: #f1f5fb;
-  border: 1px solid #dbe4f6;
-  border-radius: 10px;
-}
-.workflow-graph-dialog > header .graph-view-switch button {
-  width: auto;
-  height: 30px;
-  padding: 0 11px;
-  color: #728097;
-  background: transparent;
-  border: 0;
-  border-radius: 7px;
-  font-size: 10px;
-  font-weight: 800;
-  white-space: nowrap;
-}
-.workflow-graph-dialog > header .graph-view-switch button[aria-pressed='true'] {
-  color: #235fc9;
-  background: #fff;
-  box-shadow: 0 2px 8px #60708a1f;
 }
 .workflow-graph-dialog > header .graph-close-button {
   flex: 0 0 auto;
@@ -5647,12 +5549,8 @@ button:disabled {
     gap: 14px;
     flex-direction: column;
   }
-  .graph-header-actions,
-  .graph-view-switch {
+  .graph-header-actions {
     width: 100%;
-  }
-  .graph-view-switch button {
-    flex: 1;
   }
   .workflow-graph-dialog > header .graph-close-button {
     position: absolute;

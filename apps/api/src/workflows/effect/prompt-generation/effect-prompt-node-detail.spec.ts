@@ -207,7 +207,7 @@ const v11RunRecord = (): EffectPromptNodeDetailRunRecord => {
     attemptCount: 1,
     inputSnapshot: {
       schemaVersion: 6,
-      graphVersion: 'V11_COHERENT_CREATIVE_GENERATION',
+      graphVersion: 'V11_VISUAL_USAGE_STRATEGY',
       settings: { targetCount: 3, defaultDurationSeconds: 5 },
       insightArtifact: {
         result: {
@@ -638,6 +638,55 @@ describe('presentEffectPromptNodeDetail', () => {
     expect(JSON.stringify(detail)).not.toMatch(/private-v11-slot|private-fact-id/u);
   });
 
+  it('shows input and safe strategy samples for fact visual strategy compilation', () => {
+    const record = v11RunRecord();
+    record.inputSnapshot = {
+      ...(record.inputSnapshot as Record<string, unknown>),
+      graphVersion: 'V11_VISUAL_USAGE_STRATEGY',
+    };
+    record.stages.splice(2, 0, {
+      ...record.stages[0]!,
+      nodeId: 'FACT_VISUAL_STRATEGY_COMPILATION',
+      status: 'SUCCEEDED',
+      summary: '事实视觉使用策略已编译',
+      warnings: [],
+      errorMessage: null,
+      metadata: {
+        policyCount: 6,
+        usageCounts: {
+          DIRECTLY_VISIBLE: 2,
+          ACTION_DEMONSTRABLE: 1,
+          FORBIDDEN_VISUAL_PROOF: 1,
+        },
+        reusedCheckpoint: false,
+        samples: [
+          {
+            field: 'VISUAL_FEATURES',
+            value: '蒸熟后油润有光泽',
+            visualUsage: 'DIRECTLY_VISIBLE',
+            visualInstruction: '展示自然油光',
+            contextInstruction: '',
+            forbiddenInferences: ['不得用光泽证明配方'],
+          },
+        ],
+        checkpoint: { privateFactId: 'must-not-leak' },
+      },
+      updatedAt: new Date('2026-08-28T01:00:00.000Z'),
+    });
+
+    const detail = presentEffectPromptNodeDetail(record, 'FACT_VISUAL_STRATEGY_COMPILATION');
+    expect(detail.sections.map(({ kind }) => kind)).toEqual(['INPUT', 'OUTPUT', 'EXECUTION']);
+    expect(detail.sections.find(({ kind }) => kind === 'OUTPUT')?.fields).toEqual(
+      expect.arrayContaining([
+        { label: '已编译事实', value: 6 },
+        { label: '可直接呈现', value: 2 },
+        { label: '禁止视觉证明', value: 1 },
+      ]),
+    );
+    expect(JSON.stringify(detail)).toContain('蒸熟后油润有光泽');
+    expect(JSON.stringify(detail)).not.toContain('must-not-leak');
+  });
+
   it('shows the compiled shared prompt and limits V11 creative samples to three', () => {
     const shared = presentEffectPromptNodeDetail(v11RunRecord(), 'SHARED_PROMPT_COMPILATION');
     const creative = presentEffectPromptNodeDetail(v11RunRecord(), 'COHERENT_CREATIVE_GENERATION');
@@ -681,7 +730,7 @@ describe('presentEffectPromptNodeDetail', () => {
     expect(detail.warnings).toEqual([
       '已按目标数量保存；当前批次仍有少量语义相近内容，可按需人工调整',
     ]);
-    expect(JSON.stringify(detail)).not.toMatch(/endpoint|embedding-model|raw-vector/ui);
+    expect(JSON.stringify(detail)).not.toMatch(/endpoint|embedding-model|raw-vector/iu);
   });
 
   it('marks running output as partial and pending output as expected', () => {

@@ -422,7 +422,23 @@ export class EffectPromptRepository {
           status: { in: ['QUEUED', 'RUNNING'] },
         },
       });
-      if (active) return { kind: 'ACTIVE_CONFLICT' as const };
+      if (active) {
+        const activeSnapshot = active.inputSnapshot as Partial<EffectPromptInputSnapshot> | null;
+        if (activeSnapshot?.graphVersion === CURRENT_EFFECT_PROMPT_GRAPH_VERSION)
+          return { kind: 'ACTIVE_CONFLICT' as const };
+        await transaction.effectPromptRun.update({
+          where: { projectId_id: { projectId, id: active.id } },
+          data: {
+            status: 'FAILED',
+            currentNode: 'LOAD_AND_SNAPSHOT',
+            errorCode: 'WORKFLOW_RETIRED',
+            errorMessage: '该历史 Prompt 工作流已停用，请重新生成',
+            attemptToken: null,
+            leaseExpiresAt: null,
+            completedAt: new Date(),
+          },
+        });
+      }
       const sourceFingerprint = workflowStateHash({
         insight: snapshot.insightArtifact,
         settingsHash,
@@ -524,6 +540,7 @@ export class EffectPromptRepository {
           status: 'SUCCEEDED',
           nodeId: {
             in: [
+              'FACT_VISUAL_STRATEGY_COMPILATION',
               'PLAN_HOOK_STRATEGY',
               'PLAN_PAIN_STRATEGY',
               'PLAN_PRODUCT_DISPLAY_STRATEGY',
@@ -547,12 +564,33 @@ export class EffectPromptRepository {
         },
         select: { nodeId: true, metadata: true },
       });
+      const reusableVisualStrategyStages =
+        run.inputSnapshot &&
+        (run.inputSnapshot as Record<string, unknown>).graphVersion ===
+          CURRENT_EFFECT_PROMPT_GRAPH_VERSION &&
+        !checkpointStages.some(({ nodeId }) => nodeId === 'FACT_VISUAL_STRATEGY_COMPILATION')
+          ? await transaction.effectPromptStageOutput.findMany({
+              where: {
+                projectId,
+                runId: { not: runId },
+                nodeId: 'FACT_VISUAL_STRATEGY_COMPILATION',
+                status: 'SUCCEEDED',
+                run: {
+                  workflowRunId: run.workflowRunId,
+                  productId: run.productId,
+                },
+              },
+              orderBy: { updatedAt: 'desc' },
+              take: 20,
+              select: { nodeId: true, metadata: true },
+            })
+          : [];
       return {
         kind: 'CLAIMED' as const,
         run: claimed,
         attemptToken,
         input: claimed.inputSnapshot as EffectPromptInputSnapshot,
-        checkpointStages,
+        checkpointStages: [...checkpointStages, ...reusableVisualStrategyStages],
       };
     });
   }
@@ -832,7 +870,7 @@ export class EffectPromptRepository {
           settingsHash: run.settingsHash,
         },
       });
-      if (snapshot.graphVersion !== 'V11_COHERENT_CREATIVE_GENERATION') {
+      if (snapshot.graphVersion !== CURRENT_EFFECT_PROMPT_GRAPH_VERSION) {
         const replenish = await transaction.effectPromptStageOutput.findUnique({
           where: {
             projectId_runId_nodeId: { projectId, runId, nodeId: 'REPLENISH' },

@@ -16,6 +16,7 @@ import type {
   GetEffectPromptNodeDetailData,
 } from '@ai-marketing/contracts';
 import {
+  CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
@@ -929,6 +930,16 @@ const nodeMetricFields = (
         numberField(metadata, 'adaptiveCount', '自适应信息'),
         numberField(metadata, 'excludedCount', '不适用信息'),
       ]);
+    case 'FACT_VISUAL_STRATEGY_COMPILATION': {
+      const counts = metadataRecord(metadata.usageCounts);
+      return compact([
+        numberField(metadata, 'policyCount', '已编译事实'),
+        numberField(counts, 'DIRECTLY_VISIBLE', '可直接呈现'),
+        numberField(counts, 'ACTION_DEMONSTRABLE', '可通过动作呈现'),
+        numberField(counts, 'FORBIDDEN_VISUAL_PROOF', '禁止视觉证明'),
+        textField('策略来源', metadata.reusedCheckpoint === true ? '已复用' : '本次编译'),
+      ]);
+    }
     case 'SHARED_PROMPT_COMPILATION':
       return compact([
         numberField(metadata, 'sectionCount', '共用段落'),
@@ -1326,6 +1337,15 @@ const actualBlocks = (
         tagGroup('使用场景', insightList(insight, 'usageScenarios', 'usage_scenarios')),
       ]),
     );
+  } else if (nodeId === 'FACT_VISUAL_STRATEGY_COMPILATION') {
+    const metadata = metadataRecord(run.stages.find((stage) => stage.nodeId === nodeId)?.metadata);
+    const samples = (Array.isArray(metadata.samples) ? metadata.samples : []).flatMap((item) => {
+      if (!isRecord(item)) return [];
+      const value = publicText(item.value, 500);
+      const usage = publicText(item.visualUsage, 80);
+      return value && usage ? [`${value} → ${usage}`] : [];
+    });
+    blocks.push(tagBlock('事实视觉角色样例', [tagGroup('策略样例', samples)]));
   } else if (RELATIONSHIP_FRAGMENT_BY_NODE[nodeId]) {
     const type = RELATIONSHIP_FRAGMENT_BY_NODE[nodeId]!;
     blocks.push(
@@ -1507,7 +1527,7 @@ const graphVersion = (run: EffectPromptNodeDetailRunRecord): string =>
   publicText(inputSnapshot(run).graphVersion, 80);
 
 const isV11Run = (run: EffectPromptNodeDetailRunRecord): boolean =>
-  graphVersion(run) === 'V11_COHERENT_CREATIVE_GENERATION';
+  graphVersion(run) === CURRENT_EFFECT_PROMPT_GRAPH_VERSION;
 
 const purposeList = (value: unknown): EffectPromptFragmentType[] =>
   (Array.isArray(value) ? value : [])
@@ -1877,6 +1897,8 @@ const v11OutputBlocks = (
   } else if (nodeId === 'INSIGHT_MAPPING') {
     const mapped = tagBlock('提炼信息应用结果', metadataFactGroups(metadata));
     blocks.push(mapped ?? actualBlocks(run, nodeId)[0] ?? null);
+  } else if (nodeId === 'FACT_VISUAL_STRATEGY_COMPILATION') {
+    blocks.push(...actualBlocks(run, nodeId));
   } else if (nodeId === 'SHARED_PROMPT_COMPILATION') {
     const prompt = sharedPromptData(run, metadata);
     const sectionLabels = (Array.isArray(prompt.sections) ? prompt.sections : []).flatMap(
@@ -1929,6 +1951,8 @@ const v11OutputBlocks = (
 const expectedOutputSummary: Partial<Record<EffectPromptNodeId, string>> = {
   LOAD_AND_SNAPSHOT: '将锁定本次商品、营销洞察、数量、时长与共用约束。',
   INSIGHT_MAPPING: '将营销洞察划分为必须应用、自适应应用、排除信息和全局约束。',
+  FACT_VISUAL_STRATEGY_COMPILATION:
+    '将已确认事实分成可见画面任务、商业背景和禁止视觉证明的事实角色。',
   SHARED_PROMPT_COMPILATION: '将禁用元素与用户补充内容合并为一段批次共用提示词。',
   COHERENT_CREATIVE_GENERATION: '将生成围绕同一创意主线的六维信息与干净 Prompt 正文。',
   CREATIVE_EVALUATION_CLASSIFICATION: '将给出质量判断、推荐主用途、兼容用途和问题原因。',
@@ -1970,6 +1994,22 @@ const v11InputSections = (
     return {
       summary: '接收上游已确认的产品事实和营销洞察。',
       fields: base,
+      blocks: actualBlocks(run, 'INSIGHT_MAPPING'),
+    };
+  if (nodeId === 'FACT_VISUAL_STRATEGY_COMPILATION')
+    return {
+      summary: '接收已经映射且允许使用的商品事实，判断每条事实应该怎样进入画面。',
+      fields: [
+        ...base,
+        {
+          label: '可用事实',
+          value: [
+            ...insightList(insight, 'coreSellingPoints', 'core_selling_points'),
+            ...insightList(insight, 'secondarySellingPoints', 'secondary_selling_points'),
+            ...insightList(insight, 'usageScenarios', 'usage_scenarios'),
+          ].length,
+        },
+      ],
       blocks: actualBlocks(run, 'INSIGHT_MAPPING'),
     };
   if (nodeId === 'SHARED_PROMPT_COMPILATION') {

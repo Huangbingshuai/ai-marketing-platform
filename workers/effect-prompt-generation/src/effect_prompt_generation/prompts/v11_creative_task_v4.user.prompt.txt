@@ -1,0 +1,16 @@
+VERSION: effect-prompt-v11-coherent-creative-task-v4
+
+逐条视觉任务简报：
+{task_briefs_json}
+
+本批次统一共用约束（仅遵守，不复述）：
+{shared_prompt_content_json}
+
+需要避开的已有语义签名：{avoid_semantic_json}
+需要避开的已有视觉签名：{avoid_visual_json}
+上一轮淘汰原因：{rejection_reasons_json}
+单条重新生成上下文：{regeneration_context_json}
+
+为每个任务各生成一条独立、完整、连贯、产品相关的素材创意。visualTask 是必须成为画面的任务，businessContext 只用于理解商业方向，不得被伪装成画面已经证明的结论。不要按钩子、痛点、产品展示、卖点讲解、结尾转化或片尾品牌分组，也不要输出用途分类。
+
+已有语义和视觉签名只是软避重参考。优先改变与当前 visualTask 相容的叙事角度、真实场景、人物动作、产品表现、镜头或情绪，不能为了不同而牺牲商品关联、编造新事实或堆砌统一质感词。

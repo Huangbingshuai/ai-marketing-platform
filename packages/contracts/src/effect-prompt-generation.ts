@@ -447,14 +447,20 @@ export const EFFECT_PROMPT_GRAPH_VERSIONS = [
   'V9_SIX_BRANCH_STRATEGY',
   'V10_RELATION_COORDINATE_BLUEPRINT',
   'V11_COHERENT_CREATIVE_GENERATION',
+  'V11_VISUAL_USAGE_STRATEGY',
 ] as const;
 export type EffectPromptGraphVersion = (typeof EFFECT_PROMPT_GRAPH_VERSIONS)[number];
 export const CURRENT_EFFECT_PROMPT_GRAPH_VERSION: EffectPromptGraphVersion =
-  'V11_COHERENT_CREATIVE_GENERATION';
+  'V11_VISUAL_USAGE_STRATEGY';
 
 export const EFFECT_PROMPT_GRAPH_NODES = [
   { id: 'LOAD_AND_SNAPSHOT', label: '输入快照', group: 'SNAPSHOT' },
   { id: 'INSIGHT_MAPPING', label: '提炼信息应用映射', group: 'PLANNING' },
+  {
+    id: 'FACT_VISUAL_STRATEGY_COMPILATION',
+    label: '事实视觉使用策略编译',
+    group: 'PLANNING',
+  },
   { id: 'SHARED_PROMPT_COMPILATION', label: '共用提示词编译', group: 'PLANNING' },
   { id: 'STRATEGY_PLANNING', label: '营销关系规划', group: 'PLANNING' },
   { id: 'GLOBAL_FACT_ALLOCATION', label: '全局事实分配', group: 'PLANNING' },
@@ -669,6 +675,26 @@ export const EFFECT_PROMPT_V11_ITEM_EVALUATE_GRAPH_NODE_IDS = [
   'RESULT_SAVE',
 ] as const satisfies readonly EffectPromptNodeId[];
 
+export const EFFECT_PROMPT_V11_VISUAL_STRATEGY_GRAPH_NODE_IDS = [
+  'LOAD_AND_SNAPSHOT',
+  'INSIGHT_MAPPING',
+  'FACT_VISUAL_STRATEGY_COMPILATION',
+  'SHARED_PROMPT_COMPILATION',
+  'COHERENT_CREATIVE_GENERATION',
+  'CREATIVE_EVALUATION_CLASSIFICATION',
+  'EXACT_SELECTION_AND_SUPPLEMENT',
+  'RESULT_SAVE',
+] as const satisfies readonly EffectPromptNodeId[];
+
+export const EFFECT_PROMPT_V11_VISUAL_STRATEGY_ITEM_EVALUATE_GRAPH_NODE_IDS = [
+  'LOAD_AND_SNAPSHOT',
+  'INSIGHT_MAPPING',
+  'FACT_VISUAL_STRATEGY_COMPILATION',
+  'SHARED_PROMPT_COMPILATION',
+  'ITEM_EVALUATE',
+  'RESULT_SAVE',
+] as const satisfies readonly EffectPromptNodeId[];
+
 export const EFFECT_PROMPT_V8_GRAPH_EDGES = [
   { from: 'LOAD_AND_SNAPSHOT', to: 'INSIGHT_MAPPING' },
   { from: 'INSIGHT_MAPPING', to: 'SHARED_PROMPT_COMPILATION' },
@@ -839,8 +865,26 @@ export const EFFECT_PROMPT_V11_ITEM_EVALUATE_GRAPH_EDGES = [
   { from: 'ITEM_EVALUATE', to: 'RESULT_SAVE' },
 ] as const satisfies ReadonlyArray<{ from: EffectPromptNodeId; to: EffectPromptNodeId }>;
 
+export const EFFECT_PROMPT_V11_VISUAL_STRATEGY_GRAPH_EDGES = [
+  { from: 'LOAD_AND_SNAPSHOT', to: 'INSIGHT_MAPPING' },
+  { from: 'INSIGHT_MAPPING', to: 'FACT_VISUAL_STRATEGY_COMPILATION' },
+  { from: 'FACT_VISUAL_STRATEGY_COMPILATION', to: 'SHARED_PROMPT_COMPILATION' },
+  { from: 'SHARED_PROMPT_COMPILATION', to: 'COHERENT_CREATIVE_GENERATION' },
+  { from: 'COHERENT_CREATIVE_GENERATION', to: 'CREATIVE_EVALUATION_CLASSIFICATION' },
+  { from: 'CREATIVE_EVALUATION_CLASSIFICATION', to: 'EXACT_SELECTION_AND_SUPPLEMENT' },
+  { from: 'EXACT_SELECTION_AND_SUPPLEMENT', to: 'RESULT_SAVE' },
+] as const satisfies ReadonlyArray<{ from: EffectPromptNodeId; to: EffectPromptNodeId }>;
+
+export const EFFECT_PROMPT_V11_VISUAL_STRATEGY_ITEM_EVALUATE_GRAPH_EDGES = [
+  { from: 'LOAD_AND_SNAPSHOT', to: 'INSIGHT_MAPPING' },
+  { from: 'INSIGHT_MAPPING', to: 'FACT_VISUAL_STRATEGY_COMPILATION' },
+  { from: 'FACT_VISUAL_STRATEGY_COMPILATION', to: 'SHARED_PROMPT_COMPILATION' },
+  { from: 'SHARED_PROMPT_COMPILATION', to: 'ITEM_EVALUATE' },
+  { from: 'ITEM_EVALUATE', to: 'RESULT_SAVE' },
+] as const satisfies ReadonlyArray<{ from: EffectPromptNodeId; to: EffectPromptNodeId }>;
+
 /** Current topology alias retained for existing consumers. */
-export const EFFECT_PROMPT_GRAPH_EDGES = EFFECT_PROMPT_V11_GRAPH_EDGES;
+export const EFFECT_PROMPT_GRAPH_EDGES = EFFECT_PROMPT_V11_VISUAL_STRATEGY_GRAPH_EDGES;
 
 export const effectPromptGraphNodeIds = (
   version: EffectPromptGraphVersion,
@@ -851,7 +895,9 @@ export const effectPromptGraphNodeIds = (
       ? EFFECT_PROMPT_V9_GRAPH_NODE_IDS
       : version === 'V10_RELATION_COORDINATE_BLUEPRINT'
         ? EFFECT_PROMPT_V10_GRAPH_NODE_IDS
-        : EFFECT_PROMPT_V11_GRAPH_NODE_IDS;
+        : version === 'V11_COHERENT_CREATIVE_GENERATION'
+          ? EFFECT_PROMPT_V11_GRAPH_NODE_IDS
+          : EFFECT_PROMPT_V11_VISUAL_STRATEGY_GRAPH_NODE_IDS;
 
 export const effectPromptGraphEdges = (
   version: EffectPromptGraphVersion,
@@ -862,23 +908,33 @@ export const effectPromptGraphEdges = (
       ? EFFECT_PROMPT_V9_GRAPH_EDGES
       : version === 'V10_RELATION_COORDINATE_BLUEPRINT'
         ? EFFECT_PROMPT_V10_GRAPH_EDGES
-        : EFFECT_PROMPT_V11_GRAPH_EDGES;
+        : version === 'V11_COHERENT_CREATIVE_GENERATION'
+          ? EFFECT_PROMPT_V11_GRAPH_EDGES
+          : EFFECT_PROMPT_V11_VISUAL_STRATEGY_GRAPH_EDGES;
 
 export const effectPromptRunGraphNodeIds = (
   version: EffectPromptGraphVersion,
   operation: EffectPromptOperation,
 ): readonly EffectPromptNodeId[] =>
-  version === 'V11_COHERENT_CREATIVE_GENERATION' && operation === 'ITEM_EVALUATE'
-    ? EFFECT_PROMPT_V11_ITEM_EVALUATE_GRAPH_NODE_IDS
-    : effectPromptGraphNodeIds(version);
+  operation !== 'ITEM_EVALUATE'
+    ? effectPromptGraphNodeIds(version)
+    : version === 'V11_COHERENT_CREATIVE_GENERATION'
+      ? EFFECT_PROMPT_V11_ITEM_EVALUATE_GRAPH_NODE_IDS
+      : version === 'V11_VISUAL_USAGE_STRATEGY'
+        ? EFFECT_PROMPT_V11_VISUAL_STRATEGY_ITEM_EVALUATE_GRAPH_NODE_IDS
+        : effectPromptGraphNodeIds(version);
 
 export const effectPromptRunGraphEdges = (
   version: EffectPromptGraphVersion,
   operation: EffectPromptOperation,
 ): ReadonlyArray<{ from: EffectPromptNodeId; to: EffectPromptNodeId }> =>
-  version === 'V11_COHERENT_CREATIVE_GENERATION' && operation === 'ITEM_EVALUATE'
-    ? EFFECT_PROMPT_V11_ITEM_EVALUATE_GRAPH_EDGES
-    : effectPromptGraphEdges(version);
+  operation !== 'ITEM_EVALUATE'
+    ? effectPromptGraphEdges(version)
+    : version === 'V11_COHERENT_CREATIVE_GENERATION'
+      ? EFFECT_PROMPT_V11_ITEM_EVALUATE_GRAPH_EDGES
+      : version === 'V11_VISUAL_USAGE_STRATEGY'
+        ? EFFECT_PROMPT_V11_VISUAL_STRATEGY_ITEM_EVALUATE_GRAPH_EDGES
+        : effectPromptGraphEdges(version);
 
 export type EffectPromptNodeExecution = {
   nodeId: EffectPromptNodeId;

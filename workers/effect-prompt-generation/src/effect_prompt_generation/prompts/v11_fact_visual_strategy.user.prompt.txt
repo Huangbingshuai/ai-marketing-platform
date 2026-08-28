@@ -1,0 +1,6 @@
+VERSION: effect-prompt-v11-fact-visual-strategy-task-v1
+
+当前已确认、允许用于 Prompt 的商品事实：
+{facts_json}
+
+为每一个 factId 编译一条视觉使用策略。policies 必须完整覆盖输入 factId，不能遗漏、重复或引用未知 factId。

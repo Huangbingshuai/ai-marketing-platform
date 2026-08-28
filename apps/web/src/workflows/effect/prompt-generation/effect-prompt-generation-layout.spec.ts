@@ -5,7 +5,7 @@ import parentSource from '../source-import/EffectImportNodePage.vue?raw';
 import pageSource from './EffectPromptGenerationNodePage.vue?raw';
 import graphSource from './effect-prompt-generation-graph.ts?raw';
 
-describe('effect prompt generation V11 layout', () => {
+describe('effect prompt generation current layout', () => {
   it('loads the live workspace contract source', () => {
     expect(viteConfigSource).toContain("'@ai-marketing/contracts': contractsSource");
     expect(viteConfigSource).toContain("exclude: ['@ai-marketing/contracts']");
@@ -92,10 +92,11 @@ describe('effect prompt generation V11 layout', () => {
     expect(pageSource).toContain('用途会根据新内容重新判断');
   });
 
-  it('renders the V11 seven-stage batch graph and operation-specific item graph', () => {
+  it('renders the current batch graph without version or history controls', () => {
     for (const nodeId of [
       'LOAD_AND_SNAPSHOT',
       'INSIGHT_MAPPING',
+      'FACT_VISUAL_STRATEGY_COMPILATION',
       'SHARED_PROMPT_COMPILATION',
       'COHERENT_CREATIVE_GENERATION',
       'CREATIVE_EVALUATION_CLASSIFICATION',
@@ -105,17 +106,19 @@ describe('effect prompt generation V11 layout', () => {
     ])
       expect(pageSource).toMatch(new RegExp(`\\b${nodeId}\\b`, 'u'));
     expect(pageSource).toMatch(
-      /effectPromptRunGraphNodeIds\(\s*displayedGraphVersion\.value,\s*displayedGraphRun\.value\.operation,?\s*\)/u,
+      /effectPromptRunGraphNodeIds\(\s*CURRENT_EFFECT_PROMPT_GRAPH_VERSION,\s*displayedGraphRun\.value\.operation,?\s*\)/u,
     );
     expect(pageSource).toMatch(
-      /effectPromptRunGraphEdges\(\s*displayedGraphVersion\.value,\s*displayedGraphRun\.value\.operation,?\s*\)/u,
+      /effectPromptRunGraphEdges\(\s*CURRENT_EFFECT_PROMPT_GRAPH_VERSION,\s*displayedGraphRun\.value\.operation,?\s*\)/u,
     );
     expect(pageSource).toContain('展示本次真实输入、连贯创意生成、用途评估和数量结果。');
     expect(graphSource).toContain('sourceIndex < targetIndex');
   });
 
-  it('retains historical V8-V10 graph detail renderers', () => {
-    expect(pageSource).toContain('effectPromptGraphNodeIds(displayedGraphVersion.value)');
+  it('keeps current real-result detail renderers without historical navigation', () => {
+    expect(pageSource).toContain('effectPromptGraphNodeIds(CURRENT_EFFECT_PROMPT_GRAPH_VERSION)');
+    expect(pageSource).not.toContain('历史执行');
+    expect(pageSource).not.toContain('displayedGraphVersionLabel');
     for (const blockKind of [
       'RELATIONSHIP_LIST',
       'COORDINATE_LIST',

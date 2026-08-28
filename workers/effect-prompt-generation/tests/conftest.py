@@ -49,6 +49,7 @@ def prompt_item(dimensions: PromptDimensions) -> PromptItem:
 @pytest.fixture
 def snapshot() -> PromptGenerationSnapshot:
     return PromptGenerationSnapshot(
+        graph_version="V9_SIX_BRANCH_STRATEGY",
         project_id="project-1",
         workflow_run_id="workflow-run-1",
         product_id="product-1",

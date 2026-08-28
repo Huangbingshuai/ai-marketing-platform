@@ -60,6 +60,8 @@ from .models import (
     FragmentDimensionCoordinatePlan,
     FragmentMarketingPlan,
     FragmentRelationshipPlan,
+    FactVisualStrategy,
+    FactVisualStrategyResponse,
     GeneratedBlueprint,
     GeneratedCandidate,
     InsightApplicationMap,
@@ -105,6 +107,7 @@ from .providers import (
     RELATIONSHIP_STAGE_BY_TYPE,
     V10_COORDINATE_VERSION,
     V10_RELATIONSHIP_VERSION,
+    V11_FACT_VISUAL_STRATEGY_VERSION,
     merge_fragment_marketing_plans,
 )
 from .strategy_planning import allocate_fragment_facts, validate_fragment_marketing_plan
@@ -120,6 +123,10 @@ from .v10_blueprints import (
     validate_relationship_plan,
 )
 from .v11_fact_allocation import allocate_v11_creative_facts
+from .v11_visual_strategy import (
+    strategy_stage_metadata,
+    validate_fact_visual_strategy,
+)
 from .quality import (
     EvaluationResult,
     CreativeSelectionResult,
@@ -178,6 +185,7 @@ class RunCache:
     total_shards: int = 0
     execution_invalid_reasons: Counter[str] = field(default_factory=Counter)
     insight_application: InsightApplicationMap | None = None
+    fact_visual_strategy: FactVisualStrategy | None = None
     strategy_plan: StrategyPlan | None = None
     evaluation: EvaluationResult | None = None
     fallback_count: int = 0
@@ -574,6 +582,88 @@ class PromptGenerationPipeline:
         await self.progress(context, 11, NodeId.INSIGHT_MAPPING)
         return application
 
+    async def compile_fact_visual_strategy(
+        self,
+        context: RuntimeContext,
+    ) -> FactVisualStrategy:
+        node = NodeId.FACT_VISUAL_STRATEGY_COMPILATION
+        await self._stage(
+            context,
+            node,
+            StageStatus.RUNNING,
+            "正在编译事实视觉使用策略",
+        )
+        application = self._require_application(context)
+        source_content_hash = self.snapshot(context).insight_artifact.content_hash
+        checkpoint = self._cache(context).strategy_checkpoints.get(node)
+        strategy: FactVisualStrategy | None = None
+        reused = False
+        if (
+            checkpoint is not None
+            and isinstance(checkpoint.plan, FactVisualStrategy)
+            and checkpoint.source_fingerprint == source_content_hash
+            and checkpoint.prompt_version == V11_FACT_VISUAL_STRATEGY_VERSION
+        ):
+            try:
+                restored = validate_fact_visual_strategy(
+                    FactVisualStrategyResponse(policies=checkpoint.plan.policies),
+                    application,
+                    source_content_hash=source_content_hash,
+                    prompt_version=V11_FACT_VISUAL_STRATEGY_VERSION,
+                )
+            except ValueError:
+                restored = None
+            if (
+                restored is not None
+                and restored.strategy_hash == checkpoint.allocation_hash
+            ):
+                strategy = restored
+                reused = True
+
+        call_metadata: dict[str, int | None] = {}
+        if strategy is None:
+            for invalid_response_attempt in range(2):
+                self._reserve_ai_call(context)
+                async with self._ai_semaphore:
+                    call = await self.provider.compile_fact_visual_strategy(application)
+                try:
+                    strategy = validate_fact_visual_strategy(
+                        call.value,
+                        application,
+                        source_content_hash=source_content_hash,
+                        prompt_version=V11_FACT_VISUAL_STRATEGY_VERSION,
+                    )
+                    break
+                except ValueError as exc:
+                    if invalid_response_attempt == 1:
+                        raise ProviderError(
+                            "AI 事实视觉使用策略结构或事实引用无效",
+                            retryable=False,
+                            error_type=ProviderErrorType.RESPONSE_INVALID,
+                            attempts=2,
+                        ) from exc
+            if strategy is None:
+                raise PipelineError("事实视觉使用策略未能形成有效结果")
+            call_metadata = {
+                "inputTokens": call.metadata.input_tokens,
+                "outputTokens": call.metadata.output_tokens,
+                "totalTokens": call.metadata.total_tokens,
+                "latencyMs": call.metadata.latency_ms,
+            }
+
+        self._cache(context).fact_visual_strategy = strategy
+        metadata = strategy_stage_metadata(strategy, application, reused=reused)
+        metadata.update(call_metadata)
+        await self._stage(
+            context,
+            node,
+            StageStatus.SUCCEEDED,
+            "事实视觉使用策略已复用" if reused else "事实视觉使用策略已编译",
+            metadata=metadata,
+        )
+        await self.progress(context, 13, node)
+        return strategy
+
     async def compile_shared_prompt(self, context: RuntimeContext) -> SharedPrompt:
         await self._stage(
             context,
@@ -683,6 +773,11 @@ class PromptGenerationPipeline:
                 round_number,
             )
         application = self._require_application(context)
+        fact_visual_strategy = (
+            self._required_fact_visual_strategy(context)
+            if _uses_fact_visual_strategy(snapshot)
+            else None
+        )
         preferred_primary_ids = (
             [binding.fact_id for binding in snapshot.target_item.insight_bindings]
             if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item
@@ -698,6 +793,7 @@ class PromptGenerationPipeline:
             count=requested,
             ordinal_start=ordinal_start,
             preferred_primary_fact_ids=preferred_primary_ids,
+            fact_visual_strategy=fact_visual_strategy,
         )
         tasks = [
             CreativeTask(
@@ -760,7 +856,11 @@ class PromptGenerationPipeline:
                 "candidateTargetCount": requested,
                 "pendingShardCount": len(pending),
                 "shardSize": min(4, self.shard_size),
-                "factSelectionMode": "WORKER_ASSIGNMENT_V1",
+                "factSelectionMode": (
+                    "VISUAL_TASK_AND_BUSINESS_CONTEXT_V1"
+                    if fact_visual_strategy is not None
+                    else "WORKER_ASSIGNMENT_V1"
+                ),
                 "primaryFactCount": len(
                     {assignment.primary_fact_id for assignment in fact_assignments}
                 ),
@@ -794,11 +894,10 @@ class PromptGenerationPipeline:
                 self._reserve_ai_call(context)
                 try:
                     async with self._ai_semaphore:
-                        call = await self.provider.generate_creatives(
-                            shard,
-                            application=self._require_application(context),
-                            shared_prompt=self._required_shared_prompt(context),
-                            regeneration_context=(
+                        call_kwargs: dict[str, Any] = {
+                            "application": self._require_application(context),
+                            "shared_prompt": self._required_shared_prompt(context),
+                            "regeneration_context": (
                                 {
                                     "originalPrompt": snapshot.target_item.content,
                                     "instruction": snapshot.regeneration_instruction
@@ -815,6 +914,14 @@ class PromptGenerationPipeline:
                                 and snapshot.target_item
                                 else None
                             ),
+                        }
+                        if _uses_fact_visual_strategy(snapshot):
+                            call_kwargs["fact_visual_strategy"] = (
+                                self._required_fact_visual_strategy(context)
+                            )
+                        call = await self.provider.generate_creatives(
+                            shard,
+                            **call_kwargs,
                         )
                     break
                 except ProviderError as exc:
@@ -892,7 +999,11 @@ class PromptGenerationPipeline:
                 "roundCandidateCount": len(round_items),
                 "completedShardCount": len(cache.completed_creative_shard_keys),
                 "supplemented": cache.v11_supplemented,
-                "factSelectionMode": "WORKER_ASSIGNMENT_V1",
+                "factSelectionMode": (
+                    "VISUAL_TASK_AND_BUSINESS_CONTEXT_V1"
+                    if _uses_fact_visual_strategy(snapshot)
+                    else "WORKER_ASSIGNMENT_V1"
+                ),
             },
         )
 
@@ -979,9 +1090,16 @@ class PromptGenerationPipeline:
                 self._reserve_ai_call(context)
                 try:
                     async with self._ai_semaphore:
+                        evaluation_kwargs: dict[str, Any] = {
+                            "application": self._require_application(context),
+                        }
+                        if _uses_fact_visual_strategy(self.snapshot(context)):
+                            evaluation_kwargs["fact_visual_strategy"] = (
+                                self._required_fact_visual_strategy(context)
+                            )
                         call = await self.provider.evaluate_creatives(
                             candidates,
-                            application=self._require_application(context),
+                            **evaluation_kwargs,
                         )
                     break
                 except ProviderError as exc:
@@ -2332,6 +2450,15 @@ class PromptGenerationPipeline:
             raise PipelineError("提炼信息应用映射尚未完成")
         return application
 
+    def _required_fact_visual_strategy(
+        self,
+        context: RuntimeContext,
+    ) -> FactVisualStrategy:
+        strategy = self._cache(context).fact_visual_strategy
+        if strategy is None:
+            raise PipelineError("事实视觉使用策略尚未编译")
+        return strategy
+
     @staticmethod
     def _plan_stage_metadata(
         plan: FragmentMarketingPlan,
@@ -3130,6 +3257,10 @@ class PromptGenerationPipeline:
                 metadata=metadata or {},
             ),
         )
+
+
+def _uses_fact_visual_strategy(snapshot: PromptGenerationSnapshot) -> bool:
+    return snapshot.graph_version == "V11_VISUAL_USAGE_STRATEGY"
 
 
 def _v11_settings(snapshot: PromptGenerationSnapshot) -> PromptBatchSettingsV6:

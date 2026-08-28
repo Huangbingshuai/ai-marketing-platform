@@ -13,8 +13,12 @@ from effect_prompt_generation.prompt_loader import (
 ACTIVE_PROMPT_FILES = {
     "v11_creative_base.system.prompt.txt",
     "v11_creative_task.user.prompt.txt",
+    "v11_creative_base_v4.system.prompt.txt",
+    "v11_creative_task_v4.user.prompt.txt",
     "v11_evaluation_base.system.prompt.txt",
     "v11_evaluation_task.user.prompt.txt",
+    "v11_fact_visual_strategy.system.prompt.txt",
+    "v11_fact_visual_strategy.user.prompt.txt",
 }
 
 
@@ -62,7 +66,7 @@ def test_v11_templates_keep_creative_generation_and_evaluation_independent() -> 
     )
     assert (
         load_prompt_version("v11_evaluation_base.system.prompt.txt")
-        == "effect-prompt-v11-creative-evaluation-v2"
+        == "effect-prompt-v11-creative-evaluation-v3"
     )
     assert "Worker 已经为每条任务选好少量可信事实" in creative
     assert "厂商无关" in creative
@@ -86,3 +90,24 @@ def test_v11_templates_keep_creative_generation_and_evaluation_independent() -> 
     assert "只有客观错误才能写入" in evaluation
     assert "一条素材可以有多个用途" in evaluation
     assert "evidenceText 必须逐字摘自正文" in evaluation
+
+
+def test_visual_strategy_templates_separate_visual_task_from_business_context() -> None:
+    compiler = load_prompt("v11_fact_visual_strategy.system.prompt.txt")
+    creative = load_prompt("v11_creative_base_v4.system.prompt.txt")
+    evaluation = load_prompt("v11_evaluation_base.system.prompt.txt")
+
+    assert (
+        load_prompt_version("v11_fact_visual_strategy.system.prompt.txt")
+        == "effect-prompt-v11-fact-visual-strategy-v1"
+    )
+    assert (
+        load_prompt_version("v11_creative_base_v4.system.prompt.txt")
+        == "effect-prompt-v11-coherent-creative-v4"
+    )
+    assert "FORBIDDEN_VISUAL_PROOF" in compiler
+    assert "不能凭成品的颜色、光泽、切面、纹理" in compiler
+    assert "visualTask" in creative
+    assert "businessContext" in creative
+    assert "businessContext 未在正文中准确表达时不得声明" in creative
+    assert "ABSTRACT_FACT_VISUAL_PROOF" in evaluation

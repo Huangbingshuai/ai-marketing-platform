@@ -6,6 +6,8 @@ from collections.abc import Sequence
 
 from .models import (
     CreativeFactAssignment,
+    FactVisualStrategy,
+    FactVisualUsage,
     InsightApplicationMap,
     InsightFact,
     InsightFactPolicy,
@@ -88,6 +90,7 @@ def allocate_v11_creative_facts(
     count: int,
     ordinal_start: int,
     preferred_primary_fact_ids: Sequence[str] = (),
+    fact_visual_strategy: FactVisualStrategy | None = None,
 ) -> list[CreativeFactAssignment]:
     """Create stable, small fact briefs without reinterpreting upstream content."""
 
@@ -126,6 +129,8 @@ def allocate_v11_creative_facts(
     if not anchors:
         anchors = primary_candidates
 
+    visual_candidates = _visual_candidates(application, fact_visual_strategy)
+
     product_name = next(
         (fact for fact in anchors if fact.field == InsightField.PRODUCT_NAME),
         None,
@@ -133,28 +138,50 @@ def allocate_v11_creative_facts(
     assignments: list[CreativeFactAssignment] = []
     for offset in range(count):
         ordinal = ordinal_start + offset
-        primary = primary_candidates[(ordinal - 1) % len(primary_candidates)]
+        business_primary = primary_candidates[(ordinal - 1) % len(primary_candidates)]
         support_ids = _support_fact_ids(
             usable,
-            primary=primary,
+            primary=business_primary,
             ordinal=ordinal,
         )
+        visual_primary = _visual_primary(
+            business_primary,
+            visual_candidates=visual_candidates,
+            strategy=fact_visual_strategy,
+            ordinal=ordinal,
+        )
+        business_context_ids = list(
+            dict.fromkeys(
+                [
+                    *(
+                        [business_primary.fact_id]
+                        if business_primary.fact_id != visual_primary.fact_id
+                        else []
+                    ),
+                    *support_ids,
+                ]
+            )
+        )[:2]
         anchor_ids = _anchor_fact_ids(
             anchors,
-            primary=primary,
+            primary=visual_primary,
             product_name=product_name,
             ordinal=ordinal,
         )
         payload = {
             "ordinal": ordinal,
-            "primaryFactId": primary.fact_id,
-            "supportFactIds": support_ids,
+            "primaryFactId": visual_primary.fact_id,
+            "visualTaskFactId": visual_primary.fact_id,
+            "supportFactIds": business_context_ids,
+            "businessContextFactIds": business_context_ids,
             "productAnchorFactIds": anchor_ids,
         }
         assignments.append(
             CreativeFactAssignment(
-                primary_fact_id=primary.fact_id,
-                support_fact_ids=support_ids,
+                primary_fact_id=visual_primary.fact_id,
+                visual_task_fact_id=visual_primary.fact_id,
+                support_fact_ids=business_context_ids,
+                business_context_fact_ids=business_context_ids,
                 product_anchor_fact_ids=anchor_ids,
                 assignment_hash=hashlib.sha256(
                     json.dumps(
@@ -167,6 +194,54 @@ def allocate_v11_creative_facts(
             )
         )
     return assignments
+
+
+def _visual_candidates(
+    application: InsightApplicationMap,
+    strategy: FactVisualStrategy | None,
+) -> list[InsightFact]:
+    if strategy is None:
+        return application.usable
+    visible_usage = {
+        FactVisualUsage.DIRECTLY_VISIBLE,
+        FactVisualUsage.ACTION_DEMONSTRABLE,
+    }
+    direct = [
+        fact
+        for fact in application.usable
+        if strategy.by_id[fact.fact_id].visual_usage in visible_usage
+    ]
+    identity = [
+        fact
+        for fact in application.usable
+        if strategy.by_id[fact.fact_id].visual_usage
+        == FactVisualUsage.IDENTITY_ANCHOR
+    ]
+    return [*direct, *identity]
+
+
+def _visual_primary(
+    business_primary: InsightFact,
+    *,
+    visual_candidates: Sequence[InsightFact],
+    strategy: FactVisualStrategy | None,
+    ordinal: int,
+) -> InsightFact:
+    if strategy is None:
+        return business_primary
+    visible_ids = {fact.fact_id for fact in visual_candidates}
+    if business_primary.fact_id in visible_ids:
+        return business_primary
+    policy = strategy.by_id[business_primary.fact_id]
+    compatible = [
+        fact
+        for fact in visual_candidates
+        if fact.fact_id in policy.compatible_fact_ids
+    ]
+    candidates = compatible or list(visual_candidates)
+    if not candidates:
+        raise ValueError("fact visual strategy has no visual task candidate")
+    return candidates[(ordinal - 1) % len(candidates)]
 
 
 def _ordered_facts(

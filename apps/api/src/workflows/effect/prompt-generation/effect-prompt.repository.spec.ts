@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
   DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_SCHEMA_VERSION,
 } from '@ai-marketing/contracts';
@@ -290,6 +291,75 @@ describe('EffectPromptRepository', () => {
     });
   });
 
+  it('retires an active legacy run before creating the only current workflow run', async () => {
+    const created = runRecord({
+      inputSnapshot: { graphVersion: CURRENT_EFFECT_PROMPT_GRAPH_VERSION },
+    });
+    const update = vi.fn().mockResolvedValue({});
+    const create = vi.fn().mockResolvedValue(created);
+    const transaction = {
+      effectPromptRun: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        findFirst: vi.fn().mockResolvedValue(
+          runRecord({
+            id: '00000000-0000-4000-8000-000000000099',
+            inputSnapshot: { graphVersion: 'V10_RELATION_COORDINATE_BLUEPRINT' },
+            status: 'RUNNING',
+          }),
+        ),
+        update,
+        create,
+      },
+      effectImportProduct: { findFirst: vi.fn().mockResolvedValue({ id: productId }) },
+      workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: workflowRunId }) },
+      workflowNodeState: {
+        findUnique: vi.fn().mockResolvedValue({
+          revision: 1,
+          state: DEFAULT_EFFECT_PROMPT_SETTINGS,
+        }),
+      },
+      workingArtifact: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: '00000000-0000-4000-8000-000000000005',
+          revision: 1,
+          contentHash: 'a'.repeat(64),
+          payload: { productName: '产品' },
+        }),
+      },
+      effectPromptResult: { findFirst: vi.fn().mockResolvedValue(null) },
+      jobOutbox: { create: vi.fn().mockResolvedValue({}) },
+      $queryRaw: vi.fn().mockResolvedValue([{ id: productId }]),
+    };
+    const repository = new EffectPromptRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await expect(repository.startRun(projectId, workflowRunId, productId, input)).resolves.toEqual({
+      kind: 'CREATED',
+      run: created,
+    });
+    expect(update).toHaveBeenCalledWith({
+      where: {
+        projectId_id: { projectId, id: '00000000-0000-4000-8000-000000000099' },
+      },
+      data: expect.objectContaining({
+        status: 'FAILED',
+        errorCode: 'WORKFLOW_RETIRED',
+        attemptToken: null,
+        leaseExpiresAt: null,
+      }),
+    });
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          inputSnapshot: expect.objectContaining({
+            graphVersion: CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
+          }),
+        }),
+      }),
+    );
+  });
+
   it('migrates V1 full-video settings to V4 six-fragment defaults before snapshotting', async () => {
     const created = runRecord();
     const nodeUpdate = vi.fn().mockResolvedValue({});
@@ -354,7 +424,7 @@ describe('EffectPromptRepository', () => {
       data: expect.objectContaining({
         settingsHash: expectedHash,
         inputSnapshot: expect.objectContaining({
-          graphVersion: 'V11_COHERENT_CREATIVE_GENERATION',
+          graphVersion: 'V11_VISUAL_USAGE_STRATEGY',
           settings: expectedSettings,
         }),
       }),

@@ -20,6 +20,7 @@ from effect_prompt_generation.models import (
     CreativeEvaluation,
     CreativeScores,
     FactEvidence,
+    FactVisualStrategy,
     FragmentType,
     ProgressPayload,
     PromptBatchResultV6,
@@ -93,8 +94,13 @@ class FirstRoundRejectingProvider(MockAiProvider):
         candidates: list[CreativeCandidate],
         *,
         application: Any,
+        fact_visual_strategy: FactVisualStrategy | None = None,
     ) -> Any:
-        call = await super().evaluate_creatives(candidates, application=application)
+        call = await super().evaluate_creatives(
+            candidates,
+            application=application,
+            fact_visual_strategy=fact_visual_strategy,
+        )
         items = [
             item.model_copy(update={"hard_issues": ["TEST_FIRST_ROUND_REJECTION"]})
             if candidate.round == 0 and candidate.ordinal <= 3
@@ -110,8 +116,13 @@ class FirstTwoRoundsRejectingProvider(MockAiProvider):
         candidates: list[CreativeCandidate],
         *,
         application: Any,
+        fact_visual_strategy: FactVisualStrategy | None = None,
     ) -> Any:
-        call = await super().evaluate_creatives(candidates, application=application)
+        call = await super().evaluate_creatives(
+            candidates,
+            application=application,
+            fact_visual_strategy=fact_visual_strategy,
+        )
         items = [
             item.model_copy(update={"hard_issues": ["TEST_EARLY_ROUND_REJECTION"]})
             if candidate.round < 2
@@ -127,8 +138,13 @@ class AlwaysRejectingProvider(MockAiProvider):
         candidates: list[CreativeCandidate],
         *,
         application: Any,
+        fact_visual_strategy: FactVisualStrategy | None = None,
     ) -> Any:
-        call = await super().evaluate_creatives(candidates, application=application)
+        call = await super().evaluate_creatives(
+            candidates,
+            application=application,
+            fact_visual_strategy=fact_visual_strategy,
+        )
         items = [
             item.model_copy(update={"hard_issues": ["TEST_SAFETY_REJECTION"]})
             for item in call.value.items
@@ -353,6 +369,55 @@ async def test_v11_graph_generates_120_percent_then_selects_exact_count() -> Non
     assert classification_stage.status == "SUCCEEDED"
     assert classification_stage.metadata["evaluatedCount"] == 12
     assert classification_stage.metadata["averageScores"]["productRelevance"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_visual_strategy_graph_compiles_roles_before_creative_generation() -> None:
+    api = V11Api()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=MockAiProvider(),
+        shard_size=5,
+    )
+    runtime = _runtime()
+    snapshot = _snapshot().model_copy(
+        update={"graph_version": "V11_VISUAL_USAGE_STRATEGY"}
+    )
+    pipeline.register_snapshot(runtime, snapshot)
+
+    result = await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    assert result["prompt_result_id"] == "prompt-result-v11"
+    strategy_stage = next(
+        stage
+        for stage in reversed(api.stages)
+        if stage.node_id == "FACT_VISUAL_STRATEGY_COMPILATION"
+    )
+    assert strategy_stage.status == "SUCCEEDED"
+    assert strategy_stage.metadata["policyCount"] > 0
+    assert strategy_stage.metadata["usageCounts"]["FORBIDDEN_VISUAL_PROOF"] > 0
+    creative_stage = next(
+        stage
+        for stage in reversed(api.stages)
+        if stage.node_id == "COHERENT_CREATIVE_GENERATION"
+    )
+    assert (
+        creative_stage.metadata["factSelectionMode"]
+        == "VISUAL_TASK_AND_BUSINESS_CONTEXT_V1"
+    )
+    assignments = [
+        task.fact_assignment
+        for shard in api.shards.values()
+        if shard.phase.value == "CREATIVE"
+        for task in shard.creative_plan
+        if task.fact_assignment is not None
+    ]
+    assert assignments
+    assert all(assignment.visual_task_fact_id for assignment in assignments)
+    assert any(assignment.business_context_fact_ids for assignment in assignments)
 
 
 @pytest.mark.asyncio

@@ -221,6 +221,14 @@ def build_graph(
         prompt = await pipeline.compile_shared_prompt(runtime.context)
         return {"shared_prompt": prompt}
 
+    async def fact_visual_strategy_compilation(
+        state: GraphState,
+        runtime: Runtime[RuntimeContext],
+    ) -> dict[str, object]:
+        del state
+        strategy = await pipeline.compile_fact_visual_strategy(runtime.context)
+        return {"fact_visual_strategy": strategy}
+
     async def coherent_creative_generation(
         state: GraphState, runtime: Runtime[RuntimeContext]
     ) -> dict[str, object]:
@@ -416,7 +424,10 @@ def build_graph(
     async def save(
         state: GraphState, runtime: Runtime[RuntimeContext]
     ) -> dict[str, object]:
-        if state.get("graph_version") == "V11_COHERENT_CREATIVE_GENERATION":
+        if state.get("graph_version") in {
+            "V11_COHERENT_CREATIVE_GENERATION",
+            "V11_VISUAL_USAGE_STRATEGY",
+        }:
             result_id = await pipeline.save_v11_result(runtime.context)
         else:
             result_id = await pipeline.save_result(
@@ -492,12 +503,23 @@ def build_graph(
         )
 
     def route_after_shared_prompt(state: GraphState) -> str:
-        if state.get("graph_version") != "V11_COHERENT_CREATIVE_GENERATION":
+        if state.get("graph_version") not in {
+            "V11_COHERENT_CREATIVE_GENERATION",
+            "V11_VISUAL_USAGE_STRATEGY",
+        }:
             return NodeId.GLOBAL_FACT_ALLOCATION.value
         return (
             NodeId.ITEM_EVALUATE.value
             if state.get("operation") == "ITEM_EVALUATE"
             else NodeId.COHERENT_CREATIVE_GENERATION.value
+        )
+
+    def route_after_insight_mapping(state: GraphState) -> str:
+        return (
+            NodeId.FACT_VISUAL_STRATEGY_COMPILATION.value
+            if state.get("graph_version")
+            == "V11_VISUAL_USAGE_STRATEGY"
+            else NodeId.SHARED_PROMPT_COMPILATION.value
         )
 
     def dispatch_relationship_branches(state: GraphState) -> list[Send]:
@@ -566,6 +588,10 @@ def build_graph(
     )
     builder.add_node(NodeId.LOAD_AND_SNAPSHOT.value, load)
     builder.add_node(NodeId.INSIGHT_MAPPING.value, map_insight)
+    builder.add_node(
+        NodeId.FACT_VISUAL_STRATEGY_COMPILATION.value,
+        fact_visual_strategy_compilation,
+    )
     builder.add_node(NodeId.SHARED_PROMPT_COMPILATION.value, shared_prompt_compilation)
     builder.add_node(NodeId.GLOBAL_FACT_ALLOCATION.value, global_fact_allocation)
     builder.add_node(NodeId.RELATIONSHIP_FRAGMENT_ROUTER.value, relationship_router)
@@ -614,8 +640,17 @@ def build_graph(
 
     builder.add_edge(START, NodeId.LOAD_AND_SNAPSHOT.value)
     builder.add_edge(NodeId.LOAD_AND_SNAPSHOT.value, NodeId.INSIGHT_MAPPING.value)
+    builder.add_conditional_edges(
+        NodeId.INSIGHT_MAPPING.value,
+        route_after_insight_mapping,
+        [
+            NodeId.FACT_VISUAL_STRATEGY_COMPILATION.value,
+            NodeId.SHARED_PROMPT_COMPILATION.value,
+        ],
+    )
     builder.add_edge(
-        NodeId.INSIGHT_MAPPING.value, NodeId.SHARED_PROMPT_COMPILATION.value
+        NodeId.FACT_VISUAL_STRATEGY_COMPILATION.value,
+        NodeId.SHARED_PROMPT_COMPILATION.value,
     )
     builder.add_conditional_edges(
         NodeId.SHARED_PROMPT_COMPILATION.value,

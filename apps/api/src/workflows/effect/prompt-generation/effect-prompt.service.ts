@@ -27,7 +27,6 @@ import {
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_GRAPH_NODES,
-  EFFECT_PROMPT_GRAPH_VERSIONS,
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_MAX_RUN_ATTEMPTS,
   EFFECT_PROMPT_SCHEMA_VERSION,
@@ -81,6 +80,12 @@ const notFound = (message: string) =>
 const conflict = (message: string) =>
   new ApiHttpException(message, HttpStatus.CONFLICT, 'CONFLICT');
 
+const retiredWorkflow = () =>
+  new ApiHttpException('该历史 Prompt 工作流已停用，请重新生成', HttpStatus.GONE, 'CONFLICT');
+
+const isCoherentCreativeGraph = (version: EffectPromptGraphVersion): boolean =>
+  version === CURRENT_EFFECT_PROMPT_GRAPH_VERSION;
+
 const publicWarnings = (value: unknown): string[] =>
   Array.isArray(value)
     ? [...new Set(value.filter((item): item is string => typeof item === 'string'))]
@@ -100,28 +105,13 @@ const promptArtifactProductName = (snapshot: EffectPromptInputSnapshot): string 
 
 const graphVersionOf = (record: EffectPromptRunRecord): EffectPromptGraphVersion => {
   const snapshot = record.inputSnapshot as Partial<EffectPromptInputSnapshot> | null;
-  if (
-    snapshot?.graphVersion &&
-    EFFECT_PROMPT_GRAPH_VERSIONS.includes(snapshot.graphVersion as EffectPromptGraphVersion)
-  )
-    return snapshot.graphVersion as EffectPromptGraphVersion;
-  const legacyNodeIds = new Set(effectPromptGraphNodeIds('V8_SINGLE_STRATEGY'));
-  const v9NodeIds = new Set(effectPromptGraphNodeIds('V9_SIX_BRANCH_STRATEGY'));
-  const hasPersistedV10Stage = (record.stages ?? []).some(
-    ({ nodeId }) =>
-      !v9NodeIds.has(nodeId as EffectPromptNodeId) &&
-      effectPromptGraphNodeIds('V10_RELATION_COORDINATE_BLUEPRINT').includes(
-        nodeId as EffectPromptNodeId,
-      ),
-  );
-  if (hasPersistedV10Stage) return 'V10_RELATION_COORDINATE_BLUEPRINT';
-  const hasPersistedV9Stage = (record.stages ?? []).some(
-    ({ nodeId }) =>
-      !legacyNodeIds.has(nodeId as EffectPromptNodeId) &&
-      effectPromptGraphNodeIds('V9_SIX_BRANCH_STRATEGY').includes(nodeId as EffectPromptNodeId),
-  );
-  return hasPersistedV9Stage ? 'V9_SIX_BRANCH_STRATEGY' : 'V8_SINGLE_STRATEGY';
+  return snapshot?.graphVersion === CURRENT_EFFECT_PROMPT_GRAPH_VERSION
+    ? CURRENT_EFFECT_PROMPT_GRAPH_VERSION
+    : 'V8_SINGLE_STRATEGY';
 };
+
+const isCurrentGraphRun = (record: EffectPromptRunRecord): boolean =>
+  graphVersionOf(record) === CURRENT_EFFECT_PROMPT_GRAPH_VERSION;
 
 const operationOf = (record: EffectPromptRunRecord): EffectPromptOperation => {
   const snapshot = record.inputSnapshot as Partial<EffectPromptInputSnapshot> | null;
@@ -423,16 +413,18 @@ export class EffectPromptService {
     const products = await this.repository.products(projectId, workflowRunId);
     const states: EffectPromptProductState[] = await Promise.all(
       products.map(async (product) => {
-        const runRecord = product.promptRuns[0]
+        const latestRunRecord = product.promptRuns[0]
           ? await this.repository.run(projectId, product.promptRuns[0].id)
           : null;
+        const runRecord =
+          latestRunRecord && isCurrentGraphRun(latestRunRecord) ? latestRunRecord : null;
         const resultRecord =
-          runRecord?.result ??
+          latestRunRecord?.result ??
           (await this.repository.latestResult(projectId, workflowRunId, product.id));
         const resultRun =
-          resultRecord && resultRecord.runId !== runRecord?.id
+          resultRecord && resultRecord.runId !== latestRunRecord?.id
             ? await this.repository.run(projectId, resultRecord.runId)
-            : runRecord;
+            : latestRunRecord;
         const draft = resultRecord
           ? (parseEffectPromptBatchResult(resultRecord.draftResult) ??
             parseEffectPromptBatchResultV5ForRead(resultRecord.draftResult) ??
@@ -500,7 +492,7 @@ export class EffectPromptService {
           currentNode: runRecord?.currentNode ?? null,
           errorCode: runRecord?.errorCode ?? null,
           errorMessage: legacyResult
-            ? '当前为历史 Prompt 结果，可继续查看和导出；重新生成后将使用新版创意规则'
+            ? '当前结果为只读存量数据，重新生成后将使用当前工作流'
             : (runRecord?.errorMessage ?? null),
           updatedAt: (runRecord?.updatedAt ?? product.updatedAt).toISOString(),
         };
@@ -622,6 +614,7 @@ export class EffectPromptService {
     await this.projects.get(projectId);
     const record = await this.repository.run(projectId, runId);
     if (!record) throw notFound('Prompt 任务不存在');
+    if (!isCurrentGraphRun(record)) throw retiredWorkflow();
     return { run: presentRun(record) };
   }
 
@@ -635,6 +628,7 @@ export class EffectPromptService {
     if (!definition) throw badRequest('未知的 Prompt 子工作流节点');
     const record = await this.repository.runForNodeDetail(projectId, runId);
     if (!record) throw notFound('Prompt 任务不存在');
+    if (!isCurrentGraphRun(record)) throw retiredWorkflow();
     if (
       !effectPromptRunGraphNodeIds(graphVersionOf(record), operationOf(record)).includes(
         definition.id,
@@ -1112,7 +1106,17 @@ export class EffectPromptService {
     if (result.kind === 'BUSY') throw conflict('Prompt 任务已被其他 Worker 认领');
     if (result.kind === 'TERMINAL' || result.kind === 'ATTEMPTS_EXHAUSTED')
       return { terminal: true as const, runId };
-    const checkpoints = result.checkpointStages.flatMap(({ nodeId, metadata }) => {
+    if (result.input.graphVersion !== CURRENT_EFFECT_PROMPT_GRAPH_VERSION) {
+      await this.repository.fail(projectId, runId, result.attemptToken, {
+        errorCode: 'WORKFLOW_RETIRED',
+        errorMessage: '该历史 Prompt 工作流已停用，请重新生成',
+        retryable: false,
+        warnings: [],
+        currentNode: 'LOAD_AND_SNAPSHOT',
+      });
+      return { terminal: true as const, runId };
+    }
+    const checkpointCandidates = result.checkpointStages.flatMap(({ nodeId, metadata }) => {
       if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return [];
       const checkpoint = (metadata as Record<string, unknown>).checkpoint;
       if (!checkpoint || typeof checkpoint !== 'object' || Array.isArray(checkpoint)) return [];
@@ -1121,6 +1125,22 @@ export class EffectPromptService {
         ? [checkpoint]
         : [];
     });
+    const insightContentHash = result.input?.insightArtifact?.contentHash ?? '';
+    const reusableVisualStrategy = checkpointCandidates.find((checkpoint) => {
+      const value = checkpoint as Record<string, unknown>;
+      return (
+        result.input?.graphVersion === CURRENT_EFFECT_PROMPT_GRAPH_VERSION &&
+        value.nodeId === 'FACT_VISUAL_STRATEGY_COMPILATION' &&
+        value.sourceFingerprint === insightContentHash
+      );
+    });
+    const checkpoints = [
+      ...checkpointCandidates.filter(
+        (checkpoint) =>
+          (checkpoint as Record<string, unknown>).nodeId !== 'FACT_VISUAL_STRATEGY_COMPILATION',
+      ),
+      ...(reusableVisualStrategy ? [reusableVisualStrategy] : []),
+    ];
     return {
       terminal: false as const,
       runId,
@@ -1136,6 +1156,7 @@ export class EffectPromptService {
   }
 
   async heartbeat(projectId: string, runId: string, attemptToken: string) {
+    await this.stageGraph(projectId, runId);
     if ((await this.repository.heartbeat(projectId, runId, attemptToken)).count !== 1)
       throw conflict('Worker 租约已失效');
     return { accepted: true as const };
@@ -1173,6 +1194,7 @@ export class EffectPromptService {
   ): Promise<{ graphVersion: EffectPromptGraphVersion; operation: EffectPromptRun['operation'] }> {
     const run = await this.repository.run(projectId, runId);
     if (!run) throw notFound('Prompt 任务不存在');
+    if (!isCurrentGraphRun(run)) throw retiredWorkflow();
     return { graphVersion: graphVersionOf(run), operation: operationOf(run) };
   }
 
@@ -1189,17 +1211,13 @@ export class EffectPromptService {
     const { graphVersion } = await this.stageGraph(projectId, runId);
     if (phase === 'BLUEPRINT' && graphVersion !== 'V10_RELATION_COORDINATE_BLUEPRINT')
       throw badRequest('蓝图分片不属于当前 Prompt 工作流版本');
-    if (
-      ['CREATIVE', 'CLASSIFICATION'].includes(phase) &&
-      graphVersion !== 'V11_COHERENT_CREATIVE_GENERATION'
-    )
+    if (['CREATIVE', 'CLASSIFICATION'].includes(phase) && !isCoherentCreativeGraph(graphVersion))
       throw badRequest('创意分片不属于当前 Prompt 工作流版本');
-    if (phase === 'PROMPT' && graphVersion === 'V11_COHERENT_CREATIVE_GENERATION')
+    if (phase === 'PROMPT' && isCoherentCreativeGraph(graphVersion))
       throw badRequest('旧 Prompt 分片不属于当前工作流版本');
-    const maxRound =
-      graphVersion === 'V11_COHERENT_CREATIVE_GENERATION'
-        ? 4
-        : EFFECT_PROMPT_LIMITS.maxReplenishmentRounds;
+    const maxRound = isCoherentCreativeGraph(graphVersion)
+      ? 4
+      : EFFECT_PROMPT_LIMITS.maxReplenishmentRounds;
     if (round < 0 || round > maxRound || shardIndex < 0) throw badRequest('分片标识无效');
     if (
       !(await this.repository.saveShard(
@@ -1230,7 +1248,7 @@ export class EffectPromptService {
     }
     if (
       (phase === 'CREATIVE' || phase === 'CLASSIFICATION') &&
-      graphVersion !== 'V11_COHERENT_CREATIVE_GENERATION'
+      !isCoherentCreativeGraph(graphVersion)
     )
       throw badRequest('创意分片不属于当前 Prompt 工作流版本');
     const records = await this.repository.shards(projectId, runId, attemptToken, phase);
@@ -1238,21 +1256,30 @@ export class EffectPromptService {
     return {
       runId,
       shards: records.map((record) => {
-        const publicPhase: EffectPromptShardPhase =
-          graphVersion === 'V11_COHERENT_CREATIVE_GENERATION'
-            ? record.phase === 'BLUEPRINT'
-              ? 'CREATIVE'
-              : 'CLASSIFICATION'
-            : record.phase;
+        const publicPhase: EffectPromptShardPhase = isCoherentCreativeGraph(graphVersion)
+          ? record.phase === 'BLUEPRINT'
+            ? 'CREATIVE'
+            : 'CLASSIFICATION'
+          : record.phase;
         return {
           phase: publicPhase,
           round: record.round,
           shardIndex: record.shardIndex,
           status: record.status,
-          combinationPlan: record.phase === 'PROMPT' ? record.combinationPlan : [],
-          items: record.phase === 'PROMPT' ? record.items : [],
-          blueprintPlan: record.phase === 'BLUEPRINT' ? record.combinationPlan : [],
-          blueprints: record.phase === 'BLUEPRINT' ? record.items : [],
+          combinationPlan:
+            !isCoherentCreativeGraph(graphVersion) && record.phase === 'PROMPT'
+              ? record.combinationPlan
+              : [],
+          items:
+            !isCoherentCreativeGraph(graphVersion) && record.phase === 'PROMPT' ? record.items : [],
+          blueprintPlan:
+            graphVersion === 'V10_RELATION_COORDINATE_BLUEPRINT' && record.phase === 'BLUEPRINT'
+              ? record.combinationPlan
+              : [],
+          blueprints:
+            graphVersion === 'V10_RELATION_COORDINATE_BLUEPRINT' && record.phase === 'BLUEPRINT'
+              ? record.items
+              : [],
           creativePlan: publicPhase === 'CREATIVE' ? record.combinationPlan : [],
           creativeItems: publicPhase === 'CREATIVE' ? record.items : [],
           classificationPlan: publicPhase === 'CLASSIFICATION' ? record.combinationPlan : [],
@@ -1285,6 +1312,7 @@ export class EffectPromptService {
       parsed.qualityStatus !== 'PASS'
     )
       throw badRequest('Prompt 批次未达到精确数量或用途评估尚未完成');
+    await this.stageGraph(projectId, runId);
     const result = await this.repository.complete(projectId, runId, attemptToken, parsed);
     if (result.kind === 'NOT_FOUND') throw notFound('Prompt 任务不存在');
     if (result.kind === 'LEASE_CONFLICT') throw conflict('Worker 租约已失效');

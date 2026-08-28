@@ -1,7 +1,10 @@
-VERSION: effect-prompt-v11-creative-evaluation-task-v2
+VERSION: effect-prompt-v11-creative-evaluation-task-v3
 
 候选声明所引用的已确认事实：
 {facts_json}
+
+这些事实的视觉使用策略：
+{fact_visual_strategy_json}
 
 待评估候选：
 {candidates_json}

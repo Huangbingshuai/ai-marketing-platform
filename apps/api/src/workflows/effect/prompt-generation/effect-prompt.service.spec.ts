@@ -88,33 +88,56 @@ describe('EffectPromptService settings contract', () => {
     }
   });
 
-  it('returns V9-compatible strategy checkpoints and unified V10 stage checkpoints on claim', async () => {
-    const relationshipCheckpoint = {
-      nodeId: 'PLAN_HOOK_RELATIONSHIPS',
-      sourceFingerprint: 'source-a',
-      allocationHash: 'a'.repeat(64),
-      promptVersion: 'v10',
-      plan: {},
-    };
-    const strategyCheckpoint = {
-      nodeId: 'PLAN_HOOK_STRATEGY',
-      sourceFingerprint: 'source-a',
-      allocationHash: 'b'.repeat(64),
-      promptVersion: 'v9',
-      plan: {},
-    };
+  it('terminates a retired workflow when a queued legacy run is claimed', async () => {
     const repository = {
       claim: vi.fn().mockResolvedValue({
         kind: 'CLAIMED',
         run: { sourceFingerprint: 'source-a' },
         attemptToken: 'attempt-a',
         input: { graphVersion: 'V10_RELATION_COORDINATE_BLUEPRINT' },
+        checkpointStages: [],
+      }),
+      fail: vi.fn().mockResolvedValue('FAILED'),
+    };
+    const service = new EffectPromptService(repository as never, {} as never, {} as never);
+
+    const output = await service.claim('project-a', 'run-a');
+
+    expect(output).toEqual({ terminal: true, runId: 'run-a' });
+    expect(repository.fail).toHaveBeenCalledWith('project-a', 'run-a', 'attempt-a', {
+      errorCode: 'WORKFLOW_RETIRED',
+      errorMessage: '该历史 Prompt 工作流已停用，请重新生成',
+      retryable: false,
+      warnings: [],
+      currentNode: 'LOAD_AND_SNAPSHOT',
+    });
+  });
+
+  it('reuses only a fact visual strategy checkpoint with the same insight content hash', async () => {
+    const matching = {
+      nodeId: 'FACT_VISUAL_STRATEGY_COMPILATION',
+      sourceFingerprint: 'insight-hash-current',
+      allocationHash: 'c'.repeat(64),
+      promptVersion: 'effect-prompt-v11-fact-visual-strategy-v1',
+      plan: {},
+    };
+    const stale = {
+      ...matching,
+      sourceFingerprint: 'insight-hash-old',
+      allocationHash: 'd'.repeat(64),
+    };
+    const repository = {
+      claim: vi.fn().mockResolvedValue({
+        kind: 'CLAIMED',
+        run: { sourceFingerprint: 'run-source' },
+        attemptToken: 'attempt-a',
+        input: {
+          graphVersion: 'V11_VISUAL_USAGE_STRATEGY',
+          insightArtifact: { contentHash: 'insight-hash-current' },
+        },
         checkpointStages: [
-          {
-            nodeId: 'PLAN_HOOK_RELATIONSHIPS',
-            metadata: { checkpoint: relationshipCheckpoint },
-          },
-          { nodeId: 'PLAN_HOOK_STRATEGY', metadata: { checkpoint: strategyCheckpoint } },
+          { nodeId: 'FACT_VISUAL_STRATEGY_COMPILATION', metadata: { checkpoint: stale } },
+          { nodeId: 'FACT_VISUAL_STRATEGY_COMPILATION', metadata: { checkpoint: matching } },
         ],
       }),
     };
@@ -122,12 +145,9 @@ describe('EffectPromptService settings contract', () => {
 
     const output = await service.claim('project-a', 'run-a');
 
-    expect(output).toMatchObject({
-      terminal: false,
-      stageCheckpoints: [relationshipCheckpoint, strategyCheckpoint],
-      strategyCheckpoints: [strategyCheckpoint],
-    });
+    expect(output.stageCheckpoints).toEqual([matching]);
   });
+
   it('normalizes and forwards visual item-regeneration direction without opening a batch path', async () => {
     const dimensions = {
       narrative: ' 场景代入型 ',
@@ -203,7 +223,7 @@ describe('EffectPromptService settings contract', () => {
       targetItemId,
       inputSnapshot: {
         operation: 'ITEM_EVALUATE',
-        graphVersion: 'V11_COHERENT_CREATIVE_GENERATION',
+        graphVersion: 'V11_VISUAL_USAGE_STRATEGY',
       },
       status: 'QUEUED',
       progress: 0,
@@ -256,7 +276,7 @@ describe('EffectPromptService settings contract', () => {
     const repository = {
       run: vi.fn().mockResolvedValue({
         id: 'run-v11',
-        inputSnapshot: { graphVersion: 'V11_COHERENT_CREATIVE_GENERATION' },
+        inputSnapshot: { graphVersion: 'V11_VISUAL_USAGE_STRATEGY' },
         operation: 'BATCH_GENERATE',
       }),
       saveShard: vi.fn().mockResolvedValue(true),
@@ -277,6 +297,74 @@ describe('EffectPromptService settings contract', () => {
     await expect(
       service.saveShard('project-a', 'run-v11', 'attempt-a', 5, 0, 'CREATIVE', input),
     ).rejects.toThrow('分片标识无效');
+  });
+
+  it('projects persisted V11 shards only into their phase-specific fields', async () => {
+    const creativePlan = [{ slotId: 'creative-task-a' }];
+    const creativeItems = [{ slotId: 'creative-a', content: '创意候选正文' }];
+    const classificationPlan = ['creative-a'];
+    const evaluations = [{ slotId: 'creative-a', primaryPurpose: 'HOOK' }];
+    const repository = {
+      run: vi.fn().mockResolvedValue({
+        id: 'run-v11',
+        inputSnapshot: { graphVersion: 'V11_VISUAL_USAGE_STRATEGY' },
+        operation: 'BATCH_GENERATE',
+      }),
+      shards: vi.fn().mockResolvedValue([
+        {
+          phase: 'BLUEPRINT',
+          round: 0,
+          shardIndex: 0,
+          status: 'SUCCEEDED',
+          combinationPlan: creativePlan,
+          items: creativeItems,
+          warnings: [],
+          errorCode: null,
+          errorMessage: null,
+          updatedAt: new Date('2026-08-28T00:00:00.000Z'),
+        },
+        {
+          phase: 'PROMPT',
+          round: 0,
+          shardIndex: 0,
+          status: 'SUCCEEDED',
+          combinationPlan: classificationPlan,
+          items: evaluations,
+          warnings: [],
+          errorCode: null,
+          errorMessage: null,
+          updatedAt: new Date('2026-08-28T00:00:00.000Z'),
+        },
+      ]),
+    };
+    const service = new EffectPromptService(repository as never, {} as never, {} as never);
+
+    const output = await service.shards('project-a', 'run-v11', 'attempt-a');
+
+    expect(output.shards).toEqual([
+      expect.objectContaining({
+        phase: 'CREATIVE',
+        combinationPlan: [],
+        items: [],
+        blueprintPlan: [],
+        blueprints: [],
+        creativePlan,
+        creativeItems,
+        classificationPlan: [],
+        evaluations: [],
+      }),
+      expect.objectContaining({
+        phase: 'CLASSIFICATION',
+        combinationPlan: [],
+        items: [],
+        blueprintPlan: [],
+        blueprints: [],
+        creativePlan: [],
+        creativeItems: [],
+        classificationPlan,
+        evaluations,
+      }),
+    ]);
   });
 
   it('rejects item-only regeneration fields on a batch run', async () => {
@@ -545,7 +633,7 @@ describe('EffectPromptService settings contract', () => {
         errorMessage: null,
         createdAt: new Date('2026-08-25T00:00:00.000Z'),
         updatedAt: new Date('2026-08-25T00:01:00.000Z'),
-        inputSnapshot: {},
+        inputSnapshot: { graphVersion: 'V11_VISUAL_USAGE_STRATEGY' },
         shards: [],
         result: null,
         stages: [
@@ -627,7 +715,7 @@ describe('EffectPromptService settings contract', () => {
         resultRevision: null,
         metrics: null,
         qualityStatus: null,
-        errorMessage: '当前为历史 Prompt 结果，可继续查看和导出；重新生成后将使用新版创意规则',
+        errorMessage: '当前结果为只读存量数据，重新生成后将使用当前工作流',
       }),
     );
   });
@@ -637,7 +725,8 @@ describe('EffectPromptService settings contract', () => {
       id: 'run-new',
       status: 'RUNNING',
       progress: 11,
-      currentNode: 'STRATEGY_PLANNING',
+      currentNode: 'COHERENT_CREATIVE_GENERATION',
+      inputSnapshot: { graphVersion: 'V11_VISUAL_USAGE_STRATEGY' },
       result: null,
       updatedAt: new Date('2026-08-26T00:01:00.000Z'),
     };
@@ -686,7 +775,7 @@ describe('EffectPromptService settings contract', () => {
         status: 'PROCESSING',
         runId: 'run-new',
         progress: 11,
-        currentNode: 'STRATEGY_PLANNING',
+        currentNode: 'COHERENT_CREATIVE_GENERATION',
       }),
     );
   });
@@ -1092,7 +1181,7 @@ describe('EffectPromptService settings contract', () => {
     );
   });
 
-  it('recognizes a versionless recovered run as V9 when real V9 stages exist', async () => {
+  it('rejects a versionless recovered legacy run instead of inferring V9', async () => {
     const now = new Date('2026-08-27T03:00:00.000Z');
     const record = {
       id: 'run-a',
@@ -1126,14 +1215,10 @@ describe('EffectPromptService settings contract', () => {
     const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
     const service = new EffectPromptService(repository as never, projects as never, {} as never);
 
-    const output = await service.run('project-a', 'run-a');
-
-    expect(output.run.graphVersion).toBe('V9_SIX_BRANCH_STRATEGY');
-    expect(output.run.nodes.some(({ nodeId }) => nodeId === 'GLOBAL_FACT_ALLOCATION')).toBe(true);
-    expect(output.run.nodes.some(({ nodeId }) => nodeId === 'STRATEGY_PLANNING')).toBe(false);
+    await expect(service.run('project-a', 'run-a')).rejects.toMatchObject({ status: 410 });
   });
 
-  it('recognizes a versionless recovered run as V10 when V10-only stages exist', async () => {
+  it('rejects a versionless recovered legacy run instead of inferring V10', async () => {
     const now = new Date('2026-08-27T03:30:00.000Z');
     const record = {
       id: 'run-v10',
@@ -1167,11 +1252,7 @@ describe('EffectPromptService settings contract', () => {
     const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
     const service = new EffectPromptService(repository as never, projects as never, {} as never);
 
-    const output = await service.run('project-a', 'run-v10');
-
-    expect(output.run.graphVersion).toBe('V10_RELATION_COORDINATE_BLUEPRINT');
-    expect(output.run.nodes.some(({ nodeId }) => nodeId === 'PLAN_HOOK_COORDINATES')).toBe(true);
-    expect(output.run.nodes.some(({ nodeId }) => nodeId === 'PLAN_HOOK_STRATEGY')).toBe(false);
+    await expect(service.run('project-a', 'run-v10')).rejects.toMatchObject({ status: 410 });
   });
 
   it('rejects node details from a different persisted graph version', async () => {
@@ -1192,7 +1273,7 @@ describe('EffectPromptService settings contract', () => {
 
     await expect(
       service.nodeDetail('project-a', 'run-v9', 'PLAN_HOOK_COORDINATES'),
-    ).rejects.toMatchObject({ status: 400 });
+    ).rejects.toMatchObject({ status: 410 });
   });
 
   it('projects the persisted failed branch as the only failure and closes aborted siblings', async () => {
@@ -1204,24 +1285,24 @@ describe('EffectPromptService settings contract', () => {
       productId: 'product-a',
       operation: 'BATCH_GENERATE',
       targetItemId: null,
-      inputSnapshot: { graphVersion: 'V9_SIX_BRANCH_STRATEGY' },
+      inputSnapshot: { graphVersion: 'V11_VISUAL_USAGE_STRATEGY' },
       status: 'FAILED',
       progress: 80,
-      currentNode: 'GENERATE_OUTRO',
+      currentNode: 'EXACT_SELECTION_AND_SUPPLEMENT',
       warnings: [],
       errorCode: 'AI_REQUEST_REJECTED',
       errorMessage: 'Prompt AI 请求被拒绝',
       attemptCount: 2,
       stages: [
         {
-          nodeId: 'GENERATE_PRODUCT_DISPLAY',
+          nodeId: 'CREATIVE_EVALUATION_CLASSIFICATION',
           status: 'FAILED',
           summary: 'Prompt AI 请求被拒绝',
           warnings: [],
           errorMessage: 'Prompt AI 请求被拒绝',
         },
         {
-          nodeId: 'GENERATE_OUTRO',
+          nodeId: 'EXACT_SELECTION_AND_SUPPLEMENT',
           status: 'RUNNING',
           summary: '正在生成候选 Prompt',
           warnings: [],
@@ -1238,11 +1319,13 @@ describe('EffectPromptService settings contract', () => {
 
     const output = await service.run('project-a', 'run-a');
 
-    expect(output.run.currentNode).toBe('GENERATE_PRODUCT_DISPLAY');
+    expect(output.run.currentNode).toBe('CREATIVE_EVALUATION_CLASSIFICATION');
     expect(
-      output.run.nodes.find(({ nodeId }) => nodeId === 'GENERATE_PRODUCT_DISPLAY'),
+      output.run.nodes.find(({ nodeId }) => nodeId === 'CREATIVE_EVALUATION_CLASSIFICATION'),
     ).toMatchObject({ status: 'FAILED' });
-    expect(output.run.nodes.find(({ nodeId }) => nodeId === 'GENERATE_OUTRO')).toMatchObject({
+    expect(
+      output.run.nodes.find(({ nodeId }) => nodeId === 'EXACT_SELECTION_AND_SUPPLEMENT'),
+    ).toMatchObject({
       status: 'SKIPPED',
       summary: '任务已停止，该分支未完成',
       errorMessage: null,

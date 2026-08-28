@@ -14,6 +14,7 @@ from effect_prompt_generation.models import (
     CreativeFactAssignment,
     CreativeShardPlan,
     CreativeTask,
+    FactVisualUsage,
     EvidenceMode,
     FragmentType,
     InsightBinding,
@@ -159,6 +160,69 @@ async def test_ark_v11_creative_uses_one_coherent_schema_and_shared_constraints(
         primary_fact.fact_id,
         product_fact.fact_id,
     ]
+
+
+@pytest.mark.asyncio
+async def test_ark_compiles_visual_usage_for_every_confirmed_fact() -> None:
+    application = map_insight(
+        {
+            "productName": "广式腊肠",
+            "visualFeatures": "油润透亮的肉质质感",
+            "coreSellingPoints": ["纯猪肉无淀粉"],
+        }
+    )
+    seen: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        seen.update(payload)
+        policies = []
+        for fact in application.usable:
+            forbidden = fact.value == "纯猪肉无淀粉"
+            policies.append(
+                {
+                    "factId": fact.fact_id,
+                    "visualUsage": (
+                        "FORBIDDEN_VISUAL_PROOF"
+                        if forbidden
+                        else "DIRECTLY_VISIBLE"
+                    ),
+                    "visualInstruction": "" if forbidden else "展示真实可见外观",
+                    "contextInstruction": "只作商业背景" if forbidden else "",
+                    "compatibleFactIds": [],
+                    "forbiddenInferences": (
+                        ["不得用切面证明配方"] if forbidden else []
+                    ),
+                }
+            )
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "output_text": json.dumps({"policies": policies}, ensure_ascii=False),
+            },
+        )
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.example/v3",
+        api_key="test-key",
+        strategy_model="strategy-model",
+        candidate_model="creative-model",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        call = await provider.compile_fact_visual_strategy(application)
+    finally:
+        await provider.aclose()
+
+    assert len(call.value.policies) == len(application.usable)
+    assert any(
+        policy.visual_usage == FactVisualUsage.FORBIDDEN_VISUAL_PROOF
+        for policy in call.value.policies
+    )
+    payload_text = json.dumps(seen, ensure_ascii=False)
+    assert "纯猪肉无淀粉" in payload_text
+    assert "effect_prompt_v11_fact_visual_strategy" in payload_text
 
 
 @pytest.mark.asyncio

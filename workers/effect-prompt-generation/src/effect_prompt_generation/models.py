@@ -38,6 +38,7 @@ class GraphState(TypedDict):
     target_count: NotRequired[int]
     retained_count: NotRequired[int]
     insight_map: NotRequired[InsightApplicationMap]
+    fact_visual_strategy: NotRequired[FactVisualStrategy]
     shared_prompt: NotRequired[SharedPrompt]
     fact_allocations: NotRequired[dict[FragmentType, FragmentFactAllocation]]
     expected_fragment_types: NotRequired[list[FragmentType]]
@@ -297,6 +298,52 @@ class InsightApplicationMap(ApiModel):
         return {fact.fact_id: fact for fact in [*self.usable, *self.constraints]}
 
 
+class FactVisualUsage(StrEnum):
+    IDENTITY_ANCHOR = "IDENTITY_ANCHOR"
+    DIRECTLY_VISIBLE = "DIRECTLY_VISIBLE"
+    ACTION_DEMONSTRABLE = "ACTION_DEMONSTRABLE"
+    CONTEXT_ONLY = "CONTEXT_ONLY"
+    TEXT_ONLY = "TEXT_ONLY"
+    FORBIDDEN_VISUAL_PROOF = "FORBIDDEN_VISUAL_PROOF"
+
+
+class FactVisualPolicyDraft(ApiModel):
+    fact_id: str = Field(min_length=1, max_length=120)
+    visual_usage: FactVisualUsage
+    visual_instruction: str = Field(default="", max_length=240)
+    context_instruction: str = Field(default="", max_length=240)
+    compatible_fact_ids: list[str] = Field(default_factory=list, max_length=6)
+    forbidden_inferences: list[str] = Field(default_factory=list, max_length=4)
+
+    @field_validator(
+        "visual_instruction",
+        "context_instruction",
+    )
+    @classmethod
+    def clean_instruction(cls, value: str) -> str:
+        return " ".join(value.split())
+
+    @field_validator("compatible_fact_ids", "forbidden_inferences")
+    @classmethod
+    def unique_texts(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(" ".join(value.split()) for value in values if value.strip()))
+
+
+class FactVisualStrategyResponse(ApiModel):
+    policies: list[FactVisualPolicyDraft] = Field(min_length=1, max_length=80)
+
+
+class FactVisualStrategy(ApiModel):
+    source_content_hash: str = Field(min_length=1, max_length=128)
+    prompt_version: str = Field(min_length=1, max_length=120)
+    strategy_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    policies: list[FactVisualPolicyDraft] = Field(min_length=1, max_length=80)
+
+    @property
+    def by_id(self) -> dict[str, FactVisualPolicyDraft]:
+        return {policy.fact_id: policy for policy in self.policies}
+
+
 class PromptItem(ApiModel):
     id: str = Field(min_length=1, max_length=160)
     code: str = Field(min_length=1, max_length=40)
@@ -527,7 +574,8 @@ class PromptGenerationSnapshot(ApiModel):
         "V9_SIX_BRANCH_STRATEGY",
         "V10_RELATION_COORDINATE_BLUEPRINT",
         "V11_COHERENT_CREATIVE_GENERATION",
-    ] = "V9_SIX_BRANCH_STRATEGY"
+        "V11_VISUAL_USAGE_STRATEGY",
+    ] = "V11_VISUAL_USAGE_STRATEGY"
     project_id: str
     workflow_run_id: str
     product_id: str
@@ -595,6 +643,7 @@ class ClaimResponse(ApiModel):
 class NodeId(StrEnum):
     LOAD_AND_SNAPSHOT = "LOAD_AND_SNAPSHOT"
     INSIGHT_MAPPING = "INSIGHT_MAPPING"
+    FACT_VISUAL_STRATEGY_COMPILATION = "FACT_VISUAL_STRATEGY_COMPILATION"
     SHARED_PROMPT_COMPILATION = "SHARED_PROMPT_COMPILATION"
     STRATEGY_PLANNING = "STRATEGY_PLANNING"
     GLOBAL_FACT_ALLOCATION = "GLOBAL_FACT_ALLOCATION"
@@ -905,6 +954,7 @@ class StrategyCheckpoint(ApiModel):
         FragmentMarketingPlan
         | FragmentRelationshipPlan
         | FragmentDimensionCoordinatePlan
+        | FactVisualStrategy
     )
 
 
@@ -1016,6 +1066,8 @@ class CreativeFactAssignment(ApiModel):
     primary_fact_id: str = Field(min_length=1, max_length=120)
     support_fact_ids: list[str] = Field(default_factory=list, max_length=2)
     product_anchor_fact_ids: list[str] = Field(min_length=1, max_length=2)
+    visual_task_fact_id: str | None = Field(default=None, min_length=1, max_length=120)
+    business_context_fact_ids: list[str] = Field(default_factory=list, max_length=2)
     assignment_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
 
     @model_validator(mode="after")
@@ -1026,6 +1078,12 @@ class CreativeFactAssignment(ApiModel):
             if fact_id != self.primary_fact_id
         ]
         self.product_anchor_fact_ids = list(dict.fromkeys(self.product_anchor_fact_ids))
+        self.visual_task_fact_id = self.visual_task_fact_id or self.primary_fact_id
+        self.business_context_fact_ids = [
+            fact_id
+            for fact_id in dict.fromkeys(self.business_context_fact_ids)
+            if fact_id != self.visual_task_fact_id
+        ]
         return self
 
     @property
@@ -1034,7 +1092,13 @@ class CreativeFactAssignment(ApiModel):
             dict.fromkeys(
                 [
                     self.primary_fact_id,
+                    *(
+                        [self.visual_task_fact_id]
+                        if self.visual_task_fact_id is not None
+                        else []
+                    ),
                     *self.support_fact_ids,
+                    *self.business_context_fact_ids,
                     *self.product_anchor_fact_ids,
                 ]
             )

@@ -28,6 +28,10 @@ from .models import (
     CreativeShardPlan,
     CreativeTask,
     FactEvidence,
+    FactVisualPolicyDraft,
+    FactVisualStrategy,
+    FactVisualStrategyResponse,
+    FactVisualUsage,
     DimensionPools,
     DimensionCoordinate,
     EvidenceMode,
@@ -117,12 +121,17 @@ V10_COORDINATE_BASE_PROMPT = "v10_coordinate_base.system.prompt.txt"
 V10_COORDINATE_TASK_PROMPT = "v10_coordinate_task.user.prompt.txt"
 V10_BLUEPRINT_BASE_PROMPT = "v10_blueprint_base.system.prompt.txt"
 V10_BLUEPRINT_TASK_PROMPT = "v10_blueprint_task.user.prompt.txt"
-V11_CREATIVE_VERSION = "effect-prompt-v11-coherent-creative-v3"
-V11_EVALUATION_VERSION = "effect-prompt-v11-creative-evaluation-v2"
-V11_CREATIVE_BASE_PROMPT = "v11_creative_base.system.prompt.txt"
-V11_CREATIVE_TASK_PROMPT = "v11_creative_task.user.prompt.txt"
+V11_CREATIVE_VERSION = "effect-prompt-v11-coherent-creative-v4"
+V11_EVALUATION_VERSION = "effect-prompt-v11-creative-evaluation-v3"
+V11_CREATIVE_BASE_PROMPT = "v11_creative_base_v4.system.prompt.txt"
+V11_CREATIVE_TASK_PROMPT = "v11_creative_task_v4.user.prompt.txt"
+V11_CREATIVE_LEGACY_BASE_PROMPT = "v11_creative_base.system.prompt.txt"
+V11_CREATIVE_LEGACY_TASK_PROMPT = "v11_creative_task.user.prompt.txt"
 V11_EVALUATION_BASE_PROMPT = "v11_evaluation_base.system.prompt.txt"
 V11_EVALUATION_TASK_PROMPT = "v11_evaluation_task.user.prompt.txt"
+V11_FACT_VISUAL_STRATEGY_VERSION = "effect-prompt-v11-fact-visual-strategy-v1"
+V11_FACT_VISUAL_STRATEGY_BASE_PROMPT = "v11_fact_visual_strategy.system.prompt.txt"
+V11_FACT_VISUAL_STRATEGY_TASK_PROMPT = "v11_fact_visual_strategy.user.prompt.txt"
 
 RELATIONSHIP_STAGE_BY_TYPE: dict[FragmentType, str] = {
     FragmentType.HOOK: NodeId.PLAN_HOOK_RELATIONSHIPS.value,
@@ -201,12 +210,18 @@ class AiCallResult(Generic[TModel]):
 class AiProvider(Protocol):
     execution_mode: str
 
+    async def compile_fact_visual_strategy(
+        self,
+        application: InsightApplicationMap,
+    ) -> AiCallResult[FactVisualStrategyResponse]: ...
+
     async def generate_creatives(
         self,
         shard: CreativeShardPlan,
         *,
         application: InsightApplicationMap,
         shared_prompt: SharedPrompt,
+        fact_visual_strategy: FactVisualStrategy | None = None,
         regeneration_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeCandidateBatch]: ...
 
@@ -215,6 +230,7 @@ class AiProvider(Protocol):
         candidates: list[CreativeCandidate],
         *,
         application: InsightApplicationMap,
+        fact_visual_strategy: FactVisualStrategy | None = None,
     ) -> AiCallResult[CreativeEvaluationBatch]: ...
 
     async def plan_strategy(
@@ -270,30 +286,53 @@ class AiProvider(Protocol):
 class MockAiProvider:
     execution_mode = "MOCK"
 
+    async def compile_fact_visual_strategy(
+        self,
+        application: InsightApplicationMap,
+    ) -> AiCallResult[FactVisualStrategyResponse]:
+        return _mock_result(
+            _mock_fact_visual_strategy(application),
+            NodeId.FACT_VISUAL_STRATEGY_COMPILATION.value,
+            V11_FACT_VISUAL_STRATEGY_BASE_PROMPT,
+        )
+
     async def generate_creatives(
         self,
         shard: CreativeShardPlan,
         *,
         application: InsightApplicationMap,
         shared_prompt: SharedPrompt,
+        fact_visual_strategy: FactVisualStrategy | None = None,
         regeneration_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeCandidateBatch]:
         del shared_prompt, regeneration_context
         items = [
-            _mock_creative_candidate(task, application)
+            _mock_creative_candidate(task, application, fact_visual_strategy)
             for task in shard.tasks
         ]
-        return _mock_result(CreativeCandidateBatch(items=items), "COHERENT_CREATIVE_GENERATION", V11_CREATIVE_BASE_PROMPT)
+        return _mock_result(
+            CreativeCandidateBatch(items=items),
+            "COHERENT_CREATIVE_GENERATION",
+            (
+                V11_CREATIVE_BASE_PROMPT
+                if fact_visual_strategy is not None
+                else V11_CREATIVE_LEGACY_BASE_PROMPT
+            ),
+        )
 
     async def evaluate_creatives(
         self,
         candidates: list[CreativeCandidate],
         *,
         application: InsightApplicationMap,
+        fact_visual_strategy: FactVisualStrategy | None = None,
     ) -> AiCallResult[CreativeEvaluationBatch]:
         return _mock_result(
             CreativeEvaluationBatch(
-                items=[_mock_creative_evaluation(item, application) for item in candidates]
+                items=[
+                    _mock_creative_evaluation(item, application)
+                    for item in candidates
+                ]
             ),
             "CREATIVE_EVALUATION_CLASSIFICATION",
             V11_EVALUATION_BASE_PROMPT,
@@ -480,12 +519,55 @@ class ArkResponsesProvider:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    async def compile_fact_visual_strategy(
+        self,
+        application: InsightApplicationMap,
+    ) -> AiCallResult[FactVisualStrategyResponse]:
+        facts = [
+            fact.model_dump(
+                mode="json",
+                by_alias=True,
+                exclude={
+                    "eligible_fragment_types",
+                    "preferred_role",
+                    "exclusion_reason",
+                    "value_hash",
+                },
+            )
+            for fact in application.usable
+        ]
+        if not facts:
+            raise ProviderError(
+                "fact visual strategy requires confirmed insight facts",
+                retryable=False,
+                error_type=ProviderErrorType.REQUEST_REJECTED,
+            )
+        prompt = render_prompt(
+            V11_FACT_VISUAL_STRATEGY_TASK_PROMPT,
+            facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+        )
+        return await self._structured(
+            prompt,
+            FactVisualStrategyResponse,
+            schema_name="effect_prompt_v11_fact_visual_strategy",
+            stage=NodeId.FACT_VISUAL_STRATEGY_COMPILATION.value,
+            prompt_file=V11_FACT_VISUAL_STRATEGY_BASE_PROMPT,
+            model=self._candidate_model,
+            max_output_tokens=min(
+                self._candidate_max_output_tokens,
+                max(2048, len(facts) * 220),
+            ),
+            request_timeout=self._candidate_timeout,
+            instructions=load_prompt(V11_FACT_VISUAL_STRATEGY_BASE_PROMPT),
+        )
+
     async def generate_creatives(
         self,
         shard: CreativeShardPlan,
         *,
         application: InsightApplicationMap,
         shared_prompt: SharedPrompt,
+        fact_visual_strategy: FactVisualStrategy | None = None,
         regeneration_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeCandidateBatch]:
         assignments = {
@@ -497,11 +579,22 @@ class ArkResponsesProvider:
                 task,
                 assignment=assignments[task.slot_id],
                 application=application,
+                fact_visual_strategy=fact_visual_strategy,
             )
             for task in shard.tasks
         ]
+        creative_task_prompt = (
+            V11_CREATIVE_TASK_PROMPT
+            if fact_visual_strategy is not None
+            else V11_CREATIVE_LEGACY_TASK_PROMPT
+        )
+        creative_base_prompt = (
+            V11_CREATIVE_BASE_PROMPT
+            if fact_visual_strategy is not None
+            else V11_CREATIVE_LEGACY_BASE_PROMPT
+        )
         prompt = render_prompt(
-            V11_CREATIVE_TASK_PROMPT,
+            creative_task_prompt,
             task_briefs_json=json.dumps(
                 task_briefs,
                 ensure_ascii=False,
@@ -523,14 +616,14 @@ class ArkResponsesProvider:
             CreativeCandidateBatch,
             schema_name="effect_prompt_v11_coherent_creative_batch",
             stage="COHERENT_CREATIVE_GENERATION",
-            prompt_file=V11_CREATIVE_BASE_PROMPT,
+            prompt_file=creative_base_prompt,
             model=self._candidate_model,
             max_output_tokens=min(
                 self._candidate_max_output_tokens,
                 max(1536, len(shard.tasks) * 900),
             ),
             request_timeout=self._candidate_timeout,
-            instructions=load_prompt(V11_CREATIVE_BASE_PROMPT),
+            instructions=load_prompt(creative_base_prompt),
         )
         task_by_slot = {item.slot_id: item for item in shard.tasks}
         actual = [item.slot_id for item in call.value.items]
@@ -560,9 +653,14 @@ class ArkResponsesProvider:
                     attempts=call.metadata.attempts,
                     elapsed_ms=call.metadata.latency_ms,
                 )
-            if assignment.primary_fact_id not in fact_ids:
+            visual_fact_id = assignment.visual_task_fact_id or assignment.primary_fact_id
+            if visual_fact_id not in fact_ids:
                 raise ProviderError(
-                    "AI coherent creative response did not use its assigned primary fact",
+                    (
+                        "AI coherent creative response did not use its assigned visual task fact"
+                        if fact_visual_strategy is not None
+                        else "AI coherent creative response did not use its assigned primary fact"
+                    ),
                     retryable=False,
                     error_type=ProviderErrorType.RESPONSE_INVALID,
                     attempts=call.metadata.attempts,
@@ -595,6 +693,7 @@ class ArkResponsesProvider:
         candidates: list[CreativeCandidate],
         *,
         application: InsightApplicationMap,
+        fact_visual_strategy: FactVisualStrategy | None = None,
     ) -> AiCallResult[CreativeEvaluationBatch]:
         if not candidates or len(candidates) > 10:
             raise ProviderError(
@@ -617,6 +716,14 @@ class ArkResponsesProvider:
         prompt = render_prompt(
             V11_EVALUATION_TASK_PROMPT,
             facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+            fact_visual_strategy_json=json.dumps(
+                _evaluation_strategy_payload(
+                    referenced,
+                    fact_visual_strategy,
+                ),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
             candidates_json=json.dumps(
                 [item.model_dump(mode="json", by_alias=True) for item in candidates],
                 ensure_ascii=False,
@@ -1231,12 +1338,74 @@ def _mock_result(
     )
 
 
+def _mock_fact_visual_strategy(
+    application: InsightApplicationMap,
+) -> FactVisualStrategyResponse:
+    policies: list[FactVisualPolicyDraft] = []
+    visible_ids = [
+        fact.fact_id
+        for fact in application.usable
+        if fact.field
+        in {
+            InsightField.PRODUCT_NAME,
+            InsightField.PRODUCT_CATEGORY,
+            InsightField.CORE_SPECIFICATION,
+            InsightField.VISUAL_FEATURES,
+            InsightField.USAGE_SCENARIO,
+            InsightField.PURCHASE_SCENARIO,
+        }
+    ]
+    for fact in application.usable:
+        if fact.field in {InsightField.PRODUCT_NAME, InsightField.PRODUCT_CATEGORY}:
+            usage = FactVisualUsage.IDENTITY_ANCHOR
+            visual_instruction = "让当前产品或品类成为明确的主要画面主体"
+            context_instruction = ""
+        elif fact.field in {InsightField.CORE_SPECIFICATION, InsightField.VISUAL_FEATURES}:
+            usage = FactVisualUsage.DIRECTLY_VISIBLE
+            visual_instruction = "只呈现该事实中能够直接观察的外观或包装信息"
+            context_instruction = ""
+        elif fact.field in {InsightField.USAGE_SCENARIO, InsightField.PURCHASE_SCENARIO}:
+            usage = FactVisualUsage.ACTION_DEMONSTRABLE
+            visual_instruction = "通过一个连续、真实的使用或购买动作表达该场景"
+            context_instruction = ""
+        elif fact.field in {
+            InsightField.CORE_SELLING_POINT,
+            InsightField.TRUST_BACKING,
+        }:
+            usage = FactVisualUsage.FORBIDDEN_VISUAL_PROOF
+            visual_instruction = ""
+            context_instruction = "只作为商业方向，不要求画面证明该结论"
+        else:
+            usage = FactVisualUsage.CONTEXT_ONLY
+            visual_instruction = ""
+            context_instruction = "用于选择合理的场景、人物或叙事动机"
+        policies.append(
+            FactVisualPolicyDraft(
+                fact_id=fact.fact_id,
+                visual_usage=usage,
+                visual_instruction=visual_instruction,
+                context_instruction=context_instruction,
+                compatible_fact_ids=[
+                    fact_id for fact_id in visible_ids if fact_id != fact.fact_id
+                ][:4],
+                forbidden_inferences=(
+                    ["不得用成品外观、纹理、光泽或人物反应证明该事实"]
+                    if usage == FactVisualUsage.FORBIDDEN_VISUAL_PROOF
+                    else []
+                ),
+            )
+        )
+    return FactVisualStrategyResponse(policies=policies)
+
+
 def _mock_creative_candidate(
     task: CreativeTask,
     application: InsightApplicationMap,
+    fact_visual_strategy: FactVisualStrategy | None = None,
 ) -> CreativeCandidate:
     assignment = _creative_fact_assignment(task, application)
-    primary = application.by_id[assignment.primary_fact_id]
+    visual_fact_id = assignment.visual_task_fact_id or assignment.primary_fact_id
+    primary = application.by_id[visual_fact_id]
     anchor = application.by_id[assignment.product_anchor_fact_ids[0]]
     declared_fact_ids = list(
         dict.fromkeys([primary.fact_id, anchor.fact_id])
@@ -1312,6 +1481,7 @@ def _creative_task_brief(
     *,
     assignment: CreativeFactAssignment,
     application: InsightApplicationMap,
+    fact_visual_strategy: FactVisualStrategy | None,
 ) -> dict[str, Any]:
     def fact_payload(fact_id: str) -> dict[str, str]:
         fact = application.by_id[fact_id]
@@ -1321,20 +1491,68 @@ def _creative_task_brief(
             "value": fact.value,
         }
 
+    if fact_visual_strategy is None:
+        return {
+            "slotId": task.slot_id,
+            "ordinal": task.ordinal,
+            "round": task.round,
+            "targetDurationSeconds": task.target_duration_seconds,
+            "primaryFact": fact_payload(assignment.primary_fact_id),
+            "supportFacts": [
+                fact_payload(fact_id) for fact_id in assignment.support_fact_ids
+            ],
+            "productAnchorFacts": [
+                fact_payload(fact_id)
+                for fact_id in assignment.product_anchor_fact_ids
+            ],
+        }
+
+    policy_by_id = fact_visual_strategy.by_id
+    visual_fact_id = assignment.visual_task_fact_id or assignment.primary_fact_id
+    visual_policy = policy_by_id[visual_fact_id]
+    business_context = []
+    forbidden_inferences = list(visual_policy.forbidden_inferences)
+    for fact_id in assignment.business_context_fact_ids:
+        policy = policy_by_id[fact_id]
+        business_context.append(
+            {
+                **fact_payload(fact_id),
+                "instruction": policy.context_instruction,
+                "visualUsage": policy.visual_usage.value,
+            }
+        )
+        forbidden_inferences.extend(policy.forbidden_inferences)
+
     return {
         "slotId": task.slot_id,
         "ordinal": task.ordinal,
         "round": task.round,
         "targetDurationSeconds": task.target_duration_seconds,
-        "primaryFact": fact_payload(assignment.primary_fact_id),
-        "supportFacts": [
-            fact_payload(fact_id) for fact_id in assignment.support_fact_ids
-        ],
+        "visualTask": {
+            **fact_payload(visual_fact_id),
+            "instruction": visual_policy.visual_instruction,
+            "visualUsage": visual_policy.visual_usage.value,
+        },
+        "businessContext": business_context,
         "productAnchorFacts": [
             fact_payload(fact_id)
             for fact_id in assignment.product_anchor_fact_ids
         ],
+        "forbiddenInferences": list(dict.fromkeys(forbidden_inferences)),
     }
+
+
+def _evaluation_strategy_payload(
+    referenced_fact_ids: set[str],
+    strategy: FactVisualStrategy | None,
+) -> list[dict[str, Any]]:
+    if strategy is None:
+        return []
+    return [
+        policy.model_dump(mode="json", by_alias=True)
+        for policy in strategy.policies
+        if policy.fact_id in referenced_fact_ids
+    ]
 
 
 def _mock_creative_evaluation(

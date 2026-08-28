@@ -8,6 +8,7 @@ import {
   DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
+  EFFECT_PROMPT_GRAPH_VERSIONS,
   EFFECT_PROMPT_LEGACY_SCHEMA_VERSION,
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_NODE_DETAIL_SECTION_KINDS,
@@ -67,8 +68,15 @@ describe('effect prompt generation contract', () => {
     ).toEqual({ targetCount: 50, defaultDurationSeconds: 5 });
   });
 
-  it('publishes V11 batch and item-evaluation topologies while retaining historical graphs', () => {
-    expect(CURRENT_EFFECT_PROMPT_GRAPH_VERSION).toBe('V11_COHERENT_CREATIVE_GENERATION');
+  it('publishes the visual-strategy batch topology while retaining historical graphs', () => {
+    expect(EFFECT_PROMPT_GRAPH_VERSIONS).toEqual([
+      'V8_SINGLE_STRATEGY',
+      'V9_SIX_BRANCH_STRATEGY',
+      'V10_RELATION_COORDINATE_BLUEPRINT',
+      'V11_COHERENT_CREATIVE_GENERATION',
+      'V11_VISUAL_USAGE_STRATEGY',
+    ]);
+    expect(CURRENT_EFFECT_PROMPT_GRAPH_VERSION).toBe('V11_VISUAL_USAGE_STRATEGY');
     expect(effectPromptGraphNodeIds('V10_RELATION_COORDINATE_BLUEPRINT')).toContain(
       'BLUEPRINT_ORTHOGONAL_GATE',
     );
@@ -77,6 +85,7 @@ describe('effect prompt generation contract', () => {
     ).toEqual([
       'LOAD_AND_SNAPSHOT',
       'INSIGHT_MAPPING',
+      'FACT_VISUAL_STRATEGY_COMPILATION',
       'SHARED_PROMPT_COMPILATION',
       'COHERENT_CREATIVE_GENERATION',
       'CREATIVE_EVALUATION_CLASSIFICATION',
