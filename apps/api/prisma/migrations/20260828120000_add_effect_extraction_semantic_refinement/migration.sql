@@ -1,0 +1,1 @@
+ALTER TYPE "EffectExtractionBranch" ADD VALUE 'SEMANTIC_REFINEMENT';

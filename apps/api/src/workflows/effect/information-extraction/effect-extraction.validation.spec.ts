@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS } from '@ai-marketing/contracts';
 
 import {
   canonicalHash,
@@ -9,6 +10,7 @@ import {
   isSupportedExtractionMaterial,
   manualOverridesForResult,
   safeTokenEquals,
+  toEditableEffectExtractionResultV2,
   toEffectExtractionResultV2,
 } from './effect-extraction.validation';
 
@@ -83,7 +85,9 @@ describe('effect extraction validation', () => {
   });
 
   it('accepts only the legacy schema-v2 shape that is missing resolution', () => {
-    const { resolution: _resolution, ...legacyResult } = validResult;
+    const legacyResult = Object.fromEntries(
+      Object.entries(validResult).filter(([key]) => key !== 'resolution'),
+    );
     expect(isLegacyEffectExtractionResultWithoutResolution(legacyResult)).toBe(true);
     expect(isLegacyEffectExtractionResultWithoutResolution(validResult)).toBe(false);
     expect(
@@ -100,19 +104,67 @@ describe('effect extraction validation', () => {
     ).toBe(false);
   });
 
-  it('accepts at most three core selling points', () => {
+  it('keeps AI generation limits separate from the editable draft boundary', () => {
     expect(
       isEffectExtractionResult({
         ...validResult,
-        coreSellingPoints: Array.from({ length: 3 }, (_, index) => `卖点${index + 1}`),
+        coreSellingPoints: Array.from(
+          { length: EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS },
+          (_, index) => `卖点${index + 1}`,
+        ),
       }),
     ).toBe(true);
     expect(
       isEffectExtractionResult({
         ...validResult,
-        coreSellingPoints: Array.from({ length: 4 }, (_, index) => `卖点${index + 1}`),
+        coreSellingPoints: Array.from(
+          { length: EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS + 1 },
+          (_, index) => `卖点${index + 1}`,
+        ),
       }),
     ).toBe(false);
+  });
+
+  it('preserves manually appended items when validating an editable v2 result', () => {
+    const edited = {
+      ...validResult,
+      coreSellingPoints: ['一', '二', '三', '人工补充卖点'],
+      usageScenarios: ['场景一', '场景二', '场景三', '场景四', '场景五', '人工补充场景'],
+    };
+    const normalized = toEditableEffectExtractionResultV2(edited, {
+      durationSeconds: 20,
+      aspectRatio: '9:16',
+      resolution: '1080P',
+      deliveryChannels: '抖音',
+      disabledElements: ['绝对化用语'],
+      visualStyleBaseline: '国潮新中式',
+    });
+
+    expect(normalized).toMatchObject({
+      coreSellingPoints: edited.coreSellingPoints,
+      usageScenarios: edited.usageScenarios,
+    });
+  });
+
+  it('rejects an over-limit current draft instead of silently applying AI generation limits', () => {
+    const overLimit = {
+      ...validResult,
+      usageScenarios: Array.from(
+        { length: EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS + 1 },
+        (_, index) => `场景${index + 1}`,
+      ),
+    };
+    const candidate = toEditableEffectExtractionResultV2(overLimit, {
+      durationSeconds: 20,
+      aspectRatio: '9:16',
+      resolution: '1080P',
+      deliveryChannels: '抖音',
+      disabledElements: ['绝对化用语'],
+      visualStyleBaseline: '国潮新中式',
+    });
+
+    expect(isEffectExtractionResult(candidate)).toBe(false);
+    expect(candidate).toMatchObject({ usageScenarios: overLimit.usageScenarios });
   });
 
   it('adapts v1 results without dropping overflow selling points', () => {

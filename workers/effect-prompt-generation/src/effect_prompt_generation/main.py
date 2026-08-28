@@ -77,6 +77,7 @@ async def serve(settings: WorkerSettings) -> None:
         similarity_mode=settings.prompt_similarity_mode,
         embedding_batch_size=settings.prompt_embedding_batch_size,
         embedding_max_concurrency=settings.prompt_embedding_max_concurrency,
+        ai_max_concurrency=settings.prompt_max_concurrency,
         shard_size=settings.prompt_shard_size,
         max_ai_calls_per_run=settings.prompt_max_ai_calls_per_run,
     )

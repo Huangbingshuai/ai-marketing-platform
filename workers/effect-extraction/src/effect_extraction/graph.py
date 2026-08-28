@@ -54,6 +54,12 @@ def build_graph(
         await pipeline.fuse_sources(runtime.context)
         return {}
 
+    async def semantic_refinement(
+        state: GraphState, runtime: Runtime[RuntimeContext]
+    ) -> dict[str, str]:
+        await pipeline.refine_semantics(runtime.context)
+        return {}
+
     async def normalize_and_store(
         state: GraphState, runtime: Runtime[RuntimeContext]
     ) -> dict[str, str]:
@@ -66,11 +72,13 @@ def build_graph(
     builder.add_node("commerce", commerce)
     builder.add_node("form", form)
     builder.add_node("fuse_sources", fuse_sources)
+    builder.add_node("semantic_refinement", semantic_refinement)
     builder.add_node("normalize_and_store", normalize_and_store)
     builder.add_edge(START, "load_snapshot")
     for branch in BRANCH_NODES:
         builder.add_edge("load_snapshot", branch)
     builder.add_edge(list(BRANCH_NODES), "fuse_sources")
-    builder.add_edge("fuse_sources", "normalize_and_store")
+    builder.add_edge("fuse_sources", "semantic_refinement")
+    builder.add_edge("semantic_refinement", "normalize_and_store")
     builder.add_edge("normalize_and_store", END)
     return builder.compile()

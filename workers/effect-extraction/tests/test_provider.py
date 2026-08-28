@@ -3,8 +3,19 @@ import json
 import httpx
 import pytest
 
-from effect_extraction.models import ExtractionCandidate, ExtractionResult
-from effect_extraction.providers import ArkResponsesProvider, ProviderError, ProviderErrorType
+from effect_extraction.models import (
+    ExtractionCandidate,
+    ExtractionResult,
+    SemanticField,
+    SemanticGroup,
+    SemanticRefinementDecision,
+    SemanticRelation,
+)
+from effect_extraction.providers import (
+    ArkResponsesProvider,
+    ProviderError,
+    ProviderErrorType,
+)
 
 
 @pytest.mark.asyncio
@@ -47,7 +58,7 @@ async def test_ark_provider_sends_multimodal_strict_schema_without_store() -> No
     assert result.value.visual_features == "红色包装"
     assert result.metadata.stage == "IMAGE"
     assert result.metadata.model == "doubao-seed-2-1-turbo"
-    assert result.metadata.prompt_version == "2.0.0"
+    assert result.metadata.prompt_version == "3.0.0"
     assert result.metadata.input_tokens is None
     assert result.metadata.output_tokens is None
     assert result.metadata.total_tokens is None
@@ -261,3 +272,67 @@ async def test_ark_provider_records_safe_timeout_diagnostics(
     assert str(error) == "AI request timed out"
     assert "sensitive" not in str(error)
     assert "secret-must-not-leak" not in str(error)
+
+
+@pytest.mark.asyncio
+async def test_ark_provider_uses_embedding_recall_and_one_strict_semantic_request() -> None:
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append((request.url.path, payload))
+        if request.url.path.endswith("/embeddings/multimodal"):
+            return httpx.Response(
+                200,
+                json={"data": {"embedding": [[1.0, 0.0]]}, "usage": {"input_tokens": 4}},
+            )
+        decision = SemanticRefinementDecision(
+            groups=[
+                SemanticGroup(
+                    field=SemanticField.CORE_PAIN_POINTS,
+                    member_fact_ids=["corePainPoints-01", "corePainPoints-02"],
+                    canonical_value="家庭日常佐餐需要方便、有风味的腊味食材",
+                    relation=SemanticRelation.SAME_MEANING,
+                )
+            ]
+        )
+        return httpx.Response(200, json={"output_text": decision.model_dump_json(by_alias=True)})
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.test/api/v3/",
+        api_key="secret",
+        model="seed-model",
+        semantic_model="semantic-model",
+        embedding_model="embedding-model",
+        transport=httpx.MockTransport(handler),
+    )
+    facts = [
+        {"factId": "corePainPoints-01", "field": "corePainPoints", "value": "日常佐餐不便"},
+        {"factId": "corePainPoints-02", "field": "corePainPoints", "value": "家常备餐不便"},
+    ]
+    try:
+        embedding = await provider.embed_semantic_texts(["核心痛点：日常佐餐不便"])
+        decision = await provider.refine_semantics(
+            facts=facts,
+            candidate_pairs=[
+                {
+                    "leftFactId": "corePainPoints-01",
+                    "rightFactId": "corePainPoints-02",
+                    "similarity": 0.82,
+                }
+            ],
+        )
+    finally:
+        await provider.aclose()
+
+    assert embedding.vectors == [(1.0, 0.0)]
+    assert embedding.model == "embedding-model"
+    assert decision.metadata.stage == "SEMANTIC_REFINEMENT"
+    assert decision.metadata.model == "semantic-model"
+    assert decision.value.groups[0].member_fact_ids == [
+        "corePainPoints-01",
+        "corePainPoints-02",
+    ]
+    semantic_payload = requests[-1][1]
+    assert semantic_payload["store"] is False
+    assert semantic_payload["text"]["format"]["name"] == "effect_semantic_refinement"  # type: ignore[index]

@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 
 from effect_extraction.models import ExtractionCandidate, ExtractionResult
-from effect_extraction.prompt_loader import load_prompt_template, load_prompt_version, render_prompt
+from effect_extraction.prompt_loader import (
+    load_prompt_template,
+    load_prompt_version,
+    render_prompt,
+)
 
 
 def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
@@ -13,7 +17,7 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     normalization = load_prompt_template("result_normalization.prompt.txt")
 
     assert load_prompt_version("document_extraction.prompt.txt") == "2.0.0"
-    assert load_prompt_version("image_analysis.prompt.txt") == "2.0.0"
+    assert load_prompt_version("image_analysis.prompt.txt") == "3.0.0"
     assert load_prompt_version("commerce_extraction.prompt.txt") == "1.0.0"
     assert load_prompt_version("result_normalization.prompt.txt") == "2.0.0"
 
@@ -32,9 +36,10 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
         assert '"disabledElements"' in prompt
 
     assert "无证据的字符串、数字或数组均为 null" in document.template
-    assert "应补充建议价格带、目标受众、痛点、动因、营销目标和场景" in image.template
+    assert "不扩写完整营销策略" in image.template
+    assert "`purchaseScenarios`" in image.template
+    assert "固定为 null" in image.template
     assert "提供有边界、可执行的补全" in normalization.template
-    assert "建议" in image.template and "需确认" in image.template
     assert "建议" in normalization.template and "需确认" in normalization.template
     assert '"priceRange": null' in document.template
     assert '"visualFeatures": "红褐色长条腊肠' in image.template

@@ -534,6 +534,8 @@ describe('EffectExtractionService', () => {
     };
     const editedResult = {
       ...extractionResult,
+      coreSellingPoints: ['卖点一', '卖点二', '卖点三', '人工补充卖点'],
+      usageScenarios: ['蒸制', '煲仔饭', '炒制', '家庭聚餐', '日常佐餐', '人工补充场景'],
       durationSeconds: 40,
       aspectRatio: '3:4',
       deliveryChannels: '快手',
@@ -818,7 +820,9 @@ describe('EffectExtractionService', () => {
   });
 
   it('completes a legacy schema-v2 worker result without resolution', async () => {
-    const { resolution: _resolution, ...legacyResult } = extractionResult;
+    const legacyResult = Object.fromEntries(
+      Object.entries(extractionResult).filter(([key]) => key !== 'resolution'),
+    );
     const storedResult = {
       id: 'result-a',
       projectId: 'project-a',

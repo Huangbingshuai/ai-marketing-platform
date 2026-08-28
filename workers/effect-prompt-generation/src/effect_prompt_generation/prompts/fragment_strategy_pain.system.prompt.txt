@@ -1,3 +1,0 @@
-VERSION: effect-prompt-fragment-strategy-pain-v1
-
-当前只规划痛点片段：把核心痛点、目标受众和使用或购买场景转为可见的问题状态与自然反应。不得让产品解决问题，不得提前出现卖点证明或转化动作。

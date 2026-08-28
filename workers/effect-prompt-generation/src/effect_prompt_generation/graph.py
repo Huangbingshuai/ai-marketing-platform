@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable
 from typing import Literal
 
 from langgraph.graph import END, START, StateGraph
@@ -26,6 +27,20 @@ from .pipeline import (
     MAX_REPLENISHMENT_ROUNDS,
     PromptGenerationPipeline,
 )
+
+
+async def _gather_cancel_on_error(calls: list[Awaitable[object]]) -> None:
+    tasks: list[asyncio.Future[object]] = [
+        asyncio.ensure_future(call) for call in calls
+    ]
+    try:
+        await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 def build_graph(
@@ -215,11 +230,11 @@ def build_graph(
             round_number=0,
         )
         if pending:
-            await asyncio.gather(
-                *(
+            await _gather_cancel_on_error(
+                [
                     pipeline.generate_v11_creative_shard(runtime.context, shard)
                     for shard in pending
-                )
+                ]
             )
         await pipeline.complete_v11_creative_generation(
             runtime.context,
@@ -230,11 +245,11 @@ def build_graph(
             round_number=0,
         )
         if classifications:
-            await asyncio.gather(
-                *(
+            await _gather_cancel_on_error(
+                [
                     pipeline.evaluate_v11_classification_shard(runtime.context, shard)
                     for shard in classifications
-                )
+                ]
             )
         await pipeline.complete_v11_classification(
             runtime.context,
@@ -247,11 +262,11 @@ def build_graph(
         supplement_round = 1
         while needed and supplement_round <= MAX_REPLENISHMENT_ROUNDS:
             if supplement:
-                await asyncio.gather(
-                    *(
+                await _gather_cancel_on_error(
+                    [
                         pipeline.generate_v11_creative_shard(runtime.context, shard)
                         for shard in supplement
-                    )
+                    ]
                 )
             await pipeline.complete_v11_creative_generation(
                 runtime.context,
@@ -262,13 +277,13 @@ def build_graph(
                 round_number=supplement_round,
             )
             if classifications:
-                await asyncio.gather(
-                    *(
+                await _gather_cancel_on_error(
+                    [
                         pipeline.evaluate_v11_classification_shard(
                             runtime.context, shard
                         )
                         for shard in classifications
-                    )
+                    ]
                 )
             await pipeline.complete_v11_classification(
                 runtime.context,

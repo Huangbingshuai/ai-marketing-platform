@@ -9,6 +9,7 @@ import {
   EFFECT_EXTRACTION_BRANCHES,
   EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS,
   EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS,
+  EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
   EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS,
   EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS,
   EFFECT_EXTRACTION_MAX_TRUST_BACKINGS,
@@ -216,34 +217,35 @@ export const manualOverrideFieldNames = (value: unknown): string[] => {
     .sort();
 };
 
+const hasExactEffectExtractionResultKeys = (value: unknown): value is Record<string, unknown> =>
+  Boolean(
+    value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === RESULT_KEYS.length &&
+    RESULT_KEYS.every((key) => key in value),
+  );
+
 export const isEffectExtractionResult = (value: unknown): value is EffectExtractionResult => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  if (
-    Object.keys(record).length !== RESULT_KEYS.length ||
-    RESULT_KEYS.some((key) => !(key in record))
-  )
-    return false;
+  if (!hasExactEffectExtractionResultKeys(value)) return false;
+  const record = value;
   return (
     validString(record.productCategory) &&
     validString(record.productName) &&
     validString(record.coreSpecification) &&
     validString(record.priceRange) &&
     validString(record.visualFeatures) &&
-    validStringArray(record.coreSellingPoints, EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS) &&
+    validStringArray(record.coreSellingPoints, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
     record.coreSellingPoints.length >= 1 &&
-    validStringArray(
-      record.secondarySellingPoints,
-      EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS,
-    ) &&
-    validStringArray(record.trustBackings, EFFECT_EXTRACTION_MAX_TRUST_BACKINGS) &&
+    validStringArray(record.secondarySellingPoints, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
+    validStringArray(record.trustBackings, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
     validString(record.targetAudience) &&
-    validStringArray(record.corePainPoints, EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS) &&
-    validStringArray(record.decisionDrivers, EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS) &&
+    validStringArray(record.corePainPoints, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
+    validStringArray(record.decisionDrivers, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
     validString(record.marketingGoal) &&
-    validStringArray(record.usageScenarios, EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS) &&
-    validStringArray(record.purchaseScenarios, EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS) &&
-    validStringArray(record.emotionalScenarios, EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS) &&
+    validStringArray(record.usageScenarios, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
+    validStringArray(record.purchaseScenarios, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
+    validStringArray(record.emotionalScenarios, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
     Number.isInteger(record.durationSeconds) &&
     Number(record.durationSeconds) >= 1 &&
     Number(record.durationSeconds) <= 3600 &&
@@ -256,6 +258,27 @@ export const isEffectExtractionResult = (value: unknown): value is EffectExtract
     validString(record.visualStyleBaseline) &&
     true
   );
+};
+
+export const toEditableEffectExtractionResultV2 = (
+  value: unknown,
+  defaults: EffectExtractionResultDefaults,
+): unknown => {
+  if (!hasExactEffectExtractionResultKeys(value))
+    return toEffectExtractionResultV2(value, defaults);
+  if (!isEffectExtractionResult(value)) return value;
+  return {
+    ...value,
+    coreSellingPoints: [...value.coreSellingPoints],
+    secondarySellingPoints: [...value.secondarySellingPoints],
+    trustBackings: [...value.trustBackings],
+    corePainPoints: [...value.corePainPoints],
+    decisionDrivers: [...value.decisionDrivers],
+    usageScenarios: [...value.usageScenarios],
+    purchaseScenarios: [...value.purchaseScenarios],
+    emotionalScenarios: [...value.emotionalScenarios],
+    disabledElements: [...value.disabledElements],
+  };
 };
 
 /**

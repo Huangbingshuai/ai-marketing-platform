@@ -11,7 +11,8 @@ import type {
 import type { EffectExtractionInputSnapshot } from './effect-extraction.types';
 
 type DetailBranchRecord = {
-  branch: 'DOCUMENT' | 'IMAGE' | 'COMMERCE' | 'FORM' | 'FUSION' | 'NORMALIZATION';
+  branch:
+    'DOCUMENT' | 'IMAGE' | 'COMMERCE' | 'FORM' | 'FUSION' | 'SEMANTIC_REFINEMENT' | 'NORMALIZATION';
   status: EffectExtractionNodeStatus;
   structuredOutput?: unknown;
   updatedAt: Date;
@@ -79,7 +80,22 @@ const SOURCE_LABELS: Record<string, string> = {
   COMMERCE: '电商抓取',
   IMAGE: '图片识别',
   FUSION: '多源融合',
+  SEMANTIC_REFINEMENT: '语义整理',
   NORMALIZATION: '标准化',
+};
+
+const SEMANTIC_FIELD_LABELS: Record<string, string> = {
+  corePainPoints: '核心痛点',
+  decisionDrivers: '决策动因',
+  usageScenarios: '使用场景',
+  purchaseScenarios: '购买场景',
+  emotionalScenarios: '情绪场景',
+};
+
+const SEMANTIC_RELATION_LABELS: Record<string, string> = {
+  SAME_MEANING: '含义相同',
+  PARENT_CHILD: '包含关系',
+  SAME_FAMILY: '同一主题',
 };
 
 const MATERIAL_TYPE_LABELS: Record<string, string> = {
@@ -168,6 +184,46 @@ const candidateFields = (
       field(key, label, record[key], provenanceLabel(sources[key]), includeEmpty),
     ),
   );
+};
+
+const semanticSources = (
+  metadata: JsonRecord,
+  fallbackStatus: EffectExtractionNodeStatus,
+): EffectExtractionNodeDetailSource[] => {
+  const groups = Array.isArray(metadata.semanticGroups) ? metadata.semanticGroups : [];
+  return groups.flatMap((value, index) => {
+    if (!isRecord(value)) return [];
+    const canonicalValue = publicText(value.canonicalValue, 240);
+    const fieldKey = publicText(value.field, 80);
+    const memberValues = Array.isArray(value.memberValues)
+      ? value.memberValues
+          .map((item) => publicText(item, 240))
+          .filter(Boolean)
+          .slice(0, 20)
+      : [];
+    if (!canonicalValue || memberValues.length < 2) return [];
+    const relation = publicText(value.relation, 80);
+    return [
+      {
+        name: canonicalValue,
+        status: fallbackStatus,
+        fields: fields([
+          field(
+            `semantic-group-${index}-field`,
+            '归并类型',
+            SEMANTIC_FIELD_LABELS[fieldKey] ?? fieldKey,
+          ),
+          field(
+            `semantic-group-${index}-relation`,
+            '语义关系',
+            SEMANTIC_RELATION_LABELS[relation] ?? relation,
+          ),
+          field(`semantic-group-${index}-members`, '原始表达', memberValues),
+        ]),
+        warnings: [],
+      },
+    ];
+  });
 };
 
 const payload = (
@@ -466,6 +522,29 @@ export const presentExtractionNodeDetail = (
       summary: branch ? '已合并来自不同资料的产品信息' : '等待合并产品信息',
       fields: candidateFields(output.candidate, output.metadata.provenance, true),
       sources: [],
+    };
+  }
+
+  if (nodeId === 'SEMANTIC_REFINEMENT') {
+    const sources = semanticSources(output.metadata, execution.status);
+    const inputCount = Number(output.metadata.inputCount);
+    const outputCount = Number(output.metadata.outputCount);
+    const summary = !branch
+      ? '等待整理含义重复的信息'
+      : execution.status === 'PARTIAL'
+        ? '语义整理未完成，已保留原始提炼信息'
+        : execution.status === 'FAILED'
+          ? '语义整理失败，已保留原始提炼信息'
+          : sources.length > 0
+            ? `已归并 ${sources.length} 组语义重复信息`
+            : Number.isFinite(inputCount) && Number.isFinite(outputCount)
+              ? `已检查 ${inputCount} 条信息，未发现需要归并的重复表达`
+              : '语义整理已完成';
+    return {
+      ...base,
+      summary,
+      fields: [],
+      sources,
     };
   }
 

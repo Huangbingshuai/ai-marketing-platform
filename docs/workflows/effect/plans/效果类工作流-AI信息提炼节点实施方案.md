@@ -174,20 +174,23 @@ Ark Provider 使用 `ARK_BASE_URL`、`ARK_API_KEY` 和部署级分节点模型�
        ↓ waiting edge
     多源融合
        ↓
+    语义整理
+       ↓
     标准化与结果保存
 ```
 
 七个固定节点 ID 为：
 
-| 节点 ID             | 展示名称         | 拓扑分组 |
-| ------------------- | ---------------- | -------- |
-| `LOAD_AND_SNAPSHOT` | 资料快照         | 输入     |
-| `DOCUMENT`          | 文档解析         | 并行分支 |
-| `IMAGE`             | 图片识别         | 并行分支 |
-| `COMMERCE`          | 电商链接         | 并行分支 |
-| `FORM`              | 表单配置         | 并行分支 |
-| `FUSION`            | 多源融合         | 融合     |
-| `NORMALIZATION`     | 标准化与结果保存 | 输出     |
+| 节点 ID               | 展示名称         | 拓扑分组 |
+| --------------------- | ---------------- | -------- |
+| `LOAD_AND_SNAPSHOT`   | 资料快照         | 输入     |
+| `DOCUMENT`            | 文档解析         | 并行分支 |
+| `IMAGE`               | 图片识别         | 并行分支 |
+| `COMMERCE`            | 电商链接         | 并行分支 |
+| `FORM`                | 表单配置         | 并行分支 |
+| `FUSION`              | 多源融合         | 融合     |
+| `SEMANTIC_REFINEMENT` | 语义整理         | 整理     |
+| `NORMALIZATION`       | 标准化与结果保存 | 输出     |
 
 节点公开状态统一为 `PENDING`、`RUNNING`、`SUCCEEDED`、`PARTIAL`、`SKIPPED`、`FAILED`，分别对应等待、运行中、成功、部分成功、已跳过和失败。`EffectExtractionRun` 增加完整 `nodes: EffectExtractionNodeExecution[]`，每个节点只公开 `nodeId`、`status`、安全化 `warnings` 和安全化 `errorMessage`。响应不得包含 Markdown、图片内容、模型输入、结构化中间结果、对象存储地址或 Worker 内部字段。
 

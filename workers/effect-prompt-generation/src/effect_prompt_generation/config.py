@@ -76,7 +76,7 @@ class WorkerSettings(BaseSettings):
         le=8192,
     )
     ark_prompt_evaluation_max_output_tokens: int = Field(
-        default=3072,
+        default=4096,
         alias="ARK_PROMPT_EVALUATION_MAX_OUTPUT_TOKENS",
         ge=1024,
         le=8192,

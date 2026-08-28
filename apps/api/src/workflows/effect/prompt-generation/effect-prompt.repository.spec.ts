@@ -753,6 +753,46 @@ describe('EffectPromptRepository', () => {
     expect(updateOutbox).toHaveBeenCalledOnce();
   });
 
+  it('republishes a queued Prompt run when its published message was never claimed', async () => {
+    const now = new Date('2026-08-26T10:00:00.000Z');
+    const staleRun = {
+      ...runRecord(),
+      status: 'QUEUED',
+      updatedAt: new Date('2026-08-26T09:58:00.000Z'),
+    };
+    const update = vi.fn().mockResolvedValue({});
+    const updateOutbox = vi.fn().mockResolvedValue({ count: 1 });
+    const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([{ id: runId }]),
+      effectPromptRun: { findFirst: vi.fn().mockResolvedValue(staleRun), update },
+      jobOutbox: { updateMany: updateOutbox },
+    };
+    const repository = new EffectPromptRepository({
+      effectPromptRun: {
+        findMany: vi.fn().mockResolvedValue([{ id: runId, projectId }]),
+      },
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await expect(repository.recoverStaleQueuedDispatches(now)).resolves.toBe(1);
+    expect(updateOutbox).toHaveBeenCalledWith({
+      where: {
+        projectId,
+        jobType: 'EFFECT_PROMPT_GENERATION',
+        aggregateId: runId,
+        status: 'PUBLISHED',
+      },
+      data: expect.objectContaining({ status: 'PENDING', publishedAt: null }),
+    });
+    expect(update).toHaveBeenCalledWith({
+      where: { projectId_id: { projectId, id: runId } },
+      data: expect.objectContaining({
+        errorCode: 'WORKER_CLAIM_TIMEOUT',
+        errorMessage: 'Prompt 任务消息已自动重新投递',
+      }),
+    });
+  });
+
   it('fails an expired Prompt worker lease after the third attempt', async () => {
     const now = new Date('2026-08-26T10:00:00.000Z');
     const update = vi.fn().mockResolvedValue({});

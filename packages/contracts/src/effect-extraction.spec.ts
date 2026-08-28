@@ -7,6 +7,7 @@ import {
   EFFECT_EXTRACTION_BRANCHES,
   EFFECT_EXTRACTION_GRAPH_EDGES,
   EFFECT_EXTRACTION_GRAPH_NODES,
+  EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
   EFFECT_EXTRACTION_PRODUCT_STATUSES,
   EFFECT_EXTRACTION_SCHEMA_VERSION,
   type EffectExtractionResult,
@@ -40,10 +41,18 @@ describe('effect extraction contract', () => {
   it('keeps the public result aligned with the canonical JSON schema', () => {
     const schema = JSON.parse(
       readFileSync(resolve(process.cwd(), 'schemas/effect-extraction-result.schema.json'), 'utf8'),
-    ) as { required: string[]; additionalProperties: boolean };
+    ) as {
+      required: string[];
+      additionalProperties: boolean;
+      $defs: Record<string, { maxItems?: number }>;
+    };
 
     expect(Object.keys(result).sort()).toEqual([...schema.required].sort());
     expect(schema.additionalProperties).toBe(false);
+    expect(schema.$defs.editableRequiredItems?.maxItems).toBe(
+      EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
+    );
+    expect(schema.$defs.editableItems?.maxItems).toBe(EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS);
   });
 
   it('exposes stable v2 statuses and branch names', () => {
@@ -56,13 +65,14 @@ describe('effect extraction contract', () => {
       'COMMERCE',
       'FORM',
       'FUSION',
+      'SEMANTIC_REFINEMENT',
       'NORMALIZATION',
     ]);
   });
 
-  it('exposes one stable execution definition for the seven-node graph', () => {
+  it('exposes one stable execution definition for the eight-node graph', () => {
     const nodeIds = EFFECT_EXTRACTION_GRAPH_NODES.map((node) => node.id);
-    expect(nodeIds).toHaveLength(7);
+    expect(nodeIds).toHaveLength(8);
     expect(new Set(nodeIds).size).toBe(nodeIds.length);
     expect(nodeIds).toEqual([
       'LOAD_AND_SNAPSHOT',
@@ -71,9 +81,10 @@ describe('effect extraction contract', () => {
       'COMMERCE',
       'FORM',
       'FUSION',
+      'SEMANTIC_REFINEMENT',
       'NORMALIZATION',
     ]);
-    expect(EFFECT_EXTRACTION_GRAPH_EDGES).toHaveLength(9);
+    expect(EFFECT_EXTRACTION_GRAPH_EDGES).toHaveLength(10);
     expect(
       EFFECT_EXTRACTION_GRAPH_EDGES.every(
         ({ from, to }) => nodeIds.includes(from) && nodeIds.includes(to),

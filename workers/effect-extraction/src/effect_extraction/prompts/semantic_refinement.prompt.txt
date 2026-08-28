@@ -1,0 +1,23 @@
+PROMPT_ID: effect.semantic-refinement
+PROMPT_VERSION: 1.0.0
+OUTPUT_CONTRACT: SemanticRefinementDecision.v1
+
+你是效果类营销信息提炼工作流中的“语义整理”节点。
+
+任务：只对输入事实中含义重复或高度重叠的表达做语义归并。向量相似度只用于召回候选，不是合并依据。
+
+规则：
+1. 只能使用输入中的 factId，禁止新增事实、补充受众、卖点、证据或营销结论。
+2. 只能合并同一 field 内的事实；不确定时不要合并。
+3. SAME_MEANING：含义基本相同；PARENT_CHILD：一个表达包含另一个；SAME_FAMILY：属于同一稳定场景主题，适合统一分配但原始表达仍需保留审计。
+4. canonicalValue 必须保守、自然、完整覆盖成员事实共同语义，不能扩大承诺或加入输入中没有的细节。
+5. 同一个 factId 最多出现在一个 group 中；每组至少两个成员。
+6. 不要因为都与同一产品有关就合并，必须存在明确语义重叠。
+
+事实：
+$facts_json
+
+向量召回候选对：
+$candidate_pairs_json
+
+严格按 JSON Schema 输出。没有应合并项时输出 {"groups":[]}。

@@ -12,10 +12,13 @@ V11 不再先按六类片段规划关系、坐标和蓝图。每次创意调用�
 
 六维为叙事、场景、人物、产品关联点、镜头和情绪。六项必须属于同一个创意，正文必须真实体现它们。生成模型不做钩子、痛点、产品展示等用途分组；独立评估模型在正文完成后负责质量评分、事实证据核验以及多用途分类。
 
+为降低单次创意调用的判断负担，Worker 会在分片前从已提交的营销洞察中为每条候选稳定分配 `1` 个主要事实、最多 `2` 个辅助事实和 `1～2` 个产品锚点。生成模型只接收本条轻量事实简报，不再接收整张提炼信息表或事实哈希、策略、职责等内部元数据；返回结果必须使用主要事实和至少一个产品锚点，且不能跨任务引用其他事实。该分配只负责选择和轮转上游已确认内容，不对提炼结果做二次改写或真假判断。
+
 批量生成采用以下规则：
 
 - 首轮候选数为用户目标数量的 `120%`（向上取整）。
-- 每个创意分片最多 4 条，每个分类分片最多 10 条；分片阶段分别为 `CREATIVE` 和 `CLASSIFICATION`。创意分片按默认输出上限控制规模，避免再次出现长 JSON 截断。
+- 每个创意分片最多 4 条，每个分类分片最多 5 条；分片阶段分别为 `CREATIVE` 和 `CLASSIFICATION`。两类分片均按真实输出长度收窄，避免长 JSON 截断。分类动态输出预算按每条 720 Token 计算、最低 1536 Token，并受 4096 的默认总上限约束。
+- 创意与分类调用共用 `PROMPT_MAX_CONCURRENCY` 滑动并发门限；一个分片完成后立即补入下一个，但分类节点仍等待本轮全部创意分片完成后再启动。
 - 评估事实优先给出正文中的逐字证据。评估模型返回的未知事实或非逐字证据会被丢弃并记录告警，不再连带淘汰仍具有其他有效产品证据的 Prompt；完全缺少有效产品关联仍是硬问题。
 - 完全相同的正文，或完全相同的创意主线与六维组合，才算硬重复。
 - 选择分数由 `80%` 独立质量分和 `20%` 批次新颖度组成；相似但不完全相同的候选不会被机械删除。
@@ -32,6 +35,8 @@ V8～V10 的关系规划、六类分支、坐标池、蓝图和旧门禁代码�
 生产默认 Provider 是 Ark；缺少 `ARK_API_KEY` 时启动失败，不会静默降级 Mock。Mock 只允许使用以 `.test` 结尾或 `test.` 开头的 RabbitMQ 队列，防止测试 Worker 消费生产任务。完成回写包含 `executionMode=ARK|MOCK`，API 可拒绝非测试运行的 Mock 结果。
 
 Ark Responses API 在解析 JSON 前检查 `status` 与 `incomplete_details`。输出长度截断会立即返回 `AI_OUTPUT_TRUNCATED`；未完成响应不会被当作合法 JSON。Provider 单次只尝试一次，网络、超时、限流和 5xx 的业务重试统一由 API 任务层负责。
+
+队列信封兼容 Prompt V5/V6，新任务使用 V6。Ark 偶尔会把被截断的 JSON 标成 `completed`；V11 对这种已完成但格式异常的响应仅在当前创意或评估分片内补试一次。补试仍失败时会取消同批尚未完成的调用，再交给任务层处理，避免旧 attempt 继续产生费用或回写。
 
 向量服务使用独立 Provider 和 HTTP 客户端，不复用生成模型。`trigram` 保持旧行为；`shadow` 同时计算旧算法和向量结果但仍保存旧结果；`vector` 由双向量结果接管。火山向量模型或 Endpoint 必须显式配置，不能回退到 `ARK_MODEL`。当前账号使用 `doubao-embedding-vision-251215`，通过官方 `/embeddings/multimodal` 端点发送纯文本。该端点每次最多接收一个 `text`，Worker 会自动把每批限制为单条并使用独立并发门限；不会误发到文本 `/embeddings` 端点。`shadow` 下向量故障会在阶段详情留下告警并继续旧算法，`vector` 下则重试或失败，禁止静默降级。
 
@@ -54,7 +59,7 @@ Ark Responses API 在解析 JSON 前检查 `status` 与 `incomplete_details`。�
 - `ARK_PROMPT_CANDIDATE_MODEL`：V11 连贯创意生成模型；未配置时回退到 `ARK_PROMPT_MODEL`，再回退到 `ARK_MODEL`
 - `ARK_PROMPT_EVALUATION_MODEL`：V11 独立质量评估与用途分类模型；未配置时跟随候选模型
 - `ARK_PROMPT_CANDIDATE_MAX_OUTPUT_TOKENS`，默认 `4096`
-- `ARK_PROMPT_EVALUATION_MAX_OUTPUT_TOKENS`，默认 `3072`
+- `ARK_PROMPT_EVALUATION_MAX_OUTPUT_TOKENS`，默认 `4096`
 - `ARK_PROMPT_CANDIDATE_TIMEOUT_SECONDS`，默认 `120`
 - `ARK_PROMPT_EVALUATION_TIMEOUT_SECONDS`，默认 `120`
 - `ARK_PROMPT_PROVIDER_MAX_ATTEMPTS`，默认 `1`

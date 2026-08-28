@@ -25,7 +25,10 @@ def _provider(settings: WorkerSettings) -> AiProvider:
         document_model=settings.resolved_document_model,
         commerce_model=settings.resolved_commerce_model,
         image_model=settings.resolved_image_model,
+        semantic_model=settings.resolved_semantic_model,
         normalization_model=settings.resolved_normalization_model,
+        embedding_model=settings.ark_extraction_embedding_model,
+        embedding_max_concurrency=settings.semantic_embedding_max_concurrency,
         timeout=settings.ark_timeout_seconds,
     )
 

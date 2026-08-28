@@ -1130,6 +1130,68 @@ export class EffectPromptRepository {
     return { requeued, failed };
   }
 
+  async recoverStaleQueuedDispatches(now = new Date()): Promise<number> {
+    const staleBefore = new Date(now.getTime() - 60_000);
+    const candidates = await this.prisma.effectPromptRun.findMany({
+      where: { status: 'QUEUED', updatedAt: { lte: staleBefore } },
+      select: { id: true, projectId: true },
+      orderBy: { updatedAt: 'asc' },
+      take: 50,
+    });
+    let requeued = 0;
+    for (const candidate of candidates) {
+      const recovered = await this.prisma.$transaction(async (transaction) => {
+        await transaction.$queryRaw<Array<{ id: string }>>`
+          SELECT "id" FROM "effect_prompt_runs"
+          WHERE "projectId" = ${candidate.projectId}::uuid
+            AND "id" = ${candidate.id}::uuid
+          FOR UPDATE
+        `;
+        const run = await transaction.effectPromptRun.findFirst({
+          where: {
+            projectId: candidate.projectId,
+            id: candidate.id,
+            status: 'QUEUED',
+            updatedAt: { lte: staleBefore },
+          },
+        });
+        if (!run) return false;
+        const outbox = await transaction.jobOutbox.updateMany({
+          where: {
+            projectId: run.projectId,
+            jobType: EFFECT_PROMPT_JOB_TYPE,
+            aggregateId: run.id,
+            status: 'PUBLISHED',
+          },
+          data: {
+            status: 'PENDING',
+            dispatchToken: null,
+            nextAttemptAt: now,
+            publishedAt: null,
+            lastError: null,
+          },
+        });
+        if (outbox.count !== 1) return false;
+        await transaction.effectPromptRun.update({
+          where: { projectId_id: { projectId: run.projectId, id: run.id } },
+          data: {
+            warnings: json([
+              ...new Set([
+                ...parseStrings(run.warnings),
+                'Prompt 任务消息未被 Worker 领取，系统已自动重新投递',
+              ]),
+            ]),
+            errorCode: 'WORKER_CLAIM_TIMEOUT',
+            errorMessage: 'Prompt 任务消息已自动重新投递',
+          },
+        });
+        return true;
+      });
+      if (recovered) requeued += 1;
+    }
+    return requeued;
+  }
+
   async mutateResult(
     projectId: string,
     resultId: string,

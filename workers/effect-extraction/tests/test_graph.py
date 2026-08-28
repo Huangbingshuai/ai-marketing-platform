@@ -34,8 +34,12 @@ class RecordingPipeline:
         assert self.finished == {"documents", "images", "commerce", "form"}
         self.finished.add("fusion")
 
-    async def normalize_and_finalize(self, context: RuntimeContext) -> str:
+    async def refine_semantics(self, context: RuntimeContext) -> None:
         assert "fusion" in self.finished
+        self.finished.add("semantic_refinement")
+
+    async def normalize_and_finalize(self, context: RuntimeContext) -> str:
+        assert "semantic_refinement" in self.finished
         return "result-1"
 
 

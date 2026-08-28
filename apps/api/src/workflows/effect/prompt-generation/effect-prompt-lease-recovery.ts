@@ -40,6 +40,7 @@ export class EffectPromptLeaseRecovery implements OnModuleInit, OnModuleDestroy 
     this.active = true;
     try {
       await this.repository.recoverExpiredLeases();
+      await this.repository.recoverStaleQueuedDispatches();
     } finally {
       this.active = false;
     }

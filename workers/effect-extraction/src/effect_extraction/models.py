@@ -174,12 +174,38 @@ class ExtractionResult(ApiModel):
     visual_style_baseline: str
 
 
+class SemanticField(StrEnum):
+    CORE_PAIN_POINTS = "corePainPoints"
+    DECISION_DRIVERS = "decisionDrivers"
+    USAGE_SCENARIOS = "usageScenarios"
+    PURCHASE_SCENARIOS = "purchaseScenarios"
+    EMOTIONAL_SCENARIOS = "emotionalScenarios"
+
+
+class SemanticRelation(StrEnum):
+    SAME_MEANING = "SAME_MEANING"
+    PARENT_CHILD = "PARENT_CHILD"
+    SAME_FAMILY = "SAME_FAMILY"
+
+
+class SemanticGroup(ApiModel):
+    field: SemanticField
+    member_fact_ids: list[str] = Field(min_length=2)
+    canonical_value: str = Field(min_length=1, max_length=240)
+    relation: SemanticRelation
+
+
+class SemanticRefinementDecision(ApiModel):
+    groups: list[SemanticGroup]
+
+
 class BranchName(StrEnum):
     DOCUMENT = "DOCUMENT"
     IMAGE = "IMAGE"
     COMMERCE = "COMMERCE"
     FORM = "FORM"
     FUSION = "FUSION"
+    SEMANTIC_REFINEMENT = "SEMANTIC_REFINEMENT"
     NORMALIZATION = "NORMALIZATION"
 
 

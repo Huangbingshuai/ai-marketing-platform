@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -42,7 +43,6 @@ from .models import (
     CreativeCandidate,
     CreativeDimensions,
     CreativeEvaluation,
-    CreativeFactAssignment,
     CreativeScores,
     CreativeShardPlan,
     CreativeTask,
@@ -127,6 +127,7 @@ from .quality import (
 )
 
 MAX_REPLENISHMENT_ROUNDS = 3
+V11_CLASSIFICATION_SHARD_SIZE = 5
 
 GENERATION_NODE_BY_FRAGMENT: dict[FragmentType, NodeId] = {
     FragmentType.HOOK: NodeId.GENERATE_HOOK,
@@ -203,6 +204,7 @@ class PromptGenerationPipeline:
         similarity_mode: Literal["trigram", "shadow", "vector"] = "trigram",
         embedding_batch_size: int = 64,
         embedding_max_concurrency: int = 2,
+        ai_max_concurrency: int = 6,
         shard_size: int = 8,
         max_ai_calls_per_run: int = 256,
     ) -> None:
@@ -212,6 +214,8 @@ class PromptGenerationPipeline:
         self.similarity_mode = similarity_mode
         self.embedding_batch_size = embedding_batch_size
         self.embedding_max_concurrency = embedding_max_concurrency
+        self.ai_max_concurrency = max(1, ai_max_concurrency)
+        self._ai_semaphore = asyncio.Semaphore(self.ai_max_concurrency)
         self.shard_size = shard_size
         self.max_ai_calls_per_run = max_ai_calls_per_run
         self._snapshots: dict[str, PromptGenerationSnapshot] = {}
@@ -675,27 +679,38 @@ class PromptGenerationPipeline:
         await self.api.put_shard(context, running)
         snapshot = self.snapshot(context)
         try:
-            self._reserve_ai_call(context)
-            call = await self.provider.generate_creatives(
-                shard,
-                application=self._require_application(context),
-                shared_prompt=self._required_shared_prompt(context),
-                regeneration_context=(
-                    {
-                        "originalPrompt": snapshot.target_item.content,
-                        "instruction": snapshot.regeneration_instruction or "",
-                        "replacementDimensions": (
-                            snapshot.replacement_dimensions.model_dump(
-                                mode="json", by_alias=True
-                            )
-                            if snapshot.replacement_dimensions
-                            else None
-                        ),
-                    }
-                    if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item
-                    else None
-                ),
-            )
+            for invalid_response_attempt in range(2):
+                self._reserve_ai_call(context)
+                try:
+                    async with self._ai_semaphore:
+                        call = await self.provider.generate_creatives(
+                            shard,
+                            application=self._require_application(context),
+                            shared_prompt=self._required_shared_prompt(context),
+                            regeneration_context=(
+                                {
+                                    "originalPrompt": snapshot.target_item.content,
+                                    "instruction": snapshot.regeneration_instruction or "",
+                                    "replacementDimensions": (
+                                        snapshot.replacement_dimensions.model_dump(
+                                            mode="json", by_alias=True
+                                        )
+                                        if snapshot.replacement_dimensions
+                                        else None
+                                    ),
+                                }
+                                if snapshot.operation == "ITEM_REGENERATE"
+                                and snapshot.target_item
+                                else None
+                            ),
+                        )
+                    break
+                except ProviderError as exc:
+                    if (
+                        exc.error_type != ProviderErrorType.RESPONSE_INVALID
+                        or invalid_response_attempt == 1
+                    ):
+                        raise
             generated_at = utc_now()
             items = [
                 item.model_copy(update={"generated_at": generated_at})
@@ -765,6 +780,7 @@ class PromptGenerationPipeline:
                 "roundCandidateCount": len(round_items),
                 "completedShardCount": len(cache.completed_creative_shard_keys),
                 "supplemented": cache.v11_supplemented,
+                "factSelectionMode": "WORKER_ASSIGNMENT_V1",
             },
         )
 
@@ -775,23 +791,36 @@ class PromptGenerationPipeline:
         round_number: int,
     ) -> list[ClassificationShardPlan]:
         cache = self._cache(context)
-        pending_ids = [
+        round_candidate_ids = [
             item.slot_id
             for item in sorted(cache.creatives.values(), key=lambda row: row.ordinal)
-            if item.round == round_number and item.slot_id not in cache.creative_evaluations
+            if item.round == round_number
         ]
         shards = [
             ClassificationShardPlan(
                 round=round_number,
                 shard_index=index,
-                candidate_ids=pending_ids[start : start + 10],
+                candidate_ids=round_candidate_ids[
+                    start : start + V11_CLASSIFICATION_SHARD_SIZE
+                ],
             )
-            for index, start in enumerate(range(0, len(pending_ids), 10))
+            for index, start in enumerate(
+                range(
+                    0,
+                    len(round_candidate_ids),
+                    V11_CLASSIFICATION_SHARD_SIZE,
+                )
+            )
         ]
+        missing_ids = {
+            candidate_id
+            for candidate_id in round_candidate_ids
+            if candidate_id not in cache.creative_evaluations
+        }
         pending = [
             item
             for item in shards
-            if item.key not in cache.completed_classification_shard_keys
+            if any(candidate_id in missing_ids for candidate_id in item.candidate_ids)
         ]
         node = (
             NodeId.ITEM_EVALUATE
@@ -805,9 +834,10 @@ class PromptGenerationPipeline:
             "正在评估创意并标注素材用途" if pending else "创意评估与用途分类已恢复",
             metadata={
                 "round": round_number,
-                "candidateCount": len(pending_ids),
+                "candidateCount": len(round_candidate_ids),
+                "missingCandidateCount": len(missing_ids),
                 "pendingShardCount": len(pending),
-                "shardSize": 10,
+                "shardSize": V11_CLASSIFICATION_SHARD_SIZE,
             },
         )
         return pending
@@ -833,11 +863,21 @@ class PromptGenerationPipeline:
         )
         await self.api.put_shard(context, running)
         try:
-            self._reserve_ai_call(context)
-            call = await self.provider.evaluate_creatives(
-                candidates,
-                application=self._require_application(context),
-            )
+            for invalid_response_attempt in range(2):
+                self._reserve_ai_call(context)
+                try:
+                    async with self._ai_semaphore:
+                        call = await self.provider.evaluate_creatives(
+                            candidates,
+                            application=self._require_application(context),
+                        )
+                    break
+                except ProviderError as exc:
+                    if (
+                        exc.error_type != ProviderErrorType.RESPONSE_INVALID
+                        or invalid_response_attempt == 1
+                    ):
+                        raise
             candidate_by_id = {item.slot_id: item for item in candidates}
             items = [
                 validate_creative_evaluation(
@@ -1131,14 +1171,13 @@ class PromptGenerationPipeline:
         items = cache.accepted_v11_items
         item_operation = snapshot.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"}
         expected = 1 if item_operation else settings.target_count
-        evaluations = list(cache.creative_evaluations.values())
         selected = cache.selected_creatives.selected if cache.selected_creatives else []
         score_rows = [item.evaluation.scores for item in selected]
         hard_counts = Counter(
-            issue for item in evaluations for issue in item.hard_issues
+            issue for item in selected for issue in item.evaluation.hard_issues
         )
         warning_counts = Counter(
-            warning for item in evaluations for warning in item.warnings
+            warning for item in selected for warning in item.evaluation.warnings
         )
         average = _average_v11_scores(score_rows)
         primary_distribution = Counter(item.primary_purpose for item in items)

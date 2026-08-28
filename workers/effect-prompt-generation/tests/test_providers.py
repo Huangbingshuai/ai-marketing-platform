@@ -9,6 +9,9 @@ from effect_prompt_generation.assembly import assemble_fragment_prompt
 from effect_prompt_generation.combinations import make_shards, plan_combinations
 from effect_prompt_generation.insight_mapping import map_insight
 from effect_prompt_generation.models import (
+    CreativeCandidate,
+    CreativeDimensions,
+    CreativeFactAssignment,
     CreativeShardPlan,
     CreativeTask,
     EvidenceMode,
@@ -61,9 +64,14 @@ def _shared_prompt() -> SharedPrompt:
 async def test_ark_v11_creative_uses_one_coherent_schema_and_shared_constraints() -> None:
     seen: dict[str, object] = {}
     application = map_insight(
-        {"productName": "便携杯", "coreSellingPoints": ["单手开合"]}
+        {
+            "productName": "便携杯",
+            "coreSellingPoints": ["单手开合"],
+            "corePainPoints": ["普通杯盖需要双手操作"],
+        }
     )
-    fact = next(item for item in application.usable if item.value == "便携杯")
+    product_fact = next(item for item in application.usable if item.value == "便携杯")
+    primary_fact = next(item for item in application.usable if item.value == "单手开合")
     shard = CreativeShardPlan(
         round=0,
         shard_index=0,
@@ -73,7 +81,12 @@ async def test_ark_v11_creative_uses_one_coherent_schema_and_shared_constraints(
                 ordinal=1,
                 round=0,
                 target_duration_seconds=5,
-                preferred_fact_ids=[fact.fact_id],
+                fact_assignment=CreativeFactAssignment(
+                    primary_fact_id=primary_fact.fact_id,
+                    product_anchor_fact_ids=[product_fact.fact_id],
+                    assignment_hash="a" * 64,
+                ),
+                preferred_fact_ids=[primary_fact.fact_id],
             )
         ],
     )
@@ -88,7 +101,7 @@ async def test_ark_v11_creative_uses_one_coherent_schema_and_shared_constraints(
                     "ordinal": 99,
                     "round": 1,
                     "creativeCore": "通勤途中单手打开便携杯",
-                    "declaredFactIds": [fact.fact_id, "unknown-fact"],
+                    "declaredFactIds": [primary_fact.fact_id, product_fact.fact_id],
                     "dimensions": {
                         "narrative": "动作直接进入产品使用",
                         "scene": "早高峰地铁站台",
@@ -132,9 +145,194 @@ async def test_ark_v11_creative_uses_one_coherent_schema_and_shared_constraints(
     assert "fragmentType" not in item_schema["properties"]
     prompt = seen["input"][0]["content"][0]["text"]  # type: ignore[index]
     assert "医疗功效" in prompt
+    assert "单手开合" in prompt
+    assert "便携杯" in prompt
+    assert "普通杯盖需要双手操作" not in prompt
+    assert "primaryFact" in prompt
+    assert "productAnchorFacts" in prompt
+    assert "valueHash" not in prompt
+    assert "eligibleFragmentTypes" not in prompt
+    assert "contentHash" not in prompt
     assert call.value.items[0].ordinal == 1
     assert call.value.items[0].round == 0
-    assert call.value.items[0].declared_fact_ids == [fact.fact_id]
+    assert call.value.items[0].declared_fact_ids == [
+        primary_fact.fact_id,
+        product_fact.fact_id,
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("declared_selector", "message"),
+    [
+        ("anchor-only", "assigned primary fact"),
+        ("primary-only", "assigned product anchor"),
+        ("unassigned", "outside its assigned brief"),
+    ],
+)
+async def test_ark_v11_creative_rejects_invalid_fact_usage(
+    declared_selector: str,
+    message: str,
+) -> None:
+    application = map_insight(
+        {
+            "productName": "便携杯",
+            "coreSellingPoints": ["单手开合"],
+            "corePainPoints": ["普通杯盖需要双手操作"],
+        }
+    )
+    product_fact = next(item for item in application.usable if item.value == "便携杯")
+    primary_fact = next(item for item in application.usable if item.value == "单手开合")
+    unassigned_fact = next(
+        item for item in application.usable if item.value == "普通杯盖需要双手操作"
+    )
+    declared = {
+        "anchor-only": [product_fact.fact_id],
+        "primary-only": [primary_fact.fact_id],
+        "unassigned": [primary_fact.fact_id, product_fact.fact_id, unassigned_fact.fact_id],
+    }[declared_selector]
+    shard = CreativeShardPlan(
+        round=0,
+        shard_index=0,
+        tasks=[
+            CreativeTask(
+                slot_id="creative-1",
+                ordinal=1,
+                round=0,
+                target_duration_seconds=5,
+                fact_assignment=CreativeFactAssignment(
+                    primary_fact_id=primary_fact.fact_id,
+                    product_anchor_fact_ids=[product_fact.fact_id],
+                    assignment_hash="b" * 64,
+                ),
+            )
+        ],
+    )
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        output = {
+            "items": [
+                {
+                    "slotId": "creative-1",
+                    "ordinal": 1,
+                    "round": 0,
+                    "creativeCore": "通勤途中单手打开便携杯",
+                    "declaredFactIds": declared,
+                    "dimensions": {
+                        "narrative": "动作直接进入产品使用",
+                        "scene": "早高峰地铁站台",
+                        "persona": "单手拿包的成年通勤者",
+                        "productRelation": "便携杯被单手打开",
+                        "camera": "中近景跟随后轻推",
+                        "emotion": "从容利落",
+                    },
+                    "content": "早高峰地铁站台上，成年通勤者单手打开便携杯并喝水，镜头跟随后轻推至杯盖。",
+                    "generatedAt": None,
+                }
+            ]
+        }
+        return httpx.Response(
+            200,
+            json={"status": "completed", "output_text": json.dumps(output, ensure_ascii=False)},
+        )
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.example/v3",
+        api_key="test-key",
+        strategy_model="strategy-model",
+        candidate_model="creative-model",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(ProviderError, match=message):
+            await provider.generate_creatives(
+                shard,
+                application=application,
+                shared_prompt=_shared_prompt(),
+            )
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_ark_v11_evaluation_reserves_reasoning_room_for_five_items() -> None:
+    seen: dict[str, object] = {}
+    application = map_insight({"productName": "便携杯"})
+    product_fact = next(item for item in application.usable if item.value == "便携杯")
+    candidates = [
+        CreativeCandidate(
+            slot_id=f"creative-{index}",
+            ordinal=index,
+            round=0,
+            creative_core="通勤途中展示便携杯",
+            declared_fact_ids=[product_fact.fact_id],
+            dimensions=CreativeDimensions(
+                narrative="动作展示",
+                scene="地铁站台",
+                persona="成年通勤者",
+                product_relation="便携杯作为画面主体",
+                camera="中近景轻推",
+                emotion="从容",
+            ),
+            content=f"地铁站台上，成年通勤者拿起便携杯喝水，镜头轻推至杯身细节，编号{index}。",
+        )
+        for index in range(1, 6)
+    ]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        seen.update(payload)
+        output = {
+            "items": [
+                {
+                    "slotId": item.slot_id,
+                    "primaryPurpose": "PRODUCT_DISPLAY",
+                    "compatiblePurposes": ["PRODUCT_DISPLAY"],
+                    "factEvidence": [
+                        {"factId": product_fact.fact_id, "evidenceText": "便携杯"}
+                    ],
+                    "realizedFactIds": [product_fact.fact_id],
+                    "scores": {
+                        "productRelevance": 95,
+                        "creativeCoherence": 90,
+                        "visualExecutability": 90,
+                        "commercialUsefulness": 85,
+                        "visualClarity": 90,
+                    },
+                    "semanticSignature": f"semantic-{item.ordinal}",
+                    "visualSignature": f"visual-{item.ordinal}",
+                    "hardIssues": [],
+                    "warnings": [],
+                }
+                for item in candidates
+            ]
+        }
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "output_text": json.dumps(output, ensure_ascii=False),
+            },
+        )
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.example/v3",
+        api_key="test-key",
+        strategy_model="strategy-model",
+        candidate_model="creative-model",
+        evaluation_max_output_tokens=4096,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await provider.evaluate_creatives(
+            candidates,
+            application=application,
+        )
+    finally:
+        await provider.aclose()
+
+    assert seen["max_output_tokens"] == 3600
+    assert len(result.value.items) == 5
 
 
 @pytest.mark.asyncio
@@ -430,7 +628,7 @@ async def test_ark_candidate_returns_only_slot_and_direct_prompt() -> None:
     assert seen["max_output_tokens"] == 768
     assert seen_timeout["read"] == 87
     assert "instructions" in seen
-    assert "当前分支只生成一个卖点所需的干净证据画面" in str(seen["instructions"])
+    assert "effect-prompt-candidate-base-v9" in str(seen["instructions"])
     prompt = seen["input"][0]["content"][0]["text"]  # type: ignore[index]
     assert "便携杯" in prompt
     assert "产品更早出现" in prompt

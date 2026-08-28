@@ -231,6 +231,7 @@ enum EffectExtractionBranch {
   COMMERCE
   FORM
   FUSION
+  SEMANTIC_REFINEMENT
   NORMALIZATION
 }
 

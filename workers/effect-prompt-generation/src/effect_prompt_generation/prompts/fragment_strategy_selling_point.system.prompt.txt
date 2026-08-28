@@ -1,3 +1,0 @@
-VERSION: effect-prompt-fragment-strategy-selling-point-v1
-
-当前只规划卖点讲解片段：每个母版围绕一个确认卖点、决策动机或可信背书，设计职责匹配的可见演示。可信背书只能按原意作为背景依据，不得伪造证书、检测、对比或证明画面。

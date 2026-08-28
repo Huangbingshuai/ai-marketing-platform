@@ -23,6 +23,7 @@ from .models import (
     CreativeDimensions,
     CreativeEvaluation,
     CreativeEvaluationBatch,
+    CreativeFactAssignment,
     CreativeScores,
     CreativeShardPlan,
     CreativeTask,
@@ -116,7 +117,7 @@ V10_COORDINATE_BASE_PROMPT = "v10_coordinate_base.system.prompt.txt"
 V10_COORDINATE_TASK_PROMPT = "v10_coordinate_task.user.prompt.txt"
 V10_BLUEPRINT_BASE_PROMPT = "v10_blueprint_base.system.prompt.txt"
 V10_BLUEPRINT_TASK_PROMPT = "v10_blueprint_task.user.prompt.txt"
-V11_CREATIVE_VERSION = "effect-prompt-v11-coherent-creative-v1"
+V11_CREATIVE_VERSION = "effect-prompt-v11-coherent-creative-v2"
 V11_EVALUATION_VERSION = "effect-prompt-v11-creative-evaluation-v1"
 V11_CREATIVE_BASE_PROMPT = "v11_creative_base.system.prompt.txt"
 V11_CREATIVE_TASK_PROMPT = "v11_creative_task.user.prompt.txt"
@@ -438,7 +439,7 @@ class ArkResponsesProvider:
         strategy_max_output_tokens: int = 8192,
         candidate_max_output_tokens: int = 4096,
         fragment_strategy_max_output_tokens: int = 3072,
-        evaluation_max_output_tokens: int = 3072,
+        evaluation_max_output_tokens: int = 4096,
         reasoning_effort: str = "minimal",
         strategy_timeout: float = 180.0,
         candidate_timeout: float = 120.0,
@@ -487,26 +488,28 @@ class ArkResponsesProvider:
         shared_prompt: SharedPrompt,
         regeneration_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeCandidateBatch]:
-        facts = [
-            fact.model_dump(
-                mode="json",
-                by_alias=True,
-                exclude={"eligible_fragment_types", "exclusion_reason"},
+        assignments = {
+            task.slot_id: _creative_fact_assignment(task, application)
+            for task in shard.tasks
+        }
+        task_briefs = [
+            _creative_task_brief(
+                task,
+                assignment=assignments[task.slot_id],
+                application=application,
             )
-            for fact in application.usable
+            for task in shard.tasks
         ]
         prompt = render_prompt(
             V11_CREATIVE_TASK_PROMPT,
-            facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
-            tasks_json=json.dumps(
-                [item.model_dump(mode="json", by_alias=True) for item in shard.tasks],
+            task_briefs_json=json.dumps(
+                task_briefs,
                 ensure_ascii=False,
                 sort_keys=True,
             ),
-            shared_prompt_json=json.dumps(
-                shared_prompt.model_dump(mode="json", by_alias=True),
+            shared_prompt_content_json=json.dumps(
+                shared_prompt.compiled_content,
                 ensure_ascii=False,
-                sort_keys=True,
             ),
             avoid_semantic_json=json.dumps(shard.avoid_semantic_signatures, ensure_ascii=False),
             avoid_visual_json=json.dumps(shard.avoid_visual_signatures, ensure_ascii=False),
@@ -539,14 +542,35 @@ class ArkResponsesProvider:
                 attempts=call.metadata.attempts,
                 elapsed_ms=call.metadata.latency_ms,
             )
-        known = {fact.fact_id for fact in application.usable}
         normalized: list[CreativeCandidate] = []
         for item in call.value.items:
             task = task_by_slot[item.slot_id]
-            fact_ids = [fact_id for fact_id in item.declared_fact_ids if fact_id in known]
-            if not fact_ids:
+            assignment = assignments[item.slot_id]
+            fact_ids = list(dict.fromkeys(item.declared_fact_ids))
+            unassigned = [
+                fact_id
+                for fact_id in fact_ids
+                if fact_id not in assignment.allowed_fact_ids
+            ]
+            if unassigned:
                 raise ProviderError(
-                    "AI coherent creative response did not reference a confirmed fact",
+                    "AI coherent creative response referenced a fact outside its assigned brief",
+                    retryable=False,
+                    error_type=ProviderErrorType.RESPONSE_INVALID,
+                    attempts=call.metadata.attempts,
+                    elapsed_ms=call.metadata.latency_ms,
+                )
+            if assignment.primary_fact_id not in fact_ids:
+                raise ProviderError(
+                    "AI coherent creative response did not use its assigned primary fact",
+                    retryable=False,
+                    error_type=ProviderErrorType.RESPONSE_INVALID,
+                    attempts=call.metadata.attempts,
+                    elapsed_ms=call.metadata.latency_ms,
+                )
+            if not set(fact_ids).intersection(assignment.product_anchor_fact_ids):
+                raise ProviderError(
+                    "AI coherent creative response did not use an assigned product anchor",
                     retryable=False,
                     error_type=ProviderErrorType.RESPONSE_INVALID,
                     attempts=call.metadata.attempts,
@@ -608,7 +632,10 @@ class ArkResponsesProvider:
             model=self._evaluation_model,
             max_output_tokens=min(
                 self._evaluation_max_output_tokens,
-                max(1024, len(candidates) * 520),
+                # Ark counts the structured answer and reasoning tokens against
+                # the same limit. Five detailed evaluations repeatedly reached
+                # the former 2,600-token ceiling during the paid 50-item run.
+                max(1536, len(candidates) * 720),
             ),
             request_timeout=self._evaluation_timeout,
             instructions=load_prompt(V11_EVALUATION_BASE_PROMPT),
@@ -1208,40 +1235,13 @@ def _mock_creative_candidate(
     task: CreativeTask,
     application: InsightApplicationMap,
 ) -> CreativeCandidate:
-    facts = application.usable
-    creative_facts = [
-        fact
-        for fact in facts
-        if fact.field
-        in {
-            InsightField.PRODUCT_NAME,
-            InsightField.PRODUCT_CATEGORY,
-            InsightField.CORE_SPECIFICATION,
-            InsightField.VISUAL_FEATURES,
-            InsightField.CORE_SELLING_POINT,
-            InsightField.SECONDARY_SELLING_POINT,
-            InsightField.CORE_PAIN_POINT,
-            InsightField.DECISION_DRIVER,
-            InsightField.USAGE_SCENARIO,
-            InsightField.PURCHASE_SCENARIO,
-            InsightField.EMOTIONAL_SCENARIO,
-        }
-    ] or facts
-    preferred = [
-        application.by_id[fact_id]
-        for fact_id in task.preferred_fact_ids
-        if fact_id in application.by_id
-    ]
-    chosen = [item for item in preferred if item in creative_facts] or creative_facts
-    primary = chosen[(task.ordinal - 1) % len(chosen)]
-    product = next(
-        (
-            fact.value
-            for fact in facts
-            if fact.field == InsightField.PRODUCT_NAME
-        ),
-        "当前产品",
+    assignment = _creative_fact_assignment(task, application)
+    primary = application.by_id[assignment.primary_fact_id]
+    anchor = application.by_id[assignment.product_anchor_fact_ids[0]]
+    declared_fact_ids = list(
+        dict.fromkeys([primary.fact_id, anchor.fact_id])
     )
+    product = anchor.value
     scenes = ["家庭厨房料理台", "节日家宴餐桌", "明亮食品展示台", "居家备餐区"]
     cameras = ["近景缓慢横移", "微距轻推", "中近景固定观察", "俯拍平稳跟随"]
     scene = scenes[(task.ordinal - 1) % len(scenes)]
@@ -1264,7 +1264,7 @@ def _mock_creative_candidate(
         ordinal=task.ordinal,
         round=task.round,
         creative_core=f"用{scene}中的连续动作表现{primary.value}",
-        declared_fact_ids=[primary.fact_id],
+        declared_fact_ids=declared_fact_ids,
         dimensions=CreativeDimensions(
             narrative="从准备动作自然推进到产品细节停留",
             scene=scene,
@@ -1275,6 +1275,66 @@ def _mock_creative_candidate(
         ),
         content=content,
     )
+
+
+def _creative_fact_assignment(
+    task: CreativeTask,
+    application: InsightApplicationMap,
+) -> CreativeFactAssignment:
+    if task.fact_assignment is not None:
+        assignment = task.fact_assignment
+    else:
+        # Compatibility for early V11 shard plans persisted before fact assignments.
+        from .v11_fact_allocation import allocate_v11_creative_facts
+
+        assignment = allocate_v11_creative_facts(
+            application,
+            count=1,
+            ordinal_start=task.ordinal,
+            preferred_primary_fact_ids=task.preferred_fact_ids,
+        )[0]
+    missing = [
+        fact_id
+        for fact_id in assignment.allowed_fact_ids
+        if fact_id not in application.by_id
+    ]
+    if missing:
+        raise ProviderError(
+            "creative fact assignment contains an unavailable fact",
+            retryable=False,
+            error_type=ProviderErrorType.RESPONSE_INVALID,
+        )
+    return assignment
+
+
+def _creative_task_brief(
+    task: CreativeTask,
+    *,
+    assignment: CreativeFactAssignment,
+    application: InsightApplicationMap,
+) -> dict[str, Any]:
+    def fact_payload(fact_id: str) -> dict[str, str]:
+        fact = application.by_id[fact_id]
+        return {
+            "factId": fact.fact_id,
+            "field": fact.field.value,
+            "value": fact.value,
+        }
+
+    return {
+        "slotId": task.slot_id,
+        "ordinal": task.ordinal,
+        "round": task.round,
+        "targetDurationSeconds": task.target_duration_seconds,
+        "primaryFact": fact_payload(assignment.primary_fact_id),
+        "supportFacts": [
+            fact_payload(fact_id) for fact_id in assignment.support_fact_ids
+        ],
+        "productAnchorFacts": [
+            fact_payload(fact_id)
+            for fact_id in assignment.product_anchor_fact_ids
+        ],
+    }
 
 
 def _mock_creative_evaluation(

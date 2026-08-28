@@ -1,17 +1,14 @@
-VERSION: effect-prompt-v11-coherent-creative-task-v1
+VERSION: effect-prompt-v11-coherent-creative-task-v2
 
-已确认的产品事实：
-{facts_json}
+逐条创意事实简报：
+{task_briefs_json}
 
 本批次统一共用约束（仅遵守，不复述）：
-{shared_prompt_json}
-
-需要生成的任务：
-{tasks_json}
+{shared_prompt_content_json}
 
 需要避开的已有语义签名：{avoid_semantic_json}
 需要避开的已有视觉签名：{avoid_visual_json}
 上一轮淘汰原因：{rejection_reasons_json}
 单条重新生成上下文：{regeneration_context_json}
 
-为每个任务生成一条完整、连贯、产品相关的素材创意。不要按钩子、痛点、产品展示、卖点讲解、结尾转化或片尾品牌分组，也不要输出任何用途分类。
+为每个任务各生成一条独立、完整、连贯、产品相关的素材创意。严格使用该任务自己的 primaryFact、supportFacts 和 productAnchorFacts；不得跨任务借用事实。不要按钩子、痛点、产品展示、卖点讲解、结尾转化或片尾品牌分组，也不要输出任何用途分类。

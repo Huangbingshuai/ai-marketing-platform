@@ -47,6 +47,7 @@ import {
   manualOverrideFieldNames,
   manualOverridesForResult,
   parseWarnings,
+  toEditableEffectExtractionResultV2,
   toEffectExtractionResultV2,
 } from './effect-extraction.validation';
 
@@ -75,7 +76,8 @@ const safeFileName = (value: string): string =>
   ).slice(0, 255);
 
 type RunBranchRecord = {
-  branch: 'DOCUMENT' | 'IMAGE' | 'COMMERCE' | 'FORM' | 'FUSION' | 'NORMALIZATION';
+  branch:
+    'DOCUMENT' | 'IMAGE' | 'COMMERCE' | 'FORM' | 'FUSION' | 'SEMANTIC_REFINEMENT' | 'NORMALIZATION';
   status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'PARTIAL' | 'SKIPPED' | 'FAILED';
   warnings: unknown;
   errorCode?: string | null;
@@ -551,7 +553,7 @@ export class EffectExtractionService {
     const snapshot = sourceRun?.inputSnapshot as EffectExtractionInputSnapshot | undefined;
     if (!snapshot) throw conflict('提炼输入快照不存在，请重新提炼');
     const config = snapshot.globalVideoConfig ?? snapshot.product.effectiveConfig;
-    const draftResult = toEffectExtractionResultV2(
+    const draftResult = toEditableEffectExtractionResultV2(
       existing.draftResult,
       effectExtractionDefaultsFromConfig(config),
     );

@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from effect_extraction.config import DEFAULT_ARK_MODEL, WorkerSettings
+from effect_extraction.config import (
+    DEFAULT_ARK_MODEL,
+    DEFAULT_ARK_SEMANTIC_MODEL,
+    WorkerSettings,
+)
 from effect_extraction.main import _provider
 from effect_extraction.providers import ArkResponsesProvider, MockAiProvider
 
@@ -19,7 +23,10 @@ def _base_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "ARK_DOCUMENT_MODEL",
         "ARK_COMMERCE_MODEL",
         "ARK_IMAGE_MODEL",
+        "ARK_SEMANTIC_MODEL",
         "ARK_NORMALIZATION_MODEL",
+        "ARK_EXTRACTION_EMBEDDING_MODEL",
+        "SEMANTIC_EMBEDDING_MAX_CONCURRENCY",
         "COMMERCE_RENDERER_URL",
         "COMMERCE_RENDERER_TOKEN",
         "COMMERCE_STATIC_CONNECT_TIMEOUT_SECONDS",
@@ -61,6 +68,7 @@ def test_default_provider_uses_seed_2_1_turbo_model_id(
     assert settings.resolved_document_model == DEFAULT_ARK_MODEL
     assert settings.resolved_commerce_model == DEFAULT_ARK_MODEL
     assert settings.resolved_image_model == DEFAULT_ARK_MODEL
+    assert settings.resolved_semantic_model == DEFAULT_ARK_SEMANTIC_MODEL
     assert settings.resolved_normalization_model == DEFAULT_ARK_MODEL
 
 
@@ -73,6 +81,7 @@ def test_stage_models_support_specific_values_and_blank_fallback(
     monkeypatch.setenv("ARK_DOCUMENT_MODEL", " document-model ")
     monkeypatch.setenv("ARK_COMMERCE_MODEL", " commerce-model ")
     monkeypatch.setenv("ARK_IMAGE_MODEL", "   ")
+    monkeypatch.setenv("ARK_SEMANTIC_MODEL", "semantic-model")
     monkeypatch.setenv("ARK_NORMALIZATION_MODEL", "normalization-model")
 
     settings = WorkerSettings()  # type: ignore[call-arg]
@@ -80,7 +89,21 @@ def test_stage_models_support_specific_values_and_blank_fallback(
     assert settings.resolved_document_model == "document-model"
     assert settings.resolved_commerce_model == "commerce-model"
     assert settings.resolved_image_model == "base-model"
+    assert settings.resolved_semantic_model == "semantic-model"
     assert settings.resolved_normalization_model == "normalization-model"
+
+
+def test_blank_semantic_model_uses_the_fast_semantic_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _base_environment(monkeypatch)
+    monkeypatch.setenv("ARK_API_KEY", "test-key")
+    monkeypatch.setenv("ARK_MODEL", "base-model")
+    monkeypatch.setenv("ARK_SEMANTIC_MODEL", "   ")
+
+    settings = WorkerSettings()  # type: ignore[call-arg]
+
+    assert settings.resolved_semantic_model == DEFAULT_ARK_SEMANTIC_MODEL
 
 
 @pytest.mark.parametrize(

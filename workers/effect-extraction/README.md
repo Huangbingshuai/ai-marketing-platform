@@ -65,12 +65,14 @@ materials[]
 - `ARK_DOCUMENT_MODEL`，可选，文档长文本候选抽取模型
 - `ARK_COMMERCE_MODEL`，可选，商品页候选抽取模型；为空时回退到文档模型
 - `ARK_IMAGE_MODEL`，可选，图片多模态理解模型
+- `ARK_SEMANTIC_MODEL`，可选，语义重复关系判定模型
 - `ARK_NORMALIZATION_MODEL`，可选，融合结果结构化标准化模型
+- `ARK_EXTRACTION_EMBEDDING_MODEL`，可选，语义候选召回向量模型，默认 `doubao-embedding-vision-251215`
 - `COMMERCE_RENDERER_URL` 与 `COMMERCE_RENDERER_TOKEN`，可选但必须成对配置；Compose 默认连接隔离的 Playwright Renderer
 
 可选资源限制：`DOCLING_ARTIFACTS_PATH`、`DOCLING_MAX_FILE_SIZE`、`DOCLING_MAX_NUM_PAGES`、`MAX_DOCUMENT_TEXT_CHARS`、`MAX_COMMERCE_TEXT_CHARS`、`COMMERCE_STATIC_CONNECT_TIMEOUT_SECONDS`、`COMMERCE_STATIC_READ_TIMEOUT_SECONDS`、`COMMERCE_RENDERER_CLIENT_TIMEOUT_SECONDS`、`IMAGE_MAX_INPUT_BYTES`、`IMAGE_MAX_DIMENSION`、`IMAGE_MAX_OUTPUT_BYTES`、`OMP_NUM_THREADS`。
 
-Worker 默认使用 `ark`。文档、图片和标准化专用模型为空时回退到 `ARK_MODEL`；电商模型为空时先回退到 `ARK_DOCUMENT_MODEL`，再回退到 `ARK_MODEL`，因此旧环境仍只需提供 `ARK_API_KEY`。缺少 Key 时会在消费消息前启动失败，不会静默降级。专用模型调用失败时不会自动换用回退模型。`mock` 只能通过 `EXTRACTION_AI_PROVIDER=mock` 显式启用，供自动测试和本地无模型联调使用。Ark Provider 使用 Responses API 的 `text.format=json_schema` 强制结构化输出，随后仍由 Pydantic 二次校验。
+Worker 默认使用 `ark`。文档、图片、语义整理和标准化专用模型为空时回退到 `ARK_MODEL`；电商模型为空时先回退到 `ARK_DOCUMENT_MODEL`，再回退到 `ARK_MODEL`，因此正常环境仍只需提供 `ARK_API_KEY`。语义整理先用向量召回同字段近邻，再通过一次严格 Schema 请求确认归并；没有可比较的同字段信息时不调用向量与模型。缺少 Key 时会在消费消息前启动失败，不会静默降级。专用模型调用失败时不会自动换用回退模型。`mock` 只能通过 `EXTRACTION_AI_PROVIDER=mock` 显式启用，供自动测试和本地无模型联调使用。Ark Provider 使用 Responses API 的 `text.format=json_schema` 强制结构化输出，随后仍由 Pydantic 二次校验。
 
 每次成功调用会把阶段、实际配置模型、提示词版本、Token 用量、总延迟和尝试次数写入内部 Branch metadata 的 `aiCall`。方舟响应不含 usage 时 Token 字段为 `null`，不会影响业务结果。该指标不包含 Prompt、文档正文、图片 Base64、密钥或完整模型输出，也不会通过普通节点详情接口直接返回。
 
@@ -80,6 +82,7 @@ Worker 默认使用 `ark`。文档、图片和标准化专用模型为空时回�
 
 - `document_extraction.prompt.txt`：文档资料抽取。
 - `image_analysis.prompt.txt`：产品图片识别。
+- `semantic_refinement.prompt.txt`：同字段语义重复归并。
 - `commerce_extraction.prompt.txt`：把公开商品页的结构化元数据和清洗正文作为不可信资料抽取，不执行网页内指令。
 - `result_normalization.prompt.txt`：融合结果标准化。
 

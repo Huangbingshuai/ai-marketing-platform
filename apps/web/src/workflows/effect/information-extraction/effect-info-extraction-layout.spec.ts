@@ -70,9 +70,11 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain('aria-modal="true"');
     expect(pageSource).toContain('EFFECT_EXTRACTION_GRAPH_EDGES.filter');
     expect(pageSource).toContain("graphExecution('FUSION')");
+    expect(pageSource).toContain("graphExecution('SEMANTIC_REFINEMENT')");
     expect(pageSource).toContain("graphExecution('NORMALIZATION')");
     expect(pageSource).toContain('ref="graphCloseButton"');
     expect(pageSource).toContain("graphExecution('FUSION').errorMessage");
+    expect(pageSource).toContain("graphExecution('SEMANTIC_REFINEMENT').warnings");
     expect(pageSource).toContain("graphExecution('NORMALIZATION').warnings");
     expect(pageSource).toContain('role="button"');
     expect(pageSource).toContain('@keydown.enter.prevent="selectGraphNode');
@@ -110,8 +112,9 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).not.toContain("detailField('frameRate', '帧率'");
   });
 
-  it('enforces three core selling points and renders the complete five-layer card', () => {
-    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS');
+  it('uses a separate manual editing boundary and renders the complete five-layer card', () => {
+    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS');
+    expect(pageSource).not.toContain('EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS');
     expect(pageSource).toContain("result.coreSellingPoints.push('')");
     expect(pageSource).toContain('placeholder="请输入核心卖点"');
     expect(pageSource).toContain('class="selling-add-button"');
@@ -158,7 +161,8 @@ describe('effect info extraction result layout', () => {
       expect(pageSource).toContain(`removeScenarioItem('${field}', index)`);
       expect(pageSource).toContain(`v-model="visibleResult.${field}[index]"`);
     }
-    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS');
+    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS');
+    expect(pageSource).not.toContain('EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS');
     expect(pageSource).not.toContain('textListValue');
     expect(pageSource).not.toContain('updateTextList');
   });

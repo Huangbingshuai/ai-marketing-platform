@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 from dataclasses import replace
 from typing import Any
@@ -29,7 +30,11 @@ from effect_prompt_generation.models import (
     StageOutput,
 )
 from effect_prompt_generation.pipeline import PromptGenerationPipeline
-from effect_prompt_generation.providers import MockAiProvider
+from effect_prompt_generation.providers import (
+    MockAiProvider,
+    ProviderError,
+    ProviderErrorType,
+)
 from effect_prompt_generation.quality import (
     select_creatives,
     validate_creative_evaluation,
@@ -135,6 +140,68 @@ class FailingEmbeddingProvider(MockEmbeddingProvider):
         raise EmbeddingProviderError("向量服务测试不可用", retryable=True)
 
 
+class ConcurrencyTrackingProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.active = 0
+        self.maximum = 0
+        self._lock = asyncio.Lock()
+
+    async def _enter(self) -> None:
+        async with self._lock:
+            self.active += 1
+            self.maximum = max(self.maximum, self.active)
+
+    async def _leave(self) -> None:
+        async with self._lock:
+            self.active -= 1
+
+    async def generate_creatives(self, *args: Any, **kwargs: Any) -> Any:
+        await self._enter()
+        try:
+            await asyncio.sleep(0.01)
+            return await super().generate_creatives(*args, **kwargs)
+        finally:
+            await self._leave()
+
+    async def evaluate_creatives(self, *args: Any, **kwargs: Any) -> Any:
+        await self._enter()
+        try:
+            await asyncio.sleep(0.01)
+            return await super().evaluate_creatives(*args, **kwargs)
+        finally:
+            await self._leave()
+
+
+class OneClassificationFailureProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.failures_remaining = 2
+
+    async def evaluate_creatives(self, *args: Any, **kwargs: Any) -> Any:
+        if self.failures_remaining:
+            self.failures_remaining -= 1
+            raise ProviderError(
+                "test classification response invalid",
+                retryable=True,
+                error_type=ProviderErrorType.RESPONSE_INVALID,
+            )
+        return await super().evaluate_creatives(*args, **kwargs)
+
+
+class OneTransientClassificationFailureProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def evaluate_creatives(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls += 1
+        if self.calls == 1:
+            raise ProviderError(
+                "test transient classification response invalid",
+                retryable=True,
+                error_type=ProviderErrorType.RESPONSE_INVALID,
+            )
+        return await super().evaluate_creatives(*args, **kwargs)
+
+
 def _snapshot() -> PromptGenerationSnapshot:
     return PromptGenerationSnapshot(
         schema_version=6,
@@ -209,8 +276,29 @@ async def test_v11_graph_generates_120_percent_then_selects_exact_count() -> Non
     assert all("虚构医疗功效" not in item.content for item in api.result.items)
     assert Counter(item.phase.value for item in api.shards.values()) == {
         "CREATIVE": 3,
-        "CLASSIFICATION": 2,
+        "CLASSIFICATION": 3,
     }
+    creative_tasks = [
+        task
+        for shard in api.shards.values()
+        if shard.phase.value == "CREATIVE"
+        for task in shard.creative_plan
+    ]
+    assert len(creative_tasks) == 12
+    assert all(task.fact_assignment is not None for task in creative_tasks)
+    assert all(
+        len(task.fact_assignment.support_fact_ids) <= 2
+        and 1 <= len(task.fact_assignment.product_anchor_fact_ids) <= 2
+        for task in creative_tasks
+        if task.fact_assignment is not None
+    )
+    assert len(
+        {
+            task.fact_assignment.primary_fact_id
+            for task in creative_tasks
+            if task.fact_assignment is not None
+        }
+    ) > 1
     mapping_stage = next(
         stage
         for stage in reversed(api.stages)
@@ -236,9 +324,95 @@ async def test_v11_graph_generates_120_percent_then_selects_exact_count() -> Non
     assert shared_stage.metadata["compiledContent"]
     assert creative_stage.status == "SUCCEEDED"
     assert creative_stage.metadata["candidateCount"] == 12
+    assert creative_stage.metadata["factSelectionMode"] == "WORKER_ASSIGNMENT_V1"
     assert classification_stage.status == "SUCCEEDED"
     assert classification_stage.metadata["evaluatedCount"] == 12
     assert classification_stage.metadata["averageScores"]["productRelevance"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_v11_ai_shards_use_one_sliding_concurrency_limit() -> None:
+    api = V11Api()
+    provider = ConcurrencyTrackingProvider()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        ai_max_concurrency=2,
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _snapshot())
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    assert provider.maximum == 2
+    assert provider.active == 0
+
+
+@pytest.mark.asyncio
+async def test_v11_retries_one_invalid_classification_response_inside_its_shard() -> None:
+    api = V11Api()
+    provider = OneTransientClassificationFailureProvider()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _snapshot())
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    assert provider.calls == 4
+    assert api.result is not None
+    assert api.result.metrics.generated_candidate_count == 12
+
+
+@pytest.mark.asyncio
+async def test_v11_classification_retry_keeps_stable_shard_assignments() -> None:
+    api = V11Api()
+    provider = OneClassificationFailureProvider()
+    runtime = _runtime()
+    first = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        shard_size=5,
+    )
+    first.register_snapshot(runtime, _snapshot())
+
+    with pytest.raises(ProviderError, match="classification response invalid"):
+        await build_graph(first).ainvoke(
+            {"project_id": runtime.project_id},
+            context=runtime,
+        )
+
+    resumed = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        shard_size=5,
+    )
+    resumed.register_snapshot(runtime, _snapshot())
+    await build_graph(resumed).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    classification_shards = [
+        shard
+        for shard in api.shards.values()
+        if shard.phase.value == "CLASSIFICATION"
+    ]
+    assert {shard.shard_index for shard in classification_shards} == {0, 1, 2}
+    assert all(shard.status == "SUCCEEDED" for shard in classification_shards)
+    assert sum(len(shard.evaluations) for shard in classification_shards) == 12
+    assert api.result is not None
+    assert api.result.metrics.generated_candidate_count == 12
 
 
 @pytest.mark.asyncio
@@ -454,9 +628,11 @@ async def test_v11_stops_supplementing_as_soon_as_exact_quantity_is_reached() ->
     assert api.result.metrics.candidate_target_count == 12
     assert api.result.metrics.generated_candidate_count == 14
     assert api.result.metrics.replenishment_rounds == 1
+    assert api.result.metrics.rejected_count > 0
+    assert api.result.metrics.hard_issue_counts == []
     assert Counter(item.phase.value for item in api.shards.values()) == {
         "CREATIVE": 4,
-        "CLASSIFICATION": 3,
+        "CLASSIFICATION": 4,
     }
 
 
@@ -483,7 +659,7 @@ async def test_v11_can_run_multiple_supplement_rounds_to_reach_exact_quantity() 
     assert api.result.metrics.replenishment_rounds == 2
     assert Counter(item.phase.value for item in api.shards.values()) == {
         "CREATIVE": 9,
-        "CLASSIFICATION": 6,
+        "CLASSIFICATION": 9,
     }
 
 

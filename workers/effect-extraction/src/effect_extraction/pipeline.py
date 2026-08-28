@@ -7,8 +7,8 @@ from pathlib import PurePath
 from .api_client import InternalApi, InternalApiError
 from .commerce import (
     CommerceErrorType,
-    CommerceFetchError,
     CommerceFetcher,
+    CommerceFetchError,
     CommercePage,
     HttpxCommerceFetcher,
     has_candidate_data,
@@ -31,6 +31,7 @@ from .models import (
     SnapshotMaterial,
 )
 from .providers import AiProvider, ProviderError, ProviderErrorType
+from .semantic_refinement import refine_candidate_semantics
 
 DOCUMENT_MIME_TYPES = {
     "application/pdf",
@@ -65,8 +66,13 @@ class ExtractionPipeline:
         self._snapshots: dict[str, ExtractionSnapshot] = {}
         self._progress: dict[str, ProgressPayload] = {}
 
-    def register_snapshot(self, context: RuntimeContext, snapshot: ExtractionSnapshot) -> None:
-        if snapshot.project_id != context.project_id or snapshot.product.id != context.product_id:
+    def register_snapshot(
+        self, context: RuntimeContext, snapshot: ExtractionSnapshot
+    ) -> None:
+        if (
+            snapshot.project_id != context.project_id
+            or snapshot.product.id != context.product_id
+        ):
             raise PipelineError("claimed snapshot does not match runtime context")
         self._snapshots[context.run_id] = snapshot
 
@@ -76,7 +82,9 @@ class ExtractionPipeline:
         except KeyError as exc:
             raise PipelineError("claimed snapshot is not registered") from exc
 
-    async def snapshot(self, project_id: str, context: RuntimeContext) -> ExtractionSnapshot:
+    async def snapshot(
+        self, project_id: str, context: RuntimeContext
+    ) -> ExtractionSnapshot:
         snapshot = self._snapshot(context)
         expected = (
             project_id,
@@ -92,10 +100,14 @@ class ExtractionPipeline:
         )
         if expected != actual:
             raise PipelineError("extraction snapshot does not match the queued request")
-        await self.report_progress(context, ProgressPayload(current_node="LOAD_AND_SNAPSHOT", progress=5))
+        await self.report_progress(
+            context, ProgressPayload(current_node="LOAD_AND_SNAPSHOT", progress=5)
+        )
         return snapshot
 
-    async def report_progress(self, context: RuntimeContext, payload: ProgressPayload) -> None:
+    async def report_progress(
+        self, context: RuntimeContext, payload: ProgressPayload
+    ) -> None:
         self._progress[context.run_id] = payload
         await self.api.progress(context, payload)
 
@@ -108,7 +120,9 @@ class ExtractionPipeline:
 
     async def document_branch(self, context: RuntimeContext) -> BranchOutput:
         snapshot = self._snapshot(context)
-        sources = [material for material in snapshot.materials if _is_document(material)]
+        sources = [
+            material for material in snapshot.materials if _is_document(material)
+        ]
         await self._start(context, BranchName.DOCUMENT)
         await self.report_progress(
             context,
@@ -173,7 +187,9 @@ class ExtractionPipeline:
             except Exception as exc:
                 items.append(_failed_item(material.id, exc, BranchName.DOCUMENT))
 
-        return await self._save(context, _aggregate(BranchName.DOCUMENT, context, items))
+        return await self._save(
+            context, _aggregate(BranchName.DOCUMENT, context, items)
+        )
 
     async def image_branch(self, context: RuntimeContext) -> BranchOutput:
         snapshot = self._snapshot(context)
@@ -200,7 +216,9 @@ class ExtractionPipeline:
             async with semaphore:
                 try:
                     content = await self.api.download_material(context, material.id)
-                    processed = await asyncio.to_thread(self.image_processor.process, content)
+                    processed = await asyncio.to_thread(
+                        self.image_processor.process, content
+                    )
                     ai_call = await self.provider.analyze_image(
                         processed.data_uri,
                         source_name=material.original_file_name,
@@ -210,7 +228,10 @@ class ExtractionPipeline:
                         source_id=material.id,
                         status=BranchStatus.SUCCEEDED,
                         candidate=ai_call.value,
-                        metadata={**processed.metadata, "aiCall": ai_call.metadata.as_dict()},
+                        metadata={
+                            **processed.metadata,
+                            "aiCall": ai_call.metadata.as_dict(),
+                        },
                     )
                 except InternalApiError as exc:
                     return (
@@ -221,7 +242,9 @@ class ExtractionPipeline:
                 except Exception as exc:
                     return _failed_item(material.id, exc, BranchName.IMAGE)
 
-        processed_items = await asyncio.gather(*(process(material) for material in sources))
+        processed_items = await asyncio.gather(
+            *(process(material) for material in sources)
+        )
         retryable_error = next(
             (item for item in processed_items if isinstance(item, InternalApiError)),
             None,
@@ -308,7 +331,9 @@ class ExtractionPipeline:
                         artifact_storage_key=storage_key,
                     )
                 else:
-                    warning = _provider_error_message(BranchName.COMMERCE, exc.error_type)
+                    warning = _provider_error_message(
+                        BranchName.COMMERCE, exc.error_type
+                    )
                     error = {
                         "type": exc.error_type.value,
                         "attempts": exc.attempts,
@@ -415,31 +440,102 @@ class ExtractionPipeline:
         )
         return await self._save(context, output)
 
+    async def refine_semantics(self, context: RuntimeContext) -> BranchOutput:
+        await self._start(context, BranchName.SEMANTIC_REFINEMENT)
+        await self.report_progress(
+            context,
+            ProgressPayload(current_node="SEMANTIC_REFINEMENT", progress=82),
+        )
+        branches = await self.api.get_branches(context)
+        fusion = next(
+            (branch for branch in branches if branch.branch == BranchName.FUSION), None
+        )
+        if fusion is None or fusion.candidate is None:
+            raise FusionError("fusion output is missing")
+        try:
+            result = await refine_candidate_semantics(
+                fusion.candidate, provider=self.provider
+            )
+            output = BranchOutput(
+                branch=BranchName.SEMANTIC_REFINEMENT,
+                status=BranchStatus.SUCCEEDED,
+                source_fingerprint=context.source_fingerprint,
+                candidate=result.candidate,
+                metadata=result.metadata,
+            )
+        except ProviderError as exc:
+            warning = _provider_error_message(
+                BranchName.SEMANTIC_REFINEMENT, exc.error_type
+            )
+            output = BranchOutput(
+                branch=BranchName.SEMANTIC_REFINEMENT,
+                status=BranchStatus.PARTIAL,
+                source_fingerprint=context.source_fingerprint,
+                candidate=fusion.candidate,
+                warnings=[f"{warning}，已保留原始提炼信息"],
+                metadata={
+                    "failures": [
+                        {
+                            "type": exc.error_type.value,
+                            "attempts": exc.attempts,
+                            "elapsedMs": exc.elapsed_ms,
+                        }
+                    ]
+                },
+            )
+        except (TypeError, ValueError) as exc:
+            output = BranchOutput(
+                branch=BranchName.SEMANTIC_REFINEMENT,
+                status=BranchStatus.PARTIAL,
+                source_fingerprint=context.source_fingerprint,
+                candidate=fusion.candidate,
+                warnings=["语义整理结果无效，已保留原始提炼信息"],
+                metadata={
+                    "failures": [
+                        {
+                            "type": type(exc).__name__.upper(),
+                            "attempts": 1,
+                            "elapsedMs": 0,
+                        }
+                    ]
+                },
+            )
+        return await self._save(context, output)
+
     async def normalize_and_finalize(self, context: RuntimeContext) -> str:
         await self._start(context, BranchName.NORMALIZATION)
         await self.report_progress(
             context,
-            ProgressPayload(current_node="NORMALIZATION", progress=85),
+            ProgressPayload(current_node="NORMALIZATION", progress=90),
         )
         branches = await self.api.get_branches(context)
         by_name = {branch.branch: branch for branch in branches}
         fusion = by_name.get(BranchName.FUSION)
         if fusion is None or fusion.candidate is None:
             raise FusionError("fusion output is missing")
+        semantic = by_name.get(BranchName.SEMANTIC_REFINEMENT)
+        normalized_input = (
+            semantic.candidate
+            if semantic is not None and semantic.candidate is not None
+            else fusion.candidate
+        )
         snapshot = self._snapshot(context)
         ai_call = await self.provider.normalize(
-            fusion.candidate,
+            normalized_input,
             protected_input=snapshot.manual_overrides,
         )
         result = ai_call.value
+        if semantic is not None and semantic.status == BranchStatus.SUCCEEDED:
+            _restore_semantic_fields(result, normalized_input)
         form = by_name.get(BranchName.FORM)
         if form and form.candidate:
             _restore_manual_fields(result, form.candidate)
         provenance_raw = fusion.metadata.get("provenance", {})
-        provenance = {
-            str(key): str(value)
-            for key, value in provenance_raw.items()
-        } if isinstance(provenance_raw, dict) else {}
+        provenance = (
+            {str(key): str(value) for key, value in provenance_raw.items()}
+            if isinstance(provenance_raw, dict)
+            else {}
+        )
         warnings = []
         for branch in branches:
             warnings.extend(branch.warnings)
@@ -475,7 +571,9 @@ class ExtractionPipeline:
             ),
         )
 
-    async def _save(self, context: RuntimeContext, output: BranchOutput) -> BranchOutput:
+    async def _save(
+        self, context: RuntimeContext, output: BranchOutput
+    ) -> BranchOutput:
         await self.api.put_branch(context, output)
         return output
 
@@ -491,8 +589,10 @@ class ExtractionPipeline:
 
 
 def _is_document(material: SnapshotMaterial) -> bool:
-    return material.mime_type.lower() in DOCUMENT_MIME_TYPES \
+    return (
+        material.mime_type.lower() in DOCUMENT_MIME_TYPES
         or PurePath(material.original_file_name).suffix.lower() in DOCUMENT_EXTENSIONS
+    )
 
 
 def _is_image(material: SnapshotMaterial) -> bool:
@@ -574,6 +674,7 @@ def _provider_error_message(branch: BranchName, error_type: ProviderErrorType) -
         BranchName.DOCUMENT: "文档 AI 抽取",
         BranchName.IMAGE: "图片 AI 识别",
         BranchName.COMMERCE: "商品页面 AI 抽取",
+        BranchName.SEMANTIC_REFINEMENT: "语义整理",
     }
     action = actions.get(branch, "AI 处理")
     suffixes = {
@@ -674,3 +775,16 @@ def _restore_manual_fields(result: object, form: ExtractionCandidate) -> None:
             setattr(result, field, value)
     if form.disabled_elements:
         setattr(result, "disabled_elements", _strings(form.disabled_elements))
+
+
+def _restore_semantic_fields(result: object, semantic: ExtractionCandidate) -> None:
+    for field in (
+        "core_pain_points",
+        "decision_drivers",
+        "usage_scenarios",
+        "purchase_scenarios",
+        "emotional_scenarios",
+    ):
+        values = getattr(semantic, field)
+        if values is not None:
+            setattr(result, field, _strings(values)[:5])

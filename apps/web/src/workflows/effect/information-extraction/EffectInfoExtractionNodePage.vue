@@ -11,11 +11,7 @@ import type {
 import {
   EFFECT_EXTRACTION_GRAPH_EDGES,
   EFFECT_EXTRACTION_GRAPH_NODES,
-  EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS,
-  EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS,
-  EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS,
-  EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS,
-  EFFECT_EXTRACTION_MAX_TRUST_BACKINGS,
+  EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
   EFFECT_IMPORT_ASPECT_RATIOS,
   EFFECT_IMPORT_DELIVERY_CHANNELS,
   EFFECT_IMPORT_LIMITS,
@@ -197,6 +193,7 @@ const graphNodeDescription = (nodeId: EffectExtractionNodeId): string =>
     COMMERCE: '检查商品链接中的信息',
     FORM: '读取导入节点的全局视频配置',
     FUSION: '合并不同资料中的有效信息',
+    SEMANTIC_REFINEMENT: '归并含义重复的痛点、决策动因和场景信息',
     NORMALIZATION: '生成可继续编辑的产品信息卡',
   })[nodeId];
 const graphDetailValue = (value: EffectExtractionNodeDetail['fields'][number]['value']): string => {
@@ -416,7 +413,12 @@ const localGraphDetail = (nodeId: EffectExtractionNodeId): EffectExtractionNodeD
   }
   return {
     ...base,
-    summary: nodeId === 'FUSION' ? '等待合并不同资料中的产品信息' : '等待生成可编辑的产品信息卡',
+    summary:
+      nodeId === 'FUSION'
+        ? '等待合并不同资料中的产品信息'
+        : nodeId === 'SEMANTIC_REFINEMENT'
+          ? '等待整理含义重复的信息'
+          : '等待生成可编辑的产品信息卡',
     fields: [],
     sources: [],
   };
@@ -1012,7 +1014,7 @@ const updateProductBaseField = (field: ProductBaseField, event: Event): void => 
 
 const addSellingPoint = (): void => {
   const result = currentState.value?.result;
-  if (!result || result.coreSellingPoints.length >= EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS)
+  if (!result || result.coreSellingPoints.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS)
     return;
   result.coreSellingPoints.push('');
   markDirty();
@@ -1031,11 +1033,7 @@ type ScenarioListField = 'usageScenarios' | 'purchaseScenarios' | 'emotionalScen
 
 const addAdditionalSellingPoint = (field: AdditionalSellingField): void => {
   const result = currentState.value?.result;
-  const limit =
-    field === 'secondarySellingPoints'
-      ? EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS
-      : EFFECT_EXTRACTION_MAX_TRUST_BACKINGS;
-  if (!result || result[field].length >= limit) return;
+  if (!result || result[field].length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) return;
   result[field].push('');
   markDirty();
 };
@@ -1049,7 +1047,7 @@ const removeAdditionalSellingPoint = (field: AdditionalSellingField, index: numb
 
 const addUserInsightItem = (field: UserInsightListField): void => {
   const result = currentState.value?.result;
-  if (!result || result[field].length >= EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS) return;
+  if (!result || result[field].length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) return;
   result[field].push('');
   markDirty();
 };
@@ -1063,7 +1061,7 @@ const removeUserInsightItem = (field: UserInsightListField, index: number): void
 
 const addScenarioItem = (field: ScenarioListField): void => {
   const result = currentState.value?.result;
-  if (!result || result[field].length >= EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS) return;
+  if (!result || result[field].length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) return;
   result[field].push('');
   markDirty();
 };
@@ -1401,11 +1399,11 @@ onBeforeUnmount(() => {
               type="button"
               :disabled="
                 baseFieldsReadonly ||
-                visibleResult.coreSellingPoints.length >= EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS
+                visibleResult.coreSellingPoints.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
               "
               :title="
-                visibleResult.coreSellingPoints.length >= EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS
-                  ? `最多添加 ${EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS} 个核心卖点`
+                visibleResult.coreSellingPoints.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
+                  ? `最多添加 ${EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS} 个核心卖点`
                   : '添加一个核心卖点'
               "
               @click="addSellingPoint"
@@ -1442,7 +1440,7 @@ onBeforeUnmount(() => {
                 :disabled="
                   baseFieldsReadonly ||
                   visibleResult.secondarySellingPoints.length >=
-                    EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS
+                    EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
                 "
                 @click="addAdditionalSellingPoint('secondarySellingPoints')"
               >
@@ -1476,7 +1474,7 @@ onBeforeUnmount(() => {
                 type="button"
                 :disabled="
                   baseFieldsReadonly ||
-                  visibleResult.trustBackings.length >= EFFECT_EXTRACTION_MAX_TRUST_BACKINGS
+                  visibleResult.trustBackings.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
                 "
                 @click="addAdditionalSellingPoint('trustBackings')"
               >
@@ -1528,7 +1526,7 @@ onBeforeUnmount(() => {
               type="button"
               :disabled="
                 baseFieldsReadonly ||
-                visibleResult.corePainPoints.length >= EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS
+                visibleResult.corePainPoints.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
               "
               @click="addUserInsightItem('corePainPoints')"
             >
@@ -1565,7 +1563,7 @@ onBeforeUnmount(() => {
               type="button"
               :disabled="
                 baseFieldsReadonly ||
-                visibleResult.decisionDrivers.length >= EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS
+                visibleResult.decisionDrivers.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
               "
               @click="addUserInsightItem('decisionDrivers')"
             >
@@ -1616,7 +1614,7 @@ onBeforeUnmount(() => {
               type="button"
               :disabled="
                 baseFieldsReadonly ||
-                visibleResult.usageScenarios.length >= EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS
+                visibleResult.usageScenarios.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
               "
               @click="addScenarioItem('usageScenarios')"
             >
@@ -1653,7 +1651,7 @@ onBeforeUnmount(() => {
               type="button"
               :disabled="
                 baseFieldsReadonly ||
-                visibleResult.purchaseScenarios.length >= EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS
+                visibleResult.purchaseScenarios.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
               "
               @click="addScenarioItem('purchaseScenarios')"
             >
@@ -1690,7 +1688,7 @@ onBeforeUnmount(() => {
               type="button"
               :disabled="
                 baseFieldsReadonly ||
-                visibleResult.emotionalScenarios.length >= EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS
+                visibleResult.emotionalScenarios.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
               "
               @click="addScenarioItem('emotionalScenarios')"
             >
@@ -1987,6 +1985,40 @@ onBeforeUnmount(() => {
                   </p>
                   <p v-if="graphExecution('FUSION').errorMessage" class="node-error">
                     {{ graphExecution('FUSION').errorMessage }}
+                  </p>
+                </article>
+
+                <div class="workflow-graph-connector" aria-hidden="true"><i /></div>
+
+                <article
+                  class="workflow-graph-node workflow-graph-node--single"
+                  :class="`is-${graphStatusMeta(graphExecution('SEMANTIC_REFINEMENT').status).tone}`"
+                  role="button"
+                  tabindex="0"
+                  :aria-pressed="selectedGraphNodeId === 'SEMANTIC_REFINEMENT'"
+                  @click="selectGraphNode('SEMANTIC_REFINEMENT')"
+                  @keydown.enter.prevent="selectGraphNode('SEMANTIC_REFINEMENT')"
+                  @keydown.space.prevent="selectGraphNode('SEMANTIC_REFINEMENT')"
+                >
+                  <div class="workflow-graph-node__heading">
+                    <span class="workflow-graph-node__status-dot" aria-hidden="true" />
+                    <div>
+                      <strong>{{ graphNodeDefinition('SEMANTIC_REFINEMENT').label }}</strong>
+                      <small>{{ graphNodeDescription('SEMANTIC_REFINEMENT') }}</small>
+                    </div>
+                    <em>{{
+                      graphStatusMeta(graphExecution('SEMANTIC_REFINEMENT').status).label
+                    }}</em>
+                  </div>
+                  <p v-if="graphExecution('SEMANTIC_REFINEMENT').errorMessage" class="node-error">
+                    {{ graphExecution('SEMANTIC_REFINEMENT').errorMessage }}
+                  </p>
+                  <p
+                    v-for="(warning, index) in graphExecution('SEMANTIC_REFINEMENT').warnings"
+                    :key="`${warning.code}-${index}`"
+                    class="node-warning"
+                  >
+                    {{ presentWarningMessage(warning.message) }}
                   </p>
                 </article>
 

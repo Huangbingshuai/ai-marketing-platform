@@ -1,20 +1,29 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import math
 import random
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Generic, Protocol, TypeVar, cast
+from typing import Any, Generic, Protocol, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
 
-from .models import ExtractionCandidate, ExtractionResult
+from .models import (
+    ExtractionCandidate,
+    ExtractionResult,
+    SemanticField,
+    SemanticGroup,
+    SemanticRefinementDecision,
+    SemanticRelation,
+)
 from .prompt_loader import load_prompt_version, render_prompt
 
 TModel = TypeVar("TModel", bound=BaseModel)
@@ -24,6 +33,7 @@ DOCUMENT_EXTRACTION_PROMPT = "document_extraction.prompt.txt"
 IMAGE_ANALYSIS_PROMPT = "image_analysis.prompt.txt"
 COMMERCE_EXTRACTION_PROMPT = "commerce_extraction.prompt.txt"
 RESULT_NORMALIZATION_PROMPT = "result_normalization.prompt.txt"
+SEMANTIC_REFINEMENT_PROMPT = "semantic_refinement.prompt.txt"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -95,7 +105,26 @@ class AiCallResult(Generic[TResult]):
     metadata: AiCallMetadata
 
 
+@dataclass(frozen=True, slots=True)
+class EmbeddingBatchResult:
+    vectors: list[tuple[float, ...]]
+    model: str
+    request_count: int
+    retry_count: int
+    input_tokens: int
+    latency_ms: int
+
+
 class AiProvider(Protocol):
+    async def embed_semantic_texts(self, texts: list[str]) -> EmbeddingBatchResult: ...
+
+    async def refine_semantics(
+        self,
+        *,
+        facts: Sequence[Mapping[str, str]],
+        candidate_pairs: Sequence[Mapping[str, Any]],
+    ) -> AiCallResult[SemanticRefinementDecision]: ...
+
     async def extract_document(
         self, markdown: str, *, source_name: str
     ) -> AiCallResult[ExtractionCandidate]: ...
@@ -133,6 +162,68 @@ def _clean(value: str | None) -> str | None:
 
 class MockAiProvider:
     """Deterministic provider used only when explicitly selected."""
+
+    async def embed_semantic_texts(self, texts: list[str]) -> EmbeddingBatchResult:
+        if not texts:
+            raise ValueError("semantic embedding inputs cannot be empty")
+        return EmbeddingBatchResult(
+            vectors=[_mock_embedding(text) for text in texts],
+            model="mock-hashed-bigram-v1",
+            request_count=1,
+            retry_count=0,
+            input_tokens=sum(len(text) for text in texts),
+            latency_ms=0,
+        )
+
+    async def refine_semantics(
+        self,
+        *,
+        facts: Sequence[Mapping[str, str]],
+        candidate_pairs: Sequence[Mapping[str, Any]],
+    ) -> AiCallResult[SemanticRefinementDecision]:
+        facts_by_id = {str(row["factId"]): row for row in facts}
+        parent: dict[str, str] = {fact_id: fact_id for fact_id in facts_by_id}
+
+        def find(value: str) -> str:
+            while parent[value] != value:
+                parent[value] = parent[parent[value]]
+                value = parent[value]
+            return value
+
+        def union(left: str, right: str) -> None:
+            left_root, right_root = find(left), find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
+
+        for pair in candidate_pairs:
+            score = pair.get("similarity")
+            left, right = str(pair.get("leftFactId")), str(pair.get("rightFactId"))
+            if isinstance(score, (int, float)) and score >= 0.58 and left in parent and right in parent:
+                union(left, right)
+        components: dict[str, list[str]] = {}
+        for fact_id in parent:
+            components.setdefault(find(fact_id), []).append(fact_id)
+        groups: list[SemanticGroup] = []
+        for member_ids in components.values():
+            if len(member_ids) < 2:
+                continue
+            rows = [facts_by_id[member_id] for member_id in member_ids]
+            if len({row["field"] for row in rows}) != 1:
+                continue
+            canonical = min((str(row["value"]) for row in rows), key=lambda value: (len(value), value))
+            groups.append(
+                SemanticGroup(
+                    field=SemanticField(str(rows[0]["field"])),
+                    member_fact_ids=member_ids,
+                    canonical_value=canonical,
+                    relation=SemanticRelation.SAME_MEANING,
+                )
+            )
+        return _mock_result(
+            SemanticRefinementDecision(groups=groups),
+            "SEMANTIC_REFINEMENT",
+            SEMANTIC_REFINEMENT_PROMPT,
+        )
 
     async def extract_document(
         self, markdown: str, *, source_name: str
@@ -221,7 +312,10 @@ class ArkResponsesProvider:
         document_model: str | None = None,
         commerce_model: str | None = None,
         image_model: str | None = None,
+        semantic_model: str | None = None,
         normalization_model: str | None = None,
+        embedding_model: str = "doubao-embedding-vision-251215",
+        embedding_max_concurrency: int = 8,
         timeout: float = 120.0,
         max_attempts: int = 3,
         transport: httpx.AsyncBaseTransport | None = None,
@@ -229,8 +323,11 @@ class ArkResponsesProvider:
         self._document_model = _specific_model(document_model, model)
         self._commerce_model = _specific_model(commerce_model, self._document_model)
         self._image_model = _specific_model(image_model, model)
+        self._semantic_model = _specific_model(semantic_model, model)
         self._normalization_model = _specific_model(normalization_model, model)
-        self._max_attempts = max_attempts
+        self._embedding_model = _specific_model(embedding_model, embedding_model)
+        self._embedding_max_concurrency = max(1, min(embedding_max_concurrency, 32))
+        self._max_attempts = max(1, max_attempts)
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/") + "/",
             timeout=timeout,
@@ -240,6 +337,105 @@ class ArkResponsesProvider:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    async def embed_semantic_texts(self, texts: list[str]) -> EmbeddingBatchResult:
+        if not texts or any(not text.strip() for text in texts):
+            raise ValueError("semantic embedding inputs cannot be empty")
+        started_at = time.perf_counter()
+        semaphore = asyncio.Semaphore(self._embedding_max_concurrency)
+
+        async def request(text: str) -> tuple[tuple[float, ...], int, int]:
+            async with semaphore:
+                return await self._embed_one(text)
+
+        rows = await asyncio.gather(*(request(text) for text in texts))
+        return EmbeddingBatchResult(
+            vectors=[row[0] for row in rows],
+            model=self._embedding_model,
+            request_count=sum(row[1] for row in rows),
+            retry_count=sum(max(0, row[1] - 1) for row in rows),
+            input_tokens=sum(row[2] for row in rows),
+            latency_ms=max(0, round((time.perf_counter() - started_at) * 1000)),
+        )
+
+    async def refine_semantics(
+        self,
+        *,
+        facts: Sequence[Mapping[str, str]],
+        candidate_pairs: Sequence[Mapping[str, Any]],
+    ) -> AiCallResult[SemanticRefinementDecision]:
+        prompt = render_prompt(
+            SEMANTIC_REFINEMENT_PROMPT,
+            facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+            candidate_pairs_json=json.dumps(
+                candidate_pairs, ensure_ascii=False, sort_keys=True
+            ),
+        )
+        return await self._structured(
+            [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+            SemanticRefinementDecision,
+            schema_name="effect_semantic_refinement",
+            stage="SEMANTIC_REFINEMENT",
+            model=self._semantic_model,
+            prompt_version=load_prompt_version(SEMANTIC_REFINEMENT_PROMPT),
+        )
+
+    async def _embed_one(self, text: str) -> tuple[tuple[float, ...], int, int]:
+        last_error: Exception | None = None
+        last_error_type = ProviderErrorType.UNKNOWN
+        retryable = False
+        started_at = time.perf_counter()
+        for attempt in range(1, self._max_attempts + 1):
+            try:
+                response = await self._client.post(
+                    "embeddings/multimodal",
+                    json={
+                        "model": self._embedding_model,
+                        "input": [{"type": "text", "text": text}],
+                        "encoding_format": "float",
+                    },
+                )
+            except httpx.TimeoutException as exc:
+                last_error = exc
+                last_error_type = ProviderErrorType.TIMEOUT
+                retryable = True
+            except httpx.NetworkError as exc:
+                last_error = exc
+                last_error_type = ProviderErrorType.NETWORK
+                retryable = True
+            else:
+                if not response.is_error:
+                    try:
+                        payload = response.json()
+                        vector = _embedding_vector(payload)
+                        usage = _usage(payload)
+                        return vector, attempt, usage["inputTokens"] or 0
+                    except (TypeError, ValueError, KeyError) as exc:
+                        last_error = exc
+                        last_error_type = ProviderErrorType.RESPONSE_INVALID
+                        retryable = attempt == 1
+                elif response.status_code == 429:
+                    last_error = RuntimeError("Ark embedding rate limited")
+                    last_error_type = ProviderErrorType.RATE_LIMIT
+                    retryable = True
+                elif response.status_code >= 500:
+                    last_error = RuntimeError("Ark embedding service unavailable")
+                    last_error_type = ProviderErrorType.SERVICE
+                    retryable = True
+                else:
+                    last_error = RuntimeError("Ark embedding request rejected")
+                    last_error_type = ProviderErrorType.REQUEST_REJECTED
+                    retryable = False
+            if not retryable or attempt >= self._max_attempts:
+                break
+            await asyncio.sleep(min(4.0, 0.4 * (2 ** (attempt - 1))) + random.uniform(0.0, 0.15))
+        raise ProviderError(
+            _PROVIDER_ERROR_MESSAGES[last_error_type],
+            retryable=retryable,
+            error_type=last_error_type,
+            attempts=attempt,
+            elapsed_ms=max(0, round((time.perf_counter() - started_at) * 1000)),
+        ) from last_error
 
     async def extract_document(
         self, markdown: str, *, source_name: str
@@ -494,3 +690,39 @@ def _output_text(payload: Any) -> str:
                         if isinstance(text, str) and text.strip():
                             return text
     raise ValueError("Ark response does not contain output_text")
+
+
+def _embedding_vector(payload: Any) -> tuple[float, ...]:
+    if not isinstance(payload, Mapping):
+        raise ValueError("embedding response is invalid")
+    data = payload.get("data")
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if not isinstance(data, Mapping):
+        raise ValueError("embedding response data is missing")
+    raw = data.get("embedding")
+    if isinstance(raw, list) and len(raw) == 1 and isinstance(raw[0], list):
+        raw = raw[0]
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("embedding vector is empty")
+    vector = tuple(float(value) for value in raw)
+    if any(not math.isfinite(value) for value in vector) or not any(vector):
+        raise ValueError("embedding vector is invalid")
+    return vector
+
+
+def _mock_embedding(value: str, dimension: int = 128) -> tuple[float, ...]:
+    normalized = re.sub(r"[^\w\u4e00-\u9fff]+", "", value.lower())
+    grams = (
+        {normalized}
+        if len(normalized) < 2
+        else {normalized[index : index + 2] for index in range(len(normalized) - 1)}
+    )
+    vector = [0.0] * dimension
+    for gram in grams or {"empty"}:
+        digest = hashlib.sha256(gram.encode("utf-8")).digest()
+        index = int.from_bytes(digest[:4], "big") % dimension
+        vector[index] += 1.0 if digest[4] % 2 == 0 else -1.0
+    if not any(vector):
+        vector[0] = 1.0
+    return tuple(vector)

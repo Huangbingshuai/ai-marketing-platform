@@ -24,6 +24,7 @@ export const EFFECT_EXTRACTION_BRANCHES = [
   'COMMERCE',
   'FORM',
   'FUSION',
+  'SEMANTIC_REFINEMENT',
   'NORMALIZATION',
 ] as const;
 export type EffectExtractionBranch = (typeof EFFECT_EXTRACTION_BRANCHES)[number];
@@ -45,6 +46,7 @@ export const EFFECT_EXTRACTION_GRAPH_NODES = [
   { id: 'COMMERCE', label: '电商链接', group: 'PARALLEL' },
   { id: 'FORM', label: '表单配置', group: 'PARALLEL' },
   { id: 'FUSION', label: '多源融合', group: 'FUSION' },
+  { id: 'SEMANTIC_REFINEMENT', label: '语义整理', group: 'SEMANTIC' },
   { id: 'NORMALIZATION', label: '标准化与结果保存', group: 'NORMALIZATION' },
 ] as const;
 export type EffectExtractionNodeId = (typeof EFFECT_EXTRACTION_GRAPH_NODES)[number]['id'];
@@ -60,7 +62,8 @@ export const EFFECT_EXTRACTION_GRAPH_EDGES = [
   { from: 'IMAGE', to: 'FUSION' },
   { from: 'COMMERCE', to: 'FUSION' },
   { from: 'FORM', to: 'FUSION' },
-  { from: 'FUSION', to: 'NORMALIZATION' },
+  { from: 'FUSION', to: 'SEMANTIC_REFINEMENT' },
+  { from: 'SEMANTIC_REFINEMENT', to: 'NORMALIZATION' },
 ] as const satisfies ReadonlyArray<{ from: EffectExtractionNodeId; to: EffectExtractionNodeId }>;
 
 export type EffectExtractionNodeExecution = {
@@ -111,6 +114,11 @@ export const EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS = 6;
 export const EFFECT_EXTRACTION_MAX_TRUST_BACKINGS = 6;
 export const EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS = 5;
 export const EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS = 5;
+/**
+ * AI normalization keeps the stricter per-field limits above. A user may append
+ * additional confirmed items in the editable draft up to this shared boundary.
+ */
+export const EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS = 20;
 
 export type EffectExtractionResult = {
   productCategory: string;

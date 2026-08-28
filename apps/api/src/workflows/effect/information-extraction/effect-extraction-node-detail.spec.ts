@@ -535,4 +535,85 @@ describe('presentExtractionNodeDetail', () => {
     );
     expect(normalized.fields.find(({ key }) => key === 'revision')?.value).toBe(2);
   });
+
+  it('shows semantic themes and original expressions without leaking vector diagnostics', () => {
+    const detail = presentExtractionNodeDetail(
+      {
+        inputSnapshot: snapshot,
+        updatedAt: new Date('2026-08-24T00:03:00.000Z'),
+        branches: [
+          {
+            branch: 'SEMANTIC_REFINEMENT',
+            status: 'SUCCEEDED',
+            updatedAt: new Date('2026-08-24T00:02:00.000Z'),
+            structuredOutput: {
+              metadata: {
+                inputCount: 4,
+                outputCount: 3,
+                embedding: { model: 'private-model', inputTokens: 88, latencyMs: 12 },
+                semanticGroups: [
+                  {
+                    field: 'corePainPoints',
+                    canonicalValue: '家庭日常佐餐需要方便、有风味的腊味食材',
+                    memberValues: [
+                      '日常佐餐缺少方便入味的腊味食材',
+                      '日常佐餐缺少方便且有风味的预制食材',
+                    ],
+                    relation: 'SAME_MEANING',
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+      'SEMANTIC_REFINEMENT',
+      execution('SEMANTIC_REFINEMENT'),
+    );
+
+    expect(detail.summary).toBe('已归并 1 组语义重复信息');
+    expect(detail.sources[0]).toMatchObject({
+      name: '家庭日常佐餐需要方便、有风味的腊味食材',
+      fields: [
+        expect.objectContaining({ label: '归并类型', value: '核心痛点' }),
+        expect.objectContaining({ label: '语义关系', value: '含义相同' }),
+        expect.objectContaining({ label: '原始表达' }),
+      ],
+    });
+    expect(JSON.stringify(detail)).not.toContain('private-model');
+    expect(JSON.stringify(detail)).not.toContain('inputTokens');
+  });
+
+  it('does not describe a partial semantic timeout as completed', () => {
+    const detail = presentExtractionNodeDetail(
+      {
+        inputSnapshot: snapshot,
+        updatedAt: new Date('2026-08-24T00:03:00.000Z'),
+        branches: [
+          {
+            branch: 'SEMANTIC_REFINEMENT',
+            status: 'PARTIAL',
+            updatedAt: new Date('2026-08-24T00:02:00.000Z'),
+            structuredOutput: { metadata: {} },
+          },
+        ],
+      },
+      'SEMANTIC_REFINEMENT',
+      {
+        ...execution('SEMANTIC_REFINEMENT'),
+        status: 'PARTIAL',
+        warnings: [
+          {
+            code: 'AI_TIMEOUT',
+            message: '语义整理超时，已保留原始提炼信息',
+            branch: 'SEMANTIC_REFINEMENT',
+            sourceId: null,
+          },
+        ],
+      },
+    );
+
+    expect(detail.summary).toBe('语义整理未完成，已保留原始提炼信息');
+    expect(detail.summary).not.toContain('已完成');
+  });
 });

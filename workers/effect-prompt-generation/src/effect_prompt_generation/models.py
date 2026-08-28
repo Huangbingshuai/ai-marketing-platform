@@ -89,7 +89,10 @@ class RuntimeContext:
 
 
 class PromptGenerationRequest(ApiModel):
-    schema_version: Literal[5] = 5
+    # The queue envelope follows the public Prompt schema generation. Keep V5
+    # readable for messages published before the V11 rollout, while all new V6
+    # runs use schemaVersion=6.
+    schema_version: Literal[5, 6] = 6
     run_id: str
     project_id: str
     request_id: str

@@ -1,3 +1,0 @@
-VERSION: effect-prompt-fragment-strategy-product-display-v1
-
-当前只规划产品展示片段：稳定呈现产品身份、规格、视觉特征和使用场景，通过单一拿取、摆放、打开、切割或局部观察动作展示外观。不得硬塞促销、功效承诺或完整广告结论。
