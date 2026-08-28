@@ -25,8 +25,14 @@ def _base_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "ARK_IMAGE_MODEL",
         "ARK_SEMANTIC_MODEL",
         "ARK_NORMALIZATION_MODEL",
-        "ARK_EXTRACTION_EMBEDDING_MODEL",
-        "SEMANTIC_EMBEDDING_MAX_CONCURRENCY",
+        "ARK_IMAGE_TIMEOUT_SECONDS",
+        "ARK_IMAGE_MAX_ATTEMPTS",
+        "ARK_IMAGE_MAX_OUTPUT_TOKENS",
+        "ARK_IMAGE_RETRY_MAX_OUTPUT_TOKENS",
+        "ARK_IMAGE_DETAIL",
+        "ARK_IMAGE_REASONING_EFFORT",
+        "IMAGE_MAX_DIMENSION",
+        "IMAGE_MAX_CONCURRENCY",
         "COMMERCE_RENDERER_URL",
         "COMMERCE_RENDERER_TOKEN",
         "COMMERCE_STATIC_CONNECT_TIMEOUT_SECONDS",
@@ -70,6 +76,26 @@ def test_default_provider_uses_seed_2_1_turbo_model_id(
     assert settings.resolved_image_model == DEFAULT_ARK_MODEL
     assert settings.resolved_semantic_model == DEFAULT_ARK_SEMANTIC_MODEL
     assert settings.resolved_normalization_model == DEFAULT_ARK_MODEL
+    assert settings.ark_image_timeout_seconds == 90
+    assert settings.ark_image_max_attempts == 2
+    assert settings.ark_image_max_output_tokens == 4096
+    assert settings.ark_image_retry_max_output_tokens == 6144
+    assert settings.ark_image_detail == "low"
+    assert settings.ark_image_reasoning_effort == "minimal"
+    assert settings.image_max_dimension == 1280
+    assert settings.image_max_concurrency == 2
+
+
+def test_image_retry_budget_cannot_be_smaller_than_first_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _base_environment(monkeypatch)
+    monkeypatch.setenv("EXTRACTION_AI_PROVIDER", "mock")
+    monkeypatch.setenv("ARK_IMAGE_MAX_OUTPUT_TOKENS", "4096")
+    monkeypatch.setenv("ARK_IMAGE_RETRY_MAX_OUTPUT_TOKENS", "2048")
+
+    with pytest.raises(ValidationError, match="ARK_IMAGE_RETRY_MAX_OUTPUT_TOKENS"):
+        WorkerSettings()  # type: ignore[call-arg]
 
 
 def test_stage_models_support_specific_values_and_blank_fallback(

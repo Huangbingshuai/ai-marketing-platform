@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 from dataclasses import dataclass
 from io import BytesIO
 
 from PIL import Image, ImageOps, UnidentifiedImageError
+
+IMAGE_PREPROCESS_VERSION = "jpeg-lanczos-v2"
 
 
 class ImageProcessingError(RuntimeError):
@@ -57,6 +60,8 @@ class ImageProcessor:
                 "processedHeight": processed_height,
                 "inputBytes": len(content),
                 "processedBytes": len(encoded),
+                "processedSha256": hashlib.sha256(encoded).hexdigest(),
+                "preprocessVersion": IMAGE_PREPROCESS_VERSION,
             },
         )
 

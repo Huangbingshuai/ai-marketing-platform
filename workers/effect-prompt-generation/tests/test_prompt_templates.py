@@ -58,19 +58,31 @@ def test_v11_templates_keep_creative_generation_and_evaluation_independent() -> 
 
     assert (
         load_prompt_version("v11_creative_base.system.prompt.txt")
-        == "effect-prompt-v11-coherent-creative-v2"
+        == "effect-prompt-v11-coherent-creative-v3"
+    )
+    assert (
+        load_prompt_version("v11_evaluation_base.system.prompt.txt")
+        == "effect-prompt-v11-creative-evaluation-v2"
     )
     assert "Worker 已经为每条任务选好少量可信事实" in creative
+    assert "厂商无关" in creative
     assert "每个任务都必须独立生成自己的一个 creativeCore" in creative
     assert "primaryFact 必须被正文真实表达" in creative
     assert "至少使用一个 productAnchorFact" in creative
     assert "supportFacts 只在有助于连贯表达时使用" in creative
     assert "productRelation" in creative
+    assert "禁止给不同任务机械套用同一组" in creative
+    assert "不是可拍画面" in creative
+    assert "不能被写成肉眼已经证明" in creative
     assert "逐条创意事实简报" in task
     assert "已确认的产品事实" not in task
     assert "{facts_json}" not in task
     assert "不要按钩子、痛点、产品展示、卖点讲解、结尾转化或片尾品牌分组" in task
     assert "不要输出任何用途分类" in task
+    assert "只是软避重参考" in task
     assert "只评估候选，不改写正文" in evaluation
+    assert "五个窄职责视角" in evaluation
+    assert "GENERIC_STYLE_STACKING" in evaluation
+    assert "只有客观错误才能写入" in evaluation
     assert "一条素材可以有多个用途" in evaluation
     assert "evidenceText 必须逐字摘自正文" in evaluation

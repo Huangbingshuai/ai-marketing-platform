@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import logging
 from collections.abc import Sequence
 from pathlib import PurePath
 
@@ -33,6 +35,8 @@ from .models import (
 from .providers import AiProvider, ProviderError, ProviderErrorType
 from .semantic_refinement import refine_candidate_semantics
 
+LOGGER = logging.getLogger(__name__)
+
 DOCUMENT_MIME_TYPES = {
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -53,6 +57,7 @@ class ExtractionPipeline:
         document_parser: DocumentParser,
         image_processor: ImageProcessor,
         max_document_text_chars: int,
+        image_max_concurrency: int = 2,
         commerce_fetcher: CommerceFetcher | None = None,
         max_commerce_text_chars: int = 80_000,
     ) -> None:
@@ -61,6 +66,7 @@ class ExtractionPipeline:
         self.document_parser = document_parser
         self.image_processor = image_processor
         self.max_document_text_chars = max_document_text_chars
+        self.image_max_concurrency = max(1, min(image_max_concurrency, 8))
         self.commerce_fetcher = commerce_fetcher or HttpxCommerceFetcher()
         self.max_commerce_text_chars = max_commerce_text_chars
         self._snapshots: dict[str, ExtractionSnapshot] = {}
@@ -210,7 +216,7 @@ class ExtractionPipeline:
                 ),
             )
 
-        semaphore = asyncio.Semaphore(3)
+        semaphore = asyncio.Semaphore(self.image_max_concurrency)
 
         async def process(material: SnapshotMaterial) -> BranchItem | InternalApiError:
             async with semaphore:
@@ -219,17 +225,63 @@ class ExtractionPipeline:
                     processed = await asyncio.to_thread(
                         self.image_processor.process, content
                     )
+                    cache_key = _image_cache_key(
+                        processed.metadata, self.provider.image_cache_namespace
+                    )
+                    cached_candidate: ExtractionCandidate | None = None
+                    try:
+                        cached_candidate = await self.api.get_image_cache(
+                            context, cache_key
+                        )
+                    except InternalApiError as exc:
+                        LOGGER.warning(
+                            "Image cache lookup failed run_id=%s source_id=%s retryable=%s",
+                            context.run_id,
+                            material.id,
+                            exc.retryable,
+                        )
+                    if cached_candidate is not None:
+                        return BranchItem(
+                            source_id=material.id,
+                            status=BranchStatus.SUCCEEDED,
+                            candidate=cached_candidate,
+                            metadata={
+                                **processed.metadata,
+                                "cache": {"hit": True},
+                            },
+                        )
                     ai_call = await self.provider.analyze_image(
                         processed.data_uri,
                         source_name=material.original_file_name,
                         image_metadata=processed.metadata,
                     )
+                    try:
+                        await self.api.put_image_cache(
+                            context,
+                            cache_key,
+                            ai_call.value,
+                            {
+                                "model": ai_call.metadata.model,
+                                "promptVersion": ai_call.metadata.prompt_version,
+                                "preprocessVersion": processed.metadata.get(
+                                    "preprocessVersion"
+                                ),
+                            },
+                        )
+                    except InternalApiError as exc:
+                        LOGGER.warning(
+                            "Image cache write failed run_id=%s source_id=%s retryable=%s",
+                            context.run_id,
+                            material.id,
+                            exc.retryable,
+                        )
                     return BranchItem(
                         source_id=material.id,
                         status=BranchStatus.SUCCEEDED,
                         candidate=ai_call.value,
                         metadata={
                             **processed.metadata,
+                            "cache": {"hit": False},
                             "aiCall": ai_call.metadata.as_dict(),
                         },
                     )
@@ -595,6 +647,13 @@ def _is_document(material: SnapshotMaterial) -> bool:
     )
 
 
+def _image_cache_key(metadata: dict[str, int | str], namespace: str) -> str:
+    fingerprint = metadata.get("processedSha256")
+    if not isinstance(fingerprint, str) or len(fingerprint) != 64:
+        raise PipelineError("processed image fingerprint is missing")
+    return hashlib.sha256(f"{fingerprint}:{namespace}".encode("utf-8")).hexdigest()
+
+
 def _is_image(material: SnapshotMaterial) -> bool:
     return material.mime_type.lower().startswith("image/")
 
@@ -684,6 +743,7 @@ def _provider_error_message(branch: BranchName, error_type: ProviderErrorType) -
         ProviderErrorType.SERVICE: "服务暂时不可用",
         ProviderErrorType.RESPONSE_INVALID: "返回格式异常",
         ProviderErrorType.REQUEST_REJECTED: "请求被拒绝",
+        ProviderErrorType.OUTPUT_TRUNCATED: "输出超出限制",
         ProviderErrorType.UNKNOWN: "失败",
     }
     return f"{action}{suffixes[error_type]}"

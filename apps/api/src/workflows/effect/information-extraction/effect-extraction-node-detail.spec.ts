@@ -536,7 +536,7 @@ describe('presentExtractionNodeDetail', () => {
     expect(normalized.fields.find(({ key }) => key === 'revision')?.value).toBe(2);
   });
 
-  it('shows semantic themes and original expressions without leaking vector diagnostics', () => {
+  it('shows semantic decisions and original expressions without leaking model diagnostics', () => {
     const detail = presentExtractionNodeDetail(
       {
         inputSnapshot: snapshot,
@@ -560,6 +560,7 @@ describe('presentExtractionNodeDetail', () => {
                       '日常佐餐缺少方便且有风味的预制食材',
                     ],
                     relation: 'SAME_MEANING',
+                    applied: true,
                   },
                 ],
               },
@@ -577,11 +578,55 @@ describe('presentExtractionNodeDetail', () => {
       fields: [
         expect.objectContaining({ label: '归并类型', value: '核心痛点' }),
         expect.objectContaining({ label: '语义关系', value: '含义相同' }),
+        expect.objectContaining({ label: '处理方式', value: '合并为代表表达' }),
         expect.objectContaining({ label: '原始表达' }),
       ],
     });
     expect(JSON.stringify(detail)).not.toContain('private-model');
     expect(JSON.stringify(detail)).not.toContain('inputTokens');
+  });
+
+  it('describes same-family themes without claiming that distinct facts were merged', () => {
+    const detail = presentExtractionNodeDetail(
+      {
+        inputSnapshot: snapshot,
+        updatedAt: new Date('2026-08-24T00:03:00.000Z'),
+        branches: [
+          {
+            branch: 'SEMANTIC_REFINEMENT',
+            status: 'SUCCEEDED',
+            updatedAt: new Date('2026-08-24T00:02:00.000Z'),
+            structuredOutput: {
+              metadata: {
+                inputCount: 3,
+                outputCount: 3,
+                mergedGroupCount: 0,
+                familyGroupCount: 1,
+                semanticGroups: [
+                  {
+                    field: 'usageScenarios',
+                    canonicalValue: '煲仔饭烹饪',
+                    memberValues: ['煲仔饭烹饪', '蒸制食用', '炒制食用'],
+                    relation: 'SAME_FAMILY',
+                    applied: false,
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+      'SEMANTIC_REFINEMENT',
+      execution('SEMANTIC_REFINEMENT'),
+    );
+
+    expect(detail.summary).toBe('已整理 1 组相关主题，保留全部原始表达');
+    expect(detail.sources[0]?.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: '语义关系', value: '同一主题' }),
+        expect.objectContaining({ label: '处理方式', value: '保留全部原始表达' }),
+      ]),
+    );
   });
 
   it('does not describe a partial semantic timeout as completed', () => {

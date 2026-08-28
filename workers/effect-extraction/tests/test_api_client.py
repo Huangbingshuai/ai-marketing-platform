@@ -4,7 +4,13 @@ import httpx
 import pytest
 
 from effect_extraction.api_client import HttpInternalApi
-from effect_extraction.models import BranchName, BranchOutput, BranchStatus, RuntimeContext
+from effect_extraction.models import (
+    BranchName,
+    BranchOutput,
+    BranchStatus,
+    ExtractionCandidate,
+    RuntimeContext,
+)
 
 
 def claim_data() -> dict[str, object]:
@@ -162,3 +168,61 @@ async def test_internal_api_persists_specific_document_timeout_code() -> None:
             "sourceId": None,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_internal_api_reads_and_writes_project_scoped_image_cache() -> None:
+    requests: list[httpx.Request] = []
+    candidate = ExtractionCandidate.empty()
+    candidate.visual_features = "红色包装"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "data": {
+                        "hit": True,
+                        "candidate": candidate.model_dump(mode="json", by_alias=True),
+                        "metadata": {},
+                    },
+                },
+            )
+        return httpx.Response(200, json={"success": True, "data": {"accepted": True}})
+
+    context = RuntimeContext(
+        "run-1",
+        "project-1",
+        "draft-1",
+        "product-1",
+        "request-1",
+        "attempt-1",
+        "server-fingerprint",
+    )
+    api = HttpInternalApi(
+        "http://api.local/api/", "worker-secret", transport=httpx.MockTransport(handler)
+    )
+    try:
+        cached = await api.get_image_cache(context, "a" * 64)
+        await api.put_image_cache(
+            context,
+            "a" * 64,
+            candidate,
+            {"promptVersion": "4.0.0"},
+        )
+    finally:
+        await api.aclose()
+
+    assert cached is not None and cached.visual_features == "红色包装"
+    assert dict(requests[0].url.params) == {
+        "projectId": "project-1",
+        "cacheKey": "a" * 64,
+    }
+    assert requests[0].headers["x-attempt-token"] == "attempt-1"
+    body = json.loads(requests[1].content)
+    assert body["projectId"] == "project-1"
+    assert body["cacheKey"] == "a" * 64
+    assert body["candidate"]["visualFeatures"] == "红色包装"
+    assert body["metadata"] == {"promptVersion": "4.0.0"}

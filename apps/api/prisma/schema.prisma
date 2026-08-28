@@ -250,17 +250,17 @@ enum JobOutboxStatus {
 }
 
 model Project {
-  id                         String                      @id @default(uuid()) @db.Uuid
-  name                       String                      @db.VarChar(120)
-  description                String?                     @db.VarChar(500)
-  client                     String?                     @db.VarChar(120)
-  productName                String?                     @db.VarChar(120)
-  iconKey                    String?                     @db.VarChar(80)
+  id                         String                       @id @default(uuid()) @db.Uuid
+  name                       String                       @db.VarChar(120)
+  description                String?                      @db.VarChar(500)
+  client                     String?                      @db.VarChar(120)
+  productName                String?                      @db.VarChar(120)
+  iconKey                    String?                      @db.VarChar(80)
   defaultWorkflow            AssetWorkflow?
   defaultSpace               AssetWorkflowSpace?
-  status                     ProjectStatus               @default(ACTIVE)
-  createdAt                  DateTime                    @default(now())
-  updatedAt                  DateTime                    @updatedAt
+  status                     ProjectStatus                @default(ACTIVE)
+  createdAt                  DateTime                     @default(now())
+  updatedAt                  DateTime                     @updatedAt
   assets                     Asset[]
   assetVersions              AssetVersion[]
   effectImportWorkspace      EffectImportWorkspace?
@@ -268,6 +268,7 @@ model Project {
   storageCleanupTasks        StorageCleanupTask[]
   effectExtractionRuns       EffectExtractionRun[]
   effectExtractionResults    EffectExtractionResult[]
+  effectExtractionImageCache EffectExtractionImageCache[]
   effectPromptRuns           EffectPromptRun[]
   effectPromptResults        EffectPromptResult[]
   jobOutboxEntries           JobOutbox[]
@@ -811,6 +812,23 @@ model EffectExtractionBranchOutput {
   @@unique([projectId, runId, branch])
   @@index([projectId, runId, updatedAt])
   @@map("effect_extraction_branch_outputs")
+}
+
+model EffectExtractionImageCache {
+  id        String    @id @default(uuid()) @db.Uuid
+  projectId String    @db.Uuid
+  cacheKey  String    @db.Char(64)
+  candidate Json
+  metadata  Json      @default("{}")
+  hitCount  Int       @default(0)
+  lastHitAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, cacheKey])
+  @@index([projectId, updatedAt])
+  @@map("effect_extraction_image_cache")
 }
 
 model EffectExtractionResult {

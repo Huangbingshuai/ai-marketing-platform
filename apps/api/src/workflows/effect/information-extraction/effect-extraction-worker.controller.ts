@@ -28,6 +28,8 @@ import {
   WorkerBranchOutputDto,
   WorkerCompleteDto,
   WorkerFailDto,
+  WorkerImageCacheQueryDto,
+  WorkerImageCacheWriteDto,
   WorkerProgressDto,
   WorkerProjectDto,
 } from './dto/effect-extraction.dto';
@@ -91,6 +93,28 @@ export class EffectExtractionWorkerController {
     @Query() query: WorkerProjectDto,
   ) {
     return this.service.branches(query.projectId, runId, attemptToken);
+  }
+
+  @Get('runs/:runId/image-cache')
+  imageCache(
+    @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string,
+    @Headers('x-attempt-token') attemptToken: string,
+    @Query() query: WorkerImageCacheQueryDto,
+  ) {
+    return this.service.imageCache(query.projectId, runId, attemptToken, query.cacheKey);
+  }
+
+  @Put('runs/:runId/image-cache')
+  saveImageCache(
+    @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string,
+    @Headers('x-attempt-token') attemptToken: string,
+    @Body() body: WorkerImageCacheWriteDto,
+  ) {
+    return this.service.saveImageCache(body.projectId, runId, attemptToken, {
+      cacheKey: body.cacheKey,
+      candidate: body.candidate,
+      metadata: body.metadata ?? {},
+    });
   }
 
   @Post('runs/:runId/artifacts')

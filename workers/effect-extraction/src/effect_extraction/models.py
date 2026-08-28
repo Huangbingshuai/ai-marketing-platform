@@ -150,6 +150,27 @@ class ExtractionCandidate(ApiModel):
         return cls(**{name: None for name in cls.model_fields})
 
 
+class ImageVisibleFacts(ApiModel):
+    """Compact image-only contract; every value must be directly visible."""
+
+    product_category: str | None
+    product_name: str | None
+    core_specification: str | None
+    visual_features: str | None
+    core_selling_points: list[str] | None = Field(max_length=2)
+    secondary_selling_points: list[str] | None = Field(max_length=2)
+    trust_backings: list[str] | None = Field(max_length=2)
+    usage_scenarios: list[str] | None = Field(max_length=2)
+    emotional_scenarios: list[str] | None = Field(max_length=2)
+    visual_style_baseline: str | None
+
+    def to_candidate(self) -> ExtractionCandidate:
+        candidate = ExtractionCandidate.empty()
+        for field_name in type(self).model_fields:
+            setattr(candidate, field_name, getattr(self, field_name))
+        return candidate
+
+
 class ExtractionResult(ApiModel):
     product_category: str
     product_name: str
@@ -190,13 +211,13 @@ class SemanticRelation(StrEnum):
 
 class SemanticGroup(ApiModel):
     field: SemanticField
-    member_fact_ids: list[str] = Field(min_length=2)
-    canonical_value: str = Field(min_length=1, max_length=240)
+    member_fact_ids: list[str] = Field(min_length=2, max_length=5)
+    representative_fact_id: str
     relation: SemanticRelation
 
 
 class SemanticRefinementDecision(ApiModel):
-    groups: list[SemanticGroup]
+    groups: list[SemanticGroup] = Field(max_length=10)
 
 
 class BranchName(StrEnum):

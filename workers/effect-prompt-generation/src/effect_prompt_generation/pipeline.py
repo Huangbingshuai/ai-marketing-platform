@@ -10,6 +10,7 @@ import uuid
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from itertools import combinations
 from typing import Any, Literal, cast
 
 from pydantic import ValidationError
@@ -29,8 +30,13 @@ from .combinations import (
 )
 from .insight_mapping import bindings_for_fact_ids, map_insight
 from .embeddings import (
+    ContentVectorIndex,
+    CreativeVectorIndex,
     EmbeddingProvider,
     EmbeddingProviderError,
+    RedundancySummary,
+    VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD,
+    build_content_vector_index,
     build_creative_vector_index,
 )
 from .models import (
@@ -122,12 +128,17 @@ from .quality import (
     pair_rate,
     semantic_violations,
     visual_violations,
+    normalize_creative_signature,
     select_creatives,
     validate_creative_evaluation,
 )
 
 MAX_REPLENISHMENT_ROUNDS = 3
-V11_CLASSIFICATION_SHARD_SIZE = 5
+# Five detailed V11 evaluations can still produce a status=completed response whose
+# JSON ends early. Three candidates keep each strict response comfortably bounded;
+# the pipeline-level sliding concurrency retains throughput while avoiding paid
+# whole-batch failures caused by one oversized classification response.
+V11_CLASSIFICATION_SHARD_SIZE = 3
 
 GENERATION_NODE_BY_FRAGMENT: dict[FragmentType, NodeId] = {
     FragmentType.HOOK: NodeId.GENERATE_HOOK,
@@ -189,6 +200,11 @@ class RunCache:
     v11_exact_duplicate_count: int = 0
     v11_supplemented: bool = False
     v11_replenishment_rounds: int = 0
+    v11_diversity_supplemented: bool = False
+    v11_diversity_supplement_count: int = 0
+    v11_diversity_avoid_slot_ids: set[str] = field(default_factory=set)
+    v11_initial_redundancy_summary: RedundancySummary | None = None
+    v11_redundancy_summary: RedundancySummary | None = None
     embedding_vectors: dict[str, tuple[float, ...]] = field(default_factory=dict)
     embedding_stage_metadata: dict[str, Any] = field(default_factory=dict)
     embedding_warning: str | None = None
@@ -530,6 +546,8 @@ class PromptGenerationPipeline:
         *,
         round_number: int,
         missing_count: int | None = None,
+        requested_count: int | None = None,
+        supplement_kind: Literal["QUANTITY", "DIVERSITY"] = "QUANTITY",
     ) -> list[CreativeShardPlan]:
         settings = _v11_settings(self.snapshot(context))
         snapshot = self.snapshot(context)
@@ -570,6 +588,10 @@ class PromptGenerationPipeline:
                 selection_target * 1.2
             )
             cache.v11_candidate_target_count = requested
+        elif supplement_kind == "DIVERSITY":
+            requested = max(1, requested_count or 1)
+            cache.v11_diversity_supplemented = True
+            cache.v11_diversity_supplement_count += requested
         else:
             deficit = max(1, missing_count or selection_target)
             requested = max(deficit + 1, math.ceil(deficit * 1.2))
@@ -611,6 +633,12 @@ class PromptGenerationPipeline:
             for index in range(requested)
         ]
         selected = cache.selected_creatives.selected if cache.selected_creatives else []
+        if supplement_kind == "DIVERSITY" and cache.v11_diversity_avoid_slot_ids:
+            selected = [
+                item
+                for item in selected
+                if item.candidate.slot_id in cache.v11_diversity_avoid_slot_ids
+            ]
         rejection_reasons = sorted(
             {
                 issue
@@ -643,6 +671,7 @@ class PromptGenerationPipeline:
             "正在生成连贯六维创意" if pending else "连贯六维创意已恢复",
             metadata={
                 "round": round_number,
+                "supplementKind": supplement_kind,
                 "candidateTargetCount": requested,
                 "pendingShardCount": len(pending),
                 "shardSize": min(4, self.shard_size),
@@ -1015,7 +1044,167 @@ class PromptGenerationPipeline:
                     and not evaluation.hard_issues
                 )
             ]
-            if self.similarity_mode != "trigram" and len(eligible_candidates) > 1:
+            content_mmr_policy = (
+                snapshot.selection_policy_version == "MMR_CONTENT_V2"
+            )
+            if (
+                self.similarity_mode != "trigram"
+                and len(eligible_candidates) > 1
+                and content_mmr_policy
+            ):
+                if self.embedding_provider is None:
+                    raise PipelineError(
+                        "embedding provider is required for shadow or vector similarity"
+                    )
+                anchors = [
+                    item
+                    for item in snapshot.similarity_anchors
+                    if isinstance(item, PromptItemV6)
+                ]
+                try:
+                    insight = snapshot.insight_artifact.result
+                    content_index = await build_content_vector_index(
+                        eligible_candidates,
+                        anchors,
+                        provider=self.embedding_provider,
+                        vector_cache=cache.embedding_vectors,
+                        product_name=_insight_text(
+                            insight,
+                            "productName",
+                            "product_name",
+                        ),
+                        product_category=_insight_text(
+                            insight,
+                            "productCategory",
+                            "product_category",
+                        ),
+                        shared_prompt=self._required_shared_prompt(context),
+                        batch_size=self.embedding_batch_size,
+                        max_concurrency=self.embedding_max_concurrency,
+                    )
+                    mmr_result = select_creatives(
+                        list(cache.creatives.values()),
+                        list(cache.creative_evaluations.values()),
+                        target_count=selection_target,
+                        novelty_resolver=lambda left, right: content_index.novelty(
+                            left.candidate.slot_id,
+                            right.candidate.slot_id,
+                        ),
+                        fixed_novelty_resolver=(
+                            lambda item: content_index.novelty_to_anchors(
+                                item.candidate.slot_id
+                            )
+                        )
+                        if anchors
+                        else None,
+                        dimension_gain_resolver=lambda item, selected: (
+                            _dimension_unique_gain(item, selected, anchors)
+                        ),
+                        quality_weight=0.70,
+                        novelty_weight=0.30,
+                    )
+                    baseline_ids = {
+                        item.candidate.slot_id for item in baseline_result.selected
+                    }
+                    mmr_ids = {
+                        item.candidate.slot_id for item in mmr_result.selected
+                    }
+                    denominator = max(1, len(baseline_ids))
+                    baseline_summary = _selection_content_summary(
+                        baseline_result,
+                        content_index,
+                    )
+                    mmr_summary = _selection_content_summary(
+                        mmr_result,
+                        content_index,
+                    )
+                    reduction_applicable, reduction = _near_duplicate_reduction(
+                        baseline_summary,
+                        mmr_summary,
+                    )
+                    redundancy = content_index.redundancy_summary(
+                        [item.candidate.slot_id for item in mmr_result.selected]
+                    )
+                    if cache.v11_initial_redundancy_summary is None:
+                        cache.v11_initial_redundancy_summary = redundancy
+                    cache.v11_redundancy_summary = redundancy
+                    cache.v11_diversity_avoid_slot_ids = set(
+                        redundancy.high_risk_candidate_ids
+                    )
+                    stats = content_index.stats
+                    soft_excess_limit = max(2, math.ceil(selection_target * 0.10))
+                    cache.embedding_stage_metadata = {
+                        "similarityMode": self.similarity_mode,
+                        "selectionPolicyVersion": "MMR_CONTENT_V2",
+                        "selectionMethod": (
+                            "CONTENT_VECTOR_MMR"
+                            if self.similarity_mode == "vector"
+                            else "TRIGRAM_SHADOW"
+                        ),
+                        "mmrQualityWeight": 0.70,
+                        "mmrDiversityWeight": 0.30,
+                        "fixedAnchorCount": len(anchors),
+                        "embeddingInputCount": stats.input_count,
+                        "embeddingRequestCount": stats.request_count,
+                        "embeddingInputTokens": stats.input_tokens,
+                        "embeddingRetryCount": stats.retry_count,
+                        "embeddingCacheHitCount": stats.cache_hit_count,
+                        "comparisonCount": stats.comparison_count,
+                        "embeddingDurationMs": stats.duration_ms,
+                        "localComparisonMs": stats.local_comparison_ms,
+                        "contentSimilarityP50": stats.similarity_p50,
+                        "contentSimilarityP95": stats.similarity_p95,
+                        "vectorSelectionOverlapPercent": round(
+                            100.0 * len(baseline_ids & mmr_ids) / denominator,
+                            2,
+                        ),
+                        "vectorChangedItemCount": len(mmr_ids - baseline_ids),
+                        "nearDuplicateRiskThreshold": (
+                            VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD
+                        ),
+                        "softExcessLimit": soft_excess_limit,
+                        "baselineSelection": baseline_summary,
+                        "contentMmrSelection": mmr_summary,
+                        "nearDuplicateReductionApplicable": reduction_applicable,
+                        "nearDuplicateReductionPercent": reduction,
+                        "averageQualityDelta": round(
+                            float(mmr_summary["averageQualityScore"])
+                            - float(baseline_summary["averageQualityScore"]),
+                            4,
+                        ),
+                        "initialHighRiskGroupCount": (
+                            cache.v11_initial_redundancy_summary.high_risk_group_count
+                        ),
+                        "initialRedundantCandidateCount": (
+                            cache.v11_initial_redundancy_summary.redundant_candidate_count
+                        ),
+                        "finalHighRiskGroupCount": redundancy.high_risk_group_count,
+                        "finalHighRiskPairCount": redundancy.high_risk_pair_count,
+                        "finalRedundantCandidateCount": (
+                            redundancy.redundant_candidate_count
+                        ),
+                        "diversitySupplementTriggered": (
+                            cache.v11_diversity_supplemented
+                        ),
+                        "diversitySupplementCount": (
+                            cache.v11_diversity_supplement_count
+                        ),
+                        "highRiskPairs": stats.high_risk_pairs,
+                    }
+                    if self.similarity_mode == "vector":
+                        result = mmr_result
+                except EmbeddingProviderError as exc:
+                    if self.similarity_mode == "vector":
+                        setattr(exc, "node_id", NodeId.EXACT_SELECTION_AND_SUPPLEMENT)
+                        raise
+                    cache.embedding_warning = str(exc)
+                    cache.embedding_stage_metadata = {
+                        "similarityMode": "shadow",
+                        "selectionPolicyVersion": "MMR_CONTENT_V2",
+                        "selectionMethod": "TRIGRAM_SHADOW_UNAVAILABLE",
+                        "embeddingWarning": str(exc),
+                    }
+            elif self.similarity_mode != "trigram" and len(eligible_candidates) > 1:
                 if self.embedding_provider is None:
                     raise PipelineError(
                         "embedding provider is required for shadow or vector similarity"
@@ -1069,6 +1258,30 @@ class PromptGenerationPipeline:
                     }
                     denominator = max(1, len(baseline_ids))
                     stats = vector_index.stats
+                    baseline_summary = _selection_vector_summary(
+                        baseline_result,
+                        vector_index,
+                    )
+                    content_summary = _selection_vector_summary(
+                        content_result,
+                        vector_index,
+                    )
+                    vector_summary = _selection_vector_summary(
+                        vector_result,
+                        vector_index,
+                    )
+                    content_reduction_applicable, content_reduction = (
+                        _near_duplicate_reduction(
+                            baseline_summary,
+                            content_summary,
+                        )
+                    )
+                    vector_reduction_applicable, vector_reduction = (
+                        _near_duplicate_reduction(
+                            baseline_summary,
+                            vector_summary,
+                        )
+                    )
                     cache.embedding_stage_metadata = {
                         "similarityMode": self.similarity_mode,
                         "selectionMethod": (
@@ -1093,6 +1306,32 @@ class PromptGenerationPipeline:
                         "contentSelectionOverlapPercent": round(
                             100.0 * len(baseline_ids & content_ids) / denominator,
                             2,
+                        ),
+                        "contentChangedItemCount": len(content_ids - baseline_ids),
+                        "vectorChangedItemCount": len(vector_ids - baseline_ids),
+                        "nearDuplicateRiskThreshold": (
+                            VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD
+                        ),
+                        "baselineSelection": baseline_summary,
+                        "contentVectorSelection": content_summary,
+                        "dualVectorSelection": vector_summary,
+                        "contentNearDuplicateReductionApplicable": (
+                            content_reduction_applicable
+                        ),
+                        "contentNearDuplicateReductionPercent": content_reduction,
+                        "vectorNearDuplicateReductionApplicable": (
+                            vector_reduction_applicable
+                        ),
+                        "vectorNearDuplicateReductionPercent": vector_reduction,
+                        "contentAverageQualityDelta": round(
+                            float(content_summary["averageQualityScore"])
+                            - float(baseline_summary["averageQualityScore"]),
+                            4,
+                        ),
+                        "vectorAverageQualityDelta": round(
+                            float(vector_summary["averageQualityScore"])
+                            - float(baseline_summary["averageQualityScore"]),
+                            4,
                         ),
                         "highRiskPairs": stats.high_risk_pairs,
                     }
@@ -1128,27 +1367,95 @@ class PromptGenerationPipeline:
             else [*_retained_v11_items(snapshot.retained_manual_items), *items]
         )
         missing = max(0, selection_target - len(items))
-        should_supplement = (
+        should_quantity_supplement = (
             missing > 0
-            and round_number < MAX_REPLENISHMENT_ROUNDS
+            and cache.v11_replenishment_rounds < MAX_REPLENISHMENT_ROUNDS
             and snapshot.operation != "ITEM_EVALUATE"
         )
-        pending = (
-            await self.plan_v11_creatives(
+        redundancy = cache.v11_redundancy_summary
+        soft_excess_limit = max(2, math.ceil(selection_target * 0.10))
+        should_diversity_supplement = (
+            not should_quantity_supplement
+            and missing == 0
+            and selection_target > 1
+            and snapshot.operation == "BATCH_GENERATE"
+            and snapshot.selection_policy_version == "MMR_CONTENT_V2"
+            and self.similarity_mode == "vector"
+            and not cache.v11_diversity_supplemented
+            and redundancy is not None
+            and redundancy.redundant_candidate_count > soft_excess_limit
+        )
+        diversity_supplement_count = 0
+        if should_diversity_supplement and redundancy is not None:
+            diversity_supplement_count = min(
+                max(
+                    2,
+                    math.ceil(
+                        (
+                            redundancy.redundant_candidate_count
+                            - soft_excess_limit
+                        )
+                        * 1.25
+                    ),
+                ),
+                math.ceil(selection_target * 0.20),
+            )
+        pending = []
+        if should_quantity_supplement:
+            pending = await self.plan_v11_creatives(
                 context,
                 round_number=round_number + 1,
                 missing_count=missing,
             )
-            if should_supplement
-            else []
+        elif should_diversity_supplement:
+            pending = await self.plan_v11_creatives(
+                context,
+                round_number=round_number + 1,
+                requested_count=diversity_supplement_count,
+                supplement_kind="DIVERSITY",
+            )
+        should_supplement = should_quantity_supplement or should_diversity_supplement
+        if cache.embedding_stage_metadata:
+            cache.embedding_stage_metadata.update(
+                {
+                    "initialCandidateCount": cache.v11_candidate_target_count,
+                    "finalCandidateCount": len(cache.creatives),
+                    "diversitySupplementTriggered": (
+                        cache.v11_diversity_supplemented
+                    ),
+                    "diversitySupplementCount": (
+                        cache.v11_diversity_supplement_count
+                    ),
+                    "finalAccurateCount": len(cache.accepted_v11_items),
+                }
+            )
+        diversity_soft_warning = (
+            "SEMANTIC_DIVERSITY_SOFT_TARGET_NOT_MET"
+            if (
+                not should_supplement
+                and missing == 0
+                and cache.v11_diversity_supplemented
+                and redundancy is not None
+                and redundancy.redundant_candidate_count > soft_excess_limit
+            )
+            else None
         )
+        stage_warnings = [
+            warning
+            for warning in (cache.embedding_warning, diversity_soft_warning)
+            if warning
+        ]
         await self._stage(
             context,
             NodeId.EXACT_SELECTION_AND_SUPPLEMENT,
             StageStatus.PARTIAL if should_supplement else StageStatus.SUCCEEDED,
-            "合格候选不足，正在执行一次定向补充"
-            if should_supplement
-            else "质量优先筛选完成",
+            (
+                "合格候选不足，正在执行数量补充"
+                if should_quantity_supplement
+                else "语义相似候选偏多，正在执行一次多样性补充"
+                if should_diversity_supplement
+                else "已按质量与语义多样性选满目标数量"
+            ),
             metadata={
                 "round": round_number,
                 "acceptedCount": len(cache.accepted_v11_items),
@@ -1160,7 +1467,7 @@ class PromptGenerationPipeline:
                 "supplemented": cache.v11_supplemented,
                 **cache.embedding_stage_metadata,
             },
-            warnings=[cache.embedding_warning] if cache.embedding_warning else None,
+            warnings=stage_warnings or None,
         )
         return pending, should_supplement
 
@@ -2662,6 +2969,156 @@ def _v11_settings(snapshot: PromptGenerationSnapshot) -> PromptBatchSettingsV6:
     if not isinstance(snapshot.settings, PromptBatchSettingsV6):
         raise PipelineError("V11 run requires Prompt settings schema V6")
     return snapshot.settings
+
+
+def _selection_vector_summary(
+    selection: CreativeSelectionResult,
+    vector_index: CreativeVectorIndex,
+) -> dict[str, Any]:
+    selected = selection.selected
+    selected_ids = [item.candidate.slot_id for item in selected]
+    pair_risks = [
+        vector_index.pair_similarity(left_id, right_id).risk
+        for left_id, right_id in combinations(selected_ids, 2)
+    ]
+    dimensions = [item.candidate.dimensions for item in selected]
+    dimension_unique_counts = {
+        field_name: len(
+            {
+                normalize_creative_signature(getattr(item, field_name))
+                for item in dimensions
+            }
+        )
+        for field_name in (
+            "narrative",
+            "scene",
+            "persona",
+            "product_relation",
+            "camera",
+            "emotion",
+        )
+    }
+    average_quality = (
+        sum(item.quality_score for item in selected) / len(selected)
+        if selected
+        else 0.0
+    )
+    return {
+        "selectedCount": len(selected),
+        "averageQualityScore": round(average_quality, 4),
+        "nearDuplicatePairCount": sum(
+            risk >= VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD for risk in pair_risks
+        ),
+        "highestPairRisk": round(max(pair_risks), 4) if pair_risks else 0.0,
+        "dimensionUniqueCounts": dimension_unique_counts,
+        "dimensionUniqueTotal": sum(dimension_unique_counts.values()),
+        "realizedFactCount": len(
+            {
+                fact_id
+                for item in selected
+                for fact_id in item.evaluation.realized_fact_ids
+            }
+        ),
+    }
+
+
+def _selection_content_summary(
+    selection: CreativeSelectionResult,
+    vector_index: ContentVectorIndex,
+) -> dict[str, Any]:
+    selected = selection.selected
+    selected_ids = [item.candidate.slot_id for item in selected]
+    redundancy = vector_index.redundancy_summary(selected_ids)
+    fields = (
+        "narrative",
+        "scene",
+        "persona",
+        "product_relation",
+        "camera",
+        "emotion",
+    )
+    dimension_unique_counts = {
+        field_name: len(
+            {
+                normalize_creative_signature(
+                    getattr(item.candidate.dimensions, field_name)
+                )
+                for item in selected
+            }
+        )
+        for field_name in fields
+    }
+    average_quality = (
+        sum(item.quality_score for item in selected) / len(selected)
+        if selected
+        else 0.0
+    )
+    pair_risks = [
+        vector_index.similarity(left_id, right_id)
+        for left_id, right_id in combinations(selected_ids, 2)
+    ]
+    pair_risks.extend(
+        vector_index.similarity(selected_id, anchor_id)
+        for selected_id in selected_ids
+        for anchor_id in vector_index.anchor_ids
+    )
+    return {
+        "selectedCount": len(selected),
+        "averageQualityScore": round(average_quality, 4),
+        "nearDuplicatePairCount": redundancy.high_risk_pair_count,
+        "redundantCandidateCount": redundancy.redundant_candidate_count,
+        "highestPairRisk": round(max(pair_risks), 4) if pair_risks else 0.0,
+        "dimensionUniqueCounts": dimension_unique_counts,
+        "dimensionUniqueTotal": sum(dimension_unique_counts.values()),
+        "realizedFactCount": len(
+            {
+                fact_id
+                for item in selected
+                for fact_id in item.evaluation.realized_fact_ids
+            }
+        ),
+    }
+
+
+def _dimension_unique_gain(
+    item: RankedCreative,
+    selected: list[RankedCreative],
+    anchors: list[PromptItemV6],
+) -> int:
+    fields = (
+        "narrative",
+        "scene",
+        "persona",
+        "product_relation",
+        "camera",
+        "emotion",
+    )
+    existing_dimensions = [
+        *[row.candidate.dimensions for row in selected],
+        *[anchor.dimensions for anchor in anchors],
+    ]
+    return sum(
+        normalize_creative_signature(
+            getattr(item.candidate.dimensions, field_name)
+        )
+        not in {
+            normalize_creative_signature(getattr(dimensions, field_name))
+            for dimensions in existing_dimensions
+        }
+        for field_name in fields
+    )
+
+
+def _near_duplicate_reduction(
+    baseline_summary: Mapping[str, Any],
+    compared_summary: Mapping[str, Any],
+) -> tuple[bool, float]:
+    baseline_count = int(baseline_summary["nearDuplicatePairCount"])
+    compared_count = int(compared_summary["nearDuplicatePairCount"])
+    if baseline_count <= 0:
+        return False, 0.0
+    reduction = 100.0 * (baseline_count - compared_count) / baseline_count
+    return True, round(reduction, 2)
 
 
 def _v11_prompt_items(

@@ -27,9 +27,13 @@ def _provider(settings: WorkerSettings) -> AiProvider:
         image_model=settings.resolved_image_model,
         semantic_model=settings.resolved_semantic_model,
         normalization_model=settings.resolved_normalization_model,
-        embedding_model=settings.ark_extraction_embedding_model,
-        embedding_max_concurrency=settings.semantic_embedding_max_concurrency,
         timeout=settings.ark_timeout_seconds,
+        image_timeout=settings.ark_image_timeout_seconds,
+        image_max_attempts=settings.ark_image_max_attempts,
+        image_max_output_tokens=settings.ark_image_max_output_tokens,
+        image_retry_max_output_tokens=settings.ark_image_retry_max_output_tokens,
+        image_detail=settings.ark_image_detail,
+        image_reasoning_effort=settings.ark_image_reasoning_effort,
     )
 
 
@@ -62,6 +66,7 @@ async def serve(settings: WorkerSettings) -> None:
             max_output_bytes=settings.image_max_output_bytes,
         ),
         max_document_text_chars=settings.max_document_text_chars,
+        image_max_concurrency=settings.image_max_concurrency,
         commerce_fetcher=HttpxCommerceFetcher(
             renderer=commerce_renderer,
             connect_timeout=settings.commerce_static_connect_timeout_seconds,

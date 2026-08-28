@@ -7,8 +7,7 @@ from pydantic import AnyHttpUrl, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_ARK_MODEL = "doubao-seed-2-1-turbo-260628"
-DEFAULT_ARK_SEMANTIC_MODEL = "doubao-seed-2-0-lite-260428"
-DEFAULT_ARK_EMBEDDING_MODEL = "doubao-embedding-vision-251215"
+DEFAULT_ARK_SEMANTIC_MODEL = "doubao-seed-2-0-mini-260428"
 ARK_KEY_PLACEHOLDERS = {
     "replace-with-your-ark-api-key",
     "your-ark-api-key",
@@ -49,17 +48,6 @@ class WorkerSettings(BaseSettings):
     ark_normalization_model: str | None = Field(
         default=None, alias="ARK_NORMALIZATION_MODEL"
     )
-    ark_extraction_embedding_model: str = Field(
-        default=DEFAULT_ARK_EMBEDDING_MODEL,
-        alias="ARK_EXTRACTION_EMBEDDING_MODEL",
-    )
-    semantic_embedding_max_concurrency: int = Field(
-        default=8,
-        alias="SEMANTIC_EMBEDDING_MAX_CONCURRENCY",
-        ge=1,
-        le=32,
-    )
-
     commerce_renderer_url: AnyHttpUrl | None = Field(
         default=None, alias="COMMERCE_RENDERER_URL"
     )
@@ -92,22 +80,43 @@ class WorkerSettings(BaseSettings):
     image_max_input_bytes: int = Field(
         default=20 * 1024 * 1024, alias="IMAGE_MAX_INPUT_BYTES", ge=1
     )
-    image_max_dimension: int = Field(default=2048, alias="IMAGE_MAX_DIMENSION", ge=256)
+    image_max_dimension: int = Field(default=1280, alias="IMAGE_MAX_DIMENSION", ge=256)
     image_max_output_bytes: int = Field(
         default=4 * 1024 * 1024, alias="IMAGE_MAX_OUTPUT_BYTES", ge=32_768
+    )
+    image_max_concurrency: int = Field(
+        default=2, alias="IMAGE_MAX_CONCURRENCY", ge=1, le=8
     )
     api_timeout_seconds: float = Field(
         default=60.0, alias="INTERNAL_API_TIMEOUT_SECONDS", gt=0
     )
     ark_timeout_seconds: float = Field(default=120.0, alias="ARK_TIMEOUT_SECONDS", gt=0)
+    ark_image_timeout_seconds: float = Field(
+        default=90.0, alias="ARK_IMAGE_TIMEOUT_SECONDS", gt=0
+    )
+    ark_image_max_attempts: int = Field(
+        default=2, alias="ARK_IMAGE_MAX_ATTEMPTS", ge=1, le=3
+    )
+    ark_image_max_output_tokens: int = Field(
+        default=4096, alias="ARK_IMAGE_MAX_OUTPUT_TOKENS", ge=256, le=16_384
+    )
+    ark_image_retry_max_output_tokens: int = Field(
+        default=6144,
+        alias="ARK_IMAGE_RETRY_MAX_OUTPUT_TOKENS",
+        ge=256,
+        le=16_384,
+    )
+    ark_image_detail: Literal["low", "high", "auto"] = Field(
+        default="low", alias="ARK_IMAGE_DETAIL"
+    )
+    ark_image_reasoning_effort: Literal["minimal", "low", "medium", "high"] = Field(
+        default="minimal", alias="ARK_IMAGE_REASONING_EFFORT"
+    )
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
     @model_validator(mode="after")
     def validate_provider(self) -> WorkerSettings:
         self.ark_model = self.ark_model.strip()
-        self.ark_extraction_embedding_model = (
-            self.ark_extraction_embedding_model.strip()
-        )
         for field_name in (
             "ark_document_model",
             "ark_commerce_model",
@@ -133,11 +142,11 @@ class WorkerSettings(BaseSettings):
                 raise ValueError(
                     "ARK_MODEL cannot be empty when EXTRACTION_AI_PROVIDER=ark"
                 )
-            if not self.ark_extraction_embedding_model:
-                raise ValueError(
-                    "ARK_EXTRACTION_EMBEDDING_MODEL cannot be empty when "
-                    "EXTRACTION_AI_PROVIDER=ark"
-                )
+        if self.ark_image_retry_max_output_tokens < self.ark_image_max_output_tokens:
+            raise ValueError(
+                "ARK_IMAGE_RETRY_MAX_OUTPUT_TOKENS must be greater than or equal to "
+                "ARK_IMAGE_MAX_OUTPUT_TOKENS"
+            )
         if not self.effect_extraction_queue.strip():
             raise ValueError("EFFECT_EXTRACTION_QUEUE cannot be empty")
         renderer_token = (

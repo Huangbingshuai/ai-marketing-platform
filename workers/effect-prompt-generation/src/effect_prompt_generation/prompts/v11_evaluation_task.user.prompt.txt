@@ -1,4 +1,4 @@
-VERSION: effect-prompt-v11-creative-evaluation-task-v1
+VERSION: effect-prompt-v11-creative-evaluation-task-v2
 
 候选声明所引用的已确认事实：
 {facts_json}
@@ -6,4 +6,4 @@ VERSION: effect-prompt-v11-creative-evaluation-task-v1
 待评估候选：
 {candidates_json}
 
-逐条独立核对正文证据、六维一致性、画面可执行性和用途。items 数量与 slotId 必须和输入一致。
+逐条独立核对正文证据、六维一致性、画面可执行性、商业素材价值和是否依赖无关场景或统一质感套话。硬问题和软提醒必须严格使用系统提示规定的稳定问题码。items 数量与 slotId 必须和输入一致。

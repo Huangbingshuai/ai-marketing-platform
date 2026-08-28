@@ -36,6 +36,9 @@ from effect_prompt_generation.providers import (
     ProviderErrorType,
 )
 from effect_prompt_generation.quality import (
+    RankedCreative,
+    _creative_novelty,
+    creative_soft_warnings,
     select_creatives,
     validate_creative_evaluation,
 )
@@ -276,7 +279,7 @@ async def test_v11_graph_generates_120_percent_then_selects_exact_count() -> Non
     assert all("虚构医疗功效" not in item.content for item in api.result.items)
     assert Counter(item.phase.value for item in api.shards.values()) == {
         "CREATIVE": 3,
-        "CLASSIFICATION": 3,
+        "CLASSIFICATION": 4,
     }
     creative_tasks = [
         task
@@ -369,7 +372,7 @@ async def test_v11_retries_one_invalid_classification_response_inside_its_shard(
         context=runtime,
     )
 
-    assert provider.calls == 4
+    assert provider.calls == 5
     assert api.result is not None
     assert api.result.metrics.generated_candidate_count == 12
 
@@ -408,7 +411,7 @@ async def test_v11_classification_retry_keeps_stable_shard_assignments() -> None
         for shard in api.shards.values()
         if shard.phase.value == "CLASSIFICATION"
     ]
-    assert {shard.shard_index for shard in classification_shards} == {0, 1, 2}
+    assert {shard.shard_index for shard in classification_shards} == {0, 1, 2, 3}
     assert all(shard.status == "SUCCEEDED" for shard in classification_shards)
     assert sum(len(shard.evaluations) for shard in classification_shards) == 12
     assert api.result is not None
@@ -490,6 +493,25 @@ async def test_v11_shadow_selection_reports_comparison_without_changing_result()
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
     assert selection_stage.metadata["selectionMethod"] == "TRIGRAM_SHADOW"
+    assert selection_stage.metadata["baselineSelection"]["selectedCount"] == 10
+    assert selection_stage.metadata["contentVectorSelection"]["selectedCount"] == 10
+    assert selection_stage.metadata["dualVectorSelection"]["selectedCount"] == 10
+    assert selection_stage.metadata["vectorChangedItemCount"] >= 0
+    assert selection_stage.metadata["contentChangedItemCount"] >= 0
+    assert isinstance(
+        selection_stage.metadata["vectorAverageQualityDelta"],
+        float,
+    )
+    assert set(
+        selection_stage.metadata["dualVectorSelection"]["dimensionUniqueCounts"]
+    ) == {
+        "narrative",
+        "scene",
+        "persona",
+        "product_relation",
+        "camera",
+        "emotion",
+    }
 
 
 @pytest.mark.asyncio
@@ -632,7 +654,7 @@ async def test_v11_stops_supplementing_as_soon_as_exact_quantity_is_reached() ->
     assert api.result.metrics.hard_issue_counts == []
     assert Counter(item.phase.value for item in api.shards.values()) == {
         "CREATIVE": 4,
-        "CLASSIFICATION": 4,
+        "CLASSIFICATION": 5,
     }
 
 
@@ -659,7 +681,7 @@ async def test_v11_can_run_multiple_supplement_rounds_to_reach_exact_quantity() 
     assert api.result.metrics.replenishment_rounds == 2
     assert Counter(item.phase.value for item in api.shards.values()) == {
         "CREATIVE": 9,
-        "CLASSIFICATION": 9,
+        "CLASSIFICATION": 12,
     }
 
 
@@ -729,6 +751,119 @@ def test_v11_evaluation_requires_real_text_evidence() -> None:
     assert "FACT_EVIDENCE_NOT_IN_CONTENT" in validated.warnings
     assert "FACT_EVIDENCE_NOT_IN_CONTENT" not in validated.hard_issues
     assert "MISSING_PRODUCT_RELATION" in validated.hard_issues
+
+
+def test_v11_generic_visual_language_is_a_soft_warning_only() -> None:
+    application = map_insight({"productName": "广式腊肠"})
+    fact = next(item for item in application.usable if item.value == "广式腊肠")
+    candidate = CreativeCandidate(
+        slot_id="candidate-generic-style",
+        ordinal=1,
+        round=0,
+        creative_core="切片动作展示",
+        declared_fact_ids=[fact.fact_id],
+        dimensions=CreativeDimensions(
+            narrative="切片后夹起",
+            scene="家庭厨房",
+            persona="成年人手部",
+            product_relation="广式腊肠作为动作主体",
+            camera="电影级浅景深镜头缓慢推进",
+            emotion="暖色调高级质感",
+        ),
+        content=(
+            "家庭厨房里，成年人切开广式腊肠并用筷子夹起一片，"
+            "镜头展示产品品质后停留在切面。"
+        ),
+    )
+    evaluation = CreativeEvaluation(
+        slot_id=candidate.slot_id,
+        primary_purpose=FragmentType.PRODUCT_DISPLAY,
+        compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+        fact_evidence=[FactEvidence(fact_id=fact.fact_id, evidence_text="广式腊肠")],
+        realized_fact_ids=[fact.fact_id],
+        scores=CreativeScores(
+            product_relevance=90,
+            creative_coherence=90,
+            visual_executability=90,
+            commercial_usefulness=85,
+            visual_clarity=90,
+        ),
+        semantic_signature="ignored",
+        visual_signature="ignored",
+    )
+
+    assert creative_soft_warnings(candidate) == [
+        "GENERIC_STYLE_STACKING",
+        "PURPOSE_SENTENCE_INSTEAD_OF_VISIBLE_ACTION",
+    ]
+    validated = validate_creative_evaluation(candidate, evaluation, application)
+    assert validated.hard_issues == []
+    assert validated.warnings == [
+        "GENERIC_STYLE_STACKING",
+        "PURPOSE_SENTENCE_INSTEAD_OF_VISIBLE_ACTION",
+    ]
+
+
+def test_v11_novelty_uses_narrative_and_emotion_as_soft_dimensions() -> None:
+    def ranked(
+        slot_id: str,
+        *,
+        narrative: str,
+        emotion: str,
+        content: str,
+    ) -> RankedCreative:
+        candidate = CreativeCandidate(
+            slot_id=slot_id,
+            ordinal=1,
+            round=0,
+            creative_core=slot_id,
+            declared_fact_ids=["fact-product"],
+            dimensions=CreativeDimensions(
+                narrative=narrative,
+                scene="家庭厨房",
+                persona="成年人手部",
+                product_relation="广式腊肠切面",
+                camera="微距固定侧拍",
+                emotion=emotion,
+            ),
+            content=content,
+        )
+        evaluation = CreativeEvaluation(
+            slot_id=slot_id,
+            primary_purpose=FragmentType.PRODUCT_DISPLAY,
+            compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+            scores=CreativeScores(
+                product_relevance=90,
+                creative_coherence=90,
+                visual_executability=90,
+                commercial_usefulness=85,
+                visual_clarity=90,
+            ),
+            semantic_signature=slot_id,
+            visual_signature=slot_id,
+        )
+        return RankedCreative(
+            candidate=candidate,
+            evaluation=evaluation,
+            quality_score=90,
+            novelty_score=100,
+            selection_score=92,
+        )
+
+    first = ranked(
+        "first",
+        narrative="动作直接展示",
+        emotion="利落明快",
+        content="刀锋切开广式腊肠，切面在厨房自然光下稳定停留。",
+    )
+    second = ranked(
+        "second",
+        narrative="家庭体验代入",
+        emotion="温馨治愈",
+        content="筷子夹起广式腊肠放进白瓷碟，家人在餐桌旁自然互动。",
+    )
+
+    assert _creative_novelty(first, second) > 0
 
 
 def test_v11_discards_bad_evidence_excerpt_without_rejecting_valid_prompt() -> None:

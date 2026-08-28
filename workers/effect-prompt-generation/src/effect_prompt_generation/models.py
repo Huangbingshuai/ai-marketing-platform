@@ -536,6 +536,10 @@ class PromptGenerationSnapshot(ApiModel):
     retained_manual_items: list[PromptItem | PromptItemV6] = Field(
         default_factory=list, max_length=200
     )
+    selection_policy_version: Literal["MMR_CONTENT_V2"] | None = None
+    similarity_anchors: list[PromptItem | PromptItemV6] = Field(
+        default_factory=list, max_length=200
+    )
     shared_prompt: SharedPrompt | None = None
     base_result_revision: int | None = Field(default=None, ge=1)
     target_item: PromptItem | PromptItemV6 | None = None

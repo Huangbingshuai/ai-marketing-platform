@@ -1,4 +1,4 @@
-VERSION: effect-prompt-v11-coherent-creative-task-v2
+VERSION: effect-prompt-v11-coherent-creative-task-v3
 
 逐条创意事实简报：
 {task_briefs_json}
@@ -12,3 +12,5 @@ VERSION: effect-prompt-v11-coherent-creative-task-v2
 单条重新生成上下文：{regeneration_context_json}
 
 为每个任务各生成一条独立、完整、连贯、产品相关的素材创意。严格使用该任务自己的 primaryFact、supportFacts 和 productAnchorFacts；不得跨任务借用事实。不要按钩子、痛点、产品展示、卖点讲解、结尾转化或片尾品牌分组，也不要输出任何用途分类。
+
+已有语义和视觉签名只是软避重参考：优先改变与当前产品事实相容的叙事角度、真实场景、人物动作、产品表现、镜头或情绪，不能为了不同而牺牲商品关联、编造新场景或堆砌统一质感词。不同任务可以使用同一个合理场所，但创意主线、产品动作和镜头重点必须真实独立。

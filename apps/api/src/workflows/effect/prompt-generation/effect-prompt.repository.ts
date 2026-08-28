@@ -400,6 +400,8 @@ export class EffectPromptRepository {
           result: insight.payload,
         },
         retainedManualItems: manualItems,
+        selectionPolicyVersion: 'MMR_CONTENT_V2',
+        similarityAnchors: manualItems,
         sharedPrompt: readableLatest?.sharedPrompt ?? null,
         ...((input.operation === 'ITEM_REGENERATE' || input.operation === 'ITEM_EVALUATE') &&
         targetItem
@@ -425,6 +427,8 @@ export class EffectPromptRepository {
         insight: snapshot.insightArtifact,
         settingsHash,
         retainedManualItems: manualItems,
+        selectionPolicyVersion: snapshot.selectionPolicyVersion,
+        similarityAnchors: snapshot.similarityAnchors,
         sharedPrompt: snapshot.sharedPrompt,
         regeneration:
           snapshot.operation === 'ITEM_REGENERATE' || snapshot.operation === 'ITEM_EVALUATE'

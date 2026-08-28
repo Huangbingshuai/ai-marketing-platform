@@ -1776,7 +1776,27 @@ const v11AdditionalOutputFields = (
       numberField(metadata, 'targetCount', '目标数量'),
       numberField(metadata, 'missingCount', '当前缺口'),
       numberField(metadata, 'exactDuplicateCount', '完全重复淘汰'),
-      textField('定向补充', metadata.supplemented === true ? '已执行' : '未触发'),
+      numberField(metadata, 'fixedAnchorCount', '固定参照 Prompt'),
+      numberField(metadata, 'embeddingInputCount', '向量化正文'),
+      numberField(metadata, 'embeddingRequestCount', '向量请求'),
+      numberField(metadata, 'embeddingDurationMs', '向量阶段耗时（毫秒）'),
+      numberField(metadata, 'localComparisonMs', '本地矩阵耗时（毫秒）'),
+      numberField(metadata, 'initialRedundantCandidateCount', '补充前高风险冗余'),
+      numberField(metadata, 'finalRedundantCandidateCount', '补充后高风险冗余'),
+      textField(
+        'MMR 权重',
+        typeof metadata.mmrQualityWeight === 'number' &&
+          typeof metadata.mmrDiversityWeight === 'number'
+          ? `质量 ${Math.round(metadata.mmrQualityWeight * 100)}% / 多样性 ${Math.round(metadata.mmrDiversityWeight * 100)}%`
+          : null,
+      ),
+      textField('数量补充', metadata.supplemented === true ? '已执行' : '未触发'),
+      textField(
+        '多样性补充',
+        metadata.diversitySupplementTriggered === true
+          ? `已补充 ${typeof metadata.diversitySupplementCount === 'number' ? metadata.diversitySupplementCount : 0} 条候选`
+          : '未触发',
+      ),
     ]);
   if (nodeId === 'RESULT_SAVE' && result)
     return compact([

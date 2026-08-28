@@ -13,10 +13,12 @@ import {
   IsIn,
   IsInt,
   IsOptional,
+  IsObject,
   IsString,
   IsUUID,
   Max,
   MaxLength,
+  Matches,
   Min,
 } from 'class-validator';
 
@@ -51,6 +53,15 @@ export class WorkerProjectDto {
 export class WorkerProgressDto extends WorkerProjectDto {
   @Type(() => Number) @IsInt() @Min(0) @Max(99) progress!: number;
   @IsString() @MaxLength(120) currentNode!: string;
+}
+
+export class WorkerImageCacheQueryDto extends WorkerProjectDto {
+  @IsString() @Matches(/^[a-f0-9]{64}$/) cacheKey!: string;
+}
+
+export class WorkerImageCacheWriteDto extends WorkerImageCacheQueryDto {
+  @IsObject() candidate!: Record<string, unknown>;
+  @IsOptional() @IsObject() metadata?: Record<string, unknown>;
 }
 
 export class WorkerBranchOutputDto extends WorkerProjectDto {

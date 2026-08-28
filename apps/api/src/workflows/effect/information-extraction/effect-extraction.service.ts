@@ -678,6 +678,32 @@ export class EffectExtractionService {
     };
   }
 
+  async imageCache(projectId: string, runId: string, attemptToken: string, cacheKey: string) {
+    const result = await this.repository.imageCache(projectId, runId, attemptToken, cacheKey);
+    if (!result.authorized) throw conflict('Worker 租约已失效');
+    if (!result.record) return { hit: false as const };
+    return {
+      hit: true as const,
+      candidate: result.record.candidate,
+      metadata: result.record.metadata,
+    };
+  }
+
+  async saveImageCache(
+    projectId: string,
+    runId: string,
+    attemptToken: string,
+    input: {
+      cacheKey: string;
+      candidate: Record<string, unknown>;
+      metadata: Record<string, unknown>;
+    },
+  ) {
+    if (!(await this.repository.saveImageCache(projectId, runId, attemptToken, input)))
+      throw conflict('Worker 租约已失效');
+    return { accepted: true as const };
+  }
+
   async storeArtifact(
     projectId: string,
     runId: string,

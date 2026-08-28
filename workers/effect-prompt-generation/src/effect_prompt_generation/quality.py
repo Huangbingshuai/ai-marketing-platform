@@ -379,10 +379,54 @@ _PRODUCT_RELEVANT_FIELDS = {
     InsightField.EMOTIONAL_SCENARIO,
 }
 
+_GENERIC_STYLE_PHRASES = (
+    "电影级",
+    "电影感",
+    "高级感",
+    "高级质感",
+    "商业广告质感",
+    "大片质感",
+    "暖色光线",
+    "暖色调",
+    "浅景深",
+    "缓慢推进",
+)
+
+_PURPOSE_ONLY_PHRASES = (
+    "展示产品效果",
+    "展示产品品质",
+    "体现产品品质",
+    "突出产品卖点",
+    "突出核心卖点",
+    "建立信任感",
+    "营造高级感",
+)
+
 
 def normalize_creative_signature(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value).casefold()
     return re.sub(r"[\s\W_]+", "", normalized)[:240] or "empty"
+
+
+def creative_soft_warnings(candidate: CreativeCandidate) -> list[str]:
+    """Return deterministic quality hints that must never reject a creative."""
+
+    corpus = "|".join(
+        (
+            candidate.content,
+            candidate.dimensions.camera,
+            candidate.dimensions.emotion,
+        )
+    )
+    warnings: list[str] = []
+    generic_hits = {
+        phrase for phrase in _GENERIC_STYLE_PHRASES if phrase in corpus
+    }
+    if len(generic_hits) >= 3:
+        warnings.append("GENERIC_STYLE_STACKING")
+    if any(phrase in corpus for phrase in _PURPOSE_ONLY_PHRASES):
+        warnings.append("PURPOSE_SENTENCE_INSTEAD_OF_VISIBLE_ACTION")
+    return warnings
 
 
 def validate_creative_evaluation(
@@ -404,7 +448,7 @@ def validate_creative_evaluation(
         for issue in evaluation.hard_issues
         if issue not in evidence_metadata_codes
     ]
-    warnings = [*evaluation.warnings]
+    warnings = [*evaluation.warnings, *creative_soft_warnings(candidate)]
     warnings.extend(
         issue
         for issue in evaluation.hard_issues
@@ -461,6 +505,11 @@ def select_creatives(
     *,
     target_count: int,
     novelty_resolver: Callable[[RankedCreative, RankedCreative], float] | None = None,
+    fixed_novelty_resolver: Callable[[RankedCreative], float] | None = None,
+    dimension_gain_resolver: Callable[[RankedCreative, list[RankedCreative]], int]
+    | None = None,
+    quality_weight: float = 0.8,
+    novelty_weight: float = 0.2,
 ) -> CreativeSelectionResult:
     candidate_by_id = {item.slot_id: item for item in candidates}
     ranked = [
@@ -469,7 +518,10 @@ def select_creatives(
             evaluation=item,
             quality_score=item.scores.overall_quality,
             novelty_score=100.0,
-            selection_score=item.scores.overall_quality * 0.8 + 20.0,
+            selection_score=(
+                item.scores.overall_quality * quality_weight
+                + 100.0 * novelty_weight
+            ),
         )
         for item in evaluations
         if item.slot_id in candidate_by_id and not item.hard_issues
@@ -502,26 +554,32 @@ def select_creatives(
     while remaining and len(selected) < target_count:
         scored: list[RankedCreative] = []
         for item in remaining:
-            novelty = min(
-                (
-                    resolve_novelty(item, accepted)
-                    for accepted in selected
-                ),
-                default=100.0,
-            )
+            novelty_values = [
+                resolve_novelty(item, accepted) for accepted in selected
+            ]
+            if fixed_novelty_resolver is not None:
+                novelty_values.append(fixed_novelty_resolver(item))
+            novelty = min(novelty_values, default=100.0)
             scored.append(
                 RankedCreative(
                     candidate=item.candidate,
                     evaluation=item.evaluation,
                     quality_score=item.quality_score,
                     novelty_score=novelty,
-                    selection_score=round(item.quality_score * 0.8 + novelty * 0.2, 4),
+                    selection_score=round(
+                        item.quality_score * quality_weight
+                        + novelty * novelty_weight,
+                        4,
+                    ),
                 )
             )
         best = max(
             scored,
             key=lambda row: (
                 row.selection_score,
+                dimension_gain_resolver(row, selected)
+                if dimension_gain_resolver is not None
+                else 0,
                 row.quality_score,
                 -row.candidate.ordinal,
             ),
@@ -544,14 +602,16 @@ def _creative_novelty(left: RankedCreative, right: RankedCreative) -> float:
     visual = sum(
         1
         for left_value, right_value in (
+            (left_visual.narrative, right_visual.narrative),
             (left_visual.scene, right_visual.scene),
             (left_visual.persona, right_visual.persona),
             (left_visual.product_relation, right_visual.product_relation),
             (left_visual.camera, right_visual.camera),
+            (left_visual.emotion, right_visual.emotion),
         )
         if normalize_creative_signature(left_value)
         == normalize_creative_signature(right_value)
-    ) / 4
+    ) / 6
     return round(100.0 * (1.0 - max(semantic, visual)), 4)
 
 

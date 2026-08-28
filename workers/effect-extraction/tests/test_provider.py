@@ -6,6 +6,7 @@ import pytest
 from effect_extraction.models import (
     ExtractionCandidate,
     ExtractionResult,
+    ImageVisibleFacts,
     SemanticField,
     SemanticGroup,
     SemanticRefinementDecision,
@@ -24,8 +25,18 @@ async def test_ark_provider_sends_multimodal_strict_schema_without_store() -> No
 
     async def handler(request: httpx.Request) -> httpx.Response:
         captured.update(json.loads(request.content))
-        candidate = ExtractionCandidate.empty()
-        candidate.visual_features = "红色包装"
+        candidate = ImageVisibleFacts(
+            product_category=None,
+            product_name=None,
+            core_specification=None,
+            visual_features="红色包装",
+            core_selling_points=None,
+            secondary_selling_points=None,
+            trust_backings=None,
+            usage_scenarios=None,
+            emotional_scenarios=None,
+            visual_style_baseline=None,
+        )
         return httpx.Response(
             200,
             json={
@@ -58,15 +69,18 @@ async def test_ark_provider_sends_multimodal_strict_schema_without_store() -> No
     assert result.value.visual_features == "红色包装"
     assert result.metadata.stage == "IMAGE"
     assert result.metadata.model == "doubao-seed-2-1-turbo"
-    assert result.metadata.prompt_version == "3.0.0"
+    assert result.metadata.prompt_version == "4.0.0"
     assert result.metadata.input_tokens is None
     assert result.metadata.output_tokens is None
     assert result.metadata.total_tokens is None
     assert result.metadata.attempts == 1
     assert captured["store"] is False
+    assert captured["max_output_tokens"] == 4096
+    assert captured["reasoning"] == {"effort": "minimal"}
     assert captured["text"]["format"]["type"] == "json_schema"  # type: ignore[index]
     content = captured["input"][0]["content"]  # type: ignore[index]
-    assert any(part.get("type") == "input_image" for part in content)
+    image_part = next(part for part in content if part.get("type") == "input_image")
+    assert image_part["detail"] == "low"
 
 
 @pytest.mark.asyncio
@@ -100,6 +114,19 @@ async def test_ark_provider_routes_each_stage_and_records_usage() -> None:
                 delivery_channels="短视频",
                 disabled_elements=[],
                 visual_style_baseline="自然",
+            ).model_dump_json(by_alias=True)
+        elif schema_name == "effect_image_visible_facts":
+            output = ImageVisibleFacts(
+                product_category=None,
+                product_name=None,
+                core_specification=None,
+                visual_features=None,
+                core_selling_points=None,
+                secondary_selling_points=None,
+                trust_backings=None,
+                usage_scenarios=None,
+                emotional_scenarios=None,
+                visual_style_baseline=None,
             ).model_dump_json(by_alias=True)
         else:
             output = ExtractionCandidate.empty().model_dump_json(by_alias=True)
@@ -209,7 +236,20 @@ async def test_ark_provider_retries_with_the_same_stage_model(
             return httpx.Response(429, json={"error": {"message": "rate limited"}})
         return httpx.Response(
             200,
-            json={"output_text": ExtractionCandidate.empty().model_dump_json(by_alias=True)},
+            json={
+                "output_text": ImageVisibleFacts(
+                    product_category=None,
+                    product_name=None,
+                    core_specification=None,
+                    visual_features=None,
+                    core_selling_points=None,
+                    secondary_selling_points=None,
+                    trust_backings=None,
+                    usage_scenarios=None,
+                    emotional_scenarios=None,
+                    visual_style_baseline=None,
+                ).model_dump_json(by_alias=True)
+            },
         )
 
     monkeypatch.setattr("effect_extraction.providers.asyncio.sleep", no_sleep)
@@ -233,6 +273,76 @@ async def test_ark_provider_retries_with_the_same_stage_model(
     assert requested_models == ["image-model", "image-model"]
     assert result.metadata.model == "image-model"
     assert result.metadata.attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_image_request_retries_truncation_once_with_a_larger_output_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    budgets: list[int] = []
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        budgets.append(payload["max_output_tokens"])
+        if len(budgets) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                },
+            )
+        output = ImageVisibleFacts(
+            product_category=None,
+            product_name=None,
+            core_specification=None,
+            visual_features="红色包装",
+            core_selling_points=None,
+            secondary_selling_points=None,
+            trust_backings=None,
+            usage_scenarios=None,
+            emotional_scenarios=None,
+            visual_style_baseline=None,
+        )
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "output_text": output.model_dump_json(by_alias=True),
+                "usage": {
+                    "input_tokens": 50,
+                    "output_tokens": 300,
+                    "total_tokens": 350,
+                    "output_tokens_details": {"reasoning_tokens": 120},
+                },
+            },
+        )
+
+    monkeypatch.setattr("effect_extraction.providers.asyncio.sleep", no_sleep)
+    provider = ArkResponsesProvider(
+        base_url="https://ark.test/api/v3/",
+        api_key="secret",
+        model="image-model",
+        image_max_output_tokens=2048,
+        image_retry_max_output_tokens=3072,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await provider.analyze_image(
+            "data:image/jpeg;base64,AAAA",
+            source_name="product.jpg",
+            image_metadata={"processedWidth": 100, "processedHeight": 80},
+        )
+    finally:
+        await provider.aclose()
+
+    assert budgets == [2048, 3072]
+    assert result.metadata.attempts == 2
+    assert result.metadata.reasoning_tokens == 120
+    assert result.value.visual_features == "红色包装"
 
 
 @pytest.mark.asyncio
@@ -275,23 +385,18 @@ async def test_ark_provider_records_safe_timeout_diagnostics(
 
 
 @pytest.mark.asyncio
-async def test_ark_provider_uses_embedding_recall_and_one_strict_semantic_request() -> None:
+async def test_ark_provider_uses_one_minimal_reasoning_semantic_request() -> None:
     requests: list[tuple[str, dict[str, object]]] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         requests.append((request.url.path, payload))
-        if request.url.path.endswith("/embeddings/multimodal"):
-            return httpx.Response(
-                200,
-                json={"data": {"embedding": [[1.0, 0.0]]}, "usage": {"input_tokens": 4}},
-            )
         decision = SemanticRefinementDecision(
             groups=[
                 SemanticGroup(
                     field=SemanticField.CORE_PAIN_POINTS,
                     member_fact_ids=["corePainPoints-01", "corePainPoints-02"],
-                    canonical_value="家庭日常佐餐需要方便、有风味的腊味食材",
+                    representative_fact_id="corePainPoints-01",
                     relation=SemanticRelation.SAME_MEANING,
                 )
             ]
@@ -303,7 +408,6 @@ async def test_ark_provider_uses_embedding_recall_and_one_strict_semantic_reques
         api_key="secret",
         model="seed-model",
         semantic_model="semantic-model",
-        embedding_model="embedding-model",
         transport=httpx.MockTransport(handler),
     )
     facts = [
@@ -311,22 +415,11 @@ async def test_ark_provider_uses_embedding_recall_and_one_strict_semantic_reques
         {"factId": "corePainPoints-02", "field": "corePainPoints", "value": "家常备餐不便"},
     ]
     try:
-        embedding = await provider.embed_semantic_texts(["核心痛点：日常佐餐不便"])
-        decision = await provider.refine_semantics(
-            facts=facts,
-            candidate_pairs=[
-                {
-                    "leftFactId": "corePainPoints-01",
-                    "rightFactId": "corePainPoints-02",
-                    "similarity": 0.82,
-                }
-            ],
-        )
+        decision = await provider.refine_semantics(facts=facts)
     finally:
         await provider.aclose()
 
-    assert embedding.vectors == [(1.0, 0.0)]
-    assert embedding.model == "embedding-model"
+    assert len(requests) == 1
     assert decision.metadata.stage == "SEMANTIC_REFINEMENT"
     assert decision.metadata.model == "semantic-model"
     assert decision.value.groups[0].member_fact_ids == [
@@ -335,4 +428,7 @@ async def test_ark_provider_uses_embedding_recall_and_one_strict_semantic_reques
     ]
     semantic_payload = requests[-1][1]
     assert semantic_payload["store"] is False
+    assert semantic_payload["reasoning"] == {"effort": "minimal"}
+    assert semantic_payload["max_output_tokens"] == 1024
     assert semantic_payload["text"]["format"]["name"] == "effect_semantic_refinement"  # type: ignore[index]
+    assert "embeddings" not in requests[-1][0]

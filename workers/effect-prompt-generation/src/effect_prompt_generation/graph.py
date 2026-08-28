@@ -260,7 +260,9 @@ def build_graph(
             round_number=0,
         )
         supplement_round = 1
-        while needed and supplement_round <= MAX_REPLENISHMENT_ROUNDS:
+        # Quantity recovery may run for three rounds. A separate, optional fourth
+        # pass is reserved for the one-shot semantic-diversity supplement.
+        while needed and supplement_round <= MAX_REPLENISHMENT_ROUNDS + 1:
             if supplement:
                 await _gather_cancel_on_error(
                     [

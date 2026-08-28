@@ -4,8 +4,12 @@ import os
 
 import pytest
 
-from effect_extraction.config import DEFAULT_ARK_MODEL
-from effect_extraction.models import ExtractionCandidate, ExtractionResult
+from effect_extraction.config import DEFAULT_ARK_MODEL, DEFAULT_ARK_SEMANTIC_MODEL
+from effect_extraction.models import (
+    ExtractionCandidate,
+    ExtractionResult,
+    SemanticRelation,
+)
 from effect_extraction.providers import ArkResponsesProvider
 
 
@@ -60,7 +64,11 @@ async def test_real_ark_text_image_and_normalization_contracts() -> None:
         image = await provider.analyze_image(
             _SMOKE_TEST_PNG,
             source_name="ark-smoke.png",
-            image_metadata={"processedWidth": 64, "processedHeight": 64, "format": "PNG"},
+            image_metadata={
+                "processedWidth": 64,
+                "processedHeight": 64,
+                "format": "PNG",
+            },
         )
         normalized = await provider.normalize(
             ExtractionCandidate(
@@ -68,6 +76,7 @@ async def test_real_ark_text_image_and_normalization_contracts() -> None:
                 product_name="山泉气泡水",
                 core_specification="500ml",
                 price_range=None,
+                resolution=None,
                 visual_features="透明瓶身",
                 core_selling_points=["无糖"],
                 secondary_selling_points=None,
@@ -97,3 +106,74 @@ async def test_real_ark_text_image_and_normalization_contracts() -> None:
     assert document.metadata.stage == "DOCUMENT"
     assert image.metadata.stage == "IMAGE"
     assert normalized.metadata.stage == "NORMALIZATION"
+
+
+@pytest.mark.asyncio
+async def test_real_ark_semantic_decision_merges_only_repeated_meaning() -> None:
+    api_key = _required_environment("ARK_API_KEY")
+    model = os.getenv("ARK_MODEL", DEFAULT_ARK_MODEL).strip() or DEFAULT_ARK_MODEL
+    semantic_model = (
+        os.getenv("ARK_SEMANTIC_MODEL", DEFAULT_ARK_SEMANTIC_MODEL).strip()
+        or DEFAULT_ARK_SEMANTIC_MODEL
+    )
+    facts = [
+        {
+            "factId": "pain-1",
+            "field": "corePainPoints",
+            "value": "日常佐餐缺少方便入味的腊味食材",
+        },
+        {
+            "factId": "pain-2",
+            "field": "corePainPoints",
+            "value": "家庭日常佐餐缺少方便且有风味的腊味食材",
+        },
+        {
+            "factId": "pain-3",
+            "field": "corePainPoints",
+            "value": "年节礼赠难以选择实用又有特色的产品",
+        },
+        {
+            "factId": "usage-1",
+            "field": "usageScenarios",
+            "value": "制作煲仔饭",
+        },
+        {
+            "factId": "usage-2",
+            "field": "usageScenarios",
+            "value": "蒸制食用",
+        },
+        {
+            "factId": "usage-3",
+            "field": "usageScenarios",
+            "value": "炒制食用",
+        },
+    ]
+
+    provider = ArkResponsesProvider(
+        base_url=os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
+        api_key=api_key,
+        model=model,
+        semantic_model=semantic_model,
+        timeout=float(os.getenv("ARK_TIMEOUT_SECONDS", "120")),
+        max_attempts=2,
+    )
+    try:
+        decision = await provider.refine_semantics(facts=facts)
+    finally:
+        await provider.aclose()
+
+    applied_groups = [
+        group
+        for group in decision.value.groups
+        if group.relation
+        in {SemanticRelation.SAME_MEANING, SemanticRelation.PARENT_CHILD}
+    ]
+    assert any(
+        set(group.member_fact_ids) == {"pain-1", "pain-2"} for group in applied_groups
+    )
+    assert not any(
+        len({"usage-1", "usage-2", "usage-3"}.intersection(group.member_fact_ids)) > 1
+        for group in applied_groups
+    )
+    assert decision.metadata.stage == "SEMANTIC_REFINEMENT"
+    assert decision.metadata.attempts >= 1

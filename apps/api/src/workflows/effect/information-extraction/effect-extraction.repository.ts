@@ -852,6 +852,76 @@ export class EffectExtractionRepository {
     });
   }
 
+  async imageCache(
+    projectId: string,
+    runId: string,
+    attemptToken: string,
+    cacheKey: string,
+    now = new Date(),
+  ) {
+    return this.prisma.$transaction(async (transaction) => {
+      const authorized = await transaction.effectExtractionRun.count({
+        where: {
+          projectId,
+          id: runId,
+          status: 'RUNNING',
+          attemptToken,
+          leaseExpiresAt: { gt: now },
+        },
+      });
+      if (authorized !== 1) return { authorized: false as const, record: null };
+      const record = await transaction.effectExtractionImageCache.findUnique({
+        where: { projectId_cacheKey: { projectId, cacheKey } },
+      });
+      if (record) {
+        await transaction.effectExtractionImageCache.update({
+          where: { id: record.id },
+          data: { hitCount: { increment: 1 }, lastHitAt: now },
+        });
+      }
+      return { authorized: true as const, record };
+    });
+  }
+
+  async saveImageCache(
+    projectId: string,
+    runId: string,
+    attemptToken: string,
+    input: {
+      cacheKey: string;
+      candidate: Record<string, unknown>;
+      metadata: Record<string, unknown>;
+    },
+    now = new Date(),
+  ): Promise<boolean> {
+    return this.prisma.$transaction(async (transaction) => {
+      const authorized = await transaction.effectExtractionRun.count({
+        where: {
+          projectId,
+          id: runId,
+          status: 'RUNNING',
+          attemptToken,
+          leaseExpiresAt: { gt: now },
+        },
+      });
+      if (authorized !== 1) return false;
+      await transaction.effectExtractionImageCache.upsert({
+        where: { projectId_cacheKey: { projectId, cacheKey: input.cacheKey } },
+        create: {
+          projectId,
+          cacheKey: input.cacheKey,
+          candidate: json(input.candidate),
+          metadata: json(input.metadata),
+        },
+        update: {
+          candidate: json(input.candidate),
+          metadata: json(input.metadata),
+        },
+      });
+      return true;
+    });
+  }
+
   artifactByKey(projectId: string, runId: string, idempotencyKey: string) {
     return this.prisma.effectExtractionArtifact.findUnique({
       where: { projectId_runId_idempotencyKey: { projectId, runId, idempotencyKey } },

@@ -458,3 +458,31 @@ Worker 和 Renderer 均只允许 HTTP/HTTPS 与 80/443 端口，拒绝 URL 凭�
 状态语义固定为：无链接 `SKIPPED`；抓取和模型成功 `SUCCEEDED`；存在确定性商品字段但 AI 失败 `PARTIAL`；页面受限、不可访问或没有可用信息 `FAILED`。除内部 API 持久化失败外，电商来源失败不会中止其他并行分支。节点详情只白名单展示来源网站、商品名称、品类、价格区间、核心规格和卖点；不公开完整 URL、HTTP 状态、抓取模式、耗时、Token、模型、存储键、HTML、正文或其他内部元数据。历史无链接 Run 的旧告警在详情层隐藏，避免与“未提供商品链接，无需解析”摘要重复。
 
 新增隔离服务位于 `workers/effect-commerce-renderer`，Compose 默认以内部地址 `http://commerce-renderer:8080` 连接且不发布宿主端口。Worker 与 Renderer 镜像均已构建，Renderer 健康检查通过，Worker 已使用新镜像重建并恢复 RabbitMQ 消费。定向验证结果：Worker 54 项通过、3 项真实集成门控跳过，mypy 30 个源文件无错误；Renderer 17 项通过且无警告，严格 mypy 通过；API 电商产物、白名单投影和项目隔离测试通过。全仓 `pnpm check` 通过，包含 Lint、Prettier、TypeScript 类型检查、Contracts 9 项、API 141 项、Web 114 项测试及前后端生产构建。浏览器在全新 Vite 依赖环境中确认工作流弹窗可打开、COMMERCE 节点可点击、无链接状态只展示一次用户可理解的跳过摘要；本轮没有提交新的商品链接或触发付费 Ark 请求。
+
+## 29. 2026-08-28 Seed 2.1 Turbo 图片识别尾延迟优化
+
+真实付费 Run 显示三张图片的调用耗时分别约为 108 秒、227 秒和 322 秒，后两张发生 2～3 次尝试，单图结构化输出达到约 3,700～5,400 Token。根因不是图片下载或 LangGraph 汇合，而是图片分支复用 21 字段通用候选 Schema、未限制输出预算，并沿用通用 120 秒超时和 3 次重试，导致长输出与重试叠加放大尾延迟。
+
+图片节点现改为专用 `ImageVisibleFacts.v1` 契约，只输出产品品类、名称、规格、视觉特征、两类可见卖点、可读信任标识、使用场景、情绪场景和视觉风格 10 个字段，再由 Worker 确定性映射回完整 `ExtractionCandidate`。价格、人群、痛点、营销目标、购买场景和视频配置不再作为一批固定 null 字段交给图片模型。Prompt 升级为 `4.0.0`，仍坚持只提取图片可见或可读事实，不允许把图片内容当作指令。
+
+图片输入默认最长边由 2048 降为 1280，Responses API 使用 `detail=low`，并显式设置图片节点 `reasoning.effort=minimal`；图片模型调用采用独立预算：单次 90 秒、最多 2 次、首次最多 4096 输出 Token，只有明确返回 `incomplete/max_output_tokens` 时第二次扩到 6144。真实回归确认 2048/3072 会因 Seed 2.1 Turbo 的思考 Token 占用而产生无效结果，因此不再使用该过低预算；字符长度保持 Prompt 软约束，字段集合和数组数量继续由 JSON Schema/Pydantic 硬校验。安全调用元数据新增 reasoning Token，不记录 Prompt、Base64、原始响应或密钥。图片并发由固定 3 改为可配置的默认 2，降低账户限流和同一批次内相互争抢造成的尾延迟。
+
+新增项目隔离的 `EffectExtractionImageCache`。Worker 对压缩后的 JPEG 计算 SHA-256，并把图片内容指纹与实际模型、Prompt 版本、图片 Schema 和 detail 组成缓存键；缓存通过受 Worker Token、`projectId + runId + attemptToken + leaseExpiresAt` 保护的内部 API 读写，Python 不直连数据库。命中后直接复用已通过 Pydantic 校验的完整候选，不把图片或模型输入写入缓存；模型、Prompt 或图片内容变化会自然失效。缓存读取或写入异常只记录安全日志并回退真实模型，不阻断当前图片识别。
+
+新增配置为 `ARK_IMAGE_DETAIL`、`ARK_IMAGE_REASONING_EFFORT`、`ARK_IMAGE_TIMEOUT_SECONDS`、`ARK_IMAGE_MAX_ATTEMPTS`、`ARK_IMAGE_MAX_OUTPUT_TOKENS`、`ARK_IMAGE_RETRY_MAX_OUTPUT_TOKENS`、`IMAGE_MAX_DIMENSION` 和 `IMAGE_MAX_CONCURRENCY`。
+
+真实付费回归 Run `19c35ace-78e1-47f8-8ab9-dc199283b104` 最终为 `COMPLETED / 100%`。三张 1536×1024 PNG 经 1280 最长边 JPEG 预处理后，Seed 2.1 Turbo 图片调用分别为 4,510ms、6,667ms 和 5,047ms，全部首次成功；单图输出 144～158 Token，reasoning Token 均为 0。与优化前约 108～322 秒、最多三次尝试相比，单图实测尾延迟降至 7 秒内，且三条项目隔离缓存记录均成功写入。浏览器确认外层信息卡与 LangGraph 弹窗均为已完成，图片节点展示三张图片及各自业务识别结果。
+
+最终验证：Worker `70 passed, 3 skipped`，mypy 16 个源文件无错误；API 缓存、项目隔离、租约与幂等定向测试通过；TypeScript 类型检查及 Contracts、API、Web 全量测试和生产构建通过；Compose 配置检查、Worker Docker 构建及重建启动通过。真实密钥、图片 Base64、Prompt 与模型原始响应均未写入日志、文档或公开节点详情。
+
+## 30. 2026-08-28 语义整理改为单次 Mini 决策
+
+语义整理节点保留在 `FUSION → SEMANTIC_REFINEMENT → NORMALIZATION` 的既有位置，公开节点 ID、状态、API 路径和 WorkingArtifact 提交边界均不变。内部实现移除了向量模型、候选召回、相似度阈值和候选对协议，改为“完全相同字符串确定性去重 + 一次低成本模型全量判断”。同字段没有两条以上不同事实时不调用模型；需要判断时默认使用 `doubao-seed-2-0-mini-260428`，请求采用严格 JSON Schema、minimal reasoning、30 秒超时和最多两次尝试。
+
+模型不能生成新的规范文案，只能从已有事实 ID 中选择代表事实。`SAME_MEANING` 与 `PARENT_CHILD` 执行归并，`SAME_FAMILY` 只建立可审计关联并保留全部原始事实，从而避免把蒸、炒、煲仔饭等不同使用方式或不同节庆场景压成一条。非法 ID、跨字段、成员重叠和无效代表事实均会被拒绝；标准化完成后仍确定性恢复这五类语义列表，避免下游重新扩写。
+
+真实付费 Run `4294d7e7-03e0-4f62-ad47-2d4fa0e8e3b1` 完成到 100%。语义决策只调用一次 Seed 2.0 Mini，输入 1,021 Token、输出 5 Token、reasoning 0 Token，一次成功，耗时约 2.285 秒；无向量接口调用。浏览器确认工作流七个来源与处理节点加语义节点全部完成，语义详情显示已检查 9 条且没有强制归并不同事实。
+
+另以两条同义日常佐餐痛点和煲仔饭、蒸制、炒制三种不同做法执行真实 Mini 冒烟。提示词 `2.1.0` 成功归并同义痛点，同时没有把不同做法放入会删除事实的关系组；该用例已纳入显式付费集成测试。
+
+本轮验证：Worker 72 项通过、4 项显式集成门控跳过，mypy 32 个文件无错误；Contracts 15、API 287、Web 161 项测试全部通过；TypeScript 类型检查、生产构建、Compose 配置检查和 Worker Docker 构建通过。详细设计与历史方案替代关系见 `docs/workflows/effect/plans/效果类AI信息提炼-语义整理节点实施方案.md`。

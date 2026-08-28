@@ -37,6 +37,16 @@ class InternalApi(Protocol):
     ) -> str: ...
     async def put_branch(self, context: RuntimeContext, output: BranchOutput) -> None: ...
     async def get_branches(self, context: RuntimeContext) -> list[BranchOutput]: ...
+    async def get_image_cache(
+        self, context: RuntimeContext, cache_key: str
+    ) -> ExtractionCandidate | None: ...
+    async def put_image_cache(
+        self,
+        context: RuntimeContext,
+        cache_key: str,
+        candidate: ExtractionCandidate,
+        metadata: Mapping[str, Any],
+    ) -> None: ...
     async def complete(self, context: RuntimeContext, payload: FinalizePayload) -> str: ...
     async def fail(self, context: RuntimeContext, payload: FailurePayload) -> None: ...
     async def progress(self, context: RuntimeContext, payload: ProgressPayload) -> None: ...
@@ -139,6 +149,41 @@ class HttpInternalApi:
             raise InternalApiError("branches response is not a list", retryable=False)
         return [_branch_output(record, context.source_fingerprint) for record in records]
 
+    async def get_image_cache(
+        self, context: RuntimeContext, cache_key: str
+    ) -> ExtractionCandidate | None:
+        payload = await self._json(
+            "GET",
+            f"{self._ROOT}/runs/{context.run_id}/image-cache",
+            params={"projectId": context.project_id, "cacheKey": cache_key},
+            headers=self._lease(context),
+        )
+        if not isinstance(payload, Mapping) or payload.get("hit") is not True:
+            return None
+        candidate = payload.get("candidate")
+        if not isinstance(candidate, Mapping):
+            raise InternalApiError("image cache candidate is invalid", retryable=False)
+        return ExtractionCandidate.model_validate(candidate)
+
+    async def put_image_cache(
+        self,
+        context: RuntimeContext,
+        cache_key: str,
+        candidate: ExtractionCandidate,
+        metadata: Mapping[str, Any],
+    ) -> None:
+        await self._json(
+            "PUT",
+            f"{self._ROOT}/runs/{context.run_id}/image-cache",
+            headers=self._lease(context),
+            json={
+                "projectId": context.project_id,
+                "cacheKey": cache_key,
+                "candidate": candidate.model_dump(mode="json", by_alias=True),
+                "metadata": dict(metadata),
+            },
+        )
+
     async def complete(self, context: RuntimeContext, payload: FinalizePayload) -> str:
         data = await self._json(
             "POST", f"{self._ROOT}/runs/{context.run_id}/complete",
@@ -185,6 +230,7 @@ def _branch_error_code(output: BranchOutput) -> str:
                 "AI_SERVICE",
                 "AI_RESPONSE_INVALID",
                 "AI_REQUEST_REJECTED",
+                "AI_OUTPUT_TRUNCATED",
                 "AI_UNKNOWN",
             }:
                 return f"{output.branch.value}_{error_type}"

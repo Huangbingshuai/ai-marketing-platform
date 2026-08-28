@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pytest
@@ -21,7 +21,6 @@ from effect_extraction.models import (
 from effect_extraction.pipeline import ExtractionPipeline
 from effect_extraction.providers import (
     AiCallResult,
-    EmbeddingBatchResult,
     MockAiProvider,
     ProviderError,
     ProviderErrorType,
@@ -32,6 +31,7 @@ class ApiStub:
     def __init__(self) -> None:
         self.saved: list[BranchOutput] = []
         self.branches: list[BranchOutput] = []
+        self.image_cache: dict[str, ExtractionCandidate] = {}
         self.snapshot = ExtractionSnapshot(
             schema_version=2,
             project_id="project",
@@ -104,6 +104,20 @@ class ApiStub:
     async def get_branches(self, context: RuntimeContext) -> list[BranchOutput]:
         return self.branches
 
+    async def get_image_cache(
+        self, context: RuntimeContext, cache_key: str
+    ) -> ExtractionCandidate | None:
+        return self.image_cache.get(cache_key)
+
+    async def put_image_cache(
+        self,
+        context: RuntimeContext,
+        cache_key: str,
+        candidate: ExtractionCandidate,
+        metadata: Mapping[str, Any],
+    ) -> None:
+        self.image_cache[cache_key] = candidate
+
     async def complete(self, context: RuntimeContext, payload: object) -> str:
         return "extract-result"
 
@@ -119,7 +133,12 @@ class ImageProcessorStub:
     def process(self, content: bytes) -> ProcessedImage:
         return ProcessedImage(
             data_uri="data:image/jpeg;base64,AA==",
-            metadata={"processedWidth": 100, "processedHeight": 100},
+            metadata={
+                "processedWidth": 100,
+                "processedHeight": 100,
+                "processedSha256": "a" * 64,
+                "preprocessVersion": "test",
+            },
         )
 
 
@@ -146,6 +165,23 @@ class ConcurrentImageProvider(MockAiProvider):
         )
 
 
+class CountingImageProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def analyze_image(
+        self,
+        data_uri: str,
+        *,
+        source_name: str,
+        image_metadata: Mapping[str, Any],
+    ) -> AiCallResult[ExtractionCandidate]:
+        self.calls += 1
+        return await super().analyze_image(
+            data_uri, source_name=source_name, image_metadata=image_metadata
+        )
+
+
 class TimeoutDocumentProvider(MockAiProvider):
     async def extract_document(
         self, markdown: str, *, source_name: str
@@ -160,7 +196,11 @@ class TimeoutDocumentProvider(MockAiProvider):
 
 
 class TimeoutSemanticProvider(MockAiProvider):
-    async def embed_semantic_texts(self, texts: list[str]) -> EmbeddingBatchResult:
+    async def refine_semantics(
+        self,
+        *,
+        facts: Sequence[Mapping[str, str]],
+    ) -> Any:
         raise ProviderError(
             "AI request timed out",
             retryable=True,
@@ -279,7 +319,7 @@ async def test_form_branch_reads_only_the_global_video_configuration() -> None:
 
 
 @pytest.mark.asyncio
-async def test_image_branch_analyzes_up_to_three_images_concurrently() -> None:
+async def test_image_branch_limits_model_concurrency_to_two_by_default() -> None:
     api = ApiStub()
     api.snapshot.materials = [
         SnapshotMaterial(
@@ -312,8 +352,46 @@ async def test_image_branch_analyzes_up_to_three_images_concurrently() -> None:
         "image-1",
         "image-2",
     ]
-    assert provider.max_active == 3
-    assert all(item.metadata["aiCall"]["stage"] == "IMAGE" for item in output.items)
+    assert provider.max_active == 2
+    assert all(
+        item.metadata.get("aiCall", {}).get("stage") == "IMAGE"
+        or item.metadata.get("cache") == {"hit": True}
+        for item in output.items
+    )
+
+
+@pytest.mark.asyncio
+async def test_image_branch_reuses_content_fingerprint_cache_without_a_second_model_call() -> None:
+    api = ApiStub()
+    api.snapshot.materials = [
+        SnapshotMaterial(
+            id="image-1",
+            type="PRODUCT_IMAGE",
+            original_file_name="image-1.png",
+            mime_type="image/png",
+            size_bytes=10,
+        )
+    ]
+    provider = CountingImageProvider()
+    pipeline = ExtractionPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        document_parser=ParserStub(),
+        image_processor=ImageProcessorStub(),  # type: ignore[arg-type]
+        max_document_text_chars=1000,
+    )
+    context = RuntimeContext(
+        "run", "project", "draft", "product", "request", "attempt", "server-fingerprint"
+    )
+    pipeline.register_snapshot(context, api.snapshot)
+
+    first = await pipeline.image_branch(context)
+    second = await pipeline.image_branch(context)
+
+    assert provider.calls == 1
+    assert first.items[0].metadata["cache"] == {"hit": False}
+    assert second.items[0].metadata["cache"] == {"hit": True}
+    assert second.items[0].candidate == first.items[0].candidate
 
 
 @pytest.mark.asyncio

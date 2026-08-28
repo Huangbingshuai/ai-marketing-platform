@@ -203,6 +203,7 @@ const semanticSources = (
       : [];
     if (!canonicalValue || memberValues.length < 2) return [];
     const relation = publicText(value.relation, 80);
+    const applied = value.applied !== false;
     return [
       {
         name: canonicalValue,
@@ -217,6 +218,11 @@ const semanticSources = (
             `semantic-group-${index}-relation`,
             '语义关系',
             SEMANTIC_RELATION_LABELS[relation] ?? relation,
+          ),
+          field(
+            `semantic-group-${index}-action`,
+            '处理方式',
+            applied ? '合并为代表表达' : '保留全部原始表达',
           ),
           field(`semantic-group-${index}-members`, '原始表达', memberValues),
         ]),
@@ -529,17 +535,31 @@ export const presentExtractionNodeDetail = (
     const sources = semanticSources(output.metadata, execution.status);
     const inputCount = Number(output.metadata.inputCount);
     const outputCount = Number(output.metadata.outputCount);
+    const mergedGroupCount = Number(output.metadata.mergedGroupCount);
+    const familyGroupCount = Number(output.metadata.familyGroupCount);
+    const completedSummary =
+      Number.isFinite(mergedGroupCount) && Number.isFinite(familyGroupCount)
+        ? mergedGroupCount > 0 && familyGroupCount > 0
+          ? `已归并 ${mergedGroupCount} 组重复信息，并整理 ${familyGroupCount} 组相关主题`
+          : mergedGroupCount > 0
+            ? `已归并 ${mergedGroupCount} 组语义重复信息`
+            : familyGroupCount > 0
+              ? `已整理 ${familyGroupCount} 组相关主题，保留全部原始表达`
+              : null
+        : null;
     const summary = !branch
       ? '等待整理含义重复的信息'
       : execution.status === 'PARTIAL'
         ? '语义整理未完成，已保留原始提炼信息'
         : execution.status === 'FAILED'
           ? '语义整理失败，已保留原始提炼信息'
-          : sources.length > 0
-            ? `已归并 ${sources.length} 组语义重复信息`
-            : Number.isFinite(inputCount) && Number.isFinite(outputCount)
-              ? `已检查 ${inputCount} 条信息，未发现需要归并的重复表达`
-              : '语义整理已完成';
+          : completedSummary
+            ? completedSummary
+            : sources.length > 0
+              ? `已归并 ${sources.length} 组语义重复信息`
+              : Number.isFinite(inputCount) && Number.isFinite(outputCount)
+                ? `已检查 ${inputCount} 条信息，未发现需要归并的重复表达`
+                : '语义整理已完成';
     return {
       ...base,
       summary,

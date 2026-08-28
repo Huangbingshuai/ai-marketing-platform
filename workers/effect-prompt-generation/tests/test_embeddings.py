@@ -5,6 +5,7 @@ import json
 
 import httpx
 import pytest
+import effect_prompt_generation.embeddings as embeddings_module
 
 from effect_prompt_generation.embeddings import (
     ArkEmbeddingProvider,
@@ -334,6 +335,35 @@ async def test_vector_index_batches_120_inputs_and_reuses_run_cache() -> None:
     assert second.stats.request_count == 0
     assert second.stats.cache_hit_count == 120
     assert 0 <= first.dual_novelty("candidate-001", "candidate-002") <= 100
+
+
+@pytest.mark.asyncio
+async def test_vector_index_normalizes_each_document_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    normalize_calls = 0
+    original = embeddings_module._normalize_vector
+
+    def counting_normalize(vector: tuple[float, ...]) -> tuple[float, ...]:
+        nonlocal normalize_calls
+        normalize_calls += 1
+        return original(vector)
+
+    monkeypatch.setattr(embeddings_module, "_normalize_vector", counting_normalize)
+    result = await build_creative_vector_index(
+        [_candidate(index) for index in range(1, 61)],
+        provider=MockEmbeddingProvider(),
+        vector_cache={},
+        product_name="便携杯",
+        product_category="随行杯",
+        shared_prompt=_shared_prompt(),
+        batch_size=64,
+        max_concurrency=2,
+    )
+
+    assert result.stats.input_count == 120
+    assert result.stats.comparison_count == 1770
+    assert normalize_calls == 120
 
 
 class _ConcurrencyProvider(MockEmbeddingProvider):

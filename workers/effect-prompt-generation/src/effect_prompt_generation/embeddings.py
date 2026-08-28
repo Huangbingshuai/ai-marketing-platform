@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 import math
+import operator
 import random
 import re
 import time
@@ -15,14 +16,18 @@ from itertools import combinations
 from typing import Any, Literal, Protocol
 
 import httpx
+import numpy as np
+import numpy.typing as npt
 
-from .models import CreativeCandidate, SharedPrompt
+from .models import CreativeCandidate, PromptItemV6, SharedPrompt
 from .quality import normalize_creative_signature
 
 LOGGER = logging.getLogger(__name__)
 
 EMBEDDING_TEXT_VERSION = "effect-prompt-embedding-text-v1"
+CONTENT_MMR_EMBEDDING_TEXT_VERSION = "effect-prompt-embedding-text-v2"
 MAX_EMBEDDING_INPUTS = 256
+VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD = 0.82
 
 _DURATION = re.compile(
     r"(?:(?:视频)?时长\s*[:：]?\s*)?\d+\s*(?:秒|s)(?=\s*[,，。；;]|$)",
@@ -233,13 +238,283 @@ class CreativeVectorIndex:
     pairs: dict[tuple[str, str], PairSimilarity]
     stats: EmbeddingComparisonStats
 
+    def pair_similarity(self, left_id: str, right_id: str) -> PairSimilarity:
+        return self.pairs[_pair_key(left_id, right_id)]
+
     def dual_novelty(self, left_id: str, right_id: str) -> float:
-        pair = self.pairs[_pair_key(left_id, right_id)]
+        pair = self.pair_similarity(left_id, right_id)
         return round(100.0 * (1.0 - pair.risk), 4)
 
     def content_novelty(self, left_id: str, right_id: str) -> float:
-        pair = self.pairs[_pair_key(left_id, right_id)]
+        pair = self.pair_similarity(left_id, right_id)
         return round(100.0 * (1.0 - pair.content), 4)
+
+
+@dataclass(frozen=True, slots=True)
+class ContentEmbeddingStats:
+    input_count: int
+    request_count: int
+    input_tokens: int
+    retry_count: int
+    cache_hit_count: int
+    comparison_count: int
+    duration_ms: float
+    local_comparison_ms: float
+    similarity_p50: float
+    similarity_p95: float
+    high_risk_pairs: list[dict[str, int | float | bool]]
+
+
+@dataclass(frozen=True, slots=True)
+class RedundancySummary:
+    high_risk_group_count: int
+    high_risk_pair_count: int
+    redundant_candidate_count: int
+    high_risk_candidate_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ContentVectorIndex:
+    entity_ids: tuple[str, ...]
+    row_by_id: dict[str, int]
+    candidate_ids: tuple[str, ...]
+    anchor_ids: tuple[str, ...]
+    similarities: npt.NDArray[np.float32]
+    stats: ContentEmbeddingStats
+
+    def _row(self, entity_id: str) -> int:
+        try:
+            return self.row_by_id[entity_id]
+        except KeyError as exc:
+            raise KeyError(entity_id) from exc
+
+    def similarity(self, left_id: str, right_id: str) -> float:
+        return float(self.similarities[self._row(left_id), self._row(right_id)])
+
+    def novelty(self, left_id: str, right_id: str) -> float:
+        return round(100.0 * (1.0 - self.similarity(left_id, right_id)), 4)
+
+    def novelty_to_anchors(self, candidate_id: str) -> float:
+        if not self.anchor_ids:
+            return 100.0
+        risk = max(self.similarity(candidate_id, anchor_id) for anchor_id in self.anchor_ids)
+        return round(100.0 * (1.0 - risk), 4)
+
+    def redundancy_summary(
+        self,
+        selected_ids: list[str],
+        *,
+        threshold: float = VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD,
+    ) -> RedundancySummary:
+        selected = [item for item in selected_ids if item in self.candidate_ids]
+        anchors = list(self.anchor_ids)
+        nodes = [*selected, *anchors]
+        parent = {node: node for node in nodes}
+
+        def find(node: str) -> str:
+            while parent[node] != node:
+                parent[node] = parent[parent[node]]
+                node = parent[node]
+            return node
+
+        def union(left: str, right: str) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
+
+        pair_count = 0
+        for left_index, left_id in enumerate(selected):
+            for right_id in selected[left_index + 1 :]:
+                if self.similarity(left_id, right_id) >= threshold:
+                    pair_count += 1
+                    union(left_id, right_id)
+            for anchor_id in anchors:
+                if self.similarity(left_id, anchor_id) >= threshold:
+                    pair_count += 1
+                    union(left_id, anchor_id)
+
+        components: dict[str, set[str]] = {}
+        for node in nodes:
+            components.setdefault(find(node), set()).add(node)
+        selected_set = set(selected)
+        anchor_set = set(anchors)
+        redundant_count = 0
+        group_count = 0
+        high_risk_ids: set[str] = set()
+        for members in components.values():
+            candidate_members = members & selected_set
+            if not candidate_members:
+                continue
+            contains_anchor = bool(members & anchor_set)
+            if contains_anchor or len(candidate_members) > 1:
+                group_count += 1
+                high_risk_ids.update(candidate_members)
+                redundant_count += (
+                    len(candidate_members)
+                    if contains_anchor
+                    else max(0, len(candidate_members) - 1)
+                )
+        return RedundancySummary(
+            high_risk_group_count=group_count,
+            high_risk_pair_count=pair_count,
+            redundant_candidate_count=redundant_count,
+            high_risk_candidate_ids=tuple(
+                item for item in selected if item in high_risk_ids
+            ),
+        )
+
+
+async def build_content_vector_index(
+    candidates: list[CreativeCandidate],
+    anchors: list[PromptItemV6],
+    *,
+    provider: EmbeddingProvider,
+    vector_cache: dict[str, tuple[float, ...]],
+    product_name: str | None,
+    product_category: str | None,
+    shared_prompt: SharedPrompt,
+    batch_size: int,
+    max_concurrency: int,
+) -> ContentVectorIndex:
+    started = time.perf_counter()
+    ordered_candidates = sorted(candidates, key=lambda item: item.ordinal)
+    ordered_anchors = list(anchors)
+    documents: dict[str, str] = {}
+    entity_document_keys: dict[str, str] = {}
+    candidate_ids: list[str] = []
+    anchor_ids: list[str] = []
+
+    def register(entity_id: str, content: str) -> None:
+        text = compile_content_embedding_text(
+            content,
+            product_name=product_name,
+            product_category=product_category,
+            shared_prompt=shared_prompt,
+        )
+        key = _cache_key(
+            provider.cache_namespace,
+            text,
+            version=CONTENT_MMR_EMBEDDING_TEXT_VERSION,
+        )
+        documents.setdefault(key, text)
+        entity_document_keys[entity_id] = key
+
+    for candidate in ordered_candidates:
+        candidate_ids.append(candidate.slot_id)
+        register(candidate.slot_id, candidate.content)
+    for index, anchor in enumerate(ordered_anchors):
+        anchor_id = f"anchor:{index}"
+        anchor_ids.append(anchor_id)
+        register(anchor_id, anchor.content)
+
+    missing = [
+        (key, text) for key, text in documents.items() if key not in vector_cache
+    ]
+    cache_hit_count = len(documents) - len(missing)
+    safe_batch_size = max(
+        1,
+        min(batch_size, MAX_EMBEDDING_INPUTS, provider.max_inputs_per_request),
+    )
+    batches = [
+        missing[index : index + safe_batch_size]
+        for index in range(0, len(missing), safe_batch_size)
+    ]
+    semaphore = asyncio.Semaphore(max(1, max_concurrency))
+
+    async def embed_batch(
+        batch: list[tuple[str, str]],
+    ) -> tuple[list[tuple[str, tuple[float, ...]]], EmbeddingBatchResult]:
+        async with semaphore:
+            result = await provider.embed([text for _, text in batch])
+        if len(result.vectors) != len(batch):
+            raise EmbeddingProviderError(
+                "向量响应数量与请求不一致",
+                retryable=False,
+            )
+        return list(zip((key for key, _ in batch), result.vectors, strict=True)), result
+
+    request_count = input_tokens = retry_count = 0
+    if batches:
+        responses = await asyncio.gather(*(embed_batch(batch) for batch in batches))
+        for rows, result in responses:
+            request_count += result.request_count
+            input_tokens += result.input_tokens
+            retry_count += result.retry_count
+            vector_cache.update(rows)
+
+    entity_ids = tuple([*candidate_ids, *anchor_ids])
+    comparison_started = time.perf_counter()
+    matrix = np.asarray(
+        [vector_cache[entity_document_keys[entity_id]] for entity_id in entity_ids],
+        dtype=np.float32,
+    )
+    if matrix.ndim != 2 or matrix.shape[0] != len(entity_ids):
+        raise EmbeddingProviderError("向量矩阵结构无效", retryable=False)
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    if np.any(~np.isfinite(norms)) or np.any(norms <= 0):
+        raise EmbeddingProviderError("向量矩阵包含无效数值", retryable=False)
+    normalized = matrix / norms
+    similarities = np.clip(normalized @ normalized.T, 0.0, 1.0).astype(
+        np.float32,
+        copy=False,
+    )
+    local_comparison_ms = (time.perf_counter() - comparison_started) * 1000.0
+
+    candidate_count = len(candidate_ids)
+    candidate_scores = [
+        float(similarities[left, right])
+        for left in range(candidate_count)
+        for right in range(left + 1, candidate_count)
+    ]
+    safe_pairs: list[dict[str, int | float | bool]] = []
+    ranked_pairs: list[tuple[float, int, int, bool]] = []
+    for left in range(candidate_count):
+        for right in range(left + 1, candidate_count):
+            ranked_pairs.append((float(similarities[left, right]), left, right, False))
+        for anchor_offset in range(len(anchor_ids)):
+            right = candidate_count + anchor_offset
+            ranked_pairs.append((float(similarities[left, right]), left, anchor_offset, True))
+    for score, left, right, right_is_anchor in sorted(
+        ranked_pairs, reverse=True
+    )[:3]:
+        safe_pairs.append(
+            {
+                "leftOrdinal": ordered_candidates[left].ordinal,
+                "rightOrdinal": right + 1,
+                "rightIsAnchor": right_is_anchor,
+                "similarity": round(score, 4),
+            }
+        )
+    duration_ms = (time.perf_counter() - started) * 1000.0
+    LOGGER.info(
+        "content embedding comparison completed inputs=%s requests=%s retries=%s pairs=%s duration_ms=%.2f",
+        len(documents),
+        request_count,
+        retry_count,
+        len(ranked_pairs),
+        duration_ms,
+    )
+    return ContentVectorIndex(
+        entity_ids=entity_ids,
+        row_by_id={entity_id: index for index, entity_id in enumerate(entity_ids)},
+        candidate_ids=tuple(candidate_ids),
+        anchor_ids=tuple(anchor_ids),
+        similarities=similarities,
+        stats=ContentEmbeddingStats(
+            input_count=len(documents),
+            request_count=request_count,
+            input_tokens=input_tokens,
+            retry_count=retry_count,
+            cache_hit_count=cache_hit_count,
+            comparison_count=len(ranked_pairs),
+            duration_ms=round(duration_ms, 3),
+            local_comparison_ms=round(local_comparison_ms, 3),
+            similarity_p50=round(_percentile(candidate_scores, 0.50), 6),
+            similarity_p95=round(_percentile(candidate_scores, 0.95), 6),
+            high_risk_pairs=safe_pairs,
+        ),
+    )
 
 
 async def build_creative_vector_index(
@@ -313,6 +588,10 @@ async def build_creative_vector_index(
             vector_cache.update(rows)
 
     comparison_started = time.perf_counter()
+    normalized_vectors = {
+        key: _normalize_vector(vector_cache[key])
+        for key in documents
+    }
     pair_rows: dict[tuple[str, str], PairSimilarity] = {}
     content_scores: list[float] = []
     creative_scores: list[float] = []
@@ -320,10 +599,16 @@ async def build_creative_vector_index(
         left_content, left_creative = slot_keys[left.slot_id]
         right_content, right_creative = slot_keys[right.slot_id]
         content = _clamp_similarity(
-            _cosine(vector_cache[left_content], vector_cache[right_content])
+            _normalized_dot(
+                normalized_vectors[left_content],
+                normalized_vectors[right_content],
+            )
         )
         creative_cosine = _clamp_similarity(
-            _cosine(vector_cache[left_creative], vector_cache[right_creative])
+            _normalized_dot(
+                normalized_vectors[left_creative],
+                normalized_vectors[right_creative],
+            )
         )
         structural = _structural_overlap(left, right)
         creative = _clamp_similarity(0.8 * creative_cosine + 0.2 * structural)
@@ -539,23 +824,33 @@ def _retry_delay(response: httpx.Response | None, attempt: int) -> float:
     )
 
 
-def _cache_key(namespace: str, text: str) -> str:
-    source = f"{EMBEDDING_TEXT_VERSION}|{namespace}|{text}"
+def _cache_key(
+    namespace: str,
+    text: str,
+    *,
+    version: str = EMBEDDING_TEXT_VERSION,
+) -> str:
+    source = f"{version}|{namespace}|{text}"
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
 def _cosine(left: tuple[float, ...], right: tuple[float, ...]) -> float:
+    return _normalized_dot(_normalize_vector(left), _normalize_vector(right))
+
+
+def _normalize_vector(vector: tuple[float, ...]) -> tuple[float, ...]:
+    if not vector:
+        raise ValueError("embedding vector cannot be empty")
+    norm = math.sqrt(sum(value * value for value in vector))
+    if norm == 0.0:
+        raise ValueError("embedding vectors cannot have zero norm")
+    return tuple(value / norm for value in vector)
+
+
+def _normalized_dot(left: tuple[float, ...], right: tuple[float, ...]) -> float:
     if len(left) != len(right) or not left:
         raise ValueError("embedding vectors must have the same non-zero dimension")
-    dot = sum(
-        left_value * right_value
-        for left_value, right_value in zip(left, right, strict=True)
-    )
-    left_norm = math.sqrt(sum(value * value for value in left))
-    right_norm = math.sqrt(sum(value * value for value in right))
-    if left_norm == 0.0 or right_norm == 0.0:
-        raise ValueError("embedding vectors cannot have zero norm")
-    return dot / (left_norm * right_norm)
+    return float(sum(map(operator.mul, left, right)))
 
 
 def _clamp_similarity(value: float) -> float:

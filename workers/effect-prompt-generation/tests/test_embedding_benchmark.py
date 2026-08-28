@@ -227,9 +227,9 @@ async def test_paid_ark_embedding_accuracy_and_batch_latency() -> None:
     )
     try:
         smoke = await provider.embed(["效果类视频素材向量接口连通性检查"])
-        # 多模态端点每次最多接收一个 text。真实测试只抽取 3 组正例与
-        # 3 组负例，连同连通性与并发对比严格控制在 20 个付费请求内。
-        pairs = labeled_pairs()[:6]
+        # 多模态端点每次最多接收一个 text。本测试覆盖完整 180 组标注对，
+        # 其中相同文本会在调用前确定性去重。
+        pairs = labeled_pairs()
         texts = [text for pair in pairs for text in (pair.left, pair.right)]
         vectors, accuracy_requests, accuracy_tokens = await _embed_texts(
             provider,
@@ -262,7 +262,7 @@ async def test_paid_ark_embedding_accuracy_and_batch_latency() -> None:
             performance_tokens += tokens
 
         total_requests = smoke.request_count + accuracy_requests + performance_requests
-        assert total_requests <= 20
+        assert total_requests <= 190
         assert vector_recall >= baseline_recall + 0.20
         assert vector_fpr <= 0.10
         assert vector_fpr <= baseline_fpr + 0.03

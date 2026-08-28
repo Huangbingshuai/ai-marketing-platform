@@ -17,3 +17,5 @@ def test_image_processor_bounds_dimensions_and_returns_data_uri() -> None:
     assert processed.metadata["processedWidth"] == 1024
     assert processed.metadata["processedHeight"] == 512
     assert int(processed.metadata["processedBytes"]) <= 512 * 1024
+    assert len(str(processed.metadata["processedSha256"])) == 64
+    assert processed.metadata["preprocessVersion"] == "jpeg-lanczos-v2"
