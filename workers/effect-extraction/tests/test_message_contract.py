@@ -7,7 +7,7 @@ from effect_extraction.models import ExtractionRequest
 def test_queue_message_accepts_ids_only() -> None:
     message = ExtractionRequest.model_validate(
         {
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "runId": "run-1",
             "projectId": "project-1",
             "requestId": "request-1",

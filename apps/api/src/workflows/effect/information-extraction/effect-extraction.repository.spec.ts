@@ -65,6 +65,7 @@ describe('EffectExtractionRepository isolation and idempotency', () => {
       draftId: '00000000-0000-4000-8000-000000000301',
       productId: '00000000-0000-4000-8000-000000000401',
       expectedRevision: 3,
+      refreshImageRecognition: false,
     };
     const { canonicalHash } = await import('./effect-extraction.validation');
     const existing = runRecord({ requestHash: canonicalHash(request) });
@@ -83,6 +84,7 @@ describe('EffectExtractionRepository isolation and idempotency', () => {
       request.productId,
       request.expectedRevision,
       'click-1',
+      request.refreshImageRecognition,
     );
 
     expect(result).toEqual({ kind: 'REPLAYED', run: existing });

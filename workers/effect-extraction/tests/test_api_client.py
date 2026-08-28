@@ -20,7 +20,7 @@ def claim_data() -> dict[str, object]:
         "sourceFingerprint": "server-fingerprint",
         "attemptToken": "attempt-1",
         "input": {
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "projectId": "project-1",
             "draftId": "draft-1",
             "mode": "SINGLE",
@@ -56,6 +56,7 @@ def claim_data() -> dict[str, object]:
                     "sourceHash": "input-hash",
                 }
             ],
+            "bypassImageCache": True,
         },
     }
 
@@ -93,6 +94,7 @@ async def test_internal_api_claim_and_branch_match_backend_contract() -> None:
         assert claim.input.dependencies[0].source_type == "EXECUTION_INPUT"
         assert claim.input.global_video_config is not None
         assert claim.input.global_video_config.delivery_channel == "视频号"
+        assert claim.input.bypass_image_cache is True
         context = RuntimeContext(
             "run-1", "project-1", "draft-1", "product-1", "request-1", "attempt-1",
             claim.source_fingerprint or "",

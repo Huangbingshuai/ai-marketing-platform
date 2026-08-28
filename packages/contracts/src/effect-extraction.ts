@@ -187,6 +187,8 @@ export type StartEffectExtractionRunRequest = {
   draftId: string;
   expectedRevision: number;
   idempotencyKey: string;
+  /** Explicit re-extraction bypasses image cache while still refreshing it after success. */
+  refreshImageRecognition?: boolean;
 };
 
 export type EffectExtractionRun = {

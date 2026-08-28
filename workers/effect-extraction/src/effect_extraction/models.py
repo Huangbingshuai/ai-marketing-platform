@@ -46,7 +46,7 @@ class RuntimeContext:
 
 
 class ExtractionRequest(ApiModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[2, 3] = 2
     run_id: str
     project_id: str
     request_id: str
@@ -100,7 +100,7 @@ class SnapshotDependency(ApiModel):
 
 
 class ExtractionSnapshot(ApiModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[2, 3] = 2
     project_id: str
     draft_id: str
     mode: Literal["SINGLE", "BATCH"]
@@ -111,6 +111,7 @@ class ExtractionSnapshot(ApiModel):
     dependency_snapshot: SnapshotDependencyRevision | None = None
     dependencies: list[SnapshotDependency] = Field(default_factory=list)
     manual_overrides: dict[str, Any] = Field(default_factory=dict)
+    bypass_image_cache: bool = False
 
 class ClaimResponse(ApiModel):
     terminal: bool
@@ -163,11 +164,13 @@ class ImageVisibleFacts(ApiModel):
     usage_scenarios: list[str] | None = Field(max_length=2)
     emotional_scenarios: list[str] | None = Field(max_length=2)
     visual_style_baseline: str | None
+    high_detail_recommended: bool
 
     def to_candidate(self) -> ExtractionCandidate:
         candidate = ExtractionCandidate.empty()
-        for field_name in type(self).model_fields:
-            setattr(candidate, field_name, getattr(self, field_name))
+        for field_name in ExtractionCandidate.model_fields:
+            if field_name in type(self).model_fields:
+                setattr(candidate, field_name, getattr(self, field_name))
         return candidate
 
 

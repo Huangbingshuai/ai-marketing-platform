@@ -34,6 +34,7 @@ def _provider(settings: WorkerSettings) -> AiProvider:
         image_retry_max_output_tokens=settings.ark_image_retry_max_output_tokens,
         image_detail=settings.ark_image_detail,
         image_reasoning_effort=settings.ark_image_reasoning_effort,
+        image_adaptive_high_detail=settings.ark_image_adaptive_high_detail,
     )
 
 

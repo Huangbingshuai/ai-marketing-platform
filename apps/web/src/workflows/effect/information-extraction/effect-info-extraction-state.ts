@@ -1,8 +1,33 @@
-import type {
-  EffectExtractionProductState as EffectExtractionProductDto,
-  EffectExtractionProductStatus,
-  EffectExtractionResult,
+import {
+  EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
+  type EffectExtractionProductState as EffectExtractionProductDto,
+  type EffectExtractionProductStatus,
+  type EffectExtractionResult,
 } from '@ai-marketing/contracts';
+
+/*
+ * WorkflowNodeState can outlive a result-schema upgrade. Keep this adapter at
+ * the local draft boundary so a historical scalar audience cannot replace the
+ * already-adapted workspace result with an incomplete runtime object.
+ */
+const normalizedTargetAudiences = (value: EffectExtractionResult): string[] => {
+  const candidates = Array.isArray(value.targetAudiences)
+    ? value.targetAudiences
+    : typeof value.targetAudience === 'string'
+      ? value.targetAudience.split(/[\n,，、;；]+/u)
+      : [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of candidates) {
+    if (typeof item !== 'string') continue;
+    const normalized = item.replace(/\s+/g, ' ').trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+    if (result.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) break;
+  }
+  return result;
+};
 
 export type { EffectExtractionResult } from '@ai-marketing/contracts';
 
@@ -25,18 +50,23 @@ export const EFFECT_EXTRACTION_STATUS_META: Record<
   STALE: { label: '待更新', tone: 'warning' },
 };
 
-export const cloneExtractionResult = (value: EffectExtractionResult): EffectExtractionResult => ({
-  ...value,
-  coreSellingPoints: [...value.coreSellingPoints],
-  secondarySellingPoints: [...value.secondarySellingPoints],
-  trustBackings: [...value.trustBackings],
-  corePainPoints: [...value.corePainPoints],
-  decisionDrivers: [...value.decisionDrivers],
-  usageScenarios: [...value.usageScenarios],
-  purchaseScenarios: [...value.purchaseScenarios],
-  emotionalScenarios: [...value.emotionalScenarios],
-  disabledElements: [...value.disabledElements],
-});
+export const cloneExtractionResult = (value: EffectExtractionResult): EffectExtractionResult => {
+  const targetAudiences = normalizedTargetAudiences(value);
+  return {
+    ...value,
+    coreSellingPoints: [...value.coreSellingPoints],
+    secondarySellingPoints: [...value.secondarySellingPoints],
+    trustBackings: [...value.trustBackings],
+    targetAudience: targetAudiences.join('；'),
+    targetAudiences,
+    corePainPoints: [...value.corePainPoints],
+    decisionDrivers: [...value.decisionDrivers],
+    usageScenarios: [...value.usageScenarios],
+    purchaseScenarios: [...value.purchaseScenarios],
+    emotionalScenarios: [...value.emotionalScenarios],
+    disabledElements: [...value.disabledElements],
+  };
+};
 
 export const cloneExtractionProductState = (
   value: EffectExtractionProductState,

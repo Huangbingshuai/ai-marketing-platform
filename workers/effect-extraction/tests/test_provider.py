@@ -36,6 +36,7 @@ async def test_ark_provider_sends_multimodal_strict_schema_without_store() -> No
             usage_scenarios=None,
             emotional_scenarios=None,
             visual_style_baseline=None,
+            high_detail_recommended=False,
         )
         return httpx.Response(
             200,
@@ -69,7 +70,7 @@ async def test_ark_provider_sends_multimodal_strict_schema_without_store() -> No
     assert result.value.visual_features == "红色包装"
     assert result.metadata.stage == "IMAGE"
     assert result.metadata.model == "doubao-seed-2-1-turbo"
-    assert result.metadata.prompt_version == "4.0.0"
+    assert result.metadata.prompt_version == "5.0.0"
     assert result.metadata.input_tokens is None
     assert result.metadata.output_tokens is None
     assert result.metadata.total_tokens is None
@@ -81,6 +82,134 @@ async def test_ark_provider_sends_multimodal_strict_schema_without_store() -> No
     content = captured["input"][0]["content"]  # type: ignore[index]
     image_part = next(part for part in content if part.get("type") == "input_image")
     assert image_part["detail"] == "low"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source_name", "recommended"),
+    [("product.jpg", True), ("包装背面.png", False)],
+)
+async def test_ark_provider_escalates_only_ocr_sensitive_images_to_high_detail(
+    source_name: str,
+    recommended: bool,
+) -> None:
+    details: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        content = payload["input"][0]["content"]
+        detail = next(part["detail"] for part in content if part.get("type") == "input_image")
+        details.append(detail)
+        if detail == "low":
+            output = ImageVisibleFacts(
+                product_category="腊味",
+                product_name="广式腊肠",
+                core_specification=None,
+                visual_features="红金包装，腊肠主体清晰",
+                core_selling_points=["包装醒目"],
+                secondary_selling_points=None,
+                trust_backings=None,
+                usage_scenarios=None,
+                emotional_scenarios=None,
+                visual_style_baseline="暖色调",
+                high_detail_recommended=recommended,
+            )
+            usage = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+        else:
+            output = ImageVisibleFacts(
+                product_category="腊味肉制品",
+                product_name="广式腊肠",
+                core_specification="净含量 500g",
+                visual_features=None,
+                core_selling_points=None,
+                secondary_selling_points=None,
+                trust_backings=["SC 生产许可标识"],
+                usage_scenarios=None,
+                emotional_scenarios=None,
+                visual_style_baseline=None,
+                high_detail_recommended=False,
+            )
+            usage = {"input_tokens": 20, "output_tokens": 8, "total_tokens": 28}
+        return httpx.Response(
+            200,
+            json={"output_text": output.model_dump_json(by_alias=True), "usage": usage},
+        )
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.test/api/v3/",
+        api_key="secret",
+        model="doubao-seed-2-1-turbo",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await provider.analyze_image(
+            "data:image/jpeg;base64,AAAA",
+            source_name=source_name,
+            image_metadata={"processedWidth": 1280, "processedHeight": 853},
+        )
+    finally:
+        await provider.aclose()
+
+    assert details == ["low", "high"]
+    assert result.value.core_specification == "净含量 500g"
+    assert result.value.trust_backings == ["SC 生产许可标识"]
+    assert result.value.visual_features == "红金包装，腊肠主体清晰"
+    assert result.metadata.input_tokens == 30
+    assert result.metadata.output_tokens == 13
+    assert result.metadata.total_tokens == 43
+    assert result.metadata.attempts == 2
+    assert result.cacheable is True
+
+
+@pytest.mark.asyncio
+async def test_ark_provider_keeps_low_detail_result_but_does_not_cache_when_refinement_fails(
+) -> None:
+    details: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        content = payload["input"][0]["content"]
+        detail = next(part["detail"] for part in content if part.get("type") == "input_image")
+        details.append(detail)
+        if detail == "high":
+            return httpx.Response(503, json={"error": {"message": "temporary unavailable"}})
+        output = ImageVisibleFacts(
+            product_category="腊味",
+            product_name="广式腊肠",
+            core_specification=None,
+            visual_features="红金包装，腊肠主体清晰",
+            core_selling_points=None,
+            secondary_selling_points=None,
+            trust_backings=None,
+            usage_scenarios=None,
+            emotional_scenarios=None,
+            visual_style_baseline="暖色调",
+            high_detail_recommended=True,
+        )
+        return httpx.Response(
+            200,
+            json={"output_text": output.model_dump_json(by_alias=True)},
+        )
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.test/api/v3/",
+        api_key="secret",
+        model="doubao-seed-2-1-turbo",
+        image_max_attempts=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await provider.analyze_image(
+            "data:image/jpeg;base64,AAAA",
+            source_name="包装背面.png",
+            image_metadata={"processedWidth": 1280, "processedHeight": 853},
+        )
+    finally:
+        await provider.aclose()
+
+    assert details == ["low", "high"]
+    assert result.value.visual_features == "红金包装，腊肠主体清晰"
+    assert result.cacheable is False
 
 
 @pytest.mark.asyncio
@@ -127,6 +256,7 @@ async def test_ark_provider_routes_each_stage_and_records_usage() -> None:
                 usage_scenarios=None,
                 emotional_scenarios=None,
                 visual_style_baseline=None,
+                high_detail_recommended=False,
             ).model_dump_json(by_alias=True)
         else:
             output = ExtractionCandidate.empty().model_dump_json(by_alias=True)
@@ -248,6 +378,7 @@ async def test_ark_provider_retries_with_the_same_stage_model(
                     usage_scenarios=None,
                     emotional_scenarios=None,
                     visual_style_baseline=None,
+                    high_detail_recommended=False,
                 ).model_dump_json(by_alias=True)
             },
         )
@@ -306,6 +437,7 @@ async def test_image_request_retries_truncation_once_with_a_larger_output_budget
             usage_scenarios=None,
             emotional_scenarios=None,
             visual_style_baseline=None,
+            high_detail_recommended=False,
         )
         return httpx.Response(
             200,

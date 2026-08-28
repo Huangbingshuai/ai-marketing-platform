@@ -141,8 +141,15 @@ export class EffectExtractionRepository {
     productId: string,
     expectedRevision: number,
     idempotencyKey: string,
+    refreshImageRecognition = false,
   ): Promise<StartRunResult> {
-    const requestHash = canonicalHash({ projectId, draftId, productId, expectedRevision });
+    const requestHash = canonicalHash({
+      projectId,
+      draftId,
+      productId,
+      expectedRevision,
+      refreshImageRecognition,
+    });
     return this.prisma.$transaction(async (transaction) => {
       const existing = await transaction.effectExtractionRun.findUnique({
         where: { projectId_idempotencyKey: { projectId, idempotencyKey } },
@@ -307,6 +314,7 @@ export class EffectExtractionRepository {
         },
         materials,
         manualOverrides: inheritedOverrides,
+        bypassImageCache: refreshImageRecognition,
         dependencySnapshot: {
           sourcePackageRevision: sourcePackage.revision,
           effectiveVideoConfigRevision: effectiveVideoConfig.revision,

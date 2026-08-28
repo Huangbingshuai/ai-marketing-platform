@@ -112,6 +112,9 @@ class WorkerSettings(BaseSettings):
     ark_image_reasoning_effort: Literal["minimal", "low", "medium", "high"] = Field(
         default="minimal", alias="ARK_IMAGE_REASONING_EFFORT"
     )
+    ark_image_adaptive_high_detail: bool = Field(
+        default=True, alias="ARK_IMAGE_ADAPTIVE_HIGH_DETAIL"
+    )
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
     @model_validator(mode="after")

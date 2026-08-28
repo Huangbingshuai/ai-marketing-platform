@@ -44,6 +44,7 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain('加载最新结果');
     expect(pageSource).not.toContain('部分来源有提示，已使用其余有效资料完成提炼');
     expect(pageSource).not.toContain('class="state-alert warning extraction-warnings"');
+    expect(pageSource).toContain('refreshImageRecognition: Boolean(state.runId || state.resultId)');
   });
 
   it('uses the same global validation footer as the source import node', () => {
@@ -118,6 +119,8 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain("result.coreSellingPoints.push('')");
     expect(pageSource).toContain('placeholder="请输入核心卖点"');
     expect(pageSource).toContain('class="selling-add-button"');
+    expect(pageSource).toContain('.block-heading .selling-add-button');
+    expect(pageSource).not.toContain('.selling-subheading button,\n.selling-add-button');
     for (const field of [
       'secondarySellingPoints',
       'trustBackings',

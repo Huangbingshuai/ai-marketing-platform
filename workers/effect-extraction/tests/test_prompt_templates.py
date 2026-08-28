@@ -18,7 +18,7 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     normalization = load_prompt_template("result_normalization.prompt.txt")
 
     assert load_prompt_version("document_extraction.prompt.txt") == "2.0.0"
-    assert load_prompt_version("image_analysis.prompt.txt") == "4.0.0"
+    assert load_prompt_version("image_analysis.prompt.txt") == "5.0.0"
     assert load_prompt_version("commerce_extraction.prompt.txt") == "1.0.0"
     assert load_prompt_version("semantic_refinement.prompt.txt") == "2.1.0"
     assert load_prompt_version("result_normalization.prompt.txt") == "2.1.0"
@@ -42,6 +42,8 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert "无证据的字符串、数字或数组均为 null" in document.template
     assert "不扩写完整营销策略" in image.template
     assert "不属于本节点" in image.template
+    assert "highDetailRecommended" in image.template
+    assert "纯产品外观、食用场景或文字已经清晰可读时为 false" in image.template
     assert "提供有边界、可执行的补全" in normalization.template
     assert "建议" in normalization.template and "需确认" in normalization.template
     assert "不得新增输入中不存在的年龄、性别、职业或地域属性" in normalization.template

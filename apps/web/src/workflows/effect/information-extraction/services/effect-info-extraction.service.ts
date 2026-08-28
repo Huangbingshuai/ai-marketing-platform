@@ -61,7 +61,7 @@ export const beginEffectExtraction = async (
   context: EffectExtractionContext,
   productId: string,
   expectedRevision: number,
-  signal?: AbortSignal,
+  options: { refreshImageRecognition?: boolean; signal?: AbortSignal } = {},
 ): Promise<EffectExtractionRun> =>
   (
     await startEffectExtractionRun(
@@ -71,8 +71,9 @@ export const beginEffectExtraction = async (
         draftId: context.draftId,
         expectedRevision,
         idempotencyKey: createExtractionIdempotencyKey(),
+        refreshImageRecognition: options.refreshImageRecognition ?? false,
       },
-      signal,
+      options.signal,
     )
   ).data.run;
 

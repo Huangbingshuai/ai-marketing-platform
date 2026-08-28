@@ -40,6 +40,8 @@ export type EffectExtractionInputSnapshot = {
   materials: EffectExtractionSourceMaterial[];
   /** Field-level user corrections inherited by a later extraction run. */
   manualOverrides?: Partial<EffectExtractionResult>;
+  /** Explicit re-extraction skips image-cache reads but refreshes cache after success. */
+  bypassImageCache?: boolean;
   dependencySnapshot: {
     sourcePackageRevision: number;
     effectiveVideoConfigRevision: number;

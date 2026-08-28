@@ -41,6 +41,7 @@ describe('effect info extraction API', () => {
       draftId: 'draft-1',
       expectedRevision: 7,
       idempotencyKey: 'extract-once-1',
+      refreshImageRecognition: true,
     });
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -51,6 +52,7 @@ describe('effect info extraction API', () => {
       draftId: 'draft-1',
       expectedRevision: 7,
       idempotencyKey: 'extract-once-1',
+      refreshImageRecognition: true,
     });
   });
 

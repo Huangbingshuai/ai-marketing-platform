@@ -35,6 +35,7 @@ export class StartExtractionRunDto {
   @IsUUID('4') draftId!: string;
   @Type(() => Number) @IsInt() @Min(1) expectedRevision!: number;
   @IsString() @MaxLength(500) idempotencyKey!: string;
+  @IsOptional() @IsBoolean() refreshImageRecognition?: boolean;
 }
 
 export class UpdateExtractionResultDto {

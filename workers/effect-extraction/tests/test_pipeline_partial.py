@@ -182,6 +182,24 @@ class CountingImageProvider(MockAiProvider):
         )
 
 
+class UncacheableImageProvider(CountingImageProvider):
+    async def analyze_image(
+        self,
+        data_uri: str,
+        *,
+        source_name: str,
+        image_metadata: Mapping[str, Any],
+    ) -> AiCallResult[ExtractionCandidate]:
+        result = await super().analyze_image(
+            data_uri, source_name=source_name, image_metadata=image_metadata
+        )
+        return AiCallResult(
+            value=result.value,
+            metadata=result.metadata,
+            cacheable=False,
+        )
+
+
 class TimeoutDocumentProvider(MockAiProvider):
     async def extract_document(
         self, markdown: str, *, source_name: str
@@ -392,6 +410,74 @@ async def test_image_branch_reuses_content_fingerprint_cache_without_a_second_mo
     assert first.items[0].metadata["cache"] == {"hit": False}
     assert second.items[0].metadata["cache"] == {"hit": True}
     assert second.items[0].candidate == first.items[0].candidate
+
+
+@pytest.mark.asyncio
+async def test_image_branch_bypasses_cache_for_explicit_re_extraction() -> None:
+    api = ApiStub()
+    api.snapshot.bypass_image_cache = True
+    api.snapshot.materials = [
+        SnapshotMaterial(
+            id="image-1",
+            type="PRODUCT_IMAGE",
+            original_file_name="image-1.png",
+            mime_type="image/png",
+            size_bytes=10,
+        )
+    ]
+    provider = CountingImageProvider()
+    pipeline = ExtractionPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        document_parser=ParserStub(),
+        image_processor=ImageProcessorStub(),  # type: ignore[arg-type]
+        max_document_text_chars=1000,
+    )
+    context = RuntimeContext(
+        "run", "project", "draft", "product", "request", "attempt", "server-fingerprint"
+    )
+    pipeline.register_snapshot(context, api.snapshot)
+
+    first = await pipeline.image_branch(context)
+    second = await pipeline.image_branch(context)
+
+    assert provider.calls == 2
+    assert first.items[0].metadata["cache"] == {"hit": False, "bypassed": True}
+    assert second.items[0].metadata["cache"] == {"hit": False, "bypassed": True}
+
+
+@pytest.mark.asyncio
+async def test_image_branch_does_not_cache_a_degraded_adaptive_result() -> None:
+    api = ApiStub()
+    api.snapshot.materials = [
+        SnapshotMaterial(
+            id="image-1",
+            type="PRODUCT_IMAGE",
+            original_file_name="包装背面.png",
+            mime_type="image/png",
+            size_bytes=10,
+        )
+    ]
+    provider = UncacheableImageProvider()
+    pipeline = ExtractionPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        document_parser=ParserStub(),
+        image_processor=ImageProcessorStub(),  # type: ignore[arg-type]
+        max_document_text_chars=1000,
+    )
+    context = RuntimeContext(
+        "run", "project", "draft", "product", "request", "attempt", "server-fingerprint"
+    )
+    pipeline.register_snapshot(context, api.snapshot)
+
+    first = await pipeline.image_branch(context)
+    second = await pipeline.image_branch(context)
+
+    assert provider.calls == 2
+    assert api.image_cache == {}
+    assert first.items[0].metadata["cache"] == {"hit": False}
+    assert second.items[0].metadata["cache"] == {"hit": False}
 
 
 @pytest.mark.asyncio

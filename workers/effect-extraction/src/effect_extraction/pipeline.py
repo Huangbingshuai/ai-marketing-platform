@@ -229,17 +229,18 @@ class ExtractionPipeline:
                         processed.metadata, self.provider.image_cache_namespace
                     )
                     cached_candidate: ExtractionCandidate | None = None
-                    try:
-                        cached_candidate = await self.api.get_image_cache(
-                            context, cache_key
-                        )
-                    except InternalApiError as exc:
-                        LOGGER.warning(
-                            "Image cache lookup failed run_id=%s source_id=%s retryable=%s",
-                            context.run_id,
-                            material.id,
-                            exc.retryable,
-                        )
+                    if not snapshot.bypass_image_cache:
+                        try:
+                            cached_candidate = await self.api.get_image_cache(
+                                context, cache_key
+                            )
+                        except InternalApiError as exc:
+                            LOGGER.warning(
+                                "Image cache lookup failed run_id=%s source_id=%s retryable=%s",
+                                context.run_id,
+                                material.id,
+                                exc.retryable,
+                            )
                     if cached_candidate is not None:
                         return BranchItem(
                             source_id=material.id,
@@ -255,33 +256,41 @@ class ExtractionPipeline:
                         source_name=material.original_file_name,
                         image_metadata=processed.metadata,
                     )
-                    try:
-                        await self.api.put_image_cache(
-                            context,
-                            cache_key,
-                            ai_call.value,
-                            {
-                                "model": ai_call.metadata.model,
-                                "promptVersion": ai_call.metadata.prompt_version,
-                                "preprocessVersion": processed.metadata.get(
-                                    "preprocessVersion"
-                                ),
-                            },
-                        )
-                    except InternalApiError as exc:
-                        LOGGER.warning(
-                            "Image cache write failed run_id=%s source_id=%s retryable=%s",
-                            context.run_id,
-                            material.id,
-                            exc.retryable,
-                        )
+                    if ai_call.cacheable:
+                        try:
+                            await self.api.put_image_cache(
+                                context,
+                                cache_key,
+                                ai_call.value,
+                                {
+                                    "model": ai_call.metadata.model,
+                                    "promptVersion": ai_call.metadata.prompt_version,
+                                    "preprocessVersion": processed.metadata.get(
+                                        "preprocessVersion"
+                                    ),
+                                },
+                            )
+                        except InternalApiError as exc:
+                            LOGGER.warning(
+                                "Image cache write failed run_id=%s source_id=%s retryable=%s",
+                                context.run_id,
+                                material.id,
+                                exc.retryable,
+                            )
                     return BranchItem(
                         source_id=material.id,
                         status=BranchStatus.SUCCEEDED,
                         candidate=ai_call.value,
                         metadata={
                             **processed.metadata,
-                            "cache": {"hit": False},
+                            "cache": {
+                                "hit": False,
+                                **(
+                                    {"bypassed": True}
+                                    if snapshot.bypass_image_cache
+                                    else {}
+                                ),
+                            },
                             "aiCall": ai_call.metadata.as_dict(),
                         },
                     )

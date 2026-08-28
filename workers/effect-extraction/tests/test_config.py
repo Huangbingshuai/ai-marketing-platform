@@ -31,6 +31,7 @@ def _base_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "ARK_IMAGE_RETRY_MAX_OUTPUT_TOKENS",
         "ARK_IMAGE_DETAIL",
         "ARK_IMAGE_REASONING_EFFORT",
+        "ARK_IMAGE_ADAPTIVE_HIGH_DETAIL",
         "IMAGE_MAX_DIMENSION",
         "IMAGE_MAX_CONCURRENCY",
         "COMMERCE_RENDERER_URL",
@@ -82,6 +83,7 @@ def test_default_provider_uses_seed_2_1_turbo_model_id(
     assert settings.ark_image_retry_max_output_tokens == 6144
     assert settings.ark_image_detail == "low"
     assert settings.ark_image_reasoning_effort == "minimal"
+    assert settings.ark_image_adaptive_high_detail is True
     assert settings.image_max_dimension == 1280
     assert settings.image_max_concurrency == 2
 

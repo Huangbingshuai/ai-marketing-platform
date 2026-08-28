@@ -31,6 +31,10 @@ COMMERCE_EXTRACTION_PROMPT = "commerce_extraction.prompt.txt"
 RESULT_NORMALIZATION_PROMPT = "result_normalization.prompt.txt"
 SEMANTIC_REFINEMENT_PROMPT = "semantic_refinement.prompt.txt"
 LOGGER = logging.getLogger(__name__)
+_HIGH_DETAIL_FILE_NAME = re.compile(
+    r"(?:包装|背面|背标|标签|说明|配料|成分|规格|净含量|认证|检测|奖项|证书|package|packaging|label|back)",
+    re.IGNORECASE,
+)
 
 
 class ProviderErrorType(StrEnum):
@@ -103,6 +107,7 @@ class AiCallMetadata:
 class AiCallResult(Generic[TResult]):
     value: TResult
     metadata: AiCallMetadata
+    cacheable: bool = True
 
 
 class AiProvider(Protocol):
@@ -155,7 +160,10 @@ class MockAiProvider:
 
     @property
     def image_cache_namespace(self) -> str:
-        return f"mock:{load_prompt_version(IMAGE_ANALYSIS_PROMPT)}:image-visible-v1:low"
+        return (
+            f"mock:{load_prompt_version(IMAGE_ANALYSIS_PROMPT)}:"
+            "image-visible-v2:adaptive-1:low-high"
+        )
 
     async def refine_semantics(
         self,
@@ -265,6 +273,7 @@ class ArkResponsesProvider:
         image_retry_max_output_tokens: int = 6144,
         image_detail: str = "low",
         image_reasoning_effort: str = "minimal",
+        image_adaptive_high_detail: bool = True,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._document_model = _specific_model(document_model, model)
@@ -285,6 +294,7 @@ class ArkResponsesProvider:
             if image_reasoning_effort in {"minimal", "low", "medium", "high"}
             else "minimal"
         )
+        self._image_adaptive_high_detail = image_adaptive_high_detail
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/") + "/",
             timeout=timeout,
@@ -297,7 +307,8 @@ class ArkResponsesProvider:
         prompt_version = load_prompt_version(IMAGE_ANALYSIS_PROMPT)
         return (
             f"ark:{self._image_model}:{prompt_version}:"
-            f"image-visible-v1:{self._image_detail}:{self._image_reasoning_effort}"
+            f"image-visible-v2:adaptive-{int(self._image_adaptive_high_detail)}:"
+            f"{self._image_detail}-high:{self._image_reasoning_effort}"
         )
 
     async def aclose(self) -> None:
@@ -355,7 +366,55 @@ class ArkResponsesProvider:
             source_name=source_name,
             image_metadata_json=json.dumps(dict(image_metadata), ensure_ascii=False),
         )
-        call = await self._structured(
+        first = await self._analyze_image_once(
+            prompt=prompt,
+            data_uri=data_uri,
+            detail=self._image_detail,
+        )
+        should_escalate = (
+            self._image_adaptive_high_detail
+            and self._image_detail == "low"
+            and (
+                first.value.high_detail_recommended
+                or _HIGH_DETAIL_FILE_NAME.search(source_name) is not None
+            )
+        )
+        if not should_escalate:
+            return AiCallResult(
+                value=first.value.to_candidate(),
+                metadata=first.metadata,
+            )
+        try:
+            refined = await self._analyze_image_once(
+                prompt=prompt,
+                data_uri=data_uri,
+                detail="high",
+            )
+        except ProviderError as exc:
+            LOGGER.warning(
+                "Ark adaptive image detail fallback error_type=%s attempts=%s elapsed_ms=%s",
+                exc.error_type.value,
+                exc.attempts,
+                exc.elapsed_ms,
+            )
+            return AiCallResult(
+                value=first.value.to_candidate(),
+                metadata=first.metadata,
+                cacheable=False,
+            )
+        return AiCallResult(
+            value=_merge_image_visible_facts(first.value, refined.value).to_candidate(),
+            metadata=_combine_ai_call_metadata(first.metadata, refined.metadata),
+        )
+
+    async def _analyze_image_once(
+        self,
+        *,
+        prompt: str,
+        data_uri: str,
+        detail: str,
+    ) -> AiCallResult[ImageVisibleFacts]:
+        return await self._structured(
             [
                 {
                     "role": "user",
@@ -364,7 +423,7 @@ class ArkResponsesProvider:
                         {
                             "type": "input_image",
                             "image_url": data_uri,
-                            "detail": self._image_detail,
+                            "detail": detail,
                         },
                     ],
                 }
@@ -380,7 +439,6 @@ class ArkResponsesProvider:
             retry_max_output_tokens=self._image_retry_max_output_tokens,
             reasoning_effort=self._image_reasoning_effort,
         )
-        return AiCallResult(value=call.value.to_candidate(), metadata=call.metadata)
 
     async def extract_commerce(
         self,
@@ -568,6 +626,47 @@ def _specific_model(value: str | None, fallback: str) -> str:
     if not resolved:
         raise ValueError("Ark model cannot be empty")
     return resolved
+
+
+def _merge_image_visible_facts(
+    first: ImageVisibleFacts,
+    refined: ImageVisibleFacts,
+) -> ImageVisibleFacts:
+    merged: dict[str, Any] = {}
+    for field_name in ImageVisibleFacts.model_fields:
+        if field_name == "high_detail_recommended":
+            merged[field_name] = False
+            continue
+        refined_value = getattr(refined, field_name)
+        merged[field_name] = (
+            refined_value if refined_value is not None else getattr(first, field_name)
+        )
+    return ImageVisibleFacts.model_validate(merged)
+
+
+def _combined_token_count(first: int | None, refined: int | None) -> int | None:
+    if first is None and refined is None:
+        return None
+    return (first or 0) + (refined or 0)
+
+
+def _combine_ai_call_metadata(
+    first: AiCallMetadata,
+    refined: AiCallMetadata,
+) -> AiCallMetadata:
+    return AiCallMetadata(
+        stage=refined.stage,
+        model=refined.model,
+        prompt_version=refined.prompt_version,
+        input_tokens=_combined_token_count(first.input_tokens, refined.input_tokens),
+        output_tokens=_combined_token_count(first.output_tokens, refined.output_tokens),
+        total_tokens=_combined_token_count(first.total_tokens, refined.total_tokens),
+        latency_ms=first.latency_ms + refined.latency_ms,
+        attempts=first.attempts + refined.attempts,
+        reasoning_tokens=_combined_token_count(
+            first.reasoning_tokens, refined.reasoning_tokens
+        ),
+    )
 
 
 class _RetryStructuredResponse(Exception):

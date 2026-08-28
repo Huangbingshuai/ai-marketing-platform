@@ -828,7 +828,10 @@ const runCurrentExtraction = async (): Promise<void> => {
       context.value,
       product.id,
       sourceRevision.value,
-      controller.signal,
+      {
+        refreshImageRecognition: Boolean(state.runId || state.resultId),
+        signal: controller.signal,
+      },
     );
     if (disposed || controller.signal.aborted) return;
     patchFromRun(product.id, run);
@@ -2671,16 +2674,19 @@ select {
   font-size: 13px;
 }
 .selling-subheading button,
-.selling-add-button {
+.block-heading .selling-add-button {
   display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  height: 30px;
   min-height: 30px;
   padding: 0 10px;
+  align-items: center;
+  gap: 4px;
   color: #2f6df6;
   background: #f5f8ff;
   border: 1px solid #d6e3ff;
   border-radius: 9px;
+  font-size: 13px;
+  font-weight: 400;
 }
 .empty-inline {
   margin: 0;

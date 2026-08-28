@@ -612,8 +612,17 @@ describe('EffectExtractionService', () => {
         draftId: 'draft-a',
         expectedRevision: 3,
         idempotencyKey: 'click-a',
+        refreshImageRecognition: true,
       }),
     ).rejects.toMatchObject({ status: HttpStatus.CONFLICT });
+    expect(repository.startRun).toHaveBeenCalledWith(
+      'project-a',
+      'draft-a',
+      'product-a',
+      3,
+      'click-a',
+      true,
+    );
   });
 
   it('does not fail a heartbeat when Redis progress caching is unavailable', async () => {

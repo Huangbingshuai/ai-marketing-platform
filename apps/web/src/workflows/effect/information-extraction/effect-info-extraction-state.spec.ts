@@ -74,8 +74,10 @@ describe('effect info extraction state', () => {
   it('clones editable array fields and server warnings', () => {
     const cloned = cloneExtractionResult(result);
     cloned.coreSellingPoints.push('卖点二');
+    cloned.targetAudiences.push('新增人群');
     cloned.disabledElements.push('新增禁用词');
     expect(result.coreSellingPoints).toEqual(['卖点一']);
+    expect(result.targetAudiences).toEqual(['目标人群']);
     expect(result.disabledElements).toEqual(['禁用元素']);
 
     const view = toExtractionProductState({
@@ -87,5 +89,29 @@ describe('effect info extraction state', () => {
     view.warnings[0]!.message = '已修改';
     expect(view.saveState).toBe('SAVED');
     expect(view.saveErrorMessage).toBeNull();
+  });
+
+  it('adapts a historical node draft with only a scalar target audience', () => {
+    const legacyResult: Omit<EffectExtractionResult, 'targetAudiences'> & {
+      targetAudiences?: string[];
+    } = {
+      ...result,
+      targetAudience:
+        '25-45岁家庭厨房决策者，美食爱好者，年货送礼人群，向往粤式风味的消费者',
+    };
+    delete legacyResult.targetAudiences;
+
+    const cloned = cloneExtractionResult(legacyResult as EffectExtractionResult);
+
+    expect(cloned.targetAudiences).toEqual([
+      '25-45岁家庭厨房决策者',
+      '美食爱好者',
+      '年货送礼人群',
+      '向往粤式风味的消费者',
+    ]);
+    expect(cloned.targetAudience).toBe(
+      '25-45岁家庭厨房决策者；美食爱好者；年货送礼人群；向往粤式风味的消费者',
+    );
+    expect(cloned.targetAudiences.join(' ')).not.toContain('上班族');
   });
 });

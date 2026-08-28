@@ -441,7 +441,12 @@ export class EffectExtractionService {
   async start(
     projectId: string,
     productId: string,
-    input: { draftId: string; expectedRevision: number; idempotencyKey: string },
+    input: {
+      draftId: string;
+      expectedRevision: number;
+      idempotencyKey: string;
+      refreshImageRecognition?: boolean;
+    },
   ): Promise<StartEffectExtractionRunData> {
     await this.projects.get(projectId);
     const idempotencyKey = input.idempotencyKey.trim();
@@ -452,6 +457,7 @@ export class EffectExtractionService {
       productId,
       input.expectedRevision,
       idempotencyKey,
+      input.refreshImageRecognition ?? false,
     );
     if (result.kind === 'NOT_FOUND') throw notFound('资料草稿或产品不存在');
     if (result.kind === 'REVISION_CONFLICT') throw conflict('资料草稿已更新，请刷新后重试');
