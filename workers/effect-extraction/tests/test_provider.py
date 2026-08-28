@@ -517,6 +517,108 @@ async def test_ark_provider_records_safe_timeout_diagnostics(
 
 
 @pytest.mark.asyncio
+async def test_ark_provider_retries_remote_protocol_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests = 0
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        if requests == 1:
+            raise httpx.RemoteProtocolError(
+                "Server disconnected without sending a response.",
+                request=request,
+            )
+        candidate = ImageVisibleFacts(
+            product_category="腊味肉制品",
+            product_name="广式腊肠",
+            core_specification=None,
+            visual_features="腊肠切片油润透亮",
+            core_selling_points=None,
+            secondary_selling_points=None,
+            trust_backings=None,
+            usage_scenarios=None,
+            emotional_scenarios=None,
+            visual_style_baseline="暖色食欲感",
+            high_detail_recommended=False,
+        )
+        return httpx.Response(
+            200,
+            json={"output_text": candidate.model_dump_json(by_alias=True)},
+        )
+
+    monkeypatch.setattr("effect_extraction.providers.asyncio.sleep", no_sleep)
+    provider = ArkResponsesProvider(
+        base_url="https://ark.test/api/v3/",
+        api_key="secret",
+        model="image-model",
+        image_max_attempts=2,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await provider.analyze_image(
+            "data:image/jpeg;base64,AAAA",
+            source_name="product.jpg",
+            image_metadata={"processedWidth": 100, "processedHeight": 80},
+        )
+    finally:
+        await provider.aclose()
+
+    assert requests == 2
+    assert result.metadata.attempts == 2
+    assert result.value.product_name == "广式腊肠"
+
+
+@pytest.mark.asyncio
+async def test_ark_provider_sanitizes_exhausted_remote_protocol_disconnects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests = 0
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        raise httpx.RemoteProtocolError(
+            "sensitive upstream disconnect detail",
+            request=request,
+        )
+
+    monkeypatch.setattr("effect_extraction.providers.asyncio.sleep", no_sleep)
+    provider = ArkResponsesProvider(
+        base_url="https://ark.test/api/v3/",
+        api_key="secret-must-not-leak",
+        model="image-model",
+        image_max_attempts=2,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(ProviderError) as raised:
+            await provider.analyze_image(
+                "data:image/jpeg;base64,AAAA",
+                source_name="product.jpg",
+                image_metadata={"processedWidth": 100, "processedHeight": 80},
+            )
+    finally:
+        await provider.aclose()
+
+    error = raised.value
+    assert requests == 2
+    assert error.error_type == ProviderErrorType.NETWORK
+    assert error.attempts == 2
+    assert error.retryable is True
+    assert str(error) == "AI network request failed"
+    assert "sensitive" not in str(error)
+    assert "secret-must-not-leak" not in str(error)
+
+
+@pytest.mark.asyncio
 async def test_ark_provider_uses_one_minimal_reasoning_semantic_request() -> None:
     requests: list[tuple[str, dict[str, object]]] = []
 

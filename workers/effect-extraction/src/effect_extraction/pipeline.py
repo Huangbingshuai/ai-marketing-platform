@@ -229,19 +229,21 @@ class ExtractionPipeline:
                         processed.metadata, self.provider.image_cache_namespace
                     )
                     cached_candidate: ExtractionCandidate | None = None
-                    if not snapshot.bypass_image_cache:
-                        try:
-                            cached_candidate = await self.api.get_image_cache(
-                                context, cache_key
-                            )
-                        except InternalApiError as exc:
-                            LOGGER.warning(
-                                "Image cache lookup failed run_id=%s source_id=%s retryable=%s",
-                                context.run_id,
-                                material.id,
-                                exc.retryable,
-                            )
-                    if cached_candidate is not None:
+                    try:
+                        cached_candidate = await self.api.get_image_cache(
+                            context, cache_key
+                        )
+                    except InternalApiError as exc:
+                        LOGGER.warning(
+                            "Image cache lookup failed run_id=%s source_id=%s retryable=%s",
+                            context.run_id,
+                            material.id,
+                            exc.retryable,
+                        )
+                    if (
+                        cached_candidate is not None
+                        and not snapshot.bypass_image_cache
+                    ):
                         return BranchItem(
                             source_id=material.id,
                             status=BranchStatus.SUCCEEDED,
@@ -251,11 +253,37 @@ class ExtractionPipeline:
                                 "cache": {"hit": True},
                             },
                         )
-                    ai_call = await self.provider.analyze_image(
-                        processed.data_uri,
-                        source_name=material.original_file_name,
-                        image_metadata=processed.metadata,
-                    )
+                    try:
+                        ai_call = await self.provider.analyze_image(
+                            processed.data_uri,
+                            source_name=material.original_file_name,
+                            image_metadata=processed.metadata,
+                        )
+                    except ProviderError as exc:
+                        if cached_candidate is None:
+                            raise
+                        warning = _provider_error_message(
+                            BranchName.IMAGE, exc.error_type
+                        )
+                        return BranchItem(
+                            source_id=material.id,
+                            status=BranchStatus.PARTIAL,
+                            candidate=cached_candidate,
+                            warning=f"{warning}，已使用上次识别结果",
+                            metadata={
+                                **processed.metadata,
+                                "cache": {
+                                    "hit": True,
+                                    "fallback": True,
+                                    **(
+                                        {"bypassed": True}
+                                        if snapshot.bypass_image_cache
+                                        else {}
+                                    ),
+                                },
+                                "error": _provider_error_diagnostic(exc),
+                            },
+                        )
                     if ai_call.cacheable:
                         try:
                             await self.api.put_image_cache(
@@ -671,9 +699,11 @@ def _aggregate(
     branch: BranchName, context: RuntimeContext, items: list[BranchItem]
 ) -> BranchOutput:
     succeeded = sum(item.status == BranchStatus.SUCCEEDED for item in items)
+    partial = sum(item.status == BranchStatus.PARTIAL for item in items)
+    usable = succeeded + partial
     if succeeded == len(items):
         status = BranchStatus.SUCCEEDED
-    elif succeeded > 0:
+    elif usable > 0:
         status = BranchStatus.PARTIAL
     else:
         status = BranchStatus.FAILED
@@ -681,7 +711,7 @@ def _aggregate(
     failure_diagnostics = [
         error
         for item in items
-        if item.status == BranchStatus.FAILED
+        if item.status in {BranchStatus.FAILED, BranchStatus.PARTIAL}
         and isinstance((error := item.metadata.get("error")), dict)
     ]
     return BranchOutput(
@@ -701,11 +731,7 @@ def _failed_item(source_id: str, exc: Exception, branch: BranchName) -> BranchIt
             status=BranchStatus.FAILED,
             warning=_provider_error_message(branch, exc.error_type),
             metadata={
-                "error": {
-                    "type": exc.error_type.value,
-                    "attempts": exc.attempts,
-                    "elapsedMs": exc.elapsed_ms,
-                }
+                "error": _provider_error_diagnostic(exc)
             },
         )
     if isinstance(exc, CommerceFetchError):
@@ -735,6 +761,14 @@ def _failed_item(source_id: str, exc: Exception, branch: BranchName) -> BranchIt
         status=BranchStatus.FAILED,
         warning=_safe_error(exc),
     )
+
+
+def _provider_error_diagnostic(exc: ProviderError) -> dict[str, int | str]:
+    return {
+        "type": exc.error_type.value,
+        "attempts": exc.attempts,
+        "elapsedMs": exc.elapsed_ms,
+    }
 
 
 def _provider_error_message(branch: BranchName, error_type: ProviderErrorType) -> str:

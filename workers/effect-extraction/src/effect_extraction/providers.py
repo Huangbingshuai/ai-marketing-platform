@@ -540,6 +540,15 @@ class ArkResponsesProvider:
                 last_error = exc
                 last_error_type = ProviderErrorType.TIMEOUT
                 retryable = True
+            except httpx.RemoteProtocolError as exc:
+                # The upstream can close an HTTP connection after accepting the
+                # request but before returning a response. HTTPX classifies this
+                # separately from NetworkError, but it is still a transient
+                # transport failure that is safe to retry within the existing
+                # bounded attempt budget.
+                last_error = exc
+                last_error_type = ProviderErrorType.NETWORK
+                retryable = True
             except httpx.NetworkError as exc:
                 last_error = exc
                 last_error_type = ProviderErrorType.NETWORK

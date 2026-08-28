@@ -200,6 +200,30 @@ class UncacheableImageProvider(CountingImageProvider):
         )
 
 
+class DisconnectingAfterFirstImageProvider(CountingImageProvider):
+    async def analyze_image(
+        self,
+        data_uri: str,
+        *,
+        source_name: str,
+        image_metadata: Mapping[str, Any],
+    ) -> AiCallResult[ExtractionCandidate]:
+        if self.calls == 0:
+            return await super().analyze_image(
+                data_uri,
+                source_name=source_name,
+                image_metadata=image_metadata,
+            )
+        self.calls += 1
+        raise ProviderError(
+            "AI network request failed",
+            retryable=True,
+            error_type=ProviderErrorType.NETWORK,
+            attempts=2,
+            elapsed_ms=1_234,
+        )
+
+
 class TimeoutDocumentProvider(MockAiProvider):
     async def extract_document(
         self, markdown: str, *, source_name: str
@@ -444,6 +468,59 @@ async def test_image_branch_bypasses_cache_for_explicit_re_extraction() -> None:
     assert provider.calls == 2
     assert first.items[0].metadata["cache"] == {"hit": False, "bypassed": True}
     assert second.items[0].metadata["cache"] == {"hit": False, "bypassed": True}
+
+
+@pytest.mark.asyncio
+async def test_image_branch_uses_previous_result_when_refresh_disconnects() -> None:
+    api = ApiStub()
+    api.snapshot.materials = [
+        SnapshotMaterial(
+            id="image-1",
+            type="PRODUCT_IMAGE",
+            original_file_name="image-1.png",
+            mime_type="image/png",
+            size_bytes=10,
+        )
+    ]
+    provider = DisconnectingAfterFirstImageProvider()
+    pipeline = ExtractionPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        document_parser=ParserStub(),
+        image_processor=ImageProcessorStub(),  # type: ignore[arg-type]
+        max_document_text_chars=1000,
+    )
+    context = RuntimeContext(
+        "run", "project", "draft", "product", "request", "attempt", "server-fingerprint"
+    )
+    pipeline.register_snapshot(context, api.snapshot)
+
+    first = await pipeline.image_branch(context)
+    api.snapshot.bypass_image_cache = True
+    refreshed = await pipeline.image_branch(context)
+
+    assert provider.calls == 2
+    assert first.status == BranchStatus.SUCCEEDED
+    assert refreshed.status == BranchStatus.PARTIAL
+    assert refreshed.items[0].status == BranchStatus.PARTIAL
+    assert refreshed.items[0].candidate == first.items[0].candidate
+    assert refreshed.items[0].warning == "图片 AI 识别连接失败，已使用上次识别结果"
+    assert refreshed.items[0].metadata["cache"] == {
+        "hit": True,
+        "fallback": True,
+        "bypassed": True,
+    }
+    assert refreshed.items[0].metadata["error"] == {
+        "type": "AI_NETWORK",
+        "attempts": 2,
+        "elapsedMs": 1_234,
+    }
+    assert refreshed.metadata == {
+        "failures": [
+            {"type": "AI_NETWORK", "attempts": 2, "elapsedMs": 1_234}
+        ]
+    }
+    assert "Server disconnected" not in " ".join(refreshed.warnings)
 
 
 @pytest.mark.asyncio
