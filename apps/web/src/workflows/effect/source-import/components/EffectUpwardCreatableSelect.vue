@@ -12,8 +12,9 @@ const props = withDefaults(
     modelValue: SelectValue;
     options: readonly SelectOption[];
     placeholder?: string;
+    creatable?: boolean;
   }>(),
-  { disabled: false, placeholder: '请选择或输入自定义值' },
+  { creatable: true, disabled: false, placeholder: '请选择或输入自定义值' },
 );
 
 const emit = defineEmits<{ 'update:modelValue': [value: SelectValue] }>();
@@ -54,6 +55,7 @@ const filteredOptions = computed(() => {
 const canCreate = computed(() => {
   const value = query.value.trim();
   return (
+    props.creatable &&
     Boolean(value) &&
     !props.options.some(
       (option) =>
@@ -170,7 +172,7 @@ onBeforeUnmount(() => {
             type="text"
             autocomplete="off"
             :aria-label="`${fieldLabel}搜索`"
-            placeholder="搜索或输入自定义值"
+            :placeholder="creatable ? '搜索或输入自定义值' : '搜索可选值'"
           />
         </label>
         <div class="effect-up-select__options" role="listbox" :aria-label="fieldLabel">

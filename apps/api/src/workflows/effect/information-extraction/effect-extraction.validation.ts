@@ -13,6 +13,7 @@ import {
   EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS,
   EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS,
   EFFECT_EXTRACTION_MAX_TRUST_BACKINGS,
+  normalizeEffectImportResolution,
 } from '@ai-marketing/contracts';
 
 const RESULT_KEYS = [
@@ -197,7 +198,10 @@ export const toEffectExtractionResultV2 = (
         ? Number(record.durationSeconds)
         : defaults.durationSeconds,
     aspectRatio: text(record, 'aspectRatio') || defaults.aspectRatio,
-    resolution: text(record, 'resolution') || defaults.resolution,
+    resolution:
+      normalizeEffectImportResolution(text(record, 'resolution')) ??
+      normalizeEffectImportResolution(defaults.resolution) ??
+      '720p',
     deliveryChannels: text(record, 'deliveryChannels') || defaults.deliveryChannels,
     disabledElements: compactStrings(
       Array.isArray(record.disabledElements) ? record.disabledElements : defaults.disabledElements,
@@ -294,7 +298,7 @@ export const isEffectExtractionResult = (value: unknown): value is EffectExtract
     validString(record.aspectRatio, 50) &&
     record.aspectRatio.length > 0 &&
     validString(record.resolution, 50) &&
-    record.resolution.length > 0 &&
+    normalizeEffectImportResolution(record.resolution) !== null &&
     validString(record.deliveryChannels) &&
     validStringArray(record.disabledElements, 100) &&
     validString(record.visualStyleBaseline) &&
@@ -311,6 +315,7 @@ export const toEditableEffectExtractionResultV2 = (
   if (!isEffectExtractionResult(value)) return value;
   return {
     ...value,
+    resolution: normalizeEffectImportResolution(value.resolution) ?? '720p',
     coreSellingPoints: [...value.coreSellingPoints],
     secondarySellingPoints: [...value.secondarySellingPoints],
     trustBackings: [...value.trustBackings],
@@ -340,7 +345,28 @@ export const isLegacyEffectExtractionResultWithoutResolution = (
       ...record,
       targetAudience: targetAudienceSummary(targetAudiences),
       targetAudiences,
-      resolution: '__RESTORE_FROM_INPUT_SNAPSHOT__',
+      resolution: '720p',
+    })
+  );
+};
+
+/**
+ * Compatibility guard for workers built before target audiences became an
+ * independently editable list. The repository canonicalizes the legacy
+ * summary into `targetAudiences` before persisting the result.
+ */
+export const isLegacyEffectExtractionResultWithoutCanonicalAudiences = (
+  value: unknown,
+): value is Omit<EffectExtractionResult, 'targetAudiences'> => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const targetAudiences = targetAudienceItems(record);
+  return (
+    !('targetAudiences' in record) &&
+    isEffectExtractionResult({
+      ...record,
+      targetAudience: targetAudienceSummary(targetAudiences),
+      targetAudiences,
     })
   );
 };

@@ -121,15 +121,15 @@ V10_COORDINATE_BASE_PROMPT = "v10_coordinate_base.system.prompt.txt"
 V10_COORDINATE_TASK_PROMPT = "v10_coordinate_task.user.prompt.txt"
 V10_BLUEPRINT_BASE_PROMPT = "v10_blueprint_base.system.prompt.txt"
 V10_BLUEPRINT_TASK_PROMPT = "v10_blueprint_task.user.prompt.txt"
-V11_CREATIVE_VERSION = "effect-prompt-v11-coherent-creative-v4"
-V11_EVALUATION_VERSION = "effect-prompt-v11-creative-evaluation-v3"
+V11_CREATIVE_VERSION = "effect-prompt-v11-coherent-creative-v6"
+V11_EVALUATION_VERSION = "effect-prompt-v11-creative-evaluation-v4"
 V11_CREATIVE_BASE_PROMPT = "v11_creative_base_v4.system.prompt.txt"
 V11_CREATIVE_TASK_PROMPT = "v11_creative_task_v4.user.prompt.txt"
 V11_CREATIVE_LEGACY_BASE_PROMPT = "v11_creative_base.system.prompt.txt"
 V11_CREATIVE_LEGACY_TASK_PROMPT = "v11_creative_task.user.prompt.txt"
 V11_EVALUATION_BASE_PROMPT = "v11_evaluation_base.system.prompt.txt"
 V11_EVALUATION_TASK_PROMPT = "v11_evaluation_task.user.prompt.txt"
-V11_FACT_VISUAL_STRATEGY_VERSION = "effect-prompt-v11-fact-visual-strategy-v1"
+V11_FACT_VISUAL_STRATEGY_VERSION = "effect-prompt-v11-fact-visual-strategy-v2"
 V11_FACT_VISUAL_STRATEGY_BASE_PROMPT = "v11_fact_visual_strategy.system.prompt.txt"
 V11_FACT_VISUAL_STRATEGY_TASK_PROMPT = "v11_fact_visual_strategy.user.prompt.txt"
 
@@ -554,10 +554,10 @@ class ArkResponsesProvider:
             prompt_file=V11_FACT_VISUAL_STRATEGY_BASE_PROMPT,
             model=self._candidate_model,
             max_output_tokens=min(
-                self._candidate_max_output_tokens,
-                max(2048, len(facts) * 220),
+                self._strategy_max_output_tokens,
+                max(4096, len(facts) * 320),
             ),
-            request_timeout=self._candidate_timeout,
+            request_timeout=self._strategy_timeout,
             instructions=load_prompt(V11_FACT_VISUAL_STRATEGY_BASE_PROMPT),
         )
 
@@ -1223,7 +1223,8 @@ class ArkResponsesProvider:
                             )
                             if (
                                 response_status == "incomplete"
-                                and incomplete_reason == "max_output_tokens"
+                                and incomplete_reason
+                                in {"max_output_tokens", "length"}
                             ):
                                 error_type = ProviderErrorType.OUTPUT_TRUNCATED
                                 retryable = False
@@ -1387,7 +1388,7 @@ def _mock_fact_visual_strategy(
                 context_instruction=context_instruction,
                 compatible_fact_ids=[
                     fact_id for fact_id in visible_ids if fact_id != fact.fact_id
-                ][:4],
+                ][:3],
                 forbidden_inferences=(
                     ["不得用成品外观、纹理、光泽或人物反应证明该事实"]
                     if usage == FactVisualUsage.FORBIDDEN_VISUAL_PROOF
@@ -1505,6 +1506,10 @@ def _creative_task_brief(
                 fact_payload(fact_id)
                 for fact_id in assignment.product_anchor_fact_ids
             ],
+            "productBoundaryFacts": [
+                fact_payload(fact_id)
+                for fact_id in assignment.product_boundary_fact_ids
+            ],
         }
 
     policy_by_id = fact_visual_strategy.by_id
@@ -1537,6 +1542,10 @@ def _creative_task_brief(
         "productAnchorFacts": [
             fact_payload(fact_id)
             for fact_id in assignment.product_anchor_fact_ids
+        ],
+        "productBoundaryFacts": [
+            fact_payload(fact_id)
+            for fact_id in assignment.product_boundary_fact_ids
         ],
         "forbiddenInferences": list(dict.fromkeys(forbidden_inferences)),
     }

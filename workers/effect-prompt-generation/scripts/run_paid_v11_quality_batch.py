@@ -362,7 +362,7 @@ async def _run(args: argparse.Namespace) -> None:
     settings = WorkerSettings()  # type: ignore[call-arg]
     snapshot_payload = json.loads(raw_snapshot)
     snapshot_payload["schemaVersion"] = 6
-    snapshot_payload["graphVersion"] = "V11_VISUAL_USAGE_STRATEGY"
+    snapshot_payload["graphVersion"] = "CURRENT"
     snapshot_payload["operation"] = "BATCH_GENERATE"
     snapshot_payload["settings"] = PromptBatchSettingsV6(
         target_count=50,

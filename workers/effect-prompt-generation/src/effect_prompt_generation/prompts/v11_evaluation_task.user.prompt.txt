@@ -1,4 +1,4 @@
-VERSION: effect-prompt-v11-creative-evaluation-task-v3
+VERSION: effect-prompt-v11-creative-evaluation-task-v4
 
 候选声明所引用的已确认事实：
 {facts_json}

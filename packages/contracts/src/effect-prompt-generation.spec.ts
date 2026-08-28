@@ -9,13 +9,13 @@ import {
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_GRAPH_VERSIONS,
+  EFFECT_PROMPT_INSIGHT_FIELDS,
   EFFECT_PROMPT_LEGACY_SCHEMA_VERSION,
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_NODE_DETAIL_SECTION_KINDS,
   EFFECT_PROMPT_NODE_DETAIL_SECTION_STATES,
   EFFECT_PROMPT_SCHEMA_VERSION,
   EFFECT_PROMPT_SHARD_PHASES,
-  effectPromptGraphNodeIds,
   effectPromptRunGraphNodeIds,
   effectPromptSettingsNodeId,
   effectPromptTargetCount,
@@ -68,18 +68,9 @@ describe('effect prompt generation contract', () => {
     ).toEqual({ targetCount: 50, defaultDurationSeconds: 5 });
   });
 
-  it('publishes the visual-strategy batch topology while retaining historical graphs', () => {
-    expect(EFFECT_PROMPT_GRAPH_VERSIONS).toEqual([
-      'V8_SINGLE_STRATEGY',
-      'V9_SIX_BRANCH_STRATEGY',
-      'V10_RELATION_COORDINATE_BLUEPRINT',
-      'V11_COHERENT_CREATIVE_GENERATION',
-      'V11_VISUAL_USAGE_STRATEGY',
-    ]);
-    expect(CURRENT_EFFECT_PROMPT_GRAPH_VERSION).toBe('V11_VISUAL_USAGE_STRATEGY');
-    expect(effectPromptGraphNodeIds('V10_RELATION_COORDINATE_BLUEPRINT')).toContain(
-      'BLUEPRINT_ORTHOGONAL_GATE',
-    );
+  it('publishes only the current batch and item-evaluation topology', () => {
+    expect(EFFECT_PROMPT_GRAPH_VERSIONS).toEqual(['CURRENT']);
+    expect(CURRENT_EFFECT_PROMPT_GRAPH_VERSION).toBe('CURRENT');
     expect(
       effectPromptRunGraphNodeIds(CURRENT_EFFECT_PROMPT_GRAPH_VERSION, 'BATCH_GENERATE'),
     ).toEqual([
@@ -111,6 +102,11 @@ describe('effect prompt generation contract', () => {
       'PARTIAL',
       'EMPTY',
     ]);
+  });
+
+  it('keeps resolution as a structured insight constraint', () => {
+    expect(EFFECT_PROMPT_INSIGHT_FIELDS).toContain('RESOLUTION');
+    expect(batchSchema.$defs.insightField.enum).toContain('RESOLUTION');
   });
 
   it('allows item evaluation without fragment-type input', () => {

@@ -41,6 +41,7 @@ import {
 import {
   effectExtractionDefaultsFromConfig,
   extractionSourceFingerprint,
+  isLegacyEffectExtractionResultWithoutCanonicalAudiences,
   isLegacyEffectExtractionResultWithoutResolution,
   isSupportedExtractionMaterial,
   isEffectExtractionResult,
@@ -813,6 +814,7 @@ export class EffectExtractionService {
   async complete(projectId: string, runId: string, attemptToken: string, input: CompleteRunInput) {
     if (
       !isEffectExtractionResult(input.result) &&
+      !isLegacyEffectExtractionResultWithoutCanonicalAudiences(input.result) &&
       !isLegacyEffectExtractionResultWithoutResolution(input.result)
     )
       throw badRequest('标准化结果不符合统一结构');

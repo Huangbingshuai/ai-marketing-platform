@@ -151,6 +151,7 @@ async def test_ark_v11_creative_uses_one_coherent_schema_and_shared_constraints(
     assert "普通杯盖需要双手操作" not in prompt
     assert "primaryFact" in prompt
     assert "productAnchorFacts" in prompt
+    assert "productBoundaryFacts" in prompt
     assert "valueHash" not in prompt
     assert "eligibleFragmentTypes" not in prompt
     assert "contentHash" not in prompt
@@ -223,6 +224,7 @@ async def test_ark_compiles_visual_usage_for_every_confirmed_fact() -> None:
     payload_text = json.dumps(seen, ensure_ascii=False)
     assert "纯猪肉无淀粉" in payload_text
     assert "effect_prompt_v11_fact_visual_strategy" in payload_text
+    assert seen["max_output_tokens"] == 4096
 
 
 @pytest.mark.asyncio
@@ -520,7 +522,10 @@ async def test_ark_strategy_uses_compact_schema_and_worker_expands_safely() -> N
 
 
 @pytest.mark.asyncio
-async def test_ark_output_limit_is_non_retryable_without_provider_retry() -> None:
+@pytest.mark.parametrize("incomplete_reason", ["max_output_tokens", "length"])
+async def test_ark_output_limit_is_non_retryable_without_provider_retry(
+    incomplete_reason: str,
+) -> None:
     calls = 0
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -530,7 +535,7 @@ async def test_ark_output_limit_is_non_retryable_without_provider_retry() -> Non
             200,
             json={
                 "status": "incomplete",
-                "incomplete_details": {"reason": "max_output_tokens"},
+                "incomplete_details": {"reason": incomplete_reason},
                 "output_text": '{"relationshipBundles":[{"bundleId":"cut',
                 "usage": {
                     "input_tokens": 800,

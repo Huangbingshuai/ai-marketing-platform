@@ -132,7 +132,20 @@ def map_insight(payload: Mapping[str, Any]) -> InsightApplicationMap:
         InsightFactPolicy.ADAPTIVE,
         add_value,
     )
-    add_value(InsightField.TARGET_AUDIENCE, _first(payload, "targetAudience", "target_audience"), InsightFactPolicy.REQUIRED)
+    target_audiences = _values(payload, "targetAudiences", "target_audiences")
+    if target_audiences:
+        for target_audience in target_audiences:
+            add_value(
+                InsightField.TARGET_AUDIENCE,
+                target_audience,
+                InsightFactPolicy.REQUIRED,
+            )
+    else:
+        add_value(
+            InsightField.TARGET_AUDIENCE,
+            _first(payload, "targetAudience", "target_audience"),
+            InsightFactPolicy.REQUIRED,
+        )
     _add_values(payload, ("corePainPoints", "core_pain_points"), InsightField.CORE_PAIN_POINT, InsightFactPolicy.REQUIRED, add_value)
     _add_values(payload, ("decisionDrivers", "decision_drivers"), InsightField.DECISION_DRIVER, InsightFactPolicy.REQUIRED, add_value)
     add_value(InsightField.MARKETING_GOAL, _first(payload, "marketingGoal", "marketing_goal"), InsightFactPolicy.REQUIRED)
@@ -148,6 +161,7 @@ def map_insight(payload: Mapping[str, Any]) -> InsightApplicationMap:
 
     add_value(InsightField.SOURCE_DURATION, _first(payload, "durationSeconds", "duration_seconds"), InsightFactPolicy.CONSTRAINT)
     add_value(InsightField.ASPECT_RATIO, _first(payload, "aspectRatio", "aspect_ratio"), InsightFactPolicy.CONSTRAINT)
+    add_value(InsightField.RESOLUTION, _first(payload, "resolution"), InsightFactPolicy.CONSTRAINT)
     add_value(InsightField.DELIVERY_CHANNELS, _first(payload, "deliveryChannels", "delivery_channels"), InsightFactPolicy.CONSTRAINT)
     _add_values(payload, ("disabledElements", "disabled_elements"), InsightField.DISABLED_ELEMENT, InsightFactPolicy.CONSTRAINT, add_value)
     add_value(InsightField.VISUAL_STYLE_BASELINE, _first(payload, "visualStyleBaseline", "visual_style_baseline"), InsightFactPolicy.CONSTRAINT)

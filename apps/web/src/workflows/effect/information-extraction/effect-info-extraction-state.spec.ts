@@ -91,13 +91,16 @@ describe('effect info extraction state', () => {
     expect(view.saveErrorMessage).toBeNull();
   });
 
+  it('normalizes a historical uppercase resolution for the fixed selector', () => {
+    expect(cloneExtractionResult({ ...result, resolution: '1080P' }).resolution).toBe('1080p');
+  });
+
   it('adapts a historical node draft with only a scalar target audience', () => {
     const legacyResult: Omit<EffectExtractionResult, 'targetAudiences'> & {
       targetAudiences?: string[];
     } = {
       ...result,
-      targetAudience:
-        '25-45岁家庭厨房决策者，美食爱好者，年货送礼人群，向往粤式风味的消费者',
+      targetAudience: '25-45岁家庭厨房决策者，美食爱好者，年货送礼人群，向往粤式风味的消费者',
     };
     delete legacyResult.targetAudiences;
 

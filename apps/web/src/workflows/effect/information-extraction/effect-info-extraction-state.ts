@@ -1,5 +1,6 @@
 import {
   EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
+  normalizeEffectImportResolution,
   type EffectExtractionProductState as EffectExtractionProductDto,
   type EffectExtractionProductStatus,
   type EffectExtractionResult,
@@ -54,6 +55,7 @@ export const cloneExtractionResult = (value: EffectExtractionResult): EffectExtr
   const targetAudiences = normalizedTargetAudiences(value);
   return {
     ...value,
+    resolution: normalizeEffectImportResolution(value.resolution) ?? '720p',
     coreSellingPoints: [...value.coreSellingPoints],
     secondarySellingPoints: [...value.secondarySellingPoints],
     trustBackings: [...value.trustBackings],

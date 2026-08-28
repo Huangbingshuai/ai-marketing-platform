@@ -66,7 +66,7 @@ def test_v11_templates_keep_creative_generation_and_evaluation_independent() -> 
     )
     assert (
         load_prompt_version("v11_evaluation_base.system.prompt.txt")
-        == "effect-prompt-v11-creative-evaluation-v3"
+        == "effect-prompt-v11-creative-evaluation-v4"
     )
     assert "Worker 已经为每条任务选好少量可信事实" in creative
     assert "厂商无关" in creative
@@ -99,15 +99,20 @@ def test_visual_strategy_templates_separate_visual_task_from_business_context() 
 
     assert (
         load_prompt_version("v11_fact_visual_strategy.system.prompt.txt")
-        == "effect-prompt-v11-fact-visual-strategy-v1"
+        == "effect-prompt-v11-fact-visual-strategy-v2"
     )
     assert (
         load_prompt_version("v11_creative_base_v4.system.prompt.txt")
-        == "effect-prompt-v11-coherent-creative-v4"
+        == "effect-prompt-v11-coherent-creative-v6"
     )
     assert "FORBIDDEN_VISUAL_PROOF" in compiler
     assert "不能凭成品的颜色、光泽、切面、纹理" in compiler
+    assert "最多 30 个汉字" in compiler
+    assert "采用短语而不是完整解释" in compiler
     assert "visualTask" in creative
     assert "businessContext" in creative
     assert "businessContext 未在正文中准确表达时不得声明" in creative
+    assert "不是每条都必须拍出的卖点" in creative
+    assert "不授权虚构品牌礼盒" in creative
+    assert "必须标记 FABRICATED_FACT" in evaluation
     assert "ABSTRACT_FACT_VISUAL_PROOF" in evaluation

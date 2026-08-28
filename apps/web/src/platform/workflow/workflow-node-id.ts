@@ -14,7 +14,8 @@ export const latestWorkflowNodeStateMap = (
     const baseId = workflowNodeBaseId(state.nodeId);
     if (!baseId) continue;
     const current = latest.get(baseId);
-    if (!current || Date.parse(state.savedAt) >= Date.parse(current.savedAt)) latest.set(baseId, state);
+    if (!current || Date.parse(state.savedAt) >= Date.parse(current.savedAt))
+      latest.set(baseId, state);
   }
   return latest;
 };

@@ -69,13 +69,14 @@ const legacyDefaultDuration = (result: Omit<EffectPromptBatchResultV5, 'items'>)
   for (const config of Object.values(result.settings.fragmentConfigs)) {
     occurrences.set(config.durationSeconds, (occurrences.get(config.durationSeconds) ?? 0) + 1);
   }
-  return [...occurrences.entries()]
-    .sort(([leftDuration, leftCount], [rightDuration, rightCount]) => {
+  return (
+    [...occurrences.entries()].sort(([leftDuration, leftCount], [rightDuration, rightCount]) => {
       if (leftCount !== rightCount) return rightCount - leftCount;
       if (leftDuration === 5) return -1;
       if (rightDuration === 5) return 1;
       return leftDuration - rightDuration;
-    })[0]?.[0] ?? 5;
+    })[0]?.[0] ?? 5
+  );
 };
 
 const legacyBatchForView = (
@@ -206,24 +207,14 @@ export const loadEffectPromptResult = async (
   signal?: AbortSignal,
 ): Promise<EffectPromptViewResultData> => {
   const loaded = (
-    await getEffectPromptResult(
-      projectId,
-      workflowRunId,
-      productId,
-      page,
-      query,
-      purpose,
-      signal,
-    )
+    await getEffectPromptResult(projectId, workflowRunId, productId, page, query, purpose, signal)
   ).data;
   if (loaded.result.schemaVersion !== EFFECT_PROMPT_LEGACY_SCHEMA_VERSION) {
     return loaded as EffectPromptViewResultData;
   }
   return {
     ...loaded,
-    result: legacyBatchForView(
-      loaded.result as Omit<EffectPromptBatchResultV5, 'items'>,
-    ),
+    result: legacyBatchForView(loaded.result as Omit<EffectPromptBatchResultV5, 'items'>),
     items: loaded.items.map((item) => legacyItemForView(item as EffectPromptItemV5)),
   };
 };

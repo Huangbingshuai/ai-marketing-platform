@@ -381,7 +381,7 @@ async def test_visual_strategy_graph_compiles_roles_before_creative_generation()
     )
     runtime = _runtime()
     snapshot = _snapshot().model_copy(
-        update={"graph_version": "V11_VISUAL_USAGE_STRATEGY"}
+        update={"graph_version": "CURRENT"}
     )
     pipeline.register_snapshot(runtime, snapshot)
 

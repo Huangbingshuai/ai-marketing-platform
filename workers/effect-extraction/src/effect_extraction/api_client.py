@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any, Protocol
 
@@ -58,6 +59,26 @@ def _unwrap(payload: Any) -> Any:
             raise InternalApiError(str(payload.get("message") or "success=false"), retryable=False)
         return payload.get("data")
     return payload
+
+
+_TARGET_AUDIENCE_SEPARATOR = re.compile(r"[\n,，、;；]+")
+
+
+def _final_result_payload(payload: FinalizePayload) -> dict[str, Any]:
+    """Serialize the public result contract without expanding Ark's response schema."""
+    result = payload.result.model_dump(mode="json", by_alias=True)
+    audiences: list[str] = []
+    seen: set[str] = set()
+    for item in _TARGET_AUDIENCE_SEPARATOR.split(payload.result.target_audience):
+        normalized = item.strip()
+        key = normalized.casefold()
+        if not normalized or key in seen:
+            continue
+        seen.add(key)
+        audiences.append(normalized)
+    result["targetAudiences"] = audiences
+    result["targetAudience"] = "；".join(audiences)
+    return result
 
 
 class HttpInternalApi:
@@ -189,7 +210,7 @@ class HttpInternalApi:
             "POST", f"{self._ROOT}/runs/{context.run_id}/complete",
             headers=self._lease(context),
             json={"projectId": context.project_id,
-                  "result": payload.result.model_dump(mode="json", by_alias=True),
+                  "result": _final_result_payload(payload),
                   "provenance": payload.provenance, "conflictReport": payload.conflict_report,
                   "warnings": _warnings(payload.warnings, None)},
         )

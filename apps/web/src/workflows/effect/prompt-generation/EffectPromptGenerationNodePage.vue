@@ -265,6 +265,7 @@ const insightFieldLabels: Record<EffectPromptInsightField, string> = {
   EMOTIONAL_SCENARIO: '情绪场景',
   SOURCE_DURATION: '上游时长',
   ASPECT_RATIO: '画幅',
+  RESOLUTION: '分辨率',
   DELIVERY_CHANNELS: '投放渠道',
   DISABLED_ELEMENT: '禁用元素',
   VISUAL_STYLE_BASELINE: '视觉基线',

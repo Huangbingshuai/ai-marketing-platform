@@ -9,6 +9,7 @@ import {
   EFFECT_IMPORT_UPLOAD_MATERIAL_TYPES,
   EFFECT_MANIFEST_COLUMNS,
   mergeEffectVideoConfig,
+  normalizeEffectImportResolution,
   normalizeEffectImportSku,
   type AdvanceEffectImportDraftData,
   type BatchDeleteEffectImportProductsData,
@@ -180,6 +181,7 @@ const isValidConfig = (value: unknown): value is EffectVideoConfig => {
     stringFields.every(
       (field) => typeof config[field] === 'string' && (config[field] as string).trim().length > 0,
     ) &&
+    normalizeEffectImportResolution(String(config.resolution)) !== null &&
     typeof config.durationSeconds === 'number' &&
     Number.isInteger(config.durationSeconds) &&
     config.durationSeconds >= EFFECT_IMPORT_LIMITS.minDurationSeconds &&
@@ -630,12 +632,12 @@ export class EffectSourceImportService {
     this.assertMode(modeValue);
     await this.initialized(projectId);
     if (!isValidConfig(config)) throw badRequest('全局视频配置无效');
-    const record = await this.repository.updateConfig(
-      projectId,
-      modeValue,
-      expectedRevision,
-      config,
-    );
+    const resolution = normalizeEffectImportResolution(config.resolution);
+    if (!resolution) throw badRequest('全局视频配置无效');
+    const record = await this.repository.updateConfig(projectId, modeValue, expectedRevision, {
+      ...config,
+      resolution,
+    });
     if (!record) throw conflict();
     return { draft: await this.draftWithCommitState(record) };
   }

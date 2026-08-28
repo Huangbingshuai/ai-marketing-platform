@@ -425,6 +425,7 @@ def build_graph(
         state: GraphState, runtime: Runtime[RuntimeContext]
     ) -> dict[str, object]:
         if state.get("graph_version") in {
+            "CURRENT",
             "V11_COHERENT_CREATIVE_GENERATION",
             "V11_VISUAL_USAGE_STRATEGY",
         }:
@@ -504,6 +505,7 @@ def build_graph(
 
     def route_after_shared_prompt(state: GraphState) -> str:
         if state.get("graph_version") not in {
+            "CURRENT",
             "V11_COHERENT_CREATIVE_GENERATION",
             "V11_VISUAL_USAGE_STRATEGY",
         }:
@@ -517,8 +519,7 @@ def build_graph(
     def route_after_insight_mapping(state: GraphState) -> str:
         return (
             NodeId.FACT_VISUAL_STRATEGY_COMPILATION.value
-            if state.get("graph_version")
-            == "V11_VISUAL_USAGE_STRATEGY"
+            if state.get("graph_version") == "CURRENT"
             else NodeId.SHARED_PROMPT_COMPILATION.value
         )
 

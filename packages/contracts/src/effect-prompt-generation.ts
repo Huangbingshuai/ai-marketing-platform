@@ -209,6 +209,7 @@ export const EFFECT_PROMPT_INSIGHT_FIELDS = [
   'EMOTIONAL_SCENARIO',
   'SOURCE_DURATION',
   'ASPECT_RATIO',
+  'RESOLUTION',
   'DELIVERY_CHANNELS',
   'DISABLED_ELEMENT',
   'VISUAL_STYLE_BASELINE',
@@ -442,16 +443,18 @@ export const EFFECT_PROMPT_SHARD_PHASES = [
 ] as const;
 export type EffectPromptShardPhase = (typeof EFFECT_PROMPT_SHARD_PHASES)[number];
 
-export const EFFECT_PROMPT_GRAPH_VERSIONS = [
+export const EFFECT_PROMPT_GRAPH_VERSIONS = ['CURRENT'] as const;
+export const LEGACY_EFFECT_PROMPT_GRAPH_VERSIONS = [
   'V8_SINGLE_STRATEGY',
   'V9_SIX_BRANCH_STRATEGY',
   'V10_RELATION_COORDINATE_BLUEPRINT',
   'V11_COHERENT_CREATIVE_GENERATION',
   'V11_VISUAL_USAGE_STRATEGY',
 ] as const;
-export type EffectPromptGraphVersion = (typeof EFFECT_PROMPT_GRAPH_VERSIONS)[number];
-export const CURRENT_EFFECT_PROMPT_GRAPH_VERSION: EffectPromptGraphVersion =
-  'V11_VISUAL_USAGE_STRATEGY';
+export type EffectPromptGraphVersion =
+  | (typeof EFFECT_PROMPT_GRAPH_VERSIONS)[number]
+  | (typeof LEGACY_EFFECT_PROMPT_GRAPH_VERSIONS)[number];
+export const CURRENT_EFFECT_PROMPT_GRAPH_VERSION: EffectPromptGraphVersion = 'CURRENT';
 
 export const EFFECT_PROMPT_GRAPH_NODES = [
   { id: 'LOAD_AND_SNAPSHOT', label: '输入快照', group: 'SNAPSHOT' },
@@ -920,7 +923,7 @@ export const effectPromptRunGraphNodeIds = (
     ? effectPromptGraphNodeIds(version)
     : version === 'V11_COHERENT_CREATIVE_GENERATION'
       ? EFFECT_PROMPT_V11_ITEM_EVALUATE_GRAPH_NODE_IDS
-      : version === 'V11_VISUAL_USAGE_STRATEGY'
+      : version === 'V11_VISUAL_USAGE_STRATEGY' || version === 'CURRENT'
         ? EFFECT_PROMPT_V11_VISUAL_STRATEGY_ITEM_EVALUATE_GRAPH_NODE_IDS
         : effectPromptGraphNodeIds(version);
 
@@ -932,7 +935,7 @@ export const effectPromptRunGraphEdges = (
     ? effectPromptGraphEdges(version)
     : version === 'V11_COHERENT_CREATIVE_GENERATION'
       ? EFFECT_PROMPT_V11_ITEM_EVALUATE_GRAPH_EDGES
-      : version === 'V11_VISUAL_USAGE_STRATEGY'
+      : version === 'V11_VISUAL_USAGE_STRATEGY' || version === 'CURRENT'
         ? EFFECT_PROMPT_V11_VISUAL_STRATEGY_ITEM_EVALUATE_GRAPH_EDGES
         : effectPromptGraphEdges(version);
 

@@ -12,7 +12,7 @@ const reportArgument = process.argv.slice(2).find((value) => value.startsWith('-
 const reportPath = resolve(
   process.cwd(),
   reportArgument?.slice('--report='.length) ??
-  '../../docs/project-assets/reports/working-file-backfill-report.json',
+    '../../docs/project-assets/reports/working-file-backfill-report.json',
 );
 
 const loadEnvFile = async (path) => {

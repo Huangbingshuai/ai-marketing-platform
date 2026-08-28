@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_EFFECT_VIDEO_CONFIG,
+  EFFECT_IMPORT_RESOLUTIONS,
   EFFECT_IMPORT_UPLOAD_MATERIAL_TYPES,
   EFFECT_IMPORT_STYLE_TONES,
   EFFECT_MANIFEST_COLUMNS,
   mergeEffectVideoConfig,
+  normalizeEffectImportResolution,
   normalizeEffectImportSku,
   type EffectVideoConfig,
 } from './effect-import';
@@ -36,6 +38,14 @@ describe('标准化资料包', () => {
       '夜景氛围',
     ]);
     expect(DEFAULT_EFFECT_VIDEO_CONFIG.styleTone).toBe('烟火食欲感');
+  });
+
+  it('使用火山视频生成接口的分辨率枚举和默认值', () => {
+    expect(EFFECT_IMPORT_RESOLUTIONS).toEqual(['480p', '720p', '1080p']);
+    expect(DEFAULT_EFFECT_VIDEO_CONFIG.resolution).toBe('720p');
+    expect(normalizeEffectImportResolution(' 1080P ')).toBe('1080p');
+    expect(normalizeEffectImportResolution('2K')).toBeNull();
+    expect(normalizeEffectImportResolution('自定义')).toBeNull();
   });
 });
 

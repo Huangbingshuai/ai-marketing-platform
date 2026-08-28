@@ -3,6 +3,8 @@ import {
   EFFECT_IMPORT_ASPECT_RATIOS,
   EFFECT_IMPORT_DELIVERY_CHANNELS,
   EFFECT_IMPORT_LIMITS,
+  EFFECT_IMPORT_RESOLUTIONS,
+  normalizeEffectImportResolution,
   type EffectVideoConfig,
 } from '@ai-marketing/contracts';
 import { ref, watch } from 'vue';
@@ -21,16 +23,25 @@ const fields = [
     key: 'aspectRatio' as const,
     label: '画幅比例',
     options: strings(EFFECT_IMPORT_ASPECT_RATIOS),
+    creatable: true,
+  },
+  {
+    key: 'resolution' as const,
+    label: '分辨率',
+    options: strings(EFFECT_IMPORT_RESOLUTIONS),
+    creatable: false,
   },
   {
     key: 'styleTone' as const,
     label: '风格基调',
     options: strings(EFFECT_IMPORT_PROTOTYPE_STYLE_TONES),
+    creatable: true,
   },
   {
     key: 'deliveryChannel' as const,
     label: '投放渠道',
     options: strings(EFFECT_IMPORT_DELIVERY_CHANNELS),
+    creatable: true,
   },
 ];
 
@@ -44,6 +55,11 @@ const updateField = (key: keyof EffectVideoConfig, value: number | string): void
   }
   emit('update:config', { ...props.config, [key]: normalized });
 };
+
+const displayedFieldValue = (key: (typeof fields)[number]['key']): number | string =>
+  key === 'resolution'
+    ? (normalizeEffectImportResolution(String(props.config.resolution)) ?? props.config.resolution)
+    : props.config[key];
 
 const updateDisabledElements = (): void => {
   const values = [
@@ -97,8 +113,9 @@ watch(
         <span>{{ field.label }}</span>
         <EffectUpwardCreatableSelect
           :field-label="field.label"
-          :model-value="config[field.key]"
+          :model-value="displayedFieldValue(field.key)"
           :options="field.options"
+          :creatable="field.creatable"
           :disabled="disabled"
           @update:model-value="updateField(field.key, $event)"
         />

@@ -686,11 +686,7 @@ const validMetrics = (value: unknown): value is EffectPromptMetrics => {
     integer('generatedCandidateCount', 0) &&
     integer('acceptedCount', 0, EFFECT_PROMPT_LIMITS.maxCount) &&
     integer('rejectedCount', 0) &&
-    integer(
-      'replenishmentRounds',
-      0,
-      EFFECT_PROMPT_LIMITS.maxReplenishmentRounds,
-    ) &&
+    integer('replenishmentRounds', 0, EFFECT_PROMPT_LIMITS.maxReplenishmentRounds) &&
     integer('exactDuplicateCount', 0) &&
     Array.isArray(distribution) &&
     distribution.length === EFFECT_PROMPT_FRAGMENT_TYPES.length &&
@@ -731,7 +727,7 @@ const validMetrics = (value: unknown): value is EffectPromptMetrics => {
 
 export const defaultEffectPromptRenderProfile = (): EffectPromptRenderProfile => ({
   ratio: '9:16',
-  resolution: '1080p',
+  resolution: '720p',
   capabilityKey: 'SEEDANCE_2_0',
   sharedConstraints: {
     disabledElements: [],

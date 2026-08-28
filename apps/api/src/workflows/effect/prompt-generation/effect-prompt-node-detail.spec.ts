@@ -207,7 +207,7 @@ const v11RunRecord = (): EffectPromptNodeDetailRunRecord => {
     attemptCount: 1,
     inputSnapshot: {
       schemaVersion: 6,
-      graphVersion: 'V11_VISUAL_USAGE_STRATEGY',
+      graphVersion: 'CURRENT',
       settings: { targetCount: 3, defaultDurationSeconds: 5 },
       insightArtifact: {
         result: {
@@ -642,7 +642,7 @@ describe('presentEffectPromptNodeDetail', () => {
     const record = v11RunRecord();
     record.inputSnapshot = {
       ...(record.inputSnapshot as Record<string, unknown>),
-      graphVersion: 'V11_VISUAL_USAGE_STRATEGY',
+      graphVersion: 'CURRENT',
     };
     record.stages.splice(2, 0, {
       ...record.stages[0]!,

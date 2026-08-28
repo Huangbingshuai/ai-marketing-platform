@@ -45,7 +45,7 @@ def test_v11_fact_allocation_is_small_deterministic_and_product_anchored() -> No
     assert first == second
     assert all(len(item.support_fact_ids) <= 2 for item in first)
     assert all(1 <= len(item.product_anchor_fact_ids) <= 2 for item in first)
-    assert all(len(item.allowed_fact_ids) <= 5 for item in first)
+    assert all(len(item.allowed_fact_ids) <= 7 for item in first)
     assert all(
         fact_id in application.by_id
         for item in first
@@ -57,6 +57,19 @@ def test_v11_fact_allocation_is_small_deterministic_and_product_anchored() -> No
         if fact.field == InsightField.PRODUCT_NAME
     )
     assert all(product_name_id in item.product_anchor_fact_ids for item in first)
+    specification_id = next(
+        fact.fact_id
+        for fact in application.usable
+        if fact.field == InsightField.CORE_SPECIFICATION
+    )
+    assert all(
+        specification_id not in item.product_anchor_fact_ids
+        for item in first
+    )
+    assert all(
+        specification_id in item.product_boundary_fact_ids
+        for item in first
+    )
     assert all(len(item.assignment_hash) == 64 for item in first)
 
 

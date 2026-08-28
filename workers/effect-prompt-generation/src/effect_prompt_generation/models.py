@@ -233,6 +233,7 @@ class InsightField(StrEnum):
     EMOTIONAL_SCENARIO = "EMOTIONAL_SCENARIO"
     SOURCE_DURATION = "SOURCE_DURATION"
     ASPECT_RATIO = "ASPECT_RATIO"
+    RESOLUTION = "RESOLUTION"
     DELIVERY_CHANNELS = "DELIVERY_CHANNELS"
     DISABLED_ELEMENT = "DISABLED_ELEMENT"
     VISUAL_STYLE_BASELINE = "VISUAL_STYLE_BASELINE"
@@ -310,10 +311,10 @@ class FactVisualUsage(StrEnum):
 class FactVisualPolicyDraft(ApiModel):
     fact_id: str = Field(min_length=1, max_length=120)
     visual_usage: FactVisualUsage
-    visual_instruction: str = Field(default="", max_length=240)
-    context_instruction: str = Field(default="", max_length=240)
-    compatible_fact_ids: list[str] = Field(default_factory=list, max_length=6)
-    forbidden_inferences: list[str] = Field(default_factory=list, max_length=4)
+    visual_instruction: str = Field(default="", max_length=120)
+    context_instruction: str = Field(default="", max_length=120)
+    compatible_fact_ids: list[str] = Field(default_factory=list, max_length=3)
+    forbidden_inferences: list[str] = Field(default_factory=list, max_length=2)
 
     @field_validator(
         "visual_instruction",
@@ -570,12 +571,13 @@ class InsightArtifact(ApiModel):
 class PromptGenerationSnapshot(ApiModel):
     schema_version: Literal[5, 6] = 5
     graph_version: Literal[
+        "CURRENT",
         "V8_SINGLE_STRATEGY",
         "V9_SIX_BRANCH_STRATEGY",
         "V10_RELATION_COORDINATE_BLUEPRINT",
         "V11_COHERENT_CREATIVE_GENERATION",
         "V11_VISUAL_USAGE_STRATEGY",
-    ] = "V11_VISUAL_USAGE_STRATEGY"
+    ] = "CURRENT"
     project_id: str
     workflow_run_id: str
     product_id: str
@@ -1066,6 +1068,7 @@ class CreativeFactAssignment(ApiModel):
     primary_fact_id: str = Field(min_length=1, max_length=120)
     support_fact_ids: list[str] = Field(default_factory=list, max_length=2)
     product_anchor_fact_ids: list[str] = Field(min_length=1, max_length=2)
+    product_boundary_fact_ids: list[str] = Field(default_factory=list, max_length=2)
     visual_task_fact_id: str | None = Field(default=None, min_length=1, max_length=120)
     business_context_fact_ids: list[str] = Field(default_factory=list, max_length=2)
     assignment_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -1078,6 +1081,9 @@ class CreativeFactAssignment(ApiModel):
             if fact_id != self.primary_fact_id
         ]
         self.product_anchor_fact_ids = list(dict.fromkeys(self.product_anchor_fact_ids))
+        self.product_boundary_fact_ids = list(
+            dict.fromkeys(self.product_boundary_fact_ids)
+        )
         self.visual_task_fact_id = self.visual_task_fact_id or self.primary_fact_id
         self.business_context_fact_ids = [
             fact_id
@@ -1100,6 +1106,7 @@ class CreativeFactAssignment(ApiModel):
                     *self.support_fact_ids,
                     *self.business_context_fact_ids,
                     *self.product_anchor_fact_ids,
+                    *self.product_boundary_fact_ids,
                 ]
             )
         )

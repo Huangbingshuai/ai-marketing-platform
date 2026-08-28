@@ -81,6 +81,7 @@ describe('effect extraction validation', () => {
 
   it('accepts exactly the standard extraction shape', () => {
     expect(isEffectExtractionResult(validResult)).toBe(true);
+    expect(isEffectExtractionResult({ ...validResult, resolution: '2K' })).toBe(false);
     expect(isEffectExtractionResult({ ...validResult, unexpected: true })).toBe(false);
     expect(isEffectExtractionResult({ ...validResult, coreSellingPoints: '卖点' })).toBe(false);
   });
@@ -146,6 +147,7 @@ describe('effect extraction validation', () => {
     expect(normalized).toMatchObject({
       coreSellingPoints: edited.coreSellingPoints,
       usageScenarios: edited.usageScenarios,
+      resolution: '1080p',
     });
   });
 

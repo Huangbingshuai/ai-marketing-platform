@@ -25,6 +25,18 @@ CONTEXT_USAGES = {
     FactVisualUsage.FORBIDDEN_VISUAL_PROOF,
 }
 
+DEFAULT_VISUAL_INSTRUCTIONS = {
+    FactVisualUsage.IDENTITY_ANCHOR: "让当前产品或品类成为明确画面主体",
+    FactVisualUsage.DIRECTLY_VISIBLE: "只呈现该事实可直接观察的外观或包装",
+    FactVisualUsage.ACTION_DEMONSTRABLE: "通过一个连续真实动作呈现该事实",
+}
+
+DEFAULT_CONTEXT_INSTRUCTIONS = {
+    FactVisualUsage.CONTEXT_ONLY: "只影响场景、人物或商业方向",
+    FactVisualUsage.TEXT_ONLY: "仅通过准确文字或口播表达",
+    FactVisualUsage.FORBIDDEN_VISUAL_PROOF: "只作商业背景，不作为视觉证明",
+}
+
 
 def validate_fact_visual_strategy(
     response: FactVisualStrategyResponse,
@@ -51,21 +63,24 @@ def validate_fact_visual_strategy(
         usage = policy.visual_usage
         if fact.field in {InsightField.PRODUCT_NAME, InsightField.PRODUCT_CATEGORY}:
             usage = FactVisualUsage.IDENTITY_ANCHOR
-        if usage in VISIBLE_USAGES and not policy.visual_instruction:
-            raise ValueError("visible fact policy requires visualInstruction")
-        if usage in CONTEXT_USAGES and not policy.context_instruction:
-            raise ValueError("context fact policy requires contextInstruction")
-        if (
-            usage == FactVisualUsage.FORBIDDEN_VISUAL_PROOF
-            and not policy.forbidden_inferences
-        ):
-            raise ValueError("forbidden visual proof policy requires forbiddenInferences")
+        visual_instruction = policy.visual_instruction
+        context_instruction = policy.context_instruction
+        forbidden_inferences = policy.forbidden_inferences
+        if usage in VISIBLE_USAGES and not visual_instruction:
+            visual_instruction = DEFAULT_VISUAL_INSTRUCTIONS[usage]
+        if usage in CONTEXT_USAGES and not context_instruction:
+            context_instruction = DEFAULT_CONTEXT_INSTRUCTIONS[usage]
+        if usage == FactVisualUsage.FORBIDDEN_VISUAL_PROOF and not forbidden_inferences:
+            forbidden_inferences = ["不得用成品外观或人物反应证明该事实"]
 
         normalized.append(
             policy.model_copy(
                 update={
                     "visual_usage": usage,
+                    "visual_instruction": visual_instruction,
+                    "context_instruction": context_instruction,
                     "compatible_fact_ids": compatible,
+                    "forbidden_inferences": forbidden_inferences,
                 }
             )
         )

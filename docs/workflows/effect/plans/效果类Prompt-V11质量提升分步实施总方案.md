@@ -110,12 +110,12 @@ Prompt 节点只消费已经提交且为 CURRENT 的：
 
 ```ts
 type FactVisualUsage =
-  | "IDENTITY_ANCHOR"
-  | "DIRECTLY_VISIBLE"
-  | "ACTION_DEMONSTRABLE"
-  | "CONTEXT_ONLY"
-  | "TEXT_ONLY"
-  | "FORBIDDEN_VISUAL_PROOF";
+  | 'IDENTITY_ANCHOR'
+  | 'DIRECTLY_VISIBLE'
+  | 'ACTION_DEMONSTRABLE'
+  | 'CONTEXT_ONLY'
+  | 'TEXT_ONLY'
+  | 'FORBIDDEN_VISUAL_PROOF';
 
 type FactUsagePolicy = {
   factId: string;
@@ -137,11 +137,7 @@ type FactUsagePolicy = {
   "productCategory": "腊味肉制品",
   "coreSpecification": "500g 真空袋装",
   "visualFeatures": "腊肠油润透亮的肉质质感",
-  "coreSellingPoints": [
-    "三七肥瘦黄金配比",
-    "广府糖酒腌制工艺",
-    "纯猪肉无淀粉"
-  ],
+  "coreSellingPoints": ["三七肥瘦黄金配比", "广府糖酒腌制工艺", "纯猪肉无淀粉"],
   "secondarySellingPoints": [
     "肥瘦纹理清晰分明",
     "肠体饱满色泽鲜亮",
@@ -184,31 +180,31 @@ type FactUsagePolicy = {
 
 事实策略编译器根据“来源字段＋原始值”调用一次 AI 生成内部策略，不改写上游原文。该调用以已提交营销洞察的 `contentHash` 和策略模板版本为缓存键；上游内容未变化时，重新生成 Prompt 直接复用，不按 Prompt 条数重复调用：
 
-| 当前提炼字段与原始值 | 内部策略 | 允许用于 Prompt 的方式 | 禁止推导 |
-| --- | --- | --- | --- |
-| `productName`：广式腊肠 | 产品身份锚点 | 明确画面主体 | 不替换成其他腊味产品 |
-| `productCategory`：腊味肉制品 | 产品身份背景 | 限定产品形态和使用语境 | 不推导即食、保健等属性 |
-| `coreSpecification`：500g 真空袋装 | `DIRECTLY_VISIBLE` | 展示真空袋装形态与规格 | 不虚构包装文字、品牌或认证 |
-| `visualFeatures`：腊肠油润透亮的肉质质感 | `DIRECTLY_VISIBLE` | 展示蒸熟产品的油润表面和肉质 | 不把光泽解释成工艺或成分证明 |
-| `coreSellingPoints[0]`：三七肥瘦黄金配比 | `CONTEXT_ONLY` | 用确认的“肥瘦纹理清晰分明”视觉特征辅助表达 | 不声称肉眼可以精确证明三七比例 |
-| `coreSellingPoints[1]`：广府糖酒腌制工艺 | `CONTEXT_ONLY` | 作为风味与创意背景 | 不摆拍糖酒料汁冒充真实生产过程，不用成品光泽证明工艺 |
-| `coreSellingPoints[2]`：纯猪肉无淀粉 | `FORBIDDEN_VISUAL_PROOF` | 只作为营销信息背景，当前纯视觉 Prompt 不承担证明 | 不用切面、肉纤维、弹性或“没有粉质感”证明 |
-| `secondarySellingPoints[0..2]`：肥瘦纹理、饱满色泽、油润质感 | `DIRECTLY_VISIBLE` | 使用切面、整根外观或蒸熟成品特写 | 不进一步推导精确配比、配方或产地 |
-| `secondarySellingPoints[3]`：咸甜酒香回甘 | `CONTEXT_ONLY` | 指导家庭用餐、品尝后的自然情绪 | 不把人物表情当作具体风味证明，不允许未烹制直接品尝 |
-| `secondarySellingPoints[4]`：真空锁鲜 | `ACTION_DEMONSTRABLE` | 展示密封包装、拆袋和储存取用 | 不证明保鲜时长，不虚构实验对比 |
-| `secondarySellingPoints[5]`：适配煲仔饭、蒸、炒 | `ACTION_DEMONSTRABLE` | 一条 Prompt 选择一种烹饪方式 | 不在15秒片段中完整演示三种做法 |
-| `targetAudience` | `CONTEXT_ONLY` | 选择合理人物身份 | 不把整段受众描述写入正文 |
-| `corePainPoints`、`decisionDrivers` | `CONTEXT_ONLY` | 指导叙事动机和场景选择 | 不把担忧直接伪造成可见结论 |
-| `usageScenarios`、`purchaseScenarios` | `ACTION_DEMONSTRABLE` | 家庭用餐、厨房加工、节日礼赠三类可信场景 | 不增加上游没有的实验室、办公室等场景 |
-| `emotionalScenarios`：不同场景下的氛围感体验 | `CONTEXT_ONLY` | 只作宽松情绪背景 | 不机械复制成正文标签 |
-| `marketingGoal` | 内部规划信息 | 影响商业表达方向 | 不写成画面中的“营销目标”元数据 |
-| `priceRange`：含“需结合品牌与渠道确认” | 排除 | 不进入生成任务 | 不出现45～75元或任何促销价格 |
-| `trustBackings`：空数组 | 排除 | 不传给模型 | 不补造认证、销量或背书 |
-| `durationSeconds`：60 | 上游背景 | 不覆盖 Prompt 节点设置的统一15秒片段时长 | 不写进 Prompt 正文 |
-| `aspectRatio`、`resolution` | 结构化渲染配置 | 由 Prompt 批次 `renderProfile` 保存 | 不写进 Prompt 正文 |
-| `deliveryChannels`：抖音 | `CONTEXT_ONLY` | 指导短视频商业表达 | 不写成“渠道：抖音”元数据 |
-| `visualStyleBaseline`：烟火食欲感 | `CONTEXT_ONLY` | 指导光线、食物状态和生活氛围 | 不要求每条复述“烟火食欲感” |
-| `disabledElements` | 共用提示词来源 | 沿用批次级一段式共用提示词 | 不复制进每条正文 |
+| 当前提炼字段与原始值                                         | 内部策略                 | 允许用于 Prompt 的方式                           | 禁止推导                                             |
+| ------------------------------------------------------------ | ------------------------ | ------------------------------------------------ | ---------------------------------------------------- |
+| `productName`：广式腊肠                                      | 产品身份锚点             | 明确画面主体                                     | 不替换成其他腊味产品                                 |
+| `productCategory`：腊味肉制品                                | 产品身份背景             | 限定产品形态和使用语境                           | 不推导即食、保健等属性                               |
+| `coreSpecification`：500g 真空袋装                           | `DIRECTLY_VISIBLE`       | 展示真空袋装形态与规格                           | 不虚构包装文字、品牌或认证                           |
+| `visualFeatures`：腊肠油润透亮的肉质质感                     | `DIRECTLY_VISIBLE`       | 展示蒸熟产品的油润表面和肉质                     | 不把光泽解释成工艺或成分证明                         |
+| `coreSellingPoints[0]`：三七肥瘦黄金配比                     | `CONTEXT_ONLY`           | 用确认的“肥瘦纹理清晰分明”视觉特征辅助表达       | 不声称肉眼可以精确证明三七比例                       |
+| `coreSellingPoints[1]`：广府糖酒腌制工艺                     | `CONTEXT_ONLY`           | 作为风味与创意背景                               | 不摆拍糖酒料汁冒充真实生产过程，不用成品光泽证明工艺 |
+| `coreSellingPoints[2]`：纯猪肉无淀粉                         | `FORBIDDEN_VISUAL_PROOF` | 只作为营销信息背景，当前纯视觉 Prompt 不承担证明 | 不用切面、肉纤维、弹性或“没有粉质感”证明             |
+| `secondarySellingPoints[0..2]`：肥瘦纹理、饱满色泽、油润质感 | `DIRECTLY_VISIBLE`       | 使用切面、整根外观或蒸熟成品特写                 | 不进一步推导精确配比、配方或产地                     |
+| `secondarySellingPoints[3]`：咸甜酒香回甘                    | `CONTEXT_ONLY`           | 指导家庭用餐、品尝后的自然情绪                   | 不把人物表情当作具体风味证明，不允许未烹制直接品尝   |
+| `secondarySellingPoints[4]`：真空锁鲜                        | `ACTION_DEMONSTRABLE`    | 展示密封包装、拆袋和储存取用                     | 不证明保鲜时长，不虚构实验对比                       |
+| `secondarySellingPoints[5]`：适配煲仔饭、蒸、炒              | `ACTION_DEMONSTRABLE`    | 一条 Prompt 选择一种烹饪方式                     | 不在15秒片段中完整演示三种做法                       |
+| `targetAudience`                                             | `CONTEXT_ONLY`           | 选择合理人物身份                                 | 不把整段受众描述写入正文                             |
+| `corePainPoints`、`decisionDrivers`                          | `CONTEXT_ONLY`           | 指导叙事动机和场景选择                           | 不把担忧直接伪造成可见结论                           |
+| `usageScenarios`、`purchaseScenarios`                        | `ACTION_DEMONSTRABLE`    | 家庭用餐、厨房加工、节日礼赠三类可信场景         | 不增加上游没有的实验室、办公室等场景                 |
+| `emotionalScenarios`：不同场景下的氛围感体验                 | `CONTEXT_ONLY`           | 只作宽松情绪背景                                 | 不机械复制成正文标签                                 |
+| `marketingGoal`                                              | 内部规划信息             | 影响商业表达方向                                 | 不写成画面中的“营销目标”元数据                       |
+| `priceRange`：含“需结合品牌与渠道确认”                       | 排除                     | 不进入生成任务                                   | 不出现45～75元或任何促销价格                         |
+| `trustBackings`：空数组                                      | 排除                     | 不传给模型                                       | 不补造认证、销量或背书                               |
+| `durationSeconds`：60                                        | 上游背景                 | 不覆盖 Prompt 节点设置的统一15秒片段时长         | 不写进 Prompt 正文                                   |
+| `aspectRatio`、`resolution`                                  | 结构化渲染配置           | 由 Prompt 批次 `renderProfile` 保存              | 不写进 Prompt 正文                                   |
+| `deliveryChannels`：抖音                                     | `CONTEXT_ONLY`           | 指导短视频商业表达                               | 不写成“渠道：抖音”元数据                             |
+| `visualStyleBaseline`：烟火食欲感                            | `CONTEXT_ONLY`           | 指导光线、食物状态和生活氛围                     | 不要求每条复述“烟火食欲感”                           |
+| `disabledElements`                                           | 共用提示词来源           | 沿用批次级一段式共用提示词                       | 不复制进每条正文                                     |
 
 字段名只能提供初步职责，不能可靠判断任意商品事实应该怎样进入画面。因此本阶段必须调用模型完成跨品类语义判断。Worker 不负责硬编码“香肠、护肤品、家电”等商品规则，只负责校验模型引用的 `factId` 必须来自当前营销洞察、排除不确定事实，并拒绝空策略、未知引用和对原始事实的篡改。无法确定的事实保守降级为 `CONTEXT_ONLY`，策略编译失败时不得静默伪装成功。
 
@@ -280,11 +276,11 @@ type FactUsagePolicy = {
 
 #### 实际实现与测试结果
 
-- 新图版本为 `V11_VISUAL_USAGE_STRATEGY`，在“提炼信息应用映射”与“共用提示词编译”之间新增内部节点 `FACT_VISUAL_STRATEGY_COMPILATION`。
-- 策略模板版本为 `effect-prompt-v11-fact-visual-strategy-v1`；连贯创意模板升级为 `effect-prompt-v11-coherent-creative-v4`，评估模板升级为 `effect-prompt-v11-creative-evaluation-v3`。
+- 当前图由 `CURRENT_EFFECT_PROMPT_GRAPH_VERSION` 唯一指向，在“提炼信息应用映射”与“共用提示词编译”之间新增内部节点 `FACT_VISUAL_STRATEGY_COMPILATION`。
+- 策略模板版本为 `effect-prompt-v11-fact-visual-strategy-v2`；真实联调发现完整事实策略在候选节点的 4096 Token 预算下会被 Ark 以 `incomplete_details.reason=length` 截断，因此策略阶段改用独立的规划输出预算与超时，并把单事实说明收缩为短语、关联事实最多 3 个、禁止推导最多 2 条。首个完整 50 条批次又发现 11 条使用礼盒或礼袋，其中多条把未确认礼盒、品牌字样和盒内组合当成产品包装；因此连贯创意模板升级为 `effect-prompt-v11-coherent-creative-v5`，所有任务固定携带产品名称与已确认核心规格，送礼事实只授权递送动作；评估模板升级为 `effect-prompt-v11-creative-evaluation-v4`，未确认产品包装统一按 `FABRICATED_FACT` 处理。
 - 同一项目、工作流、商品下，API 会读取此前成功的策略阶段；只有 `sourceFingerprint` 与当前营销洞察 `contentHash` 完全一致时 Worker 才复用。缓存不匹配、引用未知事实、遗漏可用事实、职责空缺或策略不合法时均拒绝复用或拒绝完成，不静默退回旧分配。
 - 生成任务已把原主要事实拆为 `visualTask` 与 `businessContext`；抽象卖点可以继续影响商业表达，但不能占用可见画面任务。评估模型复用候选实际引用事实对应的策略片段，不维护第二套视觉边界。
-- 公共 Prompt V6 结果、HTTP 路径、Prisma Schema、WorkingArtifact 提交边界均未改变；V8～V10 与原 V11 Run 继续按显式历史拓扑读取。
+- 公共 Prompt V6 结果、HTTP 路径、Prisma Schema、WorkingArtifact 提交边界均未改变；旧 Run 只保留为不可见审计记录，不参与当前工作区、节点详情或 Worker 恢复。
 
 实际自动验证：
 
@@ -294,11 +290,11 @@ Worker 视觉策略与 V11 创意专项：25 passed
 Worker mypy src：通过
 Worker Ruff src/tests：通过
 Contracts：6 passed，typecheck/build 通过
-API Prompt repository/service/node-detail：125 passed，typecheck/build 通过
-Web Prompt graph/layout：22 passed，typecheck/build 通过
+API Prompt repository/service/node-detail：126 passed，typecheck/build 通过
+Web Prompt graph/layout：18 passed，typecheck/build 通过
 ```
 
-本次没有调用真实 Ark 或 Seedance。自动测试已经证明结构、职责拆分、哈希复用、历史兼容和安全投影成立；“广式腊肠”真实生成是否彻底消除错误视觉证明，仍需另行授权一次付费批次后才能下结论。实施项四“客观业务错误检查”尚未实施，因此当前仍以生成约束与 AI 评估双层降低风险，不能宣称所有违规正文都可由确定性规则拦截。
+本次没有调用真实 Ark 或 Seedance。自动测试已经证明结构、职责拆分、哈希复用、当前图隔离和安全投影成立；“广式腊肠”真实生成是否彻底消除错误视觉证明，仍需另行授权一次付费批次后才能下结论。实施项四“客观业务错误检查”尚未实施，因此当前仍以生成约束与 AI 评估双层降低风险，不能宣称所有违规正文都可由确定性规则拦截。
 
 ### 实施项二：产品动作状态与食品使用规则
 
@@ -311,13 +307,7 @@ Web Prompt graph/layout：22 passed，typecheck/build 通过
 #### 内部数据设计
 
 ```ts
-type ProductState =
-  | "SEALED"
-  | "OPENED"
-  | "PREPARED"
-  | "COOKED"
-  | "SERVED"
-  | "TASTED";
+type ProductState = 'SEALED' | 'OPENED' | 'PREPARED' | 'COOKED' | 'SERVED' | 'TASTED';
 
 type ProductActionRule = {
   action: string;
@@ -362,8 +352,7 @@ type ProductActionRule = {
 type CreativeDirection = {
   primaryFactId: string;
   priorityDimensions: Array<
-    "NARRATIVE" | "SCENE" | "PERSONA" |
-    "PRODUCT_RELATION" | "CAMERA" | "EMOTION"
+    'NARRATIVE' | 'SCENE' | 'PERSONA' | 'PRODUCT_RELATION' | 'CAMERA' | 'EMOTION'
   >;
   preferredSceneFamily?: string;
   preferredActionFamily?: string;
@@ -526,14 +515,14 @@ type CreativeFamilySignature = {
 
 推荐顺序不代表自动授权：
 
-| 顺序 | 实施项 | 原因 | 是否增加模型调用 |
-| --- | --- | --- | --- |
-| 1 | 事实视觉使用策略 | 先解决事实误导和合规风险 | 是；每个新的提炼内容哈希编译一次，批量生成复用 |
-| 2 | 产品动作状态规则 | 解决生食、密封闻香等明显错误 | 否 |
-| 3 | 客观业务错误检查 | 让前两项真正成为质量边界 | 否 |
-| 4 | 轻量差异方向分配 | 从生成源头减少厨房切片集中 | 否 |
-| 5 | 业务语义族群择优 | 在最终50条中控制真实同质化 | 否 |
-| 6 | 定向补充与质量报告 | 用较低成本修复剩余缺口 | 仅缺口出现时增加 |
+| 顺序 | 实施项             | 原因                         | 是否增加模型调用                               |
+| ---- | ------------------ | ---------------------------- | ---------------------------------------------- |
+| 1    | 事实视觉使用策略   | 先解决事实误导和合规风险     | 是；每个新的提炼内容哈希编译一次，批量生成复用 |
+| 2    | 产品动作状态规则   | 解决生食、密封闻香等明显错误 | 否                                             |
+| 3    | 客观业务错误检查   | 让前两项真正成为质量边界     | 否                                             |
+| 4    | 轻量差异方向分配   | 从生成源头减少厨房切片集中   | 否                                             |
+| 5    | 业务语义族群择优   | 在最终50条中控制真实同质化   | 否                                             |
+| 6    | 定向补充与质量报告 | 用较低成本修复剩余缺口       | 仅缺口出现时增加                               |
 
 优先完成 1～3，可以先解决“内容错误”；再完成 4～5，解决“内容单一”；最后完成 6，补齐生产稳定性和用户可见解释。
 
@@ -551,13 +540,17 @@ type CreativeFamilySignature = {
 
 ## 8. 实施决策记录
 
-| 实施项 | 当前状态 | 用户决定 | 实际结果 |
-| --- | --- | --- | --- |
-| 一：事实视觉使用策略 | 已完成 | 用户确认按“提炼映射后新增 AI 策略编译阶段”实施 | 已完成自动回归；未执行新的真实 Ark 付费验收 |
-| 二：产品动作状态规则 | 待确认 | — | — |
-| 三：轻量差异方向分配 | 待确认 | — | — |
-| 四：客观业务错误检查 | 待确认 | — | — |
-| 五：业务语义族群择优 | 待确认 | — | — |
-| 六：定向补充与质量报告 | 待确认 | — | — |
+| 实施项                 | 当前状态                 | 用户决定                                                                     | 实际结果                                                                                                                                                                                            |
+| ---------------------- | ------------------------ | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 一：事实视觉使用策略   | 已完成并通过 V6 真实复验 | 用户确认按“提炼映射后新增 AI 策略编译阶段”实施，并授权两轮测试及一次追加复验 | 三轮均精确得到 50 条；虚构礼盒从 11 条相关内容降为 0。第二轮 48/50 条机械包装描述经“产品锚点 + 只约束不强制展示的产品边界”修复后，第三轮降为 11 条真空包装、6 条 `500g`，加权质量 94.35，高于前两轮 |
+| 二：产品动作状态规则   | 待确认                   | —                                                                            | —                                                                                                                                                                                                   |
+| 三：轻量差异方向分配   | 待确认                   | —                                                                            | —                                                                                                                                                                                                   |
+| 四：客观业务错误检查   | 待确认                   | —                                                                            | —                                                                                                                                                                                                   |
+| 五：业务语义族群择优   | 待确认                   | —                                                                            | —                                                                                                                                                                                                   |
+| 六：定向补充与质量报告 | 待确认                   | —                                                                            | —                                                                                                                                                                                                   |
 
 用户可以直接回复“实施第 X 项”。在收到明确选择前，不继续实施本文中的任何待确认项。
+
+### 两轮真实验收补充结论（2026-08-28）
+
+完整对比见 [Prompt 视觉策略两轮真实付费质量对比与第三轮授权复验](../evidence/Prompt视觉策略两轮真实付费质量对比-2026-08-28.md)。三轮五项加权平均质量分别为 94.15、93.77 和 94.35。V6 将 `500g 真空袋装` 等已确认规格从“每条必须表现”调整为“所有条目都不能违反、只有相关视觉任务才表现”，真实复验确认机械规格复述已经消退且虚构产品包装没有回归。

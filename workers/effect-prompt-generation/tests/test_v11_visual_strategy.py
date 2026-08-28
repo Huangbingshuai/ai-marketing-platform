@@ -83,7 +83,7 @@ def test_visual_strategy_splits_abstract_fact_from_visible_task() -> None:
         _response(application),
         application,
         source_content_hash="insight-hash",
-        prompt_version="effect-prompt-v11-fact-visual-strategy-v1",
+        prompt_version="effect-prompt-v11-fact-visual-strategy-v2",
     )
 
     no_starch = next(fact for fact in application.usable if fact.value == "纯猪肉无淀粉")
@@ -125,6 +125,64 @@ def test_visual_strategy_rejects_missing_or_unknown_fact_ids() -> None:
         )
 
 
+def test_visual_strategy_fills_missing_explanations_without_changing_ai_role() -> None:
+    application = _application()
+    response = _response(application)
+    source = next(
+        policy
+        for policy in response.policies
+        if policy.visual_usage == FactVisualUsage.FORBIDDEN_VISUAL_PROOF
+    )
+    incomplete = source.model_copy(
+        update={"context_instruction": "", "forbidden_inferences": []}
+    )
+    strategy = validate_fact_visual_strategy(
+        response.model_copy(
+            update={
+                "policies": [
+                    incomplete if policy.fact_id == source.fact_id else policy
+                    for policy in response.policies
+                ]
+            }
+        ),
+        application,
+        source_content_hash="insight-hash",
+        prompt_version="effect-prompt-v11-fact-visual-strategy-v2",
+    )
+
+    normalized = strategy.by_id[source.fact_id]
+    assert normalized.visual_usage == FactVisualUsage.FORBIDDEN_VISUAL_PROOF
+    assert normalized.context_instruction == "只作商业背景，不作为视觉证明"
+    assert normalized.forbidden_inferences == ["不得用成品外观或人物反应证明该事实"]
+
+
+def test_fact_allocation_keeps_specification_as_boundary_not_must_show_anchor() -> None:
+    application = map_insight(
+        {
+            "productName": "广式腊肠",
+            "coreSpecification": "500g 真空袋装",
+            "purchaseScenarios": ["年货送礼"],
+            "usageScenarios": ["家庭蒸煮"],
+        }
+    )
+    product_name = next(
+        fact for fact in application.usable if fact.value == "广式腊肠"
+    )
+    specification = next(
+        fact for fact in application.usable if fact.value == "500g 真空袋装"
+    )
+    assignments = allocate_v11_creative_facts(
+        application,
+        count=8,
+        ordinal_start=1,
+    )
+
+    assert all(
+        assignment.product_anchor_fact_ids == [product_name.fact_id]
+        and assignment.product_boundary_fact_ids == [specification.fact_id]
+        for assignment in assignments
+    )
+
 class _StageApi:
     def __init__(self) -> None:
         self.stages: list[StageOutput] = []
@@ -160,7 +218,7 @@ async def test_pipeline_reuses_strategy_checkpoint_for_same_insight_hash() -> No
         _response(application),
         application,
         source_content_hash="insight-hash",
-        prompt_version="effect-prompt-v11-fact-visual-strategy-v1",
+        prompt_version="effect-prompt-v11-fact-visual-strategy-v2",
     )
     provider = _CountingProvider()
     api = _StageApi()
@@ -176,7 +234,7 @@ async def test_pipeline_reuses_strategy_checkpoint_for_same_insight_hash() -> No
     )
     snapshot = PromptGenerationSnapshot(
         schema_version=6,
-        graph_version="V11_VISUAL_USAGE_STRATEGY",
+        graph_version="CURRENT",
         project_id=context.project_id,
         workflow_run_id=context.workflow_run_id,
         product_id=context.product_id,

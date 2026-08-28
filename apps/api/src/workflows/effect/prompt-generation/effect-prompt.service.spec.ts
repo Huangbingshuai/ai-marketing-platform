@@ -132,7 +132,7 @@ describe('EffectPromptService settings contract', () => {
         run: { sourceFingerprint: 'run-source' },
         attemptToken: 'attempt-a',
         input: {
-          graphVersion: 'V11_VISUAL_USAGE_STRATEGY',
+          graphVersion: 'CURRENT',
           insightArtifact: { contentHash: 'insight-hash-current' },
         },
         checkpointStages: [
@@ -223,7 +223,7 @@ describe('EffectPromptService settings contract', () => {
       targetItemId,
       inputSnapshot: {
         operation: 'ITEM_EVALUATE',
-        graphVersion: 'V11_VISUAL_USAGE_STRATEGY',
+        graphVersion: 'CURRENT',
       },
       status: 'QUEUED',
       progress: 0,
@@ -276,7 +276,7 @@ describe('EffectPromptService settings contract', () => {
     const repository = {
       run: vi.fn().mockResolvedValue({
         id: 'run-v11',
-        inputSnapshot: { graphVersion: 'V11_VISUAL_USAGE_STRATEGY' },
+        inputSnapshot: { graphVersion: 'CURRENT' },
         operation: 'BATCH_GENERATE',
       }),
       saveShard: vi.fn().mockResolvedValue(true),
@@ -307,7 +307,7 @@ describe('EffectPromptService settings contract', () => {
     const repository = {
       run: vi.fn().mockResolvedValue({
         id: 'run-v11',
-        inputSnapshot: { graphVersion: 'V11_VISUAL_USAGE_STRATEGY' },
+        inputSnapshot: { graphVersion: 'CURRENT' },
         operation: 'BATCH_GENERATE',
       }),
       shards: vi.fn().mockResolvedValue([
@@ -633,7 +633,7 @@ describe('EffectPromptService settings contract', () => {
         errorMessage: null,
         createdAt: new Date('2026-08-25T00:00:00.000Z'),
         updatedAt: new Date('2026-08-25T00:01:00.000Z'),
-        inputSnapshot: { graphVersion: 'V11_VISUAL_USAGE_STRATEGY' },
+        inputSnapshot: { graphVersion: 'CURRENT' },
         shards: [],
         result: null,
         stages: [
@@ -726,7 +726,7 @@ describe('EffectPromptService settings contract', () => {
       status: 'RUNNING',
       progress: 11,
       currentNode: 'COHERENT_CREATIVE_GENERATION',
-      inputSnapshot: { graphVersion: 'V11_VISUAL_USAGE_STRATEGY' },
+      inputSnapshot: { graphVersion: 'CURRENT' },
       result: null,
       updatedAt: new Date('2026-08-26T00:01:00.000Z'),
     };
@@ -1285,7 +1285,7 @@ describe('EffectPromptService settings contract', () => {
       productId: 'product-a',
       operation: 'BATCH_GENERATE',
       targetItemId: null,
-      inputSnapshot: { graphVersion: 'V11_VISUAL_USAGE_STRATEGY' },
+      inputSnapshot: { graphVersion: 'CURRENT' },
       status: 'FAILED',
       progress: 80,
       currentNode: 'EXACT_SELECTION_AND_SUPPLEMENT',

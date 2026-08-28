@@ -168,6 +168,7 @@ def allocate_v11_creative_facts(
             product_name=product_name,
             ordinal=ordinal,
         )
+        boundary_ids = _product_boundary_fact_ids(anchors)
         payload = {
             "ordinal": ordinal,
             "primaryFactId": visual_primary.fact_id,
@@ -175,6 +176,7 @@ def allocate_v11_creative_facts(
             "supportFactIds": business_context_ids,
             "businessContextFactIds": business_context_ids,
             "productAnchorFactIds": anchor_ids,
+            "productBoundaryFactIds": boundary_ids,
         }
         assignments.append(
             CreativeFactAssignment(
@@ -183,6 +185,7 @@ def allocate_v11_creative_facts(
                 support_fact_ids=business_context_ids,
                 business_context_fact_ids=business_context_ids,
                 product_anchor_fact_ids=anchor_ids,
+                product_boundary_fact_ids=boundary_ids,
                 assignment_hash=hashlib.sha256(
                     json.dumps(
                         payload,
@@ -310,16 +313,29 @@ def _anchor_fact_ids(
     selected: list[str] = []
     if product_name is not None:
         selected.append(product_name.fact_id)
-    if primary.field in _PRODUCT_ANCHOR_FIELDS:
+    if not selected and primary.field in _PRODUCT_ANCHOR_FIELDS:
         selected.append(primary.fact_id)
-    else:
+    if not selected:
         non_name = [
             fact
             for fact in anchors
-            if product_name is None or fact.fact_id != product_name.fact_id
+            if fact.fact_id not in selected
         ]
         if non_name:
             selected.append(non_name[(ordinal - 1) % len(non_name)].fact_id)
     if not selected:
         selected.append(primary.fact_id)
     return list(dict.fromkeys(selected))[:2]
+
+
+def _product_boundary_fact_ids(anchors: Sequence[InsightFact]) -> list[str]:
+    """Return confirmed physical-form facts without making them must-show anchors."""
+    boundary_fields = {
+        InsightField.CORE_SPECIFICATION,
+        InsightField.VISUAL_FEATURES,
+    }
+    return [
+        fact.fact_id
+        for fact in anchors
+        if fact.field in boundary_fields
+    ][:2]

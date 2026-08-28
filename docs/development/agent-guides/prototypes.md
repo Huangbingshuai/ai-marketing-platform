@@ -10,14 +10,14 @@
 
 ## 原型对应关系
 
-| 正式区域 | 参考原型 |
-| --- | --- |
-| 效果类工作流 | `references/prototypes/effect/` 下的效果类冻结原型 |
-| 定制类工作流 | `references/prototypes/customized/` 下的定制类冻结原型 |
-| 裂变类·爆款复刻 | `references/prototypes/fission/` 下爆款复刻对应页面 |
-| 裂变类·数字人口播 | `references/prototypes/fission/` 下数字人口播对应页面 |
-| 裂变类·局部元素替换 | `references/prototypes/fission/` 下局部替换对应页面 |
-| 项目与资产、流程与版本、批量导出 | 整合原型中的全局公共组件 |
+| 正式区域                         | 参考原型                                               |
+| -------------------------------- | ------------------------------------------------------ |
+| 效果类工作流                     | `references/prototypes/effect/` 下的效果类冻结原型     |
+| 定制类工作流                     | `references/prototypes/customized/` 下的定制类冻结原型 |
+| 裂变类·爆款复刻                  | `references/prototypes/fission/` 下爆款复刻对应页面    |
+| 裂变类·数字人口播                | `references/prototypes/fission/` 下数字人口播对应页面  |
+| 裂变类·局部元素替换              | `references/prototypes/fission/` 下局部替换对应页面    |
+| 项目与资产、流程与版本、批量导出 | 整合原型中的全局公共组件                               |
 
 若目录实际文件名与表格不同，以 `references/prototypes` 中最新冻结清单为准；无法判断时先报告候选文件，不凭名称猜测。
 

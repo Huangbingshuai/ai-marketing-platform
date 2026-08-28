@@ -3260,7 +3260,7 @@ class PromptGenerationPipeline:
 
 
 def _uses_fact_visual_strategy(snapshot: PromptGenerationSnapshot) -> bool:
-    return snapshot.graph_version == "V11_VISUAL_USAGE_STRATEGY"
+    return snapshot.graph_version == "CURRENT"
 
 
 def _v11_settings(snapshot: PromptGenerationSnapshot) -> PromptBatchSettingsV6:
@@ -3614,7 +3614,7 @@ def _render_profile(insight: Mapping[str, object]) -> RenderProfile:
     ).replace("：", ":")
     if ratio_raw not in {"16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"}:
         raise PipelineError(f"Seedance 不支持当前画幅：{ratio_raw}")
-    resolution_raw = (_insight_text(insight, "resolution") or "1080p").lower()
+    resolution_raw = (_insight_text(insight, "resolution") or "720p").lower()
     if resolution_raw not in {"480p", "720p", "1080p"}:
         raise PipelineError(f"Seedance 不支持当前分辨率：{resolution_raw}")
     disabled = _normalized_disabled_elements(
@@ -3653,8 +3653,8 @@ def _safe_error(exc: Exception) -> str:
             "AI_NETWORK": "Prompt AI 连接失败",
             "AI_RATE_LIMIT": "Prompt AI 服务繁忙，请稍后重试",
             "AI_SERVICE": "Prompt AI 服务暂时不可用",
-            "AI_OUTPUT_TRUNCATED": "营销关系规划结果超过安全长度，任务已停止",
-            "AI_RESPONSE_INCOMPLETE": "营销关系规划响应未完成，任务已停止",
+            "AI_OUTPUT_TRUNCATED": "Prompt AI 输出超过长度限制，任务已停止",
+            "AI_RESPONSE_INCOMPLETE": "Prompt AI 响应未完整返回，任务已停止",
             "AI_RESPONSE_INVALID": "Prompt AI 返回格式异常",
             "AI_REQUEST_REJECTED": "Prompt AI 请求被拒绝",
             "AI_UNKNOWN": "Prompt AI 生成失败",

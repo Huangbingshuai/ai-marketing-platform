@@ -560,13 +560,18 @@ def select_creatives(
     selected: list[RankedCreative] = []
     remaining = list(unique)
     resolve_novelty = novelty_resolver or _creative_novelty
+    novelty_by_id = {
+        item.candidate.slot_id: (
+            fixed_novelty_resolver(item)
+            if fixed_novelty_resolver is not None
+            else 100.0
+        )
+        for item in remaining
+    }
     while remaining and len(selected) < target_count:
         scored: list[RankedCreative] = []
         for item in remaining:
-            novelty_values = [resolve_novelty(item, accepted) for accepted in selected]
-            if fixed_novelty_resolver is not None:
-                novelty_values.append(fixed_novelty_resolver(item))
-            novelty = min(novelty_values, default=100.0)
+            novelty = novelty_by_id[item.candidate.slot_id]
             scored.append(
                 RankedCreative(
                     candidate=item.candidate,
@@ -596,6 +601,12 @@ def select_creatives(
             for item in remaining
             if item.candidate.slot_id != best.candidate.slot_id
         ]
+        for item in remaining:
+            slot_id = item.candidate.slot_id
+            novelty_by_id[slot_id] = min(
+                novelty_by_id[slot_id],
+                resolve_novelty(item, best),
+            )
     selected_ids = {item.candidate.slot_id for item in selected}
     rejected = [item for item in ranked if item.candidate.slot_id not in selected_ids]
     return CreativeSelectionResult(

@@ -870,4 +870,46 @@ describe('EffectExtractionService', () => {
       expect.objectContaining({ result: legacyResult }),
     );
   });
+
+  it('completes a worker result created before canonical target audience arrays', async () => {
+    const legacyResult = Object.fromEntries(
+      Object.entries(extractionResult).filter(([key]) => key !== 'targetAudiences'),
+    );
+    const storedResult = {
+      id: 'result-a',
+      projectId: 'project-a',
+      draftId: 'draft-a',
+      productId: 'product-a',
+      revision: 1,
+      draftResult: extractionResult,
+    };
+    const repository = {
+      complete: vi.fn().mockResolvedValue({ kind: 'COMPLETED', result: storedResult }),
+      workflowRunForDraft: vi.fn().mockResolvedValue(null),
+    } as unknown as EffectExtractionRepository;
+    const progressStore = {
+      delete: vi.fn().mockResolvedValue(undefined),
+    } as unknown as JobProgressStore;
+    const service = new EffectExtractionService(
+      repository,
+      projectService(),
+      progressStore,
+      storage,
+    );
+
+    await expect(
+      service.complete('project-a', 'run-a', 'attempt-a', {
+        result: legacyResult as typeof extractionResult,
+        provenance: {},
+        conflictReport: [],
+        warnings: [],
+      }),
+    ).resolves.toEqual({ extractResultId: 'result-a' });
+    expect(repository.complete).toHaveBeenCalledWith(
+      'project-a',
+      'run-a',
+      'attempt-a',
+      expect.objectContaining({ result: legacyResult }),
+    );
+  });
 });

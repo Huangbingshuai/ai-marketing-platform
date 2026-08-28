@@ -67,13 +67,16 @@ describe('effect import single-product prototype grid', () => {
 });
 
 describe('effect import prototype video configuration', () => {
-  it('shows only the five fields confirmed by the prototype', () => {
-    for (const label of ['视频时长', '画幅比例', '风格基调', '投放渠道', '禁用元素']) {
+  it('shows the global resolution accepted by the Ark video API', () => {
+    for (const label of ['视频时长', '画幅比例', '分辨率', '风格基调', '投放渠道', '禁用元素']) {
       expect(globalConfigSource).toContain(label);
     }
-    for (const removed of ['分辨率', '帧率', '字幕策略', '口播策略', 'BGM 策略']) {
+    for (const removed of ['帧率', '字幕策略', '口播策略', 'BGM 策略']) {
       expect(globalConfigSource).not.toContain(removed);
     }
+    expect(globalConfigSource).toContain('EFFECT_IMPORT_RESOLUTIONS');
+    expect(globalConfigSource).toContain("key: 'resolution' as const");
+    expect(globalConfigSource).toContain('creatable: false');
     expect(pageSource).not.toContain('ProductConfigOverrideDialog');
     expect(productEditorSource).not.toContain('单品覆盖配置');
   });

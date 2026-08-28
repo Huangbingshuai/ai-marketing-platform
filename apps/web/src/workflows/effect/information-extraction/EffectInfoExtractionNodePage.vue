@@ -16,6 +16,7 @@ import {
   EFFECT_IMPORT_DELIVERY_CHANNELS,
   EFFECT_IMPORT_LIMITS,
   EFFECT_IMPORT_MATERIAL_TYPE_LABELS,
+  EFFECT_IMPORT_RESOLUTIONS,
 } from '@ai-marketing/contracts';
 import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
 import {
@@ -404,6 +405,7 @@ const localGraphDetail = (nodeId: EffectExtractionNodeId): EffectExtractionNodeD
       fields: [
         detailField('durationSeconds', '视频时长', `${config.durationSeconds} 秒`, '全局配置'),
         detailField('aspectRatio', '画幅比例', config.aspectRatio, '全局配置'),
+        detailField('resolution', '分辨率', config.resolution, '全局配置'),
         detailField('styleTone', '风格基调', config.styleTone, '全局配置'),
         detailField('deliveryChannel', '投放渠道', config.deliveryChannel, '全局配置'),
         detailField('disabledElements', '禁用元素', config.disabledElements, '全局配置'),
@@ -459,6 +461,7 @@ const baseFieldsReadonly = computed(() => !currentState.value?.result || current
 const selectOptions = (values: readonly string[]) =>
   values.map((value) => ({ label: value, value }));
 const aspectRatioOptions = selectOptions(EFFECT_IMPORT_ASPECT_RATIOS);
+const resolutionOptions = selectOptions(EFFECT_IMPORT_RESOLUTIONS);
 const deliveryChannelOptions = selectOptions(EFFECT_IMPORT_DELIVERY_CHANNELS);
 const visualStyleOptions = selectOptions(EFFECT_IMPORT_PROTOTYPE_STYLE_TONES);
 const saveStateLabel = computed(() => {
@@ -824,15 +827,10 @@ const runCurrentExtraction = async (): Promise<void> => {
     [product.id]: pendingGraphNodes(),
   };
   try {
-    const run = await beginEffectExtraction(
-      context.value,
-      product.id,
-      sourceRevision.value,
-      {
-        refreshImageRecognition: Boolean(state.runId || state.resultId),
-        signal: controller.signal,
-      },
-    );
+    const run = await beginEffectExtraction(context.value, product.id, sourceRevision.value, {
+      refreshImageRecognition: Boolean(state.runId || state.resultId),
+      signal: controller.signal,
+    });
     if (disposed || controller.signal.aborted) return;
     patchFromRun(product.id, run);
     void monitorProductRun(product.id, run.id, controller);
@@ -989,7 +987,7 @@ const markDirty = (): void => {
 };
 
 type ProductionRuleField =
-  'aspectRatio' | 'deliveryChannels' | 'durationSeconds' | 'visualStyleBaseline';
+  'aspectRatio' | 'deliveryChannels' | 'durationSeconds' | 'resolution' | 'visualStyleBaseline';
 
 const updateProductionRule = (field: ProductionRuleField, value: number | string): void => {
   const result = currentState.value?.result;
@@ -1370,6 +1368,10 @@ onBeforeUnmount(() => {
             <div>
               <dt>时长</dt>
               <dd>{{ currentConfig.durationSeconds }} 秒</dd>
+            </div>
+            <div>
+              <dt>分辨率</dt>
+              <dd>{{ currentConfig.resolution }}</dd>
             </div>
             <div>
               <dt>风格</dt>
@@ -1791,6 +1793,17 @@ onBeforeUnmount(() => {
                 :options="aspectRatioOptions"
                 :disabled="baseFieldsReadonly"
                 @update:model-value="updateProductionRule('aspectRatio', $event)"
+              />
+            </label>
+            <label class="field-label">
+              <span>分辨率</span>
+              <EffectUpwardCreatableSelect
+                field-label="分辨率"
+                :model-value="visibleResult.resolution"
+                :options="resolutionOptions"
+                :creatable="false"
+                :disabled="baseFieldsReadonly"
+                @update:model-value="updateProductionRule('resolution', $event)"
               />
             </label>
             <label class="field-label wide">

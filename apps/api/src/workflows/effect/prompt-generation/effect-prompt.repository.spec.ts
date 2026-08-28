@@ -424,7 +424,7 @@ describe('EffectPromptRepository', () => {
       data: expect.objectContaining({
         settingsHash: expectedHash,
         inputSnapshot: expect.objectContaining({
-          graphVersion: 'V11_VISUAL_USAGE_STRATEGY',
+          graphVersion: 'CURRENT',
           settings: expectedSettings,
         }),
       }),

@@ -9,6 +9,8 @@ from effect_extraction.models import (
     BranchOutput,
     BranchStatus,
     ExtractionCandidate,
+    ExtractionResult,
+    FinalizePayload,
     RuntimeContext,
 )
 
@@ -228,3 +230,59 @@ async def test_internal_api_reads_and_writes_project_scoped_image_cache() -> Non
     assert body["cacheKey"] == "a" * 64
     assert body["candidate"]["visualFeatures"] == "红色包装"
     assert body["metadata"] == {"promptVersion": "4.0.0"}
+
+
+@pytest.mark.asyncio
+async def test_internal_api_completes_with_canonical_target_audience_items() -> None:
+    captured: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            201,
+            json={"success": True, "data": {"extractResultId": "result-1"}},
+        )
+
+    context = RuntimeContext(
+        "run-1", "project-1", "draft-1", "product-1", "request-1", "attempt-1",
+        "server-fingerprint",
+    )
+    result = ExtractionResult(
+        product_category="食品",
+        product_name="商品",
+        core_specification="100g",
+        price_range="10-20元",
+        visual_features="红色包装",
+        core_selling_points=["卖点"],
+        secondary_selling_points=[],
+        trust_backings=[],
+        target_audience="家庭厨房决策者，美食爱好者；家庭厨房决策者",
+        core_pain_points=["备餐麻烦"],
+        decision_drivers=["方便"],
+        marketing_goal="促进转化",
+        usage_scenarios=["家庭佐餐"],
+        purchase_scenarios=["日常采购"],
+        emotional_scenarios=["温馨围餐"],
+        duration_seconds=20,
+        aspect_ratio="9:16",
+        resolution="1080P",
+        delivery_channels="抖音",
+        disabled_elements=[],
+        visual_style_baseline="烟火食欲感",
+    )
+    api = HttpInternalApi(
+        "http://api.local/api/", "worker-secret", transport=httpx.MockTransport(handler)
+    )
+    try:
+        extract_result_id = await api.complete(
+            context,
+            FinalizePayload(result=result, provenance={}, conflict_report=[], warnings=[]),
+        )
+    finally:
+        await api.aclose()
+
+    assert extract_result_id == "result-1"
+    final_result = captured["result"]
+    assert isinstance(final_result, dict)
+    assert final_result["targetAudience"] == "家庭厨房决策者；美食爱好者"
+    assert final_result["targetAudiences"] == ["家庭厨房决策者", "美食爱好者"]

@@ -56,7 +56,9 @@ export const EFFECT_IMPORT_ASPECT_RATIOS = [
   '21:9',
 ] as const;
 export const EFFECT_IMPORT_DURATION_OPTIONS = [5, 10, 15, 20, 30, 45, 60] as const;
-export const EFFECT_IMPORT_RESOLUTIONS = ['720P', '1080P', '2K', '4K'] as const;
+/** Values accepted by the Ark video-generation `resolution` request field. */
+export const EFFECT_IMPORT_RESOLUTIONS = ['480p', '720p', '1080p'] as const;
+export type EffectImportResolution = (typeof EFFECT_IMPORT_RESOLUTIONS)[number];
 export const EFFECT_IMPORT_FRAME_RATE_OPTIONS = [23.976, 24, 25, 30, 50, 60] as const;
 export const EFFECT_IMPORT_SUBTITLE_STRATEGIES = [
   '跟随口播',
@@ -125,7 +127,7 @@ export type EffectVideoConfigOverride = Partial<EffectVideoConfig>;
 export const DEFAULT_EFFECT_VIDEO_CONFIG: EffectVideoConfig = {
   aspectRatio: '9:16',
   durationSeconds: 15,
-  resolution: '1080P',
+  resolution: '720p',
   frameRate: 30,
   subtitleStrategy: '跟随口播',
   voiceoverStrategy: 'AI 女声',
@@ -639,6 +641,17 @@ export type AdvanceEffectImportDraftData = {
 /** Normalize SKU values for comparisons within a single draft. */
 export function normalizeEffectImportSku(value: string): string {
   return value.trim().normalize('NFKC').toUpperCase();
+}
+
+/**
+ * Accept historical upper-case values while returning the exact Ark API enum.
+ * Unsupported legacy values such as 2K/4K intentionally return null.
+ */
+export function normalizeEffectImportResolution(value: string): EffectImportResolution | null {
+  const normalized = value.trim().toLocaleLowerCase('en-US');
+  return EFFECT_IMPORT_RESOLUTIONS.includes(normalized as EffectImportResolution)
+    ? (normalized as EffectImportResolution)
+    : null;
 }
 
 /** Resolve an effective per-product config without mutating either input. */
