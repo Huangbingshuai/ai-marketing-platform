@@ -36,7 +36,9 @@ VISUAL_WEIGHTS = {
 _DURATION = re.compile(r"(?:视频)?时长\s*[:：]?\s*\d+\s*(?:秒|s)", re.IGNORECASE)
 _ASPECT = re.compile(r"(?:画幅|比例)\s*[:：]?\s*\d+\s*[:：x×]\s*\d+", re.IGNORECASE)
 _CHANNEL = re.compile(r"(?:投放)?渠道\s*[:：][^。；;\n]+", re.IGNORECASE)
-_COMPLIANCE = re.compile(r"(?:合规|禁用元素|注意事项|避免)\s*[:：][^。\n]+", re.IGNORECASE)
+_COMPLIANCE = re.compile(
+    r"(?:合规|禁用元素|注意事项|避免)\s*[:：][^。\n]+", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,9 +151,11 @@ def evaluate_candidates(
     removed_visual = 0
     removed_dimension = 0
 
-    required_fact_ids = {
-        fact.fact_id for fact in insight_application.required
-    } if insight_application else set()
+    required_fact_ids = (
+        {fact.fact_id for fact in insight_application.required}
+        if insight_application
+        else set()
+    )
     retained_ids = {item.id for item in accepted}
     seen_content = {_normalized_value(item.content) for item in accepted}
     remaining: list[PromptItem] = []
@@ -261,7 +265,9 @@ def evaluate_candidates(
         for item in dict.fromkeys(required_selling_points or [])
         if _normalized_value(item) in covered
     ]
-    coverage = insight_coverage(insight_application, accepted) if insight_application else None
+    coverage = (
+        insight_coverage(insight_application, accepted) if insight_application else None
+    )
     missing_fact_ids = [item.fact_id for item in coverage.missing] if coverage else []
     passed = (
         len(accepted) == target_count
@@ -309,7 +315,9 @@ def evaluate_candidates(
     )
 
 
-def _coverage_order(items: list[PromptItem], required_fact_ids: set[str]) -> list[PromptItem]:
+def _coverage_order(
+    items: list[PromptItem], required_fact_ids: set[str]
+) -> list[PromptItem]:
     remaining = list(items)
     uncovered = set(required_fact_ids)
     ordered: list[PromptItem] = []
@@ -317,17 +325,23 @@ def _coverage_order(items: list[PromptItem], required_fact_ids: set[str]) -> lis
         best_index, _ = max(
             enumerate(remaining),
             key=lambda entry: len(
-                uncovered.intersection(binding.fact_id for binding in entry[1].insight_bindings)
+                uncovered.intersection(
+                    binding.fact_id for binding in entry[1].insight_bindings
+                )
             ),
         )
         score = len(
-            uncovered.intersection(binding.fact_id for binding in remaining[best_index].insight_bindings)
+            uncovered.intersection(
+                binding.fact_id for binding in remaining[best_index].insight_bindings
+            )
         )
         if score == 0:
             break
         item = remaining.pop(best_index)
         ordered.append(item)
-        uncovered.difference_update(binding.fact_id for binding in item.insight_bindings)
+        uncovered.difference_update(
+            binding.fact_id for binding in item.insight_bindings
+        )
     return [*ordered, *remaining]
 
 
@@ -419,9 +433,7 @@ def creative_soft_warnings(candidate: CreativeCandidate) -> list[str]:
         )
     )
     warnings: list[str] = []
-    generic_hits = {
-        phrase for phrase in _GENERIC_STYLE_PHRASES if phrase in corpus
-    }
+    generic_hits = {phrase for phrase in _GENERIC_STYLE_PHRASES if phrase in corpus}
     if len(generic_hits) >= 3:
         warnings.append("GENERIC_STYLE_STACKING")
     if any(phrase in corpus for phrase in _PURPOSE_ONLY_PHRASES):
@@ -450,9 +462,7 @@ def validate_creative_evaluation(
     ]
     warnings = [*evaluation.warnings, *creative_soft_warnings(candidate)]
     warnings.extend(
-        issue
-        for issue in evaluation.hard_issues
-        if issue in evidence_metadata_codes
+        issue for issue in evaluation.hard_issues if issue in evidence_metadata_codes
     )
     for evidence in evaluation.fact_evidence:
         fact = application.by_id.get(evidence.fact_id)
@@ -519,8 +529,7 @@ def select_creatives(
             quality_score=item.scores.overall_quality,
             novelty_score=100.0,
             selection_score=(
-                item.scores.overall_quality * quality_weight
-                + 100.0 * novelty_weight
+                item.scores.overall_quality * quality_weight + 100.0 * novelty_weight
             ),
         )
         for item in evaluations
@@ -554,9 +563,7 @@ def select_creatives(
     while remaining and len(selected) < target_count:
         scored: list[RankedCreative] = []
         for item in remaining:
-            novelty_values = [
-                resolve_novelty(item, accepted) for accepted in selected
-            ]
+            novelty_values = [resolve_novelty(item, accepted) for accepted in selected]
             if fixed_novelty_resolver is not None:
                 novelty_values.append(fixed_novelty_resolver(item))
             novelty = min(novelty_values, default=100.0)
@@ -567,8 +574,7 @@ def select_creatives(
                     quality_score=item.quality_score,
                     novelty_score=novelty,
                     selection_score=round(
-                        item.quality_score * quality_weight
-                        + novelty * novelty_weight,
+                        item.quality_score * quality_weight + novelty * novelty_weight,
                         4,
                     ),
                 )
@@ -585,7 +591,11 @@ def select_creatives(
             ),
         )
         selected.append(best)
-        remaining = [item for item in remaining if item.candidate.slot_id != best.candidate.slot_id]
+        remaining = [
+            item
+            for item in remaining
+            if item.candidate.slot_id != best.candidate.slot_id
+        ]
     selected_ids = {item.candidate.slot_id for item in selected}
     rejected = [item for item in ranked if item.candidate.slot_id not in selected_ids]
     return CreativeSelectionResult(
@@ -599,19 +609,22 @@ def _creative_novelty(left: RankedCreative, right: RankedCreative) -> float:
     semantic = trigram_dice(left.candidate.content, right.candidate.content)
     left_visual = left.candidate.dimensions
     right_visual = right.candidate.dimensions
-    visual = sum(
-        1
-        for left_value, right_value in (
-            (left_visual.narrative, right_visual.narrative),
-            (left_visual.scene, right_visual.scene),
-            (left_visual.persona, right_visual.persona),
-            (left_visual.product_relation, right_visual.product_relation),
-            (left_visual.camera, right_visual.camera),
-            (left_visual.emotion, right_visual.emotion),
+    visual = (
+        sum(
+            1
+            for left_value, right_value in (
+                (left_visual.narrative, right_visual.narrative),
+                (left_visual.scene, right_visual.scene),
+                (left_visual.persona, right_visual.persona),
+                (left_visual.product_relation, right_visual.product_relation),
+                (left_visual.camera, right_visual.camera),
+                (left_visual.emotion, right_visual.emotion),
+            )
+            if normalize_creative_signature(left_value)
+            == normalize_creative_signature(right_value)
         )
-        if normalize_creative_signature(left_value)
-        == normalize_creative_signature(right_value)
-    ) / 6
+        / 6
+    )
     return round(100.0 * (1.0 - max(semantic, visual)), 4)
 
 

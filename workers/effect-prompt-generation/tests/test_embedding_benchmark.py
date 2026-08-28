@@ -5,10 +5,13 @@ import os
 import time
 from dataclasses import dataclass
 
+import numpy as np
 import pytest
 
 from effect_prompt_generation.embeddings import (
     ArkEmbeddingProvider,
+    ContentEmbeddingStats,
+    ContentVectorIndex,
     EmbeddingProvider,
 )
 from effect_prompt_generation.models import (
@@ -19,7 +22,7 @@ from effect_prompt_generation.models import (
     FragmentType,
     SharedPrompt,
 )
-from effect_prompt_generation.quality import trigram_dice
+from effect_prompt_generation.quality import select_creatives, trigram_dice
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +147,58 @@ def test_labeled_embedding_benchmark_has_balanced_180_pairs() -> None:
     assert len(pairs) == 180
     assert sum(item.similar for item in pairs) == 90
     assert sum(not item.similar for item in pairs) == 90
+
+
+def test_content_mmr_60_by_2048_matrix_and_selection_p95_is_under_50ms() -> None:
+    candidates = [_candidate(index) for index in range(60)]
+    evaluations = [_evaluation(candidate) for candidate in candidates]
+    random = np.random.default_rng(20260828)
+    source = random.normal(size=(60, 2048)).astype(np.float32)
+    elapsed_ms: list[float] = []
+    for _ in range(12):
+        started = time.perf_counter()
+        normalized = source / np.linalg.norm(source, axis=1, keepdims=True)
+        similarities = np.clip(normalized @ normalized.T, 0.0, 1.0).astype(
+            np.float32,
+            copy=False,
+        )
+        index = ContentVectorIndex(
+            entity_ids=tuple(item.slot_id for item in candidates),
+            row_by_id={item.slot_id: offset for offset, item in enumerate(candidates)},
+            candidate_ids=tuple(item.slot_id for item in candidates),
+            anchor_ids=(),
+            similarities=similarities,
+            stats=ContentEmbeddingStats(
+                input_count=60,
+                request_count=0,
+                input_tokens=0,
+                retry_count=0,
+                cache_hit_count=60,
+                comparison_count=1770,
+                duration_ms=0,
+                local_comparison_ms=0,
+                similarity_p50=0,
+                similarity_p95=0,
+                high_risk_pairs=[],
+            ),
+        )
+        selected = select_creatives(
+            candidates,
+            evaluations,
+            target_count=50,
+            novelty_resolver=lambda left, right: index.novelty(
+                left.candidate.slot_id,
+                right.candidate.slot_id,
+            ),
+            quality_weight=0.7,
+            novelty_weight=0.3,
+        )
+        elapsed_ms.append((time.perf_counter() - started) * 1000.0)
+        assert len(selected.selected) == 50
+
+    expected = _cosine(tuple(source[0]), tuple(source[1]))
+    assert float(similarities[0, 1]) == pytest.approx(max(0.0, expected), abs=1e-6)
+    assert _percentile(elapsed_ms[2:], 0.95) <= 50
 
 
 async def _embed_texts(

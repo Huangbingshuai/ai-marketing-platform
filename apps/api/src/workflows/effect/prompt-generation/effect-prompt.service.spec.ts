@@ -252,6 +252,33 @@ describe('EffectPromptService settings contract', () => {
     expect(output.run.nodes.map(({ nodeId }) => nodeId)).toContain('ITEM_EVALUATE');
   });
 
+  it('accepts the separate fourth V11 diversity-supplement shard round', async () => {
+    const repository = {
+      run: vi.fn().mockResolvedValue({
+        id: 'run-v11',
+        inputSnapshot: { graphVersion: 'V11_COHERENT_CREATIVE_GENERATION' },
+        operation: 'BATCH_GENERATE',
+      }),
+      saveShard: vi.fn().mockResolvedValue(true),
+    };
+    const service = new EffectPromptService(repository as never, {} as never, {} as never);
+    const input = {
+      status: 'SUCCEEDED' as const,
+      combinationPlan: [],
+      items: [],
+      creativePlan: [],
+      creativeItems: [],
+      warnings: [],
+    };
+
+    await expect(
+      service.saveShard('project-a', 'run-v11', 'attempt-a', 4, 0, 'CREATIVE', input),
+    ).resolves.toEqual({ accepted: true });
+    await expect(
+      service.saveShard('project-a', 'run-v11', 'attempt-a', 5, 0, 'CREATIVE', input),
+    ).rejects.toThrow('分片标识无效');
+  });
+
   it('rejects item-only regeneration fields on a batch run', async () => {
     const repository = { workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }) };
     const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };

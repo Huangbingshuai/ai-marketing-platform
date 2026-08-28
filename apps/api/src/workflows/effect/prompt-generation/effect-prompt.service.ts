@@ -1198,7 +1198,7 @@ export class EffectPromptService {
       throw badRequest('旧 Prompt 分片不属于当前工作流版本');
     const maxRound =
       graphVersion === 'V11_COHERENT_CREATIVE_GENERATION'
-        ? 1
+        ? 4
         : EFFECT_PROMPT_LIMITS.maxReplenishmentRounds;
     if (round < 0 || round > maxRound || shardIndex < 0) throw badRequest('分片标识无效');
     if (

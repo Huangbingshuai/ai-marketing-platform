@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from effect_prompt_generation.embeddings import (
+    EmbeddingBatchResult,
     EmbeddingProviderError,
     MockEmbeddingProvider,
 )
@@ -143,6 +144,24 @@ class FailingEmbeddingProvider(MockEmbeddingProvider):
         raise EmbeddingProviderError("向量服务测试不可用", retryable=True)
 
 
+class IdenticalEmbeddingProvider(MockEmbeddingProvider):
+    cache_namespace = "identical-vector-test-provider"
+
+    def __init__(self) -> None:
+        self.input_count = 0
+        self.call_count = 0
+
+    async def embed(self, texts: list[str]) -> EmbeddingBatchResult:
+        self.input_count += len(texts)
+        self.call_count += 1
+        return EmbeddingBatchResult(
+            vectors=[(1.0, 0.0) for _ in texts],
+            request_count=1,
+            input_tokens=sum(len(text) for text in texts),
+            retry_count=0,
+        )
+
+
 class ConcurrencyTrackingProvider(MockAiProvider):
     def __init__(self) -> None:
         self.active = 0
@@ -274,7 +293,9 @@ async def test_v11_graph_generates_120_percent_then_selects_exact_count() -> Non
     assert api.execution_mode == "MOCK"
     assert all(item.target_duration_seconds == 5 for item in api.result.items)
     assert all(item.fragment_type == item.primary_purpose for item in api.result.items)
-    assert all(item.primary_purpose in item.compatible_purposes for item in api.result.items)
+    assert all(
+        item.primary_purpose in item.compatible_purposes for item in api.result.items
+    )
     assert all("广式腊肠" in item.content for item in api.result.items)
     assert all("虚构医疗功效" not in item.content for item in api.result.items)
     assert Counter(item.phase.value for item in api.shards.values()) == {
@@ -295,17 +316,18 @@ async def test_v11_graph_generates_120_percent_then_selects_exact_count() -> Non
         for task in creative_tasks
         if task.fact_assignment is not None
     )
-    assert len(
-        {
-            task.fact_assignment.primary_fact_id
-            for task in creative_tasks
-            if task.fact_assignment is not None
-        }
-    ) > 1
+    assert (
+        len(
+            {
+                task.fact_assignment.primary_fact_id
+                for task in creative_tasks
+                if task.fact_assignment is not None
+            }
+        )
+        > 1
+    )
     mapping_stage = next(
-        stage
-        for stage in reversed(api.stages)
-        if stage.node_id == "INSIGHT_MAPPING"
+        stage for stage in reversed(api.stages) if stage.node_id == "INSIGHT_MAPPING"
     )
     shared_stage = next(
         stage
@@ -356,7 +378,9 @@ async def test_v11_ai_shards_use_one_sliding_concurrency_limit() -> None:
 
 
 @pytest.mark.asyncio
-async def test_v11_retries_one_invalid_classification_response_inside_its_shard() -> None:
+async def test_v11_retries_one_invalid_classification_response_inside_its_shard() -> (
+    None
+):
     api = V11Api()
     provider = OneTransientClassificationFailureProvider()
     pipeline = PromptGenerationPipeline(
@@ -407,9 +431,7 @@ async def test_v11_classification_retry_keeps_stable_shard_assignments() -> None
     )
 
     classification_shards = [
-        shard
-        for shard in api.shards.values()
-        if shard.phase.value == "CLASSIFICATION"
+        shard for shard in api.shards.values() if shard.phase.value == "CLASSIFICATION"
     ]
     assert {shard.shard_index for shard in classification_shards} == {0, 1, 2, 3}
     assert all(shard.status == "SUCCEEDED" for shard in classification_shards)
@@ -419,7 +441,9 @@ async def test_v11_classification_retry_keeps_stable_shard_assignments() -> None
 
 
 @pytest.mark.asyncio
-async def test_v11_vector_selection_keeps_exact_count_and_reports_safe_metrics() -> None:
+async def test_v11_vector_selection_keeps_exact_count_and_reports_safe_metrics() -> (
+    None
+):
     api = V11Api()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -453,7 +477,124 @@ async def test_v11_vector_selection_keeps_exact_count_and_reports_safe_metrics()
 
 
 @pytest.mark.asyncio
-async def test_v11_shadow_selection_reports_comparison_without_changing_result() -> None:
+async def test_v11_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
+    api = V11Api()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=MockAiProvider(),
+        embedding_provider=MockEmbeddingProvider(),
+        similarity_mode="shadow",
+        embedding_batch_size=64,
+        embedding_max_concurrency=2,
+        shard_size=5,
+    )
+    runtime = _runtime()
+    snapshot = _snapshot().model_copy(
+        update={
+            "selection_policy_version": "MMR_CONTENT_V2",
+            "similarity_anchors": [],
+        }
+    )
+    pipeline.register_snapshot(runtime, snapshot)
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    assert api.result is not None
+    assert len(api.result.items) == 10
+    selection_stage = next(
+        stage
+        for stage in reversed(api.stages)
+        if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
+    )
+    assert selection_stage.metadata["selectionPolicyVersion"] == "MMR_CONTENT_V2"
+    assert selection_stage.metadata["selectionMethod"] == "TRIGRAM_SHADOW"
+    assert selection_stage.metadata["embeddingInputCount"] == 12
+    assert selection_stage.metadata["embeddingRequestCount"] == 1
+    assert selection_stage.metadata["mmrQualityWeight"] == 0.7
+    assert selection_stage.metadata["mmrDiversityWeight"] == 0.3
+    assert selection_stage.metadata["contentMmrSelection"]["selectedCount"] == 10
+    assert "dualVectorSelection" not in selection_stage.metadata
+
+
+@pytest.mark.asyncio
+async def test_v11_content_mmr_diversity_supplement_runs_once_and_keeps_exact_count() -> (
+    None
+):
+    api = V11Api()
+    embedding_provider = IdenticalEmbeddingProvider()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=MockAiProvider(),
+        embedding_provider=embedding_provider,
+        similarity_mode="vector",
+        embedding_batch_size=64,
+        embedding_max_concurrency=2,
+        shard_size=5,
+    )
+    runtime = _runtime()
+    snapshot = _snapshot().model_copy(
+        update={
+            "selection_policy_version": "MMR_CONTENT_V2",
+            "similarity_anchors": [],
+        }
+    )
+    pipeline.register_snapshot(runtime, snapshot)
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    assert api.result is not None
+    assert len(api.result.items) == 10
+    assert api.result.metrics.generated_candidate_count == 14
+    assert embedding_provider.input_count == 14
+    final_selection_stage = next(
+        stage
+        for stage in reversed(api.stages)
+        if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
+    )
+    assert final_selection_stage.metadata["diversitySupplementTriggered"] is True
+    assert final_selection_stage.metadata["diversitySupplementCount"] == 2
+    assert final_selection_stage.metadata["embeddingInputCount"] == 14
+    assert final_selection_stage.metadata["embeddingRequestCount"] == 2
+    assert final_selection_stage.metadata["finalAccurateCount"] == 10
+    assert final_selection_stage.warnings == ["SEMANTIC_DIVERSITY_SOFT_TARGET_NOT_MET"]
+
+    # Simulate an in-flight MMR_CONTENT_V2 shard written before supplementKind
+    # was added. Recovery infers that round 1 started after quantity was met.
+    for key, shard in list(api.shards.items()):
+        if shard.phase.value == "CREATIVE" and shard.round > 0:
+            api.shards[key] = shard.model_copy(
+                update={
+                    "creative_plan": [
+                        task.model_copy(update={"supplement_kind": None})
+                        for task in shard.creative_plan
+                    ]
+                }
+            )
+    resumed = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=MockAiProvider(),
+        embedding_provider=IdenticalEmbeddingProvider(),
+        similarity_mode="vector",
+        shard_size=5,
+    )
+    resumed.register_snapshot(runtime, snapshot)
+    await resumed.load_and_snapshot(runtime)
+    restored_cache = resumed._cache(runtime)
+    assert restored_cache.v11_diversity_supplemented is True
+    assert restored_cache.v11_diversity_supplement_count == 2
+    assert restored_cache.v11_replenishment_rounds == 0
+
+
+@pytest.mark.asyncio
+async def test_v11_shadow_selection_reports_comparison_without_changing_result() -> (
+    None
+):
     baseline_api = V11Api()
     shadow_api = V11Api()
     baseline = PromptGenerationPipeline(
@@ -563,7 +704,9 @@ async def test_v11_vector_embedding_failure_is_retryable_and_safely_coded() -> N
 
 
 @pytest.mark.asyncio
-async def test_v11_item_evaluate_preserves_content_and_only_runs_classification() -> None:
+async def test_v11_item_evaluate_preserves_content_and_only_runs_classification() -> (
+    None
+):
     snapshot = _snapshot()
     now = "2026-08-27T10:00:00Z"
     target = PromptItemV6(
@@ -622,8 +765,7 @@ async def test_v11_item_evaluate_preserves_content_and_only_runs_classification(
         "CLASSIFICATION": 1
     }
     assert not any(
-        stage.node_id.value == "COHERENT_CREATIVE_GENERATION"
-        for stage in api.stages
+        stage.node_id.value == "COHERENT_CREATIVE_GENERATION" for stage in api.stages
     )
     assert any(stage.node_id.value == "ITEM_EVALUATE" for stage in api.stages)
 
@@ -871,7 +1013,9 @@ def test_v11_discards_bad_evidence_excerpt_without_rejecting_valid_prompt() -> N
         {"productName": "广式腊肠", "coreSellingPoints": ["油润红亮切面"]}
     )
     product_fact = next(item for item in application.usable if item.value == "广式腊肠")
-    selling_fact = next(item for item in application.usable if item.value == "油润红亮切面")
+    selling_fact = next(
+        item for item in application.usable if item.value == "油润红亮切面"
+    )
     candidate = CreativeCandidate(
         slot_id="candidate-valid-product",
         ordinal=1,
@@ -894,7 +1038,9 @@ def test_v11_discards_bad_evidence_excerpt_without_rejecting_valid_prompt() -> N
         compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
         fact_evidence=[
             FactEvidence(fact_id=product_fact.fact_id, evidence_text="广式腊肠"),
-            FactEvidence(fact_id=selling_fact.fact_id, evidence_text="油亮红润的真实切面"),
+            FactEvidence(
+                fact_id=selling_fact.fact_id, evidence_text="油亮红润的真实切面"
+            ),
         ],
         realized_fact_ids=[product_fact.fact_id, selling_fact.fact_id],
         scores=CreativeScores(
@@ -921,7 +1067,9 @@ def test_v11_evidence_excerpt_noise_does_not_reduce_a_50_item_batch() -> None:
         {"productName": "广式腊肠", "coreSellingPoints": ["油润红亮切面"]}
     )
     product_fact = next(item for item in application.usable if item.value == "广式腊肠")
-    selling_fact = next(item for item in application.usable if item.value == "油润红亮切面")
+    selling_fact = next(
+        item for item in application.usable if item.value == "油润红亮切面"
+    )
     candidates: list[CreativeCandidate] = []
     evaluations: list[CreativeEvaluation] = []
     for index in range(60):
@@ -1023,9 +1171,74 @@ def test_v11_selection_uses_quality_80_and_novelty_20() -> None:
 
     result = select_creatives(
         candidates,
-        [evaluation(candidates[0], 95), evaluation(candidates[1], 94), evaluation(candidates[2], 85)],
+        [
+            evaluation(candidates[0], 95),
+            evaluation(candidates[1], 94),
+            evaluation(candidates[2], 85),
+        ],
         target_count=2,
     )
 
     assert [item.candidate.slot_id for item in result.selected] == ["c-1", "c-3"]
     assert result.selected[1].novelty_score > 0
+
+
+def test_v11_content_mmr_uses_70_30_and_fixed_anchor_from_first_choice() -> None:
+    def candidate(index: int) -> CreativeCandidate:
+        return CreativeCandidate(
+            slot_id=f"mmr-{index}",
+            ordinal=index,
+            round=0,
+            creative_core=f"创意{index}",
+            declared_fact_ids=["fact-product"],
+            dimensions=CreativeDimensions(
+                narrative=f"叙事{index}",
+                scene=f"场景{index}",
+                persona=f"人物{index}",
+                product_relation=f"产品关系{index}",
+                camera=f"镜头{index}",
+                emotion=f"情绪{index}",
+            ),
+            content=(
+                f"第{index}条可执行的连续产品动作画面，主体完成动作后保持稳定构图。"
+            ),
+        )
+
+    def evaluation(item: CreativeCandidate, quality: float) -> CreativeEvaluation:
+        return CreativeEvaluation(
+            slot_id=item.slot_id,
+            primary_purpose=FragmentType.PRODUCT_DISPLAY,
+            compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+            scores=CreativeScores(
+                product_relevance=quality,
+                creative_coherence=quality,
+                visual_executability=quality,
+                commercial_usefulness=quality,
+                visual_clarity=quality,
+            ),
+            semantic_signature=f"s-{item.ordinal}",
+            visual_signature=f"v-{item.ordinal}",
+        )
+
+    candidates = [candidate(1), candidate(2)]
+    evaluations = [evaluation(candidates[0], 95), evaluation(candidates[1], 90)]
+    no_anchor = select_creatives(
+        candidates,
+        evaluations,
+        target_count=1,
+        quality_weight=0.7,
+        novelty_weight=0.3,
+    )
+    with_anchor = select_creatives(
+        candidates,
+        evaluations,
+        target_count=1,
+        fixed_novelty_resolver=lambda item: (
+            0.0 if item.candidate.slot_id == "mmr-1" else 100.0
+        ),
+        quality_weight=0.7,
+        novelty_weight=0.3,
+    )
+
+    assert [item.candidate.slot_id for item in no_anchor.selected] == ["mmr-1"]
+    assert [item.candidate.slot_id for item in with_anchor.selected] == ["mmr-2"]

@@ -47,7 +47,9 @@ class GraphState(TypedDict):
     fragment_relationship_plans: Annotated[list[FragmentRelationshipPlan], operator.add]
     active_relationship_allocation: NotRequired[dict[str, Any]]
     relationship_checkpoint_types: NotRequired[list[FragmentType]]
-    dimension_coordinate_plans: Annotated[list[FragmentDimensionCoordinatePlan], operator.add]
+    dimension_coordinate_plans: Annotated[
+        list[FragmentDimensionCoordinatePlan], operator.add
+    ]
     active_coordinate_request: NotRequired[dict[str, Any]]
     coordinate_checkpoint_types: NotRequired[list[FragmentType]]
     blueprint_quotas: NotRequired[list[BlueprintBundleQuota]]
@@ -557,7 +559,10 @@ class PromptGenerationSnapshot(ApiModel):
 
     @model_validator(mode="after")
     def validate_operation(self) -> PromptGenerationSnapshot:
-        if self.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"} and not self.target_item_id:
+        if (
+            self.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"}
+            and not self.target_item_id
+        ):
             raise ValueError("targetItemId is required for item operations")
         if self.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"} and (
             self.target_item is None or self.target_item_index is None
@@ -597,9 +602,7 @@ class NodeId(StrEnum):
     PLAN_HOOK_STRATEGY = "PLAN_HOOK_STRATEGY"
     PLAN_PAIN_STRATEGY = "PLAN_PAIN_STRATEGY"
     PLAN_PRODUCT_DISPLAY_STRATEGY = "PLAN_PRODUCT_DISPLAY_STRATEGY"
-    PLAN_SELLING_POINT_EXPLANATION_STRATEGY = (
-        "PLAN_SELLING_POINT_EXPLANATION_STRATEGY"
-    )
+    PLAN_SELLING_POINT_EXPLANATION_STRATEGY = "PLAN_SELLING_POINT_EXPLANATION_STRATEGY"
     PLAN_CTA_STRATEGY = "PLAN_CTA_STRATEGY"
     PLAN_OUTRO_STRATEGY = "PLAN_OUTRO_STRATEGY"
     STRATEGY_MERGE_VALIDATION = "STRATEGY_MERGE_VALIDATION"
@@ -607,7 +610,9 @@ class NodeId(StrEnum):
     PLAN_HOOK_RELATIONSHIPS = "PLAN_HOOK_RELATIONSHIPS"
     PLAN_PAIN_RELATIONSHIPS = "PLAN_PAIN_RELATIONSHIPS"
     PLAN_PRODUCT_DISPLAY_RELATIONSHIPS = "PLAN_PRODUCT_DISPLAY_RELATIONSHIPS"
-    PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS = "PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS"
+    PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS = (
+        "PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS"
+    )
     PLAN_CTA_RELATIONSHIPS = "PLAN_CTA_RELATIONSHIPS"
     PLAN_OUTRO_RELATIONSHIPS = "PLAN_OUTRO_RELATIONSHIPS"
     RELATIONSHIP_MERGE_VALIDATION = "RELATIONSHIP_MERGE_VALIDATION"
@@ -615,7 +620,9 @@ class NodeId(StrEnum):
     PLAN_HOOK_COORDINATES = "PLAN_HOOK_COORDINATES"
     PLAN_PAIN_COORDINATES = "PLAN_PAIN_COORDINATES"
     PLAN_PRODUCT_DISPLAY_COORDINATES = "PLAN_PRODUCT_DISPLAY_COORDINATES"
-    PLAN_SELLING_POINT_EXPLANATION_COORDINATES = "PLAN_SELLING_POINT_EXPLANATION_COORDINATES"
+    PLAN_SELLING_POINT_EXPLANATION_COORDINATES = (
+        "PLAN_SELLING_POINT_EXPLANATION_COORDINATES"
+    )
     PLAN_CTA_COORDINATES = "PLAN_CTA_COORDINATES"
     PLAN_OUTRO_COORDINATES = "PLAN_OUTRO_COORDINATES"
     COORDINATE_MERGE_VALIDATION = "COORDINATE_MERGE_VALIDATION"
@@ -624,7 +631,9 @@ class NodeId(StrEnum):
     GENERATE_HOOK_BLUEPRINTS = "GENERATE_HOOK_BLUEPRINTS"
     GENERATE_PAIN_BLUEPRINTS = "GENERATE_PAIN_BLUEPRINTS"
     GENERATE_PRODUCT_DISPLAY_BLUEPRINTS = "GENERATE_PRODUCT_DISPLAY_BLUEPRINTS"
-    GENERATE_SELLING_POINT_EXPLANATION_BLUEPRINTS = "GENERATE_SELLING_POINT_EXPLANATION_BLUEPRINTS"
+    GENERATE_SELLING_POINT_EXPLANATION_BLUEPRINTS = (
+        "GENERATE_SELLING_POINT_EXPLANATION_BLUEPRINTS"
+    )
     GENERATE_CTA_BLUEPRINTS = "GENERATE_CTA_BLUEPRINTS"
     GENERATE_OUTRO_BLUEPRINTS = "GENERATE_OUTRO_BLUEPRINTS"
     BLUEPRINT_ORTHOGONAL_GATE = "BLUEPRINT_ORTHOGONAL_GATE"
@@ -731,12 +740,20 @@ class MarketingRelationshipBundle(ApiModel):
     persona: str = Field(min_length=1, max_length=160)
     selling_point: str = Field(min_length=1, max_length=240)
     primary_fact_id: str | None = Field(default=None, max_length=120)
-    creative_intent: str = Field(default="清晰表达当前片段职责", min_length=1, max_length=160)
-    opening_state: str = Field(default="首帧建立主体与环境关系", min_length=1, max_length=240)
-    action_arc: str = Field(default="主体完成一个连续可见动作", min_length=1, max_length=400)
+    creative_intent: str = Field(
+        default="清晰表达当前片段职责", min_length=1, max_length=160
+    )
+    opening_state: str = Field(
+        default="首帧建立主体与环境关系", min_length=1, max_length=240
+    )
+    action_arc: str = Field(
+        default="主体完成一个连续可见动作", min_length=1, max_length=400
+    )
     camera: str = Field(default="中景稳定记录主体动作", min_length=1, max_length=160)
     emotion: str = Field(default="真实自然", min_length=1, max_length=120)
-    ending_state: str = Field(default="动作结束后保持稳定构图", min_length=1, max_length=240)
+    ending_state: str = Field(
+        default="动作结束后保持稳定构图", min_length=1, max_length=240
+    )
 
 
 class FragmentFactAllocation(ApiModel):
@@ -884,7 +901,11 @@ class StrategyCheckpoint(ApiModel):
     source_fingerprint: str = Field(min_length=1, max_length=128)
     allocation_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     prompt_version: str = Field(min_length=1, max_length=120)
-    plan: FragmentMarketingPlan | FragmentRelationshipPlan | FragmentDimensionCoordinatePlan
+    plan: (
+        FragmentMarketingPlan
+        | FragmentRelationshipPlan
+        | FragmentDimensionCoordinatePlan
+    )
 
 
 class CompactMarketingRelationshipBundle(ApiModel):
@@ -1004,9 +1025,7 @@ class CreativeFactAssignment(ApiModel):
             for fact_id in dict.fromkeys(self.support_fact_ids)
             if fact_id != self.primary_fact_id
         ]
-        self.product_anchor_fact_ids = list(
-            dict.fromkeys(self.product_anchor_fact_ids)
-        )
+        self.product_anchor_fact_ids = list(dict.fromkeys(self.product_anchor_fact_ids))
         return self
 
     @property
@@ -1025,7 +1044,8 @@ class CreativeFactAssignment(ApiModel):
 class CreativeTask(ApiModel):
     slot_id: str = Field(min_length=1, max_length=160)
     ordinal: int = Field(ge=1)
-    round: int = Field(ge=0, le=3)
+    round: int = Field(ge=0, le=4)
+    supplement_kind: Literal["INITIAL", "QUANTITY", "DIVERSITY"] | None = None
     target_duration_seconds: int = Field(ge=4, le=15)
     fact_assignment: CreativeFactAssignment | None = None
     # Kept only so persisted early-V11 shard plans remain readable.
@@ -1035,7 +1055,7 @@ class CreativeTask(ApiModel):
 class CreativeCandidate(ApiModel):
     slot_id: str = Field(min_length=1, max_length=160)
     ordinal: int = Field(ge=1)
-    round: int = Field(ge=0, le=3)
+    round: int = Field(ge=0, le=4)
     creative_core: str = Field(min_length=1, max_length=160)
     declared_fact_ids: list[str] = Field(min_length=1, max_length=12)
     dimensions: CreativeDimensions
@@ -1056,7 +1076,7 @@ class CreativeCandidateBatch(ApiModel):
 
 
 class CreativeShardPlan(ApiModel):
-    round: int = Field(ge=0, le=3)
+    round: int = Field(ge=0, le=4)
     shard_index: int = Field(ge=0)
     tasks: list[CreativeTask] = Field(min_length=1, max_length=5)
     avoid_semantic_signatures: list[str] = Field(default_factory=list, max_length=200)
@@ -1124,7 +1144,7 @@ class CreativeEvaluationBatch(ApiModel):
 
 
 class ClassificationShardPlan(ApiModel):
-    round: int = Field(ge=0, le=3)
+    round: int = Field(ge=0, le=4)
     shard_index: int = Field(ge=0)
     candidate_ids: list[str] = Field(min_length=1, max_length=10)
 
@@ -1142,7 +1162,7 @@ class ShardPhase(StrEnum):
 
 class ShardRecord(ApiModel):
     phase: ShardPhase = ShardPhase.PROMPT
-    round: int = Field(ge=0, le=3)
+    round: int = Field(ge=0, le=4)
     shard_index: int = Field(ge=0)
     status: StageStatus
     combination_plan: list[PlannedCombination] = Field(default_factory=list)

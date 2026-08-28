@@ -11,6 +11,7 @@ from effect_prompt_generation.embeddings import (
     ArkEmbeddingProvider,
     EmbeddingProviderError,
     MockEmbeddingProvider,
+    build_content_vector_index,
     build_creative_vector_index,
     compile_content_embedding_text,
     compile_creative_embedding_text,
@@ -18,6 +19,8 @@ from effect_prompt_generation.embeddings import (
 from effect_prompt_generation.models import (
     CreativeCandidate,
     CreativeDimensions,
+    FragmentType,
+    PromptItemV6,
     SharedPrompt,
     SharedPromptSection,
 )
@@ -60,6 +63,28 @@ def _candidate(index: int) -> CreativeCandidate:
             f"5秒，9:16画幅。场景{index}里成年人拿起便携杯完成动作{index}，"
             "镜头在稳定画面结束。画面中不得出现以下内容：价格贴纸；二维码。"
         ),
+    )
+
+
+def _anchor(index: int) -> PromptItemV6:
+    candidate = _candidate(index)
+    return PromptItemV6(
+        id=f"anchor-{index}",
+        code=f"P{index:03d}",
+        origin="MANUAL",
+        fragment_type=FragmentType.PRODUCT_DISPLAY,
+        primary_purpose=FragmentType.PRODUCT_DISPLAY,
+        compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+        classification_status="VERIFIED",
+        product_relevance=90,
+        material_tags=["产品展示"],
+        target_duration_seconds=5,
+        dimensions=candidate.dimensions,
+        content=candidate.content,
+        insight_bindings=[],
+        manual_edited=True,
+        created_at="2026-08-28T10:00:00Z",
+        updated_at="2026-08-28T10:00:00Z",
     )
 
 
@@ -335,6 +360,63 @@ async def test_vector_index_batches_120_inputs_and_reuses_run_cache() -> None:
     assert second.stats.request_count == 0
     assert second.stats.cache_hit_count == 120
     assert 0 <= first.dual_novelty("candidate-001", "candidate-002") <= 100
+
+
+@pytest.mark.asyncio
+async def test_content_mmr_index_embeds_one_text_per_candidate_and_uses_matrix_cosine() -> (
+    None
+):
+    candidates = [_candidate(index) for index in range(1, 61)]
+    provider = MockEmbeddingProvider()
+
+    index = await build_content_vector_index(
+        candidates,
+        [],
+        provider=provider,
+        vector_cache={},
+        product_name="便携杯",
+        product_category="随行杯",
+        shared_prompt=_shared_prompt(),
+        batch_size=64,
+        max_concurrency=2,
+    )
+
+    assert index.stats.input_count == 60
+    assert index.stats.request_count == 1
+    assert index.stats.comparison_count == 1770
+    assert index.similarities.shape == (60, 60)
+    assert index.similarity("candidate-001", "candidate-001") == pytest.approx(
+        1.0, abs=1e-6
+    )
+
+
+@pytest.mark.asyncio
+async def test_content_mmr_index_includes_fixed_anchor_without_counting_it_as_candidate() -> (
+    None
+):
+    candidates = [_candidate(1), _candidate(2)]
+    anchor = _anchor(1)
+    index = await build_content_vector_index(
+        candidates,
+        [anchor],
+        provider=MockEmbeddingProvider(),
+        vector_cache={},
+        product_name="便携杯",
+        product_category="随行杯",
+        shared_prompt=_shared_prompt(),
+        batch_size=64,
+        max_concurrency=2,
+    )
+
+    summary = index.redundancy_summary(["candidate-001", "candidate-002"])
+
+    assert (
+        index.stats.input_count == 2
+    )  # anchor-1 and candidate-1 share one compiled text
+    assert len(index.candidate_ids) == 2
+    assert len(index.anchor_ids) == 1
+    assert index.novelty_to_anchors("candidate-001") == pytest.approx(0.0, abs=1e-4)
+    assert summary.redundant_candidate_count >= 1
 
 
 @pytest.mark.asyncio

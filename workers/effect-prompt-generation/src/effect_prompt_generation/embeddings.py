@@ -297,7 +297,9 @@ class ContentVectorIndex:
     def novelty_to_anchors(self, candidate_id: str) -> float:
         if not self.anchor_ids:
             return 100.0
-        risk = max(self.similarity(candidate_id, anchor_id) for anchor_id in self.anchor_ids)
+        risk = max(
+            self.similarity(candidate_id, anchor_id) for anchor_id in self.anchor_ids
+        )
         return round(100.0 * (1.0 - risk), 4)
 
     def redundancy_summary(
@@ -474,10 +476,10 @@ async def build_content_vector_index(
             ranked_pairs.append((float(similarities[left, right]), left, right, False))
         for anchor_offset in range(len(anchor_ids)):
             right = candidate_count + anchor_offset
-            ranked_pairs.append((float(similarities[left, right]), left, anchor_offset, True))
-    for score, left, right, right_is_anchor in sorted(
-        ranked_pairs, reverse=True
-    )[:3]:
+            ranked_pairs.append(
+                (float(similarities[left, right]), left, anchor_offset, True)
+            )
+    for score, left, right, right_is_anchor in sorted(ranked_pairs, reverse=True)[:3]:
         safe_pairs.append(
             {
                 "leftOrdinal": ordered_candidates[left].ordinal,
@@ -589,8 +591,7 @@ async def build_creative_vector_index(
 
     comparison_started = time.perf_counter()
     normalized_vectors = {
-        key: _normalize_vector(vector_cache[key])
-        for key in documents
+        key: _normalize_vector(vector_cache[key]) for key in documents
     }
     pair_rows: dict[tuple[str, str], PairSimilarity] = {}
     content_scores: list[float] = []

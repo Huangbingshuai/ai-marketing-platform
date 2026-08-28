@@ -158,6 +158,8 @@ const ISSUE_LABELS: Record<string, string> = {
   ROLE_CONFLICT: '片段承担了互相冲突的职责',
   PHYSICS_BREAK: '画面包含缺乏依据的物理跳变',
   REFERENCE_DEPENDENCY: '没有参考图却要求精确还原包装细节',
+  SEMANTIC_DIVERSITY_SOFT_TARGET_NOT_MET:
+    '已按目标数量保存；当前批次仍有少量语义相近内容，可按需人工调整',
   SEMANTIC_DUPLICATE: '语义高度相似',
   SOURCE_FACT_VIOLATION: '使用了上游未确认事实',
   STACKED_PERSONA: '人物身份或受众画像堆叠',
@@ -1930,7 +1932,8 @@ const expectedOutputSummary: Partial<Record<EffectPromptNodeId, string>> = {
   SHARED_PROMPT_COMPILATION: '将禁用元素与用户补充内容合并为一段批次共用提示词。',
   COHERENT_CREATIVE_GENERATION: '将生成围绕同一创意主线的六维信息与干净 Prompt 正文。',
   CREATIVE_EVALUATION_CLASSIFICATION: '将给出质量判断、推荐主用途、兼容用途和问题原因。',
-  EXACT_SELECTION_AND_SUPPLEMENT: '将按质量与差异选满目标数量，候选不足时执行一次定向补充。',
+  EXACT_SELECTION_AND_SUPPLEMENT:
+    '将按质量与语义多样性选满目标数量；数量不足时定向补齐，高风险冗余偏多时最多追加一次多样性候选。',
   RESULT_SAVE: '将最佳结果保存为节点草稿，完成校验前不会提交工作副本。',
   ITEM_EVALUATE: '将重新评估当前条目的产品关联、质量与推荐用途。',
 };
@@ -2158,7 +2161,7 @@ export const presentEffectPromptNodeDetail = (
     sections: buildDetailSections(run, nodeId, status, stage?.metadata),
     fields: actualFields(run, nodeId, stage?.metadata),
     blocks: actualBlocks(run, nodeId),
-    warnings: safeStrings(stage?.warnings, 20),
+    warnings: issueLabels(safeStrings(stage?.warnings, 20)),
     errorMessage: terminalFailure
       ? publicText(run.errorMessage, 1000)
       : stage?.errorMessage

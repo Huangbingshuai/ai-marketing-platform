@@ -280,6 +280,17 @@ const v11RunRecord = (): EffectPromptNodeDetailRunRecord => {
         missingCount: 0,
         exactDuplicateCount: 0,
         supplemented: false,
+        fixedAnchorCount: 1,
+        embeddingInputCount: 4,
+        embeddingRequestCount: 1,
+        embeddingDurationMs: 120.5,
+        localComparisonMs: 0.8,
+        mmrQualityWeight: 0.7,
+        mmrDiversityWeight: 0.3,
+        initialRedundantCandidateCount: 2,
+        finalRedundantCandidateCount: 1,
+        diversitySupplementTriggered: true,
+        diversitySupplementCount: 2,
       }),
       stage('RESULT_SAVE', 'Prompt 批次结果已保存', {
         batchSize: 3,
@@ -647,6 +658,30 @@ describe('presentEffectPromptNodeDetail', () => {
     });
     if (creativeBlock?.kind !== 'CREATIVE_SAMPLE_LIST') throw new Error('missing V11 samples');
     expect(creativeBlock.items).toHaveLength(3);
+  });
+
+  it('shows safe MMR weights, anchors, timing and diversity supplement results', () => {
+    const record = v11RunRecord();
+    record.stages = record.stages.map((stage) =>
+      stage.nodeId === 'EXACT_SELECTION_AND_SUPPLEMENT'
+        ? { ...stage, warnings: ['SEMANTIC_DIVERSITY_SOFT_TARGET_NOT_MET'] }
+        : stage,
+    );
+    const detail = presentEffectPromptNodeDetail(record, 'EXACT_SELECTION_AND_SUPPLEMENT');
+    const output = detail.sections.find(({ kind }) => kind === 'OUTPUT');
+
+    expect(output?.fields).toEqual(
+      expect.arrayContaining([
+        { label: '固定参照 Prompt', value: 1 },
+        { label: '向量化正文', value: 4 },
+        { label: 'MMR 权重', value: '质量 70% / 多样性 30%' },
+        { label: '多样性补充', value: '已补充 2 条候选' },
+      ]),
+    );
+    expect(detail.warnings).toEqual([
+      '已按目标数量保存；当前批次仍有少量语义相近内容，可按需人工调整',
+    ]);
+    expect(JSON.stringify(detail)).not.toMatch(/endpoint|embedding-model|raw-vector/ui);
   });
 
   it('marks running output as partial and pending output as expected', () => {

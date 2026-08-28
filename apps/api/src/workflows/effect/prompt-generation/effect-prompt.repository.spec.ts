@@ -513,6 +513,8 @@ describe('EffectPromptRepository', () => {
         inputSnapshot: expect.objectContaining({
           schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
           retainedManualItems: [],
+          selectionPolicyVersion: 'MMR_CONTENT_V2',
+          similarityAnchors: [],
           baseResultRevision: null,
         }),
       }),
