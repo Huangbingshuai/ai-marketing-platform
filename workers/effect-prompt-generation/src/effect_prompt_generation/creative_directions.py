@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections import Counter
 from collections.abc import Iterable, Sequence
@@ -37,7 +38,7 @@ _ACTION_MOTIF_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("BOIL", re.compile(r"水煮|煮制|放入汤中|下锅煮")),
     ("ROAST", re.compile(r"烘烤|烤制|放入烤箱")),
     ("ADD_TO_DISH", re.compile(r"加入|放入|铺在|盖在|拌入")),
-    ("SERVE", re.compile(r"端上|端到|递到|递给|送到餐桌")),
+    ("SERVE", re.compile(r"端上|端到|递到|递给|递赠|递送|赠送|交到|送到餐桌")),
     ("SHARE", re.compile(r"分享|分给|共同夹取|家人.{0,8}(?:夹|取|尝)")),
     ("TASTE", re.compile(r"品尝|尝一口|入口|咬下|送入口中|放入口中")),
     ("SMELL", re.compile(r"闻香|凑近闻|闻一闻")),
@@ -124,8 +125,12 @@ def validate_creative_direction_plan(
     usable_ids = {fact.fact_id for fact in application.usable}
     strategy_ids = set(fact_visual_strategy.by_id)
     directions: list[CreativeDirection] = []
+    direction_ids: set[str] = set()
     semantic_signatures: set[tuple[str, ...]] = set()
     for direction in response.directions:
+        if direction.direction_id in direction_ids:
+            raise ValueError("creative directions repeat the same direction id")
+        direction_ids.add(direction.direction_id)
         fact_ids = list(dict.fromkeys(direction.compatible_fact_ids))
         if not fact_ids or any(
             fact_id not in usable_ids or fact_id not in strategy_ids
@@ -139,6 +144,14 @@ def validate_creative_direction_plan(
         directions.append(
             direction.model_copy(update={"compatible_fact_ids": fact_ids})
         )
+    allocation_buckets = Counter(
+        direction_allocation_bucket(direction) for direction in directions
+    )
+    minimum_bucket_count = min(5, len(directions))
+    if len(allocation_buckets) < minimum_bucket_count:
+        raise ValueError("creative directions do not cover enough scene-action combinations")
+    if allocation_buckets and max(allocation_buckets.values()) > 2:
+        raise ValueError("creative directions repeat one scene-action combination")
     plan_payload = [item.model_dump(mode="json", by_alias=True) for item in directions]
     return CreativeDirectionPlan(
         directions=directions,
@@ -178,23 +191,70 @@ def allocate_creative_directions(
     ]
     if alternatives:
         directions = alternatives
-    # Balance concrete scene atoms first, then rotate directions within each atom.
-    # This prevents several model labels for "岭南厨房/砂锅台面/家庭备餐" from
-    # receiving three times the allocation merely because their strings differ.
-    grouped: dict[str, list[CreativeDirection]] = {}
+    # Balance concrete scene-action combinations while also capping every
+    # individual direction. Balancing only by a coarse scene atom caused a
+    # single dining direction to receive 23/70 tasks when five kitchen
+    # directions were collapsed into one atom.
+    grouped: dict[tuple[str, str], list[CreativeDirection]] = {}
     for direction in directions:
-        grouped.setdefault(scene_atom_for_direction(direction), []).append(direction)
-    atoms = list(grouped)
-    atom_start = max(0, ordinal_start - 1) % len(atoms)
-    atoms = [*atoms[atom_start:], *atoms[:atom_start]]
-    atom_offsets: Counter[str] = Counter()
+        grouped.setdefault(direction_allocation_bucket(direction), []).append(direction)
+    buckets = list(grouped)
+    bucket_start = max(0, ordinal_start - 1) % len(buckets)
+    buckets = [*buckets[bucket_start:], *buckets[:bucket_start]]
+    direction_cap = math.ceil(count / len(directions))
+    direction_counts: Counter[str] = Counter()
+    bucket_counts: Counter[tuple[str, str]] = Counter()
+    bucket_offsets: Counter[tuple[str, str]] = Counter()
+    cursor = 0
     allocated: list[CreativeDirection] = []
-    for index in range(count):
-        atom = atoms[index % len(atoms)]
-        rows = grouped[atom]
-        direction = rows[atom_offsets[atom] % len(rows)]
-        atom_offsets[atom] += 1
+    for _ in range(count):
+        eligible_buckets = [
+            bucket
+            for bucket in buckets
+            if any(
+                direction_counts[row.direction_id] < direction_cap
+                for row in grouped[bucket]
+            )
+        ]
+        if not eligible_buckets:
+            raise ValueError("creative direction allocation capacity was exhausted")
+        minimum_bucket_load = min(bucket_counts[bucket] for bucket in eligible_buckets)
+        equally_loaded = {
+            bucket
+            for bucket in eligible_buckets
+            if bucket_counts[bucket] == minimum_bucket_load
+        }
+        bucket = next(
+            candidate
+            for offset in range(len(buckets))
+            if (candidate := buckets[(cursor + offset) % len(buckets)])
+            in equally_loaded
+        )
+        cursor = (buckets.index(bucket) + 1) % len(buckets)
+        rows = grouped[bucket]
+        eligible_rows = [
+            row
+            for row in rows
+            if direction_counts[row.direction_id] < direction_cap
+        ]
+        minimum_direction_load = min(
+            direction_counts[row.direction_id] for row in eligible_rows
+        )
+        equally_loaded_rows = [
+            row
+            for row in eligible_rows
+            if direction_counts[row.direction_id] == minimum_direction_load
+        ]
+        direction = equally_loaded_rows[
+            bucket_offsets[bucket] % len(equally_loaded_rows)
+        ]
+        bucket_offsets[bucket] += 1
+        bucket_counts[bucket] += 1
+        direction_counts[direction.direction_id] += 1
         allocated.append(direction)
+        if len(allocated) % len(directions) == 0:
+            # Avoid repeating the same direction/fact ordinal cycle.
+            cursor = (cursor + 1) % len(buckets)
     return allocated
 
 
@@ -368,6 +428,24 @@ def scene_atom_for_direction(direction: CreativeDirection) -> str:
         if primary != "OTHER"
         else scene_atom_from_text(direction.creative_direction)
     )
+
+
+def direction_allocation_bucket(direction: CreativeDirection) -> tuple[str, str]:
+    action_corpus = "|".join(
+        (
+            direction.semantic_profile.product_action_family,
+            direction.creative_direction,
+        )
+    )
+    motifs = tuple(
+        label for label, pattern in _ACTION_MOTIF_PATTERNS if pattern.search(action_corpus)
+    )
+    action_key = "+".join(motifs) or re.sub(
+        r"\s+",
+        "",
+        direction.semantic_profile.product_action_family,
+    ).casefold()
+    return scene_atom_for_direction(direction), action_key
 
 
 def scene_atom_signature(candidate: CreativeCandidate) -> str:

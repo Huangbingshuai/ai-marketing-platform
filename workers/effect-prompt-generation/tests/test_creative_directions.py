@@ -30,7 +30,7 @@ from effect_prompt_generation.creative_directions import (
     allocate_creative_directions,
     complete_semantic_profile,
     creative_direction_source_hash,
-    scene_atom_for_direction,
+    direction_allocation_bucket,
     scene_atom_from_text,
     validate_semantic_profile,
     validate_creative_direction_plan,
@@ -133,7 +133,7 @@ async def test_cluster_policy_plans_directions_and_generates_140_percent() -> No
         if task.fact_assignment is not None and task.creative_direction is not None
     )
     counts = Counter(
-        scene_atom_for_direction(task.creative_direction)
+        task.creative_direction.direction_id
         for task in creative_tasks
         if task.creative_direction is not None
     )
@@ -342,8 +342,9 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
         count=70,
         ordinal_start=1,
     )
-    counts = Counter(scene_atom_for_direction(item) for item in allocated)
+    counts = Counter(item.direction_id for item in allocated)
     assert max(counts.values()) - min(counts.values()) <= 1
+    assert max(counts.values()) <= 9
 
     invalid = raw.model_copy(
         update={
@@ -364,6 +365,32 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
             template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
         )
 
+    repeated_directions = [
+        direction.model_copy(
+            update={
+                "creative_direction": "在家庭餐桌完成端上产品",
+                "semantic_profile": direction.semantic_profile.model_copy(
+                    update={
+                        "scene_family": "家庭餐桌",
+                        "product_action_family": "端上产品",
+                    }
+                ),
+            }
+        )
+        if index < 3
+        else direction
+        for index, direction in enumerate(raw.directions)
+    ]
+    repeated = raw.model_copy(update={"directions": repeated_directions})
+    with pytest.raises(ValueError, match="repeat one scene-action combination"):
+        validate_creative_direction_plan(
+            CreativeDirectionResponse.model_validate(repeated),
+            application,
+            strategy,
+            source_hash=source_hash,
+            template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+        )
+
 
 @pytest.mark.parametrize(
     "label",
@@ -373,7 +400,7 @@ def test_scene_atom_collapses_kitchen_and_preparation_synonyms(label: str) -> No
     assert scene_atom_from_text(label) == "KITCHEN_PREP"
 
 
-def test_direction_allocation_balances_scene_atoms_before_model_labels() -> None:
+def test_direction_allocation_caps_each_direction_after_scene_atom_collapsing() -> None:
     plan = _direction_plan_for_semantic_tests()
     scene_labels = [
         "家庭厨房灶台",
@@ -402,13 +429,53 @@ def test_direction_allocation_balances_scene_atoms_before_model_labels() -> None
         count=12,
         ordinal_start=1,
     )
-    atom_counts = Counter(scene_atom_for_direction(item) for item in allocated)
+    direction_counts = Counter(item.direction_id for item in allocated)
 
-    assert atom_counts == {
-        "KITCHEN_PREP": 4,
-        "DINING_MEAL": 4,
-        "RETAIL_PURCHASE": 4,
-    }
+    assert max(direction_counts.values()) - min(direction_counts.values()) <= 1
+    assert max(direction_counts.values()) <= 2
+
+
+def test_direction_allocation_prevents_single_dining_direction_from_taking_23_of_70() -> None:
+    plan = _direction_plan_for_semantic_tests()
+    scene_action_rows = [
+        ("家庭厨房灶台", "整根放入煲仔饭烹制"),
+        ("家庭厨房蒸制区", "整根上屉蒸制观察"),
+        ("新春家庭玄关", "袋装整袋递赠送礼"),
+        ("家庭厨房炒锅旁", "切段下锅翻炒"),
+        ("家庭餐桌", "煲仔饭开盖展示"),
+        ("家庭备餐台面", "少量切片展示切面"),
+        ("家庭备餐区", "整根摆入家宴备菜盘"),
+        ("居家客厅会客区", "袋装双手递赠"),
+    ]
+    directions = [
+        direction.model_copy(
+            update={
+                "semantic_profile": direction.semantic_profile.model_copy(
+                    update={
+                        "scene_family": scene,
+                        "product_action_family": action,
+                    }
+                ),
+                "creative_direction": f"在{scene}完成{action}",
+            }
+        )
+        for direction, (scene, action) in zip(
+            plan.directions,
+            scene_action_rows,
+            strict=True,
+        )
+    ]
+    plan = plan.model_copy(update={"directions": directions})
+
+    allocated = allocate_creative_directions(plan, count=70, ordinal_start=1)
+    direction_counts = Counter(item.direction_id for item in allocated)
+    bucket_counts = Counter(direction_allocation_bucket(item) for item in allocated)
+
+    assert len(direction_counts) == 8
+    assert min(direction_counts.values()) == 8
+    assert max(direction_counts.values()) == 9
+    assert direction_counts[directions[4].direction_id] <= 9
+    assert max(bucket_counts.values()) < 23
 
 
 def test_direction_checkpoint_round_trip_parses_worker_plan() -> None:

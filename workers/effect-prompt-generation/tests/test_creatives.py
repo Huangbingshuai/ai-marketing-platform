@@ -632,7 +632,7 @@ async def test_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
     assert selection_stage.metadata["selectionMethod"] == "TRIGRAM_SHADOW"
-    assert selection_stage.metadata["embeddingInputCount"] == 12
+    assert selection_stage.metadata["embeddingInputCount"] == 14
     assert selection_stage.metadata["embeddingRequestCount"] == 1
     assert selection_stage.metadata["mmrQualityWeight"] == 0.7
     assert selection_stage.metadata["mmrDiversityWeight"] == 0.3
@@ -671,7 +671,7 @@ async def test_content_mmr_diversity_supplement_runs_once_and_keeps_exact_count(
     assert api.result is not None
     assert len(api.result.items) == 10
     assert api.result.metrics.generated_candidate_count == 16
-    assert embedding_provider.input_count == 14
+    assert embedding_provider.input_count == 16
     final_selection_stage = next(
         stage
         for stage in reversed(api.stages)
@@ -679,7 +679,7 @@ async def test_content_mmr_diversity_supplement_runs_once_and_keeps_exact_count(
     )
     assert final_selection_stage.metadata["diversitySupplementTriggered"] is True
     assert final_selection_stage.metadata["diversitySupplementCount"] == 2
-    assert final_selection_stage.metadata["embeddingInputCount"] == 14
+    assert final_selection_stage.metadata["embeddingInputCount"] == 16
     assert final_selection_stage.metadata["embeddingRequestCount"] == 2
     assert final_selection_stage.metadata["finalAccurateCount"] == 10
     assert final_selection_stage.warnings == ["SEMANTIC_DUPLICATE_RATE_LIMIT_NOT_MET"]

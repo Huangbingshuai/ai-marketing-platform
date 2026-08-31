@@ -155,6 +155,7 @@ class RunCache:
     diversity_avoid_action_motifs: set[str] = field(default_factory=set)
     diversity_avoid_scene_atoms: set[str] = field(default_factory=set)
     diversity_supplement_reasons: list[str] = field(default_factory=list)
+    used_direction_fact_pairs: set[tuple[str, str]] = field(default_factory=set)
     initial_redundancy_summary: RedundancySummary | None = None
     redundancy_summary: RedundancySummary | None = None
     content_vector_index: ContentVectorIndex | None = None
@@ -275,6 +276,11 @@ class PromptGenerationPipeline:
         restored_creative_tasks = [
             task for shard in succeeded_creatives for task in shard.creative_plan
         ]
+        cache.used_direction_fact_pairs = {
+            (task.creative_direction.direction_id, task.fact_assignment.primary_fact_id)
+            for task in restored_creative_tasks
+            if task.creative_direction is not None and task.fact_assignment is not None
+        }
         cache.creative_target_durations = {
             task.slot_id: task.target_duration_seconds for task in restored_creative_tasks
         }
@@ -757,18 +763,29 @@ class PromptGenerationPipeline:
                 for direction in directions
             ]
         if directions:
-            fact_assignments = [
-                allocate_creative_facts(
-                    application,
-                    count=1,
-                    ordinal_start=ordinal_start + index,
-                    preferred_primary_fact_ids=(
-                        preferred_primary_ids or direction.compatible_fact_ids
-                    ),
-                    fact_visual_strategy=fact_visual_strategy,
-                )[0]
-                for index, direction in enumerate(directions)
-            ]
+            fact_assignments = []
+            for index, direction in enumerate(directions):
+                preferred_ids = preferred_primary_ids or direction.compatible_fact_ids
+                assignment = None
+                for fact_offset in range(max(1, len(preferred_ids))):
+                    candidate_assignment = allocate_creative_facts(
+                        application,
+                        count=1,
+                        ordinal_start=ordinal_start + index + fact_offset,
+                        preferred_primary_fact_ids=preferred_ids,
+                        fact_visual_strategy=fact_visual_strategy,
+                    )[0]
+                    pair = (
+                        direction.direction_id,
+                        candidate_assignment.primary_fact_id,
+                    )
+                    assignment = candidate_assignment
+                    if pair not in cache.used_direction_fact_pairs:
+                        cache.used_direction_fact_pairs.add(pair)
+                        break
+                if assignment is None:
+                    raise PipelineError("创意方向未能分配可用事实")
+                fact_assignments.append(assignment)
         else:
             fact_assignments = allocate_creative_facts(
                 application,
