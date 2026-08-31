@@ -619,11 +619,11 @@ class CreativeDirection(ApiModel):
 
 
 class CreativeDirectionResponse(ApiModel):
-    directions: list[CreativeDirection] = Field(min_length=8, max_length=12)
+    directions: list[CreativeDirection] = Field(min_length=8, max_length=16)
 
 
 class CreativeDirectionPlan(ApiModel):
-    directions: list[CreativeDirection] = Field(min_length=8, max_length=12)
+    directions: list[CreativeDirection] = Field(min_length=8, max_length=16)
     source_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     template_hash: str = Field(pattern=r"^[a-f0-9]{64}$")

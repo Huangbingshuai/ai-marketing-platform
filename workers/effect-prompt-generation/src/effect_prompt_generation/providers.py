@@ -15,6 +15,7 @@ from typing import Any, Generic, Protocol, TypeVar
 import httpx
 from pydantic import BaseModel, ValidationError
 
+from .creative_directions import creative_direction_target_count
 from .models import (
     CreativeCandidate,
     CreativeCandidateBatch,
@@ -174,9 +175,12 @@ class MockAiProvider:
         shared_prompt: SharedPrompt,
         target_count: int,
     ) -> AiCallResult[CreativeDirectionResponse]:
-        del fact_visual_strategy, shared_prompt, target_count
+        del fact_visual_strategy, shared_prompt
         return _mock_result(
-            _mock_creative_direction_response(application),
+            _mock_creative_direction_response(
+                application,
+                direction_count=creative_direction_target_count(target_count),
+            ),
             NodeId.COHERENT_CREATIVE_GENERATION.value,
             CREATIVE_DIRECTION_BASE_PROMPT,
         )
@@ -371,6 +375,9 @@ class ArkResponsesProvider:
         prompt = render_prompt(
             CREATIVE_DIRECTION_TASK_PROMPT,
             target_count=str(target_count),
+            target_direction_count=str(
+                creative_direction_target_count(target_count)
+            ),
             facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
             fact_visual_strategy_json=json.dumps(
                 visual_policies,
@@ -914,6 +921,8 @@ def _mock_fact_visual_strategy(
 
 def _mock_creative_direction_response(
     application: InsightApplicationMap,
+    *,
+    direction_count: int = 8,
 ) -> CreativeDirectionResponse:
     fact_ids = [fact.fact_id for fact in application.usable]
     if not fact_ids:
@@ -931,6 +940,14 @@ def _mock_creative_direction_response(
         ("细节发现", "家宴餐桌", "聚餐成员", "夹取观察", "近景轻推", "食欲吸引"),
         ("选择过程", "家庭储物区", "家庭采购者", "取出确认", "主观视角", "安心从容"),
         ("结果呈现", "餐后分享区", "朋友群体", "分食互动", "固定全景", "轻松愉悦"),
+        ("熟制观察", "家庭蒸锅区", "家庭烹饪者", "揭盖观察", "侧面近景", "期待满足"),
+        ("备餐节奏", "厨房砧板区", "仅手部", "整根放置", "顶视固定", "干净利落"),
+        ("选购确认", "商超货架", "家庭采购者", "拿取查看", "肩后跟拍", "理性安心"),
+        ("便当搭配", "通勤便当区", "通勤成年人", "放入餐盒", "俯拍轻移", "轻快实用"),
+        ("家常加菜", "家庭饭桌", "家庭成员", "端盘入桌", "横向跟随", "日常温暖"),
+        ("质感聚焦", "纯色静物台", "仅手部", "托盘移动", "低机位轻推", "克制清晰"),
+        ("节前收纳", "家庭储物柜", "家庭采购者", "放入储物篮", "中景固定", "有序踏实"),
+        ("小聚准备", "朋友聚餐桌", "年轻朋友", "摆放共享餐盘", "环绕中景", "热闹自然"),
     )
     dimension_pairs = (
         (CreativeDimensionKey.SCENE, CreativeDimensionKey.PRODUCT_RELATION),
@@ -941,6 +958,14 @@ def _mock_creative_direction_response(
         (CreativeDimensionKey.PRODUCT_RELATION, CreativeDimensionKey.CAMERA),
         (CreativeDimensionKey.NARRATIVE, CreativeDimensionKey.PERSONA),
         (CreativeDimensionKey.EMOTION, CreativeDimensionKey.SCENE),
+        (CreativeDimensionKey.CAMERA, CreativeDimensionKey.SCENE),
+        (CreativeDimensionKey.PRODUCT_RELATION, CreativeDimensionKey.NARRATIVE),
+        (CreativeDimensionKey.PERSONA, CreativeDimensionKey.CAMERA),
+        (CreativeDimensionKey.SCENE, CreativeDimensionKey.EMOTION),
+        (CreativeDimensionKey.NARRATIVE, CreativeDimensionKey.PRODUCT_RELATION),
+        (CreativeDimensionKey.CAMERA, CreativeDimensionKey.EMOTION),
+        (CreativeDimensionKey.PERSONA, CreativeDimensionKey.PRODUCT_RELATION),
+        (CreativeDimensionKey.NARRATIVE, CreativeDimensionKey.SCENE),
     )
     return CreativeDirectionResponse(
         directions=[
@@ -959,7 +984,7 @@ def _mock_creative_direction_response(
                 ),
                 avoid_families=["重复厨房切制"],
             )
-            for index, row in enumerate(rows)
+            for index, row in enumerate(rows[:direction_count])
         ]
     )
 

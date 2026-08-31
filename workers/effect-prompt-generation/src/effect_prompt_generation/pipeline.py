@@ -8,7 +8,7 @@ import re
 import unicodedata
 import uuid
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Any, Literal, cast
@@ -83,6 +83,7 @@ from .creative_directions import (
     allocate_direction_fact_focus_ids,
     allocate_creative_directions,
     complete_semantic_profile,
+    creative_direction_target_count,
     creative_direction_source_hash,
     dominant_action_motifs,
     dominant_families,
@@ -530,6 +531,9 @@ class PromptGenerationPipeline:
         application = self._require_application(context)
         visual_strategy = self._required_fact_visual_strategy(context)
         shared_prompt = self._required_shared_prompt(context)
+        expected_direction_count = creative_direction_target_count(
+            snapshot.settings.target_count
+        )
         source_hash = creative_direction_source_hash(
             insight_content_hash=snapshot.insight_artifact.content_hash,
             visual_strategy_hash=visual_strategy.strategy_hash,
@@ -555,6 +559,7 @@ class PromptGenerationPipeline:
                     visual_strategy,
                     source_hash=source_hash,
                     template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+                    expected_direction_count=expected_direction_count,
                 )
             except ValueError:
                 restored = None
@@ -569,7 +574,7 @@ class PromptGenerationPipeline:
                 StageStatus.RUNNING,
                 "正在规划批次创意方向",
                 metadata={
-                    "directionCount": 0,
+                    "directionCount": expected_direction_count,
                     "priorityDimensionDistribution": [],
                     "candidateTargetCount": math.ceil(
                         snapshot.settings.target_count * 1.4
@@ -592,6 +597,7 @@ class PromptGenerationPipeline:
                         visual_strategy,
                         source_hash=source_hash,
                         template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+                        expected_direction_count=expected_direction_count,
                     )
                     break
                 except ValueError as exc:
@@ -722,7 +728,7 @@ class PromptGenerationPipeline:
         if snapshot.operation == "BATCH_GENERATE" and round_number > 0:
             remaining_capacity = max(
                 0,
-                math.ceil(selection_target * 1.6) - len(cache.creatives),
+                math.ceil(selection_target * 1.8) - len(cache.creatives),
             )
             requested = min(requested, remaining_capacity)
             if requested <= 0:
@@ -1485,6 +1491,12 @@ class PromptGenerationPipeline:
                             for item in cache.creative_evaluations.values()
                             if candidate_ids is None or item.slot_id in candidate_ids
                         ]
+                        group_map = content_index.semantic_group_map(
+                            [
+                                *[item.slot_id for item in candidates],
+                                *content_index.anchor_ids,
+                            ]
+                        )
                         return select_creatives(
                             candidates,
                             evaluations,
@@ -1526,8 +1538,18 @@ class PromptGenerationPipeline:
                             ),
                             required_fact_ids=required_fact_ids,
                             fixed_covered_fact_ids=fixed_covered_fact_ids,
-                            quality_weight=0.70,
-                            novelty_weight=0.30,
+                            quality_weight=0.55,
+                            novelty_weight=0.45,
+                            semantic_group_resolver=lambda item: group_map.get(
+                                item.candidate.slot_id,
+                                item.candidate.slot_id,
+                            ),
+                            fixed_semantic_group_ids=[
+                                group_map[anchor_id]
+                                for anchor_id in content_index.anchor_ids
+                                if anchor_id in group_map
+                            ],
+                            semantic_group_repeat_penalty=12.0,
                         )
 
                     quality_baseline_result = select_creatives(
@@ -1586,7 +1608,11 @@ class PromptGenerationPipeline:
                         [item.candidate.slot_id for item in mmr_result.selected]
                     )
                     pre_guard_redundancy = post_supplement_redundancy
-                    mmr_result, final_guard_source = _guard_final_selection_risk(
+                    (
+                        mmr_result,
+                        final_guard_source,
+                        final_guard_swap_count,
+                    ) = _guard_final_selection_risk(
                         mmr_result,
                         comparators=[
                             ("QUALITY_BASELINE", quality_baseline_result),
@@ -1594,6 +1620,11 @@ class PromptGenerationPipeline:
                         ],
                         content_index=content_index,
                         target_count=selection_target,
+                        required_fact_ids=required_fact_ids,
+                        fixed_covered_fact_ids=fixed_covered_fact_ids,
+                        duplicate_limit_count=_maximum_semantic_duplicates(
+                            selection_target + len(anchors)
+                        ),
                     )
                     post_guard_redundancy = content_index.redundancy_summary(
                         [item.candidate.slot_id for item in mmr_result.selected]
@@ -1641,8 +1672,10 @@ class PromptGenerationPipeline:
                             if self.similarity_mode == "vector"
                             else "TRIGRAM_SHADOW"
                         ),
-                        "mmrQualityWeight": 0.70,
-                        "mmrDiversityWeight": 0.30,
+                        "mmrQualityWeight": 0.55,
+                        "mmrDiversityWeight": 0.45,
+                        "semanticGroupFirst": True,
+                        "semanticGroupRepeatPenalty": 12.0,
                         "contentNoveltyWeight": 0.70,
                         "clusterAwareNoveltyWeight": 0.30,
                         "fixedAnchorCount": len(anchors),
@@ -1700,6 +1733,7 @@ class PromptGenerationPipeline:
                         ),
                         "finalGuardApplied": final_guard_source is not None,
                         "finalGuardSource": final_guard_source,
+                        "finalGuardSwapCount": final_guard_swap_count,
                         "averageQualityDelta": round(
                             float(mmr_summary["averageQualityScore"])
                             - float(baseline_summary["averageQualityScore"]),
@@ -2040,8 +2074,8 @@ class PromptGenerationPipeline:
                     2,
                     math.ceil(max(redundant_excess, cluster_excess) * 1.25),
                 ),
-                math.ceil(selection_target * 0.20),
-                max(0, math.ceil(selection_target * 1.60) - len(cache.creatives)),
+                math.ceil(selection_target * 0.40),
+                max(0, math.ceil(selection_target * 1.80) - len(cache.creatives)),
             )
             should_diversity_supplement = diversity_supplement_count > 0
             cache.diversity_avoid_scene_atoms = set(dominant_scene_atom_values)
@@ -2536,9 +2570,12 @@ def _guard_final_selection_risk(
     comparators: list[tuple[str, CreativeSelectionResult]],
     content_index: ContentVectorIndex,
     target_count: int,
-) -> tuple[CreativeSelectionResult, str | None]:
+    required_fact_ids: Sequence[str] = (),
+    fixed_covered_fact_ids: Sequence[str] = (),
+    duplicate_limit_count: int = 0,
+) -> tuple[CreativeSelectionResult, str | None, int]:
     if len(preferred.selected) != target_count:
-        return preferred, None
+        return preferred, None, 0
     guarded = preferred
     guarded_risk = content_index.redundancy_summary(
         [item.candidate.slot_id for item in guarded.selected]
@@ -2555,7 +2592,129 @@ def _guard_final_selection_risk(
         guarded = comparator
         guarded_risk = comparator_risk
         source = comparator_source
-    return guarded, source
+    all_rows = {
+        row.candidate.slot_id: row
+        for result in [preferred, *[item for _, item in comparators]]
+        for row in [*result.selected, *result.rejected]
+    }
+    guarded_ids = {row.candidate.slot_id for row in guarded.selected}
+    guarded = CreativeSelectionResult(
+        selected=guarded.selected,
+        rejected=[
+            row for slot_id, row in all_rows.items() if slot_id not in guarded_ids
+        ],
+        exact_duplicate_count=guarded.exact_duplicate_count,
+    )
+    repaired, swap_count = _repair_redundant_selection(
+        guarded,
+        content_index=content_index,
+        required_fact_ids=required_fact_ids,
+        fixed_covered_fact_ids=fixed_covered_fact_ids,
+        duplicate_limit_count=duplicate_limit_count,
+    )
+    if swap_count:
+        source = "INDIVIDUAL_REDUNDANCY_REPAIR"
+    return repaired, source, swap_count
+
+
+def _repair_redundant_selection(
+    selection: CreativeSelectionResult,
+    *,
+    content_index: ContentVectorIndex,
+    required_fact_ids: Sequence[str],
+    fixed_covered_fact_ids: Sequence[str],
+    duplicate_limit_count: int,
+) -> tuple[CreativeSelectionResult, int]:
+    """Swap redundant rows for safer unused candidates without changing count."""
+
+    selected = list(selection.selected)
+    rejected = list(selection.rejected)
+    required = set(required_fact_ids) - set(fixed_covered_fact_ids)
+    swap_count = 0
+
+    def covers_required(rows: Sequence[RankedCreative]) -> bool:
+        covered = {
+            fact_id
+            for row in rows
+            for fact_id in row.evaluation.realized_fact_ids
+        }
+        return required.issubset(covered)
+
+    for _ in range(len(selected)):
+        current_risk = content_index.redundancy_summary(
+            [row.candidate.slot_id for row in selected]
+        )
+        if current_risk.redundant_candidate_count <= duplicate_limit_count:
+            break
+        risky_ids = set(current_risk.high_risk_candidate_ids)
+        removable = sorted(
+            (row for row in selected if row.candidate.slot_id in risky_ids),
+            key=lambda row: (row.quality_score, row.candidate.ordinal),
+        )
+        available = sorted(
+            rejected,
+            key=lambda row: (
+                row.quality_score,
+                row.novelty_score,
+                -row.candidate.ordinal,
+            ),
+            reverse=True,
+        )
+        best: tuple[
+            tuple[int, int, float, float],
+            int,
+            RankedCreative,
+            RedundancySummary,
+        ] | None = None
+        for removed in removable:
+            removed_index = next(
+                index
+                for index, row in enumerate(selected)
+                if row.candidate.slot_id == removed.candidate.slot_id
+            )
+            for replacement in available:
+                proposal = list(selected)
+                proposal[removed_index] = replacement
+                if not covers_required(proposal):
+                    continue
+                proposal_risk = content_index.redundancy_summary(
+                    [row.candidate.slot_id for row in proposal]
+                )
+                if not _strictly_dominates_redundancy(
+                    proposal_risk,
+                    current_risk,
+                ):
+                    continue
+                score = (
+                    current_risk.redundant_candidate_count
+                    - proposal_risk.redundant_candidate_count,
+                    current_risk.high_risk_pair_count
+                    - proposal_risk.high_risk_pair_count,
+                    replacement.quality_score - removed.quality_score,
+                    replacement.novelty_score,
+                )
+                if best is None or score > best[0]:
+                    best = (score, removed_index, replacement, proposal_risk)
+        if best is None:
+            break
+        _, removed_index, replacement, _ = best
+        removed = selected[removed_index]
+        selected[removed_index] = replacement
+        rejected = [
+            row
+            for row in rejected
+            if row.candidate.slot_id != replacement.candidate.slot_id
+        ]
+        rejected.append(removed)
+        swap_count += 1
+    return (
+        CreativeSelectionResult(
+            selected=selected,
+            rejected=rejected,
+            exact_duplicate_count=selection.exact_duplicate_count,
+        ),
+        swap_count,
+    )
 
 
 def _strictly_dominates_redundancy(

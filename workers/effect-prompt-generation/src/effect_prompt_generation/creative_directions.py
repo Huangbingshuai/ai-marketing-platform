@@ -96,6 +96,12 @@ _SCENE_ATOM_GUIDANCE = {
 }
 
 
+def creative_direction_target_count(target_count: int) -> int:
+    """Scale creative spaces with batch size instead of paraphrasing eight."""
+
+    return min(16, max(8, math.ceil(max(1, target_count) / 4)))
+
+
 def creative_direction_source_hash(
     *,
     insight_content_hash: str,
@@ -122,7 +128,13 @@ def validate_creative_direction_plan(
     *,
     source_hash: str,
     template_hash: str,
+    expected_direction_count: int | None = None,
 ) -> CreativeDirectionPlan:
+    if (
+        expected_direction_count is not None
+        and len(response.directions) != expected_direction_count
+    ):
+        raise ValueError("creative direction count does not match the batch target")
     usable_ids = {fact.fact_id for fact in application.usable}
     strategy_ids = set(fact_visual_strategy.by_id)
     directions: list[CreativeDirection] = []

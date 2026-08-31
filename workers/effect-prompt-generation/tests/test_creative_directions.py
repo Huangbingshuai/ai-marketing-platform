@@ -30,6 +30,7 @@ from effect_prompt_generation.creative_directions import (
     allocate_direction_fact_focus_ids,
     allocate_creative_directions,
     complete_semantic_profile,
+    creative_direction_target_count,
     creative_direction_source_hash,
     direction_allocation_bucket,
     scene_atom_from_text,
@@ -38,6 +39,12 @@ from effect_prompt_generation.creative_directions import (
 )
 
 from test_creatives import PromptApi, _runtime, _snapshot
+
+
+def test_creative_direction_count_scales_with_batch_size() -> None:
+    assert creative_direction_target_count(10) == 8
+    assert creative_direction_target_count(50) == 13
+    assert creative_direction_target_count(500) == 16
 
 
 def _cluster_snapshot() -> PromptGenerationSnapshot:
@@ -190,6 +197,13 @@ async def test_fifty_target_plans_exactly_seventy_initial_candidates() -> None:
     assert len(tasks) == 70
     assert sum(len(shard.tasks) for shard in shards) == 70
     assert all(task.creative_direction is not None for task in tasks)
+    direction_counts = Counter(
+        task.creative_direction.direction_id
+        for task in tasks
+        if task.creative_direction is not None
+    )
+    assert len(direction_counts) == 13
+    assert max(direction_counts.values()) <= 6
 
 
 @pytest.mark.asyncio
@@ -237,8 +251,8 @@ async def test_quantity_supplement_respects_total_candidate_ceiling() -> None:
     )
 
     # A 10-item target starts with 14 candidates. Every supplement shares the
-    # 16-item batch ceiling, so quantity recovery may request only two more.
-    assert sum(len(shard.tasks) for shard in supplement) == 2
+    # 18-item batch ceiling, so quantity recovery may request only four more.
+    assert sum(len(shard.tasks) for shard in supplement) == 4
 
 
 @pytest.mark.asyncio
@@ -260,7 +274,7 @@ async def test_cluster_concentration_triggers_only_one_diversity_supplement() ->
     )
 
     assert api.result is not None
-    assert api.result.metrics.generated_candidate_count == 16
+    assert api.result.metrics.generated_candidate_count == 18
     diversity_tasks = [
         task
         for shard in api.shards.values()
@@ -268,14 +282,14 @@ async def test_cluster_concentration_triggers_only_one_diversity_supplement() ->
         for task in shard.creative_plan
         if task.supplement_kind == "DIVERSITY"
     ]
-    assert len(diversity_tasks) == 2
+    assert len(diversity_tasks) == 4
     final_stage = next(
         stage
         for stage in reversed(api.stages)
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
     assert final_stage.metadata["diversitySupplementTriggered"] is True
-    assert final_stage.metadata["diversitySupplementCount"] == 2
+    assert final_stage.metadata["diversitySupplementCount"] == 4
     assert any(
         reason.startswith("ACTION_CLUSTER_OVER_40_PERCENT")
         for reason in final_stage.metadata["diversitySupplementReasons"]
@@ -342,6 +356,15 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
         source_hash=source_hash,
         template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
     )
+    with pytest.raises(ValueError, match="count does not match"):
+        validate_creative_direction_plan(
+            raw,
+            application,
+            strategy,
+            source_hash=source_hash,
+            template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+            expected_direction_count=13,
+        )
     planned_fact_ids = {
         fact_id
         for direction in plan.directions

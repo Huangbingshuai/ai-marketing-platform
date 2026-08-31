@@ -303,6 +303,37 @@ class ContentVectorIndex:
         )
         return round(100.0 * (1.0 - risk), 4)
 
+    def semantic_group_map(
+        self,
+        entity_ids: list[str],
+        *,
+        threshold: float = VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD,
+    ) -> dict[str, str]:
+        """Build stable connected-component keys for group-first selection."""
+
+        nodes = list(dict.fromkeys(item for item in entity_ids if item in self.row_by_id))
+        parent = {node: node for node in nodes}
+
+        def find(node: str) -> str:
+            while parent[node] != node:
+                parent[node] = parent[parent[node]]
+                node = parent[node]
+            return node
+
+        def union(left: str, right: str) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root == right_root:
+                return
+            canonical, merged = sorted((left_root, right_root))
+            parent[merged] = canonical
+
+        for left_index, left_id in enumerate(nodes):
+            for right_id in nodes[left_index + 1 :]:
+                if self.similarity(left_id, right_id) >= threshold:
+                    union(left_id, right_id)
+        return {node: find(node) for node in nodes}
+
     def redundancy_summary(
         self,
         selected_ids: list[str],

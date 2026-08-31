@@ -5,9 +5,12 @@ from collections import Counter
 from dataclasses import replace
 from typing import Any
 
+import numpy as np
 import pytest
 
 from effect_prompt_generation.embeddings import (
+    ContentEmbeddingStats,
+    ContentVectorIndex,
     EmbeddingBatchResult,
     EmbeddingProviderError,
     MockEmbeddingProvider,
@@ -34,6 +37,7 @@ from effect_prompt_generation.models import (
 )
 from effect_prompt_generation.pipeline import (
     PromptGenerationPipeline,
+    _guard_final_selection_risk,
     _maximum_semantic_duplicates,
     _semantic_evaluation,
 )
@@ -43,6 +47,7 @@ from effect_prompt_generation.providers import (
     ProviderErrorType,
 )
 from effect_prompt_generation.quality import (
+    CreativeSelectionResult,
     RankedCreative,
     _creative_novelty,
     creative_soft_warnings,
@@ -694,8 +699,9 @@ async def test_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
         api.result.metrics.candidate_target_count
     )
     assert selection_stage.metadata["embeddingRequestCount"] == 1
-    assert selection_stage.metadata["mmrQualityWeight"] == 0.7
-    assert selection_stage.metadata["mmrDiversityWeight"] == 0.3
+    assert selection_stage.metadata["mmrQualityWeight"] == 0.55
+    assert selection_stage.metadata["mmrDiversityWeight"] == 0.45
+    assert selection_stage.metadata["semanticGroupFirst"] is True
     assert selection_stage.metadata["contentMmrSelection"]["selectedCount"] == 10
     assert "dualVectorSelection" not in selection_stage.metadata
 
@@ -730,16 +736,16 @@ async def test_content_mmr_diversity_supplement_runs_once_and_keeps_exact_count(
 
     assert api.result is not None
     assert len(api.result.items) == 10
-    assert api.result.metrics.generated_candidate_count == 16
-    assert embedding_provider.input_count == 16
+    assert api.result.metrics.generated_candidate_count == 18
+    assert embedding_provider.input_count == 18
     final_selection_stage = next(
         stage
         for stage in reversed(api.stages)
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
     assert final_selection_stage.metadata["diversitySupplementTriggered"] is True
-    assert final_selection_stage.metadata["diversitySupplementCount"] == 2
-    assert final_selection_stage.metadata["embeddingInputCount"] == 16
+    assert final_selection_stage.metadata["diversitySupplementCount"] == 4
+    assert final_selection_stage.metadata["embeddingInputCount"] == 18
     assert final_selection_stage.metadata["embeddingRequestCount"] == 2
     assert final_selection_stage.metadata["finalAccurateCount"] == 10
     assert final_selection_stage.warnings == ["SEMANTIC_DUPLICATE_RATE_LIMIT_NOT_MET"]
@@ -755,7 +761,7 @@ async def test_content_mmr_diversity_supplement_runs_once_and_keeps_exact_count(
     await resumed.load_and_snapshot(runtime)
     restored_cache = resumed._cache(runtime)
     assert restored_cache.diversity_supplemented is True
-    assert restored_cache.diversity_supplement_count == 2
+    assert restored_cache.diversity_supplement_count == 4
     assert restored_cache.replenishment_rounds == 0
 
 
@@ -987,11 +993,11 @@ async def test_candidate_ceiling_stops_repeated_low_quality_supplements() -> Non
     assert api.result is not None
     assert api.result.quality_status == "NEEDS_REVIEW"
     assert api.result.items == []
-    assert api.result.metrics.generated_candidate_count == 16
+    assert api.result.metrics.generated_candidate_count == 18
     assert api.result.metrics.replenishment_rounds == 1
     assert Counter(item.phase.value for item in api.shards.values()) == {
         "CREATIVE": 5,
-        "CLASSIFICATION": 6,
+        "CLASSIFICATION": 7,
     }
 
 
@@ -1014,7 +1020,7 @@ async def test_stops_after_three_rounds_when_real_safety_issues_remain() -> None
     assert api.result is not None
     assert api.result.quality_status == "NEEDS_REVIEW"
     assert api.result.items == []
-    assert api.result.metrics.generated_candidate_count == 16
+    assert api.result.metrics.generated_candidate_count == 18
     assert api.result.metrics.replenishment_rounds == 1
 
 
@@ -1537,3 +1543,131 @@ def test_content_mmr_uses_70_30_and_fixed_anchor_from_first_choice() -> None:
 
     assert [item.candidate.slot_id for item in no_anchor.selected] == ["mmr-1"]
     assert [item.candidate.slot_id for item in with_anchor.selected] == ["mmr-2"]
+
+
+def test_semantic_group_first_selects_a_distinct_group_before_repeating() -> None:
+    def candidate(slot_id: str, ordinal: int) -> CreativeCandidate:
+        return CreativeCandidate(
+            slot_id=slot_id,
+            ordinal=ordinal,
+            round=0,
+            creative_core=f"{slot_id}创意主线",
+            declared_fact_ids=["fact-product"],
+            dimensions=CreativeDimensions(
+                narrative=f"{slot_id}叙事",
+                scene=f"{slot_id}场景",
+                persona="成年人手部",
+                product_relation="产品主体动作",
+                camera="稳定近景",
+                emotion="自然真实",
+            ),
+            content=f"{slot_id}场景中，成年人围绕产品完成一条清晰连续的主体动作。",
+        )
+
+    def evaluation(item: CreativeCandidate, quality: int) -> CreativeEvaluation:
+        return CreativeEvaluation(
+            slot_id=item.slot_id,
+            primary_purpose=FragmentType.PRODUCT_DISPLAY,
+            compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+            scores=CreativeScores(
+                product_relevance=quality,
+                creative_coherence=quality,
+                visual_executability=quality,
+                commercial_usefulness=quality,
+                visual_clarity=quality,
+            ),
+            semantic_signature=item.slot_id,
+            visual_signature=item.slot_id,
+        )
+
+    candidates = [candidate("a1", 1), candidate("a2", 2), candidate("b1", 3)]
+    groups = {"a1": "group-a", "a2": "group-a", "b1": "group-b"}
+    result = select_creatives(
+        candidates,
+        [
+            evaluation(candidates[0], 98),
+            evaluation(candidates[1], 96),
+            evaluation(candidates[2], 80),
+        ],
+        target_count=2,
+        quality_weight=1.0,
+        novelty_weight=0.0,
+        semantic_group_resolver=lambda row: groups[row.candidate.slot_id],
+        semantic_group_repeat_penalty=12.0,
+    )
+
+    assert [row.candidate.slot_id for row in result.selected] == ["a1", "b1"]
+
+
+def test_final_guard_swaps_redundant_item_without_changing_quantity() -> None:
+    def ranked(slot_id: str, ordinal: int, quality: int) -> RankedCreative:
+        candidate = CreativeCandidate(
+            slot_id=slot_id,
+            ordinal=ordinal,
+            round=0,
+            creative_core=f"{slot_id}创意主线",
+            declared_fact_ids=["fact-product"],
+            dimensions=CreativeDimensions(
+                narrative=f"{slot_id}叙事",
+                scene=f"{slot_id}场景",
+                persona="成年人手部",
+                product_relation="产品主体动作",
+                camera="稳定近景",
+                emotion="自然真实",
+            ),
+            content=f"{slot_id}场景中，成年人围绕产品完成一条清晰连续的主体动作。",
+        )
+        evaluation = CreativeEvaluation(
+            slot_id=slot_id,
+            primary_purpose=FragmentType.PRODUCT_DISPLAY,
+            compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+            scores=CreativeScores(
+                product_relevance=quality,
+                creative_coherence=quality,
+                visual_executability=quality,
+                commercial_usefulness=quality,
+                visual_clarity=quality,
+            ),
+            semantic_signature=slot_id,
+            visual_signature=slot_id,
+        )
+        return RankedCreative(candidate, evaluation, quality, 100.0, float(quality))
+
+    rows = [
+        ranked("a", 1, 95),
+        ranked("b", 2, 90),
+        ranked("c", 3, 88),
+        ranked("d", 4, 84),
+    ]
+    index = ContentVectorIndex(
+        entity_ids=("a", "b", "c", "d"),
+        row_by_id={"a": 0, "b": 1, "c": 2, "d": 3},
+        candidate_ids=("a", "b", "c", "d"),
+        anchor_ids=(),
+        similarities=np.asarray(
+            [
+                [1.0, 0.95, 0.10, 0.10],
+                [0.95, 1.0, 0.10, 0.10],
+                [0.10, 0.10, 1.0, 0.10],
+                [0.10, 0.10, 0.10, 1.0],
+            ],
+            dtype=np.float32,
+        ),
+        stats=ContentEmbeddingStats(4, 0, 0, 0, 4, 6, 0, 0, 0, 0, []),
+    )
+
+    guarded, source, swap_count = _guard_final_selection_risk(
+        CreativeSelectionResult(selected=rows[:3], rejected=[rows[3]], exact_duplicate_count=0),
+        comparators=[],
+        content_index=index,
+        target_count=3,
+        duplicate_limit_count=0,
+    )
+
+    assert len(guarded.selected) == 3
+    assert {row.candidate.slot_id for row in guarded.selected} == {"a", "c", "d"}
+    assert index.redundancy_summary(
+        [row.candidate.slot_id for row in guarded.selected]
+    ).redundant_candidate_count == 0
+    assert source == "INDIVIDUAL_REDUNDANCY_REPAIR"
+    assert swap_count == 1

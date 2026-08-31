@@ -114,6 +114,30 @@ def test_redundancy_summary_counts_duplicate_groups_formed_only_by_anchors() -> 
     assert summary.high_risk_candidate_ids == ()
 
 
+def test_semantic_group_map_returns_stable_connected_components() -> None:
+    index = ContentVectorIndex(
+        entity_ids=("a", "b", "c", "d"),
+        row_by_id={"a": 0, "b": 1, "c": 2, "d": 3},
+        candidate_ids=("a", "b", "c", "d"),
+        anchor_ids=(),
+        similarities=np.asarray(
+            [
+                [1.0, 0.90, 0.10, 0.10],
+                [0.90, 1.0, 0.85, 0.10],
+                [0.10, 0.85, 1.0, 0.10],
+                [0.10, 0.10, 0.10, 1.0],
+            ],
+            dtype=np.float32,
+        ),
+        stats=ContentEmbeddingStats(4, 0, 0, 0, 4, 6, 0, 0, 0, 0, []),
+    )
+
+    groups = index.semantic_group_map(["d", "c", "b", "a"])
+
+    assert groups["a"] == groups["b"] == groups["c"]
+    assert groups["d"] != groups["a"]
+
+
 def test_embedding_text_compiler_removes_shared_tail_and_common_product_tokens() -> (
     None
 ):

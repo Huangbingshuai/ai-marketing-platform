@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Callable
@@ -412,6 +413,9 @@ def select_creatives(
     fixed_covered_fact_ids: Sequence[str] = (),
     quality_weight: float = 0.8,
     novelty_weight: float = 0.2,
+    semantic_group_resolver: Callable[[RankedCreative], str] | None = None,
+    fixed_semantic_group_ids: Sequence[str] = (),
+    semantic_group_repeat_penalty: float = 0.0,
 ) -> CreativeSelectionResult:
     candidate_by_id = {item.slot_id: item for item in candidates}
     ranked = [
@@ -452,6 +456,7 @@ def select_creatives(
 
     selected: list[RankedCreative] = []
     remaining = list(unique)
+    semantic_group_counts: Counter[str] = Counter(fixed_semantic_group_ids)
     resolve_novelty = novelty_resolver or _creative_novelty
     novelty_by_id = {
         item.candidate.slot_id: (
@@ -466,6 +471,16 @@ def select_creatives(
         scored: list[RankedCreative] = []
         for item in remaining:
             novelty = novelty_by_id[item.candidate.slot_id]
+            semantic_group = (
+                semantic_group_resolver(item)
+                if semantic_group_resolver is not None
+                else None
+            )
+            repeat_penalty = (
+                semantic_group_counts[semantic_group] * semantic_group_repeat_penalty
+                if semantic_group is not None
+                else 0.0
+            )
             scored.append(
                 RankedCreative(
                     candidate=item.candidate,
@@ -473,7 +488,9 @@ def select_creatives(
                     quality_score=item.quality_score,
                     novelty_score=novelty,
                     selection_score=round(
-                        item.quality_score * quality_weight + novelty * novelty_weight,
+                        item.quality_score * quality_weight
+                        + novelty * novelty_weight
+                        - repeat_penalty,
                         4,
                     ),
                 )
@@ -483,8 +500,17 @@ def select_creatives(
             for row in scored
             if uncovered_required.intersection(row.evaluation.realized_fact_ids)
         ]
+        selection_pool = coverage_candidates or scored
+        if semantic_group_resolver is not None:
+            unused_group_candidates = [
+                row
+                for row in selection_pool
+                if semantic_group_counts[semantic_group_resolver(row)] == 0
+            ]
+            if unused_group_candidates:
+                selection_pool = unused_group_candidates
         best = max(
-            coverage_candidates or scored,
+            selection_pool,
             key=lambda row: (
                 row.selection_score,
                 dimension_gain_resolver(row, selected)
@@ -495,6 +521,8 @@ def select_creatives(
             ),
         )
         selected.append(best)
+        if semantic_group_resolver is not None:
+            semantic_group_counts[semantic_group_resolver(best)] += 1
         uncovered_required.difference_update(best.evaluation.realized_fact_ids)
         remaining = [
             item
