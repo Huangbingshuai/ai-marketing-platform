@@ -881,6 +881,90 @@ describe('EffectPromptRepository', () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  it('replaces a draft with imported manual prompts in one revision', async () => {
+    const timestamp = '2026-08-31T01:00:00.000Z';
+    const makeItem = (id: string, origin: 'AI' | 'MANUAL') => ({
+      id,
+      code: origin === 'AI' ? 'P001' : 'P002',
+      origin,
+      fragmentType: 'PRODUCT_DISPLAY' as const,
+      primaryPurpose: 'PRODUCT_DISPLAY' as const,
+      compatiblePurposes: ['PRODUCT_DISPLAY' as const],
+      classificationStatus: (origin === 'AI' ? 'VERIFIED' : 'PENDING') as 'VERIFIED' | 'PENDING',
+      productRelevance: origin === 'AI' ? 90 : 0,
+      materialTags: [],
+      targetDurationSeconds: 5,
+      creativeCore: '场景代入型',
+      dimensions: {
+        narrative: '场景代入型',
+        scene: '家庭餐桌',
+        persona: '年轻家庭',
+        productRelation: '广式腊肠',
+        camera: '固定近景',
+        emotion: '温馨治愈',
+      },
+      content: `${id} 的广式腊肠展示画面`,
+      insightBindings: [],
+      manualEdited: origin === 'MANUAL',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const existingItem = makeItem('00000000-0000-4000-8000-000000000011', 'AI');
+    const importedItem = makeItem('00000000-0000-4000-8000-000000000012', 'MANUAL');
+    const draft = recomputePromptQuality([existingItem], {
+      targetCount: 10,
+      defaultDurationSeconds: 5,
+    });
+    const updated = {
+      id: 'result-a',
+      projectId: 'project-a',
+      productId: 'product-a',
+      revision: 3,
+      savedAt: new Date(timestamp),
+      updatedAt: new Date(timestamp),
+    };
+    const update = vi.fn().mockResolvedValue(updated);
+    const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([{ id: 'result-a' }]),
+      effectPromptResult: {
+        findFirst: vi.fn().mockResolvedValue({
+          ...updated,
+          revision: 2,
+          draftResult: draft,
+          manualOverrides: null,
+        }),
+        update,
+      },
+    };
+    const repository = new EffectPromptRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    const output = await repository.mutateResult('project-a', 'result-a', 2, {
+      kind: 'IMPORT',
+      mode: 'REPLACE',
+      items: [importedItem],
+    });
+
+    expect(output).toMatchObject({
+      kind: 'UPDATED',
+      draft: {
+        items: [expect.objectContaining({ id: '00000000-0000-4000-8000-000000000012' })],
+      },
+    });
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          revision: { increment: 1 },
+          manualOverrides: expect.objectContaining({
+            added: [expect.objectContaining({ id: '00000000-0000-4000-8000-000000000012' })],
+            deleted: ['00000000-0000-4000-8000-000000000011'],
+          }),
+        }),
+      }),
+    );
+  });
+
   it('rechecks current insight and execution input inside the commit transaction', async () => {
     const commit = vi.fn();
     const transaction = {

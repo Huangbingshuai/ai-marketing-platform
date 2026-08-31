@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   loadEffectPromptNodeDetail,
   loadEffectPromptWorkspace,
+  parseEffectPromptImportJson,
   pollEffectPromptRun,
 } from './effect-prompt-generation.service';
 
@@ -82,5 +83,66 @@ describe('effect prompt generation HTTP service', () => {
     await expect(
       loadEffectPromptNodeDetail('project-1', 'prompt-run-1', 'FACT_VISUAL_STRATEGY_COMPILATION'),
     ).resolves.toEqual(detail);
+  });
+
+  it('parses a server-exported JSON batch and keeps only editable prompt fields', () => {
+    const dimensions = {
+      narrative: '场景代入型',
+      scene: '家庭餐桌',
+      persona: '年轻家庭',
+      productRelation: '广式腊肠',
+      camera: '固定近景',
+      emotion: '温馨治愈',
+    };
+    const parsed = parseEffectPromptImportJson(
+      JSON.stringify({
+        resultId: 'internal-result',
+        items: [
+          {
+            id: 'untrusted-id',
+            primaryPurpose: 'HOOK',
+            productRelevance: 100,
+            content: '家庭餐桌上展示蒸熟的广式腊肠。',
+            materialTags: ['餐桌', '餐桌', ''],
+            dimensions,
+          },
+          {
+            content: '家庭餐桌上展示蒸熟的广式腊肠。',
+            dimensions,
+          },
+        ],
+      }),
+    );
+
+    expect(parsed.duplicateCount).toBe(1);
+    expect(parsed.items).toEqual([
+      {
+        content: '家庭餐桌上展示蒸熟的广式腊肠。',
+        materialTags: ['餐桌'],
+        dimensions,
+      },
+      {
+        content: '家庭餐桌上展示蒸熟的广式腊肠。',
+        materialTags: [],
+        dimensions,
+      },
+    ]);
+    expect(parsed.items[0]).not.toHaveProperty('id');
+    expect(parsed.items[0]).not.toHaveProperty('primaryPurpose');
+  });
+
+  it('rejects an import row without all six creative dimensions', () => {
+    expect(() =>
+      parseEffectPromptImportJson(
+        JSON.stringify({
+          items: [
+            {
+              content: '产品近景',
+              dimensions: { narrative: '展示型' },
+            },
+          ],
+        }),
+      ),
+    ).toThrow('缺少场景变量');
   });
 });

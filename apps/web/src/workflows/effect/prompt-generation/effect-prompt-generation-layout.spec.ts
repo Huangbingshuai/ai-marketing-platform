@@ -105,6 +105,20 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('用途会根据新内容重新判断');
   });
 
+  it('supports atomic JSON import with append and replace modes', () => {
+    expect(pageSource).toContain('批量导入');
+    expect(pageSource).toContain('accept=".json,application/json"');
+    expect(pageSource).toContain('parseEffectPromptImportJson');
+    expect(pageSource).toContain('importEffectPromptBatchDraft');
+    expect(pageSource).toContain('value="APPEND"');
+    expect(pageSource).toContain('value="REPLACE"');
+    expect(pageSource).toContain('系统不会信任文件中的用途、评分或内部');
+    expect(pageSource).toContain('ID。');
+    expect(pageSource).toContain('@keydown.esc="closeImportDialog"');
+    expect(pageSource).toContain('次级素材标签（可选）');
+    expect(pageSource).toContain('currentCountStats.actualCount} 条 Prompt');
+  });
+
   it('renders the current batch graph without version or history controls', () => {
     for (const nodeId of [
       'LOAD_AND_SNAPSHOT',

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type {
   EffectPromptBatchResult,
   EffectPromptDimensions,
+  EffectPromptImportMode,
   EffectPromptItem,
   EffectPromptManualOverrides,
   EffectPromptOperation,
@@ -1198,6 +1199,7 @@ export class EffectPromptRepository {
     expectedRevision: number,
     mutation:
       | { kind: 'ADD'; item: EffectPromptItem }
+      | { kind: 'IMPORT'; mode: EffectPromptImportMode; items: EffectPromptItem[] }
       | {
           kind: 'UPDATE';
           itemId: string;
@@ -1235,7 +1237,20 @@ export class EffectPromptRepository {
       const items = [...current.items];
       let semanticEvaluation = pendingEffectPromptSemanticEvaluation();
       let semanticContentUnchanged = mutation.kind === 'SHARED_PROMPT';
-      if (mutation.kind === 'ADD') {
+      if (mutation.kind === 'IMPORT') {
+        if (mutation.items.some((item) => items.some(({ id }) => id === item.id)))
+          return { kind: 'ITEM_CONFLICT' as const };
+        if (mutation.mode === 'REPLACE') {
+          const deletedAiIds = items.filter(({ origin }) => origin === 'AI').map(({ id }) => id);
+          items.splice(0, items.length, ...mutation.items);
+          overrides.added = [...mutation.items];
+          overrides.edited = {};
+          overrides.deleted = [...new Set([...overrides.deleted, ...deletedAiIds])];
+        } else {
+          items.push(...mutation.items);
+          overrides.added.push(...mutation.items);
+        }
+      } else if (mutation.kind === 'ADD') {
         if (items.some(({ id }) => id === mutation.item.id))
           return { kind: 'ITEM_CONFLICT' as const };
         items.push(mutation.item);

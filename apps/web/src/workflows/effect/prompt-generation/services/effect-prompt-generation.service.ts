@@ -3,16 +3,20 @@ import type {
   EffectPromptBatchSettings,
   EffectPromptDimensions,
   EffectPromptFragmentType,
+  EffectPromptImportItem,
+  EffectPromptImportMode,
   EffectPromptItem,
   EffectPromptNodeId,
   EffectPromptRun,
   GetEffectPromptNodeDetailData,
   GetEffectPromptResultData,
   GetEffectPromptWorkspaceData,
+  ImportEffectPromptResultData,
   StartEffectPromptRunRequest,
   UpdateEffectPromptResultData,
   ValidateEffectPromptResultData,
 } from '@ai-marketing/contracts';
+import { EFFECT_PROMPT_DIMENSIONS, EFFECT_PROMPT_LIMITS } from '@ai-marketing/contracts';
 
 import {
   addEffectPromptItem,
@@ -22,6 +26,7 @@ import {
   getEffectPromptResult,
   getEffectPromptRun,
   getEffectPromptWorkspace,
+  importEffectPromptItems,
   saveEffectPromptSettings,
   startEffectPromptRun,
   updateEffectPromptItem,
@@ -169,6 +174,69 @@ export type PromptItemDraft = {
   dimensions: EffectPromptDimensions;
 };
 
+export type ParsedEffectPromptImport = {
+  items: EffectPromptImportItem[];
+  duplicateCount: number;
+};
+
+export const parseEffectPromptImportJson = (source: string): ParsedEffectPromptImport => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(source) as unknown;
+  } catch {
+    throw new Error('导入文件不是有效的 JSON');
+  }
+  const rows = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === 'object' && Array.isArray((parsed as { items?: unknown }).items)
+      ? (parsed as { items: unknown[] }).items
+      : null;
+  if (!rows?.length) throw new Error('导入文件中没有 Prompt 条目');
+  if (rows.length > EFFECT_PROMPT_LIMITS.maxCount)
+    throw new Error(`一次最多导入 ${EFFECT_PROMPT_LIMITS.maxCount} 条 Prompt`);
+
+  const items = rows.map((row, index): EffectPromptImportItem => {
+    if (!row || typeof row !== 'object' || Array.isArray(row))
+      throw new Error(`第 ${index + 1} 条 Prompt 结构无效`);
+    const value = row as Record<string, unknown>;
+    const content = typeof value.content === 'string' ? value.content.normalize('NFC').trim() : '';
+    if (!content || content.length > 12_000)
+      throw new Error(`第 ${index + 1} 条 Prompt 正文为空或超过长度限制`);
+    const dimensionsValue = value.dimensions;
+    if (!dimensionsValue || typeof dimensionsValue !== 'object' || Array.isArray(dimensionsValue))
+      throw new Error(`第 ${index + 1} 条 Prompt 缺少六维创意信息`);
+    const dimensions = Object.fromEntries(
+      EFFECT_PROMPT_DIMENSIONS.map(({ key, label }) => {
+        const item = (dimensionsValue as Record<string, unknown>)[key];
+        if (typeof item !== 'string' || !item.trim())
+          throw new Error(`第 ${index + 1} 条 Prompt 缺少${label}`);
+        return [key, item.normalize('NFC').trim()];
+      }),
+    ) as EffectPromptDimensions;
+    const materialTags =
+      value.materialTags === undefined
+        ? []
+        : Array.isArray(value.materialTags) &&
+            value.materialTags.length <= EFFECT_PROMPT_LIMITS.maxMaterialTags &&
+            value.materialTags.every((tag) => typeof tag === 'string' && tag.trim().length <= 120)
+          ? [
+              ...new Map(
+                value.materialTags
+                  .map((tag) => (tag as string).normalize('NFC').trim())
+                  .filter(Boolean)
+                  .map((tag) => [tag.toLocaleLowerCase('zh-CN'), tag]),
+              ).values(),
+            ]
+          : null;
+    if (materialTags === null) throw new Error(`第 ${index + 1} 条 Prompt 的次级标签无效`);
+    return { content, dimensions, materialTags };
+  });
+  const keys = items.map(({ content }) =>
+    content.normalize('NFC').trim().replaceAll(/\s+/gu, ' ').toLocaleLowerCase('zh-CN'),
+  );
+  return { items, duplicateCount: keys.length - new Set(keys).size };
+};
+
 export const saveEffectPromptItem = async (
   projectId: string,
   resultId: string,
@@ -191,6 +259,17 @@ export const removeEffectPromptItem = async (
   signal?: AbortSignal,
 ): Promise<UpdateEffectPromptResultData> =>
   (await deleteEffectPromptItem(projectId, resultId, item.id, expectedRevision, signal)).data;
+
+export const importEffectPromptBatchDraft = async (
+  projectId: string,
+  resultId: string,
+  expectedRevision: number,
+  mode: EffectPromptImportMode,
+  items: EffectPromptImportItem[],
+  signal?: AbortSignal,
+): Promise<ImportEffectPromptResultData> =>
+  (await importEffectPromptItems(projectId, resultId, { mode, items, expectedRevision }, signal))
+    .data;
 
 export const saveEffectPromptSharedPrompt = async (
   projectId: string,
@@ -219,6 +298,8 @@ export const downloadEffectPromptBatch = async (
   const exported = (await exportEffectPromptResult(projectId, resultId, signal)).data;
   const renderProfile = exported.result.renderProfile;
   const fileContent = {
+    format: 'effect-prompt-batch',
+    formatVersion: 1,
     productId: exported.productId,
     resultId: exported.resultId,
     revision: exported.revision,

@@ -3,6 +3,7 @@ import type {
   EffectPromptBatchSettings,
   EffectPromptDimensions,
   EffectPromptFragmentType,
+  EffectPromptImportMode,
   EffectPromptOperation,
   EffectPromptShardPhase,
   EffectPromptStageStatus,
@@ -10,6 +11,7 @@ import type {
 import {
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_GRAPH_NODES,
+  EFFECT_PROMPT_IMPORT_MODES,
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_OPERATIONS,
   EFFECT_PROMPT_SHARD_PHASES,
@@ -30,6 +32,7 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 
 export class PromptWorkspaceQueryDto {
@@ -64,13 +67,37 @@ export class StartPromptRunDto {
 
 export class PromptItemDto {
   @IsArray()
-  @ArrayMinSize(1)
   @ArrayMaxSize(EFFECT_PROMPT_LIMITS.maxMaterialTags)
   @IsString({ each: true })
   @MaxLength(120, { each: true })
   materialTags!: string[];
   @Allow() dimensions!: EffectPromptDimensions;
   @IsString() @MaxLength(12_000) content!: string;
+  @Type(() => Number) @IsInt() @Min(1) expectedRevision!: number;
+}
+
+export class ImportPromptItemDto {
+  @IsArray()
+  @ArrayMaxSize(EFFECT_PROMPT_LIMITS.maxMaterialTags)
+  @IsString({ each: true })
+  @MaxLength(120, { each: true })
+  materialTags: string[] = [];
+
+  @Allow() dimensions!: EffectPromptDimensions;
+
+  @IsString() @MaxLength(12_000) content!: string;
+}
+
+export class ImportPromptResultDto {
+  @IsIn([...EFFECT_PROMPT_IMPORT_MODES]) mode!: EffectPromptImportMode;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(EFFECT_PROMPT_LIMITS.maxCount)
+  @ValidateNested({ each: true })
+  @Type(() => ImportPromptItemDto)
+  items!: ImportPromptItemDto[];
+
   @Type(() => Number) @IsInt() @Min(1) expectedRevision!: number;
 }
 

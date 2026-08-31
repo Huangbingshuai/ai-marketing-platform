@@ -1181,4 +1181,88 @@ describe('EffectPromptService settings contract', () => {
       errorMessage: null,
     });
   });
+
+  it('imports a batch atomically, skips duplicate bodies, and accepts empty secondary tags', async () => {
+    const draft = completionGateFixture();
+    const savedAt = new Date('2026-08-31T01:00:00.000Z');
+    const repository = {
+      result: vi.fn().mockResolvedValue({
+        id: 'result-a',
+        productId: 'product-a',
+        revision: 4,
+        draftResult: draft,
+        savedAt,
+        updatedAt: savedAt,
+      }),
+      mutateResult: vi
+        .fn()
+        .mockImplementation(
+          async (
+            _projectId: string,
+            _resultId: string,
+            _revision: number,
+            mutation: { items: typeof draft.items },
+          ) => ({
+            kind: 'UPDATED',
+            result: {
+              id: 'result-a',
+              productId: 'product-a',
+              revision: 5,
+              savedAt,
+              updatedAt: savedAt,
+            },
+            draft: recomputePromptQuality(
+              [...draft.items, ...mutation.items],
+              draft.settings,
+              draft.metrics,
+              draft.renderProfile,
+              draft.sharedPrompt,
+            ),
+          }),
+        ),
+    };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const service = new EffectPromptService(repository as never, projects as never, {} as never);
+    const dimensions = {
+      narrative: '场景代入型',
+      scene: '家庭餐桌',
+      persona: '年轻家庭',
+      productRelation: '广式腊肠',
+      camera: '固定近景',
+      emotion: '温馨治愈',
+    };
+
+    const output = await service.importItems('project-a', 'result-a', 4, 'APPEND', [
+      { content: draft.items[0]!.content, materialTags: [], dimensions },
+      {
+        content: '家庭餐桌上，成年人将蒸熟的广式腊肠放入餐盘，固定近景停在产品外观。',
+        materialTags: [],
+        dimensions,
+      },
+    ]);
+
+    expect(output.importSummary).toEqual({
+      mode: 'APPEND',
+      receivedCount: 2,
+      importedCount: 1,
+      skippedDuplicateCount: 1,
+      pendingEvaluationCount: 1,
+    });
+    expect(repository.mutateResult).toHaveBeenCalledWith(
+      'project-a',
+      'result-a',
+      4,
+      expect.objectContaining({
+        kind: 'IMPORT',
+        mode: 'APPEND',
+        items: [
+          expect.objectContaining({
+            origin: 'MANUAL',
+            classificationStatus: 'PENDING',
+            materialTags: [],
+          }),
+        ],
+      }),
+    );
+  });
 });

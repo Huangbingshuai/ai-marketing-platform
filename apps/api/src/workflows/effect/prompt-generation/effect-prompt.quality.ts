@@ -452,7 +452,6 @@ const validBaseItem = (item: Record<string, unknown>): boolean =>
     typeof item.fragmentType === 'string' &&
     EFFECT_PROMPT_FRAGMENT_TYPES.includes(item.fragmentType as EffectPromptFragmentType) &&
     Array.isArray(item.materialTags) &&
-    item.materialTags.length > 0 &&
     item.materialTags.length <= EFFECT_PROMPT_LIMITS.maxMaterialTags &&
     item.materialTags.every(
       (tag) => typeof tag === 'string' && tag.trim().length > 0 && tag.length <= 120,

@@ -9,6 +9,7 @@ import {
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_GRAPH_NODE_IDS,
   EFFECT_PROMPT_INSIGHT_FIELDS,
+  EFFECT_PROMPT_IMPORT_MODES,
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_NODE_DETAIL_SECTION_KINDS,
   EFFECT_PROMPT_NODE_DETAIL_SECTION_STATES,
@@ -110,6 +111,10 @@ describe('effect prompt generation contract', () => {
     };
     expect(request.operation).toBe('ITEM_EVALUATE');
     expect(effectPromptSettingsNodeId('product-one')).toBe('PROMPT_GENERATION:product-one');
+  });
+
+  it('publishes append and replace as the only batch import modes', () => {
+    expect(EFFECT_PROMPT_IMPORT_MODES).toEqual(['APPEND', 'REPLACE']);
   });
 
   it('keeps the canonical JSON schema aligned with purpose and score fields', () => {

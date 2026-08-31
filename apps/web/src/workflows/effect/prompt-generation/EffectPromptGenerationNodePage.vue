@@ -5,6 +5,8 @@ import type {
   EffectPromptDimensionKey,
   EffectPromptDimensions,
   EffectPromptFragmentType,
+  EffectPromptImportItem,
+  EffectPromptImportMode,
   EffectPromptItem,
   EffectPromptInsightField,
   EffectPromptNodeExecution,
@@ -42,6 +44,7 @@ import {
   LoaderCircle,
   Pencil,
   Plus,
+  Upload,
   RefreshCw,
   Search,
   Sparkles,
@@ -66,11 +69,13 @@ import {
   beginEffectPromptRun,
   commitEffectPromptResult,
   downloadEffectPromptBatch,
+  importEffectPromptBatchDraft,
   loadEffectPromptNodeDetail,
   loadEffectPromptResult,
   loadEffectPromptRun,
   loadEffectPromptWorkspace,
   pollEffectPromptRun,
+  parseEffectPromptImportJson,
   removeEffectPromptItem,
   saveEffectPromptItem,
   saveEffectPromptSharedPrompt,
@@ -109,6 +114,7 @@ const notice = ref<Notice | null>(null);
 const itemOperation = ref<ItemOperation | null>(null);
 const validating = ref(false);
 const exporting = ref(false);
+const importing = ref(false);
 const batchStartPending = ref(false);
 const sharedPromptDraft = ref('');
 const sharedPromptDirty = ref(false);
@@ -139,6 +145,16 @@ const editorTrigger = ref<HTMLElement | null>(null);
 const editorCloseButton = ref<HTMLButtonElement | null>(null);
 const promptSearchInput = ref<HTMLInputElement | null>(null);
 
+const importFileInput = ref<HTMLInputElement | null>(null);
+const importDialogOpen = ref(false);
+const importMode = ref<EffectPromptImportMode>('APPEND');
+const importFileName = ref('');
+const importItems = ref<EffectPromptImportItem[]>([]);
+const importDuplicateCount = ref(0);
+const importError = ref('');
+const importTrigger = ref<HTMLElement | null>(null);
+const importCloseButton = ref<HTMLButtonElement | null>(null);
+
 const regenerationDialogOpen = ref(false);
 const regenerationCandidate = ref<EffectPromptItem | null>(null);
 const regenerationDimensions = ref<EffectPromptDimensions>(emptyDimensions());
@@ -161,6 +177,7 @@ let operationController: AbortController | null = null;
 let itemMutationController: AbortController | null = null;
 let sharedPromptController: AbortController | null = null;
 let exportController: AbortController | null = null;
+let importController: AbortController | null = null;
 let graphDetailController: AbortController | null = null;
 let settingsTimer: ReturnType<typeof setTimeout> | undefined;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -646,6 +663,7 @@ watch(currentProductId, (next, previous) => {
   itemMutationController?.abort();
   sharedPromptController?.abort();
   exportController?.abort();
+  importController?.abort();
   itemOperation.value = null;
   exporting.value = false;
   sharedPromptDirty.value = false;
@@ -660,6 +678,7 @@ watch(currentProductId, (next, previous) => {
   regenerationTrigger.value = null;
   deleteDialogOpen.value = false;
   deleteCandidate.value = null;
+  importDialogOpen.value = false;
   regenerationDialogOpen.value = false;
   regenerationCandidate.value = null;
   deleteTrigger.value = null;
@@ -955,7 +974,7 @@ const commitEditor = async (): Promise<void> => {
   const draft = editorDraft.value;
   if (!state?.resultId || !result || result.revision === null || partialPreview.value) return;
   if (!draft.content.trim()) {
-    showNotice('请填写片段类型和 Prompt 内容', 'warning');
+    showNotice('请填写 Prompt 内容', 'warning');
     return;
   }
   const missing = EFFECT_PROMPT_DIMENSIONS.find(({ key }) => !draft.dimensions[key].trim());
@@ -1199,6 +1218,122 @@ const copyItem = async (item: EffectPromptItem): Promise<void> => {
   }
 };
 
+const resetImportState = (): void => {
+  importFileName.value = '';
+  importItems.value = [];
+  importDuplicateCount.value = 0;
+  importError.value = '';
+  importMode.value = 'APPEND';
+  if (importFileInput.value) importFileInput.value.value = '';
+};
+
+const closeImportDialog = (): void => {
+  if (importing.value) return;
+  importDialogOpen.value = false;
+  resetImportState();
+  const trigger = importTrigger.value;
+  importTrigger.value = null;
+  void nextTick(() => trigger?.focus());
+};
+
+const readImportFile = async (file: File): Promise<void> => {
+  importError.value = '';
+  if (!file.name.toLocaleLowerCase('zh-CN').endsWith('.json')) {
+    importError.value = '请选择 JSON 文件';
+    return;
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    importError.value = '导入文件不能超过 5 MB';
+    return;
+  }
+  try {
+    const parsed = parseEffectPromptImportJson(await file.text());
+    importFileName.value = file.name;
+    importItems.value = parsed.items;
+    importDuplicateCount.value = parsed.duplicateCount;
+    importDialogOpen.value = true;
+    await nextTick();
+    importCloseButton.value?.focus();
+  } catch (error) {
+    importError.value = safeMessage(error, 'Prompt 导入文件解析失败');
+    showNotice(importError.value, 'error');
+  }
+};
+
+const triggerImportFileDialog = (): void => {
+  if (!importFileInput.value) return;
+  importFileInput.value.value = '';
+  importFileInput.value.click();
+};
+
+const chooseImportFile = (event?: Event): void => {
+  if (partialPreview.value || currentRunning.value || importing.value || !resultData.value) return;
+  importTrigger.value = event?.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  importError.value = '';
+  triggerImportFileDialog();
+};
+
+const onImportFileChange = async (event: Event): Promise<void> => {
+  const input = event.currentTarget as HTMLInputElement;
+  const file = input.files?.[0];
+  if (file) await readImportFile(file);
+  if (!importDialogOpen.value) input.value = '';
+};
+
+const onImportDrop = async (event: DragEvent): Promise<void> => {
+  if (importing.value) return;
+  const file = event.dataTransfer?.files?.[0];
+  if (file) await readImportFile(file);
+};
+
+const confirmImportBatch = async (): Promise<void> => {
+  const state = currentState.value;
+  const result = resultData.value;
+  if (
+    !state?.resultId ||
+    !result ||
+    result.revision === null ||
+    partialPreview.value ||
+    currentRunning.value ||
+    importing.value ||
+    !importItems.value.length
+  )
+    return;
+  importController?.abort();
+  const controller = new AbortController();
+  importController = controller;
+  importing.value = true;
+  const productId = state.productId;
+  try {
+    const imported = await importEffectPromptBatchDraft(
+      props.projectId,
+      state.resultId,
+      result.revision,
+      importMode.value,
+      importItems.value,
+      controller.signal,
+    );
+    if (controller.signal.aborted || currentProductId.value !== productId) return;
+    importDialogOpen.value = false;
+    const { importedCount, skippedDuplicateCount, pendingEvaluationCount } = imported.importSummary;
+    resetImportState();
+    importTrigger.value = null;
+    page.value = 1;
+    await reloadWorkspace(false);
+    showNotice(
+      importedCount
+        ? `已导入 ${importedCount} 条 Prompt${skippedDuplicateCount ? `，跳过 ${skippedDuplicateCount} 条重复正文` : ''}；当前 ${pendingEvaluationCount} 条待评估`
+        : `没有新增 Prompt，已跳过 ${skippedDuplicateCount} 条重复正文`,
+      importedCount ? 'success' : 'warning',
+    );
+  } catch (error) {
+    if (!isAbortError(error)) await handleMutationError(error, 'Prompt 批量导入失败');
+  } finally {
+    if (importController === controller) importController = null;
+    if (!controller.signal.aborted || currentProductId.value === productId) importing.value = false;
+  }
+};
+
 const exportBatch = async (): Promise<void> => {
   const state = currentState.value;
   if (
@@ -1248,7 +1383,7 @@ const validatePromptBatch = async (): Promise<void> => {
     partialPreview.value ||
     !currentQualityReady.value
   ) {
-    showNotice('当前批次仍未满足数量、类型配额、事实覆盖或用户设置的相似率上限', 'warning');
+    showNotice('当前批次仍存在数量偏差、重复正文、待评估条目或未通过的质量检查', 'warning');
     return;
   }
   validating.value = true;
@@ -1928,6 +2063,25 @@ onBeforeUnmount(() => {
           >
             {{ currentSemanticDisplay.text }}
           </span>
+          <input
+            ref="importFileInput"
+            class="visually-hidden"
+            type="file"
+            accept=".json,application/json"
+            tabindex="-1"
+            aria-hidden="true"
+            @change="onImportFileChange"
+          />
+          <button
+            v-if="!partialPreview"
+            class="secondary-button"
+            type="button"
+            :disabled="!resultData || currentRunning || importing"
+            @click="chooseImportFile($event)"
+          >
+            <LoaderCircle v-if="importing" class="spin" :size="15" />
+            <Upload v-else :size="15" />批量导入
+          </button>
           <button
             v-if="!partialPreview"
             class="primary-button"
@@ -2128,8 +2282,8 @@ onBeforeUnmount(() => {
       <WorkflowNodeDraftBar
         :detail="
           partialPreview
-            ? `${currentProduct.name} · ${resultData?.total ?? 0} 条临时预览 · 未保存为节点结果`
-            : `${currentProduct.name} · ${resultData?.total ?? 0} 条 Prompt · ${currentState.commitStatus === 'COMMITTED' ? '已提交工作副本，尚未归档' : '已自动保存到节点草稿，尚未提交工作副本'}`
+            ? `${currentProduct.name} · ${currentCountStats.actualCount} 条临时预览 · 未保存为节点结果`
+            : `${currentProduct.name} · ${currentCountStats.actualCount} 条 Prompt · ${currentState.commitStatus === 'COMMITTED' ? '已提交工作副本，尚未归档' : '已自动保存到节点草稿，尚未提交工作副本'}`
         "
         :state="
           currentRunning || currentSaveStatus === 'saving'
@@ -2175,6 +2329,84 @@ onBeforeUnmount(() => {
     </template>
 
     <Teleport to="body">
+      <div
+        v-if="importDialogOpen"
+        class="prompt-dialog-backdrop"
+        @mousedown.self="closeImportDialog"
+      >
+        <section
+          class="prompt-import-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="prompt-import-title"
+          @keydown.esc="closeImportDialog"
+          @dragover.prevent
+          @drop.prevent="onImportDrop"
+        >
+          <header>
+            <div>
+              <span>批量导入</span>
+              <h2 id="prompt-import-title">导入 Prompt 到节点草稿</h2>
+            </div>
+            <button
+              ref="importCloseButton"
+              type="button"
+              aria-label="关闭 Prompt 导入窗口"
+              @click="closeImportDialog"
+            >
+              <X :size="17" />
+            </button>
+          </header>
+          <div class="prompt-import-file">
+            <Upload :size="24" />
+            <div>
+              <strong>{{ importFileName }}</strong>
+              <span>识别到 {{ importItems.length }} 条 Prompt</span>
+              <small v-if="importDuplicateCount">
+                文件内有 {{ importDuplicateCount }} 条重复正文，保存时会自动跳过。
+              </small>
+            </div>
+            <button type="button" :disabled="importing" @click="triggerImportFileDialog">
+              更换文件
+            </button>
+          </div>
+          <fieldset class="prompt-import-modes">
+            <legend>导入方式</legend>
+            <label>
+              <input v-model="importMode" type="radio" value="APPEND" />
+              <span>
+                <strong>追加到当前草稿</strong>
+                <small>保留当前 Prompt，重复正文会被跳过。</small>
+              </span>
+            </label>
+            <label>
+              <input v-model="importMode" type="radio" value="REPLACE" />
+              <span>
+                <strong>替换当前草稿</strong>
+                <small>用本文件内容替换当前 Prompt；已提交工作副本不会立即改变。</small>
+              </span>
+            </label>
+          </fieldset>
+          <p class="prompt-import-note">
+            系统不会信任文件中的用途、评分或内部
+            ID。导入内容会统一标记为人工草稿，并在重新评估完成前阻止完成校验。
+          </p>
+          <p v-if="importError" class="prompt-import-error" role="alert">{{ importError }}</p>
+          <footer>
+            <button type="button" :disabled="importing" @click="closeImportDialog">取消</button>
+            <button
+              class="primary-button"
+              type="button"
+              :disabled="importing || !importItems.length"
+              @click="confirmImportBatch"
+            >
+              <LoaderCircle v-if="importing" class="spin" :size="14" />
+              {{ importMode === 'APPEND' ? '确认追加' : '确认替换' }}
+            </button>
+          </footer>
+        </section>
+      </div>
+
       <div v-if="editorOpen" class="prompt-dialog-backdrop" @mousedown.self="closeEditor">
         <section
           class="prompt-editor-dialog"
@@ -2206,7 +2438,7 @@ onBeforeUnmount(() => {
               <small>由当前批次统一设置，不写入 Prompt 正文。</small>
             </label>
             <label class="editor-wide-field">
-              <span>次级素材标签</span>
+              <span>次级素材标签（可选）</span>
               <input
                 v-model="editorMaterialTagsText"
                 type="text"
@@ -3993,6 +4225,7 @@ button:disabled {
   background: #0f172a66;
   backdrop-filter: blur(3px);
 }
+.prompt-import-dialog,
 .prompt-editor-dialog,
 .prompt-regeneration-dialog,
 .prompt-delete-dialog,
@@ -4004,6 +4237,166 @@ button:disabled {
   border: 1px solid #dbe4f6;
   border-radius: 20px;
   box-shadow: 0 24px 70px #0f172a38;
+}
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+.prompt-import-dialog {
+  width: min(680px, 100%);
+  padding: 22px;
+}
+.prompt-import-dialog > header {
+  display: flex;
+  margin-bottom: 18px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.prompt-import-dialog > header span {
+  color: #2563eb;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+.prompt-import-dialog > header h2 {
+  margin: 4px 0 0;
+  color: #1d2940;
+  font-size: 20px;
+}
+.prompt-import-dialog > header > button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  color: #64748b;
+  background: #f7f9fc;
+  border: 1px solid #dfe6f0;
+  border-radius: 9px;
+}
+.prompt-import-file {
+  display: flex;
+  min-height: 92px;
+  padding: 16px;
+  align-items: center;
+  gap: 13px;
+  color: #2563eb;
+  background: #f7faff;
+  border: 1px dashed #9ebaf3;
+  border-radius: 14px;
+}
+.prompt-import-file > div {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 4px;
+}
+.prompt-import-file strong {
+  overflow: hidden;
+  color: #24324a;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prompt-import-file span,
+.prompt-import-file small {
+  color: #718096;
+  font-size: 10px;
+}
+.prompt-import-file small {
+  color: #b45309;
+}
+.prompt-import-file button,
+.prompt-import-dialog > footer button {
+  display: inline-flex;
+  height: 38px;
+  padding: 0 15px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: #536178;
+  background: #fff;
+  border: 1px solid #dbe4f6;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 800;
+}
+.prompt-import-modes {
+  display: grid;
+  margin: 16px 0 0;
+  padding: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  border: 0;
+}
+.prompt-import-modes legend {
+  margin-bottom: 8px;
+  color: #4d5b72;
+  font-size: 11px;
+  font-weight: 900;
+}
+.prompt-import-modes label {
+  display: flex;
+  padding: 13px;
+  align-items: flex-start;
+  gap: 9px;
+  border: 1px solid #dbe4f6;
+  border-radius: 12px;
+  cursor: pointer;
+}
+.prompt-import-modes label:has(input:checked) {
+  background: #f6f9ff;
+  border-color: #7da4ff;
+}
+.prompt-import-modes input {
+  margin-top: 3px;
+}
+.prompt-import-modes label > span {
+  display: grid;
+  gap: 4px;
+}
+.prompt-import-modes strong {
+  color: #27364e;
+  font-size: 11px;
+}
+.prompt-import-modes small,
+.prompt-import-note {
+  color: #7c889a;
+  font-size: 10px;
+  line-height: 1.6;
+}
+.prompt-import-note {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border-radius: 10px;
+}
+.prompt-import-error {
+  margin: 10px 0 0;
+  color: #c24141;
+  font-size: 11px;
+}
+.prompt-import-dialog > footer {
+  display: flex;
+  margin-top: 17px;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.prompt-import-dialog > footer .primary-button {
+  min-width: 126px;
+  color: #fff;
+  background: var(--effect-blue);
+  border-color: var(--effect-blue);
+}
+.prompt-import-dialog button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 .prompt-editor-dialog {
   padding: 22px;
@@ -5618,6 +6011,7 @@ button:disabled {
     gap: 3px;
   }
   .editor-grid,
+  .prompt-import-modes,
   .regeneration-dimension-grid,
   .graph-row.parallel {
     grid-template-columns: 1fr;
@@ -5641,6 +6035,15 @@ button:disabled {
     margin-right: 0;
   }
   .prompt-editor-dialog > footer button {
+    width: 100%;
+  }
+  .prompt-import-file,
+  .prompt-import-dialog > footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .prompt-import-file button,
+  .prompt-import-dialog > footer button {
     width: 100%;
   }
   .prompt-dialog-backdrop {
