@@ -112,18 +112,16 @@ class FakeMessage:
         self.nacked = True
 
 
-@pytest.mark.parametrize("schema_version", [5, 6])
-def test_prompt_queue_envelope_accepts_v5_and_v6(schema_version: int) -> None:
+def test_prompt_queue_envelope_uses_current_shape() -> None:
     request = PromptGenerationRequest.model_validate(
         {
-            "schemaVersion": schema_version,
             "runId": "run-1",
             "projectId": "project-1",
             "requestId": "request-1",
         }
     )
 
-    assert request.schema_version == schema_version
+    assert request.run_id == "run-1"
 
 
 @pytest.mark.asyncio
@@ -142,7 +140,6 @@ async def test_runtime_validation_error_is_persisted_as_safe_failure_and_cache_i
     message = FakeMessage(
         json.dumps(
             {
-                "schemaVersion": 6,
                 "runId": "run-1",
                 "projectId": snapshot.project_id,
                 "requestId": "request-1",
@@ -209,7 +206,6 @@ async def test_retryable_message_is_requeued_once_when_failure_cannot_be_persist
     message = FakeMessage(
         json.dumps(
             {
-                "schemaVersion": 5,
                 "runId": "run-1",
                 "projectId": snapshot.project_id,
                 "requestId": "request-1",

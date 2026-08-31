@@ -18,11 +18,11 @@ from uuid import uuid4
 
 from effect_prompt_generation.config import WorkerSettings
 from effect_prompt_generation.graph import build_graph
-from effect_prompt_generation.main import _provider
+from effect_prompt_generation.main import _embedding_provider, _provider
 from effect_prompt_generation.models import (
     ProgressPayload,
-    PromptBatchResultV6,
-    PromptBatchSettingsV6,
+    PromptBatchResult,
+    PromptBatchSettings,
     PromptGenerationSnapshot,
     RuntimeContext,
     ShardPhase,
@@ -65,7 +65,7 @@ class LocalApi:
     def __init__(self) -> None:
         self.stages: list[StageOutput] = []
         self.shards: dict[str, ShardRecord] = {}
-        self.result: PromptBatchResultV6 | None = None
+        self.result: PromptBatchResult | None = None
         self.failure: Any | None = None
 
     async def put_stage(self, context: RuntimeContext, output: StageOutput) -> None:
@@ -104,7 +104,7 @@ class LocalApi:
         del context
         if execution_mode != "ARK":
             raise RuntimeError("paid quality batch must use the real Ark provider")
-        self.result = PromptBatchResultV6.model_validate(result)
+        self.result = PromptBatchResult.model_validate(result)
         return f"local-paid-{uuid4()}"
 
     async def fail(self, context: RuntimeContext, payload: Any) -> None:
@@ -120,29 +120,59 @@ class TrackingProvider:
         self.calls: list[Any] = []
         self.failures: list[dict[str, Any]] = []
 
+    async def compile_fact_visual_strategy(
+        self,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        return await self._tracked(
+            "FACT_VISUAL_STRATEGY_COMPILATION",
+            self.delegate.compile_fact_visual_strategy,
+            *args,
+            **kwargs,
+        )
+
+    async def plan_creative_directions(
+        self,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        return await self._tracked(
+            "COHERENT_CREATIVE_GENERATION",
+            self.delegate.plan_creative_directions,
+            *args,
+            **kwargs,
+        )
+
     async def generate_creatives(self, *args: Any, **kwargs: Any) -> Any:
-        try:
-            call = await self.delegate.generate_creatives(*args, **kwargs)
-        except ProviderError as exc:
-            self.failures.append(
-                {
-                    "stage": "COHERENT_CREATIVE_GENERATION",
-                    "errorType": exc.error_type.value,
-                    "attempts": exc.attempts,
-                    "elapsedMs": exc.elapsed_ms,
-                }
-            )
-            raise
-        self.calls.append(call.metadata)
-        return call
+        return await self._tracked(
+            "COHERENT_CREATIVE_GENERATION",
+            self.delegate.generate_creatives,
+            *args,
+            **kwargs,
+        )
 
     async def evaluate_creatives(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._tracked(
+            "CREATIVE_EVALUATION_CLASSIFICATION",
+            self.delegate.evaluate_creatives,
+            *args,
+            **kwargs,
+        )
+
+    async def _tracked(
+        self,
+        stage: str,
+        call_method: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
         try:
-            call = await self.delegate.evaluate_creatives(*args, **kwargs)
+            call = await call_method(*args, **kwargs)
         except ProviderError as exc:
             self.failures.append(
                 {
-                    "stage": "CREATIVE_EVALUATION_CLASSIFICATION",
+                    "stage": stage,
                     "errorType": exc.error_type.value,
                     "attempts": exc.attempts,
                     "elapsedMs": exc.elapsed_ms,
@@ -161,7 +191,7 @@ def _normalize(value: str) -> str:
 
 
 def _summary(
-    result: PromptBatchResultV6,
+    result: PromptBatchResult,
     api: LocalApi,
     calls: list[Any],
     failed_calls: list[dict[str, Any]],
@@ -271,8 +301,7 @@ def _summary(
         2,
     )
     return {
-        "schemaVersion": result.schema_version,
-        "templateVersions": sorted({item.prompt_version for item in calls}),
+        "templateHashes": sorted({item.template_hash for item in calls}),
         "targetCount": result.settings.target_count,
         "candidateTargetCount": result.metrics.candidate_target_count,
         "generatedCandidateCount": result.metrics.generated_candidate_count,
@@ -316,7 +345,7 @@ async def _run(args: argparse.Namespace) -> None:
     if args.stdin_base64:
         raw_snapshot = base64.b64decode(raw_snapshot).decode("utf-8")
     if args.analyze_result_only:
-        result = PromptBatchResultV6.model_validate_json(raw_snapshot)
+        result = PromptBatchResult.model_validate_json(raw_snapshot)
         summary = _summary(result, LocalApi(), [], [], 0.0)
         output_dir = Path(args.output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -332,7 +361,7 @@ async def _run(args: argparse.Namespace) -> None:
         return
     if args.analyze_full_only:
         payload = json.loads(raw_snapshot)
-        result = PromptBatchResultV6.model_validate(payload["result"])
+        result = PromptBatchResult.model_validate(payload["result"])
         api = LocalApi()
         api.shards = {
             shard.key: shard
@@ -356,15 +385,13 @@ async def _run(args: argparse.Namespace) -> None:
         return
     _load_env(repo_root / ".env")
     os.environ["PROMPT_AI_PROVIDER"] = "ark"
-    os.environ["PROMPT_SIMILARITY_MODE"] = "trigram"
+    os.environ["PROMPT_SIMILARITY_MODE"] = "vector"
     os.environ.setdefault("INTERNAL_API_BASE_URL", "http://127.0.0.1:1")
     os.environ.setdefault("EFFECT_PROMPT_WORKER_TOKEN", "local-paid-quality-run")
     settings = WorkerSettings()  # type: ignore[call-arg]
     snapshot_payload = json.loads(raw_snapshot)
-    snapshot_payload["schemaVersion"] = 6
-    snapshot_payload["graphVersion"] = "CURRENT"
     snapshot_payload["operation"] = "BATCH_GENERATE"
-    snapshot_payload["settings"] = PromptBatchSettingsV6(
+    snapshot_payload["settings"] = PromptBatchSettings(
         target_count=50,
         default_duration_seconds=15,
     ).model_dump(mode="json", by_alias=True)
@@ -384,11 +411,13 @@ async def _run(args: argparse.Namespace) -> None:
     )
     api = LocalApi()
     delegate = _provider(settings)
+    embedding_provider = _embedding_provider(settings)
     provider = TrackingProvider(delegate)
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=provider,  # type: ignore[arg-type]
-        similarity_mode="trigram",
+        embedding_provider=embedding_provider,
+        similarity_mode="vector",
         ai_max_concurrency=settings.prompt_max_concurrency,
         shard_size=settings.prompt_shard_size,
         max_ai_calls_per_run=settings.prompt_max_ai_calls_per_run,
@@ -402,8 +431,10 @@ async def _run(args: argparse.Namespace) -> None:
         )
     finally:
         await provider.aclose()
+        if embedding_provider is not None:
+            await embedding_provider.aclose()
     if api.result is None:
-        raise RuntimeError("paid batch completed without a V6 result")
+        raise RuntimeError("paid batch completed without a valid result")
     elapsed = time.monotonic() - started
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)

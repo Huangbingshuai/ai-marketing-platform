@@ -1,4 +1,4 @@
-# 效果类 Prompt V11：4～30 秒轻量时长软适配实施方案
+# 效果类 Prompt：4～30 秒轻量时长软适配实施方案
 
 ## 1. 文档状态
 
@@ -10,14 +10,14 @@
 
 ## 2. 目标
 
-新生成的 Prompt V6 批次允许用户选择 4～30 秒的统一默认片段时长。时长作为结构化数据传给 Worker，Worker 根据时长给生成模型一段轻量的时序节奏意图，不把时长、画幅、分辨率或批次共用提示词写入单条 Prompt 正文。
+新生成的 Prompt 批次允许用户选择 4～30 秒的统一默认片段时长。时长作为结构化数据传给 Worker，Worker 根据时长给生成模型一段轻量的时序节奏意图，不把时长、画幅、分辨率或批次共用提示词写入单条 Prompt 正文。
 
 ## 3. 边界与兼容
 
 - 直接上游仍为已提交且为 CURRENT 的 `marketing-insight:{productId}` 工作副本。
 - 节点内生成、评估和人工修改只更新领域草稿与 `WorkflowNodeState`。
 - 只有用户完成校验后，才提交 `prompt-batch:{productId}` WorkingArtifact。
-- V5 历史结果继续保持 4～15 秒校验；V6 新结果使用 4～30 秒。
+- 当前 Prompt 结果统一使用 4～30 秒校验；历史数据只通过读取归一化兼容，不再保留第二套代码契约。
 - Prompt 节点不感知具体视频厂商或模型，不新增 Seedance 2.5 能力枚举，不修改第 4～6 节点。
 
 ## 4. 时长软适配
@@ -47,8 +47,8 @@ Worker 为每个已持久化的创意任务根据 `targetDurationSeconds` 编译
 
 ## 7. 验证计划
 
-- Contracts：V5 4～15 秒与 V6 4～30 秒分版校验、JSON Schema 对齐。
-- API：V6 设置和条目允许 30 秒，V5 仍拒绝超过 15 秒。
+- Contracts：当前设置、条目和 JSON Schema 统一使用 4～30 秒范围。
+- API：设置、人工编辑、单条重生成和完成校验统一允许 4～30 秒。
 - Worker：四个时长区间的软提示正确；评估输入带每条时长；恢复分片后时长不丢失。
 - Web：时长控件可在 4～30 秒内调整，越界值被正确纠正。
 - 运行相关单测、类型检查、生产构建与 `git diff --check`。
@@ -62,7 +62,7 @@ Worker 为每个已持久化的创意任务根据 `targetDurationSeconds` 编译
 
 ## 9. 实施结果
 
-- 当前 V11/V6 的设置、单条 Prompt、Pydantic 和 JSON Schema 已统一支持 4～30 秒，没有新增 Schema 版本。
+- 当前工作流的设置、单条 Prompt、Pydantic 和 JSON Schema 已统一支持 4～30 秒，没有新增代码版本分支。
 - Worker 已将时长编译为四档 `temporalIntent`，并删除“允许 2～3 个衔接微动作”的统一限制。
 - 评估请求会带入每条 `targetDurationSeconds`，但不改变评估输出结构，新增两个非阻断软提醒。
 - 分片恢复会从已持久化的 `CreativeShardPlan.tasks` 恢复 `slotId → 时长`，单条重生成和 `ITEM_EVALUATE` 继续使用原条目时长。

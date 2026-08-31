@@ -10,11 +10,9 @@ import type {
   EffectPromptSharedPrompt,
 } from '@ai-marketing/contracts';
 import {
-  CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
   EFFECT_PROMPT_MAX_RUN_ATTEMPTS,
-  EFFECT_PROMPT_SCHEMA_VERSION,
   effectPromptTargetCount,
-  migrateEffectPromptSettings,
+  readEffectPromptSettings,
 } from '@ai-marketing/contracts';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Prisma } from '../../../generated/prisma/client';
@@ -29,8 +27,10 @@ import { workflowStateHash } from '../../../platform/workflow/workflow-state-has
 import {
   mergeEffectPromptCompletionItems,
   parseEffectPromptBatchResult,
-  parseEffectPromptBatchResultV5ForRead,
+  parseEffectPromptSemanticAudit,
+  pendingEffectPromptSemanticEvaluation,
   recomputePromptQuality,
+  semanticEvaluationAfterDeletion,
 } from './effect-prompt.quality';
 import {
   emptyManualOverrides,
@@ -42,27 +42,27 @@ import {
 const AI_RESPONSE_INVALID_RETRY_LEDGER_NODE = 'INTERNAL_AI_RESPONSE_INVALID_RETRY';
 
 const json = (value: unknown): Prisma.InputJsonValue => value as Prisma.InputJsonValue;
-const leaseDate = (now: Date): Date => new Date(now.getTime() + 90_000);
-const jsonRecord = (value: unknown): Record<string, unknown> =>
+const jsonRecord = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
-    : {};
+    : null;
 const stageMetadataWithPreservedCheckpoint = (
   previous: unknown,
   incoming: unknown,
 ): Record<string, unknown> => {
-  const next = { ...jsonRecord(incoming) };
-  const checkpoint = jsonRecord(previous).checkpoint;
+  const next = { ...(jsonRecord(incoming) ?? {}) };
+  const checkpoint = jsonRecord(previous)?.checkpoint;
   if (!Object.prototype.hasOwnProperty.call(next, 'checkpoint') && checkpoint !== undefined)
     next.checkpoint = checkpoint;
   return next;
 };
+const leaseDate = (now: Date): Date => new Date(now.getTime() + 90_000);
 const parseStrings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 
 type PersistedEffectPromptShardPhase = 'BLUEPRINT' | 'PROMPT';
 const persistedShardPhase = (phase: EffectPromptShardPhase): PersistedEffectPromptShardPhase =>
-  phase === 'CREATIVE' ? 'BLUEPRINT' : phase === 'CLASSIFICATION' ? 'PROMPT' : phase;
+  phase === 'CREATIVE' ? 'BLUEPRINT' : 'PROMPT';
 
 export const isAllowedReplacementSellingPoint = (
   insight: unknown,
@@ -323,25 +323,9 @@ export class EffectPromptRepository {
       });
       if (!settingsNode || settingsNode.revision !== input.expectedSettingsRevision)
         return { kind: 'SETTINGS_CONFLICT' as const };
-      const legacySettings = settingsNode.schemaVersion < EFFECT_PROMPT_SCHEMA_VERSION;
-      const settings = migrateEffectPromptSettings(settingsNode.state, settingsNode.schemaVersion);
+      const settings = readEffectPromptSettings(settingsNode.state);
+      if (!settings) return { kind: 'SETTINGS_CONFLICT' as const };
       const settingsHash = workflowStateHash(settings);
-      if (legacySettings) {
-        await transaction.workflowNodeState.update({
-          where: {
-            projectId_workflowRunId_nodeId: { projectId, workflowRunId, nodeId },
-          },
-          data: {
-            schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
-            revision: { increment: 1 },
-            contentHash: settingsHash,
-            executionInputHash: settingsHash,
-            executionInputSchemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
-            state: json(settings),
-            savedAt: new Date(),
-          },
-        });
-      }
       const insight = await transaction.workingArtifact.findFirst({
         where: {
           projectId,
@@ -358,19 +342,18 @@ export class EffectPromptRepository {
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       });
       const parsedLatest = latest ? parseEffectPromptBatchResult(latest.draftResult) : null;
-      const parsedLatestV5 = latest
-        ? parseEffectPromptBatchResultV5ForRead(latest.draftResult)
-        : null;
-      const readableLatest = parsedLatest ?? parsedLatestV5;
-      const latestCurrent =
-        latest?.schemaVersion === EFFECT_PROMPT_SCHEMA_VERSION && parsedLatest ? latest : null;
+      const latestCurrent = latest && parsedLatest ? latest : null;
       const currentResult = latestCurrent ? parsedLatest : null;
       if (
         input.expectedResultRevision !== null &&
-        latest?.revision !== input.expectedResultRevision
+        latestCurrent?.revision !== input.expectedResultRevision
       )
         return { kind: 'RESULT_CONFLICT' as const };
-      if (input.operation === 'BATCH_GENERATE' && latest && input.expectedResultRevision === null)
+      if (
+        input.operation === 'BATCH_GENERATE' &&
+        latestCurrent &&
+        input.expectedResultRevision === null
+      )
         return { kind: 'RESULT_CONFLICT' as const };
       if (input.operation === 'ITEM_REGENERATE' || input.operation === 'ITEM_EVALUATE') {
         if (!latestCurrent || input.expectedResultRevision === null || !input.targetItemId)
@@ -399,8 +382,6 @@ export class EffectPromptRepository {
       if (manualItems.length > effectPromptTargetCount(settings))
         return { kind: 'MANUAL_COUNT_EXCEEDED' as const };
       const snapshot: EffectPromptInputSnapshot = {
-        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
-        graphVersion: CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
         projectId,
         workflowRunId,
         productId,
@@ -414,9 +395,9 @@ export class EffectPromptRepository {
           result: insight.payload,
         },
         retainedManualItems: manualItems,
-        selectionPolicyVersion: 'MMR_CONTENT_CLUSTER_V3',
+        selectionPolicy: 'MMR_CONTENT',
         similarityAnchors: manualItems,
-        sharedPrompt: readableLatest?.sharedPrompt ?? null,
+        sharedPrompt: currentResult?.sharedPrompt ?? null,
         ...((input.operation === 'ITEM_REGENERATE' || input.operation === 'ITEM_EVALUATE') &&
         targetItem
           ? {
@@ -437,27 +418,13 @@ export class EffectPromptRepository {
         },
       });
       if (active) {
-        const activeSnapshot = active.inputSnapshot as Partial<EffectPromptInputSnapshot> | null;
-        if (activeSnapshot?.graphVersion === CURRENT_EFFECT_PROMPT_GRAPH_VERSION)
-          return { kind: 'ACTIVE_CONFLICT' as const };
-        await transaction.effectPromptRun.update({
-          where: { projectId_id: { projectId, id: active.id } },
-          data: {
-            status: 'FAILED',
-            currentNode: 'LOAD_AND_SNAPSHOT',
-            errorCode: 'WORKFLOW_RETIRED',
-            errorMessage: '该历史 Prompt 工作流已停用，请重新生成',
-            attemptToken: null,
-            leaseExpiresAt: null,
-            completedAt: new Date(),
-          },
-        });
+        return { kind: 'ACTIVE_CONFLICT' as const };
       }
       const sourceFingerprint = workflowStateHash({
         insight: snapshot.insightArtifact,
         settingsHash,
         retainedManualItems: manualItems,
-        selectionPolicyVersion: snapshot.selectionPolicyVersion,
+        selectionPolicy: snapshot.selectionPolicy,
         similarityAnchors: snapshot.similarityAnchors,
         sharedPrompt: snapshot.sharedPrompt,
         regeneration:
@@ -493,7 +460,6 @@ export class EffectPromptRepository {
           aggregateId: run.id,
           routingKey: EFFECT_PROMPT_QUEUE,
           payload: json({
-            schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
             projectId,
             runId: run.id,
             requestId: run.id,
@@ -551,55 +517,32 @@ export class EffectPromptRepository {
         where: {
           projectId,
           runId,
-          status: { in: ['RUNNING', 'SUCCEEDED', 'PARTIAL', 'FAILED'] },
+          status: 'SUCCEEDED',
           nodeId: {
-            in: [
-              'FACT_VISUAL_STRATEGY_COMPILATION',
-              'COHERENT_CREATIVE_GENERATION',
-              'PLAN_HOOK_STRATEGY',
-              'PLAN_PAIN_STRATEGY',
-              'PLAN_PRODUCT_DISPLAY_STRATEGY',
-              'PLAN_SELLING_POINT_EXPLANATION_STRATEGY',
-              'PLAN_CTA_STRATEGY',
-              'PLAN_OUTRO_STRATEGY',
-              'PLAN_HOOK_RELATIONSHIPS',
-              'PLAN_PAIN_RELATIONSHIPS',
-              'PLAN_PRODUCT_DISPLAY_RELATIONSHIPS',
-              'PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS',
-              'PLAN_CTA_RELATIONSHIPS',
-              'PLAN_OUTRO_RELATIONSHIPS',
-              'PLAN_HOOK_COORDINATES',
-              'PLAN_PAIN_COORDINATES',
-              'PLAN_PRODUCT_DISPLAY_COORDINATES',
-              'PLAN_SELLING_POINT_EXPLANATION_COORDINATES',
-              'PLAN_CTA_COORDINATES',
-              'PLAN_OUTRO_COORDINATES',
-            ],
+            in: ['FACT_VISUAL_STRATEGY_COMPILATION', 'COHERENT_CREATIVE_GENERATION'],
           },
         },
         select: { nodeId: true, metadata: true },
       });
-      const reusableVisualStrategyStages =
-        run.inputSnapshot &&
-        (run.inputSnapshot as Record<string, unknown>).graphVersion ===
-          CURRENT_EFFECT_PROMPT_GRAPH_VERSION &&
-        !checkpointStages.some(({ nodeId }) => nodeId === 'FACT_VISUAL_STRATEGY_COMPILATION')
-          ? await transaction.effectPromptStageOutput.findMany({
-              where: {
-                projectId,
-                runId: { not: runId },
-                nodeId: 'FACT_VISUAL_STRATEGY_COMPILATION',
-                status: 'SUCCEEDED',
-                run: {
-                  workflowRunId: run.workflowRunId,
-                  productId: run.productId,
-                },
+      const reusableVisualStrategyStages = !checkpointStages.some(
+        ({ nodeId }) => nodeId === 'FACT_VISUAL_STRATEGY_COMPILATION',
+      )
+        ? await transaction.effectPromptStageOutput.findMany({
+            where: {
+              projectId,
+              runId: { not: runId },
+              nodeId: 'FACT_VISUAL_STRATEGY_COMPILATION',
+              status: 'SUCCEEDED',
+              run: {
+                workflowRunId: run.workflowRunId,
+                productId: run.productId,
               },
-              orderBy: { updatedAt: 'desc' },
-              take: 20,
-              select: { nodeId: true, metadata: true },
-            })
-          : [];
+            },
+            orderBy: { updatedAt: 'desc' },
+            take: 20,
+            select: { nodeId: true, metadata: true },
+          })
+        : [];
       return {
         kind: 'CLAIMED' as const,
         run: claimed,
@@ -650,9 +593,6 @@ export class EffectPromptRepository {
         },
       });
       if (renewed.count !== 1) {
-        // A supplement can revisit an earlier node after selection has already
-        // advanced the run. Keep the live node and lease fresh without making
-        // the user-visible overall progress move backwards.
         renewed = await transaction.effectPromptRun.updateMany({
           where: activeLease,
           data: {
@@ -719,22 +659,8 @@ export class EffectPromptRepository {
         data: { heartbeatAt: now, leaseExpiresAt: leaseDate(now) },
       });
       if (renewed.count !== 1) return false;
-      const plan =
-        phase === 'BLUEPRINT'
-          ? input.blueprintPlan
-          : phase === 'CREATIVE'
-            ? input.creativePlan
-            : phase === 'CLASSIFICATION'
-              ? input.classificationPlan
-              : input.combinationPlan;
-      const items =
-        phase === 'BLUEPRINT'
-          ? input.blueprints
-          : phase === 'CREATIVE'
-            ? input.creativeItems
-            : phase === 'CLASSIFICATION'
-              ? input.evaluations
-              : input.items;
+      const plan = phase === 'CREATIVE' ? input.creativePlan : input.classificationPlan;
+      const items = phase === 'CREATIVE' ? input.creativeItems : input.evaluations;
       await transaction.effectPromptShardOutput.upsert({
         where: {
           projectId_runId_phase_round_shardIndex: {
@@ -839,6 +765,19 @@ export class EffectPromptRepository {
         generated.renderProfile,
         generated.sharedPrompt,
       );
+      const resultSaveStage = await transaction.effectPromptStageOutput.findUnique({
+        where: {
+          projectId_runId_nodeId: { projectId, runId, nodeId: 'RESULT_SAVE' },
+        },
+      });
+      const resultSaveMetadata = jsonRecord(resultSaveStage?.metadata);
+      const rawSemanticAudit = resultSaveMetadata?.semanticAudit;
+      const semanticAudit =
+        rawSemanticAudit === undefined || rawSemanticAudit === null
+          ? null
+          : parseEffectPromptSemanticAudit(rawSemanticAudit, draft.items);
+      if (rawSemanticAudit !== undefined && rawSemanticAudit !== null && !semanticAudit)
+        return { kind: 'INVALID_SEMANTIC_AUDIT' as const };
       let overrides = emptyManualOverrides();
       if (
         (snapshot.operation === 'ITEM_REGENERATE' || snapshot.operation === 'ITEM_EVALUATE') &&
@@ -871,6 +810,7 @@ export class EffectPromptRepository {
                 productRelevance: evaluated.productRelevance,
                 materialTags: [...evaluated.materialTags],
                 targetDurationSeconds: evaluated.targetDurationSeconds,
+                creativeCore: evaluated.creativeCore,
                 dimensions: evaluated.dimensions,
               };
           }
@@ -888,6 +828,7 @@ export class EffectPromptRepository {
               productRelevance: item.productRelevance,
               materialTags: item.materialTags,
               targetDurationSeconds: item.targetDurationSeconds,
+              creativeCore: item.creativeCore,
               dimensions: item.dimensions,
             };
         }
@@ -898,7 +839,6 @@ export class EffectPromptRepository {
           workflowRunId: run.workflowRunId,
           productId: run.productId,
           runId,
-          schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
           generatedResult: json(generated),
           draftResult: json(draft),
           manualOverrides: json(overrides),
@@ -907,27 +847,6 @@ export class EffectPromptRepository {
           settingsHash: run.settingsHash,
         },
       });
-      if (snapshot.graphVersion !== CURRENT_EFFECT_PROMPT_GRAPH_VERSION) {
-        const replenish = await transaction.effectPromptStageOutput.findUnique({
-          where: {
-            projectId_runId_nodeId: { projectId, runId, nodeId: 'REPLENISH' },
-          },
-        });
-        if (!replenish)
-          await transaction.effectPromptStageOutput.create({
-            data: {
-              projectId,
-              runId,
-              nodeId: 'REPLENISH',
-              status: 'SKIPPED',
-              summary: '本次生成无需自动补齐',
-              warnings: json([]),
-              metadata: json({ replenishmentRound: draft.metrics.replenishmentRounds }),
-              startedAt: now,
-              completedAt: now,
-            },
-          });
-      }
       await transaction.effectPromptStageOutput.upsert({
         where: {
           projectId_runId_nodeId: { projectId, runId, nodeId: 'RESULT_SAVE' },
@@ -942,6 +861,7 @@ export class EffectPromptRepository {
           metadata: json({
             batchSize: draft.metrics.acceptedCount,
             qualityStatus: draft.qualityStatus,
+            ...(semanticAudit ? { semanticAudit } : {}),
           }),
           startedAt: now,
           completedAt: now,
@@ -952,6 +872,7 @@ export class EffectPromptRepository {
           metadata: json({
             batchSize: draft.metrics.acceptedCount,
             qualityStatus: draft.qualityStatus,
+            ...(semanticAudit ? { semanticAudit } : {}),
           }),
           errorMessage: null,
           completedAt: now,
@@ -1290,6 +1211,7 @@ export class EffectPromptRepository {
             | 'productRelevance'
             | 'materialTags'
             | 'targetDurationSeconds'
+            | 'creativeCore'
             | 'dimensions'
           >;
         }
@@ -1311,6 +1233,8 @@ export class EffectPromptRepository {
       if (!current) return { kind: 'INVALID_RESULT' as const };
       const overrides = parseOverrides(existing.manualOverrides);
       const items = [...current.items];
+      let semanticEvaluation = pendingEffectPromptSemanticEvaluation();
+      let semanticContentUnchanged = mutation.kind === 'SHARED_PROMPT';
       if (mutation.kind === 'ADD') {
         if (items.some(({ id }) => id === mutation.item.id))
           return { kind: 'ITEM_CONFLICT' as const };
@@ -1326,6 +1250,20 @@ export class EffectPromptRepository {
           delete overrides.edited[mutation.itemId];
           if (previous.origin === 'AI' && !overrides.deleted.includes(mutation.itemId))
             overrides.deleted.push(mutation.itemId);
+          const resultSaveStage = await transaction.effectPromptStageOutput.findUnique({
+            where: {
+              projectId_runId_nodeId: {
+                projectId,
+                runId: existing.runId,
+                nodeId: 'RESULT_SAVE',
+              },
+            },
+          });
+          const metadata = jsonRecord(resultSaveStage?.metadata);
+          const audit = parseEffectPromptSemanticAudit(metadata?.semanticAudit, items, true);
+          semanticEvaluation = audit
+            ? semanticEvaluationAfterDeletion(items, audit)
+            : pendingEffectPromptSemanticEvaluation();
         } else {
           const updated: EffectPromptItem = {
             ...previous,
@@ -1333,6 +1271,7 @@ export class EffectPromptRepository {
             manualEdited: true,
             updatedAt: new Date().toISOString(),
           };
+          semanticContentUnchanged = updated.content === previous.content;
           items[index] = updated;
           if (previous.origin === 'MANUAL')
             overrides.added = overrides.added.map((item) =>
@@ -1347,6 +1286,11 @@ export class EffectPromptRepository {
         current.metrics,
         current.renderProfile,
         mutation.kind === 'SHARED_PROMPT' ? mutation.sharedPrompt : current.sharedPrompt,
+        semanticContentUnchanged
+          ? current.metrics.semanticEvaluation
+          : mutation.kind === 'DELETE'
+            ? semanticEvaluation
+            : pendingEffectPromptSemanticEvaluation(),
       );
       if (workflowStateHash(next) === workflowStateHash(current))
         return { kind: 'UNCHANGED' as const, result: existing, draft: current };

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from effect_prompt_generation.insight_mapping import map_insight
 from effect_prompt_generation.models import InsightField
-from effect_prompt_generation.v11_fact_allocation import (
-    allocate_v11_creative_facts,
+from effect_prompt_generation.fact_allocation import (
+    allocate_creative_facts,
 )
 
 
@@ -28,15 +28,15 @@ def _application():
     )
 
 
-def test_v11_fact_allocation_is_small_deterministic_and_product_anchored() -> None:
+def test_fact_allocation_is_small_deterministic_and_product_anchored() -> None:
     application = _application()
 
-    first = allocate_v11_creative_facts(
+    first = allocate_creative_facts(
         application,
         count=12,
         ordinal_start=1,
     )
-    second = allocate_v11_creative_facts(
+    second = allocate_creative_facts(
         application,
         count=12,
         ordinal_start=1,
@@ -73,7 +73,7 @@ def test_v11_fact_allocation_is_small_deterministic_and_product_anchored() -> No
     assert all(len(item.assignment_hash) == 64 for item in first)
 
 
-def test_v11_fact_allocation_rotates_creative_primary_facts_before_repeating() -> None:
+def test_fact_allocation_rotates_creative_primary_facts_before_repeating() -> None:
     application = _application()
     expected_primary_ids = {
         fact.fact_id
@@ -90,7 +90,7 @@ def test_v11_fact_allocation_rotates_creative_primary_facts_before_repeating() -
             InsightField.CORE_SPECIFICATION,
         }
     }
-    assignments = allocate_v11_creative_facts(
+    assignments = allocate_creative_facts(
         application,
         count=len(expected_primary_ids),
         ordinal_start=1,
@@ -107,7 +107,7 @@ def test_v11_fact_allocation_rotates_creative_primary_facts_before_repeating() -
     assert InsightField.DISABLED_ELEMENT not in primary_fields
 
 
-def test_v11_fact_allocation_keeps_regeneration_primary_binding() -> None:
+def test_fact_allocation_keeps_regeneration_primary_binding() -> None:
     application = _application()
     preferred = next(
         fact.fact_id
@@ -115,7 +115,7 @@ def test_v11_fact_allocation_keeps_regeneration_primary_binding() -> None:
         if fact.field == InsightField.CORE_PAIN_POINT
     )
 
-    assignments = allocate_v11_creative_facts(
+    assignments = allocate_creative_facts(
         application,
         count=3,
         ordinal_start=20,

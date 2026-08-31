@@ -10,16 +10,20 @@ from effect_prompt_generation.models import (
     InsightArtifact,
     NodeId,
     ProgressPayload,
-    PromptBatchSettingsV6,
+    PromptBatchSettings,
     PromptGenerationSnapshot,
     RuntimeContext,
     StageOutput,
     StrategyCheckpoint,
 )
 from effect_prompt_generation.pipeline import PromptGenerationPipeline
-from effect_prompt_generation.providers import AiCallResult, MockAiProvider
-from effect_prompt_generation.v11_fact_allocation import allocate_v11_creative_facts
-from effect_prompt_generation.v11_visual_strategy import validate_fact_visual_strategy
+from effect_prompt_generation.providers import (
+    FACT_VISUAL_STRATEGY_TEMPLATE_HASH,
+    AiCallResult,
+    MockAiProvider,
+)
+from effect_prompt_generation.fact_allocation import allocate_creative_facts
+from effect_prompt_generation.visual_strategy import validate_fact_visual_strategy
 
 
 def _application() -> InsightApplicationMap:
@@ -83,11 +87,11 @@ def test_visual_strategy_splits_abstract_fact_from_visible_task() -> None:
         _response(application),
         application,
         source_content_hash="insight-hash",
-        prompt_version="effect-prompt-v11-fact-visual-strategy-v2",
+        template_hash=FACT_VISUAL_STRATEGY_TEMPLATE_HASH,
     )
 
     no_starch = next(fact for fact in application.usable if fact.value == "纯猪肉无淀粉")
-    assignments = allocate_v11_creative_facts(
+    assignments = allocate_creative_facts(
         application,
         count=1,
         ordinal_start=1,
@@ -110,7 +114,7 @@ def test_visual_strategy_rejects_missing_or_unknown_fact_ids() -> None:
             response.model_copy(update={"policies": response.policies[:-1]}),
             application,
             source_content_hash="insight-hash",
-            prompt_version="effect-prompt-v11-fact-visual-strategy-v1",
+            template_hash=FACT_VISUAL_STRATEGY_TEMPLATE_HASH,
         )
 
     unknown = response.policies[0].model_copy(
@@ -121,7 +125,7 @@ def test_visual_strategy_rejects_missing_or_unknown_fact_ids() -> None:
             response.model_copy(update={"policies": [unknown, *response.policies[1:]]}),
             application,
             source_content_hash="insight-hash",
-            prompt_version="effect-prompt-v11-fact-visual-strategy-v1",
+            template_hash=FACT_VISUAL_STRATEGY_TEMPLATE_HASH,
         )
 
 
@@ -147,7 +151,7 @@ def test_visual_strategy_fills_missing_explanations_without_changing_ai_role() -
         ),
         application,
         source_content_hash="insight-hash",
-        prompt_version="effect-prompt-v11-fact-visual-strategy-v2",
+        template_hash=FACT_VISUAL_STRATEGY_TEMPLATE_HASH,
     )
 
     normalized = strategy.by_id[source.fact_id]
@@ -171,7 +175,7 @@ def test_fact_allocation_keeps_specification_as_boundary_not_must_show_anchor() 
     specification = next(
         fact for fact in application.usable if fact.value == "500g 真空袋装"
     )
-    assignments = allocate_v11_creative_facts(
+    assignments = allocate_creative_facts(
         application,
         count=8,
         ordinal_start=1,
@@ -218,7 +222,7 @@ async def test_pipeline_reuses_strategy_checkpoint_for_same_insight_hash() -> No
         _response(application),
         application,
         source_content_hash="insight-hash",
-        prompt_version="effect-prompt-v11-fact-visual-strategy-v2",
+        template_hash=FACT_VISUAL_STRATEGY_TEMPLATE_HASH,
     )
     provider = _CountingProvider()
     api = _StageApi()
@@ -233,16 +237,15 @@ async def test_pipeline_reuses_strategy_checkpoint_for_same_insight_hash() -> No
         source_fingerprint="run-source",
     )
     snapshot = PromptGenerationSnapshot(
-        schema_version=6,
-        graph_version="CURRENT",
         project_id=context.project_id,
         workflow_run_id=context.workflow_run_id,
         product_id=context.product_id,
         operation="BATCH_GENERATE",
-        settings=PromptBatchSettingsV6(
+        settings=PromptBatchSettings(
             target_count=10,
             default_duration_seconds=5,
         ),
+        selection_policy="MMR_CONTENT",
         insight_artifact=InsightArtifact(
             id="insight-1",
             revision=1,
@@ -261,7 +264,7 @@ async def test_pipeline_reuses_strategy_checkpoint_for_same_insight_hash() -> No
         node_id=NodeId.FACT_VISUAL_STRATEGY_COMPILATION,
         source_fingerprint="insight-hash",
         allocation_hash=strategy.strategy_hash,
-        prompt_version=strategy.prompt_version,
+        template_hash=strategy.template_hash,
         plan=strategy,
     )
     pipeline.register_snapshot(context, snapshot, [checkpoint])

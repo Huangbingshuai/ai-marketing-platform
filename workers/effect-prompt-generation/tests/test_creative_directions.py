@@ -18,15 +18,15 @@ from effect_prompt_generation.models import (
     CreativeSemanticProfile,
     FragmentType,
     PromptGenerationSnapshot,
-    PromptBatchSettingsV6,
+    PromptBatchSettings,
     StrategyCheckpoint,
 )
 from effect_prompt_generation.pipeline import PromptGenerationPipeline
 from effect_prompt_generation.providers import (
+    CREATIVE_DIRECTION_TEMPLATE_HASH,
     MockAiProvider,
-    V11_CREATIVE_DIRECTION_VERSION,
 )
-from effect_prompt_generation.v11_creative_directions import (
+from effect_prompt_generation.creative_directions import (
     allocate_creative_directions,
     complete_semantic_profile,
     creative_direction_source_hash,
@@ -36,16 +36,11 @@ from effect_prompt_generation.v11_creative_directions import (
     validate_creative_direction_plan,
 )
 
-from test_v11_creatives import V11Api, _runtime, _snapshot
+from test_creatives import PromptApi, _runtime, _snapshot
 
 
 def _cluster_snapshot() -> PromptGenerationSnapshot:
-    return _snapshot().model_copy(
-        update={
-            "graph_version": "CURRENT",
-            "selection_policy_version": "MMR_CONTENT_CLUSTER_V3",
-        }
-    )
+    return _snapshot()
 
 
 class ConcentratedClusterProvider(MockAiProvider):
@@ -102,7 +97,7 @@ class MissingSemanticProfileProvider(MockAiProvider):
 
 @pytest.mark.asyncio
 async def test_cluster_policy_plans_directions_and_generates_140_percent() -> None:
-    api = V11Api()
+    api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=MockAiProvider(),
@@ -118,10 +113,10 @@ async def test_cluster_policy_plans_directions_and_generates_140_percent() -> No
         context=runtime,
     )
 
-    assert result["prompt_result_id"] == "prompt-result-v11"
+    assert result["prompt_result_id"] == "prompt-result-current"
     assert api.result is not None
     assert api.result.metrics.candidate_target_count == 14
-    assert api.result.metrics.generated_candidate_count == 14
+    assert api.result.metrics.generated_candidate_count == 16
     assert len(api.result.items) == 10
     creative_tasks = [
         task
@@ -145,21 +140,18 @@ async def test_cluster_policy_plans_directions_and_generates_140_percent() -> No
     assert max(counts.values()) - min(counts.values()) <= 1
     creative_stage = next(
         stage
-        for stage in reversed(api.stages)
+        for stage in api.stages
         if stage.node_id.value == "COHERENT_CREATIVE_GENERATION"
+        and "checkpoint" in stage.metadata
     )
     assert creative_stage.metadata["directionCount"] == 8
-    assert creative_stage.metadata["candidateTargetCount"] == 14
-    assert creative_stage.metadata["checkpoint"]["promptVersion"] == (
-        V11_CREATIVE_DIRECTION_VERSION
+    assert creative_stage.metadata["checkpoint"]["templateHash"] == (
+        CREATIVE_DIRECTION_TEMPLATE_HASH
     )
     selection_stage = next(
         stage
         for stage in reversed(api.stages)
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
-    )
-    assert selection_stage.metadata["selectionPolicyVersion"] == (
-        "MMR_CONTENT_CLUSTER_V3"
     )
     assert selection_stage.metadata["clusterAwareNoveltyWeight"] == 0.30
     assert selection_stage.metadata["contentNoveltyWeight"] == 0.70
@@ -167,7 +159,7 @@ async def test_cluster_policy_plans_directions_and_generates_140_percent() -> No
 
 @pytest.mark.asyncio
 async def test_fifty_target_plans_exactly_seventy_initial_candidates() -> None:
-    api = V11Api()
+    api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=MockAiProvider(),
@@ -176,7 +168,7 @@ async def test_fifty_target_plans_exactly_seventy_initial_candidates() -> None:
     runtime = _runtime()
     snapshot = _cluster_snapshot().model_copy(
         update={
-            "settings": PromptBatchSettingsV6(
+            "settings": PromptBatchSettings(
                 target_count=50,
                 default_duration_seconds=15,
             )
@@ -187,7 +179,7 @@ async def test_fifty_target_plans_exactly_seventy_initial_candidates() -> None:
     await pipeline.compile_fact_visual_strategy(runtime)
     await pipeline.compile_shared_prompt(runtime)
 
-    shards = await pipeline.plan_v11_creatives(runtime, round_number=0)
+    shards = await pipeline.plan_creatives(runtime, round_number=0)
 
     tasks = [task for shard in shards for task in shard.tasks]
     assert len(tasks) == 70
@@ -197,7 +189,7 @@ async def test_fifty_target_plans_exactly_seventy_initial_candidates() -> None:
 
 @pytest.mark.asyncio
 async def test_quantity_supplement_respects_total_candidate_ceiling() -> None:
-    api = V11Api()
+    api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=MockAiProvider(),
@@ -209,7 +201,7 @@ async def test_quantity_supplement_respects_total_candidate_ceiling() -> None:
     await pipeline.compile_fact_visual_strategy(runtime)
     await pipeline.compile_shared_prompt(runtime)
 
-    initial = await pipeline.plan_v11_creatives(runtime, round_number=0)
+    initial = await pipeline.plan_creatives(runtime, round_number=0)
     initial_tasks = [task for shard in initial for task in shard.tasks]
     cache = pipeline._cache(runtime)
     cache.creatives = {
@@ -233,7 +225,7 @@ async def test_quantity_supplement_respects_total_candidate_ceiling() -> None:
         if task.fact_assignment is not None
     }
 
-    supplement = await pipeline.plan_v11_creatives(
+    supplement = await pipeline.plan_creatives(
         runtime,
         round_number=1,
         missing_count=10,
@@ -246,7 +238,7 @@ async def test_quantity_supplement_respects_total_candidate_ceiling() -> None:
 
 @pytest.mark.asyncio
 async def test_cluster_concentration_triggers_only_one_diversity_supplement() -> None:
-    api = V11Api()
+    api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=ConcentratedClusterProvider(),
@@ -287,7 +279,7 @@ async def test_cluster_concentration_triggers_only_one_diversity_supplement() ->
 
 @pytest.mark.asyncio
 async def test_missing_semantic_profiles_do_not_fail_the_batch() -> None:
-    api = V11Api()
+    api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=MissingSemanticProfileProvider(),
@@ -303,7 +295,7 @@ async def test_missing_semantic_profiles_do_not_fail_the_batch() -> None:
         context=runtime,
     )
 
-    assert result["prompt_result_id"] == "prompt-result-v11"
+    assert result["prompt_result_id"] == "prompt-result-current"
     assert api.result is not None
     assert len(api.result.items) == 10
     evaluations = [
@@ -321,14 +313,14 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
     response = provider  # keep construction below explicit and synchronous
     del response
     from effect_prompt_generation.providers import _mock_creative_direction_response
-    from effect_prompt_generation.v11_visual_strategy import validate_fact_visual_strategy
+    from effect_prompt_generation.visual_strategy import validate_fact_visual_strategy
     from effect_prompt_generation.providers import _mock_fact_visual_strategy
 
     strategy = validate_fact_visual_strategy(
         _mock_fact_visual_strategy(application),
         application,
         source_content_hash="source",
-        prompt_version="test",
+        template_hash="0" * 64,
     )
     raw = _mock_creative_direction_response(application)
     source_hash = creative_direction_source_hash(
@@ -336,14 +328,14 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
         visual_strategy_hash=strategy.strategy_hash,
         shared_prompt_hash="shared",
         target_count=50,
-        prompt_version=V11_CREATIVE_DIRECTION_VERSION,
+        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
     )
     plan = validate_creative_direction_plan(
         raw,
         application,
         strategy,
         source_hash=source_hash,
-        prompt_version=V11_CREATIVE_DIRECTION_VERSION,
+        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
     )
     allocated = allocate_creative_directions(
         plan,
@@ -369,7 +361,7 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
             application,
             strategy,
             source_hash=source_hash,
-            prompt_version=V11_CREATIVE_DIRECTION_VERSION,
+            template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
         )
 
 
@@ -425,13 +417,13 @@ def test_direction_checkpoint_round_trip_parses_worker_plan() -> None:
         _mock_creative_direction_response,
         _mock_fact_visual_strategy,
     )
-    from effect_prompt_generation.v11_visual_strategy import validate_fact_visual_strategy
+    from effect_prompt_generation.visual_strategy import validate_fact_visual_strategy
 
     strategy = validate_fact_visual_strategy(
         _mock_fact_visual_strategy(application),
         application,
         source_content_hash="source",
-        prompt_version="test",
+        template_hash="0" * 64,
     )
     source_hash = "a" * 64
     plan = validate_creative_direction_plan(
@@ -439,14 +431,14 @@ def test_direction_checkpoint_round_trip_parses_worker_plan() -> None:
         application,
         strategy,
         source_hash=source_hash,
-        prompt_version=V11_CREATIVE_DIRECTION_VERSION,
+        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
     )
     checkpoint = StrategyCheckpoint.model_validate(
         {
             "nodeId": "COHERENT_CREATIVE_GENERATION",
             "sourceFingerprint": source_hash,
             "allocationHash": plan.plan_hash,
-            "promptVersion": plan.prompt_version,
+            "templateHash": plan.template_hash,
             "plan": plan.model_dump(mode="json", by_alias=True),
         }
     )
@@ -459,20 +451,20 @@ def test_semantic_profile_only_accepts_dynamic_vocabulary_or_other() -> None:
         _mock_creative_direction_response,
         _mock_fact_visual_strategy,
     )
-    from effect_prompt_generation.v11_visual_strategy import validate_fact_visual_strategy
+    from effect_prompt_generation.visual_strategy import validate_fact_visual_strategy
 
     strategy = validate_fact_visual_strategy(
         _mock_fact_visual_strategy(application),
         application,
         source_content_hash="source",
-        prompt_version="test",
+        template_hash="0" * 64,
     )
     plan = validate_creative_direction_plan(
         _mock_creative_direction_response(application),
         application,
         strategy,
         source_hash="b" * 64,
-        prompt_version=V11_CREATIVE_DIRECTION_VERSION,
+        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
     )
     base = plan.directions[0].semantic_profile
     evaluation = CreativeEvaluation(
@@ -588,20 +580,20 @@ def _direction_plan_for_semantic_tests() -> Any:
         _mock_creative_direction_response,
         _mock_fact_visual_strategy,
     )
-    from effect_prompt_generation.v11_visual_strategy import validate_fact_visual_strategy
+    from effect_prompt_generation.visual_strategy import validate_fact_visual_strategy
 
     strategy = validate_fact_visual_strategy(
         _mock_fact_visual_strategy(application),
         application,
         source_content_hash="source",
-        prompt_version="test",
+        template_hash="0" * 64,
     )
     return validate_creative_direction_plan(
         _mock_creative_direction_response(application),
         application,
         strategy,
         source_hash="c" * 64,
-        prompt_version=V11_CREATIVE_DIRECTION_VERSION,
+        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
     )
 
 
@@ -654,7 +646,7 @@ def test_direction_source_hash_invalidates_every_authoritative_input() -> None:
         visual_strategy_hash="visual-a",
         shared_prompt_hash="shared-a",
         target_count=50,
-        prompt_version=V11_CREATIVE_DIRECTION_VERSION,
+        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
     )
     variants = {
         creative_direction_source_hash(
@@ -662,28 +654,28 @@ def test_direction_source_hash_invalidates_every_authoritative_input() -> None:
             visual_strategy_hash="visual-a",
             shared_prompt_hash="shared-a",
             target_count=50,
-            prompt_version=V11_CREATIVE_DIRECTION_VERSION,
+            template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
         ),
         creative_direction_source_hash(
             insight_content_hash="insight-a",
             visual_strategy_hash="visual-b",
             shared_prompt_hash="shared-a",
             target_count=50,
-            prompt_version=V11_CREATIVE_DIRECTION_VERSION,
+            template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
         ),
         creative_direction_source_hash(
             insight_content_hash="insight-a",
             visual_strategy_hash="visual-a",
             shared_prompt_hash="shared-b",
             target_count=50,
-            prompt_version=V11_CREATIVE_DIRECTION_VERSION,
+            template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
         ),
         creative_direction_source_hash(
             insight_content_hash="insight-a",
             visual_strategy_hash="visual-a",
             shared_prompt_hash="shared-a",
             target_count=51,
-            prompt_version=V11_CREATIVE_DIRECTION_VERSION,
+            template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
         ),
     }
     assert baseline not in variants

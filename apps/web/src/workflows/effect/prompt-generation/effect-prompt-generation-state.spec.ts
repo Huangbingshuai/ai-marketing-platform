@@ -6,7 +6,6 @@ import type {
 import {
   DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
-  EFFECT_PROMPT_SCHEMA_VERSION,
 } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 
@@ -31,6 +30,7 @@ const prompt: EffectPromptItem = {
   productRelevance: 92,
   materialTags: ['首帧', '痛点'],
   targetDurationSeconds: 5,
+  creativeCore: '家庭厨房里的广式腊肠痛点悬念',
   dimensions: {
     narrative: '痛点前置型',
     scene: '家庭厨房',
@@ -47,7 +47,6 @@ const prompt: EffectPromptItem = {
 };
 
 const batch: EffectPromptBatchResult = {
-  schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
   settings: DEFAULT_EFFECT_PROMPT_SETTINGS,
   renderProfile: {
     ratio: '9:16',
@@ -63,7 +62,14 @@ const batch: EffectPromptBatchResult = {
     generatedCandidateCount: 65,
     rejectedCount: 15,
     replenishmentRounds: 1,
-    exactDuplicateCount: 2,
+    exactDuplicateCount: 0,
+    semanticEvaluation: {
+      status: 'VERIFIED',
+      evaluatedCount: 50,
+      duplicateGroupCount: 3,
+      duplicateCount: 7,
+      duplicateRate: 14,
+    },
     purposeDistribution: EFFECT_PROMPT_FRAGMENT_TYPES.map((purpose) => ({
       purpose,
       primaryCount: purpose === 'HOOK' ? 50 : 0,
@@ -101,6 +107,7 @@ describe('effect prompt generation state', () => {
   it('matches id, content, fixed and secondary labels and six-dimensional labels', () => {
     expect(promptMatchesKeyword(prompt, 'P001')).toBe(true);
     expect(promptMatchesKeyword(prompt, '广式腊肠')).toBe(true);
+    expect(promptMatchesKeyword(prompt, '痛点悬念')).toBe(true);
     expect(promptMatchesKeyword(prompt, '叙事结构')).toBe(true);
     expect(promptMatchesKeyword(prompt, '温馨治愈')).toBe(true);
     expect(promptMatchesKeyword(prompt, '钩子片段')).toBe(true);
@@ -122,6 +129,18 @@ describe('effect prompt generation state', () => {
       isPromptResultQualityReady({
         ...batch,
         metrics: { ...batch.metrics, acceptedCount: 49 },
+      }),
+    ).toBe(false);
+    expect(
+      isPromptResultQualityReady({
+        ...batch,
+        metrics: {
+          ...batch.metrics,
+          semanticEvaluation: {
+            ...batch.metrics.semanticEvaluation,
+            duplicateRate: 15,
+          },
+        },
       }),
     ).toBe(false);
 

@@ -59,25 +59,6 @@ export class EffectPromptWorkerController {
     return this.service.saveStage(body.projectId, runId, attemptToken, nodeId, body);
   }
 
-  @Put('runs/:runId/shards/:round/:shardIndex')
-  legacyPromptShard(
-    @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string,
-    @Param('round', ParseIntPipe) round: number,
-    @Param('shardIndex', ParseIntPipe) shardIndex: number,
-    @Headers('x-attempt-token') attemptToken: string,
-    @Body() body: WorkerShardDto,
-  ) {
-    return this.service.saveShard(
-      body.projectId,
-      runId,
-      attemptToken,
-      round,
-      shardIndex,
-      'PROMPT',
-      body,
-    );
-  }
-
   @Put('runs/:runId/shards/:phase/:round/:shardIndex')
   shard(
     @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string,

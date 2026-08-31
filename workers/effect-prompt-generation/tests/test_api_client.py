@@ -35,16 +35,24 @@ async def test_internal_api_uses_worker_and_attempt_tokens(runtime: RuntimeConte
         await api.put_stage(
             context,
             StageOutput(
-                node_id=NodeId.QUALITY_GATE,
+                node_id=NodeId.EXACT_SELECTION_AND_SUPPLEMENT,
                 status=StageStatus.RUNNING,
                 summary="正在校验",
             ),
         )
-        await api.heartbeat(context, ProgressPayload(progress=40, current_node=NodeId.QUALITY_GATE))
+        await api.heartbeat(
+            context,
+            ProgressPayload(
+                progress=40,
+                current_node=NodeId.EXACT_SELECTION_AND_SUPPLEMENT,
+            ),
+        )
     finally:
         await api.aclose()
 
-    assert requests[0].url.path.endswith("/internal/workers/effect-prompt-generation/runs/run-1/stages/QUALITY_GATE")
+    assert requests[0].url.path.endswith(
+        "/internal/workers/effect-prompt-generation/runs/run-1/stages/EXACT_SELECTION_AND_SUPPLEMENT"
+    )
     assert requests[0].headers["x-worker-token"] == "worker-token"
     assert requests[0].headers["x-attempt-token"] == "attempt-1"
     assert json.loads(requests[1].content) == {"projectId": "project-1"}
@@ -73,7 +81,7 @@ async def test_get_shards_accepts_backend_run_id_envelope(runtime: RuntimeContex
 
 
 @pytest.mark.asyncio
-async def test_put_shard_serializes_v11_phase_fields(runtime: RuntimeContext) -> None:
+async def test_put_shard_serializes_current_phase_fields(runtime: RuntimeContext) -> None:
     seen: dict[str, object] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:

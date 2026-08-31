@@ -8,19 +8,71 @@ from jsonschema import Draft202012Validator
 
 from effect_prompt_generation.models import (
     CreativeAverageScores,
-    CreativeDimensions,
+    CreativeEvaluationDraft,
+    CreativeEvaluationDraftBatch,
     FragmentType,
-    PromptBatchResultV6,
-    PromptBatchSettingsV6,
+    PromptBatchResult,
+    PromptBatchSettings,
     PromptItem,
-    PromptItemV6,
-    PromptMetricsV6,
+    PromptMetrics,
     PurposeDistribution,
     RenderProfile,
+    SemanticEvaluation,
     SharedPrompt,
     SharedPromptSection,
     SharedRenderConstraints,
 )
+
+
+def test_evaluation_draft_schema_excludes_worker_derived_fields() -> None:
+    schema = CreativeEvaluationDraftBatch.model_json_schema(by_alias=True)
+    properties = schema["$defs"]["CreativeEvaluationDraft"]["properties"]
+
+    assert "factEvidence" in properties
+    assert "scores" in properties
+    assert "realizedFactIds" not in properties
+    assert "semanticSignature" not in properties
+    assert "visualSignature" not in properties
+    assert properties["compatiblePurposes"]["maxItems"] == 3
+    assert properties["factEvidence"]["maxItems"] == 3
+    assert properties["hardIssues"]["maxItems"] == 5
+    assert properties["warnings"]["maxItems"] == 3
+
+
+def test_evaluation_draft_treats_compatible_purposes_as_other_purposes() -> None:
+    draft = CreativeEvaluationDraft(
+        slot_id="creative-1",
+        primary_purpose=FragmentType.PRODUCT_DISPLAY,
+        compatible_purposes=[
+            FragmentType.PRODUCT_DISPLAY,
+            FragmentType.CTA,
+            FragmentType.CTA,
+        ],
+        scores={
+            "productRelevance": 90,
+            "creativeCoherence": 90,
+            "visualExecutability": 90,
+            "commercialUsefulness": 90,
+            "visualClarity": 90,
+        },
+    )
+
+    assert draft.compatible_purposes == [FragmentType.CTA]
+
+    primary_only = CreativeEvaluationDraft(
+        slot_id="creative-2",
+        primary_purpose=FragmentType.HOOK,
+        compatible_purposes=[],
+        scores={
+            "productRelevance": 90,
+            "creativeCoherence": 90,
+            "visualExecutability": 90,
+            "commercialUsefulness": 90,
+            "visualClarity": 90,
+        },
+    )
+
+    assert primary_only.compatible_purposes == []
 
 
 def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> None:
@@ -29,39 +81,20 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
         json.dumps(
             disabled_elements,
             ensure_ascii=False,
+            sort_keys=True,
             separators=(",", ":"),
-        ).encode()
+        ).encode("utf-8")
     ).hexdigest()
-    item = PromptItemV6(
-        id=prompt_item.id,
-        code=prompt_item.code,
-        origin=prompt_item.origin,
-        fragment_type=prompt_item.fragment_type,
-        primary_purpose=prompt_item.fragment_type,
-        compatible_purposes=[
-            prompt_item.fragment_type,
-            FragmentType.SELLING_POINT_EXPLANATION,
-        ],
-        classification_status="VERIFIED",
-        product_relevance=92,
-        material_tags=prompt_item.material_tags,
-        target_duration_seconds=30,
-        dimensions=CreativeDimensions(
-            narrative=prompt_item.dimensions.narrative,
-            scene=prompt_item.dimensions.scene,
-            persona=prompt_item.dimensions.persona,
-            product_relation=prompt_item.dimensions.selling_point,
-            camera=prompt_item.dimensions.camera,
-            emotion=prompt_item.dimensions.emotion,
-        ),
-        content=prompt_item.content,
-        insight_bindings=prompt_item.insight_bindings,
-        manual_edited=prompt_item.manual_edited,
-        created_at=prompt_item.created_at,
-        updated_at=prompt_item.updated_at,
+    item = prompt_item.model_copy(
+        update={
+            "compatible_purposes": [
+                prompt_item.fragment_type,
+                FragmentType.SELLING_POINT_EXPLANATION,
+            ]
+        }
     )
-    result = PromptBatchResultV6(
-        settings=PromptBatchSettingsV6(target_count=10, default_duration_seconds=30),
+    result = PromptBatchResult(
+        settings=PromptBatchSettings(target_count=10, default_duration_seconds=5),
         render_profile=RenderProfile(
             ratio="9:16",
             resolution="1080p",
@@ -79,7 +112,7 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
                     source="SYSTEM",
                     content="画面中不得出现以下内容：医疗暗示。",
                     editable=False,
-                    source_hash=disabled_hash,
+                        source_hash=disabled_hash,
                 ),
                 SharedPromptSection(
                     key="USER_ADDITIONAL",
@@ -96,7 +129,7 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
             ).hexdigest(),
         ),
         items=[item],
-        metrics=PromptMetricsV6(
+        metrics=PromptMetrics(
             target_count=10,
             candidate_target_count=12,
             accepted_count=1,
@@ -104,6 +137,13 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
             rejected_count=11,
             replenishment_rounds=0,
             exact_duplicate_count=0,
+            semantic_evaluation=SemanticEvaluation(
+                status="VERIFIED",
+                evaluated_count=1,
+                duplicate_group_count=0,
+                duplicate_count=0,
+                duplicate_rate=0,
+            ),
             purpose_distribution=[
                 PurposeDistribution(
                     purpose=purpose,

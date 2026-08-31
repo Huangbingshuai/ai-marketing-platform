@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 
 import type {
   EffectPromptBatchSettings,
-  EffectPromptBatchSettingsV5,
   EffectPromptDimensions,
   EffectPromptFragmentType,
   EffectPromptNodeDetailBlock,
@@ -16,20 +15,19 @@ import type {
   GetEffectPromptNodeDetailData,
 } from '@ai-marketing/contracts';
 import {
-  CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_MAX_RUN_ATTEMPTS,
   EFFECT_PROMPT_NODE_DETAIL_LIMITS,
+  EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT,
+  EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD,
 } from '@ai-marketing/contracts';
 
 import type { EffectPromptNodeDetailRunRecord } from './effect-prompt.repository';
 import {
-  EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD,
   EFFECT_PROMPT_VISUAL_OVERLAP_THRESHOLD,
   isEffectPromptSettings,
-  isEffectPromptSettingsV5,
   trigramDice,
 } from './effect-prompt.quality';
 
@@ -91,7 +89,7 @@ type Coordinate = {
   sourceFactIds: string[];
 };
 
-const GENERATION_FRAGMENT_BY_NODE: Partial<Record<EffectPromptNodeId, EffectPromptFragmentType>> = {
+const GENERATION_FRAGMENT_BY_NODE: Partial<Record<string, EffectPromptFragmentType>> = {
   GENERATE_HOOK: 'HOOK',
   GENERATE_PAIN: 'PAIN',
   GENERATE_PRODUCT_DISPLAY: 'PRODUCT_DISPLAY',
@@ -100,17 +98,16 @@ const GENERATION_FRAGMENT_BY_NODE: Partial<Record<EffectPromptNodeId, EffectProm
   GENERATE_OUTRO: 'OUTRO',
 };
 
-const RELATIONSHIP_FRAGMENT_BY_NODE: Partial<Record<EffectPromptNodeId, EffectPromptFragmentType>> =
-  {
-    PLAN_HOOK_RELATIONSHIPS: 'HOOK',
-    PLAN_PAIN_RELATIONSHIPS: 'PAIN',
-    PLAN_PRODUCT_DISPLAY_RELATIONSHIPS: 'PRODUCT_DISPLAY',
-    PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS: 'SELLING_POINT_EXPLANATION',
-    PLAN_CTA_RELATIONSHIPS: 'CTA',
-    PLAN_OUTRO_RELATIONSHIPS: 'OUTRO',
-  };
+const RELATIONSHIP_FRAGMENT_BY_NODE: Partial<Record<string, EffectPromptFragmentType>> = {
+  PLAN_HOOK_RELATIONSHIPS: 'HOOK',
+  PLAN_PAIN_RELATIONSHIPS: 'PAIN',
+  PLAN_PRODUCT_DISPLAY_RELATIONSHIPS: 'PRODUCT_DISPLAY',
+  PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS: 'SELLING_POINT_EXPLANATION',
+  PLAN_CTA_RELATIONSHIPS: 'CTA',
+  PLAN_OUTRO_RELATIONSHIPS: 'OUTRO',
+};
 
-const COORDINATE_FRAGMENT_BY_NODE: Partial<Record<EffectPromptNodeId, EffectPromptFragmentType>> = {
+const COORDINATE_FRAGMENT_BY_NODE: Partial<Record<string, EffectPromptFragmentType>> = {
   PLAN_HOOK_COORDINATES: 'HOOK',
   PLAN_PAIN_COORDINATES: 'PAIN',
   PLAN_PRODUCT_DISPLAY_COORDINATES: 'PRODUCT_DISPLAY',
@@ -119,7 +116,7 @@ const COORDINATE_FRAGMENT_BY_NODE: Partial<Record<EffectPromptNodeId, EffectProm
   PLAN_OUTRO_COORDINATES: 'OUTRO',
 };
 
-const BLUEPRINT_FRAGMENT_BY_NODE: Partial<Record<EffectPromptNodeId, EffectPromptFragmentType>> = {
+const BLUEPRINT_FRAGMENT_BY_NODE: Partial<Record<string, EffectPromptFragmentType>> = {
   GENERATE_HOOK_BLUEPRINTS: 'HOOK',
   GENERATE_PAIN_BLUEPRINTS: 'PAIN',
   GENERATE_PRODUCT_DISPLAY_BLUEPRINTS: 'PRODUCT_DISPLAY',
@@ -257,22 +254,15 @@ const enumField = (
 const inputSnapshot = (run: EffectPromptNodeDetailRunRecord): JsonRecord =>
   metadataRecord(run.inputSnapshot);
 
-const inputSettings = (
-  run: EffectPromptNodeDetailRunRecord,
-): EffectPromptBatchSettings | EffectPromptBatchSettingsV5 | null => {
+const inputSettings = (run: EffectPromptNodeDetailRunRecord): EffectPromptBatchSettings | null => {
   const settings = inputSnapshot(run).settings;
-  return isEffectPromptSettings(settings) || isEffectPromptSettingsV5(settings) ? settings : null;
+  return isEffectPromptSettings(settings) ? settings : null;
 };
 
 const dimensionValue = (
   dimensionsValue: EffectPromptNodeDetailPrompt['dimensions'],
   key: keyof EffectPromptDimensions,
-): string =>
-  key === 'productRelation'
-    ? 'productRelation' in dimensionsValue
-      ? dimensionsValue.productRelation
-      : dimensionsValue.sellingPoint
-    : dimensionsValue[key];
+): string => dimensionsValue[key];
 
 const insightResult = (run: EffectPromptNodeDetailRunRecord): JsonRecord => {
   const artifact = metadataRecord(inputSnapshot(run).insightArtifact);
@@ -542,10 +532,7 @@ const routeBlock = (
           : 'PENDING';
     return {
       fragmentType: type,
-      targetCount:
-        'fragmentConfigs' in settings
-          ? settings.fragmentConfigs[type].count
-          : Math.ceil(settings.targetCount / EFFECT_PROMPT_FRAGMENT_TYPES.length),
+      targetCount: Math.ceil(settings.targetCount / EFFECT_PROMPT_FRAGMENT_TYPES.length),
       candidateCount:
         finalCounts?.[type] ??
         (phase === 'BLUEPRINT'
@@ -918,10 +905,7 @@ const pairBlock = (
   return visible.length ? { kind: 'PAIR_LIST', title, metric, items: visible } : null;
 };
 
-const nodeMetricFields = (
-  nodeId: EffectPromptNodeId,
-  rawMetadata: unknown,
-): EffectPromptNodeDetailField[] => {
+const nodeMetricFields = (nodeId: string, rawMetadata: unknown): EffectPromptNodeDetailField[] => {
   const metadata = metadataRecord(rawMetadata);
   switch (nodeId) {
     case 'INSIGHT_MAPPING':
@@ -972,12 +956,25 @@ const nodeMetricFields = (
         numberField(metadata, 'evaluatedCount', '已评估创意'),
         numberField(metadata, 'acceptedCount', '通过评估'),
         numberField(metadata, 'rejectedCount', '未通过评估'),
+        numberField(metadata, 'semanticEvaluatedCount', '语义评估数量'),
+        numberField(metadata, 'semanticDuplicateGroupCount', '重复组'),
+        numberField(metadata, 'semanticDuplicateCount', '重复条目'),
+        numberField(metadata, 'semanticDuplicateRate', '语义重复度（%）'),
+        {
+          label: '相似判定标准',
+          value: `${Math.round(EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD * 100)}%`,
+        },
+        {
+          label: '重复度目标',
+          value: `< ${EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT}%`,
+        },
       ]);
     case 'EXACT_SELECTION_AND_SUPPLEMENT':
       return compact([
         numberField(metadata, 'targetCount', '目标数量'),
         numberField(metadata, 'selectedCount', '已择优保留'),
         numberField(metadata, 'supplementedCount', '补充数量'),
+        numberField(metadata, 'semanticDuplicateRate', '最终语义重复度（%）'),
       ]);
     case 'ITEM_EVALUATE':
       return compact([
@@ -1170,12 +1167,14 @@ const nodeMetricFields = (
       ]);
     case 'LOAD_AND_SNAPSHOT':
       return [];
+    default:
+      return [];
   }
 };
 
 const actualFields = (
   run: EffectPromptNodeDetailRunRecord,
-  nodeId: EffectPromptNodeId,
+  nodeId: string,
   metadata: unknown,
 ): EffectPromptNodeDetailField[] => {
   if (nodeId === 'LOAD_AND_SNAPSHOT') {
@@ -1184,25 +1183,9 @@ const actualFields = (
     return compact([
       textField('产品名称', insightText(insight, 'productName', 'product_name')),
       textField('产品品类', insightText(insight, 'productCategory', 'product_category')),
-      settings && 'semanticLimit' in settings
-        ? { label: '语义重复度上限', value: `${settings.semanticLimit}%` }
-        : null,
-      settings && 'visualLimit' in settings
-        ? { label: '画面重合度上限', value: `${settings.visualLimit}%` }
-        : null,
-      settings && 'targetCount' in settings
-        ? { label: '目标数量', value: `${settings.targetCount} 条` }
-        : null,
-      settings && 'defaultDurationSeconds' in settings
-        ? { label: '统一时长', value: `${settings.defaultDurationSeconds} 秒` }
-        : null,
+      settings ? { label: '目标数量', value: `${settings.targetCount} 条` } : null,
+      settings ? { label: '统一时长', value: `${settings.defaultDurationSeconds} 秒` } : null,
       { label: '保留人工内容', value: retainedPrompts(run).length },
-      ...(settings && 'fragmentConfigs' in settings
-        ? EFFECT_PROMPT_FRAGMENT_TYPES.map((type) => ({
-            label: EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[type],
-            value: `${settings.fragmentConfigs[type].count} 条 · ${settings.fragmentConfigs[type].durationSeconds} 秒`,
-          }))
-        : []),
     ]);
   }
   const stageFields = nodeMetricFields(nodeId, metadata);
@@ -1305,7 +1288,7 @@ const actualFields = (
 
 const actualBlocks = (
   run: EffectPromptNodeDetailRunRecord,
-  nodeId: EffectPromptNodeId,
+  nodeId: string,
 ): EffectPromptNodeDetailBlock[] => {
   const blocks: Array<EffectPromptNodeDetailBlock | null> = [];
   const insight = insightResult(run);
@@ -1504,7 +1487,7 @@ const actualBlocks = (
   return blocks.filter((block): block is EffectPromptNodeDetailBlock => block !== null);
 };
 
-type V11CreativeRow = {
+type CreativeRow = {
   slotId: string;
   ordinal: number;
   targetDurationSeconds: number;
@@ -1514,7 +1497,7 @@ type V11CreativeRow = {
   content: string;
 };
 
-type V11EvaluationRow = {
+type EvaluationRow = {
   slotId: string;
   primaryPurpose: EffectPromptFragmentType;
   compatiblePurposes: EffectPromptFragmentType[];
@@ -1522,12 +1505,6 @@ type V11EvaluationRow = {
   hardIssues: string[];
   warnings: string[];
 };
-
-const graphVersion = (run: EffectPromptNodeDetailRunRecord): string =>
-  publicText(inputSnapshot(run).graphVersion, 80);
-
-const isV11Run = (run: EffectPromptNodeDetailRunRecord): boolean =>
-  graphVersion(run) === CURRENT_EFFECT_PROMPT_GRAPH_VERSION;
 
 const purposeList = (value: unknown): EffectPromptFragmentType[] =>
   (Array.isArray(value) ? value : [])
@@ -1549,7 +1526,7 @@ const qualityScores = (value: unknown): EffectPromptQualityScores | null => {
     : null;
 };
 
-const v11CreativeRows = (run: EffectPromptNodeDetailRunRecord): V11CreativeRow[] => {
+const creativeRows = (run: EffectPromptNodeDetailRunRecord): CreativeRow[] => {
   const taskBySlot = new Map<string, JsonRecord>();
   for (const shard of run.shards) {
     for (const raw of Array.isArray(shard.combinationPlan) ? shard.combinationPlan : []) {
@@ -1558,7 +1535,7 @@ const v11CreativeRows = (run: EffectPromptNodeDetailRunRecord): V11CreativeRow[]
       if (slotId) taskBySlot.set(slotId, raw);
     }
   }
-  const rows: V11CreativeRow[] = [];
+  const rows: CreativeRow[] = [];
   for (const shard of run.shards) {
     for (const raw of Array.isArray(shard.items) ? shard.items : []) {
       if (!isRecord(raw) || typeof raw.creativeCore !== 'string') continue;
@@ -1591,8 +1568,8 @@ const v11CreativeRows = (run: EffectPromptNodeDetailRunRecord): V11CreativeRow[]
     .sort((left, right) => left.ordinal - right.ordinal);
 };
 
-const v11EvaluationRows = (run: EffectPromptNodeDetailRunRecord): V11EvaluationRow[] => {
-  const rows: V11EvaluationRow[] = [];
+const evaluationRows = (run: EffectPromptNodeDetailRunRecord): EvaluationRow[] => {
+  const rows: EvaluationRow[] = [];
   for (const shard of run.shards) {
     for (const raw of Array.isArray(shard.items) ? shard.items : []) {
       if (!isRecord(raw) || !isRecord(raw.scores)) continue;
@@ -1624,9 +1601,9 @@ const issueLabels = (codes: string[]): string[] =>
 const creativeSamples = (
   run: EffectPromptNodeDetailRunRecord,
 ): EffectPromptNodeDetailCreativeSample[] => {
-  const evaluationBySlot = new Map(v11EvaluationRows(run).map((item) => [item.slotId, item]));
+  const evaluationBySlot = new Map(evaluationRows(run).map((item) => [item.slotId, item]));
   const lookup = factValueLookup(run);
-  return v11CreativeRows(run).map((item) => {
+  return creativeRows(run).map((item) => {
     const evaluation = evaluationBySlot.get(item.slotId);
     return {
       code: promptCode(item.ordinal),
@@ -1648,15 +1625,15 @@ const creativeSamples = (
   });
 };
 
-const finalV6Record = (run: EffectPromptNodeDetailRunRecord): JsonRecord | null => {
+const finalResultRecord = (run: EffectPromptNodeDetailRunRecord): JsonRecord | null => {
   const raw = run.result ? metadataRecord(run.result.draftResult) : {};
-  return raw.schemaVersion === 6 ? raw : null;
+  return Array.isArray(raw.items) && isRecord(raw.settings) && isRecord(raw.metrics) ? raw : null;
 };
 
-const finalV6Samples = (
+const finalResultSamples = (
   run: EffectPromptNodeDetailRunRecord,
 ): EffectPromptNodeDetailCreativeSample[] => {
-  const result = finalV6Record(run);
+  const result = finalResultRecord(run);
   if (!result) return [];
   return (Array.isArray(result.items) ? result.items : []).flatMap((value) => {
     if (!isRecord(value)) return [];
@@ -1727,7 +1704,7 @@ const textContentBlock = (
     : null;
 };
 
-const averageQualityScores = (rows: V11EvaluationRow[]): EffectPromptQualityScores | null => {
+const averageQualityScores = (rows: EvaluationRow[]): EffectPromptQualityScores | null => {
   if (!rows.length) return null;
   const total = rows.reduce(
     (sum, item) => ({
@@ -1761,21 +1738,17 @@ const scoreFields = (scores: EffectPromptQualityScores | null): EffectPromptNode
       ]
     : [];
 
-const v11AdditionalOutputFields = (
+const additionalOutputFields = (
   run: EffectPromptNodeDetailRunRecord,
   nodeId: EffectPromptNodeId,
   metadata: JsonRecord,
 ): EffectPromptNodeDetailField[] => {
   const samples = creativeSamples(run);
-  const evaluations = v11EvaluationRows(run);
-  const result = finalV6Record(run);
+  const evaluations = evaluationRows(run);
+  const result = finalResultRecord(run);
   const resultMetrics = metadataRecord(result?.metrics);
   if (nodeId === 'COHERENT_CREATIVE_GENERATION')
     return [
-      ...compact([
-        numberField(metadata, 'directionCount', '批次创意方向'),
-        numberField(metadata, 'candidateTargetCount', '候选目标'),
-      ]),
       { label: '实际生成创意', value: samples.length },
       {
         label: '完成分片',
@@ -1795,6 +1768,20 @@ const v11AdditionalOutputFields = (
       { label: '通过评估', value: evaluations.filter((item) => !item.hardIssues.length).length },
       { label: '未通过评估', value: evaluations.filter((item) => item.hardIssues.length).length },
       ...scoreFields(averageQualityScores(evaluations)),
+      ...compact([
+        numberField(metadata, 'semanticEvaluatedCount', '语义评估数量'),
+        numberField(metadata, 'semanticDuplicateGroupCount', '重复组'),
+        numberField(metadata, 'semanticDuplicateCount', '重复条目'),
+        numberField(metadata, 'semanticDuplicateRate', '语义重复度（%）'),
+        {
+          label: '相似判定标准',
+          value: `${Math.round(EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD * 100)}%`,
+        },
+        {
+          label: '重复度目标',
+          value: `< ${EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT}%`,
+        },
+      ]),
     ];
   if (nodeId === 'EXACT_SELECTION_AND_SUPPLEMENT')
     return compact([
@@ -1809,27 +1796,8 @@ const v11AdditionalOutputFields = (
       numberField(metadata, 'localComparisonMs', '本地矩阵耗时（毫秒）'),
       numberField(metadata, 'initialRedundantCandidateCount', '补充前高风险冗余'),
       numberField(metadata, 'finalRedundantCandidateCount', '补充后高风险冗余'),
-      textField(
-        '场景最大簇',
-        typeof metadata.preSelectionMaxSceneShare === 'number' &&
-          typeof metadata.postSelectionMaxSceneShare === 'number'
-          ? `${Math.round(metadata.preSelectionMaxSceneShare * 100)}% → ${Math.round(metadata.postSelectionMaxSceneShare * 100)}%`
-          : null,
-      ),
-      textField(
-        '动作最大簇',
-        typeof metadata.preSelectionMaxActionShare === 'number' &&
-          typeof metadata.postSelectionMaxActionShare === 'number'
-          ? `${Math.round(metadata.preSelectionMaxActionShare * 100)}% → ${Math.round(metadata.postSelectionMaxActionShare * 100)}%`
-          : null,
-      ),
-      textField(
-        '多样性构成',
-        typeof metadata.contentNoveltyWeight === 'number' &&
-          typeof metadata.clusterAwareNoveltyWeight === 'number'
-          ? `正文 ${Math.round(metadata.contentNoveltyWeight * 100)}% / 业务语义 ${Math.round(metadata.clusterAwareNoveltyWeight * 100)}%`
-          : null,
-      ),
+      numberField(metadata, 'semanticDuplicateRate', '最终语义重复度（%）'),
+      textField('重复度目标', `< ${EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT}%`),
       textField(
         'MMR 权重',
         typeof metadata.mmrQualityWeight === 'number' &&
@@ -1850,6 +1818,15 @@ const v11AdditionalOutputFields = (
       { label: '已保存 Prompt', value: (Array.isArray(result.items) ? result.items : []).length },
       numberField(resultMetrics, 'targetCount', '目标数量'),
       textField('质量状态', result.qualityStatus),
+      textField(
+        '语义重复度',
+        resultMetrics.semanticEvaluation &&
+          typeof resultMetrics.semanticEvaluation === 'object' &&
+          !Array.isArray(resultMetrics.semanticEvaluation) &&
+          typeof (resultMetrics.semanticEvaluation as JsonRecord).duplicateRate === 'number'
+          ? `${(resultMetrics.semanticEvaluation as JsonRecord).duplicateRate}%`
+          : '待评估',
+      ),
       { label: '提交状态', value: '已保存为节点草稿，尚未提交工作副本' },
       ...scoreFields(qualityScores(resultMetrics.averageScores)),
     ]);
@@ -1884,7 +1861,7 @@ const sharedPromptData = (
   metadata: JsonRecord,
 ): JsonRecord => {
   if (publicText(metadata.compiledContent)) return metadata;
-  const resultPrompt = metadataRecord(finalV6Record(run)?.sharedPrompt);
+  const resultPrompt = metadataRecord(finalResultRecord(run)?.sharedPrompt);
   if (publicText(resultPrompt.compiledContent)) return resultPrompt;
   return metadataRecord(inputSnapshot(run).sharedPrompt);
 };
@@ -1892,7 +1869,7 @@ const sharedPromptData = (
 const purposeDistributionBlock = (
   run: EffectPromptNodeDetailRunRecord,
 ): EffectPromptNodeDetailBlock | null => {
-  const metrics = metadataRecord(finalV6Record(run)?.metrics);
+  const metrics = metadataRecord(finalResultRecord(run)?.metrics);
   const distribution = (
     Array.isArray(metrics.purposeDistribution) ? metrics.purposeDistribution : []
   ).flatMap((item) => {
@@ -1909,34 +1886,14 @@ const purposeDistributionBlock = (
   return tagBlock('最终推荐用途分布', [tagGroup('用途分布', distribution)]);
 };
 
-const distributionTags = (value: unknown): string[] =>
-  (Array.isArray(value) ? value : []).flatMap((item) => {
-    if (!isRecord(item)) return [];
-    const label = publicText(item.label, 80);
-    const count = safeNumber(item.count);
-    return label && count !== null ? [`${label}：${count} 条`] : [];
-  });
-
-const semanticDistributionBlock = (
-  title: string,
-  value: unknown,
-): EffectPromptNodeDetailBlock | null => {
-  const distribution = metadataRecord(value);
-  return tagBlock(title, [
-    tagGroup('场景', distributionTags(distribution.sceneFamilies).slice(0, 5)),
-    tagGroup('产品动作', distributionTags(distribution.productActionFamilies).slice(0, 5)),
-    tagGroup('叙事', distributionTags(distribution.narrativeFamilies).slice(0, 5)),
-  ]);
-};
-
-const v11OutputBlocks = (
+const outputBlocks = (
   run: EffectPromptNodeDetailRunRecord,
   nodeId: EffectPromptNodeId,
   metadata: JsonRecord,
 ): EffectPromptNodeDetailBlock[] => {
   const blocks: Array<EffectPromptNodeDetailBlock | null> = [];
   const samples = creativeSamples(run);
-  const evaluations = v11EvaluationRows(run);
+  const evaluations = evaluationRows(run);
   if (nodeId === 'LOAD_AND_SNAPSHOT') {
     blocks.push(...actualBlocks(run, nodeId));
   } else if (nodeId === 'INSIGHT_MAPPING') {
@@ -1955,12 +1912,7 @@ const v11OutputBlocks = (
     );
     blocks.push(textContentBlock('最终共用提示词', prompt.compiledContent, sectionLabels));
   } else if (nodeId === 'COHERENT_CREATIVE_GENERATION') {
-    blocks.push(
-      tagBlock('优先变化维度', [
-        tagGroup('分配情况', distributionTags(metadata.priorityDimensionDistribution)),
-      ]),
-      creativeSampleBlock('真实创意候选样例', samples, samples.length),
-    );
+    blocks.push(creativeSampleBlock('真实创意候选样例', samples, samples.length));
   } else if (nodeId === 'CREATIVE_EVALUATION_CLASSIFICATION' || nodeId === 'ITEM_EVALUATE') {
     const accepted = samples.filter((item) => item.outcome === 'ACCEPTED');
     const rejected = samples.filter((item) => item.outcome === 'REJECTED');
@@ -1969,7 +1921,6 @@ const v11OutputBlocks = (
       for (const issue of evaluation.hardIssues)
         hardCounts.set(issue, (hardCounts.get(issue) ?? 0) + 1);
     blocks.push(
-      semanticDistributionBlock('候选业务语义分布', metadata.semanticProfileDistribution),
       creativeSampleBlock('通过评估的创意样例', accepted, accepted.length),
       creativeSampleBlock('未通过评估的创意样例', rejected, rejected.length),
       issueBlock(
@@ -1978,15 +1929,11 @@ const v11OutputBlocks = (
       ),
     );
   } else if (nodeId === 'EXACT_SELECTION_AND_SUPPLEMENT') {
-    const saved = finalV6Samples(run);
+    const saved = finalResultSamples(run);
     const accepted = samples
       .filter((item) => item.outcome === 'ACCEPTED')
       .map((item) => ({ ...item, outcome: 'SELECTED' as const }));
     blocks.push(
-      semanticDistributionBlock('最终业务语义分布', metadata.selectedSemanticProfileDistribution),
-      tagBlock('多样性补充判断', [
-        tagGroup('原因', safeStrings(metadata.diversitySupplementReasons, 8)),
-      ]),
       creativeSampleBlock(
         saved.length ? '最终择优 Prompt 样例' : '当前合格候选样例',
         saved.length ? saved.map((item) => ({ ...item, outcome: 'SELECTED' as const })) : accepted,
@@ -1994,7 +1941,7 @@ const v11OutputBlocks = (
       ),
     );
   } else if (nodeId === 'RESULT_SAVE') {
-    const saved = finalV6Samples(run);
+    const saved = finalResultSamples(run);
     blocks.push(
       purposeDistributionBlock(run),
       creativeSampleBlock('最终保存 Prompt 样例', saved, saved.length),
@@ -2009,8 +1956,7 @@ const expectedOutputSummary: Partial<Record<EffectPromptNodeId, string>> = {
   FACT_VISUAL_STRATEGY_COMPILATION:
     '将已确认事实分成可见画面任务、商业背景和禁止视觉证明的事实角色。',
   SHARED_PROMPT_COMPILATION: '将禁用元素与用户补充内容合并为一段批次共用提示词。',
-  COHERENT_CREATIVE_GENERATION:
-    '将先协调本批创意方向，再生成围绕同一主线的六维信息与干净 Prompt 正文。',
+  COHERENT_CREATIVE_GENERATION: '将生成围绕同一创意主线的六维信息与干净 Prompt 正文。',
   CREATIVE_EVALUATION_CLASSIFICATION: '将给出质量判断、推荐主用途、兼容用途和问题原因。',
   EXACT_SELECTION_AND_SUPPLEMENT:
     '将按质量与语义多样性选满目标数量；数量不足时定向补齐，高风险冗余偏多时最多追加一次多样性候选。',
@@ -2018,14 +1964,14 @@ const expectedOutputSummary: Partial<Record<EffectPromptNodeId, string>> = {
   ITEM_EVALUATE: '将重新评估当前条目的产品关联、质量与推荐用途。',
 };
 
-const v11InputSections = (
+const inputSections = (
   run: EffectPromptNodeDetailRunRecord,
   nodeId: EffectPromptNodeId,
 ): Pick<EffectPromptNodeDetailSection, 'summary' | 'fields' | 'blocks'> => {
   const insight = insightResult(run);
   const settings = inputSettings(run);
   const samples = creativeSamples(run);
-  const evaluations = v11EvaluationRows(run);
+  const evaluations = evaluationRows(run);
   const retainedCount = retainedPrompts(run).length;
   const base = compact([
     textField('当前商品', insightText(insight, 'productName', 'product_name')),
@@ -2128,7 +2074,7 @@ const v11InputSections = (
     };
   }
   if (nodeId === 'RESULT_SAVE') {
-    const finalSamples = finalV6Samples(run);
+    const finalSamples = finalResultSamples(run);
     const selectedCount =
       finalSamples.length || evaluations.filter((item) => !item.hardIssues.length).length;
     return {
@@ -2166,26 +2112,14 @@ const buildDetailSections = (
   metadataValue: unknown,
 ): EffectPromptNodeDetailSection[] => {
   const metadata = metadataRecord(metadataValue);
-  const legacyFields = actualFields(run, nodeId, metadata);
-  const legacyBlocks = actualBlocks(run, nodeId);
-  const input = isV11Run(run)
-    ? v11InputSections(run, nodeId)
-    : {
-        summary: '接收历史工作流上一阶段已经确认的业务结果。',
-        fields: nodeId === 'LOAD_AND_SNAPSHOT' ? legacyFields : [],
-        blocks: nodeId === 'LOAD_AND_SNAPSHOT' ? legacyBlocks : [],
-      };
-  const outputFields = isV11Run(run)
-    ? uniqueFields([...legacyFields, ...v11AdditionalOutputFields(run, nodeId, metadata)])
-    : nodeId === 'LOAD_AND_SNAPSHOT'
-      ? []
-      : legacyFields;
-  const outputBlocks = isV11Run(run)
-    ? v11OutputBlocks(run, nodeId, metadata)
-    : nodeId === 'LOAD_AND_SNAPSHOT'
-      ? []
-      : legacyBlocks;
-  const outputHasContent = outputFields.length > 0 || outputBlocks.length > 0;
+  const baseFields = actualFields(run, nodeId, metadata);
+  const input = inputSections(run, nodeId);
+  const outputFields = uniqueFields([
+    ...baseFields,
+    ...additionalOutputFields(run, nodeId, metadata),
+  ]);
+  const nodeOutputBlocks = outputBlocks(run, nodeId, metadata);
+  const outputHasContent = outputFields.length > 0 || nodeOutputBlocks.length > 0;
   const outputState = sectionState(status, outputHasContent);
   return [
     {
@@ -2216,7 +2150,7 @@ const buildDetailSections = (
                 ? '当前没有可展示的业务输出，请查看下方失败原因。'
                 : '当前阶段没有额外可展示的业务结果。',
       fields: outputFields,
-      blocks: outputBlocks,
+      blocks: nodeOutputBlocks,
     },
     {
       kind: 'EXECUTION',

@@ -4,7 +4,6 @@ import type {
   EffectPromptBatchSettings,
   EffectPromptDimensionKey,
   EffectPromptDimensions,
-  EffectPromptDimensionsV5,
   EffectPromptFragmentType,
   EffectPromptItem,
   EffectPromptInsightField,
@@ -17,15 +16,15 @@ import type {
   GetEffectPromptNodeDetailData,
 } from '@ai-marketing/contracts';
 import {
-  CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
   DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
-  effectPromptGraphEdges,
-  effectPromptGraphNodeIds,
+  EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT,
+  EFFECT_PROMPT_GRAPH_EDGES,
+  EFFECT_PROMPT_GRAPH_NODE_IDS,
   effectPromptRunGraphEdges,
   effectPromptRunGraphNodeIds,
 } from '@ai-marketing/contracts';
@@ -183,26 +182,16 @@ const currentSettings = computed(
 const currentTargetCount = computed(() => currentSettings.value.targetCount);
 const editorTargetDurationSeconds = computed(() => currentSettings.value.defaultDurationSeconds);
 const currentRun = computed(() => runsByProduct.value[currentProductId.value] ?? null);
-const displayedGraphRun = computed(() => {
-  const run = currentRun.value;
-  return run?.graphVersion === CURRENT_EFFECT_PROMPT_GRAPH_VERSION ? run : null;
-});
+const displayedGraphRun = computed(() => currentRun.value);
 const graphDialogDescription = '展示本次真实输入、连贯创意生成、用途评估和数量结果。';
 const currentGraphNodeIds = computed<readonly EffectPromptNodeId[]>(() => {
   if (displayedGraphRun.value)
-    return effectPromptRunGraphNodeIds(
-      CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
-      displayedGraphRun.value.operation,
-    );
-  return effectPromptGraphNodeIds(CURRENT_EFFECT_PROMPT_GRAPH_VERSION);
+    return effectPromptRunGraphNodeIds(displayedGraphRun.value.operation);
+  return EFFECT_PROMPT_GRAPH_NODE_IDS;
 });
 const currentGraphEdges = computed(() => {
-  if (displayedGraphRun.value)
-    return effectPromptRunGraphEdges(
-      CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
-      displayedGraphRun.value.operation,
-    );
-  return effectPromptGraphEdges(CURRENT_EFFECT_PROMPT_GRAPH_VERSION);
+  if (displayedGraphRun.value) return effectPromptRunGraphEdges(displayedGraphRun.value.operation);
+  return EFFECT_PROMPT_GRAPH_EDGES;
 });
 const currentAttemptLabel = computed(() => {
   const run = displayedGraphRun.value;
@@ -242,10 +231,7 @@ const currentMetrics = computed(
 const currentRenderProfile = computed(() => currentResult.value?.renderProfile ?? null);
 const currentSharedPrompt = computed(() => currentResult.value?.sharedPrompt ?? null);
 const currentSharedPromptContent = computed(
-  () =>
-    currentSharedPrompt.value?.compiledContent.trim() ??
-    currentRenderProfile.value?.sharedConstraints.prompt?.trim() ??
-    '',
+  () => currentSharedPrompt.value?.compiledContent.trim() ?? '',
 );
 const insightFieldLabels: Record<EffectPromptInsightField, string> = {
   PRODUCT_NAME: '产品名称',
@@ -270,15 +256,19 @@ const insightFieldLabels: Record<EffectPromptInsightField, string> = {
   DISABLED_ELEMENT: '禁用元素',
   VISUAL_STYLE_BASELINE: '视觉基线',
 };
-const itemInsightSources = (item: EffectPromptItem) =>
-  [
-    ...new Map(
-      item.insightBindings.map((binding) => [
-        binding.field,
-        { field: binding.field, label: insightFieldLabels[binding.field], value: binding.value },
-      ]),
-    ).values(),
-  ].slice(0, 8);
+const itemInsightFacts = (item: EffectPromptItem) => [
+  ...new Map(
+    item.insightBindings.map((binding) => [
+      binding.factId,
+      {
+        factId: binding.factId,
+        field: binding.field,
+        label: insightFieldLabels[binding.field],
+        value: binding.value,
+      },
+    ]),
+  ).values(),
+];
 const currentCountStats = computed(() => {
   const targetCount = currentTargetCount.value;
   const actualCount = currentMetrics.value?.acceptedCount ?? resultData.value?.total ?? 0;
@@ -290,6 +280,20 @@ const currentCountStats = computed(() => {
   };
 });
 const currentRunning = computed(() => isPromptRunActive(currentState.value));
+const currentSemanticEvaluation = computed(() => currentMetrics.value?.semanticEvaluation ?? null);
+const currentSemanticDisplay = computed(() => {
+  const evaluation = currentSemanticEvaluation.value;
+  if (!evaluation || evaluation.status !== 'VERIFIED' || evaluation.duplicateRate === null)
+    return {
+      state: currentRunning.value ? 'running' : 'pending',
+      text: currentRunning.value ? '正在计算语义重复度' : '语义重复度待评估',
+    } as const;
+  const passed = evaluation.duplicateRate < EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT;
+  return {
+    state: passed ? 'passed' : 'failed',
+    text: `语义重复度 ${evaluation.duplicateRate.toFixed(1)}% · 目标 <${EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT}% · ${passed ? '符合要求' : '需要优化'}`,
+  } as const;
+});
 const currentQualityReady = computed(() => isPromptResultQualityReady(currentResult.value));
 const totalPages = computed(() => promptPageCount(resultData.value?.total ?? 0));
 const allProductsCommitted = computed(
@@ -448,10 +452,7 @@ const loadCurrentResult = async (): Promise<void> => {
       return;
     resultData.value = loaded;
     if (!sharedPromptDirty.value)
-      sharedPromptDraft.value =
-        loaded.result.sharedPrompt?.compiledContent.trim() ??
-        loaded.result.renderProfile.sharedConstraints.prompt?.trim() ??
-        '';
+      sharedPromptDraft.value = loaded.result.sharedPrompt?.compiledContent.trim() ?? '';
     if (page.value > promptPageCount(loaded.total)) page.value = promptPageCount(loaded.total);
   } catch (error) {
     if (!isAbortError(error) && generation === resultGeneration)
@@ -1274,15 +1275,8 @@ const graphStatusMeta = (statusValue: EffectPromptStageStatus): { label: string;
     FAILED: { label: '失败', tone: 'danger' },
   })[statusValue];
 const graphRowTitle = (row: EffectPromptNodeId[]): string => {
-  const firstNode = row[0];
-  if (row.length !== EFFECT_PROMPT_FRAGMENT_TYPES.length || !firstNode) return '';
-  const definition = graphDefinition(firstNode);
-  if (definition.group === 'COORDINATE') return '六类产品专属坐标并行规划';
-  if (definition.group === 'BLUEPRINT') return '六类组合级蓝图并行生成';
-  if (definition.group === 'GENERATION') return '六类视频 Prompt 并行生成';
-  if (definition.group === 'STRATEGY')
-    return definition.label.includes('组合') ? '六类营销组合并行规划' : '六类营销规划并行生成';
-  return '六类片段并行处理';
+  void row;
+  return '';
 };
 const graphDescription = (nodeId: EffectPromptNodeId): string =>
   ({
@@ -1380,12 +1374,9 @@ const graphDimensionLabel = (key: EffectPromptDimensionKey): string =>
   EFFECT_PROMPT_DIMENSIONS.find((dimension) => dimension.key === key)?.label ?? key;
 
 const graphPromptDimensionValue = (
-  item: { dimensions: EffectPromptDimensions | EffectPromptDimensionsV5 },
+  item: { dimensions: EffectPromptDimensions },
   key: EffectPromptDimensionKey,
-): string =>
-  key === 'productRelation' && !('productRelation' in item.dimensions)
-    ? item.dimensions.sellingPoint
-    : (item.dimensions as EffectPromptDimensions)[key];
+): string => item.dimensions[key];
 
 const graphPairScore = (value: number): string => `${(value * 100).toFixed(0)}%`;
 
@@ -1900,7 +1891,7 @@ onBeforeUnmount(() => {
               ref="promptSearchInput"
               v-model="keyword"
               type="search"
-              placeholder="搜索 ID / 画面 / 推荐用途 / 六维创意"
+              placeholder="搜索 ID / 画面 / 推荐用途 / 提炼依据 / 创意主线 / 六维创意"
           /></label>
           <span class="prompt-result-count">
             当前 {{ currentCountStats.actualCount }}/{{ currentCountStats.targetCount }} 条 ·
@@ -1911,6 +1902,13 @@ onBeforeUnmount(() => {
                   ? `超出 ${currentCountStats.excessCount} 条`
                   : '数量一致'
             }}
+          </span>
+          <span
+            class="prompt-semantic-rate"
+            :class="`prompt-semantic-rate--${currentSemanticDisplay.state}`"
+            role="status"
+          >
+            {{ currentSemanticDisplay.text }}
           </span>
           <button
             v-if="!partialPreview"
@@ -2013,20 +2011,21 @@ onBeforeUnmount(() => {
               <span v-for="tag in item.materialTags" :key="tag">{{ tag }}</span>
               <em v-if="!item.materialTags.length">暂无</em>
             </div>
-            <div
-              v-if="item.insightBindings.length"
-              class="insight-source-tags"
-              aria-label="该条 Prompt 使用的提炼信息"
-            >
-              <small>提炼来源</small>
-              <span
-                v-for="source in itemInsightSources(item)"
-                :key="source.field"
-                :title="source.value"
-                >{{ source.label }}</span
-              >
-            </div>
             <textarea :value="item.content" readonly aria-label="Prompt 内容" />
+            <details class="prompt-dimension-details">
+              <summary>查看提炼信息依据</summary>
+              <dl v-if="item.insightBindings.length" class="prompt-fact-list">
+                <div v-for="fact in itemInsightFacts(item)" :key="fact.factId">
+                  <dt>{{ fact.label }}</dt>
+                  <dd>{{ fact.value }}</dd>
+                </div>
+              </dl>
+              <p v-else class="prompt-detail-empty">暂无可追溯的提炼信息依据</p>
+            </details>
+            <details class="prompt-dimension-details">
+              <summary>查看创意主线</summary>
+              <p class="prompt-creative-core">{{ item.creativeCore }}</p>
+            </details>
             <details class="prompt-dimension-details">
               <summary>查看六维创意信息</summary>
               <div class="prompt-dimensions">
@@ -3736,25 +3735,6 @@ button:disabled {
   font-size: 9px;
   font-style: normal;
 }
-.insight-source-tags {
-  display: flex;
-  margin: -2px 0 8px;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-.insight-source-tags small {
-  color: #8995a8;
-  font-size: 9px;
-}
-.insight-source-tags span {
-  padding: 3px 6px;
-  color: #28725f;
-  background: #edf9f5;
-  border: 1px solid #d3eee5;
-  border-radius: 5px;
-  font-size: 9px;
-}
 .prompt-dimension-details {
   margin-top: 7px;
   color: #78869a;
@@ -3767,6 +3747,68 @@ button:disabled {
 }
 .prompt-dimension-details .prompt-dimensions {
   margin: 7px 0 0;
+}
+.prompt-semantic-rate {
+  display: inline-flex;
+  min-height: 28px;
+  padding: 0 10px;
+  align-items: center;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.prompt-semantic-rate--passed {
+  color: #177a59;
+  background: #edf8f3;
+}
+.prompt-semantic-rate--failed {
+  color: #c43d48;
+  background: #fff0f1;
+}
+.prompt-semantic-rate--pending,
+.prompt-semantic-rate--running {
+  color: #6e7f96;
+  background: #f1f4f8;
+}
+.prompt-fact-list,
+.prompt-creative-core,
+.prompt-detail-empty {
+  margin: 7px 0 0;
+}
+.prompt-fact-list {
+  display: grid;
+  gap: 5px;
+}
+.prompt-fact-list > div {
+  display: grid;
+  grid-template-columns: minmax(70px, max-content) 1fr;
+  gap: 8px;
+  padding: 7px 9px;
+  color: #253047;
+  background: #f4f8ff;
+  border: 1px solid #cfe0ff;
+  border-radius: 7px;
+}
+.prompt-fact-list dt {
+  color: #2f6fed;
+  font-weight: 700;
+}
+.prompt-fact-list dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.prompt-creative-core {
+  padding: 8px 10px;
+  color: #253047;
+  background: #f4f8ff;
+  border: 1px solid #cfe0ff;
+  border-radius: 7px;
+  line-height: 1.6;
+}
+.prompt-detail-empty {
+  color: #98a3b3;
 }
 .prompt-main > header i {
   color: #7658d5;
@@ -5522,6 +5564,10 @@ button:disabled {
   }
   .prompt-actions {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .prompt-fact-list > div {
+    grid-template-columns: 1fr;
+    gap: 3px;
   }
   .editor-grid,
   .regeneration-dimension-grid,

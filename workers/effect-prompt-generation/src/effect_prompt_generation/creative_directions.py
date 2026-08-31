@@ -100,7 +100,7 @@ def creative_direction_source_hash(
     visual_strategy_hash: str,
     shared_prompt_hash: str,
     target_count: int,
-    prompt_version: str,
+    template_hash: str,
 ) -> str:
     return _hash(
         {
@@ -108,7 +108,7 @@ def creative_direction_source_hash(
             "visualStrategyHash": visual_strategy_hash,
             "sharedPromptHash": shared_prompt_hash,
             "targetCount": target_count,
-            "promptVersion": prompt_version,
+            "templateHash": template_hash,
         }
     )
 
@@ -119,7 +119,7 @@ def validate_creative_direction_plan(
     fact_visual_strategy: FactVisualStrategy,
     *,
     source_hash: str,
-    prompt_version: str,
+    template_hash: str,
 ) -> CreativeDirectionPlan:
     usable_ids = {fact.fact_id for fact in application.usable}
     strategy_ids = set(fact_visual_strategy.by_id)
@@ -144,7 +144,7 @@ def validate_creative_direction_plan(
         directions=directions,
         source_hash=source_hash,
         plan_hash=_hash(plan_payload),
-        prompt_version=prompt_version,
+        template_hash=template_hash,
     )
 
 

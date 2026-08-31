@@ -43,7 +43,7 @@ def validate_fact_visual_strategy(
     application: InsightApplicationMap,
     *,
     source_content_hash: str,
-    prompt_version: str,
+    template_hash: str,
 ) -> FactVisualStrategy:
     usable_by_id = {fact.fact_id: fact for fact in application.usable}
     policy_ids = [policy.fact_id for policy in response.policies]
@@ -102,7 +102,7 @@ def validate_fact_visual_strategy(
     ).hexdigest()
     return FactVisualStrategy(
         source_content_hash=source_content_hash,
-        prompt_version=prompt_version,
+        template_hash=template_hash,
         strategy_hash=strategy_hash,
         policies=normalized,
     )
@@ -144,7 +144,7 @@ def strategy_stage_metadata(
             "nodeId": "FACT_VISUAL_STRATEGY_COMPILATION",
             "sourceFingerprint": strategy.source_content_hash,
             "allocationHash": strategy.strategy_hash,
-            "promptVersion": strategy.prompt_version,
+            "templateHash": strategy.template_hash,
             "plan": strategy.model_dump(mode="json", by_alias=True),
         },
     }

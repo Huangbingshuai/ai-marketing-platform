@@ -4,22 +4,21 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
-  CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
   DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
-  EFFECT_PROMPT_GRAPH_VERSIONS,
+  EFFECT_PROMPT_GRAPH_NODE_IDS,
   EFFECT_PROMPT_INSIGHT_FIELDS,
-  EFFECT_PROMPT_LEGACY_SCHEMA_VERSION,
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_NODE_DETAIL_SECTION_KINDS,
   EFFECT_PROMPT_NODE_DETAIL_SECTION_STATES,
-  EFFECT_PROMPT_SCHEMA_VERSION,
+  EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT,
+  EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD,
   EFFECT_PROMPT_SHARD_PHASES,
   effectPromptRunGraphNodeIds,
   effectPromptSettingsNodeId,
   effectPromptTargetCount,
-  migrateEffectPromptSettings,
+  readEffectPromptSettings,
   normalizeEffectPromptSettings,
   type StartEffectPromptRunRequest,
 } from './effect-prompt-generation';
@@ -29,9 +28,7 @@ const batchSchema = JSON.parse(
 ) as Record<string, any>;
 
 describe('effect prompt generation contract', () => {
-  it('freezes the V6 settings and six coherent dimensions', () => {
-    expect(EFFECT_PROMPT_SCHEMA_VERSION).toBe(6);
-    expect(EFFECT_PROMPT_LEGACY_SCHEMA_VERSION).toBe(5);
+  it('freezes the canonical settings and six coherent dimensions', () => {
     expect(DEFAULT_EFFECT_PROMPT_SETTINGS).toEqual({
       targetCount: 50,
       defaultDurationSeconds: 5,
@@ -49,15 +46,11 @@ describe('effect prompt generation contract', () => {
       targetCount: 200,
       defaultDurationSeconds: 4,
     });
-    expect(normalizeEffectPromptSettings({ targetCount: 50, defaultDurationSeconds: 31 })).toEqual({
-      targetCount: 50,
-      defaultDurationSeconds: 30,
-    });
   });
 
-  it('migrates historical fragment settings without carrying six quotas forward', () => {
+  it('accepts only the canonical settings shape', () => {
     expect(
-      migrateEffectPromptSettings({
+      readEffectPromptSettings({
         fragmentConfigs: {
           HOOK: { count: 10, durationSeconds: 5 },
           PAIN: { count: 8, durationSeconds: 5 },
@@ -69,15 +62,15 @@ describe('effect prompt generation contract', () => {
         semanticLimit: 15,
         visualLimit: 20,
       }),
-    ).toEqual({ targetCount: 50, defaultDurationSeconds: 5 });
+    ).toBeNull();
+    expect(readEffectPromptSettings({ targetCount: 50, defaultDurationSeconds: 5 })).toEqual({
+      targetCount: 50,
+      defaultDurationSeconds: 5,
+    });
   });
 
   it('publishes only the current batch and item-evaluation topology', () => {
-    expect(EFFECT_PROMPT_GRAPH_VERSIONS).toEqual(['CURRENT']);
-    expect(CURRENT_EFFECT_PROMPT_GRAPH_VERSION).toBe('CURRENT');
-    expect(
-      effectPromptRunGraphNodeIds(CURRENT_EFFECT_PROMPT_GRAPH_VERSION, 'BATCH_GENERATE'),
-    ).toEqual([
+    expect(EFFECT_PROMPT_GRAPH_NODE_IDS).toEqual([
       'LOAD_AND_SNAPSHOT',
       'INSIGHT_MAPPING',
       'FACT_VISUAL_STRATEGY_COMPILATION',
@@ -87,15 +80,8 @@ describe('effect prompt generation contract', () => {
       'EXACT_SELECTION_AND_SUPPLEMENT',
       'RESULT_SAVE',
     ]);
-    expect(
-      effectPromptRunGraphNodeIds(CURRENT_EFFECT_PROMPT_GRAPH_VERSION, 'ITEM_EVALUATE'),
-    ).toContain('ITEM_EVALUATE');
-    expect(EFFECT_PROMPT_SHARD_PHASES).toEqual([
-      'BLUEPRINT',
-      'PROMPT',
-      'CREATIVE',
-      'CLASSIFICATION',
-    ]);
+    expect(effectPromptRunGraphNodeIds('ITEM_EVALUATE')).toContain('ITEM_EVALUATE');
+    expect(EFFECT_PROMPT_SHARD_PHASES).toEqual(['CREATIVE', 'CLASSIFICATION']);
   });
 
   it('publishes additive node-detail input, output, and execution section states', () => {
@@ -126,9 +112,9 @@ describe('effect prompt generation contract', () => {
     expect(effectPromptSettingsNodeId('product-one')).toBe('PROMPT_GENERATION:product-one');
   });
 
-  it('keeps the canonical JSON schema aligned with V6 purpose and score fields', () => {
-    expect(batchSchema.$id).toMatch(/effect-prompt-batch\.v6\.json$/u);
-    expect(batchSchema.properties.schemaVersion.const).toBe(6);
+  it('keeps the canonical JSON schema aligned with purpose and score fields', () => {
+    expect(batchSchema.$id).toMatch(/effect-prompt-batch\.json$/u);
+    expect(batchSchema.properties.schemaVersion).toBeUndefined();
     expect([...batchSchema.properties.settings.required].sort()).toEqual([
       'defaultDurationSeconds',
       'targetCount',
@@ -140,13 +126,15 @@ describe('effect prompt generation contract', () => {
         'compatiblePurposes',
         'classificationStatus',
         'productRelevance',
+        'creativeCore',
       ]),
     );
     expect(batchSchema.$defs.fragmentType.enum).toEqual(EFFECT_PROMPT_FRAGMENT_TYPES);
     expect(batchSchema.properties.metrics.properties.replenishmentRounds.maximum).toBe(
       EFFECT_PROMPT_LIMITS.maxReplenishmentRounds,
     );
-    expect(batchSchema.properties.settings.properties.defaultDurationSeconds.maximum).toBe(30);
-    expect(batchSchema.$defs.item.properties.targetDurationSeconds.maximum).toBe(30);
+    expect(batchSchema.properties.metrics.required).toContain('semanticEvaluation');
+    expect(EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD).toBe(0.82);
+    expect(EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT).toBe(15);
   });
 });

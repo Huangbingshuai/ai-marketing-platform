@@ -5,11 +5,15 @@ import hashlib
 import json
 
 import httpx
+import numpy as np
 import pytest
+
 import effect_prompt_generation.embeddings as embeddings_module
 
 from effect_prompt_generation.embeddings import (
     ArkEmbeddingProvider,
+    ContentEmbeddingStats,
+    ContentVectorIndex,
     EmbeddingProviderError,
     MockEmbeddingProvider,
     build_content_vector_index,
@@ -21,7 +25,7 @@ from effect_prompt_generation.models import (
     CreativeCandidate,
     CreativeDimensions,
     FragmentType,
-    PromptItemV6,
+    PromptItem,
     SharedPrompt,
     SharedPromptSection,
 )
@@ -67,9 +71,9 @@ def _candidate(index: int) -> CreativeCandidate:
     )
 
 
-def _anchor(index: int) -> PromptItemV6:
+def _anchor(index: int) -> PromptItem:
     candidate = _candidate(index)
-    return PromptItemV6(
+    return PromptItem(
         id=f"anchor-{index}",
         code=f"P{index:03d}",
         origin="MANUAL",
@@ -80,6 +84,7 @@ def _anchor(index: int) -> PromptItemV6:
         product_relevance=90,
         material_tags=["产品展示"],
         target_duration_seconds=5,
+        creative_core=candidate.creative_core,
         dimensions=candidate.dimensions,
         content=candidate.content,
         insight_bindings=[],
@@ -87,6 +92,26 @@ def _anchor(index: int) -> PromptItemV6:
         created_at="2026-08-28T10:00:00Z",
         updated_at="2026-08-28T10:00:00Z",
     )
+
+
+def test_redundancy_summary_counts_duplicate_groups_formed_only_by_anchors() -> None:
+    index = ContentVectorIndex(
+        entity_ids=("candidate", "anchor:a", "anchor:b"),
+        row_by_id={"candidate": 0, "anchor:a": 1, "anchor:b": 2},
+        candidate_ids=("candidate",),
+        anchor_ids=("anchor:a", "anchor:b"),
+        similarities=np.asarray(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.95], [0.0, 0.95, 1.0]],
+            dtype=np.float32,
+        ),
+        stats=ContentEmbeddingStats(3, 0, 0, 0, 3, 3, 0, 0, 0, 0, []),
+    )
+
+    summary = index.redundancy_summary(["candidate"])
+
+    assert summary.high_risk_group_count == 1
+    assert summary.redundant_candidate_count == 1
+    assert summary.high_risk_candidate_ids == ()
 
 
 def test_embedding_text_compiler_removes_shared_tail_and_common_product_tokens() -> (

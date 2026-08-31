@@ -57,10 +57,23 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).not.toContain('fragmentTypeFilter');
   });
 
+  it('shows the fixed semantic duplicate-rate result without restoring a user setting', () => {
+    expect(pageSource).toContain('currentSemanticDisplay');
+    expect(pageSource).toContain('语义重复度 ${evaluation.duplicateRate.toFixed(1)}%');
+    expect(pageSource).toContain('正在计算语义重复度');
+    expect(pageSource).toContain('语义重复度待评估');
+    expect(pageSource).toContain('prompt-semantic-rate--');
+  });
+
   it('uses product relation as the fourth creative dimension', () => {
     expect(pageSource).toContain('productRelation: []');
     expect(pageSource).toContain('dimensions.productRelation');
     expect(pageSource).toContain("dimension.key === 'productRelation'");
+    expect(pageSource).toContain('查看提炼信息依据');
+    expect(pageSource).toContain('itemInsightFacts(item)');
+    expect(pageSource).toContain('{{ fact.value }}');
+    expect(pageSource).toContain('查看创意主线');
+    expect(pageSource).toContain('{{ item.creativeCore }}');
     expect(pageSource).toContain('查看六维创意信息');
     expect(pageSource).not.toContain('卖点侧重');
   });
@@ -106,19 +119,16 @@ describe('effect prompt generation current layout', () => {
     ])
       expect(pageSource).toMatch(new RegExp(`\\b${nodeId}\\b`, 'u'));
     expect(pageSource).toMatch(
-      /effectPromptRunGraphNodeIds\(\s*CURRENT_EFFECT_PROMPT_GRAPH_VERSION,\s*displayedGraphRun\.value\.operation,?\s*\)/u,
+      /effectPromptRunGraphNodeIds\(displayedGraphRun\.value\.operation\)/u,
     );
-    expect(pageSource).toMatch(
-      /effectPromptRunGraphEdges\(\s*CURRENT_EFFECT_PROMPT_GRAPH_VERSION,\s*displayedGraphRun\.value\.operation,?\s*\)/u,
-    );
+    expect(pageSource).toMatch(/effectPromptRunGraphEdges\(displayedGraphRun\.value\.operation\)/u);
     expect(pageSource).toContain('展示本次真实输入、连贯创意生成、用途评估和数量结果。');
     expect(graphSource).toContain('sourceIndex < targetIndex');
   });
 
   it('keeps current real-result detail renderers without historical navigation', () => {
-    expect(pageSource).toContain('effectPromptGraphNodeIds(CURRENT_EFFECT_PROMPT_GRAPH_VERSION)');
+    expect(pageSource).toContain('EFFECT_PROMPT_GRAPH_NODE_IDS');
     expect(pageSource).not.toContain('历史执行');
-    expect(pageSource).not.toContain('displayedGraphVersionLabel');
     for (const blockKind of [
       'RELATIONSHIP_LIST',
       'COORDINATE_LIST',

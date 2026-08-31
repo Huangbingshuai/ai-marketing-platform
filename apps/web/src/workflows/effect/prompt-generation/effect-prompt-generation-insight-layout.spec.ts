@@ -2,13 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import pageSource from './EffectPromptGenerationNodePage.vue?raw';
 
-describe('effect prompt V4 insight utilization layout', () => {
-  it('keeps per-item source labels without rendering the batch coverage component', () => {
+describe('effect prompt insight utilization layout', () => {
+  it('shows each item fact basis without rendering the batch coverage component', () => {
     expect(pageSource).not.toContain('aria-label="配额与提炼信息覆盖"');
     expect(pageSource).not.toContain('currentMetrics.insightCoverage.covered.length');
     expect(pageSource).not.toContain('currentMetrics.insightCoverage.missing.length');
-    expect(pageSource).toContain('class="insight-source-tags"');
-    expect(pageSource).toContain('itemInsightSources(item)');
+    expect(pageSource).toContain('查看提炼信息依据');
+    expect(pageSource).toContain('itemInsightFacts(item)');
+    expect(pageSource).toContain('{{ fact.value }}');
   });
 
   it('renders the mapping and coverage stages in the public sub-workflow', () => {

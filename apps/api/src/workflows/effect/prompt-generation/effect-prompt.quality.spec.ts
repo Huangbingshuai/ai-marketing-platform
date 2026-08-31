@@ -1,23 +1,18 @@
-import type {
-  EffectPromptBatchResultV5,
-  EffectPromptItem,
-  EffectPromptItemV5,
-} from '@ai-marketing/contracts';
-import {
-  DEFAULT_EFFECT_PROMPT_FRAGMENT_CONFIGS,
-  DEFAULT_EFFECT_PROMPT_SETTINGS,
-} from '@ai-marketing/contracts';
+import { createHash } from 'node:crypto';
+
+import type { EffectPromptItem } from '@ai-marketing/contracts';
+import { DEFAULT_EFFECT_PROMPT_SETTINGS } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 
 import {
   compileEffectPromptSharedPrompt,
   defaultEffectPromptRenderProfile,
   isEffectPromptItem,
-  isEffectPromptItemV5,
   parseEffectPromptBatchResult,
-  parseEffectPromptBatchResultV5ForRead,
   mergeEffectPromptCompletionItems,
+  parseEffectPromptSemanticAudit,
   recomputePromptQuality,
+  semanticEvaluationAfterDeletion,
 } from './effect-prompt.quality';
 
 const item = (id: string, content = `产品创意画面 ${id}`): EffectPromptItem => ({
@@ -31,6 +26,7 @@ const item = (id: string, content = `产品创意画面 ${id}`): EffectPromptIte
   productRelevance: 92,
   materialTags: ['产品展示'],
   targetDurationSeconds: 5,
+  creativeCore: '家庭厨房中的产品切面展示',
   dimensions: {
     narrative: '单镜头状态变化',
     scene: '家庭厨房',
@@ -46,13 +42,42 @@ const item = (id: string, content = `产品创意画面 ${id}`): EffectPromptIte
   updatedAt: '2026-08-27T00:00:00.000Z',
 });
 
-describe('effect prompt V6 quality contract', () => {
+const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
+
+const auditFor = (items: EffectPromptItem[], pairs: Array<[string, string]>) => {
+  const evaluatedItems = items
+    .map(({ id, content }) => ({
+      itemId: id,
+      contentHash: sha256(content.normalize('NFKC').trim()),
+    }))
+    .sort((left, right) => left.itemId.localeCompare(right.itemId, 'en-US'));
+  return {
+    schemaVersion: 1,
+    similarityThreshold: 0.82,
+    evaluatedItems,
+    duplicatePairs: pairs.map(([leftItemId, rightItemId]) => ({ leftItemId, rightItemId })),
+    contentFingerprint: sha256(JSON.stringify(evaluatedItems)),
+  };
+};
+
+describe('effect prompt quality contract', () => {
   it('requires purpose projection and productRelation', () => {
     expect(isEffectPromptItem(item('001'))).toBe(true);
-    expect(isEffectPromptItem({ ...item('030'), targetDurationSeconds: 30 })).toBe(true);
-    expect(isEffectPromptItem({ ...item('031'), targetDurationSeconds: 31 })).toBe(false);
     expect(isEffectPromptItem({ ...item('002'), fragmentType: 'HOOK' })).toBe(false);
     expect(isEffectPromptItem({ ...item('003'), compatiblePurposes: ['HOOK'] })).toBe(false);
+  });
+
+  it('restores creative core from narrative for existing stored items', () => {
+    const existing = item('legacy');
+    const withoutCreativeCore: Partial<EffectPromptItem> = { ...existing };
+    delete withoutCreativeCore.creativeCore;
+    const result = recomputePromptQuality([existing], {
+      targetCount: 1,
+      defaultDurationSeconds: 5,
+    });
+    const parsed = parseEffectPromptBatchResult({ ...result, items: [withoutCreativeCore] });
+
+    expect(parsed?.items[0]?.creativeCore).toBe(existing.dimensions.narrative);
   });
 
   it('computes exact-count, purpose and lightweight issue metrics', () => {
@@ -74,8 +99,14 @@ describe('effect prompt V6 quality contract', () => {
       undefined,
       defaultEffectPromptRenderProfile(),
       compileEffectPromptSharedPrompt([]),
+      {
+        status: 'VERIFIED',
+        evaluatedCount: 10,
+        duplicateGroupCount: 0,
+        duplicateCount: 0,
+        duplicateRate: 0,
+      },
     );
-    expect(result.schemaVersion).toBe(6);
     expect(result.items).toHaveLength(10);
     expect(result.metrics.hardIssueCounts).toEqual([]);
     expect(result.metrics.exactDuplicateCount).toBe(0);
@@ -87,6 +118,7 @@ describe('effect prompt V6 quality contract', () => {
       compatibleCount: 10,
     });
     expect(result.metrics.averageScores.productRelevance).toBe(92);
+    expect(result.metrics.semanticEvaluation.duplicateRate).toBe(0);
     expect(
       parseEffectPromptBatchResult({
         ...result,
@@ -113,75 +145,97 @@ describe('effect prompt V6 quality contract', () => {
     expect(recomputed.metrics.hardIssueCounts).toEqual(result.metrics.hardIssueCounts);
   });
 
-  it('reads V5 without fabricating V6 purpose or score fields', () => {
-    const legacyItem: EffectPromptItemV5 = {
-      id: 'legacy-1',
-      code: 'P001',
-      origin: 'AI',
-      fragmentType: 'HOOK',
-      materialTags: ['钩子'],
-      targetDurationSeconds: 5,
-      dimensions: {
-        narrative: '悬念',
-        scene: '厨房',
-        persona: '成年人',
-        sellingPoint: '产品切面',
-        camera: '近景',
-        emotion: '好奇',
+  it('requires semantic duplicate rate to be strictly below fifteen percent', () => {
+    const items = Array.from({ length: 20 }, (_, index) =>
+      item(`00000000-0000-4000-8000-${String(index).padStart(12, '0')}`),
+    );
+    const result = recomputePromptQuality(
+      items,
+      { targetCount: 20, defaultDurationSeconds: 5 },
+      undefined,
+      defaultEffectPromptRenderProfile(),
+      compileEffectPromptSharedPrompt([]),
+      {
+        status: 'VERIFIED',
+        evaluatedCount: 20,
+        duplicateGroupCount: 1,
+        duplicateCount: 3,
+        duplicateRate: 15,
       },
-      content: '历史 Prompt',
-      insightBindings: [],
-      manualEdited: false,
-      createdAt: '2026-08-26T00:00:00.000Z',
-      updatedAt: '2026-08-26T00:00:00.000Z',
-    };
-    expect(isEffectPromptItemV5({ ...legacyItem, targetDurationSeconds: 16 })).toBe(false);
-    const legacy: EffectPromptBatchResultV5 = {
-      schemaVersion: 5,
-      settings: {
-        fragmentConfigs: DEFAULT_EFFECT_PROMPT_FRAGMENT_CONFIGS,
-        semanticLimit: 15,
-        visualLimit: 20,
-      },
-      renderProfile: defaultEffectPromptRenderProfile(),
-      items: [legacyItem],
-      metrics: {
-        targetCount: 50,
-        acceptedCount: 1,
-        generatedCandidateCount: 1,
-        fallbackCount: 0,
-        removedSemanticDuplicates: 0,
-        removedVisualDuplicates: 0,
-        removedDimensionConflicts: 0,
-        semanticDuplicateRate: 0,
-        visualOverlapRate: 0,
-        replenishmentRounds: 0,
-        fragmentTypeDistribution: [
-          { fragmentType: 'HOOK', targetCount: 10, actualCount: 1 },
-          { fragmentType: 'PAIN', targetCount: 8, actualCount: 0 },
-          { fragmentType: 'PRODUCT_DISPLAY', targetCount: 12, actualCount: 0 },
-          { fragmentType: 'SELLING_POINT_EXPLANATION', targetCount: 10, actualCount: 0 },
-          { fragmentType: 'CTA', targetCount: 6, actualCount: 0 },
-          { fragmentType: 'OUTRO', targetCount: 4, actualCount: 0 },
-        ],
-        sellingPointCoverage: { required: [], covered: [], missing: [] },
-        insightCoverage: {
-          required: [],
-          covered: [],
-          missing: [],
-          adaptive: [],
-          deferred: [],
-          excluded: [],
-          appliedConstraints: [],
+    );
+    expect(result.qualityStatus).toBe('NEEDS_REVIEW');
+  });
+
+  it('allows seven but blocks eight semantic duplicates in a fifty-item batch', () => {
+    const items = Array.from({ length: 50 }, (_, index) =>
+      item(`00000000-0000-4000-8000-${String(index).padStart(12, '0')}`),
+    );
+    const evaluate = (duplicateCount: number) =>
+      recomputePromptQuality(
+        items,
+        { targetCount: 50, defaultDurationSeconds: 5 },
+        undefined,
+        defaultEffectPromptRenderProfile(),
+        compileEffectPromptSharedPrompt([]),
+        {
+          status: 'VERIFIED',
+          evaluatedCount: 50,
+          duplicateGroupCount: 1,
+          duplicateCount,
+          duplicateRate: duplicateCount * 2,
         },
-        removedExecutionInvalid: 0,
-        executionInvalidReasons: [],
-      },
-      qualityStatus: 'PASS',
-    };
-    expect(parseEffectPromptBatchResultV5ForRead(legacy)?.items[0]).toEqual(legacyItem);
-    expect(parseEffectPromptBatchResult(legacy)).toBeNull();
-    expect(DEFAULT_EFFECT_PROMPT_SETTINGS.targetCount).toBe(50);
+      );
+
+    expect(evaluate(7).qualityStatus).toBe('PASS');
+    expect(evaluate(8).qualityStatus).toBe('NEEDS_REVIEW');
+  });
+
+  it('recalculates connected duplicate groups after a deletion from a trusted audit', () => {
+    const items = Array.from({ length: 10 }, (_, index) =>
+      item(`00000000-0000-4000-8000-${String(index).padStart(12, '0')}`),
+    );
+    const rawAudit = auditFor(items, [
+      [items[0]!.id, items[1]!.id],
+      [items[1]!.id, items[2]!.id],
+      [items[5]!.id, items[6]!.id],
+    ]);
+    const audit = parseEffectPromptSemanticAudit(rawAudit, items);
+    expect(audit).not.toBeNull();
+    expect(
+      semanticEvaluationAfterDeletion(
+        items.filter(({ id }) => id !== items[1]!.id),
+        audit!,
+      ),
+    ).toEqual({
+      status: 'VERIFIED',
+      evaluatedCount: 9,
+      duplicateGroupCount: 1,
+      duplicateCount: 1,
+      duplicateRate: 11.11,
+    });
+    expect(
+      semanticEvaluationAfterDeletion(
+        items.map((row, index) => (index === 0 ? { ...row, content: '正文已变化' } : row)),
+        audit!,
+      ).status,
+    ).toBe('PENDING');
+  });
+
+  it('keeps historical results without semantic evaluation pending', () => {
+    const result = recomputePromptQuality([item('legacy')], {
+      targetCount: 1,
+      defaultDurationSeconds: 5,
+    });
+    const legacyMetrics: Partial<typeof result.metrics> = { ...result.metrics };
+    delete legacyMetrics.semanticEvaluation;
+    const parsed = parseEffectPromptBatchResult({ ...result, metrics: legacyMetrics });
+    expect(parsed?.metrics.semanticEvaluation).toEqual({
+      status: 'PENDING',
+      evaluatedCount: 0,
+      duplicateGroupCount: null,
+      duplicateCount: null,
+      duplicateRate: null,
+    });
   });
 
   it('ITEM_EVALUATE updates only classification data and keeps authored content intact', () => {
@@ -197,8 +251,7 @@ describe('effect prompt V6 quality contract', () => {
       productRelevance: 88,
     };
     const merged = mergeEffectPromptCompletionItems([evaluated], {
-      schemaVersion: 6,
-      graphVersion: 'V11_COHERENT_CREATIVE_GENERATION',
+      selectionPolicy: 'MMR_CONTENT',
       projectId: 'project-a',
       workflowRunId: 'workflow-a',
       productId: 'product-a',

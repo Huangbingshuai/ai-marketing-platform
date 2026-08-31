@@ -1,5 +1,3 @@
-VERSION: effect-prompt-v11-coherent-creative-task-v3
-
 逐条创意事实简报：
 {task_briefs_json}
 

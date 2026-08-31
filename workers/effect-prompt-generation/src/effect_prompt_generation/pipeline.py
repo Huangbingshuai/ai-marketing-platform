@@ -16,33 +16,19 @@ from typing import Any, Literal, cast
 from pydantic import ValidationError
 
 from .api_client import InternalApi, InternalApiError
-from .assembly import (
-    assemble_fragment_prompt,
-    assemble_safe_fallback_prompt,
-    hard_execution_reasons,
-)
-from .combinations import (
-    expression_bindings,
-    fragment_type_deficits,
-    fragment_type_targets,
-    make_shards,
-    plan_combinations,
-)
-from .insight_mapping import bindings_for_fact_ids, map_insight
+from .insight_mapping import map_insight
 from .embeddings import (
     ContentVectorIndex,
     CreativeVectorIndex,
     EmbeddingProvider,
     EmbeddingProviderError,
+    MockEmbeddingProvider,
     RedundancySummary,
     VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD,
     build_content_vector_index,
     build_creative_vector_index,
 )
 from .models import (
-    BlueprintBundleQuota,
-    BlueprintShardPlan,
-    BlueprintTask,
     ClassificationShardPlan,
     CountMetric,
     CreativeAverageScores,
@@ -54,82 +40,46 @@ from .models import (
     CreativeScores,
     CreativeShardPlan,
     CreativeTask,
-    EvidenceMode,
     FailurePayload,
     FragmentType,
     FRAGMENT_TYPE_LABELS,
-    FragmentFactAllocation,
-    FragmentDimensionCoordinatePlan,
-    FragmentMarketingPlan,
-    FragmentRelationshipPlan,
     FactVisualStrategy,
     FactVisualStrategyResponse,
-    GeneratedBlueprint,
-    GeneratedCandidate,
     InsightApplicationMap,
-    InsightField,
     InsightBinding,
     NodeId,
-    PairViolation,
-    PlannedCombination,
     ProgressPayload,
     PromptBatchResult,
     PromptBatchSettings,
-    PromptBatchResultV6,
-    PromptBatchSettingsV6,
     PromptGenerationSnapshot,
-    PromptDimensions,
     PromptItem,
-    PromptItemV6,
     PromptMetrics,
-    PromptMetricsV6,
     PurposeDistribution,
     RenderProfile,
     RuntimeContext,
+    SemanticEvaluation,
     SharedPrompt,
     SharedPromptSection,
-    ShardPlan,
     ShardPhase,
     ShardRecord,
     SharedRenderConstraints,
     StageOutput,
     StageStatus,
-    StrategyPlan,
     StrategyCheckpoint,
     utc_now,
 )
 from .providers import (
-    BLUEPRINT_STAGE_BY_TYPE,
-    COORDINATE_STAGE_BY_TYPE,
-    FRAGMENT_STRATEGY_STAGE_BY_TYPE,
-    FRAGMENT_STRATEGY_VERSION,
     AiProvider,
     ProviderError,
     ProviderErrorType,
-    RELATIONSHIP_STAGE_BY_TYPE,
-    V10_COORDINATE_VERSION,
-    V10_RELATIONSHIP_VERSION,
-    V11_FACT_VISUAL_STRATEGY_VERSION,
-    V11_CREATIVE_DIRECTION_VERSION,
-    merge_fragment_marketing_plans,
+    FACT_VISUAL_STRATEGY_TEMPLATE_HASH,
+    CREATIVE_DIRECTION_TEMPLATE_HASH,
 )
-from .strategy_planning import allocate_fragment_facts, validate_fragment_marketing_plan
-from .v10_blueprints import (
-    allocate_blueprint_quotas,
-    blueprint_signature,
-    make_blueprint_shards,
-    make_blueprint_tasks,
-    materialize_blueprint,
-    select_orthogonal_blueprints,
-    validate_coordinate_plan,
-    validate_generated_blueprints,
-    validate_relationship_plan,
-)
-from .v11_fact_allocation import allocate_v11_creative_facts
-from .v11_creative_directions import (
+from .creative_directions import (
     action_motif_guidance,
     action_motif_signature,
     allocate_creative_directions,
+    complete_semantic_profile,
     creative_direction_source_hash,
     dominant_action_motifs,
     dominant_families,
@@ -137,50 +87,33 @@ from .v11_creative_directions import (
     max_cluster_share,
     max_scene_atom_share,
     scene_atom_for_direction,
-    scene_atom_guidance,
     scene_atom_signature,
     semantic_cluster_novelty,
     semantic_profile_distribution,
-    complete_semantic_profile,
     validate_creative_direction_plan,
     validate_semantic_profile,
 )
-from .v11_visual_strategy import (
+from .fact_allocation import allocate_creative_facts
+from .visual_strategy import (
     strategy_stage_metadata,
     validate_fact_visual_strategy,
 )
 from .quality import (
-    EvaluationResult,
     CreativeSelectionResult,
     RankedCreative,
-    evaluate_candidates,
-    pair_rate,
-    semantic_violations,
-    visual_violations,
     normalize_creative_signature,
     select_creatives,
     validate_creative_evaluation,
 )
 
 MAX_REPLENISHMENT_ROUNDS = 3
-# Five detailed V11 evaluations can still produce a status=completed response whose
+SEMANTIC_DUPLICATE_RATE_LIMIT = 15.0
+# Five detailed evaluations can still produce a status=completed response whose
 # JSON ends early. Three candidates keep each strict response comfortably bounded;
 # the pipeline-level sliding concurrency retains throughput while avoiding paid
 # whole-batch failures caused by one oversized classification response.
-V11_CLASSIFICATION_SHARD_SIZE = 3
-
-GENERATION_NODE_BY_FRAGMENT: dict[FragmentType, NodeId] = {
-    FragmentType.HOOK: NodeId.GENERATE_HOOK,
-    FragmentType.PAIN: NodeId.GENERATE_PAIN,
-    FragmentType.PRODUCT_DISPLAY: NodeId.GENERATE_PRODUCT_DISPLAY,
-    FragmentType.SELLING_POINT_EXPLANATION: NodeId.GENERATE_SELLING_POINT_EXPLANATION,
-    FragmentType.CTA: NodeId.GENERATE_CTA,
-    FragmentType.OUTRO: NodeId.GENERATE_OUTRO,
-}
-BLUEPRINT_NODE_BY_FRAGMENT: dict[FragmentType, NodeId] = {
-    fragment_type: NodeId(node_id)
-    for fragment_type, node_id in BLUEPRINT_STAGE_BY_TYPE.items()
-}
+CLASSIFICATION_SHARD_SIZE = 3
+MAX_PROCESS_EMBEDDING_CACHE_ENTRIES = 4_096
 
 
 class PipelineError(RuntimeError):
@@ -190,63 +123,41 @@ class PipelineError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class LoadedRun:
     snapshot: PromptGenerationSnapshot
-    candidates: list[GeneratedCandidate]
-    completed_shard_keys: list[str]
-    highest_round: int
-    completed_blueprint_shard_keys: list[str] = field(default_factory=list)
     completed_creative_shard_keys: list[str] = field(default_factory=list)
     completed_classification_shard_keys: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
 class RunCache:
-    candidates: dict[str, GeneratedCandidate] = field(default_factory=dict)
-    normalized_items: list[PromptItem] = field(default_factory=list)
-    accepted_items: list[PromptItem] = field(default_factory=list)
     ai_call_count: int = 0
     total_shards: int = 0
-    execution_invalid_reasons: Counter[str] = field(default_factory=Counter)
     insight_application: InsightApplicationMap | None = None
     fact_visual_strategy: FactVisualStrategy | None = None
-    creative_direction_plan: CreativeDirectionPlan | None = None
-    strategy_plan: StrategyPlan | None = None
-    evaluation: EvaluationResult | None = None
-    fallback_count: int = 0
     shared_prompt: SharedPrompt | None = None
+    creative_direction_plan: CreativeDirectionPlan | None = None
     strategy_checkpoints: dict[NodeId, StrategyCheckpoint] = field(default_factory=dict)
-    relationship_plans: dict[FragmentType, FragmentRelationshipPlan] = field(
-        default_factory=dict
-    )
-    coordinate_plans: dict[FragmentType, FragmentDimensionCoordinatePlan] = field(
-        default_factory=dict
-    )
-    blueprint_quotas: list[BlueprintBundleQuota] = field(default_factory=list)
-    blueprint_tasks: dict[str, BlueprintTask] = field(default_factory=dict)
-    blueprints: dict[str, GeneratedBlueprint] = field(default_factory=dict)
-    selected_blueprints: dict[str, GeneratedBlueprint] = field(default_factory=dict)
-    completed_blueprint_shard_keys: set[str] = field(default_factory=set)
     creatives: dict[str, CreativeCandidate] = field(default_factory=dict)
     creative_target_durations: dict[str, int] = field(default_factory=dict)
     creative_evaluations: dict[str, CreativeEvaluation] = field(default_factory=dict)
     completed_creative_shard_keys: set[str] = field(default_factory=set)
     completed_classification_shard_keys: set[str] = field(default_factory=set)
     selected_creatives: CreativeSelectionResult | None = None
-    accepted_v11_items: list[PromptItemV6] = field(default_factory=list)
-    v11_candidate_target_count: int = 0
-    v11_exact_duplicate_count: int = 0
-    v11_supplemented: bool = False
-    v11_replenishment_rounds: int = 0
-    v11_diversity_supplemented: bool = False
-    v11_diversity_supplement_count: int = 0
-    v11_diversity_avoid_slot_ids: set[str] = field(default_factory=set)
-    v11_avoid_scene_families: set[str] = field(default_factory=set)
-    v11_avoid_scene_atoms: set[str] = field(default_factory=set)
-    v11_avoid_action_families: set[str] = field(default_factory=set)
-    v11_avoid_action_motifs: set[str] = field(default_factory=set)
-    v11_diversity_supplement_reasons: list[str] = field(default_factory=list)
-    v11_diversity_supplement_slot_ids: set[str] = field(default_factory=set)
-    v11_initial_redundancy_summary: RedundancySummary | None = None
-    v11_redundancy_summary: RedundancySummary | None = None
+    accepted_items: list[PromptItem] = field(default_factory=list)
+    candidate_target_count: int = 0
+    exact_duplicate_count: int = 0
+    supplemented: bool = False
+    replenishment_rounds: int = 0
+    diversity_supplemented: bool = False
+    diversity_supplement_count: int = 0
+    diversity_supplement_slot_ids: set[str] = field(default_factory=set)
+    diversity_avoid_slot_ids: set[str] = field(default_factory=set)
+    diversity_avoid_action_families: set[str] = field(default_factory=set)
+    diversity_avoid_action_motifs: set[str] = field(default_factory=set)
+    diversity_avoid_scene_atoms: set[str] = field(default_factory=set)
+    diversity_supplement_reasons: list[str] = field(default_factory=list)
+    initial_redundancy_summary: RedundancySummary | None = None
+    redundancy_summary: RedundancySummary | None = None
+    content_vector_index: ContentVectorIndex | None = None
     embedding_vectors: dict[str, tuple[float, ...]] = field(default_factory=dict)
     embedding_remote_input_count: int = 0
     embedding_request_count: int = 0
@@ -265,7 +176,7 @@ class PromptGenerationPipeline:
         api: InternalApi,
         provider: AiProvider,
         embedding_provider: EmbeddingProvider | None = None,
-        similarity_mode: Literal["trigram", "shadow", "vector"] = "trigram",
+        similarity_mode: Literal["trigram", "shadow", "vector"] = "vector",
         embedding_batch_size: int = 64,
         embedding_max_concurrency: int = 2,
         ai_max_concurrency: int = 6,
@@ -274,7 +185,13 @@ class PromptGenerationPipeline:
     ) -> None:
         self.api = api
         self.provider = provider
-        self.embedding_provider = embedding_provider
+        self.embedding_provider = (
+            embedding_provider
+            if embedding_provider is not None
+            else MockEmbeddingProvider()
+            if provider.execution_mode == "MOCK" and similarity_mode == "vector"
+            else None
+        )
         self.similarity_mode = similarity_mode
         self.embedding_batch_size = embedding_batch_size
         self.embedding_max_concurrency = embedding_max_concurrency
@@ -284,6 +201,10 @@ class PromptGenerationPipeline:
         self.max_ai_calls_per_run = max_ai_calls_per_run
         self._snapshots: dict[str, PromptGenerationSnapshot] = {}
         self._runs: dict[str, RunCache] = {}
+        # The worker process is long lived. Sharing the content-addressed vector cache
+        # lets item evaluation reuse unchanged batch vectors without persisting model
+        # vectors in public results or database records.
+        self._embedding_vectors: dict[str, tuple[float, ...]] = {}
 
     def register_snapshot(
         self,
@@ -295,7 +216,8 @@ class PromptGenerationPipeline:
         self._runs[context.run_id] = RunCache(
             strategy_checkpoints={
                 item.node_id: item for item in strategy_checkpoints or []
-            }
+            },
+            embedding_vectors=self._embedding_vectors,
         )
 
     def unregister(self, context: RuntimeContext) -> None:
@@ -323,17 +245,6 @@ class PromptGenerationPipeline:
         )
         snapshot = self.snapshot(context)
         shards = await self.api.get_shards(context)
-        succeeded = [
-            item
-            for item in shards
-            if item.status == StageStatus.SUCCEEDED and item.phase == ShardPhase.PROMPT
-        ]
-        succeeded_blueprints = [
-            item
-            for item in shards
-            if item.status == StageStatus.SUCCEEDED
-            and item.phase == ShardPhase.BLUEPRINT
-        ]
         succeeded_creatives = [
             item
             for item in shards
@@ -346,41 +257,7 @@ class PromptGenerationPipeline:
             if item.status == StageStatus.SUCCEEDED
             and item.phase == ShardPhase.CLASSIFICATION
         ]
-        if any(
-            combination.planning_version
-            not in {
-                "six-branch-v1",
-                "six-ai-branch-v2",
-                "v10-coordinate-blueprint",
-            }
-            for shard in succeeded
-            for combination in shard.combination_plan
-        ):
-            raise PipelineError("生成规则已升级，请重新生成当前 Prompt 批次")
-        candidates = [candidate for shard in succeeded for candidate in shard.items]
-        unique_candidates = _unique_candidates(candidates)
-        self._cache(context).candidates = {
-            item.slot_id: item for item in unique_candidates
-        }
-        self._cache(context).execution_invalid_reasons = Counter(
-            reason
-            for item in unique_candidates
-            for reason in item.execution_invalid_reasons
-        )
         cache = self._cache(context)
-        cache.blueprints = {
-            item.slot_id: item
-            for shard in succeeded_blueprints
-            for item in shard.blueprints
-        }
-        cache.blueprint_tasks = {
-            item.slot_id: item
-            for shard in succeeded_blueprints
-            for item in shard.blueprint_plan
-        }
-        cache.completed_blueprint_shard_keys = {
-            item.key for item in succeeded_blueprints
-        }
         cache.creatives = {
             item.slot_id: item
             for shard in succeeded_creatives
@@ -399,80 +276,27 @@ class PromptGenerationPipeline:
             task for shard in succeeded_creatives for task in shard.creative_plan
         ]
         cache.creative_target_durations = {
-            task.slot_id: task.target_duration_seconds
-            for task in restored_creative_tasks
+            task.slot_id: task.target_duration_seconds for task in restored_creative_tasks
         }
-        legacy_diversity_rounds: set[int] = set()
-        if snapshot.selection_policy_version == "MMR_CONTENT_V2":
-            restored_settings = _v11_settings(snapshot)
-            restored_target = (
-                1
-                if snapshot.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"}
-                else max(
-                    0,
-                    restored_settings.target_count
-                    - len(snapshot.retained_manual_items),
-                )
-            )
-            for round_number in sorted(
-                {
-                    task.round
-                    for task in restored_creative_tasks
-                    if task.round > 0 and task.supplement_kind is None
-                }
-            ):
-                prior_candidates = [
-                    candidate
-                    for candidate in cache.creatives.values()
-                    if candidate.round < round_number
-                ]
-                prior_evaluations = [
-                    evaluation
-                    for slot_id, evaluation in cache.creative_evaluations.items()
-                    if (
-                        (candidate := cache.creatives.get(slot_id)) is not None
-                        and candidate.round < round_number
-                    )
-                ]
-                prior_selection = select_creatives(
-                    prior_candidates,
-                    prior_evaluations,
-                    target_count=restored_target,
-                )
-                if len(prior_selection.selected) >= restored_target:
-                    legacy_diversity_rounds.add(round_number)
         quantity_tasks = [
             task
             for task in restored_creative_tasks
             if task.supplement_kind == "QUANTITY"
-            or (
-                task.supplement_kind is None
-                and task.round > 0
-                and task.round not in legacy_diversity_rounds
-            )
         ]
         diversity_tasks = [
             task
             for task in restored_creative_tasks
             if task.supplement_kind == "DIVERSITY"
-            or (task.supplement_kind is None and task.round in legacy_diversity_rounds)
         ]
-        cache.v11_replenishment_rounds = max(
+        cache.replenishment_rounds = max(
             (task.round for task in quantity_tasks),
             default=0,
         )
-        cache.v11_supplemented = cache.v11_replenishment_rounds > 0
-        cache.v11_diversity_supplemented = bool(diversity_tasks)
-        cache.v11_diversity_supplement_count = len(diversity_tasks)
-        cache.v11_diversity_supplement_slot_ids = {
-            task.slot_id for task in diversity_tasks
-        }
+        cache.supplemented = cache.replenishment_rounds > 0
+        cache.diversity_supplemented = bool(diversity_tasks)
+        cache.diversity_supplement_count = len(diversity_tasks)
         loaded = LoadedRun(
             snapshot=snapshot,
-            candidates=unique_candidates,
-            completed_shard_keys=[item.key for item in succeeded],
-            highest_round=max((item.round for item in succeeded), default=0),
-            completed_blueprint_shard_keys=[item.key for item in succeeded_blueprints],
             completed_creative_shard_keys=[item.key for item in succeeded_creatives],
             completed_classification_shard_keys=[
                 item.key for item in succeeded_classifications
@@ -486,8 +310,6 @@ class PromptGenerationPipeline:
             metadata={
                 "batchSize": snapshot.settings.target_count,
                 "retainedCount": len(snapshot.retained_manual_items),
-                "resumedShardCount": len(succeeded),
-                "resumedBlueprintShardCount": len(succeeded_blueprints),
                 "resumedCreativeShardCount": len(succeeded_creatives),
                 "resumedClassificationShardCount": len(succeeded_classifications),
                 "snapshotSummary": _short(
@@ -514,64 +336,6 @@ class PromptGenerationPipeline:
         )
         await self.progress(context, 8, NodeId.LOAD_AND_SNAPSHOT)
         return loaded
-
-    async def plan_strategy(
-        self,
-        context: RuntimeContext,
-        *,
-        application: InsightApplicationMap,
-        target_count: int,
-    ) -> StrategyPlan:
-        await self._stage(
-            context, NodeId.STRATEGY_PLANNING, StageStatus.RUNNING, "正在规划营销关系"
-        )
-        self._reserve_ai_call(context)
-        call = await self.provider.plan_strategy(application, target_count=target_count)
-        plan = call.value
-        pools = plan.dimension_pools
-        fragment_pools = plan.fragment_strategy_pools
-        self._cache(context).strategy_plan = plan
-        await self._stage(
-            context,
-            NodeId.STRATEGY_PLANNING,
-            StageStatus.SUCCEEDED,
-            "营销关系规划完成",
-            metadata={
-                "sceneCount": len(pools.scenes),
-                "personaCount": len(pools.personas),
-                "sellingPointCount": len(pools.selling_points),
-                "emotionCount": sum(len(item.emotions) for item in fragment_pools),
-                "fragmentStrategyCount": len(fragment_pools),
-                "openingStateCount": sum(
-                    len(item.opening_states) for item in fragment_pools
-                ),
-                "actionArcCount": sum(len(item.action_arcs) for item in fragment_pools),
-                "cameraPlanCount": sum(len(item.cameras) for item in fragment_pools),
-                "endingStateCount": sum(
-                    len(item.ending_states) for item in fragment_pools
-                ),
-                "evidencePlanCount": len(pools.evidence_plans),
-                "relationshipBundleCount": len(plan.relationship_bundles),
-                "plannedFactCount": len(
-                    {
-                        fact_id
-                        for bundle in plan.relationship_bundles
-                        for fact_id in bundle.fact_ids
-                    }
-                ),
-                "modelRelationshipBundleCount": (
-                    call.metadata.model_relationship_bundle_count
-                ),
-                "workerCompletedRelationshipBundleCount": (
-                    call.metadata.worker_completed_relationship_bundle_count
-                ),
-                "dimensionExample": _short(
-                    f"{fragment_pools[0].opening_states[0]} / {pools.scenes[0]} / {pools.selling_points[0]}"
-                ),
-            },
-        )
-        await self.progress(context, 15, NodeId.STRATEGY_PLANNING)
-        return plan
 
     async def map_insight(self, context: RuntimeContext) -> InsightApplicationMap:
         await self._stage(
@@ -636,14 +400,14 @@ class PromptGenerationPipeline:
             checkpoint is not None
             and isinstance(checkpoint.plan, FactVisualStrategy)
             and checkpoint.source_fingerprint == source_content_hash
-            and checkpoint.prompt_version == V11_FACT_VISUAL_STRATEGY_VERSION
+            and checkpoint.template_hash == FACT_VISUAL_STRATEGY_TEMPLATE_HASH
         ):
             try:
                 restored = validate_fact_visual_strategy(
                     FactVisualStrategyResponse(policies=checkpoint.plan.policies),
                     application,
                     source_content_hash=source_content_hash,
-                    prompt_version=V11_FACT_VISUAL_STRATEGY_VERSION,
+                    template_hash=FACT_VISUAL_STRATEGY_TEMPLATE_HASH,
                 )
             except ValueError:
                 restored = None
@@ -665,7 +429,7 @@ class PromptGenerationPipeline:
                         call.value,
                         application,
                         source_content_hash=source_content_hash,
-                        prompt_version=V11_FACT_VISUAL_STRATEGY_VERSION,
+                        template_hash=FACT_VISUAL_STRATEGY_TEMPLATE_HASH,
                     )
                     break
                 except ValueError as exc:
@@ -740,117 +504,116 @@ class PromptGenerationPipeline:
         await self.progress(context, 13, NodeId.SHARED_PROMPT_COMPILATION)
         return prompt
 
-    async def _ensure_v11_creative_direction_plan(
+    async def _ensure_creative_direction_plan(
         self,
         context: RuntimeContext,
     ) -> CreativeDirectionPlan | None:
         snapshot = self.snapshot(context)
-        if (
-            snapshot.operation != "BATCH_GENERATE"
-            or snapshot.selection_policy_version != "MMR_CONTENT_CLUSTER_V3"
-        ):
+        if snapshot.operation != "BATCH_GENERATE":
             return None
         cache = self._cache(context)
         if cache.creative_direction_plan is not None:
             return cache.creative_direction_plan
         application = self._require_application(context)
-        strategy = self._required_fact_visual_strategy(context)
+        visual_strategy = self._required_fact_visual_strategy(context)
         shared_prompt = self._required_shared_prompt(context)
-        settings = _v11_settings(snapshot)
         source_hash = creative_direction_source_hash(
             insight_content_hash=snapshot.insight_artifact.content_hash,
-            visual_strategy_hash=strategy.strategy_hash,
+            visual_strategy_hash=visual_strategy.strategy_hash,
             shared_prompt_hash=shared_prompt.content_hash,
-            target_count=settings.target_count,
-            prompt_version=V11_CREATIVE_DIRECTION_VERSION,
+            target_count=snapshot.settings.target_count,
+            template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
         )
-        node = NodeId.COHERENT_CREATIVE_GENERATION
-        checkpoint = cache.strategy_checkpoints.get(node)
+        checkpoint = cache.strategy_checkpoints.get(
+            NodeId.COHERENT_CREATIVE_GENERATION
+        )
         plan: CreativeDirectionPlan | None = None
         reused = False
         if (
             checkpoint is not None
             and isinstance(checkpoint.plan, CreativeDirectionPlan)
             and checkpoint.source_fingerprint == source_hash
-            and checkpoint.allocation_hash == checkpoint.plan.plan_hash
-            and checkpoint.prompt_version == V11_CREATIVE_DIRECTION_VERSION
+            and checkpoint.template_hash == CREATIVE_DIRECTION_TEMPLATE_HASH
         ):
             try:
-                plan = validate_creative_direction_plan(
+                restored = validate_creative_direction_plan(
                     CreativeDirectionResponse(directions=checkpoint.plan.directions),
                     application,
-                    strategy,
+                    visual_strategy,
                     source_hash=source_hash,
-                    prompt_version=V11_CREATIVE_DIRECTION_VERSION,
+                    template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
                 )
             except ValueError:
-                plan = None
-            if plan is not None and plan.plan_hash == checkpoint.plan.plan_hash:
-                plan = plan.model_copy(update={"reused_checkpoint": True})
+                restored = None
+            if restored is not None and restored.plan_hash == checkpoint.allocation_hash:
+                plan = restored.model_copy(update={"reused_checkpoint": True})
                 reused = True
-            else:
-                plan = None
-
         call_metadata: dict[str, int | None] = {}
         if plan is None:
-            await self._stage(
-                context,
-                node,
-                StageStatus.RUNNING,
-                "正在规划批次创意方向",
-            )
             for invalid_response_attempt in range(2):
                 self._reserve_ai_call(context)
                 async with self._ai_semaphore:
                     call = await self.provider.plan_creative_directions(
                         application,
-                        fact_visual_strategy=strategy,
+                        fact_visual_strategy=visual_strategy,
                         shared_prompt=shared_prompt,
-                        target_count=settings.target_count,
+                        target_count=snapshot.settings.target_count,
                     )
                 try:
                     plan = validate_creative_direction_plan(
                         call.value,
                         application,
-                        strategy,
+                        visual_strategy,
                         source_hash=source_hash,
-                        prompt_version=V11_CREATIVE_DIRECTION_VERSION,
+                        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
                     )
                     break
                 except ValueError as exc:
                     if invalid_response_attempt == 1:
                         raise ProviderError(
-                            "AI 批次创意方向结构或事实引用无效",
+                            "AI 创意方向规划结构或事实引用无效",
                             retryable=False,
                             error_type=ProviderErrorType.RESPONSE_INVALID,
                             attempts=2,
                         ) from exc
             if plan is None:
-                raise PipelineError("批次创意方向未能形成有效结果")
+                raise PipelineError("创意方向规划未能形成有效结果")
             call_metadata = {
                 "inputTokens": call.metadata.input_tokens,
                 "outputTokens": call.metadata.output_tokens,
                 "totalTokens": call.metadata.total_tokens,
                 "latencyMs": call.metadata.latency_ms,
             }
-
         cache.creative_direction_plan = plan
+        priority_counts = Counter(
+            dimension.value
+            for direction in plan.directions
+            for dimension in direction.priority_dimensions
+        )
         await self._stage(
             context,
-            node,
+            NodeId.COHERENT_CREATIVE_GENERATION,
             StageStatus.RUNNING,
-            "批次创意方向已复用" if reused else "批次创意方向已完成",
+            "创意方向已复用" if reused else "创意方向规划完成，正在生成候选",
             metadata={
-                **self._creative_direction_metadata(context),
+                "directionCount": len(plan.directions),
+                "priorityDimensionDistribution": [
+                    {"dimension": key, "count": count}
+                    for key, count in sorted(priority_counts.items())
+                ],
+                "checkpoint": {
+                    "nodeId": NodeId.COHERENT_CREATIVE_GENERATION.value,
+                    "sourceFingerprint": source_hash,
+                    "allocationHash": plan.plan_hash,
+                    "templateHash": CREATIVE_DIRECTION_TEMPLATE_HASH,
+                    "plan": plan.model_dump(mode="json", by_alias=True),
+                },
                 **call_metadata,
             },
         )
         return plan
 
-    def _creative_direction_metadata(
-        self,
-        context: RuntimeContext,
-    ) -> dict[str, Any]:
+    def _creative_direction_metadata(self, context: RuntimeContext) -> dict[str, Any]:
         plan = self._cache(context).creative_direction_plan
         if plan is None:
             return {"directionCount": 0, "priorityDimensionDistribution": []}
@@ -862,19 +625,12 @@ class PromptGenerationPipeline:
         return {
             "directionCount": len(plan.directions),
             "priorityDimensionDistribution": [
-                {"label": label, "count": count}
-                for label, count in sorted(counts.items())
+                {"dimension": key, "count": count}
+                for key, count in sorted(counts.items())
             ],
-            "checkpoint": {
-                "nodeId": NodeId.COHERENT_CREATIVE_GENERATION.value,
-                "sourceFingerprint": plan.source_hash,
-                "allocationHash": plan.plan_hash,
-                "promptVersion": plan.prompt_version,
-                "plan": plan.model_dump(mode="json", by_alias=True),
-            },
         }
 
-    async def plan_v11_creatives(
+    async def plan_creatives(
         self,
         context: RuntimeContext,
         *,
@@ -883,15 +639,15 @@ class PromptGenerationPipeline:
         requested_count: int | None = None,
         supplement_kind: Literal["QUANTITY", "DIVERSITY"] = "QUANTITY",
     ) -> list[CreativeShardPlan]:
-        settings = _v11_settings(self.snapshot(context))
+        settings = _current_settings(self.snapshot(context))
         snapshot = self.snapshot(context)
         cache = self._cache(context)
         if snapshot.operation == "ITEM_EVALUATE":
             if round_number != 0:
                 return []
             target = snapshot.target_item
-            if not isinstance(target, PromptItemV6):
-                raise PipelineError("V11 item evaluation requires a V6 target item")
+            if not isinstance(target, PromptItem):
+                raise PipelineError("item evaluation requires a current target item")
             application = self._require_application(context)
             declared_ids = list(
                 dict.fromkeys(
@@ -900,14 +656,12 @@ class PromptGenerationPipeline:
                 )
             )[:12]
             if not declared_ids:
-                raise PipelineError(
-                    "V11 item evaluation requires confirmed insight facts"
-                )
+                raise PipelineError("item evaluation requires confirmed insight facts")
             candidate = CreativeCandidate(
                 slot_id=target.id,
                 ordinal=(snapshot.target_item_index or 0) + 1,
                 round=0,
-                creative_core=target.dimensions.narrative,
+                creative_core=target.creative_core,
                 declared_fact_ids=declared_ids,
                 dimensions=target.dimensions,
                 content=target.content,
@@ -917,9 +671,9 @@ class PromptGenerationPipeline:
             cache.creative_target_durations[candidate.slot_id] = (
                 target.target_duration_seconds
             )
-            cache.v11_candidate_target_count = 1
+            cache.candidate_target_count = 1
             return []
-        direction_plan = await self._ensure_v11_creative_direction_plan(context)
+        direction_plan = await self._ensure_creative_direction_plan(context)
         selection_target = (
             1
             if snapshot.operation == "ITEM_REGENERATE"
@@ -929,50 +683,30 @@ class PromptGenerationPipeline:
             requested = (
                 3
                 if snapshot.operation == "ITEM_REGENERATE"
-                else math.ceil(
-                    selection_target
-                    * (
-                        1.4
-                        if snapshot.selection_policy_version == "MMR_CONTENT_CLUSTER_V3"
-                        else 1.2
-                    )
-                )
+                else math.ceil(selection_target * 1.4)
             )
-            cache.v11_candidate_target_count = requested
+            cache.candidate_target_count = requested
         elif supplement_kind == "DIVERSITY":
             requested = max(1, requested_count or 1)
-            cache.v11_diversity_supplemented = True
-            cache.v11_diversity_supplement_count += requested
+            cache.diversity_supplemented = True
+            cache.diversity_supplement_count += requested
         else:
             deficit = max(1, missing_count or selection_target)
             requested = max(deficit + 1, math.ceil(deficit * 1.2))
-            cache.v11_supplemented = True
-            cache.v11_replenishment_rounds = max(
-                cache.v11_replenishment_rounds,
+        if snapshot.operation == "BATCH_GENERATE" and round_number > 0:
+            remaining_capacity = max(
+                0,
+                math.ceil(selection_target * 1.6) - len(cache.creatives),
+            )
+            requested = min(requested, remaining_capacity)
+            if requested <= 0:
+                return []
+        if round_number > 0 and supplement_kind == "QUANTITY":
+            cache.supplemented = True
+            cache.replenishment_rounds = max(
+                cache.replenishment_rounds,
                 round_number,
             )
-        if round_number > 0 and snapshot.operation == "BATCH_GENERATE":
-            candidate_ceiling = math.ceil(settings.target_count * 1.60)
-            requested = min(
-                requested,
-                max(0, candidate_ceiling - len(cache.creatives)),
-            )
-            if requested == 0:
-                if supplement_kind == "QUANTITY":
-                    cache.v11_replenishment_rounds = MAX_REPLENISHMENT_ROUNDS
-                await self._stage(
-                    context,
-                    NodeId.COHERENT_CREATIVE_GENERATION,
-                    StageStatus.SUCCEEDED,
-                    "候选池已达到本批安全上限",
-                    metadata={
-                        "round": round_number,
-                        "candidateTargetCount": 0,
-                        "candidateCount": len(cache.creatives),
-                        **self._creative_direction_metadata(context),
-                    },
-                )
-                return []
         application = self._require_application(context)
         fact_visual_strategy = (
             self._required_fact_visual_strategy(context)
@@ -994,18 +728,13 @@ class PromptGenerationPipeline:
                 direction_plan,
                 count=requested,
                 ordinal_start=ordinal_start,
-                avoid_scene_families=(
-                    cache.v11_avoid_scene_families
-                    if supplement_kind == "DIVERSITY"
-                    else ()
-                ),
                 avoid_scene_atoms=(
-                    cache.v11_avoid_scene_atoms
+                    cache.diversity_avoid_scene_atoms
                     if supplement_kind == "DIVERSITY"
                     else ()
                 ),
                 avoid_action_families=(
-                    cache.v11_avoid_action_families
+                    cache.diversity_avoid_action_families
                     if supplement_kind == "DIVERSITY"
                     else ()
                 ),
@@ -1013,18 +742,15 @@ class PromptGenerationPipeline:
             if direction_plan is not None
             else []
         )
-        if supplement_kind == "DIVERSITY" and (
-            cache.v11_avoid_action_motifs or cache.v11_avoid_scene_atoms
-        ):
-            batch_avoidance = [
-                *scene_atom_guidance(sorted(cache.v11_avoid_scene_atoms)),
-                *action_motif_guidance(sorted(cache.v11_avoid_action_motifs)),
-            ]
+        if supplement_kind == "DIVERSITY" and cache.diversity_avoid_action_motifs:
+            motif_guidance = action_motif_guidance(
+                sorted(cache.diversity_avoid_action_motifs)
+            )
             directions = [
                 direction.model_copy(
                     update={
                         "avoid_families": list(
-                            dict.fromkeys([*batch_avoidance, *direction.avoid_families])
+                            dict.fromkeys([*direction.avoid_families, *motif_guidance])
                         )[:2]
                     }
                 )
@@ -1032,7 +758,7 @@ class PromptGenerationPipeline:
             ]
         if directions:
             fact_assignments = [
-                allocate_v11_creative_facts(
+                allocate_creative_facts(
                     application,
                     count=1,
                     ordinal_start=ordinal_start + index,
@@ -1044,7 +770,7 @@ class PromptGenerationPipeline:
                 for index, direction in enumerate(directions)
             ]
         else:
-            fact_assignments = allocate_v11_creative_facts(
+            fact_assignments = allocate_creative_facts(
                 application,
                 count=requested,
                 ordinal_start=ordinal_start,
@@ -1053,7 +779,7 @@ class PromptGenerationPipeline:
             )
         tasks = [
             CreativeTask(
-                slot_id=f"v11-r{round_number}-c{ordinal_start + index:04d}",
+                slot_id=f"creative-r{round_number}-c{ordinal_start + index:04d}",
                 ordinal=ordinal_start + index,
                 round=round_number,
                 supplement_kind=("INITIAL" if round_number == 0 else supplement_kind),
@@ -1068,19 +794,17 @@ class PromptGenerationPipeline:
             )
             for index in range(requested)
         ]
-        if supplement_kind == "DIVERSITY":
-            cache.v11_diversity_supplement_slot_ids.update(
-                task.slot_id for task in tasks
-            )
         cache.creative_target_durations.update(
             {task.slot_id: task.target_duration_seconds for task in tasks}
         )
+        if supplement_kind == "DIVERSITY":
+            cache.diversity_supplement_slot_ids.update(task.slot_id for task in tasks)
         selected = cache.selected_creatives.selected if cache.selected_creatives else []
-        if supplement_kind == "DIVERSITY" and cache.v11_diversity_avoid_slot_ids:
+        if supplement_kind == "DIVERSITY" and cache.diversity_avoid_slot_ids:
             selected = [
                 item
                 for item in selected
-                if item.candidate.slot_id in cache.v11_diversity_avoid_slot_ids
+                if item.candidate.slot_id in cache.diversity_avoid_slot_ids
             ]
         rejection_reasons = sorted(
             {
@@ -1121,9 +845,9 @@ class PromptGenerationPipeline:
                 "pendingShardCount": len(pending),
                 "shardSize": min(4, self.shard_size),
                 "factSelectionMode": (
-                    "VISUAL_TASK_AND_BUSINESS_CONTEXT_V1"
+                    "VISUAL_TASK_AND_BUSINESS_CONTEXT"
                     if fact_visual_strategy is not None
-                    else "WORKER_ASSIGNMENT_V1"
+                    else "WORKER_ASSIGNMENT"
                 ),
                 "primaryFactCount": len(
                     {assignment.primary_fact_id for assignment in fact_assignments}
@@ -1140,7 +864,7 @@ class PromptGenerationPipeline:
         )
         return pending
 
-    async def generate_v11_creative_shard(
+    async def generate_creative_shard(
         self,
         context: RuntimeContext,
         shard: CreativeShardPlan,
@@ -1229,11 +953,9 @@ class PromptGenerationPipeline:
                     }
                 ),
             )
-            if _is_batch_response_invalid(snapshot, exc):
-                return []
             raise
 
-    async def complete_v11_creative_generation(
+    async def complete_creative_generation(
         self,
         context: RuntimeContext,
         *,
@@ -1259,23 +981,23 @@ class PromptGenerationPipeline:
                 "targetCount": (
                     1
                     if snapshot.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"}
-                    else _v11_settings(snapshot).target_count
+                    else _current_settings(snapshot).target_count
                 ),
-                "candidateTargetCount": cache.v11_candidate_target_count,
+                "candidateTargetCount": cache.candidate_target_count,
                 "candidateCount": len(cache.creatives),
                 "roundCandidateCount": len(round_items),
                 "completedShardCount": len(cache.completed_creative_shard_keys),
-                "supplemented": cache.v11_supplemented,
+                "supplemented": cache.supplemented,
                 "factSelectionMode": (
-                    "VISUAL_TASK_AND_BUSINESS_CONTEXT_V1"
+                    "VISUAL_TASK_AND_BUSINESS_CONTEXT"
                     if _uses_fact_visual_strategy(snapshot)
-                    else "WORKER_ASSIGNMENT_V1"
+                    else "WORKER_ASSIGNMENT"
                 ),
                 **self._creative_direction_metadata(context),
             },
         )
 
-    async def plan_v11_classification(
+    async def plan_classification(
         self,
         context: RuntimeContext,
         *,
@@ -1292,14 +1014,14 @@ class PromptGenerationPipeline:
                 round=round_number,
                 shard_index=index,
                 candidate_ids=round_candidate_ids[
-                    start : start + V11_CLASSIFICATION_SHARD_SIZE
+                    start : start + CLASSIFICATION_SHARD_SIZE
                 ],
             )
             for index, start in enumerate(
                 range(
                     0,
                     len(round_candidate_ids),
-                    V11_CLASSIFICATION_SHARD_SIZE,
+                    CLASSIFICATION_SHARD_SIZE,
                 )
             )
         ]
@@ -1328,22 +1050,21 @@ class PromptGenerationPipeline:
                 "candidateCount": len(round_candidate_ids),
                 "missingCandidateCount": len(missing_ids),
                 "pendingShardCount": len(pending),
-                "shardSize": V11_CLASSIFICATION_SHARD_SIZE,
+                "shardSize": CLASSIFICATION_SHARD_SIZE,
             },
         )
         return pending
 
-    async def evaluate_v11_classification_shard(
+    async def evaluate_classification_shard(
         self,
         context: RuntimeContext,
         shard: ClassificationShardPlan,
     ) -> list[CreativeEvaluation]:
         cache = self._cache(context)
         candidates = [cache.creatives[item_id] for item_id in shard.candidate_ids]
-        snapshot = self.snapshot(context)
         node = (
             NodeId.ITEM_EVALUATE
-            if snapshot.operation == "ITEM_EVALUATE"
+            if self.snapshot(context).operation == "ITEM_EVALUATE"
             else NodeId.CREATIVE_EVALUATION_CLASSIFICATION
         )
         running = ShardRecord(
@@ -1361,23 +1082,20 @@ class PromptGenerationPipeline:
                     async with self._ai_semaphore:
                         evaluation_kwargs: dict[str, Any] = {
                             "application": self._require_application(context),
-                        }
-                        if _uses_fact_visual_strategy(self.snapshot(context)):
-                            evaluation_kwargs["fact_visual_strategy"] = (
-                                self._required_fact_visual_strategy(context)
-                            )
-                        if cache.creative_direction_plan is not None:
-                            evaluation_kwargs["direction_plan"] = (
-                                cache.creative_direction_plan
-                            )
-                        call = await self.provider.evaluate_creatives(
-                            candidates,
-                            target_durations={
+                            "target_durations": {
                                 candidate.slot_id: cache.creative_target_durations[
                                     candidate.slot_id
                                 ]
                                 for candidate in candidates
                             },
+                            "direction_plan": cache.creative_direction_plan,
+                        }
+                        if _uses_fact_visual_strategy(self.snapshot(context)):
+                            evaluation_kwargs["fact_visual_strategy"] = (
+                                self._required_fact_visual_strategy(context)
+                            )
+                        call = await self.provider.evaluate_creatives(
+                            candidates,
                             **evaluation_kwargs,
                         )
                     break
@@ -1390,16 +1108,17 @@ class PromptGenerationPipeline:
             candidate_by_id = {item.slot_id: item for item in candidates}
             items = []
             for item in call.value.items:
+                candidate = candidate_by_id[item.slot_id]
                 if cache.creative_direction_plan is not None:
                     item = complete_semantic_profile(
                         item,
-                        candidate_by_id[item.slot_id],
+                        candidate,
                         cache.creative_direction_plan,
                     )
                     validate_semantic_profile(item, cache.creative_direction_plan)
                 items.append(
                     validate_creative_evaluation(
-                        candidate_by_id[item.slot_id],
+                        candidate,
                         item,
                         self._require_application(context),
                         target_duration_seconds=cache.creative_target_durations[
@@ -1434,11 +1153,9 @@ class PromptGenerationPipeline:
                     }
                 ),
             )
-            if _is_batch_response_invalid(snapshot, exc):
-                return []
             raise
 
-    async def complete_v11_classification(
+    async def complete_classification(
         self,
         context: RuntimeContext,
         *,
@@ -1460,6 +1177,92 @@ class PromptGenerationPipeline:
             warning for item in evaluations for warning in item.warnings
         )
         purpose_counts = Counter(item.primary_purpose for item in evaluations)
+        semantic_metadata: dict[str, Any] = {
+            "semanticEvaluationStatus": "PENDING",
+            "semanticSimilarityThreshold": VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD,
+            "semanticDuplicateRateLimit": SEMANTIC_DUPLICATE_RATE_LIMIT,
+        }
+        eligible_candidates = [
+            candidate
+            for candidate in cache.creatives.values()
+            if (
+                (evaluation := cache.creative_evaluations.get(candidate.slot_id))
+                is not None
+                and not evaluation.hard_issues
+            )
+        ]
+        if self.similarity_mode != "trigram" and eligible_candidates:
+            if self.embedding_provider is None:
+                raise PipelineError(
+                    "embedding provider is required for semantic evaluation"
+                )
+            anchors = [
+                item
+                for item in snapshot.similarity_anchors
+                if isinstance(item, PromptItem)
+            ]
+            try:
+                insight = snapshot.insight_artifact.result
+                content_index = await build_content_vector_index(
+                    eligible_candidates,
+                    anchors,
+                    provider=self.embedding_provider,
+                    vector_cache=cache.embedding_vectors,
+                    product_name=_insight_text(
+                        insight,
+                        "productName",
+                        "product_name",
+                    ),
+                    product_category=_insight_text(
+                        insight,
+                        "productCategory",
+                        "product_category",
+                    ),
+                    shared_prompt=self._required_shared_prompt(context),
+                    batch_size=self.embedding_batch_size,
+                    max_concurrency=self.embedding_max_concurrency,
+                )
+                _trim_embedding_cache(cache.embedding_vectors)
+            except EmbeddingProviderError as exc:
+                setattr(exc, "node_id", node)
+                raise
+            cache.content_vector_index = content_index
+            preliminary = content_index.redundancy_summary(
+                [candidate.slot_id for candidate in eligible_candidates]
+            )
+            cache.redundancy_summary = preliminary
+            content_stats = content_index.stats
+            cache.embedding_remote_input_count += (
+                content_stats.input_count - content_stats.cache_hit_count
+            )
+            cache.embedding_request_count += content_stats.request_count
+            cache.embedding_input_tokens += content_stats.input_tokens
+            cache.embedding_retry_count += content_stats.retry_count
+            cache.embedding_duration_ms += content_stats.duration_ms
+            cache.embedding_local_comparison_ms += content_stats.local_comparison_ms
+            preliminary_evaluation = _semantic_evaluation(
+                preliminary,
+                len(eligible_candidates) + len(anchors),
+            )
+            semantic_metadata = {
+                "semanticEvaluationStatus": preliminary_evaluation.status,
+                "semanticEvaluatedCount": preliminary_evaluation.evaluated_count,
+                "semanticDuplicateGroupCount": (
+                    preliminary_evaluation.duplicate_group_count
+                ),
+                "semanticDuplicateCount": preliminary_evaluation.duplicate_count,
+                "semanticDuplicateRate": preliminary_evaluation.duplicate_rate,
+                "semanticSimilarityThreshold": VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD,
+                "semanticDuplicateRateLimit": SEMANTIC_DUPLICATE_RATE_LIMIT,
+                "embeddingInputCount": cache.embedding_remote_input_count,
+                "embeddingRequestCount": cache.embedding_request_count,
+                "embeddingCacheHitCount": content_stats.cache_hit_count,
+                "embeddingDurationMs": round(cache.embedding_duration_ms, 3),
+                "localComparisonMs": round(
+                    cache.embedding_local_comparison_ms,
+                    3,
+                ),
+            }
         await self._stage(
             context,
             node,
@@ -1472,7 +1275,7 @@ class PromptGenerationPipeline:
                 "acceptedCount": len(accepted),
                 "rejectedCount": len(evaluations) - len(accepted),
                 "completedShardCount": len(cache.completed_classification_shard_keys),
-                "averageScores": _average_v11_scores(
+                "averageScores": _average_scores(
                     [item.scores for item in evaluations]
                 ).model_dump(mode="json", by_alias=True),
                 "purposeDistribution": [
@@ -1487,13 +1290,11 @@ class PromptGenerationPipeline:
                     {"code": code, "count": count}
                     for code, count in sorted(warning_counts.items())
                 ],
-                "semanticProfileDistribution": semantic_profile_distribution(
-                    evaluations
-                ),
+                **semantic_metadata,
             },
         )
 
-    async def select_v11_creatives(
+    async def select_creatives(
         self,
         context: RuntimeContext,
         *,
@@ -1501,7 +1302,7 @@ class PromptGenerationPipeline:
     ) -> tuple[list[CreativeShardPlan], bool]:
         cache = self._cache(context)
         snapshot = self.snapshot(context)
-        settings = _v11_settings(snapshot)
+        settings = _current_settings(snapshot)
         item_operation = snapshot.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"}
         selection_target = (
             1
@@ -1529,15 +1330,10 @@ class PromptGenerationPipeline:
                 exact_duplicate_count=0,
             )
         else:
-            cluster_mmr_policy = (
-                snapshot.selection_policy_version == "MMR_CONTENT_CLUSTER_V3"
-            )
             baseline_result = select_creatives(
                 list(cache.creatives.values()),
                 list(cache.creative_evaluations.values()),
                 target_count=selection_target,
-                quality_weight=0.70 if cluster_mmr_policy else 0.80,
-                novelty_weight=0.30 if cluster_mmr_policy else 0.20,
             )
             result = baseline_result
             cache.embedding_stage_metadata = {
@@ -1554,10 +1350,7 @@ class PromptGenerationPipeline:
                     and not evaluation.hard_issues
                 )
             ]
-            content_mmr_policy = snapshot.selection_policy_version in {
-                "MMR_CONTENT_V2",
-                "MMR_CONTENT_CLUSTER_V3",
-            }
+            content_mmr_policy = snapshot.selection_policy == "MMR_CONTENT"
             if (
                 self.similarity_mode != "trigram"
                 and len(eligible_candidates) > 1
@@ -1570,77 +1363,55 @@ class PromptGenerationPipeline:
                 anchors = [
                     item
                     for item in snapshot.similarity_anchors
-                    if isinstance(item, PromptItemV6)
+                    if isinstance(item, PromptItem)
                 ]
                 try:
-                    insight = snapshot.insight_artifact.result
-                    content_index = await build_content_vector_index(
-                        eligible_candidates,
-                        anchors,
-                        provider=self.embedding_provider,
-                        vector_cache=cache.embedding_vectors,
-                        product_name=_insight_text(
-                            insight,
-                            "productName",
-                            "product_name",
-                        ),
-                        product_category=_insight_text(
-                            insight,
-                            "productCategory",
-                            "product_category",
-                        ),
-                        shared_prompt=self._required_shared_prompt(context),
-                        batch_size=self.embedding_batch_size,
-                        max_concurrency=self.embedding_max_concurrency,
-                    )
+                    content_index = cache.content_vector_index
+                    if content_index is None:
+                        raise PipelineError(
+                            "semantic evaluation index is unavailable"
+                        )
                     def select_content_mmr(
                         candidate_ids: set[str] | None = None,
                     ) -> CreativeSelectionResult:
-                        selected_candidates = [
+                        candidates = [
                             item
                             for item in cache.creatives.values()
                             if candidate_ids is None or item.slot_id in candidate_ids
                         ]
-                        selected_evaluations_for_pool = [
+                        evaluations = [
                             item
                             for item in cache.creative_evaluations.values()
                             if candidate_ids is None or item.slot_id in candidate_ids
                         ]
                         return select_creatives(
-                            selected_candidates,
-                            selected_evaluations_for_pool,
+                            candidates,
+                            evaluations,
                             target_count=selection_target,
-                            novelty_resolver=lambda left, right: (
-                                round(
-                                    0.70
-                                    * content_index.novelty(
-                                        left.candidate.slot_id,
-                                        right.candidate.slot_id,
-                                    )
-                                    + 0.30
-                                    * semantic_cluster_novelty(
-                                        left.evaluation.semantic_profile,
-                                        right.evaluation.semantic_profile,
-                                        left_action_motifs=action_motif_signature(
-                                            left.candidate
-                                        ),
-                                        right_action_motifs=action_motif_signature(
-                                            right.candidate
-                                        ),
-                                        left_scene_atom=scene_atom_signature(
-                                            left.candidate
-                                        ),
-                                        right_scene_atom=scene_atom_signature(
-                                            right.candidate
-                                        ),
-                                    ),
-                                    4,
-                                )
-                                if cluster_mmr_policy
-                                else content_index.novelty(
+                            novelty_resolver=lambda left, right: round(
+                                0.70
+                                * content_index.novelty(
                                     left.candidate.slot_id,
                                     right.candidate.slot_id,
                                 )
+                                + 0.30
+                                * semantic_cluster_novelty(
+                                    left.evaluation.semantic_profile,
+                                    right.evaluation.semantic_profile,
+                                    left_action_motifs=action_motif_signature(
+                                        left.candidate
+                                    ),
+                                    right_action_motifs=action_motif_signature(
+                                        right.candidate
+                                    ),
+                                    left_scene_atom=scene_atom_signature(
+                                        left.candidate
+                                    ),
+                                    right_scene_atom=scene_atom_signature(
+                                        right.candidate
+                                    ),
+                                ),
+                                4,
                             ),
                             fixed_novelty_resolver=(
                                 lambda item: content_index.novelty_to_anchors(
@@ -1666,42 +1437,32 @@ class PromptGenerationPipeline:
                     mmr_result = select_content_mmr()
                     admitted_supplements: set[str] = set()
                     rejected_supplements: set[str] = set()
-                    diversity_slots = (
-                        cache.v11_diversity_supplement_slot_ids
-                        & set(cache.creatives)
+                    diversity_slots = cache.diversity_supplement_slot_ids & set(
+                        cache.creatives
                     )
                     base_ids = set(cache.creatives) - diversity_slots
                     base_result = select_content_mmr(base_ids)
-                    # Quantity remains authoritative. Only apply the marginal
-                    # diversity admission gate when the pre-supplement pool can
-                    # already fill the requested count.
                     if diversity_slots and len(base_result.selected) >= selection_target:
                         current_result = base_result
                         current_risk = content_index.redundancy_summary(
-                            [
-                                item.candidate.slot_id
-                                for item in current_result.selected
-                            ]
+                            [item.candidate.slot_id for item in current_result.selected]
                         )
                         for supplement_id in sorted(
                             diversity_slots,
                             key=lambda slot_id: cache.creatives[slot_id].ordinal,
                         ):
+                            proposal_result = select_content_mmr(
+                                {*base_ids, *admitted_supplements, supplement_id}
+                            )
                             proposal_ids = {
-                                *base_ids,
-                                *admitted_supplements,
-                                supplement_id,
-                            }
-                            proposal_result = select_content_mmr(proposal_ids)
-                            proposal_selected_ids = {
                                 item.candidate.slot_id
                                 for item in proposal_result.selected
                             }
-                            if supplement_id not in proposal_selected_ids:
+                            if supplement_id not in proposal_ids:
                                 rejected_supplements.add(supplement_id)
                                 continue
                             proposal_risk = content_index.redundancy_summary(
-                                list(proposal_selected_ids)
+                                list(proposal_ids)
                             )
                             if _positive_redundancy_improvement(
                                 current_risk,
@@ -1719,7 +1480,6 @@ class PromptGenerationPipeline:
                     post_supplement_redundancy = content_index.redundancy_summary(
                         [item.candidate.slot_id for item in mmr_result.selected]
                     )
-                    post_supplement_selected_count = len(mmr_result.selected)
                     pre_guard_redundancy = post_supplement_redundancy
                     mmr_result, final_guard_source = _guard_final_selection_risk(
                         mmr_result,
@@ -1754,40 +1514,32 @@ class PromptGenerationPipeline:
                     mmr_redundancy = content_index.redundancy_summary(
                         [item.candidate.slot_id for item in mmr_result.selected]
                     )
-                    if cache.v11_initial_redundancy_summary is None:
-                        cache.v11_initial_redundancy_summary = mmr_redundancy
-                    cache.v11_redundancy_summary = mmr_redundancy
-                    cache.v11_diversity_avoid_slot_ids = set(
+                    if cache.initial_redundancy_summary is None:
+                        cache.initial_redundancy_summary = mmr_redundancy
+                    cache.redundancy_summary = mmr_redundancy
+                    cache.diversity_avoid_slot_ids = set(
                         mmr_redundancy.high_risk_candidate_ids
                     )
                     content_stats = content_index.stats
-                    cache.embedding_remote_input_count += (
-                        content_stats.input_count - content_stats.cache_hit_count
+                    evaluated_count = len(mmr_result.selected) + len(anchors)
+                    semantic_limit_count = _maximum_semantic_duplicates(
+                        evaluated_count
                     )
-                    cache.embedding_request_count += content_stats.request_count
-                    cache.embedding_input_tokens += content_stats.input_tokens
-                    cache.embedding_retry_count += content_stats.retry_count
-                    cache.embedding_duration_ms += content_stats.duration_ms
-                    cache.embedding_local_comparison_ms += (
-                        content_stats.local_comparison_ms
+                    semantic_evaluation = _semantic_evaluation(
+                        mmr_redundancy,
+                        evaluated_count,
                     )
-                    soft_excess_limit = max(2, math.ceil(selection_target * 0.10))
                     cache.embedding_stage_metadata = {
                         "similarityMode": self.similarity_mode,
-                        "selectionPolicyVersion": snapshot.selection_policy_version,
                         "selectionMethod": (
                             "CONTENT_CLUSTER_VECTOR_MMR"
-                            if self.similarity_mode == "vector" and cluster_mmr_policy
-                            else "CONTENT_VECTOR_MMR"
                             if self.similarity_mode == "vector"
                             else "TRIGRAM_SHADOW"
                         ),
                         "mmrQualityWeight": 0.70,
                         "mmrDiversityWeight": 0.30,
-                        "clusterAwareNoveltyWeight": (
-                            0.30 if cluster_mmr_policy else 0.0
-                        ),
-                        "contentNoveltyWeight": (0.70 if cluster_mmr_policy else 1.0),
+                        "contentNoveltyWeight": 0.70,
+                        "clusterAwareNoveltyWeight": 0.30,
                         "fixedAnchorCount": len(anchors),
                         "embeddingInputCount": cache.embedding_remote_input_count,
                         "embeddingRequestCount": cache.embedding_request_count,
@@ -1809,7 +1561,15 @@ class PromptGenerationPipeline:
                         "nearDuplicateRiskThreshold": (
                             VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD
                         ),
-                        "softExcessLimit": soft_excess_limit,
+                        "semanticDuplicateLimitCount": semantic_limit_count,
+                        "semanticEvaluationStatus": semantic_evaluation.status,
+                        "semanticEvaluatedCount": semantic_evaluation.evaluated_count,
+                        "semanticDuplicateGroupCount": (
+                            semantic_evaluation.duplicate_group_count
+                        ),
+                        "semanticDuplicateCount": semantic_evaluation.duplicate_count,
+                        "semanticDuplicateRate": semantic_evaluation.duplicate_rate,
+                        "semanticDuplicateRateLimit": SEMANTIC_DUPLICATE_RATE_LIMIT,
                         "baselineSelection": baseline_summary,
                         "contentMmrSelection": mmr_summary,
                         "nearDuplicateReductionApplicable": reduction_applicable,
@@ -1823,11 +1583,11 @@ class PromptGenerationPipeline:
                         ),
                         "postSupplementRisk": _redundancy_metadata(
                             post_supplement_redundancy,
-                            selected_count=post_supplement_selected_count,
+                            selected_count=len(mmr_result.selected),
                         ),
                         "preFinalGuard": _redundancy_metadata(
                             pre_guard_redundancy,
-                            selected_count=post_supplement_selected_count,
+                            selected_count=len(mmr_result.selected),
                         ),
                         "postFinalGuard": _redundancy_metadata(
                             post_guard_redundancy,
@@ -1841,10 +1601,10 @@ class PromptGenerationPipeline:
                             4,
                         ),
                         "initialHighRiskGroupCount": (
-                            cache.v11_initial_redundancy_summary.high_risk_group_count
+                            cache.initial_redundancy_summary.high_risk_group_count
                         ),
                         "initialRedundantCandidateCount": (
-                            cache.v11_initial_redundancy_summary.redundant_candidate_count
+                            cache.initial_redundancy_summary.redundant_candidate_count
                         ),
                         "finalHighRiskGroupCount": (
                             mmr_redundancy.high_risk_group_count
@@ -1853,12 +1613,8 @@ class PromptGenerationPipeline:
                         "finalRedundantCandidateCount": (
                             mmr_redundancy.redundant_candidate_count
                         ),
-                        "diversitySupplementTriggered": (
-                            cache.v11_diversity_supplemented
-                        ),
-                        "diversitySupplementCount": (
-                            cache.v11_diversity_supplement_count
-                        ),
+                        "diversitySupplementTriggered": (cache.diversity_supplemented),
+                        "diversitySupplementCount": (cache.diversity_supplement_count),
                         "diversitySupplementAdmittedCount": len(
                             admitted_supplements
                         ),
@@ -1876,7 +1632,6 @@ class PromptGenerationPipeline:
                     cache.embedding_warning = str(exc)
                     cache.embedding_stage_metadata = {
                         "similarityMode": "shadow",
-                        "selectionPolicyVersion": "MMR_CONTENT_V2",
                         "selectionMethod": "TRIGRAM_SHADOW_UNAVAILABLE",
                         "embeddingWarning": str(exc),
                     }
@@ -1905,6 +1660,7 @@ class PromptGenerationPipeline:
                         batch_size=self.embedding_batch_size,
                         max_concurrency=self.embedding_max_concurrency,
                     )
+                    _trim_embedding_cache(cache.embedding_vectors)
                     vector_result = select_creatives(
                         list(cache.creatives.values()),
                         list(cache.creative_evaluations.values()),
@@ -1935,7 +1691,7 @@ class PromptGenerationPipeline:
                         item.candidate.slot_id for item in content_result.selected
                     }
                     denominator = max(1, len(baseline_ids))
-                    legacy_stats = vector_index.stats
+                    baseline_stats = vector_index.stats
                     baseline_summary = _selection_vector_summary(
                         baseline_result,
                         vector_index,
@@ -1967,18 +1723,18 @@ class PromptGenerationPipeline:
                             if self.similarity_mode == "vector"
                             else "TRIGRAM_SHADOW"
                         ),
-                        "embeddingInputCount": legacy_stats.input_count,
-                        "embeddingRequestCount": legacy_stats.request_count,
-                        "embeddingInputTokens": legacy_stats.input_tokens,
-                        "embeddingRetryCount": legacy_stats.retry_count,
-                        "embeddingCacheHitCount": legacy_stats.cache_hit_count,
-                        "comparisonCount": legacy_stats.comparison_count,
-                        "embeddingDurationMs": legacy_stats.duration_ms,
-                        "localComparisonMs": legacy_stats.local_comparison_ms,
-                        "contentSimilarityP50": legacy_stats.content_p50,
-                        "contentSimilarityP95": legacy_stats.content_p95,
-                        "creativeSimilarityP50": legacy_stats.creative_p50,
-                        "creativeSimilarityP95": legacy_stats.creative_p95,
+                        "embeddingInputCount": baseline_stats.input_count,
+                        "embeddingRequestCount": baseline_stats.request_count,
+                        "embeddingInputTokens": baseline_stats.input_tokens,
+                        "embeddingRetryCount": baseline_stats.retry_count,
+                        "embeddingCacheHitCount": baseline_stats.cache_hit_count,
+                        "comparisonCount": baseline_stats.comparison_count,
+                        "embeddingDurationMs": baseline_stats.duration_ms,
+                        "localComparisonMs": baseline_stats.local_comparison_ms,
+                        "contentSimilarityP50": baseline_stats.content_p50,
+                        "contentSimilarityP95": baseline_stats.content_p95,
+                        "creativeSimilarityP50": baseline_stats.creative_p50,
+                        "creativeSimilarityP95": baseline_stats.creative_p95,
                         "vectorSelectionOverlapPercent": round(
                             100.0 * len(baseline_ids & vector_ids) / denominator,
                             2,
@@ -2013,7 +1769,7 @@ class PromptGenerationPipeline:
                             - float(baseline_summary["averageQualityScore"]),
                             4,
                         ),
-                        "highRiskPairs": legacy_stats.high_risk_pairs,
+                        "highRiskPairs": baseline_stats.high_risk_pairs,
                     }
                     if self.similarity_mode == "vector":
                         result = vector_result
@@ -2048,54 +1804,51 @@ class PromptGenerationPipeline:
         pre_scene_share = max_scene_atom_share(eligible_selected_candidates)
         post_scene_share = max_scene_atom_share(selected_candidates)
         pre_action_share = max_cluster_share(
-            eligible_evaluations, "product_action_family"
+            eligible_evaluations,
+            "product_action_family",
         )
         post_action_share = max_cluster_share(
-            selected_evaluations, "product_action_family"
+            selected_evaluations,
+            "product_action_family",
         )
-        dominant_motifs = dominant_action_motifs(
-            selected_candidates
-        )
+        dominant_motifs = dominant_action_motifs(selected_candidates)
         dominant_scene_atom_values = dominant_scene_atoms(selected_candidates)
-        if snapshot.selection_policy_version == "MMR_CONTENT_CLUSTER_V3":
-            cache.embedding_stage_metadata.update(
-                {
-                    "selectionPolicyVersion": "MMR_CONTENT_CLUSTER_V3",
-                    "selectedSemanticProfileDistribution": (
-                        semantic_profile_distribution(selected_evaluations)
-                    ),
-                    "preSelectionMaxSceneShare": pre_scene_share,
-                    "postSelectionMaxSceneShare": post_scene_share,
-                    "preSelectionMaxActionShare": pre_action_share,
-                    "postSelectionMaxActionShare": post_action_share,
-                    "clusterAwareNoveltyWeight": 0.30,
-                    "contentNoveltyWeight": 0.70,
-                }
-            )
+        cache.embedding_stage_metadata.update(
+            {
+                "selectedSemanticProfileDistribution": (
+                    semantic_profile_distribution(selected_evaluations)
+                ),
+                "preSelectionMaxSceneShare": pre_scene_share,
+                "postSelectionMaxSceneShare": post_scene_share,
+                "preSelectionMaxActionShare": pre_action_share,
+                "postSelectionMaxActionShare": post_action_share,
+                "contentNoveltyWeight": 0.70,
+                "clusterAwareNoveltyWeight": 0.30,
+            }
+        )
         cache.selected_creatives = result
-        cache.v11_exact_duplicate_count = result.exact_duplicate_count
-        items = _v11_prompt_items(
+        cache.exact_duplicate_count = result.exact_duplicate_count
+        items = _prompt_items(
             context,
             result,
             self._require_application(context),
             settings.default_duration_seconds,
         )
-        cache.accepted_v11_items = (
+        cache.accepted_items = (
             items
             if item_operation
-            else [*_retained_v11_items(snapshot.retained_manual_items), *items]
+            else [*_retained_items(snapshot.retained_manual_items), *items]
         )
         missing = max(0, selection_target - len(items))
         should_quantity_supplement = (
             missing > 0
-            and cache.v11_replenishment_rounds < MAX_REPLENISHMENT_ROUNDS
+            and cache.replenishment_rounds < MAX_REPLENISHMENT_ROUNDS
             and snapshot.operation != "ITEM_EVALUATE"
         )
-        current_redundancy = cache.v11_redundancy_summary
-        soft_excess_limit = max(2, math.ceil(selection_target * 0.10))
-        dominant_scenes = dominant_families(
-            selected_evaluations,
-            "scene_family",
+        current_redundancy = cache.redundancy_summary
+        semantic_evaluated_count = len(cache.accepted_items)
+        semantic_duplicate_limit_count = _maximum_semantic_duplicates(
+            semantic_evaluated_count
         )
         dominant_actions = dominant_families(
             selected_evaluations,
@@ -2106,16 +1859,18 @@ class PromptGenerationPipeline:
             plan
             and dominant_scene_atom_values
             and any(
-                scene_atom_for_direction(item) not in dominant_scene_atom_values
-                for item in plan.directions
+                scene_atom_for_direction(direction)
+                not in dominant_scene_atom_values
+                for direction in plan.directions
             )
         )
         alternative_action_exists = bool(
             plan
             and dominant_actions
             and any(
-                item.semantic_profile.product_action_family not in dominant_actions
-                for item in plan.directions
+                direction.semantic_profile.product_action_family
+                not in dominant_actions
+                for direction in plan.directions
             )
         )
         cluster_reasons = [
@@ -2124,12 +1879,12 @@ class PromptGenerationPipeline:
                     "SCENE_CLUSTER_OVER_40_PERCENT:"
                     f"{','.join(dominant_scene_atom_values)}"
                 ]
-                if alternative_scene_exists
+                if alternative_scene_exists and post_scene_share > 0.40
                 else []
             ),
             *(
                 [f"ACTION_CLUSTER_OVER_40_PERCENT:{','.join(dominant_actions)}"]
-                if alternative_action_exists
+                if alternative_action_exists and post_action_share > 0.40
                 else []
             ),
             *(
@@ -2140,21 +1895,18 @@ class PromptGenerationPipeline:
         ]
         vector_diversity_needed = bool(
             current_redundancy is not None
-            and current_redundancy.redundant_candidate_count > soft_excess_limit
+            and current_redundancy.redundant_candidate_count
+            > semantic_duplicate_limit_count
         )
-        cluster_diversity_needed = bool(
-            snapshot.selection_policy_version == "MMR_CONTENT_CLUSTER_V3"
-            and cluster_reasons
-        )
+        cluster_diversity_needed = bool(cluster_reasons)
         should_diversity_supplement = (
             not should_quantity_supplement
             and missing == 0
             and selection_target > 1
             and snapshot.operation == "BATCH_GENERATE"
-            and snapshot.selection_policy_version
-            in {"MMR_CONTENT_V2", "MMR_CONTENT_CLUSTER_V3"}
+            and snapshot.selection_policy == "MMR_CONTENT"
             and self.similarity_mode == "vector"
-            and not cache.v11_diversity_supplemented
+            and not cache.diversity_supplemented
             and (vector_diversity_needed or cluster_diversity_needed)
         )
         diversity_supplement_count = 0
@@ -2162,17 +1914,14 @@ class PromptGenerationPipeline:
             redundant_excess = (
                 max(
                     0,
-                    current_redundancy.redundant_candidate_count - soft_excess_limit,
+                    current_redundancy.redundant_candidate_count
+                    - semantic_duplicate_limit_count,
                 )
                 if current_redundancy is not None
                 else 0
             )
             cluster_excess = math.ceil(
-                max(
-                    0.0,
-                    post_scene_share - 0.40,
-                    post_action_share - 0.40,
-                )
+                max(0.0, post_scene_share - 0.40, post_action_share - 0.40)
                 * selection_target
             )
             diversity_supplement_count = min(
@@ -2184,23 +1933,26 @@ class PromptGenerationPipeline:
                 max(0, math.ceil(selection_target * 1.60) - len(cache.creatives)),
             )
             should_diversity_supplement = diversity_supplement_count > 0
-            cache.v11_avoid_scene_families = set(dominant_scenes)
-            cache.v11_avoid_scene_atoms = set(dominant_scene_atom_values)
-            cache.v11_avoid_action_families = set(dominant_actions)
-            cache.v11_avoid_action_motifs = set(dominant_motifs)
-            cache.v11_diversity_supplement_reasons = [
-                *(["VECTOR_NEAR_DUPLICATE_EXCESS"] if vector_diversity_needed else []),
+            cache.diversity_avoid_scene_atoms = set(dominant_scene_atom_values)
+            cache.diversity_avoid_action_families = set(dominant_actions)
+            cache.diversity_avoid_action_motifs = set(dominant_motifs)
+            cache.diversity_supplement_reasons = [
+                *(
+                    ["VECTOR_NEAR_DUPLICATE_EXCESS"]
+                    if vector_diversity_needed
+                    else []
+                ),
                 *cluster_reasons,
             ]
         pending = []
         if should_quantity_supplement:
-            pending = await self.plan_v11_creatives(
+            pending = await self.plan_creatives(
                 context,
                 round_number=round_number + 1,
                 missing_count=missing,
             )
         elif should_diversity_supplement:
-            pending = await self.plan_v11_creatives(
+            pending = await self.plan_creatives(
                 context,
                 round_number=round_number + 1,
                 requested_count=diversity_supplement_count,
@@ -2210,22 +1962,20 @@ class PromptGenerationPipeline:
         if cache.embedding_stage_metadata:
             cache.embedding_stage_metadata.update(
                 {
-                    "initialCandidateCount": cache.v11_candidate_target_count,
+                    "initialCandidateCount": cache.candidate_target_count,
                     "finalCandidateCount": len(cache.creatives),
-                    "diversitySupplementTriggered": (cache.v11_diversity_supplemented),
-                    "diversitySupplementCount": (cache.v11_diversity_supplement_count),
-                    "finalAccurateCount": len(cache.accepted_v11_items),
-                    "diversitySupplementReasons": (
-                        cache.v11_diversity_supplement_reasons
-                    ),
+                    "diversitySupplementTriggered": (cache.diversity_supplemented),
+                    "diversitySupplementCount": (cache.diversity_supplement_count),
+                    "diversitySupplementReasons": cache.diversity_supplement_reasons,
+                    "finalAccurateCount": len(cache.accepted_items),
                 }
             )
         diversity_soft_warning = (
-            "SEMANTIC_DIVERSITY_SOFT_TARGET_NOT_MET"
+            "SEMANTIC_DUPLICATE_RATE_LIMIT_NOT_MET"
             if (
                 not should_supplement
                 and missing == 0
-                and cache.v11_diversity_supplemented
+                and cache.diversity_supplemented
                 and (vector_diversity_needed or cluster_diversity_needed)
             )
             else None
@@ -2248,22 +1998,22 @@ class PromptGenerationPipeline:
             ),
             metadata={
                 "round": round_number,
-                "acceptedCount": len(cache.accepted_v11_items),
+                "acceptedCount": len(cache.accepted_items),
                 "targetCount": 1 if item_operation else settings.target_count,
                 "missingCount": missing,
                 "exactDuplicateCount": result.exact_duplicate_count,
-                "supplemented": cache.v11_supplemented,
+                "supplemented": cache.supplemented,
                 **cache.embedding_stage_metadata,
             },
             warnings=stage_warnings or None,
         )
         return pending, should_supplement
 
-    async def save_v11_result(self, context: RuntimeContext) -> str:
+    async def save_result(self, context: RuntimeContext) -> str:
         cache = self._cache(context)
         snapshot = self.snapshot(context)
-        settings = _v11_settings(snapshot)
-        items = cache.accepted_v11_items
+        settings = _current_settings(snapshot)
+        items = cache.accepted_items
         item_operation = snapshot.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"}
         expected = 1 if item_operation else settings.target_count
         selected = cache.selected_creatives.selected if cache.selected_creatives else []
@@ -2274,26 +2024,44 @@ class PromptGenerationPipeline:
         warning_counts = Counter(
             warning for item in selected for warning in item.evaluation.warnings
         )
-        average = _average_v11_scores(score_rows)
+        average = _average_scores(score_rows)
         primary_distribution = Counter(item.primary_purpose for item in items)
         compatible_distribution = Counter(
             purpose for item in items for purpose in item.compatible_purposes
+        )
+        semantic_evaluated_count = (
+            len(items) + len(snapshot.similarity_anchors)
+            if item_operation
+            else len(items)
+        )
+        semantic_evaluation = (
+            _semantic_evaluation(
+                cache.redundancy_summary,
+                semantic_evaluated_count,
+            )
+            if self.similarity_mode != "trigram"
+            and cache.redundancy_summary is not None
+            else _pending_semantic_evaluation()
         )
         quality_status: Literal["PASS", "NEEDS_REVIEW"] = (
             "PASS"
             if len(items) == expected
             and all(item.classification_status == "VERIFIED" for item in items)
             and not any(row.evaluation.hard_issues for row in selected)
+            and semantic_evaluation.status == "VERIFIED"
+            and semantic_evaluation.duplicate_rate is not None
+            and semantic_evaluation.duplicate_rate < SEMANTIC_DUPLICATE_RATE_LIMIT
             else "NEEDS_REVIEW"
         )
-        metrics = PromptMetricsV6(
+        metrics = PromptMetrics(
             target_count=settings.target_count,
-            candidate_target_count=max(10, cache.v11_candidate_target_count),
+            candidate_target_count=max(10, cache.candidate_target_count),
             generated_candidate_count=len(cache.creatives),
             accepted_count=len(items),
             rejected_count=max(0, len(cache.creatives) - len(selected)),
-            replenishment_rounds=cache.v11_replenishment_rounds,
-            exact_duplicate_count=cache.v11_exact_duplicate_count,
+            replenishment_rounds=cache.replenishment_rounds,
+            exact_duplicate_count=cache.exact_duplicate_count,
+            semantic_evaluation=semantic_evaluation,
             purpose_distribution=[
                 PurposeDistribution(
                     purpose=purpose,
@@ -2312,7 +2080,7 @@ class PromptGenerationPipeline:
                 for code, count in sorted(warning_counts.items())
             ],
         )
-        result = PromptBatchResultV6(
+        result = PromptBatchResult(
             settings=settings,
             render_profile=_render_profile(snapshot.insight_artifact.result),
             shared_prompt=self._required_shared_prompt(context),
@@ -2323,15 +2091,29 @@ class PromptGenerationPipeline:
             metrics=metrics,
             quality_status=quality_status,
         )
+        semantic_audit = _semantic_audit(
+            context,
+            result.items,
+            selected,
+            cache.redundancy_summary,
+            snapshot,
+        )
         await self._stage(
             context,
             NodeId.RESULT_SAVE,
             StageStatus.RUNNING,
-            "正在保存 V11 Prompt 草稿",
+            "正在保存 Prompt 草稿",
             metadata={
                 "batchSize": len(items),
                 "qualityStatus": quality_status,
                 "executionMode": self.provider.execution_mode,
+                "semanticEvaluationStatus": semantic_evaluation.status,
+                "semanticEvaluatedCount": semantic_evaluation.evaluated_count,
+                "semanticDuplicateGroupCount": semantic_evaluation.duplicate_group_count,
+                "semanticDuplicateCount": semantic_evaluation.duplicate_count,
+                "semanticDuplicateRate": semantic_evaluation.duplicate_rate,
+                "semanticDuplicateRateLimit": SEMANTIC_DUPLICATE_RATE_LIMIT,
+                "semanticAudit": semantic_audit,
             },
         )
         return await self.api.complete(
@@ -2340,1451 +2122,31 @@ class PromptGenerationPipeline:
             execution_mode=self.provider.execution_mode,
         )
 
-    async def allocate_strategy_facts(
-        self, context: RuntimeContext, application: InsightApplicationMap
-    ) -> dict[FragmentType, FragmentFactAllocation]:
-        await self._stage(
-            context,
-            NodeId.GLOBAL_FACT_ALLOCATION,
-            StageStatus.RUNNING,
-            "正在分配六类片段事实",
-        )
-        settings = self.snapshot(context).settings
-        counts = {
-            fragment_type: settings.fragment_configs[fragment_type].count
-            for fragment_type in FragmentType
-        }
-        allocations = allocate_fragment_facts(application, counts)
-        await self._stage(
-            context,
-            NodeId.GLOBAL_FACT_ALLOCATION,
-            StageStatus.SUCCEEDED,
-            "全局事实分配完成",
-            metadata={
-                "fragmentTypeCount": len(allocations),
-                "mandatoryFactCount": len(
-                    {
-                        fact_id
-                        for row in allocations.values()
-                        for fact_id in row.mandatory_fact_ids
-                    }
-                ),
-                "bundleTargetCount": sum(
-                    row.bundle_target for row in allocations.values()
-                ),
-            },
-        )
-        await self.progress(context, 15, NodeId.GLOBAL_FACT_ALLOCATION)
-        return allocations
-
-    async def prepare_strategy_router(
-        self,
-        context: RuntimeContext,
-        allocations: Mapping[FragmentType, FragmentFactAllocation],
-    ) -> list[FragmentMarketingPlan]:
-        await self._stage(
-            context,
-            NodeId.STRATEGY_FRAGMENT_ROUTER,
-            StageStatus.RUNNING,
-            "正在路由六类营销规划",
-        )
-        reusable: list[FragmentMarketingPlan] = []
-        cache = self._cache(context)
-        for allocation in allocations.values():
-            node = NodeId(FRAGMENT_STRATEGY_STAGE_BY_TYPE[allocation.fragment_type])
-            checkpoint = cache.strategy_checkpoints.get(node)
-            if not checkpoint:
-                continue
-            if not isinstance(checkpoint.plan, FragmentMarketingPlan):
-                continue
-            if (
-                checkpoint.source_fingerprint != context.source_fingerprint
-                or checkpoint.allocation_hash != allocation.allocation_hash
-                or checkpoint.prompt_version != FRAGMENT_STRATEGY_VERSION
-            ):
-                continue
-            try:
-                validate_fragment_marketing_plan(
-                    checkpoint.plan,
-                    allocation,
-                    cache.insight_application or self._require_application(context),
-                )
-            except ValueError:
-                continue
-            reusable.append(
-                checkpoint.plan.model_copy(update={"reused_checkpoint": True})
-            )
-            await self._stage(
-                context,
-                node,
-                StageStatus.SUCCEEDED,
-                "已复用上一次成功的营销规划",
-                metadata=self._plan_stage_metadata(
-                    checkpoint.plan, allocation, reused=True
-                ),
-            )
-        await self._stage(
-            context,
-            NodeId.STRATEGY_FRAGMENT_ROUTER,
-            StageStatus.SUCCEEDED,
-            "营销规划分支已路由",
-            metadata={
-                "branchCount": len(allocations),
-                "reusedCheckpointCount": len(reusable),
-            },
-        )
-        return reusable
-
-    async def skip_fragment_strategy(
-        self, context: RuntimeContext, allocation: FragmentFactAllocation, summary: str
-    ) -> None:
-        node = NodeId(FRAGMENT_STRATEGY_STAGE_BY_TYPE[allocation.fragment_type])
-        await self._stage(
-            context,
-            node,
-            StageStatus.SKIPPED,
-            summary,
-            metadata={
-                "targetBundleCount": allocation.bundle_target,
-                "actualBundleCount": 0,
-                "mandatoryFactCount": len(allocation.mandatory_fact_ids),
-                "coveredMandatoryFactCount": 0,
-                "reusedCheckpoint": summary.startswith("已复用"),
-            },
-        )
-
-    async def plan_fragment_strategy(
-        self,
-        context: RuntimeContext,
-        allocation: FragmentFactAllocation,
-    ) -> FragmentMarketingPlan:
-        node = NodeId(FRAGMENT_STRATEGY_STAGE_BY_TYPE[allocation.fragment_type])
-        await self._stage(
-            context, node, StageStatus.RUNNING, "正在生成本类营销创意母版"
-        )
-        try:
-            self._reserve_ai_call(context)
-            shared_prompt = self._cache(context).shared_prompt
-            if shared_prompt is None:
-                raise PipelineError("批次共用提示词尚未编译")
-            call = await self.provider.plan_fragment_strategy(
-                allocation,
-                application=self._require_application(context),
-                shared_prompt=shared_prompt,
-            )
-            plan = call.value
-            validate_fragment_marketing_plan(
-                plan, allocation, self._require_application(context)
-            )
-        except Exception as exc:
-            setattr(exc, "node_id", node)
-            await self._stage(context, node, StageStatus.FAILED, _safe_error(exc))
-            raise
-        await self._stage(
-            context,
-            node,
-            StageStatus.SUCCEEDED,
-            "本类营销创意母版已完成",
-            metadata={
-                **self._plan_stage_metadata(plan, allocation, reused=False),
-                "checkpoint": {
-                    "nodeId": node.value,
-                    "sourceFingerprint": context.source_fingerprint,
-                    "allocationHash": allocation.allocation_hash,
-                    "promptVersion": plan.prompt_version,
-                    "plan": plan.model_dump(mode="json", by_alias=True),
-                },
-                "latencyMs": call.metadata.latency_ms,
-                "outputTokens": call.metadata.output_tokens,
-            },
-        )
-        return plan
-
-    async def merge_strategy_plans(
-        self,
-        context: RuntimeContext,
-        plans: list[FragmentMarketingPlan],
-    ) -> StrategyPlan:
-        await self._stage(
-            context,
-            NodeId.STRATEGY_MERGE_VALIDATION,
-            StageStatus.RUNNING,
-            "正在合并校验六类营销规划",
-        )
-        expected = self._expected_strategy_fragments(context)
-        plan = merge_fragment_marketing_plans(
-            self._require_application(context), plans, required_fragment_types=expected
-        )
-        self._cache(context).strategy_plan = plan
-        await self._stage(
-            context,
-            NodeId.STRATEGY_MERGE_VALIDATION,
-            StageStatus.SUCCEEDED,
-            "营销规划合并校验完成",
-            metadata={
-                "completedBranchCount": len({item.fragment_type for item in plans}),
-                "relationshipBundleCount": len(plan.relationship_bundles),
-                "plannedFactCount": len(
-                    {
-                        fact_id
-                        for row in plan.relationship_bundles
-                        for fact_id in row.fact_ids
-                    }
-                ),
-            },
-        )
-        await self.progress(context, 24, NodeId.STRATEGY_MERGE_VALIDATION)
-        return plan
-
-    async def prepare_relationship_router(
-        self,
-        context: RuntimeContext,
-        allocations: Mapping[FragmentType, FragmentFactAllocation],
-    ) -> list[FragmentRelationshipPlan]:
-        await self._stage(
-            context,
-            NodeId.RELATIONSHIP_FRAGMENT_ROUTER,
-            StageStatus.RUNNING,
-            "正在路由六类营销事实关系",
-        )
-        reusable: list[FragmentRelationshipPlan] = []
-        cache = self._cache(context)
-        for allocation in allocations.values():
-            node = NodeId(RELATIONSHIP_STAGE_BY_TYPE[allocation.fragment_type])
-            checkpoint = cache.strategy_checkpoints.get(node)
-            if not checkpoint or not isinstance(
-                checkpoint.plan, FragmentRelationshipPlan
-            ):
-                continue
-            if (
-                checkpoint.source_fingerprint != context.source_fingerprint
-                or checkpoint.allocation_hash != allocation.allocation_hash
-                or checkpoint.prompt_version != V10_RELATIONSHIP_VERSION
-            ):
-                continue
-            try:
-                validate_relationship_plan(
-                    checkpoint.plan, allocation, self._require_application(context)
-                )
-            except ValueError:
-                continue
-            plan = checkpoint.plan.model_copy(update={"reused_checkpoint": True})
-            reusable.append(plan)
-            cache.relationship_plans[plan.fragment_type] = plan
-        await self._stage(
-            context,
-            NodeId.RELATIONSHIP_FRAGMENT_ROUTER,
-            StageStatus.SUCCEEDED,
-            "营销事实关系分支已路由",
-            metadata={
-                "branchCount": len(allocations),
-                "reusedCheckpointCount": len(reusable),
-            },
-        )
-        return reusable
-
-    async def plan_fragment_relationships(
-        self,
-        context: RuntimeContext,
-        allocation: FragmentFactAllocation,
-    ) -> FragmentRelationshipPlan:
-        node = NodeId(RELATIONSHIP_STAGE_BY_TYPE[allocation.fragment_type])
-        await self._stage(
-            context, node, StageStatus.RUNNING, "正在生成本类营销事实关系"
-        )
-        try:
-            self._reserve_ai_call(context)
-            call = await self.provider.plan_fragment_relationships(
-                allocation,
-                application=self._require_application(context),
-                shared_prompt=self._required_shared_prompt(context),
-            )
-            validate_relationship_plan(
-                call.value, allocation, self._require_application(context)
-            )
-        except Exception as exc:
-            setattr(exc, "node_id", node)
-            await self._stage(context, node, StageStatus.FAILED, _safe_error(exc))
-            raise
-        plan = call.value
-        self._cache(context).relationship_plans[plan.fragment_type] = plan
-        await self._stage(
-            context,
-            node,
-            StageStatus.SUCCEEDED,
-            "本类营销事实关系已完成",
-            metadata={
-                "targetBundleCount": allocation.bundle_target,
-                "actualBundleCount": len(plan.bundles),
-                "plannedFactCount": len(
-                    {fact_id for row in plan.bundles for fact_id in row.fact_ids}
-                ),
-                "checkpoint": {
-                    "nodeId": node.value,
-                    "sourceFingerprint": context.source_fingerprint,
-                    "allocationHash": allocation.allocation_hash,
-                    "promptVersion": plan.prompt_version,
-                    "plan": plan.model_dump(mode="json", by_alias=True),
-                },
-            },
-        )
-        return plan
-
-    async def merge_relationship_plans(
-        self,
-        context: RuntimeContext,
-        plans: list[FragmentRelationshipPlan],
-    ) -> list[FragmentRelationshipPlan]:
-        await self._stage(
-            context,
-            NodeId.RELATIONSHIP_MERGE_VALIDATION,
-            StageStatus.RUNNING,
-            "正在合并校验六类营销事实关系",
-        )
-        expected = self._expected_strategy_fragments(context)
-        by_type = {item.fragment_type: item for item in plans}
-        if len(by_type) != len(plans) or set(by_type) != expected:
-            raise PipelineError("六类营销事实关系缺失或重复")
-        self._cache(context).relationship_plans = by_type
-        await self._stage(
-            context,
-            NodeId.RELATIONSHIP_MERGE_VALIDATION,
-            StageStatus.SUCCEEDED,
-            "营销事实关系合并校验完成",
-            metadata={
-                "completedBranchCount": len(plans),
-                "relationshipBundleCount": sum(len(item.bundles) for item in plans),
-            },
-        )
-        return plans
-
-    async def prepare_coordinate_router(
-        self,
-        context: RuntimeContext,
-        relationships: list[FragmentRelationshipPlan],
-    ) -> list[FragmentDimensionCoordinatePlan]:
-        await self._stage(
-            context,
-            NodeId.DIMENSION_COORDINATE_ROUTER,
-            StageStatus.RUNNING,
-            "正在路由六类产品专属六维坐标规划",
-        )
-        reusable: list[FragmentDimensionCoordinatePlan] = []
-        cache = self._cache(context)
-        for relationship in relationships:
-            node = NodeId(COORDINATE_STAGE_BY_TYPE[relationship.fragment_type])
-            checkpoint = cache.strategy_checkpoints.get(node)
-            if not checkpoint or not isinstance(
-                checkpoint.plan, FragmentDimensionCoordinatePlan
-            ):
-                continue
-            if (
-                checkpoint.source_fingerprint != context.source_fingerprint
-                or checkpoint.prompt_version != V10_COORDINATE_VERSION
-            ):
-                continue
-            try:
-                validate_coordinate_plan(
-                    checkpoint.plan,
-                    relationship,
-                    self._require_application(context),
-                )
-            except ValueError:
-                continue
-            plan = checkpoint.plan.model_copy(update={"reused_checkpoint": True})
-            reusable.append(plan)
-            cache.coordinate_plans[plan.fragment_type] = plan
-        await self._stage(
-            context,
-            NodeId.DIMENSION_COORDINATE_ROUTER,
-            StageStatus.SUCCEEDED,
-            "六维坐标规划分支已路由",
-            metadata={
-                "branchCount": len(relationships),
-                "reusedCheckpointCount": len(reusable),
-            },
-        )
-        return reusable
-
-    async def plan_dimension_coordinates(
-        self,
-        context: RuntimeContext,
-        relationship: FragmentRelationshipPlan,
-    ) -> FragmentDimensionCoordinatePlan:
-        node = NodeId(COORDINATE_STAGE_BY_TYPE[relationship.fragment_type])
-        await self._stage(
-            context, node, StageStatus.RUNNING, "正在规划本类产品专属六维坐标"
-        )
-        try:
-            self._reserve_ai_call(context)
-            call = await self.provider.plan_dimension_coordinates(
-                relationship,
-                application=self._require_application(context),
-                shared_prompt=self._required_shared_prompt(context),
-                target_count=self.snapshot(context)
-                .settings.fragment_configs[relationship.fragment_type]
-                .count,
-            )
-            validate_coordinate_plan(
-                call.value,
-                relationship,
-                self._require_application(context),
-            )
-        except Exception as exc:
-            setattr(exc, "node_id", node)
-            await self._stage(context, node, StageStatus.FAILED, _safe_error(exc))
-            raise
-        plan = call.value
-        self._cache(context).coordinate_plans[plan.fragment_type] = plan
-        coordinate_count = sum(
-            len(values)
-            for values in (
-                plan.narratives,
-                plan.scenes,
-                plan.personas,
-                plan.selling_points,
-                plan.cameras,
-                plan.emotions,
-            )
-        )
-        await self._stage(
-            context,
-            node,
-            StageStatus.SUCCEEDED,
-            "本类产品专属六维坐标已完成",
-            metadata={
-                "coordinateCount": coordinate_count,
-                "bundleCount": len(relationship.bundles),
-                "checkpoint": {
-                    "nodeId": node.value,
-                    "sourceFingerprint": context.source_fingerprint,
-                    "allocationHash": plan.relationship_allocation_hash,
-                    "promptVersion": plan.prompt_version,
-                    "plan": plan.model_dump(mode="json", by_alias=True),
-                },
-            },
-        )
-        return plan
-
-    async def merge_coordinate_plans(
-        self,
-        context: RuntimeContext,
-        plans: list[FragmentDimensionCoordinatePlan],
-    ) -> list[FragmentDimensionCoordinatePlan]:
-        await self._stage(
-            context,
-            NodeId.COORDINATE_MERGE_VALIDATION,
-            StageStatus.RUNNING,
-            "正在合并校验六类六维坐标计划",
-        )
-        expected = self._expected_strategy_fragments(context)
-        by_type = {item.fragment_type: item for item in plans}
-        if len(by_type) != len(plans) or set(by_type) != expected:
-            raise PipelineError("六类六维坐标计划缺失或重复")
-        self._cache(context).coordinate_plans = by_type
-        await self._stage(
-            context,
-            NodeId.COORDINATE_MERGE_VALIDATION,
-            StageStatus.SUCCEEDED,
-            "六维坐标计划合并校验完成",
-            metadata={
-                "completedBranchCount": len(plans),
-                "coordinateCount": sum(
-                    len(item.narratives)
-                    + len(item.scenes)
-                    + len(item.personas)
-                    + len(item.selling_points)
-                    + len(item.cameras)
-                    + len(item.emotions)
-                    for item in plans
-                ),
-            },
-        )
-        return plans
-
-    async def allocate_and_plan_blueprints(
-        self,
-        context: RuntimeContext,
-        *,
-        relationships: list[FragmentRelationshipPlan],
-        round_number: int,
-        ordinal_start: int,
-        deficits: Mapping[str, int] | None = None,
-    ) -> list[BlueprintShardPlan]:
-        await self._stage(
-            context,
-            NodeId.BLUEPRINT_QUOTA_ALLOCATION,
-            StageStatus.RUNNING,
-            "正在分配营销组合蓝图配额",
-        )
-        settings = self.snapshot(context).settings
-        targets = {
-            fragment_type: settings.fragment_configs[fragment_type].count
-            for fragment_type in FragmentType
-        }
-        snapshot = self.snapshot(context)
-        if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item:
-            targets = {snapshot.target_item.fragment_type: 1}
-        quotas = allocate_blueprint_quotas(
-            relationships,
-            targets,
-            round_number=round_number,
-            deficits=deficits,
-            priority_fact_ids={
-                fact.fact_id
-                for fact in self._require_application(context).required
-                if fact.field
-                in {
-                    InsightField.CORE_SELLING_POINT,
-                    InsightField.CORE_SPECIFICATION,
-                    InsightField.PRODUCT_NAME,
-                    InsightField.CORE_PAIN_POINT,
-                }
-            },
-        )
-        if round_number == 0:
-            self._cache(context).blueprint_quotas = quotas
-        tasks = make_blueprint_tasks(
-            relationships,
-            quotas,
-            {
-                fragment_type: settings.fragment_configs[fragment_type].duration_seconds
-                for fragment_type in FragmentType
-            },
-            round_number=round_number,
-            ordinal_start=ordinal_start,
-        )
-        for task in tasks:
-            self._cache(context).blueprint_tasks[task.slot_id] = task
-        shards = make_blueprint_shards(
-            tasks, round_number=round_number, shard_size=self.shard_size
-        )
-        completed = self._cache(context).completed_blueprint_shard_keys
-        pending = [item for item in shards if item.key not in completed]
-        await self._stage(
-            context,
-            NodeId.BLUEPRINT_QUOTA_ALLOCATION,
-            StageStatus.SUCCEEDED,
-            "营销组合蓝图配额与分片已完成",
-            metadata={
-                "round": round_number,
-                "bundleQuotaCount": len(quotas),
-                "plannedBlueprintCount": len(tasks),
-                "blueprintShardCount": len(pending),
-            },
-        )
-        await self._stage(
-            context,
-            NodeId.BLUEPRINT_FRAGMENT_ROUTER,
-            StageStatus.SUCCEEDED,
-            "蓝图分片已按六类素材用途完成路由",
-            metadata={"totalShards": len(pending)},
-        )
-        return pending
-
-    async def generate_blueprint_shard(
-        self,
-        context: RuntimeContext,
-        shard: BlueprintShardPlan,
-    ) -> list[GeneratedBlueprint]:
-        running = ShardRecord(
-            phase=ShardPhase.BLUEPRINT,
-            round=shard.round,
-            shard_index=shard.shard_index,
-            status=StageStatus.RUNNING,
-            blueprint_plan=shard.tasks,
-        )
-        await self.api.put_shard(context, running)
-        node = BLUEPRINT_NODE_BY_FRAGMENT[shard.fragment_type]
-        try:
-            self._reserve_ai_call(context)
-            relationship = self._cache(context).relationship_plans[shard.fragment_type]
-            coordinate_plan = self._cache(context).coordinate_plans[shard.fragment_type]
-            call = await self.provider.generate_blueprints(
-                shard,
-                relationships=relationship,
-                coordinate_plan=coordinate_plan,
-                application=self._require_application(context),
-                shared_prompt=self._required_shared_prompt(context),
-                avoid_signatures=[
-                    blueprint_signature(item, coordinate_plan)
-                    for item in self._cache(context).blueprints.values()
-                    if item.fragment_type == shard.fragment_type
-                    and item.bundle_id in {task.bundle_id for task in shard.tasks}
-                ],
-            )
-            validate_generated_blueprints(
-                call.value.items, shard.tasks, coordinate_plan
-            )
-            await self.api.put_shard(
-                context,
-                running.model_copy(
-                    update={
-                        "status": StageStatus.SUCCEEDED,
-                        "blueprints": call.value.items,
-                    }
-                ),
-            )
-            for item in call.value.items:
-                self._cache(context).blueprints[item.slot_id] = item
-            self._cache(context).completed_blueprint_shard_keys.add(shard.key)
-            return call.value.items
-        except Exception as exc:
-            setattr(exc, "node_id", node)
-            await self.api.put_shard(
-                context,
-                running.model_copy(
-                    update={
-                        "status": StageStatus.FAILED,
-                        "warnings": [_safe_error(exc)],
-                        "error_code": _error_code(exc),
-                        "error_message": _safe_error(exc),
-                    }
-                ),
-            )
-            if (
-                isinstance(exc, ProviderError)
-                and exc.error_type == ProviderErrorType.RESPONSE_INVALID
-            ):
-                return []
-            raise
-
-    async def gate_blueprints_and_plan_prompts(
-        self,
-        context: RuntimeContext,
-        *,
-        round_number: int,
-        completed_prompt_keys: list[str],
-    ) -> tuple[list[ShardPlan], dict[str, int]]:
-        await self._stage(
-            context,
-            NodeId.BLUEPRINT_ORTHOGONAL_GATE,
-            StageStatus.RUNNING,
-            "正在执行全批次蓝图六维正交校验",
-        )
-        selected, deficits, rejected = select_orthogonal_blueprints(
-            list(self._cache(context).blueprints.values()),
-            self._cache(context).blueprint_quotas,
-            list(self._cache(context).coordinate_plans.values()),
-        )
-        self._cache(context).selected_blueprints = {
-            item.slot_id: item for item in selected
-        }
-        combinations = [
-            materialize_blueprint(
-                item,
-                self._cache(context).blueprint_tasks[item.slot_id],
-                self._cache(context).coordinate_plans[item.fragment_type],
-                self._require_application(context),
-            )
-            for item in selected
-        ]
-        snapshot = self.snapshot(context)
-        if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item:
-            combinations = [
-                _freeze_item_regeneration_combination(
-                    combination,
-                    snapshot=snapshot,
-                    strategy=None,
-                    application=self._require_application(context),
-                )
-                for combination in combinations
-            ]
-        shards = make_shards(
-            combinations, round_number=round_number, shard_size=self.shard_size
-        )
-        pending = [
-            item for item in shards if item.key not in set(completed_prompt_keys)
-        ]
-        compared = len(selected) * (len(selected) - 1) // 2
-        await self._stage(
-            context,
-            NodeId.BLUEPRINT_ORTHOGONAL_GATE,
-            StageStatus.SUCCEEDED if not deficits else StageStatus.PARTIAL,
-            "全批次蓝图六维正交校验完成",
-            metadata={
-                "acceptedBlueprintCount": len(selected),
-                "rejectedBlueprintCount": rejected,
-                "comparedPairCount": compared,
-                "missingBlueprintCount": sum(deficits.values()),
-            },
-        )
-        return pending, deficits
-
-    def _expected_strategy_fragments(
-        self, context: RuntimeContext
-    ) -> set[FragmentType]:
-        snapshot = self.snapshot(context)
-        if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item:
-            return {snapshot.target_item.fragment_type}
-        return set(FragmentType)
-
-    def _require_application(self, context: RuntimeContext) -> InsightApplicationMap:
-        application = self._cache(context).insight_application
-        if application is None:
-            raise PipelineError("提炼信息应用映射尚未完成")
-        return application
-
-    def _required_fact_visual_strategy(
-        self,
-        context: RuntimeContext,
-    ) -> FactVisualStrategy:
-        strategy = self._cache(context).fact_visual_strategy
-        if strategy is None:
-            raise PipelineError("事实视觉使用策略尚未编译")
-        return strategy
-
-    @staticmethod
-    def _plan_stage_metadata(
-        plan: FragmentMarketingPlan,
-        allocation: FragmentFactAllocation,
-        *,
-        reused: bool,
-    ) -> dict[str, Any]:
-        return {
-            "targetBundleCount": allocation.bundle_target,
-            "actualBundleCount": len(plan.bundles),
-            "mandatoryFactCount": len(allocation.mandatory_fact_ids),
-            "coveredMandatoryFactCount": len(
-                set(allocation.mandatory_fact_ids).intersection(
-                    fact_id for row in plan.bundles for fact_id in row.fact_ids
-                )
-            ),
-            "reusedCheckpoint": reused,
-        }
-
-    async def plan_round(
-        self,
-        context: RuntimeContext,
-        *,
-        strategy: StrategyPlan,
-        application: InsightApplicationMap,
-        round_number: int,
-        missing_count: int,
-        ordinal_start: int,
-        completed_keys: list[str],
-        priority_fact_ids: list[str] | None = None,
-    ) -> list[ShardPlan]:
-        node = NodeId.DIMENSION_COMBINATION if round_number == 0 else NodeId.REPLENISH
-        await self._stage(context, node, StageStatus.RUNNING, "正在编排片段蓝图")
-        snapshot = self.snapshot(context)
-        requested = (
-            missing_count
-            if snapshot.operation == "ITEM_REGENERATE"
-            else min(289, max(missing_count, math.ceil(missing_count * 1.25)))
-        )
-        settings = snapshot.settings
-        targets = fragment_type_targets(
-            {
-                fragment_type: settings.fragment_configs[fragment_type].count
-                for fragment_type in FragmentType
-            }
-        )
-        existing = (
-            self._cache(context).accepted_items
-            or self.snapshot(context).retained_manual_items
-        )
-        actual_types = Counter(item.fragment_type for item in existing)
-        deficits = fragment_type_deficits(
-            targets,
-            actual_types,
-        )
-        combinations = plan_combinations(
-            strategy,
-            application,
-            count=requested,
-            round_number=round_number,
-            ordinal_start=ordinal_start,
-            fragment_targets=targets,
-            fragment_durations={
-                fragment_type: settings.fragment_configs[fragment_type].duration_seconds
-                for fragment_type in FragmentType
-            },
-            fragment_deficits=deficits,
-            priority_fact_ids=(
-                []
-                if snapshot.operation == "ITEM_REGENERATE"
-                else priority_fact_ids or []
-            ),
-        )
-        if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item:
-            combinations = [
-                _freeze_item_regeneration_combination(
-                    combination,
-                    snapshot=snapshot,
-                    strategy=strategy,
-                    application=application,
-                )
-                for combination in combinations
-            ]
-        shards = make_shards(
-            combinations, round_number=round_number, shard_size=self.shard_size
-        )
-        all_pending = [item for item in shards if item.key not in set(completed_keys)]
-        remaining_calls = max(
-            0, self.max_ai_calls_per_run - self._cache(context).ai_call_count
-        )
-        pending = all_pending[:remaining_calls]
-        stage_metadata: dict[str, int | float | str | bool | None] = {
-            "replenishmentRound": round_number,
-            "plannedCandidateCount": len(combinations),
-            "pendingShardCount": len(pending),
-            "resumedShardCount": len(shards) - len(all_pending),
-            "combinationExample": _combination_example(
-                combinations[0] if combinations else None
-            ),
-            "priorityFactCount": len(priority_fact_ids or []),
-        }
-        if node == NodeId.REPLENISH:
-            stage_metadata["missingCount"] = missing_count
-        await self._stage(
-            context,
-            node,
-            StageStatus.SUCCEEDED,
-            "片段蓝图已编排"
-            if round_number == 0
-            else f"第 {round_number} 轮定向补齐蓝图已编排",
-            metadata=stage_metadata,
-        )
-        await self._stage(
-            context,
-            NodeId.FRAGMENT_TYPE_ROUTER,
-            StageStatus.SUCCEEDED,
-            "候选分片已按六类素材用途完成路由",
-            metadata={
-                "fragmentTypeCount": len(FragmentType),
-                "totalShards": len(pending),
-                "routedShards": len(pending),
-            },
-        )
-        pending_by_type = Counter(shard.fragment_type for shard in pending)
-        for fragment_type, generation_node in GENERATION_NODE_BY_FRAGMENT.items():
-            shard_count = pending_by_type[fragment_type]
-            await self._stage(
-                context,
-                generation_node,
-                StageStatus.RUNNING if shard_count else StageStatus.SKIPPED,
-                f"{fragment_type.value} 候选 Prompt 分片生成中"
-                if shard_count
-                else "当前轮次无需生成该类片段",
-                metadata={
-                    "totalShards": shard_count,
-                    "completedShards": 0,
-                    "targetCount": targets[fragment_type],
-                },
-            )
-        if round_number == 0:
-            self._cache(context).total_shards = (
-                len(pending) + len(shards) - len(all_pending)
-            )
-        else:
-            self._cache(context).total_shards += len(pending)
-        await self.progress(context, 22 if round_number == 0 else 78, node)
-        return pending
-
-    async def generate_shard(
-        self, context: RuntimeContext, shard: ShardPlan
-    ) -> list[GeneratedCandidate]:
-        running = ShardRecord(
-            phase=ShardPhase.PROMPT,
-            round=shard.round,
-            shard_index=shard.shard_index,
-            status=StageStatus.RUNNING,
-            combination_plan=shard.combinations,
-        )
-        await self.api.put_shard(context, running)
-        snapshot = self.snapshot(context)
-        try:
-            self._reserve_ai_call(context)
-            if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item:
-                call = await self.provider.generate_candidates(
-                    shard.combinations,
-                    insight=snapshot.insight_artifact.result,
-                    shared_prompt=self._required_shared_prompt(context),
-                    regeneration_context={
-                        "originalPrompt": snapshot.target_item.content,
-                        "instruction": snapshot.regeneration_instruction or "",
-                        "lockedFields": {
-                            "fragmentType": snapshot.target_item.fragment_type.value,
-                            "durationSeconds": snapshot.target_item.target_duration_seconds,
-                            "materialTags": snapshot.target_item.material_tags,
-                        },
-                    },
-                )
-            else:
-                call = await self.provider.generate_candidates(
-                    shard.combinations,
-                    insight=snapshot.insight_artifact.result,
-                    shared_prompt=self._required_shared_prompt(context),
-                )
-            plan_by_slot = {item.slot_id: item for item in call.value.items}
-            insight = snapshot.insight_artifact.result
-            product_name = (
-                _insight_text(insight, "productName", "product_name") or "该产品"
-            )
-            generated_at = utc_now()
-            candidates: list[GeneratedCandidate] = []
-            for plan in shard.combinations:
-                content, invalid_reasons = assemble_fragment_prompt(
-                    plan_by_slot[plan.slot_id].prompt_text,
-                    plan,
-                    product_name=product_name,
-                    source_facts=_source_fact_texts(insight),
-                )
-                candidates.append(
-                    GeneratedCandidate(
-                        slot_id=plan.slot_id,
-                        ordinal=plan.ordinal,
-                        round=shard.round,
-                        shard_index=shard.shard_index,
-                        fragment_type=plan.fragment_type,
-                        material_tags=plan.material_tags,
-                        target_duration_seconds=plan.target_duration_seconds,
-                        dimensions=plan.dimensions,
-                        content=content,
-                        insight_bindings=plan.insight_bindings,
-                        execution_invalid_reasons=invalid_reasons,
-                        generated_at=generated_at,
-                    )
-                )
-            await self.api.put_shard(
-                context,
-                running.model_copy(
-                    update={"status": StageStatus.SUCCEEDED, "items": candidates}
-                ),
-            )
-            cache = self._cache(context)
-            for candidate in candidates:
-                cache.candidates[candidate.slot_id] = candidate
-                cache.execution_invalid_reasons.update(
-                    candidate.execution_invalid_reasons
-                )
-            return candidates
-        except Exception as exc:
-            # Parallel fragment branches update progress independently. Attach the
-            # actual failing branch so a slower sibling cannot be reported instead.
-            setattr(exc, "node_id", GENERATION_NODE_BY_FRAGMENT[shard.fragment_type])
-            await self.api.put_shard(
-                context,
-                running.model_copy(
-                    update={
-                        "status": StageStatus.FAILED,
-                        "warnings": [_safe_error(exc)],
-                        "error_code": _error_code(exc),
-                        "error_message": _safe_error(exc),
-                    }
-                ),
-            )
-            if (
-                isinstance(exc, ProviderError)
-                and exc.error_type == ProviderErrorType.RESPONSE_INVALID
-            ):
-                return []
-            raise
-
-    async def normalize(self, context: RuntimeContext) -> list[PromptItem]:
-        await self._stage(
-            context, NodeId.NORMALIZATION, StageStatus.RUNNING, "正在标准化候选 Prompt"
-        )
-        unique = [
-            item
-            for item in _unique_candidates(
-                list(self._cache(context).candidates.values())
-            )
-            if not hard_execution_reasons(item.execution_invalid_reasons)
-        ]
-        items = [
-            PromptItem(
-                id=_stable_item_id(context.source_fingerprint, candidate.slot_id),
-                code=f"P{candidate.ordinal:03d}",
-                origin="AI",
-                fragment_type=candidate.fragment_type,
-                material_tags=candidate.material_tags,
-                target_duration_seconds=candidate.target_duration_seconds,
-                dimensions=candidate.dimensions,
-                content=candidate.content,
-                insight_bindings=candidate.insight_bindings,
-                manual_edited=False,
-                created_at=candidate.generated_at,
-                updated_at=candidate.generated_at,
-            )
-            for candidate in unique
-        ]
-        self._cache(context).normalized_items = items
-        for fragment_type, generation_node in GENERATION_NODE_BY_FRAGMENT.items():
-            generated = [item for item in unique if item.fragment_type == fragment_type]
-            await self._stage(
-                context,
-                generation_node,
-                StageStatus.SUCCEEDED if generated else StageStatus.SKIPPED,
-                "该类候选 Prompt 分片生成完成"
-                if generated
-                else "当前批次未生成该类片段",
-                metadata={
-                    "totalShards": len(
-                        {(item.round, item.shard_index) for item in generated}
-                    ),
-                    "completedShards": len(
-                        {(item.round, item.shard_index) for item in generated}
-                    ),
-                    "candidateCount": len(generated),
-                    "targetCount": self.snapshot(context)
-                    .settings.fragment_configs[fragment_type]
-                    .count,
-                },
-            )
-        await self._stage(
-            context,
-            NodeId.NORMALIZATION,
-            StageStatus.SUCCEEDED,
-            "候选 Prompt 标准化完成",
-            metadata={
-                "candidateCount": len(items),
-                "normalizedFieldCount": 12,
-                "structureExample": _short(
-                    "单一场景 + 单一连续动作 + 可见主体/产品 + 镜头/光线/节奏 + 结束状态"
-                ),
-            },
-        )
-        await self.progress(context, 55, NodeId.NORMALIZATION)
-        return items
-
-    async def semantic_check(self, context: RuntimeContext) -> list[PairViolation]:
-        await self._stage(
-            context,
-            NodeId.SEMANTIC_DEDUP,
-            StageStatus.RUNNING,
-            "正在计算语义重复代理指标",
-        )
-        items = [
-            *cast(list[PromptItem], self.snapshot(context).retained_manual_items),
-            *self._cache(context).normalized_items,
-        ]
-        pairs = semantic_violations(items)
-        compared_pairs = len(items) * (len(items) - 1) // 2
-        await self._stage(
-            context,
-            NodeId.SEMANTIC_DEDUP,
-            StageStatus.SUCCEEDED,
-            "语义重复代理校验完成",
-            metadata={
-                "violatingPairCount": len(pairs),
-                "comparedPairCount": compared_pairs,
-                "semanticDuplicateRate": pair_rate(len(pairs), len(items)),
-            },
-        )
-        return pairs
-
-    async def visual_check(self, context: RuntimeContext) -> list[PairViolation]:
-        await self._stage(
-            context,
-            NodeId.VISUAL_DEDUP,
-            StageStatus.RUNNING,
-            "正在计算视觉结构重合代理指标",
-        )
-        items = [
-            *cast(list[PromptItem], self.snapshot(context).retained_manual_items),
-            *self._cache(context).normalized_items,
-        ]
-        pairs = visual_violations(items)
-        compared_pairs = len(items) * (len(items) - 1) // 2
-        await self._stage(
-            context,
-            NodeId.VISUAL_DEDUP,
-            StageStatus.SUCCEEDED,
-            "视觉结构重合代理校验完成",
-            metadata={
-                "violatingPairCount": len(pairs),
-                "comparedPairCount": compared_pairs,
-                "visualOverlapRate": pair_rate(len(pairs), len(items)),
-            },
-        )
-        return pairs
-
-    async def quality_gate(
-        self,
-        context: RuntimeContext,
-        *,
-        round_number: int,
-    ) -> EvaluationResult:
-        await self._stage(
-            context, NodeId.QUALITY_GATE, StageStatus.RUNNING, "正在执行批次质量门禁"
-        )
-        evaluation = self._cache(context).evaluation
-        if evaluation is None:
-            evaluation = await self.evaluate_insight_coverage(
-                context,
-                round_number=round_number,
-            )
-        self._cache(context).accepted_items = evaluation.items
-        passed = evaluation.quality_status == "PASS"
-        await self._stage(
-            context,
-            NodeId.QUALITY_GATE,
-            StageStatus.SUCCEEDED if passed else StageStatus.PARTIAL,
-            "批次质量门禁通过"
-            if passed
-            else (
-                "批次缺少必须利用的提炼信息"
-                if evaluation.missing_fact_ids
-                else "批次仍需补齐或人工复核"
-            ),
-            metadata={
-                "acceptedCount": evaluation.metrics.accepted_count,
-                "targetCount": evaluation.metrics.target_count,
-                "semanticDuplicateRate": evaluation.metrics.semantic_duplicate_rate,
-                "visualOverlapRate": evaluation.metrics.visual_overlap_rate,
-                "removedCount": (
-                    evaluation.metrics.removed_semantic_duplicates
-                    + evaluation.metrics.removed_visual_duplicates
-                    + evaluation.metrics.removed_dimension_conflicts
-                    + evaluation.metrics.removed_execution_invalid
-                ),
-                "missingFactCount": len(evaluation.missing_fact_ids),
-                "replenishmentRound": round_number,
-                "qualityStatus": evaluation.quality_status,
-            },
-        )
-        await self.progress(context, 72, NodeId.QUALITY_GATE)
-        return evaluation
-
-    async def evaluate_insight_coverage(
-        self,
-        context: RuntimeContext,
-        *,
-        round_number: int,
-    ) -> EvaluationResult:
-        await self._stage(
-            context,
-            NodeId.INSIGHT_COVERAGE,
-            StageStatus.RUNNING,
-            "正在核对提炼信息实际利用情况",
-        )
-        settings = self.snapshot(context).settings
-        application = self._cache(context).insight_application
-        if application is None:
-            raise PipelineError("提炼信息应用映射尚未完成")
-        evaluation = evaluate_candidates(
-            cast(list[PromptItem], self.snapshot(context).retained_manual_items),
-            self._cache(context).normalized_items,
-            target_count=settings.target_count,
-            semantic_limit=settings.semantic_limit,
-            visual_limit=settings.visual_limit,
-            round_number=round_number,
-            required_selling_points=_core_selling_points(
-                self.snapshot(context).insight_artifact.result
-            ),
-            insight_application=application,
-            fragment_type_targets=fragment_type_targets(
-                {
-                    fragment_type: settings.fragment_configs[fragment_type].count
-                    for fragment_type in FragmentType
-                }
-            ),
-            generated_candidate_count=len(self._cache(context).candidates),
-            removed_execution_invalid=sum(
-                bool(hard_execution_reasons(item.execution_invalid_reasons))
-                for item in self._cache(context).candidates.values()
-            ),
-            execution_invalid_reasons=dict(
-                self._cache(context).execution_invalid_reasons
-            ),
-        )
-        self._cache(context).accepted_items = evaluation.items
-        self._cache(context).evaluation = evaluation
-        coverage = evaluation.metrics.insight_coverage
-        await self._stage(
-            context,
-            NodeId.INSIGHT_COVERAGE,
-            StageStatus.SUCCEEDED if not coverage.missing else StageStatus.PARTIAL,
-            "必须利用的提炼信息已全部覆盖"
-            if not coverage.missing
-            else "仍有必须利用的提炼信息待补齐",
-            metadata={
-                "requiredCount": len(coverage.required),
-                "coveredCount": len(coverage.covered),
-                "missingCount": len(coverage.missing),
-                "deferredCount": len(coverage.deferred),
-                "appliedConstraintCount": len(coverage.applied_constraints),
-                "replenishmentRound": round_number,
-            },
-        )
-        await self.progress(context, 68, NodeId.INSIGHT_COVERAGE)
-        return evaluation
-
-    async def save_result(
-        self,
-        context: RuntimeContext,
-        *,
-        metrics: PromptMetrics,
-        shared_prompt: SharedPrompt,
-    ) -> str:
-        metrics = await self._ensure_exact_batch(context, metrics)
-        items = self._cache(context).accepted_items
-        retained_ids = {
-            item.id for item in self.snapshot(context).retained_manual_items
-        }
-        generated_only = [item for item in items if item.id not in retained_ids]
-        renumbered = [
-            item.model_copy(update={"code": f"P{index:03d}"})
-            for index, item in enumerate(generated_only, 1)
-        ]
-        settings = cast(PromptBatchSettings, self.snapshot(context).settings)
-        quality_status: Literal["PASS", "NEEDS_REVIEW"] = (
-            "PASS"
-            if (
-                len(items) == settings.target_count
-                and metrics.semantic_duplicate_rate <= settings.semantic_limit
-                and metrics.visual_overlap_rate <= settings.visual_limit
-                and all(
-                    item.actual_count == item.target_count
-                    for item in metrics.fragment_type_distribution
-                )
-                and not metrics.selling_point_coverage.missing
-                and not metrics.insight_coverage.missing
-            )
-            else "NEEDS_REVIEW"
-        )
-        result = PromptBatchResult(
-            settings=settings,
-            render_profile=_render_profile(
-                self.snapshot(context).insight_artifact.result,
-            ),
-            shared_prompt=shared_prompt,
-            items=renumbered,
-            metrics=metrics.model_copy(
-                update={
-                    "accepted_count": len(renumbered),
-                    "fallback_count": self._cache(context).fallback_count,
-                }
-            ),
-            quality_status=quality_status
-            if len(renumbered) == settings.target_count
-            else "NEEDS_REVIEW",
-        )
-        await self._stage(
-            context,
-            NodeId.RESULT_SAVE,
-            StageStatus.RUNNING,
-            "正在保存权威 Prompt 草稿",
-            metadata={
-                "batchSize": len(items),
-                "qualityStatus": result.quality_status,
-                "saveSummary": _short(
-                    f"已准备保存 {len(items)} 条方案，质量状态 {result.quality_status}"
-                ),
-            },
-        )
-        return await self.api.complete(context, result)
-
-    def _required_shared_prompt(self, context: RuntimeContext) -> SharedPrompt:
-        prompt = self._cache(context).shared_prompt
-        if prompt is None:
-            raise PipelineError("批次共用提示词尚未编译")
-        return prompt
-
-    async def _ensure_exact_batch(
-        self,
-        context: RuntimeContext,
-        metrics: PromptMetrics,
-    ) -> PromptMetrics:
-        snapshot = self.snapshot(context)
-        if snapshot.graph_version == "V10_RELATION_COORDINATE_BLUEPRINT":
-            # V10 never fabricates deterministic Prompt fallbacks. Every missing
-            # item must return through the original relationship's blueprint branch.
-            return metrics.model_copy(update={"fallback_count": 0})
-        if snapshot.operation != "BATCH_GENERATE":
-            return metrics.model_copy(update={"fallback_count": 0})
-        settings = snapshot.settings
-        targets = fragment_type_targets(
-            {
-                fragment_type: settings.fragment_configs[fragment_type].count
-                for fragment_type in FragmentType
-            }
-        )
-        accepted = list(self._cache(context).accepted_items)
-        if _matches_fragment_targets(accepted, targets):
-            return metrics.model_copy(update={"fallback_count": 0})
-        application = self._cache(context).insight_application
-        strategy = self._cache(context).strategy_plan
-        if application is None or strategy is None:
-            raise PipelineError("无法读取安全兜底所需的营销关系规划")
-        product_name = (
-            _insight_text(
-                snapshot.insight_artifact.result, "productName", "product_name"
-            )
-            or "该产品"
-        )
-        fallback_items: list[PromptItem] = []
-        ordinal = self.next_ordinal(context)
-        for fallback_round in range(MAX_REPLENISHMENT_ROUNDS + 1, 25):
-            actual = Counter(item.fragment_type for item in accepted)
-            deficits = fragment_type_deficits(targets, actual)
-            missing_count = sum(deficits.values())
-            if missing_count <= 0:
-                break
-            evaluation = self._cache(context).evaluation
-            combinations = plan_combinations(
-                strategy,
-                application,
-                count=min(289, max(missing_count * 4, missing_count)),
-                round_number=fallback_round,
-                ordinal_start=ordinal,
-                fragment_targets=targets,
-                fragment_durations={
-                    fragment_type: settings.fragment_configs[
-                        fragment_type
-                    ].duration_seconds
-                    for fragment_type in FragmentType
-                },
-                fragment_deficits=deficits,
-                priority_fact_ids=evaluation.missing_fact_ids if evaluation else [],
-            )
-            generated_at = utc_now()
-            round_items: list[PromptItem] = []
-            for combination in combinations:
-                content, invalid_reasons = assemble_safe_fallback_prompt(
-                    combination,
-                    product_name=product_name,
-                    source_facts=_source_fact_texts(snapshot.insight_artifact.result),
-                )
-                if invalid_reasons:
-                    self._cache(context).execution_invalid_reasons.update(
-                        invalid_reasons
-                    )
-                    continue
-                round_items.append(
-                    PromptItem(
-                        id=_stable_item_id(
-                            snapshot.insight_artifact.content_hash, combination.slot_id
-                        ),
-                        code=f"P{combination.ordinal:03d}",
-                        origin="AI",
-                        fragment_type=combination.fragment_type,
-                        material_tags=combination.material_tags,
-                        target_duration_seconds=combination.target_duration_seconds,
-                        dimensions=combination.dimensions,
-                        content=content,
-                        insight_bindings=combination.insight_bindings,
-                        manual_edited=False,
-                        created_at=generated_at,
-                        updated_at=generated_at,
-                    )
-                )
-            fallback_items.extend(round_items)
-            evaluation = evaluate_candidates(
-                accepted,
-                round_items,
-                target_count=settings.target_count,
-                semantic_limit=settings.semantic_limit,
-                visual_limit=settings.visual_limit,
-                round_number=MAX_REPLENISHMENT_ROUNDS,
-                required_selling_points=_core_selling_points(
-                    snapshot.insight_artifact.result
-                ),
-                insight_application=application,
-                fragment_type_targets=targets,
-                generated_candidate_count=len(self._cache(context).candidates)
-                + len(fallback_items),
-                removed_execution_invalid=sum(
-                    bool(hard_execution_reasons(item.execution_invalid_reasons))
-                    for item in self._cache(context).candidates.values()
-                ),
-                execution_invalid_reasons=dict(
-                    self._cache(context).execution_invalid_reasons
-                ),
-            )
-            accepted = evaluation.items
-            self._cache(context).accepted_items = accepted
-            self._cache(context).evaluation = evaluation
-            metrics = evaluation.metrics
-            ordinal += len(combinations)
-            if _matches_fragment_targets(accepted, targets):
-                break
-        if not _matches_fragment_targets(accepted, targets):
-            raise PipelineError("安全补齐后仍无法满足用户设置的 Prompt 数量与六类配额")
-        fallback_ids = {item.id for item in fallback_items}
-        self._cache(context).fallback_count = sum(
-            item.id in fallback_ids for item in accepted
-        )
-        await self._stage(
-            context,
-            NodeId.REPLENISH,
-            StageStatus.SUCCEEDED,
-            "已通过安全蓝图补齐到用户设置数量",
-            metadata={
-                "replenishmentRound": MAX_REPLENISHMENT_ROUNDS,
-                "fallbackCount": self._cache(context).fallback_count,
-                "acceptedCount": len(accepted),
-                "targetCount": settings.target_count,
-            },
-        )
-        return metrics.model_copy(
-            update={"fallback_count": self._cache(context).fallback_count}
-        )
-
-    def next_ordinal(self, context: RuntimeContext) -> int:
-        return (
-            max(
-                (item.ordinal for item in self._cache(context).candidates.values()),
-                default=len(self.snapshot(context).retained_manual_items),
-            )
-            + 1
-        )
-
-    def next_blueprint_ordinal(self, context: RuntimeContext) -> int:
-        return (
-            max(
-                (
-                    item.ordinal
-                    for item in self._cache(context).blueprint_tasks.values()
-                ),
-                default=len(self.snapshot(context).retained_manual_items),
-            )
-            + 1
-        )
-
-    def blueprint_deficits_from_accepted(
-        self, context: RuntimeContext
-    ) -> dict[str, int]:
-        cache = self._cache(context)
-        accepted_ids = {item.id for item in cache.accepted_items}
-        accepted_slots = {
-            slot_id
-            for slot_id in cache.selected_blueprints
-            if _stable_item_id(context.source_fingerprint, slot_id) in accepted_ids
-        }
-        actual: Counter[str] = Counter(
-            cache.selected_blueprints[slot_id].bundle_id for slot_id in accepted_slots
-        )
-        # Prompt-level rejection invalidates the originating blueprint. Keep only
-        # accepted blueprints before replenishment so the next orthogonal gate
-        # fills the exact relationship gaps instead of reselecting stale drafts.
-        cache.blueprints = {
-            slot_id: blueprint
-            for slot_id, blueprint in cache.blueprints.items()
-            if slot_id in accepted_slots
-        }
-        cache.selected_blueprints = dict(cache.blueprints)
-        cache.candidates = {
-            slot_id: candidate
-            for slot_id, candidate in cache.candidates.items()
-            if _stable_item_id(context.source_fingerprint, slot_id) in accepted_ids
-        }
-        cache.normalized_items = [
-            item for item in cache.normalized_items if item.id in accepted_ids
-        ]
-        return {
-            quota.bundle_id: quota.target_count - actual[quota.bundle_id]
-            for quota in cache.blueprint_quotas
-            if actual[quota.bundle_id] < quota.target_count
-        }
-
     def _reserve_ai_call(self, context: RuntimeContext) -> None:
         cache = self._cache(context)
         if cache.ai_call_count >= self.max_ai_calls_per_run:
             raise PipelineError("Prompt 子工作流 AI 调用次数超过安全上限")
         cache.ai_call_count += 1
+
+    def _require_application(self, context: RuntimeContext) -> InsightApplicationMap:
+        application = self._cache(context).insight_application
+        if application is None:
+            raise PipelineError("提炼信息用途映射尚未完成")
+        return application
+
+    def _required_fact_visual_strategy(
+        self, context: RuntimeContext
+    ) -> FactVisualStrategy:
+        strategy = self._cache(context).fact_visual_strategy
+        if strategy is None:
+            raise PipelineError("事实视觉使用策略编译尚未完成")
+        return strategy
+
+    def _required_shared_prompt(self, context: RuntimeContext) -> SharedPrompt:
+        prompt = self._cache(context).shared_prompt
+        if prompt is None:
+            raise PipelineError("共用提示词编译尚未完成")
+        return prompt
 
     async def mark_failed(self, context: RuntimeContext, exc: Exception) -> None:
         retryable = (
@@ -3835,12 +2197,13 @@ class PromptGenerationPipeline:
 
 
 def _uses_fact_visual_strategy(snapshot: PromptGenerationSnapshot) -> bool:
-    return snapshot.graph_version == "CURRENT"
+    del snapshot
+    return True
 
 
-def _v11_settings(snapshot: PromptGenerationSnapshot) -> PromptBatchSettingsV6:
-    if not isinstance(snapshot.settings, PromptBatchSettingsV6):
-        raise PipelineError("V11 run requires Prompt settings schema V6")
+def _current_settings(snapshot: PromptGenerationSnapshot) -> PromptBatchSettings:
+    if not isinstance(snapshot.settings, PromptBatchSettings):
+        raise PipelineError("current run requires current Prompt settings")
     return snapshot.settings
 
 
@@ -3953,10 +2316,47 @@ def _selection_content_summary(
     }
 
 
+def _maximum_semantic_duplicates(evaluated_count: int) -> int:
+    if evaluated_count <= 0:
+        return 0
+    return max(
+        0,
+        math.ceil(evaluated_count * SEMANTIC_DUPLICATE_RATE_LIMIT / 100.0) - 1,
+    )
+
+
+def _pending_semantic_evaluation() -> SemanticEvaluation:
+    return SemanticEvaluation(
+        status="PENDING",
+        evaluated_count=0,
+        duplicate_group_count=None,
+        duplicate_count=None,
+        duplicate_rate=None,
+    )
+
+
+def _semantic_evaluation(
+    redundancy: RedundancySummary,
+    evaluated_count: int,
+) -> SemanticEvaluation:
+    duplicate_rate = (
+        round(100.0 * redundancy.redundant_candidate_count / evaluated_count, 2)
+        if evaluated_count > 0
+        else 0.0
+    )
+    return SemanticEvaluation(
+        status="VERIFIED",
+        evaluated_count=evaluated_count,
+        duplicate_group_count=redundancy.high_risk_group_count,
+        duplicate_count=redundancy.redundant_candidate_count,
+        duplicate_rate=duplicate_rate,
+    )
+
+
 def _dimension_unique_gain(
     item: RankedCreative,
     selected: list[RankedCreative],
-    anchors: list[PromptItemV6],
+    anchors: list[PromptItem],
 ) -> int:
     fields = (
         "narrative",
@@ -3996,13 +2396,6 @@ def _positive_redundancy_improvement(
     current: RedundancySummary,
     proposal: RedundancySummary,
 ) -> bool:
-    """Require a strict marginal risk gain from a diversity supplement.
-
-    High-risk pair count is the primary observed defect. Redundant candidate
-    count breaks ties without allowing a supplement to trade one risk group for
-    more near-duplicate pairs.
-    """
-
     return (
         proposal.high_risk_pair_count < current.high_risk_pair_count
         or (
@@ -4020,14 +2413,6 @@ def _guard_final_selection_risk(
     content_index: ContentVectorIndex,
     target_count: int,
 ) -> tuple[CreativeSelectionResult, str | None]:
-    """Keep 70/30 MMR unless an exact-count reference strictly dominates it.
-
-    Ordinary similarity stays a soft ranking signal. This guard only prevents
-    the final batch from being worse on both observable redundancy measures
-    than a usable, same-size reference set. It never removes an item without
-    replacing it, so quantity remains authoritative.
-    """
-
     if len(preferred.selected) != target_count:
         return preferred, None
     guarded = preferred
@@ -4055,8 +2440,7 @@ def _strictly_dominates_redundancy(
 ) -> bool:
     return (
         candidate.high_risk_pair_count <= current.high_risk_pair_count
-        and candidate.redundant_candidate_count
-        <= current.redundant_candidate_count
+        and candidate.redundant_candidate_count <= current.redundant_candidate_count
         and (
             candidate.high_risk_pair_count < current.high_risk_pair_count
             or candidate.redundant_candidate_count
@@ -4078,18 +2462,18 @@ def _redundancy_metadata(
     }
 
 
-def _v11_prompt_items(
+def _prompt_items(
     context: RuntimeContext,
     selection: CreativeSelectionResult,
     application: InsightApplicationMap,
     default_duration_seconds: int,
-) -> list[PromptItemV6]:
-    result: list[PromptItemV6] = []
+) -> list[PromptItem]:
+    result: list[PromptItem] = []
     for row in selection.selected:
         candidate = row.candidate
         evaluation = row.evaluation
         bindings: list[InsightBinding] = []
-        for fact_id in dict.fromkeys(evaluation.realized_fact_ids):
+        for fact_id in evaluation.realized_fact_ids:
             fact = application.by_id.get(fact_id)
             if fact is None:
                 continue
@@ -4104,7 +2488,7 @@ def _v11_prompt_items(
             )
         timestamp = candidate.generated_at or utc_now()
         result.append(
-            PromptItemV6(
+            PromptItem(
                 id=_stable_item_id(context.source_fingerprint, candidate.slot_id),
                 code=f"P{candidate.ordinal:03d}",
                 origin="AI",
@@ -4118,6 +2502,7 @@ def _v11_prompt_items(
                     for purpose in evaluation.compatible_purposes
                 ],
                 target_duration_seconds=default_duration_seconds,
+                creative_core=candidate.creative_core,
                 dimensions=candidate.dimensions,
                 content=candidate.content,
                 insight_bindings=bindings,
@@ -4129,16 +2514,16 @@ def _v11_prompt_items(
     return result
 
 
-def _retained_v11_items(
-    retained: list[PromptItem | PromptItemV6],
-) -> list[PromptItemV6]:
-    result: list[PromptItemV6] = []
+def _retained_items(
+    retained: list[PromptItem],
+) -> list[PromptItem]:
+    result: list[PromptItem] = []
     for item in retained:
-        if isinstance(item, PromptItemV6):
+        if isinstance(item, PromptItem):
             result.append(item)
             continue
         result.append(
-            PromptItemV6(
+            PromptItem(
                 id=item.id,
                 code=item.code,
                 origin=item.origin,
@@ -4149,6 +2534,7 @@ def _retained_v11_items(
                 product_relevance=0,
                 material_tags=item.material_tags,
                 target_duration_seconds=item.target_duration_seconds,
+                creative_core=item.dimensions.narrative,
                 dimensions=CreativeDimensions(
                     narrative=item.dimensions.narrative,
                     scene=item.dimensions.scene,
@@ -4167,7 +2553,7 @@ def _retained_v11_items(
     return result
 
 
-def _average_v11_scores(rows: list[CreativeScores]) -> CreativeAverageScores:
+def _average_scores(rows: list[CreativeScores]) -> CreativeAverageScores:
     if not rows:
         return CreativeAverageScores(
             product_relevance=0,
@@ -4195,13 +2581,96 @@ def _stable_item_id(source_fingerprint: str, slot_id: str) -> str:
     return str(uuid.UUID(bytes=digest, version=4))
 
 
-def _matches_fragment_targets(
-    items: list[PromptItem], targets: dict[FragmentType, int]
-) -> bool:
-    actual = Counter(item.fragment_type for item in items)
-    return len(items) == sum(targets.values()) and all(
-        actual[fragment_type] == count for fragment_type, count in targets.items()
+def _semantic_audit(
+    context: RuntimeContext,
+    items: list[PromptItem],
+    selected: list[RankedCreative],
+    summary: RedundancySummary | None,
+    snapshot: PromptGenerationSnapshot,
+) -> dict[str, Any] | None:
+    """Persist only hashes and duplicate edges needed for safe delete recalculation."""
+    if summary is None:
+        return None
+
+    item_operation = snapshot.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"}
+    candidate_item_ids: dict[str, str] = {}
+    if item_operation and snapshot.target_item is not None:
+        candidate_item_ids.update(
+            {
+                row.candidate.slot_id: snapshot.target_item.id
+                for row in selected
+            }
+        )
+    else:
+        candidate_item_ids.update(
+            {
+                row.candidate.slot_id: _stable_item_id(
+                    context.source_fingerprint,
+                    row.candidate.slot_id,
+                )
+                for row in selected
+            }
+        )
+
+    all_items = (
+        {snapshot.target_item.id: items[0]}
+        if item_operation and snapshot.target_item is not None and len(items) == 1
+        else {item.id: item for item in items}
     )
+    for anchor in snapshot.similarity_anchors:
+        if isinstance(anchor, PromptItem):
+            all_items[anchor.id] = anchor
+
+    def public_id(entity_id: str) -> str | None:
+        if entity_id.startswith("anchor:"):
+            return entity_id.removeprefix("anchor:")
+        return candidate_item_ids.get(entity_id)
+
+    duplicate_pairs: list[dict[str, str]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for left_entity_id, right_entity_id in summary.high_risk_pairs:
+        left_id = public_id(left_entity_id)
+        right_id = public_id(right_entity_id)
+        if (
+            left_id is None
+            or right_id is None
+            or left_id == right_id
+            or left_id not in all_items
+            or right_id not in all_items
+        ):
+            continue
+        ordered_ids = sorted((left_id, right_id))
+        pair = (ordered_ids[0], ordered_ids[1])
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        duplicate_pairs.append({"leftItemId": pair[0], "rightItemId": pair[1]})
+
+    evaluated_items = [
+        {
+            "itemId": item_id,
+            "contentHash": _semantic_content_hash(item.content),
+        }
+        for item_id, item in sorted(all_items.items())
+    ]
+    fingerprint = _sha256_json(evaluated_items)
+    return {
+        "schemaVersion": 1,
+        "similarityThreshold": VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD,
+        "evaluatedItems": evaluated_items,
+        "duplicatePairs": duplicate_pairs,
+        "contentFingerprint": fingerprint,
+    }
+
+
+def _semantic_content_hash(content: str) -> str:
+    return _sha256_text(unicodedata.normalize("NFKC", content).strip())
+
+
+def _trim_embedding_cache(cache: dict[str, tuple[float, ...]]) -> None:
+    overflow = len(cache) - MAX_PROCESS_EMBEDDING_CACHE_ENTRIES
+    for key in list(cache)[: max(0, overflow)]:
+        cache.pop(key, None)
 
 
 def _normalized_disabled_elements(values: list[str]) -> list[str]:
@@ -4293,32 +2762,6 @@ def _render_profile(insight: Mapping[str, object]) -> RenderProfile:
             disabled_elements=disabled,
             content_hash=digest,
         ),
-    )
-
-
-def _unique_candidates(items: list[GeneratedCandidate]) -> list[GeneratedCandidate]:
-    by_slot: dict[str, GeneratedCandidate] = {}
-    for item in items:
-        by_slot.setdefault(item.slot_id, item)
-    return sorted(
-        by_slot.values(), key=lambda item: (item.ordinal, item.round, item.shard_index)
-    )
-
-
-def _is_batch_response_invalid(
-    snapshot: PromptGenerationSnapshot,
-    exc: Exception,
-) -> bool:
-    """Let batch candidate surplus absorb one invalid model shard.
-
-    Transport/service failures still belong to task-level retry, while item
-    operations must surface any failure because they have no candidate surplus.
-    """
-
-    return (
-        snapshot.operation == "BATCH_GENERATE"
-        and isinstance(exc, ProviderError)
-        and exc.error_type == ProviderErrorType.RESPONSE_INVALID
     )
 
 
@@ -4415,92 +2858,3 @@ def _source_fact_texts(insight: Mapping[str, object]) -> list[str]:
 
 def _short(value: str, limit: int = 180) -> str:
     return " ".join(value.split())[:limit]
-
-
-def _freeze_item_regeneration_combination(
-    combination: PlannedCombination,
-    *,
-    snapshot: PromptGenerationSnapshot,
-    strategy: StrategyPlan | None,
-    application: InsightApplicationMap,
-) -> PlannedCombination:
-    target = snapshot.target_item
-    if target is None:
-        return combination
-    if not isinstance(target, PromptItem):
-        raise PipelineError("legacy item regeneration requires a V5 Prompt item")
-    dimensions = cast(
-        PromptDimensions,
-        snapshot.replacement_dimensions or target.dimensions,
-    )
-    preserved_fact_ids = [
-        binding.fact_id
-        for binding in target.insight_bindings
-        if binding.field
-        not in {InsightField.CORE_SELLING_POINT, InsightField.SECONDARY_SELLING_POINT}
-    ]
-    normalized_selling_point = " ".join(dimensions.selling_point.split()).casefold()
-    selling_fact = next(
-        (
-            fact
-            for fact in application.usable
-            if fact.field
-            in {InsightField.CORE_SELLING_POINT, InsightField.SECONDARY_SELLING_POINT}
-            and target.fragment_type in fact.eligible_fragment_types
-            and " ".join(fact.value.split()).casefold() == normalized_selling_point
-        ),
-        None,
-    )
-    if selling_fact:
-        preserved_fact_ids.append(selling_fact.fact_id)
-    bindings = expression_bindings(
-        bindings_for_fact_ids(application, preserved_fact_ids, target.fragment_type),
-        fragment_type=target.fragment_type,
-        occurrence=snapshot.target_item_index or 0,
-        priority_fact_ids={selling_fact.fact_id} if selling_fact else set(),
-    )
-    evidence = (
-        next(
-            (
-                item
-                for item in strategy.dimension_pools.evidence_plans
-                if " ".join(item.selling_point.split()).casefold()
-                == normalized_selling_point
-            ),
-            None,
-        )
-        if strategy is not None
-        else None
-    )
-    return combination.model_copy(
-        update={
-            "fragment_type": target.fragment_type,
-            "material_tags": list(target.material_tags),
-            "target_duration_seconds": target.target_duration_seconds,
-            "dimensions": dimensions,
-            "insight_bindings": bindings,
-            "evidence_mode": evidence.evidence_mode
-            if evidence
-            else EvidenceMode.TEXT_ONLY,
-            "allowed_visual_evidence": (
-                evidence.allowed_visual_evidence
-                if evidence
-                else "只按片段职责使用已绑定的信息卡原文和真实可见产品细节"
-            ),
-            "forbidden_inference": (
-                evidence.forbidden_inference
-                if evidence
-                else "不得扩展为信息卡未确认的功效、数据、认证、工艺画面或承诺"
-            ),
-        }
-    )
-
-
-def _combination_example(value: PlannedCombination | None) -> str:
-    if value is None:
-        return "暂无组合"
-    dims = value.dimensions
-    return _short(
-        f"{dims.narrative} / {dims.scene} / {dims.persona} / {dims.selling_point} / "
-        f"{dims.camera} / {dims.emotion}"
-    )

@@ -1,5 +1,3 @@
-VERSION: effect-prompt-v11-creative-direction-task-v2
-
 目标 Prompt 数量：{target_count}
 
 已确认事实：
