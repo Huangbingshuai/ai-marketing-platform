@@ -4,21 +4,12 @@
   "title": "EffectPromptBatchResult",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "settings",
-    "renderProfile",
-    "items",
-    "metrics",
-    "qualityStatus"
-  ],
+  "required": ["settings", "renderProfile", "items", "metrics", "qualityStatus"],
   "properties": {
     "settings": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "targetCount",
-        "defaultDurationSeconds"
-      ],
+      "required": ["targetCount", "defaultDurationSeconds"],
       "properties": {
         "targetCount": {
           "type": "integer",
@@ -56,6 +47,7 @@
         "rejectedCount",
         "replenishmentRounds",
         "exactDuplicateCount",
+        "semanticEvaluation",
         "purposeDistribution",
         "averageScores",
         "hardIssueCounts",
@@ -94,6 +86,9 @@
           "type": "integer",
           "minimum": 0
         },
+        "semanticEvaluation": {
+          "$ref": "#/$defs/semanticEvaluation"
+        },
         "purposeDistribution": {
           "$ref": "#/$defs/purposeDistribution"
         },
@@ -109,35 +104,18 @@
       }
     },
     "qualityStatus": {
-      "enum": [
-        "PASS",
-        "NEEDS_REVIEW"
-      ]
+      "enum": ["PASS", "NEEDS_REVIEW"]
     }
   },
   "$defs": {
     "fragmentType": {
       "type": "string",
-      "enum": [
-        "HOOK",
-        "PAIN",
-        "PRODUCT_DISPLAY",
-        "SELLING_POINT_EXPLANATION",
-        "CTA",
-        "OUTRO"
-      ]
+      "enum": ["HOOK", "PAIN", "PRODUCT_DISPLAY", "SELLING_POINT_EXPLANATION", "CTA", "OUTRO"]
     },
     "dimensions": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "narrative",
-        "scene",
-        "persona",
-        "productRelation",
-        "camera",
-        "emotion"
-      ],
+      "required": ["narrative", "scene", "persona", "productRelation", "camera", "emotion"],
       "properties": {
         "narrative": {
           "type": "string",
@@ -205,10 +183,7 @@
           "maxLength": 40
         },
         "origin": {
-          "enum": [
-            "AI",
-            "MANUAL"
-          ]
+          "enum": ["AI", "MANUAL"]
         },
         "fragmentType": {
           "$ref": "#/$defs/fragmentType"
@@ -226,10 +201,7 @@
           }
         },
         "classificationStatus": {
-          "enum": [
-            "PENDING",
-            "VERIFIED"
-          ]
+          "enum": ["PENDING", "VERIFIED"]
         },
         "productRelevance": {
           "type": "integer",
@@ -288,46 +260,21 @@
     "renderProfile": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "ratio",
-        "resolution",
-        "capabilityKey",
-        "sharedConstraints"
-      ],
+      "required": ["ratio", "resolution", "capabilityKey", "sharedConstraints"],
       "properties": {
         "ratio": {
-          "enum": [
-            "16:9",
-            "4:3",
-            "1:1",
-            "3:4",
-            "9:16",
-            "21:9",
-            "adaptive"
-          ]
+          "enum": ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"]
         },
         "resolution": {
-          "enum": [
-            "480p",
-            "720p",
-            "1080p"
-          ]
+          "enum": ["480p", "720p", "1080p"]
         },
         "capabilityKey": {
-          "enum": [
-            "SEEDANCE_2_0",
-            "SEEDANCE_2_0_FAST",
-            "SEEDANCE_1_5_PRO",
-            "SEEDANCE_1_0"
-          ]
+          "enum": ["SEEDANCE_2_0", "SEEDANCE_2_0_FAST", "SEEDANCE_1_5_PRO", "SEEDANCE_1_0"]
         },
         "sharedConstraints": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "disabledElements",
-            "contentHash"
-          ],
+          "required": ["disabledElements", "contentHash"],
           "properties": {
             "disabledElements": {
               "type": "array",
@@ -354,11 +301,7 @@
     "sharedPrompt": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "sections",
-        "compiledContent",
-        "contentHash"
-      ],
+      "required": ["sections", "compiledContent", "contentHash"],
       "properties": {
         "sections": {
           "type": "array",
@@ -381,14 +324,7 @@
     "sharedPromptSection": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "key",
-        "title",
-        "source",
-        "content",
-        "editable",
-        "sourceHash"
-      ],
+      "required": ["key", "title", "source", "content", "editable", "sourceHash"],
       "properties": {
         "key": {
           "type": "string",
@@ -400,10 +336,7 @@
           "maxLength": 120
         },
         "source": {
-          "enum": [
-            "SYSTEM",
-            "USER"
-          ]
+          "enum": ["SYSTEM", "USER"]
         },
         "content": {
           "type": "string",
@@ -425,11 +358,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "purpose",
-          "primaryCount",
-          "compatibleCount"
-        ],
+        "required": ["purpose", "primaryCount", "compatibleCount"],
         "properties": {
           "purpose": {
             "$ref": "#/$defs/fragmentType"
@@ -444,6 +373,42 @@
             "minimum": 0,
             "maximum": 200
           }
+        }
+      }
+    },
+    "semanticEvaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "evaluatedCount",
+        "duplicateGroupCount",
+        "duplicateCount",
+        "duplicateRate"
+      ],
+      "properties": {
+        "status": {
+          "enum": ["PENDING", "VERIFIED"]
+        },
+        "evaluatedCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 200
+        },
+        "duplicateGroupCount": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 200
+        },
+        "duplicateCount": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 200
+        },
+        "duplicateRate": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 100
         }
       }
     },
@@ -490,10 +455,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "code",
-          "count"
-        ],
+        "required": ["code", "count"],
         "properties": {
           "code": {
             "type": "string",
@@ -536,12 +498,7 @@
     "insightReference": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "factId",
-        "field",
-        "value",
-        "valueHash"
-      ],
+      "required": ["factId", "field", "value", "valueHash"],
       "properties": {
         "factId": {
           "type": "string",
@@ -565,13 +522,7 @@
     "insightBinding": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "factId",
-        "field",
-        "value",
-        "valueHash",
-        "role"
-      ],
+      "required": ["factId", "field", "value", "valueHash", "role"],
       "properties": {
         "factId": {
           "type": "string",
@@ -591,24 +542,14 @@
           "pattern": "^[a-f0-9]{64}$"
         },
         "role": {
-          "enum": [
-            "PRIMARY",
-            "CONTEXT",
-            "EVIDENCE"
-          ]
+          "enum": ["PRIMARY", "CONTEXT", "EVIDENCE"]
         }
       }
     },
     "excludedInsight": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "factId",
-        "field",
-        "value",
-        "valueHash",
-        "reason"
-      ],
+      "required": ["factId", "field", "value", "valueHash", "reason"],
       "properties": {
         "factId": {
           "type": "string",
@@ -628,11 +569,7 @@
           "pattern": "^[a-f0-9]{64}$"
         },
         "reason": {
-          "enum": [
-            "UNCERTAIN",
-            "EMPTY",
-            "UNSUPPORTED"
-          ]
+          "enum": ["UNCERTAIN", "EMPTY", "UNSUPPORTED"]
         }
       }
     },

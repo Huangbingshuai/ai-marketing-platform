@@ -22,6 +22,7 @@ import {
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
+  EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT,
   EFFECT_PROMPT_GRAPH_EDGES,
   EFFECT_PROMPT_GRAPH_NODE_IDS,
   effectPromptRunGraphEdges,
@@ -189,8 +190,7 @@ const currentGraphNodeIds = computed<readonly EffectPromptNodeId[]>(() => {
   return EFFECT_PROMPT_GRAPH_NODE_IDS;
 });
 const currentGraphEdges = computed(() => {
-  if (displayedGraphRun.value)
-    return effectPromptRunGraphEdges(displayedGraphRun.value.operation);
+  if (displayedGraphRun.value) return effectPromptRunGraphEdges(displayedGraphRun.value.operation);
   return EFFECT_PROMPT_GRAPH_EDGES;
 });
 const currentAttemptLabel = computed(() => {
@@ -256,20 +256,19 @@ const insightFieldLabels: Record<EffectPromptInsightField, string> = {
   DISABLED_ELEMENT: '禁用元素',
   VISUAL_STYLE_BASELINE: '视觉基线',
 };
-const itemInsightFacts = (item: EffectPromptItem) =>
-  [
-    ...new Map(
-      item.insightBindings.map((binding) => [
-        binding.factId,
-        {
-          factId: binding.factId,
-          field: binding.field,
-          label: insightFieldLabels[binding.field],
-          value: binding.value,
-        },
-      ]),
-    ).values(),
-  ];
+const itemInsightFacts = (item: EffectPromptItem) => [
+  ...new Map(
+    item.insightBindings.map((binding) => [
+      binding.factId,
+      {
+        factId: binding.factId,
+        field: binding.field,
+        label: insightFieldLabels[binding.field],
+        value: binding.value,
+      },
+    ]),
+  ).values(),
+];
 const currentCountStats = computed(() => {
   const targetCount = currentTargetCount.value;
   const actualCount = currentMetrics.value?.acceptedCount ?? resultData.value?.total ?? 0;
@@ -281,6 +280,20 @@ const currentCountStats = computed(() => {
   };
 });
 const currentRunning = computed(() => isPromptRunActive(currentState.value));
+const currentSemanticEvaluation = computed(() => currentMetrics.value?.semanticEvaluation ?? null);
+const currentSemanticDisplay = computed(() => {
+  const evaluation = currentSemanticEvaluation.value;
+  if (!evaluation || evaluation.status !== 'VERIFIED' || evaluation.duplicateRate === null)
+    return {
+      state: currentRunning.value ? 'running' : 'pending',
+      text: currentRunning.value ? '正在计算语义重复度' : '语义重复度待评估',
+    } as const;
+  const passed = evaluation.duplicateRate < EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT;
+  return {
+    state: passed ? 'passed' : 'failed',
+    text: `语义重复度 ${evaluation.duplicateRate.toFixed(1)}% · 目标 <${EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT}% · ${passed ? '符合要求' : '需要优化'}`,
+  } as const;
+});
 const currentQualityReady = computed(() => isPromptResultQualityReady(currentResult.value));
 const totalPages = computed(() => promptPageCount(resultData.value?.total ?? 0));
 const allProductsCommitted = computed(
@@ -1256,7 +1269,10 @@ const graphStatusMeta = (statusValue: EffectPromptStageStatus): { label: string;
     SKIPPED: { label: '已跳过', tone: 'skipped' },
     FAILED: { label: '失败', tone: 'danger' },
   })[statusValue];
-const graphRowTitle = (_row: EffectPromptNodeId[]): string => '';
+const graphRowTitle = (row: EffectPromptNodeId[]): string => {
+  void row;
+  return '';
+};
 const graphDescription = (nodeId: EffectPromptNodeId): string =>
   ({
     LOAD_AND_SNAPSHOT: '冻结洞察工作副本、批次设置和人工保留内容',
@@ -1880,6 +1896,13 @@ onBeforeUnmount(() => {
                   ? `超出 ${currentCountStats.excessCount} 条`
                   : '数量一致'
             }}
+          </span>
+          <span
+            class="prompt-semantic-rate"
+            :class="`prompt-semantic-rate--${currentSemanticDisplay.state}`"
+            role="status"
+          >
+            {{ currentSemanticDisplay.text }}
           </span>
           <button
             v-if="!partialPreview"
@@ -3718,6 +3741,29 @@ button:disabled {
 }
 .prompt-dimension-details .prompt-dimensions {
   margin: 7px 0 0;
+}
+.prompt-semantic-rate {
+  display: inline-flex;
+  min-height: 28px;
+  padding: 0 10px;
+  align-items: center;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.prompt-semantic-rate--passed {
+  color: #177a59;
+  background: #edf8f3;
+}
+.prompt-semantic-rate--failed {
+  color: #c43d48;
+  background: #fff0f1;
+}
+.prompt-semantic-rate--pending,
+.prompt-semantic-rate--running {
+  color: #6e7f96;
+  background: #f1f4f8;
 }
 .prompt-fact-list,
 .prompt-creative-core,

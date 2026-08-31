@@ -8,6 +8,7 @@ import {
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_LIMITS,
+  EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT,
   normalizeEffectPromptSettings,
 } from '@ai-marketing/contracts';
 
@@ -68,7 +69,11 @@ export const isPromptResultQualityReady = (
   Boolean(
     result &&
     result.qualityStatus === 'PASS' &&
-    result.metrics.acceptedCount === result.settings.targetCount,
+    result.metrics.acceptedCount === result.settings.targetCount &&
+    result.metrics.semanticEvaluation.status === 'VERIFIED' &&
+    result.metrics.semanticEvaluation.evaluatedCount === result.metrics.acceptedCount &&
+    result.metrics.semanticEvaluation.duplicateRate !== null &&
+    result.metrics.semanticEvaluation.duplicateRate < EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT,
   );
 
 export const isPromptProductCommitted = (state: EffectPromptProductState): boolean =>

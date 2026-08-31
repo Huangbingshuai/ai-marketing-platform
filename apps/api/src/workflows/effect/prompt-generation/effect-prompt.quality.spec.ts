@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import type { EffectPromptItem } from '@ai-marketing/contracts';
 import { DEFAULT_EFFECT_PROMPT_SETTINGS } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
@@ -8,7 +10,9 @@ import {
   isEffectPromptItem,
   parseEffectPromptBatchResult,
   mergeEffectPromptCompletionItems,
+  parseEffectPromptSemanticAudit,
   recomputePromptQuality,
+  semanticEvaluationAfterDeletion,
 } from './effect-prompt.quality';
 
 const item = (id: string, content = `产品创意画面 ${id}`): EffectPromptItem => ({
@@ -38,6 +42,24 @@ const item = (id: string, content = `产品创意画面 ${id}`): EffectPromptIte
   updatedAt: '2026-08-27T00:00:00.000Z',
 });
 
+const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
+
+const auditFor = (items: EffectPromptItem[], pairs: Array<[string, string]>) => {
+  const evaluatedItems = items
+    .map(({ id, content }) => ({
+      itemId: id,
+      contentHash: sha256(content.normalize('NFKC').trim()),
+    }))
+    .sort((left, right) => left.itemId.localeCompare(right.itemId, 'en-US'));
+  return {
+    schemaVersion: 1,
+    similarityThreshold: 0.82,
+    evaluatedItems,
+    duplicatePairs: pairs.map(([leftItemId, rightItemId]) => ({ leftItemId, rightItemId })),
+    contentFingerprint: sha256(JSON.stringify(evaluatedItems)),
+  };
+};
+
 describe('effect prompt quality contract', () => {
   it('requires purpose projection and productRelation', () => {
     expect(isEffectPromptItem(item('001'))).toBe(true);
@@ -47,8 +69,12 @@ describe('effect prompt quality contract', () => {
 
   it('restores creative core from narrative for existing stored items', () => {
     const existing = item('legacy');
-    const { creativeCore: _creativeCore, ...withoutCreativeCore } = existing;
-    const result = recomputePromptQuality([existing], { targetCount: 1, defaultDurationSeconds: 5 });
+    const withoutCreativeCore: Partial<EffectPromptItem> = { ...existing };
+    delete withoutCreativeCore.creativeCore;
+    const result = recomputePromptQuality([existing], {
+      targetCount: 1,
+      defaultDurationSeconds: 5,
+    });
     const parsed = parseEffectPromptBatchResult({ ...result, items: [withoutCreativeCore] });
 
     expect(parsed?.items[0]?.creativeCore).toBe(existing.dimensions.narrative);
@@ -73,6 +99,13 @@ describe('effect prompt quality contract', () => {
       undefined,
       defaultEffectPromptRenderProfile(),
       compileEffectPromptSharedPrompt([]),
+      {
+        status: 'VERIFIED',
+        evaluatedCount: 10,
+        duplicateGroupCount: 0,
+        duplicateCount: 0,
+        duplicateRate: 0,
+      },
     );
     expect(result.items).toHaveLength(10);
     expect(result.metrics.hardIssueCounts).toEqual([]);
@@ -85,6 +118,7 @@ describe('effect prompt quality contract', () => {
       compatibleCount: 10,
     });
     expect(result.metrics.averageScores.productRelevance).toBe(92);
+    expect(result.metrics.semanticEvaluation.duplicateRate).toBe(0);
     expect(
       parseEffectPromptBatchResult({
         ...result,
@@ -109,6 +143,99 @@ describe('effect prompt quality contract', () => {
     );
     const recomputed = recomputePromptQuality(result.items, result.settings, result.metrics);
     expect(recomputed.metrics.hardIssueCounts).toEqual(result.metrics.hardIssueCounts);
+  });
+
+  it('requires semantic duplicate rate to be strictly below fifteen percent', () => {
+    const items = Array.from({ length: 20 }, (_, index) =>
+      item(`00000000-0000-4000-8000-${String(index).padStart(12, '0')}`),
+    );
+    const result = recomputePromptQuality(
+      items,
+      { targetCount: 20, defaultDurationSeconds: 5 },
+      undefined,
+      defaultEffectPromptRenderProfile(),
+      compileEffectPromptSharedPrompt([]),
+      {
+        status: 'VERIFIED',
+        evaluatedCount: 20,
+        duplicateGroupCount: 1,
+        duplicateCount: 3,
+        duplicateRate: 15,
+      },
+    );
+    expect(result.qualityStatus).toBe('NEEDS_REVIEW');
+  });
+
+  it('allows seven but blocks eight semantic duplicates in a fifty-item batch', () => {
+    const items = Array.from({ length: 50 }, (_, index) =>
+      item(`00000000-0000-4000-8000-${String(index).padStart(12, '0')}`),
+    );
+    const evaluate = (duplicateCount: number) =>
+      recomputePromptQuality(
+        items,
+        { targetCount: 50, defaultDurationSeconds: 5 },
+        undefined,
+        defaultEffectPromptRenderProfile(),
+        compileEffectPromptSharedPrompt([]),
+        {
+          status: 'VERIFIED',
+          evaluatedCount: 50,
+          duplicateGroupCount: 1,
+          duplicateCount,
+          duplicateRate: duplicateCount * 2,
+        },
+      );
+
+    expect(evaluate(7).qualityStatus).toBe('PASS');
+    expect(evaluate(8).qualityStatus).toBe('NEEDS_REVIEW');
+  });
+
+  it('recalculates connected duplicate groups after a deletion from a trusted audit', () => {
+    const items = Array.from({ length: 10 }, (_, index) =>
+      item(`00000000-0000-4000-8000-${String(index).padStart(12, '0')}`),
+    );
+    const rawAudit = auditFor(items, [
+      [items[0]!.id, items[1]!.id],
+      [items[1]!.id, items[2]!.id],
+      [items[5]!.id, items[6]!.id],
+    ]);
+    const audit = parseEffectPromptSemanticAudit(rawAudit, items);
+    expect(audit).not.toBeNull();
+    expect(
+      semanticEvaluationAfterDeletion(
+        items.filter(({ id }) => id !== items[1]!.id),
+        audit!,
+      ),
+    ).toEqual({
+      status: 'VERIFIED',
+      evaluatedCount: 9,
+      duplicateGroupCount: 1,
+      duplicateCount: 1,
+      duplicateRate: 11.11,
+    });
+    expect(
+      semanticEvaluationAfterDeletion(
+        items.map((row, index) => (index === 0 ? { ...row, content: '正文已变化' } : row)),
+        audit!,
+      ).status,
+    ).toBe('PENDING');
+  });
+
+  it('keeps historical results without semantic evaluation pending', () => {
+    const result = recomputePromptQuality([item('legacy')], {
+      targetCount: 1,
+      defaultDurationSeconds: 5,
+    });
+    const legacyMetrics: Partial<typeof result.metrics> = { ...result.metrics };
+    delete legacyMetrics.semanticEvaluation;
+    const parsed = parseEffectPromptBatchResult({ ...result, metrics: legacyMetrics });
+    expect(parsed?.metrics.semanticEvaluation).toEqual({
+      status: 'PENDING',
+      evaluatedCount: 0,
+      duplicateGroupCount: null,
+      duplicateCount: null,
+      duplicateRate: null,
+    });
   });
 
   it('ITEM_EVALUATE updates only classification data and keeps authored content intact', () => {

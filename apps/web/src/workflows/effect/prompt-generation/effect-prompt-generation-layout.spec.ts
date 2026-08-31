@@ -57,6 +57,14 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).not.toContain('fragmentTypeFilter');
   });
 
+  it('shows the fixed semantic duplicate-rate result without restoring a user setting', () => {
+    expect(pageSource).toContain('currentSemanticDisplay');
+    expect(pageSource).toContain('语义重复度 ${evaluation.duplicateRate.toFixed(1)}%');
+    expect(pageSource).toContain('正在计算语义重复度');
+    expect(pageSource).toContain('语义重复度待评估');
+    expect(pageSource).toContain('prompt-semantic-rate--');
+  });
+
   it('uses product relation as the fourth creative dimension', () => {
     expect(pageSource).toContain('productRelation: []');
     expect(pageSource).toContain('dimensions.productRelation');
@@ -113,9 +121,7 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toMatch(
       /effectPromptRunGraphNodeIds\(displayedGraphRun\.value\.operation\)/u,
     );
-    expect(pageSource).toMatch(
-      /effectPromptRunGraphEdges\(displayedGraphRun\.value\.operation\)/u,
-    );
+    expect(pageSource).toMatch(/effectPromptRunGraphEdges\(displayedGraphRun\.value\.operation\)/u);
     expect(pageSource).toContain('展示本次真实输入、连贯创意生成、用途评估和数量结果。');
     expect(graphSource).toContain('sourceIndex < targetIndex');
   });

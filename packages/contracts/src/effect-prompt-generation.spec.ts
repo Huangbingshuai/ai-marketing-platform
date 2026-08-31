@@ -12,6 +12,8 @@ import {
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_NODE_DETAIL_SECTION_KINDS,
   EFFECT_PROMPT_NODE_DETAIL_SECTION_STATES,
+  EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT,
+  EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD,
   EFFECT_PROMPT_SHARD_PHASES,
   effectPromptRunGraphNodeIds,
   effectPromptSettingsNodeId,
@@ -131,5 +133,8 @@ describe('effect prompt generation contract', () => {
     expect(batchSchema.properties.metrics.properties.replenishmentRounds.maximum).toBe(
       EFFECT_PROMPT_LIMITS.maxReplenishmentRounds,
     );
+    expect(batchSchema.properties.metrics.required).toContain('semanticEvaluation');
+    expect(EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD).toBe(0.82);
+    expect(EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT).toBe(15);
   });
 });

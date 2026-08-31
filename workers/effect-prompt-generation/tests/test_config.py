@@ -45,7 +45,7 @@ def test_mock_requires_explicit_provider_and_prompt_model_falls_back() -> None:
     assert settings.resolved_prompt_candidate_timeout_seconds == 120
     assert settings.ark_prompt_provider_max_attempts == 1
     assert settings.resolved_prompt_evaluation_model == settings.resolved_prompt_candidate_model
-    assert settings.prompt_similarity_mode == "trigram"
+    assert settings.prompt_similarity_mode == "vector"
     assert settings.prompt_embedding_batch_size == 64
     assert settings.prompt_embedding_max_concurrency == 8
     assert settings.ark_prompt_embedding_timeout_seconds == 30

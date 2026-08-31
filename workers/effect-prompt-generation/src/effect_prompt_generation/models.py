@@ -295,6 +295,14 @@ class CreativeAverageScores(ApiModel):
     visual_clarity: float = Field(ge=0, le=100)
 
 
+class SemanticEvaluation(ApiModel):
+    status: Literal["PENDING", "VERIFIED"]
+    evaluated_count: int = Field(ge=0, le=200)
+    duplicate_group_count: int | None = Field(default=None, ge=0, le=200)
+    duplicate_count: int | None = Field(default=None, ge=0, le=200)
+    duplicate_rate: float | None = Field(default=None, ge=0, le=100)
+
+
 class CountMetric(ApiModel):
     code: str = Field(min_length=1, max_length=120)
     count: int = Field(ge=1, le=2_000)
@@ -308,6 +316,7 @@ class PromptMetrics(ApiModel):
     rejected_count: int = Field(ge=0)
     replenishment_rounds: int = Field(ge=0, le=3)
     exact_duplicate_count: int = Field(ge=0)
+    semantic_evaluation: SemanticEvaluation
     purpose_distribution: list[PurposeDistribution] = Field(min_length=6, max_length=6)
     average_scores: CreativeAverageScores
     hard_issue_counts: list[CountMetric] = Field(default_factory=list)

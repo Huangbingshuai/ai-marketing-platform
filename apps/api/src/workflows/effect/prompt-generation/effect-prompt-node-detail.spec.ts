@@ -54,8 +54,20 @@ const record = (): EffectPromptNodeDetailRunRecord =>
           : nodeId === 'SHARED_PROMPT_COMPILATION'
             ? { compiledContent: '画面中不得出现虚构医疗功效。', sectionCount: 1 }
             : nodeId === 'EXACT_SELECTION_AND_SUPPLEMENT'
-              ? { acceptedCount: 2, targetCount: 2, missingCount: 0 }
-              : {},
+              ? {
+                  acceptedCount: 2,
+                  targetCount: 2,
+                  missingCount: 0,
+                  semanticDuplicateRate: 0,
+                }
+              : nodeId === 'CREATIVE_EVALUATION_CLASSIFICATION'
+                ? {
+                    semanticEvaluatedCount: 2,
+                    semanticDuplicateGroupCount: 0,
+                    semanticDuplicateCount: 0,
+                    semanticDuplicateRate: 0,
+                  }
+                : {},
       updatedAt: new Date('2026-08-31T01:00:00.000Z'),
     })),
     shards: [],
@@ -78,9 +90,7 @@ describe('presentEffectPromptNodeDetail', () => {
       currentNode: 'COHERENT_CREATIVE_GENERATION',
       errorMessage: 'Prompt AI 生成超时',
       stages: base.stages.map((stage) =>
-        stage.nodeId === 'COHERENT_CREATIVE_GENERATION'
-          ? { ...stage, status: 'RUNNING' }
-          : stage,
+        stage.nodeId === 'COHERENT_CREATIVE_GENERATION' ? { ...stage, status: 'RUNNING' } : stage,
       ),
     } as EffectPromptNodeDetailRunRecord;
     const detail = presentEffectPromptNodeDetail(failed, 'COHERENT_CREATIVE_GENERATION');
@@ -93,5 +103,17 @@ describe('presentEffectPromptNodeDetail', () => {
     const output = detail.sections.find(({ kind }) => kind === 'OUTPUT');
     expect(output?.summary).toContain('节点草稿');
     expect(output?.summary).toContain('完成校验');
+  });
+
+  it('在评估节点展示固定相似标准和最终重复度', () => {
+    const detail = presentEffectPromptNodeDetail(record(), 'CREATIVE_EVALUATION_CLASSIFICATION');
+    const output = detail.sections.find(({ kind }) => kind === 'OUTPUT');
+    expect(output?.fields).toEqual(
+      expect.arrayContaining([
+        { label: '相似判定标准', value: '82%' },
+        { label: '重复度目标', value: '< 15%' },
+        { label: '语义重复度（%）', value: 0 },
+      ]),
+    );
   });
 });

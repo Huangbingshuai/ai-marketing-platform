@@ -22,6 +22,7 @@ from .embeddings import (
     CreativeVectorIndex,
     EmbeddingProvider,
     EmbeddingProviderError,
+    MockEmbeddingProvider,
     RedundancySummary,
     VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD,
     build_content_vector_index,
@@ -54,6 +55,7 @@ from .models import (
     PurposeDistribution,
     RenderProfile,
     RuntimeContext,
+    SemanticEvaluation,
     SharedPrompt,
     SharedPromptSection,
     ShardPhase,
@@ -84,11 +86,13 @@ from .quality import (
 )
 
 MAX_REPLENISHMENT_ROUNDS = 3
+SEMANTIC_DUPLICATE_RATE_LIMIT = 15.0
 # Five detailed evaluations can still produce a status=completed response whose
 # JSON ends early. Three candidates keep each strict response comfortably bounded;
 # the pipeline-level sliding concurrency retains throughput while avoiding paid
 # whole-batch failures caused by one oversized classification response.
 CLASSIFICATION_SHARD_SIZE = 3
+MAX_PROCESS_EMBEDDING_CACHE_ENTRIES = 4_096
 
 
 class PipelineError(RuntimeError):
@@ -125,6 +129,7 @@ class RunCache:
     diversity_avoid_slot_ids: set[str] = field(default_factory=set)
     initial_redundancy_summary: RedundancySummary | None = None
     redundancy_summary: RedundancySummary | None = None
+    content_vector_index: ContentVectorIndex | None = None
     embedding_vectors: dict[str, tuple[float, ...]] = field(default_factory=dict)
     embedding_remote_input_count: int = 0
     embedding_request_count: int = 0
@@ -143,7 +148,7 @@ class PromptGenerationPipeline:
         api: InternalApi,
         provider: AiProvider,
         embedding_provider: EmbeddingProvider | None = None,
-        similarity_mode: Literal["trigram", "shadow", "vector"] = "trigram",
+        similarity_mode: Literal["trigram", "shadow", "vector"] = "vector",
         embedding_batch_size: int = 64,
         embedding_max_concurrency: int = 2,
         ai_max_concurrency: int = 6,
@@ -152,7 +157,13 @@ class PromptGenerationPipeline:
     ) -> None:
         self.api = api
         self.provider = provider
-        self.embedding_provider = embedding_provider
+        self.embedding_provider = (
+            embedding_provider
+            if embedding_provider is not None
+            else MockEmbeddingProvider()
+            if provider.execution_mode == "MOCK" and similarity_mode == "vector"
+            else None
+        )
         self.similarity_mode = similarity_mode
         self.embedding_batch_size = embedding_batch_size
         self.embedding_max_concurrency = embedding_max_concurrency
@@ -162,6 +173,10 @@ class PromptGenerationPipeline:
         self.max_ai_calls_per_run = max_ai_calls_per_run
         self._snapshots: dict[str, PromptGenerationSnapshot] = {}
         self._runs: dict[str, RunCache] = {}
+        # The worker process is long lived. Sharing the content-addressed vector cache
+        # lets item evaluation reuse unchanged batch vectors without persisting model
+        # vectors in public results or database records.
+        self._embedding_vectors: dict[str, tuple[float, ...]] = {}
 
     def register_snapshot(
         self,
@@ -173,7 +188,8 @@ class PromptGenerationPipeline:
         self._runs[context.run_id] = RunCache(
             strategy_checkpoints={
                 item.node_id: item for item in strategy_checkpoints or []
-            }
+            },
+            embedding_vectors=self._embedding_vectors,
         )
 
     def unregister(self, context: RuntimeContext) -> None:
@@ -912,6 +928,92 @@ class PromptGenerationPipeline:
             warning for item in evaluations for warning in item.warnings
         )
         purpose_counts = Counter(item.primary_purpose for item in evaluations)
+        semantic_metadata: dict[str, Any] = {
+            "semanticEvaluationStatus": "PENDING",
+            "semanticSimilarityThreshold": VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD,
+            "semanticDuplicateRateLimit": SEMANTIC_DUPLICATE_RATE_LIMIT,
+        }
+        eligible_candidates = [
+            candidate
+            for candidate in cache.creatives.values()
+            if (
+                (evaluation := cache.creative_evaluations.get(candidate.slot_id))
+                is not None
+                and not evaluation.hard_issues
+            )
+        ]
+        if self.similarity_mode != "trigram" and eligible_candidates:
+            if self.embedding_provider is None:
+                raise PipelineError(
+                    "embedding provider is required for semantic evaluation"
+                )
+            anchors = [
+                item
+                for item in snapshot.similarity_anchors
+                if isinstance(item, PromptItem)
+            ]
+            try:
+                insight = snapshot.insight_artifact.result
+                content_index = await build_content_vector_index(
+                    eligible_candidates,
+                    anchors,
+                    provider=self.embedding_provider,
+                    vector_cache=cache.embedding_vectors,
+                    product_name=_insight_text(
+                        insight,
+                        "productName",
+                        "product_name",
+                    ),
+                    product_category=_insight_text(
+                        insight,
+                        "productCategory",
+                        "product_category",
+                    ),
+                    shared_prompt=self._required_shared_prompt(context),
+                    batch_size=self.embedding_batch_size,
+                    max_concurrency=self.embedding_max_concurrency,
+                )
+                _trim_embedding_cache(cache.embedding_vectors)
+            except EmbeddingProviderError as exc:
+                setattr(exc, "node_id", node)
+                raise
+            cache.content_vector_index = content_index
+            preliminary = content_index.redundancy_summary(
+                [candidate.slot_id for candidate in eligible_candidates]
+            )
+            cache.redundancy_summary = preliminary
+            content_stats = content_index.stats
+            cache.embedding_remote_input_count += (
+                content_stats.input_count - content_stats.cache_hit_count
+            )
+            cache.embedding_request_count += content_stats.request_count
+            cache.embedding_input_tokens += content_stats.input_tokens
+            cache.embedding_retry_count += content_stats.retry_count
+            cache.embedding_duration_ms += content_stats.duration_ms
+            cache.embedding_local_comparison_ms += content_stats.local_comparison_ms
+            preliminary_evaluation = _semantic_evaluation(
+                preliminary,
+                len(eligible_candidates) + len(anchors),
+            )
+            semantic_metadata = {
+                "semanticEvaluationStatus": preliminary_evaluation.status,
+                "semanticEvaluatedCount": preliminary_evaluation.evaluated_count,
+                "semanticDuplicateGroupCount": (
+                    preliminary_evaluation.duplicate_group_count
+                ),
+                "semanticDuplicateCount": preliminary_evaluation.duplicate_count,
+                "semanticDuplicateRate": preliminary_evaluation.duplicate_rate,
+                "semanticSimilarityThreshold": VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD,
+                "semanticDuplicateRateLimit": SEMANTIC_DUPLICATE_RATE_LIMIT,
+                "embeddingInputCount": cache.embedding_remote_input_count,
+                "embeddingRequestCount": cache.embedding_request_count,
+                "embeddingCacheHitCount": content_stats.cache_hit_count,
+                "embeddingDurationMs": round(cache.embedding_duration_ms, 3),
+                "localComparisonMs": round(
+                    cache.embedding_local_comparison_ms,
+                    3,
+                ),
+            }
         await self._stage(
             context,
             node,
@@ -939,6 +1041,7 @@ class PromptGenerationPipeline:
                     {"code": code, "count": count}
                     for code, count in sorted(warning_counts.items())
                 ],
+                **semantic_metadata,
             },
         )
 
@@ -1014,26 +1117,11 @@ class PromptGenerationPipeline:
                     if isinstance(item, PromptItem)
                 ]
                 try:
-                    insight = snapshot.insight_artifact.result
-                    content_index = await build_content_vector_index(
-                        eligible_candidates,
-                        anchors,
-                        provider=self.embedding_provider,
-                        vector_cache=cache.embedding_vectors,
-                        product_name=_insight_text(
-                            insight,
-                            "productName",
-                            "product_name",
-                        ),
-                        product_category=_insight_text(
-                            insight,
-                            "productCategory",
-                            "product_category",
-                        ),
-                        shared_prompt=self._required_shared_prompt(context),
-                        batch_size=self.embedding_batch_size,
-                        max_concurrency=self.embedding_max_concurrency,
-                    )
+                    content_index = cache.content_vector_index
+                    if content_index is None:
+                        raise PipelineError(
+                            "semantic evaluation index is unavailable"
+                        )
                     mmr_result = select_creatives(
                         list(cache.creatives.values()),
                         list(cache.creative_evaluations.values()),
@@ -1082,17 +1170,14 @@ class PromptGenerationPipeline:
                         mmr_redundancy.high_risk_candidate_ids
                     )
                     content_stats = content_index.stats
-                    cache.embedding_remote_input_count += (
-                        content_stats.input_count - content_stats.cache_hit_count
+                    evaluated_count = len(mmr_result.selected) + len(anchors)
+                    semantic_limit_count = _maximum_semantic_duplicates(
+                        evaluated_count
                     )
-                    cache.embedding_request_count += content_stats.request_count
-                    cache.embedding_input_tokens += content_stats.input_tokens
-                    cache.embedding_retry_count += content_stats.retry_count
-                    cache.embedding_duration_ms += content_stats.duration_ms
-                    cache.embedding_local_comparison_ms += (
-                        content_stats.local_comparison_ms
+                    semantic_evaluation = _semantic_evaluation(
+                        mmr_redundancy,
+                        evaluated_count,
                     )
-                    soft_excess_limit = max(2, math.ceil(selection_target * 0.10))
                     cache.embedding_stage_metadata = {
                         "similarityMode": self.similarity_mode,
                         "selectionMethod": (
@@ -1123,7 +1208,15 @@ class PromptGenerationPipeline:
                         "nearDuplicateRiskThreshold": (
                             VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD
                         ),
-                        "softExcessLimit": soft_excess_limit,
+                        "semanticDuplicateLimitCount": semantic_limit_count,
+                        "semanticEvaluationStatus": semantic_evaluation.status,
+                        "semanticEvaluatedCount": semantic_evaluation.evaluated_count,
+                        "semanticDuplicateGroupCount": (
+                            semantic_evaluation.duplicate_group_count
+                        ),
+                        "semanticDuplicateCount": semantic_evaluation.duplicate_count,
+                        "semanticDuplicateRate": semantic_evaluation.duplicate_rate,
+                        "semanticDuplicateRateLimit": SEMANTIC_DUPLICATE_RATE_LIMIT,
                         "baselineSelection": baseline_summary,
                         "contentMmrSelection": mmr_summary,
                         "nearDuplicateReductionApplicable": reduction_applicable,
@@ -1187,6 +1280,7 @@ class PromptGenerationPipeline:
                         batch_size=self.embedding_batch_size,
                         max_concurrency=self.embedding_max_concurrency,
                     )
+                    _trim_embedding_cache(cache.embedding_vectors)
                     vector_result = select_creatives(
                         list(cache.creatives.values()),
                         list(cache.creative_evaluations.values()),
@@ -1335,7 +1429,10 @@ class PromptGenerationPipeline:
             and snapshot.operation != "ITEM_EVALUATE"
         )
         current_redundancy = cache.redundancy_summary
-        soft_excess_limit = max(2, math.ceil(selection_target * 0.10))
+        semantic_evaluated_count = len(cache.accepted_items)
+        semantic_duplicate_limit_count = _maximum_semantic_duplicates(
+            semantic_evaluated_count
+        )
         should_diversity_supplement = (
             not should_quantity_supplement
             and missing == 0
@@ -1345,7 +1442,8 @@ class PromptGenerationPipeline:
             and self.similarity_mode == "vector"
             and not cache.diversity_supplemented
             and current_redundancy is not None
-            and current_redundancy.redundant_candidate_count > soft_excess_limit
+            and current_redundancy.redundant_candidate_count
+            > semantic_duplicate_limit_count
         )
         diversity_supplement_count = 0
         if should_diversity_supplement and current_redundancy is not None:
@@ -1355,7 +1453,7 @@ class PromptGenerationPipeline:
                     math.ceil(
                         (
                             current_redundancy.redundant_candidate_count
-                            - soft_excess_limit
+                            - semantic_duplicate_limit_count
                         )
                         * 1.25
                     ),
@@ -1388,13 +1486,14 @@ class PromptGenerationPipeline:
                 }
             )
         diversity_soft_warning = (
-            "SEMANTIC_DIVERSITY_SOFT_TARGET_NOT_MET"
+            "SEMANTIC_DUPLICATE_RATE_LIMIT_NOT_MET"
             if (
                 not should_supplement
                 and missing == 0
                 and cache.diversity_supplemented
                 and current_redundancy is not None
-                and current_redundancy.redundant_candidate_count > soft_excess_limit
+                and current_redundancy.redundant_candidate_count
+                > semantic_duplicate_limit_count
             )
             else None
         )
@@ -1447,11 +1546,28 @@ class PromptGenerationPipeline:
         compatible_distribution = Counter(
             purpose for item in items for purpose in item.compatible_purposes
         )
+        semantic_evaluated_count = (
+            len(items) + len(snapshot.similarity_anchors)
+            if item_operation
+            else len(items)
+        )
+        semantic_evaluation = (
+            _semantic_evaluation(
+                cache.redundancy_summary,
+                semantic_evaluated_count,
+            )
+            if self.similarity_mode != "trigram"
+            and cache.redundancy_summary is not None
+            else _pending_semantic_evaluation()
+        )
         quality_status: Literal["PASS", "NEEDS_REVIEW"] = (
             "PASS"
             if len(items) == expected
             and all(item.classification_status == "VERIFIED" for item in items)
             and not any(row.evaluation.hard_issues for row in selected)
+            and semantic_evaluation.status == "VERIFIED"
+            and semantic_evaluation.duplicate_rate is not None
+            and semantic_evaluation.duplicate_rate < SEMANTIC_DUPLICATE_RATE_LIMIT
             else "NEEDS_REVIEW"
         )
         metrics = PromptMetrics(
@@ -1462,6 +1578,7 @@ class PromptGenerationPipeline:
             rejected_count=max(0, len(cache.creatives) - len(selected)),
             replenishment_rounds=cache.replenishment_rounds,
             exact_duplicate_count=cache.exact_duplicate_count,
+            semantic_evaluation=semantic_evaluation,
             purpose_distribution=[
                 PurposeDistribution(
                     purpose=purpose,
@@ -1491,6 +1608,13 @@ class PromptGenerationPipeline:
             metrics=metrics,
             quality_status=quality_status,
         )
+        semantic_audit = _semantic_audit(
+            context,
+            result.items,
+            selected,
+            cache.redundancy_summary,
+            snapshot,
+        )
         await self._stage(
             context,
             NodeId.RESULT_SAVE,
@@ -1500,6 +1624,13 @@ class PromptGenerationPipeline:
                 "batchSize": len(items),
                 "qualityStatus": quality_status,
                 "executionMode": self.provider.execution_mode,
+                "semanticEvaluationStatus": semantic_evaluation.status,
+                "semanticEvaluatedCount": semantic_evaluation.evaluated_count,
+                "semanticDuplicateGroupCount": semantic_evaluation.duplicate_group_count,
+                "semanticDuplicateCount": semantic_evaluation.duplicate_count,
+                "semanticDuplicateRate": semantic_evaluation.duplicate_rate,
+                "semanticDuplicateRateLimit": SEMANTIC_DUPLICATE_RATE_LIMIT,
+                "semanticAudit": semantic_audit,
             },
         )
         return await self.api.complete(
@@ -1702,6 +1833,43 @@ def _selection_content_summary(
     }
 
 
+def _maximum_semantic_duplicates(evaluated_count: int) -> int:
+    if evaluated_count <= 0:
+        return 0
+    return max(
+        0,
+        math.ceil(evaluated_count * SEMANTIC_DUPLICATE_RATE_LIMIT / 100.0) - 1,
+    )
+
+
+def _pending_semantic_evaluation() -> SemanticEvaluation:
+    return SemanticEvaluation(
+        status="PENDING",
+        evaluated_count=0,
+        duplicate_group_count=None,
+        duplicate_count=None,
+        duplicate_rate=None,
+    )
+
+
+def _semantic_evaluation(
+    redundancy: RedundancySummary,
+    evaluated_count: int,
+) -> SemanticEvaluation:
+    duplicate_rate = (
+        round(100.0 * redundancy.redundant_candidate_count / evaluated_count, 2)
+        if evaluated_count > 0
+        else 0.0
+    )
+    return SemanticEvaluation(
+        status="VERIFIED",
+        evaluated_count=evaluated_count,
+        duplicate_group_count=redundancy.high_risk_group_count,
+        duplicate_count=redundancy.redundant_candidate_count,
+        duplicate_rate=duplicate_rate,
+    )
+
+
 def _dimension_unique_gain(
     item: RankedCreative,
     selected: list[RankedCreative],
@@ -1858,6 +2026,98 @@ def _stable_item_id(source_fingerprint: str, slot_id: str) -> str:
     digest = hashlib.sha256(f"{source_fingerprint}:{slot_id}".encode()).digest()[:16]
     # Set RFC 4122 version/variant bits while retaining deterministic replay identity.
     return str(uuid.UUID(bytes=digest, version=4))
+
+
+def _semantic_audit(
+    context: RuntimeContext,
+    items: list[PromptItem],
+    selected: list[RankedCreative],
+    summary: RedundancySummary | None,
+    snapshot: PromptGenerationSnapshot,
+) -> dict[str, Any] | None:
+    """Persist only hashes and duplicate edges needed for safe delete recalculation."""
+    if summary is None:
+        return None
+
+    item_operation = snapshot.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"}
+    candidate_item_ids: dict[str, str] = {}
+    if item_operation and snapshot.target_item is not None:
+        candidate_item_ids.update(
+            {
+                row.candidate.slot_id: snapshot.target_item.id
+                for row in selected
+            }
+        )
+    else:
+        candidate_item_ids.update(
+            {
+                row.candidate.slot_id: _stable_item_id(
+                    context.source_fingerprint,
+                    row.candidate.slot_id,
+                )
+                for row in selected
+            }
+        )
+
+    all_items = (
+        {snapshot.target_item.id: items[0]}
+        if item_operation and snapshot.target_item is not None and len(items) == 1
+        else {item.id: item for item in items}
+    )
+    for anchor in snapshot.similarity_anchors:
+        if isinstance(anchor, PromptItem):
+            all_items[anchor.id] = anchor
+
+    def public_id(entity_id: str) -> str | None:
+        if entity_id.startswith("anchor:"):
+            return entity_id.removeprefix("anchor:")
+        return candidate_item_ids.get(entity_id)
+
+    duplicate_pairs: list[dict[str, str]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for left_entity_id, right_entity_id in summary.high_risk_pairs:
+        left_id = public_id(left_entity_id)
+        right_id = public_id(right_entity_id)
+        if (
+            left_id is None
+            or right_id is None
+            or left_id == right_id
+            or left_id not in all_items
+            or right_id not in all_items
+        ):
+            continue
+        ordered_ids = sorted((left_id, right_id))
+        pair = (ordered_ids[0], ordered_ids[1])
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        duplicate_pairs.append({"leftItemId": pair[0], "rightItemId": pair[1]})
+
+    evaluated_items = [
+        {
+            "itemId": item_id,
+            "contentHash": _semantic_content_hash(item.content),
+        }
+        for item_id, item in sorted(all_items.items())
+    ]
+    fingerprint = _sha256_json(evaluated_items)
+    return {
+        "schemaVersion": 1,
+        "similarityThreshold": VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD,
+        "evaluatedItems": evaluated_items,
+        "duplicatePairs": duplicate_pairs,
+        "contentFingerprint": fingerprint,
+    }
+
+
+def _semantic_content_hash(content: str) -> str:
+    return _sha256_text(unicodedata.normalize("NFKC", content).strip())
+
+
+def _trim_embedding_cache(cache: dict[str, tuple[float, ...]]) -> None:
+    overflow = len(cache) - MAX_PROCESS_EMBEDDING_CACHE_ENTRIES
+    for key in list(cache)[: max(0, overflow)]:
+        cache.pop(key, None)
 
 
 def _normalized_disabled_elements(values: list[str]) -> list[str]:

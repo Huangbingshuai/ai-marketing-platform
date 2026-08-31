@@ -27,7 +27,10 @@ import { workflowStateHash } from '../../../platform/workflow/workflow-state-has
 import {
   mergeEffectPromptCompletionItems,
   parseEffectPromptBatchResult,
+  parseEffectPromptSemanticAudit,
+  pendingEffectPromptSemanticEvaluation,
   recomputePromptQuality,
+  semanticEvaluationAfterDeletion,
 } from './effect-prompt.quality';
 import {
   emptyManualOverrides,
@@ -39,6 +42,10 @@ import {
 const AI_RESPONSE_INVALID_RETRY_LEDGER_NODE = 'INTERNAL_AI_RESPONSE_INVALID_RETRY';
 
 const json = (value: unknown): Prisma.InputJsonValue => value as Prisma.InputJsonValue;
+const jsonRecord = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 const leaseDate = (now: Date): Date => new Date(now.getTime() + 90_000);
 const parseStrings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
@@ -507,24 +514,25 @@ export class EffectPromptRepository {
         },
         select: { nodeId: true, metadata: true },
       });
-      const reusableVisualStrategyStages =
-        !checkpointStages.some(({ nodeId }) => nodeId === 'FACT_VISUAL_STRATEGY_COMPILATION')
-          ? await transaction.effectPromptStageOutput.findMany({
-              where: {
-                projectId,
-                runId: { not: runId },
-                nodeId: 'FACT_VISUAL_STRATEGY_COMPILATION',
-                status: 'SUCCEEDED',
-                run: {
-                  workflowRunId: run.workflowRunId,
-                  productId: run.productId,
-                },
+      const reusableVisualStrategyStages = !checkpointStages.some(
+        ({ nodeId }) => nodeId === 'FACT_VISUAL_STRATEGY_COMPILATION',
+      )
+        ? await transaction.effectPromptStageOutput.findMany({
+            where: {
+              projectId,
+              runId: { not: runId },
+              nodeId: 'FACT_VISUAL_STRATEGY_COMPILATION',
+              status: 'SUCCEEDED',
+              run: {
+                workflowRunId: run.workflowRunId,
+                productId: run.productId,
               },
-              orderBy: { updatedAt: 'desc' },
-              take: 20,
-              select: { nodeId: true, metadata: true },
-            })
-          : [];
+            },
+            orderBy: { updatedAt: 'desc' },
+            take: 20,
+            select: { nodeId: true, metadata: true },
+          })
+        : [];
       return {
         kind: 'CLAIMED' as const,
         run: claimed,
@@ -622,10 +630,8 @@ export class EffectPromptRepository {
         data: { heartbeatAt: now, leaseExpiresAt: leaseDate(now) },
       });
       if (renewed.count !== 1) return false;
-      const plan =
-        phase === 'CREATIVE' ? input.creativePlan : input.classificationPlan;
-      const items =
-        phase === 'CREATIVE' ? input.creativeItems : input.evaluations;
+      const plan = phase === 'CREATIVE' ? input.creativePlan : input.classificationPlan;
+      const items = phase === 'CREATIVE' ? input.creativeItems : input.evaluations;
       await transaction.effectPromptShardOutput.upsert({
         where: {
           projectId_runId_phase_round_shardIndex: {
@@ -730,6 +736,19 @@ export class EffectPromptRepository {
         generated.renderProfile,
         generated.sharedPrompt,
       );
+      const resultSaveStage = await transaction.effectPromptStageOutput.findUnique({
+        where: {
+          projectId_runId_nodeId: { projectId, runId, nodeId: 'RESULT_SAVE' },
+        },
+      });
+      const resultSaveMetadata = jsonRecord(resultSaveStage?.metadata);
+      const rawSemanticAudit = resultSaveMetadata?.semanticAudit;
+      const semanticAudit =
+        rawSemanticAudit === undefined || rawSemanticAudit === null
+          ? null
+          : parseEffectPromptSemanticAudit(rawSemanticAudit, draft.items);
+      if (rawSemanticAudit !== undefined && rawSemanticAudit !== null && !semanticAudit)
+        return { kind: 'INVALID_SEMANTIC_AUDIT' as const };
       let overrides = emptyManualOverrides();
       if (
         (snapshot.operation === 'ITEM_REGENERATE' || snapshot.operation === 'ITEM_EVALUATE') &&
@@ -813,6 +832,7 @@ export class EffectPromptRepository {
           metadata: json({
             batchSize: draft.metrics.acceptedCount,
             qualityStatus: draft.qualityStatus,
+            ...(semanticAudit ? { semanticAudit } : {}),
           }),
           startedAt: now,
           completedAt: now,
@@ -823,6 +843,7 @@ export class EffectPromptRepository {
           metadata: json({
             batchSize: draft.metrics.acceptedCount,
             qualityStatus: draft.qualityStatus,
+            ...(semanticAudit ? { semanticAudit } : {}),
           }),
           errorMessage: null,
           completedAt: now,
@@ -1183,6 +1204,8 @@ export class EffectPromptRepository {
       if (!current) return { kind: 'INVALID_RESULT' as const };
       const overrides = parseOverrides(existing.manualOverrides);
       const items = [...current.items];
+      let semanticEvaluation = pendingEffectPromptSemanticEvaluation();
+      let semanticContentUnchanged = mutation.kind === 'SHARED_PROMPT';
       if (mutation.kind === 'ADD') {
         if (items.some(({ id }) => id === mutation.item.id))
           return { kind: 'ITEM_CONFLICT' as const };
@@ -1198,6 +1221,20 @@ export class EffectPromptRepository {
           delete overrides.edited[mutation.itemId];
           if (previous.origin === 'AI' && !overrides.deleted.includes(mutation.itemId))
             overrides.deleted.push(mutation.itemId);
+          const resultSaveStage = await transaction.effectPromptStageOutput.findUnique({
+            where: {
+              projectId_runId_nodeId: {
+                projectId,
+                runId: existing.runId,
+                nodeId: 'RESULT_SAVE',
+              },
+            },
+          });
+          const metadata = jsonRecord(resultSaveStage?.metadata);
+          const audit = parseEffectPromptSemanticAudit(metadata?.semanticAudit, items, true);
+          semanticEvaluation = audit
+            ? semanticEvaluationAfterDeletion(items, audit)
+            : pendingEffectPromptSemanticEvaluation();
         } else {
           const updated: EffectPromptItem = {
             ...previous,
@@ -1205,6 +1242,7 @@ export class EffectPromptRepository {
             manualEdited: true,
             updatedAt: new Date().toISOString(),
           };
+          semanticContentUnchanged = updated.content === previous.content;
           items[index] = updated;
           if (previous.origin === 'MANUAL')
             overrides.added = overrides.added.map((item) =>
@@ -1219,6 +1257,11 @@ export class EffectPromptRepository {
         current.metrics,
         current.renderProfile,
         mutation.kind === 'SHARED_PROMPT' ? mutation.sharedPrompt : current.sharedPrompt,
+        semanticContentUnchanged
+          ? current.metrics.semanticEvaluation
+          : mutation.kind === 'DELETE'
+            ? semanticEvaluation
+            : pendingEffectPromptSemanticEvaluation(),
       );
       if (workflowStateHash(next) === workflowStateHash(current))
         return { kind: 'UNCHANGED' as const, result: existing, draft: current };

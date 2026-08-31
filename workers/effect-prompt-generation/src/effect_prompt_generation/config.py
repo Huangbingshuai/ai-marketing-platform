@@ -89,7 +89,7 @@ class WorkerSettings(BaseSettings):
         default=6, alias="PROMPT_MAX_CONCURRENCY", ge=1, le=8
     )
     prompt_similarity_mode: Literal["trigram", "shadow", "vector"] = Field(
-        default="trigram", alias="PROMPT_SIMILARITY_MODE"
+        default="vector", alias="PROMPT_SIMILARITY_MODE"
     )
     prompt_embedding_batch_size: int = Field(
         default=64, alias="PROMPT_EMBEDDING_BATCH_SIZE", ge=1, le=256

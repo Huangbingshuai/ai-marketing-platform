@@ -27,6 +27,7 @@ import {
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_MAX_RUN_ATTEMPTS,
+  EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT,
   EFFECT_PROMPT_SHARD_PHASES,
   effectPromptSettingsNodeId,
   readEffectPromptSettings,
@@ -77,6 +78,36 @@ const publicWarnings = (value: unknown): string[] =>
   Array.isArray(value)
     ? [...new Set(value.filter((item): item is string => typeof item === 'string'))]
     : [];
+
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+
+const isReusableVisualStrategyCheckpoint = (
+  checkpoint: unknown,
+  insightContentHash: string,
+): boolean => {
+  if (!checkpoint || typeof checkpoint !== 'object' || Array.isArray(checkpoint)) return false;
+  const value = checkpoint as Record<string, unknown>;
+  if (
+    value.nodeId !== 'FACT_VISUAL_STRATEGY_COMPILATION' ||
+    value.sourceFingerprint !== insightContentHash ||
+    typeof value.allocationHash !== 'string' ||
+    !SHA256_PATTERN.test(value.allocationHash) ||
+    typeof value.templateHash !== 'string' ||
+    !SHA256_PATTERN.test(value.templateHash)
+  ) {
+    return false;
+  }
+  if (!value.plan || typeof value.plan !== 'object' || Array.isArray(value.plan)) return false;
+  const plan = value.plan as Record<string, unknown>;
+  return (
+    plan.sourceContentHash === insightContentHash &&
+    plan.templateHash === value.templateHash &&
+    typeof plan.strategyHash === 'string' &&
+    SHA256_PATTERN.test(plan.strategyHash) &&
+    Array.isArray(plan.policies) &&
+    plan.policies.length > 0
+  );
+};
 
 const promptArtifactProductName = (snapshot: EffectPromptInputSnapshot): string => {
   const insight = snapshot.insightArtifact.result;
@@ -187,10 +218,7 @@ const fragmentDisplayOrder = new Map(
   EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType, index) => [fragmentType, index]),
 );
 
-const comparePromptItemsForDisplay = (
-  left: EffectPromptItem,
-  right: EffectPromptItem,
-): number => {
+const comparePromptItemsForDisplay = (left: EffectPromptItem, right: EffectPromptItem): number => {
   const fragmentOrder =
     (fragmentDisplayOrder.get(left.fragmentType) ?? EFFECT_PROMPT_FRAGMENT_TYPES.length) -
     (fragmentDisplayOrder.get(right.fragmentType) ?? EFFECT_PROMPT_FRAGMENT_TYPES.length);
@@ -198,10 +226,7 @@ const comparePromptItemsForDisplay = (
   return left.code.localeCompare(right.code, 'zh-CN', { numeric: true });
 };
 
-const itemMatchesPurpose = (
-  item: EffectPromptItem,
-  purpose?: EffectPromptFragmentType,
-): boolean =>
+const itemMatchesPurpose = (item: EffectPromptItem, purpose?: EffectPromptFragmentType): boolean =>
   !purpose || item.primaryPurpose === purpose || item.compatiblePurposes.includes(purpose);
 
 const unknownRecord = (value: unknown): Record<string, unknown> | null =>
@@ -400,7 +425,8 @@ export class EffectPromptService {
         const latestRunRecord = product.promptRuns[0]
           ? await this.repository.run(projectId, product.promptRuns[0].id)
           : null;
-        const runRecord = latestRunRecord && currentSnapshot(latestRunRecord) ? latestRunRecord : null;
+        const runRecord =
+          latestRunRecord && currentSnapshot(latestRunRecord) ? latestRunRecord : null;
         const resultRecord =
           latestRunRecord?.result ??
           (await this.repository.latestResult(projectId, workflowRunId, product.id));
@@ -415,7 +441,8 @@ export class EffectPromptService {
           product.id,
         );
         const settings =
-          readEffectPromptSettings(settingsNode?.state) ?? normalizeEffectPromptSettings({
+          readEffectPromptSettings(settingsNode?.state) ??
+          normalizeEffectPromptSettings({
             targetCount: EFFECT_PROMPT_LIMITS.defaultCount,
             defaultDurationSeconds: EFFECT_PROMPT_LIMITS.defaultDurationSeconds,
           });
@@ -938,6 +965,23 @@ export class EffectPromptService {
     if (verified.items.some((item) => item.classificationStatus !== 'VERIFIED'))
       issues.push({ code: 'CLASSIFICATION_PENDING', message: '仍有 Prompt 尚未完成用途评估' });
     if (
+      verified.metrics.semanticEvaluation.status !== 'VERIFIED' ||
+      verified.metrics.semanticEvaluation.evaluatedCount !== verified.items.length ||
+      verified.metrics.semanticEvaluation.duplicateRate === null
+    )
+      issues.push({
+        code: 'SEMANTIC_EVALUATION_PENDING',
+        message: '语义重复度尚未完成评估',
+      });
+    else if (
+      verified.metrics.semanticEvaluation.duplicateRate >=
+      EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT
+    )
+      issues.push({
+        code: 'SEMANTIC_DUPLICATE_RATE_EXCEEDED',
+        message: `语义重复度必须低于 ${EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT}%`,
+      });
+    if (
       verified.items.some(
         (item) => item.targetDurationSeconds !== verified.settings.defaultDurationSeconds,
       )
@@ -1063,13 +1107,9 @@ export class EffectPromptService {
         : [];
     });
     const insightContentHash = result.input?.insightArtifact?.contentHash ?? '';
-    const reusableVisualStrategy = checkpointCandidates.find((checkpoint) => {
-      const value = checkpoint as Record<string, unknown>;
-      return (
-        value.nodeId === 'FACT_VISUAL_STRATEGY_COMPILATION' &&
-        value.sourceFingerprint === insightContentHash
-      );
-    });
+    const reusableVisualStrategy = checkpointCandidates.find((checkpoint) =>
+      isReusableVisualStrategyCheckpoint(checkpoint, insightContentHash),
+    );
     const checkpoints = [
       ...checkpointCandidates.filter(
         (checkpoint) =>
@@ -1220,6 +1260,8 @@ export class EffectPromptService {
     const result = await this.repository.complete(projectId, runId, attemptToken, parsed);
     if (result.kind === 'NOT_FOUND') throw notFound('Prompt 任务不存在');
     if (result.kind === 'LEASE_CONFLICT') throw conflict('Worker 租约已失效');
+    if (result.kind === 'INVALID_SEMANTIC_AUDIT')
+      throw badRequest('Prompt 语义评估与当前正文不一致，请重新执行评估');
     return { promptResultId: result.result.id };
   }
 

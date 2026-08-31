@@ -11,6 +11,7 @@ from effect_prompt_generation.embeddings import (
     EmbeddingBatchResult,
     EmbeddingProviderError,
     MockEmbeddingProvider,
+    RedundancySummary,
 )
 from effect_prompt_generation.graph import build_graph
 from effect_prompt_generation.insight_mapping import map_insight
@@ -31,7 +32,11 @@ from effect_prompt_generation.models import (
     ShardRecord,
     StageOutput,
 )
-from effect_prompt_generation.pipeline import PromptGenerationPipeline
+from effect_prompt_generation.pipeline import (
+    PromptGenerationPipeline,
+    _maximum_semantic_duplicates,
+    _semantic_evaluation,
+)
 from effect_prompt_generation.providers import (
     MockAiProvider,
     ProviderError,
@@ -86,6 +91,20 @@ class PromptApi:
     async def fail(self, context: RuntimeContext, payload: Any) -> None:
         del context
         self.failure = payload
+
+
+def test_semantic_duplicate_limit_is_strictly_below_fifteen_percent() -> None:
+    assert _maximum_semantic_duplicates(50) == 7
+    seven = _semantic_evaluation(
+        RedundancySummary(1, 7, 7, (), ()),
+        50,
+    )
+    eight = _semantic_evaluation(
+        RedundancySummary(1, 8, 8, (), ()),
+        50,
+    )
+    assert seven.duplicate_rate == 14
+    assert eight.duplicate_rate == 16
 
 
 class FirstRoundRejectingProvider(MockAiProvider):
@@ -172,6 +191,27 @@ class IdenticalEmbeddingProvider(MockEmbeddingProvider):
         self.call_count += 1
         return EmbeddingBatchResult(
             vectors=[(1.0, 0.0) for _ in texts],
+            request_count=1,
+            input_tokens=sum(len(text) for text in texts),
+            retry_count=0,
+        )
+
+
+class DistinctEmbeddingProvider(MockEmbeddingProvider):
+    cache_namespace = "distinct-vector-test-provider"
+
+    def __init__(self) -> None:
+        self._index_by_text: dict[str, int] = {}
+
+    async def embed(self, texts: list[str]) -> EmbeddingBatchResult:
+        vectors: list[tuple[float, ...]] = []
+        for text in texts:
+            index = self._index_by_text.setdefault(text, len(self._index_by_text))
+            vector = [0.0] * 256
+            vector[index % len(vector)] = 1.0
+            vectors.append(tuple(vector))
+        return EmbeddingBatchResult(
+            vectors=vectors,
             request_count=1,
             input_tokens=sum(len(text) for text in texts),
             retry_count=0,
@@ -288,6 +328,7 @@ async def test_graph_generates_120_percent_then_selects_exact_count() -> None:
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=MockAiProvider(),
+        embedding_provider=DistinctEmbeddingProvider(),
         shard_size=5,
     )
     runtime = _runtime()
@@ -359,6 +400,9 @@ async def test_graph_generates_120_percent_then_selects_exact_count() -> None:
         for stage in reversed(api.stages)
         if stage.node_id == "CREATIVE_EVALUATION_CLASSIFICATION"
     )
+    result_stage = next(
+        stage for stage in reversed(api.stages) if stage.node_id == "RESULT_SAVE"
+    )
     assert mapping_stage.metadata["requiredFacts"]
     assert all("factId" not in item for item in mapping_stage.metadata["requiredFacts"])
     assert shared_stage.metadata["compiledContent"]
@@ -371,6 +415,11 @@ async def test_graph_generates_120_percent_then_selects_exact_count() -> None:
     assert classification_stage.status == "SUCCEEDED"
     assert classification_stage.metadata["evaluatedCount"] == 12
     assert classification_stage.metadata["averageScores"]["productRelevance"] >= 0
+    semantic_audit = result_stage.metadata["semanticAudit"]
+    assert semantic_audit["schemaVersion"] == 1
+    assert semantic_audit["similarityThreshold"] == 0.82
+    assert len(semantic_audit["evaluatedItems"]) == 10
+    assert len(semantic_audit["contentFingerprint"]) == 64
 
 
 @pytest.mark.asyncio
@@ -451,6 +500,7 @@ async def test_retries_one_invalid_classification_response_inside_its_shard() ->
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=provider,
+        embedding_provider=DistinctEmbeddingProvider(),
         shard_size=5,
     )
     runtime = _runtime()
@@ -474,6 +524,7 @@ async def test_classification_retry_keeps_stable_shard_assignments() -> None:
     first = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=provider,
+        embedding_provider=DistinctEmbeddingProvider(),
         shard_size=5,
     )
     first.register_snapshot(runtime, _snapshot())
@@ -487,6 +538,7 @@ async def test_classification_retry_keeps_stable_shard_assignments() -> None:
     resumed = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=provider,
+        embedding_provider=DistinctEmbeddingProvider(),
         shard_size=5,
     )
     resumed.register_snapshot(runtime, _snapshot())
@@ -624,7 +676,7 @@ async def test_content_mmr_diversity_supplement_runs_once_and_keeps_exact_count(
     assert final_selection_stage.metadata["embeddingInputCount"] == 14
     assert final_selection_stage.metadata["embeddingRequestCount"] == 2
     assert final_selection_stage.metadata["finalAccurateCount"] == 10
-    assert final_selection_stage.warnings == ["SEMANTIC_DIVERSITY_SOFT_TARGET_NOT_MET"]
+    assert final_selection_stage.warnings == ["SEMANTIC_DUPLICATE_RATE_LIMIT_NOT_MET"]
 
     resumed = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -650,6 +702,7 @@ async def test_shadow_selection_reports_comparison_without_changing_result() -> 
     baseline = PromptGenerationPipeline(
         api=baseline_api,  # type: ignore[arg-type]
         provider=MockAiProvider(),
+        similarity_mode="trigram",
         shard_size=5,
     )
     shadow = PromptGenerationPipeline(
@@ -704,7 +757,7 @@ async def test_shadow_selection_reports_comparison_without_changing_result() -> 
 
 
 @pytest.mark.asyncio
-async def test_shadow_embedding_failure_keeps_baseline_with_warning() -> None:
+async def test_shadow_embedding_failure_does_not_publish_fake_semantic_result() -> None:
     api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -716,20 +769,13 @@ async def test_shadow_embedding_failure_keeps_baseline_with_warning() -> None:
     runtime = _runtime()
     pipeline.register_snapshot(runtime, _snapshot())
 
-    await build_graph(pipeline).ainvoke(
-        {"project_id": runtime.project_id},
-        context=runtime,
-    )
+    with pytest.raises(EmbeddingProviderError, match="向量服务测试不可用"):
+        await build_graph(pipeline).ainvoke(
+            {"project_id": runtime.project_id},
+            context=runtime,
+        )
 
-    assert api.result is not None
-    assert len(api.result.items) == 10
-    selection_stage = next(
-        stage
-        for stage in reversed(api.stages)
-        if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
-    )
-    assert selection_stage.metadata["selectionMethod"] == "TRIGRAM_SHADOW_UNAVAILABLE"
-    assert selection_stage.warnings == ["向量服务测试不可用"]
+    assert api.result is None
 
 
 @pytest.mark.asyncio
@@ -818,6 +864,10 @@ async def test_item_evaluate_preserves_content_and_only_runs_classification() ->
         stage.node_id.value == "COHERENT_CREATIVE_GENERATION" for stage in api.stages
     )
     assert any(stage.node_id.value == "ITEM_EVALUATE" for stage in api.stages)
+    result_stage = next(
+        stage for stage in reversed(api.stages) if stage.node_id.value == "RESULT_SAVE"
+    )
+    assert result_stage.metadata["semanticAudit"]["evaluatedItems"][0]["itemId"] == target.id
 
 
 @pytest.mark.asyncio
@@ -826,6 +876,7 @@ async def test_stops_supplementing_as_soon_as_exact_quantity_is_reached() -> Non
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=FirstRoundRejectingProvider(),
+        embedding_provider=DistinctEmbeddingProvider(),
         shard_size=5,
     )
     runtime = _runtime()
@@ -856,6 +907,7 @@ async def test_can_run_multiple_supplement_rounds_to_reach_exact_quantity() -> N
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=FirstTwoRoundsRejectingProvider(),
+        embedding_provider=DistinctEmbeddingProvider(),
         shard_size=5,
     )
     runtime = _runtime()

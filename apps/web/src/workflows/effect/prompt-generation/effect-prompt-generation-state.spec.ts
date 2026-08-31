@@ -62,7 +62,14 @@ const batch: EffectPromptBatchResult = {
     generatedCandidateCount: 65,
     rejectedCount: 15,
     replenishmentRounds: 1,
-    exactDuplicateCount: 2,
+    exactDuplicateCount: 0,
+    semanticEvaluation: {
+      status: 'VERIFIED',
+      evaluatedCount: 50,
+      duplicateGroupCount: 3,
+      duplicateCount: 7,
+      duplicateRate: 14,
+    },
     purposeDistribution: EFFECT_PROMPT_FRAGMENT_TYPES.map((purpose) => ({
       purpose,
       primaryCount: purpose === 'HOOK' ? 50 : 0,
@@ -122,6 +129,18 @@ describe('effect prompt generation state', () => {
       isPromptResultQualityReady({
         ...batch,
         metrics: { ...batch.metrics, acceptedCount: 49 },
+      }),
+    ).toBe(false);
+    expect(
+      isPromptResultQualityReady({
+        ...batch,
+        metrics: {
+          ...batch.metrics,
+          semanticEvaluation: {
+            ...batch.metrics.semanticEvaluation,
+            duplicateRate: 15,
+          },
+        },
       }),
     ).toBe(false);
 

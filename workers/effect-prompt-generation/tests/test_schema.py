@@ -17,6 +17,7 @@ from effect_prompt_generation.models import (
     PromptMetrics,
     PurposeDistribution,
     RenderProfile,
+    SemanticEvaluation,
     SharedPrompt,
     SharedPromptSection,
     SharedRenderConstraints,
@@ -127,6 +128,13 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
             rejected_count=11,
             replenishment_rounds=0,
             exact_duplicate_count=0,
+            semantic_evaluation=SemanticEvaluation(
+                status="VERIFIED",
+                evaluated_count=1,
+                duplicate_group_count=0,
+                duplicate_count=0,
+                duplicate_rate=0,
+            ),
             purpose_distribution=[
                 PurposeDistribution(
                     purpose=purpose,

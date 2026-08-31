@@ -20,11 +20,12 @@ import {
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_MAX_RUN_ATTEMPTS,
   EFFECT_PROMPT_NODE_DETAIL_LIMITS,
+  EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT,
+  EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD,
 } from '@ai-marketing/contracts';
 
 import type { EffectPromptNodeDetailRunRecord } from './effect-prompt.repository';
 import {
-  EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD,
   EFFECT_PROMPT_VISUAL_OVERLAP_THRESHOLD,
   isEffectPromptSettings,
   trigramDice,
@@ -97,15 +98,14 @@ const GENERATION_FRAGMENT_BY_NODE: Partial<Record<string, EffectPromptFragmentTy
   GENERATE_OUTRO: 'OUTRO',
 };
 
-const RELATIONSHIP_FRAGMENT_BY_NODE: Partial<Record<string, EffectPromptFragmentType>> =
-  {
-    PLAN_HOOK_RELATIONSHIPS: 'HOOK',
-    PLAN_PAIN_RELATIONSHIPS: 'PAIN',
-    PLAN_PRODUCT_DISPLAY_RELATIONSHIPS: 'PRODUCT_DISPLAY',
-    PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS: 'SELLING_POINT_EXPLANATION',
-    PLAN_CTA_RELATIONSHIPS: 'CTA',
-    PLAN_OUTRO_RELATIONSHIPS: 'OUTRO',
-  };
+const RELATIONSHIP_FRAGMENT_BY_NODE: Partial<Record<string, EffectPromptFragmentType>> = {
+  PLAN_HOOK_RELATIONSHIPS: 'HOOK',
+  PLAN_PAIN_RELATIONSHIPS: 'PAIN',
+  PLAN_PRODUCT_DISPLAY_RELATIONSHIPS: 'PRODUCT_DISPLAY',
+  PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS: 'SELLING_POINT_EXPLANATION',
+  PLAN_CTA_RELATIONSHIPS: 'CTA',
+  PLAN_OUTRO_RELATIONSHIPS: 'OUTRO',
+};
 
 const COORDINATE_FRAGMENT_BY_NODE: Partial<Record<string, EffectPromptFragmentType>> = {
   PLAN_HOOK_COORDINATES: 'HOOK',
@@ -254,9 +254,7 @@ const enumField = (
 const inputSnapshot = (run: EffectPromptNodeDetailRunRecord): JsonRecord =>
   metadataRecord(run.inputSnapshot);
 
-const inputSettings = (
-  run: EffectPromptNodeDetailRunRecord,
-): EffectPromptBatchSettings | null => {
+const inputSettings = (run: EffectPromptNodeDetailRunRecord): EffectPromptBatchSettings | null => {
   const settings = inputSnapshot(run).settings;
   return isEffectPromptSettings(settings) ? settings : null;
 };
@@ -264,8 +262,7 @@ const inputSettings = (
 const dimensionValue = (
   dimensionsValue: EffectPromptNodeDetailPrompt['dimensions'],
   key: keyof EffectPromptDimensions,
-): string =>
-  dimensionsValue[key];
+): string => dimensionsValue[key];
 
 const insightResult = (run: EffectPromptNodeDetailRunRecord): JsonRecord => {
   const artifact = metadataRecord(inputSnapshot(run).insightArtifact);
@@ -908,10 +905,7 @@ const pairBlock = (
   return visible.length ? { kind: 'PAIR_LIST', title, metric, items: visible } : null;
 };
 
-const nodeMetricFields = (
-  nodeId: string,
-  rawMetadata: unknown,
-): EffectPromptNodeDetailField[] => {
+const nodeMetricFields = (nodeId: string, rawMetadata: unknown): EffectPromptNodeDetailField[] => {
   const metadata = metadataRecord(rawMetadata);
   switch (nodeId) {
     case 'INSIGHT_MAPPING':
@@ -962,12 +956,25 @@ const nodeMetricFields = (
         numberField(metadata, 'evaluatedCount', '已评估创意'),
         numberField(metadata, 'acceptedCount', '通过评估'),
         numberField(metadata, 'rejectedCount', '未通过评估'),
+        numberField(metadata, 'semanticEvaluatedCount', '语义评估数量'),
+        numberField(metadata, 'semanticDuplicateGroupCount', '重复组'),
+        numberField(metadata, 'semanticDuplicateCount', '重复条目'),
+        numberField(metadata, 'semanticDuplicateRate', '语义重复度（%）'),
+        {
+          label: '相似判定标准',
+          value: `${Math.round(EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD * 100)}%`,
+        },
+        {
+          label: '重复度目标',
+          value: `< ${EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT}%`,
+        },
       ]);
     case 'EXACT_SELECTION_AND_SUPPLEMENT':
       return compact([
         numberField(metadata, 'targetCount', '目标数量'),
         numberField(metadata, 'selectedCount', '已择优保留'),
         numberField(metadata, 'supplementedCount', '补充数量'),
+        numberField(metadata, 'semanticDuplicateRate', '最终语义重复度（%）'),
       ]);
     case 'ITEM_EVALUATE':
       return compact([
@@ -1176,12 +1183,8 @@ const actualFields = (
     return compact([
       textField('产品名称', insightText(insight, 'productName', 'product_name')),
       textField('产品品类', insightText(insight, 'productCategory', 'product_category')),
-      settings
-        ? { label: '目标数量', value: `${settings.targetCount} 条` }
-        : null,
-      settings
-        ? { label: '统一时长', value: `${settings.defaultDurationSeconds} 秒` }
-        : null,
+      settings ? { label: '目标数量', value: `${settings.targetCount} 条` } : null,
+      settings ? { label: '统一时长', value: `${settings.defaultDurationSeconds} 秒` } : null,
       { label: '保留人工内容', value: retainedPrompts(run).length },
     ]);
   }
@@ -1765,6 +1768,20 @@ const additionalOutputFields = (
       { label: '通过评估', value: evaluations.filter((item) => !item.hardIssues.length).length },
       { label: '未通过评估', value: evaluations.filter((item) => item.hardIssues.length).length },
       ...scoreFields(averageQualityScores(evaluations)),
+      ...compact([
+        numberField(metadata, 'semanticEvaluatedCount', '语义评估数量'),
+        numberField(metadata, 'semanticDuplicateGroupCount', '重复组'),
+        numberField(metadata, 'semanticDuplicateCount', '重复条目'),
+        numberField(metadata, 'semanticDuplicateRate', '语义重复度（%）'),
+        {
+          label: '相似判定标准',
+          value: `${Math.round(EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD * 100)}%`,
+        },
+        {
+          label: '重复度目标',
+          value: `< ${EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT}%`,
+        },
+      ]),
     ];
   if (nodeId === 'EXACT_SELECTION_AND_SUPPLEMENT')
     return compact([
@@ -1779,6 +1796,8 @@ const additionalOutputFields = (
       numberField(metadata, 'localComparisonMs', '本地矩阵耗时（毫秒）'),
       numberField(metadata, 'initialRedundantCandidateCount', '补充前高风险冗余'),
       numberField(metadata, 'finalRedundantCandidateCount', '补充后高风险冗余'),
+      numberField(metadata, 'semanticDuplicateRate', '最终语义重复度（%）'),
+      textField('重复度目标', `< ${EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT}%`),
       textField(
         'MMR 权重',
         typeof metadata.mmrQualityWeight === 'number' &&
@@ -1799,6 +1818,15 @@ const additionalOutputFields = (
       { label: '已保存 Prompt', value: (Array.isArray(result.items) ? result.items : []).length },
       numberField(resultMetrics, 'targetCount', '目标数量'),
       textField('质量状态', result.qualityStatus),
+      textField(
+        '语义重复度',
+        resultMetrics.semanticEvaluation &&
+          typeof resultMetrics.semanticEvaluation === 'object' &&
+          !Array.isArray(resultMetrics.semanticEvaluation) &&
+          typeof (resultMetrics.semanticEvaluation as JsonRecord).duplicateRate === 'number'
+          ? `${(resultMetrics.semanticEvaluation as JsonRecord).duplicateRate}%`
+          : '待评估',
+      ),
       { label: '提交状态', value: '已保存为节点草稿，尚未提交工作副本' },
       ...scoreFields(qualityScores(resultMetrics.averageScores)),
     ]);

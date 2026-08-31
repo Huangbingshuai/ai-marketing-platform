@@ -271,6 +271,7 @@ class RedundancySummary:
     high_risk_pair_count: int
     redundant_candidate_count: int
     high_risk_candidate_ids: tuple[str, ...]
+    high_risk_pairs: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,45 +326,43 @@ class ContentVectorIndex:
             if left_root != right_root:
                 parent[right_root] = left_root
 
-        pair_count = 0
+        high_risk_pairs: list[tuple[str, str]] = []
         for left_index, left_id in enumerate(selected):
             for right_id in selected[left_index + 1 :]:
                 if self.similarity(left_id, right_id) >= threshold:
-                    pair_count += 1
+                    high_risk_pairs.append((left_id, right_id))
                     union(left_id, right_id)
             for anchor_id in anchors:
                 if self.similarity(left_id, anchor_id) >= threshold:
-                    pair_count += 1
+                    high_risk_pairs.append((left_id, anchor_id))
                     union(left_id, anchor_id)
+        for left_index, left_id in enumerate(anchors):
+            for right_id in anchors[left_index + 1 :]:
+                if self.similarity(left_id, right_id) >= threshold:
+                    high_risk_pairs.append((left_id, right_id))
+                    union(left_id, right_id)
 
         components: dict[str, set[str]] = {}
         for node in nodes:
             components.setdefault(find(node), set()).add(node)
         selected_set = set(selected)
-        anchor_set = set(anchors)
         redundant_count = 0
         group_count = 0
         high_risk_ids: set[str] = set()
         for members in components.values():
             candidate_members = members & selected_set
-            if not candidate_members:
-                continue
-            contains_anchor = bool(members & anchor_set)
-            if contains_anchor or len(candidate_members) > 1:
+            if len(members) > 1:
                 group_count += 1
                 high_risk_ids.update(candidate_members)
-                redundant_count += (
-                    len(candidate_members)
-                    if contains_anchor
-                    else max(0, len(candidate_members) - 1)
-                )
+                redundant_count += len(members) - 1
         return RedundancySummary(
             high_risk_group_count=group_count,
-            high_risk_pair_count=pair_count,
+            high_risk_pair_count=len(high_risk_pairs),
             redundant_candidate_count=redundant_count,
             high_risk_candidate_ids=tuple(
                 item for item in selected if item in high_risk_ids
             ),
+            high_risk_pairs=tuple(high_risk_pairs),
         )
 
 
@@ -405,8 +404,8 @@ async def build_content_vector_index(
     for candidate in ordered_candidates:
         candidate_ids.append(candidate.slot_id)
         register(candidate.slot_id, candidate.content)
-    for index, anchor in enumerate(ordered_anchors):
-        anchor_id = f"anchor:{index}"
+    for anchor in ordered_anchors:
+        anchor_id = f"anchor:{anchor.id}"
         anchor_ids.append(anchor_id)
         register(anchor_id, anchor.content)
 

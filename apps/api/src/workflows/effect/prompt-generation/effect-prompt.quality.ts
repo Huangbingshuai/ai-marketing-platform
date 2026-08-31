@@ -11,6 +11,7 @@ import type {
   EffectPromptInsightRole,
   EffectPromptMetrics,
   EffectPromptRenderProfile,
+  EffectPromptSemanticEvaluation,
   EffectPromptSharedPrompt,
   EffectPromptSharedPromptSection,
 } from '@ai-marketing/contracts';
@@ -23,6 +24,9 @@ import {
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_RENDER_CAPABILITIES,
   EFFECT_PROMPT_RENDER_CAPABILITY_KEYS,
+  EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT,
+  EFFECT_PROMPT_SEMANTIC_EVALUATION_STATUSES,
+  EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD,
   SEEDANCE_RATIOS,
   SEEDANCE_RESOLUTIONS,
   effectPromptTargetCount,
@@ -30,7 +34,6 @@ import {
 } from '@ai-marketing/contracts';
 import type { EffectPromptInputSnapshot } from './effect-prompt.types';
 
-export const EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD = 0.82;
 export const EFFECT_PROMPT_VISUAL_OVERLAP_THRESHOLD = 0.75;
 const visualWeights: Record<'scene' | 'persona' | 'camera' | 'emotion', number> = {
   scene: 0.35,
@@ -511,9 +514,48 @@ const validIssueCounts = (value: unknown): boolean =>
     );
   });
 
+const validSemanticEvaluation = (value: unknown): value is EffectPromptSemanticEvaluation => {
+  const evaluation = record(value);
+  if (!evaluation || Object.keys(evaluation).length !== 5) return false;
+  const nullableCount = (key: 'duplicateGroupCount' | 'duplicateCount') =>
+    evaluation[key] === null ||
+    (Number.isInteger(evaluation[key]) &&
+      Number(evaluation[key]) >= 0 &&
+      Number(evaluation[key]) <= EFFECT_PROMPT_LIMITS.maxCount);
+  const nullableRate =
+    evaluation.duplicateRate === null ||
+    (typeof evaluation.duplicateRate === 'number' &&
+      Number.isFinite(evaluation.duplicateRate) &&
+      evaluation.duplicateRate >= 0 &&
+      evaluation.duplicateRate <= 100);
+  const status = evaluation.status;
+  const verifiedValues =
+    evaluation.duplicateGroupCount !== null &&
+    evaluation.duplicateCount !== null &&
+    evaluation.duplicateRate !== null;
+  return Boolean(
+    EFFECT_PROMPT_SEMANTIC_EVALUATION_STATUSES.includes(status as never) &&
+    Number.isInteger(evaluation.evaluatedCount) &&
+    Number(evaluation.evaluatedCount) >= 0 &&
+    Number(evaluation.evaluatedCount) <= EFFECT_PROMPT_LIMITS.maxCount &&
+    nullableCount('duplicateGroupCount') &&
+    nullableCount('duplicateCount') &&
+    nullableRate &&
+    (status === 'VERIFIED' ? verifiedValues : !verifiedValues),
+  );
+};
+
+export const pendingEffectPromptSemanticEvaluation = (): EffectPromptSemanticEvaluation => ({
+  status: 'PENDING',
+  evaluatedCount: 0,
+  duplicateGroupCount: null,
+  duplicateCount: null,
+  duplicateRate: null,
+});
+
 const validMetrics = (value: unknown): value is EffectPromptMetrics => {
   const metrics = record(value);
-  if (!metrics || Object.keys(metrics).length !== 11) return false;
+  if (!metrics || ![11, 12].includes(Object.keys(metrics).length)) return false;
   const integer = (key: keyof EffectPromptMetrics, minimum: number, maximum = Infinity) =>
     Number.isInteger(metrics[key]) &&
     Number(metrics[key]) >= minimum &&
@@ -528,6 +570,8 @@ const validMetrics = (value: unknown): value is EffectPromptMetrics => {
     integer('rejectedCount', 0) &&
     integer('replenishmentRounds', 0, EFFECT_PROMPT_LIMITS.maxReplenishmentRounds) &&
     integer('exactDuplicateCount', 0) &&
+    (metrics.semanticEvaluation === undefined ||
+      validSemanticEvaluation(metrics.semanticEvaluation)) &&
     Array.isArray(distribution) &&
     distribution.length === EFFECT_PROMPT_FRAGMENT_TYPES.length &&
     EFFECT_PROMPT_FRAGMENT_TYPES.every(
@@ -597,6 +641,139 @@ const normalizedDisabledElements = (values: string[]): string[] => {
 
 const sha256Text = (value: string): string => createHash('sha256').update(value).digest('hex');
 const sha256Json = (value: unknown): string => sha256Text(JSON.stringify(value));
+
+export type EffectPromptSemanticAudit = {
+  schemaVersion: 1;
+  similarityThreshold: number;
+  evaluatedItems: Array<{ itemId: string; contentHash: string }>;
+  duplicatePairs: Array<{ leftItemId: string; rightItemId: string }>;
+  contentFingerprint: string;
+};
+
+const semanticContentHash = (content: string): string =>
+  sha256Text(content.normalize('NFKC').trim());
+
+export const parseEffectPromptSemanticAudit = (
+  value: unknown,
+  items: EffectPromptItem[],
+  allowItemSubset = false,
+): EffectPromptSemanticAudit | null => {
+  const audit = record(value);
+  if (!audit || Object.keys(audit).length !== 5) return null;
+  const evaluatedItems = Array.isArray(audit.evaluatedItems) ? audit.evaluatedItems : [];
+  const duplicatePairs = Array.isArray(audit.duplicatePairs) ? audit.duplicatePairs : [];
+  if (
+    audit.schemaVersion !== 1 ||
+    audit.similarityThreshold !== EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD ||
+    evaluatedItems.length > EFFECT_PROMPT_LIMITS.maxCount ||
+    duplicatePairs.length > EFFECT_PROMPT_LIMITS.maxCount * EFFECT_PROMPT_LIMITS.maxCount ||
+    typeof audit.contentFingerprint !== 'string'
+  )
+    return null;
+  const normalizedItems: EffectPromptSemanticAudit['evaluatedItems'] = [];
+  const evaluatedIds = new Set<string>();
+  for (const rawItem of evaluatedItems) {
+    const item = record(rawItem);
+    if (
+      !item ||
+      Object.keys(item).length !== 2 ||
+      typeof item.itemId !== 'string' ||
+      !/^[a-f0-9-]{36}$/iu.test(item.itemId) ||
+      typeof item.contentHash !== 'string' ||
+      !/^[a-f0-9]{64}$/u.test(item.contentHash) ||
+      evaluatedIds.has(item.itemId)
+    )
+      return null;
+    evaluatedIds.add(item.itemId);
+    normalizedItems.push({ itemId: item.itemId, contentHash: item.contentHash });
+  }
+  normalizedItems.sort((left, right) => left.itemId.localeCompare(right.itemId, 'en-US'));
+  if (sha256Json(normalizedItems) !== audit.contentFingerprint) return null;
+  const currentById = new Map(items.map((item) => [item.id, item]));
+  const auditedHashById = new Map(
+    normalizedItems.map(({ itemId, contentHash }) => [itemId, contentHash]),
+  );
+  if (
+    currentById.size !== items.length ||
+    (!allowItemSubset && normalizedItems.length !== items.length) ||
+    items.some(({ id, content }) => auditedHashById.get(id) !== semanticContentHash(content))
+  )
+    return null;
+  const normalizedPairs: EffectPromptSemanticAudit['duplicatePairs'] = [];
+  const pairKeys = new Set<string>();
+  for (const rawPair of duplicatePairs) {
+    const pair = record(rawPair);
+    if (
+      !pair ||
+      Object.keys(pair).length !== 2 ||
+      typeof pair.leftItemId !== 'string' ||
+      typeof pair.rightItemId !== 'string' ||
+      pair.leftItemId === pair.rightItemId ||
+      !evaluatedIds.has(pair.leftItemId) ||
+      !evaluatedIds.has(pair.rightItemId)
+    )
+      return null;
+    const orderedItemIds = [pair.leftItemId, pair.rightItemId].sort((left, right) =>
+      left.localeCompare(right, 'en-US'),
+    );
+    const leftItemId = orderedItemIds[0]!;
+    const rightItemId = orderedItemIds[1]!;
+    const key = `${leftItemId}:${rightItemId}`;
+    if (pairKeys.has(key)) return null;
+    pairKeys.add(key);
+    normalizedPairs.push({ leftItemId, rightItemId });
+  }
+  return {
+    schemaVersion: 1,
+    similarityThreshold: EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD,
+    evaluatedItems: normalizedItems,
+    duplicatePairs: normalizedPairs,
+    contentFingerprint: audit.contentFingerprint,
+  };
+};
+
+export const semanticEvaluationAfterDeletion = (
+  items: EffectPromptItem[],
+  audit: EffectPromptSemanticAudit,
+): EffectPromptSemanticEvaluation => {
+  const remainingIds = new Set(items.map(({ id }) => id));
+  const auditedHashes = new Map(
+    audit.evaluatedItems.map((item) => [item.itemId, item.contentHash]),
+  );
+  if (items.some((item) => auditedHashes.get(item.id) !== semanticContentHash(item.content)))
+    return pendingEffectPromptSemanticEvaluation();
+  const parent = new Map([...remainingIds].map((id) => [id, id]));
+  const find = (id: string): string => {
+    let current = id;
+    while (parent.get(current) !== current) current = parent.get(current)!;
+    while (parent.get(id) !== id) {
+      const next = parent.get(id)!;
+      parent.set(id, current);
+      id = next;
+    }
+    return current;
+  };
+  for (const { leftItemId, rightItemId } of audit.duplicatePairs) {
+    if (!remainingIds.has(leftItemId) || !remainingIds.has(rightItemId)) continue;
+    const leftRoot = find(leftItemId);
+    const rightRoot = find(rightItemId);
+    if (leftRoot !== rightRoot) parent.set(rightRoot, leftRoot);
+  }
+  const componentSizes = new Map<string, number>();
+  for (const id of remainingIds) {
+    const root = find(id);
+    componentSizes.set(root, (componentSizes.get(root) ?? 0) + 1);
+  }
+  const duplicateGroups = [...componentSizes.values()].filter((size) => size > 1);
+  const duplicateCount = duplicateGroups.reduce((sum, size) => sum + size - 1, 0);
+  return {
+    status: 'VERIFIED',
+    evaluatedCount: items.length,
+    duplicateGroupCount: duplicateGroups.length,
+    duplicateCount,
+    duplicateRate: items.length ? Math.round((duplicateCount / items.length) * 10_000) / 100 : 0,
+  };
+};
 
 export const compileEffectPromptSharedPrompt = (
   disabledElements: string[],
@@ -738,14 +915,10 @@ export const recomputePromptQuality = (
   previous?: Partial<EffectPromptMetrics>,
   renderProfile: EffectPromptRenderProfile = defaultEffectPromptRenderProfile(),
   sharedPrompt?: EffectPromptSharedPrompt,
+  semanticEvaluationOverride?: EffectPromptSemanticEvaluation,
 ): Pick<
   EffectPromptBatchResult,
-  | 'settings'
-  | 'renderProfile'
-  | 'sharedPrompt'
-  | 'items'
-  | 'metrics'
-  | 'qualityStatus'
+  'settings' | 'renderProfile' | 'sharedPrompt' | 'items' | 'metrics' | 'qualityStatus'
 > => {
   const settings = normalizeEffectPromptSettings(rawSettings);
   const items = rawItems.filter(isEffectPromptItem);
@@ -783,6 +956,11 @@ export const recomputePromptQuality = (
       ) / 100
     : 0;
   const previousScores = previous?.averageScores;
+  const semanticEvaluation = validSemanticEvaluation(semanticEvaluationOverride)
+    ? semanticEvaluationOverride
+    : validSemanticEvaluation(previous?.semanticEvaluation)
+      ? previous.semanticEvaluation
+      : pendingEffectPromptSemanticEvaluation();
   const metrics: EffectPromptMetrics = {
     targetCount: settings.targetCount,
     candidateTargetCount: Math.min(240, Math.ceil(settings.targetCount * 1.2)),
@@ -797,6 +975,7 @@ export const recomputePromptQuality = (
       Math.max(previous?.replenishmentRounds ?? 0, 0),
     ),
     exactDuplicateCount: exactDuplicatePairs,
+    semanticEvaluation,
     purposeDistribution,
     averageScores: {
       productRelevance: averageProductRelevance,
@@ -812,7 +991,11 @@ export const recomputePromptQuality = (
     items.length === settings.targetCount &&
     exactDuplicatePairs === 0 &&
     normalizedHardIssues.length === 0 &&
-    items.every(({ classificationStatus }) => classificationStatus === 'VERIFIED')
+    items.every(({ classificationStatus }) => classificationStatus === 'VERIFIED') &&
+    semanticEvaluation.status === 'VERIFIED' &&
+    semanticEvaluation.evaluatedCount === items.length &&
+    semanticEvaluation.duplicateRate !== null &&
+    semanticEvaluation.duplicateRate < EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT
       ? 'PASS'
       : 'NEEDS_REVIEW';
   return {

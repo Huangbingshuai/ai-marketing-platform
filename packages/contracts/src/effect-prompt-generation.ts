@@ -3,6 +3,9 @@ import type { WorkingArtifactCommitStatus, WorkingArtifactCommitSummary } from '
 export const EFFECT_PROMPT_API_BASE =
   '/api/projects/:projectId/workflows/effect/prompt-generation' as const;
 
+export const EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD = 0.82;
+export const EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT = 15;
+
 export const EFFECT_PROMPT_LIMITS = {
   minCount: 10,
   maxCount: 200,
@@ -258,6 +261,18 @@ export type EffectPromptQualityScores = {
   visualClarity: number;
 };
 
+export const EFFECT_PROMPT_SEMANTIC_EVALUATION_STATUSES = ['PENDING', 'VERIFIED'] as const;
+export type EffectPromptSemanticEvaluationStatus =
+  (typeof EFFECT_PROMPT_SEMANTIC_EVALUATION_STATUSES)[number];
+
+export type EffectPromptSemanticEvaluation = {
+  status: EffectPromptSemanticEvaluationStatus;
+  evaluatedCount: number;
+  duplicateGroupCount: number | null;
+  duplicateCount: number | null;
+  duplicateRate: number | null;
+};
+
 export type EffectPromptMetrics = {
   targetCount: number;
   candidateTargetCount: number;
@@ -266,6 +281,7 @@ export type EffectPromptMetrics = {
   rejectedCount: number;
   replenishmentRounds: number;
   exactDuplicateCount: number;
+  semanticEvaluation: EffectPromptSemanticEvaluation;
   purposeDistribution: Array<{
     purpose: EffectPromptFragmentType;
     primaryCount: number;

@@ -65,7 +65,13 @@ const completionGateFixture = (duplicate = false) => {
     createdAt: now,
     updatedAt: now,
   }));
-  return recomputePromptQuality(items, settings);
+  return recomputePromptQuality(items, settings, undefined, undefined, undefined, {
+    status: 'VERIFIED',
+    evaluatedCount: items.length,
+    duplicateGroupCount: 0,
+    duplicateCount: 0,
+    duplicateRate: 0,
+  });
 };
 
 const currentInputSnapshot = (overrides: Record<string, unknown> = {}) => ({
@@ -108,12 +114,18 @@ describe('EffectPromptService settings contract', () => {
   });
 
   it('reuses only a fact visual strategy checkpoint with the same insight content hash', async () => {
+    const templateHash = 'a'.repeat(64);
     const matching = {
       nodeId: 'FACT_VISUAL_STRATEGY_COMPILATION',
       sourceFingerprint: 'insight-hash-current',
       allocationHash: 'c'.repeat(64),
-      templateHash: 'a'.repeat(64),
-      plan: {},
+      templateHash,
+      plan: {
+        sourceContentHash: 'insight-hash-current',
+        templateHash,
+        strategyHash: 'b'.repeat(64),
+        policies: [{ factId: 'fact-1' }],
+      },
     };
     const stale = {
       ...matching,
@@ -137,6 +149,37 @@ describe('EffectPromptService settings contract', () => {
     const output = await service.claim('project-a', 'run-a');
 
     expect(output.stageCheckpoints).toEqual([matching]);
+  });
+
+  it('ignores legacy visual strategy checkpoints that the current worker cannot validate', async () => {
+    const legacy = {
+      nodeId: 'FACT_VISUAL_STRATEGY_COMPILATION',
+      sourceFingerprint: 'insight-hash-current',
+      allocationHash: 'c'.repeat(64),
+      promptVersion: 'effect-prompt-v11-fact-visual-strategy-v2',
+      plan: {
+        sourceContentHash: 'insight-hash-current',
+        promptVersion: 'effect-prompt-v11-fact-visual-strategy-v2',
+        strategyHash: 'b'.repeat(64),
+        policies: [{ factId: 'fact-1' }],
+      },
+    };
+    const repository = {
+      claim: vi.fn().mockResolvedValue({
+        kind: 'CLAIMED',
+        run: { sourceFingerprint: 'run-source' },
+        attemptToken: 'attempt-a',
+        input: currentInputSnapshot(),
+        checkpointStages: [
+          { nodeId: 'FACT_VISUAL_STRATEGY_COMPILATION', metadata: { checkpoint: legacy } },
+        ],
+      }),
+    };
+    const service = new EffectPromptService(repository as never, {} as never, {} as never);
+
+    const output = await service.claim('project-a', 'run-a');
+
+    expect(output.stageCheckpoints).toEqual([]);
   });
 
   it('normalizes and forwards visual item-regeneration direction without opening a batch path', async () => {
