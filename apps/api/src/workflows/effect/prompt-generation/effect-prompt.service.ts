@@ -3,8 +3,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import type {
   EffectPromptDimensions,
   EffectPromptFragmentType,
-  EffectPromptImportItem,
-  EffectPromptImportMode,
   EffectPromptItem,
   EffectPromptOperation,
   EffectPromptBatchResult,
@@ -19,7 +17,6 @@ import type {
   GetEffectPromptResultData,
   GetEffectPromptRunData,
   GetEffectPromptWorkspaceData,
-  ImportEffectPromptResultData,
   StartEffectPromptRunData,
   UpdateEffectPromptResultData,
   ValidateEffectPromptResultData,
@@ -30,6 +27,7 @@ import {
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_MAX_RUN_ATTEMPTS,
+  EFFECT_PROMPT_RENDER_CAPABILITIES,
   EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT,
   EFFECT_PROMPT_SHARD_PHASES,
   effectPromptSettingsNodeId,
@@ -84,7 +82,7 @@ const publicWarnings = (value: unknown): string[] =>
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
-const isReusableVisualStrategyCheckpoint = (
+const isValidVisualStrategyCheckpoint = (
   checkpoint: unknown,
   insightContentHash: string,
 ): boolean => {
@@ -736,6 +734,7 @@ export class EffectPromptService {
     content: string;
     materialTags: string[];
     dimensions: EffectPromptDimensions;
+    targetDurationSeconds: number;
   }): boolean {
     return (
       input.content.trim().length > 0 &&
@@ -748,8 +747,25 @@ export class EffectPromptService {
       new Set(
         input.materialTags.map((tag) => tag.normalize('NFC').trim().toLocaleLowerCase('zh-CN')),
       ).size === input.materialTags.length &&
+      Number.isInteger(input.targetDurationSeconds) &&
+      input.targetDurationSeconds >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
+      input.targetDurationSeconds <= EFFECT_PROMPT_LIMITS.maxDurationSeconds &&
       validateDimensions(input.dimensions)
     );
+  }
+
+  private validateItemDuration(
+    result: EffectPromptBatchResult,
+    targetDurationSeconds: number,
+  ): void {
+    const capability = EFFECT_PROMPT_RENDER_CAPABILITIES[result.renderProfile.capabilityKey];
+    if (
+      targetDurationSeconds < capability.minDurationSeconds ||
+      targetDurationSeconds > capability.maxDurationSeconds
+    )
+      throw badRequest(
+        `当前视频模型支持 ${capability.minDurationSeconds}～${capability.maxDurationSeconds} 秒的片段时长`,
+      );
   }
 
   private presentMutation(
@@ -779,6 +795,7 @@ export class EffectPromptService {
       content: string;
       materialTags: string[];
       dimensions: EffectPromptDimensions;
+      targetDurationSeconds: number;
     },
   ): Promise<UpdateEffectPromptResultData> {
     await this.projects.get(projectId);
@@ -795,6 +812,7 @@ export class EffectPromptService {
       throw badRequest(`Prompt 数量已达到 ${EFFECT_PROMPT_LIMITS.maxCount} 条上限`);
     const parsed = parseEffectPromptBatchResult(current.draftResult);
     if (!parsed) throw conflict('Prompt 结果结构无效，请重新生成');
+    this.validateItemDuration(parsed, input.targetDurationSeconds);
     const maxCode = parsed.items.reduce((maximum, item) => {
       const number = Number(item.code.replace(/\D+/gu, ''));
       return Number.isFinite(number) ? Math.max(maximum, number) : maximum;
@@ -810,7 +828,7 @@ export class EffectPromptService {
       classificationStatus: 'PENDING',
       productRelevance: 0,
       materialTags: input.materialTags.map((tag) => tag.normalize('NFC').trim()),
-      targetDurationSeconds: parsed.settings.defaultDurationSeconds,
+      targetDurationSeconds: input.targetDurationSeconds,
       creativeCore: input.dimensions.narrative.trim(),
       dimensions: Object.fromEntries(
         EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions[key].trim()]),
@@ -838,6 +856,7 @@ export class EffectPromptService {
       content: string;
       materialTags: string[];
       dimensions: EffectPromptDimensions;
+      targetDurationSeconds: number;
     },
   ): Promise<UpdateEffectPromptResultData> {
     await this.projects.get(projectId);
@@ -846,6 +865,7 @@ export class EffectPromptService {
     if (!current) throw notFound('Prompt 结果不存在');
     const parsed = parseEffectPromptBatchResult(current.draftResult);
     if (!parsed) throw conflict('Prompt 结果结构无效，请重新生成');
+    this.validateItemDuration(parsed, input.targetDurationSeconds);
     const currentItem = parsed.items.find((item) => item.id === itemId);
     if (!currentItem) throw notFound('Prompt 不存在');
     return this.presentMutation(
@@ -860,7 +880,7 @@ export class EffectPromptService {
           classificationStatus: 'PENDING',
           productRelevance: 0,
           materialTags: input.materialTags.map((tag) => tag.normalize('NFC').trim()),
-          targetDurationSeconds: parsed.settings.defaultDurationSeconds,
+          targetDurationSeconds: input.targetDurationSeconds,
           creativeCore: input.dimensions.narrative.trim(),
           dimensions: Object.fromEntries(
             EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions[key].trim()]),
@@ -883,123 +903,6 @@ export class EffectPromptService {
         itemId,
       }),
     );
-  }
-
-  async importItems(
-    projectId: string,
-    resultId: string,
-    expectedRevision: number,
-    mode: EffectPromptImportMode,
-    inputItems: EffectPromptImportItem[],
-  ): Promise<ImportEffectPromptResultData> {
-    await this.projects.get(projectId);
-    if (!inputItems.length || inputItems.length > EFFECT_PROMPT_LIMITS.maxCount)
-      throw badRequest(`每次必须导入 1～${EFFECT_PROMPT_LIMITS.maxCount} 条 Prompt`);
-    const current = await this.repository.result(projectId, resultId);
-    if (!current) throw notFound('Prompt 结果不存在');
-    if (current.revision !== expectedRevision)
-      throw conflict('Prompt 结果已被其他操作更新，请刷新后重试');
-    const parsed = parseEffectPromptBatchResult(current.draftResult);
-    if (!parsed) throw conflict('Prompt 结果结构无效，请重新生成');
-
-    const normalizedInputs = inputItems.map((input) => ({
-      content: input.content.normalize('NFC').trim(),
-      materialTags: [
-        ...new Map(
-          input.materialTags
-            .map((tag) => tag.normalize('NFC').trim())
-            .filter(Boolean)
-            .map((tag) => [tag.toLocaleLowerCase('zh-CN'), tag]),
-        ).values(),
-      ],
-      dimensions: Object.fromEntries(
-        EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [
-          key,
-          input.dimensions[key].normalize('NFC').trim(),
-        ]),
-      ) as EffectPromptDimensions,
-    }));
-    if (normalizedInputs.some((input) => !this.validItemInput(input)))
-      throw badRequest('导入文件中存在正文、六维或次级标签不完整的 Prompt');
-
-    const contentKey = (content: string): string =>
-      content.normalize('NFC').trim().replaceAll(/\s+/gu, ' ').toLocaleLowerCase('zh-CN');
-    const seen = new Set(
-      mode === 'APPEND' ? parsed.items.map((item) => contentKey(item.content)) : [],
-    );
-    const uniqueInputs = normalizedInputs.filter((input) => {
-      const key = contentKey(input.content);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-    const skippedDuplicateCount = normalizedInputs.length - uniqueInputs.length;
-    const finalCount = (mode === 'APPEND' ? parsed.items.length : 0) + uniqueInputs.length;
-    if (finalCount > EFFECT_PROMPT_LIMITS.maxCount)
-      throw badRequest(`导入后不能超过 ${EFFECT_PROMPT_LIMITS.maxCount} 条 Prompt`);
-
-    if (!uniqueInputs.length)
-      return {
-        resultId: current.id,
-        productId: current.productId,
-        revision: current.revision,
-        result: parsed,
-        savedAt: (current.savedAt ?? current.updatedAt).toISOString(),
-        unchanged: true,
-        importSummary: {
-          mode,
-          receivedCount: inputItems.length,
-          importedCount: 0,
-          skippedDuplicateCount,
-          pendingEvaluationCount: parsed.items.filter(
-            ({ classificationStatus }) => classificationStatus === 'PENDING',
-          ).length,
-        },
-      };
-
-    const maxCode =
-      mode === 'APPEND'
-        ? Math.max(0, ...parsed.items.map(({ code }) => Number(/^P(\d+)$/u.exec(code)?.[1] ?? 0)))
-        : 0;
-    const now = new Date().toISOString();
-    const importedItems: EffectPromptItem[] = uniqueInputs.map((input, index) => ({
-      id: randomUUID(),
-      code: `P${String(maxCode + index + 1).padStart(3, '0')}`,
-      origin: 'MANUAL',
-      fragmentType: 'PRODUCT_DISPLAY',
-      primaryPurpose: 'PRODUCT_DISPLAY',
-      compatiblePurposes: ['PRODUCT_DISPLAY'],
-      classificationStatus: 'PENDING',
-      productRelevance: 0,
-      materialTags: input.materialTags,
-      targetDurationSeconds: parsed.settings.defaultDurationSeconds,
-      creativeCore: input.dimensions.narrative,
-      dimensions: input.dimensions,
-      content: input.content,
-      insightBindings: [],
-      manualEdited: true,
-      createdAt: now,
-      updatedAt: now,
-    }));
-    const mutation = this.presentMutation(
-      await this.repository.mutateResult(projectId, resultId, expectedRevision, {
-        kind: 'IMPORT',
-        mode,
-        items: importedItems,
-      }),
-    );
-    return {
-      ...mutation,
-      importSummary: {
-        mode,
-        receivedCount: inputItems.length,
-        importedCount: importedItems.length,
-        skippedDuplicateCount,
-        pendingEvaluationCount: mutation.result.items.filter(
-          ({ classificationStatus }) => classificationStatus === 'PENDING',
-        ).length,
-      },
-    };
   }
 
   async updateSharedPrompt(
@@ -1226,15 +1129,15 @@ export class EffectPromptService {
         : [];
     });
     const insightContentHash = result.input?.insightArtifact?.contentHash ?? '';
-    const reusableVisualStrategy = checkpointCandidates.find((checkpoint) =>
-      isReusableVisualStrategyCheckpoint(checkpoint, insightContentHash),
+    const currentRunVisualStrategy = checkpointCandidates.find((checkpoint) =>
+      isValidVisualStrategyCheckpoint(checkpoint, insightContentHash),
     );
     const checkpoints = [
       ...checkpointCandidates.filter(
         (checkpoint) =>
           (checkpoint as Record<string, unknown>).nodeId !== 'FACT_VISUAL_STRATEGY_COMPILATION',
       ),
-      ...(reusableVisualStrategy ? [reusableVisualStrategy] : []),
+      ...(currentRunVisualStrategy ? [currentRunVisualStrategy] : []),
     ];
     return {
       terminal: false as const,

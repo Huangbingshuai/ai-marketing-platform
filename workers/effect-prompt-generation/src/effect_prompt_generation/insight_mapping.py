@@ -86,6 +86,18 @@ _PRIMARY_FIELDS = {
 }
 _EVIDENCE_FIELDS = {InsightField.TRUST_BACKING}
 
+# These are the business facts that make a Prompt materially use the upstream
+# insight card. Product identity/specification alone is not deep coverage.
+MANDATORY_BUSINESS_FIELDS = {
+    InsightField.CORE_SELLING_POINT,
+    InsightField.SECONDARY_SELLING_POINT,
+    InsightField.TARGET_AUDIENCE,
+    InsightField.CORE_PAIN_POINT,
+    InsightField.USAGE_SCENARIO,
+    InsightField.PURCHASE_SCENARIO,
+    InsightField.EMOTIONAL_SCENARIO,
+}
+
 
 def map_insight(payload: Mapping[str, Any]) -> InsightApplicationMap:
     required: list[InsightFact] = []
@@ -124,7 +136,7 @@ def map_insight(payload: Mapping[str, Any]) -> InsightApplicationMap:
     add_value(InsightField.VISUAL_FEATURES, _first(payload, "visualFeatures", "visual_features"), InsightFactPolicy.REQUIRED)
 
     _add_values(payload, ("coreSellingPoints", "core_selling_points"), InsightField.CORE_SELLING_POINT, InsightFactPolicy.REQUIRED, add_value)
-    _add_values(payload, ("secondarySellingPoints", "secondary_selling_points"), InsightField.SECONDARY_SELLING_POINT, InsightFactPolicy.ADAPTIVE, add_value)
+    _add_values(payload, ("secondarySellingPoints", "secondary_selling_points"), InsightField.SECONDARY_SELLING_POINT, InsightFactPolicy.REQUIRED, add_value)
     _add_values(
         payload,
         ("trustBackings", "trust_backings"),
@@ -156,8 +168,8 @@ def map_insight(payload: Mapping[str, Any]) -> InsightApplicationMap:
         (("emotionalScenarios", "emotional_scenarios"), InsightField.EMOTIONAL_SCENARIO),
     ):
         values = _values(payload, *keys)
-        for index, value in enumerate(values):
-            add_value(field, value, InsightFactPolicy.REQUIRED if index == 0 else InsightFactPolicy.ADAPTIVE)
+        for value in values:
+            add_value(field, value, InsightFactPolicy.REQUIRED)
 
     add_value(InsightField.SOURCE_DURATION, _first(payload, "durationSeconds", "duration_seconds"), InsightFactPolicy.CONSTRAINT)
     add_value(InsightField.ASPECT_RATIO, _first(payload, "aspectRatio", "aspect_ratio"), InsightFactPolicy.CONSTRAINT)
@@ -198,6 +210,21 @@ def insight_coverage(application: InsightApplicationMap, items: Sequence[PromptI
         ],
         applied_constraints=[_reference(fact) for fact in application.constraints],
     )
+
+
+def mandatory_business_facts(application: InsightApplicationMap) -> list[InsightFact]:
+    """Return confirmed facts that the batch must genuinely use.
+
+    The list deliberately excludes product name/category/specification. Those
+    facts keep the product identifiable, but must not make a generic product
+    shot look like deep insight coverage.
+    """
+
+    return [
+        fact
+        for fact in application.usable
+        if fact.field in MANDATORY_BUSINESS_FIELDS
+    ]
 
 
 def bindings_for_fact_ids(

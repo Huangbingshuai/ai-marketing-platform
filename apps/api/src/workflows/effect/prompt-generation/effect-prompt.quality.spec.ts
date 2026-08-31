@@ -145,6 +145,61 @@ describe('effect prompt quality contract', () => {
     expect(recomputed.metrics.hardIssueCounts).toEqual(result.metrics.hardIssueCounts);
   });
 
+  it('does not treat product identity alone as deep insight usage', () => {
+    const requiredFact = {
+      factId: 'CORE_SELLING_POINT:confirmed',
+      field: 'CORE_SELLING_POINT' as const,
+      value: '广府酒香腌制工艺',
+      valueHash: sha256('广府酒香腌制工艺'),
+    };
+    const productOnly = {
+      ...item('identity-only'),
+      insightBindings: [
+        {
+          factId: 'PRODUCT_NAME:confirmed',
+          field: 'PRODUCT_NAME' as const,
+          value: '广式腊肠',
+          valueHash: sha256('广式腊肠'),
+          role: 'PRIMARY' as const,
+        },
+      ],
+    };
+    const deeplyBound = {
+      ...item('deeply-bound'),
+      insightBindings: [{ ...requiredFact, role: 'CONTEXT' as const }],
+    };
+    const result = recomputePromptQuality(
+      [productOnly, deeplyBound],
+      { targetCount: 2, defaultDurationSeconds: 5 },
+      {
+        insightCoverage: {
+          required: [requiredFact],
+          covered: [],
+          missing: [requiredFact],
+          adaptive: [],
+          deferred: [],
+          excluded: [],
+          appliedConstraints: [],
+        },
+      },
+      defaultEffectPromptRenderProfile(),
+      compileEffectPromptSharedPrompt([]),
+      {
+        status: 'VERIFIED',
+        evaluatedCount: 2,
+        duplicateGroupCount: 0,
+        duplicateCount: 0,
+        duplicateRate: 0,
+      },
+    );
+
+    expect(result.metrics.hardIssueCounts).toContainEqual({
+      code: 'MISSING_DEEP_BUSINESS_FACT',
+      count: 1,
+    });
+    expect(result.qualityStatus).toBe('NEEDS_REVIEW');
+  });
+
   it('requires semantic duplicate rate to be strictly below fifteen percent', () => {
     const items = Array.from({ length: 20 }, (_, index) =>
       item(`00000000-0000-4000-8000-${String(index).padStart(12, '0')}`),

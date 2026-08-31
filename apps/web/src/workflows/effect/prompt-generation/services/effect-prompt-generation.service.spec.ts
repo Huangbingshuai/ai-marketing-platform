@@ -2,11 +2,12 @@ import type { EffectPromptRun, GetEffectPromptWorkspaceData } from '@ai-marketin
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  buildEffectPromptCsv,
   loadEffectPromptNodeDetail,
   loadEffectPromptWorkspace,
-  parseEffectPromptImportJson,
   pollEffectPromptRun,
 } from './effect-prompt-generation.service';
+import type { EffectPromptBatchResult } from '@ai-marketing/contracts';
 
 const response = (data: unknown): Response =>
   new Response(JSON.stringify({ success: true, data }), {
@@ -38,6 +39,63 @@ const run = (status: EffectPromptRun['status'], progress: number): EffectPromptR
 afterEach(() => vi.unstubAllGlobals());
 
 describe('effect prompt generation HTTP service', () => {
+  it('exports a spreadsheet-friendly CSV without internal fields', () => {
+    const result = {
+      renderProfile: {
+        ratio: '9:16',
+        resolution: '1080p',
+        capabilityKey: 'SEEDANCE_2_0',
+        sharedConstraints: { disabledElements: [], contentHash: 'private-constraint-hash' },
+      },
+      sharedPrompt: { compiledContent: '画面保持食品卫生，不出现未确认功效。' },
+      items: [
+        {
+          id: 'private-item-id',
+          code: 'P001',
+          content: '=不应被表格识别为公式',
+          targetDurationSeconds: 8,
+          primaryPurpose: 'PRODUCT_DISPLAY',
+          compatiblePurposes: ['PRODUCT_DISPLAY', 'HOOK'],
+          dimensions: {
+            narrative: '效果展示型',
+            scene: '家庭厨房',
+            persona: '成年人手部出镜',
+            productRelation: '腊肠蒸熟后的饱满外观',
+            camera: '微距慢推',
+            emotion: '温暖食欲感',
+          },
+          materialTags: ['蒸制', '微距'],
+          insightBindings: [
+            {
+              factId: 'private-fact-id',
+              field: 'VISUAL_FEATURES',
+              value: '蒸熟后表面油亮',
+              valueHash: 'private-value-hash',
+              role: 'PRIMARY',
+            },
+          ],
+        },
+      ],
+    } as unknown as EffectPromptBatchResult;
+
+    const csv = buildEffectPromptCsv('广式腊肠', result);
+
+    expect(csv).toContain('\uFEFF"商品","编号","Prompt 正文","片段时长（秒）"');
+    expect(csv).toContain('"广式腊肠","P001","\'=不应被表格识别为公式","8"');
+    expect(csv).toContain('"产品展示片段","钩子片段"');
+    expect(csv).toContain('"视觉特征：蒸熟后表面油亮"');
+    expect(csv).toContain('"画面保持食品卫生，不出现未确认功效。","9:16","1080p"');
+    for (const internal of [
+      'private-item-id',
+      'private-fact-id',
+      'private-value-hash',
+      'private-constraint-hash',
+      'productRelevance',
+      'classificationStatus',
+    ])
+      expect(csv).not.toContain(internal);
+  });
+
   it('直接读取项目隔离的当前工作区', async () => {
     const workspace: GetEffectPromptWorkspaceData = {
       projectId: 'project-1',
@@ -83,66 +141,5 @@ describe('effect prompt generation HTTP service', () => {
     await expect(
       loadEffectPromptNodeDetail('project-1', 'prompt-run-1', 'FACT_VISUAL_STRATEGY_COMPILATION'),
     ).resolves.toEqual(detail);
-  });
-
-  it('parses a server-exported JSON batch and keeps only editable prompt fields', () => {
-    const dimensions = {
-      narrative: '场景代入型',
-      scene: '家庭餐桌',
-      persona: '年轻家庭',
-      productRelation: '广式腊肠',
-      camera: '固定近景',
-      emotion: '温馨治愈',
-    };
-    const parsed = parseEffectPromptImportJson(
-      JSON.stringify({
-        resultId: 'internal-result',
-        items: [
-          {
-            id: 'untrusted-id',
-            primaryPurpose: 'HOOK',
-            productRelevance: 100,
-            content: '家庭餐桌上展示蒸熟的广式腊肠。',
-            materialTags: ['餐桌', '餐桌', ''],
-            dimensions,
-          },
-          {
-            content: '家庭餐桌上展示蒸熟的广式腊肠。',
-            dimensions,
-          },
-        ],
-      }),
-    );
-
-    expect(parsed.duplicateCount).toBe(1);
-    expect(parsed.items).toEqual([
-      {
-        content: '家庭餐桌上展示蒸熟的广式腊肠。',
-        materialTags: ['餐桌'],
-        dimensions,
-      },
-      {
-        content: '家庭餐桌上展示蒸熟的广式腊肠。',
-        materialTags: [],
-        dimensions,
-      },
-    ]);
-    expect(parsed.items[0]).not.toHaveProperty('id');
-    expect(parsed.items[0]).not.toHaveProperty('primaryPurpose');
-  });
-
-  it('rejects an import row without all six creative dimensions', () => {
-    expect(() =>
-      parseEffectPromptImportJson(
-        JSON.stringify({
-          items: [
-            {
-              content: '产品近景',
-              dimensions: { narrative: '展示型' },
-            },
-          ],
-        }),
-      ),
-    ).toThrow('缺少场景变量');
   });
 });

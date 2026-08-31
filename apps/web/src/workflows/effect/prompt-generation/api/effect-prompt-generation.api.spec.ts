@@ -56,12 +56,14 @@ describe('effect prompt generation API', () => {
       content: 'Prompt',
       materialTags: ['首帧'],
       dimensions,
+      targetDurationSeconds: 5,
       expectedRevision: 7,
     });
     await updateEffectPromptItem('project-1', 'result-1', 'item-1', {
       content: 'Prompt',
       materialTags: ['首帧'],
       dimensions,
+      targetDurationSeconds: 5,
       expectedRevision: 8,
     });
     await deleteEffectPromptItem('project-1', 'result-1', 'item-1', 9);

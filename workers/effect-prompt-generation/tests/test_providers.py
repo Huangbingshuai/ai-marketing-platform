@@ -19,9 +19,11 @@ from effect_prompt_generation.models import (
 )
 from effect_prompt_generation.providers import (
     ArkResponsesProvider,
+    MockAiProvider,
     ProviderError,
     _validate_structured_output,
 )
+from effect_prompt_generation.visual_strategy import validate_fact_visual_strategy
 
 
 class _StructuredEnvelope(BaseModel):
@@ -172,6 +174,103 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
 
 
 @pytest.mark.asyncio
+async def test_ark_creative_uses_slot_local_fact_aliases_and_restores_ids() -> None:
+    seen_prompt = ""
+    application = map_insight(
+        {
+            "productName": "便携杯",
+            "coreSellingPoints": ["单手开合"],
+        }
+    )
+    product_fact = next(item for item in application.usable if item.value == "便携杯")
+    primary_fact = next(item for item in application.usable if item.value == "单手开合")
+    visual_strategy = validate_fact_visual_strategy(
+        (await MockAiProvider().compile_fact_visual_strategy(application)).value,
+        application,
+        source_content_hash="a" * 64,
+        template_hash="b" * 64,
+    )
+    shard = CreativeShardPlan(
+        round=0,
+        shard_index=0,
+        tasks=[
+            CreativeTask(
+                slot_id="creative-1",
+                ordinal=1,
+                round=0,
+                target_duration_seconds=5,
+                fact_assignment=CreativeFactAssignment(
+                    primary_fact_id=primary_fact.fact_id,
+                    product_anchor_fact_ids=[product_fact.fact_id],
+                    assignment_hash="a" * 64,
+                ),
+            )
+        ],
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal seen_prompt
+        payload = json.loads(request.content)
+        seen_prompt = payload["input"][0]["content"][0]["text"]
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "output_text": json.dumps(
+                    {
+                        "items": [
+                            {
+                                "slotId": "creative-1",
+                                "ordinal": 1,
+                                "round": 0,
+                                "creativeCore": "通勤途中单手打开便携杯",
+                                # Product is present in the content, but the
+                                # model omits its anchor id. This must continue
+                                # to evaluation instead of failing the batch.
+                                "declaredFactIds": ["F1"],
+                                "dimensions": {
+                                    "narrative": "动作展示",
+                                    "scene": "地铁站台",
+                                    "persona": "成年通勤者",
+                                    "productRelation": "单手打开便携杯",
+                                    "camera": "中近景跟随",
+                                    "emotion": "从容利落",
+                                },
+                                "content": "地铁站台上，成年通勤者单手打开便携杯，镜头跟随杯盖动作。",
+                                "generatedAt": None,
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        )
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.example/v3",
+        api_key="test-key",
+        strategy_model="strategy-model",
+        candidate_model="creative-model",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        call = await provider.generate_creatives(
+            shard,
+            application=application,
+            shared_prompt=_shared_prompt(),
+            fact_visual_strategy=visual_strategy,
+        )
+    finally:
+        await provider.aclose()
+
+    assert '"factId": "F1"' in seen_prompt
+    assert '"factId": "F2"' in seen_prompt
+    assert primary_fact.fact_id not in seen_prompt
+    assert product_fact.fact_id not in seen_prompt
+    assert call.value.items[0].declared_fact_ids == [primary_fact.fact_id]
+
+
+@pytest.mark.asyncio
 async def test_ark_compiles_visual_usage_for_every_confirmed_fact() -> None:
     application = map_insight(
         {
@@ -237,9 +336,8 @@ async def test_ark_compiles_visual_usage_for_every_confirmed_fact() -> None:
 @pytest.mark.parametrize(
     ("declared_selector", "message"),
     [
-        ("anchor-only", "assigned primary fact"),
-        ("primary-only", "assigned product anchor"),
-        ("unassigned", "outside its assigned brief"),
+        ("anchor-only", "no valid candidate"),
+        ("unassigned", "no valid candidate"),
     ],
 )
 async def test_ark_creative_rejects_invalid_fact_usage(
@@ -334,7 +432,7 @@ async def test_ark_creative_rejects_invalid_fact_usage(
 
 
 @pytest.mark.asyncio
-async def test_ark_evaluation_reserves_reasoning_room_for_five_items() -> None:
+async def test_ark_evaluation_uses_configured_ceiling_for_five_items() -> None:
     seen: dict[str, object] = {}
     application = map_insight({"productName": "便携杯"})
     product_fact = next(item for item in application.usable if item.value == "便携杯")
@@ -411,5 +509,5 @@ async def test_ark_evaluation_reserves_reasoning_room_for_five_items() -> None:
     finally:
         await provider.aclose()
 
-    assert seen["max_output_tokens"] == 3600
+    assert seen["max_output_tokens"] == 4096
     assert len(result.value.items) == 5

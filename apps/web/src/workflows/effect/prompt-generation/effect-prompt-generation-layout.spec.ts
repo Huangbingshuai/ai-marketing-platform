@@ -16,7 +16,8 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).not.toContain('仅以下参数可调');
     expect(pageSource).toMatch(/\.settings-heading\s*\{[^}]*padding:\s*0 13px;/u);
     expect(pageSource).toContain('Prompt 总数量');
-    expect(pageSource).toContain('默认片段时长');
+    expect(pageSource).toContain("label: '片段时长'");
+    expect(pageSource).not.toContain('默认片段时长');
     expect(pageSource).toContain('currentSettings.value.targetCount');
     expect(pageSource).toContain('currentSettings.value.defaultDurationSeconds');
     for (const removed of [
@@ -105,18 +106,24 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('用途会根据新内容重新判断');
   });
 
-  it('supports atomic JSON import with append and replace modes', () => {
-    expect(pageSource).toContain('批量导入');
-    expect(pageSource).toContain('accept=".json,application/json"');
-    expect(pageSource).toContain('parseEffectPromptImportJson');
-    expect(pageSource).toContain('importEffectPromptBatchDraft');
-    expect(pageSource).toContain('value="APPEND"');
-    expect(pageSource).toContain('value="REPLACE"');
-    expect(pageSource).toContain('系统不会信任文件中的用途、评分或内部');
-    expect(pageSource).toContain('ID。');
-    expect(pageSource).toContain('@keydown.esc="closeImportDialog"');
+  it('keeps manual editing concise without a batch-import entry', () => {
+    expect(pageSource).not.toContain('批量导入');
+    expect(pageSource).not.toContain('parseEffectPromptImportJson');
+    expect(pageSource).not.toContain('importEffectPromptBatchDraft');
     expect(pageSource).toContain('次级素材标签（可选）');
+    expect(pageSource).toContain('<Plus :size="15" />新增 Prompt');
+    expect(pageSource).toContain('v-model.number="editorDraft.targetDurationSeconds"');
+    expect(pageSource).toContain('短片只安排一个连续动作');
     expect(pageSource).toContain('currentCountStats.actualCount} 条 Prompt');
+  });
+
+  it('corrects an out-of-range page before rendering the loaded result', () => {
+    const correction = pageSource.indexOf('if (page.value > validPage)');
+    const assignment = pageSource.indexOf('resultData.value = loaded;', correction);
+    expect(correction).toBeGreaterThan(-1);
+    expect(assignment).toBeGreaterThan(correction);
+    expect(pageSource.slice(correction, assignment)).toContain('page.value = validPage;');
+    expect(pageSource.slice(correction, assignment)).toContain('return;');
   });
 
   it('renders the current batch graph without version or history controls', () => {

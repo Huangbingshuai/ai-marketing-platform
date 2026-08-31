@@ -714,7 +714,9 @@ class CreativeTask(ApiModel):
     slot_id: str = Field(min_length=1, max_length=160)
     ordinal: int = Field(ge=1)
     round: int = Field(ge=0, le=4)
-    supplement_kind: Literal["INITIAL", "QUANTITY", "DIVERSITY"] | None = None
+    supplement_kind: Literal[
+        "INITIAL", "QUANTITY", "COVERAGE", "DIVERSITY"
+    ] | None = None
     target_duration_seconds: int = Field(ge=4, le=30)
     fact_assignment: CreativeFactAssignment | None = None
     creative_direction: CreativeDirection | None = None

@@ -101,7 +101,8 @@ def test_visual_strategy_templates_separate_visual_task_from_business_context() 
     assert "采用短语而不是完整解释" in compiler
     assert "visualTask" in creative
     assert "businessContext" in creative
-    assert "businessContext 未在正文中准确表达时不得声明" in creative
+    assert "required=true 的主要业务事实必须实现并声明" in creative
+    assert "指定六维字段或正文中准确实现时才能声明" in creative
     assert "不是每条都必须拍出的卖点" in creative
     assert "不授权虚构品牌礼盒" in creative
     assert "必须标记 FABRICATED_FACT" in evaluation

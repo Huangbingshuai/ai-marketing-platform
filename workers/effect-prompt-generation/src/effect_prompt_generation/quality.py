@@ -3,10 +3,10 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Callable
 
+from .insight_mapping import MANDATORY_BUSINESS_FIELDS
 from .models import (
     CreativeCandidate,
     CreativeEvaluation,
@@ -305,7 +305,7 @@ def validate_creative_evaluation(
         if fact_id in application.by_id
     }
     allowed_evidence = declared | contextual
-    content_text = _normalized_evidence_text(candidate.content)
+    evidence_sources = _candidate_evidence_sources(candidate)
     valid_evidence = []
     evidenced_fact_ids: set[str] = set()
     evidence_metadata_codes = {
@@ -327,10 +327,13 @@ def validate_creative_evaluation(
         if fact is None or evidence.fact_id not in allowed_evidence:
             warnings.append("UNKNOWN_OR_UNDECLARED_FACT")
             continue
-        if _normalized_evidence_text(evidence.evidence_text) not in content_text:
+        if not any(
+            _normalized_evidence_text(evidence.evidence_text) in source_text
+            for source_text in evidence_sources.values()
+        ):
             warnings.append("FACT_EVIDENCE_NOT_IN_CONTENT")
             continue
-        if evidence.fact_id not in contextual and not _evidence_supports_fact(
+        if not _evidence_supports_fact(
             evidence.evidence_text,
             fact.value,
             field=fact.field,
@@ -346,6 +349,14 @@ def validate_creative_evaluation(
         for evidence in valid_evidence
         if application.by_id[evidence.fact_id].field in _PRODUCT_RELEVANT_FIELDS
     ]
+    deep_business_evidence = [
+        evidence
+        for evidence in valid_evidence
+        if application.by_id[evidence.fact_id].field in MANDATORY_BUSINESS_FIELDS
+    ]
+    mandatory_business_facts_available = any(
+        fact.field in MANDATORY_BUSINESS_FIELDS for fact in application.usable
+    )
     if fact_visual_strategy is not None:
         policy_by_id = fact_visual_strategy.by_id
         non_visual_fact_used = any(
@@ -364,6 +375,8 @@ def validate_creative_evaluation(
             issues.append("ABSTRACT_FACT_VISUAL_PROOF")
     if not relevant:
         issues.append("MISSING_PRODUCT_RELATION")
+    if mandatory_business_facts_available and not deep_business_evidence:
+        issues.append("MISSING_DEEP_BUSINESS_FACT")
     if evaluation.scores.product_relevance < 60:
         issues.append("LOW_PRODUCT_RELEVANCE")
     if evaluation.scores.creative_coherence < 50:
@@ -598,6 +611,27 @@ def _creative_novelty(left: RankedCreative, right: RankedCreative) -> float:
 def _normalized_evidence_text(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value).casefold()
     return re.sub(r"[\s\W_]+", "", normalized)
+
+
+def _candidate_evidence_sources(candidate: CreativeCandidate) -> dict[str, str]:
+    """Return the only fields allowed to support a final fact binding.
+
+    Clean video content remains the authority for visible facts. Structured
+    creative fields may carry audience, scenario or abstract business context
+    without pretending the rendered pixels prove a formula, taste or process.
+    """
+
+    dimensions = candidate.dimensions
+    return {
+        "content": _normalized_evidence_text(candidate.content),
+        "creative_core": _normalized_evidence_text(candidate.creative_core),
+        "narrative": _normalized_evidence_text(dimensions.narrative),
+        "scene": _normalized_evidence_text(dimensions.scene),
+        "persona": _normalized_evidence_text(dimensions.persona),
+        "product_relation": _normalized_evidence_text(
+            dimensions.product_relation
+        ),
+    }
 
 
 def _evidence_supports_fact(

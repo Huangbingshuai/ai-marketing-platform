@@ -418,12 +418,21 @@ class ArkResponsesProvider:
             task.slot_id: _creative_fact_assignment(task, application)
             for task in shard.tasks
         }
+        fact_aliases_by_slot = {
+            task.slot_id: _creative_fact_aliases(assignments[task.slot_id])
+            for task in shard.tasks
+        }
         task_briefs = [
             _creative_task_brief(
                 task,
                 assignment=assignments[task.slot_id],
                 application=application,
                 fact_visual_strategy=fact_visual_strategy,
+                fact_aliases=(
+                    fact_aliases_by_slot[task.slot_id]
+                    if fact_visual_strategy is not None
+                    else None
+                ),
             )
             for task in shard.tasks
         ]
@@ -480,44 +489,35 @@ class ArkResponsesProvider:
                 elapsed_ms=call.metadata.latency_ms,
             )
         normalized: list[CreativeCandidate] = []
+        rejected_item_count = 0
         for item in call.value.items:
             task = task_by_slot[item.slot_id]
             assignment = assignments[item.slot_id]
-            fact_ids = list(dict.fromkeys(item.declared_fact_ids))
+            aliases = fact_aliases_by_slot[item.slot_id]
+            fact_ids_by_alias = {alias: fact_id for fact_id, alias in aliases.items()}
+            fact_ids = list(
+                dict.fromkeys(
+                    fact_ids_by_alias.get(fact_id, fact_id)
+                    for fact_id in item.declared_fact_ids
+                )
+            )
             unassigned = [
                 fact_id
                 for fact_id in fact_ids
                 if fact_id not in assignment.allowed_fact_ids
             ]
             if unassigned:
-                raise ProviderError(
-                    "AI coherent creative response referenced a fact outside its assigned brief",
-                    retryable=False,
-                    error_type=ProviderErrorType.RESPONSE_INVALID,
-                    attempts=call.metadata.attempts,
-                    elapsed_ms=call.metadata.latency_ms,
-                )
+                rejected_item_count += 1
+                continue
             visual_fact_id = assignment.visual_task_fact_id or assignment.primary_fact_id
             if visual_fact_id not in fact_ids:
-                raise ProviderError(
-                    (
-                        "AI coherent creative response did not use its assigned visual task fact"
-                        if fact_visual_strategy is not None
-                        else "AI coherent creative response did not use its assigned primary fact"
-                    ),
-                    retryable=False,
-                    error_type=ProviderErrorType.RESPONSE_INVALID,
-                    attempts=call.metadata.attempts,
-                    elapsed_ms=call.metadata.latency_ms,
-                )
-            if not set(fact_ids).intersection(assignment.product_anchor_fact_ids):
-                raise ProviderError(
-                    "AI coherent creative response did not use an assigned product anchor",
-                    retryable=False,
-                    error_type=ProviderErrorType.RESPONSE_INVALID,
-                    attempts=call.metadata.attempts,
-                    elapsed_ms=call.metadata.latency_ms,
-                )
+                rejected_item_count += 1
+                continue
+            # A missing declared product anchor is metadata incompleteness, not a
+            # malformed creative. The evaluation stage receives the assigned
+            # anchors and must prove product relevance with text actually found
+            # in the candidate content. Candidates without such evidence are
+            # rejected individually instead of failing the whole paid batch.
             normalized.append(
                 item.model_copy(
                     update={
@@ -526,6 +526,21 @@ class ArkResponsesProvider:
                         "declared_fact_ids": list(dict.fromkeys(fact_ids)),
                     }
                 )
+            )
+        if not normalized:
+            raise ProviderError(
+                "AI coherent creative response contained no valid candidate",
+                retryable=False,
+                error_type=ProviderErrorType.RESPONSE_INVALID,
+                attempts=call.metadata.attempts,
+                elapsed_ms=call.metadata.latency_ms,
+            )
+        if rejected_item_count:
+            LOGGER.warning(
+                "discarded invalid creative candidates stage=%s rejected=%s accepted=%s",
+                NodeId.COHERENT_CREATIVE_GENERATION.value,
+                rejected_item_count,
+                len(normalized),
             )
         return AiCallResult(
             value=call.value.model_copy(update={"items": normalized}),
@@ -632,10 +647,10 @@ class ArkResponsesProvider:
             model=self._evaluation_model,
             max_output_tokens=min(
                 self._evaluation_max_output_tokens,
-                # Ark counts the structured answer and reasoning tokens against
-                # the same limit. Five detailed evaluations repeatedly reached
-                # the former 2,600-token ceiling during the paid 50-item run.
-                max(1536, len(candidates) * 720),
+                # Ark counts both the structured answer and reasoning tokens.
+                # Real three-item shards reached the former 2,160-token limit,
+                # so reserve enough room per candidate instead of truncating JSON.
+                max(2048, len(candidates) * 1000),
             ),
             request_timeout=self._evaluation_timeout,
             instructions=load_prompt(EVALUATION_BASE_PROMPT),
@@ -998,8 +1013,19 @@ def _mock_creative_candidate(
     visual_fact_id = assignment.visual_task_fact_id or assignment.primary_fact_id
     primary = application.by_id[visual_fact_id]
     anchor = application.by_id[assignment.product_anchor_fact_ids[0]]
+    business_fact = (
+        application.by_id[assignment.business_context_fact_ids[0]]
+        if assignment.business_context_fact_ids
+        else None
+    )
     declared_fact_ids = list(
-        dict.fromkeys([primary.fact_id, anchor.fact_id])
+        dict.fromkeys(
+            [
+                primary.fact_id,
+                anchor.fact_id,
+                *([business_fact.fact_id] if business_fact is not None else []),
+            ]
+        )
     )
     product = anchor.value
     scenes = ["家庭厨房料理台", "节日家宴餐桌", "明亮食品展示台", "居家备餐区"]
@@ -1032,6 +1058,37 @@ def _mock_creative_candidate(
         f"{scene}内，{product}{action}，画面清楚呈现{primary.value}。"
         f"{camera}记录一个连续动作，暖色自然光突出真实质感，动作结束后主体稳定停留在画面中央。"
     )
+    persona = (
+        business_fact.value
+        if business_fact is not None
+        and business_fact.field == InsightField.TARGET_AUDIENCE
+        else direction.semantic_profile.persona_family
+        if direction is not None
+        else "仅一双成年人的手参与动作"
+    )
+    scene_dimension = (
+        business_fact.value
+        if business_fact is not None
+        and business_fact.field
+        in {
+            InsightField.USAGE_SCENARIO,
+            InsightField.PURCHASE_SCENARIO,
+            InsightField.EMOTIONAL_SCENARIO,
+        }
+        else scene
+    )
+    product_relation = (
+        business_fact.value
+        if business_fact is not None
+        and business_fact.field
+        not in {
+            InsightField.TARGET_AUDIENCE,
+            InsightField.USAGE_SCENARIO,
+            InsightField.PURCHASE_SCENARIO,
+            InsightField.EMOTIONAL_SCENARIO,
+        }
+        else primary.value
+    )
     return CreativeCandidate(
         slot_id=task.slot_id,
         ordinal=task.ordinal,
@@ -1048,13 +1105,9 @@ def _mock_creative_candidate(
                 if direction is not None
                 else "从准备动作自然推进到产品细节停留"
             ),
-            scene=scene,
-            persona=(
-                direction.semantic_profile.persona_family
-                if direction is not None
-                else "仅一双成年人的手参与动作"
-            ),
-            product_relation=primary.value,
+            scene=scene_dimension,
+            persona=persona,
+            product_relation=product_relation,
             camera=camera,
             emotion=(
                 direction.semantic_profile.emotion_family
@@ -1102,11 +1155,12 @@ def _creative_task_brief(
     assignment: CreativeFactAssignment,
     application: InsightApplicationMap,
     fact_visual_strategy: FactVisualStrategy | None,
+    fact_aliases: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     def fact_payload(fact_id: str) -> dict[str, str]:
         fact = application.by_id[fact_id]
         return {
-            "factId": fact.fact_id,
+            "factId": (fact_aliases or {}).get(fact.fact_id, fact.fact_id),
             "field": fact.field.value,
             "value": fact.value,
         }
@@ -1155,13 +1209,17 @@ def _creative_task_brief(
     visual_policy = policy_by_id[visual_fact_id]
     business_context = []
     forbidden_inferences = list(visual_policy.forbidden_inferences)
-    for fact_id in assignment.business_context_fact_ids:
+    for index, fact_id in enumerate(assignment.business_context_fact_ids):
         policy = policy_by_id[fact_id]
         business_context.append(
             {
                 **fact_payload(fact_id),
                 "instruction": policy.context_instruction,
                 "visualUsage": policy.visual_usage.value,
+                "required": index == 0,
+                "realizationField": _business_context_realization_field(
+                    application.by_id[fact_id].field
+                ),
             }
         )
         forbidden_inferences.extend(policy.forbidden_inferences)
@@ -1188,6 +1246,35 @@ def _creative_task_brief(
         ],
         "forbiddenInferences": list(dict.fromkeys(forbidden_inferences)),
         "creativeDirection": direction_payload,
+    }
+
+
+def _business_context_realization_field(field: InsightField) -> str:
+    if field == InsightField.TARGET_AUDIENCE:
+        return "persona"
+    if field in {
+        InsightField.USAGE_SCENARIO,
+        InsightField.PURCHASE_SCENARIO,
+        InsightField.EMOTIONAL_SCENARIO,
+    }:
+        return "scene"
+    return "productRelation"
+
+
+def _creative_fact_aliases(
+    assignment: CreativeFactAssignment,
+) -> dict[str, str]:
+    """Give every slot its own compact fact namespace.
+
+    Multiple tasks share one model request. Reusing global fact identifiers in
+    that request lets the model accidentally borrow another slot's identifier.
+    Slot-local aliases keep the briefs isolated; generated aliases are mapped
+    back to authoritative fact ids before any candidate is persisted.
+    """
+
+    return {
+        fact_id: f"F{index}"
+        for index, fact_id in enumerate(assignment.allowed_fact_ids, start=1)
     }
 
 
@@ -1241,7 +1328,6 @@ def _mock_creative_evaluation(
     *,
     context_fact_ids: Sequence[str] = (),
 ) -> CreativeEvaluation:
-    context_ids = set(context_fact_ids)
     evidence: list[FactEvidence] = []
     for fact_id in dict.fromkeys(
         [*candidate.declared_fact_ids, *context_fact_ids]
@@ -1249,14 +1335,17 @@ def _mock_creative_evaluation(
         fact = application.by_id.get(fact_id)
         if fact is None:
             continue
-        evidence_text = (
-            fact.value
-            if fact.value in candidate.content
-            else candidate.dimensions.scene
-            if fact_id in context_ids
-            and candidate.dimensions.scene in candidate.content
-            else ""
+        candidate_fields = (
+            candidate.content,
+            candidate.creative_core,
+            candidate.dimensions.narrative,
+            candidate.dimensions.scene,
+            candidate.dimensions.persona,
+            candidate.dimensions.product_relation,
         )
+        evidence_text = fact.value if any(
+            fact.value in value for value in candidate_fields
+        ) else ""
         if evidence_text:
             evidence.append(
                 FactEvidence(fact_id=fact_id, evidence_text=evidence_text)

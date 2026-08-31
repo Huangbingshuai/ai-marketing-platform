@@ -16,7 +16,6 @@ import {
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import {
   DeletePromptItemDto,
-  ImportPromptResultDto,
   PromptItemDto,
   PromptResultQueryDto,
   PromptWorkspaceQueryDto,
@@ -151,22 +150,6 @@ export class EffectPromptController {
       resultId,
       itemId,
       expectedRevision(ifMatch, body.expectedRevision),
-    );
-  }
-
-  @Post('results/:resultId/import')
-  importItems(
-    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
-    @Param('resultId', new ParseUUIDPipe({ version: '4' })) resultId: string,
-    @Headers('if-match') ifMatch: string | undefined,
-    @Body() body: ImportPromptResultDto,
-  ) {
-    return this.service.importItems(
-      projectId,
-      resultId,
-      expectedRevision(ifMatch, body.expectedRevision),
-      body.mode,
-      body.items,
     );
   }
 

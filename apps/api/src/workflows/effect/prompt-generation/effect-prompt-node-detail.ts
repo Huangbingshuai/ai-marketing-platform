@@ -140,6 +140,8 @@ const ISSUE_LABELS: Record<string, string> = {
   CTA_NO_SAFE_AREA: '转化片段没有形成可供后续文案使用的安全留白',
   EVIDENCE_MODE_MISMATCH: '卖点画面与允许呈现的证据类型不一致',
   FACT_OVERLOAD: '单条片段承载了过多提炼事实',
+  MISSING_DEEP_BUSINESS_FACT:
+    '单条片段只建立了产品身份，未实际使用卖点、痛点、受众或场景',
   HOOK_RESOLVED: '钩子片段提前揭晓了答案或解决方案',
   META_LANGUAGE: '包含策划元话语',
   MULTI_STAGE_STORY: '片段包含多个叙事阶段',

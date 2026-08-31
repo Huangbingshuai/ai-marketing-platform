@@ -256,6 +256,45 @@ async def test_quantity_supplement_respects_total_candidate_ceiling() -> None:
 
 
 @pytest.mark.asyncio
+async def test_coverage_supplement_targets_the_missing_business_fact() -> None:
+    api = PromptApi()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=MockAiProvider(),
+        shard_size=5,
+    )
+    runtime = _runtime()
+    snapshot = _cluster_snapshot()
+    pipeline.register_snapshot(runtime, snapshot)
+    await pipeline.map_insight(runtime)
+    await pipeline.compile_fact_visual_strategy(runtime)
+    await pipeline.compile_shared_prompt(runtime)
+    application = map_insight(snapshot.insight_artifact.result)
+    missing_fact = next(
+        fact
+        for fact in application.required
+        if fact.field.value == "CORE_PAIN_POINT"
+    )
+
+    supplement = await pipeline.plan_creatives(
+        runtime,
+        round_number=1,
+        requested_count=2,
+        supplement_kind="COVERAGE",
+        coverage_fact_ids=[missing_fact.fact_id],
+    )
+    tasks = [task for shard in supplement for task in shard.tasks]
+
+    assert len(tasks) == 2
+    assert all(
+        task.fact_assignment is not None
+        and missing_fact.fact_id in task.fact_assignment.allowed_fact_ids
+        and task.supplement_kind == "COVERAGE"
+        for task in tasks
+    )
+
+
+@pytest.mark.asyncio
 async def test_cluster_concentration_triggers_only_one_diversity_supplement() -> None:
     api = PromptApi()
     pipeline = PromptGenerationPipeline(

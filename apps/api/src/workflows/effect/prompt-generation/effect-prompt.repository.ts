@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import type {
   EffectPromptBatchResult,
   EffectPromptDimensions,
-  EffectPromptImportMode,
   EffectPromptItem,
   EffectPromptManualOverrides,
   EffectPromptOperation,
@@ -525,31 +524,12 @@ export class EffectPromptRepository {
         },
         select: { nodeId: true, metadata: true },
       });
-      const reusableVisualStrategyStages = !checkpointStages.some(
-        ({ nodeId }) => nodeId === 'FACT_VISUAL_STRATEGY_COMPILATION',
-      )
-        ? await transaction.effectPromptStageOutput.findMany({
-            where: {
-              projectId,
-              runId: { not: runId },
-              nodeId: 'FACT_VISUAL_STRATEGY_COMPILATION',
-              status: 'SUCCEEDED',
-              run: {
-                workflowRunId: run.workflowRunId,
-                productId: run.productId,
-              },
-            },
-            orderBy: { updatedAt: 'desc' },
-            take: 20,
-            select: { nodeId: true, metadata: true },
-          })
-        : [];
       return {
         kind: 'CLAIMED' as const,
         run: claimed,
         attemptToken,
         input: claimed.inputSnapshot as EffectPromptInputSnapshot,
-        checkpointStages: [...checkpointStages, ...reusableVisualStrategyStages],
+        checkpointStages,
       };
     });
   }
@@ -1199,7 +1179,6 @@ export class EffectPromptRepository {
     expectedRevision: number,
     mutation:
       | { kind: 'ADD'; item: EffectPromptItem }
-      | { kind: 'IMPORT'; mode: EffectPromptImportMode; items: EffectPromptItem[] }
       | {
           kind: 'UPDATE';
           itemId: string;
@@ -1237,20 +1216,7 @@ export class EffectPromptRepository {
       const items = [...current.items];
       let semanticEvaluation = pendingEffectPromptSemanticEvaluation();
       let semanticContentUnchanged = mutation.kind === 'SHARED_PROMPT';
-      if (mutation.kind === 'IMPORT') {
-        if (mutation.items.some((item) => items.some(({ id }) => id === item.id)))
-          return { kind: 'ITEM_CONFLICT' as const };
-        if (mutation.mode === 'REPLACE') {
-          const deletedAiIds = items.filter(({ origin }) => origin === 'AI').map(({ id }) => id);
-          items.splice(0, items.length, ...mutation.items);
-          overrides.added = [...mutation.items];
-          overrides.edited = {};
-          overrides.deleted = [...new Set([...overrides.deleted, ...deletedAiIds])];
-        } else {
-          items.push(...mutation.items);
-          overrides.added.push(...mutation.items);
-        }
-      } else if (mutation.kind === 'ADD') {
+      if (mutation.kind === 'ADD') {
         if (items.some(({ id }) => id === mutation.item.id))
           return { kind: 'ITEM_CONFLICT' as const };
         items.push(mutation.item);

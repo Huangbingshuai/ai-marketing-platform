@@ -190,6 +190,7 @@ def allocate_direction_fact_focus_ids(
     application: InsightApplicationMap,
     *,
     priority_fact_ids: Sequence[str] = (),
+    minimum_priority_uses: int = 2,
 ) -> list[str]:
     """Choose one business fact per task while covering the whole insight map.
 
@@ -212,6 +213,7 @@ def allocate_direction_fact_focus_ids(
     }
     usage: Counter[str] = Counter()
     selected: list[str] = []
+    minimum_priority_uses = max(1, minimum_priority_uses)
     for direction in directions:
         candidates = [
             fact_id
@@ -220,8 +222,21 @@ def allocate_direction_fact_focus_ids(
         ]
         if not candidates:
             raise ValueError("creative direction has no usable fact for allocation")
+        priority_candidates = [
+            fact_id for fact_id in candidates if fact_id in priority_rank
+        ]
+        under_target = [
+            fact_id
+            for fact_id in priority_candidates
+            if usage[fact_id] < minimum_priority_uses
+        ]
+        # Product identity remains a separate anchor. Whenever a direction can
+        # carry a mandatory business fact, keep the task focused on that fact
+        # instead of letting an unused product name/specification win merely
+        # because its usage counter is lower.
+        selection_pool = under_target or priority_candidates or candidates
         chosen = min(
-            candidates,
+            selection_pool,
             key=lambda fact_id: (
                 usage[fact_id],
                 0 if fact_id in priority_rank else 1,

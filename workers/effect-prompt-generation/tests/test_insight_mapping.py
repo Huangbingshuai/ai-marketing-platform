@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-
 from effect_prompt_generation.insight_mapping import (
+    mandatory_business_facts,
     map_insight,
 )
 from effect_prompt_generation.models import (
@@ -87,6 +87,25 @@ def test_maps_canonical_audience_items_independently_without_reusing_summary() -
 
     assert audiences == ["家庭厨房人群", "美食爱好者"]
     assert "家庭厨房人群；美食爱好者" not in audiences
+
+
+def test_marks_all_confirmed_business_facts_as_mandatory_batch_inputs() -> None:
+    application = map_insight(_card())
+
+    values = {fact.value for fact in mandatory_business_facts(application)}
+
+    assert {
+        "广式风味",
+        "切面油润",
+        "便于切配",
+        "家庭厨房人群",
+        "美食爱好者",
+        "年货选择困难",
+        "煲仔饭烹饪",
+        "蒸制",
+        "年货选购",
+        "家庭团聚",
+    }.issubset(values)
 
 
 def test_falls_back_to_historical_audience_summary_only_when_canonical_list_is_empty() -> (

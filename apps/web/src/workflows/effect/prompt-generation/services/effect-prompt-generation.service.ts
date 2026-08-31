@@ -3,20 +3,22 @@ import type {
   EffectPromptBatchSettings,
   EffectPromptDimensions,
   EffectPromptFragmentType,
-  EffectPromptImportItem,
-  EffectPromptImportMode,
+  EffectPromptInsightField,
   EffectPromptItem,
   EffectPromptNodeId,
   EffectPromptRun,
   GetEffectPromptNodeDetailData,
   GetEffectPromptResultData,
   GetEffectPromptWorkspaceData,
-  ImportEffectPromptResultData,
   StartEffectPromptRunRequest,
   UpdateEffectPromptResultData,
   ValidateEffectPromptResultData,
 } from '@ai-marketing/contracts';
-import { EFFECT_PROMPT_DIMENSIONS, EFFECT_PROMPT_LIMITS } from '@ai-marketing/contracts';
+import {
+  EFFECT_PROMPT_DIMENSIONS,
+  EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
+  EFFECT_PROMPT_LIMITS,
+} from '@ai-marketing/contracts';
 
 import {
   addEffectPromptItem,
@@ -26,7 +28,6 @@ import {
   getEffectPromptResult,
   getEffectPromptRun,
   getEffectPromptWorkspace,
-  importEffectPromptItems,
   saveEffectPromptSettings,
   startEffectPromptRun,
   updateEffectPromptItem,
@@ -172,69 +173,7 @@ export type PromptItemDraft = {
   content: string;
   materialTags: string[];
   dimensions: EffectPromptDimensions;
-};
-
-export type ParsedEffectPromptImport = {
-  items: EffectPromptImportItem[];
-  duplicateCount: number;
-};
-
-export const parseEffectPromptImportJson = (source: string): ParsedEffectPromptImport => {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(source) as unknown;
-  } catch {
-    throw new Error('导入文件不是有效的 JSON');
-  }
-  const rows = Array.isArray(parsed)
-    ? parsed
-    : parsed && typeof parsed === 'object' && Array.isArray((parsed as { items?: unknown }).items)
-      ? (parsed as { items: unknown[] }).items
-      : null;
-  if (!rows?.length) throw new Error('导入文件中没有 Prompt 条目');
-  if (rows.length > EFFECT_PROMPT_LIMITS.maxCount)
-    throw new Error(`一次最多导入 ${EFFECT_PROMPT_LIMITS.maxCount} 条 Prompt`);
-
-  const items = rows.map((row, index): EffectPromptImportItem => {
-    if (!row || typeof row !== 'object' || Array.isArray(row))
-      throw new Error(`第 ${index + 1} 条 Prompt 结构无效`);
-    const value = row as Record<string, unknown>;
-    const content = typeof value.content === 'string' ? value.content.normalize('NFC').trim() : '';
-    if (!content || content.length > 12_000)
-      throw new Error(`第 ${index + 1} 条 Prompt 正文为空或超过长度限制`);
-    const dimensionsValue = value.dimensions;
-    if (!dimensionsValue || typeof dimensionsValue !== 'object' || Array.isArray(dimensionsValue))
-      throw new Error(`第 ${index + 1} 条 Prompt 缺少六维创意信息`);
-    const dimensions = Object.fromEntries(
-      EFFECT_PROMPT_DIMENSIONS.map(({ key, label }) => {
-        const item = (dimensionsValue as Record<string, unknown>)[key];
-        if (typeof item !== 'string' || !item.trim())
-          throw new Error(`第 ${index + 1} 条 Prompt 缺少${label}`);
-        return [key, item.normalize('NFC').trim()];
-      }),
-    ) as EffectPromptDimensions;
-    const materialTags =
-      value.materialTags === undefined
-        ? []
-        : Array.isArray(value.materialTags) &&
-            value.materialTags.length <= EFFECT_PROMPT_LIMITS.maxMaterialTags &&
-            value.materialTags.every((tag) => typeof tag === 'string' && tag.trim().length <= 120)
-          ? [
-              ...new Map(
-                value.materialTags
-                  .map((tag) => (tag as string).normalize('NFC').trim())
-                  .filter(Boolean)
-                  .map((tag) => [tag.toLocaleLowerCase('zh-CN'), tag]),
-              ).values(),
-            ]
-          : null;
-    if (materialTags === null) throw new Error(`第 ${index + 1} 条 Prompt 的次级标签无效`);
-    return { content, dimensions, materialTags };
-  });
-  const keys = items.map(({ content }) =>
-    content.normalize('NFC').trim().replaceAll(/\s+/gu, ' ').toLocaleLowerCase('zh-CN'),
-  );
-  return { items, duplicateCount: keys.length - new Set(keys).size };
+  targetDurationSeconds: number;
 };
 
 export const saveEffectPromptItem = async (
@@ -260,17 +199,6 @@ export const removeEffectPromptItem = async (
 ): Promise<UpdateEffectPromptResultData> =>
   (await deleteEffectPromptItem(projectId, resultId, item.id, expectedRevision, signal)).data;
 
-export const importEffectPromptBatchDraft = async (
-  projectId: string,
-  resultId: string,
-  expectedRevision: number,
-  mode: EffectPromptImportMode,
-  items: EffectPromptImportItem[],
-  signal?: AbortSignal,
-): Promise<ImportEffectPromptResultData> =>
-  (await importEffectPromptItems(projectId, resultId, { mode, items, expectedRevision }, signal))
-    .data;
-
 export const saveEffectPromptSharedPrompt = async (
   projectId: string,
   resultId: string,
@@ -289,6 +217,84 @@ export const commitEffectPromptResult = async (
 ): Promise<ValidateEffectPromptResultData> =>
   (await validateEffectPromptResult(projectId, resultId, { expectedRevision }, signal)).data;
 
+const insightFieldLabels: Record<EffectPromptInsightField, string> = {
+  PRODUCT_NAME: '产品名称',
+  PRODUCT_CATEGORY: '产品品类',
+  CORE_SPECIFICATION: '核心规格',
+  PRICE_RANGE: '确认价格',
+  VISUAL_FEATURES: '视觉特征',
+  CORE_SELLING_POINT: '核心卖点',
+  SECONDARY_SELLING_POINT: '次要卖点',
+  TRUST_BACKING: '信任背书',
+  TARGET_AUDIENCE: '目标受众',
+  CORE_PAIN_POINT: '核心痛点',
+  DECISION_DRIVER: '决策动机',
+  MARKETING_GOAL: '营销目标',
+  USAGE_SCENARIO: '使用场景',
+  PURCHASE_SCENARIO: '购买场景',
+  EMOTIONAL_SCENARIO: '情绪场景',
+  SOURCE_DURATION: '上游时长',
+  ASPECT_RATIO: '画幅',
+  RESOLUTION: '分辨率',
+  DELIVERY_CHANNELS: '投放渠道',
+  DISABLED_ELEMENT: '禁用元素',
+  VISUAL_STYLE_BASELINE: '视觉基线',
+};
+
+const csvCell = (value: string | number): string => {
+  const text = String(value).normalize('NFC');
+  const formulaSafe = /^[\t\r ]*[=+\-@]/u.test(text) ? `'${text}` : text;
+  return `"${formulaSafe.replace(/"/gu, '""')}"`;
+};
+
+export const buildEffectPromptCsv = (
+  productName: string,
+  result: EffectPromptBatchResult,
+): string => {
+  const headers = [
+    '商品',
+    '编号',
+    'Prompt 正文',
+    '片段时长（秒）',
+    '推荐用途',
+    '其他兼容用途',
+    ...EFFECT_PROMPT_DIMENSIONS.map(({ label }) => label),
+    '提炼来源',
+    '素材标签',
+    '共用提示词',
+    '画幅',
+    '分辨率',
+  ];
+  const sharedPrompt = result.sharedPrompt?.compiledContent.trim() ?? '';
+  const rows = result.items.map((item) => {
+    const compatiblePurposes = item.compatiblePurposes.filter(
+      (purpose) => purpose !== item.primaryPurpose,
+    );
+    const insightSources = [
+      ...new Set(
+        item.insightBindings.map(
+          ({ field, value }) => `${insightFieldLabels[field]}：${value.trim()}`,
+        ),
+      ),
+    ];
+    return [
+      productName.trim() || '当前商品',
+      item.code,
+      item.content,
+      item.targetDurationSeconds,
+      EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.primaryPurpose],
+      compatiblePurposes.map((purpose) => EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[purpose]).join('；'),
+      ...EFFECT_PROMPT_DIMENSIONS.map(({ key }) => item.dimensions[key]),
+      insightSources.join('；'),
+      item.materialTags.join('；'),
+      sharedPrompt,
+      result.renderProfile.ratio,
+      result.renderProfile.resolution,
+    ];
+  });
+  return `\uFEFF${[headers, ...rows].map((row) => row.map(csvCell).join(',')).join('\r\n')}`;
+};
+
 export const downloadEffectPromptBatch = async (
   projectId: string,
   resultId: string,
@@ -296,42 +302,11 @@ export const downloadEffectPromptBatch = async (
   signal?: AbortSignal,
 ): Promise<{ blob: Blob; fileName: string }> => {
   const exported = (await exportEffectPromptResult(projectId, resultId, signal)).data;
-  const renderProfile = exported.result.renderProfile;
-  const fileContent = {
-    format: 'effect-prompt-batch',
-    formatVersion: 1,
-    productId: exported.productId,
-    resultId: exported.resultId,
-    revision: exported.revision,
-    exportedAt: exported.exportedAt,
-    renderProfile: {
-      capabilityKey: renderProfile.capabilityKey,
-      ratio: renderProfile.ratio,
-      resolution: renderProfile.resolution,
-    },
-    sharedPrompt: exported.result.sharedPrompt ?? null,
-    items: exported.result.items.map((item) => ({
-      id: item.id,
-      code: item.code,
-      primaryPurpose: item.primaryPurpose,
-      compatiblePurposes: item.compatiblePurposes,
-      classificationStatus: item.classificationStatus,
-      fragmentType: item.fragmentType,
-      content: item.content,
-      targetDurationSeconds: item.targetDurationSeconds,
-      ratio: renderProfile.ratio,
-      resolution: renderProfile.resolution,
-      materialTags: item.materialTags,
-      creativeCore: item.creativeCore,
-      dimensions: item.dimensions,
-      productRelevance: item.productRelevance,
-      insightBindings: item.insightBindings,
-    })),
-  };
+  const safeProductName = (productName.trim() || '当前商品').replace(/[\\/:*?"<>|]/gu, '_');
   return {
-    blob: new Blob([JSON.stringify(fileContent, null, 2)], {
-      type: 'application/json;charset=utf-8',
+    blob: new Blob([buildEffectPromptCsv(productName, exported.result)], {
+      type: 'text/csv;charset=utf-8',
     }),
-    fileName: `${productName.trim() || '当前商品'}-差异化Prompt-${exported.result.items.length}条.json`,
+    fileName: `${safeProductName}-Prompt-${exported.result.items.length}条.csv`,
   };
 };

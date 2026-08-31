@@ -739,22 +739,8 @@ export type GetEffectPromptNodeDetailData = {
 
 export type UpsertEffectPromptItemRequest = Pick<
   EffectPromptItem,
-  'content' | 'materialTags' | 'dimensions'
+  'content' | 'materialTags' | 'dimensions' | 'targetDurationSeconds'
 > & { expectedRevision: number };
-
-export const EFFECT_PROMPT_IMPORT_MODES = ['APPEND', 'REPLACE'] as const;
-export type EffectPromptImportMode = (typeof EFFECT_PROMPT_IMPORT_MODES)[number];
-
-export type EffectPromptImportItem = Pick<
-  EffectPromptItem,
-  'content' | 'materialTags' | 'dimensions'
->;
-
-export type ImportEffectPromptResultRequest = {
-  mode: EffectPromptImportMode;
-  items: EffectPromptImportItem[];
-  expectedRevision: number;
-};
 
 export type UpdateEffectPromptSharedPromptRequest = {
   content: string;
@@ -768,16 +754,6 @@ export type UpdateEffectPromptResultData = {
   result: EffectPromptBatchResult;
   savedAt: string;
   unchanged: boolean;
-};
-
-export type ImportEffectPromptResultData = UpdateEffectPromptResultData & {
-  importSummary: {
-    mode: EffectPromptImportMode;
-    receivedCount: number;
-    importedCount: number;
-    skippedDuplicateCount: number;
-    pendingEvaluationCount: number;
-  };
 };
 
 export type ValidateEffectPromptResultRequest = { expectedRevision: number };

@@ -6,8 +6,6 @@ import type {
   GetEffectPromptResultData,
   GetEffectPromptRunData,
   GetEffectPromptWorkspaceData,
-  ImportEffectPromptResultData,
-  ImportEffectPromptResultRequest,
   SaveEffectPromptSettingsData,
   SaveEffectPromptSettingsRequest,
   StartEffectPromptRunData,
@@ -171,20 +169,6 @@ export const deleteEffectPromptItem = (
       signal,
     },
   );
-
-export const importEffectPromptItems = (
-  projectId: string,
-  resultId: string,
-  input: ImportEffectPromptResultRequest,
-  signal?: AbortSignal,
-): Promise<ApiResponse<ImportEffectPromptResultData>> =>
-  requestJson(`${basePath(projectId)}/results/${encodeURIComponent(resultId)}/import`, {
-    method: 'POST',
-    body: input,
-    headers: revisionHeaders(input.expectedRevision),
-    operation: '批量导入 Prompt',
-    signal,
-  });
 
 export const updateEffectPromptSharedPrompt = (
   projectId: string,

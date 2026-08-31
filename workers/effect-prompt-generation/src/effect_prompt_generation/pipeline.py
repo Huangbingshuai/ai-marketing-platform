@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import re
 import unicodedata
@@ -16,7 +17,11 @@ from typing import Any, Literal, cast
 from pydantic import ValidationError
 
 from .api_client import InternalApi, InternalApiError
-from .insight_mapping import insight_coverage, map_insight
+from .insight_mapping import (
+    insight_coverage,
+    mandatory_business_facts,
+    map_insight,
+)
 from .embeddings import (
     ContentVectorIndex,
     CreativeVectorIndex,
@@ -44,6 +49,7 @@ from .models import (
     FragmentType,
     FRAGMENT_TYPE_LABELS,
     FactVisualStrategy,
+    FactVisualUsage,
     FactVisualStrategyResponse,
     InsightApplicationMap,
     InsightBinding,
@@ -112,12 +118,12 @@ from .quality import (
 
 MAX_REPLENISHMENT_ROUNDS = 3
 SEMANTIC_DUPLICATE_RATE_LIMIT = 15.0
-# Five detailed evaluations can still produce a status=completed response whose
-# JSON ends early. Three candidates keep each strict response comfortably bounded;
-# the pipeline-level sliding concurrency retains throughput while avoiding paid
-# whole-batch failures caused by one oversized classification response.
+# Keep ordinary calls economical. If a three-item strict response is malformed
+# or truncated, the pipeline automatically isolates that shard into single-item
+# calls instead of failing the entire batch.
 CLASSIFICATION_SHARD_SIZE = 3
 MAX_PROCESS_EMBEDDING_CACHE_ENTRIES = 4_096
+LOGGER = logging.getLogger(__name__)
 
 
 class PipelineError(RuntimeError):
@@ -292,10 +298,10 @@ class PromptGenerationPipeline:
         cache.creative_target_durations = {
             task.slot_id: task.target_duration_seconds for task in restored_creative_tasks
         }
-        quantity_tasks = [
+        replenishment_tasks = [
             task
             for task in restored_creative_tasks
-            if task.supplement_kind == "QUANTITY"
+            if task.supplement_kind in {"QUANTITY", "COVERAGE"}
         ]
         diversity_tasks = [
             task
@@ -303,7 +309,7 @@ class PromptGenerationPipeline:
             if task.supplement_kind == "DIVERSITY"
         ]
         cache.replenishment_rounds = max(
-            (task.round for task in quantity_tasks),
+            (task.round for task in replenishment_tasks),
             default=0,
         )
         cache.supplemented = cache.replenishment_rounds > 0
@@ -669,7 +675,8 @@ class PromptGenerationPipeline:
         round_number: int,
         missing_count: int | None = None,
         requested_count: int | None = None,
-        supplement_kind: Literal["QUANTITY", "DIVERSITY"] = "QUANTITY",
+        supplement_kind: Literal["QUANTITY", "COVERAGE", "DIVERSITY"] = "QUANTITY",
+        coverage_fact_ids: Sequence[str] = (),
     ) -> list[CreativeShardPlan]:
         settings = _current_settings(self.snapshot(context))
         snapshot = self.snapshot(context)
@@ -718,10 +725,11 @@ class PromptGenerationPipeline:
                 else math.ceil(selection_target * 1.4)
             )
             cache.candidate_target_count = requested
-        elif supplement_kind == "DIVERSITY":
+        elif supplement_kind in {"COVERAGE", "DIVERSITY"}:
             requested = max(1, requested_count or 1)
-            cache.diversity_supplemented = True
-            cache.diversity_supplement_count += requested
+            if supplement_kind == "DIVERSITY":
+                cache.diversity_supplemented = True
+                cache.diversity_supplement_count += requested
         else:
             deficit = max(1, missing_count or selection_target)
             requested = max(deficit + 1, math.ceil(deficit * 1.2))
@@ -733,7 +741,7 @@ class PromptGenerationPipeline:
             requested = min(requested, remaining_capacity)
             if requested <= 0:
                 return []
-        if round_number > 0 and supplement_kind == "QUANTITY":
+        if round_number > 0 and supplement_kind in {"QUANTITY", "COVERAGE"}:
             cache.supplemented = True
             cache.replenishment_rounds = max(
                 cache.replenishment_rounds,
@@ -760,10 +768,11 @@ class PromptGenerationPipeline:
             for item in snapshot.retained_manual_items
             for binding in item.insight_bindings
         )
+        batch_required_fact_ids = [fact.fact_id for fact in application.required]
         missing_required_fact_ids = [
-            fact.fact_id
-            for fact in application.required
-            if fact.fact_id not in already_covered_fact_ids
+            fact_id
+            for fact_id in batch_required_fact_ids
+            if fact_id not in already_covered_fact_ids
         ]
         ordinal_start = (
             1
@@ -810,8 +819,11 @@ class PromptGenerationPipeline:
                 directions,
                 application,
                 priority_fact_ids=(
-                    preferred_primary_ids or missing_required_fact_ids
+                    preferred_primary_ids
+                    or list(coverage_fact_ids)
+                    or missing_required_fact_ids
                 ),
+                minimum_priority_uses=(1 if round_number > 0 else 2),
             )
             for index, direction in enumerate(directions):
                 preferred_ids = list(
@@ -920,9 +932,9 @@ class PromptGenerationPipeline:
                     if fact_visual_strategy is not None
                     else "WORKER_ASSIGNMENT"
                 ),
-                "requiredFactCount": len(application.required),
+                "requiredFactCount": len(batch_required_fact_ids),
                 "missingRequiredFactCountBeforeRound": len(
-                    missing_required_fact_ids
+                    coverage_fact_ids or missing_required_fact_ids
                 ),
                 "primaryFactCount": len(
                     {assignment.primary_fact_id for assignment in fact_assignments}
@@ -1010,13 +1022,39 @@ class PromptGenerationPipeline:
             cache.completed_creative_shard_keys.add(shard.key)
             return items
         except Exception as exc:
-            setattr(
-                exc,
-                "node_id",
+            node_id = (
                 NodeId.ITEM_EVALUATE
                 if snapshot.operation == "ITEM_EVALUATE"
-                else NodeId.COHERENT_CREATIVE_GENERATION,
+                else NodeId.COHERENT_CREATIVE_GENERATION
             )
+            setattr(exc, "node_id", node_id)
+            if (
+                snapshot.operation == "BATCH_GENERATE"
+                and isinstance(exc, ProviderError)
+                and exc.error_type == ProviderErrorType.RESPONSE_INVALID
+            ):
+                LOGGER.warning(
+                    "discarding invalid creative shard round=%s shard=%s task_count=%s",
+                    shard.round,
+                    shard.shard_index,
+                    len(shard.tasks),
+                )
+                await self.api.put_shard(
+                    context,
+                    running.model_copy(
+                        update={
+                            "status": StageStatus.SUCCEEDED,
+                            "creative_items": [],
+                            "warnings": [
+                                "该分片候选结构异常，已跳过并交由后续数量补充"
+                            ],
+                            "error_code": None,
+                            "error_message": None,
+                        }
+                    ),
+                )
+                self._cache(context).completed_creative_shard_keys.add(shard.key)
+                return []
             await self.api.put_shard(
                 context,
                 running.model_copy(
@@ -1151,32 +1189,41 @@ class PromptGenerationPipeline:
         )
         await self.api.put_shard(context, running)
         try:
-            for invalid_response_attempt in range(2):
-                self._reserve_ai_call(context)
-                try:
-                    application = self._require_application(context)
-                    assigned_context_fact_ids = {
-                        candidate.slot_id: _evaluation_context_fact_ids(
-                            candidate,
-                            cache.creative_tasks.get(candidate.slot_id),
-                            application,
-                            item_evaluation=(
-                                self.snapshot(context).operation == "ITEM_EVALUATE"
-                            ),
-                        )
-                        for candidate in candidates
-                    }
+            application = self._require_application(context)
+            assigned_context_fact_ids = {
+                candidate.slot_id: _evaluation_context_fact_ids(
+                    candidate,
+                    cache.creative_tasks.get(candidate.slot_id),
+                    application,
+                    item_evaluation=(
+                        self.snapshot(context).operation == "ITEM_EVALUATE"
+                    ),
+                )
+                for candidate in candidates
+            }
+
+            async def request_evaluations(
+                group: list[CreativeCandidate],
+            ) -> list[CreativeEvaluation]:
+                attempts = 2 if len(group) == 1 else 1
+                for invalid_response_attempt in range(attempts):
+                    self._reserve_ai_call(context)
                     async with self._ai_semaphore:
                         evaluation_kwargs: dict[str, Any] = {
                             "application": application,
                             "assigned_context_fact_ids": (
-                                assigned_context_fact_ids
+                                {
+                                    candidate.slot_id: assigned_context_fact_ids[
+                                        candidate.slot_id
+                                    ]
+                                    for candidate in group
+                                }
                             ),
                             "target_durations": {
-                                candidate.slot_id: cache.creative_target_durations[
-                                    candidate.slot_id
-                                ]
-                                for candidate in candidates
+                                candidate.slot_id: (
+                                    cache.creative_target_durations[candidate.slot_id]
+                                )
+                                for candidate in group
                             },
                             "direction_plan": cache.creative_direction_plan,
                         }
@@ -1184,20 +1231,45 @@ class PromptGenerationPipeline:
                             evaluation_kwargs["fact_visual_strategy"] = (
                                 self._required_fact_visual_strategy(context)
                             )
-                        call = await self.provider.evaluate_creatives(
-                            candidates,
-                            **evaluation_kwargs,
-                        )
-                    break
-                except ProviderError as exc:
-                    if (
-                        exc.error_type != ProviderErrorType.RESPONSE_INVALID
-                        or invalid_response_attempt == 1
-                    ):
-                        raise
+                        try:
+                            call = await self.provider.evaluate_creatives(
+                                group,
+                                **evaluation_kwargs,
+                            )
+                            return call.value.items
+                        except ProviderError as exc:
+                            if (
+                                exc.error_type != ProviderErrorType.RESPONSE_INVALID
+                                or invalid_response_attempt == attempts - 1
+                            ):
+                                raise
+                raise PipelineError("creative evaluation retry loop exhausted")
+
+            try:
+                evaluated_items = await request_evaluations(candidates)
+            except ProviderError as exc:
+                recoverable_structure_error = exc.error_type in {
+                    ProviderErrorType.RESPONSE_INVALID,
+                    ProviderErrorType.OUTPUT_TRUNCATED,
+                    ProviderErrorType.RESPONSE_INCOMPLETE,
+                }
+                if len(candidates) == 1 or not recoverable_structure_error:
+                    raise
+                LOGGER.warning(
+                    "splitting invalid creative evaluation shard round=%s "
+                    "shard=%s candidate_count=%s error_type=%s",
+                    shard.round,
+                    shard.shard_index,
+                    len(candidates),
+                    exc.error_type.value,
+                )
+                evaluated_items = []
+                for candidate in candidates:
+                    evaluated_items.extend(await request_evaluations([candidate]))
+
             candidate_by_id = {item.slot_id: item for item in candidates}
             items = []
-            for item in call.value.items:
+            for item in evaluated_items:
                 candidate = candidate_by_id[item.slot_id]
                 if cache.creative_direction_plan is not None:
                     item = complete_semantic_profile(
@@ -1976,8 +2048,11 @@ class PromptGenerationPipeline:
             result,
             self._require_application(context),
             settings.default_duration_seconds,
-            creative_tasks=cache.creative_tasks,
-            item_evaluation=(snapshot.operation == "ITEM_EVALUATE"),
+            fact_visual_strategy=(
+                self._required_fact_visual_strategy(context)
+                if _uses_fact_visual_strategy(snapshot)
+                else None
+            ),
         )
         cache.accepted_items = (
             items
@@ -1985,8 +2060,25 @@ class PromptGenerationPipeline:
             else [*_retained_items(snapshot.retained_manual_items), *items]
         )
         missing = max(0, selection_target - len(items))
+        selected_covered_fact_ids = {
+            fact_id
+            for row in result.selected
+            for fact_id in row.evaluation.realized_fact_ids
+        }
+        selected_covered_fact_ids.update(fixed_covered_fact_ids)
+        missing_coverage_fact_ids = [
+            fact_id
+            for fact_id in required_fact_ids
+            if fact_id not in selected_covered_fact_ids
+        ]
+        should_coverage_supplement = (
+            bool(missing_coverage_fact_ids)
+            and cache.replenishment_rounds < MAX_REPLENISHMENT_ROUNDS
+            and snapshot.operation == "BATCH_GENERATE"
+        )
         should_quantity_supplement = (
-            missing > 0
+            not should_coverage_supplement
+            and missing > 0
             and cache.replenishment_rounds < MAX_REPLENISHMENT_ROUNDS
             and snapshot.operation != "ITEM_EVALUATE"
         )
@@ -2045,7 +2137,8 @@ class PromptGenerationPipeline:
         )
         cluster_diversity_needed = bool(cluster_reasons)
         should_diversity_supplement = (
-            not should_quantity_supplement
+            not should_coverage_supplement
+            and not should_quantity_supplement
             and missing == 0
             and selection_target > 1
             and snapshot.operation == "BATCH_GENERATE"
@@ -2090,7 +2183,19 @@ class PromptGenerationPipeline:
                 *cluster_reasons,
             ]
         pending = []
-        if should_quantity_supplement:
+        if should_coverage_supplement:
+            coverage_supplement_count = max(
+                len(missing_coverage_fact_ids) + 1,
+                len(missing_coverage_fact_ids) * 2,
+            )
+            pending = await self.plan_creatives(
+                context,
+                round_number=round_number + 1,
+                requested_count=coverage_supplement_count,
+                supplement_kind="COVERAGE",
+                coverage_fact_ids=missing_coverage_fact_ids,
+            )
+        elif should_quantity_supplement:
             pending = await self.plan_creatives(
                 context,
                 round_number=round_number + 1,
@@ -2103,7 +2208,10 @@ class PromptGenerationPipeline:
                 requested_count=diversity_supplement_count,
                 supplement_kind="DIVERSITY",
             )
-        should_supplement = should_quantity_supplement or should_diversity_supplement
+        # Capacity exhaustion may turn an intended supplement into an empty
+        # plan. Only report PARTIAL when there is real work to execute; the
+        # final coverage gate will otherwise retain the draft as NEEDS_REVIEW.
+        should_supplement = bool(pending)
         if cache.embedding_stage_metadata:
             cache.embedding_stage_metadata.update(
                 {
@@ -2135,10 +2243,12 @@ class PromptGenerationPipeline:
             NodeId.EXACT_SELECTION_AND_SUPPLEMENT,
             StageStatus.PARTIAL if should_supplement else StageStatus.SUCCEEDED,
             (
-                "合格候选不足，正在执行数量补充"
-                if should_quantity_supplement
+                "必用提炼事实尚未正确实现，正在定向补充"
+                if should_coverage_supplement and should_supplement
+                else "合格候选不足，正在执行数量补充"
+                if should_quantity_supplement and should_supplement
                 else "语义相似候选偏多，正在执行一次多样性补充"
-                if should_diversity_supplement
+                if should_diversity_supplement and should_supplement
                 else "已按质量与语义多样性选满目标数量"
             ),
             metadata={
@@ -2146,6 +2256,10 @@ class PromptGenerationPipeline:
                 "acceptedCount": len(cache.accepted_items),
                 "targetCount": 1 if item_operation else settings.target_count,
                 "missingCount": missing,
+                "missingRequiredFactCount": len(missing_coverage_fact_ids),
+                "coverageSupplementTriggered": (
+                    should_coverage_supplement and should_supplement
+                ),
                 "exactDuplicateCount": result.exact_duplicate_count,
                 "supplemented": cache.supplemented,
                 **cache.embedding_stage_metadata,
@@ -2790,9 +2904,16 @@ def _evaluation_context_fact_ids(
         and fact_id in application.by_id
         and application.by_id[fact_id].field in _SEMANTIC_CONTEXT_FIELDS
     ]
+    product_anchor_ids = [
+        fact_id
+        for fact_id in assignment.product_anchor_fact_ids
+        if fact_id in application.by_id
+        and application.by_id[fact_id].field
+        in {InsightField.PRODUCT_NAME, InsightField.PRODUCT_CATEGORY}
+    ]
     return list(
         dict.fromkeys(
-            [*semantic_context_ids, *semantic_visual_ids]
+            [*semantic_context_ids, *semantic_visual_ids, *product_anchor_ids]
         )
     )
 
@@ -2803,49 +2924,64 @@ def _prompt_items(
     application: InsightApplicationMap,
     default_duration_seconds: int,
     *,
-    creative_tasks: Mapping[str, CreativeTask],
-    item_evaluation: bool,
+    fact_visual_strategy: FactVisualStrategy | None,
 ) -> list[PromptItem]:
     result: list[PromptItem] = []
+    mandatory_business_ids = {
+        fact.fact_id for fact in mandatory_business_facts(application)
+    }
     for row in selection.selected:
         candidate = row.candidate
         evaluation = row.evaluation
-        task = creative_tasks.get(candidate.slot_id)
-        contextual_ids = set(
-            _evaluation_context_fact_ids(
-                candidate,
-                task,
-                application,
-                item_evaluation=item_evaluation,
-            )
-        )
-        visual_fact_id = (
-            task.fact_assignment.visual_task_fact_id
-            if task is not None and task.fact_assignment is not None
-            else None
+        evidence_by_id = {
+            evidence.fact_id: evidence.evidence_text
+            for evidence in evaluation.fact_evidence
+        }
+        normalized_content = normalize_creative_signature(candidate.content)
+        policy_by_id = (
+            fact_visual_strategy.by_id if fact_visual_strategy is not None else {}
         )
         bindings: list[InsightBinding] = []
-        for fact_id in evaluation.realized_fact_ids:
+        ordered_fact_ids = sorted(
+            evaluation.realized_fact_ids,
+            key=lambda fact_id: (
+                0
+                if fact_id in mandatory_business_ids
+                else 1
+                if application.by_id.get(fact_id) is not None
+                and application.by_id[fact_id].field
+                in {InsightField.PRODUCT_NAME, InsightField.PRODUCT_CATEGORY}
+                else 2,
+                evaluation.realized_fact_ids.index(fact_id),
+            ),
+        )[:3]
+        for fact_id in ordered_fact_ids:
             fact = application.by_id.get(fact_id)
             if fact is None:
                 continue
+            evidence_signature = normalize_creative_signature(
+                evidence_by_id.get(fact_id, "")
+            )
+            policy = policy_by_id.get(fact_id)
+            if fact.field in {InsightField.PRODUCT_NAME, InsightField.PRODUCT_CATEGORY}:
+                role = InsightBindingRole.PRIMARY
+            elif policy is not None and policy.visual_usage in {
+                FactVisualUsage.CONTEXT_ONLY,
+                FactVisualUsage.TEXT_ONLY,
+                FactVisualUsage.FORBIDDEN_VISUAL_PROOF,
+            }:
+                role = InsightBindingRole.CONTEXT
+            elif evidence_signature and evidence_signature in normalized_content:
+                role = InsightBindingRole.EVIDENCE
+            else:
+                role = InsightBindingRole.CONTEXT
             bindings.append(
                 InsightBinding(
                     fact_id=fact.fact_id,
                     field=fact.field,
                     value=fact.value,
                     value_hash=fact.value_hash,
-                    role=(
-                        InsightBindingRole.CONTEXT
-                        if fact_id in contextual_ids
-                        and fact_id not in candidate.declared_fact_ids
-                        else InsightBindingRole.EVIDENCE
-                        if fact.preferred_role == InsightBindingRole.EVIDENCE
-                        else InsightBindingRole.PRIMARY
-                        if fact_id == visual_fact_id
-                        or fact_id in candidate.declared_fact_ids
-                        else fact.preferred_role
-                    ),
+                    role=role,
                 )
             )
         timestamp = candidate.generated_at or utc_now()

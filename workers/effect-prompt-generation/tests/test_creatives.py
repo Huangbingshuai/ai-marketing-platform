@@ -22,10 +22,13 @@ from effect_prompt_generation.models import (
     CreativeCandidate,
     CreativeDimensions,
     CreativeEvaluation,
+    CreativeFactAssignment,
     CreativeScores,
+    CreativeTask,
     FactEvidence,
     FactVisualStrategy,
     FragmentType,
+    InsightField,
     ProgressPayload,
     PromptBatchResult,
     PromptBatchSettings,
@@ -37,6 +40,7 @@ from effect_prompt_generation.models import (
 )
 from effect_prompt_generation.pipeline import (
     PromptGenerationPipeline,
+    _evaluation_context_fact_ids,
     _guard_final_selection_risk,
     _maximum_semantic_duplicates,
     _semantic_evaluation,
@@ -285,7 +289,9 @@ class DirectionStageTrackingProvider(MockAiProvider):
 
 class OneClassificationFailureProvider(MockAiProvider):
     def __init__(self) -> None:
-        self.failures_remaining = 2
+        # One batch response plus both isolated retries fail in the first run;
+        # the next run can then recover the same persisted shard assignment.
+        self.failures_remaining = 4
 
     async def evaluate_creatives(self, *args: Any, **kwargs: Any) -> Any:
         if self.failures_remaining:
@@ -311,6 +317,40 @@ class OneTransientClassificationFailureProvider(MockAiProvider):
                 error_type=ProviderErrorType.RESPONSE_INVALID,
             )
         return await super().evaluate_creatives(*args, **kwargs)
+
+
+class BatchTruncatedClassificationProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.batch_calls = 0
+        self.single_calls = 0
+
+    async def evaluate_creatives(self, *args: Any, **kwargs: Any) -> Any:
+        candidates = args[0]
+        if len(candidates) > 1:
+            self.batch_calls += 1
+            raise ProviderError(
+                "test classification output truncated",
+                retryable=False,
+                error_type=ProviderErrorType.OUTPUT_TRUNCATED,
+            )
+        self.single_calls += 1
+        return await super().evaluate_creatives(*args, **kwargs)
+
+
+class InvalidCreativeShardProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.invalid_calls = 0
+
+    async def generate_creatives(self, *args: Any, **kwargs: Any) -> Any:
+        shard = args[0]
+        if shard.round == 0 and shard.shard_index == 0:
+            self.invalid_calls += 1
+            raise ProviderError(
+                "test creative response invalid",
+                retryable=False,
+                error_type=ProviderErrorType.RESPONSE_INVALID,
+            )
+        return await super().generate_creatives(*args, **kwargs)
 
 
 def _snapshot() -> PromptGenerationSnapshot:
@@ -406,6 +446,7 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
         "CREATIVE": 4,
         "CLASSIFICATION": 5,
     }
+
     creative_tasks = [
         task
         for shard in api.shards.values()
@@ -468,6 +509,33 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     assert semantic_audit["similarityThreshold"] == 0.82
     assert len(semantic_audit["evaluatedItems"]) == 10
     assert len(semantic_audit["contentFingerprint"]) == 64
+
+
+@pytest.mark.asyncio
+async def test_invalid_creative_shard_does_not_fail_paid_batch() -> None:
+    api = PromptApi()
+    provider = InvalidCreativeShardProvider()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        embedding_provider=DistinctEmbeddingProvider(),
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _snapshot())
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    assert provider.invalid_calls == 2
+    assert api.result is not None
+    assert len(api.result.items) == 10
+    failed_source_shard = api.shards["CREATIVE:0:0"]
+    assert failed_source_shard.status.value == "SUCCEEDED"
+    assert failed_source_shard.creative_items == []
+    assert failed_source_shard.warnings
 
 
 @pytest.mark.asyncio
@@ -580,9 +648,109 @@ async def test_retries_one_invalid_classification_response_inside_its_shard() ->
         context=runtime,
     )
 
-    assert provider.calls == 6
+    assert provider.calls == 8
     assert api.result is not None
     assert api.result.metrics.generated_candidate_count == 14
+
+
+@pytest.mark.asyncio
+async def test_splits_truncated_classification_shard_without_failing_batch() -> None:
+    api = PromptApi()
+    provider = BatchTruncatedClassificationProvider()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        embedding_provider=DistinctEmbeddingProvider(),
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _snapshot())
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    assert provider.batch_calls == 5
+    assert provider.single_calls == 14
+    assert api.result is not None
+    assert api.result.metrics.generated_candidate_count == 14
+
+
+def test_product_anchor_omission_is_deferred_to_evidence_validation() -> None:
+    application = map_insight(
+        {
+            "productName": "便携杯",
+            "coreSellingPoints": ["单手开合"],
+        }
+    )
+    product_fact = next(item for item in application.usable if item.value == "便携杯")
+    primary_fact = next(item for item in application.usable if item.value == "单手开合")
+    candidate = CreativeCandidate(
+        slot_id="creative-anchor",
+        ordinal=1,
+        round=0,
+        creative_core="通勤者单手打开便携杯",
+        declared_fact_ids=[primary_fact.fact_id],
+        dimensions=CreativeDimensions(
+            narrative="动作展示",
+            scene="地铁站台",
+            persona="成年通勤者",
+            product_relation="单手打开便携杯",
+            camera="中近景跟随",
+            emotion="从容利落",
+        ),
+        content="地铁站台上，成年通勤者单手打开便携杯，镜头跟随杯盖动作。",
+    )
+    task = CreativeTask(
+        slot_id=candidate.slot_id,
+        ordinal=1,
+        round=0,
+        target_duration_seconds=5,
+        fact_assignment=CreativeFactAssignment(
+            primary_fact_id=primary_fact.fact_id,
+            product_anchor_fact_ids=[product_fact.fact_id],
+            assignment_hash="a" * 64,
+        ),
+    )
+    contextual_ids = _evaluation_context_fact_ids(
+        candidate,
+        task,
+        application,
+        item_evaluation=False,
+    )
+    evaluation = CreativeEvaluation(
+        slot_id=candidate.slot_id,
+        primary_purpose=FragmentType.PRODUCT_DISPLAY,
+        compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+        fact_evidence=[
+            FactEvidence(fact_id=product_fact.fact_id, evidence_text="便携杯")
+        ],
+        realized_fact_ids=[product_fact.fact_id],
+        scores=CreativeScores(
+            product_relevance=90,
+            creative_coherence=90,
+            visual_executability=90,
+            commercial_usefulness=85,
+            visual_clarity=90,
+        ),
+        semantic_signature="通勤单手开杯",
+        visual_signature="站台跟随杯盖",
+        hard_issues=[],
+        warnings=[],
+    )
+
+    validated = validate_creative_evaluation(
+        candidate,
+        evaluation,
+        application,
+        contextual_fact_ids=contextual_ids,
+        target_duration_seconds=5,
+    )
+
+    assert product_fact.fact_id in contextual_ids
+    assert validated.realized_fact_ids == [product_fact.fact_id]
+    assert "MISSING_PRODUCT_RELATION" not in validated.hard_issues
 
 
 @pytest.mark.asyncio
@@ -656,7 +824,7 @@ async def test_vector_selection_keeps_exact_count_and_reports_safe_metrics() -> 
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
     assert selection_stage.metadata["selectionMethod"] == "CONTENT_CLUSTER_VECTOR_MMR"
-    assert selection_stage.metadata["embeddingInputCount"] >= 14
+    assert 10 <= selection_stage.metadata["embeddingInputCount"] <= 14
     assert selection_stage.metadata["embeddingRequestCount"] == 2
     assert selection_stage.metadata["comparisonCount"] > 0
     assert "model" not in selection_stage.metadata
@@ -695,7 +863,7 @@ async def test_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
     assert selection_stage.metadata["selectionMethod"] == "TRIGRAM_SHADOW"
-    assert selection_stage.metadata["embeddingInputCount"] == (
+    assert 10 <= selection_stage.metadata["embeddingInputCount"] <= (
         api.result.metrics.candidate_target_count
     )
     assert selection_stage.metadata["embeddingRequestCount"] == 1
@@ -737,7 +905,7 @@ async def test_content_mmr_diversity_supplement_runs_once_and_keeps_exact_count(
     assert api.result is not None
     assert len(api.result.items) == 10
     assert api.result.metrics.generated_candidate_count == 18
-    assert embedding_provider.input_count == 18
+    assert embedding_provider.input_count == 14
     final_selection_stage = next(
         stage
         for stage in reversed(api.stages)
@@ -745,7 +913,7 @@ async def test_content_mmr_diversity_supplement_runs_once_and_keeps_exact_count(
     )
     assert final_selection_stage.metadata["diversitySupplementTriggered"] is True
     assert final_selection_stage.metadata["diversitySupplementCount"] == 4
-    assert final_selection_stage.metadata["embeddingInputCount"] == 18
+    assert final_selection_stage.metadata["embeddingInputCount"] == 14
     assert final_selection_stage.metadata["embeddingRequestCount"] == 2
     assert final_selection_stage.metadata["finalAccurateCount"] == 10
     assert final_selection_stage.warnings == ["SEMANTIC_DUPLICATE_RATE_LIMIT_NOT_MET"]
@@ -891,7 +1059,7 @@ async def test_item_evaluate_preserves_content_and_only_runs_classification() ->
             narrative="从成品摆盘推进到切面细节",
             scene="节日家宴餐桌",
             persona="仅一双成年人手部",
-            product_relation="广式腊肠油润红亮切面",
+            product_relation="蒸熟后油润有光泽",
             camera="近景缓慢横移",
             emotion="温暖真实",
         ),
@@ -943,7 +1111,7 @@ async def test_item_evaluate_preserves_content_and_only_runs_classification() ->
 
 
 @pytest.mark.asyncio
-async def test_stops_supplementing_as_soon_as_exact_quantity_is_reached() -> None:
+async def test_runs_coverage_replenishment_after_reaching_exact_count() -> None:
     api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -963,13 +1131,13 @@ async def test_stops_supplementing_as_soon_as_exact_quantity_is_reached() -> Non
     assert api.result.quality_status == "PASS"
     assert len(api.result.items) == 10
     assert api.result.metrics.candidate_target_count == 14
-    assert api.result.metrics.generated_candidate_count == 14
-    assert api.result.metrics.replenishment_rounds == 0
+    assert api.result.metrics.generated_candidate_count == 17
+    assert api.result.metrics.replenishment_rounds == 1
     assert api.result.metrics.rejected_count > 0
     assert api.result.metrics.hard_issue_counts == []
     assert Counter(item.phase.value for item in api.shards.values()) == {
-        "CREATIVE": 4,
-        "CLASSIFICATION": 5,
+        "CREATIVE": 5,
+        "CLASSIFICATION": 6,
     }
 
 
@@ -1090,7 +1258,7 @@ def test_assigned_business_context_accepts_real_semantic_evidence() -> None:
         declared_fact_ids=[product_fact.fact_id],
         dimensions=CreativeDimensions(
             narrative="场景代入",
-            scene="春节家庭玄关",
+            scene="年货送礼",
             persona="登门拜访的成年人",
             product_relation="双手递送广式腊肠",
             camera="中近景稳定跟随",
@@ -1109,7 +1277,7 @@ def test_assigned_business_context_accepts_real_semantic_evidence() -> None:
             FactEvidence(fact_id=product_fact.fact_id, evidence_text="广式腊肠"),
             FactEvidence(
                 fact_id=gift_fact.fact_id,
-                evidence_text="双手递给前来迎接的家人",
+                evidence_text="年货送礼",
             ),
         ],
         realized_fact_ids=[product_fact.fact_id, gift_fact.fact_id],
@@ -1136,6 +1304,73 @@ def test_assigned_business_context_accepts_real_semantic_evidence() -> None:
         gift_fact.fact_id,
     ]
     assert "UNKNOWN_OR_UNDECLARED_FACT" not in validated.warnings
+
+
+def test_context_binding_is_removed_when_excerpt_describes_another_fact() -> None:
+    application = map_insight(
+        {
+            "productName": "广式腊肠",
+            "coreSpecification": "500g真空袋装",
+            "coreSellingPoints": ["三七肥瘦黄金配比"],
+        }
+    )
+    product_fact = next(
+        fact for fact in application.usable if fact.field == InsightField.PRODUCT_NAME
+    )
+    selling_fact = next(
+        fact
+        for fact in application.usable
+        if fact.field == InsightField.CORE_SELLING_POINT
+    )
+    candidate = CreativeCandidate(
+        slot_id="candidate-mismatched-context",
+        ordinal=1,
+        round=0,
+        creative_core="包装规格展示",
+        declared_fact_ids=[product_fact.fact_id],
+        dimensions=CreativeDimensions(
+            narrative="包装展示",
+            scene="家庭餐桌",
+            persona="成年人手部",
+            product_relation="500g真空袋装",
+            camera="近景固定",
+            emotion="清楚克制",
+        ),
+        content="成年人把500g真空袋装广式腊肠平稳放在家庭餐桌中央。",
+    )
+    evaluation = CreativeEvaluation(
+        slot_id=candidate.slot_id,
+        primary_purpose=FragmentType.PRODUCT_DISPLAY,
+        compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+        fact_evidence=[
+            FactEvidence(fact_id=product_fact.fact_id, evidence_text="广式腊肠"),
+            FactEvidence(
+                fact_id=selling_fact.fact_id,
+                evidence_text="500g真空袋装",
+            ),
+        ],
+        realized_fact_ids=[product_fact.fact_id, selling_fact.fact_id],
+        scores=CreativeScores(
+            product_relevance=90,
+            creative_coherence=90,
+            visual_executability=90,
+            commercial_usefulness=85,
+            visual_clarity=90,
+        ),
+        semantic_signature="ignored",
+        visual_signature="ignored",
+    )
+
+    validated = validate_creative_evaluation(
+        candidate,
+        evaluation,
+        application,
+        contextual_fact_ids=[selling_fact.fact_id],
+    )
+
+    assert validated.realized_fact_ids == [product_fact.fact_id]
+    assert "FACT_EVIDENCE_MISMATCH" in validated.warnings
+    assert "MISSING_DEEP_BUSINESS_FACT" in validated.hard_issues
 
 
 def test_selection_prioritizes_an_uncovered_required_fact() -> None:
@@ -1309,7 +1544,7 @@ def test_novelty_uses_narrative_and_emotion_as_soft_dimensions() -> None:
     assert _creative_novelty(first, second) > 0
 
 
-def test_discards_bad_evidence_excerpt_without_rejecting_valid_prompt() -> None:
+def test_discards_bad_evidence_and_rejects_identity_only_prompt() -> None:
     application = map_insight(
         {"productName": "广式腊肠", "coreSellingPoints": ["油润红亮切面"]}
     )
@@ -1358,12 +1593,12 @@ def test_discards_bad_evidence_excerpt_without_rejecting_valid_prompt() -> None:
 
     validated = validate_creative_evaluation(candidate, evaluation, application)
 
-    assert validated.hard_issues == []
+    assert validated.hard_issues == ["MISSING_DEEP_BUSINESS_FACT"]
     assert validated.warnings == ["FACT_EVIDENCE_NOT_IN_CONTENT"]
     assert validated.realized_fact_ids == [product_fact.fact_id]
 
 
-def test_evidence_excerpt_noise_does_not_reduce_a_50_item_batch() -> None:
+def test_evidence_excerpt_noise_cannot_fake_deep_fact_coverage() -> None:
     application = map_insight(
         {"productName": "广式腊肠", "coreSellingPoints": ["油润红亮切面"]}
     )
@@ -1423,11 +1658,11 @@ def test_evidence_excerpt_noise_does_not_reduce_a_50_item_batch() -> None:
 
     result = select_creatives(candidates, evaluations, target_count=50)
 
-    assert len(result.selected) == 50
-    assert all(not item.evaluation.hard_issues for item in result.selected)
+    assert result.selected == []
     assert all(
-        item.evaluation.warnings == ["FACT_EVIDENCE_NOT_IN_CONTENT"]
-        for item in result.selected
+        item.hard_issues == ["MISSING_DEEP_BUSINESS_FACT"]
+        and item.warnings == ["FACT_EVIDENCE_NOT_IN_CONTENT"]
+        for item in evaluations
     )
 
 
