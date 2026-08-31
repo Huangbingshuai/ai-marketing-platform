@@ -21,6 +21,78 @@ from .models import (
 
 OTHER_FAMILY = "OTHER"
 
+# The evaluator's product-action family is intentionally a reusable, high-level
+# business label.  It cannot distinguish two candidates that both say
+# "serving interaction" while repeating the same underlying "slice then pick
+# up" action.  These deterministic motifs stay internal to selection and are
+# derived from the actual candidate rather than trusted model metadata.
+_ACTION_MOTIF_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("CUT", re.compile(r"切(?:开|下|成|出|片|段|块|丁|丝|薄片|厚片|制)|下刀|刀刃")),
+    ("PICK_UP", re.compile(r"夹起|夹取|筷子夹|拿起|拾起|提起")),
+    ("PLATE", re.compile(r"摆盘|装盘|码放|摆放到.{0,6}(?:盘|碟|碗)")),
+    ("UNPACK", re.compile(r"拆(?:开)?包装|撕开|开袋|取出包装|从.{0,6}(?:袋|盒)中取出")),
+    ("STEAM", re.compile(r"蒸制|上锅蒸|放入蒸笼|揭开锅盖|打开蒸笼")),
+    ("FRY", re.compile(r"煎制|下锅煎|翻煎")),
+    ("STIR_FRY", re.compile(r"翻炒|下锅炒|炒制")),
+    ("BOIL", re.compile(r"水煮|煮制|放入汤中|下锅煮")),
+    ("ROAST", re.compile(r"烘烤|烤制|放入烤箱")),
+    ("ADD_TO_DISH", re.compile(r"加入|放入|铺在|盖在|拌入")),
+    ("SERVE", re.compile(r"端上|端到|递到|递给|送到餐桌")),
+    ("SHARE", re.compile(r"分享|分给|共同夹取|家人.{0,8}(?:夹|取|尝)")),
+    ("TASTE", re.compile(r"品尝|尝一口|入口|咬下|送入口中|放入口中")),
+    ("SMELL", re.compile(r"闻香|凑近闻|闻一闻")),
+    ("INSPECT", re.compile(r"观察|查看|端详|对准.{0,8}(?:切面|表面|包装)")),
+    ("TURN", re.compile(r"翻面|转动|旋转")),
+    ("PRESS", re.compile(r"按压|轻压|捏动")),
+)
+
+_ACTION_MOTIF_GUIDANCE = {
+    "CUT": "切开或切片",
+    "PICK_UP": "夹取或拿起",
+    "PLATE": "摆盘或码放",
+    "UNPACK": "拆袋或取出包装",
+    "STEAM": "蒸制或揭盖",
+    "FRY": "煎制",
+    "STIR_FRY": "翻炒",
+    "BOIL": "水煮",
+    "ROAST": "烘烤",
+    "ADD_TO_DISH": "加入或铺入菜品",
+    "SERVE": "端上或递送",
+    "SHARE": "分享或共同夹取",
+    "TASTE": "品尝或入口",
+    "SMELL": "闻香",
+    "INSPECT": "观察外观",
+    "TURN": "翻面或转动",
+    "PRESS": "按压或捏动",
+}
+
+_SCENE_ATOM_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "KITCHEN_PREP",
+        re.compile(
+            r"厨房|灶台|厨台|备餐|备菜|砧板|案板|料理台|砂锅台面|锅边|蒸笼旁|蒸锅旁|岭南厨房"
+        ),
+    ),
+    ("DINING_MEAL", re.compile(r"餐桌|饭桌|家宴|聚餐|用餐区|围桌|团圆饭")),
+    ("RETAIL_PURCHASE", re.compile(r"超市|商超|货架|门店|卖场|选购|收银台")),
+    ("GIFT_HANDOFF", re.compile(r"送礼|递礼|拜访|年货|伴手礼|礼赠|登门")),
+    ("HOME_LIVING", re.compile(r"客厅|居家|家中|玄关|阳台")),
+    ("OUTDOOR_MEAL", re.compile(r"户外|露营|野餐|庭院|烧烤架")),
+    ("FOOD_STALL", re.compile(r"市集|摊位|档口|熟食店|餐饮店")),
+    ("PRODUCT_STILL_LIFE", re.compile(r"纯色背景|静物台|展示台|棚拍|产品台")),
+)
+
+_SCENE_ATOM_GUIDANCE = {
+    "KITCHEN_PREP": "家庭厨房、灶台、砧板或备餐台",
+    "DINING_MEAL": "餐桌、家宴或围桌用餐",
+    "RETAIL_PURCHASE": "商超、门店、货架或收银",
+    "GIFT_HANDOFF": "送礼、拜访或年货递送",
+    "HOME_LIVING": "客厅或普通居家空间",
+    "OUTDOOR_MEAL": "户外、露营或野餐",
+    "FOOD_STALL": "市集、摊位或餐饮档口",
+    "PRODUCT_STILL_LIFE": "纯色背景、展示台或棚拍静物",
+}
+
 
 def creative_direction_source_hash(
     *,
@@ -67,9 +139,7 @@ def validate_creative_direction_plan(
         directions.append(
             direction.model_copy(update={"compatible_fact_ids": fact_ids})
         )
-    plan_payload = [
-        item.model_dump(mode="json", by_alias=True) for item in directions
-    ]
+    plan_payload = [item.model_dump(mode="json", by_alias=True) for item in directions]
     return CreativeDirectionPlan(
         directions=directions,
         source_hash=source_hash,
@@ -85,12 +155,14 @@ def allocate_creative_directions(
     ordinal_start: int,
     preferred_direction_ids: Sequence[str] = (),
     avoid_scene_families: Iterable[str] = (),
+    avoid_scene_atoms: Iterable[str] = (),
     avoid_action_families: Iterable[str] = (),
 ) -> list[CreativeDirection]:
     if count <= 0:
         return []
     preferred = set(preferred_direction_ids)
     avoided_scenes = set(avoid_scene_families)
+    avoided_scene_atoms = set(avoid_scene_atoms)
     avoided_actions = set(avoid_action_families)
     directions = [
         item
@@ -101,15 +173,29 @@ def allocate_creative_directions(
         item
         for item in directions
         if item.semantic_profile.scene_family not in avoided_scenes
+        and scene_atom_for_direction(item) not in avoided_scene_atoms
         and item.semantic_profile.product_action_family not in avoided_actions
     ]
     if alternatives:
         directions = alternatives
-    # A stable round-robin gives every available direction equal opportunity before
-    # any one direction receives a second task. The model still owns the actual idea.
-    start = max(0, ordinal_start - 1) % len(directions)
-    rotated = [*directions[start:], *directions[:start]]
-    return [rotated[index % len(rotated)] for index in range(count)]
+    # Balance concrete scene atoms first, then rotate directions within each atom.
+    # This prevents several model labels for "岭南厨房/砂锅台面/家庭备餐" from
+    # receiving three times the allocation merely because their strings differ.
+    grouped: dict[str, list[CreativeDirection]] = {}
+    for direction in directions:
+        grouped.setdefault(scene_atom_for_direction(direction), []).append(direction)
+    atoms = list(grouped)
+    atom_start = max(0, ordinal_start - 1) % len(atoms)
+    atoms = [*atoms[atom_start:], *atoms[:atom_start]]
+    atom_offsets: Counter[str] = Counter()
+    allocated: list[CreativeDirection] = []
+    for index in range(count):
+        atom = atoms[index % len(atoms)]
+        rows = grouped[atom]
+        direction = rows[atom_offsets[atom] % len(rows)]
+        atom_offsets[atom] += 1
+        allocated.append(direction)
+    return allocated
 
 
 def validate_semantic_profile(
@@ -123,9 +209,7 @@ def validate_semantic_profile(
     for field_name, allowed in vocabulary.items():
         value = getattr(profile, field_name)
         if value != OTHER_FAMILY and value not in allowed:
-            raise ValueError(
-                f"creative evaluation used unknown {field_name} value"
-            )
+            raise ValueError(f"creative evaluation used unknown {field_name} value")
 
 
 def complete_semantic_profile(
@@ -169,9 +253,7 @@ def complete_semantic_profile(
         sources = tuple(
             value
             for value in (current, *source_by_field[field_name])
-            if isinstance(value, str)
-            and value.strip()
-            and value != OTHER_FAMILY
+            if isinstance(value, str) and value.strip() and value != OTHER_FAMILY
         )
         completed[field_name] = _match_dynamic_family(sources, allowed)
     repaired = evaluation.model_copy(
@@ -195,6 +277,11 @@ def semantic_profile_signature(profile: CreativeSemanticProfile) -> tuple[str, .
 def semantic_cluster_novelty(
     left: CreativeSemanticProfile | None,
     right: CreativeSemanticProfile | None,
+    *,
+    left_action_motifs: Sequence[str] = (),
+    right_action_motifs: Sequence[str] = (),
+    left_scene_atom: str | None = None,
+    right_scene_atom: str | None = None,
 ) -> float:
     if left is None or right is None:
         return 100.0
@@ -202,11 +289,124 @@ def semantic_cluster_novelty(
     right_signature = semantic_profile_signature(right)
     same = sum(
         left_value == right_value
-        for left_value, right_value in zip(
-            left_signature, right_signature, strict=True
+        for left_value, right_value in zip(left_signature, right_signature, strict=True)
+    )
+    axis_novelty = 100.0 * (1.0 - same / len(left_signature))
+    left_motifs = set(left_action_motifs)
+    right_motifs = set(right_action_motifs)
+    # Reusing even one concrete production action is meaningful repetition.
+    # A Jaccard score hid this whenever two prompts surrounded the same CUT
+    # action with different secondary gestures, so shared motifs now receive
+    # no motif novelty at all.
+    motif_novelty = 0.0 if left_motifs & right_motifs else 100.0
+    scene_atom_novelty = (
+        0.0
+        if left_scene_atom
+        and right_scene_atom
+        and left_scene_atom == right_scene_atom
+        else 100.0
+    )
+    # Keep the six official axes in the score, but make the two known sources of
+    # label fragmentation (concrete action and concrete scene) independently
+    # visible to MMR.
+    weighted = [(0.30, axis_novelty)]
+    if left_motifs or right_motifs:
+        weighted.append((0.40, motif_novelty))
+    if left_scene_atom and right_scene_atom:
+        weighted.append((0.30, scene_atom_novelty))
+    weight_sum = sum(weight for weight, _ in weighted)
+    return round(sum(weight * value for weight, value in weighted) / weight_sum, 4)
+
+
+def action_motif_signature(candidate: CreativeCandidate) -> tuple[str, ...]:
+    corpus = "|".join(
+        (
+            candidate.creative_core,
+            candidate.dimensions.narrative,
+            candidate.dimensions.product_relation,
+            candidate.content,
         )
     )
-    return round(100.0 * (1.0 - same / len(left_signature)), 4)
+    return tuple(
+        label for label, pattern in _ACTION_MOTIF_PATTERNS if pattern.search(corpus)
+    )
+
+
+def dominant_action_motifs(
+    candidates: Iterable[CreativeCandidate],
+    *,
+    threshold: float = 0.40,
+) -> list[str]:
+    rows = list(candidates)
+    if not rows:
+        return []
+    counts = Counter(
+        motif for candidate in rows for motif in set(action_motif_signature(candidate))
+    )
+    return [motif for motif, count in counts.items() if count / len(rows) > threshold]
+
+
+def action_motif_guidance(motifs: Iterable[str]) -> list[str]:
+    return [
+        _ACTION_MOTIF_GUIDANCE[motif]
+        for motif in motifs
+        if motif in _ACTION_MOTIF_GUIDANCE
+    ]
+
+
+def scene_atom_from_text(value: str) -> str:
+    for atom, pattern in _SCENE_ATOM_PATTERNS:
+        if pattern.search(value):
+            return atom
+    return "OTHER"
+
+
+def scene_atom_for_direction(direction: CreativeDirection) -> str:
+    primary = scene_atom_from_text(direction.semantic_profile.scene_family)
+    return (
+        primary
+        if primary != "OTHER"
+        else scene_atom_from_text(direction.creative_direction)
+    )
+
+
+def scene_atom_signature(candidate: CreativeCandidate) -> str:
+    primary = scene_atom_from_text(candidate.dimensions.scene)
+    return (
+        primary
+        if primary != "OTHER"
+        else scene_atom_from_text(
+            "|".join((candidate.creative_core, candidate.content))
+        )
+    )
+
+
+def scene_atom_guidance(atoms: Iterable[str]) -> list[str]:
+    return [_SCENE_ATOM_GUIDANCE[atom] for atom in atoms if atom in _SCENE_ATOM_GUIDANCE]
+
+
+def dominant_scene_atoms(
+    candidates: Iterable[CreativeCandidate],
+    *,
+    threshold: float = 0.40,
+) -> list[str]:
+    rows = list(candidates)
+    if not rows:
+        return []
+    counts = Counter(scene_atom_signature(candidate) for candidate in rows)
+    return [
+        atom
+        for atom, count in counts.items()
+        if atom != "OTHER" and count / len(rows) > threshold
+    ]
+
+
+def max_scene_atom_share(candidates: Iterable[CreativeCandidate]) -> float:
+    rows = list(candidates)
+    if not rows:
+        return 0.0
+    counts = Counter(scene_atom_signature(candidate) for candidate in rows)
+    return round(max(counts.values(), default=0) / len(rows), 4)
 
 
 def semantic_profile_distribution(
@@ -251,11 +451,7 @@ def dominant_families(
     if not rows:
         return []
     counts = Counter(getattr(item, field) for item in rows)
-    return [
-        label
-        for label, count in counts.items()
-        if count / len(rows) > threshold
-    ]
+    return [label for label, count in counts.items() if count / len(rows) > threshold]
 
 
 def _match_dynamic_family(sources: Sequence[str], allowed: set[str]) -> str:
@@ -268,7 +464,10 @@ def _match_dynamic_family(sources: Sequence[str], allowed: set[str]) -> str:
         if not normalized_label:
             continue
         score = max(
-            (_family_match_score(normalized_label, source) for source in normalized_sources),
+            (
+                _family_match_score(normalized_label, source)
+                for source in normalized_sources
+            ),
             default=0.0,
         )
         ranked.append((score, label))

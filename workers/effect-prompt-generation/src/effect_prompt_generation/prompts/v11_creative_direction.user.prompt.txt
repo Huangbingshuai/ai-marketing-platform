@@ -1,4 +1,4 @@
-VERSION: effect-prompt-v11-creative-direction-task-v1
+VERSION: effect-prompt-v11-creative-direction-task-v2
 
 目标 Prompt 数量：{target_count}
 
@@ -10,5 +10,8 @@ VERSION: effect-prompt-v11-creative-direction-task-v1
 
 批次共用提示词（只约束，不复述）：
 {shared_prompt_json}
+
+视觉风格基调（仅作为整批视觉底色，不是固定场景模板）：
+{visual_style_baseline_json}
 
 请规划恰好 8 个可供整批轮换的创意方向。方向应覆盖多种合理叙事、场景、人物关系、产品动作、镜头和情绪，但不得通过虚构场景或虚构事实追求数量。

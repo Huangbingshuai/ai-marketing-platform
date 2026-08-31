@@ -245,9 +245,21 @@ export const pollEffectPromptRun = async (
   runId: string,
   { intervalMs = 1_200, onUpdate, signal }: PollEffectPromptRunOptions = {},
 ): Promise<EffectPromptRun> => {
+  let consecutiveErrors = 0;
   while (true) {
     if (signal?.aborted) throw abortError();
-    const run = await loadEffectPromptRun(projectId, runId, signal);
+    let run: EffectPromptRun;
+    try {
+      run = await loadEffectPromptRun(projectId, runId, signal);
+      consecutiveErrors = 0;
+    } catch (error) {
+      if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError'))
+        throw abortError();
+      consecutiveErrors += 1;
+      if (consecutiveErrors >= 5) throw error;
+      await waitForNextPoll(intervalMs, signal);
+      continue;
+    }
     onUpdate?.(run);
     if (isTerminalPromptRun(run)) return run;
     await waitForNextPoll(intervalMs, signal);

@@ -11,6 +11,7 @@ from effect_prompt_generation.embeddings import (
     EmbeddingBatchResult,
     EmbeddingProviderError,
     MockEmbeddingProvider,
+    RedundancySummary,
 )
 from effect_prompt_generation.graph import build_graph
 from effect_prompt_generation.insight_mapping import map_insight
@@ -18,9 +19,12 @@ from effect_prompt_generation.models import (
     CreativeCandidate,
     CreativeDimensions,
     CreativeEvaluation,
+    CreativeSemanticProfile,
     CreativeScores,
     FactEvidence,
+    FactVisualPolicyDraft,
     FactVisualStrategy,
+    FactVisualUsage,
     FragmentType,
     ProgressPayload,
     PromptBatchResultV6,
@@ -33,6 +37,7 @@ from effect_prompt_generation.models import (
 )
 from effect_prompt_generation.pipeline import (
     PromptGenerationPipeline,
+    _guard_final_selection_risk,
     _is_batch_response_invalid,
 )
 from effect_prompt_generation.providers import (
@@ -41,11 +46,19 @@ from effect_prompt_generation.providers import (
     ProviderErrorType,
 )
 from effect_prompt_generation.quality import (
+    CreativeSelectionResult,
     RankedCreative,
     _creative_novelty,
+    creative_execution_findings,
     creative_soft_warnings,
     select_creatives,
     validate_creative_evaluation,
+)
+from effect_prompt_generation.v11_creative_directions import (
+    action_motif_signature,
+    dominant_action_motifs,
+    scene_atom_signature,
+    semantic_cluster_novelty,
 )
 
 
@@ -423,7 +436,9 @@ async def test_v11_graph_generates_120_percent_then_selects_exact_count() -> Non
 
 
 @pytest.mark.asyncio
-async def test_v11_uses_30_second_duration_for_generation_evaluation_and_recovery() -> None:
+async def test_v11_uses_30_second_duration_for_generation_evaluation_and_recovery() -> (
+    None
+):
     api = V11Api()
     provider = DurationCapturingProvider()
     pipeline = PromptGenerationPipeline(
@@ -451,8 +466,7 @@ async def test_v11_uses_30_second_duration_for_generation_evaluation_and_recover
     assert all(item.target_duration_seconds == 30 for item in api.result.items)
     assert provider.evaluated_durations
     assert all(
-        set(durations.values()) == {30}
-        for durations in provider.evaluated_durations
+        set(durations.values()) == {30} for durations in provider.evaluated_durations
     )
 
     resumed = PromptGenerationPipeline(
@@ -468,7 +482,9 @@ async def test_v11_uses_30_second_duration_for_generation_evaluation_and_recover
 
 
 @pytest.mark.asyncio
-async def test_visual_strategy_graph_compiles_roles_before_creative_generation() -> None:
+async def test_visual_strategy_graph_compiles_roles_before_creative_generation() -> (
+    None
+):
     api = V11Api()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -476,9 +492,7 @@ async def test_visual_strategy_graph_compiles_roles_before_creative_generation()
         shard_size=5,
     )
     runtime = _runtime()
-    snapshot = _snapshot().model_copy(
-        update={"graph_version": "CURRENT"}
-    )
+    snapshot = _snapshot().model_copy(update={"graph_version": "CURRENT"})
     pipeline.register_snapshot(runtime, snapshot)
 
     result = await build_graph(pipeline).ainvoke(
@@ -757,6 +771,29 @@ async def test_v11_content_mmr_diversity_supplement_runs_once_and_keeps_exact_co
     )
     assert final_selection_stage.metadata["diversitySupplementTriggered"] is True
     assert final_selection_stage.metadata["diversitySupplementCount"] == 2
+    assert final_selection_stage.metadata["diversitySupplementAdmittedCount"] == 0
+    assert final_selection_stage.metadata["diversitySupplementRejectedCount"] == 2
+    assert final_selection_stage.metadata["preSupplementRisk"] == {
+        "selectedCount": 10,
+        "highRiskGroupCount": 1,
+        "highRiskPairCount": 45,
+        "redundantCandidateCount": 9,
+    }
+    assert final_selection_stage.metadata["postSupplementRisk"] == {
+        "selectedCount": 10,
+        "highRiskGroupCount": 1,
+        "highRiskPairCount": 45,
+        "redundantCandidateCount": 9,
+    }
+    assert final_selection_stage.metadata["preFinalGuard"] == (
+        final_selection_stage.metadata["postFinalGuard"]
+    )
+    assert final_selection_stage.metadata["finalGuardApplied"] is False
+    assert final_selection_stage.metadata["finalGuardSource"] is None
+    assert (
+        final_selection_stage.metadata["nearDuplicateReductionBasis"]
+        == "PURE_QUALITY_BASELINE_TO_FINAL_GUARD"
+    )
     assert final_selection_stage.metadata["embeddingInputCount"] == 14
     assert final_selection_stage.metadata["embeddingRequestCount"] == 2
     assert final_selection_stage.metadata["finalAccurateCount"] == 10
@@ -787,6 +824,78 @@ async def test_v11_content_mmr_diversity_supplement_runs_once_and_keeps_exact_co
     assert restored_cache.v11_diversity_supplemented is True
     assert restored_cache.v11_diversity_supplement_count == 2
     assert restored_cache.v11_replenishment_rounds == 0
+
+
+def test_v11_final_guard_never_keeps_a_pareto_worse_exact_count_batch() -> None:
+    def ranked(slot_id: str, ordinal: int) -> RankedCreative:
+        candidate = CreativeCandidate(
+            slot_id=slot_id,
+            ordinal=ordinal,
+            round=0,
+            creative_core=f"创意{slot_id}",
+            declared_fact_ids=["fact-product"],
+            dimensions=CreativeDimensions(
+                narrative=f"叙事{slot_id}",
+                scene=f"场景{slot_id}",
+                persona=f"人物{slot_id}",
+                product_relation=f"产品动作{slot_id}",
+                camera=f"镜头{slot_id}",
+                emotion=f"情绪{slot_id}",
+            ),
+            content=f"候选正文{slot_id}围绕已确认产品完成一条连续且可拍摄的动作。",
+        )
+        evaluation = CreativeEvaluation(
+            slot_id=slot_id,
+            primary_purpose=FragmentType.PRODUCT_DISPLAY,
+            compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+            scores=CreativeScores(
+                product_relevance=90,
+                creative_coherence=90,
+                visual_executability=90,
+                commercial_usefulness=90,
+                visual_clarity=90,
+            ),
+            semantic_signature=slot_id,
+            visual_signature=slot_id,
+        )
+        return RankedCreative(
+            candidate=candidate,
+            evaluation=evaluation,
+            quality_score=90,
+            novelty_score=90,
+            selection_score=90,
+        )
+
+    preferred = CreativeSelectionResult(
+        selected=[ranked("mmr-1", 1), ranked("mmr-2", 2)],
+        rejected=[],
+        exact_duplicate_count=0,
+    )
+    quality_baseline = CreativeSelectionResult(
+        selected=[ranked("quality-1", 3), ranked("quality-2", 4)],
+        rejected=[],
+        exact_duplicate_count=0,
+    )
+
+    class StaticRiskIndex:
+        def redundancy_summary(self, selected_ids: list[str]) -> RedundancySummary:
+            if set(selected_ids) == {"mmr-1", "mmr-2"}:
+                return RedundancySummary(4, 106, 40, tuple(selected_ids))
+            return RedundancySummary(3, 100, 35, tuple(selected_ids))
+
+    guarded, source = _guard_final_selection_risk(
+        preferred,
+        comparators=[("QUALITY_BASELINE", quality_baseline)],
+        content_index=StaticRiskIndex(),  # type: ignore[arg-type]
+        target_count=2,
+    )
+
+    assert source == "QUALITY_BASELINE"
+    assert [item.candidate.slot_id for item in guarded.selected] == [
+        "quality-1",
+        "quality-2",
+    ]
+    assert len(guarded.selected) == 2
 
 
 @pytest.mark.asyncio
@@ -1187,6 +1296,670 @@ def test_v11_evaluation_deduplicates_repeated_fact_evidence() -> None:
     assert validated.realized_fact_ids == [fact.fact_id]
 
 
+def test_v11_fact_evidence_must_support_the_bound_fact() -> None:
+    application = map_insight(
+        {"productName": "广式腊肠", "coreSellingPoints": ["蒸熟后油润有光泽"]}
+    )
+    product_fact = next(item for item in application.usable if item.value == "广式腊肠")
+    selling_fact = next(
+        item for item in application.usable if item.value == "蒸熟后油润有光泽"
+    )
+    candidate = CreativeCandidate(
+        slot_id="candidate-mismatched-binding",
+        ordinal=1,
+        round=0,
+        creative_core="产品身份展示",
+        declared_fact_ids=[product_fact.fact_id, selling_fact.fact_id],
+        dimensions=CreativeDimensions(
+            narrative="直接展示",
+            scene="家庭厨房",
+            persona="成年人手部",
+            product_relation="广式腊肠作为主体",
+            camera="固定近景",
+            emotion="自然",
+        ),
+        content="家庭厨房里，成年人把广式腊肠放在白瓷盘中，镜头固定观察。",
+    )
+    evaluation = CreativeEvaluation(
+        slot_id=candidate.slot_id,
+        primary_purpose=FragmentType.PRODUCT_DISPLAY,
+        compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+        fact_evidence=[
+            FactEvidence(fact_id=product_fact.fact_id, evidence_text="广式腊肠"),
+            FactEvidence(fact_id=selling_fact.fact_id, evidence_text="广式腊肠"),
+        ],
+        realized_fact_ids=[product_fact.fact_id, selling_fact.fact_id],
+        scores=CreativeScores(
+            product_relevance=90,
+            creative_coherence=90,
+            visual_executability=90,
+            commercial_usefulness=85,
+            visual_clarity=90,
+        ),
+        semantic_signature="ignored",
+        visual_signature="ignored",
+    )
+
+    validated = validate_creative_evaluation(candidate, evaluation, application)
+
+    assert validated.realized_fact_ids == [product_fact.fact_id]
+    assert "FACT_EVIDENCE_MISMATCH" in validated.warnings
+
+
+def test_v11_accepts_concise_evidence_excerpt_from_a_longer_fact() -> None:
+    application = map_insight(
+        {"productName": "广式腊肠", "usageScenarios": ["煲仔饭烹饪"]}
+    )
+    product_fact = next(item for item in application.usable if item.value == "广式腊肠")
+    scenario_fact = next(
+        item for item in application.usable if item.value == "煲仔饭烹饪"
+    )
+    candidate = CreativeCandidate(
+        slot_id="candidate-concise-evidence",
+        ordinal=1,
+        round=0,
+        creative_core="煲仔饭中的腊肠食用场景",
+        declared_fact_ids=[product_fact.fact_id, scenario_fact.fact_id],
+        dimensions=CreativeDimensions(
+            narrative="场景代入",
+            scene="家庭厨房煲仔饭",
+            persona="成年人手部",
+            product_relation="广式腊肠用于煲仔饭",
+            camera="近景跟随",
+            emotion="温暖",
+        ),
+        content="家庭厨房里，成年人把熟制的广式腊肠铺在煲仔饭上，镜头近景跟随。",
+    )
+    evaluation = CreativeEvaluation(
+        slot_id=candidate.slot_id,
+        primary_purpose=FragmentType.PRODUCT_DISPLAY,
+        compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+        fact_evidence=[
+            FactEvidence(fact_id=product_fact.fact_id, evidence_text="广式腊肠"),
+            FactEvidence(fact_id=scenario_fact.fact_id, evidence_text="煲仔饭"),
+        ],
+        realized_fact_ids=[product_fact.fact_id, scenario_fact.fact_id],
+        scores=CreativeScores(
+            product_relevance=94,
+            creative_coherence=92,
+            visual_executability=91,
+            commercial_usefulness=90,
+            visual_clarity=92,
+        ),
+        semantic_signature="ignored",
+        visual_signature="ignored",
+    )
+
+    validated = validate_creative_evaluation(candidate, evaluation, application)
+
+    assert validated.realized_fact_ids == [product_fact.fact_id, scenario_fact.fact_id]
+    assert "FACT_EVIDENCE_MISMATCH" not in validated.warnings
+
+
+@pytest.mark.parametrize("vessel", ["蒸屉", "蒸笼", "蒸锅", "锅盖"])
+def test_v11_rejects_impossible_cool_vapor_from_hot_food_vessel(vessel: str) -> None:
+    application = map_insight({"productName": "广式腊肠"})
+    candidate = _physical_logic_candidate(
+        f"成年人打开{vessel}，{vessel}边缘冒出一缕凉气，广式腊肠保持居中。"
+    )
+
+    hard_issues, warnings = creative_execution_findings(
+        candidate,
+        target_duration_seconds=15,
+        application=application,
+    )
+
+    assert hard_issues == ["FOOD_PHYSICS_CONFLICT"]
+    assert warnings == []
+
+
+def test_v11_rejects_cook_required_food_jumping_from_slicing_to_tasting() -> None:
+    application = map_insight({"productName": "广式腊肠"})
+    candidate = _physical_logic_candidate(
+        "成年人拆开普通外袋，把广式腊肠切片，随后用筷子夹起一片送入口中。"
+    )
+
+    hard_issues, _ = creative_execution_findings(
+        candidate,
+        target_duration_seconds=15,
+        application=application,
+    )
+
+    assert "FOOD_STATE_CONFLICT" in hard_issues
+
+
+def test_v11_rejects_uncooked_slice_placed_on_an_already_finished_dish() -> None:
+    application = map_insight({"productName": "广式腊肠"})
+    candidate = _physical_logic_candidate(
+        "成年人把广式腊肠切片，随后铺在热气腾腾的煲仔饭上，镜头停留。"
+    )
+
+    hard_issues, _ = creative_execution_findings(
+        candidate,
+        target_duration_seconds=15,
+        application=application,
+    )
+
+    assert "FOOD_STATE_CONFLICT" in hard_issues
+
+
+def test_v11_accepts_slice_added_to_rice_before_an_explicit_final_simmer() -> None:
+    application = map_insight({"productName": "广式腊肠"})
+    candidate = _physical_logic_candidate(
+        "成年人把广式腊肠切片，随后铺在刚收完汁的煲仔饭上，加盖小火焖至熟制完成。"
+    )
+
+    hard_issues, _ = creative_execution_findings(
+        candidate,
+        target_duration_seconds=15,
+        application=application,
+    )
+
+    assert "FOOD_STATE_CONFLICT" not in hard_issues
+
+
+def test_v11_accepts_cook_required_food_after_explicit_heating_completion() -> None:
+    application = map_insight({"productName": "广式腊肠"})
+    candidate = _physical_logic_candidate(
+        "成年人把广式腊肠切片放入蒸笼，蒸制完成后用筷子夹起一片品尝。"
+    )
+
+    hard_issues, _ = creative_execution_findings(
+        candidate,
+        target_duration_seconds=15,
+        application=application,
+    )
+
+    assert "FOOD_STATE_CONFLICT" not in hard_issues
+
+
+def test_v11_does_not_apply_cook_required_gate_to_confirmed_ready_to_eat_food() -> None:
+    application = map_insight(
+        {"productName": "即食鸡胸肉", "coreSellingPoints": ["开袋即食"]}
+    )
+    candidate = _physical_logic_candidate(
+        "成年人拆开包装，将即食鸡胸肉切片后夹起一片品尝。"
+    )
+
+    hard_issues, _ = creative_execution_findings(
+        candidate,
+        target_duration_seconds=15,
+        application=application,
+    )
+
+    assert "FOOD_STATE_CONFLICT" not in hard_issues
+
+
+def test_v11_rejects_clearly_overloaded_fifteen_second_action_chain() -> None:
+    candidate = _physical_logic_candidate(
+        "成年人拆开包装，切开产品，随后放入蒸笼蒸熟，然后夹起摆盘，"
+        "接着端上餐桌并品尝，最后转动盘子观察切面。"
+    )
+
+    hard_issues, _ = creative_execution_findings(
+        candidate,
+        target_duration_seconds=15,
+    )
+
+    assert "ACTION_CHAIN_OVERLOAD" in hard_issues
+
+
+def test_current_five_second_multi_stage_action_is_a_soft_density_warning() -> None:
+    candidate = _physical_logic_candidate(
+        "成年人切开已经熟制的广式腊肠，随后放入锅中翻炒，然后夹起摆入餐盘。"
+    )
+
+    hard_issues, warnings = creative_execution_findings(
+        candidate,
+        target_duration_seconds=5,
+    )
+
+    assert "ACTION_CHAIN_OVERLOAD" not in hard_issues
+    assert "DURATION_TOO_DENSE" in warnings
+
+
+def test_v11_action_motifs_expose_repetition_hidden_by_broad_action_family() -> None:
+    profile = CreativeSemanticProfile(
+        narrative_family="场景代入",
+        scene_family="家庭餐桌",
+        persona_family="家庭成员",
+        product_action_family="餐前互动",
+        camera_family="稳定跟拍",
+        emotion_family="温馨自然",
+    )
+    cut = _physical_logic_candidate(
+        "家庭厨房里，成年人把广式腊肠切片并让镜头稳定停留在切面。"
+    )
+    serve = _physical_logic_candidate(
+        "家庭餐桌旁，成年人把蒸熟的广式腊肠端上餐桌与家人自然分享。"
+    )
+
+    same_broad_family = semantic_cluster_novelty(profile, profile)
+    motif_aware = semantic_cluster_novelty(
+        profile,
+        profile,
+        left_action_motifs=action_motif_signature(cut),
+        right_action_motifs=action_motif_signature(serve),
+    )
+
+    assert same_broad_family == 0
+    assert motif_aware > same_broad_family
+
+
+def test_current_selection_treats_any_shared_concrete_action_as_repetition() -> None:
+    profile = CreativeSemanticProfile(
+        narrative_family="场景代入",
+        scene_family="家庭餐桌",
+        persona_family="家庭成员",
+        product_action_family="餐前互动",
+        camera_family="稳定跟拍",
+        emotion_family="温馨自然",
+    )
+    cut_and_plate = _physical_logic_candidate(
+        "成年人把广式腊肠切片后摆入白瓷盘，镜头稳定跟随。"
+    )
+    cut_and_pick = _physical_logic_candidate(
+        "成年人切开广式腊肠并用筷子夹起一片，镜头停留。"
+    )
+    serve_without_cut = _physical_logic_candidate(
+        "成年人把蒸熟的整根广式腊肠端上餐桌，与家人自然分享。"
+    )
+
+    repeated_cut = semantic_cluster_novelty(
+        profile,
+        profile,
+        left_action_motifs=action_motif_signature(cut_and_plate),
+        right_action_motifs=action_motif_signature(cut_and_pick),
+    )
+    different_action = semantic_cluster_novelty(
+        profile,
+        profile,
+        left_action_motifs=action_motif_signature(cut_and_plate),
+        right_action_motifs=action_motif_signature(serve_without_cut),
+    )
+
+    assert repeated_cut == 0
+    assert different_action > repeated_cut
+
+
+def test_current_batch_detects_a_dominant_concrete_cutting_motif() -> None:
+    candidates = [
+        _physical_logic_candidate("家庭厨房里，成年人把广式腊肠切片后观察真实切面。"),
+        _physical_logic_candidate("家庭餐桌旁，成年人切开广式腊肠并摆入白色餐盘。"),
+        _physical_logic_candidate("自然光下，成年人缓慢下刀切出一片广式腊肠。"),
+        _physical_logic_candidate("家庭餐桌旁，成年人把蒸熟的广式腊肠端上餐桌。"),
+        _physical_logic_candidate("家庭聚餐时，成年人夹起一段广式腊肠与家人分享。"),
+    ]
+
+    assert dominant_action_motifs(candidates) == ["CUT"]
+
+
+def test_current_cluster_novelty_collapses_cross_label_kitchen_scenes() -> None:
+    profile_left = CreativeSemanticProfile(
+        narrative_family="场景代入",
+        scene_family="岭南厨房",
+        persona_family="家庭成员",
+        product_action_family="整根观察",
+        camera_family="稳定跟拍",
+        emotion_family="温馨自然",
+    )
+    profile_right = profile_left.model_copy(
+        update={"scene_family": "砂锅台面备餐"}
+    )
+    kitchen_left = _physical_logic_candidate(
+        "岭南厨房灶台旁，成年人观察蒸笼中的广式腊肠，镜头稳定停留。"
+    )
+    kitchen_left = kitchen_left.model_copy(
+        update={
+            "dimensions": kitchen_left.dimensions.model_copy(
+                update={"scene": "岭南厨房灶台"}
+            )
+        }
+    )
+    kitchen_right = _physical_logic_candidate(
+        "砂锅台面备餐区，成年人观察盘中的广式腊肠，镜头稳定停留。"
+    )
+    kitchen_right = kitchen_right.model_copy(
+        update={
+            "dimensions": kitchen_right.dimensions.model_copy(
+                update={"scene": "砂锅台面备餐"}
+            )
+        }
+    )
+    dining = _physical_logic_candidate(
+        "家庭餐桌旁，成年人把广式腊肠端给家人，镜头稳定跟随。"
+    )
+    dining = dining.model_copy(
+        update={
+            "dimensions": dining.dimensions.model_copy(
+                update={"scene": "家庭餐桌"}
+            )
+        }
+    )
+
+    same_atom = semantic_cluster_novelty(
+        profile_left,
+        profile_right,
+        left_scene_atom=scene_atom_signature(kitchen_left),
+        right_scene_atom=scene_atom_signature(kitchen_right),
+    )
+    different_atom = semantic_cluster_novelty(
+        profile_left,
+        profile_right,
+        left_scene_atom=scene_atom_signature(kitchen_left),
+        right_scene_atom=scene_atom_signature(dining),
+    )
+
+    assert same_atom < different_atom
+
+
+def test_current_rejects_real_minute_wait_inside_a_thirty_second_prompt() -> None:
+    candidate = _physical_logic_candidate(
+        "成年人把广式腊肠放入蒸笼，十几分钟后揭盖，再切段端上餐桌。"
+    )
+
+    hard_issues, _ = creative_execution_findings(
+        candidate,
+        target_duration_seconds=30,
+    )
+
+    assert "REAL_TIME_EXCEEDS_TARGET" in hard_issues
+
+
+def test_current_rejects_full_cooking_then_serving_inside_thirty_seconds() -> None:
+    candidate = _physical_logic_candidate(
+        "成年人切开广式腊肠，放入蒸笼蒸熟，随后切段并端上餐桌。"
+    )
+
+    hard_issues, _ = creative_execution_findings(
+        candidate,
+        target_duration_seconds=30,
+    )
+
+    assert "REAL_TIME_EXCEEDS_TARGET" in hard_issues
+
+
+def test_current_rejects_rapid_whole_product_cooking_compression_at_thirty_seconds() -> (
+    None
+):
+    candidate = _physical_logic_candidate(
+        "成年人把整根广式腊肠放入沸水，片刻后立即捞出已经熟透的成品。"
+    )
+
+    hard_issues, _ = creative_execution_findings(
+        candidate,
+        target_duration_seconds=30,
+    )
+
+    assert "REAL_TIME_EXCEEDS_TARGET" in hard_issues
+
+
+def test_current_rejects_product_rotating_without_physical_support() -> None:
+    candidate = _physical_logic_candidate(
+        "白瓷盘保持静止，整根广式腊肠无外力缓慢旋转，镜头固定观察。"
+    )
+
+    hard_issues, _ = creative_execution_findings(
+        candidate,
+        target_duration_seconds=15,
+    )
+
+    assert "UNSUPPORTED_OBJECT_MOTION" in hard_issues
+
+
+def test_current_warns_when_chopsticks_lift_a_whole_long_product() -> None:
+    candidate = _physical_logic_candidate(
+        "家庭餐桌旁，成年人用木筷夹起一整根广式腊肠并悬停展示。"
+    )
+
+    hard_issues, warnings = creative_execution_findings(
+        candidate,
+        target_duration_seconds=15,
+    )
+
+    assert "UNSUPPORTED_OBJECT_MOTION" not in hard_issues
+    assert "IMPLAUSIBLE_PRODUCT_HANDLING" in warnings
+
+
+def test_current_fact_evidence_normalization_ignores_punctuation_only() -> None:
+    application = map_insight(
+        {"productName": "广式腊肠", "coreSellingPoints": ["蒸熟后油润有光泽"]}
+    )
+    product_fact = next(item for item in application.usable if item.value == "广式腊肠")
+    selling_fact = next(
+        item for item in application.usable if item.value == "蒸熟后油润有光泽"
+    )
+    candidate = _physical_logic_candidate(
+        "白瓷盘里摆着广式腊肠，蒸熟后，油润有光泽，镜头近距离观察。"
+    ).model_copy(
+        update={"declared_fact_ids": [product_fact.fact_id, selling_fact.fact_id]}
+    )
+    evaluation = CreativeEvaluation(
+        slot_id=candidate.slot_id,
+        primary_purpose=FragmentType.PRODUCT_DISPLAY,
+        compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+        fact_evidence=[
+            FactEvidence(fact_id=product_fact.fact_id, evidence_text="广式腊肠"),
+            FactEvidence(
+                fact_id=selling_fact.fact_id,
+                evidence_text="蒸熟后油润有光泽",
+            ),
+        ],
+        realized_fact_ids=[product_fact.fact_id, selling_fact.fact_id],
+        scores=CreativeScores(
+            product_relevance=90,
+            creative_coherence=90,
+            visual_executability=90,
+            commercial_usefulness=85,
+            visual_clarity=90,
+        ),
+        semantic_signature="ignored",
+        visual_signature="ignored",
+    )
+
+    validated = validate_creative_evaluation(candidate, evaluation, application)
+
+    assert validated.realized_fact_ids == [
+        product_fact.fact_id,
+        selling_fact.fact_id,
+    ]
+    assert "FACT_EVIDENCE_NOT_IN_CONTENT" not in validated.warnings
+    assert "FACT_EVIDENCE_MISMATCH" not in validated.warnings
+
+
+def test_current_short_generic_excerpt_cannot_bind_a_longer_business_fact() -> None:
+    application = map_insight(
+        {"productName": "广式腊肠", "usageScenarios": ["家庭厨房蒸制"]}
+    )
+    product_fact = next(item for item in application.usable if item.value == "广式腊肠")
+    scenario_fact = next(
+        item for item in application.usable if item.value == "家庭厨房蒸制"
+    )
+    candidate = _physical_logic_candidate(
+        "家庭餐桌旁，成年人把广式腊肠放入白瓷盘，镜头保持稳定。"
+    ).model_copy(
+        update={"declared_fact_ids": [product_fact.fact_id, scenario_fact.fact_id]}
+    )
+    evaluation = CreativeEvaluation(
+        slot_id=candidate.slot_id,
+        primary_purpose=FragmentType.PRODUCT_DISPLAY,
+        compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+        fact_evidence=[
+            FactEvidence(fact_id=product_fact.fact_id, evidence_text="广式腊肠"),
+            FactEvidence(fact_id=scenario_fact.fact_id, evidence_text="家庭"),
+        ],
+        realized_fact_ids=[product_fact.fact_id, scenario_fact.fact_id],
+        scores=CreativeScores(
+            product_relevance=90,
+            creative_coherence=90,
+            visual_executability=90,
+            commercial_usefulness=85,
+            visual_clarity=90,
+        ),
+        semantic_signature="ignored",
+        visual_signature="ignored",
+    )
+
+    validated = validate_creative_evaluation(candidate, evaluation, application)
+
+    assert validated.realized_fact_ids == [product_fact.fact_id]
+    assert "FACT_EVIDENCE_MISMATCH" in validated.warnings
+
+
+@pytest.mark.parametrize("finished_rice", ["刚离火的米饭", "刚蒸好的米饭"])
+def test_current_rejects_raw_slices_placed_on_finished_rice(
+    finished_rice: str,
+) -> None:
+    application = map_insight({"productName": "广式腊肠"})
+    candidate = _physical_logic_candidate(
+        f"成年人拆开外袋，把广式腊肠切片铺在{finished_rice}上，镜头停留。"
+    )
+
+    hard_issues, _ = creative_execution_findings(
+        candidate,
+        target_duration_seconds=30,
+        application=application,
+    )
+
+    assert "FOOD_STATE_CONFLICT" in hard_issues
+
+
+def test_current_rejects_visual_packaging_proof_of_an_abstract_fact() -> None:
+    application = map_insight(
+        {"productName": "广式腊肠", "coreSellingPoints": ["真空锁鲜"]}
+    )
+    product_fact = next(item for item in application.usable if item.value == "广式腊肠")
+    lock_fact = next(item for item in application.usable if item.value == "真空锁鲜")
+    strategy = FactVisualStrategy(
+        source_content_hash="source",
+        prompt_version="current",
+        strategy_hash="a" * 64,
+        policies=[
+            FactVisualPolicyDraft(
+                fact_id=product_fact.fact_id,
+                visual_usage=FactVisualUsage.IDENTITY_ANCHOR,
+            ),
+            FactVisualPolicyDraft(
+                fact_id=lock_fact.fact_id,
+                visual_usage=FactVisualUsage.FORBIDDEN_VISUAL_PROOF,
+                forbidden_inferences=["不得用包装形态证明锁鲜效果"],
+            ),
+        ],
+    )
+    candidate = CreativeCandidate(
+        slot_id="abstract-packaging-proof",
+        ordinal=1,
+        round=0,
+        creative_core="包装细节观察",
+        declared_fact_ids=[product_fact.fact_id, lock_fact.fact_id],
+        dimensions=CreativeDimensions(
+            narrative="近景观察",
+            scene="家庭厨房",
+            persona="成年人手部",
+            product_relation="真空锁鲜的密封形态",
+            camera="包装封口微距",
+            emotion="可信自然",
+        ),
+        content="成年人拿起广式腊肠外袋，微距观察真空锁鲜的密封形态与封口。",
+    )
+    evaluation = CreativeEvaluation(
+        slot_id=candidate.slot_id,
+        primary_purpose=FragmentType.PRODUCT_DISPLAY,
+        compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+        fact_evidence=[
+            FactEvidence(fact_id=product_fact.fact_id, evidence_text="广式腊肠"),
+            FactEvidence(fact_id=lock_fact.fact_id, evidence_text="真空锁鲜"),
+        ],
+        realized_fact_ids=[product_fact.fact_id, lock_fact.fact_id],
+        scores=CreativeScores(
+            product_relevance=94,
+            creative_coherence=92,
+            visual_executability=90,
+            commercial_usefulness=90,
+            visual_clarity=92,
+        ),
+        semantic_signature="ignored",
+        visual_signature="ignored",
+    )
+
+    validated = validate_creative_evaluation(
+        candidate,
+        evaluation,
+        application,
+        target_duration_seconds=30,
+        fact_visual_strategy=strategy,
+    )
+
+    assert "ABSTRACT_FACT_VISUAL_PROOF" in validated.hard_issues
+
+
+def test_current_removes_unsupported_abstract_proof_model_false_positive() -> None:
+    application = map_insight({"productName": "广式腊肠"})
+    product_fact = next(item for item in application.usable if item.value == "广式腊肠")
+    strategy = FactVisualStrategy(
+        source_content_hash="source",
+        prompt_version="current",
+        strategy_hash="b" * 64,
+        policies=[
+            FactVisualPolicyDraft(
+                fact_id=product_fact.fact_id,
+                visual_usage=FactVisualUsage.IDENTITY_ANCHOR,
+            )
+        ],
+    )
+    candidate = _physical_logic_candidate(
+        "家庭厨房里，成年人把蒸熟的广式腊肠放入锅中与青菜快速翻炒。"
+    ).model_copy(update={"declared_fact_ids": [product_fact.fact_id]})
+    evaluation = CreativeEvaluation(
+        slot_id=candidate.slot_id,
+        primary_purpose=FragmentType.PRODUCT_DISPLAY,
+        compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+        fact_evidence=[
+            FactEvidence(fact_id=product_fact.fact_id, evidence_text="广式腊肠")
+        ],
+        realized_fact_ids=[product_fact.fact_id],
+        scores=CreativeScores(
+            product_relevance=92,
+            creative_coherence=90,
+            visual_executability=90,
+            commercial_usefulness=88,
+            visual_clarity=90,
+        ),
+        semantic_signature="ignored",
+        visual_signature="ignored",
+        hard_issues=["ABSTRACT_FACT_VISUAL_PROOF"],
+    )
+
+    validated = validate_creative_evaluation(
+        candidate,
+        evaluation,
+        application,
+        target_duration_seconds=30,
+        fact_visual_strategy=strategy,
+    )
+
+    assert "ABSTRACT_FACT_VISUAL_PROOF" not in validated.hard_issues
+
+
+def _physical_logic_candidate(content: str) -> CreativeCandidate:
+    return CreativeCandidate(
+        slot_id="physical-logic",
+        ordinal=1,
+        round=0,
+        creative_core="食品连续动作",
+        declared_fact_ids=["fact-product"],
+        dimensions=CreativeDimensions(
+            narrative="连续动作",
+            scene="家庭厨房",
+            persona="成年人手部",
+            product_relation="产品作为动作主体",
+            camera="稳定近景跟随",
+            emotion="自然真实",
+        ),
+        content=content,
+    )
+
+
 def test_v11_generic_visual_language_is_a_soft_warning_only() -> None:
     application = map_insight({"productName": "广式腊肠"})
     fact = next(item for item in application.usable if item.value == "广式腊肠")
@@ -1473,6 +2246,60 @@ def test_v11_selection_uses_quality_80_and_novelty_20() -> None:
 
     assert [item.candidate.slot_id for item in result.selected] == ["c-1", "c-3"]
     assert result.selected[1].novelty_score > 0
+
+
+def test_current_selection_prefers_duration_fit_candidate_without_blocking_count() -> None:
+    def candidate(slot_id: str, content: str) -> CreativeCandidate:
+        return CreativeCandidate(
+            slot_id=slot_id,
+            ordinal=1 if slot_id == "dense" else 2,
+            round=0,
+            creative_core=f"广式腊肠餐桌展示-{slot_id}",
+            declared_fact_ids=["fact-product"],
+            dimensions=CreativeDimensions(
+                narrative=f"直接展示-{slot_id}",
+                scene="家庭餐桌",
+                persona="成年人手部",
+                product_relation="广式腊肠作为画面主体",
+                camera="稳定近景",
+                emotion="自然温暖",
+            ),
+            content=content,
+        )
+
+    dense = candidate(
+        "dense",
+        "成年人切开熟制的广式腊肠，随后放入锅中翻炒，然后夹起摆入餐盘。",
+    )
+    focused = candidate(
+        "focused",
+        "成年人夹起一片熟制的广式腊肠，近景停留在清晰切面。",
+    )
+
+    def evaluation(item: CreativeCandidate, quality: float) -> CreativeEvaluation:
+        return CreativeEvaluation(
+            slot_id=item.slot_id,
+            primary_purpose=FragmentType.PRODUCT_DISPLAY,
+            compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+            scores=CreativeScores(
+                product_relevance=quality,
+                creative_coherence=quality,
+                visual_executability=quality,
+                commercial_usefulness=quality,
+                visual_clarity=quality,
+            ),
+            semantic_signature=item.slot_id,
+            visual_signature=item.slot_id,
+            warnings=["DURATION_TOO_DENSE"] if item is dense else [],
+        )
+
+    result = select_creatives(
+        [dense, focused],
+        [evaluation(dense, 92), evaluation(focused, 87)],
+        target_count=1,
+    )
+
+    assert [item.candidate.slot_id for item in result.selected] == ["focused"]
 
 
 def test_v11_content_mmr_uses_70_30_and_fixed_anchor_from_first_choice() -> None:

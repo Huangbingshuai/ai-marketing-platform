@@ -501,6 +501,11 @@ const startPolling = (productId: string, run: EffectPromptRun): void => {
       if (controller.signal.aborted || disposed) return;
       updateRun(productId, finalRun);
       await reloadWorkspace(false);
+      // A workspace request that started before the terminal poll can return an
+      // older active snapshot afterwards. Re-apply the authoritative terminal
+      // run only when this product still points at the same task, so a newer run
+      // created in another tab is never overwritten.
+      if (productStates.value[productId]?.runId === finalRun.id) updateRun(productId, finalRun);
       const successMessage =
         run.operation === 'ITEM_EVALUATE'
           ? 'Prompt 用途评估完成'

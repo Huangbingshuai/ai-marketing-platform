@@ -13,6 +13,8 @@ from .models import (
     CreativeCandidate,
     CreativeEvaluation,
     ExecutionInvalidReason,
+    FactVisualStrategy,
+    FactVisualUsage,
     FragmentType,
     FragmentTypeDistribution,
     InsightApplicationMap,
@@ -416,6 +418,86 @@ _PURPOSE_ONLY_PHRASES = (
     "营造高级感",
 )
 
+_ACTION_VERB_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"切(?:开|下|成|出|片|段|块|丁|丝|薄片|厚片|制)|下刀"),
+    re.compile(r"夹起|夹取|拿起|拾起"),
+    re.compile(r"摆盘|装盘|码放"),
+    re.compile(r"拆(?:开)?包装|撕开|开袋"),
+    re.compile(r"放入|加入|铺在|拌入"),
+    re.compile(r"蒸制|上锅蒸|放入蒸笼|揭开锅盖"),
+    re.compile(r"煎制|下锅煎|翻煎"),
+    re.compile(r"翻炒|下锅炒|炒制"),
+    re.compile(r"水煮|煮制|下锅煮"),
+    re.compile(r"烘烤|烤制|放入烤箱"),
+    re.compile(r"端上|递给|送到餐桌"),
+    re.compile(r"品尝|尝一口|入口|咬下|送入口中|放入口中"),
+    re.compile(r"观察|查看|端详"),
+)
+_COOKING_METHOD_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"蒸制|上锅蒸|蒸笼"),
+    re.compile(r"煎制|下锅煎|翻煎"),
+    re.compile(r"翻炒|下锅炒|炒制"),
+    re.compile(r"水煮|煮制|下锅煮"),
+    re.compile(r"烘烤|烤制|烤箱"),
+)
+_SEQUENCE_CONNECTOR = re.compile(
+    r"随后|接着|然后|再(?:将|把|用|切|夹|放|端|取)|最后|继而"
+)
+_RAW_FOOD = re.compile(
+    r"生(?:的|制|鲜)?(?:腊肠|香肠)|未(?:经烹制|煮熟|蒸熟|熟制)|未经加热"
+)
+_COOKED_FOOD = re.compile(
+    r"蒸熟|煮熟|煎熟|炒熟|烤熟|焖熟|熟制后|加热完成|蒸制完成|煮制完成|煎制完成|炒制完成|烤制完成|焖制完成|加盖焖|小火焖"
+)
+_TASTING_ACTION = re.compile(r"品尝|尝一口|入口|咬下|送入口中|放入口中")
+_IMPOSSIBLE_COOL_VAPOR = re.compile(
+    r"(?:腊肠|香肠|切片|食物|产品|蒸屉|蒸笼|蒸锅|锅盖).{0,16}"
+    r"(?:冒出|升起|散发|腾起)(?:阵阵|一缕|丝丝)?(?:凉气|冷气)"
+    r"|(?:凉气|冷气).{0,16}(?:从|围绕)(?:腊肠|香肠|切片|食物|产品|蒸屉|蒸笼|蒸锅|锅盖)"
+)
+_READY_TO_EAT = re.compile(r"即食|开袋即食|熟制品|可直接食用|无需加热")
+_COOK_REQUIRED = re.compile(
+    r"需(?:要)?(?:熟制|煮熟|蒸熟|加热)|食用前(?:需|须)加热|非即食|生制"
+)
+_COOK_REQUIRED_CATEGORY = re.compile(r"腊肠|腊肉|生香肠")
+_PREPARATION_ACTION = re.compile(r"拆(?:开)?包装|撕开|开袋|取出|切片|切开|下刀")
+_FINISHED_DISH_PLACEMENT = re.compile(
+    r"(?:放|摆|铺|码)(?:在|到|入|上).{0,10}"
+    r"(?:成品饭|熟米饭|热米饭|做好的饭|刚焖好的?饭|成品菜|做好的菜|"
+    r"热气腾腾的?煲仔饭|做好的?煲仔饭|盛好的?煲仔饭|刚焖好的?煲仔饭|刚收完汁的?煲仔饭|"
+    r"刚离火的?(?:米饭|煲仔饭)|刚蒸好的?(?:米饭|饭|煲仔饭))"
+)
+_EXPLICIT_COOKED_PRODUCT = re.compile(
+    r"(?:蒸熟|煮熟|煎熟|炒熟|烤熟|焖熟|熟制(?:完成|后)?|加热完成)(?:的)?(?:广式)?(?:腊肠|香肠)"
+    r"|(?:广式)?(?:腊肠|香肠).{0,8}(?:已经|已)?(?:蒸熟|煮熟|煎熟|炒熟|烤熟|焖熟|熟制(?:完成)?|加热完成)"
+)
+_EXPLICIT_MINUTE_WAIT = re.compile(
+    r"(?:几|数|十几|几十|\d+)\s*分钟(?:后|左右|完成|至|再|，|,)?"
+)
+_LONG_COOK_COMPLETION = re.compile(
+    r"蒸熟|煮熟|焖熟|烤熟|熟制完成|加热完成|蒸制完成|煮制完成|焖制完成|"
+    r"加盖.{0,12}(?:焖至|蒸至|煮至).{0,6}熟"
+)
+_RAPID_FULL_COOK = re.compile(
+    r"(?:整根)?(?:广式)?(?:腊肠|香肠).{0,16}(?:放入|投入|下入).{0,10}"
+    r"(?:沸水|蒸锅|蒸笼|锅中).{0,18}(?:片刻|瞬间|转眼|马上|立即|很快|眨眼间|不一会儿)"
+    r".{0,18}(?:蒸熟|煮熟|熟透|成品|出锅|捞出|蒸好|煮好)"
+)
+_UNSUPPORTED_SELF_ROTATION = re.compile(
+    r"(?:腊肠|香肠|产品|整根).{0,10}(?:自行|自己|无外力|悬空)(?:缓慢|快速|持续)?(?:旋转|转动|翻面)"
+    r"|(?:自行|自己|无外力|悬空)(?:缓慢|快速|持续)?(?:旋转|转动|翻面).{0,10}(?:腊肠|香肠|产品|整根)"
+)
+_CHOPSTICKS_WHOLE_SAUSAGE = re.compile(
+    r"(?:筷子|木筷).{0,12}(?:夹起|夹住|夹取|提起).{0,8}(?:一整根|整根)(?:广式)?(?:腊肠|香肠)"
+    r"|(?:一整根|整根)(?:广式)?(?:腊肠|香肠).{0,12}(?:被|用)(?:筷子|木筷).{0,8}(?:夹起|夹住|夹取|提起)"
+)
+_ABSTRACT_VISUAL_PROOF = re.compile(
+    r"(?:真空|密封|封口|包装|袋装|外观|形态).{0,12}(?:锁鲜|保鲜)"
+    r"|(?:锁鲜|保鲜).{0,12}(?:真空|密封|封口|包装|袋装|外观|形态)"
+    r"|(?:肉纤维|粉质|切面|纹理|光泽|弹性|颜色).{0,14}(?:无淀粉|零添加|无添加|纯天然|配方|工艺|比例)"
+    r"|(?:无淀粉|零添加|无添加|纯天然|配方|工艺|比例).{0,14}(?:肉纤维|粉质|切面|纹理|光泽|弹性|颜色)"
+)
+
 
 def normalize_creative_signature(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value).casefold()
@@ -441,10 +523,127 @@ def creative_soft_warnings(candidate: CreativeCandidate) -> list[str]:
     return warnings
 
 
+def creative_execution_findings(
+    candidate: CreativeCandidate,
+    *,
+    target_duration_seconds: int | None,
+    application: InsightApplicationMap | None = None,
+) -> tuple[list[str], list[str]]:
+    """Return deterministic physical/timing findings without model judgment.
+
+    Only unambiguous food-state conflicts and clearly overloaded short timelines
+    are hard issues. Borderline density remains a warning so exact-count
+    selection can still prefer a cleaner candidate without treating taste as a
+    safety fact.
+    """
+
+    corpus = "|".join(
+        (
+            candidate.creative_core,
+            candidate.dimensions.narrative,
+            candidate.dimensions.product_relation,
+            candidate.content,
+        )
+    )
+    hard_issues: list[str] = []
+    warnings: list[str] = []
+    if _IMPOSSIBLE_COOL_VAPOR.search(corpus):
+        hard_issues.append("FOOD_PHYSICS_CONFLICT")
+    if _UNSUPPORTED_SELF_ROTATION.search(candidate.content):
+        hard_issues.append("UNSUPPORTED_OBJECT_MOTION")
+    if _CHOPSTICKS_WHOLE_SAUSAGE.search(candidate.content):
+        warnings.append("IMPLAUSIBLE_PRODUCT_HANDLING")
+    # Food-state order must be proved by the renderable body. Metadata cannot
+    # make a missing heating step magically happen in the generated footage.
+    food_text = candidate.content
+    taste_match = _TASTING_ACTION.search(food_text)
+    raw_match = _RAW_FOOD.search(food_text)
+    if taste_match is not None and raw_match is not None:
+        cooked_before_taste = any(
+            match.start() < taste_match.start()
+            for match in _COOKED_FOOD.finditer(food_text)
+        )
+        if not cooked_before_taste:
+            hard_issues.append("FOOD_STATE_CONFLICT")
+    if application is not None and _application_requires_cooking(application):
+        preparation_match = _PREPARATION_ACTION.search(food_text)
+        finished_dish_match = _FINISHED_DISH_PLACEMENT.search(food_text)
+        terminal_match = taste_match or finished_dish_match
+        if preparation_match is not None and terminal_match is not None:
+            cooking_matches = list(_COOKED_FOOD.finditer(food_text))
+            explicit_cooked_product = _EXPLICIT_COOKED_PRODUCT.search(food_text)
+            cooked_in_time = (
+                (
+                    explicit_cooked_product is not None
+                    and explicit_cooked_product.start() < terminal_match.start()
+                )
+                or any(
+                    preparation_match.start() < match.start() < terminal_match.start()
+                    for match in cooking_matches
+                )
+                if taste_match is not None
+                else (
+                    explicit_cooked_product is not None
+                    and explicit_cooked_product.start() < terminal_match.start()
+                )
+                or any(
+                    match.start() > terminal_match.start() for match in cooking_matches
+                )
+            )
+            if not cooked_in_time:
+                hard_issues.append("FOOD_STATE_CONFLICT")
+
+    if target_duration_seconds is not None and target_duration_seconds <= 30:
+        action_count = sum(
+            bool(pattern.search(corpus)) for pattern in _ACTION_VERB_PATTERNS
+        )
+        cooking_method_count = sum(
+            bool(pattern.search(corpus)) for pattern in _COOKING_METHOD_PATTERNS
+        )
+        connector_count = len(_SEQUENCE_CONNECTOR.findall(candidate.content))
+        preparation_match = _PREPARATION_ACTION.search(candidate.content)
+        long_completion = _LONG_COOK_COMPLETION.search(candidate.content)
+        impossible_wait = bool(_EXPLICIT_MINUTE_WAIT.search(candidate.content))
+        continuous_full_cook = bool(
+            target_duration_seconds > 15
+            and preparation_match is not None
+            and long_completion is not None
+            and preparation_match.start() < long_completion.start()
+        )
+        rapid_full_cook = bool(_RAPID_FULL_COOK.search(candidate.content))
+        if impossible_wait or continuous_full_cook or rapid_full_cook:
+            hard_issues.append("REAL_TIME_EXCEEDS_TARGET")
+        very_short_duration = target_duration_seconds <= 8
+        short_duration = target_duration_seconds <= 15
+        if (
+            short_duration
+            and (action_count >= 6 or cooking_method_count >= 3 or connector_count >= 5)
+        ) or (
+            not short_duration
+            and (action_count >= 8 or cooking_method_count >= 3 or connector_count >= 6)
+        ):
+            hard_issues.append("ACTION_CHAIN_OVERLOAD")
+        elif (
+            very_short_duration
+            and (action_count >= 3 or cooking_method_count >= 2 or connector_count >= 2)
+        ) or (
+            short_duration
+            and (action_count >= 4 or cooking_method_count >= 2 or connector_count >= 3)
+        ) or (
+            not short_duration
+            and (action_count >= 6 or cooking_method_count >= 2 or connector_count >= 4)
+        ):
+            warnings.append("DURATION_TOO_DENSE")
+    return list(dict.fromkeys(hard_issues)), list(dict.fromkeys(warnings))
+
+
 def validate_creative_evaluation(
     candidate: CreativeCandidate,
     evaluation: CreativeEvaluation,
     application: InsightApplicationMap,
+    *,
+    target_duration_seconds: int | None = None,
+    fact_visual_strategy: FactVisualStrategy | None = None,
 ) -> CreativeEvaluation:
     if evaluation.slot_id != candidate.slot_id:
         raise ValueError("creative evaluation changed slotId")
@@ -456,10 +655,11 @@ def validate_creative_evaluation(
         "FACT_EVIDENCE_NOT_IN_CONTENT",
         "UNKNOWN_OR_UNDECLARED_FACT",
     }
+    ai_reported_abstract_proof = "ABSTRACT_FACT_VISUAL_PROOF" in evaluation.hard_issues
     issues = [
         issue
         for issue in evaluation.hard_issues
-        if issue not in evidence_metadata_codes
+        if issue not in {*evidence_metadata_codes, "ABSTRACT_FACT_VISUAL_PROOF"}
     ]
     warnings = [*evaluation.warnings, *creative_soft_warnings(candidate)]
     warnings.extend(
@@ -473,6 +673,13 @@ def validate_creative_evaluation(
         if _normalized_evidence_text(evidence.evidence_text) not in content_text:
             warnings.append("FACT_EVIDENCE_NOT_IN_CONTENT")
             continue
+        if not _evidence_supports_fact(
+            evidence.evidence_text,
+            fact.value,
+            field=fact.field,
+        ):
+            warnings.append("FACT_EVIDENCE_MISMATCH")
+            continue
         if evidence.fact_id in evidenced_fact_ids:
             continue
         evidenced_fact_ids.add(evidence.fact_id)
@@ -482,6 +689,23 @@ def validate_creative_evaluation(
         for evidence in valid_evidence
         if application.by_id[evidence.fact_id].field in _PRODUCT_RELEVANT_FIELDS
     ]
+    if fact_visual_strategy is not None:
+        policy_by_id = fact_visual_strategy.by_id
+        non_visual_fact_used = any(
+            (policy := policy_by_id.get(evidence.fact_id)) is not None
+            and policy.visual_usage
+            in {
+                FactVisualUsage.CONTEXT_ONLY,
+                FactVisualUsage.TEXT_ONLY,
+                FactVisualUsage.FORBIDDEN_VISUAL_PROOF,
+            }
+            for evidence in valid_evidence
+        )
+        if non_visual_fact_used and (
+            ai_reported_abstract_proof
+            or _ABSTRACT_VISUAL_PROOF.search(candidate.content)
+        ):
+            issues.append("ABSTRACT_FACT_VISUAL_PROOF")
     if not relevant:
         issues.append("MISSING_PRODUCT_RELATION")
     if evaluation.scores.product_relevance < 60:
@@ -490,6 +714,13 @@ def validate_creative_evaluation(
         issues.append("DIMENSION_CONTENT_CONFLICT")
     if evaluation.scores.visual_executability < 50:
         issues.append("VISUALLY_UNEXECUTABLE")
+    execution_issues, execution_warnings = creative_execution_findings(
+        candidate,
+        target_duration_seconds=target_duration_seconds,
+        application=application,
+    )
+    issues.extend(execution_issues)
+    warnings.extend(execution_warnings)
     semantic = normalize_creative_signature(candidate.creative_core)
     visual = normalize_creative_signature(
         "|".join(
@@ -530,10 +761,11 @@ def select_creatives(
         RankedCreative(
             candidate=candidate_by_id[item.slot_id],
             evaluation=item,
-            quality_score=item.scores.overall_quality,
+            quality_score=_selection_quality_score(item),
             novelty_score=100.0,
             selection_score=(
-                item.scores.overall_quality * quality_weight + 100.0 * novelty_weight
+                _selection_quality_score(item) * quality_weight
+                + 100.0 * novelty_weight
             ),
         )
         for item in evaluations
@@ -620,6 +852,17 @@ def select_creatives(
     )
 
 
+def _selection_quality_score(evaluation: CreativeEvaluation) -> float:
+    """Prefer duration-fit candidates without turning soft warnings into rejection."""
+
+    penalty = 0.0
+    if "DURATION_TOO_DENSE" in evaluation.warnings:
+        penalty += 8.0
+    if "DURATION_TOO_SPARSE" in evaluation.warnings:
+        penalty += 4.0
+    return max(0.0, round(evaluation.scores.overall_quality - penalty, 4))
+
+
 def _creative_novelty(left: RankedCreative, right: RankedCreative) -> float:
     semantic = trigram_dice(left.candidate.content, right.candidate.content)
     left_visual = left.candidate.dimensions
@@ -666,4 +909,57 @@ def _creative_novelty(left: RankedCreative, right: RankedCreative) -> float:
 
 
 def _normalized_evidence_text(value: str) -> str:
-    return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return re.sub(r"[\s\W_]+", "", normalized)
+
+
+def _evidence_supports_fact(
+    evidence_text: str,
+    fact_value: str,
+    *,
+    field: InsightField,
+) -> bool:
+    evidence = normalize_creative_signature(evidence_text)
+    fact = normalize_creative_signature(fact_value)
+    if not evidence or not fact:
+        return False
+    if field in {InsightField.PRODUCT_NAME, InsightField.PRODUCT_CATEGORY}:
+        return fact in evidence or evidence in fact
+    generic_short_evidence = {"家庭", "厨房", "产品", "场景", "人群", "用户"}
+    if fact in evidence or (
+        len(evidence) >= 3
+        and evidence not in generic_short_evidence
+        and evidence in fact
+    ):
+        return True
+    # Evidence excerpts are deliberately short. Requiring shared meaningful
+    # bigrams catches an unrelated product-name excerpt bound to a selling point
+    # while retaining faithful excerpts such as "家庭蒸制" for
+    # "家庭厨房蒸制".
+    evidence_bigrams = _ngrams(evidence, 2)
+    fact_bigrams = _ngrams(fact, 2)
+    if (
+        len(evidence) < 3
+        or evidence in generic_short_evidence
+        or not evidence_bigrams
+        or not fact_bigrams
+    ):
+        return False
+    overlap = len(evidence_bigrams & fact_bigrams)
+    return (
+        overlap >= 1 and overlap / min(len(evidence_bigrams), len(fact_bigrams)) >= 0.5
+    )
+
+
+def _application_requires_cooking(application: InsightApplicationMap) -> bool:
+    values = "|".join(fact.value for fact in application.usable)
+    if _READY_TO_EAT.search(values):
+        return False
+    if _COOK_REQUIRED.search(values):
+        return True
+    identity = "|".join(
+        fact.value
+        for fact in application.usable
+        if fact.field in {InsightField.PRODUCT_NAME, InsightField.PRODUCT_CATEGORY}
+    )
+    return bool(_COOK_REQUIRED_CATEGORY.search(identity))

@@ -128,8 +128,8 @@ V10_COORDINATE_BASE_PROMPT = "v10_coordinate_base.system.prompt.txt"
 V10_COORDINATE_TASK_PROMPT = "v10_coordinate_task.user.prompt.txt"
 V10_BLUEPRINT_BASE_PROMPT = "v10_blueprint_base.system.prompt.txt"
 V10_BLUEPRINT_TASK_PROMPT = "v10_blueprint_task.user.prompt.txt"
-V11_CREATIVE_VERSION = "effect-prompt-v11-coherent-creative-v9"
-V11_EVALUATION_VERSION = "effect-prompt-v11-creative-evaluation-v6"
+V11_CREATIVE_VERSION = "effect-prompt-v11-coherent-creative-v13"
+V11_EVALUATION_VERSION = "effect-prompt-v11-creative-evaluation-v10"
 V11_CREATIVE_BASE_PROMPT = "v11_creative_base_v4.system.prompt.txt"
 V11_CREATIVE_TASK_PROMPT = "v11_creative_task_v4.user.prompt.txt"
 V11_CREATIVE_LEGACY_BASE_PROMPT = "v11_creative_base.system.prompt.txt"
@@ -139,7 +139,7 @@ V11_EVALUATION_TASK_PROMPT = "v11_evaluation_task.user.prompt.txt"
 V11_FACT_VISUAL_STRATEGY_VERSION = "effect-prompt-v11-fact-visual-strategy-v2"
 V11_FACT_VISUAL_STRATEGY_BASE_PROMPT = "v11_fact_visual_strategy.system.prompt.txt"
 V11_FACT_VISUAL_STRATEGY_TASK_PROMPT = "v11_fact_visual_strategy.user.prompt.txt"
-V11_CREATIVE_DIRECTION_VERSION = "effect-prompt-v11-creative-direction-v1"
+V11_CREATIVE_DIRECTION_VERSION = "effect-prompt-v11-creative-direction-v5"
 V11_CREATIVE_DIRECTION_BASE_PROMPT = "v11_creative_direction.system.prompt.txt"
 V11_CREATIVE_DIRECTION_TASK_PROMPT = "v11_creative_direction.user.prompt.txt"
 
@@ -416,7 +416,9 @@ class MockAiProvider:
         for index, fact_id in enumerate(allocation.mandatory_fact_ids):
             selected_by_bundle[index % allocation.bundle_target].append(fact_id)
         for index, selected in enumerate(selected_by_bundle):
-            candidate = allocation.candidate_fact_ids[index % len(allocation.candidate_fact_ids)]
+            candidate = allocation.candidate_fact_ids[
+                index % len(allocation.candidate_fact_ids)
+            ]
             if candidate not in selected:
                 selected.append(candidate)
         bundles = []
@@ -628,6 +630,14 @@ class ArkResponsesProvider:
             }
             for policy in fact_visual_strategy.policies
         ]
+        visual_style_baseline = next(
+            (
+                fact.value
+                for fact in application.constraints
+                if fact.field == InsightField.VISUAL_STYLE_BASELINE
+            ),
+            "",
+        )
         prompt = render_prompt(
             V11_CREATIVE_DIRECTION_TASK_PROMPT,
             target_count=str(target_count),
@@ -639,6 +649,10 @@ class ArkResponsesProvider:
             ),
             shared_prompt_json=json.dumps(
                 shared_prompt.compiled_content,
+                ensure_ascii=False,
+            ),
+            visual_style_baseline_json=json.dumps(
+                visual_style_baseline or "未设置",
                 ensure_ascii=False,
             ),
         )
@@ -704,9 +718,15 @@ class ArkResponsesProvider:
                 shared_prompt.compiled_content,
                 ensure_ascii=False,
             ),
-            avoid_semantic_json=json.dumps(shard.avoid_semantic_signatures, ensure_ascii=False),
-            avoid_visual_json=json.dumps(shard.avoid_visual_signatures, ensure_ascii=False),
-            rejection_reasons_json=json.dumps(shard.rejection_reasons, ensure_ascii=False),
+            avoid_semantic_json=json.dumps(
+                shard.avoid_semantic_signatures, ensure_ascii=False
+            ),
+            avoid_visual_json=json.dumps(
+                shard.avoid_visual_signatures, ensure_ascii=False
+            ),
+            rejection_reasons_json=json.dumps(
+                shard.rejection_reasons, ensure_ascii=False
+            ),
             regeneration_context_json=json.dumps(
                 regeneration_context or {}, ensure_ascii=False, sort_keys=True
             ),
@@ -774,7 +794,9 @@ class ArkResponsesProvider:
                     attempts=call.metadata.attempts,
                     elapsed_ms=call.metadata.latency_ms,
                 )
-            visual_fact_id = assignment.visual_task_fact_id or assignment.primary_fact_id
+            visual_fact_id = (
+                assignment.visual_task_fact_id or assignment.primary_fact_id
+            )
             if visual_fact_id not in fact_ids:
                 LOGGER.info(
                     "dropping creative candidate without assigned visual fact slot_id=%s",
@@ -1023,7 +1045,9 @@ class ArkResponsesProvider:
     ) -> AiCallResult[FragmentRelationshipPlan]:
         candidate_facts = [
             application.by_id[fact_id].model_dump(
-                mode="json", by_alias=True, exclude={"eligible_fragment_types", "exclusion_reason"}
+                mode="json",
+                by_alias=True,
+                exclude={"eligible_fragment_types", "exclusion_reason"},
             )
             for fact_id in allocation.candidate_fact_ids
         ]
@@ -1032,8 +1056,12 @@ class ArkResponsesProvider:
             fragment_type=allocation.fragment_type.value,
             target_count=str(allocation.target_count),
             bundle_target=str(allocation.bundle_target),
-            mandatory_fact_ids_json=json.dumps(allocation.mandatory_fact_ids, ensure_ascii=False),
-            candidate_facts_json=json.dumps(candidate_facts, ensure_ascii=False, sort_keys=True),
+            mandatory_fact_ids_json=json.dumps(
+                allocation.mandatory_fact_ids, ensure_ascii=False
+            ),
+            candidate_facts_json=json.dumps(
+                candidate_facts, ensure_ascii=False, sort_keys=True
+            ),
             shared_prompt=shared_prompt.compiled_content or "未设置",
             allocation_hash=allocation.allocation_hash,
         )
@@ -1074,13 +1102,13 @@ class ArkResponsesProvider:
         facts = [
             application.by_id[fact_id].model_dump(mode="json", by_alias=True)
             for fact_id in dict.fromkeys(
-                fact_id for bundle in relationships.bundles for fact_id in bundle.fact_ids
+                fact_id
+                for bundle in relationships.bundles
+                for fact_id in bundle.fact_ids
             )
         ]
         plan_hash = relationship_hash(relationships)
-        variant_targets = coordinate_variant_targets(
-            relationships, target_count
-        )
+        variant_targets = coordinate_variant_targets(relationships, target_count)
         shared_variant_count = min(5, max(variant_targets.values()) + 2)
         prompt = render_prompt(
             V10_COORDINATE_TASK_PROMPT,
@@ -1088,17 +1116,15 @@ class ArkResponsesProvider:
             target_count=str(target_count),
             facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
             relationships_json=json.dumps(
-                relationships.model_dump(mode="json", by_alias=True), ensure_ascii=False, sort_keys=True
+                relationships.model_dump(mode="json", by_alias=True),
+                ensure_ascii=False,
+                sort_keys=True,
             ),
             fragment_rules=_fragment_rule(relationships.fragment_type),
             shared_prompt=shared_prompt.compiled_content or "未设置",
             relationship_hash=plan_hash,
-            quota_json=json.dumps(
-                variant_targets, ensure_ascii=False, sort_keys=True
-            ),
-            bundle_ids_json=json.dumps(
-                list(variant_targets), ensure_ascii=False
-            ),
+            quota_json=json.dumps(variant_targets, ensure_ascii=False, sort_keys=True),
+            bundle_ids_json=json.dumps(list(variant_targets), ensure_ascii=False),
             shared_variant_count=str(shared_variant_count),
         )
         call = await self._structured(
@@ -1149,16 +1175,22 @@ class ArkResponsesProvider:
     ) -> AiCallResult[GeneratedBlueprintBatch]:
         facts = [
             application.by_id[fact_id].model_dump(mode="json", by_alias=True)
-            for fact_id in dict.fromkeys(fact_id for task in shard.tasks for fact_id in task.fact_ids)
+            for fact_id in dict.fromkeys(
+                fact_id for task in shard.tasks for fact_id in task.fact_ids
+            )
         ]
         prompt = render_prompt(
             V10_BLUEPRINT_TASK_PROMPT,
             facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
             relationships_json=json.dumps(
-                relationships.model_dump(mode="json", by_alias=True), ensure_ascii=False, sort_keys=True
+                relationships.model_dump(mode="json", by_alias=True),
+                ensure_ascii=False,
+                sort_keys=True,
             ),
             coordinate_plan_json=json.dumps(
-                coordinate_plan.model_dump(mode="json", by_alias=True), ensure_ascii=False, sort_keys=True
+                coordinate_plan.model_dump(mode="json", by_alias=True),
+                ensure_ascii=False,
+                sort_keys=True,
             ),
             tasks_json=json.dumps(
                 [item.model_dump(mode="json", by_alias=True) for item in shard.tasks],
@@ -1166,7 +1198,9 @@ class ArkResponsesProvider:
                 sort_keys=True,
             ),
             shared_prompt=shared_prompt.compiled_content or "未设置",
-            avoid_signatures_json=json.dumps(avoid_signatures or [], ensure_ascii=False),
+            avoid_signatures_json=json.dumps(
+                avoid_signatures or [], ensure_ascii=False
+            ),
         )
         call = await self._structured(
             prompt,
@@ -1175,13 +1209,19 @@ class ArkResponsesProvider:
             stage=BLUEPRINT_STAGE_BY_TYPE[shard.fragment_type],
             prompt_file=V10_BLUEPRINT_BASE_PROMPT,
             model=self._blueprint_model,
-            max_output_tokens=min(self._strategy_max_output_tokens, max(1536, len(shard.tasks) * 640)),
+            max_output_tokens=min(
+                self._strategy_max_output_tokens, max(1536, len(shard.tasks) * 640)
+            ),
             request_timeout=self._strategy_timeout,
             instructions=load_prompt(V10_BLUEPRINT_BASE_PROMPT),
         )
         try:
-            normalized_items = normalize_generated_blueprints(call.value.items, shard.tasks)
-            validate_generated_blueprints(normalized_items, shard.tasks, coordinate_plan)
+            normalized_items = normalize_generated_blueprints(
+                call.value.items, shard.tasks
+            )
+            validate_generated_blueprints(
+                normalized_items, shard.tasks, coordinate_plan
+            )
         except ValueError as exc:
             raise ProviderError(
                 "AI blueprint response changed locked coordinates or facts",
@@ -1362,8 +1402,7 @@ class ArkResponsesProvider:
                             )
                             if (
                                 response_status == "incomplete"
-                                and incomplete_reason
-                                in {"max_output_tokens", "length"}
+                                and incomplete_reason in {"max_output_tokens", "length"}
                             ):
                                 error_type = ProviderErrorType.OUTPUT_TRUNCATED
                                 retryable = False
@@ -1500,11 +1539,17 @@ def _mock_fact_visual_strategy(
             usage = FactVisualUsage.IDENTITY_ANCHOR
             visual_instruction = "让当前产品或品类成为明确的主要画面主体"
             context_instruction = ""
-        elif fact.field in {InsightField.CORE_SPECIFICATION, InsightField.VISUAL_FEATURES}:
+        elif fact.field in {
+            InsightField.CORE_SPECIFICATION,
+            InsightField.VISUAL_FEATURES,
+        }:
             usage = FactVisualUsage.DIRECTLY_VISIBLE
             visual_instruction = "只呈现该事实中能够直接观察的外观或包装信息"
             context_instruction = ""
-        elif fact.field in {InsightField.USAGE_SCENARIO, InsightField.PURCHASE_SCENARIO}:
+        elif fact.field in {
+            InsightField.USAGE_SCENARIO,
+            InsightField.PURCHASE_SCENARIO,
+        }:
             usage = FactVisualUsage.ACTION_DEMONSTRABLE
             visual_instruction = "通过一个连续、真实的使用或购买动作表达该场景"
             context_instruction = ""
@@ -1599,9 +1644,7 @@ def _mock_creative_candidate(
     visual_fact_id = assignment.visual_task_fact_id or assignment.primary_fact_id
     primary = application.by_id[visual_fact_id]
     anchor = application.by_id[assignment.product_anchor_fact_ids[0]]
-    declared_fact_ids = list(
-        dict.fromkeys([primary.fact_id, anchor.fact_id])
-    )
+    declared_fact_ids = list(dict.fromkeys([primary.fact_id, anchor.fact_id]))
     product = anchor.value
     scenes = ["家庭厨房料理台", "节日家宴餐桌", "明亮食品展示台", "居家备餐区"]
     cameras = ["近景缓慢横移", "微距轻推", "中近景固定观察", "俯拍平稳跟随"]
@@ -1738,8 +1781,7 @@ def _creative_task_brief(
                 fact_payload(fact_id) for fact_id in assignment.support_fact_ids
             ],
             "productAnchorFacts": [
-                fact_payload(fact_id)
-                for fact_id in assignment.product_anchor_fact_ids
+                fact_payload(fact_id) for fact_id in assignment.product_anchor_fact_ids
             ],
             "productBoundaryFacts": [
                 fact_payload(fact_id)
@@ -1777,12 +1819,10 @@ def _creative_task_brief(
         },
         "businessContext": business_context,
         "productAnchorFacts": [
-            fact_payload(fact_id)
-            for fact_id in assignment.product_anchor_fact_ids
+            fact_payload(fact_id) for fact_id in assignment.product_anchor_fact_ids
         ],
         "productBoundaryFacts": [
-            fact_payload(fact_id)
-            for fact_id in assignment.product_boundary_fact_ids
+            fact_payload(fact_id) for fact_id in assignment.product_boundary_fact_ids
         ],
         "forbiddenInferences": list(dict.fromkeys(forbidden_inferences)),
         "creativeDirection": direction_payload,
@@ -1883,7 +1923,11 @@ def _temporal_intent_for_duration(duration_seconds: int) -> dict[str, str]:
     if duration_seconds <= 8:
         return {
             "band": "SHORT_FOCUS",
-            "guidance": "快速建立商品与视觉重点，减少铺垫，让直接、清楚的连续动作承担主要表达。",
+            "guidance": (
+                "只围绕一个可立即看懂的视觉事件，直接进入一个主动作，并在该动作形成的清晰结果上停留。"
+                "不要在主动作后继续切换到烹饪、摆盘、品尝、递送或开箱等第二阶段；若内容涉及产品处理，"
+                "只呈现其中一个可实时完成的阶段。"
+            ),
         }
     if duration_seconds <= 15:
         return {
@@ -1897,7 +1941,7 @@ def _temporal_intent_for_duration(duration_seconds: int) -> dict[str, str]:
         }
     return {
         "band": "CONNECTED_PHASES",
-        "guidance": "形成连贯的较长素材片段，可有前后衔接的拍摄阶段，但始终保持同一商品、连续时空和单一创意目标。",
+        "guidance": "围绕同一商品持续展开一条可实时拍完的动作过程；不要用“几分钟后”“十几分钟后”、完整蒸煮至熟或其他时间跳跃填满素材，宁可延长观察与镜头停留。",
     }
 
 
@@ -1940,11 +1984,9 @@ def _mock_creative_evaluation(
                 if item.semantic_profile.scene_family == candidate.dimensions.scene
                 and item.semantic_profile.narrative_family
                 == candidate.dimensions.narrative
-                and item.semantic_profile.persona_family
-                == candidate.dimensions.persona
+                and item.semantic_profile.persona_family == candidate.dimensions.persona
                 and item.semantic_profile.camera_family == candidate.dimensions.camera
-                and item.semantic_profile.emotion_family
-                == candidate.dimensions.emotion
+                and item.semantic_profile.emotion_family == candidate.dimensions.emotion
             ),
             direction_plan.directions[
                 (candidate.ordinal - 1) % len(direction_plan.directions)
@@ -2043,7 +2085,9 @@ def _normalize_relationship_model_response(
         )
     ]
     if not exact_sets:
-        raise ValueError("relationship model response cannot satisfy the exact allocation")
+        raise ValueError(
+            "relationship model response cannot satisfy the exact allocation"
+        )
     chosen = max(
         exact_sets,
         key=lambda rows: (
@@ -2277,7 +2321,9 @@ def merge_fragment_marketing_plans(
     expected = required_fragment_types or set(FragmentType)
     by_type = {plan.fragment_type: plan for plan in plans}
     if len(by_type) != len(plans) or set(by_type) != expected:
-        raise ValueError("fragment strategy merge is missing or duplicates a required type")
+        raise ValueError(
+            "fragment strategy merge is missing or duplicates a required type"
+        )
     covered: set[str] = set()
     relationships: list[MarketingRelationshipBundle] = []
     for fragment_type in FragmentType:
@@ -3042,31 +3088,89 @@ def _mock_coordinate_plan(
     size = min(12, max(4, target_count))
     detail_sets = {
         "N": [
-            "局部先露", "动作前停", "环境先行", "结果倒叙", "遮挡待解", "关系对照",
-            "材质先见", "位置悬念", "状态先行", "边缘揭示", "距离变化", "静态蓄势",
+            "局部先露",
+            "动作前停",
+            "环境先行",
+            "结果倒叙",
+            "遮挡待解",
+            "关系对照",
+            "材质先见",
+            "位置悬念",
+            "状态先行",
+            "边缘揭示",
+            "距离变化",
+            "静态蓄势",
         ],
         "S": [
-            "晨间窗边", "傍晚玄关", "午后书桌", "夜间厨房", "门店侧台", "户外长椅",
-            "客厅矮柜", "办公茶水间", "餐桌一角", "卧室收纳区", "通勤入口", "简洁展示台",
+            "晨间窗边",
+            "傍晚玄关",
+            "午后书桌",
+            "夜间厨房",
+            "门店侧台",
+            "户外长椅",
+            "客厅矮柜",
+            "办公茶水间",
+            "餐桌一角",
+            "卧室收纳区",
+            "通勤入口",
+            "简洁展示台",
         ],
         "P": [
-            "深色袖口双手", "浅色袖口双手", "成年女性侧身", "成年男性侧身", "无人仅产品", "单手持物",
-            "双手轻扶", "成年使用者背影", "仅指尖入画", "成年人物半身", "手腕局部", "无人道具陪衬",
+            "深色袖口双手",
+            "浅色袖口双手",
+            "成年女性侧身",
+            "成年男性侧身",
+            "无人仅产品",
+            "单手持物",
+            "双手轻扶",
+            "成年使用者背影",
+            "仅指尖入画",
+            "成年人物半身",
+            "手腕局部",
+            "无人道具陪衬",
         ],
         "C": [
-            "正面固定近景", "桌面低位近景", "侧前方固定中景", "固定俯拍近景", "微距固定观察", "中近景固定观察",
-            "肩后固定观察", "平视固定近景", "侧面固定特写", "高位固定中景", "低位固定中景", "正上方固定俯拍",
+            "正面固定近景",
+            "桌面低位近景",
+            "侧前方固定中景",
+            "固定俯拍近景",
+            "微距固定观察",
+            "中近景固定观察",
+            "肩后固定观察",
+            "平视固定近景",
+            "侧面固定特写",
+            "高位固定中景",
+            "低位固定中景",
+            "正上方固定俯拍",
         ],
         "E": [
-            "暖色柔光", "冷中性光", "清晨自然光", "傍晚侧逆光", "柔和顶光", "明亮散射光",
-            "克制低饱和", "清透高明度", "温和侧光", "安静暗背景", "轻快自然光", "专业硬朗侧光",
+            "暖色柔光",
+            "冷中性光",
+            "清晨自然光",
+            "傍晚侧逆光",
+            "柔和顶光",
+            "明亮散射光",
+            "克制低饱和",
+            "清透高明度",
+            "温和侧光",
+            "安静暗背景",
+            "轻快自然光",
+            "专业硬朗侧光",
         ],
     }
     role_markers = {
         FragmentType.HOOK: {"N": "未揭晓悬念", "C": "局部悬念观察", "E": "疑问张力"},
         FragmentType.PAIN: {"N": "真实受阻状态", "C": "障碍关系观察", "E": "克制焦虑"},
-        FragmentType.PRODUCT_DISPLAY: {"N": "产品主体展示", "C": "产品轮廓观察", "E": "清晰明亮"},
-        FragmentType.SELLING_POINT_EXPLANATION: {"N": "产品细节观察", "C": "细节证据观察", "E": "专业专注"},
+        FragmentType.PRODUCT_DISPLAY: {
+            "N": "产品主体展示",
+            "C": "产品轮廓观察",
+            "E": "清晰明亮",
+        },
+        FragmentType.SELLING_POINT_EXPLANATION: {
+            "N": "产品细节观察",
+            "C": "细节证据观察",
+            "E": "专业专注",
+        },
         FragmentType.CTA: {"N": "稳定收束构图", "C": "安全留白构图", "E": "从容确认"},
         FragmentType.OUTRO: {"N": "安静稳定定格", "C": "固定品牌构图", "E": "沉静结束"},
     }[fragment]
@@ -3090,7 +3194,9 @@ def _mock_coordinate_plan(
                     coordinate_id=f"{fragment.value}-{prefix}{index + 1:02d}",
                     value=value,
                     compatible_bundle_ids=bundle_ids,
-                    source_fact_ids=[facts[index % len(facts)].fact_id] if facts else [],
+                    source_fact_ids=[facts[index % len(facts)].fact_id]
+                    if facts
+                    else [],
                     normalized_signature=normalize_coordinate_signature(value),
                 )
             )

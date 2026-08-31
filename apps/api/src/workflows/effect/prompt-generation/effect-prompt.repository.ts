@@ -633,14 +633,15 @@ export class EffectPromptRepository {
     now = new Date(),
   ): Promise<boolean> {
     return this.prisma.$transaction(async (transaction) => {
-      const renewed = await transaction.effectPromptRun.updateMany({
-        where: {
-          projectId,
-          id: runId,
-          status: 'RUNNING',
-          attemptToken,
-          leaseExpiresAt: { gt: now },
-        },
+      const activeLease = {
+        projectId,
+        id: runId,
+        status: 'RUNNING' as const,
+        attemptToken,
+        leaseExpiresAt: { gt: now },
+      };
+      let renewed = await transaction.effectPromptRun.updateMany({
+        where: { ...activeLease, progress: { lte: progress } },
         data: {
           currentNode: nodeId,
           progress,
@@ -648,6 +649,19 @@ export class EffectPromptRepository {
           leaseExpiresAt: leaseDate(now),
         },
       });
+      if (renewed.count !== 1) {
+        // A supplement can revisit an earlier node after selection has already
+        // advanced the run. Keep the live node and lease fresh without making
+        // the user-visible overall progress move backwards.
+        renewed = await transaction.effectPromptRun.updateMany({
+          where: activeLease,
+          data: {
+            currentNode: nodeId,
+            heartbeatAt: now,
+            leaseExpiresAt: leaseDate(now),
+          },
+        });
+      }
       if (renewed.count !== 1) return false;
       const previousStage = await transaction.effectPromptStageOutput.findUnique({
         where: { projectId_runId_nodeId: { projectId, runId, nodeId } },

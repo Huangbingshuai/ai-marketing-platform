@@ -68,7 +68,7 @@ def test_v11_templates_keep_creative_generation_and_evaluation_independent() -> 
     )
     assert (
         load_prompt_version("v11_evaluation_base.system.prompt.txt")
-        == "effect-prompt-v11-creative-evaluation-v6"
+        == "effect-prompt-v11-creative-evaluation-v10"
     )
     assert "Worker 已经为每条任务选好少量可信事实" in creative
     assert "厂商无关" in creative
@@ -105,7 +105,7 @@ def test_visual_strategy_templates_separate_visual_task_from_business_context() 
     )
     assert (
         load_prompt_version("v11_creative_base_v4.system.prompt.txt")
-        == "effect-prompt-v11-coherent-creative-v9"
+        == "effect-prompt-v11-coherent-creative-v13"
     )
     assert "FORBIDDEN_VISUAL_PROOF" in compiler
     assert "不能凭成品的颜色、光泽、切面、纹理" in compiler
@@ -116,5 +116,22 @@ def test_visual_strategy_templates_separate_visual_task_from_business_context() 
     assert "businessContext 未在正文中准确表达时不得声明" in creative
     assert "不是每条都必须拍出的卖点" in creative
     assert "不授权虚构品牌礼盒" in creative
+    assert "整条素材只能围绕一个可立即看懂的视觉事件" in creative
+    assert "不得把切制后下锅" in creative
     assert "必须标记 FABRICATED_FACT" in evaluation
     assert "ABSTRACT_FACT_VISUAL_PROOF" in evaluation
+
+
+def test_creative_direction_uses_style_as_a_diverse_visual_baseline_only() -> None:
+    direction = load_prompt("v11_creative_direction.system.prompt.txt")
+    task = load_prompt("v11_creative_direction.user.prompt.txt")
+
+    assert (
+        load_prompt_version("v11_creative_direction.system.prompt.txt")
+        == "effect-prompt-v11-creative-direction-v5"
+    )
+    assert "视觉风格基调只是整批共享的视觉语言" in direction
+    assert "不是场景、人物、动作或镜头模板" in direction
+    assert "同一风格下仍须保持" in direction
+    assert "仅作为整批视觉底色，不是固定场景模板" in task
+    assert "{visual_style_baseline_json}" in task

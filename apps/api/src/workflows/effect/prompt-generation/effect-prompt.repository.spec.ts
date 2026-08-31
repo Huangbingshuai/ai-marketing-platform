@@ -102,6 +102,54 @@ describe('EffectPromptRepository', () => {
     );
   });
 
+  it('keeps overall progress monotonic when a supplement revisits an earlier stage', async () => {
+    const updateMany = vi
+      .fn()
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 });
+    const transaction = {
+      effectPromptRun: { updateMany },
+      effectPromptStageOutput: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        upsert: vi.fn().mockResolvedValue({}),
+      },
+    };
+    const repository = new EffectPromptRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await expect(
+      repository.saveStage(
+        projectId,
+        runId,
+        'attempt-a',
+        'CREATIVE_EVALUATION_CLASSIFICATION',
+        {
+          status: 'RUNNING',
+          summary: '正在评估补充候选',
+          warnings: [],
+          metadata: { round: 1 },
+        },
+        59,
+      ),
+    ).resolves.toBe(true);
+
+    expect(updateMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({ progress: { lte: 59 } }),
+        data: expect.objectContaining({ progress: 59 }),
+      }),
+    );
+    expect(updateMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.not.objectContaining({ progress: expect.anything() }),
+        data: expect.not.objectContaining({ progress: expect.anything() }),
+      }),
+    );
+  });
+
   it('persists blueprint and prompt shards under phase-scoped unique keys', async () => {
     const upsert = vi.fn().mockResolvedValue({});
     const transaction = {

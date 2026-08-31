@@ -76,6 +76,7 @@ async def test_ark_plans_compact_batch_creative_directions() -> None:
             "visualFeatures": ["蒸熟后表面油润"],
             "coreSellingPoints": ["广式甜咸风味"],
             "usageScenarios": ["家庭蒸制", "年夜饭摆盘"],
+            "visualStyleBaseline": "烟火食欲感",
         }
     )
     strategy = validate_fact_visual_strategy(
@@ -147,7 +148,10 @@ async def test_ark_plans_compact_batch_creative_directions() -> None:
     assert seen["max_output_tokens"] == 6144
     assert seen_timeout["read"] == 180
     payload_text = json.dumps(seen, ensure_ascii=False)
+    prompt_text = seen["input"][0]["content"][0]["text"]  # type: ignore[index]
     assert "广式腊肠" in payload_text
+    assert "视觉风格基调（仅作为整批视觉底色，不是固定场景模板）" in prompt_text
+    assert '"烟火食欲感"' in prompt_text
     assert "目标 Prompt 数量：50" in payload_text
     assert "effect_prompt_v11_creative_direction_plan" in payload_text
     assert "strategyHash" not in payload_text
@@ -162,6 +166,7 @@ async def test_ark_v11_creative_uses_one_coherent_schema_and_shared_constraints(
             "productName": "便携杯",
             "coreSellingPoints": ["单手开合"],
             "corePainPoints": ["普通杯盖需要双手操作"],
+            "visualStyleBaseline": "清透冰感",
         }
     )
     product_fact = next(item for item in application.usable if item.value == "便携杯")
@@ -243,6 +248,7 @@ async def test_ark_v11_creative_uses_one_coherent_schema_and_shared_constraints(
     assert "单手开合" in prompt
     assert "便携杯" in prompt
     assert "普通杯盖需要双手操作" not in prompt
+    assert "清透冰感" not in prompt
     assert primary_fact.fact_id not in prompt
     assert product_fact.fact_id not in prompt
     assert "primaryFact" in prompt
@@ -726,7 +732,9 @@ async def test_ark_v11_multi_task_shard_uses_slot_local_fact_aliases() -> None:
 @pytest.mark.asyncio
 async def test_ark_v11_evaluation_reserves_reasoning_room_for_five_items() -> None:
     seen: dict[str, object] = {}
-    application = map_insight({"productName": "便携杯"})
+    application = map_insight(
+        {"productName": "便携杯", "visualStyleBaseline": "极简商务"}
+    )
     product_fact = next(item for item in application.usable if item.value == "便携杯")
     candidates = [
         CreativeCandidate(
@@ -805,12 +813,14 @@ async def test_ark_v11_evaluation_reserves_reasoning_room_for_five_items() -> No
     assert len(result.value.items) == 5
     prompt_text = seen["input"][0]["content"][0]["text"]
     assert prompt_text.count('"targetDurationSeconds": 30') == 5
+    assert "极简商务" not in prompt_text
 
 
 @pytest.mark.parametrize(
     ("duration_seconds", "expected_band"),
     [
         (4, "SHORT_FOCUS"),
+        (5, "SHORT_FOCUS"),
         (8, "SHORT_FOCUS"),
         (9, "COMPLETE_ACTION"),
         (15, "COMPLETE_ACTION"),
@@ -829,6 +839,9 @@ def test_v11_temporal_intent_uses_soft_duration_bands(
     assert intent["band"] == expected_band
     assert "动作数" not in intent["guidance"]
     assert "镜头数" not in intent["guidance"]
+    if expected_band == "SHORT_FOCUS":
+        assert "一个可立即看懂的视觉事件" in intent["guidance"]
+        assert "第二阶段" in intent["guidance"]
 
 
 @pytest.mark.asyncio

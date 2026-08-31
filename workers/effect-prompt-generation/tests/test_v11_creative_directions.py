@@ -30,6 +30,8 @@ from effect_prompt_generation.v11_creative_directions import (
     allocate_creative_directions,
     complete_semantic_profile,
     creative_direction_source_hash,
+    scene_atom_for_direction,
+    scene_atom_from_text,
     validate_semantic_profile,
     validate_creative_direction_plan,
 )
@@ -136,7 +138,7 @@ async def test_cluster_policy_plans_directions_and_generates_140_percent() -> No
         if task.fact_assignment is not None and task.creative_direction is not None
     )
     counts = Counter(
-        task.creative_direction.direction_id
+        scene_atom_for_direction(task.creative_direction)
         for task in creative_tasks
         if task.creative_direction is not None
     )
@@ -278,10 +280,6 @@ async def test_cluster_concentration_triggers_only_one_diversity_supplement() ->
     assert final_stage.metadata["diversitySupplementTriggered"] is True
     assert final_stage.metadata["diversitySupplementCount"] == 2
     assert any(
-        reason.startswith("SCENE_CLUSTER_OVER_40_PERCENT")
-        for reason in final_stage.metadata["diversitySupplementReasons"]
-    )
-    assert any(
         reason.startswith("ACTION_CLUSTER_OVER_40_PERCENT")
         for reason in final_stage.metadata["diversitySupplementReasons"]
     )
@@ -352,7 +350,7 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
         count=70,
         ordinal_start=1,
     )
-    counts = Counter(item.direction_id for item in allocated)
+    counts = Counter(scene_atom_for_direction(item) for item in allocated)
     assert max(counts.values()) - min(counts.values()) <= 1
 
     invalid = raw.model_copy(
@@ -373,6 +371,52 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
             source_hash=source_hash,
             prompt_version=V11_CREATIVE_DIRECTION_VERSION,
         )
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["家庭厨房灶台", "岭南厨房", "砂锅台面备餐", "砧板旁的料理台"],
+)
+def test_scene_atom_collapses_kitchen_and_preparation_synonyms(label: str) -> None:
+    assert scene_atom_from_text(label) == "KITCHEN_PREP"
+
+
+def test_direction_allocation_balances_scene_atoms_before_model_labels() -> None:
+    plan = _direction_plan_for_semantic_tests()
+    scene_labels = [
+        "家庭厨房灶台",
+        "岭南厨房",
+        "砂锅台面备餐",
+        "家庭砧板",
+        "家宴餐桌",
+        "团圆饭围桌",
+        "超市货架",
+        "门店选购",
+    ]
+    directions = [
+        direction.model_copy(
+            update={
+                "semantic_profile": direction.semantic_profile.model_copy(
+                    update={"scene_family": scene_labels[index]}
+                )
+            }
+        )
+        for index, direction in enumerate(plan.directions)
+    ]
+    plan = plan.model_copy(update={"directions": directions})
+
+    allocated = allocate_creative_directions(
+        plan,
+        count=12,
+        ordinal_start=1,
+    )
+    atom_counts = Counter(scene_atom_for_direction(item) for item in allocated)
+
+    assert atom_counts == {
+        "KITCHEN_PREP": 4,
+        "DINING_MEAL": 4,
+        "RETAIL_PURCHASE": 4,
+    }
 
 
 def test_direction_checkpoint_round_trip_parses_worker_plan() -> None:

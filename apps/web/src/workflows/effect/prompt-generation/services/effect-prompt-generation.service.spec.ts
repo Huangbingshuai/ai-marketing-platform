@@ -160,6 +160,25 @@ describe('effect prompt generation HTTP service', () => {
     expect(updates).toEqual([45, 100]);
   });
 
+  it('continues polling after a transient run query failure', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError('temporary network failure'))
+      .mockResolvedValueOnce(response({ run: run('RUNNING', 83) }))
+      .mockResolvedValueOnce(response({ run: run('COMPLETED', 100) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const updates: number[] = [];
+
+    const finalRun = await pollEffectPromptRun('project-1', 'prompt-run-1', {
+      intervalMs: 0,
+      onUpdate: (nextRun) => updates.push(nextRun.progress),
+    });
+
+    expect(finalRun.status).toBe('COMPLETED');
+    expect(updates).toEqual([83, 100]);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it('keeps the safe truncation code and terminal message returned by the API', async () => {
     const failedRun: EffectPromptRun = {
       ...run('FAILED', 15),
