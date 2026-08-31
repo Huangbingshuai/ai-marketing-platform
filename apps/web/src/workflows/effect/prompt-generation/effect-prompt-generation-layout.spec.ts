@@ -106,19 +106,18 @@ describe('effect prompt generation current layout', () => {
     ])
       expect(pageSource).toMatch(new RegExp(`\\b${nodeId}\\b`, 'u'));
     expect(pageSource).toMatch(
-      /effectPromptRunGraphNodeIds\(\s*CURRENT_EFFECT_PROMPT_GRAPH_VERSION,\s*displayedGraphRun\.value\.operation,?\s*\)/u,
+      /effectPromptRunGraphNodeIds\(displayedGraphRun\.value\.operation\)/u,
     );
     expect(pageSource).toMatch(
-      /effectPromptRunGraphEdges\(\s*CURRENT_EFFECT_PROMPT_GRAPH_VERSION,\s*displayedGraphRun\.value\.operation,?\s*\)/u,
+      /effectPromptRunGraphEdges\(displayedGraphRun\.value\.operation\)/u,
     );
     expect(pageSource).toContain('展示本次真实输入、连贯创意生成、用途评估和数量结果。');
     expect(graphSource).toContain('sourceIndex < targetIndex');
   });
 
   it('keeps current real-result detail renderers without historical navigation', () => {
-    expect(pageSource).toContain('effectPromptGraphNodeIds(CURRENT_EFFECT_PROMPT_GRAPH_VERSION)');
+    expect(pageSource).toContain('EFFECT_PROMPT_GRAPH_NODE_IDS');
     expect(pageSource).not.toContain('历史执行');
-    expect(pageSource).not.toContain('displayedGraphVersionLabel');
     for (const blockKind of [
       'RELATIONSHIP_LIST',
       'COORDINATE_LIST',

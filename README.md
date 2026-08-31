@@ -6,7 +6,7 @@
 
 > 文档状态：与当前工作区实现同步
 >
-> 最后更新：2026-08-28
+> 最后更新：2026-08-31
 
 ## 当前进度
 
@@ -27,7 +27,7 @@
 | -------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | 01 资料包导入  | 已完成                         | 完成校验后提交每个产品的 `source-package:{productId}`，全局视频配置单独维护。                                                                |
 | 02 AI 信息提炼 | 已完成                         | 生成 schema v3《产品素材制作信息卡》，目标受众按条保存，制作规则包含受控分辨率；只有完成校验后提交 `marketing-insight:{productId}`。         |
-| 03 Prompt 生成 | 当前视觉策略与向量择优版已完成 | 生成 V6 连贯六维素材 Prompt 批次；先编译事实视觉角色，再生成、独立评估并用正文向量 MMR 精确择优，完成校验后提交 `prompt-batch:{productId}`。 |
+| 03 Prompt 生成 | 已完成                         | 生成连贯六维素材 Prompt 批次；先编译事实视觉角色，再生成、独立评估并用正文向量 MMR 精确择优，完成校验后提交 `prompt-batch:{productId}`。    |
 | 04 视频渲染    | 待开发                         | 目前只实现读取已提交 Prompt、合并共用提示词并规范化 Seedance 参数的纯请求编译边界，尚未实现完整异步渲染任务。                                |
 | 05 模板混剪    | 待开发                         | 尚未实现素材池智能填充、成片工程和时间轴精修。                                                                                               |
 | 06 成片输出    | 待开发                         | 尚未实现最终合成、质量管理和批量导出。                                                                                                       |
@@ -40,8 +40,8 @@
 - RabbitMQ Outbox 可靠投递、Redis 进度缓存、任务租约和重复消息恢复。
 - Python 3.12 + LangGraph AI 提炼 Worker。
 - 独立 Prompt 生成 Worker：可信事实准备、连贯六维创意生成、独立质量评估与多用途分类、精确数量择优和一次定向补充。
-- Prompt V6 批次严格匹配用户设置的总数量；六类是生成后的推荐/兼容用途标签，不再是生成配额或六条独立生产线。
-- 当前 Prompt 工作流统一使用八阶段 `CURRENT` 拓扑；旧图记录只留在数据库审计链，不再进入工作区、节点详情或新任务执行路径。
+- Prompt 批次严格匹配用户设置的总数量；六类是生成后的推荐/兼容用途标签，不再是生成配额或六条独立生产线。
+- Prompt 生成只维护一套八阶段工作流，不再通过代码版本或图版本选择不同执行路径。
 - 火山正文向量 + OpenMontage 式 MMR 择优：质量占 70%、相对新颖度占 30%，一般相似只降序不阻断数量，人工保留项和单条重生成的其他条目作为固定参照。
 - Docling 本地解析 PDF/DOCX，模型文件通过 Docker named volume 持久化。
 - 电商链接静态抓取、JSON-LD/OpenGraph/京东内嵌数据解析，以及隔离 Playwright Chromium 动态渲染兜底。
@@ -147,7 +147,7 @@ Step 03 读取当前产品已提交的 `marketing-insight:{productId}`，生成�
 
 共用提示词继续作为批次级唯一的一段文本，可以包含禁用元素、品牌一致性、人物一致性和其他全批要求。生成模型收到它作为约束但不应复述到每条正文；第 4 节点编译 Seedance 请求时再将同一段文字追加一次，并独立传递时长、画幅和分辨率，不回写单条 Prompt。人工新增或修改后条目先显示“待重新评估”，由异步 `ITEM_EVALUATE` 重新判断推荐用途、兼容用途和产品相关性。
 
-当前 Prompt 工作流只展示八阶段线性拓扑，其中“事实视觉使用策略编译”位于“提炼信息应用映射”之后、“共用提示词编译”之前。新任务和新恢复固定使用内部版本 `CURRENT`。旧 Run、Stage 和 Shard 只作为不可见审计记录保留，不再进入工作区、节点详情或 Worker；已经生成的 Prompt 结果不会因此删除。详细设计见 [单一当前工作流收敛实施方案](docs/workflows/effect/plans/效果类Prompt-单一当前工作流收敛实施方案.md)，质量改造见 [Prompt 质量提升分步实施总方案](docs/workflows/effect/plans/效果类Prompt-V11质量提升分步实施总方案.md)，通俗说明见 [Prompt 生成子工作流节点通俗说明](docs/workflows/effect/guides/效果类Prompt生成子工作流节点通俗说明.md)。
+当前 Prompt 工作流只展示八阶段线性拓扑，其中“事实视觉使用策略编译”位于“提炼信息应用映射”之后、“共用提示词编译”之前。新任务和任务恢复都走同一条执行路径，不读取代码版本号。数据库中的业务 revision、上游 revision 和内容哈希继续用于并发控制、变更判断与审计，不属于代码版本。详细设计见 [Prompt 当前工作流实施方案](docs/workflows/effect/plans/效果类Prompt-单一当前工作流收敛实施方案.md)，通俗说明见 [Prompt 生成子工作流节点通俗说明](docs/workflows/effect/guides/效果类Prompt生成子工作流节点通俗说明.md)。
 
 ### Prompt 结果与当前项目工作区同步
 
@@ -492,7 +492,7 @@ docker compose logs --tail 200 effect-extraction-worker
 - [目标受众与全局分辨率贯通实施方案](docs/workflows/effect/plans/效果类目标受众与全局分辨率贯通实施方案.md)
 - [产品素材制作信息卡 Result V2 完善实施方案](docs/workflows/effect/plans/效果类AI信息提炼-产品素材制作信息卡完善实施方案.md)
 - [AI 信息提炼分节点模型路由实施方案](docs/workflows/effect/plans/效果类AI信息提炼-分节点模型路由实施方案.md)
-- [差异化 Prompt 批量生成节点实施方案](docs/workflows/effect/plans/效果类工作流-差异化Prompt批量生成节点实施方案.md)
+- [Prompt 当前工作流实施方案](docs/workflows/effect/plans/效果类Prompt-单一当前工作流收敛实施方案.md)
 - [Prompt 视觉策略真实付费质量对比](docs/workflows/effect/evidence/Prompt视觉策略两轮真实付费质量对比-2026-08-28.md)
 - [MinIO 存储与本地部署方案](docs/workflows/effect/deployment/效果类导入素材-MinIO存储与本地部署方案.md)
 - [AI 信息提炼 Worker 说明](workers/effect-extraction/README.md)

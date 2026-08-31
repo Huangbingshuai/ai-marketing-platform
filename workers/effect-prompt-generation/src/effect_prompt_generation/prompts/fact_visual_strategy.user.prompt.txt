@@ -1,5 +1,3 @@
-VERSION: effect-prompt-v11-fact-visual-strategy-task-v1
-
 当前已确认、允许用于 Prompt 的商品事实：
 {facts_json}
 

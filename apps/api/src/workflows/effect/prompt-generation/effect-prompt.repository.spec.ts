@@ -1,9 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
-  CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
-  DEFAULT_EFFECT_PROMPT_SETTINGS,
-  EFFECT_PROMPT_SCHEMA_VERSION,
-} from '@ai-marketing/contracts';
+import { DEFAULT_EFFECT_PROMPT_SETTINGS } from '@ai-marketing/contracts';
 
 import type { PrismaService } from '../../../database/prisma.service';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
@@ -59,7 +55,7 @@ const runRecord = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('EffectPromptRepository', () => {
-  it('persists blueprint and prompt shards under phase-scoped unique keys', async () => {
+  it('persists creative and classification shards under phase-scoped unique keys', async () => {
     const upsert = vi.fn().mockResolvedValue({});
     const transaction = {
       effectPromptRun: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
@@ -72,8 +68,6 @@ describe('EffectPromptRepository', () => {
       status: 'SUCCEEDED' as const,
       combinationPlan: [],
       items: [],
-      blueprintPlan: [{ slotId: 'blueprint-task-a' }],
-      blueprints: [{ slotId: 'blueprint-a' }],
       creativePlan: [{ slotId: 'creative-task-a' }],
       creativeItems: [{ slotId: 'creative-a' }],
       classificationPlan: ['creative-a'],
@@ -81,10 +75,8 @@ describe('EffectPromptRepository', () => {
       warnings: [],
     };
 
-    await repository.saveShard(projectId, runId, 'attempt-a', 0, 0, 'BLUEPRINT', input);
-    await repository.saveShard(projectId, runId, 'attempt-a', 0, 0, 'PROMPT', input);
-    await repository.saveShard(projectId, runId, 'attempt-a', 1, 0, 'CREATIVE', input);
-    await repository.saveShard(projectId, runId, 'attempt-a', 1, 0, 'CLASSIFICATION', input);
+    await repository.saveShard(projectId, runId, 'attempt-a', 0, 0, 'CREATIVE', input);
+    await repository.saveShard(projectId, runId, 'attempt-a', 0, 0, 'CLASSIFICATION', input);
 
     expect(upsert.mock.calls.map(([argument]) => argument.where)).toEqual([
       {
@@ -105,41 +97,13 @@ describe('EffectPromptRepository', () => {
           shardIndex: 0,
         },
       },
-      {
-        projectId_runId_phase_round_shardIndex: {
-          projectId,
-          runId,
-          phase: 'BLUEPRINT',
-          round: 1,
-          shardIndex: 0,
-        },
-      },
-      {
-        projectId_runId_phase_round_shardIndex: {
-          projectId,
-          runId,
-          phase: 'PROMPT',
-          round: 1,
-          shardIndex: 0,
-        },
-      },
     ]);
     expect(upsert.mock.calls[0]?.[0].create).toMatchObject({
-      phase: 'BLUEPRINT',
-      combinationPlan: input.blueprintPlan,
-      items: input.blueprints,
-    });
-    expect(upsert.mock.calls[1]?.[0].create).toMatchObject({
-      phase: 'PROMPT',
-      combinationPlan: input.combinationPlan,
-      items: input.items,
-    });
-    expect(upsert.mock.calls[2]?.[0].create).toMatchObject({
       phase: 'BLUEPRINT',
       combinationPlan: input.creativePlan,
       items: input.creativeItems,
     });
-    expect(upsert.mock.calls[3]?.[0].create).toMatchObject({
+    expect(upsert.mock.calls[1]?.[0].create).toMatchObject({
       phase: 'PROMPT',
       combinationPlan: input.classificationPlan,
       items: input.evaluations,
@@ -282,7 +246,6 @@ describe('EffectPromptRepository', () => {
         aggregateId: runId,
         routingKey: 'effect.prompt-generation.requested',
         payload: {
-          schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
           projectId,
           runId,
           requestId: runId,
@@ -291,9 +254,9 @@ describe('EffectPromptRepository', () => {
     });
   });
 
-  it('retires an active legacy run before creating the only current workflow run', async () => {
+  it('rejects a second active run for the same product', async () => {
     const created = runRecord({
-      inputSnapshot: { graphVersion: CURRENT_EFFECT_PROMPT_GRAPH_VERSION },
+      inputSnapshot: { selectionPolicy: 'MMR_CONTENT' },
     });
     const update = vi.fn().mockResolvedValue({});
     const create = vi.fn().mockResolvedValue(created);
@@ -303,7 +266,7 @@ describe('EffectPromptRepository', () => {
         findFirst: vi.fn().mockResolvedValue(
           runRecord({
             id: '00000000-0000-4000-8000-000000000099',
-            inputSnapshot: { graphVersion: 'V10_RELATION_COORDINATE_BLUEPRINT' },
+            inputSnapshot: { invalidRetiredShape: true },
             status: 'RUNNING',
           }),
         ),
@@ -335,32 +298,13 @@ describe('EffectPromptRepository', () => {
     } as unknown as PrismaService);
 
     await expect(repository.startRun(projectId, workflowRunId, productId, input)).resolves.toEqual({
-      kind: 'CREATED',
-      run: created,
+      kind: 'ACTIVE_CONFLICT',
     });
-    expect(update).toHaveBeenCalledWith({
-      where: {
-        projectId_id: { projectId, id: '00000000-0000-4000-8000-000000000099' },
-      },
-      data: expect.objectContaining({
-        status: 'FAILED',
-        errorCode: 'WORKFLOW_RETIRED',
-        attemptToken: null,
-        leaseExpiresAt: null,
-      }),
-    });
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          inputSnapshot: expect.objectContaining({
-            graphVersion: CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
-          }),
-        }),
-      }),
-    );
+    expect(update).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
   });
 
-  it('migrates V1 full-video settings to V4 six-fragment defaults before snapshotting', async () => {
+  it('rejects settings that do not match the current Prompt structure', async () => {
     const created = runRecord();
     const nodeUpdate = vi.fn().mockResolvedValue({});
     const runCreate = vi.fn().mockResolvedValue(created);
@@ -374,7 +318,6 @@ describe('EffectPromptRepository', () => {
       workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: workflowRunId }) },
       workflowNodeState: {
         findUnique: vi.fn().mockResolvedValue({
-          schemaVersion: 1,
           revision: 1,
           state: { count: 50, durationSeconds: 15, semanticLimit: 15, visualLimit: 20 },
         }),
@@ -397,39 +340,10 @@ describe('EffectPromptRepository', () => {
     } as unknown as PrismaService);
 
     await expect(repository.startRun(projectId, workflowRunId, productId, input)).resolves.toEqual({
-      kind: 'CREATED',
-      run: created,
+      kind: 'SETTINGS_CONFLICT',
     });
-
-    const expectedSettings = DEFAULT_EFFECT_PROMPT_SETTINGS;
-    const expectedHash = workflowStateHash(expectedSettings);
-    expect(nodeUpdate).toHaveBeenCalledWith({
-      where: {
-        projectId_workflowRunId_nodeId: {
-          projectId,
-          workflowRunId,
-          nodeId: `PROMPT_GENERATION:${productId}`,
-        },
-      },
-      data: expect.objectContaining({
-        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
-        revision: { increment: 1 },
-        state: expectedSettings,
-        contentHash: expectedHash,
-        executionInputHash: expectedHash,
-        executionInputSchemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
-      }),
-    });
-    expect(runCreate).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        settingsHash: expectedHash,
-        inputSnapshot: expect.objectContaining({
-          graphVersion: 'CURRENT',
-          settings: expectedSettings,
-        }),
-      }),
-      include: { result: true, stages: true },
-    });
+    expect(nodeUpdate).not.toHaveBeenCalled();
+    expect(runCreate).not.toHaveBeenCalled();
   });
 
   it('requires result revision CAS when batch generation replaces an existing result', async () => {
@@ -453,7 +367,6 @@ describe('EffectPromptRepository', () => {
       },
       effectPromptResult: {
         findFirst: vi.fn().mockResolvedValue({
-          schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
           revision: 4,
           draftResult: recomputePromptQuality([], DEFAULT_EFFECT_PROMPT_SETTINGS),
         }),
@@ -491,7 +404,6 @@ describe('EffectPromptRepository', () => {
       workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: workflowRunId }) },
       workflowNodeState: {
         findUnique: vi.fn().mockResolvedValue({
-          schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
           revision: 1,
           state: DEFAULT_EFFECT_PROMPT_SETTINGS,
         }),
@@ -506,7 +418,6 @@ describe('EffectPromptRepository', () => {
       },
       effectPromptResult: {
         findFirst: vi.fn().mockResolvedValue({
-          schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
           revision: 4,
           draftResult: current,
         }),
@@ -532,7 +443,7 @@ describe('EffectPromptRepository', () => {
     });
   });
 
-  it('starts a fresh V5 batch from a legacy result when its revision still matches', async () => {
+  it('rejects replacement when the stored result does not match the current structure', async () => {
     const created = runRecord();
     const runCreate = vi.fn().mockResolvedValue(created);
     const transaction = {
@@ -545,7 +456,6 @@ describe('EffectPromptRepository', () => {
       workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: workflowRunId }) },
       workflowNodeState: {
         findUnique: vi.fn().mockResolvedValue({
-          schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
           revision: 1,
           state: DEFAULT_EFFECT_PROMPT_SETTINGS,
         }),
@@ -560,9 +470,8 @@ describe('EffectPromptRepository', () => {
       },
       effectPromptResult: {
         findFirst: vi.fn().mockResolvedValue({
-          schemaVersion: 2,
           revision: 9,
-          draftResult: { schemaVersion: 2 },
+          draftResult: { invalidShape: true },
         }),
       },
       jobOutbox: { create: vi.fn().mockResolvedValue({}) },
@@ -577,19 +486,8 @@ describe('EffectPromptRepository', () => {
         ...input,
         expectedResultRevision: 9,
       }),
-    ).resolves.toEqual({ kind: 'CREATED', run: created });
-    expect(runCreate).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        inputSnapshot: expect.objectContaining({
-          schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
-          retainedManualItems: [],
-          selectionPolicyVersion: 'MMR_CONTENT_V2',
-          similarityAnchors: [],
-          baseResultRevision: null,
-        }),
-      }),
-      include: { result: true, stages: true },
-    });
+    ).resolves.toEqual({ kind: 'RESULT_CONFLICT' });
+    expect(runCreate).not.toHaveBeenCalled();
   });
 
   it('requires a live project-scoped attempt token for heartbeats', async () => {
@@ -904,7 +802,7 @@ describe('EffectPromptRepository', () => {
     expect(transaction.jobOutbox.updateMany).not.toHaveBeenCalled();
   });
 
-  it('closes RESULT_SAVE and skips an untriggered REPLENISH in the completion transaction', async () => {
+  it('closes RESULT_SAVE in the completion transaction', async () => {
     const now = new Date('2026-08-25T00:00:00.000Z');
     const candidate = recomputePromptQuality([], DEFAULT_EFFECT_PROMPT_SETTINGS);
     const stageCreate = vi.fn().mockResolvedValue({});
@@ -919,7 +817,6 @@ describe('EffectPromptRepository', () => {
           attemptToken: 'attempt-a',
           leaseExpiresAt: new Date('2026-08-25T00:02:00.000Z'),
           inputSnapshot: {
-            schemaVersion: 4,
             projectId,
             workflowRunId,
             productId,
@@ -928,6 +825,7 @@ describe('EffectPromptRepository', () => {
             settings: candidate.settings,
             insightArtifact: { id: 'insight', revision: 1, contentHash: 'hash', result: {} },
             retainedManualItems: [],
+            selectionPolicy: 'MMR_CONTENT',
             baseResultRevision: null,
           },
           result: null,
@@ -948,15 +846,7 @@ describe('EffectPromptRepository', () => {
     await expect(
       repository.complete(projectId, runId, 'attempt-a', candidate, now),
     ).resolves.toEqual({ kind: 'COMPLETED', result: createdResult });
-    expect(stageCreate).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        projectId,
-        runId,
-        nodeId: 'REPLENISH',
-        status: 'SKIPPED',
-        completedAt: now,
-      }),
-    });
+    expect(stageCreate).not.toHaveBeenCalled();
     expect(stageUpsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {

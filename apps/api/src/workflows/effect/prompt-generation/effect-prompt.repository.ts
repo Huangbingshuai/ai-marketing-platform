@@ -10,11 +10,9 @@ import type {
   EffectPromptSharedPrompt,
 } from '@ai-marketing/contracts';
 import {
-  CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
   EFFECT_PROMPT_MAX_RUN_ATTEMPTS,
-  EFFECT_PROMPT_SCHEMA_VERSION,
   effectPromptTargetCount,
-  migrateEffectPromptSettings,
+  readEffectPromptSettings,
 } from '@ai-marketing/contracts';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Prisma } from '../../../generated/prisma/client';
@@ -29,7 +27,6 @@ import { workflowStateHash } from '../../../platform/workflow/workflow-state-has
 import {
   mergeEffectPromptCompletionItems,
   parseEffectPromptBatchResult,
-  parseEffectPromptBatchResultV5ForRead,
   recomputePromptQuality,
 } from './effect-prompt.quality';
 import {
@@ -48,7 +45,7 @@ const parseStrings = (value: unknown): string[] =>
 
 type PersistedEffectPromptShardPhase = 'BLUEPRINT' | 'PROMPT';
 const persistedShardPhase = (phase: EffectPromptShardPhase): PersistedEffectPromptShardPhase =>
-  phase === 'CREATIVE' ? 'BLUEPRINT' : phase === 'CLASSIFICATION' ? 'PROMPT' : phase;
+  phase === 'CREATIVE' ? 'BLUEPRINT' : 'PROMPT';
 
 export const isAllowedReplacementSellingPoint = (
   insight: unknown,
@@ -309,25 +306,9 @@ export class EffectPromptRepository {
       });
       if (!settingsNode || settingsNode.revision !== input.expectedSettingsRevision)
         return { kind: 'SETTINGS_CONFLICT' as const };
-      const legacySettings = settingsNode.schemaVersion < EFFECT_PROMPT_SCHEMA_VERSION;
-      const settings = migrateEffectPromptSettings(settingsNode.state, settingsNode.schemaVersion);
+      const settings = readEffectPromptSettings(settingsNode.state);
+      if (!settings) return { kind: 'SETTINGS_CONFLICT' as const };
       const settingsHash = workflowStateHash(settings);
-      if (legacySettings) {
-        await transaction.workflowNodeState.update({
-          where: {
-            projectId_workflowRunId_nodeId: { projectId, workflowRunId, nodeId },
-          },
-          data: {
-            schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
-            revision: { increment: 1 },
-            contentHash: settingsHash,
-            executionInputHash: settingsHash,
-            executionInputSchemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
-            state: json(settings),
-            savedAt: new Date(),
-          },
-        });
-      }
       const insight = await transaction.workingArtifact.findFirst({
         where: {
           projectId,
@@ -344,19 +325,18 @@ export class EffectPromptRepository {
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       });
       const parsedLatest = latest ? parseEffectPromptBatchResult(latest.draftResult) : null;
-      const parsedLatestV5 = latest
-        ? parseEffectPromptBatchResultV5ForRead(latest.draftResult)
-        : null;
-      const readableLatest = parsedLatest ?? parsedLatestV5;
-      const latestCurrent =
-        latest?.schemaVersion === EFFECT_PROMPT_SCHEMA_VERSION && parsedLatest ? latest : null;
+      const latestCurrent = latest && parsedLatest ? latest : null;
       const currentResult = latestCurrent ? parsedLatest : null;
       if (
         input.expectedResultRevision !== null &&
-        latest?.revision !== input.expectedResultRevision
+        latestCurrent?.revision !== input.expectedResultRevision
       )
         return { kind: 'RESULT_CONFLICT' as const };
-      if (input.operation === 'BATCH_GENERATE' && latest && input.expectedResultRevision === null)
+      if (
+        input.operation === 'BATCH_GENERATE' &&
+        latestCurrent &&
+        input.expectedResultRevision === null
+      )
         return { kind: 'RESULT_CONFLICT' as const };
       if (input.operation === 'ITEM_REGENERATE' || input.operation === 'ITEM_EVALUATE') {
         if (!latestCurrent || input.expectedResultRevision === null || !input.targetItemId)
@@ -385,8 +365,6 @@ export class EffectPromptRepository {
       if (manualItems.length > effectPromptTargetCount(settings))
         return { kind: 'MANUAL_COUNT_EXCEEDED' as const };
       const snapshot: EffectPromptInputSnapshot = {
-        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
-        graphVersion: CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
         projectId,
         workflowRunId,
         productId,
@@ -400,9 +378,9 @@ export class EffectPromptRepository {
           result: insight.payload,
         },
         retainedManualItems: manualItems,
-        selectionPolicyVersion: 'MMR_CONTENT_V2',
+        selectionPolicy: 'MMR_CONTENT',
         similarityAnchors: manualItems,
-        sharedPrompt: readableLatest?.sharedPrompt ?? null,
+        sharedPrompt: currentResult?.sharedPrompt ?? null,
         ...((input.operation === 'ITEM_REGENERATE' || input.operation === 'ITEM_EVALUATE') &&
         targetItem
           ? {
@@ -423,27 +401,13 @@ export class EffectPromptRepository {
         },
       });
       if (active) {
-        const activeSnapshot = active.inputSnapshot as Partial<EffectPromptInputSnapshot> | null;
-        if (activeSnapshot?.graphVersion === CURRENT_EFFECT_PROMPT_GRAPH_VERSION)
-          return { kind: 'ACTIVE_CONFLICT' as const };
-        await transaction.effectPromptRun.update({
-          where: { projectId_id: { projectId, id: active.id } },
-          data: {
-            status: 'FAILED',
-            currentNode: 'LOAD_AND_SNAPSHOT',
-            errorCode: 'WORKFLOW_RETIRED',
-            errorMessage: '该历史 Prompt 工作流已停用，请重新生成',
-            attemptToken: null,
-            leaseExpiresAt: null,
-            completedAt: new Date(),
-          },
-        });
+        return { kind: 'ACTIVE_CONFLICT' as const };
       }
       const sourceFingerprint = workflowStateHash({
         insight: snapshot.insightArtifact,
         settingsHash,
         retainedManualItems: manualItems,
-        selectionPolicyVersion: snapshot.selectionPolicyVersion,
+        selectionPolicy: snapshot.selectionPolicy,
         similarityAnchors: snapshot.similarityAnchors,
         sharedPrompt: snapshot.sharedPrompt,
         regeneration:
@@ -479,7 +443,6 @@ export class EffectPromptRepository {
           aggregateId: run.id,
           routingKey: EFFECT_PROMPT_QUEUE,
           payload: json({
-            schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
             projectId,
             runId: run.id,
             requestId: run.id,
@@ -539,35 +502,12 @@ export class EffectPromptRepository {
           runId,
           status: 'SUCCEEDED',
           nodeId: {
-            in: [
-              'FACT_VISUAL_STRATEGY_COMPILATION',
-              'PLAN_HOOK_STRATEGY',
-              'PLAN_PAIN_STRATEGY',
-              'PLAN_PRODUCT_DISPLAY_STRATEGY',
-              'PLAN_SELLING_POINT_EXPLANATION_STRATEGY',
-              'PLAN_CTA_STRATEGY',
-              'PLAN_OUTRO_STRATEGY',
-              'PLAN_HOOK_RELATIONSHIPS',
-              'PLAN_PAIN_RELATIONSHIPS',
-              'PLAN_PRODUCT_DISPLAY_RELATIONSHIPS',
-              'PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS',
-              'PLAN_CTA_RELATIONSHIPS',
-              'PLAN_OUTRO_RELATIONSHIPS',
-              'PLAN_HOOK_COORDINATES',
-              'PLAN_PAIN_COORDINATES',
-              'PLAN_PRODUCT_DISPLAY_COORDINATES',
-              'PLAN_SELLING_POINT_EXPLANATION_COORDINATES',
-              'PLAN_CTA_COORDINATES',
-              'PLAN_OUTRO_COORDINATES',
-            ],
+            in: ['FACT_VISUAL_STRATEGY_COMPILATION'],
           },
         },
         select: { nodeId: true, metadata: true },
       });
       const reusableVisualStrategyStages =
-        run.inputSnapshot &&
-        (run.inputSnapshot as Record<string, unknown>).graphVersion ===
-          CURRENT_EFFECT_PROMPT_GRAPH_VERSION &&
         !checkpointStages.some(({ nodeId }) => nodeId === 'FACT_VISUAL_STRATEGY_COMPILATION')
           ? await transaction.effectPromptStageOutput.findMany({
               where: {
@@ -683,21 +623,9 @@ export class EffectPromptRepository {
       });
       if (renewed.count !== 1) return false;
       const plan =
-        phase === 'BLUEPRINT'
-          ? input.blueprintPlan
-          : phase === 'CREATIVE'
-            ? input.creativePlan
-            : phase === 'CLASSIFICATION'
-              ? input.classificationPlan
-              : input.combinationPlan;
+        phase === 'CREATIVE' ? input.creativePlan : input.classificationPlan;
       const items =
-        phase === 'BLUEPRINT'
-          ? input.blueprints
-          : phase === 'CREATIVE'
-            ? input.creativeItems
-            : phase === 'CLASSIFICATION'
-              ? input.evaluations
-              : input.items;
+        phase === 'CREATIVE' ? input.creativeItems : input.evaluations;
       await transaction.effectPromptShardOutput.upsert({
         where: {
           projectId_runId_phase_round_shardIndex: {
@@ -861,7 +789,6 @@ export class EffectPromptRepository {
           workflowRunId: run.workflowRunId,
           productId: run.productId,
           runId,
-          schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
           generatedResult: json(generated),
           draftResult: json(draft),
           manualOverrides: json(overrides),
@@ -870,27 +797,6 @@ export class EffectPromptRepository {
           settingsHash: run.settingsHash,
         },
       });
-      if (snapshot.graphVersion !== CURRENT_EFFECT_PROMPT_GRAPH_VERSION) {
-        const replenish = await transaction.effectPromptStageOutput.findUnique({
-          where: {
-            projectId_runId_nodeId: { projectId, runId, nodeId: 'REPLENISH' },
-          },
-        });
-        if (!replenish)
-          await transaction.effectPromptStageOutput.create({
-            data: {
-              projectId,
-              runId,
-              nodeId: 'REPLENISH',
-              status: 'SKIPPED',
-              summary: '本次生成无需自动补齐',
-              warnings: json([]),
-              metadata: json({ replenishmentRound: draft.metrics.replenishmentRounds }),
-              startedAt: now,
-              completedAt: now,
-            },
-          });
-      }
       await transaction.effectPromptStageOutput.upsert({
         where: {
           projectId_runId_nodeId: { projectId, runId, nodeId: 'RESULT_SAVE' },

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import pageSource from './EffectPromptGenerationNodePage.vue?raw';
 
-describe('effect prompt V4 insight utilization layout', () => {
+describe('effect prompt insight utilization layout', () => {
   it('keeps per-item source labels without rendering the batch coverage component', () => {
     expect(pageSource).not.toContain('aria-label="配额与提炼信息覆盖"');
     expect(pageSource).not.toContain('currentMetrics.insightCoverage.covered.length');

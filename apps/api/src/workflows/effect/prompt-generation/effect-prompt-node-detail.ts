@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 
 import type {
   EffectPromptBatchSettings,
-  EffectPromptBatchSettingsV5,
   EffectPromptDimensions,
   EffectPromptFragmentType,
   EffectPromptNodeDetailBlock,
@@ -16,7 +15,6 @@ import type {
   GetEffectPromptNodeDetailData,
 } from '@ai-marketing/contracts';
 import {
-  CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
@@ -29,7 +27,6 @@ import {
   EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD,
   EFFECT_PROMPT_VISUAL_OVERLAP_THRESHOLD,
   isEffectPromptSettings,
-  isEffectPromptSettingsV5,
   trigramDice,
 } from './effect-prompt.quality';
 
@@ -91,7 +88,7 @@ type Coordinate = {
   sourceFactIds: string[];
 };
 
-const GENERATION_FRAGMENT_BY_NODE: Partial<Record<EffectPromptNodeId, EffectPromptFragmentType>> = {
+const GENERATION_FRAGMENT_BY_NODE: Partial<Record<string, EffectPromptFragmentType>> = {
   GENERATE_HOOK: 'HOOK',
   GENERATE_PAIN: 'PAIN',
   GENERATE_PRODUCT_DISPLAY: 'PRODUCT_DISPLAY',
@@ -100,7 +97,7 @@ const GENERATION_FRAGMENT_BY_NODE: Partial<Record<EffectPromptNodeId, EffectProm
   GENERATE_OUTRO: 'OUTRO',
 };
 
-const RELATIONSHIP_FRAGMENT_BY_NODE: Partial<Record<EffectPromptNodeId, EffectPromptFragmentType>> =
+const RELATIONSHIP_FRAGMENT_BY_NODE: Partial<Record<string, EffectPromptFragmentType>> =
   {
     PLAN_HOOK_RELATIONSHIPS: 'HOOK',
     PLAN_PAIN_RELATIONSHIPS: 'PAIN',
@@ -110,7 +107,7 @@ const RELATIONSHIP_FRAGMENT_BY_NODE: Partial<Record<EffectPromptNodeId, EffectPr
     PLAN_OUTRO_RELATIONSHIPS: 'OUTRO',
   };
 
-const COORDINATE_FRAGMENT_BY_NODE: Partial<Record<EffectPromptNodeId, EffectPromptFragmentType>> = {
+const COORDINATE_FRAGMENT_BY_NODE: Partial<Record<string, EffectPromptFragmentType>> = {
   PLAN_HOOK_COORDINATES: 'HOOK',
   PLAN_PAIN_COORDINATES: 'PAIN',
   PLAN_PRODUCT_DISPLAY_COORDINATES: 'PRODUCT_DISPLAY',
@@ -119,7 +116,7 @@ const COORDINATE_FRAGMENT_BY_NODE: Partial<Record<EffectPromptNodeId, EffectProm
   PLAN_OUTRO_COORDINATES: 'OUTRO',
 };
 
-const BLUEPRINT_FRAGMENT_BY_NODE: Partial<Record<EffectPromptNodeId, EffectPromptFragmentType>> = {
+const BLUEPRINT_FRAGMENT_BY_NODE: Partial<Record<string, EffectPromptFragmentType>> = {
   GENERATE_HOOK_BLUEPRINTS: 'HOOK',
   GENERATE_PAIN_BLUEPRINTS: 'PAIN',
   GENERATE_PRODUCT_DISPLAY_BLUEPRINTS: 'PRODUCT_DISPLAY',
@@ -259,20 +256,16 @@ const inputSnapshot = (run: EffectPromptNodeDetailRunRecord): JsonRecord =>
 
 const inputSettings = (
   run: EffectPromptNodeDetailRunRecord,
-): EffectPromptBatchSettings | EffectPromptBatchSettingsV5 | null => {
+): EffectPromptBatchSettings | null => {
   const settings = inputSnapshot(run).settings;
-  return isEffectPromptSettings(settings) || isEffectPromptSettingsV5(settings) ? settings : null;
+  return isEffectPromptSettings(settings) ? settings : null;
 };
 
 const dimensionValue = (
   dimensionsValue: EffectPromptNodeDetailPrompt['dimensions'],
   key: keyof EffectPromptDimensions,
 ): string =>
-  key === 'productRelation'
-    ? 'productRelation' in dimensionsValue
-      ? dimensionsValue.productRelation
-      : dimensionsValue.sellingPoint
-    : dimensionsValue[key];
+  dimensionsValue[key];
 
 const insightResult = (run: EffectPromptNodeDetailRunRecord): JsonRecord => {
   const artifact = metadataRecord(inputSnapshot(run).insightArtifact);
@@ -542,10 +535,7 @@ const routeBlock = (
           : 'PENDING';
     return {
       fragmentType: type,
-      targetCount:
-        'fragmentConfigs' in settings
-          ? settings.fragmentConfigs[type].count
-          : Math.ceil(settings.targetCount / EFFECT_PROMPT_FRAGMENT_TYPES.length),
+      targetCount: Math.ceil(settings.targetCount / EFFECT_PROMPT_FRAGMENT_TYPES.length),
       candidateCount:
         finalCounts?.[type] ??
         (phase === 'BLUEPRINT'
@@ -919,7 +909,7 @@ const pairBlock = (
 };
 
 const nodeMetricFields = (
-  nodeId: EffectPromptNodeId,
+  nodeId: string,
   rawMetadata: unknown,
 ): EffectPromptNodeDetailField[] => {
   const metadata = metadataRecord(rawMetadata);
@@ -1170,12 +1160,14 @@ const nodeMetricFields = (
       ]);
     case 'LOAD_AND_SNAPSHOT':
       return [];
+    default:
+      return [];
   }
 };
 
 const actualFields = (
   run: EffectPromptNodeDetailRunRecord,
-  nodeId: EffectPromptNodeId,
+  nodeId: string,
   metadata: unknown,
 ): EffectPromptNodeDetailField[] => {
   if (nodeId === 'LOAD_AND_SNAPSHOT') {
@@ -1184,25 +1176,13 @@ const actualFields = (
     return compact([
       textField('产品名称', insightText(insight, 'productName', 'product_name')),
       textField('产品品类', insightText(insight, 'productCategory', 'product_category')),
-      settings && 'semanticLimit' in settings
-        ? { label: '语义重复度上限', value: `${settings.semanticLimit}%` }
-        : null,
-      settings && 'visualLimit' in settings
-        ? { label: '画面重合度上限', value: `${settings.visualLimit}%` }
-        : null,
-      settings && 'targetCount' in settings
+      settings
         ? { label: '目标数量', value: `${settings.targetCount} 条` }
         : null,
-      settings && 'defaultDurationSeconds' in settings
+      settings
         ? { label: '统一时长', value: `${settings.defaultDurationSeconds} 秒` }
         : null,
       { label: '保留人工内容', value: retainedPrompts(run).length },
-      ...(settings && 'fragmentConfigs' in settings
-        ? EFFECT_PROMPT_FRAGMENT_TYPES.map((type) => ({
-            label: EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[type],
-            value: `${settings.fragmentConfigs[type].count} 条 · ${settings.fragmentConfigs[type].durationSeconds} 秒`,
-          }))
-        : []),
     ]);
   }
   const stageFields = nodeMetricFields(nodeId, metadata);
@@ -1305,7 +1285,7 @@ const actualFields = (
 
 const actualBlocks = (
   run: EffectPromptNodeDetailRunRecord,
-  nodeId: EffectPromptNodeId,
+  nodeId: string,
 ): EffectPromptNodeDetailBlock[] => {
   const blocks: Array<EffectPromptNodeDetailBlock | null> = [];
   const insight = insightResult(run);
@@ -1504,7 +1484,7 @@ const actualBlocks = (
   return blocks.filter((block): block is EffectPromptNodeDetailBlock => block !== null);
 };
 
-type V11CreativeRow = {
+type CreativeRow = {
   slotId: string;
   ordinal: number;
   targetDurationSeconds: number;
@@ -1514,7 +1494,7 @@ type V11CreativeRow = {
   content: string;
 };
 
-type V11EvaluationRow = {
+type EvaluationRow = {
   slotId: string;
   primaryPurpose: EffectPromptFragmentType;
   compatiblePurposes: EffectPromptFragmentType[];
@@ -1522,12 +1502,6 @@ type V11EvaluationRow = {
   hardIssues: string[];
   warnings: string[];
 };
-
-const graphVersion = (run: EffectPromptNodeDetailRunRecord): string =>
-  publicText(inputSnapshot(run).graphVersion, 80);
-
-const isV11Run = (run: EffectPromptNodeDetailRunRecord): boolean =>
-  graphVersion(run) === CURRENT_EFFECT_PROMPT_GRAPH_VERSION;
 
 const purposeList = (value: unknown): EffectPromptFragmentType[] =>
   (Array.isArray(value) ? value : [])
@@ -1549,7 +1523,7 @@ const qualityScores = (value: unknown): EffectPromptQualityScores | null => {
     : null;
 };
 
-const v11CreativeRows = (run: EffectPromptNodeDetailRunRecord): V11CreativeRow[] => {
+const creativeRows = (run: EffectPromptNodeDetailRunRecord): CreativeRow[] => {
   const taskBySlot = new Map<string, JsonRecord>();
   for (const shard of run.shards) {
     for (const raw of Array.isArray(shard.combinationPlan) ? shard.combinationPlan : []) {
@@ -1558,7 +1532,7 @@ const v11CreativeRows = (run: EffectPromptNodeDetailRunRecord): V11CreativeRow[]
       if (slotId) taskBySlot.set(slotId, raw);
     }
   }
-  const rows: V11CreativeRow[] = [];
+  const rows: CreativeRow[] = [];
   for (const shard of run.shards) {
     for (const raw of Array.isArray(shard.items) ? shard.items : []) {
       if (!isRecord(raw) || typeof raw.creativeCore !== 'string') continue;
@@ -1591,8 +1565,8 @@ const v11CreativeRows = (run: EffectPromptNodeDetailRunRecord): V11CreativeRow[]
     .sort((left, right) => left.ordinal - right.ordinal);
 };
 
-const v11EvaluationRows = (run: EffectPromptNodeDetailRunRecord): V11EvaluationRow[] => {
-  const rows: V11EvaluationRow[] = [];
+const evaluationRows = (run: EffectPromptNodeDetailRunRecord): EvaluationRow[] => {
+  const rows: EvaluationRow[] = [];
   for (const shard of run.shards) {
     for (const raw of Array.isArray(shard.items) ? shard.items : []) {
       if (!isRecord(raw) || !isRecord(raw.scores)) continue;
@@ -1624,9 +1598,9 @@ const issueLabels = (codes: string[]): string[] =>
 const creativeSamples = (
   run: EffectPromptNodeDetailRunRecord,
 ): EffectPromptNodeDetailCreativeSample[] => {
-  const evaluationBySlot = new Map(v11EvaluationRows(run).map((item) => [item.slotId, item]));
+  const evaluationBySlot = new Map(evaluationRows(run).map((item) => [item.slotId, item]));
   const lookup = factValueLookup(run);
-  return v11CreativeRows(run).map((item) => {
+  return creativeRows(run).map((item) => {
     const evaluation = evaluationBySlot.get(item.slotId);
     return {
       code: promptCode(item.ordinal),
@@ -1648,15 +1622,15 @@ const creativeSamples = (
   });
 };
 
-const finalV6Record = (run: EffectPromptNodeDetailRunRecord): JsonRecord | null => {
+const finalResultRecord = (run: EffectPromptNodeDetailRunRecord): JsonRecord | null => {
   const raw = run.result ? metadataRecord(run.result.draftResult) : {};
-  return raw.schemaVersion === 6 ? raw : null;
+  return Array.isArray(raw.items) && isRecord(raw.settings) && isRecord(raw.metrics) ? raw : null;
 };
 
-const finalV6Samples = (
+const finalResultSamples = (
   run: EffectPromptNodeDetailRunRecord,
 ): EffectPromptNodeDetailCreativeSample[] => {
-  const result = finalV6Record(run);
+  const result = finalResultRecord(run);
   if (!result) return [];
   return (Array.isArray(result.items) ? result.items : []).flatMap((value) => {
     if (!isRecord(value)) return [];
@@ -1727,7 +1701,7 @@ const textContentBlock = (
     : null;
 };
 
-const averageQualityScores = (rows: V11EvaluationRow[]): EffectPromptQualityScores | null => {
+const averageQualityScores = (rows: EvaluationRow[]): EffectPromptQualityScores | null => {
   if (!rows.length) return null;
   const total = rows.reduce(
     (sum, item) => ({
@@ -1761,14 +1735,14 @@ const scoreFields = (scores: EffectPromptQualityScores | null): EffectPromptNode
       ]
     : [];
 
-const v11AdditionalOutputFields = (
+const additionalOutputFields = (
   run: EffectPromptNodeDetailRunRecord,
   nodeId: EffectPromptNodeId,
   metadata: JsonRecord,
 ): EffectPromptNodeDetailField[] => {
   const samples = creativeSamples(run);
-  const evaluations = v11EvaluationRows(run);
-  const result = finalV6Record(run);
+  const evaluations = evaluationRows(run);
+  const result = finalResultRecord(run);
   const resultMetrics = metadataRecord(result?.metrics);
   if (nodeId === 'COHERENT_CREATIVE_GENERATION')
     return [
@@ -1859,7 +1833,7 @@ const sharedPromptData = (
   metadata: JsonRecord,
 ): JsonRecord => {
   if (publicText(metadata.compiledContent)) return metadata;
-  const resultPrompt = metadataRecord(finalV6Record(run)?.sharedPrompt);
+  const resultPrompt = metadataRecord(finalResultRecord(run)?.sharedPrompt);
   if (publicText(resultPrompt.compiledContent)) return resultPrompt;
   return metadataRecord(inputSnapshot(run).sharedPrompt);
 };
@@ -1867,7 +1841,7 @@ const sharedPromptData = (
 const purposeDistributionBlock = (
   run: EffectPromptNodeDetailRunRecord,
 ): EffectPromptNodeDetailBlock | null => {
-  const metrics = metadataRecord(finalV6Record(run)?.metrics);
+  const metrics = metadataRecord(finalResultRecord(run)?.metrics);
   const distribution = (
     Array.isArray(metrics.purposeDistribution) ? metrics.purposeDistribution : []
   ).flatMap((item) => {
@@ -1884,14 +1858,14 @@ const purposeDistributionBlock = (
   return tagBlock('最终推荐用途分布', [tagGroup('用途分布', distribution)]);
 };
 
-const v11OutputBlocks = (
+const outputBlocks = (
   run: EffectPromptNodeDetailRunRecord,
   nodeId: EffectPromptNodeId,
   metadata: JsonRecord,
 ): EffectPromptNodeDetailBlock[] => {
   const blocks: Array<EffectPromptNodeDetailBlock | null> = [];
   const samples = creativeSamples(run);
-  const evaluations = v11EvaluationRows(run);
+  const evaluations = evaluationRows(run);
   if (nodeId === 'LOAD_AND_SNAPSHOT') {
     blocks.push(...actualBlocks(run, nodeId));
   } else if (nodeId === 'INSIGHT_MAPPING') {
@@ -1927,7 +1901,7 @@ const v11OutputBlocks = (
       ),
     );
   } else if (nodeId === 'EXACT_SELECTION_AND_SUPPLEMENT') {
-    const saved = finalV6Samples(run);
+    const saved = finalResultSamples(run);
     const accepted = samples
       .filter((item) => item.outcome === 'ACCEPTED')
       .map((item) => ({ ...item, outcome: 'SELECTED' as const }));
@@ -1939,7 +1913,7 @@ const v11OutputBlocks = (
       ),
     );
   } else if (nodeId === 'RESULT_SAVE') {
-    const saved = finalV6Samples(run);
+    const saved = finalResultSamples(run);
     blocks.push(
       purposeDistributionBlock(run),
       creativeSampleBlock('最终保存 Prompt 样例', saved, saved.length),
@@ -1962,14 +1936,14 @@ const expectedOutputSummary: Partial<Record<EffectPromptNodeId, string>> = {
   ITEM_EVALUATE: '将重新评估当前条目的产品关联、质量与推荐用途。',
 };
 
-const v11InputSections = (
+const inputSections = (
   run: EffectPromptNodeDetailRunRecord,
   nodeId: EffectPromptNodeId,
 ): Pick<EffectPromptNodeDetailSection, 'summary' | 'fields' | 'blocks'> => {
   const insight = insightResult(run);
   const settings = inputSettings(run);
   const samples = creativeSamples(run);
-  const evaluations = v11EvaluationRows(run);
+  const evaluations = evaluationRows(run);
   const retainedCount = retainedPrompts(run).length;
   const base = compact([
     textField('当前商品', insightText(insight, 'productName', 'product_name')),
@@ -2072,7 +2046,7 @@ const v11InputSections = (
     };
   }
   if (nodeId === 'RESULT_SAVE') {
-    const finalSamples = finalV6Samples(run);
+    const finalSamples = finalResultSamples(run);
     const selectedCount =
       finalSamples.length || evaluations.filter((item) => !item.hardIssues.length).length;
     return {
@@ -2110,26 +2084,14 @@ const buildDetailSections = (
   metadataValue: unknown,
 ): EffectPromptNodeDetailSection[] => {
   const metadata = metadataRecord(metadataValue);
-  const legacyFields = actualFields(run, nodeId, metadata);
-  const legacyBlocks = actualBlocks(run, nodeId);
-  const input = isV11Run(run)
-    ? v11InputSections(run, nodeId)
-    : {
-        summary: '接收历史工作流上一阶段已经确认的业务结果。',
-        fields: nodeId === 'LOAD_AND_SNAPSHOT' ? legacyFields : [],
-        blocks: nodeId === 'LOAD_AND_SNAPSHOT' ? legacyBlocks : [],
-      };
-  const outputFields = isV11Run(run)
-    ? uniqueFields([...legacyFields, ...v11AdditionalOutputFields(run, nodeId, metadata)])
-    : nodeId === 'LOAD_AND_SNAPSHOT'
-      ? []
-      : legacyFields;
-  const outputBlocks = isV11Run(run)
-    ? v11OutputBlocks(run, nodeId, metadata)
-    : nodeId === 'LOAD_AND_SNAPSHOT'
-      ? []
-      : legacyBlocks;
-  const outputHasContent = outputFields.length > 0 || outputBlocks.length > 0;
+  const baseFields = actualFields(run, nodeId, metadata);
+  const input = inputSections(run, nodeId);
+  const outputFields = uniqueFields([
+    ...baseFields,
+    ...additionalOutputFields(run, nodeId, metadata),
+  ]);
+  const nodeOutputBlocks = outputBlocks(run, nodeId, metadata);
+  const outputHasContent = outputFields.length > 0 || nodeOutputBlocks.length > 0;
   const outputState = sectionState(status, outputHasContent);
   return [
     {
@@ -2160,7 +2122,7 @@ const buildDetailSections = (
                 ? '当前没有可展示的业务输出，请查看下方失败原因。'
                 : '当前阶段没有额外可展示的业务结果。',
       fields: outputFields,
-      blocks: outputBlocks,
+      blocks: nodeOutputBlocks,
     },
     {
       kind: 'EXECUTION',

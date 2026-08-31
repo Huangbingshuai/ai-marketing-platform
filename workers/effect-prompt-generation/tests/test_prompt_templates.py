@@ -6,23 +6,23 @@ import pytest
 
 from effect_prompt_generation.prompt_loader import (
     load_prompt,
-    load_prompt_version,
+    load_prompt_hash,
     render_prompt,
 )
 
 ACTIVE_PROMPT_FILES = {
-    "v11_creative_base.system.prompt.txt",
-    "v11_creative_task.user.prompt.txt",
-    "v11_creative_base_v4.system.prompt.txt",
-    "v11_creative_task_v4.user.prompt.txt",
-    "v11_evaluation_base.system.prompt.txt",
-    "v11_evaluation_task.user.prompt.txt",
-    "v11_fact_visual_strategy.system.prompt.txt",
-    "v11_fact_visual_strategy.user.prompt.txt",
+    "creative_fallback_base.system.prompt.txt",
+    "creative_fallback_task.user.prompt.txt",
+    "creative_base.system.prompt.txt",
+    "creative_task.user.prompt.txt",
+    "evaluation_base.system.prompt.txt",
+    "evaluation_task.user.prompt.txt",
+    "fact_visual_strategy.system.prompt.txt",
+    "fact_visual_strategy.user.prompt.txt",
 }
 
 
-def test_prompt_directory_only_contains_active_v11_templates() -> None:
+def test_prompt_directory_only_contains_active_templates() -> None:
     prompt_dir = (
         Path(__file__).parents[1] / "src" / "effect_prompt_generation" / "prompts"
     )
@@ -31,9 +31,9 @@ def test_prompt_directory_only_contains_active_v11_templates() -> None:
     assert prompt_files == ACTIVE_PROMPT_FILES
 
 
-def test_v11_creative_task_renders_literal_json_inputs() -> None:
+def test_creative_task_renders_literal_json_inputs() -> None:
     rendered = render_prompt(
-        "v11_creative_task.user.prompt.txt",
+        "creative_fallback_task.user.prompt.txt",
         task_briefs_json='[{"slotId":"slot-1","primaryFact":"广式腊肠"}]',
         shared_prompt_content_json='"画面中不得出现促销贴纸"',
         avoid_semantic_json="[]",
@@ -50,24 +50,18 @@ def test_v11_creative_task_renders_literal_json_inputs() -> None:
 def test_render_prompt_reports_a_template_variable_that_was_not_supplied() -> None:
     with pytest.raises(ValueError, match="missing prompt template variable"):
         render_prompt(
-            "v11_creative_task.user.prompt.txt",
+            "creative_fallback_task.user.prompt.txt",
             task_briefs_json="[]",
         )
 
 
-def test_v11_templates_keep_creative_generation_and_evaluation_independent() -> None:
-    creative = load_prompt("v11_creative_base.system.prompt.txt")
-    task = load_prompt("v11_creative_task.user.prompt.txt")
-    evaluation = load_prompt("v11_evaluation_base.system.prompt.txt")
+def test_templates_keep_creative_generation_and_evaluation_independent() -> None:
+    creative = load_prompt("creative_fallback_base.system.prompt.txt")
+    task = load_prompt("creative_fallback_task.user.prompt.txt")
+    evaluation = load_prompt("evaluation_base.system.prompt.txt")
 
-    assert (
-        load_prompt_version("v11_creative_base.system.prompt.txt")
-        == "effect-prompt-v11-coherent-creative-v3"
-    )
-    assert (
-        load_prompt_version("v11_evaluation_base.system.prompt.txt")
-        == "effect-prompt-v11-creative-evaluation-v4"
-    )
+    assert len(load_prompt_hash("creative_fallback_base.system.prompt.txt")) == 64
+    assert len(load_prompt_hash("evaluation_base.system.prompt.txt")) == 64
     assert "Worker 已经为每条任务选好少量可信事实" in creative
     assert "厂商无关" in creative
     assert "每个任务都必须独立生成自己的一个 creativeCore" in creative
@@ -93,18 +87,12 @@ def test_v11_templates_keep_creative_generation_and_evaluation_independent() -> 
 
 
 def test_visual_strategy_templates_separate_visual_task_from_business_context() -> None:
-    compiler = load_prompt("v11_fact_visual_strategy.system.prompt.txt")
-    creative = load_prompt("v11_creative_base_v4.system.prompt.txt")
-    evaluation = load_prompt("v11_evaluation_base.system.prompt.txt")
+    compiler = load_prompt("fact_visual_strategy.system.prompt.txt")
+    creative = load_prompt("creative_base.system.prompt.txt")
+    evaluation = load_prompt("evaluation_base.system.prompt.txt")
 
-    assert (
-        load_prompt_version("v11_fact_visual_strategy.system.prompt.txt")
-        == "effect-prompt-v11-fact-visual-strategy-v2"
-    )
-    assert (
-        load_prompt_version("v11_creative_base_v4.system.prompt.txt")
-        == "effect-prompt-v11-coherent-creative-v6"
-    )
+    assert len(load_prompt_hash("fact_visual_strategy.system.prompt.txt")) == 64
+    assert len(load_prompt_hash("creative_base.system.prompt.txt")) == 64
     assert "FORBIDDEN_VISUAL_PROOF" in compiler
     assert "不能凭成品的颜色、光泽、切面、纹理" in compiler
     assert "最多 30 个汉字" in compiler

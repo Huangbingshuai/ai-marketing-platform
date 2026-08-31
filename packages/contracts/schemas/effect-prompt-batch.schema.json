@@ -1,27 +1,49 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ai-marketing.local/schemas/effect-prompt-batch.v6.json",
-  "title": "EffectPromptBatchResult.v6",
+  "$id": "https://ai-marketing.local/schemas/effect-prompt-batch.json",
+  "title": "EffectPromptBatchResult",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "settings", "renderProfile", "items", "metrics", "qualityStatus"],
+  "required": [
+    "settings",
+    "renderProfile",
+    "items",
+    "metrics",
+    "qualityStatus"
+  ],
   "properties": {
-    "schemaVersion": { "const": 6 },
     "settings": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["targetCount", "defaultDurationSeconds"],
+      "required": [
+        "targetCount",
+        "defaultDurationSeconds"
+      ],
       "properties": {
-        "targetCount": { "type": "integer", "minimum": 10, "maximum": 200 },
-        "defaultDurationSeconds": { "type": "integer", "minimum": 4, "maximum": 15 }
+        "targetCount": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 200
+        },
+        "defaultDurationSeconds": {
+          "type": "integer",
+          "minimum": 4,
+          "maximum": 15
+        }
       }
     },
-    "renderProfile": { "$ref": "#/$defs/renderProfile" },
-    "sharedPrompt": { "$ref": "#/$defs/sharedPrompt" },
+    "renderProfile": {
+      "$ref": "#/$defs/renderProfile"
+    },
+    "sharedPrompt": {
+      "$ref": "#/$defs/sharedPrompt"
+    },
     "items": {
       "type": "array",
       "maxItems": 200,
-      "items": { "$ref": "#/$defs/item" }
+      "items": {
+        "$ref": "#/$defs/item"
+      }
     },
     "metrics": {
       "type": "object",
@@ -40,37 +62,113 @@
         "warningCounts"
       ],
       "properties": {
-        "targetCount": { "type": "integer", "minimum": 10, "maximum": 200 },
-        "acceptedCount": { "type": "integer", "minimum": 0, "maximum": 200 },
-        "candidateTargetCount": { "type": "integer", "minimum": 10, "maximum": 240 },
-        "generatedCandidateCount": { "type": "integer", "minimum": 0 },
-        "rejectedCount": { "type": "integer", "minimum": 0 },
-        "replenishmentRounds": { "type": "integer", "minimum": 0, "maximum": 3 },
-        "exactDuplicateCount": { "type": "integer", "minimum": 0 },
-        "purposeDistribution": { "$ref": "#/$defs/purposeDistribution" },
-        "averageScores": { "$ref": "#/$defs/qualityScores" },
-        "hardIssueCounts": { "$ref": "#/$defs/issueCounts" },
-        "warningCounts": { "$ref": "#/$defs/issueCounts" }
+        "targetCount": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 200
+        },
+        "acceptedCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 200
+        },
+        "candidateTargetCount": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 240
+        },
+        "generatedCandidateCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rejectedCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "replenishmentRounds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "exactDuplicateCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "purposeDistribution": {
+          "$ref": "#/$defs/purposeDistribution"
+        },
+        "averageScores": {
+          "$ref": "#/$defs/qualityScores"
+        },
+        "hardIssueCounts": {
+          "$ref": "#/$defs/issueCounts"
+        },
+        "warningCounts": {
+          "$ref": "#/$defs/issueCounts"
+        }
       }
     },
-    "qualityStatus": { "enum": ["PASS", "NEEDS_REVIEW"] }
+    "qualityStatus": {
+      "enum": [
+        "PASS",
+        "NEEDS_REVIEW"
+      ]
+    }
   },
   "$defs": {
     "fragmentType": {
       "type": "string",
-      "enum": ["HOOK", "PAIN", "PRODUCT_DISPLAY", "SELLING_POINT_EXPLANATION", "CTA", "OUTRO"]
+      "enum": [
+        "HOOK",
+        "PAIN",
+        "PRODUCT_DISPLAY",
+        "SELLING_POINT_EXPLANATION",
+        "CTA",
+        "OUTRO"
+      ]
     },
     "dimensions": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["narrative", "scene", "persona", "productRelation", "camera", "emotion"],
+      "required": [
+        "narrative",
+        "scene",
+        "persona",
+        "productRelation",
+        "camera",
+        "emotion"
+      ],
       "properties": {
-        "narrative": { "type": "string", "minLength": 1, "maxLength": 120 },
-        "scene": { "type": "string", "minLength": 1, "maxLength": 120 },
-        "persona": { "type": "string", "minLength": 1, "maxLength": 160 },
-        "productRelation": { "type": "string", "minLength": 1, "maxLength": 240 },
-        "camera": { "type": "string", "minLength": 1, "maxLength": 160 },
-        "emotion": { "type": "string", "minLength": 1, "maxLength": 120 }
+        "narrative": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "scene": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "persona": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "productRelation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "camera": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "emotion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        }
       }
     },
     "item": {
@@ -95,63 +193,154 @@
         "updatedAt"
       ],
       "properties": {
-        "id": { "type": "string", "minLength": 1, "maxLength": 160 },
-        "code": { "type": "string", "minLength": 1, "maxLength": 40 },
-        "origin": { "enum": ["AI", "MANUAL"] },
-        "fragmentType": { "$ref": "#/$defs/fragmentType" },
-        "primaryPurpose": { "$ref": "#/$defs/fragmentType" },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "origin": {
+          "enum": [
+            "AI",
+            "MANUAL"
+          ]
+        },
+        "fragmentType": {
+          "$ref": "#/$defs/fragmentType"
+        },
+        "primaryPurpose": {
+          "$ref": "#/$defs/fragmentType"
+        },
         "compatiblePurposes": {
           "type": "array",
           "minItems": 1,
           "maxItems": 6,
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/fragmentType" }
+          "items": {
+            "$ref": "#/$defs/fragmentType"
+          }
         },
-        "classificationStatus": { "enum": ["PENDING", "VERIFIED"] },
-        "productRelevance": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "classificationStatus": {
+          "enum": [
+            "PENDING",
+            "VERIFIED"
+          ]
+        },
+        "productRelevance": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
         "materialTags": {
           "type": "array",
           "minItems": 1,
           "maxItems": 12,
           "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1, "maxLength": 120 }
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          }
         },
-        "targetDurationSeconds": { "type": "integer", "minimum": 4, "maximum": 15 },
-        "dimensions": { "$ref": "#/$defs/dimensions" },
-        "content": { "type": "string", "minLength": 1, "maxLength": 12000 },
+        "targetDurationSeconds": {
+          "type": "integer",
+          "minimum": 4,
+          "maximum": 15
+        },
+        "dimensions": {
+          "$ref": "#/$defs/dimensions"
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 12000
+        },
         "insightBindings": {
           "type": "array",
           "maxItems": 16,
-          "items": { "$ref": "#/$defs/insightBinding" }
+          "items": {
+            "$ref": "#/$defs/insightBinding"
+          }
         },
-        "manualEdited": { "type": "boolean" },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" }
+        "manualEdited": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
       }
     },
     "renderProfile": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ratio", "resolution", "capabilityKey", "sharedConstraints"],
+      "required": [
+        "ratio",
+        "resolution",
+        "capabilityKey",
+        "sharedConstraints"
+      ],
       "properties": {
-        "ratio": { "enum": ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"] },
-        "resolution": { "enum": ["480p", "720p", "1080p"] },
+        "ratio": {
+          "enum": [
+            "16:9",
+            "4:3",
+            "1:1",
+            "3:4",
+            "9:16",
+            "21:9",
+            "adaptive"
+          ]
+        },
+        "resolution": {
+          "enum": [
+            "480p",
+            "720p",
+            "1080p"
+          ]
+        },
         "capabilityKey": {
-          "enum": ["SEEDANCE_2_0", "SEEDANCE_2_0_FAST", "SEEDANCE_1_5_PRO", "SEEDANCE_1_0"]
+          "enum": [
+            "SEEDANCE_2_0",
+            "SEEDANCE_2_0_FAST",
+            "SEEDANCE_1_5_PRO",
+            "SEEDANCE_1_0"
+          ]
         },
         "sharedConstraints": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["disabledElements", "contentHash"],
+          "required": [
+            "disabledElements",
+            "contentHash"
+          ],
           "properties": {
             "disabledElements": {
               "type": "array",
               "maxItems": 100,
               "uniqueItems": true,
-              "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
             },
-            "prompt": { "type": "string", "maxLength": 60000 },
-            "contentHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+            "prompt": {
+              "type": "string",
+              "maxLength": 60000
+            },
+            "contentHash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
           }
         }
       }
@@ -159,30 +348,68 @@
     "sharedPrompt": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schemaVersion", "sections", "compiledContent", "contentHash"],
+      "required": [
+        "sections",
+        "compiledContent",
+        "contentHash"
+      ],
       "properties": {
-        "schemaVersion": { "const": 1 },
         "sections": {
           "type": "array",
           "minItems": 1,
           "maxItems": 20,
-          "items": { "$ref": "#/$defs/sharedPromptSection" }
+          "items": {
+            "$ref": "#/$defs/sharedPromptSection"
+          }
         },
-        "compiledContent": { "type": "string", "maxLength": 60000 },
-        "contentHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        "compiledContent": {
+          "type": "string",
+          "maxLength": 60000
+        },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
       }
     },
     "sharedPromptSection": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["key", "title", "source", "content", "editable", "sourceHash"],
+      "required": [
+        "key",
+        "title",
+        "source",
+        "content",
+        "editable",
+        "sourceHash"
+      ],
       "properties": {
-        "key": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$" },
-        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
-        "source": { "enum": ["SYSTEM", "USER"] },
-        "content": { "type": "string", "maxLength": 30000 },
-        "editable": { "type": "boolean" },
-        "sourceHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        "key": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{0,63}$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "source": {
+          "enum": [
+            "SYSTEM",
+            "USER"
+          ]
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 30000
+        },
+        "editable": {
+          "type": "boolean"
+        },
+        "sourceHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
       }
     },
     "purposeDistribution": {
@@ -192,11 +419,25 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["purpose", "primaryCount", "compatibleCount"],
+        "required": [
+          "purpose",
+          "primaryCount",
+          "compatibleCount"
+        ],
         "properties": {
-          "purpose": { "$ref": "#/$defs/fragmentType" },
-          "primaryCount": { "type": "integer", "minimum": 0, "maximum": 200 },
-          "compatibleCount": { "type": "integer", "minimum": 0, "maximum": 200 }
+          "purpose": {
+            "$ref": "#/$defs/fragmentType"
+          },
+          "primaryCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 200
+          },
+          "compatibleCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 200
+          }
         }
       }
     },
@@ -211,11 +452,31 @@
         "visualClarity"
       ],
       "properties": {
-        "productRelevance": { "type": "number", "minimum": 0, "maximum": 100 },
-        "creativeCoherence": { "type": "number", "minimum": 0, "maximum": 100 },
-        "visualExecutability": { "type": "number", "minimum": 0, "maximum": 100 },
-        "commercialUsefulness": { "type": "number", "minimum": 0, "maximum": 100 },
-        "visualClarity": { "type": "number", "minimum": 0, "maximum": 100 }
+        "productRelevance": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "creativeCoherence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "visualExecutability": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "commercialUsefulness": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "visualClarity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        }
       }
     },
     "issueCounts": {
@@ -223,10 +484,20 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["code", "count"],
+        "required": [
+          "code",
+          "count"
+        ],
         "properties": {
-          "code": { "type": "string", "minLength": 1, "maxLength": 120 },
-          "count": { "type": "integer", "minimum": 1 }
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          }
         }
       }
     },
@@ -259,36 +530,104 @@
     "insightReference": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["factId", "field", "value", "valueHash"],
+      "required": [
+        "factId",
+        "field",
+        "value",
+        "valueHash"
+      ],
       "properties": {
-        "factId": { "type": "string", "minLength": 1, "maxLength": 120 },
-        "field": { "$ref": "#/$defs/insightField" },
-        "value": { "type": "string", "minLength": 1, "maxLength": 500 },
-        "valueHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        "factId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "field": {
+          "$ref": "#/$defs/insightField"
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "valueHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
       }
     },
     "insightBinding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["factId", "field", "value", "valueHash", "role"],
+      "required": [
+        "factId",
+        "field",
+        "value",
+        "valueHash",
+        "role"
+      ],
       "properties": {
-        "factId": { "type": "string", "minLength": 1, "maxLength": 120 },
-        "field": { "$ref": "#/$defs/insightField" },
-        "value": { "type": "string", "minLength": 1, "maxLength": 500 },
-        "valueHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-        "role": { "enum": ["PRIMARY", "CONTEXT", "EVIDENCE"] }
+        "factId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "field": {
+          "$ref": "#/$defs/insightField"
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "valueHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "role": {
+          "enum": [
+            "PRIMARY",
+            "CONTEXT",
+            "EVIDENCE"
+          ]
+        }
       }
     },
     "excludedInsight": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["factId", "field", "value", "valueHash", "reason"],
+      "required": [
+        "factId",
+        "field",
+        "value",
+        "valueHash",
+        "reason"
+      ],
       "properties": {
-        "factId": { "type": "string", "minLength": 1, "maxLength": 120 },
-        "field": { "$ref": "#/$defs/insightField" },
-        "value": { "type": "string", "minLength": 1, "maxLength": 500 },
-        "valueHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-        "reason": { "enum": ["UNCERTAIN", "EMPTY", "UNSUPPORTED"] }
+        "factId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "field": {
+          "$ref": "#/$defs/insightField"
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "valueHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "reason": {
+          "enum": [
+            "UNCERTAIN",
+            "EMPTY",
+            "UNSUPPORTED"
+          ]
+        }
       }
     },
     "insightCoverage": {
@@ -307,37 +646,51 @@
         "required": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/insightReference" }
+          "items": {
+            "$ref": "#/$defs/insightReference"
+          }
         },
         "covered": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/insightReference" }
+          "items": {
+            "$ref": "#/$defs/insightReference"
+          }
         },
         "missing": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/insightReference" }
+          "items": {
+            "$ref": "#/$defs/insightReference"
+          }
         },
         "adaptive": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/insightReference" }
+          "items": {
+            "$ref": "#/$defs/insightReference"
+          }
         },
         "deferred": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/insightReference" }
+          "items": {
+            "$ref": "#/$defs/insightReference"
+          }
         },
         "excluded": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/excludedInsight" }
+          "items": {
+            "$ref": "#/$defs/excludedInsight"
+          }
         },
         "appliedConstraints": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/insightReference" }
+          "items": {
+            "$ref": "#/$defs/insightReference"
+          }
         }
       }
     }

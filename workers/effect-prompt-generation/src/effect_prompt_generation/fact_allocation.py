@@ -84,7 +84,7 @@ _SUPPORT_FIELDS: dict[InsightField, tuple[InsightField, ...]] = {
 }
 
 
-def allocate_v11_creative_facts(
+def allocate_creative_facts(
     application: InsightApplicationMap,
     *,
     count: int,

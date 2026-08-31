@@ -4,7 +4,6 @@ import type {
   EffectPromptBatchSettings,
   EffectPromptDimensionKey,
   EffectPromptDimensions,
-  EffectPromptDimensionsV5,
   EffectPromptFragmentType,
   EffectPromptItem,
   EffectPromptInsightField,
@@ -17,15 +16,14 @@ import type {
   GetEffectPromptNodeDetailData,
 } from '@ai-marketing/contracts';
 import {
-  CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
   DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
-  effectPromptGraphEdges,
-  effectPromptGraphNodeIds,
+  EFFECT_PROMPT_GRAPH_EDGES,
+  EFFECT_PROMPT_GRAPH_NODE_IDS,
   effectPromptRunGraphEdges,
   effectPromptRunGraphNodeIds,
 } from '@ai-marketing/contracts';
@@ -183,26 +181,17 @@ const currentSettings = computed(
 const currentTargetCount = computed(() => currentSettings.value.targetCount);
 const editorTargetDurationSeconds = computed(() => currentSettings.value.defaultDurationSeconds);
 const currentRun = computed(() => runsByProduct.value[currentProductId.value] ?? null);
-const displayedGraphRun = computed(() => {
-  const run = currentRun.value;
-  return run?.graphVersion === CURRENT_EFFECT_PROMPT_GRAPH_VERSION ? run : null;
-});
+const displayedGraphRun = computed(() => currentRun.value);
 const graphDialogDescription = '展示本次真实输入、连贯创意生成、用途评估和数量结果。';
 const currentGraphNodeIds = computed<readonly EffectPromptNodeId[]>(() => {
   if (displayedGraphRun.value)
-    return effectPromptRunGraphNodeIds(
-      CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
-      displayedGraphRun.value.operation,
-    );
-  return effectPromptGraphNodeIds(CURRENT_EFFECT_PROMPT_GRAPH_VERSION);
+    return effectPromptRunGraphNodeIds(displayedGraphRun.value.operation);
+  return EFFECT_PROMPT_GRAPH_NODE_IDS;
 });
 const currentGraphEdges = computed(() => {
   if (displayedGraphRun.value)
-    return effectPromptRunGraphEdges(
-      CURRENT_EFFECT_PROMPT_GRAPH_VERSION,
-      displayedGraphRun.value.operation,
-    );
-  return effectPromptGraphEdges(CURRENT_EFFECT_PROMPT_GRAPH_VERSION);
+    return effectPromptRunGraphEdges(displayedGraphRun.value.operation);
+  return EFFECT_PROMPT_GRAPH_EDGES;
 });
 const currentAttemptLabel = computed(() => {
   const run = displayedGraphRun.value;
@@ -242,10 +231,7 @@ const currentMetrics = computed(
 const currentRenderProfile = computed(() => currentResult.value?.renderProfile ?? null);
 const currentSharedPrompt = computed(() => currentResult.value?.sharedPrompt ?? null);
 const currentSharedPromptContent = computed(
-  () =>
-    currentSharedPrompt.value?.compiledContent.trim() ??
-    currentRenderProfile.value?.sharedConstraints.prompt?.trim() ??
-    '',
+  () => currentSharedPrompt.value?.compiledContent.trim() ?? '',
 );
 const insightFieldLabels: Record<EffectPromptInsightField, string> = {
   PRODUCT_NAME: '产品名称',
@@ -448,10 +434,7 @@ const loadCurrentResult = async (): Promise<void> => {
       return;
     resultData.value = loaded;
     if (!sharedPromptDirty.value)
-      sharedPromptDraft.value =
-        loaded.result.sharedPrompt?.compiledContent.trim() ??
-        loaded.result.renderProfile.sharedConstraints.prompt?.trim() ??
-        '';
+      sharedPromptDraft.value = loaded.result.sharedPrompt?.compiledContent.trim() ?? '';
     if (page.value > promptPageCount(loaded.total)) page.value = promptPageCount(loaded.total);
   } catch (error) {
     if (!isAbortError(error) && generation === resultGeneration)
@@ -1268,17 +1251,7 @@ const graphStatusMeta = (statusValue: EffectPromptStageStatus): { label: string;
     SKIPPED: { label: '已跳过', tone: 'skipped' },
     FAILED: { label: '失败', tone: 'danger' },
   })[statusValue];
-const graphRowTitle = (row: EffectPromptNodeId[]): string => {
-  const firstNode = row[0];
-  if (row.length !== EFFECT_PROMPT_FRAGMENT_TYPES.length || !firstNode) return '';
-  const definition = graphDefinition(firstNode);
-  if (definition.group === 'COORDINATE') return '六类产品专属坐标并行规划';
-  if (definition.group === 'BLUEPRINT') return '六类组合级蓝图并行生成';
-  if (definition.group === 'GENERATION') return '六类视频 Prompt 并行生成';
-  if (definition.group === 'STRATEGY')
-    return definition.label.includes('组合') ? '六类营销组合并行规划' : '六类营销规划并行生成';
-  return '六类片段并行处理';
-};
+const graphRowTitle = (_row: EffectPromptNodeId[]): string => '';
 const graphDescription = (nodeId: EffectPromptNodeId): string =>
   ({
     LOAD_AND_SNAPSHOT: '冻结洞察工作副本、批次设置和人工保留内容',
@@ -1375,12 +1348,9 @@ const graphDimensionLabel = (key: EffectPromptDimensionKey): string =>
   EFFECT_PROMPT_DIMENSIONS.find((dimension) => dimension.key === key)?.label ?? key;
 
 const graphPromptDimensionValue = (
-  item: { dimensions: EffectPromptDimensions | EffectPromptDimensionsV5 },
+  item: { dimensions: EffectPromptDimensions },
   key: EffectPromptDimensionKey,
-): string =>
-  key === 'productRelation' && !('productRelation' in item.dimensions)
-    ? item.dimensions.sellingPoint
-    : (item.dimensions as EffectPromptDimensions)[key];
+): string => item.dimensions[key];
 
 const graphPairScore = (value: number): string => `${(value * 100).toFixed(0)}%`;
 

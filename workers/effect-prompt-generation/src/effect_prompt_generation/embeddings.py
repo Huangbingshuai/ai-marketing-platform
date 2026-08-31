@@ -19,13 +19,13 @@ import httpx
 import numpy as np
 import numpy.typing as npt
 
-from .models import CreativeCandidate, PromptItemV6, SharedPrompt
+from .models import CreativeCandidate, PromptItem, SharedPrompt
 from .quality import normalize_creative_signature
 
 LOGGER = logging.getLogger(__name__)
 
-EMBEDDING_TEXT_VERSION = "effect-prompt-embedding-text-v1"
-CONTENT_MMR_EMBEDDING_TEXT_VERSION = "effect-prompt-embedding-text-v2"
+DUAL_VECTOR_CACHE_PROFILE = "effect-prompt-dual-vector"
+CONTENT_MMR_CACHE_PROFILE = "effect-prompt-content-mmr"
 MAX_EMBEDDING_INPUTS = 256
 VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD = 0.82
 
@@ -71,7 +71,7 @@ class EmbeddingProvider(Protocol):
 
 class MockEmbeddingProvider:
     execution_mode = "MOCK"
-    cache_namespace = "mock-hashed-trigram-v1"
+    cache_namespace = "mock-hashed-trigram"
     max_inputs_per_request = MAX_EMBEDDING_INPUTS
 
     async def embed(self, texts: list[str]) -> EmbeddingBatchResult:
@@ -369,7 +369,7 @@ class ContentVectorIndex:
 
 async def build_content_vector_index(
     candidates: list[CreativeCandidate],
-    anchors: list[PromptItemV6],
+    anchors: list[PromptItem],
     *,
     provider: EmbeddingProvider,
     vector_cache: dict[str, tuple[float, ...]],
@@ -397,7 +397,7 @@ async def build_content_vector_index(
         key = _cache_key(
             provider.cache_namespace,
             text,
-            version=CONTENT_MMR_EMBEDDING_TEXT_VERSION,
+            profile=CONTENT_MMR_CACHE_PROFILE,
         )
         documents.setdefault(key, text)
         entity_document_keys[entity_id] = key
@@ -829,9 +829,9 @@ def _cache_key(
     namespace: str,
     text: str,
     *,
-    version: str = EMBEDDING_TEXT_VERSION,
+    profile: str = DUAL_VECTOR_CACHE_PROFILE,
 ) -> str:
-    source = f"{version}|{namespace}|{text}"
+    source = f"{profile}|{namespace}|{text}"
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 

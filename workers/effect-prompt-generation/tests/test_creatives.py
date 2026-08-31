@@ -23,10 +23,10 @@ from effect_prompt_generation.models import (
     FactVisualStrategy,
     FragmentType,
     ProgressPayload,
-    PromptBatchResultV6,
-    PromptBatchSettingsV6,
+    PromptBatchResult,
+    PromptBatchSettings,
     PromptGenerationSnapshot,
-    PromptItemV6,
+    PromptItem,
     RuntimeContext,
     ShardRecord,
     StageOutput,
@@ -46,11 +46,11 @@ from effect_prompt_generation.quality import (
 )
 
 
-class V11Api:
+class PromptApi:
     def __init__(self) -> None:
         self.stages: list[StageOutput] = []
         self.shards: dict[str, ShardRecord] = {}
-        self.result: PromptBatchResultV6 | None = None
+        self.result: PromptBatchResult | None = None
         self.execution_mode: str | None = None
         self.failure: Any | None = None
 
@@ -79,9 +79,9 @@ class V11Api:
         execution_mode: str = "ARK",
     ) -> str:
         del context
-        self.result = PromptBatchResultV6.model_validate(result)
+        self.result = PromptBatchResult.model_validate(result)
         self.execution_mode = execution_mode
-        return "prompt-result-v11"
+        return "prompt-result-current"
 
     async def fail(self, context: RuntimeContext, payload: Any) -> None:
         del context
@@ -242,18 +242,17 @@ class OneTransientClassificationFailureProvider(MockAiProvider):
 
 def _snapshot() -> PromptGenerationSnapshot:
     return PromptGenerationSnapshot(
-        schema_version=6,
-        graph_version="V11_COHERENT_CREATIVE_GENERATION",
-        project_id="project-v11",
-        workflow_run_id="workflow-v11",
+        project_id="project-current",
+        workflow_run_id="workflow-current",
         product_id="sausage",
         operation="BATCH_GENERATE",
-        settings=PromptBatchSettingsV6(
+        settings=PromptBatchSettings(
             target_count=10,
             default_duration_seconds=5,
         ),
+        selection_policy="MMR_CONTENT",
         insight_artifact={
-            "id": "insight-v11",
+            "id": "insight-current",
             "revision": 1,
             "contentHash": "sha256:sausage",
             "result": {
@@ -273,19 +272,19 @@ def _snapshot() -> PromptGenerationSnapshot:
 
 def _runtime() -> RuntimeContext:
     return RuntimeContext(
-        run_id="run-v11",
-        project_id="project-v11",
-        workflow_run_id="workflow-v11",
+        run_id="run-current",
+        project_id="project-current",
+        workflow_run_id="workflow-current",
         product_id="sausage",
-        request_id="request-v11",
-        attempt_token="attempt-v11",
-        source_fingerprint="source-v11",
+        request_id="request-current",
+        attempt_token="attempt-current",
+        source_fingerprint="source-current",
     )
 
 
 @pytest.mark.asyncio
-async def test_v11_graph_generates_120_percent_then_selects_exact_count() -> None:
-    api = V11Api()
+async def test_graph_generates_120_percent_then_selects_exact_count() -> None:
+    api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=MockAiProvider(),
@@ -299,9 +298,8 @@ async def test_v11_graph_generates_120_percent_then_selects_exact_count() -> Non
         context=runtime,
     )
 
-    assert result["prompt_result_id"] == "prompt-result-v11"
+    assert result["prompt_result_id"] == "prompt-result-current"
     assert api.result is not None
-    assert api.result.schema_version == 6
     assert api.result.metrics.candidate_target_count == 12
     assert api.result.metrics.generated_candidate_count == 12
     assert len(api.result.items) == 10
@@ -365,7 +363,10 @@ async def test_v11_graph_generates_120_percent_then_selects_exact_count() -> Non
     assert shared_stage.metadata["compiledContent"]
     assert creative_stage.status == "SUCCEEDED"
     assert creative_stage.metadata["candidateCount"] == 12
-    assert creative_stage.metadata["factSelectionMode"] == "WORKER_ASSIGNMENT_V1"
+    assert (
+        creative_stage.metadata["factSelectionMode"]
+        == "VISUAL_TASK_AND_BUSINESS_CONTEXT"
+    )
     assert classification_stage.status == "SUCCEEDED"
     assert classification_stage.metadata["evaluatedCount"] == 12
     assert classification_stage.metadata["averageScores"]["productRelevance"] >= 0
@@ -373,16 +374,14 @@ async def test_v11_graph_generates_120_percent_then_selects_exact_count() -> Non
 
 @pytest.mark.asyncio
 async def test_visual_strategy_graph_compiles_roles_before_creative_generation() -> None:
-    api = V11Api()
+    api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=MockAiProvider(),
         shard_size=5,
     )
     runtime = _runtime()
-    snapshot = _snapshot().model_copy(
-        update={"graph_version": "CURRENT"}
-    )
+    snapshot = _snapshot()
     pipeline.register_snapshot(runtime, snapshot)
 
     result = await build_graph(pipeline).ainvoke(
@@ -390,7 +389,7 @@ async def test_visual_strategy_graph_compiles_roles_before_creative_generation()
         context=runtime,
     )
 
-    assert result["prompt_result_id"] == "prompt-result-v11"
+    assert result["prompt_result_id"] == "prompt-result-current"
     strategy_stage = next(
         stage
         for stage in reversed(api.stages)
@@ -406,7 +405,7 @@ async def test_visual_strategy_graph_compiles_roles_before_creative_generation()
     )
     assert (
         creative_stage.metadata["factSelectionMode"]
-        == "VISUAL_TASK_AND_BUSINESS_CONTEXT_V1"
+        == "VISUAL_TASK_AND_BUSINESS_CONTEXT"
     )
     assignments = [
         task.fact_assignment
@@ -421,8 +420,8 @@ async def test_visual_strategy_graph_compiles_roles_before_creative_generation()
 
 
 @pytest.mark.asyncio
-async def test_v11_ai_shards_use_one_sliding_concurrency_limit() -> None:
-    api = V11Api()
+async def test_ai_shards_use_one_sliding_concurrency_limit() -> None:
+    api = PromptApi()
     provider = ConcurrencyTrackingProvider()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -443,10 +442,10 @@ async def test_v11_ai_shards_use_one_sliding_concurrency_limit() -> None:
 
 
 @pytest.mark.asyncio
-async def test_v11_retries_one_invalid_classification_response_inside_its_shard() -> (
+async def test_retries_one_invalid_classification_response_inside_its_shard() -> (
     None
 ):
-    api = V11Api()
+    api = PromptApi()
     provider = OneTransientClassificationFailureProvider()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -467,8 +466,8 @@ async def test_v11_retries_one_invalid_classification_response_inside_its_shard(
 
 
 @pytest.mark.asyncio
-async def test_v11_classification_retry_keeps_stable_shard_assignments() -> None:
-    api = V11Api()
+async def test_classification_retry_keeps_stable_shard_assignments() -> None:
+    api = PromptApi()
     provider = OneClassificationFailureProvider()
     runtime = _runtime()
     first = PromptGenerationPipeline(
@@ -506,10 +505,10 @@ async def test_v11_classification_retry_keeps_stable_shard_assignments() -> None
 
 
 @pytest.mark.asyncio
-async def test_v11_vector_selection_keeps_exact_count_and_reports_safe_metrics() -> (
+async def test_vector_selection_keeps_exact_count_and_reports_safe_metrics() -> (
     None
 ):
-    api = V11Api()
+    api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=MockAiProvider(),
@@ -534,16 +533,16 @@ async def test_v11_vector_selection_keeps_exact_count_and_reports_safe_metrics()
         for stage in reversed(api.stages)
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
-    assert selection_stage.metadata["selectionMethod"] == "VECTOR"
-    assert selection_stage.metadata["embeddingInputCount"] == 24
-    assert selection_stage.metadata["embeddingRequestCount"] == 1
-    assert selection_stage.metadata["comparisonCount"] == 66
+    assert selection_stage.metadata["selectionMethod"] == "CONTENT_VECTOR_MMR"
+    assert selection_stage.metadata["embeddingInputCount"] == 14
+    assert selection_stage.metadata["embeddingRequestCount"] == 2
+    assert selection_stage.metadata["comparisonCount"] == 91
     assert "model" not in selection_stage.metadata
 
 
 @pytest.mark.asyncio
-async def test_v11_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
-    api = V11Api()
+async def test_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
+    api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=MockAiProvider(),
@@ -556,7 +555,6 @@ async def test_v11_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
     runtime = _runtime()
     snapshot = _snapshot().model_copy(
         update={
-            "selection_policy_version": "MMR_CONTENT_V2",
             "similarity_anchors": [],
         }
     )
@@ -574,7 +572,6 @@ async def test_v11_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
         for stage in reversed(api.stages)
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
-    assert selection_stage.metadata["selectionPolicyVersion"] == "MMR_CONTENT_V2"
     assert selection_stage.metadata["selectionMethod"] == "TRIGRAM_SHADOW"
     assert selection_stage.metadata["embeddingInputCount"] == 12
     assert selection_stage.metadata["embeddingRequestCount"] == 1
@@ -585,10 +582,10 @@ async def test_v11_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
 
 
 @pytest.mark.asyncio
-async def test_v11_content_mmr_diversity_supplement_runs_once_and_keeps_exact_count() -> (
+async def test_content_mmr_diversity_supplement_runs_once_and_keeps_exact_count() -> (
     None
 ):
-    api = V11Api()
+    api = PromptApi()
     embedding_provider = IdenticalEmbeddingProvider()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -602,7 +599,6 @@ async def test_v11_content_mmr_diversity_supplement_runs_once_and_keeps_exact_co
     runtime = _runtime()
     snapshot = _snapshot().model_copy(
         update={
-            "selection_policy_version": "MMR_CONTENT_V2",
             "similarity_anchors": [],
         }
     )
@@ -629,18 +625,6 @@ async def test_v11_content_mmr_diversity_supplement_runs_once_and_keeps_exact_co
     assert final_selection_stage.metadata["finalAccurateCount"] == 10
     assert final_selection_stage.warnings == ["SEMANTIC_DIVERSITY_SOFT_TARGET_NOT_MET"]
 
-    # Simulate an in-flight MMR_CONTENT_V2 shard written before supplementKind
-    # was added. Recovery infers that round 1 started after quantity was met.
-    for key, shard in list(api.shards.items()):
-        if shard.phase.value == "CREATIVE" and shard.round > 0:
-            api.shards[key] = shard.model_copy(
-                update={
-                    "creative_plan": [
-                        task.model_copy(update={"supplement_kind": None})
-                        for task in shard.creative_plan
-                    ]
-                }
-            )
     resumed = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=MockAiProvider(),
@@ -651,17 +635,17 @@ async def test_v11_content_mmr_diversity_supplement_runs_once_and_keeps_exact_co
     resumed.register_snapshot(runtime, snapshot)
     await resumed.load_and_snapshot(runtime)
     restored_cache = resumed._cache(runtime)
-    assert restored_cache.v11_diversity_supplemented is True
-    assert restored_cache.v11_diversity_supplement_count == 2
-    assert restored_cache.v11_replenishment_rounds == 0
+    assert restored_cache.diversity_supplemented is True
+    assert restored_cache.diversity_supplement_count == 2
+    assert restored_cache.replenishment_rounds == 0
 
 
 @pytest.mark.asyncio
-async def test_v11_shadow_selection_reports_comparison_without_changing_result() -> (
+async def test_shadow_selection_reports_comparison_without_changing_result() -> (
     None
 ):
-    baseline_api = V11Api()
-    shadow_api = V11Api()
+    baseline_api = PromptApi()
+    shadow_api = PromptApi()
     baseline = PromptGenerationPipeline(
         api=baseline_api,  # type: ignore[arg-type]
         provider=MockAiProvider(),
@@ -675,7 +659,7 @@ async def test_v11_shadow_selection_reports_comparison_without_changing_result()
         shard_size=5,
     )
     baseline_runtime = _runtime()
-    shadow_runtime = replace(_runtime(), run_id="run-v11-shadow")
+    shadow_runtime = replace(_runtime(), run_id="run-current-shadow")
     baseline.register_snapshot(baseline_runtime, _snapshot())
     shadow.register_snapshot(shadow_runtime, _snapshot())
 
@@ -700,16 +684,14 @@ async def test_v11_shadow_selection_reports_comparison_without_changing_result()
     )
     assert selection_stage.metadata["selectionMethod"] == "TRIGRAM_SHADOW"
     assert selection_stage.metadata["baselineSelection"]["selectedCount"] == 10
-    assert selection_stage.metadata["contentVectorSelection"]["selectedCount"] == 10
-    assert selection_stage.metadata["dualVectorSelection"]["selectedCount"] == 10
+    assert selection_stage.metadata["contentMmrSelection"]["selectedCount"] == 10
     assert selection_stage.metadata["vectorChangedItemCount"] >= 0
-    assert selection_stage.metadata["contentChangedItemCount"] >= 0
     assert isinstance(
-        selection_stage.metadata["vectorAverageQualityDelta"],
+        selection_stage.metadata["averageQualityDelta"],
         float,
     )
     assert set(
-        selection_stage.metadata["dualVectorSelection"]["dimensionUniqueCounts"]
+        selection_stage.metadata["contentMmrSelection"]["dimensionUniqueCounts"]
     ) == {
         "narrative",
         "scene",
@@ -721,8 +703,8 @@ async def test_v11_shadow_selection_reports_comparison_without_changing_result()
 
 
 @pytest.mark.asyncio
-async def test_v11_shadow_embedding_failure_keeps_baseline_with_warning() -> None:
-    api = V11Api()
+async def test_shadow_embedding_failure_keeps_baseline_with_warning() -> None:
+    api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=MockAiProvider(),
@@ -750,8 +732,8 @@ async def test_v11_shadow_embedding_failure_keeps_baseline_with_warning() -> Non
 
 
 @pytest.mark.asyncio
-async def test_v11_vector_embedding_failure_is_retryable_and_safely_coded() -> None:
-    api = V11Api()
+async def test_vector_embedding_failure_is_retryable_and_safely_coded() -> None:
+    api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=MockAiProvider(),
@@ -769,12 +751,12 @@ async def test_v11_vector_embedding_failure_is_retryable_and_safely_coded() -> N
 
 
 @pytest.mark.asyncio
-async def test_v11_item_evaluate_preserves_content_and_only_runs_classification() -> (
+async def test_item_evaluate_preserves_content_and_only_runs_classification() -> (
     None
 ):
     snapshot = _snapshot()
     now = "2026-08-27T10:00:00Z"
-    target = PromptItemV6(
+    target = PromptItem(
         id="manual-prompt-1",
         code="P004",
         origin="MANUAL",
@@ -808,7 +790,7 @@ async def test_v11_item_evaluate_preserves_content_and_only_runs_classification(
             "replacement_dimensions": target.dimensions,
         }
     )
-    api = V11Api()
+    api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=MockAiProvider(),
@@ -836,8 +818,8 @@ async def test_v11_item_evaluate_preserves_content_and_only_runs_classification(
 
 
 @pytest.mark.asyncio
-async def test_v11_stops_supplementing_as_soon_as_exact_quantity_is_reached() -> None:
-    api = V11Api()
+async def test_stops_supplementing_as_soon_as_exact_quantity_is_reached() -> None:
+    api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=FirstRoundRejectingProvider(),
@@ -866,8 +848,8 @@ async def test_v11_stops_supplementing_as_soon_as_exact_quantity_is_reached() ->
 
 
 @pytest.mark.asyncio
-async def test_v11_can_run_multiple_supplement_rounds_to_reach_exact_quantity() -> None:
-    api = V11Api()
+async def test_can_run_multiple_supplement_rounds_to_reach_exact_quantity() -> None:
+    api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=FirstTwoRoundsRejectingProvider(),
@@ -893,8 +875,8 @@ async def test_v11_can_run_multiple_supplement_rounds_to_reach_exact_quantity() 
 
 
 @pytest.mark.asyncio
-async def test_v11_stops_after_three_rounds_when_real_safety_issues_remain() -> None:
-    api = V11Api()
+async def test_stops_after_three_rounds_when_real_safety_issues_remain() -> None:
+    api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=AlwaysRejectingProvider(),
@@ -915,7 +897,7 @@ async def test_v11_stops_after_three_rounds_when_real_safety_issues_remain() -> 
     assert api.result.metrics.replenishment_rounds == 3
 
 
-def test_v11_evaluation_requires_real_text_evidence() -> None:
+def test_evaluation_requires_real_text_evidence() -> None:
     application = map_insight(
         {"productName": "广式腊肠", "coreSellingPoints": ["油润红亮切面"]}
     )
@@ -960,7 +942,7 @@ def test_v11_evaluation_requires_real_text_evidence() -> None:
     assert "MISSING_PRODUCT_RELATION" in validated.hard_issues
 
 
-def test_v11_generic_visual_language_is_a_soft_warning_only() -> None:
+def test_generic_visual_language_is_a_soft_warning_only() -> None:
     application = map_insight({"productName": "广式腊肠"})
     fact = next(item for item in application.usable if item.value == "广式腊肠")
     candidate = CreativeCandidate(
@@ -1011,7 +993,7 @@ def test_v11_generic_visual_language_is_a_soft_warning_only() -> None:
     ]
 
 
-def test_v11_novelty_uses_narrative_and_emotion_as_soft_dimensions() -> None:
+def test_novelty_uses_narrative_and_emotion_as_soft_dimensions() -> None:
     def ranked(
         slot_id: str,
         *,
@@ -1073,7 +1055,7 @@ def test_v11_novelty_uses_narrative_and_emotion_as_soft_dimensions() -> None:
     assert _creative_novelty(first, second) > 0
 
 
-def test_v11_discards_bad_evidence_excerpt_without_rejecting_valid_prompt() -> None:
+def test_discards_bad_evidence_excerpt_without_rejecting_valid_prompt() -> None:
     application = map_insight(
         {"productName": "广式腊肠", "coreSellingPoints": ["油润红亮切面"]}
     )
@@ -1127,7 +1109,7 @@ def test_v11_discards_bad_evidence_excerpt_without_rejecting_valid_prompt() -> N
     assert validated.realized_fact_ids == [product_fact.fact_id]
 
 
-def test_v11_evidence_excerpt_noise_does_not_reduce_a_50_item_batch() -> None:
+def test_evidence_excerpt_noise_does_not_reduce_a_50_item_batch() -> None:
     application = map_insight(
         {"productName": "广式腊肠", "coreSellingPoints": ["油润红亮切面"]}
     )
@@ -1195,7 +1177,7 @@ def test_v11_evidence_excerpt_noise_does_not_reduce_a_50_item_batch() -> None:
     )
 
 
-def test_v11_selection_uses_quality_80_and_novelty_20() -> None:
+def test_selection_uses_quality_80_and_novelty_20() -> None:
     def candidate(index: int, scene: str) -> CreativeCandidate:
         return CreativeCandidate(
             slot_id=f"c-{index}",
@@ -1248,7 +1230,7 @@ def test_v11_selection_uses_quality_80_and_novelty_20() -> None:
     assert result.selected[1].novelty_score > 0
 
 
-def test_v11_content_mmr_uses_70_30_and_fixed_anchor_from_first_choice() -> None:
+def test_content_mmr_uses_70_30_and_fixed_anchor_from_first_choice() -> None:
     def candidate(index: int) -> CreativeCandidate:
         return CreativeCandidate(
             slot_id=f"mmr-{index}",

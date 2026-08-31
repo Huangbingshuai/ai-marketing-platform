@@ -20,7 +20,6 @@ import type {
 import { requestJson } from '../../../../api/http-client';
 
 export type ExportEffectPromptResultData = {
-  schemaVersion: number;
   productId: string;
   resultId: string;
   revision: number;

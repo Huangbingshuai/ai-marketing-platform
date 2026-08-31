@@ -63,25 +63,25 @@ def test_mock_rejects_the_normal_prompt_queue() -> None:
         )
 
 
-def test_legacy_prompt_model_and_node_specific_overrides_keep_precedence() -> None:
-    legacy = _settings(PROMPT_AI_PROVIDER="mock", ARK_PROMPT_MODEL="legacy-model")
+def test_shared_prompt_model_and_node_specific_overrides_keep_precedence() -> None:
+    shared = _settings(PROMPT_AI_PROVIDER="mock", ARK_PROMPT_MODEL="shared-model")
     specific = _settings(
         PROMPT_AI_PROVIDER="mock",
-        ARK_PROMPT_MODEL="legacy-model",
+        ARK_PROMPT_MODEL="shared-model",
         ARK_PROMPT_STRATEGY_MODEL="strategy-model",
         ARK_PROMPT_BLUEPRINT_MODEL="blueprint-model",
         ARK_PROMPT_CANDIDATE_MODEL="candidate-model",
     )
 
-    assert legacy.resolved_prompt_strategy_model == "legacy-model"
-    assert legacy.resolved_prompt_candidate_model == "legacy-model"
+    assert shared.resolved_prompt_strategy_model == "shared-model"
+    assert shared.resolved_prompt_candidate_model == "shared-model"
     assert specific.resolved_prompt_strategy_model == "strategy-model"
     assert specific.resolved_prompt_blueprint_model == "blueprint-model"
     assert specific.resolved_prompt_candidate_model == "candidate-model"
 
 
-def test_candidate_timeout_prefers_node_override_and_keeps_legacy_fallback() -> None:
-    legacy = _settings(PROMPT_AI_PROVIDER="mock", ARK_TIMEOUT_SECONDS=180)
+def test_candidate_timeout_prefers_node_override_and_keeps_shared_fallback() -> None:
+    shared = _settings(PROMPT_AI_PROVIDER="mock", ARK_TIMEOUT_SECONDS=180)
     specific = _settings(
         PROMPT_AI_PROVIDER="mock",
         ARK_TIMEOUT_SECONDS=180,
@@ -89,7 +89,7 @@ def test_candidate_timeout_prefers_node_override_and_keeps_legacy_fallback() -> 
         ARK_PROMPT_STRATEGY_TIMEOUT_SECONDS=240,
     )
 
-    assert legacy.resolved_prompt_candidate_timeout_seconds == 180
+    assert shared.resolved_prompt_candidate_timeout_seconds == 180
     assert specific.resolved_prompt_candidate_timeout_seconds == 90
     assert specific.ark_prompt_strategy_timeout_seconds == 240
 

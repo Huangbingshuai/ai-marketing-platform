@@ -1,12 +1,5 @@
-import type {
-  EffectPromptBatchResultV5,
-  EffectPromptItem,
-  EffectPromptItemV5,
-} from '@ai-marketing/contracts';
-import {
-  DEFAULT_EFFECT_PROMPT_FRAGMENT_CONFIGS,
-  DEFAULT_EFFECT_PROMPT_SETTINGS,
-} from '@ai-marketing/contracts';
+import type { EffectPromptItem } from '@ai-marketing/contracts';
+import { DEFAULT_EFFECT_PROMPT_SETTINGS } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -14,7 +7,6 @@ import {
   defaultEffectPromptRenderProfile,
   isEffectPromptItem,
   parseEffectPromptBatchResult,
-  parseEffectPromptBatchResultV5ForRead,
   mergeEffectPromptCompletionItems,
   recomputePromptQuality,
 } from './effect-prompt.quality';
@@ -45,7 +37,7 @@ const item = (id: string, content = `产品创意画面 ${id}`): EffectPromptIte
   updatedAt: '2026-08-27T00:00:00.000Z',
 });
 
-describe('effect prompt V6 quality contract', () => {
+describe('effect prompt quality contract', () => {
   it('requires purpose projection and productRelation', () => {
     expect(isEffectPromptItem(item('001'))).toBe(true);
     expect(isEffectPromptItem({ ...item('002'), fragmentType: 'HOOK' })).toBe(false);
@@ -72,7 +64,6 @@ describe('effect prompt V6 quality contract', () => {
       defaultEffectPromptRenderProfile(),
       compileEffectPromptSharedPrompt([]),
     );
-    expect(result.schemaVersion).toBe(6);
     expect(result.items).toHaveLength(10);
     expect(result.metrics.hardIssueCounts).toEqual([]);
     expect(result.metrics.exactDuplicateCount).toBe(0);
@@ -110,76 +101,6 @@ describe('effect prompt V6 quality contract', () => {
     expect(recomputed.metrics.hardIssueCounts).toEqual(result.metrics.hardIssueCounts);
   });
 
-  it('reads V5 without fabricating V6 purpose or score fields', () => {
-    const legacyItem: EffectPromptItemV5 = {
-      id: 'legacy-1',
-      code: 'P001',
-      origin: 'AI',
-      fragmentType: 'HOOK',
-      materialTags: ['钩子'],
-      targetDurationSeconds: 5,
-      dimensions: {
-        narrative: '悬念',
-        scene: '厨房',
-        persona: '成年人',
-        sellingPoint: '产品切面',
-        camera: '近景',
-        emotion: '好奇',
-      },
-      content: '历史 Prompt',
-      insightBindings: [],
-      manualEdited: false,
-      createdAt: '2026-08-26T00:00:00.000Z',
-      updatedAt: '2026-08-26T00:00:00.000Z',
-    };
-    const legacy: EffectPromptBatchResultV5 = {
-      schemaVersion: 5,
-      settings: {
-        fragmentConfigs: DEFAULT_EFFECT_PROMPT_FRAGMENT_CONFIGS,
-        semanticLimit: 15,
-        visualLimit: 20,
-      },
-      renderProfile: defaultEffectPromptRenderProfile(),
-      items: [legacyItem],
-      metrics: {
-        targetCount: 50,
-        acceptedCount: 1,
-        generatedCandidateCount: 1,
-        fallbackCount: 0,
-        removedSemanticDuplicates: 0,
-        removedVisualDuplicates: 0,
-        removedDimensionConflicts: 0,
-        semanticDuplicateRate: 0,
-        visualOverlapRate: 0,
-        replenishmentRounds: 0,
-        fragmentTypeDistribution: [
-          { fragmentType: 'HOOK', targetCount: 10, actualCount: 1 },
-          { fragmentType: 'PAIN', targetCount: 8, actualCount: 0 },
-          { fragmentType: 'PRODUCT_DISPLAY', targetCount: 12, actualCount: 0 },
-          { fragmentType: 'SELLING_POINT_EXPLANATION', targetCount: 10, actualCount: 0 },
-          { fragmentType: 'CTA', targetCount: 6, actualCount: 0 },
-          { fragmentType: 'OUTRO', targetCount: 4, actualCount: 0 },
-        ],
-        sellingPointCoverage: { required: [], covered: [], missing: [] },
-        insightCoverage: {
-          required: [],
-          covered: [],
-          missing: [],
-          adaptive: [],
-          deferred: [],
-          excluded: [],
-          appliedConstraints: [],
-        },
-        removedExecutionInvalid: 0,
-        executionInvalidReasons: [],
-      },
-      qualityStatus: 'PASS',
-    };
-    expect(parseEffectPromptBatchResultV5ForRead(legacy)?.items[0]).toEqual(legacyItem);
-    expect(parseEffectPromptBatchResult(legacy)).toBeNull();
-    expect(DEFAULT_EFFECT_PROMPT_SETTINGS.targetCount).toBe(50);
-  });
-
   it('ITEM_EVALUATE updates only classification data and keeps authored content intact', () => {
     const target = { ...item('target'), origin: 'MANUAL' as const, manualEdited: true };
     const evaluated = {
@@ -193,8 +114,7 @@ describe('effect prompt V6 quality contract', () => {
       productRelevance: 88,
     };
     const merged = mergeEffectPromptCompletionItems([evaluated], {
-      schemaVersion: 6,
-      graphVersion: 'V11_COHERENT_CREATIVE_GENERATION',
+      selectionPolicy: 'MMR_CONTENT',
       projectId: 'project-a',
       workflowRunId: 'workflow-a',
       productId: 'product-a',

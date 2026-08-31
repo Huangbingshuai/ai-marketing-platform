@@ -11,7 +11,6 @@ from .models import (
     FailurePayload,
     ProgressPayload,
     PromptBatchResult,
-    PromptBatchResultV6,
     RuntimeContext,
     ShardRecord,
     ShardsResponse,
@@ -35,7 +34,7 @@ class InternalApi(Protocol):
     async def complete(
         self,
         context: RuntimeContext,
-        result: PromptBatchResult | PromptBatchResultV6,
+        result: PromptBatchResult | PromptBatchResult,
         *,
         execution_mode: str = "ARK",
     ) -> str: ...
@@ -141,16 +140,6 @@ class HttpInternalApi:
                 "projectId": context.project_id,
                 "phase": shard.phase.value,
                 "status": shard.status.value,
-                "combinationPlan": [
-                    item.model_dump(mode="json", by_alias=True) for item in shard.combination_plan
-                ],
-                "items": [item.model_dump(mode="json", by_alias=True) for item in shard.items],
-                "blueprintPlan": [
-                    item.model_dump(mode="json", by_alias=True) for item in shard.blueprint_plan
-                ],
-                "blueprints": [
-                    item.model_dump(mode="json", by_alias=True) for item in shard.blueprints
-                ],
                 "creativePlan": [
                     item.model_dump(mode="json", by_alias=True) for item in shard.creative_plan
                 ],
@@ -190,7 +179,7 @@ class HttpInternalApi:
     async def complete(
         self,
         context: RuntimeContext,
-        result: PromptBatchResult | PromptBatchResultV6,
+        result: PromptBatchResult | PromptBatchResult,
         *,
         execution_mode: str = "ARK",
     ) -> str:

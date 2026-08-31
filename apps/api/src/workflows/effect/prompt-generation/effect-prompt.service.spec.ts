@@ -4,7 +4,6 @@ import {
   DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_LIMITS,
-  EFFECT_PROMPT_SCHEMA_VERSION,
 } from '@ai-marketing/contracts';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -68,6 +67,25 @@ const completionGateFixture = (duplicate = false) => {
   return recomputePromptQuality(items, settings);
 };
 
+const currentInputSnapshot = (overrides: Record<string, unknown> = {}) => ({
+  projectId: 'project-a',
+  workflowRunId: 'workflow-a',
+  productId: 'product-a',
+  operation: 'BATCH_GENERATE',
+  targetItemId: null,
+  settings: { targetCount: 50, defaultDurationSeconds: 5 },
+  insightArtifact: {
+    id: 'insight-a',
+    revision: 1,
+    contentHash: 'insight-hash-current',
+    result: { productName: '广式腊肠' },
+  },
+  retainedManualItems: [],
+  selectionPolicy: 'MMR_CONTENT',
+  baseResultRevision: null,
+  ...overrides,
+});
+
 describe('EffectPromptService settings contract', () => {
   it('rejects mock completion unless the deployment explicitly opts in', async () => {
     const previous = process.env.EFFECT_PROMPT_ALLOW_MOCK_COMPLETION;
@@ -88,37 +106,12 @@ describe('EffectPromptService settings contract', () => {
     }
   });
 
-  it('terminates a retired workflow when a queued legacy run is claimed', async () => {
-    const repository = {
-      claim: vi.fn().mockResolvedValue({
-        kind: 'CLAIMED',
-        run: { sourceFingerprint: 'source-a' },
-        attemptToken: 'attempt-a',
-        input: { graphVersion: 'V10_RELATION_COORDINATE_BLUEPRINT' },
-        checkpointStages: [],
-      }),
-      fail: vi.fn().mockResolvedValue('FAILED'),
-    };
-    const service = new EffectPromptService(repository as never, {} as never, {} as never);
-
-    const output = await service.claim('project-a', 'run-a');
-
-    expect(output).toEqual({ terminal: true, runId: 'run-a' });
-    expect(repository.fail).toHaveBeenCalledWith('project-a', 'run-a', 'attempt-a', {
-      errorCode: 'WORKFLOW_RETIRED',
-      errorMessage: '该历史 Prompt 工作流已停用，请重新生成',
-      retryable: false,
-      warnings: [],
-      currentNode: 'LOAD_AND_SNAPSHOT',
-    });
-  });
-
   it('reuses only a fact visual strategy checkpoint with the same insight content hash', async () => {
     const matching = {
       nodeId: 'FACT_VISUAL_STRATEGY_COMPILATION',
       sourceFingerprint: 'insight-hash-current',
       allocationHash: 'c'.repeat(64),
-      promptVersion: 'effect-prompt-v11-fact-visual-strategy-v1',
+      templateHash: 'a'.repeat(64),
       plan: {},
     };
     const stale = {
@@ -131,10 +124,7 @@ describe('EffectPromptService settings contract', () => {
         kind: 'CLAIMED',
         run: { sourceFingerprint: 'run-source' },
         attemptToken: 'attempt-a',
-        input: {
-          graphVersion: 'CURRENT',
-          insightArtifact: { contentHash: 'insight-hash-current' },
-        },
+        input: currentInputSnapshot(),
         checkpointStages: [
           { nodeId: 'FACT_VISUAL_STRATEGY_COMPILATION', metadata: { checkpoint: stale } },
           { nodeId: 'FACT_VISUAL_STRATEGY_COMPILATION', metadata: { checkpoint: matching } },
@@ -222,8 +212,7 @@ describe('EffectPromptService settings contract', () => {
       operation: 'ITEM_REGENERATE',
       targetItemId,
       inputSnapshot: {
-        operation: 'ITEM_EVALUATE',
-        graphVersion: 'CURRENT',
+        ...currentInputSnapshot({ operation: 'ITEM_EVALUATE', targetItemId }),
       },
       status: 'QUEUED',
       progress: 0,
@@ -272,11 +261,11 @@ describe('EffectPromptService settings contract', () => {
     expect(output.run.nodes.map(({ nodeId }) => nodeId)).toContain('ITEM_EVALUATE');
   });
 
-  it('accepts the separate fourth V11 diversity-supplement shard round', async () => {
+  it('accepts the fourth diversity-supplement shard round', async () => {
     const repository = {
       run: vi.fn().mockResolvedValue({
-        id: 'run-v11',
-        inputSnapshot: { graphVersion: 'CURRENT' },
+        id: 'run-current',
+        inputSnapshot: currentInputSnapshot(),
         operation: 'BATCH_GENERATE',
       }),
       saveShard: vi.fn().mockResolvedValue(true),
@@ -292,22 +281,22 @@ describe('EffectPromptService settings contract', () => {
     };
 
     await expect(
-      service.saveShard('project-a', 'run-v11', 'attempt-a', 4, 0, 'CREATIVE', input),
+      service.saveShard('project-a', 'run-current', 'attempt-a', 4, 0, 'CREATIVE', input),
     ).resolves.toEqual({ accepted: true });
     await expect(
-      service.saveShard('project-a', 'run-v11', 'attempt-a', 5, 0, 'CREATIVE', input),
+      service.saveShard('project-a', 'run-current', 'attempt-a', 5, 0, 'CREATIVE', input),
     ).rejects.toThrow('分片标识无效');
   });
 
-  it('projects persisted V11 shards only into their phase-specific fields', async () => {
+  it('projects persisted shards only into their phase-specific fields', async () => {
     const creativePlan = [{ slotId: 'creative-task-a' }];
     const creativeItems = [{ slotId: 'creative-a', content: '创意候选正文' }];
     const classificationPlan = ['creative-a'];
     const evaluations = [{ slotId: 'creative-a', primaryPurpose: 'HOOK' }];
     const repository = {
       run: vi.fn().mockResolvedValue({
-        id: 'run-v11',
-        inputSnapshot: { graphVersion: 'CURRENT' },
+        id: 'run-current',
+        inputSnapshot: currentInputSnapshot(),
         operation: 'BATCH_GENERATE',
       }),
       shards: vi.fn().mockResolvedValue([
@@ -339,15 +328,13 @@ describe('EffectPromptService settings contract', () => {
     };
     const service = new EffectPromptService(repository as never, {} as never, {} as never);
 
-    const output = await service.shards('project-a', 'run-v11', 'attempt-a');
+    const output = await service.shards('project-a', 'run-current', 'attempt-a');
 
     expect(output.shards).toEqual([
       expect.objectContaining({
         phase: 'CREATIVE',
         combinationPlan: [],
         items: [],
-        blueprintPlan: [],
-        blueprints: [],
         creativePlan,
         creativeItems,
         classificationPlan: [],
@@ -357,8 +344,6 @@ describe('EffectPromptService settings contract', () => {
         phase: 'CLASSIFICATION',
         combinationPlan: [],
         items: [],
-        blueprintPlan: [],
-        blueprints: [],
         creativePlan: [],
         creativeItems: [],
         classificationPlan,
@@ -418,6 +403,7 @@ describe('EffectPromptService settings contract', () => {
     const repository = {
       run: vi.fn().mockResolvedValue({
         inputSnapshot: {
+          selectionPolicy: 'MMR_CONTENT',
           operation: 'BATCH_GENERATE',
           settings: DEFAULT_EFFECT_PROMPT_SETTINGS,
         },
@@ -431,8 +417,13 @@ describe('EffectPromptService settings contract', () => {
         result: shortResult,
         executionMode: 'ARK',
       }),
-    ).rejects.toMatchObject({ status: 400 });
-    expect(repository.complete).not.toHaveBeenCalled();
+    ).resolves.toEqual({ promptResultId: 'result-a' });
+    expect(repository.complete).toHaveBeenCalledWith(
+      'project-a',
+      'run-a',
+      'attempt-a',
+      expect.objectContaining({ qualityStatus: 'NEEDS_REVIEW' }),
+    );
   });
 
   it('uses the extracted product name for the committed Prompt working artifact', async () => {
@@ -510,7 +501,6 @@ describe('EffectPromptService settings contract', () => {
         id: 'result-a',
         productId: 'product-a',
         revision: 3,
-        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
         draftResult: draft,
       }),
       mutateResult: vi
@@ -576,7 +566,6 @@ describe('EffectPromptService settings contract', () => {
         id: 'result-a',
         productId: 'product-a',
         revision: 3,
-        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
         draftResult: draft,
       }),
       mutateResult: vi.fn().mockResolvedValue({
@@ -633,7 +622,7 @@ describe('EffectPromptService settings contract', () => {
         errorMessage: null,
         createdAt: new Date('2026-08-25T00:00:00.000Z'),
         updatedAt: new Date('2026-08-25T00:01:00.000Z'),
-        inputSnapshot: { graphVersion: 'CURRENT' },
+        inputSnapshot: currentInputSnapshot(),
         shards: [],
         result: null,
         stages: [
@@ -679,107 +668,6 @@ describe('EffectPromptService settings contract', () => {
       expect(serialized).not.toContain(value);
   });
 
-  it('hides V2 results from the V4 workspace and requests regeneration', async () => {
-    const repository = {
-      workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }),
-      products: vi.fn().mockResolvedValue([
-        {
-          id: 'product-a',
-          promptRuns: [],
-          updatedAt: new Date('2026-08-25T00:00:00.000Z'),
-        },
-      ]),
-      latestResult: vi.fn().mockResolvedValue({
-        id: 'legacy-result',
-        revision: 4,
-        schemaVersion: 2,
-        settingsHash: 'legacy-settings',
-        draftResult: { schemaVersion: 2 },
-      }),
-      settingsNode: vi.fn().mockResolvedValue({
-        revision: 2,
-        schemaVersion: 2,
-        state: { count: 50, durationSeconds: 5, semanticLimit: 15, visualLimit: 20 },
-      }),
-      insightArtifact: vi.fn().mockResolvedValue(null),
-      promptArtifact: vi.fn().mockResolvedValue(null),
-    };
-    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
-    const service = new EffectPromptService(repository as never, projects as never, {} as never);
-
-    const output = await service.workspace('project-a', 'workflow-a');
-
-    expect(output.products[0]).toEqual(
-      expect.objectContaining({
-        resultId: null,
-        resultRevision: null,
-        metrics: null,
-        qualityStatus: null,
-        errorMessage: '当前结果为只读存量数据，重新生成后将使用当前工作流',
-      }),
-    );
-  });
-
-  it('keeps a replacement batch visible as processing while its legacy result is stale', async () => {
-    const activeRun = {
-      id: 'run-new',
-      status: 'RUNNING',
-      progress: 11,
-      currentNode: 'COHERENT_CREATIVE_GENERATION',
-      inputSnapshot: { graphVersion: 'CURRENT' },
-      result: null,
-      updatedAt: new Date('2026-08-26T00:01:00.000Z'),
-    };
-    const repository = {
-      workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }),
-      products: vi.fn().mockResolvedValue([
-        {
-          id: 'product-a',
-          promptRuns: [activeRun],
-          updatedAt: new Date('2026-08-26T00:00:00.000Z'),
-        },
-      ]),
-      run: vi.fn().mockImplementation((_projectId: string, id: string) =>
-        Promise.resolve(
-          id === activeRun.id
-            ? activeRun
-            : {
-                id: 'run-old',
-                inputSnapshot: {},
-              },
-        ),
-      ),
-      latestResult: vi.fn().mockResolvedValue({
-        id: 'legacy-result',
-        runId: 'run-old',
-        revision: 4,
-        schemaVersion: 2,
-        settingsHash: 'legacy-settings',
-        draftResult: { schemaVersion: 2 },
-      }),
-      settingsNode: vi.fn().mockResolvedValue({
-        revision: 2,
-        schemaVersion: 2,
-        state: { count: 50, durationSeconds: 5, semanticLimit: 15, visualLimit: 20 },
-      }),
-      insightArtifact: vi.fn().mockResolvedValue(null),
-      promptArtifact: vi.fn().mockResolvedValue(null),
-    };
-    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
-    const service = new EffectPromptService(repository as never, projects as never, {} as never);
-
-    const output = await service.workspace('project-a', 'workflow-a');
-
-    expect(output.products[0]).toEqual(
-      expect.objectContaining({
-        status: 'PROCESSING',
-        runId: 'run-new',
-        progress: 11,
-        currentNode: 'COHERENT_CREATIVE_GENERATION',
-      }),
-    );
-  });
-
   it('rejects manual additions before they can exceed the shared result limit', async () => {
     const timestamp = '2026-08-25T00:00:00.000Z';
     const items = Array.from({ length: EFFECT_PROMPT_LIMITS.maxCount }, (_, index) => ({
@@ -811,7 +699,6 @@ describe('EffectPromptService settings contract', () => {
     }));
     const repository = {
       result: vi.fn().mockResolvedValue({
-        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
         draftResult: { items },
       }),
       mutateResult: vi.fn(),
@@ -877,7 +764,6 @@ describe('EffectPromptService settings contract', () => {
         id: 'result-a',
         productId: 'product-a',
         revision: 1,
-        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
         draftResult,
       }),
     };
@@ -947,7 +833,6 @@ describe('EffectPromptService settings contract', () => {
         id: 'result-a',
         productId: 'product-a',
         revision: 1,
-        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
         draftResult,
       }),
     };
@@ -976,7 +861,6 @@ describe('EffectPromptService settings contract', () => {
         id: 'run-failed',
         sourceFingerprint: 'f'.repeat(64),
         inputSnapshot: {
-          schemaVersion: 5,
           projectId: 'project-a',
           workflowRunId: 'workflow-a',
           productId: 'product-a',
@@ -1075,25 +959,7 @@ describe('EffectPromptService settings contract', () => {
     expect(output.result.qualityStatus).toBe('NEEDS_REVIEW');
   });
 
-  it('returns an explicit validation issue for legacy full-video results', async () => {
-    const repository = {
-      result: vi.fn().mockResolvedValue({
-        id: 'result-a',
-        productId: 'product-a',
-        revision: 1,
-        schemaVersion: 1,
-      }),
-    };
-    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
-    const service = new EffectPromptService(repository as never, projects as never, {} as never);
-
-    const output = await service.validateResult('project-a', 'result-a', 1);
-
-    expect(output.valid).toBe(false);
-    expect(output.issues).toEqual([expect.objectContaining({ code: 'LEGACY_SCHEMA' })]);
-  });
-
-  it('does not recreate removed legacy quality gates during completion', async () => {
+  it('does not recreate removed quality gates during completion', async () => {
     const draft = completionGateFixture();
     expect(draft.qualityStatus).toBe('PASS');
     const insightSnapshot = {
@@ -1109,7 +975,6 @@ describe('EffectPromptService settings contract', () => {
         workflowRunId: 'workflow-a',
         runId: 'run-a',
         revision: 1,
-        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
         draftResult: draft,
         settingsHash: 'settings-current',
       }),
@@ -1155,7 +1020,6 @@ describe('EffectPromptService settings contract', () => {
         workflowRunId: 'workflow-a',
         runId: 'run-a',
         revision: 1,
-        schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
         draftResult: draft,
         settingsHash: 'settings-current',
       }),
@@ -1181,101 +1045,6 @@ describe('EffectPromptService settings contract', () => {
     );
   });
 
-  it('rejects a versionless recovered legacy run instead of inferring V9', async () => {
-    const now = new Date('2026-08-27T03:00:00.000Z');
-    const record = {
-      id: 'run-a',
-      projectId: 'project-a',
-      workflowRunId: 'workflow-a',
-      productId: 'product-a',
-      operation: 'BATCH_GENERATE',
-      targetItemId: null,
-      inputSnapshot: {},
-      status: 'FAILED',
-      progress: 15,
-      currentNode: 'GLOBAL_FACT_ALLOCATION',
-      warnings: [],
-      errorCode: null,
-      errorMessage: null,
-      attemptCount: 1,
-      stages: [
-        {
-          nodeId: 'GLOBAL_FACT_ALLOCATION',
-          status: 'SUCCEEDED',
-          summary: '全局事实分配完成',
-          warnings: [],
-          errorMessage: null,
-        },
-      ],
-      result: null,
-      createdAt: now,
-      updatedAt: now,
-    };
-    const repository = { run: vi.fn().mockResolvedValue(record) };
-    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
-    const service = new EffectPromptService(repository as never, projects as never, {} as never);
-
-    await expect(service.run('project-a', 'run-a')).rejects.toMatchObject({ status: 410 });
-  });
-
-  it('rejects a versionless recovered legacy run instead of inferring V10', async () => {
-    const now = new Date('2026-08-27T03:30:00.000Z');
-    const record = {
-      id: 'run-v10',
-      projectId: 'project-a',
-      workflowRunId: 'workflow-a',
-      productId: 'product-a',
-      operation: 'BATCH_GENERATE',
-      targetItemId: null,
-      inputSnapshot: {},
-      status: 'RUNNING',
-      progress: 30,
-      currentNode: 'PLAN_HOOK_COORDINATES',
-      warnings: [],
-      errorCode: null,
-      errorMessage: null,
-      attemptCount: 1,
-      stages: [
-        {
-          nodeId: 'PLAN_HOOK_COORDINATES',
-          status: 'SUCCEEDED',
-          summary: '钩子六维坐标规划完成',
-          warnings: [],
-          errorMessage: null,
-        },
-      ],
-      result: null,
-      createdAt: now,
-      updatedAt: now,
-    };
-    const repository = { run: vi.fn().mockResolvedValue(record) };
-    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
-    const service = new EffectPromptService(repository as never, projects as never, {} as never);
-
-    await expect(service.run('project-a', 'run-v10')).rejects.toMatchObject({ status: 410 });
-  });
-
-  it('rejects node details from a different persisted graph version', async () => {
-    const now = new Date('2026-08-27T03:40:00.000Z');
-    const record = {
-      id: 'run-v9',
-      inputSnapshot: { graphVersion: 'V9_SIX_BRANCH_STRATEGY' },
-      status: 'COMPLETED',
-      currentNode: 'COMPLETED',
-      stages: [],
-      shards: [],
-      result: null,
-      updatedAt: now,
-    };
-    const repository = { runForNodeDetail: vi.fn().mockResolvedValue(record) };
-    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
-    const service = new EffectPromptService(repository as never, projects as never, {} as never);
-
-    await expect(
-      service.nodeDetail('project-a', 'run-v9', 'PLAN_HOOK_COORDINATES'),
-    ).rejects.toMatchObject({ status: 410 });
-  });
-
   it('projects the persisted failed branch as the only failure and closes aborted siblings', async () => {
     const now = new Date('2026-08-27T04:10:00.000Z');
     const record = {
@@ -1285,7 +1054,7 @@ describe('EffectPromptService settings contract', () => {
       productId: 'product-a',
       operation: 'BATCH_GENERATE',
       targetItemId: null,
-      inputSnapshot: { graphVersion: 'CURRENT' },
+      inputSnapshot: currentInputSnapshot(),
       status: 'FAILED',
       progress: 80,
       currentNode: 'EXACT_SELECTION_AND_SUPPLEMENT',

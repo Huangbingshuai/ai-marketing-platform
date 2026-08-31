@@ -2,19 +2,14 @@ import { createHash } from 'node:crypto';
 import type {
   EffectPromptBatchResult,
   EffectPromptBatchSettings,
-  EffectPromptBatchResultV5,
-  EffectPromptBatchSettingsV5,
   EffectPromptDimensions,
-  EffectPromptDimensionsV5,
   EffectPromptFragmentType,
   EffectPromptItem,
-  EffectPromptItemV5,
   EffectPromptInsightBinding,
   EffectPromptInsightCoverage,
   EffectPromptInsightReference,
   EffectPromptInsightRole,
   EffectPromptMetrics,
-  EffectPromptMetricsV5,
   EffectPromptRenderProfile,
   EffectPromptSharedPrompt,
   EffectPromptSharedPromptSection,
@@ -28,15 +23,10 @@ import {
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_RENDER_CAPABILITIES,
   EFFECT_PROMPT_RENDER_CAPABILITY_KEYS,
-  EFFECT_PROMPT_SCHEMA_VERSION,
-  EFFECT_PROMPT_LEGACY_SCHEMA_VERSION,
-  EFFECT_PROMPT_V5_DIMENSIONS,
   SEEDANCE_RATIOS,
   SEEDANCE_RESOLUTIONS,
   effectPromptTargetCount,
-  migrateEffectPromptSettingsV5,
   normalizeEffectPromptSettings,
-  normalizeEffectPromptSettingsV5,
 } from '@ai-marketing/contracts';
 import type { EffectPromptInputSnapshot } from './effect-prompt.types';
 
@@ -62,15 +52,6 @@ const dimensionTextLimits: Record<keyof EffectPromptDimensions, number> = {
   camera: 160,
   emotion: 120,
 };
-const dimensionTextLimitsV5: Record<keyof EffectPromptDimensionsV5, number> = {
-  narrative: 120,
-  scene: 120,
-  persona: 160,
-  sellingPoint: 240,
-  camera: 160,
-  emotion: 120,
-};
-
 const record = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -430,20 +411,6 @@ export const effectPromptExactDuplicatePairs = (items: readonly EffectPromptItem
   return [...counts.values()].reduce((pairs, count) => pairs + (count * (count - 1)) / 2, 0);
 };
 
-const validDimensionsV5 = (value: unknown): value is EffectPromptDimensionsV5 => {
-  const candidate = record(value);
-  return Boolean(
-    candidate &&
-    Object.keys(candidate).length === EFFECT_PROMPT_V5_DIMENSIONS.length &&
-    EFFECT_PROMPT_V5_DIMENSIONS.every(
-      ({ key }) =>
-        typeof candidate[key] === 'string' &&
-        candidate[key].trim().length > 0 &&
-        candidate[key].length <= dimensionTextLimitsV5[key],
-    ),
-  );
-};
-
 const validBaseItem = (item: Record<string, unknown>): boolean =>
   Boolean(
     typeof item.id === 'string' &&
@@ -478,16 +445,6 @@ const validBaseItem = (item: Record<string, unknown>): boolean =>
     validDateTime(item.updatedAt),
   );
 
-export const isEffectPromptItemV5 = (value: unknown): value is EffectPromptItemV5 => {
-  const item = record(value);
-  return Boolean(
-    item &&
-    validBaseItem(item) &&
-    validDimensionsV5(item.dimensions) &&
-    Object.keys(item).length === 12,
-  );
-};
-
 export const isEffectPromptItem = (value: unknown): value is EffectPromptItem => {
   const item = record(value);
   const compatiblePurposes = item?.compatiblePurposes;
@@ -513,44 +470,6 @@ export const isEffectPromptItem = (value: unknown): value is EffectPromptItem =>
   );
 };
 
-export const isEffectPromptSettingsV5 = (value: unknown): value is EffectPromptBatchSettingsV5 => {
-  const settings = record(value);
-  if (!settings) return false;
-  const fragmentConfigs = record(settings.fragmentConfigs);
-  if (!fragmentConfigs) return false;
-  const validFragmentConfigs =
-    Object.keys(fragmentConfigs).length === EFFECT_PROMPT_FRAGMENT_TYPES.length &&
-    EFFECT_PROMPT_FRAGMENT_TYPES.every((fragmentType) => {
-      const config = record(fragmentConfigs[fragmentType]);
-      return Boolean(
-        config &&
-        Object.keys(config).length === 2 &&
-        Number.isInteger(config.count) &&
-        Number(config.count) >= EFFECT_PROMPT_LIMITS.minFragmentCount &&
-        Number(config.count) <= EFFECT_PROMPT_LIMITS.maxCount &&
-        Number.isInteger(config.durationSeconds) &&
-        Number(config.durationSeconds) >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
-        Number(config.durationSeconds) <= EFFECT_PROMPT_LIMITS.maxDurationSeconds,
-      );
-    });
-  const totalCount = EFFECT_PROMPT_FRAGMENT_TYPES.reduce((total, fragmentType) => {
-    const config = record(fragmentConfigs[fragmentType]);
-    return total + Number(config?.count ?? 0);
-  }, 0);
-  return (
-    Object.keys(settings).length === 3 &&
-    validFragmentConfigs &&
-    totalCount >= EFFECT_PROMPT_LIMITS.minCount &&
-    totalCount <= EFFECT_PROMPT_LIMITS.maxCount &&
-    Number.isInteger(settings.semanticLimit) &&
-    Number(settings.semanticLimit) >= EFFECT_PROMPT_LIMITS.minSemanticDuplicateRate &&
-    Number(settings.semanticLimit) <= EFFECT_PROMPT_LIMITS.maxSemanticDuplicateRate &&
-    Number.isInteger(settings.visualLimit) &&
-    Number(settings.visualLimit) >= EFFECT_PROMPT_LIMITS.minVisualOverlapRate &&
-    Number(settings.visualLimit) <= EFFECT_PROMPT_LIMITS.maxVisualOverlapRate
-  );
-};
-
 export const isEffectPromptSettings = (value: unknown): value is EffectPromptBatchSettings => {
   const settings = record(value);
   return Boolean(
@@ -562,97 +481,6 @@ export const isEffectPromptSettings = (value: unknown): value is EffectPromptBat
     Number.isInteger(settings.defaultDurationSeconds) &&
     Number(settings.defaultDurationSeconds) >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
     Number(settings.defaultDurationSeconds) <= EFFECT_PROMPT_LIMITS.maxDurationSeconds,
-  );
-};
-
-const validMetricsV5 = (value: unknown): value is EffectPromptMetricsV5 => {
-  const metrics = record(value);
-  if (!metrics || Object.keys(metrics).length !== 15) return false;
-  const integer = (key: keyof EffectPromptMetricsV5, minimum: number, maximum = Infinity) =>
-    Number.isInteger(metrics[key]) &&
-    Number(metrics[key]) >= minimum &&
-    Number(metrics[key]) <= maximum;
-  const rate = (key: 'semanticDuplicateRate' | 'visualOverlapRate') =>
-    typeof metrics[key] === 'number' &&
-    Number.isFinite(metrics[key]) &&
-    metrics[key] >= 0 &&
-    metrics[key] <= 100;
-  const distribution = metrics.fragmentTypeDistribution;
-  const coverage = record(metrics.sellingPointCoverage);
-  const insightCoverage = record(metrics.insightCoverage);
-  const reasons = metrics.executionInvalidReasons;
-  return (
-    integer('targetCount', EFFECT_PROMPT_LIMITS.minCount, EFFECT_PROMPT_LIMITS.maxCount) &&
-    integer('acceptedCount', 0, EFFECT_PROMPT_LIMITS.maxCount) &&
-    integer('generatedCandidateCount', 0) &&
-    integer('fallbackCount', 0, EFFECT_PROMPT_LIMITS.maxCount) &&
-    integer('removedSemanticDuplicates', 0) &&
-    integer('removedVisualDuplicates', 0) &&
-    integer('removedDimensionConflicts', 0) &&
-    rate('semanticDuplicateRate') &&
-    rate('visualOverlapRate') &&
-    integer('replenishmentRounds', 0, EFFECT_PROMPT_LIMITS.maxReplenishmentRounds) &&
-    Array.isArray(distribution) &&
-    distribution.length === EFFECT_PROMPT_FRAGMENT_TYPES.length &&
-    EFFECT_PROMPT_FRAGMENT_TYPES.every(
-      (fragmentType) =>
-        distribution.filter((item) => record(item)?.fragmentType === fragmentType).length === 1,
-    ) &&
-    distribution.every((item) => {
-      const entry = record(item);
-      return Boolean(
-        entry &&
-        Object.keys(entry).length === 3 &&
-        EFFECT_PROMPT_FRAGMENT_TYPES.includes(entry.fragmentType as EffectPromptFragmentType) &&
-        Number.isInteger(entry.targetCount) &&
-        Number(entry.targetCount) >= 0 &&
-        Number.isInteger(entry.actualCount) &&
-        Number(entry.actualCount) >= 0,
-      );
-    }) &&
-    Boolean(
-      coverage &&
-      Object.keys(coverage).length === 3 &&
-      ['required', 'covered', 'missing'].every(
-        (key) =>
-          Array.isArray(coverage[key]) &&
-          (coverage[key] as unknown[]).every((item) => typeof item === 'string'),
-      ),
-    ) &&
-    Boolean(
-      insightCoverage &&
-      Object.keys(insightCoverage).length === 7 &&
-      ['required', 'covered', 'missing', 'adaptive', 'deferred', 'appliedConstraints'].every(
-        (key) =>
-          Array.isArray(insightCoverage[key]) &&
-          (insightCoverage[key] as unknown[]).every(validInsightReference),
-      ) &&
-      Array.isArray(insightCoverage.excluded) &&
-      insightCoverage.excluded.every((item) => {
-        const entry = record(item);
-        const reason = entry?.reason;
-        return Boolean(
-          entry &&
-          Object.keys(entry).length === 5 &&
-          validInsightReference(entry) &&
-          ['UNCERTAIN', 'EMPTY', 'UNSUPPORTED'].includes(String(reason)),
-        );
-      }),
-    ) &&
-    integer('removedExecutionInvalid', 0) &&
-    Array.isArray(reasons) &&
-    reasons.every((item) => {
-      const entry = record(item);
-      return Boolean(
-        entry &&
-        Object.keys(entry).length === 2 &&
-        typeof entry.code === 'string' &&
-        entry.code.trim().length > 0 &&
-        entry.code.length <= 120 &&
-        Number.isInteger(entry.count) &&
-        Number(entry.count) > 0,
-      );
-    })
   );
 };
 
@@ -755,9 +583,6 @@ const normalizedDisabledElements = (values: string[]): string[] => {
   return [...unique.values()];
 };
 
-const sharedConstraintContentHash = (disabledElements: string[], prompt: string): string =>
-  createHash('sha256').update(JSON.stringify({ disabledElements, prompt })).digest('hex');
-
 const sha256Text = (value: string): string => createHash('sha256').update(value).digest('hex');
 const sha256Json = (value: unknown): string => sha256Text(JSON.stringify(value));
 
@@ -793,7 +618,6 @@ export const compileEffectPromptSharedPrompt = (
     .filter(Boolean)
     .join('\n');
   return {
-    schemaVersion: 1,
     sections,
     compiledContent,
     contentHash: sha256Text(compiledContent),
@@ -813,8 +637,7 @@ export const isEffectPromptSharedPrompt = (
   if (!prompt || !Array.isArray(prompt.sections)) return false;
   const sections = prompt.sections.map(record);
   if (
-    prompt.schemaVersion !== 1 ||
-    Object.keys(prompt).length !== 4 ||
+    Object.keys(prompt).length !== 3 ||
     sections.length < 1 ||
     sections.length > 20 ||
     sections.some((section) => !section || Object.keys(section).length !== 6)
@@ -877,11 +700,6 @@ export const isEffectPromptRenderProfile = (value: unknown): value is EffectProm
   const disabledElements = Array.isArray(constraints.disabledElements)
     ? constraints.disabledElements
     : [];
-  const prompt = constraints.prompt;
-  const hasPrompt = typeof prompt === 'string';
-  const expectedPrompt = compileEffectPromptSharedConstraintPrompt(
-    disabledElements.filter((item): item is string => typeof item === 'string'),
-  );
   return Boolean(
     Object.keys(profile).length === 4 &&
     EFFECT_PROMPT_RENDER_CAPABILITY_KEYS.includes(capabilityKey) &&
@@ -889,19 +707,16 @@ export const isEffectPromptRenderProfile = (value: unknown): value is EffectProm
     SEEDANCE_RESOLUTIONS.includes(profile.resolution as never) &&
     capability.ratios.includes(profile.ratio as never) &&
     capability.resolutions.includes(profile.resolution as never) &&
-    [2, 3].includes(Object.keys(constraints).length) &&
+    Object.keys(constraints).length === 2 &&
     disabledElements.length <= 100 &&
     disabledElements.every(
       (item) => typeof item === 'string' && item.trim().length > 0 && item.length <= 500,
     ) &&
     new Set(disabledElements.map((item) => normalizedValue(String(item)))).size ===
       disabledElements.length &&
-    (!hasPrompt || (prompt.length <= 60_000 && prompt === expectedPrompt)) &&
     typeof constraints.contentHash === 'string' &&
     /^[a-f0-9]{64}$/u.test(constraints.contentHash) &&
-    (hasPrompt
-      ? constraints.contentHash === sharedConstraintContentHash(disabledElements, prompt)
-      : constraints.contentHash === sha256Json(disabledElements)),
+    constraints.contentHash === sha256Json(disabledElements),
   );
 };
 
@@ -913,7 +728,6 @@ export const recomputePromptQuality = (
   sharedPrompt?: EffectPromptSharedPrompt,
 ): Pick<
   EffectPromptBatchResult,
-  | 'schemaVersion'
   | 'settings'
   | 'renderProfile'
   | 'sharedPrompt'
@@ -990,7 +804,6 @@ export const recomputePromptQuality = (
       ? 'PASS'
       : 'NEEDS_REVIEW';
   return {
-    schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
     settings,
     renderProfile,
     ...(sharedPrompt ? { sharedPrompt } : {}),
@@ -1004,14 +817,13 @@ export const parseEffectPromptBatchResult = (value: unknown): EffectPromptBatchR
   const candidate = record(value);
   if (
     !candidate ||
-    candidate.schemaVersion !== EFFECT_PROMPT_SCHEMA_VERSION ||
     !isEffectPromptSettings(candidate.settings) ||
     !isEffectPromptRenderProfile(candidate.renderProfile) ||
     !Array.isArray(candidate.items) ||
     candidate.items.length > EFFECT_PROMPT_LIMITS.maxCount ||
     !validMetrics(candidate.metrics) ||
     !['PASS', 'NEEDS_REVIEW'].includes(String(candidate.qualityStatus)) ||
-    ![6, 7].includes(Object.keys(candidate).length) ||
+    ![5, 6].includes(Object.keys(candidate).length) ||
     (candidate.sharedPrompt !== undefined &&
       !isEffectPromptSharedPrompt(
         candidate.sharedPrompt,
@@ -1032,107 +844,6 @@ export const parseEffectPromptBatchResult = (value: unknown): EffectPromptBatchR
     candidate.renderProfile,
     candidate.sharedPrompt,
   );
-};
-
-export const parseEffectPromptBatchResultV5ForRead = (
-  value: unknown,
-): EffectPromptBatchResultV5 | null => {
-  const candidate = record(value);
-  if (
-    !candidate ||
-    candidate.schemaVersion !== EFFECT_PROMPT_LEGACY_SCHEMA_VERSION ||
-    !isEffectPromptSettingsV5(candidate.settings) ||
-    !isEffectPromptRenderProfile(candidate.renderProfile) ||
-    !Array.isArray(candidate.items) ||
-    candidate.items.length > EFFECT_PROMPT_LIMITS.maxCount ||
-    !validMetricsV5(candidate.metrics) ||
-    !['PASS', 'NEEDS_REVIEW'].includes(String(candidate.qualityStatus)) ||
-    ![6, 7].includes(Object.keys(candidate).length) ||
-    (candidate.sharedPrompt !== undefined &&
-      !isEffectPromptSharedPrompt(
-        candidate.sharedPrompt,
-        candidate.renderProfile.sharedConstraints.disabledElements,
-      ))
-  )
-    return null;
-  const items = candidate.items.filter(isEffectPromptItemV5);
-  if (
-    items.length !== candidate.items.length ||
-    new Set(items.map(({ id }) => id)).size !== items.length
-  )
-    return null;
-  return {
-    schemaVersion: EFFECT_PROMPT_LEGACY_SCHEMA_VERSION,
-    settings: normalizeEffectPromptSettingsV5(candidate.settings),
-    renderProfile: candidate.renderProfile,
-    ...(candidate.sharedPrompt ? { sharedPrompt: candidate.sharedPrompt } : {}),
-    items,
-    metrics: candidate.metrics,
-    qualityStatus: candidate.qualityStatus as EffectPromptBatchResultV5['qualityStatus'],
-  };
-};
-
-export const parseLegacyV4EffectPromptBatchResultForRead = (
-  value: unknown,
-): EffectPromptBatchResultV5 | null => {
-  const candidate = record(value);
-  if (!candidate || candidate.schemaVersion !== 4 || !Array.isArray(candidate.items)) return null;
-  const settings = migrateEffectPromptSettingsV5(candidate.settings, 4);
-  const items = candidate.items.map((value) => {
-    const item = record(value);
-    if (!item || typeof item.fragmentType !== 'string') return null;
-    const fragmentType = item.fragmentType as EffectPromptFragmentType;
-    if (!EFFECT_PROMPT_FRAGMENT_TYPES.includes(fragmentType)) return null;
-    const migrated = {
-      ...item,
-      targetDurationSeconds: settings.fragmentConfigs[fragmentType].durationSeconds,
-    };
-    return isEffectPromptItemV5(migrated) ? migrated : null;
-  });
-  if (
-    items.some((item) => item === null) ||
-    new Set(items.map((item) => item!.id)).size !== items.length
-  )
-    return null;
-  const metrics = record(candidate.metrics);
-  const coverage = record(metrics?.insightCoverage);
-  const constraints = Array.isArray(coverage?.appliedConstraints)
-    ? coverage.appliedConstraints.map(record).filter((item) => item !== null)
-    : [];
-  const rawRatio = constraints.find((item) => item?.field === 'ASPECT_RATIO')?.value;
-  const ratio: EffectPromptRenderProfile['ratio'] = SEEDANCE_RATIOS.includes(rawRatio as never)
-    ? (rawRatio as EffectPromptRenderProfile['ratio'])
-    : '9:16';
-  const disabledElements = [
-    ...new Set(
-      constraints
-        .filter((item) => item?.field === 'DISABLED_ELEMENT' && typeof item.value === 'string')
-        .map((item) => String(item!.value).trim())
-        .filter(Boolean),
-    ),
-  ];
-  const renderProfile: EffectPromptRenderProfile = {
-    ratio,
-    resolution: '1080p',
-    capabilityKey: 'SEEDANCE_2_0',
-    sharedConstraints: {
-      disabledElements,
-      prompt: compileEffectPromptSharedConstraintPrompt(disabledElements),
-      contentHash: sharedConstraintContentHash(
-        disabledElements,
-        compileEffectPromptSharedConstraintPrompt(disabledElements),
-      ),
-    },
-  };
-  if (!validMetricsV5(candidate.metrics)) return null;
-  return {
-    schemaVersion: EFFECT_PROMPT_LEGACY_SCHEMA_VERSION,
-    settings,
-    renderProfile,
-    items: items as EffectPromptItemV5[],
-    metrics: candidate.metrics,
-    qualityStatus: candidate.qualityStatus === 'PASS' ? 'PASS' : 'NEEDS_REVIEW',
-  };
 };
 
 export const mergeEffectPromptCompletionItems = (

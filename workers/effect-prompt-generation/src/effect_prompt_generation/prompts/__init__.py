@@ -1,1 +1,1 @@
-"""Versioned prompts bundled with the worker."""
+"""Prompt templates bundled with the worker."""

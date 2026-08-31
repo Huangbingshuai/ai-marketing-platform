@@ -6,7 +6,6 @@ import type {
 import {
   DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
-  EFFECT_PROMPT_SCHEMA_VERSION,
 } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 
@@ -47,7 +46,6 @@ const prompt: EffectPromptItem = {
 };
 
 const batch: EffectPromptBatchResult = {
-  schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
   settings: DEFAULT_EFFECT_PROMPT_SETTINGS,
   renderProfile: {
     ratio: '9:16',

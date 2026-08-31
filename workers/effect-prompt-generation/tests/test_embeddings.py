@@ -20,7 +20,7 @@ from effect_prompt_generation.models import (
     CreativeCandidate,
     CreativeDimensions,
     FragmentType,
-    PromptItemV6,
+    PromptItem,
     SharedPrompt,
     SharedPromptSection,
 )
@@ -66,9 +66,9 @@ def _candidate(index: int) -> CreativeCandidate:
     )
 
 
-def _anchor(index: int) -> PromptItemV6:
+def _anchor(index: int) -> PromptItem:
     candidate = _candidate(index)
-    return PromptItemV6(
+    return PromptItem(
         id=f"anchor-{index}",
         code=f"P{index:03d}",
         origin="MANUAL",
