@@ -488,7 +488,7 @@ class PromptGenerationPipeline:
                 slot_id=target.id,
                 ordinal=(snapshot.target_item_index or 0) + 1,
                 round=0,
-                creative_core=target.dimensions.narrative,
+                creative_core=target.creative_core,
                 declared_fact_ids=declared_ids,
                 dimensions=target.dimensions,
                 content=target.content,
@@ -1781,6 +1781,7 @@ def _prompt_items(
                     for purpose in evaluation.compatible_purposes
                 ],
                 target_duration_seconds=default_duration_seconds,
+                creative_core=candidate.creative_core,
                 dimensions=candidate.dimensions,
                 content=candidate.content,
                 insight_bindings=bindings,
@@ -1812,6 +1813,7 @@ def _retained_items(
                 product_relevance=0,
                 material_tags=item.material_tags,
                 target_duration_seconds=item.target_duration_seconds,
+                creative_core=item.dimensions.narrative,
                 dimensions=CreativeDimensions(
                     narrative=item.dimensions.narrative,
                     scene=item.dimensions.scene,

@@ -41,6 +41,7 @@ def prompt_item(dimensions: CreativeDimensions) -> PromptItem:
         product_relevance=92,
         material_tags=["产品", "特写"],
         target_duration_seconds=5,
+        creative_core="家庭早餐中的广式腊肠切面展示",
         dimensions=dimensions,
         content="家庭早餐场景中切开广式腊肠，镜头从人物中景切换到油润切面细节。",
         insight_bindings=[],

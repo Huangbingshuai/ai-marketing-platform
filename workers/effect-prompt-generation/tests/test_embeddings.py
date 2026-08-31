@@ -79,6 +79,7 @@ def _anchor(index: int) -> PromptItem:
         product_relevance=90,
         material_tags=["产品展示"],
         target_duration_seconds=5,
+        creative_core=candidate.creative_core,
         dimensions=candidate.dimensions,
         content=candidate.content,
         insight_bindings=[],

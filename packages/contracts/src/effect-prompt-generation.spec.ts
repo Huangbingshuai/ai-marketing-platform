@@ -124,6 +124,7 @@ describe('effect prompt generation contract', () => {
         'compatiblePurposes',
         'classificationStatus',
         'productRelevance',
+        'creativeCore',
       ]),
     );
     expect(batchSchema.$defs.fragmentType.enum).toEqual(EFFECT_PROMPT_FRAGMENT_TYPES);

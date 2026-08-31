@@ -185,6 +185,7 @@
         "productRelevance",
         "materialTags",
         "targetDurationSeconds",
+        "creativeCore",
         "dimensions",
         "content",
         "insightBindings",
@@ -250,6 +251,11 @@
           "type": "integer",
           "minimum": 4,
           "maximum": 15
+        },
+        "creativeCore": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
         },
         "dimensions": {
           "$ref": "#/$defs/dimensions"

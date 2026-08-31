@@ -26,6 +26,7 @@ const item: EffectPromptItem = {
   productRelevance: 95,
   materialTags: ['产品展示'],
   targetDurationSeconds: 5,
+  creativeCore: '家庭厨房中的产品入画展示',
   dimensions: {
     narrative: '产品入画',
     scene: '家庭厨房',

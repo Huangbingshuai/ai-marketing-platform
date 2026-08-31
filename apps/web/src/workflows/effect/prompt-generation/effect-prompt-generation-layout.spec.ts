@@ -61,6 +61,11 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('productRelation: []');
     expect(pageSource).toContain('dimensions.productRelation');
     expect(pageSource).toContain("dimension.key === 'productRelation'");
+    expect(pageSource).toContain('查看提炼信息依据');
+    expect(pageSource).toContain('itemInsightFacts(item)');
+    expect(pageSource).toContain('{{ fact.value }}');
+    expect(pageSource).toContain('查看创意主线');
+    expect(pageSource).toContain('{{ item.creativeCore }}');
     expect(pageSource).toContain('查看六维创意信息');
     expect(pageSource).not.toContain('卖点侧重');
   });

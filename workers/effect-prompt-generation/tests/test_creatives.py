@@ -303,6 +303,7 @@ async def test_graph_generates_120_percent_then_selects_exact_count() -> None:
     assert api.result.metrics.candidate_target_count == 12
     assert api.result.metrics.generated_candidate_count == 12
     assert len(api.result.items) == 10
+    assert all(item.creative_core for item in api.result.items)
     assert api.result.quality_status == "PASS"
     assert api.execution_mode == "MOCK"
     assert all(item.target_duration_seconds == 5 for item in api.result.items)
@@ -767,6 +768,7 @@ async def test_item_evaluate_preserves_content_and_only_runs_classification() ->
         product_relevance=0,
         material_tags=["待重新评估"],
         target_duration_seconds=5,
+        creative_core="从成品摆盘推进到切面细节",
         dimensions=CreativeDimensions(
             narrative="从成品摆盘推进到切面细节",
             scene="节日家宴餐桌",
@@ -807,6 +809,7 @@ async def test_item_evaluate_preserves_content_and_only_runs_classification() ->
     assert api.result is not None
     assert len(api.result.items) == 1
     assert api.result.items[0].content == target.content
+    assert api.result.items[0].creative_core == target.creative_core
     assert api.result.items[0].classification_status == "VERIFIED"
     assert Counter(item.phase.value for item in api.shards.values()) == {
         "CLASSIFICATION": 1

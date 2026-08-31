@@ -229,6 +229,7 @@ export const downloadEffectPromptBatch = async (
       ratio: renderProfile.ratio,
       resolution: renderProfile.resolution,
       materialTags: item.materialTags,
+      creativeCore: item.creativeCore,
       dimensions: item.dimensions,
       productRelevance: item.productRelevance,
       insightBindings: item.insightBindings,

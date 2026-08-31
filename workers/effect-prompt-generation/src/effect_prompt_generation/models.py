@@ -252,6 +252,7 @@ class PromptItem(ApiModel):
     product_relevance: int = Field(ge=0, le=100)
     material_tags: list[str] = Field(min_length=1, max_length=12)
     target_duration_seconds: int = Field(ge=4, le=15)
+    creative_core: str = Field(min_length=1, max_length=160)
     dimensions: CreativeDimensions
     content: str = Field(min_length=1, max_length=12_000)
     insight_bindings: list[InsightBinding] = Field(default_factory=list, max_length=16)

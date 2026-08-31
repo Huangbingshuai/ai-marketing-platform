@@ -22,6 +22,7 @@ const item = (id: string, content = `产品创意画面 ${id}`): EffectPromptIte
   productRelevance: 92,
   materialTags: ['产品展示'],
   targetDurationSeconds: 5,
+  creativeCore: '家庭厨房中的产品切面展示',
   dimensions: {
     narrative: '单镜头状态变化',
     scene: '家庭厨房',
@@ -42,6 +43,15 @@ describe('effect prompt quality contract', () => {
     expect(isEffectPromptItem(item('001'))).toBe(true);
     expect(isEffectPromptItem({ ...item('002'), fragmentType: 'HOOK' })).toBe(false);
     expect(isEffectPromptItem({ ...item('003'), compatiblePurposes: ['HOOK'] })).toBe(false);
+  });
+
+  it('restores creative core from narrative for existing stored items', () => {
+    const existing = item('legacy');
+    const { creativeCore: _creativeCore, ...withoutCreativeCore } = existing;
+    const result = recomputePromptQuality([existing], { targetCount: 1, defaultDurationSeconds: 5 });
+    const parsed = parseEffectPromptBatchResult({ ...result, items: [withoutCreativeCore] });
+
+    expect(parsed?.items[0]?.creativeCore).toBe(existing.dimensions.narrative);
   });
 
   it('computes exact-count, purpose and lightweight issue metrics', () => {

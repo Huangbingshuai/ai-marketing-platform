@@ -42,6 +42,7 @@ const visualWeights: Record<'scene' | 'persona' | 'camera' | 'emotion', number> 
 const itemTextLimits = {
   id: 160,
   code: 40,
+  creativeCore: 160,
   content: 12_000,
 } as const;
 const dimensionTextLimits: Record<keyof EffectPromptDimensions, number> = {
@@ -432,6 +433,9 @@ const validBaseItem = (item: Record<string, unknown>): boolean =>
     Number.isInteger(item.targetDurationSeconds) &&
     Number(item.targetDurationSeconds) >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
     Number(item.targetDurationSeconds) <= EFFECT_PROMPT_LIMITS.maxDurationSeconds &&
+    typeof item.creativeCore === 'string' &&
+    item.creativeCore.trim().length > 0 &&
+    item.creativeCore.length <= itemTextLimits.creativeCore &&
     typeof item.content === 'string' &&
     item.content.trim().length > 0 &&
     item.content.length <= itemTextLimits.content &&
@@ -466,8 +470,16 @@ export const isEffectPromptItem = (value: unknown): value is EffectPromptItem =>
     Number.isInteger(item.productRelevance) &&
     Number(item.productRelevance) >= 0 &&
     Number(item.productRelevance) <= 100 &&
-    Object.keys(item).length === 16,
+    Object.keys(item).length === 17,
   );
+};
+
+const withCreativeCoreCompatibility = (value: unknown): unknown => {
+  const item = record(value);
+  if (!item || item.creativeCore !== undefined) return value;
+  const dimensions = record(item.dimensions);
+  const narrative = typeof dimensions?.narrative === 'string' ? dimensions.narrative.trim() : '';
+  return narrative ? { ...item, creativeCore: narrative } : value;
 };
 
 export const isEffectPromptSettings = (value: unknown): value is EffectPromptBatchSettings => {
@@ -831,9 +843,10 @@ export const parseEffectPromptBatchResult = (value: unknown): EffectPromptBatchR
       ))
   )
     return null;
-  const items = candidate.items.filter(isEffectPromptItem);
+  const normalizedItems = candidate.items.map(withCreativeCoreCompatibility);
+  const items = normalizedItems.filter(isEffectPromptItem);
   if (
-    items.length !== candidate.items.length ||
+    items.length !== normalizedItems.length ||
     new Set(items.map(({ id }) => id)).size !== items.length
   )
     return null;

@@ -240,6 +240,13 @@ const promptPreviewItems = (run: EffectPromptPreviewRunRecord): EffectPromptItem
       const ordinal = typeof item.ordinal === 'number' ? item.ordinal : 0;
       const generatedAt = typeof item.generatedAt === 'string' ? item.generatedAt : '';
       if (!slotId || !Number.isSafeInteger(ordinal) || ordinal < 1 || !generatedAt) continue;
+      const dimensions = unknownRecord(item.dimensions);
+      const creativeCore =
+        typeof item.creativeCore === 'string'
+          ? item.creativeCore.trim()
+          : typeof dimensions?.narrative === 'string'
+            ? dimensions.narrative.trim()
+            : '';
       const candidate = {
         id: previewItemId(run.sourceFingerprint, slotId),
         code: `P${String(ordinal).padStart(3, '0')}`,
@@ -251,6 +258,7 @@ const promptPreviewItems = (run: EffectPromptPreviewRunRecord): EffectPromptItem
         productRelevance: 0,
         materialTags: item.materialTags,
         targetDurationSeconds: item.targetDurationSeconds,
+        creativeCore,
         dimensions: item.dimensions,
         content: item.content,
         insightBindings: item.insightBindings,
@@ -774,6 +782,7 @@ export class EffectPromptService {
       productRelevance: 0,
       materialTags: input.materialTags.map((tag) => tag.normalize('NFC').trim()),
       targetDurationSeconds: parsed.settings.defaultDurationSeconds,
+      creativeCore: input.dimensions.narrative.trim(),
       dimensions: Object.fromEntries(
         EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions[key].trim()]),
       ) as EffectPromptDimensions,
@@ -823,6 +832,7 @@ export class EffectPromptService {
           productRelevance: 0,
           materialTags: input.materialTags.map((tag) => tag.normalize('NFC').trim()),
           targetDurationSeconds: parsed.settings.defaultDurationSeconds,
+          creativeCore: input.dimensions.narrative.trim(),
           dimensions: Object.fromEntries(
             EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions[key].trim()]),
           ) as EffectPromptDimensions,

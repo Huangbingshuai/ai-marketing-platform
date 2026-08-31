@@ -50,6 +50,7 @@ const completionGateFixture = (duplicate = false) => {
     productRelevance: 85,
     materialTags: [fragmentType, String(index)],
     targetDurationSeconds: 5,
+    creativeCore: `创意主线-${index}`,
     dimensions: {
       narrative: `叙事-${index}`,
       scene: index === 1 ? '场景-0' : `场景-${index}`,
@@ -383,6 +384,7 @@ describe('EffectPromptService settings contract', () => {
           productRelevance: 80,
           materialTags: ['钩子'],
           targetDurationSeconds: 5,
+          creativeCore: '家庭厨房中的产品切面悬念',
           dimensions: {
             narrative: '痛点前置',
             scene: '家庭厨房',
@@ -683,6 +685,7 @@ describe('EffectPromptService settings contract', () => {
       productRelevance: 80,
       materialTags: ['素材片段', `标签-${index}`],
       targetDurationSeconds: 5,
+      creativeCore: `创意主线-${index}`,
       dimensions: {
         narrative: `叙事-${index}`,
         scene: `场景-${index}`,
@@ -736,6 +739,7 @@ describe('EffectPromptService settings contract', () => {
       productRelevance: 80,
       materialTags: [fragmentType === 'HOOK' ? '钩子' : '转化'],
       targetDurationSeconds: 5,
+      creativeCore: `创意主线-${id}`,
       dimensions: {
         narrative: `叙事-${id}`,
         scene: `场景-${id}`,
@@ -801,6 +805,7 @@ describe('EffectPromptService settings contract', () => {
       productRelevance: 80,
       materialTags: [fragmentType],
       targetDurationSeconds: 5,
+      creativeCore: `创意主线-${id}`,
       dimensions: {
         narrative: `叙事-${id}`,
         scene: `场景-${id}`,
@@ -885,6 +890,7 @@ describe('EffectPromptService settings contract', () => {
                 fragmentType: 'HOOK',
                 materialTags: ['钩子'],
                 targetDurationSeconds: 5,
+                creativeCore: '家庭厨房中的切面悬念',
                 dimensions: {
                   narrative: '痛点前置',
                   scene: '家庭厨房',
@@ -904,6 +910,7 @@ describe('EffectPromptService settings contract', () => {
                 fragmentType: 'HOOK',
                 materialTags: ['钩子'],
                 targetDurationSeconds: 5,
+                creativeCore: '窗边桌面的细节悬念',
                 dimensions: {
                   narrative: '细节悬念',
                   scene: '窗边桌面',
@@ -923,6 +930,7 @@ describe('EffectPromptService settings contract', () => {
                 fragmentType: 'HOOK',
                 materialTags: ['钩子'],
                 targetDurationSeconds: 5,
+                creativeCore: '餐桌上的产品悬念',
                 dimensions: {
                   narrative: '悬念引入',
                   scene: '餐桌',

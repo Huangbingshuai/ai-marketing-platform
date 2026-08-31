@@ -150,6 +150,7 @@ describe('EffectPromptRepository', () => {
       productRelevance: 80,
       materialTags: ['钩子', id],
       targetDurationSeconds: 5,
+      creativeCore: `创意主线-${id}`,
       dimensions: {
         narrative: `叙事-${id}`,
         scene: `场景-${id}`,

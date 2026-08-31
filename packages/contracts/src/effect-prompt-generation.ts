@@ -240,6 +240,8 @@ export type EffectPromptItem = {
   productRelevance: number;
   materialTags: string[];
   targetDurationSeconds: number;
+  /** One-line creative throughline generated together with dimensions and content. */
+  creativeCore: string;
   dimensions: EffectPromptDimensions;
   content: string;
   insightBindings: EffectPromptInsightBinding[];
@@ -299,6 +301,7 @@ export type EffectPromptManualOverrides = {
       | 'productRelevance'
       | 'materialTags'
       | 'targetDurationSeconds'
+      | 'creativeCore'
       | 'dimensions'
     >
   >;

@@ -762,6 +762,7 @@ export class EffectPromptRepository {
                 productRelevance: evaluated.productRelevance,
                 materialTags: [...evaluated.materialTags],
                 targetDurationSeconds: evaluated.targetDurationSeconds,
+                creativeCore: evaluated.creativeCore,
                 dimensions: evaluated.dimensions,
               };
           }
@@ -779,6 +780,7 @@ export class EffectPromptRepository {
               productRelevance: item.productRelevance,
               materialTags: item.materialTags,
               targetDurationSeconds: item.targetDurationSeconds,
+              creativeCore: item.creativeCore,
               dimensions: item.dimensions,
             };
         }
@@ -1159,6 +1161,7 @@ export class EffectPromptRepository {
             | 'productRelevance'
             | 'materialTags'
             | 'targetDurationSeconds'
+            | 'creativeCore'
             | 'dimensions'
           >;
         }

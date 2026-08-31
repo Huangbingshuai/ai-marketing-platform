@@ -30,6 +30,7 @@ const prompt: EffectPromptItem = {
   productRelevance: 92,
   materialTags: ['首帧', '痛点'],
   targetDurationSeconds: 5,
+  creativeCore: '家庭厨房里的广式腊肠痛点悬念',
   dimensions: {
     narrative: '痛点前置型',
     scene: '家庭厨房',
@@ -99,6 +100,7 @@ describe('effect prompt generation state', () => {
   it('matches id, content, fixed and secondary labels and six-dimensional labels', () => {
     expect(promptMatchesKeyword(prompt, 'P001')).toBe(true);
     expect(promptMatchesKeyword(prompt, '广式腊肠')).toBe(true);
+    expect(promptMatchesKeyword(prompt, '痛点悬念')).toBe(true);
     expect(promptMatchesKeyword(prompt, '叙事结构')).toBe(true);
     expect(promptMatchesKeyword(prompt, '温馨治愈')).toBe(true);
     expect(promptMatchesKeyword(prompt, '钩子片段')).toBe(true);

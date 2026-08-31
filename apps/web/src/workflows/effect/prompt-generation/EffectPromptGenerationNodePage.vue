@@ -256,15 +256,20 @@ const insightFieldLabels: Record<EffectPromptInsightField, string> = {
   DISABLED_ELEMENT: '禁用元素',
   VISUAL_STYLE_BASELINE: '视觉基线',
 };
-const itemInsightSources = (item: EffectPromptItem) =>
+const itemInsightFacts = (item: EffectPromptItem) =>
   [
     ...new Map(
       item.insightBindings.map((binding) => [
-        binding.field,
-        { field: binding.field, label: insightFieldLabels[binding.field], value: binding.value },
+        binding.factId,
+        {
+          factId: binding.factId,
+          field: binding.field,
+          label: insightFieldLabels[binding.field],
+          value: binding.value,
+        },
       ]),
     ).values(),
-  ].slice(0, 8);
+  ];
 const currentCountStats = computed(() => {
   const targetCount = currentTargetCount.value;
   const actualCount = currentMetrics.value?.acceptedCount ?? resultData.value?.total ?? 0;
@@ -1864,7 +1869,7 @@ onBeforeUnmount(() => {
               ref="promptSearchInput"
               v-model="keyword"
               type="search"
-              placeholder="搜索 ID / 画面 / 推荐用途 / 六维创意"
+              placeholder="搜索 ID / 画面 / 推荐用途 / 提炼依据 / 创意主线 / 六维创意"
           /></label>
           <span class="prompt-result-count">
             当前 {{ currentCountStats.actualCount }}/{{ currentCountStats.targetCount }} 条 ·
@@ -1977,20 +1982,21 @@ onBeforeUnmount(() => {
               <span v-for="tag in item.materialTags" :key="tag">{{ tag }}</span>
               <em v-if="!item.materialTags.length">暂无</em>
             </div>
-            <div
-              v-if="item.insightBindings.length"
-              class="insight-source-tags"
-              aria-label="该条 Prompt 使用的提炼信息"
-            >
-              <small>提炼来源</small>
-              <span
-                v-for="source in itemInsightSources(item)"
-                :key="source.field"
-                :title="source.value"
-                >{{ source.label }}</span
-              >
-            </div>
             <textarea :value="item.content" readonly aria-label="Prompt 内容" />
+            <details class="prompt-dimension-details">
+              <summary>查看提炼信息依据</summary>
+              <dl v-if="item.insightBindings.length" class="prompt-fact-list">
+                <div v-for="fact in itemInsightFacts(item)" :key="fact.factId">
+                  <dt>{{ fact.label }}</dt>
+                  <dd>{{ fact.value }}</dd>
+                </div>
+              </dl>
+              <p v-else class="prompt-detail-empty">暂无可追溯的提炼信息依据</p>
+            </details>
+            <details class="prompt-dimension-details">
+              <summary>查看创意主线</summary>
+              <p class="prompt-creative-core">{{ item.creativeCore }}</p>
+            </details>
             <details class="prompt-dimension-details">
               <summary>查看六维创意信息</summary>
               <div class="prompt-dimensions">
@@ -3700,25 +3706,6 @@ button:disabled {
   font-size: 9px;
   font-style: normal;
 }
-.insight-source-tags {
-  display: flex;
-  margin: -2px 0 8px;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-.insight-source-tags small {
-  color: #8995a8;
-  font-size: 9px;
-}
-.insight-source-tags span {
-  padding: 3px 6px;
-  color: #28725f;
-  background: #edf9f5;
-  border: 1px solid #d3eee5;
-  border-radius: 5px;
-  font-size: 9px;
-}
 .prompt-dimension-details {
   margin-top: 7px;
   color: #78869a;
@@ -3731,6 +3718,45 @@ button:disabled {
 }
 .prompt-dimension-details .prompt-dimensions {
   margin: 7px 0 0;
+}
+.prompt-fact-list,
+.prompt-creative-core,
+.prompt-detail-empty {
+  margin: 7px 0 0;
+}
+.prompt-fact-list {
+  display: grid;
+  gap: 5px;
+}
+.prompt-fact-list > div {
+  display: grid;
+  grid-template-columns: minmax(70px, max-content) 1fr;
+  gap: 8px;
+  padding: 7px 9px;
+  color: #253047;
+  background: #f4f8ff;
+  border: 1px solid #cfe0ff;
+  border-radius: 7px;
+}
+.prompt-fact-list dt {
+  color: #2f6fed;
+  font-weight: 700;
+}
+.prompt-fact-list dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.prompt-creative-core {
+  padding: 8px 10px;
+  color: #253047;
+  background: #f4f8ff;
+  border: 1px solid #cfe0ff;
+  border-radius: 7px;
+  line-height: 1.6;
+}
+.prompt-detail-empty {
+  color: #98a3b3;
 }
 .prompt-main > header i {
   color: #7658d5;
@@ -5486,6 +5512,10 @@ button:disabled {
   }
   .prompt-actions {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .prompt-fact-list > div {
+    grid-template-columns: 1fr;
+    gap: 3px;
   }
   .editor-grid,
   .regeneration-dimension-grid,
