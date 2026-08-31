@@ -11,6 +11,8 @@ from effect_prompt_generation.prompt_loader import (
 )
 
 ACTIVE_PROMPT_FILES = {
+    "v11_creative_direction.system.prompt.txt",
+    "v11_creative_direction.user.prompt.txt",
     "v11_creative_base.system.prompt.txt",
     "v11_creative_task.user.prompt.txt",
     "v11_creative_base_v4.system.prompt.txt",
@@ -66,7 +68,7 @@ def test_v11_templates_keep_creative_generation_and_evaluation_independent() -> 
     )
     assert (
         load_prompt_version("v11_evaluation_base.system.prompt.txt")
-        == "effect-prompt-v11-creative-evaluation-v4"
+        == "effect-prompt-v11-creative-evaluation-v6"
     )
     assert "Worker 已经为每条任务选好少量可信事实" in creative
     assert "厂商无关" in creative
@@ -103,7 +105,7 @@ def test_visual_strategy_templates_separate_visual_task_from_business_context() 
     )
     assert (
         load_prompt_version("v11_creative_base_v4.system.prompt.txt")
-        == "effect-prompt-v11-coherent-creative-v6"
+        == "effect-prompt-v11-coherent-creative-v9"
     )
     assert "FORBIDDEN_VISUAL_PROOF" in compiler
     assert "不能凭成品的颜色、光泽、切面、纹理" in compiler

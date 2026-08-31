@@ -148,6 +148,33 @@ describe('EffectPromptService settings contract', () => {
     expect(output.stageCheckpoints).toEqual([matching]);
   });
 
+  it('returns a same-run coherent creative direction checkpoint for lease recovery', async () => {
+    const checkpoint = {
+      nodeId: 'COHERENT_CREATIVE_GENERATION',
+      sourceFingerprint: 'run-source',
+      allocationHash: 'e'.repeat(64),
+      promptVersion: 'effect-prompt-v11-batch-diversity-v1',
+      plan: { territories: [{ territoryId: 'territory-1' }] },
+    };
+    const repository = {
+      claim: vi.fn().mockResolvedValue({
+        kind: 'CLAIMED',
+        run: { sourceFingerprint: 'run-source' },
+        attemptToken: 'attempt-a',
+        input: {
+          graphVersion: 'CURRENT',
+          insightArtifact: { contentHash: 'insight-hash-current' },
+        },
+        checkpointStages: [{ nodeId: 'COHERENT_CREATIVE_GENERATION', metadata: { checkpoint } }],
+      }),
+    };
+    const service = new EffectPromptService(repository as never, {} as never, {} as never);
+
+    const output = await service.claim('project-a', 'run-a');
+
+    expect(output.stageCheckpoints).toEqual([checkpoint]);
+  });
+
   it('normalizes and forwards visual item-regeneration direction without opening a batch path', async () => {
     const dimensions = {
       narrative: ' 场景代入型 ',

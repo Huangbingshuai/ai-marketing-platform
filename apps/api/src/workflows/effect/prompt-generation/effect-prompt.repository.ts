@@ -43,6 +43,20 @@ const AI_RESPONSE_INVALID_RETRY_LEDGER_NODE = 'INTERNAL_AI_RESPONSE_INVALID_RETR
 
 const json = (value: unknown): Prisma.InputJsonValue => value as Prisma.InputJsonValue;
 const leaseDate = (now: Date): Date => new Date(now.getTime() + 90_000);
+const jsonRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+const stageMetadataWithPreservedCheckpoint = (
+  previous: unknown,
+  incoming: unknown,
+): Record<string, unknown> => {
+  const next = { ...jsonRecord(incoming) };
+  const checkpoint = jsonRecord(previous).checkpoint;
+  if (!Object.prototype.hasOwnProperty.call(next, 'checkpoint') && checkpoint !== undefined)
+    next.checkpoint = checkpoint;
+  return next;
+};
 const parseStrings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 
@@ -400,7 +414,7 @@ export class EffectPromptRepository {
           result: insight.payload,
         },
         retainedManualItems: manualItems,
-        selectionPolicyVersion: 'MMR_CONTENT_V2',
+        selectionPolicyVersion: 'MMR_CONTENT_CLUSTER_V3',
         similarityAnchors: manualItems,
         sharedPrompt: readableLatest?.sharedPrompt ?? null,
         ...((input.operation === 'ITEM_REGENERATE' || input.operation === 'ITEM_EVALUATE') &&
@@ -537,10 +551,11 @@ export class EffectPromptRepository {
         where: {
           projectId,
           runId,
-          status: 'SUCCEEDED',
+          status: { in: ['RUNNING', 'SUCCEEDED', 'PARTIAL', 'FAILED'] },
           nodeId: {
             in: [
               'FACT_VISUAL_STRATEGY_COMPILATION',
+              'COHERENT_CREATIVE_GENERATION',
               'PLAN_HOOK_STRATEGY',
               'PLAN_PAIN_STRATEGY',
               'PLAN_PRODUCT_DISPLAY_STRATEGY',
@@ -634,6 +649,14 @@ export class EffectPromptRepository {
         },
       });
       if (renewed.count !== 1) return false;
+      const previousStage = await transaction.effectPromptStageOutput.findUnique({
+        where: { projectId_runId_nodeId: { projectId, runId, nodeId } },
+        select: { metadata: true },
+      });
+      const metadata = stageMetadataWithPreservedCheckpoint(
+        previousStage?.metadata,
+        input.metadata,
+      );
       await transaction.effectPromptStageOutput.upsert({
         where: { projectId_runId_nodeId: { projectId, runId, nodeId } },
         create: {
@@ -643,7 +666,7 @@ export class EffectPromptRepository {
           status: input.status,
           summary: input.summary,
           warnings: json(input.warnings),
-          metadata: json(input.metadata ?? {}),
+          metadata: json(metadata),
           startedAt: now,
           completedAt: ['PENDING', 'RUNNING'].includes(input.status) ? null : now,
         },
@@ -651,7 +674,7 @@ export class EffectPromptRepository {
           status: input.status,
           summary: input.summary,
           warnings: json(input.warnings),
-          metadata: json(input.metadata ?? {}),
+          metadata: json(metadata),
           completedAt: ['PENDING', 'RUNNING'].includes(input.status) ? null : now,
         },
       });

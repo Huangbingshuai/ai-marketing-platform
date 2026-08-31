@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 
 import httpx
@@ -40,7 +41,7 @@ def _shared_prompt() -> SharedPrompt:
             )
         ],
         compiled_content=content,
-        content_hash="2" * 64,
+        content_hash=hashlib.sha256(content.encode()).hexdigest(),
     )
 
 

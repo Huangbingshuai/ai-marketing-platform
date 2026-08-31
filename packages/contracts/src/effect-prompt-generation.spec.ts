@@ -49,6 +49,10 @@ describe('effect prompt generation contract', () => {
       targetCount: 200,
       defaultDurationSeconds: 4,
     });
+    expect(normalizeEffectPromptSettings({ targetCount: 50, defaultDurationSeconds: 31 })).toEqual({
+      targetCount: 50,
+      defaultDurationSeconds: 30,
+    });
   });
 
   it('migrates historical fragment settings without carrying six quotas forward', () => {
@@ -142,5 +146,7 @@ describe('effect prompt generation contract', () => {
     expect(batchSchema.properties.metrics.properties.replenishmentRounds.maximum).toBe(
       EFFECT_PROMPT_LIMITS.maxReplenishmentRounds,
     );
+    expect(batchSchema.properties.settings.properties.defaultDurationSeconds.maximum).toBe(30);
+    expect(batchSchema.$defs.item.properties.targetDurationSeconds.maximum).toBe(30);
   });
 });

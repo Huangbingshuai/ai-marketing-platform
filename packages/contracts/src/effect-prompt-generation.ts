@@ -11,7 +11,7 @@ export const EFFECT_PROMPT_LIMITS = {
   defaultCount: 50,
   minFragmentCount: 1,
   minDurationSeconds: 4,
-  maxDurationSeconds: 15,
+  maxDurationSeconds: 30,
   defaultDurationSeconds: 5,
   minSemanticDuplicateRate: 5,
   maxSemanticDuplicateRate: 15,
@@ -23,6 +23,12 @@ export const EFFECT_PROMPT_LIMITS = {
   maxReplenishmentRounds: 3,
   shardSize: 8,
   maxMaterialTags: 12,
+} as const;
+
+/** Historical V5 read compatibility only. Current V11/V6 batches use EFFECT_PROMPT_LIMITS. */
+export const EFFECT_PROMPT_V5_DURATION_LIMITS = {
+  minDurationSeconds: 4,
+  maxDurationSeconds: 15,
 } as const;
 
 export const EFFECT_PROMPT_DIMENSIONS = [
@@ -1325,8 +1331,11 @@ export const normalizeEffectPromptSettingsV5 = (
             Math.max(EFFECT_PROMPT_LIMITS.minFragmentCount, Math.round(source.count)),
           ),
           durationSeconds: Math.min(
-            EFFECT_PROMPT_LIMITS.maxDurationSeconds,
-            Math.max(EFFECT_PROMPT_LIMITS.minDurationSeconds, Math.round(source.durationSeconds)),
+            EFFECT_PROMPT_V5_DURATION_LIMITS.maxDurationSeconds,
+            Math.max(
+              EFFECT_PROMPT_V5_DURATION_LIMITS.minDurationSeconds,
+              Math.round(source.durationSeconds),
+            ),
           ),
         },
       ];

@@ -13,7 +13,7 @@
       "required": ["targetCount", "defaultDurationSeconds"],
       "properties": {
         "targetCount": { "type": "integer", "minimum": 10, "maximum": 200 },
-        "defaultDurationSeconds": { "type": "integer", "minimum": 4, "maximum": 15 }
+        "defaultDurationSeconds": { "type": "integer", "minimum": 4, "maximum": 30 }
       }
     },
     "renderProfile": { "$ref": "#/$defs/renderProfile" },
@@ -116,7 +116,7 @@
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1, "maxLength": 120 }
         },
-        "targetDurationSeconds": { "type": "integer", "minimum": 4, "maximum": 15 },
+        "targetDurationSeconds": { "type": "integer", "minimum": 4, "maximum": 30 },
         "dimensions": { "$ref": "#/$defs/dimensions" },
         "content": { "type": "string", "minLength": 1, "maxLength": 12000 },
         "insightBindings": {

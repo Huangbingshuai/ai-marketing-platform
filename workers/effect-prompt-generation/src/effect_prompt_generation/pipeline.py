@@ -47,6 +47,8 @@ from .models import (
     CountMetric,
     CreativeAverageScores,
     CreativeCandidate,
+    CreativeDirectionPlan,
+    CreativeDirectionResponse,
     CreativeDimensions,
     CreativeEvaluation,
     CreativeScores,
@@ -108,6 +110,7 @@ from .providers import (
     V10_COORDINATE_VERSION,
     V10_RELATIONSHIP_VERSION,
     V11_FACT_VISUAL_STRATEGY_VERSION,
+    V11_CREATIVE_DIRECTION_VERSION,
     merge_fragment_marketing_plans,
 )
 from .strategy_planning import allocate_fragment_facts, validate_fragment_marketing_plan
@@ -123,6 +126,17 @@ from .v10_blueprints import (
     validate_relationship_plan,
 )
 from .v11_fact_allocation import allocate_v11_creative_facts
+from .v11_creative_directions import (
+    allocate_creative_directions,
+    creative_direction_source_hash,
+    dominant_families,
+    max_cluster_share,
+    semantic_cluster_novelty,
+    semantic_profile_distribution,
+    complete_semantic_profile,
+    validate_creative_direction_plan,
+    validate_semantic_profile,
+)
 from .v11_visual_strategy import (
     strategy_stage_metadata,
     validate_fact_visual_strategy,
@@ -186,6 +200,7 @@ class RunCache:
     execution_invalid_reasons: Counter[str] = field(default_factory=Counter)
     insight_application: InsightApplicationMap | None = None
     fact_visual_strategy: FactVisualStrategy | None = None
+    creative_direction_plan: CreativeDirectionPlan | None = None
     strategy_plan: StrategyPlan | None = None
     evaluation: EvaluationResult | None = None
     fallback_count: int = 0
@@ -203,6 +218,7 @@ class RunCache:
     selected_blueprints: dict[str, GeneratedBlueprint] = field(default_factory=dict)
     completed_blueprint_shard_keys: set[str] = field(default_factory=set)
     creatives: dict[str, CreativeCandidate] = field(default_factory=dict)
+    creative_target_durations: dict[str, int] = field(default_factory=dict)
     creative_evaluations: dict[str, CreativeEvaluation] = field(default_factory=dict)
     completed_creative_shard_keys: set[str] = field(default_factory=set)
     completed_classification_shard_keys: set[str] = field(default_factory=set)
@@ -215,6 +231,9 @@ class RunCache:
     v11_diversity_supplemented: bool = False
     v11_diversity_supplement_count: int = 0
     v11_diversity_avoid_slot_ids: set[str] = field(default_factory=set)
+    v11_avoid_scene_families: set[str] = field(default_factory=set)
+    v11_avoid_action_families: set[str] = field(default_factory=set)
+    v11_diversity_supplement_reasons: list[str] = field(default_factory=list)
     v11_initial_redundancy_summary: RedundancySummary | None = None
     v11_redundancy_summary: RedundancySummary | None = None
     embedding_vectors: dict[str, tuple[float, ...]] = field(default_factory=dict)
@@ -368,6 +387,10 @@ class PromptGenerationPipeline:
         restored_creative_tasks = [
             task for shard in succeeded_creatives for task in shard.creative_plan
         ]
+        cache.creative_target_durations = {
+            task.slot_id: task.target_duration_seconds
+            for task in restored_creative_tasks
+        }
         legacy_diversity_rounds: set[int] = set()
         if snapshot.selection_policy_version == "MMR_CONTENT_V2":
             restored_settings = _v11_settings(snapshot)
@@ -706,6 +729,142 @@ class PromptGenerationPipeline:
         await self.progress(context, 13, NodeId.SHARED_PROMPT_COMPILATION)
         return prompt
 
+    async def _ensure_v11_creative_direction_plan(
+        self,
+        context: RuntimeContext,
+    ) -> CreativeDirectionPlan | None:
+        snapshot = self.snapshot(context)
+        if (
+            snapshot.operation != "BATCH_GENERATE"
+            or snapshot.selection_policy_version != "MMR_CONTENT_CLUSTER_V3"
+        ):
+            return None
+        cache = self._cache(context)
+        if cache.creative_direction_plan is not None:
+            return cache.creative_direction_plan
+        application = self._require_application(context)
+        strategy = self._required_fact_visual_strategy(context)
+        shared_prompt = self._required_shared_prompt(context)
+        settings = _v11_settings(snapshot)
+        source_hash = creative_direction_source_hash(
+            insight_content_hash=snapshot.insight_artifact.content_hash,
+            visual_strategy_hash=strategy.strategy_hash,
+            shared_prompt_hash=shared_prompt.content_hash,
+            target_count=settings.target_count,
+            prompt_version=V11_CREATIVE_DIRECTION_VERSION,
+        )
+        node = NodeId.COHERENT_CREATIVE_GENERATION
+        checkpoint = cache.strategy_checkpoints.get(node)
+        plan: CreativeDirectionPlan | None = None
+        reused = False
+        if (
+            checkpoint is not None
+            and isinstance(checkpoint.plan, CreativeDirectionPlan)
+            and checkpoint.source_fingerprint == source_hash
+            and checkpoint.allocation_hash == checkpoint.plan.plan_hash
+            and checkpoint.prompt_version == V11_CREATIVE_DIRECTION_VERSION
+        ):
+            try:
+                plan = validate_creative_direction_plan(
+                    CreativeDirectionResponse(
+                        directions=checkpoint.plan.directions
+                    ),
+                    application,
+                    strategy,
+                    source_hash=source_hash,
+                    prompt_version=V11_CREATIVE_DIRECTION_VERSION,
+                )
+            except ValueError:
+                plan = None
+            if plan is not None and plan.plan_hash == checkpoint.plan.plan_hash:
+                plan = plan.model_copy(update={"reused_checkpoint": True})
+                reused = True
+            else:
+                plan = None
+
+        call_metadata: dict[str, int | None] = {}
+        if plan is None:
+            await self._stage(
+                context,
+                node,
+                StageStatus.RUNNING,
+                "正在规划批次创意方向",
+            )
+            for invalid_response_attempt in range(2):
+                self._reserve_ai_call(context)
+                async with self._ai_semaphore:
+                    call = await self.provider.plan_creative_directions(
+                        application,
+                        fact_visual_strategy=strategy,
+                        shared_prompt=shared_prompt,
+                        target_count=settings.target_count,
+                    )
+                try:
+                    plan = validate_creative_direction_plan(
+                        call.value,
+                        application,
+                        strategy,
+                        source_hash=source_hash,
+                        prompt_version=V11_CREATIVE_DIRECTION_VERSION,
+                    )
+                    break
+                except ValueError as exc:
+                    if invalid_response_attempt == 1:
+                        raise ProviderError(
+                            "AI 批次创意方向结构或事实引用无效",
+                            retryable=False,
+                            error_type=ProviderErrorType.RESPONSE_INVALID,
+                            attempts=2,
+                        ) from exc
+            if plan is None:
+                raise PipelineError("批次创意方向未能形成有效结果")
+            call_metadata = {
+                "inputTokens": call.metadata.input_tokens,
+                "outputTokens": call.metadata.output_tokens,
+                "totalTokens": call.metadata.total_tokens,
+                "latencyMs": call.metadata.latency_ms,
+            }
+
+        cache.creative_direction_plan = plan
+        await self._stage(
+            context,
+            node,
+            StageStatus.RUNNING,
+            "批次创意方向已复用" if reused else "批次创意方向已完成",
+            metadata={
+                **self._creative_direction_metadata(context),
+                **call_metadata,
+            },
+        )
+        return plan
+
+    def _creative_direction_metadata(
+        self,
+        context: RuntimeContext,
+    ) -> dict[str, Any]:
+        plan = self._cache(context).creative_direction_plan
+        if plan is None:
+            return {"directionCount": 0, "priorityDimensionDistribution": []}
+        counts = Counter(
+            dimension.value
+            for direction in plan.directions
+            for dimension in direction.priority_dimensions
+        )
+        return {
+            "directionCount": len(plan.directions),
+            "priorityDimensionDistribution": [
+                {"label": label, "count": count}
+                for label, count in sorted(counts.items())
+            ],
+            "checkpoint": {
+                "nodeId": NodeId.COHERENT_CREATIVE_GENERATION.value,
+                "sourceFingerprint": plan.source_hash,
+                "allocationHash": plan.plan_hash,
+                "promptVersion": plan.prompt_version,
+                "plan": plan.model_dump(mode="json", by_alias=True),
+            },
+        }
+
     async def plan_v11_creatives(
         self,
         context: RuntimeContext,
@@ -746,8 +905,12 @@ class PromptGenerationPipeline:
                 generated_at=utc_now(),
             )
             cache.creatives[candidate.slot_id] = candidate
+            cache.creative_target_durations[candidate.slot_id] = (
+                target.target_duration_seconds
+            )
             cache.v11_candidate_target_count = 1
             return []
+        direction_plan = await self._ensure_v11_creative_direction_plan(context)
         selection_target = (
             1
             if snapshot.operation == "ITEM_REGENERATE"
@@ -757,7 +920,15 @@ class PromptGenerationPipeline:
             requested = (
                 3
                 if snapshot.operation == "ITEM_REGENERATE"
-                else math.ceil(selection_target * 1.2)
+                else math.ceil(
+                    selection_target
+                    * (
+                        1.4
+                        if snapshot.selection_policy_version
+                        == "MMR_CONTENT_CLUSTER_V3"
+                        else 1.2
+                    )
+                )
             )
             cache.v11_candidate_target_count = requested
         elif supplement_kind == "DIVERSITY":
@@ -772,6 +943,31 @@ class PromptGenerationPipeline:
                 cache.v11_replenishment_rounds,
                 round_number,
             )
+        if (
+            round_number > 0
+            and snapshot.operation == "BATCH_GENERATE"
+        ):
+            candidate_ceiling = math.ceil(settings.target_count * 1.60)
+            requested = min(
+                requested,
+                max(0, candidate_ceiling - len(cache.creatives)),
+            )
+            if requested == 0:
+                if supplement_kind == "QUANTITY":
+                    cache.v11_replenishment_rounds = MAX_REPLENISHMENT_ROUNDS
+                await self._stage(
+                    context,
+                    NodeId.COHERENT_CREATIVE_GENERATION,
+                    StageStatus.SUCCEEDED,
+                    "候选池已达到本批安全上限",
+                    metadata={
+                        "round": round_number,
+                        "candidateTargetCount": 0,
+                        "candidateCount": len(cache.creatives),
+                        **self._creative_direction_metadata(context),
+                    },
+                )
+                return []
         application = self._require_application(context)
         fact_visual_strategy = (
             self._required_fact_visual_strategy(context)
@@ -788,13 +984,47 @@ class PromptGenerationPipeline:
             if round_number == 0
             else max((item.ordinal for item in cache.creatives.values()), default=0) + 1
         )
-        fact_assignments = allocate_v11_creative_facts(
-            application,
-            count=requested,
-            ordinal_start=ordinal_start,
-            preferred_primary_fact_ids=preferred_primary_ids,
-            fact_visual_strategy=fact_visual_strategy,
+        directions = (
+            allocate_creative_directions(
+                direction_plan,
+                count=requested,
+                ordinal_start=ordinal_start,
+                avoid_scene_families=(
+                    cache.v11_avoid_scene_families
+                    if supplement_kind == "DIVERSITY"
+                    else ()
+                ),
+                avoid_action_families=(
+                    cache.v11_avoid_action_families
+                    if supplement_kind == "DIVERSITY"
+                    else ()
+                ),
+            )
+            if direction_plan is not None
+            else []
         )
+        if directions:
+            fact_assignments = [
+                allocate_v11_creative_facts(
+                    application,
+                    count=1,
+                    ordinal_start=ordinal_start + index,
+                    preferred_primary_fact_ids=(
+                        preferred_primary_ids
+                        or direction.compatible_fact_ids
+                    ),
+                    fact_visual_strategy=fact_visual_strategy,
+                )[0]
+                for index, direction in enumerate(directions)
+            ]
+        else:
+            fact_assignments = allocate_v11_creative_facts(
+                application,
+                count=requested,
+                ordinal_start=ordinal_start,
+                preferred_primary_fact_ids=preferred_primary_ids,
+                fact_visual_strategy=fact_visual_strategy,
+            )
         tasks = [
             CreativeTask(
                 slot_id=f"v11-r{round_number}-c{ordinal_start + index:04d}",
@@ -807,10 +1037,14 @@ class PromptGenerationPipeline:
                     else settings.default_duration_seconds
                 ),
                 fact_assignment=fact_assignments[index],
+                creative_direction=(directions[index] if directions else None),
                 preferred_fact_ids=[fact_assignments[index].primary_fact_id],
             )
             for index in range(requested)
         ]
+        cache.creative_target_durations.update(
+            {task.slot_id: task.target_duration_seconds for task in tasks}
+        )
         selected = cache.selected_creatives.selected if cache.selected_creatives else []
         if supplement_kind == "DIVERSITY" and cache.v11_diversity_avoid_slot_ids:
             selected = [
@@ -871,6 +1105,7 @@ class PromptGenerationPipeline:
                         for fact_id in assignment.product_anchor_fact_ids
                     }
                 ),
+                **self._creative_direction_metadata(context),
             },
         )
         return pending
@@ -964,6 +1199,8 @@ class PromptGenerationPipeline:
                     }
                 ),
             )
+            if _is_batch_response_invalid(snapshot, exc):
+                return []
             raise
 
     async def complete_v11_creative_generation(
@@ -1004,6 +1241,7 @@ class PromptGenerationPipeline:
                     if _uses_fact_visual_strategy(snapshot)
                     else "WORKER_ASSIGNMENT_V1"
                 ),
+                **self._creative_direction_metadata(context),
             },
         )
 
@@ -1072,9 +1310,10 @@ class PromptGenerationPipeline:
     ) -> list[CreativeEvaluation]:
         cache = self._cache(context)
         candidates = [cache.creatives[item_id] for item_id in shard.candidate_ids]
+        snapshot = self.snapshot(context)
         node = (
             NodeId.ITEM_EVALUATE
-            if self.snapshot(context).operation == "ITEM_EVALUATE"
+            if snapshot.operation == "ITEM_EVALUATE"
             else NodeId.CREATIVE_EVALUATION_CLASSIFICATION
         )
         running = ShardRecord(
@@ -1097,8 +1336,18 @@ class PromptGenerationPipeline:
                             evaluation_kwargs["fact_visual_strategy"] = (
                                 self._required_fact_visual_strategy(context)
                             )
+                        if cache.creative_direction_plan is not None:
+                            evaluation_kwargs["direction_plan"] = (
+                                cache.creative_direction_plan
+                            )
                         call = await self.provider.evaluate_creatives(
                             candidates,
+                            target_durations={
+                                candidate.slot_id: cache.creative_target_durations[
+                                    candidate.slot_id
+                                ]
+                                for candidate in candidates
+                            },
                             **evaluation_kwargs,
                         )
                     break
@@ -1109,14 +1358,22 @@ class PromptGenerationPipeline:
                     ):
                         raise
             candidate_by_id = {item.slot_id: item for item in candidates}
-            items = [
-                validate_creative_evaluation(
-                    candidate_by_id[item.slot_id],
-                    item,
-                    self._require_application(context),
+            items = []
+            for item in call.value.items:
+                if cache.creative_direction_plan is not None:
+                    item = complete_semantic_profile(
+                        item,
+                        candidate_by_id[item.slot_id],
+                        cache.creative_direction_plan,
+                    )
+                    validate_semantic_profile(item, cache.creative_direction_plan)
+                items.append(
+                    validate_creative_evaluation(
+                        candidate_by_id[item.slot_id],
+                        item,
+                        self._require_application(context),
+                    )
                 )
-                for item in call.value.items
-            ]
             await self.api.put_shard(
                 context,
                 running.model_copy(
@@ -1139,6 +1396,8 @@ class PromptGenerationPipeline:
                     }
                 ),
             )
+            if _is_batch_response_invalid(snapshot, exc):
+                return []
             raise
 
     async def complete_v11_classification(
@@ -1190,6 +1449,9 @@ class PromptGenerationPipeline:
                     {"code": code, "count": count}
                     for code, count in sorted(warning_counts.items())
                 ],
+                "semanticProfileDistribution": semantic_profile_distribution(
+                    evaluations
+                ),
             },
         )
 
@@ -1229,10 +1491,15 @@ class PromptGenerationPipeline:
                 exact_duplicate_count=0,
             )
         else:
+            cluster_mmr_policy = (
+                snapshot.selection_policy_version == "MMR_CONTENT_CLUSTER_V3"
+            )
             baseline_result = select_creatives(
                 list(cache.creatives.values()),
                 list(cache.creative_evaluations.values()),
                 target_count=selection_target,
+                quality_weight=0.70 if cluster_mmr_policy else 0.80,
+                novelty_weight=0.30 if cluster_mmr_policy else 0.20,
             )
             result = baseline_result
             cache.embedding_stage_metadata = {
@@ -1249,7 +1516,10 @@ class PromptGenerationPipeline:
                     and not evaluation.hard_issues
                 )
             ]
-            content_mmr_policy = snapshot.selection_policy_version == "MMR_CONTENT_V2"
+            content_mmr_policy = snapshot.selection_policy_version in {
+                "MMR_CONTENT_V2",
+                "MMR_CONTENT_CLUSTER_V3",
+            }
             if (
                 self.similarity_mode != "trigram"
                 and len(eligible_candidates) > 1
@@ -1289,9 +1559,25 @@ class PromptGenerationPipeline:
                         list(cache.creatives.values()),
                         list(cache.creative_evaluations.values()),
                         target_count=selection_target,
-                        novelty_resolver=lambda left, right: content_index.novelty(
-                            left.candidate.slot_id,
-                            right.candidate.slot_id,
+                        novelty_resolver=lambda left, right: (
+                            round(
+                                0.70
+                                * content_index.novelty(
+                                    left.candidate.slot_id,
+                                    right.candidate.slot_id,
+                                )
+                                + 0.30
+                                * semantic_cluster_novelty(
+                                    left.evaluation.semantic_profile,
+                                    right.evaluation.semantic_profile,
+                                ),
+                                4,
+                            )
+                            if cluster_mmr_policy
+                            else content_index.novelty(
+                                left.candidate.slot_id,
+                                right.candidate.slot_id,
+                            )
                         ),
                         fixed_novelty_resolver=(
                             lambda item: content_index.novelty_to_anchors(
@@ -1346,14 +1632,23 @@ class PromptGenerationPipeline:
                     soft_excess_limit = max(2, math.ceil(selection_target * 0.10))
                     cache.embedding_stage_metadata = {
                         "similarityMode": self.similarity_mode,
-                        "selectionPolicyVersion": "MMR_CONTENT_V2",
+                        "selectionPolicyVersion": snapshot.selection_policy_version,
                         "selectionMethod": (
-                            "CONTENT_VECTOR_MMR"
+                            "CONTENT_CLUSTER_VECTOR_MMR"
+                            if self.similarity_mode == "vector"
+                            and cluster_mmr_policy
+                            else "CONTENT_VECTOR_MMR"
                             if self.similarity_mode == "vector"
                             else "TRIGRAM_SHADOW"
                         ),
                         "mmrQualityWeight": 0.70,
                         "mmrDiversityWeight": 0.30,
+                        "clusterAwareNoveltyWeight": (
+                            0.30 if cluster_mmr_policy else 0.0
+                        ),
+                        "contentNoveltyWeight": (
+                            0.70 if cluster_mmr_policy else 1.0
+                        ),
                         "fixedAnchorCount": len(anchors),
                         "embeddingInputCount": cache.embedding_remote_input_count,
                         "embeddingRequestCount": cache.embedding_request_count,
@@ -1572,6 +1867,39 @@ class PromptGenerationPipeline:
                     "selectionMethod": "SKIPPED_SINGLE_CANDIDATE",
                     "comparisonCount": 0,
                 }
+        eligible_evaluations = [
+            evaluation
+            for evaluation in cache.creative_evaluations.values()
+            if not evaluation.hard_issues
+        ]
+        selected_evaluations = [item.evaluation for item in result.selected]
+        pre_scene_share = max_cluster_share(
+            eligible_evaluations, "scene_family"
+        )
+        post_scene_share = max_cluster_share(
+            selected_evaluations, "scene_family"
+        )
+        pre_action_share = max_cluster_share(
+            eligible_evaluations, "product_action_family"
+        )
+        post_action_share = max_cluster_share(
+            selected_evaluations, "product_action_family"
+        )
+        if snapshot.selection_policy_version == "MMR_CONTENT_CLUSTER_V3":
+            cache.embedding_stage_metadata.update(
+                {
+                    "selectionPolicyVersion": "MMR_CONTENT_CLUSTER_V3",
+                    "selectedSemanticProfileDistribution": (
+                        semantic_profile_distribution(selected_evaluations)
+                    ),
+                    "preSelectionMaxSceneShare": pre_scene_share,
+                    "postSelectionMaxSceneShare": post_scene_share,
+                    "preSelectionMaxActionShare": pre_action_share,
+                    "postSelectionMaxActionShare": post_action_share,
+                    "clusterAwareNoveltyWeight": 0.30,
+                    "contentNoveltyWeight": 0.70,
+                }
+            )
         cache.selected_creatives = result
         cache.v11_exact_duplicate_count = result.exact_duplicate_count
         items = _v11_prompt_items(
@@ -1593,32 +1921,100 @@ class PromptGenerationPipeline:
         )
         current_redundancy = cache.v11_redundancy_summary
         soft_excess_limit = max(2, math.ceil(selection_target * 0.10))
+        dominant_scenes = dominant_families(
+            selected_evaluations,
+            "scene_family",
+        )
+        dominant_actions = dominant_families(
+            selected_evaluations,
+            "product_action_family",
+        )
+        plan = cache.creative_direction_plan
+        alternative_scene_exists = bool(
+            plan
+            and dominant_scenes
+            and any(
+                item.semantic_profile.scene_family not in dominant_scenes
+                for item in plan.directions
+            )
+        )
+        alternative_action_exists = bool(
+            plan
+            and dominant_actions
+            and any(
+                item.semantic_profile.product_action_family not in dominant_actions
+                for item in plan.directions
+            )
+        )
+        cluster_reasons = [
+            *(
+                [f"SCENE_CLUSTER_OVER_40_PERCENT:{','.join(dominant_scenes)}"]
+                if alternative_scene_exists
+                else []
+            ),
+            *(
+                [f"ACTION_CLUSTER_OVER_40_PERCENT:{','.join(dominant_actions)}"]
+                if alternative_action_exists
+                else []
+            ),
+        ]
+        vector_diversity_needed = bool(
+            current_redundancy is not None
+            and current_redundancy.redundant_candidate_count > soft_excess_limit
+        )
+        cluster_diversity_needed = bool(
+            snapshot.selection_policy_version == "MMR_CONTENT_CLUSTER_V3"
+            and cluster_reasons
+        )
         should_diversity_supplement = (
             not should_quantity_supplement
             and missing == 0
             and selection_target > 1
             and snapshot.operation == "BATCH_GENERATE"
-            and snapshot.selection_policy_version == "MMR_CONTENT_V2"
+            and snapshot.selection_policy_version
+            in {"MMR_CONTENT_V2", "MMR_CONTENT_CLUSTER_V3"}
             and self.similarity_mode == "vector"
             and not cache.v11_diversity_supplemented
-            and current_redundancy is not None
-            and current_redundancy.redundant_candidate_count > soft_excess_limit
+            and (vector_diversity_needed or cluster_diversity_needed)
         )
         diversity_supplement_count = 0
-        if should_diversity_supplement and current_redundancy is not None:
+        if should_diversity_supplement:
+            redundant_excess = (
+                max(
+                    0,
+                    current_redundancy.redundant_candidate_count
+                    - soft_excess_limit,
+                )
+                if current_redundancy is not None
+                else 0
+            )
+            cluster_excess = math.ceil(
+                max(
+                    0.0,
+                    post_scene_share - 0.40,
+                    post_action_share - 0.40,
+                )
+                * selection_target
+            )
             diversity_supplement_count = min(
                 max(
                     2,
-                    math.ceil(
-                        (
-                            current_redundancy.redundant_candidate_count
-                            - soft_excess_limit
-                        )
-                        * 1.25
-                    ),
+                    math.ceil(max(redundant_excess, cluster_excess) * 1.25),
                 ),
                 math.ceil(selection_target * 0.20),
+                max(0, math.ceil(selection_target * 1.60) - len(cache.creatives)),
             )
+            should_diversity_supplement = diversity_supplement_count > 0
+            cache.v11_avoid_scene_families = set(dominant_scenes)
+            cache.v11_avoid_action_families = set(dominant_actions)
+            cache.v11_diversity_supplement_reasons = [
+                *(
+                    ["VECTOR_NEAR_DUPLICATE_EXCESS"]
+                    if vector_diversity_needed
+                    else []
+                ),
+                *cluster_reasons,
+            ]
         pending = []
         if should_quantity_supplement:
             pending = await self.plan_v11_creatives(
@@ -1642,6 +2038,9 @@ class PromptGenerationPipeline:
                     "diversitySupplementTriggered": (cache.v11_diversity_supplemented),
                     "diversitySupplementCount": (cache.v11_diversity_supplement_count),
                     "finalAccurateCount": len(cache.accepted_v11_items),
+                    "diversitySupplementReasons": (
+                        cache.v11_diversity_supplement_reasons
+                    ),
                 }
             )
         diversity_soft_warning = (
@@ -1650,8 +2049,7 @@ class PromptGenerationPipeline:
                 not should_supplement
                 and missing == 0
                 and cache.v11_diversity_supplemented
-                and current_redundancy is not None
-                and current_redundancy.redundant_candidate_count > soft_excess_limit
+                and (vector_diversity_needed or cluster_diversity_needed)
             )
             else None
         )
@@ -3428,7 +3826,7 @@ def _v11_prompt_items(
         candidate = row.candidate
         evaluation = row.evaluation
         bindings: list[InsightBinding] = []
-        for fact_id in evaluation.realized_fact_ids:
+        for fact_id in dict.fromkeys(evaluation.realized_fact_ids):
             fact = application.by_id.get(fact_id)
             if fact is None:
                 continue
@@ -3641,6 +4039,23 @@ def _unique_candidates(items: list[GeneratedCandidate]) -> list[GeneratedCandida
         by_slot.setdefault(item.slot_id, item)
     return sorted(
         by_slot.values(), key=lambda item: (item.ordinal, item.round, item.shard_index)
+    )
+
+
+def _is_batch_response_invalid(
+    snapshot: PromptGenerationSnapshot,
+    exc: Exception,
+) -> bool:
+    """Let batch candidate surplus absorb one invalid model shard.
+
+    Transport/service failures still belong to task-level retry, while item
+    operations must surface any failure because they have no candidate surplus.
+    """
+
+    return (
+        snapshot.operation == "BATCH_GENERATE"
+        and isinstance(exc, ProviderError)
+        and exc.error_type == ProviderErrorType.RESPONSE_INVALID
     )
 
 

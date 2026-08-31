@@ -31,7 +31,10 @@ from effect_prompt_generation.models import (
     ShardRecord,
     StageOutput,
 )
-from effect_prompt_generation.pipeline import PromptGenerationPipeline
+from effect_prompt_generation.pipeline import (
+    PromptGenerationPipeline,
+    _is_batch_response_invalid,
+)
 from effect_prompt_generation.providers import (
     MockAiProvider,
     ProviderError,
@@ -93,11 +96,13 @@ class FirstRoundRejectingProvider(MockAiProvider):
         self,
         candidates: list[CreativeCandidate],
         *,
+        target_durations: Any,
         application: Any,
         fact_visual_strategy: FactVisualStrategy | None = None,
     ) -> Any:
         call = await super().evaluate_creatives(
             candidates,
+            target_durations=target_durations,
             application=application,
             fact_visual_strategy=fact_visual_strategy,
         )
@@ -115,11 +120,13 @@ class FirstTwoRoundsRejectingProvider(MockAiProvider):
         self,
         candidates: list[CreativeCandidate],
         *,
+        target_durations: Any,
         application: Any,
         fact_visual_strategy: FactVisualStrategy | None = None,
     ) -> Any:
         call = await super().evaluate_creatives(
             candidates,
+            target_durations=target_durations,
             application=application,
             fact_visual_strategy=fact_visual_strategy,
         )
@@ -137,11 +144,13 @@ class AlwaysRejectingProvider(MockAiProvider):
         self,
         candidates: list[CreativeCandidate],
         *,
+        target_durations: Any,
         application: Any,
         fact_visual_strategy: FactVisualStrategy | None = None,
     ) -> Any:
         call = await super().evaluate_creatives(
             candidates,
+            target_durations=target_durations,
             application=application,
             fact_visual_strategy=fact_visual_strategy,
         )
@@ -176,6 +185,15 @@ class IdenticalEmbeddingProvider(MockEmbeddingProvider):
             input_tokens=sum(len(text) for text in texts),
             retry_count=0,
         )
+
+
+class DurationCapturingProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.evaluated_durations: list[dict[str, int]] = []
+
+    async def evaluate_creatives(self, *args: Any, **kwargs: Any) -> Any:
+        self.evaluated_durations.append(dict(kwargs["target_durations"]))
+        return await super().evaluate_creatives(*args, **kwargs)
 
 
 class ConcurrencyTrackingProvider(MockAiProvider):
@@ -223,6 +241,39 @@ class OneClassificationFailureProvider(MockAiProvider):
                 error_type=ProviderErrorType.RESPONSE_INVALID,
             )
         return await super().evaluate_creatives(*args, **kwargs)
+
+
+class OneCreativeFailureProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.failures_remaining = 2
+
+    async def generate_creatives(self, *args: Any, **kwargs: Any) -> Any:
+        if self.failures_remaining:
+            self.failures_remaining -= 1
+            raise ProviderError(
+                "test creative response invalid",
+                retryable=True,
+                error_type=ProviderErrorType.RESPONSE_INVALID,
+            )
+        return await super().generate_creatives(*args, **kwargs)
+
+
+class NetworkClassificationFailureProvider(MockAiProvider):
+    async def evaluate_creatives(self, *args: Any, **kwargs: Any) -> Any:
+        raise ProviderError(
+            "test classification network failure",
+            retryable=True,
+            error_type=ProviderErrorType.NETWORK,
+        )
+
+
+class DirectionPlanningSpyProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.direction_calls = 0
+
+    async def plan_creative_directions(self, *args: Any, **kwargs: Any) -> Any:
+        self.direction_calls += 1
+        return await super().plan_creative_directions(*args, **kwargs)
 
 
 class OneTransientClassificationFailureProvider(MockAiProvider):
@@ -372,6 +423,51 @@ async def test_v11_graph_generates_120_percent_then_selects_exact_count() -> Non
 
 
 @pytest.mark.asyncio
+async def test_v11_uses_30_second_duration_for_generation_evaluation_and_recovery() -> None:
+    api = V11Api()
+    provider = DurationCapturingProvider()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        shard_size=5,
+    )
+    runtime = _runtime()
+    snapshot = _snapshot().model_copy(
+        update={
+            "settings": PromptBatchSettingsV6(
+                target_count=10,
+                default_duration_seconds=30,
+            )
+        }
+    )
+    pipeline.register_snapshot(runtime, snapshot)
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    assert api.result is not None
+    assert all(item.target_duration_seconds == 30 for item in api.result.items)
+    assert provider.evaluated_durations
+    assert all(
+        set(durations.values()) == {30}
+        for durations in provider.evaluated_durations
+    )
+
+    resumed = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=MockAiProvider(),
+        shard_size=5,
+    )
+    resumed.register_snapshot(runtime, snapshot)
+    await resumed.load_and_snapshot(runtime)
+    restored = resumed._cache(runtime).creative_target_durations
+    assert restored
+    assert set(restored.values()) == {30}
+
+
+@pytest.mark.asyncio
 async def test_visual_strategy_graph_compiles_roles_before_creative_generation() -> None:
     api = V11Api()
     pipeline = PromptGenerationPipeline(
@@ -467,30 +563,17 @@ async def test_v11_retries_one_invalid_classification_response_inside_its_shard(
 
 
 @pytest.mark.asyncio
-async def test_v11_classification_retry_keeps_stable_shard_assignments() -> None:
+async def test_v11_batch_isolates_one_invalid_classification_shard() -> None:
     api = V11Api()
     provider = OneClassificationFailureProvider()
     runtime = _runtime()
-    first = PromptGenerationPipeline(
+    pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
         provider=provider,
         shard_size=5,
     )
-    first.register_snapshot(runtime, _snapshot())
-
-    with pytest.raises(ProviderError, match="classification response invalid"):
-        await build_graph(first).ainvoke(
-            {"project_id": runtime.project_id},
-            context=runtime,
-        )
-
-    resumed = PromptGenerationPipeline(
-        api=api,  # type: ignore[arg-type]
-        provider=provider,
-        shard_size=5,
-    )
-    resumed.register_snapshot(runtime, _snapshot())
-    await build_graph(resumed).ainvoke(
+    pipeline.register_snapshot(runtime, _snapshot())
+    await build_graph(pipeline).ainvoke(
         {"project_id": runtime.project_id},
         context=runtime,
     )
@@ -498,11 +581,61 @@ async def test_v11_classification_retry_keeps_stable_shard_assignments() -> None
     classification_shards = [
         shard for shard in api.shards.values() if shard.phase.value == "CLASSIFICATION"
     ]
-    assert {shard.shard_index for shard in classification_shards} == {0, 1, 2, 3}
-    assert all(shard.status == "SUCCEEDED" for shard in classification_shards)
-    assert sum(len(shard.evaluations) for shard in classification_shards) == 12
+    assert any(shard.status == "FAILED" for shard in classification_shards)
+    assert any(shard.status == "SUCCEEDED" for shard in classification_shards)
     assert api.result is not None
-    assert api.result.metrics.generated_candidate_count == 12
+    assert len(api.result.items) == 10
+
+
+@pytest.mark.asyncio
+async def test_v11_batch_isolates_one_invalid_creative_shard() -> None:
+    api = V11Api()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=OneCreativeFailureProvider(),
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _snapshot())
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id}, context=runtime
+    )
+
+    creative_shards = [
+        shard for shard in api.shards.values() if shard.phase.value == "CREATIVE"
+    ]
+    assert any(shard.status == "FAILED" for shard in creative_shards)
+    assert any(shard.status == "SUCCEEDED" for shard in creative_shards)
+    assert api.result is not None
+    assert len(api.result.items) == 10
+
+
+@pytest.mark.asyncio
+async def test_v11_batch_does_not_isolate_network_failure() -> None:
+    pipeline = PromptGenerationPipeline(
+        api=V11Api(),  # type: ignore[arg-type]
+        provider=NetworkClassificationFailureProvider(),
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _snapshot())
+
+    with pytest.raises(ProviderError, match="network failure"):
+        await build_graph(pipeline).ainvoke(
+            {"project_id": runtime.project_id}, context=runtime
+        )
+
+
+def test_v11_item_operation_does_not_isolate_invalid_response() -> None:
+    snapshot = _snapshot().model_copy(update={"operation": "ITEM_REGENERATE"})
+    error = ProviderError(
+        "invalid item response",
+        retryable=False,
+        error_type=ProviderErrorType.RESPONSE_INVALID,
+    )
+
+    assert _is_batch_response_invalid(snapshot, error) is False
 
 
 @pytest.mark.asyncio
@@ -836,6 +969,61 @@ async def test_v11_item_evaluate_preserves_content_and_only_runs_classification(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["ITEM_EVALUATE", "ITEM_REGENERATE"])
+async def test_v11_item_operations_skip_batch_direction_planning(
+    operation: str,
+) -> None:
+    target = PromptItemV6(
+        id="prompt-item-direction-spy",
+        code="P001",
+        origin="AI",
+        fragment_type=FragmentType.PRODUCT_DISPLAY,
+        primary_purpose=FragmentType.PRODUCT_DISPLAY,
+        compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+        classification_status="VERIFIED",
+        product_relevance=90,
+        material_tags=["产品"],
+        target_duration_seconds=5,
+        dimensions=CreativeDimensions(
+            narrative="产品动作",
+            scene="家庭餐桌",
+            persona="成年人",
+            product_relation="广式腊肠摆盘",
+            camera="中近景跟随",
+            emotion="温暖",
+        ),
+        content="家庭餐桌上，成年人将广式腊肠摆入餐盘，镜头中近景跟随。",
+        insight_bindings=[],
+        manual_edited=False,
+        created_at="2026-08-27T10:00:00Z",
+        updated_at="2026-08-27T10:00:00Z",
+    )
+    snapshot = _snapshot().model_copy(
+        update={
+            "operation": operation,
+            "target_item_id": target.id,
+            "target_item": target,
+            "target_item_index": 0,
+        }
+    )
+    provider = DirectionPlanningSpyProvider()
+    pipeline = PromptGenerationPipeline(
+        api=V11Api(),  # type: ignore[arg-type]
+        provider=provider,
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, snapshot)
+    await pipeline.map_insight(runtime)
+    await pipeline.compile_fact_visual_strategy(runtime)
+    await pipeline.compile_shared_prompt(runtime)
+
+    await pipeline.plan_v11_creatives(runtime, round_number=0)
+
+    assert provider.direction_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_v11_stops_supplementing_as_soon_as_exact_quantity_is_reached() -> None:
     api = V11Api()
     pipeline = PromptGenerationPipeline(
@@ -866,7 +1054,7 @@ async def test_v11_stops_supplementing_as_soon_as_exact_quantity_is_reached() ->
 
 
 @pytest.mark.asyncio
-async def test_v11_can_run_multiple_supplement_rounds_to_reach_exact_quantity() -> None:
+async def test_v11_candidate_ceiling_stops_repeated_quantity_supplements() -> None:
     api = V11Api()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -882,14 +1070,10 @@ async def test_v11_can_run_multiple_supplement_rounds_to_reach_exact_quantity() 
     )
 
     assert api.result is not None
-    assert api.result.quality_status == "PASS"
-    assert len(api.result.items) == 10
-    assert api.result.metrics.generated_candidate_count == 36
-    assert api.result.metrics.replenishment_rounds == 2
-    assert Counter(item.phase.value for item in api.shards.values()) == {
-        "CREATIVE": 9,
-        "CLASSIFICATION": 12,
-    }
+    assert api.result.quality_status == "NEEDS_REVIEW"
+    assert api.result.items == []
+    assert api.result.metrics.generated_candidate_count == 16
+    assert api.result.metrics.replenishment_rounds == 3
 
 
 @pytest.mark.asyncio
@@ -911,7 +1095,7 @@ async def test_v11_stops_after_three_rounds_when_real_safety_issues_remain() -> 
     assert api.result is not None
     assert api.result.quality_status == "NEEDS_REVIEW"
     assert api.result.items == []
-    assert api.result.metrics.generated_candidate_count == 48
+    assert api.result.metrics.generated_candidate_count == 16
     assert api.result.metrics.replenishment_rounds == 3
 
 
@@ -958,6 +1142,49 @@ def test_v11_evaluation_requires_real_text_evidence() -> None:
     assert "FACT_EVIDENCE_NOT_IN_CONTENT" in validated.warnings
     assert "FACT_EVIDENCE_NOT_IN_CONTENT" not in validated.hard_issues
     assert "MISSING_PRODUCT_RELATION" in validated.hard_issues
+
+
+def test_v11_evaluation_deduplicates_repeated_fact_evidence() -> None:
+    application = map_insight({"productName": "广式腊肠"})
+    fact = next(item for item in application.usable if item.value == "广式腊肠")
+    candidate = CreativeCandidate(
+        slot_id="candidate-duplicate-evidence",
+        ordinal=1,
+        round=0,
+        creative_core="展示广式腊肠切面",
+        declared_fact_ids=[fact.fact_id],
+        dimensions=CreativeDimensions(
+            narrative="产品展示",
+            scene="家庭厨房",
+            persona="成年人手部",
+            product_relation="广式腊肠作为画面主体",
+            camera="近景推进到切面",
+            emotion="自然温暖",
+        ),
+        content="家庭厨房里，成年人切开广式腊肠，镜头推进并停留在切面。",
+    )
+    duplicate = FactEvidence(fact_id=fact.fact_id, evidence_text="广式腊肠")
+    evaluation = CreativeEvaluation(
+        slot_id=candidate.slot_id,
+        primary_purpose=FragmentType.PRODUCT_DISPLAY,
+        compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+        fact_evidence=[duplicate, duplicate],
+        realized_fact_ids=[fact.fact_id],
+        scores=CreativeScores(
+            product_relevance=90,
+            creative_coherence=90,
+            visual_executability=90,
+            commercial_usefulness=85,
+            visual_clarity=90,
+        ),
+        semantic_signature="ignored",
+        visual_signature="ignored",
+    )
+
+    validated = validate_creative_evaluation(candidate, evaluation, application)
+
+    assert validated.fact_evidence == [duplicate]
+    assert validated.realized_fact_ids == [fact.fact_id]
 
 
 def test_v11_generic_visual_language_is_a_soft_warning_only() -> None:

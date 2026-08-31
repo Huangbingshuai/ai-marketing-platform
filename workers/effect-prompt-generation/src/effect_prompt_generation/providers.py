@@ -4,7 +4,9 @@ import asyncio
 import json
 import logging
 import random
+import re
 import time
+import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -20,11 +22,16 @@ from .models import (
     CompactStrategyPlan,
     CreativeCandidate,
     CreativeCandidateBatch,
+    CreativeDimensionKey,
+    CreativeDirection,
+    CreativeDirectionPlan,
+    CreativeDirectionResponse,
     CreativeDimensions,
     CreativeEvaluation,
     CreativeEvaluationBatch,
     CreativeFactAssignment,
     CreativeScores,
+    CreativeSemanticProfile,
     CreativeShardPlan,
     CreativeTask,
     FactEvidence,
@@ -121,8 +128,8 @@ V10_COORDINATE_BASE_PROMPT = "v10_coordinate_base.system.prompt.txt"
 V10_COORDINATE_TASK_PROMPT = "v10_coordinate_task.user.prompt.txt"
 V10_BLUEPRINT_BASE_PROMPT = "v10_blueprint_base.system.prompt.txt"
 V10_BLUEPRINT_TASK_PROMPT = "v10_blueprint_task.user.prompt.txt"
-V11_CREATIVE_VERSION = "effect-prompt-v11-coherent-creative-v6"
-V11_EVALUATION_VERSION = "effect-prompt-v11-creative-evaluation-v4"
+V11_CREATIVE_VERSION = "effect-prompt-v11-coherent-creative-v9"
+V11_EVALUATION_VERSION = "effect-prompt-v11-creative-evaluation-v6"
 V11_CREATIVE_BASE_PROMPT = "v11_creative_base_v4.system.prompt.txt"
 V11_CREATIVE_TASK_PROMPT = "v11_creative_task_v4.user.prompt.txt"
 V11_CREATIVE_LEGACY_BASE_PROMPT = "v11_creative_base.system.prompt.txt"
@@ -132,6 +139,9 @@ V11_EVALUATION_TASK_PROMPT = "v11_evaluation_task.user.prompt.txt"
 V11_FACT_VISUAL_STRATEGY_VERSION = "effect-prompt-v11-fact-visual-strategy-v2"
 V11_FACT_VISUAL_STRATEGY_BASE_PROMPT = "v11_fact_visual_strategy.system.prompt.txt"
 V11_FACT_VISUAL_STRATEGY_TASK_PROMPT = "v11_fact_visual_strategy.user.prompt.txt"
+V11_CREATIVE_DIRECTION_VERSION = "effect-prompt-v11-creative-direction-v1"
+V11_CREATIVE_DIRECTION_BASE_PROMPT = "v11_creative_direction.system.prompt.txt"
+V11_CREATIVE_DIRECTION_TASK_PROMPT = "v11_creative_direction.user.prompt.txt"
 
 RELATIONSHIP_STAGE_BY_TYPE: dict[FragmentType, str] = {
     FragmentType.HOOK: NodeId.PLAN_HOOK_RELATIONSHIPS.value,
@@ -215,6 +225,15 @@ class AiProvider(Protocol):
         application: InsightApplicationMap,
     ) -> AiCallResult[FactVisualStrategyResponse]: ...
 
+    async def plan_creative_directions(
+        self,
+        application: InsightApplicationMap,
+        *,
+        fact_visual_strategy: FactVisualStrategy,
+        shared_prompt: SharedPrompt,
+        target_count: int,
+    ) -> AiCallResult[CreativeDirectionResponse]: ...
+
     async def generate_creatives(
         self,
         shard: CreativeShardPlan,
@@ -229,8 +248,10 @@ class AiProvider(Protocol):
         self,
         candidates: list[CreativeCandidate],
         *,
+        target_durations: Mapping[str, int],
         application: InsightApplicationMap,
         fact_visual_strategy: FactVisualStrategy | None = None,
+        direction_plan: CreativeDirectionPlan | None = None,
     ) -> AiCallResult[CreativeEvaluationBatch]: ...
 
     async def plan_strategy(
@@ -296,6 +317,21 @@ class MockAiProvider:
             V11_FACT_VISUAL_STRATEGY_BASE_PROMPT,
         )
 
+    async def plan_creative_directions(
+        self,
+        application: InsightApplicationMap,
+        *,
+        fact_visual_strategy: FactVisualStrategy,
+        shared_prompt: SharedPrompt,
+        target_count: int,
+    ) -> AiCallResult[CreativeDirectionResponse]:
+        del fact_visual_strategy, shared_prompt, target_count
+        return _mock_result(
+            _mock_creative_direction_response(application),
+            NodeId.COHERENT_CREATIVE_GENERATION.value,
+            V11_CREATIVE_DIRECTION_BASE_PROMPT,
+        )
+
     async def generate_creatives(
         self,
         shard: CreativeShardPlan,
@@ -324,13 +360,16 @@ class MockAiProvider:
         self,
         candidates: list[CreativeCandidate],
         *,
+        target_durations: Mapping[str, int],
         application: InsightApplicationMap,
         fact_visual_strategy: FactVisualStrategy | None = None,
+        direction_plan: CreativeDirectionPlan | None = None,
     ) -> AiCallResult[CreativeEvaluationBatch]:
+        del target_durations
         return _mock_result(
             CreativeEvaluationBatch(
                 items=[
-                    _mock_creative_evaluation(item, application)
+                    _mock_creative_evaluation(item, application, direction_plan)
                     for item in candidates
                 ]
             ),
@@ -561,6 +600,67 @@ class ArkResponsesProvider:
             instructions=load_prompt(V11_FACT_VISUAL_STRATEGY_BASE_PROMPT),
         )
 
+    async def plan_creative_directions(
+        self,
+        application: InsightApplicationMap,
+        *,
+        fact_visual_strategy: FactVisualStrategy,
+        shared_prompt: SharedPrompt,
+        target_count: int,
+    ) -> AiCallResult[CreativeDirectionResponse]:
+        facts = [
+            {
+                "factId": fact.fact_id,
+                "field": fact.field.value,
+                "value": fact.value,
+                "policy": fact.policy.value,
+            }
+            for fact in application.usable
+        ]
+        visual_policies = [
+            {
+                "factId": policy.fact_id,
+                "visualUsage": policy.visual_usage.value,
+                "visualInstruction": policy.visual_instruction,
+                "contextInstruction": policy.context_instruction,
+                "compatibleFactIds": policy.compatible_fact_ids,
+                "forbiddenInferences": policy.forbidden_inferences,
+            }
+            for policy in fact_visual_strategy.policies
+        ]
+        prompt = render_prompt(
+            V11_CREATIVE_DIRECTION_TASK_PROMPT,
+            target_count=str(target_count),
+            facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+            fact_visual_strategy_json=json.dumps(
+                visual_policies,
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            shared_prompt_json=json.dumps(
+                shared_prompt.compiled_content,
+                ensure_ascii=False,
+            ),
+        )
+        return await self._structured(
+            prompt,
+            CreativeDirectionResponse,
+            schema_name="effect_prompt_v11_creative_direction_plan",
+            stage=NodeId.COHERENT_CREATIVE_GENERATION.value,
+            prompt_file=V11_CREATIVE_DIRECTION_BASE_PROMPT,
+            model=self._fragment_strategy_model,
+            # Direction planning is compact compared with the retired monolithic
+            # strategy plan, but it still needs room for 8-12 structured rows and
+            # the provider's reasoning tokens. The 3,072-token fragment branch
+            # budget repeatedly truncates this batch-level response.
+            max_output_tokens=min(self._strategy_max_output_tokens, 6144),
+            # This is one batch-level planning request, not a six-branch fragment
+            # strategy call. Use the dedicated 180s planning budget while keeping
+            # every candidate generation request on its independent 120s budget.
+            request_timeout=self._strategy_timeout,
+            instructions=load_prompt(V11_CREATIVE_DIRECTION_BASE_PROMPT),
+        )
+
     async def generate_creatives(
         self,
         shard: CreativeShardPlan,
@@ -639,11 +739,13 @@ class ArkResponsesProvider:
         for item in call.value.items:
             task = task_by_slot[item.slot_id]
             assignment = assignments[item.slot_id]
-            fact_ids = list(dict.fromkeys(item.declared_fact_ids))
+            alias_to_fact_id = {
+                alias: fact_id
+                for fact_id, alias in _creative_fact_aliases(assignment).items()
+            }
+            declared_aliases = list(dict.fromkeys(item.declared_fact_ids))
             unassigned = [
-                fact_id
-                for fact_id in fact_ids
-                if fact_id not in assignment.allowed_fact_ids
+                alias for alias in declared_aliases if alias not in alias_to_fact_id
             ]
             if unassigned:
                 raise ProviderError(
@@ -653,33 +755,44 @@ class ArkResponsesProvider:
                     attempts=call.metadata.attempts,
                     elapsed_ms=call.metadata.latency_ms,
                 )
+            fact_ids = [alias_to_fact_id[alias] for alias in declared_aliases]
+            fact_ids = _complete_declared_assigned_facts(
+                item,
+                fact_ids=fact_ids,
+                assignment=assignment,
+                application=application,
+            )
+            if _unassigned_candidate_fact_values(
+                item,
+                assignment=assignment,
+                application=application,
+            ):
+                raise ProviderError(
+                    "AI coherent creative response used an unassigned confirmed fact in candidate text",
+                    retryable=False,
+                    error_type=ProviderErrorType.RESPONSE_INVALID,
+                    attempts=call.metadata.attempts,
+                    elapsed_ms=call.metadata.latency_ms,
+                )
             visual_fact_id = assignment.visual_task_fact_id or assignment.primary_fact_id
             if visual_fact_id not in fact_ids:
-                raise ProviderError(
-                    (
-                        "AI coherent creative response did not use its assigned visual task fact"
-                        if fact_visual_strategy is not None
-                        else "AI coherent creative response did not use its assigned primary fact"
-                    ),
-                    retryable=False,
-                    error_type=ProviderErrorType.RESPONSE_INVALID,
-                    attempts=call.metadata.attempts,
-                    elapsed_ms=call.metadata.latency_ms,
+                LOGGER.info(
+                    "dropping creative candidate without assigned visual fact slot_id=%s",
+                    item.slot_id,
                 )
+                continue
             if not set(fact_ids).intersection(assignment.product_anchor_fact_ids):
-                raise ProviderError(
-                    "AI coherent creative response did not use an assigned product anchor",
-                    retryable=False,
-                    error_type=ProviderErrorType.RESPONSE_INVALID,
-                    attempts=call.metadata.attempts,
-                    elapsed_ms=call.metadata.latency_ms,
+                LOGGER.info(
+                    "dropping creative candidate without assigned product anchor slot_id=%s",
+                    item.slot_id,
                 )
+                continue
             normalized.append(
                 item.model_copy(
                     update={
                         "ordinal": task.ordinal,
                         "round": task.round,
-                        "declared_fact_ids": list(dict.fromkeys(fact_ids)),
+                        "declared_fact_ids": fact_ids,
                     }
                 )
             )
@@ -692,12 +805,23 @@ class ArkResponsesProvider:
         self,
         candidates: list[CreativeCandidate],
         *,
+        target_durations: Mapping[str, int],
         application: InsightApplicationMap,
         fact_visual_strategy: FactVisualStrategy | None = None,
+        direction_plan: CreativeDirectionPlan | None = None,
     ) -> AiCallResult[CreativeEvaluationBatch]:
         if not candidates or len(candidates) > 10:
             raise ProviderError(
                 "creative evaluation batch must contain between one and ten items",
+                retryable=False,
+                error_type=ProviderErrorType.REQUEST_REJECTED,
+            )
+        expected = {item.slot_id for item in candidates}
+        if set(target_durations) != expected or any(
+            not 4 <= duration <= 30 for duration in target_durations.values()
+        ):
+            raise ProviderError(
+                "creative evaluation requires one valid target duration per candidate",
                 retryable=False,
                 error_type=ProviderErrorType.REQUEST_REJECTED,
             )
@@ -725,7 +849,23 @@ class ArkResponsesProvider:
                 sort_keys=True,
             ),
             candidates_json=json.dumps(
-                [item.model_dump(mode="json", by_alias=True) for item in candidates],
+                [
+                    {
+                        "candidate": item.model_dump(mode="json", by_alias=True),
+                        "targetDurationSeconds": target_durations[item.slot_id],
+                    }
+                    for item in candidates
+                ],
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            semantic_vocabulary_json=json.dumps(
+                {
+                    key: sorted([*values, "OTHER"])
+                    for key, values in direction_plan.vocabulary.items()
+                }
+                if direction_plan is not None
+                else {},
                 ensure_ascii=False,
                 sort_keys=True,
             ),
@@ -747,7 +887,6 @@ class ArkResponsesProvider:
             request_timeout=self._evaluation_timeout,
             instructions=load_prompt(V11_EVALUATION_BASE_PROMPT),
         )
-        expected = {item.slot_id for item in candidates}
         actual = [item.slot_id for item in call.value.items]
         if len(actual) != len(set(actual)) or set(actual) != expected:
             raise ProviderError(
@@ -1399,6 +1538,58 @@ def _mock_fact_visual_strategy(
     return FactVisualStrategyResponse(policies=policies)
 
 
+def _mock_creative_direction_response(
+    application: InsightApplicationMap,
+) -> CreativeDirectionResponse:
+    fact_ids = [fact.fact_id for fact in application.usable]
+    if not fact_ids:
+        raise ProviderError(
+            "creative direction planning requires confirmed insight facts",
+            retryable=False,
+            error_type=ProviderErrorType.REQUEST_REJECTED,
+        )
+    rows = (
+        ("场景代入", "家庭备餐", "独自备餐", "取放产品", "稳定跟拍", "生活真实"),
+        ("分享体验", "家庭餐桌", "家庭成员", "端菜分享", "中景观察", "温馨团聚"),
+        ("产品观察", "食品展示台", "仅手部", "转动展示", "微距环绕", "清晰克制"),
+        ("使用演示", "早餐准备区", "通勤成年人", "快速装盘", "俯拍跟随", "活力明快"),
+        ("消费场景", "年货准备区", "送礼双方", "递送接收", "侧向跟拍", "节庆期待"),
+        ("细节发现", "家宴餐桌", "聚餐成员", "夹取观察", "近景轻推", "食欲吸引"),
+        ("选择过程", "家庭储物区", "家庭采购者", "取出确认", "主观视角", "安心从容"),
+        ("结果呈现", "餐后分享区", "朋友群体", "分食互动", "固定全景", "轻松愉悦"),
+    )
+    dimension_pairs = (
+        (CreativeDimensionKey.SCENE, CreativeDimensionKey.PRODUCT_RELATION),
+        (CreativeDimensionKey.PERSONA, CreativeDimensionKey.EMOTION),
+        (CreativeDimensionKey.CAMERA, CreativeDimensionKey.PRODUCT_RELATION),
+        (CreativeDimensionKey.NARRATIVE, CreativeDimensionKey.CAMERA),
+        (CreativeDimensionKey.SCENE, CreativeDimensionKey.PERSONA),
+        (CreativeDimensionKey.PRODUCT_RELATION, CreativeDimensionKey.CAMERA),
+        (CreativeDimensionKey.NARRATIVE, CreativeDimensionKey.PERSONA),
+        (CreativeDimensionKey.EMOTION, CreativeDimensionKey.SCENE),
+    )
+    return CreativeDirectionResponse(
+        directions=[
+            CreativeDirection(
+                direction_id=f"direction-{index + 1:02d}",
+                compatible_fact_ids=fact_ids,
+                creative_direction=f"围绕{row[1]}中的{row[3]}建立一个连续产品画面",
+                priority_dimensions=list(dimension_pairs[index]),
+                semantic_profile=CreativeSemanticProfile(
+                    narrative_family=row[0],
+                    scene_family=row[1],
+                    persona_family=row[2],
+                    product_action_family=row[3],
+                    camera_family=row[4],
+                    emotion_family=row[5],
+                ),
+                avoid_families=["重复厨房切制"],
+            )
+            for index, row in enumerate(rows)
+        ]
+    )
+
+
 def _mock_creative_candidate(
     task: CreativeTask,
     application: InsightApplicationMap,
@@ -1414,17 +1605,30 @@ def _mock_creative_candidate(
     product = anchor.value
     scenes = ["家庭厨房料理台", "节日家宴餐桌", "明亮食品展示台", "居家备餐区"]
     cameras = ["近景缓慢横移", "微距轻推", "中近景固定观察", "俯拍平稳跟随"]
-    scene = scenes[(task.ordinal - 1) % len(scenes)]
-    camera = cameras[((task.ordinal - 1) // len(scenes)) % len(cameras)]
+    direction = task.creative_direction
+    scene = (
+        direction.semantic_profile.scene_family
+        if direction is not None
+        else scenes[(task.ordinal - 1) % len(scenes)]
+    )
+    camera = (
+        direction.semantic_profile.camera_family
+        if direction is not None
+        else cameras[((task.ordinal - 1) // len(scenes)) % len(cameras)]
+    )
     actions = [
         "被切开并整齐摆盘",
         "由筷子夹起后停在切面细节",
         "从蒸笼中取出并放到白瓷盘",
         "包装旁的成品被缓慢转动展示",
     ]
-    action = actions[
-        ((task.ordinal - 1) // (len(scenes) * len(cameras))) % len(actions)
-    ]
+    action = (
+        direction.semantic_profile.product_action_family
+        if direction is not None
+        else actions[
+            ((task.ordinal - 1) // (len(scenes) * len(cameras))) % len(actions)
+        ]
+    )
     content = (
         f"{scene}内，{product}{action}，画面清楚呈现{primary.value}。"
         f"{camera}记录一个连续动作，暖色自然光突出真实质感，动作结束后主体稳定停留在画面中央。"
@@ -1436,12 +1640,24 @@ def _mock_creative_candidate(
         creative_core=f"用{scene}中的连续动作表现{primary.value}",
         declared_fact_ids=declared_fact_ids,
         dimensions=CreativeDimensions(
-            narrative="从准备动作自然推进到产品细节停留",
+            narrative=(
+                direction.semantic_profile.narrative_family
+                if direction is not None
+                else "从准备动作自然推进到产品细节停留"
+            ),
             scene=scene,
-            persona="仅一双成年人的手参与动作",
+            persona=(
+                direction.semantic_profile.persona_family
+                if direction is not None
+                else "仅一双成年人的手参与动作"
+            ),
             product_relation=primary.value,
             camera=camera,
-            emotion="温暖真实且具有食欲吸引力",
+            emotion=(
+                direction.semantic_profile.emotion_family
+                if direction is not None
+                else "温暖真实且具有食欲吸引力"
+            ),
         ),
         content=content,
     )
@@ -1484,20 +1700,39 @@ def _creative_task_brief(
     application: InsightApplicationMap,
     fact_visual_strategy: FactVisualStrategy | None,
 ) -> dict[str, Any]:
+    fact_aliases = _creative_fact_aliases(assignment)
+
     def fact_payload(fact_id: str) -> dict[str, str]:
         fact = application.by_id[fact_id]
         return {
-            "factId": fact.fact_id,
+            "factId": fact_aliases[fact.fact_id],
             "field": fact.field.value,
             "value": fact.value,
         }
 
+    direction_payload = (
+        {
+            "directionId": task.creative_direction.direction_id,
+            "creativeDirection": task.creative_direction.creative_direction,
+            "priorityDimensions": [
+                item.value for item in task.creative_direction.priority_dimensions
+            ],
+            "targetSemanticProfile": task.creative_direction.semantic_profile.model_dump(
+                mode="json", by_alias=True
+            ),
+            "avoidFamilies": task.creative_direction.avoid_families,
+        }
+        if task.creative_direction is not None
+        else None
+    )
+    temporal_intent = _temporal_intent_for_duration(task.target_duration_seconds)
     if fact_visual_strategy is None:
         return {
             "slotId": task.slot_id,
             "ordinal": task.ordinal,
             "round": task.round,
             "targetDurationSeconds": task.target_duration_seconds,
+            "temporalIntent": temporal_intent,
             "primaryFact": fact_payload(assignment.primary_fact_id),
             "supportFacts": [
                 fact_payload(fact_id) for fact_id in assignment.support_fact_ids
@@ -1510,6 +1745,7 @@ def _creative_task_brief(
                 fact_payload(fact_id)
                 for fact_id in assignment.product_boundary_fact_ids
             ],
+            "creativeDirection": direction_payload,
         }
 
     policy_by_id = fact_visual_strategy.by_id
@@ -1533,6 +1769,7 @@ def _creative_task_brief(
         "ordinal": task.ordinal,
         "round": task.round,
         "targetDurationSeconds": task.target_duration_seconds,
+        "temporalIntent": temporal_intent,
         "visualTask": {
             **fact_payload(visual_fact_id),
             "instruction": visual_policy.visual_instruction,
@@ -1548,6 +1785,119 @@ def _creative_task_brief(
             for fact_id in assignment.product_boundary_fact_ids
         ],
         "forbiddenInferences": list(dict.fromkeys(forbidden_inferences)),
+        "creativeDirection": direction_payload,
+    }
+
+
+def _creative_fact_aliases(
+    assignment: CreativeFactAssignment,
+) -> dict[str, str]:
+    """Create slot-local aliases so one shard task cannot borrow another fact ID."""
+
+    return {
+        fact_id: f"F{index}"
+        for index, fact_id in enumerate(assignment.allowed_fact_ids, start=1)
+    }
+
+
+def _complete_declared_assigned_facts(
+    candidate: CreativeCandidate,
+    *,
+    fact_ids: list[str],
+    assignment: CreativeFactAssignment,
+    application: InsightApplicationMap,
+) -> list[str]:
+    """Repair omitted metadata only when this slot contains exact fact evidence."""
+
+    completed = list(dict.fromkeys(fact_ids))
+    corpus = _normalized_candidate_fact_evidence(candidate)
+
+    def append_if_evidenced(fact_id: str) -> bool:
+        if fact_id in completed:
+            return True
+        fact = application.by_id[fact_id]
+        normalized_fact = _normalize_exact_fact_text(fact.value)
+        if normalized_fact and normalized_fact in corpus:
+            completed.append(fact_id)
+            return True
+        return False
+
+    visual_fact_id = assignment.visual_task_fact_id or assignment.primary_fact_id
+    append_if_evidenced(visual_fact_id)
+    if not set(completed).intersection(assignment.product_anchor_fact_ids):
+        for fact_id in assignment.product_anchor_fact_ids:
+            if append_if_evidenced(fact_id):
+                break
+    return completed
+
+
+def _normalized_candidate_fact_evidence(candidate: CreativeCandidate) -> str:
+    dimensions = candidate.dimensions
+    return _normalize_exact_fact_text(
+        " ".join(
+            (
+                candidate.creative_core,
+                dimensions.narrative,
+                dimensions.scene,
+                dimensions.persona,
+                dimensions.product_relation,
+                dimensions.camera,
+                dimensions.emotion,
+                candidate.content,
+            )
+        )
+    )
+
+
+def _unassigned_candidate_fact_values(
+    candidate: CreativeCandidate,
+    *,
+    assignment: CreativeFactAssignment,
+    application: InsightApplicationMap,
+) -> list[str]:
+    corpus = _normalized_candidate_fact_evidence(candidate)
+    assigned_ids = set(assignment.allowed_fact_ids)
+    assigned_values = {
+        _normalize_exact_fact_text(application.by_id[fact_id].value)
+        for fact_id in assigned_ids
+    }
+    return [
+        fact.fact_id
+        for fact in application.usable
+        if fact.fact_id not in assigned_ids
+        and (normalized := _normalize_exact_fact_text(fact.value))
+        not in assigned_values
+        and len(normalized) >= 6
+        and normalized in corpus
+    ]
+
+
+def _normalize_exact_fact_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return re.sub(r"[\s\W_]+", "", normalized)
+
+
+def _temporal_intent_for_duration(duration_seconds: int) -> dict[str, str]:
+    if not 4 <= duration_seconds <= 30:
+        raise ValueError("target duration must be between 4 and 30 seconds")
+    if duration_seconds <= 8:
+        return {
+            "band": "SHORT_FOCUS",
+            "guidance": "快速建立商品与视觉重点，减少铺垫，让直接、清楚的连续动作承担主要表达。",
+        }
+    if duration_seconds <= 15:
+        return {
+            "band": "COMPLETE_ACTION",
+            "guidance": "在同一主场景中自然完成一条连续动作弧，让开端、发展与结束状态彼此衔接。",
+        }
+    if duration_seconds <= 22:
+        return {
+            "band": "GRADUAL_PROCESS",
+            "guidance": "围绕同一商品和主场景展开渐进过程，可自然改变构图或观察角度，但不要拆成独立镜头清单。",
+        }
+    return {
+        "band": "CONNECTED_PHASES",
+        "guidance": "形成连贯的较长素材片段，可有前后衔接的拍摄阶段，但始终保持同一商品、连续时空和单一创意目标。",
     }
 
 
@@ -1567,6 +1917,7 @@ def _evaluation_strategy_payload(
 def _mock_creative_evaluation(
     candidate: CreativeCandidate,
     application: InsightApplicationMap,
+    direction_plan: CreativeDirectionPlan | None = None,
 ) -> CreativeEvaluation:
     evidence = [
         FactEvidence(fact_id=fact_id, evidence_text=application.by_id[fact_id].value)
@@ -1580,6 +1931,25 @@ def _mock_creative_evaluation(
     if primary != FragmentType.PRODUCT_DISPLAY:
         compatible.append(FragmentType.PRODUCT_DISPLAY)
     hard_issues = [] if evidence else ["MISSING_PRODUCT_RELATION"]
+    direction = None
+    if direction_plan is not None:
+        direction = next(
+            (
+                item
+                for item in direction_plan.directions
+                if item.semantic_profile.scene_family == candidate.dimensions.scene
+                and item.semantic_profile.narrative_family
+                == candidate.dimensions.narrative
+                and item.semantic_profile.persona_family
+                == candidate.dimensions.persona
+                and item.semantic_profile.camera_family == candidate.dimensions.camera
+                and item.semantic_profile.emotion_family
+                == candidate.dimensions.emotion
+            ),
+            direction_plan.directions[
+                (candidate.ordinal - 1) % len(direction_plan.directions)
+            ],
+        )
     return CreativeEvaluation(
         slot_id=candidate.slot_id,
         primary_purpose=primary,
@@ -1604,6 +1974,7 @@ def _mock_creative_evaluation(
                 ]
             )
         ),
+        semantic_profile=(direction.semantic_profile if direction else None),
         hard_issues=hard_issues,
         warnings=[],
     )

@@ -1772,6 +1772,10 @@ const v11AdditionalOutputFields = (
   const resultMetrics = metadataRecord(result?.metrics);
   if (nodeId === 'COHERENT_CREATIVE_GENERATION')
     return [
+      ...compact([
+        numberField(metadata, 'directionCount', '批次创意方向'),
+        numberField(metadata, 'candidateTargetCount', '候选目标'),
+      ]),
       { label: '实际生成创意', value: samples.length },
       {
         label: '完成分片',
@@ -1805,6 +1809,27 @@ const v11AdditionalOutputFields = (
       numberField(metadata, 'localComparisonMs', '本地矩阵耗时（毫秒）'),
       numberField(metadata, 'initialRedundantCandidateCount', '补充前高风险冗余'),
       numberField(metadata, 'finalRedundantCandidateCount', '补充后高风险冗余'),
+      textField(
+        '场景最大簇',
+        typeof metadata.preSelectionMaxSceneShare === 'number' &&
+          typeof metadata.postSelectionMaxSceneShare === 'number'
+          ? `${Math.round(metadata.preSelectionMaxSceneShare * 100)}% → ${Math.round(metadata.postSelectionMaxSceneShare * 100)}%`
+          : null,
+      ),
+      textField(
+        '动作最大簇',
+        typeof metadata.preSelectionMaxActionShare === 'number' &&
+          typeof metadata.postSelectionMaxActionShare === 'number'
+          ? `${Math.round(metadata.preSelectionMaxActionShare * 100)}% → ${Math.round(metadata.postSelectionMaxActionShare * 100)}%`
+          : null,
+      ),
+      textField(
+        '多样性构成',
+        typeof metadata.contentNoveltyWeight === 'number' &&
+          typeof metadata.clusterAwareNoveltyWeight === 'number'
+          ? `正文 ${Math.round(metadata.contentNoveltyWeight * 100)}% / 业务语义 ${Math.round(metadata.clusterAwareNoveltyWeight * 100)}%`
+          : null,
+      ),
       textField(
         'MMR 权重',
         typeof metadata.mmrQualityWeight === 'number' &&
@@ -1884,6 +1909,26 @@ const purposeDistributionBlock = (
   return tagBlock('最终推荐用途分布', [tagGroup('用途分布', distribution)]);
 };
 
+const distributionTags = (value: unknown): string[] =>
+  (Array.isArray(value) ? value : []).flatMap((item) => {
+    if (!isRecord(item)) return [];
+    const label = publicText(item.label, 80);
+    const count = safeNumber(item.count);
+    return label && count !== null ? [`${label}：${count} 条`] : [];
+  });
+
+const semanticDistributionBlock = (
+  title: string,
+  value: unknown,
+): EffectPromptNodeDetailBlock | null => {
+  const distribution = metadataRecord(value);
+  return tagBlock(title, [
+    tagGroup('场景', distributionTags(distribution.sceneFamilies).slice(0, 5)),
+    tagGroup('产品动作', distributionTags(distribution.productActionFamilies).slice(0, 5)),
+    tagGroup('叙事', distributionTags(distribution.narrativeFamilies).slice(0, 5)),
+  ]);
+};
+
 const v11OutputBlocks = (
   run: EffectPromptNodeDetailRunRecord,
   nodeId: EffectPromptNodeId,
@@ -1910,7 +1955,12 @@ const v11OutputBlocks = (
     );
     blocks.push(textContentBlock('最终共用提示词', prompt.compiledContent, sectionLabels));
   } else if (nodeId === 'COHERENT_CREATIVE_GENERATION') {
-    blocks.push(creativeSampleBlock('真实创意候选样例', samples, samples.length));
+    blocks.push(
+      tagBlock('优先变化维度', [
+        tagGroup('分配情况', distributionTags(metadata.priorityDimensionDistribution)),
+      ]),
+      creativeSampleBlock('真实创意候选样例', samples, samples.length),
+    );
   } else if (nodeId === 'CREATIVE_EVALUATION_CLASSIFICATION' || nodeId === 'ITEM_EVALUATE') {
     const accepted = samples.filter((item) => item.outcome === 'ACCEPTED');
     const rejected = samples.filter((item) => item.outcome === 'REJECTED');
@@ -1919,6 +1969,7 @@ const v11OutputBlocks = (
       for (const issue of evaluation.hardIssues)
         hardCounts.set(issue, (hardCounts.get(issue) ?? 0) + 1);
     blocks.push(
+      semanticDistributionBlock('候选业务语义分布', metadata.semanticProfileDistribution),
       creativeSampleBlock('通过评估的创意样例', accepted, accepted.length),
       creativeSampleBlock('未通过评估的创意样例', rejected, rejected.length),
       issueBlock(
@@ -1932,6 +1983,10 @@ const v11OutputBlocks = (
       .filter((item) => item.outcome === 'ACCEPTED')
       .map((item) => ({ ...item, outcome: 'SELECTED' as const }));
     blocks.push(
+      semanticDistributionBlock('最终业务语义分布', metadata.selectedSemanticProfileDistribution),
+      tagBlock('多样性补充判断', [
+        tagGroup('原因', safeStrings(metadata.diversitySupplementReasons, 8)),
+      ]),
       creativeSampleBlock(
         saved.length ? '最终择优 Prompt 样例' : '当前合格候选样例',
         saved.length ? saved.map((item) => ({ ...item, outcome: 'SELECTED' as const })) : accepted,
@@ -1954,7 +2009,8 @@ const expectedOutputSummary: Partial<Record<EffectPromptNodeId, string>> = {
   FACT_VISUAL_STRATEGY_COMPILATION:
     '将已确认事实分成可见画面任务、商业背景和禁止视觉证明的事实角色。',
   SHARED_PROMPT_COMPILATION: '将禁用元素与用户补充内容合并为一段批次共用提示词。',
-  COHERENT_CREATIVE_GENERATION: '将生成围绕同一创意主线的六维信息与干净 Prompt 正文。',
+  COHERENT_CREATIVE_GENERATION:
+    '将先协调本批创意方向，再生成围绕同一主线的六维信息与干净 Prompt 正文。',
   CREATIVE_EVALUATION_CLASSIFICATION: '将给出质量判断、推荐主用途、兼容用途和问题原因。',
   EXACT_SELECTION_AND_SUPPLEMENT:
     '将按质量与语义多样性选满目标数量；数量不足时定向补齐，高风险冗余偏多时最多追加一次多样性候选。',

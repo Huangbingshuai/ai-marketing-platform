@@ -24,6 +24,14 @@ from effect_prompt_generation.models import (
 
 
 def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> None:
+    disabled_elements = ["医疗暗示"]
+    disabled_hash = hashlib.sha256(
+        json.dumps(
+            disabled_elements,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
     item = PromptItemV6(
         id=prompt_item.id,
         code=prompt_item.code,
@@ -37,7 +45,7 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
         classification_status="VERIFIED",
         product_relevance=92,
         material_tags=prompt_item.material_tags,
-        target_duration_seconds=prompt_item.target_duration_seconds,
+        target_duration_seconds=30,
         dimensions=CreativeDimensions(
             narrative=prompt_item.dimensions.narrative,
             scene=prompt_item.dimensions.scene,
@@ -53,14 +61,14 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
         updated_at=prompt_item.updated_at,
     )
     result = PromptBatchResultV6(
-        settings=PromptBatchSettingsV6(target_count=10, default_duration_seconds=5),
+        settings=PromptBatchSettingsV6(target_count=10, default_duration_seconds=30),
         render_profile=RenderProfile(
             ratio="9:16",
             resolution="1080p",
             capability_key="SEEDANCE_2_0",
             shared_constraints=SharedRenderConstraints(
-                disabled_elements=["医疗暗示"],
-                content_hash="0" * 64,
+                disabled_elements=disabled_elements,
+                content_hash=disabled_hash,
             ),
         ),
         shared_prompt=SharedPrompt(
@@ -71,7 +79,7 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
                     source="SYSTEM",
                     content="画面中不得出现以下内容：医疗暗示。",
                     editable=False,
-                    source_hash="1" * 64,
+                    source_hash=disabled_hash,
                 ),
                 SharedPromptSection(
                     key="USER_ADDITIONAL",

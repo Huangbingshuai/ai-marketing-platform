@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import time
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from effect_prompt_generation.models import (
     CreativeScores,
     FragmentType,
     SharedPrompt,
+    SharedPromptSection,
 )
 from effect_prompt_generation.quality import select_creatives, trigram_dice
 
@@ -97,7 +99,21 @@ def labeled_pairs() -> list[LabeledPair]:
 
 
 def _empty_shared_prompt() -> SharedPrompt:
-    return SharedPrompt(sections=[], compiled_content="", content_hash="0" * 64)
+    empty_hash = hashlib.sha256(b"").hexdigest()
+    return SharedPrompt(
+        sections=[
+            SharedPromptSection(
+                key="USER_ADDITIONAL",
+                title="补充共用内容",
+                source="USER",
+                content="",
+                editable=True,
+                source_hash=empty_hash,
+            )
+        ],
+        compiled_content="",
+        content_hash=empty_hash,
+    )
 
 
 def _candidate(index: int) -> CreativeCandidate:

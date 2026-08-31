@@ -91,7 +91,7 @@ describe('effect prompt generation state', () => {
       }),
     ).toEqual({
       targetCount: 10,
-      defaultDurationSeconds: 15,
+      defaultDurationSeconds: 30,
     });
     expect(normalizePromptSettings(DEFAULT_EFFECT_PROMPT_SETTINGS)).toEqual(
       DEFAULT_EFFECT_PROMPT_SETTINGS,

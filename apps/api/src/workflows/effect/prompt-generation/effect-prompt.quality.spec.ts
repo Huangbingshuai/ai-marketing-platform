@@ -13,6 +13,7 @@ import {
   compileEffectPromptSharedPrompt,
   defaultEffectPromptRenderProfile,
   isEffectPromptItem,
+  isEffectPromptItemV5,
   parseEffectPromptBatchResult,
   parseEffectPromptBatchResultV5ForRead,
   mergeEffectPromptCompletionItems,
@@ -48,6 +49,8 @@ const item = (id: string, content = `产品创意画面 ${id}`): EffectPromptIte
 describe('effect prompt V6 quality contract', () => {
   it('requires purpose projection and productRelation', () => {
     expect(isEffectPromptItem(item('001'))).toBe(true);
+    expect(isEffectPromptItem({ ...item('030'), targetDurationSeconds: 30 })).toBe(true);
+    expect(isEffectPromptItem({ ...item('031'), targetDurationSeconds: 31 })).toBe(false);
     expect(isEffectPromptItem({ ...item('002'), fragmentType: 'HOOK' })).toBe(false);
     expect(isEffectPromptItem({ ...item('003'), compatiblePurposes: ['HOOK'] })).toBe(false);
   });
@@ -132,6 +135,7 @@ describe('effect prompt V6 quality contract', () => {
       createdAt: '2026-08-26T00:00:00.000Z',
       updatedAt: '2026-08-26T00:00:00.000Z',
     };
+    expect(isEffectPromptItemV5({ ...legacyItem, targetDurationSeconds: 16 })).toBe(false);
     const legacy: EffectPromptBatchResultV5 = {
       schemaVersion: 5,
       settings: {

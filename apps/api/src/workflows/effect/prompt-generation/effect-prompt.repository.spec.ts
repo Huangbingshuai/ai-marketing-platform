@@ -59,6 +59,49 @@ const runRecord = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('EffectPromptRepository', () => {
+  it('preserves a validated stage checkpoint across later progress updates', async () => {
+    const checkpoint = {
+      nodeId: 'COHERENT_CREATIVE_GENERATION',
+      sourceFingerprint: 'source-a',
+      allocationHash: 'a'.repeat(64),
+      promptVersion: 'effect-prompt-v11-batch-diversity-v1',
+      plan: { territories: [] },
+    };
+    const upsert = vi.fn().mockResolvedValue({});
+    const transaction = {
+      effectPromptRun: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      effectPromptStageOutput: {
+        findUnique: vi.fn().mockResolvedValue({ metadata: { checkpoint } }),
+        upsert,
+      },
+    };
+    const repository = new EffectPromptRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await repository.saveStage(
+      projectId,
+      runId,
+      'attempt-a',
+      'COHERENT_CREATIVE_GENERATION',
+      {
+        status: 'RUNNING',
+        summary: '正在生成',
+        warnings: [],
+        metadata: { candidateCount: 12 },
+      },
+      40,
+    );
+
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          metadata: { checkpoint, candidateCount: 12 },
+        }),
+      }),
+    );
+  });
+
   it('persists blueprint and prompt shards under phase-scoped unique keys', async () => {
     const upsert = vi.fn().mockResolvedValue({});
     const transaction = {
@@ -583,7 +626,7 @@ describe('EffectPromptRepository', () => {
         inputSnapshot: expect.objectContaining({
           schemaVersion: EFFECT_PROMPT_SCHEMA_VERSION,
           retainedManualItems: [],
-          selectionPolicyVersion: 'MMR_CONTENT_V2',
+          selectionPolicyVersion: 'MMR_CONTENT_CLUSTER_V3',
           similarityAnchors: [],
           baseResultRevision: null,
         }),

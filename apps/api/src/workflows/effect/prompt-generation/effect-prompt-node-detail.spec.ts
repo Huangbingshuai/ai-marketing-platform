@@ -265,14 +265,25 @@ const v11RunRecord = (): EffectPromptNodeDetailRunRecord => {
       }),
       stage('COHERENT_CREATIVE_GENERATION', '连贯六维创意生成完成', {
         targetCount: 3,
+        candidateTargetCount: 5,
         candidateCount: 4,
         completedShardCount: 1,
+        directionCount: 3,
+        priorityDimensionDistribution: [
+          { label: '场景', count: 2 },
+          { label: '产品动作', count: 2 },
+        ],
       }),
       stage('CREATIVE_EVALUATION_CLASSIFICATION', '创意质量评估与用途分类完成', {
         evaluatedCount: 4,
         acceptedCount: 3,
         rejectedCount: 1,
         completedShardCount: 1,
+        semanticProfileDistribution: {
+          sceneFamilies: [{ label: '家庭餐桌', count: 2 }],
+          productActionFamilies: [{ label: '分享夹取', count: 2 }],
+          narrativeFamilies: [{ label: '场景代入', count: 2 }],
+        },
       }),
       stage('EXACT_SELECTION_AND_SUPPLEMENT', '质量优先筛选完成', {
         acceptedCount: 3,
@@ -291,6 +302,18 @@ const v11RunRecord = (): EffectPromptNodeDetailRunRecord => {
         finalRedundantCandidateCount: 1,
         diversitySupplementTriggered: true,
         diversitySupplementCount: 2,
+        contentNoveltyWeight: 0.7,
+        clusterAwareNoveltyWeight: 0.3,
+        preSelectionMaxSceneShare: 0.75,
+        postSelectionMaxSceneShare: 0.5,
+        preSelectionMaxActionShare: 0.75,
+        postSelectionMaxActionShare: 0.5,
+        diversitySupplementReasons: ['场景族过度集中'],
+        selectedSemanticProfileDistribution: {
+          sceneFamilies: [{ label: '家庭餐桌', count: 2 }],
+          productActionFamilies: [{ label: '分享夹取', count: 2 }],
+          narrativeFamilies: [{ label: '场景代入', count: 2 }],
+        },
       }),
       stage('RESULT_SAVE', 'Prompt 批次结果已保存', {
         batchSize: 3,
@@ -707,6 +730,13 @@ describe('presentEffectPromptNodeDetail', () => {
     });
     if (creativeBlock?.kind !== 'CREATIVE_SAMPLE_LIST') throw new Error('missing V11 samples');
     expect(creativeBlock.items).toHaveLength(3);
+    expect(creative.sections.find(({ kind }) => kind === 'OUTPUT')?.fields).toEqual(
+      expect.arrayContaining([
+        { label: '批次创意方向', value: 3 },
+        { label: '候选目标', value: 5 },
+      ]),
+    );
+    expect(JSON.stringify(creative)).toContain('产品动作：2 条');
   });
 
   it('shows safe MMR weights, anchors, timing and diversity supplement results', () => {
@@ -724,9 +754,13 @@ describe('presentEffectPromptNodeDetail', () => {
         { label: '固定参照 Prompt', value: 1 },
         { label: '向量化正文', value: 4 },
         { label: 'MMR 权重', value: '质量 70% / 多样性 30%' },
+        { label: '场景最大簇', value: '75% → 50%' },
+        { label: '动作最大簇', value: '75% → 50%' },
+        { label: '多样性构成', value: '正文 70% / 业务语义 30%' },
         { label: '多样性补充', value: '已补充 2 条候选' },
       ]),
     );
+    expect(JSON.stringify(output?.blocks)).toContain('场景族过度集中');
     expect(detail.warnings).toEqual([
       '已按目标数量保存；当前批次仍有少量语义相近内容，可按需人工调整',
     ]);

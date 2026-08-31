@@ -1,4 +1,4 @@
-VERSION: effect-prompt-v11-creative-evaluation-task-v4
+VERSION: effect-prompt-v11-creative-evaluation-task-v5
 
 候选声明所引用的已确认事实：
 {facts_json}
@@ -6,7 +6,10 @@ VERSION: effect-prompt-v11-creative-evaluation-task-v4
 这些事实的视觉使用策略：
 {fact_visual_strategy_json}
 
-待评估候选：
+待评估候选及其结构化目标时长（每个元素包含 candidate 与 targetDurationSeconds）：
 {candidates_json}
 
-逐条独立核对正文证据、六维一致性、画面可执行性、商业素材价值和是否依赖无关场景或统一质感套话。硬问题和软提醒必须严格使用系统提示规定的稳定问题码。items 数量与 slotId 必须和输入一致。
+本批允许使用的六轴语义分类词表：
+{semantic_vocabulary_json}
+
+逐条独立核对正文证据、六维一致性、目标时长下的动作密度与画面可执行性、商业素材价值，以及是否依赖无关场景或统一质感套话。只评估，不改写正文。硬问题和软提醒必须严格使用系统提示规定的稳定问题码。items 数量与 slotId 必须和输入一致。

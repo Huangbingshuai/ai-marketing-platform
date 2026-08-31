@@ -451,6 +451,7 @@ def validate_creative_evaluation(
     declared = set(candidate.declared_fact_ids)
     content_text = _normalized_evidence_text(candidate.content)
     valid_evidence = []
+    evidenced_fact_ids: set[str] = set()
     evidence_metadata_codes = {
         "FACT_EVIDENCE_NOT_IN_CONTENT",
         "UNKNOWN_OR_UNDECLARED_FACT",
@@ -472,6 +473,9 @@ def validate_creative_evaluation(
         if _normalized_evidence_text(evidence.evidence_text) not in content_text:
             warnings.append("FACT_EVIDENCE_NOT_IN_CONTENT")
             continue
+        if evidence.fact_id in evidenced_fact_ids:
+            continue
+        evidenced_fact_ids.add(evidence.fact_id)
         valid_evidence.append(evidence)
     relevant = [
         evidence
@@ -636,7 +640,29 @@ def _creative_novelty(left: RankedCreative, right: RankedCreative) -> float:
         )
         / 6
     )
-    return round(100.0 * (1.0 - max(semantic, visual)), 4)
+    base_novelty = 100.0 * (1.0 - max(semantic, visual))
+    left_profile = left.evaluation.semantic_profile
+    right_profile = right.evaluation.semantic_profile
+    if left_profile is None or right_profile is None:
+        return round(base_novelty, 4)
+    pairs = (
+        (left_profile.narrative_family, right_profile.narrative_family),
+        (left_profile.scene_family, right_profile.scene_family),
+        (left_profile.persona_family, right_profile.persona_family),
+        (
+            left_profile.product_action_family,
+            right_profile.product_action_family,
+        ),
+        (left_profile.camera_family, right_profile.camera_family),
+        (left_profile.emotion_family, right_profile.emotion_family),
+    )
+    same = sum(
+        normalize_creative_signature(left_value)
+        == normalize_creative_signature(right_value)
+        for left_value, right_value in pairs
+    )
+    cluster_novelty = 100.0 * (1.0 - same / len(pairs))
+    return round(0.70 * base_novelty + 0.30 * cluster_novelty, 4)
 
 
 def _normalized_evidence_text(value: str) -> str:

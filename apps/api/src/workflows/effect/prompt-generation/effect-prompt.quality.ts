@@ -30,6 +30,7 @@ import {
   EFFECT_PROMPT_RENDER_CAPABILITY_KEYS,
   EFFECT_PROMPT_SCHEMA_VERSION,
   EFFECT_PROMPT_LEGACY_SCHEMA_VERSION,
+  EFFECT_PROMPT_V5_DURATION_LIMITS,
   EFFECT_PROMPT_V5_DIMENSIONS,
   SEEDANCE_RATIOS,
   SEEDANCE_RESOLUTIONS,
@@ -444,7 +445,10 @@ const validDimensionsV5 = (value: unknown): value is EffectPromptDimensionsV5 =>
   );
 };
 
-const validBaseItem = (item: Record<string, unknown>): boolean =>
+const validBaseItem = (
+  item: Record<string, unknown>,
+  durationLimits: { minDurationSeconds: number; maxDurationSeconds: number },
+): boolean =>
   Boolean(
     typeof item.id === 'string' &&
     item.id.length > 0 &&
@@ -463,8 +467,8 @@ const validBaseItem = (item: Record<string, unknown>): boolean =>
     ) &&
     new Set(item.materialTags.map(normalizedValue)).size === item.materialTags.length &&
     Number.isInteger(item.targetDurationSeconds) &&
-    Number(item.targetDurationSeconds) >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
-    Number(item.targetDurationSeconds) <= EFFECT_PROMPT_LIMITS.maxDurationSeconds &&
+    Number(item.targetDurationSeconds) >= durationLimits.minDurationSeconds &&
+    Number(item.targetDurationSeconds) <= durationLimits.maxDurationSeconds &&
     typeof item.content === 'string' &&
     item.content.trim().length > 0 &&
     item.content.length <= itemTextLimits.content &&
@@ -482,7 +486,7 @@ export const isEffectPromptItemV5 = (value: unknown): value is EffectPromptItemV
   const item = record(value);
   return Boolean(
     item &&
-    validBaseItem(item) &&
+    validBaseItem(item, EFFECT_PROMPT_V5_DURATION_LIMITS) &&
     validDimensionsV5(item.dimensions) &&
     Object.keys(item).length === 12,
   );
@@ -493,7 +497,7 @@ export const isEffectPromptItem = (value: unknown): value is EffectPromptItem =>
   const compatiblePurposes = item?.compatiblePurposes;
   return Boolean(
     item &&
-    validBaseItem(item) &&
+    validBaseItem(item, EFFECT_PROMPT_LIMITS) &&
     validDimensions(item.dimensions) &&
     EFFECT_PROMPT_FRAGMENT_TYPES.includes(item.primaryPurpose as EffectPromptFragmentType) &&
     item.fragmentType === item.primaryPurpose &&
@@ -529,8 +533,8 @@ export const isEffectPromptSettingsV5 = (value: unknown): value is EffectPromptB
         Number(config.count) >= EFFECT_PROMPT_LIMITS.minFragmentCount &&
         Number(config.count) <= EFFECT_PROMPT_LIMITS.maxCount &&
         Number.isInteger(config.durationSeconds) &&
-        Number(config.durationSeconds) >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
-        Number(config.durationSeconds) <= EFFECT_PROMPT_LIMITS.maxDurationSeconds,
+        Number(config.durationSeconds) >= EFFECT_PROMPT_V5_DURATION_LIMITS.minDurationSeconds &&
+        Number(config.durationSeconds) <= EFFECT_PROMPT_V5_DURATION_LIMITS.maxDurationSeconds,
       );
     });
   const totalCount = EFFECT_PROMPT_FRAGMENT_TYPES.reduce((total, fragmentType) => {

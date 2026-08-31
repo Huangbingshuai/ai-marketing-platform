@@ -26,7 +26,7 @@ export type EffectPromptInputSnapshot = {
   };
   retainedManualItems: EffectPromptItem[];
   /** Freezes the selector implementation so an in-flight Run cannot change on resume. */
-  selectionPolicyVersion?: 'MMR_CONTENT_V2';
+  selectionPolicyVersion?: 'MMR_CONTENT_V2' | 'MMR_CONTENT_CLUSTER_V3';
   /** Fixed items that influence semantic novelty but are never selected or removed. */
   similarityAnchors?: EffectPromptItem[];
   /** Carries user-authored batch-level content into regeneration without copying it to items. */

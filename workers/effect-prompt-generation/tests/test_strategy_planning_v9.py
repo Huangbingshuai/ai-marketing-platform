@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from effect_prompt_generation.insight_mapping import map_insight
@@ -59,11 +61,11 @@ async def test_six_ai_plans_merge_without_breaking_master_coherence(
                 source="USER",
                 content="",
                 editable=True,
-                source_hash="0" * 64,
+                source_hash=hashlib.sha256(b"").hexdigest(),
             )
         ],
         compiled_content="",
-        content_hash="0" * 64,
+        content_hash=hashlib.sha256(b"").hexdigest(),
     )
 
     plans = []

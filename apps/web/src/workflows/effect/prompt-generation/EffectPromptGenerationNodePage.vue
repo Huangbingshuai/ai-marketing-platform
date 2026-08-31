@@ -1286,7 +1286,7 @@ const graphDescription = (nodeId: EffectPromptNodeId): string =>
     FACT_VISUAL_STRATEGY_COMPILATION:
       '判断哪些事实可以成为画面任务，哪些只作为商业背景或禁止视觉证明',
     SHARED_PROMPT_COMPILATION: '编译本批次生成与渲染共同使用的提示词',
-    COHERENT_CREATIVE_GENERATION: '基于已确认产品事实同步生成完整六维创意与干净正文',
+    COHERENT_CREATIVE_GENERATION: '先协调批次创意方向，再同步生成完整六维创意与干净正文',
     CREATIVE_EVALUATION_CLASSIFICATION: '评估产品关联和创意质量，并标注推荐用途与兼容用途',
     EXACT_SELECTION_AND_SUPPLEMENT: '按质量与差异择优，缺少时只补充仍需的数量',
     ITEM_EVALUATE: '重新评估人工修改内容的六维连贯性与素材用途',
@@ -1480,7 +1480,8 @@ const localGraphDetail = (nodeId: EffectPromptNodeId): NodeDetail => {
         FACT_VISUAL_STRATEGY_COMPILATION:
           '将已确认事实编译为可见任务、商业背景与禁止视觉证明的安全角色。',
         SHARED_PROMPT_COMPILATION: '将形成生成与渲染共同使用的一段批次级提示词。',
-        COHERENT_CREATIVE_GENERATION: '将同步生成创意主线、六维信息和干净正文。',
+        COHERENT_CREATIVE_GENERATION:
+          '将先分配批次差异方向，再同步生成创意主线、六维信息和干净正文。',
         CREATIVE_EVALUATION_CLASSIFICATION: '将输出质量判断、推荐用途和问题原因。',
         EXACT_SELECTION_AND_SUPPLEMENT: '将按质量与差异选满目标数量，必要时补充一次。',
         RESULT_SAVE: '将最佳结果保存为节点草稿，完成校验前不会提交工作副本。',

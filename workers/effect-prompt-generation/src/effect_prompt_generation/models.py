@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import operator
+import hashlib
+import json
+import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -20,6 +23,27 @@ class ApiModel(BaseModel):
         populate_by_name=True,
         extra="forbid",
     )
+
+
+def _contract_sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _contract_sha256_json(value: object) -> str:
+    return _contract_sha256_text(
+        json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    )
+
+
+def _contract_disabled_elements(values: list[str]) -> list[str]:
+    unique: dict[str, str] = {}
+    for value in values:
+        cleaned = " ".join(value.split()).rstrip("。；;，,").strip()
+        if not cleaned:
+            continue
+        key = unicodedata.normalize("NFKC", cleaned).casefold()
+        unique.setdefault(key, cleaned)
+    return list(unique.values())
 
 
 class InputState(TypedDict):
@@ -139,6 +163,39 @@ class CreativeDimensions(ApiModel):
         return cleaned
 
 
+class CreativeDimensionKey(StrEnum):
+    NARRATIVE = "NARRATIVE"
+    SCENE = "SCENE"
+    PERSONA = "PERSONA"
+    PRODUCT_RELATION = "PRODUCT_RELATION"
+    CAMERA = "CAMERA"
+    EMOTION = "EMOTION"
+
+
+class CreativeSemanticProfile(ApiModel):
+    narrative_family: str = Field(min_length=1, max_length=80)
+    scene_family: str = Field(min_length=1, max_length=80)
+    persona_family: str = Field(min_length=1, max_length=80)
+    product_action_family: str = Field(min_length=1, max_length=80)
+    camera_family: str = Field(min_length=1, max_length=80)
+    emotion_family: str = Field(min_length=1, max_length=80)
+
+    @field_validator(
+        "narrative_family",
+        "scene_family",
+        "persona_family",
+        "product_action_family",
+        "camera_family",
+        "emotion_family",
+    )
+    @classmethod
+    def clean_family(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            raise ValueError("semantic family cannot be blank")
+        return cleaned
+
+
 class FragmentType(StrEnum):
     HOOK = "HOOK"
     PAIN = "PAIN"
@@ -200,7 +257,7 @@ class PromptBatchSettings(ApiModel):
 
 class PromptBatchSettingsV6(ApiModel):
     target_count: int = Field(ge=10, le=200)
-    default_duration_seconds: int = Field(ge=4, le=15)
+    default_duration_seconds: int = Field(ge=4, le=30)
 
     @property
     def fragment_configs(self) -> dict[FragmentType, FragmentConfig]:
@@ -380,7 +437,7 @@ class PromptItemV6(ApiModel):
     classification_status: Literal["PENDING", "VERIFIED"]
     product_relevance: int = Field(ge=0, le=100)
     material_tags: list[str] = Field(min_length=1, max_length=12)
-    target_duration_seconds: int = Field(ge=4, le=15)
+    target_duration_seconds: int = Field(ge=4, le=30)
     dimensions: CreativeDimensions
     content: str = Field(min_length=1, max_length=12_000)
     insight_bindings: list[InsightBinding] = Field(default_factory=list, max_length=16)
@@ -508,12 +565,31 @@ class SharedPrompt(ApiModel):
         )
         if self.compiled_content != expected:
             raise ValueError("compiledContent must match non-empty sections")
+        if self.content_hash != _contract_sha256_text(expected):
+            raise ValueError("shared prompt contentHash must match compiledContent")
+        additional = next(
+            (section for section in self.sections if section.key == "USER_ADDITIONAL"),
+            None,
+        )
+        if additional is not None and additional.source_hash != _contract_sha256_text(
+            additional.content
+        ):
+            raise ValueError("USER_ADDITIONAL sourceHash must match its content")
         return self
 
 
 class SharedRenderConstraints(ApiModel):
     disabled_elements: list[str] = Field(default_factory=list, max_length=100)
     content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+    @model_validator(mode="after")
+    def validate_disabled_elements_hash(self) -> SharedRenderConstraints:
+        normalized = _contract_disabled_elements(self.disabled_elements)
+        if normalized != self.disabled_elements:
+            raise ValueError("disabledElements must be normalized and unique")
+        if self.content_hash != _contract_sha256_json(normalized):
+            raise ValueError("sharedConstraints contentHash must match disabledElements")
+        return self
 
 
 class RenderProfile(ApiModel):
@@ -558,6 +634,40 @@ class PromptBatchResultV6(ApiModel):
             raise ValueError("metrics.acceptedCount must equal items length")
         if self.metrics.target_count != self.settings.target_count:
             raise ValueError("metrics.targetCount must equal settings.targetCount")
+        disabled = self.render_profile.shared_constraints.disabled_elements
+        disabled_section = next(
+            (
+                section
+                for section in self.shared_prompt.sections
+                if section.key == "DISABLED_ELEMENTS"
+            ),
+            None,
+        )
+        additional_section = next(
+            (
+                section
+                for section in self.shared_prompt.sections
+                if section.key == "USER_ADDITIONAL"
+            ),
+            None,
+        )
+        expected_disabled_content = (
+            f"画面中不得出现以下内容：{'；'.join(disabled)}。" if disabled else ""
+        )
+        if (
+            disabled_section is None
+            or disabled_section.source != "SYSTEM"
+            or disabled_section.editable
+            or disabled_section.content != expected_disabled_content
+            or disabled_section.source_hash != _contract_sha256_json(disabled)
+        ):
+            raise ValueError("DISABLED_ELEMENTS section must match renderProfile")
+        if (
+            additional_section is None
+            or additional_section.source != "USER"
+            or not additional_section.editable
+        ):
+            raise ValueError("USER_ADDITIONAL section is required")
         return self
 
 
@@ -588,7 +698,9 @@ class PromptGenerationSnapshot(ApiModel):
     retained_manual_items: list[PromptItem | PromptItemV6] = Field(
         default_factory=list, max_length=200
     )
-    selection_policy_version: Literal["MMR_CONTENT_V2"] | None = None
+    selection_policy_version: Literal[
+        "MMR_CONTENT_V2", "MMR_CONTENT_CLUSTER_V3"
+    ] | None = None
     similarity_anchors: list[PromptItem | PromptItemV6] = Field(
         default_factory=list, max_length=200
     )
@@ -957,6 +1069,7 @@ class StrategyCheckpoint(ApiModel):
         | FragmentRelationshipPlan
         | FragmentDimensionCoordinatePlan
         | FactVisualStrategy
+        | CreativeDirectionPlan
     )
 
 
@@ -1112,13 +1225,74 @@ class CreativeFactAssignment(ApiModel):
         )
 
 
+class CreativeDirection(ApiModel):
+    direction_id: str = Field(min_length=1, max_length=120)
+    compatible_fact_ids: list[str] = Field(min_length=1, max_length=32)
+    creative_direction: str = Field(min_length=1, max_length=240)
+    priority_dimensions: list[CreativeDimensionKey] = Field(min_length=2, max_length=2)
+    semantic_profile: CreativeSemanticProfile
+    avoid_families: list[str] = Field(default_factory=list, max_length=2)
+
+    @model_validator(mode="after")
+    def normalize_direction(self) -> CreativeDirection:
+        self.compatible_fact_ids = list(dict.fromkeys(self.compatible_fact_ids))
+        self.priority_dimensions = list(dict.fromkeys(self.priority_dimensions))
+        self.avoid_families = list(
+            dict.fromkeys(
+                " ".join(item.split())
+                for item in self.avoid_families
+                if item.strip()
+            )
+        )
+        if len(self.priority_dimensions) != 2:
+            raise ValueError("priorityDimensions must contain two distinct dimensions")
+        return self
+
+
+class CreativeDirectionResponse(ApiModel):
+    directions: list[CreativeDirection] = Field(min_length=8, max_length=12)
+
+
+class CreativeDirectionPlan(ApiModel):
+    directions: list[CreativeDirection] = Field(min_length=8, max_length=12)
+    source_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    prompt_version: str = Field(min_length=1, max_length=120)
+    reused_checkpoint: bool = False
+
+    @model_validator(mode="after")
+    def unique_directions(self) -> CreativeDirectionPlan:
+        direction_ids = [item.direction_id for item in self.directions]
+        direction_texts = [item.creative_direction.casefold() for item in self.directions]
+        if len(set(direction_ids)) != len(direction_ids):
+            raise ValueError("creative direction ids must be unique")
+        if len(set(direction_texts)) != len(direction_texts):
+            raise ValueError("creative directions must be distinct")
+        return self
+
+    @property
+    def vocabulary(self) -> dict[str, set[str]]:
+        profiles = [item.semantic_profile for item in self.directions]
+        return {
+            "narrative_family": {item.narrative_family for item in profiles},
+            "scene_family": {item.scene_family for item in profiles},
+            "persona_family": {item.persona_family for item in profiles},
+            "product_action_family": {
+                item.product_action_family for item in profiles
+            },
+            "camera_family": {item.camera_family for item in profiles},
+            "emotion_family": {item.emotion_family for item in profiles},
+        }
+
+
 class CreativeTask(ApiModel):
     slot_id: str = Field(min_length=1, max_length=160)
     ordinal: int = Field(ge=1)
     round: int = Field(ge=0, le=4)
     supplement_kind: Literal["INITIAL", "QUANTITY", "DIVERSITY"] | None = None
-    target_duration_seconds: int = Field(ge=4, le=15)
+    target_duration_seconds: int = Field(ge=4, le=30)
     fact_assignment: CreativeFactAssignment | None = None
+    creative_direction: CreativeDirection | None = None
     # Kept only so persisted early-V11 shard plans remain readable.
     preferred_fact_ids: list[str] = Field(default_factory=list, max_length=12)
 
@@ -1192,8 +1366,37 @@ class CreativeEvaluation(ApiModel):
     scores: CreativeScores
     semantic_signature: str = Field(min_length=1, max_length=240)
     visual_signature: str = Field(min_length=1, max_length=240)
+    semantic_profile: CreativeSemanticProfile | None = None
     hard_issues: list[str] = Field(default_factory=list, max_length=20)
     warnings: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("semantic_profile", mode="before")
+    @classmethod
+    def tolerate_partial_semantic_profile(cls, value: Any) -> Any:
+        """Keep Ark transport omissions readable so Worker can classify locally.
+
+        The actual vocabulary check still happens after the candidate is available.
+        This validator only prevents an otherwise valid evaluation batch from being
+        discarded because one nested classification field was omitted or blank.
+        """
+
+        if value is None or not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        fields = (
+            ("narrative_family", "narrativeFamily"),
+            ("scene_family", "sceneFamily"),
+            ("persona_family", "personaFamily"),
+            ("product_action_family", "productActionFamily"),
+            ("camera_family", "cameraFamily"),
+            ("emotion_family", "emotionFamily"),
+        )
+        for snake_name, alias in fields:
+            key = alias if alias in normalized else snake_name
+            raw = normalized.get(key)
+            if not isinstance(raw, str) or not raw.strip():
+                normalized[key] = "OTHER"
+        return normalized
 
     @model_validator(mode="after")
     def validate_purposes_and_evidence(self) -> CreativeEvaluation:
@@ -1286,6 +1489,9 @@ class FailurePayload(ApiModel):
 class ProgressPayload(ApiModel):
     progress: int | None = Field(default=None, ge=0, le=99)
     current_node: NodeId | None = None
+
+
+StrategyCheckpoint.model_rebuild()
 
 
 def utc_now() -> datetime:
