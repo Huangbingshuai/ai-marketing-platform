@@ -16,7 +16,7 @@ from typing import Any, Literal, cast
 from pydantic import ValidationError
 
 from .api_client import InternalApi, InternalApiError
-from .insight_mapping import map_insight
+from .insight_mapping import insight_coverage, map_insight
 from .embeddings import (
     ContentVectorIndex,
     CreativeVectorIndex,
@@ -47,6 +47,8 @@ from .models import (
     FactVisualStrategyResponse,
     InsightApplicationMap,
     InsightBinding,
+    InsightBindingRole,
+    InsightField,
     NodeId,
     ProgressPayload,
     PromptBatchResult,
@@ -78,6 +80,7 @@ from .providers import (
 from .creative_directions import (
     action_motif_guidance,
     action_motif_signature,
+    allocate_direction_fact_focus_ids,
     allocate_creative_directions,
     complete_semantic_profile,
     creative_direction_source_hash,
@@ -137,6 +140,7 @@ class RunCache:
     creative_direction_plan: CreativeDirectionPlan | None = None
     strategy_checkpoints: dict[NodeId, StrategyCheckpoint] = field(default_factory=dict)
     creatives: dict[str, CreativeCandidate] = field(default_factory=dict)
+    creative_tasks: dict[str, CreativeTask] = field(default_factory=dict)
     creative_target_durations: dict[str, int] = field(default_factory=dict)
     creative_evaluations: dict[str, CreativeEvaluation] = field(default_factory=dict)
     completed_creative_shard_keys: set[str] = field(default_factory=set)
@@ -276,6 +280,9 @@ class PromptGenerationPipeline:
         restored_creative_tasks = [
             task for shard in succeeded_creatives for task in shard.creative_plan
         ]
+        cache.creative_tasks = {
+            task.slot_id: task for task in restored_creative_tasks
+        }
         cache.used_direction_fact_pairs = {
             (task.creative_direction.direction_id, task.fact_assignment.primary_fact_id)
             for task in restored_creative_tasks
@@ -556,6 +563,19 @@ class PromptGenerationPipeline:
                 reused = True
         call_metadata: dict[str, int | None] = {}
         if plan is None:
+            await self._stage(
+                context,
+                NodeId.COHERENT_CREATIVE_GENERATION,
+                StageStatus.RUNNING,
+                "正在规划批次创意方向",
+                metadata={
+                    "directionCount": 0,
+                    "priorityDimensionDistribution": [],
+                    "candidateTargetCount": math.ceil(
+                        snapshot.settings.target_count * 1.4
+                    ),
+                },
+            )
             for invalid_response_attempt in range(2):
                 self._reserve_ai_call(context)
                 async with self._ai_semaphore:
@@ -724,6 +744,21 @@ class PromptGenerationPipeline:
             if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item
             else []
         )
+        already_covered_fact_ids = {
+            fact_id
+            for evaluation in cache.creative_evaluations.values()
+            for fact_id in evaluation.realized_fact_ids
+        }
+        already_covered_fact_ids.update(
+            binding.fact_id
+            for item in snapshot.retained_manual_items
+            for binding in item.insight_bindings
+        )
+        missing_required_fact_ids = [
+            fact.fact_id
+            for fact in application.required
+            if fact.fact_id not in already_covered_fact_ids
+        ]
         ordinal_start = (
             1
             if round_number == 0
@@ -764,15 +799,27 @@ class PromptGenerationPipeline:
             ]
         if directions:
             fact_assignments = []
+            used_direction_fact_pairs = cache.used_direction_fact_pairs
+            focus_fact_ids = allocate_direction_fact_focus_ids(
+                directions,
+                application,
+                priority_fact_ids=(
+                    preferred_primary_ids or missing_required_fact_ids
+                ),
+            )
             for index, direction in enumerate(directions):
-                preferred_ids = preferred_primary_ids or direction.compatible_fact_ids
+                preferred_ids = list(
+                    dict.fromkeys(
+                        [focus_fact_ids[index], *direction.compatible_fact_ids]
+                    )
+                )
                 assignment = None
-                for fact_offset in range(max(1, len(preferred_ids))):
+                for focused_fact_id in preferred_ids:
                     candidate_assignment = allocate_creative_facts(
                         application,
                         count=1,
-                        ordinal_start=ordinal_start + index + fact_offset,
-                        preferred_primary_fact_ids=preferred_ids,
+                        ordinal_start=ordinal_start + index,
+                        preferred_primary_fact_ids=[focused_fact_id],
                         fact_visual_strategy=fact_visual_strategy,
                     )[0]
                     pair = (
@@ -780,8 +827,8 @@ class PromptGenerationPipeline:
                         candidate_assignment.primary_fact_id,
                     )
                     assignment = candidate_assignment
-                    if pair not in cache.used_direction_fact_pairs:
-                        cache.used_direction_fact_pairs.add(pair)
+                    if pair not in used_direction_fact_pairs:
+                        used_direction_fact_pairs.add(pair)
                         break
                 if assignment is None:
                     raise PipelineError("创意方向未能分配可用事实")
@@ -814,6 +861,7 @@ class PromptGenerationPipeline:
         cache.creative_target_durations.update(
             {task.slot_id: task.target_duration_seconds for task in tasks}
         )
+        cache.creative_tasks.update({task.slot_id: task for task in tasks})
         if supplement_kind == "DIVERSITY":
             cache.diversity_supplement_slot_ids.update(task.slot_id for task in tasks)
         selected = cache.selected_creatives.selected if cache.selected_creatives else []
@@ -862,9 +910,13 @@ class PromptGenerationPipeline:
                 "pendingShardCount": len(pending),
                 "shardSize": min(4, self.shard_size),
                 "factSelectionMode": (
-                    "VISUAL_TASK_AND_BUSINESS_CONTEXT"
+                    "GLOBAL_COVERAGE_VISUAL_TASK_AND_BUSINESS_CONTEXT"
                     if fact_visual_strategy is not None
                     else "WORKER_ASSIGNMENT"
+                ),
+                "requiredFactCount": len(application.required),
+                "missingRequiredFactCountBeforeRound": len(
+                    missing_required_fact_ids
                 ),
                 "primaryFactCount": len(
                     {assignment.primary_fact_id for assignment in fact_assignments}
@@ -1096,9 +1148,24 @@ class PromptGenerationPipeline:
             for invalid_response_attempt in range(2):
                 self._reserve_ai_call(context)
                 try:
+                    application = self._require_application(context)
+                    assigned_context_fact_ids = {
+                        candidate.slot_id: _evaluation_context_fact_ids(
+                            candidate,
+                            cache.creative_tasks.get(candidate.slot_id),
+                            application,
+                            item_evaluation=(
+                                self.snapshot(context).operation == "ITEM_EVALUATE"
+                            ),
+                        )
+                        for candidate in candidates
+                    }
                     async with self._ai_semaphore:
                         evaluation_kwargs: dict[str, Any] = {
-                            "application": self._require_application(context),
+                            "application": application,
+                            "assigned_context_fact_ids": (
+                                assigned_context_fact_ids
+                            ),
                             "target_durations": {
                                 candidate.slot_id: cache.creative_target_durations[
                                     candidate.slot_id
@@ -1137,10 +1204,14 @@ class PromptGenerationPipeline:
                     validate_creative_evaluation(
                         candidate,
                         item,
-                        self._require_application(context),
+                        application,
                         target_duration_seconds=cache.creative_target_durations[
                             item.slot_id
                         ],
+                        contextual_fact_ids=assigned_context_fact_ids.get(
+                            item.slot_id,
+                            [],
+                        ),
                         fact_visual_strategy=(
                             self._required_fact_visual_strategy(context)
                             if _uses_fact_visual_strategy(self.snapshot(context))
@@ -1326,6 +1397,17 @@ class PromptGenerationPipeline:
             if item_operation
             else max(0, settings.target_count - len(snapshot.retained_manual_items))
         )
+        application = self._require_application(context)
+        required_fact_ids = (
+            []
+            if item_operation
+            else [fact.fact_id for fact in application.required]
+        )
+        fixed_covered_fact_ids = [
+            binding.fact_id
+            for item in snapshot.retained_manual_items
+            for binding in item.insight_bindings
+        ]
         if snapshot.operation == "ITEM_EVALUATE":
             candidate = next(iter(cache.creatives.values()), None)
             evaluation = (
@@ -1351,6 +1433,8 @@ class PromptGenerationPipeline:
                 list(cache.creatives.values()),
                 list(cache.creative_evaluations.values()),
                 target_count=selection_target,
+                required_fact_ids=required_fact_ids,
+                fixed_covered_fact_ids=fixed_covered_fact_ids,
             )
             result = baseline_result
             cache.embedding_stage_metadata = {
@@ -1440,6 +1524,8 @@ class PromptGenerationPipeline:
                             dimension_gain_resolver=lambda item, selected: (
                                 _dimension_unique_gain(item, selected, anchors)
                             ),
+                            required_fact_ids=required_fact_ids,
+                            fixed_covered_fact_ids=fixed_covered_fact_ids,
                             quality_weight=0.70,
                             novelty_weight=0.30,
                         )
@@ -1448,6 +1534,8 @@ class PromptGenerationPipeline:
                         list(cache.creatives.values()),
                         list(cache.creative_evaluations.values()),
                         target_count=selection_target,
+                        required_fact_ids=required_fact_ids,
+                        fixed_covered_fact_ids=fixed_covered_fact_ids,
                         quality_weight=1.0,
                         novelty_weight=0.0,
                     )
@@ -1682,6 +1770,8 @@ class PromptGenerationPipeline:
                         list(cache.creatives.values()),
                         list(cache.creative_evaluations.values()),
                         target_count=selection_target,
+                        required_fact_ids=required_fact_ids,
+                        fixed_covered_fact_ids=fixed_covered_fact_ids,
                         novelty_resolver=lambda left, right: vector_index.dual_novelty(
                             left.candidate.slot_id,
                             right.candidate.slot_id,
@@ -1691,6 +1781,8 @@ class PromptGenerationPipeline:
                         list(cache.creatives.values()),
                         list(cache.creative_evaluations.values()),
                         target_count=selection_target,
+                        required_fact_ids=required_fact_ids,
+                        fixed_covered_fact_ids=fixed_covered_fact_ids,
                         novelty_resolver=lambda left, right: (
                             vector_index.content_novelty(
                                 left.candidate.slot_id,
@@ -1850,6 +1942,8 @@ class PromptGenerationPipeline:
             result,
             self._require_application(context),
             settings.default_duration_seconds,
+            creative_tasks=cache.creative_tasks,
+            item_evaluation=(snapshot.operation == "ITEM_EVALUATE"),
         )
         cache.accepted_items = (
             items
@@ -2060,6 +2154,10 @@ class PromptGenerationPipeline:
             and cache.redundancy_summary is not None
             else _pending_semantic_evaluation()
         )
+        coverage = insight_coverage(
+            self._require_application(context),
+            items,
+        )
         quality_status: Literal["PASS", "NEEDS_REVIEW"] = (
             "PASS"
             if len(items) == expected
@@ -2068,6 +2166,7 @@ class PromptGenerationPipeline:
             and semantic_evaluation.status == "VERIFIED"
             and semantic_evaluation.duplicate_rate is not None
             and semantic_evaluation.duplicate_rate < SEMANTIC_DUPLICATE_RATE_LIMIT
+            and (item_operation or not coverage.missing)
             else "NEEDS_REVIEW"
         )
         metrics = PromptMetrics(
@@ -2096,6 +2195,7 @@ class PromptGenerationPipeline:
                 CountMetric(code=code, count=count)
                 for code, count in sorted(warning_counts.items())
             ],
+            insight_coverage=coverage,
         )
         result = PromptBatchResult(
             settings=settings,
@@ -2130,6 +2230,13 @@ class PromptGenerationPipeline:
                 "semanticDuplicateCount": semantic_evaluation.duplicate_count,
                 "semanticDuplicateRate": semantic_evaluation.duplicate_rate,
                 "semanticDuplicateRateLimit": SEMANTIC_DUPLICATE_RATE_LIMIT,
+                "requiredFactCount": len(coverage.required),
+                "coveredRequiredFactCount": len(coverage.covered),
+                "missingRequiredFactCount": len(coverage.missing),
+                "missingRequiredFacts": [
+                    {"field": item.field.value, "value": item.value}
+                    for item in coverage.missing
+                ],
                 "semanticAudit": semantic_audit,
             },
         )
@@ -2479,16 +2586,85 @@ def _redundancy_metadata(
     }
 
 
+_SEMANTIC_CONTEXT_FIELDS = {
+    InsightField.TARGET_AUDIENCE,
+    InsightField.CORE_PAIN_POINT,
+    InsightField.DECISION_DRIVER,
+    InsightField.MARKETING_GOAL,
+    InsightField.CORE_SELLING_POINT,
+    InsightField.SECONDARY_SELLING_POINT,
+    InsightField.USAGE_SCENARIO,
+    InsightField.PURCHASE_SCENARIO,
+    InsightField.EMOTIONAL_SCENARIO,
+}
+
+
+def _evaluation_context_fact_ids(
+    candidate: CreativeCandidate,
+    task: CreativeTask | None,
+    application: InsightApplicationMap,
+    *,
+    item_evaluation: bool,
+) -> list[str]:
+    if item_evaluation:
+        return [
+            fact_id
+            for fact_id in candidate.declared_fact_ids
+            if fact_id in application.by_id
+        ]
+    if task is None or task.fact_assignment is None:
+        return []
+    assignment = task.fact_assignment
+    semantic_context_ids = [
+        fact_id
+        for fact_id in assignment.business_context_fact_ids
+        if fact_id in application.by_id
+        and application.by_id[fact_id].field in _SEMANTIC_CONTEXT_FIELDS
+    ]
+    semantic_visual_ids = [
+        fact_id
+        for fact_id in (
+            assignment.visual_task_fact_id,
+            assignment.primary_fact_id,
+        )
+        if fact_id is not None
+        and fact_id in application.by_id
+        and application.by_id[fact_id].field in _SEMANTIC_CONTEXT_FIELDS
+    ]
+    return list(
+        dict.fromkeys(
+            [*semantic_context_ids, *semantic_visual_ids]
+        )
+    )
+
+
 def _prompt_items(
     context: RuntimeContext,
     selection: CreativeSelectionResult,
     application: InsightApplicationMap,
     default_duration_seconds: int,
+    *,
+    creative_tasks: Mapping[str, CreativeTask],
+    item_evaluation: bool,
 ) -> list[PromptItem]:
     result: list[PromptItem] = []
     for row in selection.selected:
         candidate = row.candidate
         evaluation = row.evaluation
+        task = creative_tasks.get(candidate.slot_id)
+        contextual_ids = set(
+            _evaluation_context_fact_ids(
+                candidate,
+                task,
+                application,
+                item_evaluation=item_evaluation,
+            )
+        )
+        visual_fact_id = (
+            task.fact_assignment.visual_task_fact_id
+            if task is not None and task.fact_assignment is not None
+            else None
+        )
         bindings: list[InsightBinding] = []
         for fact_id in evaluation.realized_fact_ids:
             fact = application.by_id.get(fact_id)
@@ -2500,7 +2676,17 @@ def _prompt_items(
                     field=fact.field,
                     value=fact.value,
                     value_hash=fact.value_hash,
-                    role=fact.preferred_role,
+                    role=(
+                        InsightBindingRole.CONTEXT
+                        if fact_id in contextual_ids
+                        and fact_id not in candidate.declared_fact_ids
+                        else InsightBindingRole.EVIDENCE
+                        if fact.preferred_role == InsightBindingRole.EVIDENCE
+                        else InsightBindingRole.PRIMARY
+                        if fact_id == visual_fact_id
+                        or fact_id in candidate.declared_fact_ids
+                        else fact.preferred_role
+                    ),
                 )
             )
         timestamp = candidate.generated_at or utc_now()

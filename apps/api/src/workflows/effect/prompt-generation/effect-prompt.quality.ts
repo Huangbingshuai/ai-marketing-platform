@@ -163,6 +163,31 @@ const validInsightBinding = (value: unknown): value is EffectPromptInsightBindin
   );
 };
 
+const validInsightCoverage = (value: unknown): value is EffectPromptInsightCoverage => {
+  const coverage = record(value);
+  if (!coverage || Object.keys(coverage).length !== 7) return false;
+  const references = (key: string) =>
+    Array.isArray(coverage[key]) && coverage[key].every(validInsightReference);
+  return Boolean(
+    references('required') &&
+    references('covered') &&
+    references('missing') &&
+    references('adaptive') &&
+    references('deferred') &&
+    references('appliedConstraints') &&
+    Array.isArray(coverage.excluded) &&
+    coverage.excluded.every((item) => {
+      const excluded = record(item);
+      const reason = excluded?.reason;
+      return Boolean(
+        excluded &&
+        validInsightReference(excluded) &&
+        ['UNCERTAIN', 'EMPTY', 'UNSUPPORTED'].includes(String(reason)),
+      );
+    }),
+  );
+};
+
 const bindingRole = (field: EffectPromptInsightReference['field']): EffectPromptInsightRole => {
   if (field === 'TRUST_BACKING') return 'EVIDENCE';
   if (['CORE_SELLING_POINT', 'CORE_PAIN_POINT', 'MARKETING_GOAL', 'PRICE_RANGE'].includes(field))
@@ -555,7 +580,7 @@ export const pendingEffectPromptSemanticEvaluation = (): EffectPromptSemanticEva
 
 const validMetrics = (value: unknown): value is EffectPromptMetrics => {
   const metrics = record(value);
-  if (!metrics || ![11, 12].includes(Object.keys(metrics).length)) return false;
+  if (!metrics || ![12, 13].includes(Object.keys(metrics).length)) return false;
   const integer = (key: keyof EffectPromptMetrics, minimum: number, maximum = Infinity) =>
     Number.isInteger(metrics[key]) &&
     Number(metrics[key]) >= minimum &&
@@ -605,7 +630,8 @@ const validMetrics = (value: unknown): value is EffectPromptMetrics => {
         Number(scores[key]) <= 100,
     ) &&
     validIssueCounts(metrics.hardIssueCounts) &&
-    validIssueCounts(metrics.warningCounts),
+    validIssueCounts(metrics.warningCounts) &&
+    validInsightCoverage(metrics.insightCoverage),
   );
 };
 
@@ -961,6 +987,24 @@ export const recomputePromptQuality = (
     : validSemanticEvaluation(previous?.semanticEvaluation)
       ? previous.semanticEvaluation
       : pendingEffectPromptSemanticEvaluation();
+  const previousCoverage = previous?.insightCoverage ?? {
+    required: [],
+    covered: [],
+    missing: [],
+    adaptive: [],
+    deferred: [],
+    excluded: [],
+    appliedConstraints: [],
+  };
+  const boundFactIds = new Set(
+    items.flatMap((item) => item.insightBindings.map((binding) => binding.factId)),
+  );
+  const insightCoverage: EffectPromptInsightCoverage = {
+    ...previousCoverage,
+    covered: previousCoverage.required.filter(({ factId }) => boundFactIds.has(factId)),
+    missing: previousCoverage.required.filter(({ factId }) => !boundFactIds.has(factId)),
+    deferred: previousCoverage.adaptive.filter(({ factId }) => !boundFactIds.has(factId)),
+  };
   const metrics: EffectPromptMetrics = {
     targetCount: settings.targetCount,
     candidateTargetCount: Math.min(240, Math.ceil(settings.targetCount * 1.2)),
@@ -986,6 +1030,7 @@ export const recomputePromptQuality = (
     },
     hardIssueCounts: normalizedHardIssues,
     warningCounts: previous?.warningCounts ?? [],
+    insightCoverage,
   };
   const qualityStatus =
     items.length === settings.targetCount &&
@@ -995,7 +1040,8 @@ export const recomputePromptQuality = (
     semanticEvaluation.status === 'VERIFIED' &&
     semanticEvaluation.evaluatedCount === items.length &&
     semanticEvaluation.duplicateRate !== null &&
-    semanticEvaluation.duplicateRate < EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT
+    semanticEvaluation.duplicateRate < EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT &&
+    insightCoverage.missing.length === 0
       ? 'PASS'
       : 'NEEDS_REVIEW';
   return {

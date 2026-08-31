@@ -27,6 +27,7 @@ from effect_prompt_generation.providers import (
     MockAiProvider,
 )
 from effect_prompt_generation.creative_directions import (
+    allocate_direction_fact_focus_ids,
     allocate_creative_directions,
     complete_semantic_profile,
     creative_direction_source_hash,
@@ -50,6 +51,7 @@ class ConcentratedClusterProvider(MockAiProvider):
         *,
         target_durations: Any,
         application: Any,
+        assigned_context_fact_ids: Any = None,
         fact_visual_strategy: Any = None,
         direction_plan: Any = None,
     ) -> Any:
@@ -57,6 +59,7 @@ class ConcentratedClusterProvider(MockAiProvider):
             candidates,
             target_durations=target_durations,
             application=application,
+            assigned_context_fact_ids=assigned_context_fact_ids,
             fact_visual_strategy=fact_visual_strategy,
             direction_plan=direction_plan,
         )
@@ -76,6 +79,7 @@ class MissingSemanticProfileProvider(MockAiProvider):
         *,
         target_durations: Any,
         application: Any,
+        assigned_context_fact_ids: Any = None,
         fact_visual_strategy: Any = None,
         direction_plan: Any = None,
     ) -> Any:
@@ -83,6 +87,7 @@ class MissingSemanticProfileProvider(MockAiProvider):
             candidates,
             target_durations=target_durations,
             application=application,
+            assigned_context_fact_ids=assigned_context_fact_ids,
             fact_visual_strategy=fact_visual_strategy,
             direction_plan=direction_plan,
         )
@@ -337,6 +342,14 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
         source_hash=source_hash,
         template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
     )
+    planned_fact_ids = {
+        fact_id
+        for direction in plan.directions
+        for fact_id in direction.compatible_fact_ids
+    }
+    assert {fact.fact_id for fact in application.required}.issubset(
+        planned_fact_ids
+    )
     allocated = allocate_creative_directions(
         plan,
         count=70,
@@ -345,6 +358,13 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
     counts = Counter(item.direction_id for item in allocated)
     assert max(counts.values()) - min(counts.values()) <= 1
     assert max(counts.values()) <= 9
+    focus_ids = allocate_direction_fact_focus_ids(
+        allocated,
+        application,
+        priority_fact_ids=[fact.fact_id for fact in application.required],
+    )
+    assert {fact.fact_id for fact in application.required}.issubset(focus_ids)
+    assert {fact.fact_id for fact in application.usable}.issubset(focus_ids)
 
     invalid = raw.model_copy(
         update={

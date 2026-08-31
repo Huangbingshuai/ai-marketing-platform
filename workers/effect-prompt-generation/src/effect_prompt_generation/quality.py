@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Callable
 
@@ -291,11 +292,18 @@ def validate_creative_evaluation(
     application: InsightApplicationMap,
     *,
     target_duration_seconds: int | None = None,
+    contextual_fact_ids: Sequence[str] = (),
     fact_visual_strategy: FactVisualStrategy | None = None,
 ) -> CreativeEvaluation:
     if evaluation.slot_id != candidate.slot_id:
         raise ValueError("creative evaluation changed slotId")
     declared = set(candidate.declared_fact_ids)
+    contextual = {
+        fact_id
+        for fact_id in contextual_fact_ids
+        if fact_id in application.by_id
+    }
+    allowed_evidence = declared | contextual
     content_text = _normalized_evidence_text(candidate.content)
     valid_evidence = []
     evidenced_fact_ids: set[str] = set()
@@ -315,13 +323,13 @@ def validate_creative_evaluation(
     )
     for evidence in evaluation.fact_evidence:
         fact = application.by_id.get(evidence.fact_id)
-        if fact is None or evidence.fact_id not in declared:
+        if fact is None or evidence.fact_id not in allowed_evidence:
             warnings.append("UNKNOWN_OR_UNDECLARED_FACT")
             continue
         if _normalized_evidence_text(evidence.evidence_text) not in content_text:
             warnings.append("FACT_EVIDENCE_NOT_IN_CONTENT")
             continue
-        if not _evidence_supports_fact(
+        if evidence.fact_id not in contextual and not _evidence_supports_fact(
             evidence.evidence_text,
             fact.value,
             field=fact.field,
@@ -400,6 +408,8 @@ def select_creatives(
     fixed_novelty_resolver: Callable[[RankedCreative], float] | None = None,
     dimension_gain_resolver: Callable[[RankedCreative, list[RankedCreative]], int]
     | None = None,
+    required_fact_ids: Sequence[str] = (),
+    fixed_covered_fact_ids: Sequence[str] = (),
     quality_weight: float = 0.8,
     novelty_weight: float = 0.2,
 ) -> CreativeSelectionResult:
@@ -451,6 +461,7 @@ def select_creatives(
         )
         for item in remaining
     }
+    uncovered_required = set(required_fact_ids) - set(fixed_covered_fact_ids)
     while remaining and len(selected) < target_count:
         scored: list[RankedCreative] = []
         for item in remaining:
@@ -467,8 +478,13 @@ def select_creatives(
                     ),
                 )
             )
+        coverage_candidates = [
+            row
+            for row in scored
+            if uncovered_required.intersection(row.evaluation.realized_fact_ids)
+        ]
         best = max(
-            scored,
+            coverage_candidates or scored,
             key=lambda row: (
                 row.selection_score,
                 dimension_gain_resolver(row, selected)
@@ -479,6 +495,7 @@ def select_creatives(
             ),
         )
         selected.append(best)
+        uncovered_required.difference_update(best.evaluation.realized_fact_ids)
         remaining = [
             item
             for item in remaining

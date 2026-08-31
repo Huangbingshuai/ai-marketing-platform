@@ -378,6 +378,7 @@ class PromptMetrics(ApiModel):
     average_scores: CreativeAverageScores
     hard_issue_counts: list[CountMetric] = Field(default_factory=list)
     warning_counts: list[CountMetric] = Field(default_factory=list)
+    insight_coverage: InsightCoverage
 
 
 class SharedPromptSection(ApiModel):

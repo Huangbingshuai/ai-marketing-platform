@@ -1813,10 +1813,22 @@ const additionalOutputFields = (
           : '未触发',
       ),
     ]);
-  if (nodeId === 'RESULT_SAVE' && result)
+  if (nodeId === 'RESULT_SAVE' && result) {
+    const insightCoverage = metadataRecord(resultMetrics.insightCoverage);
+    const requiredFacts = Array.isArray(insightCoverage.required)
+      ? insightCoverage.required.length
+      : 0;
+    const coveredFacts = Array.isArray(insightCoverage.covered)
+      ? insightCoverage.covered.length
+      : 0;
+    const missingFacts = Array.isArray(insightCoverage.missing)
+      ? insightCoverage.missing.length
+      : 0;
     return compact([
       { label: '已保存 Prompt', value: (Array.isArray(result.items) ? result.items : []).length },
       numberField(resultMetrics, 'targetCount', '目标数量'),
+      { label: '必用事实覆盖', value: `${coveredFacts}/${requiredFacts}` },
+      { label: '仍缺事实', value: missingFacts },
       textField('质量状态', result.qualityStatus),
       textField(
         '语义重复度',
@@ -1830,6 +1842,7 @@ const additionalOutputFields = (
       { label: '提交状态', value: '已保存为节点草稿，尚未提交工作副本' },
       ...scoreFields(qualityScores(resultMetrics.averageScores)),
     ]);
+  }
   return [];
 };
 

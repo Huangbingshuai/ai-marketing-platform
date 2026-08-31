@@ -180,7 +180,6 @@ def insight_coverage(application: InsightApplicationMap, items: Sequence[PromptI
         for item in items
         for binding in item.insight_bindings
         if binding.fact_id in application.by_id
-        and item.fragment_type in application.by_id[binding.fact_id].eligible_fragment_types
     }
     required = [_reference(fact) for fact in application.required]
     adaptive = [_reference(fact) for fact in application.adaptive]

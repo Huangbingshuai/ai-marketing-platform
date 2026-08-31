@@ -290,6 +290,7 @@ export type EffectPromptMetrics = {
   averageScores: EffectPromptQualityScores;
   hardIssueCounts: Array<{ code: string; count: number }>;
   warningCounts: Array<{ code: string; count: number }>;
+  insightCoverage: EffectPromptInsightCoverage;
 };
 
 export const EFFECT_PROMPT_QUALITY_STATUSES = ['PASS', 'NEEDS_REVIEW'] as const;

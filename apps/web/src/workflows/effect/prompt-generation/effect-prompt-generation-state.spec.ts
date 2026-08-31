@@ -84,6 +84,15 @@ const batch: EffectPromptBatchResult = {
     },
     hardIssueCounts: [],
     warningCounts: [{ code: 'LOW_PURPOSE_CONFIDENCE', count: 2 }],
+    insightCoverage: {
+      required: [],
+      covered: [],
+      missing: [],
+      adaptive: [],
+      deferred: [],
+      excluded: [],
+      appliedConstraints: [],
+    },
   },
   qualityStatus: 'PASS',
 };

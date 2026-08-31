@@ -11,6 +11,7 @@ from effect_prompt_generation.models import (
     CreativeEvaluationDraft,
     CreativeEvaluationDraftBatch,
     FragmentType,
+    InsightCoverage,
     PromptBatchResult,
     PromptBatchSettings,
     PromptItem,
@@ -161,6 +162,7 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
             ),
             hard_issue_counts=[],
             warning_counts=[],
+            insight_coverage=InsightCoverage(),
         ),
         quality_status="NEEDS_REVIEW",
     )

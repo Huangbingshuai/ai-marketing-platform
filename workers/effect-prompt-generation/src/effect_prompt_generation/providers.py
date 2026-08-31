@@ -7,7 +7,7 @@ import logging
 import random
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Generic, Protocol, TypeVar
@@ -148,6 +148,7 @@ class AiProvider(Protocol):
         *,
         target_durations: Mapping[str, int],
         application: InsightApplicationMap,
+        assigned_context_fact_ids: Mapping[str, Sequence[str]] | None = None,
         fact_visual_strategy: FactVisualStrategy | None = None,
         direction_plan: CreativeDirectionPlan | None = None,
     ) -> AiCallResult[CreativeEvaluationBatch]: ...
@@ -210,14 +211,21 @@ class MockAiProvider:
         *,
         target_durations: Mapping[str, int],
         application: InsightApplicationMap,
+        assigned_context_fact_ids: Mapping[str, Sequence[str]] | None = None,
         fact_visual_strategy: FactVisualStrategy | None = None,
         direction_plan: CreativeDirectionPlan | None = None,
     ) -> AiCallResult[CreativeEvaluationBatch]:
         del target_durations
+        context_by_slot = assigned_context_fact_ids or {}
         return _mock_result(
             CreativeEvaluationBatch(
                 items=[
-                    _mock_creative_evaluation(item, application, direction_plan)
+                    _mock_creative_evaluation(
+                        item,
+                        application,
+                        direction_plan,
+                        context_fact_ids=context_by_slot.get(item.slot_id, ()),
+                    )
                     for item in candidates
                 ]
             ),
@@ -523,6 +531,7 @@ class ArkResponsesProvider:
         *,
         target_durations: Mapping[str, int],
         application: InsightApplicationMap,
+        assigned_context_fact_ids: Mapping[str, Sequence[str]] | None = None,
         fact_visual_strategy: FactVisualStrategy | None = None,
         direction_plan: CreativeDirectionPlan | None = None,
     ) -> AiCallResult[CreativeEvaluationBatch]:
@@ -541,9 +550,26 @@ class ArkResponsesProvider:
                 retryable=False,
                 error_type=ProviderErrorType.REQUEST_REJECTED,
             )
+        context_by_slot = {
+            slot_id: list(dict.fromkeys(fact_ids))
+            for slot_id, fact_ids in (assigned_context_fact_ids or {}).items()
+        }
+        if any(slot_id not in expected for slot_id in context_by_slot) or any(
+            fact_id not in application.by_id
+            for fact_ids in context_by_slot.values()
+            for fact_id in fact_ids
+        ):
+            raise ProviderError(
+                "creative evaluation received an unknown assigned context fact",
+                retryable=False,
+                error_type=ProviderErrorType.REQUEST_REJECTED,
+            )
         referenced = {
             fact_id for item in candidates for fact_id in item.declared_fact_ids
         }
+        referenced.update(
+            fact_id for fact_ids in context_by_slot.values() for fact_id in fact_ids
+        )
         facts = [
             application.by_id[fact_id].model_dump(
                 mode="json",
@@ -569,6 +595,10 @@ class ArkResponsesProvider:
                     {
                         "candidate": item.model_dump(mode="json", by_alias=True),
                         "targetDurationSeconds": target_durations[item.slot_id],
+                        "assignedContextFactIds": context_by_slot.get(
+                            item.slot_id,
+                            [],
+                        ),
                     }
                     for item in candidates
                 ],
@@ -1183,13 +1213,29 @@ def _mock_creative_evaluation(
     candidate: CreativeCandidate,
     application: InsightApplicationMap,
     direction_plan: CreativeDirectionPlan | None = None,
+    *,
+    context_fact_ids: Sequence[str] = (),
 ) -> CreativeEvaluation:
-    evidence = [
-        FactEvidence(fact_id=fact_id, evidence_text=application.by_id[fact_id].value)
-        for fact_id in candidate.declared_fact_ids
-        if fact_id in application.by_id
-        and application.by_id[fact_id].value in candidate.content
-    ]
+    context_ids = set(context_fact_ids)
+    evidence: list[FactEvidence] = []
+    for fact_id in dict.fromkeys(
+        [*candidate.declared_fact_ids, *context_fact_ids]
+    ):
+        fact = application.by_id.get(fact_id)
+        if fact is None:
+            continue
+        evidence_text = (
+            fact.value
+            if fact.value in candidate.content
+            else candidate.dimensions.scene
+            if fact_id in context_ids
+            and candidate.dimensions.scene in candidate.content
+            else ""
+        )
+        if evidence_text:
+            evidence.append(
+                FactEvidence(fact_id=fact_id, evidence_text=evidence_text)
+            )
     purposes = list(FragmentType)
     primary = purposes[(candidate.ordinal - 1) % len(purposes)]
     compatible = [primary]

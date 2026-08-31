@@ -51,7 +51,8 @@
         "purposeDistribution",
         "averageScores",
         "hardIssueCounts",
-        "warningCounts"
+        "warningCounts",
+        "insightCoverage"
       ],
       "properties": {
         "targetCount": {
@@ -100,6 +101,9 @@
         },
         "warningCounts": {
           "$ref": "#/$defs/issueCounts"
+        },
+        "insightCoverage": {
+          "$ref": "#/$defs/insightCoverage"
         }
       }
     },

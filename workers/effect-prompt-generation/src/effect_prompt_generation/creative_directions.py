@@ -17,6 +17,7 @@ from .models import (
     CreativeSemanticProfile,
     FactVisualStrategy,
     InsightApplicationMap,
+    InsightFactPolicy,
 )
 
 
@@ -144,6 +145,17 @@ def validate_creative_direction_plan(
         directions.append(
             direction.model_copy(update={"compatible_fact_ids": fact_ids})
         )
+    directions = _distribute_unassigned_facts(
+        directions,
+        application=application,
+        fact_visual_strategy=fact_visual_strategy,
+    )
+    required_ids = {fact.fact_id for fact in application.required}
+    planned_ids = {
+        fact_id for direction in directions for fact_id in direction.compatible_fact_ids
+    }
+    if not required_ids.issubset(planned_ids):
+        raise ValueError("creative directions did not cover all required facts")
     allocation_buckets = Counter(
         direction_allocation_bucket(direction) for direction in directions
     )
@@ -159,6 +171,105 @@ def validate_creative_direction_plan(
         plan_hash=_hash(plan_payload),
         template_hash=template_hash,
     )
+
+
+def allocate_direction_fact_focus_ids(
+    directions: Sequence[CreativeDirection],
+    application: InsightApplicationMap,
+    *,
+    priority_fact_ids: Sequence[str] = (),
+) -> list[str]:
+    """Choose one business fact per task while covering the whole insight map.
+
+    Directions remain the creative boundary. Within that boundary this scheduler
+    prefers facts that have been used least, so product name and packaging cannot
+    crowd out pains, audiences, decision drivers, scenarios, or selling points.
+    """
+
+    if not directions:
+        return []
+    fact_by_id = application.by_id
+    priority = [
+        fact_id
+        for fact_id in dict.fromkeys(priority_fact_ids)
+        if fact_id in fact_by_id
+    ]
+    priority_rank = {fact_id: index for index, fact_id in enumerate(priority)}
+    source_rank = {
+        fact.fact_id: index for index, fact in enumerate(application.usable)
+    }
+    usage: Counter[str] = Counter()
+    selected: list[str] = []
+    for direction in directions:
+        candidates = [
+            fact_id
+            for fact_id in direction.compatible_fact_ids
+            if fact_id in fact_by_id
+        ]
+        if not candidates:
+            raise ValueError("creative direction has no usable fact for allocation")
+        chosen = min(
+            candidates,
+            key=lambda fact_id: (
+                usage[fact_id],
+                0 if fact_id in priority_rank else 1,
+                0
+                if fact_by_id[fact_id].policy == InsightFactPolicy.REQUIRED
+                else 1,
+                priority_rank.get(fact_id, len(priority_rank)),
+                source_rank.get(fact_id, len(source_rank)),
+            ),
+        )
+        usage[chosen] += 1
+        selected.append(chosen)
+    return selected
+
+
+def _distribute_unassigned_facts(
+    directions: Sequence[CreativeDirection],
+    *,
+    application: InsightApplicationMap,
+    fact_visual_strategy: FactVisualStrategy,
+) -> list[CreativeDirection]:
+    """Fill planning omissions without inventing a second creative plan.
+
+    The model still decides all creative directions. The Worker only attaches
+    confirmed facts that the model omitted, preferring directions already linked
+    by the visual strategy and otherwise the least-loaded direction.
+    """
+
+    result = list(directions)
+    planned = {
+        fact_id for direction in result for fact_id in direction.compatible_fact_ids
+    }
+    policy_by_id = fact_visual_strategy.by_id
+    for fact in application.usable:
+        if fact.fact_id in planned:
+            continue
+        policy = policy_by_id[fact.fact_id]
+
+        def direction_score(index: int) -> tuple[int, int, int]:
+            direction = result[index]
+            existing = set(direction.compatible_fact_ids)
+            related = bool(existing.intersection(policy.compatible_fact_ids)) or any(
+                fact.fact_id in policy_by_id[item].compatible_fact_ids
+                for item in existing
+                if item in policy_by_id
+            )
+            return (0 if related else 1, len(existing), index)
+
+        target_index = min(range(len(result)), key=direction_score)
+        target = result[target_index]
+        result[target_index] = target.model_copy(
+            update={
+                "compatible_fact_ids": [
+                    *target.compatible_fact_ids,
+                    fact.fact_id,
+                ]
+            }
+        )
+        planned.add(fact.fact_id)
+    return result
 
 
 def allocate_creative_directions(
@@ -194,7 +305,10 @@ def allocate_creative_directions(
     # Balance concrete scene-action combinations while also capping every
     # individual direction. Balancing only by a coarse scene atom caused a
     # single dining direction to receive 23/70 tasks when five kitchen
-    # directions were collapsed into one atom.
+    # directions were collapsed into one atom. The per-direction cap guarantees
+    # that no valid direction can monopolise a large batch, while the combined
+    # bucket still prevents synonymous scene labels with the same action from
+    # being treated as independent creative spaces.
     grouped: dict[tuple[str, str], list[CreativeDirection]] = {}
     for direction in directions:
         grouped.setdefault(direction_allocation_bucket(direction), []).append(direction)
@@ -253,7 +367,11 @@ def allocate_creative_directions(
         direction_counts[direction.direction_id] += 1
         allocated.append(direction)
         if len(allocated) % len(directions) == 0:
-            # Avoid repeating the same direction/fact ordinal cycle.
+            # Do not repeat the exact same direction order every pass. Fact
+            # allocation also uses the absolute ordinal, so a fixed N-item
+            # cycle can repeatedly pair one direction with the same fact when
+            # both cycles share a divisor. Rotating the next pass keeps the
+            # direction counts balanced while varying the fact combination.
             cursor = (cursor + 1) % len(buckets)
     return allocated
 

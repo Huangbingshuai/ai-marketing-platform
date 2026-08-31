@@ -265,10 +265,28 @@ const itemInsightFacts = (item: EffectPromptItem) => [
         field: binding.field,
         label: insightFieldLabels[binding.field],
         value: binding.value,
+        role: binding.role,
       },
     ]),
   ).values(),
 ];
+const itemInsightFactGroups = (item: EffectPromptItem) => {
+  const facts = itemInsightFacts(item);
+  return [
+    {
+      key: 'DIRECT',
+      label: '画面直接依据',
+      description: '正文直接呈现或明确表达的信息',
+      facts: facts.filter((fact) => fact.role !== 'CONTEXT'),
+    },
+    {
+      key: 'CONTEXT',
+      label: '创意背景依据',
+      description: '用于决定场景、人物、动作或商业语境的信息',
+      facts: facts.filter((fact) => fact.role === 'CONTEXT'),
+    },
+  ].filter((group) => group.facts.length);
+};
 const currentCountStats = computed(() => {
   const targetCount = currentTargetCount.value;
   const actualCount = currentMetrics.value?.acceptedCount ?? resultData.value?.total ?? 0;
@@ -2014,12 +2032,24 @@ onBeforeUnmount(() => {
             <textarea :value="item.content" readonly aria-label="Prompt 内容" />
             <details class="prompt-dimension-details">
               <summary>查看提炼信息依据</summary>
-              <dl v-if="item.insightBindings.length" class="prompt-fact-list">
-                <div v-for="fact in itemInsightFacts(item)" :key="fact.factId">
-                  <dt>{{ fact.label }}</dt>
-                  <dd>{{ fact.value }}</dd>
-                </div>
-              </dl>
+              <div v-if="item.insightBindings.length" class="prompt-fact-groups">
+                <section
+                  v-for="group in itemInsightFactGroups(item)"
+                  :key="group.key"
+                  class="prompt-fact-group"
+                >
+                  <header>
+                    <strong>{{ group.label }}</strong>
+                    <small>{{ group.description }}</small>
+                  </header>
+                  <dl class="prompt-fact-list">
+                    <div v-for="fact in group.facts" :key="fact.factId">
+                      <dt>{{ fact.label }}</dt>
+                      <dd>{{ fact.value }}</dd>
+                    </div>
+                  </dl>
+                </section>
+              </div>
               <p v-else class="prompt-detail-empty">暂无可追溯的提炼信息依据</p>
             </details>
             <details class="prompt-dimension-details">
@@ -3779,6 +3809,24 @@ button:disabled {
 .prompt-fact-list {
   display: grid;
   gap: 5px;
+}
+.prompt-fact-groups {
+  display: grid;
+  gap: 10px;
+  margin-top: 8px;
+}
+.prompt-fact-group > header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.prompt-fact-group > header strong {
+  color: #334155;
+  font-size: 12px;
+}
+.prompt-fact-group > header small {
+  color: #8a98aa;
+  font-size: 10px;
 }
 .prompt-fact-list > div {
   display: grid;

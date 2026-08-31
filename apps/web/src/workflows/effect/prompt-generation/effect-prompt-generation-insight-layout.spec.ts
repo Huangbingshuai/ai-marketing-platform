@@ -8,7 +8,9 @@ describe('effect prompt insight utilization layout', () => {
     expect(pageSource).not.toContain('currentMetrics.insightCoverage.covered.length');
     expect(pageSource).not.toContain('currentMetrics.insightCoverage.missing.length');
     expect(pageSource).toContain('查看提炼信息依据');
-    expect(pageSource).toContain('itemInsightFacts(item)');
+    expect(pageSource).toContain('itemInsightFactGroups(item)');
+    expect(pageSource).toContain('画面直接依据');
+    expect(pageSource).toContain('创意背景依据');
     expect(pageSource).toContain('{{ fact.value }}');
   });
 

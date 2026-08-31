@@ -8,7 +8,7 @@
 
 对每条候选：
 1. 从六类用途 HOOK、PAIN、PRODUCT_DISPLAY、SELLING_POINT_EXPLANATION、CTA、OUTRO 中选择一个 primaryPurpose，并给出包含主用途的 compatiblePurposes；一条素材可以有多个用途。
-2. factEvidence 只列正文实际表达的事实。evidenceText 必须逐字摘自正文，factId 必须来自候选 declaredFactIds；realizedFactIds 与 factEvidence 的 factId 顺序一致。
+2. factEvidence 只列正文实际表达的事实。evidenceText 必须逐字摘自正文，factId 必须来自候选 declaredFactIds 或该条 assignedContextFactIds；realizedFactIds 与 factEvidence 的 factId 顺序一致。declaredFactIds 是画面直接任务和产品锚点，assignedContextFactIds 是已经分配给该条的商业背景，只能在正文真实体现对应人物、场景、需求、动机或营销语境时绑定，不能因为“可能相关”就绑定。
 3. 五项分数均为 0～100：productRelevance、creativeCoherence、visualExecutability、commercialUsefulness、visualClarity。
 4. hardIssues 只允许使用稳定问题码：PRODUCT_UNRELATED、FABRICATED_FACT、ABSTRACT_FACT_VISUAL_PROOF、DIMENSION_CONTENT_CONFLICT、EMPTY_OR_BROKEN_CONTENT、VISUALLY_UNEXECUTABLE、MULTI_SCENE_TIMELINE、COMPLETE_AD_TIMELINE。只有客观错误才能写入，不得把品味判断作为硬问题。
 5. warnings 只允许使用稳定问题码：GENERIC_STYLE_STACKING、PURPOSE_SENTENCE_INSTEAD_OF_VISIBLE_ACTION、CAMERA_ACTION_MISMATCH、UNRELATED_DIVERSITY_SCENE、TEMPLATE_LIKE_EXPRESSION、ORDINARY_SIMILARITY、PURPOSE_SKEW、SECONDARY_FACT_NOT_USED、DURATION_TOO_DENSE、DURATION_TOO_SPARSE。一般相似、用途偏斜、通用正向套话、次要事实未覆盖、轻微时长不匹配和品味建议只写 warnings。
@@ -23,6 +23,6 @@
 14. 每条输入包含独立的 targetDurationSeconds。4～8 秒只完成一个主动作并停留；9～15 秒可容纳一条连续动作弧；16～30 秒可渐进展开但仍不得跨地点或跨真实时间。轻微过密或过稀写 warning，不因单纯时长偏好写 hardIssues。
 15. 必须核对正文具体底层动作；在目标时长内串联拆袋、切片、多种烹饪、摆盘、品尝或递送等过多阶段时标记 DURATION_TOO_DENSE。
 16. 需要熟制的产品从拆袋或切片直接跳到入口、品尝或摆上已经做好的饭菜，或常温、成品食物和热食器具冒凉气，属于 VISUALLY_UNEXECUTABLE；明确即食的产品不误判。
-17. factEvidence 的摘录必须真正支持对应事实，不能仅因同一句出现产品名就把产品名绑定到卖点、痛点、场景或受众事实。
+17. factEvidence 的摘录必须真正支持对应事实，不能仅因同一句出现产品名就把产品名绑定到卖点、痛点、场景或受众事实。商业背景允许使用语义证据而非机械复述原词，例如“春节玄关双手递送产品”可以支持已分配的“年货送礼”，但不能由此推导礼盒、折扣、工艺或功效。
 18. 产品没有手、工具、转台或容器运动支撑却自行旋转、翻面或悬空转动，属于 VISUALLY_UNEXECUTABLE。筷子夹起整根长条食品属于不自然操作，应降低 visualExecutability 并给 CAMERA_ACTION_MISMATCH。
 19. 即使目标时长接近 30 秒，需熟制食品进入沸水、蒸锅或蒸笼后“片刻、瞬间、转眼、马上”就成为成品，也属于不真实的时间压缩。

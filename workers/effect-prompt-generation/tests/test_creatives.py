@@ -256,6 +256,28 @@ class ConcurrencyTrackingProvider(MockAiProvider):
             await self._leave()
 
 
+class DirectionStageTrackingProvider(MockAiProvider):
+    def __init__(self, api: PromptApi) -> None:
+        self.api = api
+        self.saw_running_stage_before_call = False
+
+    async def plan_creative_directions(self, *args: Any, **kwargs: Any) -> Any:
+        stage = next(
+            (
+                item
+                for item in reversed(self.api.stages)
+                if item.node_id.value == "COHERENT_CREATIVE_GENERATION"
+            ),
+            None,
+        )
+        self.saw_running_stage_before_call = (
+            stage is not None
+            and stage.status.value == "RUNNING"
+            and stage.summary == "正在规划批次创意方向"
+        )
+        return await super().plan_creative_directions(*args, **kwargs)
+
+
 class OneClassificationFailureProvider(MockAiProvider):
     def __init__(self) -> None:
         self.failures_remaining = 2
@@ -351,7 +373,9 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     assert api.result.metrics.generated_candidate_count == 14
     assert len(api.result.items) == 10
     assert all(item.creative_core for item in api.result.items)
-    assert api.result.quality_status == "PASS"
+    assert api.result.quality_status == "PASS", [
+        item.field.value for item in api.result.metrics.insight_coverage.missing
+    ]
     assert api.execution_mode == "MOCK"
     assert all(item.target_duration_seconds == 5 for item in api.result.items)
     assert all(item.fragment_type == item.primary_purpose for item in api.result.items)
@@ -360,6 +384,19 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     )
     assert all("广式腊肠" in item.content for item in api.result.items)
     assert all("虚构医疗功效" not in item.content for item in api.result.items)
+    assert any(
+        binding.role.value == "CONTEXT"
+        for item in api.result.items
+        for binding in item.insight_bindings
+    )
+    assert all(
+        not (
+            binding.field.value == "PRODUCT_NAME"
+            and binding.role.value == "CONTEXT"
+        )
+        for item in api.result.items
+        for binding in item.insight_bindings
+    )
     assert Counter(item.phase.value for item in api.shards.values()) == {
         "CREATIVE": 4,
         "CLASSIFICATION": 5,
@@ -498,6 +535,27 @@ async def test_ai_shards_use_one_sliding_concurrency_limit() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reports_creative_direction_stage_before_slow_ai_call() -> None:
+    api = PromptApi()
+    provider = DirectionStageTrackingProvider(api)
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        embedding_provider=DistinctEmbeddingProvider(),
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _snapshot())
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    assert provider.saw_running_stage_before_call is True
+
+
+@pytest.mark.asyncio
 async def test_retries_one_invalid_classification_response_inside_its_shard() -> (
     None
 ):
@@ -632,7 +690,9 @@ async def test_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
     assert selection_stage.metadata["selectionMethod"] == "TRIGRAM_SHADOW"
-    assert selection_stage.metadata["embeddingInputCount"] == 14
+    assert selection_stage.metadata["embeddingInputCount"] == (
+        api.result.metrics.candidate_target_count
+    )
     assert selection_stage.metadata["embeddingRequestCount"] == 1
     assert selection_stage.metadata["mmrQualityWeight"] == 0.7
     assert selection_stage.metadata["mmrDiversityWeight"] == 0.3
@@ -1001,6 +1061,133 @@ def test_evaluation_requires_real_text_evidence() -> None:
     assert "FACT_EVIDENCE_NOT_IN_CONTENT" in validated.warnings
     assert "FACT_EVIDENCE_NOT_IN_CONTENT" not in validated.hard_issues
     assert "MISSING_PRODUCT_RELATION" in validated.hard_issues
+
+
+def test_assigned_business_context_accepts_real_semantic_evidence() -> None:
+    application = map_insight(
+        {
+            "productName": "广式腊肠",
+            "purchaseScenarios": ["年货送礼"],
+        }
+    )
+    product_fact = next(
+        item for item in application.usable if item.value == "广式腊肠"
+    )
+    gift_fact = next(
+        item for item in application.usable if item.value == "年货送礼"
+    )
+    candidate = CreativeCandidate(
+        slot_id="candidate-gift-context",
+        ordinal=1,
+        round=0,
+        creative_core="春节玄关递送产品",
+        declared_fact_ids=[product_fact.fact_id],
+        dimensions=CreativeDimensions(
+            narrative="场景代入",
+            scene="春节家庭玄关",
+            persona="登门拜访的成年人",
+            product_relation="双手递送广式腊肠",
+            camera="中近景稳定跟随",
+            emotion="喜庆温暖",
+        ),
+        content=(
+            "春节家庭玄关挂着福字，一位成年人从普通提袋中取出广式腊肠，"
+            "双手递给前来迎接的家人，镜头停在自然接过产品的动作上。"
+        ),
+    )
+    evaluation = CreativeEvaluation(
+        slot_id=candidate.slot_id,
+        primary_purpose=FragmentType.CTA,
+        compatible_purposes=[FragmentType.CTA],
+        fact_evidence=[
+            FactEvidence(fact_id=product_fact.fact_id, evidence_text="广式腊肠"),
+            FactEvidence(
+                fact_id=gift_fact.fact_id,
+                evidence_text="双手递给前来迎接的家人",
+            ),
+        ],
+        realized_fact_ids=[product_fact.fact_id, gift_fact.fact_id],
+        scores=CreativeScores(
+            product_relevance=92,
+            creative_coherence=91,
+            visual_executability=90,
+            commercial_usefulness=88,
+            visual_clarity=90,
+        ),
+        semantic_signature="ignored",
+        visual_signature="ignored",
+    )
+
+    validated = validate_creative_evaluation(
+        candidate,
+        evaluation,
+        application,
+        contextual_fact_ids=[gift_fact.fact_id],
+    )
+
+    assert validated.realized_fact_ids == [
+        product_fact.fact_id,
+        gift_fact.fact_id,
+    ]
+    assert "UNKNOWN_OR_UNDECLARED_FACT" not in validated.warnings
+
+
+def test_selection_prioritizes_an_uncovered_required_fact() -> None:
+    def candidate(slot_id: str, ordinal: int) -> CreativeCandidate:
+        return CreativeCandidate(
+            slot_id=slot_id,
+            ordinal=ordinal,
+            round=0,
+            creative_core=slot_id,
+            declared_fact_ids=["fact-product"],
+            dimensions=CreativeDimensions(
+                narrative="连续展示",
+                scene=f"场景{ordinal}",
+                persona="成年人手部",
+                product_relation="产品动作",
+                camera="稳定跟拍",
+                emotion="自然",
+            ),
+            content=f"产品在场景{ordinal}中完成一个清晰连续动作并稳定停留。",
+        )
+
+    def evaluation(
+        slot_id: str,
+        score: float,
+        realized_fact_ids: list[str],
+    ) -> CreativeEvaluation:
+        evidence = [
+            FactEvidence(fact_id=fact_id, evidence_text="产品")
+            for fact_id in realized_fact_ids
+        ]
+        return CreativeEvaluation(
+            slot_id=slot_id,
+            primary_purpose=FragmentType.PRODUCT_DISPLAY,
+            compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+            fact_evidence=evidence,
+            realized_fact_ids=realized_fact_ids,
+            scores=CreativeScores(
+                product_relevance=score,
+                creative_coherence=score,
+                visual_executability=score,
+                commercial_usefulness=score,
+                visual_clarity=score,
+            ),
+            semantic_signature=slot_id,
+            visual_signature=slot_id,
+        )
+
+    result = select_creatives(
+        [candidate("high", 1), candidate("coverage", 2)],
+        [
+            evaluation("high", 95, ["fact-product"]),
+            evaluation("coverage", 80, ["fact-product", "fact-pain"]),
+        ],
+        target_count=1,
+        required_fact_ids=["fact-pain"],
+    )
+
+    assert [item.candidate.slot_id for item in result.selected] == ["coverage"]
 
 
 def test_generic_visual_language_is_a_soft_warning_only() -> None:
