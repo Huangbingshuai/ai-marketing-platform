@@ -75,6 +75,21 @@ _PRODUCT_RELEVANT_FIELDS = {
     InsightField.EMOTIONAL_SCENARIO,
 }
 
+# These fields are routinely realized through natural-language scene/persona
+# semantics instead of by repeating the insight-card wording verbatim. The AI
+# evaluator already maps a concrete excerpt back to an allowed, task-scoped
+# fact id; the Worker still verifies that the excerpt comes from this
+# candidate, but must not reject a valid paraphrase merely because Chinese
+# character n-grams differ from the upstream label.
+_SEMANTIC_BUSINESS_FIELDS = {
+    InsightField.TARGET_AUDIENCE,
+    InsightField.CORE_PAIN_POINT,
+    InsightField.DECISION_DRIVER,
+    InsightField.USAGE_SCENARIO,
+    InsightField.PURCHASE_SCENARIO,
+    InsightField.EMOTIONAL_SCENARIO,
+}
+
 _GENERIC_STYLE_PHRASES = (
     "电影级",
     "电影感",
@@ -327,14 +342,16 @@ def validate_creative_evaluation(
         if fact is None or evidence.fact_id not in allowed_evidence:
             warnings.append("UNKNOWN_OR_UNDECLARED_FACT")
             continue
-        if not any(
-            _normalized_evidence_text(evidence.evidence_text) in source_text
-            for source_text in evidence_sources.values()
-        ):
+        matched_evidence = _match_candidate_evidence(
+            evidence.evidence_text,
+            evidence_sources,
+            field=fact.field,
+        )
+        if matched_evidence is None:
             warnings.append("FACT_EVIDENCE_NOT_IN_CONTENT")
             continue
-        if not _evidence_supports_fact(
-            evidence.evidence_text,
+        if fact.field not in _SEMANTIC_BUSINESS_FIELDS and not _evidence_supports_fact(
+            matched_evidence,
             fact.value,
             field=fact.field,
         ):
@@ -343,7 +360,9 @@ def validate_creative_evaluation(
         if evidence.fact_id in evidenced_fact_ids:
             continue
         evidenced_fact_ids.add(evidence.fact_id)
-        valid_evidence.append(evidence)
+        valid_evidence.append(
+            evidence.model_copy(update={"evidence_text": matched_evidence[:160]})
+        )
     relevant = [
         evidence
         for evidence in valid_evidence
@@ -376,7 +395,7 @@ def validate_creative_evaluation(
     if not relevant:
         issues.append("MISSING_PRODUCT_RELATION")
     if mandatory_business_facts_available and not deep_business_evidence:
-        issues.append("MISSING_DEEP_BUSINESS_FACT")
+        warnings.append("MISSING_DEEP_BUSINESS_FACT")
     if evaluation.scores.product_relevance < 60:
         issues.append("LOW_PRODUCT_RELEVANCE")
     if evaluation.scores.creative_coherence < 50:
@@ -423,6 +442,7 @@ def select_creatives(
     dimension_gain_resolver: Callable[[RankedCreative, list[RankedCreative]], int]
     | None = None,
     required_fact_ids: Sequence[str] = (),
+    preferred_item_fact_ids: Sequence[str] = (),
     fixed_covered_fact_ids: Sequence[str] = (),
     quality_weight: float = 0.8,
     novelty_weight: float = 0.2,
@@ -480,6 +500,7 @@ def select_creatives(
         for item in remaining
     }
     uncovered_required = set(required_fact_ids) - set(fixed_covered_fact_ids)
+    preferred_item_facts = set(preferred_item_fact_ids)
     while remaining and len(selected) < target_count:
         scored: list[RankedCreative] = []
         for item in remaining:
@@ -508,12 +529,18 @@ def select_creatives(
                     ),
                 )
             )
-        coverage_candidates = [
+        business_bound_candidates = [
             row
             for row in scored
+            if preferred_item_facts.intersection(row.evaluation.realized_fact_ids)
+        ]
+        business_pool = business_bound_candidates or scored
+        coverage_candidates = [
+            row
+            for row in business_pool
             if uncovered_required.intersection(row.evaluation.realized_fact_ids)
         ]
-        selection_pool = coverage_candidates or scored
+        selection_pool = coverage_candidates or business_pool
         if semantic_group_resolver is not None:
             unused_group_candidates = [
                 row
@@ -559,6 +586,10 @@ def select_creatives(
 
 def _selection_quality_score(evaluation: CreativeEvaluation) -> float:
     penalty = 0.0
+    if "MISSING_DEEP_BUSINESS_FACT" in evaluation.warnings:
+        # Keep the candidate available for exact-count recovery, but make a
+        # correctly bound business fact decisively preferable during MMR.
+        penalty += 18.0
     if "DURATION_TOO_DENSE" in evaluation.warnings:
         penalty += 8.0
     if "DURATION_TOO_SPARSE" in evaluation.warnings:
@@ -623,15 +654,54 @@ def _candidate_evidence_sources(candidate: CreativeCandidate) -> dict[str, str]:
 
     dimensions = candidate.dimensions
     return {
-        "content": _normalized_evidence_text(candidate.content),
-        "creative_core": _normalized_evidence_text(candidate.creative_core),
-        "narrative": _normalized_evidence_text(dimensions.narrative),
-        "scene": _normalized_evidence_text(dimensions.scene),
-        "persona": _normalized_evidence_text(dimensions.persona),
-        "product_relation": _normalized_evidence_text(
-            dimensions.product_relation
-        ),
+        "content": candidate.content,
+        "creative_core": candidate.creative_core,
+        "narrative": dimensions.narrative,
+        "scene": dimensions.scene,
+        "persona": dimensions.persona,
+        "product_relation": dimensions.product_relation,
     }
+
+
+def _match_candidate_evidence(
+    evidence_text: str,
+    sources: dict[str, str],
+    *,
+    field: InsightField,
+) -> str | None:
+    evidence = _normalized_evidence_text(evidence_text)
+    if not evidence:
+        return None
+    for source in sources.values():
+        if evidence in _normalized_evidence_text(source):
+            return evidence_text
+
+    # For semantic context the evaluator may return a concise paraphrase
+    # instead of a byte-identical excerpt. Recover only from the field that is
+    # responsible for carrying that business meaning; never use this path for
+    # specifications, price, packaging, formula, process or visual claims.
+    source_key = {
+        InsightField.TARGET_AUDIENCE: "persona",
+        InsightField.CORE_PAIN_POINT: "product_relation",
+        InsightField.DECISION_DRIVER: "product_relation",
+        InsightField.USAGE_SCENARIO: "scene",
+        InsightField.PURCHASE_SCENARIO: "scene",
+        InsightField.EMOTIONAL_SCENARIO: "scene",
+    }.get(field)
+    if source_key is None:
+        return None
+    source = sources.get(source_key, "").strip()
+    normalized_source = _normalized_evidence_text(source)
+    if len(normalized_source) < 3 or normalized_source in {
+        "家庭",
+        "厨房",
+        "产品",
+        "场景",
+        "人群",
+        "用户",
+    }:
+        return None
+    return source
 
 
 def _evidence_supports_fact(

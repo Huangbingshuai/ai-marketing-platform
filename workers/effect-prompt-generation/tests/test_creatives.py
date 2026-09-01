@@ -39,6 +39,7 @@ from effect_prompt_generation.models import (
     StageOutput,
 )
 from effect_prompt_generation.pipeline import (
+    PipelineError,
     PromptGenerationPipeline,
     _evaluation_context_fact_ids,
     _guard_final_selection_risk,
@@ -824,7 +825,7 @@ async def test_vector_selection_keeps_exact_count_and_reports_safe_metrics() -> 
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
     assert selection_stage.metadata["selectionMethod"] == "CONTENT_CLUSTER_VECTOR_MMR"
-    assert 10 <= selection_stage.metadata["embeddingInputCount"] <= 14
+    assert 10 <= selection_stage.metadata["embeddingInputCount"] <= 18
     assert selection_stage.metadata["embeddingRequestCount"] == 2
     assert selection_stage.metadata["comparisonCount"] > 0
     assert "model" not in selection_stage.metadata
@@ -905,7 +906,7 @@ async def test_content_mmr_diversity_supplement_runs_once_and_keeps_exact_count(
     assert api.result is not None
     assert len(api.result.items) == 10
     assert api.result.metrics.generated_candidate_count == 18
-    assert embedding_provider.input_count == 14
+    assert embedding_provider.input_count == 18
     final_selection_stage = next(
         stage
         for stage in reversed(api.stages)
@@ -913,7 +914,7 @@ async def test_content_mmr_diversity_supplement_runs_once_and_keeps_exact_count(
     )
     assert final_selection_stage.metadata["diversitySupplementTriggered"] is True
     assert final_selection_stage.metadata["diversitySupplementCount"] == 4
-    assert final_selection_stage.metadata["embeddingInputCount"] == 14
+    assert final_selection_stage.metadata["embeddingInputCount"] == 18
     assert final_selection_stage.metadata["embeddingRequestCount"] == 2
     assert final_selection_stage.metadata["finalAccurateCount"] == 10
     assert final_selection_stage.warnings == ["SEMANTIC_DUPLICATE_RATE_LIMIT_NOT_MET"]
@@ -1131,8 +1132,8 @@ async def test_runs_coverage_replenishment_after_reaching_exact_count() -> None:
     assert api.result.quality_status == "PASS"
     assert len(api.result.items) == 10
     assert api.result.metrics.candidate_target_count == 14
-    assert api.result.metrics.generated_candidate_count == 17
-    assert api.result.metrics.replenishment_rounds == 1
+    assert api.result.metrics.generated_candidate_count == 16
+    assert api.result.metrics.replenishment_rounds == 0
     assert api.result.metrics.rejected_count > 0
     assert api.result.metrics.hard_issue_counts == []
     assert Counter(item.phase.value for item in api.shards.values()) == {
@@ -1153,16 +1154,13 @@ async def test_candidate_ceiling_stops_repeated_low_quality_supplements() -> Non
     runtime = _runtime()
     pipeline.register_snapshot(runtime, _snapshot())
 
-    await build_graph(pipeline).ainvoke(
-        {"project_id": runtime.project_id},
-        context=runtime,
-    )
+    with pytest.raises(PipelineError, match="安全候选数量不足"):
+        await build_graph(pipeline).ainvoke(
+            {"project_id": runtime.project_id},
+            context=runtime,
+        )
 
-    assert api.result is not None
-    assert api.result.quality_status == "NEEDS_REVIEW"
-    assert api.result.items == []
-    assert api.result.metrics.generated_candidate_count == 18
-    assert api.result.metrics.replenishment_rounds == 1
+    assert api.result is None
     assert Counter(item.phase.value for item in api.shards.values()) == {
         "CREATIVE": 5,
         "CLASSIFICATION": 7,
@@ -1180,16 +1178,13 @@ async def test_stops_after_three_rounds_when_real_safety_issues_remain() -> None
     runtime = _runtime()
     pipeline.register_snapshot(runtime, _snapshot())
 
-    await build_graph(pipeline).ainvoke(
-        {"project_id": runtime.project_id},
-        context=runtime,
-    )
+    with pytest.raises(PipelineError, match="安全候选数量不足"):
+        await build_graph(pipeline).ainvoke(
+            {"project_id": runtime.project_id},
+            context=runtime,
+        )
 
-    assert api.result is not None
-    assert api.result.quality_status == "NEEDS_REVIEW"
-    assert api.result.items == []
-    assert api.result.metrics.generated_candidate_count == 18
-    assert api.result.metrics.replenishment_rounds == 1
+    assert api.result is None
 
 
 def test_evaluation_requires_real_text_evidence() -> None:
@@ -1258,7 +1253,7 @@ def test_assigned_business_context_accepts_real_semantic_evidence() -> None:
         declared_fact_ids=[product_fact.fact_id],
         dimensions=CreativeDimensions(
             narrative="场景代入",
-            scene="年货送礼",
+            scene="春节玄关向亲友递送实用食材礼物",
             persona="登门拜访的成年人",
             product_relation="双手递送广式腊肠",
             camera="中近景稳定跟随",
@@ -1277,7 +1272,7 @@ def test_assigned_business_context_accepts_real_semantic_evidence() -> None:
             FactEvidence(fact_id=product_fact.fact_id, evidence_text="广式腊肠"),
             FactEvidence(
                 fact_id=gift_fact.fact_id,
-                evidence_text="年货送礼",
+                evidence_text="春节时把腊肠递给亲友",
             ),
         ],
         realized_fact_ids=[product_fact.fact_id, gift_fact.fact_id],
@@ -1304,6 +1299,7 @@ def test_assigned_business_context_accepts_real_semantic_evidence() -> None:
         gift_fact.fact_id,
     ]
     assert "UNKNOWN_OR_UNDECLARED_FACT" not in validated.warnings
+    assert validated.fact_evidence[1].evidence_text == candidate.dimensions.scene
 
 
 def test_context_binding_is_removed_when_excerpt_describes_another_fact() -> None:
@@ -1370,7 +1366,8 @@ def test_context_binding_is_removed_when_excerpt_describes_another_fact() -> Non
 
     assert validated.realized_fact_ids == [product_fact.fact_id]
     assert "FACT_EVIDENCE_MISMATCH" in validated.warnings
-    assert "MISSING_DEEP_BUSINESS_FACT" in validated.hard_issues
+    assert "MISSING_DEEP_BUSINESS_FACT" not in validated.hard_issues
+    assert "MISSING_DEEP_BUSINESS_FACT" in validated.warnings
 
 
 def test_selection_prioritizes_an_uncovered_required_fact() -> None:
@@ -1429,6 +1426,142 @@ def test_selection_prioritizes_an_uncovered_required_fact() -> None:
     )
 
     assert [item.candidate.slot_id for item in result.selected] == ["coverage"]
+
+
+def test_selection_prefers_deep_bound_candidates_without_dropping_quantity() -> None:
+    candidates: list[CreativeCandidate] = []
+    evaluations: list[CreativeEvaluation] = []
+    for index in range(60):
+        slot_id = f"candidate-{index:02d}"
+        candidates.append(
+            CreativeCandidate(
+                slot_id=slot_id,
+                ordinal=index + 1,
+                round=0,
+                creative_core=f"创意主线{index}",
+                declared_fact_ids=["fact-product"],
+                dimensions=CreativeDimensions(
+                    narrative=f"叙事{index}",
+                    scene=f"场景{index}",
+                    persona="成年人手部",
+                    product_relation="广式腊肠",
+                    camera=f"镜头{index}",
+                    emotion="自然",
+                ),
+                content=f"场景{index}中展示广式腊肠并完成一个连续动作。",
+            )
+        )
+        deep_bound = index < 50
+        evaluations.append(
+            CreativeEvaluation(
+                slot_id=slot_id,
+                primary_purpose=FragmentType.PRODUCT_DISPLAY,
+                compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+                fact_evidence=(
+                    [FactEvidence(fact_id="fact-deep", evidence_text="场景")]
+                    if deep_bound
+                    else []
+                ),
+                realized_fact_ids=["fact-deep"] if deep_bound else [],
+                scores=CreativeScores(
+                    product_relevance=85 if deep_bound else 99,
+                    creative_coherence=85 if deep_bound else 99,
+                    visual_executability=85 if deep_bound else 99,
+                    commercial_usefulness=85 if deep_bound else 99,
+                    visual_clarity=85 if deep_bound else 99,
+                ),
+                semantic_signature=slot_id,
+                visual_signature=slot_id,
+                warnings=[] if deep_bound else ["MISSING_DEEP_BUSINESS_FACT"],
+            )
+        )
+
+    result = select_creatives(
+        candidates,
+        evaluations,
+        target_count=50,
+        preferred_item_fact_ids=["fact-deep"],
+    )
+
+    assert len(result.selected) == 50
+    assert all(
+        "fact-deep" in item.evaluation.realized_fact_ids for item in result.selected
+    )
+
+
+def test_missing_deep_fact_warning_does_not_repeat_real_batch_mass_rejection() -> None:
+    candidates: list[CreativeCandidate] = []
+    evaluations: list[CreativeEvaluation] = []
+    for index in range(90):
+        slot_id = f"real-batch-{index:02d}"
+        candidates.append(
+            CreativeCandidate(
+                slot_id=slot_id,
+                ordinal=index + 1,
+                round=0,
+                creative_core=f"业务创意{index}",
+                declared_fact_ids=["fact-product"],
+                dimensions=CreativeDimensions(
+                    narrative=f"叙事{index}",
+                    scene=f"场景{index}",
+                    persona=f"人物{index}",
+                    product_relation="广式腊肠",
+                    camera=f"镜头{index}",
+                    emotion=f"情绪{index}",
+                ),
+                content=f"场景{index}中围绕广式腊肠完成一个连续可见动作。",
+            )
+        )
+        if index < 5:
+            realized = ["fact-deep"]
+            hard_issues: list[str] = []
+            warnings: list[str] = []
+        elif index < 78:
+            realized = []
+            hard_issues = []
+            warnings = ["MISSING_DEEP_BUSINESS_FACT"]
+        else:
+            realized = []
+            hard_issues = ["FABRICATED_FACT"]
+            warnings = []
+        evaluations.append(
+            CreativeEvaluation(
+                slot_id=slot_id,
+                primary_purpose=FragmentType.PRODUCT_DISPLAY,
+                compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+                fact_evidence=(
+                    [FactEvidence(fact_id="fact-deep", evidence_text="业务创意")]
+                    if realized
+                    else []
+                ),
+                realized_fact_ids=realized,
+                scores=CreativeScores(
+                    product_relevance=90,
+                    creative_coherence=90,
+                    visual_executability=90,
+                    commercial_usefulness=90,
+                    visual_clarity=90,
+                ),
+                semantic_signature=slot_id,
+                visual_signature=slot_id,
+                hard_issues=hard_issues,
+                warnings=warnings,
+            )
+        )
+
+    result = select_creatives(
+        candidates,
+        evaluations,
+        target_count=50,
+        preferred_item_fact_ids=["fact-deep"],
+    )
+
+    assert len(result.selected) == 50
+    assert all(not item.evaluation.hard_issues for item in result.selected)
+    assert sum(
+        "MISSING_DEEP_BUSINESS_FACT" in item.evaluation.warnings
+        for item in result.selected
+    ) == 45
 
 
 def test_generic_visual_language_is_a_soft_warning_only() -> None:
@@ -1593,8 +1726,11 @@ def test_discards_bad_evidence_and_rejects_identity_only_prompt() -> None:
 
     validated = validate_creative_evaluation(candidate, evaluation, application)
 
-    assert validated.hard_issues == ["MISSING_DEEP_BUSINESS_FACT"]
-    assert validated.warnings == ["FACT_EVIDENCE_NOT_IN_CONTENT"]
+    assert validated.hard_issues == []
+    assert validated.warnings == [
+        "FACT_EVIDENCE_NOT_IN_CONTENT",
+        "MISSING_DEEP_BUSINESS_FACT",
+    ]
     assert validated.realized_fact_ids == [product_fact.fact_id]
 
 
@@ -1658,10 +1794,11 @@ def test_evidence_excerpt_noise_cannot_fake_deep_fact_coverage() -> None:
 
     result = select_creatives(candidates, evaluations, target_count=50)
 
-    assert result.selected == []
+    assert len(result.selected) == 50
     assert all(
-        item.hard_issues == ["MISSING_DEEP_BUSINESS_FACT"]
-        and item.warnings == ["FACT_EVIDENCE_NOT_IN_CONTENT"]
+        item.hard_issues == []
+        and item.warnings
+        == ["FACT_EVIDENCE_NOT_IN_CONTENT", "MISSING_DEEP_BUSINESS_FACT"]
         for item in evaluations
     )
 

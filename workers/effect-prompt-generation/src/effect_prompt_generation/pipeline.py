@@ -769,9 +769,18 @@ class PromptGenerationPipeline:
             for binding in item.insight_bindings
         )
         batch_required_fact_ids = [fact.fact_id for fact in application.required]
+        batch_business_fact_ids = [
+            fact.fact_id for fact in mandatory_business_facts(application)
+        ]
+        batch_business_fact_id_set = set(batch_business_fact_ids)
         missing_required_fact_ids = [
             fact_id
             for fact_id in batch_required_fact_ids
+            if fact_id not in already_covered_fact_ids
+        ]
+        missing_business_fact_ids = [
+            fact_id
+            for fact_id in batch_business_fact_ids
             if fact_id not in already_covered_fact_ids
         ]
         ordinal_start = (
@@ -821,6 +830,8 @@ class PromptGenerationPipeline:
                 priority_fact_ids=(
                     preferred_primary_ids
                     or list(coverage_fact_ids)
+                    or missing_business_fact_ids
+                    or batch_business_fact_ids
                     or missing_required_fact_ids
                 ),
                 minimum_priority_uses=(1 if round_number > 0 else 2),
@@ -872,7 +883,19 @@ class PromptGenerationPipeline:
                 ),
                 fact_assignment=fact_assignments[index],
                 creative_direction=(directions[index] if directions else None),
-                preferred_fact_ids=[fact_assignments[index].primary_fact_id],
+                preferred_fact_ids=[
+                    next(
+                        (
+                            fact_id
+                            for fact_id in [
+                                *fact_assignments[index].business_context_fact_ids,
+                                fact_assignments[index].primary_fact_id,
+                            ]
+                            if fact_id in batch_business_fact_id_set
+                        ),
+                        fact_assignments[index].primary_fact_id,
+                    )
+                ],
             )
             for index in range(requested)
         ]
@@ -1481,6 +1504,9 @@ class PromptGenerationPipeline:
             if item_operation
             else [fact.fact_id for fact in application.required]
         )
+        preferred_item_fact_ids = [
+            fact.fact_id for fact in mandatory_business_facts(application)
+        ]
         fixed_covered_fact_ids = [
             binding.fact_id
             for item in snapshot.retained_manual_items
@@ -1512,6 +1538,7 @@ class PromptGenerationPipeline:
                 list(cache.creative_evaluations.values()),
                 target_count=selection_target,
                 required_fact_ids=required_fact_ids,
+                preferred_item_fact_ids=preferred_item_fact_ids,
                 fixed_covered_fact_ids=fixed_covered_fact_ids,
             )
             result = baseline_result
@@ -1609,6 +1636,7 @@ class PromptGenerationPipeline:
                                 _dimension_unique_gain(item, selected, anchors)
                             ),
                             required_fact_ids=required_fact_ids,
+                            preferred_item_fact_ids=preferred_item_fact_ids,
                             fixed_covered_fact_ids=fixed_covered_fact_ids,
                             quality_weight=0.55,
                             novelty_weight=0.45,
@@ -1629,6 +1657,7 @@ class PromptGenerationPipeline:
                         list(cache.creative_evaluations.values()),
                         target_count=selection_target,
                         required_fact_ids=required_fact_ids,
+                        preferred_item_fact_ids=preferred_item_fact_ids,
                         fixed_covered_fact_ids=fixed_covered_fact_ids,
                         quality_weight=1.0,
                         novelty_weight=0.0,
@@ -1693,6 +1722,7 @@ class PromptGenerationPipeline:
                         content_index=content_index,
                         target_count=selection_target,
                         required_fact_ids=required_fact_ids,
+                        preferred_item_fact_ids=preferred_item_fact_ids,
                         fixed_covered_fact_ids=fixed_covered_fact_ids,
                         duplicate_limit_count=_maximum_semantic_duplicates(
                             selection_target + len(anchors)
@@ -1877,6 +1907,7 @@ class PromptGenerationPipeline:
                         list(cache.creative_evaluations.values()),
                         target_count=selection_target,
                         required_fact_ids=required_fact_ids,
+                        preferred_item_fact_ids=preferred_item_fact_ids,
                         fixed_covered_fact_ids=fixed_covered_fact_ids,
                         novelty_resolver=lambda left, right: vector_index.dual_novelty(
                             left.candidate.slot_id,
@@ -1888,6 +1919,7 @@ class PromptGenerationPipeline:
                         list(cache.creative_evaluations.values()),
                         target_count=selection_target,
                         required_fact_ids=required_fact_ids,
+                        preferred_item_fact_ids=preferred_item_fact_ids,
                         fixed_covered_fact_ids=fixed_covered_fact_ids,
                         novelty_resolver=lambda left, right: (
                             vector_index.content_novelty(
@@ -2071,16 +2103,16 @@ class PromptGenerationPipeline:
             for fact_id in required_fact_ids
             if fact_id not in selected_covered_fact_ids
         ]
-        should_coverage_supplement = (
-            bool(missing_coverage_fact_ids)
-            and cache.replenishment_rounds < MAX_REPLENISHMENT_ROUNDS
-            and snapshot.operation == "BATCH_GENERATE"
-        )
         should_quantity_supplement = (
-            not should_coverage_supplement
-            and missing > 0
+            missing > 0
             and cache.replenishment_rounds < MAX_REPLENISHMENT_ROUNDS
             and snapshot.operation != "ITEM_EVALUATE"
+        )
+        should_coverage_supplement = (
+            not should_quantity_supplement
+            and bool(missing_coverage_fact_ids)
+            and cache.replenishment_rounds < MAX_REPLENISHMENT_ROUNDS
+            and snapshot.operation == "BATCH_GENERATE"
         )
         current_redundancy = cache.redundancy_summary
         semantic_evaluated_count = len(cache.accepted_items)
@@ -2183,7 +2215,13 @@ class PromptGenerationPipeline:
                 *cluster_reasons,
             ]
         pending = []
-        if should_coverage_supplement:
+        if should_quantity_supplement:
+            pending = await self.plan_creatives(
+                context,
+                round_number=round_number + 1,
+                missing_count=missing,
+            )
+        elif should_coverage_supplement:
             coverage_supplement_count = max(
                 len(missing_coverage_fact_ids) + 1,
                 len(missing_coverage_fact_ids) * 2,
@@ -2194,12 +2232,6 @@ class PromptGenerationPipeline:
                 requested_count=coverage_supplement_count,
                 supplement_kind="COVERAGE",
                 coverage_fact_ids=missing_coverage_fact_ids,
-            )
-        elif should_quantity_supplement:
-            pending = await self.plan_creatives(
-                context,
-                round_number=round_number + 1,
-                missing_count=missing,
             )
         elif should_diversity_supplement:
             pending = await self.plan_creatives(
@@ -2212,6 +2244,7 @@ class PromptGenerationPipeline:
         # plan. Only report PARTIAL when there is real work to execute; the
         # final coverage gate will otherwise retain the draft as NEEDS_REVIEW.
         should_supplement = bool(pending)
+        selection_failed = missing > 0 and not should_supplement
         if cache.embedding_stage_metadata:
             cache.embedding_stage_metadata.update(
                 {
@@ -2241,9 +2274,17 @@ class PromptGenerationPipeline:
         await self._stage(
             context,
             NodeId.EXACT_SELECTION_AND_SUPPLEMENT,
-            StageStatus.PARTIAL if should_supplement else StageStatus.SUCCEEDED,
             (
-                "必用提炼事实尚未正确实现，正在定向补充"
+                StageStatus.PARTIAL
+                if should_supplement
+                else StageStatus.FAILED
+                if selection_failed
+                else StageStatus.SUCCEEDED
+            ),
+            (
+                f"安全候选仍缺少 {missing} 条，已停止保存短批次"
+                if selection_failed
+                else "必用提炼事实尚未正确实现，正在定向补充"
                 if should_coverage_supplement and should_supplement
                 else "合格候选不足，正在执行数量补充"
                 if should_quantity_supplement and should_supplement
@@ -2275,6 +2316,12 @@ class PromptGenerationPipeline:
         items = cache.accepted_items
         item_operation = snapshot.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"}
         expected = 1 if item_operation else settings.target_count
+        if not item_operation and len(items) != expected:
+            exc = PipelineError(
+                f"安全候选数量不足：目标 {expected} 条，实际 {len(items)} 条"
+            )
+            setattr(exc, "node_id", NodeId.EXACT_SELECTION_AND_SUPPLEMENT)
+            raise exc
         selected = cache.selected_creatives.selected if cache.selected_creatives else []
         score_rows = [item.evaluation.scores for item in selected]
         hard_counts = Counter(
@@ -2306,10 +2353,22 @@ class PromptGenerationPipeline:
             self._require_application(context),
             items,
         )
+        deep_business_fact_ids = {
+            fact.fact_id
+            for fact in mandatory_business_facts(self._require_application(context))
+        }
+        every_item_has_deep_business_fact = item_operation or all(
+            any(
+                binding.fact_id in deep_business_fact_ids
+                for binding in item.insight_bindings
+            )
+            for item in items
+        )
         quality_status: Literal["PASS", "NEEDS_REVIEW"] = (
             "PASS"
             if len(items) == expected
             and all(item.classification_status == "VERIFIED" for item in items)
+            and every_item_has_deep_business_fact
             and not any(row.evaluation.hard_issues for row in selected)
             and semantic_evaluation.status == "VERIFIED"
             and semantic_evaluation.duplicate_rate is not None
@@ -2381,6 +2440,13 @@ class PromptGenerationPipeline:
                 "requiredFactCount": len(coverage.required),
                 "coveredRequiredFactCount": len(coverage.covered),
                 "missingRequiredFactCount": len(coverage.missing),
+                "itemsMissingDeepBusinessFact": sum(
+                    not any(
+                        binding.fact_id in deep_business_fact_ids
+                        for binding in item.insight_bindings
+                    )
+                    for item in items
+                ),
                 "missingRequiredFacts": [
                     {"field": item.field.value, "value": item.value}
                     for item in coverage.missing
@@ -2685,6 +2751,7 @@ def _guard_final_selection_risk(
     content_index: ContentVectorIndex,
     target_count: int,
     required_fact_ids: Sequence[str] = (),
+    preferred_item_fact_ids: Sequence[str] = (),
     fixed_covered_fact_ids: Sequence[str] = (),
     duplicate_limit_count: int = 0,
 ) -> tuple[CreativeSelectionResult, str | None, int]:
@@ -2723,6 +2790,7 @@ def _guard_final_selection_risk(
         guarded,
         content_index=content_index,
         required_fact_ids=required_fact_ids,
+        preferred_item_fact_ids=preferred_item_fact_ids,
         fixed_covered_fact_ids=fixed_covered_fact_ids,
         duplicate_limit_count=duplicate_limit_count,
     )
@@ -2736,6 +2804,7 @@ def _repair_redundant_selection(
     *,
     content_index: ContentVectorIndex,
     required_fact_ids: Sequence[str],
+    preferred_item_fact_ids: Sequence[str] = (),
     fixed_covered_fact_ids: Sequence[str],
     duplicate_limit_count: int,
 ) -> tuple[CreativeSelectionResult, int]:
@@ -2744,6 +2813,7 @@ def _repair_redundant_selection(
     selected = list(selection.selected)
     rejected = list(selection.rejected)
     required = set(required_fact_ids) - set(fixed_covered_fact_ids)
+    preferred_item_facts = set(preferred_item_fact_ids)
     swap_count = 0
 
     def covers_required(rows: Sequence[RankedCreative]) -> bool:
@@ -2753,6 +2823,12 @@ def _repair_redundant_selection(
             for fact_id in row.evaluation.realized_fact_ids
         }
         return required.issubset(covered)
+
+    def deep_bound_count(rows: Sequence[RankedCreative]) -> int:
+        return sum(
+            bool(preferred_item_facts.intersection(row.evaluation.realized_fact_ids))
+            for row in rows
+        )
 
     for _ in range(len(selected)):
         current_risk = content_index.redundancy_summary(
@@ -2790,6 +2866,8 @@ def _repair_redundant_selection(
                 proposal = list(selected)
                 proposal[removed_index] = replacement
                 if not covers_required(proposal):
+                    continue
+                if deep_bound_count(proposal) < deep_bound_count(selected):
                     continue
                 proposal_risk = content_index.redundancy_summary(
                     [row.candidate.slot_id for row in proposal]
