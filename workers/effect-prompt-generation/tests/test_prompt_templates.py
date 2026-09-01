@@ -34,7 +34,7 @@ def test_prompt_directory_only_contains_active_templates() -> None:
 def test_creative_task_renders_literal_json_inputs() -> None:
     rendered = render_prompt(
         "creative_task.user.prompt.txt",
-        task_briefs_json='[{"slotId":"slot-1","focusFact":"广式腊肠"}]',
+        task_briefs_json='[{"slotId":"slot-1","factApplications":[]}]',
         shared_prompt_content_json='"画面中不得出现促销贴纸"',
         avoid_semantic_json="[]",
         avoid_visual_json="[]",
@@ -64,9 +64,9 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert len(load_prompt_hash("evaluation_base.system.prompt.txt")) == 64
     assert "厂商无关" in creative
     assert "每个任务独立生成一个 creativeCore" in creative
-    assert "focusFact.factId 必须原样返回" in creative
+    assert "declaredFactIds 必须完整返回" in creative
     assert "productSnapshot" in creative
-    assert "allowedFacts" in creative
+    assert "factApplications" in creative
     assert "productRelation" in creative
     assert "一个主要地点" in creative
     assert "不能伪装成画面已经证明" in creative
@@ -85,7 +85,7 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "PARTIAL" in evaluation
 
 
-def test_visual_strategy_templates_keep_one_focus_fact_without_role_split() -> None:
+def test_visual_strategy_templates_keep_direction_fact_applications_without_role_split() -> None:
     compiler = load_prompt("fact_visual_strategy.system.prompt.txt")
     creative = load_prompt("creative_base.system.prompt.txt")
     evaluation = load_prompt("evaluation_base.system.prompt.txt")
@@ -96,11 +96,10 @@ def test_visual_strategy_templates_keep_one_focus_fact_without_role_split() -> N
     assert "不能凭成品的颜色、光泽、切面、纹理" in compiler
     assert "最多 30 个汉字" in compiler
     assert "采用短语而不是完整解释" in compiler
-    assert "focusFact" in creative
-    assert "allowedFacts" in creative
+    assert "factApplications" in creative
     assert "productSnapshot" in creative
-    assert "focusFactEvidence" in creative
-    assert "不要自行把重点事实替换成产品名称、规格或外观" in creative
+    assert "factEvidence" in creative
+    assert "productSnapshot 仅用于确认商品名称、品类、规格和外观边界" in creative
     assert "visualTask" not in creative
     assert "businessContext" not in creative
     assert "必须标记 FABRICATED_FACT" in evaluation

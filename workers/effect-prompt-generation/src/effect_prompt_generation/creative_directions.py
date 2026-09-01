@@ -16,7 +16,6 @@ from .models import (
     CreativeSemanticProfile,
     FactVisualStrategy,
     InsightApplicationMap,
-    InsightFactPolicy,
 )
 
 
@@ -71,7 +70,7 @@ def validate_creative_direction_plan(
         if direction.direction_id in direction_ids:
             raise ValueError("creative directions repeat the same direction id")
         direction_ids.add(direction.direction_id)
-        fact_ids = list(dict.fromkeys(direction.compatible_fact_ids))
+        fact_ids = direction.fact_ids
         if not fact_ids or any(
             fact_id not in usable_ids or fact_id not in strategy_ids
             for fact_id in fact_ids
@@ -81,21 +80,19 @@ def validate_creative_direction_plan(
         if signature in semantic_signatures:
             raise ValueError("creative directions repeat the same semantic profile")
         semantic_signatures.add(signature)
-        directions.append(
-            direction.model_copy(update={"compatible_fact_ids": fact_ids})
-        )
+        directions.append(direction)
     business_ids = {fact.fact_id for fact in mandatory_business_facts(application)}
+    minimum_business_facts = min(2, len(business_ids))
     if business_ids and any(
-        not business_ids.intersection(direction.compatible_fact_ids)
+        len(business_ids.intersection(direction.fact_ids)) < minimum_business_facts
         for direction in directions
     ):
-        raise ValueError("each creative direction must carry a business focus fact")
-    required_ids = {fact.fact_id for fact in application.required}
+        raise ValueError("each creative direction must apply multiple business facts")
     planned_ids = {
-        fact_id for direction in directions for fact_id in direction.compatible_fact_ids
+        fact_id for direction in directions for fact_id in direction.fact_ids
     }
-    if not required_ids.issubset(planned_ids):
-        raise ValueError("creative directions did not cover all required facts")
+    if not business_ids.issubset(planned_ids):
+        raise ValueError("creative directions did not cover all usable business facts")
     allocation_buckets = Counter(
         direction_allocation_bucket(direction) for direction in directions
     )
@@ -115,65 +112,32 @@ def validate_creative_direction_plan(
     )
 
 
-def allocate_direction_fact_focus_ids(
-    directions: Sequence[CreativeDirection],
+def creative_direction_revision_context(
+    response: CreativeDirectionResponse,
     application: InsightApplicationMap,
     *,
-    priority_fact_ids: Sequence[str] = (),
-    minimum_priority_uses: int = 2,
-) -> list[str]:
-    """Choose one business fact per task while covering the whole insight map.
+    validation_error: str,
+) -> dict[str, object]:
+    """Prepare a model-owned revision brief without changing any direction."""
 
-    Directions remain the creative boundary. Within that boundary this scheduler
-    prefers facts that have been used least, so product name and packaging cannot
-    crowd out pains, audiences, decision drivers, scenarios, or selling points.
-    """
-
-    if not directions:
-        return []
-    fact_by_id = application.by_id
-    priority = [
-        fact_id for fact_id in dict.fromkeys(priority_fact_ids) if fact_id in fact_by_id
-    ]
-    priority_rank = {fact_id: index for index, fact_id in enumerate(priority)}
-    source_rank = {fact.fact_id: index for index, fact in enumerate(application.usable)}
-    usage: Counter[str] = Counter()
-    selected: list[str] = []
-    minimum_priority_uses = max(1, minimum_priority_uses)
-    for direction in directions:
-        candidates = [
-            fact_id
-            for fact_id in direction.compatible_fact_ids
-            if fact_id in fact_by_id
-        ]
-        if not candidates:
-            raise ValueError("creative direction has no usable fact for allocation")
-        priority_candidates = [
-            fact_id for fact_id in candidates if fact_id in priority_rank
-        ]
-        under_target = [
-            fact_id
-            for fact_id in priority_candidates
-            if usage[fact_id] < minimum_priority_uses
-        ]
-        # Product identity remains a separate anchor. Whenever a direction can
-        # carry a mandatory business fact, keep the task focused on that fact
-        # instead of letting an unused product name/specification win merely
-        # because its usage counter is lower.
-        selection_pool = under_target or priority_candidates or candidates
-        chosen = min(
-            selection_pool,
-            key=lambda fact_id: (
-                usage[fact_id],
-                0 if fact_id in priority_rank else 1,
-                0 if fact_by_id[fact_id].policy == InsightFactPolicy.REQUIRED else 1,
-                priority_rank.get(fact_id, len(priority_rank)),
-                source_rank.get(fact_id, len(source_rank)),
-            ),
-        )
-        usage[chosen] += 1
-        selected.append(chosen)
-    return selected
+    business_ids = [fact.fact_id for fact in mandatory_business_facts(application)]
+    planned_ids = {
+        fact_id for direction in response.directions for fact_id in direction.fact_ids
+    }
+    return {
+        "validationError": validation_error,
+        "missingBusinessFactIds": [
+            fact_id for fact_id in business_ids if fact_id not in planned_ids
+        ],
+        "previousDirections": [
+            direction.model_dump(mode="json", by_alias=True)
+            for direction in response.directions
+        ],
+        "revisionInstruction": (
+            "重新规划完整批次，让缺失事实自然进入合适方向；"
+            "不得只追加事实ID或由系统替换事实组合。"
+        ),
+    }
 
 
 def allocate_creative_directions(

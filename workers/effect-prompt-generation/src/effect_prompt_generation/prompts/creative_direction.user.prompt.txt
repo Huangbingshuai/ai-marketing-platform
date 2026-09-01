@@ -13,4 +13,7 @@
 视觉风格基调（仅作为整批视觉底色，不是固定场景模板）：
 {visual_style_baseline_json}
 
+上一次规划的修订上下文（首次为空）：
+{revision_context_json}
+
 请规划恰好 {target_direction_count} 个可供整批轮换的创意方向。方向应覆盖多种合理叙事、场景、人物关系、产品动作、镜头和情绪，但不得通过虚构场景或虚构事实追求数量。

@@ -596,17 +596,55 @@ class StageOutput(ApiModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class CreativeDirectionFactApplication(ApiModel):
+    fact_id: str = Field(min_length=1, max_length=120)
+    creative_usage: str = Field(min_length=4, max_length=180)
+
+
 class CreativeDirection(ApiModel):
     direction_id: str = Field(min_length=1, max_length=120)
-    compatible_fact_ids: list[str] = Field(min_length=1, max_length=32)
+    fact_applications: list[CreativeDirectionFactApplication] = Field(
+        min_length=1,
+        max_length=4,
+    )
     creative_direction: str = Field(min_length=1, max_length=240)
     priority_dimensions: list[CreativeDimensionKey] = Field(min_length=2, max_length=2)
     semantic_profile: CreativeSemanticProfile
     avoid_families: list[str] = Field(default_factory=list, max_length=2)
 
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_fact_ids(cls, value: Any) -> Any:
+        """Keep old checkpoints readable without exposing the old output schema."""
+
+        if not isinstance(value, dict) or (
+            "factApplications" in value or "fact_applications" in value
+        ):
+            return value
+        migrated = dict(value)
+        legacy_ids = list(
+            migrated.pop("compatibleFactIds", None)
+            or migrated.pop("compatible_fact_ids", None)
+            or []
+        )
+        migrated["factApplications"] = [
+            {
+                "factId": fact_id,
+                "creativeUsage": "历史方向仅记录了兼容事实，当前任务会重新规划事实用法",
+            }
+            for fact_id in dict.fromkeys(legacy_ids)
+            if fact_id
+        ]
+        return migrated
+
     @model_validator(mode="after")
     def normalize_direction(self) -> CreativeDirection:
-        self.compatible_fact_ids = list(dict.fromkeys(self.compatible_fact_ids))
+        self.fact_applications = list(
+            {
+                item.fact_id: item
+                for item in self.fact_applications
+            }.values()
+        )
         self.priority_dimensions = list(dict.fromkeys(self.priority_dimensions))
         self.avoid_families = list(
             dict.fromkeys(
@@ -616,6 +654,10 @@ class CreativeDirection(ApiModel):
         if len(self.priority_dimensions) != 2:
             raise ValueError("priorityDimensions must contain two distinct dimensions")
         return self
+
+    @property
+    def fact_ids(self) -> list[str]:
+        return [item.fact_id for item in self.fact_applications]
 
 
 class CreativeDirectionResponse(ApiModel):
@@ -663,31 +705,26 @@ class StrategyCheckpoint(ApiModel):
 
 
 class CreativeFactAssignment(ApiModel):
-    focus_fact_id: str = Field(min_length=1, max_length=120)
-    allowed_fact_ids: list[str] = Field(min_length=1, max_length=8)
+    fact_ids: list[str] = Field(min_length=1, max_length=8)
     assignment_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
 
     @model_validator(mode="before")
     @classmethod
     def migrate_legacy_roles(cls, value: Any) -> Any:
-        """Read persisted multi-role shard plans without writing that shape again."""
+        """Read persisted focus and multi-role plans without writing those shapes."""
 
         if not isinstance(value, dict) or (
-            "focusFactId" in value or "focus_fact_id" in value
+            "factIds" in value or "fact_ids" in value
         ):
             return value
+        current_ids = list(
+            value.get("allowedFactIds") or value.get("allowed_fact_ids") or []
+        )
+        current_focus = value.get("focusFactId") or value.get("focus_fact_id")
         business_context = list(
             value.get("businessContextFactIds")
             or value.get("business_context_fact_ids")
             or []
-        )
-        primary = (
-            business_context[0]
-            if business_context
-            else value.get("primaryFactId")
-            or value.get("primary_fact_id")
-            or value.get("visualTaskFactId")
-            or value.get("visual_task_fact_id")
         )
         legacy_groups = (
             business_context,
@@ -712,10 +749,18 @@ class CreativeFactAssignment(ApiModel):
             ),
         )
         return {
-            "focusFactId": primary,
-            "allowedFactIds": list(
+            "factIds": list(
                 dict.fromkeys(
-                    fact_id for group in legacy_groups for fact_id in group if fact_id
+                    [
+                        *([current_focus] if current_focus else []),
+                        *current_ids,
+                        *[
+                            fact_id
+                            for group in legacy_groups
+                            for fact_id in group
+                            if fact_id
+                        ],
+                    ]
                 )
             )[:8],
             "assignmentHash": value.get("assignmentHash")
@@ -724,9 +769,7 @@ class CreativeFactAssignment(ApiModel):
 
     @model_validator(mode="after")
     def normalize_fact_ids(self) -> CreativeFactAssignment:
-        self.allowed_fact_ids = list(dict.fromkeys(self.allowed_fact_ids))
-        if self.focus_fact_id not in self.allowed_fact_ids:
-            self.allowed_fact_ids.insert(0, self.focus_fact_id)
+        self.fact_ids = list(dict.fromkeys(self.fact_ids))
         return self
 
 
@@ -744,7 +787,8 @@ class CreativeTask(ApiModel):
     preferred_fact_ids: list[str] = Field(default_factory=list, max_length=12)
 
 
-class CreativeFocusEvidence(ApiModel):
+class CreativeFactEvidence(ApiModel):
+    fact_id: str = Field(min_length=1, max_length=120)
     evidence_text: str = Field(min_length=1, max_length=160)
     evidence_source: Literal[
         "CONTENT",
@@ -762,13 +806,33 @@ class CreativeCandidate(ApiModel):
     round: int = Field(ge=0, le=4)
     creative_core: str = Field(min_length=1, max_length=160)
     declared_fact_ids: list[str] = Field(min_length=1, max_length=12)
-    # Optional only so historical persisted candidate shards remain readable.
-    # New provider responses are rejected unless both focus fields are present.
-    focus_fact_id: str | None = Field(default=None, min_length=1, max_length=120)
-    focus_fact_evidence: CreativeFocusEvidence | None = None
+    fact_evidence: list[CreativeFactEvidence] = Field(default_factory=list, max_length=8)
     dimensions: CreativeDimensions
     content: str = Field(min_length=20, max_length=600)
     generated_at: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_focus_evidence(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or (
+            "factEvidence" in value or "fact_evidence" in value
+        ):
+            return value
+        migrated = dict(value)
+        focus_id = migrated.pop("focusFactId", None) or migrated.pop(
+            "focus_fact_id",
+            None,
+        )
+        focus_evidence = migrated.pop("focusFactEvidence", None) or migrated.pop(
+            "focus_fact_evidence",
+            None,
+        )
+        migrated["factEvidence"] = (
+            [{"factId": focus_id, **focus_evidence}]
+            if focus_id and isinstance(focus_evidence, dict)
+            else []
+        )
+        return migrated
 
     @field_validator("declared_fact_ids")
     @classmethod
@@ -777,6 +841,14 @@ class CreativeCandidate(ApiModel):
         if not result:
             raise ValueError("declaredFactIds cannot be empty")
         return result
+
+    @field_validator("fact_evidence")
+    @classmethod
+    def unique_fact_evidence(
+        cls,
+        values: list[CreativeFactEvidence],
+    ) -> list[CreativeFactEvidence]:
+        return list({item.fact_id: item for item in values}.values())
 
 
 class CreativeCandidateBatch(ApiModel):

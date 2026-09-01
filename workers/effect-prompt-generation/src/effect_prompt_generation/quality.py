@@ -248,11 +248,8 @@ def validate_creative_evaluation(
     mandatory_business_facts_available = any(
         fact.field in MANDATORY_BUSINESS_FIELDS for fact in application.usable
     )
-    if (
-        candidate.focus_fact_id is not None
-        and candidate.focus_fact_id not in evidenced_fact_ids
-    ):
-        warnings.append("FOCUS_FACT_NOT_REALIZED")
+    if set(candidate.declared_fact_ids) - evidenced_fact_ids:
+        warnings.append("SECONDARY_FACT_NOT_USED")
     if not relevant:
         issues.append("MISSING_PRODUCT_RELATION")
     if mandatory_business_facts_available and not deep_business_evidence:
@@ -440,14 +437,14 @@ def select_creatives(
 
 def _selection_quality_score(evaluation: CreativeEvaluation) -> float:
     penalty = 0.0
-    if "FOCUS_FACT_NOT_REALIZED" in evaluation.warnings:
-        # Keep quantity recovery possible, while strongly preferring candidates
-        # whose assigned business focus was semantically confirmed by the model.
-        penalty += 24.0
-    elif "MISSING_DEEP_BUSINESS_FACT" in evaluation.warnings:
+    if "MISSING_DEEP_BUSINESS_FACT" in evaluation.warnings:
         # Keep the candidate available for exact-count recovery, but make a
         # correctly bound business fact decisively preferable during MMR.
         penalty += 18.0
+    if "SECONDARY_FACT_NOT_USED" in evaluation.warnings:
+        # Direction facts come from the model-owned plan. Partial realization is
+        # a soft ranking signal, never a structural rejection or Worker rewrite.
+        penalty += 8.0
     if "DURATION_TOO_DENSE" in evaluation.warnings:
         penalty += 8.0
     if "DURATION_TOO_SPARSE" in evaluation.warnings:

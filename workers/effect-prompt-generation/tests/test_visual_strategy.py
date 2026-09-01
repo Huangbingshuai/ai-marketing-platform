@@ -80,7 +80,7 @@ def _response(application: InsightApplicationMap) -> FactVisualStrategyResponse:
     return FactVisualStrategyResponse(policies=policies)
 
 
-def test_visual_strategy_does_not_replace_abstract_business_focus() -> None:
+def test_visual_strategy_keeps_abstract_business_fact_in_assignment() -> None:
     application = _application()
     strategy = validate_fact_visual_strategy(
         _response(application),
@@ -96,12 +96,11 @@ def test_visual_strategy_does_not_replace_abstract_business_focus() -> None:
         application,
         count=1,
         ordinal_start=1,
-        preferred_focus_fact_ids=[no_starch.fact_id],
+        preferred_fact_ids=[no_starch.fact_id],
     )
 
     assignment = assignments[0]
-    assert assignment.focus_fact_id == no_starch.fact_id
-    assert no_starch.fact_id in assignment.allowed_fact_ids
+    assert no_starch.fact_id in assignment.fact_ids
     assert (
         strategy.by_id[no_starch.fact_id].visual_usage
         == FactVisualUsage.FORBIDDEN_VISUAL_PROOF
@@ -163,7 +162,7 @@ def test_visual_strategy_fills_missing_explanations_without_changing_ai_role() -
     assert normalized.forbidden_inferences == ["不得用成品外观或人物反应证明该事实"]
 
 
-def test_fact_allocation_keeps_product_snapshot_out_of_focus_competition() -> None:
+def test_fact_allocation_keeps_product_snapshot_out_of_business_bundle() -> None:
     application = map_insight(
         {
             "productName": "广式腊肠",
@@ -182,13 +181,9 @@ def test_fact_allocation_keeps_product_snapshot_out_of_focus_competition() -> No
         ordinal_start=1,
     )
 
-    assert all(
-        product_name.fact_id in assignment.allowed_fact_ids
-        and specification.fact_id in assignment.allowed_fact_ids
-        and assignment.focus_fact_id
-        not in {product_name.fact_id, specification.fact_id}
-        for assignment in assignments
-    )
+    assert all(product_name.fact_id not in assignment.fact_ids for assignment in assignments)
+    assert all(specification.fact_id not in assignment.fact_ids for assignment in assignments)
+    assert all(assignment.fact_ids for assignment in assignments)
 
 
 class _StageApi:

@@ -451,17 +451,17 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     assert len(creative_tasks) == 14
     assert all(task.fact_assignment is not None for task in creative_tasks)
     assert all(
-        1 <= len(task.fact_assignment.allowed_fact_ids) <= 5
-        and task.fact_assignment.focus_fact_id in task.fact_assignment.allowed_fact_ids
+        2 <= len(task.fact_assignment.fact_ids) <= 4
         for task in creative_tasks
         if task.fact_assignment is not None
     )
     assert (
         len(
             {
-                task.fact_assignment.focus_fact_id
+                fact_id
                 for task in creative_tasks
                 if task.fact_assignment is not None
+                for fact_id in task.fact_assignment.fact_ids
             }
         )
         > 1
@@ -492,7 +492,10 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     assert shared_stage.metadata["compiledContent"]
     assert creative_stage.status == "SUCCEEDED"
     assert creative_stage.metadata["candidateCount"] == 14
-    assert creative_stage.metadata["factSelectionMode"] == "FOCUS_FACT_BRIEF"
+    assert (
+        creative_stage.metadata["factSelectionMode"]
+        == "DIRECTION_FACT_APPLICATIONS"
+    )
     assert classification_stage.status == "SUCCEEDED"
     assert classification_stage.metadata["evaluatedCount"] == 14
     assert classification_stage.metadata["averageScores"]["productRelevance"] >= 0
@@ -531,7 +534,7 @@ async def test_invalid_creative_shard_does_not_fail_paid_batch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_visual_strategy_graph_compiles_focus_brief_before_generation() -> None:
+async def test_visual_strategy_graph_compiles_direction_fact_plan_before_generation() -> None:
     api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -561,7 +564,10 @@ async def test_visual_strategy_graph_compiles_focus_brief_before_generation() ->
         for stage in reversed(api.stages)
         if stage.node_id == "COHERENT_CREATIVE_GENERATION"
     )
-    assert creative_stage.metadata["factSelectionMode"] == "FOCUS_FACT_BRIEF"
+    assert (
+        creative_stage.metadata["factSelectionMode"]
+        == "DIRECTION_FACT_APPLICATIONS"
+    )
     assignments = [
         task.fact_assignment
         for shard in api.shards.values()
@@ -570,11 +576,7 @@ async def test_visual_strategy_graph_compiles_focus_brief_before_generation() ->
         if task.fact_assignment is not None
     ]
     assert assignments
-    assert all(assignment.focus_fact_id for assignment in assignments)
-    assert all(
-        assignment.focus_fact_id in assignment.allowed_fact_ids
-        for assignment in assignments
-    )
+    assert all(2 <= len(assignment.fact_ids) <= 4 for assignment in assignments)
 
 
 @pytest.mark.asyncio
@@ -667,7 +669,7 @@ async def test_splits_truncated_classification_shard_without_failing_batch() -> 
     assert api.result.metrics.generated_candidate_count == 14
 
 
-def test_focus_fact_is_evaluated_without_product_snapshot_competing() -> None:
+def test_planned_business_facts_are_evaluated_without_product_snapshot_competing() -> None:
     application = map_insight(
         {
             "productName": "便携杯",
@@ -682,11 +684,13 @@ def test_focus_fact_is_evaluated_without_product_snapshot_competing() -> None:
         round=0,
         creative_core="通勤者单手打开便携杯",
         declared_fact_ids=[primary_fact.fact_id],
-        focus_fact_id=primary_fact.fact_id,
-        focus_fact_evidence={
-            "evidenceText": "单手打开便携杯",
-            "evidenceSource": "PRODUCT_RELATION",
-        },
+        fact_evidence=[
+            {
+                "factId": primary_fact.fact_id,
+                "evidenceText": "单手打开便携杯",
+                "evidenceSource": "PRODUCT_RELATION",
+            }
+        ],
         dimensions=CreativeDimensions(
             narrative="动作展示",
             scene="地铁站台",
@@ -703,8 +707,7 @@ def test_focus_fact_is_evaluated_without_product_snapshot_competing() -> None:
         round=0,
         target_duration_seconds=5,
         fact_assignment=CreativeFactAssignment(
-            focus_fact_id=primary_fact.fact_id,
-            allowed_fact_ids=[primary_fact.fact_id, product_fact.fact_id],
+            fact_ids=[primary_fact.fact_id],
             assignment_hash="a" * 64,
         ),
     )
@@ -749,9 +752,9 @@ def test_focus_fact_is_evaluated_without_product_snapshot_competing() -> None:
     )
 
     assert primary_fact.fact_id in contextual_ids
-    assert product_fact.fact_id not in contextual_ids
+    assert product_fact.fact_id in contextual_ids
     assert validated.realized_fact_ids == [primary_fact.fact_id]
-    assert "FOCUS_FACT_NOT_REALIZED" not in validated.warnings
+    assert "SECONDARY_FACT_NOT_USED" not in validated.warnings
 
 
 @pytest.mark.asyncio
@@ -1969,6 +1972,7 @@ def test_discards_bad_evidence_and_rejects_identity_only_prompt() -> None:
     assert validated.hard_issues == []
     assert validated.warnings == [
         "FACT_EVIDENCE_NOT_IN_CONTENT",
+        "SECONDARY_FACT_NOT_USED",
         "MISSING_DEEP_BUSINESS_FACT",
     ]
     assert validated.realized_fact_ids == [product_fact.fact_id]
@@ -2038,7 +2042,11 @@ def test_evidence_excerpt_noise_cannot_fake_deep_fact_coverage() -> None:
     assert all(
         item.hard_issues == []
         and item.warnings
-        == ["FACT_EVIDENCE_NOT_IN_CONTENT", "MISSING_DEEP_BUSINESS_FACT"]
+            == [
+                "FACT_EVIDENCE_NOT_IN_CONTENT",
+                "SECONDARY_FACT_NOT_USED",
+                "MISSING_DEEP_BUSINESS_FACT",
+            ]
         for item in evaluations
     )
 

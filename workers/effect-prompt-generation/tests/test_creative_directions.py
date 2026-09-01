@@ -8,10 +8,11 @@ import pytest
 
 from effect_prompt_generation.embeddings import MockEmbeddingProvider
 from effect_prompt_generation.graph import build_graph
-from effect_prompt_generation.insight_mapping import map_insight
+from effect_prompt_generation.insight_mapping import mandatory_business_facts, map_insight
 from effect_prompt_generation.models import (
     CreativeCandidate,
     CreativeDimensions,
+    CreativeDirectionFactApplication,
     CreativeDirectionResponse,
     CreativeEvaluation,
     CreativeScores,
@@ -27,7 +28,6 @@ from effect_prompt_generation.providers import (
     MockAiProvider,
 )
 from effect_prompt_generation.creative_directions import (
-    allocate_direction_fact_focus_ids,
     allocate_creative_directions,
     complete_semantic_profile,
     creative_direction_target_count,
@@ -109,6 +109,56 @@ class MissingSemanticProfileProvider(MockAiProvider):
         return replace(call, value=call.value.model_copy(update={"items": items}))
 
 
+class MissingFactThenReplanningProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.revision_contexts: list[dict[str, Any] | None] = []
+
+    async def plan_creative_directions(
+        self,
+        application: Any,
+        *,
+        fact_visual_strategy: Any,
+        target_count: int,
+        shared_prompt: Any,
+        revision_context: dict[str, Any] | None = None,
+    ) -> Any:
+        self.revision_contexts.append(revision_context)
+        call = await super().plan_creative_directions(
+            application,
+            fact_visual_strategy=fact_visual_strategy,
+            target_count=target_count,
+            shared_prompt=shared_prompt,
+            revision_context=revision_context,
+        )
+        if revision_context is not None:
+            return call
+        missing_fact_id = mandatory_business_facts(application)[-1].fact_id
+        business_facts = mandatory_business_facts(application)
+        directions = []
+        for direction in call.value.directions:
+            applications = [
+                item
+                for item in direction.fact_applications
+                if item.fact_id != missing_fact_id
+            ]
+            for fallback_fact in business_facts:
+                if len(applications) >= 2:
+                    break
+                if fallback_fact.fact_id not in {
+                    item.fact_id for item in applications
+                } and fallback_fact.fact_id != missing_fact_id:
+                    applications.append(
+                        CreativeDirectionFactApplication(
+                            fact_id=fallback_fact.fact_id,
+                            creative_usage="让该事实自然决定人物需求",
+                        )
+                    )
+            directions.append(
+                direction.model_copy(update={"fact_applications": applications})
+            )
+        return replace(call, value=call.value.model_copy(update={"directions": directions}))
+
+
 @pytest.mark.asyncio
 async def test_cluster_policy_plans_directions_and_generates_140_percent() -> None:
     api = PromptApi()
@@ -141,8 +191,7 @@ async def test_cluster_policy_plans_directions_and_generates_140_percent() -> No
     assert len(creative_tasks) == 14
     assert all(task.creative_direction is not None for task in creative_tasks)
     assert all(
-        set(task.fact_assignment.allowed_fact_ids)
-        & set(task.creative_direction.compatible_fact_ids)
+        task.fact_assignment.fact_ids == task.creative_direction.fact_ids
         for task in creative_tasks
         if task.fact_assignment is not None and task.creative_direction is not None
     )
@@ -209,6 +258,37 @@ async def test_fifty_target_plans_exactly_seventy_initial_candidates() -> None:
 
 
 @pytest.mark.asyncio
+async def test_missing_business_fact_replans_the_whole_direction_batch_with_ai() -> None:
+    api = PromptApi()
+    provider = MissingFactThenReplanningProvider()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _cluster_snapshot())
+    await pipeline.map_insight(runtime)
+    await pipeline.compile_fact_visual_strategy(runtime)
+    await pipeline.compile_shared_prompt(runtime)
+
+    shards = await pipeline.plan_creatives(runtime, round_number=0)
+
+    assert shards
+    assert len(provider.revision_contexts) == 2
+    assert provider.revision_contexts[0] is None
+    assert provider.revision_contexts[1]
+    assert provider.revision_contexts[1]["missingBusinessFactIds"]
+    assert all(
+        task.fact_assignment is not None
+        and task.creative_direction is not None
+        and task.fact_assignment.fact_ids == task.creative_direction.fact_ids
+        for shard in shards
+        for task in shard.tasks
+    )
+
+
+@pytest.mark.asyncio
 async def test_quantity_supplement_respects_total_candidate_ceiling() -> None:
     api = PromptApi()
     pipeline = PromptGenerationPipeline(
@@ -230,13 +310,16 @@ async def test_quantity_supplement_respects_total_candidate_ceiling() -> None:
             slot_id=task.slot_id,
             ordinal=task.ordinal,
             round=0,
-            creative_core=f"创意 {task.ordinal}",
-            declared_fact_ids=[task.fact_assignment.focus_fact_id],
-            focus_fact_id=task.fact_assignment.focus_fact_id,
-            focus_fact_evidence={
-                "evidenceText": "产品关联",
-                "evidenceSource": "PRODUCT_RELATION",
-            },
+            creative_core=f"创意 {task.ordinal}：产品关联",
+            declared_fact_ids=task.fact_assignment.fact_ids,
+            fact_evidence=[
+                {
+                    "factId": fact_id,
+                    "evidenceText": "产品关联",
+                    "evidenceSource": "PRODUCT_RELATION",
+                }
+                for fact_id in task.fact_assignment.fact_ids
+            ],
             dimensions=CreativeDimensions(
                 narrative="连续叙事",
                 scene="真实场景",
@@ -293,7 +376,7 @@ async def test_coverage_supplement_targets_the_missing_business_fact() -> None:
     assert len(tasks) == 2
     assert all(
         task.fact_assignment is not None
-        and missing_fact.fact_id in task.fact_assignment.allowed_fact_ids
+        and missing_fact.fact_id in task.fact_assignment.fact_ids
         and task.supplement_kind == "COVERAGE"
         for task in tasks
     )
@@ -407,9 +490,18 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
     planned_fact_ids = {
         fact_id
         for direction in plan.directions
-        for fact_id in direction.compatible_fact_ids
+        for fact_id in direction.fact_ids
     }
-    assert {fact.fact_id for fact in application.required}.issubset(planned_fact_ids)
+    business_fact_ids = {
+        fact.fact_id for fact in mandatory_business_facts(application)
+    }
+    assert business_fact_ids.issubset(planned_fact_ids)
+    assert all(2 <= len(direction.fact_applications) <= 4 for direction in plan.directions)
+    assert all(
+        application.by_id[item.fact_id].value not in {"", item.creative_usage}
+        for direction in plan.directions
+        for item in direction.fact_applications
+    )
     allocated = allocate_creative_directions(
         plan,
         count=70,
@@ -418,19 +510,19 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
     counts = Counter(item.direction_id for item in allocated)
     assert max(counts.values()) - min(counts.values()) <= 1
     assert max(counts.values()) <= 9
-    focus_ids = allocate_direction_fact_focus_ids(
-        allocated,
-        application,
-        priority_fact_ids=[fact.fact_id for fact in application.required],
-    )
-    assert {fact.fact_id for fact in application.required}.issubset(focus_ids)
-    assert {fact.fact_id for fact in application.usable}.issubset(focus_ids)
-
     invalid = raw.model_copy(
         update={
             "directions": [
                 raw.directions[0].model_copy(
-                    update={"compatible_fact_ids": ["unknown-fact"]}
+                    update={
+                        "fact_applications": [
+                            CreativeDirectionFactApplication(
+                                fact_id="unknown-fact",
+                                creative_usage="让未知事实决定当前方向的场景",
+                            ),
+                            *raw.directions[0].fact_applications[1:],
+                        ]
+                    }
                 ),
                 *raw.directions[1:],
             ]
@@ -445,24 +537,35 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
             template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
         )
 
-    omitted_fact_id = application.required[-1].fact_id
-    omitted = raw.model_copy(
-        update={
-            "directions": [
-                direction.model_copy(
-                    update={
-                        "compatible_fact_ids": [
-                            fact_id
-                            for fact_id in direction.compatible_fact_ids
-                            if fact_id != omitted_fact_id
-                        ]
-                    }
+    omitted_fact_id = mandatory_business_facts(application)[-1].fact_id
+    replacement_facts = [
+        fact for fact in mandatory_business_facts(application)
+        if fact.fact_id != omitted_fact_id
+    ]
+    omitted_directions = []
+    for direction in raw.directions:
+        applications = [
+            item
+            for item in direction.fact_applications
+            if item.fact_id != omitted_fact_id
+        ]
+        for replacement in replacement_facts:
+            if len(applications) >= 2:
+                break
+            if replacement.fact_id not in {item.fact_id for item in applications}:
+                applications.append(
+                    CreativeDirectionFactApplication(
+                        fact_id=replacement.fact_id,
+                        creative_usage="让替代事实自然决定人物或场景",
+                    )
                 )
-                for direction in raw.directions
-            ]
-        }
+        omitted_directions.append(
+            direction.model_copy(update={"fact_applications": applications})
+        )
+    omitted = raw.model_copy(
+        update={"directions": omitted_directions}
     )
-    with pytest.raises(ValueError, match="did not cover all required facts"):
+    with pytest.raises(ValueError, match="did not cover all usable business facts"):
         validate_creative_direction_plan(
             CreativeDirectionResponse.model_validate(omitted),
             application,

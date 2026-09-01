@@ -76,8 +76,10 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
             "corePainPoints": ["普通杯盖需要双手操作"],
         }
     )
-    product_fact = next(item for item in application.usable if item.value == "便携杯")
     primary_fact = next(item for item in application.usable if item.value == "单手开合")
+    pain_fact = next(
+        item for item in application.usable if item.value == "普通杯盖需要双手操作"
+    )
     shard = CreativeShardPlan(
         round=0,
         shard_index=0,
@@ -88,8 +90,7 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
                 round=0,
                 target_duration_seconds=5,
                 fact_assignment=CreativeFactAssignment(
-                    focus_fact_id=primary_fact.fact_id,
-                    allowed_fact_ids=[primary_fact.fact_id, product_fact.fact_id],
+                    fact_ids=[primary_fact.fact_id, pain_fact.fact_id],
                     assignment_hash="a" * 64,
                 ),
                 preferred_fact_ids=[primary_fact.fact_id],
@@ -107,17 +108,24 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
                     "ordinal": 99,
                     "round": 1,
                     "creativeCore": "通勤途中单手打开便携杯",
-                    "declaredFactIds": [primary_fact.fact_id, product_fact.fact_id],
-                    "focusFactId": primary_fact.fact_id,
-                    "focusFactEvidence": {
-                        "evidenceText": "便携杯被单手打开",
-                        "evidenceSource": "PRODUCT_RELATION",
-                    },
+                    "declaredFactIds": [primary_fact.fact_id, pain_fact.fact_id],
+                    "factEvidence": [
+                        {
+                            "factId": primary_fact.fact_id,
+                            "evidenceText": "便携杯被单手打开",
+                            "evidenceSource": "PRODUCT_RELATION",
+                        },
+                        {
+                            "factId": pain_fact.fact_id,
+                            "evidenceText": "普通杯盖需要双手操作",
+                            "evidenceSource": "PRODUCT_RELATION",
+                        },
+                    ],
                     "dimensions": {
                         "narrative": "动作直接进入产品使用",
                         "scene": "早高峰地铁站台",
                         "persona": "单手拿包的成年通勤者",
-                        "productRelation": "便携杯被单手打开",
+                        "productRelation": "普通杯盖需要双手操作，便携杯被单手打开",
                         "camera": "中近景跟随后轻推",
                         "emotion": "从容利落",
                     },
@@ -156,8 +164,8 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
     assert seen["text"]["format"]["strict"] is True  # type: ignore[index]
     item_schema = seen["text"]["format"]["schema"]["$defs"]["CreativeCandidate"]  # type: ignore[index]
     assert "creativeCore" in item_schema["properties"]
-    assert "focusFactId" in item_schema["properties"]
-    assert "focusFactEvidence" in item_schema["properties"]
+    assert "factEvidence" in item_schema["properties"]
+    assert "focusFactId" not in item_schema["properties"]
     assert "dimensions" in item_schema["properties"]
     assert "content" in item_schema["properties"]
     assert "fragmentType" not in item_schema["properties"]
@@ -165,9 +173,9 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
     assert "医疗功效" in prompt
     assert "单手开合" in prompt
     assert "便携杯" in prompt
-    assert "普通杯盖需要双手操作" not in prompt
-    assert "focusFact" in prompt
-    assert "allowedFacts" in prompt
+    assert "普通杯盖需要双手操作" in prompt
+    assert "factApplications" in prompt
+    assert "focusFact" not in prompt
     assert "productSnapshot" in prompt
     assert "visualTask" not in prompt
     assert "businessContext" not in prompt
@@ -178,9 +186,12 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
     assert call.value.items[0].round == 0
     assert call.value.items[0].declared_fact_ids == [
         primary_fact.fact_id,
-        product_fact.fact_id,
+        pain_fact.fact_id,
     ]
-    assert call.value.items[0].focus_fact_id == primary_fact.fact_id
+    assert {item.fact_id for item in call.value.items[0].fact_evidence} == {
+        primary_fact.fact_id,
+        pain_fact.fact_id,
+    }
 
 
 @pytest.mark.asyncio
@@ -190,10 +201,13 @@ async def test_ark_creative_uses_slot_local_fact_aliases_and_restores_ids() -> N
         {
             "productName": "便携杯",
             "coreSellingPoints": ["单手开合"],
+            "corePainPoints": ["普通杯盖需要双手操作"],
         }
     )
-    product_fact = next(item for item in application.usable if item.value == "便携杯")
     primary_fact = next(item for item in application.usable if item.value == "单手开合")
+    pain_fact = next(
+        item for item in application.usable if item.value == "普通杯盖需要双手操作"
+    )
     visual_strategy = validate_fact_visual_strategy(
         (await MockAiProvider().compile_fact_visual_strategy(application)).value,
         application,
@@ -210,8 +224,7 @@ async def test_ark_creative_uses_slot_local_fact_aliases_and_restores_ids() -> N
                 round=0,
                 target_duration_seconds=5,
                 fact_assignment=CreativeFactAssignment(
-                    focus_fact_id=primary_fact.fact_id,
-                    allowed_fact_ids=[primary_fact.fact_id, product_fact.fact_id],
+                    fact_ids=[primary_fact.fact_id, pain_fact.fact_id],
                     assignment_hash="a" * 64,
                 ),
             )
@@ -234,20 +247,24 @@ async def test_ark_creative_uses_slot_local_fact_aliases_and_restores_ids() -> N
                                 "ordinal": 1,
                                 "round": 0,
                                 "creativeCore": "通勤途中单手打开便携杯",
-                                # Product is present in the content, but the
-                                # model omits its anchor id. This must continue
-                                # to evaluation instead of failing the batch.
-                                "declaredFactIds": ["F1"],
-                                "focusFactId": "F1",
-                                "focusFactEvidence": {
-                                    "evidenceText": "单手打开便携杯",
-                                    "evidenceSource": "PRODUCT_RELATION",
-                                },
+                                "declaredFactIds": ["F1", "F2"],
+                                "factEvidence": [
+                                    {
+                                        "factId": "F1",
+                                        "evidenceText": "单手打开便携杯",
+                                        "evidenceSource": "PRODUCT_RELATION",
+                                    },
+                                    {
+                                        "factId": "F2",
+                                        "evidenceText": "普通杯盖需要双手操作",
+                                        "evidenceSource": "PRODUCT_RELATION",
+                                    },
+                                ],
                                 "dimensions": {
                                     "narrative": "动作展示",
                                     "scene": "地铁站台",
                                     "persona": "成年通勤者",
-                                    "productRelation": "单手打开便携杯",
+                                    "productRelation": "普通杯盖需要双手操作，单手打开便携杯",
                                     "camera": "中近景跟随",
                                     "emotion": "从容利落",
                                 },
@@ -281,8 +298,11 @@ async def test_ark_creative_uses_slot_local_fact_aliases_and_restores_ids() -> N
     assert '"factId": "F1"' in seen_prompt
     assert '"factId": "F2"' in seen_prompt
     assert primary_fact.fact_id not in seen_prompt
-    assert product_fact.fact_id not in seen_prompt
-    assert call.value.items[0].declared_fact_ids == [primary_fact.fact_id]
+    assert pain_fact.fact_id not in seen_prompt
+    assert call.value.items[0].declared_fact_ids == [
+        primary_fact.fact_id,
+        pain_fact.fact_id,
+    ]
 
 
 @pytest.mark.asyncio
@@ -351,10 +371,10 @@ async def test_ark_compiles_visual_usage_for_every_confirmed_fact() -> None:
 @pytest.mark.parametrize(
     ("declared_selector", "message"),
     [
-        ("anchor-only", "no valid candidate"),
+        ("missing-declared", "no valid candidate"),
         ("unassigned", "no valid candidate"),
-        ("missing-focus-evidence", "no valid candidate"),
-        ("wrong-focus", "no valid candidate"),
+        ("missing-evidence", "no valid candidate"),
+        ("evidence-not-in-source", "no valid candidate"),
     ],
 )
 async def test_ark_creative_rejects_invalid_fact_usage(
@@ -370,17 +390,17 @@ async def test_ark_creative_rejects_invalid_fact_usage(
     )
     product_fact = next(item for item in application.usable if item.value == "便携杯")
     primary_fact = next(item for item in application.usable if item.value == "单手开合")
-    unassigned_fact = next(
+    pain_fact = next(
         item for item in application.usable if item.value == "普通杯盖需要双手操作"
     )
+    unassigned_fact = product_fact
     declared = {
-        "anchor-only": [product_fact.fact_id],
-        "primary-only": [primary_fact.fact_id],
-        "missing-focus-evidence": [primary_fact.fact_id],
-        "wrong-focus": [primary_fact.fact_id, product_fact.fact_id],
+        "missing-declared": [primary_fact.fact_id],
+        "missing-evidence": [primary_fact.fact_id, pain_fact.fact_id],
+        "evidence-not-in-source": [primary_fact.fact_id, pain_fact.fact_id],
         "unassigned": [
             primary_fact.fact_id,
-            product_fact.fact_id,
+            pain_fact.fact_id,
             unassigned_fact.fact_id,
         ],
     }[declared_selector]
@@ -394,8 +414,7 @@ async def test_ark_creative_rejects_invalid_fact_usage(
                 round=0,
                 target_duration_seconds=5,
                 fact_assignment=CreativeFactAssignment(
-                    focus_fact_id=primary_fact.fact_id,
-                    allowed_fact_ids=[primary_fact.fact_id, product_fact.fact_id],
+                    fact_ids=[primary_fact.fact_id, pain_fact.fact_id],
                     assignment_hash="b" * 64,
                 ),
             )
@@ -411,26 +430,44 @@ async def test_ark_creative_rejects_invalid_fact_usage(
                     "round": 0,
                     "creativeCore": "通勤途中单手打开便携杯",
                     "declaredFactIds": declared,
-                    "focusFactId": (
-                        product_fact.fact_id
-                        if declared_selector == "wrong-focus"
-                        else primary_fact.fact_id
-                    ),
-                    **(
-                        {}
-                        if declared_selector == "missing-focus-evidence"
-                        else {
-                            "focusFactEvidence": {
-                                "evidenceText": "便携杯被单手打开",
-                                "evidenceSource": "PRODUCT_RELATION",
-                            }
-                        }
-                    ),
+                    "factEvidence": [
+                        {
+                            "factId": primary_fact.fact_id,
+                            "evidenceText": "便携杯被单手打开",
+                            "evidenceSource": "PRODUCT_RELATION",
+                        },
+                        *(
+                            []
+                            if declared_selector == "missing-evidence"
+                            else [
+                                {
+                                    "factId": pain_fact.fact_id,
+                                    "evidenceText": (
+                                        "不存在的证据"
+                                        if declared_selector == "evidence-not-in-source"
+                                        else "普通杯盖需要双手操作"
+                                    ),
+                                    "evidenceSource": "PRODUCT_RELATION",
+                                }
+                            ]
+                        ),
+                        *(
+                            [
+                                {
+                                    "factId": unassigned_fact.fact_id,
+                                    "evidenceText": "便携杯",
+                                    "evidenceSource": "PRODUCT_RELATION",
+                                }
+                            ]
+                            if declared_selector == "unassigned"
+                            else []
+                        ),
+                    ],
                     "dimensions": {
                         "narrative": "动作直接进入产品使用",
                         "scene": "早高峰地铁站台",
                         "persona": "单手拿包的成年通勤者",
-                        "productRelation": "便携杯被单手打开",
+                        "productRelation": "普通杯盖需要双手操作，便携杯被单手打开",
                         "camera": "中近景跟随后轻推",
                         "emotion": "从容利落",
                     },

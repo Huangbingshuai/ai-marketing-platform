@@ -84,9 +84,9 @@ from .providers import (
     CREATIVE_DIRECTION_TEMPLATE_HASH,
 )
 from .creative_directions import (
-    allocate_direction_fact_focus_ids,
     allocate_creative_directions,
     complete_semantic_profile,
+    creative_direction_revision_context,
     creative_direction_target_count,
     creative_direction_source_hash,
     dominant_families,
@@ -96,7 +96,7 @@ from .creative_directions import (
     validate_creative_direction_plan,
     validate_semantic_profile,
 )
-from .fact_allocation import allocate_creative_facts
+from .fact_allocation import allocate_creative_facts, assignment_for_direction
 from .visual_strategy import (
     strategy_stage_metadata,
     validate_fact_visual_strategy,
@@ -158,7 +158,6 @@ class RunCache:
     diversity_avoid_action_families: set[str] = field(default_factory=set)
     diversity_avoid_scene_families: set[str] = field(default_factory=set)
     diversity_supplement_reasons: list[str] = field(default_factory=list)
-    used_direction_fact_pairs: set[tuple[str, str]] = field(default_factory=set)
     initial_redundancy_summary: RedundancySummary | None = None
     redundancy_summary: RedundancySummary | None = None
     content_vector_index: ContentVectorIndex | None = None
@@ -280,11 +279,6 @@ class PromptGenerationPipeline:
             task for shard in succeeded_creatives for task in shard.creative_plan
         ]
         cache.creative_tasks = {task.slot_id: task for task in restored_creative_tasks}
-        cache.used_direction_fact_pairs = {
-            (task.creative_direction.direction_id, task.fact_assignment.focus_fact_id)
-            for task in restored_creative_tasks
-            if task.creative_direction is not None and task.fact_assignment is not None
-        }
         cache.creative_target_durations = {
             task.slot_id: task.target_duration_seconds
             for task in restored_creative_tasks
@@ -579,6 +573,7 @@ class PromptGenerationPipeline:
                     ),
                 },
             )
+            revision_context: Mapping[str, Any] | None = None
             for invalid_response_attempt in range(2):
                 self._reserve_ai_call(context)
                 async with self._ai_semaphore:
@@ -587,6 +582,7 @@ class PromptGenerationPipeline:
                         fact_visual_strategy=visual_strategy,
                         shared_prompt=shared_prompt,
                         target_count=snapshot.settings.target_count,
+                        revision_context=revision_context,
                     )
                 try:
                     plan = validate_creative_direction_plan(
@@ -599,6 +595,11 @@ class PromptGenerationPipeline:
                     )
                     break
                 except ValueError as exc:
+                    revision_context = creative_direction_revision_context(
+                        call.value,
+                        application,
+                        validation_error=str(exc),
+                    )
                     if invalid_response_attempt == 1:
                         raise ProviderError(
                             "AI 创意方向规划结构或事实引用无效",
@@ -740,7 +741,7 @@ class PromptGenerationPipeline:
                 round_number,
             )
         application = self._require_application(context)
-        preferred_focus_ids = (
+        preferred_item_fact_ids = (
             [binding.fact_id for binding in snapshot.target_item.insight_bindings]
             if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item
             else []
@@ -756,17 +757,9 @@ class PromptGenerationPipeline:
             for binding in item.insight_bindings
         )
         batch_required_fact_ids = [fact.fact_id for fact in application.required]
-        batch_business_fact_ids = [
-            fact.fact_id for fact in mandatory_business_facts(application)
-        ]
         missing_required_fact_ids = [
             fact_id
             for fact_id in batch_required_fact_ids
-            if fact_id not in already_covered_fact_ids
-        ]
-        missing_business_fact_ids = [
-            fact_id
-            for fact_id in batch_business_fact_ids
             if fact_id not in already_covered_fact_ids
         ]
         ordinal_start = (
@@ -779,6 +772,15 @@ class PromptGenerationPipeline:
                 direction_plan,
                 count=requested,
                 ordinal_start=ordinal_start,
+                preferred_direction_ids=(
+                    [
+                        direction.direction_id
+                        for direction in direction_plan.directions
+                        if set(direction.fact_ids).intersection(coverage_fact_ids)
+                    ]
+                    if supplement_kind == "COVERAGE" and coverage_fact_ids
+                    else ()
+                ),
                 avoid_scene_families=(
                     cache.diversity_avoid_scene_families
                     if supplement_kind == "DIVERSITY"
@@ -811,51 +813,19 @@ class PromptGenerationPipeline:
                 for direction in directions
             ]
         if directions:
-            fact_assignments = []
-            used_direction_fact_pairs = cache.used_direction_fact_pairs
-            focus_fact_ids = allocate_direction_fact_focus_ids(
-                directions,
-                application,
-                priority_fact_ids=(
-                    preferred_focus_ids
-                    or list(coverage_fact_ids)
-                    or missing_business_fact_ids
-                    or batch_business_fact_ids
-                    or missing_required_fact_ids
-                ),
-                minimum_priority_uses=(1 if round_number > 0 else 2),
-            )
-            for index, direction in enumerate(directions):
-                preferred_ids = list(
-                    dict.fromkeys(
-                        [focus_fact_ids[index], *direction.compatible_fact_ids]
-                    )
+            fact_assignments = [
+                assignment_for_direction(
+                    direction,
+                    ordinal=ordinal_start + index,
                 )
-                assignment = None
-                for focused_fact_id in preferred_ids:
-                    candidate_assignment = allocate_creative_facts(
-                        application,
-                        count=1,
-                        ordinal_start=ordinal_start + index,
-                        preferred_focus_fact_ids=[focused_fact_id],
-                    )[0]
-                    pair = (
-                        direction.direction_id,
-                        candidate_assignment.focus_fact_id,
-                    )
-                    assignment = candidate_assignment
-                    if pair not in used_direction_fact_pairs:
-                        used_direction_fact_pairs.add(pair)
-                        break
-                if assignment is None:
-                    raise PipelineError("创意方向未能分配可用事实")
-                fact_assignments.append(assignment)
+                for index, direction in enumerate(directions)
+            ]
         else:
             fact_assignments = allocate_creative_facts(
                 application,
                 count=requested,
                 ordinal_start=ordinal_start,
-                preferred_focus_fact_ids=preferred_focus_ids,
+                preferred_fact_ids=preferred_item_fact_ids,
             )
         tasks = [
             CreativeTask(
@@ -924,13 +894,17 @@ class PromptGenerationPipeline:
                 "candidateTargetCount": requested,
                 "pendingShardCount": len(pending),
                 "shardSize": min(4, self.shard_size),
-                "factSelectionMode": "FOCUS_FACT_BRIEF",
+                "factSelectionMode": "DIRECTION_FACT_APPLICATIONS",
                 "requiredFactCount": len(batch_required_fact_ids),
                 "missingRequiredFactCountBeforeRound": len(
                     coverage_fact_ids or missing_required_fact_ids
                 ),
-                "focusFactCount": len(
-                    {assignment.focus_fact_id for assignment in fact_assignments}
+                "plannedFactCount": len(
+                    {
+                        fact_id
+                        for assignment in fact_assignments
+                        for fact_id in assignment.fact_ids
+                    }
                 ),
                 **self._creative_direction_metadata(context),
             },
@@ -1087,7 +1061,7 @@ class PromptGenerationPipeline:
                 "roundCandidateCount": len(round_items),
                 "completedShardCount": len(cache.completed_creative_shard_keys),
                 "supplemented": cache.supplemented,
-                "factSelectionMode": "FOCUS_FACT_BRIEF",
+                "factSelectionMode": "DIRECTION_FACT_APPLICATIONS",
                 **self._creative_direction_metadata(context),
             },
         )
@@ -1456,18 +1430,7 @@ class PromptGenerationPipeline:
         preferred_item_fact_ids = [
             fact.fact_id for fact in mandatory_business_facts(application)
         ]
-        required_fact_ids = (
-            []
-            if item_operation
-            else list(
-                dict.fromkeys(
-                    [
-                        *[fact.fact_id for fact in application.required],
-                        *preferred_item_fact_ids,
-                    ]
-                )
-            )
-        )
+        required_fact_ids = [] if item_operation else preferred_item_fact_ids
         fixed_covered_fact_ids = [
             binding.fact_id
             for item in snapshot.retained_manual_items
@@ -2145,13 +2108,17 @@ class PromptGenerationPipeline:
             )
             for item in items
         )
+        covered_fact_ids = {
+            binding.fact_id for item in items for binding in item.insight_bindings
+        }
+        missing_business_fact_ids = deep_business_fact_ids - covered_fact_ids
         quality_status: Literal["PASS", "NEEDS_REVIEW"] = (
             "PASS"
             if len(items) == expected
             and all(item.classification_status == "VERIFIED" for item in items)
             and every_item_has_deep_business_fact
             and not any(row.evaluation.hard_issues for row in selected)
-            and (item_operation or not coverage.missing)
+            and (item_operation or not missing_business_fact_ids)
             else "NEEDS_REVIEW"
         )
         metrics = PromptMetrics(
@@ -2537,6 +2504,13 @@ _SEMANTIC_CONTEXT_FIELDS = {
     InsightField.EMOTIONAL_SCENARIO,
 }
 
+_PRODUCT_CONTEXT_FIELDS = {
+    InsightField.PRODUCT_NAME,
+    InsightField.PRODUCT_CATEGORY,
+    InsightField.CORE_SPECIFICATION,
+    InsightField.VISUAL_FEATURES,
+}
+
 
 def _evaluation_context_fact_ids(
     candidate: CreativeCandidate,
@@ -2545,21 +2519,40 @@ def _evaluation_context_fact_ids(
     *,
     item_evaluation: bool,
 ) -> list[str]:
+    product_context_ids = [
+        fact.fact_id
+        for fact in application.usable
+        if fact.field in _PRODUCT_CONTEXT_FIELDS
+    ]
     if item_evaluation:
-        return [
-            fact_id
-            for fact_id in candidate.declared_fact_ids
-            if fact_id in application.by_id
-        ]
+        return list(
+            dict.fromkeys(
+                [
+                    *[
+                        fact_id
+                        for fact_id in candidate.declared_fact_ids
+                        if fact_id in application.by_id
+                    ],
+                    *product_context_ids,
+                ]
+            )
+        )
     if task is None or task.fact_assignment is None:
         return []
     assignment = task.fact_assignment
-    return [
-        fact_id
-        for fact_id in assignment.allowed_fact_ids
-        if fact_id in application.by_id
-        and application.by_id[fact_id].field in _SEMANTIC_CONTEXT_FIELDS
-    ]
+    return list(
+        dict.fromkeys(
+            [
+                *[
+                    fact_id
+                    for fact_id in assignment.fact_ids
+                    if fact_id in application.by_id
+                    and application.by_id[fact_id].field in _SEMANTIC_CONTEXT_FIELDS
+                ],
+                *product_context_ids,
+            ]
+        )
+    )
 
 
 def _prompt_items(

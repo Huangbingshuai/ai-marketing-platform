@@ -5,6 +5,7 @@ import json
 from collections.abc import Sequence
 
 from .models import (
+    CreativeDirection,
     CreativeFactAssignment,
     InsightApplicationMap,
     InsightFact,
@@ -23,13 +24,6 @@ _PRIMARY_FIELD_ORDER = (
     InsightField.EMOTIONAL_SCENARIO,
     InsightField.SECONDARY_SELLING_POINT,
     InsightField.MARKETING_GOAL,
-)
-
-_PRODUCT_SNAPSHOT_FIELDS = (
-    InsightField.PRODUCT_NAME,
-    InsightField.PRODUCT_CATEGORY,
-    InsightField.CORE_SPECIFICATION,
-    InsightField.VISUAL_FEATURES,
 )
 
 _SUPPORT_FIELDS: dict[InsightField, tuple[InsightField, ...]] = {
@@ -102,9 +96,9 @@ def allocate_creative_facts(
     *,
     count: int,
     ordinal_start: int,
-    preferred_focus_fact_ids: Sequence[str] = (),
+    preferred_fact_ids: Sequence[str] = (),
 ) -> list[CreativeFactAssignment]:
-    """Create one business focus and a small compatible fact set per task."""
+    """Build a compact fact bundle for item operations without a batch direction."""
 
     if count <= 0:
         return []
@@ -114,80 +108,82 @@ def allocate_creative_facts(
 
     preferred = [
         application.by_id[fact_id]
-        for fact_id in dict.fromkeys(preferred_focus_fact_ids)
+        for fact_id in dict.fromkeys(preferred_fact_ids)
         if fact_id in application.by_id
         and application.by_id[fact_id].policy
         in {InsightFactPolicy.REQUIRED, InsightFactPolicy.ADAPTIVE}
         and application.by_id[fact_id].field in _PRIMARY_FIELD_ORDER
     ]
-    focus_candidates = preferred or _ordered_facts(
+    business_facts = _ordered_facts(
         usable,
         allowed_fields=set(_PRIMARY_FIELD_ORDER),
         field_order=_PRIMARY_FIELD_ORDER,
     )
-    if not focus_candidates:
-        focus_candidates = usable
-    product_snapshot_facts = _ordered_facts(
-        usable,
-        allowed_fields=set(_PRODUCT_SNAPSHOT_FIELDS),
-        field_order=_PRODUCT_SNAPSHOT_FIELDS,
-    )
+    candidates = preferred or business_facts or usable
 
     assignments: list[CreativeFactAssignment] = []
     for offset in range(count):
         ordinal = ordinal_start + offset
-        focus = focus_candidates[(ordinal - 1) % len(focus_candidates)]
+        anchor = candidates[(ordinal - 1) % len(candidates)]
         support_ids = _support_fact_ids(
             usable,
-            primary=focus,
+            primary=anchor,
             ordinal=ordinal,
         )
-        product_name_ids = [
+        remaining_business_ids = [
             fact.fact_id
-            for fact in product_snapshot_facts
-            if fact.field == InsightField.PRODUCT_NAME
-        ][:1]
-        other_snapshot_ids = [
-            fact.fact_id
-            for fact in product_snapshot_facts
-            if fact.field != InsightField.PRODUCT_NAME
+            for fact in business_facts
+            if fact.fact_id != anchor.fact_id
         ]
-        rotated_snapshot_ids = (
-            other_snapshot_ids[(ordinal - 1) % len(other_snapshot_ids) :]
-            + other_snapshot_ids[: (ordinal - 1) % len(other_snapshot_ids)]
-            if other_snapshot_ids
+        rotated_business_ids = (
+            remaining_business_ids[(ordinal - 1) % len(remaining_business_ids) :]
+            + remaining_business_ids[: (ordinal - 1) % len(remaining_business_ids)]
+            if remaining_business_ids
             else []
         )
-        allowed_ids = list(
+        fact_ids = list(
             dict.fromkeys(
                 [
-                    focus.fact_id,
+                    anchor.fact_id,
                     *support_ids,
-                    *product_name_ids,
-                    *rotated_snapshot_ids[:1],
+                    *rotated_business_ids,
                 ]
             )
-        )[:5]
-        payload = {
-            "ordinal": ordinal,
-            "focusFactId": focus.fact_id,
-            "allowedFactIds": allowed_ids,
-        }
-        assignments.append(
-            CreativeFactAssignment(
-                focus_fact_id=focus.fact_id,
-                allowed_fact_ids=allowed_ids,
-                assignment_hash=hashlib.sha256(
-                    json.dumps(
-                        payload,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                ).hexdigest(),
-            )
-        )
+        )[: min(4, max(1, len(business_facts)))]
+        assignments.append(_assignment(fact_ids, ordinal=ordinal))
     return assignments
+
+
+def assignment_for_direction(
+    direction: CreativeDirection,
+    *,
+    ordinal: int,
+) -> CreativeFactAssignment:
+    """Inherit the model-planned fact bundle without Worker re-allocation."""
+
+    return _assignment(direction.fact_ids, ordinal=ordinal)
+
+
+def _assignment(
+    fact_ids: Sequence[str],
+    *,
+    ordinal: int,
+) -> CreativeFactAssignment:
+    normalized = list(dict.fromkeys(fact_ids))
+    if not normalized:
+        raise ValueError("creative fact assignment requires at least one fact")
+    payload = {"ordinal": ordinal, "factIds": normalized}
+    return CreativeFactAssignment(
+        fact_ids=normalized,
+        assignment_hash=hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+    )
 
 
 def _ordered_facts(

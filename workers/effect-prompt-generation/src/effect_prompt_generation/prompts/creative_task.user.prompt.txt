@@ -9,8 +9,8 @@
 上一轮淘汰原因：{rejection_reasons_json}
 单条重新生成上下文：{regeneration_context_json}
 
-为每个任务生成一条独立、完整、连贯且与当前商品有关的素材创意。focusFact 是本条必须完整使用的业务重点，不得用 productSnapshot 中的商品名称、规格或外观替代它。按 focusFact.realizationField 让重点事实真正决定人物、场景或产品关联点，并使正文画面与之相符；如果该事实不能由画面直接证明，就把它作为安全的商业语境，不要编造证明画面。
+为每个任务生成一条独立、完整、连贯且与当前商品有关的素材创意。factApplications 是批次创意总导演已经规划好的完整事实组合，必须逐项落实其 creativeUsage；不得只使用其中一个事实，也不得用 productSnapshot 中的商品名称、规格或外观替代业务事实。如果某项事实不能由画面直接证明，就把它作为安全的人物、场景、需求或商业语境，不要编造证明画面。
 
-allowedFacts 只供自然搭配，productSnapshot 只负责真实性边界。creativeDirection 提供批次差异方向，priorityDimensions 是最值得变化的两个维度，avoidFamilies 是应避开的拥挤套路；不要机械复述这些字段，也不要按六类用途分组。
+productSnapshot 只负责真实性边界。creativeDirection 提供批次差异方向，priorityDimensions 是最值得变化的两个维度，avoidFamilies 是应避开的拥挤套路；不要机械复述这些字段，也不要按六类用途分组。
 
-每条必须返回 focusFactId 和 focusFactEvidence。focusFactEvidence.evidenceText 必须逐字存在于它声明的 evidenceSource 字段中。已有语义和视觉签名只是软避重参考，差异不能以牺牲事实、商品关联或画面逻辑为代价。
+每条必须完整返回 declaredFactIds 和 factEvidence，覆盖该任务的全部 factApplications。每条 factEvidence.evidenceText 必须逐字存在于它声明的 evidenceSource 字段中。已有语义和视觉签名只是软避重参考，差异不能以牺牲事实、商品关联或画面逻辑为代价。

@@ -28,7 +28,7 @@ def _application():
     )
 
 
-def test_fact_allocation_is_small_deterministic_and_focus_first() -> None:
+def test_fact_allocation_is_small_deterministic_and_business_only() -> None:
     application = _application()
 
     first = allocate_creative_facts(
@@ -43,23 +43,22 @@ def test_fact_allocation_is_small_deterministic_and_focus_first() -> None:
     )
 
     assert first == second
-    assert all(1 <= len(item.allowed_fact_ids) <= 5 for item in first)
-    assert all(item.focus_fact_id in item.allowed_fact_ids for item in first)
+    assert all(2 <= len(item.fact_ids) <= 4 for item in first)
     assert all(
         fact_id in application.by_id
         for item in first
-        for fact_id in item.allowed_fact_ids
+        for fact_id in item.fact_ids
     )
     product_name_id = next(
         fact.fact_id
         for fact in application.usable
         if fact.field == InsightField.PRODUCT_NAME
     )
-    assert all(product_name_id in item.allowed_fact_ids for item in first)
+    assert all(product_name_id not in item.fact_ids for item in first)
     assert all(len(item.assignment_hash) == 64 for item in first)
 
 
-def test_fact_allocation_rotates_business_focus_facts_before_repeating() -> None:
+def test_fact_allocation_rotates_business_facts_across_bundles() -> None:
     application = _application()
     expected_primary_ids = {
         fact.fact_id
@@ -83,16 +82,17 @@ def test_fact_allocation_rotates_business_focus_facts_before_repeating() -> None
         ordinal_start=1,
     )
 
-    actual_focus_ids = [item.focus_fact_id for item in assignments]
-    assert len(actual_focus_ids) == len(set(actual_focus_ids))
-    assert set(actual_focus_ids) == expected_primary_ids
-    focus_fields = {application.by_id[item.focus_fact_id].field for item in assignments}
-    assert InsightField.MARKETING_GOAL in focus_fields
-    assert InsightField.TARGET_AUDIENCE in focus_fields
-    assert InsightField.DISABLED_ELEMENT not in focus_fields
+    allocated_ids = {
+        fact_id for assignment in assignments for fact_id in assignment.fact_ids
+    }
+    assert expected_primary_ids.issubset(allocated_ids)
+    allocated_fields = {application.by_id[fact_id].field for fact_id in allocated_ids}
+    assert InsightField.MARKETING_GOAL in allocated_fields
+    assert InsightField.TARGET_AUDIENCE in allocated_fields
+    assert InsightField.DISABLED_ELEMENT not in allocated_fields
 
 
-def test_fact_allocation_keeps_regeneration_primary_binding() -> None:
+def test_fact_allocation_keeps_regeneration_preferred_binding() -> None:
     application = _application()
     preferred = next(
         fact.fact_id
@@ -104,13 +104,13 @@ def test_fact_allocation_keeps_regeneration_primary_binding() -> None:
         application,
         count=3,
         ordinal_start=20,
-        preferred_focus_fact_ids=[preferred],
+        preferred_fact_ids=[preferred],
     )
 
-    assert {item.focus_fact_id for item in assignments} == {preferred}
+    assert all(preferred in item.fact_ids for item in assignments)
 
 
-def test_legacy_fact_roles_migrate_to_focus_brief() -> None:
+def test_legacy_fact_roles_migrate_to_fact_bundle() -> None:
     assignment = CreativeFactAssignment.model_validate(
         {
             "primaryFactId": "visual-fact",
@@ -123,8 +123,7 @@ def test_legacy_fact_roles_migrate_to_focus_brief() -> None:
         }
     )
 
-    assert assignment.focus_fact_id == "business-focus"
-    assert assignment.allowed_fact_ids == [
+    assert assignment.fact_ids == [
         "business-focus",
         "support-fact",
         "visual-fact",
