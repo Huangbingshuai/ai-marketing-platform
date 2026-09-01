@@ -17,9 +17,13 @@ from .models import (
     CreativeDiversityLandscapeResponse,
     CreativeLandscapeAudit,
     CreativeLandscapeAuditResponse,
+    CreativeTerritory,
     CreativeCandidate,
     CreativeEvaluation,
+    CreativeFactTerritoryAssignment,
+    CreativeFactTerritoryAssignmentResponse,
     CreativeSemanticProfile,
+    CreativeTerritoryFactCompatibility,
     FactVisualStrategy,
     InsightApplicationMap,
 )
@@ -53,44 +57,131 @@ def creative_direction_source_hash(
     )
 
 
-def creative_landscape_revision_context(
-    response: CreativeDiversityLandscapeResponse,
+def creative_fact_assignment_revision_context(
+    response: CreativeFactTerritoryAssignmentResponse,
     application: InsightApplicationMap,
+    landscape: CreativeDiversityLandscapeResponse,
     *,
     validation_error: str,
+    expected_direction_count: int,
 ) -> dict[str, object]:
     business_ids = [fact.fact_id for fact in mandatory_business_facts(application)]
-    compatible_ids = [
-        fact_id
-        for territory in response.territories
-        for fact_id in territory.compatible_fact_ids
-    ]
-    required_ids = [
-        fact_id
-        for territory in response.territories
-        for fact_id in territory.required_fact_ids
-    ]
-    counts = Counter(required_ids)
+    territory_ids = {item.territory_id for item in landscape.territories}
+    assigned_ids = [item.fact_id for item in response.assignments]
+    counts = Counter(assigned_ids)
+    load = Counter(
+        item.territory_id
+        for item in response.assignments
+        if item.territory_id in territory_ids
+    )
+    minimum_slots = {
+        territory_id: max(1, math.ceil(load.get(territory_id, 0) / 4))
+        for territory_id in territory_ids
+    }
     return {
         "validationError": validation_error,
-        "missingRequiredFactIds": [
-            fact_id for fact_id in business_ids if fact_id not in compatible_ids
-        ],
-        "duplicatedRequiredFactIds": [
-            fact_id for fact_id, count in counts.items() if count > 1
-        ],
-        "previousTerritories": [
-            territory.model_dump(mode="json", by_alias=True)
-            for territory in response.territories
+        "missingFactIds": [item for item in business_ids if item not in counts],
+        "duplicatedFactIds": [item for item, count in counts.items() if count > 1],
+        "unknownFactIds": [item for item in counts if item not in business_ids],
+        "unknownTerritoryIds": sorted(
+            {
+                item.territory_id
+                for item in response.assignments
+                if item.territory_id not in territory_ids
+            }
+        ),
+        "factLoadByTerritory": dict(load),
+        "minimumSlotsByTerritory": minimum_slots,
+        "minimumSlotTotal": sum(minimum_slots.values()),
+        "targetDirectionCount": expected_direction_count,
+        "previousAssignments": [
+            item.model_dump(mode="json", by_alias=True)
+            for item in response.assignments
         ],
         "revisionInstruction": (
-            "重新规划完整创意版图，让每个必用事实至少进入一个自然相容空间并"
-            "获得适配说明；requiredFactIds 只放该空间必须优先承载的事实。"
-            "不得由系统替你分配事实。"
+            "重新输出全部业务事实的完整唯一分配；修正缺失、重复、未知引用和"
+            "容量问题，不修改创意空间，不删除事实。"
         ),
     }
 
 
+def compile_creative_landscape_assignments(
+    landscape: CreativeDiversityLandscapeResponse,
+    assignments: CreativeFactTerritoryAssignmentResponse,
+    application: InsightApplicationMap,
+    *,
+    source_hash: str,
+    template_hash: str,
+    expected_direction_count: int,
+) -> CreativeDiversityLandscape:
+    """Mechanically merge AI-owned fact assignments into AI-owned territories."""
+
+    business_ids = [fact.fact_id for fact in mandatory_business_facts(application)]
+    business_id_set = set(business_ids)
+    assigned_ids = [item.fact_id for item in assignments.assignments]
+    if len(assigned_ids) != len(set(assigned_ids)):
+        raise ValueError("creative fact assignment repeated a fact")
+    if set(assigned_ids) != business_id_set:
+        raise ValueError("creative fact assignment must cover every business fact once")
+    territory_ids = {item.territory_id for item in landscape.territories}
+    if any(item.territory_id not in territory_ids for item in assignments.assignments):
+        raise ValueError("creative fact assignment used an unknown territory")
+
+    assigned_by_territory: dict[str, list[CreativeFactTerritoryAssignment]] = {
+        territory_id: [] for territory_id in territory_ids
+    }
+    for item in assignments.assignments:
+        assigned_by_territory[item.territory_id].append(item)
+
+    compiled_territories = []
+    for territory in landscape.territories:
+        assigned = assigned_by_territory[territory.territory_id]
+        if len(assigned) > 8:
+            raise ValueError("creative fact assignment exceeded territory fact capacity")
+        assigned_fact_ids = [item.fact_id for item in assigned]
+        supporting_fact_ids = [
+            fact_id
+            for fact_id in territory.compatible_fact_ids
+            if fact_id not in assigned_fact_ids
+        ][: max(0, 8 - len(assigned_fact_ids))]
+        guidance_by_id = {
+            item.fact_id: item for item in territory.fact_compatibilities
+        }
+        compiled_guidance = [
+            CreativeTerritoryFactCompatibility(
+                fact_id=item.fact_id,
+                natural_usage=item.natural_usage,
+                unsupported_conditions=item.unsupported_conditions,
+            )
+            for item in assigned
+        ]
+        compiled_guidance.extend(
+            guidance_by_id[fact_id]
+            for fact_id in supporting_fact_ids
+            if fact_id in guidance_by_id
+        )
+        supporting_fact_ids = [
+            item.fact_id for item in compiled_guidance[len(assigned) :]
+        ]
+        compiled_territories.append(
+            territory.model_copy(
+                update={
+                    "required_fact_ids": assigned_fact_ids,
+                    "compatible_fact_ids": [
+                        *assigned_fact_ids,
+                        *supporting_fact_ids,
+                    ],
+                    "fact_compatibilities": compiled_guidance,
+                }
+            )
+        )
+    return validate_creative_diversity_landscape(
+        CreativeDiversityLandscapeResponse(territories=compiled_territories),
+        application,
+        source_hash=source_hash,
+        template_hash=template_hash,
+        expected_direction_count=expected_direction_count,
+    )
 def validate_creative_diversity_landscape(
     response: CreativeDiversityLandscapeResponse,
     application: InsightApplicationMap,
@@ -110,13 +201,8 @@ def validate_creative_diversity_landscape(
     ]
     if len(set(action_ids)) != len(action_ids):
         raise ValueError("creative landscape action ids must be globally unique")
-    if (
-        sum(item.target_slots for item in response.territories)
-        != expected_direction_count
-    ):
-        raise ValueError("creative landscape target slots do not match direction count")
-    if any(item.target_slots < 1 for item in response.territories):
-        raise ValueError("creative landscape territory target slots must be positive")
+    if len(response.territories) > expected_direction_count:
+        raise ValueError("creative landscape has more territories than directions")
     if any(
         fact_id not in usable_ids
         for territory in response.territories
@@ -149,23 +235,43 @@ def validate_creative_diversity_landscape(
         for fact_id in territory.required_fact_ids
     ):
         raise ValueError("creative landscape required fact lacks compatibility guidance")
-    territories = [
-        territory.model_copy(
-            update={
-                "required_fact_ids": [
-                    fact_id
-                    for fact_id in territory.required_fact_ids
-                    if fact_id in business_ids
-                ],
-            }
-        )
+    if not business_ids.issubset(set(required_ids)):
+        raise ValueError("creative landscape did not assign every business fact once")
+    normalized_required_ids = [
+        [
+            fact_id
+            for fact_id in territory.required_fact_ids
+            if fact_id in business_ids
+        ]
         for territory in response.territories
     ]
-    if any(
-        len(territory.required_fact_ids) > territory.target_slots * 4
-        for territory in territories
-    ):
-        raise ValueError("creative landscape required facts exceed territory capacity")
+    target_slots = [
+        max(1, math.ceil(len(required_fact_ids) / 4))
+        for required_fact_ids in normalized_required_ids
+    ]
+    if sum(target_slots) > expected_direction_count:
+        raise ValueError("creative landscape required facts exceed direction capacity")
+    allocation_order = sorted(
+        range(len(response.territories)),
+        key=lambda index: (
+            -len(normalized_required_ids[index]),
+            -len(response.territories[index].compatible_fact_ids),
+            response.territories[index].territory_id,
+        ),
+    )
+    for offset in range(expected_direction_count - sum(target_slots)):
+        target_slots[allocation_order[offset % len(allocation_order)]] += 1
+    territories = [
+        CreativeTerritory(
+            **territory.model_dump(
+                mode="python",
+                exclude={"required_fact_ids"},
+            ),
+            required_fact_ids=normalized_required_ids[index],
+            target_slots=target_slots[index],
+        )
+        for index, territory in enumerate(response.territories)
+    ]
     landscape_ids = {
         fact_id
         for territory in territories
@@ -242,6 +348,86 @@ def creative_landscape_audit_revision_context(
             "多种动作。保持未被指出的空间稳定，不得由系统替你判断事实语义。"
         ),
     }
+
+
+def apply_creative_landscape_audit(
+    landscape: CreativeDiversityLandscape,
+    audit: CreativeLandscapeAudit,
+    application: InsightApplicationMap,
+) -> CreativeDiversityLandscape | None:
+    """Apply AI semantic findings without asking Worker to interpret semantics.
+
+    AI owns the WEAK/UNSUPPORTED verdict. Worker only removes the exact optional
+    relationship named by AI. If that mechanical removal would lose a required
+    assignment or mandatory batch fact, the caller must ask AI to replan.
+    """
+
+    if not audit.requires_revision:
+        return landscape.model_copy(update={"semantic_audit": audit})
+    issue_keys = {
+        (issue.territory_id, issue.fact_id) for issue in audit.fact_issues
+    }
+    territories: list[CreativeTerritory] = []
+    for territory in landscape.territories:
+        removed_ids = {
+            fact_id
+            for territory_id, fact_id in issue_keys
+            if territory_id == territory.territory_id
+        }
+        if removed_ids.intersection(territory.required_fact_ids):
+            return None
+        compatible_fact_ids = [
+            fact_id
+            for fact_id in territory.compatible_fact_ids
+            if fact_id not in removed_ids
+        ]
+        if not compatible_fact_ids:
+            return None
+        territories.append(
+            territory.model_copy(
+                update={
+                    "compatible_fact_ids": compatible_fact_ids,
+                    "fact_compatibilities": [
+                        item
+                        for item in territory.fact_compatibilities
+                        if item.fact_id not in removed_ids
+                    ],
+                }
+            )
+        )
+    remaining_fact_ids = {
+        fact_id
+        for territory in territories
+        for fact_id in territory.compatible_fact_ids
+    }
+    mandatory_fact_ids = {
+        fact.fact_id for fact in mandatory_business_facts(application)
+    }
+    if not mandatory_fact_ids.issubset(remaining_fact_ids):
+        return None
+    clean_response = CreativeLandscapeAuditResponse(
+        reviewed_territory_ids=[item.territory_id for item in territories],
+        fact_issues=[],
+        requires_revision=False,
+        revision_territory_ids=[],
+        summary=(
+            f"独立复核指出的 {len(issue_keys)} 项不自然辅助事实关系已移除"
+        ),
+    )
+    clean_audit = validate_creative_landscape_audit(
+        clean_response,
+        landscape.model_copy(update={"territories": territories}),
+    )
+    payload = [
+        item.model_dump(mode="json", by_alias=True) for item in territories
+    ]
+    return landscape.model_copy(
+        update={
+            "territories": territories,
+            "landscape_hash": _hash(payload),
+            "semantic_audit": clean_audit,
+        }
+    )
 
 
 def validate_creative_direction_plan(
@@ -427,6 +613,7 @@ def creative_direction_revision_context(
     application: InsightApplicationMap,
     *,
     validation_error: str,
+    landscape: CreativeDiversityLandscape | None = None,
 ) -> dict[str, object]:
     """Prepare a model-owned revision brief without changing any direction."""
 
@@ -434,17 +621,82 @@ def creative_direction_revision_context(
     planned_ids = {
         fact_id for direction in response.directions for fact_id in direction.fact_ids
     }
+    invalid_fact_references = []
+    invalid_direction_ids: list[str] = []
+    allowed_facts_by_territory: dict[str, list[str]] = {}
+    if landscape is not None:
+        allowed_facts_by_territory = {
+            territory.territory_id: list(territory.compatible_fact_ids)
+            for territory in landscape.territories
+        }
+        invalid_fact_references = [
+            {
+                "directionId": direction.direction_id,
+                "territoryId": direction.territory_id,
+                "invalidFactIds": [
+                    fact_id
+                    for fact_id in direction.fact_ids
+                    if fact_id
+                    not in allowed_facts_by_territory.get(
+                        direction.territory_id,
+                        [],
+                    )
+                ],
+            }
+            for direction in response.directions
+            if any(
+                fact_id
+                not in allowed_facts_by_territory.get(direction.territory_id, [])
+                for fact_id in direction.fact_ids
+            )
+        ]
+        invalid_direction_ids = [
+            direction.direction_id
+            for direction in response.directions
+            if any(
+                fact_id
+                not in allowed_facts_by_territory.get(direction.territory_id, [])
+                for fact_id in direction.fact_ids
+            )
+        ]
+    missing_business_fact_ids = [
+        fact_id for fact_id in business_ids if fact_id not in planned_ids
+    ]
+    revision_direction_ids: list[str] = []
+    if landscape is not None:
+        missing_territory_ids = {
+            territory_id
+            for territory_id, allowed_fact_ids in allowed_facts_by_territory.items()
+            if any(
+                fact_id in allowed_fact_ids
+                for fact_id in missing_business_fact_ids
+            )
+        }
+        revision_direction_ids = list(
+            dict.fromkeys(
+                [
+                    direction.direction_id
+                    for direction in response.directions
+                    if direction.territory_id in missing_territory_ids
+                ]
+                + invalid_direction_ids
+            )
+        )
     return {
         "validationError": validation_error,
-        "missingBusinessFactIds": [
-            fact_id for fact_id in business_ids if fact_id not in planned_ids
-        ],
+        "missingBusinessFactIds": missing_business_fact_ids,
         "previousDirections": [
             direction.model_dump(mode="json", by_alias=True)
             for direction in response.directions
         ],
+        "allowedFactIdsByTerritory": allowed_facts_by_territory,
+        "invalidDirectionFactReferences": invalid_fact_references,
+        "revisionDirectionIds": revision_direction_ids,
         "revisionInstruction": (
             "重新规划完整批次，让缺失事实自然进入合适方向；"
+            "每个方向的 factApplications 只能引用其 territoryId 对应的"
+            " allowedFactIdsByTerritory，逐项修复 invalidDirectionFactReferences；"
+            "revisionDirectionIds 是本轮允许调整的方向，其他方向必须原样返回；"
             "不得只追加事实ID或由系统替换事实组合。"
         ),
     }

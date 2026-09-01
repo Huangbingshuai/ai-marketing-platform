@@ -1,0 +1,18 @@
+目标创意方向数量：{target_direction_count}
+
+必须恰好分配一次的已确认业务事实：
+{required_facts_json}
+
+辅助理解事实（只帮助判断自然关系，不输出到 assignments）：
+{supporting_facts_json}
+
+事实视觉使用策略及自然搭配提示：
+{fact_visual_strategy_json}
+
+已经设计好的产品专属创意空间：
+{territories_json}
+
+分配修订上下文（首次为空）：
+{revision_context_json}
+
+请为每条业务事实选择唯一且自然的主承载空间。不要修改或新增创意空间，不要输出最终视频 Prompt，不要遗漏或重复任何 factId。

@@ -620,19 +620,16 @@ class CreativeTerritoryFactCompatibility(ApiModel):
         )
 
 
-class CreativeTerritory(ApiModel):
+class CreativeTerritoryDraft(ApiModel):
     territory_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
     label: str = Field(min_length=2, max_length=80)
     compatible_fact_ids: list[str] = Field(min_length=1, max_length=8)
     fact_compatibilities: list[CreativeTerritoryFactCompatibility] = Field(
         max_length=8,
     )
-    required_fact_ids: list[str] = Field(min_length=1, max_length=40)
+    required_fact_ids: list[str] = Field(default_factory=list, max_length=40)
     scene_boundary: str = Field(min_length=4, max_length=180)
     actions: list[CreativeTerritoryAction] = Field(min_length=1, max_length=5)
-    # Raw AI output may contain zero; the landscape validator rejects it and
-    # gives the model one whole-plan revision instead of silently reallocating.
-    target_slots: int = Field(ge=0, le=16)
     differentiation_goal: str = Field(min_length=4, max_length=180)
 
     @model_validator(mode="before")
@@ -652,7 +649,7 @@ class CreativeTerritory(ApiModel):
         return migrated
 
     @model_validator(mode="after")
-    def unique_ids(self) -> CreativeTerritory:
+    def unique_ids(self) -> CreativeTerritoryDraft:
         self.compatible_fact_ids = list(dict.fromkeys(self.compatible_fact_ids))
         self.required_fact_ids = list(dict.fromkeys(self.required_fact_ids))
         self.fact_compatibilities = list(
@@ -664,8 +661,27 @@ class CreativeTerritory(ApiModel):
         return self
 
 
+class CreativeTerritory(CreativeTerritoryDraft):
+    required_fact_ids: list[str] = Field(default_factory=list, max_length=40)
+    target_slots: int = Field(ge=1, le=16)
+
+
 class CreativeDiversityLandscapeResponse(ApiModel):
-    territories: list[CreativeTerritory] = Field(min_length=5, max_length=10)
+    territories: list[CreativeTerritoryDraft] = Field(min_length=5, max_length=10)
+
+
+class CreativeFactTerritoryAssignment(ApiModel):
+    fact_id: str = Field(min_length=1, max_length=120)
+    territory_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
+    natural_usage: str = Field(min_length=4, max_length=120)
+    unsupported_conditions: list[str] = Field(default_factory=list, max_length=1)
+
+
+class CreativeFactTerritoryAssignmentResponse(ApiModel):
+    assignments: list[CreativeFactTerritoryAssignment] = Field(
+        min_length=1,
+        max_length=80,
+    )
 
 
 class CreativeLandscapeFactIssue(ApiModel):

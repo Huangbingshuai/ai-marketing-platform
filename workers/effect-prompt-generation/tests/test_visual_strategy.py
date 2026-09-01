@@ -21,6 +21,8 @@ from effect_prompt_generation.providers import (
     FACT_VISUAL_STRATEGY_TEMPLATE_HASH,
     AiCallResult,
     MockAiProvider,
+    ProviderError,
+    ProviderErrorType,
 )
 from effect_prompt_generation.fact_allocation import allocate_creative_facts
 from effect_prompt_generation.visual_strategy import validate_fact_visual_strategy
@@ -212,6 +214,69 @@ class _CountingProvider(MockAiProvider):
     ) -> AiCallResult[FactVisualStrategyResponse]:
         self.strategy_calls += 1
         return await super().compile_fact_visual_strategy(application)
+
+
+class _InvalidJsonOnceProvider(_CountingProvider):
+    async def compile_fact_visual_strategy(
+        self,
+        application: InsightApplicationMap,
+    ) -> AiCallResult[FactVisualStrategyResponse]:
+        self.strategy_calls += 1
+        if self.strategy_calls == 1:
+            raise ProviderError(
+                "temporary invalid structured response",
+                retryable=False,
+                error_type=ProviderErrorType.RESPONSE_INVALID,
+            )
+        return await MockAiProvider.compile_fact_visual_strategy(self, application)
+
+
+@pytest.mark.asyncio
+async def test_pipeline_retries_invalid_visual_strategy_json_once() -> None:
+    provider = _InvalidJsonOnceProvider()
+    api = _StageApi()
+    pipeline = PromptGenerationPipeline(api=api, provider=provider)  # type: ignore[arg-type]
+    context = RuntimeContext(
+        run_id="run-invalid-json",
+        project_id="project-1",
+        workflow_run_id="workflow-1",
+        product_id="product-1",
+        request_id="request-1",
+        attempt_token="attempt-1",
+        source_fingerprint="run-source",
+    )
+    pipeline.register_snapshot(
+        context,
+        PromptGenerationSnapshot(
+            project_id=context.project_id,
+            workflow_run_id=context.workflow_run_id,
+            product_id=context.product_id,
+            operation="BATCH_GENERATE",
+            settings=PromptBatchSettings(
+                target_count=10,
+                default_duration_seconds=5,
+            ),
+            selection_policy="MMR_CONTENT",
+            insight_artifact=InsightArtifact(
+                id="insight-1",
+                revision=1,
+                content_hash="insight-hash",
+                result={
+                    "productName": "广式腊肠",
+                    "productCategory": "腊味肉制品",
+                    "visualFeatures": "腊肠油润透亮的肉质质感",
+                    "coreSellingPoints": ["纯猪肉无淀粉"],
+                    "usageScenarios": ["家庭蒸煮"],
+                },
+            ),
+        ),
+    )
+
+    await pipeline.map_insight(context)
+    strategy = await pipeline.compile_fact_visual_strategy(context)
+
+    assert strategy.policies
+    assert provider.strategy_calls == 2
 
 
 @pytest.mark.asyncio

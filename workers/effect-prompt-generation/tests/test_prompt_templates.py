@@ -15,6 +15,8 @@ ACTIVE_PROMPT_FILES = {
     "creative_task.user.prompt.txt",
     "creative_direction.system.prompt.txt",
     "creative_direction.user.prompt.txt",
+    "creative_fact_territory_assignment.system.prompt.txt",
+    "creative_fact_territory_assignment.user.prompt.txt",
     "creative_landscape.system.prompt.txt",
     "creative_landscape.user.prompt.txt",
     "creative_landscape_audit.system.prompt.txt",
@@ -93,9 +95,52 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
 
 def test_landscape_template_distinguishes_compatible_and_primary_facts() -> None:
     landscape = load_prompt("creative_landscape.system.prompt.txt")
+    assignment = load_prompt(
+        "creative_fact_territory_assignment.system.prompt.txt"
+    )
+    audit = load_prompt("creative_landscape_audit.system.prompt.txt")
 
-    assert "只能有一个“主承载空间”" in landscape
-    assert "compatibleFactIds 可以在多个自然相容空间复用" in landscape
+    assert "requiredFactIds 本阶段保持为空" in landscape
+    assert "下一次独立 AI 调用" in landscape
+    assert "不要输出 targetSlots" in landscape
+    assert "产品信息解释、原料理念、工艺故事或消费决策空间" in landscape
+    assert "不得为了覆盖把配方挂到储存" in landscape
+    assert "必须分配的业务事实" in assignment
+    assert "必须且只能输出一次" in assignment
+    assert "不修改空间，也不生成最终视频 Prompt" in assignment
+    assert "max(1, ceil(事实数/4))" in assignment
+    assert "不能因为“无法视觉证明”这一点单独判为问题" in audit
+    assert "若被挂到储存、送礼、分享、采购等无关动作" in audit
+
+
+def test_territory_audit_template_receives_real_business_inputs() -> None:
+    rendered = render_prompt(
+        "creative_landscape_audit.user.prompt.txt",
+        facts_json='[{"factId":"F1","value":"真实卖点"}]',
+        fact_visual_strategy_json='[{"factId":"F1","visualUsage":"CONTEXT_ONLY"}]',
+        creative_territory_json='{"territoryId":"T1","label":"家庭备餐"}',
+    )
+
+    assert '"factId":"F1"' in rendered
+    assert '"territoryId":"T1"' in rendered
+    assert "facts_json" not in rendered
+    assert "creative_territory_json" not in rendered
+
+
+def test_fact_territory_assignment_receives_required_and_supporting_facts() -> None:
+    rendered = render_prompt(
+        "creative_fact_territory_assignment.user.prompt.txt",
+        target_direction_count="13",
+        required_facts_json='[{"factId":"F1","value":"核心卖点"}]',
+        supporting_facts_json='[{"factId":"F2","value":"产品外观"}]',
+        fact_visual_strategy_json='[{"factId":"F1"}]',
+        territories_json='[{"territoryId":"T1"}]',
+        revision_context_json="{}",
+    )
+
+    assert '"factId":"F1"' in rendered
+    assert '"factId":"F2"' in rendered
+    assert "辅助理解事实" in rendered
 
 
 def test_visual_strategy_templates_keep_direction_fact_applications_without_role_split() -> None:

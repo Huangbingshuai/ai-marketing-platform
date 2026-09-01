@@ -1,12 +1,12 @@
 请独立复核以下单个产品创意空间。
 
 可信事实：
-{{ facts_json }}
+{facts_json}
 
 事实视觉使用策略：
-{{ fact_visual_strategy_json }}
+{fact_visual_strategy_json}
 
 待复核创意空间：
-{{ creative_territory_json }}
+{creative_territory_json}
 
 请按系统规则返回严格结构化结果。territoryId 必须原样返回；仅在 factIssues 中列出 WEAK 或 UNSUPPORTED 的事实关系。

@@ -31,6 +31,7 @@ from .models import (
     CreativeDiversityLandscapeResponse,
     CreativeLandscapeAuditResponse,
     CreativeTerritory,
+    CreativeTerritoryDraft,
     CreativeTerritoryAuditResponse,
     CreativeTerritoryAction,
     CreativeTerritoryFactCompatibility,
@@ -38,6 +39,8 @@ from .models import (
     CreativeDimensions,
     CreativeEvaluation,
     CreativeEvaluationBatch,
+    CreativeFactTerritoryAssignment,
+    CreativeFactTerritoryAssignmentResponse,
     CreativeFactAssignment,
     CreativeFactEvidence,
     CreativeScores,
@@ -73,6 +76,12 @@ CREATIVE_LANDSCAPE_AUDIT_BASE_PROMPT = (
     "creative_landscape_audit.system.prompt.txt"
 )
 CREATIVE_LANDSCAPE_AUDIT_TASK_PROMPT = "creative_landscape_audit.user.prompt.txt"
+CREATIVE_FACT_TERRITORY_ASSIGNMENT_BASE_PROMPT = (
+    "creative_fact_territory_assignment.system.prompt.txt"
+)
+CREATIVE_FACT_TERRITORY_ASSIGNMENT_TASK_PROMPT = (
+    "creative_fact_territory_assignment.user.prompt.txt"
+)
 CREATIVE_DIRECTION_AUDIT_BASE_PROMPT = "creative_direction_audit.system.prompt.txt"
 CREATIVE_DIRECTION_AUDIT_TASK_PROMPT = "creative_direction_audit.user.prompt.txt"
 FACT_VISUAL_STRATEGY_TEMPLATE_HASH = hashlib.sha256(
@@ -87,6 +96,10 @@ CREATIVE_DIRECTION_TEMPLATE_HASH = hashlib.sha256(
         + load_prompt(CREATIVE_LANDSCAPE_AUDIT_BASE_PROMPT)
         + "\n"
         + load_prompt(CREATIVE_LANDSCAPE_AUDIT_TASK_PROMPT)
+        + "\n"
+        + load_prompt(CREATIVE_FACT_TERRITORY_ASSIGNMENT_BASE_PROMPT)
+        + "\n"
+        + load_prompt(CREATIVE_FACT_TERRITORY_ASSIGNMENT_TASK_PROMPT)
         + "\n"
         + load_prompt(CREATIVE_DIRECTION_BASE_PROMPT)
         + "\n"
@@ -197,6 +210,16 @@ class AiProvider(Protocol):
         revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDirectionResponse]: ...
 
+    async def assign_creative_landscape_facts(
+        self,
+        application: InsightApplicationMap,
+        *,
+        fact_visual_strategy: FactVisualStrategy,
+        landscape: CreativeDiversityLandscapeResponse,
+        target_count: int,
+        revision_context: Mapping[str, Any] | None = None,
+    ) -> AiCallResult[CreativeFactTerritoryAssignmentResponse]: ...
+
     async def audit_creative_territory(
         self,
         application: InsightApplicationMap,
@@ -286,6 +309,32 @@ class MockAiProvider:
             ),
             NodeId.COHERENT_CREATIVE_GENERATION.value,
             CREATIVE_DIRECTION_BASE_PROMPT,
+        )
+
+    async def assign_creative_landscape_facts(
+        self,
+        application: InsightApplicationMap,
+        *,
+        fact_visual_strategy: FactVisualStrategy,
+        landscape: CreativeDiversityLandscapeResponse,
+        target_count: int,
+        revision_context: Mapping[str, Any] | None = None,
+    ) -> AiCallResult[CreativeFactTerritoryAssignmentResponse]:
+        del fact_visual_strategy, target_count, revision_context
+        territory_ids = [item.territory_id for item in landscape.territories]
+        assignments = [
+            CreativeFactTerritoryAssignment(
+                fact_id=fact.fact_id,
+                territory_id=territory_ids[index % len(territory_ids)],
+                natural_usage=f"让该事实直接决定{landscape.territories[index % len(territory_ids)].label}的商业表达",
+                unsupported_conditions=[],
+            )
+            for index, fact in enumerate(mandatory_business_facts(application))
+        ]
+        return _mock_result(
+            CreativeFactTerritoryAssignmentResponse(assignments=assignments),
+            NodeId.COHERENT_CREATIVE_GENERATION.value,
+            CREATIVE_FACT_TERRITORY_ASSIGNMENT_BASE_PROMPT,
         )
 
     async def audit_creative_territory(
@@ -511,6 +560,10 @@ class ArkResponsesProvider:
                 "visualUsage": policy.visual_usage.value,
                 "visualInstruction": policy.visual_instruction,
                 "contextInstruction": policy.context_instruction,
+                "compatibleFactIds": [
+                    fact_aliases[fact_id]
+                    for fact_id in policy.compatible_fact_ids
+                ],
                 "forbiddenInferences": policy.forbidden_inferences,
             }
             for policy in fact_visual_strategy.policies
@@ -595,6 +648,118 @@ class ArkResponsesProvider:
             metadata=call.metadata,
         )
 
+    async def assign_creative_landscape_facts(
+        self,
+        application: InsightApplicationMap,
+        *,
+        fact_visual_strategy: FactVisualStrategy,
+        landscape: CreativeDiversityLandscapeResponse,
+        target_count: int,
+        revision_context: Mapping[str, Any] | None = None,
+    ) -> AiCallResult[CreativeFactTerritoryAssignmentResponse]:
+        fact_aliases, fact_ids_by_alias = _fact_alias_maps(application)
+        business_facts = mandatory_business_facts(application)
+        policies_by_id = fact_visual_strategy.by_id
+        facts = [
+            {
+                "factId": fact_aliases[fact.fact_id],
+                "field": fact.field.value,
+                "value": fact.value,
+            }
+            for fact in business_facts
+        ]
+        visual_policies = [
+            {
+                "factId": fact_aliases[fact.fact_id],
+                "visualUsage": policies_by_id[fact.fact_id].visual_usage.value,
+                "visualInstruction": policies_by_id[fact.fact_id].visual_instruction,
+                "contextInstruction": policies_by_id[fact.fact_id].context_instruction,
+                "compatibleFactIds": [
+                    fact_aliases[fact_id]
+                    for fact_id in policies_by_id[fact.fact_id].compatible_fact_ids
+                ],
+                "forbiddenInferences": policies_by_id[
+                    fact.fact_id
+                ].forbidden_inferences,
+            }
+            for fact in business_facts
+        ]
+        territories = [
+            {
+                "territoryId": territory.territory_id,
+                "label": territory.label,
+                "sceneBoundary": territory.scene_boundary,
+                "actions": [
+                    action.model_dump(mode="json", by_alias=True)
+                    for action in territory.actions
+                ],
+                "differentiationGoal": territory.differentiation_goal,
+                "preliminaryFactIds": [
+                    fact_aliases[fact_id]
+                    for fact_id in territory.compatible_fact_ids
+                    if fact_id in fact_aliases
+                ],
+            }
+            for territory in landscape.territories
+        ]
+        prompt = render_prompt(
+            CREATIVE_FACT_TERRITORY_ASSIGNMENT_TASK_PROMPT,
+            target_direction_count=str(creative_direction_target_count(target_count)),
+            required_facts_json=json.dumps(
+                facts, ensure_ascii=False, sort_keys=True
+            ),
+            supporting_facts_json=json.dumps(
+                [
+                    {
+                        "factId": fact_aliases[fact.fact_id],
+                        "field": fact.field.value,
+                        "value": fact.value,
+                    }
+                    for fact in application.usable
+                    if fact not in business_facts
+                ],
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            fact_visual_strategy_json=json.dumps(
+                visual_policies, ensure_ascii=False, sort_keys=True
+            ),
+            territories_json=json.dumps(
+                territories, ensure_ascii=False, sort_keys=True
+            ),
+            revision_context_json=json.dumps(
+                _remap_fact_references(revision_context or {}, fact_aliases),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )
+        call = await self._structured(
+            prompt,
+            CreativeFactTerritoryAssignmentResponse,
+            schema_name="effect_prompt_creative_fact_territory_assignment",
+            stage=NodeId.COHERENT_CREATIVE_GENERATION.value,
+            prompt_file=CREATIVE_FACT_TERRITORY_ASSIGNMENT_BASE_PROMPT,
+            model=self._fragment_strategy_model,
+            max_output_tokens=self._strategy_max_output_tokens,
+            request_timeout=self._strategy_timeout,
+            instructions=load_prompt(CREATIVE_FACT_TERRITORY_ASSIGNMENT_BASE_PROMPT),
+        )
+        return AiCallResult(
+            value=CreativeFactTerritoryAssignmentResponse(
+                assignments=[
+                    item.model_copy(
+                        update={
+                            "fact_id": fact_ids_by_alias.get(
+                                item.fact_id, item.fact_id
+                            )
+                        }
+                    )
+                    for item in call.value.assignments
+                ]
+            ),
+            metadata=call.metadata,
+        )
+
     async def audit_creative_territory(
         self,
         application: InsightApplicationMap,
@@ -618,6 +783,10 @@ class ArkResponsesProvider:
                 "visualUsage": policy.visual_usage.value,
                 "visualInstruction": policy.visual_instruction,
                 "contextInstruction": policy.context_instruction,
+                "compatibleFactIds": [
+                    fact_aliases[fact_id]
+                    for fact_id in policy.compatible_fact_ids
+                ],
                 "forbiddenInferences": policy.forbidden_inferences,
             }
             for policy in fact_visual_strategy.policies
@@ -801,6 +970,10 @@ class ArkResponsesProvider:
                 "visualUsage": policy.visual_usage.value,
                 "visualInstruction": policy.visual_instruction,
                 "contextInstruction": policy.context_instruction,
+                "compatibleFactIds": [
+                    fact_aliases[fact_id]
+                    for fact_id in policy.compatible_fact_ids
+                ],
                 "forbiddenInferences": policy.forbidden_inferences,
             }
             for policy in fact_visual_strategy.policies
@@ -1444,7 +1617,6 @@ def _mock_creative_landscape_response(
     territory_count = min(
         len(_MOCK_DIRECTION_ROWS), direction_count, len(required_pool)
     )
-    base_slots, extra = divmod(direction_count, territory_count)
     required_by_territory = [
         [fact.fact_id for fact in required_pool[index::territory_count]]
         for index in range(territory_count)
@@ -1465,7 +1637,7 @@ def _mock_creative_landscape_response(
         )
     return CreativeDiversityLandscapeResponse(
         territories=[
-            CreativeTerritory(
+            CreativeTerritoryDraft(
                 territory_id=f"TERRITORY_{index + 1:02d}",
                 label=row[1],
                 compatible_fact_ids=compatible_by_territory[index],
@@ -1489,7 +1661,6 @@ def _mock_creative_landscape_response(
                         boundary=f"只以{row[3]}作为连续主动作",
                     )
                 ],
-                target_slots=base_slots + int(index < extra),
                 differentiation_goal=f"通过{row[0]}区别于其他创意空间",
             )
             for index, row in enumerate(_MOCK_DIRECTION_ROWS[:territory_count])
@@ -1515,8 +1686,18 @@ def _mock_creative_direction_response(
             application,
             direction_count=direction_count,
         )
+        base_slots, extra_slots = divmod(
+            direction_count,
+            len(draft.territories),
+        )
         landscape = CreativeDiversityLandscape(
-            territories=draft.territories,
+            territories=[
+                CreativeTerritory(
+                    **territory.model_dump(mode="python"),
+                    target_slots=base_slots + int(index < extra_slots),
+                )
+                for index, territory in enumerate(draft.territories)
+            ],
             source_hash="0" * 64,
             landscape_hash="0" * 64,
             template_hash="0" * 64,
@@ -1572,6 +1753,12 @@ def _mock_creative_direction_response(
             if fact.fact_id
             in territory.required_fact_ids[local_index :: territory.target_slots]
         ]
+        if not required:
+            required = [
+                fact
+                for fact in business_facts
+                if fact.fact_id in territory.required_fact_ids[:1]
+            ]
         rotated = (
             business_facts[(global_index * bundle_size) % len(business_facts) :]
             + business_facts[: (global_index * bundle_size) % len(business_facts)]
