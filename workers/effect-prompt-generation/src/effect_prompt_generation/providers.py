@@ -29,9 +29,9 @@ from .models import (
     CreativeDirectionResponse,
     CreativeDiversityLandscape,
     CreativeDiversityLandscapeResponse,
-    CreativeLandscapeAuditItem,
     CreativeLandscapeAuditResponse,
     CreativeTerritory,
+    CreativeTerritoryAuditResponse,
     CreativeTerritoryAction,
     CreativeTerritoryFactCompatibility,
     CreativeDimensionKey,
@@ -197,13 +197,13 @@ class AiProvider(Protocol):
         revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDirectionResponse]: ...
 
-    async def audit_creative_landscape(
+    async def audit_creative_territory(
         self,
         application: InsightApplicationMap,
         *,
         fact_visual_strategy: FactVisualStrategy,
-        landscape: CreativeDiversityLandscape,
-    ) -> AiCallResult[CreativeLandscapeAuditResponse]: ...
+        territory: CreativeTerritory,
+    ) -> AiCallResult[CreativeTerritoryAuditResponse]: ...
 
     async def audit_creative_directions(
         self,
@@ -288,16 +288,16 @@ class MockAiProvider:
             CREATIVE_DIRECTION_BASE_PROMPT,
         )
 
-    async def audit_creative_landscape(
+    async def audit_creative_territory(
         self,
         application: InsightApplicationMap,
         *,
         fact_visual_strategy: FactVisualStrategy,
-        landscape: CreativeDiversityLandscape,
-    ) -> AiCallResult[CreativeLandscapeAuditResponse]:
+        territory: CreativeTerritory,
+    ) -> AiCallResult[CreativeTerritoryAuditResponse]:
         del application, fact_visual_strategy
         return _mock_result(
-            _mock_creative_landscape_audit(landscape),
+            _mock_creative_territory_audit(territory),
             NodeId.COHERENT_CREATIVE_GENERATION.value,
             CREATIVE_LANDSCAPE_AUDIT_BASE_PROMPT,
         )
@@ -595,13 +595,13 @@ class ArkResponsesProvider:
             metadata=call.metadata,
         )
 
-    async def audit_creative_landscape(
+    async def audit_creative_territory(
         self,
         application: InsightApplicationMap,
         *,
         fact_visual_strategy: FactVisualStrategy,
-        landscape: CreativeDiversityLandscape,
-    ) -> AiCallResult[CreativeLandscapeAuditResponse]:
+        territory: CreativeTerritory,
+    ) -> AiCallResult[CreativeTerritoryAuditResponse]:
         fact_aliases, fact_ids_by_alias = _fact_alias_maps(application)
         facts = [
             {
@@ -630,12 +630,9 @@ class ArkResponsesProvider:
                 ensure_ascii=False,
                 sort_keys=True,
             ),
-            creative_landscape_json=json.dumps(
+            creative_territory_json=json.dumps(
                 _remap_fact_references(
-                    [
-                        item.model_dump(mode="json", by_alias=True)
-                        for item in landscape.territories
-                    ],
+                    territory.model_dump(mode="json", by_alias=True),
                     fact_aliases,
                 ),
                 ensure_ascii=False,
@@ -644,8 +641,8 @@ class ArkResponsesProvider:
         )
         call = await self._structured(
             prompt,
-            CreativeLandscapeAuditResponse,
-            schema_name="effect_prompt_creative_landscape_audit",
+            CreativeTerritoryAuditResponse,
+            schema_name="effect_prompt_creative_territory_audit",
             stage=NodeId.COHERENT_CREATIVE_GENERATION.value,
             prompt_file=CREATIVE_LANDSCAPE_AUDIT_BASE_PROMPT,
             model=self._evaluation_model,
@@ -654,27 +651,19 @@ class ArkResponsesProvider:
             instructions=load_prompt(CREATIVE_LANDSCAPE_AUDIT_BASE_PROMPT),
         )
         return AiCallResult(
-            value=CreativeLandscapeAuditResponse(
-                items=[
-                    item.model_copy(
+            value=CreativeTerritoryAuditResponse(
+                territory_id=call.value.territory_id,
+                fact_issues=[
+                    issue.model_copy(
                         update={
-                            "fact_issues": [
-                                issue.model_copy(
-                                    update={
-                                        "fact_id": fact_ids_by_alias.get(
-                                            issue.fact_id,
-                                            issue.fact_id,
-                                        )
-                                    }
-                                )
-                                for issue in item.fact_issues
-                            ]
+                            "fact_id": fact_ids_by_alias.get(
+                                issue.fact_id,
+                                issue.fact_id,
+                            )
                         }
                     )
-                    for item in call.value.items
+                    for issue in call.value.fact_issues
                 ],
-                requires_revision=call.value.requires_revision,
-                revision_territory_ids=call.value.revision_territory_ids,
                 summary=call.value.summary,
             ),
             metadata=call.metadata,
@@ -1663,16 +1652,23 @@ def _mock_creative_landscape_audit(
     landscape: CreativeDiversityLandscape,
 ) -> CreativeLandscapeAuditResponse:
     return CreativeLandscapeAuditResponse(
-        items=[
-            CreativeLandscapeAuditItem(
-                territory_id=territory.territory_id,
-                fact_issues=[],
-            )
-            for territory in landscape.territories
+        reviewed_territory_ids=[
+            territory.territory_id for territory in landscape.territories
         ],
+        fact_issues=[],
         requires_revision=False,
         revision_territory_ids=[],
         summary="全部事实与产品专属创意空间自然相容",
+    )
+
+
+def _mock_creative_territory_audit(
+    territory: CreativeTerritory,
+) -> CreativeTerritoryAuditResponse:
+    return CreativeTerritoryAuditResponse(
+        territory_id=territory.territory_id,
+        fact_issues=[],
+        summary="当前空间的事实关系自然相容",
     )
 
 

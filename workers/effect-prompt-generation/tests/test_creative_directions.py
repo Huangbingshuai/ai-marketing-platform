@@ -19,8 +19,8 @@ from effect_prompt_generation.models import (
     CreativeDirectionAuditResponse,
     CreativeDirectionResponse,
     CreativeDiversityLandscapeResponse,
-    CreativeLandscapeAuditResponse,
     CreativeLandscapeFactIssue,
+    CreativeTerritoryAuditResponse,
     CreativeEvaluation,
     CreativeScores,
     CreativeSemanticProfile,
@@ -482,33 +482,25 @@ class LandscapeAuditThenReplanningProvider(MockAiProvider):
         self.revision_contexts.append(kwargs.get("revision_context"))
         return await super().plan_creative_landscape(*args, **kwargs)
 
-    async def audit_creative_landscape(self, *args: Any, **kwargs: Any) -> Any:
+    async def audit_creative_territory(self, *args: Any, **kwargs: Any) -> Any:
         self.audit_calls += 1
-        call = await super().audit_creative_landscape(*args, **kwargs)
+        call = await super().audit_creative_territory(*args, **kwargs)
         if self.audit_calls > 1:
             return call
-        first = call.value.items[0]
-        landscape = kwargs["landscape"]
-        fact_id = landscape.territories[0].compatible_fact_ids[0]
+        territory = kwargs["territory"]
+        fact_id = territory.compatible_fact_ids[0]
         return replace(
             call,
-            value=CreativeLandscapeAuditResponse(
-                items=[
-                    first.model_copy(
-                        update={
-                            "fact_issues": [
-                                CreativeLandscapeFactIssue(
-                                    fact_id=fact_id,
-                                    verdict="WEAK",
-                                    reason="该事实与空间主动作只有口头关系",
-                                )
-                            ]
-                        }
-                    ),
-                    *call.value.items[1:],
+            value=CreativeTerritoryAuditResponse(
+                territory_id=territory.territory_id,
+                fact_issues=[
+                    CreativeLandscapeFactIssue(
+                        territory_id=territory.territory_id,
+                        fact_id=fact_id,
+                        verdict="WEAK",
+                        reason="该事实与空间主动作只有口头关系",
+                    )
                 ],
-                requires_revision=True,
-                revision_territory_ids=[first.territory_id],
                 summary="独立复核要求修订一个创意空间",
             ),
         )
@@ -534,7 +526,7 @@ async def test_landscape_semantic_audit_replans_before_direction_generation() ->
     await pipeline.plan_creatives(runtime, round_number=0)
 
     assert provider.landscape_calls == 2
-    assert provider.audit_calls == 2
+    assert provider.audit_calls >= 2
     assert provider.revision_contexts[0] is None
     assert provider.revision_contexts[1]
     assert "semanticAudit" in provider.revision_contexts[1]
@@ -600,23 +592,17 @@ def test_landscape_audit_cannot_hide_a_reported_fact_issue() -> None:
         expected_direction_count=13,
     )
     audit = _mock_creative_landscape_audit(landscape)
-    first = audit.items[0]
+    first_territory_id = landscape.territories[0].territory_id
     fact_id = landscape.territories[0].compatible_fact_ids[0]
     inconsistent = audit.model_copy(
         update={
-            "items": [
-                first.model_copy(
-                    update={
-                        "fact_issues": [
-                            CreativeLandscapeFactIssue(
-                                fact_id=fact_id,
-                                verdict="WEAK",
-                                reason="该事实只能被口头硬解释",
-                            )
-                        ]
-                    }
-                ),
-                *audit.items[1:],
+            "fact_issues": [
+                CreativeLandscapeFactIssue(
+                    territory_id=first_territory_id,
+                    fact_id=fact_id,
+                    verdict="WEAK",
+                    reason="该事实只能被口头硬解释",
+                )
             ]
         }
     )
@@ -627,7 +613,7 @@ def test_landscape_audit_cannot_hide_a_reported_fact_issue() -> None:
     revised = inconsistent.model_copy(
         update={
             "requires_revision": True,
-            "revision_territory_ids": [first.territory_id],
+            "revision_territory_ids": [first_territory_id],
         }
     )
     assert validate_creative_landscape_audit(revised, landscape).requires_revision

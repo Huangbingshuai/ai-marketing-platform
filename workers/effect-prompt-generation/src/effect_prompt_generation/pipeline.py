@@ -566,7 +566,12 @@ class PromptGenerationPipeline:
                 )
                 restored_landscape_audit = validate_creative_landscape_audit(
                     CreativeLandscapeAuditResponse(
-                        items=checkpoint.plan.landscape.semantic_audit.items,
+                        reviewed_territory_ids=(
+                            checkpoint.plan.landscape.semantic_audit.reviewed_territory_ids
+                        ),
+                        fact_issues=(
+                            checkpoint.plan.landscape.semantic_audit.fact_issues
+                        ),
                         requires_revision=(
                             checkpoint.plan.landscape.semantic_audit.requires_revision
                         ),
@@ -681,43 +686,78 @@ class PromptGenerationPipeline:
                         validation_error=str(exc),
                     )
                     continue
-                landscape_audit = None
-                for landscape_audit_attempt in range(2):
-                    self._reserve_ai_call(context)
-                    try:
-                        async with self._ai_semaphore:
-                            landscape_audit_call = (
-                                await self.provider.audit_creative_landscape(
-                                    application,
-                                    fact_visual_strategy=visual_strategy,
-                                    landscape=draft_landscape,
+                async def audit_one_territory(territory: Any) -> Any:
+                    for territory_audit_attempt in range(2):
+                        self._reserve_ai_call(context)
+                        try:
+                            async with self._ai_semaphore:
+                                territory_audit_call = (
+                                    await self.provider.audit_creative_territory(
+                                        application,
+                                        fact_visual_strategy=visual_strategy,
+                                        territory=territory,
+                                    )
                                 )
-                            )
-                    except ProviderError as exc:
+                        except ProviderError as exc:
+                            if (
+                                territory_audit_attempt == 0
+                                and exc.error_type
+                                == ProviderErrorType.RESPONSE_INVALID
+                            ):
+                                continue
+                            raise
+                        call_rows.append(territory_audit_call.metadata)
+                        value = territory_audit_call.value
                         if (
-                            landscape_audit_attempt == 0
-                            and exc.error_type
-                            == ProviderErrorType.RESPONSE_INVALID
+                            value.territory_id == territory.territory_id
+                            and all(
+                                issue.territory_id == territory.territory_id
+                                and issue.fact_id in territory.compatible_fact_ids
+                                for issue in value.fact_issues
+                            )
                         ):
-                            continue
-                        raise
-                    call_rows.append(landscape_audit_call.metadata)
-                    try:
-                        landscape_audit = validate_creative_landscape_audit(
-                            landscape_audit_call.value,
-                            draft_landscape,
-                        )
-                        break
-                    except ValueError as exc:
-                        if landscape_audit_attempt == 1:
+                            return value
+                        if territory_audit_attempt == 1:
                             raise ProviderError(
-                                "AI 创意版图语义复核结构无效",
+                                "AI 单个创意空间语义复核结构无效",
                                 retryable=False,
                                 error_type=ProviderErrorType.RESPONSE_INVALID,
                                 attempts=2,
-                            ) from exc
-                if landscape_audit is None:
-                    raise PipelineError("创意版图语义复核未能形成有效结果")
+                            )
+                    raise PipelineError("单个创意空间语义复核未返回结果")
+
+                territory_audits = await asyncio.gather(
+                    *(
+                        audit_one_territory(territory)
+                        for territory in draft_landscape.territories
+                    )
+                )
+                fact_issues = [
+                    issue
+                    for territory_audit in territory_audits
+                    for issue in territory_audit.fact_issues
+                ]
+                revision_territory_ids = [
+                    territory_audit.territory_id
+                    for territory_audit in territory_audits
+                    if territory_audit.fact_issues
+                ]
+                landscape_audit = validate_creative_landscape_audit(
+                    CreativeLandscapeAuditResponse(
+                        reviewed_territory_ids=[
+                            item.territory_id for item in territory_audits
+                        ],
+                        fact_issues=fact_issues,
+                        requires_revision=bool(fact_issues),
+                        revision_territory_ids=revision_territory_ids,
+                        summary=(
+                            f"独立复核发现 {len(fact_issues)} 项事实与创意空间关系需调整"
+                            if fact_issues
+                            else "全部事实与产品专属创意空间自然相容"
+                        ),
+                    ),
+                    draft_landscape,
+                )
                 if landscape_audit.requires_revision:
                     if landscape_attempt == 1:
                         raise ProviderError(

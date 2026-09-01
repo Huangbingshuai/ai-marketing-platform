@@ -675,6 +675,15 @@ class CreativeLandscapeFactIssue(ApiModel):
     reason: str = Field(min_length=2, max_length=180)
 
 
+class CreativeTerritoryAuditResponse(ApiModel):
+    territory_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
+    fact_issues: list[CreativeLandscapeFactIssue] = Field(
+        default_factory=list,
+        max_length=8,
+    )
+    summary: str = Field(min_length=2, max_length=180)
+
+
 class CreativeLandscapeAuditResponse(ApiModel):
     reviewed_territory_ids: list[str] = Field(min_length=5, max_length=10)
     fact_issues: list[CreativeLandscapeFactIssue] = Field(
