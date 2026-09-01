@@ -132,6 +132,18 @@ class TrackingProvider:
             **kwargs,
         )
 
+    async def plan_creative_landscape(
+        self,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        return await self._tracked(
+            "COHERENT_CREATIVE_GENERATION",
+            self.delegate.plan_creative_landscape,
+            *args,
+            **kwargs,
+        )
+
     async def plan_creative_directions(
         self,
         *args: Any,
@@ -140,6 +152,18 @@ class TrackingProvider:
         return await self._tracked(
             "COHERENT_CREATIVE_GENERATION",
             self.delegate.plan_creative_directions,
+            *args,
+            **kwargs,
+        )
+
+    async def audit_creative_directions(
+        self,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        return await self._tracked(
+            "COHERENT_CREATIVE_GENERATION",
+            self.delegate.audit_creative_directions,
             *args,
             **kwargs,
         )

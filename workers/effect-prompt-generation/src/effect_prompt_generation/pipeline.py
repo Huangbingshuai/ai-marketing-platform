@@ -39,7 +39,9 @@ from .models import (
     CreativeAverageScores,
     CreativeCandidate,
     CreativeDirectionPlan,
+    CreativeDirectionAuditResponse,
     CreativeDirectionResponse,
+    CreativeDiversityLandscapeResponse,
     CreativeDimensions,
     CreativeEvaluation,
     CreativeScores,
@@ -86,6 +88,7 @@ from .providers import (
 from .creative_directions import (
     allocate_creative_directions,
     complete_semantic_profile,
+    creative_direction_audit_revision_context,
     creative_direction_revision_context,
     creative_direction_target_count,
     creative_direction_source_hash,
@@ -93,6 +96,8 @@ from .creative_directions import (
     max_cluster_share,
     semantic_cluster_novelty,
     semantic_profile_distribution,
+    validate_creative_direction_audit,
+    validate_creative_diversity_landscape,
     validate_creative_direction_plan,
     validate_semantic_profile,
 )
@@ -538,10 +543,21 @@ class PromptGenerationPipeline:
         if (
             checkpoint is not None
             and isinstance(checkpoint.plan, CreativeDirectionPlan)
+            and checkpoint.plan.landscape is not None
+            and checkpoint.plan.semantic_audit is not None
             and checkpoint.source_fingerprint == source_hash
             and checkpoint.template_hash == CREATIVE_DIRECTION_TEMPLATE_HASH
         ):
             try:
+                restored_landscape = validate_creative_diversity_landscape(
+                    CreativeDiversityLandscapeResponse(
+                        territories=checkpoint.plan.landscape.territories
+                    ),
+                    application,
+                    source_hash=source_hash,
+                    template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+                    expected_direction_count=expected_direction_count,
+                )
                 restored = validate_creative_direction_plan(
                     CreativeDirectionResponse(directions=checkpoint.plan.directions),
                     application,
@@ -549,14 +565,35 @@ class PromptGenerationPipeline:
                     source_hash=source_hash,
                     template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
                     expected_direction_count=expected_direction_count,
+                    landscape=restored_landscape,
+                )
+                restored_audit = validate_creative_direction_audit(
+                    CreativeDirectionAuditResponse(
+                        items=checkpoint.plan.semantic_audit.items,
+                        requires_revision=(
+                            checkpoint.plan.semantic_audit.requires_revision
+                        ),
+                        revision_direction_ids=(
+                            checkpoint.plan.semantic_audit.revision_direction_ids
+                        ),
+                        summary=checkpoint.plan.semantic_audit.summary,
+                    ),
+                    restored,
+                    restored_landscape,
                 )
             except ValueError:
                 restored = None
             if (
                 restored is not None
+                and not restored_audit.requires_revision
                 and restored.plan_hash == checkpoint.allocation_hash
             ):
-                plan = restored.model_copy(update={"reused_checkpoint": True})
+                plan = restored.model_copy(
+                    update={
+                        "semantic_audit": restored_audit,
+                        "reused_checkpoint": True,
+                    }
+                )
                 reused = True
         call_metadata: dict[str, int | None] = {}
         if plan is None:
@@ -573,6 +610,30 @@ class PromptGenerationPipeline:
                     ),
                 },
             )
+            call_rows = []
+            self._reserve_ai_call(context)
+            async with self._ai_semaphore:
+                landscape_call = await self.provider.plan_creative_landscape(
+                    application,
+                    fact_visual_strategy=visual_strategy,
+                    shared_prompt=shared_prompt,
+                    target_count=snapshot.settings.target_count,
+                )
+            call_rows.append(landscape_call.metadata)
+            try:
+                landscape = validate_creative_diversity_landscape(
+                    landscape_call.value,
+                    application,
+                    source_hash=source_hash,
+                    template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+                    expected_direction_count=expected_direction_count,
+                )
+            except ValueError as exc:
+                raise ProviderError(
+                    "AI 创意版图结构或事实引用无效",
+                    retryable=False,
+                    error_type=ProviderErrorType.RESPONSE_INVALID,
+                ) from exc
             revision_context: Mapping[str, Any] | None = None
             for invalid_response_attempt in range(2):
                 self._reserve_ai_call(context)
@@ -581,19 +642,21 @@ class PromptGenerationPipeline:
                         application,
                         fact_visual_strategy=visual_strategy,
                         shared_prompt=shared_prompt,
+                        landscape=landscape,
                         target_count=snapshot.settings.target_count,
                         revision_context=revision_context,
                     )
+                call_rows.append(call.metadata)
                 try:
-                    plan = validate_creative_direction_plan(
+                    draft_plan = validate_creative_direction_plan(
                         call.value,
                         application,
                         visual_strategy,
                         source_hash=source_hash,
                         template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
                         expected_direction_count=expected_direction_count,
+                        landscape=landscape,
                     )
-                    break
                 except ValueError as exc:
                     revision_context = creative_direction_revision_context(
                         call.value,
@@ -607,13 +670,49 @@ class PromptGenerationPipeline:
                             error_type=ProviderErrorType.RESPONSE_INVALID,
                             attempts=2,
                         ) from exc
+                    continue
+                self._reserve_ai_call(context)
+                async with self._ai_semaphore:
+                    audit_call = await self.provider.audit_creative_directions(
+                        application,
+                        landscape=landscape,
+                        directions=call.value,
+                    )
+                call_rows.append(audit_call.metadata)
+                try:
+                    audit = validate_creative_direction_audit(
+                        audit_call.value,
+                        draft_plan,
+                        landscape,
+                    )
+                except ValueError as exc:
+                    raise ProviderError(
+                        "AI 创意方向语义复核结构无效",
+                        retryable=False,
+                        error_type=ProviderErrorType.RESPONSE_INVALID,
+                    ) from exc
+                if audit.requires_revision:
+                    revision_context = creative_direction_audit_revision_context(
+                        draft_plan,
+                        audit,
+                    )
+                    if invalid_response_attempt == 1:
+                        raise ProviderError(
+                            "AI 创意方向经两次规划后仍未通过语义复核",
+                            retryable=False,
+                            error_type=ProviderErrorType.RESPONSE_INVALID,
+                            attempts=2,
+                        )
+                    continue
+                plan = draft_plan.model_copy(update={"semantic_audit": audit})
+                break
             if plan is None:
                 raise PipelineError("创意方向规划未能形成有效结果")
             call_metadata = {
-                "inputTokens": call.metadata.input_tokens,
-                "outputTokens": call.metadata.output_tokens,
-                "totalTokens": call.metadata.total_tokens,
-                "latencyMs": call.metadata.latency_ms,
+                "inputTokens": sum(item.input_tokens or 0 for item in call_rows),
+                "outputTokens": sum(item.output_tokens or 0 for item in call_rows),
+                "totalTokens": sum(item.total_tokens or 0 for item in call_rows),
+                "latencyMs": sum(item.latency_ms for item in call_rows),
             }
         cache.creative_direction_plan = plan
         priority_counts = Counter(
@@ -628,6 +727,13 @@ class PromptGenerationPipeline:
             "创意方向已复用" if reused else "创意方向规划完成，正在生成候选",
             metadata={
                 "directionCount": len(plan.directions),
+                "territoryCount": (
+                    len(plan.landscape.territories) if plan.landscape is not None else 0
+                ),
+                "semanticReviewPassed": bool(
+                    plan.semantic_audit is not None
+                    and not plan.semantic_audit.requires_revision
+                ),
                 "priorityDimensionDistribution": [
                     {"dimension": key, "count": count}
                     for key, count in sorted(priority_counts.items())
@@ -655,6 +761,13 @@ class PromptGenerationPipeline:
         )
         return {
             "directionCount": len(plan.directions),
+            "territoryCount": (
+                len(plan.landscape.territories) if plan.landscape is not None else 0
+            ),
+            "semanticReviewPassed": bool(
+                plan.semantic_audit is not None
+                and not plan.semantic_audit.requires_revision
+            ),
             "priorityDimensionDistribution": [
                 {"dimension": key, "count": count}
                 for key, count in sorted(counts.items())

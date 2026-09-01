@@ -1,0 +1,15 @@
+目标创意方向数量：{target_direction_count}
+
+已确认事实：
+{facts_json}
+
+事实视觉使用策略：
+{fact_visual_strategy_json}
+
+批次共用提示词（只约束，不复述）：
+{shared_prompt_json}
+
+视觉风格基调（共享视觉语言，不是固定场景）：
+{visual_style_baseline_json}
+
+请先规划产品专属创意版图。targetSlots 总和必须严格等于 {target_direction_count}，所有业务事实都必须至少进入一个相容空间。

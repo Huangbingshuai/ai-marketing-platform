@@ -13,7 +13,9 @@ from effect_prompt_generation.models import (
     CreativeCandidate,
     CreativeDimensions,
     CreativeDirectionFactApplication,
+    CreativeDirectionAuditResponse,
     CreativeDirectionResponse,
+    CreativeDiversityLandscapeResponse,
     CreativeEvaluation,
     CreativeScores,
     CreativeSemanticProfile,
@@ -37,6 +39,7 @@ from effect_prompt_generation.creative_directions import (
     max_cluster_share,
     semantic_cluster_novelty,
     validate_semantic_profile,
+    validate_creative_diversity_landscape,
     validate_creative_direction_plan,
 )
 
@@ -120,6 +123,7 @@ class MissingFactThenReplanningProvider(MockAiProvider):
         fact_visual_strategy: Any,
         target_count: int,
         shared_prompt: Any,
+        landscape: Any,
         revision_context: dict[str, Any] | None = None,
     ) -> Any:
         self.revision_contexts.append(revision_context)
@@ -128,6 +132,7 @@ class MissingFactThenReplanningProvider(MockAiProvider):
             fact_visual_strategy=fact_visual_strategy,
             target_count=target_count,
             shared_prompt=shared_prompt,
+            landscape=landscape,
             revision_context=revision_context,
         )
         if revision_context is not None:
@@ -157,6 +162,40 @@ class MissingFactThenReplanningProvider(MockAiProvider):
                 direction.model_copy(update={"fact_applications": applications})
             )
         return replace(call, value=call.value.model_copy(update={"directions": directions}))
+
+
+class SemanticAuditThenReplanningProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.audit_calls = 0
+        self.direction_calls = 0
+
+    async def plan_creative_directions(self, *args: Any, **kwargs: Any) -> Any:
+        self.direction_calls += 1
+        return await super().plan_creative_directions(*args, **kwargs)
+
+    async def audit_creative_directions(self, *args: Any, **kwargs: Any) -> Any:
+        self.audit_calls += 1
+        call = await super().audit_creative_directions(*args, **kwargs)
+        if self.audit_calls > 1:
+            return call
+        first = call.value.items[0]
+        return replace(
+            call,
+            value=CreativeDirectionAuditResponse(
+                items=[
+                    first.model_copy(
+                        update={
+                            "aligned": False,
+                            "issues": ["实际主动作与声明版图不一致"],
+                        }
+                    ),
+                    *call.value.items[1:],
+                ],
+                requires_revision=True,
+                revision_direction_ids=[first.direction_id],
+                summary="独立语义复核要求重新规划一个方向",
+            ),
+        )
 
 
 @pytest.mark.asyncio
@@ -286,6 +325,64 @@ async def test_missing_business_fact_replans_the_whole_direction_batch_with_ai()
         for shard in shards
         for task in shard.tasks
     )
+
+
+@pytest.mark.asyncio
+async def test_independent_ai_semantic_audit_requests_direction_replanning() -> None:
+    api = PromptApi()
+    provider = SemanticAuditThenReplanningProvider()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _cluster_snapshot())
+    await pipeline.map_insight(runtime)
+    await pipeline.compile_fact_visual_strategy(runtime)
+    await pipeline.compile_shared_prompt(runtime)
+
+    shards = await pipeline.plan_creatives(runtime, round_number=0)
+
+    assert shards
+    assert provider.audit_calls == 2
+    assert provider.direction_calls == 2
+    plan = pipeline._cache(runtime).creative_direction_plan
+    assert plan is not None
+    assert plan.semantic_audit is not None
+    assert plan.semantic_audit.requires_revision is False
+
+
+def test_landscape_validation_is_structural_not_keyword_based() -> None:
+    from effect_prompt_generation.providers import _mock_creative_landscape_response
+
+    application = map_insight(_cluster_snapshot().insight_artifact.result)
+    raw = _mock_creative_landscape_response(application, direction_count=13)
+    landscape = validate_creative_diversity_landscape(
+        raw,
+        application,
+        source_hash="1" * 64,
+        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+        expected_direction_count=13,
+    )
+    assert sum(item.target_slots for item in landscape.territories) == 13
+
+    invalid = CreativeDiversityLandscapeResponse(
+        territories=[
+            raw.territories[0].model_copy(
+                update={"target_slots": raw.territories[0].target_slots + 1}
+            ),
+            *raw.territories[1:],
+        ]
+    )
+    with pytest.raises(ValueError, match="target slots"):
+        validate_creative_diversity_landscape(
+            invalid,
+            application,
+            source_hash="1" * 64,
+            template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+            expected_direction_count=13,
+        )
 
 
 @pytest.mark.asyncio
@@ -577,7 +674,7 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
     repeated_directions = [
         direction.model_copy(
             update={
-                "creative_direction": "在家庭餐桌完成端上产品",
+                "creative_direction": f"在家庭餐桌完成端上产品的变化{index + 1}",
                 "semantic_profile": direction.semantic_profile.model_copy(
                     update={
                         "scene_family": "家庭餐桌",
@@ -591,41 +688,34 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
         for index, direction in enumerate(raw.directions)
     ]
     repeated = raw.model_copy(update={"directions": repeated_directions})
-    with pytest.raises(ValueError, match="repeat one scene-action combination"):
-        validate_creative_direction_plan(
-            CreativeDirectionResponse.model_validate(repeated),
-            application,
-            strategy,
-            source_hash=source_hash,
-            template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
-        )
+    # Worker no longer interprets free-text scene/action labels. An independent
+    # AI audit owns the semantic decision and asks the planner for revision.
+    repeated_plan = validate_creative_direction_plan(
+        CreativeDirectionResponse.model_validate(repeated),
+        application,
+        strategy,
+        source_hash=source_hash,
+        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+    )
+    assert len(repeated_plan.directions) == len(raw.directions)
 
 
-@pytest.mark.parametrize(
-    ("scene", "action"),
-    [
-        ("浴室洗护区", "按压泵头取用"),
-        ("机场出发大厅", "拉出拉杆推行"),
-        ("客厅硬质地面", "沿地面移动清洁"),
-        ("家庭备餐区", "取出食材烹制"),
-    ],
-)
-def test_direction_bucket_uses_current_product_semantic_families(
-    scene: str,
-    action: str,
-) -> None:
+def test_direction_bucket_uses_ai_owned_stable_ids_not_free_text() -> None:
     plan = _direction_plan_for_semantic_tests()
     direction = plan.directions[0].model_copy(
         update={
             "semantic_profile": plan.directions[0].semantic_profile.model_copy(
-                update={"scene_family": scene, "product_action_family": action}
+                update={
+                    "scene_family": "任意同义场景文字",
+                    "product_action_family": "任意同义动作文字",
+                }
             )
         }
     )
 
     assert direction_allocation_bucket(direction) == (
-        scene.casefold(),
-        action.casefold(),
+        direction.territory_id,
+        direction.primary_action_id,
     )
 
 

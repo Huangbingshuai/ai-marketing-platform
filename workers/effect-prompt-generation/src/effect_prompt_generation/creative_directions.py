@@ -9,8 +9,12 @@ from collections.abc import Iterable, Sequence
 from .insight_mapping import mandatory_business_facts
 from .models import (
     CreativeDirection,
+    CreativeDirectionAudit,
+    CreativeDirectionAuditResponse,
     CreativeDirectionPlan,
     CreativeDirectionResponse,
+    CreativeDiversityLandscape,
+    CreativeDiversityLandscapeResponse,
     CreativeCandidate,
     CreativeEvaluation,
     CreativeSemanticProfile,
@@ -47,6 +51,53 @@ def creative_direction_source_hash(
     )
 
 
+def validate_creative_diversity_landscape(
+    response: CreativeDiversityLandscapeResponse,
+    application: InsightApplicationMap,
+    *,
+    source_hash: str,
+    template_hash: str,
+    expected_direction_count: int,
+) -> CreativeDiversityLandscape:
+    usable_ids = {fact.fact_id for fact in application.usable}
+    territory_ids = [item.territory_id for item in response.territories]
+    if len(set(territory_ids)) != len(territory_ids):
+        raise ValueError("creative landscape repeats a territory id")
+    action_ids = [
+        action.action_id
+        for territory in response.territories
+        for action in territory.actions
+    ]
+    if len(set(action_ids)) != len(action_ids):
+        raise ValueError("creative landscape action ids must be globally unique")
+    if sum(item.target_slots for item in response.territories) != expected_direction_count:
+        raise ValueError("creative landscape target slots do not match direction count")
+    if any(
+        fact_id not in usable_ids
+        for territory in response.territories
+        for fact_id in territory.compatible_fact_ids
+    ):
+        raise ValueError("creative landscape referenced an unavailable fact")
+    business_ids = {fact.fact_id for fact in mandatory_business_facts(application)}
+    landscape_ids = {
+        fact_id
+        for territory in response.territories
+        for fact_id in territory.compatible_fact_ids
+    }
+    if not business_ids.issubset(landscape_ids):
+        raise ValueError("creative landscape did not cover all usable business facts")
+    payload = [
+        item.model_dump(mode="json", by_alias=True)
+        for item in response.territories
+    ]
+    return CreativeDiversityLandscape(
+        territories=response.territories,
+        source_hash=source_hash,
+        landscape_hash=_hash(payload),
+        template_hash=template_hash,
+    )
+
+
 def validate_creative_direction_plan(
     response: CreativeDirectionResponse,
     application: InsightApplicationMap,
@@ -55,6 +106,7 @@ def validate_creative_direction_plan(
     source_hash: str,
     template_hash: str,
     expected_direction_count: int | None = None,
+    landscape: CreativeDiversityLandscape | None = None,
 ) -> CreativeDirectionPlan:
     if (
         expected_direction_count is not None
@@ -65,7 +117,6 @@ def validate_creative_direction_plan(
     strategy_ids = set(fact_visual_strategy.by_id)
     directions: list[CreativeDirection] = []
     direction_ids: set[str] = set()
-    semantic_signatures: set[tuple[str, ...]] = set()
     for direction in response.directions:
         if direction.direction_id in direction_ids:
             raise ValueError("creative directions repeat the same direction id")
@@ -76,10 +127,18 @@ def validate_creative_direction_plan(
             for fact_id in fact_ids
         ):
             raise ValueError("creative direction referenced an unavailable fact")
-        signature = semantic_profile_signature(direction.semantic_profile)
-        if signature in semantic_signatures:
-            raise ValueError("creative directions repeat the same semantic profile")
-        semantic_signatures.add(signature)
+        if landscape is not None:
+            territory = landscape.by_id.get(direction.territory_id)
+            if territory is None:
+                raise ValueError("creative direction referenced an unknown territory")
+            allowed_actions = {item.action_id for item in territory.actions}
+            if direction.primary_action_id not in allowed_actions:
+                raise ValueError("creative direction referenced an unknown territory action")
+            if any(
+                fact_id not in territory.compatible_fact_ids
+                for fact_id in direction.fact_ids
+            ):
+                raise ValueError("creative direction used a fact outside its territory")
         directions.append(direction)
     business_ids = {fact.fact_id for fact in mandatory_business_facts(application)}
     minimum_business_facts = min(2, len(business_ids))
@@ -93,23 +152,63 @@ def validate_creative_direction_plan(
     }
     if not business_ids.issubset(planned_ids):
         raise ValueError("creative directions did not cover all usable business facts")
-    allocation_buckets = Counter(
-        direction_allocation_bucket(direction) for direction in directions
-    )
-    minimum_bucket_count = min(5, len(directions))
-    if len(allocation_buckets) < minimum_bucket_count:
-        raise ValueError(
-            "creative directions do not cover enough scene-action combinations"
-        )
-    if allocation_buckets and max(allocation_buckets.values()) > 2:
-        raise ValueError("creative directions repeat one scene-action combination")
+    if landscape is not None:
+        actual_slots = Counter(item.territory_id for item in directions)
+        expected_slots = {
+            item.territory_id: item.target_slots for item in landscape.territories
+        }
+        if dict(actual_slots) != expected_slots:
+            raise ValueError("creative directions do not follow landscape target slots")
     plan_payload = [item.model_dump(mode="json", by_alias=True) for item in directions]
     return CreativeDirectionPlan(
         directions=directions,
         source_hash=source_hash,
         plan_hash=_hash(plan_payload),
         template_hash=template_hash,
+        landscape=landscape,
     )
+
+
+def validate_creative_direction_audit(
+    response: CreativeDirectionAuditResponse,
+    plan: CreativeDirectionPlan,
+    landscape: CreativeDiversityLandscape,
+) -> CreativeDirectionAudit:
+    direction_ids = {item.direction_id for item in plan.directions}
+    audit_ids = [item.direction_id for item in response.items]
+    if len(audit_ids) != len(set(audit_ids)) or set(audit_ids) != direction_ids:
+        raise ValueError("creative direction audit must cover every direction exactly once")
+    for item in response.items:
+        territory = landscape.by_id.get(item.realized_territory_id)
+        if territory is None:
+            raise ValueError("creative direction audit used an unknown territory")
+        if item.realized_action_id not in {
+            action.action_id for action in territory.actions
+        }:
+            raise ValueError("creative direction audit used an unknown action")
+    if any(item not in direction_ids for item in response.revision_direction_ids):
+        raise ValueError("creative direction audit used an unknown revision id")
+    payload = response.model_dump(mode="json", by_alias=True)
+    return CreativeDirectionAudit(
+        **response.model_dump(mode="python"),
+        audit_hash=_hash(payload),
+    )
+
+
+def creative_direction_audit_revision_context(
+    plan: CreativeDirectionPlan,
+    audit: CreativeDirectionAudit,
+) -> dict[str, object]:
+    return {
+        "semanticAudit": audit.model_dump(mode="json", by_alias=True),
+        "previousDirections": [
+            item.model_dump(mode="json", by_alias=True) for item in plan.directions
+        ],
+        "revisionInstruction": (
+            "依据独立语义复核重新规划完整批次，修正同义改名、版图错位、"
+            "多主场景或多主动作；保留事实来源边界，不得由系统替换事实。"
+        ),
+    }
 
 
 def creative_direction_revision_context(
@@ -167,9 +266,8 @@ def allocate_creative_directions(
     ]
     if alternatives:
         directions = alternatives
-    # The planner owns the batch-specific semantic vocabulary. Balance its
-    # verified scene/action families without re-interpreting them through a
-    # product-specific keyword dictionary.
+    # AI owns the product-specific territory and action semantics. Worker only
+    # balances their stable IDs and never interprets direction text.
     grouped: dict[tuple[str, str], list[CreativeDirection]] = {}
     for direction in directions:
         grouped.setdefault(direction_allocation_bucket(direction), []).append(direction)
@@ -289,6 +387,8 @@ def semantic_cluster_novelty(
     left: CreativeSemanticProfile | None,
     right: CreativeSemanticProfile | None,
 ) -> float:
+    """Compare AI-owned category IDs by equality; never infer their meaning."""
+
     if left is None or right is None:
         return 100.0
     left_signature = semantic_profile_signature(left)
@@ -308,11 +408,7 @@ def semantic_cluster_novelty(
 
 
 def direction_allocation_bucket(direction: CreativeDirection) -> tuple[str, str]:
-    profile = direction.semantic_profile
-    return (
-        _family_key(profile.scene_family),
-        _family_key(profile.product_action_family),
-    )
+    return direction.territory_id, direction.primary_action_id
 
 
 def semantic_profile_distribution(

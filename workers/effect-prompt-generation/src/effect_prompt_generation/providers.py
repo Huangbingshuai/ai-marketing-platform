@@ -20,10 +20,16 @@ from .insight_mapping import mandatory_business_facts
 from .models import (
     CreativeCandidate,
     CreativeCandidateBatch,
+    CreativeDirectionAuditItem,
+    CreativeDirectionAuditResponse,
     CreativeDirection,
     CreativeDirectionFactApplication,
     CreativeDirectionPlan,
     CreativeDirectionResponse,
+    CreativeDiversityLandscape,
+    CreativeDiversityLandscapeResponse,
+    CreativeTerritory,
+    CreativeTerritoryAction,
     CreativeDimensionKey,
     CreativeDimensions,
     CreativeEvaluation,
@@ -57,14 +63,26 @@ FACT_VISUAL_STRATEGY_BASE_PROMPT = "fact_visual_strategy.system.prompt.txt"
 FACT_VISUAL_STRATEGY_TASK_PROMPT = "fact_visual_strategy.user.prompt.txt"
 CREATIVE_DIRECTION_BASE_PROMPT = "creative_direction.system.prompt.txt"
 CREATIVE_DIRECTION_TASK_PROMPT = "creative_direction.user.prompt.txt"
+CREATIVE_LANDSCAPE_BASE_PROMPT = "creative_landscape.system.prompt.txt"
+CREATIVE_LANDSCAPE_TASK_PROMPT = "creative_landscape.user.prompt.txt"
+CREATIVE_DIRECTION_AUDIT_BASE_PROMPT = "creative_direction_audit.system.prompt.txt"
+CREATIVE_DIRECTION_AUDIT_TASK_PROMPT = "creative_direction_audit.user.prompt.txt"
 FACT_VISUAL_STRATEGY_TEMPLATE_HASH = hashlib.sha256(
     load_prompt(FACT_VISUAL_STRATEGY_BASE_PROMPT).encode("utf-8")
 ).hexdigest()
 CREATIVE_DIRECTION_TEMPLATE_HASH = hashlib.sha256(
     (
-        load_prompt(CREATIVE_DIRECTION_BASE_PROMPT)
+        load_prompt(CREATIVE_LANDSCAPE_BASE_PROMPT)
+        + "\n"
+        + load_prompt(CREATIVE_LANDSCAPE_TASK_PROMPT)
+        + "\n"
+        + load_prompt(CREATIVE_DIRECTION_BASE_PROMPT)
         + "\n"
         + load_prompt(CREATIVE_DIRECTION_TASK_PROMPT)
+        + "\n"
+        + load_prompt(CREATIVE_DIRECTION_AUDIT_BASE_PROMPT)
+        + "\n"
+        + load_prompt(CREATIVE_DIRECTION_AUDIT_TASK_PROMPT)
     ).encode("utf-8")
 ).hexdigest()
 
@@ -125,15 +143,33 @@ class AiProvider(Protocol):
         application: InsightApplicationMap,
     ) -> AiCallResult[FactVisualStrategyResponse]: ...
 
-    async def plan_creative_directions(
+    async def plan_creative_landscape(
         self,
         application: InsightApplicationMap,
         *,
         fact_visual_strategy: FactVisualStrategy,
         shared_prompt: SharedPrompt,
         target_count: int,
+    ) -> AiCallResult[CreativeDiversityLandscapeResponse]: ...
+
+    async def plan_creative_directions(
+        self,
+        application: InsightApplicationMap,
+        *,
+        fact_visual_strategy: FactVisualStrategy,
+        shared_prompt: SharedPrompt,
+        landscape: CreativeDiversityLandscape,
+        target_count: int,
         revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDirectionResponse]: ...
+
+    async def audit_creative_directions(
+        self,
+        application: InsightApplicationMap,
+        *,
+        landscape: CreativeDiversityLandscape,
+        directions: CreativeDirectionResponse,
+    ) -> AiCallResult[CreativeDirectionAuditResponse]: ...
 
     async def generate_creatives(
         self,
@@ -170,12 +206,31 @@ class MockAiProvider:
             FACT_VISUAL_STRATEGY_BASE_PROMPT,
         )
 
+    async def plan_creative_landscape(
+        self,
+        application: InsightApplicationMap,
+        *,
+        fact_visual_strategy: FactVisualStrategy,
+        shared_prompt: SharedPrompt,
+        target_count: int,
+    ) -> AiCallResult[CreativeDiversityLandscapeResponse]:
+        del fact_visual_strategy, shared_prompt
+        return _mock_result(
+            _mock_creative_landscape_response(
+                application,
+                direction_count=creative_direction_target_count(target_count),
+            ),
+            NodeId.COHERENT_CREATIVE_GENERATION.value,
+            CREATIVE_LANDSCAPE_BASE_PROMPT,
+        )
+
     async def plan_creative_directions(
         self,
         application: InsightApplicationMap,
         *,
         fact_visual_strategy: FactVisualStrategy,
         shared_prompt: SharedPrompt,
+        landscape: CreativeDiversityLandscape,
         target_count: int,
         revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDirectionResponse]:
@@ -183,10 +238,24 @@ class MockAiProvider:
         return _mock_result(
             _mock_creative_direction_response(
                 application,
-                direction_count=creative_direction_target_count(target_count),
+                landscape=landscape,
             ),
             NodeId.COHERENT_CREATIVE_GENERATION.value,
             CREATIVE_DIRECTION_BASE_PROMPT,
+        )
+
+    async def audit_creative_directions(
+        self,
+        application: InsightApplicationMap,
+        *,
+        landscape: CreativeDiversityLandscape,
+        directions: CreativeDirectionResponse,
+    ) -> AiCallResult[CreativeDirectionAuditResponse]:
+        del application
+        return _mock_result(
+            _mock_creative_direction_audit(landscape, directions),
+            NodeId.COHERENT_CREATIVE_GENERATION.value,
+            CREATIVE_DIRECTION_AUDIT_BASE_PROMPT,
         )
 
     async def generate_creatives(
@@ -337,12 +406,77 @@ class ArkResponsesProvider:
             instructions=load_prompt(FACT_VISUAL_STRATEGY_BASE_PROMPT),
         )
 
+    async def plan_creative_landscape(
+        self,
+        application: InsightApplicationMap,
+        *,
+        fact_visual_strategy: FactVisualStrategy,
+        shared_prompt: SharedPrompt,
+        target_count: int,
+    ) -> AiCallResult[CreativeDiversityLandscapeResponse]:
+        facts = [
+            {
+                "factId": fact.fact_id,
+                "field": fact.field.value,
+                "value": fact.value,
+                "policy": fact.policy.value,
+            }
+            for fact in application.usable
+        ]
+        visual_policies = [
+            {
+                "factId": policy.fact_id,
+                "visualUsage": policy.visual_usage.value,
+                "visualInstruction": policy.visual_instruction,
+                "contextInstruction": policy.context_instruction,
+                "forbiddenInferences": policy.forbidden_inferences,
+            }
+            for policy in fact_visual_strategy.policies
+        ]
+        visual_style_baseline = next(
+            (
+                fact.value
+                for fact in application.constraints
+                if fact.field == InsightField.VISUAL_STYLE_BASELINE
+            ),
+            "",
+        )
+        prompt = render_prompt(
+            CREATIVE_LANDSCAPE_TASK_PROMPT,
+            target_direction_count=str(creative_direction_target_count(target_count)),
+            facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+            fact_visual_strategy_json=json.dumps(
+                visual_policies, ensure_ascii=False, sort_keys=True
+            ),
+            shared_prompt_json=json.dumps(
+                shared_prompt.compiled_content, ensure_ascii=False
+            ),
+            visual_style_baseline_json=json.dumps(
+                visual_style_baseline or "未设置", ensure_ascii=False
+            ),
+        )
+        return await self._structured(
+            prompt,
+            CreativeDiversityLandscapeResponse,
+            schema_name="effect_prompt_creative_landscape",
+            stage=NodeId.COHERENT_CREATIVE_GENERATION.value,
+            prompt_file=CREATIVE_LANDSCAPE_BASE_PROMPT,
+            model=self._fragment_strategy_model,
+            # Ark counts hidden reasoning and the JSON answer against the same
+            # limit. The landscape is compact, but a rich information card can
+            # still exhaust 4096 tokens before the structured answer closes.
+            max_output_tokens=self._strategy_max_output_tokens,
+            request_timeout=self._strategy_timeout,
+            instructions=load_prompt(CREATIVE_LANDSCAPE_BASE_PROMPT),
+        )
+
     async def plan_creative_directions(
         self,
         application: InsightApplicationMap,
         *,
         fact_visual_strategy: FactVisualStrategy,
         shared_prompt: SharedPrompt,
+        landscape: CreativeDiversityLandscape,
         target_count: int,
         revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDirectionResponse]:
@@ -361,7 +495,6 @@ class ArkResponsesProvider:
                 "visualUsage": policy.visual_usage.value,
                 "visualInstruction": policy.visual_instruction,
                 "contextInstruction": policy.context_instruction,
-                "compatibleFactIds": policy.compatible_fact_ids,
                 "forbiddenInferences": policy.forbidden_inferences,
             }
             for policy in fact_visual_strategy.policies
@@ -392,6 +525,14 @@ class ArkResponsesProvider:
                 visual_style_baseline or "未设置",
                 ensure_ascii=False,
             ),
+            creative_landscape_json=json.dumps(
+                [
+                    item.model_dump(mode="json", by_alias=True)
+                    for item in landscape.territories
+                ],
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
             revision_context_json=json.dumps(
                 revision_context or {},
                 ensure_ascii=False,
@@ -405,9 +546,51 @@ class ArkResponsesProvider:
             stage=NodeId.COHERENT_CREATIVE_GENERATION.value,
             prompt_file=CREATIVE_DIRECTION_BASE_PROMPT,
             model=self._fragment_strategy_model,
-            max_output_tokens=min(self._strategy_max_output_tokens, 6144),
+            max_output_tokens=self._strategy_max_output_tokens,
             request_timeout=self._strategy_timeout,
             instructions=load_prompt(CREATIVE_DIRECTION_BASE_PROMPT),
+        )
+
+    async def audit_creative_directions(
+        self,
+        application: InsightApplicationMap,
+        *,
+        landscape: CreativeDiversityLandscape,
+        directions: CreativeDirectionResponse,
+    ) -> AiCallResult[CreativeDirectionAuditResponse]:
+        del application
+        prompt = render_prompt(
+            CREATIVE_DIRECTION_AUDIT_TASK_PROMPT,
+            creative_landscape_json=json.dumps(
+                [
+                    item.model_dump(mode="json", by_alias=True)
+                    for item in landscape.territories
+                ],
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            creative_directions_json=json.dumps(
+                [
+                    item.model_dump(mode="json", by_alias=True)
+                    for item in directions.directions
+                ],
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )
+        return await self._structured(
+            prompt,
+            CreativeDirectionAuditResponse,
+            schema_name="effect_prompt_creative_direction_audit",
+            stage=NodeId.COHERENT_CREATIVE_GENERATION.value,
+            prompt_file=CREATIVE_DIRECTION_AUDIT_BASE_PROMPT,
+            model=self._evaluation_model,
+            # This is a batch strategy audit rather than per-item scoring. Use
+            # the strategy budget so 8-16 structured rows cannot be truncated
+            # by the smaller candidate-evaluation budget.
+            max_output_tokens=self._strategy_max_output_tokens,
+            request_timeout=self._evaluation_timeout,
+            instructions=load_prompt(CREATIVE_DIRECTION_AUDIT_BASE_PROMPT),
         )
 
     async def generate_creatives(
@@ -951,9 +1134,53 @@ def _mock_fact_visual_strategy(
     return FactVisualStrategyResponse(policies=policies)
 
 
+_MOCK_DIRECTION_ROWS = (
+    ("场景代入", "家庭备餐", "独自备餐", "取放产品", "稳定跟拍", "生活真实"),
+    ("分享体验", "家庭餐桌", "家庭成员", "端菜分享", "中景观察", "温馨团聚"),
+    ("产品观察", "食品展示台", "仅手部", "转动展示", "微距环绕", "清晰克制"),
+    ("使用演示", "早餐准备区", "通勤成年人", "快速装盘", "俯拍跟随", "活力明快"),
+    ("消费场景", "年货准备区", "送礼双方", "递送接收", "侧向跟拍", "节庆期待"),
+    ("细节发现", "家宴餐桌", "聚餐成员", "夹取观察", "近景轻推", "食欲吸引"),
+    ("选择过程", "家庭储物区", "家庭采购者", "取出确认", "主观视角", "安心从容"),
+    ("结果呈现", "餐后分享区", "朋友群体", "分食互动", "固定全景", "轻松愉悦"),
+)
+
+
+def _mock_creative_landscape_response(
+    application: InsightApplicationMap,
+    *,
+    direction_count: int,
+) -> CreativeDiversityLandscapeResponse:
+    business_facts = mandatory_business_facts(application) or application.usable
+    fact_ids = [item.fact_id for item in business_facts]
+    territory_count = min(len(_MOCK_DIRECTION_ROWS), direction_count)
+    base_slots, extra = divmod(direction_count, territory_count)
+    return CreativeDiversityLandscapeResponse(
+        territories=[
+            CreativeTerritory(
+                territory_id=f"TERRITORY_{index + 1:02d}",
+                label=row[1],
+                compatible_fact_ids=fact_ids,
+                scene_boundary=f"只在{row[1]}内形成一个主要场景",
+                actions=[
+                    CreativeTerritoryAction(
+                        action_id=f"ACTION_{index + 1:02d}",
+                        label=row[3],
+                        boundary=f"只以{row[3]}作为连续主动作",
+                    )
+                ],
+                target_slots=base_slots + int(index < extra),
+                differentiation_goal=f"通过{row[0]}区别于其他创意空间",
+            )
+            for index, row in enumerate(_MOCK_DIRECTION_ROWS[:territory_count])
+        ]
+    )
+
+
 def _mock_creative_direction_response(
     application: InsightApplicationMap,
     *,
+    landscape: CreativeDiversityLandscape | None = None,
     direction_count: int = 8,
 ) -> CreativeDirectionResponse:
     business_facts = mandatory_business_facts(application) or application.usable
@@ -963,24 +1190,17 @@ def _mock_creative_direction_response(
             retryable=False,
             error_type=ProviderErrorType.REQUEST_REJECTED,
         )
-    rows = (
-        ("场景代入", "家庭备餐", "独自备餐", "取放产品", "稳定跟拍", "生活真实"),
-        ("分享体验", "家庭餐桌", "家庭成员", "端菜分享", "中景观察", "温馨团聚"),
-        ("产品观察", "食品展示台", "仅手部", "转动展示", "微距环绕", "清晰克制"),
-        ("使用演示", "早餐准备区", "通勤成年人", "快速装盘", "俯拍跟随", "活力明快"),
-        ("消费场景", "年货准备区", "送礼双方", "递送接收", "侧向跟拍", "节庆期待"),
-        ("细节发现", "家宴餐桌", "聚餐成员", "夹取观察", "近景轻推", "食欲吸引"),
-        ("选择过程", "家庭储物区", "家庭采购者", "取出确认", "主观视角", "安心从容"),
-        ("结果呈现", "餐后分享区", "朋友群体", "分食互动", "固定全景", "轻松愉悦"),
-        ("熟制观察", "家庭蒸锅区", "家庭烹饪者", "揭盖观察", "侧面近景", "期待满足"),
-        ("备餐节奏", "厨房砧板区", "仅手部", "整根放置", "顶视固定", "干净利落"),
-        ("选购确认", "商超货架", "家庭采购者", "拿取查看", "肩后跟拍", "理性安心"),
-        ("便当搭配", "通勤便当区", "通勤成年人", "放入餐盒", "俯拍轻移", "轻快实用"),
-        ("家常加菜", "家庭饭桌", "家庭成员", "端盘入桌", "横向跟随", "日常温暖"),
-        ("质感聚焦", "纯色静物台", "仅手部", "托盘移动", "低机位轻推", "克制清晰"),
-        ("节前收纳", "家庭储物柜", "家庭采购者", "放入储物篮", "中景固定", "有序踏实"),
-        ("小聚准备", "朋友聚餐桌", "年轻朋友", "摆放共享餐盘", "环绕中景", "热闹自然"),
-    )
+    if landscape is None:
+        draft = _mock_creative_landscape_response(
+            application,
+            direction_count=direction_count,
+        )
+        landscape = CreativeDiversityLandscape(
+            territories=draft.territories,
+            source_hash="0" * 64,
+            landscape_hash="0" * 64,
+            template_hash="0" * 64,
+        )
     dimension_pairs = (
         (CreativeDimensionKey.SCENE, CreativeDimensionKey.PRODUCT_RELATION),
         (CreativeDimensionKey.PERSONA, CreativeDimensionKey.EMOTION),
@@ -1003,13 +1223,21 @@ def _mock_creative_direction_response(
         4,
         max(
             min(2, len(business_facts)),
-            (len(business_facts) + direction_count - 1) // direction_count,
+            (len(business_facts) + sum(item.target_slots for item in landscape.territories) - 1)
+            // sum(item.target_slots for item in landscape.territories),
         ),
     )
+    direction_rows = [
+        (territory, _MOCK_DIRECTION_ROWS[index % len(_MOCK_DIRECTION_ROWS)])
+        for index, territory in enumerate(landscape.territories)
+        for _ in range(territory.target_slots)
+    ]
     return CreativeDirectionResponse(
         directions=[
             CreativeDirection(
                 direction_id=f"direction-{index + 1:02d}",
+                territory_id=territory.territory_id,
+                primary_action_id=territory.actions[0].action_id,
                 fact_applications=[
                     CreativeDirectionFactApplication(
                         fact_id=fact.fact_id,
@@ -1026,7 +1254,9 @@ def _mock_creative_direction_response(
                         ]
                     )[:bundle_size]
                 ],
-                creative_direction=f"围绕{row[1]}中的{row[3]}建立一个连续产品画面",
+                creative_direction=(
+                    f"围绕{row[1]}中的{row[3]}建立第{index + 1}个连续产品画面"
+                ),
                 priority_dimensions=list(dimension_pairs[index]),
                 semantic_profile=CreativeSemanticProfile(
                     narrative_family=row[0],
@@ -1038,8 +1268,30 @@ def _mock_creative_direction_response(
                 ),
                 avoid_families=["重复厨房切制"],
             )
-            for index, row in enumerate(rows[:direction_count])
+            for index, (territory, row) in enumerate(direction_rows)
         ]
+    )
+
+
+def _mock_creative_direction_audit(
+    landscape: CreativeDiversityLandscape,
+    directions: CreativeDirectionResponse,
+) -> CreativeDirectionAuditResponse:
+    del landscape
+    return CreativeDirectionAuditResponse(
+        items=[
+            CreativeDirectionAuditItem(
+                direction_id=item.direction_id,
+                realized_territory_id=item.territory_id,
+                realized_action_id=item.primary_action_id,
+                aligned=True,
+                issues=[],
+            )
+            for item in directions.directions
+        ],
+        requires_revision=False,
+        revision_direction_ids=[],
+        summary="全部方向与模型规划的创意版图一致",
     )
 
 

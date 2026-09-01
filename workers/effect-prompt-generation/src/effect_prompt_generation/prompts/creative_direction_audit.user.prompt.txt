@@ -1,0 +1,7 @@
+产品专属创意版图：
+{creative_landscape_json}
+
+待复核创意方向：
+{creative_directions_json}
+
+请逐条重新归类并判断是否对齐，再给出整批是否需要重规划的结论。
