@@ -89,6 +89,7 @@ from .creative_directions import (
     allocate_creative_directions,
     complete_semantic_profile,
     creative_direction_audit_revision_context,
+    merge_creative_direction_revision,
     creative_landscape_revision_context,
     creative_direction_revision_context,
     creative_direction_target_count,
@@ -662,6 +663,8 @@ class PromptGenerationPipeline:
             if landscape is None:
                 raise PipelineError("创意版图未能形成有效结果")
             revision_context: Mapping[str, Any] | None = None
+            previous_audited_response: CreativeDirectionResponse | None = None
+            audit_revision_direction_ids: list[str] = []
             for invalid_response_attempt in range(2):
                 self._reserve_ai_call(context)
                 try:
@@ -686,9 +689,30 @@ class PromptGenerationPipeline:
                         continue
                     raise
                 call_rows.append(call.metadata)
+                direction_response = call.value
+                if previous_audited_response is not None:
+                    try:
+                        direction_response = merge_creative_direction_revision(
+                            previous_audited_response,
+                            direction_response,
+                            audit_revision_direction_ids,
+                        )
+                    except ValueError as exc:
+                        if invalid_response_attempt == 1:
+                            raise ProviderError(
+                                "AI 创意方向修订改变了未点名方向",
+                                retryable=False,
+                                error_type=ProviderErrorType.RESPONSE_INVALID,
+                                attempts=2,
+                            ) from exc
+                        revision_context = {
+                            **(revision_context or {}),
+                            "validationError": str(exc),
+                        }
+                        continue
                 try:
                     draft_plan = validate_creative_direction_plan(
-                        call.value,
+                        direction_response,
                         application,
                         visual_strategy,
                         source_hash=source_hash,
@@ -717,8 +741,9 @@ class PromptGenerationPipeline:
                         async with self._ai_semaphore:
                             audit_call = await self.provider.audit_creative_directions(
                                 application,
+                                fact_visual_strategy=visual_strategy,
                                 landscape=landscape,
-                                directions=call.value,
+                                directions=direction_response,
                             )
                     except ProviderError as exc:
                         if (
@@ -746,6 +771,10 @@ class PromptGenerationPipeline:
                 if audit is None:
                     raise PipelineError("创意方向语义复核未能形成有效结果")
                 if audit.requires_revision:
+                    previous_audited_response = direction_response
+                    audit_revision_direction_ids = list(
+                        audit.revision_direction_ids
+                    )
                     revision_context = creative_direction_audit_revision_context(
                         draft_plan,
                         audit,

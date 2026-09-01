@@ -607,10 +607,24 @@ class CreativeTerritoryAction(ApiModel):
     boundary: str = Field(min_length=4, max_length=160)
 
 
+class CreativeTerritoryFactCompatibility(ApiModel):
+    fact_id: str = Field(min_length=1, max_length=120)
+    natural_usage: str = Field(min_length=4, max_length=180)
+    unsupported_conditions: list[str] = Field(default_factory=list, max_length=3)
+
+    @field_validator("unsupported_conditions")
+    @classmethod
+    def clean_unsupported_conditions(cls, values: list[str]) -> list[str]:
+        return list(
+            dict.fromkeys(" ".join(item.split()) for item in values if item.strip())
+        )
+
+
 class CreativeTerritory(ApiModel):
     territory_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
     label: str = Field(min_length=2, max_length=80)
     compatible_fact_ids: list[str] = Field(min_length=1, max_length=40)
+    fact_compatibilities: list[CreativeTerritoryFactCompatibility] | None = None
     required_fact_ids: list[str] = Field(min_length=1, max_length=40)
     scene_boundary: str = Field(min_length=4, max_length=180)
     actions: list[CreativeTerritoryAction] = Field(min_length=1, max_length=5)
@@ -623,6 +637,12 @@ class CreativeTerritory(ApiModel):
     def unique_ids(self) -> CreativeTerritory:
         self.compatible_fact_ids = list(dict.fromkeys(self.compatible_fact_ids))
         self.required_fact_ids = list(dict.fromkeys(self.required_fact_ids))
+        if self.fact_compatibilities is not None:
+            self.fact_compatibilities = list(
+                {
+                    item.fact_id: item for item in self.fact_compatibilities
+                }.values()
+            )
         action_ids = [item.action_id for item in self.actions]
         if len(set(action_ids)) != len(action_ids):
             raise ValueError("creative territory action ids must be unique")
@@ -710,11 +730,18 @@ class CreativeDirectionResponse(ApiModel):
     directions: list[CreativeDirection] = Field(min_length=8, max_length=16)
 
 
+class CreativeDirectionFactAudit(ApiModel):
+    fact_id: str = Field(min_length=1, max_length=120)
+    verdict: Literal["NATURAL", "WEAK", "UNSUPPORTED"]
+    reason: str = Field(min_length=2, max_length=180)
+
+
 class CreativeDirectionAuditItem(ApiModel):
     direction_id: str = Field(min_length=1, max_length=120)
     realized_territory_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
     realized_action_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
     aligned: bool
+    fact_reviews: list[CreativeDirectionFactAudit] | None = None
     issues: list[str] = Field(default_factory=list, max_length=4)
 
     @field_validator("issues")

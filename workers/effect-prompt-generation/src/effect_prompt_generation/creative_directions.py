@@ -115,6 +115,16 @@ def validate_creative_diversity_landscape(
         for fact_id in territory.compatible_fact_ids
     ):
         raise ValueError("creative landscape referenced an unavailable fact")
+    for territory in response.territories:
+        if territory.fact_compatibilities is None:
+            raise ValueError("creative landscape omitted fact compatibility guidance")
+        guided_ids = [item.fact_id for item in territory.fact_compatibilities]
+        if len(guided_ids) != len(set(guided_ids)):
+            raise ValueError("creative landscape repeated fact compatibility guidance")
+        if set(guided_ids) != set(territory.compatible_fact_ids):
+            raise ValueError(
+                "creative landscape fact guidance must match compatible facts"
+            )
     business_ids = {fact.fact_id for fact in mandatory_business_facts(application)}
     required_ids = [
         fact_id
@@ -127,17 +137,15 @@ def validate_creative_diversity_landscape(
         raise ValueError("creative landscape assigned an unavailable required fact")
     if not business_ids.issubset(required_ids):
         raise ValueError("creative landscape did not assign every business fact")
+    if any(
+        fact_id not in territory.compatible_fact_ids
+        for territory in response.territories
+        for fact_id in territory.required_fact_ids
+    ):
+        raise ValueError("creative landscape required fact lacks compatibility guidance")
     territories = [
         territory.model_copy(
             update={
-                "compatible_fact_ids": list(
-                    dict.fromkeys(
-                        [
-                            *territory.required_fact_ids,
-                            *territory.compatible_fact_ids,
-                        ]
-                    )
-                ),
                 "required_fact_ids": [
                     fact_id
                     for fact_id in territory.required_fact_ids
@@ -263,6 +271,8 @@ def validate_creative_direction_audit(
         raise ValueError(
             "creative direction audit must cover every direction exactly once"
         )
+    plan_by_id = {item.direction_id: item for item in plan.directions}
+    revision_required_ids: set[str] = set()
     for item in response.items:
         territory = landscape.by_id.get(item.realized_territory_id)
         if territory is None:
@@ -271,8 +281,31 @@ def validate_creative_direction_audit(
             action.action_id for action in territory.actions
         }:
             raise ValueError("creative direction audit used an unknown action")
+        direction = plan_by_id[item.direction_id]
+        if item.fact_reviews is None:
+            raise ValueError("creative direction audit omitted fact reviews")
+        reviewed_fact_ids = [review.fact_id for review in item.fact_reviews]
+        if (
+            len(reviewed_fact_ids) != len(set(reviewed_fact_ids))
+            or set(reviewed_fact_ids) != set(direction.fact_ids)
+        ):
+            raise ValueError(
+                "creative direction audit must review every applied fact exactly once"
+            )
+        has_fact_issue = any(
+            review.verdict != "NATURAL" for review in item.fact_reviews
+        )
+        if has_fact_issue or not item.aligned:
+            revision_required_ids.add(item.direction_id)
     if any(item not in direction_ids for item in response.revision_direction_ids):
         raise ValueError("creative direction audit used an unknown revision id")
+    if revision_required_ids:
+        if not response.requires_revision:
+            raise ValueError("creative direction audit ignored a semantic issue")
+        if not revision_required_ids.issubset(response.revision_direction_ids):
+            raise ValueError("creative direction audit omitted a revision direction")
+    elif response.requires_revision:
+        raise ValueError("creative direction audit requested an unsupported revision")
     payload = response.model_dump(mode="json", by_alias=True)
     return CreativeDirectionAudit(
         **response.model_dump(mode="python"),
@@ -290,10 +323,35 @@ def creative_direction_audit_revision_context(
             item.model_dump(mode="json", by_alias=True) for item in plan.directions
         ],
         "revisionInstruction": (
-            "依据独立语义复核重新规划完整批次，修正同义改名、版图错位、"
-            "多主场景或多主动作；保留事实来源边界，不得由系统替换事实。"
+            "依据独立语义复核重新规划完整批次，只修改被点名的事实关系、"
+            "同义改名、版图错位、多主场景或多主动作问题。事实必须转移到"
+            "自然相容的版图与方向，不能为了覆盖率硬塞，也不得由系统替换事实。"
         ),
     }
+
+
+def merge_creative_direction_revision(
+    previous: CreativeDirectionResponse,
+    revised: CreativeDirectionResponse,
+    revision_direction_ids: Sequence[str],
+) -> CreativeDirectionResponse:
+    """Mechanically keep unflagged directions; semantic choices stay model-owned."""
+
+    previous_by_id = {item.direction_id: item for item in previous.directions}
+    revised_by_id = {item.direction_id: item for item in revised.directions}
+    if set(previous_by_id) != set(revised_by_id):
+        raise ValueError("creative direction revision changed the direction id set")
+    revision_ids = set(revision_direction_ids)
+    if not revision_ids or not revision_ids.issubset(previous_by_id):
+        raise ValueError("creative direction revision used an unknown revision id")
+    return CreativeDirectionResponse(
+        directions=[
+            revised_by_id[item.direction_id]
+            if item.direction_id in revision_ids
+            else item
+            for item in previous.directions
+        ]
+    )
 
 
 def creative_direction_revision_context(

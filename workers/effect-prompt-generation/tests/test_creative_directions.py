@@ -40,9 +40,11 @@ from effect_prompt_generation.creative_directions import (
     direction_allocation_bucket,
     dominant_families,
     max_cluster_share,
+    merge_creative_direction_revision,
     semantic_cluster_novelty,
     validate_semantic_profile,
     validate_creative_diversity_landscape,
+    validate_creative_direction_audit,
     validate_creative_direction_plan,
 )
 
@@ -428,6 +430,154 @@ def test_landscape_validation_is_structural_not_keyword_based() -> None:
             template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
             expected_direction_count=13,
         )
+
+
+def test_landscape_requires_ai_fact_compatibility_guidance() -> None:
+    from effect_prompt_generation.providers import _mock_creative_landscape_response
+
+    application = map_insight(_cluster_snapshot().insight_artifact.result)
+    raw = _mock_creative_landscape_response(application, direction_count=13)
+    missing_guidance = CreativeDiversityLandscapeResponse(
+        territories=[
+            raw.territories[0].model_copy(update={"fact_compatibilities": None}),
+            *raw.territories[1:],
+        ]
+    )
+
+    with pytest.raises(ValueError, match="omitted fact compatibility guidance"):
+        validate_creative_diversity_landscape(
+            missing_guidance,
+            application,
+            source_hash="1" * 64,
+            template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+            expected_direction_count=13,
+        )
+
+    first = raw.territories[0]
+    mismatched_guidance = CreativeDiversityLandscapeResponse(
+        territories=[
+            first.model_copy(
+                update={
+                    "fact_compatibilities": first.fact_compatibilities[:-1]
+                    if first.fact_compatibilities
+                    else [],
+                }
+            ),
+            *raw.territories[1:],
+        ]
+    )
+    with pytest.raises(ValueError, match="guidance must match compatible facts"):
+        validate_creative_diversity_landscape(
+            mismatched_guidance,
+            application,
+            source_hash="1" * 64,
+            template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+            expected_direction_count=13,
+        )
+
+
+def test_ai_audit_must_review_every_fact_and_request_revision_for_weak_fit() -> None:
+    from effect_prompt_generation.providers import (
+        _mock_creative_direction_audit,
+        _mock_creative_direction_response,
+        _mock_creative_landscape_response,
+        _mock_fact_visual_strategy,
+    )
+    from effect_prompt_generation.visual_strategy import validate_fact_visual_strategy
+
+    application = map_insight(_cluster_snapshot().insight_artifact.result)
+    raw_landscape = _mock_creative_landscape_response(application, direction_count=13)
+    landscape = validate_creative_diversity_landscape(
+        raw_landscape,
+        application,
+        source_hash="1" * 64,
+        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+        expected_direction_count=13,
+    )
+    strategy = validate_fact_visual_strategy(
+        _mock_fact_visual_strategy(application),
+        application,
+        source_content_hash="2" * 64,
+        template_hash="3" * 64,
+    )
+    raw_directions = _mock_creative_direction_response(
+        application,
+        landscape=landscape,
+    )
+    plan = validate_creative_direction_plan(
+        raw_directions,
+        application,
+        strategy,
+        source_hash="1" * 64,
+        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+        expected_direction_count=13,
+        landscape=landscape,
+    )
+    raw_audit = _mock_creative_direction_audit(landscape, raw_directions)
+    first_item = raw_audit.items[0]
+    assert first_item.fact_reviews
+    weak_review = first_item.fact_reviews[0].model_copy(
+        update={
+            "verdict": "WEAK",
+            "reason": "当前场景只能口头解释该事实，无法自然承载",
+        }
+    )
+    inconsistent = raw_audit.model_copy(
+        update={
+            "items": [
+                first_item.model_copy(
+                    update={
+                        "fact_reviews": [weak_review, *first_item.fact_reviews[1:]],
+                    }
+                ),
+                *raw_audit.items[1:],
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="ignored a semantic issue"):
+        validate_creative_direction_audit(inconsistent, plan, landscape)
+
+    revised = inconsistent.model_copy(
+        update={
+            "items": [
+                inconsistent.items[0].model_copy(
+                    update={"aligned": False, "issues": ["事实关系牵强"]}
+                ),
+                *inconsistent.items[1:],
+            ],
+            "requires_revision": True,
+            "revision_direction_ids": [first_item.direction_id],
+        }
+    )
+    validated = validate_creative_direction_audit(revised, plan, landscape)
+    assert validated.requires_revision is True
+    assert validated.revision_direction_ids == [first_item.direction_id]
+
+
+def test_direction_revision_mechanically_preserves_unflagged_directions() -> None:
+    from effect_prompt_generation.providers import _mock_creative_direction_response
+
+    application = map_insight(_cluster_snapshot().insight_artifact.result)
+    previous = _mock_creative_direction_response(application, direction_count=8)
+    revised = previous.model_copy(
+        update={
+            "directions": [
+                direction.model_copy(
+                    update={
+                        "creative_direction": (
+                            f"模型修订后的方向 {direction.direction_id}"
+                        )
+                    }
+                )
+                for direction in previous.directions
+            ]
+        }
+    )
+    flagged_id = previous.directions[0].direction_id
+    merged = merge_creative_direction_revision(previous, revised, [flagged_id])
+
+    assert merged.directions[0].creative_direction.startswith("模型修订后的方向")
+    assert merged.directions[1:] == previous.directions[1:]
 
 
 @pytest.mark.asyncio

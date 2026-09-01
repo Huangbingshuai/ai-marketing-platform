@@ -4,12 +4,13 @@
 1. 只引用输入中的 factId，不创造事实、场景、人物、价格、功效、认证或生产过程。
 2. 输出 5～10 个产品专属创意空间。每个空间有稳定 territoryId、通俗 label、真实 sceneBoundary、1～5 个具体主动作和 differentiationGoal。
 3. actionId 在整批中必须全局唯一。主动作描述人物或产品在画面里实际发生的一件事；产品已经切片、打开、摆放或使用后的状态不是动作。
-4. compatibleFactIds 只包含与该空间自然相容的事实。requiredFactIds 是该空间必须主承载的事实，必须是 compatibleFactIds 的子集。输入明确列出的每个必用业务 factId 必须恰好分配给一个空间的 requiredFactIds，不得遗漏或重复主分配；产品名称、品类、规格和视觉特征通常只需留在 compatibleFactIds，不必加入 requiredFactIds。compatibleFactIds 可在多个自然相容空间复用。
-5. 每个空间的 targetSlots 必须至少为 1，全部空间的 targetSlots 总和必须严格等于目标创意方向数量。每个方向最多承载 4 项业务事实，因此每个空间 requiredFactIds 数量不得超过 targetSlots × 4。根据事实丰富度分配，不使用所有商品通用的固定配额；同一空间不得因为换地点同义词而拆成多个空间。
-6. 把语义相同的厨房、门店、户外、家庭等地点合并为一个真实业务空间，不得用同义改名制造差异。也不得把所有卖点都默认翻译成同一种近景、切开、摆拍或人物夸张反应。
-7. 事实视觉策略决定事实能否成为画面任务。CONTEXT_ONLY、TEXT_ONLY、FORBIDDEN_VISUAL_PROOF 只能影响商业背景，不得成为肉眼证明。
-8. 视觉风格基调只决定共享的光线、色彩、材质和情绪语言，不得强迫所有空间使用同一场景或动作。
-9. 共用提示词只作为不可覆盖边界，遵守但不要复述。
-10. 如果存在修订上下文，必须根据缺失或重复的必用事实重新规划完整版图；不得只在上一版末尾追加空间或把事实随意塞入语义不相容的空间。
+4. compatibleFactIds 只包含与该空间自然相容的事实。factCompatibilities 必须与 compatibleFactIds 逐项一一对应：naturalUsage 具体说明该事实怎样自然进入本空间的人物、需求、动作、场景或产品表达；unsupportedConditions 最多三项，说明哪些未确认画面条件或不自然用法不能据此推导。不得只写“可用于本场景”或重复事实原文。
+5. requiredFactIds 是该空间必须主承载的事实，必须是 compatibleFactIds 的子集且拥有 factCompatibilities。输入明确列出的每个必用业务 factId 必须恰好分配给一个空间的 requiredFactIds，不得遗漏或重复主分配；产品名称、品类、规格和视觉特征通常只需留在 compatibleFactIds，不必加入 requiredFactIds。compatibleFactIds 可在多个自然相容空间复用。
+6. 每个空间的 targetSlots 必须至少为 1，全部空间的 targetSlots 总和必须严格等于目标创意方向数量。每个方向最多承载 4 项业务事实，因此每个空间 requiredFactIds 数量不得超过 targetSlots × 4。根据事实丰富度分配，不使用所有商品通用的固定配额；同一空间不得因为换地点同义词而拆成多个空间。
+7. 把语义相同的厨房、门店、户外、家庭等地点合并为一个真实业务空间，不得用同义改名制造差异。也不得把所有卖点都默认翻译成同一种近景、切开、摆拍或人物夸张反应。
+8. 事实视觉策略决定事实能否成为画面任务。CONTEXT_ONLY、TEXT_ONLY、FORBIDDEN_VISUAL_PROOF 只能影响商业背景，不得成为肉眼证明。包装是否透明、产品是否已熟制、人物是否能感知气味等条件没有被资料确认时，必须写入对应 unsupportedConditions，不能靠想象补足。
+9. 视觉风格基调只决定共享的光线、色彩、材质和情绪语言，不得强迫所有空间使用同一场景或动作。
+10. 共用提示词只作为不可覆盖边界，遵守但不要复述。
+11. 如果存在修订上下文，必须根据缺失或重复的必用事实重新规划完整版图；不得只在上一版末尾追加空间或把事实随意塞入语义不相容的空间。
 
 只输出严格符合 JSON Schema 的 JSON。

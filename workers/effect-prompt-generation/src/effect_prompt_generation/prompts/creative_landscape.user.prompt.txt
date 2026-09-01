@@ -18,4 +18,4 @@
 版图修订上下文（首次为空；如需修订则重新规划完整版图）：
 {revision_context_json}
 
-请先规划产品专属创意版图。targetSlots 总和必须严格等于 {target_direction_count}；上述必用业务事实 ID 必须各自恰好进入一个空间的 requiredFactIds，同时可以进入其他自然相容空间的 compatibleFactIds。
+请先规划产品专属创意版图。targetSlots 总和必须严格等于 {target_direction_count}；上述必用业务事实 ID 必须各自恰好进入一个空间的 requiredFactIds，同时可以进入其他自然相容空间的 compatibleFactIds。每个 compatibleFactId 都必须有且只有一条 factCompatibilities 适配说明；如果无法说明自然用法，就不要把该事实放入该空间。

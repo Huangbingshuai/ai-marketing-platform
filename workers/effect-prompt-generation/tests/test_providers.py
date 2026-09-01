@@ -379,6 +379,137 @@ async def test_ark_compiles_visual_usage_for_every_confirmed_fact() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ark_direction_audit_reviews_each_fact_and_restores_fact_ids() -> None:
+    from effect_prompt_generation.creative_directions import (
+        validate_creative_diversity_landscape,
+        validate_creative_direction_plan,
+    )
+    from effect_prompt_generation.providers import (
+        CREATIVE_DIRECTION_TEMPLATE_HASH,
+        _mock_creative_direction_response,
+        _mock_creative_landscape_response,
+        _mock_fact_visual_strategy,
+    )
+
+    application = map_insight(
+        {
+            "productName": "便携杯",
+            "productCategory": "饮水容器",
+            "coreSellingPoints": ["单手开合", "防漏杯盖"],
+            "corePainPoints": ["普通杯盖需要双手操作"],
+            "targetAudiences": ["通勤成年人"],
+            "decisionDrivers": ["在意携带便利"],
+            "usageScenarios": ["通勤途中饮水"],
+        }
+    )
+    strategy = validate_fact_visual_strategy(
+        _mock_fact_visual_strategy(application),
+        application,
+        source_content_hash="1" * 64,
+        template_hash="2" * 64,
+    )
+    landscape = validate_creative_diversity_landscape(
+        _mock_creative_landscape_response(application, direction_count=8),
+        application,
+        source_hash="3" * 64,
+        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+        expected_direction_count=8,
+    )
+    directions = _mock_creative_direction_response(
+        application,
+        landscape=landscape,
+    )
+    validate_creative_direction_plan(
+        directions,
+        application,
+        strategy,
+        source_hash="3" * 64,
+        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+        expected_direction_count=8,
+        landscape=landscape,
+    )
+    aliases = {
+        fact.fact_id: f"F{index + 1}"
+        for index, fact in enumerate(application.usable)
+    }
+    seen_prompt = ""
+    seen_payload = ""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal seen_payload, seen_prompt
+        payload = json.loads(request.content)
+        seen_payload = json.dumps(payload, ensure_ascii=False)
+        seen_prompt = payload["input"][0]["content"][0]["text"]
+        items = []
+        for direction in directions.directions:
+            items.append(
+                {
+                    "directionId": direction.direction_id,
+                    "realizedTerritoryId": direction.territory_id,
+                    "realizedActionId": direction.primary_action_id,
+                    "aligned": True,
+                    "factReviews": [
+                        {
+                            "factId": aliases[application.fact_id],
+                            "verdict": "NATURAL",
+                            "reason": "事实与版图和动作自然相容",
+                        }
+                        for application in direction.fact_applications
+                    ],
+                    "issues": [],
+                }
+            )
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "output_text": json.dumps(
+                    {
+                        "items": items,
+                        "requiresRevision": False,
+                        "revisionDirectionIds": [],
+                        "summary": "逐项事实关系均自然",
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        )
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.example/v3",
+        api_key="test-key",
+        strategy_model="strategy-model",
+        candidate_model="creative-model",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        call = await provider.audit_creative_directions(
+            application,
+            fact_visual_strategy=strategy,
+            landscape=landscape,
+            directions=directions,
+        )
+    finally:
+        await provider.aclose()
+
+    expected_ids = {
+        application.fact_id
+        for direction in directions.directions
+        for application in direction.fact_applications
+    }
+    restored_ids = {
+        review.fact_id
+        for item in call.value.items
+        for review in item.fact_reviews or []
+    }
+    assert restored_ids == expected_ids
+    assert "factCompatibilities" in seen_prompt
+    assert "factReviews" in seen_payload
+    assert "单手开合" in seen_prompt
+    assert all(fact.fact_id not in seen_prompt for fact in application.usable)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("declared_selector", "message"),
     [
