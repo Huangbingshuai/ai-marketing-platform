@@ -16,6 +16,7 @@ from effect_prompt_generation.embeddings import (
 from effect_prompt_generation.graph import build_graph
 from effect_prompt_generation.insight_mapping import map_insight
 from effect_prompt_generation.models import (
+    AbstractVisualProofFinding,
     CreativeCandidate,
     CreativeDimensions,
     CreativeEvaluation,
@@ -25,6 +26,7 @@ from effect_prompt_generation.models import (
     FactEvidence,
     FactVisualStrategy,
     FragmentType,
+    InsightApplicationMap,
     InsightField,
     ProgressPayload,
     PromptBatchResult,
@@ -1225,6 +1227,122 @@ def test_evaluation_requires_real_text_evidence() -> None:
     assert "FACT_EVIDENCE_NOT_IN_CONTENT" in validated.warnings
     assert "FACT_EVIDENCE_NOT_IN_CONTENT" not in validated.hard_issues
     assert "MISSING_PRODUCT_RELATION" in validated.hard_issues
+
+
+def _abstract_visual_proof_case() -> tuple[
+    InsightApplicationMap,
+    CreativeCandidate,
+    CreativeEvaluation,
+    str,
+]:
+    application = map_insight(
+        {
+            "productName": "谷物营养棒",
+            "coreSellingPoints": ["低糖配方"],
+        }
+    )
+    product_fact = next(
+        item for item in application.usable if item.value == "谷物营养棒"
+    )
+    formula_fact = next(
+        item for item in application.usable if item.value == "低糖配方"
+    )
+    proof_text = "镜头放大谷物颗粒，并以颗粒状态证明产品采用低糖配方"
+    candidate = CreativeCandidate(
+        slot_id="candidate-visual-proof",
+        ordinal=1,
+        round=0,
+        creative_core="用谷物颗粒直接证明低糖配方",
+        declared_fact_ids=[product_fact.fact_id, formula_fact.fact_id],
+        dimensions=CreativeDimensions(
+            narrative="产品证明",
+            scene="明亮餐桌",
+            persona="成年消费者",
+            product_relation="展示谷物营养棒并证明低糖配方",
+            camera="微距推进",
+            emotion="理性可信",
+        ),
+        content=f"明亮餐桌上摆放谷物营养棒，{proof_text}。",
+    )
+    evaluation = CreativeEvaluation(
+        slot_id=candidate.slot_id,
+        primary_purpose=FragmentType.SELLING_POINT_EXPLANATION,
+        compatible_purposes=[FragmentType.SELLING_POINT_EXPLANATION],
+        fact_evidence=[
+            FactEvidence(
+                fact_id=product_fact.fact_id,
+                evidence_text="谷物营养棒",
+            )
+        ],
+        realized_fact_ids=[product_fact.fact_id],
+        scores=CreativeScores(
+            product_relevance=90,
+            creative_coherence=90,
+            visual_executability=80,
+            commercial_usefulness=80,
+            visual_clarity=90,
+        ),
+        semantic_signature="谷物颗粒证明低糖",
+        visual_signature="餐桌微距谷物棒",
+        hard_issues=["ABSTRACT_FACT_VISUAL_PROOF"],
+    )
+    return application, candidate, evaluation, formula_fact.fact_id
+
+
+def test_abstract_visual_proof_requires_model_owned_fact_and_text_evidence() -> None:
+    application, candidate, evaluation, formula_fact_id = (
+        _abstract_visual_proof_case()
+    )
+    proof_text = "镜头放大谷物颗粒，并以颗粒状态证明产品采用低糖配方"
+    evaluation = evaluation.model_copy(
+        update={
+            "abstract_visual_proof_findings": [
+                AbstractVisualProofFinding(
+                    fact_id=formula_fact_id,
+                    evidence_text=proof_text,
+                    evidence_source="CONTENT",
+                    violated_policy="FORBIDDEN_VISUAL_PROOF",
+                )
+            ]
+        }
+    )
+
+    validated = validate_creative_evaluation(candidate, evaluation, application)
+
+    assert "ABSTRACT_FACT_VISUAL_PROOF" in validated.hard_issues
+    assert len(validated.abstract_visual_proof_findings) == 1
+
+
+def test_unverified_abstract_visual_proof_is_only_a_warning() -> None:
+    application, candidate, evaluation, _ = _abstract_visual_proof_case()
+
+    validated = validate_creative_evaluation(candidate, evaluation, application)
+
+    assert "ABSTRACT_FACT_VISUAL_PROOF" not in validated.hard_issues
+    assert "ABSTRACT_FACT_VISUAL_PROOF_UNVERIFIED" in validated.warnings
+
+
+def test_abstract_visual_proof_with_missing_candidate_evidence_is_not_hard() -> None:
+    application, candidate, evaluation, formula_fact_id = (
+        _abstract_visual_proof_case()
+    )
+    evaluation = evaluation.model_copy(
+        update={
+            "abstract_visual_proof_findings": [
+                AbstractVisualProofFinding(
+                    fact_id=formula_fact_id,
+                    evidence_text="正文中不存在的证明句",
+                    evidence_source="CONTENT",
+                    violated_policy="FORBIDDEN_VISUAL_PROOF",
+                )
+            ]
+        }
+    )
+
+    validated = validate_creative_evaluation(candidate, evaluation, application)
+
+    assert "ABSTRACT_FACT_VISUAL_PROOF" not in validated.hard_issues
+    assert "ABSTRACT_VISUAL_PROOF_EVIDENCE_NOT_FOUND" in validated.warnings
 
 
 def test_assigned_business_context_accepts_real_semantic_evidence() -> None:

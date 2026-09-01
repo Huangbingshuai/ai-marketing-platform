@@ -786,6 +786,26 @@ class FactEvidence(ApiModel):
         return migrated
 
 
+class AbstractVisualProofFinding(ApiModel):
+    """Model-owned semantic diagnosis with auditable candidate evidence."""
+
+    fact_id: str = Field(min_length=1, max_length=120)
+    evidence_text: str = Field(min_length=1, max_length=160)
+    evidence_source: Literal[
+        "CONTENT",
+        "CREATIVE_CORE",
+        "NARRATIVE",
+        "SCENE",
+        "PERSONA",
+        "PRODUCT_RELATION",
+    ]
+    violated_policy: Literal[
+        "CONTEXT_ONLY",
+        "TEXT_ONLY",
+        "FORBIDDEN_VISUAL_PROOF",
+    ]
+
+
 class CreativeScores(ApiModel):
     product_relevance: float = Field(ge=0, le=100)
     creative_coherence: float = Field(ge=0, le=100)
@@ -815,6 +835,10 @@ class CreativeEvaluation(ApiModel):
     semantic_signature: str = Field(min_length=1, max_length=240)
     visual_signature: str = Field(min_length=1, max_length=240)
     semantic_profile: CreativeSemanticProfile | None = None
+    abstract_visual_proof_findings: list[AbstractVisualProofFinding] = Field(
+        default_factory=list,
+        max_length=5,
+    )
     hard_issues: list[str] = Field(default_factory=list, max_length=20)
     warnings: list[str] = Field(default_factory=list, max_length=20)
 
@@ -855,6 +879,17 @@ class CreativeEvaluation(ApiModel):
             raise ValueError("realizedFactIds must match factEvidence")
         self.compatible_purposes = purposes
         self.realized_fact_ids = evidence_ids
+        self.abstract_visual_proof_findings = list(
+            {
+                (
+                    item.fact_id,
+                    item.evidence_source,
+                    item.evidence_text,
+                    item.violated_policy,
+                ): item
+                for item in self.abstract_visual_proof_findings
+            }.values()
+        )
         self.hard_issues = list(dict.fromkeys(self.hard_issues))
         self.warnings = list(dict.fromkeys(self.warnings))
         return self

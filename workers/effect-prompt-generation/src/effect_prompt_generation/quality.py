@@ -10,8 +10,6 @@ from .insight_mapping import MANDATORY_BUSINESS_FIELDS
 from .models import (
     CreativeCandidate,
     CreativeEvaluation,
-    FactVisualStrategy,
-    FactVisualUsage,
     InsightApplicationMap,
     InsightField,
 )
@@ -140,7 +138,6 @@ def validate_creative_evaluation(
     *,
     target_duration_seconds: int | None = None,
     contextual_fact_ids: Sequence[str] = (),
-    fact_visual_strategy: FactVisualStrategy | None = None,
 ) -> CreativeEvaluation:
     if evaluation.slot_id != candidate.slot_id:
         raise ValueError("creative evaluation changed slotId")
@@ -177,6 +174,24 @@ def validate_creative_evaluation(
     warnings.extend(
         issue for issue in evaluation.hard_issues if issue in subjective_ai_issues
     )
+    valid_visual_proof_findings = []
+    for finding in evaluation.abstract_visual_proof_findings:
+        if finding.fact_id not in allowed_evidence:
+            warnings.append("ABSTRACT_VISUAL_PROOF_UNKNOWN_FACT")
+            continue
+        source = evidence_sources.get(finding.evidence_source)
+        evidence_text = _normalized_evidence_text(finding.evidence_text)
+        if source is None or not evidence_text or evidence_text not in _normalized_evidence_text(source):
+            warnings.append("ABSTRACT_VISUAL_PROOF_EVIDENCE_NOT_FOUND")
+            continue
+        valid_visual_proof_findings.append(finding)
+    if ai_reported_abstract_proof:
+        if valid_visual_proof_findings:
+            issues.append("ABSTRACT_FACT_VISUAL_PROOF")
+        else:
+            warnings.append("ABSTRACT_FACT_VISUAL_PROOF_UNVERIFIED")
+    elif valid_visual_proof_findings:
+        warnings.append("ABSTRACT_VISUAL_PROOF_FINDING_WITHOUT_ISSUE")
     for evidence in evaluation.fact_evidence:
         fact = application.by_id.get(evidence.fact_id)
         if fact is None or evidence.fact_id not in allowed_evidence:
@@ -228,20 +243,6 @@ def validate_creative_evaluation(
     mandatory_business_facts_available = any(
         fact.field in MANDATORY_BUSINESS_FIELDS for fact in application.usable
     )
-    if fact_visual_strategy is not None:
-        policy_by_id = fact_visual_strategy.by_id
-        non_visual_fact_used = any(
-            (policy := policy_by_id.get(evidence.fact_id)) is not None
-            and policy.visual_usage
-            in {
-                FactVisualUsage.CONTEXT_ONLY,
-                FactVisualUsage.TEXT_ONLY,
-                FactVisualUsage.FORBIDDEN_VISUAL_PROOF,
-            }
-            for evidence in valid_evidence
-        )
-        if non_visual_fact_used and ai_reported_abstract_proof:
-            issues.append("ABSTRACT_FACT_VISUAL_PROOF")
     if not relevant:
         issues.append("MISSING_PRODUCT_RELATION")
     if mandatory_business_facts_available and not deep_business_evidence:
@@ -267,6 +268,7 @@ def validate_creative_evaluation(
         update={
             "fact_evidence": valid_evidence,
             "realized_fact_ids": [item.fact_id for item in valid_evidence],
+            "abstract_visual_proof_findings": valid_visual_proof_findings,
             "semantic_signature": semantic,
             "visual_signature": visual,
             "hard_issues": list(dict.fromkeys(issues)),

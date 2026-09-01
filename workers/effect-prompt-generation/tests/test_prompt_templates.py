@@ -109,3 +109,5 @@ def test_visual_strategy_templates_separate_visual_task_from_business_context() 
     assert "不授权虚构品牌礼盒" in creative
     assert "必须标记 FABRICATED_FACT" in evaluation
     assert "ABSTRACT_FACT_VISUAL_PROOF" in evaluation
+    assert "abstractVisualProofFindings" in evaluation
+    assert "Worker 只验证引用和原文是否存在" in evaluation

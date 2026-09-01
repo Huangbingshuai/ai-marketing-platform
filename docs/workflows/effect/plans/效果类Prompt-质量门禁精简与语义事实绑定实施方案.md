@@ -1,6 +1,6 @@
 # 效果类 Prompt：质量门禁精简与语义事实绑定实施方案
 
-> 状态：已完成（2026-09-01）
+> 状态：已完成（2026-09-01，已修正视觉证明责任边界）
 
 ## 一、目标
 
@@ -77,3 +77,11 @@
 - Web：Prompt 生成目录 7 个测试文件、32 项测试通过；Vue TypeScript 类型检查通过；Vite 生产构建通过。
 - Contracts：TypeScript 类型检查通过。
 - 本次未调用真实 Ark，也未生成或提交新的 Prompt WorkingArtifact。
+
+## 七、抽象事实视觉证明责任边界修正
+
+评分模型负责判断候选是否用具体画面错误证明了配方、工艺、功效、认证等抽象事实。模型不能只返回 `ABSTRACT_FACT_VISUAL_PROOF` 问题码，还必须同时返回对应的事实引用、候选中的原文证据、证据来源以及被违反的视觉策略。
+
+Worker 不再根据“候选绑定了不可视觉证明事实 + 模型返回问题码”自行推断二者存在语义关系。Worker 只验证：事实引用属于当前候选、证据原文真实存在、字段结构合法。缺少完整结构化诊断或证据不存在时，该问题只记为未验证提醒，不得成为硬淘汰依据。
+
+实际实现新增 `abstractVisualProofFindings` 内部结构。评估模型必须返回 `factId / evidenceText / evidenceSource / violatedPolicy`；Worker 不读取事实视觉策略来决定问题是否成立，只检查事实引用和原文证据的完整性。新增三类回归：完整模型诊断保留硬问题、只有问题码时降级提醒、证据不存在时降级提醒。Prompt Worker 完整 pytest 通过（1 项显式跳过），`mypy src` 与 `ruff check src tests` 通过。

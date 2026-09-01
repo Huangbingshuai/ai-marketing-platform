@@ -10,6 +10,7 @@ from effect_prompt_generation.models import (
     CreativeAverageScores,
     CreativeEvaluationDraft,
     CreativeEvaluationDraftBatch,
+    CreativeEvaluationBatch,
     FragmentType,
     InsightCoverage,
     PromptBatchResult,
@@ -38,6 +39,20 @@ def test_evaluation_draft_schema_excludes_worker_derived_fields() -> None:
     assert properties["factEvidence"]["maxItems"] == 3
     assert properties["hardIssues"]["maxItems"] == 5
     assert properties["warnings"]["maxItems"] == 3
+
+
+def test_evaluation_schema_requires_auditable_visual_proof_findings() -> None:
+    schema = CreativeEvaluationBatch.model_json_schema(by_alias=True)
+    properties = schema["$defs"]["CreativeEvaluation"]["properties"]
+    finding = schema["$defs"]["AbstractVisualProofFinding"]["properties"]
+
+    assert properties["abstractVisualProofFindings"]["maxItems"] == 5
+    assert set(finding) == {
+        "factId",
+        "evidenceText",
+        "evidenceSource",
+        "violatedPolicy",
+    }
 
 
 def test_evaluation_draft_treats_compatible_purposes_as_other_purposes() -> None:

@@ -1308,11 +1308,6 @@ class PromptGenerationPipeline:
                             item.slot_id,
                             [],
                         ),
-                        fact_visual_strategy=(
-                            self._required_fact_visual_strategy(context)
-                            if _uses_fact_visual_strategy(self.snapshot(context))
-                            else None
-                        ),
                     )
                 )
             await self.api.put_shard(
