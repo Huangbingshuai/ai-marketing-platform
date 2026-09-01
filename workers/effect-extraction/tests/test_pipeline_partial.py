@@ -905,6 +905,49 @@ def test_visual_features_use_image_only_when_user_material_does_not_provide_them
     assert user_result.visual_features == "用户资料外观"
 
 
+def test_image_selling_suggestions_are_deduplicated_across_images_without_merging_user_facts() -> (
+    None
+):
+    form = ExtractionCandidate.empty()
+    form.duration_seconds = 15
+    form.aspect_ratio = "9:16"
+    form.resolution = "1080p"
+    form.delivery_channels = "抖音"
+    document = ExtractionCandidate.empty()
+    document.core_selling_points = [
+        "三七肥瘦黄金配比",
+        "广府糖酒腌制工艺",
+        "咸甜酒香回甘",
+    ]
+    document.secondary_selling_points = ["切片均匀、形态规整"]
+    image = ExtractionCandidate.empty()
+    image.core_selling_points = [
+        "肥瘦相间纹理清晰",
+        "肠体饱满形态规整",
+        "肥瘦相间纹理清晰油润",
+        "整根与切片同展直观展示形态",
+        "肥瘦纹理清晰透亮",
+        "切片油润有光泽",
+    ]
+
+    result = SimpleNamespace()
+    _restore_authoritative_sources(
+        result,
+        form=form,
+        document=document,
+        commerce=None,
+        image=image,
+    )
+
+    assert result.secondary_selling_points == [
+        "切片均匀、形态规整",
+        "肥瘦相间纹理清晰油润",
+        "肠体饱满形态规整",
+        "整根与切片同展直观展示形态",
+        "切片油润有光泽",
+    ]
+
+
 def test_authoritative_source_restoration_caps_secondary_selling_points_at_ten() -> None:
     form = ExtractionCandidate.empty()
     form.duration_seconds = 15

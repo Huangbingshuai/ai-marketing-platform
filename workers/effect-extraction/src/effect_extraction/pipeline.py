@@ -39,6 +39,13 @@ from .providers import AiProvider, ProviderError, ProviderErrorType
 from .semantic_refinement import refine_candidate_semantics
 
 MAX_GENERATED_SECONDARY_SELLING_POINTS = 10
+IMAGE_SELLING_VISUAL_QUALIFIERS: tuple[str, ...] = (
+    "光泽感强",
+    "有光泽",
+    "相间",
+    "油润",
+    "透亮",
+)
 SEMANTIC_RESULT_FIELDS: tuple[str, ...] = (
     "core_pain_points",
     "decision_drivers",
@@ -1018,13 +1025,73 @@ def _normalize_candidate_deterministically(
 
 
 def _image_selling_suggestions(
-    remaining_core: list[str],
+    image_core: list[str],
     *,
+    authoritative_points: Sequence[str] = (),
     limit: int = 4,
 ) -> list[str]:
-    """Keep only image facts that the model classified as visible product value."""
+    """Keep distinct visible product values without weakening user facts.
 
-    return _strings(remaining_core)[:limit]
+    Image analysis runs independently per file, so multiple photos frequently
+    describe the same visible feature with slightly different wording. User facts
+    remain untouched; a matching image suggestion is discarded. Among matching
+    image suggestions, the more descriptive original suggestion is retained.
+    """
+
+    protected = _strings(authoritative_points)
+    suggestions: list[str] = []
+    for suggestion in _strings(image_core):
+        if any(
+            _same_image_selling_direction(suggestion, fact)
+            for fact in protected
+        ):
+            continue
+
+        duplicate_index = next(
+            (
+                index
+                for index, existing in enumerate(suggestions)
+                if _same_image_selling_direction(suggestion, existing)
+            ),
+            None,
+        )
+        if duplicate_index is None:
+            suggestions.append(suggestion)
+            continue
+
+        existing = suggestions[duplicate_index]
+        if len(_selling_point_signature(suggestion)) > len(
+            _selling_point_signature(existing)
+        ):
+            suggestions[duplicate_index] = suggestion
+
+    return suggestions[:limit]
+
+
+def _selling_point_signature(value: str) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", value.casefold())
+
+
+def _image_selling_direction_signature(value: str) -> str:
+    signature = _selling_point_signature(value)
+    for qualifier in IMAGE_SELLING_VISUAL_QUALIFIERS:
+        signature = signature.replace(qualifier, "")
+    return signature
+
+
+def _same_image_selling_direction(left: str, right: str) -> bool:
+    """Detect one repeated visible selling direction without merging subjects."""
+
+    left_signature = _image_selling_direction_signature(left)
+    right_signature = _image_selling_direction_signature(right)
+    if not left_signature or not right_signature:
+        return False
+    if left_signature == right_signature:
+        return True
+    if left_signature in right_signature or right_signature in left_signature:
+        shorter, longer = sorted((len(left_signature), len(right_signature)))
+        return shorter >= 4 and shorter / longer >= 0.75
+    return False
 
 
 def _restore_authoritative_sources(
@@ -1064,10 +1131,6 @@ def _restore_authoritative_sources(
     core_selling_points = _strings([*user_core[:3], *image_core])[:3]
     setattr(result, "core_selling_points", core_selling_points or ["待补充"])
 
-    selected_core = {item.casefold() for item in core_selling_points}
-    remaining_image_core = [
-        item for item in image_core if item.casefold() not in selected_core
-    ]
     user_secondary_selling_points = _strings(
         [
             *_candidate_items(document, "secondary_selling_points"),
@@ -1076,7 +1139,12 @@ def _restore_authoritative_sources(
         ]
     )
     image_selling_suggestions = _image_selling_suggestions(
-        remaining_image_core,
+        image_core,
+        authoritative_points=[
+            *user_core,
+            *user_secondary_selling_points,
+            *core_selling_points,
+        ],
     )
     secondary_selling_points = _strings(
         [*user_secondary_selling_points, *image_selling_suggestions]
