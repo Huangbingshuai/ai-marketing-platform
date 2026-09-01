@@ -10,7 +10,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Generic, Protocol, TypeVar
+from typing import Any, Generic, Literal, Protocol, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -27,6 +27,7 @@ from .models import (
     CreativeEvaluation,
     CreativeEvaluationBatch,
     CreativeFactAssignment,
+    CreativeFocusEvidence,
     CreativeScores,
     CreativeSemanticProfile,
     CreativeShardPlan,
@@ -48,8 +49,6 @@ TModel = TypeVar("TModel", bound=BaseModel)
 LOGGER = logging.getLogger(__name__)
 CREATIVE_BASE_PROMPT = "creative_base.system.prompt.txt"
 CREATIVE_TASK_PROMPT = "creative_task.user.prompt.txt"
-CREATIVE_FALLBACK_BASE_PROMPT = "creative_fallback_base.system.prompt.txt"
-CREATIVE_FALLBACK_TASK_PROMPT = "creative_fallback_task.user.prompt.txt"
 EVALUATION_BASE_PROMPT = "evaluation_base.system.prompt.txt"
 EVALUATION_TASK_PROMPT = "evaluation_task.user.prompt.txt"
 FACT_VISUAL_STRATEGY_BASE_PROMPT = "fact_visual_strategy.system.prompt.txt"
@@ -154,6 +153,7 @@ class AiProvider(Protocol):
         direction_plan: CreativeDirectionPlan | None = None,
     ) -> AiCallResult[CreativeEvaluationBatch]: ...
 
+
 class MockAiProvider:
     execution_mode = "MOCK"
 
@@ -202,11 +202,7 @@ class MockAiProvider:
         return _mock_result(
             CreativeCandidateBatch(items=items),
             "COHERENT_CREATIVE_GENERATION",
-            (
-                CREATIVE_BASE_PROMPT
-                if fact_visual_strategy is not None
-                else CREATIVE_FALLBACK_BASE_PROMPT
-            ),
+            CREATIVE_BASE_PROMPT,
         )
 
     async def evaluate_creatives(
@@ -236,6 +232,7 @@ class MockAiProvider:
             "CREATIVE_EVALUATION_CLASSIFICATION",
             EVALUATION_BASE_PROMPT,
         )
+
 
 class ArkResponsesProvider:
     execution_mode = "ARK"
@@ -375,9 +372,7 @@ class ArkResponsesProvider:
         prompt = render_prompt(
             CREATIVE_DIRECTION_TASK_PROMPT,
             target_count=str(target_count),
-            target_direction_count=str(
-                creative_direction_target_count(target_count)
-            ),
+            target_direction_count=str(creative_direction_target_count(target_count)),
             facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
             fact_visual_strategy_json=json.dumps(
                 visual_policies,
@@ -428,24 +423,12 @@ class ArkResponsesProvider:
                 assignment=assignments[task.slot_id],
                 application=application,
                 fact_visual_strategy=fact_visual_strategy,
-                fact_aliases=(
-                    fact_aliases_by_slot[task.slot_id]
-                    if fact_visual_strategy is not None
-                    else None
-                ),
+                fact_aliases=fact_aliases_by_slot[task.slot_id],
             )
             for task in shard.tasks
         ]
-        creative_task_prompt = (
-            CREATIVE_TASK_PROMPT
-            if fact_visual_strategy is not None
-            else CREATIVE_FALLBACK_TASK_PROMPT
-        )
-        creative_base_prompt = (
-            CREATIVE_BASE_PROMPT
-            if fact_visual_strategy is not None
-            else CREATIVE_FALLBACK_BASE_PROMPT
-        )
+        creative_task_prompt = CREATIVE_TASK_PROMPT
+        creative_base_prompt = CREATIVE_BASE_PROMPT
         prompt = render_prompt(
             creative_task_prompt,
             task_briefs_json=json.dumps(
@@ -457,9 +440,15 @@ class ArkResponsesProvider:
                 shared_prompt.compiled_content,
                 ensure_ascii=False,
             ),
-            avoid_semantic_json=json.dumps(shard.avoid_semantic_signatures, ensure_ascii=False),
-            avoid_visual_json=json.dumps(shard.avoid_visual_signatures, ensure_ascii=False),
-            rejection_reasons_json=json.dumps(shard.rejection_reasons, ensure_ascii=False),
+            avoid_semantic_json=json.dumps(
+                shard.avoid_semantic_signatures, ensure_ascii=False
+            ),
+            avoid_visual_json=json.dumps(
+                shard.avoid_visual_signatures, ensure_ascii=False
+            ),
+            rejection_reasons_json=json.dumps(
+                shard.rejection_reasons, ensure_ascii=False
+            ),
             regeneration_context_json=json.dumps(
                 regeneration_context or {}, ensure_ascii=False, sort_keys=True
             ),
@@ -509,21 +498,25 @@ class ArkResponsesProvider:
             if unassigned:
                 rejected_item_count += 1
                 continue
-            visual_fact_id = assignment.visual_task_fact_id or assignment.primary_fact_id
-            if visual_fact_id not in fact_ids:
+            focus_fact_id = fact_ids_by_alias.get(
+                item.focus_fact_id or "",
+                item.focus_fact_id,
+            )
+            if (
+                focus_fact_id != assignment.focus_fact_id
+                or focus_fact_id not in fact_ids
+                or item.focus_fact_evidence is None
+                or not _focus_evidence_exists(item)
+            ):
                 rejected_item_count += 1
                 continue
-            # A missing declared product anchor is metadata incompleteness, not a
-            # malformed creative. The evaluation stage receives the assigned
-            # anchors and must prove product relevance with text actually found
-            # in the candidate content. Candidates without such evidence are
-            # rejected individually instead of failing the whole paid batch.
             normalized.append(
                 item.model_copy(
                     update={
                         "ordinal": task.ordinal,
                         "round": task.round,
                         "declared_fact_ids": list(dict.fromkeys(fact_ids)),
+                        "focus_fact_id": focus_fact_id,
                     }
                 )
             )
@@ -744,8 +737,7 @@ class ArkResponsesProvider:
                             )
                             if (
                                 response_status == "incomplete"
-                                and incomplete_reason
-                                in {"max_output_tokens", "length"}
+                                and incomplete_reason in {"max_output_tokens", "length"}
                             ):
                                 error_type = ProviderErrorType.OUTPUT_TRUNCATED
                                 retryable = False
@@ -896,11 +888,17 @@ def _mock_fact_visual_strategy(
             usage = FactVisualUsage.IDENTITY_ANCHOR
             visual_instruction = "让当前产品或品类成为明确的主要画面主体"
             context_instruction = ""
-        elif fact.field in {InsightField.CORE_SPECIFICATION, InsightField.VISUAL_FEATURES}:
+        elif fact.field in {
+            InsightField.CORE_SPECIFICATION,
+            InsightField.VISUAL_FEATURES,
+        }:
             usage = FactVisualUsage.DIRECTLY_VISIBLE
             visual_instruction = "只呈现该事实中能够直接观察的外观或包装信息"
             context_instruction = ""
-        elif fact.field in {InsightField.USAGE_SCENARIO, InsightField.PURCHASE_SCENARIO}:
+        elif fact.field in {
+            InsightField.USAGE_SCENARIO,
+            InsightField.PURCHASE_SCENARIO,
+        }:
             usage = FactVisualUsage.ACTION_DEMONSTRABLE
             visual_instruction = "通过一个连续、真实的使用或购买动作表达该场景"
             context_instruction = ""
@@ -1010,24 +1008,23 @@ def _mock_creative_candidate(
     fact_visual_strategy: FactVisualStrategy | None = None,
 ) -> CreativeCandidate:
     assignment = _creative_fact_assignment(task, application)
-    visual_fact_id = assignment.visual_task_fact_id or assignment.primary_fact_id
-    primary = application.by_id[visual_fact_id]
-    anchor = application.by_id[assignment.product_anchor_fact_ids[0]]
-    business_fact = (
-        application.by_id[assignment.business_context_fact_ids[0]]
-        if assignment.business_context_fact_ids
-        else None
+    focus = application.by_id[assignment.focus_fact_id]
+    product_fact = next(
+        (
+            fact
+            for fact in application.usable
+            if fact.field == InsightField.PRODUCT_NAME
+        ),
+        next(
+            (
+                fact
+                for fact in application.usable
+                if fact.field == InsightField.PRODUCT_CATEGORY
+            ),
+            focus,
+        ),
     )
-    declared_fact_ids = list(
-        dict.fromkeys(
-            [
-                primary.fact_id,
-                anchor.fact_id,
-                *([business_fact.fact_id] if business_fact is not None else []),
-            ]
-        )
-    )
-    product = anchor.value
+    product = product_fact.value
     scenes = ["家庭厨房料理台", "节日家宴餐桌", "明亮食品展示台", "居家备餐区"]
     cameras = ["近景缓慢横移", "微距轻推", "中近景固定观察", "俯拍平稳跟随"]
     direction = task.creative_direction
@@ -1055,21 +1052,19 @@ def _mock_creative_candidate(
         ]
     )
     content = (
-        f"{scene}内，{product}{action}，画面清楚呈现{primary.value}。"
+        f"{scene}内，{product}{action}，画面围绕{focus.value}展开。"
         f"{camera}记录一个连续动作，暖色自然光突出真实质感，动作结束后主体稳定停留在画面中央。"
     )
     persona = (
-        business_fact.value
-        if business_fact is not None
-        and business_fact.field == InsightField.TARGET_AUDIENCE
+        focus.value
+        if focus.field == InsightField.TARGET_AUDIENCE
         else direction.semantic_profile.persona_family
         if direction is not None
         else "仅一双成年人的手参与动作"
     )
     scene_dimension = (
-        business_fact.value
-        if business_fact is not None
-        and business_fact.field
+        focus.value
+        if focus.field
         in {
             InsightField.USAGE_SCENARIO,
             InsightField.PURCHASE_SCENARIO,
@@ -1078,16 +1073,43 @@ def _mock_creative_candidate(
         else scene
     )
     product_relation = (
-        business_fact.value
-        if business_fact is not None
-        and business_fact.field
+        focus.value
+        if focus.field
         not in {
             InsightField.TARGET_AUDIENCE,
             InsightField.USAGE_SCENARIO,
             InsightField.PURCHASE_SCENARIO,
             InsightField.EMOTIONAL_SCENARIO,
         }
-        else primary.value
+        else f"{product}是当前画面主体"
+    )
+    supporting_values = [
+        application.by_id[fact_id].value
+        for fact_id in assignment.allowed_fact_ids
+        if fact_id != focus.fact_id
+    ]
+    if supporting_values:
+        product_relation = "；".join(
+            dict.fromkeys([product_relation, *supporting_values])
+        )
+    evidence_source: Literal["PERSONA", "SCENE", "PRODUCT_RELATION"] = (
+        "PERSONA"
+        if focus.field == InsightField.TARGET_AUDIENCE
+        else "SCENE"
+        if focus.field
+        in {
+            InsightField.USAGE_SCENARIO,
+            InsightField.PURCHASE_SCENARIO,
+            InsightField.EMOTIONAL_SCENARIO,
+        }
+        else "PRODUCT_RELATION"
+    )
+    evidence_text = (
+        persona
+        if evidence_source == "PERSONA"
+        else scene_dimension
+        if evidence_source == "SCENE"
+        else product_relation
     )
     return CreativeCandidate(
         slot_id=task.slot_id,
@@ -1096,9 +1118,14 @@ def _mock_creative_candidate(
         creative_core=(
             direction.creative_direction
             if direction is not None
-            else f"用{scene}中的连续动作表现{primary.value}"
+            else f"用{scene}中的连续动作表现{focus.value}"
         ),
-        declared_fact_ids=declared_fact_ids,
+        declared_fact_ids=assignment.allowed_fact_ids,
+        focus_fact_id=focus.fact_id,
+        focus_fact_evidence=CreativeFocusEvidence(
+            evidence_text=evidence_text,
+            evidence_source=evidence_source,
+        ),
         dimensions=CreativeDimensions(
             narrative=(
                 direction.semantic_profile.narrative_family
@@ -1133,7 +1160,7 @@ def _creative_fact_assignment(
             application,
             count=1,
             ordinal_start=task.ordinal,
-            preferred_primary_fact_ids=task.preferred_fact_ids,
+            preferred_focus_fact_ids=task.preferred_fact_ids,
         )[0]
     missing = [
         fact_id
@@ -1181,48 +1208,26 @@ def _creative_task_brief(
         else None
     )
     temporal_intent = _temporal_intent_for_duration(task.target_duration_seconds)
-
-    if fact_visual_strategy is None:
-        return {
-            "slotId": task.slot_id,
-            "ordinal": task.ordinal,
-            "round": task.round,
-            "targetDurationSeconds": task.target_duration_seconds,
-            "temporalIntent": temporal_intent,
-            "primaryFact": fact_payload(assignment.primary_fact_id),
-            "supportFacts": [
-                fact_payload(fact_id) for fact_id in assignment.support_fact_ids
-            ],
-            "productAnchorFacts": [
-                fact_payload(fact_id)
-                for fact_id in assignment.product_anchor_fact_ids
-            ],
-            "productBoundaryFacts": [
-                fact_payload(fact_id)
-                for fact_id in assignment.product_boundary_fact_ids
-            ],
-            "creativeDirection": direction_payload,
+    focus_fact_id = assignment.focus_fact_id
+    focus_fact = application.by_id[focus_fact_id]
+    focus_policy = (
+        fact_visual_strategy.by_id[focus_fact_id]
+        if fact_visual_strategy is not None
+        else None
+    )
+    focus_instruction = (
+        focus_policy.visual_instruction
+        if focus_policy is not None
+        and focus_policy.visual_usage
+        in {
+            FactVisualUsage.DIRECTLY_VISIBLE,
+            FactVisualUsage.ACTION_DEMONSTRABLE,
+            FactVisualUsage.IDENTITY_ANCHOR,
         }
-
-    policy_by_id = fact_visual_strategy.by_id
-    visual_fact_id = assignment.visual_task_fact_id or assignment.primary_fact_id
-    visual_policy = policy_by_id[visual_fact_id]
-    business_context = []
-    forbidden_inferences = list(visual_policy.forbidden_inferences)
-    for index, fact_id in enumerate(assignment.business_context_fact_ids):
-        policy = policy_by_id[fact_id]
-        business_context.append(
-            {
-                **fact_payload(fact_id),
-                "instruction": policy.context_instruction,
-                "visualUsage": policy.visual_usage.value,
-                "required": index == 0,
-                "realizationField": _business_context_realization_field(
-                    application.by_id[fact_id].field
-                ),
-            }
-        )
-        forbidden_inferences.extend(policy.forbidden_inferences)
+        else focus_policy.context_instruction
+        if focus_policy is not None
+        else "围绕该事实建立创意，但不得补造输入中没有的信息"
+    )
 
     return {
         "slotId": task.slot_id,
@@ -1230,26 +1235,32 @@ def _creative_task_brief(
         "round": task.round,
         "targetDurationSeconds": task.target_duration_seconds,
         "temporalIntent": temporal_intent,
-        "visualTask": {
-            **fact_payload(visual_fact_id),
-            "instruction": visual_policy.visual_instruction,
-            "visualUsage": visual_policy.visual_usage.value,
+        "focusFact": {
+            **fact_payload(focus_fact_id),
+            "instruction": focus_instruction,
+            "visualUsage": (
+                focus_policy.visual_usage.value
+                if focus_policy is not None
+                else "UNSPECIFIED"
+            ),
+            "realizationField": _focus_realization_field(focus_fact.field),
         },
-        "businessContext": business_context,
-        "productAnchorFacts": [
+        "allowedFacts": [
             fact_payload(fact_id)
-            for fact_id in assignment.product_anchor_fact_ids
+            for fact_id in assignment.allowed_fact_ids
+            if fact_id != focus_fact_id
         ],
-        "productBoundaryFacts": [
-            fact_payload(fact_id)
-            for fact_id in assignment.product_boundary_fact_ids
-        ],
-        "forbiddenInferences": list(dict.fromkeys(forbidden_inferences)),
+        "productSnapshot": _product_snapshot(application),
+        "forbiddenInferences": (
+            list(dict.fromkeys(focus_policy.forbidden_inferences))
+            if focus_policy is not None
+            else []
+        ),
         "creativeDirection": direction_payload,
     }
 
 
-def _business_context_realization_field(field: InsightField) -> str:
+def _focus_realization_field(field: InsightField) -> str:
     if field == InsightField.TARGET_AUDIENCE:
         return "persona"
     if field in {
@@ -1259,6 +1270,42 @@ def _business_context_realization_field(field: InsightField) -> str:
     }:
         return "scene"
     return "productRelation"
+
+
+def _product_snapshot(application: InsightApplicationMap) -> dict[str, Any]:
+    values_by_field = {
+        field: [fact.value for fact in application.usable if fact.field == field]
+        for field in {
+            InsightField.PRODUCT_NAME,
+            InsightField.PRODUCT_CATEGORY,
+            InsightField.CORE_SPECIFICATION,
+            InsightField.VISUAL_FEATURES,
+        }
+    }
+    return {
+        "productName": next(iter(values_by_field[InsightField.PRODUCT_NAME]), ""),
+        "productCategory": next(
+            iter(values_by_field[InsightField.PRODUCT_CATEGORY]),
+            "",
+        ),
+        "coreSpecifications": values_by_field[InsightField.CORE_SPECIFICATION],
+        "visualFeatures": values_by_field[InsightField.VISUAL_FEATURES],
+    }
+
+
+def _focus_evidence_exists(candidate: CreativeCandidate) -> bool:
+    evidence = candidate.focus_fact_evidence
+    if evidence is None:
+        return False
+    source_text = {
+        "CONTENT": candidate.content,
+        "CREATIVE_CORE": candidate.creative_core,
+        "NARRATIVE": candidate.dimensions.narrative,
+        "SCENE": candidate.dimensions.scene,
+        "PERSONA": candidate.dimensions.persona,
+        "PRODUCT_RELATION": candidate.dimensions.product_relation,
+    }[evidence.evidence_source]
+    return evidence.evidence_text in source_text
 
 
 def _creative_fact_aliases(
@@ -1329,9 +1376,7 @@ def _mock_creative_evaluation(
     context_fact_ids: Sequence[str] = (),
 ) -> CreativeEvaluation:
     evidence: list[FactEvidence] = []
-    for fact_id in dict.fromkeys(
-        [*candidate.declared_fact_ids, *context_fact_ids]
-    ):
+    for fact_id in dict.fromkeys([*candidate.declared_fact_ids, *context_fact_ids]):
         fact = application.by_id.get(fact_id)
         if fact is None:
             continue
@@ -1343,9 +1388,9 @@ def _mock_creative_evaluation(
             candidate.dimensions.persona,
             candidate.dimensions.product_relation,
         )
-        evidence_text = fact.value if any(
-            fact.value in value for value in candidate_fields
-        ) else ""
+        evidence_text = (
+            fact.value if any(fact.value in value for value in candidate_fields) else ""
+        )
         if evidence_text:
             evidence.append(
                 FactEvidence(

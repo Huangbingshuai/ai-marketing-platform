@@ -1,4 +1,4 @@
-逐条视觉任务简报：
+逐条事实任务简报：
 {task_briefs_json}
 
 本批次统一共用约束（仅遵守，不复述）：
@@ -9,6 +9,8 @@
 上一轮淘汰原因：{rejection_reasons_json}
 单条重新生成上下文：{regeneration_context_json}
 
-为每个任务各生成一条独立、完整、连贯、产品相关的素材创意。每个 slot 中的 F1、F2 等 factId 都是本条私有的局部别名，只能在该 slot 的 declaredFactIds 中使用。visualTask 是必须成为画面的任务；businessContext 中 required=true 的第一条是必须使用的主要业务事实，必须把其准确原意写入 realizationField 指定的 persona、scene 或 productRelation，并让正文创意与它一致，然后把该 factId 加入 declaredFactIds。其他 businessContext 只用于理解商业方向，未真正实现时不得声明。任何商业背景都不得被伪装成画面已经证明的结论。creativeDirection 只提供一个批次差异探索方向，priorityDimensions 是本条最值得变化的两个维度，avoidFamilies 是需要避开的拥挤套路；不要机械复述这些字段。productBoundaryFacts 只限定已确认的实物形态，不是逐条复述任务；除非 visualTask 要求展示包装、规格或外观，否则不要把它写入正文。不要按钩子、痛点、产品展示、卖点讲解、结尾转化或片尾品牌分组，也不要输出用途分类。
+为每个任务生成一条独立、完整、连贯且与当前商品有关的素材创意。focusFact 是本条必须完整使用的业务重点，不得用 productSnapshot 中的商品名称、规格或外观替代它。按 focusFact.realizationField 让重点事实真正决定人物、场景或产品关联点，并使正文画面与之相符；如果该事实不能由画面直接证明，就把它作为安全的商业语境，不要编造证明画面。
 
-已有语义和视觉签名只是软避重参考。优先改变与当前 visualTask 相容的叙事角度、真实场景、人物动作、产品表现、镜头或情绪，不能为了不同而牺牲商品关联、编造新事实或堆砌统一质感词。
+allowedFacts 只供自然搭配，productSnapshot 只负责真实性边界。creativeDirection 提供批次差异方向，priorityDimensions 是最值得变化的两个维度，avoidFamilies 是应避开的拥挤套路；不要机械复述这些字段，也不要按六类用途分组。
+
+每条必须返回 focusFactId 和 focusFactEvidence。focusFactEvidence.evidenceText 必须逐字存在于它声明的 evidenceSource 字段中。已有语义和视觉签名只是软避重参考，差异不能以牺牲事实、商品关联或画面逻辑为代价。

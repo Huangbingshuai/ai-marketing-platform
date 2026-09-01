@@ -71,8 +71,7 @@ def _response(application: InsightApplicationMap) -> FactVisualStrategyResponse:
                 compatible_fact_ids=[
                     candidate.fact_id
                     for candidate in application.usable
-                    if candidate.value
-                    in {"腊肠油润透亮的肉质质感", "家庭蒸煮"}
+                    if candidate.value in {"腊肠油润透亮的肉质质感", "家庭蒸煮"}
                     and candidate.fact_id != fact.fact_id
                 ],
                 forbidden_inferences=forbidden,
@@ -81,7 +80,7 @@ def _response(application: InsightApplicationMap) -> FactVisualStrategyResponse:
     return FactVisualStrategyResponse(policies=policies)
 
 
-def test_visual_strategy_splits_abstract_fact_from_visible_task() -> None:
+def test_visual_strategy_does_not_replace_abstract_business_focus() -> None:
     application = _application()
     strategy = validate_fact_visual_strategy(
         _response(application),
@@ -90,19 +89,23 @@ def test_visual_strategy_splits_abstract_fact_from_visible_task() -> None:
         template_hash=FACT_VISUAL_STRATEGY_TEMPLATE_HASH,
     )
 
-    no_starch = next(fact for fact in application.usable if fact.value == "纯猪肉无淀粉")
+    no_starch = next(
+        fact for fact in application.usable if fact.value == "纯猪肉无淀粉"
+    )
     assignments = allocate_creative_facts(
         application,
         count=1,
         ordinal_start=1,
-        preferred_primary_fact_ids=[no_starch.fact_id],
-        fact_visual_strategy=strategy,
+        preferred_focus_fact_ids=[no_starch.fact_id],
     )
 
     assignment = assignments[0]
-    assert assignment.visual_task_fact_id != no_starch.fact_id
-    assert no_starch.fact_id in assignment.business_context_fact_ids
-    assert strategy.by_id[no_starch.fact_id].visual_usage == FactVisualUsage.FORBIDDEN_VISUAL_PROOF
+    assert assignment.focus_fact_id == no_starch.fact_id
+    assert no_starch.fact_id in assignment.allowed_fact_ids
+    assert (
+        strategy.by_id[no_starch.fact_id].visual_usage
+        == FactVisualUsage.FORBIDDEN_VISUAL_PROOF
+    )
 
 
 def test_visual_strategy_rejects_missing_or_unknown_fact_ids() -> None:
@@ -160,7 +163,7 @@ def test_visual_strategy_fills_missing_explanations_without_changing_ai_role() -
     assert normalized.forbidden_inferences == ["不得用成品外观或人物反应证明该事实"]
 
 
-def test_fact_allocation_keeps_specification_as_boundary_not_must_show_anchor() -> None:
+def test_fact_allocation_keeps_product_snapshot_out_of_focus_competition() -> None:
     application = map_insight(
         {
             "productName": "广式腊肠",
@@ -169,9 +172,7 @@ def test_fact_allocation_keeps_specification_as_boundary_not_must_show_anchor() 
             "usageScenarios": ["家庭蒸煮"],
         }
     )
-    product_name = next(
-        fact for fact in application.usable if fact.value == "广式腊肠"
-    )
+    product_name = next(fact for fact in application.usable if fact.value == "广式腊肠")
     specification = next(
         fact for fact in application.usable if fact.value == "500g 真空袋装"
     )
@@ -182,10 +183,13 @@ def test_fact_allocation_keeps_specification_as_boundary_not_must_show_anchor() 
     )
 
     assert all(
-        assignment.product_anchor_fact_ids == [product_name.fact_id]
-        and assignment.product_boundary_fact_ids == [specification.fact_id]
+        product_name.fact_id in assignment.allowed_fact_ids
+        and specification.fact_id in assignment.allowed_fact_ids
+        and assignment.focus_fact_id
+        not in {product_name.fact_id, specification.fact_id}
         for assignment in assignments
     )
+
 
 class _StageApi:
     def __init__(self) -> None:

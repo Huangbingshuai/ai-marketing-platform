@@ -93,6 +93,8 @@ MANDATORY_BUSINESS_FIELDS = {
     InsightField.SECONDARY_SELLING_POINT,
     InsightField.TARGET_AUDIENCE,
     InsightField.CORE_PAIN_POINT,
+    InsightField.DECISION_DRIVER,
+    InsightField.MARKETING_GOAL,
     InsightField.USAGE_SCENARIO,
     InsightField.PURCHASE_SCENARIO,
     InsightField.EMOTIONAL_SCENARIO,
@@ -114,7 +116,9 @@ def map_insight(payload: Mapping[str, Any]) -> InsightApplicationMap:
         if not value:
             return None
         if _UNCERTAIN.search(value):
-            fact = _fact(field, value, InsightFactPolicy.EXCLUDED, exclusion_reason="UNCERTAIN")
+            fact = _fact(
+                field, value, InsightFactPolicy.EXCLUDED, exclusion_reason="UNCERTAIN"
+            )
             excluded.append(fact)
             return fact
         fact = _fact(field, value, policy)
@@ -125,18 +129,46 @@ def map_insight(payload: Mapping[str, Any]) -> InsightApplicationMap:
         }[policy].append(fact)
         return fact
 
-    add_value(InsightField.PRODUCT_NAME, _first(payload, "productName", "product_name"), InsightFactPolicy.REQUIRED)
-    add_value(InsightField.PRODUCT_CATEGORY, _first(payload, "productCategory", "product_category"), InsightFactPolicy.REQUIRED)
-    add_value(InsightField.CORE_SPECIFICATION, _first(payload, "coreSpecification", "core_specification"), InsightFactPolicy.REQUIRED)
+    add_value(
+        InsightField.PRODUCT_NAME,
+        _first(payload, "productName", "product_name"),
+        InsightFactPolicy.REQUIRED,
+    )
+    add_value(
+        InsightField.PRODUCT_CATEGORY,
+        _first(payload, "productCategory", "product_category"),
+        InsightFactPolicy.REQUIRED,
+    )
+    add_value(
+        InsightField.CORE_SPECIFICATION,
+        _first(payload, "coreSpecification", "core_specification"),
+        InsightFactPolicy.REQUIRED,
+    )
     add_value(
         InsightField.PRICE_RANGE,
         _first(payload, "priceRange", "price_range"),
         InsightFactPolicy.ADAPTIVE,
     )
-    add_value(InsightField.VISUAL_FEATURES, _first(payload, "visualFeatures", "visual_features"), InsightFactPolicy.REQUIRED)
+    add_value(
+        InsightField.VISUAL_FEATURES,
+        _first(payload, "visualFeatures", "visual_features"),
+        InsightFactPolicy.REQUIRED,
+    )
 
-    _add_values(payload, ("coreSellingPoints", "core_selling_points"), InsightField.CORE_SELLING_POINT, InsightFactPolicy.REQUIRED, add_value)
-    _add_values(payload, ("secondarySellingPoints", "secondary_selling_points"), InsightField.SECONDARY_SELLING_POINT, InsightFactPolicy.REQUIRED, add_value)
+    _add_values(
+        payload,
+        ("coreSellingPoints", "core_selling_points"),
+        InsightField.CORE_SELLING_POINT,
+        InsightFactPolicy.REQUIRED,
+        add_value,
+    )
+    _add_values(
+        payload,
+        ("secondarySellingPoints", "secondary_selling_points"),
+        InsightField.SECONDARY_SELLING_POINT,
+        InsightFactPolicy.REQUIRED,
+        add_value,
+    )
     _add_values(
         payload,
         ("trustBackings", "trust_backings"),
@@ -158,25 +190,70 @@ def map_insight(payload: Mapping[str, Any]) -> InsightApplicationMap:
             _first(payload, "targetAudience", "target_audience"),
             InsightFactPolicy.REQUIRED,
         )
-    _add_values(payload, ("corePainPoints", "core_pain_points"), InsightField.CORE_PAIN_POINT, InsightFactPolicy.REQUIRED, add_value)
-    _add_values(payload, ("decisionDrivers", "decision_drivers"), InsightField.DECISION_DRIVER, InsightFactPolicy.REQUIRED, add_value)
-    add_value(InsightField.MARKETING_GOAL, _first(payload, "marketingGoal", "marketing_goal"), InsightFactPolicy.REQUIRED)
+    _add_values(
+        payload,
+        ("corePainPoints", "core_pain_points"),
+        InsightField.CORE_PAIN_POINT,
+        InsightFactPolicy.REQUIRED,
+        add_value,
+    )
+    _add_values(
+        payload,
+        ("decisionDrivers", "decision_drivers"),
+        InsightField.DECISION_DRIVER,
+        InsightFactPolicy.REQUIRED,
+        add_value,
+    )
+    add_value(
+        InsightField.MARKETING_GOAL,
+        _first(payload, "marketingGoal", "marketing_goal"),
+        InsightFactPolicy.REQUIRED,
+    )
 
     for keys, field in (
         (("usageScenarios", "usage_scenarios"), InsightField.USAGE_SCENARIO),
         (("purchaseScenarios", "purchase_scenarios"), InsightField.PURCHASE_SCENARIO),
-        (("emotionalScenarios", "emotional_scenarios"), InsightField.EMOTIONAL_SCENARIO),
+        (
+            ("emotionalScenarios", "emotional_scenarios"),
+            InsightField.EMOTIONAL_SCENARIO,
+        ),
     ):
         values = _values(payload, *keys)
         for value in values:
             add_value(field, value, InsightFactPolicy.REQUIRED)
 
-    add_value(InsightField.SOURCE_DURATION, _first(payload, "durationSeconds", "duration_seconds"), InsightFactPolicy.CONSTRAINT)
-    add_value(InsightField.ASPECT_RATIO, _first(payload, "aspectRatio", "aspect_ratio"), InsightFactPolicy.CONSTRAINT)
-    add_value(InsightField.RESOLUTION, _first(payload, "resolution"), InsightFactPolicy.CONSTRAINT)
-    add_value(InsightField.DELIVERY_CHANNELS, _first(payload, "deliveryChannels", "delivery_channels"), InsightFactPolicy.CONSTRAINT)
-    _add_values(payload, ("disabledElements", "disabled_elements"), InsightField.DISABLED_ELEMENT, InsightFactPolicy.CONSTRAINT, add_value)
-    add_value(InsightField.VISUAL_STYLE_BASELINE, _first(payload, "visualStyleBaseline", "visual_style_baseline"), InsightFactPolicy.CONSTRAINT)
+    add_value(
+        InsightField.SOURCE_DURATION,
+        _first(payload, "durationSeconds", "duration_seconds"),
+        InsightFactPolicy.CONSTRAINT,
+    )
+    add_value(
+        InsightField.ASPECT_RATIO,
+        _first(payload, "aspectRatio", "aspect_ratio"),
+        InsightFactPolicy.CONSTRAINT,
+    )
+    add_value(
+        InsightField.RESOLUTION,
+        _first(payload, "resolution"),
+        InsightFactPolicy.CONSTRAINT,
+    )
+    add_value(
+        InsightField.DELIVERY_CHANNELS,
+        _first(payload, "deliveryChannels", "delivery_channels"),
+        InsightFactPolicy.CONSTRAINT,
+    )
+    _add_values(
+        payload,
+        ("disabledElements", "disabled_elements"),
+        InsightField.DISABLED_ELEMENT,
+        InsightFactPolicy.CONSTRAINT,
+        add_value,
+    )
+    add_value(
+        InsightField.VISUAL_STYLE_BASELINE,
+        _first(payload, "visualStyleBaseline", "visual_style_baseline"),
+        InsightFactPolicy.CONSTRAINT,
+    )
 
     return InsightApplicationMap(
         required=_dedupe(required),
@@ -186,7 +263,9 @@ def map_insight(payload: Mapping[str, Any]) -> InsightApplicationMap:
     )
 
 
-def insight_coverage(application: InsightApplicationMap, items: Sequence[PromptItem]) -> InsightCoverage:
+def insight_coverage(
+    application: InsightApplicationMap, items: Sequence[PromptItem]
+) -> InsightCoverage:
     covered_ids = {
         binding.fact_id
         for item in items
@@ -221,9 +300,7 @@ def mandatory_business_facts(application: InsightApplicationMap) -> list[Insight
     """
 
     return [
-        fact
-        for fact in application.usable
-        if fact.field in MANDATORY_BUSINESS_FIELDS
+        fact for fact in application.usable if fact.field in MANDATORY_BUSINESS_FIELDS
     ]
 
 
@@ -236,7 +313,11 @@ def bindings_for_fact_ids(
     seen: set[str] = set()
     for fact_id in fact_ids:
         fact = application.by_id.get(fact_id)
-        if not fact or fact_id in seen or fragment_type not in fact.eligible_fragment_types:
+        if (
+            not fact
+            or fact_id in seen
+            or fragment_type not in fact.eligible_fragment_types
+        ):
             continue
         seen.add(fact_id)
         bindings.append(

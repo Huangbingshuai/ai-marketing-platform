@@ -42,7 +42,9 @@ def trigram_dice(left: str, right: str) -> float:
 
 
 def _semantic_text(value: str) -> str:
-    normalized = re.sub(r"\s+", " ", unicodedata.normalize("NFC", value).strip().casefold())
+    normalized = re.sub(
+        r"\s+", " ", unicodedata.normalize("NFC", value).strip().casefold()
+    )
     return "".join(
         character
         for character in normalized
@@ -107,6 +109,7 @@ _PURPOSE_ONLY_PHRASES = (
     "营造高级感",
 )
 
+
 def normalize_creative_signature(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value).casefold()
     return re.sub(r"[\s\W_]+", "", normalized)[:240] or "empty"
@@ -143,9 +146,7 @@ def validate_creative_evaluation(
         raise ValueError("creative evaluation changed slotId")
     declared = set(candidate.declared_fact_ids)
     contextual = {
-        fact_id
-        for fact_id in contextual_fact_ids
-        if fact_id in application.by_id
+        fact_id for fact_id in contextual_fact_ids if fact_id in application.by_id
     }
     allowed_evidence = declared | contextual
     evidence_sources = _candidate_evidence_sources(candidate)
@@ -181,7 +182,11 @@ def validate_creative_evaluation(
             continue
         source = evidence_sources.get(finding.evidence_source)
         evidence_text = _normalized_evidence_text(finding.evidence_text)
-        if source is None or not evidence_text or evidence_text not in _normalized_evidence_text(source):
+        if (
+            source is None
+            or not evidence_text
+            or evidence_text not in _normalized_evidence_text(source)
+        ):
             warnings.append("ABSTRACT_VISUAL_PROOF_EVIDENCE_NOT_FOUND")
             continue
         valid_visual_proof_findings.append(finding)
@@ -243,6 +248,11 @@ def validate_creative_evaluation(
     mandatory_business_facts_available = any(
         fact.field in MANDATORY_BUSINESS_FIELDS for fact in application.usable
     )
+    if (
+        candidate.focus_fact_id is not None
+        and candidate.focus_fact_id not in evidenced_fact_ids
+    ):
+        warnings.append("FOCUS_FACT_NOT_REALIZED")
     if not relevant:
         issues.append("MISSING_PRODUCT_RELATION")
     if mandatory_business_facts_available and not deep_business_evidence:
@@ -303,8 +313,7 @@ def select_creatives(
             quality_score=_selection_quality_score(item),
             novelty_score=100.0,
             selection_score=(
-                _selection_quality_score(item) * quality_weight
-                + 100.0 * novelty_weight
+                _selection_quality_score(item) * quality_weight + 100.0 * novelty_weight
             ),
         )
         for item in evaluations
@@ -431,7 +440,11 @@ def select_creatives(
 
 def _selection_quality_score(evaluation: CreativeEvaluation) -> float:
     penalty = 0.0
-    if "MISSING_DEEP_BUSINESS_FACT" in evaluation.warnings:
+    if "FOCUS_FACT_NOT_REALIZED" in evaluation.warnings:
+        # Keep quantity recovery possible, while strongly preferring candidates
+        # whose assigned business focus was semantically confirmed by the model.
+        penalty += 24.0
+    elif "MISSING_DEEP_BUSINESS_FACT" in evaluation.warnings:
         # Keep the candidate available for exact-count recovery, but make a
         # correctly bound business fact decisively preferable during MMR.
         penalty += 18.0

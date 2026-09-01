@@ -433,10 +433,7 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
         for binding in item.insight_bindings
     )
     assert all(
-        not (
-            binding.field.value == "PRODUCT_NAME"
-            and binding.role.value == "CONTEXT"
-        )
+        not (binding.field.value == "PRODUCT_NAME" and binding.role.value == "CONTEXT")
         for item in api.result.items
         for binding in item.insight_bindings
     )
@@ -454,15 +451,15 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     assert len(creative_tasks) == 14
     assert all(task.fact_assignment is not None for task in creative_tasks)
     assert all(
-        len(task.fact_assignment.support_fact_ids) <= 2
-        and 1 <= len(task.fact_assignment.product_anchor_fact_ids) <= 2
+        1 <= len(task.fact_assignment.allowed_fact_ids) <= 5
+        and task.fact_assignment.focus_fact_id in task.fact_assignment.allowed_fact_ids
         for task in creative_tasks
         if task.fact_assignment is not None
     )
     assert (
         len(
             {
-                task.fact_assignment.primary_fact_id
+                task.fact_assignment.focus_fact_id
                 for task in creative_tasks
                 if task.fact_assignment is not None
             }
@@ -495,10 +492,7 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     assert shared_stage.metadata["compiledContent"]
     assert creative_stage.status == "SUCCEEDED"
     assert creative_stage.metadata["candidateCount"] == 14
-    assert (
-        creative_stage.metadata["factSelectionMode"]
-        == "VISUAL_TASK_AND_BUSINESS_CONTEXT"
-    )
+    assert creative_stage.metadata["factSelectionMode"] == "FOCUS_FACT_BRIEF"
     assert classification_stage.status == "SUCCEEDED"
     assert classification_stage.metadata["evaluatedCount"] == 14
     assert classification_stage.metadata["averageScores"]["productRelevance"] >= 0
@@ -537,7 +531,7 @@ async def test_invalid_creative_shard_does_not_fail_paid_batch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_visual_strategy_graph_compiles_roles_before_creative_generation() -> None:
+async def test_visual_strategy_graph_compiles_focus_brief_before_generation() -> None:
     api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -567,10 +561,7 @@ async def test_visual_strategy_graph_compiles_roles_before_creative_generation()
         for stage in reversed(api.stages)
         if stage.node_id == "COHERENT_CREATIVE_GENERATION"
     )
-    assert (
-        creative_stage.metadata["factSelectionMode"]
-        == "VISUAL_TASK_AND_BUSINESS_CONTEXT"
-    )
+    assert creative_stage.metadata["factSelectionMode"] == "FOCUS_FACT_BRIEF"
     assignments = [
         task.fact_assignment
         for shard in api.shards.values()
@@ -579,8 +570,11 @@ async def test_visual_strategy_graph_compiles_roles_before_creative_generation()
         if task.fact_assignment is not None
     ]
     assert assignments
-    assert all(assignment.visual_task_fact_id for assignment in assignments)
-    assert any(assignment.business_context_fact_ids for assignment in assignments)
+    assert all(assignment.focus_fact_id for assignment in assignments)
+    assert all(
+        assignment.focus_fact_id in assignment.allowed_fact_ids
+        for assignment in assignments
+    )
 
 
 @pytest.mark.asyncio
@@ -627,9 +621,7 @@ async def test_reports_creative_direction_stage_before_slow_ai_call() -> None:
 
 
 @pytest.mark.asyncio
-async def test_retries_one_invalid_classification_response_inside_its_shard() -> (
-    None
-):
+async def test_retries_one_invalid_classification_response_inside_its_shard() -> None:
     api = PromptApi()
     provider = OneTransientClassificationFailureProvider()
     pipeline = PromptGenerationPipeline(
@@ -675,7 +667,7 @@ async def test_splits_truncated_classification_shard_without_failing_batch() -> 
     assert api.result.metrics.generated_candidate_count == 14
 
 
-def test_product_anchor_omission_is_deferred_to_evidence_validation() -> None:
+def test_focus_fact_is_evaluated_without_product_snapshot_competing() -> None:
     application = map_insight(
         {
             "productName": "便携杯",
@@ -690,6 +682,11 @@ def test_product_anchor_omission_is_deferred_to_evidence_validation() -> None:
         round=0,
         creative_core="通勤者单手打开便携杯",
         declared_fact_ids=[primary_fact.fact_id],
+        focus_fact_id=primary_fact.fact_id,
+        focus_fact_evidence={
+            "evidenceText": "单手打开便携杯",
+            "evidenceSource": "PRODUCT_RELATION",
+        },
         dimensions=CreativeDimensions(
             narrative="动作展示",
             scene="地铁站台",
@@ -706,8 +703,8 @@ def test_product_anchor_omission_is_deferred_to_evidence_validation() -> None:
         round=0,
         target_duration_seconds=5,
         fact_assignment=CreativeFactAssignment(
-            primary_fact_id=primary_fact.fact_id,
-            product_anchor_fact_ids=[product_fact.fact_id],
+            focus_fact_id=primary_fact.fact_id,
+            allowed_fact_ids=[primary_fact.fact_id, product_fact.fact_id],
             assignment_hash="a" * 64,
         ),
     )
@@ -722,9 +719,14 @@ def test_product_anchor_omission_is_deferred_to_evidence_validation() -> None:
         primary_purpose=FragmentType.PRODUCT_DISPLAY,
         compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
         fact_evidence=[
-            FactEvidence(fact_id=product_fact.fact_id, evidence_text="便携杯")
+            FactEvidence(
+                fact_id=primary_fact.fact_id,
+                evidence_text="单手打开便携杯",
+                evidence_source="PRODUCT_RELATION",
+                support_level="SEMANTIC_FULL",
+            )
         ],
-        realized_fact_ids=[product_fact.fact_id],
+        realized_fact_ids=[primary_fact.fact_id],
         scores=CreativeScores(
             product_relevance=90,
             creative_coherence=90,
@@ -746,9 +748,10 @@ def test_product_anchor_omission_is_deferred_to_evidence_validation() -> None:
         target_duration_seconds=5,
     )
 
-    assert product_fact.fact_id in contextual_ids
-    assert validated.realized_fact_ids == [product_fact.fact_id]
-    assert "MISSING_PRODUCT_RELATION" not in validated.hard_issues
+    assert primary_fact.fact_id in contextual_ids
+    assert product_fact.fact_id not in contextual_ids
+    assert validated.realized_fact_ids == [primary_fact.fact_id]
+    assert "FOCUS_FACT_NOT_REALIZED" not in validated.warnings
 
 
 @pytest.mark.asyncio
@@ -793,9 +796,7 @@ async def test_classification_retry_keeps_stable_shard_assignments() -> None:
 
 
 @pytest.mark.asyncio
-async def test_vector_selection_keeps_exact_count_and_reports_safe_metrics() -> (
-    None
-):
+async def test_vector_selection_keeps_exact_count_and_reports_safe_metrics() -> None:
     api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -861,8 +862,10 @@ async def test_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
     assert selection_stage.metadata["selectionMethod"] == "TRIGRAM_SHADOW"
-    assert 10 <= selection_stage.metadata["embeddingInputCount"] <= (
-        api.result.metrics.candidate_target_count
+    assert (
+        10
+        <= selection_stage.metadata["embeddingInputCount"]
+        <= (api.result.metrics.candidate_target_count)
     )
     assert selection_stage.metadata["embeddingRequestCount"] == 1
     assert selection_stage.metadata["mmrQualityWeight"] == 0.70
@@ -873,9 +876,7 @@ async def test_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
 
 
 @pytest.mark.asyncio
-async def test_content_mmr_reports_similarity_without_diversity_regeneration() -> (
-    None
-):
+async def test_content_mmr_reports_similarity_without_diversity_regeneration() -> None:
     api = PromptApi()
     embedding_provider = IdenticalEmbeddingProvider()
     pipeline = PromptGenerationPipeline(
@@ -932,9 +933,7 @@ async def test_content_mmr_reports_similarity_without_diversity_regeneration() -
 
 
 @pytest.mark.asyncio
-async def test_shadow_selection_reports_comparison_without_changing_result() -> (
-    None
-):
+async def test_shadow_selection_reports_comparison_without_changing_result() -> None:
     baseline_api = PromptApi()
     shadow_api = PromptApi()
     baseline = PromptGenerationPipeline(
@@ -1036,9 +1035,7 @@ async def test_vector_embedding_failure_is_retryable_and_safely_coded() -> None:
 
 
 @pytest.mark.asyncio
-async def test_item_evaluate_preserves_content_and_only_runs_classification() -> (
-    None
-):
+async def test_item_evaluate_preserves_content_and_only_runs_classification() -> None:
     snapshot = _snapshot()
     now = "2026-08-27T10:00:00Z"
     target = PromptItem(
@@ -1105,7 +1102,10 @@ async def test_item_evaluate_preserves_content_and_only_runs_classification() ->
     result_stage = next(
         stage for stage in reversed(api.stages) if stage.node_id.value == "RESULT_SAVE"
     )
-    assert result_stage.metadata["semanticAudit"]["evaluatedItems"][0]["itemId"] == target.id
+    assert (
+        result_stage.metadata["semanticAudit"]["evaluatedItems"][0]["itemId"]
+        == target.id
+    )
 
 
 @pytest.mark.asyncio
@@ -1244,9 +1244,7 @@ def _abstract_visual_proof_case() -> tuple[
     product_fact = next(
         item for item in application.usable if item.value == "谷物营养棒"
     )
-    formula_fact = next(
-        item for item in application.usable if item.value == "低糖配方"
-    )
+    formula_fact = next(item for item in application.usable if item.value == "低糖配方")
     proof_text = "镜头放大谷物颗粒，并以颗粒状态证明产品采用低糖配方"
     candidate = CreativeCandidate(
         slot_id="candidate-visual-proof",
@@ -1290,9 +1288,7 @@ def _abstract_visual_proof_case() -> tuple[
 
 
 def test_abstract_visual_proof_requires_model_owned_fact_and_text_evidence() -> None:
-    application, candidate, evaluation, formula_fact_id = (
-        _abstract_visual_proof_case()
-    )
+    application, candidate, evaluation, formula_fact_id = _abstract_visual_proof_case()
     proof_text = "镜头放大谷物颗粒，并以颗粒状态证明产品采用低糖配方"
     evaluation = evaluation.model_copy(
         update={
@@ -1323,9 +1319,7 @@ def test_unverified_abstract_visual_proof_is_only_a_warning() -> None:
 
 
 def test_abstract_visual_proof_with_missing_candidate_evidence_is_not_hard() -> None:
-    application, candidate, evaluation, formula_fact_id = (
-        _abstract_visual_proof_case()
-    )
+    application, candidate, evaluation, formula_fact_id = _abstract_visual_proof_case()
     evaluation = evaluation.model_copy(
         update={
             "abstract_visual_proof_findings": [
@@ -1352,12 +1346,8 @@ def test_assigned_business_context_accepts_real_semantic_evidence() -> None:
             "purchaseScenarios": ["年货送礼"],
         }
     )
-    product_fact = next(
-        item for item in application.usable if item.value == "广式腊肠"
-    )
-    gift_fact = next(
-        item for item in application.usable if item.value == "年货送礼"
-    )
+    product_fact = next(item for item in application.usable if item.value == "广式腊肠")
+    gift_fact = next(item for item in application.usable if item.value == "年货送礼")
     candidate = CreativeCandidate(
         slot_id="candidate-gift-context",
         ordinal=1,
@@ -1417,7 +1407,9 @@ def test_assigned_business_context_accepts_real_semantic_evidence() -> None:
     assert validated.fact_evidence[1].evidence_text == candidate.dimensions.scene
 
 
-def test_selling_point_binding_accepts_full_semantic_support_without_character_overlap() -> None:
+def test_selling_point_binding_accepts_full_semantic_support_without_character_overlap() -> (
+    None
+):
     application = map_insight(
         {
             "productName": "广式腊肠",
@@ -1803,10 +1795,13 @@ def test_missing_deep_fact_warning_does_not_repeat_real_batch_mass_rejection() -
 
     assert len(result.selected) == 50
     assert all(not item.evaluation.hard_issues for item in result.selected)
-    assert sum(
-        "MISSING_DEEP_BUSINESS_FACT" in item.evaluation.warnings
-        for item in result.selected
-    ) == 45
+    assert (
+        sum(
+            "MISSING_DEEP_BUSINESS_FACT" in item.evaluation.warnings
+            for item in result.selected
+        )
+        == 45
+    )
 
 
 def test_generic_visual_language_is_a_soft_warning_only() -> None:

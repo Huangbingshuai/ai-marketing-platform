@@ -279,16 +279,15 @@ class PromptGenerationPipeline:
         restored_creative_tasks = [
             task for shard in succeeded_creatives for task in shard.creative_plan
         ]
-        cache.creative_tasks = {
-            task.slot_id: task for task in restored_creative_tasks
-        }
+        cache.creative_tasks = {task.slot_id: task for task in restored_creative_tasks}
         cache.used_direction_fact_pairs = {
-            (task.creative_direction.direction_id, task.fact_assignment.primary_fact_id)
+            (task.creative_direction.direction_id, task.fact_assignment.focus_fact_id)
             for task in restored_creative_tasks
             if task.creative_direction is not None and task.fact_assignment is not None
         }
         cache.creative_target_durations = {
-            task.slot_id: task.target_duration_seconds for task in restored_creative_tasks
+            task.slot_id: task.target_duration_seconds
+            for task in restored_creative_tasks
         }
         replenishment_tasks = [
             task
@@ -539,9 +538,7 @@ class PromptGenerationPipeline:
             target_count=snapshot.settings.target_count,
             template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
         )
-        checkpoint = cache.strategy_checkpoints.get(
-            NodeId.COHERENT_CREATIVE_GENERATION
-        )
+        checkpoint = cache.strategy_checkpoints.get(NodeId.COHERENT_CREATIVE_GENERATION)
         plan: CreativeDirectionPlan | None = None
         reused = False
         if (
@@ -561,7 +558,10 @@ class PromptGenerationPipeline:
                 )
             except ValueError:
                 restored = None
-            if restored is not None and restored.plan_hash == checkpoint.allocation_hash:
+            if (
+                restored is not None
+                and restored.plan_hash == checkpoint.allocation_hash
+            ):
                 plan = restored.model_copy(update={"reused_checkpoint": True})
                 reused = True
         call_metadata: dict[str, int | None] = {}
@@ -740,12 +740,7 @@ class PromptGenerationPipeline:
                 round_number,
             )
         application = self._require_application(context)
-        fact_visual_strategy = (
-            self._required_fact_visual_strategy(context)
-            if _uses_fact_visual_strategy(snapshot)
-            else None
-        )
-        preferred_primary_ids = (
+        preferred_focus_ids = (
             [binding.fact_id for binding in snapshot.target_item.insight_bindings]
             if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item
             else []
@@ -764,7 +759,6 @@ class PromptGenerationPipeline:
         batch_business_fact_ids = [
             fact.fact_id for fact in mandatory_business_facts(application)
         ]
-        batch_business_fact_id_set = set(batch_business_fact_ids)
         missing_required_fact_ids = [
             fact_id
             for fact_id in batch_required_fact_ids
@@ -823,7 +817,7 @@ class PromptGenerationPipeline:
                 directions,
                 application,
                 priority_fact_ids=(
-                    preferred_primary_ids
+                    preferred_focus_ids
                     or list(coverage_fact_ids)
                     or missing_business_fact_ids
                     or batch_business_fact_ids
@@ -843,12 +837,11 @@ class PromptGenerationPipeline:
                         application,
                         count=1,
                         ordinal_start=ordinal_start + index,
-                        preferred_primary_fact_ids=[focused_fact_id],
-                        fact_visual_strategy=fact_visual_strategy,
+                        preferred_focus_fact_ids=[focused_fact_id],
                     )[0]
                     pair = (
                         direction.direction_id,
-                        candidate_assignment.primary_fact_id,
+                        candidate_assignment.focus_fact_id,
                     )
                     assignment = candidate_assignment
                     if pair not in used_direction_fact_pairs:
@@ -862,8 +855,7 @@ class PromptGenerationPipeline:
                 application,
                 count=requested,
                 ordinal_start=ordinal_start,
-                preferred_primary_fact_ids=preferred_primary_ids,
-                fact_visual_strategy=fact_visual_strategy,
+                preferred_focus_fact_ids=preferred_focus_ids,
             )
         tasks = [
             CreativeTask(
@@ -878,19 +870,6 @@ class PromptGenerationPipeline:
                 ),
                 fact_assignment=fact_assignments[index],
                 creative_direction=(directions[index] if directions else None),
-                preferred_fact_ids=[
-                    next(
-                        (
-                            fact_id
-                            for fact_id in [
-                                *fact_assignments[index].business_context_fact_ids,
-                                fact_assignments[index].primary_fact_id,
-                            ]
-                            if fact_id in batch_business_fact_id_set
-                        ),
-                        fact_assignments[index].primary_fact_id,
-                    )
-                ],
             )
             for index in range(requested)
         ]
@@ -945,24 +924,13 @@ class PromptGenerationPipeline:
                 "candidateTargetCount": requested,
                 "pendingShardCount": len(pending),
                 "shardSize": min(4, self.shard_size),
-                "factSelectionMode": (
-                    "GLOBAL_COVERAGE_VISUAL_TASK_AND_BUSINESS_CONTEXT"
-                    if fact_visual_strategy is not None
-                    else "WORKER_ASSIGNMENT"
-                ),
+                "factSelectionMode": "FOCUS_FACT_BRIEF",
                 "requiredFactCount": len(batch_required_fact_ids),
                 "missingRequiredFactCountBeforeRound": len(
                     coverage_fact_ids or missing_required_fact_ids
                 ),
-                "primaryFactCount": len(
-                    {assignment.primary_fact_id for assignment in fact_assignments}
-                ),
-                "productAnchorFactCount": len(
-                    {
-                        fact_id
-                        for assignment in fact_assignments
-                        for fact_id in assignment.product_anchor_fact_ids
-                    }
+                "focusFactCount": len(
+                    {assignment.focus_fact_id for assignment in fact_assignments}
                 ),
                 **self._creative_direction_metadata(context),
             },
@@ -1119,11 +1087,7 @@ class PromptGenerationPipeline:
                 "roundCandidateCount": len(round_items),
                 "completedShardCount": len(cache.completed_creative_shard_keys),
                 "supplemented": cache.supplemented,
-                "factSelectionMode": (
-                    "VISUAL_TASK_AND_BUSINESS_CONTEXT"
-                    if _uses_fact_visual_strategy(snapshot)
-                    else "WORKER_ASSIGNMENT"
-                ),
+                "factSelectionMode": "FOCUS_FACT_BRIEF",
                 **self._creative_direction_metadata(context),
             },
         )
@@ -1489,14 +1453,21 @@ class PromptGenerationPipeline:
             else max(0, settings.target_count - len(snapshot.retained_manual_items))
         )
         application = self._require_application(context)
-        required_fact_ids = (
-            []
-            if item_operation
-            else [fact.fact_id for fact in application.required]
-        )
         preferred_item_fact_ids = [
             fact.fact_id for fact in mandatory_business_facts(application)
         ]
+        required_fact_ids = (
+            []
+            if item_operation
+            else list(
+                dict.fromkeys(
+                    [
+                        *[fact.fact_id for fact in application.required],
+                        *preferred_item_fact_ids,
+                    ]
+                )
+            )
+        )
         fixed_covered_fact_ids = [
             binding.fact_id
             for item in snapshot.retained_manual_items
@@ -1564,9 +1535,8 @@ class PromptGenerationPipeline:
                 try:
                     content_index = cache.content_vector_index
                     if content_index is None:
-                        raise PipelineError(
-                            "semantic evaluation index is unavailable"
-                        )
+                        raise PipelineError("semantic evaluation index is unavailable")
+
                     def select_content_mmr(
                         candidate_ids: set[str] | None = None,
                     ) -> CreativeSelectionResult:
@@ -1654,9 +1624,7 @@ class PromptGenerationPipeline:
                     )
                     content_stats = content_index.stats
                     evaluated_count = len(mmr_result.selected) + len(anchors)
-                    semantic_limit_count = _maximum_semantic_duplicates(
-                        evaluated_count
-                    )
+                    semantic_limit_count = _maximum_semantic_duplicates(evaluated_count)
                     semantic_evaluation = _semantic_evaluation(
                         mmr_redundancy,
                         evaluated_count,
@@ -1706,9 +1674,7 @@ class PromptGenerationPipeline:
                         "contentMmrSelection": mmr_summary,
                         "nearDuplicateReductionApplicable": reduction_applicable,
                         "nearDuplicateReductionPercent": reduction,
-                        "nearDuplicateReductionBasis": (
-                            "PURE_QUALITY_BASELINE_TO_MMR"
-                        ),
+                        "nearDuplicateReductionBasis": ("PURE_QUALITY_BASELINE_TO_MMR"),
                         "finalGuardApplied": False,
                         "averageQualityDelta": round(
                             float(mmr_summary["averageQualityScore"])
@@ -1997,17 +1963,13 @@ class PromptGenerationPipeline:
             plan
             and dominant_actions
             and any(
-                direction.semantic_profile.product_action_family
-                not in dominant_actions
+                direction.semantic_profile.product_action_family not in dominant_actions
                 for direction in plan.directions
             )
         )
         cluster_reasons = [
             *(
-                [
-                    "SCENE_CLUSTER_OVER_40_PERCENT:"
-                    f"{','.join(dominant_scenes)}"
-                ]
+                [f"SCENE_CLUSTER_OVER_40_PERCENT:{','.join(dominant_scenes)}"]
                 if alternative_scene_exists and post_scene_share > 0.40
                 else []
             ),
@@ -2023,11 +1985,7 @@ class PromptGenerationPipeline:
             > semantic_duplicate_limit_count
         )
         diversity_findings = [
-            *(
-                ["VECTOR_NEAR_DUPLICATE_EXCESS"]
-                if vector_diversity_needed
-                else []
-            ),
+            *(["VECTOR_NEAR_DUPLICATE_EXCESS"] if vector_diversity_needed else []),
             *cluster_reasons,
         ]
         pending = []
@@ -2596,34 +2554,12 @@ def _evaluation_context_fact_ids(
     if task is None or task.fact_assignment is None:
         return []
     assignment = task.fact_assignment
-    semantic_context_ids = [
+    return [
         fact_id
-        for fact_id in assignment.business_context_fact_ids
+        for fact_id in assignment.allowed_fact_ids
         if fact_id in application.by_id
         and application.by_id[fact_id].field in _SEMANTIC_CONTEXT_FIELDS
     ]
-    semantic_visual_ids = [
-        fact_id
-        for fact_id in (
-            assignment.visual_task_fact_id,
-            assignment.primary_fact_id,
-        )
-        if fact_id is not None
-        and fact_id in application.by_id
-        and application.by_id[fact_id].field in _SEMANTIC_CONTEXT_FIELDS
-    ]
-    product_anchor_ids = [
-        fact_id
-        for fact_id in assignment.product_anchor_fact_ids
-        if fact_id in application.by_id
-        and application.by_id[fact_id].field
-        in {InsightField.PRODUCT_NAME, InsightField.PRODUCT_CATEGORY}
-    ]
-    return list(
-        dict.fromkeys(
-            [*semantic_context_ids, *semantic_visual_ids, *product_anchor_ids]
-        )
-    )
 
 
 def _prompt_items(
@@ -2662,7 +2598,7 @@ def _prompt_items(
                 else 2,
                 evaluation.realized_fact_ids.index(fact_id),
             ),
-        )[:3]
+        )[:5]
         for fact_id in ordered_fact_ids:
             fact = application.by_id.get(fact_id)
             if fact is None:
@@ -2802,10 +2738,7 @@ def _semantic_audit(
     candidate_item_ids: dict[str, str] = {}
     if item_operation and snapshot.target_item is not None:
         candidate_item_ids.update(
-            {
-                row.candidate.slot_id: snapshot.target_item.id
-                for row in selected
-            }
+            {row.candidate.slot_id: snapshot.target_item.id for row in selected}
         )
     else:
         candidate_item_ids.update(

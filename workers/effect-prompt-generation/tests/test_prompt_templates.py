@@ -11,8 +11,6 @@ from effect_prompt_generation.prompt_loader import (
 )
 
 ACTIVE_PROMPT_FILES = {
-    "creative_fallback_base.system.prompt.txt",
-    "creative_fallback_task.user.prompt.txt",
     "creative_base.system.prompt.txt",
     "creative_task.user.prompt.txt",
     "creative_direction.system.prompt.txt",
@@ -35,8 +33,8 @@ def test_prompt_directory_only_contains_active_templates() -> None:
 
 def test_creative_task_renders_literal_json_inputs() -> None:
     rendered = render_prompt(
-        "creative_fallback_task.user.prompt.txt",
-        task_briefs_json='[{"slotId":"slot-1","primaryFact":"广式腊肠"}]',
+        "creative_task.user.prompt.txt",
+        task_briefs_json='[{"slotId":"slot-1","focusFact":"广式腊肠"}]',
         shared_prompt_content_json='"画面中不得出现促销贴纸"',
         avoid_semantic_json="[]",
         avoid_visual_json="[]",
@@ -52,33 +50,30 @@ def test_creative_task_renders_literal_json_inputs() -> None:
 def test_render_prompt_reports_a_template_variable_that_was_not_supplied() -> None:
     with pytest.raises(ValueError, match="missing prompt template variable"):
         render_prompt(
-            "creative_fallback_task.user.prompt.txt",
+            "creative_task.user.prompt.txt",
             task_briefs_json="[]",
         )
 
 
 def test_templates_keep_creative_generation_and_evaluation_independent() -> None:
-    creative = load_prompt("creative_fallback_base.system.prompt.txt")
-    task = load_prompt("creative_fallback_task.user.prompt.txt")
+    creative = load_prompt("creative_base.system.prompt.txt")
+    task = load_prompt("creative_task.user.prompt.txt")
     evaluation = load_prompt("evaluation_base.system.prompt.txt")
 
-    assert len(load_prompt_hash("creative_fallback_base.system.prompt.txt")) == 64
+    assert len(load_prompt_hash("creative_base.system.prompt.txt")) == 64
     assert len(load_prompt_hash("evaluation_base.system.prompt.txt")) == 64
-    assert "Worker 已经为每条任务选好少量可信事实" in creative
     assert "厂商无关" in creative
-    assert "每个任务都必须独立生成自己的一个 creativeCore" in creative
-    assert "primaryFact 必须被正文真实表达" in creative
-    assert "至少使用一个 productAnchorFact" in creative
-    assert "supportFacts 只在有助于连贯表达时使用" in creative
+    assert "每个任务独立生成一个 creativeCore" in creative
+    assert "focusFact.factId 必须原样返回" in creative
+    assert "productSnapshot" in creative
+    assert "allowedFacts" in creative
     assert "productRelation" in creative
-    assert "禁止给不同任务机械套用同一组" in creative
-    assert "不是可拍画面" in creative
-    assert "不能被写成肉眼已经证明" in creative
-    assert "逐条创意事实简报" in task
+    assert "一个主要地点" in creative
+    assert "不能伪装成画面已经证明" in creative
+    assert "逐条事实任务简报" in task
     assert "已确认的产品事实" not in task
     assert "{facts_json}" not in task
-    assert "不要按钩子、痛点、产品展示、卖点讲解、结尾转化或片尾品牌分组" in task
-    assert "不要输出任何用途分类" in task
+    assert "不要按六类用途分组" in task
     assert "只是软避重参考" in task
     assert "只评估候选，不改写正文" in evaluation
     assert "五个窄职责视角" in evaluation
@@ -90,7 +85,7 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "PARTIAL" in evaluation
 
 
-def test_visual_strategy_templates_separate_visual_task_from_business_context() -> None:
+def test_visual_strategy_templates_keep_one_focus_fact_without_role_split() -> None:
     compiler = load_prompt("fact_visual_strategy.system.prompt.txt")
     creative = load_prompt("creative_base.system.prompt.txt")
     evaluation = load_prompt("evaluation_base.system.prompt.txt")
@@ -101,12 +96,13 @@ def test_visual_strategy_templates_separate_visual_task_from_business_context() 
     assert "不能凭成品的颜色、光泽、切面、纹理" in compiler
     assert "最多 30 个汉字" in compiler
     assert "采用短语而不是完整解释" in compiler
-    assert "visualTask" in creative
-    assert "businessContext" in creative
-    assert "required=true 的主要业务事实必须实现并声明" in creative
-    assert "指定六维字段或正文中准确实现时才能声明" in creative
-    assert "不是每条都必须拍出的卖点" in creative
-    assert "不授权虚构品牌礼盒" in creative
+    assert "focusFact" in creative
+    assert "allowedFacts" in creative
+    assert "productSnapshot" in creative
+    assert "focusFactEvidence" in creative
+    assert "不要自行把重点事实替换成产品名称、规格或外观" in creative
+    assert "visualTask" not in creative
+    assert "businessContext" not in creative
     assert "必须标记 FABRICATED_FACT" in evaluation
     assert "ABSTRACT_FACT_VISUAL_PROOF" in evaluation
     assert "abstractVisualProofFindings" in evaluation

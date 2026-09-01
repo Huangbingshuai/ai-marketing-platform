@@ -6,6 +6,7 @@ import math
 from collections import Counter
 from collections.abc import Iterable, Sequence
 
+from .insight_mapping import mandatory_business_facts
 from .models import (
     CreativeDirection,
     CreativeDirectionPlan,
@@ -83,11 +84,12 @@ def validate_creative_direction_plan(
         directions.append(
             direction.model_copy(update={"compatible_fact_ids": fact_ids})
         )
-    directions = _distribute_unassigned_facts(
-        directions,
-        application=application,
-        fact_visual_strategy=fact_visual_strategy,
-    )
+    business_ids = {fact.fact_id for fact in mandatory_business_facts(application)}
+    if business_ids and any(
+        not business_ids.intersection(direction.compatible_fact_ids)
+        for direction in directions
+    ):
+        raise ValueError("each creative direction must carry a business focus fact")
     required_ids = {fact.fact_id for fact in application.required}
     planned_ids = {
         fact_id for direction in directions for fact_id in direction.compatible_fact_ids
@@ -99,7 +101,9 @@ def validate_creative_direction_plan(
     )
     minimum_bucket_count = min(5, len(directions))
     if len(allocation_buckets) < minimum_bucket_count:
-        raise ValueError("creative directions do not cover enough scene-action combinations")
+        raise ValueError(
+            "creative directions do not cover enough scene-action combinations"
+        )
     if allocation_buckets and max(allocation_buckets.values()) > 2:
         raise ValueError("creative directions repeat one scene-action combination")
     plan_payload = [item.model_dump(mode="json", by_alias=True) for item in directions]
@@ -129,14 +133,10 @@ def allocate_direction_fact_focus_ids(
         return []
     fact_by_id = application.by_id
     priority = [
-        fact_id
-        for fact_id in dict.fromkeys(priority_fact_ids)
-        if fact_id in fact_by_id
+        fact_id for fact_id in dict.fromkeys(priority_fact_ids) if fact_id in fact_by_id
     ]
     priority_rank = {fact_id: index for index, fact_id in enumerate(priority)}
-    source_rank = {
-        fact.fact_id: index for index, fact in enumerate(application.usable)
-    }
+    source_rank = {fact.fact_id: index for index, fact in enumerate(application.usable)}
     usage: Counter[str] = Counter()
     selected: list[str] = []
     minimum_priority_uses = max(1, minimum_priority_uses)
@@ -166,9 +166,7 @@ def allocate_direction_fact_focus_ids(
             key=lambda fact_id: (
                 usage[fact_id],
                 0 if fact_id in priority_rank else 1,
-                0
-                if fact_by_id[fact_id].policy == InsightFactPolicy.REQUIRED
-                else 1,
+                0 if fact_by_id[fact_id].policy == InsightFactPolicy.REQUIRED else 1,
                 priority_rank.get(fact_id, len(priority_rank)),
                 source_rank.get(fact_id, len(source_rank)),
             ),
@@ -176,53 +174,6 @@ def allocate_direction_fact_focus_ids(
         usage[chosen] += 1
         selected.append(chosen)
     return selected
-
-
-def _distribute_unassigned_facts(
-    directions: Sequence[CreativeDirection],
-    *,
-    application: InsightApplicationMap,
-    fact_visual_strategy: FactVisualStrategy,
-) -> list[CreativeDirection]:
-    """Fill planning omissions without inventing a second creative plan.
-
-    The model still decides all creative directions. The Worker only attaches
-    confirmed facts that the model omitted, preferring directions already linked
-    by the visual strategy and otherwise the least-loaded direction.
-    """
-
-    result = list(directions)
-    planned = {
-        fact_id for direction in result for fact_id in direction.compatible_fact_ids
-    }
-    policy_by_id = fact_visual_strategy.by_id
-    for fact in application.usable:
-        if fact.fact_id in planned:
-            continue
-        policy = policy_by_id[fact.fact_id]
-
-        def direction_score(index: int) -> tuple[int, int, int]:
-            direction = result[index]
-            existing = set(direction.compatible_fact_ids)
-            related = bool(existing.intersection(policy.compatible_fact_ids)) or any(
-                fact.fact_id in policy_by_id[item].compatible_fact_ids
-                for item in existing
-                if item in policy_by_id
-            )
-            return (0 if related else 1, len(existing), index)
-
-        target_index = min(range(len(result)), key=direction_score)
-        target = result[target_index]
-        result[target_index] = target.model_copy(
-            update={
-                "compatible_fact_ids": [
-                    *target.compatible_fact_ids,
-                    fact.fact_id,
-                ]
-            }
-        )
-        planned.add(fact.fact_id)
-    return result
 
 
 def allocate_creative_directions(
@@ -293,9 +244,7 @@ def allocate_creative_directions(
         cursor = (buckets.index(bucket) + 1) % len(buckets)
         rows = grouped[bucket]
         eligible_rows = [
-            row
-            for row in rows
-            if direction_counts[row.direction_id] < direction_cap
+            row for row in rows if direction_counts[row.direction_id] < direction_cap
         ]
         minimum_direction_load = min(
             direction_counts[row.direction_id] for row in eligible_rows
@@ -431,9 +380,7 @@ def max_cluster_share(
     if not rows:
         return 0.0
     counts = Counter(
-        label
-        for item in rows
-        if (label := getattr(item, field)) != OTHER_FAMILY
+        label for item in rows if (label := getattr(item, field)) != OTHER_FAMILY
     )
     return round(max(counts.values(), default=0) / len(rows), 4)
 
@@ -448,9 +395,7 @@ def dominant_families(
     if not rows:
         return []
     counts = Counter(
-        label
-        for item in rows
-        if (label := getattr(item, field)) != OTHER_FAMILY
+        label for item in rows if (label := getattr(item, field)) != OTHER_FAMILY
     )
     return [label for label, count in counts.items() if count / len(rows) > threshold]
 

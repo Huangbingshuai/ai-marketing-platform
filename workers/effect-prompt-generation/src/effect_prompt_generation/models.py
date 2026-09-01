@@ -280,7 +280,9 @@ class FactVisualPolicyDraft(ApiModel):
     @field_validator("compatible_fact_ids", "forbidden_inferences")
     @classmethod
     def unique_texts(cls, values: list[str]) -> list[str]:
-        return list(dict.fromkeys(" ".join(value.split()) for value in values if value.strip()))
+        return list(
+            dict.fromkeys(" ".join(value.split()) for value in values if value.strip())
+        )
 
 
 class FactVisualStrategyResponse(ApiModel):
@@ -429,7 +431,9 @@ class SharedRenderConstraints(ApiModel):
         if normalized != self.disabled_elements:
             raise ValueError("disabledElements must be normalized and unique")
         if self.content_hash != _contract_sha256_json(normalized):
-            raise ValueError("sharedConstraints contentHash must match disabledElements")
+            raise ValueError(
+                "sharedConstraints contentHash must match disabledElements"
+            )
         return self
 
 
@@ -512,9 +516,7 @@ class PromptGenerationSnapshot(ApiModel):
         default_factory=list, max_length=200
     )
     selection_policy: Literal["MMR_CONTENT"]
-    similarity_anchors: list[PromptItem] = Field(
-        default_factory=list, max_length=200
-    )
+    similarity_anchors: list[PromptItem] = Field(default_factory=list, max_length=200)
     shared_prompt: SharedPrompt | None = None
     base_result_revision: int | None = Field(default=None, ge=1)
     target_item: PromptItem | None = None
@@ -608,9 +610,7 @@ class CreativeDirection(ApiModel):
         self.priority_dimensions = list(dict.fromkeys(self.priority_dimensions))
         self.avoid_families = list(
             dict.fromkeys(
-                " ".join(item.split())
-                for item in self.avoid_families
-                if item.strip()
+                " ".join(item.split()) for item in self.avoid_families if item.strip()
             )
         )
         if len(self.priority_dimensions) != 2:
@@ -632,7 +632,9 @@ class CreativeDirectionPlan(ApiModel):
     @model_validator(mode="after")
     def unique_directions(self) -> CreativeDirectionPlan:
         direction_ids = [item.direction_id for item in self.directions]
-        direction_texts = [item.creative_direction.casefold() for item in self.directions]
+        direction_texts = [
+            item.creative_direction.casefold() for item in self.directions
+        ]
         if len(set(direction_ids)) != len(direction_ids):
             raise ValueError("creative direction ids must be unique")
         if len(set(direction_texts)) != len(direction_texts):
@@ -646,9 +648,7 @@ class CreativeDirectionPlan(ApiModel):
             "narrative_family": {item.narrative_family for item in profiles},
             "scene_family": {item.scene_family for item in profiles},
             "persona_family": {item.persona_family for item in profiles},
-            "product_action_family": {
-                item.product_action_family for item in profiles
-            },
+            "product_action_family": {item.product_action_family for item in profiles},
             "camera_family": {item.camera_family for item in profiles},
             "emotion_family": {item.emotion_family for item in profiles},
         }
@@ -663,65 +663,97 @@ class StrategyCheckpoint(ApiModel):
 
 
 class CreativeFactAssignment(ApiModel):
-    primary_fact_id: str = Field(min_length=1, max_length=120)
-    support_fact_ids: list[str] = Field(default_factory=list, max_length=2)
-    product_anchor_fact_ids: list[str] = Field(min_length=1, max_length=2)
-    product_boundary_fact_ids: list[str] = Field(default_factory=list, max_length=2)
-    visual_task_fact_id: str | None = Field(default=None, min_length=1, max_length=120)
-    business_context_fact_ids: list[str] = Field(default_factory=list, max_length=2)
+    focus_fact_id: str = Field(min_length=1, max_length=120)
+    allowed_fact_ids: list[str] = Field(min_length=1, max_length=8)
     assignment_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_roles(cls, value: Any) -> Any:
+        """Read persisted multi-role shard plans without writing that shape again."""
+
+        if not isinstance(value, dict) or (
+            "focusFactId" in value or "focus_fact_id" in value
+        ):
+            return value
+        business_context = list(
+            value.get("businessContextFactIds")
+            or value.get("business_context_fact_ids")
+            or []
+        )
+        primary = (
+            business_context[0]
+            if business_context
+            else value.get("primaryFactId")
+            or value.get("primary_fact_id")
+            or value.get("visualTaskFactId")
+            or value.get("visual_task_fact_id")
+        )
+        legacy_groups = (
+            business_context,
+            [
+                legacy_primary
+                for legacy_primary in [
+                    value.get("primaryFactId") or value.get("primary_fact_id"),
+                    value.get("visualTaskFactId") or value.get("visual_task_fact_id"),
+                ]
+                if legacy_primary
+            ],
+            list(value.get("supportFactIds") or value.get("support_fact_ids") or []),
+            list(
+                value.get("productAnchorFactIds")
+                or value.get("product_anchor_fact_ids")
+                or []
+            ),
+            list(
+                value.get("productBoundaryFactIds")
+                or value.get("product_boundary_fact_ids")
+                or []
+            ),
+        )
+        return {
+            "focusFactId": primary,
+            "allowedFactIds": list(
+                dict.fromkeys(
+                    fact_id for group in legacy_groups for fact_id in group if fact_id
+                )
+            )[:8],
+            "assignmentHash": value.get("assignmentHash")
+            or value.get("assignment_hash"),
+        }
 
     @model_validator(mode="after")
     def normalize_fact_ids(self) -> CreativeFactAssignment:
-        self.support_fact_ids = [
-            fact_id
-            for fact_id in dict.fromkeys(self.support_fact_ids)
-            if fact_id != self.primary_fact_id
-        ]
-        self.product_anchor_fact_ids = list(dict.fromkeys(self.product_anchor_fact_ids))
-        self.product_boundary_fact_ids = list(
-            dict.fromkeys(self.product_boundary_fact_ids)
-        )
-        self.visual_task_fact_id = self.visual_task_fact_id or self.primary_fact_id
-        self.business_context_fact_ids = [
-            fact_id
-            for fact_id in dict.fromkeys(self.business_context_fact_ids)
-            if fact_id != self.visual_task_fact_id
-        ]
+        self.allowed_fact_ids = list(dict.fromkeys(self.allowed_fact_ids))
+        if self.focus_fact_id not in self.allowed_fact_ids:
+            self.allowed_fact_ids.insert(0, self.focus_fact_id)
         return self
-
-    @property
-    def allowed_fact_ids(self) -> list[str]:
-        return list(
-            dict.fromkeys(
-                [
-                    self.primary_fact_id,
-                    *(
-                        [self.visual_task_fact_id]
-                        if self.visual_task_fact_id is not None
-                        else []
-                    ),
-                    *self.support_fact_ids,
-                    *self.business_context_fact_ids,
-                    *self.product_anchor_fact_ids,
-                    *self.product_boundary_fact_ids,
-                ]
-            )
-        )
 
 
 class CreativeTask(ApiModel):
     slot_id: str = Field(min_length=1, max_length=160)
     ordinal: int = Field(ge=1)
     round: int = Field(ge=0, le=4)
-    supplement_kind: Literal[
-        "INITIAL", "QUANTITY", "COVERAGE", "DIVERSITY"
-    ] | None = None
+    supplement_kind: Literal["INITIAL", "QUANTITY", "COVERAGE", "DIVERSITY"] | None = (
+        None
+    )
     target_duration_seconds: int = Field(ge=4, le=30)
     fact_assignment: CreativeFactAssignment | None = None
     creative_direction: CreativeDirection | None = None
     # Kept only so persisted earlier shard plans remain readable.
     preferred_fact_ids: list[str] = Field(default_factory=list, max_length=12)
+
+
+class CreativeFocusEvidence(ApiModel):
+    evidence_text: str = Field(min_length=1, max_length=160)
+    evidence_source: Literal[
+        "CONTENT",
+        "CREATIVE_CORE",
+        "NARRATIVE",
+        "SCENE",
+        "PERSONA",
+        "PRODUCT_RELATION",
+    ]
 
 
 class CreativeCandidate(ApiModel):
@@ -730,6 +762,10 @@ class CreativeCandidate(ApiModel):
     round: int = Field(ge=0, le=4)
     creative_core: str = Field(min_length=1, max_length=160)
     declared_fact_ids: list[str] = Field(min_length=1, max_length=12)
+    # Optional only so historical persisted candidate shards remain readable.
+    # New provider responses are rejected unless both focus fields are present.
+    focus_fact_id: str | None = Field(default=None, min_length=1, max_length=120)
+    focus_fact_evidence: CreativeFocusEvidence | None = None
     dimensions: CreativeDimensions
     content: str = Field(min_length=20, max_length=600)
     generated_at: datetime | None = None
@@ -900,9 +936,7 @@ class CreativeEvaluationDraft(ApiModel):
 
     slot_id: str = Field(min_length=1, max_length=160)
     primary_purpose: FragmentType
-    compatible_purposes: list[FragmentType] = Field(
-        default_factory=list, max_length=3
-    )
+    compatible_purposes: list[FragmentType] = Field(default_factory=list, max_length=3)
     fact_evidence: list[FactEvidence] = Field(default_factory=list, max_length=3)
     scores: CreativeScores
     hard_issues: list[str] = Field(default_factory=list, max_length=5)

@@ -231,7 +231,12 @@ async def test_quantity_supplement_respects_total_candidate_ceiling() -> None:
             ordinal=task.ordinal,
             round=0,
             creative_core=f"创意 {task.ordinal}",
-            declared_fact_ids=[task.fact_assignment.primary_fact_id],
+            declared_fact_ids=[task.fact_assignment.focus_fact_id],
+            focus_fact_id=task.fact_assignment.focus_fact_id,
+            focus_fact_evidence={
+                "evidenceText": "产品关联",
+                "evidenceSource": "PRODUCT_RELATION",
+            },
             dimensions=CreativeDimensions(
                 narrative="连续叙事",
                 scene="真实场景",
@@ -273,9 +278,7 @@ async def test_coverage_supplement_targets_the_missing_business_fact() -> None:
     await pipeline.compile_shared_prompt(runtime)
     application = map_insight(snapshot.insight_artifact.result)
     missing_fact = next(
-        fact
-        for fact in application.required
-        if fact.field.value == "CORE_PAIN_POINT"
+        fact for fact in application.required if fact.field.value == "CORE_PAIN_POINT"
     )
 
     supplement = await pipeline.plan_creatives(
@@ -356,9 +359,7 @@ async def test_missing_semantic_profiles_do_not_fail_the_batch() -> None:
     assert api.result is not None
     assert len(api.result.items) == 10
     evaluations = [
-        evaluation
-        for shard in api.shards.values()
-        for evaluation in shard.evaluations
+        evaluation for shard in api.shards.values() for evaluation in shard.evaluations
     ]
     assert evaluations
     assert all(evaluation.semantic_profile is not None for evaluation in evaluations)
@@ -408,9 +409,7 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
         for direction in plan.directions
         for fact_id in direction.compatible_fact_ids
     }
-    assert {fact.fact_id for fact in application.required}.issubset(
-        planned_fact_ids
-    )
+    assert {fact.fact_id for fact in application.required}.issubset(planned_fact_ids)
     allocated = allocate_creative_directions(
         plan,
         count=70,
@@ -440,6 +439,32 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
     with pytest.raises(ValueError, match="unavailable fact"):
         validate_creative_direction_plan(
             CreativeDirectionResponse.model_validate(invalid),
+            application,
+            strategy,
+            source_hash=source_hash,
+            template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+        )
+
+    omitted_fact_id = application.required[-1].fact_id
+    omitted = raw.model_copy(
+        update={
+            "directions": [
+                direction.model_copy(
+                    update={
+                        "compatible_fact_ids": [
+                            fact_id
+                            for fact_id in direction.compatible_fact_ids
+                            if fact_id != omitted_fact_id
+                        ]
+                    }
+                )
+                for direction in raw.directions
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="did not cover all required facts"):
+        validate_creative_direction_plan(
+            CreativeDirectionResponse.model_validate(omitted),
             application,
             strategy,
             source_hash=source_hash,
@@ -495,7 +520,10 @@ def test_direction_bucket_uses_current_product_semantic_families(
         }
     )
 
-    assert direction_allocation_bucket(direction) == (scene.casefold(), action.casefold())
+    assert direction_allocation_bucket(direction) == (
+        scene.casefold(),
+        action.casefold(),
+    )
 
 
 def test_semantic_novelty_uses_product_independent_scene_and_action_families() -> None:
@@ -577,7 +605,9 @@ def test_direction_allocation_caps_each_dynamic_direction() -> None:
     assert max(direction_counts.values()) <= 2
 
 
-def test_direction_allocation_prevents_single_dining_direction_from_taking_23_of_70() -> None:
+def test_direction_allocation_prevents_single_dining_direction_from_taking_23_of_70() -> (
+    None
+):
     plan = _direction_plan_for_semantic_tests()
     scene_action_rows = [
         ("家庭厨房灶台", "整根放入煲仔饭烹制"),
@@ -737,7 +767,9 @@ def test_missing_semantic_profile_becomes_other_without_character_guessing() -> 
     validate_semantic_profile(completed, plan)
 
 
-def test_partial_semantic_profile_preserves_valid_labels_and_marks_unknown_other() -> None:
+def test_partial_semantic_profile_preserves_valid_labels_and_marks_unknown_other() -> (
+    None
+):
     plan = _direction_plan_for_semantic_tests()
     profile = plan.directions[0].semantic_profile
     candidate = _candidate_for_semantic_tests(profile)
@@ -813,7 +845,9 @@ def _direction_plan_for_semantic_tests() -> Any:
     )
 
 
-def _candidate_for_semantic_tests(profile: CreativeSemanticProfile) -> CreativeCandidate:
+def _candidate_for_semantic_tests(
+    profile: CreativeSemanticProfile,
+) -> CreativeCandidate:
     return CreativeCandidate(
         slot_id="candidate-semantic-repair",
         ordinal=1,
