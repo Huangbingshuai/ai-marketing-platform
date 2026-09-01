@@ -112,7 +112,7 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).not.toContain("detailField('frameRate', '帧率'");
   });
 
-  it('keeps video configuration read-only and labels every extracted value origin', () => {
+  it('keeps inherited video configuration editable and only marks image-recognition additions', () => {
     expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS');
     expect(pageSource).not.toContain('EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS');
     expect(pageSource).toContain("result.coreSellingPoints.push('')");
@@ -130,13 +130,20 @@ describe('effect info extraction result layout', () => {
     ])
       expect(pageSource).toContain(field);
     expect(pageSource).toContain('暂无可验证的信任背书');
-    expect(pageSource).toContain('制作规则仅以资料导入节点为准');
+    expect(pageSource).toContain('<h3>统一制作规则</h3>');
+    expect(pageSource).toContain('<h3>全局视频配置</h3>');
+    expect(pageSource).toContain('初始值继承资料导入节点，可在当前信息卡中调整');
     expect(pageSource).toContain('{{ currentConfig.resolution }}');
     expect(pageSource).toContain("currentConfig.disabledElements.join('、')");
-    expect(pageSource).not.toContain('制作规则层');
-    expect(pageSource).not.toContain('updateProductionRule');
-    expect(pageSource).not.toContain('EffectUpwardCreatableSelect');
-    expect(pageSource).toContain("'AI_IMAGE_SUGGESTION' ? 'AI 图片建议' : '用户事实'");
+    expect(pageSource).toContain('updateProductionRule');
+    expect(pageSource).toContain('EffectUpwardCreatableSelect');
+    expect(pageSource).toContain('v-model="newDisabledElement"');
+    expect(pageSource).toContain('图片识别补充 ·');
+    expect(pageSource).not.toContain('用户事实');
+    expect(pageSource).toContain('originSourceLabel');
+    expect(pageSource).toContain('origin-chip');
+    expect(pageSource).toContain("em[data-origin='USER_FACT']");
+    expect(pageSource).toContain('display: none;');
     expect(pageSource).toContain("itemOrigin('coreSellingPoints', index)");
     expect(pageSource).toContain("itemOrigin('usageScenarios', index)");
     expect(pageSource).toContain("fieldOrigin('priceRange')");

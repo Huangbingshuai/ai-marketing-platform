@@ -77,10 +77,19 @@ export const cloneExtractionProductState = (
   warnings: value.warnings.map((warning) => ({ ...warning })),
   provenance: {
     fieldOrigins: { ...value.provenance.fieldOrigins },
+    fieldSourceNames: Object.fromEntries(
+      Object.entries(value.provenance.fieldSourceNames ?? {}).map(([field, names]) => [
+        field,
+        [...(names ?? [])],
+      ]),
+    ),
     itemOrigins: Object.fromEntries(
       Object.entries(value.provenance.itemOrigins).map(([field, items]) => [
         field,
-        items?.map((item) => ({ ...item })),
+        items?.map((item) => ({
+          ...item,
+          sourceNames: [...(item.sourceNames ?? [])],
+        })),
       ]),
     ),
   },
@@ -92,7 +101,18 @@ export const toExtractionProductState = (
 ): EffectExtractionProductState => ({
   ...value,
   warnings: value.warnings.map((warning) => ({ ...warning })),
-  provenance: value.provenance ?? { fieldOrigins: {}, itemOrigins: {} },
+  provenance: value.provenance
+    ? {
+        ...value.provenance,
+        fieldSourceNames: value.provenance.fieldSourceNames ?? {},
+        itemOrigins: Object.fromEntries(
+          Object.entries(value.provenance.itemOrigins).map(([field, items]) => [
+            field,
+            items?.map((item) => ({ ...item, sourceNames: item.sourceNames ?? [] })),
+          ]),
+        ),
+      }
+    : { fieldOrigins: {}, fieldSourceNames: {}, itemOrigins: {} },
   result: value.result ? cloneExtractionResult(value.result) : null,
   saveState: value.result ? 'SAVED' : 'CLEAN',
   saveErrorMessage: null,

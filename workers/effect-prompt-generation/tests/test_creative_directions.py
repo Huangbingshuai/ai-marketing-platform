@@ -19,6 +19,8 @@ from effect_prompt_generation.models import (
     CreativeDirectionAuditResponse,
     CreativeDirectionResponse,
     CreativeDiversityLandscapeResponse,
+    CreativeLandscapeAuditResponse,
+    CreativeLandscapeFactIssue,
     CreativeEvaluation,
     CreativeScores,
     CreativeSemanticProfile,
@@ -45,6 +47,7 @@ from effect_prompt_generation.creative_directions import (
     validate_semantic_profile,
     validate_creative_diversity_landscape,
     validate_creative_direction_audit,
+    validate_creative_landscape_audit,
     validate_creative_direction_plan,
 )
 
@@ -382,9 +385,37 @@ def test_landscape_validation_is_structural_not_keyword_based() -> None:
         for fact_id in territory.required_fact_ids
     ]
     assert len(required_ids) == len(set(required_ids))
-    assert set(required_ids) == {
+    business_ids = {
         fact.fact_id for fact in mandatory_business_facts(application)
     }
+    assert set(required_ids).issubset(business_ids)
+    compatible_ids = {
+        fact_id
+        for territory in landscape.territories
+        for fact_id in territory.compatible_fact_ids
+    }
+    assert business_ids.issubset(compatible_ids)
+
+    optional_primary = raw.territories[0].required_fact_ids[0]
+    compatible_only = CreativeDiversityLandscapeResponse(
+        territories=[
+            raw.territories[0].model_copy(
+                update={
+                    "required_fact_ids": raw.territories[0].required_fact_ids[1:]
+                }
+            ),
+            *raw.territories[1:],
+        ]
+    )
+    relaxed = validate_creative_diversity_landscape(
+        compatible_only,
+        application,
+        source_hash="1" * 64,
+        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+        expected_direction_count=13,
+    )
+    assert optional_primary in relaxed.territories[0].compatible_fact_ids
+    assert optional_primary not in relaxed.territories[0].required_fact_ids
 
     invalid = CreativeDiversityLandscapeResponse(
         territories=[
@@ -417,6 +448,14 @@ def test_landscape_validation_is_structural_not_keyword_based() -> None:
                         *raw.territories[1].compatible_fact_ids,
                         duplicated_required,
                     ],
+                    "fact_compatibilities": [
+                        *(raw.territories[1].fact_compatibilities or []),
+                        next(
+                            item
+                            for item in raw.territories[0].fact_compatibilities or []
+                            if item.fact_id == duplicated_required
+                        ),
+                    ],
                 }
             ),
             *raw.territories[2:],
@@ -432,6 +471,75 @@ def test_landscape_validation_is_structural_not_keyword_based() -> None:
         )
 
 
+class LandscapeAuditThenReplanningProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.audit_calls = 0
+        self.landscape_calls = 0
+        self.revision_contexts: list[dict[str, Any] | None] = []
+
+    async def plan_creative_landscape(self, *args: Any, **kwargs: Any) -> Any:
+        self.landscape_calls += 1
+        self.revision_contexts.append(kwargs.get("revision_context"))
+        return await super().plan_creative_landscape(*args, **kwargs)
+
+    async def audit_creative_landscape(self, *args: Any, **kwargs: Any) -> Any:
+        self.audit_calls += 1
+        call = await super().audit_creative_landscape(*args, **kwargs)
+        if self.audit_calls > 1:
+            return call
+        first = call.value.items[0]
+        landscape = kwargs["landscape"]
+        fact_id = landscape.territories[0].compatible_fact_ids[0]
+        return replace(
+            call,
+            value=CreativeLandscapeAuditResponse(
+                items=[
+                    first.model_copy(
+                        update={
+                            "fact_issues": [
+                                CreativeLandscapeFactIssue(
+                                    fact_id=fact_id,
+                                    verdict="WEAK",
+                                    reason="该事实与空间主动作只有口头关系",
+                                )
+                            ]
+                        }
+                    ),
+                    *call.value.items[1:],
+                ],
+                requires_revision=True,
+                revision_territory_ids=[first.territory_id],
+                summary="独立复核要求修订一个创意空间",
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_landscape_semantic_audit_replans_before_direction_generation() -> None:
+    api = PromptApi()
+    provider = LandscapeAuditThenReplanningProvider()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        embedding_provider=MockEmbeddingProvider(),
+        similarity_mode="vector",
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _cluster_snapshot())
+
+    await pipeline.map_insight(runtime)
+    await pipeline.compile_fact_visual_strategy(runtime)
+    await pipeline.compile_shared_prompt(runtime)
+    await pipeline.plan_creatives(runtime, round_number=0)
+
+    assert provider.landscape_calls == 2
+    assert provider.audit_calls == 2
+    assert provider.revision_contexts[0] is None
+    assert provider.revision_contexts[1]
+    assert "semanticAudit" in provider.revision_contexts[1]
+
+
 def test_landscape_requires_ai_fact_compatibility_guidance() -> None:
     from effect_prompt_generation.providers import _mock_creative_landscape_response
 
@@ -439,7 +547,7 @@ def test_landscape_requires_ai_fact_compatibility_guidance() -> None:
     raw = _mock_creative_landscape_response(application, direction_count=13)
     missing_guidance = CreativeDiversityLandscapeResponse(
         territories=[
-            raw.territories[0].model_copy(update={"fact_compatibilities": None}),
+            raw.territories[0].model_copy(update={"fact_compatibilities": []}),
             *raw.territories[1:],
         ]
     )
@@ -475,6 +583,54 @@ def test_landscape_requires_ai_fact_compatibility_guidance() -> None:
             expected_direction_count=13,
         )
 
+
+def test_landscape_audit_cannot_hide_a_reported_fact_issue() -> None:
+    from effect_prompt_generation.providers import (
+        _mock_creative_landscape_audit,
+        _mock_creative_landscape_response,
+    )
+
+    application = map_insight(_cluster_snapshot().insight_artifact.result)
+    raw = _mock_creative_landscape_response(application, direction_count=13)
+    landscape = validate_creative_diversity_landscape(
+        raw,
+        application,
+        source_hash="1" * 64,
+        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+        expected_direction_count=13,
+    )
+    audit = _mock_creative_landscape_audit(landscape)
+    first = audit.items[0]
+    fact_id = landscape.territories[0].compatible_fact_ids[0]
+    inconsistent = audit.model_copy(
+        update={
+            "items": [
+                first.model_copy(
+                    update={
+                        "fact_issues": [
+                            CreativeLandscapeFactIssue(
+                                fact_id=fact_id,
+                                verdict="WEAK",
+                                reason="该事实只能被口头硬解释",
+                            )
+                        ]
+                    }
+                ),
+                *audit.items[1:],
+            ]
+        }
+    )
+
+    with pytest.raises(ValueError, match="ignored a semantic issue"):
+        validate_creative_landscape_audit(inconsistent, landscape)
+
+    revised = inconsistent.model_copy(
+        update={
+            "requires_revision": True,
+            "revision_territory_ids": [first.territory_id],
+        }
+    )
+    assert validate_creative_landscape_audit(revised, landscape).requires_revision
 
 def test_ai_audit_must_review_every_fact_and_request_revision_for_weak_fit() -> None:
     from effect_prompt_generation.providers import (

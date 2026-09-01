@@ -21,6 +21,10 @@ def _base_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "ARK_API_KEY",
         "ARK_MODEL",
         "ARK_DOCUMENT_MODEL",
+        "ARK_DOCUMENT_TIMEOUT_SECONDS",
+        "ARK_DOCUMENT_MAX_ATTEMPTS",
+        "ARK_DOCUMENT_MAX_OUTPUT_TOKENS",
+        "ARK_DOCUMENT_REASONING_EFFORT",
         "ARK_COMMERCE_MODEL",
         "ARK_IMAGE_MODEL",
         "ARK_SEMANTIC_MODEL",
@@ -77,6 +81,10 @@ def test_default_provider_uses_seed_2_1_turbo_model_id(
     assert settings.resolved_image_model == DEFAULT_ARK_MODEL
     assert settings.resolved_semantic_model == DEFAULT_ARK_SEMANTIC_MODEL
     assert settings.resolved_normalization_model == DEFAULT_ARK_MODEL
+    assert settings.ark_document_timeout_seconds == 45
+    assert settings.ark_document_max_attempts == 1
+    assert settings.ark_document_max_output_tokens == 3072
+    assert settings.ark_document_reasoning_effort == "minimal"
     assert settings.ark_image_timeout_seconds == 90
     assert settings.ark_image_max_attempts == 2
     assert settings.ark_image_max_output_tokens == 4096

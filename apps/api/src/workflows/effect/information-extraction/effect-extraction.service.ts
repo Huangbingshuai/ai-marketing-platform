@@ -8,6 +8,7 @@ import type {
   EffectExtractionProvenance,
   EffectExtractionResult,
   EffectExtractionRun,
+  EffectExtractionValueOrigin,
   EffectVideoConfig,
   EffectVideoConfigOverride,
   GetEffectExtractionRunData,
@@ -21,7 +22,6 @@ import {
   EFFECT_EXTRACTION_GRAPH_NODES,
   EFFECT_EXTRACTION_SCHEMA_VERSION,
   mergeEffectVideoConfig,
-  normalizeEffectImportResolution,
 } from '@ai-marketing/contracts';
 import { HttpStatus, Inject, Injectable, Optional } from '@nestjs/common';
 
@@ -255,9 +255,9 @@ export class EffectExtractionService {
     if (!activeProduct || !workflow || !snapshot || !snapshotProduct?.name.trim()) return null;
     const productName = snapshotProduct.name.trim();
     const config = snapshot.globalVideoConfig ?? snapshotProduct.effectiveConfig;
-    const result = withEffectiveVideoConfig(
-      toEffectExtractionResultV2(record.draftResult, effectExtractionDefaultsFromConfig(config)),
-      config,
+    const result = toEffectExtractionResultV2(
+      record.draftResult,
+      effectExtractionDefaultsFromConfig(config),
     );
     return {
       workflowRunId: workflow.workspace.workflowRunId,
@@ -387,12 +387,9 @@ export class EffectExtractionService {
           product.configOverride as EffectVideoConfigOverride,
         );
         const resultV2 = result
-          ? withEffectiveVideoConfig(
-              toEffectExtractionResultV2(
-                result.draftResult,
-                effectExtractionDefaultsFromConfig(config),
-              ),
-              config,
+          ? toEffectExtractionResultV2(
+              result.draftResult,
+              effectExtractionDefaultsFromConfig(config),
             )
           : null;
         const manualOverrideFields = manualOverrideFieldNames(result?.manualOverrides);
@@ -400,6 +397,7 @@ export class EffectExtractionService {
           resultV2,
           run?.branches ?? [],
           manualOverrideFields,
+          product.materials,
         );
         const fingerprint = await this.currentFingerprint(draft, product.id);
         const stale = Boolean(result && result.sourceFingerprint !== fingerprint);
@@ -535,7 +533,10 @@ export class EffectExtractionService {
       existing.generatedResult,
       effectExtractionDefaultsFromConfig(config),
     );
-    const editableResult = withEffectiveVideoConfig(result, config);
+    const editableResult: EffectExtractionResult = {
+      ...result,
+      disabledElements: [...new Set([...config.disabledElements, ...result.disabledElements])],
+    };
     const manualOverrides = manualOverridesForResult(generated, editableResult);
     const updated = await this.repository.updateResult(
       projectId,
@@ -569,11 +570,11 @@ export class EffectExtractionService {
     const snapshot = sourceRun?.inputSnapshot as EffectExtractionInputSnapshot | undefined;
     if (!snapshot) throw conflict('提炼输入快照不存在，请重新提炼');
     const config = snapshot.globalVideoConfig ?? snapshot.product.effectiveConfig;
-    const editableDraft = toEditableEffectExtractionResultV2(
+    const draftResult = toEditableEffectExtractionResultV2(
       existing.draftResult,
       effectExtractionDefaultsFromConfig(config),
     );
-    if (!isEffectExtractionResult(editableDraft))
+    if (!isEffectExtractionResult(draftResult))
       return {
         valid: false,
         issues: [{ code: 'INVALID_RESULT', message: '提炼结果不符合标准结构' }],
@@ -583,7 +584,6 @@ export class EffectExtractionService {
         allProductsValidated: false,
         validatedAt: new Date().toISOString(),
       };
-    const draftResult = withEffectiveVideoConfig(editableDraft, config);
     existing.draftResult = draftResult as never;
     if (await this.repository.hasNewerWorkingResult(projectId, existing.productId, existing.runId))
       throw conflict('当前结果已不是最新提炼结果，请刷新后完成校验');
@@ -877,20 +877,9 @@ type ExtractionOriginBranch = {
   structuredOutput: unknown;
 };
 
-const withEffectiveVideoConfig = (
-  result: EffectExtractionResult,
-  config: EffectVideoConfig,
-): EffectExtractionResult => {
-  const defaults = effectExtractionDefaultsFromConfig(config);
-  return {
-    ...result,
-    durationSeconds: defaults.durationSeconds,
-    aspectRatio: defaults.aspectRatio,
-    resolution: normalizeEffectImportResolution(defaults.resolution) ?? '720p',
-    deliveryChannels: defaults.deliveryChannels,
-    disabledElements: [...defaults.disabledElements],
-    visualStyleBaseline: defaults.visualStyleBaseline,
-  };
+type ExtractionOriginMaterial = {
+  id: string;
+  originalFileName: string | null;
 };
 
 const EXTRACTION_LIST_FIELDS = [
@@ -940,21 +929,101 @@ const candidateFieldValues = (
 ): Set<string> => {
   const values = new Set<string>();
   for (const candidate of candidates) {
-    const raw = candidate[field] ?? candidate[snakeCaseField(field)];
-    for (const value of Array.isArray(raw) ? raw : [raw]) {
-      if (value !== null && value !== undefined && value !== '')
-        values.add(normalizeOriginValue(value));
+    const rawFields =
+      field === 'secondarySellingPoints'
+        ? (['secondarySellingPoints', 'coreSellingPoints'] as const)
+        : ([field] as const);
+    for (const rawField of rawFields) {
+      const raw =
+        rawField === 'targetAudiences'
+          ? (candidate.targetAudiences ?? candidate.targetAudience ?? candidate.target_audience)
+          : (candidate[rawField] ?? candidate[snakeCaseField(rawField)]);
+      const rawValues =
+        rawField === 'targetAudiences' && typeof raw === 'string'
+          ? raw.split(/[\n,，、;；]+/u)
+          : Array.isArray(raw)
+            ? raw
+            : [raw];
+      for (const value of rawValues) {
+        if (value !== null && value !== undefined && value !== '')
+          values.add(normalizeOriginValue(value));
+      }
     }
   }
   return values;
+};
+
+type ExtractionCandidateSource = {
+  branch: string;
+  candidate: Record<string, unknown>;
+  sourceName: string;
+};
+
+const extractionCandidateSources = (
+  branches: readonly ExtractionOriginBranch[],
+  materials: readonly ExtractionOriginMaterial[],
+): ExtractionCandidateSource[] => {
+  const materialNames = new Map(
+    materials.map((material) => [
+      material.id,
+      material.originalFileName ? safeFileName(material.originalFileName) : '用户资料',
+    ]),
+  );
+  const fallbackName = (branch: string) =>
+    ({
+      FORM: '资料导入表单',
+      DOCUMENT: '用户资料',
+      COMMERCE: '商品链接',
+      IMAGE: '产品图片',
+    })[branch] ?? '提炼结果';
+  const entries: ExtractionCandidateSource[] = [];
+  for (const branch of branches) {
+    if (
+      !branch.structuredOutput ||
+      typeof branch.structuredOutput !== 'object' ||
+      Array.isArray(branch.structuredOutput)
+    )
+      continue;
+    const payload = branch.structuredOutput as Record<string, unknown>;
+    if (
+      payload.candidate &&
+      typeof payload.candidate === 'object' &&
+      !Array.isArray(payload.candidate)
+    ) {
+      entries.push({
+        branch: branch.branch,
+        candidate: payload.candidate as Record<string, unknown>,
+        sourceName: fallbackName(branch.branch),
+      });
+    }
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    for (const rawItem of items) {
+      if (!rawItem || typeof rawItem !== 'object' || Array.isArray(rawItem)) continue;
+      const item = rawItem as Record<string, unknown>;
+      if (!item.candidate || typeof item.candidate !== 'object' || Array.isArray(item.candidate))
+        continue;
+      const candidate = item.candidate as Record<string, unknown>;
+      const sourceName =
+        typeof item.sourceId === 'string'
+          ? (materialNames.get(item.sourceId) ?? fallbackName(branch.branch))
+          : fallbackName(branch.branch);
+      entries.push({ branch: branch.branch, candidate, sourceName });
+    }
+  }
+  return entries;
 };
 
 const extractionValueProvenance = (
   result: EffectExtractionResult | null,
   branches: readonly ExtractionOriginBranch[],
   manualOverrideFields: readonly string[],
+  materials: readonly ExtractionOriginMaterial[],
 ): EffectExtractionProvenance => {
-  const provenance: EffectExtractionProvenance = { fieldOrigins: {}, itemOrigins: {} };
+  const provenance: EffectExtractionProvenance = {
+    fieldOrigins: {},
+    fieldSourceNames: {},
+    itemOrigins: {},
+  };
   if (!result) return provenance;
 
   const userCandidates = branches
@@ -964,6 +1033,7 @@ const extractionValueProvenance = (
     .filter(({ branch }) => branch === 'IMAGE')
     .flatMap(({ structuredOutput }) => branchCandidates(structuredOutput));
   const overridden = new Set(manualOverrideFields);
+  const candidateSources = extractionCandidateSources(branches, materials);
 
   for (const field of Object.keys(result) as (keyof EffectExtractionResult)[]) {
     const userValues = candidateFieldValues(userCandidates, field);
@@ -974,14 +1044,38 @@ const extractionValueProvenance = (
       imageValues.has(normalizeOriginValue(value))
         ? ('AI_IMAGE_SUGGESTION' as const)
         : ('USER_FACT' as const);
+    const sourceNamesFor = (value: unknown, origin: EffectExtractionValueOrigin): string[] => {
+      if (overridden.has(field)) return ['人工修改'];
+      const allowedBranches =
+        origin === 'AI_IMAGE_SUGGESTION'
+          ? new Set(['IMAGE'])
+          : new Set(['FORM', 'DOCUMENT', 'COMMERCE']);
+      const names = candidateSources
+        .filter(
+          (entry) =>
+            allowedBranches.has(entry.branch) &&
+            candidateFieldValues([entry.candidate], field).has(normalizeOriginValue(value)),
+        )
+        .map((entry) => entry.sourceName);
+      const uniqueNames = [...new Set(names)].slice(0, 3);
+      return uniqueNames.length
+        ? uniqueNames
+        : [origin === 'AI_IMAGE_SUGGESTION' ? '产品图片' : '用户资料'];
+    };
     const value = result[field];
     if (EXTRACTION_LIST_FIELDS.includes(field as (typeof EXTRACTION_LIST_FIELDS)[number])) {
-      provenance.itemOrigins[field] = (Array.isArray(value) ? value : []).map((item) => ({
-        value: String(item),
-        origin: originFor(item),
-      }));
+      provenance.itemOrigins[field] = (Array.isArray(value) ? value : []).map((item) => {
+        const origin = originFor(item);
+        return {
+          value: String(item),
+          origin,
+          sourceNames: sourceNamesFor(item, origin),
+        };
+      });
     } else {
-      provenance.fieldOrigins[field] = originFor(value);
+      const origin = originFor(value);
+      provenance.fieldOrigins[field] = origin;
+      provenance.fieldSourceNames[field] = sourceNamesFor(value, origin);
     }
   }
   return provenance;

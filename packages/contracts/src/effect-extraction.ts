@@ -159,6 +159,7 @@ export type EffectExtractionValueOrigin = 'USER_FACT' | 'AI_IMAGE_SUGGESTION';
 export type EffectExtractionProvenanceItem = {
   value: string;
   origin: EffectExtractionValueOrigin;
+  sourceNames: string[];
 };
 
 /**
@@ -168,6 +169,7 @@ export type EffectExtractionProvenanceItem = {
  */
 export type EffectExtractionProvenance = {
   fieldOrigins: Partial<Record<keyof EffectExtractionResult, EffectExtractionValueOrigin>>;
+  fieldSourceNames: Partial<Record<keyof EffectExtractionResult, string[]>>;
   itemOrigins: Partial<Record<keyof EffectExtractionResult, EffectExtractionProvenanceItem[]>>;
 };
 

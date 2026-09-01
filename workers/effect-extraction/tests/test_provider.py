@@ -70,7 +70,7 @@ async def test_ark_provider_sends_multimodal_strict_schema_without_store() -> No
     assert result.value.visual_features == "红色包装"
     assert result.metadata.stage == "IMAGE"
     assert result.metadata.model == "doubao-seed-2-1-turbo"
-    assert result.metadata.prompt_version == "5.0.0"
+    assert result.metadata.prompt_version == "6.1.0"
     assert result.metadata.input_tokens is None
     assert result.metadata.output_tokens is None
     assert result.metadata.total_tokens is None
@@ -215,11 +215,13 @@ async def test_ark_provider_keeps_low_detail_result_but_does_not_cache_when_refi
 @pytest.mark.asyncio
 async def test_ark_provider_routes_each_stage_and_records_usage() -> None:
     requested_models: list[str] = []
+    requested_payloads: dict[str, dict[str, object]] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         requested_models.append(payload["model"])
         schema_name = payload["text"]["format"]["name"]
+        requested_payloads[schema_name] = payload
         if schema_name == "effect_extraction_result":
             output = ExtractionResult(
                 product_category="食品",
@@ -300,6 +302,10 @@ async def test_ark_provider_routes_each_stage_and_records_usage() -> None:
         "image-model",
         "normalization-model",
     ]
+    assert requested_payloads["effect_document_candidate"]["max_output_tokens"] == 3072
+    assert requested_payloads["effect_document_candidate"]["reasoning"] == {
+        "effort": "minimal"
+    }
     for call, stage, model in (
         (document, "DOCUMENT", "document-model"),
         (commerce, "COMMERCE", "commerce-model"),
@@ -506,9 +512,9 @@ async def test_ark_provider_records_safe_timeout_diagnostics(
         await provider.aclose()
 
     error = raised.value
-    assert requests == 3
+    assert requests == 1
     assert error.error_type == ProviderErrorType.TIMEOUT
-    assert error.attempts == 3
+    assert error.attempts == 1
     assert error.elapsed_ms >= 0
     assert error.retryable is True
     assert str(error) == "AI request timed out"

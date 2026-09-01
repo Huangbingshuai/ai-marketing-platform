@@ -42,6 +42,7 @@ from .models import (
     CreativeDirectionAuditResponse,
     CreativeDirectionResponse,
     CreativeDiversityLandscapeResponse,
+    CreativeLandscapeAuditResponse,
     CreativeDimensions,
     CreativeEvaluation,
     CreativeScores,
@@ -89,6 +90,7 @@ from .creative_directions import (
     allocate_creative_directions,
     complete_semantic_profile,
     creative_direction_audit_revision_context,
+    creative_landscape_audit_revision_context,
     merge_creative_direction_revision,
     creative_landscape_revision_context,
     creative_direction_revision_context,
@@ -99,6 +101,7 @@ from .creative_directions import (
     semantic_cluster_novelty,
     semantic_profile_distribution,
     validate_creative_direction_audit,
+    validate_creative_landscape_audit,
     validate_creative_diversity_landscape,
     validate_creative_direction_plan,
     validate_semantic_profile,
@@ -546,6 +549,7 @@ class PromptGenerationPipeline:
             checkpoint is not None
             and isinstance(checkpoint.plan, CreativeDirectionPlan)
             and checkpoint.plan.landscape is not None
+            and checkpoint.plan.landscape.semantic_audit is not None
             and checkpoint.plan.semantic_audit is not None
             and checkpoint.source_fingerprint == source_hash
             and checkpoint.template_hash == CREATIVE_DIRECTION_TEMPLATE_HASH
@@ -559,6 +563,22 @@ class PromptGenerationPipeline:
                     source_hash=source_hash,
                     template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
                     expected_direction_count=expected_direction_count,
+                )
+                restored_landscape_audit = validate_creative_landscape_audit(
+                    CreativeLandscapeAuditResponse(
+                        items=checkpoint.plan.landscape.semantic_audit.items,
+                        requires_revision=(
+                            checkpoint.plan.landscape.semantic_audit.requires_revision
+                        ),
+                        revision_territory_ids=(
+                            checkpoint.plan.landscape.semantic_audit.revision_territory_ids
+                        ),
+                        summary=checkpoint.plan.landscape.semantic_audit.summary,
+                    ),
+                    restored_landscape,
+                )
+                restored_landscape = restored_landscape.model_copy(
+                    update={"semantic_audit": restored_landscape_audit}
                 )
                 restored = validate_creative_direction_plan(
                     CreativeDirectionResponse(directions=checkpoint.plan.directions),
@@ -587,6 +607,7 @@ class PromptGenerationPipeline:
                 restored = None
             if (
                 restored is not None
+                and not restored_landscape_audit.requires_revision
                 and not restored_audit.requires_revision
                 and restored.plan_hash == checkpoint.allocation_hash
             ):
@@ -639,14 +660,13 @@ class PromptGenerationPipeline:
                     raise
                 call_rows.append(landscape_call.metadata)
                 try:
-                    landscape = validate_creative_diversity_landscape(
+                    draft_landscape = validate_creative_diversity_landscape(
                         landscape_call.value,
                         application,
                         source_hash=source_hash,
                         template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
                         expected_direction_count=expected_direction_count,
                     )
-                    break
                 except ValueError as exc:
                     if landscape_attempt == 1:
                         raise ProviderError(
@@ -660,6 +680,63 @@ class PromptGenerationPipeline:
                         application,
                         validation_error=str(exc),
                     )
+                    continue
+                landscape_audit = None
+                for landscape_audit_attempt in range(2):
+                    self._reserve_ai_call(context)
+                    try:
+                        async with self._ai_semaphore:
+                            landscape_audit_call = (
+                                await self.provider.audit_creative_landscape(
+                                    application,
+                                    fact_visual_strategy=visual_strategy,
+                                    landscape=draft_landscape,
+                                )
+                            )
+                    except ProviderError as exc:
+                        if (
+                            landscape_audit_attempt == 0
+                            and exc.error_type
+                            == ProviderErrorType.RESPONSE_INVALID
+                        ):
+                            continue
+                        raise
+                    call_rows.append(landscape_audit_call.metadata)
+                    try:
+                        landscape_audit = validate_creative_landscape_audit(
+                            landscape_audit_call.value,
+                            draft_landscape,
+                        )
+                        break
+                    except ValueError as exc:
+                        if landscape_audit_attempt == 1:
+                            raise ProviderError(
+                                "AI 创意版图语义复核结构无效",
+                                retryable=False,
+                                error_type=ProviderErrorType.RESPONSE_INVALID,
+                                attempts=2,
+                            ) from exc
+                if landscape_audit is None:
+                    raise PipelineError("创意版图语义复核未能形成有效结果")
+                if landscape_audit.requires_revision:
+                    if landscape_attempt == 1:
+                        raise ProviderError(
+                            "AI 创意版图经两次规划后仍未通过语义复核",
+                            retryable=False,
+                            error_type=ProviderErrorType.RESPONSE_INVALID,
+                            attempts=2,
+                        )
+                    landscape_revision_context = (
+                        creative_landscape_audit_revision_context(
+                            draft_landscape,
+                            landscape_audit,
+                        )
+                    )
+                    continue
+                landscape = draft_landscape.model_copy(
+                    update={"semantic_audit": landscape_audit}
+                )
+                break
             if landscape is None:
                 raise PipelineError("创意版图未能形成有效结果")
             revision_context: Mapping[str, Any] | None = None

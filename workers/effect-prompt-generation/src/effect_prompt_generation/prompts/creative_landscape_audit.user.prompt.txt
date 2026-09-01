@@ -1,0 +1,12 @@
+请独立复核以下产品专属创意版图。
+
+可信事实：
+{{ facts_json }}
+
+事实视觉使用策略：
+{{ fact_visual_strategy_json }}
+
+待复核创意版图：
+{{ creative_landscape_json }}
+
+请按系统规则返回严格结构化结果。每个创意空间输出一条 item；仅在 factIssues 中列出 WEAK 或 UNSUPPORTED 的事实。

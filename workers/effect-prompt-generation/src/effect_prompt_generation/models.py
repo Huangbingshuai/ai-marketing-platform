@@ -609,8 +609,8 @@ class CreativeTerritoryAction(ApiModel):
 
 class CreativeTerritoryFactCompatibility(ApiModel):
     fact_id: str = Field(min_length=1, max_length=120)
-    natural_usage: str = Field(min_length=4, max_length=180)
-    unsupported_conditions: list[str] = Field(default_factory=list, max_length=3)
+    natural_usage: str = Field(min_length=4, max_length=120)
+    unsupported_conditions: list[str] = Field(default_factory=list, max_length=1)
 
     @field_validator("unsupported_conditions")
     @classmethod
@@ -623,8 +623,10 @@ class CreativeTerritoryFactCompatibility(ApiModel):
 class CreativeTerritory(ApiModel):
     territory_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
     label: str = Field(min_length=2, max_length=80)
-    compatible_fact_ids: list[str] = Field(min_length=1, max_length=40)
-    fact_compatibilities: list[CreativeTerritoryFactCompatibility] | None = None
+    compatible_fact_ids: list[str] = Field(min_length=1, max_length=8)
+    fact_compatibilities: list[CreativeTerritoryFactCompatibility] = Field(
+        max_length=8,
+    )
     required_fact_ids: list[str] = Field(min_length=1, max_length=40)
     scene_boundary: str = Field(min_length=4, max_length=180)
     actions: list[CreativeTerritoryAction] = Field(min_length=1, max_length=5)
@@ -633,16 +635,29 @@ class CreativeTerritory(ApiModel):
     target_slots: int = Field(ge=0, le=16)
     differentiation_goal: str = Field(min_length=4, max_length=180)
 
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_fact_compatibilities(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        if (
+            "factCompatibilities" not in migrated
+            and "fact_compatibilities" not in migrated
+        ):
+            # Historical checkpoints remain parseable, then current landscape
+            # validation rejects the empty guidance and replans with the new
+            # required structured-output field.
+            migrated["factCompatibilities"] = []
+        return migrated
+
     @model_validator(mode="after")
     def unique_ids(self) -> CreativeTerritory:
         self.compatible_fact_ids = list(dict.fromkeys(self.compatible_fact_ids))
         self.required_fact_ids = list(dict.fromkeys(self.required_fact_ids))
-        if self.fact_compatibilities is not None:
-            self.fact_compatibilities = list(
-                {
-                    item.fact_id: item for item in self.fact_compatibilities
-                }.values()
-            )
+        self.fact_compatibilities = list(
+            {item.fact_id: item for item in self.fact_compatibilities}.values()
+        )
         action_ids = [item.action_id for item in self.actions]
         if len(set(action_ids)) != len(action_ids):
             raise ValueError("creative territory action ids must be unique")
@@ -653,11 +668,53 @@ class CreativeDiversityLandscapeResponse(ApiModel):
     territories: list[CreativeTerritory] = Field(min_length=5, max_length=10)
 
 
+class CreativeLandscapeFactIssue(ApiModel):
+    territory_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
+    fact_id: str = Field(min_length=1, max_length=120)
+    verdict: Literal["WEAK", "UNSUPPORTED"]
+    reason: str = Field(min_length=2, max_length=180)
+
+
+class CreativeLandscapeAuditResponse(ApiModel):
+    reviewed_territory_ids: list[str] = Field(min_length=5, max_length=10)
+    fact_issues: list[CreativeLandscapeFactIssue] = Field(
+        default_factory=list,
+        max_length=24,
+    )
+    requires_revision: bool
+    revision_territory_ids: list[str] = Field(default_factory=list, max_length=10)
+    summary: str = Field(min_length=2, max_length=240)
+
+    @model_validator(mode="after")
+    def normalize_revision_ids(self) -> CreativeLandscapeAuditResponse:
+        self.revision_territory_ids = list(
+            dict.fromkeys(self.revision_territory_ids)
+        )
+        if self.requires_revision and not self.revision_territory_ids:
+            raise ValueError("landscape audit revision requires territory ids")
+        if not self.requires_revision:
+            self.revision_territory_ids = []
+        return self
+
+
+class CreativeLandscapeAudit(ApiModel):
+    reviewed_territory_ids: list[str] = Field(min_length=5, max_length=10)
+    fact_issues: list[CreativeLandscapeFactIssue] = Field(
+        default_factory=list,
+        max_length=24,
+    )
+    requires_revision: bool = False
+    revision_territory_ids: list[str] = Field(default_factory=list, max_length=10)
+    summary: str = Field(min_length=2, max_length=240)
+    audit_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class CreativeDiversityLandscape(ApiModel):
     territories: list[CreativeTerritory] = Field(min_length=5, max_length=10)
     source_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     landscape_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     template_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    semantic_audit: CreativeLandscapeAudit | None = None
 
     @property
     def by_id(self) -> dict[str, CreativeTerritory]:

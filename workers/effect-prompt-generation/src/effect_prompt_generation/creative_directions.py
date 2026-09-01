@@ -15,6 +15,8 @@ from .models import (
     CreativeDirectionResponse,
     CreativeDiversityLandscape,
     CreativeDiversityLandscapeResponse,
+    CreativeLandscapeAudit,
+    CreativeLandscapeAuditResponse,
     CreativeCandidate,
     CreativeEvaluation,
     CreativeSemanticProfile,
@@ -58,16 +60,21 @@ def creative_landscape_revision_context(
     validation_error: str,
 ) -> dict[str, object]:
     business_ids = [fact.fact_id for fact in mandatory_business_facts(application)]
-    assigned_ids = [
+    compatible_ids = [
+        fact_id
+        for territory in response.territories
+        for fact_id in territory.compatible_fact_ids
+    ]
+    required_ids = [
         fact_id
         for territory in response.territories
         for fact_id in territory.required_fact_ids
     ]
-    counts = Counter(assigned_ids)
+    counts = Counter(required_ids)
     return {
         "validationError": validation_error,
         "missingRequiredFactIds": [
-            fact_id for fact_id in business_ids if counts[fact_id] == 0
+            fact_id for fact_id in business_ids if fact_id not in compatible_ids
         ],
         "duplicatedRequiredFactIds": [
             fact_id for fact_id, count in counts.items() if count > 1
@@ -77,7 +84,8 @@ def creative_landscape_revision_context(
             for territory in response.territories
         ],
         "revisionInstruction": (
-            "重新规划完整创意版图，让每个必用事实恰好由一个语义相容空间主承载；"
+            "重新规划完整创意版图，让每个必用事实至少进入一个自然相容空间并"
+            "获得适配说明；requiredFactIds 只放该空间必须优先承载的事实。"
             "不得由系统替你分配事实。"
         ),
     }
@@ -116,7 +124,7 @@ def validate_creative_diversity_landscape(
     ):
         raise ValueError("creative landscape referenced an unavailable fact")
     for territory in response.territories:
-        if territory.fact_compatibilities is None:
+        if not territory.fact_compatibilities:
             raise ValueError("creative landscape omitted fact compatibility guidance")
         guided_ids = [item.fact_id for item in territory.fact_compatibilities]
         if len(guided_ids) != len(set(guided_ids)):
@@ -135,8 +143,6 @@ def validate_creative_diversity_landscape(
         raise ValueError("creative landscape repeats a required fact assignment")
     if any(fact_id not in usable_ids for fact_id in required_ids):
         raise ValueError("creative landscape assigned an unavailable required fact")
-    if not business_ids.issubset(required_ids):
-        raise ValueError("creative landscape did not assign every business fact")
     if any(
         fact_id not in territory.compatible_fact_ids
         for territory in response.territories
@@ -174,6 +180,68 @@ def validate_creative_diversity_landscape(
         landscape_hash=_hash(payload),
         template_hash=template_hash,
     )
+
+
+def validate_creative_landscape_audit(
+    response: CreativeLandscapeAuditResponse,
+    landscape: CreativeDiversityLandscape,
+) -> CreativeLandscapeAudit:
+    """Validate audit bookkeeping without making semantic decisions in Worker."""
+
+    territory_ids = {item.territory_id for item in landscape.territories}
+    audit_ids = response.reviewed_territory_ids
+    if len(audit_ids) != len(set(audit_ids)) or set(audit_ids) != territory_ids:
+        raise ValueError("creative landscape audit must cover every territory once")
+    landscape_by_id = landscape.by_id
+    issue_territory_ids: set[str] = set()
+    issue_keys = [
+        (issue.territory_id, issue.fact_id) for issue in response.fact_issues
+    ]
+    if len(issue_keys) != len(set(issue_keys)):
+        raise ValueError("creative landscape audit repeated a fact issue")
+    for issue in response.fact_issues:
+        territory = landscape_by_id.get(issue.territory_id)
+        if territory is None:
+            raise ValueError("creative landscape audit used an unknown territory")
+        if issue.fact_id not in territory.compatible_fact_ids:
+            raise ValueError("creative landscape audit used an unrelated fact id")
+        issue_territory_ids.add(issue.territory_id)
+    if any(
+        territory_id not in territory_ids
+        for territory_id in response.revision_territory_ids
+    ):
+        raise ValueError("creative landscape audit used an unknown revision id")
+    if issue_territory_ids:
+        if not response.requires_revision:
+            raise ValueError("creative landscape audit ignored a semantic issue")
+        if not issue_territory_ids.issubset(response.revision_territory_ids):
+            raise ValueError("creative landscape audit omitted a revision territory")
+    elif response.requires_revision:
+        raise ValueError("creative landscape audit requested an unsupported revision")
+    payload = response.model_dump(mode="json", by_alias=True)
+    return CreativeLandscapeAudit(
+        **response.model_dump(mode="python"),
+        audit_hash=_hash(payload),
+    )
+
+
+def creative_landscape_audit_revision_context(
+    landscape: CreativeDiversityLandscape,
+    audit: CreativeLandscapeAudit,
+) -> dict[str, object]:
+    return {
+        "semanticAudit": audit.model_dump(mode="json", by_alias=True),
+        "previousTerritories": [
+            item.model_dump(mode="json", by_alias=True)
+            for item in landscape.territories
+        ],
+        "revisionInstruction": (
+            "依据独立语义复核重新规划完整创意版图。把不自然或缺少画面条件的"
+            "事实移出原空间，放入真正能自然承载它的空间；必要时同步调整相关空间。"
+            "多选项事实可以由同一空间内多个方向分别承载，不得强迫单条短片同时完成"
+            "多种动作。保持未被指出的空间稳定，不得由系统替你判断事实语义。"
+        ),
+    }
 
 
 def validate_creative_direction_plan(

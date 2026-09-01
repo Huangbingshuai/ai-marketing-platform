@@ -1,6 +1,6 @@
 目标创意方向数量：{target_direction_count}
 
-必须由版图明确主分配且整批恰好覆盖一次的业务事实 ID：
+必须至少进入一个自然相容版图并获得适配说明的业务事实 ID：
 {required_fact_ids_json}
 
 已确认事实：
@@ -18,4 +18,4 @@
 版图修订上下文（首次为空；如需修订则重新规划完整版图）：
 {revision_context_json}
 
-请先规划产品专属创意版图。targetSlots 总和必须严格等于 {target_direction_count}；上述必用业务事实 ID 必须各自恰好进入一个空间的 requiredFactIds，同时可以进入其他自然相容空间的 compatibleFactIds。每个 compatibleFactId 都必须有且只有一条 factCompatibilities 适配说明；如果无法说明自然用法，就不要把该事实放入该空间。
+请先规划产品专属创意版图。targetSlots 总和必须严格等于 {target_direction_count}；上述每个业务事实 ID 必须至少进入一个真正自然相容空间的 compatibleFactIds 并获得适配说明。requiredFactIds 只放该空间后续方向必须优先承载的事实，不要为了重复清单把所有 ID 都抄进去。每个空间只保留 requiredFactIds 和最多两个自然辅助事实，总 compatibleFactIds 不超过 8；每个 compatibleFactId 都必须有且只有一条简短 factCompatibilities。无法说明自然用法就不要放入该空间。

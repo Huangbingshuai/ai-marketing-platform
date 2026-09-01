@@ -17,6 +17,8 @@ ACTIVE_PROMPT_FILES = {
     "creative_direction.user.prompt.txt",
     "creative_landscape.system.prompt.txt",
     "creative_landscape.user.prompt.txt",
+    "creative_landscape_audit.system.prompt.txt",
+    "creative_landscape_audit.user.prompt.txt",
     "creative_direction_audit.system.prompt.txt",
     "creative_direction_audit.user.prompt.txt",
     "evaluation_base.system.prompt.txt",
@@ -87,6 +89,13 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "evidenceText 必须逐字摘自正文、creativeCore 或六维字段" in evaluation
     assert "SEMANTIC_FULL" in evaluation
     assert "PARTIAL" in evaluation
+
+
+def test_landscape_template_distinguishes_compatible_and_primary_facts() -> None:
+    landscape = load_prompt("creative_landscape.system.prompt.txt")
+
+    assert "只能有一个“主承载空间”" in landscape
+    assert "compatibleFactIds 可以在多个自然相容空间复用" in landscape
 
 
 def test_visual_strategy_templates_keep_direction_fact_applications_without_role_split() -> None:

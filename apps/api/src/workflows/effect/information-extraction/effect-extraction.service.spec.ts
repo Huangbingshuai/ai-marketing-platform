@@ -296,7 +296,12 @@ describe('EffectExtractionService', () => {
             sku: '',
             commerceUrl: null,
             configOverride: {},
-            materials: [],
+            materials: [
+              {
+                id: 'image-a',
+                originalFileName: '腊肠切面.png',
+              },
+            ],
             updatedAt: new Date('2026-08-21T00:00:00.000Z'),
             extractionRuns: [
               {
@@ -329,9 +334,12 @@ describe('EffectExtractionService', () => {
                     structuredOutput: {
                       items: [
                         {
+                          sourceId: 'image-a',
                           candidate: {
                             visualFeatures: '肥瘦颗粒分明',
+                            coreSellingPoints: ['切面纹理清晰'],
                             secondarySellingPoints: ['外观油润有光泽'],
+                            corePainPoints: ['家庭蒸食准备费时'],
                           },
                         },
                       ],
@@ -353,7 +361,8 @@ describe('EffectExtractionService', () => {
                     priceRange: '20 元/袋',
                     visualFeatures: '肥瘦颗粒分明',
                     coreSellingPoints: ['用户卖点'],
-                    secondarySellingPoints: ['外观油润有光泽'],
+                    secondarySellingPoints: ['切面纹理清晰', '外观油润有光泽'],
+                    corePainPoints: ['家庭蒸食准备费时'],
                   },
                   generatedResult: extractionResult,
                   manualOverrides: {},
@@ -405,9 +414,32 @@ describe('EffectExtractionService', () => {
         visualFeatures: 'AI_IMAGE_SUGGESTION',
         durationSeconds: 'USER_FACT',
       },
+      fieldSourceNames: {
+        productName: ['资料导入表单'],
+        priceRange: ['用户资料'],
+        visualFeatures: ['腊肠切面.png'],
+      },
       itemOrigins: {
-        coreSellingPoints: [{ value: '用户卖点', origin: 'USER_FACT' }],
-        secondarySellingPoints: [{ value: '外观油润有光泽', origin: 'AI_IMAGE_SUGGESTION' }],
+        coreSellingPoints: [{ value: '用户卖点', origin: 'USER_FACT', sourceNames: ['用户资料'] }],
+        secondarySellingPoints: [
+          {
+            value: '切面纹理清晰',
+            origin: 'AI_IMAGE_SUGGESTION',
+            sourceNames: ['腊肠切面.png'],
+          },
+          {
+            value: '外观油润有光泽',
+            origin: 'AI_IMAGE_SUGGESTION',
+            sourceNames: ['腊肠切面.png'],
+          },
+        ],
+        corePainPoints: [
+          {
+            value: '家庭蒸食准备费时',
+            origin: 'AI_IMAGE_SUGGESTION',
+            sourceNames: ['腊肠切面.png'],
+          },
+        ],
       },
     });
   });
@@ -663,7 +695,7 @@ describe('EffectExtractionService', () => {
     expect(repository.result).not.toHaveBeenCalled();
   });
 
-  it('keeps production rules strictly aligned with the source-import snapshot', async () => {
+  it('keeps user-selected production rules as field-level overrides', async () => {
     const config = {
       aspectRatio: '9:16',
       durationSeconds: 15,
@@ -705,12 +737,7 @@ describe('EffectExtractionService', () => {
         revision: 2,
         draftResult: {
           ...editedResult,
-          durationSeconds: 15,
-          aspectRatio: '9:16',
-          resolution: '1080p',
-          deliveryChannels: '抖音',
-          visualStyleBaseline: '烟火食欲感',
-          disabledElements: ['系统禁用词'],
+          disabledElements: ['系统禁用词', '人工禁用词'],
         },
         savedAt: new Date('2026-08-25T08:00:00.000Z'),
       }),
@@ -728,27 +755,19 @@ describe('EffectExtractionService', () => {
       'project-a',
       'result-a',
       1,
+      { ...editedResult, disabledElements: ['系统禁用词', '人工禁用词'] },
       expect.objectContaining({
-        durationSeconds: 15,
-        aspectRatio: '9:16',
-        resolution: '1080p',
-        deliveryChannels: '抖音',
-        visualStyleBaseline: '烟火食欲感',
-        disabledElements: ['系统禁用词'],
-      }),
-      expect.not.objectContaining({
-        durationSeconds: expect.anything(),
-        aspectRatio: expect.anything(),
-        deliveryChannels: expect.anything(),
-        visualStyleBaseline: expect.anything(),
-        disabledElements: expect.anything(),
+        durationSeconds: 40,
+        aspectRatio: '3:4',
+        deliveryChannels: '快手',
+        visualStyleBaseline: '国潮新中式',
       }),
     );
     expect(result.result).toMatchObject({
-      durationSeconds: 15,
-      aspectRatio: '9:16',
-      deliveryChannels: '抖音',
-      visualStyleBaseline: '烟火食欲感',
+      durationSeconds: 40,
+      aspectRatio: '3:4',
+      deliveryChannels: '快手',
+      visualStyleBaseline: '国潮新中式',
     });
   });
 

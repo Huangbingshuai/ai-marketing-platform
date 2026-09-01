@@ -152,7 +152,7 @@ class ExtractionCandidate(ApiModel):
 
 
 class ImageVisibleFacts(ApiModel):
-    """Compact image-only contract; every value must be directly visible."""
+    """Image facts plus conservative marketing suggestions grounded in the image."""
 
     product_category: str | None
     product_name: str | None
@@ -161,7 +161,12 @@ class ImageVisibleFacts(ApiModel):
     core_selling_points: list[str] | None = Field(max_length=2)
     secondary_selling_points: list[str] | None = Field(max_length=2)
     trust_backings: list[str] | None = Field(max_length=2)
+    target_audience: str | None = None
+    core_pain_points: list[str] | None = Field(default=None, max_length=2)
+    decision_drivers: list[str] | None = Field(default=None, max_length=2)
+    marketing_goal: str | None = None
     usage_scenarios: list[str] | None = Field(max_length=2)
+    purchase_scenarios: list[str] | None = Field(default=None, max_length=2)
     emotional_scenarios: list[str] | None = Field(max_length=2)
     visual_style_baseline: str | None
     high_detail_recommended: bool
@@ -181,7 +186,7 @@ class ExtractionResult(ApiModel):
     price_range: str
     visual_features: str
     core_selling_points: list[str] = Field(min_length=1, max_length=3)
-    secondary_selling_points: list[str] = Field(max_length=6)
+    secondary_selling_points: list[str] = Field(max_length=20)
     trust_backings: list[str] = Field(max_length=6)
     target_audience: str
     core_pain_points: list[str] = Field(max_length=5)

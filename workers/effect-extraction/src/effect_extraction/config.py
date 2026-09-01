@@ -91,6 +91,18 @@ class WorkerSettings(BaseSettings):
         default=60.0, alias="INTERNAL_API_TIMEOUT_SECONDS", gt=0
     )
     ark_timeout_seconds: float = Field(default=120.0, alias="ARK_TIMEOUT_SECONDS", gt=0)
+    ark_document_timeout_seconds: float = Field(
+        default=45.0, alias="ARK_DOCUMENT_TIMEOUT_SECONDS", gt=0
+    )
+    ark_document_max_attempts: int = Field(
+        default=1, alias="ARK_DOCUMENT_MAX_ATTEMPTS", ge=1, le=2
+    )
+    ark_document_max_output_tokens: int = Field(
+        default=3072, alias="ARK_DOCUMENT_MAX_OUTPUT_TOKENS", ge=256, le=8192
+    )
+    ark_document_reasoning_effort: Literal["minimal", "low", "medium", "high"] = Field(
+        default="minimal", alias="ARK_DOCUMENT_REASONING_EFFORT"
+    )
     ark_image_timeout_seconds: float = Field(
         default=90.0, alias="ARK_IMAGE_TIMEOUT_SECONDS", gt=0
     )

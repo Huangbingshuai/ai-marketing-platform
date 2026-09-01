@@ -22,7 +22,7 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     normalization = load_prompt_template("result_normalization.prompt.txt")
 
     assert load_prompt_version("document_extraction.prompt.txt") == "3.0.0"
-    assert load_prompt_version("image_analysis.prompt.txt") == "5.0.0"
+    assert load_prompt_version("image_analysis.prompt.txt") == "6.1.0"
     assert load_prompt_version("commerce_extraction.prompt.txt") == "1.0.0"
     assert load_prompt_version("semantic_refinement.prompt.txt") == "2.1.0"
     assert load_prompt_version("result_normalization.prompt.txt") == "3.0.0"
@@ -44,9 +44,14 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
         assert '"disabledElements"' in prompt
 
     assert "无证据的字符串、数字或数组均为 null" in document.template
-    assert "不扩写完整营销策略" in image.template
-    assert "不属于本节点" in image.template
+    assert "基于明确画面证据给出少量、保守的营销建议" in image.template
+    assert "价格和视频配置不属于本节点" in image.template
     assert "highDetailRecommended" in image.template
+    assert '"corePainPoints"' in image.template
+    assert '"decisionDrivers"' in image.template
+    assert '"purchaseScenarios"' in image.template
+    assert "属于 AI 图片建议" in image.template
+    assert "先按信息卡字段归类" in image.template
     assert "纯产品外观、食用场景或文字已经清晰可读时为 false" in image.template
     assert "只做格式整理，不新增事实或营销策略" in normalization.template
     assert "价格缺失时写“待补充”" in normalization.template

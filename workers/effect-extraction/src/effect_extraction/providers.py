@@ -162,7 +162,7 @@ class MockAiProvider:
     def image_cache_namespace(self) -> str:
         return (
             f"mock:{load_prompt_version(IMAGE_ANALYSIS_PROMPT)}:"
-            "image-visible-v2:adaptive-1:low-high"
+            "image-visible-v3:adaptive-1:low-high"
         )
 
     async def refine_semantics(
@@ -267,6 +267,10 @@ class ArkResponsesProvider:
         normalization_model: str | None = None,
         timeout: float = 120.0,
         max_attempts: int = 3,
+        document_timeout: float = 45.0,
+        document_max_attempts: int = 1,
+        document_max_output_tokens: int = 3072,
+        document_reasoning_effort: str = "minimal",
         image_timeout: float = 90.0,
         image_max_attempts: int = 2,
         image_max_output_tokens: int = 4096,
@@ -282,6 +286,14 @@ class ArkResponsesProvider:
         self._semantic_model = _specific_model(semantic_model, model)
         self._normalization_model = _specific_model(normalization_model, model)
         self._max_attempts = max(1, max_attempts)
+        self._document_timeout = max(1.0, document_timeout)
+        self._document_max_attempts = max(1, min(document_max_attempts, 2))
+        self._document_max_output_tokens = max(256, document_max_output_tokens)
+        self._document_reasoning_effort = (
+            document_reasoning_effort
+            if document_reasoning_effort in {"minimal", "low", "medium", "high"}
+            else "minimal"
+        )
         self._image_timeout = max(1.0, image_timeout)
         self._image_max_attempts = max(1, image_max_attempts)
         self._image_max_output_tokens = max(256, image_max_output_tokens)
@@ -307,7 +319,7 @@ class ArkResponsesProvider:
         prompt_version = load_prompt_version(IMAGE_ANALYSIS_PROMPT)
         return (
             f"ark:{self._image_model}:{prompt_version}:"
-            f"image-visible-v2:adaptive-{int(self._image_adaptive_high_detail)}:"
+            f"image-visible-v3:adaptive-{int(self._image_adaptive_high_detail)}:"
             f"{self._image_detail}-high:{self._image_reasoning_effort}"
         )
 
@@ -352,6 +364,10 @@ class ArkResponsesProvider:
             stage="DOCUMENT",
             model=self._document_model,
             prompt_version=load_prompt_version(DOCUMENT_EXTRACTION_PROMPT),
+            request_timeout=self._document_timeout,
+            max_attempts=self._document_max_attempts,
+            max_output_tokens=self._document_max_output_tokens,
+            reasoning_effort=self._document_reasoning_effort,
         )
 
     async def analyze_image(

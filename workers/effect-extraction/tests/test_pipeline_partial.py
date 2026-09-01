@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -18,7 +19,7 @@ from effect_extraction.models import (
     SnapshotProduct,
     VideoConfig,
 )
-from effect_extraction.pipeline import ExtractionPipeline
+from effect_extraction.pipeline import ExtractionPipeline, _restore_authoritative_sources
 from effect_extraction.providers import (
     AiCallResult,
     MockAiProvider,
@@ -237,6 +238,40 @@ class TimeoutDocumentProvider(MockAiProvider):
         )
 
 
+class CountingDocumentProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def extract_document(
+        self, markdown: str, *, source_name: str
+    ) -> AiCallResult[ExtractionCandidate]:
+        self.calls += 1
+        return await super().extract_document(markdown, source_name=source_name)
+
+
+class StructuredDocumentParser:
+    async def parse(self, content: bytes, *, file_name: str) -> str:
+        return """
+## 产品基础层
+### 产品品类
+腊味肉制品
+### 产品名称
+广式腊肠
+### 核心规格
+500g 真空袋装
+## 卖点层
+### 核心卖点
+- 三七肥瘦黄金配比
+- 真空锁鲜
+## 用户层
+### 核心痛点
+- 担心腊肠口感不稳定
+## 场景层
+### 典型使用场景
+- 家庭日常佐餐
+"""
+
+
 class TimeoutSemanticProvider(MockAiProvider):
     async def refine_semantics(
         self,
@@ -291,6 +326,34 @@ async def test_document_branch_keeps_success_when_one_file_fails() -> None:
     ]
     assert output.items[0].metadata["aiCall"]["stage"] == "DOCUMENT"
     assert api.saved[-1] == output
+
+
+@pytest.mark.asyncio
+async def test_document_branch_skips_ai_for_structured_information_table() -> None:
+    api = ApiStub()
+    api.snapshot.materials = [api.snapshot.materials[0]]
+    provider = CountingDocumentProvider()
+    pipeline = ExtractionPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        document_parser=StructuredDocumentParser(),
+        image_processor=object(),  # type: ignore[arg-type]
+        max_document_text_chars=1000,
+    )
+    context = RuntimeContext(
+        "run", "project", "draft", "product", "request", "attempt", "server-fingerprint"
+    )
+    pipeline.register_snapshot(context, api.snapshot)
+
+    output = await pipeline.document_branch(context)
+
+    assert provider.calls == 0
+    assert output.status == BranchStatus.SUCCEEDED
+    assert output.items[0].candidate is not None
+    assert output.items[0].candidate.product_name == "广式腊肠"
+    assert output.items[0].metadata["extractionMode"] == "STRUCTURED_TABLE"
+    assert output.items[0].metadata["modelInputChars"] == 0
+    assert "aiCall" not in output.items[0].metadata
 
 
 @pytest.mark.asyncio
@@ -558,7 +621,7 @@ async def test_image_branch_does_not_cache_a_degraded_adaptive_result() -> None:
 
 
 @pytest.mark.asyncio
-async def test_normalization_branch_records_ai_call_metadata() -> None:
+async def test_normalization_branch_uses_deterministic_contract_mapping() -> None:
     api = ApiStub()
     fused = ExtractionCandidate.empty()
     fused.product_name = "商品"
@@ -612,7 +675,11 @@ async def test_normalization_branch_records_ai_call_metadata() -> None:
         if item.branch == BranchName.NORMALIZATION
         and item.status == BranchStatus.SUCCEEDED
     )
-    assert normalization.metadata["aiCall"]["stage"] == "NORMALIZATION"
+    assert normalization.metadata["normalization"] == {
+        "mode": "DETERMINISTIC",
+        "modelCalled": False,
+    }
+    assert "aiCall" not in normalization.metadata
     assert normalization.candidate is not None
     assert normalization.candidate.product_name == "商品"
     assert normalization.candidate.resolution == "720p"
@@ -715,8 +782,22 @@ async def test_normalization_keeps_user_price_and_secondary_points_before_image_
         "切片均匀、形态规整",
     ]
     image = ExtractionCandidate.empty()
-    image.core_selling_points = ["肥瘦颗粒分明", "外观油润有光泽"]
-    image.secondary_selling_points = ["整根形态饱满紧实"]
+    image.visual_features = "红白相间，切面肥瘦纹理清晰，表面油润"
+    image.core_selling_points = [
+        "肥瘦颗粒分明",
+        "外观油润有光泽",
+        "切片纹理清晰",
+        "肠体形态规整",
+    ]
+    image.secondary_selling_points = [
+        "整根切片同展便于判断形态",
+        "福字中国结烘托节庆氛围",
+    ]
+    image.target_audience = "重视家庭餐桌效率的烹饪者"
+    image.core_pain_points = ["日常菜肴搭配缺少省时的风味食材"]
+    image.decision_drivers = ["切片与整根同展便于判断用法"]
+    image.marketing_goal = "展示家庭蒸食与节庆礼赠的双场景价值"
+    image.purchase_scenarios = ["节庆家庭礼赠"]
     fused = document.model_copy(deep=True)
     fused.product_name = form.product_name
     fused.product_category = form.product_category
@@ -773,12 +854,56 @@ async def test_normalization_keeps_user_price_and_secondary_points_before_image_
     )
     assert normalization.candidate is not None
     assert normalization.candidate.price_range == "20 元/袋"
+    assert normalization.candidate.visual_features == image.visual_features
     assert normalization.candidate.core_selling_points == document.core_selling_points
     assert (
         normalization.candidate.secondary_selling_points[:4]
         == document.secondary_selling_points
     )
-    assert len(normalization.candidate.secondary_selling_points or []) == 6
+    assert normalization.candidate.secondary_selling_points == [
+        *document.secondary_selling_points,
+        "肥瘦颗粒分明",
+        "外观油润有光泽",
+        "整根切片同展便于判断形态",
+        "福字中国结烘托节庆氛围",
+    ]
+    assert normalization.candidate.target_audience == image.target_audience
+    assert normalization.candidate.core_pain_points == image.core_pain_points
+    assert normalization.candidate.decision_drivers == image.decision_drivers
+    assert normalization.candidate.marketing_goal == image.marketing_goal
+    assert normalization.candidate.purchase_scenarios == image.purchase_scenarios
+
+
+def test_visual_features_use_image_only_when_user_material_does_not_provide_them() -> None:
+    form = ExtractionCandidate.empty()
+    form.duration_seconds = 15
+    form.aspect_ratio = "9:16"
+    form.resolution = "1080p"
+    form.delivery_channels = "抖音"
+    document = ExtractionCandidate.empty()
+    image = ExtractionCandidate.empty()
+    image.visual_features = "AI 识图外观"
+
+    missing_result = SimpleNamespace()
+    _restore_authoritative_sources(
+        missing_result,
+        form=form,
+        document=document,
+        commerce=None,
+        image=image,
+    )
+    assert missing_result.visual_features == "AI 识图外观"
+
+    document.visual_features = "用户资料外观"
+    user_result = SimpleNamespace()
+    _restore_authoritative_sources(
+        user_result,
+        form=form,
+        document=document,
+        commerce=None,
+        image=image,
+    )
+    assert user_result.visual_features == "用户资料外观"
 
 
 @pytest.mark.asyncio

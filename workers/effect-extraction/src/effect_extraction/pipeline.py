@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 from collections.abc import Sequence
 from pathlib import PurePath
 
@@ -17,6 +18,7 @@ from .commerce import (
     merge_commerce_candidates,
 )
 from .docling_parser import DocumentParser
+from .document_facts import extract_structured_document_facts
 from .fusion import FusionError, branch_candidate, fuse
 from .image_processing import ImageProcessor
 from .models import (
@@ -163,12 +165,20 @@ class ExtractionPipeline:
                         f"{context.run_id}:docling:{material.id}:{context.source_fingerprint}"
                     ),
                 )
+                structured_candidate = extract_structured_document_facts(markdown)
                 truncated = len(markdown) > self.max_document_text_chars
                 model_text = markdown[: self.max_document_text_chars]
-                ai_call = await self.provider.extract_document(
-                    model_text, source_name=material.original_file_name
-                )
-                document_candidate = _without_document_video_config(ai_call.value)
+                ai_call = None
+                if structured_candidate is None:
+                    ai_call = await self.provider.extract_document(
+                        model_text, source_name=material.original_file_name
+                    )
+                if structured_candidate is not None:
+                    extracted_candidate = structured_candidate
+                else:
+                    assert ai_call is not None
+                    extracted_candidate = ai_call.value
+                document_candidate = _without_document_video_config(extracted_candidate)
                 items.append(
                     BranchItem(
                         source_id=material.id,
@@ -177,13 +187,26 @@ class ExtractionPipeline:
                         artifact_storage_key=storage_key,
                         metadata={
                             "markdownChars": len(markdown),
-                            "modelInputChars": len(model_text),
-                            "modelInputTruncated": truncated,
-                            "aiCall": ai_call.metadata.as_dict(),
+                            "modelInputChars": (
+                                0 if structured_candidate is not None else len(model_text)
+                            ),
+                            "modelInputTruncated": (
+                                structured_candidate is None and truncated
+                            ),
+                            "extractionMode": (
+                                "STRUCTURED_TABLE"
+                                if structured_candidate is not None
+                                else "AI_FALLBACK"
+                            ),
+                            **(
+                                {"aiCall": ai_call.metadata.as_dict()}
+                                if ai_call is not None
+                                else {}
+                            ),
                         },
                         warning=(
                             "文档过长，模型候选抽取使用了受限长度文本；完整 Markdown 已保留"
-                            if truncated
+                            if structured_candidate is None and truncated
                             else None
                         ),
                     )
@@ -611,16 +634,37 @@ class ExtractionPipeline:
         document_candidate = branch_candidate(document) if document else None
         commerce_candidate = branch_candidate(commerce) if commerce else None
         image_candidate = branch_candidate(image) if image else None
-        ai_call = await self.provider.normalize(
-            normalized_input,
-            protected_input=_protected_user_input(
-                snapshot.manual_overrides,
-                form_candidate,
-                document_candidate,
-                commerce_candidate,
-            ),
-        )
-        result = ai_call.value
+        normalization_metadata: dict[str, object]
+        try:
+            result = _normalize_candidate_deterministically(normalized_input)
+            normalization_metadata = {
+                "normalization": {
+                    "mode": "DETERMINISTIC",
+                    "modelCalled": False,
+                }
+            }
+        except (TypeError, ValueError) as exc:
+            LOGGER.warning(
+                "deterministic normalization failed; using AI fallback error_type=%s",
+                type(exc).__name__,
+            )
+            ai_call = await self.provider.normalize(
+                normalized_input,
+                protected_input=_protected_user_input(
+                    snapshot.manual_overrides,
+                    form_candidate,
+                    document_candidate,
+                    commerce_candidate,
+                ),
+            )
+            result = ai_call.value
+            normalization_metadata = {
+                "normalization": {
+                    "mode": "AI_FALLBACK",
+                    "modelCalled": True,
+                },
+                "aiCall": ai_call.metadata.as_dict(),
+            }
         _restore_authoritative_sources(
             result,
             form=form_candidate,
@@ -644,7 +688,7 @@ class ExtractionPipeline:
             status=BranchStatus.SUCCEEDED,
             source_fingerprint=context.source_fingerprint,
             candidate=ExtractionCandidate.model_validate(result.model_dump()),
-            metadata={"aiCall": ai_call.metadata.as_dict()},
+            metadata=normalization_metadata,
         )
         await self._save(context, normalization)
         extract_result_id = await self.api.complete(
@@ -920,6 +964,64 @@ def _merged_items(
     )[:limit]
 
 
+def _normalize_candidate_deterministically(
+    candidate: ExtractionCandidate,
+) -> ExtractionResult:
+    core_points = _candidate_items(candidate, "core_selling_points")
+    selected_core = core_points[:3] or ["待补充"]
+    secondary_points = _strings(
+        [
+            *core_points[3:],
+            *_candidate_items(candidate, "secondary_selling_points"),
+        ]
+    )[:20]
+    audience = _candidate_text(candidate, "target_audience")
+    audience_items = _strings(re.split(r"[\n,，、;；]+", audience or ""))[:5]
+
+    return ExtractionResult(
+        product_category=_candidate_text(candidate, "product_category") or "待补充",
+        product_name=_candidate_text(candidate, "product_name") or "待补充",
+        core_specification=_candidate_text(candidate, "core_specification")
+        or "待补充",
+        price_range=_candidate_text(candidate, "price_range") or "待补充",
+        visual_features=_candidate_text(candidate, "visual_features") or "待补充",
+        core_selling_points=selected_core,
+        secondary_selling_points=secondary_points,
+        trust_backings=_candidate_items(candidate, "trust_backings")[:6],
+        target_audience="；".join(audience_items) or "待补充",
+        core_pain_points=_candidate_items(candidate, "core_pain_points")[:5],
+        decision_drivers=_candidate_items(candidate, "decision_drivers")[:5],
+        marketing_goal=_candidate_text(candidate, "marketing_goal") or "待补充",
+        usage_scenarios=_candidate_items(candidate, "usage_scenarios")[:5],
+        purchase_scenarios=_candidate_items(candidate, "purchase_scenarios")[:5],
+        emotional_scenarios=_candidate_items(candidate, "emotional_scenarios")[:5],
+        duration_seconds=candidate.duration_seconds or 20,
+        aspect_ratio=_candidate_text(candidate, "aspect_ratio") or "9:16",
+        resolution=_candidate_text(candidate, "resolution") or "1080p",
+        delivery_channels=_candidate_text(candidate, "delivery_channels") or "待补充",
+        disabled_elements=_candidate_items(candidate, "disabled_elements"),
+        visual_style_baseline=_candidate_text(candidate, "visual_style_baseline")
+        or "待补充",
+    )
+
+
+def _image_selling_suggestions(
+    remaining_core: list[str],
+    secondary: list[str],
+    *,
+    limit: int = 4,
+) -> list[str]:
+    """Prefer visible product value and contextual image suggestions together."""
+
+    return _strings(
+        [
+            *remaining_core[:2],
+            *secondary,
+            *remaining_core[2:],
+        ]
+    )[:limit]
+
+
 def _restore_authoritative_sources(
     result: object,
     *,
@@ -961,15 +1063,20 @@ def _restore_authoritative_sources(
     remaining_image_core = [
         item for item in image_core if item.casefold() not in selected_core
     ]
-    secondary_selling_points = _strings(
+    user_secondary_selling_points = _strings(
         [
             *_candidate_items(document, "secondary_selling_points"),
             *_candidate_items(commerce, "secondary_selling_points"),
             *user_core[3:],
-            *remaining_image_core,
-            *_candidate_items(image, "secondary_selling_points"),
         ]
-    )[:6]
+    )
+    image_selling_suggestions = _image_selling_suggestions(
+        remaining_image_core,
+        _candidate_items(image, "secondary_selling_points"),
+    )
+    secondary_selling_points = _strings(
+        [*user_secondary_selling_points, *image_selling_suggestions]
+    )[:20]
     setattr(result, "secondary_selling_points", secondary_selling_points)
     setattr(
         result,
@@ -978,19 +1085,25 @@ def _restore_authoritative_sources(
     )
 
     setattr(
-        result, "target_audience", _first_text("target_audience", document, commerce)
+        result,
+        "target_audience",
+        _first_text("target_audience", document, commerce, image),
     )
     setattr(
         result,
         "core_pain_points",
-        _merged_items("core_pain_points", document, commerce, limit=5),
+        _merged_items("core_pain_points", document, commerce, image, limit=5),
     )
     setattr(
         result,
         "decision_drivers",
-        _merged_items("decision_drivers", document, commerce, limit=5),
+        _merged_items("decision_drivers", document, commerce, image, limit=5),
     )
-    setattr(result, "marketing_goal", _first_text("marketing_goal", document, commerce))
+    setattr(
+        result,
+        "marketing_goal",
+        _first_text("marketing_goal", document, commerce, image),
+    )
     setattr(
         result,
         "usage_scenarios",
@@ -999,7 +1112,7 @@ def _restore_authoritative_sources(
     setattr(
         result,
         "purchase_scenarios",
-        _merged_items("purchase_scenarios", document, commerce, limit=5),
+        _merged_items("purchase_scenarios", document, commerce, image, limit=5),
     )
     setattr(
         result,
