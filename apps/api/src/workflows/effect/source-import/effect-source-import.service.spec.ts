@@ -1,4 +1,5 @@
 import { DEFAULT_EFFECT_VIDEO_CONFIG, type EffectImportDraft } from '@ai-marketing/contracts';
+import { inflateRawSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { StoragePort } from '../../../platform/file/storage.port';
@@ -9,6 +10,44 @@ import {
   EffectSourceImportService,
   normalizeMultipartFileName,
 } from './effect-source-import.service';
+
+const readZipEntry = (archive: Buffer, expectedName: string): Buffer => {
+  let endOfCentralDirectory = -1;
+  for (let offset = archive.length - 22; offset >= 0; offset -= 1) {
+    if (archive.readUInt32LE(offset) === 0x06054b50) {
+      endOfCentralDirectory = offset;
+      break;
+    }
+  }
+  if (endOfCentralDirectory < 0) throw new Error('DOCX central directory is missing');
+
+  const entryCount = archive.readUInt16LE(endOfCentralDirectory + 10);
+  let centralOffset = archive.readUInt32LE(endOfCentralDirectory + 16);
+  for (let index = 0; index < entryCount; index += 1) {
+    if (archive.readUInt32LE(centralOffset) !== 0x02014b50)
+      throw new Error('DOCX central directory entry is invalid');
+    const method = archive.readUInt16LE(centralOffset + 10);
+    const compressedSize = archive.readUInt32LE(centralOffset + 20);
+    const nameLength = archive.readUInt16LE(centralOffset + 28);
+    const extraLength = archive.readUInt16LE(centralOffset + 30);
+    const commentLength = archive.readUInt16LE(centralOffset + 32);
+    const localOffset = archive.readUInt32LE(centralOffset + 42);
+    const name = archive.subarray(centralOffset + 46, centralOffset + 46 + nameLength).toString();
+    if (name === expectedName) {
+      if (archive.readUInt32LE(localOffset) !== 0x04034b50)
+        throw new Error('DOCX local entry is invalid');
+      const localNameLength = archive.readUInt16LE(localOffset + 26);
+      const localExtraLength = archive.readUInt16LE(localOffset + 28);
+      const dataOffset = localOffset + 30 + localNameLength + localExtraLength;
+      const compressed = archive.subarray(dataOffset, dataOffset + compressedSize);
+      if (method === 0) return compressed;
+      if (method === 8) return inflateRawSync(compressed);
+      throw new Error(`unsupported DOCX compression method: ${method}`);
+    }
+    centralOffset += 46 + nameLength + extraLength + commentLength;
+  }
+  throw new Error(`DOCX entry is missing: ${expectedName}`);
+};
 
 const serviceWith = (
   repository: Partial<EffectSourceImportRepository> = {},
@@ -137,6 +176,31 @@ describe('EffectSourceImportService', () => {
     );
     expect(template.buffer.subarray(0, 2).toString('ascii')).toBe('PK');
     expect(template.buffer.length).toBeGreaterThan(10_000);
+
+    const documentXml = readZipEntry(template.buffer, 'word/document.xml').toString('utf8');
+    const informationCardFields = [
+      '品类',
+      '产品名称',
+      '核心规格',
+      '价格带',
+      '核心外观特征',
+      '核心卖点',
+      '次要卖点',
+      '辅助信任背书',
+      '目标受众画像',
+      '核心痛点',
+      '决策动因',
+      '营销目标',
+      '核心使用场景',
+      '购买场景',
+      '情绪共鸣场景',
+    ];
+    expect(documentXml).not.toContain('<w:tbl');
+    expect(documentXml.match(/w:pStyle w:val="Heading1"/g)).toHaveLength(4);
+    expect(documentXml.match(/w:pStyle w:val="Heading2"/g)).toHaveLength(
+      informationCardFields.length,
+    );
+    for (const field of informationCardFields) expect(documentXml).toContain(field);
   });
 
   it('把产品名称作为资料导入节点必填项，品类仍交给 AI 提炼', () => {
