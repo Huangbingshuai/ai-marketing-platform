@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { requestJson } from './http-client';
+import { ApiClientError, isNetworkError, requestJson } from './http-client';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -58,6 +58,13 @@ describe('HTTP client', () => {
     const abortError = new DOMException('aborted', 'AbortError');
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abortError));
     await expect(requestJson('/projects')).rejects.toBe(abortError);
+  });
+
+  it('distinguishes browser connection failures from API and abort errors', () => {
+    expect(isNetworkError(new TypeError('Failed to fetch'))).toBe(true);
+    expect(isNetworkError(new DOMException('connection lost', 'NetworkError'))).toBe(true);
+    expect(isNetworkError(new ApiClientError('服务异常', 503))).toBe(false);
+    expect(isNetworkError(new DOMException('aborted', 'AbortError'))).toBe(false);
   });
 
   it('supports PUT, DELETE and custom headers with JSON bodies', async () => {

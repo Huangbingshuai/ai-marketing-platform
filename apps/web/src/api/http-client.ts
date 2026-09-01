@@ -111,3 +111,7 @@ export const getJson = <T>(path: string, operation = '请求', signal?: AbortSig
 
 export const isAbortError = (error: unknown): boolean =>
   error instanceof DOMException && error.name === 'AbortError';
+
+export const isNetworkError = (error: unknown): boolean =>
+  error instanceof TypeError ||
+  (error instanceof DOMException && error.name === 'NetworkError');

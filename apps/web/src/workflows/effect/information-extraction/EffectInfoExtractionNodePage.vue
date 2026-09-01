@@ -34,7 +34,7 @@ import {
 } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
-import { ApiClientError, isAbortError } from '../../../api/http-client';
+import { ApiClientError, isAbortError, isNetworkError } from '../../../api/http-client';
 import {
   getActiveWorkflowRunOverview,
   getWorkflowNodeState,
@@ -108,6 +108,8 @@ let saveTimer: ReturnType<typeof setTimeout> | undefined;
 const nodeStateRevision = ref(0);
 let lastSavedNodeState = '';
 const activeRunControllers = new Map<string, { controller: AbortController; runId: string }>();
+const transientNetworkMessage =
+  '网络连接暂时中断，任务不会因此被标记为失败。恢复连接后可继续查询或重新提炼。';
 
 const context = computed<EffectExtractionContext>(() => ({
   projectId: props.projectId,
@@ -782,7 +784,11 @@ const monitorProductRun = async (
     if (!isAbortError(error) && !disposed) {
       pollingErrors.value = {
         ...pollingErrors.value,
-        [productId]: error instanceof Error ? error.message : '任务进度查询失败',
+        [productId]: isNetworkError(error)
+          ? '网络连接暂时中断，任务仍在后台运行。恢复连接后请继续查询。'
+          : error instanceof Error
+            ? error.message
+            : '任务进度查询失败',
       };
     }
   } finally {
@@ -848,6 +854,7 @@ const runCurrentExtraction = async (): Promise<void> => {
   const state = currentState.value;
   if (!product || !state || isExtractionRunning(state)) return;
   if (!(await flushPendingEdits())) return;
+  const previousState = cloneExtractionProductState(state);
   stopProductPoll(product.id);
   const controller = new AbortController();
   activeRunControllers.set(product.id, { controller, runId: '' });
@@ -876,6 +883,36 @@ const runCurrentExtraction = async (): Promise<void> => {
     if (isAbortError(error) || disposed) return;
     if (error instanceof ApiClientError && error.status === 409) {
       await loadWorkspace();
+      return;
+    }
+    if (isNetworkError(error)) {
+      let monitoringRecoveredRun = false;
+      try {
+        await refreshProductFromWorkspace(product.id, controller.signal);
+        const recovered = productStates.value[product.id];
+        if (recovered && isExtractionRunning(recovered) && recovered.runId) {
+          monitoringRecoveredRun = true;
+          void monitorProductRun(product.id, recovered.runId, controller);
+        } else {
+          pollingErrors.value = {
+            ...pollingErrors.value,
+            [product.id]: transientNetworkMessage,
+          };
+        }
+      } catch (recoveryError) {
+        if (isAbortError(recoveryError) || disposed) return;
+        replaceState(previousState);
+        pollingErrors.value = {
+          ...pollingErrors.value,
+          [product.id]: transientNetworkMessage,
+        };
+      }
+      if (
+        !monitoringRecoveredRun &&
+        activeRunControllers.get(product.id)?.controller === controller
+      ) {
+        activeRunControllers.delete(product.id);
+      }
       return;
     }
     patchProductState(product.id, {

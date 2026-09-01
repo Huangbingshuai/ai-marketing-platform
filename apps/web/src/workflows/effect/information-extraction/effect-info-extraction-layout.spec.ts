@@ -46,6 +46,14 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain('refreshImageRecognition: Boolean(state.runId || state.resultId)');
   });
 
+  it('does not turn a browser connection interruption into a failed extraction run', () => {
+    expect(pageSource).toContain('isNetworkError(error)');
+    expect(pageSource).toContain('const previousState = cloneExtractionProductState(state)');
+    expect(pageSource).toContain('replaceState(previousState)');
+    expect(pageSource).toContain('任务不会因此被标记为失败');
+    expect(pageSource).toContain('任务仍在后台运行');
+  });
+
   it('uses the same global validation footer as the source import node', () => {
     expect(pageSource).toContain('<WorkflowNodeDraftBar');
     expect(pageSource).toContain('<WorkflowNodeFooter');
