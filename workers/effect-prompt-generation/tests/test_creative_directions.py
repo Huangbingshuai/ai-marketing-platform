@@ -8,7 +8,10 @@ import pytest
 
 from effect_prompt_generation.embeddings import MockEmbeddingProvider
 from effect_prompt_generation.graph import build_graph
-from effect_prompt_generation.insight_mapping import mandatory_business_facts, map_insight
+from effect_prompt_generation.insight_mapping import (
+    mandatory_business_facts,
+    map_insight,
+)
 from effect_prompt_generation.models import (
     CreativeCandidate,
     CreativeDimensions,
@@ -149,9 +152,10 @@ class MissingFactThenReplanningProvider(MockAiProvider):
             for fallback_fact in business_facts:
                 if len(applications) >= 2:
                     break
-                if fallback_fact.fact_id not in {
-                    item.fact_id for item in applications
-                } and fallback_fact.fact_id != missing_fact_id:
+                if (
+                    fallback_fact.fact_id not in {item.fact_id for item in applications}
+                    and fallback_fact.fact_id != missing_fact_id
+                ):
                     applications.append(
                         CreativeDirectionFactApplication(
                             fact_id=fallback_fact.fact_id,
@@ -161,7 +165,9 @@ class MissingFactThenReplanningProvider(MockAiProvider):
             directions.append(
                 direction.model_copy(update={"fact_applications": applications})
             )
-        return replace(call, value=call.value.model_copy(update={"directions": directions}))
+        return replace(
+            call, value=call.value.model_copy(update={"directions": directions})
+        )
 
 
 class SemanticAuditThenReplanningProvider(MockAiProvider):
@@ -297,7 +303,9 @@ async def test_fifty_target_plans_exactly_seventy_initial_candidates() -> None:
 
 
 @pytest.mark.asyncio
-async def test_missing_business_fact_replans_the_whole_direction_batch_with_ai() -> None:
+async def test_missing_business_fact_replans_the_whole_direction_batch_with_ai() -> (
+    None
+):
     api = PromptApi()
     provider = MissingFactThenReplanningProvider()
     pipeline = PromptGenerationPipeline(
@@ -366,6 +374,15 @@ def test_landscape_validation_is_structural_not_keyword_based() -> None:
         expected_direction_count=13,
     )
     assert sum(item.target_slots for item in landscape.territories) == 13
+    required_ids = [
+        fact_id
+        for territory in landscape.territories
+        for fact_id in territory.required_fact_ids
+    ]
+    assert len(required_ids) == len(set(required_ids))
+    assert set(required_ids) == {
+        fact.fact_id for fact in mandatory_business_facts(application)
+    }
 
     invalid = CreativeDiversityLandscapeResponse(
         territories=[
@@ -378,6 +395,34 @@ def test_landscape_validation_is_structural_not_keyword_based() -> None:
     with pytest.raises(ValueError, match="target slots"):
         validate_creative_diversity_landscape(
             invalid,
+            application,
+            source_hash="1" * 64,
+            template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+            expected_direction_count=13,
+        )
+
+    duplicated_required = raw.territories[0].required_fact_ids[0]
+    duplicate_assignment = CreativeDiversityLandscapeResponse(
+        territories=[
+            raw.territories[0],
+            raw.territories[1].model_copy(
+                update={
+                    "required_fact_ids": [
+                        *raw.territories[1].required_fact_ids,
+                        duplicated_required,
+                    ],
+                    "compatible_fact_ids": [
+                        *raw.territories[1].compatible_fact_ids,
+                        duplicated_required,
+                    ],
+                }
+            ),
+            *raw.territories[2:],
+        ]
+    )
+    with pytest.raises(ValueError, match="repeats a required fact"):
+        validate_creative_diversity_landscape(
+            duplicate_assignment,
             application,
             source_hash="1" * 64,
             template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
@@ -585,15 +630,13 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
             expected_direction_count=13,
         )
     planned_fact_ids = {
-        fact_id
-        for direction in plan.directions
-        for fact_id in direction.fact_ids
+        fact_id for direction in plan.directions for fact_id in direction.fact_ids
     }
-    business_fact_ids = {
-        fact.fact_id for fact in mandatory_business_facts(application)
-    }
+    business_fact_ids = {fact.fact_id for fact in mandatory_business_facts(application)}
     assert business_fact_ids.issubset(planned_fact_ids)
-    assert all(2 <= len(direction.fact_applications) <= 4 for direction in plan.directions)
+    assert all(
+        2 <= len(direction.fact_applications) <= 4 for direction in plan.directions
+    )
     assert all(
         application.by_id[item.fact_id].value not in {"", item.creative_usage}
         for direction in plan.directions
@@ -636,7 +679,8 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
 
     omitted_fact_id = mandatory_business_facts(application)[-1].fact_id
     replacement_facts = [
-        fact for fact in mandatory_business_facts(application)
+        fact
+        for fact in mandatory_business_facts(application)
         if fact.fact_id != omitted_fact_id
     ]
     omitted_directions = []
@@ -659,9 +703,7 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
         omitted_directions.append(
             direction.model_copy(update={"fact_applications": applications})
         )
-    omitted = raw.model_copy(
-        update={"directions": omitted_directions}
-    )
+    omitted = raw.model_copy(update={"directions": omitted_directions})
     with pytest.raises(ValueError, match="did not cover all usable business facts"):
         validate_creative_direction_plan(
             CreativeDirectionResponse.model_validate(omitted),

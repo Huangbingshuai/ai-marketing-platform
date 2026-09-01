@@ -320,17 +320,19 @@ async def test_ark_compiles_visual_usage_for_every_confirmed_fact() -> None:
         payload = json.loads(request.content)
         seen.update(payload)
         policies = []
-        for fact in application.usable:
+        for index, fact in enumerate(application.usable):
             forbidden = fact.value == "纯猪肉无淀粉"
             policies.append(
                 {
-                    "factId": fact.fact_id,
+                    "factId": f"F{index + 1}",
                     "visualUsage": (
                         "FORBIDDEN_VISUAL_PROOF" if forbidden else "DIRECTLY_VISIBLE"
                     ),
                     "visualInstruction": "" if forbidden else "展示真实可见外观",
                     "contextInstruction": "只作商业背景" if forbidden else "",
-                    "compatibleFactIds": [],
+                    "compatibleFactIds": (
+                        [f"F{index + 2}"] if index + 1 < len(application.usable) else []
+                    ),
                     "forbiddenInferences": (
                         ["不得用切面证明配方"] if forbidden else []
                     ),
@@ -357,12 +359,21 @@ async def test_ark_compiles_visual_usage_for_every_confirmed_fact() -> None:
         await provider.aclose()
 
     assert len(call.value.policies) == len(application.usable)
+    assert {item.fact_id for item in call.value.policies} == {
+        item.fact_id for item in application.usable
+    }
+    assert all(
+        fact_id in {item.fact_id for item in application.usable}
+        for policy in call.value.policies
+        for fact_id in policy.compatible_fact_ids
+    )
     assert any(
         policy.visual_usage == FactVisualUsage.FORBIDDEN_VISUAL_PROOF
         for policy in call.value.policies
     )
     payload_text = json.dumps(seen, ensure_ascii=False)
     assert "纯猪肉无淀粉" in payload_text
+    assert "F1" in payload_text
     assert "effect_prompt_fact_visual_strategy" in payload_text
     assert seen["max_output_tokens"] == 4096
 

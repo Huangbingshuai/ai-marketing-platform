@@ -1,5 +1,8 @@
 目标创意方向数量：{target_direction_count}
 
+必须由版图明确主分配且整批恰好覆盖一次的业务事实 ID：
+{required_fact_ids_json}
+
 已确认事实：
 {facts_json}
 
@@ -12,4 +15,7 @@
 视觉风格基调（共享视觉语言，不是固定场景）：
 {visual_style_baseline_json}
 
-请先规划产品专属创意版图。targetSlots 总和必须严格等于 {target_direction_count}，所有业务事实都必须至少进入一个相容空间。
+版图修订上下文（首次为空；如需修订则重新规划完整版图）：
+{revision_context_json}
+
+请先规划产品专属创意版图。targetSlots 总和必须严格等于 {target_direction_count}；上述必用业务事实 ID 必须各自恰好进入一个空间的 requiredFactIds，同时可以进入其他自然相容空间的 compatibleFactIds。

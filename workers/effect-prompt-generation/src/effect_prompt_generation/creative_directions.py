@@ -51,6 +51,38 @@ def creative_direction_source_hash(
     )
 
 
+def creative_landscape_revision_context(
+    response: CreativeDiversityLandscapeResponse,
+    application: InsightApplicationMap,
+    *,
+    validation_error: str,
+) -> dict[str, object]:
+    business_ids = [fact.fact_id for fact in mandatory_business_facts(application)]
+    assigned_ids = [
+        fact_id
+        for territory in response.territories
+        for fact_id in territory.required_fact_ids
+    ]
+    counts = Counter(assigned_ids)
+    return {
+        "validationError": validation_error,
+        "missingRequiredFactIds": [
+            fact_id for fact_id in business_ids if counts[fact_id] == 0
+        ],
+        "duplicatedRequiredFactIds": [
+            fact_id for fact_id, count in counts.items() if count > 1
+        ],
+        "previousTerritories": [
+            territory.model_dump(mode="json", by_alias=True)
+            for territory in response.territories
+        ],
+        "revisionInstruction": (
+            "重新规划完整创意版图，让每个必用事实恰好由一个语义相容空间主承载；"
+            "不得由系统替你分配事实。"
+        ),
+    }
+
+
 def validate_creative_diversity_landscape(
     response: CreativeDiversityLandscapeResponse,
     application: InsightApplicationMap,
@@ -70,8 +102,13 @@ def validate_creative_diversity_landscape(
     ]
     if len(set(action_ids)) != len(action_ids):
         raise ValueError("creative landscape action ids must be globally unique")
-    if sum(item.target_slots for item in response.territories) != expected_direction_count:
+    if (
+        sum(item.target_slots for item in response.territories)
+        != expected_direction_count
+    ):
         raise ValueError("creative landscape target slots do not match direction count")
+    if any(item.target_slots < 1 for item in response.territories):
+        raise ValueError("creative landscape territory target slots must be positive")
     if any(
         fact_id not in usable_ids
         for territory in response.territories
@@ -79,19 +116,52 @@ def validate_creative_diversity_landscape(
     ):
         raise ValueError("creative landscape referenced an unavailable fact")
     business_ids = {fact.fact_id for fact in mandatory_business_facts(application)}
-    landscape_ids = {
+    required_ids = [
         fact_id
         for territory in response.territories
+        for fact_id in territory.required_fact_ids
+    ]
+    if len(required_ids) != len(set(required_ids)):
+        raise ValueError("creative landscape repeats a required fact assignment")
+    if any(fact_id not in usable_ids for fact_id in required_ids):
+        raise ValueError("creative landscape assigned an unavailable required fact")
+    if not business_ids.issubset(required_ids):
+        raise ValueError("creative landscape did not assign every business fact")
+    territories = [
+        territory.model_copy(
+            update={
+                "compatible_fact_ids": list(
+                    dict.fromkeys(
+                        [
+                            *territory.required_fact_ids,
+                            *territory.compatible_fact_ids,
+                        ]
+                    )
+                ),
+                "required_fact_ids": [
+                    fact_id
+                    for fact_id in territory.required_fact_ids
+                    if fact_id in business_ids
+                ],
+            }
+        )
+        for territory in response.territories
+    ]
+    if any(
+        len(territory.required_fact_ids) > territory.target_slots * 4
+        for territory in territories
+    ):
+        raise ValueError("creative landscape required facts exceed territory capacity")
+    landscape_ids = {
+        fact_id
+        for territory in territories
         for fact_id in territory.compatible_fact_ids
     }
     if not business_ids.issubset(landscape_ids):
         raise ValueError("creative landscape did not cover all usable business facts")
-    payload = [
-        item.model_dump(mode="json", by_alias=True)
-        for item in response.territories
-    ]
+    payload = [item.model_dump(mode="json", by_alias=True) for item in territories]
     return CreativeDiversityLandscape(
-        territories=response.territories,
+        territories=territories,
         source_hash=source_hash,
         landscape_hash=_hash(payload),
         template_hash=template_hash,
@@ -133,7 +203,9 @@ def validate_creative_direction_plan(
                 raise ValueError("creative direction referenced an unknown territory")
             allowed_actions = {item.action_id for item in territory.actions}
             if direction.primary_action_id not in allowed_actions:
-                raise ValueError("creative direction referenced an unknown territory action")
+                raise ValueError(
+                    "creative direction referenced an unknown territory action"
+                )
             if any(
                 fact_id not in territory.compatible_fact_ids
                 for fact_id in direction.fact_ids
@@ -159,6 +231,17 @@ def validate_creative_direction_plan(
         }
         if dict(actual_slots) != expected_slots:
             raise ValueError("creative directions do not follow landscape target slots")
+        for territory in landscape.territories:
+            realized_ids = {
+                fact_id
+                for direction in directions
+                if direction.territory_id == territory.territory_id
+                for fact_id in direction.fact_ids
+            }
+            if not set(territory.required_fact_ids).issubset(realized_ids):
+                raise ValueError(
+                    "creative directions did not cover territory required facts"
+                )
     plan_payload = [item.model_dump(mode="json", by_alias=True) for item in directions]
     return CreativeDirectionPlan(
         directions=directions,
@@ -177,7 +260,9 @@ def validate_creative_direction_audit(
     direction_ids = {item.direction_id for item in plan.directions}
     audit_ids = [item.direction_id for item in response.items]
     if len(audit_ids) != len(set(audit_ids)) or set(audit_ids) != direction_ids:
-        raise ValueError("creative direction audit must cover every direction exactly once")
+        raise ValueError(
+            "creative direction audit must cover every direction exactly once"
+        )
     for item in response.items:
         territory = landscape.by_id.get(item.realized_territory_id)
         if territory is None:

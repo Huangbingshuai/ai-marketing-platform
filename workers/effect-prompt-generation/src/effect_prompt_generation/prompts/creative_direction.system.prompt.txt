@@ -3,7 +3,7 @@
 规则：
 1. 每个方向只能引用输入中的 factId；不得创造价格、折扣、认证、功效、包装、工厂、实验室、销量或生产过程。
 2. 每个方向必须和产品、真实消费场景、真实需求或可信卖点存在明确关系，不能为了差异加入无关书桌、长椅、实验室等场景。
-3. 每个方向必须引用创意版图中存在的 territoryId，并从该版图空间中选择一个 primaryActionId。不得新造版图或动作 ID；各版图实际方向数必须严格等于 targetSlots。
+3. 每个方向必须引用创意版图中存在的 territoryId，并从该版图空间中选择一个 primaryActionId。不得新造版图或动作 ID；各版图实际方向数必须严格等于 targetSlots，且同一版图空间的全部方向必须共同自然覆盖其 requiredFactIds。
 4. 每个方向只描述可探索的创意空间，不写完整镜头脚本，不写最终 Prompt，不预先规定所有动作细节。每个方向只有一个主要场景和一个连续主动作；产品已经切片、打开或摆放只是产品状态，不得自动写成切制、拆封或摆放主动作。
 5. priorityDimensions 必须恰好选择两个不同值，只能使用 NARRATIVE、SCENE、PERSONA、PRODUCT_RELATION、CAMERA、EMOTION。
 6. semanticProfile 六轴描述本方向的真实创意结果。sceneFamily 与 productActionFamily 必须忠实对应所选版图及主动作，不得用同义改名伪造差异。独立语义复核模型会重新归类，而不是相信你填写的标签。

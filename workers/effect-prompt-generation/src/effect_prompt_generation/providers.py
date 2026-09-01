@@ -135,6 +135,27 @@ class AiCallResult(Generic[TModel]):
     metadata: AiCallMetadata
 
 
+def _fact_alias_maps(
+    application: InsightApplicationMap,
+) -> tuple[dict[str, str], dict[str, str]]:
+    aliases = {
+        fact.fact_id: f"F{index + 1}" for index, fact in enumerate(application.usable)
+    }
+    return aliases, {alias: fact_id for fact_id, alias in aliases.items()}
+
+
+def _remap_fact_references(value: Any, mapping: Mapping[str, str]) -> Any:
+    if isinstance(value, str):
+        return mapping.get(value, value)
+    if isinstance(value, list):
+        return [_remap_fact_references(item, mapping) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _remap_fact_references(item, mapping) for key, item in value.items()
+        }
+    return value
+
+
 class AiProvider(Protocol):
     execution_mode: str
 
@@ -150,6 +171,7 @@ class AiProvider(Protocol):
         fact_visual_strategy: FactVisualStrategy,
         shared_prompt: SharedPrompt,
         target_count: int,
+        revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDiversityLandscapeResponse]: ...
 
     async def plan_creative_directions(
@@ -213,8 +235,9 @@ class MockAiProvider:
         fact_visual_strategy: FactVisualStrategy,
         shared_prompt: SharedPrompt,
         target_count: int,
+        revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDiversityLandscapeResponse]:
-        del fact_visual_strategy, shared_prompt
+        del fact_visual_strategy, shared_prompt, revision_context
         return _mock_result(
             _mock_creative_landscape_response(
                 application,
@@ -368,8 +391,10 @@ class ArkResponsesProvider:
         self,
         application: InsightApplicationMap,
     ) -> AiCallResult[FactVisualStrategyResponse]:
-        facts = [
-            fact.model_dump(
+        fact_aliases, fact_ids_by_alias = _fact_alias_maps(application)
+        facts = []
+        for fact in application.usable:
+            payload = fact.model_dump(
                 mode="json",
                 by_alias=True,
                 exclude={
@@ -379,8 +404,8 @@ class ArkResponsesProvider:
                     "value_hash",
                 },
             )
-            for fact in application.usable
-        ]
+            payload["factId"] = fact_aliases[fact.fact_id]
+            facts.append(payload)
         if not facts:
             raise ProviderError(
                 "fact visual strategy requires confirmed insight facts",
@@ -391,7 +416,7 @@ class ArkResponsesProvider:
             FACT_VISUAL_STRATEGY_TASK_PROMPT,
             facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
         )
-        return await self._structured(
+        call = await self._structured(
             prompt,
             FactVisualStrategyResponse,
             schema_name="effect_prompt_fact_visual_strategy",
@@ -405,6 +430,25 @@ class ArkResponsesProvider:
             request_timeout=self._strategy_timeout,
             instructions=load_prompt(FACT_VISUAL_STRATEGY_BASE_PROMPT),
         )
+        return AiCallResult(
+            value=FactVisualStrategyResponse(
+                policies=[
+                    policy.model_copy(
+                        update={
+                            "fact_id": fact_ids_by_alias.get(
+                                policy.fact_id, policy.fact_id
+                            ),
+                            "compatible_fact_ids": [
+                                fact_ids_by_alias.get(fact_id, fact_id)
+                                for fact_id in policy.compatible_fact_ids
+                            ],
+                        }
+                    )
+                    for policy in call.value.policies
+                ]
+            ),
+            metadata=call.metadata,
+        )
 
     async def plan_creative_landscape(
         self,
@@ -413,10 +457,12 @@ class ArkResponsesProvider:
         fact_visual_strategy: FactVisualStrategy,
         shared_prompt: SharedPrompt,
         target_count: int,
+        revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDiversityLandscapeResponse]:
+        fact_aliases, fact_ids_by_alias = _fact_alias_maps(application)
         facts = [
             {
-                "factId": fact.fact_id,
+                "factId": fact_aliases[fact.fact_id],
                 "field": fact.field.value,
                 "value": fact.value,
                 "policy": fact.policy.value,
@@ -425,7 +471,7 @@ class ArkResponsesProvider:
         ]
         visual_policies = [
             {
-                "factId": policy.fact_id,
+                "factId": fact_aliases[policy.fact_id],
                 "visualUsage": policy.visual_usage.value,
                 "visualInstruction": policy.visual_instruction,
                 "contextInstruction": policy.context_instruction,
@@ -444,6 +490,13 @@ class ArkResponsesProvider:
         prompt = render_prompt(
             CREATIVE_LANDSCAPE_TASK_PROMPT,
             target_direction_count=str(creative_direction_target_count(target_count)),
+            required_fact_ids_json=json.dumps(
+                [
+                    fact_aliases[fact.fact_id]
+                    for fact in mandatory_business_facts(application)
+                ],
+                ensure_ascii=False,
+            ),
             facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
             fact_visual_strategy_json=json.dumps(
                 visual_policies, ensure_ascii=False, sort_keys=True
@@ -454,8 +507,13 @@ class ArkResponsesProvider:
             visual_style_baseline_json=json.dumps(
                 visual_style_baseline or "未设置", ensure_ascii=False
             ),
+            revision_context_json=json.dumps(
+                _remap_fact_references(revision_context or {}, fact_aliases),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
         )
-        return await self._structured(
+        call = await self._structured(
             prompt,
             CreativeDiversityLandscapeResponse,
             schema_name="effect_prompt_creative_landscape",
@@ -469,6 +527,26 @@ class ArkResponsesProvider:
             request_timeout=self._strategy_timeout,
             instructions=load_prompt(CREATIVE_LANDSCAPE_BASE_PROMPT),
         )
+        return AiCallResult(
+            value=CreativeDiversityLandscapeResponse(
+                territories=[
+                    territory.model_copy(
+                        update={
+                            "compatible_fact_ids": [
+                                fact_ids_by_alias.get(fact_id, fact_id)
+                                for fact_id in territory.compatible_fact_ids
+                            ],
+                            "required_fact_ids": [
+                                fact_ids_by_alias.get(fact_id, fact_id)
+                                for fact_id in territory.required_fact_ids
+                            ],
+                        }
+                    )
+                    for territory in call.value.territories
+                ]
+            ),
+            metadata=call.metadata,
+        )
 
     async def plan_creative_directions(
         self,
@@ -480,9 +558,10 @@ class ArkResponsesProvider:
         target_count: int,
         revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDirectionResponse]:
+        fact_aliases, fact_ids_by_alias = _fact_alias_maps(application)
         facts = [
             {
-                "factId": fact.fact_id,
+                "factId": fact_aliases[fact.fact_id],
                 "field": fact.field.value,
                 "value": fact.value,
                 "policy": fact.policy.value,
@@ -491,7 +570,7 @@ class ArkResponsesProvider:
         ]
         visual_policies = [
             {
-                "factId": policy.fact_id,
+                "factId": fact_aliases[policy.fact_id],
                 "visualUsage": policy.visual_usage.value,
                 "visualInstruction": policy.visual_instruction,
                 "contextInstruction": policy.context_instruction,
@@ -526,20 +605,23 @@ class ArkResponsesProvider:
                 ensure_ascii=False,
             ),
             creative_landscape_json=json.dumps(
-                [
-                    item.model_dump(mode="json", by_alias=True)
-                    for item in landscape.territories
-                ],
+                _remap_fact_references(
+                    [
+                        item.model_dump(mode="json", by_alias=True)
+                        for item in landscape.territories
+                    ],
+                    fact_aliases,
+                ),
                 ensure_ascii=False,
                 sort_keys=True,
             ),
             revision_context_json=json.dumps(
-                revision_context or {},
+                _remap_fact_references(revision_context or {}, fact_aliases),
                 ensure_ascii=False,
                 sort_keys=True,
             ),
         )
-        return await self._structured(
+        call = await self._structured(
             prompt,
             CreativeDirectionResponse,
             schema_name="effect_prompt_creative_direction_plan",
@@ -549,6 +631,29 @@ class ArkResponsesProvider:
             max_output_tokens=self._strategy_max_output_tokens,
             request_timeout=self._strategy_timeout,
             instructions=load_prompt(CREATIVE_DIRECTION_BASE_PROMPT),
+        )
+        return AiCallResult(
+            value=CreativeDirectionResponse(
+                directions=[
+                    direction.model_copy(
+                        update={
+                            "fact_applications": [
+                                application.model_copy(
+                                    update={
+                                        "fact_id": fact_ids_by_alias.get(
+                                            application.fact_id,
+                                            application.fact_id,
+                                        )
+                                    }
+                                )
+                                for application in direction.fact_applications
+                            ]
+                        }
+                    )
+                    for direction in call.value.directions
+                ]
+            ),
+            metadata=call.metadata,
         )
 
     async def audit_creative_directions(
@@ -684,9 +789,7 @@ class ArkResponsesProvider:
                 )
             )
             unassigned = [
-                fact_id
-                for fact_id in fact_ids
-                if fact_id not in assignment.fact_ids
+                fact_id for fact_id in fact_ids if fact_id not in assignment.fact_ids
             ]
             if unassigned or set(fact_ids) != set(assignment.fact_ids):
                 rejected_item_count += 1
@@ -702,13 +805,11 @@ class ArkResponsesProvider:
                 )
                 for evidence in item.fact_evidence
             ]
-            if (
-                {evidence.fact_id for evidence in normalized_evidence}
-                != set(assignment.fact_ids)
-                or any(
-                    not _candidate_fact_evidence_exists(item, evidence)
-                    for evidence in normalized_evidence
-                )
+            if {evidence.fact_id for evidence in normalized_evidence} != set(
+                assignment.fact_ids
+            ) or any(
+                not _candidate_fact_evidence_exists(item, evidence)
+                for evidence in normalized_evidence
             ):
                 rejected_item_count += 1
                 continue
@@ -1152,15 +1253,25 @@ def _mock_creative_landscape_response(
     direction_count: int,
 ) -> CreativeDiversityLandscapeResponse:
     business_facts = mandatory_business_facts(application) or application.usable
-    fact_ids = [item.fact_id for item in business_facts]
-    territory_count = min(len(_MOCK_DIRECTION_ROWS), direction_count)
+    required_pool = list(
+        {fact.fact_id: fact for fact in [*business_facts, *application.usable]}.values()
+    )
+    fact_ids = [item.fact_id for item in application.usable]
+    territory_count = min(
+        len(_MOCK_DIRECTION_ROWS), direction_count, len(required_pool)
+    )
     base_slots, extra = divmod(direction_count, territory_count)
+    required_by_territory = [
+        [fact.fact_id for fact in required_pool[index::territory_count]]
+        for index in range(territory_count)
+    ]
     return CreativeDiversityLandscapeResponse(
         territories=[
             CreativeTerritory(
                 territory_id=f"TERRITORY_{index + 1:02d}",
                 label=row[1],
                 compatible_fact_ids=fact_ids,
+                required_fact_ids=required_by_territory[index],
                 scene_boundary=f"只在{row[1]}内形成一个主要场景",
                 actions=[
                     CreativeTerritoryAction(
@@ -1223,15 +1334,47 @@ def _mock_creative_direction_response(
         4,
         max(
             min(2, len(business_facts)),
-            (len(business_facts) + sum(item.target_slots for item in landscape.territories) - 1)
+            (
+                len(business_facts)
+                + sum(item.target_slots for item in landscape.territories)
+                - 1
+            )
             // sum(item.target_slots for item in landscape.territories),
         ),
     )
     direction_rows = [
-        (territory, _MOCK_DIRECTION_ROWS[index % len(_MOCK_DIRECTION_ROWS)])
+        (
+            territory,
+            local_index,
+            _MOCK_DIRECTION_ROWS[index % len(_MOCK_DIRECTION_ROWS)],
+        )
         for index, territory in enumerate(landscape.territories)
-        for _ in range(territory.target_slots)
+        for local_index in range(territory.target_slots)
     ]
+
+    def assigned_facts(
+        territory: CreativeTerritory,
+        local_index: int,
+        global_index: int,
+    ) -> list[Any]:
+        required = [
+            fact
+            for fact in business_facts
+            if fact.fact_id
+            in territory.required_fact_ids[local_index :: territory.target_slots]
+        ]
+        rotated = (
+            business_facts[(global_index * bundle_size) % len(business_facts) :]
+            + business_facts[: (global_index * bundle_size) % len(business_facts)]
+        )
+        return list(
+            {
+                fact.fact_id: fact
+                for fact in [*required, *rotated]
+                if fact.fact_id in territory.compatible_fact_ids
+            }.values()
+        )[: max(bundle_size, min(4, len(required)))]
+
     return CreativeDirectionResponse(
         directions=[
             CreativeDirection(
@@ -1245,14 +1388,7 @@ def _mock_creative_direction_response(
                             f"让“{fact.value}”自然决定本方向的人物、场景或产品表达"
                         ),
                     )
-                    for fact in (
-                        business_facts[
-                            (index * bundle_size) % len(business_facts) :
-                        ]
-                        + business_facts[
-                            : (index * bundle_size) % len(business_facts)
-                        ]
-                    )[:bundle_size]
+                    for fact in assigned_facts(territory, local_index, index)
                 ],
                 creative_direction=(
                     f"围绕{row[1]}中的{row[3]}建立第{index + 1}个连续产品画面"
@@ -1268,7 +1404,7 @@ def _mock_creative_direction_response(
                 ),
                 avoid_families=["重复厨房切制"],
             )
-            for index, (territory, row) in enumerate(direction_rows)
+            for index, (territory, local_index, row) in enumerate(direction_rows)
         ]
     )
 
@@ -1382,11 +1518,7 @@ def _mock_creative_candidate(
         ),
         None,
     )
-    scene_dimension = (
-        scene_fact.value
-        if scene_fact is not None
-        else scene
-    )
+    scene_dimension = scene_fact.value if scene_fact is not None else scene
     product_relation = "；".join(fact.value for fact in assigned_facts)
     return CreativeCandidate(
         slot_id=task.slot_id,
@@ -1443,9 +1575,7 @@ def _creative_fact_assignment(
             preferred_fact_ids=task.preferred_fact_ids,
         )[0]
     missing = [
-        fact_id
-        for fact_id in assignment.fact_ids
-        if fact_id not in application.by_id
+        fact_id for fact_id in assignment.fact_ids if fact_id not in application.by_id
     ]
     if missing:
         raise ProviderError(
@@ -1540,8 +1670,7 @@ def _creative_task_brief(
         "targetDurationSeconds": task.target_duration_seconds,
         "temporalIntent": temporal_intent,
         "factApplications": [
-            fact_application_payload(fact_id)
-            for fact_id in assignment.fact_ids
+            fact_application_payload(fact_id) for fact_id in assignment.fact_ids
         ],
         "productSnapshot": _product_snapshot(application),
         "forbiddenInferences": (

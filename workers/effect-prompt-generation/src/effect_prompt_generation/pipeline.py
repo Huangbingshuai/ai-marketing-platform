@@ -89,6 +89,7 @@ from .creative_directions import (
     allocate_creative_directions,
     complete_semantic_profile,
     creative_direction_audit_revision_context,
+    creative_landscape_revision_context,
     creative_direction_revision_context,
     creative_direction_target_count,
     creative_direction_source_hash,
@@ -611,41 +612,79 @@ class PromptGenerationPipeline:
                 },
             )
             call_rows = []
-            self._reserve_ai_call(context)
-            async with self._ai_semaphore:
-                landscape_call = await self.provider.plan_creative_landscape(
-                    application,
-                    fact_visual_strategy=visual_strategy,
-                    shared_prompt=shared_prompt,
-                    target_count=snapshot.settings.target_count,
-                )
-            call_rows.append(landscape_call.metadata)
-            try:
-                landscape = validate_creative_diversity_landscape(
-                    landscape_call.value,
-                    application,
-                    source_hash=source_hash,
-                    template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
-                    expected_direction_count=expected_direction_count,
-                )
-            except ValueError as exc:
-                raise ProviderError(
-                    "AI 创意版图结构或事实引用无效",
-                    retryable=False,
-                    error_type=ProviderErrorType.RESPONSE_INVALID,
-                ) from exc
+            landscape = None
+            landscape_revision_context: Mapping[str, Any] | None = None
+            for landscape_attempt in range(2):
+                self._reserve_ai_call(context)
+                try:
+                    async with self._ai_semaphore:
+                        landscape_call = await self.provider.plan_creative_landscape(
+                            application,
+                            fact_visual_strategy=visual_strategy,
+                            shared_prompt=shared_prompt,
+                            target_count=snapshot.settings.target_count,
+                            revision_context=landscape_revision_context,
+                        )
+                except ProviderError as exc:
+                    if (
+                        landscape_attempt == 0
+                        and exc.error_type == ProviderErrorType.RESPONSE_INVALID
+                    ):
+                        landscape_revision_context = {
+                            "validationError": "上一版结构化 JSON 不完整",
+                            "revisionInstruction": "重新输出完整的创意版图 JSON。",
+                        }
+                        continue
+                    raise
+                call_rows.append(landscape_call.metadata)
+                try:
+                    landscape = validate_creative_diversity_landscape(
+                        landscape_call.value,
+                        application,
+                        source_hash=source_hash,
+                        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+                        expected_direction_count=expected_direction_count,
+                    )
+                    break
+                except ValueError as exc:
+                    if landscape_attempt == 1:
+                        raise ProviderError(
+                            "AI 创意版图经两次规划后仍存在无效事实分配",
+                            retryable=False,
+                            error_type=ProviderErrorType.RESPONSE_INVALID,
+                            attempts=2,
+                        ) from exc
+                    landscape_revision_context = creative_landscape_revision_context(
+                        landscape_call.value,
+                        application,
+                        validation_error=str(exc),
+                    )
+            if landscape is None:
+                raise PipelineError("创意版图未能形成有效结果")
             revision_context: Mapping[str, Any] | None = None
             for invalid_response_attempt in range(2):
                 self._reserve_ai_call(context)
-                async with self._ai_semaphore:
-                    call = await self.provider.plan_creative_directions(
-                        application,
-                        fact_visual_strategy=visual_strategy,
-                        shared_prompt=shared_prompt,
-                        landscape=landscape,
-                        target_count=snapshot.settings.target_count,
-                        revision_context=revision_context,
-                    )
+                try:
+                    async with self._ai_semaphore:
+                        call = await self.provider.plan_creative_directions(
+                            application,
+                            fact_visual_strategy=visual_strategy,
+                            shared_prompt=shared_prompt,
+                            landscape=landscape,
+                            target_count=snapshot.settings.target_count,
+                            revision_context=revision_context,
+                        )
+                except ProviderError as exc:
+                    if (
+                        invalid_response_attempt == 0
+                        and exc.error_type == ProviderErrorType.RESPONSE_INVALID
+                    ):
+                        revision_context = {
+                            "validationError": "上一版结构化 JSON 不完整",
+                            "revisionInstruction": "重新输出完整的创意方向 JSON。",
+                        }
+                        continue
+                    raise
                 call_rows.append(call.metadata)
                 try:
                     draft_plan = validate_creative_direction_plan(
@@ -671,26 +710,41 @@ class PromptGenerationPipeline:
                             attempts=2,
                         ) from exc
                     continue
-                self._reserve_ai_call(context)
-                async with self._ai_semaphore:
-                    audit_call = await self.provider.audit_creative_directions(
-                        application,
-                        landscape=landscape,
-                        directions=call.value,
-                    )
-                call_rows.append(audit_call.metadata)
-                try:
-                    audit = validate_creative_direction_audit(
-                        audit_call.value,
-                        draft_plan,
-                        landscape,
-                    )
-                except ValueError as exc:
-                    raise ProviderError(
-                        "AI 创意方向语义复核结构无效",
-                        retryable=False,
-                        error_type=ProviderErrorType.RESPONSE_INVALID,
-                    ) from exc
+                audit = None
+                for audit_attempt in range(2):
+                    self._reserve_ai_call(context)
+                    try:
+                        async with self._ai_semaphore:
+                            audit_call = await self.provider.audit_creative_directions(
+                                application,
+                                landscape=landscape,
+                                directions=call.value,
+                            )
+                    except ProviderError as exc:
+                        if (
+                            audit_attempt == 0
+                            and exc.error_type == ProviderErrorType.RESPONSE_INVALID
+                        ):
+                            continue
+                        raise
+                    call_rows.append(audit_call.metadata)
+                    try:
+                        audit = validate_creative_direction_audit(
+                            audit_call.value,
+                            draft_plan,
+                            landscape,
+                        )
+                        break
+                    except ValueError as exc:
+                        if audit_attempt == 1:
+                            raise ProviderError(
+                                "AI 创意方向语义复核结构无效",
+                                retryable=False,
+                                error_type=ProviderErrorType.RESPONSE_INVALID,
+                                attempts=2,
+                            ) from exc
+                if audit is None:
+                    raise PipelineError("创意方向语义复核未能形成有效结果")
                 if audit.requires_revision:
                     revision_context = creative_direction_audit_revision_context(
                         draft_plan,

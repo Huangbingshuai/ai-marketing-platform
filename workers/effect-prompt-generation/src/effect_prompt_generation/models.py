@@ -611,14 +611,18 @@ class CreativeTerritory(ApiModel):
     territory_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
     label: str = Field(min_length=2, max_length=80)
     compatible_fact_ids: list[str] = Field(min_length=1, max_length=40)
+    required_fact_ids: list[str] = Field(min_length=1, max_length=40)
     scene_boundary: str = Field(min_length=4, max_length=180)
     actions: list[CreativeTerritoryAction] = Field(min_length=1, max_length=5)
-    target_slots: int = Field(ge=1, le=16)
+    # Raw AI output may contain zero; the landscape validator rejects it and
+    # gives the model one whole-plan revision instead of silently reallocating.
+    target_slots: int = Field(ge=0, le=16)
     differentiation_goal: str = Field(min_length=4, max_length=180)
 
     @model_validator(mode="after")
     def unique_ids(self) -> CreativeTerritory:
         self.compatible_fact_ids = list(dict.fromkeys(self.compatible_fact_ids))
+        self.required_fact_ids = list(dict.fromkeys(self.required_fact_ids))
         action_ids = [item.action_id for item in self.actions]
         if len(set(action_ids)) != len(action_ids):
             raise ValueError("creative territory action ids must be unique")
@@ -685,10 +689,7 @@ class CreativeDirection(ApiModel):
     @model_validator(mode="after")
     def normalize_direction(self) -> CreativeDirection:
         self.fact_applications = list(
-            {
-                item.fact_id: item
-                for item in self.fact_applications
-            }.values()
+            {item.fact_id: item for item in self.fact_applications}.values()
         )
         self.priority_dimensions = list(dict.fromkeys(self.priority_dimensions))
         self.avoid_families = list(
@@ -719,7 +720,9 @@ class CreativeDirectionAuditItem(ApiModel):
     @field_validator("issues")
     @classmethod
     def clean_issues(cls, values: list[str]) -> list[str]:
-        return list(dict.fromkeys(" ".join(item.split()) for item in values if item.strip()))
+        return list(
+            dict.fromkeys(" ".join(item.split()) for item in values if item.strip())
+        )
 
 
 class CreativeDirectionAuditResponse(ApiModel):
@@ -797,9 +800,7 @@ class CreativeFactAssignment(ApiModel):
     def migrate_legacy_roles(cls, value: Any) -> Any:
         """Read persisted focus and multi-role plans without writing those shapes."""
 
-        if not isinstance(value, dict) or (
-            "factIds" in value or "fact_ids" in value
-        ):
+        if not isinstance(value, dict) or ("factIds" in value or "fact_ids" in value):
             return value
         current_ids = list(
             value.get("allowedFactIds") or value.get("allowed_fact_ids") or []
@@ -890,7 +891,9 @@ class CreativeCandidate(ApiModel):
     round: int = Field(ge=0, le=4)
     creative_core: str = Field(min_length=1, max_length=160)
     declared_fact_ids: list[str] = Field(min_length=1, max_length=12)
-    fact_evidence: list[CreativeFactEvidence] = Field(default_factory=list, max_length=8)
+    fact_evidence: list[CreativeFactEvidence] = Field(
+        default_factory=list, max_length=8
+    )
     dimensions: CreativeDimensions
     content: str = Field(min_length=20, max_length=600)
     generated_at: datetime | None = None
