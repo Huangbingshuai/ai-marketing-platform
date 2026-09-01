@@ -18,6 +18,8 @@ from .models import (
     ExtractionCandidate,
     ExtractionResult,
     ImageVisibleFacts,
+    SemanticField,
+    SemanticFieldSelection,
     SemanticRefinementDecision,
 )
 from .prompt_loader import load_prompt_version, render_prompt
@@ -170,8 +172,22 @@ class MockAiProvider:
         *,
         facts: Sequence[Mapping[str, str]],
     ) -> AiCallResult[SemanticRefinementDecision]:
+        fact_ids_by_field: dict[SemanticField, list[str]] = {}
+        for fact in facts:
+            field = SemanticField(str(fact["field"]))
+            fact_ids_by_field.setdefault(field, []).append(str(fact["factId"]))
         return _mock_result(
-            SemanticRefinementDecision(groups=[]),
+            SemanticRefinementDecision(
+                groups=[],
+                placements=[],
+                selections=[
+                    SemanticFieldSelection(
+                        field=field,
+                        retained_fact_ids=fact_ids,
+                    )
+                    for field, fact_ids in fact_ids_by_field.items()
+                ],
+            ),
             "SEMANTIC_REFINEMENT",
             SEMANTIC_REFINEMENT_PROMPT,
         )
@@ -184,7 +200,9 @@ class MockAiProvider:
         candidate = ExtractionCandidate.empty()
         if content:
             candidate.product_name = content[0][:120]
-            candidate.core_specification = content[1][:240] if len(content) > 1 else None
+            candidate.core_specification = (
+                content[1][:240] if len(content) > 1 else None
+            )
             candidate.core_selling_points = content[2:5] or None
         return _mock_result(candidate, "DOCUMENT", DOCUMENT_EXTRACTION_PROMPT)
 
@@ -198,7 +216,9 @@ class MockAiProvider:
         width = image_metadata.get("processedWidth")
         height = image_metadata.get("processedHeight")
         candidate = ExtractionCandidate.empty()
-        candidate.visual_features = f"{source_name}，图像尺寸 {width}×{height}，产品主体清晰"
+        candidate.visual_features = (
+            f"{source_name}，图像尺寸 {width}×{height}，产品主体清晰"
+        )
         return _mock_result(candidate, "IMAGE", IMAGE_ANALYSIS_PROMPT)
 
     async def extract_commerce(
@@ -213,7 +233,9 @@ class MockAiProvider:
         category = structured_metadata.get("category")
         description = structured_metadata.get("description")
         candidate.product_name = _clean(name) if isinstance(name, str) else None
-        candidate.product_category = _clean(category) if isinstance(category, str) else None
+        candidate.product_category = (
+            _clean(category) if isinstance(category, str) else None
+        )
         if isinstance(description, str) and (cleaned := _clean(description)):
             candidate.secondary_selling_points = [cleaned[:240]]
         if candidate.product_name is None:
@@ -300,7 +322,9 @@ class ArkResponsesProvider:
         self._image_retry_max_output_tokens = max(
             self._image_max_output_tokens, image_retry_max_output_tokens
         )
-        self._image_detail = image_detail if image_detail in {"low", "high", "auto"} else "low"
+        self._image_detail = (
+            image_detail if image_detail in {"low", "high", "auto"} else "low"
+        )
         self._image_reasoning_effort = (
             image_reasoning_effort
             if image_reasoning_effort in {"minimal", "low", "medium", "high"}
@@ -311,7 +335,10 @@ class ArkResponsesProvider:
             base_url=base_url.rstrip("/") + "/",
             timeout=timeout,
             transport=transport,
-            headers={"authorization": f"Bearer {api_key}", "content-type": "application/json"},
+            headers={
+                "authorization": f"Bearer {api_key}",
+                "content-type": "application/json",
+            },
         )
 
     @property
@@ -342,11 +369,11 @@ class ArkResponsesProvider:
             stage="SEMANTIC_REFINEMENT",
             model=self._semantic_model,
             prompt_version=load_prompt_version(SEMANTIC_REFINEMENT_PROMPT),
-            request_timeout=30.0,
+            request_timeout=60.0,
             max_attempts=2,
-            max_output_tokens=1024,
-            retry_max_output_tokens=1536,
-            reasoning_effort="minimal",
+            max_output_tokens=4096,
+            retry_max_output_tokens=6144,
+            reasoning_effort="low",
         )
 
     async def extract_document(
@@ -583,7 +610,9 @@ class ArkResponsesProvider:
                             )
                             retryable = attempt < attempt_limit
                             raise _RetryStructuredResponse
-                        value = model_type.model_validate_json(_output_text(response_payload))
+                        value = model_type.model_validate_json(
+                            _output_text(response_payload)
+                        )
                         usage = _usage(response_payload)
                         metadata = AiCallMetadata(
                             stage=stage,
@@ -592,7 +621,9 @@ class ArkResponsesProvider:
                             input_tokens=usage["inputTokens"],
                             output_tokens=usage["outputTokens"],
                             total_tokens=usage["totalTokens"],
-                            latency_ms=max(0, round((time.perf_counter() - started_at) * 1000)),
+                            latency_ms=max(
+                                0, round((time.perf_counter() - started_at) * 1000)
+                            ),
                             attempts=attempt,
                             reasoning_tokens=usage["reasoningTokens"],
                         )
@@ -699,7 +730,11 @@ class _RetryStructuredResponse(Exception):
 
 
 def _token(value: Any) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        else None
+    )
 
 
 def _usage(payload: Any) -> dict[str, int | None]:
@@ -716,7 +751,9 @@ def _usage(payload: Any) -> dict[str, int | None]:
         "outputTokens": _token(usage.get("output_tokens", usage.get("outputTokens"))),
         "totalTokens": _token(usage.get("total_tokens", usage.get("totalTokens"))),
         "reasoningTokens": _token(
-            output_details.get("reasoning_tokens", output_details.get("reasoningTokens"))
+            output_details.get(
+                "reasoning_tokens", output_details.get("reasoningTokens")
+            )
         ),
     }
 

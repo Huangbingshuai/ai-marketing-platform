@@ -222,13 +222,25 @@ class SemanticRelation(StrEnum):
 
 class SemanticGroup(ApiModel):
     field: SemanticField
-    member_fact_ids: list[str] = Field(min_length=2, max_length=5)
+    member_fact_ids: list[str] = Field(min_length=2, max_length=10)
     representative_fact_id: str
     relation: SemanticRelation
 
 
+class SemanticPlacement(ApiModel):
+    fact_id: str
+    target_field: SemanticField
+
+
+class SemanticFieldSelection(ApiModel):
+    field: SemanticField
+    retained_fact_ids: list[str] = Field(min_length=1, max_length=10)
+
+
 class SemanticRefinementDecision(ApiModel):
-    groups: list[SemanticGroup] = Field(max_length=20)
+    groups: list[SemanticGroup] = Field(max_length=30)
+    placements: list[SemanticPlacement] = Field(max_length=20)
+    selections: list[SemanticFieldSelection] = Field(max_length=7)
 
 
 class BranchName(StrEnum):

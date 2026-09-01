@@ -8,6 +8,7 @@ from effect_extraction.models import (
     ExtractionResult,
     ImageVisibleFacts,
     SemanticField,
+    SemanticFieldSelection,
     SemanticGroup,
     SemanticRefinementDecision,
     SemanticRelation,
@@ -649,7 +650,7 @@ async def test_ark_provider_sanitizes_exhausted_remote_protocol_disconnects(
 
 
 @pytest.mark.asyncio
-async def test_ark_provider_uses_one_minimal_reasoning_semantic_request() -> None:
+async def test_ark_provider_uses_one_low_reasoning_semantic_request() -> None:
     requests: list[tuple[str, dict[str, object]]] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -663,7 +664,14 @@ async def test_ark_provider_uses_one_minimal_reasoning_semantic_request() -> Non
                     representative_fact_id="corePainPoints-01",
                     relation=SemanticRelation.SAME_MEANING,
                 )
-            ]
+            ],
+            placements=[],
+            selections=[
+                SemanticFieldSelection(
+                    field=SemanticField.CORE_PAIN_POINTS,
+                    retained_fact_ids=["corePainPoints-01"],
+                )
+            ],
         )
         return httpx.Response(
             200, json={"output_text": decision.model_dump_json(by_alias=True)}
@@ -702,7 +710,7 @@ async def test_ark_provider_uses_one_minimal_reasoning_semantic_request() -> Non
     ]
     semantic_payload = requests[-1][1]
     assert semantic_payload["store"] is False
-    assert semantic_payload["reasoning"] == {"effort": "minimal"}
-    assert semantic_payload["max_output_tokens"] == 1024
+    assert semantic_payload["reasoning"] == {"effort": "low"}
+    assert semantic_payload["max_output_tokens"] == 4096
     assert semantic_payload["text"]["format"]["name"] == "effect_semantic_refinement"  # type: ignore[index]
     assert "embeddings" not in requests[-1][0]

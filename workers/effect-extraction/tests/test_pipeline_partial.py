@@ -871,6 +871,8 @@ async def test_normalization_keeps_user_price_and_secondary_points_before_image_
         "外观油润有光泽",
         "切片纹理清晰",
         "肠体形态规整",
+        "整根切片同展便于判断形态",
+        "福字中国结烘托节庆氛围",
     ]
     assert normalization.candidate.target_audience == image.target_audience
     assert normalization.candidate.core_pain_points == image.core_pain_points
@@ -930,6 +932,10 @@ def test_semantic_candidate_sends_all_selling_points_with_source_authority() -> 
         "肥瘦纹理清晰透亮",
         "切片油润有光泽",
     ]
+    image.secondary_selling_points = [
+        "整根形态规整均匀",
+        "切片形态规整层次分明",
+    ]
 
     fusion = ExtractionCandidate.empty()
     candidate, sources = _prepare_semantic_candidate(
@@ -959,10 +965,13 @@ def test_semantic_candidate_sends_all_selling_points_with_source_authority() -> 
         "整根与切片同展直观展示形态",
         "肥瘦纹理清晰透亮",
         "切片油润有光泽",
+        "整根形态规整均匀",
+        "切片形态规整层次分明",
     ]
     secondary_sources = sources["secondarySellingPoints"]
     assert secondary_sources["切片均匀、形态规整"] == "USER_FACT"
     assert secondary_sources["肥瘦相间纹理清晰"] == "IMAGE_SUGGESTION"
+    assert secondary_sources["切片形态规整层次分明"] == "IMAGE_SUGGESTION"
 
 
 def test_authoritative_source_restoration_caps_secondary_selling_points_at_ten() -> (

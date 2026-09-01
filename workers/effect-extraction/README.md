@@ -77,7 +77,7 @@ materials[]
 
 可选资源限制：`DOCLING_ARTIFACTS_PATH`、`DOCLING_MAX_FILE_SIZE`、`DOCLING_MAX_NUM_PAGES`、`MAX_DOCUMENT_TEXT_CHARS`、`MAX_COMMERCE_TEXT_CHARS`、`COMMERCE_STATIC_CONNECT_TIMEOUT_SECONDS`、`COMMERCE_STATIC_READ_TIMEOUT_SECONDS`、`COMMERCE_RENDERER_CLIENT_TIMEOUT_SECONDS`、`IMAGE_MAX_INPUT_BYTES`、`IMAGE_MAX_DIMENSION`、`IMAGE_MAX_OUTPUT_BYTES`、`OMP_NUM_THREADS`。
 
-Worker 默认使用 `ark`。文档、图片和语义整理专用模型为空时回退到 `ARK_MODEL`；电商模型为空时先回退到 `ARK_DOCUMENT_MODEL`，再回退到 `ARK_MODEL`。NORMALIZATION 正常路径不调用模型，仅在确定性契约构造异常时使用可选的标准化模型兜底。语义整理默认使用 `doubao-seed-2-0-mini-260428`，通过一次最小思考的严格 Schema 请求判断小规模事实关系；模型只能选择已有事实 ID，不能生成新事实，`SAME_FAMILY` 只分组、不删除原始表达。同义、父子和同主题关系完全由语义模型判断，Worker 不再使用字符相似、关键词、修饰语名单或文本包含关系复判语义，只校验事实 ID、字段归属、结构合法性和来源权限：用户事实不会被另一条建议覆盖，多个用户事实不会因模型分组而被删除。没有可比较的同字段信息时不调用模型。缺少 Key 时会在消费消息前启动失败，不会静默降级。专用模型调用失败时不会自动换用回退模型。`mock` 只能通过 `EXTRACTION_AI_PROVIDER=mock` 显式启用，供自动测试和本地无模型联调使用。Ark Provider 使用 Responses API 的 `text.format=json_schema` 强制结构化输出，随后仍由 Pydantic 二次校验。
+Worker 默认使用 `ark`。文档、图片和语义整理专用模型为空时回退到 `ARK_MODEL`；电商模型为空时先回退到 `ARK_DOCUMENT_MODEL`，再回退到 `ARK_MODEL`。NORMALIZATION 正常路径不调用模型，仅在确定性契约构造异常时使用可选的标准化模型兜底。语义整理默认跟随 `doubao-seed-2-1-turbo-260628`，通过一次低思考强度的严格 Schema 请求完成跨字段归类、同义/父子/同主题关系判断和字段超量择优。模型只能选择已有事实 ID，不能生成、改写或概括事实；Worker 不再使用字符相似、关键词、修饰语名单、文本包含或业务关键词复判语义，只校验事实 ID、来源权限、字段数量和 JSON 结构。用户事实不能移动、不能被图片建议覆盖，也不能因模型分组或择优被删除；AI 图片建议可以由模型移动到更合理的卖点、痛点、决策动因或场景字段。少于两条可整理事实时不调用模型。缺少 Key 时会在消费消息前启动失败，不会静默降级。专用模型调用失败时不会自动换用回退模型。`mock` 只能通过 `EXTRACTION_AI_PROVIDER=mock` 显式启用，供自动测试和本地无模型联调使用。Ark Provider 使用 Responses API 的 `text.format=json_schema` 强制结构化输出，随后仍由 Pydantic 二次校验。
 
 每次成功的模型调用会把阶段、实际配置模型、提示词版本、Token 用量、总延迟和尝试次数写入内部 Branch metadata 的 `aiCall`。确定性 DOCUMENT 与 NORMALIZATION 路径分别记录解析/标准化模式且不伪造模型调用指标。方舟响应不含 usage 时 Token 字段为 `null`，不会影响业务结果。该指标不包含 Prompt、文档正文、图片 Base64、密钥或完整模型输出，也不会通过普通节点详情接口直接返回。
 
@@ -87,7 +87,7 @@ Worker 默认使用 `ark`。文档、图片和语义整理专用模型为空时�
 
 - `document_extraction.prompt.txt`：文档资料抽取。
 - `image_analysis.prompt.txt`：产品图片识别。
-- `semantic_refinement.prompt.txt`：同字段语义重复归并。
+- `semantic_refinement.prompt.txt`：跨字段语义归类、关系判断和字段择优。
 - `commerce_extraction.prompt.txt`：把公开商品页的结构化元数据和清洗正文作为不可信资料抽取，不执行网页内指令。
 - `result_normalization.prompt.txt`：融合结果标准化。
 

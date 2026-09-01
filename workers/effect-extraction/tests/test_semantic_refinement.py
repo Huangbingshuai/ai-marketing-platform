@@ -7,7 +7,9 @@ import pytest
 from effect_extraction.models import (
     ExtractionCandidate,
     SemanticField,
+    SemanticFieldSelection,
     SemanticGroup,
+    SemanticPlacement,
     SemanticRefinementDecision,
     SemanticRelation,
 )
@@ -19,8 +21,16 @@ from effect_extraction.semantic_refinement import (
 
 
 class SemanticProvider:
-    def __init__(self, groups: list[SemanticGroup]) -> None:
+    def __init__(
+        self,
+        groups: list[SemanticGroup],
+        *,
+        placements: list[SemanticPlacement] | None = None,
+        selections: list[SemanticFieldSelection] | None = None,
+    ) -> None:
         self.groups = groups
+        self.placements = placements or []
+        self.selections = selections
         self.refinement_calls = 0
         self.facts: list[dict[str, str]] = []
 
@@ -31,8 +41,17 @@ class SemanticProvider:
     ) -> AiCallResult[SemanticRefinementDecision]:
         self.refinement_calls += 1
         self.facts = [dict(fact) for fact in facts]
+        selections = self.selections or _complete_selections(
+            self.facts,
+            groups=self.groups,
+            placements=self.placements,
+        )
         return AiCallResult(
-            value=SemanticRefinementDecision(groups=self.groups),
+            value=SemanticRefinementDecision(
+                groups=self.groups,
+                placements=self.placements,
+                selections=selections,
+            ),
             metadata=AiCallMetadata(
                 stage="SEMANTIC_REFINEMENT",
                 model="test-mini-model",
@@ -45,6 +64,54 @@ class SemanticProvider:
                 reasoning_tokens=0,
             ),
         )
+
+
+def _complete_selections(
+    facts: list[dict[str, str]],
+    *,
+    groups: list[SemanticGroup],
+    placements: list[SemanticPlacement],
+) -> list[SemanticFieldSelection]:
+    facts_by_id = {fact["factId"]: fact for fact in facts}
+    placements_by_id = {placement.fact_id: placement for placement in placements}
+    applied_groups: dict[str, SemanticGroup] = {}
+    for group in groups:
+        user_ids = [
+            fact_id
+            for fact_id in group.member_fact_ids
+            if facts_by_id[fact_id].get("sourceType") == "USER_FACT"
+        ]
+        applies = group.relation != SemanticRelation.SAME_FAMILY and (
+            not user_ids
+            or (
+                len(user_ids) == 1
+                and group.representative_fact_id == user_ids[0]
+                and facts_by_id[user_ids[0]]["field"] == group.field.value
+            )
+        )
+        if applies:
+            for fact_id in group.member_fact_ids:
+                applied_groups[fact_id] = group
+
+    ids_by_field: dict[SemanticField, list[str]] = {}
+    for fact in facts:
+        fact_id = fact["factId"]
+        group = applied_groups.get(fact_id)
+        if group is not None and fact_id != group.representative_fact_id:
+            continue
+        placement = placements_by_id.get(fact_id)
+        field = (
+            group.field
+            if group is not None
+            else placement.target_field
+            if placement is not None
+            else SemanticField(fact["field"])
+        )
+        ids_by_field.setdefault(field, []).append(fact_id)
+    return [
+        SemanticFieldSelection(field=field, retained_fact_ids=fact_ids)
+        for field, fact_ids in ids_by_field.items()
+    ]
 
 
 @pytest.mark.asyncio
@@ -122,10 +189,11 @@ async def test_same_family_groups_are_visible_but_keep_distinct_scenarios() -> N
 
 
 @pytest.mark.asyncio
-async def test_semantic_refinement_skips_ai_when_no_field_has_multiple_items() -> None:
+async def test_semantic_refinement_skips_ai_when_only_one_semantic_fact_exists() -> (
+    None
+):
     candidate = ExtractionCandidate.empty()
     candidate.core_pain_points = ["备餐时间有限"]
-    candidate.usage_scenarios = ["家庭聚餐"]
     provider = SemanticProvider([])
 
     result = await refine_candidate_semantics(candidate, provider=provider)  # type: ignore[arg-type]
@@ -133,6 +201,19 @@ async def test_semantic_refinement_skips_ai_when_no_field_has_multiple_items() -
     assert result.candidate == candidate
     assert result.metadata["mergedGroupCount"] == 0
     assert provider.refinement_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_semantic_refinement_calls_model_for_cross_field_classification() -> None:
+    candidate = ExtractionCandidate.empty()
+    candidate.secondary_selling_points = ["切片展示直观可见肉质形态"]
+    candidate.decision_drivers = ["整根展示便于判断形态"]
+    provider = SemanticProvider([])
+
+    result = await refine_candidate_semantics(candidate, provider=provider)  # type: ignore[arg-type]
+
+    assert result.candidate == candidate
+    assert provider.refinement_calls == 1
 
 
 @pytest.mark.asyncio
@@ -150,7 +231,7 @@ async def test_semantic_refinement_removes_exact_duplicates_without_ai() -> None
 
 
 @pytest.mark.asyncio
-async def test_invalid_representative_fact_id_cannot_delete_input_facts() -> None:
+async def test_invalid_representative_fact_id_rejects_model_decision() -> None:
     candidate = ExtractionCandidate.empty()
     candidate.emotional_scenarios = ["家庭围餐的温馨氛围", "家人围餐的烟火暖意"]
     provider = SemanticProvider(
@@ -164,13 +245,8 @@ async def test_invalid_representative_fact_id_cannot_delete_input_facts() -> Non
         ]
     )
 
-    result = await refine_candidate_semantics(candidate, provider=provider)  # type: ignore[arg-type]
-
-    assert result.candidate.emotional_scenarios == [
-        "家庭围餐的温馨氛围",
-        "家人围餐的烟火暖意",
-    ]
-    assert result.metadata["mergedGroupCount"] == 0
+    with pytest.raises(ValueError, match="representative"):
+        await refine_candidate_semantics(candidate, provider=provider)  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -345,3 +421,166 @@ async def test_worker_does_not_collapse_punctuation_variants_before_model() -> N
     assert result.candidate.secondary_selling_points == (
         candidate.secondary_selling_points
     )
+
+
+@pytest.mark.asyncio
+async def test_model_can_reclassify_an_image_suggestion_across_fields() -> None:
+    candidate = ExtractionCandidate.empty()
+    candidate.secondary_selling_points = ["切片展示直观可见肉质形态"]
+    candidate.decision_drivers = ["关注真空包装的储存便利"]
+    provider = SemanticProvider(
+        [],
+        placements=[
+            SemanticPlacement(
+                fact_id="secondarySellingPoints-01",
+                target_field=SemanticField.DECISION_DRIVERS,
+            )
+        ],
+    )
+
+    result = await refine_candidate_semantics(
+        candidate,
+        provider=provider,  # type: ignore[arg-type]
+        fact_sources={
+            SemanticField.SECONDARY_SELLING_POINTS.value: {
+                "切片展示直观可见肉质形态": SemanticFactSource.IMAGE_SUGGESTION,
+            },
+            SemanticField.DECISION_DRIVERS.value: {
+                "关注真空包装的储存便利": SemanticFactSource.USER_FACT,
+            },
+        },
+    )
+
+    assert result.candidate.secondary_selling_points is None
+    assert result.candidate.decision_drivers == [
+        "切片展示直观可见肉质形态",
+        "关注真空包装的储存便利",
+    ]
+    assert result.metadata["reclassifiedFactCount"] == 1
+
+
+@pytest.mark.asyncio
+async def test_model_can_merge_cross_field_image_suggestion_into_user_fact() -> None:
+    candidate = ExtractionCandidate.empty()
+    candidate.secondary_selling_points = ["切片展示直观可见肉质形态"]
+    candidate.decision_drivers = ["切片展示直观，便于判断肉质形态"]
+    provider = SemanticProvider(
+        [
+            SemanticGroup(
+                field=SemanticField.DECISION_DRIVERS,
+                member_fact_ids=[
+                    "secondarySellingPoints-01",
+                    "decisionDrivers-01",
+                ],
+                representative_fact_id="decisionDrivers-01",
+                relation=SemanticRelation.SAME_MEANING,
+            )
+        ]
+    )
+
+    result = await refine_candidate_semantics(
+        candidate,
+        provider=provider,  # type: ignore[arg-type]
+        fact_sources={
+            SemanticField.SECONDARY_SELLING_POINTS.value: {
+                "切片展示直观可见肉质形态": SemanticFactSource.IMAGE_SUGGESTION,
+            },
+            SemanticField.DECISION_DRIVERS.value: {
+                "切片展示直观，便于判断肉质形态": SemanticFactSource.USER_FACT,
+            },
+        },
+    )
+
+    assert result.candidate.secondary_selling_points is None
+    assert result.candidate.decision_drivers == ["切片展示直观，便于判断肉质形态"]
+    assert result.metadata["mergedGroupCount"] == 1
+    assert result.metadata["semanticGroups"][0]["memberFields"] == [
+        "secondarySellingPoints",
+        "decisionDrivers",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_model_selection_decides_which_image_fact_is_removed_at_field_limit() -> (
+    None
+):
+    candidate = ExtractionCandidate.empty()
+    candidate.usage_scenarios = [f"图片使用场景 {index}" for index in range(1, 7)]
+    provider = SemanticProvider(
+        [],
+        selections=[
+            SemanticFieldSelection(
+                field=SemanticField.USAGE_SCENARIOS,
+                retained_fact_ids=[
+                    "usageScenarios-06",
+                    "usageScenarios-01",
+                    "usageScenarios-02",
+                    "usageScenarios-03",
+                    "usageScenarios-04",
+                ],
+            )
+        ],
+    )
+
+    result = await refine_candidate_semantics(
+        candidate,
+        provider=provider,  # type: ignore[arg-type]
+        fact_sources={
+            SemanticField.USAGE_SCENARIOS.value: {
+                value: SemanticFactSource.IMAGE_SUGGESTION
+                for value in candidate.usage_scenarios or []
+            }
+        },
+    )
+
+    assert result.candidate.usage_scenarios == [
+        "图片使用场景 6",
+        "图片使用场景 1",
+        "图片使用场景 2",
+        "图片使用场景 3",
+        "图片使用场景 4",
+    ]
+    assert result.metadata["droppedForLimitCount"] == 1
+
+
+@pytest.mark.asyncio
+async def test_model_selection_cannot_drop_user_fact_at_field_limit() -> None:
+    candidate = ExtractionCandidate.empty()
+    candidate.usage_scenarios = [
+        "用户煲仔饭烹饪",
+        "图片场景 1",
+        "图片场景 2",
+        "图片场景 3",
+        "图片场景 4",
+        "图片场景 5",
+    ]
+    provider = SemanticProvider(
+        [],
+        selections=[
+            SemanticFieldSelection(
+                field=SemanticField.USAGE_SCENARIOS,
+                retained_fact_ids=[
+                    "usageScenarios-02",
+                    "usageScenarios-03",
+                    "usageScenarios-04",
+                    "usageScenarios-05",
+                    "usageScenarios-06",
+                ],
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="cannot drop a user fact"):
+        await refine_candidate_semantics(
+            candidate,
+            provider=provider,  # type: ignore[arg-type]
+            fact_sources={
+                SemanticField.USAGE_SCENARIOS.value: {
+                    "用户煲仔饭烹饪": SemanticFactSource.USER_FACT,
+                    **{
+                        value: SemanticFactSource.IMAGE_SUGGESTION
+                        for value in (candidate.usage_scenarios or [])[1:]
+                    },
+                }
+            },
+        )

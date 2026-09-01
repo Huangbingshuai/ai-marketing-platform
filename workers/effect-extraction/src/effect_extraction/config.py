@@ -7,7 +7,7 @@ from pydantic import AnyHttpUrl, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_ARK_MODEL = "doubao-seed-2-1-turbo-260628"
-DEFAULT_ARK_SEMANTIC_MODEL = "doubao-seed-2-0-mini-260428"
+DEFAULT_ARK_SEMANTIC_MODEL = DEFAULT_ARK_MODEL
 ARK_KEY_PLACEHOLDERS = {
     "replace-with-your-ark-api-key",
     "your-ark-api-key",

@@ -1059,11 +1059,19 @@ def _prepare_semantic_candidate(
     prepared = fusion_candidate.model_copy(deep=True)
     user_core = _merged_items("core_selling_points", document, commerce, limit=20)
     image_core = _candidate_items(image, "core_selling_points")
+    image_secondary = _candidate_items(image, "secondary_selling_points")
     selected_core = _strings([*user_core[:3], *image_core])[:3]
     selected_core_keys = {item.casefold() for item in selected_core}
-    remaining_image_core = [
-        item for item in image_core if item.casefold() not in selected_core_keys
-    ]
+    image_secondary_candidates = _strings(
+        [
+            *(item for item in image_core if item.casefold() not in selected_core_keys),
+            *(
+                item
+                for item in image_secondary
+                if item.casefold() not in selected_core_keys
+            ),
+        ]
+    )
     user_secondary = _strings(
         [
             *_candidate_items(document, "secondary_selling_points"),
@@ -1073,7 +1081,7 @@ def _prepare_semantic_candidate(
     )
     prepared.core_selling_points = selected_core or None
     prepared.secondary_selling_points = (
-        _strings([*user_secondary, *remaining_image_core]) or None
+        _strings([*user_secondary, *image_secondary_candidates]) or None
     )
 
     sources: dict[str, dict[str, SemanticFactSource]] = {}
@@ -1083,7 +1091,7 @@ def _prepare_semantic_candidate(
             image_values = [item for item in selected_core if item not in user_core]
         elif attr == "secondary_selling_points":
             user_values = user_secondary
-            image_values = remaining_image_core
+            image_values = image_secondary_candidates
         else:
             user_values = _strings(
                 [
@@ -1137,6 +1145,7 @@ def _restore_authoritative_sources(
 
     user_core = _merged_items("core_selling_points", document, commerce, limit=20)
     image_core = _candidate_items(image, "core_selling_points")
+    image_secondary = _candidate_items(image, "secondary_selling_points")
     core_selling_points = _strings([*user_core[:3], *image_core])[:3]
     setattr(result, "core_selling_points", core_selling_points or ["待补充"])
 
@@ -1149,7 +1158,9 @@ def _restore_authoritative_sources(
     )
     selected_core = {item.casefold() for item in core_selling_points}
     image_selling_suggestions = [
-        item for item in image_core if item.casefold() not in selected_core
+        item
+        for item in _strings([*image_core, *image_secondary])
+        if item.casefold() not in selected_core
     ]
     secondary_selling_points = _strings(
         [*user_secondary_selling_points, *image_selling_suggestions]
