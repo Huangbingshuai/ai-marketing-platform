@@ -162,6 +162,7 @@ export const toEffectExtractionResultV2 = (
       ? (value as Record<string, unknown>)
       : {};
   const allSellingPoints = compactStrings(record.coreSellingPoints, 9);
+  // Keep persisted AI output aligned with the shared ten-item generation boundary.
   const explicitSecondary = compactStrings(
     record.secondarySellingPoints,
     EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS,

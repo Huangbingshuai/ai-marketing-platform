@@ -38,6 +38,15 @@ from .models import (
 from .providers import AiProvider, ProviderError, ProviderErrorType
 from .semantic_refinement import refine_candidate_semantics
 
+MAX_GENERATED_SECONDARY_SELLING_POINTS = 10
+SEMANTIC_RESULT_FIELDS: tuple[str, ...] = (
+    "core_pain_points",
+    "decision_drivers",
+    "usage_scenarios",
+    "purchase_scenarios",
+    "emotional_scenarios",
+)
+
 LOGGER = logging.getLogger(__name__)
 
 DOCUMENT_MIME_TYPES = {
@@ -624,7 +633,9 @@ class ExtractionPipeline:
         fusion = by_name.get(BranchName.FUSION)
         if fusion is None or fusion.candidate is None:
             raise FusionError("fusion output is missing")
-        normalized_input = fusion.candidate
+        semantic = by_name.get(BranchName.SEMANTIC_REFINEMENT)
+        semantic_candidate = branch_candidate(semantic) if semantic else None
+        normalized_input = semantic_candidate or fusion.candidate
         snapshot = self._snapshot(context)
         form = by_name.get(BranchName.FORM)
         document = by_name.get(BranchName.DOCUMENT)
@@ -672,6 +683,7 @@ class ExtractionPipeline:
             commerce=commerce_candidate,
             image=image_candidate,
         )
+        _restore_semantic_fields(result, semantic_candidate)
         result = ExtractionResult.model_validate(result.model_dump(mode="json"))
         provenance_raw = fusion.metadata.get("provenance", {})
         provenance = (
@@ -974,7 +986,7 @@ def _normalize_candidate_deterministically(
             *core_points[3:],
             *_candidate_items(candidate, "secondary_selling_points"),
         ]
-    )[:20]
+    )[:MAX_GENERATED_SECONDARY_SELLING_POINTS]
     audience = _candidate_text(candidate, "target_audience")
     audience_items = _strings(re.split(r"[\n,，、;；]+", audience or ""))[:5]
 
@@ -1007,19 +1019,12 @@ def _normalize_candidate_deterministically(
 
 def _image_selling_suggestions(
     remaining_core: list[str],
-    secondary: list[str],
     *,
     limit: int = 4,
 ) -> list[str]:
-    """Prefer visible product value and contextual image suggestions together."""
+    """Keep only image facts that the model classified as visible product value."""
 
-    return _strings(
-        [
-            *remaining_core[:2],
-            *secondary,
-            *remaining_core[2:],
-        ]
-    )[:limit]
+    return _strings(remaining_core)[:limit]
 
 
 def _restore_authoritative_sources(
@@ -1072,11 +1077,10 @@ def _restore_authoritative_sources(
     )
     image_selling_suggestions = _image_selling_suggestions(
         remaining_image_core,
-        _candidate_items(image, "secondary_selling_points"),
     )
     secondary_selling_points = _strings(
         [*user_secondary_selling_points, *image_selling_suggestions]
-    )[:20]
+    )[:MAX_GENERATED_SECONDARY_SELLING_POINTS]
     setattr(result, "secondary_selling_points", secondary_selling_points)
     setattr(
         result,
@@ -1136,6 +1140,18 @@ def _restore_authoritative_sources(
         "visual_style_baseline",
         _candidate_text(form, "visual_style_baseline") or "待补充",
     )
+
+
+def _restore_semantic_fields(
+    result: object,
+    semantic: ExtractionCandidate | None,
+) -> None:
+    """Apply only validated existing-fact merges after authoritative restoration."""
+
+    if semantic is None:
+        return
+    for field in SEMANTIC_RESULT_FIELDS:
+        setattr(result, field, _candidate_items(semantic, field)[:5])
 
 
 def _protected_user_input(

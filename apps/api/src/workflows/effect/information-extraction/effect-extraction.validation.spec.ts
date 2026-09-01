@@ -197,7 +197,7 @@ describe('effect extraction validation', () => {
     expect(adapted.visualStyleBaseline).toBe('温暖烟火气');
   });
 
-  it('preserves all grounded secondary selling points up to the shared capacity', () => {
+  it('preserves grounded secondary selling points below the AI generation capacity', () => {
     const secondarySellingPoints = Array.from({ length: 8 }, (_, index) => `次要卖点${index + 1}`);
 
     const adapted = toEffectExtractionResultV2(
@@ -213,6 +213,24 @@ describe('effect extraction validation', () => {
     );
 
     expect(adapted.secondarySellingPoints).toEqual(secondarySellingPoints);
+  });
+
+  it('caps generated secondary selling points at ten without changing the editable boundary', () => {
+    const secondarySellingPoints = Array.from({ length: 12 }, (_, index) => `次要卖点${index + 1}`);
+
+    const adapted = toEffectExtractionResultV2(
+      { ...validResult, secondarySellingPoints },
+      {
+        durationSeconds: 20,
+        aspectRatio: '9:16',
+        resolution: '1080P',
+        deliveryChannels: '抖音',
+        disabledElements: [],
+        visualStyleBaseline: '自然可信',
+      },
+    );
+
+    expect(adapted.secondarySellingPoints).toEqual(secondarySellingPoints.slice(0, 10));
   });
 
   it('splits a legacy target audience summary into canonical audience facts', () => {

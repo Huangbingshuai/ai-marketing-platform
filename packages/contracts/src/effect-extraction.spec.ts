@@ -55,7 +55,8 @@ describe('effect extraction contract', () => {
       EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
     );
     expect(schema.$defs.editableItems?.maxItems).toBe(EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS);
-    expect(EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS).toBe(
+    expect(EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS).toBe(10);
+    expect(EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS).toBeLessThan(
       EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
     );
   });

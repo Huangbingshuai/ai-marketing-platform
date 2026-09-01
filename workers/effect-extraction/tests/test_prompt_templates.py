@@ -22,7 +22,7 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     normalization = load_prompt_template("result_normalization.prompt.txt")
 
     assert load_prompt_version("document_extraction.prompt.txt") == "3.0.0"
-    assert load_prompt_version("image_analysis.prompt.txt") == "6.1.0"
+    assert load_prompt_version("image_analysis.prompt.txt") == "6.2.0"
     assert load_prompt_version("commerce_extraction.prompt.txt") == "1.0.0"
     assert load_prompt_version("semantic_refinement.prompt.txt") == "2.2.0"
     assert load_prompt_version("result_normalization.prompt.txt") == "3.0.0"
@@ -53,6 +53,8 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert '"purchaseScenarios"' in image.template
     assert "属于 AI 图片建议" in image.template
     assert "先按信息卡字段归类" in image.template
+    assert "香料、餐具、竹篮、蒸笼" in image.template
+    assert "场景道具是否没有被写成产品卖点" in image.template
     assert "纯产品外观、食用场景或文字已经清晰可读时为 false" in image.template
     assert "只做格式整理，不新增事实或营销策略" in normalization.template
     assert "价格缺失时写“待补充”" in normalization.template

@@ -686,13 +686,13 @@ async def test_normalization_branch_uses_deterministic_contract_mapping() -> Non
 
 
 @pytest.mark.asyncio
-async def test_normalization_preserves_document_facts_instead_of_semantic_rewrites() -> (
-    None
-):
+async def test_normalization_uses_validated_semantic_candidate_without_reintroducing_duplicates() -> None:
     api = ApiStub()
     fused = ExtractionCandidate.empty()
-    fused.purchase_scenarios = ["年货送礼", "节庆礼赠", "走亲访友礼赠"]
-    semantic = fused.model_copy(update={"purchase_scenarios": ["年节采购与礼赠"]})
+    fused.purchase_scenarios = ["家庭日常采购", "家庭日常食材采购", "春节送礼"]
+    semantic = fused.model_copy(
+        update={"purchase_scenarios": ["家庭日常采购", "春节送礼"]}
+    )
     form = ExtractionCandidate.empty()
     form.product_name = "商品"
     form.product_category = "食品"
@@ -749,9 +749,8 @@ async def test_normalization_preserves_document_facts_instead_of_semantic_rewrit
     )
     assert normalization.candidate is not None
     assert normalization.candidate.purchase_scenarios == [
-        "年货送礼",
-        "节庆礼赠",
-        "走亲访友礼赠",
+        "家庭日常采购",
+        "春节送礼",
     ]
 
 
@@ -864,8 +863,8 @@ async def test_normalization_keeps_user_price_and_secondary_points_before_image_
         *document.secondary_selling_points,
         "肥瘦颗粒分明",
         "外观油润有光泽",
-        "整根切片同展便于判断形态",
-        "福字中国结烘托节庆氛围",
+        "切片纹理清晰",
+        "肠体形态规整",
     ]
     assert normalization.candidate.target_audience == image.target_audience
     assert normalization.candidate.core_pain_points == image.core_pain_points
@@ -904,6 +903,29 @@ def test_visual_features_use_image_only_when_user_material_does_not_provide_them
         image=image,
     )
     assert user_result.visual_features == "用户资料外观"
+
+
+def test_authoritative_source_restoration_caps_secondary_selling_points_at_ten() -> None:
+    form = ExtractionCandidate.empty()
+    form.duration_seconds = 15
+    form.aspect_ratio = "9:16"
+    form.resolution = "1080p"
+    form.delivery_channels = "抖音"
+    document = ExtractionCandidate.empty()
+    document.secondary_selling_points = [f"次要卖点{index}" for index in range(1, 13)]
+
+    result = SimpleNamespace()
+    _restore_authoritative_sources(
+        result,
+        form=form,
+        document=document,
+        commerce=None,
+        image=None,
+    )
+
+    assert result.secondary_selling_points == [
+        f"次要卖点{index}" for index in range(1, 11)
+    ]
 
 
 @pytest.mark.asyncio
