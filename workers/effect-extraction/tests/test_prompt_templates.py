@@ -22,9 +22,9 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     normalization = load_prompt_template("result_normalization.prompt.txt")
 
     assert load_prompt_version("document_extraction.prompt.txt") == "3.0.0"
-    assert load_prompt_version("image_analysis.prompt.txt") == "6.2.0"
+    assert load_prompt_version("image_analysis.prompt.txt") == "6.3.0"
     assert load_prompt_version("commerce_extraction.prompt.txt") == "1.0.0"
-    assert load_prompt_version("semantic_refinement.prompt.txt") == "2.2.0"
+    assert load_prompt_version("semantic_refinement.prompt.txt") == "3.0.0"
     assert load_prompt_version("result_normalization.prompt.txt") == "3.0.0"
 
     assert "产品文档事实抽取器" in document.template
@@ -33,6 +33,8 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert "只选择事实 ID" in semantic.template
     assert "SAME_FAMILY" in semantic.template
     assert "产品外观品质判断" in semantic.template
+    assert "coreSellingPoints 和 secondarySellingPoints" in semantic.template
+    assert "sourceType=USER_FACT" in semantic.template
     assert "产品素材制作信息卡标准化器" in normalization.template
 
     for prompt in (document.template, commerce.template, normalization.template):
@@ -52,6 +54,7 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert '"decisionDrivers"' in image.template
     assert '"purchaseScenarios"' in image.template
     assert "属于 AI 图片建议" in image.template
+    assert "不得仅凭产品外观写“判断品质”" in image.template
     assert "先按信息卡字段归类" in image.template
     assert "香料、餐具、竹篮、蒸笼" in image.template
     assert "场景道具是否没有被写成产品卖点" in image.template

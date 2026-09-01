@@ -45,11 +45,18 @@ async def test_ark_provider_sends_multimodal_strict_schema_without_store() -> No
                     {
                         "type": "message",
                         "content": [
-                            {"type": "output_text", "text": candidate.model_dump_json(by_alias=True)}
+                            {
+                                "type": "output_text",
+                                "text": candidate.model_dump_json(by_alias=True),
+                            }
                         ],
                     }
                 ],
-                "usage": {"input_tokens": "100", "output_tokens": True, "total_tokens": -1},
+                "usage": {
+                    "input_tokens": "100",
+                    "output_tokens": True,
+                    "total_tokens": -1,
+                },
             },
         )
 
@@ -70,7 +77,7 @@ async def test_ark_provider_sends_multimodal_strict_schema_without_store() -> No
     assert result.value.visual_features == "红色包装"
     assert result.metadata.stage == "IMAGE"
     assert result.metadata.model == "doubao-seed-2-1-turbo"
-    assert result.metadata.prompt_version == "6.2.0"
+    assert result.metadata.prompt_version == "6.3.0"
     assert result.metadata.input_tokens is None
     assert result.metadata.output_tokens is None
     assert result.metadata.total_tokens is None
@@ -98,7 +105,9 @@ async def test_ark_provider_escalates_only_ocr_sensitive_images_to_high_detail(
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         content = payload["input"][0]["content"]
-        detail = next(part["detail"] for part in content if part.get("type") == "input_image")
+        detail = next(
+            part["detail"] for part in content if part.get("type") == "input_image"
+        )
         details.append(detail)
         if detail == "low":
             output = ImageVisibleFacts(
@@ -162,17 +171,22 @@ async def test_ark_provider_escalates_only_ocr_sensitive_images_to_high_detail(
 
 
 @pytest.mark.asyncio
-async def test_ark_provider_keeps_low_detail_result_but_does_not_cache_when_refinement_fails(
-) -> None:
+async def test_ark_provider_keeps_low_detail_result_but_does_not_cache_when_refinement_fails() -> (
+    None
+):
     details: list[str] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         content = payload["input"][0]["content"]
-        detail = next(part["detail"] for part in content if part.get("type") == "input_image")
+        detail = next(
+            part["detail"] for part in content if part.get("type") == "input_image"
+        )
         details.append(detail)
         if detail == "high":
-            return httpx.Response(503, json={"error": {"message": "temporary unavailable"}})
+            return httpx.Response(
+                503, json={"error": {"message": "temporary unavailable"}}
+            )
         output = ImageVisibleFacts(
             product_category="腊味",
             product_name="广式腊肠",
@@ -266,7 +280,11 @@ async def test_ark_provider_routes_each_stage_and_records_usage() -> None:
             200,
             json={
                 "output_text": output,
-                "usage": {"input_tokens": 101, "output_tokens": 22, "total_tokens": 123},
+                "usage": {
+                    "input_tokens": 101,
+                    "output_tokens": 22,
+                    "total_tokens": 123,
+                },
             },
         )
 
@@ -321,14 +339,20 @@ async def test_ark_provider_routes_each_stage_and_records_usage() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ark_commerce_prompt_treats_page_as_untrusted_and_uses_document_fallback_model() -> None:
+async def test_ark_commerce_prompt_treats_page_as_untrusted_and_uses_document_fallback_model() -> (
+    None
+):
     captured: dict[str, object] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
         captured.update(json.loads(request.content))
         return httpx.Response(
             200,
-            json={"output_text": ExtractionCandidate.empty().model_dump_json(by_alias=True)},
+            json={
+                "output_text": ExtractionCandidate.empty().model_dump_json(
+                    by_alias=True
+                )
+            },
         )
 
     provider = ArkResponsesProvider(
@@ -641,7 +665,9 @@ async def test_ark_provider_uses_one_minimal_reasoning_semantic_request() -> Non
                 )
             ]
         )
-        return httpx.Response(200, json={"output_text": decision.model_dump_json(by_alias=True)})
+        return httpx.Response(
+            200, json={"output_text": decision.model_dump_json(by_alias=True)}
+        )
 
     provider = ArkResponsesProvider(
         base_url="https://ark.test/api/v3/",
@@ -651,8 +677,16 @@ async def test_ark_provider_uses_one_minimal_reasoning_semantic_request() -> Non
         transport=httpx.MockTransport(handler),
     )
     facts = [
-        {"factId": "corePainPoints-01", "field": "corePainPoints", "value": "日常佐餐不便"},
-        {"factId": "corePainPoints-02", "field": "corePainPoints", "value": "家常备餐不便"},
+        {
+            "factId": "corePainPoints-01",
+            "field": "corePainPoints",
+            "value": "日常佐餐不便",
+        },
+        {
+            "factId": "corePainPoints-02",
+            "field": "corePainPoints",
+            "value": "家常备餐不便",
+        },
     ]
     try:
         decision = await provider.refine_semantics(facts=facts)

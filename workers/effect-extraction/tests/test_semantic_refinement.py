@@ -12,13 +12,17 @@ from effect_extraction.models import (
     SemanticRelation,
 )
 from effect_extraction.providers import AiCallMetadata, AiCallResult
-from effect_extraction.semantic_refinement import refine_candidate_semantics
+from effect_extraction.semantic_refinement import (
+    SemanticFactSource,
+    refine_candidate_semantics,
+)
 
 
 class SemanticProvider:
     def __init__(self, groups: list[SemanticGroup]) -> None:
         self.groups = groups
         self.refinement_calls = 0
+        self.facts: list[dict[str, str]] = []
 
     async def refine_semantics(
         self,
@@ -26,6 +30,7 @@ class SemanticProvider:
         facts: Sequence[Mapping[str, str]],
     ) -> AiCallResult[SemanticRefinementDecision]:
         self.refinement_calls += 1
+        self.facts = [dict(fact) for fact in facts]
         return AiCallResult(
             value=SemanticRefinementDecision(groups=self.groups),
             metadata=AiCallMetadata(
@@ -62,7 +67,16 @@ async def test_semantic_refinement_keeps_an_existing_fact_for_same_meaning() -> 
         ]
     )
 
-    result = await refine_candidate_semantics(candidate, provider=provider)  # type: ignore[arg-type]
+    result = await refine_candidate_semantics(
+        candidate,
+        provider=provider,  # type: ignore[arg-type]
+        fact_sources={
+            SemanticField.CORE_PAIN_POINTS.value: {
+                value: SemanticFactSource.IMAGE_SUGGESTION
+                for value in candidate.core_pain_points or []
+            }
+        },
+    )
 
     assert result.candidate.product_name == "广式腊肠"
     assert result.candidate.core_pain_points == [
@@ -160,7 +174,7 @@ async def test_invalid_representative_fact_id_cannot_delete_input_facts() -> Non
 
 
 @pytest.mark.asyncio
-async def test_model_cannot_merge_different_decision_criteria_as_same_meaning() -> None:
+async def test_model_cannot_delete_two_user_facts_even_when_it_groups_them() -> None:
     candidate = ExtractionCandidate.empty()
     candidate.decision_drivers = [
         "节庆元素烘托契合年货采购需求",
@@ -177,7 +191,16 @@ async def test_model_cannot_merge_different_decision_criteria_as_same_meaning() 
         ]
     )
 
-    result = await refine_candidate_semantics(candidate, provider=provider)  # type: ignore[arg-type]
+    result = await refine_candidate_semantics(
+        candidate,
+        provider=provider,  # type: ignore[arg-type]
+        fact_sources={
+            SemanticField.DECISION_DRIVERS.value: {
+                value: SemanticFactSource.USER_FACT
+                for value in candidate.decision_drivers or []
+            }
+        },
+    )
 
     assert result.candidate.decision_drivers == candidate.decision_drivers
     assert result.metadata["mergedGroupCount"] == 0
@@ -186,9 +209,11 @@ async def test_model_cannot_merge_different_decision_criteria_as_same_meaning() 
 
 
 @pytest.mark.asyncio
-async def test_parent_child_merge_requires_literal_containment() -> None:
+async def test_worker_applies_model_parent_child_without_textual_semantic_check() -> (
+    None
+):
     candidate = ExtractionCandidate.empty()
-    candidate.usage_scenarios = ["家庭日常佐餐", "家庭日常佐餐搭配煲仔饭"]
+    candidate.usage_scenarios = ["家庭日常佐餐", "居家日常吃饭场景"]
     provider = SemanticProvider(
         [
             SemanticGroup(
@@ -200,7 +225,123 @@ async def test_parent_child_merge_requires_literal_containment() -> None:
         ]
     )
 
-    result = await refine_candidate_semantics(candidate, provider=provider)  # type: ignore[arg-type]
+    result = await refine_candidate_semantics(
+        candidate,
+        provider=provider,  # type: ignore[arg-type]
+        fact_sources={
+            SemanticField.USAGE_SCENARIOS.value: {
+                value: SemanticFactSource.IMAGE_SUGGESTION
+                for value in candidate.usage_scenarios or []
+            }
+        },
+    )
 
-    assert result.candidate.usage_scenarios == ["家庭日常佐餐搭配煲仔饭"]
+    assert result.candidate.usage_scenarios == ["居家日常吃饭场景"]
     assert result.metadata["mergedGroupCount"] == 1
+
+
+@pytest.mark.asyncio
+async def test_semantic_model_deduplicates_differently_worded_image_selling_points() -> (
+    None
+):
+    candidate = ExtractionCandidate.empty()
+    candidate.secondary_selling_points = [
+        "肥瘦纹理分明，肉质油润有光泽",
+        "肥瘦纹理清晰分明",
+        "整根切片同展，形态直观可见",
+    ]
+    provider = SemanticProvider(
+        [
+            SemanticGroup(
+                field=SemanticField.SECONDARY_SELLING_POINTS,
+                member_fact_ids=[
+                    "secondarySellingPoints-01",
+                    "secondarySellingPoints-02",
+                ],
+                representative_fact_id="secondarySellingPoints-01",
+                relation=SemanticRelation.SAME_MEANING,
+            )
+        ]
+    )
+
+    result = await refine_candidate_semantics(
+        candidate,
+        provider=provider,  # type: ignore[arg-type]
+        fact_sources={
+            SemanticField.SECONDARY_SELLING_POINTS.value: {
+                value: SemanticFactSource.IMAGE_SUGGESTION
+                for value in candidate.secondary_selling_points or []
+            }
+        },
+    )
+
+    assert result.candidate.secondary_selling_points == [
+        "肥瘦纹理分明，肉质油润有光泽",
+        "整根切片同展，形态直观可见",
+    ]
+    assert provider.facts[0]["sourceType"] == "IMAGE_SUGGESTION"
+    assert result.metadata["mergedGroupCount"] == 1
+
+
+@pytest.mark.asyncio
+async def test_user_fact_is_the_only_allowed_representative_in_a_mixed_group() -> None:
+    candidate = ExtractionCandidate.empty()
+    candidate.secondary_selling_points = [
+        "切片均匀、形态规整",
+        "切片形态规整均匀",
+    ]
+    provider = SemanticProvider(
+        [
+            SemanticGroup(
+                field=SemanticField.SECONDARY_SELLING_POINTS,
+                member_fact_ids=[
+                    "secondarySellingPoints-01",
+                    "secondarySellingPoints-02",
+                ],
+                representative_fact_id="secondarySellingPoints-01",
+                relation=SemanticRelation.SAME_MEANING,
+            )
+        ]
+    )
+
+    result = await refine_candidate_semantics(
+        candidate,
+        provider=provider,  # type: ignore[arg-type]
+        fact_sources={
+            SemanticField.SECONDARY_SELLING_POINTS.value: {
+                "切片均匀、形态规整": SemanticFactSource.USER_FACT,
+                "切片形态规整均匀": SemanticFactSource.IMAGE_SUGGESTION,
+            }
+        },
+    )
+
+    assert result.candidate.secondary_selling_points == ["切片均匀、形态规整"]
+    assert result.metadata["mergedGroupCount"] == 1
+
+
+@pytest.mark.asyncio
+async def test_worker_does_not_collapse_punctuation_variants_before_model() -> None:
+    candidate = ExtractionCandidate.empty()
+    candidate.secondary_selling_points = [
+        "肥瘦纹理清晰，油润有光泽",
+        "肥瘦纹理清晰、油润有光泽",
+    ]
+    provider = SemanticProvider([])
+
+    result = await refine_candidate_semantics(
+        candidate,
+        provider=provider,  # type: ignore[arg-type]
+        fact_sources={
+            SemanticField.SECONDARY_SELLING_POINTS.value: {
+                value: SemanticFactSource.IMAGE_SUGGESTION
+                for value in candidate.secondary_selling_points or []
+            }
+        },
+    )
+
+    assert [row["value"] for row in provider.facts] == (
+        candidate.secondary_selling_points
+    )
+    assert result.candidate.secondary_selling_points == (
+        candidate.secondary_selling_points
+    )

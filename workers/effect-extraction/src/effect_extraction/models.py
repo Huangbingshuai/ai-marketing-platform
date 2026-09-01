@@ -113,6 +113,7 @@ class ExtractionSnapshot(ApiModel):
     manual_overrides: dict[str, Any] = Field(default_factory=dict)
     bypass_image_cache: bool = False
 
+
 class ClaimResponse(ApiModel):
     terminal: bool
     run_id: str
@@ -204,6 +205,8 @@ class ExtractionResult(ApiModel):
 
 
 class SemanticField(StrEnum):
+    CORE_SELLING_POINTS = "coreSellingPoints"
+    SECONDARY_SELLING_POINTS = "secondarySellingPoints"
     CORE_PAIN_POINTS = "corePainPoints"
     DECISION_DRIVERS = "decisionDrivers"
     USAGE_SCENARIOS = "usageScenarios"
@@ -225,7 +228,7 @@ class SemanticGroup(ApiModel):
 
 
 class SemanticRefinementDecision(ApiModel):
-    groups: list[SemanticGroup] = Field(max_length=10)
+    groups: list[SemanticGroup] = Field(max_length=20)
 
 
 class BranchName(StrEnum):

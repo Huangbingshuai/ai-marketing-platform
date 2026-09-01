@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 from .models import (
@@ -13,12 +14,19 @@ from .models import (
 from .providers import AiProvider
 
 SEMANTIC_FIELDS: tuple[tuple[SemanticField, str], ...] = (
+    (SemanticField.CORE_SELLING_POINTS, "core_selling_points"),
+    (SemanticField.SECONDARY_SELLING_POINTS, "secondary_selling_points"),
     (SemanticField.CORE_PAIN_POINTS, "core_pain_points"),
     (SemanticField.DECISION_DRIVERS, "decision_drivers"),
     (SemanticField.USAGE_SCENARIOS, "usage_scenarios"),
     (SemanticField.PURCHASE_SCENARIOS, "purchase_scenarios"),
     (SemanticField.EMOTIONAL_SCENARIOS, "emotional_scenarios"),
 )
+
+
+class SemanticFactSource(StrEnum):
+    USER_FACT = "USER_FACT"
+    IMAGE_SUGGESTION = "IMAGE_SUGGESTION"
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,11 +39,12 @@ async def refine_candidate_semantics(
     candidate: ExtractionCandidate,
     *,
     provider: AiProvider,
+    fact_sources: dict[str, dict[str, SemanticFactSource]] | None = None,
 ) -> SemanticRefinementResult:
     """Use one strict low-cost model call to classify the small fact set."""
 
     refined = candidate.model_copy(deep=True)
-    facts, facts_by_id = _facts(candidate)
+    facts, facts_by_id = _facts(candidate, fact_sources=fact_sources or {})
     input_count = sum(
         len(getattr(candidate, attr) or []) for _, attr in SEMANTIC_FIELDS
     )
@@ -66,20 +75,24 @@ async def refine_candidate_semantics(
         values = getattr(refined, attr) or []
         field_groups = [group for group in groups if group.field == field]
         applied_groups = [
-            group
-            for group in field_groups
-            if _safe_to_apply(group, facts_by_id)
+            group for group in field_groups if _source_policy_allows(group, facts_by_id)
         ]
-        setattr(refined, attr, _apply_groups(values, applied_groups, facts_by_id) or None)
+        setattr(
+            refined, attr, _apply_groups(values, applied_groups, facts_by_id) or None
+        )
         for group in field_groups:
             representative = facts_by_id[group.representative_fact_id]["value"]
-            applied = _safe_to_apply(group, facts_by_id)
+            applied = _source_policy_allows(group, facts_by_id)
             public_groups.append(
                 {
                     "field": field.value,
                     "canonicalValue": representative,
                     "memberValues": [
                         facts_by_id[fact_id]["value"]
+                        for fact_id in group.member_fact_ids
+                    ],
+                    "memberSourceTypes": [
+                        facts_by_id[fact_id]["sourceType"]
                         for fact_id in group.member_fact_ids
                     ],
                     "relation": group.relation.value,
@@ -100,21 +113,27 @@ async def refine_candidate_semantics(
 
 def _facts(
     candidate: ExtractionCandidate,
+    *,
+    fact_sources: dict[str, dict[str, SemanticFactSource]],
 ) -> tuple[list[dict[str, str]], dict[str, dict[str, str]]]:
     facts: list[dict[str, str]] = []
     for field, attr in SEMANTIC_FIELDS:
         seen: set[str] = set()
         for value in getattr(candidate, attr) or []:
             cleaned = re.sub(r"\s+", " ", value).strip()
-            signature = re.sub(r"[\s，。；、,.!?！？：:（）()\-]+", "", cleaned).lower()
-            if not cleaned or signature in seen:
+            if not cleaned or cleaned in seen:
                 continue
-            seen.add(signature)
+            seen.add(cleaned)
+            source = fact_sources.get(field.value, {}).get(
+                cleaned,
+                SemanticFactSource.USER_FACT,
+            )
             facts.append(
                 {
                     "factId": f"{field.value}-{len([row for row in facts if row['field'] == field.value]) + 1:02d}",
                     "field": field.value,
                     "value": cleaned,
+                    "sourceType": source.value,
                 }
             )
     return facts, {row["factId"]: row for row in facts}
@@ -140,61 +159,27 @@ def _validated_groups(
         rows = [facts_by_id[member_id] for member_id in member_ids]
         if any(row["field"] != group.field.value for row in rows):
             continue
-        accepted.append(
-            group.model_copy(update={"member_fact_ids": member_ids})
-        )
+        accepted.append(group.model_copy(update={"member_fact_ids": member_ids}))
         used.update(member_ids)
     return accepted
 
 
-def _safe_to_apply(
+def _source_policy_allows(
     group: SemanticGroup,
     facts_by_id: dict[str, dict[str, str]],
 ) -> bool:
-    """Fail closed when a model proposes a destructive semantic merge.
-
-    The model remains useful for discovering relationships, but facts are only
-    removed when the original text independently supports the proposed relation.
-    False negatives leave a little redundancy; false positives erase user or
-    image evidence and are therefore more harmful in this workflow.
-    """
+    """Apply model semantics only when source authority permits the deletion."""
 
     if group.relation == SemanticRelation.SAME_FAMILY:
         return False
-    representative = _semantic_signature(
-        facts_by_id[group.representative_fact_id]["value"]
-    )
-    members = [
-        _semantic_signature(facts_by_id[fact_id]["value"])
+    user_fact_ids = [
+        fact_id
         for fact_id in group.member_fact_ids
+        if facts_by_id[fact_id]["sourceType"] == SemanticFactSource.USER_FACT.value
     ]
-    if not representative or any(not member for member in members):
-        return False
-    if group.relation == SemanticRelation.PARENT_CHILD:
-        return all(member in representative for member in members)
-    if group.relation != SemanticRelation.SAME_MEANING:
-        return False
-    return all(
-        member == representative or _strong_textual_overlap(representative, member)
-        for member in members
-    )
-
-
-def _semantic_signature(value: str) -> str:
-    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", value.casefold())
-
-
-def _strong_textual_overlap(left: str, right: str) -> bool:
-    if left in right or right in left:
-        shorter, longer = sorted((len(left), len(right)))
-        return shorter >= 4 and shorter / longer >= 0.6
-    left_bigrams = {left[index : index + 2] for index in range(len(left) - 1)}
-    right_bigrams = {right[index : index + 2] for index in range(len(right) - 1)}
-    common = left_bigrams.intersection(right_bigrams)
-    if len(common) < 3:
-        return False
-    dice = (2 * len(common)) / (len(left_bigrams) + len(right_bigrams))
-    return dice >= 0.45
+    if not user_fact_ids:
+        return True
+    return len(user_fact_ids) == 1 and group.representative_fact_id == user_fact_ids[0]
 
 
 def _apply_groups(
@@ -234,7 +219,9 @@ def _metadata(
 ) -> dict[str, Any]:
     rows = groups or []
     applied_count = sum(row.get("applied") is True for row in rows)
-    family_count = sum(row.get("relation") == SemanticRelation.SAME_FAMILY.value for row in rows)
+    family_count = sum(
+        row.get("relation") == SemanticRelation.SAME_FAMILY.value for row in rows
+    )
     rejected_merge_count = sum(
         row.get("relation") != SemanticRelation.SAME_FAMILY.value
         and row.get("applied") is not True

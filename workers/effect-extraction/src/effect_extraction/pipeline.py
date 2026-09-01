@@ -36,23 +36,22 @@ from .models import (
     SnapshotMaterial,
 )
 from .providers import AiProvider, ProviderError, ProviderErrorType
-from .semantic_refinement import refine_candidate_semantics
+from .semantic_refinement import (
+    SEMANTIC_FIELDS,
+    SemanticFactSource,
+    refine_candidate_semantics,
+)
 
 MAX_GENERATED_SECONDARY_SELLING_POINTS = 10
-IMAGE_SELLING_VISUAL_QUALIFIERS: tuple[str, ...] = (
-    "光泽感强",
-    "有光泽",
-    "相间",
-    "油润",
-    "透亮",
-)
-SEMANTIC_RESULT_FIELDS: tuple[str, ...] = (
-    "core_pain_points",
-    "decision_drivers",
-    "usage_scenarios",
-    "purchase_scenarios",
-    "emotional_scenarios",
-)
+SEMANTIC_RESULT_LIMITS: dict[str, int] = {
+    "core_selling_points": 3,
+    "secondary_selling_points": MAX_GENERATED_SECONDARY_SELLING_POINTS,
+    "core_pain_points": 5,
+    "decision_drivers": 5,
+    "usage_scenarios": 5,
+    "purchase_scenarios": 5,
+    "emotional_scenarios": 5,
+}
 
 LOGGER = logging.getLogger(__name__)
 
@@ -204,7 +203,9 @@ class ExtractionPipeline:
                         metadata={
                             "markdownChars": len(markdown),
                             "modelInputChars": (
-                                0 if structured_candidate is not None else len(model_text)
+                                0
+                                if structured_candidate is not None
+                                else len(model_text)
                             ),
                             "modelInputTruncated": (
                                 structured_candidate is None and truncated
@@ -579,9 +580,15 @@ class ExtractionPipeline:
         )
         if fusion is None or fusion.candidate is None:
             raise FusionError("fusion output is missing")
+        semantic_candidate, fact_sources = _prepare_semantic_candidate(
+            fusion.candidate,
+            branches,
+        )
         try:
             result = await refine_candidate_semantics(
-                fusion.candidate, provider=self.provider
+                semantic_candidate,
+                provider=self.provider,
+                fact_sources=fact_sources,
             )
             output = BranchOutput(
                 branch=BranchName.SEMANTIC_REFINEMENT,
@@ -598,7 +605,7 @@ class ExtractionPipeline:
                 branch=BranchName.SEMANTIC_REFINEMENT,
                 status=BranchStatus.PARTIAL,
                 source_fingerprint=context.source_fingerprint,
-                candidate=fusion.candidate,
+                candidate=semantic_candidate,
                 warnings=[f"{warning}，已保留原始提炼信息"],
                 metadata={
                     "failures": [
@@ -615,7 +622,7 @@ class ExtractionPipeline:
                 branch=BranchName.SEMANTIC_REFINEMENT,
                 status=BranchStatus.PARTIAL,
                 source_fingerprint=context.source_fingerprint,
-                candidate=fusion.candidate,
+                candidate=semantic_candidate,
                 warnings=["语义整理结果无效，已保留原始提炼信息"],
                 metadata={
                     "failures": [
@@ -1000,8 +1007,7 @@ def _normalize_candidate_deterministically(
     return ExtractionResult(
         product_category=_candidate_text(candidate, "product_category") or "待补充",
         product_name=_candidate_text(candidate, "product_name") or "待补充",
-        core_specification=_candidate_text(candidate, "core_specification")
-        or "待补充",
+        core_specification=_candidate_text(candidate, "core_specification") or "待补充",
         price_range=_candidate_text(candidate, "price_range") or "待补充",
         visual_features=_candidate_text(candidate, "visual_features") or "待补充",
         core_selling_points=selected_core,
@@ -1024,74 +1030,77 @@ def _normalize_candidate_deterministically(
     )
 
 
-def _image_selling_suggestions(
-    image_core: list[str],
-    *,
-    authoritative_points: Sequence[str] = (),
-    limit: int = 4,
-) -> list[str]:
-    """Keep distinct visible product values without weakening user facts.
+def _prepare_semantic_candidate(
+    fusion_candidate: ExtractionCandidate,
+    branches: Sequence[BranchOutput],
+) -> tuple[
+    ExtractionCandidate,
+    dict[str, dict[str, SemanticFactSource]],
+]:
+    """Build the exact fact set and source authority for the semantic model."""
 
-    Image analysis runs independently per file, so multiple photos frequently
-    describe the same visible feature with slightly different wording. User facts
-    remain untouched; a matching image suggestion is discarded. Among matching
-    image suggestions, the more descriptive original suggestion is retained.
-    """
+    by_name = {branch.branch: branch for branch in branches}
+    document = (
+        branch_candidate(by_name[BranchName.DOCUMENT])
+        if BranchName.DOCUMENT in by_name
+        else None
+    )
+    commerce = (
+        branch_candidate(by_name[BranchName.COMMERCE])
+        if BranchName.COMMERCE in by_name
+        else None
+    )
+    image = (
+        branch_candidate(by_name[BranchName.IMAGE])
+        if BranchName.IMAGE in by_name
+        else None
+    )
 
-    protected = _strings(authoritative_points)
-    suggestions: list[str] = []
-    for suggestion in _strings(image_core):
-        if any(
-            _same_image_selling_direction(suggestion, fact)
-            for fact in protected
-        ):
-            continue
+    prepared = fusion_candidate.model_copy(deep=True)
+    user_core = _merged_items("core_selling_points", document, commerce, limit=20)
+    image_core = _candidate_items(image, "core_selling_points")
+    selected_core = _strings([*user_core[:3], *image_core])[:3]
+    selected_core_keys = {item.casefold() for item in selected_core}
+    remaining_image_core = [
+        item for item in image_core if item.casefold() not in selected_core_keys
+    ]
+    user_secondary = _strings(
+        [
+            *_candidate_items(document, "secondary_selling_points"),
+            *_candidate_items(commerce, "secondary_selling_points"),
+            *user_core[3:],
+        ]
+    )
+    prepared.core_selling_points = selected_core or None
+    prepared.secondary_selling_points = (
+        _strings([*user_secondary, *remaining_image_core]) or None
+    )
 
-        duplicate_index = next(
-            (
-                index
-                for index, existing in enumerate(suggestions)
-                if _same_image_selling_direction(suggestion, existing)
-            ),
-            None,
-        )
-        if duplicate_index is None:
-            suggestions.append(suggestion)
-            continue
+    sources: dict[str, dict[str, SemanticFactSource]] = {}
+    for field, attr in SEMANTIC_FIELDS:
+        if attr == "core_selling_points":
+            user_values = [item for item in selected_core if item in user_core]
+            image_values = [item for item in selected_core if item not in user_core]
+        elif attr == "secondary_selling_points":
+            user_values = user_secondary
+            image_values = remaining_image_core
+        else:
+            user_values = _strings(
+                [
+                    *_candidate_items(document, attr),
+                    *_candidate_items(commerce, attr),
+                ]
+            )
+            image_values = _candidate_items(image, attr)
 
-        existing = suggestions[duplicate_index]
-        if len(_selling_point_signature(suggestion)) > len(
-            _selling_point_signature(existing)
-        ):
-            suggestions[duplicate_index] = suggestion
+        field_sources: dict[str, SemanticFactSource] = {}
+        for value in _strings(image_values):
+            field_sources[value] = SemanticFactSource.IMAGE_SUGGESTION
+        for value in _strings(user_values):
+            field_sources[value] = SemanticFactSource.USER_FACT
+        sources[field.value] = field_sources
 
-    return suggestions[:limit]
-
-
-def _selling_point_signature(value: str) -> str:
-    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", value.casefold())
-
-
-def _image_selling_direction_signature(value: str) -> str:
-    signature = _selling_point_signature(value)
-    for qualifier in IMAGE_SELLING_VISUAL_QUALIFIERS:
-        signature = signature.replace(qualifier, "")
-    return signature
-
-
-def _same_image_selling_direction(left: str, right: str) -> bool:
-    """Detect one repeated visible selling direction without merging subjects."""
-
-    left_signature = _image_selling_direction_signature(left)
-    right_signature = _image_selling_direction_signature(right)
-    if not left_signature or not right_signature:
-        return False
-    if left_signature == right_signature:
-        return True
-    if left_signature in right_signature or right_signature in left_signature:
-        shorter, longer = sorted((len(left_signature), len(right_signature)))
-        return shorter >= 4 and shorter / longer >= 0.75
-    return False
+    return prepared, sources
 
 
 def _restore_authoritative_sources(
@@ -1138,14 +1147,10 @@ def _restore_authoritative_sources(
             *user_core[3:],
         ]
     )
-    image_selling_suggestions = _image_selling_suggestions(
-        image_core,
-        authoritative_points=[
-            *user_core,
-            *user_secondary_selling_points,
-            *core_selling_points,
-        ],
-    )
+    selected_core = {item.casefold() for item in core_selling_points}
+    image_selling_suggestions = [
+        item for item in image_core if item.casefold() not in selected_core
+    ]
     secondary_selling_points = _strings(
         [*user_secondary_selling_points, *image_selling_suggestions]
     )[:MAX_GENERATED_SECONDARY_SELLING_POINTS]
@@ -1218,8 +1223,11 @@ def _restore_semantic_fields(
 
     if semantic is None:
         return
-    for field in SEMANTIC_RESULT_FIELDS:
-        setattr(result, field, _candidate_items(semantic, field)[:5])
+    for field, limit in SEMANTIC_RESULT_LIMITS.items():
+        items = _candidate_items(semantic, field)[:limit]
+        if field == "core_selling_points" and not items:
+            continue
+        setattr(result, field, items)
 
 
 def _protected_user_input(

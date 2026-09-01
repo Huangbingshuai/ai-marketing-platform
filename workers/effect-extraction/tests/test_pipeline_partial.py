@@ -19,7 +19,11 @@ from effect_extraction.models import (
     SnapshotProduct,
     VideoConfig,
 )
-from effect_extraction.pipeline import ExtractionPipeline, _restore_authoritative_sources
+from effect_extraction.pipeline import (
+    ExtractionPipeline,
+    _prepare_semantic_candidate,
+    _restore_authoritative_sources,
+)
 from effect_extraction.providers import (
     AiCallResult,
     MockAiProvider,
@@ -686,7 +690,9 @@ async def test_normalization_branch_uses_deterministic_contract_mapping() -> Non
 
 
 @pytest.mark.asyncio
-async def test_normalization_uses_validated_semantic_candidate_without_reintroducing_duplicates() -> None:
+async def test_normalization_uses_validated_semantic_candidate_without_reintroducing_duplicates() -> (
+    None
+):
     api = ApiStub()
     fused = ExtractionCandidate.empty()
     fused.purchase_scenarios = ["家庭日常采购", "家庭日常食材采购", "春节送礼"]
@@ -873,7 +879,9 @@ async def test_normalization_keeps_user_price_and_secondary_points_before_image_
     assert normalization.candidate.purchase_scenarios == image.purchase_scenarios
 
 
-def test_visual_features_use_image_only_when_user_material_does_not_provide_them() -> None:
+def test_visual_features_use_image_only_when_user_material_does_not_provide_them() -> (
+    None
+):
     form = ExtractionCandidate.empty()
     form.duration_seconds = 15
     form.aspect_ratio = "9:16"
@@ -905,14 +913,7 @@ def test_visual_features_use_image_only_when_user_material_does_not_provide_them
     assert user_result.visual_features == "用户资料外观"
 
 
-def test_image_selling_suggestions_are_deduplicated_across_images_without_merging_user_facts() -> (
-    None
-):
-    form = ExtractionCandidate.empty()
-    form.duration_seconds = 15
-    form.aspect_ratio = "9:16"
-    form.resolution = "1080p"
-    form.delivery_channels = "抖音"
+def test_semantic_candidate_sends_all_selling_points_with_source_authority() -> None:
     document = ExtractionCandidate.empty()
     document.core_selling_points = [
         "三七肥瘦黄金配比",
@@ -930,25 +931,43 @@ def test_image_selling_suggestions_are_deduplicated_across_images_without_mergin
         "切片油润有光泽",
     ]
 
-    result = SimpleNamespace()
-    _restore_authoritative_sources(
-        result,
-        form=form,
-        document=document,
-        commerce=None,
-        image=image,
+    fusion = ExtractionCandidate.empty()
+    candidate, sources = _prepare_semantic_candidate(
+        fusion,
+        [
+            BranchOutput(
+                branch=BranchName.DOCUMENT,
+                status=BranchStatus.SUCCEEDED,
+                source_fingerprint="fingerprint",
+                candidate=document,
+            ),
+            BranchOutput(
+                branch=BranchName.IMAGE,
+                status=BranchStatus.SUCCEEDED,
+                source_fingerprint="fingerprint",
+                candidate=image,
+            ),
+        ],
     )
 
-    assert result.secondary_selling_points == [
+    assert candidate.core_selling_points == document.core_selling_points
+    assert candidate.secondary_selling_points == [
         "切片均匀、形态规整",
-        "肥瘦相间纹理清晰油润",
+        "肥瘦相间纹理清晰",
         "肠体饱满形态规整",
+        "肥瘦相间纹理清晰油润",
         "整根与切片同展直观展示形态",
+        "肥瘦纹理清晰透亮",
         "切片油润有光泽",
     ]
+    secondary_sources = sources["secondarySellingPoints"]
+    assert secondary_sources["切片均匀、形态规整"] == "USER_FACT"
+    assert secondary_sources["肥瘦相间纹理清晰"] == "IMAGE_SUGGESTION"
 
 
-def test_authoritative_source_restoration_caps_secondary_selling_points_at_ten() -> None:
+def test_authoritative_source_restoration_caps_secondary_selling_points_at_ten() -> (
+    None
+):
     form = ExtractionCandidate.empty()
     form.duration_seconds = 15
     form.aspect_ratio = "9:16"
