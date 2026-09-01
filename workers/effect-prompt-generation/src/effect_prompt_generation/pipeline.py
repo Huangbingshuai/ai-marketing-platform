@@ -84,20 +84,13 @@ from .providers import (
     CREATIVE_DIRECTION_TEMPLATE_HASH,
 )
 from .creative_directions import (
-    action_motif_guidance,
-    action_motif_signature,
     allocate_direction_fact_focus_ids,
     allocate_creative_directions,
     complete_semantic_profile,
     creative_direction_target_count,
     creative_direction_source_hash,
-    dominant_action_motifs,
     dominant_families,
-    dominant_scene_atoms,
     max_cluster_share,
-    max_scene_atom_share,
-    scene_atom_for_direction,
-    scene_atom_signature,
     semantic_cluster_novelty,
     semantic_profile_distribution,
     validate_creative_direction_plan,
@@ -163,8 +156,7 @@ class RunCache:
     diversity_supplement_slot_ids: set[str] = field(default_factory=set)
     diversity_avoid_slot_ids: set[str] = field(default_factory=set)
     diversity_avoid_action_families: set[str] = field(default_factory=set)
-    diversity_avoid_action_motifs: set[str] = field(default_factory=set)
-    diversity_avoid_scene_atoms: set[str] = field(default_factory=set)
+    diversity_avoid_scene_families: set[str] = field(default_factory=set)
     diversity_supplement_reasons: list[str] = field(default_factory=list)
     used_direction_fact_pairs: set[tuple[str, str]] = field(default_factory=set)
     initial_redundancy_summary: RedundancySummary | None = None
@@ -793,8 +785,8 @@ class PromptGenerationPipeline:
                 direction_plan,
                 count=requested,
                 ordinal_start=ordinal_start,
-                avoid_scene_atoms=(
-                    cache.diversity_avoid_scene_atoms
+                avoid_scene_families=(
+                    cache.diversity_avoid_scene_families
                     if supplement_kind == "DIVERSITY"
                     else ()
                 ),
@@ -807,15 +799,18 @@ class PromptGenerationPipeline:
             if direction_plan is not None
             else []
         )
-        if supplement_kind == "DIVERSITY" and cache.diversity_avoid_action_motifs:
-            motif_guidance = action_motif_guidance(
-                sorted(cache.diversity_avoid_action_motifs)
-            )
+        if supplement_kind == "DIVERSITY":
+            crowded_families = [
+                *sorted(cache.diversity_avoid_scene_families),
+                *sorted(cache.diversity_avoid_action_families),
+            ]
             directions = [
                 direction.model_copy(
                     update={
                         "avoid_families": list(
-                            dict.fromkeys([*direction.avoid_families, *motif_guidance])
+                            dict.fromkeys(
+                                [*direction.avoid_families, *crowded_families]
+                            )
                         )[:2]
                     }
                 )
@@ -1590,12 +1585,6 @@ class PromptGenerationPipeline:
                             for item in cache.creative_evaluations.values()
                             if candidate_ids is None or item.slot_id in candidate_ids
                         ]
-                        group_map = content_index.semantic_group_map(
-                            [
-                                *[item.slot_id for item in candidates],
-                                *content_index.anchor_ids,
-                            ]
-                        )
                         return select_creatives(
                             candidates,
                             evaluations,
@@ -1610,18 +1599,6 @@ class PromptGenerationPipeline:
                                 * semantic_cluster_novelty(
                                     left.evaluation.semantic_profile,
                                     right.evaluation.semantic_profile,
-                                    left_action_motifs=action_motif_signature(
-                                        left.candidate
-                                    ),
-                                    right_action_motifs=action_motif_signature(
-                                        right.candidate
-                                    ),
-                                    left_scene_atom=scene_atom_signature(
-                                        left.candidate
-                                    ),
-                                    right_scene_atom=scene_atom_signature(
-                                        right.candidate
-                                    ),
                                 ),
                                 4,
                             ),
@@ -1638,18 +1615,8 @@ class PromptGenerationPipeline:
                             required_fact_ids=required_fact_ids,
                             preferred_item_fact_ids=preferred_item_fact_ids,
                             fixed_covered_fact_ids=fixed_covered_fact_ids,
-                            quality_weight=0.55,
-                            novelty_weight=0.45,
-                            semantic_group_resolver=lambda item: group_map.get(
-                                item.candidate.slot_id,
-                                item.candidate.slot_id,
-                            ),
-                            fixed_semantic_group_ids=[
-                                group_map[anchor_id]
-                                for anchor_id in content_index.anchor_ids
-                                if anchor_id in group_map
-                            ],
-                            semantic_group_repeat_penalty=12.0,
+                            quality_weight=0.70,
+                            novelty_weight=0.30,
                         )
 
                     quality_baseline_result = select_creatives(
@@ -1663,74 +1630,6 @@ class PromptGenerationPipeline:
                         novelty_weight=0.0,
                     )
                     mmr_result = select_content_mmr()
-                    admitted_supplements: set[str] = set()
-                    rejected_supplements: set[str] = set()
-                    diversity_slots = cache.diversity_supplement_slot_ids & set(
-                        cache.creatives
-                    )
-                    base_ids = set(cache.creatives) - diversity_slots
-                    base_result = select_content_mmr(base_ids)
-                    if diversity_slots and len(base_result.selected) >= selection_target:
-                        current_result = base_result
-                        current_risk = content_index.redundancy_summary(
-                            [item.candidate.slot_id for item in current_result.selected]
-                        )
-                        for supplement_id in sorted(
-                            diversity_slots,
-                            key=lambda slot_id: cache.creatives[slot_id].ordinal,
-                        ):
-                            proposal_result = select_content_mmr(
-                                {*base_ids, *admitted_supplements, supplement_id}
-                            )
-                            proposal_ids = {
-                                item.candidate.slot_id
-                                for item in proposal_result.selected
-                            }
-                            if supplement_id not in proposal_ids:
-                                rejected_supplements.add(supplement_id)
-                                continue
-                            proposal_risk = content_index.redundancy_summary(
-                                list(proposal_ids)
-                            )
-                            if _positive_redundancy_improvement(
-                                current_risk,
-                                proposal_risk,
-                            ):
-                                admitted_supplements.add(supplement_id)
-                                current_result = proposal_result
-                                current_risk = proposal_risk
-                            else:
-                                rejected_supplements.add(supplement_id)
-                        mmr_result = current_result
-                    pre_supplement_redundancy = content_index.redundancy_summary(
-                        [item.candidate.slot_id for item in base_result.selected]
-                    )
-                    post_supplement_redundancy = content_index.redundancy_summary(
-                        [item.candidate.slot_id for item in mmr_result.selected]
-                    )
-                    pre_guard_redundancy = post_supplement_redundancy
-                    (
-                        mmr_result,
-                        final_guard_source,
-                        final_guard_swap_count,
-                    ) = _guard_final_selection_risk(
-                        mmr_result,
-                        comparators=[
-                            ("QUALITY_BASELINE", quality_baseline_result),
-                            ("PRE_SUPPLEMENT_SELECTION", base_result),
-                        ],
-                        content_index=content_index,
-                        target_count=selection_target,
-                        required_fact_ids=required_fact_ids,
-                        preferred_item_fact_ids=preferred_item_fact_ids,
-                        fixed_covered_fact_ids=fixed_covered_fact_ids,
-                        duplicate_limit_count=_maximum_semantic_duplicates(
-                            selection_target + len(anchors)
-                        ),
-                    )
-                    post_guard_redundancy = content_index.redundancy_summary(
-                        [item.candidate.slot_id for item in mmr_result.selected]
-                    )
                     baseline_ids = {
                         item.candidate.slot_id
                         for item in quality_baseline_result.selected
@@ -1774,10 +1673,8 @@ class PromptGenerationPipeline:
                             if self.similarity_mode == "vector"
                             else "TRIGRAM_SHADOW"
                         ),
-                        "mmrQualityWeight": 0.55,
-                        "mmrDiversityWeight": 0.45,
-                        "semanticGroupFirst": True,
-                        "semanticGroupRepeatPenalty": 12.0,
+                        "mmrQualityWeight": 0.70,
+                        "mmrDiversityWeight": 0.30,
                         "contentNoveltyWeight": 0.70,
                         "clusterAwareNoveltyWeight": 0.30,
                         "fixedAnchorCount": len(anchors),
@@ -1815,27 +1712,9 @@ class PromptGenerationPipeline:
                         "nearDuplicateReductionApplicable": reduction_applicable,
                         "nearDuplicateReductionPercent": reduction,
                         "nearDuplicateReductionBasis": (
-                            "PURE_QUALITY_BASELINE_TO_FINAL_GUARD"
+                            "PURE_QUALITY_BASELINE_TO_MMR"
                         ),
-                        "preSupplementRisk": _redundancy_metadata(
-                            pre_supplement_redundancy,
-                            selected_count=len(base_result.selected),
-                        ),
-                        "postSupplementRisk": _redundancy_metadata(
-                            post_supplement_redundancy,
-                            selected_count=len(mmr_result.selected),
-                        ),
-                        "preFinalGuard": _redundancy_metadata(
-                            pre_guard_redundancy,
-                            selected_count=len(mmr_result.selected),
-                        ),
-                        "postFinalGuard": _redundancy_metadata(
-                            post_guard_redundancy,
-                            selected_count=len(mmr_result.selected),
-                        ),
-                        "finalGuardApplied": final_guard_source is not None,
-                        "finalGuardSource": final_guard_source,
-                        "finalGuardSwapCount": final_guard_swap_count,
+                        "finalGuardApplied": False,
                         "averageQualityDelta": round(
                             float(mmr_summary["averageQualityScore"])
                             - float(baseline_summary["averageQualityScore"]),
@@ -1856,12 +1735,6 @@ class PromptGenerationPipeline:
                         ),
                         "diversitySupplementTriggered": (cache.diversity_supplemented),
                         "diversitySupplementCount": (cache.diversity_supplement_count),
-                        "diversitySupplementAdmittedCount": len(
-                            admitted_supplements
-                        ),
-                        "diversitySupplementRejectedCount": len(
-                            rejected_supplements
-                        ),
                         "highRiskPairs": content_stats.high_risk_pairs,
                     }
                     if self.similarity_mode == "vector":
@@ -2042,14 +1915,8 @@ class PromptGenerationPipeline:
             if not evaluation.hard_issues
         ]
         selected_evaluations = [item.evaluation for item in result.selected]
-        eligible_selected_candidates = [
-            cache.creatives[evaluation.slot_id]
-            for evaluation in eligible_evaluations
-            if evaluation.slot_id in cache.creatives
-        ]
-        selected_candidates = [item.candidate for item in result.selected]
-        pre_scene_share = max_scene_atom_share(eligible_selected_candidates)
-        post_scene_share = max_scene_atom_share(selected_candidates)
+        pre_scene_share = max_cluster_share(eligible_evaluations, "scene_family")
+        post_scene_share = max_cluster_share(selected_evaluations, "scene_family")
         pre_action_share = max_cluster_share(
             eligible_evaluations,
             "product_action_family",
@@ -2058,8 +1925,7 @@ class PromptGenerationPipeline:
             selected_evaluations,
             "product_action_family",
         )
-        dominant_motifs = dominant_action_motifs(selected_candidates)
-        dominant_scene_atom_values = dominant_scene_atoms(selected_candidates)
+        dominant_scenes = dominant_families(selected_evaluations, "scene_family")
         cache.embedding_stage_metadata.update(
             {
                 "selectedSemanticProfileDistribution": (
@@ -2126,10 +1992,9 @@ class PromptGenerationPipeline:
         plan = cache.creative_direction_plan
         alternative_scene_exists = bool(
             plan
-            and dominant_scene_atom_values
+            and dominant_scenes
             and any(
-                scene_atom_for_direction(direction)
-                not in dominant_scene_atom_values
+                direction.semantic_profile.scene_family not in dominant_scenes
                 for direction in plan.directions
             )
         )
@@ -2146,7 +2011,7 @@ class PromptGenerationPipeline:
             *(
                 [
                     "SCENE_CLUSTER_OVER_40_PERCENT:"
-                    f"{','.join(dominant_scene_atom_values)}"
+                    f"{','.join(dominant_scenes)}"
                 ]
                 if alternative_scene_exists and post_scene_share > 0.40
                 else []
@@ -2156,64 +2021,20 @@ class PromptGenerationPipeline:
                 if alternative_action_exists and post_action_share > 0.40
                 else []
             ),
-            *(
-                [f"ACTION_MOTIF_OVER_40_PERCENT:{','.join(dominant_motifs)}"]
-                if dominant_motifs
-                else []
-            ),
         ]
         vector_diversity_needed = bool(
             current_redundancy is not None
             and current_redundancy.redundant_candidate_count
             > semantic_duplicate_limit_count
         )
-        cluster_diversity_needed = bool(cluster_reasons)
-        should_diversity_supplement = (
-            not should_coverage_supplement
-            and not should_quantity_supplement
-            and missing == 0
-            and selection_target > 1
-            and snapshot.operation == "BATCH_GENERATE"
-            and snapshot.selection_policy == "MMR_CONTENT"
-            and self.similarity_mode == "vector"
-            and not cache.diversity_supplemented
-            and (vector_diversity_needed or cluster_diversity_needed)
-        )
-        diversity_supplement_count = 0
-        if should_diversity_supplement:
-            redundant_excess = (
-                max(
-                    0,
-                    current_redundancy.redundant_candidate_count
-                    - semantic_duplicate_limit_count,
-                )
-                if current_redundancy is not None
-                else 0
-            )
-            cluster_excess = math.ceil(
-                max(0.0, post_scene_share - 0.40, post_action_share - 0.40)
-                * selection_target
-            )
-            diversity_supplement_count = min(
-                max(
-                    2,
-                    math.ceil(max(redundant_excess, cluster_excess) * 1.25),
-                ),
-                math.ceil(selection_target * 0.40),
-                max(0, math.ceil(selection_target * 1.80) - len(cache.creatives)),
-            )
-            should_diversity_supplement = diversity_supplement_count > 0
-            cache.diversity_avoid_scene_atoms = set(dominant_scene_atom_values)
-            cache.diversity_avoid_action_families = set(dominant_actions)
-            cache.diversity_avoid_action_motifs = set(dominant_motifs)
-            cache.diversity_supplement_reasons = [
-                *(
-                    ["VECTOR_NEAR_DUPLICATE_EXCESS"]
-                    if vector_diversity_needed
-                    else []
-                ),
-                *cluster_reasons,
-            ]
+        diversity_findings = [
+            *(
+                ["VECTOR_NEAR_DUPLICATE_EXCESS"]
+                if vector_diversity_needed
+                else []
+            ),
+            *cluster_reasons,
+        ]
         pending = []
         if should_quantity_supplement:
             pending = await self.plan_creatives(
@@ -2233,13 +2054,6 @@ class PromptGenerationPipeline:
                 supplement_kind="COVERAGE",
                 coverage_fact_ids=missing_coverage_fact_ids,
             )
-        elif should_diversity_supplement:
-            pending = await self.plan_creatives(
-                context,
-                round_number=round_number + 1,
-                requested_count=diversity_supplement_count,
-                supplement_kind="DIVERSITY",
-            )
         # Capacity exhaustion may turn an intended supplement into an empty
         # plan. Only report PARTIAL when there is real work to execute; the
         # final coverage gate will otherwise retain the draft as NEEDS_REVIEW.
@@ -2257,13 +2071,8 @@ class PromptGenerationPipeline:
                 }
             )
         diversity_soft_warning = (
-            "SEMANTIC_DUPLICATE_RATE_LIMIT_NOT_MET"
-            if (
-                not should_supplement
-                and missing == 0
-                and cache.diversity_supplemented
-                and (vector_diversity_needed or cluster_diversity_needed)
-            )
+            "SEMANTIC_DIVERSITY_CAN_BE_IMPROVED"
+            if missing == 0 and diversity_findings
             else None
         )
         stage_warnings = [
@@ -2288,8 +2097,6 @@ class PromptGenerationPipeline:
                 if should_coverage_supplement and should_supplement
                 else "合格候选不足，正在执行数量补充"
                 if should_quantity_supplement and should_supplement
-                else "语义相似候选偏多，正在执行一次多样性补充"
-                if should_diversity_supplement and should_supplement
                 else "已按质量与语义多样性选满目标数量"
             ),
             metadata={
@@ -2300,6 +2107,22 @@ class PromptGenerationPipeline:
                 "missingRequiredFactCount": len(missing_coverage_fact_ids),
                 "coverageSupplementTriggered": (
                     should_coverage_supplement and should_supplement
+                ),
+                "hardRejectedCount": sum(
+                    bool(item.hard_issues)
+                    for item in cache.creative_evaluations.values()
+                ),
+                "eligibleNotSelectedCount": max(
+                    0,
+                    len(
+                        [
+                            item
+                            for item in cache.creative_evaluations.values()
+                            if not item.hard_issues
+                        ]
+                    )
+                    - len(cache.accepted_items)
+                    - result.exact_duplicate_count,
                 ),
                 "exactDuplicateCount": result.exact_duplicate_count,
                 "supplemented": cache.supplemented,
@@ -2349,6 +2172,11 @@ class PromptGenerationPipeline:
             and cache.redundancy_summary is not None
             else _pending_semantic_evaluation()
         )
+        if (
+            semantic_evaluation.duplicate_rate is not None
+            and semantic_evaluation.duplicate_rate >= SEMANTIC_DUPLICATE_RATE_LIMIT
+        ):
+            warning_counts["SEMANTIC_DIVERSITY_CAN_BE_IMPROVED"] += 1
         coverage = insight_coverage(
             self._require_application(context),
             items,
@@ -2370,9 +2198,6 @@ class PromptGenerationPipeline:
             and all(item.classification_status == "VERIFIED" for item in items)
             and every_item_has_deep_business_fact
             and not any(row.evaluation.hard_issues for row in selected)
-            and semantic_evaluation.status == "VERIFIED"
-            and semantic_evaluation.duplicate_rate is not None
-            and semantic_evaluation.duplicate_rate < SEMANTIC_DUPLICATE_RATE_LIMIT
             and (item_operation or not coverage.missing)
             else "NEEDS_REVIEW"
         )
@@ -2440,6 +2265,23 @@ class PromptGenerationPipeline:
                 "requiredFactCount": len(coverage.required),
                 "coveredRequiredFactCount": len(coverage.covered),
                 "missingRequiredFactCount": len(coverage.missing),
+                "hardRejectedCount": sum(
+                    bool(item.hard_issues)
+                    for item in cache.creative_evaluations.values()
+                ),
+                "exactDuplicateDroppedCount": cache.exact_duplicate_count,
+                "eligibleNotSelectedCount": max(
+                    0,
+                    len(
+                        [
+                            item
+                            for item in cache.creative_evaluations.values()
+                            if not item.hard_issues
+                        ]
+                    )
+                    - len(selected)
+                    - cache.exact_duplicate_count,
+                ),
                 "itemsMissingDeepBusinessFact": sum(
                     not any(
                         binding.fact_id in deep_business_fact_ids
@@ -2728,213 +2570,6 @@ def _near_duplicate_reduction(
         return False, 0.0
     reduction = 100.0 * (baseline_count - compared_count) / baseline_count
     return True, round(reduction, 2)
-
-
-def _positive_redundancy_improvement(
-    current: RedundancySummary,
-    proposal: RedundancySummary,
-) -> bool:
-    return (
-        proposal.high_risk_pair_count < current.high_risk_pair_count
-        or (
-            proposal.high_risk_pair_count == current.high_risk_pair_count
-            and proposal.redundant_candidate_count
-            < current.redundant_candidate_count
-        )
-    )
-
-
-def _guard_final_selection_risk(
-    preferred: CreativeSelectionResult,
-    *,
-    comparators: list[tuple[str, CreativeSelectionResult]],
-    content_index: ContentVectorIndex,
-    target_count: int,
-    required_fact_ids: Sequence[str] = (),
-    preferred_item_fact_ids: Sequence[str] = (),
-    fixed_covered_fact_ids: Sequence[str] = (),
-    duplicate_limit_count: int = 0,
-) -> tuple[CreativeSelectionResult, str | None, int]:
-    if len(preferred.selected) != target_count:
-        return preferred, None, 0
-    guarded = preferred
-    guarded_risk = content_index.redundancy_summary(
-        [item.candidate.slot_id for item in guarded.selected]
-    )
-    source: str | None = None
-    for comparator_source, comparator in comparators:
-        if len(comparator.selected) != target_count:
-            continue
-        comparator_risk = content_index.redundancy_summary(
-            [item.candidate.slot_id for item in comparator.selected]
-        )
-        if not _strictly_dominates_redundancy(comparator_risk, guarded_risk):
-            continue
-        guarded = comparator
-        guarded_risk = comparator_risk
-        source = comparator_source
-    all_rows = {
-        row.candidate.slot_id: row
-        for result in [preferred, *[item for _, item in comparators]]
-        for row in [*result.selected, *result.rejected]
-    }
-    guarded_ids = {row.candidate.slot_id for row in guarded.selected}
-    guarded = CreativeSelectionResult(
-        selected=guarded.selected,
-        rejected=[
-            row for slot_id, row in all_rows.items() if slot_id not in guarded_ids
-        ],
-        exact_duplicate_count=guarded.exact_duplicate_count,
-    )
-    repaired, swap_count = _repair_redundant_selection(
-        guarded,
-        content_index=content_index,
-        required_fact_ids=required_fact_ids,
-        preferred_item_fact_ids=preferred_item_fact_ids,
-        fixed_covered_fact_ids=fixed_covered_fact_ids,
-        duplicate_limit_count=duplicate_limit_count,
-    )
-    if swap_count:
-        source = "INDIVIDUAL_REDUNDANCY_REPAIR"
-    return repaired, source, swap_count
-
-
-def _repair_redundant_selection(
-    selection: CreativeSelectionResult,
-    *,
-    content_index: ContentVectorIndex,
-    required_fact_ids: Sequence[str],
-    preferred_item_fact_ids: Sequence[str] = (),
-    fixed_covered_fact_ids: Sequence[str],
-    duplicate_limit_count: int,
-) -> tuple[CreativeSelectionResult, int]:
-    """Swap redundant rows for safer unused candidates without changing count."""
-
-    selected = list(selection.selected)
-    rejected = list(selection.rejected)
-    required = set(required_fact_ids) - set(fixed_covered_fact_ids)
-    preferred_item_facts = set(preferred_item_fact_ids)
-    swap_count = 0
-
-    def covers_required(rows: Sequence[RankedCreative]) -> bool:
-        covered = {
-            fact_id
-            for row in rows
-            for fact_id in row.evaluation.realized_fact_ids
-        }
-        return required.issubset(covered)
-
-    def deep_bound_count(rows: Sequence[RankedCreative]) -> int:
-        return sum(
-            bool(preferred_item_facts.intersection(row.evaluation.realized_fact_ids))
-            for row in rows
-        )
-
-    for _ in range(len(selected)):
-        current_risk = content_index.redundancy_summary(
-            [row.candidate.slot_id for row in selected]
-        )
-        if current_risk.redundant_candidate_count <= duplicate_limit_count:
-            break
-        risky_ids = set(current_risk.high_risk_candidate_ids)
-        removable = sorted(
-            (row for row in selected if row.candidate.slot_id in risky_ids),
-            key=lambda row: (row.quality_score, row.candidate.ordinal),
-        )
-        available = sorted(
-            rejected,
-            key=lambda row: (
-                row.quality_score,
-                row.novelty_score,
-                -row.candidate.ordinal,
-            ),
-            reverse=True,
-        )
-        best: tuple[
-            tuple[int, int, float, float],
-            int,
-            RankedCreative,
-            RedundancySummary,
-        ] | None = None
-        for removed in removable:
-            removed_index = next(
-                index
-                for index, row in enumerate(selected)
-                if row.candidate.slot_id == removed.candidate.slot_id
-            )
-            for replacement in available:
-                proposal = list(selected)
-                proposal[removed_index] = replacement
-                if not covers_required(proposal):
-                    continue
-                if deep_bound_count(proposal) < deep_bound_count(selected):
-                    continue
-                proposal_risk = content_index.redundancy_summary(
-                    [row.candidate.slot_id for row in proposal]
-                )
-                if not _strictly_dominates_redundancy(
-                    proposal_risk,
-                    current_risk,
-                ):
-                    continue
-                score = (
-                    current_risk.redundant_candidate_count
-                    - proposal_risk.redundant_candidate_count,
-                    current_risk.high_risk_pair_count
-                    - proposal_risk.high_risk_pair_count,
-                    replacement.quality_score - removed.quality_score,
-                    replacement.novelty_score,
-                )
-                if best is None or score > best[0]:
-                    best = (score, removed_index, replacement, proposal_risk)
-        if best is None:
-            break
-        _, removed_index, replacement, _ = best
-        removed = selected[removed_index]
-        selected[removed_index] = replacement
-        rejected = [
-            row
-            for row in rejected
-            if row.candidate.slot_id != replacement.candidate.slot_id
-        ]
-        rejected.append(removed)
-        swap_count += 1
-    return (
-        CreativeSelectionResult(
-            selected=selected,
-            rejected=rejected,
-            exact_duplicate_count=selection.exact_duplicate_count,
-        ),
-        swap_count,
-    )
-
-
-def _strictly_dominates_redundancy(
-    candidate: RedundancySummary,
-    current: RedundancySummary,
-) -> bool:
-    return (
-        candidate.high_risk_pair_count <= current.high_risk_pair_count
-        and candidate.redundant_candidate_count <= current.redundant_candidate_count
-        and (
-            candidate.high_risk_pair_count < current.high_risk_pair_count
-            or candidate.redundant_candidate_count
-            < current.redundant_candidate_count
-        )
-    )
-
-
-def _redundancy_metadata(
-    summary: RedundancySummary,
-    *,
-    selected_count: int,
-) -> dict[str, int]:
-    return {
-        "selectedCount": selected_count,
-        "highRiskGroupCount": summary.high_risk_group_count,
-        "highRiskPairCount": summary.high_risk_pair_count,
-        "redundantCandidateCount": summary.redundant_candidate_count,
-    }
 
 
 _SEMANTIC_CONTEXT_FIELDS = {

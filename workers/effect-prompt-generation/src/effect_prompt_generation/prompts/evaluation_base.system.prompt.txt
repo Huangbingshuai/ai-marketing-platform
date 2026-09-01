@@ -8,21 +8,21 @@
 
 对每条候选：
 1. 从六类用途 HOOK、PAIN、PRODUCT_DISPLAY、SELLING_POINT_EXPLANATION、CTA、OUTRO 中选择一个 primaryPurpose，并给出包含主用途的 compatiblePurposes；一条素材可以有多个用途。
-2. factEvidence 只列候选真正实现的事实。可见事实的 evidenceText 必须逐字摘自正文；受众、场景或抽象商业背景可以逐字摘自 creativeCore 或六维中的 persona、scene、productRelation，但正文必须与该结构化表达一致。factId 必须来自候选 declaredFactIds 或该条 assignedContextFactIds；realizedFactIds 与 factEvidence 的 factId 顺序一致。assignedContextFactIds 只能在候选真实体现对应人物、场景、需求、动机或营销语境时绑定，不能因为“可能相关”就绑定。
+2. factEvidence 只列候选真正实现的事实。evidenceText 必须逐字摘自正文、creativeCore 或六维字段，evidenceSource 必须对应 CONTENT、CREATIVE_CORE、NARRATIVE、SCENE、PERSONA、PRODUCT_RELATION 之一。supportLevel 使用 EXACT、SEMANTIC_FULL、PARTIAL、NONE：完整保留事实业务含义的改写为 SEMANTIC_FULL；遗漏关键限定、配方、工艺、数量、对象或承诺时只能为 PARTIAL；无支持为 NONE。产品名称、品类、规格和价格只有原值被准确表达时才能使用 EXACT。factId 必须来自候选 declaredFactIds 或该条 assignedContextFactIds；realizedFactIds 与 factEvidence 中支持等级为 EXACT 或 SEMANTIC_FULL 的 factId 顺序一致。
 3. 五项分数均为 0～100：productRelevance、creativeCoherence、visualExecutability、commercialUsefulness、visualClarity。
-4. hardIssues 只允许使用稳定问题码：PRODUCT_UNRELATED、FABRICATED_FACT、ABSTRACT_FACT_VISUAL_PROOF、DIMENSION_CONTENT_CONFLICT、EMPTY_OR_BROKEN_CONTENT、VISUALLY_UNEXECUTABLE、MULTI_SCENE_TIMELINE、COMPLETE_AD_TIMELINE。只有客观错误才能写入，不得把品味判断作为硬问题。
-5. warnings 只允许使用稳定问题码：GENERIC_STYLE_STACKING、PURPOSE_SENTENCE_INSTEAD_OF_VISIBLE_ACTION、CAMERA_ACTION_MISMATCH、UNRELATED_DIVERSITY_SCENE、TEMPLATE_LIKE_EXPRESSION、ORDINARY_SIMILARITY、PURPOSE_SKEW、SECONDARY_FACT_NOT_USED、DURATION_TOO_DENSE、DURATION_TOO_SPARSE。一般相似、用途偏斜、通用正向套话、次要事实未覆盖、轻微时长不匹配和品味建议只写 warnings。
+4. hardIssues 只允许使用稳定问题码：PRODUCT_UNRELATED、FABRICATED_FACT、ABSTRACT_FACT_VISUAL_PROOF、EMPTY_OR_BROKEN_CONTENT、VISUALLY_UNEXECUTABLE、MULTI_SCENE_TIMELINE、COMPLETE_AD_TIMELINE。只有事实错误、商品完全无关、结构破损或客观无法生成才能写入，不得把评分、品味或一般不一致作为硬问题。
+5. warnings 只允许使用稳定问题码：DIMENSION_CONTENT_CONFLICT、GENERIC_STYLE_STACKING、PURPOSE_SENTENCE_INSTEAD_OF_VISIBLE_ACTION、CAMERA_ACTION_MISMATCH、UNRELATED_DIVERSITY_SCENE、TEMPLATE_LIKE_EXPRESSION、ORDINARY_SIMILARITY、PURPOSE_SKEW、SECONDARY_FACT_NOT_USED、DURATION_TOO_DENSE、DURATION_TOO_SPARSE。一般相似、用途偏斜、六维轻微漂移、通用正向套话、次要事实未覆盖、轻微时长不匹配和品味建议只写 warnings。
 6. “展示品质、体现卖点、营造高级感”不是可见动作；出现这类目的句但仍有明确动作时给软提醒，缺少主体、对象和可见动作而无法生成时才判定 VISUALLY_UNEXECUTABLE。
 7. 单独出现一种合理的暖光、浅景深或推进镜头不是问题；机械堆叠多种通用质感词、且没有服务当前商品动作时才标记 GENERIC_STYLE_STACKING。
-8. 书桌、实验室、户外长椅等场景不是天然错误；只有它与当前商品事实、人物和动作没有可解释关系，且明显为了追求差异而出现时才标记 UNRELATED_DIVERSITY_SCENE；商品完全无关时使用 PRODUCT_UNRELATED。
+8. 任何地点都不是天然正确或错误；只有场景与当前商品事实、人物和动作没有可解释关系，且明显为了追求差异而出现时才标记 UNRELATED_DIVERSITY_SCENE；商品完全无关时使用 PRODUCT_UNRELATED。
 9. semanticSignature 概括创意主线语义，visualSignature 概括场景、人物、产品动作和镜头组合；不得用随机编号制造差异。
 10. 不因正文偶尔复述共用约束而淘汰。只输出严格符合 JSON Schema 的 JSON。
 11. 事实视觉策略是事实角色边界。若正文用成品外观、纹理、光泽、切面、弹性、人物表情、临时道具或未经确认的过程证明标记为 CONTEXT_ONLY、TEXT_ONLY 或 FORBIDDEN_VISUAL_PROOF 的事实，使用 ABSTRACT_FACT_VISUAL_PROOF。
 12. 购买、年货或伴手礼场景只证明消费语境，不自动证明产品存在礼盒、礼袋、包装文字、品牌印花、香料配件或特定盒内组合。正文若把未在可信事实中确认的这些内容写成产品包装或包装文字，必须标记 FABRICATED_FACT；普通无品牌场景道具不单独判错。
-13. semanticProfile 使用输入给出的批次动态词表，对正文真实实现的叙事、场景、人物关系、产品动作、镜头和情绪逐轴分类；无法归类时使用 OTHER，不得照抄领取方向而忽略正文。
+13. semanticProfile 使用输入给出的当前商品批次动态词表，对正文真实实现的叙事、场景、人物关系、产品动作、镜头和情绪逐轴做语义分类；同义改写必须归入同一个语义族，不能依据字符是否相同拆分类别。无法归类时使用 OTHER，不得照抄领取方向而忽略正文。
 14. 每条输入包含独立的 targetDurationSeconds。4～8 秒只完成一个主动作并停留；9～15 秒可容纳一条连续动作弧；16～30 秒可渐进展开但仍不得跨地点或跨真实时间。轻微过密或过稀写 warning，不因单纯时长偏好写 hardIssues。
 15. 必须核对正文具体底层动作；在目标时长内串联拆袋、切片、多种烹饪、摆盘、品尝或递送等过多阶段时标记 DURATION_TOO_DENSE。
 16. 需要熟制的产品从拆袋或切片直接跳到入口、品尝或摆上已经做好的饭菜，或常温、成品食物和热食器具冒凉气，属于 VISUALLY_UNEXECUTABLE；明确即食的产品不误判。
-17. factEvidence 的摘录必须真正支持对应事实，不能仅因同一句出现产品名就把产品名绑定到卖点、痛点、场景或受众事实。商业背景允许从匹配的六维字段摘录准确语义，例如 persona 中明确写出的家庭厨房决策者、scene 中明确写出的年货送礼；不能用“真空袋装”支持肥瘦配比，用“家庭厨房”支持传统工艺，或用普通烹饪动作支持味觉、配方、功效与储存承诺。
+17. factEvidence 判断的是“上游事实是否完整支持候选表达”，不是字符是否相似。不能仅因同一句出现产品名就把产品名绑定到卖点、痛点、场景或受众事实；不能用“真空袋装”支持肥瘦配比，用“家庭厨房”支持传统工艺，或用普通使用动作支持味觉、配方、功效与储存承诺。语义方向相关但缺少事实关键限定时必须标为 PARTIAL，不得冒充完整覆盖。
 18. 产品没有手、工具、转台或容器运动支撑却自行旋转、翻面或悬空转动，属于 VISUALLY_UNEXECUTABLE。筷子夹起整根长条食品属于不自然操作，应降低 visualExecutability 并给 CAMERA_ACTION_MISMATCH。
 19. 即使目标时长接近 30 秒，需熟制食品进入沸水、蒸锅或蒸笼后“片刻、瞬间、转眼、马上”就成为成品，也属于不真实的时间压缩。

@@ -200,7 +200,7 @@ describe('effect prompt quality contract', () => {
     expect(result.qualityStatus).toBe('NEEDS_REVIEW');
   });
 
-  it('requires semantic duplicate rate to be strictly below fifteen percent', () => {
+  it('keeps semantic duplicate rate as an advisory metric', () => {
     const items = Array.from({ length: 20 }, (_, index) =>
       item(`00000000-0000-4000-8000-${String(index).padStart(12, '0')}`),
     );
@@ -218,10 +218,10 @@ describe('effect prompt quality contract', () => {
         duplicateRate: 15,
       },
     );
-    expect(result.qualityStatus).toBe('NEEDS_REVIEW');
+    expect(result.qualityStatus).toBe('PASS');
   });
 
-  it('allows seven but blocks eight semantic duplicates in a fifty-item batch', () => {
+  it('does not change the quality status at the semantic duplicate reference line', () => {
     const items = Array.from({ length: 50 }, (_, index) =>
       item(`00000000-0000-4000-8000-${String(index).padStart(12, '0')}`),
     );
@@ -242,7 +242,7 @@ describe('effect prompt quality contract', () => {
       );
 
     expect(evaluate(7).qualityStatus).toBe('PASS');
-    expect(evaluate(8).qualityStatus).toBe('NEEDS_REVIEW');
+    expect(evaluate(8).qualityStatus).toBe('PASS');
   });
 
   it('recalculates connected duplicate groups after a deletion from a trusted audit', () => {

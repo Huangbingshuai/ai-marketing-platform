@@ -5,12 +5,9 @@ from collections import Counter
 from dataclasses import replace
 from typing import Any
 
-import numpy as np
 import pytest
 
 from effect_prompt_generation.embeddings import (
-    ContentEmbeddingStats,
-    ContentVectorIndex,
     EmbeddingBatchResult,
     EmbeddingProviderError,
     MockEmbeddingProvider,
@@ -42,7 +39,6 @@ from effect_prompt_generation.pipeline import (
     PipelineError,
     PromptGenerationPipeline,
     _evaluation_context_fact_ids,
-    _guard_final_selection_risk,
     _maximum_semantic_duplicates,
     _semantic_evaluation,
 )
@@ -52,7 +48,6 @@ from effect_prompt_generation.providers import (
     ProviderErrorType,
 )
 from effect_prompt_generation.quality import (
-    CreativeSelectionResult,
     RankedCreative,
     _creative_novelty,
     creative_soft_warnings,
@@ -826,7 +821,7 @@ async def test_vector_selection_keeps_exact_count_and_reports_safe_metrics() -> 
     )
     assert selection_stage.metadata["selectionMethod"] == "CONTENT_CLUSTER_VECTOR_MMR"
     assert 10 <= selection_stage.metadata["embeddingInputCount"] <= 18
-    assert selection_stage.metadata["embeddingRequestCount"] == 2
+    assert selection_stage.metadata["embeddingRequestCount"] == 1
     assert selection_stage.metadata["comparisonCount"] > 0
     assert "model" not in selection_stage.metadata
 
@@ -868,15 +863,15 @@ async def test_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
         api.result.metrics.candidate_target_count
     )
     assert selection_stage.metadata["embeddingRequestCount"] == 1
-    assert selection_stage.metadata["mmrQualityWeight"] == 0.55
-    assert selection_stage.metadata["mmrDiversityWeight"] == 0.45
-    assert selection_stage.metadata["semanticGroupFirst"] is True
+    assert selection_stage.metadata["mmrQualityWeight"] == 0.70
+    assert selection_stage.metadata["mmrDiversityWeight"] == 0.30
+    assert "semanticGroupFirst" not in selection_stage.metadata
     assert selection_stage.metadata["contentMmrSelection"]["selectedCount"] == 10
     assert "dualVectorSelection" not in selection_stage.metadata
 
 
 @pytest.mark.asyncio
-async def test_content_mmr_diversity_supplement_runs_once_and_keeps_exact_count() -> (
+async def test_content_mmr_reports_similarity_without_diversity_regeneration() -> (
     None
 ):
     api = PromptApi()
@@ -905,19 +900,19 @@ async def test_content_mmr_diversity_supplement_runs_once_and_keeps_exact_count(
 
     assert api.result is not None
     assert len(api.result.items) == 10
-    assert api.result.metrics.generated_candidate_count == 18
-    assert embedding_provider.input_count == 18
+    assert api.result.metrics.generated_candidate_count == 14
+    assert embedding_provider.input_count == 14
     final_selection_stage = next(
         stage
         for stage in reversed(api.stages)
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
-    assert final_selection_stage.metadata["diversitySupplementTriggered"] is True
-    assert final_selection_stage.metadata["diversitySupplementCount"] == 4
-    assert final_selection_stage.metadata["embeddingInputCount"] == 18
-    assert final_selection_stage.metadata["embeddingRequestCount"] == 2
+    assert final_selection_stage.metadata["diversitySupplementTriggered"] is False
+    assert final_selection_stage.metadata["diversitySupplementCount"] == 0
+    assert final_selection_stage.metadata["embeddingInputCount"] == 14
+    assert final_selection_stage.metadata["embeddingRequestCount"] == 1
     assert final_selection_stage.metadata["finalAccurateCount"] == 10
-    assert final_selection_stage.warnings == ["SEMANTIC_DUPLICATE_RATE_LIMIT_NOT_MET"]
+    assert final_selection_stage.warnings == ["SEMANTIC_DIVERSITY_CAN_BE_IMPROVED"]
 
     resumed = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -929,8 +924,8 @@ async def test_content_mmr_diversity_supplement_runs_once_and_keeps_exact_count(
     resumed.register_snapshot(runtime, snapshot)
     await resumed.load_and_snapshot(runtime)
     restored_cache = resumed._cache(runtime)
-    assert restored_cache.diversity_supplemented is True
-    assert restored_cache.diversity_supplement_count == 4
+    assert restored_cache.diversity_supplemented is False
+    assert restored_cache.diversity_supplement_count == 0
     assert restored_cache.replenishment_rounds == 0
 
 
@@ -1112,7 +1107,7 @@ async def test_item_evaluate_preserves_content_and_only_runs_classification() ->
 
 
 @pytest.mark.asyncio
-async def test_runs_coverage_replenishment_after_reaching_exact_count() -> None:
+async def test_does_not_replenish_when_initial_selection_already_covers_facts() -> None:
     api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -1132,13 +1127,13 @@ async def test_runs_coverage_replenishment_after_reaching_exact_count() -> None:
     assert api.result.quality_status == "PASS"
     assert len(api.result.items) == 10
     assert api.result.metrics.candidate_target_count == 14
-    assert api.result.metrics.generated_candidate_count == 16
+    assert api.result.metrics.generated_candidate_count == 14
     assert api.result.metrics.replenishment_rounds == 0
     assert api.result.metrics.rejected_count > 0
     assert api.result.metrics.hard_issue_counts == []
     assert Counter(item.phase.value for item in api.shards.values()) == {
-        "CREATIVE": 5,
-        "CLASSIFICATION": 6,
+        "CREATIVE": 4,
+        "CLASSIFICATION": 5,
     }
 
 
@@ -1272,7 +1267,9 @@ def test_assigned_business_context_accepts_real_semantic_evidence() -> None:
             FactEvidence(fact_id=product_fact.fact_id, evidence_text="广式腊肠"),
             FactEvidence(
                 fact_id=gift_fact.fact_id,
-                evidence_text="春节时把腊肠递给亲友",
+                evidence_text=candidate.dimensions.scene,
+                evidence_source="SCENE",
+                support_level="SEMANTIC_FULL",
             ),
         ],
         realized_fact_ids=[product_fact.fact_id, gift_fact.fact_id],
@@ -1300,6 +1297,136 @@ def test_assigned_business_context_accepts_real_semantic_evidence() -> None:
     ]
     assert "UNKNOWN_OR_UNDECLARED_FACT" not in validated.warnings
     assert validated.fact_evidence[1].evidence_text == candidate.dimensions.scene
+
+
+def test_selling_point_binding_accepts_full_semantic_support_without_character_overlap() -> None:
+    application = map_insight(
+        {
+            "productName": "广式腊肠",
+            "coreSellingPoints": ["广府糖酒腌制工艺"],
+        }
+    )
+    product_fact = next(
+        fact for fact in application.usable if fact.field == InsightField.PRODUCT_NAME
+    )
+    selling_fact = next(
+        fact
+        for fact in application.usable
+        if fact.field == InsightField.CORE_SELLING_POINT
+    )
+    candidate = CreativeCandidate(
+        slot_id="candidate-semantic-selling-point",
+        ordinal=1,
+        round=0,
+        creative_core="呈现岭南传统糖酒入味方式",
+        declared_fact_ids=[product_fact.fact_id, selling_fact.fact_id],
+        dimensions=CreativeDimensions(
+            narrative="风味工艺讲解",
+            scene="家庭备餐台",
+            persona="成年人手部",
+            product_relation="沿用岭南做法，以蔗糖配米酒慢慢入味",
+            camera="产品近景",
+            emotion="真实克制",
+        ),
+        content="家庭备餐台上，镜头围绕广式腊肠呈现沿用岭南做法、以蔗糖配米酒慢慢入味的特色。",
+    )
+    evaluation = CreativeEvaluation(
+        slot_id=candidate.slot_id,
+        primary_purpose=FragmentType.SELLING_POINT_EXPLANATION,
+        compatible_purposes=[FragmentType.SELLING_POINT_EXPLANATION],
+        fact_evidence=[
+            FactEvidence(fact_id=product_fact.fact_id, evidence_text="广式腊肠"),
+            FactEvidence(
+                fact_id=selling_fact.fact_id,
+                evidence_text="沿用岭南做法，以蔗糖配米酒慢慢入味",
+                evidence_source="PRODUCT_RELATION",
+                support_level="SEMANTIC_FULL",
+            ),
+        ],
+        realized_fact_ids=[product_fact.fact_id, selling_fact.fact_id],
+        scores=CreativeScores(
+            product_relevance=90,
+            creative_coherence=88,
+            visual_executability=86,
+            commercial_usefulness=90,
+            visual_clarity=85,
+        ),
+        semantic_signature="ignored",
+        visual_signature="ignored",
+    )
+
+    validated = validate_creative_evaluation(candidate, evaluation, application)
+
+    assert selling_fact.fact_id in validated.realized_fact_ids
+    assert "FACT_EVIDENCE_MISMATCH" not in validated.warnings
+
+
+def test_partial_business_fact_and_low_scores_only_create_soft_warnings() -> None:
+    application = map_insight(
+        {
+            "productName": "旅行箱",
+            "coreSellingPoints": ["航空级铝合金框架与静音万向轮"],
+        }
+    )
+    product_fact = next(
+        fact for fact in application.usable if fact.field == InsightField.PRODUCT_NAME
+    )
+    selling_fact = next(
+        fact
+        for fact in application.usable
+        if fact.field == InsightField.CORE_SELLING_POINT
+    )
+    candidate = CreativeCandidate(
+        slot_id="candidate-partial-selling-point",
+        ordinal=1,
+        round=0,
+        creative_core="机场大厅推行旅行箱",
+        declared_fact_ids=[product_fact.fact_id, selling_fact.fact_id],
+        dimensions=CreativeDimensions(
+            narrative="场景体验",
+            scene="机场出发大厅",
+            persona="成年旅客",
+            product_relation="平稳推行旅行箱",
+            camera="侧后方跟拍",
+            emotion="从容",
+        ),
+        content="成年旅客在机场出发大厅平稳推行旅行箱，镜头跟随箱体移动。",
+    )
+    evaluation = CreativeEvaluation(
+        slot_id=candidate.slot_id,
+        primary_purpose=FragmentType.PRODUCT_DISPLAY,
+        compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+        fact_evidence=[
+            FactEvidence(fact_id=product_fact.fact_id, evidence_text="旅行箱"),
+            FactEvidence(
+                fact_id=selling_fact.fact_id,
+                evidence_text="平稳推行旅行箱",
+                evidence_source="PRODUCT_RELATION",
+                support_level="PARTIAL",
+            ),
+        ],
+        realized_fact_ids=[product_fact.fact_id],
+        scores=CreativeScores(
+            product_relevance=55,
+            creative_coherence=45,
+            visual_executability=45,
+            commercial_usefulness=55,
+            visual_clarity=55,
+        ),
+        semantic_signature="ignored",
+        visual_signature="ignored",
+        hard_issues=["DIMENSION_CONTENT_CONFLICT"],
+    )
+
+    validated = validate_creative_evaluation(candidate, evaluation, application)
+
+    assert validated.hard_issues == []
+    assert selling_fact.fact_id not in validated.realized_fact_ids
+    assert "FACT_EVIDENCE_PARTIAL" in validated.warnings
+    assert "LOW_PRODUCT_RELEVANCE_SCORE" in validated.warnings
+    assert "LOW_CREATIVE_COHERENCE_SCORE" in validated.warnings
+    assert "LOW_VISUAL_EXECUTABILITY_SCORE" in validated.warnings
+    assert "DIMENSION_CONTENT_CONFLICT" in validated.warnings
 
 
 def test_context_binding_is_removed_when_excerpt_describes_another_fact() -> None:
@@ -1969,77 +2096,3 @@ def test_semantic_group_first_selects_a_distinct_group_before_repeating() -> Non
     )
 
     assert [row.candidate.slot_id for row in result.selected] == ["a1", "b1"]
-
-
-def test_final_guard_swaps_redundant_item_without_changing_quantity() -> None:
-    def ranked(slot_id: str, ordinal: int, quality: int) -> RankedCreative:
-        candidate = CreativeCandidate(
-            slot_id=slot_id,
-            ordinal=ordinal,
-            round=0,
-            creative_core=f"{slot_id}创意主线",
-            declared_fact_ids=["fact-product"],
-            dimensions=CreativeDimensions(
-                narrative=f"{slot_id}叙事",
-                scene=f"{slot_id}场景",
-                persona="成年人手部",
-                product_relation="产品主体动作",
-                camera="稳定近景",
-                emotion="自然真实",
-            ),
-            content=f"{slot_id}场景中，成年人围绕产品完成一条清晰连续的主体动作。",
-        )
-        evaluation = CreativeEvaluation(
-            slot_id=slot_id,
-            primary_purpose=FragmentType.PRODUCT_DISPLAY,
-            compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
-            scores=CreativeScores(
-                product_relevance=quality,
-                creative_coherence=quality,
-                visual_executability=quality,
-                commercial_usefulness=quality,
-                visual_clarity=quality,
-            ),
-            semantic_signature=slot_id,
-            visual_signature=slot_id,
-        )
-        return RankedCreative(candidate, evaluation, quality, 100.0, float(quality))
-
-    rows = [
-        ranked("a", 1, 95),
-        ranked("b", 2, 90),
-        ranked("c", 3, 88),
-        ranked("d", 4, 84),
-    ]
-    index = ContentVectorIndex(
-        entity_ids=("a", "b", "c", "d"),
-        row_by_id={"a": 0, "b": 1, "c": 2, "d": 3},
-        candidate_ids=("a", "b", "c", "d"),
-        anchor_ids=(),
-        similarities=np.asarray(
-            [
-                [1.0, 0.95, 0.10, 0.10],
-                [0.95, 1.0, 0.10, 0.10],
-                [0.10, 0.10, 1.0, 0.10],
-                [0.10, 0.10, 0.10, 1.0],
-            ],
-            dtype=np.float32,
-        ),
-        stats=ContentEmbeddingStats(4, 0, 0, 0, 4, 6, 0, 0, 0, 0, []),
-    )
-
-    guarded, source, swap_count = _guard_final_selection_risk(
-        CreativeSelectionResult(selected=rows[:3], rejected=[rows[3]], exact_duplicate_count=0),
-        comparators=[],
-        content_index=index,
-        target_count=3,
-        duplicate_limit_count=0,
-    )
-
-    assert len(guarded.selected) == 3
-    assert {row.candidate.slot_id for row in guarded.selected} == {"a", "c", "d"}
-    assert index.redundancy_summary(
-        [row.candidate.slot_id for row in guarded.selected]
-    ).redundant_candidate_count == 0
-    assert source == "INDIVIDUAL_REDUNDANCY_REPAIR"
-    assert swap_count == 1

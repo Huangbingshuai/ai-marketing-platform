@@ -763,6 +763,27 @@ class CreativeShardPlan(ApiModel):
 class FactEvidence(ApiModel):
     fact_id: str = Field(min_length=1, max_length=120)
     evidence_text: str = Field(min_length=1, max_length=160)
+    evidence_source: Literal[
+        "CONTENT",
+        "CREATIVE_CORE",
+        "NARRATIVE",
+        "SCENE",
+        "PERSONA",
+        "PRODUCT_RELATION",
+    ]
+    support_level: Literal["EXACT", "SEMANTIC_FULL", "PARTIAL", "NONE"]
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_evidence(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        if "evidenceSource" not in migrated and "evidence_source" not in migrated:
+            migrated["evidenceSource"] = "CONTENT"
+        if "supportLevel" not in migrated and "support_level" not in migrated:
+            migrated["supportLevel"] = "EXACT"
+        return migrated
 
 
 class CreativeScores(ApiModel):
@@ -823,7 +844,13 @@ class CreativeEvaluation(ApiModel):
         purposes = list(dict.fromkeys(self.compatible_purposes))
         if self.primary_purpose not in purposes:
             raise ValueError("compatiblePurposes must include primaryPurpose")
-        evidence_ids = list(dict.fromkeys(item.fact_id for item in self.fact_evidence))
+        evidence_ids = list(
+            dict.fromkeys(
+                item.fact_id
+                for item in self.fact_evidence
+                if item.support_level in {"EXACT", "SEMANTIC_FULL"}
+            )
+        )
         if list(dict.fromkeys(self.realized_fact_ids)) != evidence_ids:
             raise ValueError("realizedFactIds must match factEvidence")
         self.compatible_purposes = purposes

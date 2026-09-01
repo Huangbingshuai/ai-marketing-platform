@@ -33,7 +33,9 @@ from effect_prompt_generation.creative_directions import (
     creative_direction_target_count,
     creative_direction_source_hash,
     direction_allocation_bucket,
-    scene_atom_from_text,
+    dominant_families,
+    max_cluster_share,
+    semantic_cluster_novelty,
     validate_semantic_profile,
     validate_creative_direction_plan,
 )
@@ -128,7 +130,7 @@ async def test_cluster_policy_plans_directions_and_generates_140_percent() -> No
     assert result["prompt_result_id"] == "prompt-result-current"
     assert api.result is not None
     assert api.result.metrics.candidate_target_count == 14
-    assert api.result.metrics.generated_candidate_count == 16
+    assert api.result.metrics.generated_candidate_count == 14
     assert len(api.result.items) == 10
     creative_tasks = [
         task
@@ -295,7 +297,7 @@ async def test_coverage_supplement_targets_the_missing_business_fact() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cluster_concentration_triggers_only_one_diversity_supplement() -> None:
+async def test_cluster_concentration_is_a_soft_warning_without_regeneration() -> None:
     api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -313,7 +315,7 @@ async def test_cluster_concentration_triggers_only_one_diversity_supplement() ->
     )
 
     assert api.result is not None
-    assert api.result.metrics.generated_candidate_count == 18
+    assert api.result.metrics.generated_candidate_count == 14
     diversity_tasks = [
         task
         for shard in api.shards.values()
@@ -321,18 +323,15 @@ async def test_cluster_concentration_triggers_only_one_diversity_supplement() ->
         for task in shard.creative_plan
         if task.supplement_kind == "DIVERSITY"
     ]
-    assert len(diversity_tasks) == 4
+    assert diversity_tasks == []
     final_stage = next(
         stage
         for stage in reversed(api.stages)
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
-    assert final_stage.metadata["diversitySupplementTriggered"] is True
-    assert final_stage.metadata["diversitySupplementCount"] == 4
-    assert any(
-        reason.startswith("ACTION_CLUSTER_OVER_40_PERCENT")
-        for reason in final_stage.metadata["diversitySupplementReasons"]
-    )
+    assert final_stage.metadata["diversitySupplementTriggered"] is False
+    assert final_stage.metadata["diversitySupplementCount"] == 0
+    assert final_stage.warnings == ["SEMANTIC_DIVERSITY_CAN_BE_IMPROVED"]
 
 
 @pytest.mark.asyncio
@@ -475,14 +474,75 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
 
 
 @pytest.mark.parametrize(
-    "label",
-    ["家庭厨房灶台", "岭南厨房", "砂锅台面备餐", "砧板旁的料理台"],
+    ("scene", "action"),
+    [
+        ("浴室洗护区", "按压泵头取用"),
+        ("机场出发大厅", "拉出拉杆推行"),
+        ("客厅硬质地面", "沿地面移动清洁"),
+        ("家庭备餐区", "取出食材烹制"),
+    ],
 )
-def test_scene_atom_collapses_kitchen_and_preparation_synonyms(label: str) -> None:
-    assert scene_atom_from_text(label) == "KITCHEN_PREP"
+def test_direction_bucket_uses_current_product_semantic_families(
+    scene: str,
+    action: str,
+) -> None:
+    plan = _direction_plan_for_semantic_tests()
+    direction = plan.directions[0].model_copy(
+        update={
+            "semantic_profile": plan.directions[0].semantic_profile.model_copy(
+                update={"scene_family": scene, "product_action_family": action}
+            )
+        }
+    )
+
+    assert direction_allocation_bucket(direction) == (scene.casefold(), action.casefold())
 
 
-def test_direction_allocation_caps_each_direction_after_scene_atom_collapsing() -> None:
+def test_semantic_novelty_uses_product_independent_scene_and_action_families() -> None:
+    left = CreativeSemanticProfile(
+        narrative_family="问题发现",
+        scene_family="浴室洗护区",
+        persona_family="长发用户",
+        product_action_family="按压泵头取用",
+        camera_family="手部近景",
+        emotion_family="清爽轻快",
+    )
+    right = CreativeSemanticProfile(
+        narrative_family="效果体验",
+        scene_family="浴室洗护区",
+        persona_family="短发用户",
+        product_action_family="按压泵头取用",
+        camera_family="肩后跟拍",
+        emotion_family="从容治愈",
+    )
+
+    # Scene and product action carry half of the cluster weight for every
+    # product domain; no shampoo-specific verb dictionary is involved.
+    assert semantic_cluster_novelty(left, right) == 50.0
+    assert semantic_cluster_novelty(left, left) == 0.0
+
+
+def test_unknown_semantic_family_does_not_fake_a_crowded_business_cluster() -> None:
+    unknown = CreativeSemanticProfile(
+        narrative_family="OTHER",
+        scene_family="OTHER",
+        persona_family="OTHER",
+        product_action_family="OTHER",
+        camera_family="OTHER",
+        emotion_family="OTHER",
+    )
+    evaluations = [
+        _evaluation_for_semantic_tests(semantic_profile=unknown).model_copy(
+            update={"slot_id": f"unknown-{index}"}
+        )
+        for index in range(5)
+    ]
+
+    assert max_cluster_share(evaluations, "scene_family") == 0.0
+    assert dominant_families(evaluations, "scene_family") == []
+
+
+def test_direction_allocation_caps_each_dynamic_direction() -> None:
     plan = _direction_plan_for_semantic_tests()
     scene_labels = [
         "家庭厨房灶台",
@@ -658,7 +718,7 @@ def test_semantic_profile_only_accepts_dynamic_vocabulary_or_other() -> None:
     validate_semantic_profile(other, plan)
 
 
-def test_missing_semantic_profile_is_completed_from_candidate_dimensions() -> None:
+def test_missing_semantic_profile_becomes_other_without_character_guessing() -> None:
     plan = _direction_plan_for_semantic_tests()
     profile = plan.directions[0].semantic_profile
     candidate = _candidate_for_semantic_tests(profile)
@@ -666,11 +726,18 @@ def test_missing_semantic_profile_is_completed_from_candidate_dimensions() -> No
 
     completed = complete_semantic_profile(evaluation, candidate, plan)
 
-    assert completed.semantic_profile == profile
+    assert completed.semantic_profile == CreativeSemanticProfile(
+        narrative_family="OTHER",
+        scene_family="OTHER",
+        persona_family="OTHER",
+        product_action_family="OTHER",
+        camera_family="OTHER",
+        emotion_family="OTHER",
+    )
     validate_semantic_profile(completed, plan)
 
 
-def test_partial_blank_and_unknown_semantic_profile_is_repaired_or_other() -> None:
+def test_partial_semantic_profile_preserves_valid_labels_and_marks_unknown_other() -> None:
     plan = _direction_plan_for_semantic_tests()
     profile = plan.directions[0].semantic_profile
     candidate = _candidate_for_semantic_tests(profile)
@@ -693,12 +760,12 @@ def test_partial_blank_and_unknown_semantic_profile_is_repaired_or_other() -> No
     completed = complete_semantic_profile(evaluation, candidate, plan)
 
     assert completed.semantic_profile is not None
-    assert completed.semantic_profile.scene_family == profile.scene_family
-    assert completed.semantic_profile.persona_family == profile.persona_family
-    assert (
-        completed.semantic_profile.product_action_family
-        == profile.product_action_family
-    )
+    assert completed.semantic_profile.narrative_family == profile.narrative_family
+    assert completed.semantic_profile.scene_family == "OTHER"
+    assert completed.semantic_profile.persona_family == "OTHER"
+    assert completed.semantic_profile.product_action_family == "OTHER"
+    assert completed.semantic_profile.camera_family == profile.camera_family
+    assert completed.semantic_profile.emotion_family == profile.emotion_family
     validate_semantic_profile(completed, plan)
 
     unrelated = candidate.model_copy(

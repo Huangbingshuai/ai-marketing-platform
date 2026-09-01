@@ -318,8 +318,10 @@ const currentSemanticDisplay = computed(() => {
     } as const;
   const passed = evaluation.duplicateRate < EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT;
   return {
-    state: passed ? 'passed' : 'failed',
-    text: `语义重复度 ${evaluation.duplicateRate.toFixed(1)}% · 目标 <${EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT}% · ${passed ? '符合要求' : '需要优化'}`,
+    state: passed ? 'passed' : 'warning',
+    text: passed
+      ? `语义重复度 ${evaluation.duplicateRate.toFixed(1)}% · 参考 <${EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT}%`
+      : `语义重复度 ${evaluation.duplicateRate.toFixed(1)}% · 偏高，但不影响提交`,
   } as const;
 });
 const currentQualityReady = computed(() => isPromptResultQualityReady(currentResult.value));
@@ -3828,9 +3830,9 @@ button:disabled {
   color: #177a59;
   background: #edf8f3;
 }
-.prompt-semantic-rate--failed {
-  color: #c43d48;
-  background: #fff0f1;
+.prompt-semantic-rate--warning {
+  color: #9a6712;
+  background: #fff7df;
 }
 .prompt-semantic-rate--pending,
 .prompt-semantic-rate--running {

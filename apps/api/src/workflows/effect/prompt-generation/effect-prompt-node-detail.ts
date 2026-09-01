@@ -967,8 +967,8 @@ const nodeMetricFields = (nodeId: string, rawMetadata: unknown): EffectPromptNod
           value: `${Math.round(EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD * 100)}%`,
         },
         {
-          label: '重复度目标',
-          value: `< ${EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT}%`,
+          label: '重复度参考',
+          value: `< ${EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT}%（仅提醒）`,
         },
       ]);
     case 'EXACT_SELECTION_AND_SUPPLEMENT':
@@ -1780,8 +1780,8 @@ const additionalOutputFields = (
           value: `${Math.round(EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD * 100)}%`,
         },
         {
-          label: '重复度目标',
-          value: `< ${EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT}%`,
+          label: '重复度参考',
+          value: `< ${EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT}%（仅提醒）`,
         },
       ]),
     ];
@@ -1790,6 +1790,8 @@ const additionalOutputFields = (
       numberField(metadata, 'acceptedCount', '已择优保留'),
       numberField(metadata, 'targetCount', '目标数量'),
       numberField(metadata, 'missingCount', '当前缺口'),
+      numberField(metadata, 'hardRejectedCount', '硬问题淘汰'),
+      numberField(metadata, 'eligibleNotSelectedCount', '合格但未入选'),
       numberField(metadata, 'exactDuplicateCount', '完全重复淘汰'),
       numberField(metadata, 'fixedAnchorCount', '固定参照 Prompt'),
       numberField(metadata, 'embeddingInputCount', '向量化正文'),
@@ -1799,7 +1801,7 @@ const additionalOutputFields = (
       numberField(metadata, 'initialRedundantCandidateCount', '补充前高风险冗余'),
       numberField(metadata, 'finalRedundantCandidateCount', '补充后高风险冗余'),
       numberField(metadata, 'semanticDuplicateRate', '最终语义重复度（%）'),
-      textField('重复度目标', `< ${EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT}%`),
+      textField('重复度参考', `< ${EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT}%（仅提醒）`),
       textField(
         'MMR 权重',
         typeof metadata.mmrQualityWeight === 'number' &&

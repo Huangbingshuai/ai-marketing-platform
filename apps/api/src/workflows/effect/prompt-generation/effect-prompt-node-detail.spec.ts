@@ -105,13 +105,13 @@ describe('presentEffectPromptNodeDetail', () => {
     expect(output?.summary).toContain('完成校验');
   });
 
-  it('在评估节点展示固定相似标准和最终重复度', () => {
+  it('在评估节点展示固定相似标准和不阻断提交的重复度参考', () => {
     const detail = presentEffectPromptNodeDetail(record(), 'CREATIVE_EVALUATION_CLASSIFICATION');
     const output = detail.sections.find(({ kind }) => kind === 'OUTPUT');
     expect(output?.fields).toEqual(
       expect.arrayContaining([
         { label: '相似判定标准', value: '82%' },
-        { label: '重复度目标', value: '< 15%' },
+        { label: '重复度参考', value: '< 15%（仅提醒）' },
         { label: '语义重复度（%）', value: 0 },
       ]),
     );

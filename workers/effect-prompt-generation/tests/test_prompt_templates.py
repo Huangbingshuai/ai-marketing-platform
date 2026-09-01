@@ -83,9 +83,11 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "只评估候选，不改写正文" in evaluation
     assert "五个窄职责视角" in evaluation
     assert "GENERIC_STYLE_STACKING" in evaluation
-    assert "只有客观错误才能写入" in evaluation
+    assert "只有事实错误、商品完全无关、结构破损或客观无法生成才能写入" in evaluation
     assert "一条素材可以有多个用途" in evaluation
-    assert "evidenceText 必须逐字摘自正文" in evaluation
+    assert "evidenceText 必须逐字摘自正文、creativeCore 或六维字段" in evaluation
+    assert "SEMANTIC_FULL" in evaluation
+    assert "PARTIAL" in evaluation
 
 
 def test_visual_strategy_templates_separate_visual_task_from_business_context() -> None:

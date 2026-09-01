@@ -151,7 +151,7 @@ describe('effect prompt generation state', () => {
           },
         },
       }),
-    ).toBe(false);
+    ).toBe(true);
 
     const state = {
       status: 'COMPLETED',

@@ -987,21 +987,14 @@ export class EffectPromptService {
     if (verified.items.some((item) => item.classificationStatus !== 'VERIFIED'))
       issues.push({ code: 'CLASSIFICATION_PENDING', message: '仍有 Prompt 尚未完成用途评估' });
     if (
-      verified.metrics.semanticEvaluation.status !== 'VERIFIED' ||
-      verified.metrics.semanticEvaluation.evaluatedCount !== verified.items.length ||
-      verified.metrics.semanticEvaluation.duplicateRate === null
-    )
-      issues.push({
-        code: 'SEMANTIC_EVALUATION_PENDING',
-        message: '语义重复度尚未完成评估',
-      });
-    else if (
+      verified.metrics.semanticEvaluation.status === 'VERIFIED' &&
+      verified.metrics.semanticEvaluation.duplicateRate !== null &&
       verified.metrics.semanticEvaluation.duplicateRate >=
       EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT
     )
-      issues.push({
-        code: 'SEMANTIC_DUPLICATE_RATE_EXCEEDED',
-        message: `语义重复度必须低于 ${EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT}%`,
+      warnings.push({
+        code: 'SEMANTIC_DIVERSITY_CAN_BE_IMPROVED',
+        message: `语义近似内容达到 ${verified.metrics.semanticEvaluation.duplicateRate}%，可继续优化但不阻止提交`,
       });
     if (
       verified.items.some(

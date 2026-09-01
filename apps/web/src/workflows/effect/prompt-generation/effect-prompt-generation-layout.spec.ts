@@ -63,6 +63,7 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('语义重复度 ${evaluation.duplicateRate.toFixed(1)}%');
     expect(pageSource).toContain('正在计算语义重复度');
     expect(pageSource).toContain('语义重复度待评估');
+    expect(pageSource).toContain('偏高，但不影响提交');
     expect(pageSource).toContain('prompt-semantic-rate--');
   });
 

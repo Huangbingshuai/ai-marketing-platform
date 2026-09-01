@@ -1348,7 +1348,12 @@ def _mock_creative_evaluation(
         ) else ""
         if evidence_text:
             evidence.append(
-                FactEvidence(fact_id=fact_id, evidence_text=evidence_text)
+                FactEvidence(
+                    fact_id=fact_id,
+                    evidence_text=evidence_text,
+                    evidence_source="CONTENT",
+                    support_level="EXACT",
+                )
             )
     purposes = list(FragmentType)
     primary = purposes[(candidate.ordinal - 1) % len(purposes)]

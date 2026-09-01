@@ -1064,10 +1064,6 @@ export const recomputePromptQuality = (
     exactDuplicatePairs === 0 &&
     normalizedHardIssues.length === 0 &&
     items.every(({ classificationStatus }) => classificationStatus === 'VERIFIED') &&
-    semanticEvaluation.status === 'VERIFIED' &&
-    semanticEvaluation.evaluatedCount === items.length &&
-    semanticEvaluation.duplicateRate !== null &&
-    semanticEvaluation.duplicateRate < EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT &&
     insightCoverage.missing.length === 0
       ? 'PASS'
       : 'NEEDS_REVIEW';
