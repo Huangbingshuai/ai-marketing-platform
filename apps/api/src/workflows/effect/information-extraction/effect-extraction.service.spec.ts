@@ -269,6 +269,149 @@ describe('EffectExtractionService', () => {
     });
   });
 
+  it('projects user facts and image AI suggestions item by item', async () => {
+    const repository = {
+      workspace: vi.fn().mockResolvedValue({
+        id: 'draft-a',
+        projectId: 'project-a',
+        mode: 'SINGLE',
+        revision: 1,
+        globalConfig: {
+          aspectRatio: '9:16',
+          durationSeconds: 15,
+          resolution: '1080p',
+          frameRate: 30,
+          subtitleStrategy: '跟随口播',
+          voiceoverStrategy: 'AI 女声',
+          bgmStrategy: '自动匹配',
+          styleTone: '烟火食欲感',
+          deliveryChannel: '抖音',
+          disabledElements: ['系统禁用词'],
+        },
+        products: [
+          {
+            id: 'product-a',
+            name: '测试产品',
+            category: '测试品类',
+            sku: '',
+            commerceUrl: null,
+            configOverride: {},
+            materials: [],
+            updatedAt: new Date('2026-08-21T00:00:00.000Z'),
+            extractionRuns: [
+              {
+                ...runRecord,
+                status: 'COMPLETED',
+                progress: 100,
+                sourceFingerprint: 'fingerprint-a',
+                branches: [
+                  {
+                    branch: 'FORM',
+                    structuredOutput: {
+                      candidate: { productName: '测试产品', productCategory: '测试品类' },
+                    },
+                  },
+                  {
+                    branch: 'DOCUMENT',
+                    structuredOutput: {
+                      items: [
+                        {
+                          candidate: {
+                            priceRange: '20 元/袋',
+                            coreSellingPoints: ['用户卖点'],
+                          },
+                        },
+                      ],
+                    },
+                  },
+                  {
+                    branch: 'IMAGE',
+                    structuredOutput: {
+                      items: [
+                        {
+                          candidate: {
+                            visualFeatures: '肥瘦颗粒分明',
+                            secondarySellingPoints: ['外观油润有光泽'],
+                          },
+                        },
+                      ],
+                    },
+                  },
+                ],
+                result: {
+                  id: 'result-a',
+                  projectId: 'project-a',
+                  draftId: 'draft-a',
+                  productId: 'product-a',
+                  runId: 'run-a',
+                  schemaVersion: 3,
+                  revision: 1,
+                  draftResult: {
+                    ...extractionResult,
+                    productName: '测试产品',
+                    productCategory: '测试品类',
+                    priceRange: '20 元/袋',
+                    visualFeatures: '肥瘦颗粒分明',
+                    coreSellingPoints: ['用户卖点'],
+                    secondarySellingPoints: ['外观油润有光泽'],
+                  },
+                  generatedResult: extractionResult,
+                  manualOverrides: {},
+                  sourceFingerprint: 'fingerprint-a',
+                },
+              },
+            ],
+          },
+        ],
+      }),
+      product: vi.fn().mockResolvedValue({ id: 'product-a' }),
+      workflowRunForDraft: vi.fn().mockResolvedValue({
+        workspace: { workflowRunId: 'workflow-a' },
+      }),
+      run: vi.fn().mockResolvedValue({
+        inputSnapshot: {
+          product: {
+            name: '测试产品',
+            category: '测试品类',
+            sku: '',
+            effectiveConfig: {
+              aspectRatio: '9:16',
+              durationSeconds: 15,
+              resolution: '1080p',
+              styleTone: '烟火食欲感',
+              deliveryChannel: '抖音',
+              disabledElements: ['系统禁用词'],
+            },
+          },
+          dependencies: [],
+        },
+      }),
+      currentDependencySnapshot: vi.fn().mockResolvedValue(null),
+      insightArtifact: vi.fn().mockResolvedValue(null),
+    } as unknown as EffectExtractionRepository;
+    const service = new EffectExtractionService(
+      repository,
+      projectService(),
+      {} as JobProgressStore,
+      storage,
+    );
+
+    const result = await service.workspace('project-a', 'draft-a');
+
+    expect(result.products[0]?.provenance).toMatchObject({
+      fieldOrigins: {
+        productName: 'USER_FACT',
+        priceRange: 'USER_FACT',
+        visualFeatures: 'AI_IMAGE_SUGGESTION',
+        durationSeconds: 'USER_FACT',
+      },
+      itemOrigins: {
+        coreSellingPoints: [{ value: '用户卖点', origin: 'USER_FACT' }],
+        secondarySellingPoints: [{ value: '外观油润有光泽', origin: 'AI_IMAGE_SUGGESTION' }],
+      },
+    });
+  });
+
   it('keeps the snapshot running after claim until a persisted branch starts', async () => {
     const repository = {
       run: vi.fn().mockResolvedValue({
@@ -520,7 +663,7 @@ describe('EffectExtractionService', () => {
     expect(repository.result).not.toHaveBeenCalled();
   });
 
-  it('keeps user-selected production rules as field-level overrides', async () => {
+  it('keeps production rules strictly aligned with the source-import snapshot', async () => {
     const config = {
       aspectRatio: '9:16',
       durationSeconds: 15,
@@ -562,7 +705,12 @@ describe('EffectExtractionService', () => {
         revision: 2,
         draftResult: {
           ...editedResult,
-          disabledElements: ['系统禁用词', '人工禁用词'],
+          durationSeconds: 15,
+          aspectRatio: '9:16',
+          resolution: '1080p',
+          deliveryChannels: '抖音',
+          visualStyleBaseline: '烟火食欲感',
+          disabledElements: ['系统禁用词'],
         },
         savedAt: new Date('2026-08-25T08:00:00.000Z'),
       }),
@@ -580,19 +728,27 @@ describe('EffectExtractionService', () => {
       'project-a',
       'result-a',
       1,
-      { ...editedResult, disabledElements: ['系统禁用词', '人工禁用词'] },
       expect.objectContaining({
-        durationSeconds: 40,
-        aspectRatio: '3:4',
-        deliveryChannels: '快手',
-        visualStyleBaseline: '国潮新中式',
+        durationSeconds: 15,
+        aspectRatio: '9:16',
+        resolution: '1080p',
+        deliveryChannels: '抖音',
+        visualStyleBaseline: '烟火食欲感',
+        disabledElements: ['系统禁用词'],
+      }),
+      expect.not.objectContaining({
+        durationSeconds: expect.anything(),
+        aspectRatio: expect.anything(),
+        deliveryChannels: expect.anything(),
+        visualStyleBaseline: expect.anything(),
+        disabledElements: expect.anything(),
       }),
     );
     expect(result.result).toMatchObject({
-      durationSeconds: 40,
-      aspectRatio: '3:4',
-      deliveryChannels: '快手',
-      visualStyleBaseline: '国潮新中式',
+      durationSeconds: 15,
+      aspectRatio: '9:16',
+      deliveryChannels: '抖音',
+      visualStyleBaseline: '烟火食欲感',
     });
   });
 

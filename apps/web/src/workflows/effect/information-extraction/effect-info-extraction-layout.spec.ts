@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import viteConfigSource from '../../../../vite.config.ts?raw';
-import creatableSelectSource from '../source-import/components/EffectUpwardCreatableSelect.vue?raw';
 import pageSource from './EffectInfoExtractionNodePage.vue?raw';
 
 describe('effect info extraction result layout', () => {
@@ -113,7 +112,7 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).not.toContain("detailField('frameRate', '帧率'");
   });
 
-  it('uses a separate manual editing boundary and renders the complete five-layer card', () => {
+  it('keeps video configuration read-only and labels every extracted value origin', () => {
     expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS');
     expect(pageSource).not.toContain('EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS');
     expect(pageSource).toContain("result.coreSellingPoints.push('')");
@@ -128,26 +127,19 @@ describe('effect info extraction result layout', () => {
       'decisionDrivers',
       'purchaseScenarios',
       'emotionalScenarios',
-      'visualStyleBaseline',
     ])
       expect(pageSource).toContain(field);
     expect(pageSource).toContain('暂无可验证的信任背书');
-    expect(pageSource).toContain('初始值继承资料导入节点，可在当前信息卡中调整');
+    expect(pageSource).toContain('制作规则仅以资料导入节点为准');
     expect(pageSource).toContain('{{ currentConfig.resolution }}');
-    expect(pageSource).toContain('EffectUpwardCreatableSelect');
-    expect(pageSource).toContain(':value="visibleResult.durationSeconds"');
-    expect(pageSource).toContain("updateProductionRule('aspectRatio', $event)");
-    expect(pageSource).toContain("updateProductionRule('resolution', $event)");
-    expect(pageSource).toContain("updateProductionRule('deliveryChannels', $event)");
-    expect(pageSource).toContain("updateProductionRule('visualStyleBaseline', $event)");
-    expect(creatableSelectSource).toContain("placeholder: '请选择或输入自定义值'");
-    expect(creatableSelectSource).toContain('v-if="canCreate"');
-    expect(pageSource).toContain('EFFECT_IMPORT_PROTOTYPE_STYLE_TONES');
-    expect(pageSource).toContain('EFFECT_IMPORT_RESOLUTIONS');
-    expect(pageSource).toContain(':options="resolutionOptions"');
-    expect(pageSource).toContain(':creatable="false"');
-    expect(pageSource).toContain('.production-rule-grid .field-label + .field-label');
-    expect(pageSource).toContain('.production-rule-grid + .field-label');
+    expect(pageSource).toContain("currentConfig.disabledElements.join('、')");
+    expect(pageSource).not.toContain('制作规则层');
+    expect(pageSource).not.toContain('updateProductionRule');
+    expect(pageSource).not.toContain('EffectUpwardCreatableSelect');
+    expect(pageSource).toContain("'AI_IMAGE_SUGGESTION' ? 'AI 图片建议' : '用户事实'");
+    expect(pageSource).toContain("itemOrigin('coreSellingPoints', index)");
+    expect(pageSource).toContain("itemOrigin('usageScenarios', index)");
+    expect(pageSource).toContain("fieldOrigin('priceRange')");
   });
 
   it('edits target audiences, pain points and decision drivers with the same item rows', () => {

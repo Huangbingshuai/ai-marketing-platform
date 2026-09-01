@@ -179,9 +179,16 @@ const candidateFields = (
 ): EffectExtractionNodeDetailField[] => {
   const record = isRecord(candidate) ? candidate : {};
   const sources = isRecord(provenance) ? provenance : {};
+  const snakeCase = (key: string) => key.replace(/[A-Z]/g, (value) => `_${value.toLowerCase()}`);
   return fields(
     CANDIDATE_FIELDS.map(([key, label]) =>
-      field(key, label, record[key], provenanceLabel(sources[key]), includeEmpty),
+      field(
+        key,
+        label,
+        record[key] ?? record[snakeCase(key)],
+        provenanceLabel(sources[key] ?? sources[snakeCase(key)]),
+        includeEmpty,
+      ),
     ),
   );
 };

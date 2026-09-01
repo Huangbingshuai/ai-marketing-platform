@@ -4,6 +4,7 @@ import type {
   EffectExtractionNodeExecution,
   EffectExtractionNodeId,
   EffectExtractionNodeStatus,
+  EffectExtractionValueOrigin,
   EffectImportMode,
   EffectImportProduct,
   EffectVideoConfig,
@@ -12,11 +13,7 @@ import {
   EFFECT_EXTRACTION_GRAPH_EDGES,
   EFFECT_EXTRACTION_GRAPH_NODES,
   EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
-  EFFECT_IMPORT_ASPECT_RATIOS,
-  EFFECT_IMPORT_DELIVERY_CHANNELS,
-  EFFECT_IMPORT_LIMITS,
   EFFECT_IMPORT_MATERIAL_TYPE_LABELS,
-  EFFECT_IMPORT_RESOLUTIONS,
 } from '@ai-marketing/contracts';
 import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
 import {
@@ -39,9 +36,6 @@ import {
   getWorkflowNodeState,
   putWorkflowNodeState,
 } from '../../../platform/workflow/api/workflow-working.api';
-import EffectUpwardCreatableSelect from '../source-import/components/EffectUpwardCreatableSelect.vue';
-import { EFFECT_IMPORT_PROTOTYPE_STYLE_TONES } from '../source-import/effect-import-options';
-
 import {
   cloneExtractionProductState,
   cloneExtractionResult,
@@ -83,7 +77,6 @@ const loading = ref(true);
 const loadingError = ref('');
 const sourceRevision = ref(0);
 const pollingErrors = ref<Record<string, string>>({});
-const newDisabledElement = ref('');
 const graphDialogOpen = ref(false);
 const graphLoading = ref(false);
 const validating = ref(false);
@@ -458,12 +451,27 @@ const emptyExtractionResult: EffectExtractionResult = {
 };
 const visibleResult = computed(() => currentState.value?.result ?? emptyExtractionResult);
 const baseFieldsReadonly = computed(() => !currentState.value?.result || currentRunning.value);
-const selectOptions = (values: readonly string[]) =>
-  values.map((value) => ({ label: value, value }));
-const aspectRatioOptions = selectOptions(EFFECT_IMPORT_ASPECT_RATIOS);
-const resolutionOptions = selectOptions(EFFECT_IMPORT_RESOLUTIONS);
-const deliveryChannelOptions = selectOptions(EFFECT_IMPORT_DELIVERY_CHANNELS);
-const visualStyleOptions = selectOptions(EFFECT_IMPORT_PROTOTYPE_STYLE_TONES);
+type OriginListField =
+  | 'coreSellingPoints'
+  | 'secondarySellingPoints'
+  | 'trustBackings'
+  | 'targetAudiences'
+  | 'corePainPoints'
+  | 'decisionDrivers'
+  | 'usageScenarios'
+  | 'purchaseScenarios'
+  | 'emotionalScenarios';
+const originLabel = (origin: EffectExtractionValueOrigin): string =>
+  origin === 'AI_IMAGE_SUGGESTION' ? 'AI 图片建议' : '用户事实';
+const fieldOrigin = (field: keyof EffectExtractionResult): EffectExtractionValueOrigin =>
+  currentState.value?.provenance.fieldOrigins[field] ?? 'USER_FACT';
+const itemOrigin = (field: OriginListField, index: number): EffectExtractionValueOrigin => {
+  const value = visibleResult.value[field][index]?.replace(/\s+/g, ' ').trim();
+  const recorded = currentState.value?.provenance.itemOrigins[field] ?? [];
+  return (
+    recorded.find((item) => item.value.replace(/\s+/g, ' ').trim() === value)?.origin ?? 'USER_FACT'
+  );
+};
 const saveStateLabel = computed(() => {
   const state = currentState.value?.saveState ?? 'CLEAN';
   return {
@@ -986,23 +994,6 @@ const markDirty = (): void => {
   saveTimer = setTimeout(() => void saveDraft(), 1000);
 };
 
-type ProductionRuleField =
-  'aspectRatio' | 'deliveryChannels' | 'durationSeconds' | 'resolution' | 'visualStyleBaseline';
-
-const updateProductionRule = (field: ProductionRuleField, value: number | string): void => {
-  const result = currentState.value?.result;
-  if (!result || baseFieldsReadonly.value) return;
-  if (field === 'durationSeconds') {
-    result.durationSeconds = Math.min(
-      EFFECT_IMPORT_LIMITS.maxDurationSeconds,
-      Math.max(EFFECT_IMPORT_LIMITS.minDurationSeconds, Number(value) || 1),
-    );
-  } else {
-    result[field] = String(value);
-  }
-  markDirty();
-};
-
 const productBaseValue = (field: ProductBaseField): string => {
   return currentState.value?.result?.[field] ?? '';
 };
@@ -1011,6 +1002,7 @@ const updateProductBaseField = (field: ProductBaseField, event: Event): void => 
   const result = currentState.value?.result;
   if (!result) return;
   result[field] = (event.target as HTMLInputElement | HTMLTextAreaElement).value;
+  currentState.value!.provenance.fieldOrigins[field] = 'USER_FACT';
   markDirty();
 };
 
@@ -1075,22 +1067,6 @@ const removeScenarioItem = (field: ScenarioListField, index: number): void => {
   markDirty();
 };
 
-const addDisabledElement = (): void => {
-  const result = currentState.value?.result;
-  const value = newDisabledElement.value.trim();
-  if (!result || !value || result.disabledElements.includes(value)) return;
-  result.disabledElements.push(value);
-  newDisabledElement.value = '';
-  markDirty();
-};
-
-const removeDisabledElement = (index: number): void => {
-  const result = currentState.value?.result;
-  if (!result) return;
-  result.disabledElements.splice(index, 1);
-  markDirty();
-};
-
 const saveDraft = async (): Promise<boolean> => {
   clearTimeout(saveTimer);
   saveTimer = undefined;
@@ -1147,7 +1123,6 @@ const selectProduct = async (event: Event): Promise<void> => {
   if (!(await flushPendingEdits())) return;
   closeGraphDialog(false);
   currentProductId.value = nextProductId;
-  newDisabledElement.value = '';
 };
 
 watch(
@@ -1320,35 +1295,55 @@ onBeforeUnmount(() => {
           <h3>产品基础层</h3>
           <div class="base-fields">
             <label
-              ><span>品类</span
+              ><span
+                >品类
+                <em :data-origin="fieldOrigin('productCategory')">{{
+                  originLabel(fieldOrigin('productCategory'))
+                }}</em></span
               ><input
                 :value="productBaseValue('productCategory')"
                 :readonly="baseFieldsReadonly"
                 @input="updateProductBaseField('productCategory', $event)"
             /></label>
             <label
-              ><span>产品名称</span
+              ><span
+                >产品名称
+                <em :data-origin="fieldOrigin('productName')">{{
+                  originLabel(fieldOrigin('productName'))
+                }}</em></span
               ><input
                 :value="productBaseValue('productName')"
                 :readonly="baseFieldsReadonly"
                 @input="updateProductBaseField('productName', $event)"
             /></label>
             <label
-              ><span>核心规格</span
+              ><span
+                >核心规格
+                <em :data-origin="fieldOrigin('coreSpecification')">{{
+                  originLabel(fieldOrigin('coreSpecification'))
+                }}</em></span
               ><input
                 :value="productBaseValue('coreSpecification')"
                 :readonly="baseFieldsReadonly"
                 @input="updateProductBaseField('coreSpecification', $event)"
             /></label>
             <label
-              ><span>价格带</span
+              ><span
+                >价格带
+                <em :data-origin="fieldOrigin('priceRange')">{{
+                  originLabel(fieldOrigin('priceRange'))
+                }}</em></span
               ><input
                 :value="productBaseValue('priceRange')"
                 :readonly="baseFieldsReadonly"
                 @input="updateProductBaseField('priceRange', $event)"
             /></label>
             <label class="wide"
-              ><span>核心外观特征</span
+              ><span
+                >核心外观特征
+                <em :data-origin="fieldOrigin('visualFeatures')">{{
+                  originLabel(fieldOrigin('visualFeatures'))
+                }}</em></span
               ><textarea
                 :value="productBaseValue('visualFeatures')"
                 :readonly="baseFieldsReadonly"
@@ -1381,8 +1376,12 @@ onBeforeUnmount(() => {
               <dt>渠道</dt>
               <dd>{{ currentConfig.deliveryChannel }}</dd>
             </div>
+            <div>
+              <dt>禁用元素</dt>
+              <dd>{{ currentConfig.disabledElements.join('、') || '未设置' }}</dd>
+            </div>
           </dl>
-          <p>如需修改，请返回步骤 1，后续将按影响范围增量更新。</p>
+          <p>制作规则仅以资料导入节点为准；如需修改，请返回步骤 1。</p>
         </aside>
       </div>
 
@@ -1423,7 +1422,12 @@ onBeforeUnmount(() => {
               :key="index"
               class="selling-point-row"
             >
-              <span>核心卖点</span>
+              <span
+                >核心卖点
+                <em :data-origin="itemOrigin('coreSellingPoints', index)">{{
+                  originLabel(itemOrigin('coreSellingPoints', index))
+                }}</em></span
+              >
               <input
                 v-model="visibleResult.coreSellingPoints[index]"
                 :readonly="baseFieldsReadonly"
@@ -1458,7 +1462,12 @@ onBeforeUnmount(() => {
               :key="`secondary-${index}`"
               class="selling-point-row"
             >
-              <span>次要卖点</span>
+              <span
+                >次要卖点
+                <em :data-origin="itemOrigin('secondarySellingPoints', index)">{{
+                  originLabel(itemOrigin('secondarySellingPoints', index))
+                }}</em></span
+              >
               <input
                 v-model="visibleResult.secondarySellingPoints[index]"
                 :readonly="baseFieldsReadonly"
@@ -1495,7 +1504,12 @@ onBeforeUnmount(() => {
               :key="`trust-${index}`"
               class="selling-point-row"
             >
-              <span>信任背书</span>
+              <span
+                >信任背书
+                <em :data-origin="itemOrigin('trustBackings', index)">{{
+                  originLabel(itemOrigin('trustBackings', index))
+                }}</em></span
+              >
               <input
                 v-model="visibleResult.trustBackings[index]"
                 :readonly="baseFieldsReadonly"
@@ -1538,7 +1552,12 @@ onBeforeUnmount(() => {
               :key="`audience-${index}`"
               class="selling-point-row"
             >
-              <span>目标受众</span>
+              <span
+                >目标受众
+                <em :data-origin="itemOrigin('targetAudiences', index)">{{
+                  originLabel(itemOrigin('targetAudiences', index))
+                }}</em></span
+              >
               <input
                 v-model="visibleResult.targetAudiences[index]"
                 :readonly="baseFieldsReadonly"
@@ -1575,7 +1594,12 @@ onBeforeUnmount(() => {
               :key="`pain-${index}`"
               class="selling-point-row"
             >
-              <span>核心痛点</span>
+              <span
+                >核心痛点
+                <em :data-origin="itemOrigin('corePainPoints', index)">{{
+                  originLabel(itemOrigin('corePainPoints', index))
+                }}</em></span
+              >
               <input
                 v-model="visibleResult.corePainPoints[index]"
                 :readonly="baseFieldsReadonly"
@@ -1612,7 +1636,12 @@ onBeforeUnmount(() => {
               :key="`driver-${index}`"
               class="selling-point-row"
             >
-              <span>决策动因</span>
+              <span
+                >决策动因
+                <em :data-origin="itemOrigin('decisionDrivers', index)">{{
+                  originLabel(itemOrigin('decisionDrivers', index))
+                }}</em></span
+              >
               <input
                 v-model="visibleResult.decisionDrivers[index]"
                 :readonly="baseFieldsReadonly"
@@ -1630,7 +1659,12 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <label class="field-label user-marketing-goal">
-            <span>营销目标</span>
+            <span
+              >营销目标
+              <em :data-origin="fieldOrigin('marketingGoal')">{{
+                originLabel(fieldOrigin('marketingGoal'))
+              }}</em></span
+            >
             <textarea
               v-model="visibleResult.marketingGoal"
               :readonly="baseFieldsReadonly"
@@ -1663,7 +1697,12 @@ onBeforeUnmount(() => {
               :key="`usage-${index}`"
               class="selling-point-row"
             >
-              <span>使用场景</span>
+              <span
+                >使用场景
+                <em :data-origin="itemOrigin('usageScenarios', index)">{{
+                  originLabel(itemOrigin('usageScenarios', index))
+                }}</em></span
+              >
               <input
                 v-model="visibleResult.usageScenarios[index]"
                 :readonly="baseFieldsReadonly"
@@ -1700,7 +1739,12 @@ onBeforeUnmount(() => {
               :key="`purchase-${index}`"
               class="selling-point-row"
             >
-              <span>购买场景</span>
+              <span
+                >购买场景
+                <em :data-origin="itemOrigin('purchaseScenarios', index)">{{
+                  originLabel(itemOrigin('purchaseScenarios', index))
+                }}</em></span
+              >
               <input
                 v-model="visibleResult.purchaseScenarios[index]"
                 :readonly="baseFieldsReadonly"
@@ -1739,7 +1783,12 @@ onBeforeUnmount(() => {
               :key="`emotional-${index}`"
               class="selling-point-row"
             >
-              <span>情绪场景</span>
+              <span
+                >情绪场景
+                <em :data-origin="itemOrigin('emotionalScenarios', index)">{{
+                  originLabel(itemOrigin('emotionalScenarios', index))
+                }}</em></span
+              >
               <input
                 v-model="visibleResult.emotionalScenarios[index]"
                 :readonly="baseFieldsReadonly"
@@ -1753,104 +1802,6 @@ onBeforeUnmount(() => {
                 @click="removeScenarioItem('emotionalScenarios', index)"
               >
                 <Trash2 :size="14" />
-              </button>
-            </div>
-          </div>
-        </section>
-
-        <section class="content-block">
-          <div class="block-heading">
-            <div>
-              <h3>制作规则层</h3>
-              <p>初始值继承资料导入节点，可在当前信息卡中调整</p>
-            </div>
-          </div>
-          <div class="production-rule-grid">
-            <label class="field-label">
-              <span>统一时长</span>
-              <div class="production-duration-input">
-                <input
-                  :value="visibleResult.durationSeconds"
-                  type="number"
-                  :min="EFFECT_IMPORT_LIMITS.minDurationSeconds"
-                  :max="EFFECT_IMPORT_LIMITS.maxDurationSeconds"
-                  :disabled="baseFieldsReadonly"
-                  @change="
-                    updateProductionRule(
-                      'durationSeconds',
-                      ($event.target as HTMLInputElement).value,
-                    )
-                  "
-                />
-                <small>秒</small>
-              </div>
-            </label>
-            <label class="field-label">
-              <span>画幅</span>
-              <EffectUpwardCreatableSelect
-                field-label="画幅"
-                :model-value="visibleResult.aspectRatio"
-                :options="aspectRatioOptions"
-                :disabled="baseFieldsReadonly"
-                @update:model-value="updateProductionRule('aspectRatio', $event)"
-              />
-            </label>
-            <label class="field-label">
-              <span>分辨率</span>
-              <EffectUpwardCreatableSelect
-                field-label="分辨率"
-                :model-value="visibleResult.resolution"
-                :options="resolutionOptions"
-                :creatable="false"
-                :disabled="baseFieldsReadonly"
-                @update:model-value="updateProductionRule('resolution', $event)"
-              />
-            </label>
-            <label class="field-label wide">
-              <span>投放渠道</span>
-              <EffectUpwardCreatableSelect
-                field-label="投放渠道"
-                :model-value="visibleResult.deliveryChannels"
-                :options="deliveryChannelOptions"
-                :disabled="baseFieldsReadonly"
-                @update:model-value="updateProductionRule('deliveryChannels', $event)"
-              />
-            </label>
-          </div>
-          <label class="field-label">
-            <span>视觉风格基线</span>
-            <EffectUpwardCreatableSelect
-              field-label="视觉风格基线"
-              :model-value="visibleResult.visualStyleBaseline"
-              :options="visualStyleOptions"
-              :disabled="baseFieldsReadonly"
-              @update:model-value="updateProductionRule('visualStyleBaseline', $event)"
-            />
-          </label>
-          <div class="field-label disabled-field">
-            <span>合规禁用词库</span>
-          </div>
-          <div class="field-label disabled-field">
-            <div class="disabled-tags">
-              <button
-                v-for="(element, index) in visibleResult.disabledElements"
-                :key="`${element}-${index}`"
-                type="button"
-                :disabled="baseFieldsReadonly"
-                @click="removeDisabledElement(index)"
-              >
-                {{ element }} <b>×</b>
-              </button>
-            </div>
-            <div class="disabled-input-row">
-              <input
-                v-model="newDisabledElement"
-                placeholder="输入新禁用词"
-                :disabled="baseFieldsReadonly"
-                @keydown.enter.prevent="addDisabledElement"
-              />
-              <button type="button" :disabled="baseFieldsReadonly" @click="addDisabledElement">
-                添加
               </button>
             </div>
           </div>
@@ -2490,7 +2441,33 @@ button:disabled {
   font-weight: 650;
 }
 .base-fields label > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   line-height: 22px;
+}
+.base-fields em,
+.field-label em,
+.selling-point-row em {
+  display: inline-flex;
+  width: fit-content;
+  padding: 2px 7px;
+  align-items: center;
+  color: #16795d;
+  background: #eaf8f2;
+  border-radius: 999px;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 750;
+  line-height: 18px;
+  white-space: nowrap;
+}
+.base-fields em[data-origin='AI_IMAGE_SUGGESTION'],
+.field-label em[data-origin='AI_IMAGE_SUGGESTION'],
+.selling-point-row em[data-origin='AI_IMAGE_SUGGESTION'] {
+  color: #8057c7;
+  background: #f2edff;
 }
 .field-label {
   display: grid;
@@ -2500,6 +2477,10 @@ button:disabled {
   font-weight: 650;
 }
 .field-label > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   line-height: 22px;
 }
 .base-fields label.wide {
@@ -2726,12 +2707,18 @@ select {
   height: 40px;
   align-items: center;
   justify-content: center;
+  flex-direction: column;
   color: #596278;
   background: #f8fafc;
   border: 1px solid #dce3ec;
   border-radius: 10px;
   font-size: 14px;
   font-weight: 650;
+}
+.selling-point-row em {
+  padding: 0 5px;
+  font-size: 9px;
+  line-height: 15px;
 }
 .selling-point-row button {
   display: grid;

@@ -154,6 +154,23 @@ export type EffectExtractionWarning = {
   sourceId: string | null;
 };
 
+export type EffectExtractionValueOrigin = 'USER_FACT' | 'AI_IMAGE_SUGGESTION';
+
+export type EffectExtractionProvenanceItem = {
+  value: string;
+  origin: EffectExtractionValueOrigin;
+};
+
+/**
+ * Display-only origin information for the effective extraction draft. The
+ * extraction result remains the sole business payload; this structure only
+ * explains whether each visible value came from user material or image AI.
+ */
+export type EffectExtractionProvenance = {
+  fieldOrigins: Partial<Record<keyof EffectExtractionResult, EffectExtractionValueOrigin>>;
+  itemOrigins: Partial<Record<keyof EffectExtractionResult, EffectExtractionProvenanceItem[]>>;
+};
+
 export type EffectExtractionProductState = {
   projectId: string;
   draftId: string;
@@ -164,6 +181,7 @@ export type EffectExtractionProductState = {
   resultSchemaVersion: number | null;
   resultRevision: number | null;
   result: EffectExtractionResult | null;
+  provenance: EffectExtractionProvenance;
   manualOverrideFields: string[];
   progress: number;
   currentNode: string | null;

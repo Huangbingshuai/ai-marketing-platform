@@ -80,7 +80,12 @@ export class EffectExtractionRepository {
             extractionRuns: {
               orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
               take: 1,
-              include: { result: true },
+              include: {
+                result: true,
+                branches: {
+                  where: { branch: { in: ['FORM', 'DOCUMENT', 'COMMERCE', 'IMAGE'] } },
+                },
+              },
             },
           },
         },

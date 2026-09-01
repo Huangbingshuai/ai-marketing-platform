@@ -17,7 +17,7 @@ from .commerce import (
     merge_commerce_candidates,
 )
 from .docling_parser import DocumentParser
-from .fusion import FusionError, fuse
+from .fusion import FusionError, branch_candidate, fuse
 from .image_processing import ImageProcessor
 from .models import (
     BranchItem,
@@ -25,6 +25,7 @@ from .models import (
     BranchOutput,
     BranchStatus,
     ExtractionCandidate,
+    ExtractionResult,
     ExtractionSnapshot,
     FailurePayload,
     FinalizePayload,
@@ -167,11 +168,12 @@ class ExtractionPipeline:
                 ai_call = await self.provider.extract_document(
                     model_text, source_name=material.original_file_name
                 )
+                document_candidate = _without_document_video_config(ai_call.value)
                 items.append(
                     BranchItem(
                         source_id=material.id,
                         status=BranchStatus.SUCCEEDED,
-                        candidate=ai_call.value,
+                        candidate=document_candidate,
                         artifact_storage_key=storage_key,
                         metadata={
                             "markdownChars": len(markdown),
@@ -240,10 +242,7 @@ class ExtractionPipeline:
                             material.id,
                             exc.retryable,
                         )
-                    if (
-                        cached_candidate is not None
-                        and not snapshot.bypass_image_cache
-                    ):
+                    if cached_candidate is not None and not snapshot.bypass_image_cache:
                         return BranchItem(
                             source_id=material.id,
                             status=BranchStatus.SUCCEEDED,
@@ -602,23 +601,34 @@ class ExtractionPipeline:
         fusion = by_name.get(BranchName.FUSION)
         if fusion is None or fusion.candidate is None:
             raise FusionError("fusion output is missing")
-        semantic = by_name.get(BranchName.SEMANTIC_REFINEMENT)
-        normalized_input = (
-            semantic.candidate
-            if semantic is not None and semantic.candidate is not None
-            else fusion.candidate
-        )
+        normalized_input = fusion.candidate
         snapshot = self._snapshot(context)
+        form = by_name.get(BranchName.FORM)
+        document = by_name.get(BranchName.DOCUMENT)
+        commerce = by_name.get(BranchName.COMMERCE)
+        image = by_name.get(BranchName.IMAGE)
+        form_candidate = branch_candidate(form) if form else None
+        document_candidate = branch_candidate(document) if document else None
+        commerce_candidate = branch_candidate(commerce) if commerce else None
+        image_candidate = branch_candidate(image) if image else None
         ai_call = await self.provider.normalize(
             normalized_input,
-            protected_input=snapshot.manual_overrides,
+            protected_input=_protected_user_input(
+                snapshot.manual_overrides,
+                form_candidate,
+                document_candidate,
+                commerce_candidate,
+            ),
         )
         result = ai_call.value
-        if semantic is not None and semantic.status == BranchStatus.SUCCEEDED:
-            _restore_semantic_fields(result, normalized_input)
-        form = by_name.get(BranchName.FORM)
-        if form and form.candidate:
-            _restore_manual_fields(result, form.candidate)
+        _restore_authoritative_sources(
+            result,
+            form=form_candidate,
+            document=document_candidate,
+            commerce=commerce_candidate,
+            image=image_candidate,
+        )
+        result = ExtractionResult.model_validate(result.model_dump(mode="json"))
         provenance_raw = fusion.metadata.get("provenance", {})
         provenance = (
             {str(key): str(value) for key, value in provenance_raw.items()}
@@ -730,9 +740,7 @@ def _failed_item(source_id: str, exc: Exception, branch: BranchName) -> BranchIt
             source_id=source_id,
             status=BranchStatus.FAILED,
             warning=_provider_error_message(branch, exc.error_type),
-            metadata={
-                "error": _provider_error_diagnostic(exc)
-            },
+            metadata={"error": _provider_error_diagnostic(exc)},
         )
     if isinstance(exc, CommerceFetchError):
         return BranchItem(
@@ -861,33 +869,172 @@ def _strings(values: Sequence[str | None]) -> list[str]:
     return result
 
 
-def _restore_manual_fields(result: object, form: ExtractionCandidate) -> None:
+def _without_document_video_config(
+    candidate: ExtractionCandidate,
+) -> ExtractionCandidate:
+    sanitized = candidate.model_copy(deep=True)
     for field in (
-        "product_category",
-        "product_name",
         "duration_seconds",
         "aspect_ratio",
         "resolution",
         "delivery_channels",
+        "disabled_elements",
         "visual_style_baseline",
     ):
-        value = getattr(form, field)
-        if isinstance(value, str) and value.strip():
-            setattr(result, field, value.strip())
-        elif isinstance(value, int) and value > 0:
-            setattr(result, field, value)
-    if form.disabled_elements:
-        setattr(result, "disabled_elements", _strings(form.disabled_elements))
+        setattr(sanitized, field, None)
+    return sanitized
 
 
-def _restore_semantic_fields(result: object, semantic: ExtractionCandidate) -> None:
-    for field in (
+def _candidate_text(candidate: ExtractionCandidate | None, field: str) -> str | None:
+    if candidate is None:
+        return None
+    value = getattr(candidate, field)
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _candidate_items(candidate: ExtractionCandidate | None, field: str) -> list[str]:
+    if candidate is None:
+        return []
+    return _strings(getattr(candidate, field) or [])
+
+
+def _first_text(field: str, *candidates: ExtractionCandidate | None) -> str:
+    for candidate in candidates:
+        value = _candidate_text(candidate, field)
+        if value is not None:
+            return value
+    return "待补充"
+
+
+def _merged_items(
+    field: str,
+    *candidates: ExtractionCandidate | None,
+    limit: int,
+) -> list[str]:
+    return _strings(
+        [
+            item
+            for candidate in candidates
+            for item in _candidate_items(candidate, field)
+        ]
+    )[:limit]
+
+
+def _restore_authoritative_sources(
+    result: object,
+    *,
+    form: ExtractionCandidate | None,
+    document: ExtractionCandidate | None,
+    commerce: ExtractionCandidate | None,
+    image: ExtractionCandidate | None,
+) -> None:
+    """Keep user-provided facts authoritative and use image AI only as visible suggestions."""
+
+    setattr(
+        result,
+        "product_category",
+        _first_text("product_category", form, document, commerce, image),
+    )
+    setattr(
+        result,
+        "product_name",
+        _first_text("product_name", form, document, commerce, image),
+    )
+    setattr(
+        result,
+        "core_specification",
+        _first_text("core_specification", document, commerce, image),
+    )
+    setattr(result, "price_range", _first_text("price_range", document, commerce))
+    setattr(
+        result,
+        "visual_features",
+        _first_text("visual_features", document, commerce, image),
+    )
+
+    user_core = _merged_items("core_selling_points", document, commerce, limit=20)
+    image_core = _candidate_items(image, "core_selling_points")
+    core_selling_points = _strings([*user_core[:3], *image_core])[:3]
+    setattr(result, "core_selling_points", core_selling_points or ["待补充"])
+
+    selected_core = {item.casefold() for item in core_selling_points}
+    remaining_image_core = [
+        item for item in image_core if item.casefold() not in selected_core
+    ]
+    secondary_selling_points = _strings(
+        [
+            *_candidate_items(document, "secondary_selling_points"),
+            *_candidate_items(commerce, "secondary_selling_points"),
+            *user_core[3:],
+            *remaining_image_core,
+            *_candidate_items(image, "secondary_selling_points"),
+        ]
+    )[:6]
+    setattr(result, "secondary_selling_points", secondary_selling_points)
+    setattr(
+        result,
+        "trust_backings",
+        _merged_items("trust_backings", document, commerce, image, limit=6),
+    )
+
+    setattr(
+        result, "target_audience", _first_text("target_audience", document, commerce)
+    )
+    setattr(
+        result,
         "core_pain_points",
+        _merged_items("core_pain_points", document, commerce, limit=5),
+    )
+    setattr(
+        result,
         "decision_drivers",
+        _merged_items("decision_drivers", document, commerce, limit=5),
+    )
+    setattr(result, "marketing_goal", _first_text("marketing_goal", document, commerce))
+    setattr(
+        result,
         "usage_scenarios",
+        _merged_items("usage_scenarios", document, commerce, image, limit=5),
+    )
+    setattr(
+        result,
         "purchase_scenarios",
+        _merged_items("purchase_scenarios", document, commerce, limit=5),
+    )
+    setattr(
+        result,
         "emotional_scenarios",
-    ):
-        values = getattr(semantic, field)
-        if values is not None:
-            setattr(result, field, _strings(values)[:5])
+        _merged_items("emotional_scenarios", document, commerce, image, limit=5),
+    )
+
+    if form is None:
+        raise FusionError("required FORM candidate is missing")
+    setattr(result, "duration_seconds", form.duration_seconds or 20)
+    setattr(result, "aspect_ratio", _candidate_text(form, "aspect_ratio") or "9:16")
+    setattr(result, "resolution", _candidate_text(form, "resolution") or "1080p")
+    setattr(
+        result,
+        "delivery_channels",
+        _candidate_text(form, "delivery_channels") or "待补充",
+    )
+    setattr(result, "disabled_elements", _candidate_items(form, "disabled_elements"))
+    setattr(
+        result,
+        "visual_style_baseline",
+        _candidate_text(form, "visual_style_baseline") or "待补充",
+    )
+
+
+def _protected_user_input(
+    manual_overrides: dict[str, object],
+    *candidates: ExtractionCandidate | None,
+) -> dict[str, object]:
+    protected: dict[str, object] = {}
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        for key, value in candidate.model_dump(mode="json", by_alias=True).items():
+            if value not in (None, [], ""):
+                protected.setdefault(key, value)
+    protected.update(manual_overrides)
+    return protected

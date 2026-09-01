@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from effect_extraction.models import ExtractionCandidate, ExtractionResult, ImageVisibleFacts
+from effect_extraction.models import (
+    ExtractionCandidate,
+    ExtractionResult,
+    ImageVisibleFacts,
+)
 from effect_extraction.prompt_loader import (
     load_prompt_template,
     load_prompt_version,
@@ -17,11 +21,11 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     semantic = load_prompt_template("semantic_refinement.prompt.txt")
     normalization = load_prompt_template("result_normalization.prompt.txt")
 
-    assert load_prompt_version("document_extraction.prompt.txt") == "2.0.0"
+    assert load_prompt_version("document_extraction.prompt.txt") == "3.0.0"
     assert load_prompt_version("image_analysis.prompt.txt") == "5.0.0"
     assert load_prompt_version("commerce_extraction.prompt.txt") == "1.0.0"
     assert load_prompt_version("semantic_refinement.prompt.txt") == "2.1.0"
-    assert load_prompt_version("result_normalization.prompt.txt") == "2.1.0"
+    assert load_prompt_version("result_normalization.prompt.txt") == "3.0.0"
 
     assert "产品文档事实抽取器" in document.template
     assert "产品图片" in image.template
@@ -44,14 +48,17 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert "不属于本节点" in image.template
     assert "highDetailRecommended" in image.template
     assert "纯产品外观、食用场景或文字已经清晰可读时为 false" in image.template
-    assert "提供有边界、可执行的补全" in normalization.template
-    assert "建议" in normalization.template and "需确认" in normalization.template
+    assert "只做格式整理，不新增事实或营销策略" in normalization.template
+    assert "价格缺失时写“待补充”" in normalization.template
     assert "不得新增输入中不存在的年龄、性别、职业或地域属性" in normalization.template
     assert '"priceRange": null' in document.template
     assert '"visualFeatures": "红褐色长条腊肠' in image.template
-    assert '"priceRange": "建议零售价 35～59 元/500g' in normalization.template
+    assert '"priceRange": "20 元/袋"' in normalization.template
+    assert "六个全局视频配置字段是否全部为 null" in document.template
 
-    candidate_fields = ExtractionCandidate.model_json_schema(by_alias=True)["properties"]
+    candidate_fields = ExtractionCandidate.model_json_schema(by_alias=True)[
+        "properties"
+    ]
     image_fields = ImageVisibleFacts.model_json_schema(by_alias=True)["properties"]
     result_fields = ExtractionResult.model_json_schema(by_alias=True)["properties"]
     for field_name in candidate_fields:
@@ -112,8 +119,14 @@ def test_effect_extraction_prompt_fails_fast_when_a_variable_is_missing() -> Non
 
 @pytest.mark.parametrize(
     "file_name",
-    ["../document_extraction.prompt.txt", "prompts/document_extraction.prompt.txt", "note.txt"],
+    [
+        "../document_extraction.prompt.txt",
+        "prompts/document_extraction.prompt.txt",
+        "note.txt",
+    ],
 )
-def test_effect_extraction_prompt_loader_rejects_unsafe_file_names(file_name: str) -> None:
+def test_effect_extraction_prompt_loader_rejects_unsafe_file_names(
+    file_name: str,
+) -> None:
     with pytest.raises(ValueError, match="Invalid effect extraction prompt file name"):
         load_prompt_template(file_name)

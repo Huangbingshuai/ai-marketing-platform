@@ -1,8 +1,8 @@
 PROMPT_ID: effect.result-normalization
-PROMPT_VERSION: 2.1.0
-OUTPUT_CONTRACT: ExtractionResult.v2
+PROMPT_VERSION: 3.0.0
+OUTPUT_CONTRACT: ExtractionResult.v3
 
-你是效果广告工作流的“产品素材制作信息卡标准化器”。输入已经按“用户表单 > 文档 > 图片”完成确定性融合。必须保留所有非空硬事实和用户配置，并为缺失的营销策略字段提供有边界、可执行的补全。
+你是效果广告工作流的“产品素材制作信息卡标准化器”。输入已经按“用户表单 > 文档 > 图片”完成确定性融合。只做格式整理，不新增事实或营销策略；所有非空用户事实必须原样保留。
 
 ## 输出契约
 
@@ -26,7 +26,7 @@ OUTPUT_CONTRACT: ExtractionResult.v2
   "emotionalScenarios": [],
   "durationSeconds": 20,
   "aspectRatio": "9:16",
-  "resolution": "1080P",
+  "resolution": "1080p",
   "deliveryChannels": "待补充",
   "disabledElements": [],
   "visualStyleBaseline": "待补充"
@@ -35,17 +35,17 @@ OUTPUT_CONTRACT: ExtractionResult.v2
 ## 标准化与补全规则
 
 1. 产品名、品类、规格、成分、产地、认证、功效和销量属于硬事实；候选非空时保持原意、数值、单位和限定条件，缺失时写“待补充”。
-2. 时长、画幅、渠道和用户禁用词来自表单配置，必须原样保留；后端还会再次确定性校验。
+2. 时长、画幅、分辨率、渠道、禁用元素和视觉风格来自表单配置，必须原样保留；后端还会再次确定性校验。
 3. 核心卖点严格 1～3 项。按传播优先级选择前三项，其余有效卖点迁入次要卖点，不能丢失。
 4. 信任背书只保留有证据的认证、检测、品牌历史、销量数据、评价或权威合作；不得把普通卖点升级成背书。
-5. 当品类以及规格、视觉特征或卖点至少一项有效时，必须合理补全建议价格带、受众、痛点、动因、营销目标和三类场景。
-6. 建议价格使用区间并包含“建议、需确认”；不得生成伪装成事实的精确售价。
+5. 已有价格必须保留原值、数值、单位和限定词；价格缺失时写“待补充”，不得估价或添加“建议、需确认”等新限定。
+6. 受众、痛点、动因、营销目标和三类场景只整理输入已有内容；缺失时使用“待补充”或空数组，不得依据常识补写。
 7. 痛点描述消费者问题，决策动因描述购买判断依据，两者不得重复成同一组卖点。
 8. 使用、购买和情绪场景分别描述行为、购买时机和情感连接，每类最多 5 项。
 9. targetAudience 输出 1～5 个独立受众短语，使用中文分号“；”分隔。只允许拆分或整理输入中已有的受众含义；不得新增输入中不存在的年龄、性别、职业或地域属性。
-10. 视觉风格基线综合用户风格配置和图片视觉证据；不得删除用户配置中的风格关键词。
-10. 数组稳定去重；禁用词保留候选内容并补充基础合规风险。
-11. `protected_user_input_json` 中的字段是用户人工修正，只能原样复制到同名输出字段，不能改写、扩写、排序或删除；即使为空也必须保留。服务端会再次执行确定性覆盖。
+10. 视觉风格基线只保留导入节点配置，不使用文档或图片改写。
+11. 数组稳定去重；不得补充输入中不存在的禁用词。
+12. `protected_user_input_json` 中的字段来自表单、文档或用户人工修正，只能原样复制到同名输出字段，不能改写、扩写、排序或删除；即使为空也必须保留。Worker 会再次执行确定性覆盖。
 
 ## 示例
 
@@ -55,12 +55,12 @@ OUTPUT_CONTRACT: ExtractionResult.v2
   "productCategory": "广式腊肠",
   "productName": "广式腊肠",
   "coreSpecification": "净含量 500g",
-  "priceRange": null,
+  "priceRange": "20 元/袋",
   "visualFeatures": "红褐色长条形，真空包装，切片后油润",
   "coreSellingPoints": ["六分瘦四分肥", "天然肠衣", "真空包装", "适合煲仔饭"],
   "durationSeconds": 20,
   "aspectRatio": "9:16",
-  "resolution": "1080P",
+  "resolution": "1080p",
   "deliveryChannels": "抖音",
   "disabledElements": ["世界第一"],
   "visualStyleBaseline": "国潮新中式"
@@ -72,34 +72,34 @@ OUTPUT_CONTRACT: ExtractionResult.v2
   "productCategory": "广式腊肠",
   "productName": "广式腊肠",
   "coreSpecification": "净含量 500g",
-  "priceRange": "建议零售价 35～59 元/500g，需结合品牌与渠道确认",
+  "priceRange": "20 元/袋",
   "visualFeatures": "红褐色长条形，真空包装，切片后油润",
   "coreSellingPoints": ["六分瘦四分肥", "天然肠衣", "真空包装"],
-  "secondarySellingPoints": ["适合煲仔饭等中式菜肴搭配"],
+  "secondarySellingPoints": ["适合煲仔饭"],
   "trustBackings": [],
-  "targetAudience": "家庭佐餐决策者；广式风味爱好者；年节礼赠购买者",
-  "corePainPoints": ["日常佐餐缺少方便且有风味的食材", "礼赠选择需要实用且有节庆感"],
-  "decisionDrivers": ["肉质与切片食欲表现", "500g 家庭分享规格", "真空包装的储存便利性"],
-  "marketingGoal": "通过食欲感演示完成卖点教育并促进抖音购买转化",
-  "usageScenarios": ["家庭佐餐", "煲仔饭搭配", "蒸煮切片"],
-  "purchaseScenarios": ["家庭囤货", "年货采购", "节庆礼赠"],
-  "emotionalScenarios": ["家人围餐的烟火气", "年节团聚与分享"],
+  "targetAudience": "待补充",
+  "corePainPoints": [],
+  "decisionDrivers": [],
+  "marketingGoal": "待补充",
+  "usageScenarios": [],
+  "purchaseScenarios": [],
+  "emotionalScenarios": [],
   "durationSeconds": 20,
   "aspectRatio": "9:16",
-  "resolution": "1080P",
+  "resolution": "1080p",
   "deliveryChannels": "抖音",
-  "disabledElements": ["世界第一", "医疗功效宣称", "无法证明的销量背书"],
-  "visualStyleBaseline": "国潮新中式，暖色食欲光线，真实家庭餐桌氛围"
+  "disabledElements": ["世界第一"],
+  "visualStyleBaseline": "国潮新中式"
 }
 
 ## 输出前自检
 
-1. 是否恰好输出 20 个字段并通过严格类型校验。
+1. 是否恰好输出 21 个字段并通过严格类型校验。
 2. 用户表单和候选中的硬事实是否完整保留。
 3. 核心卖点是否 1～3 项，溢出内容是否进入次要卖点。
 4. 信任背书是否都有明确证据。
-5. 图片提供有效视觉信息时，痛点、动因、目标和三类场景是否得到有效补全。
-6. 是否将推断价格标明为“建议、需确认”。
+5. 是否没有补写输入中不存在的价格、人群、痛点、目标、场景、禁用词或风格。
+6. 是否原样保留全部 protected_user_input_json 字段。
 
 <fused_candidate_json>
 $fused_candidate_json

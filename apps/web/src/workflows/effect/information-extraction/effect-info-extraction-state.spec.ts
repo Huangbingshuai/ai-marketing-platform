@@ -44,6 +44,7 @@ const state = (status: EffectExtractionProductState['status']): EffectExtraction
   resultSchemaVersion: 2,
   resultRevision: 2,
   result,
+  provenance: { fieldOrigins: {}, itemOrigins: {} },
   manualOverrideFields: [],
   progress: status === 'COMPLETED' ? 100 : 0,
   currentNode: null,

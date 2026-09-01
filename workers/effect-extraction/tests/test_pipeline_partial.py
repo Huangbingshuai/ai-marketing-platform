@@ -403,7 +403,9 @@ async def test_image_branch_limits_model_concurrency_to_two_by_default() -> None
 
 
 @pytest.mark.asyncio
-async def test_image_branch_reuses_content_fingerprint_cache_without_a_second_model_call() -> None:
+async def test_image_branch_reuses_content_fingerprint_cache_without_a_second_model_call() -> (
+    None
+):
     api = ApiStub()
     api.snapshot.materials = [
         SnapshotMaterial(
@@ -516,9 +518,7 @@ async def test_image_branch_uses_previous_result_when_refresh_disconnects() -> N
         "elapsedMs": 1_234,
     }
     assert refreshed.metadata == {
-        "failures": [
-            {"type": "AI_NETWORK", "attempts": 2, "elapsedMs": 1_234}
-        ]
+        "failures": [{"type": "AI_NETWORK", "attempts": 2, "elapsedMs": 1_234}]
     }
     assert "Server disconnected" not in " ".join(refreshed.warnings)
 
@@ -562,7 +562,21 @@ async def test_normalization_branch_records_ai_call_metadata() -> None:
     api = ApiStub()
     fused = ExtractionCandidate.empty()
     fused.product_name = "商品"
+    form = ExtractionCandidate.empty()
+    form.product_name = "商品"
+    form.product_category = "食品"
+    form.duration_seconds = 20
+    form.aspect_ratio = "1:1"
+    form.resolution = "720p"
+    form.delivery_channels = "视频号"
+    form.visual_style_baseline = "烟火食欲感"
     api.branches = [
+        BranchOutput(
+            branch=BranchName.FORM,
+            status=BranchStatus.SUCCEEDED,
+            source_fingerprint="server-fingerprint",
+            candidate=form,
+        ),
         BranchOutput(
             branch=BranchName.FUSION,
             status=BranchStatus.SUCCEEDED,
@@ -600,16 +614,39 @@ async def test_normalization_branch_records_ai_call_metadata() -> None:
     )
     assert normalization.metadata["aiCall"]["stage"] == "NORMALIZATION"
     assert normalization.candidate is not None
-    assert normalization.candidate.product_name == "语义整理后的商品"
+    assert normalization.candidate.product_name == "商品"
+    assert normalization.candidate.resolution == "720p"
 
 
 @pytest.mark.asyncio
-async def test_normalization_cannot_reintroduce_semantic_duplicates() -> None:
+async def test_normalization_preserves_document_facts_instead_of_semantic_rewrites() -> (
+    None
+):
     api = ApiStub()
     fused = ExtractionCandidate.empty()
     fused.purchase_scenarios = ["年货送礼", "节庆礼赠", "走亲访友礼赠"]
     semantic = fused.model_copy(update={"purchase_scenarios": ["年节采购与礼赠"]})
+    form = ExtractionCandidate.empty()
+    form.product_name = "商品"
+    form.product_category = "食品"
+    form.duration_seconds = 20
+    form.aspect_ratio = "1:1"
+    form.resolution = "720p"
+    form.delivery_channels = "视频号"
+    form.visual_style_baseline = "烟火食欲感"
     api.branches = [
+        BranchOutput(
+            branch=BranchName.FORM,
+            status=BranchStatus.SUCCEEDED,
+            source_fingerprint="server-fingerprint",
+            candidate=form,
+        ),
+        BranchOutput(
+            branch=BranchName.DOCUMENT,
+            status=BranchStatus.SUCCEEDED,
+            source_fingerprint="server-fingerprint",
+            candidate=fused,
+        ),
         BranchOutput(
             branch=BranchName.FUSION,
             status=BranchStatus.SUCCEEDED,
@@ -644,7 +681,104 @@ async def test_normalization_cannot_reintroduce_semantic_duplicates() -> None:
         and item.status == BranchStatus.SUCCEEDED
     )
     assert normalization.candidate is not None
-    assert normalization.candidate.purchase_scenarios == ["年节采购与礼赠"]
+    assert normalization.candidate.purchase_scenarios == [
+        "年货送礼",
+        "节庆礼赠",
+        "走亲访友礼赠",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_normalization_keeps_user_price_and_secondary_points_before_image_suggestions() -> (
+    None
+):
+    api = ApiStub()
+    form = ExtractionCandidate.empty()
+    form.product_name = "广东腊肠"
+    form.product_category = "腊味肉制品"
+    form.duration_seconds = 60
+    form.aspect_ratio = "9:16"
+    form.resolution = "720p"
+    form.delivery_channels = "抖音"
+    form.visual_style_baseline = "烟火食欲感"
+    document = ExtractionCandidate.empty()
+    document.price_range = "20 元/袋"
+    document.core_selling_points = [
+        "三七肥瘦黄金配比",
+        "广府糖酒腌制工艺",
+        "咸甜酒香回甘",
+    ]
+    document.secondary_selling_points = [
+        "纯猪肉无淀粉",
+        "真空锁鲜",
+        "适配多种烹饪方式",
+        "切片均匀、形态规整",
+    ]
+    image = ExtractionCandidate.empty()
+    image.core_selling_points = ["肥瘦颗粒分明", "外观油润有光泽"]
+    image.secondary_selling_points = ["整根形态饱满紧实"]
+    fused = document.model_copy(deep=True)
+    fused.product_name = form.product_name
+    fused.product_category = form.product_category
+    fused.duration_seconds = form.duration_seconds
+    fused.aspect_ratio = form.aspect_ratio
+    fused.resolution = form.resolution
+    fused.delivery_channels = form.delivery_channels
+    fused.visual_style_baseline = form.visual_style_baseline
+    api.branches = [
+        BranchOutput(
+            branch=BranchName.FORM,
+            status=BranchStatus.SUCCEEDED,
+            source_fingerprint="server-fingerprint",
+            candidate=form,
+        ),
+        BranchOutput(
+            branch=BranchName.DOCUMENT,
+            status=BranchStatus.SUCCEEDED,
+            source_fingerprint="server-fingerprint",
+            candidate=document,
+        ),
+        BranchOutput(
+            branch=BranchName.IMAGE,
+            status=BranchStatus.SUCCEEDED,
+            source_fingerprint="server-fingerprint",
+            candidate=image,
+        ),
+        BranchOutput(
+            branch=BranchName.FUSION,
+            status=BranchStatus.SUCCEEDED,
+            source_fingerprint="server-fingerprint",
+            candidate=fused,
+        ),
+    ]
+    pipeline = ExtractionPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=MockAiProvider(),
+        document_parser=ParserStub(),
+        image_processor=ImageProcessorStub(),  # type: ignore[arg-type]
+        max_document_text_chars=1000,
+    )
+    context = RuntimeContext(
+        "run", "project", "draft", "product", "request", "attempt", "server-fingerprint"
+    )
+    pipeline.register_snapshot(context, api.snapshot)
+
+    await pipeline.normalize_and_finalize(context)
+
+    normalization = next(
+        item
+        for item in api.saved
+        if item.branch == BranchName.NORMALIZATION
+        and item.status == BranchStatus.SUCCEEDED
+    )
+    assert normalization.candidate is not None
+    assert normalization.candidate.price_range == "20 元/袋"
+    assert normalization.candidate.core_selling_points == document.core_selling_points
+    assert (
+        normalization.candidate.secondary_selling_points[:4]
+        == document.secondary_selling_points
+    )
+    assert len(normalization.candidate.secondary_selling_points or []) == 6
 
 
 @pytest.mark.asyncio

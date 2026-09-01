@@ -13,6 +13,8 @@ load_snapshot
           ↓ waiting edge: ALL
       fuse_sources
           ↓
+      refine_semantics
+          ↓
       normalize_and_store
 ```
 
@@ -21,7 +23,7 @@ load_snapshot
 - runtime context：`run_id`、`project_id`、`draft_id`、`product_id`、`request_id`、`attempt_token`、`source_fingerprint`
 - Rabbit 消息：`{ schemaVersion: 1, projectId, runId, requestId }`
 - `source_fingerprint` 直接采用 claim 响应的 `sourceFingerprint`，Worker 不自行计算。
-- 分支枚举：`DOCUMENT | IMAGE | COMMERCE | FORM | FUSION | NORMALIZATION`
+- 分支枚举：`DOCUMENT | IMAGE | COMMERCE | FORM | FUSION | SEMANTIC_REFINEMENT | NORMALIZATION`
 - 分支状态：`PENDING | RUNNING | SUCCEEDED | PARTIAL | SKIPPED | FAILED`
 - 文档和图片按源文件记录结果；存在成功项和失败项时为 `PARTIAL`。表单是必需分支。
 
@@ -87,7 +89,9 @@ Worker 默认使用 `ark`。文档、图片、语义整理和标准化专用模�
 
 `prompt_loader.py` 按文件名加载、缓存和渲染提示词，并拒绝目录穿越和非 `.prompt.txt` 文件。`providers.py` 只声明所需文件名并传入资料名、正文、图片元数据和融合候选 JSON。修改模板时不得改名 `$source_name`、`$document_markdown`、`$image_metadata_json` 和 `$fused_candidate_json` 占位符；缺少文件或变量时 Worker 会立即失败。`prompts/` 作为 Python 包内资源会随 Worker wheel 一起发布。
 
-文档抽取保持事实优先；图片分析与结果标准化允许对价格带、目标人群、营销目标、创意卖点、使用场景、渠道、品牌调性和合规风险进行有边界的营销补全。产品名、规格、配方、产地、认证、功效和销量等硬事实不得臆造。推断价格必须使用带“建议、需确认”的区间，不能伪装成用户提供的精确售价。
+文档抽取保持事实优先，并主动忽略资料文档中的时长、画幅、分辨率、渠道、禁用元素和视觉风格；六项制作配置只采用资料导入节点的表单快照。图片分析只能补充可见外观、陈列、场景与视觉气氛建议，不能推断价格、受众、痛点、认证、功效、销量或信任背书。结果标准化只做结构整理，Worker 会在完成前确定性恢复文档、表单和电商资料中的用户事实：非空价格保持原值，用户列表保持原顺序，图片建议只能填空或追加到剩余容量。
+
+API 根据同一次运行的 `FORM / DOCUMENT / COMMERCE / IMAGE` 分支候选生成安全的逐项来源视图。前端显示“用户事实”或“AI 图片建议”，但两者仍共同存在于可编辑草稿中；只有用户完成校验后，营销洞察 WorkingArtifact 才会更新并供 Prompt 节点消费。
 
 ## 本地开发与验证
 

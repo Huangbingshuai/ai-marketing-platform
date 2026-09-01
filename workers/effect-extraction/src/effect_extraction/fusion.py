@@ -17,6 +17,7 @@ SCALAR_FIELDS = (
     "marketing_goal",
     "duration_seconds",
     "aspect_ratio",
+    "resolution",
     "delivery_channels",
     "visual_style_baseline",
 )
@@ -55,7 +56,7 @@ def _key(value: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip().casefold()
 
 
-def _branch_candidate(output: BranchOutput) -> ExtractionCandidate | None:
+def branch_candidate(output: BranchOutput) -> ExtractionCandidate | None:
     if output.candidate is not None:
         return output.candidate
     candidates = [item.candidate for item in output.items if item.candidate is not None]
@@ -98,7 +99,7 @@ def fuse(branches: list[BranchOutput]) -> FusionResult:
             warnings.append(f"{name.value} branch output is missing")
             continue
         warnings.extend(output.warnings)
-        candidate = _branch_candidate(output)
+        candidate = branch_candidate(output)
         if candidate is not None:
             ordered.append((name, candidate))
 

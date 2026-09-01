@@ -75,6 +75,15 @@ export const cloneExtractionProductState = (
 ): EffectExtractionProductState => ({
   ...value,
   warnings: value.warnings.map((warning) => ({ ...warning })),
+  provenance: {
+    fieldOrigins: { ...value.provenance.fieldOrigins },
+    itemOrigins: Object.fromEntries(
+      Object.entries(value.provenance.itemOrigins).map(([field, items]) => [
+        field,
+        items?.map((item) => ({ ...item })),
+      ]),
+    ),
+  },
   result: value.result ? cloneExtractionResult(value.result) : null,
 });
 
@@ -83,6 +92,7 @@ export const toExtractionProductState = (
 ): EffectExtractionProductState => ({
   ...value,
   warnings: value.warnings.map((warning) => ({ ...warning })),
+  provenance: value.provenance ?? { fieldOrigins: {}, itemOrigins: {} },
   result: value.result ? cloneExtractionResult(value.result) : null,
   saveState: value.result ? 'SAVED' : 'CLEAN',
   saveErrorMessage: null,
