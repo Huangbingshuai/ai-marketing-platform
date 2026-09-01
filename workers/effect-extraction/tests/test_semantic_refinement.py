@@ -15,6 +15,7 @@ from effect_extraction.models import (
 )
 from effect_extraction.providers import AiCallMetadata, AiCallResult
 from effect_extraction.semantic_refinement import (
+    SEMANTIC_FIELD_LIMITS,
     SemanticFactSource,
     refine_candidate_semantics,
 )
@@ -109,7 +110,10 @@ def _complete_selections(
         )
         ids_by_field.setdefault(field, []).append(fact_id)
     return [
-        SemanticFieldSelection(field=field, retained_fact_ids=fact_ids)
+        SemanticFieldSelection(
+            field=field,
+            retained_fact_ids=fact_ids[: SEMANTIC_FIELD_LIMITS[field]],
+        )
         for field, fact_ids in ids_by_field.items()
     ]
 
@@ -581,6 +585,85 @@ async def test_model_selection_cannot_drop_user_fact_at_field_limit() -> None:
                         value: SemanticFactSource.IMAGE_SUGGESTION
                         for value in (candidate.usage_scenarios or [])[1:]
                     },
+                }
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_model_selects_only_user_facts_when_they_exceed_secondary_limit() -> None:
+    candidate = ExtractionCandidate.empty()
+    candidate.secondary_selling_points = [
+        f"用户次要卖点 {index}" for index in range(1, 8)
+    ]
+    provider = SemanticProvider(
+        [],
+        selections=[
+            SemanticFieldSelection(
+                field=SemanticField.SECONDARY_SELLING_POINTS,
+                retained_fact_ids=[
+                    "secondarySellingPoints-07",
+                    "secondarySellingPoints-01",
+                    "secondarySellingPoints-02",
+                    "secondarySellingPoints-03",
+                    "secondarySellingPoints-04",
+                    "secondarySellingPoints-05",
+                ],
+            )
+        ],
+    )
+
+    result = await refine_candidate_semantics(
+        candidate,
+        provider=provider,  # type: ignore[arg-type]
+    )
+
+    assert result.candidate.secondary_selling_points == [
+        "用户次要卖点 7",
+        "用户次要卖点 1",
+        "用户次要卖点 2",
+        "用户次要卖点 3",
+        "用户次要卖点 4",
+        "用户次要卖点 5",
+    ]
+    assert result.metadata["droppedForLimitCount"] == 1
+
+
+@pytest.mark.asyncio
+async def test_model_cannot_prefer_image_over_excess_user_secondary_facts() -> None:
+    candidate = ExtractionCandidate.empty()
+    candidate.secondary_selling_points = [
+        *[f"用户次要卖点 {index}" for index in range(1, 8)],
+        "图片次要卖点",
+    ]
+    provider = SemanticProvider(
+        [],
+        selections=[
+            SemanticFieldSelection(
+                field=SemanticField.SECONDARY_SELLING_POINTS,
+                retained_fact_ids=[
+                    "secondarySellingPoints-01",
+                    "secondarySellingPoints-02",
+                    "secondarySellingPoints-03",
+                    "secondarySellingPoints-04",
+                    "secondarySellingPoints-05",
+                    "secondarySellingPoints-08",
+                ],
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="cannot prefer an image suggestion"):
+        await refine_candidate_semantics(
+            candidate,
+            provider=provider,  # type: ignore[arg-type]
+            fact_sources={
+                SemanticField.SECONDARY_SELLING_POINTS.value: {
+                    **{
+                        value: SemanticFactSource.USER_FACT
+                        for value in (candidate.secondary_selling_points or [])[:7]
+                    },
+                    "图片次要卖点": SemanticFactSource.IMAGE_SUGGESTION,
                 }
             },
         )

@@ -24,8 +24,8 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert load_prompt_version("document_extraction.prompt.txt") == "3.0.0"
     assert load_prompt_version("image_analysis.prompt.txt") == "6.3.0"
     assert load_prompt_version("commerce_extraction.prompt.txt") == "1.0.0"
-    assert load_prompt_version("semantic_refinement.prompt.txt") == "4.0.0"
-    assert load_prompt_version("result_normalization.prompt.txt") == "3.0.0"
+    assert load_prompt_version("semantic_refinement.prompt.txt") == "4.1.0"
+    assert load_prompt_version("result_normalization.prompt.txt") == "3.1.0"
 
     assert "产品文档事实抽取器" in document.template
     assert "产品图片" in image.template
@@ -37,6 +37,7 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert "sourceType=USER_FACT" in semantic.template
     assert "placements" in semantic.template
     assert "selections" in semantic.template
+    assert "最终最多 6 条" in semantic.template
     assert "Worker" not in semantic.template
     assert "产品素材制作信息卡标准化器" in normalization.template
 

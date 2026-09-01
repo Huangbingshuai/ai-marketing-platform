@@ -197,8 +197,8 @@ describe('effect extraction validation', () => {
     expect(adapted.visualStyleBaseline).toBe('温暖烟火气');
   });
 
-  it('preserves grounded secondary selling points below the AI generation capacity', () => {
-    const secondarySellingPoints = Array.from({ length: 8 }, (_, index) => `次要卖点${index + 1}`);
+  it('preserves grounded secondary selling points within the AI generation capacity', () => {
+    const secondarySellingPoints = Array.from({ length: 6 }, (_, index) => `次要卖点${index + 1}`);
 
     const adapted = toEffectExtractionResultV2(
       { ...validResult, secondarySellingPoints },
@@ -215,7 +215,7 @@ describe('effect extraction validation', () => {
     expect(adapted.secondarySellingPoints).toEqual(secondarySellingPoints);
   });
 
-  it('caps generated secondary selling points at ten without changing the editable boundary', () => {
+  it('caps generated secondary selling points at six without changing the editable boundary', () => {
     const secondarySellingPoints = Array.from({ length: 12 }, (_, index) => `次要卖点${index + 1}`);
 
     const adapted = toEffectExtractionResultV2(
@@ -230,7 +230,25 @@ describe('effect extraction validation', () => {
       },
     );
 
-    expect(adapted.secondarySellingPoints).toEqual(secondarySellingPoints.slice(0, 10));
+    expect(adapted.secondarySellingPoints).toEqual(secondarySellingPoints.slice(0, 6));
+  });
+
+  it('caps other generated list fields at five', () => {
+    const trustBackings = Array.from({ length: 7 }, (_, index) => `信任背书${index + 1}`);
+
+    const adapted = toEffectExtractionResultV2(
+      { ...validResult, trustBackings },
+      {
+        durationSeconds: 20,
+        aspectRatio: '9:16',
+        resolution: '1080P',
+        deliveryChannels: '抖音',
+        disabledElements: [],
+        visualStyleBaseline: '自然可信',
+      },
+    );
+
+    expect(adapted.trustBackings).toEqual(trustBackings.slice(0, 5));
   });
 
   it('splits a legacy target audience summary into canonical audience facts', () => {

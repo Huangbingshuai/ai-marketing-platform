@@ -257,7 +257,7 @@ class MockAiProvider:
             visual_features=fused.visual_features or "待补充",
             core_selling_points=(fused.core_selling_points or ["待补充"])[0:3],
             secondary_selling_points=(fused.secondary_selling_points or [])[0:6],
-            trust_backings=(fused.trust_backings or [])[0:6],
+            trust_backings=(fused.trust_backings or [])[0:5],
             target_audience=fused.target_audience or "待补充",
             core_pain_points=(fused.core_pain_points or [])[0:5],
             decision_drivers=(fused.decision_drivers or [])[0:5],

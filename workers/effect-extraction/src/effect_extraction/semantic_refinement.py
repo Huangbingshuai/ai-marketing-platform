@@ -26,7 +26,7 @@ SEMANTIC_FIELDS: tuple[tuple[SemanticField, str], ...] = (
 )
 SEMANTIC_FIELD_LIMITS: dict[SemanticField, int] = {
     SemanticField.CORE_SELLING_POINTS: 3,
-    SemanticField.SECONDARY_SELLING_POINTS: 10,
+    SemanticField.SECONDARY_SELLING_POINTS: 6,
     SemanticField.CORE_PAIN_POINTS: 5,
     SemanticField.DECISION_DRIVERS: 5,
     SemanticField.USAGE_SCENARIOS: 5,
@@ -292,8 +292,13 @@ def _validated_selection(
             if facts_by_id[fact["factId"]]["sourceType"]
             == SemanticFactSource.USER_FACT.value
         }
-        if not required_user_ids.issubset(retained_ids):
-            raise ValueError("semantic selection cannot drop a user fact")
+        if len(required_user_ids) <= expected_count:
+            if not required_user_ids.issubset(retained_ids):
+                raise ValueError("semantic selection cannot drop a user fact")
+        elif any(fact_id not in required_user_ids for fact_id in retained_ids):
+            raise ValueError(
+                "semantic selection cannot prefer an image suggestion over user facts"
+            )
         values = [available_by_id[fact_id]["value"] for fact_id in retained_ids]
         if len(values) != len(set(values)):
             raise ValueError("semantic selection contains exact duplicate values")

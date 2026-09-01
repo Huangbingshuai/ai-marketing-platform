@@ -42,7 +42,8 @@ from .semantic_refinement import (
     refine_candidate_semantics,
 )
 
-MAX_GENERATED_SECONDARY_SELLING_POINTS = 10
+MAX_GENERATED_SECONDARY_SELLING_POINTS = 6
+MAX_GENERATED_LIST_ITEMS = 5
 SEMANTIC_RESULT_LIMITS: dict[str, int] = {
     "core_selling_points": 3,
     "secondary_selling_points": MAX_GENERATED_SECONDARY_SELLING_POINTS,
@@ -1012,7 +1013,9 @@ def _normalize_candidate_deterministically(
         visual_features=_candidate_text(candidate, "visual_features") or "待补充",
         core_selling_points=selected_core,
         secondary_selling_points=secondary_points,
-        trust_backings=_candidate_items(candidate, "trust_backings")[:6],
+        trust_backings=_candidate_items(candidate, "trust_backings")[
+            :MAX_GENERATED_LIST_ITEMS
+        ],
         target_audience="；".join(audience_items) or "待补充",
         core_pain_points=_candidate_items(candidate, "core_pain_points")[:5],
         decision_drivers=_candidate_items(candidate, "decision_drivers")[:5],
@@ -1169,7 +1172,13 @@ def _restore_authoritative_sources(
     setattr(
         result,
         "trust_backings",
-        _merged_items("trust_backings", document, commerce, image, limit=6),
+        _merged_items(
+            "trust_backings",
+            document,
+            commerce,
+            image,
+            limit=MAX_GENERATED_LIST_ITEMS,
+        ),
     )
 
     setattr(

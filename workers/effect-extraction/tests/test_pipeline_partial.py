@@ -869,10 +869,6 @@ async def test_normalization_keeps_user_price_and_secondary_points_before_image_
         *document.secondary_selling_points,
         "肥瘦颗粒分明",
         "外观油润有光泽",
-        "切片纹理清晰",
-        "肠体形态规整",
-        "整根切片同展便于判断形态",
-        "福字中国结烘托节庆氛围",
     ]
     assert normalization.candidate.target_audience == image.target_audience
     assert normalization.candidate.core_pain_points == image.core_pain_points
@@ -974,7 +970,7 @@ def test_semantic_candidate_sends_all_selling_points_with_source_authority() -> 
     assert secondary_sources["切片形态规整层次分明"] == "IMAGE_SUGGESTION"
 
 
-def test_authoritative_source_restoration_caps_secondary_selling_points_at_ten() -> (
+def test_authoritative_source_restoration_caps_secondary_selling_points_at_six() -> (
     None
 ):
     form = ExtractionCandidate.empty()
@@ -995,8 +991,29 @@ def test_authoritative_source_restoration_caps_secondary_selling_points_at_ten()
     )
 
     assert result.secondary_selling_points == [
-        f"次要卖点{index}" for index in range(1, 11)
+        f"次要卖点{index}" for index in range(1, 7)
     ]
+
+
+def test_authoritative_source_restoration_caps_trust_backings_at_five() -> None:
+    form = ExtractionCandidate.empty()
+    form.duration_seconds = 15
+    form.aspect_ratio = "9:16"
+    form.resolution = "1080p"
+    form.delivery_channels = "抖音"
+    document = ExtractionCandidate.empty()
+    document.trust_backings = [f"信任背书{index}" for index in range(1, 8)]
+
+    result = SimpleNamespace()
+    _restore_authoritative_sources(
+        result,
+        form=form,
+        document=document,
+        commerce=None,
+        image=None,
+    )
+
+    assert result.trust_backings == [f"信任背书{index}" for index in range(1, 6)]
 
 
 @pytest.mark.asyncio

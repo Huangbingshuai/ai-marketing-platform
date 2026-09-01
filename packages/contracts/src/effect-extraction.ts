@@ -110,9 +110,9 @@ export type EffectExtractionNodeDetail = {
 };
 
 export const EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS = 3;
-/** Final AI extraction output keeps at most ten secondary selling points. */
-export const EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS = 10;
-export const EFFECT_EXTRACTION_MAX_TRUST_BACKINGS = 6;
+/** Final AI extraction output keeps at most six secondary selling points. */
+export const EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS = 6;
+export const EFFECT_EXTRACTION_MAX_TRUST_BACKINGS = 5;
 export const EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS = 5;
 export const EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS = 5;
 /**

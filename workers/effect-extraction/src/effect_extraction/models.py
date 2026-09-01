@@ -188,7 +188,7 @@ class ExtractionResult(ApiModel):
     visual_features: str
     core_selling_points: list[str] = Field(min_length=1, max_length=3)
     secondary_selling_points: list[str] = Field(max_length=20)
-    trust_backings: list[str] = Field(max_length=6)
+    trust_backings: list[str] = Field(max_length=5)
     target_audience: str
     core_pain_points: list[str] = Field(max_length=5)
     decision_drivers: list[str] = Field(max_length=5)
@@ -234,7 +234,7 @@ class SemanticPlacement(ApiModel):
 
 class SemanticFieldSelection(ApiModel):
     field: SemanticField
-    retained_fact_ids: list[str] = Field(min_length=1, max_length=10)
+    retained_fact_ids: list[str] = Field(min_length=1, max_length=6)
 
 
 class SemanticRefinementDecision(ApiModel):
