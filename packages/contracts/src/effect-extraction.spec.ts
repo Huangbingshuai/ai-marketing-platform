@@ -8,6 +8,7 @@ import {
   EFFECT_EXTRACTION_GRAPH_EDGES,
   EFFECT_EXTRACTION_GRAPH_NODES,
   EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
+  EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS,
   EFFECT_EXTRACTION_PRODUCT_STATUSES,
   EFFECT_EXTRACTION_SCHEMA_VERSION,
   type EffectExtractionResult,
@@ -54,6 +55,9 @@ describe('effect extraction contract', () => {
       EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
     );
     expect(schema.$defs.editableItems?.maxItems).toBe(EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS);
+    expect(EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS).toBe(
+      EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
+    );
   });
 
   it('exposes stable v3 statuses and branch names', () => {

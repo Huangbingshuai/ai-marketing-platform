@@ -87,6 +87,12 @@ def test_extracts_docling_heading_and_list_information_card() -> None:
 - 煲仔饭烹饪
 - 家庭日常佐餐
 
+### 情绪氛围场景
+- 家庭围餐的烟火气
+- 春节团圆的喜庆氛围
+
+填写确认：以上内容由资料提供方确认，作为本次效果类项目的信息提炼依据
+
 ## 制作规则层
 
 ### 视频时长
@@ -104,7 +110,45 @@ def test_extracts_docling_heading_and_list_information_card() -> None:
     ]
     assert result.target_audience == "25-45 岁家庭厨房决策者；美食爱好者"
     assert result.usage_scenarios == ["煲仔饭烹饪", "家庭日常佐餐"]
+    assert result.emotional_scenarios == [
+        "家庭围餐的烟火气",
+        "春节团圆的喜庆氛围",
+    ]
     assert result.duration_seconds is None
+
+
+def test_stops_a_list_field_before_plain_confirmation_footer() -> None:
+    markdown = """
+### 产品名称
+广式腊肠
+
+### 产品品类
+腊味肉制品
+
+### 核心规格
+500g 真空袋装
+
+### 核心卖点
+- 三七肥瘦黄金配比
+
+### 核心痛点
+- 担心肥瘦比例和口感不稳定
+
+### 情绪氛围场景
+- 家庭围餐的烟火气
+- 节庆阖家欢聚的氛围
+
+填写确认：以上内容由资料提供方确认，作为本次效果类项目的信息提炼依据
+"""
+
+    result = extract_structured_document_facts(markdown)
+
+    assert result is not None
+    assert result.emotional_scenarios == [
+        "家庭围餐的烟火气",
+        "节庆阖家欢聚的氛围",
+    ]
+    assert all("填写确认" not in value for value in result.emotional_scenarios)
 
 
 def test_treats_explicit_empty_values_as_missing_facts() -> None:

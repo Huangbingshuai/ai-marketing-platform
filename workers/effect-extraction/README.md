@@ -77,7 +77,7 @@ materials[]
 
 可选资源限制：`DOCLING_ARTIFACTS_PATH`、`DOCLING_MAX_FILE_SIZE`、`DOCLING_MAX_NUM_PAGES`、`MAX_DOCUMENT_TEXT_CHARS`、`MAX_COMMERCE_TEXT_CHARS`、`COMMERCE_STATIC_CONNECT_TIMEOUT_SECONDS`、`COMMERCE_STATIC_READ_TIMEOUT_SECONDS`、`COMMERCE_RENDERER_CLIENT_TIMEOUT_SECONDS`、`IMAGE_MAX_INPUT_BYTES`、`IMAGE_MAX_DIMENSION`、`IMAGE_MAX_OUTPUT_BYTES`、`OMP_NUM_THREADS`。
 
-Worker 默认使用 `ark`。文档、图片和语义整理专用模型为空时回退到 `ARK_MODEL`；电商模型为空时先回退到 `ARK_DOCUMENT_MODEL`，再回退到 `ARK_MODEL`。NORMALIZATION 正常路径不调用模型，仅在确定性契约构造异常时使用可选的标准化模型兜底。语义整理默认使用 `doubao-seed-2-0-mini-260428`，通过一次最小思考的严格 Schema 请求判断小规模事实关系；模型只能选择已有事实 ID，不能生成新事实，`SAME_FAMILY` 只分组、不删除原始表达。没有可比较的同字段信息时不调用模型。缺少 Key 时会在消费消息前启动失败，不会静默降级。专用模型调用失败时不会自动换用回退模型。`mock` 只能通过 `EXTRACTION_AI_PROVIDER=mock` 显式启用，供自动测试和本地无模型联调使用。Ark Provider 使用 Responses API 的 `text.format=json_schema` 强制结构化输出，随后仍由 Pydantic 二次校验。
+Worker 默认使用 `ark`。文档、图片和语义整理专用模型为空时回退到 `ARK_MODEL`；电商模型为空时先回退到 `ARK_DOCUMENT_MODEL`，再回退到 `ARK_MODEL`。NORMALIZATION 正常路径不调用模型，仅在确定性契约构造异常时使用可选的标准化模型兜底。语义整理默认使用 `doubao-seed-2-0-mini-260428`，通过一次最小思考的严格 Schema 请求判断小规模事实关系；模型只能选择已有事实 ID，不能生成新事实，`SAME_FAMILY` 只分组、不删除原始表达。模型建议的 `SAME_MEANING` 与 `PARENT_CHILD` 还必须通过 Worker 的文本骨架或包含关系保护，无法确定时保留全部原始事实。没有可比较的同字段信息时不调用模型。缺少 Key 时会在消费消息前启动失败，不会静默降级。专用模型调用失败时不会自动换用回退模型。`mock` 只能通过 `EXTRACTION_AI_PROVIDER=mock` 显式启用，供自动测试和本地无模型联调使用。Ark Provider 使用 Responses API 的 `text.format=json_schema` 强制结构化输出，随后仍由 Pydantic 二次校验。
 
 每次成功的模型调用会把阶段、实际配置模型、提示词版本、Token 用量、总延迟和尝试次数写入内部 Branch metadata 的 `aiCall`。确定性 DOCUMENT 与 NORMALIZATION 路径分别记录解析/标准化模式且不伪造模型调用指标。方舟响应不含 usage 时 Token 字段为 `null`，不会影响业务结果。该指标不包含 Prompt、文档正文、图片 Base64、密钥或完整模型输出，也不会通过普通节点详情接口直接返回。
 
@@ -93,9 +93,9 @@ Worker 默认使用 `ark`。文档、图片和语义整理专用模型为空时�
 
 `prompt_loader.py` 按文件名加载、缓存和渲染提示词，并拒绝目录穿越和非 `.prompt.txt` 文件。`providers.py` 只声明所需文件名并传入资料名、正文、图片元数据和融合候选 JSON。修改模板时不得改名 `$source_name`、`$document_markdown`、`$image_metadata_json` 和 `$fused_candidate_json` 占位符；缺少文件或变量时 Worker 会立即失败。`prompts/` 作为 Python 包内资源会随 Worker wheel 一起发布。
 
-文档抽取保持事实优先，并主动忽略资料文档中的时长、画幅、分辨率、渠道、禁用元素和视觉风格；六项制作配置只采用资料导入节点的表单快照。符合《产品素材制作信息卡》的 Markdown 表格，以及 Docling 常见的“字段标题 + 段落/项目列表”格式，均由 Worker 按字段白名单确定性解析，直接得到用户事实，不再调用 Ark；只有无法可靠识别的非结构化文档才进入文档 AI 兜底。分支 metadata 的 `extractionMode` 会记录 `STRUCTURED_TABLE` 或 `AI_FALLBACK`，便于定位性能问题。
+文档抽取保持事实优先，并主动忽略资料文档中的时长、画幅、分辨率、渠道、禁用元素和视觉风格；六项制作配置只采用资料导入节点的表单快照。符合《产品素材制作信息卡》的 Markdown 表格，以及 Docling 常见的“字段标题 + 段落/项目列表”格式，均由 Worker 按字段白名单确定性解析，直接得到用户事实，不再调用 Ark；项目列表后的填写确认、说明和备注段落会被排除。只有无法可靠识别的非结构化文档才进入文档 AI 兜底。分支 metadata 的 `extractionMode` 会记录 `STRUCTURED_TABLE` 或 `AI_FALLBACK`，便于定位性能问题。
 
-图片分析先提取可见外观、包装文字、陈列、场景与视觉气氛，也可以在画面具有明确人物、动作、用途或购买情境时，保守补充卖点、痛点、受众、决策动因、营销目标和场景建议。节庆、礼赠、家庭餐桌等画面证据优先进入对应场景字段，不能只写成泛化卖点。价格、配方、产地、认证、功效、销量与信任背书仍不得无证据推断。卖点融合先保留全部用户事实，再从图片可见价值和场景建议中最多选择 4 项补充，避免图片建议被固定六项容量截断。NORMALIZATION 对结构化候选执行确定性契约化，并在完成前恢复文档、表单和电商资料中的用户事实；核心外观特征只有在用户资料没有提供时才使用图片结果。
+图片分析先提取可见外观、包装文字、陈列、场景与视觉气氛，也可以在画面具有明确人物、动作、用途或购买情境时，保守补充卖点、痛点、受众、决策动因、营销目标和场景建议。节庆、礼赠、家庭餐桌等画面证据优先进入对应场景字段，不能只写成泛化卖点。价格、配方、产地、认证、功效、销量与信任背书仍不得无证据推断。卖点融合先保留全部用户事实，再从图片可见价值和场景建议中最多选择 4 项补充；次要卖点从 Worker 到 API 统一保留最多 20 项，避免跨层适配静默截断。NORMALIZATION 对结构化候选执行确定性契约化，并在完成前恢复文档、表单和电商资料中的用户事实；核心外观特征只有在用户资料没有提供时才使用图片结果。
 
 API 根据同一次运行的 `FORM / DOCUMENT / COMMERCE / IMAGE` 分支候选生成安全的逐项来源视图。前端不重复标注用户事实，仅在图片补充项下方显示轻量来源说明，不再单独铺设图片建议区。只有用户完成校验后，营销洞察 WorkingArtifact 才会更新并供 Prompt 节点消费。
 

@@ -68,11 +68,12 @@ async def refine_candidate_semantics(
         applied_groups = [
             group
             for group in field_groups
-            if group.relation != SemanticRelation.SAME_FAMILY
+            if _safe_to_apply(group, facts_by_id)
         ]
         setattr(refined, attr, _apply_groups(values, applied_groups, facts_by_id) or None)
         for group in field_groups:
             representative = facts_by_id[group.representative_fact_id]["value"]
+            applied = _safe_to_apply(group, facts_by_id)
             public_groups.append(
                 {
                     "field": field.value,
@@ -82,7 +83,7 @@ async def refine_candidate_semantics(
                         for fact_id in group.member_fact_ids
                     ],
                     "relation": group.relation.value,
-                    "applied": group.relation != SemanticRelation.SAME_FAMILY,
+                    "applied": applied,
                 }
             )
     output_count = sum(len(getattr(refined, attr) or []) for _, attr in SEMANTIC_FIELDS)
@@ -146,6 +147,56 @@ def _validated_groups(
     return accepted
 
 
+def _safe_to_apply(
+    group: SemanticGroup,
+    facts_by_id: dict[str, dict[str, str]],
+) -> bool:
+    """Fail closed when a model proposes a destructive semantic merge.
+
+    The model remains useful for discovering relationships, but facts are only
+    removed when the original text independently supports the proposed relation.
+    False negatives leave a little redundancy; false positives erase user or
+    image evidence and are therefore more harmful in this workflow.
+    """
+
+    if group.relation == SemanticRelation.SAME_FAMILY:
+        return False
+    representative = _semantic_signature(
+        facts_by_id[group.representative_fact_id]["value"]
+    )
+    members = [
+        _semantic_signature(facts_by_id[fact_id]["value"])
+        for fact_id in group.member_fact_ids
+    ]
+    if not representative or any(not member for member in members):
+        return False
+    if group.relation == SemanticRelation.PARENT_CHILD:
+        return all(member in representative for member in members)
+    if group.relation != SemanticRelation.SAME_MEANING:
+        return False
+    return all(
+        member == representative or _strong_textual_overlap(representative, member)
+        for member in members
+    )
+
+
+def _semantic_signature(value: str) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", value.casefold())
+
+
+def _strong_textual_overlap(left: str, right: str) -> bool:
+    if left in right or right in left:
+        shorter, longer = sorted((len(left), len(right)))
+        return shorter >= 4 and shorter / longer >= 0.6
+    left_bigrams = {left[index : index + 2] for index in range(len(left) - 1)}
+    right_bigrams = {right[index : index + 2] for index in range(len(right) - 1)}
+    common = left_bigrams.intersection(right_bigrams)
+    if len(common) < 3:
+        return False
+    dice = (2 * len(common)) / (len(left_bigrams) + len(right_bigrams))
+    return dice >= 0.45
+
+
 def _apply_groups(
     values: list[str],
     groups: list[SemanticGroup],
@@ -156,7 +207,8 @@ def _apply_groups(
         members = {facts_by_id[fact_id]["value"] for fact_id in group.member_fact_ids}
         representative = facts_by_id[group.representative_fact_id]["value"]
         if representative in values:
-            replacements[representative] = (representative, members)
+            for member in members:
+                replacements[member] = (representative, members)
     consumed: set[str] = set()
     output: list[str] = []
     for value in values:
@@ -167,7 +219,8 @@ def _apply_groups(
             output.append(value)
             continue
         canonical, members = replacement
-        output.append(canonical)
+        if canonical not in output:
+            output.append(canonical)
         consumed.update(members)
     return output
 
@@ -182,11 +235,17 @@ def _metadata(
     rows = groups or []
     applied_count = sum(row.get("applied") is True for row in rows)
     family_count = sum(row.get("relation") == SemanticRelation.SAME_FAMILY.value for row in rows)
+    rejected_merge_count = sum(
+        row.get("relation") != SemanticRelation.SAME_FAMILY.value
+        and row.get("applied") is not True
+        for row in rows
+    )
     metadata: dict[str, Any] = {
         "inputCount": input_count,
         "outputCount": output_count,
         "mergedGroupCount": applied_count,
         "familyGroupCount": family_count,
+        "rejectedMergeCount": rejected_merge_count,
         "decisionGroupCount": len(rows),
         "semanticGroups": rows,
     }

@@ -24,7 +24,7 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert load_prompt_version("document_extraction.prompt.txt") == "3.0.0"
     assert load_prompt_version("image_analysis.prompt.txt") == "6.1.0"
     assert load_prompt_version("commerce_extraction.prompt.txt") == "1.0.0"
-    assert load_prompt_version("semantic_refinement.prompt.txt") == "2.1.0"
+    assert load_prompt_version("semantic_refinement.prompt.txt") == "2.2.0"
     assert load_prompt_version("result_normalization.prompt.txt") == "3.0.0"
 
     assert "产品文档事实抽取器" in document.template
@@ -32,6 +32,7 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert "公开商品页面信息抽取器" in commerce.template
     assert "只选择事实 ID" in semantic.template
     assert "SAME_FAMILY" in semantic.template
+    assert "产品外观品质判断" in semantic.template
     assert "产品素材制作信息卡标准化器" in normalization.template
 
     for prompt in (document.template, commerce.template, normalization.template):

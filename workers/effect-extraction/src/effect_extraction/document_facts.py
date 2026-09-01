@@ -8,6 +8,9 @@ _MARKDOWN_DECORATION = re.compile(r"(?:\*\*|__|`)")
 _TABLE_SEPARATOR = re.compile(r"^:?-{3,}:?$")
 _HEADING = re.compile(r"^#{1,6}\s+(?P<title>.+?)\s*$")
 _LIST_MARKER = re.compile(r"^(?:[-*+]\s+|\d+[.)、]\s*)")
+_NON_FACT_NOTE = re.compile(
+    r"^(?:填写确认|用户确认|资料确认|确认说明|说明|备注|注)\s*[：:]"
+)
 _EMPTY_VALUES = {"", "-", "—", "无", "暂无", "未提供", "待补充", "不适用"}
 _LIST_SEPARATOR = re.compile(r"[；;\n]+")
 
@@ -145,8 +148,20 @@ def _heading_values(markdown: str) -> list[tuple[str, str]]:
             continue
 
         values = [inline_value] if inline_value else []
+        list_started = False
         while index < len(lines) and _HEADING.match(lines[index].strip()) is None:
-            value = _clean(_LIST_MARKER.sub("", lines[index].strip()))
+            raw_value = lines[index].strip()
+            if not raw_value:
+                index += 1
+                continue
+            if _NON_FACT_NOTE.match(_clean(raw_value)):
+                break
+            has_list_marker = _LIST_MARKER.match(raw_value) is not None
+            if field_name in _LIST_FIELDS | {"target_audience"}:
+                if list_started and not has_list_marker:
+                    break
+                list_started = list_started or has_list_marker
+            value = _clean(_LIST_MARKER.sub("", raw_value))
             if value:
                 values.append(value)
             index += 1

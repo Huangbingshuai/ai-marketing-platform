@@ -110,7 +110,8 @@ export type EffectExtractionNodeDetail = {
 };
 
 export const EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS = 3;
-export const EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS = 6;
+/** Preserve user facts plus grounded image suggestions without API-side truncation. */
+export const EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS = 20;
 export const EFFECT_EXTRACTION_MAX_TRUST_BACKINGS = 6;
 export const EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS = 5;
 export const EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS = 5;

@@ -157,3 +157,50 @@ async def test_invalid_representative_fact_id_cannot_delete_input_facts() -> Non
         "家人围餐的烟火暖意",
     ]
     assert result.metadata["mergedGroupCount"] == 0
+
+
+@pytest.mark.asyncio
+async def test_model_cannot_merge_different_decision_criteria_as_same_meaning() -> None:
+    candidate = ExtractionCandidate.empty()
+    candidate.decision_drivers = [
+        "节庆元素烘托契合年货采购需求",
+        "整根腊肠清晰展示，便于判断外观品质",
+    ]
+    provider = SemanticProvider(
+        [
+            SemanticGroup(
+                field=SemanticField.DECISION_DRIVERS,
+                member_fact_ids=["decisionDrivers-01", "decisionDrivers-02"],
+                representative_fact_id="decisionDrivers-01",
+                relation=SemanticRelation.SAME_MEANING,
+            )
+        ]
+    )
+
+    result = await refine_candidate_semantics(candidate, provider=provider)  # type: ignore[arg-type]
+
+    assert result.candidate.decision_drivers == candidate.decision_drivers
+    assert result.metadata["mergedGroupCount"] == 0
+    assert result.metadata["rejectedMergeCount"] == 1
+    assert result.metadata["semanticGroups"][0]["applied"] is False
+
+
+@pytest.mark.asyncio
+async def test_parent_child_merge_requires_literal_containment() -> None:
+    candidate = ExtractionCandidate.empty()
+    candidate.usage_scenarios = ["家庭日常佐餐", "家庭日常佐餐搭配煲仔饭"]
+    provider = SemanticProvider(
+        [
+            SemanticGroup(
+                field=SemanticField.USAGE_SCENARIOS,
+                member_fact_ids=["usageScenarios-01", "usageScenarios-02"],
+                representative_fact_id="usageScenarios-02",
+                relation=SemanticRelation.PARENT_CHILD,
+            )
+        ]
+    )
+
+    result = await refine_candidate_semantics(candidate, provider=provider)  # type: ignore[arg-type]
+
+    assert result.candidate.usage_scenarios == ["家庭日常佐餐搭配煲仔饭"]
+    assert result.metadata["mergedGroupCount"] == 1
