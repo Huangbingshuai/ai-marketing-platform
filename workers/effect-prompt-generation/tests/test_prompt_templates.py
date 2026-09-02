@@ -83,6 +83,8 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "{facts_json}" not in task
     assert "不要按六类用途分组" in task
     assert "只是软避重参考" in task
+    assert "同一创意方向下的兄弟变体" in task
+    assert "不得只替换形容词" in task
     assert "只评估候选，不改写正文" in evaluation
     assert "五个窄职责视角" in evaluation
     assert "GENERIC_STYLE_STACKING" in evaluation

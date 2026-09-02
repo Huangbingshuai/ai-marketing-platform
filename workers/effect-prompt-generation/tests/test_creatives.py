@@ -936,7 +936,7 @@ async def test_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
 
 
 @pytest.mark.asyncio
-async def test_content_mmr_reports_similarity_without_diversity_regeneration() -> None:
+async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
     api = PromptApi()
     embedding_provider = IdenticalEmbeddingProvider()
     pipeline = PromptGenerationPipeline(
@@ -963,19 +963,28 @@ async def test_content_mmr_reports_similarity_without_diversity_regeneration() -
 
     assert api.result is not None
     assert len(api.result.items) == 10
-    assert api.result.metrics.generated_candidate_count == 14
+    assert api.result.metrics.generated_candidate_count == 16
     assert embedding_provider.input_count == 14
     final_selection_stage = next(
         stage
         for stage in reversed(api.stages)
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
-    assert final_selection_stage.metadata["diversitySupplementTriggered"] is False
-    assert final_selection_stage.metadata["diversitySupplementCount"] == 0
+    assert final_selection_stage.metadata["diversitySupplementTriggered"] is True
+    assert final_selection_stage.metadata["diversitySupplementCount"] == 2
     assert final_selection_stage.metadata["embeddingInputCount"] == 14
     assert final_selection_stage.metadata["embeddingRequestCount"] == 1
     assert final_selection_stage.metadata["finalAccurateCount"] == 10
     assert final_selection_stage.warnings == ["SEMANTIC_DIVERSITY_CAN_BE_IMPROVED"]
+    diversity_tasks = [
+        task
+        for shard in api.shards.values()
+        if shard.phase.value == "CREATIVE"
+        for task in shard.creative_plan
+        if task.supplement_kind == "DIVERSITY"
+    ]
+    assert len(diversity_tasks) == 2
+    assert {task.round for task in diversity_tasks} == {1}
 
     resumed = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -987,8 +996,8 @@ async def test_content_mmr_reports_similarity_without_diversity_regeneration() -
     resumed.register_snapshot(runtime, snapshot)
     await resumed.load_and_snapshot(runtime)
     restored_cache = resumed._cache(runtime)
-    assert restored_cache.diversity_supplemented is False
-    assert restored_cache.diversity_supplement_count == 0
+    assert restored_cache.diversity_supplemented is True
+    assert restored_cache.diversity_supplement_count == 2
     assert restored_cache.replenishment_rounds == 0
 
 

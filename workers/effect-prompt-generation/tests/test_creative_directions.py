@@ -457,7 +457,7 @@ async def test_cluster_policy_plans_directions_and_generates_140_percent() -> No
     assert result["prompt_result_id"] == "prompt-result-current"
     assert api.result is not None
     assert api.result.metrics.candidate_target_count == 14
-    assert api.result.metrics.generated_candidate_count == 14
+    assert api.result.metrics.generated_candidate_count == 16
     assert len(api.result.items) == 10
     creative_tasks = [
         task
@@ -532,6 +532,21 @@ async def test_fifty_target_plans_exactly_seventy_initial_candidates() -> None:
     )
     assert len(direction_counts) == 13
     assert max(direction_counts.values()) <= 6
+    sibling_coordinated_tasks = [
+        task
+        for shard in shards
+        if len(shard.tasks) > 1
+        and len(
+            {
+                task.creative_direction.direction_id
+                for task in shard.tasks
+                if task.creative_direction is not None
+            }
+        )
+        == 1
+        for task in shard.tasks
+    ]
+    assert len(sibling_coordinated_tasks) >= 52
 
 
 @pytest.mark.asyncio
@@ -1333,7 +1348,7 @@ async def test_coverage_supplement_targets_the_missing_business_fact() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cluster_concentration_is_a_soft_warning_without_regeneration() -> None:
+async def test_cluster_concentration_triggers_one_soft_diversity_supplement() -> None:
     api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -1351,7 +1366,7 @@ async def test_cluster_concentration_is_a_soft_warning_without_regeneration() ->
     )
 
     assert api.result is not None
-    assert api.result.metrics.generated_candidate_count == 14
+    assert api.result.metrics.generated_candidate_count == 16
     diversity_tasks = [
         task
         for shard in api.shards.values()
@@ -1359,14 +1374,15 @@ async def test_cluster_concentration_is_a_soft_warning_without_regeneration() ->
         for task in shard.creative_plan
         if task.supplement_kind == "DIVERSITY"
     ]
-    assert diversity_tasks == []
+    assert len(diversity_tasks) == 2
+    assert {task.round for task in diversity_tasks} == {1}
     final_stage = next(
         stage
         for stage in reversed(api.stages)
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
-    assert final_stage.metadata["diversitySupplementTriggered"] is False
-    assert final_stage.metadata["diversitySupplementCount"] == 0
+    assert final_stage.metadata["diversitySupplementTriggered"] is True
+    assert final_stage.metadata["diversitySupplementCount"] == 2
     assert final_stage.warnings == ["SEMANTIC_DIVERSITY_CAN_BE_IMPROVED"]
 
 

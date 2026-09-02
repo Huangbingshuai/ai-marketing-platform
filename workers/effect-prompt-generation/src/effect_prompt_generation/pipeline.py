@@ -1360,11 +1360,15 @@ class PromptGenerationPipeline:
                 for issue in evaluation.hard_issues
             }
         )[:20]
+        task_chunks = _creative_task_chunks(
+            tasks,
+            max_size=min(4, self.shard_size),
+        )
         shards = [
             CreativeShardPlan(
                 round=round_number,
                 shard_index=index,
-                tasks=tasks[start : start + min(4, self.shard_size)],
+                tasks=task_chunk,
                 avoid_semantic_signatures=[
                     item.evaluation.semantic_signature for item in selected
                 ],
@@ -1373,7 +1377,7 @@ class PromptGenerationPipeline:
                 ],
                 rejection_reasons=rejection_reasons,
             )
-            for index, start in enumerate(range(0, len(tasks), min(4, self.shard_size)))
+            for index, task_chunk in enumerate(task_chunks)
         ]
         pending = [
             item
@@ -1395,6 +1399,18 @@ class PromptGenerationPipeline:
                 "pendingShardCount": len(pending),
                 "generatedCandidateCount": len(cache.creatives),
                 "shardSize": min(4, self.shard_size),
+                "siblingCoordinatedShardCount": sum(
+                    len(shard.tasks) > 1
+                    and len(
+                        {
+                            task.creative_direction.direction_id
+                            for task in shard.tasks
+                            if task.creative_direction is not None
+                        }
+                    )
+                    == 1
+                    for shard in shards
+                ),
                 "factSelectionMode": "DIRECTION_FACT_APPLICATIONS",
                 "requiredFactCount": len(batch_required_fact_ids),
                 "missingRequiredFactCountBeforeRound": len(
@@ -2466,6 +2482,15 @@ class PromptGenerationPipeline:
             *(["VECTOR_NEAR_DUPLICATE_EXCESS"] if vector_diversity_needed else []),
             *cluster_reasons,
         ]
+        should_diversity_supplement = (
+            not should_quantity_supplement
+            and not should_coverage_supplement
+            and missing == 0
+            and bool(diversity_findings)
+            and not cache.diversity_supplemented
+            and round_number < MAX_REPLENISHMENT_ROUNDS
+            and snapshot.operation == "BATCH_GENERATE"
+        )
         pending = []
         if should_quantity_supplement:
             pending = await self.plan_creatives(
@@ -2484,6 +2509,22 @@ class PromptGenerationPipeline:
                 requested_count=coverage_supplement_count,
                 supplement_kind="COVERAGE",
                 coverage_fact_ids=pool_missing_coverage_fact_ids,
+            )
+        elif should_diversity_supplement:
+            if post_scene_share > 0.40:
+                cache.diversity_avoid_scene_families.update(dominant_scenes)
+            if post_action_share > 0.40:
+                cache.diversity_avoid_action_families.update(dominant_actions)
+            cache.diversity_supplement_reasons = diversity_findings
+            diversity_supplement_count = max(
+                1,
+                math.ceil(selection_target * 0.20),
+            )
+            pending = await self.plan_creatives(
+                context,
+                round_number=round_number + 1,
+                requested_count=diversity_supplement_count,
+                supplement_kind="DIVERSITY",
             )
         # Capacity exhaustion may turn an intended supplement into an empty
         # plan. Only report PARTIAL when there is real work to execute; the
@@ -2539,6 +2580,8 @@ class PromptGenerationPipeline:
                 if selection_failed
                 else "必用提炼事实尚未正确实现，正在定向补充"
                 if should_coverage_supplement and should_supplement
+                else "语义近似内容较集中，正在执行一次多样性补充"
+                if should_diversity_supplement and should_supplement
                 else "合格候选不足，正在执行数量补充"
                 if should_quantity_supplement and should_supplement
                 else "已选满目标数量，仍有必用事实待人工复核"
@@ -2822,6 +2865,40 @@ class PromptGenerationPipeline:
                 metadata=metadata or {},
             ),
         )
+
+
+def _creative_task_chunks(
+    tasks: Sequence[CreativeTask],
+    *,
+    max_size: int,
+) -> list[list[CreativeTask]]:
+    """Pack sibling direction tasks together without interpreting their semantics."""
+
+    if not tasks:
+        return []
+    size = max(1, min(5, max_size))
+    direction_groups: dict[str, list[CreativeTask]] = {}
+    for task in tasks:
+        direction_id = (
+            task.creative_direction.direction_id
+            if task.creative_direction is not None
+            else task.slot_id
+        )
+        direction_groups.setdefault(direction_id, []).append(task)
+
+    chunks: list[list[CreativeTask]] = []
+    remainders: list[CreativeTask] = []
+    for group in direction_groups.values():
+        ordered = sorted(group, key=lambda item: item.ordinal)
+        while len(ordered) >= size:
+            chunks.append(ordered[:size])
+            ordered = ordered[size:]
+        remainders.extend(ordered)
+    chunks.extend(
+        remainders[start : start + size]
+        for start in range(0, len(remainders), size)
+    )
+    return chunks
 
 
 def _uses_fact_visual_strategy(snapshot: PromptGenerationSnapshot) -> bool:
