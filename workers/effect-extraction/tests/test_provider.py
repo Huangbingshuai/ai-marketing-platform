@@ -687,6 +687,12 @@ async def test_ark_provider_uses_one_compact_minimal_reasoning_semantic_request(
             "value": "日常佐餐不便",
             "sourceType": "USER_FACT",
         },
+        {
+            "factId": "user-emotionalScenarios-01",
+            "field": "emotionalScenarios",
+            "value": "家庭相聚氛围",
+            "sourceType": "USER_FACT",
+        },
     ]
     image_suggestions = [
         {
@@ -723,4 +729,8 @@ async def test_ark_provider_uses_one_compact_minimal_reasoning_semantic_request(
     assert semantic_payload["max_output_tokens"] == 3072
     assert semantic_payload["text"]["format"]["name"] == "effect_semantic_refinement"  # type: ignore[index]
     assert "reference-visualFeatures" in str(semantic_payload["input"])
+    semantic_input = str(semantic_payload["input"])
+    assert '"USER": {"corePainPoints"' in semantic_input
+    assert '"SCENARIO": {"usageScenarios"' in semantic_input
+    assert "user-emotionalScenarios-01" in semantic_input
     assert "embeddings" not in requests[-1][0]

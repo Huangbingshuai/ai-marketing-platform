@@ -14,7 +14,6 @@ from effect_extraction.models import (
 )
 from effect_extraction.providers import ArkResponsesProvider
 
-
 _RUN_REAL_ARK = os.getenv("RUN_ARK_INTEGRATION") == "1"
 
 pytestmark = [
@@ -175,6 +174,18 @@ async def test_real_ark_semantic_decision_obeys_product_agnostic_relation_bounda
             "value": "春节送礼",
             "sourceType": "USER_FACT",
         },
+        {
+            "factId": "emotion-reunion-gift",
+            "field": "emotionalScenarios",
+            "value": "春节团圆与送礼心意",
+            "sourceType": "USER_FACT",
+        },
+        {
+            "factId": "emotion-family-festival",
+            "field": "emotionalScenarios",
+            "value": "节庆阖家欢聚的氛围",
+            "sourceType": "USER_FACT",
+        },
     ]
     image_suggestions = [
         {
@@ -250,6 +261,13 @@ async def test_real_ark_semantic_decision_obeys_product_agnostic_relation_bounda
         >= 2
         for notice in decision.value.user_fact_notices
     )
+    assert any(
+        notice.issue == SemanticUserFactIssue.POSSIBLE_OVERLAP
+        and {notice.fact_id, *notice.related_fact_ids}.issuperset(
+            {"emotion-reunion-gift", "emotion-family-festival"}
+        )
+        for notice in decision.value.user_fact_notices
+    )
     image_decisions = {
         item.fact_id: item for item in decision.value.suggestion_decisions
     }
@@ -265,3 +283,83 @@ async def test_real_ark_semantic_decision_obeys_product_agnostic_relation_bounda
     }
     assert decision.metadata.stage == "SEMANTIC_REFINEMENT"
     assert decision.metadata.attempts >= 1
+
+
+@pytest.mark.asyncio
+async def test_real_ark_user_fact_review_recalls_compound_same_layer_overlap() -> None:
+    api_key = _required_environment("ARK_API_KEY")
+    model = os.getenv("ARK_MODEL", DEFAULT_ARK_MODEL).strip() or DEFAULT_ARK_MODEL
+    semantic_model = (
+        os.getenv("ARK_SEMANTIC_MODEL", DEFAULT_ARK_SEMANTIC_MODEL).strip()
+        or DEFAULT_ARK_SEMANTIC_MODEL
+    )
+    provider = ArkResponsesProvider(
+        base_url=os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
+        api_key=api_key,
+        model=model,
+        semantic_model=semantic_model,
+        timeout=float(os.getenv("ARK_TIMEOUT_SECONDS", "120")),
+        semantic_timeout=30,
+        semantic_max_attempts=1,
+        semantic_max_output_tokens=3072,
+        semantic_reasoning_effort="minimal",
+    )
+    try:
+        decision = await provider.refine_semantics(
+            user_facts=[
+                {
+                    "factId": "purchase-daily",
+                    "field": "purchaseScenarios",
+                    "value": "家庭日常采购",
+                    "sourceType": "USER_FACT",
+                },
+                {
+                    "factId": "purchase-seasonal",
+                    "field": "purchaseScenarios",
+                    "value": "年货采购",
+                    "sourceType": "USER_FACT",
+                },
+                {
+                    "factId": "purchase-gift",
+                    "field": "purchaseScenarios",
+                    "value": "春节送礼",
+                    "sourceType": "USER_FACT",
+                },
+                {
+                    "factId": "emotion-reunion-gift",
+                    "field": "emotionalScenarios",
+                    "value": "春节团圆与送礼心意",
+                    "sourceType": "USER_FACT",
+                },
+                {
+                    "factId": "emotion-family-festival",
+                    "field": "emotionalScenarios",
+                    "value": "节庆阖家欢聚的氛围",
+                    "sourceType": "USER_FACT",
+                },
+            ],
+            image_suggestions=[],
+            reference_facts=[],
+            remaining_capacity_by_field={},
+        )
+    finally:
+        await provider.aclose()
+
+    assert any(
+        notice.issue == SemanticUserFactIssue.POSSIBLE_OVERLAP
+        and {notice.fact_id, *notice.related_fact_ids}.issuperset(
+            {"emotion-reunion-gift", "emotion-family-festival"}
+        )
+        for notice in decision.value.user_fact_notices
+    )
+    purchase_ids = {"purchase-daily", "purchase-seasonal", "purchase-gift"}
+    assert not any(
+        notice.issue
+        in {
+            SemanticUserFactIssue.POSSIBLE_DUPLICATE,
+            SemanticUserFactIssue.POSSIBLE_OVERLAP,
+        }
+        and len({notice.fact_id, *notice.related_fact_ids}.intersection(purchase_ids))
+        >= 2
+        for notice in decision.value.user_fact_notices
+    )

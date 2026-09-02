@@ -24,7 +24,7 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert load_prompt_version("document_extraction.prompt.txt") == "3.0.0"
     assert load_prompt_version("image_analysis.prompt.txt") == "6.5.0"
     assert load_prompt_version("commerce_extraction.prompt.txt") == "1.0.0"
-    assert load_prompt_version("semantic_refinement.prompt.txt") == "5.4.0"
+    assert load_prompt_version("semantic_refinement.prompt.txt") == "5.6.0"
     assert load_prompt_version("result_normalization.prompt.txt") == "3.1.0"
 
     assert "产品文档事实抽取器" in document.template
@@ -40,6 +40,15 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert "同一个业务层内比较用户事实" in semantic.template
     assert "卖点层包含 coreSellingPoints、secondarySellingPoints" in semantic.template
     assert "严禁跨业务层关联" in semantic.template
+    assert "穷举检查每层内部的全部无序事实对" in semantic.template
+    assert "不要求形成严格父子包含" in semantic.template
+    assert "最小“原子业务命题”" in semantic.template
+    assert "额外信息只能阻止判为完全重复" in semantic.template
+    assert "不能因为其他原子命题不同而降为 RELATED_DISTINCT" in semantic.template
+    assert "商品无关关系校准" in semantic.template
+    assert "特定时段集中备货" in semantic.template
+    assert "背景相同不能覆盖目的差异" in semantic.template
+    assert "同一对问题事实只输出一条 userFactNotice" in semantic.template
     assert "可替换性测试" in semantic.template
     assert "有效差异测试" in semantic.template
     assert "RELATED_DISTINCT" in semantic.template
@@ -130,7 +139,10 @@ def test_effect_extraction_prompts_render_business_inputs() -> None:
     )
     semantic = render_prompt(
         "semantic_refinement.prompt.txt",
-        user_facts_json='[{"factId":"user-usageScenarios-01","value":"煲仔饭烹饪"}]',
+        user_facts_by_layer_json=(
+            '{"SCENARIO":{"usageScenarios":'
+            '[{"factId":"user-usageScenarios-01","value":"煲仔饭烹饪"}]}}'
+        ),
         image_suggestions_json='[{"factId":"image-usageScenarios-01","value":"蒸锅食用"}]',
         reference_facts_json='[{"factId":"reference-visualFeatures","value":"肥瘦纹理清晰"}]',
         remaining_capacity_json='{"usageScenarios":4}',
@@ -147,6 +159,7 @@ def test_effect_extraction_prompts_render_business_inputs() -> None:
     assert "</fused_candidate_json>" in normalization
     assert '<protected_user_input_json>\n{"marketingGoal":"人工目标"}' in normalization
     assert '"factId":"user-usageScenarios-01"' in semantic
+    assert '"SCENARIO"' in semantic
     assert '"factId":"image-usageScenarios-01"' in semantic
     assert '"factId":"reference-visualFeatures"' in semantic
     assert '"usageScenarios":4' in semantic

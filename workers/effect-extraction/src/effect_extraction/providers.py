@@ -39,6 +39,15 @@ _HIGH_DETAIL_FILE_NAME = re.compile(
     r"(?:包装|背面|背标|标签|说明|配料|成分|规格|净含量|认证|检测|奖项|证书|package|packaging|label|back)",
     re.IGNORECASE,
 )
+_SEMANTIC_NOTICE_FIELDS_BY_LAYER: dict[str, tuple[str, ...]] = {
+    "SELLING_POINT": ("coreSellingPoints", "secondarySellingPoints"),
+    "USER": ("corePainPoints", "decisionDrivers"),
+    "SCENARIO": (
+        "usageScenarios",
+        "purchaseScenarios",
+        "emotionalScenarios",
+    ),
+}
 
 
 class ProviderErrorType(StrEnum):
@@ -398,7 +407,10 @@ class ArkResponsesProvider:
     ) -> AiCallResult[SemanticRefinementDecision]:
         prompt = render_prompt(
             SEMANTIC_REFINEMENT_PROMPT,
-            user_facts_json=json.dumps(user_facts, ensure_ascii=False, sort_keys=True),
+            user_facts_by_layer_json=json.dumps(
+                _semantic_user_facts_by_layer(user_facts),
+                ensure_ascii=False,
+            ),
             image_suggestions_json=json.dumps(
                 image_suggestions, ensure_ascii=False, sort_keys=True
             ),
@@ -728,6 +740,27 @@ def _specific_model(value: str | None, fallback: str) -> str:
     if not resolved:
         raise ValueError("Ark model cannot be empty")
     return resolved
+
+
+def _semantic_user_facts_by_layer(
+    user_facts: Sequence[Mapping[str, str]],
+) -> dict[str, dict[str, list[Mapping[str, str]]]]:
+    """Group facts structurally so the model can audit every same-layer pair."""
+
+    grouped: dict[str, dict[str, list[Mapping[str, str]]]] = {
+        layer: {field: [] for field in fields}
+        for layer, fields in _SEMANTIC_NOTICE_FIELDS_BY_LAYER.items()
+    }
+    field_targets = {
+        field: grouped[layer][field]
+        for layer, fields in _SEMANTIC_NOTICE_FIELDS_BY_LAYER.items()
+        for field in fields
+    }
+    for fact in user_facts:
+        target = field_targets.get(str(fact.get("field", "")))
+        if target is not None:
+            target.append(fact)
+    return grouped
 
 
 def _merge_image_visible_facts(
