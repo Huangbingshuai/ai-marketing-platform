@@ -629,6 +629,52 @@ describe('presentExtractionNodeDetail', () => {
     );
   });
 
+  it('shows the lightweight semantic summary without exposing model diagnostics', () => {
+    const detail = presentExtractionNodeDetail(
+      {
+        inputSnapshot: snapshot,
+        updatedAt: new Date('2026-08-24T00:03:00.000Z'),
+        branches: [
+          {
+            branch: 'SEMANTIC_REFINEMENT',
+            status: 'SUCCEEDED',
+            updatedAt: new Date('2026-08-24T00:02:00.000Z'),
+            structuredOutput: {
+              metadata: {
+                userFactCount: 12,
+                userNoticeCount: 2,
+                imageSuggestionInputCount: 8,
+                imageSuggestionKeptCount: 4,
+                imageSuggestionMovedCount: 1,
+                imageSuggestionDroppedCount: 4,
+                aiCall: {
+                  model: 'private-model',
+                  inputTokens: 120,
+                  latencyMs: 4321,
+                },
+              },
+            },
+          },
+        ],
+      },
+      'SEMANTIC_REFINEMENT',
+      execution('SEMANTIC_REFINEMENT'),
+    );
+
+    expect(detail.summary).toBe('已保留 12 条用户事实，整理 8 条图片建议');
+    expect(detail.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: '检查的用户事实', value: 12 }),
+        expect.objectContaining({ label: '待用户确认的问题', value: 2 }),
+        expect.objectContaining({ label: '保留的图片建议', value: 4 }),
+        expect.objectContaining({ label: '语义模型耗时', value: '4.3 秒' }),
+      ]),
+    );
+    expect(detail.sources).toEqual([]);
+    expect(JSON.stringify(detail)).not.toContain('private-model');
+    expect(JSON.stringify(detail)).not.toContain('inputTokens');
+  });
+
   it('does not describe a partial semantic timeout as completed', () => {
     const detail = presentExtractionNodeDetail(
       {

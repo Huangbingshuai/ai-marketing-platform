@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
-from enum import StrEnum
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 from .models import (
     ExtractionCandidate,
     SemanticField,
-    SemanticFieldSelection,
-    SemanticGroup,
-    SemanticPlacement,
-    SemanticRelation,
+    SemanticRefinementDecision,
+    SemanticSuggestionDisposition,
+    SemanticUserFactIssue,
 )
 from .providers import AiProvider
 
@@ -33,11 +30,7 @@ SEMANTIC_FIELD_LIMITS: dict[SemanticField, int] = {
     SemanticField.PURCHASE_SCENARIOS: 5,
     SemanticField.EMOTIONAL_SCENARIOS: 5,
 }
-
-
-class SemanticFactSource(StrEnum):
-    USER_FACT = "USER_FACT"
-    IMAGE_SUGGESTION = "IMAGE_SUGGESTION"
+MAX_USER_FACTS_PER_FIELD = 20
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,332 +43,278 @@ async def refine_candidate_semantics(
     candidate: ExtractionCandidate,
     *,
     provider: AiProvider,
-    fact_sources: dict[str, dict[str, SemanticFactSource]] | None = None,
+    user_facts: Sequence[Mapping[str, str]],
+    image_suggestions: Sequence[Mapping[str, str]],
 ) -> SemanticRefinementResult:
-    """Let the model resolve semantics while Worker enforces structure and authority."""
+    """Apply model decisions only to image suggestions; user facts are immutable."""
 
-    refined = candidate.model_copy(deep=True)
-    facts, facts_by_id = _facts(candidate, fact_sources=fact_sources or {})
-    input_count = sum(
-        len(getattr(candidate, attr) or []) for _, attr in SEMANTIC_FIELDS
+    users = _validated_input_rows(user_facts, expected_source="USER_FACT")
+    suggestions = _validated_input_rows(
+        image_suggestions,
+        expected_source="IMAGE_SUGGESTION",
     )
-    _apply_values(refined, facts)
-    if len(facts) < 2:
+    all_ids = [row["factId"] for row in [*users, *suggestions]]
+    if len(all_ids) != len(set(all_ids)):
+        raise ValueError("semantic fact ids must be unique")
+
+    remaining_capacity = _remaining_capacity(users)
+    structural_notices = _over_limit_notices(users)
+    if not suggestions and len(users) < 2:
+        refined = _candidate_with_facts(candidate, users, [])
         return SemanticRefinementResult(
             candidate=refined,
-            metadata=_metadata(input_count=input_count, output_count=len(facts)),
+            metadata=_metadata(
+                users=users,
+                suggestions=suggestions,
+                kept=[],
+                notices=structural_notices,
+            ),
         )
 
-    ai_call = await provider.refine_semantics(facts=facts)
-    placements = _validated_placements(
-        ai_call.value.placements,
-        facts_by_id=facts_by_id,
+    ai_call = await provider.refine_semantics(
+        user_facts=users,
+        image_suggestions=suggestions,
+        remaining_capacity_by_field={
+            field.value: capacity for field, capacity in remaining_capacity.items()
+        },
     )
-    groups = _validated_groups(
-        ai_call.value.groups,
-        placements=placements,
-        facts_by_id=facts_by_id,
+    kept = _validated_suggestion_decisions(
+        ai_call.value,
+        suggestions=suggestions,
+        remaining_capacity=remaining_capacity,
     )
-    public_groups = _public_groups(groups, facts_by_id=facts_by_id)
-    resolved_facts = _resolved_facts(
-        facts,
-        groups=groups,
-        placements=placements,
-        facts_by_id=facts_by_id,
-    )
-    selected_facts = _validated_selection(
-        ai_call.value.selections,
-        resolved_facts=resolved_facts,
-        facts_by_id=facts_by_id,
-    )
-    _apply_values(refined, selected_facts, resolved_field_key="resolvedField")
-
-    public_placements = [
-        {
-            "factId": placement.fact_id,
-            "value": facts_by_id[placement.fact_id]["value"],
-            "fromField": facts_by_id[placement.fact_id]["field"],
-            "targetField": placement.target_field.value,
-        }
-        for placement in placements.values()
-    ]
+    model_notices = _validated_user_notices(ai_call.value, users=users)
+    notices = [*model_notices, *structural_notices]
+    refined = _candidate_with_facts(candidate, users, kept)
     return SemanticRefinementResult(
         candidate=refined,
         metadata=_metadata(
-            input_count=input_count,
-            output_count=len(selected_facts),
-            groups=public_groups,
-            placements=public_placements,
-            dropped_for_limit_count=len(resolved_facts) - len(selected_facts),
+            users=users,
+            suggestions=suggestions,
+            kept=kept,
+            notices=notices,
+            decisions=ai_call.value,
             ai_call=ai_call.metadata.as_dict(),
         ),
     )
 
 
-def _facts(
+def user_only_candidate(
     candidate: ExtractionCandidate,
+    user_facts: Sequence[Mapping[str, str]],
+) -> ExtractionCandidate:
+    users = _validated_input_rows(user_facts, expected_source="USER_FACT")
+    return _candidate_with_facts(candidate, users, [])
+
+
+def semantic_fallback_metadata(
     *,
-    fact_sources: dict[str, dict[str, SemanticFactSource]],
-) -> tuple[list[dict[str, str]], dict[str, dict[str, str]]]:
-    facts: list[dict[str, str]] = []
-    for field, attr in SEMANTIC_FIELDS:
-        seen: set[str] = set()
-        field_index = 0
-        for value in getattr(candidate, attr) or []:
-            cleaned = re.sub(r"\s+", " ", value).strip()
-            if not cleaned or cleaned in seen:
-                continue
-            seen.add(cleaned)
-            field_index += 1
-            source = fact_sources.get(field.value, {}).get(
-                cleaned,
-                SemanticFactSource.USER_FACT,
-            )
-            facts.append(
-                {
-                    "factId": f"{field.value}-{field_index:02d}",
-                    "field": field.value,
-                    "value": cleaned,
-                    "sourceType": source.value,
-                }
-            )
-    return facts, {row["factId"]: row for row in facts}
-
-
-def _validated_placements(
-    placements: list[SemanticPlacement],
-    *,
-    facts_by_id: dict[str, dict[str, str]],
-) -> dict[str, SemanticPlacement]:
-    accepted: dict[str, SemanticPlacement] = {}
-    for placement in placements:
-        row = facts_by_id.get(placement.fact_id)
-        if row is None or placement.fact_id in accepted:
-            raise ValueError("semantic placement references an invalid fact")
-        if row["sourceType"] != SemanticFactSource.IMAGE_SUGGESTION.value:
-            raise ValueError("semantic placement cannot move a user fact")
-        if row["field"] == placement.target_field.value:
-            raise ValueError("semantic placement must change the field")
-        accepted[placement.fact_id] = placement
-    return accepted
-
-
-def _validated_groups(
-    groups: list[SemanticGroup],
-    *,
-    placements: dict[str, SemanticPlacement],
-    facts_by_id: dict[str, dict[str, str]],
-) -> list[SemanticGroup]:
-    used: set[str] = set()
-    accepted: list[SemanticGroup] = []
-    for group in groups:
-        member_ids = list(dict.fromkeys(group.member_fact_ids))
-        if len(member_ids) < 2 or any(
-            member_id not in facts_by_id for member_id in member_ids
-        ):
-            raise ValueError("semantic group references an invalid fact")
-        if used.intersection(member_ids):
-            raise ValueError("semantic fact cannot belong to multiple groups")
-        if group.representative_fact_id not in member_ids:
-            raise ValueError("semantic representative must belong to its group")
-
-        for member_id in member_ids:
-            placement = placements.get(member_id)
-            if placement is not None and placement.target_field != group.field:
-                raise ValueError("semantic placement conflicts with group destination")
-        representative = facts_by_id[group.representative_fact_id]
-        if (
-            representative["sourceType"] == SemanticFactSource.USER_FACT.value
-            and representative["field"] != group.field.value
-        ):
-            raise ValueError("semantic group cannot move a user representative")
-        if (
-            representative["sourceType"] == SemanticFactSource.IMAGE_SUGGESTION.value
-            and representative["field"] != group.field.value
-            and placements.get(group.representative_fact_id) is None
-        ):
-            raise ValueError("semantic group must place a moved image representative")
-
-        accepted.append(group.model_copy(update={"member_fact_ids": member_ids}))
-        used.update(member_ids)
-    return accepted
-
-
-def _source_policy_allows(
-    group: SemanticGroup,
-    facts_by_id: dict[str, dict[str, str]],
-) -> bool:
-    """Apply model semantics only when source authority permits the deletion."""
-
-    if group.relation == SemanticRelation.SAME_FAMILY:
-        return False
-    user_fact_ids = [
-        fact_id
-        for fact_id in group.member_fact_ids
-        if facts_by_id[fact_id]["sourceType"] == SemanticFactSource.USER_FACT.value
-    ]
-    if not user_fact_ids:
-        return True
-    return (
-        len(user_fact_ids) == 1
-        and group.representative_fact_id == user_fact_ids[0]
-        and facts_by_id[user_fact_ids[0]]["field"] == group.field.value
+    user_facts: Sequence[Mapping[str, str]],
+    image_suggestions: Sequence[Mapping[str, str]],
+    failure: dict[str, Any],
+) -> dict[str, Any]:
+    users = _validated_input_rows(user_facts, expected_source="USER_FACT")
+    suggestions = _validated_input_rows(
+        image_suggestions,
+        expected_source="IMAGE_SUGGESTION",
     )
+    metadata = _metadata(
+        users=users,
+        suggestions=suggestions,
+        kept=[],
+        notices=_over_limit_notices(users),
+    )
+    metadata["failures"] = [failure]
+    metadata["degraded"] = True
+    return metadata
 
 
-def _resolved_facts(
-    facts: list[dict[str, str]],
+def _validated_input_rows(
+    rows: Sequence[Mapping[str, str]],
     *,
-    groups: list[SemanticGroup],
-    placements: dict[str, SemanticPlacement],
-    facts_by_id: dict[str, dict[str, str]],
+    expected_source: str,
 ) -> list[dict[str, str]]:
-    applied_groups = [
-        group for group in groups if _source_policy_allows(group, facts_by_id)
-    ]
-    groups_by_member = {
-        member_id: group
-        for group in applied_groups
-        for member_id in group.member_fact_ids
-    }
-    resolved: list[dict[str, str]] = []
-    for fact in facts:
-        fact_id = fact["factId"]
-        group = groups_by_member.get(fact_id)
-        if group is not None and fact_id != group.representative_fact_id:
-            continue
-        placement = placements.get(fact_id)
-        target_field = (
-            group.field.value
-            if group is not None
-            else placement.target_field.value
-            if placement is not None
-            else fact["field"]
+    accepted: list[dict[str, str]] = []
+    for row in rows:
+        fact_id = str(row.get("factId", "")).strip()
+        value = str(row.get("value", "")).strip()
+        source_type = str(row.get("sourceType", "")).strip()
+        field = SemanticField(str(row.get("field", "")))
+        if not fact_id or not value or source_type != expected_source:
+            raise ValueError("semantic input fact is invalid")
+        accepted.append(
+            {
+                "factId": fact_id,
+                "field": field.value,
+                "value": value,
+                "sourceType": source_type,
+            }
         )
-        resolved.append({**fact, "resolvedField": target_field})
-    return resolved
+    if len(accepted) != len({row["factId"] for row in accepted}):
+        raise ValueError("semantic input contains duplicate fact ids")
+    return accepted
 
 
-def _validated_selection(
-    selections: list[SemanticFieldSelection],
+def _remaining_capacity(
+    users: Sequence[Mapping[str, str]],
+) -> dict[SemanticField, int]:
+    counts = {field: 0 for field, _ in SEMANTIC_FIELDS}
+    for row in users:
+        counts[SemanticField(row["field"])] += 1
+    return {
+        field: max(0, SEMANTIC_FIELD_LIMITS[field] - counts[field])
+        for field, _ in SEMANTIC_FIELDS
+    }
+
+
+def _validated_suggestion_decisions(
+    decision: SemanticRefinementDecision,
     *,
-    resolved_facts: list[dict[str, str]],
-    facts_by_id: dict[str, dict[str, str]],
+    suggestions: Sequence[Mapping[str, str]],
+    remaining_capacity: Mapping[SemanticField, int],
 ) -> list[dict[str, str]]:
-    selections_by_field: dict[SemanticField, SemanticFieldSelection] = {}
-    for selection in selections:
-        if selection.field in selections_by_field:
-            raise ValueError("semantic field selection is duplicated")
-        selections_by_field[selection.field] = selection
+    suggestions_by_id = {row["factId"]: dict(row) for row in suggestions}
+    decision_ids = [row.fact_id for row in decision.suggestion_decisions]
+    if len(decision_ids) != len(set(decision_ids)):
+        raise ValueError("semantic suggestion decision is duplicated")
+    if set(decision_ids) != set(suggestions_by_id):
+        raise ValueError("semantic decisions must cover every image suggestion")
 
-    available_by_field: dict[SemanticField, list[dict[str, str]]] = {}
-    for fact in resolved_facts:
-        field = SemanticField(fact["resolvedField"])
-        available_by_field.setdefault(field, []).append(fact)
-    if set(selections_by_field) != set(available_by_field):
-        raise ValueError("semantic selections must cover every non-empty field")
-
-    selected: list[dict[str, str]] = []
-    for field, available in available_by_field.items():
-        retained_ids = selections_by_field[field].retained_fact_ids
-        if len(retained_ids) != len(set(retained_ids)):
-            raise ValueError("semantic selection contains duplicate facts")
-        available_by_id = {fact["factId"]: fact for fact in available}
-        expected_count = min(SEMANTIC_FIELD_LIMITS[field], len(available))
-        if len(retained_ids) != expected_count or any(
-            fact_id not in available_by_id for fact_id in retained_ids
-        ):
-            raise ValueError("semantic selection has an invalid field count")
-        required_user_ids = {
-            fact["factId"]
-            for fact in available
-            if facts_by_id[fact["factId"]]["sourceType"]
-            == SemanticFactSource.USER_FACT.value
-        }
-        if len(required_user_ids) <= expected_count:
-            if not required_user_ids.issubset(retained_ids):
-                raise ValueError("semantic selection cannot drop a user fact")
-        elif any(fact_id not in required_user_ids for fact_id in retained_ids):
-            raise ValueError(
-                "semantic selection cannot prefer an image suggestion over user facts"
-            )
-        values = [available_by_id[fact_id]["value"] for fact_id in retained_ids]
-        if len(values) != len(set(values)):
-            raise ValueError("semantic selection contains exact duplicate values")
-        selected.extend(available_by_id[fact_id] for fact_id in retained_ids)
-    return selected
+    kept: list[dict[str, str]] = []
+    kept_counts = {field: 0 for field, _ in SEMANTIC_FIELDS}
+    for row in decision.suggestion_decisions:
+        original = suggestions_by_id[row.fact_id]
+        if row.disposition == SemanticSuggestionDisposition.DROP:
+            if row.target_field is not None:
+                raise ValueError("dropped image suggestion cannot have a target field")
+            continue
+        if row.target_field is None:
+            raise ValueError("kept image suggestion requires a target field")
+        kept_counts[row.target_field] += 1
+        if kept_counts[row.target_field] > remaining_capacity[row.target_field]:
+            raise ValueError("semantic decisions exceed the remaining field capacity")
+        kept.append({**original, "resolvedField": row.target_field.value})
+    return kept
 
 
-def _apply_values(
-    candidate: ExtractionCandidate,
-    facts: list[dict[str, str]],
+def _validated_user_notices(
+    decision: SemanticRefinementDecision,
     *,
-    resolved_field_key: str = "field",
-) -> None:
-    for field, attr in SEMANTIC_FIELDS:
-        values = [
-            fact["value"] for fact in facts if fact[resolved_field_key] == field.value
-        ]
-        setattr(candidate, attr, values or None)
-
-
-def _public_groups(
-    groups: list[SemanticGroup],
-    *,
-    facts_by_id: dict[str, dict[str, str]],
+    users: Sequence[Mapping[str, str]],
 ) -> list[dict[str, Any]]:
-    return [
-        {
-            "field": group.field.value,
-            "canonicalValue": facts_by_id[group.representative_fact_id]["value"],
-            "memberValues": [
-                facts_by_id[fact_id]["value"] for fact_id in group.member_fact_ids
-            ],
-            "memberSourceTypes": [
-                facts_by_id[fact_id]["sourceType"] for fact_id in group.member_fact_ids
-            ],
-            "memberFields": [
-                facts_by_id[fact_id]["field"] for fact_id in group.member_fact_ids
-            ],
-            "relation": group.relation.value,
-            "applied": _source_policy_allows(group, facts_by_id),
-        }
-        for group in groups
-    ]
+    users_by_id = {row["factId"]: dict(row) for row in users}
+    seen: set[tuple[str, SemanticUserFactIssue]] = set()
+    notices: list[dict[str, Any]] = []
+    for notice in decision.user_fact_notices:
+        fact = users_by_id.get(notice.fact_id)
+        key = (notice.fact_id, notice.issue)
+        if fact is None or key in seen:
+            raise ValueError("semantic notice references an invalid user fact")
+        if notice.issue == SemanticUserFactIssue.FIELD_OVER_RECOMMENDED_COUNT:
+            raise ValueError("field capacity notices are generated structurally")
+        related_ids = list(dict.fromkeys(notice.related_fact_ids))
+        if notice.fact_id in related_ids or any(
+            related_id not in users_by_id for related_id in related_ids
+        ):
+            raise ValueError("semantic notice has invalid related user facts")
+        if notice.issue == SemanticUserFactIssue.POSSIBLE_WRONG_FIELD:
+            if (
+                notice.suggested_field is None
+                or notice.suggested_field.value == fact["field"]
+            ):
+                raise ValueError("wrong-field notice requires a different field")
+        elif notice.suggested_field is not None:
+            raise ValueError("only wrong-field notices may suggest another field")
+        notices.append(
+            {
+                "factId": notice.fact_id,
+                "field": fact["field"],
+                "value": fact["value"],
+                "issue": notice.issue.value,
+                "relatedFactIds": related_ids,
+                "relatedValues": [users_by_id[item]["value"] for item in related_ids],
+                "suggestedField": (
+                    notice.suggested_field.value
+                    if notice.suggested_field is not None
+                    else None
+                ),
+            }
+        )
+        seen.add(key)
+    return notices
+
+
+def _over_limit_notices(
+    users: Sequence[Mapping[str, str]],
+) -> list[dict[str, Any]]:
+    by_field: dict[SemanticField, list[Mapping[str, str]]] = {}
+    for row in users:
+        by_field.setdefault(SemanticField(row["field"]), []).append(row)
+    notices: list[dict[str, Any]] = []
+    for field, rows in by_field.items():
+        if len(rows) <= SEMANTIC_FIELD_LIMITS[field]:
+            continue
+        first = rows[0]
+        notices.append(
+            {
+                "factId": first["factId"],
+                "field": field.value,
+                "value": first["value"],
+                "issue": SemanticUserFactIssue.FIELD_OVER_RECOMMENDED_COUNT.value,
+                "relatedFactIds": [],
+                "relatedValues": [],
+                "suggestedField": None,
+                "actualCount": len(rows),
+                "recommendedCount": SEMANTIC_FIELD_LIMITS[field],
+            }
+        )
+    return notices
+
+
+def _candidate_with_facts(
+    candidate: ExtractionCandidate,
+    users: Sequence[Mapping[str, str]],
+    kept_suggestions: Sequence[Mapping[str, str]],
+) -> ExtractionCandidate:
+    refined = candidate.model_copy(deep=True)
+    for field, attr in SEMANTIC_FIELDS:
+        user_values = [row["value"] for row in users if row["field"] == field.value]
+        image_values = [
+            row["value"]
+            for row in kept_suggestions
+            if row.get("resolvedField") == field.value
+        ]
+        values = [*user_values, *image_values]
+        setattr(refined, attr, values or None)
+    return refined
 
 
 def _metadata(
     *,
-    input_count: int,
-    output_count: int,
-    groups: list[dict[str, Any]] | None = None,
-    placements: list[dict[str, Any]] | None = None,
-    dropped_for_limit_count: int = 0,
+    users: Sequence[Mapping[str, str]],
+    suggestions: Sequence[Mapping[str, str]],
+    kept: Sequence[Mapping[str, str]],
+    notices: Sequence[Mapping[str, Any]],
+    decisions: SemanticRefinementDecision | None = None,
     ai_call: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    rows = groups or []
-    placement_rows = placements or []
-    applied_count = sum(row.get("applied") is True for row in rows)
-    family_count = sum(
-        row.get("relation") == SemanticRelation.SAME_FAMILY.value for row in rows
-    )
-    rejected_merge_count = sum(
-        row.get("relation") != SemanticRelation.SAME_FAMILY.value
-        and row.get("applied") is not True
-        for row in rows
+    original_fields = {row["factId"]: row["field"] for row in suggestions}
+    moved_count = sum(
+        original_fields[row["factId"]] != row.get("resolvedField") for row in kept
     )
     metadata: dict[str, Any] = {
-        "inputCount": input_count,
-        "outputCount": output_count,
-        "mergedGroupCount": applied_count,
-        "familyGroupCount": family_count,
-        "rejectedMergeCount": rejected_merge_count,
-        "decisionGroupCount": len(rows),
-        "reclassifiedFactCount": len(placement_rows),
-        "droppedForLimitCount": dropped_for_limit_count,
-        "semanticGroups": rows,
-        "semanticPlacements": placement_rows,
+        "inputCount": len(users) + len(suggestions),
+        "outputCount": len(users) + len(kept),
+        "userFactCount": len(users),
+        "userNoticeCount": len(notices),
+        "imageSuggestionInputCount": len(suggestions),
+        "imageSuggestionKeptCount": len(kept),
+        "imageSuggestionMovedCount": moved_count,
+        "imageSuggestionDroppedCount": len(suggestions) - len(kept),
+        "userFactNotices": list(notices),
     }
+    if decisions is not None:
+        metadata["semanticDecisionCount"] = len(decisions.suggestion_decisions)
     if ai_call is not None:
         metadata["aiCall"] = ai_call
     return metadata

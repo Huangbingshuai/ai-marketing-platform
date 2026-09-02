@@ -39,6 +39,10 @@ def _provider(settings: WorkerSettings) -> AiProvider:
         image_detail=settings.ark_image_detail,
         image_reasoning_effort=settings.ark_image_reasoning_effort,
         image_adaptive_high_detail=settings.ark_image_adaptive_high_detail,
+        semantic_timeout=settings.ark_semantic_timeout_seconds,
+        semantic_max_attempts=settings.ark_semantic_max_attempts,
+        semantic_max_output_tokens=settings.ark_semantic_max_output_tokens,
+        semantic_reasoning_effort=settings.ark_semantic_reasoning_effort,
     )
 
 

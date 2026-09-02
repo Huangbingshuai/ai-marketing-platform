@@ -83,13 +83,40 @@ describe('effect info extraction state', () => {
 
     const view = toExtractionProductState({
       ...state('COMPLETED'),
+      provenance: {
+        fieldOrigins: {},
+        fieldSourceNames: {},
+        itemOrigins: {
+          coreSellingPoints: [
+            {
+              value: '卖点一',
+              origin: 'USER_FACT',
+              sourceNames: ['用户资料'],
+              semanticNotices: [
+                {
+                  issue: 'POSSIBLE_OVERLAP',
+                  message: '建议检查',
+                  suggestedField: null,
+                  relatedValues: ['卖点二'],
+                },
+              ],
+            },
+          ],
+        },
+      },
       warnings: [
         { code: 'COMMERCE_SKIPPED', message: '暂未抓取', branch: 'COMMERCE', sourceId: null },
       ],
     });
     view.warnings[0]!.message = '已修改';
+    view.provenance.itemOrigins.coreSellingPoints![0]!.semanticNotices![0]!.relatedValues.push(
+      '卖点三',
+    );
     expect(view.saveState).toBe('SAVED');
     expect(view.saveErrorMessage).toBeNull();
+    expect(
+      state('COMPLETED').provenance.itemOrigins.coreSellingPoints?.[0]?.semanticNotices,
+    ).toBeUndefined();
   });
 
   it('normalizes a historical uppercase resolution for the fixed selector', () => {

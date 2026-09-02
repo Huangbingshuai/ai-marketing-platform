@@ -19,8 +19,10 @@ from .models import (
     ExtractionResult,
     ImageVisibleFacts,
     SemanticField,
-    SemanticFieldSelection,
     SemanticRefinementDecision,
+    SemanticSuggestionDecision,
+    SemanticSuggestionDisposition,
+    SemanticSuggestionReason,
 )
 from .prompt_loader import load_prompt_version, render_prompt
 
@@ -119,7 +121,9 @@ class AiProvider(Protocol):
     async def refine_semantics(
         self,
         *,
-        facts: Sequence[Mapping[str, str]],
+        user_facts: Sequence[Mapping[str, str]],
+        image_suggestions: Sequence[Mapping[str, str]],
+        remaining_capacity_by_field: Mapping[str, int],
     ) -> AiCallResult[SemanticRefinementDecision]: ...
 
     async def extract_document(
@@ -170,23 +174,40 @@ class MockAiProvider:
     async def refine_semantics(
         self,
         *,
-        facts: Sequence[Mapping[str, str]],
+        user_facts: Sequence[Mapping[str, str]],
+        image_suggestions: Sequence[Mapping[str, str]],
+        remaining_capacity_by_field: Mapping[str, int],
     ) -> AiCallResult[SemanticRefinementDecision]:
-        fact_ids_by_field: dict[SemanticField, list[str]] = {}
-        for fact in facts:
+        del user_facts
+        kept_by_field: dict[SemanticField, int] = {}
+        suggestion_decisions: list[SemanticSuggestionDecision] = []
+        for fact in image_suggestions:
             field = SemanticField(str(fact["field"]))
-            fact_ids_by_field.setdefault(field, []).append(str(fact["factId"]))
+            kept_count = kept_by_field.get(field, 0)
+            capacity = remaining_capacity_by_field.get(field.value, 0)
+            keep = kept_count < capacity
+            if keep:
+                kept_by_field[field] = kept_count + 1
+            suggestion_decisions.append(
+                SemanticSuggestionDecision(
+                    fact_id=str(fact["factId"]),
+                    disposition=(
+                        SemanticSuggestionDisposition.KEEP
+                        if keep
+                        else SemanticSuggestionDisposition.DROP
+                    ),
+                    target_field=field if keep else None,
+                    reason=(
+                        SemanticSuggestionReason.LOW_INFORMATION
+                        if keep
+                        else SemanticSuggestionReason.CAPACITY
+                    ),
+                )
+            )
         return _mock_result(
             SemanticRefinementDecision(
-                groups=[],
-                placements=[],
-                selections=[
-                    SemanticFieldSelection(
-                        field=field,
-                        retained_fact_ids=fact_ids,
-                    )
-                    for field, fact_ids in fact_ids_by_field.items()
-                ],
+                suggestion_decisions=suggestion_decisions,
+                user_fact_notices=[],
             ),
             "SEMANTIC_REFINEMENT",
             SEMANTIC_REFINEMENT_PROMPT,
@@ -300,6 +321,10 @@ class ArkResponsesProvider:
         image_detail: str = "low",
         image_reasoning_effort: str = "minimal",
         image_adaptive_high_detail: bool = True,
+        semantic_timeout: float = 30.0,
+        semantic_max_attempts: int = 1,
+        semantic_max_output_tokens: int = 2048,
+        semantic_reasoning_effort: str = "minimal",
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._document_model = _specific_model(document_model, model)
@@ -331,6 +356,14 @@ class ArkResponsesProvider:
             else "minimal"
         )
         self._image_adaptive_high_detail = image_adaptive_high_detail
+        self._semantic_timeout = max(1.0, semantic_timeout)
+        self._semantic_max_attempts = max(1, semantic_max_attempts)
+        self._semantic_max_output_tokens = max(256, semantic_max_output_tokens)
+        self._semantic_reasoning_effort = (
+            semantic_reasoning_effort
+            if semantic_reasoning_effort in {"minimal", "low", "medium", "high"}
+            else "minimal"
+        )
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/") + "/",
             timeout=timeout,
@@ -356,11 +389,19 @@ class ArkResponsesProvider:
     async def refine_semantics(
         self,
         *,
-        facts: Sequence[Mapping[str, str]],
+        user_facts: Sequence[Mapping[str, str]],
+        image_suggestions: Sequence[Mapping[str, str]],
+        remaining_capacity_by_field: Mapping[str, int],
     ) -> AiCallResult[SemanticRefinementDecision]:
         prompt = render_prompt(
             SEMANTIC_REFINEMENT_PROMPT,
-            facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+            user_facts_json=json.dumps(user_facts, ensure_ascii=False, sort_keys=True),
+            image_suggestions_json=json.dumps(
+                image_suggestions, ensure_ascii=False, sort_keys=True
+            ),
+            remaining_capacity_json=json.dumps(
+                remaining_capacity_by_field, ensure_ascii=False, sort_keys=True
+            ),
         )
         return await self._structured(
             [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
@@ -369,11 +410,10 @@ class ArkResponsesProvider:
             stage="SEMANTIC_REFINEMENT",
             model=self._semantic_model,
             prompt_version=load_prompt_version(SEMANTIC_REFINEMENT_PROMPT),
-            request_timeout=60.0,
-            max_attempts=2,
-            max_output_tokens=4096,
-            retry_max_output_tokens=6144,
-            reasoning_effort="low",
+            request_timeout=self._semantic_timeout,
+            max_attempts=self._semantic_max_attempts,
+            max_output_tokens=self._semantic_max_output_tokens,
+            reasoning_effort=self._semantic_reasoning_effort,
         )
 
     async def extract_document(

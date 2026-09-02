@@ -127,6 +127,18 @@ class WorkerSettings(BaseSettings):
     ark_image_adaptive_high_detail: bool = Field(
         default=True, alias="ARK_IMAGE_ADAPTIVE_HIGH_DETAIL"
     )
+    ark_semantic_timeout_seconds: float = Field(
+        default=30.0, alias="ARK_SEMANTIC_TIMEOUT_SECONDS", gt=0
+    )
+    ark_semantic_max_attempts: int = Field(
+        default=1, alias="ARK_SEMANTIC_MAX_ATTEMPTS", ge=1, le=1
+    )
+    ark_semantic_max_output_tokens: int = Field(
+        default=2048, alias="ARK_SEMANTIC_MAX_OUTPUT_TOKENS", ge=256, le=4096
+    )
+    ark_semantic_reasoning_effort: Literal["minimal", "low", "medium", "high"] = Field(
+        default="minimal", alias="ARK_SEMANTIC_REASONING_EFFORT"
+    )
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
     @model_validator(mode="after")

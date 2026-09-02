@@ -147,7 +147,7 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain('EffectUpwardCreatableSelect');
     expect(pageSource).toContain('v-model="newDisabledElement"');
     expect(pageSource).toContain('图片识别补充 ·');
-    expect(pageSource).not.toContain('用户事实');
+    expect(pageSource).toContain("if (!shouldShowOrigin(origin)) return ''");
     expect(pageSource).toContain('originSourceLabel');
     expect(pageSource).toContain('origin-chip');
     expect(pageSource).toContain("em[data-origin='USER_FACT']");
@@ -155,6 +155,10 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain("itemOrigin('coreSellingPoints', index)");
     expect(pageSource).toContain("itemOrigin('usageScenarios', index)");
     expect(pageSource).toContain("fieldOrigin('priceRange')");
+    expect(pageSource).toContain('semantic-fact-notice');
+    expect(pageSource).toContain("itemSemanticNotices('coreSellingPoints', index)");
+    expect(pageSource).toContain("markListFieldDirty('corePainPoints')");
+    expect(pageSource).toContain('delete item.semanticNotices');
   });
 
   it('edits target audiences, pain points and decision drivers with the same item rows', () => {

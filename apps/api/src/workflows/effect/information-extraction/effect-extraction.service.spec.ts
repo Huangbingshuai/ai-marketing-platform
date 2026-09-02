@@ -338,11 +338,29 @@ describe('EffectExtractionService', () => {
                           candidate: {
                             visualFeatures: '肥瘦颗粒分明',
                             coreSellingPoints: ['切面纹理清晰'],
-                            secondarySellingPoints: ['外观油润有光泽'],
+                            secondarySellingPoints: ['外观油润有光泽', '可迁移建议'],
                             corePainPoints: ['家庭蒸食准备费时'],
                           },
                         },
                       ],
+                    },
+                  },
+                  {
+                    branch: 'SEMANTIC_REFINEMENT',
+                    structuredOutput: {
+                      metadata: {
+                        userFactNotices: [
+                          {
+                            factId: 'user-coreSellingPoints-01',
+                            field: 'coreSellingPoints',
+                            value: '用户卖点',
+                            issue: 'POSSIBLE_OVERLAP',
+                            relatedFactIds: ['user-secondarySellingPoints-01'],
+                            relatedValues: ['用户次要卖点'],
+                            suggestedField: null,
+                          },
+                        ],
+                      },
                     },
                   },
                 ],
@@ -363,6 +381,7 @@ describe('EffectExtractionService', () => {
                     coreSellingPoints: ['用户卖点'],
                     secondarySellingPoints: ['切面纹理清晰', '外观油润有光泽'],
                     corePainPoints: ['家庭蒸食准备费时'],
+                    decisionDrivers: ['可迁移建议'],
                   },
                   generatedResult: extractionResult,
                   manualOverrides: {},
@@ -420,7 +439,21 @@ describe('EffectExtractionService', () => {
         visualFeatures: ['腊肠切面.png'],
       },
       itemOrigins: {
-        coreSellingPoints: [{ value: '用户卖点', origin: 'USER_FACT', sourceNames: ['用户资料'] }],
+        coreSellingPoints: [
+          {
+            value: '用户卖点',
+            origin: 'USER_FACT',
+            sourceNames: ['用户资料'],
+            semanticNotices: [
+              {
+                issue: 'POSSIBLE_OVERLAP',
+                message: '建议检查：与“用户次要卖点”存在内容重叠，系统未自动合并。',
+                suggestedField: null,
+                relatedValues: ['用户次要卖点'],
+              },
+            ],
+          },
+        ],
         secondarySellingPoints: [
           {
             value: '切面纹理清晰',
@@ -436,6 +469,13 @@ describe('EffectExtractionService', () => {
         corePainPoints: [
           {
             value: '家庭蒸食准备费时',
+            origin: 'AI_IMAGE_SUGGESTION',
+            sourceNames: ['腊肠切面.png'],
+          },
+        ],
+        decisionDrivers: [
+          {
+            value: '可迁移建议',
             origin: 'AI_IMAGE_SUGGESTION',
             sourceNames: ['腊肠切面.png'],
           },

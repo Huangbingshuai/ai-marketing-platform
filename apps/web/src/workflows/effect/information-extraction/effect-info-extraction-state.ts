@@ -89,6 +89,10 @@ export const cloneExtractionProductState = (
         items?.map((item) => ({
           ...item,
           sourceNames: [...(item.sourceNames ?? [])],
+          semanticNotices: item.semanticNotices?.map((notice) => ({
+            ...notice,
+            relatedValues: [...notice.relatedValues],
+          })),
         })),
       ]),
     ),
@@ -108,7 +112,14 @@ export const toExtractionProductState = (
         itemOrigins: Object.fromEntries(
           Object.entries(value.provenance.itemOrigins).map(([field, items]) => [
             field,
-            items?.map((item) => ({ ...item, sourceNames: item.sourceNames ?? [] })),
+            items?.map((item) => ({
+              ...item,
+              sourceNames: item.sourceNames ?? [],
+              semanticNotices: item.semanticNotices?.map((notice) => ({
+                ...notice,
+                relatedValues: [...notice.relatedValues],
+              })),
+            })),
           ]),
         ),
       }

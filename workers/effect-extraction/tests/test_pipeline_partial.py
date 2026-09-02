@@ -23,6 +23,7 @@ from effect_extraction.pipeline import (
     ExtractionPipeline,
     _prepare_semantic_candidate,
     _restore_authoritative_sources,
+    _restore_semantic_fields,
 )
 from effect_extraction.providers import (
     AiCallResult,
@@ -280,13 +281,16 @@ class TimeoutSemanticProvider(MockAiProvider):
     async def refine_semantics(
         self,
         *,
-        facts: Sequence[Mapping[str, str]],
+        user_facts: Sequence[Mapping[str, str]],
+        image_suggestions: Sequence[Mapping[str, str]],
+        remaining_capacity_by_field: Mapping[str, int],
     ) -> Any:
+        del user_facts, image_suggestions, remaining_capacity_by_field
         raise ProviderError(
             "AI request timed out",
             retryable=True,
             error_type=ProviderErrorType.TIMEOUT,
-            attempts=3,
+            attempts=1,
             elapsed_ms=12_500,
         )
 
@@ -934,7 +938,7 @@ def test_semantic_candidate_sends_all_selling_points_with_source_authority() -> 
     ]
 
     fusion = ExtractionCandidate.empty()
-    candidate, sources = _prepare_semantic_candidate(
+    candidate, user_facts, image_suggestions = _prepare_semantic_candidate(
         fusion,
         [
             BranchOutput(
@@ -950,24 +954,27 @@ def test_semantic_candidate_sends_all_selling_points_with_source_authority() -> 
                 candidate=image,
             ),
         ],
+        manual_overrides={},
     )
 
-    assert candidate.core_selling_points == document.core_selling_points
-    assert candidate.secondary_selling_points == [
-        "切片均匀、形态规整",
-        "肥瘦相间纹理清晰",
-        "肠体饱满形态规整",
-        "肥瘦相间纹理清晰油润",
-        "整根与切片同展直观展示形态",
-        "肥瘦纹理清晰透亮",
-        "切片油润有光泽",
-        "整根形态规整均匀",
-        "切片形态规整层次分明",
+    assert candidate.core_selling_points == [
+        *document.core_selling_points,
+        *image.core_selling_points,
     ]
-    secondary_sources = sources["secondarySellingPoints"]
-    assert secondary_sources["切片均匀、形态规整"] == "USER_FACT"
-    assert secondary_sources["肥瘦相间纹理清晰"] == "IMAGE_SUGGESTION"
-    assert secondary_sources["切片形态规整层次分明"] == "IMAGE_SUGGESTION"
+    assert candidate.secondary_selling_points == [
+        *document.secondary_selling_points,
+        *image.secondary_selling_points,
+    ]
+    assert [fact["value"] for fact in user_facts] == [
+        *document.core_selling_points,
+        *document.secondary_selling_points,
+    ]
+    assert all(fact["sourceType"] == "USER_FACT" for fact in user_facts)
+    assert [fact["value"] for fact in image_suggestions] == [
+        *image.core_selling_points,
+        *image.secondary_selling_points,
+    ]
+    assert all(fact["sourceType"] == "IMAGE_SUGGESTION" for fact in image_suggestions)
 
 
 def test_authoritative_source_restoration_caps_secondary_selling_points_at_six() -> (
@@ -995,7 +1002,7 @@ def test_authoritative_source_restoration_caps_secondary_selling_points_at_six()
     ]
 
 
-def test_authoritative_source_restoration_caps_trust_backings_at_five() -> None:
+def test_authoritative_source_restoration_preserves_user_trust_backings() -> None:
     form = ExtractionCandidate.empty()
     form.duration_seconds = 15
     form.aspect_ratio = "9:16"
@@ -1013,23 +1020,27 @@ def test_authoritative_source_restoration_caps_trust_backings_at_five() -> None:
         image=None,
     )
 
-    assert result.trust_backings == [f"信任背书{index}" for index in range(1, 6)]
+    assert result.trust_backings == [f"信任背书{index}" for index in range(1, 8)]
 
 
 @pytest.mark.asyncio
-async def test_semantic_refinement_degrades_to_original_fusion_candidate_on_timeout() -> (
-    None
-):
+async def test_semantic_refinement_degrades_to_user_facts_on_timeout() -> None:
     api = ApiStub()
     fused = ExtractionCandidate.empty()
     fused.core_pain_points = ["家庭用餐准备不便", "家庭日常用餐准备不方便"]
     api.branches = [
         BranchOutput(
+            branch=BranchName.DOCUMENT,
+            status=BranchStatus.SUCCEEDED,
+            source_fingerprint="server-fingerprint",
+            candidate=fused,
+        ),
+        BranchOutput(
             branch=BranchName.FUSION,
             status=BranchStatus.SUCCEEDED,
             source_fingerprint="server-fingerprint",
             candidate=fused,
-        )
+        ),
     ]
     pipeline = ExtractionPipeline(
         api=api,  # type: ignore[arg-type]
@@ -1047,7 +1058,19 @@ async def test_semantic_refinement_degrades_to_original_fusion_candidate_on_time
 
     assert output.status == BranchStatus.PARTIAL
     assert output.candidate == fused
-    assert output.warnings == ["语义整理超时，已保留原始提炼信息"]
-    assert output.metadata == {
-        "failures": [{"type": "AI_TIMEOUT", "attempts": 3, "elapsedMs": 12_500}]
-    }
+    assert output.warnings == ["语义整理超时，已保留用户事实，图片建议未加入信息卡"]
+    assert output.metadata["failures"] == [
+        {"type": "AI_TIMEOUT", "attempts": 1, "elapsedMs": 12_500}
+    ]
+    assert output.metadata["degraded"] is True
+    assert output.metadata["userFactCount"] == 2
+
+
+def test_empty_semantic_core_does_not_reintroduce_unreviewed_image_suggestions() -> (
+    None
+):
+    result = SimpleNamespace(core_selling_points=["图片推测卖点"])
+
+    _restore_semantic_fields(result, ExtractionCandidate.empty())
+
+    assert result.core_selling_points == ["待补充"]

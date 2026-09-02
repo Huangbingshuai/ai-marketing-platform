@@ -24,20 +24,19 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert load_prompt_version("document_extraction.prompt.txt") == "3.0.0"
     assert load_prompt_version("image_analysis.prompt.txt") == "6.3.0"
     assert load_prompt_version("commerce_extraction.prompt.txt") == "1.0.0"
-    assert load_prompt_version("semantic_refinement.prompt.txt") == "4.1.0"
+    assert load_prompt_version("semantic_refinement.prompt.txt") == "5.0.0"
     assert load_prompt_version("result_normalization.prompt.txt") == "3.1.0"
 
     assert "产品文档事实抽取器" in document.template
     assert "产品图片" in image.template
     assert "公开商品页面信息抽取器" in commerce.template
-    assert "只能选择已有 factId" in semantic.template
-    assert "SAME_FAMILY" in semantic.template
-    assert "语义整理与字段归类" in semantic.template
-    assert "整根腊肠清晰展示" in semantic.template
-    assert "sourceType=USER_FACT" in semantic.template
-    assert "placements" in semantic.template
-    assert "selections" in semantic.template
-    assert "最终最多 6 条" in semantic.template
+    assert "每个 imageSuggestion 恰好返回一条决定" in semantic.template
+    assert "用户事实" in semantic.template
+    assert "绝不能修改用户事实" in semantic.template
+    assert "remainingCapacityByField" in semantic.template
+    assert "suggestionDecisions" in semantic.template
+    assert "userFactNotices" in semantic.template
+    assert "POSSIBLE_WRONG_FIELD" in semantic.template
     assert "Worker" not in semantic.template
     assert "产品素材制作信息卡标准化器" in normalization.template
 
@@ -110,7 +109,9 @@ def test_effect_extraction_prompts_render_business_inputs() -> None:
     )
     semantic = render_prompt(
         "semantic_refinement.prompt.txt",
-        facts_json='[{"factId":"usageScenarios-01","value":"煲仔饭烹饪"}]',
+        user_facts_json='[{"factId":"user-usageScenarios-01","value":"煲仔饭烹饪"}]',
+        image_suggestions_json='[{"factId":"image-usageScenarios-01","value":"蒸锅食用"}]',
+        remaining_capacity_json='{"usageScenarios":4}',
     )
 
     assert "资料文件名：产品说明.docx" in document
@@ -123,7 +124,9 @@ def test_effect_extraction_prompts_render_business_inputs() -> None:
     assert '<fused_candidate_json>\n{"productName":"广式腊肠"}' in normalization
     assert "</fused_candidate_json>" in normalization
     assert '<protected_user_input_json>\n{"marketingGoal":"人工目标"}' in normalization
-    assert '"factId":"usageScenarios-01"' in semantic
+    assert '"factId":"user-usageScenarios-01"' in semantic
+    assert '"factId":"image-usageScenarios-01"' in semantic
+    assert '"usageScenarios":4' in semantic
     assert "向量召回" not in semantic
 
 

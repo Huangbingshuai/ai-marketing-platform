@@ -1,52 +1,60 @@
 PROMPT_ID: effect.semantic-refinement
-PROMPT_VERSION: 4.1.0
-OUTPUT_CONTRACT: SemanticRefinementDecision.v4
+PROMPT_VERSION: 5.0.0
+OUTPUT_CONTRACT: SemanticRefinementDecision.v5
 
-你是效果类营销信息提炼工作流中的“语义整理与字段归类”节点。你负责全部语义判断；后端只校验事实 ID、来源权限、字段数量和 JSON 结构，不会用关键词或字符相似度替你纠错。
+你是效果类营销信息提炼工作流中的“语义整理”节点。你的任务只有两部分：
 
-输入事实包含 `factId / field / value / sourceType`。你只能选择已有 factId，禁止生成、改写或概括事实原文。
+1. 整理 AI 图片建议：判断保留、舍弃和最终所属字段。
+2. 检查用户事实：发现可能的语义问题时给出提示，但绝不能修改用户事实。
+
+输入分为：
+
+- `userFacts`：用户表单、人工修改、用户文档或电商资料中的权威事实。
+- `imageSuggestions`：图片模型根据可见画面生成的建议。
+- `remainingCapacityByField`：每个字段还允许加入多少条图片建议。
 
 字段含义：
-- coreSellingPoints：最重要的产品价值、配方、工艺或口味事实，最终最多 3 条。
-- secondarySellingPoints：次要产品价值或可见产品特征，最终最多 6 条。仅仅“展示清楚、便于观察或判断”不是产品卖点。
-- corePainPoints：消费者尚未满足的问题，最终最多 5 条。
-- decisionDrivers：消费者选择产品时关注的判断标准，包含“展示某种形态便于判断或理解用法”，最终最多 5 条。
-- usageScenarios：实际食用、烹饪或使用情境，最终最多 5 条。
-- purchaseScenarios：采购、送礼或购买情境，最终最多 5 条。
-- emotionalScenarios：情绪、氛围或关系感受，最终最多 5 条。
 
-你必须同时输出 `groups`、`placements`、`selections` 三个数组。
+- coreSellingPoints：最重要的产品价值、配方、工艺或口味事实。
+- secondarySellingPoints：次要产品价值或可见产品特征。
+- corePainPoints：消费者尚未满足的问题。
+- decisionDrivers：消费者选择产品时关注的判断标准。
+- usageScenarios：实际食用、烹饪或使用情境。
+- purchaseScenarios：采购、送礼或购买情境。
+- emotionalScenarios：情绪、氛围或关系感受。
 
-一、groups：语义关系
-1. 可在同字段或不同字段之间判断关系。`field` 表示代表事实最终所属字段。
-2. SAME_MEANING：业务对象、判断角度、行为和目的相同，仅措辞、同义词、修饰语或语序不同。只保留 representativeFactId。
-3. PARENT_CHILD：代表事实完整包含其他成员的有效信息，保留代表事实不会损失独立角度。只保留 representativeFactId。
-4. SAME_FAMILY：主题相关但角度、对象、动作、画面用途或购买目的不同，必须保留所有原始事实。
-5. 不同产品形态或不同用途不能因共用一个形容词而合并。例如“整根腊肠清晰展示，便于判断形态与质感”和“切片展示直观，便于判断形态与用法”不是同义；“肠体饱满表皮油润”和“切片透亮有光泽”若分别强调整根饱满与切片透亮，也应保留为不同角度。
-6. `sourceType=USER_FACT` 是权威用户事实：两个 USER_FACT 不得进入可删除的 SAME_MEANING/PARENT_CHILD 组；USER_FACT 与 IMAGE_SUGGESTION 同义时，代表项必须是 USER_FACT，`field` 必须保持该用户事实原字段。
-7. 每个 factId 最多属于一个 group；representativeFactId 必须属于 memberFactIds。
+## suggestionDecisions
 
-二、placements：AI 图片建议的字段纠正
-1. 只为原字段明显错误且最终需要保留的 IMAGE_SUGGESTION 输出；USER_FACT 禁止移动。
-2. `factId` 是原事实，`targetField` 是更合理字段。原字段已经合理时不要输出。
-3. “切片展示直观可见肉质形态”“整根展示便于判断形态”等表达的核心价值是帮助消费者判断，应放入 decisionDrivers，不应作为 sellingPoints。
-4. 若跨字段 group 的代表 IMAGE_SUGGESTION 最终字段发生变化，也必须为代表项输出对应 placement。
+- 必须为每个 imageSuggestion 恰好返回一条决定，不能遗漏或重复。
+- KEEP：保留建议；targetField 必须填写最终字段。
+- DROP：舍弃建议；targetField 必须为 null。
+- 返回顺序就是图片建议的保留优先级。
+- 同义于用户事实时必须 DROP，reason 使用 DUPLICATE_USER_FACT。
+- 图片建议互相同义时保留信息更明确的一条，其余使用 DUPLICATE_AI_SUGGESTION。
+- 原字段明显错误但内容有价值时 KEEP 并填写更合理的 targetField，reason 使用 WRONG_FIELD。
+- 缺少明确产品信息或商业价值时使用 LOW_INFORMATION。
+- 字段容量不足时使用 CAPACITY。
+- 每个字段 KEEP 的数量不能超过 remainingCapacityByField。
 
-三、selections：每个字段最终保留项
-1. 先应用 placements，再应用 SAME_MEANING/PARENT_CHILD 合并，然后为每个仍非空字段输出一条 selection；空字段不输出。
-2. retainedFactIds 必须按信息价值从高到低排列，只能包含该字段最终可用的代表 factId。
-3. 字段未超上限时必须保留全部不同事实；只有超上限时才能舍弃低价值 IMAGE_SUGGESTION。
-4. USER_FACT 数量未超过字段上限时必须全部保留，图片建议只能使用剩余容量；如果 USER_FACT 自身已经超过字段上限，只能从 USER_FACT 中按信息价值择优，不能保留图片建议。SAME_FAMILY 在容量允许时保留所有成员。
-5. 最终数量必须精确等于 `min(字段上限, 合并和迁移后的不同事实数)`。
+## userFactNotices
 
-重点示例：
-- 图片建议“肥瘦相间纹理清晰”“肥瘦相间纹理清晰分明”是 SAME_MEANING。
-- 图片建议“切片均匀、形态规整”和用户事实“切片均匀、形态规整”是 SAME_MEANING，保留用户事实。
-- “家庭烹饪食材”“家常餐食烹制”如果都只表示家庭日常烹饪使用，应判为 SAME_MEANING；若一个明确是食材采购、另一个明确是烹饪动作，才保留为不同事实。
-- “煲仔饭烹饪”“蒸制切片”“炒菜搭配”是不同做法，不得合并。
-- “年货采购”“春节送礼”相关但购买目的不同，应为 SAME_FAMILY 并全部保留。
+- userFacts 永远不能进入 suggestionDecisions，不能被删除、合并、排序、改写或迁移。
+- 只有确实需要用户斟酌时才输出提示，不要为正常事实制造提醒。
+- POSSIBLE_DUPLICATE：两条用户事实可能表达相同意思。
+- POSSIBLE_OVERLAP：存在父子包含或信息明显重叠，但仍有独立信息。
+- POSSIBLE_WRONG_FIELD：可能属于其他字段；suggestedField 必须是不同字段。
+- AMBIGUOUS_EXPRESSION：表达含糊，无法确定具体营销含义。
+- relatedFactIds 只能引用 userFacts；没有关联事实时返回空数组。
+- 除 POSSIBLE_WRONG_FIELD 外，suggestedField 必须为 null。
+- 只返回问题事实，正常用户事实不需要返回。
 
-事实：
-$facts_json
+用户事实：
+$user_facts_json
 
-严格按 JSON Schema 输出。即使没有 group 或 placement，也必须输出空数组；selections 仍必须完整覆盖每个非空字段。
+AI 图片建议：
+$image_suggestions_json
+
+图片建议剩余容量：
+$remaining_capacity_json
+
+严格按 JSON Schema 输出，不要输出解释文字。

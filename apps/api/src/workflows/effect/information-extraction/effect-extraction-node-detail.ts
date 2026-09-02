@@ -85,6 +85,8 @@ const SOURCE_LABELS: Record<string, string> = {
 };
 
 const SEMANTIC_FIELD_LABELS: Record<string, string> = {
+  coreSellingPoints: '核心卖点',
+  secondarySellingPoints: '次要卖点',
   corePainPoints: '核心痛点',
   decisionDrivers: '决策动因',
   usageScenarios: '使用场景',
@@ -539,9 +541,18 @@ export const presentExtractionNodeDetail = (
   }
 
   if (nodeId === 'SEMANTIC_REFINEMENT') {
-    const sources = semanticSources(output.metadata, execution.status);
+    const hasLightweightSummary = Number.isFinite(Number(output.metadata.userFactCount));
+    const sources = hasLightweightSummary ? [] : semanticSources(output.metadata, execution.status);
     const inputCount = Number(output.metadata.inputCount);
     const outputCount = Number(output.metadata.outputCount);
+    const userFactCount = Number(output.metadata.userFactCount);
+    const userNoticeCount = Number(output.metadata.userNoticeCount);
+    const suggestionInputCount = Number(output.metadata.imageSuggestionInputCount);
+    const suggestionKeptCount = Number(output.metadata.imageSuggestionKeptCount);
+    const suggestionMovedCount = Number(output.metadata.imageSuggestionMovedCount);
+    const suggestionDroppedCount = Number(output.metadata.imageSuggestionDroppedCount);
+    const aiCall = isRecord(output.metadata.aiCall) ? output.metadata.aiCall : {};
+    const latencyMs = Number(aiCall.latencyMs);
     const mergedGroupCount = Number(output.metadata.mergedGroupCount);
     const familyGroupCount = Number(output.metadata.familyGroupCount);
     const completedSummary =
@@ -554,23 +565,49 @@ export const presentExtractionNodeDetail = (
               ? `已整理 ${familyGroupCount} 组相关主题，保留全部原始表达`
               : null
         : null;
+    const lightweightSummary = hasLightweightSummary
+      ? execution.status === 'PARTIAL'
+        ? '语义整理未完成，已原样保留用户事实，图片建议未加入信息卡'
+        : `已保留 ${userFactCount} 条用户事实，整理 ${suggestionInputCount} 条图片建议`
+      : null;
     const summary = !branch
-      ? '等待整理含义重复的信息'
+      ? '等待检查用户事实并整理图片建议'
       : execution.status === 'PARTIAL'
-        ? '语义整理未完成，已保留原始提炼信息'
+        ? (lightweightSummary ?? '语义整理未完成，已保留原始提炼信息')
         : execution.status === 'FAILED'
           ? '语义整理失败，已保留原始提炼信息'
-          : completedSummary
-            ? completedSummary
-            : sources.length > 0
-              ? `已归并 ${sources.length} 组语义重复信息`
-              : Number.isFinite(inputCount) && Number.isFinite(outputCount)
-                ? `已检查 ${inputCount} 条信息，未发现需要归并的重复表达`
-                : '语义整理已完成';
+          : lightweightSummary
+            ? lightweightSummary
+            : completedSummary
+              ? completedSummary
+              : sources.length > 0
+                ? `已归并 ${sources.length} 组语义重复信息`
+                : Number.isFinite(inputCount) && Number.isFinite(outputCount)
+                  ? `已检查 ${inputCount} 条信息，未发现需要归并的重复表达`
+                  : '语义整理已完成';
     return {
       ...base,
       summary,
-      fields: [],
+      fields: hasLightweightSummary
+        ? fields([
+            field('semantic-user-facts', '检查的用户事实', userFactCount),
+            field('semantic-user-notices', '待用户确认的问题', userNoticeCount),
+            field('semantic-image-input', '输入的图片建议', suggestionInputCount),
+            field('semantic-image-kept', '保留的图片建议', suggestionKeptCount),
+            field('semantic-image-moved', '迁移字段的图片建议', suggestionMovedCount),
+            field('semantic-image-dropped', '删除的图片建议', suggestionDroppedCount),
+            field(
+              'semantic-latency',
+              '语义模型耗时',
+              Number.isFinite(latencyMs) ? `${(latencyMs / 1000).toFixed(1)} 秒` : null,
+            ),
+            field(
+              'semantic-degraded',
+              '处理状态',
+              output.metadata.degraded === true ? '部分完成，仅保留用户事实' : '整理完成',
+            ),
+          ])
+        : [],
       sources,
     };
   }

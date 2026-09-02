@@ -31,6 +31,38 @@ const runRecord = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('EffectExtractionRepository isolation and idempotency', () => {
+  it('loads semantic refinement metadata with the latest workspace run', async () => {
+    const findFirst = vi.fn().mockResolvedValue(null);
+    const repository = new EffectExtractionRepository({
+      effectImportDraft: { findFirst },
+    } as unknown as PrismaService);
+
+    await repository.workspace('project-a', 'draft-a');
+
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { projectId: 'project-a', id: 'draft-a' },
+        include: expect.objectContaining({
+          products: expect.objectContaining({
+            include: expect.objectContaining({
+              extractionRuns: expect.objectContaining({
+                include: expect.objectContaining({
+                  branches: {
+                    where: {
+                      branch: {
+                        in: ['FORM', 'DOCUMENT', 'COMMERCE', 'IMAGE', 'SEMANTIC_REFINEMENT'],
+                      },
+                    },
+                  },
+                }),
+              }),
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
   it('scopes run lookup by projectId and runId', async () => {
     const findFirst = vi.fn().mockResolvedValue(null);
     const repository = new EffectExtractionRepository({

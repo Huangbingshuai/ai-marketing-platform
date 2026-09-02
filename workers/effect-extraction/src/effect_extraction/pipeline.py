@@ -37,21 +37,23 @@ from .models import (
 )
 from .providers import AiProvider, ProviderError, ProviderErrorType
 from .semantic_refinement import (
+    MAX_USER_FACTS_PER_FIELD,
     SEMANTIC_FIELDS,
-    SemanticFactSource,
     refine_candidate_semantics,
+    semantic_fallback_metadata,
+    user_only_candidate,
 )
 
 MAX_GENERATED_SECONDARY_SELLING_POINTS = 6
 MAX_GENERATED_LIST_ITEMS = 5
 SEMANTIC_RESULT_LIMITS: dict[str, int] = {
-    "core_selling_points": 3,
-    "secondary_selling_points": MAX_GENERATED_SECONDARY_SELLING_POINTS,
-    "core_pain_points": 5,
-    "decision_drivers": 5,
-    "usage_scenarios": 5,
-    "purchase_scenarios": 5,
-    "emotional_scenarios": 5,
+    "core_selling_points": MAX_USER_FACTS_PER_FIELD,
+    "secondary_selling_points": MAX_USER_FACTS_PER_FIELD,
+    "core_pain_points": MAX_USER_FACTS_PER_FIELD,
+    "decision_drivers": MAX_USER_FACTS_PER_FIELD,
+    "usage_scenarios": MAX_USER_FACTS_PER_FIELD,
+    "purchase_scenarios": MAX_USER_FACTS_PER_FIELD,
+    "emotional_scenarios": MAX_USER_FACTS_PER_FIELD,
 }
 
 LOGGER = logging.getLogger(__name__)
@@ -581,15 +583,19 @@ class ExtractionPipeline:
         )
         if fusion is None or fusion.candidate is None:
             raise FusionError("fusion output is missing")
-        semantic_candidate, fact_sources = _prepare_semantic_candidate(
+        snapshot = self._snapshot(context)
+        semantic_candidate, user_facts, image_suggestions = _prepare_semantic_candidate(
             fusion.candidate,
             branches,
+            manual_overrides=snapshot.manual_overrides,
         )
+        fallback_candidate = user_only_candidate(semantic_candidate, user_facts)
         try:
             result = await refine_candidate_semantics(
                 semantic_candidate,
                 provider=self.provider,
-                fact_sources=fact_sources,
+                user_facts=user_facts,
+                image_suggestions=image_suggestions,
             )
             output = BranchOutput(
                 branch=BranchName.SEMANTIC_REFINEMENT,
@@ -597,6 +603,19 @@ class ExtractionPipeline:
                 source_fingerprint=context.source_fingerprint,
                 candidate=result.candidate,
                 metadata=result.metadata,
+            )
+            LOGGER.info(
+                "semantic refinement completed user_facts=%s user_notices=%s "
+                "image_suggestions=%s image_kept=%s image_moved=%s image_dropped=%s "
+                "latency_ms=%s attempts=%s",
+                result.metadata.get("userFactCount", 0),
+                result.metadata.get("userNoticeCount", 0),
+                result.metadata.get("imageSuggestionInputCount", 0),
+                result.metadata.get("imageSuggestionKeptCount", 0),
+                result.metadata.get("imageSuggestionMovedCount", 0),
+                result.metadata.get("imageSuggestionDroppedCount", 0),
+                (result.metadata.get("aiCall") or {}).get("latencyMs", 0),
+                (result.metadata.get("aiCall") or {}).get("attempts", 0),
             )
         except ProviderError as exc:
             warning = _provider_error_message(
@@ -606,34 +625,34 @@ class ExtractionPipeline:
                 branch=BranchName.SEMANTIC_REFINEMENT,
                 status=BranchStatus.PARTIAL,
                 source_fingerprint=context.source_fingerprint,
-                candidate=semantic_candidate,
-                warnings=[f"{warning}，已保留原始提炼信息"],
-                metadata={
-                    "failures": [
-                        {
-                            "type": exc.error_type.value,
-                            "attempts": exc.attempts,
-                            "elapsedMs": exc.elapsed_ms,
-                        }
-                    ]
-                },
+                candidate=fallback_candidate,
+                warnings=[f"{warning}，已保留用户事实，图片建议未加入信息卡"],
+                metadata=semantic_fallback_metadata(
+                    user_facts=user_facts,
+                    image_suggestions=image_suggestions,
+                    failure={
+                        "type": exc.error_type.value,
+                        "attempts": exc.attempts,
+                        "elapsedMs": exc.elapsed_ms,
+                    },
+                ),
             )
         except (TypeError, ValueError) as exc:
             output = BranchOutput(
                 branch=BranchName.SEMANTIC_REFINEMENT,
                 status=BranchStatus.PARTIAL,
                 source_fingerprint=context.source_fingerprint,
-                candidate=semantic_candidate,
-                warnings=["语义整理结果无效，已保留原始提炼信息"],
-                metadata={
-                    "failures": [
-                        {
-                            "type": type(exc).__name__.upper(),
-                            "attempts": 1,
-                            "elapsedMs": 0,
-                        }
-                    ]
-                },
+                candidate=fallback_candidate,
+                warnings=["语义整理结果无效，已保留用户事实，图片建议未加入信息卡"],
+                metadata=semantic_fallback_metadata(
+                    user_facts=user_facts,
+                    image_suggestions=image_suggestions,
+                    failure={
+                        "type": type(exc).__name__.upper(),
+                        "attempts": 1,
+                        "elapsedMs": 0,
+                    },
+                ),
             )
         return await self._save(context, output)
 
@@ -1033,14 +1052,41 @@ def _normalize_candidate_deterministically(
     )
 
 
+def _items_preserving_order(
+    candidate: ExtractionCandidate | None,
+    field: str,
+) -> list[str]:
+    if candidate is None:
+        return []
+    result: list[str] = []
+    for raw in getattr(candidate, field) or []:
+        value = " ".join(str(raw).split()).strip()
+        if value:
+            result.append(value)
+    return result
+
+
+def _manual_items(
+    manual_overrides: dict[str, object],
+    *,
+    field: str,
+    alias: str,
+) -> list[str] | None:
+    sentinel = object()
+    raw = manual_overrides.get(alias, manual_overrides.get(field, sentinel))
+    if raw is sentinel or not isinstance(raw, list):
+        return None
+    values = [" ".join(str(item).split()).strip() for item in raw]
+    return [value for value in values if value]
+
+
 def _prepare_semantic_candidate(
     fusion_candidate: ExtractionCandidate,
     branches: Sequence[BranchOutput],
-) -> tuple[
-    ExtractionCandidate,
-    dict[str, dict[str, SemanticFactSource]],
-]:
-    """Build the exact fact set and source authority for the semantic model."""
+    *,
+    manual_overrides: dict[str, object],
+) -> tuple[ExtractionCandidate, list[dict[str, str]], list[dict[str, str]]]:
+    """Separate immutable user facts from mutable image suggestions."""
 
     by_name = {branch.branch: branch for branch in branches}
     document = (
@@ -1060,58 +1106,44 @@ def _prepare_semantic_candidate(
     )
 
     prepared = fusion_candidate.model_copy(deep=True)
-    user_core = _merged_items("core_selling_points", document, commerce, limit=20)
-    image_core = _candidate_items(image, "core_selling_points")
-    image_secondary = _candidate_items(image, "secondary_selling_points")
-    selected_core = _strings([*user_core[:3], *image_core])[:3]
-    selected_core_keys = {item.casefold() for item in selected_core}
-    image_secondary_candidates = _strings(
-        [
-            *(item for item in image_core if item.casefold() not in selected_core_keys),
-            *(
-                item
-                for item in image_secondary
-                if item.casefold() not in selected_core_keys
-            ),
-        ]
-    )
-    user_secondary = _strings(
-        [
-            *_candidate_items(document, "secondary_selling_points"),
-            *_candidate_items(commerce, "secondary_selling_points"),
-            *user_core[3:],
-        ]
-    )
-    prepared.core_selling_points = selected_core or None
-    prepared.secondary_selling_points = (
-        _strings([*user_secondary, *image_secondary_candidates]) or None
-    )
-
-    sources: dict[str, dict[str, SemanticFactSource]] = {}
+    user_facts: list[dict[str, str]] = []
+    image_suggestions: list[dict[str, str]] = []
     for field, attr in SEMANTIC_FIELDS:
-        if attr == "core_selling_points":
-            user_values = [item for item in selected_core if item in user_core]
-            image_values = [item for item in selected_core if item not in user_core]
-        elif attr == "secondary_selling_points":
-            user_values = user_secondary
-            image_values = image_secondary_candidates
-        else:
-            user_values = _strings(
-                [
-                    *_candidate_items(document, attr),
-                    *_candidate_items(commerce, attr),
-                ]
-            )
-            image_values = _candidate_items(image, attr)
+        manual_values = _manual_items(
+            manual_overrides,
+            field=attr,
+            alias=field.value,
+        )
+        user_values = (
+            manual_values
+            if manual_values is not None
+            else [
+                *_items_preserving_order(document, attr),
+                *_items_preserving_order(commerce, attr),
+            ]
+        )[:MAX_USER_FACTS_PER_FIELD]
+        image_values = _items_preserving_order(image, attr)
+        setattr(prepared, attr, [*user_values, *image_values] or None)
+        user_facts.extend(
+            {
+                "factId": f"user-{field.value}-{index:02d}",
+                "field": field.value,
+                "value": value,
+                "sourceType": "USER_FACT",
+            }
+            for index, value in enumerate(user_values, start=1)
+        )
+        image_suggestions.extend(
+            {
+                "factId": f"image-{field.value}-{index:02d}",
+                "field": field.value,
+                "value": value,
+                "sourceType": "IMAGE_SUGGESTION",
+            }
+            for index, value in enumerate(image_values, start=1)
+        )
 
-        field_sources: dict[str, SemanticFactSource] = {}
-        for value in _strings(image_values):
-            field_sources[value] = SemanticFactSource.IMAGE_SUGGESTION
-        for value in _strings(user_values):
-            field_sources[value] = SemanticFactSource.USER_FACT
-        sources[field.value] = field_sources
-
-    return prepared, sources
+    return prepared, user_facts, image_suggestions
 
 
 def _restore_authoritative_sources(
@@ -1172,13 +1204,10 @@ def _restore_authoritative_sources(
     setattr(
         result,
         "trust_backings",
-        _merged_items(
-            "trust_backings",
-            document,
-            commerce,
-            image,
-            limit=MAX_GENERATED_LIST_ITEMS,
-        ),
+        [
+            *_items_preserving_order(document, "trust_backings"),
+            *_items_preserving_order(commerce, "trust_backings"),
+        ][:MAX_USER_FACTS_PER_FIELD],
     )
 
     setattr(
@@ -1246,6 +1275,7 @@ def _restore_semantic_fields(
     for field, limit in SEMANTIC_RESULT_LIMITS.items():
         items = _candidate_items(semantic, field)[:limit]
         if field == "core_selling_points" and not items:
+            setattr(result, field, ["待补充"])
             continue
         setattr(result, field, items)
 

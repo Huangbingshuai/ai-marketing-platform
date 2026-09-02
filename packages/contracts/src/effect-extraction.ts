@@ -157,10 +157,34 @@ export type EffectExtractionWarning = {
 
 export type EffectExtractionValueOrigin = 'USER_FACT' | 'AI_IMAGE_SUGGESTION';
 
+export type EffectExtractionSemanticField =
+  | 'coreSellingPoints'
+  | 'secondarySellingPoints'
+  | 'corePainPoints'
+  | 'decisionDrivers'
+  | 'usageScenarios'
+  | 'purchaseScenarios'
+  | 'emotionalScenarios';
+
+export type EffectExtractionSemanticNoticeIssue =
+  | 'POSSIBLE_DUPLICATE'
+  | 'POSSIBLE_OVERLAP'
+  | 'POSSIBLE_WRONG_FIELD'
+  | 'AMBIGUOUS_EXPRESSION'
+  | 'FIELD_OVER_RECOMMENDED_COUNT';
+
+export type EffectExtractionSemanticNotice = {
+  issue: EffectExtractionSemanticNoticeIssue;
+  message: string;
+  suggestedField: EffectExtractionSemanticField | null;
+  relatedValues: string[];
+};
+
 export type EffectExtractionProvenanceItem = {
   value: string;
   origin: EffectExtractionValueOrigin;
   sourceNames: string[];
+  semanticNotices?: EffectExtractionSemanticNotice[];
 };
 
 /**

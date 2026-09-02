@@ -8,10 +8,10 @@ from effect_extraction.models import (
     ExtractionResult,
     ImageVisibleFacts,
     SemanticField,
-    SemanticFieldSelection,
-    SemanticGroup,
     SemanticRefinementDecision,
-    SemanticRelation,
+    SemanticSuggestionDecision,
+    SemanticSuggestionDisposition,
+    SemanticSuggestionReason,
 )
 from effect_extraction.providers import (
     ArkResponsesProvider,
@@ -650,28 +650,24 @@ async def test_ark_provider_sanitizes_exhausted_remote_protocol_disconnects(
 
 
 @pytest.mark.asyncio
-async def test_ark_provider_uses_one_low_reasoning_semantic_request() -> None:
+async def test_ark_provider_uses_one_compact_minimal_reasoning_semantic_request() -> (
+    None
+):
     requests: list[tuple[str, dict[str, object]]] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         requests.append((request.url.path, payload))
         decision = SemanticRefinementDecision(
-            groups=[
-                SemanticGroup(
-                    field=SemanticField.CORE_PAIN_POINTS,
-                    member_fact_ids=["corePainPoints-01", "corePainPoints-02"],
-                    representative_fact_id="corePainPoints-01",
-                    relation=SemanticRelation.SAME_MEANING,
+            suggestion_decisions=[
+                SemanticSuggestionDecision(
+                    fact_id="image-corePainPoints-01",
+                    disposition=SemanticSuggestionDisposition.KEEP,
+                    target_field=SemanticField.CORE_PAIN_POINTS,
+                    reason=SemanticSuggestionReason.LOW_INFORMATION,
                 )
             ],
-            placements=[],
-            selections=[
-                SemanticFieldSelection(
-                    field=SemanticField.CORE_PAIN_POINTS,
-                    retained_fact_ids=["corePainPoints-01"],
-                )
-            ],
+            user_fact_notices=[],
         )
         return httpx.Response(
             200, json={"output_text": decision.model_dump_json(by_alias=True)}
@@ -684,33 +680,38 @@ async def test_ark_provider_uses_one_low_reasoning_semantic_request() -> None:
         semantic_model="semantic-model",
         transport=httpx.MockTransport(handler),
     )
-    facts = [
+    user_facts = [
         {
-            "factId": "corePainPoints-01",
+            "factId": "user-corePainPoints-01",
             "field": "corePainPoints",
             "value": "日常佐餐不便",
+            "sourceType": "USER_FACT",
         },
+    ]
+    image_suggestions = [
         {
-            "factId": "corePainPoints-02",
+            "factId": "image-corePainPoints-01",
             "field": "corePainPoints",
             "value": "家常备餐不便",
+            "sourceType": "IMAGE_SUGGESTION",
         },
     ]
     try:
-        decision = await provider.refine_semantics(facts=facts)
+        decision = await provider.refine_semantics(
+            user_facts=user_facts,
+            image_suggestions=image_suggestions,
+            remaining_capacity_by_field={"corePainPoints": 4},
+        )
     finally:
         await provider.aclose()
 
     assert len(requests) == 1
     assert decision.metadata.stage == "SEMANTIC_REFINEMENT"
     assert decision.metadata.model == "semantic-model"
-    assert decision.value.groups[0].member_fact_ids == [
-        "corePainPoints-01",
-        "corePainPoints-02",
-    ]
+    assert decision.value.suggestion_decisions[0].fact_id == "image-corePainPoints-01"
     semantic_payload = requests[-1][1]
     assert semantic_payload["store"] is False
-    assert semantic_payload["reasoning"] == {"effort": "low"}
-    assert semantic_payload["max_output_tokens"] == 4096
+    assert semantic_payload["reasoning"] == {"effort": "minimal"}
+    assert semantic_payload["max_output_tokens"] == 2048
     assert semantic_payload["text"]["format"]["name"] == "effect_semantic_refinement"  # type: ignore[index]
     assert "embeddings" not in requests[-1][0]

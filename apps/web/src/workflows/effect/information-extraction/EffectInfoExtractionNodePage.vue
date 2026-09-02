@@ -4,6 +4,7 @@ import type {
   EffectExtractionNodeExecution,
   EffectExtractionNodeId,
   EffectExtractionNodeStatus,
+  EffectExtractionSemanticNotice,
   EffectExtractionValueOrigin,
   EffectImportMode,
   EffectImportProduct,
@@ -196,7 +197,7 @@ const graphNodeDescription = (nodeId: EffectExtractionNodeId): string =>
     COMMERCE: '检查商品链接中的信息',
     FORM: '读取导入节点的全局视频配置',
     FUSION: '合并不同资料中的有效信息',
-    SEMANTIC_REFINEMENT: '归并含义重复的痛点、决策动因和场景信息',
+    SEMANTIC_REFINEMENT: '保留用户事实，只整理图片建议并给出待确认提示',
     NORMALIZATION: '生成可继续编辑的产品信息卡',
   })[nodeId];
 const graphDetailValue = (value: EffectExtractionNodeDetail['fields'][number]['value']): string => {
@@ -494,6 +495,10 @@ const itemSourceNames = (field: OriginListField, index: number): string[] =>
   itemProvenance(field, index)?.sourceNames?.length
     ? (itemProvenance(field, index)?.sourceNames ?? [])
     : ['人工修改'];
+const itemSemanticNotices = (
+  field: OriginListField,
+  index: number,
+): EffectExtractionSemanticNotice[] => itemProvenance(field, index)?.semanticNotices ?? [];
 const originSourceLabel = (
   origin: EffectExtractionValueOrigin,
   sourceNames: readonly string[],
@@ -1061,6 +1066,17 @@ const markDirty = (): void => {
   saveTimer = setTimeout(() => void saveDraft(), 1000);
 };
 
+const clearFieldSemanticNotices = (field: OriginListField): void => {
+  const items = currentState.value?.provenance.itemOrigins[field];
+  if (!items) return;
+  for (const item of items) delete item.semanticNotices;
+};
+
+const markListFieldDirty = (field: OriginListField): void => {
+  clearFieldSemanticNotices(field);
+  markDirty();
+};
+
 type ProductionRuleField =
   'aspectRatio' | 'deliveryChannels' | 'durationSeconds' | 'resolution' | 'visualStyleBaseline';
 
@@ -1102,14 +1118,14 @@ const addSellingPoint = (): void => {
   if (!result || result.coreSellingPoints.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS)
     return;
   result.coreSellingPoints.push('');
-  markDirty();
+  markListFieldDirty('coreSellingPoints');
 };
 
 const removeSellingPoint = (index: number): void => {
   const result = currentState.value?.result;
   if (!result || result.coreSellingPoints.length <= 1) return;
   result.coreSellingPoints.splice(index, 1);
-  markDirty();
+  markListFieldDirty('coreSellingPoints');
 };
 
 type AdditionalSellingField = 'secondarySellingPoints' | 'trustBackings';
@@ -1120,42 +1136,42 @@ const addAdditionalSellingPoint = (field: AdditionalSellingField): void => {
   const result = currentState.value?.result;
   if (!result || result[field].length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) return;
   result[field].push('');
-  markDirty();
+  markListFieldDirty(field);
 };
 
 const removeAdditionalSellingPoint = (field: AdditionalSellingField, index: number): void => {
   const result = currentState.value?.result;
   if (!result) return;
   result[field].splice(index, 1);
-  markDirty();
+  markListFieldDirty(field);
 };
 
 const addUserInsightItem = (field: UserInsightListField): void => {
   const result = currentState.value?.result;
   if (!result || result[field].length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) return;
   result[field].push('');
-  markDirty();
+  markListFieldDirty(field);
 };
 
 const removeUserInsightItem = (field: UserInsightListField, index: number): void => {
   const result = currentState.value?.result;
   if (!result) return;
   result[field].splice(index, 1);
-  markDirty();
+  markListFieldDirty(field);
 };
 
 const addScenarioItem = (field: ScenarioListField): void => {
   const result = currentState.value?.result;
   if (!result || result[field].length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) return;
   result[field].push('');
-  markDirty();
+  markListFieldDirty(field);
 };
 
 const removeScenarioItem = (field: ScenarioListField, index: number): void => {
   const result = currentState.value?.result;
   if (!result) return;
   result[field].splice(index, 1);
-  markDirty();
+  markListFieldDirty(field);
 };
 
 const addDisabledElement = (): void => {
@@ -1564,7 +1580,7 @@ onBeforeUnmount(() => {
                 v-model="visibleResult.coreSellingPoints[index]"
                 :readonly="baseFieldsReadonly"
                 placeholder="请输入核心卖点"
-                @input="markDirty"
+                @input="markListFieldDirty('coreSellingPoints')"
               />
               <em
                 class="origin-chip"
@@ -1585,6 +1601,13 @@ onBeforeUnmount(() => {
               >
                 <Trash2 :size="14" />
               </button>
+              <p
+                v-for="notice in itemSemanticNotices('coreSellingPoints', index)"
+                :key="notice.issue"
+                class="semantic-fact-notice"
+              >
+                <AlertCircle :size="13" />{{ notice.message }}
+              </p>
             </div>
             <div class="selling-subheading">
               <strong>次要卖点</strong>
@@ -1610,7 +1633,7 @@ onBeforeUnmount(() => {
                 v-model="visibleResult.secondarySellingPoints[index]"
                 :readonly="baseFieldsReadonly"
                 placeholder="请输入次要卖点"
-                @input="markDirty"
+                @input="markListFieldDirty('secondarySellingPoints')"
               />
               <em
                 class="origin-chip"
@@ -1631,6 +1654,13 @@ onBeforeUnmount(() => {
               >
                 <Trash2 :size="14" />
               </button>
+              <p
+                v-for="notice in itemSemanticNotices('secondarySellingPoints', index)"
+                :key="notice.issue"
+                class="semantic-fact-notice"
+              >
+                <AlertCircle :size="13" />{{ notice.message }}
+              </p>
             </div>
             <div class="selling-subheading">
               <strong>辅助信任背书</strong>
@@ -1658,7 +1688,7 @@ onBeforeUnmount(() => {
                 v-model="visibleResult.trustBackings[index]"
                 :readonly="baseFieldsReadonly"
                 placeholder="仅填写有资料证据的背书"
-                @input="markDirty"
+                @input="markListFieldDirty('trustBackings')"
               />
               <em
                 class="origin-chip"
@@ -1712,7 +1742,7 @@ onBeforeUnmount(() => {
                 v-model="visibleResult.targetAudiences[index]"
                 :readonly="baseFieldsReadonly"
                 placeholder="请输入目标受众"
-                @input="markDirty"
+                @input="markListFieldDirty('targetAudiences')"
               />
               <em
                 class="origin-chip"
@@ -1760,7 +1790,7 @@ onBeforeUnmount(() => {
                 v-model="visibleResult.corePainPoints[index]"
                 :readonly="baseFieldsReadonly"
                 placeholder="请输入核心痛点"
-                @input="markDirty"
+                @input="markListFieldDirty('corePainPoints')"
               />
               <em
                 class="origin-chip"
@@ -1781,6 +1811,13 @@ onBeforeUnmount(() => {
               >
                 <Trash2 :size="14" />
               </button>
+              <p
+                v-for="notice in itemSemanticNotices('corePainPoints', index)"
+                :key="notice.issue"
+                class="semantic-fact-notice"
+              >
+                <AlertCircle :size="13" />{{ notice.message }}
+              </p>
             </div>
           </div>
           <div class="selling-subheading">
@@ -1808,7 +1845,7 @@ onBeforeUnmount(() => {
                 v-model="visibleResult.decisionDrivers[index]"
                 :readonly="baseFieldsReadonly"
                 placeholder="请输入决策动因"
-                @input="markDirty"
+                @input="markListFieldDirty('decisionDrivers')"
               />
               <em
                 class="origin-chip"
@@ -1829,6 +1866,13 @@ onBeforeUnmount(() => {
               >
                 <Trash2 :size="14" />
               </button>
+              <p
+                v-for="notice in itemSemanticNotices('decisionDrivers', index)"
+                :key="notice.issue"
+                class="semantic-fact-notice"
+              >
+                <AlertCircle :size="13" />{{ notice.message }}
+              </p>
             </div>
           </div>
           <label class="field-label user-marketing-goal">
@@ -1879,7 +1923,7 @@ onBeforeUnmount(() => {
                 v-model="visibleResult.usageScenarios[index]"
                 :readonly="baseFieldsReadonly"
                 placeholder="请输入核心使用场景"
-                @input="markDirty"
+                @input="markListFieldDirty('usageScenarios')"
               />
               <em
                 class="origin-chip"
@@ -1900,6 +1944,13 @@ onBeforeUnmount(() => {
               >
                 <Trash2 :size="14" />
               </button>
+              <p
+                v-for="notice in itemSemanticNotices('usageScenarios', index)"
+                :key="notice.issue"
+                class="semantic-fact-notice"
+              >
+                <AlertCircle :size="13" />{{ notice.message }}
+              </p>
             </div>
           </div>
           <div class="selling-subheading">
@@ -1927,7 +1978,7 @@ onBeforeUnmount(() => {
                 v-model="visibleResult.purchaseScenarios[index]"
                 :readonly="baseFieldsReadonly"
                 placeholder="请输入购买场景"
-                @input="markDirty"
+                @input="markListFieldDirty('purchaseScenarios')"
               />
               <em
                 class="origin-chip"
@@ -1948,6 +1999,13 @@ onBeforeUnmount(() => {
               >
                 <Trash2 :size="14" />
               </button>
+              <p
+                v-for="notice in itemSemanticNotices('purchaseScenarios', index)"
+                :key="notice.issue"
+                class="semantic-fact-notice"
+              >
+                <AlertCircle :size="13" />{{ notice.message }}
+              </p>
             </div>
           </div>
           <div class="selling-subheading">
@@ -1977,7 +2035,7 @@ onBeforeUnmount(() => {
                 v-model="visibleResult.emotionalScenarios[index]"
                 :readonly="baseFieldsReadonly"
                 placeholder="请输入情绪共鸣场景"
-                @input="markDirty"
+                @input="markListFieldDirty('emotionalScenarios')"
               />
               <em
                 class="origin-chip"
@@ -1998,6 +2056,13 @@ onBeforeUnmount(() => {
               >
                 <Trash2 :size="14" />
               </button>
+              <p
+                v-for="notice in itemSemanticNotices('emotionalScenarios', index)"
+                :key="notice.issue"
+                class="semantic-fact-notice"
+              >
+                <AlertCircle :size="13" />{{ notice.message }}
+              </p>
             </div>
           </div>
         </section>
@@ -3034,6 +3099,25 @@ select {
   margin-right: 4px;
   color: #9a86c4;
   content: '✦';
+}
+.selling-point-row .semantic-fact-notice {
+  display: flex;
+  min-width: 0;
+  margin: -2px 0 2px;
+  padding: 7px 9px;
+  align-items: flex-start;
+  gap: 6px;
+  color: #9a6508;
+  background: #fff8e8;
+  border: 1px solid #f5deb0;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  grid-column: 2 / -1;
+}
+.selling-point-row .semantic-fact-notice svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
 }
 .selling-point-row button {
   display: grid;

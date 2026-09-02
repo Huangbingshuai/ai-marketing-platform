@@ -8,6 +8,9 @@ import type {
   EffectExtractionProvenance,
   EffectExtractionResult,
   EffectExtractionRun,
+  EffectExtractionSemanticField,
+  EffectExtractionSemanticNotice,
+  EffectExtractionSemanticNoticeIssue,
   EffectExtractionValueOrigin,
   EffectVideoConfig,
   EffectVideoConfigOverride,
@@ -953,6 +956,115 @@ const candidateFieldValues = (
   return values;
 };
 
+const SEMANTIC_NOTICE_FIELDS = new Set<EffectExtractionSemanticField>([
+  'coreSellingPoints',
+  'secondarySellingPoints',
+  'corePainPoints',
+  'decisionDrivers',
+  'usageScenarios',
+  'purchaseScenarios',
+  'emotionalScenarios',
+]);
+
+const SEMANTIC_NOTICE_ISSUES = new Set<EffectExtractionSemanticNoticeIssue>([
+  'POSSIBLE_DUPLICATE',
+  'POSSIBLE_OVERLAP',
+  'POSSIBLE_WRONG_FIELD',
+  'AMBIGUOUS_EXPRESSION',
+  'FIELD_OVER_RECOMMENDED_COUNT',
+]);
+
+const SEMANTIC_FIELD_LABELS: Record<EffectExtractionSemanticField, string> = {
+  coreSellingPoints: '核心卖点',
+  secondarySellingPoints: '次要卖点',
+  corePainPoints: '核心痛点',
+  decisionDrivers: '决策动因',
+  usageScenarios: '核心使用场景',
+  purchaseScenarios: '购买场景',
+  emotionalScenarios: '情绪共鸣场景',
+};
+
+const safeSemanticValue = (value: unknown): string =>
+  String(value ?? '')
+    .replace(/data:[^\s,]+;base64,[a-z\d+/=]+/giu, '')
+    .replace(/(?:https?|tos|s3):\/\/\S+/giu, '')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .slice(0, 160);
+
+const semanticNoticeMessage = (
+  issue: EffectExtractionSemanticNoticeIssue,
+  relatedValues: readonly string[],
+  suggestedField: EffectExtractionSemanticField | null,
+  raw: Record<string, unknown>,
+): string => {
+  const related = relatedValues[0];
+  if (issue === 'POSSIBLE_DUPLICATE' && related)
+    return `建议检查：与“${related}”含义接近，系统未自动合并。`;
+  if (issue === 'POSSIBLE_OVERLAP' && related)
+    return `建议检查：与“${related}”存在内容重叠，系统未自动合并。`;
+  if (issue === 'POSSIBLE_WRONG_FIELD' && suggestedField)
+    return `建议确认：该内容可能更适合“${SEMANTIC_FIELD_LABELS[suggestedField]}”，系统未自动移动。`;
+  if (issue === 'FIELD_OVER_RECOMMENDED_COUNT') {
+    const actualCount = Number(raw.actualCount);
+    const recommendedCount = Number(raw.recommendedCount);
+    if (Number.isInteger(actualCount) && Number.isInteger(recommendedCount))
+      return `当前用户事实共 ${actualCount} 条，超过推荐 ${recommendedCount} 条；系统已全部保留。`;
+  }
+  return '建议确认：该表达含义可能不够明确，系统未自动修改。';
+};
+
+const semanticNoticesByValue = (
+  branches: readonly ExtractionOriginBranch[],
+): Map<string, EffectExtractionSemanticNotice[]> => {
+  const branch = branches.find(({ branch }) => branch === 'SEMANTIC_REFINEMENT');
+  if (!branch?.structuredOutput || typeof branch.structuredOutput !== 'object') return new Map();
+  const payload = branch.structuredOutput as Record<string, unknown>;
+  const metadata =
+    payload.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata)
+      ? (payload.metadata as Record<string, unknown>)
+      : {};
+  const rows = Array.isArray(metadata.userFactNotices) ? metadata.userFactNotices : [];
+  const notices = new Map<string, EffectExtractionSemanticNotice[]>();
+  for (const row of rows) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+    const raw = row as Record<string, unknown>;
+    const field = String(raw.field ?? '') as EffectExtractionSemanticField;
+    const issue = String(raw.issue ?? '') as EffectExtractionSemanticNoticeIssue;
+    const value = safeSemanticValue(raw.value);
+    const factId = String(raw.factId ?? '');
+    const relatedFactIds = Array.isArray(raw.relatedFactIds) ? raw.relatedFactIds.map(String) : [];
+    if (
+      !SEMANTIC_NOTICE_FIELDS.has(field) ||
+      !SEMANTIC_NOTICE_ISSUES.has(issue) ||
+      !value ||
+      !factId.startsWith(`user-${field}-`) ||
+      relatedFactIds.some((id) => !id.startsWith('user-'))
+    )
+      continue;
+    const suggestedField = SEMANTIC_NOTICE_FIELDS.has(
+      String(raw.suggestedField ?? '') as EffectExtractionSemanticField,
+    )
+      ? (String(raw.suggestedField) as EffectExtractionSemanticField)
+      : null;
+    const relatedValues = (Array.isArray(raw.relatedValues) ? raw.relatedValues : [])
+      .map(safeSemanticValue)
+      .filter(Boolean)
+      .slice(0, 3);
+    const notice: EffectExtractionSemanticNotice = {
+      issue,
+      message: semanticNoticeMessage(issue, relatedValues, suggestedField, raw),
+      suggestedField,
+      relatedValues,
+    };
+    const key = `${field}:${normalizeOriginValue(value)}`;
+    const existing = notices.get(key) ?? [];
+    if (!existing.some((item) => item.issue === issue)) existing.push(notice);
+    notices.set(key, existing);
+  }
+  return notices;
+};
+
 type ExtractionCandidateSource = {
   branch: string;
   candidate: Record<string, unknown>;
@@ -1034,14 +1146,23 @@ const extractionValueProvenance = (
     .flatMap(({ structuredOutput }) => branchCandidates(structuredOutput));
   const overridden = new Set(manualOverrideFields);
   const candidateSources = extractionCandidateSources(branches, materials);
+  const semanticNotices = semanticNoticesByValue(branches);
+  const imageSemanticValues = new Set(
+    [...SEMANTIC_NOTICE_FIELDS].flatMap((semanticField) => [
+      ...candidateFieldValues(imageCandidates, semanticField),
+    ]),
+  );
 
   for (const field of Object.keys(result) as (keyof EffectExtractionResult)[]) {
     const userValues = candidateFieldValues(userCandidates, field);
     const imageValues = candidateFieldValues(imageCandidates, field);
+    const resolvedImageValues = SEMANTIC_NOTICE_FIELDS.has(field as EffectExtractionSemanticField)
+      ? imageSemanticValues
+      : imageValues;
     const originFor = (value: unknown) =>
       !overridden.has(field) &&
       !userValues.has(normalizeOriginValue(value)) &&
-      imageValues.has(normalizeOriginValue(value))
+      resolvedImageValues.has(normalizeOriginValue(value))
         ? ('AI_IMAGE_SUGGESTION' as const)
         : ('USER_FACT' as const);
     const sourceNamesFor = (value: unknown, origin: EffectExtractionValueOrigin): string[] => {
@@ -1051,11 +1172,19 @@ const extractionValueProvenance = (
           ? new Set(['IMAGE'])
           : new Set(['FORM', 'DOCUMENT', 'COMMERCE']);
       const names = candidateSources
-        .filter(
-          (entry) =>
-            allowedBranches.has(entry.branch) &&
-            candidateFieldValues([entry.candidate], field).has(normalizeOriginValue(value)),
-        )
+        .filter((entry) => {
+          if (!allowedBranches.has(entry.branch)) return false;
+          if (
+            origin === 'AI_IMAGE_SUGGESTION' &&
+            SEMANTIC_NOTICE_FIELDS.has(field as EffectExtractionSemanticField)
+          )
+            return [...SEMANTIC_NOTICE_FIELDS].some((semanticField) =>
+              candidateFieldValues([entry.candidate], semanticField).has(
+                normalizeOriginValue(value),
+              ),
+            );
+          return candidateFieldValues([entry.candidate], field).has(normalizeOriginValue(value));
+        })
         .map((entry) => entry.sourceName);
       const uniqueNames = [...new Set(names)].slice(0, 3);
       return uniqueNames.length
@@ -1070,6 +1199,12 @@ const extractionValueProvenance = (
           value: String(item),
           origin,
           sourceNames: sourceNamesFor(item, origin),
+          ...(origin === 'USER_FACT' && !overridden.has(field)
+            ? {
+                semanticNotices:
+                  semanticNotices.get(`${String(field)}:${normalizeOriginValue(item)}`) ?? [],
+              }
+            : {}),
         };
       });
     } else {

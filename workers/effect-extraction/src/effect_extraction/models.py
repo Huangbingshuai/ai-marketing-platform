@@ -186,16 +186,16 @@ class ExtractionResult(ApiModel):
     core_specification: str
     price_range: str
     visual_features: str
-    core_selling_points: list[str] = Field(min_length=1, max_length=3)
+    core_selling_points: list[str] = Field(min_length=1, max_length=20)
     secondary_selling_points: list[str] = Field(max_length=20)
-    trust_backings: list[str] = Field(max_length=5)
+    trust_backings: list[str] = Field(max_length=20)
     target_audience: str
-    core_pain_points: list[str] = Field(max_length=5)
-    decision_drivers: list[str] = Field(max_length=5)
+    core_pain_points: list[str] = Field(max_length=20)
+    decision_drivers: list[str] = Field(max_length=20)
     marketing_goal: str
-    usage_scenarios: list[str] = Field(max_length=5)
-    purchase_scenarios: list[str] = Field(max_length=5)
-    emotional_scenarios: list[str] = Field(max_length=5)
+    usage_scenarios: list[str] = Field(max_length=20)
+    purchase_scenarios: list[str] = Field(max_length=20)
+    emotional_scenarios: list[str] = Field(max_length=20)
     duration_seconds: int = Field(ge=1, le=3600)
     aspect_ratio: str
     resolution: str
@@ -214,33 +214,44 @@ class SemanticField(StrEnum):
     EMOTIONAL_SCENARIOS = "emotionalScenarios"
 
 
-class SemanticRelation(StrEnum):
-    SAME_MEANING = "SAME_MEANING"
-    PARENT_CHILD = "PARENT_CHILD"
-    SAME_FAMILY = "SAME_FAMILY"
+class SemanticSuggestionDisposition(StrEnum):
+    KEEP = "KEEP"
+    DROP = "DROP"
 
 
-class SemanticGroup(ApiModel):
-    field: SemanticField
-    member_fact_ids: list[str] = Field(min_length=2, max_length=10)
-    representative_fact_id: str
-    relation: SemanticRelation
+class SemanticSuggestionReason(StrEnum):
+    DUPLICATE_USER_FACT = "DUPLICATE_USER_FACT"
+    DUPLICATE_AI_SUGGESTION = "DUPLICATE_AI_SUGGESTION"
+    WRONG_FIELD = "WRONG_FIELD"
+    LOW_INFORMATION = "LOW_INFORMATION"
+    CAPACITY = "CAPACITY"
 
 
-class SemanticPlacement(ApiModel):
+class SemanticUserFactIssue(StrEnum):
+    POSSIBLE_DUPLICATE = "POSSIBLE_DUPLICATE"
+    POSSIBLE_OVERLAP = "POSSIBLE_OVERLAP"
+    POSSIBLE_WRONG_FIELD = "POSSIBLE_WRONG_FIELD"
+    AMBIGUOUS_EXPRESSION = "AMBIGUOUS_EXPRESSION"
+    FIELD_OVER_RECOMMENDED_COUNT = "FIELD_OVER_RECOMMENDED_COUNT"
+
+
+class SemanticSuggestionDecision(ApiModel):
     fact_id: str
-    target_field: SemanticField
+    disposition: SemanticSuggestionDisposition
+    target_field: SemanticField | None = None
+    reason: SemanticSuggestionReason
 
 
-class SemanticFieldSelection(ApiModel):
-    field: SemanticField
-    retained_fact_ids: list[str] = Field(min_length=1, max_length=6)
+class SemanticUserFactNotice(ApiModel):
+    fact_id: str
+    issue: SemanticUserFactIssue
+    related_fact_ids: list[str] = Field(default_factory=list, max_length=10)
+    suggested_field: SemanticField | None = None
 
 
 class SemanticRefinementDecision(ApiModel):
-    groups: list[SemanticGroup] = Field(max_length=30)
-    placements: list[SemanticPlacement] = Field(max_length=20)
-    selections: list[SemanticFieldSelection] = Field(max_length=7)
+    suggestion_decisions: list[SemanticSuggestionDecision] = Field(max_length=40)
+    user_fact_notices: list[SemanticUserFactNotice] = Field(max_length=40)
 
 
 class BranchName(StrEnum):

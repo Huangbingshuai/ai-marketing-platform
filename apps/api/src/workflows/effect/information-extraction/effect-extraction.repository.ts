@@ -83,7 +83,11 @@ export class EffectExtractionRepository {
               include: {
                 result: true,
                 branches: {
-                  where: { branch: { in: ['FORM', 'DOCUMENT', 'COMMERCE', 'IMAGE'] } },
+                  where: {
+                    branch: {
+                      in: ['FORM', 'DOCUMENT', 'COMMERCE', 'IMAGE', 'SEMANTIC_REFINEMENT'],
+                    },
+                  },
                 },
               },
             },
