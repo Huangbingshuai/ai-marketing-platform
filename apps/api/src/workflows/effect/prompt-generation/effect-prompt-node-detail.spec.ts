@@ -116,6 +116,57 @@ describe('presentEffectPromptNodeDetail', () => {
     expect(output?.summary).toContain('完成校验');
   });
 
+  it('当前结果没有旧版卖点覆盖数据时不展示误导性的 0/0', () => {
+    const base = record();
+    const current = {
+      ...base,
+      result: {
+        draftResult: {
+          schemaVersion: 6,
+          settings: { targetCount: 1, defaultDurationSeconds: 5 },
+          qualityStatus: 'NEEDS_REVIEW',
+          items: [
+            {
+              code: 'P001',
+              fragmentType: 'PRODUCT_DISPLAY',
+              targetDurationSeconds: 5,
+              materialTags: [],
+              content: '餐桌上展示一盘已经蒸熟并切好的广式腊肠。',
+              dimensions: {
+                narrative: '产品展示',
+                scene: '家庭餐桌',
+                persona: '成年人',
+                productRelation: '广式腊肠外观',
+                camera: '近景',
+                emotion: '烟火食欲感',
+              },
+            },
+          ],
+          metrics: {
+            targetCount: 1,
+            insightCoverage: {
+              required: ['fact-a'],
+              covered: [],
+              missing: ['fact-a'],
+            },
+          },
+        },
+      },
+    } as unknown as EffectPromptNodeDetailRunRecord;
+
+    const detail = presentEffectPromptNodeDetail(current, 'RESULT_SAVE');
+    const output = detail.sections.find(({ kind }) => kind === 'OUTPUT');
+    expect(detail.fields).not.toEqual(
+      expect.arrayContaining([{ label: '卖点覆盖', value: '0/0' }]),
+    );
+    expect(output?.fields).toEqual(
+      expect.arrayContaining([
+        { label: '必用事实覆盖', value: '0/1' },
+        { label: '仍缺事实', value: 1 },
+      ]),
+    );
+  });
+
   it('在评估节点展示固定相似标准和不阻断提交的重复度参考', () => {
     const detail = presentEffectPromptNodeDetail(record(), 'CREATIVE_EVALUATION_CLASSIFICATION');
     const output = detail.sections.find(({ kind }) => kind === 'OUTPUT');

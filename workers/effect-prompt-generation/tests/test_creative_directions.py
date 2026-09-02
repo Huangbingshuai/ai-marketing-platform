@@ -258,6 +258,9 @@ def test_direction_revision_context_names_territory_fact_boundary() -> None:
         }
     ]
     assert context["revisionDirectionIds"] == [first.direction_id]
+    assert context["revisionRequiredBusinessFactIds"] == []
+    assert context["revisionFactApplicationCapacity"] == 4
+    assert context["revisionFactOptions"] == []
 
 
 def _cluster_snapshot() -> PromptGenerationSnapshot:
@@ -556,6 +559,17 @@ async def test_missing_business_fact_replans_the_whole_direction_batch_with_ai()
     assert provider.revision_contexts[1]
     assert provider.revision_contexts[1]["missingBusinessFactIds"]
     assert provider.revision_contexts[1]["revisionDirectionIds"]
+    assert set(provider.revision_contexts[1]["missingBusinessFactIds"]).issubset(
+        provider.revision_contexts[1]["revisionRequiredBusinessFactIds"]
+    )
+    assert provider.revision_contexts[1]["revisionFactOptions"]
+    assert all(
+        item["eligibleDirectionIds"]
+        for item in provider.revision_contexts[1]["revisionFactOptions"]
+    )
+    assert provider.revision_contexts[1]["revisionFactApplicationCapacity"] >= len(
+        provider.revision_contexts[1]["revisionRequiredBusinessFactIds"]
+    )
     assert all(
         task.fact_assignment is not None
         and task.creative_direction is not None

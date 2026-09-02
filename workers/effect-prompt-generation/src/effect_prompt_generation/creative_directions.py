@@ -775,9 +775,36 @@ def creative_direction_revision_context(
                 + invalid_direction_ids
             )
         )
+    revision_direction_id_set = set(revision_direction_ids)
+    locked_business_fact_ids = {
+        fact_id
+        for direction in response.directions
+        if direction.direction_id not in revision_direction_id_set
+        for fact_id in direction.fact_ids
+        if fact_id in business_ids
+    }
+    revision_required_business_fact_ids = [
+        fact_id for fact_id in business_ids if fact_id not in locked_business_fact_ids
+    ]
+    revision_fact_options = [
+        {
+            "factId": fact_id,
+            "eligibleDirectionIds": [
+                direction.direction_id
+                for direction in response.directions
+                if direction.direction_id in revision_direction_id_set
+                and fact_id
+                in allowed_facts_by_territory.get(direction.territory_id, [])
+            ],
+        }
+        for fact_id in revision_required_business_fact_ids
+    ]
     return {
         "validationError": validation_error,
         "missingBusinessFactIds": missing_business_fact_ids,
+        "revisionRequiredBusinessFactIds": revision_required_business_fact_ids,
+        "revisionFactOptions": revision_fact_options,
+        "revisionFactApplicationCapacity": len(revision_direction_ids) * 4,
         "previousDirections": [
             direction.model_dump(mode="json", by_alias=True)
             for direction in response.directions
@@ -786,7 +813,12 @@ def creative_direction_revision_context(
         "invalidDirectionFactReferences": invalid_fact_references,
         "revisionDirectionIds": revision_direction_ids,
         "revisionInstruction": (
-            "重新规划完整批次，让缺失事实自然进入合适方向；"
+            "重新规划完整批次，让缺失事实自然进入合适方向。先把"
+            " revisionRequiredBusinessFactIds 当作不可丢失的覆盖清单："
+            "revisionDirectionIds 中全部方向的 factApplications 合集必须完整"
+            "包含这份清单；revisionFactOptions 给出每项事实可以进入的方向，"
+            "由模型判断其中最自然的具体关系。添加缺失事实时不得移除清单中的"
+            "其他唯一事实，可移除重复事实为单条最多 4 项的容量让路；"
             "每个方向的 factApplications 只能引用其 territoryId 对应的"
             " allowedFactIdsByTerritory，逐项修复 invalidDirectionFactReferences；"
             "revisionDirectionIds 是本轮允许调整的方向，其他方向必须原样返回；"

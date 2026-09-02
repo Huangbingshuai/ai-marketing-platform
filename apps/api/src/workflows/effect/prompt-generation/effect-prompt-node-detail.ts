@@ -1375,15 +1375,19 @@ const actualFields = (
       },
       { label: '质量状态', value: result.qualityStatus },
     ];
-  if (nodeId === 'RESULT_SAVE' && result)
-    return [
+  if (nodeId === 'RESULT_SAVE' && result) {
+    const legacySellingPointCoverage = result.metrics.sellingPointCoverage;
+    return compact([
       { label: '已保存 Prompt', value: result.items.length },
       { label: '质量状态', value: result.qualityStatus },
-      {
-        label: '卖点覆盖',
-        value: `${result.metrics.sellingPointCoverage.covered.length}/${result.metrics.sellingPointCoverage.required.length}`,
-      },
-    ];
+      legacySellingPointCoverage.required.length
+        ? {
+            label: '卖点覆盖',
+            value: `${legacySellingPointCoverage.covered.length}/${legacySellingPointCoverage.required.length}`,
+          }
+        : null,
+    ]);
+  }
   return stageFields;
 };
 
