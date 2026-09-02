@@ -159,6 +159,12 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain("itemSemanticNotices('coreSellingPoints', index)");
     expect(pageSource).toContain("markListFieldDirty('corePainPoints')");
     expect(pageSource).toContain('delete item.semanticNotices');
+    expect(pageSource).toContain('dismissSemanticNotice');
+    expect(pageSource).toContain('aria-label="关闭这条建议"');
+    expect(pageSource).toContain('dismissedSemanticNoticesByProduct');
+    expect(pageSource).toContain('dismissedSemanticNotices: Object.fromEntries');
+    expect(pageSource).toContain('dismissed?.resultId === state.resultId');
+    expect(pageSource).toContain('persistNodeState(false, false)');
   });
 
   it('edits target audiences, pain points and decision drivers with the same item rows', () => {

@@ -79,6 +79,9 @@ const emit = defineEmits<{
 }>();
 
 const productStates = ref<Record<string, EffectExtractionProductState>>({});
+const dismissedSemanticNoticesByProduct = ref<
+  Record<string, { resultId: string | null; keys: string[] }>
+>({});
 const currentProductId = ref('');
 const loading = ref(true);
 const loadingError = ref('');
@@ -461,6 +464,9 @@ const emptyExtractionResult: EffectExtractionResult = {
 };
 const visibleResult = computed(() => currentState.value?.result ?? emptyExtractionResult);
 const baseFieldsReadonly = computed(() => !currentState.value?.result || currentRunning.value);
+const semanticNoticeDismissDisabled = computed(
+  () => baseFieldsReadonly.value || currentState.value?.saveState === 'SAVING',
+);
 const selectOptions = (values: readonly string[]) =>
   values.map((value) => ({ label: value, value }));
 const aspectRatioOptions = selectOptions(EFFECT_IMPORT_ASPECT_RATIOS);
@@ -495,10 +501,47 @@ const itemSourceNames = (field: OriginListField, index: number): string[] =>
   itemProvenance(field, index)?.sourceNames?.length
     ? (itemProvenance(field, index)?.sourceNames ?? [])
     : ['人工修改'];
+const semanticNoticeKey = (
+  field: OriginListField,
+  value: string,
+  notice: EffectExtractionSemanticNotice,
+): string =>
+  JSON.stringify([
+    field,
+    value.replace(/\s+/g, ' ').trim(),
+    notice.issue,
+    notice.suggestedField,
+    [...notice.relatedValues].map((value) => value.replace(/\s+/g, ' ').trim()).sort(),
+  ]);
+const dismissedSemanticNoticeKeys = (): ReadonlySet<string> => {
+  const state = currentState.value;
+  if (!state) return new Set();
+  const dismissed = dismissedSemanticNoticesByProduct.value[state.productId];
+  return dismissed?.resultId === state.resultId ? new Set(dismissed.keys) : new Set();
+};
 const itemSemanticNotices = (
   field: OriginListField,
   index: number,
-): EffectExtractionSemanticNotice[] => itemProvenance(field, index)?.semanticNotices ?? [];
+): EffectExtractionSemanticNotice[] => {
+  const dismissed = dismissedSemanticNoticeKeys();
+  const value = visibleResult.value[field][index] ?? '';
+  return (itemProvenance(field, index)?.semanticNotices ?? []).filter(
+    (notice) => !dismissed.has(semanticNoticeKey(field, value, notice)),
+  );
+};
+const recordDismissedSemanticNoticeKeys = (keys: readonly string[]): void => {
+  const state = currentState.value;
+  if (!state || !keys.length) return;
+  const existing = dismissedSemanticNoticesByProduct.value[state.productId];
+  const previousKeys = existing?.resultId === state.resultId ? existing.keys : [];
+  dismissedSemanticNoticesByProduct.value = {
+    ...dismissedSemanticNoticesByProduct.value,
+    [state.productId]: {
+      resultId: state.resultId,
+      keys: [...new Set([...previousKeys, ...keys])].slice(-200),
+    },
+  };
+};
 const originSourceLabel = (
   origin: EffectExtractionValueOrigin,
   sourceNames: readonly string[],
@@ -614,6 +657,7 @@ type ExtractionNodeDraft = {
     string,
     { resultId: string | null; result: EffectExtractionResult; sourceResultRevision: number | null }
   >;
+  dismissedSemanticNotices?: Record<string, { resultId: string | null; keys: string[] }>;
 };
 
 const nodeStatePayload = (): ExtractionNodeDraft => ({
@@ -629,11 +673,39 @@ const nodeStatePayload = (): ExtractionNodeDraft => ({
         },
       ]),
   ),
+  dismissedSemanticNotices: Object.fromEntries(
+    Object.entries(dismissedSemanticNoticesByProduct.value)
+      .filter(
+        ([productId, dismissed]) =>
+          dismissed.keys.length > 0 &&
+          productStates.value[productId]?.resultId === dismissed.resultId,
+      )
+      .map(([productId, dismissed]) => [
+        productId,
+        { resultId: dismissed.resultId, keys: [...new Set(dismissed.keys)].slice(-200) },
+      ]),
+  ),
 });
 
 const applyNodeState = (value: unknown): void => {
   if (!value || typeof value !== 'object') return;
-  const products = (value as ExtractionNodeDraft).products;
+  const draft = value as ExtractionNodeDraft;
+  dismissedSemanticNoticesByProduct.value = Object.fromEntries(
+    Object.entries(draft.dismissedSemanticNotices ?? {})
+      .filter(
+        ([productId, dismissed]) =>
+          dismissed?.resultId === productStates.value[productId]?.resultId &&
+          Array.isArray(dismissed.keys),
+      )
+      .map(([productId, dismissed]) => [
+        productId,
+        {
+          resultId: dismissed.resultId,
+          keys: [...new Set(dismissed.keys.filter((key) => typeof key === 'string'))].slice(-200),
+        },
+      ]),
+  );
+  const products = draft.products;
   if (!products) return;
   for (const [productId, saved] of Object.entries(products)) {
     const current = productStates.value[productId];
@@ -653,7 +725,7 @@ const applyNodeState = (value: unknown): void => {
   }
 };
 
-const persistNodeState = async (keepalive = false): Promise<boolean> => {
+const persistNodeState = async (keepalive = false, saveResult = true): Promise<boolean> => {
   if (!props.projectId || !props.workflowRunId) return true;
   const productId = currentProductId.value;
   const current = productId ? productStates.value[productId] : null;
@@ -670,7 +742,7 @@ const persistNodeState = async (keepalive = false): Promise<boolean> => {
   const controller = new AbortController();
   saveController = controller;
   try {
-    if (current?.result && current.resultId && current.resultRevision !== null) {
+    if (saveResult && current?.result && current.resultId && current.resultRevision !== null) {
       const saved = await saveEffectExtractionResult(
         props.projectId,
         current.resultId,
@@ -839,6 +911,7 @@ const loadWorkspace = async (): Promise<void> => {
       lastSavedNodeState = JSON.stringify(saved.state);
     } else {
       nodeStateRevision.value = 0;
+      dismissedSemanticNoticesByProduct.value = {};
       lastSavedNodeState = JSON.stringify(nodeStatePayload());
     }
     if (!props.products.some((product) => product.id === currentProductId.value)) {
@@ -1069,7 +1142,30 @@ const markDirty = (): void => {
 const clearFieldSemanticNotices = (field: OriginListField): void => {
   const items = currentState.value?.provenance.itemOrigins[field];
   if (!items) return;
-  for (const item of items) delete item.semanticNotices;
+  const keys: string[] = [];
+  for (const item of items) {
+    for (const notice of item.semanticNotices ?? [])
+      keys.push(semanticNoticeKey(field, item.value, notice));
+    delete item.semanticNotices;
+  }
+  recordDismissedSemanticNoticeKeys(keys);
+};
+
+const dismissSemanticNotice = (
+  field: OriginListField,
+  index: number,
+  notice: EffectExtractionSemanticNotice,
+): void => {
+  if (semanticNoticeDismissDisabled.value) return;
+  recordDismissedSemanticNoticeKeys([
+    semanticNoticeKey(field, visibleResult.value[field][index] ?? '', notice),
+  ]);
+  const state = currentState.value;
+  if (state?.saveState === 'DIRTY' || state?.saveState === 'SAVE_FAILED') {
+    markDirty();
+    return;
+  }
+  void persistNodeState(false, false);
 };
 
 const markListFieldDirty = (field: OriginListField): void => {
@@ -1606,7 +1702,18 @@ onBeforeUnmount(() => {
                 :key="notice.issue"
                 class="semantic-fact-notice"
               >
-                <AlertCircle :size="13" />{{ notice.message }}
+                <AlertCircle :size="13" />
+                <span>{{ notice.message }}</span>
+                <button
+                  type="button"
+                  class="semantic-fact-notice__dismiss"
+                  aria-label="关闭这条建议"
+                  title="关闭这条建议"
+                  :disabled="semanticNoticeDismissDisabled"
+                  @click="dismissSemanticNotice('coreSellingPoints', index, notice)"
+                >
+                  <X :size="12" />
+                </button>
               </p>
             </div>
             <div class="selling-subheading">
@@ -1659,7 +1766,18 @@ onBeforeUnmount(() => {
                 :key="notice.issue"
                 class="semantic-fact-notice"
               >
-                <AlertCircle :size="13" />{{ notice.message }}
+                <AlertCircle :size="13" />
+                <span>{{ notice.message }}</span>
+                <button
+                  type="button"
+                  class="semantic-fact-notice__dismiss"
+                  aria-label="关闭这条建议"
+                  title="关闭这条建议"
+                  :disabled="semanticNoticeDismissDisabled"
+                  @click="dismissSemanticNotice('secondarySellingPoints', index, notice)"
+                >
+                  <X :size="12" />
+                </button>
               </p>
             </div>
             <div class="selling-subheading">
@@ -1816,7 +1934,18 @@ onBeforeUnmount(() => {
                 :key="notice.issue"
                 class="semantic-fact-notice"
               >
-                <AlertCircle :size="13" />{{ notice.message }}
+                <AlertCircle :size="13" />
+                <span>{{ notice.message }}</span>
+                <button
+                  type="button"
+                  class="semantic-fact-notice__dismiss"
+                  aria-label="关闭这条建议"
+                  title="关闭这条建议"
+                  :disabled="semanticNoticeDismissDisabled"
+                  @click="dismissSemanticNotice('corePainPoints', index, notice)"
+                >
+                  <X :size="12" />
+                </button>
               </p>
             </div>
           </div>
@@ -1871,7 +2000,18 @@ onBeforeUnmount(() => {
                 :key="notice.issue"
                 class="semantic-fact-notice"
               >
-                <AlertCircle :size="13" />{{ notice.message }}
+                <AlertCircle :size="13" />
+                <span>{{ notice.message }}</span>
+                <button
+                  type="button"
+                  class="semantic-fact-notice__dismiss"
+                  aria-label="关闭这条建议"
+                  title="关闭这条建议"
+                  :disabled="semanticNoticeDismissDisabled"
+                  @click="dismissSemanticNotice('decisionDrivers', index, notice)"
+                >
+                  <X :size="12" />
+                </button>
               </p>
             </div>
           </div>
@@ -1949,7 +2089,18 @@ onBeforeUnmount(() => {
                 :key="notice.issue"
                 class="semantic-fact-notice"
               >
-                <AlertCircle :size="13" />{{ notice.message }}
+                <AlertCircle :size="13" />
+                <span>{{ notice.message }}</span>
+                <button
+                  type="button"
+                  class="semantic-fact-notice__dismiss"
+                  aria-label="关闭这条建议"
+                  title="关闭这条建议"
+                  :disabled="semanticNoticeDismissDisabled"
+                  @click="dismissSemanticNotice('usageScenarios', index, notice)"
+                >
+                  <X :size="12" />
+                </button>
               </p>
             </div>
           </div>
@@ -2004,7 +2155,18 @@ onBeforeUnmount(() => {
                 :key="notice.issue"
                 class="semantic-fact-notice"
               >
-                <AlertCircle :size="13" />{{ notice.message }}
+                <AlertCircle :size="13" />
+                <span>{{ notice.message }}</span>
+                <button
+                  type="button"
+                  class="semantic-fact-notice__dismiss"
+                  aria-label="关闭这条建议"
+                  title="关闭这条建议"
+                  :disabled="semanticNoticeDismissDisabled"
+                  @click="dismissSemanticNotice('purchaseScenarios', index, notice)"
+                >
+                  <X :size="12" />
+                </button>
               </p>
             </div>
           </div>
@@ -2061,7 +2223,18 @@ onBeforeUnmount(() => {
                 :key="notice.issue"
                 class="semantic-fact-notice"
               >
-                <AlertCircle :size="13" />{{ notice.message }}
+                <AlertCircle :size="13" />
+                <span>{{ notice.message }}</span>
+                <button
+                  type="button"
+                  class="semantic-fact-notice__dismiss"
+                  aria-label="关闭这条建议"
+                  title="关闭这条建议"
+                  :disabled="semanticNoticeDismissDisabled"
+                  @click="dismissSemanticNotice('emotionalScenarios', index, notice)"
+                >
+                  <X :size="12" />
+                </button>
               </p>
             </div>
           </div>
@@ -3119,6 +3292,10 @@ select {
   flex: 0 0 auto;
   margin-top: 1px;
 }
+.selling-point-row .semantic-fact-notice > span {
+  min-width: 0;
+  flex: 1;
+}
 .selling-point-row button {
   display: grid;
   width: 38px;
@@ -3131,6 +3308,29 @@ select {
   border-radius: 10px;
   grid-column: 3;
   grid-row: 1;
+}
+.selling-point-row button.semantic-fact-notice__dismiss {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  margin: -3px -4px -3px 2px;
+  padding: 0;
+  flex: 0 0 22px;
+  place-items: center;
+  color: #a97a27;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  grid-column: auto;
+  grid-row: auto;
+}
+.selling-point-row button.semantic-fact-notice__dismiss:hover {
+  color: #7d5209;
+  background: #f9e9bd;
+}
+.selling-point-row button.semantic-fact-notice__dismiss:focus-visible {
+  box-shadow: 0 0 0 2px #e9bd5d;
+  outline: none;
 }
 .disabled-field {
   margin-top: 14px;

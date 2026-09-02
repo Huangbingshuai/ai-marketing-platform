@@ -1000,18 +1000,18 @@ const semanticNoticeMessage = (
 ): string => {
   const related = relatedValues[0];
   if (issue === 'POSSIBLE_DUPLICATE' && related)
-    return `建议检查：与“${related}”含义接近，系统未自动合并。`;
+    return `建议处理：与“${related}”含义接近，可保留表达更准确的一条，或合并为一条。`;
   if (issue === 'POSSIBLE_OVERLAP' && related)
-    return `建议检查：与“${related}”存在内容重叠，系统未自动合并。`;
+    return `建议处理：与“${related}”内容重叠，可合并共同信息，或补充两者的具体差异。`;
   if (issue === 'POSSIBLE_WRONG_FIELD' && suggestedField)
-    return `建议确认：该内容可能更适合“${SEMANTIC_FIELD_LABELS[suggestedField]}”，系统未自动移动。`;
+    return `建议处理：可考虑将该内容移至“${SEMANTIC_FIELD_LABELS[suggestedField]}”；如需保留当前分类，请补充归类依据。`;
   if (issue === 'FIELD_OVER_RECOMMENDED_COUNT') {
     const actualCount = Number(raw.actualCount);
     const recommendedCount = Number(raw.recommendedCount);
     if (Number.isInteger(actualCount) && Number.isInteger(recommendedCount))
-      return `当前用户事实共 ${actualCount} 条，超过推荐 ${recommendedCount} 条；系统已全部保留。`;
+      return `建议精简：当前有 ${actualCount} 条，建议优先保留 ${recommendedCount} 条最重要的内容。`;
   }
-  return '建议确认：该表达含义可能不够明确，系统未自动修改。';
+  return '建议完善：请补充具体对象、使用场景或可验证特征，使表达更明确。';
 };
 
 const semanticNoticesByValue = (

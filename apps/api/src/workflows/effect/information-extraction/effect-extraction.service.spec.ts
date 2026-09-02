@@ -447,7 +447,8 @@ describe('EffectExtractionService', () => {
             semanticNotices: [
               {
                 issue: 'POSSIBLE_OVERLAP',
-                message: '建议检查：与“用户次要卖点”存在内容重叠，系统未自动合并。',
+                message:
+                  '建议处理：与“用户次要卖点”内容重叠，可合并共同信息，或补充两者的具体差异。',
                 suggestedField: null,
                 relatedValues: ['用户次要卖点'],
               },
@@ -482,6 +483,7 @@ describe('EffectExtractionService', () => {
         ],
       },
     });
+    expect(JSON.stringify(result.products[0]?.provenance)).not.toContain('系统未自动');
   });
 
   it('keeps the snapshot running after claim until a persisted branch starts', async () => {
