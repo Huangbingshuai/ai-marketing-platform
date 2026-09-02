@@ -55,9 +55,20 @@ const record = (): EffectPromptNodeDetailRunRecord =>
             ? { compiledContent: '画面中不得出现虚构医疗功效。', sectionCount: 1 }
             : nodeId === 'EXACT_SELECTION_AND_SUPPLEMENT'
               ? {
+                  initialCandidateCount: 3,
+                  cumulativeCandidateCount: 4,
+                  safeCandidateCount: 4,
+                  selectedCandidateCount: 2,
                   acceptedCount: 2,
                   targetCount: 2,
                   missingCount: 0,
+                  missingRequiredFactCount: 1,
+                  poolMissingRequiredFactCount: 0,
+                  quantitySupplementTriggered: false,
+                  quantitySupplementCount: 0,
+                  coverageSupplementTriggered: true,
+                  coverageSupplementCount: 1,
+                  coverageNeedsReview: true,
                   semanticDuplicateRate: 0,
                 }
               : nodeId === 'CREATIVE_EVALUATION_CLASSIFICATION'
@@ -113,6 +124,22 @@ describe('presentEffectPromptNodeDetail', () => {
         { label: '相似判定标准', value: '82%' },
         { label: '重复度参考', value: '< 15%（仅提醒）' },
         { label: '语义重复度（%）', value: 0 },
+      ]),
+    );
+  });
+
+  it('区分初始候选、择优和两类补充，不把未入选误称为淘汰', () => {
+    const detail = presentEffectPromptNodeDetail(record(), 'EXACT_SELECTION_AND_SUPPLEMENT');
+    const output = detail.sections.find(({ kind }) => kind === 'OUTPUT');
+    expect(output?.fields).toEqual(
+      expect.arrayContaining([
+        { label: '初始候选', value: 3 },
+        { label: '累计候选', value: 4 },
+        { label: '无硬问题候选', value: 4 },
+        { label: 'AI 择优入选', value: 2 },
+        { label: '数量补充', value: '未触发' },
+        { label: '事实覆盖补充', value: '已补充 1 条候选' },
+        { label: '覆盖结论', value: '仍有事实待人工复核' },
       ]),
     );
   });

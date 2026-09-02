@@ -1885,9 +1885,15 @@ const additionalOutputFields = (
     ];
   if (nodeId === 'EXACT_SELECTION_AND_SUPPLEMENT')
     return compact([
+      numberField(metadata, 'initialCandidateCount', '初始候选'),
+      numberField(metadata, 'cumulativeCandidateCount', '累计候选'),
+      numberField(metadata, 'safeCandidateCount', '无硬问题候选'),
+      numberField(metadata, 'selectedCandidateCount', 'AI 择优入选'),
       numberField(metadata, 'acceptedCount', '已择优保留'),
       numberField(metadata, 'targetCount', '目标数量'),
       numberField(metadata, 'missingCount', '当前缺口'),
+      numberField(metadata, 'missingRequiredFactCount', '入选结果待覆盖事实'),
+      numberField(metadata, 'poolMissingRequiredFactCount', '候选池待覆盖事实'),
       numberField(metadata, 'hardRejectedCount', '硬问题淘汰'),
       numberField(metadata, 'eligibleNotSelectedCount', '合格但未入选'),
       numberField(metadata, 'exactDuplicateCount', '完全重复淘汰'),
@@ -1907,7 +1913,22 @@ const additionalOutputFields = (
           ? `质量 ${Math.round(metadata.mmrQualityWeight * 100)}% / 多样性 ${Math.round(metadata.mmrDiversityWeight * 100)}%`
           : null,
       ),
-      textField('数量补充', metadata.supplemented === true ? '已执行' : '未触发'),
+      textField(
+        '数量补充',
+        metadata.quantitySupplementTriggered === true
+          ? `已补充 ${typeof metadata.quantitySupplementCount === 'number' ? metadata.quantitySupplementCount : 0} 条候选`
+          : '未触发',
+      ),
+      textField(
+        '事实覆盖补充',
+        metadata.coverageSupplementTriggered === true
+          ? `已补充 ${typeof metadata.coverageSupplementCount === 'number' ? metadata.coverageSupplementCount : 0} 条候选`
+          : '未触发',
+      ),
+      textField(
+        '覆盖结论',
+        metadata.coverageNeedsReview === true ? '仍有事实待人工复核' : '无需人工补充复核',
+      ),
       textField(
         '多样性补充',
         metadata.diversitySupplementTriggered === true
@@ -2077,7 +2098,7 @@ const expectedOutputSummary: Partial<Record<EffectPromptNodeId, string>> = {
   COHERENT_CREATIVE_GENERATION: '将生成围绕同一创意主线的六维信息与干净 Prompt 正文。',
   CREATIVE_EVALUATION_CLASSIFICATION: '将给出质量判断、推荐主用途、兼容用途和问题原因。',
   EXACT_SELECTION_AND_SUPPLEMENT:
-    '将按质量与语义多样性选满目标数量；数量不足时定向补齐，高风险冗余偏多时最多追加一次多样性候选。',
+    '将先从现有候选中按质量与差异选满目标数量；安全候选不足时补充一次，候选池仍缺必用事实时再定向补充一次。覆盖仍不足会保留足量草稿并提示人工复核。',
   RESULT_SAVE: '将最佳结果保存为节点草稿，完成校验前不会提交工作副本。',
   ITEM_EVALUATE: '将重新评估当前条目的产品关联、质量与推荐用途。',
 };

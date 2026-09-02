@@ -84,7 +84,7 @@ def build_graph(
         await pipeline.complete_classification(runtime.context, round_number=0)
         supplement, needed = await pipeline.select_creatives(runtime.context, round_number=0)
         supplement_round = 1
-        while needed and supplement_round <= MAX_REPLENISHMENT_ROUNDS + 1:
+        while needed and supplement_round <= MAX_REPLENISHMENT_ROUNDS:
             if supplement:
                 await _gather_cancel_on_error(
                     [

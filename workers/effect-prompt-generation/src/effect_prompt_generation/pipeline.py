@@ -120,7 +120,11 @@ from .quality import (
     validate_creative_evaluation,
 )
 
-MAX_REPLENISHMENT_ROUNDS = 3
+# Quantity recovery and business-fact recovery are separate concerns. Each may
+# run once; repeatedly chasing an evaluator's unresolved fact finding only
+# amplifies model variance and cost.
+MAX_REPLENISHMENT_ROUNDS = 2
+COVERAGE_SUPPLEMENT_RATIO = 0.20
 SEMANTIC_DUPLICATE_RATE_LIMIT = 15.0
 # Keep ordinary calls economical. If a three-item strict response is malformed
 # or truncated, the pipeline automatically isolates that shard into single-item
@@ -162,6 +166,10 @@ class RunCache:
     exact_duplicate_count: int = 0
     supplemented: bool = False
     replenishment_rounds: int = 0
+    quantity_supplemented: bool = False
+    quantity_supplement_count: int = 0
+    coverage_supplemented: bool = False
+    coverage_supplement_count: int = 0
     diversity_supplemented: bool = False
     diversity_supplement_count: int = 0
     diversity_supplement_slot_ids: set[str] = field(default_factory=set)
@@ -299,16 +307,25 @@ class PromptGenerationPipeline:
             for task in restored_creative_tasks
             if task.supplement_kind in {"QUANTITY", "COVERAGE"}
         ]
+        quantity_tasks = [
+            task for task in restored_creative_tasks if task.supplement_kind == "QUANTITY"
+        ]
+        coverage_tasks = [
+            task for task in restored_creative_tasks if task.supplement_kind == "COVERAGE"
+        ]
         diversity_tasks = [
             task
             for task in restored_creative_tasks
             if task.supplement_kind == "DIVERSITY"
         ]
-        cache.replenishment_rounds = max(
-            (task.round for task in replenishment_tasks),
-            default=0,
+        cache.replenishment_rounds = len(
+            {task.round for task in replenishment_tasks}
         )
         cache.supplemented = cache.replenishment_rounds > 0
+        cache.quantity_supplemented = bool(quantity_tasks)
+        cache.quantity_supplement_count = len(quantity_tasks)
+        cache.coverage_supplemented = bool(coverage_tasks)
+        cache.coverage_supplement_count = len(coverage_tasks)
         cache.diversity_supplemented = bool(diversity_tasks)
         cache.diversity_supplement_count = len(diversity_tasks)
         loaded = LoadedRun(
@@ -1206,10 +1223,20 @@ class PromptGenerationPipeline:
                 return []
         if round_number > 0 and supplement_kind in {"QUANTITY", "COVERAGE"}:
             cache.supplemented = True
-            cache.replenishment_rounds = max(
-                cache.replenishment_rounds,
-                round_number,
+            cache.replenishment_rounds = len(
+                {
+                    task.round
+                    for task in cache.creative_tasks.values()
+                    if task.supplement_kind in {"QUANTITY", "COVERAGE"}
+                }
+                | {round_number}
             )
+            if supplement_kind == "QUANTITY":
+                cache.quantity_supplemented = True
+                cache.quantity_supplement_count += requested
+            else:
+                cache.coverage_supplemented = True
+                cache.coverage_supplement_count += requested
         application = self._require_application(context)
         preferred_item_fact_ids = (
             [binding.fact_id for binding in snapshot.target_item.insight_bindings]
@@ -2367,14 +2394,28 @@ class PromptGenerationPipeline:
             for fact_id in required_fact_ids
             if fact_id not in selected_covered_fact_ids
         ]
+        eligible_covered_fact_ids = {
+            fact_id
+            for evaluation in eligible_evaluations
+            for fact_id in evaluation.realized_fact_ids
+        }
+        eligible_covered_fact_ids.update(fixed_covered_fact_ids)
+        pool_missing_coverage_fact_ids = [
+            fact_id
+            for fact_id in required_fact_ids
+            if fact_id not in eligible_covered_fact_ids
+        ]
         should_quantity_supplement = (
             missing > 0
+            and not cache.quantity_supplemented
             and cache.replenishment_rounds < MAX_REPLENISHMENT_ROUNDS
             and snapshot.operation != "ITEM_EVALUATE"
         )
         should_coverage_supplement = (
             not should_quantity_supplement
-            and bool(missing_coverage_fact_ids)
+            and missing == 0
+            and bool(pool_missing_coverage_fact_ids)
+            and not cache.coverage_supplemented
             and cache.replenishment_rounds < MAX_REPLENISHMENT_ROUNDS
             and snapshot.operation == "BATCH_GENERATE"
         )
@@ -2433,22 +2474,27 @@ class PromptGenerationPipeline:
                 missing_count=missing,
             )
         elif should_coverage_supplement:
-            coverage_supplement_count = max(
-                len(missing_coverage_fact_ids) + 1,
-                len(missing_coverage_fact_ids) * 2,
+            coverage_supplement_count = _coverage_supplement_count(
+                selection_target,
+                len(pool_missing_coverage_fact_ids),
             )
             pending = await self.plan_creatives(
                 context,
                 round_number=round_number + 1,
                 requested_count=coverage_supplement_count,
                 supplement_kind="COVERAGE",
-                coverage_fact_ids=missing_coverage_fact_ids,
+                coverage_fact_ids=pool_missing_coverage_fact_ids,
             )
         # Capacity exhaustion may turn an intended supplement into an empty
         # plan. Only report PARTIAL when there is real work to execute; the
         # final coverage gate will otherwise retain the draft as NEEDS_REVIEW.
         should_supplement = bool(pending)
         selection_failed = missing > 0 and not should_supplement
+        coverage_needs_review = (
+            missing == 0
+            and bool(missing_coverage_fact_ids)
+            and not should_supplement
+        )
         if cache.embedding_stage_metadata:
             cache.embedding_stage_metadata.update(
                 {
@@ -2467,7 +2513,15 @@ class PromptGenerationPipeline:
         )
         stage_warnings = [
             warning
-            for warning in (cache.embedding_warning, diversity_soft_warning)
+            for warning in (
+                cache.embedding_warning,
+                diversity_soft_warning,
+                (
+                    "REQUIRED_FACT_COVERAGE_NEEDS_REVIEW"
+                    if coverage_needs_review
+                    else None
+                ),
+            )
             if warning
         ]
         await self._stage(
@@ -2487,6 +2541,8 @@ class PromptGenerationPipeline:
                 if should_coverage_supplement and should_supplement
                 else "合格候选不足，正在执行数量补充"
                 if should_quantity_supplement and should_supplement
+                else "已选满目标数量，仍有必用事实待人工复核"
+                if coverage_needs_review
                 else "已按质量与语义多样性选满目标数量"
             ),
             metadata={
@@ -2495,9 +2551,16 @@ class PromptGenerationPipeline:
                 "targetCount": 1 if item_operation else settings.target_count,
                 "missingCount": missing,
                 "missingRequiredFactCount": len(missing_coverage_fact_ids),
-                "coverageSupplementTriggered": (
-                    should_coverage_supplement and should_supplement
-                ),
+                "poolMissingRequiredFactCount": len(pool_missing_coverage_fact_ids),
+                "coverageSupplementTriggered": cache.coverage_supplemented,
+                "coverageSupplementCount": cache.coverage_supplement_count,
+                "quantitySupplementTriggered": cache.quantity_supplemented,
+                "quantitySupplementCount": cache.quantity_supplement_count,
+                "coverageNeedsReview": coverage_needs_review,
+                "initialCandidateCount": cache.candidate_target_count,
+                "cumulativeCandidateCount": len(cache.creatives),
+                "safeCandidateCount": len(eligible_evaluations),
+                "selectedCandidateCount": len(result.selected),
                 "hardRejectedCount": sum(
                     bool(item.hard_issues)
                     for item in cache.creative_evaluations.values()
@@ -2511,7 +2574,7 @@ class PromptGenerationPipeline:
                             if not item.hard_issues
                         ]
                     )
-                    - len(cache.accepted_items)
+                    - len(result.selected)
                     - result.exact_duplicate_count,
                 ),
                 "exactDuplicateCount": result.exact_duplicate_count,
@@ -2888,6 +2951,21 @@ def _maximum_semantic_duplicates(evaluated_count: int) -> int:
         0,
         math.ceil(evaluated_count * SEMANTIC_DUPLICATE_RATE_LIMIT / 100.0) - 1,
     )
+
+
+def _coverage_supplement_count(
+    selection_target: int,
+    missing_fact_count: int,
+) -> int:
+    """Keep one coverage retry useful without letting it become another batch."""
+    if selection_target <= 0 or missing_fact_count <= 0:
+        return 0
+    supplement_limit = max(
+        1,
+        math.ceil(selection_target * COVERAGE_SUPPLEMENT_RATIO),
+    )
+    desired = max(missing_fact_count + 1, missing_fact_count * 2)
+    return min(supplement_limit, desired)
 
 
 def _pending_semantic_evaluation() -> SemanticEvaluation:

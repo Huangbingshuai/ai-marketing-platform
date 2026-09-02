@@ -40,6 +40,7 @@ from effect_prompt_generation.models import (
 from effect_prompt_generation.pipeline import (
     PipelineError,
     PromptGenerationPipeline,
+    _coverage_supplement_count,
     _evaluation_context_fact_ids,
     _maximum_semantic_duplicates,
     _semantic_evaluation,
@@ -113,6 +114,13 @@ def test_semantic_duplicate_limit_is_strictly_below_fifteen_percent() -> None:
     assert eight.duplicate_rate == 16
 
 
+def test_coverage_supplement_is_capped_at_twenty_percent() -> None:
+    assert _coverage_supplement_count(10, 1) == 2
+    assert _coverage_supplement_count(50, 20) == 10
+    assert _coverage_supplement_count(100, 20) == 20
+    assert _coverage_supplement_count(50, 0) == 0
+
+
 class FirstRoundRejectingProvider(MockAiProvider):
     async def evaluate_creatives(
         self,
@@ -178,6 +186,46 @@ class AlwaysRejectingProvider(MockAiProvider):
         )
         items = [
             item.model_copy(update={"hard_issues": ["FABRICATED_FACT"]})
+            for item in call.value.items
+        ]
+        return replace(call, value=call.value.model_copy(update={"items": items}))
+
+
+class MissingPainCoverageProvider(MockAiProvider):
+    async def evaluate_creatives(
+        self,
+        candidates: list[CreativeCandidate],
+        *,
+        application: InsightApplicationMap,
+        fact_visual_strategy: FactVisualStrategy | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        call = await super().evaluate_creatives(
+            candidates,
+            application=application,
+            fact_visual_strategy=fact_visual_strategy,
+            **kwargs,
+        )
+        pain_fact_ids = {
+            fact.fact_id
+            for fact in application.usable
+            if fact.field == InsightField.CORE_PAIN_POINT
+        }
+        items = [
+            item.model_copy(
+                update={
+                    "fact_evidence": [
+                        evidence
+                        for evidence in item.fact_evidence
+                        if evidence.fact_id not in pain_fact_ids
+                    ],
+                    "realized_fact_ids": [
+                        fact_id
+                        for fact_id in item.realized_fact_ids
+                        if fact_id not in pain_fact_ids
+                    ],
+                }
+            )
             for item in call.value.items
         ]
         return replace(call, value=call.value.model_copy(update={"items": items}))
@@ -1150,6 +1198,78 @@ async def test_does_not_replenish_when_initial_selection_already_covers_facts() 
         "CREATIVE": 4,
         "CLASSIFICATION": 5,
     }
+    selection_stage = next(
+        stage
+        for stage in reversed(api.stages)
+        if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
+    )
+    assert selection_stage.metadata["initialCandidateCount"] == 14
+    assert selection_stage.metadata["cumulativeCandidateCount"] == 14
+    assert selection_stage.metadata["safeCandidateCount"] == 11
+    assert selection_stage.metadata["selectedCandidateCount"] == 10
+    assert selection_stage.metadata["quantitySupplementTriggered"] is False
+    assert selection_stage.metadata["coverageSupplementTriggered"] is False
+
+
+@pytest.mark.asyncio
+async def test_unresolved_fact_coverage_supplements_once_then_keeps_exact_draft() -> None:
+    api = PromptApi()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=MissingPainCoverageProvider(),
+        embedding_provider=DistinctEmbeddingProvider(),
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _snapshot())
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    assert api.result is not None
+    assert len(api.result.items) == 10
+    assert api.result.quality_status == "NEEDS_REVIEW"
+    assert api.result.metrics.generated_candidate_count == 16
+    assert api.result.metrics.replenishment_rounds == 1
+    creative_tasks = [
+        task
+        for shard in api.shards.values()
+        if shard.phase.value == "CREATIVE"
+        for task in shard.creative_plan
+    ]
+    coverage_tasks = [
+        task for task in creative_tasks if task.supplement_kind == "COVERAGE"
+    ]
+    assert len(coverage_tasks) == 2
+    assert {task.round for task in coverage_tasks} == {1}
+    selection_stage = next(
+        stage
+        for stage in reversed(api.stages)
+        if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
+    )
+    assert selection_stage.status.value == "SUCCEEDED"
+    assert selection_stage.metadata["coverageSupplementTriggered"] is True
+    assert selection_stage.metadata["coverageSupplementCount"] == 2
+    assert selection_stage.metadata["coverageNeedsReview"] is True
+    assert selection_stage.metadata["initialCandidateCount"] == 14
+    assert selection_stage.metadata["cumulativeCandidateCount"] == 16
+    assert "REQUIRED_FACT_COVERAGE_NEEDS_REVIEW" in selection_stage.warnings
+
+    resumed = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=MissingPainCoverageProvider(),
+        embedding_provider=DistinctEmbeddingProvider(),
+        shard_size=5,
+    )
+    resumed.register_snapshot(runtime, _snapshot())
+    await resumed.load_and_snapshot(runtime)
+    resumed_cache = resumed._cache(runtime)
+    assert resumed_cache.coverage_supplemented is True
+    assert resumed_cache.coverage_supplement_count == 2
+    assert resumed_cache.quantity_supplemented is False
+    assert resumed_cache.replenishment_rounds == 1
 
 
 @pytest.mark.asyncio
@@ -1175,10 +1295,19 @@ async def test_candidate_ceiling_stops_repeated_low_quality_supplements() -> Non
         "CREATIVE": 5,
         "CLASSIFICATION": 7,
     }
+    supplement_tasks = [
+        task
+        for shard in api.shards.values()
+        if shard.phase.value == "CREATIVE"
+        for task in shard.creative_plan
+        if task.round > 0
+    ]
+    assert {task.supplement_kind for task in supplement_tasks} == {"QUANTITY"}
+    assert {task.round for task in supplement_tasks} == {1}
 
 
 @pytest.mark.asyncio
-async def test_stops_after_three_rounds_when_real_safety_issues_remain() -> None:
+async def test_stops_after_one_quantity_supplement_when_safety_issues_remain() -> None:
     api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -1195,6 +1324,13 @@ async def test_stops_after_three_rounds_when_real_safety_issues_remain() -> None
         )
 
     assert api.result is None
+    creative_rounds = {
+        task.round
+        for shard in api.shards.values()
+        if shard.phase.value == "CREATIVE"
+        for task in shard.creative_plan
+    }
+    assert creative_rounds == {0, 1}
 
 
 def test_worker_does_not_require_literal_overlap_for_semantic_evidence() -> None:
