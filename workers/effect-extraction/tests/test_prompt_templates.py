@@ -19,42 +19,44 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     image = load_prompt_template("image_analysis.prompt.txt")
     commerce = load_prompt_template("commerce_extraction.prompt.txt")
     semantic = load_prompt_template("semantic_refinement.prompt.txt")
+    semantic_images = load_prompt_template(
+        "semantic_image_suggestion_review.prompt.txt"
+    )
     normalization = load_prompt_template("result_normalization.prompt.txt")
 
     assert load_prompt_version("document_extraction.prompt.txt") == "3.0.0"
     assert load_prompt_version("image_analysis.prompt.txt") == "6.5.0"
     assert load_prompt_version("commerce_extraction.prompt.txt") == "1.0.0"
-    assert load_prompt_version("semantic_refinement.prompt.txt") == "5.6.0"
+    assert load_prompt_version("semantic_refinement.prompt.txt") == "6.4.0"
+    assert load_prompt_version("semantic_image_suggestion_review.prompt.txt") == "1.1.1"
     assert load_prompt_version("result_normalization.prompt.txt") == "3.1.0"
 
     assert "产品文档事实抽取器" in document.template
     assert "产品图片" in image.template
     assert "公开商品页面信息抽取器" in commerce.template
-    assert "每个 imageSuggestion 恰好返回一条决定" in semantic.template
     assert "用户事实" in semantic.template
     assert "绝不能修改用户事实" in semantic.template
-    assert "remainingCapacityByField" in semantic.template
-    assert "suggestionDecisions" in semantic.template
     assert "userFactNotices" in semantic.template
-    assert "readOnlyReferences" in semantic.template
-    assert "同一个业务层内比较用户事实" in semantic.template
-    assert "卖点层包含 coreSellingPoints、secondarySellingPoints" in semantic.template
-    assert "严禁跨业务层关联" in semantic.template
-    assert "穷举检查每层内部的全部无序事实对" in semantic.template
-    assert "不要求形成严格父子包含" in semantic.template
-    assert "最小“原子业务命题”" in semantic.template
-    assert "额外信息只能阻止判为完全重复" in semantic.template
-    assert "不能因为其他原子命题不同而降为 RELATED_DISTINCT" in semantic.template
-    assert "商品无关关系校准" in semantic.template
-    assert "特定时段集中备货" in semantic.template
-    assert "背景相同不能覆盖目的差异" in semantic.template
-    assert "同一对问题事实只输出一条 userFactNotice" in semantic.template
-    assert "可替换性测试" in semantic.template
-    assert "有效差异测试" in semantic.template
-    assert "RELATED_DISTINCT" in semantic.template
-    assert "唯一保留集合" in semantic.template
-    assert "任意两条 KEEP 都必须具有不同的独立语义贡献" in semantic.template
+    assert "userFactPairs" in semantic.template
+    assert "pairDecisions" in semantic.template
+    assert "共同用餐或分享食物" in semantic.template
+    assert "周期性家庭备货" in semantic.template
+    assert "为他人选购礼物" in semantic.template
+    assert "每个 pairId 恰好出现一次" in semantic.template
+    assert "制作工艺与口感、香气、质地" in semantic.template
+    assert "单字段审查还是全字段独立复核" in semantic.template
+    assert "每个 imageSuggestion 恰好返回一条决定" in semantic_images.template
+    assert "remainingCapacityByField" in semantic_images.template
+    assert "suggestionDecisions" in semantic_images.template
+    assert "readOnlyReferences" in semantic_images.template
+    assert "全部 imageSuggestions 作为一个批次" in semantic_images.template
+    assert "不能从画面推断口感" in semantic_images.template
+    assert "INDEPENDENT_VISIBLE_FACT" in semantic_images.template
+    assert "INFERRED_INTENT_OR_CLAIM" in semantic_images.template
+    assert "静物、厨房烹饪准备、节庆装饰" in semantic_images.template
+    assert "任意两条之间必须有不同的独立可见语义贡献" in semantic_images.template
     assert "Worker" not in semantic.template
+    assert "Worker" not in semantic_images.template
     assert "产品素材制作信息卡标准化器" in normalization.template
 
     for prompt in (document.template, commerce.template, normalization.template):
@@ -98,6 +100,7 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     )
     for term in regression_only_terms:
         assert term not in semantic.template
+        assert term not in semantic_images.template
         assert term not in image.template
 
     candidate_fields = ExtractionCandidate.model_json_schema(by_alias=True)[
@@ -139,10 +142,20 @@ def test_effect_extraction_prompts_render_business_inputs() -> None:
     )
     semantic = render_prompt(
         "semantic_refinement.prompt.txt",
+        review_scope="单字段独立审查",
         user_facts_by_layer_json=(
             '{"SCENARIO":{"usageScenarios":'
             '[{"factId":"user-usageScenarios-01","value":"煲仔饭烹饪"}]}}'
         ),
+        user_fact_pairs_json=(
+            '[{"pairId":"pair-0001","field":"usageScenarios",'
+            '"leftFact":{"factId":"user-usageScenarios-01","value":"煲仔饭烹饪"},'
+            '"rightFact":{"factId":"user-usageScenarios-02","value":"蒸制食用"}}]'
+        ),
+    )
+    semantic_images = render_prompt(
+        "semantic_image_suggestion_review.prompt.txt",
+        user_facts_json=('[{"factId":"user-usageScenarios-01","value":"煲仔饭烹饪"}]'),
         image_suggestions_json='[{"factId":"image-usageScenarios-01","value":"蒸锅食用"}]',
         reference_facts_json='[{"factId":"reference-visualFeatures","value":"肥瘦纹理清晰"}]',
         remaining_capacity_json='{"usageScenarios":4}',
@@ -160,10 +173,12 @@ def test_effect_extraction_prompts_render_business_inputs() -> None:
     assert '<protected_user_input_json>\n{"marketingGoal":"人工目标"}' in normalization
     assert '"factId":"user-usageScenarios-01"' in semantic
     assert '"SCENARIO"' in semantic
-    assert '"factId":"image-usageScenarios-01"' in semantic
-    assert '"factId":"reference-visualFeatures"' in semantic
-    assert '"usageScenarios":4' in semantic
+    assert '"pairId":"pair-0001"' in semantic
+    assert '"factId":"image-usageScenarios-01"' in semantic_images
+    assert '"factId":"reference-visualFeatures"' in semantic_images
+    assert '"usageScenarios":4' in semantic_images
     assert "向量召回" not in semantic
+    assert "向量召回" not in semantic_images
 
 
 def test_effect_extraction_prompt_fails_fast_when_a_variable_is_missing() -> None:

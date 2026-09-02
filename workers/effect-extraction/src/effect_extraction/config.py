@@ -139,6 +139,9 @@ class WorkerSettings(BaseSettings):
     ark_semantic_reasoning_effort: Literal["minimal", "low", "medium", "high"] = Field(
         default="minimal", alias="ARK_SEMANTIC_REASONING_EFFORT"
     )
+    ark_semantic_user_review_reasoning_effort: Literal[
+        "minimal", "low", "medium", "high"
+    ] = Field(default="minimal", alias="ARK_SEMANTIC_USER_REVIEW_REASONING_EFFORT")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
     @model_validator(mode="after")

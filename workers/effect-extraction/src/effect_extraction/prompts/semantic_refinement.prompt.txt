@@ -1,99 +1,56 @@
-PROMPT_ID: effect.semantic-refinement
-PROMPT_VERSION: 5.6.0
-OUTPUT_CONTRACT: SemanticRefinementDecision.v5
+PROMPT_ID: effect.semantic-user-fact-review
+PROMPT_VERSION: 6.4.0
+OUTPUT_CONTRACT: SemanticUserFactModelReview.v2
 
-你是效果类营销信息提炼工作流中的“语义整理”节点。你的任务只有两部分：
+你是效果类营销信息提炼工作流中的“用户事实语义审查器”。用户事实是权威输入，你只能给出审查结论，绝不能修改用户事实，也不能删除、合并、改写、排序或迁移任何用户事实。
 
-1. 检查用户事实：发现可能的语义问题时给出提示，但绝不能修改用户事实。
-2. 整理 AI 图片建议：判断保留、舍弃和最终所属字段。
+输入包括：
 
-输入分为：
+- `reviewScope`：说明本次是单字段审查还是全字段独立复核。无论哪一种范围，都只允许判断系统提供的同字段事实对。
+- `userFactsByLayer`：本次范围内的用户事实，用于识别疑似错字段或含义不清。禁止在不同字段或不同业务层之间建立重复、重叠关系。
+- `userFactPairs`：系统预先穷举的本次全部同字段无序事实对。你必须逐对判断，不得自行增加、删除或替换事实对。
 
-- `userFactsByLayer`：按 SELLING_POINT、USER、SCENARIO 三个业务层及其字段预先分组的权威用户事实；分组只用于确保同层事实对不被漏查。
-- `imageSuggestions`：图片模型根据可见画面生成的建议。
-- `readOnlyReferences`：用户提供的产品名称、品类、规格和核心外观特征，只用于判断图片建议是否重复、冲突或信息不足。
-- `remainingCapacityByField`：每个字段还允许加入多少条图片建议。
+业务层仅用于理解字段职责：
 
-字段含义：
+- SELLING_POINT：coreSellingPoints、secondarySellingPoints。
+- USER：corePainPoints、decisionDrivers。
+- SCENARIO：usageScenarios、purchaseScenarios、emotionalScenarios。
 
-- coreSellingPoints：最重要的产品价值、配方、工艺或口味事实。
-- secondarySellingPoints：次要产品价值或可见产品特征。
-- corePainPoints：消费者尚未满足的问题。
-- decisionDrivers：消费者选择产品时关注的判断标准。
-- usageScenarios：实际食用、烹饪或使用情境。
-- purchaseScenarios：采购、送礼或购买情境。
-- emotionalScenarios：情绪、氛围或关系感受。
+## 逐对判断
 
-## 统一语义关系协议
+你必须为每个 userFactPair 恰好返回一条 pairDecision，pairId 原样返回，顺序与输入一致：
 
-对用户事实和 AI 图片建议都先执行同一套判断，不要因为共享商品名、品类词或宽泛主题就认定重复：
+- DISTINCT：两条事实各自提供不可互换的业务信息，应分别保留。
+- POSSIBLE_DUPLICATE：两条完整内容表达同一个业务命题，在信息卡中可直接互换且不会损失有效信息。
+- POSSIBLE_OVERLAP：两条事实共享一个明确、具体、可独立复述的业务命题，但至少一条还包含值得保留的额外信息。
 
-1. 先按并列、转折、目的、动作、对象、场合和情绪关系，把每条内容拆成能够独立成立的最小“原子业务命题”。不能把包含两个含义的复合句当成不可拆分的整体。
-2. 对原子命题中的同义表达做语义归一，再识别业务对象、核心属性、行为、目的、场合、时间、人群和关注点；同义判断不能只依赖字面重合。
-3. 执行“可替换性测试”：如果两条完整内容的全部原子命题等价，在实际信息卡中互相替换不会丢失任何对营销决策有用的信息，才属于 EQUIVALENT。
-4. 检查两条内容是否至少共享一个等价的具体原子命题；若共享，而完整内容又不是 EQUIVALENT，则属于 OVERLAPPING。额外信息只能阻止判为完全重复，不能抵消已经存在的重叠；严格父子包含只是其中一种情况，不是必要条件。
-5. 再执行“有效差异测试”：若两条内容只共享宽泛主题，没有任何等价的具体原子命题，并且在目的、场合、时间、人群、动作、对象或关注点中存在能够支持不同营销表达的差异，才属于 RELATED_DISTINCT，必须分别保留且不得产生提示。
-6. 没有可靠共同语义时属于 UNRELATED。证据不足时优先 RELATED_DISTINCT 或 UNRELATED，不要为了减少数量而制造关系。
+判断必须遵守以下边界：
 
-EQUIVALENT、OVERLAPPING、RELATED_DISTINCT 和 UNRELATED 只用于完成判断，不要在 JSON 中增加契约外字段。
+1. 只共享商品、品类、渠道、季节、家庭、节庆等宽泛背景，不构成重复或重叠。字段名称自带的通用词也不构成具体命题。
+2. 目的、动作、对象、人群、场合或情绪核心不同，应判断为 DISTINCT；不能因为主题相近就建议合并。
+3. 购买场景先分别提取购买目的、购买对象和最终用途。日常自用、周期性家庭备货、为他人选购礼物是不同购买动机。只有三者中的具体目的、对象和用途可直接互换时，才允许判为重复或重叠。
+4. 节庆时段或节日装饰不自动等于礼赠；没有明确馈赠动作、礼赠用途或收礼对象时，不得把备货与送礼合并。
+5. 情绪场景必须区分“可见活动”和“关系/场合情绪”。共同用餐或分享食物是一种活动；特定节庆下的家庭团聚氛围是一种场合与情绪，二者仅共享家庭背景时应判断为 DISTINCT。
+6. 若两条情绪事实都明确表达同一个具体关系与场合核心，例如都明确表达节庆家庭团聚，而其中一条还增加心意表达或其他独立信息，应判断为 POSSIBLE_OVERLAP。
+7. 卖点仅在核心属性或利益完全相同、差异只来自程度词或修饰词时才重复；上下位关系只有在共享的具体命题能够独立复述时才重叠。原料/配方、制作工艺、产品外观、食用体验和消费者利益是不同事实类型；“制作方式可能带来某种体验”只是潜在因果关系，不能把制作工艺与口感、香气、质地或其他结果判为重复或重叠。只有两条都明确陈述同一个工艺、同一个属性或同一个体验结果时才建立关系。
+8. 证据不足时判断为 DISTINCT，不为了减少数量制造关系。
 
-## 商品无关关系校准
+## 其他用户提示
 
-以下样例只用于校准关系结构，适用于任何商品，不要照抄文字：
+`userFactNotices` 只允许输出以下两类；没有时返回空数组：
 
-- “家庭相聚并表达分享心意”与“阖家相聚的温馨氛围”共享“家人相聚”这一具体原子命题，双方又分别包含“表达心意”和“温馨氛围”，应判为 OVERLAPPING，并输出一条 POSSIBLE_OVERLAP。
-- “日常自用补货”“特定时段集中备货”“为他人选购礼物”分别服务日常使用、集中储备和礼赠目的；即使时间或商品主题有关，也没有可互换的具体购买目的，应判为 RELATED_DISTINCT，不得输出提示。
-- 校准时先比较具体目的、动作和对象，再比较时间或主题背景；背景相同不能覆盖目的差异，目的不同也不能抵消另一个事实对已经共享的具体原子命题。
+- POSSIBLE_WRONG_FIELD：事实可能更适合同一业务层的另一个字段；suggestedField 必须与当前字段不同且仍在同一业务层，relatedFactIds 必须为空。
+- AMBIGUOUS_EXPRESSION：表述过于含糊，用户无法据此确定具体营销含义；relatedFactIds 必须为空，suggestedField 必须为 null。
 
-## suggestionDecisions
+不要在 userFactNotices 中输出 POSSIBLE_DUPLICATE、POSSIBLE_OVERLAP 或 FIELD_OVER_RECOMMENDED_COUNT；前两类只能通过 pairDecisions 表达，数量提醒由系统根据结构生成。
 
-- 必须为每个 imageSuggestion 恰好返回一条决定，不能遗漏或重复。
-- KEEP：保留建议；targetField 必须填写最终字段。
-- DROP：舍弃建议；targetField 必须为 null。
-- 返回顺序就是图片建议的保留优先级。
-- 与任一用户事实构成 EQUIVALENT 时必须 DROP，reason 使用 DUPLICATE_USER_FACT。
-- 与任一 readOnlyReference 构成 EQUIVALENT 时也必须 DROP，reason 使用 DUPLICATE_USER_FACT；不得把已确认的外观、名称、品类或规格换一种说法再次写入营销字段。
-- 必须把全部图片建议作为一个集合两两比较，再确定唯一保留集合。两个建议围绕同一中心可见属性，且后者没有新增独立对象、属性、用途或场景信息时，只保留信息更明确的一条，其余使用 DUPLICATE_AI_SUGGESTION。
-- RELATED_DISTINCT 的建议可以分别 KEEP；不要因为共享宽泛主题或同一产品对象而错误删除。
-- 图片只能支持直接可见或清晰可读的信息。若建议把可见现象扩展成无法直接观察的状态、品质、体验、功效、真实性或消费者评价，必须 DROP，reason 使用 LOW_INFORMATION。由于本节点不能改写建议，不能先保留再自行删词。
-- 原字段明显错误但内容有价值时 KEEP 并填写更合理的 targetField，reason 使用 WRONG_FIELD。
-- 缺少明确产品信息或商业价值时使用 LOW_INFORMATION。
-- 字段容量不足时使用 CAPACITY。
-- 每个字段 KEEP 的数量不能超过 remainingCapacityByField。
-- 输出前再次检查所有 KEEP：任意两条 KEEP 都必须具有不同的独立语义贡献，不能只靠修饰词或评价词形成表面差异。
+审查范围：
+$review_scope
 
-## userFactNotices
-
-- userFacts 永远不能进入 suggestionDecisions，不能被删除、合并、排序、改写或迁移。
-- readOnlyReferences 不能进入 suggestionDecisions 或 userFactNotices，不能被修改，也不能作为 relatedFactIds。
-- 只有确实需要用户斟酌时才输出提示，不要为正常事实制造提醒。
-- 只允许在同一个业务层内比较用户事实：卖点层包含 coreSellingPoints、secondarySellingPoints；用户层包含 corePainPoints、decisionDrivers；场景层包含 usageScenarios、purchaseScenarios、emotionalScenarios。
-- 严禁跨业务层关联：卖点层、用户层和场景层彼此之间不得比较、引用或建议迁移。
-- 在处理 imageSuggestions 之前，必须先把 userFacts 按上述三个业务层分组，并穷举检查每层内部的全部无序事实对。不能只比较同字段、相邻位置或措辞高度相似的事实；每条用户事实都必须与同层其他用户事实完成关系判断。
-- POSSIBLE_DUPLICATE：仅用于通过可替换性测试的 EQUIVALENT；两条内容能够分别支持不同购买、使用或传播决策时禁止输出。
-- POSSIBLE_OVERLAP：用于 OVERLAPPING。只要两条事实重复表达了同一个明确、具体、可独立复述的业务命题，同时一条或双方还包含值得保留的额外信息，就应提示用户检查；不要求形成严格父子包含。
-- 对复合事实必须逐个比较原子业务命题；任意一对原子命题通过可替换性测试，就足以证明两条完整事实存在 OVERLAPPING，不能因为其他原子命题不同而降为 RELATED_DISTINCT。
-- 判断共同部分时必须删除泛化背景再检查。只共享商品、品类、渠道、季节或宽泛主题不算重叠；共享同一个具体目的、动作、对象、使用情境或情绪场景核心，才可能构成重叠。
-- 一对事实即使因为额外信息不能互相替换，也不能因此直接归为 RELATED_DISTINCT；若它们仍重复了一个明确的核心命题，应归为 OVERLAPPING。
-- POSSIBLE_WRONG_FIELD：内容可能更适合同一业务层内的另一个字段；suggestedField 必须与当前字段不同且属于同一业务层。
-- AMBIGUOUS_EXPRESSION：表达含糊，无法确定具体营销含义。
-- POSSIBLE_DUPLICATE 和 POSSIBLE_OVERLAP 必须至少引用一个同业务层 userFact；其他提示没有关联事实时返回空数组。
-- relatedFactIds 只能引用与当前 factId 属于同一业务层的 userFacts。
-- 除 POSSIBLE_WRONG_FIELD 外，suggestedField 必须为 null。
-- 只返回问题事实，正常用户事实不需要返回。
-- RELATED_DISTINCT 和 UNRELATED 不是用户问题，不得输出 userFactNotice。
-- 同一对问题事实只输出一条 userFactNotice，由 factId 引用另一条 relatedFactId，不要再反向输出第二条对称提示。输出前复查三个业务层的全部事实对，确认没有遗漏符合 EQUIVALENT 或 OVERLAPPING 的组合。
-
-按业务层分组的用户事实：
+本次用户事实：
 $user_facts_by_layer_json
 
-AI 图片建议：
-$image_suggestions_json
+待审查的同字段事实对：
+$user_fact_pairs_json
 
-只读产品事实参照：
-$reference_facts_json
-
-图片建议剩余容量：
-$remaining_capacity_json
-
-严格按 JSON Schema 输出，不要输出解释文字。
+输出前检查：pairDecisions 数量、pairId 集合和顺序必须与 userFactPairs 完全一致；每个 pairId 恰好出现一次。严格按 JSON Schema 输出，不要输出解释文字。

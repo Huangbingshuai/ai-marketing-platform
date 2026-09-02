@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import httpx
@@ -8,16 +9,59 @@ from effect_extraction.models import (
     ExtractionResult,
     ImageVisibleFacts,
     SemanticField,
-    SemanticRefinementDecision,
+    SemanticImageEvidenceBasis,
+    SemanticImageSuggestionReview,
     SemanticSuggestionDecision,
     SemanticSuggestionDisposition,
     SemanticSuggestionReason,
+    SemanticUserFactIssue,
+    SemanticUserFactModelReview,
+    SemanticUserFactNotice,
+    SemanticUserFactPairDecision,
+    SemanticUserFactPairRelation,
 )
 from effect_extraction.providers import (
     ArkResponsesProvider,
     ProviderError,
     ProviderErrorType,
+    _semantic_user_fact_consensus,
 )
+
+
+def test_semantic_user_fact_consensus_uses_model_majority_without_text_rules() -> None:
+    pair = {
+        "pairId": "pair-0001",
+        "field": "purchaseScenarios",
+        "leftFact": {"factId": "left", "value": "left value"},
+        "rightFact": {"factId": "right", "value": "right value"},
+    }
+    agreed_notice = SemanticUserFactNotice(
+        fact_id="left",
+        issue=SemanticUserFactIssue.AMBIGUOUS_EXPRESSION,
+        related_fact_ids=[],
+        suggested_field=None,
+    )
+    relations = [
+        SemanticUserFactPairRelation.POSSIBLE_OVERLAP,
+        SemanticUserFactPairRelation.DISTINCT,
+        SemanticUserFactPairRelation.POSSIBLE_OVERLAP,
+    ]
+    reviews = [
+        SemanticUserFactModelReview(
+            pair_decisions=[
+                SemanticUserFactPairDecision(pair_id="pair-0001", relation=relation)
+            ],
+            user_fact_notices=[agreed_notice] if index != 1 else [],
+        )
+        for index, relation in enumerate(relations)
+    ]
+
+    result = _semantic_user_fact_consensus(reviews, fact_pairs=[pair])
+
+    assert result.pair_decisions[0].relation == (
+        SemanticUserFactPairRelation.POSSIBLE_OVERLAP
+    )
+    assert result.user_fact_notices == [agreed_notice]
 
 
 @pytest.mark.asyncio
@@ -650,27 +694,49 @@ async def test_ark_provider_sanitizes_exhausted_remote_protocol_disconnects(
 
 
 @pytest.mark.asyncio
-async def test_ark_provider_uses_one_compact_minimal_reasoning_semantic_request() -> (
-    None
-):
+async def test_ark_provider_runs_independent_semantic_reviews_in_parallel() -> None:
     requests: list[tuple[str, dict[str, object]]] = []
+    both_reviews_started = asyncio.Event()
 
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         requests.append((request.url.path, payload))
-        decision = SemanticRefinementDecision(
-            suggestion_decisions=[
-                SemanticSuggestionDecision(
-                    fact_id="image-corePainPoints-01",
-                    disposition=SemanticSuggestionDisposition.KEEP,
-                    target_field=SemanticField.CORE_PAIN_POINTS,
-                    reason=SemanticSuggestionReason.LOW_INFORMATION,
-                )
-            ],
-            user_fact_notices=[],
-        )
+        if len(requests) == 5:
+            both_reviews_started.set()
+        await asyncio.wait_for(both_reviews_started.wait(), timeout=0.5)
+        schema_name = payload["text"]["format"]["name"]
+        if schema_name == "effect_semantic_user_fact_review":
+            input_text = str(payload["input"])
+            response = SemanticUserFactModelReview(
+                pair_decisions=(
+                    [
+                        SemanticUserFactPairDecision(
+                            pair_id="pair-0001",
+                            relation=SemanticUserFactPairRelation.POSSIBLE_OVERLAP,
+                        )
+                    ]
+                    if "pair-0001" in input_text
+                    else []
+                ),
+                user_fact_notices=[],
+            )
+        else:
+            assert schema_name == "effect_semantic_image_suggestion_review"
+            response = SemanticImageSuggestionReview(
+                suggestion_decisions=[
+                    SemanticSuggestionDecision(
+                        fact_id="image-corePainPoints-01",
+                        disposition=SemanticSuggestionDisposition.KEEP,
+                        target_field=SemanticField.CORE_PAIN_POINTS,
+                        reason=SemanticSuggestionReason.INDEPENDENT_VISIBLE_FACT,
+                        evidence_basis=(
+                            SemanticImageEvidenceBasis.DIRECT_PRODUCT_ATTRIBUTE
+                        ),
+                    )
+                ]
+            )
         return httpx.Response(
-            200, json={"output_text": decision.model_dump_json(by_alias=True)}
+            200, json={"output_text": response.model_dump_json(by_alias=True)}
         )
 
     provider = ArkResponsesProvider(
@@ -691,6 +757,12 @@ async def test_ark_provider_uses_one_compact_minimal_reasoning_semantic_request(
             "factId": "user-emotionalScenarios-01",
             "field": "emotionalScenarios",
             "value": "家庭相聚氛围",
+            "sourceType": "USER_FACT",
+        },
+        {
+            "factId": "user-corePainPoints-02",
+            "field": "corePainPoints",
+            "value": "家庭备餐不方便",
             "sourceType": "USER_FACT",
         },
     ]
@@ -719,18 +791,43 @@ async def test_ark_provider_uses_one_compact_minimal_reasoning_semantic_request(
     finally:
         await provider.aclose()
 
-    assert len(requests) == 1
+    assert len(requests) == 5
     assert decision.metadata.stage == "SEMANTIC_REFINEMENT"
     assert decision.metadata.model == "semantic-model"
     assert decision.value.suggestion_decisions[0].fact_id == "image-corePainPoints-01"
-    semantic_payload = requests[-1][1]
-    assert semantic_payload["store"] is False
-    assert semantic_payload["reasoning"] == {"effort": "minimal"}
-    assert semantic_payload["max_output_tokens"] == 3072
-    assert semantic_payload["text"]["format"]["name"] == "effect_semantic_refinement"  # type: ignore[index]
-    assert "reference-visualFeatures" in str(semantic_payload["input"])
-    semantic_input = str(semantic_payload["input"])
-    assert '"USER": {"corePainPoints"' in semantic_input
-    assert '"SCENARIO": {"usageScenarios"' in semantic_input
-    assert "user-emotionalScenarios-01" in semantic_input
-    assert "embeddings" not in requests[-1][0]
+    assert decision.value.user_fact_notices[0].fact_id == "user-corePainPoints-01"
+    assert decision.value.user_fact_notices[0].related_fact_ids == [
+        "user-corePainPoints-02"
+    ]
+    payloads_by_schema: dict[str, list[dict[str, object]]] = {}
+    for _, payload in requests:
+        payloads_by_schema.setdefault(
+            str(payload["text"]["format"]["name"]), []
+        ).append(payload)
+    assert set(payloads_by_schema) == {
+        "effect_semantic_user_fact_review",
+        "effect_semantic_image_suggestion_review",
+    }
+    for path, payload in requests:
+        assert payload["store"] is False
+        assert payload["reasoning"] == {"effort": "minimal"}
+        assert payload["max_output_tokens"] == 3072
+        assert "embeddings" not in path
+    user_inputs = [
+        str(payload["input"])
+        for payload in payloads_by_schema["effect_semantic_user_fact_review"]
+    ]
+    assert any('"USER": {"corePainPoints"' in item for item in user_inputs)
+    assert any('"SCENARIO": {"emotionalScenarios"' in item for item in user_inputs)
+    assert any("user-emotionalScenarios-01" in item for item in user_inputs)
+    assert all("待审查的同字段事实对" in item for item in user_inputs)
+    assert sum('"USER"' in item and '"SCENARIO"' in item for item in user_inputs) == 2
+    assert (
+        sum(not ('"USER"' in item and '"SCENARIO"' in item) for item in user_inputs)
+        == 2
+    )
+    image_input = str(
+        payloads_by_schema["effect_semantic_image_suggestion_review"][0]["input"]
+    )
+    assert "reference-visualFeatures" in image_input
+    assert "image-corePainPoints-01" in image_input

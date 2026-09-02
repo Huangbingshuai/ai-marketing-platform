@@ -6,9 +6,11 @@ from typing import Any, Mapping, Sequence
 
 from .models import (
     ExtractionCandidate,
+    SemanticImageEvidenceBasis,
     SemanticField,
     SemanticRefinementDecision,
     SemanticSuggestionDisposition,
+    SemanticSuggestionReason,
     SemanticUserFactIssue,
 )
 from .providers import AiProvider
@@ -249,9 +251,26 @@ def _safe_suggestion_decisions(
         if row.disposition == SemanticSuggestionDisposition.DROP:
             if row.target_field is not None:
                 corrections["DROP_TARGET_IGNORED"] += 1
+            if row.reason in {
+                SemanticSuggestionReason.INDEPENDENT_VISIBLE_FACT,
+                SemanticSuggestionReason.WRONG_FIELD,
+            }:
+                corrections["INVALID_DROP_REASON"] += 1
             continue
         if row.target_field is None:
             corrections["KEEP_TARGET_MISSING"] += 1
+            continue
+        if row.evidence_basis == SemanticImageEvidenceBasis.INFERRED_INTENT_OR_CLAIM:
+            corrections["INFERRED_SUGGESTION_KEPT"] += 1
+            continue
+        moved = row.target_field.value != original["field"]
+        expected_reason = (
+            SemanticSuggestionReason.WRONG_FIELD
+            if moved
+            else SemanticSuggestionReason.INDEPENDENT_VISIBLE_FACT
+        )
+        if row.reason != expected_reason:
+            corrections["INVALID_KEEP_REASON"] += 1
             continue
         kept_counts[row.target_field] += 1
         if kept_counts[row.target_field] > remaining_capacity[row.target_field]:
@@ -292,21 +311,20 @@ def _safe_user_notices(
             corrections["INVALID_RELATED_USER_FACT"] += 1
             continue
         fact_field = SemanticField(fact["field"])
-        if any(
-            SEMANTIC_FIELD_LAYERS[SemanticField(users_by_id[related_id]["field"])]
-            != SEMANTIC_FIELD_LAYERS[fact_field]
-            for related_id in related_ids
-        ):
-            corrections["CROSS_LAYER_USER_NOTICE"] += 1
-            continue
-        if (
-            notice.issue
-            in {
-                SemanticUserFactIssue.POSSIBLE_DUPLICATE,
-                SemanticUserFactIssue.POSSIBLE_OVERLAP,
-            }
-            and not related_ids
-        ):
+        if notice.issue in {
+            SemanticUserFactIssue.POSSIBLE_DUPLICATE,
+            SemanticUserFactIssue.POSSIBLE_OVERLAP,
+        }:
+            if not related_ids:
+                corrections["INVALID_RELATED_USER_FACT"] += 1
+                continue
+            if any(
+                SemanticField(users_by_id[related_id]["field"]) != fact_field
+                for related_id in related_ids
+            ):
+                corrections["CROSS_FIELD_USER_NOTICE"] += 1
+                continue
+        elif related_ids:
             corrections["INVALID_RELATED_USER_FACT"] += 1
             continue
         if notice.issue == SemanticUserFactIssue.POSSIBLE_WRONG_FIELD:

@@ -6,7 +6,7 @@ import logging
 import random
 import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Generic, Protocol, TypeVar
@@ -19,10 +19,18 @@ from .models import (
     ExtractionResult,
     ImageVisibleFacts,
     SemanticField,
+    SemanticImageEvidenceBasis,
+    SemanticImageSuggestionReview,
     SemanticRefinementDecision,
     SemanticSuggestionDecision,
     SemanticSuggestionDisposition,
     SemanticSuggestionReason,
+    SemanticUserFactIssue,
+    SemanticUserFactModelReview,
+    SemanticUserFactNotice,
+    SemanticUserFactPairDecision,
+    SemanticUserFactPairRelation,
+    SemanticUserFactReview,
 )
 from .prompt_loader import load_prompt_version, render_prompt
 
@@ -34,6 +42,7 @@ IMAGE_ANALYSIS_PROMPT = "image_analysis.prompt.txt"
 COMMERCE_EXTRACTION_PROMPT = "commerce_extraction.prompt.txt"
 RESULT_NORMALIZATION_PROMPT = "result_normalization.prompt.txt"
 SEMANTIC_REFINEMENT_PROMPT = "semantic_refinement.prompt.txt"
+SEMANTIC_IMAGE_SUGGESTION_REVIEW_PROMPT = "semantic_image_suggestion_review.prompt.txt"
 LOGGER = logging.getLogger(__name__)
 _HIGH_DETAIL_FILE_NAME = re.compile(
     r"(?:包装|背面|背标|标签|说明|配料|成分|规格|净含量|认证|检测|奖项|证书|package|packaging|label|back)",
@@ -209,10 +218,11 @@ class MockAiProvider:
                     ),
                     target_field=field if keep else None,
                     reason=(
-                        SemanticSuggestionReason.LOW_INFORMATION
+                        SemanticSuggestionReason.INDEPENDENT_VISIBLE_FACT
                         if keep
                         else SemanticSuggestionReason.CAPACITY
                     ),
+                    evidence_basis=SemanticImageEvidenceBasis.DIRECT_PRODUCT_ATTRIBUTE,
                 )
             )
         return _mock_result(
@@ -336,6 +346,7 @@ class ArkResponsesProvider:
         semantic_max_attempts: int = 1,
         semantic_max_output_tokens: int = 3072,
         semantic_reasoning_effort: str = "minimal",
+        semantic_user_review_reasoning_effort: str = "minimal",
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._document_model = _specific_model(document_model, model)
@@ -375,6 +386,12 @@ class ArkResponsesProvider:
             if semantic_reasoning_effort in {"minimal", "low", "medium", "high"}
             else "minimal"
         )
+        self._semantic_user_review_reasoning_effort = (
+            semantic_user_review_reasoning_effort
+            if semantic_user_review_reasoning_effort
+            in {"minimal", "low", "medium", "high"}
+            else "minimal"
+        )
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/") + "/",
             timeout=timeout,
@@ -405,12 +422,165 @@ class ArkResponsesProvider:
         reference_facts: Sequence[Mapping[str, str]],
         remaining_capacity_by_field: Mapping[str, int],
     ) -> AiCallResult[SemanticRefinementDecision]:
+        calls: list[Awaitable[AiCallResult[Any]]] = []
+        if user_facts:
+            calls.append(self._review_user_facts(user_facts))
+        if image_suggestions:
+            calls.append(
+                self._review_image_suggestions(
+                    user_facts=user_facts,
+                    image_suggestions=image_suggestions,
+                    reference_facts=reference_facts,
+                    remaining_capacity_by_field=remaining_capacity_by_field,
+                )
+            )
+        results = await asyncio.gather(*calls)
+        user_fact_notices: list[SemanticUserFactNotice] = []
+        suggestion_decisions: list[SemanticSuggestionDecision] = []
+        for result in results:
+            if isinstance(result.value, SemanticUserFactReview):
+                user_fact_notices = result.value.user_fact_notices
+            elif isinstance(result.value, SemanticImageSuggestionReview):
+                suggestion_decisions = result.value.suggestion_decisions
+        return AiCallResult(
+            value=SemanticRefinementDecision(
+                suggestion_decisions=suggestion_decisions,
+                user_fact_notices=user_fact_notices,
+            ),
+            metadata=_combine_parallel_ai_call_metadata(
+                [result.metadata for result in results],
+                model=self._semantic_model,
+            ),
+        )
+
+    async def _review_user_facts(
+        self,
+        user_facts: Sequence[Mapping[str, str]],
+    ) -> AiCallResult[SemanticUserFactReview]:
+        facts_by_layer = _semantic_user_facts_by_layer(user_facts)
+        fact_pairs = _semantic_user_fact_pairs(user_facts)
+        scopes: list[
+            tuple[
+                str,
+                str,
+                list[Mapping[str, str]],
+                list[dict[str, Any]],
+            ]
+        ] = []
+        review_calls: list[Awaitable[AiCallResult[SemanticUserFactModelReview]]] = []
+        for layer, fields in _SEMANTIC_NOTICE_FIELDS_BY_LAYER.items():
+            layer_facts = facts_by_layer[layer]
+            for field in fields:
+                field_facts = layer_facts[field]
+                if not field_facts:
+                    continue
+                field_pairs = [pair for pair in fact_pairs if pair["field"] == field]
+                scopes.append((layer, field, field_facts, field_pairs))
+                review_calls.append(
+                    self._review_user_fact_scope_once(
+                        facts_by_layer={layer: {field: field_facts}},
+                        fact_pairs=field_pairs,
+                        review_scope="单字段独立审查",
+                    )
+                )
+        review_calls.extend(
+            [
+                self._review_user_fact_scope_once(
+                    facts_by_layer=facts_by_layer,
+                    fact_pairs=fact_pairs,
+                    review_scope="全字段独立复核",
+                ),
+                self._review_user_fact_scope_once(
+                    facts_by_layer=facts_by_layer,
+                    fact_pairs=fact_pairs,
+                    review_scope="全字段独立复核",
+                ),
+            ]
+        )
+        results = await asyncio.gather(*review_calls)
+        global_reviews = results[len(scopes) :]
+        if len(global_reviews) != 2:
+            raise ProviderError(
+                _PROVIDER_ERROR_MESSAGES[ProviderErrorType.RESPONSE_INVALID],
+                retryable=False,
+                error_type=ProviderErrorType.RESPONSE_INVALID,
+            )
+        for result in global_reviews:
+            _validate_user_fact_model_review(result.value, fact_pairs=fact_pairs)
+
+        notices: list[SemanticUserFactNotice] = []
+        for index, (_, _, scope_field_facts, scope_field_pairs) in enumerate(scopes):
+            field_review = results[index]
+            fact_ids = {str(fact.get("factId", "")) for fact in scope_field_facts}
+            review_votes = [
+                field_review.value,
+                *[
+                    _semantic_user_fact_review_subset(
+                        result.value,
+                        fact_pairs=scope_field_pairs,
+                        fact_ids=fact_ids,
+                    )
+                    for result in global_reviews
+                ],
+            ]
+            consensus = _semantic_user_fact_consensus(
+                review_votes,
+                fact_pairs=scope_field_pairs,
+            )
+            notices.extend(
+                _map_user_fact_model_review(
+                    consensus,
+                    fact_pairs=scope_field_pairs,
+                ).user_fact_notices
+            )
+        return AiCallResult(
+            value=SemanticUserFactReview(user_fact_notices=notices),
+            metadata=_combine_parallel_ai_call_metadata(
+                [result.metadata for result in results],
+                model=self._semantic_model,
+            ),
+        )
+
+    async def _review_user_fact_scope_once(
+        self,
+        *,
+        facts_by_layer: Mapping[str, Mapping[str, Sequence[Mapping[str, str]]]],
+        fact_pairs: Sequence[Mapping[str, Any]],
+        review_scope: str,
+    ) -> AiCallResult[SemanticUserFactModelReview]:
         prompt = render_prompt(
             SEMANTIC_REFINEMENT_PROMPT,
+            review_scope=review_scope,
             user_facts_by_layer_json=json.dumps(
-                _semantic_user_facts_by_layer(user_facts),
+                facts_by_layer,
                 ensure_ascii=False,
             ),
+            user_fact_pairs_json=json.dumps(fact_pairs, ensure_ascii=False),
+        )
+        return await self._structured(
+            [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+            SemanticUserFactModelReview,
+            schema_name="effect_semantic_user_fact_review",
+            stage="SEMANTIC_REFINEMENT",
+            model=self._semantic_model,
+            prompt_version=load_prompt_version(SEMANTIC_REFINEMENT_PROMPT),
+            request_timeout=self._semantic_timeout,
+            max_attempts=self._semantic_max_attempts,
+            max_output_tokens=self._semantic_max_output_tokens,
+            reasoning_effort=self._semantic_user_review_reasoning_effort,
+        )
+
+    async def _review_image_suggestions(
+        self,
+        *,
+        user_facts: Sequence[Mapping[str, str]],
+        image_suggestions: Sequence[Mapping[str, str]],
+        reference_facts: Sequence[Mapping[str, str]],
+        remaining_capacity_by_field: Mapping[str, int],
+    ) -> AiCallResult[SemanticImageSuggestionReview]:
+        prompt = render_prompt(
+            SEMANTIC_IMAGE_SUGGESTION_REVIEW_PROMPT,
+            user_facts_json=json.dumps(user_facts, ensure_ascii=False, sort_keys=True),
             image_suggestions_json=json.dumps(
                 image_suggestions, ensure_ascii=False, sort_keys=True
             ),
@@ -423,11 +593,11 @@ class ArkResponsesProvider:
         )
         return await self._structured(
             [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
-            SemanticRefinementDecision,
-            schema_name="effect_semantic_refinement",
+            SemanticImageSuggestionReview,
+            schema_name="effect_semantic_image_suggestion_review",
             stage="SEMANTIC_REFINEMENT",
             model=self._semantic_model,
-            prompt_version=load_prompt_version(SEMANTIC_REFINEMENT_PROMPT),
+            prompt_version=load_prompt_version(SEMANTIC_IMAGE_SUGGESTION_REVIEW_PROMPT),
             request_timeout=self._semantic_timeout,
             max_attempts=self._semantic_max_attempts,
             max_output_tokens=self._semantic_max_output_tokens,
@@ -763,6 +933,182 @@ def _semantic_user_facts_by_layer(
     return grouped
 
 
+def _semantic_user_fact_pairs(
+    user_facts: Sequence[Mapping[str, str]],
+) -> list[dict[str, Any]]:
+    """Build every same-field unordered pair without interpreting fact text."""
+
+    by_field: dict[str, list[Mapping[str, str]]] = {
+        field: []
+        for fields in _SEMANTIC_NOTICE_FIELDS_BY_LAYER.values()
+        for field in fields
+    }
+    for fact in user_facts:
+        field = str(fact.get("field", ""))
+        if field in by_field:
+            by_field[field].append(fact)
+    pairs: list[dict[str, Any]] = []
+    for fields in _SEMANTIC_NOTICE_FIELDS_BY_LAYER.values():
+        for field in fields:
+            facts = by_field[field]
+            for left_index, left in enumerate(facts):
+                for right in facts[left_index + 1 :]:
+                    pairs.append(
+                        {
+                            "pairId": f"pair-{len(pairs) + 1:04d}",
+                            "field": field,
+                            "leftFact": {
+                                "factId": str(left.get("factId", "")),
+                                "value": str(left.get("value", "")),
+                            },
+                            "rightFact": {
+                                "factId": str(right.get("factId", "")),
+                                "value": str(right.get("value", "")),
+                            },
+                        }
+                    )
+    return pairs
+
+
+def _map_user_fact_model_review(
+    review: SemanticUserFactModelReview,
+    *,
+    fact_pairs: Sequence[Mapping[str, Any]],
+) -> SemanticUserFactReview:
+    expected_by_id = _validate_user_fact_model_review(
+        review,
+        fact_pairs=fact_pairs,
+    )
+    notices = list(review.user_fact_notices)
+    for decision in review.pair_decisions:
+        if decision.relation == SemanticUserFactPairRelation.DISTINCT:
+            continue
+        pair = expected_by_id[decision.pair_id]
+        left = pair["leftFact"]
+        right = pair["rightFact"]
+        notices.append(
+            SemanticUserFactNotice(
+                fact_id=str(left["factId"]),
+                issue=(
+                    SemanticUserFactIssue.POSSIBLE_DUPLICATE
+                    if decision.relation
+                    == SemanticUserFactPairRelation.POSSIBLE_DUPLICATE
+                    else SemanticUserFactIssue.POSSIBLE_OVERLAP
+                ),
+                related_fact_ids=[str(right["factId"])],
+                suggested_field=None,
+            )
+        )
+    return SemanticUserFactReview(user_fact_notices=notices)
+
+
+def _validate_user_fact_model_review(
+    review: SemanticUserFactModelReview,
+    *,
+    fact_pairs: Sequence[Mapping[str, Any]],
+) -> dict[str, Mapping[str, Any]]:
+    expected_by_id = {str(pair["pairId"]): pair for pair in fact_pairs}
+    expected_ids = list(expected_by_id)
+    returned_ids = [decision.pair_id for decision in review.pair_decisions]
+    if returned_ids != expected_ids or any(
+        notice.issue
+        not in {
+            SemanticUserFactIssue.POSSIBLE_WRONG_FIELD,
+            SemanticUserFactIssue.AMBIGUOUS_EXPRESSION,
+        }
+        for notice in review.user_fact_notices
+    ):
+        raise ProviderError(
+            _PROVIDER_ERROR_MESSAGES[ProviderErrorType.RESPONSE_INVALID],
+            retryable=False,
+            error_type=ProviderErrorType.RESPONSE_INVALID,
+        )
+    return expected_by_id
+
+
+def _semantic_user_fact_consensus(
+    reviews: Sequence[SemanticUserFactModelReview],
+    *,
+    fact_pairs: Sequence[Mapping[str, Any]],
+) -> SemanticUserFactModelReview:
+    if len(reviews) not in {2, 3}:
+        raise ValueError("semantic user fact consensus requires two or three reviews")
+    for review in reviews:
+        _validate_user_fact_model_review(review, fact_pairs=fact_pairs)
+
+    pair_decisions: list[SemanticUserFactPairDecision] = []
+    for pair_index, pair in enumerate(fact_pairs):
+        relations = [review.pair_decisions[pair_index].relation for review in reviews]
+        selected = next(
+            (
+                relation
+                for relation in SemanticUserFactPairRelation
+                if relations.count(relation) >= 2
+            ),
+            None,
+        )
+        if selected is None:
+            raise ProviderError(
+                _PROVIDER_ERROR_MESSAGES[ProviderErrorType.RESPONSE_INVALID],
+                retryable=False,
+                error_type=ProviderErrorType.RESPONSE_INVALID,
+            )
+        pair_decisions.append(
+            SemanticUserFactPairDecision(
+                pair_id=str(pair["pairId"]),
+                relation=selected,
+            )
+        )
+
+    notice_counts: dict[
+        tuple[str, SemanticUserFactIssue, tuple[str, ...], SemanticField | None], int
+    ] = {}
+    notice_by_signature: dict[
+        tuple[str, SemanticUserFactIssue, tuple[str, ...], SemanticField | None],
+        SemanticUserFactNotice,
+    ] = {}
+    for review in reviews:
+        seen_in_review: set[
+            tuple[str, SemanticUserFactIssue, tuple[str, ...], SemanticField | None]
+        ] = set()
+        for notice in review.user_fact_notices:
+            signature = (
+                notice.fact_id,
+                notice.issue,
+                tuple(notice.related_fact_ids),
+                notice.suggested_field,
+            )
+            if signature in seen_in_review:
+                continue
+            seen_in_review.add(signature)
+            notice_counts[signature] = notice_counts.get(signature, 0) + 1
+            notice_by_signature.setdefault(signature, notice)
+    notices = [
+        notice_by_signature[signature]
+        for signature, count in notice_counts.items()
+        if count >= 2
+    ]
+    return SemanticUserFactModelReview(
+        pair_decisions=pair_decisions,
+        user_fact_notices=notices,
+    )
+
+
+def _semantic_user_fact_review_subset(
+    review: SemanticUserFactModelReview,
+    *,
+    fact_pairs: Sequence[Mapping[str, Any]],
+    fact_ids: set[str],
+) -> SemanticUserFactModelReview:
+    decisions_by_id = {decision.pair_id: decision for decision in review.pair_decisions}
+    return SemanticUserFactModelReview(
+        pair_decisions=[decisions_by_id[str(pair["pairId"])] for pair in fact_pairs],
+        user_fact_notices=[
+            notice for notice in review.user_fact_notices if notice.fact_id in fact_ids
+        ],
+    )
+
+
 def _merge_image_visible_facts(
     first: ImageVisibleFacts,
     refined: ImageVisibleFacts,
@@ -802,6 +1148,43 @@ def _combine_ai_call_metadata(
             first.reasoning_tokens, refined.reasoning_tokens
         ),
     )
+
+
+def _combine_parallel_ai_call_metadata(
+    calls: Sequence[AiCallMetadata],
+    *,
+    model: str,
+) -> AiCallMetadata:
+    if not calls:
+        return AiCallMetadata(
+            stage="SEMANTIC_REFINEMENT",
+            model=model,
+            prompt_version="none",
+            input_tokens=None,
+            output_tokens=None,
+            total_tokens=None,
+            latency_ms=0,
+            attempts=1,
+            reasoning_tokens=None,
+        )
+    return AiCallMetadata(
+        stage="SEMANTIC_REFINEMENT",
+        model=model,
+        prompt_version="+".join(call.prompt_version for call in calls),
+        input_tokens=_sum_optional_tokens(call.input_tokens for call in calls),
+        output_tokens=_sum_optional_tokens(call.output_tokens for call in calls),
+        total_tokens=_sum_optional_tokens(call.total_tokens for call in calls),
+        latency_ms=max(call.latency_ms for call in calls),
+        attempts=max(call.attempts for call in calls),
+        reasoning_tokens=_sum_optional_tokens(call.reasoning_tokens for call in calls),
+    )
+
+
+def _sum_optional_tokens(values: Iterable[int | None]) -> int | None:
+    materialized = list(values)
+    if not any(value is not None for value in materialized):
+        return None
+    return sum(value or 0 for value in materialized)
 
 
 class _RetryStructuredResponse(Exception):

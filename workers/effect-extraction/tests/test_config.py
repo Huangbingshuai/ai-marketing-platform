@@ -32,6 +32,7 @@ def _base_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "ARK_SEMANTIC_MAX_ATTEMPTS",
         "ARK_SEMANTIC_MAX_OUTPUT_TOKENS",
         "ARK_SEMANTIC_REASONING_EFFORT",
+        "ARK_SEMANTIC_USER_REVIEW_REASONING_EFFORT",
         "ARK_NORMALIZATION_MODEL",
         "ARK_IMAGE_TIMEOUT_SECONDS",
         "ARK_IMAGE_MAX_ATTEMPTS",
@@ -100,6 +101,7 @@ def test_default_provider_uses_seed_2_1_turbo_model_id(
     assert settings.ark_semantic_max_attempts == 1
     assert settings.ark_semantic_max_output_tokens == 3072
     assert settings.ark_semantic_reasoning_effort == "minimal"
+    assert settings.ark_semantic_user_review_reasoning_effort == "minimal"
     assert settings.image_max_dimension == 1280
     assert settings.image_max_concurrency == 2
 

@@ -43,6 +43,9 @@ def _provider(settings: WorkerSettings) -> AiProvider:
         semantic_max_attempts=settings.ark_semantic_max_attempts,
         semantic_max_output_tokens=settings.ark_semantic_max_output_tokens,
         semantic_reasoning_effort=settings.ark_semantic_reasoning_effort,
+        semantic_user_review_reasoning_effort=(
+            settings.ark_semantic_user_review_reasoning_effort
+        ),
     )
 
 

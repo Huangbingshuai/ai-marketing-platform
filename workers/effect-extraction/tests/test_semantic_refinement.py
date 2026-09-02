@@ -7,6 +7,7 @@ import pytest
 from effect_extraction.models import (
     ExtractionCandidate,
     SemanticField,
+    SemanticImageEvidenceBasis,
     SemanticRefinementDecision,
     SemanticSuggestionDecision,
     SemanticSuggestionDisposition,
@@ -74,25 +75,31 @@ def keep(
     fact_id: str,
     field: SemanticField,
     *,
-    reason: SemanticSuggestionReason = SemanticSuggestionReason.WRONG_FIELD,
+    reason: SemanticSuggestionReason = SemanticSuggestionReason.INDEPENDENT_VISIBLE_FACT,
 ) -> SemanticSuggestionDecision:
     return SemanticSuggestionDecision(
         fact_id=fact_id,
         disposition=SemanticSuggestionDisposition.KEEP,
         target_field=field,
         reason=reason,
+        evidence_basis=SemanticImageEvidenceBasis.DIRECT_PRODUCT_ATTRIBUTE,
     )
 
 
 def drop(
     fact_id: str,
     reason: SemanticSuggestionReason,
+    *,
+    evidence_basis: SemanticImageEvidenceBasis = (
+        SemanticImageEvidenceBasis.DIRECT_PRODUCT_ATTRIBUTE
+    ),
 ) -> SemanticSuggestionDecision:
     return SemanticSuggestionDecision(
         fact_id=fact_id,
         disposition=SemanticSuggestionDisposition.DROP,
         target_field=None,
         reason=reason,
+        evidence_basis=evidence_basis,
     )
 
 
@@ -165,7 +172,11 @@ async def test_image_suggestions_can_be_dropped_moved_and_ranked() -> None:
         SemanticRefinementDecision(
             suggestion_decisions=[
                 drop("image-sell-01", SemanticSuggestionReason.DUPLICATE_USER_FACT),
-                keep("image-sell-02", SemanticField.DECISION_DRIVERS),
+                keep(
+                    "image-sell-02",
+                    SemanticField.DECISION_DRIVERS,
+                    reason=SemanticSuggestionReason.WRONG_FIELD,
+                ),
             ],
             user_fact_notices=[],
         )
@@ -351,12 +362,13 @@ async def test_worker_rejects_cross_field_user_notices() -> None:
 
     assert result.metadata["userFactNotices"] == []
     assert result.metadata["validation"]["correctionCounts"] == {
-        "CROSS_LAYER_USER_NOTICE": 2
+        "CROSS_FIELD_USER_NOTICE": 1,
+        "CROSS_LAYER_USER_NOTICE": 1,
     }
 
 
 @pytest.mark.asyncio
-async def test_worker_allows_user_notices_within_the_same_business_layer() -> None:
+async def test_worker_rejects_cross_field_overlap_but_allows_same_layer_move() -> None:
     candidate = ExtractionCandidate.empty()
     users = [
         fact(
@@ -397,14 +409,14 @@ async def test_worker_allows_user_notices_within_the_same_business_layer() -> No
         image_suggestions=[],
     )
 
-    assert result.metadata["userNoticeCount"] == 2
-    assert result.metadata["userFactNotices"][0]["relatedValues"] == [
-        "传统糖酒腌制风味"
-    ]
-    assert result.metadata["userFactNotices"][1]["suggestedField"] == (
+    assert result.metadata["userNoticeCount"] == 1
+    assert result.metadata["userFactNotices"][0]["suggestedField"] == (
         SemanticField.CORE_SELLING_POINTS.value
     )
-    assert result.metadata["validation"]["status"] == "VERIFIED"
+    assert result.metadata["validation"]["status"] == "CORRECTED"
+    assert result.metadata["validation"]["correctionCounts"] == {
+        "CROSS_FIELD_USER_NOTICE": 1
+    }
 
 
 @pytest.mark.asyncio
@@ -457,6 +469,43 @@ async def test_worker_treats_missing_image_decisions_as_safe_drops() -> None:
         "correctionCodes": ["MISSING_SUGGESTION_DECISION"],
         "correctionCounts": {"MISSING_SUGGESTION_DECISION": 1},
     }
+
+
+@pytest.mark.asyncio
+async def test_worker_accepts_inferred_drop_with_duplicate_reason() -> None:
+    candidate = ExtractionCandidate.empty()
+    images = [
+        fact(
+            "image-purchase-01",
+            SemanticField.PURCHASE_SCENARIOS,
+            "由静物推断的采购意图",
+            "IMAGE_SUGGESTION",
+        )
+    ]
+    provider = SemanticProvider(
+        SemanticRefinementDecision(
+            suggestion_decisions=[
+                drop(
+                    "image-purchase-01",
+                    SemanticSuggestionReason.DUPLICATE_USER_FACT,
+                    evidence_basis=(
+                        SemanticImageEvidenceBasis.INFERRED_INTENT_OR_CLAIM
+                    ),
+                )
+            ],
+            user_fact_notices=[],
+        )
+    )
+
+    result = await refine_candidate_semantics(
+        candidate,
+        provider=provider,  # type: ignore[arg-type]
+        user_facts=[],
+        image_suggestions=images,
+    )
+
+    assert result.candidate.purchase_scenarios is None
+    assert result.metadata["validation"]["status"] == "VERIFIED"
 
 
 @pytest.mark.asyncio

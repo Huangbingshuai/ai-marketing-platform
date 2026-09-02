@@ -220,11 +220,20 @@ class SemanticSuggestionDisposition(StrEnum):
 
 
 class SemanticSuggestionReason(StrEnum):
+    INDEPENDENT_VISIBLE_FACT = "INDEPENDENT_VISIBLE_FACT"
     DUPLICATE_USER_FACT = "DUPLICATE_USER_FACT"
     DUPLICATE_AI_SUGGESTION = "DUPLICATE_AI_SUGGESTION"
     WRONG_FIELD = "WRONG_FIELD"
     LOW_INFORMATION = "LOW_INFORMATION"
     CAPACITY = "CAPACITY"
+
+
+class SemanticImageEvidenceBasis(StrEnum):
+    DIRECT_PRODUCT_ATTRIBUTE = "DIRECT_PRODUCT_ATTRIBUTE"
+    READABLE_PRODUCT_TEXT = "READABLE_PRODUCT_TEXT"
+    EXPLICIT_ACTION = "EXPLICIT_ACTION"
+    EXPLICIT_SCENE = "EXPLICIT_SCENE"
+    INFERRED_INTENT_OR_CLAIM = "INFERRED_INTENT_OR_CLAIM"
 
 
 class SemanticUserFactIssue(StrEnum):
@@ -240,6 +249,7 @@ class SemanticSuggestionDecision(ApiModel):
     disposition: SemanticSuggestionDisposition
     target_field: SemanticField | None = None
     reason: SemanticSuggestionReason
+    evidence_basis: SemanticImageEvidenceBasis
 
 
 class SemanticUserFactNotice(ApiModel):
@@ -247,6 +257,30 @@ class SemanticUserFactNotice(ApiModel):
     issue: SemanticUserFactIssue
     related_fact_ids: list[str] = Field(default_factory=list, max_length=10)
     suggested_field: SemanticField | None = None
+
+
+class SemanticUserFactReview(ApiModel):
+    user_fact_notices: list[SemanticUserFactNotice] = Field(max_length=40)
+
+
+class SemanticUserFactPairRelation(StrEnum):
+    DISTINCT = "DISTINCT"
+    POSSIBLE_DUPLICATE = "POSSIBLE_DUPLICATE"
+    POSSIBLE_OVERLAP = "POSSIBLE_OVERLAP"
+
+
+class SemanticUserFactPairDecision(ApiModel):
+    pair_id: str
+    relation: SemanticUserFactPairRelation
+
+
+class SemanticUserFactModelReview(ApiModel):
+    pair_decisions: list[SemanticUserFactPairDecision] = Field(max_length=1400)
+    user_fact_notices: list[SemanticUserFactNotice] = Field(max_length=40)
+
+
+class SemanticImageSuggestionReview(ApiModel):
+    suggestion_decisions: list[SemanticSuggestionDecision] = Field(max_length=40)
 
 
 class SemanticRefinementDecision(ApiModel):

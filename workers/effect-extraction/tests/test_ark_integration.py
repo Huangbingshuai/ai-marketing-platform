@@ -121,6 +121,18 @@ async def test_real_ark_semantic_decision_obeys_product_agnostic_relation_bounda
     )
     facts = [
         {
+            "factId": "selling-process",
+            "field": "coreSellingPoints",
+            "value": "广府糖酒腌制工艺",
+            "sourceType": "USER_FACT",
+        },
+        {
+            "factId": "selling-sensory-result",
+            "field": "coreSellingPoints",
+            "value": "咸甜酒香回甘",
+            "sourceType": "USER_FACT",
+        },
+        {
             "factId": "pain-1",
             "field": "corePainPoints",
             "value": "日常佐餐缺少方便入味的腊味食材",
@@ -186,6 +198,12 @@ async def test_real_ark_semantic_decision_obeys_product_agnostic_relation_bounda
             "value": "节庆阖家欢聚的氛围",
             "sourceType": "USER_FACT",
         },
+        {
+            "factId": "emotion-family-meal",
+            "field": "emotionalScenarios",
+            "value": "家人围餐分享",
+            "sourceType": "USER_FACT",
+        },
     ]
     image_suggestions = [
         {
@@ -198,6 +216,12 @@ async def test_real_ark_semantic_decision_obeys_product_agnostic_relation_bounda
             "factId": "image-appearance-2",
             "field": "secondarySellingPoints",
             "value": "表面油润有光泽，观感新鲜",
+            "sourceType": "IMAGE_SUGGESTION",
+        },
+        {
+            "factId": "image-purchase-inference",
+            "field": "purchaseScenarios",
+            "value": "日常囤购，准备家常烹饪腊味",
             "sourceType": "IMAGE_SUGGESTION",
         },
     ]
@@ -247,24 +271,54 @@ async def test_real_ark_semantic_decision_obeys_product_agnostic_relation_bounda
         "purchase-seasonal",
         "purchase-gift",
     }
+    purchase_notices = [
+        (
+            notice.fact_id,
+            tuple(notice.related_fact_ids),
+            notice.issue.value,
+        )
+        for notice in decision.value.user_fact_notices
+        if (
+            notice.issue
+            in {
+                SemanticUserFactIssue.POSSIBLE_DUPLICATE,
+                SemanticUserFactIssue.POSSIBLE_OVERLAP,
+            }
+            and len(
+                {notice.fact_id, *notice.related_fact_ids}.intersection(
+                    distinct_purchase_ids
+                )
+            )
+            >= 2
+        )
+    ]
+    assert purchase_notices == []
     assert not any(
         notice.issue
         in {
             SemanticUserFactIssue.POSSIBLE_DUPLICATE,
             SemanticUserFactIssue.POSSIBLE_OVERLAP,
         }
-        and len(
-            {notice.fact_id, *notice.related_fact_ids}.intersection(
-                distinct_purchase_ids
-            )
+        and {notice.fact_id, *notice.related_fact_ids}.issuperset(
+            {"selling-process", "selling-sensory-result"}
         )
-        >= 2
         for notice in decision.value.user_fact_notices
     )
     assert any(
         notice.issue == SemanticUserFactIssue.POSSIBLE_OVERLAP
         and {notice.fact_id, *notice.related_fact_ids}.issuperset(
             {"emotion-reunion-gift", "emotion-family-festival"}
+        )
+        for notice in decision.value.user_fact_notices
+    )
+    assert not any(
+        notice.issue
+        in {
+            SemanticUserFactIssue.POSSIBLE_DUPLICATE,
+            SemanticUserFactIssue.POSSIBLE_OVERLAP,
+        }
+        and {notice.fact_id, *notice.related_fact_ids}.issuperset(
+            {"emotion-family-meal", "emotion-family-festival"}
         )
         for notice in decision.value.user_fact_notices
     )
@@ -279,6 +333,13 @@ async def test_real_ark_semantic_decision_obeys_product_agnostic_relation_bounda
     )
     assert image_decisions["image-appearance-2"].reason in {
         SemanticSuggestionReason.DUPLICATE_AI_SUGGESTION,
+        SemanticSuggestionReason.LOW_INFORMATION,
+    }
+    assert image_decisions["image-purchase-inference"].disposition == (
+        SemanticSuggestionDisposition.DROP
+    )
+    assert image_decisions["image-purchase-inference"].reason in {
+        SemanticSuggestionReason.DUPLICATE_USER_FACT,
         SemanticSuggestionReason.LOW_INFORMATION,
     }
     assert decision.metadata.stage == "SEMANTIC_REFINEMENT"

@@ -75,13 +75,14 @@ materials[]
 - `ARK_SEMANTIC_TIMEOUT_SECONDS`，语义整理单次硬超时，默认 `30`
 - `ARK_SEMANTIC_MAX_ATTEMPTS`，语义整理最大尝试次数，固定为 `1`
 - `ARK_SEMANTIC_MAX_OUTPUT_TOKENS`，语义整理输出上限，默认 `3072`
-- `ARK_SEMANTIC_REASONING_EFFORT`，语义整理思考强度，默认 `minimal`
+- `ARK_SEMANTIC_REASONING_EFFORT`，AI 图片建议审查思考强度，默认 `minimal`
+- `ARK_SEMANTIC_USER_REVIEW_REASONING_EFFORT`，用户事实逐对审查思考强度，默认 `minimal`；每个字段由三个快速审查请求独立判断并按多数结论输出
 - `ARK_NORMALIZATION_MODEL`，可选，仅在确定性契约化异常时使用的标准化兜底模型
 - `COMMERCE_RENDERER_URL` 与 `COMMERCE_RENDERER_TOKEN`，可选但必须成对配置；Compose 默认连接隔离的 Playwright Renderer
 
 可选资源限制：`DOCLING_ARTIFACTS_PATH`、`DOCLING_MAX_FILE_SIZE`、`DOCLING_MAX_NUM_PAGES`、`MAX_DOCUMENT_TEXT_CHARS`、`MAX_COMMERCE_TEXT_CHARS`、`COMMERCE_STATIC_CONNECT_TIMEOUT_SECONDS`、`COMMERCE_STATIC_READ_TIMEOUT_SECONDS`、`COMMERCE_RENDERER_CLIENT_TIMEOUT_SECONDS`、`IMAGE_MAX_INPUT_BYTES`、`IMAGE_MAX_DIMENSION`、`IMAGE_MAX_OUTPUT_BYTES`、`OMP_NUM_THREADS`。
 
-Worker 默认使用 `ark`。文档和图片专用模型为空时回退到 `ARK_MODEL`；语义整理独立使用 Pro 模型；电商模型为空时先回退到 `ARK_DOCUMENT_MODEL`，再回退到 `ARK_MODEL`。NORMALIZATION 正常路径不调用模型，仅在确定性契约构造异常时使用可选的标准化模型兜底。语义整理只让模型处理两类决策：对用户事实生成非阻断提示，以及对 AI 图片建议去重、择优或迁移字段。用户事实提示只允许在同一业务层内比较：核心与次要卖点同属卖点层，核心痛点与决策动因同属用户层，使用、购买与情绪场景同属场景层；三个业务层之间不得跨层关联或迁移。关系判断采用商品无关的“可替换性 + 有效差异”协议：互相替换不损失营销信息才可视为重复；只要目的、场合、时间、人群、动作、对象或关注点存在能够支持不同表达的差异，就按相关但不同保留。AI 图片建议先与用户事实和只读参照比较，再在整批建议内建立唯一保留集合；围绕同一中心可见属性且没有新增独立信息的建议只能保留一条。AI 图片建议仍可迁移到更合适字段。用户事实只清理首尾空白，原字段、原顺序、原内容和最多 20 项的编辑安全边界全部保留；核心 3 项、次要 6 项及其他字段 5 项仅作为 AI 图片建议的剩余容量。用户提供的产品名称、品类、规格和核心外观特征会作为只读参照交给模型，仅用于识别重复图片建议，不允许进入提示或决定结果。模型只能选择已有事实 ID，不能生成、改写或概括事实；Worker 不使用关键词、字符相似度或业务规则参与语义判断，只校验事实 ID、来源权限、数量、容量和 JSON 结构。模型返回部分结构问题时，Worker 按返回顺序保留容量内的有效决定，把缺失、重复、未知、跨层或超容量决定安全视为删除，并逐条忽略无效用户提示；该节点标记为部分完成，但不会再丢弃整批有效图片建议。语义调用最多等待 30 秒且只调用一次；Provider 整体失败时用户事实正常保存，未整理图片建议不进入信息卡。缺少 Key 时会在消费消息前启动失败，不会静默降级。`mock` 只能通过 `EXTRACTION_AI_PROVIDER=mock` 显式启用，供自动测试和本地无模型联调使用。Ark Provider 使用 Responses API 的 `text.format=json_schema` 强制结构化输出，随后仍由 Pydantic 二次校验。
+Worker 默认使用 `ark`。文档和图片专用模型为空时回退到 `ARK_MODEL`；语义整理独立使用 Pro 模型；电商模型为空时先回退到 `ARK_DOCUMENT_MODEL`，再回退到 `ARK_MODEL`。NORMALIZATION 正常路径不调用模型，仅在确定性契约构造异常时使用可选的标准化模型兜底。语义整理在同一个业务节点内并行执行用户事实审查与 AI 图片建议审查。Provider 会确定性穷举每个字段内的全部用户事实对，并行发起一次单字段审查和两次全字段独立复核；每个事实对因此拥有三个相互独立的模型结论，最终只采用多数结果，避免单次随机误判直接形成用户提示。疑似错字段和歧义提示同样至少需要两个模型返回完全一致的结构化决定。图片建议由另一条严格结构化请求统一去重、择优或迁移字段，并与全部用户事实、只读参照和整批图片建议共同比较。每条图片决定必须声明直接外观、可读文字、明确动作、明确场景或推断性意图等画面证据类型；推断性购买意图、品质、体验或功效不得保留。用户事实只清理首尾空白，原字段、原顺序、原内容和最多 20 项的编辑安全边界全部保留；核心 3 项、次要 6 项及其他字段 5 项仅作为 AI 图片建议的剩余容量。用户提供的产品名称、品类、规格和核心外观特征会作为只读参照交给图片建议审查模型，仅用于识别重复建议，不允许进入提示或决定结果。Worker 不使用关键词、字符相似度或业务规则参与语义判断，只校验稳定 ID、来源权限、决定枚举、字段关联边界、票数、数量、容量和 JSON 结构。每个模型请求最多等待 30 秒且只尝试一次；任一路整体失败时用户事实正常保存，未整理图片建议不进入信息卡。缺少 Key 时会在消费消息前启动失败，不会静默降级。`mock` 只能通过 `EXTRACTION_AI_PROVIDER=mock` 显式启用，供自动测试和本地无模型联调使用。Ark Provider 使用 Responses API 的 `text.format=json_schema` 强制结构化输出，随后仍由 Pydantic 二次校验。
 
 每次成功的模型调用会把阶段、实际配置模型、提示词版本、Token 用量、总延迟和尝试次数写入内部 Branch metadata 的 `aiCall`。确定性 DOCUMENT 与 NORMALIZATION 路径分别记录解析/标准化模式且不伪造模型调用指标。方舟响应不含 usage 时 Token 字段为 `null`，不会影响业务结果。该指标不包含 Prompt、文档正文、图片 Base64、密钥或完整模型输出，也不会通过普通节点详情接口直接返回。
 
@@ -91,7 +92,8 @@ Worker 默认使用 `ark`。文档和图片专用模型为空时回退到 `ARK_M
 
 - `document_extraction.prompt.txt`：文档资料抽取。
 - `image_analysis.prompt.txt`：产品图片识别。
-- `semantic_refinement.prompt.txt`：用户事实提示与 AI 图片建议去重、迁移和择优。
+- `semantic_refinement.prompt.txt`：逐对审查用户事实的同字段重复、重叠，并检查歧义和疑似错字段。
+- `semantic_image_suggestion_review.prompt.txt`：审查 AI 图片建议的事实重复、结构化画面证据、字段和容量。
 - `commerce_extraction.prompt.txt`：把公开商品页的结构化元数据和清洗正文作为不可信资料抽取，不执行网页内指令。
 - `result_normalization.prompt.txt`：融合结果标准化。
 
