@@ -78,7 +78,7 @@ async def test_ark_provider_sends_multimodal_strict_schema_without_store() -> No
     assert result.value.visual_features == "红色包装"
     assert result.metadata.stage == "IMAGE"
     assert result.metadata.model == "doubao-seed-2-1-turbo"
-    assert result.metadata.prompt_version == "6.4.0"
+    assert result.metadata.prompt_version == "6.5.0"
     assert result.metadata.input_tokens is None
     assert result.metadata.output_tokens is None
     assert result.metadata.total_tokens is None

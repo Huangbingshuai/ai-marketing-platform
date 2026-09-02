@@ -8,6 +8,8 @@ from effect_extraction.config import DEFAULT_ARK_MODEL, DEFAULT_ARK_SEMANTIC_MOD
 from effect_extraction.models import (
     ExtractionCandidate,
     ExtractionResult,
+    SemanticSuggestionDisposition,
+    SemanticSuggestionReason,
     SemanticUserFactIssue,
 )
 from effect_extraction.providers import ArkResponsesProvider
@@ -109,7 +111,7 @@ async def test_real_ark_text_image_and_normalization_contracts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_real_ark_semantic_decision_only_warns_about_repeated_user_meaning() -> (
+async def test_real_ark_semantic_decision_obeys_product_agnostic_relation_boundary() -> (
     None
 ):
     api_key = _required_environment("ARK_API_KEY")
@@ -155,6 +157,38 @@ async def test_real_ark_semantic_decision_only_warns_about_repeated_user_meaning
             "value": "炒制食用",
             "sourceType": "USER_FACT",
         },
+        {
+            "factId": "purchase-daily",
+            "field": "purchaseScenarios",
+            "value": "家庭日常采购",
+            "sourceType": "USER_FACT",
+        },
+        {
+            "factId": "purchase-seasonal",
+            "field": "purchaseScenarios",
+            "value": "年货采购",
+            "sourceType": "USER_FACT",
+        },
+        {
+            "factId": "purchase-gift",
+            "field": "purchaseScenarios",
+            "value": "春节送礼",
+            "sourceType": "USER_FACT",
+        },
+    ]
+    image_suggestions = [
+        {
+            "factId": "image-appearance-1",
+            "field": "secondarySellingPoints",
+            "value": "肠体饱满油润有光泽",
+            "sourceType": "IMAGE_SUGGESTION",
+        },
+        {
+            "factId": "image-appearance-2",
+            "field": "secondarySellingPoints",
+            "value": "表面油润有光泽，观感新鲜",
+            "sourceType": "IMAGE_SUGGESTION",
+        },
     ]
 
     provider = ArkResponsesProvider(
@@ -173,7 +207,7 @@ async def test_real_ark_semantic_decision_only_warns_about_repeated_user_meaning
     try:
         decision = await provider.refine_semantics(
             user_facts=facts,
-            image_suggestions=[],
+            image_suggestions=image_suggestions,
             reference_facts=[],
             remaining_capacity_by_field={
                 "coreSellingPoints": 3,
@@ -197,6 +231,37 @@ async def test_real_ark_semantic_decision_only_warns_about_repeated_user_meaning
         and {notice.fact_id, *notice.related_fact_ids}.issuperset({"pain-1", "pain-2"})
         for notice in decision.value.user_fact_notices
     )
-    assert decision.value.suggestion_decisions == []
+    distinct_purchase_ids = {
+        "purchase-daily",
+        "purchase-seasonal",
+        "purchase-gift",
+    }
+    assert not any(
+        notice.issue
+        in {
+            SemanticUserFactIssue.POSSIBLE_DUPLICATE,
+            SemanticUserFactIssue.POSSIBLE_OVERLAP,
+        }
+        and len(
+            {notice.fact_id, *notice.related_fact_ids}.intersection(
+                distinct_purchase_ids
+            )
+        )
+        >= 2
+        for notice in decision.value.user_fact_notices
+    )
+    image_decisions = {
+        item.fact_id: item for item in decision.value.suggestion_decisions
+    }
+    assert image_decisions["image-appearance-1"].disposition == (
+        SemanticSuggestionDisposition.KEEP
+    )
+    assert image_decisions["image-appearance-2"].disposition == (
+        SemanticSuggestionDisposition.DROP
+    )
+    assert image_decisions["image-appearance-2"].reason in {
+        SemanticSuggestionReason.DUPLICATE_AI_SUGGESTION,
+        SemanticSuggestionReason.LOW_INFORMATION,
+    }
     assert decision.metadata.stage == "SEMANTIC_REFINEMENT"
     assert decision.metadata.attempts >= 1
