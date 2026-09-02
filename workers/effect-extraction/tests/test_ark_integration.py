@@ -133,6 +133,18 @@ async def test_real_ark_semantic_decision_obeys_product_agnostic_relation_bounda
             "sourceType": "USER_FACT",
         },
         {
+            "factId": "selling-package-structure",
+            "field": "secondarySellingPoints",
+            "value": "500mL 泵头包装",
+            "sourceType": "USER_FACT",
+        },
+        {
+            "factId": "selling-use-benefit",
+            "field": "secondarySellingPoints",
+            "value": "按压取用方便控制用量",
+            "sourceType": "USER_FACT",
+        },
+        {
             "factId": "pain-1",
             "field": "corePainPoints",
             "value": "日常佐餐缺少方便入味的腊味食材",
@@ -301,6 +313,17 @@ async def test_real_ark_semantic_decision_obeys_product_agnostic_relation_bounda
         }
         and {notice.fact_id, *notice.related_fact_ids}.issuperset(
             {"selling-process", "selling-sensory-result"}
+        )
+        for notice in decision.value.user_fact_notices
+    )
+    assert not any(
+        notice.issue
+        in {
+            SemanticUserFactIssue.POSSIBLE_DUPLICATE,
+            SemanticUserFactIssue.POSSIBLE_OVERLAP,
+        }
+        and {notice.fact_id, *notice.related_fact_ids}.issuperset(
+            {"selling-package-structure", "selling-use-benefit"}
         )
         for notice in decision.value.user_fact_notices
     )

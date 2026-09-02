@@ -283,6 +283,23 @@ class SemanticImageSuggestionReview(ApiModel):
     suggestion_decisions: list[SemanticSuggestionDecision] = Field(max_length=40)
 
 
+class SemanticImageSuggestionModelDecision(ApiModel):
+    """Permissive transport shape; business validation happens per decision."""
+
+    fact_id: str = ""
+    disposition: str = ""
+    target_field: str | None = None
+    reason: str = ""
+    evidence_basis: str = ""
+
+
+class SemanticImageSuggestionModelReview(ApiModel):
+    suggestion_decisions: list[SemanticImageSuggestionModelDecision] = Field(
+        default_factory=list,
+        max_length=40,
+    )
+
+
 class SemanticRefinementDecision(ApiModel):
     suggestion_decisions: list[SemanticSuggestionDecision] = Field(max_length=40)
     user_fact_notices: list[SemanticUserFactNotice] = Field(max_length=40)

@@ -20,6 +20,7 @@ from .models import (
     ImageVisibleFacts,
     SemanticField,
     SemanticImageEvidenceBasis,
+    SemanticImageSuggestionModelReview,
     SemanticImageSuggestionReview,
     SemanticRefinementDecision,
     SemanticSuggestionDecision,
@@ -476,52 +477,46 @@ class ArkResponsesProvider:
                     continue
                 field_pairs = [pair for pair in fact_pairs if pair["field"] == field]
                 scopes.append((layer, field, field_facts, field_pairs))
-                review_calls.append(
-                    self._review_user_fact_scope_once(
-                        facts_by_layer={layer: {field: field_facts}},
-                        fact_pairs=field_pairs,
-                        review_scope="单字段独立审查",
-                    )
+                # Two focused votes prevent a broad full-card review from
+                # outvoting the field-specific semantic distinction.
+                review_calls.extend(
+                    [
+                        self._review_user_fact_scope_once(
+                            facts_by_layer={layer: {field: field_facts}},
+                            fact_pairs=field_pairs,
+                            review_scope="单字段独立审查",
+                        )
+                        for _ in range(2)
+                    ]
                 )
-        review_calls.extend(
-            [
-                self._review_user_fact_scope_once(
-                    facts_by_layer=facts_by_layer,
-                    fact_pairs=fact_pairs,
-                    review_scope="全字段独立复核",
-                ),
-                self._review_user_fact_scope_once(
-                    facts_by_layer=facts_by_layer,
-                    fact_pairs=fact_pairs,
-                    review_scope="全字段独立复核",
-                ),
-            ]
+        review_calls.append(
+            self._review_user_fact_scope_once(
+                facts_by_layer=facts_by_layer,
+                fact_pairs=fact_pairs,
+                review_scope="全字段独立复核",
+            )
         )
         results = await asyncio.gather(*review_calls)
-        global_reviews = results[len(scopes) :]
-        if len(global_reviews) != 2:
+        global_review = results[len(scopes) * 2 :]
+        if len(global_review) != 1:
             raise ProviderError(
                 _PROVIDER_ERROR_MESSAGES[ProviderErrorType.RESPONSE_INVALID],
                 retryable=False,
                 error_type=ProviderErrorType.RESPONSE_INVALID,
             )
-        for result in global_reviews:
-            _validate_user_fact_model_review(result.value, fact_pairs=fact_pairs)
+        _validate_user_fact_model_review(global_review[0].value, fact_pairs=fact_pairs)
 
         notices: list[SemanticUserFactNotice] = []
         for index, (_, _, scope_field_facts, scope_field_pairs) in enumerate(scopes):
-            field_review = results[index]
+            field_reviews = results[index * 2 : index * 2 + 2]
             fact_ids = {str(fact.get("factId", "")) for fact in scope_field_facts}
             review_votes = [
-                field_review.value,
-                *[
-                    _semantic_user_fact_review_subset(
-                        result.value,
-                        fact_pairs=scope_field_pairs,
-                        fact_ids=fact_ids,
-                    )
-                    for result in global_reviews
-                ],
+                *[result.value for result in field_reviews],
+                _semantic_user_fact_review_subset(
+                    global_review[0].value,
+                    fact_pairs=scope_field_pairs,
+                    fact_ids=fact_ids,
+                ),
             ]
             consensus = _semantic_user_fact_consensus(
                 review_votes,
@@ -591,9 +586,9 @@ class ArkResponsesProvider:
                 remaining_capacity_by_field, ensure_ascii=False, sort_keys=True
             ),
         )
-        return await self._structured(
+        result = await self._structured(
             [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
-            SemanticImageSuggestionReview,
+            SemanticImageSuggestionModelReview,
             schema_name="effect_semantic_image_suggestion_review",
             stage="SEMANTIC_REFINEMENT",
             model=self._semantic_model,
@@ -602,6 +597,28 @@ class ArkResponsesProvider:
             max_attempts=self._semantic_max_attempts,
             max_output_tokens=self._semantic_max_output_tokens,
             reasoning_effort=self._semantic_reasoning_effort,
+        )
+        strict_decisions: list[SemanticSuggestionDecision] = []
+        seen_ids: set[str] = set()
+        for raw_decision in result.value.suggestion_decisions:
+            if raw_decision.fact_id in seen_ids:
+                continue
+            try:
+                decision = SemanticSuggestionDecision.model_validate(
+                    raw_decision.model_dump(mode="json", by_alias=True)
+                )
+            except ValidationError:
+                # Keep valid decisions from the same batch. The downstream
+                # structural validator treats this item as a missing decision
+                # and safely drops only that suggestion.
+                continue
+            seen_ids.add(decision.fact_id)
+            strict_decisions.append(decision)
+        return AiCallResult(
+            value=SemanticImageSuggestionReview(
+                suggestion_decisions=strict_decisions,
+            ),
+            metadata=result.metadata,
         )
 
     async def extract_document(

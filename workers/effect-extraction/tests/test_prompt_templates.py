@@ -27,8 +27,8 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert load_prompt_version("document_extraction.prompt.txt") == "3.0.0"
     assert load_prompt_version("image_analysis.prompt.txt") == "6.5.0"
     assert load_prompt_version("commerce_extraction.prompt.txt") == "1.0.0"
-    assert load_prompt_version("semantic_refinement.prompt.txt") == "6.4.0"
-    assert load_prompt_version("semantic_image_suggestion_review.prompt.txt") == "1.1.1"
+    assert load_prompt_version("semantic_refinement.prompt.txt") == "6.5.0"
+    assert load_prompt_version("semantic_image_suggestion_review.prompt.txt") == "1.1.2"
     assert load_prompt_version("result_normalization.prompt.txt") == "3.1.0"
 
     assert "产品文档事实抽取器" in document.template
@@ -44,6 +44,8 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert "为他人选购礼物" in semantic.template
     assert "每个 pairId 恰好出现一次" in semantic.template
     assert "制作工艺与口感、香气、质地" in semantic.template
+    assert "共享命题证明" in semantic.template
+    assert "潜在因果关系不是共享命题" in semantic.template
     assert "单字段审查还是全字段独立复核" in semantic.template
     assert "每个 imageSuggestion 恰好返回一条决定" in semantic_images.template
     assert "remainingCapacityByField" in semantic_images.template

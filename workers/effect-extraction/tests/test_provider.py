@@ -701,7 +701,7 @@ async def test_ark_provider_runs_independent_semantic_reviews_in_parallel() -> N
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         requests.append((request.url.path, payload))
-        if len(requests) == 5:
+        if len(requests) == 6:
             both_reviews_started.set()
         await asyncio.wait_for(both_reviews_started.wait(), timeout=0.5)
         schema_name = payload["text"]["format"]["name"]
@@ -791,7 +791,7 @@ async def test_ark_provider_runs_independent_semantic_reviews_in_parallel() -> N
     finally:
         await provider.aclose()
 
-    assert len(requests) == 5
+    assert len(requests) == 6
     assert decision.metadata.stage == "SEMANTIC_REFINEMENT"
     assert decision.metadata.model == "semantic-model"
     assert decision.value.suggestion_decisions[0].fact_id == "image-corePainPoints-01"
@@ -821,13 +821,79 @@ async def test_ark_provider_runs_independent_semantic_reviews_in_parallel() -> N
     assert any('"SCENARIO": {"emotionalScenarios"' in item for item in user_inputs)
     assert any("user-emotionalScenarios-01" in item for item in user_inputs)
     assert all("待审查的同字段事实对" in item for item in user_inputs)
-    assert sum('"USER"' in item and '"SCENARIO"' in item for item in user_inputs) == 2
+    assert sum('"USER"' in item and '"SCENARIO"' in item for item in user_inputs) == 1
     assert (
         sum(not ('"USER"' in item and '"SCENARIO"' in item) for item in user_inputs)
-        == 2
+        == 4
     )
     image_input = str(
         payloads_by_schema["effect_semantic_image_suggestion_review"][0]["input"]
     )
     assert "reference-visualFeatures" in image_input
     assert "image-corePainPoints-01" in image_input
+
+
+@pytest.mark.asyncio
+async def test_image_semantic_review_keeps_valid_items_when_one_item_is_invalid() -> (
+    None
+):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["text"]["format"]["name"] == (
+            "effect_semantic_image_suggestion_review"
+        )
+        return httpx.Response(
+            200,
+            json={
+                "output_text": json.dumps(
+                    {
+                        "suggestionDecisions": [
+                            {
+                                "factId": "image-secondarySellingPoints-01",
+                                "disposition": "KEEP",
+                                "targetField": "secondarySellingPoints",
+                                "reason": "INDEPENDENT_VISIBLE_FACT",
+                                "evidenceBasis": "DIRECT_PRODUCT_ATTRIBUTE",
+                            },
+                            {
+                                "factId": "image-secondarySellingPoints-02",
+                                "disposition": "KEEP",
+                                "targetField": "secondarySellingPoints",
+                                "reason": "UNSUPPORTED_REASON",
+                                "evidenceBasis": "DIRECT_PRODUCT_ATTRIBUTE",
+                            },
+                        ]
+                    }
+                )
+            },
+        )
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.test/api/v3/",
+        api_key="secret",
+        model="seed-model",
+        semantic_model="semantic-model",
+        transport=httpx.MockTransport(handler),
+    )
+    suggestions = [
+        {
+            "factId": f"image-secondarySellingPoints-0{index}",
+            "field": "secondarySellingPoints",
+            "value": f"visible fact {index}",
+            "sourceType": "IMAGE_SUGGESTION",
+        }
+        for index in (1, 2)
+    ]
+    try:
+        result = await provider.refine_semantics(
+            user_facts=[],
+            image_suggestions=suggestions,
+            reference_facts=[],
+            remaining_capacity_by_field={"secondarySellingPoints": 2},
+        )
+    finally:
+        await provider.aclose()
+
+    assert [item.fact_id for item in result.value.suggestion_decisions] == [
+        "image-secondarySellingPoints-01"
+    ]
