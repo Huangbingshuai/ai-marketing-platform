@@ -545,9 +545,14 @@ class PromptGenerationPipeline:
         application = self._require_application(context)
         visual_strategy = self._required_fact_visual_strategy(context)
         shared_prompt = self._required_shared_prompt(context)
-        expected_direction_count = creative_direction_target_count(
-            snapshot.settings.target_count
-        )
+        mandatory_fact_count = len(mandatory_business_facts(application))
+        try:
+            expected_direction_count = creative_direction_target_count(
+                snapshot.settings.target_count,
+                mandatory_fact_count,
+            )
+        except ValueError as exc:
+            raise PipelineError(str(exc)) from exc
         source_hash = creative_direction_source_hash(
             insight_content_hash=snapshot.insight_artifact.content_hash,
             visual_strategy_hash=visual_strategy.strategy_hash,
@@ -653,6 +658,8 @@ class PromptGenerationPipeline:
                 "正在规划批次创意方向",
                 metadata={
                     "directionCount": expected_direction_count,
+                    "mandatoryBusinessFactCount": mandatory_fact_count,
+                    "businessFactCapacity": expected_direction_count * 4,
                     "priorityDimensionDistribution": [],
                     "candidateTargetCount": math.ceil(
                         snapshot.settings.target_count * 1.4

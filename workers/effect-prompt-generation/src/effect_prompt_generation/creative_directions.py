@@ -30,12 +30,82 @@ from .models import (
 
 
 OTHER_FAMILY = "OTHER"
+MIN_CREATIVE_DIRECTION_COUNT = 8
+MAX_CREATIVE_DIRECTION_COUNT = 16
+MAX_BUSINESS_FACTS_PER_DIRECTION = 4
 
 
-def creative_direction_target_count(target_count: int) -> int:
-    """Scale creative spaces with batch size instead of paraphrasing eight."""
+def creative_direction_target_count(
+    target_count: int,
+    mandatory_fact_count: int | None = None,
+) -> int:
+    """Scale directions for both output volume and required fact density.
 
-    return min(16, max(8, math.ceil(max(1, target_count) / 4)))
+    The optional fact count keeps isolated historical callers readable, while
+    current batch generation always supplies the real mandatory business fact
+    count and therefore receives capacity validation before any AI call.
+    """
+
+    volume_target = min(
+        MAX_CREATIVE_DIRECTION_COUNT,
+        max(MIN_CREATIVE_DIRECTION_COUNT, math.ceil(max(1, target_count) / 4)),
+    )
+    if mandatory_fact_count is None:
+        return volume_target
+    if mandatory_fact_count <= 0:
+        raise ValueError(
+            "提炼信息中没有可分配的卖点、痛点、受众、动机、营销目标或场景，"
+            "请先完善并提交信息提炼结果"
+        )
+    prompt_capacity = max(1, target_count) * MAX_BUSINESS_FACTS_PER_DIRECTION
+    if mandatory_fact_count > prompt_capacity:
+        minimum_prompt_count = math.ceil(
+            mandatory_fact_count / MAX_BUSINESS_FACTS_PER_DIRECTION
+        )
+        raise ValueError(
+            f"当前 {target_count} 条 Prompt 最多承载 {prompt_capacity} 条业务事实，"
+            f"现有 {mandatory_fact_count} 条；请将 Prompt 总数至少调整为 "
+            f"{minimum_prompt_count} 条"
+        )
+    direction_capacity = (
+        MAX_CREATIVE_DIRECTION_COUNT * MAX_BUSINESS_FACTS_PER_DIRECTION
+    )
+    if mandatory_fact_count > direction_capacity:
+        raise ValueError(
+            f"当前创意规划最多承载 {direction_capacity} 条业务事实，现有 "
+            f"{mandatory_fact_count} 条；请先精简或合并提炼信息"
+        )
+    coverage_target = math.ceil(
+        mandatory_fact_count / MAX_BUSINESS_FACTS_PER_DIRECTION
+    )
+    return max(volume_target, coverage_target)
+
+
+def creative_direction_fact_density_instruction(
+    mandatory_fact_count: int,
+    direction_count: int,
+) -> str:
+    """Describe the current batch's fact-density rule to the AI planner."""
+
+    if mandatory_fact_count >= direction_count * 2:
+        return (
+            f"当前有 {mandatory_fact_count} 条必须覆盖的业务事实和 {direction_count} "
+            "个创意方向。每个方向必须自然使用 2～4 条业务事实；整批必须覆盖"
+            "全部业务事实。"
+        )
+    if mandatory_fact_count >= direction_count:
+        return (
+            f"当前有 {mandatory_fact_count} 条必须覆盖的业务事实和 {direction_count} "
+            "个创意方向。每个方向至少自然使用 1 条业务事实，可在关系自然时使用"
+            "至多 4 条；整批必须覆盖全部业务事实。"
+        )
+    return (
+        f"当前只有 {mandatory_fact_count} 条必须覆盖的业务事实，但需要规划 "
+        f"{direction_count} 个创意方向。至少让 {mandatory_fact_count} 个不同方向"
+        "各自然承载业务事实，并保证整批完整覆盖；其余方向可以引用已确认的产品"
+        "名称、品类、规格或视觉特征形成产品相关创意，不得虚构新的营销事实，也"
+        "不得机械重复同一业务事实凑数。"
+    )
 
 
 def creative_direction_source_hash(
@@ -136,14 +206,14 @@ def compile_creative_landscape_assignments(
     compiled_territories = []
     for territory in landscape.territories:
         assigned = assigned_by_territory[territory.territory_id]
-        if len(assigned) > 8:
+        if len(assigned) > 64:
             raise ValueError("creative fact assignment exceeded territory fact capacity")
         assigned_fact_ids = [item.fact_id for item in assigned]
         supporting_fact_ids = [
             fact_id
             for fact_id in territory.compatible_fact_ids
             if fact_id not in assigned_fact_ids
-        ][: max(0, 8 - len(assigned_fact_ids))]
+        ][: max(0, 64 - len(assigned_fact_ids))]
         guidance_by_id = {
             item.fact_id: item for item in territory.fact_compatibilities
         }
@@ -475,12 +545,23 @@ def validate_creative_direction_plan(
                 raise ValueError("creative direction used a fact outside its territory")
         directions.append(direction)
     business_ids = {fact.fact_id for fact in mandatory_business_facts(application)}
-    minimum_business_facts = min(2, len(business_ids))
-    if business_ids and any(
-        len(business_ids.intersection(direction.fact_ids)) < minimum_business_facts
-        for direction in directions
-    ):
-        raise ValueError("each creative direction must apply multiple business facts")
+    business_fact_counts = [
+        len(business_ids.intersection(direction.fact_ids)) for direction in directions
+    ]
+    if len(business_ids) >= len(directions) * 2:
+        if any(count < 2 for count in business_fact_counts):
+            raise ValueError(
+                "fact-rich batches require at least two business facts per direction"
+            )
+    elif len(business_ids) >= len(directions):
+        if any(count < 1 for count in business_fact_counts):
+            raise ValueError(
+                "this batch requires at least one business fact per direction"
+            )
+    elif sum(count > 0 for count in business_fact_counts) < len(business_ids):
+        raise ValueError(
+            "sparse business facts must be distributed across distinct directions"
+        )
     planned_ids = {
         fact_id for direction in directions for fact_id in direction.fact_ids
     }

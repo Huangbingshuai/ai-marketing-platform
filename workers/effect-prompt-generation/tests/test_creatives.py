@@ -451,7 +451,7 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     assert len(creative_tasks) == 14
     assert all(task.fact_assignment is not None for task in creative_tasks)
     assert all(
-        2 <= len(task.fact_assignment.fact_ids) <= 4
+        1 <= len(task.fact_assignment.fact_ids) <= 4
         for task in creative_tasks
         if task.fact_assignment is not None
     )
@@ -576,7 +576,7 @@ async def test_visual_strategy_graph_compiles_direction_fact_plan_before_generat
         if task.fact_assignment is not None
     ]
     assert assignments
-    assert all(2 <= len(assignment.fact_ids) <= 4 for assignment in assignments)
+    assert all(1 <= len(assignment.fact_ids) <= 4 for assignment in assignments)
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections import Counter
 from dataclasses import replace
 from typing import Any
@@ -44,6 +45,7 @@ from effect_prompt_generation.creative_directions import (
     allocate_creative_directions,
     complete_semantic_profile,
     compile_creative_landscape_assignments,
+    creative_direction_fact_density_instruction,
     creative_direction_target_count,
     creative_direction_source_hash,
     direction_allocation_bucket,
@@ -66,6 +68,84 @@ def test_creative_direction_count_scales_with_batch_size() -> None:
     assert creative_direction_target_count(10) == 8
     assert creative_direction_target_count(50) == 13
     assert creative_direction_target_count(500) == 16
+
+
+def test_creative_direction_count_scales_with_fact_density() -> None:
+    assert creative_direction_target_count(50, 37) == 13
+    assert creative_direction_target_count(10, 40) == 10
+    assert "每个方向必须自然使用 2～4 条业务事实" in (
+        creative_direction_fact_density_instruction(37, 13)
+    )
+    assert "至少让 3 个不同方向" in (
+        creative_direction_fact_density_instruction(3, 8)
+    )
+
+
+def test_creative_direction_capacity_fails_before_ai_calls() -> None:
+    with pytest.raises(ValueError, match="至少调整为 11 条"):
+        creative_direction_target_count(10, 41)
+    with pytest.raises(ValueError, match="最多承载 64 条业务事实"):
+        creative_direction_target_count(50, 65)
+    with pytest.raises(ValueError, match="没有可分配"):
+        creative_direction_target_count(50, 0)
+
+
+def test_one_natural_territory_can_carry_more_than_eight_business_facts() -> None:
+    from effect_prompt_generation.providers import _mock_creative_landscape_response
+
+    application = map_insight(_cluster_snapshot().insight_artifact.result)
+    template = mandatory_business_facts(application)[0]
+    business_ids = {fact.fact_id for fact in mandatory_business_facts(application)}
+    cloned_facts = [
+        template.model_copy(
+            update={
+                "fact_id": f"dense-business-{index:02d}",
+                "value": f"已确认业务事实 {index}",
+                "value_hash": hashlib.sha256(
+                    f"已确认业务事实 {index}".encode("utf-8")
+                ).hexdigest(),
+            }
+        )
+        for index in range(9)
+    ]
+    dense_application = application.model_copy(
+        update={
+            "required": [
+                fact for fact in application.required if fact.fact_id not in business_ids
+            ]
+            + cloned_facts,
+            "adaptive": [
+                fact for fact in application.adaptive if fact.fact_id not in business_ids
+            ],
+        }
+    )
+    landscape = _mock_creative_landscape_response(
+        dense_application,
+        direction_count=13,
+    )
+    territory_id = landscape.territories[0].territory_id
+    compiled = compile_creative_landscape_assignments(
+        landscape,
+        CreativeFactTerritoryAssignmentResponse(
+            assignments=[
+                CreativeFactTerritoryAssignment(
+                    fact_id=fact.fact_id,
+                    territory_id=territory_id,
+                    natural_usage="同一真实业务主题下的自然产品表达",
+                    unsupported_conditions=[],
+                )
+                for fact in cloned_facts
+            ]
+        ),
+        dense_application,
+        source_hash="a" * 64,
+        template_hash="b" * 64,
+        expected_direction_count=13,
+    )
+
+    assert len(compiled.by_id[territory_id].required_fact_ids) == 9
+    assert compiled.by_id[territory_id].target_slots >= 3
+    assert sum(item.target_slots for item in compiled.territories) == 13
 
 
 def test_ai_flagged_optional_landscape_binding_is_removed_mechanically() -> None:
@@ -1240,9 +1320,16 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
     }
     business_fact_ids = {fact.fact_id for fact in mandatory_business_facts(application)}
     assert business_fact_ids.issubset(planned_fact_ids)
-    assert all(
-        2 <= len(direction.fact_applications) <= 4 for direction in plan.directions
-    )
+    business_counts = [
+        len(business_fact_ids.intersection(direction.fact_ids))
+        for direction in plan.directions
+    ]
+    if len(business_fact_ids) >= len(plan.directions) * 2:
+        assert all(2 <= count <= 4 for count in business_counts)
+    elif len(business_fact_ids) >= len(plan.directions):
+        assert all(1 <= count <= 4 for count in business_counts)
+    else:
+        assert sum(count > 0 for count in business_counts) >= len(business_fact_ids)
     assert all(
         application.by_id[item.fact_id].value not in {"", item.creative_usage}
         for direction in plan.directions

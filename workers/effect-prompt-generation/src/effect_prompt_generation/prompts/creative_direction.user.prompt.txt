@@ -1,6 +1,9 @@
 目标 Prompt 数量：{target_count}
 目标创意方向数量：{target_direction_count}
 
+本批事实密度要求：
+{fact_density_instruction}
+
 已确认事实：
 {facts_json}
 

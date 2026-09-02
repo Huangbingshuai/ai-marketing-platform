@@ -18,4 +18,4 @@
 版图修订上下文（首次为空；如需修订则重新规划完整版图）：
 {revision_context_json}
 
-请先规划产品专属创意版图，空间数量不得超过后续 {target_direction_count} 个创意方向。不要输出 targetSlots。requiredFactIds 在本阶段必须为空；compatibleFactIds 只保留少量用于定义空间主题的事实。下一次独立 AI 调用会负责全部业务事实的唯一主承载分配。
+请先规划产品专属创意版图，空间数量必须介于 1 和 10 之间，且不得超过后续 {target_direction_count} 个创意方向。空间应按真实业务主题组织，不要为了平均承载事实而拆分同义空间。不要输出 targetSlots。requiredFactIds 在本阶段必须为空；compatibleFactIds 只保留少量用于定义空间主题的事实。下一次独立 AI 调用会负责全部业务事实的唯一主承载分配；同一空间可以主承载较多自然相关事实，Worker 会按每 4 条事实增加一个方向槽位。

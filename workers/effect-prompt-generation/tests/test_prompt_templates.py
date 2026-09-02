@@ -113,6 +113,36 @@ def test_landscape_template_distinguishes_compatible_and_primary_facts() -> None
     assert "若被挂到储存、送礼、分享、采购等无关动作" in audit
 
 
+def test_direction_and_landscape_templates_receive_density_rules() -> None:
+    direction = render_prompt(
+        "creative_direction.user.prompt.txt",
+        target_count="50",
+        target_direction_count="13",
+        fact_density_instruction="每个方向必须自然使用 2～4 条业务事实",
+        facts_json="[]",
+        fact_visual_strategy_json="[]",
+        shared_prompt_json='""',
+        visual_style_baseline_json='"未设置"',
+        creative_landscape_json="[]",
+        revision_context_json="{}",
+    )
+    landscape = render_prompt(
+        "creative_landscape.user.prompt.txt",
+        target_direction_count="13",
+        required_fact_ids_json="[]",
+        facts_json="[]",
+        fact_visual_strategy_json="[]",
+        shared_prompt_json='""',
+        visual_style_baseline_json='"未设置"',
+        revision_context_json="{}",
+    )
+
+    assert "本批事实密度要求" in direction
+    assert "每个方向必须自然使用 2～4 条业务事实" in direction
+    assert "空间数量必须介于 1 和 10 之间" in landscape
+    assert "每 4 条事实增加一个方向槽位" in landscape
+
+
 def test_territory_audit_template_receives_real_business_inputs() -> None:
     rendered = render_prompt(
         "creative_landscape_audit.user.prompt.txt",

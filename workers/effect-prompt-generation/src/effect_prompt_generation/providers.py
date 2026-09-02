@@ -15,7 +15,10 @@ from typing import Any, Generic, Protocol, TypeVar
 import httpx
 from pydantic import BaseModel, ValidationError
 
-from .creative_directions import creative_direction_target_count
+from .creative_directions import (
+    creative_direction_fact_density_instruction,
+    creative_direction_target_count,
+)
 from .insight_mapping import mandatory_business_facts
 from .models import (
     CreativeCandidate,
@@ -285,7 +288,10 @@ class MockAiProvider:
         return _mock_result(
             _mock_creative_landscape_response(
                 application,
-                direction_count=creative_direction_target_count(target_count),
+                direction_count=creative_direction_target_count(
+                    target_count,
+                    len(mandatory_business_facts(application)),
+                ),
             ),
             NodeId.COHERENT_CREATIVE_GENERATION.value,
             CREATIVE_LANDSCAPE_BASE_PROMPT,
@@ -576,9 +582,14 @@ class ArkResponsesProvider:
             ),
             "",
         )
+        business_fact_count = len(mandatory_business_facts(application))
+        target_direction_count = creative_direction_target_count(
+            target_count,
+            business_fact_count,
+        )
         prompt = render_prompt(
             CREATIVE_LANDSCAPE_TASK_PROMPT,
-            target_direction_count=str(creative_direction_target_count(target_count)),
+            target_direction_count=str(target_direction_count),
             required_fact_ids_json=json.dumps(
                 [
                     fact_aliases[fact.fact_id]
@@ -704,7 +715,12 @@ class ArkResponsesProvider:
         ]
         prompt = render_prompt(
             CREATIVE_FACT_TERRITORY_ASSIGNMENT_TASK_PROMPT,
-            target_direction_count=str(creative_direction_target_count(target_count)),
+            target_direction_count=str(
+                creative_direction_target_count(
+                    target_count,
+                    len(business_facts),
+                )
+            ),
             required_facts_json=json.dumps(
                 facts, ensure_ascii=False, sort_keys=True
             ),
@@ -876,10 +892,21 @@ class ArkResponsesProvider:
             ),
             "",
         )
+        business_fact_count = len(mandatory_business_facts(application))
+        target_direction_count = creative_direction_target_count(
+            target_count,
+            business_fact_count,
+        )
         prompt = render_prompt(
             CREATIVE_DIRECTION_TASK_PROMPT,
             target_count=str(target_count),
-            target_direction_count=str(creative_direction_target_count(target_count)),
+            target_direction_count=str(target_direction_count),
+            fact_density_instruction=(
+                creative_direction_fact_density_instruction(
+                    business_fact_count,
+                    target_direction_count,
+                )
+            ),
             facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
             fact_visual_strategy_json=json.dumps(
                 visual_policies,
@@ -1609,16 +1636,24 @@ def _mock_creative_landscape_response(
     *,
     direction_count: int,
 ) -> CreativeDiversityLandscapeResponse:
-    business_facts = mandatory_business_facts(application) or application.usable
+    business_facts = mandatory_business_facts(application)
+    if not business_facts:
+        raise ProviderError(
+            "creative landscape planning requires confirmed business facts",
+            retryable=False,
+            error_type=ProviderErrorType.REQUEST_REJECTED,
+        )
     required_pool = list(
-        {fact.fact_id: fact for fact in [*business_facts, *application.usable]}.values()
+        {fact.fact_id: fact for fact in application.usable}.values()
     )
     fact_ids = [item.fact_id for item in application.usable]
     territory_count = min(
-        len(_MOCK_DIRECTION_ROWS), direction_count, len(required_pool)
+        len(_MOCK_DIRECTION_ROWS),
+        direction_count,
+        max(1, len(required_pool)),
     )
     required_by_territory = [
-        [fact.fact_id for fact in required_pool[index::territory_count]]
+        [fact.fact_id for fact in business_facts[index::territory_count]]
         for index in range(territory_count)
     ]
     facts_by_id = application.by_id
@@ -1633,7 +1668,7 @@ def _mock_creative_landscape_response(
             fact_id for fact_id in rotated_ids if fact_id not in required_ids
         ][:2]
         compatible_by_territory.append(
-            list(dict.fromkeys([*required_ids, *supporting_ids]))[:8]
+            list(dict.fromkeys([*required_ids, *supporting_ids]))[:64]
         )
     return CreativeDiversityLandscapeResponse(
         territories=[
@@ -1674,7 +1709,7 @@ def _mock_creative_direction_response(
     landscape: CreativeDiversityLandscape | None = None,
     direction_count: int = 8,
 ) -> CreativeDirectionResponse:
-    business_facts = mandatory_business_facts(application) or application.usable
+    business_facts = mandatory_business_facts(application)
     if not business_facts:
         raise ProviderError(
             "creative direction planning requires confirmed insight facts",
@@ -1720,16 +1755,19 @@ def _mock_creative_direction_response(
         (CreativeDimensionKey.PERSONA, CreativeDimensionKey.PRODUCT_RELATION),
         (CreativeDimensionKey.NARRATIVE, CreativeDimensionKey.SCENE),
     )
+    total_direction_count = sum(
+        item.target_slots for item in landscape.territories
+    )
     bundle_size = min(
         4,
         max(
-            min(2, len(business_facts)),
+            1,
             (
                 len(business_facts)
-                + sum(item.target_slots for item in landscape.territories)
+                + total_direction_count
                 - 1
             )
-            // sum(item.target_slots for item in landscape.territories),
+            // total_direction_count,
         ),
     )
     direction_rows = [
@@ -1753,23 +1791,37 @@ def _mock_creative_direction_response(
             if fact.fact_id
             in territory.required_fact_ids[local_index :: territory.target_slots]
         ]
-        if not required:
-            required = [
-                fact
-                for fact in business_facts
-                if fact.fact_id in territory.required_fact_ids[:1]
-            ]
+        if len(business_facts) >= total_direction_count * 2:
+            minimum_business_count = 2
+        elif len(business_facts) >= total_direction_count:
+            minimum_business_count = 1
+        else:
+            minimum_business_count = int(global_index < len(business_facts))
         rotated = (
             business_facts[(global_index * bundle_size) % len(business_facts) :]
             + business_facts[: (global_index * bundle_size) % len(business_facts)]
         )
-        return list(
+        selected = list(
             {
                 fact.fact_id: fact
                 for fact in [*required, *rotated]
                 if fact.fact_id in territory.compatible_fact_ids
             }.values()
-        )[: max(bundle_size, min(4, len(required)))]
+        )[: max(minimum_business_count, min(4, len(required)))]
+        if len(selected) < minimum_business_count:
+            selected.extend(
+                fact
+                for fact in rotated
+                if fact.fact_id not in {item.fact_id for item in selected}
+                and fact.fact_id in territory.compatible_fact_ids
+            )
+            selected = selected[:minimum_business_count]
+        if not selected:
+            compatible_ids = set(territory.compatible_fact_ids)
+            selected = [
+                fact for fact in application.usable if fact.fact_id in compatible_ids
+            ][:1]
+        return selected[:4]
 
     return CreativeDirectionResponse(
         directions=[

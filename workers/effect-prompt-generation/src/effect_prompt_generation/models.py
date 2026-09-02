@@ -623,11 +623,11 @@ class CreativeTerritoryFactCompatibility(ApiModel):
 class CreativeTerritoryDraft(ApiModel):
     territory_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
     label: str = Field(min_length=2, max_length=80)
-    compatible_fact_ids: list[str] = Field(min_length=1, max_length=8)
+    compatible_fact_ids: list[str] = Field(min_length=1, max_length=64)
     fact_compatibilities: list[CreativeTerritoryFactCompatibility] = Field(
-        max_length=8,
+        max_length=64,
     )
-    required_fact_ids: list[str] = Field(default_factory=list, max_length=40)
+    required_fact_ids: list[str] = Field(default_factory=list, max_length=64)
     scene_boundary: str = Field(min_length=4, max_length=180)
     actions: list[CreativeTerritoryAction] = Field(min_length=1, max_length=5)
     differentiation_goal: str = Field(min_length=4, max_length=180)
@@ -662,12 +662,12 @@ class CreativeTerritoryDraft(ApiModel):
 
 
 class CreativeTerritory(CreativeTerritoryDraft):
-    required_fact_ids: list[str] = Field(default_factory=list, max_length=40)
+    required_fact_ids: list[str] = Field(default_factory=list, max_length=64)
     target_slots: int = Field(ge=1, le=16)
 
 
 class CreativeDiversityLandscapeResponse(ApiModel):
-    territories: list[CreativeTerritoryDraft] = Field(min_length=5, max_length=10)
+    territories: list[CreativeTerritoryDraft] = Field(min_length=1, max_length=10)
 
 
 class CreativeFactTerritoryAssignment(ApiModel):
@@ -695,16 +695,16 @@ class CreativeTerritoryAuditResponse(ApiModel):
     territory_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
     fact_issues: list[CreativeLandscapeFactIssue] = Field(
         default_factory=list,
-        max_length=8,
+        max_length=64,
     )
     summary: str = Field(min_length=2, max_length=180)
 
 
 class CreativeLandscapeAuditResponse(ApiModel):
-    reviewed_territory_ids: list[str] = Field(min_length=5, max_length=10)
+    reviewed_territory_ids: list[str] = Field(min_length=1, max_length=10)
     fact_issues: list[CreativeLandscapeFactIssue] = Field(
         default_factory=list,
-        max_length=24,
+        max_length=64,
     )
     requires_revision: bool
     revision_territory_ids: list[str] = Field(default_factory=list, max_length=10)
@@ -723,10 +723,10 @@ class CreativeLandscapeAuditResponse(ApiModel):
 
 
 class CreativeLandscapeAudit(ApiModel):
-    reviewed_territory_ids: list[str] = Field(min_length=5, max_length=10)
+    reviewed_territory_ids: list[str] = Field(min_length=1, max_length=10)
     fact_issues: list[CreativeLandscapeFactIssue] = Field(
         default_factory=list,
-        max_length=24,
+        max_length=64,
     )
     requires_revision: bool = False
     revision_territory_ids: list[str] = Field(default_factory=list, max_length=10)
@@ -735,7 +735,7 @@ class CreativeLandscapeAudit(ApiModel):
 
 
 class CreativeDiversityLandscape(ApiModel):
-    territories: list[CreativeTerritory] = Field(min_length=5, max_length=10)
+    territories: list[CreativeTerritory] = Field(min_length=1, max_length=10)
     source_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     landscape_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     template_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
