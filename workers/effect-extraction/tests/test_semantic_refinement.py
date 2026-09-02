@@ -284,7 +284,7 @@ async def test_single_user_fact_skips_the_model() -> None:
 
 
 @pytest.mark.asyncio
-async def test_worker_rejects_missing_image_decisions() -> None:
+async def test_worker_treats_missing_image_decisions_as_safe_drops() -> None:
     candidate = ExtractionCandidate.empty()
     images = [
         fact(
@@ -298,17 +298,24 @@ async def test_worker_rejects_missing_image_decisions() -> None:
         SemanticRefinementDecision(suggestion_decisions=[], user_fact_notices=[])
     )
 
-    with pytest.raises(ValueError, match="cover every image suggestion"):
-        await refine_candidate_semantics(
-            candidate,
-            provider=provider,  # type: ignore[arg-type]
-            user_facts=[],
-            image_suggestions=images,
-        )
+    result = await refine_candidate_semantics(
+        candidate,
+        provider=provider,  # type: ignore[arg-type]
+        user_facts=[],
+        image_suggestions=images,
+    )
+
+    assert result.candidate.usage_scenarios is None
+    assert result.metadata["validation"] == {
+        "status": "CORRECTED",
+        "correctionCount": 1,
+        "correctionCodes": ["MISSING_SUGGESTION_DECISION"],
+        "correctionCounts": {"MISSING_SUGGESTION_DECISION": 1},
+    }
 
 
 @pytest.mark.asyncio
-async def test_worker_rejects_image_suggestions_over_remaining_capacity() -> None:
+async def test_worker_drops_image_suggestions_over_remaining_capacity() -> None:
     candidate = ExtractionCandidate.empty()
     users = [
         fact(
@@ -336,17 +343,21 @@ async def test_worker_rejects_image_suggestions_over_remaining_capacity() -> Non
         )
     )
 
-    with pytest.raises(ValueError, match="remaining field capacity"):
-        await refine_candidate_semantics(
-            candidate,
-            provider=provider,  # type: ignore[arg-type]
-            user_facts=users,
-            image_suggestions=images,
-        )
+    result = await refine_candidate_semantics(
+        candidate,
+        provider=provider,  # type: ignore[arg-type]
+        user_facts=users,
+        image_suggestions=images,
+    )
+
+    assert result.candidate.core_selling_points == ["卖点1", "卖点2", "卖点3"]
+    assert result.metadata["validation"]["correctionCounts"] == {
+        "FIELD_CAPACITY_EXCEEDED": 1
+    }
 
 
 @pytest.mark.asyncio
-async def test_worker_rejects_notice_for_unknown_user_fact() -> None:
+async def test_worker_ignores_notice_for_unknown_user_fact() -> None:
     candidate = ExtractionCandidate.empty()
     users = [
         fact("user-usage-01", SemanticField.USAGE_SCENARIOS, "蒸制食用", "USER_FACT"),
@@ -364,10 +375,14 @@ async def test_worker_rejects_notice_for_unknown_user_fact() -> None:
         )
     )
 
-    with pytest.raises(ValueError, match="invalid user fact"):
-        await refine_candidate_semantics(
-            candidate,
-            provider=provider,  # type: ignore[arg-type]
-            user_facts=users,
-            image_suggestions=[],
-        )
+    result = await refine_candidate_semantics(
+        candidate,
+        provider=provider,  # type: ignore[arg-type]
+        user_facts=users,
+        image_suggestions=[],
+    )
+
+    assert result.metadata["userNoticeCount"] == 0
+    assert result.metadata["validation"]["correctionCounts"] == {
+        "UNKNOWN_USER_NOTICE_FACT": 1
+    }

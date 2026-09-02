@@ -98,7 +98,7 @@ def test_default_provider_uses_seed_2_1_turbo_model_id(
     assert settings.ark_image_adaptive_high_detail is True
     assert settings.ark_semantic_timeout_seconds == 30
     assert settings.ark_semantic_max_attempts == 1
-    assert settings.ark_semantic_max_output_tokens == 2048
+    assert settings.ark_semantic_max_output_tokens == 3072
     assert settings.ark_semantic_reasoning_effort == "minimal"
     assert settings.image_max_dimension == 1280
     assert settings.image_max_concurrency == 2
@@ -137,7 +137,7 @@ def test_stage_models_support_specific_values_and_blank_fallback(
     assert settings.resolved_normalization_model == "normalization-model"
 
 
-def test_blank_semantic_model_uses_the_fast_semantic_default(
+def test_blank_semantic_model_uses_the_pro_semantic_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _base_environment(monkeypatch)

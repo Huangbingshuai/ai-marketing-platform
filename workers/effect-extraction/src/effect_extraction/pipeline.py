@@ -597,23 +597,38 @@ class ExtractionPipeline:
                 user_facts=user_facts,
                 image_suggestions=image_suggestions,
             )
+            validation = result.metadata.get("validation") or {}
+            correction_count = int(validation.get("correctionCount", 0))
+            corrected = correction_count > 0
             output = BranchOutput(
                 branch=BranchName.SEMANTIC_REFINEMENT,
-                status=BranchStatus.SUCCEEDED,
+                status=(
+                    BranchStatus.PARTIAL if corrected else BranchStatus.SUCCEEDED
+                ),
                 source_fingerprint=context.source_fingerprint,
                 candidate=result.candidate,
+                warnings=(
+                    [
+                        f"语义整理已安全忽略 {correction_count} 项无效结构，"
+                        "其余图片建议已正常应用"
+                    ]
+                    if corrected
+                    else []
+                ),
                 metadata=result.metadata,
             )
             LOGGER.info(
                 "semantic refinement completed user_facts=%s user_notices=%s "
                 "image_suggestions=%s image_kept=%s image_moved=%s image_dropped=%s "
-                "latency_ms=%s attempts=%s",
+                "corrections=%s correction_codes=%s latency_ms=%s attempts=%s",
                 result.metadata.get("userFactCount", 0),
                 result.metadata.get("userNoticeCount", 0),
                 result.metadata.get("imageSuggestionInputCount", 0),
                 result.metadata.get("imageSuggestionKeptCount", 0),
                 result.metadata.get("imageSuggestionMovedCount", 0),
                 result.metadata.get("imageSuggestionDroppedCount", 0),
+                correction_count,
+                ",".join(validation.get("correctionCodes", [])) or "none",
                 (result.metadata.get("aiCall") or {}).get("latencyMs", 0),
                 (result.metadata.get("aiCall") or {}).get("attempts", 0),
             )
@@ -637,7 +652,7 @@ class ExtractionPipeline:
                     },
                 ),
             )
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError):
             output = BranchOutput(
                 branch=BranchName.SEMANTIC_REFINEMENT,
                 status=BranchStatus.PARTIAL,
@@ -648,7 +663,7 @@ class ExtractionPipeline:
                     user_facts=user_facts,
                     image_suggestions=image_suggestions,
                     failure={
-                        "type": type(exc).__name__.upper(),
+                        "type": "SEMANTIC_INPUT_INVALID",
                         "attempts": 1,
                         "elapsedMs": 0,
                     },

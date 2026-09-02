@@ -707,4 +707,55 @@ describe('presentExtractionNodeDetail', () => {
     expect(detail.summary).toBe('语义整理未完成，已保留原始提炼信息');
     expect(detail.summary).not.toContain('已完成');
   });
+
+  it('shows structural corrections without describing valid image suggestions as discarded', () => {
+    const detail = presentExtractionNodeDetail(
+      {
+        inputSnapshot: snapshot,
+        updatedAt: new Date('2026-08-24T00:03:00.000Z'),
+        branches: [
+          {
+            branch: 'SEMANTIC_REFINEMENT',
+            status: 'PARTIAL',
+            updatedAt: new Date('2026-08-24T00:02:00.000Z'),
+            structuredOutput: {
+              metadata: {
+                userFactCount: 25,
+                userNoticeCount: 3,
+                imageSuggestionInputCount: 12,
+                imageSuggestionKeptCount: 4,
+                imageSuggestionMovedCount: 1,
+                imageSuggestionDroppedCount: 8,
+                validation: {
+                  status: 'CORRECTED',
+                  correctionCount: 2,
+                  correctionCodes: ['MISSING_SUGGESTION_DECISION', 'FIELD_CAPACITY_EXCEEDED'],
+                },
+                aiCall: { latencyMs: 9200 },
+              },
+            },
+          },
+        ],
+      },
+      'SEMANTIC_REFINEMENT',
+      {
+        ...execution('SEMANTIC_REFINEMENT'),
+        status: 'PARTIAL',
+        warnings: [],
+      },
+    );
+
+    expect(detail.summary).toBe('语义整理已保留有效结果，并安全忽略 2 项无效结构');
+    expect(detail.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: '保留的图片建议', value: 4 }),
+        expect.objectContaining({ label: '安全忽略的结构问题', value: 2 }),
+        expect.objectContaining({
+          label: '结构问题类型',
+          value: ['缺少处理决定', '目标字段容量超限'],
+        }),
+        expect.objectContaining({ label: '处理状态', value: '部分完成，已保留有效整理结果' }),
+      ]),
+    );
+  });
 });

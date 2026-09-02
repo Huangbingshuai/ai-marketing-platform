@@ -241,6 +241,21 @@ const semanticSources = (
   });
 };
 
+const SEMANTIC_CORRECTION_LABELS: Record<string, string> = {
+  UNKNOWN_SUGGESTION_ID: '未知图片建议',
+  DUPLICATE_SUGGESTION_DECISION: '重复处理决定',
+  MISSING_SUGGESTION_DECISION: '缺少处理决定',
+  DROP_TARGET_IGNORED: '删除决定携带多余字段',
+  KEEP_TARGET_MISSING: '保留决定缺少目标字段',
+  FIELD_CAPACITY_EXCEEDED: '目标字段容量超限',
+  UNKNOWN_USER_NOTICE_FACT: '提示引用未知用户事实',
+  DUPLICATE_USER_NOTICE: '重复用户提示',
+  MODEL_CAPACITY_NOTICE_IGNORED: '模型重复生成容量提示',
+  INVALID_RELATED_USER_FACT: '提示关联事实无效',
+  INVALID_SUGGESTED_FIELD: '建议字段无效',
+  UNEXPECTED_SUGGESTED_FIELD: '提示携带多余建议字段',
+};
+
 const payload = (
   value: unknown,
 ): { candidate: unknown; items: unknown[]; metadata: JsonRecord } => {
@@ -553,6 +568,15 @@ export const presentExtractionNodeDetail = (
     const suggestionDroppedCount = Number(output.metadata.imageSuggestionDroppedCount);
     const aiCall = isRecord(output.metadata.aiCall) ? output.metadata.aiCall : {};
     const latencyMs = Number(aiCall.latencyMs);
+    const validation = isRecord(output.metadata.validation) ? output.metadata.validation : {};
+    const correctionCount = Number(validation.correctionCount);
+    const correctionCodes = Array.isArray(validation.correctionCodes)
+      ? validation.correctionCodes
+          .map(String)
+          .map((code) => SEMANTIC_CORRECTION_LABELS[code])
+          .filter((label): label is string => Boolean(label))
+      : [];
+    const corrected = validation.status === 'CORRECTED' && correctionCount > 0;
     const mergedGroupCount = Number(output.metadata.mergedGroupCount);
     const familyGroupCount = Number(output.metadata.familyGroupCount);
     const completedSummary =
@@ -567,7 +591,9 @@ export const presentExtractionNodeDetail = (
         : null;
     const lightweightSummary = hasLightweightSummary
       ? execution.status === 'PARTIAL'
-        ? '语义整理未完成，已原样保留用户事实，图片建议未加入信息卡'
+        ? corrected
+          ? `语义整理已保留有效结果，并安全忽略 ${correctionCount} 项无效结构`
+          : '语义整理未完成，已原样保留用户事实，图片建议未加入信息卡'
         : `已保留 ${userFactCount} 条用户事实，整理 ${suggestionInputCount} 条图片建议`
       : null;
     const summary = !branch
@@ -597,6 +623,16 @@ export const presentExtractionNodeDetail = (
             field('semantic-image-moved', '迁移字段的图片建议', suggestionMovedCount),
             field('semantic-image-dropped', '删除的图片建议', suggestionDroppedCount),
             field(
+              'semantic-correction-count',
+              '安全忽略的结构问题',
+              corrected ? correctionCount : 0,
+            ),
+            field(
+              'semantic-correction-types',
+              '结构问题类型',
+              correctionCodes.length ? correctionCodes : null,
+            ),
+            field(
               'semantic-latency',
               '语义模型耗时',
               Number.isFinite(latencyMs) ? `${(latencyMs / 1000).toFixed(1)} 秒` : null,
@@ -604,7 +640,11 @@ export const presentExtractionNodeDetail = (
             field(
               'semantic-degraded',
               '处理状态',
-              output.metadata.degraded === true ? '部分完成，仅保留用户事实' : '整理完成',
+              output.metadata.degraded === true
+                ? '部分完成，仅保留用户事实'
+                : corrected
+                  ? '部分完成，已保留有效整理结果'
+                  : '整理完成',
             ),
           ])
         : [],

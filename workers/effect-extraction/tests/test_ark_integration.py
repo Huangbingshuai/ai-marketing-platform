@@ -165,8 +165,10 @@ async def test_real_ark_semantic_decision_only_warns_about_repeated_user_meaning
         timeout=float(os.getenv("ARK_TIMEOUT_SECONDS", "120")),
         semantic_timeout=float(os.getenv("ARK_SEMANTIC_TIMEOUT_SECONDS", "30")),
         semantic_max_attempts=1,
-        semantic_max_output_tokens=2048,
-        semantic_reasoning_effort="minimal",
+        semantic_max_output_tokens=int(
+            os.getenv("ARK_SEMANTIC_MAX_OUTPUT_TOKENS", "3072")
+        ),
+        semantic_reasoning_effort=os.getenv("ARK_SEMANTIC_REASONING_EFFORT", "minimal"),
     )
     try:
         decision = await provider.refine_semantics(

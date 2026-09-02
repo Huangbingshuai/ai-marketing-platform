@@ -7,7 +7,7 @@ from pydantic import AnyHttpUrl, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_ARK_MODEL = "doubao-seed-2-1-turbo-260628"
-DEFAULT_ARK_SEMANTIC_MODEL = DEFAULT_ARK_MODEL
+DEFAULT_ARK_SEMANTIC_MODEL = "doubao-seed-2-1-pro-260628"
 ARK_KEY_PLACEHOLDERS = {
     "replace-with-your-ark-api-key",
     "your-ark-api-key",
@@ -134,7 +134,7 @@ class WorkerSettings(BaseSettings):
         default=1, alias="ARK_SEMANTIC_MAX_ATTEMPTS", ge=1, le=1
     )
     ark_semantic_max_output_tokens: int = Field(
-        default=2048, alias="ARK_SEMANTIC_MAX_OUTPUT_TOKENS", ge=256, le=4096
+        default=3072, alias="ARK_SEMANTIC_MAX_OUTPUT_TOKENS", ge=256, le=4096
     )
     ark_semantic_reasoning_effort: Literal["minimal", "low", "medium", "high"] = Field(
         default="minimal", alias="ARK_SEMANTIC_REASONING_EFFORT"

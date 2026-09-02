@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
@@ -37,6 +38,9 @@ MAX_USER_FACTS_PER_FIELD = 20
 class SemanticRefinementResult:
     candidate: ExtractionCandidate
     metadata: dict[str, Any]
+
+
+CorrectionCounts = Counter[str]
 
 
 async def refine_candidate_semantics(
@@ -78,12 +82,16 @@ async def refine_candidate_semantics(
             field.value: capacity for field, capacity in remaining_capacity.items()
         },
     )
-    kept = _validated_suggestion_decisions(
+    kept, decision_corrections = _safe_suggestion_decisions(
         ai_call.value,
         suggestions=suggestions,
         remaining_capacity=remaining_capacity,
     )
-    model_notices = _validated_user_notices(ai_call.value, users=users)
+    model_notices, notice_corrections = _safe_user_notices(
+        ai_call.value,
+        users=users,
+    )
+    corrections = decision_corrections + notice_corrections
     notices = [*model_notices, *structural_notices]
     refined = _candidate_with_facts(candidate, users, kept)
     return SemanticRefinementResult(
@@ -95,6 +103,7 @@ async def refine_candidate_semantics(
             notices=notices,
             decisions=ai_call.value,
             ai_call=ai_call.metadata.as_dict(),
+            corrections=corrections,
         ),
     )
 
@@ -167,64 +176,81 @@ def _remaining_capacity(
     }
 
 
-def _validated_suggestion_decisions(
+def _safe_suggestion_decisions(
     decision: SemanticRefinementDecision,
     *,
     suggestions: Sequence[Mapping[str, str]],
     remaining_capacity: Mapping[SemanticField, int],
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], CorrectionCounts]:
     suggestions_by_id = {row["factId"]: dict(row) for row in suggestions}
-    decision_ids = [row.fact_id for row in decision.suggestion_decisions]
-    if len(decision_ids) != len(set(decision_ids)):
-        raise ValueError("semantic suggestion decision is duplicated")
-    if set(decision_ids) != set(suggestions_by_id):
-        raise ValueError("semantic decisions must cover every image suggestion")
-
+    corrections: CorrectionCounts = Counter()
+    seen: set[str] = set()
     kept: list[dict[str, str]] = []
     kept_counts = {field: 0 for field, _ in SEMANTIC_FIELDS}
     for row in decision.suggestion_decisions:
-        original = suggestions_by_id[row.fact_id]
+        original = suggestions_by_id.get(row.fact_id)
+        if original is None:
+            corrections["UNKNOWN_SUGGESTION_ID"] += 1
+            continue
+        if row.fact_id in seen:
+            corrections["DUPLICATE_SUGGESTION_DECISION"] += 1
+            continue
+        seen.add(row.fact_id)
         if row.disposition == SemanticSuggestionDisposition.DROP:
             if row.target_field is not None:
-                raise ValueError("dropped image suggestion cannot have a target field")
+                corrections["DROP_TARGET_IGNORED"] += 1
             continue
         if row.target_field is None:
-            raise ValueError("kept image suggestion requires a target field")
+            corrections["KEEP_TARGET_MISSING"] += 1
+            continue
         kept_counts[row.target_field] += 1
         if kept_counts[row.target_field] > remaining_capacity[row.target_field]:
-            raise ValueError("semantic decisions exceed the remaining field capacity")
+            corrections["FIELD_CAPACITY_EXCEEDED"] += 1
+            continue
         kept.append({**original, "resolvedField": row.target_field.value})
-    return kept
+    missing_count = len(suggestions_by_id) - len(seen)
+    if missing_count > 0:
+        corrections["MISSING_SUGGESTION_DECISION"] += missing_count
+    return kept, corrections
 
 
-def _validated_user_notices(
+def _safe_user_notices(
     decision: SemanticRefinementDecision,
     *,
     users: Sequence[Mapping[str, str]],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], CorrectionCounts]:
     users_by_id = {row["factId"]: dict(row) for row in users}
     seen: set[tuple[str, SemanticUserFactIssue]] = set()
     notices: list[dict[str, Any]] = []
+    corrections: CorrectionCounts = Counter()
     for notice in decision.user_fact_notices:
         fact = users_by_id.get(notice.fact_id)
         key = (notice.fact_id, notice.issue)
-        if fact is None or key in seen:
-            raise ValueError("semantic notice references an invalid user fact")
+        if fact is None:
+            corrections["UNKNOWN_USER_NOTICE_FACT"] += 1
+            continue
+        if key in seen:
+            corrections["DUPLICATE_USER_NOTICE"] += 1
+            continue
         if notice.issue == SemanticUserFactIssue.FIELD_OVER_RECOMMENDED_COUNT:
-            raise ValueError("field capacity notices are generated structurally")
+            corrections["MODEL_CAPACITY_NOTICE_IGNORED"] += 1
+            continue
         related_ids = list(dict.fromkeys(notice.related_fact_ids))
         if notice.fact_id in related_ids or any(
             related_id not in users_by_id for related_id in related_ids
         ):
-            raise ValueError("semantic notice has invalid related user facts")
+            corrections["INVALID_RELATED_USER_FACT"] += 1
+            continue
         if notice.issue == SemanticUserFactIssue.POSSIBLE_WRONG_FIELD:
             if (
                 notice.suggested_field is None
                 or notice.suggested_field.value == fact["field"]
             ):
-                raise ValueError("wrong-field notice requires a different field")
+                corrections["INVALID_SUGGESTED_FIELD"] += 1
+                continue
         elif notice.suggested_field is not None:
-            raise ValueError("only wrong-field notices may suggest another field")
+            corrections["UNEXPECTED_SUGGESTED_FIELD"] += 1
+            continue
         notices.append(
             {
                 "factId": notice.fact_id,
@@ -241,7 +267,7 @@ def _validated_user_notices(
             }
         )
         seen.add(key)
-    return notices
+    return notices, corrections
 
 
 def _over_limit_notices(
@@ -297,6 +323,7 @@ def _metadata(
     notices: Sequence[Mapping[str, Any]],
     decisions: SemanticRefinementDecision | None = None,
     ai_call: dict[str, Any] | None = None,
+    corrections: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     original_fields = {row["factId"]: row["field"] for row in suggestions}
     moved_count = sum(
@@ -317,4 +344,15 @@ def _metadata(
         metadata["semanticDecisionCount"] = len(decisions.suggestion_decisions)
     if ai_call is not None:
         metadata["aiCall"] = ai_call
+    correction_counts = {
+        code: int(count)
+        for code, count in sorted((corrections or {}).items())
+        if count > 0
+    }
+    metadata["validation"] = {
+        "status": "CORRECTED" if correction_counts else "VERIFIED",
+        "correctionCount": sum(correction_counts.values()),
+        "correctionCodes": list(correction_counts),
+        "correctionCounts": correction_counts,
+    }
     return metadata

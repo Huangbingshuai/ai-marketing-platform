@@ -15,6 +15,7 @@ from effect_extraction.models import (
     ExtractionCandidate,
     ExtractionSnapshot,
     RuntimeContext,
+    SemanticRefinementDecision,
     SnapshotMaterial,
     SnapshotProduct,
     VideoConfig,
@@ -26,6 +27,7 @@ from effect_extraction.pipeline import (
     _restore_semantic_fields,
 )
 from effect_extraction.providers import (
+    AiCallMetadata,
     AiCallResult,
     MockAiProvider,
     ProviderError,
@@ -292,6 +294,34 @@ class TimeoutSemanticProvider(MockAiProvider):
             error_type=ProviderErrorType.TIMEOUT,
             attempts=1,
             elapsed_ms=12_500,
+        )
+
+
+class MissingDecisionSemanticProvider(MockAiProvider):
+    async def refine_semantics(
+        self,
+        *,
+        user_facts: Sequence[Mapping[str, str]],
+        image_suggestions: Sequence[Mapping[str, str]],
+        remaining_capacity_by_field: Mapping[str, int],
+    ) -> AiCallResult[SemanticRefinementDecision]:
+        del user_facts, image_suggestions, remaining_capacity_by_field
+        return AiCallResult(
+            value=SemanticRefinementDecision(
+                suggestion_decisions=[],
+                user_fact_notices=[],
+            ),
+            metadata=AiCallMetadata(
+                stage="SEMANTIC_REFINEMENT",
+                model="test-pro-model",
+                prompt_version="test-v5",
+                input_tokens=10,
+                output_tokens=5,
+                total_tokens=15,
+                latency_ms=250,
+                attempts=1,
+                reasoning_tokens=0,
+            ),
         )
 
 
@@ -1064,6 +1094,62 @@ async def test_semantic_refinement_degrades_to_user_facts_on_timeout() -> None:
     ]
     assert output.metadata["degraded"] is True
     assert output.metadata["userFactCount"] == 2
+
+
+@pytest.mark.asyncio
+async def test_semantic_refinement_keeps_valid_batch_after_structural_correction() -> (
+    None
+):
+    api = ApiStub()
+    document = ExtractionCandidate.empty()
+    document.core_pain_points = ["家庭用餐准备不便"]
+    image = ExtractionCandidate.empty()
+    image.usage_scenarios = ["家庭快速备餐"]
+    fused = document.model_copy(update={"usage_scenarios": ["家庭快速备餐"]})
+    api.branches = [
+        BranchOutput(
+            branch=BranchName.DOCUMENT,
+            status=BranchStatus.SUCCEEDED,
+            source_fingerprint="server-fingerprint",
+            candidate=document,
+        ),
+        BranchOutput(
+            branch=BranchName.IMAGE,
+            status=BranchStatus.SUCCEEDED,
+            source_fingerprint="server-fingerprint",
+            candidate=image,
+        ),
+        BranchOutput(
+            branch=BranchName.FUSION,
+            status=BranchStatus.SUCCEEDED,
+            source_fingerprint="server-fingerprint",
+            candidate=fused,
+        ),
+    ]
+    pipeline = ExtractionPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=MissingDecisionSemanticProvider(),
+        document_parser=ParserStub(),
+        image_processor=ImageProcessorStub(),  # type: ignore[arg-type]
+        max_document_text_chars=1000,
+    )
+    context = RuntimeContext(
+        "run", "project", "draft", "product", "request", "attempt", "server-fingerprint"
+    )
+    pipeline.register_snapshot(context, api.snapshot)
+
+    output = await pipeline.refine_semantics(context)
+
+    assert output.status == BranchStatus.PARTIAL
+    assert output.candidate is not None
+    assert output.candidate.core_pain_points == ["家庭用餐准备不便"]
+    assert output.candidate.usage_scenarios is None
+    assert output.metadata["validation"]["correctionCounts"] == {
+        "MISSING_SUGGESTION_DECISION": 1
+    }
+    assert output.warnings == [
+        "语义整理已安全忽略 1 项无效结构，其余图片建议已正常应用"
+    ]
 
 
 def test_empty_semantic_core_does_not_reintroduce_unreviewed_image_suggestions() -> (

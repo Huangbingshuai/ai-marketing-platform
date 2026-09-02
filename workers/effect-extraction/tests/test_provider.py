@@ -712,6 +712,6 @@ async def test_ark_provider_uses_one_compact_minimal_reasoning_semantic_request(
     semantic_payload = requests[-1][1]
     assert semantic_payload["store"] is False
     assert semantic_payload["reasoning"] == {"effort": "minimal"}
-    assert semantic_payload["max_output_tokens"] == 2048
+    assert semantic_payload["max_output_tokens"] == 3072
     assert semantic_payload["text"]["format"]["name"] == "effect_semantic_refinement"  # type: ignore[index]
     assert "embeddings" not in requests[-1][0]

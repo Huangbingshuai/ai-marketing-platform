@@ -323,7 +323,7 @@ class ArkResponsesProvider:
         image_adaptive_high_detail: bool = True,
         semantic_timeout: float = 30.0,
         semantic_max_attempts: int = 1,
-        semantic_max_output_tokens: int = 2048,
+        semantic_max_output_tokens: int = 3072,
         semantic_reasoning_effort: str = "minimal",
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
