@@ -22,9 +22,9 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     normalization = load_prompt_template("result_normalization.prompt.txt")
 
     assert load_prompt_version("document_extraction.prompt.txt") == "3.0.0"
-    assert load_prompt_version("image_analysis.prompt.txt") == "6.4.0"
+    assert load_prompt_version("image_analysis.prompt.txt") == "6.5.0"
     assert load_prompt_version("commerce_extraction.prompt.txt") == "1.0.0"
-    assert load_prompt_version("semantic_refinement.prompt.txt") == "5.3.0"
+    assert load_prompt_version("semantic_refinement.prompt.txt") == "5.4.0"
     assert load_prompt_version("result_normalization.prompt.txt") == "3.1.0"
 
     assert "产品文档事实抽取器" in document.template
@@ -40,6 +40,11 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert "同一个业务层内比较用户事实" in semantic.template
     assert "卖点层包含 coreSellingPoints、secondarySellingPoints" in semantic.template
     assert "严禁跨业务层关联" in semantic.template
+    assert "可替换性测试" in semantic.template
+    assert "有效差异测试" in semantic.template
+    assert "RELATED_DISTINCT" in semantic.template
+    assert "唯一保留集合" in semantic.template
+    assert "任意两条 KEEP 都必须具有不同的独立语义贡献" in semantic.template
     assert "Worker" not in semantic.template
     assert "产品素材制作信息卡标准化器" in normalization.template
 
@@ -60,7 +65,8 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert '"decisionDrivers"' in image.template
     assert '"purchaseScenarios"' in image.template
     assert "属于 AI 图片建议" in image.template
-    assert "不得仅凭产品外观写“判断品质”" in image.template
+    assert "不得从产品外观推断任何无法直接观察" in image.template
+    assert "必须作为一个集合统一去重" in image.template
     assert "先按信息卡字段归类" in image.template
     assert "香料、餐具、竹篮、蒸笼" in image.template
     assert "场景道具是否没有被写成产品卖点" in image.template
@@ -70,9 +76,20 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert "价格缺失时写“待补充”" in normalization.template
     assert "不得新增输入中不存在的年龄、性别、职业或地域属性" in normalization.template
     assert '"priceRange": null' in document.template
-    assert '"visualFeatures": "红褐色长条腊肠' in image.template
     assert '"priceRange": "20 元/袋"' in normalization.template
     assert "六个全局视频配置字段是否全部为 null" in document.template
+
+    regression_only_terms = (
+        "广式腊肠",
+        "家庭日常采购",
+        "年货采购",
+        "春节送礼",
+        "油润有光泽",
+        "观感新鲜",
+    )
+    for term in regression_only_terms:
+        assert term not in semantic.template
+        assert term not in image.template
 
     candidate_fields = ExtractionCandidate.model_json_schema(by_alias=True)[
         "properties"
