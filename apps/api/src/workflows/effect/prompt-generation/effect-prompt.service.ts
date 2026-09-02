@@ -1237,8 +1237,6 @@ export class EffectPromptService {
           round: record.round,
           shardIndex: record.shardIndex,
           status: record.status,
-          combinationPlan: [],
-          items: [],
           creativePlan: publicPhase === 'CREATIVE' ? record.combinationPlan : [],
           creativeItems: publicPhase === 'CREATIVE' ? record.items : [],
           classificationPlan: publicPhase === 'CLASSIFICATION' ? record.combinationPlan : [],

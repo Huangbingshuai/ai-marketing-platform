@@ -407,8 +407,6 @@ describe('EffectPromptService settings contract', () => {
     expect(output.shards).toEqual([
       expect.objectContaining({
         phase: 'CREATIVE',
-        combinationPlan: [],
-        items: [],
         creativePlan,
         creativeItems,
         classificationPlan: [],
@@ -416,14 +414,15 @@ describe('EffectPromptService settings contract', () => {
       }),
       expect.objectContaining({
         phase: 'CLASSIFICATION',
-        combinationPlan: [],
-        items: [],
         creativePlan: [],
         creativeItems: [],
         classificationPlan,
         evaluations,
       }),
     ]);
+    expect(output.shards.every((shard) => !('combinationPlan' in shard) && !('items' in shard))).toBe(
+      true,
+    );
   });
 
   it('rejects item-only regeneration fields on a batch run', async () => {

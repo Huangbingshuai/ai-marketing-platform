@@ -81,6 +81,49 @@ async def test_get_shards_accepts_backend_run_id_envelope(runtime: RuntimeContex
 
 
 @pytest.mark.asyncio
+async def test_get_shards_restores_current_creative_phase_fields(
+    runtime: RuntimeContext,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "runId": "run-1",
+                    "shards": [
+                        {
+                            "phase": "CREATIVE",
+                            "round": 0,
+                            "shardIndex": 0,
+                            "status": "SUCCEEDED",
+                            "creativePlan": [],
+                            "creativeItems": [],
+                            "classificationPlan": [],
+                            "evaluations": [],
+                            "warnings": [],
+                        }
+                    ],
+                },
+            },
+        )
+
+    api = HttpInternalApi(
+        "http://api.local/api",
+        "worker-token",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        shards = await api.get_shards(runtime)
+    finally:
+        await api.aclose()
+
+    assert len(shards) == 1
+    assert shards[0].phase == ShardPhase.CREATIVE
+    assert shards[0].status == StageStatus.SUCCEEDED
+
+
+@pytest.mark.asyncio
 async def test_put_shard_serializes_current_phase_fields(runtime: RuntimeContext) -> None:
     seen: dict[str, object] = {}
 

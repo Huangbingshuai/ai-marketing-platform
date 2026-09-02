@@ -71,7 +71,8 @@ def test_creative_direction_count_scales_with_batch_size() -> None:
 
 
 def test_creative_direction_count_scales_with_fact_density() -> None:
-    assert creative_direction_target_count(50, 37) == 13
+    assert creative_direction_target_count(50, 37) == 15
+    assert creative_direction_target_count(50, 41) == 16
     assert creative_direction_target_count(10, 40) == 10
     assert "每个方向必须自然使用 2～4 条业务事实" in (
         creative_direction_fact_density_instruction(37, 13)
@@ -408,6 +409,30 @@ class SemanticAuditThenReplanningProvider(MockAiProvider):
         )
 
 
+class SemanticAuditAlwaysAdvisoryProvider(SemanticAuditThenReplanningProvider):
+    async def audit_creative_directions(self, *args: Any, **kwargs: Any) -> Any:
+        self.audit_calls += 1
+        call = await MockAiProvider.audit_creative_directions(self, *args, **kwargs)
+        first = call.value.items[0]
+        return replace(
+            call,
+            value=CreativeDirectionAuditResponse(
+                items=[
+                    first.model_copy(
+                        update={
+                            "aligned": False,
+                            "issues": ["实际主动作仍需继续优化"],
+                        }
+                    ),
+                    *call.value.items[1:],
+                ],
+                requires_revision=True,
+                revision_direction_ids=[first.direction_id],
+                summary="独立语义复核保留一项非阻断优化建议",
+            ),
+        )
+
+
 @pytest.mark.asyncio
 async def test_cluster_policy_plans_directions_and_generates_140_percent() -> None:
     api = PromptApi()
@@ -564,6 +589,33 @@ async def test_independent_ai_semantic_audit_requests_direction_replanning() -> 
     assert plan is not None
     assert plan.semantic_audit is not None
     assert plan.semantic_audit.requires_revision is False
+
+
+@pytest.mark.asyncio
+async def test_repeated_semantic_audit_disagreement_becomes_advisory() -> None:
+    api = PromptApi()
+    provider = SemanticAuditAlwaysAdvisoryProvider()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _cluster_snapshot())
+    await pipeline.map_insight(runtime)
+    await pipeline.compile_fact_visual_strategy(runtime)
+    await pipeline.compile_shared_prompt(runtime)
+
+    shards = await pipeline.plan_creatives(runtime, round_number=0)
+
+    assert shards
+    assert provider.audit_calls == 2
+    assert provider.direction_calls == 2
+    plan = pipeline._cache(runtime).creative_direction_plan
+    assert plan is not None
+    assert plan.semantic_audit is not None
+    assert plan.semantic_audit.requires_revision is True
+    assert plan.semantic_audit.revision_direction_ids
 
 
 def test_landscape_validation_is_structural_not_keyword_based() -> None:
@@ -1114,6 +1166,62 @@ def test_direction_revision_mechanically_preserves_unflagged_directions() -> Non
 
     assert merged.directions[0].creative_direction.startswith("模型修订后的方向")
     assert merged.directions[1:] == previous.directions[1:]
+
+
+def test_direction_audit_accepts_structured_direction_issue_as_revision_reason() -> None:
+    from effect_prompt_generation.providers import (
+        _mock_creative_direction_audit,
+        _mock_creative_direction_response,
+        _mock_creative_landscape_response,
+        _mock_fact_visual_strategy,
+    )
+    from effect_prompt_generation.visual_strategy import validate_fact_visual_strategy
+
+    application = map_insight(_cluster_snapshot().insight_artifact.result)
+    strategy = validate_fact_visual_strategy(
+        _mock_fact_visual_strategy(application),
+        application,
+        source_content_hash="2" * 64,
+        template_hash="3" * 64,
+    )
+    landscape = validate_creative_diversity_landscape(
+        _mock_creative_landscape_response(application, direction_count=13),
+        application,
+        source_hash="1" * 64,
+        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+        expected_direction_count=13,
+    )
+    raw_directions = _mock_creative_direction_response(
+        application,
+        direction_count=13,
+        landscape=landscape,
+    )
+    plan = validate_creative_direction_plan(
+        raw_directions,
+        application,
+        strategy,
+        source_hash="1" * 64,
+        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+        expected_direction_count=13,
+        landscape=landscape,
+    )
+    raw_audit = _mock_creative_direction_audit(landscape, raw_directions)
+    first_item = raw_audit.items[0]
+    response = raw_audit.model_copy(
+        update={
+            "items": [
+                first_item.model_copy(update={"issues": ["主动作关系需要调整"]}),
+                *raw_audit.items[1:],
+            ],
+            "requires_revision": True,
+            "revision_direction_ids": [first_item.direction_id],
+        }
+    )
+
+    validated = validate_creative_direction_audit(response, plan, landscape)
+
+    assert validated.requires_revision is True
+    assert validated.revision_direction_ids == [first_item.direction_id]
 
 
 @pytest.mark.asyncio

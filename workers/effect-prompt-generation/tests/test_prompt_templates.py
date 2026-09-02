@@ -195,3 +195,5 @@ def test_visual_strategy_templates_keep_direction_fact_applications_without_role
     assert "ABSTRACT_FACT_VISUAL_PROOF" in evaluation
     assert "abstractVisualProofFindings" in evaluation
     assert "Worker 只校验 factId 与枚举合法" in evaluation
+    assert "factEvidence 因为画面不能证明抽象事实而标记 PARTIAL/NONE" in evaluation
+    assert "不得同时写入 ABSTRACT_FACT_VISUAL_PROOF" in evaluation

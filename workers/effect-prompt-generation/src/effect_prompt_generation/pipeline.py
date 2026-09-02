@@ -637,7 +637,6 @@ class PromptGenerationPipeline:
             if (
                 restored is not None
                 and not restored_landscape_audit.requires_revision
-                and not restored_audit.requires_revision
                 and restored.plan_hash == checkpoint.allocation_hash
             ):
                 plan = restored.model_copy(
@@ -907,6 +906,7 @@ class PromptGenerationPipeline:
             revision_context: Mapping[str, Any] | None = None
             previous_audited_response: CreativeDirectionResponse | None = None
             audit_revision_direction_ids: list[str] = []
+            semantic_revision_count = 0
             for invalid_response_attempt in range(4):
                 self._reserve_ai_call(context)
                 try:
@@ -1044,22 +1044,22 @@ class PromptGenerationPipeline:
                 if audit is None:
                     raise PipelineError("创意方向语义复核未能形成有效结果")
                 if audit.requires_revision:
-                    previous_audited_response = direction_response
-                    audit_revision_direction_ids = list(
-                        audit.revision_direction_ids
-                    )
-                    revision_context = creative_direction_audit_revision_context(
-                        draft_plan,
-                        audit,
-                    )
-                    if invalid_response_attempt == 3:
-                        raise ProviderError(
-                            "AI 创意方向经四次规划后仍未通过语义复核",
-                            retryable=False,
-                            error_type=ProviderErrorType.RESPONSE_INVALID,
-                            attempts=4,
+                    if semantic_revision_count == 0 and invalid_response_attempt < 3:
+                        previous_audited_response = direction_response
+                        audit_revision_direction_ids = list(
+                            audit.revision_direction_ids
                         )
-                    continue
+                        revision_context = creative_direction_audit_revision_context(
+                            draft_plan,
+                            audit,
+                        )
+                        semantic_revision_count += 1
+                        continue
+                    # The AI audit remains available to downstream evaluation,
+                    # but repeated subjective disagreement is advisory. Worker
+                    # does not reinterpret the findings or alter directions.
+                    plan = draft_plan.model_copy(update={"semantic_audit": audit})
+                    break
                 plan = draft_plan.model_copy(update={"semantic_audit": audit})
                 break
             if plan is None:

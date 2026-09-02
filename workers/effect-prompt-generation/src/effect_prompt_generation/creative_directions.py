@@ -75,8 +75,14 @@ def creative_direction_target_count(
             f"当前创意规划最多承载 {direction_capacity} 条业务事实，现有 "
             f"{mandatory_fact_count} 条；请先精简或合并提炼信息"
         )
-    coverage_target = math.ceil(
-        mandatory_fact_count / MAX_BUSINESS_FACTS_PER_DIRECTION
+    # Four facts is the structural ceiling, not the creative planning target.
+    # Keeping the average near 2.5 gives the AI room to build one coherent
+    # relationship instead of squeezing every available slot. Worker only
+    # calculates capacity; it never assigns facts to directions.
+    coverage_target = min(
+        MAX_CREATIVE_DIRECTION_COUNT,
+        max(1, target_count),
+        math.ceil(mandatory_fact_count * 2 / 5),
     )
     return max(volume_target, coverage_target)
 
@@ -630,7 +636,13 @@ def validate_creative_direction_audit(
         has_fact_issue = any(
             review.verdict != "NATURAL" for review in item.fact_reviews
         )
-        if has_fact_issue or not item.aligned:
+        # ``issues`` is part of the AI auditor's structured verdict.  Treating
+        # only ``aligned`` and fact reviews as authoritative made a perfectly
+        # valid response self-contradictory whenever the auditor reported a
+        # direction-level issue while keeping the coarse alignment flag true.
+        # This is structural reconciliation only; Worker does not infer the
+        # business meaning of the issue text.
+        if has_fact_issue or not item.aligned or bool(item.issues):
             revision_required_ids.add(item.direction_id)
     if any(item not in direction_ids for item in response.revision_direction_ids):
         raise ValueError("creative direction audit used an unknown revision id")
