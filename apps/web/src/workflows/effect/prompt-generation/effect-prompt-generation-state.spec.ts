@@ -111,6 +111,9 @@ describe('effect prompt generation state', () => {
     expect(normalizePromptSettings(DEFAULT_EFFECT_PROMPT_SETTINGS)).toEqual(
       DEFAULT_EFFECT_PROMPT_SETTINGS,
     );
+    expect(
+      normalizePromptSettings({ targetCount: 101, defaultDurationSeconds: 5 }),
+    ).toEqual({ targetCount: 100, defaultDurationSeconds: 5 });
   });
 
   it('matches id, content, fixed and secondary labels and six-dimensional labels', () => {

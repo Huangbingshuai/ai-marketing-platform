@@ -11,6 +11,11 @@ from typing import Any, Literal, NotRequired, TypedDict
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
+MIN_PROMPT_COUNT = 10
+MAX_PROMPT_COUNT = 100
+MAX_CANDIDATE_COUNT = 240
+
+
 def to_camel(value: str) -> str:
     head, *tail = value.split("_")
     return head + "".join(part.capitalize() for part in tail)
@@ -164,7 +169,7 @@ class EvidenceMode(StrEnum):
 
 
 class PromptBatchSettings(ApiModel):
-    target_count: int = Field(ge=10, le=200)
+    target_count: int = Field(ge=MIN_PROMPT_COUNT, le=MAX_PROMPT_COUNT)
     default_duration_seconds: int = Field(ge=4, le=30)
 
 
@@ -342,8 +347,8 @@ class PromptItem(ApiModel):
 
 class PurposeDistribution(ApiModel):
     purpose: FragmentType
-    primary_count: int = Field(ge=0, le=200)
-    compatible_count: int = Field(ge=0, le=200)
+    primary_count: int = Field(ge=0, le=MAX_PROMPT_COUNT)
+    compatible_count: int = Field(ge=0, le=MAX_PROMPT_COUNT)
 
 
 class CreativeAverageScores(ApiModel):
@@ -356,9 +361,11 @@ class CreativeAverageScores(ApiModel):
 
 class SemanticEvaluation(ApiModel):
     status: Literal["PENDING", "VERIFIED"]
-    evaluated_count: int = Field(ge=0, le=200)
-    duplicate_group_count: int | None = Field(default=None, ge=0, le=200)
-    duplicate_count: int | None = Field(default=None, ge=0, le=200)
+    evaluated_count: int = Field(ge=0, le=MAX_PROMPT_COUNT)
+    duplicate_group_count: int | None = Field(
+        default=None, ge=0, le=MAX_PROMPT_COUNT
+    )
+    duplicate_count: int | None = Field(default=None, ge=0, le=MAX_PROMPT_COUNT)
     duplicate_rate: float | None = Field(default=None, ge=0, le=100)
 
 
@@ -368,10 +375,10 @@ class CountMetric(ApiModel):
 
 
 class PromptMetrics(ApiModel):
-    target_count: int = Field(ge=10, le=200)
-    candidate_target_count: int = Field(ge=10, le=240)
+    target_count: int = Field(ge=MIN_PROMPT_COUNT, le=MAX_PROMPT_COUNT)
+    candidate_target_count: int = Field(ge=MIN_PROMPT_COUNT, le=MAX_CANDIDATE_COUNT)
     generated_candidate_count: int = Field(ge=0)
-    accepted_count: int = Field(ge=0, le=200)
+    accepted_count: int = Field(ge=0, le=MAX_PROMPT_COUNT)
     rejected_count: int = Field(ge=0)
     replenishment_rounds: int = Field(ge=0, le=3)
     exact_duplicate_count: int = Field(ge=0)

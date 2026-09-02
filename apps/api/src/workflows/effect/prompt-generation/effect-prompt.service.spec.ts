@@ -568,6 +568,28 @@ describe('EffectPromptService settings contract', () => {
     });
   });
 
+  it('rejects a Prompt target count above the hard limit of 100', async () => {
+    const repository = {
+      workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }),
+      products: vi.fn().mockResolvedValue([{ id: 'product-a' }]),
+    };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const workingRepository = { saveNodeState: vi.fn() };
+    const service = new EffectPromptService(
+      repository as never,
+      projects as never,
+      workingRepository as never,
+    );
+
+    await expect(
+      service.saveSettings('project-a', 'product-a', 'workflow-a', null, {
+        targetCount: 101,
+        defaultDurationSeconds: 5,
+      }),
+    ).rejects.toThrow('Prompt 批次设置不符合允许范围');
+    expect(workingRepository.saveNodeState).not.toHaveBeenCalled();
+  });
+
   it('saves the single shared-prompt editor content and keeps the batch in draft', async () => {
     const draft = recomputePromptQuality([], DEFAULT_EFFECT_PROMPT_SETTINGS);
     const savedAt = new Date('2026-08-26T08:00:00.000Z');

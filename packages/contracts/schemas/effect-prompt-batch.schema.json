@@ -14,7 +14,7 @@
         "targetCount": {
           "type": "integer",
           "minimum": 10,
-          "maximum": 200
+          "maximum": 100
         },
         "defaultDurationSeconds": {
           "type": "integer",
@@ -31,7 +31,7 @@
     },
     "items": {
       "type": "array",
-      "maxItems": 200,
+      "maxItems": 100,
       "items": {
         "$ref": "#/$defs/item"
       }
@@ -58,12 +58,12 @@
         "targetCount": {
           "type": "integer",
           "minimum": 10,
-          "maximum": 200
+          "maximum": 100
         },
         "acceptedCount": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 200
+          "maximum": 100
         },
         "candidateTargetCount": {
           "type": "integer",
@@ -370,12 +370,12 @@
           "primaryCount": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 200
+            "maximum": 100
           },
           "compatibleCount": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 200
+            "maximum": 100
           }
         }
       }
@@ -397,17 +397,17 @@
         "evaluatedCount": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 200
+          "maximum": 100
         },
         "duplicateGroupCount": {
           "type": ["integer", "null"],
           "minimum": 0,
-          "maximum": 200
+          "maximum": 100
         },
         "duplicateCount": {
           "type": ["integer", "null"],
           "minimum": 0,
-          "maximum": 200
+          "maximum": 100
         },
         "duplicateRate": {
           "type": ["number", "null"],

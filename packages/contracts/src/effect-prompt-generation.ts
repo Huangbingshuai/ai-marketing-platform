@@ -8,7 +8,7 @@ export const EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT = 15;
 
 export const EFFECT_PROMPT_LIMITS = {
   minCount: 10,
-  maxCount: 200,
+  maxCount: 100,
   defaultCount: 50,
   minFragmentCount: 1,
   minDurationSeconds: 4,

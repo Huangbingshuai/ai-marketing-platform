@@ -4,7 +4,9 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
 from jsonschema import Draft202012Validator
+from pydantic import ValidationError
 
 from effect_prompt_generation.models import (
     CreativeAverageScores,
@@ -24,6 +26,14 @@ from effect_prompt_generation.models import (
     SharedPromptSection,
     SharedRenderConstraints,
 )
+
+
+def test_prompt_batch_target_count_has_a_hard_limit_of_100() -> None:
+    assert PromptBatchSettings(
+        target_count=100, default_duration_seconds=5
+    ).target_count == 100
+    with pytest.raises(ValidationError):
+        PromptBatchSettings(target_count=101, default_duration_seconds=5)
 
 
 def test_evaluation_draft_schema_excludes_worker_derived_fields() -> None:

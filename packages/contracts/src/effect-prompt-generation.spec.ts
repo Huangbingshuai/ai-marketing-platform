@@ -43,9 +43,12 @@ describe('effect prompt generation contract', () => {
     ]);
     expect(effectPromptTargetCount(DEFAULT_EFFECT_PROMPT_SETTINGS)).toBe(50);
     expect(normalizeEffectPromptSettings({ targetCount: 999, defaultDurationSeconds: 1 })).toEqual({
-      targetCount: 200,
+      targetCount: 100,
       defaultDurationSeconds: 4,
     });
+    expect(EFFECT_PROMPT_LIMITS.maxCount).toBe(100);
+    expect(batchSchema.properties.settings.properties.targetCount.maximum).toBe(100);
+    expect(batchSchema.properties.items.maxItems).toBe(100);
   });
 
   it('accepts only the canonical settings shape', () => {

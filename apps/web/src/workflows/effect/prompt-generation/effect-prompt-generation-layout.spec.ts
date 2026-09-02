@@ -16,6 +16,7 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).not.toContain('仅以下参数可调');
     expect(pageSource).toMatch(/\.settings-heading\s*\{[^}]*padding:\s*0 13px;/u);
     expect(pageSource).toContain('Prompt 总数量');
+    expect(pageSource).toContain('每批最多 ${EFFECT_PROMPT_LIMITS.maxCount} 条');
     expect(pageSource).toContain("label: '片段时长'");
     expect(pageSource).not.toContain('默认片段时长');
     expect(pageSource).toContain('currentSettings.value.targetCount');

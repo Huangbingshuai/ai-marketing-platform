@@ -1819,7 +1819,7 @@ onBeforeUnmount(() => {
               {
                 key: 'targetCount',
                 label: 'Prompt 总数量',
-                hint: '成功批次必须与设置数量完全一致',
+                hint: `每批最多 ${EFFECT_PROMPT_LIMITS.maxCount} 条，成功批次必须与设置数量完全一致`,
                 suffix: '条',
               },
               {
