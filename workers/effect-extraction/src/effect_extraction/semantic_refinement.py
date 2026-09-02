@@ -22,6 +22,9 @@ SEMANTIC_FIELDS: tuple[tuple[SemanticField, str], ...] = (
     (SemanticField.PURCHASE_SCENARIOS, "purchase_scenarios"),
     (SemanticField.EMOTIONAL_SCENARIOS, "emotional_scenarios"),
 )
+SEMANTIC_REFERENCE_FIELDS = frozenset(
+    {"productCategory", "productName", "coreSpecification", "visualFeatures"}
+)
 SEMANTIC_FIELD_LIMITS: dict[SemanticField, int] = {
     SemanticField.CORE_SELLING_POINTS: 3,
     SemanticField.SECONDARY_SELLING_POINTS: 6,
@@ -30,6 +33,15 @@ SEMANTIC_FIELD_LIMITS: dict[SemanticField, int] = {
     SemanticField.USAGE_SCENARIOS: 5,
     SemanticField.PURCHASE_SCENARIOS: 5,
     SemanticField.EMOTIONAL_SCENARIOS: 5,
+}
+SEMANTIC_FIELD_LAYERS: dict[SemanticField, str] = {
+    SemanticField.CORE_SELLING_POINTS: "SELLING_POINT",
+    SemanticField.SECONDARY_SELLING_POINTS: "SELLING_POINT",
+    SemanticField.CORE_PAIN_POINTS: "USER",
+    SemanticField.DECISION_DRIVERS: "USER",
+    SemanticField.USAGE_SCENARIOS: "SCENARIO",
+    SemanticField.PURCHASE_SCENARIOS: "SCENARIO",
+    SemanticField.EMOTIONAL_SCENARIOS: "SCENARIO",
 }
 MAX_USER_FACTS_PER_FIELD = 20
 
@@ -49,6 +61,7 @@ async def refine_candidate_semantics(
     provider: AiProvider,
     user_facts: Sequence[Mapping[str, str]],
     image_suggestions: Sequence[Mapping[str, str]],
+    reference_facts: Sequence[Mapping[str, str]] = (),
 ) -> SemanticRefinementResult:
     """Apply model decisions only to image suggestions; user facts are immutable."""
 
@@ -57,7 +70,8 @@ async def refine_candidate_semantics(
         image_suggestions,
         expected_source="IMAGE_SUGGESTION",
     )
-    all_ids = [row["factId"] for row in [*users, *suggestions]]
+    references = _validated_reference_rows(reference_facts)
+    all_ids = [row["factId"] for row in [*users, *suggestions, *references]]
     if len(all_ids) != len(set(all_ids)):
         raise ValueError("semantic fact ids must be unique")
 
@@ -70,6 +84,7 @@ async def refine_candidate_semantics(
             metadata=_metadata(
                 users=users,
                 suggestions=suggestions,
+                references=references,
                 kept=[],
                 notices=structural_notices,
             ),
@@ -78,6 +93,7 @@ async def refine_candidate_semantics(
     ai_call = await provider.refine_semantics(
         user_facts=users,
         image_suggestions=suggestions,
+        reference_facts=references,
         remaining_capacity_by_field={
             field.value: capacity for field, capacity in remaining_capacity.items()
         },
@@ -99,6 +115,7 @@ async def refine_candidate_semantics(
         metadata=_metadata(
             users=users,
             suggestions=suggestions,
+            references=references,
             kept=kept,
             notices=notices,
             decisions=ai_call.value,
@@ -120,6 +137,7 @@ def semantic_fallback_metadata(
     *,
     user_facts: Sequence[Mapping[str, str]],
     image_suggestions: Sequence[Mapping[str, str]],
+    reference_facts: Sequence[Mapping[str, str]] = (),
     failure: dict[str, Any],
 ) -> dict[str, Any]:
     users = _validated_input_rows(user_facts, expected_source="USER_FACT")
@@ -127,11 +145,14 @@ def semantic_fallback_metadata(
         image_suggestions,
         expected_source="IMAGE_SUGGESTION",
     )
+    references = _validated_reference_rows(reference_facts)
     metadata = _metadata(
         users=users,
         suggestions=suggestions,
+        references=references,
         kept=[],
         notices=_over_limit_notices(users),
+        validation_status="NOT_VERIFIED",
     )
     metadata["failures"] = [failure]
     metadata["degraded"] = True
@@ -161,6 +182,35 @@ def _validated_input_rows(
         )
     if len(accepted) != len({row["factId"] for row in accepted}):
         raise ValueError("semantic input contains duplicate fact ids")
+    return accepted
+
+
+def _validated_reference_rows(
+    rows: Sequence[Mapping[str, str]],
+) -> list[dict[str, str]]:
+    accepted: list[dict[str, str]] = []
+    for row in rows:
+        fact_id = str(row.get("factId", "")).strip()
+        value = str(row.get("value", "")).strip()
+        source_type = str(row.get("sourceType", "")).strip()
+        field = str(row.get("field", "")).strip()
+        if (
+            not fact_id
+            or not value
+            or source_type != "USER_REFERENCE"
+            or field not in SEMANTIC_REFERENCE_FIELDS
+        ):
+            raise ValueError("semantic reference fact is invalid")
+        accepted.append(
+            {
+                "factId": fact_id,
+                "field": field,
+                "value": value,
+                "sourceType": source_type,
+            }
+        )
+    if len(accepted) != len({row["factId"] for row in accepted}):
+        raise ValueError("semantic reference facts contain duplicate ids")
     return accepted
 
 
@@ -241,12 +291,33 @@ def _safe_user_notices(
         ):
             corrections["INVALID_RELATED_USER_FACT"] += 1
             continue
+        fact_field = SemanticField(fact["field"])
+        if any(
+            SEMANTIC_FIELD_LAYERS[SemanticField(users_by_id[related_id]["field"])]
+            != SEMANTIC_FIELD_LAYERS[fact_field]
+            for related_id in related_ids
+        ):
+            corrections["CROSS_LAYER_USER_NOTICE"] += 1
+            continue
+        if (
+            notice.issue
+            in {
+                SemanticUserFactIssue.POSSIBLE_DUPLICATE,
+                SemanticUserFactIssue.POSSIBLE_OVERLAP,
+            }
+            and not related_ids
+        ):
+            corrections["INVALID_RELATED_USER_FACT"] += 1
+            continue
         if notice.issue == SemanticUserFactIssue.POSSIBLE_WRONG_FIELD:
-            if (
-                notice.suggested_field is None
-                or notice.suggested_field.value == fact["field"]
-            ):
+            if notice.suggested_field is None or notice.suggested_field == fact_field:
                 corrections["INVALID_SUGGESTED_FIELD"] += 1
+                continue
+            if (
+                SEMANTIC_FIELD_LAYERS[notice.suggested_field]
+                != SEMANTIC_FIELD_LAYERS[fact_field]
+            ):
+                corrections["CROSS_LAYER_USER_NOTICE"] += 1
                 continue
         elif notice.suggested_field is not None:
             corrections["UNEXPECTED_SUGGESTED_FIELD"] += 1
@@ -319,11 +390,13 @@ def _metadata(
     *,
     users: Sequence[Mapping[str, str]],
     suggestions: Sequence[Mapping[str, str]],
+    references: Sequence[Mapping[str, str]],
     kept: Sequence[Mapping[str, str]],
     notices: Sequence[Mapping[str, Any]],
     decisions: SemanticRefinementDecision | None = None,
     ai_call: dict[str, Any] | None = None,
     corrections: Mapping[str, int] | None = None,
+    validation_status: str | None = None,
 ) -> dict[str, Any]:
     original_fields = {row["factId"]: row["field"] for row in suggestions}
     moved_count = sum(
@@ -333,6 +406,7 @@ def _metadata(
         "inputCount": len(users) + len(suggestions),
         "outputCount": len(users) + len(kept),
         "userFactCount": len(users),
+        "referenceFactCount": len(references),
         "userNoticeCount": len(notices),
         "imageSuggestionInputCount": len(suggestions),
         "imageSuggestionKeptCount": len(kept),
@@ -350,7 +424,8 @@ def _metadata(
         if count > 0
     }
     metadata["validation"] = {
-        "status": "CORRECTED" if correction_counts else "VERIFIED",
+        "status": validation_status
+        or ("CORRECTED" if correction_counts else "VERIFIED"),
         "correctionCount": sum(correction_counts.values()),
         "correctionCodes": list(correction_counts),
         "correctionCounts": correction_counts,

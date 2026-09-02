@@ -140,8 +140,7 @@ const ISSUE_LABELS: Record<string, string> = {
   CTA_NO_SAFE_AREA: '转化片段没有形成可供后续文案使用的安全留白',
   EVIDENCE_MODE_MISMATCH: '卖点画面与允许呈现的证据类型不一致',
   FACT_OVERLOAD: '单条片段承载了过多提炼事实',
-  MISSING_DEEP_BUSINESS_FACT:
-    '单条片段只建立了产品身份，未实际使用卖点、痛点、受众或场景',
+  MISSING_DEEP_BUSINESS_FACT: '单条片段只建立了产品身份，未实际使用卖点、痛点、受众或场景',
   HOOK_RESOLVED: '钩子片段提前揭晓了答案或解决方案',
   META_LANGUAGE: '包含策划元话语',
   MULTI_STAGE_STORY: '片段包含多个叙事阶段',
@@ -576,6 +575,79 @@ const checkpointPlan = (value: unknown): JsonRecord => {
   return metadataRecord(checkpoint.plan);
 };
 
+const CREATIVE_DIRECTION_DIMENSION_LABELS: Record<string, string> = {
+  NARRATIVE: '叙事结构',
+  SCENE: '场景',
+  PERSONA: '人物',
+  PRODUCT_RELATION: '产品关联点',
+  CAMERA: '镜头语言',
+  EMOTION: '情绪基调',
+};
+
+const creativePlanBlock = (value: unknown): EffectPromptNodeDetailBlock | null => {
+  const plan = checkpointPlan(value);
+  const landscape = metadataRecord(plan.landscape);
+  const rawTerritories = Array.isArray(landscape.territories) ? landscape.territories : [];
+  const rawDirections = Array.isArray(plan.directions) ? plan.directions : [];
+  const territories = rawTerritories.flatMap((rawTerritory) => {
+    if (!isRecord(rawTerritory)) return [];
+    const territoryId = publicText(rawTerritory.territoryId, 80);
+    const title = publicText(rawTerritory.label, 120);
+    const sceneBoundary = publicText(rawTerritory.sceneBoundary, 360);
+    const differentiationGoal = publicText(rawTerritory.differentiationGoal, 360);
+    const targetSlots = safeNumber(rawTerritory.targetSlots);
+    if (!territoryId || !title || !sceneBoundary || !differentiationGoal || targetSlots === null)
+      return [];
+    const actions = (Array.isArray(rawTerritory.actions) ? rawTerritory.actions : []).flatMap(
+      (rawAction) => {
+        if (!isRecord(rawAction)) return [];
+        const actionId = publicText(rawAction.actionId, 80);
+        const label = publicText(rawAction.label, 160);
+        return actionId && label ? [{ actionId, label }] : [];
+      },
+    );
+    const actionById = new Map(actions.map((action) => [action.actionId, action.label]));
+    const directions = rawDirections.flatMap((rawDirection, directionIndex) => {
+      if (!isRecord(rawDirection) || publicText(rawDirection.territoryId, 80) !== territoryId)
+        return [];
+      const creativeDirection = publicText(rawDirection.creativeDirection, 500);
+      if (!creativeDirection) return [];
+      const primaryActionId = publicText(rawDirection.primaryActionId, 80);
+      return [
+        {
+          code: `方向 ${String(directionIndex + 1).padStart(2, '0')}`,
+          creativeDirection,
+          primaryAction: actionById.get(primaryActionId) ?? '按该空间动作范围执行',
+          priorityDimensions: safeStrings(rawDirection.priorityDimensions, 2).flatMap(
+            (dimension) => CREATIVE_DIRECTION_DIMENSION_LABELS[dimension] ?? [],
+          ),
+        },
+      ];
+    });
+    return [
+      {
+        title,
+        sceneBoundary,
+        differentiationGoal,
+        targetSlots,
+        actions: actions.map((action) => action.label),
+        directions,
+      },
+    ];
+  });
+  if (!territories.length) return null;
+  return {
+    kind: 'CREATIVE_PLAN_LIST',
+    title: '产品创意空间与方向',
+    territoryCount: territories.length,
+    directionCount: territories.reduce(
+      (total, territory) => total + territory.directions.length,
+      0,
+    ),
+    items: territories,
+  };
+};
+
 const collectStringLeaves = (value: unknown, output: string[] = []): string[] => {
   if (typeof value === 'string') {
     const cleaned = publicText(value, 500);
@@ -949,9 +1021,36 @@ const nodeMetricFields = (nodeId: string, rawMetadata: unknown): EffectPromptNod
       ]);
     case 'COHERENT_CREATIVE_GENERATION':
       return compact([
+        textField(
+          '当前步骤',
+          (
+            {
+              CREATIVE_SPACE_PLANNING: '规划产品创意空间',
+              CREATIVE_SPACE_REVIEW: '复核产品创意空间',
+              CREATIVE_DIRECTION_PLANNING: '规划批次创意方向',
+              CREATIVE_DIRECTION_REVIEW: '复核创意关系',
+              CANDIDATE_GENERATION: '生成候选 Prompt',
+              CANDIDATE_GENERATION_COMPLETE: '候选生成完成',
+            } as Record<string, string>
+          )[typeof metadata.perceptionPhase === 'string' ? metadata.perceptionPhase : ''],
+        ),
         numberField(metadata, 'targetCount', '目标创意'),
-        numberField(metadata, 'candidateCount', '已生成创意'),
-        numberField(metadata, 'completedShardCount', '完成分片'),
+        numberField(metadata, 'territoryCount', '产品创意空间'),
+        numberField(metadata, 'directionCount', '创意方向'),
+        numberField(metadata, 'candidateTargetCount', '候选目标'),
+        numberField(metadata, 'candidateCount', '已生成候选'),
+        numberField(metadata, 'generatedCandidateCount', '当前候选'),
+        numberField(metadata, 'totalShardCount', '生成分片总数'),
+        numberField(metadata, 'completedShardCount', '开始前已恢复分片'),
+        numberField(metadata, 'pendingShardCount', '本轮待生成分片'),
+        textField(
+          '规划复核',
+          metadata.semanticReviewPassed === true
+            ? '已通过'
+            : metadata.semanticReviewPassed === false
+              ? '待通过'
+              : null,
+        ),
       ]);
     case 'CREATIVE_EVALUATION_CLASSIFICATION':
       return compact([
@@ -1749,21 +1848,20 @@ const additionalOutputFields = (
   const evaluations = evaluationRows(run);
   const result = finalResultRecord(run);
   const resultMetrics = metadataRecord(result?.metrics);
-  if (nodeId === 'COHERENT_CREATIVE_GENERATION')
+  if (nodeId === 'COHERENT_CREATIVE_GENERATION') {
+    const creativeShards = run.shards.filter((shard) => shard.phase === 'BLUEPRINT');
+    const completedShards = creativeShards.filter((shard) => shard.status === 'SUCCEEDED');
+    const pendingShards = creativeShards.filter(
+      (shard) => shard.status === 'PENDING' || shard.status === 'RUNNING',
+    );
+    const plannedShardCount = safeNumber(metadata.totalShardCount) ?? creativeShards.length;
     return [
-      { label: '实际生成创意', value: samples.length },
-      {
-        label: '完成分片',
-        value: run.shards.filter(
-          (shard) =>
-            shard.phase === 'BLUEPRINT' &&
-            shard.status === 'SUCCEEDED' &&
-            (Array.isArray(shard.items) ? shard.items : []).some(
-              (item) => isRecord(item) && typeof item.creativeCore === 'string',
-            ),
-        ).length,
-      },
+      { label: '实际生成候选', value: samples.length },
+      { label: '实时分片进度', value: `${completedShards.length}/${plannedShardCount}` },
+      { label: '实际完成分片', value: completedShards.length },
+      { label: '当前处理中分片', value: pendingShards.length },
     ];
+  }
   if (nodeId === 'CREATIVE_EVALUATION_CLASSIFICATION' || nodeId === 'ITEM_EVALUATE')
     return [
       { label: '实际完成评估', value: evaluations.length },
@@ -1929,7 +2027,10 @@ const outputBlocks = (
     );
     blocks.push(textContentBlock('最终共用提示词', prompt.compiledContent, sectionLabels));
   } else if (nodeId === 'COHERENT_CREATIVE_GENERATION') {
-    blocks.push(creativeSampleBlock('真实创意候选样例', samples, samples.length));
+    blocks.push(
+      creativePlanBlock(metadata),
+      creativeSampleBlock('真实创意候选样例', samples, samples.length),
+    );
   } else if (nodeId === 'CREATIVE_EVALUATION_CLASSIFICATION' || nodeId === 'ITEM_EVALUATE') {
     const accepted = samples.filter((item) => item.outcome === 'ACCEPTED');
     const rejected = samples.filter((item) => item.outcome === 'REJECTED');

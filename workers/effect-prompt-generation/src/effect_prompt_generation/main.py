@@ -46,8 +46,6 @@ def _provider(settings: WorkerSettings) -> AiProvider:
 
 
 def _embedding_provider(settings: WorkerSettings) -> EmbeddingProvider | None:
-    if settings.prompt_similarity_mode == "trigram":
-        return None
     if settings.prompt_ai_provider == "mock":
         return MockEmbeddingProvider()
     assert settings.ark_api_key is not None

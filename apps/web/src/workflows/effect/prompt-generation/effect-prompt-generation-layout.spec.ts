@@ -149,10 +149,20 @@ describe('effect prompt generation current layout', () => {
     expect(graphSource).toContain('sourceIndex < targetIndex');
   });
 
+  it('shows live worker summaries and refreshes the selected running-node detail', () => {
+    expect(pageSource).toContain('if (executionSummary) return executionSummary');
+    expect(pageSource).toContain('graphNodeDescription(nodeId)');
+    expect(pageSource).toContain("displayedGraphRun.value?.status !== 'RUNNING'");
+    expect(pageSource).toContain('displayedGraphRun.value.currentNode !== nodeId');
+    expect(pageSource).toContain('void refreshGraphDetail()');
+    expect(pageSource).toContain('graphDetailRefreshTimer = setTimeout');
+  });
+
   it('keeps current real-result detail renderers without historical navigation', () => {
     expect(pageSource).toContain('EFFECT_PROMPT_GRAPH_NODE_IDS');
     expect(pageSource).not.toContain('历史执行');
     for (const blockKind of [
+      'CREATIVE_PLAN_LIST',
       'RELATIONSHIP_LIST',
       'COORDINATE_LIST',
       'BLUEPRINT_LIST',
@@ -162,6 +172,10 @@ describe('effect prompt generation current layout', () => {
       'ISSUE_LIST',
     ])
       expect(pageSource).toContain(`block.kind === '${blockKind}'`);
+    expect(pageSource).toContain('产品创意空间 ·');
+    expect(pageSource).toContain('territory.directions');
+    expect(pageSource).toContain('direction.creativeDirection');
+    expect(pageSource).toContain('主要动作：{{ direction.primaryAction }}');
     expect(pageSource).toContain('graphPromptDimensionValue(item, dimension.key)');
   });
 

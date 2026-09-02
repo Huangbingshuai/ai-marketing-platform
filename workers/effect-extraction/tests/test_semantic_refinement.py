@@ -38,6 +38,7 @@ class SemanticProvider:
         self.calls = 0
         self.user_facts: list[dict[str, str]] = []
         self.image_suggestions: list[dict[str, str]] = []
+        self.reference_facts: list[dict[str, str]] = []
         self.remaining_capacity: dict[str, int] = {}
 
     async def refine_semantics(
@@ -45,11 +46,13 @@ class SemanticProvider:
         *,
         user_facts: Sequence[Mapping[str, str]],
         image_suggestions: Sequence[Mapping[str, str]],
+        reference_facts: Sequence[Mapping[str, str]],
         remaining_capacity_by_field: Mapping[str, int],
     ) -> AiCallResult[SemanticRefinementDecision]:
         self.calls += 1
         self.user_facts = [dict(row) for row in user_facts]
         self.image_suggestions = [dict(row) for row in image_suggestions]
+        self.reference_facts = [dict(row) for row in reference_facts]
         self.remaining_capacity = dict(remaining_capacity_by_field)
         return AiCallResult(
             value=self.decision,
@@ -184,6 +187,48 @@ async def test_image_suggestions_can_be_dropped_moved_and_ranked() -> None:
 
 
 @pytest.mark.asyncio
+async def test_read_only_product_references_are_only_used_by_the_model() -> None:
+    candidate = ExtractionCandidate.empty()
+    images = [
+        fact(
+            "image-sell-01",
+            SemanticField.SECONDARY_SELLING_POINTS,
+            "肥瘦相间纹理清晰",
+            "IMAGE_SUGGESTION",
+        )
+    ]
+    references = [
+        {
+            "factId": "reference-visualFeatures",
+            "field": "visualFeatures",
+            "value": "红白相间的肥瘦纹理清晰",
+            "sourceType": "USER_REFERENCE",
+        }
+    ]
+    provider = SemanticProvider(
+        SemanticRefinementDecision(
+            suggestion_decisions=[
+                drop("image-sell-01", SemanticSuggestionReason.DUPLICATE_USER_FACT)
+            ],
+            user_fact_notices=[],
+        )
+    )
+
+    result = await refine_candidate_semantics(
+        candidate,
+        provider=provider,  # type: ignore[arg-type]
+        user_facts=[],
+        image_suggestions=images,
+        reference_facts=references,
+    )
+
+    assert result.candidate.secondary_selling_points is None
+    assert provider.reference_facts == references
+    assert result.metadata["referenceFactCount"] == 1
+    assert result.metadata["userFactNotices"] == []
+
+
+@pytest.mark.asyncio
 async def test_user_facts_over_recommended_limit_are_all_preserved() -> None:
     candidate = ExtractionCandidate.empty()
     users = [
@@ -260,6 +305,106 @@ async def test_exact_duplicate_user_facts_are_not_removed() -> None:
     )
 
     assert result.candidate.usage_scenarios == ["煲仔饭烹饪", "煲仔饭烹饪"]
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_cross_field_user_notices() -> None:
+    candidate = ExtractionCandidate.empty()
+    users = [
+        fact(
+            "user-pain-01",
+            SemanticField.CORE_PAIN_POINTS,
+            "日常佐餐缺少方便搭配",
+            "USER_FACT",
+        ),
+        fact(
+            "user-usage-01",
+            SemanticField.USAGE_SCENARIOS,
+            "家庭日常佐餐",
+            "USER_FACT",
+        ),
+    ]
+    provider = SemanticProvider(
+        SemanticRefinementDecision(
+            suggestion_decisions=[],
+            user_fact_notices=[
+                SemanticUserFactNotice(
+                    fact_id="user-pain-01",
+                    issue=SemanticUserFactIssue.POSSIBLE_OVERLAP,
+                    related_fact_ids=["user-usage-01"],
+                ),
+                SemanticUserFactNotice(
+                    fact_id="user-pain-01",
+                    issue=SemanticUserFactIssue.POSSIBLE_WRONG_FIELD,
+                    suggested_field=SemanticField.USAGE_SCENARIOS,
+                ),
+            ],
+        )
+    )
+
+    result = await refine_candidate_semantics(
+        candidate,
+        provider=provider,  # type: ignore[arg-type]
+        user_facts=users,
+        image_suggestions=[],
+    )
+
+    assert result.metadata["userFactNotices"] == []
+    assert result.metadata["validation"]["correctionCounts"] == {
+        "CROSS_LAYER_USER_NOTICE": 2
+    }
+
+
+@pytest.mark.asyncio
+async def test_worker_allows_user_notices_within_the_same_business_layer() -> None:
+    candidate = ExtractionCandidate.empty()
+    users = [
+        fact(
+            "user-core-01",
+            SemanticField.CORE_SELLING_POINTS,
+            "广府糖酒腌制工艺",
+            "USER_FACT",
+        ),
+        fact(
+            "user-secondary-01",
+            SemanticField.SECONDARY_SELLING_POINTS,
+            "传统糖酒腌制风味",
+            "USER_FACT",
+        ),
+    ]
+    provider = SemanticProvider(
+        SemanticRefinementDecision(
+            suggestion_decisions=[],
+            user_fact_notices=[
+                SemanticUserFactNotice(
+                    fact_id="user-core-01",
+                    issue=SemanticUserFactIssue.POSSIBLE_OVERLAP,
+                    related_fact_ids=["user-secondary-01"],
+                ),
+                SemanticUserFactNotice(
+                    fact_id="user-secondary-01",
+                    issue=SemanticUserFactIssue.POSSIBLE_WRONG_FIELD,
+                    suggested_field=SemanticField.CORE_SELLING_POINTS,
+                ),
+            ],
+        )
+    )
+
+    result = await refine_candidate_semantics(
+        candidate,
+        provider=provider,  # type: ignore[arg-type]
+        user_facts=users,
+        image_suggestions=[],
+    )
+
+    assert result.metadata["userNoticeCount"] == 2
+    assert result.metadata["userFactNotices"][0]["relatedValues"] == [
+        "传统糖酒腌制风味"
+    ]
+    assert result.metadata["userFactNotices"][1]["suggestedField"] == (
+        SemanticField.CORE_SELLING_POINTS.value
+    )
+    assert result.metadata["validation"]["status"] == "VERIFIED"
 
 
 @pytest.mark.asyncio

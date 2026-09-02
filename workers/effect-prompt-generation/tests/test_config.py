@@ -94,8 +94,15 @@ def test_candidate_timeout_prefers_node_override_and_keeps_shared_fallback() -> 
     assert specific.ark_prompt_strategy_timeout_seconds == 240
 
 
-def test_ark_vector_and_shadow_modes_require_explicit_embedding_model() -> None:
+def test_ark_requires_vector_mode_and_explicit_embedding_model() -> None:
     with pytest.raises(ValidationError, match="ARK_PROMPT_EMBEDDING_MODEL"):
+        _settings(
+            PROMPT_AI_PROVIDER="ark",
+            ARK_API_KEY="real-test-key",
+            PROMPT_SIMILARITY_MODE="vector",
+        )
+
+    with pytest.raises(ValidationError, match="PROMPT_SIMILARITY_MODE"):
         _settings(
             PROMPT_AI_PROVIDER="ark",
             ARK_API_KEY="real-test-key",

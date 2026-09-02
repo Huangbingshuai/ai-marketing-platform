@@ -199,6 +199,7 @@ describe('effect info extraction result layout', () => {
   it('translates internal fusion conflict messages into concise user-facing Chinese', () => {
     expect(pageSource).toContain('const presentWarningMessage');
     expect(pageSource).toContain("product_category: '品类'");
+    expect(pageSource).toContain("visual_style_baseline: '视觉风格基线'");
     expect(pageSource).toContain('存在多种识别结果，已优先采用');
     expect(pageSource).not.toContain(
       '{{ warningBranchLabel(warning.branch) }}：{{ warning.message }}',

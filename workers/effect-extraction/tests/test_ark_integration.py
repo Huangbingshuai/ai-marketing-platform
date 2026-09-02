@@ -174,6 +174,7 @@ async def test_real_ark_semantic_decision_only_warns_about_repeated_user_meaning
         decision = await provider.refine_semantics(
             user_facts=facts,
             image_suggestions=[],
+            reference_facts=[],
             remaining_capacity_by_field={
                 "coreSellingPoints": 3,
                 "secondarySellingPoints": 6,

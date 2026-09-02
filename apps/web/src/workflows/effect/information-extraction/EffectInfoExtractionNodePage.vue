@@ -267,6 +267,7 @@ const warningFieldLabels: Record<string, string> = {
   brand_tone: '品牌调性',
   core_selling_points: '核心卖点',
   disabled_elements: '禁用元素',
+  visual_style_baseline: '视觉风格基线',
 };
 const warningSourceLabels: Record<string, string> = {
   FORM: '人工填写',

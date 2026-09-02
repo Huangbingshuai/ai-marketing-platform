@@ -536,6 +536,58 @@ describe('presentExtractionNodeDetail', () => {
     expect(normalized.fields.find(({ key }) => key === 'revision')?.value).toBe(2);
   });
 
+  it('removes image provenance when semantic refinement discarded every image suggestion', () => {
+    const record: ExtractionNodeDetailRecord = {
+      inputSnapshot: snapshot,
+      updatedAt: new Date('2026-08-24T00:03:00.000Z'),
+      branches: [
+        {
+          branch: 'DOCUMENT',
+          status: 'SUCCEEDED',
+          updatedAt: new Date('2026-08-24T00:01:00.000Z'),
+          structuredOutput: {
+            candidate: { coreSellingPoints: ['用户卖点'] },
+          },
+        },
+        {
+          branch: 'IMAGE',
+          status: 'SUCCEEDED',
+          updatedAt: new Date('2026-08-24T00:01:30.000Z'),
+          structuredOutput: {
+            items: [{ candidate: { coreSellingPoints: ['未保留的图片卖点'] } }],
+          },
+        },
+        {
+          branch: 'SEMANTIC_REFINEMENT',
+          status: 'PARTIAL',
+          updatedAt: new Date('2026-08-24T00:02:00.000Z'),
+          structuredOutput: {
+            candidate: { coreSellingPoints: ['用户卖点'] },
+            metadata: { degraded: true },
+          },
+        },
+      ],
+      result: {
+        draftResult: { coreSellingPoints: ['用户卖点'] },
+        provenance: { coreSellingPoints: 'DOCUMENT>IMAGE' },
+        conflictReport: [],
+        revision: 1,
+        savedAt: null,
+        updatedAt: new Date('2026-08-24T00:03:00.000Z'),
+      },
+    };
+
+    const normalized = presentExtractionNodeDetail(
+      record,
+      'NORMALIZATION',
+      execution('NORMALIZATION'),
+    );
+
+    expect(normalized.fields.find(({ key }) => key === 'coreSellingPoints')?.source).toBe(
+      '文档解析',
+    );
+  });
+
   it('shows semantic decisions and original expressions without leaking model diagnostics', () => {
     const detail = presentExtractionNodeDetail(
       {
@@ -706,6 +758,57 @@ describe('presentExtractionNodeDetail', () => {
 
     expect(detail.summary).toBe('语义整理未完成，已保留原始提炼信息');
     expect(detail.summary).not.toContain('已完成');
+  });
+
+  it('shows an invalid semantic response as unverified with its actual elapsed time', () => {
+    const detail = presentExtractionNodeDetail(
+      {
+        inputSnapshot: snapshot,
+        updatedAt: new Date('2026-08-24T00:03:00.000Z'),
+        branches: [
+          {
+            branch: 'SEMANTIC_REFINEMENT',
+            status: 'PARTIAL',
+            updatedAt: new Date('2026-08-24T00:02:00.000Z'),
+            structuredOutput: {
+              metadata: {
+                degraded: true,
+                userFactCount: 25,
+                userNoticeCount: 0,
+                imageSuggestionInputCount: 15,
+                imageSuggestionKeptCount: 0,
+                imageSuggestionMovedCount: 0,
+                imageSuggestionDroppedCount: 15,
+                failures: [{ type: 'AI_RESPONSE_INVALID', attempts: 1, elapsedMs: 13002 }],
+                validation: {
+                  status: 'NOT_VERIFIED',
+                  correctionCount: 0,
+                  correctionCodes: [],
+                },
+              },
+            },
+          },
+        ],
+      },
+      'SEMANTIC_REFINEMENT',
+      {
+        ...execution('SEMANTIC_REFINEMENT'),
+        status: 'PARTIAL',
+        warnings: [],
+      },
+    );
+
+    expect(detail.summary).toBe('语义整理未完成，已原样保留用户事实，图片建议未加入信息卡');
+    expect(detail.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: '语义决策校验',
+          value: '未通过：模型返回格式异常',
+        }),
+        expect.objectContaining({ label: '语义模型耗时', value: '13.0 秒' }),
+        expect.objectContaining({ label: '处理状态', value: '部分完成，仅保留用户事实' }),
+      ]),
+    );
   });
 
   it('shows structural corrections without describing valid image suggestions as discarded', () => {

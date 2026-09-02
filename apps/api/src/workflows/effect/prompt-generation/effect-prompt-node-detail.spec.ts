@@ -116,4 +116,103 @@ describe('presentEffectPromptNodeDetail', () => {
       ]),
     );
   });
+
+  it('展示创意空间、方向和真实分片进度，不暴露内部规划内容', () => {
+    const base = record();
+    const running = {
+      ...base,
+      status: 'RUNNING',
+      currentNode: 'COHERENT_CREATIVE_GENERATION',
+      stages: base.stages.map((stage) =>
+        stage.nodeId === 'COHERENT_CREATIVE_GENERATION'
+          ? {
+              ...stage,
+              status: 'RUNNING',
+              summary: '创意方案已完成，正在生成候选 Prompt',
+              metadata: {
+                perceptionPhase: 'CANDIDATE_GENERATION',
+                territoryCount: 6,
+                directionCount: 12,
+                candidateTargetCount: 70,
+                totalShardCount: 18,
+                completedShardCount: 7,
+                pendingShardCount: 11,
+                checkpoint: {
+                  plan: {
+                    landscape: {
+                      territories: [
+                        {
+                          territoryId: 'FAMILY_SHARING',
+                          label: '家庭分享空间',
+                          sceneBoundary: '家庭餐桌内完成分享与取食，不切换地点。',
+                          differentiationGoal: '突出亲友共享与产品自然入席。',
+                          targetSlots: 4,
+                          actions: [
+                            {
+                              actionId: 'SHARE_PLATE',
+                              label: '共同夹取分享',
+                              boundary: '只表现一次连续分享动作。',
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                    directions: [
+                      {
+                        directionId: 'direction-01',
+                        territoryId: 'FAMILY_SHARING',
+                        primaryActionId: 'SHARE_PLATE',
+                        creativeDirection: '围绕春节家庭围桌分享腊味形成一条连续动作。',
+                        priorityDimensions: ['SCENE', 'EMOTION'],
+                      },
+                    ],
+                  },
+                },
+              },
+            }
+          : stage,
+      ),
+      shards: [
+        { phase: 'BLUEPRINT', status: 'SUCCEEDED', items: [] },
+        { phase: 'BLUEPRINT', status: 'RUNNING', items: [] },
+      ],
+    } as unknown as EffectPromptNodeDetailRunRecord;
+    const detail = presentEffectPromptNodeDetail(running, 'COHERENT_CREATIVE_GENERATION');
+    const fields = detail.sections.flatMap((section) => section.fields);
+    expect(fields).toEqual(
+      expect.arrayContaining([
+        { label: '当前步骤', value: '生成候选 Prompt' },
+        { label: '产品创意空间', value: 6 },
+        { label: '创意方向', value: 12 },
+        { label: '候选目标', value: 70 },
+        { label: '实时分片进度', value: '1/18' },
+        { label: '实际完成分片', value: 1 },
+        { label: '当前处理中分片', value: 1 },
+      ]),
+    );
+    expect(JSON.stringify(detail)).not.toContain('事实 ID');
+    expect(JSON.stringify(detail)).not.toContain('模型输入');
+    const plan = detail.sections
+      .flatMap((section) => section.blocks)
+      .find((block) => block.kind === 'CREATIVE_PLAN_LIST');
+    expect(plan).toMatchObject({
+      territoryCount: 1,
+      directionCount: 1,
+      items: [
+        {
+          title: '家庭分享空间',
+          actions: ['共同夹取分享'],
+          directions: [
+            {
+              code: '方向 01',
+              primaryAction: '共同夹取分享',
+              priorityDimensions: ['场景', '情绪基调'],
+            },
+          ],
+        },
+      ],
+    });
+    expect(JSON.stringify(plan)).not.toContain('FAMILY_SHARING');
+    expect(JSON.stringify(plan)).not.toContain('direction-01');
+  });
 });

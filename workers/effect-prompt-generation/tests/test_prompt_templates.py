@@ -86,9 +86,10 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "只评估候选，不改写正文" in evaluation
     assert "五个窄职责视角" in evaluation
     assert "GENERIC_STYLE_STACKING" in evaluation
-    assert "只有事实错误、商品完全无关、结构破损或客观无法生成才能写入" in evaluation
+    assert "只有事实编造、商品完全无关" in evaluation
     assert "一条素材可以有多个用途" in evaluation
-    assert "evidenceText 必须逐字摘自正文、creativeCore 或六维字段" in evaluation
+    assert "不要依赖原文字符重合" in evaluation
+    assert "evidenceText 和 evidenceSource 可以省略" in evaluation
     assert "SEMANTIC_FULL" in evaluation
     assert "PARTIAL" in evaluation
 
@@ -186,11 +187,11 @@ def test_visual_strategy_templates_keep_direction_fact_applications_without_role
     assert "采用短语而不是完整解释" in compiler
     assert "factApplications" in creative
     assert "productSnapshot" in creative
-    assert "factEvidence" in creative
+    assert "factEvidence" not in creative
     assert "productSnapshot 仅用于确认商品名称、品类、规格和外观边界" in creative
     assert "visualTask" not in creative
     assert "businessContext" not in creative
     assert "必须标记 FABRICATED_FACT" in evaluation
     assert "ABSTRACT_FACT_VISUAL_PROOF" in evaluation
     assert "abstractVisualProofFindings" in evaluation
-    assert "Worker 只验证引用和原文是否存在" in evaluation
+    assert "Worker 只校验 factId 与枚举合法" in evaluation

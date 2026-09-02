@@ -988,53 +988,35 @@ class CreativeTask(ApiModel):
     preferred_fact_ids: list[str] = Field(default_factory=list, max_length=12)
 
 
-class CreativeFactEvidence(ApiModel):
-    fact_id: str = Field(min_length=1, max_length=120)
-    evidence_text: str = Field(min_length=1, max_length=160)
-    evidence_source: Literal[
-        "CONTENT",
-        "CREATIVE_CORE",
-        "NARRATIVE",
-        "SCENE",
-        "PERSONA",
-        "PRODUCT_RELATION",
-    ]
-
-
 class CreativeCandidate(ApiModel):
     slot_id: str = Field(min_length=1, max_length=160)
     ordinal: int = Field(ge=1)
     round: int = Field(ge=0, le=4)
     creative_core: str = Field(min_length=1, max_length=160)
     declared_fact_ids: list[str] = Field(min_length=1, max_length=12)
-    fact_evidence: list[CreativeFactEvidence] = Field(
-        default_factory=list, max_length=8
-    )
     dimensions: CreativeDimensions
     content: str = Field(min_length=20, max_length=600)
     generated_at: datetime | None = None
 
     @model_validator(mode="before")
     @classmethod
-    def migrate_legacy_focus_evidence(cls, value: Any) -> Any:
-        if not isinstance(value, dict) or (
-            "factEvidence" in value or "fact_evidence" in value
-        ):
+    def discard_legacy_generation_evidence(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
             return value
         migrated = dict(value)
-        focus_id = migrated.pop("focusFactId", None) or migrated.pop(
+        # Persisted shards from the previous internal contract may still carry
+        # literal quote evidence. It never affected the public Prompt result and
+        # is deliberately discarded: generation declares its assigned fact IDs,
+        # while the independent evaluator owns all semantic realization checks.
+        for key in (
+            "factEvidence",
+            "fact_evidence",
+            "focusFactId",
             "focus_fact_id",
-            None,
-        )
-        focus_evidence = migrated.pop("focusFactEvidence", None) or migrated.pop(
+            "focusFactEvidence",
             "focus_fact_evidence",
-            None,
-        )
-        migrated["factEvidence"] = (
-            [{"factId": focus_id, **focus_evidence}]
-            if focus_id and isinstance(focus_evidence, dict)
-            else []
-        )
+        ):
+            migrated.pop(key, None)
         return migrated
 
     @field_validator("declared_fact_ids")
@@ -1044,15 +1026,6 @@ class CreativeCandidate(ApiModel):
         if not result:
             raise ValueError("declaredFactIds cannot be empty")
         return result
-
-    @field_validator("fact_evidence")
-    @classmethod
-    def unique_fact_evidence(
-        cls,
-        values: list[CreativeFactEvidence],
-    ) -> list[CreativeFactEvidence]:
-        return list({item.fact_id: item for item in values}.values())
-
 
 class CreativeCandidateBatch(ApiModel):
     items: list[CreativeCandidate] = Field(min_length=1, max_length=5)
@@ -1073,7 +1046,7 @@ class CreativeShardPlan(ApiModel):
 
 class FactEvidence(ApiModel):
     fact_id: str = Field(min_length=1, max_length=120)
-    evidence_text: str = Field(min_length=1, max_length=160)
+    evidence_text: str | None = Field(default=None, max_length=160)
     evidence_source: Literal[
         "CONTENT",
         "CREATIVE_CORE",
@@ -1081,20 +1054,8 @@ class FactEvidence(ApiModel):
         "SCENE",
         "PERSONA",
         "PRODUCT_RELATION",
-    ]
-    support_level: Literal["EXACT", "SEMANTIC_FULL", "PARTIAL", "NONE"]
-
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_legacy_evidence(cls, value: Any) -> Any:
-        if not isinstance(value, dict):
-            return value
-        migrated = dict(value)
-        if "evidenceSource" not in migrated and "evidence_source" not in migrated:
-            migrated["evidenceSource"] = "CONTENT"
-        if "supportLevel" not in migrated and "support_level" not in migrated:
-            migrated["supportLevel"] = "EXACT"
-        return migrated
+    ] | None = None
+    support_level: Literal["EXACT", "SEMANTIC_FULL", "PARTIAL", "NONE"] = "EXACT"
 
 
 class AbstractVisualProofFinding(ApiModel):
@@ -1212,7 +1173,7 @@ class CreativeEvaluationDraft(ApiModel):
     slot_id: str = Field(min_length=1, max_length=160)
     primary_purpose: FragmentType
     compatible_purposes: list[FragmentType] = Field(default_factory=list, max_length=3)
-    fact_evidence: list[FactEvidence] = Field(default_factory=list, max_length=3)
+    fact_evidence: list[FactEvidence] = Field(default_factory=list, max_length=8)
     scores: CreativeScores
     hard_issues: list[str] = Field(default_factory=list, max_length=5)
     warnings: list[str] = Field(default_factory=list, max_length=3)

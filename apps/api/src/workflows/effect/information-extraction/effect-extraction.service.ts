@@ -984,6 +984,21 @@ const SEMANTIC_FIELD_LABELS: Record<EffectExtractionSemanticField, string> = {
   emotionalScenarios: '情绪共鸣场景',
 };
 
+const SEMANTIC_FIELD_LAYERS: Record<EffectExtractionSemanticField, string> = {
+  coreSellingPoints: 'SELLING_POINT',
+  secondarySellingPoints: 'SELLING_POINT',
+  corePainPoints: 'USER',
+  decisionDrivers: 'USER',
+  usageScenarios: 'SCENARIO',
+  purchaseScenarios: 'SCENARIO',
+  emotionalScenarios: 'SCENARIO',
+};
+
+const semanticFieldFromFactId = (
+  factId: string,
+): EffectExtractionSemanticField | null =>
+  [...SEMANTIC_NOTICE_FIELDS].find((field) => factId.startsWith(`user-${field}-`)) ?? null;
+
 const safeSemanticValue = (value: unknown): string =>
   String(value ?? '')
     .replace(/data:[^\s,]+;base64,[a-z\d+/=]+/giu, '')
@@ -1034,19 +1049,32 @@ const semanticNoticesByValue = (
     const value = safeSemanticValue(raw.value);
     const factId = String(raw.factId ?? '');
     const relatedFactIds = Array.isArray(raw.relatedFactIds) ? raw.relatedFactIds.map(String) : [];
-    if (
-      !SEMANTIC_NOTICE_FIELDS.has(field) ||
-      !SEMANTIC_NOTICE_ISSUES.has(issue) ||
-      !value ||
-      !factId.startsWith(`user-${field}-`) ||
-      relatedFactIds.some((id) => !id.startsWith('user-'))
-    )
-      continue;
+    const requiresRelatedFact = issue === 'POSSIBLE_DUPLICATE' || issue === 'POSSIBLE_OVERLAP';
     const suggestedField = SEMANTIC_NOTICE_FIELDS.has(
       String(raw.suggestedField ?? '') as EffectExtractionSemanticField,
     )
       ? (String(raw.suggestedField) as EffectExtractionSemanticField)
       : null;
+    const relatedFields = relatedFactIds.map(semanticFieldFromFactId);
+    const wrongFieldSuggestionIsInvalid =
+      issue === 'POSSIBLE_WRONG_FIELD' &&
+      (!suggestedField ||
+        suggestedField === field ||
+        SEMANTIC_FIELD_LAYERS[suggestedField] !== SEMANTIC_FIELD_LAYERS[field]);
+    if (
+      !SEMANTIC_NOTICE_FIELDS.has(field) ||
+      !SEMANTIC_NOTICE_ISSUES.has(issue) ||
+      !value ||
+      !factId.startsWith(`user-${field}-`) ||
+      (requiresRelatedFact && relatedFactIds.length === 0) ||
+      relatedFields.some(
+        (relatedField) =>
+          !relatedField || SEMANTIC_FIELD_LAYERS[relatedField] !== SEMANTIC_FIELD_LAYERS[field],
+      ) ||
+      wrongFieldSuggestionIsInvalid ||
+      (issue !== 'POSSIBLE_WRONG_FIELD' && suggestedField !== null)
+    )
+      continue;
     const relatedValues = (Array.isArray(raw.relatedValues) ? raw.relatedValues : [])
       .map(safeSemanticValue)
       .filter(Boolean)
@@ -1199,7 +1227,7 @@ const extractionValueProvenance = (
           value: String(item),
           origin,
           sourceNames: sourceNamesFor(item, origin),
-          ...(origin === 'USER_FACT' && !overridden.has(field)
+          ...(origin === 'USER_FACT'
             ? {
                 semanticNotices:
                   semanticNotices.get(`${String(field)}:${normalizeOriginValue(item)}`) ?? [],

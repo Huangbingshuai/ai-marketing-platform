@@ -167,6 +167,7 @@ let graphDetailController: AbortController | null = null;
 let settingsTimer: ReturnType<typeof setTimeout> | undefined;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+let graphDetailRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 const pollControllers = new Map<string, { controller: AbortController; runId: string }>();
 const settingsControllers = new Map<string, AbortController>();
 const settingsSavePromises = new Map<string, Promise<boolean>>();
@@ -216,8 +217,11 @@ const currentRetryWarning = computed(
   () => displayedGraphRun.value?.warnings.find((warning) => warning.includes('自动重新排队')) ?? '',
 );
 const currentStageLabel = computed(() => {
-  const nodeId = currentRun.value?.currentNode;
+  const run = currentRun.value;
+  const nodeId = run?.currentNode;
   if (!nodeId || nodeId === 'COMPLETED') return '正在生成候选 Prompt';
+  const executionSummary = run.nodes.find((node) => node.nodeId === nodeId)?.summary.trim();
+  if (executionSummary) return executionSummary;
   return (
     EFFECT_PROMPT_GRAPH_NODES.find((node) => node.id === nodeId)?.label ?? '正在生成候选 Prompt'
   );
@@ -1333,7 +1337,7 @@ const graphDescription = (nodeId: EffectPromptNodeId): string =>
     FACT_VISUAL_STRATEGY_COMPILATION:
       '判断哪些事实可以成为画面任务，哪些只作为商业背景或禁止视觉证明',
     SHARED_PROMPT_COMPILATION: '编译本批次生成与渲染共同使用的提示词',
-    COHERENT_CREATIVE_GENERATION: '先协调批次创意方向，再同步生成完整六维创意与干净正文',
+    COHERENT_CREATIVE_GENERATION: '先形成产品创意空间及其方向，再生成完整六维创意与干净正文',
     CREATIVE_EVALUATION_CLASSIFICATION: '评估产品关联和创意质量，并标注推荐用途与兼容用途',
     EXACT_SELECTION_AND_SUPPLEMENT: '按质量与差异择优，缺少时只补充仍需的数量',
     ITEM_EVALUATE: '重新评估人工修改内容的六维连贯性与素材用途',
@@ -1388,6 +1392,12 @@ const graphDescription = (nodeId: EffectPromptNodeId): string =>
     REPLENISH: '按缺少的片段类型和提炼事实定向补齐',
     RESULT_SAVE: '保存最佳批次草稿和质量结论',
   })[nodeId];
+const graphNodeDescription = (nodeId: EffectPromptNodeId): string => {
+  const execution = graphExecution(nodeId);
+  return execution.status === 'RUNNING' && execution.summary.trim()
+    ? execution.summary.trim()
+    : graphDescription(nodeId);
+};
 const graphDetailValue = (value: unknown): string => {
   if (Array.isArray(value)) {
     const visible = value.filter(
@@ -1605,6 +1615,8 @@ const openGraph = async (event?: Event): Promise<void> => {
 
 const closeGraph = (): void => {
   graphDialogOpen.value = false;
+  if (graphDetailRefreshTimer) clearTimeout(graphDetailRefreshTimer);
+  graphDetailRefreshTimer = undefined;
   graphDetailController?.abort();
   graphDetailController = null;
   graphDetailLoading.value = false;
@@ -1671,6 +1683,30 @@ const selectGraphNode = (nodeId: EffectPromptNodeId): void => {
   void refreshGraphDetail();
 };
 
+watch(
+  [
+    () => graphDialogOpen.value,
+    () => selectedGraphNodeId.value,
+    () => displayedGraphRun.value?.updatedAt,
+    () => displayedGraphRun.value?.currentNode,
+  ],
+  ([open, nodeId]) => {
+    if (graphDetailRefreshTimer) clearTimeout(graphDetailRefreshTimer);
+    graphDetailRefreshTimer = undefined;
+    if (
+      !open ||
+      !nodeId ||
+      displayedGraphRun.value?.status !== 'RUNNING' ||
+      displayedGraphRun.value.currentNode !== nodeId
+    )
+      return;
+    graphDetailRefreshTimer = setTimeout(() => {
+      graphDetailRefreshTimer = undefined;
+      void refreshGraphDetail();
+    }, 500);
+  },
+);
+
 const flushPendingEdits = async (): Promise<boolean> => flushSettings();
 defineExpose({ flushPendingEdits });
 
@@ -1692,6 +1728,7 @@ onBeforeUnmount(() => {
   if (settingsTimer) clearTimeout(settingsTimer);
   if (searchTimer) clearTimeout(searchTimer);
   if (noticeTimer) clearTimeout(noticeTimer);
+  if (graphDetailRefreshTimer) clearTimeout(graphDetailRefreshTimer);
 });
 </script>
 
@@ -2544,7 +2581,7 @@ onBeforeUnmount(() => {
                   >
                     <span class="node-dot" /><span
                       ><strong>{{ graphDefinition(nodeId).label }}</strong
-                      ><small>{{ graphDescription(nodeId) }}</small></span
+                      ><small>{{ graphNodeDescription(nodeId) }}</small></span
                     ><em>{{ graphStatusMeta(graphExecution(nodeId).status).label }}</em>
                   </button>
                 </div>
@@ -2653,6 +2690,52 @@ onBeforeUnmount(() => {
                               }}</span>
                             </div>
                             <p>{{ block.content }}</p>
+                          </details>
+                        </div>
+
+                        <div
+                          v-else-if="block.kind === 'CREATIVE_PLAN_LIST'"
+                          class="node-creative-plan-list"
+                        >
+                          <p class="node-sample-count">
+                            {{ block.territoryCount }} 个产品创意空间 ·
+                            {{ block.directionCount }} 个创意方向
+                          </p>
+                          <details v-for="territory in block.items" :key="territory.title" open>
+                            <summary>
+                              <span>
+                                <strong>{{ territory.title }}</strong>
+                                {{ territory.directions.length }} 个方向
+                              </span>
+                              <em>目标承载 {{ territory.targetSlots }} 条</em>
+                            </summary>
+                            <div class="node-creative-territory-summary">
+                              <p><b>适用画面</b>{{ territory.sceneBoundary }}</p>
+                              <p><b>差异目标</b>{{ territory.differentiationGoal }}</p>
+                              <p v-if="territory.actions.length" class="node-sample-tags">
+                                <span v-for="action in territory.actions" :key="action">{{
+                                  action
+                                }}</span>
+                              </p>
+                            </div>
+                            <ol>
+                              <li
+                                v-for="direction in territory.directions"
+                                :key="`${direction.code}-${direction.creativeDirection}`"
+                              >
+                                <header>
+                                  <strong>{{ direction.code }}</strong>
+                                  <span
+                                    v-for="dimension in direction.priorityDimensions"
+                                    :key="dimension"
+                                  >
+                                    {{ dimension }}
+                                  </span>
+                                </header>
+                                <p>{{ direction.creativeDirection }}</p>
+                                <small>主要动作：{{ direction.primaryAction }}</small>
+                              </li>
+                            </ol>
                           </details>
                         </div>
 
@@ -5012,6 +5095,7 @@ button:disabled {
 .node-tag-groups,
 .node-text-content,
 .node-creative-list,
+.node-creative-plan-list,
 .node-relationship-list,
 .node-coordinate-list,
 .node-blueprint-list,
@@ -5027,6 +5111,7 @@ button:disabled {
 .node-tag-groups > div,
 .node-text-content > details,
 .node-creative-list > details,
+.node-creative-plan-list > details,
 .node-relationship-list > article,
 .node-coordinate-list > section,
 .node-blueprint-list > details,
@@ -5052,6 +5137,89 @@ button:disabled {
   cursor: pointer;
   font-size: 8px;
   font-weight: 800;
+}
+.node-creative-plan-list > details > summary {
+  display: flex;
+  padding: 11px 12px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #4d5f7a;
+  cursor: pointer;
+  list-style: none;
+}
+.node-creative-plan-list > details > summary::-webkit-details-marker {
+  display: none;
+}
+.node-creative-plan-list > details > summary span {
+  display: grid;
+  gap: 2px;
+  font-size: 9px;
+}
+.node-creative-plan-list > details > summary strong {
+  color: #263a5a;
+  font-size: 11px;
+}
+.node-creative-plan-list > details > summary em {
+  color: #5f77a0;
+  font-size: 8px;
+  font-style: normal;
+}
+.node-creative-territory-summary {
+  display: grid;
+  padding: 0 12px 10px;
+  gap: 6px;
+}
+.node-creative-territory-summary > p {
+  margin: 0;
+  color: #66758b;
+  font-size: 9px;
+  line-height: 1.6;
+}
+.node-creative-territory-summary b {
+  margin-right: 7px;
+  color: #385079;
+}
+.node-creative-plan-list ol {
+  display: grid;
+  margin: 0;
+  padding: 0 10px 10px;
+  gap: 7px;
+  list-style: none;
+}
+.node-creative-plan-list li {
+  padding: 9px 10px;
+  background: #f7f9fd;
+  border: 1px solid #e2e9f5;
+  border-radius: 9px;
+}
+.node-creative-plan-list li > header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.node-creative-plan-list li > header strong {
+  margin-right: auto;
+  color: #345077;
+  font-size: 9px;
+}
+.node-creative-plan-list li > header span {
+  padding: 2px 5px;
+  color: #476ca8;
+  background: #eaf1fd;
+  border-radius: 99px;
+  font-size: 7px;
+}
+.node-creative-plan-list li > p {
+  margin: 7px 0 4px;
+  color: #53647c;
+  font-size: 9px;
+  line-height: 1.6;
+}
+.node-creative-plan-list li > small {
+  color: #8490a2;
+  font-size: 8px;
 }
 .node-text-content summary em,
 .node-creative-list > details > summary em {

@@ -24,7 +24,7 @@ from effect_prompt_generation.models import (
     SharedPrompt,
     SharedPromptSection,
 )
-from effect_prompt_generation.quality import select_creatives, trigram_dice
+from effect_prompt_generation.quality import select_creatives
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,11 +309,9 @@ async def test_paid_ark_embedding_accuracy_and_batch_latency() -> None:
             concurrency=8,
         )
         labels = [pair.similar for pair in pairs]
-        trigram_scores = [trigram_dice(pair.left, pair.right) for pair in pairs]
         vector_scores = [
             _cosine(vectors[pair.left], vectors[pair.right]) for pair in pairs
         ]
-        baseline_recall, baseline_fpr = _metrics(trigram_scores, labels, 0.82)
         vector_recall, vector_fpr = _metrics(vector_scores, labels, 0.82)
 
         latency_texts = list(dict.fromkeys(texts))[:4]
@@ -334,15 +332,12 @@ async def test_paid_ark_embedding_accuracy_and_batch_latency() -> None:
 
         total_requests = smoke.request_count + accuracy_requests + performance_requests
         assert total_requests <= 190
-        assert vector_recall >= baseline_recall + 0.20
+        assert vector_recall >= 0.80
         assert vector_fpr <= 0.10
-        assert vector_fpr <= baseline_fpr + 0.03
         assert latency_ms[8] <= 5000
         assert latency_ms[8] < latency_ms[2]
         print(
             {
-                "baselineRecall": round(baseline_recall, 4),
-                "baselineFalsePositiveRate": round(baseline_fpr, 4),
                 "vectorRecall": round(vector_recall, 4),
                 "vectorFalsePositiveRate": round(vector_fpr, 4),
                 "requestCount": total_requests,

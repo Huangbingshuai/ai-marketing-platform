@@ -52,7 +52,6 @@ from effect_prompt_generation.providers import (
 from effect_prompt_generation.quality import (
     RankedCreative,
     _creative_novelty,
-    creative_soft_warnings,
     select_creatives,
     validate_creative_evaluation,
 )
@@ -130,7 +129,7 @@ class FirstRoundRejectingProvider(MockAiProvider):
             **kwargs,
         )
         items = [
-            item.model_copy(update={"hard_issues": ["TEST_FIRST_ROUND_REJECTION"]})
+            item.model_copy(update={"hard_issues": ["FABRICATED_FACT"]})
             if candidate.round == 0 and candidate.ordinal <= 3
             else item
             for candidate, item in zip(candidates, call.value.items, strict=True)
@@ -154,7 +153,7 @@ class FirstTwoRoundsRejectingProvider(MockAiProvider):
             **kwargs,
         )
         items = [
-            item.model_copy(update={"hard_issues": ["TEST_EARLY_ROUND_REJECTION"]})
+            item.model_copy(update={"hard_issues": ["FABRICATED_FACT"]})
             if candidate.round < 2
             else item
             for candidate, item in zip(candidates, call.value.items, strict=True)
@@ -178,7 +177,7 @@ class AlwaysRejectingProvider(MockAiProvider):
             **kwargs,
         )
         items = [
-            item.model_copy(update={"hard_issues": ["TEST_SAFETY_REJECTION"]})
+            item.model_copy(update={"hard_issues": ["FABRICATED_FACT"]})
             for item in call.value.items
         ]
         return replace(call, value=call.value.model_copy(update={"items": items}))
@@ -280,7 +279,8 @@ class DirectionStageTrackingProvider(MockAiProvider):
         self.saw_running_stage_before_call = (
             stage is not None
             and stage.status.value == "RUNNING"
-            and stage.summary == "正在规划批次创意方向"
+            and "正在规划" in stage.summary
+            and "创意方向" in stage.summary
         )
         return await super().plan_creative_directions(*args, **kwargs)
 
@@ -620,6 +620,15 @@ async def test_reports_creative_direction_stage_before_slow_ai_call() -> None:
     )
 
     assert provider.saw_running_stage_before_call is True
+    summaries = [
+        stage.summary
+        for stage in api.stages
+        if stage.node_id.value == "COHERENT_CREATIVE_GENERATION"
+    ]
+    assert any("产品专属创意空间" in summary for summary in summaries)
+    assert any("正在复核" in summary and "产品创意空间" in summary for summary in summaries)
+    assert any("创意方向已形成" in summary for summary in summaries)
+    assert any("正在生成候选 Prompt" in summary for summary in summaries)
 
 
 @pytest.mark.asyncio
@@ -864,7 +873,7 @@ async def test_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
         for stage in reversed(api.stages)
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
-    assert selection_stage.metadata["selectionMethod"] == "TRIGRAM_SHADOW"
+    assert selection_stage.metadata["selectionMethod"] == "VECTOR_SHADOW"
     assert (
         10
         <= selection_stage.metadata["embeddingInputCount"]
@@ -942,7 +951,8 @@ async def test_shadow_selection_reports_comparison_without_changing_result() -> 
     baseline = PromptGenerationPipeline(
         api=baseline_api,  # type: ignore[arg-type]
         provider=MockAiProvider(),
-        similarity_mode="trigram",
+        embedding_provider=MockEmbeddingProvider(),
+        similarity_mode="shadow",
         shard_size=5,
     )
     shadow = PromptGenerationPipeline(
@@ -976,7 +986,7 @@ async def test_shadow_selection_reports_comparison_without_changing_result() -> 
         for stage in reversed(shadow_api.stages)
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
-    assert selection_stage.metadata["selectionMethod"] == "TRIGRAM_SHADOW"
+    assert selection_stage.metadata["selectionMethod"] == "VECTOR_SHADOW"
     assert selection_stage.metadata["baselineSelection"]["selectedCount"] == 10
     assert selection_stage.metadata["contentMmrSelection"]["selectedCount"] == 10
     assert selection_stage.metadata["vectorChangedItemCount"] >= 0
@@ -1187,7 +1197,7 @@ async def test_stops_after_three_rounds_when_real_safety_issues_remain() -> None
     assert api.result is None
 
 
-def test_evaluation_requires_real_text_evidence() -> None:
+def test_worker_does_not_require_literal_overlap_for_semantic_evidence() -> None:
     application = map_insight(
         {"productName": "广式腊肠", "coreSellingPoints": ["油润红亮切面"]}
     )
@@ -1227,9 +1237,9 @@ def test_evaluation_requires_real_text_evidence() -> None:
 
     validated = validate_creative_evaluation(candidate, evaluation, application)
 
-    assert "FACT_EVIDENCE_NOT_IN_CONTENT" in validated.warnings
-    assert "FACT_EVIDENCE_NOT_IN_CONTENT" not in validated.hard_issues
-    assert "MISSING_PRODUCT_RELATION" in validated.hard_issues
+    assert validated.hard_issues == []
+    assert validated.warnings == []
+    assert validated.realized_fact_ids == [fact.fact_id]
 
 
 def _abstract_visual_proof_case() -> tuple[
@@ -1318,10 +1328,10 @@ def test_unverified_abstract_visual_proof_is_only_a_warning() -> None:
     validated = validate_creative_evaluation(candidate, evaluation, application)
 
     assert "ABSTRACT_FACT_VISUAL_PROOF" not in validated.hard_issues
-    assert "ABSTRACT_FACT_VISUAL_PROOF_UNVERIFIED" in validated.warnings
+    assert "ABSTRACT_FACT_VISUAL_PROOF_REPORT_INVALID" in validated.warnings
 
 
-def test_abstract_visual_proof_with_missing_candidate_evidence_is_not_hard() -> None:
+def test_worker_trusts_ai_abstract_visual_proof_without_literal_matching() -> None:
     application, candidate, evaluation, formula_fact_id = _abstract_visual_proof_case()
     evaluation = evaluation.model_copy(
         update={
@@ -1338,8 +1348,8 @@ def test_abstract_visual_proof_with_missing_candidate_evidence_is_not_hard() -> 
 
     validated = validate_creative_evaluation(candidate, evaluation, application)
 
-    assert "ABSTRACT_FACT_VISUAL_PROOF" not in validated.hard_issues
-    assert "ABSTRACT_VISUAL_PROOF_EVIDENCE_NOT_FOUND" in validated.warnings
+    assert "ABSTRACT_FACT_VISUAL_PROOF" in validated.hard_issues
+    assert validated.warnings == []
 
 
 def test_assigned_business_context_accepts_real_semantic_evidence() -> None:
@@ -1535,14 +1545,10 @@ def test_partial_business_fact_and_low_scores_only_create_soft_warnings() -> Non
 
     assert validated.hard_issues == []
     assert selling_fact.fact_id not in validated.realized_fact_ids
-    assert "FACT_EVIDENCE_PARTIAL" in validated.warnings
-    assert "LOW_PRODUCT_RELEVANCE_SCORE" in validated.warnings
-    assert "LOW_CREATIVE_COHERENCE_SCORE" in validated.warnings
-    assert "LOW_VISUAL_EXECUTABILITY_SCORE" in validated.warnings
-    assert "DIMENSION_CONTENT_CONFLICT" in validated.warnings
+    assert validated.warnings == ["DIMENSION_CONTENT_CONFLICT"]
 
 
-def test_context_binding_is_removed_when_excerpt_describes_another_fact() -> None:
+def test_worker_does_not_reinterpret_ai_context_fact_semantics() -> None:
     application = map_insight(
         {
             "productName": "广式腊肠",
@@ -1604,10 +1610,11 @@ def test_context_binding_is_removed_when_excerpt_describes_another_fact() -> Non
         contextual_fact_ids=[selling_fact.fact_id],
     )
 
-    assert validated.realized_fact_ids == [product_fact.fact_id]
-    assert "FACT_EVIDENCE_MISMATCH" in validated.warnings
-    assert "MISSING_DEEP_BUSINESS_FACT" not in validated.hard_issues
-    assert "MISSING_DEEP_BUSINESS_FACT" in validated.warnings
+    assert validated.realized_fact_ids == [
+        product_fact.fact_id,
+        selling_fact.fact_id,
+    ]
+    assert validated.warnings == []
 
 
 def test_selection_prioritizes_an_uncovered_required_fact() -> None:
@@ -1846,16 +1853,9 @@ def test_generic_visual_language_is_a_soft_warning_only() -> None:
         visual_signature="ignored",
     )
 
-    assert creative_soft_warnings(candidate) == [
-        "GENERIC_STYLE_STACKING",
-        "PURPOSE_SENTENCE_INSTEAD_OF_VISIBLE_ACTION",
-    ]
     validated = validate_creative_evaluation(candidate, evaluation, application)
     assert validated.hard_issues == []
-    assert validated.warnings == [
-        "GENERIC_STYLE_STACKING",
-        "PURPOSE_SENTENCE_INSTEAD_OF_VISIBLE_ACTION",
-    ]
+    assert validated.warnings == []
 
 
 def test_novelty_uses_narrative_and_emotion_as_soft_dimensions() -> None:
@@ -1920,7 +1920,7 @@ def test_novelty_uses_narrative_and_emotion_as_soft_dimensions() -> None:
     assert _creative_novelty(first, second) > 0
 
 
-def test_discards_bad_evidence_and_rejects_identity_only_prompt() -> None:
+def test_worker_downgrades_unknown_ai_issue_without_rechecking_evidence_text() -> None:
     application = map_insight(
         {"productName": "广式腊肠", "coreSellingPoints": ["油润红亮切面"]}
     )
@@ -1964,21 +1964,20 @@ def test_discards_bad_evidence_and_rejects_identity_only_prompt() -> None:
         ),
         semantic_signature="ignored",
         visual_signature="ignored",
-        hard_issues=["FACT_EVIDENCE_NOT_IN_CONTENT"],
+        hard_issues=["MODEL_UNKNOWN_ISSUE"],
     )
 
     validated = validate_creative_evaluation(candidate, evaluation, application)
 
     assert validated.hard_issues == []
-    assert validated.warnings == [
-        "FACT_EVIDENCE_NOT_IN_CONTENT",
-        "SECONDARY_FACT_NOT_USED",
-        "MISSING_DEEP_BUSINESS_FACT",
+    assert validated.warnings == ["MODEL_UNKNOWN_ISSUE"]
+    assert validated.realized_fact_ids == [
+        product_fact.fact_id,
+        selling_fact.fact_id,
     ]
-    assert validated.realized_fact_ids == [product_fact.fact_id]
 
 
-def test_evidence_excerpt_noise_cannot_fake_deep_fact_coverage() -> None:
+def test_worker_uses_ai_support_level_instead_of_excerpt_character_matching() -> None:
     application = map_insight(
         {"productName": "广式腊肠", "coreSellingPoints": ["油润红亮切面"]}
     )
@@ -2029,7 +2028,7 @@ def test_evidence_excerpt_noise_cannot_fake_deep_fact_coverage() -> None:
             ),
             semantic_signature="ignored",
             visual_signature="ignored",
-            hard_issues=["FACT_EVIDENCE_NOT_IN_CONTENT"],
+            hard_issues=["MODEL_UNKNOWN_ISSUE"],
         )
         candidates.append(candidate)
         evaluations.append(
@@ -2041,12 +2040,8 @@ def test_evidence_excerpt_noise_cannot_fake_deep_fact_coverage() -> None:
     assert len(result.selected) == 50
     assert all(
         item.hard_issues == []
-        and item.warnings
-            == [
-                "FACT_EVIDENCE_NOT_IN_CONTENT",
-                "SECONDARY_FACT_NOT_USED",
-                "MISSING_DEEP_BUSINESS_FACT",
-            ]
+        and item.warnings == ["MODEL_UNKNOWN_ISSUE"]
+        and selling_fact.fact_id in item.realized_fact_ids
         for item in evaluations
     )
 

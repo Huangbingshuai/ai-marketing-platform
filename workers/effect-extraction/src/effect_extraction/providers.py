@@ -123,6 +123,7 @@ class AiProvider(Protocol):
         *,
         user_facts: Sequence[Mapping[str, str]],
         image_suggestions: Sequence[Mapping[str, str]],
+        reference_facts: Sequence[Mapping[str, str]],
         remaining_capacity_by_field: Mapping[str, int],
     ) -> AiCallResult[SemanticRefinementDecision]: ...
 
@@ -176,9 +177,10 @@ class MockAiProvider:
         *,
         user_facts: Sequence[Mapping[str, str]],
         image_suggestions: Sequence[Mapping[str, str]],
+        reference_facts: Sequence[Mapping[str, str]],
         remaining_capacity_by_field: Mapping[str, int],
     ) -> AiCallResult[SemanticRefinementDecision]:
-        del user_facts
+        del user_facts, reference_facts
         kept_by_field: dict[SemanticField, int] = {}
         suggestion_decisions: list[SemanticSuggestionDecision] = []
         for fact in image_suggestions:
@@ -391,6 +393,7 @@ class ArkResponsesProvider:
         *,
         user_facts: Sequence[Mapping[str, str]],
         image_suggestions: Sequence[Mapping[str, str]],
+        reference_facts: Sequence[Mapping[str, str]],
         remaining_capacity_by_field: Mapping[str, int],
     ) -> AiCallResult[SemanticRefinementDecision]:
         prompt = render_prompt(
@@ -398,6 +401,9 @@ class ArkResponsesProvider:
             user_facts_json=json.dumps(user_facts, ensure_ascii=False, sort_keys=True),
             image_suggestions_json=json.dumps(
                 image_suggestions, ensure_ascii=False, sort_keys=True
+            ),
+            reference_facts_json=json.dumps(
+                reference_facts, ensure_ascii=False, sort_keys=True
             ),
             remaining_capacity_json=json.dumps(
                 remaining_capacity_by_field, ensure_ascii=False, sort_keys=True

@@ -88,7 +88,7 @@ class WorkerSettings(BaseSettings):
     prompt_max_concurrency: int = Field(
         default=6, alias="PROMPT_MAX_CONCURRENCY", ge=1, le=8
     )
-    prompt_similarity_mode: Literal["trigram", "shadow", "vector"] = Field(
+    prompt_similarity_mode: Literal["vector"] = Field(
         default="vector", alias="PROMPT_SIMILARITY_MODE"
     )
     prompt_embedding_batch_size: int = Field(
@@ -161,13 +161,9 @@ class WorkerSettings(BaseSettings):
             key = self.ark_api_key.get_secret_value().strip()
             if not key or key.casefold() in ARK_KEY_PLACEHOLDERS:
                 raise ValueError("ARK_API_KEY must be a real non-placeholder key")
-            if (
-                self.prompt_similarity_mode != "trigram"
-                and self.ark_prompt_embedding_model is None
-            ):
+            if self.ark_prompt_embedding_model is None:
                 raise ValueError(
-                    "ARK_PROMPT_EMBEDDING_MODEL is required when "
-                    "PROMPT_SIMILARITY_MODE is shadow or vector"
+                    "ARK_PROMPT_EMBEDDING_MODEL is required for Prompt vector selection"
                 )
         elif not (
             self.effect_prompt_queue.endswith(".test")

@@ -195,6 +195,73 @@ const candidateFields = (
   );
 };
 
+const semanticValueKey = (value: unknown): string =>
+  String(value ?? '')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .toLocaleLowerCase();
+
+const branchDetailCandidates = (branch: DetailBranchRecord): JsonRecord[] => {
+  const raw = isRecord(branch.structuredOutput) ? branch.structuredOutput : {};
+  const candidates: JsonRecord[] = [];
+  if (isRecord(raw.candidate)) candidates.push(raw.candidate);
+  for (const item of Array.isArray(raw.items) ? raw.items : []) {
+    if (isRecord(item) && isRecord(item.candidate)) candidates.push(item.candidate);
+  }
+  return candidates;
+};
+
+const semanticCandidateValues = (candidates: readonly JsonRecord[], field: string): Set<string> =>
+  new Set(
+    candidates.flatMap((candidate) =>
+      (Array.isArray(candidate[field]) ? candidate[field] : [])
+        .map(semanticValueKey)
+        .filter(Boolean),
+    ),
+  );
+
+const reconciledNodeDetailProvenance = (
+  record: ExtractionNodeDetailRecord,
+  candidate: unknown,
+  storedProvenance: unknown,
+): JsonRecord => {
+  const provenance = isRecord(storedProvenance) ? { ...storedProvenance } : {};
+  const branches = record.branches ?? [];
+  if (!branches.some(({ branch }) => branch === 'SEMANTIC_REFINEMENT')) return provenance;
+  const result = isRecord(candidate) ? candidate : {};
+  const authoritative = (['FORM', 'DOCUMENT', 'COMMERCE'] as const).map(
+    (branchName) =>
+      [
+        branchName,
+        branches.filter(({ branch }) => branch === branchName).flatMap(branchDetailCandidates),
+      ] as const,
+  );
+  const imageCandidates = branches
+    .filter(({ branch }) => branch === 'IMAGE')
+    .flatMap(branchDetailCandidates);
+  const imageValues = new Set(
+    Object.keys(SEMANTIC_FIELD_LABELS).flatMap((field) => [
+      ...semanticCandidateValues(imageCandidates, field),
+    ]),
+  );
+  for (const field of Object.keys(SEMANTIC_FIELD_LABELS)) {
+    const snakeCaseField = field.replace(/[A-Z]/g, (value) => `_${value.toLowerCase()}`);
+    delete provenance[field];
+    delete provenance[snakeCaseField];
+    const sources: string[] = [];
+    for (const value of Array.isArray(result[field]) ? result[field] : []) {
+      const key = semanticValueKey(value);
+      const source =
+        authoritative.find(([, candidates]) =>
+          semanticCandidateValues(candidates, field).has(key),
+        )?.[0] ?? (imageValues.has(key) ? 'IMAGE' : null);
+      if (source && !sources.includes(source)) sources.push(source);
+    }
+    if (sources.length) provenance[field] = sources.join('>');
+  }
+  return provenance;
+};
+
 const semanticSources = (
   metadata: JsonRecord,
   fallbackStatus: EffectExtractionNodeStatus,
@@ -254,6 +321,7 @@ const SEMANTIC_CORRECTION_LABELS: Record<string, string> = {
   INVALID_RELATED_USER_FACT: '提示关联事实无效',
   INVALID_SUGGESTED_FIELD: '建议字段无效',
   UNEXPECTED_SUGGESTED_FIELD: '提示携带多余建议字段',
+  CROSS_LAYER_USER_NOTICE: '跨业务层提示已忽略',
 };
 
 const payload = (
@@ -567,8 +635,16 @@ export const presentExtractionNodeDetail = (
     const suggestionMovedCount = Number(output.metadata.imageSuggestionMovedCount);
     const suggestionDroppedCount = Number(output.metadata.imageSuggestionDroppedCount);
     const aiCall = isRecord(output.metadata.aiCall) ? output.metadata.aiCall : {};
-    const latencyMs = Number(aiCall.latencyMs);
+    const failures = Array.isArray(output.metadata.failures)
+      ? output.metadata.failures.filter(isRecord)
+      : [];
+    const firstFailure = failures[0] ?? {};
+    const failureType = String(firstFailure.type ?? '');
+    const latencyMs = Number.isFinite(Number(aiCall.latencyMs))
+      ? Number(aiCall.latencyMs)
+      : Number(firstFailure.elapsedMs);
     const validation = isRecord(output.metadata.validation) ? output.metadata.validation : {};
+    const validationStatus = String(validation.status ?? '');
     const correctionCount = Number(validation.correctionCount);
     const correctionCodes = Array.isArray(validation.correctionCodes)
       ? validation.correctionCodes
@@ -576,7 +652,21 @@ export const presentExtractionNodeDetail = (
           .map((code) => SEMANTIC_CORRECTION_LABELS[code])
           .filter((label): label is string => Boolean(label))
       : [];
-    const corrected = validation.status === 'CORRECTED' && correctionCount > 0;
+    const corrected = validationStatus === 'CORRECTED' && correctionCount > 0;
+    const degraded = output.metadata.degraded === true;
+    const validationLabel = degraded
+      ? failureType === 'AI_RESPONSE_INVALID'
+        ? '未通过：模型返回格式异常'
+        : failureType === 'AI_OUTPUT_TRUNCATED'
+          ? '未通过：模型输出被截断'
+          : failureType === 'AI_TIMEOUT'
+            ? '未通过：模型请求超时'
+            : '未通过：语义决策不可用'
+      : corrected
+        ? `部分通过：已安全忽略 ${correctionCount} 项无效结构`
+        : validationStatus === 'VERIFIED'
+          ? '结构校验通过'
+          : null;
     const mergedGroupCount = Number(output.metadata.mergedGroupCount);
     const familyGroupCount = Number(output.metadata.familyGroupCount);
     const completedSummary =
@@ -632,6 +722,7 @@ export const presentExtractionNodeDetail = (
               '结构问题类型',
               correctionCodes.length ? correctionCodes : null,
             ),
+            field('semantic-validation-status', '语义决策校验', validationLabel),
             field(
               'semantic-latency',
               '语义模型耗时',
@@ -640,7 +731,7 @@ export const presentExtractionNodeDetail = (
             field(
               'semantic-degraded',
               '处理状态',
-              output.metadata.degraded === true
+              degraded
                 ? '部分完成，仅保留用户事实'
                 : corrected
                   ? '部分完成，已保留有效整理结果'
@@ -653,11 +744,17 @@ export const presentExtractionNodeDetail = (
   }
 
   const result = record.result;
+  const resultCandidate = result?.draftResult ?? output.candidate;
+  const resultProvenance = reconciledNodeDetailProvenance(
+    record,
+    resultCandidate,
+    result?.provenance,
+  );
   return {
     ...base,
     summary: result ? '产品信息卡已经生成，可以继续编辑' : '等待生成产品信息卡',
     fields: [
-      ...candidateFields(result?.draftResult ?? output.candidate, result?.provenance, true),
+      ...candidateFields(resultCandidate, resultProvenance, true),
       ...fields([
         field('revision', '结果修订号', result?.revision),
         field('savedAt', '最近保存时间', result?.savedAt?.toISOString()),

@@ -584,10 +584,12 @@ class ExtractionPipeline:
         if fusion is None or fusion.candidate is None:
             raise FusionError("fusion output is missing")
         snapshot = self._snapshot(context)
-        semantic_candidate, user_facts, image_suggestions = _prepare_semantic_candidate(
-            fusion.candidate,
-            branches,
-            manual_overrides=snapshot.manual_overrides,
+        semantic_candidate, user_facts, image_suggestions, reference_facts = (
+            _prepare_semantic_candidate(
+                fusion.candidate,
+                branches,
+                manual_overrides=snapshot.manual_overrides,
+            )
         )
         fallback_candidate = user_only_candidate(semantic_candidate, user_facts)
         try:
@@ -596,15 +598,14 @@ class ExtractionPipeline:
                 provider=self.provider,
                 user_facts=user_facts,
                 image_suggestions=image_suggestions,
+                reference_facts=reference_facts,
             )
             validation = result.metadata.get("validation") or {}
             correction_count = int(validation.get("correctionCount", 0))
             corrected = correction_count > 0
             output = BranchOutput(
                 branch=BranchName.SEMANTIC_REFINEMENT,
-                status=(
-                    BranchStatus.PARTIAL if corrected else BranchStatus.SUCCEEDED
-                ),
+                status=(BranchStatus.PARTIAL if corrected else BranchStatus.SUCCEEDED),
                 source_fingerprint=context.source_fingerprint,
                 candidate=result.candidate,
                 warnings=(
@@ -645,6 +646,7 @@ class ExtractionPipeline:
                 metadata=semantic_fallback_metadata(
                     user_facts=user_facts,
                     image_suggestions=image_suggestions,
+                    reference_facts=reference_facts,
                     failure={
                         "type": exc.error_type.value,
                         "attempts": exc.attempts,
@@ -735,10 +737,18 @@ class ExtractionPipeline:
         _restore_semantic_fields(result, semantic_candidate)
         result = ExtractionResult.model_validate(result.model_dump(mode="json"))
         provenance_raw = fusion.metadata.get("provenance", {})
-        provenance = (
+        fused_provenance = (
             {str(key): str(value) for key, value in provenance_raw.items()}
             if isinstance(provenance_raw, dict)
             else {}
+        )
+        provenance = _reconciled_final_provenance(
+            fused_provenance,
+            result=result,
+            form=form_candidate,
+            document=document_candidate,
+            commerce=commerce_candidate,
+            image=image_candidate,
         )
         warnings = []
         for branch in branches:
@@ -1095,15 +1105,38 @@ def _manual_items(
     return [value for value in values if value]
 
 
+def _manual_text(
+    manual_overrides: dict[str, object],
+    *,
+    field: str,
+    alias: str,
+) -> str | None:
+    raw = manual_overrides.get(alias, manual_overrides.get(field))
+    if not isinstance(raw, str):
+        return None
+    value = " ".join(raw.split()).strip()
+    return value or None
+
+
 def _prepare_semantic_candidate(
     fusion_candidate: ExtractionCandidate,
     branches: Sequence[BranchOutput],
     *,
     manual_overrides: dict[str, object],
-) -> tuple[ExtractionCandidate, list[dict[str, str]], list[dict[str, str]]]:
+) -> tuple[
+    ExtractionCandidate,
+    list[dict[str, str]],
+    list[dict[str, str]],
+    list[dict[str, str]],
+]:
     """Separate immutable user facts from mutable image suggestions."""
 
     by_name = {branch.branch: branch for branch in branches}
+    form = (
+        branch_candidate(by_name[BranchName.FORM])
+        if BranchName.FORM in by_name
+        else None
+    )
     document = (
         branch_candidate(by_name[BranchName.DOCUMENT])
         if BranchName.DOCUMENT in by_name
@@ -1123,6 +1156,7 @@ def _prepare_semantic_candidate(
     prepared = fusion_candidate.model_copy(deep=True)
     user_facts: list[dict[str, str]] = []
     image_suggestions: list[dict[str, str]] = []
+    reference_facts: list[dict[str, str]] = []
     for field, attr in SEMANTIC_FIELDS:
         manual_values = _manual_items(
             manual_overrides,
@@ -1158,7 +1192,98 @@ def _prepare_semantic_candidate(
             for index, value in enumerate(image_values, start=1)
         )
 
-    return prepared, user_facts, image_suggestions
+    reference_fields = (
+        ("productCategory", "product_category"),
+        ("productName", "product_name"),
+        ("coreSpecification", "core_specification"),
+        ("visualFeatures", "visual_features"),
+    )
+    for alias, attr in reference_fields:
+        manual_value = _manual_text(
+            manual_overrides,
+            field=attr,
+            alias=alias,
+        )
+        value = manual_value or next(
+            (
+                candidate_value
+                for candidate in (form, document, commerce)
+                if (candidate_value := _candidate_text(candidate, attr)) is not None
+            ),
+            None,
+        )
+        if not value:
+            continue
+        reference_facts.append(
+            {
+                "factId": f"reference-{alias}",
+                "field": alias,
+                "value": value,
+                "sourceType": "USER_REFERENCE",
+            }
+        )
+
+    return prepared, user_facts, image_suggestions, reference_facts
+
+
+def _semantic_value_key(value: str) -> str:
+    return " ".join(value.split()).strip().casefold()
+
+
+def _semantic_values(
+    candidate: ExtractionCandidate | None,
+    attr: str,
+) -> set[str]:
+    if candidate is None:
+        return set()
+    return {
+        key
+        for value in getattr(candidate, attr) or []
+        if (key := _semantic_value_key(value))
+    }
+
+
+def _reconciled_final_provenance(
+    fused_provenance: dict[str, str],
+    *,
+    result: ExtractionResult,
+    form: ExtractionCandidate | None,
+    document: ExtractionCandidate | None,
+    commerce: ExtractionCandidate | None,
+    image: ExtractionCandidate | None,
+) -> dict[str, str]:
+    """Remove pre-refinement IMAGE sources that do not survive final semantics."""
+
+    provenance = dict(fused_provenance)
+    authoritative_sources = (
+        (BranchName.FORM, form),
+        (BranchName.DOCUMENT, document),
+        (BranchName.COMMERCE, commerce),
+    )
+    image_values = {
+        value
+        for _, semantic_attr in SEMANTIC_FIELDS
+        for value in _semantic_values(image, semantic_attr)
+    }
+    for _, attr in SEMANTIC_FIELDS:
+        sources: list[str] = []
+        for value in getattr(result, attr) or []:
+            key = _semantic_value_key(value)
+            source = next(
+                (
+                    branch
+                    for branch, candidate in authoritative_sources
+                    if key in _semantic_values(candidate, attr)
+                ),
+                BranchName.IMAGE if key in image_values else None,
+            )
+            if source is not None and source.value not in sources:
+                sources.append(source.value)
+        if sources:
+            provenance[attr] = ">".join(sources)
+        else:
+            provenance.pop(attr, None)
+    return provenance
 
 
 def _restore_authoritative_sources(

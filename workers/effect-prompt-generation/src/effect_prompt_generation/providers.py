@@ -45,7 +45,6 @@ from .models import (
     CreativeFactTerritoryAssignment,
     CreativeFactTerritoryAssignmentResponse,
     CreativeFactAssignment,
-    CreativeFactEvidence,
     CreativeScores,
     CreativeSemanticProfile,
     CreativeShardPlan,
@@ -1178,32 +1177,12 @@ class ArkResponsesProvider:
             if unassigned or set(fact_ids) != set(assignment.fact_ids):
                 rejected_item_count += 1
                 continue
-            normalized_evidence = [
-                evidence.model_copy(
-                    update={
-                        "fact_id": fact_ids_by_alias.get(
-                            evidence.fact_id,
-                            evidence.fact_id,
-                        )
-                    }
-                )
-                for evidence in item.fact_evidence
-            ]
-            if {evidence.fact_id for evidence in normalized_evidence} != set(
-                assignment.fact_ids
-            ) or any(
-                not _candidate_fact_evidence_exists(item, evidence)
-                for evidence in normalized_evidence
-            ):
-                rejected_item_count += 1
-                continue
             normalized.append(
                 item.model_copy(
                     update={
                         "ordinal": task.ordinal,
                         "round": task.round,
                         "declared_fact_ids": list(dict.fromkeys(fact_ids)),
-                        "fact_evidence": normalized_evidence,
                     }
                 )
             )
@@ -2010,14 +1989,6 @@ def _mock_creative_candidate(
             else f"用{scene}中的连续动作自然结合多个已确认事实"
         ),
         declared_fact_ids=assignment.fact_ids,
-        fact_evidence=[
-            CreativeFactEvidence(
-                fact_id=fact.fact_id,
-                evidence_text=fact.value,
-                evidence_source="PRODUCT_RELATION",
-            )
-            for fact in assigned_facts
-        ],
         dimensions=CreativeDimensions(
             narrative=(
                 direction.semantic_profile.narrative_family
@@ -2190,21 +2161,6 @@ def _product_snapshot(application: InsightApplicationMap) -> dict[str, Any]:
     }
 
 
-def _candidate_fact_evidence_exists(
-    candidate: CreativeCandidate,
-    evidence: CreativeFactEvidence,
-) -> bool:
-    source_text = {
-        "CONTENT": candidate.content,
-        "CREATIVE_CORE": candidate.creative_core,
-        "NARRATIVE": candidate.dimensions.narrative,
-        "SCENE": candidate.dimensions.scene,
-        "PERSONA": candidate.dimensions.persona,
-        "PRODUCT_RELATION": candidate.dimensions.product_relation,
-    }[evidence.evidence_source]
-    return evidence.evidence_text in source_text
-
-
 def _creative_fact_aliases(
     assignment: CreativeFactAssignment,
 ) -> dict[str, str]:
@@ -2272,53 +2228,23 @@ def _mock_creative_evaluation(
     *,
     context_fact_ids: Sequence[str] = (),
 ) -> CreativeEvaluation:
-    evidence: list[FactEvidence] = []
-    for fact_id in dict.fromkeys([*candidate.declared_fact_ids, *context_fact_ids]):
-        fact = application.by_id.get(fact_id)
-        if fact is None:
-            continue
-        candidate_fields = (
-            candidate.content,
-            candidate.creative_core,
-            candidate.dimensions.narrative,
-            candidate.dimensions.scene,
-            candidate.dimensions.persona,
-            candidate.dimensions.product_relation,
+    evidence = [
+        FactEvidence(
+            fact_id=fact_id,
+            support_level="SEMANTIC_FULL",
         )
-        evidence_text = (
-            fact.value if any(fact.value in value for value in candidate_fields) else ""
+        for fact_id in dict.fromkeys(
+            [*candidate.declared_fact_ids, *context_fact_ids]
         )
-        if evidence_text:
-            evidence.append(
-                FactEvidence(
-                    fact_id=fact_id,
-                    evidence_text=evidence_text,
-                    evidence_source="CONTENT",
-                    support_level="EXACT",
-                )
-            )
+        if fact_id in application.by_id
+    ]
     purposes = list(FragmentType)
     primary = purposes[(candidate.ordinal - 1) % len(purposes)]
     compatible = [primary]
     if primary != FragmentType.PRODUCT_DISPLAY:
         compatible.append(FragmentType.PRODUCT_DISPLAY)
-    hard_issues = [] if evidence else ["MISSING_PRODUCT_RELATION"]
     direction = (
-        next(
-            (
-                item
-                for item in direction_plan.directions
-                if item.semantic_profile.scene_family == candidate.dimensions.scene
-                and item.semantic_profile.narrative_family
-                == candidate.dimensions.narrative
-                and item.semantic_profile.persona_family == candidate.dimensions.persona
-                and item.semantic_profile.camera_family == candidate.dimensions.camera
-                and item.semantic_profile.emotion_family == candidate.dimensions.emotion
-            ),
-            direction_plan.directions[
-                (candidate.ordinal - 1) % len(direction_plan.directions)
-            ],
-        )
+        direction_plan.directions[(candidate.ordinal - 1) % len(direction_plan.directions)]
         if direction_plan is not None
         else None
     )
@@ -2347,7 +2273,7 @@ def _mock_creative_evaluation(
             )
         ),
         semantic_profile=(direction.semantic_profile if direction else None),
-        hard_issues=hard_issues,
+        hard_issues=[] if evidence else ["PRODUCT_UNRELATED"],
         warnings=[],
     )
 

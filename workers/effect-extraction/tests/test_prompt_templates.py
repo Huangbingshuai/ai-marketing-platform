@@ -22,9 +22,9 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     normalization = load_prompt_template("result_normalization.prompt.txt")
 
     assert load_prompt_version("document_extraction.prompt.txt") == "3.0.0"
-    assert load_prompt_version("image_analysis.prompt.txt") == "6.3.0"
+    assert load_prompt_version("image_analysis.prompt.txt") == "6.4.0"
     assert load_prompt_version("commerce_extraction.prompt.txt") == "1.0.0"
-    assert load_prompt_version("semantic_refinement.prompt.txt") == "5.0.0"
+    assert load_prompt_version("semantic_refinement.prompt.txt") == "5.3.0"
     assert load_prompt_version("result_normalization.prompt.txt") == "3.1.0"
 
     assert "产品文档事实抽取器" in document.template
@@ -36,7 +36,10 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert "remainingCapacityByField" in semantic.template
     assert "suggestionDecisions" in semantic.template
     assert "userFactNotices" in semantic.template
-    assert "POSSIBLE_WRONG_FIELD" in semantic.template
+    assert "readOnlyReferences" in semantic.template
+    assert "同一个业务层内比较用户事实" in semantic.template
+    assert "卖点层包含 coreSellingPoints、secondarySellingPoints" in semantic.template
+    assert "严禁跨业务层关联" in semantic.template
     assert "Worker" not in semantic.template
     assert "产品素材制作信息卡标准化器" in normalization.template
 
@@ -61,6 +64,7 @@ def test_effect_extraction_prompts_load_independently_by_file_name() -> None:
     assert "先按信息卡字段归类" in image.template
     assert "香料、餐具、竹篮、蒸笼" in image.template
     assert "场景道具是否没有被写成产品卖点" in image.template
+    assert "内容制作或画面描述不是消费者决策动因" in image.template
     assert "纯产品外观、食用场景或文字已经清晰可读时为 false" in image.template
     assert "只做格式整理，不新增事实或营销策略" in normalization.template
     assert "价格缺失时写“待补充”" in normalization.template
@@ -111,6 +115,7 @@ def test_effect_extraction_prompts_render_business_inputs() -> None:
         "semantic_refinement.prompt.txt",
         user_facts_json='[{"factId":"user-usageScenarios-01","value":"煲仔饭烹饪"}]',
         image_suggestions_json='[{"factId":"image-usageScenarios-01","value":"蒸锅食用"}]',
+        reference_facts_json='[{"factId":"reference-visualFeatures","value":"肥瘦纹理清晰"}]',
         remaining_capacity_json='{"usageScenarios":4}',
     )
 
@@ -126,6 +131,7 @@ def test_effect_extraction_prompts_render_business_inputs() -> None:
     assert '<protected_user_input_json>\n{"marketingGoal":"人工目标"}' in normalization
     assert '"factId":"user-usageScenarios-01"' in semantic
     assert '"factId":"image-usageScenarios-01"' in semantic
+    assert '"factId":"reference-visualFeatures"' in semantic
     assert '"usageScenarios":4' in semantic
     assert "向量召回" not in semantic
 

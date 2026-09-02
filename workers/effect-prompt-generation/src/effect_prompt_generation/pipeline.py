@@ -53,11 +53,9 @@ from .models import (
     FragmentType,
     FRAGMENT_TYPE_LABELS,
     FactVisualStrategy,
-    FactVisualUsage,
     FactVisualStrategyResponse,
     InsightApplicationMap,
     InsightBinding,
-    InsightBindingRole,
     InsightField,
     NodeId,
     ProgressPayload,
@@ -192,7 +190,7 @@ class PromptGenerationPipeline:
         api: InternalApi,
         provider: AiProvider,
         embedding_provider: EmbeddingProvider | None = None,
-        similarity_mode: Literal["trigram", "shadow", "vector"] = "vector",
+        similarity_mode: Literal["shadow", "vector"] = "vector",
         embedding_batch_size: int = 64,
         embedding_max_concurrency: int = 2,
         ai_max_concurrency: int = 6,
@@ -655,8 +653,9 @@ class PromptGenerationPipeline:
                 context,
                 NodeId.COHERENT_CREATIVE_GENERATION,
                 StageStatus.RUNNING,
-                "正在规划批次创意方向",
+                "正在规划产品专属创意空间",
                 metadata={
+                    "perceptionPhase": "CREATIVE_SPACE_PLANNING",
                     "directionCount": expected_direction_count,
                     "mandatoryBusinessFactCount": mandatory_fact_count,
                     "businessFactCapacity": expected_direction_count * 4,
@@ -770,6 +769,20 @@ class PromptGenerationPipeline:
                         ),
                     }
                     continue
+                await self._stage(
+                    context,
+                    NodeId.COHERENT_CREATIVE_GENERATION,
+                    StageStatus.RUNNING,
+                    f"正在复核 {len(draft_landscape.territories)} 个产品创意空间",
+                    metadata={
+                        "perceptionPhase": "CREATIVE_SPACE_REVIEW",
+                        "territoryCount": len(draft_landscape.territories),
+                        "directionCount": expected_direction_count,
+                        "candidateTargetCount": math.ceil(
+                            snapshot.settings.target_count * 1.4
+                        ),
+                    },
+                )
                 async def audit_one_territory(territory: Any) -> Any:
                     for territory_audit_attempt in range(2):
                         self._reserve_ai_call(context)
@@ -874,6 +887,23 @@ class PromptGenerationPipeline:
                 break
             if landscape is None:
                 raise PipelineError("创意版图未能形成有效结果")
+            await self._stage(
+                context,
+                NodeId.COHERENT_CREATIVE_GENERATION,
+                StageStatus.RUNNING,
+                (
+                    f"已形成 {len(landscape.territories)} 个创意空间，"
+                    f"正在规划 {expected_direction_count} 个创意方向"
+                ),
+                metadata={
+                    "perceptionPhase": "CREATIVE_DIRECTION_PLANNING",
+                    "territoryCount": len(landscape.territories),
+                    "directionCount": expected_direction_count,
+                    "candidateTargetCount": math.ceil(
+                        snapshot.settings.target_count * 1.4
+                    ),
+                },
+            )
             revision_context: Mapping[str, Any] | None = None
             previous_audited_response: CreativeDirectionResponse | None = None
             audit_revision_direction_ids: list[str] = []
@@ -960,6 +990,23 @@ class PromptGenerationPipeline:
                             attempts=4,
                         ) from exc
                     continue
+                await self._stage(
+                    context,
+                    NodeId.COHERENT_CREATIVE_GENERATION,
+                    StageStatus.RUNNING,
+                    (
+                        f"{len(draft_plan.directions)} 个创意方向已形成，"
+                        "正在复核创意关系"
+                    ),
+                    metadata={
+                        "perceptionPhase": "CREATIVE_DIRECTION_REVIEW",
+                        "territoryCount": len(landscape.territories),
+                        "directionCount": len(draft_plan.directions),
+                        "candidateTargetCount": math.ceil(
+                            snapshot.settings.target_count * 1.4
+                        ),
+                    },
+                )
                 audit = None
                 for audit_attempt in range(2):
                     self._reserve_ai_call(context)
@@ -1033,8 +1080,9 @@ class PromptGenerationPipeline:
             context,
             NodeId.COHERENT_CREATIVE_GENERATION,
             StageStatus.RUNNING,
-            "创意方向已复用" if reused else "创意方向规划完成，正在生成候选",
+            "创意方案已复用，正在生成候选" if reused else "创意方案已完成，正在生成候选",
             metadata={
+                "perceptionPhase": "CANDIDATE_GENERATION",
                 "directionCount": len(plan.directions),
                 "territoryCount": (
                     len(plan.landscape.territories) if plan.landscape is not None else 0
@@ -1309,12 +1357,16 @@ class PromptGenerationPipeline:
             context,
             NodeId.COHERENT_CREATIVE_GENERATION,
             StageStatus.RUNNING if pending else StageStatus.SUCCEEDED,
-            "正在生成连贯六维创意" if pending else "连贯六维创意已恢复",
+            "创意方案已完成，正在生成候选 Prompt" if pending else "候选 Prompt 已恢复",
             metadata={
+                "perceptionPhase": "CANDIDATE_GENERATION",
                 "round": round_number,
                 "supplementKind": supplement_kind,
                 "candidateTargetCount": requested,
+                "totalShardCount": len(shards),
+                "completedShardCount": len(shards) - len(pending),
                 "pendingShardCount": len(pending),
+                "generatedCandidateCount": len(cache.creatives),
                 "shardSize": min(4, self.shard_size),
                 "factSelectionMode": "DIRECTION_FACT_APPLICATIONS",
                 "requiredFactCount": len(batch_required_fact_ids),
@@ -1472,6 +1524,7 @@ class PromptGenerationPipeline:
             StageStatus.SUCCEEDED,
             "连贯六维创意生成完成",
             metadata={
+                "perceptionPhase": "CANDIDATE_GENERATION_COMPLETE",
                 "round": round_number,
                 "targetCount": (
                     1
@@ -1730,7 +1783,7 @@ class PromptGenerationPipeline:
                 and not evaluation.hard_issues
             )
         ]
-        if self.similarity_mode != "trigram" and eligible_candidates:
+        if eligible_candidates:
             if self.embedding_provider is None:
                 raise PipelineError(
                     "embedding provider is required for semantic evaluation"
@@ -1890,7 +1943,7 @@ class PromptGenerationPipeline:
             result = baseline_result
             cache.embedding_stage_metadata = {
                 "similarityMode": self.similarity_mode,
-                "selectionMethod": "TRIGRAM",
+                "selectionMethod": "AI_CLUSTER_BASELINE",
             }
             cache.embedding_warning = None
             eligible_candidates = [
@@ -1904,13 +1957,12 @@ class PromptGenerationPipeline:
             ]
             content_mmr_policy = snapshot.selection_policy == "MMR_CONTENT"
             if (
-                self.similarity_mode != "trigram"
-                and len(eligible_candidates) > 1
+                len(eligible_candidates) > 1
                 and content_mmr_policy
             ):
                 if self.embedding_provider is None:
                     raise PipelineError(
-                        "embedding provider is required for shadow or vector similarity"
+                        "embedding provider is required for Prompt vector similarity"
                     )
                 anchors = [
                     item
@@ -2019,7 +2071,7 @@ class PromptGenerationPipeline:
                         "selectionMethod": (
                             "CONTENT_CLUSTER_VECTOR_MMR"
                             if self.similarity_mode == "vector"
-                            else "TRIGRAM_SHADOW"
+                            else "VECTOR_SHADOW"
                         ),
                         "mmrQualityWeight": 0.70,
                         "mmrDiversityWeight": 0.30,
@@ -2092,13 +2144,13 @@ class PromptGenerationPipeline:
                     cache.embedding_warning = str(exc)
                     cache.embedding_stage_metadata = {
                         "similarityMode": "shadow",
-                        "selectionMethod": "TRIGRAM_SHADOW_UNAVAILABLE",
+                        "selectionMethod": "VECTOR_SHADOW_UNAVAILABLE",
                         "embeddingWarning": str(exc),
                     }
-            elif self.similarity_mode != "trigram" and len(eligible_candidates) > 1:
+            elif len(eligible_candidates) > 1:
                 if self.embedding_provider is None:
                     raise PipelineError(
-                        "embedding provider is required for shadow or vector similarity"
+                        "embedding provider is required for Prompt vector similarity"
                     )
                 try:
                     insight = snapshot.insight_artifact.result
@@ -2187,7 +2239,7 @@ class PromptGenerationPipeline:
                         "selectionMethod": (
                             "VECTOR"
                             if self.similarity_mode == "vector"
-                            else "TRIGRAM_SHADOW"
+                            else "VECTOR_SHADOW"
                         ),
                         "embeddingInputCount": baseline_stats.input_count,
                         "embeddingRequestCount": baseline_stats.request_count,
@@ -2246,10 +2298,10 @@ class PromptGenerationPipeline:
                     cache.embedding_warning = str(exc)
                     cache.embedding_stage_metadata = {
                         "similarityMode": "shadow",
-                        "selectionMethod": "TRIGRAM_SHADOW_UNAVAILABLE",
+                        "selectionMethod": "VECTOR_SHADOW_UNAVAILABLE",
                         "embeddingWarning": str(exc),
                     }
-            elif self.similarity_mode != "trigram":
+            else:
                 cache.embedding_stage_metadata = {
                     "similarityMode": self.similarity_mode,
                     "selectionMethod": "SKIPPED_SINGLE_CANDIDATE",
@@ -2506,8 +2558,7 @@ class PromptGenerationPipeline:
                 cache.redundancy_summary,
                 semantic_evaluated_count,
             )
-            if self.similarity_mode != "trigram"
-            and cache.redundancy_summary is not None
+            if cache.redundancy_summary is not None
             else _pending_semantic_evaluation()
         )
         if (
@@ -2523,13 +2574,6 @@ class PromptGenerationPipeline:
             fact.fact_id
             for fact in mandatory_business_facts(self._require_application(context))
         }
-        every_item_has_deep_business_fact = item_operation or all(
-            any(
-                binding.fact_id in deep_business_fact_ids
-                for binding in item.insight_bindings
-            )
-            for item in items
-        )
         covered_fact_ids = {
             binding.fact_id for item in items for binding in item.insight_bindings
         }
@@ -2538,7 +2582,6 @@ class PromptGenerationPipeline:
             "PASS"
             if len(items) == expected
             and all(item.classification_status == "VERIFIED" for item in items)
-            and every_item_has_deep_business_fact
             and not any(row.evaluation.hard_issues for row in selected)
             and (item_operation or not missing_business_fact_ids)
             else "NEEDS_REVIEW"
@@ -2985,6 +3028,7 @@ def _prompt_items(
     *,
     fact_visual_strategy: FactVisualStrategy | None,
 ) -> list[PromptItem]:
+    del fact_visual_strategy
     result: list[PromptItem] = []
     mandatory_business_ids = {
         fact.fact_id for fact in mandatory_business_facts(application)
@@ -2992,14 +3036,6 @@ def _prompt_items(
     for row in selection.selected:
         candidate = row.candidate
         evaluation = row.evaluation
-        evidence_by_id = {
-            evidence.fact_id: evidence.evidence_text
-            for evidence in evaluation.fact_evidence
-        }
-        normalized_content = normalize_creative_signature(candidate.content)
-        policy_by_id = (
-            fact_visual_strategy.by_id if fact_visual_strategy is not None else {}
-        )
         bindings: list[InsightBinding] = []
         ordered_fact_ids = sorted(
             evaluation.realized_fact_ids,
@@ -3018,29 +3054,13 @@ def _prompt_items(
             fact = application.by_id.get(fact_id)
             if fact is None:
                 continue
-            evidence_signature = normalize_creative_signature(
-                evidence_by_id.get(fact_id, "")
-            )
-            policy = policy_by_id.get(fact_id)
-            if fact.field in {InsightField.PRODUCT_NAME, InsightField.PRODUCT_CATEGORY}:
-                role = InsightBindingRole.PRIMARY
-            elif policy is not None and policy.visual_usage in {
-                FactVisualUsage.CONTEXT_ONLY,
-                FactVisualUsage.TEXT_ONLY,
-                FactVisualUsage.FORBIDDEN_VISUAL_PROOF,
-            }:
-                role = InsightBindingRole.CONTEXT
-            elif evidence_signature and evidence_signature in normalized_content:
-                role = InsightBindingRole.EVIDENCE
-            else:
-                role = InsightBindingRole.CONTEXT
             bindings.append(
                 InsightBinding(
                     fact_id=fact.fact_id,
                     field=fact.field,
                     value=fact.value,
                     value_hash=fact.value_hash,
-                    role=role,
+                    role=fact.preferred_role,
                 )
             )
         timestamp = candidate.generated_at or utc_now()

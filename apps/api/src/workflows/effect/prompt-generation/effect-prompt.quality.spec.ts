@@ -145,7 +145,7 @@ describe('effect prompt quality contract', () => {
     expect(recomputed.metrics.hardIssueCounts).toEqual(result.metrics.hardIssueCounts);
   });
 
-  it('does not treat product identity alone as deep insight usage', () => {
+  it('uses batch coverage instead of blocking each identity-led item', () => {
     const requiredFact = {
       factId: 'CORE_SELLING_POINT:confirmed',
       field: 'CORE_SELLING_POINT' as const,
@@ -166,6 +166,9 @@ describe('effect prompt quality contract', () => {
     };
     const deeplyBound = {
       ...item('deeply-bound'),
+      creativeCore: '通过风味制作细节建立产品记忆点',
+      content:
+        '木质餐台上，成年人将已熟制的广式腊肠摆入白瓷碟，镜头缓慢推近并停留在产品的油润纹理上。',
       insightBindings: [{ ...requiredFact, role: 'CONTEXT' as const }],
     };
     const result = recomputePromptQuality(
@@ -193,11 +196,13 @@ describe('effect prompt quality contract', () => {
       },
     );
 
-    expect(result.metrics.hardIssueCounts).toContainEqual({
-      code: 'MISSING_DEEP_BUSINESS_FACT',
-      count: 1,
-    });
+    expect(result.metrics.hardIssueCounts).not.toContainEqual(
+      expect.objectContaining({ code: 'MISSING_DEEP_BUSINESS_FACT' }),
+    );
+    expect(result.metrics.insightCoverage.missing).toEqual([]);
     expect(result.qualityStatus).toBe('NEEDS_REVIEW');
+    expect(result.metrics.acceptedCount).toBe(2);
+    expect(result.settings.targetCount).toBe(10);
   });
 
   it('keeps semantic duplicate rate as an advisory metric', () => {

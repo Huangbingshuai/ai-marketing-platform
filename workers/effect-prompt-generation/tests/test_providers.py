@@ -164,7 +164,7 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
     assert seen["text"]["format"]["strict"] is True  # type: ignore[index]
     item_schema = seen["text"]["format"]["schema"]["$defs"]["CreativeCandidate"]  # type: ignore[index]
     assert "creativeCore" in item_schema["properties"]
-    assert "factEvidence" in item_schema["properties"]
+    assert "factEvidence" not in item_schema["properties"]
     assert "focusFactId" not in item_schema["properties"]
     assert "dimensions" in item_schema["properties"]
     assert "content" in item_schema["properties"]
@@ -188,10 +188,6 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
         primary_fact.fact_id,
         pain_fact.fact_id,
     ]
-    assert {item.fact_id for item in call.value.items[0].fact_evidence} == {
-        primary_fact.fact_id,
-        pain_fact.fact_id,
-    }
 
 
 @pytest.mark.asyncio
@@ -515,8 +511,6 @@ async def test_ark_direction_audit_reviews_each_fact_and_restores_fact_ids() -> 
     [
         ("missing-declared", "no valid candidate"),
         ("unassigned", "no valid candidate"),
-        ("missing-evidence", "no valid candidate"),
-        ("evidence-not-in-source", "no valid candidate"),
     ],
 )
 async def test_ark_creative_rejects_invalid_fact_usage(

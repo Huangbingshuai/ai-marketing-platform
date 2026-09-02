@@ -14,6 +14,7 @@ from effect_extraction.models import (
     BranchStatus,
     ExtractionCandidate,
     ExtractionSnapshot,
+    FinalizePayload,
     RuntimeContext,
     SemanticRefinementDecision,
     SnapshotMaterial,
@@ -40,6 +41,7 @@ class ApiStub:
         self.saved: list[BranchOutput] = []
         self.branches: list[BranchOutput] = []
         self.image_cache: dict[str, ExtractionCandidate] = {}
+        self.completed_payload: FinalizePayload | None = None
         self.snapshot = ExtractionSnapshot(
             schema_version=2,
             project_id="project",
@@ -126,7 +128,8 @@ class ApiStub:
     ) -> None:
         self.image_cache[cache_key] = candidate
 
-    async def complete(self, context: RuntimeContext, payload: object) -> str:
+    async def complete(self, context: RuntimeContext, payload: FinalizePayload) -> str:
+        self.completed_payload = payload
         return "extract-result"
 
 
@@ -285,9 +288,10 @@ class TimeoutSemanticProvider(MockAiProvider):
         *,
         user_facts: Sequence[Mapping[str, str]],
         image_suggestions: Sequence[Mapping[str, str]],
+        reference_facts: Sequence[Mapping[str, str]],
         remaining_capacity_by_field: Mapping[str, int],
     ) -> Any:
-        del user_facts, image_suggestions, remaining_capacity_by_field
+        del user_facts, image_suggestions, reference_facts, remaining_capacity_by_field
         raise ProviderError(
             "AI request timed out",
             retryable=True,
@@ -303,9 +307,10 @@ class MissingDecisionSemanticProvider(MockAiProvider):
         *,
         user_facts: Sequence[Mapping[str, str]],
         image_suggestions: Sequence[Mapping[str, str]],
+        reference_facts: Sequence[Mapping[str, str]],
         remaining_capacity_by_field: Mapping[str, int],
     ) -> AiCallResult[SemanticRefinementDecision]:
-        del user_facts, image_suggestions, remaining_capacity_by_field
+        del user_facts, image_suggestions, reference_facts, remaining_capacity_by_field
         return AiCallResult(
             value=SemanticRefinementDecision(
                 suggestion_decisions=[],
@@ -795,6 +800,98 @@ async def test_normalization_uses_validated_semantic_candidate_without_reintrodu
 
 
 @pytest.mark.asyncio
+async def test_normalization_reconciles_provenance_after_semantic_filtering_and_moving() -> (
+    None
+):
+    api = ApiStub()
+    form = ExtractionCandidate.empty()
+    form.product_name = "商品"
+    form.product_category = "食品"
+    form.duration_seconds = 20
+    form.aspect_ratio = "1:1"
+    form.resolution = "720p"
+    form.delivery_channels = "视频号"
+    form.visual_style_baseline = "烟火食欲感"
+    document = ExtractionCandidate.empty()
+    document.core_pain_points = ["用户提供的痛点"]
+    image = ExtractionCandidate.empty()
+    image.core_pain_points = ["未通过语义筛选的图片痛点"]
+    image.usage_scenarios = ["保留并迁移的图片场景"]
+    fused = document.model_copy(
+        update={
+            "core_pain_points": [
+                "用户提供的痛点",
+                "未通过语义筛选的图片痛点",
+            ],
+            "usage_scenarios": ["保留并迁移的图片场景"],
+        }
+    )
+    semantic = fused.model_copy(
+        update={
+            "core_pain_points": ["用户提供的痛点"],
+            "usage_scenarios": None,
+            "purchase_scenarios": ["保留并迁移的图片场景"],
+        }
+    )
+    api.branches = [
+        BranchOutput(
+            branch=BranchName.FORM,
+            status=BranchStatus.SUCCEEDED,
+            source_fingerprint="server-fingerprint",
+            candidate=form,
+        ),
+        BranchOutput(
+            branch=BranchName.DOCUMENT,
+            status=BranchStatus.SUCCEEDED,
+            source_fingerprint="server-fingerprint",
+            candidate=document,
+        ),
+        BranchOutput(
+            branch=BranchName.IMAGE,
+            status=BranchStatus.SUCCEEDED,
+            source_fingerprint="server-fingerprint",
+            candidate=image,
+        ),
+        BranchOutput(
+            branch=BranchName.FUSION,
+            status=BranchStatus.SUCCEEDED,
+            source_fingerprint="server-fingerprint",
+            candidate=fused,
+            metadata={
+                "provenance": {
+                    "core_pain_points": "DOCUMENT>IMAGE",
+                    "usage_scenarios": "IMAGE",
+                }
+            },
+        ),
+        BranchOutput(
+            branch=BranchName.SEMANTIC_REFINEMENT,
+            status=BranchStatus.SUCCEEDED,
+            source_fingerprint="server-fingerprint",
+            candidate=semantic,
+        ),
+    ]
+    pipeline = ExtractionPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=MockAiProvider(),
+        document_parser=ParserStub(),
+        image_processor=ImageProcessorStub(),  # type: ignore[arg-type]
+        max_document_text_chars=1000,
+    )
+    context = RuntimeContext(
+        "run", "project", "draft", "product", "request", "attempt", "server-fingerprint"
+    )
+    pipeline.register_snapshot(context, api.snapshot)
+
+    await pipeline.normalize_and_finalize(context)
+
+    assert api.completed_payload is not None
+    assert api.completed_payload.provenance["core_pain_points"] == "DOCUMENT"
+    assert "usage_scenarios" not in api.completed_payload.provenance
+    assert api.completed_payload.provenance["purchase_scenarios"] == "IMAGE"
+
+
+@pytest.mark.asyncio
 async def test_normalization_keeps_user_price_and_secondary_points_before_image_suggestions() -> (
     None
 ):
@@ -947,6 +1044,8 @@ def test_visual_features_use_image_only_when_user_material_does_not_provide_them
 
 def test_semantic_candidate_sends_all_selling_points_with_source_authority() -> None:
     document = ExtractionCandidate.empty()
+    document.product_name = "广式腊肠"
+    document.visual_features = "红白相间的肥瘦纹理清晰"
     document.core_selling_points = [
         "三七肥瘦黄金配比",
         "广府糖酒腌制工艺",
@@ -968,23 +1067,25 @@ def test_semantic_candidate_sends_all_selling_points_with_source_authority() -> 
     ]
 
     fusion = ExtractionCandidate.empty()
-    candidate, user_facts, image_suggestions = _prepare_semantic_candidate(
-        fusion,
-        [
-            BranchOutput(
-                branch=BranchName.DOCUMENT,
-                status=BranchStatus.SUCCEEDED,
-                source_fingerprint="fingerprint",
-                candidate=document,
-            ),
-            BranchOutput(
-                branch=BranchName.IMAGE,
-                status=BranchStatus.SUCCEEDED,
-                source_fingerprint="fingerprint",
-                candidate=image,
-            ),
-        ],
-        manual_overrides={},
+    candidate, user_facts, image_suggestions, reference_facts = (
+        _prepare_semantic_candidate(
+            fusion,
+            [
+                BranchOutput(
+                    branch=BranchName.DOCUMENT,
+                    status=BranchStatus.SUCCEEDED,
+                    source_fingerprint="fingerprint",
+                    candidate=document,
+                ),
+                BranchOutput(
+                    branch=BranchName.IMAGE,
+                    status=BranchStatus.SUCCEEDED,
+                    source_fingerprint="fingerprint",
+                    candidate=image,
+                ),
+            ],
+            manual_overrides={},
+        )
     )
 
     assert candidate.core_selling_points == [
@@ -1005,6 +1106,20 @@ def test_semantic_candidate_sends_all_selling_points_with_source_authority() -> 
         *image.secondary_selling_points,
     ]
     assert all(fact["sourceType"] == "IMAGE_SUGGESTION" for fact in image_suggestions)
+    assert reference_facts == [
+        {
+            "factId": "reference-productName",
+            "field": "productName",
+            "value": "广式腊肠",
+            "sourceType": "USER_REFERENCE",
+        },
+        {
+            "factId": "reference-visualFeatures",
+            "field": "visualFeatures",
+            "value": "红白相间的肥瘦纹理清晰",
+            "sourceType": "USER_REFERENCE",
+        },
+    ]
 
 
 def test_authoritative_source_restoration_caps_secondary_selling_points_at_six() -> (
@@ -1094,6 +1209,12 @@ async def test_semantic_refinement_degrades_to_user_facts_on_timeout() -> None:
     ]
     assert output.metadata["degraded"] is True
     assert output.metadata["userFactCount"] == 2
+    assert output.metadata["validation"] == {
+        "status": "NOT_VERIFIED",
+        "correctionCount": 0,
+        "correctionCodes": [],
+        "correctionCounts": {},
+    }
 
 
 @pytest.mark.asyncio

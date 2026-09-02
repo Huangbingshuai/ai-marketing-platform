@@ -71,7 +71,7 @@ class EmbeddingProvider(Protocol):
 
 class MockEmbeddingProvider:
     execution_mode = "MOCK"
-    cache_namespace = "mock-hashed-trigram"
+    cache_namespace = "mock-deterministic-vector"
     max_inputs_per_request = MAX_EMBEDDING_INPUTS
 
     async def embed(self, texts: list[str]) -> EmbeddingBatchResult:

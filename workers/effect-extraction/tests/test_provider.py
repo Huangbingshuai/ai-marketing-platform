@@ -78,7 +78,7 @@ async def test_ark_provider_sends_multimodal_strict_schema_without_store() -> No
     assert result.value.visual_features == "红色包装"
     assert result.metadata.stage == "IMAGE"
     assert result.metadata.model == "doubao-seed-2-1-turbo"
-    assert result.metadata.prompt_version == "6.3.0"
+    assert result.metadata.prompt_version == "6.4.0"
     assert result.metadata.input_tokens is None
     assert result.metadata.output_tokens is None
     assert result.metadata.total_tokens is None
@@ -700,6 +700,14 @@ async def test_ark_provider_uses_one_compact_minimal_reasoning_semantic_request(
         decision = await provider.refine_semantics(
             user_facts=user_facts,
             image_suggestions=image_suggestions,
+            reference_facts=[
+                {
+                    "factId": "reference-visualFeatures",
+                    "field": "visualFeatures",
+                    "value": "肥瘦纹理清晰",
+                    "sourceType": "USER_REFERENCE",
+                }
+            ],
             remaining_capacity_by_field={"corePainPoints": 4},
         )
     finally:
@@ -714,4 +722,5 @@ async def test_ark_provider_uses_one_compact_minimal_reasoning_semantic_request(
     assert semantic_payload["reasoning"] == {"effort": "minimal"}
     assert semantic_payload["max_output_tokens"] == 3072
     assert semantic_payload["text"]["format"]["name"] == "effect_semantic_refinement"  # type: ignore[index]
+    assert "reference-visualFeatures" in str(semantic_payload["input"])
     assert "embeddings" not in requests[-1][0]

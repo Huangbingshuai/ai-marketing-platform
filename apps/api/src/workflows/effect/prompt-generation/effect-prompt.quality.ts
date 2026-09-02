@@ -7,7 +7,6 @@ import type {
   EffectPromptItem,
   EffectPromptInsightBinding,
   EffectPromptInsightCoverage,
-  EffectPromptInsightField,
   EffectPromptInsightReference,
   EffectPromptInsightRole,
   EffectPromptMetrics,
@@ -49,15 +48,6 @@ const itemTextLimits = {
   creativeCore: 160,
   content: 12_000,
 } as const;
-const MANDATORY_BUSINESS_INSIGHT_FIELDS = new Set<EffectPromptInsightField>([
-  'CORE_SELLING_POINT',
-  'SECONDARY_SELLING_POINT',
-  'TARGET_AUDIENCE',
-  'CORE_PAIN_POINT',
-  'USAGE_SCENARIO',
-  'PURCHASE_SCENARIO',
-  'EMOTIONAL_SCENARIO',
-]);
 const dimensionTextLimits: Record<keyof EffectPromptDimensions, number> = {
   narrative: 120,
   scene: 120,
@@ -976,11 +966,6 @@ export const recomputePromptQuality = (
       )
       .map(({ code, count }) => [code, count]),
   );
-  const mandatoryBusinessFactIds = new Set(
-    (previous?.insightCoverage?.required ?? [])
-      .filter(({ field }) => MANDATORY_BUSINESS_INSIGHT_FIELDS.has(field))
-      .map(({ factId }) => factId),
-  );
   for (const prompt of items) {
     if (prompt.classificationStatus !== 'VERIFIED')
       hardIssueCounts.set(
@@ -989,14 +974,6 @@ export const recomputePromptQuality = (
       );
     if (prompt.targetDurationSeconds !== settings.defaultDurationSeconds)
       hardIssueCounts.set('DURATION_MISMATCH', (hardIssueCounts.get('DURATION_MISMATCH') ?? 0) + 1);
-    if (
-      mandatoryBusinessFactIds.size > 0 &&
-      !prompt.insightBindings.some(({ factId }) => mandatoryBusinessFactIds.has(factId))
-    )
-      hardIssueCounts.set(
-        'MISSING_DEEP_BUSINESS_FACT',
-        (hardIssueCounts.get('MISSING_DEEP_BUSINESS_FACT') ?? 0) + 1,
-      );
   }
   if (exactDuplicatePairs > 0) hardIssueCounts.set('EXACT_DUPLICATE', exactDuplicatePairs);
   const normalizedHardIssues = [...hardIssueCounts]

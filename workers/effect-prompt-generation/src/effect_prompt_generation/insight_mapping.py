@@ -79,6 +79,8 @@ _ELIGIBLE: dict[InsightField, tuple[FragmentType, ...]] = {
 }
 
 _PRIMARY_FIELDS = {
+    InsightField.PRODUCT_NAME,
+    InsightField.PRODUCT_CATEGORY,
     InsightField.CORE_SELLING_POINT,
     InsightField.CORE_PAIN_POINT,
     InsightField.MARKETING_GOAL,
