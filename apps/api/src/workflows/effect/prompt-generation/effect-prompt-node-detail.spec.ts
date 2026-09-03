@@ -103,7 +103,7 @@ describe('presentEffectPromptNodeDetail', () => {
       stages: base.stages.map((stage) =>
         stage.nodeId === 'COHERENT_CREATIVE_GENERATION' ? { ...stage, status: 'RUNNING' } : stage,
       ),
-    } as EffectPromptNodeDetailRunRecord;
+    } as unknown as EffectPromptNodeDetailRunRecord;
     const detail = presentEffectPromptNodeDetail(failed, 'COHERENT_CREATIVE_GENERATION');
     expect(detail.status).toBe('FAILED');
     expect(detail.errorMessage).toBe('Prompt AI 生成超时');
@@ -114,6 +114,31 @@ describe('presentEffectPromptNodeDetail', () => {
     const output = detail.sections.find(({ kind }) => kind === 'OUTPUT');
     expect(output?.summary).toContain('节点草稿');
     expect(output?.summary).toContain('完成校验');
+  });
+
+  it('单条评估存在硬问题时展示需修改状态', () => {
+    const base = record();
+    const itemEvaluation = {
+      ...base,
+      currentNode: 'ITEM_EVALUATE',
+      stages: [
+        {
+          nodeId: 'ITEM_EVALUATE',
+          status: 'SUCCEEDED',
+          summary: '单条 Prompt 评估完成',
+          warnings: [],
+          errorMessage: null,
+          metadata: { evaluatedCount: 1, classificationStatus: 'NEEDS_REVISION' },
+          updatedAt: new Date('2026-08-31T01:00:00.000Z'),
+        },
+      ],
+    } as unknown as EffectPromptNodeDetailRunRecord;
+
+    const detail = presentEffectPromptNodeDetail(itemEvaluation, 'ITEM_EVALUATE');
+    expect(detail.fields).toContainEqual({
+      label: '用途评估',
+      value: 'NEEDS_REVISION',
+    });
   });
 
   it('当前结果没有旧版卖点覆盖数据时不展示误导性的 0/0', () => {

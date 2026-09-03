@@ -92,6 +92,20 @@ describe('effect Seedance request compiler', () => {
     );
   });
 
+  it('rejects an item whose evaluator asked for revision', () => {
+    const current = batch('SEEDANCE_2_0');
+    current.items[0] = {
+      ...current.items[0]!,
+      classificationStatus: 'NEEDS_REVISION',
+      reviewIssues: ['PRODUCT_UNRELATED'],
+    };
+    expect(() => compileEffectSeedanceRequest(current, item.id, 'seedance-model')).toThrow(
+      expect.objectContaining<Partial<EffectSeedanceCompileError>>({
+        code: 'CLASSIFICATION_PENDING',
+      }),
+    );
+  });
+
   it('checks the echoed task parameters against the immutable request snapshot', () => {
     const snapshot = compileEffectSeedanceRequest(batch('SEEDANCE_2_0'), item.id, 'seedance-model');
     expect(

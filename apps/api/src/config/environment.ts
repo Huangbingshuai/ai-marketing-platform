@@ -20,6 +20,7 @@ export type EnvironmentVariables = {
   RABBITMQ_URL: string;
   EFFECT_EXTRACTION_WORKER_TOKEN: string | undefined;
   EFFECT_PROMPT_WORKER_TOKEN: string | undefined;
+  EFFECT_SEGMENT_RENDER_WORKER_TOKEN: string | undefined;
   TOS_ENDPOINT: string | undefined;
   TOS_REGION: string | undefined;
   TOS_BUCKET: string | undefined;
@@ -27,6 +28,7 @@ export type EnvironmentVariables = {
   TOS_SECRET_ACCESS_KEY: string | undefined;
   SEEDANCE_BASE_URL: string | undefined;
   SEEDANCE_API_KEY: string | undefined;
+  SEEDANCE_MODEL: string | undefined;
 };
 
 const requiredString = (value: unknown, key: string): string => {
@@ -108,9 +110,13 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
   const effectPromptWorkerToken =
     optionalString(raw.EFFECT_PROMPT_WORKER_TOKEN) ??
     (appEnvironment === 'production' ? undefined : 'local-effect-prompt-worker-token');
+  const effectSegmentRenderWorkerToken =
+    optionalString(raw.EFFECT_SEGMENT_RENDER_WORKER_TOKEN) ??
+    (appEnvironment === 'production' ? undefined : 'local-effect-segment-render-worker-token');
   if (appEnvironment === 'production') {
     requiredString(effectExtractionWorkerToken, 'EFFECT_EXTRACTION_WORKER_TOKEN');
     requiredString(effectPromptWorkerToken, 'EFFECT_PROMPT_WORKER_TOKEN');
+    requiredString(effectSegmentRenderWorkerToken, 'EFFECT_SEGMENT_RENDER_WORKER_TOKEN');
   }
 
   return {
@@ -140,6 +146,7 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
     RABBITMQ_URL: requiredString(raw.RABBITMQ_URL, 'RABBITMQ_URL'),
     EFFECT_EXTRACTION_WORKER_TOKEN: effectExtractionWorkerToken,
     EFFECT_PROMPT_WORKER_TOKEN: effectPromptWorkerToken,
+    EFFECT_SEGMENT_RENDER_WORKER_TOKEN: effectSegmentRenderWorkerToken,
     TOS_ENDPOINT: optionalString(raw.TOS_ENDPOINT),
     TOS_REGION: optionalString(raw.TOS_REGION),
     TOS_BUCKET: optionalString(raw.TOS_BUCKET),
@@ -147,5 +154,6 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
     TOS_SECRET_ACCESS_KEY: optionalString(raw.TOS_SECRET_ACCESS_KEY),
     SEEDANCE_BASE_URL: optionalString(raw.SEEDANCE_BASE_URL),
     SEEDANCE_API_KEY: optionalString(raw.SEEDANCE_API_KEY),
+    SEEDANCE_MODEL: optionalString(raw.SEEDANCE_MODEL),
   };
 };

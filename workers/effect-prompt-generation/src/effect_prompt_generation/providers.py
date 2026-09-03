@@ -299,6 +299,7 @@ class AiProvider(Protocol):
         assigned_context_fact_ids: Mapping[str, Sequence[str]] | None = None,
         fact_visual_strategy: FactVisualStrategy | None = None,
         direction_plan: CreativeDirectionPlan | None = None,
+        infer_creative_structure: bool = False,
     ) -> AiCallResult[CreativeEvaluationBatch]: ...
 
 
@@ -511,6 +512,7 @@ class MockAiProvider:
         assigned_context_fact_ids: Mapping[str, Sequence[str]] | None = None,
         fact_visual_strategy: FactVisualStrategy | None = None,
         direction_plan: CreativeDirectionPlan | None = None,
+        infer_creative_structure: bool = False,
     ) -> AiCallResult[CreativeEvaluationBatch]:
         del target_durations
         context_by_slot = assigned_context_fact_ids or {}
@@ -522,6 +524,7 @@ class MockAiProvider:
                         application,
                         direction_plan,
                         context_fact_ids=context_by_slot.get(item.slot_id, ()),
+                        infer_creative_structure=infer_creative_structure,
                     )
                     for item in candidates
                 ]
@@ -1514,6 +1517,7 @@ class ArkResponsesProvider:
         assigned_context_fact_ids: Mapping[str, Sequence[str]] | None = None,
         fact_visual_strategy: FactVisualStrategy | None = None,
         direction_plan: CreativeDirectionPlan | None = None,
+        infer_creative_structure: bool = False,
     ) -> AiCallResult[CreativeEvaluationBatch]:
         if not candidates or len(candidates) > 10:
             raise ProviderError(
@@ -1579,6 +1583,7 @@ class ArkResponsesProvider:
                             item.slot_id,
                             [],
                         ),
+                        "inferCreativeStructure": infer_creative_structure,
                     }
                     for item in candidates
                 ],
@@ -2529,6 +2534,7 @@ def _mock_creative_evaluation(
     direction_plan: CreativeDirectionPlan | None = None,
     *,
     context_fact_ids: Sequence[str] = (),
+    infer_creative_structure: bool = False,
 ) -> CreativeEvaluation:
     evidence = [
         FactEvidence(
@@ -2577,6 +2583,23 @@ def _mock_creative_evaluation(
         semantic_profile=(direction.semantic_profile if direction else None),
         hard_issues=[] if evidence else ["PRODUCT_UNRELATED"],
         warnings=[],
+        inferred_creative_core=(
+            f"围绕用户正文呈现{candidate.dimensions.product_relation}"
+            if infer_creative_structure
+            else None
+        ),
+        inferred_dimensions=(
+            CreativeDimensions(
+                narrative="用户自定义片段",
+                scene="正文中的单一主要场景",
+                persona="正文中的出镜主体",
+                product_relation="正文表达的产品关联点",
+                camera="正文描述的镜头语言",
+                emotion="正文呈现的情绪基调",
+            )
+            if infer_creative_structure
+            else None
+        ),
     )
 
 

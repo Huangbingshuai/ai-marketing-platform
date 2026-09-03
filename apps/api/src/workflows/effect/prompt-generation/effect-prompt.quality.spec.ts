@@ -304,7 +304,7 @@ describe('effect prompt quality contract', () => {
     });
   });
 
-  it('ITEM_EVALUATE updates only classification data and keeps authored content intact', () => {
+  it('ITEM_EVALUATE keeps authored content while accepting inferred creative structure', () => {
     const target = { ...item('target'), origin: 'MANUAL' as const, manualEdited: true };
     const evaluated = {
       ...target,
@@ -332,12 +332,13 @@ describe('effect prompt quality contract', () => {
     });
     expect(merged[0]).toMatchObject({
       content: target.content,
-      dimensions: target.dimensions,
+      dimensions: evaluated.dimensions,
       origin: 'MANUAL',
       manualEdited: true,
       primaryPurpose: 'HOOK',
       classificationStatus: 'VERIFIED',
       productRelevance: 88,
     });
+    expect(merged[0]?.content).not.toBe(evaluated.content);
   });
 });

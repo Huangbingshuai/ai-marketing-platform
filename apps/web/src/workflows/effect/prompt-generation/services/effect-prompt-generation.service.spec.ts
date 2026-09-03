@@ -6,6 +6,7 @@ import {
   loadEffectPromptNodeDetail,
   loadEffectPromptWorkspace,
   pollEffectPromptRun,
+  saveEffectPromptItem,
 } from './effect-prompt-generation.service';
 import type { EffectPromptBatchResult } from '@ai-marketing/contracts';
 
@@ -140,5 +141,39 @@ describe('effect prompt generation HTTP service', () => {
     await expect(
       loadEffectPromptNodeDetail('project-1', 'prompt-run-1', 'FACT_VISUAL_STRATEGY_COMPILATION'),
     ).resolves.toEqual(detail);
+  });
+
+  it('关闭 AI 分析时只保存草稿且不发送评估参数', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      response({
+        resultId: 'result-1',
+        productId: 'product-1',
+        revision: 2,
+        result: {},
+        savedAt: '2026-09-03T00:00:00.000Z',
+        unchanged: false,
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await saveEffectPromptItem(
+      'project-1',
+      'result-1',
+      1,
+      {
+        content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
+        targetDurationSeconds: 5,
+        useAiAnalysis: false,
+      },
+      undefined,
+      3,
+    );
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(String(request.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({ evaluateAfterSave: false, expectedRevision: 1 });
+    expect(body).not.toHaveProperty('expectedSettingsRevision');
+    expect(body).not.toHaveProperty('idempotencyKey');
+    expect(body).not.toHaveProperty('useAiAnalysis');
   });
 });

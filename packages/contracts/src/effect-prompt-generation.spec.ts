@@ -158,6 +158,9 @@ describe('effect prompt generation contract', () => {
     );
     expect(batchSchema.$defs.item.required).not.toContain('materialTags');
     expect(batchSchema.$defs.item.properties.materialTags).toBeUndefined();
+    expect(batchSchema.$defs.item.properties.classificationStatus.enum).toContain('NEEDS_REVISION');
+    expect(batchSchema.$defs.item.properties.reviewIssues.maxItems).toBe(10);
+    expect(batchSchema.$defs.item.allOf[0].then.required).toContain('reviewIssues');
     expect(batchSchema.$defs.fragmentType.enum).toEqual(EFFECT_PROMPT_FRAGMENT_TYPES);
     expect(batchSchema.properties.metrics.properties.replenishmentRounds.maximum).toBe(
       EFFECT_PROMPT_LIMITS.maxReplenishmentRounds,

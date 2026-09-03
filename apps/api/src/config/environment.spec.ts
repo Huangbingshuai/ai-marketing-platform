@@ -83,7 +83,7 @@ describe('validateEnvironment', () => {
     ).toThrow('MINIO_PORT');
   });
 
-  it('requires dedicated extraction and prompt worker tokens in production', () => {
+  it('requires dedicated workflow worker tokens in production', () => {
     expect(() => validateEnvironment({ ...validEnvironment, APP_ENV: 'production' })).toThrow(
       'EFFECT_EXTRACTION_WORKER_TOKEN',
     );
@@ -96,17 +96,28 @@ describe('validateEnvironment', () => {
       }),
     ).toThrow('EFFECT_PROMPT_WORKER_TOKEN');
 
-    expect(
+    expect(() =>
       validateEnvironment({
         ...validEnvironment,
         APP_ENV: 'production',
         EFFECT_EXTRACTION_WORKER_TOKEN: 'production-worker-secret',
         EFFECT_PROMPT_WORKER_TOKEN: 'production-prompt-worker-secret',
       }),
+    ).toThrow('EFFECT_SEGMENT_RENDER_WORKER_TOKEN');
+
+    expect(
+      validateEnvironment({
+        ...validEnvironment,
+        APP_ENV: 'production',
+        EFFECT_EXTRACTION_WORKER_TOKEN: 'production-worker-secret',
+        EFFECT_PROMPT_WORKER_TOKEN: 'production-prompt-worker-secret',
+        EFFECT_SEGMENT_RENDER_WORKER_TOKEN: 'production-render-worker-secret',
+      }),
     ).toMatchObject({
       APP_ENV: 'production',
       EFFECT_EXTRACTION_WORKER_TOKEN: 'production-worker-secret',
       EFFECT_PROMPT_WORKER_TOKEN: 'production-prompt-worker-secret',
+      EFFECT_SEGMENT_RENDER_WORKER_TOKEN: 'production-render-worker-secret',
     });
   });
 
@@ -114,6 +125,7 @@ describe('validateEnvironment', () => {
     expect(validateEnvironment(validEnvironment)).toMatchObject({
       EFFECT_EXTRACTION_WORKER_TOKEN: 'local-effect-extraction-worker-token',
       EFFECT_PROMPT_WORKER_TOKEN: 'local-effect-prompt-worker-token',
+      EFFECT_SEGMENT_RENDER_WORKER_TOKEN: 'local-effect-segment-render-worker-token',
     });
   });
 });

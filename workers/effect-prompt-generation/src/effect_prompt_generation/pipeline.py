@@ -1978,6 +1978,8 @@ class PromptGenerationPipeline:
                             },
                             "direction_plan": cache.creative_direction_plan,
                         }
+                        if self.snapshot(context).operation == "ITEM_EVALUATE":
+                            evaluation_kwargs["infer_creative_structure"] = True
                         if _uses_fact_visual_strategy(self.snapshot(context)):
                             evaluation_kwargs["fact_visual_strategy"] = (
                                 self._required_fact_visual_strategy(context)
@@ -1987,6 +1989,18 @@ class PromptGenerationPipeline:
                                 group,
                                 **evaluation_kwargs,
                             )
+                            if self.snapshot(
+                                context
+                            ).operation == "ITEM_EVALUATE" and any(
+                                item.inferred_creative_core is None
+                                or item.inferred_dimensions is None
+                                for item in call.value.items
+                            ):
+                                raise ProviderError(
+                                    "item evaluation did not infer creative structure",
+                                    retryable=False,
+                                    error_type=ProviderErrorType.RESPONSE_INVALID,
+                                )
                             return call.value.items
                         except ProviderError as exc:
                             if (
@@ -2022,6 +2036,22 @@ class PromptGenerationPipeline:
             items = []
             for item in evaluated_items:
                 candidate = candidate_by_id[item.slot_id]
+                if self.snapshot(context).operation == "ITEM_EVALUATE":
+                    if (
+                        item.inferred_creative_core is None
+                        or item.inferred_dimensions is None
+                    ):
+                        raise PipelineError(
+                            "item evaluation creative structure is incomplete"
+                        )
+                    candidate = candidate.model_copy(
+                        update={
+                            "creative_core": item.inferred_creative_core,
+                            "dimensions": item.inferred_dimensions,
+                        }
+                    )
+                    candidate_by_id[item.slot_id] = candidate
+                    cache.creatives[item.slot_id] = candidate
                 if cache.creative_direction_plan is not None:
                     item = complete_semantic_profile(
                         item,
@@ -2202,6 +2232,17 @@ class PromptGenerationPipeline:
                     {"code": code, "count": count}
                     for code, count in sorted(warning_counts.items())
                 ],
+                **(
+                    {
+                        "classificationStatus": (
+                            "NEEDS_REVISION"
+                            if evaluations and evaluations[0].hard_issues
+                            else "VERIFIED"
+                        )
+                    }
+                    if snapshot.operation == "ITEM_EVALUATE"
+                    else {}
+                ),
                 **semantic_metadata,
             },
         )
@@ -3477,12 +3518,7 @@ def _evaluation_context_fact_ids(
         return list(
             dict.fromkeys(
                 [
-                    *[
-                        fact_id
-                        for fact_id in candidate.declared_fact_ids
-                        if fact_id in application.by_id
-                    ],
-                    *product_context_ids,
+                    *[fact.fact_id for fact in application.usable],
                 ]
             )
         )
@@ -3556,13 +3592,16 @@ def _prompt_items(
                 fragment_type=evaluation.primary_purpose,
                 primary_purpose=evaluation.primary_purpose,
                 compatible_purposes=evaluation.compatible_purposes,
-                classification_status="VERIFIED",
+                classification_status=(
+                    "NEEDS_REVISION" if evaluation.hard_issues else "VERIFIED"
+                ),
                 product_relevance=round(evaluation.scores.product_relevance),
                 target_duration_seconds=default_duration_seconds,
                 creative_core=candidate.creative_core,
                 dimensions=candidate.dimensions,
                 content=candidate.content,
                 insight_bindings=bindings,
+                review_issues=list(evaluation.hard_issues)[:10],
                 manual_edited=False,
                 created_at=timestamp,
                 updated_at=timestamp,

@@ -1077,7 +1077,11 @@ const nodeMetricFields = (nodeId: string, rawMetadata: unknown): EffectPromptNod
     case 'ITEM_EVALUATE':
       return compact([
         numberField(metadata, 'evaluatedCount', '已评估 Prompt'),
-        enumField(metadata, 'classificationStatus', '用途评估', ['PENDING', 'VERIFIED']),
+        enumField(metadata, 'classificationStatus', '用途评估', [
+          'PENDING',
+          'VERIFIED',
+          'NEEDS_REVISION',
+        ]),
       ]);
     case 'STRATEGY_PLANNING':
       return compact([

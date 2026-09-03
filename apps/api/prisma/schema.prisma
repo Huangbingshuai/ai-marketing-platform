@@ -173,6 +173,21 @@ enum EffectPromptQualityStatus {
   NEEDS_REVIEW
 }
 
+enum EffectSegmentRenderBatchStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  PARTIAL
+  FAILED
+}
+
+enum EffectSegmentRenderTaskStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
 enum WorkflowRunStatus {
   ACTIVE
   PAUSED
@@ -250,17 +265,17 @@ enum JobOutboxStatus {
 }
 
 model Project {
-  id                         String                       @id @default(uuid()) @db.Uuid
-  name                       String                       @db.VarChar(120)
-  description                String?                      @db.VarChar(500)
-  client                     String?                      @db.VarChar(120)
-  productName                String?                      @db.VarChar(120)
-  iconKey                    String?                      @db.VarChar(80)
+  id                         String                                @id @default(uuid()) @db.Uuid
+  name                       String                                @db.VarChar(120)
+  description                String?                               @db.VarChar(500)
+  client                     String?                               @db.VarChar(120)
+  productName                String?                               @db.VarChar(120)
+  iconKey                    String?                               @db.VarChar(80)
   defaultWorkflow            AssetWorkflow?
   defaultSpace               AssetWorkflowSpace?
-  status                     ProjectStatus                @default(ACTIVE)
-  createdAt                  DateTime                     @default(now())
-  updatedAt                  DateTime                     @updatedAt
+  status                     ProjectStatus                         @default(ACTIVE)
+  createdAt                  DateTime                              @default(now())
+  updatedAt                  DateTime                              @updatedAt
   assets                     Asset[]
   assetVersions              AssetVersion[]
   effectImportWorkspace      EffectImportWorkspace?
@@ -271,6 +286,9 @@ model Project {
   effectExtractionImageCache EffectExtractionImageCache[]
   effectPromptRuns           EffectPromptRun[]
   effectPromptResults        EffectPromptResult[]
+  effectSegmentRenderBatches EffectSegmentRenderBatch[]
+  effectSegmentRenderTasks   EffectSegmentRenderTask[]
+  effectSegmentRenderOps     EffectSegmentRenderOperationReceipt[]
   jobOutboxEntries           JobOutbox[]
   effectExtractionFileHolds  EffectExtractionFileHold[]
   workflowRuns               WorkflowRun[]
@@ -353,6 +371,8 @@ model WorkflowRun {
   effectImportUploadItems    EffectImportUploadItem[]
   effectPromptRuns           EffectPromptRun[]
   effectPromptResults        EffectPromptResult[]
+  effectSegmentRenderBatches EffectSegmentRenderBatch[]
+  effectSegmentRenderTasks   EffectSegmentRenderTask[]
 
   @@unique([projectId, workflow, workflowSpace, activeKey])
   @@unique([projectId, id])
@@ -595,6 +615,8 @@ model EffectImportProduct {
   extractionResults       EffectExtractionResult[]
   promptRuns              EffectPromptRun[]
   promptResults           EffectPromptResult[]
+  segmentRenderBatches    EffectSegmentRenderBatch[]
+  segmentRenderTasks      EffectSegmentRenderTask[]
   uploadSessions          EffectImportUploadSession[]
 
   @@unique([projectId, id])
@@ -1025,4 +1047,95 @@ model EffectPromptResult {
   @@unique([projectId, runId])
   @@index([projectId, workflowRunId, productId, createdAt])
   @@map("effect_prompt_results")
+}
+
+model EffectSegmentRenderBatch {
+  id                     String                                @id @default(uuid()) @db.Uuid
+  projectId              String                                @db.Uuid
+  workflowRunId          String                                @db.Uuid
+  productId              String                                @db.Uuid
+  sourcePromptArtifactId String                                @db.Uuid
+  sourcePromptRevision   Int
+  sourcePromptHash       String                                @db.Char(64)
+  sourceFingerprint      String                                @db.Char(64)
+  idempotencyKey         String                                @db.VarChar(500)
+  requestHash            String                                @db.Char(64)
+  status                 EffectSegmentRenderBatchStatus        @default(QUEUED)
+  activeKey              String?                               @default("ACTIVE") @db.VarChar(32)
+  revision               Int                                   @default(1)
+  committedAt            DateTime?
+  createdAt              DateTime                              @default(now())
+  updatedAt              DateTime                              @updatedAt
+  project                Project                               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workflowRun            WorkflowRun                           @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
+  product                EffectImportProduct                   @relation(fields: [projectId, workflowRunId, productId], references: [projectId, workflowRunId, id], onDelete: Cascade)
+  tasks                  EffectSegmentRenderTask[]
+  operations             EffectSegmentRenderOperationReceipt[]
+
+  @@unique([projectId, id])
+  @@unique([projectId, idempotencyKey])
+  @@unique([projectId, workflowRunId, productId, activeKey])
+  @@index([projectId, workflowRunId, productId, createdAt])
+  @@map("effect_segment_render_batches")
+}
+
+model EffectSegmentRenderTask {
+  id                 String                        @id @default(uuid()) @db.Uuid
+  projectId          String                        @db.Uuid
+  workflowRunId      String                        @db.Uuid
+  productId          String                        @db.Uuid
+  batchId            String                        @db.Uuid
+  promptId           String                        @db.Uuid
+  promptCode         String                        @db.VarChar(120)
+  renderCode         String                        @db.VarChar(120)
+  sourceFingerprint  String                        @db.Char(64)
+  requestSnapshot    Json
+  status             EffectSegmentRenderTaskStatus @default(QUEUED)
+  progress           Int                           @default(0)
+  renderVersion      Int                           @default(1)
+  retryCount         Int                           @default(0)
+  maxAutoRetries     Int                           @default(2)
+  attemptCount       Int                           @default(0)
+  attemptToken       String?                       @db.Uuid
+  leaseExpiresAt     DateTime?
+  heartbeatAt        DateTime?
+  providerTaskId     String?                       @db.VarChar(255)
+  outputFileObjectId String?                       @db.Uuid
+  outputStorageKey   String?                       @db.VarChar(500)
+  outputFileName     String?                       @db.VarChar(255)
+  outputMimeType     String?                       @db.VarChar(120)
+  outputSizeBytes    Int?
+  outputContentHash  String?                       @db.Char(64)
+  errorCode          String?                       @db.VarChar(120)
+  errorMessage       String?                       @db.VarChar(1000)
+  queuedAt           DateTime                      @default(now())
+  startedAt          DateTime?
+  completedAt        DateTime?
+  createdAt          DateTime                      @default(now())
+  updatedAt          DateTime                      @updatedAt
+  project            Project                       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workflowRun        WorkflowRun                   @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
+  product            EffectImportProduct           @relation(fields: [projectId, workflowRunId, productId], references: [projectId, workflowRunId, id], onDelete: Cascade)
+  batch              EffectSegmentRenderBatch      @relation(fields: [projectId, batchId], references: [projectId, id], onDelete: Cascade)
+
+  @@unique([projectId, id])
+  @@unique([projectId, batchId, promptId])
+  @@index([projectId, workflowRunId, productId, status, updatedAt])
+  @@index([status, leaseExpiresAt])
+  @@map("effect_segment_render_tasks")
+}
+
+model EffectSegmentRenderOperationReceipt {
+  id             String                   @id @default(uuid()) @db.Uuid
+  projectId      String                   @db.Uuid
+  batchId        String                   @db.Uuid
+  idempotencyKey String                   @db.VarChar(500)
+  requestHash    String                   @db.Char(64)
+  createdAt      DateTime                 @default(now())
+  project        Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  batch          EffectSegmentRenderBatch @relation(fields: [projectId, batchId], references: [projectId, id], onDelete: Cascade)
+
+  @@unique([projectId, idempotencyKey])
+  @@index([projectId, batchId, createdAt])
+  @@map("effect_segment_render_operation_receipts")
 }

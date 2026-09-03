@@ -312,13 +312,14 @@ class PromptItem(ApiModel):
     fragment_type: FragmentType
     primary_purpose: FragmentType
     compatible_purposes: list[FragmentType] = Field(min_length=1, max_length=6)
-    classification_status: Literal["PENDING", "VERIFIED"]
+    classification_status: Literal["PENDING", "VERIFIED", "NEEDS_REVISION"]
     product_relevance: int = Field(ge=0, le=100)
     target_duration_seconds: int = Field(ge=4, le=30)
     creative_core: str = Field(min_length=1, max_length=160)
     dimensions: CreativeDimensions
     content: str = Field(min_length=1, max_length=12_000)
     insight_bindings: list[InsightBinding] = Field(default_factory=list, max_length=16)
+    review_issues: list[str] = Field(default_factory=list, max_length=10)
     manual_edited: bool
     created_at: datetime
     updated_at: datetime
@@ -331,6 +332,11 @@ class PromptItem(ApiModel):
         if self.fragment_type != self.primary_purpose:
             raise ValueError("fragmentType must equal primaryPurpose")
         self.compatible_purposes = purposes
+        self.review_issues = list(dict.fromkeys(self.review_issues))
+        if self.classification_status == "NEEDS_REVISION" and not self.review_issues:
+            raise ValueError("NEEDS_REVISION requires reviewIssues")
+        if self.classification_status != "NEEDS_REVISION":
+            self.review_issues = []
         return self
 
     @field_validator("content")
@@ -1193,6 +1199,8 @@ class CreativeEvaluation(ApiModel):
     )
     hard_issues: list[str] = Field(default_factory=list, max_length=20)
     warnings: list[str] = Field(default_factory=list, max_length=20)
+    inferred_creative_core: str | None = Field(default=None, min_length=1, max_length=160)
+    inferred_dimensions: CreativeDimensions | None = None
 
     @field_validator("semantic_profile", mode="before")
     @classmethod

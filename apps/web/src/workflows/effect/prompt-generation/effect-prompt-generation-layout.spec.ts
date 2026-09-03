@@ -83,7 +83,6 @@ describe('effect prompt generation current layout', () => {
   });
 
   it('uses product relation as the fourth creative dimension', () => {
-    expect(pageSource).toContain('productRelation: []');
     expect(pageSource).toContain("['productRelation']");
     expect(pageSource).toContain("key !== 'productRelation'");
     expect(pageSource).toContain('查看提炼信息依据');
@@ -95,15 +94,22 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).not.toContain('卖点侧重');
   });
 
-  it('saves manual edits without a selected purpose and starts asynchronous evaluation', () => {
+  it('saves manual edits without a selected purpose and makes AI evaluation optional', () => {
     expect(pageSource).not.toContain('固定主标签');
-    expect(pageSource).toContain('保存后会异步重新评估推荐用途');
+    expect(pageSource).toContain('分析六维创意、可信事实和推荐用途，不会改写正文');
+    expect(pageSource).toContain('draft.useAiAnalysis && state.settingsRevision === null');
+    expect(pageSource).toContain('saved.evaluationRun');
+    expect(pageSource).toContain('saved.affectedItemIndex');
+    expect(pageSource).not.toContain('saved.result.items.findIndex');
+    expect(pageSource).not.toContain('existingItemIds');
     expect(pageSource).toContain("operation: 'ITEM_EVALUATE'");
     expect(pageSource).toContain('targetItemId: item.id');
     expect(pageSource).toContain("item.classificationStatus === 'PENDING'");
-    expect(pageSource).toContain('待重新评估');
+    expect(pageSource).toContain('NEEDS_REVISION');
+    expect(pageSource).toContain('需修改');
     expect(pageSource).toContain('@click="evaluateItem(item)"');
-    expect(pageSource).toMatch(/<RefreshCw\s+v-else\s+:size="13"\s*\/>\s*重新评估/u);
+    expect(pageSource).toContain("item.classificationStatus === 'NEEDS_REVISION' ? '修改后评估'");
+    expect(pageSource).not.toContain('v-model="editorDraft.dimensions');
   });
 
   it('keeps list actions safe while evaluation or regeneration is active', () => {
@@ -132,6 +138,10 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).not.toContain('次级素材标签');
     expect(pageSource).toContain('<Plus :size="15" />新增 Prompt');
     expect(pageSource).toContain('v-model.number="editorDraft.targetDurationSeconds"');
+    expect(pageSource).toContain('v-model="editorDraft.useAiAnalysis"');
+    expect(pageSource).toContain('role="switch"');
+    expect(pageSource).toContain('仅保存草稿');
+    expect(pageSource).toContain('本次不会调用 AI');
     expect(pageSource).toContain('短片只安排一个连续动作');
     expect(pageSource).toContain('currentCountStats.actualCount} 条 Prompt');
   });
