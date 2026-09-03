@@ -730,9 +730,18 @@ def validate_creative_direction_diversity_audit(
         item not in proposed_ids for item in response.revision_direction_ids
     ):
         raise ValueError("supplement audit may only revise proposed directions")
-    payload = response.model_dump(mode="json", by_alias=True)
+    # The same validator is also used when a persisted checkpoint is restored.
+    # In that path ``response`` is already the enriched subclass and therefore
+    # carries ``audit_hash``.  Exclude it before recomputing the hash so the
+    # constructor stays idempotent instead of receiving the field twice.
+    response_payload = response.model_dump(mode="python", exclude={"audit_hash"})
+    payload = response.model_dump(
+        mode="json",
+        by_alias=True,
+        exclude={"audit_hash"},
+    )
     return CreativeDirectionDiversityAudit(
-        **response.model_dump(mode="python"),
+        **response_payload,
         audit_hash=_hash(payload),
     )
 
@@ -1044,10 +1053,46 @@ def creative_direction_revision_context(
             missing_fact_candidate_direction_ids.extend(
                 direction.direction_id for direction in eligible_directions[:3]
             )
+        invalid_fact_destination_direction_ids: list[str] = []
+        for invalid_reference in invalid_fact_references:
+            for invalid_fact_id in invalid_reference["invalidFactIds"]:
+                if invalid_fact_id not in business_id_set:
+                    continue
+                has_locked_valid_occurrence = any(
+                    invalid_fact_id in direction.fact_ids
+                    and direction.direction_id not in invalid_direction_ids
+                    and invalid_fact_id
+                    in allowed_facts_by_territory.get(direction.territory_id, [])
+                    for direction in response.directions
+                )
+                if has_locked_valid_occurrence:
+                    continue
+                eligible_destinations = [
+                    direction
+                    for direction in response.directions
+                    if direction.direction_id not in invalid_direction_ids
+                    and invalid_fact_id
+                    in allowed_facts_by_territory.get(direction.territory_id, [])
+                ]
+                # This is only a structural repair set: expose a small number of
+                # directions whose territory whitelist can legally receive the
+                # fact.  The AI still decides whether and how the relationship is
+                # natural; the Worker never rewrites the creative direction.
+                eligible_destinations.sort(
+                    key=lambda direction: (
+                        -max(0, 4 - len(direction.fact_ids)),
+                        len(direction.fact_ids),
+                        direction.direction_id,
+                    )
+                )
+                invalid_fact_destination_direction_ids.extend(
+                    direction.direction_id for direction in eligible_destinations[:2]
+                )
         revision_direction_ids = list(
             dict.fromkeys(
                 missing_fact_candidate_direction_ids
                 + invalid_direction_ids
+                + invalid_fact_destination_direction_ids
                 + slot_revision_direction_ids
                 + underfilled_direction_ids
             )
@@ -1076,6 +1121,13 @@ def creative_direction_revision_context(
         }
         for fact_id in revision_required_business_fact_ids
     ]
+    allowed_facts_by_direction = {
+        direction.direction_id: list(
+            allowed_facts_by_territory.get(direction.territory_id, [])
+        )
+        for direction in response.directions
+        if direction.direction_id in revision_direction_id_set
+    }
     return {
         "validationError": validation_error,
         "missingBusinessFactIds": missing_business_fact_ids,
@@ -1094,6 +1146,7 @@ def creative_direction_revision_context(
             if direction.direction_id in revision_direction_id_set
         ],
         "allowedFactIdsByTerritory": allowed_facts_by_territory,
+        "allowedFactIdsByDirection": allowed_facts_by_direction,
         "invalidDirectionFactReferences": invalid_fact_references,
         "territorySlotCorrection": slot_correction,
         "revisionDirectionIds": revision_direction_ids,
@@ -1109,7 +1162,10 @@ def creative_direction_revision_context(
             "additionalBusinessFactOptionsByDirection 中选择自然相容的补充事实；"
             "不得为了补足数量删除该方向已有的唯一业务事实；"
             "每个方向的 factApplications 只能引用其 territoryId 对应的"
-            " allowedFactIdsByTerritory，逐项修复 invalidDirectionFactReferences；"
+            " allowedFactIdsByTerritory；未迁移方向可直接按"
+            " allowedFactIdsByDirection 核对，逐项修复"
+            " invalidDirectionFactReferences。若 revisionFactOptions 把越界事实"
+            "指向另一个可修改方向，应在保持自然关系的前提下完成迁移；"
             "revisionDirectionIds 是本轮允许调整的方向，其他方向必须原样返回；"
             "如果 territorySlotCorrection 非空，只能把 movableDirectionIds 中的"
             "方向迁移到 targetTerritoryOptions，最终各空间方向数必须严格等于"

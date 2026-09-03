@@ -422,17 +422,17 @@
         "evaluatedCount": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 100
+          "maximum": 240
         },
         "duplicateGroupCount": {
           "type": ["integer", "null"],
           "minimum": 0,
-          "maximum": 100
+          "maximum": 240
         },
         "duplicateCount": {
           "type": ["integer", "null"],
           "minimum": 0,
-          "maximum": 100
+          "maximum": 240
         },
         "duplicateRate": {
           "type": ["number", "null"],

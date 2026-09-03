@@ -665,11 +665,9 @@ class PromptGenerationPipeline:
                     restored,
                     restored_landscape,
                 )
-                restored_diversity_audit = (
-                    validate_creative_direction_diversity_audit(
-                        checkpoint.plan.diversity_audit,
-                        restored.directions,
-                    )
+                restored_diversity_audit = validate_creative_direction_diversity_audit(
+                    checkpoint.plan.diversity_audit,
+                    restored.directions,
                 )
             except ValueError:
                 restored = None
@@ -942,17 +940,72 @@ class PromptGenerationPipeline:
             audit_revision_direction_ids: list[str] = []
             semantic_revision_count = 0
             for invalid_response_attempt in range(4):
-                self._reserve_ai_call(context)
                 try:
-                    async with self._ai_semaphore:
-                        call = await self.provider.plan_creative_directions(
-                            application,
-                            fact_visual_strategy=visual_strategy,
-                            shared_prompt=shared_prompt,
-                            landscape=landscape,
-                            target_count=snapshot.settings.target_count,
-                            revision_context=revision_context,
+                    revision_ids = (
+                        revision_context.get("revisionDirectionIds", [])
+                        if revision_context is not None
+                        else []
+                    )
+                    is_targeted_revision = bool(
+                        isinstance(revision_ids, list) and revision_ids
+                    )
+                    if previous_audited_response is None and not is_targeted_revision:
+
+                        async def plan_territory_directions(
+                            territory: Any,
+                        ) -> Any:
+                            self._reserve_ai_call(context)
+                            scoped_landscape = landscape.model_copy(
+                                update={"territories": [territory]}
+                            )
+                            async with self._ai_semaphore:
+                                return await self.provider.plan_creative_directions(
+                                    application,
+                                    fact_visual_strategy=visual_strategy,
+                                    shared_prompt=shared_prompt,
+                                    landscape=scoped_landscape,
+                                    target_count=snapshot.settings.target_count,
+                                    revision_context=revision_context,
+                                )
+
+                        territory_calls = await asyncio.gather(
+                            *(
+                                plan_territory_directions(territory)
+                                for territory in landscape.territories
+                            )
                         )
+                        call_rows.extend(
+                            territory_call.metadata
+                            for territory_call in territory_calls
+                        )
+                        merged_directions = [
+                            direction
+                            for territory_call in territory_calls
+                            for direction in territory_call.value.directions
+                        ]
+                        direction_response = CreativeDirectionResponse(
+                            directions=[
+                                direction.model_copy(
+                                    update={
+                                        "direction_id": f"direction-{index + 1:02d}"
+                                    }
+                                )
+                                for index, direction in enumerate(merged_directions)
+                            ]
+                        )
+                    else:
+                        self._reserve_ai_call(context)
+                        async with self._ai_semaphore:
+                            call = await self.provider.plan_creative_directions(
+                                application,
+                                fact_visual_strategy=visual_strategy,
+                                shared_prompt=shared_prompt,
+                                landscape=landscape,
+                                target_count=snapshot.settings.target_count,
+                                revision_context=revision_context,
+                            )
+                        call_rows.append(call.metadata)
+                        direction_response = call.value
                 except ProviderError as exc:
                     if (
                         invalid_response_attempt < 3
@@ -968,8 +1021,6 @@ class PromptGenerationPipeline:
                         }
                         continue
                     raise
-                call_rows.append(call.metadata)
-                direction_response = call.value
                 if previous_audited_response is not None:
                     try:
                         direction_response = merge_creative_direction_revision(
@@ -1001,6 +1052,11 @@ class PromptGenerationPipeline:
                         landscape=landscape,
                     )
                 except ValueError as exc:
+                    LOGGER.warning(
+                        "creative direction plan validation failed attempt=%s error=%s",
+                        invalid_response_attempt + 1,
+                        exc,
+                    )
                     revision_context = creative_direction_revision_context(
                         direction_response,
                         application,
@@ -1276,16 +1332,10 @@ class PromptGenerationPipeline:
                 combined = [*plan.directions, *proposed]
                 self._reserve_ai_call(context)
                 async with self._ai_semaphore:
-                    audit_call = (
-                        await self.provider.audit_creative_direction_diversity(
-                            landscape=landscape,
-                            directions=CreativeDirectionResponse(
-                                directions=combined
-                            ),
-                            proposed_direction_ids=[
-                                item.direction_id for item in proposed
-                            ],
-                        )
+                    audit_call = await self.provider.audit_creative_direction_diversity(
+                        landscape=landscape,
+                        directions=CreativeDirectionResponse(directions=combined),
+                        proposed_direction_ids=[item.direction_id for item in proposed],
                     )
                 diversity_audit = validate_creative_direction_diversity_audit(
                     audit_call.value,
@@ -1575,9 +1625,7 @@ class PromptGenerationPipeline:
                 preferred_fact_ids=preferred_item_fact_ids,
             )
         coverage_focus_set = set(coverage_fact_ids)
-        direction_totals = Counter(
-            direction.direction_id for direction in directions
-        )
+        direction_totals = Counter(direction.direction_id for direction in directions)
         direction_seen: Counter[str] = Counter()
         sibling_positions: list[tuple[int, int]] = []
         for direction in directions:
@@ -2478,9 +2526,7 @@ class PromptGenerationPipeline:
                         "mmrQualityWeight": mmr_quality_weight,
                         "mmrDiversityWeight": mmr_diversity_weight,
                         "adaptiveMmrApplied": mmr_quality_weight == 0.60,
-                        "candidatePoolRedundancyRate": (
-                            candidate_pool_redundancy_rate
-                        ),
+                        "candidatePoolRedundancyRate": (candidate_pool_redundancy_rate),
                         "contentNoveltyWeight": 0.70,
                         "clusterAwareNoveltyWeight": 0.30,
                         "fixedAnchorCount": len(anchors),

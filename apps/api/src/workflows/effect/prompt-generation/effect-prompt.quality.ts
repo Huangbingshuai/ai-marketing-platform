@@ -560,7 +560,7 @@ const validSemanticEvaluation = (value: unknown): value is EffectPromptSemanticE
     evaluation[key] === null ||
     (Number.isInteger(evaluation[key]) &&
       Number(evaluation[key]) >= 0 &&
-      Number(evaluation[key]) <= EFFECT_PROMPT_LIMITS.maxCount);
+      Number(evaluation[key]) <= EFFECT_PROMPT_LIMITS.maxCandidateCount);
   const nullableRate =
     evaluation.duplicateRate === null ||
     (typeof evaluation.duplicateRate === 'number' &&
@@ -576,7 +576,7 @@ const validSemanticEvaluation = (value: unknown): value is EffectPromptSemanticE
     EFFECT_PROMPT_SEMANTIC_EVALUATION_STATUSES.includes(status as never) &&
     Number.isInteger(evaluation.evaluatedCount) &&
     Number(evaluation.evaluatedCount) >= 0 &&
-    Number(evaluation.evaluatedCount) <= EFFECT_PROMPT_LIMITS.maxCount &&
+    Number(evaluation.evaluatedCount) <= EFFECT_PROMPT_LIMITS.maxCandidateCount &&
     nullableCount('duplicateGroupCount') &&
     nullableCount('duplicateCount') &&
     nullableRate &&
@@ -603,7 +603,11 @@ const validMetrics = (value: unknown): value is EffectPromptMetrics => {
   const scores = record(metrics.averageScores);
   return Boolean(
     integer('targetCount', EFFECT_PROMPT_LIMITS.minCount, EFFECT_PROMPT_LIMITS.maxCount) &&
-    integer('candidateTargetCount', EFFECT_PROMPT_LIMITS.minCount, 240) &&
+    integer(
+      'candidateTargetCount',
+      EFFECT_PROMPT_LIMITS.minCount,
+      EFFECT_PROMPT_LIMITS.maxCandidateCount,
+    ) &&
     integer('generatedCandidateCount', 0) &&
     integer('acceptedCount', 0, EFFECT_PROMPT_LIMITS.maxCount) &&
     integer('rejectedCount', 0) &&

@@ -61,6 +61,37 @@ def test_ark_structured_output_rejects_non_artifact_trailing_content() -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_ark_remote_protocol_disconnect_is_retryable_transport_error() -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        raise httpx.RemoteProtocolError("server disconnected")
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.example/v3",
+        api_key="test-key",
+        strategy_model="strategy-model",
+        candidate_model="creative-model",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(ProviderError) as raised:
+            await provider._structured(
+                "test",
+                _StructuredEnvelope,
+                schema_name="transport_test",
+                stage="COHERENT_CREATIVE_GENERATION",
+                prompt_file="creative_base.system.prompt.txt",
+                model="strategy-model",
+                max_output_tokens=128,
+                request_timeout=1,
+            )
+    finally:
+        await provider.aclose()
+
+    assert raised.value.retryable is True
+    assert raised.value.error_type.value == "AI_NETWORK"
+
+
 def _shared_prompt() -> SharedPrompt:
     disabled_content = "画面中不得出现以下内容：医疗功效；促销贴纸。"
     additional_content = "保持产品外观前后一致。"
@@ -667,7 +698,14 @@ async def test_ark_creative_rejects_invalid_fact_usage(
 
 
 @pytest.mark.asyncio
-async def test_ark_evaluation_uses_configured_ceiling_for_five_items() -> None:
+@pytest.mark.parametrize(
+    ("candidate_count", "expected_output_tokens"),
+    [(3, 3900), (5, 4096)],
+)
+async def test_ark_evaluation_reserves_tokens_per_candidate_with_configured_ceiling(
+    candidate_count: int,
+    expected_output_tokens: int,
+) -> None:
     seen: dict[str, object] = {}
     application = map_insight({"productName": "便携杯"})
     product_fact = next(item for item in application.usable if item.value == "便携杯")
@@ -688,7 +726,7 @@ async def test_ark_evaluation_uses_configured_ceiling_for_five_items() -> None:
             ),
             content=f"地铁站台上，成年通勤者拿起便携杯喝水，镜头轻推至杯身细节，编号{index}。",
         )
-        for index in range(1, 6)
+        for index in range(1, candidate_count + 1)
     ]
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -744,5 +782,5 @@ async def test_ark_evaluation_uses_configured_ceiling_for_five_items() -> None:
     finally:
         await provider.aclose()
 
-    assert seen["max_output_tokens"] == 4096
-    assert len(result.value.items) == 5
+    assert seen["max_output_tokens"] == expected_output_tokens
+    assert len(result.value.items) == candidate_count

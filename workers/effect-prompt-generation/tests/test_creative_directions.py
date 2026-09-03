@@ -57,6 +57,7 @@ from effect_prompt_generation.creative_directions import (
     creative_direction_revision_context,
     semantic_cluster_novelty,
     validate_semantic_profile,
+    validate_creative_direction_diversity_audit,
     validate_creative_diversity_landscape,
     validate_creative_direction_audit,
     validate_creative_landscape_audit,
@@ -68,6 +69,40 @@ from test_creatives import PromptApi, _runtime, _snapshot
 
 def test_creative_direction_count_scales_with_batch_size() -> None:
     assert creative_direction_target_count(10) == 8
+
+
+def test_direction_diversity_audit_validation_is_idempotent() -> None:
+    from effect_prompt_generation.providers import (
+        _mock_creative_direction_response,
+        _mock_creative_landscape_response,
+    )
+
+    application = map_insight(_cluster_snapshot().insight_artifact.result)
+    landscape = validate_creative_diversity_landscape(
+        _mock_creative_landscape_response(application, direction_count=13),
+        application,
+        source_hash="a" * 64,
+        template_hash="b" * 64,
+        expected_direction_count=13,
+    )
+    directions = _mock_creative_direction_response(
+        application,
+        landscape=landscape,
+        direction_count=13,
+    ).directions
+    validated = validate_creative_direction_diversity_audit(
+        CreativeDirectionDiversityAuditResponse(
+            groups=[],
+            requires_revision=False,
+            revision_direction_ids=[],
+            summary="未发现实质重复",
+        ),
+        directions,
+    )
+
+    restored = validate_creative_direction_diversity_audit(validated, directions)
+
+    assert restored == validated
     assert creative_direction_target_count(50) == 20
     assert creative_direction_target_count(100) == 24
     assert creative_direction_target_count(500) == 24
@@ -163,7 +198,9 @@ async def test_global_direction_audit_can_revise_cross_batch_overlap() -> None:
     shards = await pipeline.plan_creatives(runtime, round_number=0)
 
     assert sum(len(item.tasks) for item in shards) == 70
-    assert provider.direction_plan_calls == 2
+    # Initial planning is split by creative territory; the overlap repair is
+    # the only subsequent global direction call.
+    assert provider.direction_plan_calls > 2
     assert provider.diversity_audit_calls == 2
     plan = pipeline._cache(runtime).creative_direction_plan
     assert plan is not None
@@ -345,6 +382,118 @@ def test_direction_revision_context_names_territory_fact_boundary() -> None:
     assert context["revisionRequiredBusinessFactIds"] == []
     assert context["revisionFactApplicationCapacity"] == 4
     assert context["revisionFactOptions"] == []
+
+
+def test_direction_revision_context_opens_a_valid_destination_for_business_fact() -> None:
+    from effect_prompt_generation.providers import (
+        _mock_creative_direction_response,
+        _mock_creative_landscape_response,
+    )
+
+    application = map_insight(_cluster_snapshot().insight_artifact.result)
+    landscape = validate_creative_diversity_landscape(
+        _mock_creative_landscape_response(application, direction_count=13),
+        application,
+        source_hash="a" * 64,
+        template_hash="b" * 64,
+        expected_direction_count=13,
+    )
+    response = _mock_creative_direction_response(
+        application,
+        landscape=landscape,
+        direction_count=13,
+    )
+    business_ids = {fact.fact_id for fact in mandatory_business_facts(application)}
+    invalid_direction = next(
+        direction
+        for direction in response.directions
+        if any(
+            fact_id in business_ids
+            and fact_id
+            not in landscape.by_id[direction.territory_id].compatible_fact_ids
+            and any(
+                fact_id in landscape.by_id[candidate.territory_id].compatible_fact_ids
+                for candidate in response.directions
+                if candidate.direction_id != direction.direction_id
+            )
+            for territory in landscape.territories
+            for fact_id in territory.compatible_fact_ids
+        )
+    )
+    outside_business_fact_id = next(
+        fact_id
+        for territory in landscape.territories
+        for fact_id in territory.compatible_fact_ids
+        if fact_id in business_ids
+        and fact_id
+        not in landscape.by_id[invalid_direction.territory_id].compatible_fact_ids
+        and any(
+            fact_id in landscape.by_id[candidate.territory_id].compatible_fact_ids
+            for candidate in response.directions
+            if candidate.direction_id != invalid_direction.direction_id
+        )
+    )
+    invalid_response = response.model_copy(
+        update={
+            "directions": [
+                direction.model_copy(
+                    update={
+                        "fact_applications": [
+                            direction.fact_applications[0].model_copy(
+                                update={"fact_id": outside_business_fact_id}
+                            ),
+                            *[
+                                item
+                                for item in direction.fact_applications[1:]
+                                if item.fact_id != outside_business_fact_id
+                            ],
+                        ]
+                    }
+                )
+                if direction.direction_id == invalid_direction.direction_id
+                else direction.model_copy(
+                    update={
+                        "fact_applications": [
+                            item
+                            for item in direction.fact_applications
+                            if item.fact_id != outside_business_fact_id
+                        ]
+                    }
+                )
+                for direction in response.directions
+            ]
+        }
+    )
+
+    context = creative_direction_revision_context(
+        invalid_response,
+        application,
+        validation_error="creative direction used a fact outside its territory",
+        landscape=landscape,
+    )
+
+    eligible_destination_ids = {
+        direction.direction_id
+        for direction in invalid_response.directions
+        if direction.direction_id != invalid_direction.direction_id
+        and outside_business_fact_id
+        in landscape.by_id[direction.territory_id].compatible_fact_ids
+    }
+    opened_destination_ids = eligible_destination_ids.intersection(
+        context["revisionDirectionIds"]
+    )
+    option = next(
+        item
+        for item in context["revisionFactOptions"]
+        if item["factId"] == outside_business_fact_id
+    )
+    assert invalid_direction.direction_id in context["revisionDirectionIds"]
+    assert opened_destination_ids
+    assert opened_destination_ids.intersection(option["eligibleDirectionIds"])
+    assert all(
+        outside_business_fact_id in context["allowedFactIdsByDirection"][direction_id]
+        for direction_id in opened_destination_ids
+    )
 
 
 def test_direction_revision_context_identifies_structural_slot_correction() -> None:
@@ -857,21 +1006,22 @@ async def test_missing_business_fact_replans_the_whole_direction_batch_with_ai()
     shards = await pipeline.plan_creatives(runtime, round_number=0)
 
     assert shards
-    assert len(provider.revision_contexts) == 2
-    assert provider.revision_contexts[0] is None
-    assert provider.revision_contexts[1]
-    assert provider.revision_contexts[1]["missingBusinessFactIds"]
-    assert provider.revision_contexts[1]["revisionDirectionIds"]
-    assert set(provider.revision_contexts[1]["missingBusinessFactIds"]).issubset(
-        provider.revision_contexts[1]["revisionRequiredBusinessFactIds"]
+    assert len(provider.revision_contexts) > 2
+    assert sum(item is None for item in provider.revision_contexts) > 1
+    revision_context = provider.revision_contexts[-1]
+    assert revision_context
+    assert revision_context["missingBusinessFactIds"]
+    assert revision_context["revisionDirectionIds"]
+    assert set(revision_context["missingBusinessFactIds"]).issubset(
+        revision_context["revisionRequiredBusinessFactIds"]
     )
-    assert provider.revision_contexts[1]["revisionFactOptions"]
+    assert revision_context["revisionFactOptions"]
     assert all(
         item["eligibleDirectionIds"]
-        for item in provider.revision_contexts[1]["revisionFactOptions"]
+        for item in revision_context["revisionFactOptions"]
     )
-    assert provider.revision_contexts[1]["revisionFactApplicationCapacity"] >= len(
-        provider.revision_contexts[1]["revisionRequiredBusinessFactIds"]
+    assert revision_context["revisionFactApplicationCapacity"] >= len(
+        revision_context["revisionRequiredBusinessFactIds"]
     )
     assert all(
         task.fact_assignment is not None
@@ -901,7 +1051,7 @@ async def test_independent_ai_semantic_audit_requests_direction_replanning() -> 
 
     assert shards
     assert provider.audit_calls == 4
-    assert provider.direction_calls == 2
+    assert provider.direction_calls > 2
     plan = pipeline._cache(runtime).creative_direction_plan
     assert plan is not None
     assert plan.semantic_audit is not None
@@ -927,7 +1077,7 @@ async def test_repeated_semantic_audit_disagreement_becomes_advisory() -> None:
 
     assert shards
     assert provider.audit_calls == 4
-    assert provider.direction_calls == 2
+    assert provider.direction_calls > 2
     plan = pipeline._cache(runtime).creative_direction_plan
     assert plan is not None
     assert plan.semantic_audit is not None

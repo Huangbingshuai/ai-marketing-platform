@@ -972,6 +972,11 @@ class ArkResponsesProvider:
         revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDirectionResponse]:
         fact_aliases, fact_ids_by_alias = _fact_alias_maps(application)
+        scoped_fact_ids = {
+            fact_id
+            for territory in landscape.territories
+            for fact_id in territory.compatible_fact_ids
+        }
         facts = [
             {
                 "factId": fact_aliases[fact.fact_id],
@@ -980,6 +985,7 @@ class ArkResponsesProvider:
                 "policy": fact.policy.value,
             }
             for fact in application.usable
+            if fact.fact_id in scoped_fact_ids
         ]
         visual_policies = [
             {
@@ -990,6 +996,7 @@ class ArkResponsesProvider:
                 "forbiddenInferences": policy.forbidden_inferences,
             }
             for policy in fact_visual_strategy.policies
+            if policy.fact_id in scoped_fact_ids
         ]
         visual_style_baseline = next(
             (
@@ -999,10 +1006,18 @@ class ArkResponsesProvider:
             ),
             "",
         )
-        business_fact_count = len(mandatory_business_facts(application))
-        target_direction_count = creative_direction_target_count(
-            target_count,
-            business_fact_count,
+        business_fact_count = len(
+            {
+                fact.fact_id
+                for fact in mandatory_business_facts(application)
+                if fact.fact_id in scoped_fact_ids
+            }
+        )
+        # The validated landscape owns the exact slot allocation. Its slot
+        # total supports territory-scoped planning without changing the final
+        # number of directions in the merged batch.
+        target_direction_count = sum(
+            territory.target_slots for territory in landscape.territories
         )
         revision_direction_ids = (
             revision_context.get("revisionDirectionIds", [])
@@ -1611,9 +1626,10 @@ class ArkResponsesProvider:
             max_output_tokens=min(
                 self._evaluation_max_output_tokens,
                 # Ark counts both the structured answer and reasoning tokens.
-                # Real three-item shards reached the former 2,160-token limit,
-                # so reserve enough room per candidate instead of truncating JSON.
-                max(2048, len(candidates) * 1000),
+                # Real three-item shards regularly reached the former 3,000-token
+                # ceiling. Reserve enough room for scores, fact evidence and the
+                # six-axis profile while retaining the configured hard cap.
+                max(2048, len(candidates) * 1300),
             ),
             request_timeout=self._evaluation_timeout,
             instructions=load_prompt(EVALUATION_BASE_PROMPT),
@@ -1674,7 +1690,7 @@ class ArkResponsesProvider:
                 )
             except httpx.TimeoutException as exc:
                 last_error, error_type, retryable = exc, ProviderErrorType.TIMEOUT, True
-            except httpx.NetworkError as exc:
+            except httpx.TransportError as exc:
                 last_error, error_type, retryable = exc, ProviderErrorType.NETWORK, True
             else:
                 if not response.is_error:
@@ -2111,7 +2127,8 @@ def _mock_creative_direction_response(
                     for fact in assigned_facts(territory, local_index, index)
                 ],
                 creative_direction=(
-                    f"围绕{row[1]}中的{row[3]}建立第{index + 1}个连续产品画面"
+                    f"在{territory.label}中围绕{row[1]}里的{row[3]}"
+                    f"建立第{index + 1}个连续产品画面"
                 ),
                 priority_dimensions=list(dimension_pairs[index % len(dimension_pairs)]),
                 semantic_profile=CreativeSemanticProfile(

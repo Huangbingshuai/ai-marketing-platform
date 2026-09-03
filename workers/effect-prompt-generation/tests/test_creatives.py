@@ -971,8 +971,16 @@ async def test_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
         <= (api.result.metrics.generated_candidate_count)
     )
     assert selection_stage.metadata["embeddingRequestCount"] == 2
-    assert selection_stage.metadata["mmrQualityWeight"] == 0.70
-    assert selection_stage.metadata["mmrDiversityWeight"] == 0.30
+    expected_quality_weight = (
+        0.60
+        if selection_stage.metadata["candidatePoolRedundancyRate"] > 0.50
+        else 0.70
+    )
+    assert selection_stage.metadata["mmrQualityWeight"] == expected_quality_weight
+    assert selection_stage.metadata["mmrDiversityWeight"] == round(
+        1.0 - expected_quality_weight,
+        2,
+    )
     assert "semanticGroupFirst" not in selection_stage.metadata
     assert selection_stage.metadata["contentMmrSelection"]["selectedCount"] == 10
     assert "dualVectorSelection" not in selection_stage.metadata

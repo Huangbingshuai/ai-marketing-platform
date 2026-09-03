@@ -151,6 +151,34 @@ describe('effect prompt quality contract', () => {
     expect(recomputed.metrics.hardIssueCounts).toEqual(result.metrics.hardIssueCounts);
   });
 
+  it('accepts semantic evaluation statistics from an oversized candidate pool', () => {
+    const items = Array.from({ length: 100 }, (_, index) =>
+      item(String(index + 1), `产品创意画面 ${index + 1}`),
+    );
+    const result = recomputePromptQuality(
+      items,
+      { targetCount: 100, defaultDurationSeconds: 25 },
+      undefined,
+      defaultEffectPromptRenderProfile(),
+      compileEffectPromptSharedPrompt([]),
+      {
+        status: 'VERIFIED',
+        evaluatedCount: 142,
+        duplicateGroupCount: 18,
+        duplicateCount: 106,
+        duplicateRate: 74.65,
+      },
+    );
+
+    expect(parseEffectPromptBatchResult(result)?.metrics.semanticEvaluation).toEqual({
+      status: 'VERIFIED',
+      evaluatedCount: 142,
+      duplicateGroupCount: 18,
+      duplicateCount: 106,
+      duplicateRate: 74.65,
+    });
+  });
+
   it('uses batch coverage instead of blocking each identity-led item', () => {
     const requiredFact = {
       factId: 'CORE_SELLING_POINT:confirmed',

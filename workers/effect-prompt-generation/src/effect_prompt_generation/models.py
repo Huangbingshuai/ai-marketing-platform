@@ -366,9 +366,13 @@ class CreativeAverageScores(ApiModel):
 
 class SemanticEvaluation(ApiModel):
     status: Literal["PENDING", "VERIFIED"]
-    evaluated_count: int = Field(ge=0, le=MAX_PROMPT_COUNT)
-    duplicate_group_count: int | None = Field(default=None, ge=0, le=MAX_PROMPT_COUNT)
-    duplicate_count: int | None = Field(default=None, ge=0, le=MAX_PROMPT_COUNT)
+    # 生成阶段会先评估扩大后的候选池；最终公共批次仍只会保存
+    # 不超过 MAX_PROMPT_COUNT 条已选 Prompt。
+    evaluated_count: int = Field(ge=0, le=MAX_CANDIDATE_COUNT)
+    duplicate_group_count: int | None = Field(
+        default=None, ge=0, le=MAX_CANDIDATE_COUNT
+    )
+    duplicate_count: int | None = Field(default=None, ge=0, le=MAX_CANDIDATE_COUNT)
     duplicate_rate: float | None = Field(default=None, ge=0, le=100)
 
 
