@@ -192,7 +192,6 @@ describe('EffectPromptRepository', () => {
       compatiblePurposes: ['HOOK' as const],
       classificationStatus: 'VERIFIED' as const,
       productRelevance: 80,
-      materialTags: ['钩子', id],
       targetDurationSeconds: 5,
       creativeCore: `创意主线-${id}`,
       dimensions: {
@@ -915,7 +914,6 @@ describe('EffectPromptRepository', () => {
       compatiblePurposes: ['PRODUCT_DISPLAY' as const],
       classificationStatus: 'VERIFIED' as const,
       productRelevance: 90,
-      materialTags: ['产品展示'],
       targetDurationSeconds: 5,
       creativeCore: `备选创意-${index}`,
       dimensions: {
@@ -990,7 +988,6 @@ describe('EffectPromptRepository', () => {
       compatiblePurposes: ['HOOK' as const],
       classificationStatus: 'VERIFIED' as const,
       productRelevance: 82,
-      materialTags: ['原标签'],
       targetDurationSeconds: 15,
       creativeCore: '原创意',
       dimensions: {
@@ -1021,7 +1018,6 @@ describe('EffectPromptRepository', () => {
       fragmentType: 'PRODUCT_DISPLAY' as const,
       compatiblePurposes: ['PRODUCT_DISPLAY' as const],
       productRelevance: 94,
-      materialTags: ['候选标签'],
       targetDurationSeconds: 5,
       creativeCore: '新创意',
       dimensions: { ...targetItem.dimensions, scene: '新场景', camera: '新镜头' },
@@ -1119,7 +1115,6 @@ describe('EffectPromptRepository', () => {
       code: targetItem.code,
       content: candidate.content,
       targetDurationSeconds: targetItem.targetDurationSeconds,
-      materialTags: targetItem.materialTags,
     });
     expect(saved[1]).toMatchObject({ id: otherItem.id, content: otherItem.content });
     expect(stageUpdate).toHaveBeenCalledWith(
@@ -1145,7 +1140,6 @@ describe('EffectPromptRepository', () => {
       compatiblePurposes: ['HOOK' as const],
       classificationStatus: 'VERIFIED' as const,
       productRelevance: 82,
-      materialTags: ['原标签'],
       targetDurationSeconds: 15,
       creativeCore: '原创意',
       dimensions: {

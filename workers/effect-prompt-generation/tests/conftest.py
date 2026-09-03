@@ -39,7 +39,6 @@ def prompt_item(dimensions: CreativeDimensions) -> PromptItem:
         compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
         classification_status="VERIFIED",
         product_relevance=92,
-        material_tags=["产品", "特写"],
         target_duration_seconds=5,
         creative_core="家庭早餐中的广式腊肠切面展示",
         dimensions=dimensions,

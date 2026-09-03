@@ -313,7 +313,6 @@ const searchable = (item: EffectPromptItem, query: string): boolean => {
         purpose,
         EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[purpose],
       ]),
-      ...item.materialTags,
       `${item.targetDurationSeconds}秒`,
       `${item.targetDurationSeconds} 秒`,
       ...EFFECT_PROMPT_DIMENSIONS.flatMap(({ key, label }) => [label, item.dimensions[key]]),
@@ -400,7 +399,6 @@ const promptPreviewItems = (run: EffectPromptPreviewRunRecord): EffectPromptItem
         compatiblePurposes: [item.fragmentType],
         classificationStatus: 'VERIFIED',
         productRelevance: 0,
-        materialTags: item.materialTags,
         targetDurationSeconds: item.targetDurationSeconds,
         creativeCore,
         dimensions: item.dimensions,
@@ -874,21 +872,12 @@ export class EffectPromptService {
 
   private validItemInput(input: {
     content: string;
-    materialTags: string[];
     dimensions: EffectPromptDimensions;
     targetDurationSeconds: number;
   }): boolean {
     return (
       input.content.trim().length > 0 &&
       input.content.length <= 12_000 &&
-      Array.isArray(input.materialTags) &&
-      input.materialTags.length <= EFFECT_PROMPT_LIMITS.maxMaterialTags &&
-      input.materialTags.every(
-        (tag) => typeof tag === 'string' && tag.trim().length > 0 && tag.length <= 120,
-      ) &&
-      new Set(
-        input.materialTags.map((tag) => tag.normalize('NFC').trim().toLocaleLowerCase('zh-CN')),
-      ).size === input.materialTags.length &&
       Number.isInteger(input.targetDurationSeconds) &&
       input.targetDurationSeconds >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
       input.targetDurationSeconds <= EFFECT_PROMPT_LIMITS.maxDurationSeconds &&
@@ -1000,7 +989,6 @@ export class EffectPromptService {
     expectedRevision: number,
     input: {
       content: string;
-      materialTags: string[];
       dimensions: EffectPromptDimensions;
       targetDurationSeconds: number;
     },
@@ -1034,7 +1022,6 @@ export class EffectPromptService {
       compatiblePurposes: ['PRODUCT_DISPLAY'],
       classificationStatus: 'PENDING',
       productRelevance: 0,
-      materialTags: input.materialTags.map((tag) => tag.normalize('NFC').trim()),
       targetDurationSeconds: input.targetDurationSeconds,
       creativeCore: input.dimensions.narrative.trim(),
       dimensions: Object.fromEntries(
@@ -1061,7 +1048,6 @@ export class EffectPromptService {
     expectedRevision: number,
     input: {
       content: string;
-      materialTags: string[];
       dimensions: EffectPromptDimensions;
       targetDurationSeconds: number;
     },
@@ -1086,7 +1072,6 @@ export class EffectPromptService {
           compatiblePurposes: [...currentItem.compatiblePurposes],
           classificationStatus: 'PENDING',
           productRelevance: 0,
-          materialTags: input.materialTags.map((tag) => tag.normalize('NFC').trim()),
           targetDurationSeconds: input.targetDurationSeconds,
           creativeCore: input.dimensions.narrative.trim(),
           dimensions: Object.fromEntries(

@@ -156,6 +156,8 @@ describe('effect prompt generation contract', () => {
         'creativeCore',
       ]),
     );
+    expect(batchSchema.$defs.item.required).not.toContain('materialTags');
+    expect(batchSchema.$defs.item.properties.materialTags).toBeUndefined();
     expect(batchSchema.$defs.fragmentType.enum).toEqual(EFFECT_PROMPT_FRAGMENT_TYPES);
     expect(batchSchema.properties.metrics.properties.replenishmentRounds.maximum).toBe(
       EFFECT_PROMPT_LIMITS.maxReplenishmentRounds,

@@ -450,12 +450,6 @@ const validBaseItem = (item: Record<string, unknown>): boolean =>
     (item.origin === 'AI' || item.origin === 'MANUAL') &&
     typeof item.fragmentType === 'string' &&
     EFFECT_PROMPT_FRAGMENT_TYPES.includes(item.fragmentType as EffectPromptFragmentType) &&
-    Array.isArray(item.materialTags) &&
-    item.materialTags.length <= EFFECT_PROMPT_LIMITS.maxMaterialTags &&
-    item.materialTags.every(
-      (tag) => typeof tag === 'string' && tag.trim().length > 0 && tag.length <= 120,
-    ) &&
-    new Set(item.materialTags.map(normalizedValue)).size === item.materialTags.length &&
     Number.isInteger(item.targetDurationSeconds) &&
     Number(item.targetDurationSeconds) >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
     Number(item.targetDurationSeconds) <= EFFECT_PROMPT_LIMITS.maxDurationSeconds &&
@@ -496,16 +490,20 @@ export const isEffectPromptItem = (value: unknown): value is EffectPromptItem =>
     Number.isInteger(item.productRelevance) &&
     Number(item.productRelevance) >= 0 &&
     Number(item.productRelevance) <= 100 &&
-    Object.keys(item).length === 17,
+    Object.keys(item).length === 16,
   );
 };
 
-const withCreativeCoreCompatibility = (value: unknown): unknown => {
+const withCurrentItemCompatibility = (value: unknown): unknown => {
   const item = record(value);
-  if (!item || item.creativeCore !== undefined) return value;
-  const dimensions = record(item.dimensions);
+  if (!item) return value;
+  const current = Object.fromEntries(
+    Object.entries(item).filter(([key]) => key !== 'materialTags'),
+  );
+  if (current.creativeCore !== undefined) return current;
+  const dimensions = record(current.dimensions);
   const narrative = typeof dimensions?.narrative === 'string' ? dimensions.narrative.trim() : '';
-  return narrative ? { ...item, creativeCore: narrative } : value;
+  return narrative ? { ...current, creativeCore: narrative } : current;
 };
 
 export const isEffectPromptSettings = (value: unknown): value is EffectPromptBatchSettings => {
@@ -1073,7 +1071,7 @@ export const parseEffectPromptBatchResult = (value: unknown): EffectPromptBatchR
       ))
   )
     return null;
-  const normalizedItems = candidate.items.map(withCreativeCoreCompatibility);
+  const normalizedItems = candidate.items.map(withCurrentItemCompatibility);
   const items = normalizedItems.filter(isEffectPromptItem);
   if (
     items.length !== normalizedItems.length ||
@@ -1123,7 +1121,6 @@ export const mergeEffectPromptCompletionItems = (
           id: target.id,
           code: target.code,
           origin: 'AI',
-          materialTags: [...target.materialTags],
           targetDurationSeconds: target.targetDurationSeconds,
           manualEdited: false,
           createdAt: target.createdAt,

@@ -54,7 +54,7 @@ const workspaceKey = (context: EffectSegmentRenderContext, productId: string): s
 
 const cloneWorkspace = (workspace: EffectSegmentRenderWorkspace): EffectSegmentRenderWorkspace => ({
   ...workspace,
-  tasks: workspace.tasks.map((task) => ({ ...task, materialTags: [...task.materialTags] })),
+  tasks: workspace.tasks.map((task) => ({ ...task })),
 });
 
 const abortError = (): DOMException => new DOMException('The operation was aborted.', 'AbortError');
@@ -124,7 +124,6 @@ const createPromptTask = (
     promptCode,
     promptText: `${durationSeconds} 秒独立${EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[fragmentType]}。在${scene}由${persona}完成一个清晰可见的动作，采用${camera}，只突出“${sellingPoint}”，整体情绪${emotion}。保持${config.aspectRatio}画幅与${config.styleTone}风格，不生成完整成片时间线。`,
     fragmentType,
-    materialTags: [narrative, scene, emotion],
     durationSeconds,
     modelMatch: 'AUTO_MATCHED',
     source: 'PROMPT',
@@ -317,7 +316,6 @@ export const importEffectSegmentRenderFiles = async (
       promptCode: null,
       promptText: '外部导入素材不包含来源 Prompt。',
       fragmentType: 'PRODUCT_DISPLAY',
-      materialTags: ['外部导入', file.type.startsWith('video/') ? '视频素材' : '补充素材'],
       durationSeconds: Math.min(10, Math.max(3, Math.round(config.durationSeconds / 3))),
       modelMatch: 'AUTO_MATCHED',
       source: 'IMPORTED',
@@ -349,7 +347,6 @@ export const exportEffectSegmentRenderTasks = (
       renderCode: task.renderCode,
       promptCode: task.promptCode,
       fragmentType: task.fragmentType,
-      materialTags: task.materialTags,
       durationSeconds: task.durationSeconds,
       status: task.status,
       source: task.source,

@@ -94,11 +94,6 @@ export class UndoPromptRegenerationDto {
 }
 
 export class PromptItemDto {
-  @IsArray()
-  @ArrayMaxSize(EFFECT_PROMPT_LIMITS.maxMaterialTags)
-  @IsString({ each: true })
-  @MaxLength(120, { each: true })
-  materialTags!: string[];
   @Allow() dimensions!: EffectPromptDimensions;
   @IsString() @MaxLength(12_000) content!: string;
   @Type(() => Number)

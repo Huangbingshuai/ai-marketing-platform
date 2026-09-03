@@ -36,6 +36,12 @@ def test_prompt_batch_target_count_has_a_hard_limit_of_100() -> None:
         PromptBatchSettings(target_count=101, default_duration_seconds=5)
 
 
+def test_prompt_item_schema_has_no_secondary_material_tags() -> None:
+    schema = PromptItem.model_json_schema(by_alias=True)
+
+    assert "materialTags" not in schema["properties"]
+
+
 def test_evaluation_draft_schema_excludes_worker_derived_fields() -> None:
     schema = CreativeEvaluationDraftBatch.model_json_schema(by_alias=True)
     properties = schema["$defs"]["CreativeEvaluationDraft"]["properties"]
@@ -203,3 +209,15 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
     Draft202012Validator(
         schema, format_checker=Draft202012Validator.FORMAT_CHECKER
     ).validate(result.model_dump(mode="json", by_alias=True))
+
+
+def test_semantic_evaluation_accepts_large_candidate_pool() -> None:
+    evaluation = SemanticEvaluation(
+        status="VERIFIED",
+        evaluated_count=140,
+        duplicate_group_count=36,
+        duplicate_count=105,
+        duplicate_rate=75,
+    )
+
+    assert evaluation.evaluated_count == 140

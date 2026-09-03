@@ -23,7 +23,6 @@ export const EFFECT_PROMPT_LIMITS = {
   pageSize: 10,
   maxReplenishmentRounds: 3,
   shardSize: 8,
-  maxMaterialTags: 12,
 } as const;
 
 export const EFFECT_PROMPT_DIMENSIONS = [
@@ -244,7 +243,6 @@ export type EffectPromptItem = {
   compatiblePurposes: EffectPromptFragmentType[];
   classificationStatus: EffectPromptClassificationStatus;
   productRelevance: number;
-  materialTags: string[];
   targetDurationSeconds: number;
   /** One-line creative throughline generated together with dimensions and content. */
   creativeCore: string;
@@ -319,7 +317,6 @@ export type EffectPromptManualOverrides = {
       | 'compatiblePurposes'
       | 'classificationStatus'
       | 'productRelevance'
-      | 'materialTags'
       | 'targetDurationSeconds'
       | 'creativeCore'
       | 'dimensions'
@@ -600,7 +597,7 @@ export type EffectPromptNodeDetailField = {
 
 export type EffectPromptNodeDetailPrompt = Pick<
   EffectPromptItem,
-  'code' | 'fragmentType' | 'materialTags' | 'targetDurationSeconds' | 'dimensions' | 'content'
+  'code' | 'fragmentType' | 'targetDurationSeconds' | 'dimensions' | 'content'
 >;
 
 export type EffectPromptNodeDetailBlueprint = {
@@ -801,7 +798,7 @@ export type GetEffectPromptNodeDetailData = {
 
 export type UpsertEffectPromptItemRequest = Pick<
   EffectPromptItem,
-  'content' | 'materialTags' | 'dimensions' | 'targetDurationSeconds'
+  'content' | 'dimensions' | 'targetDurationSeconds'
 > & { expectedRevision: number };
 
 export type UpdateEffectPromptSharedPromptRequest = {

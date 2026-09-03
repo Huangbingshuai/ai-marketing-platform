@@ -128,7 +128,8 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).not.toContain('批量导入');
     expect(pageSource).not.toContain('parseEffectPromptImportJson');
     expect(pageSource).not.toContain('importEffectPromptBatchDraft');
-    expect(pageSource).toContain('次级素材标签（可选）');
+    expect(pageSource).not.toContain('次级标签');
+    expect(pageSource).not.toContain('次级素材标签');
     expect(pageSource).toContain('<Plus :size="15" />新增 Prompt');
     expect(pageSource).toContain('v-model.number="editorDraft.targetDurationSeconds"');
     expect(pageSource).toContain('短片只安排一个连续动作');

@@ -53,7 +53,6 @@ from .models import (
     CreativeTask,
     FailurePayload,
     FragmentType,
-    FRAGMENT_TYPE_LABELS,
     FactVisualStrategy,
     FactVisualStrategyResponse,
     InsightApplicationMap,
@@ -3559,10 +3558,6 @@ def _prompt_items(
                 compatible_purposes=evaluation.compatible_purposes,
                 classification_status="VERIFIED",
                 product_relevance=round(evaluation.scores.product_relevance),
-                material_tags=[
-                    FRAGMENT_TYPE_LABELS[purpose]
-                    for purpose in evaluation.compatible_purposes
-                ],
                 target_duration_seconds=default_duration_seconds,
                 creative_core=candidate.creative_core,
                 dimensions=candidate.dimensions,
@@ -3594,7 +3589,6 @@ def _retained_items(
                 compatible_purposes=[item.fragment_type],
                 classification_status="PENDING",
                 product_relevance=0,
-                material_tags=item.material_tags,
                 target_duration_seconds=item.target_duration_seconds,
                 creative_core=item.dimensions.narrative,
                 dimensions=CreativeDimensions(

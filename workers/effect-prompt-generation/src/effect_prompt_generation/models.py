@@ -314,7 +314,6 @@ class PromptItem(ApiModel):
     compatible_purposes: list[FragmentType] = Field(min_length=1, max_length=6)
     classification_status: Literal["PENDING", "VERIFIED"]
     product_relevance: int = Field(ge=0, le=100)
-    material_tags: list[str] = Field(default_factory=list, max_length=12)
     target_duration_seconds: int = Field(ge=4, le=30)
     creative_core: str = Field(min_length=1, max_length=160)
     dimensions: CreativeDimensions

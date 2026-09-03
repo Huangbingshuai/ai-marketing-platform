@@ -183,7 +183,6 @@ export const loadEffectPromptNodeDetail = async (
 
 export type PromptItemDraft = {
   content: string;
-  materialTags: string[];
   dimensions: EffectPromptDimensions;
   targetDurationSeconds: number;
 };
@@ -307,7 +306,6 @@ export const buildEffectPromptCsv = (
     '其他兼容用途',
     ...EFFECT_PROMPT_DIMENSIONS.map(({ label }) => label),
     '提炼来源',
-    '素材标签',
     '共用提示词',
     '画幅',
     '分辨率',
@@ -333,7 +331,6 @@ export const buildEffectPromptCsv = (
       compatiblePurposes.map((purpose) => EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[purpose]).join('；'),
       ...EFFECT_PROMPT_DIMENSIONS.map(({ key }) => item.dimensions[key]),
       insightSources.join('；'),
-      item.materialTags.join('；'),
       sharedPrompt,
       result.renderProfile.ratio,
       result.renderProfile.resolution,

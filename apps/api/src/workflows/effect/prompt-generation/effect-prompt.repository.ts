@@ -134,12 +134,21 @@ export type EffectPromptPreviewRunRecord = Prisma.EffectPromptRunGetPayload<{
 const parseOverrides = (value: unknown): EffectPromptManualOverrides => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return emptyManualOverrides();
   const source = value as Partial<EffectPromptManualOverrides>;
+  const withoutLegacyTags = <T>(entry: T): T => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+    return Object.fromEntries(
+      Object.entries(entry).filter(([key]) => key !== 'materialTags'),
+    ) as T;
+  };
+  const editedSource =
+    source.edited && typeof source.edited === 'object' && !Array.isArray(source.edited)
+      ? source.edited
+      : {};
   return {
-    edited:
-      source.edited && typeof source.edited === 'object' && !Array.isArray(source.edited)
-        ? source.edited
-        : {},
-    added: Array.isArray(source.added) ? source.added : [],
+    edited: Object.fromEntries(
+      Object.entries(editedSource).map(([id, item]) => [id, withoutLegacyTags(item)]),
+    ),
+    added: Array.isArray(source.added) ? source.added.map(withoutLegacyTags) : [],
     deleted: Array.isArray(source.deleted)
       ? source.deleted.filter((item): item is string => typeof item === 'string')
       : [],
@@ -859,7 +868,6 @@ export class EffectPromptRepository {
                 compatiblePurposes: [...evaluated.compatiblePurposes],
                 classificationStatus: evaluated.classificationStatus,
                 productRelevance: evaluated.productRelevance,
-                materialTags: [...evaluated.materialTags],
                 targetDurationSeconds: evaluated.targetDurationSeconds,
                 creativeCore: evaluated.creativeCore,
                 dimensions: evaluated.dimensions,
@@ -877,7 +885,6 @@ export class EffectPromptRepository {
               compatiblePurposes: item.compatiblePurposes,
               classificationStatus: item.classificationStatus,
               productRelevance: item.productRelevance,
-              materialTags: item.materialTags,
               targetDurationSeconds: item.targetDurationSeconds,
               creativeCore: item.creativeCore,
               dimensions: item.dimensions,
@@ -1019,7 +1026,6 @@ export class EffectPromptRepository {
         id: snapshot.targetItem.id,
         code: snapshot.targetItem.code,
         origin: 'AI',
-        materialTags: [...snapshot.targetItem.materialTags],
         targetDurationSeconds: snapshot.targetItem.targetDurationSeconds,
         manualEdited: false,
         createdAt: snapshot.targetItem.createdAt,
@@ -1136,7 +1142,6 @@ export class EffectPromptRepository {
           compatiblePurposes: [...snapshot.targetItem.compatiblePurposes],
           classificationStatus: snapshot.targetItem.classificationStatus,
           productRelevance: snapshot.targetItem.productRelevance,
-          materialTags: [...snapshot.targetItem.materialTags],
           targetDurationSeconds: snapshot.targetItem.targetDurationSeconds,
           creativeCore: snapshot.targetItem.creativeCore,
           dimensions: snapshot.targetItem.dimensions,
@@ -1479,7 +1484,6 @@ export class EffectPromptRepository {
             | 'compatiblePurposes'
             | 'classificationStatus'
             | 'productRelevance'
-            | 'materialTags'
             | 'targetDurationSeconds'
             | 'creativeCore'
             | 'dimensions'

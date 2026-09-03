@@ -670,7 +670,6 @@ onBeforeUnmount(() => {
             </div>
             <div class="task-tags">
               <span class="primary-tag">{{ fragmentTypeLabel(task.fragmentType) }}</span>
-              <span v-for="tag in task.materialTags" :key="tag">{{ tag }}</span>
             </div>
             <div v-if="task.errorMessage" class="task-error" role="status">
               <AlertCircle :size="12" />{{ task.errorMessage }}
@@ -799,10 +798,9 @@ onBeforeUnmount(() => {
             <span>
               <strong>{{ promptTask.productName }} · {{ promptTask.renderCode }}</strong>
               <small
-                >{{ promptTask.promptCode ?? '外部导入' }} · 标签：{{
+                >{{ promptTask.promptCode ?? '外部导入' }} · 推荐用途：{{
                   fragmentTypeLabel(promptTask.fragmentType)
-                }}
-                / {{ promptTask.materialTags.join(' / ') }}</small
+                }}</small
               >
             </span>
             <em>{{ promptTask.source === 'PROMPT' ? '来源 Prompt' : '外部素材' }}</em>

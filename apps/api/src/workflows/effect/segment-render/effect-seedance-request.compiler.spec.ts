@@ -21,7 +21,6 @@ const item: EffectPromptItem = {
   compatiblePurposes: ['PRODUCT_DISPLAY'],
   classificationStatus: 'VERIFIED',
   productRelevance: 95,
-  materialTags: ['产品展示'],
   targetDurationSeconds: 5,
   creativeCore: '家庭厨房中的产品入画展示',
   dimensions: {

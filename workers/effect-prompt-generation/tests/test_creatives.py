@@ -1215,7 +1215,6 @@ async def test_item_evaluate_preserves_content_and_only_runs_classification() ->
         compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
         classification_status="PENDING",
         product_relevance=0,
-        material_tags=["待重新评估"],
         target_duration_seconds=5,
         creative_core="从成品摆盘推进到切面细节",
         dimensions=CreativeDimensions(

@@ -130,7 +130,6 @@ describe('presentEffectPromptNodeDetail', () => {
               code: 'P001',
               fragmentType: 'PRODUCT_DISPLAY',
               targetDurationSeconds: 5,
-              materialTags: [],
               content: '餐桌上展示一盘已经蒸熟并切好的广式腊肠。',
               dimensions: {
                 narrative: '产品展示',

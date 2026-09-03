@@ -21,7 +21,6 @@ const task = (
   promptCode: `P${index}`,
   promptText: `周末家庭厨房提示词 ${index}`,
   fragmentType: 'HOOK',
-  materialTags: ['钩子片段', index % 2 ? '家庭' : '户外'],
   durationSeconds: 5,
   modelMatch: 'AUTO_MATCHED',
   source: 'PROMPT',
@@ -48,10 +47,10 @@ describe('effect segment render state', () => {
     ).toEqual({ total: 5, completed: 2, running: 2, failed: 1 });
   });
 
-  it('filters by stable id, product, prompt content and tags', () => {
+  it('filters by stable id, product and prompt content', () => {
     const tasks = [task(1, 'COMPLETED'), task(2, 'COMPLETED')];
     expect(filterEffectSegmentRenderTasks(tasks, 'R-001')).toHaveLength(1);
-    expect(filterEffectSegmentRenderTasks(tasks, '户外')).toHaveLength(1);
+    expect(filterEffectSegmentRenderTasks(tasks, '提示词 2')).toHaveLength(1);
     expect(filterEffectSegmentRenderTasks(tasks, '广式腊肠')).toHaveLength(2);
     expect(filterEffectSegmentRenderTasks(tasks, '不存在')).toEqual([]);
   });

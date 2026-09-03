@@ -64,7 +64,6 @@ describe('effect prompt generation HTTP service', () => {
             camera: '微距慢推',
             emotion: '温暖食欲感',
           },
-          materialTags: ['蒸制', '微距'],
           insightBindings: [
             {
               factId: 'private-fact-id',

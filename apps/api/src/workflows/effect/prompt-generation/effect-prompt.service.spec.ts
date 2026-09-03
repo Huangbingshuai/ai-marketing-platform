@@ -49,7 +49,6 @@ const completionGateFixture = (duplicate = false) => {
     compatiblePurposes: [fragmentType],
     classificationStatus: 'VERIFIED' as const,
     productRelevance: 85,
-    materialTags: [fragmentType, String(index)],
     targetDurationSeconds: 5,
     creativeCore: `创意主线-${index}`,
     dimensions: {
@@ -461,7 +460,6 @@ describe('EffectPromptService settings contract', () => {
           compatiblePurposes: ['HOOK'],
           classificationStatus: 'VERIFIED',
           productRelevance: 80,
-          materialTags: ['钩子'],
           targetDurationSeconds: 5,
           creativeCore: '家庭厨房中的产品切面悬念',
           dimensions: {
@@ -784,7 +782,6 @@ describe('EffectPromptService settings contract', () => {
       ],
       classificationStatus: 'VERIFIED' as const,
       productRelevance: 80,
-      materialTags: ['素材片段', `标签-${index}`],
       targetDurationSeconds: 5,
       creativeCore: `创意主线-${index}`,
       dimensions: {
@@ -813,7 +810,6 @@ describe('EffectPromptService settings contract', () => {
     await expect(
       service.addItem('project-a', 'result-a', 1, {
         content: '新增 Prompt',
-        materialTags: ['钩子', '首帧'],
         targetDurationSeconds: 5,
         dimensions: {
           narrative: '痛点前置型',
@@ -840,7 +836,6 @@ describe('EffectPromptService settings contract', () => {
     await expect(
       service.updateItem('project-a', 'result-a', draftResult.items[0]!.id, 1, {
         content: draftResult.items[0]!.content,
-        materialTags: draftResult.items[0]!.materialTags,
         targetDurationSeconds: 16,
         dimensions: draftResult.items[0]!.dimensions,
       }),
@@ -863,7 +858,6 @@ describe('EffectPromptService settings contract', () => {
       compatiblePurposes: id === 'hook-kitchen' ? [fragmentType, 'PAIN'] : [fragmentType],
       classificationStatus: 'VERIFIED' as const,
       productRelevance: 80,
-      materialTags: [fragmentType === 'HOOK' ? '首帧' : '转化'],
       targetDurationSeconds: 5,
       creativeCore: id === 'hook-kitchen' ? '用果肉悬念引出酸甜口感' : `创意主线-${id}`,
       dimensions: {
@@ -1001,7 +995,6 @@ describe('EffectPromptService settings contract', () => {
       compatiblePurposes: [fragmentType],
       classificationStatus: 'VERIFIED' as const,
       productRelevance: 80,
-      materialTags: [fragmentType],
       targetDurationSeconds: 5,
       creativeCore: `创意主线-${id}`,
       dimensions: {
@@ -1086,7 +1079,6 @@ describe('EffectPromptService settings contract', () => {
                 slotId: 'r0-s0001',
                 ordinal: 1,
                 fragmentType: 'HOOK',
-                materialTags: ['钩子'],
                 targetDurationSeconds: 5,
                 creativeCore: '家庭厨房中的切面悬念',
                 dimensions: {
@@ -1106,7 +1098,6 @@ describe('EffectPromptService settings contract', () => {
                 slotId: 'r0-s0003',
                 ordinal: 3,
                 fragmentType: 'HOOK',
-                materialTags: ['钩子'],
                 targetDurationSeconds: 5,
                 creativeCore: '窗边桌面的细节悬念',
                 dimensions: {
@@ -1126,7 +1117,6 @@ describe('EffectPromptService settings contract', () => {
                 slotId: 'r0-s0002',
                 ordinal: 2,
                 fragmentType: 'HOOK',
-                materialTags: ['钩子'],
                 targetDurationSeconds: 5,
                 creativeCore: '餐桌上的产品悬念',
                 dimensions: {

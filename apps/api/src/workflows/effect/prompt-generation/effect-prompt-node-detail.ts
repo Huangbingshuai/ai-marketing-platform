@@ -310,7 +310,6 @@ const candidates = (run: EffectPromptNodeDetailRunRecord): Candidate[] => {
       rows.push({
         code: promptCode(ordinal),
         fragmentType: type,
-        materialTags: safeStrings(raw.materialTags, 12),
         targetDurationSeconds: duration,
         dimensions: itemDimensions,
         content,
@@ -367,7 +366,6 @@ const combinations = (run: EffectPromptNodeDetailRunRecord): Combination[] => {
 const promptPreview = (item: EffectPromptNodeDetailPrompt): EffectPromptNodeDetailPrompt => ({
   code: publicText(item.code, 40),
   fragmentType: item.fragmentType,
-  materialTags: safeStrings(item.materialTags, 12),
   targetDurationSeconds: item.targetDurationSeconds,
   dimensions: Object.fromEntries(
     Object.entries(item.dimensions).map(([key, value]) => [key, publicText(value, 240)]),
@@ -386,7 +384,6 @@ const rawPromptPreview = (value: unknown): EffectPromptNodeDetailPrompt | null =
   return {
     code,
     fragmentType: type,
-    materialTags: safeStrings(value.materialTags, 12),
     targetDurationSeconds: duration,
     dimensions: itemDimensions,
     content,

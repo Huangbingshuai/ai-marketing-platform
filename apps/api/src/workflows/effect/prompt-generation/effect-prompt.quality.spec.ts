@@ -24,7 +24,6 @@ const item = (id: string, content = `产品创意画面 ${id}`): EffectPromptIte
   compatiblePurposes: ['PRODUCT_DISPLAY', 'HOOK'],
   classificationStatus: 'VERIFIED',
   productRelevance: 92,
-  materialTags: ['产品展示'],
   targetDurationSeconds: 5,
   creativeCore: '家庭厨房中的产品切面展示',
   dimensions: {
@@ -67,10 +66,11 @@ describe('effect prompt quality contract', () => {
     expect(isEffectPromptItem({ ...item('003'), compatiblePurposes: ['HOOK'] })).toBe(false);
   });
 
-  it('restores creative core from narrative for existing stored items', () => {
+  it('normalizes legacy stored items without exposing removed secondary tags', () => {
     const existing = item('legacy');
     const withoutCreativeCore: Partial<EffectPromptItem> = { ...existing };
     delete withoutCreativeCore.creativeCore;
+    (withoutCreativeCore as Record<string, unknown>).materialTags = ['历史标签'];
     const result = recomputePromptQuality([existing], {
       targetCount: 1,
       defaultDurationSeconds: 5,
@@ -78,6 +78,7 @@ describe('effect prompt quality contract', () => {
     const parsed = parseEffectPromptBatchResult({ ...result, items: [withoutCreativeCore] });
 
     expect(parsed?.items[0]?.creativeCore).toBe(existing.dimensions.narrative);
+    expect(parsed?.items[0]).not.toHaveProperty('materialTags');
   });
 
   it('computes exact-count, purpose and lightweight issue metrics', () => {

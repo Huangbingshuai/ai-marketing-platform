@@ -16,7 +16,6 @@ export type EffectSegmentRenderTask = {
   promptCode: string | null;
   promptText: string;
   fragmentType: EffectPromptFragmentType;
-  materialTags: string[];
   durationSeconds: number;
   modelMatch: 'AUTO_MATCHED';
   source: EffectSegmentRenderSource;
@@ -75,7 +74,6 @@ export const filterEffectSegmentRenderTasks = (
       task.productName,
       task.sourceName,
       task.promptText,
-      ...task.materialTags,
     ]
       .join(' ')
       .toLocaleLowerCase('zh-CN')

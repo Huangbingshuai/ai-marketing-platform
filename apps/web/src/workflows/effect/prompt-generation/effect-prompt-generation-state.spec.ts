@@ -28,7 +28,6 @@ const prompt: EffectPromptItem = {
   compatiblePurposes: ['HOOK', 'PAIN'],
   classificationStatus: 'VERIFIED',
   productRelevance: 92,
-  materialTags: ['首帧', '痛点'],
   targetDurationSeconds: 5,
   creativeCore: '家庭厨房里的广式腊肠痛点悬念',
   dimensions: {

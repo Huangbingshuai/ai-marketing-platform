@@ -139,11 +139,9 @@ const editorMode = ref<'add' | 'edit'>('edit');
 const editorItemId = ref('');
 const editorDraft = ref<PromptItemDraft>({
   content: '',
-  materialTags: [],
   dimensions: emptyDimensions(),
   targetDurationSeconds: DEFAULT_EFFECT_PROMPT_SETTINGS.defaultDurationSeconds,
 });
-const editorMaterialTagsText = ref('');
 const editorTrigger = ref<HTMLElement | null>(null);
 const editorCloseButton = ref<HTMLButtonElement | null>(null);
 const promptSearchInput = ref<HTMLInputElement | null>(null);
@@ -474,17 +472,6 @@ const selectedRegenerationCandidate = computed(() =>
 );
 function emptyDimensions(): EffectPromptDimensions {
   return { narrative: '', scene: '', persona: '', productRelation: '', camera: '', emotion: '' };
-}
-
-function uniqueTextList(value: string): string[] {
-  return [
-    ...new Set(
-      value
-        .split(/[\n,，；;]/u)
-        .map((item) => item.trim())
-        .filter(Boolean),
-    ),
-  ];
 }
 
 const fragmentTypeLabel = (fragmentType: EffectPromptFragmentType): string =>
@@ -1144,12 +1131,10 @@ const openEditor = async (item?: EffectPromptItem, event?: Event): Promise<void>
   editorItemId.value = item?.id ?? '';
   editorDraft.value = {
     content: item?.content ?? '',
-    materialTags: item ? [...item.materialTags] : [],
     dimensions: item ? { ...item.dimensions } : emptyDimensions(),
     targetDurationSeconds:
       item?.targetDurationSeconds ?? currentSettings.value.defaultDurationSeconds,
   };
-  editorMaterialTagsText.value = item?.materialTags.join('，') ?? '';
   editorOpen.value = true;
   await nextTick();
   editorCloseButton.value?.focus();
@@ -1203,7 +1188,6 @@ const commitEditor = async (): Promise<void> => {
       resultRevision,
       {
         content: draft.content.trim(),
-        materialTags: uniqueTextList(editorMaterialTagsText.value),
         targetDurationSeconds: draft.targetDurationSeconds,
         dimensions: Object.fromEntries(
           EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, draft.dimensions[key].trim()]),
@@ -2300,11 +2284,6 @@ onBeforeUnmount(() => {
                 >{{ fragmentTypeLabel(purpose) }}</span
               >
             </div>
-            <div class="material-tags" aria-label="素材次级标签">
-              <small>次级标签</small>
-              <span v-for="tag in item.materialTags" :key="tag">{{ tag }}</span>
-              <em v-if="!item.materialTags.length">暂无</em>
-            </div>
             <textarea :value="item.content" readonly aria-label="Prompt 内容" />
             <details class="prompt-dimension-details">
               <summary>查看提炼信息依据</summary>
@@ -2489,14 +2468,6 @@ onBeforeUnmount(() => {
                 Prompt 正文。</small
               >
             </label>
-            <label class="editor-wide-field">
-              <span>次级素材标签（可选）</span>
-              <input
-                v-model="editorMaterialTagsText"
-                type="text"
-                placeholder="例如：首帧，特写，实拍演示（逗号分隔）"
-              />
-            </label>
             <label v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key"
               ><span>{{ dimension.label }}</span
               ><input
@@ -2558,7 +2529,6 @@ onBeforeUnmount(() => {
                   >当前推荐：{{ fragmentTypeLabel(regenerationCandidate.primaryPurpose) }}</strong
                 >
                 <i>{{ regenerationCandidate.targetDurationSeconds }} 秒</i>
-                <i>{{ regenerationCandidate.materialTags.join(' · ') }}</i>
               </p>
             </div>
             <button
@@ -3277,9 +3247,6 @@ onBeforeUnmount(() => {
                                 >{{ EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.fragmentType] }}</span
                               ><em>{{ item.targetDurationSeconds }} 秒 · 展开全文</em>
                             </summary>
-                            <div class="node-sample-tags">
-                              <span v-for="tag in item.materialTags" :key="tag">{{ tag }}</span>
-                            </div>
                             <p class="node-prompt-content">{{ item.content }}</p>
                             <dl class="node-prompt-dimensions">
                               <div
@@ -4138,29 +4105,6 @@ button:disabled {
   border: 1px solid #ded6fb;
   border-radius: 999px;
   font-size: 9px;
-}
-.material-tags {
-  display: flex;
-  margin: 7px 0 8px;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-.material-tags small {
-  color: #8995a8;
-  font-size: 9px;
-}
-.material-tags span {
-  padding: 3px 6px;
-  color: #4c6f9f;
-  background: #edf4ff;
-  border-radius: 5px;
-  font-size: 9px;
-}
-.material-tags em {
-  color: #a0a8b5;
-  font-size: 9px;
-  font-style: normal;
 }
 .prompt-dimension-details {
   margin-top: 7px;
