@@ -59,6 +59,11 @@ export const promptMatchesKeyword = (item: EffectPromptItem, keyword: string): b
 export const promptPageCount = (itemCount: number): number =>
   Math.max(1, Math.ceil(itemCount / EFFECT_PROMPT_LIMITS.pageSize));
 
+export const clampPromptPage = (page: number, itemCount: number): number => {
+  const normalizedPage = Number.isFinite(page) ? Math.max(1, Math.trunc(page)) : 1;
+  return Math.min(normalizedPage, promptPageCount(itemCount));
+};
+
 export const isPromptRunActive = (state: EffectPromptProductState | null): boolean =>
   state?.status === 'QUEUED' || state?.status === 'PROCESSING';
 

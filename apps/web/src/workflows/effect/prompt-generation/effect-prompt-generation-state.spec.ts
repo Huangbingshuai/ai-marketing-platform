@@ -10,6 +10,7 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import {
+  clampPromptPage,
   EFFECT_PROMPT_LIMITS,
   isPromptProductCommitted,
   isPromptResultQualityReady,
@@ -111,9 +112,10 @@ describe('effect prompt generation state', () => {
     expect(normalizePromptSettings(DEFAULT_EFFECT_PROMPT_SETTINGS)).toEqual(
       DEFAULT_EFFECT_PROMPT_SETTINGS,
     );
-    expect(
-      normalizePromptSettings({ targetCount: 101, defaultDurationSeconds: 5 }),
-    ).toEqual({ targetCount: 100, defaultDurationSeconds: 5 });
+    expect(normalizePromptSettings({ targetCount: 101, defaultDurationSeconds: 5 })).toEqual({
+      targetCount: 100,
+      defaultDurationSeconds: 5,
+    });
   });
 
   it('matches id, content, fixed and secondary labels and six-dimensional labels', () => {
@@ -133,6 +135,13 @@ describe('effect prompt generation state', () => {
     expect(EFFECT_PROMPT_LIMITS.pageSize).toBe(10);
     expect(promptPageCount(23)).toBe(3);
     expect(promptPageCount(0)).toBe(1);
+  });
+
+  it('clamps stale page numbers after filtering or deleting the last page', () => {
+    expect(clampPromptPage(2, 10)).toBe(1);
+    expect(clampPromptPage(2, 11)).toBe(2);
+    expect(clampPromptPage(3, 0)).toBe(1);
+    expect(clampPromptPage(Number.NaN, 50)).toBe(1);
   });
 
   it('uses authoritative quality metrics and commit status for progression', () => {

@@ -20,7 +20,7 @@ import {
   EFFECT_IMPORT_MATERIAL_TYPE_LABELS,
   EFFECT_IMPORT_RESOLUTIONS,
 } from '@ai-marketing/contracts';
-import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
+import { WorkflowNodeDraftBar, WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
 import {
   AlertCircle,
   ArrowLeft,
@@ -1476,18 +1476,12 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <div v-if="currentRunning" class="state-alert running" role="status">
-        <LoaderCircle class="spin" :size="17" />
-        <div>
-          <strong>{{
-            currentState.status === 'QUEUED' ? '任务已进入处理队列' : '正在提炼产品资料'
-          }}</strong>
-          <p>{{ currentProgressLabel }} · {{ currentState.progress }}%</p>
-          <span class="run-progress" aria-hidden="true">
-            <i :style="{ width: `${currentState.progress}%` }" />
-          </span>
-        </div>
-      </div>
+      <WorkflowRunProgress
+        v-if="currentRunning"
+        :progress="currentState.progress"
+        :summary="currentProgressLabel"
+        @show-details="openGraphDialog"
+      />
 
       <div v-if="pollingErrors[currentState.productId]" class="state-alert danger" role="alert">
         <AlertCircle :size="17" />
@@ -2930,30 +2924,10 @@ button:disabled {
   background: #fff8e8;
   border: 1px solid #f2dfb4;
 }
-.state-alert.running {
-  color: #2559a7;
-  background: #eef4ff;
-  border: 1px solid #cfe0ff;
-}
 .state-alert.information {
   color: #35658a;
   background: #f1f8fc;
   border: 1px solid #cfe5f2;
-}
-.run-progress {
-  display: block;
-  height: 4px;
-  margin-top: 7px;
-  overflow: hidden;
-  background: #dbe7fb;
-  border-radius: 999px;
-}
-.run-progress i {
-  display: block;
-  height: 100%;
-  background: #2563eb;
-  border-radius: inherit;
-  transition: width 0.2s ease;
 }
 .product-info-layout {
   display: grid;

@@ -46,6 +46,15 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain('refreshImageRecognition: Boolean(state.runId || state.resultId)');
   });
 
+  it('uses the shared workflow progress component and opens the node graph from it', () => {
+    expect(pageSource).toContain('WorkflowRunProgress');
+    expect(pageSource).toContain(':progress="currentState.progress"');
+    expect(pageSource).toContain(':summary="currentProgressLabel"');
+    expect(pageSource).toContain('@show-details="openGraphDialog"');
+    expect(pageSource).not.toContain('class="run-progress"');
+    expect(pageSource).not.toContain('class="state-alert running"');
+  });
+
   it('does not turn a browser connection interruption into a failed extraction run', () => {
     expect(pageSource).toContain('isNetworkError(error)');
     expect(pageSource).toContain('const previousState = cloneExtractionProductState(state)');

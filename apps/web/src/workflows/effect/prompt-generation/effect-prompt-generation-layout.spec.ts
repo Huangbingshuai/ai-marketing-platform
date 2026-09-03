@@ -121,13 +121,14 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('currentCountStats.actualCount} 条 Prompt');
   });
 
-  it('corrects an out-of-range page before rendering the loaded result', () => {
-    const correction = pageSource.indexOf('if (page.value > validPage)');
+  it('publishes the new total before correcting an out-of-range page', () => {
+    const correction = pageSource.indexOf('if (page.value !== validPage)');
     const assignment = pageSource.indexOf('resultData.value = loaded;', correction);
+    const pageAssignment = pageSource.indexOf('page.value = validPage;', assignment);
     expect(correction).toBeGreaterThan(-1);
     expect(assignment).toBeGreaterThan(correction);
-    expect(pageSource.slice(correction, assignment)).toContain('page.value = validPage;');
-    expect(pageSource.slice(correction, assignment)).toContain('return;');
+    expect(pageAssignment).toBeGreaterThan(assignment);
+    expect(pageSource.slice(pageAssignment, pageAssignment + 80)).toContain('return;');
   });
 
   it('renders the current batch graph without version or history controls', () => {
@@ -158,6 +159,16 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('displayedGraphRun.value.currentNode !== nodeId');
     expect(pageSource).toContain('void refreshGraphDetail()');
     expect(pageSource).toContain('graphDetailRefreshTimer = setTimeout');
+  });
+
+  it('uses the shared workflow progress component without duplicating page styles', () => {
+    expect(pageSource).toContain('WorkflowRunProgress');
+    expect(pageSource).toContain(':progress="currentState.progress"');
+    expect(pageSource).toContain(':attempt-label="currentAttemptLabel"');
+    expect(pageSource).toContain(':warning="currentRetryWarning"');
+    expect(pageSource).toContain('@show-details="openGraph"');
+    expect(pageSource).not.toContain('class="run-progress"');
+    expect(pageSource).not.toContain('.run-progress {');
   });
 
   it('keeps current real-result detail renderers without historical navigation', () => {

@@ -31,7 +31,7 @@ import {
   effectPromptRunGraphEdges,
   effectPromptRunGraphNodeIds,
 } from '@ai-marketing/contracts';
-import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
+import { WorkflowNodeDraftBar, WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
 import {
   Activity,
   AlertCircle,
@@ -57,6 +57,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { ApiClientError, isAbortError } from '../../../api/http-client';
 import { buildEffectPromptGraphRows } from './effect-prompt-generation-graph';
 import {
+  clampPromptPage,
   clonePromptSettings,
   isPromptProductCommitted,
   isPromptResultQualityReady,
@@ -499,8 +500,12 @@ const loadCurrentResult = async (): Promise<void> => {
   const state = productStates.value[productId];
   const generation = ++resultGeneration;
   resultController?.abort();
-  resultData.value = null;
-  if (!productId || (!state?.resultId && state?.status !== 'FAILED')) return;
+  if (resultData.value?.productId && resultData.value.productId !== productId)
+    resultData.value = null;
+  if (!productId || (!state?.resultId && state?.status !== 'FAILED')) {
+    resultData.value = null;
+    return;
+  }
   const controller = new AbortController();
   resultController = controller;
   resultLoading.value = true;
@@ -520,8 +525,9 @@ const loadCurrentResult = async (): Promise<void> => {
       productId !== currentProductId.value
     )
       return;
-    const validPage = promptPageCount(loaded.total);
-    if (page.value > validPage) {
+    const validPage = clampPromptPage(page.value, loaded.total);
+    if (page.value !== validPage) {
+      resultData.value = loaded;
       page.value = validPage;
       return;
     }
@@ -1953,17 +1959,16 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <section v-if="currentRunning" class="run-progress" role="status">
-        <div><span :style="{ width: `${currentState.progress}%` }" /></div>
-        <p>
-          <span>{{
-            currentState.status === 'QUEUED' ? '正在等待 Prompt 生成服务接单' : currentStageLabel
-          }}</span>
-          <small v-if="currentAttemptLabel">{{ currentAttemptLabel }}</small>
-          <em v-if="currentRetryWarning">{{ currentRetryWarning }}</em>
-        </p>
-        <button type="button" @click="openGraph($event)">查看节点进度</button>
-      </section>
+      <WorkflowRunProgress
+        v-if="currentRunning"
+        :progress="currentState.progress"
+        :summary="
+          currentState.status === 'QUEUED' ? '正在等待 Prompt 生成服务接单' : currentStageLabel
+        "
+        :attempt-label="currentAttemptLabel"
+        :warning="currentRetryWarning"
+        @show-details="openGraph"
+      />
       <section
         v-else-if="currentState.status === 'FAILED' || currentState.status === 'STALE'"
         class="prompt-state-alert"
@@ -3498,52 +3503,6 @@ button:disabled {
 }
 .heading-generate-button {
   min-width: 160px;
-}
-.run-progress {
-  display: grid;
-  margin: -7px 0 18px;
-  padding: 11px 14px;
-  grid-template-columns: minmax(120px, 1fr) auto auto;
-  align-items: center;
-  gap: 12px;
-  color: #53647b;
-  background: #f4f8ff;
-  border: 1px solid #d8e5ff;
-  border-radius: 12px;
-  font-size: 11px;
-}
-.run-progress > div {
-  height: 6px;
-  overflow: hidden;
-  background: #dbe7fa;
-  border-radius: 99px;
-}
-.run-progress > div span {
-  display: block;
-  height: 100%;
-  background: #2563eb;
-  border-radius: inherit;
-  transition: width 0.25s;
-}
-.run-progress p {
-  display: grid;
-  margin: 0;
-  gap: 2px;
-}
-.run-progress p small {
-  color: #2563eb;
-  font-weight: 800;
-}
-.run-progress p em {
-  color: #956109;
-  font-size: 10px;
-  font-style: normal;
-}
-.run-progress button {
-  color: #2563eb;
-  background: transparent;
-  border: 0;
-  font-weight: 800;
 }
 .prompt-state-alert {
   display: flex;
@@ -6243,9 +6202,6 @@ button:disabled {
   }
   .setting-card {
     grid-template-columns: 1fr 140px;
-  }
-  .run-progress {
-    grid-template-columns: 1fr;
   }
   .prompt-card {
     grid-template-columns: 38px minmax(0, 1fr);
