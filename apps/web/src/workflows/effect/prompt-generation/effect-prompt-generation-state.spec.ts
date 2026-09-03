@@ -16,7 +16,6 @@ import {
   isPromptResultQualityReady,
   isPromptRunActive,
   normalizePromptSettings,
-  promptMatchesKeyword,
   promptPageCount,
 } from './effect-prompt-generation-state';
 
@@ -116,19 +115,6 @@ describe('effect prompt generation state', () => {
       targetCount: 100,
       defaultDurationSeconds: 5,
     });
-  });
-
-  it('matches id, content, fixed and secondary labels and six-dimensional labels', () => {
-    expect(promptMatchesKeyword(prompt, 'P001')).toBe(true);
-    expect(promptMatchesKeyword(prompt, '广式腊肠')).toBe(true);
-    expect(promptMatchesKeyword(prompt, '痛点悬念')).toBe(true);
-    expect(promptMatchesKeyword(prompt, '叙事结构')).toBe(true);
-    expect(promptMatchesKeyword(prompt, '温馨治愈')).toBe(true);
-    expect(promptMatchesKeyword(prompt, '钩子片段')).toBe(true);
-    expect(promptMatchesKeyword(prompt, '痛点片段')).toBe(true);
-    expect(promptMatchesKeyword(prompt, '产品关联点')).toBe(true);
-    expect(promptMatchesKeyword(prompt, '首帧')).toBe(true);
-    expect(promptMatchesKeyword(prompt, '不存在')).toBe(false);
   });
 
   it('keeps server pagination at ten prompts per page', () => {

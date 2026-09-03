@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type {
   EffectPromptDimensions,
   EffectPromptFragmentType,
+  EffectPromptInsightField,
   EffectPromptItem,
   EffectPromptOperation,
   EffectPromptRegenerationMode,
@@ -27,6 +28,7 @@ import type {
 } from '@ai-marketing/contracts';
 import {
   EFFECT_PROMPT_DIMENSIONS,
+  EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
@@ -259,16 +261,68 @@ const presentRun = (record: EffectPromptRunRecord): EffectPromptRun => ({
   updatedAt: record.updatedAt.toISOString(),
 });
 
+const PROMPT_INSIGHT_FIELD_LABELS: Record<EffectPromptInsightField, string> = {
+  PRODUCT_NAME: '产品名称',
+  PRODUCT_CATEGORY: '产品品类',
+  CORE_SPECIFICATION: '核心规格',
+  PRICE_RANGE: '确认价格',
+  VISUAL_FEATURES: '视觉特征',
+  CORE_SELLING_POINT: '核心卖点',
+  SECONDARY_SELLING_POINT: '次要卖点',
+  TRUST_BACKING: '信任背书',
+  TARGET_AUDIENCE: '目标受众',
+  CORE_PAIN_POINT: '核心痛点',
+  DECISION_DRIVER: '决策动机',
+  MARKETING_GOAL: '营销目标',
+  USAGE_SCENARIO: '使用场景',
+  PURCHASE_SCENARIO: '购买场景',
+  EMOTIONAL_SCENARIO: '情绪场景',
+  SOURCE_DURATION: '上游时长',
+  ASPECT_RATIO: '画幅',
+  RESOLUTION: '分辨率',
+  DELIVERY_CHANNELS: '投放渠道',
+  DISABLED_ELEMENT: '禁用元素',
+  VISUAL_STYLE_BASELINE: '视觉基线',
+};
+
+const normalizeSearchText = (value: string): string =>
+  value.normalize('NFKC').trim().toLocaleLowerCase('zh-CN');
+
+const searchTokens = (query: string): string[] => [
+  ...new Set(
+    normalizeSearchText(query)
+      .split(/[\s,，、;；/|｜]+/u)
+      .filter(Boolean),
+  ),
+];
+
 const searchable = (item: EffectPromptItem, query: string): boolean => {
-  const target = query.trim().toLocaleLowerCase('zh-CN');
-  if (!target) return true;
-  return [
-    item.code,
-    item.content,
-    item.fragmentType,
-    ...item.materialTags,
-    ...Object.values(item.dimensions),
-  ].some((value) => value.toLocaleLowerCase('zh-CN').includes(target));
+  const tokens = searchTokens(query);
+  if (!tokens.length) return true;
+  const searchableText = normalizeSearchText(
+    [
+      item.code,
+      item.content,
+      item.creativeCore,
+      item.fragmentType,
+      EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.fragmentType],
+      item.primaryPurpose,
+      EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[item.primaryPurpose],
+      ...item.compatiblePurposes.flatMap((purpose) => [
+        purpose,
+        EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[purpose],
+      ]),
+      ...item.materialTags,
+      `${item.targetDurationSeconds}秒`,
+      `${item.targetDurationSeconds} 秒`,
+      ...EFFECT_PROMPT_DIMENSIONS.flatMap(({ key, label }) => [label, item.dimensions[key]]),
+      ...item.insightBindings.flatMap(({ field, value }) => [
+        PROMPT_INSIGHT_FIELD_LABELS[field],
+        value,
+      ]),
+    ].join('\n'),
+  );
+  return tokens.every((token) => searchableText.includes(token));
 };
 
 const fragmentDisplayOrder = new Map(

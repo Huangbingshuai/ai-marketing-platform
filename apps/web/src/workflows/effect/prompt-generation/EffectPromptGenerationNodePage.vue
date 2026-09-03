@@ -327,6 +327,18 @@ const currentCountStats = computed(() => {
     excessCount: Math.max(0, actualCount - targetCount),
   };
 });
+const hasPromptFilters = computed(() => Boolean(keyword.value.trim() || purposeFilter.value));
+const promptResultCountLabel = computed(() =>
+  hasPromptFilters.value
+    ? `找到 ${resultData.value?.total ?? 0} 条 · 批次共 ${currentCountStats.value.actualCount} 条`
+    : `当前 ${currentCountStats.value.actualCount}/${currentCountStats.value.targetCount} 条 · ${
+        currentCountStats.value.missingCount
+          ? `缺少 ${currentCountStats.value.missingCount} 条`
+          : currentCountStats.value.excessCount
+            ? `超出 ${currentCountStats.value.excessCount} 条`
+            : '数量一致'
+      }`,
+);
 const currentRunning = computed(() => isPromptRunActive(currentState.value));
 const currentSemanticEvaluation = computed(() => currentMetrics.value?.semanticEvaluation ?? null);
 const currentSemanticDisplay = computed(() => {
@@ -807,6 +819,10 @@ const adjustSetting = (key: NumericPromptSetting, delta: number): void => {
 const togglePurposeFilter = (purpose: EffectPromptFragmentType): void => {
   purposeFilter.value = purposeFilter.value === purpose ? '' : purpose;
   page.value = 1;
+};
+const clearPromptSearch = (): void => {
+  keyword.value = '';
+  void nextTick(() => promptSearchInput.value?.focus());
 };
 
 async function flushSettings(productId = currentProductId.value): Promise<boolean> {
@@ -2129,23 +2145,25 @@ onBeforeUnmount(() => {
 
       <section class="effect-prompt-list" aria-label="Prompt 生成结果">
         <div class="effect-prompt-toolbar">
-          <label class="prompt-search"
-            ><Search :size="15" /><input
+          <div class="prompt-search" role="search">
+            <Search :size="15" /><input
               ref="promptSearchInput"
               v-model="keyword"
               type="search"
-              placeholder="搜索 ID / 画面 / 推荐用途 / 提炼依据 / 创意主线 / 六维创意"
-          /></label>
-          <span class="prompt-result-count">
-            当前 {{ currentCountStats.actualCount }}/{{ currentCountStats.targetCount }} 条 ·
-            {{
-              currentCountStats.missingCount
-                ? `缺少 ${currentCountStats.missingCount} 条`
-                : currentCountStats.excessCount
-                  ? `超出 ${currentCountStats.excessCount} 条`
-                  : '数量一致'
-            }}
-          </span>
+              aria-label="搜索 Prompt"
+              placeholder="搜索编号或多个关键词，例如：P012、厨房 果肉 特写"
+            />
+            <button
+              v-if="keyword"
+              class="prompt-search__clear"
+              type="button"
+              aria-label="清除搜索"
+              @click="clearPromptSearch"
+            >
+              <X :size="14" />
+            </button>
+          </div>
+          <span class="prompt-result-count">{{ promptResultCountLabel }}</span>
           <span
             class="prompt-semantic-rate"
             :class="`prompt-semantic-rate--${currentSemanticDisplay.state}`"
@@ -3923,6 +3941,26 @@ button:disabled {
   border: 0;
   outline: none;
   font-size: 13px;
+}
+.prompt-search__clear {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  padding: 0;
+  place-items: center;
+  color: #7d8ba0;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+.prompt-search__clear:hover {
+  color: #2563eb;
+  background: #eef4ff;
+}
+.prompt-search__clear:focus-visible {
+  outline: 2px solid #93b4ff;
+  outline-offset: 1px;
 }
 .prompt-result-count {
   margin-right: auto;

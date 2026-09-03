@@ -59,6 +59,16 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).not.toContain('fragmentTypeFilter');
   });
 
+  it('keeps purpose filters and explains predictable multi-keyword search', () => {
+    expect(pageSource).toContain('placeholder="搜索编号或多个关键词，例如：P012、厨房 果肉 特写"');
+    expect(pageSource).toContain('aria-label="搜索 Prompt"');
+    expect(pageSource).toContain('aria-label="清除搜索"');
+    expect(pageSource).toContain('@click="clearPromptSearch"');
+    expect(pageSource).toContain('找到 ${resultData.value?.total ?? 0} 条');
+    expect(pageSource).toContain('批次共 ${currentCountStats.value.actualCount} 条');
+    expect(pageSource).toContain('purposeFilter.value || undefined');
+  });
+
   it('shows the fixed semantic duplicate-rate result without restoring a user setting', () => {
     expect(pageSource).toContain('currentSemanticDisplay');
     expect(pageSource).toContain('语义重复度 ${evaluation.duplicateRate.toFixed(1)}%');

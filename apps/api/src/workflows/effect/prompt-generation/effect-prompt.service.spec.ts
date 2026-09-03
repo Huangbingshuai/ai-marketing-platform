@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import type { EffectPromptItem } from '@ai-marketing/contracts';
 import {
   DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
@@ -847,30 +848,45 @@ describe('EffectPromptService settings contract', () => {
     expect(repository.mutateResult).not.toHaveBeenCalled();
   });
 
-  it('combines full-text search with the strict fragment-type filter', async () => {
+  it('combines multi-keyword search with the existing purpose filter', async () => {
     const timestamp = '2026-08-25T00:00:00.000Z';
-    const makeItem = (id: string, fragmentType: 'HOOK' | 'CTA', content: string) => ({
+    const makeItem = (
+      id: string,
+      fragmentType: 'HOOK' | 'CTA',
+      content: string,
+    ): EffectPromptItem => ({
       id,
       code: id,
       origin: 'AI' as const,
       fragmentType,
       primaryPurpose: fragmentType,
-      compatiblePurposes: [fragmentType],
+      compatiblePurposes: id === 'hook-kitchen' ? [fragmentType, 'PAIN'] : [fragmentType],
       classificationStatus: 'VERIFIED' as const,
       productRelevance: 80,
-      materialTags: [fragmentType === 'HOOK' ? '钩子' : '转化'],
+      materialTags: [fragmentType === 'HOOK' ? '首帧' : '转化'],
       targetDurationSeconds: 5,
-      creativeCore: `创意主线-${id}`,
+      creativeCore: id === 'hook-kitchen' ? '用果肉悬念引出酸甜口感' : `创意主线-${id}`,
       dimensions: {
         narrative: `叙事-${id}`,
         scene: `场景-${id}`,
         persona: `人物-${id}`,
         productRelation: `产品关联-${id}`,
-        camera: `镜头-${id}`,
+        camera: id === 'hook-kitchen' ? '近景缓慢推进' : `镜头-${id}`,
         emotion: `情绪-${id}`,
       },
       content,
-      insightBindings: [],
+      insightBindings:
+        id === 'hook-kitchen'
+          ? [
+              {
+                factId: 'fact-selling-point',
+                field: 'CORE_SELLING_POINT' as const,
+                value: '酸甜咸鲜复合口感',
+                valueHash: 'a'.repeat(64),
+                role: 'PRIMARY' as const,
+              },
+            ]
+          : [],
       manualEdited: false,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -901,12 +917,42 @@ describe('EffectPromptService settings contract', () => {
       'product-a',
       1,
       10,
-      '家庭厨房',
+      '家庭 近景',
       'HOOK',
     );
 
     expect(output.total).toBe(1);
     expect(output.items.map(({ id }) => id)).toEqual(['hook-kitchen']);
+
+    const businessFields = await service.result(
+      'project-a',
+      'workflow-a',
+      'product-a',
+      1,
+      10,
+      '果肉悬念 核心卖点 酸甜咸鲜 5秒',
+    );
+    expect(businessFields.items.map(({ id }) => id)).toEqual(['hook-kitchen']);
+
+    const purposeLabel = await service.result(
+      'project-a',
+      'workflow-a',
+      'product-a',
+      1,
+      10,
+      '钩子片段',
+    );
+    expect(purposeLabel.total).toBe(2);
+
+    const allTermsRequired = await service.result(
+      'project-a',
+      'workflow-a',
+      'product-a',
+      1,
+      10,
+      '家庭 户外',
+    );
+    expect(allTermsRequired.total).toBe(0);
   });
 
   it('groups the default result list by fragment workflow order before pagination', async () => {
