@@ -198,6 +198,17 @@ export type EffectExtractionProvenance = {
   itemOrigins: Partial<Record<keyof EffectExtractionResult, EffectExtractionProvenanceItem[]>>;
 };
 
+/**
+ * Display-only summary of the image branch after semantic refinement. Counts
+ * explain why a completed run may contain no image-origin values without
+ * changing the extraction result or its revision.
+ */
+export type EffectExtractionImageRecognitionSummary = {
+  processedImageCount: number;
+  candidateSuggestionCount: number;
+  retainedSuggestionCount: number;
+};
+
 export type EffectExtractionProductState = {
   projectId: string;
   draftId: string;
@@ -209,6 +220,7 @@ export type EffectExtractionProductState = {
   resultRevision: number | null;
   result: EffectExtractionResult | null;
   provenance: EffectExtractionProvenance;
+  imageRecognitionSummary: EffectExtractionImageRecognitionSummary | null;
   manualOverrideFields: string[];
   progress: number;
   currentNode: string | null;

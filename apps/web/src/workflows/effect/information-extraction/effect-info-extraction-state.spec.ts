@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  cloneExtractionProductState,
   cloneExtractionResult,
   isExtractionReadyForNext,
   isExtractionRunning,
@@ -45,6 +46,7 @@ const state = (status: EffectExtractionProductState['status']): EffectExtraction
   resultRevision: 2,
   result,
   provenance: { fieldOrigins: {}, fieldSourceNames: {}, itemOrigins: {} },
+  imageRecognitionSummary: null,
   manualOverrideFields: [],
   progress: status === 'COMPLETED' ? 100 : 0,
   currentNode: null,
@@ -117,6 +119,22 @@ describe('effect info extraction state', () => {
     expect(
       state('COMPLETED').provenance.itemOrigins.coreSellingPoints?.[0]?.semanticNotices,
     ).toBeUndefined();
+  });
+
+  it('clones the image recognition display summary independently', () => {
+    const original = {
+      ...state('COMPLETED'),
+      imageRecognitionSummary: {
+        processedImageCount: 3,
+        candidateSuggestionCount: 12,
+        retainedSuggestionCount: 0,
+      },
+    };
+
+    const cloned = cloneExtractionProductState(original);
+    cloned.imageRecognitionSummary!.candidateSuggestionCount = 9;
+
+    expect(original.imageRecognitionSummary.candidateSuggestionCount).toBe(12);
   });
 
   it('normalizes a historical uppercase resolution for the fixed selector', () => {

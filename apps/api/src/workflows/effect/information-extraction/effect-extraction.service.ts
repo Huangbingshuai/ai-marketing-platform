@@ -4,6 +4,7 @@ import { rm } from 'node:fs/promises';
 import type {
   EffectExtractionNodeExecution,
   EffectExtractionNodeId,
+  EffectExtractionImageRecognitionSummary,
   EffectExtractionProductState,
   EffectExtractionProvenance,
   EffectExtractionResult,
@@ -431,6 +432,7 @@ export class EffectExtractionService {
           resultRevision: result?.revision ?? null,
           result: resultV2,
           provenance,
+          imageRecognitionSummary: extractionImageRecognitionSummary(run?.branches ?? []),
           manualOverrideFields,
           progress: run?.progress ?? 0,
           currentNode: run?.currentNode ?? null,
@@ -926,6 +928,54 @@ const branchCandidates = (structuredOutput: unknown): Record<string, unknown>[] 
   return candidates;
 };
 
+const nonNegativeInteger = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
+
+export const extractionImageRecognitionSummary = (
+  branches: readonly ExtractionOriginBranch[],
+): EffectExtractionImageRecognitionSummary | null => {
+  const imageBranch = branches.find(({ branch }) => branch === 'IMAGE');
+  const semanticBranch = branches.find(({ branch }) => branch === 'SEMANTIC_REFINEMENT');
+  if (
+    !imageBranch?.structuredOutput ||
+    typeof imageBranch.structuredOutput !== 'object' ||
+    Array.isArray(imageBranch.structuredOutput) ||
+    !semanticBranch?.structuredOutput ||
+    typeof semanticBranch.structuredOutput !== 'object' ||
+    Array.isArray(semanticBranch.structuredOutput)
+  )
+    return null;
+
+  const imagePayload = imageBranch.structuredOutput as Record<string, unknown>;
+  const processedImageCount = Array.isArray(imagePayload.items)
+    ? imagePayload.items.filter((item) => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+        const candidate = (item as Record<string, unknown>).candidate;
+        return Boolean(candidate && typeof candidate === 'object' && !Array.isArray(candidate));
+      }).length
+    : 0;
+  const semanticPayload = semanticBranch.structuredOutput as Record<string, unknown>;
+  const metadata = semanticPayload.metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  const candidateSuggestionCount = nonNegativeInteger(
+    (metadata as Record<string, unknown>).imageSuggestionInputCount,
+  );
+  const retainedSuggestionCount = nonNegativeInteger(
+    (metadata as Record<string, unknown>).imageSuggestionKeptCount,
+  );
+  if (
+    processedImageCount === 0 ||
+    candidateSuggestionCount === null ||
+    retainedSuggestionCount === null
+  )
+    return null;
+  return {
+    processedImageCount,
+    candidateSuggestionCount,
+    retainedSuggestionCount,
+  };
+};
+
 const candidateFieldValues = (
   candidates: readonly Record<string, unknown>[],
   field: keyof EffectExtractionResult,
@@ -994,9 +1044,7 @@ const SEMANTIC_FIELD_LAYERS: Record<EffectExtractionSemanticField, string> = {
   emotionalScenarios: 'SCENARIO',
 };
 
-const semanticFieldFromFactId = (
-  factId: string,
-): EffectExtractionSemanticField | null =>
+const semanticFieldFromFactId = (factId: string): EffectExtractionSemanticField | null =>
   [...SEMANTIC_NOTICE_FIELDS].find((field) => factId.startsWith(`user-${field}-`)) ?? null;
 
 const safeSemanticValue = (value: unknown): string =>

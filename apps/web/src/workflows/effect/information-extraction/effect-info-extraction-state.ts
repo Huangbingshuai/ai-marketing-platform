@@ -74,6 +74,9 @@ export const cloneExtractionProductState = (
   value: EffectExtractionProductState,
 ): EffectExtractionProductState => ({
   ...value,
+  imageRecognitionSummary: value.imageRecognitionSummary
+    ? { ...value.imageRecognitionSummary }
+    : null,
   warnings: value.warnings.map((warning) => ({ ...warning })),
   provenance: {
     fieldOrigins: { ...value.provenance.fieldOrigins },
@@ -104,6 +107,9 @@ export const toExtractionProductState = (
   value: EffectExtractionProductDto,
 ): EffectExtractionProductState => ({
   ...value,
+  imageRecognitionSummary: value.imageRecognitionSummary
+    ? { ...value.imageRecognitionSummary }
+    : null,
   warnings: value.warnings.map((warning) => ({ ...warning })),
   provenance: value.provenance
     ? {

@@ -8,7 +8,10 @@ import type { JobProgressStore } from '../../../platform/job/job.ports';
 import type { ProjectService } from '../../../platform/project/project.service';
 import type { EffectExtractionRepository } from './effect-extraction.repository';
 import { WorkerArtifactDto } from './dto/effect-extraction.dto';
-import { EffectExtractionService } from './effect-extraction.service';
+import {
+  EffectExtractionService,
+  extractionImageRecognitionSummary,
+} from './effect-extraction.service';
 
 const projectService = (): ProjectService =>
   ({ get: vi.fn().mockResolvedValue({ id: 'project-a' }) }) as unknown as ProjectService;
@@ -69,6 +72,47 @@ const runRecord = {
 };
 
 describe('EffectExtractionService', () => {
+  it('summarizes successful image recognition with no retained incremental facts', () => {
+    expect(
+      extractionImageRecognitionSummary([
+        {
+          branch: 'IMAGE',
+          structuredOutput: {
+            items: [
+              { candidate: { coreSellingPoints: ['图片候选一'] } },
+              { candidate: { usageScenarios: ['图片候选二'] } },
+              { status: 'FAILED' },
+            ],
+          },
+        },
+        {
+          branch: 'SEMANTIC_REFINEMENT',
+          structuredOutput: {
+            metadata: {
+              imageSuggestionInputCount: 12,
+              imageSuggestionKeptCount: 0,
+            },
+          },
+        },
+      ]),
+    ).toEqual({
+      processedImageCount: 2,
+      candidateSuggestionCount: 12,
+      retainedSuggestionCount: 0,
+    });
+  });
+
+  it('does not invent an image recognition summary for historical runs without counts', () => {
+    expect(
+      extractionImageRecognitionSummary([
+        {
+          branch: 'IMAGE',
+          structuredOutput: { items: [{ candidate: { visualFeatures: '可见外观' } }] },
+        },
+      ]),
+    ).toBeNull();
+  });
+
   it('loads node details through the project-scoped run lookup', async () => {
     const repository = {
       run: vi.fn().mockResolvedValue({

@@ -12,6 +12,7 @@ import {
   EFFECT_EXTRACTION_MAX_TRUST_BACKINGS,
   EFFECT_EXTRACTION_PRODUCT_STATUSES,
   EFFECT_EXTRACTION_SCHEMA_VERSION,
+  type EffectExtractionImageRecognitionSummary,
   type EffectExtractionResult,
 } from './effect-extraction';
 
@@ -41,6 +42,20 @@ const result: EffectExtractionResult = {
 };
 
 describe('effect extraction contract', () => {
+  it('keeps the image recognition summary display-only and count based', () => {
+    const summary: EffectExtractionImageRecognitionSummary = {
+      processedImageCount: 3,
+      candidateSuggestionCount: 12,
+      retainedSuggestionCount: 0,
+    };
+
+    expect(summary).toEqual({
+      processedImageCount: 3,
+      candidateSuggestionCount: 12,
+      retainedSuggestionCount: 0,
+    });
+  });
+
   it('keeps the public result aligned with the canonical JSON schema', () => {
     const schema = JSON.parse(
       readFileSync(resolve(process.cwd(), 'schemas/effect-extraction-result.schema.json'), 'utf8'),

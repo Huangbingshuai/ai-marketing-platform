@@ -147,6 +147,8 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain('EffectUpwardCreatableSelect');
     expect(pageSource).toContain('v-model="newDisabledElement"');
     expect(pageSource).toContain('图片识别补充 ·');
+    expect(pageSource).toContain('图片识别已完成，本次没有新增信息');
+    expect(pageSource).toContain('imageRecognitionWithoutNewFacts');
     expect(pageSource).toContain("if (!shouldShowOrigin(origin)) return ''");
     expect(pageSource).toContain('originSourceLabel');
     expect(pageSource).toContain('origin-chip');

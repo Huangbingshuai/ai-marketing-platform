@@ -154,6 +154,10 @@ const readyForNext = computed(
     ),
 );
 const currentRunning = computed(() => isExtractionRunning(currentState.value));
+const imageRecognitionWithoutNewFacts = computed(() => {
+  const summary = currentState.value?.imageRecognitionSummary;
+  return summary && summary.retainedSuggestionCount === 0 ? summary : null;
+});
 const queueWaitingTooLong = computed(
   () =>
     currentState.value?.status === 'QUEUED' &&
@@ -1505,6 +1509,18 @@ onBeforeUnmount(() => {
         <button v-if="saveConflict" type="button" @click="loadLatestResult">
           <RefreshCw :size="13" />加载最新结果
         </button>
+      </div>
+
+      <div v-if="imageRecognitionWithoutNewFacts" class="state-alert information" role="status">
+        <AlertCircle :size="17" />
+        <div>
+          <strong>图片识别已完成，本次没有新增信息</strong>
+          <p>
+            已分析 {{ imageRecognitionWithoutNewFacts.processedImageCount }} 张图片，产生
+            {{ imageRecognitionWithoutNewFacts.candidateSuggestionCount }}
+            条候选信息；经与已有资料和字段容量核对，没有需要新增到信息卡的图片补充。
+          </p>
+        </div>
       </div>
 
       <div class="product-info-layout">
@@ -2918,6 +2934,11 @@ button:disabled {
   color: #2559a7;
   background: #eef4ff;
   border: 1px solid #cfe0ff;
+}
+.state-alert.information {
+  color: #35658a;
+  background: #f1f8fc;
+  border: 1px solid #cfe5f2;
 }
 .run-progress {
   display: block;
