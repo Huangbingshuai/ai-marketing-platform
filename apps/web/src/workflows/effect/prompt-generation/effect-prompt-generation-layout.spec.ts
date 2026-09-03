@@ -82,9 +82,9 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('prompt-semantic-rate--');
   });
 
-  it('uses product relation as the fourth creative dimension', () => {
-    expect(pageSource).toContain("['productRelation']");
-    expect(pageSource).toContain("key !== 'productRelation'");
+  it('renders the shared six dimensions without asking users to lock them', () => {
+    expect(pageSource).toContain('v-for="dimension in EFFECT_PROMPT_DIMENSIONS"');
+    expect(pageSource).not.toContain('regenerationPreservedDimensions');
     expect(pageSource).toContain('查看提炼信息依据');
     expect(pageSource).toContain('itemInsightFacts(item)');
     expect(pageSource).toContain('{{ fact.value }}');
@@ -124,7 +124,13 @@ describe('effect prompt generation current layout', () => {
       expect(pageSource).toContain(handler);
     expect(pageSource).toContain('requestActionConfirmation');
     expect(pageSource).not.toContain('prompt-delete-dialog');
-    expect(pageSource).toContain('regenerationMode: regenerationMode.value');
+    expect(pageSource).toContain("regenerationMode: 'AUTO_DIVERSE'");
+    expect(pageSource).not.toContain('希望怎么重做？');
+    expect(pageSource).not.toContain('保留内容（高级设置）');
+    expect(pageSource).not.toContain('保留产品关联，换种表现');
+    expect(pageSource).not.toContain('彻底换一个创意');
+    expect(pageSource).not.toContain('按修改意见重做');
+    expect(pageSource).toContain('系统会自动生成 3 个不同方向');
     expect(pageSource).toContain('生成 3 个备选');
     expect(pageSource).toContain('采用这个方案');
     expect(pageSource).toContain('撤销本次替换');

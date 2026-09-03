@@ -12,7 +12,6 @@ import type {
   EffectPromptProductState,
   EffectPromptPurposeMatchMode,
   EffectPromptRun,
-  EffectPromptRegenerationMode,
   EffectPromptRegenerationReason,
   EffectPromptStageStatus,
   EffectVideoConfig,
@@ -149,9 +148,7 @@ const promptSearchInput = ref<HTMLInputElement | null>(null);
 
 const regenerationDialogOpen = ref(false);
 const regenerationCandidate = ref<EffectPromptItem | null>(null);
-const regenerationMode = ref<EffectPromptRegenerationMode>('PRESERVE_PRODUCT_RELATION');
 const regenerationReasons = ref<EffectPromptRegenerationReason[]>([]);
-const regenerationPreservedDimensions = ref<EffectPromptDimensionKey[]>(['productRelation']);
 const regenerationInstruction = ref('');
 const regenerationSaving = ref(false);
 const regenerationApplying = ref(false);
@@ -402,27 +399,6 @@ const graphRows = computed<EffectPromptNodeId[][]>(() =>
   buildEffectPromptGraphRows(currentGraphNodeIds.value, currentGraphEdges.value),
 );
 
-const regenerationModeOptions: Array<{
-  value: EffectPromptRegenerationMode;
-  title: string;
-  description: string;
-}> = [
-  {
-    value: 'PRESERVE_PRODUCT_RELATION',
-    title: '保留产品关联，换种表现',
-    description: '保留当前已确认事实，重点改变场景、动作、叙事或镜头。',
-  },
-  {
-    value: 'NEW_CREATIVE',
-    title: '彻底换一个创意',
-    description: '允许从信息卡的已确认事实中选择新的产品关联方向。',
-  },
-  {
-    value: 'CUSTOM',
-    title: '按修改意见重做',
-    description: '优先执行你填写的要求，同时遵守事实和共用约束。',
-  },
-];
 const regenerationReasonOptions: Array<{
   value: EffectPromptRegenerationReason;
   label: string;
@@ -443,9 +419,6 @@ const regenerationRunning = computed(
   () =>
     currentRun.value?.id === regenerationRunId.value &&
     (currentRun.value.status === 'QUEUED' || currentRun.value.status === 'RUNNING'),
-);
-const regenerationInputValid = computed(
-  () => regenerationMode.value !== 'CUSTOM' || regenerationInstruction.value.trim().length > 0,
 );
 const selectedRegenerationCandidate = computed(() =>
   regenerationPreview.value?.candidates.find(
@@ -936,9 +909,7 @@ const openRegenerationDialog = async (item: EffectPromptItem, event?: Event): Pr
   regenerationTrigger.value =
     event?.currentTarget instanceof HTMLElement ? event.currentTarget : null;
   regenerationCandidate.value = item;
-  regenerationMode.value = 'PRESERVE_PRODUCT_RELATION';
   regenerationReasons.value = [];
-  regenerationPreservedDimensions.value = ['productRelation'];
   regenerationInstruction.value = '';
   const previousRun = currentRun.value;
   regenerationRunId.value =
@@ -958,7 +929,6 @@ const closeRegenerationDialog = (): void => {
   regenerationDialogOpen.value = false;
   regenerationCandidate.value = null;
   regenerationReasons.value = [];
-  regenerationPreservedDimensions.value = ['productRelation'];
   regenerationInstruction.value = '';
   regenerationRunId.value = null;
   selectedRegenerationCandidateId.value = null;
@@ -967,28 +937,10 @@ const closeRegenerationDialog = (): void => {
   nextTick(() => trigger?.focus());
 };
 
-const selectRegenerationMode = (mode: EffectPromptRegenerationMode): void => {
-  regenerationMode.value = mode;
-  regenerationPreservedDimensions.value =
-    mode === 'NEW_CREATIVE'
-      ? regenerationPreservedDimensions.value.filter(
-          (key): key is EffectPromptDimensionKey => key !== 'productRelation',
-        )
-      : ([
-          ...new Set([...regenerationPreservedDimensions.value, 'productRelation']),
-        ] as EffectPromptDimensionKey[]);
-};
-
 const toggleRegenerationReason = (reason: EffectPromptRegenerationReason): void => {
   regenerationReasons.value = regenerationReasons.value.includes(reason)
     ? regenerationReasons.value.filter((value) => value !== reason)
     : [...regenerationReasons.value, reason];
-};
-
-const togglePreservedDimension = (key: EffectPromptDimensionKey): void => {
-  regenerationPreservedDimensions.value = regenerationPreservedDimensions.value.includes(key)
-    ? regenerationPreservedDimensions.value.filter((value) => value !== key)
-    : [...regenerationPreservedDimensions.value, key];
 };
 
 const regenerateItem = async (): Promise<void> => {
@@ -1003,10 +955,6 @@ const regenerateItem = async (): Promise<void> => {
     regenerationSaving.value
   )
     return;
-  if (regenerationMode.value === 'CUSTOM' && !regenerationInstruction.value.trim()) {
-    showNotice('请填写希望如何修改这条 Prompt', 'warning');
-    return;
-  }
   operationController?.abort();
   const controller = new AbortController();
   operationController = controller;
@@ -1019,9 +967,8 @@ const regenerateItem = async (): Promise<void> => {
         workflowRunId: props.workflowRunId,
         operation: 'ITEM_REGENERATE',
         targetItemId: item.id,
-        regenerationMode: regenerationMode.value,
+        regenerationMode: 'AUTO_DIVERSE',
         regenerationReasons: regenerationReasons.value,
-        preservedDimensions: regenerationPreservedDimensions.value,
         ...(regenerationInstruction.value.trim()
           ? { regenerationInstruction: regenerationInstruction.value.trim() }
           : {}),
@@ -2560,25 +2507,13 @@ onBeforeUnmount(() => {
           </details>
 
           <template v-if="!regenerationPreview">
-            <section class="regeneration-section">
-              <header>
-                <strong>希望怎么重做？</strong>
-                <span>系统会生成 3 个备选，采用前不会覆盖当前内容。</span>
-              </header>
-              <div class="regeneration-mode-grid">
-                <button
-                  v-for="option in regenerationModeOptions"
-                  :key="option.value"
-                  type="button"
-                  :class="{ active: regenerationMode === option.value }"
-                  :disabled="regenerationRunning || regenerationSaving"
-                  @click="selectRegenerationMode(option.value)"
-                >
-                  <strong>{{ option.title }}</strong>
-                  <span>{{ option.description }}</span>
-                </button>
-              </div>
-            </section>
+            <div class="regeneration-strategy-note">
+              <Sparkles :size="17" />
+              <p>
+                <strong>系统会自动生成 3 个不同方向</strong>
+                <span>分别尝试换种表现、更换产品重点和针对你的意见优化，采用前不会覆盖原文。</span>
+              </p>
+            </div>
 
             <section class="regeneration-section">
               <header>
@@ -2599,29 +2534,8 @@ onBeforeUnmount(() => {
               </div>
             </section>
 
-            <details class="regeneration-advanced">
-              <summary>保留内容（高级设置）</summary>
-              <p>勾选的内容保持原有业务含义，其余维度由模型重新设计。</p>
-              <div class="regeneration-lock-grid">
-                <label v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key">
-                  <input
-                    type="checkbox"
-                    :checked="regenerationPreservedDimensions.includes(dimension.key)"
-                    :disabled="regenerationRunning || regenerationSaving"
-                    @change="togglePreservedDimension(dimension.key)"
-                  />
-                  <span
-                    ><strong>{{ dimension.label }}</strong
-                    >{{ regenerationCandidate.dimensions[dimension.key] }}</span
-                  >
-                </label>
-              </div>
-            </details>
-
             <label class="regeneration-instruction">
-              <span
-                >修改意见 <em>{{ regenerationMode === 'CUSTOM' ? '必填' : '可选' }}</em></span
-              >
+              <span>具体要求 <em>可选</em></span>
               <textarea
                 v-model="regenerationInstruction"
                 maxlength="500"
@@ -2700,7 +2614,7 @@ onBeforeUnmount(() => {
                 v-if="!regenerationPreview"
                 class="primary-button"
                 type="button"
-                :disabled="regenerationSaving || regenerationRunning || !regenerationInputValid"
+                :disabled="regenerationSaving || regenerationRunning"
                 @click="regenerateItem"
               >
                 <LoaderCircle v-if="regenerationSaving" class="spin" :size="14" />
@@ -4649,9 +4563,34 @@ button:disabled {
 
 .regeneration-section,
 .regeneration-results,
-.regeneration-advanced,
 .regeneration-running {
   margin: 0 24px 16px;
+}
+
+.regeneration-strategy-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 24px 16px;
+  border: 1px solid #d7e4fb;
+  border-radius: 12px;
+  background: #f5f8ff;
+  color: #2f67c9;
+  padding: 12px 14px;
+}
+
+.regeneration-strategy-note p,
+.regeneration-strategy-note strong,
+.regeneration-strategy-note span {
+  display: block;
+  margin: 0;
+}
+
+.regeneration-strategy-note span {
+  margin-top: 3px;
+  color: #6f7f9b;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .regeneration-section > header,
@@ -4665,19 +4604,11 @@ button:disabled {
 
 .regeneration-section > header span,
 .regeneration-results > header span,
-.regeneration-advanced > p,
 .regeneration-running span {
   color: #7d8ba5;
   font-size: 12px;
 }
 
-.regeneration-mode-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.regeneration-mode-grid button,
 .regeneration-candidate-tabs button {
   border: 1px solid #dbe5f6;
   border-radius: 12px;
@@ -4686,24 +4617,6 @@ button:disabled {
   text-align: left;
 }
 
-.regeneration-mode-grid button {
-  min-height: 86px;
-  padding: 12px;
-}
-
-.regeneration-mode-grid button strong,
-.regeneration-mode-grid button span {
-  display: block;
-}
-
-.regeneration-mode-grid button span {
-  margin-top: 6px;
-  color: #7d8ba5;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.regeneration-mode-grid button.active,
 .regeneration-candidate-tabs button.active {
   border-color: #2f67ed;
   background: #f3f7ff;
@@ -4733,52 +4646,6 @@ button:disabled {
   border-color: #9ab8ff;
   background: #eaf1ff;
   color: #2458c8;
-}
-
-.regeneration-advanced {
-  border: 1px solid #e2e9f5;
-  border-radius: 12px;
-  padding: 12px 14px;
-}
-
-.regeneration-advanced summary {
-  cursor: pointer;
-  color: #43536f;
-  font-weight: 700;
-}
-
-.regeneration-lock-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.regeneration-lock-grid label {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  border-radius: 9px;
-  background: #f7f9fd;
-  padding: 9px;
-}
-
-.regeneration-lock-grid span,
-.regeneration-lock-grid strong {
-  display: block;
-}
-
-.regeneration-lock-grid span {
-  min-width: 0;
-  color: #74819a;
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.regeneration-lock-grid strong {
-  margin-bottom: 3px;
-  color: #354560;
-  font-size: 12px;
 }
 
 .regeneration-running,
@@ -6305,8 +6172,6 @@ button:disabled {
   .prompt-dialog-backdrop {
     padding: 10px;
   }
-  .regeneration-mode-grid,
-  .regeneration-lock-grid,
   .regeneration-candidate-tabs {
     grid-template-columns: 1fr;
   }

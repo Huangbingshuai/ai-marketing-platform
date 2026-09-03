@@ -13,7 +13,6 @@ from .models import (
     InsightField,
 )
 
-
 _PRIMARY_FIELD_ORDER = (
     InsightField.CORE_SELLING_POINT,
     InsightField.CORE_PAIN_POINT,
@@ -180,6 +179,54 @@ def allocate_regeneration_facts(
         ordinal_start=ordinal_start,
         preferred_fact_ids=(),
     )
+
+
+def allocate_automatic_regeneration_facts(
+    application: InsightApplicationMap,
+    *,
+    ordinal_start: int,
+    original_fact_ids: Sequence[str],
+) -> list[CreativeFactAssignment]:
+    """Give the three automatic options stable, intentionally different fact scopes.
+
+    The first and third candidates keep the verified fact bundle so changing the
+    presentation or following a narrow user note cannot silently change the
+    product message. The middle candidate rotates to another confirmed anchor
+    when the information card has one. Creative meaning remains model-owned;
+    this helper only assigns verified IDs.
+    """
+
+    preserved_first = allocate_regeneration_facts(
+        application,
+        count=1,
+        ordinal_start=ordinal_start,
+        original_fact_ids=original_fact_ids,
+        preserve_product_relation=True,
+    )[0]
+    preserved_feedback = allocate_regeneration_facts(
+        application,
+        count=1,
+        ordinal_start=ordinal_start + 2,
+        original_fact_ids=original_fact_ids,
+        preserve_product_relation=True,
+    )[0]
+    original_set = set(preserved_first.fact_ids)
+    alternatives = allocate_creative_facts(
+        application,
+        count=max(3, len(application.usable)),
+        ordinal_start=ordinal_start + 1,
+        preferred_fact_ids=(),
+    )
+    changed = next(
+        (
+            assignment
+            for assignment in alternatives
+            if assignment.fact_ids[0] not in original_set
+            or set(assignment.fact_ids) != original_set
+        ),
+        alternatives[0],
+    )
+    return [preserved_first, changed, preserved_feedback]
 
 
 def assignment_for_direction(

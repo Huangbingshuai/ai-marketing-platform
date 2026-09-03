@@ -118,6 +118,7 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
                 ),
                 coverage_focus_fact_ids=[pain_fact.fact_id],
                 preferred_fact_ids=[primary_fact.fact_id],
+                regeneration_variant_role="PRESENTATION_VARIATION",
             )
         ],
     )
@@ -180,6 +181,7 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
             shard,
             application=application,
             shared_prompt=_shared_prompt(),
+            regeneration_context={"mode": "AUTO_DIVERSE", "instruction": ""},
         )
     finally:
         await provider.aclose()
@@ -202,6 +204,8 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
     assert "coverageFocusFactIds" in prompt
     assert "事实曾被独立评估器判定为尚未真正落实" in prompt
     assert "productSnapshot" in prompt
+    assert '"regenerationVariantRole": "PRESENTATION_VARIATION"' in prompt
+    assert "AUTO_DIVERSE" in prompt
     assert "visualTask" not in prompt
     assert "businessContext" not in prompt
     assert "valueHash" not in prompt

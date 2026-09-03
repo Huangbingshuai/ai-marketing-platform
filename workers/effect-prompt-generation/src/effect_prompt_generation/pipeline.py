@@ -112,6 +112,7 @@ from .creative_directions import (
     validate_semantic_profile,
 )
 from .fact_allocation import (
+    allocate_automatic_regeneration_facts,
     allocate_creative_facts,
     allocate_regeneration_facts,
     assignment_for_direction,
@@ -1548,15 +1549,23 @@ class PromptGenerationPipeline:
                 for index, direction in enumerate(directions)
             ]
         elif snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item:
-            fact_assignments = allocate_regeneration_facts(
-                application,
-                count=requested,
-                ordinal_start=ordinal_start,
-                original_fact_ids=preferred_item_fact_ids,
-                preserve_product_relation=(
-                    snapshot.regeneration_mode != "NEW_CREATIVE"
-                    or "productRelation" in snapshot.preserved_dimensions
-                ),
+            fact_assignments = (
+                allocate_automatic_regeneration_facts(
+                    application,
+                    ordinal_start=ordinal_start,
+                    original_fact_ids=preferred_item_fact_ids,
+                )
+                if snapshot.regeneration_mode == "AUTO_DIVERSE" and requested == 3
+                else allocate_regeneration_facts(
+                    application,
+                    count=requested,
+                    ordinal_start=ordinal_start,
+                    original_fact_ids=preferred_item_fact_ids,
+                    preserve_product_relation=(
+                        snapshot.regeneration_mode != "NEW_CREATIVE"
+                        or "productRelation" in snapshot.preserved_dimensions
+                    ),
+                )
             )
         else:
             fact_assignments = allocate_creative_facts(
@@ -1597,6 +1606,17 @@ class PromptGenerationPipeline:
                 ),
                 sibling_variant_total=(
                     sibling_positions[index][1] if directions else 1
+                ),
+                regeneration_variant_role=(
+                    (
+                        "PRESENTATION_VARIATION",
+                        "PRODUCT_FOCUS_VARIATION",
+                        "FEEDBACK_OPTIMIZATION",
+                    )[index]
+                    if snapshot.operation == "ITEM_REGENERATE"
+                    and snapshot.regeneration_mode == "AUTO_DIVERSE"
+                    and requested == 3
+                    else None
                 ),
                 coverage_focus_fact_ids=(
                     [
@@ -1726,6 +1746,11 @@ class PromptGenerationPipeline:
                             "regeneration_context": (
                                 {
                                     "originalPrompt": snapshot.target_item.content,
+                                    "originalDimensions": (
+                                        snapshot.target_item.dimensions.model_dump(
+                                            mode="json", by_alias=True
+                                        )
+                                    ),
                                     "instruction": snapshot.regeneration_instruction
                                     or "",
                                     "replacementDimensions": (
@@ -1736,7 +1761,7 @@ class PromptGenerationPipeline:
                                         else None
                                     ),
                                     "mode": snapshot.regeneration_mode
-                                    or "PRESERVE_PRODUCT_RELATION",
+                                    or "AUTO_DIVERSE",
                                     "reasons": snapshot.regeneration_reasons,
                                     "preservedDimensions": snapshot.preserved_dimensions,
                                 }

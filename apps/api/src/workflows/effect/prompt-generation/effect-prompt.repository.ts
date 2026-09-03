@@ -418,11 +418,14 @@ export class EffectPromptRepository {
               targetItemIndex,
               replacementDimensions: input.replacementDimensions ?? undefined,
               regenerationInstruction: input.regenerationInstruction ?? null,
-              regenerationMode: input.regenerationMode ?? 'PRESERVE_PRODUCT_RELATION',
+              regenerationMode: input.regenerationMode ?? 'AUTO_DIVERSE',
               regenerationReasons: [...new Set(input.regenerationReasons ?? [])],
               preservedDimensions: [
                 ...new Set<EffectPromptDimensionKey>(
-                  input.preservedDimensions ?? ['productRelation'],
+                  input.preservedDimensions ??
+                    (input.regenerationMode && input.regenerationMode !== 'AUTO_DIVERSE'
+                      ? ['productRelation']
+                      : []),
                 ),
               ],
             }

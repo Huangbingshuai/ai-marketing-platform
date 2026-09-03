@@ -1379,6 +1379,76 @@ async def test_item_evaluate_marks_hard_issues_as_needing_revision() -> None:
 
 
 @pytest.mark.asyncio
+async def test_item_regenerate_automatically_assigns_three_complementary_roles() -> None:
+    snapshot = _snapshot()
+    now = "2026-09-03T10:00:00Z"
+    target = PromptItem(
+        id="prompt-to-regenerate",
+        code="P021",
+        origin="AI",
+        fragment_type=FragmentType.PRODUCT_DISPLAY,
+        primary_purpose=FragmentType.PRODUCT_DISPLAY,
+        compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+        classification_status="VERIFIED",
+        product_relevance=90,
+        target_duration_seconds=15,
+        creative_core="家庭餐桌上展示产品",
+        dimensions=CreativeDimensions(
+            narrative="场景代入",
+            scene="家庭餐桌",
+            persona="成年家庭成员",
+            product_relation="家庭用餐搭配",
+            camera="中近景跟随",
+            emotion="温暖自然",
+        ),
+        content="家庭餐桌上，成年人把广式腊肠端到桌面中央，镜头跟随盘子停稳。",
+        insight_bindings=[],
+        manual_edited=False,
+        created_at=now,
+        updated_at=now,
+    )
+    item_snapshot = snapshot.model_copy(
+        update={
+            "operation": "ITEM_REGENERATE",
+            "target_item_id": target.id,
+            "target_item": target,
+            "target_item_index": 0,
+            "regeneration_mode": "AUTO_DIVERSE",
+            "regeneration_reasons": ["SCENE_UNSUITABLE"],
+            "regeneration_instruction": "只保留一个连续动作",
+            "similarity_anchors": [],
+        }
+    )
+    api = PromptApi()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=MockAiProvider(),
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, item_snapshot)
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    creative_tasks = [
+        task
+        for shard in api.shards.values()
+        if shard.phase.value == "CREATIVE"
+        for task in shard.creative_plan
+    ]
+    assert [task.regeneration_variant_role for task in creative_tasks] == [
+        "PRESENTATION_VARIATION",
+        "PRODUCT_FOCUS_VARIATION",
+        "FEEDBACK_OPTIMIZATION",
+    ]
+    assert api.result is not None
+    assert len(api.result.items) == 3
+
+
+@pytest.mark.asyncio
 async def test_does_not_replenish_when_initial_selection_already_covers_facts() -> None:
     api = PromptApi()
     pipeline = PromptGenerationPipeline(

@@ -50,6 +50,7 @@ describe('effect prompt generation contract', () => {
       defaultDurationSeconds: 4,
     });
     expect(EFFECT_PROMPT_LIMITS.maxCount).toBe(100);
+    expect(EFFECT_PROMPT_LIMITS.maxCandidateCount).toBe(240);
     expect(batchSchema.properties.settings.properties.targetCount.maximum).toBe(100);
     expect(batchSchema.properties.items.maxItems).toBe(100);
   });
@@ -135,6 +136,7 @@ describe('effect prompt generation contract', () => {
       idempotencyKey: 'regenerate-1',
     };
     expect(EFFECT_PROMPT_REGENERATION_MODES).toContain(request.regenerationMode);
+    expect(EFFECT_PROMPT_REGENERATION_MODES).toContain('AUTO_DIVERSE');
     expect(EFFECT_PROMPT_REGENERATION_REASONS).toContain(request.regenerationReasons?.[0]);
     expect(request.replacementDimensions).toBeUndefined();
   });

@@ -535,7 +535,13 @@ class PromptGenerationSnapshot(ApiModel):
     replacement_dimensions: CreativeDimensions | None = None
     regeneration_instruction: str | None = Field(default=None, max_length=500)
     regeneration_mode: (
-        Literal["PRESERVE_PRODUCT_RELATION", "NEW_CREATIVE", "CUSTOM"] | None
+        Literal[
+            "AUTO_DIVERSE",
+            "PRESERVE_PRODUCT_RELATION",
+            "NEW_CREATIVE",
+            "CUSTOM",
+        ]
+        | None
     ) = None
     regeneration_reasons: list[
         Literal[
@@ -1049,6 +1055,14 @@ class CreativeTask(ApiModel):
     creative_direction: CreativeDirection | None = None
     sibling_variant_index: int = Field(default=1, ge=1, le=32)
     sibling_variant_total: int = Field(default=1, ge=1, le=32)
+    regeneration_variant_role: (
+        Literal[
+            "PRESENTATION_VARIATION",
+            "PRODUCT_FOCUS_VARIATION",
+            "FEEDBACK_OPTIMIZATION",
+        ]
+        | None
+    ) = None
     # A coverage supplement uses these assigned facts as the explicit repair
     # target. The model owns the semantic realization; the Worker only carries
     # and validates stable fact IDs.

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from effect_prompt_generation.insight_mapping import map_insight
-from effect_prompt_generation.models import CreativeFactAssignment, InsightField
 from effect_prompt_generation.fact_allocation import (
+    allocate_automatic_regeneration_facts,
     allocate_creative_facts,
     allocate_regeneration_facts,
 )
+from effect_prompt_generation.insight_mapping import map_insight
+from effect_prompt_generation.models import CreativeFactAssignment, InsightField
 
 
 def _application():
@@ -129,6 +130,27 @@ def test_regeneration_preserves_the_verified_fact_bundle_for_all_three_options()
 
     assert len(assignments) == 3
     assert all(item.fact_ids == original for item in assignments)
+    assert len({item.assignment_hash for item in assignments}) == 3
+
+
+def test_automatic_regeneration_keeps_two_fact_scopes_and_rotates_one() -> None:
+    application = _application()
+    original = [
+        fact.fact_id
+        for fact in application.usable
+        if fact.field in {InsightField.CORE_SELLING_POINT, InsightField.USAGE_SCENARIO}
+    ][:2]
+
+    assignments = allocate_automatic_regeneration_facts(
+        application,
+        ordinal_start=1,
+        original_fact_ids=original,
+    )
+
+    assert len(assignments) == 3
+    assert assignments[0].fact_ids == original
+    assert assignments[2].fact_ids == original
+    assert assignments[1].fact_ids != original
     assert len({item.assignment_hash for item in assignments}) == 3
 
 

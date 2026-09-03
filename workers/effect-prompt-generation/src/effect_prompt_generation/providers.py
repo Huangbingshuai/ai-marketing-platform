@@ -2417,6 +2417,7 @@ def _creative_task_brief(
             "index": task.sibling_variant_index,
             "total": task.sibling_variant_total,
         },
+        "regenerationVariantRole": task.regeneration_variant_role,
         "factApplications": [
             fact_application_payload(fact_id) for fact_id in assignment.fact_ids
         ],
