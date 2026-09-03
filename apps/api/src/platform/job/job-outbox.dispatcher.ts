@@ -1,4 +1,10 @@
-import { Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  type OnModuleDestroy,
+  type OnModuleInit,
+} from '@nestjs/common';
 
 import { EFFECT_EXTRACTION_QUEUE, JOB_PUBLISHER } from './job.constants';
 import { JobOutboxRepository } from './job-outbox.repository';
@@ -8,6 +14,7 @@ const retryDelay = (attempt: number): number => Math.min(60_000, 1000 * 2 ** Mat
 
 @Injectable()
 export class JobOutboxDispatcher implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(JobOutboxDispatcher.name);
   private timer: NodeJS.Timeout | null = null;
   private active = false;
 
@@ -40,15 +47,25 @@ export class JobOutboxDispatcher implements OnModuleInit, OnModuleDestroy {
           );
           await this.repository.markPublished(entry.projectId, entry.id, entry.dispatchToken!);
         } catch (error) {
-          await this.repository.markFailed(
-            entry.projectId,
-            entry.id,
-            entry.dispatchToken!,
-            error instanceof Error ? error.message : 'RabbitMQ publish failed',
-            new Date(Date.now() + retryDelay(entry.attempts)),
-          );
+          try {
+            await this.repository.markFailed(
+              entry.projectId,
+              entry.id,
+              entry.dispatchToken!,
+              error instanceof Error ? error.message : 'RabbitMQ publish failed',
+              new Date(Date.now() + retryDelay(entry.attempts)),
+            );
+          } catch (persistError) {
+            this.logger.error(
+              `Outbox 失败状态回写失败：${persistError instanceof Error ? persistError.name : 'UNKNOWN'}`,
+            );
+          }
         }
       }
+    } catch (error) {
+      this.logger.error(
+        `Outbox 投递轮询失败：${error instanceof Error ? error.name : 'UNKNOWN'}`,
+      );
     } finally {
       this.active = false;
     }

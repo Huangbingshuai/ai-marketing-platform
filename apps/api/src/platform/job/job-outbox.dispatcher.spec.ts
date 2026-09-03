@@ -74,4 +74,48 @@ describe('JobOutboxDispatcher', () => {
       expect.any(Date),
     );
   });
+
+  it('keeps the API alive when claiming pending entries times out', async () => {
+    const repository = {
+      claimPending: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('transaction timeout'))
+        .mockResolvedValueOnce([]),
+    } as unknown as JobOutboxRepository;
+    const publisher = { publish: vi.fn() } as unknown as JobPublisher;
+    const dispatcher = new JobOutboxDispatcher(repository, publisher);
+
+    await expect(dispatcher.dispatchPending()).resolves.toBeUndefined();
+    await expect(dispatcher.dispatchPending()).resolves.toBeUndefined();
+
+    expect(repository.claimPending).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the API alive when a failed publish cannot be persisted', async () => {
+    const repository = {
+      claimPending: vi.fn().mockResolvedValue([
+        {
+          id: 'outbox-a',
+          projectId: 'project-a',
+          routingKey: 'effect.extraction.requested',
+          payload: {
+            schemaVersion: 1,
+            projectId: 'project-a',
+            runId: 'run-a',
+            requestId: 'request-a',
+          },
+          attempts: 1,
+          dispatchToken: 'dispatch-a',
+        },
+      ]),
+      markPublished: vi.fn(),
+      markFailed: vi.fn().mockRejectedValue(new Error('transaction timeout')),
+    } as unknown as JobOutboxRepository;
+    const publisher = {
+      publish: vi.fn().mockRejectedValue(new Error('rabbit unavailable')),
+    } as JobPublisher;
+    const dispatcher = new JobOutboxDispatcher(repository, publisher);
+
+    await expect(dispatcher.dispatchPending()).resolves.toBeUndefined();
+  });
 });
