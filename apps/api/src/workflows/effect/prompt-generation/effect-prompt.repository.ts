@@ -14,6 +14,7 @@ import type {
 } from '@ai-marketing/contracts';
 import {
   EFFECT_PROMPT_MAX_RUN_ATTEMPTS,
+  EFFECT_PROMPT_RENDER_CAPABILITIES,
   effectPromptTargetCount,
   readEffectPromptSettings,
 } from '@ai-marketing/contracts';
@@ -170,6 +171,7 @@ export const promptItemsRetainedForRun = (
 export type StartPromptRunInput = {
   operation: EffectPromptOperation;
   targetItemId: string | null;
+  targetDurationSeconds?: number | null;
   regenerationInstruction?: string | null;
   replacementDimensions?: EffectPromptDimensions | null;
   regenerationMode?: EffectPromptRegenerationMode | null;
@@ -376,6 +378,27 @@ export class EffectPromptRepository {
       }
       const targetItem = currentResult?.items.find(({ id }) => id === input.targetItemId);
       const targetItemIndex = currentResult?.items.findIndex(({ id }) => id === input.targetItemId);
+      const regenerationTargetDurationSeconds =
+        input.operation === 'ITEM_REGENERATE' && targetItem
+          ? (input.targetDurationSeconds ?? targetItem.targetDurationSeconds)
+          : undefined;
+      if (
+        input.operation === 'ITEM_REGENERATE' &&
+        currentResult &&
+        regenerationTargetDurationSeconds !== undefined
+      ) {
+        const capability =
+          EFFECT_PROMPT_RENDER_CAPABILITIES[currentResult.renderProfile.capabilityKey];
+        if (
+          regenerationTargetDurationSeconds < capability.minDurationSeconds ||
+          regenerationTargetDurationSeconds > capability.maxDurationSeconds
+        )
+          return {
+            kind: 'INVALID_DURATION' as const,
+            minDurationSeconds: capability.minDurationSeconds,
+            maxDurationSeconds: capability.maxDurationSeconds,
+          };
+      }
       if (
         input.operation === 'ITEM_REGENERATE' &&
         targetItem &&
@@ -409,21 +432,30 @@ export class EffectPromptRepository {
         },
         retainedManualItems: manualItems,
         selectionPolicy: 'MMR_CONTENT',
-        similarityAnchors: manualItems,
+        similarityAnchors:
+          input.operation === 'ITEM_REGENERATE' && targetItem
+            ? [...manualItems, targetItem]
+            : manualItems,
         sharedPrompt: currentResult?.sharedPrompt ?? null,
         ...((input.operation === 'ITEM_REGENERATE' || input.operation === 'ITEM_EVALUATE') &&
         targetItem
           ? {
               targetItem,
               targetItemIndex,
+              ...(regenerationTargetDurationSeconds === undefined
+                ? {}
+                : { regenerationTargetDurationSeconds }),
               replacementDimensions: input.replacementDimensions ?? undefined,
               regenerationInstruction: input.regenerationInstruction ?? null,
-              regenerationMode: input.regenerationMode ?? 'AUTO_DIVERSE',
+              regenerationMode: input.regenerationMode ?? 'FULL_REGENERATE',
               regenerationReasons: [...new Set(input.regenerationReasons ?? [])],
               preservedDimensions: [
                 ...new Set<EffectPromptDimensionKey>(
                   input.preservedDimensions ??
-                    (input.regenerationMode && input.regenerationMode !== 'AUTO_DIVERSE'
+                    (input.regenerationMode &&
+                    !['FULL_REGENERATE', 'AUTO_DIVERSE', 'NEW_CREATIVE'].includes(
+                      input.regenerationMode,
+                    )
                       ? ['productRelation']
                       : []),
                 ),
@@ -456,6 +488,7 @@ export class EffectPromptRepository {
             ? {
                 targetItem: snapshot.targetItem,
                 targetItemIndex: snapshot.targetItemIndex,
+                targetDurationSeconds: snapshot.regenerationTargetDurationSeconds,
                 replacementDimensions: snapshot.replacementDimensions,
                 regenerationInstruction: snapshot.regenerationInstruction,
               }
@@ -1029,7 +1062,8 @@ export class EffectPromptRepository {
         id: snapshot.targetItem.id,
         code: snapshot.targetItem.code,
         origin: 'AI',
-        targetDurationSeconds: snapshot.targetItem.targetDurationSeconds,
+        targetDurationSeconds:
+          snapshot.regenerationTargetDurationSeconds ?? snapshot.targetItem.targetDurationSeconds,
         manualEdited: false,
         createdAt: snapshot.targetItem.createdAt,
         updatedAt: new Date().toISOString(),

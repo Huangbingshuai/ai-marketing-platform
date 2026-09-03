@@ -70,8 +70,32 @@ describe('effect Seedance request compiler', () => {
       '画面中不得出现以下内容：医疗功效；未成年人。\n保持产品外观前后一致。',
     );
     expect(compiled.request.content[0].text.match(/医疗功效/gu)).toHaveLength(1);
+    expect(compiled.request.content[0].text).toContain(`创意主线：${item.creativeCore}。`);
+    expect(compiled.request.content[0].text).toContain('叙事结构：产品入画');
+    expect(compiled.request.content[0].text).toContain('产品关联点：切面油润可见');
+    expect(compiled.request.content[0].text).toContain(`片段生成 Prompt：${item.content}`);
     expect(compiled.sharedPromptHash).toBe(batch('SEEDANCE_2_0').sharedPrompt?.contentHash);
     expect(item.content).not.toContain('9:16');
+  });
+
+  it('changes the prompt content fingerprint when user-authored creative structure changes', () => {
+    const original = batch('SEEDANCE_2_0');
+    const changed = batch('SEEDANCE_2_0');
+    changed.items[0] = {
+      ...changed.items[0]!,
+      creativeCore: '改为突出节庆礼赠的创意方向',
+      dimensions: {
+        ...changed.items[0]!.dimensions,
+        emotion: '节庆热闹氛围',
+      },
+    };
+
+    const before = compileEffectSeedanceRequest(original, item.id, 'seedance-model');
+    const after = compileEffectSeedanceRequest(changed, item.id, 'seedance-model');
+
+    expect(after.promptContentHash).not.toBe(before.promptContentHash);
+    expect(after.request.content[0].text).toContain('创意主线：改为突出节庆礼赠的创意方向。');
+    expect(after.request.content[0].text).toContain('情绪基调：节庆热闹氛围');
   });
 
   it('rejects 1080p for Seedance 2.0 fast without silent downgrade', () => {

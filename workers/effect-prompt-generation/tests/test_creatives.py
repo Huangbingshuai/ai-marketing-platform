@@ -41,6 +41,7 @@ from effect_prompt_generation.models import (
     StageOutput,
 )
 from effect_prompt_generation.pipeline import (
+    PENDING_CREATIVE_STRUCTURE_TEXT,
     PipelineError,
     PromptGenerationPipeline,
     _coverage_supplement_count,
@@ -351,6 +352,15 @@ class ConcurrencyTrackingProvider(MockAiProvider):
             return await super().evaluate_creatives(*args, **kwargs)
         finally:
             await self._leave()
+
+
+class RegenerationContextCapturingProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.regeneration_contexts: list[dict[str, Any] | None] = []
+
+    async def generate_creatives(self, *args: Any, **kwargs: Any) -> Any:
+        self.regeneration_contexts.append(kwargs.get("regeneration_context"))
+        return await super().generate_creatives(*args, **kwargs)
 
 
 class DirectionStageTrackingProvider(MockAiProvider):
@@ -1211,7 +1221,7 @@ async def test_vector_embedding_failure_is_retryable_and_safely_coded() -> None:
 
 
 @pytest.mark.asyncio
-async def test_item_evaluate_preserves_content_and_infers_structure_in_classification() -> (
+async def test_item_evaluate_preserves_user_authored_content_and_structure() -> (
     None
 ):
     snapshot = _snapshot()
@@ -1267,8 +1277,8 @@ async def test_item_evaluate_preserves_content_and_infers_structure_in_classific
     assert api.result is not None
     assert len(api.result.items) == 1
     assert api.result.items[0].content == target.content
-    assert api.result.items[0].creative_core != target.creative_core
-    assert api.result.items[0].dimensions.narrative == "用户自定义片段"
+    assert api.result.items[0].creative_core == target.creative_core
+    assert api.result.items[0].dimensions == target.dimensions
     assert api.result.items[0].classification_status == "VERIFIED"
     assert api.result.items[0].review_issues == []
     assert Counter(item.phase.value for item in api.shards.values()) == {
@@ -1375,6 +1385,11 @@ async def test_item_evaluate_marks_hard_issues_as_needing_revision() -> None:
 
     assert api.result is not None
     assert api.result.items[0].content == target.content
+    assert api.result.items[0].creative_core != PENDING_CREATIVE_STRUCTURE_TEXT
+    assert (
+        api.result.items[0].dimensions.narrative
+        != PENDING_CREATIVE_STRUCTURE_TEXT
+    )
     assert api.result.items[0].classification_status == "NEEDS_REVISION"
     assert api.result.items[0].review_issues == ["FABRICATED_FACT"]
     assert api.result.quality_status == "NEEDS_REVIEW"
@@ -1387,7 +1402,7 @@ async def test_item_evaluate_marks_hard_issues_as_needing_revision() -> None:
 
 
 @pytest.mark.asyncio
-async def test_item_regenerate_automatically_assigns_three_complementary_roles() -> None:
+async def test_item_regenerate_rebuilds_full_creative_with_requested_duration() -> None:
     snapshot = _snapshot()
     now = "2026-09-03T10:00:00Z"
     target = PromptItem(
@@ -1421,16 +1436,18 @@ async def test_item_regenerate_automatically_assigns_three_complementary_roles()
             "target_item_id": target.id,
             "target_item": target,
             "target_item_index": 0,
-            "regeneration_mode": "AUTO_DIVERSE",
+            "regeneration_mode": "FULL_REGENERATE",
+            "regeneration_target_duration_seconds": 12,
             "regeneration_reasons": ["SCENE_UNSUITABLE"],
             "regeneration_instruction": "只保留一个连续动作",
             "similarity_anchors": [],
         }
     )
     api = PromptApi()
+    provider = RegenerationContextCapturingProvider()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
-        provider=MockAiProvider(),
+        provider=provider,
         shard_size=5,
     )
     runtime = _runtime()
@@ -1447,13 +1464,26 @@ async def test_item_regenerate_automatically_assigns_three_complementary_roles()
         if shard.phase.value == "CREATIVE"
         for task in shard.creative_plan
     ]
-    assert [task.regeneration_variant_role for task in creative_tasks] == [
-        "PRESENTATION_VARIATION",
-        "PRODUCT_FOCUS_VARIATION",
-        "FEEDBACK_OPTIMIZATION",
-    ]
+    assert len(creative_tasks) == 3
+    assert all(task.regeneration_variant_role is None for task in creative_tasks)
+    assert all(task.target_duration_seconds == 12 for task in creative_tasks)
+    assert all(task.fact_assignment.fact_ids for task in creative_tasks)
+    expected_context = {
+        "instruction": "只保留一个连续动作",
+        "mode": "FULL_REGENERATE",
+        "reasons": ["SCENE_UNSUITABLE"],
+    }
+    assert provider.regeneration_contexts
+    assert all(context == expected_context for context in provider.regeneration_contexts)
     assert api.result is not None
     assert len(api.result.items) == 3
+    assert all(item.target_duration_seconds == 12 for item in api.result.items)
+    assert all(item.creative_core.strip() for item in api.result.items)
+    assert all(item.insight_bindings for item in api.result.items)
+    assert all(
+        all(value.strip() for value in item.dimensions.model_dump().values())
+        for item in api.result.items
+    )
 
 
 @pytest.mark.asyncio

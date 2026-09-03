@@ -94,11 +94,16 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).not.toContain('卖点侧重');
   });
 
-  it('saves manual edits without a selected purpose and makes AI evaluation optional', () => {
-    expect(pageSource).not.toContain('固定主标签');
-    expect(pageSource).toContain('分析六维创意、可信事实和推荐用途，不会改写正文');
-    expect(pageSource).toContain('draft.useAiAnalysis && state.settingsRevision === null');
-    expect(pageSource).toContain('saved.evaluationRun');
+  it('edits purpose and creative structure without automatically starting AI evaluation', () => {
+    expect(pageSource).toContain('创意方向与六维信息');
+    expect(pageSource).toContain('这些内容会和 Prompt 正文一起约束视频生成，请保持表达一致');
+    expect(pageSource).toContain('v-model="editorDraft.primaryPurpose"');
+    expect(pageSource).toContain('v-model="editorDraft.creativeCore"');
+    expect(pageSource).toContain('v-model="editorDraft.dimensions[dimension.key]"');
+    expect(pageSource).toContain('后续评估不会覆盖你的选择');
+    expect(pageSource).not.toContain('editorDraft.useAiAnalysis');
+    expect(pageSource).not.toContain('保存后使用 AI 分析');
+    expect(pageSource).toContain('保存只更新草稿，不会调用 AI');
     expect(pageSource).toContain('saved.affectedItemIndex');
     expect(pageSource).not.toContain('saved.result.items.findIndex');
     expect(pageSource).not.toContain('existingItemIds');
@@ -108,8 +113,9 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('NEEDS_REVISION');
     expect(pageSource).toContain('需修改');
     expect(pageSource).toContain('@click="evaluateItem(item)"');
-    expect(pageSource).toContain("item.classificationStatus === 'NEEDS_REVISION' ? '修改后评估'");
-    expect(pageSource).not.toContain('v-model="editorDraft.dimensions');
+    expect(pageSource).toContain("item.classificationStatus === 'NEEDS_REVISION' ? '编辑后评估'");
+    expect(pageSource).toContain("editorMode === 'add' ? '添加提示词' : '编辑提示词'");
+    expect(pageSource).toContain('<Pencil :size="13" />编辑');
   });
 
   it('keeps list actions safe while evaluation or regeneration is active', () => {
@@ -124,13 +130,17 @@ describe('effect prompt generation current layout', () => {
       expect(pageSource).toContain(handler);
     expect(pageSource).toContain('requestActionConfirmation');
     expect(pageSource).not.toContain('prompt-delete-dialog');
-    expect(pageSource).toContain("regenerationMode: 'AUTO_DIVERSE'");
+    expect(pageSource).not.toContain("regenerationMode: 'AUTO_DIVERSE'");
+    expect(pageSource).toContain('v-model.number="regenerationDurationSeconds"');
+    expect(pageSource).toContain('targetDurationSeconds: regenerationDurationSeconds.value');
+    expect(pageSource).toContain('时长作为渲染参数，不会写入 Prompt 正文');
+    expect(pageSource).toContain('查看创意方向与六维变化');
     expect(pageSource).not.toContain('希望怎么重做？');
     expect(pageSource).not.toContain('保留内容（高级设置）');
     expect(pageSource).not.toContain('保留产品关联，换种表现');
     expect(pageSource).not.toContain('彻底换一个创意');
     expect(pageSource).not.toContain('按修改意见重做');
-    expect(pageSource).toContain('系统会自动生成 3 个不同方向');
+    expect(pageSource).not.toContain('系统会自动生成 3 个不同方向');
     expect(pageSource).toContain('生成 3 个备选');
     expect(pageSource).toContain('采用这个方案');
     expect(pageSource).toContain('撤销本次替换');
@@ -144,10 +154,9 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).not.toContain('次级素材标签');
     expect(pageSource).toContain('<Plus :size="15" />新增 Prompt');
     expect(pageSource).toContain('v-model.number="editorDraft.targetDurationSeconds"');
-    expect(pageSource).toContain('v-model="editorDraft.useAiAnalysis"');
-    expect(pageSource).toContain('role="switch"');
-    expect(pageSource).toContain('仅保存草稿');
-    expect(pageSource).toContain('本次不会调用 AI');
+    expect(pageSource).toContain('v-model="editorDraft.primaryPurpose"');
+    expect(pageSource).not.toContain('role="switch"');
+    expect(pageSource).toContain("editorMode === 'add' ? '添加提示词' : '保存编辑'");
     expect(pageSource).toContain('短片只安排一个连续动作');
     expect(pageSource).toContain('currentCountStats.actualCount} 条 Prompt');
   });

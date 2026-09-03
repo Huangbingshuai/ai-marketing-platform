@@ -123,21 +123,22 @@ describe('effect prompt generation contract', () => {
     expect(effectPromptSettingsNodeId('product-one')).toBe('PROMPT_GENERATION:product-one');
   });
 
-  it('supports user-directed regeneration without requiring replacement dimensions', () => {
+  it('supports full regeneration with an independently editable duration', () => {
     const request: StartEffectPromptRunRequest = {
       workflowRunId: 'workflow-1',
       operation: 'ITEM_REGENERATE',
       targetItemId: 'prompt-1',
-      regenerationMode: 'PRESERVE_PRODUCT_RELATION',
+      targetDurationSeconds: 12,
       regenerationReasons: ['TOO_SIMILAR'],
-      preservedDimensions: ['productRelation'],
       expectedSettingsRevision: 1,
       expectedResultRevision: 2,
       idempotencyKey: 'regenerate-1',
     };
-    expect(EFFECT_PROMPT_REGENERATION_MODES).toContain(request.regenerationMode);
+    expect(EFFECT_PROMPT_REGENERATION_MODES).toContain('FULL_REGENERATE');
     expect(EFFECT_PROMPT_REGENERATION_MODES).toContain('AUTO_DIVERSE');
     expect(EFFECT_PROMPT_REGENERATION_REASONS).toContain(request.regenerationReasons?.[0]);
+    expect(request.targetDurationSeconds).toBe(12);
+    expect(request.regenerationMode).toBeUndefined();
     expect(request.replacementDimensions).toBeUndefined();
   });
 

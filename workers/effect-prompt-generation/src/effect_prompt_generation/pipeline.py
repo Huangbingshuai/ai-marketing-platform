@@ -141,6 +141,20 @@ SEMANTIC_DUPLICATE_RATE_LIMIT = 15.0
 CLASSIFICATION_SHARD_SIZE = 3
 MAX_PROCESS_EMBEDDING_CACHE_ENTRIES = 4_096
 LOGGER = logging.getLogger(__name__)
+PENDING_CREATIVE_STRUCTURE_TEXT = "等待 AI 分析"
+
+
+def _requires_creative_structure_inference(candidate: CreativeCandidate) -> bool:
+    values = (
+        candidate.creative_core,
+        candidate.dimensions.narrative,
+        candidate.dimensions.scene,
+        candidate.dimensions.persona,
+        candidate.dimensions.product_relation,
+        candidate.dimensions.camera,
+        candidate.dimensions.emotion,
+    )
+    return any(value.strip() == PENDING_CREATIVE_STRUCTURE_TEXT for value in values)
 
 
 class PipelineError(RuntimeError):
@@ -1600,7 +1614,14 @@ class PromptGenerationPipeline:
             ]
         elif snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item:
             fact_assignments = (
-                allocate_automatic_regeneration_facts(
+                allocate_creative_facts(
+                    application,
+                    count=requested,
+                    ordinal_start=ordinal_start,
+                    preferred_fact_ids=(),
+                )
+                if snapshot.regeneration_mode == "FULL_REGENERATE"
+                else allocate_automatic_regeneration_facts(
                     application,
                     ordinal_start=ordinal_start,
                     original_fact_ids=preferred_item_fact_ids,
@@ -1643,7 +1664,8 @@ class PromptGenerationPipeline:
                 round=round_number,
                 supplement_kind=("INITIAL" if round_number == 0 else supplement_kind),
                 target_duration_seconds=(
-                    snapshot.target_item.target_duration_seconds
+                    snapshot.regeneration_target_duration_seconds
+                    or snapshot.target_item.target_duration_seconds
                     if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item
                     else settings.default_duration_seconds
                 ),
@@ -1783,6 +1805,30 @@ class PromptGenerationPipeline:
         )
         await self.api.put_shard(context, running)
         snapshot = self.snapshot(context)
+        regeneration_context: dict[str, Any] | None = None
+        if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item:
+            regeneration_context = {
+                "instruction": snapshot.regeneration_instruction or "",
+                "mode": snapshot.regeneration_mode or "FULL_REGENERATE",
+                "reasons": snapshot.regeneration_reasons,
+            }
+            if snapshot.regeneration_mode != "FULL_REGENERATE":
+                regeneration_context.update(
+                    {
+                        "originalPrompt": snapshot.target_item.content,
+                        "originalDimensions": snapshot.target_item.dimensions.model_dump(
+                            mode="json", by_alias=True
+                        ),
+                        "replacementDimensions": (
+                            snapshot.replacement_dimensions.model_dump(
+                                mode="json", by_alias=True
+                            )
+                            if snapshot.replacement_dimensions
+                            else None
+                        ),
+                        "preservedDimensions": snapshot.preserved_dimensions,
+                    }
+                )
         try:
             for invalid_response_attempt in range(2):
                 self._reserve_ai_call(context)
@@ -1791,32 +1837,7 @@ class PromptGenerationPipeline:
                         call_kwargs: dict[str, Any] = {
                             "application": self._require_application(context),
                             "shared_prompt": self._required_shared_prompt(context),
-                            "regeneration_context": (
-                                {
-                                    "originalPrompt": snapshot.target_item.content,
-                                    "originalDimensions": (
-                                        snapshot.target_item.dimensions.model_dump(
-                                            mode="json", by_alias=True
-                                        )
-                                    ),
-                                    "instruction": snapshot.regeneration_instruction
-                                    or "",
-                                    "replacementDimensions": (
-                                        snapshot.replacement_dimensions.model_dump(
-                                            mode="json", by_alias=True
-                                        )
-                                        if snapshot.replacement_dimensions
-                                        else None
-                                    ),
-                                    "mode": snapshot.regeneration_mode
-                                    or "AUTO_DIVERSE",
-                                    "reasons": snapshot.regeneration_reasons,
-                                    "preservedDimensions": snapshot.preserved_dimensions,
-                                }
-                                if snapshot.operation == "ITEM_REGENERATE"
-                                and snapshot.target_item
-                                else None
-                            ),
+                            "regeneration_context": regeneration_context,
                         }
                         if _uses_fact_visual_strategy(snapshot):
                             call_kwargs["fact_visual_strategy"] = (
@@ -2014,6 +2035,13 @@ class PromptGenerationPipeline:
         await self.api.put_shard(context, running)
         try:
             application = self._require_application(context)
+            infer_creative_structure = (
+                self.snapshot(context).operation == "ITEM_EVALUATE"
+                and any(
+                    _requires_creative_structure_inference(candidate)
+                    for candidate in candidates
+                )
+            )
             assigned_context_fact_ids = {
                 candidate.slot_id: _evaluation_context_fact_ids(
                     candidate,
@@ -2052,7 +2080,9 @@ class PromptGenerationPipeline:
                             "direction_plan": cache.creative_direction_plan,
                         }
                         if self.snapshot(context).operation == "ITEM_EVALUATE":
-                            evaluation_kwargs["infer_creative_structure"] = True
+                            evaluation_kwargs["infer_creative_structure"] = (
+                                infer_creative_structure
+                            )
                         if _uses_fact_visual_strategy(self.snapshot(context)):
                             evaluation_kwargs["fact_visual_strategy"] = (
                                 self._required_fact_visual_strategy(context)
@@ -2062,9 +2092,7 @@ class PromptGenerationPipeline:
                                 group,
                                 **evaluation_kwargs,
                             )
-                            if self.snapshot(
-                                context
-                            ).operation == "ITEM_EVALUATE" and any(
+                            if infer_creative_structure and any(
                                 item.inferred_creative_core is None
                                 or item.inferred_dimensions is None
                                 for item in call.value.items
@@ -2109,7 +2137,7 @@ class PromptGenerationPipeline:
             items = []
             for item in evaluated_items:
                 candidate = candidate_by_id[item.slot_id]
-                if self.snapshot(context).operation == "ITEM_EVALUATE":
+                if infer_creative_structure:
                     if (
                         item.inferred_creative_core is None
                         or item.inferred_dimensions is None
@@ -2805,7 +2833,8 @@ class PromptGenerationPipeline:
             result,
             self._require_application(context),
             (
-                snapshot.target_item.target_duration_seconds
+                snapshot.regeneration_target_duration_seconds
+                or snapshot.target_item.target_duration_seconds
                 if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item
                 else settings.default_duration_seconds
             ),

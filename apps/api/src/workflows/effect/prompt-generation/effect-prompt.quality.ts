@@ -1132,17 +1132,31 @@ export const mergeEffectPromptCompletionItems = (
     candidateItems.find(({ id }) => id === target.id) ??
     candidateItems.find(({ id }) => !retainedIds.has(id));
   if (!replacement) return [...snapshot.retainedManualItems];
+  const targetNeedsCreativeStructure =
+    target.creativeCore.trim() === '等待 AI 分析' ||
+    EFFECT_PROMPT_DIMENSIONS.some(
+      ({ key }) => target.dimensions[key].trim() === '等待 AI 分析',
+    );
   const stableReplacement: EffectPromptItem =
     snapshot.operation === 'ITEM_EVALUATE'
       ? {
           ...target,
-          fragmentType: replacement.primaryPurpose,
-          primaryPurpose: replacement.primaryPurpose,
-          compatiblePurposes: [...replacement.compatiblePurposes],
+          fragmentType: target.primaryPurpose,
+          primaryPurpose: target.primaryPurpose,
+          compatiblePurposes: [
+            target.primaryPurpose,
+            ...replacement.compatiblePurposes.filter(
+              (purpose) => purpose !== target.primaryPurpose,
+            ),
+          ],
           classificationStatus: replacement.classificationStatus,
           productRelevance: replacement.productRelevance,
-          creativeCore: replacement.creativeCore,
-          dimensions: { ...replacement.dimensions },
+          creativeCore: targetNeedsCreativeStructure
+            ? replacement.creativeCore
+            : target.creativeCore,
+          dimensions: targetNeedsCreativeStructure
+            ? { ...replacement.dimensions }
+            : { ...target.dimensions },
           insightBindings: [...replacement.insightBindings],
           reviewIssues: [...(replacement.reviewIssues ?? [])],
           updatedAt: replacement.updatedAt,

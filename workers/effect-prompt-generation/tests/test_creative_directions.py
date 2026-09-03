@@ -49,6 +49,7 @@ from effect_prompt_generation.creative_directions import (
     compile_creative_landscape_assignments,
     creative_direction_fact_density_instruction,
     creative_direction_target_count,
+    creative_territory_target_range,
     creative_direction_source_hash,
     direction_allocation_bucket,
     dominant_families,
@@ -104,8 +105,15 @@ def test_direction_diversity_audit_validation_is_idempotent() -> None:
 
     assert restored == validated
     assert creative_direction_target_count(50) == 20
-    assert creative_direction_target_count(100) == 24
-    assert creative_direction_target_count(500) == 24
+    assert creative_direction_target_count(75) == 26
+    assert creative_direction_target_count(100) == 32
+    assert creative_direction_target_count(500) == 32
+
+
+def test_large_batches_require_enough_creative_territory_capacity() -> None:
+    assert creative_territory_target_range(20) == (1, 10)
+    assert creative_territory_target_range(26) == (7, 10)
+    assert creative_territory_target_range(32) == (8, 10)
 
 
 def test_creative_direction_count_scales_with_fact_density() -> None:
@@ -121,8 +129,8 @@ def test_creative_direction_count_scales_with_fact_density() -> None:
 def test_creative_direction_capacity_fails_before_ai_calls() -> None:
     with pytest.raises(ValueError, match="至少调整为 11 条"):
         creative_direction_target_count(10, 41)
-    with pytest.raises(ValueError, match="最多承载 96 条业务事实"):
-        creative_direction_target_count(50, 97)
+    with pytest.raises(ValueError, match="最多承载 128 条业务事实"):
+        creative_direction_target_count(50, 129)
     with pytest.raises(ValueError, match="没有可分配"):
         creative_direction_target_count(50, 0)
 

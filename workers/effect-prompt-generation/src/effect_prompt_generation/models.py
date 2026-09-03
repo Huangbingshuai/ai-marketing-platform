@@ -536,10 +536,14 @@ class PromptGenerationSnapshot(ApiModel):
     base_result_revision: int | None = Field(default=None, ge=1)
     target_item: PromptItem | None = None
     target_item_index: int | None = Field(default=None, ge=0, le=199)
+    regeneration_target_duration_seconds: int | None = Field(
+        default=None, ge=4, le=30
+    )
     replacement_dimensions: CreativeDimensions | None = None
     regeneration_instruction: str | None = Field(default=None, max_length=500)
     regeneration_mode: (
         Literal[
+            "FULL_REGENERATE",
             "AUTO_DIVERSE",
             "PRESERVE_PRODUCT_RELATION",
             "NEW_CREATIVE",
@@ -585,6 +589,7 @@ class PromptGenerationSnapshot(ApiModel):
             )
         if self.operation == "BATCH_GENERATE" and (
             self.replacement_dimensions is not None
+            or self.regeneration_target_duration_seconds is not None
             or self.regeneration_instruction is not None
             or self.regeneration_mode is not None
             or self.regeneration_reasons
@@ -704,7 +709,7 @@ class CreativeTerritoryDraft(ApiModel):
 
 class CreativeTerritory(CreativeTerritoryDraft):
     required_fact_ids: list[str] = Field(default_factory=list, max_length=64)
-    target_slots: int = Field(ge=1, le=24)
+    target_slots: int = Field(ge=1, le=32)
 
 
 class CreativeDiversityLandscapeResponse(ApiModel):
@@ -848,8 +853,8 @@ class CreativeDirection(ApiModel):
 
 
 class CreativeDirectionResponse(ApiModel):
-    # A base plan is capped at 24; up to four same-run diversity directions may
-    # be appended before the compact all-batch overlap audit.
+    # A large batch may use up to 32 base directions before the compact
+    # all-batch overlap audit.
     directions: list[CreativeDirection] = Field(min_length=1, max_length=32)
 
 
@@ -876,9 +881,9 @@ class CreativeDirectionAuditItem(ApiModel):
 
 
 class CreativeDirectionAuditResponse(ApiModel):
-    items: list[CreativeDirectionAuditItem] = Field(min_length=1, max_length=24)
+    items: list[CreativeDirectionAuditItem] = Field(min_length=1, max_length=32)
     requires_revision: bool
-    revision_direction_ids: list[str] = Field(default_factory=list, max_length=24)
+    revision_direction_ids: list[str] = Field(default_factory=list, max_length=32)
     summary: str = Field(min_length=2, max_length=500)
 
     @model_validator(mode="after")
@@ -888,9 +893,9 @@ class CreativeDirectionAuditResponse(ApiModel):
 
 
 class CreativeDirectionAudit(ApiModel):
-    items: list[CreativeDirectionAuditItem] = Field(min_length=8, max_length=24)
+    items: list[CreativeDirectionAuditItem] = Field(min_length=8, max_length=32)
     requires_revision: bool = False
-    revision_direction_ids: list[str] = Field(default_factory=list, max_length=24)
+    revision_direction_ids: list[str] = Field(default_factory=list, max_length=32)
     summary: str = Field(min_length=2, max_length=240)
     audit_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
 
@@ -916,7 +921,7 @@ class CreativeDirectionOverlapGroup(ApiModel):
 class CreativeDirectionDiversityAuditResponse(ApiModel):
     groups: list[CreativeDirectionOverlapGroup] = Field(default_factory=list, max_length=12)
     requires_revision: bool
-    revision_direction_ids: list[str] = Field(default_factory=list, max_length=24)
+    revision_direction_ids: list[str] = Field(default_factory=list, max_length=32)
     summary: str = Field(min_length=2, max_length=500)
 
     @model_validator(mode="after")

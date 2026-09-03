@@ -7,7 +7,10 @@ import type {
   SeedanceRatio,
   SeedanceResolution,
 } from '@ai-marketing/contracts';
-import { EFFECT_PROMPT_RENDER_CAPABILITIES } from '@ai-marketing/contracts';
+import {
+  EFFECT_PROMPT_DIMENSIONS,
+  EFFECT_PROMPT_RENDER_CAPABILITIES,
+} from '@ai-marketing/contracts';
 import { compileEffectPromptSharedConstraintPrompt } from '../prompt-generation/effect-prompt.quality';
 
 export type EffectSeedanceCreateTaskRequest = {
@@ -52,11 +55,31 @@ export class EffectSeedanceCompileError extends Error {
 
 const compileText = (item: EffectPromptItem, sharedPrompt: string): string => {
   const content = item.content.trim().replace(/。+$/gu, '');
+  const creativeCore = item.creativeCore.trim().replace(/。+$/gu, '');
+  const dimensions = EFFECT_PROMPT_DIMENSIONS.map(
+    ({ key, label }) => `${label}：${item.dimensions[key].trim().replace(/。+$/gu, '')}`,
+  ).join('；');
+  const structuredPrompt = [
+    `创意主线：${creativeCore}。`,
+    `六维创意信息：${dimensions}。`,
+    `片段生成 Prompt：${content}。`,
+  ].join('\n');
   const shared = sharedPrompt.trim();
-  if (!shared) return `${content}。`;
-  if (content.endsWith(shared.replace(/。+$/gu, ''))) return `${content}。`;
-  return `${content}。${shared}`;
+  if (!shared) return structuredPrompt;
+  if (content.endsWith(shared.replace(/。+$/gu, ''))) return structuredPrompt;
+  return `${structuredPrompt}\n${shared}`;
 };
+
+const promptContentHash = (item: EffectPromptItem): string =>
+  createHash('sha256')
+    .update(
+      JSON.stringify({
+        content: item.content,
+        creativeCore: item.creativeCore,
+        dimensions: item.dimensions,
+      }),
+    )
+    .digest('hex');
 
 export const compileEffectSeedanceRequest = (
   batch: EffectPromptBatchResult,
@@ -94,7 +117,7 @@ export const compileEffectSeedanceRequest = (
     promptId: item.id,
     primaryPurpose: item.primaryPurpose,
     compatiblePurposes: [...item.compatiblePurposes],
-    promptContentHash: createHash('sha256').update(item.content).digest('hex'),
+    promptContentHash: promptContentHash(item),
     sharedPromptHash:
       batch.sharedPrompt?.contentHash ?? batch.renderProfile.sharedConstraints.contentHash,
     request: {

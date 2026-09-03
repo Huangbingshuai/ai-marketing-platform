@@ -62,6 +62,12 @@ export class StartPromptRunDto {
   @IsUUID('4') workflowRunId!: string;
   @IsIn([...EFFECT_PROMPT_OPERATIONS]) operation!: EffectPromptOperation;
   @IsOptional() @IsUUID('4') targetItemId?: string;
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(EFFECT_PROMPT_LIMITS.minDurationSeconds)
+  @Max(EFFECT_PROMPT_LIMITS.maxDurationSeconds)
+  targetDurationSeconds?: number;
   @IsOptional() @IsString() @MaxLength(500) regenerationInstruction?: string;
   @IsOptional() @Allow() replacementDimensions?: EffectPromptDimensions;
   @IsOptional()
@@ -94,6 +100,8 @@ export class UndoPromptRegenerationDto {
 }
 
 export class PromptItemDto {
+  @IsOptional() @IsIn(EFFECT_PROMPT_FRAGMENT_TYPES) primaryPurpose?: EffectPromptFragmentType;
+  @IsOptional() @IsString() @MaxLength(160) creativeCore?: string;
   @IsOptional() @Allow() dimensions?: EffectPromptDimensions;
   @IsString() @MaxLength(12_000) content!: string;
   @Type(() => Number)

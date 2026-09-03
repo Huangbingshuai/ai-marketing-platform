@@ -10,6 +10,7 @@
 单条重新生成上下文：{regeneration_context_json}
 
 当单条重新生成上下文非空时，本次三个任务是提供给用户比较的三个备选，而不是后台自动替换结果：
+- FULL_REGENERATE：把每条任务当作 Prompt 节点的一次完整新生成。只依据 factApplications、事实视觉策略、共用约束、目标时长和用户可选要求，一次性重新生成创意主线、六维与正文；不得延续或猜测旧 Prompt、旧六维及旧创意方向。
 - AUTO_DIVERSE：用户不需要预先选择改动幅度；必须按每条任务的 regenerationVariantRole 执行互补分工。
 - PRESENTATION_VARIATION：保持 factApplications 的产品事实关系和产品表现重点，至少在场景、主动作、叙事、镜头中选择两个维度形成肉眼可辨的新实现；不得只换措辞、人物性别或景别名称。
 - PRODUCT_FOCUS_VARIATION：以本任务重新分配的 factApplications 建立不同的产品表现重点，同时继续遵守当前商品身份和全部真实性边界。

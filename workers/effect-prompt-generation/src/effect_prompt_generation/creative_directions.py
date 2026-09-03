@@ -33,7 +33,7 @@ from .models import (
 
 OTHER_FAMILY = "OTHER"
 MIN_CREATIVE_DIRECTION_COUNT = 8
-MAX_CREATIVE_DIRECTION_COUNT = 24
+MAX_CREATIVE_DIRECTION_COUNT = 32
 MAX_BUSINESS_FACTS_PER_DIRECTION = 4
 
 
@@ -48,12 +48,18 @@ def creative_direction_target_count(
     count and therefore receives capacity validation before any AI call.
     """
 
+    normalized_target_count = max(1, target_count)
+    if normalized_target_count <= 50:
+        volume_target = math.ceil(normalized_target_count * 2 / 5)
+    else:
+        # Preserve the proven 50-item capacity, then grow more gradually so a
+        # large batch receives additional creative containers without making
+        # the strategy response itself unmanageably large. This yields 20,
+        # 26 and 32 directions for 50, 75 and 100 items respectively.
+        volume_target = 20 + math.ceil((normalized_target_count - 50) * 6 / 25)
     volume_target = min(
         MAX_CREATIVE_DIRECTION_COUNT,
-        # Keep only two to three sibling candidates on an average direction.
-        # This is a structural capacity calculation; the AI still owns every
-        # scene, action and creative relationship.
-        max(MIN_CREATIVE_DIRECTION_COUNT, math.ceil(max(1, target_count) * 2 / 5)),
+        max(MIN_CREATIVE_DIRECTION_COUNT, volume_target),
     )
     if mandatory_fact_count is None:
         return volume_target
@@ -88,6 +94,19 @@ def creative_direction_target_count(
         math.ceil(mandatory_fact_count * 2 / 5),
     )
     return max(volume_target, coverage_target)
+
+
+def creative_territory_target_range(direction_count: int) -> tuple[int, int]:
+    """Return structural space capacity without interpreting product semantics."""
+
+    normalized_direction_count = max(1, direction_count)
+    if normalized_direction_count >= 32:
+        minimum = 8
+    elif normalized_direction_count >= 26:
+        minimum = 7
+    else:
+        minimum = 1
+    return minimum, min(10, normalized_direction_count)
 
 
 def creative_direction_fact_density_instruction(
@@ -270,6 +289,15 @@ def validate_creative_diversity_landscape(
     template_hash: str,
     expected_direction_count: int,
 ) -> CreativeDiversityLandscape:
+    minimum_territories, maximum_territories = creative_territory_target_range(
+        expected_direction_count
+    )
+    if not minimum_territories <= len(response.territories) <= maximum_territories:
+        raise ValueError(
+            "creative landscape territory count does not match batch capacity: "
+            f"expected {minimum_territories}-{maximum_territories}, "
+            f"received {len(response.territories)}"
+        )
     usable_ids = {fact.fact_id for fact in application.usable}
     territory_ids = [item.territory_id for item in response.territories]
     if len(set(territory_ids)) != len(territory_ids):

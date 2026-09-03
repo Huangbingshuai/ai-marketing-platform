@@ -137,6 +137,7 @@ def test_direction_and_landscape_templates_receive_density_rules() -> None:
     landscape = render_prompt(
         "creative_landscape.user.prompt.txt",
         target_direction_count="13",
+        territory_count_range="1～10",
         required_fact_ids_json="[]",
         facts_json="[]",
         fact_visual_strategy_json="[]",
@@ -147,7 +148,8 @@ def test_direction_and_landscape_templates_receive_density_rules() -> None:
 
     assert "本批事实密度要求" in direction
     assert "每个方向必须自然使用 2～4 条业务事实" in direction
-    assert "空间数量必须介于 1 和 10 之间" in landscape
+    assert "本批创意空间容量范围：1～10" in landscape
+    assert "空间数量必须位于 1～10 之间" in landscape
     assert "每 4 条事实增加一个方向槽位" in landscape
 
 

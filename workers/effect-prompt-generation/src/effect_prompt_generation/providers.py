@@ -18,6 +18,7 @@ from pydantic import BaseModel, ValidationError
 from .creative_directions import (
     creative_direction_fact_density_instruction,
     creative_direction_target_count,
+    creative_territory_target_range,
 )
 from .insight_mapping import mandatory_business_facts
 from .models import (
@@ -699,9 +700,15 @@ class ArkResponsesProvider:
             target_count,
             business_fact_count,
         )
+        territory_count_range = creative_territory_target_range(
+            target_direction_count
+        )
         prompt = render_prompt(
             CREATIVE_LANDSCAPE_TASK_PROMPT,
             target_direction_count=str(target_direction_count),
+            territory_count_range=(
+                f"{territory_count_range[0]}～{territory_count_range[1]}"
+            ),
             required_fact_ids_json=json.dumps(
                 [
                     fact_aliases[fact.fact_id]
@@ -1188,7 +1195,7 @@ class ArkResponsesProvider:
             prompt_file=CREATIVE_DIRECTION_AUDIT_BASE_PROMPT,
             model=self._evaluation_model,
             # This is a batch strategy audit rather than per-item scoring. Use
-            # the strategy budget so 8-24 structured rows cannot be truncated
+            # the strategy budget so 8-32 structured rows cannot be truncated
             # by the smaller candidate-evaluation budget.
             max_output_tokens=self._strategy_max_output_tokens,
             request_timeout=self._evaluation_timeout,
@@ -1944,10 +1951,11 @@ def _mock_creative_landscape_response(
         )
     required_pool = list({fact.fact_id: fact for fact in application.usable}.values())
     fact_ids = [item.fact_id for item in application.usable]
+    minimum_territory_count, _ = creative_territory_target_range(direction_count)
     territory_count = min(
         len(_MOCK_DIRECTION_ROWS),
         direction_count,
-        max(1, len(required_pool)),
+        max(minimum_territory_count, len(required_pool)),
     )
     required_by_territory = [
         [fact.fact_id for fact in business_facts[index::territory_count]]

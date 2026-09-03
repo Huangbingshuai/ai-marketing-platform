@@ -179,6 +179,26 @@ describe('effect prompt quality contract', () => {
     });
   });
 
+  it('keeps evaluator hard issues as a distinct revision blocker', () => {
+    const result = recomputePromptQuality(
+      [
+        {
+          ...item('001'),
+          classificationStatus: 'NEEDS_REVISION',
+          reviewIssues: ['PRODUCT_UNRELATED'],
+        },
+      ],
+      { targetCount: 1, defaultDurationSeconds: 5 },
+    );
+
+    expect(result.qualityStatus).toBe('NEEDS_REVIEW');
+    expect(result.metrics.hardIssueCounts).toContainEqual({
+      code: 'ITEM_NEEDS_REVISION',
+      count: 1,
+    });
+    expect(result.items[0]?.reviewIssues).toEqual(['PRODUCT_UNRELATED']);
+  });
+
   it('uses batch coverage instead of blocking each identity-led item', () => {
     const requiredFact = {
       factId: 'CORE_SELLING_POINT:confirmed',
@@ -332,7 +352,7 @@ describe('effect prompt quality contract', () => {
     });
   });
 
-  it('ITEM_EVALUATE keeps authored content while accepting inferred creative structure', () => {
+  it('ITEM_EVALUATE preserves the user-authored purpose and creative structure', () => {
     const target = { ...item('target'), origin: 'MANUAL' as const, manualEdited: true };
     const evaluated = {
       ...target,
@@ -360,10 +380,12 @@ describe('effect prompt quality contract', () => {
     });
     expect(merged[0]).toMatchObject({
       content: target.content,
-      dimensions: evaluated.dimensions,
+      creativeCore: target.creativeCore,
+      dimensions: target.dimensions,
       origin: 'MANUAL',
       manualEdited: true,
-      primaryPurpose: 'HOOK',
+      fragmentType: target.primaryPurpose,
+      primaryPurpose: target.primaryPurpose,
       classificationStatus: 'VERIFIED',
       productRelevance: 88,
     });

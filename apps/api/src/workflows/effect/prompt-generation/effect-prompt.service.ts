@@ -489,6 +489,8 @@ const pendingItemDimensions = (): EffectPromptDimensions => ({
 
 type PromptItemMutationInput = {
   content: string;
+  primaryPurpose?: EffectPromptFragmentType;
+  creativeCore?: string;
   dimensions?: EffectPromptDimensions;
   targetDurationSeconds: number;
   evaluateAfterSave?: boolean;
@@ -684,6 +686,7 @@ export class EffectPromptService {
       workflowRunId: string;
       operation: EffectPromptOperation;
       targetItemId?: string;
+      targetDurationSeconds?: number;
       regenerationInstruction?: string;
       replacementDimensions?: EffectPromptDimensions;
       regenerationMode?: EffectPromptRegenerationMode;
@@ -700,6 +703,7 @@ export class EffectPromptService {
     if (
       (input.operation === 'BATCH_GENERATE' || input.operation === 'ITEM_EVALUATE') &&
       (input.regenerationInstruction !== undefined ||
+        input.targetDurationSeconds !== undefined ||
         input.replacementDimensions !== undefined ||
         input.regenerationMode !== undefined ||
         input.regenerationReasons !== undefined ||
@@ -722,6 +726,15 @@ export class EffectPromptService {
     if ((input.regenerationInstruction?.trim().length ?? 0) > 500)
       throw badRequest('修改意见不能超过 500 字');
     if (
+      input.targetDurationSeconds !== undefined &&
+      (!Number.isInteger(input.targetDurationSeconds) ||
+        input.targetDurationSeconds < EFFECT_PROMPT_LIMITS.minDurationSeconds ||
+        input.targetDurationSeconds > EFFECT_PROMPT_LIMITS.maxDurationSeconds)
+    )
+      throw badRequest(
+        `片段时长需在 ${EFFECT_PROMPT_LIMITS.minDurationSeconds}～${EFFECT_PROMPT_LIMITS.maxDurationSeconds} 秒之间`,
+      );
+    if (
       input.operation === 'ITEM_REGENERATE' &&
       input.regenerationMode === 'CUSTOM' &&
       !input.regenerationInstruction?.trim()
@@ -741,14 +754,22 @@ export class EffectPromptService {
     const result = await this.repository.startRun(projectId, input.workflowRunId, productId, {
       operation: input.operation,
       targetItemId: input.targetItemId ?? null,
+      targetDurationSeconds: input.targetDurationSeconds ?? null,
       regenerationInstruction,
       replacementDimensions,
-      regenerationMode: input.regenerationMode ?? null,
+      regenerationMode:
+        input.operation === 'ITEM_REGENERATE'
+          ? (input.regenerationMode ?? 'FULL_REGENERATE')
+          : null,
       regenerationReasons: [...new Set(input.regenerationReasons ?? [])],
       preservedDimensions: [
         ...new Set(
           input.preservedDimensions ??
-            (input.operation === 'ITEM_REGENERATE' ? ['productRelation' as const] : []),
+            (input.operation === 'ITEM_REGENERATE' &&
+            input.regenerationMode &&
+            !['FULL_REGENERATE', 'AUTO_DIVERSE', 'NEW_CREATIVE'].includes(input.regenerationMode)
+              ? ['productRelation' as const]
+              : []),
         ),
       ],
       expectedSettingsRevision: input.expectedSettingsRevision,
@@ -760,6 +781,10 @@ export class EffectPromptService {
     if (result.kind === 'INSIGHT_NOT_READY') throw conflict('产品信息卡尚未完成校验');
     if (result.kind === 'RESULT_CONFLICT') throw conflict('Prompt 结果已更新，请刷新后重试');
     if (result.kind === 'ITEM_NOT_FOUND') throw notFound('Prompt 不存在');
+    if (result.kind === 'INVALID_DURATION')
+      throw badRequest(
+        `当前视频模型支持 ${result.minDurationSeconds}～${result.maxDurationSeconds} 秒的片段时长`,
+      );
     if (result.kind === 'INVALID_SELLING_POINT')
       throw badRequest('所选卖点不是当前信息卡已确认且适用于该片段类型的卖点');
     if (result.kind === 'MANUAL_COUNT_EXCEEDED')
@@ -890,16 +915,25 @@ export class EffectPromptService {
 
   private validItemInput(input: {
     content: string;
+    primaryPurpose?: EffectPromptFragmentType;
+    creativeCore?: string;
     dimensions?: EffectPromptDimensions;
     targetDurationSeconds: number;
   }): boolean {
+    const hasCreativeCore = input.creativeCore !== undefined;
+    const hasDimensions = input.dimensions !== undefined;
     return (
       input.content.trim().length > 0 &&
       input.content.length <= 12_000 &&
+      (input.primaryPurpose === undefined ||
+        EFFECT_PROMPT_FRAGMENT_TYPES.includes(input.primaryPurpose)) &&
+      hasCreativeCore === hasDimensions &&
+      (!hasCreativeCore ||
+        (input.creativeCore!.trim().length > 0 && input.creativeCore!.length <= 160)) &&
       Number.isInteger(input.targetDurationSeconds) &&
       input.targetDurationSeconds >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
       input.targetDurationSeconds <= EFFECT_PROMPT_LIMITS.maxDurationSeconds &&
-      (input.dimensions === undefined || validateDimensions(input.dimensions))
+      (!hasDimensions || validateDimensions(input.dimensions!))
     );
   }
 
@@ -1045,7 +1079,7 @@ export class EffectPromptService {
     input: PromptItemMutationInput,
   ): Promise<UpdateEffectPromptResultData> {
     await this.projects.get(projectId);
-    if (!this.validItemInput(input)) throw badRequest('Prompt 内容或片段时长不符合要求');
+    if (!this.validItemInput(input)) throw badRequest('Prompt 正文、片段时长或创意结构不符合要求');
     if (
       input.evaluateAfterSave &&
       (!input.expectedSettingsRevision || !input.idempotencyKey?.trim())
@@ -1074,17 +1108,18 @@ export class EffectPromptService {
           EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions![key].trim()]),
         ) as EffectPromptDimensions)
       : pendingItemDimensions();
+    const primaryPurpose = input.primaryPurpose ?? 'PRODUCT_DISPLAY';
     const item: EffectPromptItem = {
       id: randomUUID(),
       code: `P${String(maxCode + 1).padStart(3, '0')}`,
       origin: 'MANUAL',
-      fragmentType: 'PRODUCT_DISPLAY',
-      primaryPurpose: 'PRODUCT_DISPLAY',
-      compatiblePurposes: ['PRODUCT_DISPLAY'],
+      fragmentType: primaryPurpose,
+      primaryPurpose,
+      compatiblePurposes: [primaryPurpose],
       classificationStatus: 'PENDING',
       productRelevance: 0,
       targetDurationSeconds: input.targetDurationSeconds,
-      creativeCore: input.dimensions?.narrative.trim() || '等待 AI 分析',
+      creativeCore: input.creativeCore?.trim() || '等待 AI 分析',
       dimensions,
       content: input.content.trim(),
       insightBindings: [],
@@ -1111,7 +1146,7 @@ export class EffectPromptService {
     input: PromptItemMutationInput,
   ): Promise<UpdateEffectPromptResultData> {
     await this.projects.get(projectId);
-    if (!this.validItemInput(input)) throw badRequest('Prompt 内容或片段时长不符合要求');
+    if (!this.validItemInput(input)) throw badRequest('Prompt 正文、片段时长或创意结构不符合要求');
     if (
       input.evaluateAfterSave &&
       (!input.expectedSettingsRevision || !input.idempotencyKey?.trim())
@@ -1124,6 +1159,11 @@ export class EffectPromptService {
     this.validateItemDuration(parsed, input.targetDurationSeconds);
     const currentItem = parsed.items.find((item) => item.id === itemId);
     if (!currentItem) throw notFound('Prompt 不存在');
+    const primaryPurpose = input.primaryPurpose ?? currentItem.primaryPurpose;
+    const compatiblePurposes = [
+      primaryPurpose,
+      ...currentItem.compatiblePurposes.filter((purpose) => purpose !== primaryPurpose),
+    ];
     const dimensions = input.dimensions
       ? (Object.fromEntries(
           EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions![key].trim()]),
@@ -1135,13 +1175,13 @@ export class EffectPromptService {
         itemId,
         item: {
           content: input.content.trim(),
-          fragmentType: currentItem.primaryPurpose,
-          primaryPurpose: currentItem.primaryPurpose,
-          compatiblePurposes: [...currentItem.compatiblePurposes],
+          fragmentType: primaryPurpose,
+          primaryPurpose,
+          compatiblePurposes,
           classificationStatus: 'PENDING',
           productRelevance: 0,
           targetDurationSeconds: input.targetDurationSeconds,
-          creativeCore: input.dimensions?.narrative.trim() || currentItem.creativeCore,
+          creativeCore: input.creativeCore?.trim() || currentItem.creativeCore,
           dimensions,
           reviewIssues: [],
         },

@@ -977,7 +977,7 @@ describe('EffectPromptRepository', () => {
     );
   });
 
-  it('applies a selected regeneration option without changing stable item identity or duration', async () => {
+  it('applies a selected regeneration option with the requested duration and stable identity', async () => {
     const createdAt = '2026-08-25T00:00:00.000Z';
     const targetItem = {
       id: '00000000-0000-4000-8000-000000000010',
@@ -1070,6 +1070,7 @@ describe('EffectPromptRepository', () => {
               targetItemId: targetItem.id,
               targetItem,
               targetItemIndex: 0,
+              regenerationTargetDurationSeconds: 5,
               baseResultId: existing.id,
               baseResultRevision: 4,
             },
@@ -1114,7 +1115,7 @@ describe('EffectPromptRepository', () => {
       id: targetItem.id,
       code: targetItem.code,
       content: candidate.content,
-      targetDurationSeconds: targetItem.targetDurationSeconds,
+      targetDurationSeconds: candidate.targetDurationSeconds,
     });
     expect(saved[1]).toMatchObject({ id: otherItem.id, content: otherItem.content });
     expect(stageUpdate).toHaveBeenCalledWith(

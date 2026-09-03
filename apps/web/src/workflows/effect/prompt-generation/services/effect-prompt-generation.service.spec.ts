@@ -143,7 +143,7 @@ describe('effect prompt generation HTTP service', () => {
     ).resolves.toEqual(detail);
   });
 
-  it('关闭 AI 分析时只保存草稿且不发送评估参数', async () => {
+  it('编辑保存只更新草稿且不发送自动评估参数', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       response({
         resultId: 'result-1',
@@ -162,11 +162,19 @@ describe('effect prompt generation HTTP service', () => {
       1,
       {
         content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
+        primaryPurpose: 'PRODUCT_DISPLAY',
+        creativeCore: '',
+        dimensions: {
+          narrative: '',
+          scene: '',
+          persona: '',
+          productRelation: '',
+          camera: '',
+          emotion: '',
+        },
         targetDurationSeconds: 5,
-        useAiAnalysis: false,
       },
       undefined,
-      3,
     );
 
     const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
@@ -175,5 +183,55 @@ describe('effect prompt generation HTTP service', () => {
     expect(body).not.toHaveProperty('expectedSettingsRevision');
     expect(body).not.toHaveProperty('idempotencyKey');
     expect(body).not.toHaveProperty('useAiAnalysis');
+    expect(body).toHaveProperty('primaryPurpose', 'PRODUCT_DISPLAY');
+    expect(body).not.toHaveProperty('creativeCore');
+    expect(body).not.toHaveProperty('dimensions');
+  });
+
+  it('提交用户填写的创意主线和完整六维信息', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      response({
+        resultId: 'result-1',
+        productId: 'product-1',
+        revision: 2,
+        result: {},
+        savedAt: '2026-09-03T00:00:00.000Z',
+        unchanged: false,
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await saveEffectPromptItem(
+      'project-1',
+      'result-1',
+      1,
+      {
+        content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
+        primaryPurpose: 'SELLING_POINT_EXPLANATION',
+        creativeCore: '用家常装盘突出方便搭配',
+        dimensions: {
+          narrative: '动作展示',
+          scene: '家庭餐桌',
+          persona: '成年人手部',
+          productRelation: '蒸熟后直接装盘',
+          camera: '中近景跟随',
+          emotion: '温暖日常',
+        },
+        targetDurationSeconds: 5,
+      },
+      'prompt-1',
+    );
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(String(request.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      primaryPurpose: 'SELLING_POINT_EXPLANATION',
+      creativeCore: '用家常装盘突出方便搭配',
+      dimensions: {
+        narrative: '动作展示',
+        scene: '家庭餐桌',
+        productRelation: '蒸熟后直接装盘',
+      },
+    });
   });
 });

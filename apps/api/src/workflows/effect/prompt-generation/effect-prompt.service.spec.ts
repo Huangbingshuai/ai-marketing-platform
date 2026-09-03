@@ -212,15 +212,7 @@ describe('EffectPromptService settings contract', () => {
     expect(output.stageCheckpoints).toEqual([checkpoint]);
   });
 
-  it('normalizes and forwards visual item-regeneration direction without opening a batch path', async () => {
-    const dimensions = {
-      narrative: ' 场景代入型 ',
-      scene: ' 家庭餐桌 ',
-      persona: ' 仅手部出镜 ',
-      productRelation: ' 单手开合 ',
-      camera: ' 桌面近景缓慢推进 ',
-      emotion: ' 温暖舒缓 ',
-    };
+  it('starts a full item regeneration with the user-selected duration', async () => {
     const run = {
       id: 'run-a',
       projectId: 'project-a',
@@ -250,11 +242,9 @@ describe('EffectPromptService settings contract', () => {
       workflowRunId: 'workflow-a',
       operation: 'ITEM_REGENERATE',
       targetItemId: run.targetItemId,
+      targetDurationSeconds: 12,
       regenerationInstruction: '  产品更早出现  ',
-      replacementDimensions: dimensions,
-      regenerationMode: 'AUTO_DIVERSE',
       regenerationReasons: ['ACTION_UNREASONABLE', 'TOO_SIMILAR'],
-      preservedDimensions: [],
       expectedSettingsRevision: 2,
       expectedResultRevision: 3,
       idempotencyKey: 'regen-a',
@@ -266,18 +256,12 @@ describe('EffectPromptService settings contract', () => {
       'product-a',
       expect.objectContaining({
         operation: 'ITEM_REGENERATE',
+        targetDurationSeconds: 12,
         regenerationInstruction: '产品更早出现',
-        regenerationMode: 'AUTO_DIVERSE',
+        regenerationMode: 'FULL_REGENERATE',
         regenerationReasons: ['ACTION_UNREASONABLE', 'TOO_SIMILAR'],
         preservedDimensions: [],
-        replacementDimensions: {
-          narrative: '场景代入型',
-          scene: '家庭餐桌',
-          persona: '仅手部出镜',
-          productRelation: '单手开合',
-          camera: '桌面近景缓慢推进',
-          emotion: '温暖舒缓',
-        },
+        replacementDimensions: null,
       }),
     );
   });
@@ -811,6 +795,7 @@ describe('EffectPromptService settings contract', () => {
       service.addItem('project-a', 'result-a', 1, {
         content: '新增 Prompt',
         targetDurationSeconds: 5,
+        creativeCore: '家庭场景中的产品展示',
         dimensions: {
           narrative: '痛点前置型',
           scene: '家庭',
@@ -953,6 +938,16 @@ describe('EffectPromptService settings contract', () => {
 
     const output = await service.addItem('project-a', 'result-a', 1, {
       content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
+      primaryPurpose: 'SELLING_POINT_EXPLANATION',
+      creativeCore: '用家常装盘突出方便搭配',
+      dimensions: {
+        narrative: '动作展示',
+        scene: '家庭餐桌',
+        persona: '成年人手部',
+        productRelation: '蒸熟后直接装盘',
+        camera: '中近景跟随',
+        emotion: '温暖日常',
+      },
       targetDurationSeconds: 5,
       evaluateAfterSave: false,
     });
@@ -962,8 +957,43 @@ describe('EffectPromptService settings contract', () => {
     expect(output.evaluationStartError).toBeUndefined();
     expect(output.result.items.find(({ id }) => id === output.affectedItemId)).toMatchObject({
       classificationStatus: 'PENDING',
+      fragmentType: 'SELLING_POINT_EXPLANATION',
+      primaryPurpose: 'SELLING_POINT_EXPLANATION',
+      compatiblePurposes: ['SELLING_POINT_EXPLANATION'],
       content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
+      creativeCore: '用家常装盘突出方便搭配',
+      dimensions: {
+        narrative: '动作展示',
+        scene: '家庭餐桌',
+        persona: '成年人手部',
+        productRelation: '蒸熟后直接装盘',
+        camera: '中近景跟随',
+        emotion: '温暖日常',
+      },
     });
+  });
+
+  it('rejects a partial user-authored creative structure', async () => {
+    const draftResult = completionGateFixture();
+    const repository = {
+      result: vi.fn().mockResolvedValue({ draftResult }),
+      mutateResult: vi.fn(),
+    };
+    const service = new EffectPromptService(
+      repository as never,
+      { get: vi.fn().mockResolvedValue({ id: 'project-a' }) } as never,
+      {} as never,
+    );
+
+    await expect(
+      service.addItem('project-a', 'result-a', 1, {
+        content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
+        creativeCore: '只填写了创意主线',
+        targetDurationSeconds: 5,
+        evaluateAfterSave: false,
+      }),
+    ).rejects.toThrow('Prompt 正文、片段时长或创意结构不符合要求');
+    expect(repository.mutateResult).not.toHaveBeenCalled();
   });
 
   it('rejects a manually edited duration outside the active render capability', async () => {
@@ -979,6 +1009,7 @@ describe('EffectPromptService settings contract', () => {
       service.updateItem('project-a', 'result-a', draftResult.items[0]!.id, 1, {
         content: draftResult.items[0]!.content,
         targetDurationSeconds: 16,
+        creativeCore: draftResult.items[0]!.creativeCore,
         dimensions: draftResult.items[0]!.dimensions,
       }),
     ).rejects.toThrow('当前视频模型支持 4～15 秒的片段时长');

@@ -342,6 +342,7 @@ export const EFFECT_PROMPT_OPERATIONS = [
 export type EffectPromptOperation = (typeof EFFECT_PROMPT_OPERATIONS)[number];
 
 export const EFFECT_PROMPT_REGENERATION_MODES = [
+  'FULL_REGENERATE',
   'AUTO_DIVERSE',
   'PRESERVE_PRODUCT_RELATION',
   'NEW_CREATIVE',
@@ -568,6 +569,7 @@ export type StartEffectPromptRunRequest = {
   workflowRunId: string;
   operation: EffectPromptOperation;
   targetItemId?: string | undefined;
+  targetDurationSeconds?: number | undefined;
   regenerationInstruction?: string | undefined;
   replacementDimensions?: EffectPromptDimensions | undefined;
   regenerationMode?: EffectPromptRegenerationMode | undefined;
@@ -809,6 +811,8 @@ export type UpsertEffectPromptItemRequest = Pick<
   EffectPromptItem,
   'content' | 'targetDurationSeconds'
 > & {
+  primaryPurpose?: EffectPromptFragmentType;
+  creativeCore?: string;
   dimensions?: EffectPromptDimensions;
   expectedRevision: number;
   /** When true, saving and queueing the existing ITEM_EVALUATE flow is one API action. */

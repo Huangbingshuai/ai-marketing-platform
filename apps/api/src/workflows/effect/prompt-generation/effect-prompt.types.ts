@@ -30,12 +30,20 @@ export type EffectPromptInputSnapshot = {
   /** Present for ITEM_REGENERATE so the API can preserve stable identity and order. */
   targetItem?: EffectPromptItem | undefined;
   targetItemIndex?: number | undefined;
+  /** Requested duration for the regenerated candidates; absent on historical runs. */
+  regenerationTargetDurationSeconds?: number | undefined;
   /** Effective dimensions used by ITEM_REGENERATE, including the old-client fallback. */
   replacementDimensions?: EffectPromptItem['dimensions'] | undefined;
   /** Trimmed, low-priority user direction. Empty input is persisted as null. */
   regenerationInstruction?: string | null | undefined;
   regenerationMode?:
-    'AUTO_DIVERSE' | 'PRESERVE_PRODUCT_RELATION' | 'NEW_CREATIVE' | 'CUSTOM' | null | undefined;
+    | 'FULL_REGENERATE'
+    | 'AUTO_DIVERSE'
+    | 'PRESERVE_PRODUCT_RELATION'
+    | 'NEW_CREATIVE'
+    | 'CUSTOM'
+    | null
+    | undefined;
   regenerationReasons?: Array<
     | 'PRODUCT_RELATION_WEAK'
     | 'CREATIVE_ORDINARY'

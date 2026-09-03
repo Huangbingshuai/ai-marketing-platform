@@ -183,9 +183,10 @@ export const loadEffectPromptNodeDetail = async (
 
 export type PromptItemDraft = {
   content: string;
-  dimensions?: EffectPromptDimensions;
+  primaryPurpose: EffectPromptFragmentType;
+  creativeCore: string;
+  dimensions: EffectPromptDimensions;
   targetDurationSeconds: number;
-  useAiAnalysis: boolean;
 };
 
 export const saveEffectPromptItem = async (
@@ -194,20 +195,26 @@ export const saveEffectPromptItem = async (
   expectedRevision: number,
   draft: PromptItemDraft,
   itemId?: string,
-  expectedSettingsRevision?: number,
   signal?: AbortSignal,
 ): Promise<UpdateEffectPromptResultData> => {
-  const { useAiAnalysis, ...promptDraft } = draft;
+  const { creativeCore, dimensions, ...baseDraft } = draft;
+  const normalizedCreativeCore = creativeCore.trim();
+  const normalizedDimensions = Object.fromEntries(
+    EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, dimensions[key].trim()]),
+  ) as EffectPromptDimensions;
+  const hasCreativeStructure =
+    normalizedCreativeCore.length > 0 ||
+    EFFECT_PROMPT_DIMENSIONS.some(({ key }) => normalizedDimensions[key].length > 0);
+  const promptDraft = {
+    ...baseDraft,
+    ...(hasCreativeStructure
+      ? { creativeCore: normalizedCreativeCore, dimensions: normalizedDimensions }
+      : {}),
+  };
   const input = {
     ...promptDraft,
     expectedRevision,
-    evaluateAfterSave: useAiAnalysis,
-    ...(useAiAnalysis && expectedSettingsRevision
-      ? {
-          expectedSettingsRevision,
-          idempotencyKey: createPromptIdempotencyKey(),
-        }
-      : {}),
+    evaluateAfterSave: false,
   };
   return itemId
     ? (await updateEffectPromptItem(projectId, resultId, itemId, input, signal)).data
