@@ -94,7 +94,7 @@ export class UndoPromptRegenerationDto {
 }
 
 export class PromptItemDto {
-  @Allow() dimensions!: EffectPromptDimensions;
+  @IsOptional() @Allow() dimensions?: EffectPromptDimensions;
   @IsString() @MaxLength(12_000) content!: string;
   @Type(() => Number)
   @IsInt()
@@ -102,6 +102,9 @@ export class PromptItemDto {
   @Max(EFFECT_PROMPT_LIMITS.maxDurationSeconds)
   targetDurationSeconds!: number;
   @Type(() => Number) @IsInt() @Min(1) expectedRevision!: number;
+  @IsOptional() @IsBoolean() evaluateAfterSave?: boolean;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) expectedSettingsRevision?: number;
+  @IsOptional() @IsString() @MaxLength(500) idempotencyKey?: string;
 }
 
 export class DeletePromptItemDto {

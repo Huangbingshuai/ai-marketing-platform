@@ -156,6 +156,33 @@
     "item": {
       "type": "object",
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "classificationStatus": {
+                "const": "NEEDS_REVISION"
+              }
+            },
+            "required": ["classificationStatus"]
+          },
+          "then": {
+            "required": ["reviewIssues"],
+            "properties": {
+              "reviewIssues": {
+                "minItems": 1
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "reviewIssues": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ],
       "required": [
         "id",
         "code",
@@ -204,7 +231,7 @@
           }
         },
         "classificationStatus": {
-          "enum": ["PENDING", "VERIFIED"]
+          "enum": ["PENDING", "VERIFIED", "NEEDS_REVISION"]
         },
         "productRelevance": {
           "type": "integer",
@@ -234,6 +261,16 @@
           "maxItems": 16,
           "items": {
             "$ref": "#/$defs/insightBinding"
+          }
+        },
+        "reviewIssues": {
+          "type": "array",
+          "maxItems": 10,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
           }
         },
         "manualEdited": {

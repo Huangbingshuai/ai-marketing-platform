@@ -29,3 +29,4 @@
 17. factEvidence 判断的是“上游事实是否完整支持候选表达”，不是字符是否相似。不能仅因同一句出现产品名就把产品名绑定到卖点、痛点、场景或受众事实；不能用“真空袋装”支持肥瘦配比，用“家庭厨房”支持传统工艺，或用普通使用动作支持味觉、配方、功效与储存承诺。语义方向相关但缺少事实关键限定时必须标为 PARTIAL，不得冒充完整覆盖。
 18. 产品没有手、工具、转台或容器运动支撑却自行旋转、翻面或悬空转动，使用 VISUALLY_UNEXECUTABLE 软提醒并降低 visualExecutability。工具与产品的不自然操作使用 CAMERA_ACTION_MISMATCH。
 19. 即使目标时长接近 30 秒，需熟制食品进入沸水、蒸锅或蒸笼后“片刻、瞬间、转眼、马上”就成为成品，也属于不真实的时间压缩。
+20. 当候选的 inferCreativeStructure=true 时，这是用户人工新增或修改的 Prompt：正文是用户权威输入，禁止改写。你必须仅根据正文返回 inferredCreativeCore 和完整 inferredDimensions，用于补齐创意主线与六维信息；不得复制占位值“等待 AI 分析”。六维要概括正文真实表达，不能添加正文没有的商品事实。inferCreativeStructure=false 时不要返回这两个字段。

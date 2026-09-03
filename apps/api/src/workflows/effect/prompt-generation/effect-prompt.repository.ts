@@ -136,9 +136,7 @@ const parseOverrides = (value: unknown): EffectPromptManualOverrides => {
   const source = value as Partial<EffectPromptManualOverrides>;
   const withoutLegacyTags = <T>(entry: T): T => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
-    return Object.fromEntries(
-      Object.entries(entry).filter(([key]) => key !== 'materialTags'),
-    ) as T;
+    return Object.fromEntries(Object.entries(entry).filter(([key]) => key !== 'materialTags')) as T;
   };
   const editedSource =
     source.edited && typeof source.edited === 'object' && !Array.isArray(source.edited)
@@ -867,6 +865,7 @@ export class EffectPromptRepository {
                 primaryPurpose: evaluated.primaryPurpose,
                 compatiblePurposes: [...evaluated.compatiblePurposes],
                 classificationStatus: evaluated.classificationStatus,
+                reviewIssues: [...(evaluated.reviewIssues ?? [])],
                 productRelevance: evaluated.productRelevance,
                 targetDurationSeconds: evaluated.targetDurationSeconds,
                 creativeCore: evaluated.creativeCore,
@@ -884,6 +883,7 @@ export class EffectPromptRepository {
               primaryPurpose: item.primaryPurpose,
               compatiblePurposes: item.compatiblePurposes,
               classificationStatus: item.classificationStatus,
+              reviewIssues: [...(item.reviewIssues ?? [])],
               productRelevance: item.productRelevance,
               targetDurationSeconds: item.targetDurationSeconds,
               creativeCore: item.creativeCore,
@@ -1141,6 +1141,7 @@ export class EffectPromptRepository {
           primaryPurpose: snapshot.targetItem.primaryPurpose,
           compatiblePurposes: [...snapshot.targetItem.compatiblePurposes],
           classificationStatus: snapshot.targetItem.classificationStatus,
+          reviewIssues: [...(snapshot.targetItem.reviewIssues ?? [])],
           productRelevance: snapshot.targetItem.productRelevance,
           targetDurationSeconds: snapshot.targetItem.targetDurationSeconds,
           creativeCore: snapshot.targetItem.creativeCore,
@@ -1487,6 +1488,7 @@ export class EffectPromptRepository {
             | 'targetDurationSeconds'
             | 'creativeCore'
             | 'dimensions'
+            | 'reviewIssues'
           >;
         }
       | { kind: 'DELETE'; itemId: string }

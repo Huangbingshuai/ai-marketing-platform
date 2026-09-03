@@ -228,7 +228,11 @@ export type EffectPromptInsightCoverage = {
   appliedConstraints: EffectPromptInsightReference[];
 };
 
-export const EFFECT_PROMPT_CLASSIFICATION_STATUSES = ['PENDING', 'VERIFIED'] as const;
+export const EFFECT_PROMPT_CLASSIFICATION_STATUSES = [
+  'PENDING',
+  'VERIFIED',
+  'NEEDS_REVISION',
+] as const;
 export type EffectPromptClassificationStatus =
   (typeof EFFECT_PROMPT_CLASSIFICATION_STATUSES)[number];
 
@@ -249,6 +253,8 @@ export type EffectPromptItem = {
   dimensions: EffectPromptDimensions;
   content: string;
   insightBindings: EffectPromptInsightBinding[];
+  /** Safe evaluator issue codes. Present only when the item needs user revision. */
+  reviewIssues?: string[];
   manualEdited: boolean;
   createdAt: string;
   updatedAt: string;
@@ -316,6 +322,7 @@ export type EffectPromptManualOverrides = {
       | 'primaryPurpose'
       | 'compatiblePurposes'
       | 'classificationStatus'
+      | 'reviewIssues'
       | 'productRelevance'
       | 'targetDurationSeconds'
       | 'creativeCore'
@@ -798,8 +805,15 @@ export type GetEffectPromptNodeDetailData = {
 
 export type UpsertEffectPromptItemRequest = Pick<
   EffectPromptItem,
-  'content' | 'dimensions' | 'targetDurationSeconds'
-> & { expectedRevision: number };
+  'content' | 'targetDurationSeconds'
+> & {
+  dimensions?: EffectPromptDimensions;
+  expectedRevision: number;
+  /** When true, saving and queueing the existing ITEM_EVALUATE flow is one API action. */
+  evaluateAfterSave?: boolean;
+  expectedSettingsRevision?: number;
+  idempotencyKey?: string;
+};
 
 export type UpdateEffectPromptSharedPromptRequest = {
   content: string;
@@ -813,6 +827,11 @@ export type UpdateEffectPromptResultData = {
   result: EffectPromptBatchResult;
   savedAt: string;
   unchanged: boolean;
+  affectedItemId?: string;
+  /** Zero-based position in the unfiltered display order after the mutation. */
+  affectedItemIndex?: number;
+  evaluationRun?: EffectPromptRun;
+  evaluationStartError?: string;
 };
 
 export type ApplyEffectPromptRegenerationRequest = {

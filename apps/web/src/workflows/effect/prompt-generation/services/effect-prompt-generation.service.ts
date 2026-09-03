@@ -183,8 +183,9 @@ export const loadEffectPromptNodeDetail = async (
 
 export type PromptItemDraft = {
   content: string;
-  dimensions: EffectPromptDimensions;
+  dimensions?: EffectPromptDimensions;
   targetDurationSeconds: number;
+  useAiAnalysis: boolean;
 };
 
 export const saveEffectPromptItem = async (
@@ -193,9 +194,21 @@ export const saveEffectPromptItem = async (
   expectedRevision: number,
   draft: PromptItemDraft,
   itemId?: string,
+  expectedSettingsRevision?: number,
   signal?: AbortSignal,
 ): Promise<UpdateEffectPromptResultData> => {
-  const input = { ...draft, expectedRevision };
+  const { useAiAnalysis, ...promptDraft } = draft;
+  const input = {
+    ...promptDraft,
+    expectedRevision,
+    evaluateAfterSave: useAiAnalysis,
+    ...(useAiAnalysis && expectedSettingsRevision
+      ? {
+          expectedSettingsRevision,
+          idempotencyKey: createPromptIdempotencyKey(),
+        }
+      : {}),
+  };
   return itemId
     ? (await updateEffectPromptItem(projectId, resultId, itemId, input, signal)).data
     : (await addEffectPromptItem(projectId, resultId, input, signal)).data;

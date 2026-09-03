@@ -1203,7 +1203,9 @@ async def test_vector_embedding_failure_is_retryable_and_safely_coded() -> None:
 
 
 @pytest.mark.asyncio
-async def test_item_evaluate_preserves_content_and_only_runs_classification() -> None:
+async def test_item_evaluate_preserves_content_and_infers_structure_in_classification() -> (
+    None
+):
     snapshot = _snapshot()
     now = "2026-08-27T10:00:00Z"
     target = PromptItem(
@@ -1257,8 +1259,10 @@ async def test_item_evaluate_preserves_content_and_only_runs_classification() ->
     assert api.result is not None
     assert len(api.result.items) == 1
     assert api.result.items[0].content == target.content
-    assert api.result.items[0].creative_core == target.creative_core
+    assert api.result.items[0].creative_core != target.creative_core
+    assert api.result.items[0].dimensions.narrative == "用户自定义片段"
     assert api.result.items[0].classification_status == "VERIFIED"
+    assert api.result.items[0].review_issues == []
     assert Counter(item.phase.value for item in api.shards.values()) == {
         "CLASSIFICATION": 1
     }
@@ -1273,6 +1277,105 @@ async def test_item_evaluate_preserves_content_and_only_runs_classification() ->
         result_stage.metadata["semanticAudit"]["evaluatedItems"][0]["itemId"]
         == target.id
     )
+
+
+def test_item_evaluation_receives_all_confirmed_facts() -> None:
+    application = map_insight(
+        {
+            "productName": "广式腊肠",
+            "coreSellingPoints": [f"已确认卖点 {index}" for index in range(1, 18)],
+        }
+    )
+    candidate = CreativeCandidate(
+        slot_id="manual-prompt-all-facts",
+        ordinal=1,
+        round=0,
+        creative_core="等待 AI 分析",
+        declared_fact_ids=[application.usable[0].fact_id],
+        dimensions=CreativeDimensions(
+            narrative="等待 AI 分析",
+            scene="等待 AI 分析",
+            persona="等待 AI 分析",
+            product_relation="等待 AI 分析",
+            camera="等待 AI 分析",
+            emotion="等待 AI 分析",
+        ),
+        content="家庭厨房中，一双手把广式腊肠放入蒸锅，固定近景停在锅盖合上的瞬间。",
+    )
+
+    context_ids = _evaluation_context_fact_ids(
+        candidate,
+        None,
+        application,
+        item_evaluation=True,
+    )
+
+    assert context_ids == [fact.fact_id for fact in application.usable]
+    assert len(context_ids) > 12
+
+
+@pytest.mark.asyncio
+async def test_item_evaluate_marks_hard_issues_as_needing_revision() -> None:
+    snapshot = _snapshot()
+    now = "2026-09-03T10:00:00Z"
+    target = PromptItem(
+        id="manual-prompt-hard-issue",
+        code="P011",
+        origin="MANUAL",
+        fragment_type=FragmentType.PRODUCT_DISPLAY,
+        primary_purpose=FragmentType.PRODUCT_DISPLAY,
+        compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+        classification_status="PENDING",
+        product_relevance=0,
+        target_duration_seconds=5,
+        creative_core="等待 AI 分析",
+        dimensions=CreativeDimensions(
+            narrative="等待 AI 分析",
+            scene="等待 AI 分析",
+            persona="等待 AI 分析",
+            product_relation="等待 AI 分析",
+            camera="等待 AI 分析",
+            emotion="等待 AI 分析",
+        ),
+        content="门店展示台上，一双手把资料中没有确认的获奖礼盒包装转向镜头并停住。",
+        insight_bindings=[],
+        manual_edited=True,
+        created_at=now,
+        updated_at=now,
+    )
+    item_snapshot = snapshot.model_copy(
+        update={
+            "operation": "ITEM_EVALUATE",
+            "target_item_id": target.id,
+            "target_item": target,
+            "target_item_index": 0,
+        }
+    )
+    api = PromptApi()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=AlwaysRejectingProvider(),
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, item_snapshot)
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    assert api.result is not None
+    assert api.result.items[0].content == target.content
+    assert api.result.items[0].classification_status == "NEEDS_REVISION"
+    assert api.result.items[0].review_issues == ["FABRICATED_FACT"]
+    assert api.result.quality_status == "NEEDS_REVIEW"
+    evaluation_stage = next(
+        stage
+        for stage in reversed(api.stages)
+        if stage.node_id.value == "ITEM_EVALUATE"
+    )
+    assert evaluation_stage.metadata["classificationStatus"] == "NEEDS_REVISION"
 
 
 @pytest.mark.asyncio

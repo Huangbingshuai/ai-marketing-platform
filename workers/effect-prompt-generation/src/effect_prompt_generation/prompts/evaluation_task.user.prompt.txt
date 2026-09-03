@@ -10,4 +10,4 @@
 本批允许使用的六轴语义分类词表：
 {semantic_vocabulary_json}
 
-逐条独立核对事实实现程度、正文与结构化六维的一致性、目标时长下的动作密度与画面可执行性、商业素材价值，以及是否依赖无关场景或统一质感套话。每个候选的 assignedContextFactIds 只对该候选有效；只有候选真正实现业务语义时才能将其 supportLevel 标记为 EXACT 或 SEMANTIC_FULL，不以字符重合代替语义判断。只评估，不改写正文。硬问题和软提醒必须严格使用系统提示规定的稳定问题码。items 数量与 slotId 必须和输入一致。
+逐条独立核对事实实现程度、正文与结构化六维的一致性、目标时长下的动作密度与画面可执行性、商业素材价值，以及是否依赖无关场景或统一质感套话。每个候选的 assignedContextFactIds 只对该候选有效；只有候选真正实现业务语义时才能将其 supportLevel 标记为 EXACT 或 SEMANTIC_FULL，不以字符重合代替语义判断。只评估，不改写正文。inferCreativeStructure=true 时必须从用户正文补齐 inferredCreativeCore 与 inferredDimensions；这些字段只用于结构化分析，绝不能返回改写后的 content。硬问题和软提醒必须严格使用系统提示规定的稳定问题码。items 数量与 slotId 必须和输入一致。

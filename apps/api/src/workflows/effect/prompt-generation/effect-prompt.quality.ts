@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type {
   EffectPromptBatchResult,
   EffectPromptBatchSettings,
+  EffectPromptClassificationStatus,
   EffectPromptDimensions,
   EffectPromptFragmentType,
   EffectPromptItem,
@@ -17,6 +18,7 @@ import type {
 } from '@ai-marketing/contracts';
 import {
   EFFECT_PROMPT_INSIGHT_FIELDS,
+  EFFECT_PROMPT_CLASSIFICATION_STATUSES,
   EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES,
   EFFECT_PROMPT_INSIGHT_ROLES,
   EFFECT_PROMPT_FRAGMENT_TYPES,
@@ -486,11 +488,25 @@ export const isEffectPromptItem = (value: unknown): value is EffectPromptItem =>
     ) &&
     new Set(compatiblePurposes).size === compatiblePurposes.length &&
     compatiblePurposes.includes(item.primaryPurpose) &&
-    (item.classificationStatus === 'PENDING' || item.classificationStatus === 'VERIFIED') &&
+    EFFECT_PROMPT_CLASSIFICATION_STATUSES.includes(
+      item.classificationStatus as EffectPromptClassificationStatus,
+    ) &&
     Number.isInteger(item.productRelevance) &&
     Number(item.productRelevance) >= 0 &&
     Number(item.productRelevance) <= 100 &&
-    Object.keys(item).length === 16,
+    (item.reviewIssues === undefined ||
+      (Array.isArray(item.reviewIssues) &&
+        item.reviewIssues.length <= 10 &&
+        item.reviewIssues.every(
+          (issue) => typeof issue === 'string' && issue.trim().length > 0 && issue.length <= 120,
+        ) &&
+        new Set(item.reviewIssues).size === item.reviewIssues.length)) &&
+    (item.classificationStatus !== 'NEEDS_REVISION' ||
+      (Array.isArray(item.reviewIssues) && item.reviewIssues.length > 0)) &&
+    (item.classificationStatus === 'NEEDS_REVISION' ||
+      item.reviewIssues === undefined ||
+      item.reviewIssues.length === 0) &&
+    [16, 17].includes(Object.keys(item).length),
   );
 };
 
@@ -500,10 +516,12 @@ const withCurrentItemCompatibility = (value: unknown): unknown => {
   const current = Object.fromEntries(
     Object.entries(item).filter(([key]) => key !== 'materialTags'),
   );
-  if (current.creativeCore !== undefined) return current;
-  const dimensions = record(current.dimensions);
+  const withReviewIssues =
+    current.reviewIssues === undefined ? { ...current, reviewIssues: [] } : current;
+  if (withReviewIssues.creativeCore !== undefined) return withReviewIssues;
+  const dimensions = record(withReviewIssues.dimensions);
   const narrative = typeof dimensions?.narrative === 'string' ? dimensions.narrative.trim() : '';
-  return narrative ? { ...current, creativeCore: narrative } : current;
+  return narrative ? { ...withReviewIssues, creativeCore: narrative } : withReviewIssues;
 };
 
 export const isEffectPromptSettings = (value: unknown): value is EffectPromptBatchSettings => {
@@ -958,6 +976,7 @@ export const recomputePromptQuality = (
         ({ code }) =>
           ![
             'CLASSIFICATION_PENDING',
+            'ITEM_NEEDS_REVISION',
             'DURATION_MISMATCH',
             'EXACT_DUPLICATE',
             'MISSING_DEEP_BUSINESS_FACT',
@@ -966,10 +985,15 @@ export const recomputePromptQuality = (
       .map(({ code, count }) => [code, count]),
   );
   for (const prompt of items) {
-    if (prompt.classificationStatus !== 'VERIFIED')
+    if (prompt.classificationStatus === 'PENDING')
       hardIssueCounts.set(
         'CLASSIFICATION_PENDING',
         (hardIssueCounts.get('CLASSIFICATION_PENDING') ?? 0) + 1,
+      );
+    if (prompt.classificationStatus === 'NEEDS_REVISION')
+      hardIssueCounts.set(
+        'ITEM_NEEDS_REVISION',
+        (hardIssueCounts.get('ITEM_NEEDS_REVISION') ?? 0) + 1,
       );
     if (prompt.targetDurationSeconds !== settings.defaultDurationSeconds)
       hardIssueCounts.set('DURATION_MISMATCH', (hardIssueCounts.get('DURATION_MISMATCH') ?? 0) + 1);
@@ -1113,7 +1137,10 @@ export const mergeEffectPromptCompletionItems = (
           compatiblePurposes: [...replacement.compatiblePurposes],
           classificationStatus: replacement.classificationStatus,
           productRelevance: replacement.productRelevance,
+          creativeCore: replacement.creativeCore,
+          dimensions: { ...replacement.dimensions },
           insightBindings: [...replacement.insightBindings],
+          reviewIssues: [...(replacement.reviewIssues ?? [])],
           updatedAt: replacement.updatedAt,
         }
       : {

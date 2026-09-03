@@ -140,8 +140,8 @@ const editorMode = ref<'add' | 'edit'>('edit');
 const editorItemId = ref('');
 const editorDraft = ref<PromptItemDraft>({
   content: '',
-  dimensions: emptyDimensions(),
   targetDurationSeconds: DEFAULT_EFFECT_PROMPT_SETTINGS.defaultDurationSeconds,
+  useAiAnalysis: true,
 });
 const editorTrigger = ref<HTMLElement | null>(null);
 const editorCloseButton = ref<HTMLButtonElement | null>(null);
@@ -402,15 +402,6 @@ const graphRows = computed<EffectPromptNodeId[][]>(() =>
   buildEffectPromptGraphRows(currentGraphNodeIds.value, currentGraphEdges.value),
 );
 
-const dimensionSuggestions: Record<keyof EffectPromptDimensions, string[]> = {
-  narrative: ['痛点前置型', '效果展示型', '场景代入型', '科普讲解型', '对比测评型', '开箱体验型'],
-  scene: ['家庭', '户外', '职场', '线下门店', '生活化场景'],
-  persona: ['都市白领', '新手妈妈', '专业测评人', '年轻情侣', '门店主理人'],
-  productRelation: [],
-  camera: ['固定机位＋三段跳切', '广角环绕＋慢推近景', '手持跟拍＋特写', '俯拍全景＋微距切面'],
-  emotion: ['温馨治愈', '专业严谨', '活力明快', '焦虑唤醒', '干货科普'],
-};
-
 const regenerationModeOptions: Array<{
   value: EffectPromptRegenerationMode;
   title: string;
@@ -461,12 +452,16 @@ const selectedRegenerationCandidate = computed(() =>
     ({ candidateId }) => candidateId === selectedRegenerationCandidateId.value,
   ),
 );
-function emptyDimensions(): EffectPromptDimensions {
-  return { narrative: '', scene: '', persona: '', productRelation: '', camera: '', emotion: '' };
-}
-
 const fragmentTypeLabel = (fragmentType: EffectPromptFragmentType): string =>
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[fragmentType];
+
+const reviewIssueLabel = (issue: string): string =>
+  ({
+    PRODUCT_UNRELATED: '正文与当前产品缺少明确关联',
+    FABRICATED_FACT: '正文包含信息卡未确认的产品事实',
+    ABSTRACT_FACT_VISUAL_PROOF: '画面错误地把抽象卖点当成可直接证明的事实',
+    EMPTY_OR_BROKEN_CONTENT: '正文结构不完整，暂时无法用于生成视频',
+  })[issue] ?? '这条 Prompt 需要修改后重新评估';
 
 const context = (): EffectPromptContext => ({
   projectId: props.projectId,
@@ -1128,9 +1123,9 @@ const openEditor = async (item?: EffectPromptItem, event?: Event): Promise<void>
   editorItemId.value = item?.id ?? '';
   editorDraft.value = {
     content: item?.content ?? '',
-    dimensions: item ? { ...item.dimensions } : emptyDimensions(),
     targetDurationSeconds:
       item?.targetDurationSeconds ?? currentSettings.value.defaultDurationSeconds,
+    useAiAnalysis: true,
   };
   editorOpen.value = true;
   await nextTick();
@@ -1165,9 +1160,8 @@ const commitEditor = async (): Promise<void> => {
     );
     return;
   }
-  const missing = EFFECT_PROMPT_DIMENSIONS.find(({ key }) => !draft.dimensions[key].trim());
-  if (missing) {
-    showNotice(`请填写${missing.label}`, 'warning');
+  if (draft.useAiAnalysis && state.settingsRevision === null) {
+    showNotice('当前批次设置尚未保存，暂时不能评估新增 Prompt', 'warning');
     return;
   }
   editorSaving.value = true;
@@ -1177,7 +1171,6 @@ const commitEditor = async (): Promise<void> => {
   const productId = state.productId;
   const resultId = state.resultId;
   const resultRevision = result.revision;
-  const existingItemIds = new Set(currentItems.value.map((item) => item.id));
   try {
     const saved = await saveEffectPromptItem(
       props.projectId,
@@ -1186,29 +1179,37 @@ const commitEditor = async (): Promise<void> => {
       {
         content: draft.content.trim(),
         targetDurationSeconds: draft.targetDurationSeconds,
-        dimensions: Object.fromEntries(
-          EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, draft.dimensions[key].trim()]),
-        ) as EffectPromptDimensions,
+        useAiAnalysis: draft.useAiAnalysis,
       },
       editorMode.value === 'edit' ? editorItemId.value : undefined,
+      state.settingsRevision ?? undefined,
       controller.signal,
     );
     if (controller.signal.aborted || currentProductId.value !== productId) return;
     editorOpen.value = false;
-    await reloadWorkspace(false);
-    const targetItem =
-      editorMode.value === 'edit'
-        ? saved.result.items.find((item) => item.id === editorItemId.value)
-        : (saved.result.items.find((item) => !existingItemIds.has(item.id)) ??
-          saved.result.items.at(-1));
-    if (!targetItem) {
-      showNotice('Prompt 已保存，等待用途评估', 'warning');
-      return;
+    keyword.value = '';
+    purposeFilter.value = '';
+    includeCompatiblePurposes.value = false;
+    const affectedIndex = saved.affectedItemIndex ?? -1;
+    page.value =
+      affectedIndex >= 0
+        ? Math.floor(affectedIndex / EFFECT_PROMPT_LIMITS.pageSize) + 1
+        : promptPageCount(saved.result.items.length);
+    if (saved.evaluationRun) {
+      updateRun(productId, saved.evaluationRun);
+      startPolling(productId, saved.evaluationRun);
     }
+    await reloadWorkspace(false);
     showNotice(
-      editorMode.value === 'edit' ? '修改已保存，正在重新评估用途' : 'Prompt 已添加，正在评估用途',
+      saved.evaluationRun
+        ? editorMode.value === 'edit'
+          ? '修改已保存，正在分析六维、事实和推荐用途'
+          : 'Prompt 已添加，正在分析六维、事实和推荐用途'
+        : draft.useAiAnalysis
+          ? (saved.evaluationStartError ?? 'Prompt 已保存，可稍后重新评估')
+          : 'Prompt 已保存为待分析草稿，未调用 AI；需要时可在卡片上开始分析',
+      saved.evaluationRun || !draft.useAiAnalysis ? 'success' : 'warning',
     );
-    await evaluateItem(targetItem);
   } catch (error) {
     if (!isAbortError(error)) await handleMutationError(error, 'Prompt 保存失败');
   } finally {
@@ -2239,7 +2240,11 @@ onBeforeUnmount(() => {
               ><span
                 ><i v-if="item.manualEdited || item.origin === 'MANUAL'">人工</i
                 ><em v-if="item.classificationStatus === 'PENDING'" class="classification-pending"
-                  >待重新评估</em
+                  >正在分析</em
+                ><em
+                  v-else-if="item.classificationStatus === 'NEEDS_REVISION'"
+                  class="classification-needs-revision"
+                  >需修改</em
                 ><em v-else class="primary-fragment-tag"
                   >推荐：{{ fragmentTypeLabel(item.primaryPurpose) }}</em
                 ><em class="duration-tag">{{ item.targetDurationSeconds }} 秒</em></span
@@ -2263,6 +2268,16 @@ onBeforeUnmount(() => {
               >
             </div>
             <textarea :value="item.content" readonly aria-label="Prompt 内容" />
+            <div
+              v-if="item.classificationStatus === 'NEEDS_REVISION'"
+              class="prompt-review-issues"
+              role="alert"
+            >
+              <strong>请修改后重新评估</strong>
+              <span v-for="issue in item.reviewIssues ?? []" :key="issue">{{
+                reviewIssueLabel(issue)
+              }}</span>
+            </div>
             <details class="prompt-dimension-details">
               <summary>查看提炼信息依据</summary>
               <div v-if="item.insightBindings.length" class="prompt-fact-groups">
@@ -2285,11 +2300,17 @@ onBeforeUnmount(() => {
               </div>
               <p v-else class="prompt-detail-empty">暂无可追溯的提炼信息依据</p>
             </details>
-            <details class="prompt-dimension-details">
+            <details
+              v-if="item.classificationStatus !== 'PENDING'"
+              class="prompt-dimension-details"
+            >
               <summary>查看创意主线</summary>
               <p class="prompt-creative-core">{{ item.creativeCore }}</p>
             </details>
-            <details class="prompt-dimension-details">
+            <details
+              v-if="item.classificationStatus !== 'PENDING'"
+              class="prompt-dimension-details"
+            >
               <summary>查看六维创意信息</summary>
               <div class="prompt-dimensions">
                 <span v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key"
@@ -2300,7 +2321,7 @@ onBeforeUnmount(() => {
           </div>
           <div class="prompt-actions">
             <button
-              v-if="!partialPreview && item.classificationStatus === 'PENDING'"
+              v-if="!partialPreview && item.classificationStatus !== 'VERIFIED'"
               type="button"
               :disabled="currentRunning || itemOperation !== null"
               @click="evaluateItem(item)"
@@ -2308,7 +2329,7 @@ onBeforeUnmount(() => {
               <LoaderCircle v-if="evaluatingItemId === item.id" class="spin" :size="13" /><RefreshCw
                 v-else
                 :size="13"
-              />重新评估
+              />{{ item.classificationStatus === 'NEEDS_REVISION' ? '修改后评估' : '重新评估' }}
             </button>
             <button
               v-if="!partialPreview"
@@ -2432,7 +2453,7 @@ onBeforeUnmount(() => {
               <X :size="17" />
             </button>
           </header>
-          <div class="editor-grid">
+          <div class="editor-grid editor-grid-simple">
             <label>
               <span>片段时长</span>
               <input
@@ -2446,20 +2467,6 @@ onBeforeUnmount(() => {
                 Prompt 正文。</small
               >
             </label>
-            <label v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key"
-              ><span>{{ dimension.label }}</span
-              ><input
-                v-model="editorDraft.dimensions[dimension.key]"
-                :list="`prompt-dimension-${dimension.key}`"
-                :placeholder="`请选择或输入${dimension.label}`" /><datalist
-                :id="`prompt-dimension-${dimension.key}`"
-              >
-                <option
-                  v-for="value in dimensionSuggestions[dimension.key]"
-                  :key="value"
-                  :value="value"
-                /></datalist
-            ></label>
           </div>
           <label class="editor-content"
             ><span>片段生成 Prompt</span
@@ -2469,8 +2476,32 @@ onBeforeUnmount(() => {
               placeholder="请写清首帧画面、单一连续动作、产品位置、运镜、光线与结束帧"
             />
           </label>
+          <label class="editor-ai-analysis-option">
+            <input
+              v-model="editorDraft.useAiAnalysis"
+              type="checkbox"
+              role="switch"
+              :disabled="editorSaving"
+            />
+            <span aria-hidden="true"><i /></span>
+            <div>
+              <strong>保存后使用 AI 分析</strong>
+              <small v-if="editorDraft.useAiAnalysis"
+                >分析六维创意、可信事实和推荐用途，不会改写正文。</small
+              >
+              <small v-else
+                >仅保存为待分析草稿，不产生 AI 调用；完成校验前可在卡片上手动开始分析。</small
+              >
+            </div>
+          </label>
           <footer>
-            <p>保存后会异步重新评估推荐用途，评估完成前不能完成校验。</p>
+            <p>
+              {{
+                editorDraft.useAiAnalysis
+                  ? '保存后会启动异步分析；分析完成前不能完成校验。'
+                  : '本次不会调用 AI。该条会保留在节点草稿中，待分析前不能完成校验。'
+              }}
+            </p>
             <button type="button" :disabled="editorSaving" @click="closeEditor">取消</button
             ><button
               class="primary-button"
@@ -2479,7 +2510,11 @@ onBeforeUnmount(() => {
               @click="commitEditor"
             >
               <LoaderCircle v-if="editorSaving" class="spin" :size="14" />{{
-                editorMode === 'add' ? '添加到节点草稿' : '保存修改'
+                editorDraft.useAiAnalysis
+                  ? editorMode === 'add'
+                    ? '保存并开始分析'
+                    : '保存并重新分析'
+                  : '仅保存草稿'
               }}
             </button>
           </footer>
@@ -3972,8 +4007,9 @@ button:disabled {
   display: grid;
   min-width: 0;
   padding: 15px;
-  grid-template-columns: 43px minmax(0, 1fr) 138px;
-  gap: 12px;
+  grid-template-columns: 38px minmax(0, 1fr) 138px;
+  column-gap: 8px;
+  row-gap: 10px;
   background: #fff;
   border: 1px solid #f0e2db;
   border-radius: 16px;
@@ -4027,9 +4063,31 @@ button:disabled {
   background: #fff7df;
   border-color: #efd69a;
 }
+.prompt-main > header em.classification-needs-revision {
+  color: #b33a46;
+  background: #fff0f1;
+  border-color: #f3bcc2;
+}
+.prompt-review-issues {
+  display: grid;
+  margin-top: 8px;
+  padding: 9px 11px;
+  gap: 4px;
+  color: #9c3440;
+  background: #fff7f7;
+  border: 1px solid #f3c9ce;
+  border-radius: 8px;
+  font-size: 10px;
+}
+.prompt-review-issues strong {
+  font-size: 11px;
+}
+.prompt-review-issues span::before {
+  content: '· ';
+}
 .compatible-purpose-tags {
   display: flex;
-  margin: 7px 0 2px;
+  margin: 3px 0 2px;
   align-items: center;
   flex-wrap: wrap;
   gap: 5px;
@@ -4855,6 +4913,9 @@ button:disabled {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 11px;
 }
+.editor-grid-simple {
+  grid-template-columns: 1fr;
+}
 .editor-wide-field {
   grid-column: 1 / -1;
 }
@@ -4914,6 +4975,76 @@ button:disabled {
   color: #8995a8;
   font-size: 9px;
   line-height: 1.55;
+}
+.editor-ai-analysis-option {
+  position: relative;
+  display: flex;
+  margin-top: 13px;
+  padding: 12px 13px;
+  align-items: center;
+  gap: 11px;
+  background: #f7faff;
+  border: 1px solid #dbe7fb;
+  border-radius: 11px;
+  cursor: pointer;
+}
+.prompt-editor-dialog .editor-ai-analysis-option > input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.prompt-editor-dialog .editor-ai-analysis-option > span {
+  position: relative;
+  display: block;
+  width: 38px;
+  height: 22px;
+  margin: 0;
+  flex: 0 0 auto;
+  background: #cbd5e1;
+  border-radius: 999px;
+  transition: background 0.18s ease;
+}
+.editor-ai-analysis-option > span i {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px #52627a38;
+  transition: transform 0.18s ease;
+}
+.editor-ai-analysis-option > input:checked + span {
+  background: #2f68e8;
+}
+.editor-ai-analysis-option > input:checked + span i {
+  transform: translateX(16px);
+}
+.editor-ai-analysis-option > input:focus-visible + span {
+  box-shadow: 0 0 0 3px #2563eb24;
+}
+.editor-ai-analysis-option > input:disabled + span,
+.editor-ai-analysis-option:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+.editor-ai-analysis-option > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+.editor-ai-analysis-option strong {
+  color: #334155;
+  font-size: 12px;
+}
+.prompt-editor-dialog .editor-ai-analysis-option small {
+  margin: 0;
+  color: #738198;
+  font-size: 10px;
+  line-height: 1.45;
 }
 .prompt-editor-dialog input:focus,
 .prompt-editor-dialog select:focus,

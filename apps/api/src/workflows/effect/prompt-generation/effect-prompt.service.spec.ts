@@ -824,6 +824,148 @@ describe('EffectPromptService settings contract', () => {
     expect(repository.mutateResult).not.toHaveBeenCalled();
   });
 
+  it('adds a prompt without manual dimensions and queues the exact saved item', async () => {
+    const draftResult = completionGateFixture();
+    const repository = {
+      result: vi.fn().mockResolvedValue({
+        id: 'result-a',
+        productId: 'product-a',
+        workflowRunId: 'workflow-a',
+        draftResult,
+      }),
+      mutateResult: vi
+        .fn()
+        .mockImplementation(
+          async (
+            _projectId: string,
+            _resultId: string,
+            _revision: number,
+            mutation: { item: EffectPromptItem },
+          ) => ({
+            kind: 'UPDATED' as const,
+            result: {
+              id: 'result-a',
+              productId: 'product-a',
+              revision: 2,
+              savedAt: new Date('2026-09-03T00:00:00.000Z'),
+              updatedAt: new Date('2026-09-03T00:00:00.000Z'),
+            },
+            draft: recomputePromptQuality(
+              [...draftResult.items, mutation.item],
+              draftResult.settings,
+              draftResult.metrics,
+              draftResult.renderProfile,
+              draftResult.sharedPrompt,
+            ),
+          }),
+        ),
+    };
+    const service = new EffectPromptService(
+      repository as never,
+      { get: vi.fn().mockResolvedValue({ id: 'project-a' }) } as never,
+      {} as never,
+    );
+    const evaluationRun = { id: 'evaluation-run', operation: 'ITEM_EVALUATE' } as never;
+    const start = vi.spyOn(service, 'start').mockResolvedValue({ run: evaluationRun });
+
+    const output = await service.addItem('project-a', 'result-a', 1, {
+      content: '家庭厨房中，一双手把广式腊肠放入蒸锅，镜头停在锅盖合上的瞬间。',
+      targetDurationSeconds: 5,
+      evaluateAfterSave: true,
+      expectedSettingsRevision: 3,
+      idempotencyKey: 'manual-add-evaluation',
+    });
+
+    const mutation = repository.mutateResult.mock.calls[0]?.[3];
+    expect(mutation.kind).toBe('ADD');
+    expect(mutation.item.dimensions).toEqual({
+      narrative: '等待 AI 分析',
+      scene: '等待 AI 分析',
+      persona: '等待 AI 分析',
+      productRelation: '等待 AI 分析',
+      camera: '等待 AI 分析',
+      emotion: '等待 AI 分析',
+    });
+    expect(output.affectedItemId).toBe(mutation.item.id);
+    const displayOrder = [...output.result.items].sort((left, right) => {
+      const fragmentTypes = [...EFFECT_PROMPT_FRAGMENT_TYPES];
+      return (
+        fragmentTypes.indexOf(left.fragmentType) - fragmentTypes.indexOf(right.fragmentType) ||
+        left.code.localeCompare(right.code, 'zh-CN', { numeric: true })
+      );
+    });
+    expect(output.affectedItemIndex).toBe(
+      displayOrder.findIndex(({ id }) => id === mutation.item.id),
+    );
+    expect(output.evaluationRun).toBe(evaluationRun);
+    expect(start).toHaveBeenCalledWith('project-a', 'product-a', {
+      workflowRunId: 'workflow-a',
+      operation: 'ITEM_EVALUATE',
+      targetItemId: mutation.item.id,
+      expectedSettingsRevision: 3,
+      expectedResultRevision: 2,
+      idempotencyKey: 'manual-add-evaluation',
+    });
+  });
+
+  it('allows saving a pending prompt without starting AI evaluation', async () => {
+    const draftResult = completionGateFixture();
+    const repository = {
+      result: vi.fn().mockResolvedValue({
+        id: 'result-a',
+        productId: 'product-a',
+        workflowRunId: 'workflow-a',
+        draftResult,
+      }),
+      mutateResult: vi
+        .fn()
+        .mockImplementation(
+          async (
+            _projectId: string,
+            _resultId: string,
+            _revision: number,
+            mutation: { item: EffectPromptItem },
+          ) => ({
+            kind: 'UPDATED' as const,
+            result: {
+              id: 'result-a',
+              productId: 'product-a',
+              revision: 2,
+              savedAt: new Date('2026-09-03T00:00:00.000Z'),
+              updatedAt: new Date('2026-09-03T00:00:00.000Z'),
+            },
+            draft: recomputePromptQuality(
+              [...draftResult.items, mutation.item],
+              draftResult.settings,
+              draftResult.metrics,
+              draftResult.renderProfile,
+              draftResult.sharedPrompt,
+            ),
+          }),
+        ),
+    };
+    const service = new EffectPromptService(
+      repository as never,
+      { get: vi.fn().mockResolvedValue({ id: 'project-a' }) } as never,
+      {} as never,
+    );
+    const start = vi.spyOn(service, 'start');
+
+    const output = await service.addItem('project-a', 'result-a', 1, {
+      content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
+      targetDurationSeconds: 5,
+      evaluateAfterSave: false,
+    });
+
+    expect(start).not.toHaveBeenCalled();
+    expect(output.evaluationRun).toBeUndefined();
+    expect(output.evaluationStartError).toBeUndefined();
+    expect(output.result.items.find(({ id }) => id === output.affectedItemId)).toMatchObject({
+      classificationStatus: 'PENDING',
+      content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
+    });
+  });
+
   it('rejects a manually edited duration outside the active render capability', async () => {
     const draftResult = completionGateFixture();
     const repository = {
