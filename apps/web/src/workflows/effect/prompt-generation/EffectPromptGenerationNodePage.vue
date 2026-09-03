@@ -56,6 +56,7 @@ import {
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 
 import { ApiClientError, isAbortError } from '../../../api/http-client';
+import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
 import { buildEffectPromptGraphRows } from './effect-prompt-generation-graph';
 import {
   clampPromptPage,
@@ -164,11 +165,6 @@ const regenerationUndo = ref<{
 } | null>(null);
 const regenerationTrigger = ref<HTMLElement | null>(null);
 const regenerationCloseButton = ref<HTMLButtonElement | null>(null);
-
-const deleteDialogOpen = ref(false);
-const deleteCandidate = ref<EffectPromptItem | null>(null);
-const deleteTrigger = ref<HTMLElement | null>(null);
-const deleteConfirmButton = ref<HTMLButtonElement | null>(null);
 
 let disposed = false;
 let workspaceGeneration = 0;
@@ -379,11 +375,6 @@ const allProductsCommitted = computed(
 );
 const currentSaveStatus = computed(
   () => settingsSaveStatuses.value[currentProductId.value] ?? 'idle',
-);
-const deleteSaving = computed(
-  () =>
-    itemOperation.value?.kind === 'delete' &&
-    itemOperation.value.itemId === deleteCandidate.value?.id,
 );
 const regeneratingItemId = computed(() =>
   currentRunning.value && currentRun.value?.operation === 'ITEM_REGENERATE'
@@ -716,9 +707,6 @@ watch(
     regenerationRunId.value = null;
     regenerationUndo.value = null;
     regenerationTrigger.value = null;
-    deleteDialogOpen.value = false;
-    deleteCandidate.value = null;
-    deleteTrigger.value = null;
     graphDetailController?.abort();
     graphDetailController = null;
     graphDetailLoading.value = false;
@@ -753,11 +741,8 @@ watch(currentProductId, (next, previous) => {
   regenerationRunId.value = null;
   regenerationUndo.value = null;
   regenerationTrigger.value = null;
-  deleteDialogOpen.value = false;
-  deleteCandidate.value = null;
   regenerationDialogOpen.value = false;
   regenerationCandidate.value = null;
-  deleteTrigger.value = null;
   graphDetailController?.abort();
   graphDetailController = null;
   graphDetailLoading.value = false;
@@ -902,6 +887,18 @@ async function flushSettings(productId = currentProductId.value): Promise<boolea
 const generateCurrentBatch = async (): Promise<void> => {
   const productId = currentProductId.value;
   if (!productId || currentRunning.value || batchStartPending.value) return;
+  if (
+    currentState.value?.resultId &&
+    !(await requestActionConfirmation({
+      eyebrow: '重新批量生成',
+      title: '重新生成当前商品的全部 Prompt？',
+      description:
+        '系统会启动新的批量生成任务，并用新结果更新当前节点草稿；已提交工作副本会在重新完成校验前保持不变。',
+      confirmLabel: '确认重新生成',
+      tone: 'warning',
+    }))
+  )
+    return;
   batchStartPending.value = true;
   try {
     if (!(await flushSettings(productId))) return;
@@ -1307,33 +1304,19 @@ const saveSharedPrompt = async (): Promise<void> => {
   }
 };
 
-const restoreDeleteFocus = (): void => {
-  const trigger = deleteTrigger.value;
-  deleteTrigger.value = null;
-  void nextTick(() => {
-    if (trigger?.isConnected) trigger.focus();
-    else promptSearchInput.value?.focus();
-  });
-};
-
-const requestDeleteItem = async (item: EffectPromptItem, event?: Event): Promise<void> => {
+const requestDeleteItem = async (item: EffectPromptItem): Promise<void> => {
   if (currentRunning.value || itemOperation.value) return;
-  deleteCandidate.value = item;
-  deleteTrigger.value = event?.currentTarget instanceof HTMLElement ? event.currentTarget : null;
-  deleteDialogOpen.value = true;
-  await nextTick();
-  deleteConfirmButton.value?.focus();
-};
-
-const closeDeleteDialog = (): void => {
-  if (deleteSaving.value) return;
-  deleteDialogOpen.value = false;
-  deleteCandidate.value = null;
-  restoreDeleteFocus();
-};
-
-const confirmDeleteItem = async (): Promise<void> => {
-  const item = deleteCandidate.value;
+  if (
+    !(await requestActionConfirmation({
+      eyebrow: '删除 Prompt',
+      title: `删除 ${item.code}？`,
+      description:
+        '这会从当前产品的 Prompt 节点草稿中删除该条内容，并重新计算数量与去重指标；不会删除已归档资产。',
+      confirmLabel: '确认删除',
+      tone: 'danger',
+    }))
+  )
+    return;
   const state = currentState.value;
   const result = resultData.value;
   if (
@@ -1362,9 +1345,6 @@ const confirmDeleteItem = async (): Promise<void> => {
     );
     if (controller.signal.aborted || currentProductId.value !== productId) return;
     showNotice(`${item.code} 已从节点草稿删除`, 'warning');
-    deleteDialogOpen.value = false;
-    deleteCandidate.value = null;
-    restoreDeleteFocus();
     await reloadWorkspace(false);
   } catch (error) {
     if (!isAbortError(error)) await handleMutationError(error, 'Prompt 删除失败');
@@ -1899,8 +1879,6 @@ onBeforeUnmount(() => {
   exportController?.abort();
   graphDetailController?.abort();
   pollControllers.forEach(({ controller }) => controller.abort());
-  deleteDialogOpen.value = false;
-  deleteCandidate.value = null;
   if (settingsTimer) clearTimeout(settingsTimer);
   if (searchTimer) clearTimeout(searchTimer);
   if (noticeTimer) clearTimeout(noticeTimer);
@@ -2346,7 +2324,7 @@ onBeforeUnmount(() => {
               class="danger"
               type="button"
               :disabled="currentRunning || itemOperation !== null"
-              @click="requestDeleteItem(item, $event)"
+              @click="requestDeleteItem(item)"
             >
               <LoaderCircle
                 v-if="itemOperation?.itemId === item.id && itemOperation.kind === 'delete'"
@@ -2711,44 +2689,6 @@ onBeforeUnmount(() => {
                 采用这个方案
               </button>
             </div>
-          </footer>
-        </section>
-      </div>
-
-      <div
-        v-if="deleteDialogOpen && deleteCandidate"
-        class="prompt-dialog-backdrop"
-        @mousedown.self="closeDeleteDialog"
-      >
-        <section
-          class="prompt-delete-dialog"
-          role="alertdialog"
-          aria-modal="true"
-          aria-labelledby="prompt-delete-title"
-          aria-describedby="prompt-delete-description"
-          @keydown.esc="closeDeleteDialog"
-        >
-          <span class="delete-dialog-icon"><Trash2 :size="20" /></span>
-          <div>
-            <span>删除节点草稿</span>
-            <h2 id="prompt-delete-title">确认删除 {{ deleteCandidate.code }}？</h2>
-            <p id="prompt-delete-description">
-              这会从当前产品的 Prompt
-              节点草稿中删除该条内容，并重新计算数量与去重指标；不会删除已归档资产。
-            </p>
-          </div>
-          <footer>
-            <button type="button" :disabled="deleteSaving" @click="closeDeleteDialog">取消</button>
-            <button
-              ref="deleteConfirmButton"
-              class="danger-button"
-              type="button"
-              :disabled="deleteSaving || currentRunning"
-              @click="confirmDeleteItem"
-            >
-              <LoaderCircle v-if="deleteSaving" class="spin" :size="14" />
-              <Trash2 v-else :size="14" />确认删除
-            </button>
           </footer>
         </section>
       </div>
@@ -4336,7 +4276,6 @@ button:disabled {
 }
 .prompt-editor-dialog,
 .prompt-regeneration-dialog,
-.prompt-delete-dialog,
 .workflow-graph-dialog {
   width: min(920px, 100%);
   max-height: calc(100vh - 40px);
@@ -4877,69 +4816,6 @@ button:disabled {
 
 .regeneration-candidate-card dd strong {
   color: #314665;
-}
-.prompt-delete-dialog {
-  display: grid;
-  width: min(520px, 100%);
-  padding: 22px;
-  grid-template-columns: 44px minmax(0, 1fr);
-  gap: 14px;
-}
-.delete-dialog-icon {
-  display: grid;
-  width: 42px;
-  height: 42px;
-  place-items: center;
-  color: #dc2626;
-  background: #fff1f2;
-  border: 1px solid #fecdd3;
-  border-radius: 12px;
-}
-.prompt-delete-dialog > div > span {
-  color: #dc2626;
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: 0.08em;
-}
-.prompt-delete-dialog h2 {
-  margin: 4px 0 7px;
-  color: #1d2940;
-  font-size: 19px;
-}
-.prompt-delete-dialog p {
-  margin: 0;
-  color: #66758c;
-  font-size: 12px;
-  line-height: 1.7;
-}
-.prompt-delete-dialog > footer {
-  display: flex;
-  grid-column: 1 / -1;
-  justify-content: flex-end;
-  gap: 8px;
-}
-.prompt-delete-dialog > footer button {
-  display: inline-flex;
-  height: 38px;
-  padding: 0 16px;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  color: #536178;
-  background: #fff;
-  border: 1px solid #dbe4f6;
-  border-radius: 9px;
-  font-size: 12px;
-  font-weight: 800;
-}
-.prompt-delete-dialog > footer .danger-button {
-  color: #fff;
-  background: #dc2626;
-  border-color: #dc2626;
-}
-.prompt-delete-dialog > footer button:disabled {
-  cursor: not-allowed;
-  opacity: 0.58;
 }
 .prompt-editor-dialog > header,
 .workflow-graph-dialog > header {

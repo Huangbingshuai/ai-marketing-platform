@@ -36,6 +36,7 @@ import {
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import { ApiClientError, isAbortError, isNetworkError } from '../../../api/http-client';
+import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
 import {
   getActiveWorkflowRunOverview,
   getWorkflowNodeState,
@@ -936,6 +937,18 @@ const runCurrentExtraction = async (): Promise<void> => {
   const product = currentProduct.value;
   const state = currentState.value;
   if (!product || !state || isExtractionRunning(state)) return;
+  if (
+    state.status !== 'NOT_GENERATED' &&
+    !(await requestActionConfirmation({
+      eyebrow: '重新提炼',
+      title: `重新提炼“${product.name || '当前商品'}”？`,
+      description:
+        '系统会重新读取已确认资料并生成新的信息卡结果，当前结果中的人工调整可能需要重新核对。',
+      confirmLabel: '确认重新提炼',
+      tone: 'warning',
+    }))
+  )
+    return;
   if (!(await flushPendingEdits())) return;
   const previousState = cloneExtractionProductState(state);
   stopProductPoll(product.id);
@@ -1222,9 +1235,24 @@ const addSellingPoint = (): void => {
   markListFieldDirty('coreSellingPoints');
 };
 
-const removeSellingPoint = (index: number): void => {
+const summarizedRemovalValue = (value: string): string => {
+  const normalized = value.trim() || '空白条目';
+  return normalized.length > 36 ? `${normalized.slice(0, 36)}…` : normalized;
+};
+
+const confirmInformationRemoval = (label: string, value: string): Promise<boolean> =>
+  requestActionConfirmation({
+    eyebrow: `删除${label}`,
+    title: `删除“${summarizedRemovalValue(value)}”？`,
+    description: `该${label}会从当前信息卡草稿中移除，保存后下游需要基于更新后的信息重新校验。`,
+    confirmLabel: '确认删除',
+    tone: 'danger',
+  });
+
+const removeSellingPoint = async (index: number): Promise<void> => {
   const result = currentState.value?.result;
   if (!result || result.coreSellingPoints.length <= 1) return;
+  if (!(await confirmInformationRemoval('核心卖点', result.coreSellingPoints[index] ?? ''))) return;
   result.coreSellingPoints.splice(index, 1);
   markListFieldDirty('coreSellingPoints');
 };
@@ -1240,9 +1268,14 @@ const addAdditionalSellingPoint = (field: AdditionalSellingField): void => {
   markListFieldDirty(field);
 };
 
-const removeAdditionalSellingPoint = (field: AdditionalSellingField, index: number): void => {
+const removeAdditionalSellingPoint = async (
+  field: AdditionalSellingField,
+  index: number,
+): Promise<void> => {
   const result = currentState.value?.result;
   if (!result) return;
+  const label = field === 'secondarySellingPoints' ? '次要卖点' : '信任背书';
+  if (!(await confirmInformationRemoval(label, result[field][index] ?? ''))) return;
   result[field].splice(index, 1);
   markListFieldDirty(field);
 };
@@ -1254,9 +1287,15 @@ const addUserInsightItem = (field: UserInsightListField): void => {
   markListFieldDirty(field);
 };
 
-const removeUserInsightItem = (field: UserInsightListField, index: number): void => {
+const removeUserInsightItem = async (field: UserInsightListField, index: number): Promise<void> => {
   const result = currentState.value?.result;
   if (!result) return;
+  const label: Record<UserInsightListField, string> = {
+    targetAudiences: '目标受众',
+    corePainPoints: '核心痛点',
+    decisionDrivers: '决策动因',
+  };
+  if (!(await confirmInformationRemoval(label[field], result[field][index] ?? ''))) return;
   result[field].splice(index, 1);
   markListFieldDirty(field);
 };
@@ -1268,9 +1307,15 @@ const addScenarioItem = (field: ScenarioListField): void => {
   markListFieldDirty(field);
 };
 
-const removeScenarioItem = (field: ScenarioListField, index: number): void => {
+const removeScenarioItem = async (field: ScenarioListField, index: number): Promise<void> => {
   const result = currentState.value?.result;
   if (!result) return;
+  const label: Record<ScenarioListField, string> = {
+    usageScenarios: '核心使用场景',
+    purchaseScenarios: '购买场景',
+    emotionalScenarios: '情绪共鸣场景',
+  };
+  if (!(await confirmInformationRemoval(label[field], result[field][index] ?? ''))) return;
   result[field].splice(index, 1);
   markListFieldDirty(field);
 };
@@ -1284,9 +1329,10 @@ const addDisabledElement = (): void => {
   markDirty();
 };
 
-const removeDisabledElement = (index: number): void => {
+const removeDisabledElement = async (index: number): Promise<void> => {
   const result = currentState.value?.result;
   if (!result) return;
+  if (!(await confirmInformationRemoval('禁用元素', result.disabledElements[index] ?? ''))) return;
   result.disabledElements.splice(index, 1);
   markDirty();
 };

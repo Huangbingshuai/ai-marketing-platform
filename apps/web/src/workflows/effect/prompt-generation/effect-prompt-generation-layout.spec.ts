@@ -112,12 +112,12 @@ describe('effect prompt generation current layout', () => {
       'exportBatch',
       'openEditor(item, $event)',
       'copyItem(item)',
-      'requestDeleteItem(item, $event)',
+      'requestDeleteItem(item)',
       'openRegenerationDialog(item, $event)',
     ])
       expect(pageSource).toContain(handler);
-    expect(pageSource).toContain('role="alertdialog"');
-    expect(pageSource).toContain('@keydown.esc="closeDeleteDialog"');
+    expect(pageSource).toContain('requestActionConfirmation');
+    expect(pageSource).not.toContain('prompt-delete-dialog');
     expect(pageSource).toContain('regenerationMode: regenerationMode.value');
     expect(pageSource).toContain('生成 3 个备选');
     expect(pageSource).toContain('采用这个方案');

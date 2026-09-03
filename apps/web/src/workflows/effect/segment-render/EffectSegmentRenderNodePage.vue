@@ -26,6 +26,7 @@ import {
 } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 
+import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
 import {
   EFFECT_SEGMENT_RENDER_PAGE_SIZE,
   effectSegmentRenderPage,
@@ -75,12 +76,9 @@ const fileInput = ref<HTMLInputElement | null>(null);
 const previewTask = ref<EffectSegmentRenderTask | null>(null);
 const promptTask = ref<EffectSegmentRenderTask | null>(null);
 const poolOpen = ref(false);
-const deleteTaskIds = ref<string[]>([]);
-const deleteDialogOpen = ref(false);
 const previewCloseButton = ref<HTMLButtonElement | null>(null);
 const promptCloseButton = ref<HTMLButtonElement | null>(null);
 const poolCloseButton = ref<HTMLButtonElement | null>(null);
-const deleteConfirmButton = ref<HTMLButtonElement | null>(null);
 
 let dialogTrigger: HTMLElement | null = null;
 let loadController: AbortController | null = null;
@@ -167,8 +165,6 @@ const closeAllDialogs = (restoreFocus = false): void => {
   previewTask.value = null;
   promptTask.value = null;
   poolOpen.value = false;
-  deleteDialogOpen.value = false;
-  deleteTaskIds.value = [];
   if (!restoreFocus) {
     dialogTrigger = null;
     return;
@@ -305,6 +301,19 @@ const startBatch = async (): Promise<void> => {
 const retryTasks = async (taskIds: readonly string[]): Promise<void> => {
   const product = currentProduct.value;
   if (!product || operation.value || !taskIds.length) return;
+  if (
+    !(await requestActionConfirmation({
+      eyebrow: taskIds.length > 1 ? '批量重新生成' : '重新生成片段',
+      title:
+        taskIds.length > 1
+          ? `重新生成已选的 ${taskIds.length} 个视频片段？`
+          : '重新生成这个视频片段？',
+      description: '重新生成会替换当前片段的演示结果，原 Prompt 与渲染配置保持不变。',
+      confirmLabel: '确认重新生成',
+      tone: 'warning',
+    }))
+  )
+    return;
   operationController?.abort();
   const controller = new AbortController();
   operationController = controller;
@@ -330,18 +339,21 @@ const retryTasks = async (taskIds: readonly string[]): Promise<void> => {
   }
 };
 
-const requestDelete = (taskIds: readonly string[], event: Event): void => {
+const requestDelete = async (taskIds: readonly string[]): Promise<void> => {
   if (!taskIds.length || operation.value) return;
-  dialogTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
-  deleteTaskIds.value = [...taskIds];
-  deleteDialogOpen.value = true;
-  void nextTick(() => deleteConfirmButton.value?.focus());
-};
-
-const confirmDelete = async (): Promise<void> => {
   const product = currentProduct.value;
-  const taskIds = [...deleteTaskIds.value];
-  if (!product || operation.value || !taskIds.length) return;
+  if (!product) return;
+  if (
+    !(await requestActionConfirmation({
+      eyebrow: taskIds.length > 1 ? '批量删除素材' : '删除素材',
+      title:
+        taskIds.length > 1 ? `删除已选的 ${taskIds.length} 个视频片段？` : '删除这个视频片段？',
+      description: '删除后该片段会从当前产品的素材池中移除，需要重新生成或导入才能恢复可用数量。',
+      confirmLabel: taskIds.length > 1 ? `删除 ${taskIds.length} 个片段` : '确认删除',
+      tone: 'danger',
+    }))
+  )
+    return;
   operation.value = 'delete';
   const controller = new AbortController();
   operationController = controller;
@@ -359,7 +371,6 @@ const confirmDelete = async (): Promise<void> => {
     const nextSelected = new Set(selectedTaskIds.value);
     taskIds.forEach((taskId) => nextSelected.delete(taskId));
     selectedTaskIds.value = nextSelected;
-    closeAllDialogs(true);
     showNotice(`已删除 ${taskIds.length} 个素材片段`, 'warning');
   } catch (error) {
     if (!isAbortError(error)) showNotice(safeMessage(error, '片段删除失败'), 'error');
@@ -576,7 +587,7 @@ onBeforeUnmount(() => {
               class="danger"
               type="button"
               :disabled="!selectedCount || operation !== null"
-              @click="requestDelete([...selectedTaskIds], $event)"
+              @click="requestDelete([...selectedTaskIds])"
             >
               <Trash2 :size="13" />批量删除
             </button>
@@ -661,7 +672,7 @@ onBeforeUnmount(() => {
                   class="danger"
                   type="button"
                   :disabled="operation !== null || isEffectSegmentRenderBusy(task.status)"
-                  @click="requestDelete([task.id], $event)"
+                  @click="requestDelete([task.id])"
                 >
                   删除
                 </button>
@@ -847,41 +858,6 @@ onBeforeUnmount(() => {
           <footer>
             <span>共 {{ summary.completed }} 个可用素材片段</span
             ><button type="button" @click="closeAllDialogs(true)">关闭</button>
-          </footer>
-        </section>
-      </div>
-
-      <div
-        v-if="deleteDialogOpen"
-        class="segment-dialog-backdrop"
-        @mousedown.self="closeAllDialogs(true)"
-      >
-        <section
-          class="segment-dialog delete-dialog"
-          role="alertdialog"
-          aria-modal="true"
-          aria-labelledby="segment-delete-title"
-          @keydown.esc="closeAllDialogs(true)"
-        >
-          <span class="delete-icon"><Trash2 :size="20" /></span>
-          <div>
-            <small>删除素材</small>
-            <h2 id="segment-delete-title">确认删除 {{ deleteTaskIds.length }} 个片段？</h2>
-            <p>本操作只影响当前前端演示会话，不会发送网络请求。</p>
-          </div>
-          <footer>
-            <button type="button" :disabled="operation === 'delete'" @click="closeAllDialogs(true)">
-              取消
-            </button>
-            <button
-              ref="deleteConfirmButton"
-              class="danger-button"
-              type="button"
-              :disabled="operation === 'delete'"
-              @click="confirmDelete"
-            >
-              <LoaderCircle v-if="operation === 'delete'" class="spin" :size="14" />确认删除
-            </button>
           </footer>
         </section>
       </div>
@@ -1648,61 +1624,6 @@ select:disabled {
   gap: 12px;
   color: #718096;
   font-size: 10px;
-}
-.delete-dialog {
-  display: grid;
-  width: min(470px, 100%);
-  padding: 22px;
-  grid-template-columns: 44px minmax(0, 1fr);
-  gap: 14px;
-}
-.delete-icon {
-  display: grid;
-  width: 42px;
-  height: 42px;
-  place-items: center;
-  color: #dc2626;
-  background: #fff1f2;
-  border: 1px solid #fecdd3;
-  border-radius: 12px;
-}
-.delete-dialog small {
-  color: #dc2626;
-  font-size: 9px;
-  font-weight: 900;
-}
-.delete-dialog h2 {
-  margin: 4px 0 7px;
-}
-.delete-dialog p {
-  margin: 0;
-  color: #66758c;
-  font-size: 11px;
-  line-height: 1.7;
-}
-.delete-dialog footer {
-  display: flex;
-  grid-column: 1 / -1;
-  justify-content: flex-end;
-  gap: 8px;
-}
-.delete-dialog footer button {
-  display: inline-flex;
-  height: 38px;
-  padding: 0 16px;
-  align-items: center;
-  gap: 5px;
-  color: #536178;
-  background: #fff;
-  border: 1px solid #dbe4f6;
-  border-radius: 9px;
-  font-size: 12px;
-  font-weight: 800;
-}
-.delete-dialog footer .danger-button {
-  color: #fff;
-  background: #dc2626;
-  border-color: #dc2626;
 }
 .spin {
   animation: segment-spin 0.75s linear infinite;

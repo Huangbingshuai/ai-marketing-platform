@@ -30,6 +30,7 @@ import {
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 
 import { isAbortError } from '../../api/http-client';
+import { requestActionConfirmation } from '../../shared/composables/action-confirmation';
 import { createProject, listProjects as listProjectLibrary } from '../project/api/project.api';
 import { presentProjectBinding, useProjectContext } from '../project/project-context';
 import {
@@ -468,7 +469,17 @@ const upgradeSnapshot = async (): Promise<void> => {
 };
 
 const removeAsset = async (): Promise<void> => {
-  if (!detail.value || !window.confirm('确定移除当前引用？源资产不会受到影响。')) return;
+  if (!detail.value) return;
+  if (
+    !(await requestActionConfirmation({
+      eyebrow: '移除资产引用',
+      title: '从当前项目移除这项资产？',
+      description: '只会移除当前项目中的引用，源资产及其他项目中的引用不会受到影响。',
+      confirmLabel: '确认移除',
+      tone: 'danger',
+    }))
+  )
+    return;
   const projectId = detail.value.projectId;
   const assetId = detail.value.id;
   actionBusy.value = true;

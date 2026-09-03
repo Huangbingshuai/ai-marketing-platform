@@ -35,6 +35,7 @@ import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import { ApiClientError, isAbortError } from '../../../api/http-client';
 import { projectContextKey } from '../../../platform/project/project-context';
+import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
 import {
   activateWorkflowNode,
   getActiveWorkflowRunOverview,
@@ -833,7 +834,15 @@ const ensureUploadTarget = async (): Promise<void> => {
 };
 
 const deleteProduct = async (product: EffectImportProduct): Promise<void> => {
-  if (!window.confirm(`确定将“${product.name || '未命名产品'}”移入最近删除吗？24 小时内可恢复。`))
+  if (
+    !(await requestActionConfirmation({
+      eyebrow: '删除产品',
+      title: `将“${product.name || '未命名产品'}”移入最近删除？`,
+      description: '该产品会从当前资料导入列表移除，24 小时内仍可在“最近删除”中恢复。',
+      confirmLabel: '移入最近删除',
+      tone: 'danger',
+    }))
+  )
     return;
   await runWrite(
     (expectedRevision, signal) =>
@@ -878,9 +887,15 @@ const toggleSelected = (product: EffectImportProduct, selected: boolean): void =
 
 const batchDelete = async (): Promise<void> => {
   const ids = [...selectedProductIds.value];
+  if (!ids.length) return;
   if (
-    !ids.length ||
-    !window.confirm(`确定将已选的 ${ids.length} 个产品移入最近删除吗？24 小时内可恢复。`)
+    !(await requestActionConfirmation({
+      eyebrow: '批量删除产品',
+      title: `将已选的 ${ids.length} 个产品移入最近删除？`,
+      description: '这些产品会从当前资料导入列表移除，24 小时内仍可在“最近删除”中恢复。',
+      confirmLabel: `删除 ${ids.length} 个产品`,
+      tone: 'danger',
+    }))
   )
     return;
   await runWrite(
@@ -1100,10 +1115,15 @@ const removeMaterial = async (
   product: EffectImportProduct,
   material: EffectImportMaterial,
 ): Promise<void> => {
+  const materialName = material.originalFileName || material.expectedFileName || '未命名资料';
   if (
-    !window.confirm(
-      `确定删除资料“${material.originalFileName || material.expectedFileName || ''}”吗？`,
-    )
+    !(await requestActionConfirmation({
+      eyebrow: '删除资料',
+      title: `删除“${materialName}”？`,
+      description: '该资料会从当前商品资料包中移除，尚未确认的导入内容也会随之更新。',
+      confirmLabel: '确认删除',
+      tone: 'danger',
+    }))
   )
     return;
   setMaterialBusy(material.id, true);
@@ -1155,7 +1175,16 @@ const checkCommerceLink = async (product: EffectImportProduct): Promise<void> =>
 
 const removeCommerceLink = async (product: EffectImportProduct): Promise<void> => {
   if (!product.commerceUrl || busyCommerceProductIds.value.has(product.id)) return;
-  if (!window.confirm('确定删除当前商品资料包中的电商链接吗？')) return;
+  if (
+    !(await requestActionConfirmation({
+      eyebrow: '删除电商链接',
+      title: '删除当前商品的电商链接？',
+      description: '链接会从当前商品资料包中移除，已经填写的其他资料不会受到影响。',
+      confirmLabel: '确认删除',
+      tone: 'danger',
+    }))
+  )
+    return;
   setCommerceLinkBusy(product.id, true);
   try {
     if (!(await flushProduct(product.id, false))) return;

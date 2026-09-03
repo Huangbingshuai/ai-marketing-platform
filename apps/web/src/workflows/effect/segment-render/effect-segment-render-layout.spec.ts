@@ -47,16 +47,16 @@ describe('effect segment render prototype layout', () => {
       'toggleAllFiltered',
       'requestImport',
       'retryTasks([...selectedTaskIds])',
-      'requestDelete([...selectedTaskIds], $event)',
+      'requestDelete([...selectedTaskIds])',
       'exportSelected',
       'openPreview(task, $event)',
       'openPrompt(task, $event)',
     ])
       expect(pageSource).toContain(handler);
     expect(pageSource).toContain('role="dialog"');
-    expect(pageSource).toContain('role="alertdialog"');
     expect(pageSource).toContain('@keydown.esc="closeAllDialogs(true)"');
-    expect(pageSource).toContain('ref="deleteConfirmButton"');
+    expect(pageSource).toContain('requestActionConfirmation');
+    expect(pageSource).not.toContain('deleteDialogOpen');
     expect(pageSource).toContain('trigger?.isConnected && trigger.focus()');
   });
 
