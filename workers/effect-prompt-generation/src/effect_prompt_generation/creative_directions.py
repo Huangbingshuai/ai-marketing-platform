@@ -11,6 +11,8 @@ from .models import (
     CreativeDirection,
     CreativeDirectionAudit,
     CreativeDirectionAuditResponse,
+    CreativeDirectionDiversityAudit,
+    CreativeDirectionDiversityAuditResponse,
     CreativeDirectionPlan,
     CreativeDirectionResponse,
     CreativeDiversityLandscape,
@@ -31,7 +33,7 @@ from .models import (
 
 OTHER_FAMILY = "OTHER"
 MIN_CREATIVE_DIRECTION_COUNT = 8
-MAX_CREATIVE_DIRECTION_COUNT = 16
+MAX_CREATIVE_DIRECTION_COUNT = 24
 MAX_BUSINESS_FACTS_PER_DIRECTION = 4
 
 
@@ -48,7 +50,10 @@ def creative_direction_target_count(
 
     volume_target = min(
         MAX_CREATIVE_DIRECTION_COUNT,
-        max(MIN_CREATIVE_DIRECTION_COUNT, math.ceil(max(1, target_count) / 4)),
+        # Keep only two to three sibling candidates on an average direction.
+        # This is a structural capacity calculation; the AI still owns every
+        # scene, action and creative relationship.
+        max(MIN_CREATIVE_DIRECTION_COUNT, math.ceil(max(1, target_count) * 2 / 5)),
     )
     if mandatory_fact_count is None:
         return volume_target
@@ -697,9 +702,108 @@ def validate_creative_direction_audit(
     )
 
 
+def validate_creative_direction_diversity_audit(
+    response: CreativeDirectionDiversityAuditResponse,
+    directions: Sequence[CreativeDirection],
+    *,
+    proposed_direction_ids: Sequence[str] = (),
+) -> CreativeDirectionDiversityAudit:
+    """Validate only stable IDs and response structure, never visual semantics."""
+
+    direction_ids = {item.direction_id for item in directions}
+    proposed_ids = set(proposed_direction_ids)
+    group_ids: set[str] = set()
+    for group in response.groups:
+        if group.group_id in group_ids:
+            raise ValueError("creative direction diversity audit repeated a group id")
+        group_ids.add(group.group_id)
+        if any(item not in direction_ids for item in group.direction_ids):
+            raise ValueError("creative direction diversity audit used an unknown direction")
+        if proposed_ids:
+            if not proposed_ids.intersection(group.direction_ids):
+                raise ValueError("supplement overlap group omitted proposed directions")
+            if any(item not in proposed_ids for item in group.revision_direction_ids):
+                raise ValueError("supplement audit may only revise proposed directions")
+    if any(item not in direction_ids for item in response.revision_direction_ids):
+        raise ValueError("creative direction diversity audit used an unknown revision id")
+    if proposed_ids and any(
+        item not in proposed_ids for item in response.revision_direction_ids
+    ):
+        raise ValueError("supplement audit may only revise proposed directions")
+    payload = response.model_dump(mode="json", by_alias=True)
+    return CreativeDirectionDiversityAudit(
+        **response.model_dump(mode="python"),
+        audit_hash=_hash(payload),
+    )
+
+
+def validate_diversity_supplement_directions(
+    response: CreativeDirectionResponse,
+    application: InsightApplicationMap,
+    fact_visual_strategy: FactVisualStrategy,
+    *,
+    landscape: CreativeDiversityLandscape,
+    existing_directions: Sequence[CreativeDirection],
+    expected_direction_count: int,
+) -> list[CreativeDirection]:
+    """Validate supplement structure without applying base-plan slot quotas."""
+
+    if len(response.directions) != expected_direction_count:
+        raise ValueError("diversity supplement direction count does not match target")
+    usable_ids = {fact.fact_id for fact in application.usable}
+    strategy_ids = set(fact_visual_strategy.by_id)
+    existing_ids = {item.direction_id for item in existing_directions}
+    existing_texts = {item.creative_direction.casefold() for item in existing_directions}
+    supplement_ids: set[str] = set()
+    supplement_texts: set[str] = set()
+    for direction in response.directions:
+        if direction.direction_id in existing_ids or direction.direction_id in supplement_ids:
+            raise ValueError("diversity supplement repeated a direction id")
+        supplement_ids.add(direction.direction_id)
+        folded_text = direction.creative_direction.casefold()
+        if folded_text in existing_texts or folded_text in supplement_texts:
+            raise ValueError("diversity supplement repeated direction text")
+        supplement_texts.add(folded_text)
+        if not direction.fact_ids or any(
+            fact_id not in usable_ids or fact_id not in strategy_ids
+            for fact_id in direction.fact_ids
+        ):
+            raise ValueError("diversity supplement referenced an unavailable fact")
+        territory = landscape.by_id.get(direction.territory_id)
+        if territory is None:
+            raise ValueError("diversity supplement referenced an unknown territory")
+        if direction.primary_action_id not in {
+            action.action_id for action in territory.actions
+        }:
+            raise ValueError("diversity supplement referenced an unknown action")
+        if any(
+            fact_id not in territory.compatible_fact_ids for fact_id in direction.fact_ids
+        ):
+            raise ValueError("diversity supplement used a fact outside its territory")
+    return list(response.directions)
+
+
+def extend_creative_direction_plan(
+    plan: CreativeDirectionPlan,
+    directions: Sequence[CreativeDirection],
+    *,
+    diversity_audit: CreativeDirectionDiversityAudit | None = None,
+) -> CreativeDirectionPlan:
+    combined = [*plan.directions, *directions]
+    payload = [item.model_dump(mode="json", by_alias=True) for item in combined]
+    return plan.model_copy(
+        update={
+            "directions": combined,
+            "plan_hash": _hash(payload),
+            "diversity_audit": diversity_audit or plan.diversity_audit,
+        }
+    )
+
+
 def creative_direction_audit_revision_context(
     plan: CreativeDirectionPlan,
     audit: CreativeDirectionAudit,
+    diversity_audit: CreativeDirectionDiversityAudit | None = None,
 ) -> dict[str, object]:
     revision_ids = set(audit.revision_direction_ids)
     return {
@@ -713,6 +817,11 @@ def creative_direction_audit_revision_context(
             ],
             "summary": audit.summary,
         },
+        "diversityAudit": (
+            diversity_audit.model_dump(mode="json", by_alias=True)
+            if diversity_audit is not None
+            else None
+        ),
         "previousDirections": [
             item.model_dump(mode="json", by_alias=True)
             for item in plan.directions
@@ -721,7 +830,9 @@ def creative_direction_audit_revision_context(
         "revisionDirectionIds": audit.revision_direction_ids,
         "revisionInstruction": (
             "依据独立语义复核只重新规划被点名的方向，修复其事实关系、"
-            "同义改名、版图错位、多主场景或多主动作问题。事实必须转移到"
+            "同义改名、跨方向视觉重叠、版图错位、多主场景或多主动作问题。"
+            "diversityAudit 给出的方向不能只换说法，必须改变其主要场景、人物关系、"
+            "产品主动作或镜头构成中的实质组合。事实必须转移到"
             "自然相容的版图与方向，不能为了覆盖率硬塞，也不得由系统替换事实。"
         ),
     }

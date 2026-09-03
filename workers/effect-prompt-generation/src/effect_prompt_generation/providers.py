@@ -26,6 +26,7 @@ from .models import (
     CreativeDirectionAuditItem,
     CreativeDirectionFactAudit,
     CreativeDirectionAuditResponse,
+    CreativeDirectionDiversityAuditResponse,
     CreativeDirection,
     CreativeDirectionFactApplication,
     CreativeDirectionPlan,
@@ -84,6 +85,18 @@ CREATIVE_FACT_TERRITORY_ASSIGNMENT_TASK_PROMPT = (
 )
 CREATIVE_DIRECTION_AUDIT_BASE_PROMPT = "creative_direction_audit.system.prompt.txt"
 CREATIVE_DIRECTION_AUDIT_TASK_PROMPT = "creative_direction_audit.user.prompt.txt"
+CREATIVE_DIRECTION_DIVERSITY_AUDIT_BASE_PROMPT = (
+    "creative_direction_diversity_audit.system.prompt.txt"
+)
+CREATIVE_DIRECTION_DIVERSITY_AUDIT_TASK_PROMPT = (
+    "creative_direction_diversity_audit.user.prompt.txt"
+)
+CREATIVE_DIRECTION_SUPPLEMENT_BASE_PROMPT = (
+    "creative_direction_supplement.system.prompt.txt"
+)
+CREATIVE_DIRECTION_SUPPLEMENT_TASK_PROMPT = (
+    "creative_direction_supplement.user.prompt.txt"
+)
 FACT_VISUAL_STRATEGY_TEMPLATE_HASH = hashlib.sha256(
     load_prompt(FACT_VISUAL_STRATEGY_BASE_PROMPT).encode("utf-8")
 ).hexdigest()
@@ -108,6 +121,14 @@ CREATIVE_DIRECTION_TEMPLATE_HASH = hashlib.sha256(
         + load_prompt(CREATIVE_DIRECTION_AUDIT_BASE_PROMPT)
         + "\n"
         + load_prompt(CREATIVE_DIRECTION_AUDIT_TASK_PROMPT)
+        + "\n"
+        + load_prompt(CREATIVE_DIRECTION_DIVERSITY_AUDIT_BASE_PROMPT)
+        + "\n"
+        + load_prompt(CREATIVE_DIRECTION_DIVERSITY_AUDIT_TASK_PROMPT)
+        + "\n"
+        + load_prompt(CREATIVE_DIRECTION_SUPPLEMENT_BASE_PROMPT)
+        + "\n"
+        + load_prompt(CREATIVE_DIRECTION_SUPPLEMENT_TASK_PROMPT)
     ).encode("utf-8")
 ).hexdigest()
 
@@ -236,6 +257,28 @@ class AiProvider(Protocol):
         landscape: CreativeDiversityLandscape,
         directions: CreativeDirectionResponse,
     ) -> AiCallResult[CreativeDirectionAuditResponse]: ...
+
+    async def audit_creative_direction_diversity(
+        self,
+        *,
+        landscape: CreativeDiversityLandscape,
+        directions: CreativeDirectionResponse,
+        proposed_direction_ids: Sequence[str] = (),
+    ) -> AiCallResult[CreativeDirectionDiversityAuditResponse]: ...
+
+    async def plan_diversity_supplement_directions(
+        self,
+        application: InsightApplicationMap,
+        *,
+        fact_visual_strategy: FactVisualStrategy,
+        shared_prompt: SharedPrompt,
+        landscape: CreativeDiversityLandscape,
+        existing_directions: CreativeDirectionResponse,
+        requested_direction_count: int,
+        crowded_scene_families: Sequence[str],
+        crowded_action_families: Sequence[str],
+        revision_context: Mapping[str, Any] | None = None,
+    ) -> AiCallResult[CreativeDirectionResponse]: ...
 
     async def generate_creatives(
         self,
@@ -367,6 +410,76 @@ class MockAiProvider:
             _mock_creative_direction_audit(landscape, directions),
             NodeId.COHERENT_CREATIVE_GENERATION.value,
             CREATIVE_DIRECTION_AUDIT_BASE_PROMPT,
+        )
+
+    async def audit_creative_direction_diversity(
+        self,
+        *,
+        landscape: CreativeDiversityLandscape,
+        directions: CreativeDirectionResponse,
+        proposed_direction_ids: Sequence[str] = (),
+    ) -> AiCallResult[CreativeDirectionDiversityAuditResponse]:
+        del landscape, directions, proposed_direction_ids
+        return _mock_result(
+            CreativeDirectionDiversityAuditResponse(
+                groups=[],
+                requires_revision=False,
+                revision_direction_ids=[],
+                summary="全批创意方向未发现实质视觉重叠",
+            ),
+            NodeId.COHERENT_CREATIVE_GENERATION.value,
+            CREATIVE_DIRECTION_DIVERSITY_AUDIT_BASE_PROMPT,
+        )
+
+    async def plan_diversity_supplement_directions(
+        self,
+        application: InsightApplicationMap,
+        *,
+        fact_visual_strategy: FactVisualStrategy,
+        shared_prompt: SharedPrompt,
+        landscape: CreativeDiversityLandscape,
+        existing_directions: CreativeDirectionResponse,
+        requested_direction_count: int,
+        crowded_scene_families: Sequence[str],
+        crowded_action_families: Sequence[str],
+        revision_context: Mapping[str, Any] | None = None,
+    ) -> AiCallResult[CreativeDirectionResponse]:
+        del (
+            application,
+            fact_visual_strategy,
+            shared_prompt,
+            landscape,
+            crowded_scene_families,
+            crowded_action_families,
+            revision_context,
+        )
+        rows = []
+        for index in range(requested_direction_count):
+            base = existing_directions.directions[index % len(existing_directions.directions)]
+            rows.append(
+                base.model_copy(
+                    update={
+                        "direction_id": f"DIVERSITY_SUPPLEMENT_{index + 1}",
+                        "creative_direction": (
+                            f"补充差异方向 {index + 1}：{base.creative_direction}"
+                        ),
+                        "semantic_profile": base.semantic_profile.model_copy(
+                            update={
+                                "scene_family": (
+                                    f"SUPPLEMENT_SCENE_{index + 1}"
+                                ),
+                                "product_action_family": (
+                                    f"SUPPLEMENT_ACTION_{index + 1}"
+                                ),
+                            }
+                        ),
+                    }
+                )
+            )
+        return _mock_result(
+            CreativeDirectionResponse(directions=rows),
+            NodeId.COHERENT_CREATIVE_GENERATION.value,
+            CREATIVE_DIRECTION_SUPPLEMENT_BASE_PROMPT,
         )
 
     async def generate_creatives(
@@ -1057,7 +1170,7 @@ class ArkResponsesProvider:
             prompt_file=CREATIVE_DIRECTION_AUDIT_BASE_PROMPT,
             model=self._evaluation_model,
             # This is a batch strategy audit rather than per-item scoring. Use
-            # the strategy budget so 8-16 structured rows cannot be truncated
+            # the strategy budget so 8-24 structured rows cannot be truncated
             # by the smaller candidate-evaluation budget.
             max_output_tokens=self._strategy_max_output_tokens,
             request_timeout=self._evaluation_timeout,
@@ -1090,6 +1203,179 @@ class ArkResponsesProvider:
                 requires_revision=call.value.requires_revision,
                 revision_direction_ids=call.value.revision_direction_ids,
                 summary=call.value.summary,
+            ),
+            metadata=call.metadata,
+        )
+
+    async def audit_creative_direction_diversity(
+        self,
+        *,
+        landscape: CreativeDiversityLandscape,
+        directions: CreativeDirectionResponse,
+        proposed_direction_ids: Sequence[str] = (),
+    ) -> AiCallResult[CreativeDirectionDiversityAuditResponse]:
+        prompt = render_prompt(
+            CREATIVE_DIRECTION_DIVERSITY_AUDIT_TASK_PROMPT,
+            creative_landscape_json=json.dumps(
+                [
+                    {
+                        "territoryId": territory.territory_id,
+                        "label": territory.label,
+                        "sceneBoundary": territory.scene_boundary,
+                        "actions": [
+                            action.model_dump(mode="json", by_alias=True)
+                            for action in territory.actions
+                        ],
+                    }
+                    for territory in landscape.territories
+                ],
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            creative_directions_json=json.dumps(
+                [
+                    {
+                        "directionId": direction.direction_id,
+                        "territoryId": direction.territory_id,
+                        "primaryActionId": direction.primary_action_id,
+                        "creativeDirection": direction.creative_direction,
+                        "priorityDimensions": [
+                            item.value for item in direction.priority_dimensions
+                        ],
+                        "semanticProfile": direction.semantic_profile.model_dump(
+                            mode="json", by_alias=True
+                        ),
+                    }
+                    for direction in directions.directions
+                ],
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            proposed_direction_ids_json=json.dumps(
+                list(proposed_direction_ids), ensure_ascii=False
+            ),
+        )
+        return await self._structured(
+            prompt,
+            CreativeDirectionDiversityAuditResponse,
+            schema_name="effect_prompt_creative_direction_diversity_audit",
+            stage=NodeId.COHERENT_CREATIVE_GENERATION.value,
+            prompt_file=CREATIVE_DIRECTION_DIVERSITY_AUDIT_BASE_PROMPT,
+            model=self._evaluation_model,
+            max_output_tokens=self._strategy_max_output_tokens,
+            request_timeout=self._evaluation_timeout,
+            instructions=load_prompt(CREATIVE_DIRECTION_DIVERSITY_AUDIT_BASE_PROMPT),
+        )
+
+    async def plan_diversity_supplement_directions(
+        self,
+        application: InsightApplicationMap,
+        *,
+        fact_visual_strategy: FactVisualStrategy,
+        shared_prompt: SharedPrompt,
+        landscape: CreativeDiversityLandscape,
+        existing_directions: CreativeDirectionResponse,
+        requested_direction_count: int,
+        crowded_scene_families: Sequence[str],
+        crowded_action_families: Sequence[str],
+        revision_context: Mapping[str, Any] | None = None,
+    ) -> AiCallResult[CreativeDirectionResponse]:
+        fact_aliases, fact_ids_by_alias = _fact_alias_maps(application)
+        prompt = render_prompt(
+            CREATIVE_DIRECTION_SUPPLEMENT_TASK_PROMPT,
+            requested_direction_count=str(requested_direction_count),
+            facts_json=json.dumps(
+                [
+                    {
+                        "factId": fact_aliases[fact.fact_id],
+                        "field": fact.field.value,
+                        "value": fact.value,
+                        "policy": fact.policy.value,
+                    }
+                    for fact in application.usable
+                ],
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            fact_visual_strategy_json=json.dumps(
+                _remap_fact_references(
+                    [
+                        policy.model_dump(mode="json", by_alias=True)
+                        for policy in fact_visual_strategy.policies
+                    ],
+                    fact_aliases,
+                ),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            shared_prompt_json=json.dumps(
+                shared_prompt.compiled_content, ensure_ascii=False
+            ),
+            creative_landscape_json=json.dumps(
+                _remap_fact_references(
+                    [
+                        territory.model_dump(mode="json", by_alias=True)
+                        for territory in landscape.territories
+                    ],
+                    fact_aliases,
+                ),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            existing_directions_json=json.dumps(
+                _remap_fact_references(
+                    [
+                        direction.model_dump(mode="json", by_alias=True)
+                        for direction in existing_directions.directions
+                    ],
+                    fact_aliases,
+                ),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            crowded_scene_families_json=json.dumps(
+                list(crowded_scene_families), ensure_ascii=False
+            ),
+            crowded_action_families_json=json.dumps(
+                list(crowded_action_families), ensure_ascii=False
+            ),
+            revision_context_json=json.dumps(
+                _remap_fact_references(revision_context or {}, fact_aliases),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )
+        call = await self._structured(
+            prompt,
+            CreativeDirectionResponse,
+            schema_name="effect_prompt_creative_direction_supplement",
+            stage=NodeId.COHERENT_CREATIVE_GENERATION.value,
+            prompt_file=CREATIVE_DIRECTION_SUPPLEMENT_BASE_PROMPT,
+            model=self._fragment_strategy_model,
+            max_output_tokens=self._strategy_max_output_tokens,
+            request_timeout=self._strategy_timeout,
+            instructions=load_prompt(CREATIVE_DIRECTION_SUPPLEMENT_BASE_PROMPT),
+        )
+        return AiCallResult(
+            value=CreativeDirectionResponse(
+                directions=[
+                    direction.model_copy(
+                        update={
+                            "fact_applications": [
+                                fact_application.model_copy(
+                                    update={
+                                        "fact_id": fact_ids_by_alias.get(
+                                            fact_application.fact_id,
+                                            fact_application.fact_id,
+                                        )
+                                    }
+                                )
+                                for fact_application in direction.fact_applications
+                            ]
+                        }
+                    )
+                    for direction in call.value.directions
+                ]
             ),
             metadata=call.metadata,
         )
@@ -1822,7 +2108,7 @@ def _mock_creative_direction_response(
                 creative_direction=(
                     f"围绕{row[1]}中的{row[3]}建立第{index + 1}个连续产品画面"
                 ),
-                priority_dimensions=list(dimension_pairs[index]),
+                priority_dimensions=list(dimension_pairs[index % len(dimension_pairs)]),
                 semantic_profile=CreativeSemanticProfile(
                     narrative_family=row[0],
                     scene_family=row[1],
@@ -2122,6 +2408,10 @@ def _creative_task_brief(
         "round": task.round,
         "targetDurationSeconds": task.target_duration_seconds,
         "temporalIntent": temporal_intent,
+        "siblingVariation": {
+            "index": task.sibling_variant_index,
+            "total": task.sibling_variant_total,
+        },
         "factApplications": [
             fact_application_payload(fact_id) for fact_id in assignment.fact_ids
         ],
@@ -2198,18 +2488,24 @@ def _temporal_intent_for_duration(duration_seconds: int) -> dict[str, str]:
     if duration_seconds <= 15:
         return {
             "band": "COMPLETE_ACTION",
-            "guidance": "在同一主场景中自然完成一条连续动作弧，让开端、发展与结束状态彼此衔接。",
+            "guidance": (
+                "在同一主场景和同一目标下安排 2～3 个连续动作节拍，让开端、发展与结束状态"
+                "彼此衔接；不得加入第二种完整使用方法。"
+            ),
         }
     if duration_seconds <= 22:
         return {
             "band": "GRADUAL_PROCESS",
-            "guidance": "围绕同一商品和主场景展开渐进过程，可自然改变构图或观察角度，但不要拆成独立镜头清单。",
+            "guidance": (
+                "围绕同一商品、同一主场景和同一目标安排 3 个连续动作节拍，可自然改变构图"
+                "或观察角度，但不得拆成多个独立地点或完整做法。"
+            ),
         }
     return {
         "band": "CONNECTED_PHASES",
         "guidance": (
-            "围绕同一商品持续展开一条可实时拍完的动作过程；不要用时间跳跃填满素材，"
-            "宁可延长观察与镜头停留。"
+            "围绕同一商品、同一主场景和同一目标安排 3～4 个连续动作节拍，形成一条可实时"
+            "拍完的过程；不得用慢动作、无意义停留、分屏、时间跳跃或多种完整做法填满素材。"
         ),
     }
 

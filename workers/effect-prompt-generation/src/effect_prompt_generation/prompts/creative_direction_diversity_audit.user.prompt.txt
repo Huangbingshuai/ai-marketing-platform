@@ -1,0 +1,11 @@
+产品专属创意版图摘要：
+{creative_landscape_json}
+
+本批全部创意方向摘要：
+{creative_directions_json}
+
+本次新提出的补充方向 ID（常规全批复核时为空）：
+{proposed_direction_ids_json}
+
+请从“渲染后是否仍会得到近似画面”的角度进行全批比较。groups 只记录实质可互换的方向组，不把普通同品类、同风格或同一产品视为重复。
+

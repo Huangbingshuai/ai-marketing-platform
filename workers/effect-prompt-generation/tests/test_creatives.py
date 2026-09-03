@@ -19,6 +19,9 @@ from effect_prompt_generation.models import (
     AbstractVisualProofFinding,
     CreativeCandidate,
     CreativeDimensions,
+    CreativeDirectionDiversityAuditResponse,
+    CreativeDirectionOverlapGroup,
+    CreativeDirectionResponse,
     CreativeEvaluation,
     CreativeFactAssignment,
     CreativeScores,
@@ -257,6 +260,46 @@ class IdenticalEmbeddingProvider(MockEmbeddingProvider):
         )
 
 
+class RejectingDiversitySupplementProvider(MockAiProvider):
+    async def audit_creative_direction_diversity(
+        self,
+        *,
+        landscape: Any,
+        directions: CreativeDirectionResponse,
+        proposed_direction_ids: Any = (),
+    ) -> Any:
+        call = await super().audit_creative_direction_diversity(
+            landscape=landscape,
+            directions=directions,
+            proposed_direction_ids=proposed_direction_ids,
+        )
+        proposed_ids = list(proposed_direction_ids)
+        if not proposed_ids:
+            return call
+        retained_id = next(
+            item.direction_id
+            for item in directions.directions
+            if item.direction_id not in proposed_ids
+        )
+        return replace(
+            call,
+            value=CreativeDirectionDiversityAuditResponse(
+                groups=[
+                    CreativeDirectionOverlapGroup(
+                        group_id="SUPPLEMENT_OVERLAP",
+                        direction_ids=[retained_id, proposed_ids[0]],
+                        repeated_visual_core="补充方向仍与既有方向形成相同画面关系",
+                        revision_direction_ids=[proposed_ids[0]],
+                        diversification_goal="改变主要场景、产品动作或镜头构成",
+                    )
+                ],
+                requires_revision=True,
+                revision_direction_ids=[proposed_ids[0]],
+                summary="补充方向未形成实质视觉差异",
+            ),
+        )
+
+
 class DistinctEmbeddingProvider(MockEmbeddingProvider):
     cache_namespace = "distinct-vector-test-provider"
 
@@ -486,7 +529,7 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
         for binding in item.insight_bindings
     )
     assert Counter(item.phase.value for item in api.shards.values()) == {
-        "CREATIVE": 4,
+        "CREATIVE": 8,
         "CLASSIFICATION": 5,
     }
 
@@ -884,7 +927,7 @@ async def test_vector_selection_keeps_exact_count_and_reports_safe_metrics() -> 
     )
     assert selection_stage.metadata["selectionMethod"] == "CONTENT_CLUSTER_VECTOR_MMR"
     assert 10 <= selection_stage.metadata["embeddingInputCount"] <= 18
-    assert selection_stage.metadata["embeddingRequestCount"] == 1
+    assert selection_stage.metadata["embeddingRequestCount"] == 2
     assert selection_stage.metadata["comparisonCount"] > 0
     assert "model" not in selection_stage.metadata
 
@@ -925,9 +968,9 @@ async def test_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
     assert (
         10
         <= selection_stage.metadata["embeddingInputCount"]
-        <= (api.result.metrics.candidate_target_count)
+        <= (api.result.metrics.generated_candidate_count)
     )
-    assert selection_stage.metadata["embeddingRequestCount"] == 1
+    assert selection_stage.metadata["embeddingRequestCount"] == 2
     assert selection_stage.metadata["mmrQualityWeight"] == 0.70
     assert selection_stage.metadata["mmrDiversityWeight"] == 0.30
     assert "semanticGroupFirst" not in selection_stage.metadata
@@ -964,18 +1007,27 @@ async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
     assert api.result is not None
     assert len(api.result.items) == 10
     assert api.result.metrics.generated_candidate_count == 16
-    assert embedding_provider.input_count == 14
+    assert embedding_provider.input_count == 16
     final_selection_stage = next(
         stage
         for stage in reversed(api.stages)
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
+    assert final_selection_stage.metadata["diversitySupplementAttempted"] is True
     assert final_selection_stage.metadata["diversitySupplementTriggered"] is True
     assert final_selection_stage.metadata["diversitySupplementCount"] == 2
-    assert final_selection_stage.metadata["embeddingInputCount"] == 14
-    assert final_selection_stage.metadata["embeddingRequestCount"] == 1
+    assert final_selection_stage.metadata["embeddingInputCount"] == 16
+    assert final_selection_stage.metadata["embeddingRequestCount"] == 2
+    assert final_selection_stage.metadata["mmrQualityWeight"] == 0.60
+    assert final_selection_stage.metadata["mmrDiversityWeight"] == 0.40
+    assert final_selection_stage.metadata["adaptiveMmrApplied"] is True
+    assert final_selection_stage.metadata["diversitySupplementDirectionCount"] == 2
+    assert final_selection_stage.metadata["diversitySupplementImproved"] is False
     assert final_selection_stage.metadata["finalAccurateCount"] == 10
-    assert final_selection_stage.warnings == ["SEMANTIC_DIVERSITY_CAN_BE_IMPROVED"]
+    assert final_selection_stage.warnings == [
+        "SEMANTIC_DIVERSITY_CAN_BE_IMPROVED",
+        "DIVERSITY_SUPPLEMENT_NO_IMPROVEMENT",
+    ]
     diversity_tasks = [
         task
         for shard in api.shards.values()
@@ -985,6 +1037,12 @@ async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
     ]
     assert len(diversity_tasks) == 2
     assert {task.round for task in diversity_tasks} == {1}
+    assert {
+        task.creative_direction.direction_id
+        for task in diversity_tasks
+        if task.creative_direction is not None
+    } == {"DIVERSITY_SUPPLEMENT_1", "DIVERSITY_SUPPLEMENT_2"}
+    assert all(task.sibling_variant_total == 1 for task in diversity_tasks)
 
     resumed = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -996,9 +1054,49 @@ async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
     resumed.register_snapshot(runtime, snapshot)
     await resumed.load_and_snapshot(runtime)
     restored_cache = resumed._cache(runtime)
+    assert restored_cache.diversity_supplement_attempted is True
     assert restored_cache.diversity_supplemented is True
     assert restored_cache.diversity_supplement_count == 2
     assert restored_cache.replenishment_rounds == 0
+
+
+@pytest.mark.asyncio
+async def test_rejected_diversity_directions_are_not_reported_as_generated() -> None:
+    api = PromptApi()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=RejectingDiversitySupplementProvider(),
+        embedding_provider=IdenticalEmbeddingProvider(),
+        similarity_mode="vector",
+        embedding_batch_size=64,
+        embedding_max_concurrency=2,
+        shard_size=5,
+    )
+    runtime = _runtime()
+    snapshot = _snapshot().model_copy(update={"similarity_anchors": []})
+    pipeline.register_snapshot(runtime, snapshot)
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    assert api.result is not None
+    assert len(api.result.items) == 10
+    assert api.result.metrics.generated_candidate_count == 14
+    final_selection_stage = next(
+        stage
+        for stage in reversed(api.stages)
+        if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
+    )
+    assert final_selection_stage.metadata["diversitySupplementAttempted"] is True
+    assert final_selection_stage.metadata["diversitySupplementTriggered"] is False
+    assert final_selection_stage.metadata["diversitySupplementCount"] == 0
+    assert final_selection_stage.metadata["diversitySupplementDirectionCount"] == 0
+    assert final_selection_stage.warnings == [
+        "SEMANTIC_DIVERSITY_CAN_BE_IMPROVED",
+        "DIVERSITY_SUPPLEMENT_NOT_GENERATED",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1204,7 +1302,7 @@ async def test_does_not_replenish_when_initial_selection_already_covers_facts() 
     assert api.result.metrics.rejected_count > 0
     assert api.result.metrics.hard_issue_counts == []
     assert Counter(item.phase.value for item in api.shards.values()) == {
-        "CREATIVE": 4,
+        "CREATIVE": 8,
         "CLASSIFICATION": 5,
     }
     selection_stage = next(
@@ -1301,7 +1399,7 @@ async def test_candidate_ceiling_stops_repeated_low_quality_supplements() -> Non
 
     assert api.result is None
     assert Counter(item.phase.value for item in api.shards.values()) == {
-        "CREATIVE": 5,
+        "CREATIVE": 12,
         "CLASSIFICATION": 7,
     }
     supplement_tasks = [

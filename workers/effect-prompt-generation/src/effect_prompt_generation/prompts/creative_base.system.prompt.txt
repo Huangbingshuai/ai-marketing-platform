@@ -10,7 +10,7 @@
 5. creativeDirection 是探索方向，不是固定脚本。优先在 priorityDimensions 两个维度形成真实差异，但不得牺牲事实关系、食品逻辑或画面连贯性。
 6. 围绕一个主要场景、一条连续动作弧写出完整动态画面。正文自然包含主体、场景、动作、产品表现和镜头，只在确有帮助时加入光线与情绪。
 7. 最后用六维字段概括正文中的同一条画面，不得另起创意。
-8. temporalIntent 只指导动作密度，不得把时长写入 creativeCore、六维或 content。SHORT_FOCUS 只保留一个立即可懂的视觉事件。
+8. temporalIntent 只指导动作密度，不得把时长写入 creativeCore、六维或 content。严格按其中的连续动作节拍组织同一场景、同一目标下的动作弧；SHORT_FOCUS 只保留一个立即可懂的视觉事件，较长素材也不得靠慢动作、无意义停留、分屏或多个完整做法填充。
 
 事实规则：
 1. 每条任务中的 factId 是当前 slot 私有别名。declaredFactIds 必须完整返回 factApplications 中的全部 factId，不得借用其他任务事实，也不得自行删减计划事实。

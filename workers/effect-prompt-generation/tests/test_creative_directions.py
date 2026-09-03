@@ -18,6 +18,8 @@ from effect_prompt_generation.models import (
     CreativeDimensions,
     CreativeDirectionFactApplication,
     CreativeDirectionAuditResponse,
+    CreativeDirectionDiversityAuditResponse,
+    CreativeDirectionOverlapGroup,
     CreativeDirectionResponse,
     CreativeDiversityLandscapeResponse,
     CreativeLandscapeAuditResponse,
@@ -66,13 +68,14 @@ from test_creatives import PromptApi, _runtime, _snapshot
 
 def test_creative_direction_count_scales_with_batch_size() -> None:
     assert creative_direction_target_count(10) == 8
-    assert creative_direction_target_count(50) == 13
-    assert creative_direction_target_count(500) == 16
+    assert creative_direction_target_count(50) == 20
+    assert creative_direction_target_count(100) == 24
+    assert creative_direction_target_count(500) == 24
 
 
 def test_creative_direction_count_scales_with_fact_density() -> None:
-    assert creative_direction_target_count(50, 37) == 15
-    assert creative_direction_target_count(50, 41) == 16
+    assert creative_direction_target_count(50, 37) == 20
+    assert creative_direction_target_count(50, 41) == 20
     assert creative_direction_target_count(10, 40) == 10
     assert "每个方向必须自然使用 2～4 条业务事实" in (
         creative_direction_fact_density_instruction(37, 13)
@@ -83,10 +86,89 @@ def test_creative_direction_count_scales_with_fact_density() -> None:
 def test_creative_direction_capacity_fails_before_ai_calls() -> None:
     with pytest.raises(ValueError, match="至少调整为 11 条"):
         creative_direction_target_count(10, 41)
-    with pytest.raises(ValueError, match="最多承载 64 条业务事实"):
-        creative_direction_target_count(50, 65)
+    with pytest.raises(ValueError, match="最多承载 96 条业务事实"):
+        creative_direction_target_count(50, 97)
     with pytest.raises(ValueError, match="没有可分配"):
         creative_direction_target_count(50, 0)
+
+
+class CrossBatchDirectionOverlapProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.diversity_audit_calls = 0
+        self.direction_plan_calls = 0
+
+    async def plan_creative_directions(self, *args: Any, **kwargs: Any) -> Any:
+        self.direction_plan_calls += 1
+        return await super().plan_creative_directions(*args, **kwargs)
+
+    async def audit_creative_direction_diversity(
+        self,
+        *,
+        landscape: Any,
+        directions: CreativeDirectionResponse,
+        proposed_direction_ids: Any = (),
+    ) -> Any:
+        self.diversity_audit_calls += 1
+        result = await super().audit_creative_direction_diversity(
+            landscape=landscape,
+            directions=directions,
+            proposed_direction_ids=proposed_direction_ids,
+        )
+        if self.diversity_audit_calls == 1:
+            left = directions.directions[0].direction_id
+            right = directions.directions[8].direction_id
+            return result.__class__(
+                value=CreativeDirectionDiversityAuditResponse(
+                    groups=[
+                        CreativeDirectionOverlapGroup(
+                            group_id="OVERLAP_01",
+                            direction_ids=[left, right],
+                            repeated_visual_core="两个方向会形成相同主体、主动作和构图",
+                            revision_direction_ids=[right],
+                            diversification_goal="改变产品主动作与画面结构",
+                        )
+                    ],
+                    requires_revision=True,
+                    revision_direction_ids=[right],
+                    summary="发现一个跨分片视觉重叠组",
+                ),
+                metadata=result.metadata,
+            )
+        return result
+
+
+@pytest.mark.asyncio
+async def test_global_direction_audit_can_revise_cross_batch_overlap() -> None:
+    api = PromptApi()
+    provider = CrossBatchDirectionOverlapProvider()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        shard_size=5,
+    )
+    runtime = _runtime()
+    snapshot = _snapshot().model_copy(
+        update={
+            "settings": PromptBatchSettings(
+                target_count=50,
+                default_duration_seconds=15,
+            )
+        }
+    )
+    pipeline.register_snapshot(runtime, snapshot)
+    await pipeline.map_insight(runtime)
+    await pipeline.compile_fact_visual_strategy(runtime)
+    await pipeline.compile_shared_prompt(runtime)
+
+    shards = await pipeline.plan_creatives(runtime, round_number=0)
+
+    assert sum(len(item.tasks) for item in shards) == 70
+    assert provider.direction_plan_calls == 2
+    assert provider.diversity_audit_calls == 2
+    plan = pipeline._cache(runtime).creative_direction_plan
+    assert plan is not None
+    assert plan.diversity_audit is not None
+    assert plan.diversity_audit.requires_revision is False
 
 
 def test_one_natural_territory_can_carry_more_than_eight_business_facts() -> None:
@@ -723,8 +805,21 @@ async def test_fifty_target_plans_exactly_seventy_initial_candidates() -> None:
         for task in tasks
         if task.creative_direction is not None
     )
-    assert len(direction_counts) == 13
-    assert max(direction_counts.values()) <= 6
+    assert len(direction_counts) == 20
+    assert max(direction_counts.values()) <= 4
+    assert all(
+        task.sibling_variant_total == direction_counts[task.creative_direction.direction_id]
+        for task in tasks
+        if task.creative_direction is not None
+    )
+    for direction_id, sibling_total in direction_counts.items():
+        sibling_indexes = sorted(
+            task.sibling_variant_index
+            for task in tasks
+            if task.creative_direction is not None
+            and task.creative_direction.direction_id == direction_id
+        )
+        assert sibling_indexes == list(range(1, sibling_total + 1))
     sibling_coordinated_tasks = [
         task
         for shard in shards

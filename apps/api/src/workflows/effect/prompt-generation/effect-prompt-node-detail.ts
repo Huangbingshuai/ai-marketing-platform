@@ -1937,7 +1937,9 @@ const additionalOutputFields = (
         '多样性补充',
         metadata.diversitySupplementTriggered === true
           ? `已补充 ${typeof metadata.diversitySupplementCount === 'number' ? metadata.diversitySupplementCount : 0} 条候选`
-          : '未触发',
+          : metadata.diversitySupplementAttempted === true
+            ? '已尝试规划新方向，但未通过全批复核，未生成候选'
+            : '未触发',
       ),
     ]);
   if (nodeId === 'RESULT_SAVE' && result) {

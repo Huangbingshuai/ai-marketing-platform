@@ -195,6 +195,37 @@ describe('presentEffectPromptNodeDetail', () => {
     );
   });
 
+  it('多样性补充方向未通过复核时不把计划数量冒充实际候选', () => {
+    const base = record();
+    const current = {
+      ...base,
+      stages: base.stages.map((stage) =>
+        stage.nodeId === 'EXACT_SELECTION_AND_SUPPLEMENT'
+          ? {
+              ...stage,
+              metadata: {
+                ...(stage.metadata as Record<string, unknown>),
+                diversitySupplementAttempted: true,
+                diversitySupplementTriggered: false,
+                diversitySupplementCount: 0,
+              },
+            }
+          : stage,
+      ),
+    } as unknown as EffectPromptNodeDetailRunRecord;
+
+    const detail = presentEffectPromptNodeDetail(current, 'EXACT_SELECTION_AND_SUPPLEMENT');
+    const output = detail.sections.find(({ kind }) => kind === 'OUTPUT');
+    expect(output?.fields).toEqual(
+      expect.arrayContaining([
+        {
+          label: '多样性补充',
+          value: '已尝试规划新方向，但未通过全批复核，未生成候选',
+        },
+      ]),
+    );
+  });
+
   it('展示创意空间、方向和真实分片进度，不暴露内部规划内容', () => {
     const base = record();
     const running = {

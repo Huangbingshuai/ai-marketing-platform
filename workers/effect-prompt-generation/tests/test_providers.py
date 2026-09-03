@@ -21,6 +21,7 @@ from effect_prompt_generation.providers import (
     ArkResponsesProvider,
     MockAiProvider,
     ProviderError,
+    _temporal_intent_for_duration,
     _validate_structured_output,
 )
 from effect_prompt_generation.visual_strategy import validate_fact_visual_strategy
@@ -28,6 +29,28 @@ from effect_prompt_generation.visual_strategy import validate_fact_visual_strate
 
 class _StructuredEnvelope(BaseModel):
     value: int
+
+
+@pytest.mark.parametrize(
+    ("duration", "band", "required_text"),
+    [
+        (5, "SHORT_FOCUS", "一个可立即看懂"),
+        (15, "COMPLETE_ACTION", "2～3 个连续动作节拍"),
+        (20, "GRADUAL_PROCESS", "3 个连续动作节拍"),
+        (25, "CONNECTED_PHASES", "3～4 个连续动作节拍"),
+        (30, "CONNECTED_PHASES", "3～4 个连续动作节拍"),
+    ],
+)
+def test_temporal_intent_scales_continuous_action_beats(
+    duration: int,
+    band: str,
+    required_text: str,
+) -> None:
+    intent = _temporal_intent_for_duration(duration)
+
+    assert intent["band"] == band
+    assert required_text in intent["guidance"]
+    assert "分屏" in intent["guidance"] or duration < 23
 
 
 def test_ark_structured_output_rejects_non_artifact_trailing_content() -> None:

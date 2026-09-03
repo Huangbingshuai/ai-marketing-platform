@@ -38,8 +38,10 @@ from .models import (
     CountMetric,
     CreativeAverageScores,
     CreativeCandidate,
+    CreativeDirection,
     CreativeDirectionPlan,
     CreativeDirectionAuditResponse,
+    CreativeDirectionDiversityAudit,
     CreativeDirectionResponse,
     CreativeDiversityLandscapeResponse,
     CreativeLandscapeAuditResponse,
@@ -98,13 +100,16 @@ from .creative_directions import (
     creative_direction_target_count,
     creative_direction_source_hash,
     dominant_families,
+    extend_creative_direction_plan,
     max_cluster_share,
     semantic_cluster_novelty,
     semantic_profile_distribution,
+    validate_creative_direction_diversity_audit,
     validate_creative_direction_audit,
     validate_creative_landscape_audit,
     validate_creative_diversity_landscape,
     validate_creative_direction_plan,
+    validate_diversity_supplement_directions,
     validate_semantic_profile,
 )
 from .fact_allocation import (
@@ -181,6 +186,9 @@ class RunCache:
     diversity_avoid_action_families: set[str] = field(default_factory=set)
     diversity_avoid_scene_families: set[str] = field(default_factory=set)
     diversity_supplement_reasons: list[str] = field(default_factory=list)
+    diversity_supplement_attempted: bool = False
+    diversity_supplement_direction_count: int = 0
+    diversity_supplement_improved: bool | None = None
     initial_redundancy_summary: RedundancySummary | None = None
     redundancy_summary: RedundancySummary | None = None
     content_vector_index: ContentVectorIndex | None = None
@@ -334,6 +342,7 @@ class PromptGenerationPipeline:
         cache.coverage_supplement_count = len(coverage_tasks)
         cache.diversity_supplemented = bool(diversity_tasks)
         cache.diversity_supplement_count = len(diversity_tasks)
+        cache.diversity_supplement_attempted = bool(diversity_tasks)
         loaded = LoadedRun(
             snapshot=snapshot,
             completed_creative_shard_keys=[item.key for item in succeeded_creatives],
@@ -590,6 +599,7 @@ class PromptGenerationPipeline:
             and checkpoint.plan.landscape is not None
             and checkpoint.plan.landscape.semantic_audit is not None
             and checkpoint.plan.semantic_audit is not None
+            and checkpoint.plan.diversity_audit is not None
             and checkpoint.source_fingerprint == source_hash
             and checkpoint.template_hash == CREATIVE_DIRECTION_TEMPLATE_HASH
         ):
@@ -655,6 +665,12 @@ class PromptGenerationPipeline:
                     restored,
                     restored_landscape,
                 )
+                restored_diversity_audit = (
+                    validate_creative_direction_diversity_audit(
+                        checkpoint.plan.diversity_audit,
+                        restored.directions,
+                    )
+                )
             except ValueError:
                 restored = None
             if (
@@ -665,6 +681,7 @@ class PromptGenerationPipeline:
                 plan = restored.model_copy(
                     update={
                         "semantic_audit": restored_audit,
+                        "diversity_audit": restored_diversity_audit,
                         "reused_checkpoint": True,
                     }
                 )
@@ -1060,11 +1077,37 @@ class PromptGenerationPipeline:
                 batch_audits = await asyncio.gather(
                     *(audit_direction_batch(batch) for batch in direction_audit_batches)
                 )
+                self._reserve_ai_call(context)
+                async with self._ai_semaphore:
+                    diversity_audit_call = (
+                        await self.provider.audit_creative_direction_diversity(
+                            landscape=landscape,
+                            directions=direction_response,
+                        )
+                    )
+                call_rows.append(diversity_audit_call.metadata)
+                try:
+                    diversity_audit = validate_creative_direction_diversity_audit(
+                        diversity_audit_call.value,
+                        direction_response.directions,
+                    )
+                except ValueError as exc:
+                    raise ProviderError(
+                        "AI 创意方向全批去重复核结构无效",
+                        retryable=False,
+                        error_type=ProviderErrorType.RESPONSE_INVALID,
+                        attempts=1,
+                    ) from exc
                 combined_revision_ids = list(
                     dict.fromkeys(
-                        direction_id
-                        for batch_audit in batch_audits
-                        for direction_id in batch_audit.revision_direction_ids
+                        [
+                            *[
+                                direction_id
+                                for batch_audit in batch_audits
+                                for direction_id in batch_audit.revision_direction_ids
+                            ],
+                            *diversity_audit.revision_direction_ids,
+                        ]
                     )
                 )
                 combined_audit_response = CreativeDirectionAuditResponse(
@@ -1076,7 +1119,10 @@ class PromptGenerationPipeline:
                     requires_revision=bool(combined_revision_ids),
                     revision_direction_ids=combined_revision_ids,
                     summary="；".join(
-                        batch_audit.summary for batch_audit in batch_audits
+                        [
+                            *(batch_audit.summary for batch_audit in batch_audits),
+                            diversity_audit.summary,
+                        ]
                     )[:240],
                 )
                 try:
@@ -1094,6 +1140,9 @@ class PromptGenerationPipeline:
                     ) from exc
                 if audit is None:
                     raise PipelineError("创意方向语义复核未能形成有效结果")
+                draft_plan = draft_plan.model_copy(
+                    update={"diversity_audit": diversity_audit}
+                )
                 if audit.requires_revision:
                     if semantic_revision_count == 0 and invalid_response_attempt < 3:
                         previous_audited_response = direction_response
@@ -1103,6 +1152,7 @@ class PromptGenerationPipeline:
                         revision_context = creative_direction_audit_revision_context(
                             draft_plan,
                             audit,
+                            diversity_audit,
                         )
                         semantic_revision_count += 1
                         continue
@@ -1144,6 +1194,15 @@ class PromptGenerationPipeline:
                     plan.semantic_audit is not None
                     and not plan.semantic_audit.requires_revision
                 ),
+                "globalDiversityReviewPassed": bool(
+                    plan.diversity_audit is not None
+                    and not plan.diversity_audit.requires_revision
+                ),
+                "directionOverlapGroupCount": (
+                    len(plan.diversity_audit.groups)
+                    if plan.diversity_audit is not None
+                    else 0
+                ),
                 "priorityDimensionDistribution": [
                     {"dimension": key, "count": count}
                     for key, count in sorted(priority_counts.items())
@@ -1159,6 +1218,121 @@ class PromptGenerationPipeline:
             },
         )
         return plan
+
+    async def _plan_diversity_supplement_directions(
+        self,
+        context: RuntimeContext,
+        plan: CreativeDirectionPlan,
+        *,
+        requested_candidate_count: int,
+    ) -> list[CreativeDirection]:
+        cache = self._cache(context)
+        cache.diversity_supplement_attempted = True
+        landscape = plan.landscape
+        if landscape is None:
+            cache.diversity_supplement_improved = False
+            return []
+        application = self._require_application(context)
+        visual_strategy = self._required_fact_visual_strategy(context)
+        shared_prompt = self._required_shared_prompt(context)
+        requested_direction_count = min(
+            4,
+            max(2, math.ceil(requested_candidate_count / 3)),
+        )
+        revision_context: Mapping[str, Any] | None = None
+        proposed: list[CreativeDirection] | None = None
+        diversity_audit: CreativeDirectionDiversityAudit | None = None
+        for attempt in range(2):
+            try:
+                self._reserve_ai_call(context)
+                async with self._ai_semaphore:
+                    direction_call = (
+                        await self.provider.plan_diversity_supplement_directions(
+                            application,
+                            fact_visual_strategy=visual_strategy,
+                            shared_prompt=shared_prompt,
+                            landscape=landscape,
+                            existing_directions=CreativeDirectionResponse(
+                                directions=plan.directions
+                            ),
+                            requested_direction_count=requested_direction_count,
+                            crowded_scene_families=sorted(
+                                cache.diversity_avoid_scene_families
+                            ),
+                            crowded_action_families=sorted(
+                                cache.diversity_avoid_action_families
+                            ),
+                            revision_context=revision_context,
+                        )
+                    )
+                proposed = validate_diversity_supplement_directions(
+                    direction_call.value,
+                    application,
+                    visual_strategy,
+                    landscape=landscape,
+                    existing_directions=plan.directions,
+                    expected_direction_count=requested_direction_count,
+                )
+                combined = [*plan.directions, *proposed]
+                self._reserve_ai_call(context)
+                async with self._ai_semaphore:
+                    audit_call = (
+                        await self.provider.audit_creative_direction_diversity(
+                            landscape=landscape,
+                            directions=CreativeDirectionResponse(
+                                directions=combined
+                            ),
+                            proposed_direction_ids=[
+                                item.direction_id for item in proposed
+                            ],
+                        )
+                    )
+                diversity_audit = validate_creative_direction_diversity_audit(
+                    audit_call.value,
+                    combined,
+                    proposed_direction_ids=[item.direction_id for item in proposed],
+                )
+            except (ProviderError, ValueError) as exc:
+                if attempt == 0:
+                    revision_context = {
+                        "validationError": str(exc),
+                        "revisionInstruction": (
+                            "重新输出完整的补充方向结构，并保持数量、事实与版图引用合法。"
+                        ),
+                    }
+                    continue
+                cache.diversity_supplement_improved = False
+                return []
+            if not diversity_audit.requires_revision:
+                break
+            if attempt == 0:
+                revision_context = {
+                    "previousDirections": [
+                        item.model_dump(mode="json", by_alias=True) for item in proposed
+                    ],
+                    "revisionDirectionIds": diversity_audit.revision_direction_ids,
+                    "diversityAudit": diversity_audit.model_dump(
+                        mode="json", by_alias=True
+                    ),
+                    "revisionInstruction": (
+                        "保持补充方向 ID 和数量，按全批视觉复核改变实质画面关系；"
+                        "不能只换措辞、人物性别或景别名称。"
+                    ),
+                }
+                continue
+            cache.diversity_supplement_improved = False
+            return []
+        if proposed is None or diversity_audit is None:
+            cache.diversity_supplement_improved = False
+            return []
+        cache.diversity_supplement_direction_count = len(proposed)
+        cache.diversity_supplement_improved = True
+        cache.creative_direction_plan = extend_creative_direction_plan(
+            plan,
+            proposed,
+            diversity_audit=diversity_audit,
+        )
+        return proposed
 
     def _creative_direction_metadata(self, context: RuntimeContext) -> dict[str, Any]:
         plan = self._cache(context).creative_direction_plan
@@ -1177,6 +1351,15 @@ class PromptGenerationPipeline:
             "semanticReviewPassed": bool(
                 plan.semantic_audit is not None
                 and not plan.semantic_audit.requires_revision
+            ),
+            "globalDiversityReviewPassed": bool(
+                plan.diversity_audit is not None
+                and not plan.diversity_audit.requires_revision
+            ),
+            "directionOverlapGroupCount": (
+                len(plan.diversity_audit.groups)
+                if plan.diversity_audit is not None
+                else 0
             ),
             "priorityDimensionDistribution": [
                 {"dimension": key, "count": count}
@@ -1243,9 +1426,6 @@ class PromptGenerationPipeline:
             cache.candidate_target_count = requested
         elif supplement_kind in {"COVERAGE", "DIVERSITY"}:
             requested = max(1, requested_count or 1)
-            if supplement_kind == "DIVERSITY":
-                cache.diversity_supplemented = True
-                cache.diversity_supplement_count += requested
         else:
             deficit = max(1, missing_count or selection_target)
             requested = max(deficit + 1, math.ceil(deficit * 1.2))
@@ -1274,6 +1454,19 @@ class PromptGenerationPipeline:
                 cache.coverage_supplemented = True
                 cache.coverage_supplement_count += requested
         application = self._require_application(context)
+        supplement_direction_ids: list[str] = []
+        if supplement_kind == "DIVERSITY" and direction_plan is not None:
+            supplemental_directions = await self._plan_diversity_supplement_directions(
+                context,
+                direction_plan,
+                requested_candidate_count=requested,
+            )
+            if not supplemental_directions:
+                return []
+            supplement_direction_ids = [
+                item.direction_id for item in supplemental_directions
+            ]
+            direction_plan = self._cache(context).creative_direction_plan
         preferred_item_fact_ids = (
             [binding.fact_id for binding in snapshot.target_item.insight_bindings]
             if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item
@@ -1312,6 +1505,8 @@ class PromptGenerationPipeline:
                         if set(direction.fact_ids).intersection(coverage_fact_ids)
                     ]
                     if supplement_kind == "COVERAGE" and coverage_fact_ids
+                    else supplement_direction_ids
+                    if supplement_kind == "DIVERSITY"
                     else ()
                 ),
                 avoid_scene_families=(
@@ -1372,6 +1567,19 @@ class PromptGenerationPipeline:
                 preferred_fact_ids=preferred_item_fact_ids,
             )
         coverage_focus_set = set(coverage_fact_ids)
+        direction_totals = Counter(
+            direction.direction_id for direction in directions
+        )
+        direction_seen: Counter[str] = Counter()
+        sibling_positions: list[tuple[int, int]] = []
+        for direction in directions:
+            direction_seen[direction.direction_id] += 1
+            sibling_positions.append(
+                (
+                    direction_seen[direction.direction_id],
+                    direction_totals[direction.direction_id],
+                )
+            )
         tasks = [
             CreativeTask(
                 slot_id=f"creative-r{round_number}-c{ordinal_start + index:04d}",
@@ -1385,6 +1593,12 @@ class PromptGenerationPipeline:
                 ),
                 fact_assignment=fact_assignments[index],
                 creative_direction=(directions[index] if directions else None),
+                sibling_variant_index=(
+                    sibling_positions[index][0] if directions else 1
+                ),
+                sibling_variant_total=(
+                    sibling_positions[index][1] if directions else 1
+                ),
                 coverage_focus_fact_ids=(
                     [
                         fact_id
@@ -1397,6 +1611,9 @@ class PromptGenerationPipeline:
             )
             for index in range(requested)
         ]
+        if supplement_kind == "DIVERSITY" and tasks:
+            cache.diversity_supplemented = True
+            cache.diversity_supplement_count += len(tasks)
         cache.creative_target_durations.update(
             {task.slot_id: task.target_duration_seconds for task in tasks}
         )
@@ -2076,6 +2293,18 @@ class PromptGenerationPipeline:
                     content_index = cache.content_vector_index
                     if content_index is None:
                         raise PipelineError("semantic evaluation index is unavailable")
+                    candidate_pool_redundancy = content_index.redundancy_summary(
+                        [item.slot_id for item in eligible_candidates]
+                    )
+                    candidate_pool_redundancy_rate = round(
+                        candidate_pool_redundancy.redundant_candidate_count
+                        / max(1, len(eligible_candidates)),
+                        4,
+                    )
+                    mmr_quality_weight = (
+                        0.60 if candidate_pool_redundancy_rate > 0.50 else 0.70
+                    )
+                    mmr_diversity_weight = round(1.0 - mmr_quality_weight, 2)
 
                     def select_content_mmr(
                         candidate_ids: set[str] | None = None,
@@ -2120,8 +2349,8 @@ class PromptGenerationPipeline:
                             required_fact_ids=required_fact_ids,
                             preferred_item_fact_ids=preferred_item_fact_ids,
                             fixed_covered_fact_ids=fixed_covered_fact_ids,
-                            quality_weight=0.70,
-                            novelty_weight=0.30,
+                            quality_weight=mmr_quality_weight,
+                            novelty_weight=mmr_diversity_weight,
                         )
 
                     quality_baseline_result = select_creatives(
@@ -2158,6 +2387,11 @@ class PromptGenerationPipeline:
                     )
                     if cache.initial_redundancy_summary is None:
                         cache.initial_redundancy_summary = mmr_redundancy
+                    elif cache.diversity_supplemented:
+                        cache.diversity_supplement_improved = (
+                            mmr_redundancy.redundant_candidate_count
+                            < cache.initial_redundancy_summary.redundant_candidate_count
+                        )
                     cache.redundancy_summary = mmr_redundancy
                     cache.diversity_avoid_slot_ids = set(
                         mmr_redundancy.high_risk_candidate_ids
@@ -2176,8 +2410,12 @@ class PromptGenerationPipeline:
                             if self.similarity_mode == "vector"
                             else "VECTOR_SHADOW"
                         ),
-                        "mmrQualityWeight": 0.70,
-                        "mmrDiversityWeight": 0.30,
+                        "mmrQualityWeight": mmr_quality_weight,
+                        "mmrDiversityWeight": mmr_diversity_weight,
+                        "adaptiveMmrApplied": mmr_quality_weight == 0.60,
+                        "candidatePoolRedundancyRate": (
+                            candidate_pool_redundancy_rate
+                        ),
                         "contentNoveltyWeight": 0.70,
                         "clusterAwareNoveltyWeight": 0.30,
                         "fixedAnchorCount": len(anchors),
@@ -2235,7 +2473,16 @@ class PromptGenerationPipeline:
                             mmr_redundancy.redundant_candidate_count
                         ),
                         "diversitySupplementTriggered": (cache.diversity_supplemented),
+                        "diversitySupplementAttempted": (
+                            cache.diversity_supplement_attempted
+                        ),
                         "diversitySupplementCount": (cache.diversity_supplement_count),
+                        "diversitySupplementDirectionCount": (
+                            cache.diversity_supplement_direction_count
+                        ),
+                        "diversitySupplementImproved": (
+                            cache.diversity_supplement_improved
+                        ),
                         "highRiskPairs": content_stats.high_risk_pairs,
                     }
                     if self.similarity_mode == "vector":
@@ -2604,7 +2851,16 @@ class PromptGenerationPipeline:
                     "initialCandidateCount": cache.candidate_target_count,
                     "finalCandidateCount": len(cache.creatives),
                     "diversitySupplementTriggered": (cache.diversity_supplemented),
+                    "diversitySupplementAttempted": (
+                        cache.diversity_supplement_attempted
+                    ),
                     "diversitySupplementCount": (cache.diversity_supplement_count),
+                    "diversitySupplementDirectionCount": (
+                        cache.diversity_supplement_direction_count
+                    ),
+                    "diversitySupplementImproved": (
+                        cache.diversity_supplement_improved
+                    ),
                     "diversitySupplementReasons": cache.diversity_supplement_reasons,
                     "finalAccurateCount": len(cache.accepted_items),
                 }
@@ -2622,6 +2878,18 @@ class PromptGenerationPipeline:
                 (
                     "REQUIRED_FACT_COVERAGE_NEEDS_REVIEW"
                     if coverage_needs_review
+                    else None
+                ),
+                (
+                    "DIVERSITY_SUPPLEMENT_NO_IMPROVEMENT"
+                    if cache.diversity_supplemented
+                    and cache.diversity_supplement_improved is False
+                    else None
+                ),
+                (
+                    "DIVERSITY_SUPPLEMENT_NOT_GENERATED"
+                    if cache.diversity_supplement_attempted
+                    and not cache.diversity_supplemented
                     else None
                 ),
             )
@@ -2955,16 +3223,11 @@ def _creative_task_chunks(
         direction_groups.setdefault(direction_id, []).append(task)
 
     chunks: list[list[CreativeTask]] = []
-    remainders: list[CreativeTask] = []
     for group in direction_groups.values():
         ordered = sorted(group, key=lambda item: item.ordinal)
-        while len(ordered) >= size:
-            chunks.append(ordered[:size])
-            ordered = ordered[size:]
-        remainders.extend(ordered)
-    chunks.extend(
-        remainders[start : start + size] for start in range(0, len(remainders), size)
-    )
+        chunks.extend(
+            ordered[start : start + size] for start in range(0, len(ordered), size)
+        )
     return chunks
 
 

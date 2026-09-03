@@ -689,7 +689,7 @@ class CreativeTerritoryDraft(ApiModel):
 
 class CreativeTerritory(CreativeTerritoryDraft):
     required_fact_ids: list[str] = Field(default_factory=list, max_length=64)
-    target_slots: int = Field(ge=1, le=16)
+    target_slots: int = Field(ge=1, le=24)
 
 
 class CreativeDiversityLandscapeResponse(ApiModel):
@@ -833,7 +833,9 @@ class CreativeDirection(ApiModel):
 
 
 class CreativeDirectionResponse(ApiModel):
-    directions: list[CreativeDirection] = Field(min_length=1, max_length=16)
+    # A base plan is capped at 24; up to four same-run diversity directions may
+    # be appended before the compact all-batch overlap audit.
+    directions: list[CreativeDirection] = Field(min_length=1, max_length=32)
 
 
 class CreativeDirectionFactAudit(ApiModel):
@@ -859,9 +861,9 @@ class CreativeDirectionAuditItem(ApiModel):
 
 
 class CreativeDirectionAuditResponse(ApiModel):
-    items: list[CreativeDirectionAuditItem] = Field(min_length=1, max_length=16)
+    items: list[CreativeDirectionAuditItem] = Field(min_length=1, max_length=24)
     requires_revision: bool
-    revision_direction_ids: list[str] = Field(default_factory=list, max_length=16)
+    revision_direction_ids: list[str] = Field(default_factory=list, max_length=24)
     summary: str = Field(min_length=2, max_length=500)
 
     @model_validator(mode="after")
@@ -871,20 +873,63 @@ class CreativeDirectionAuditResponse(ApiModel):
 
 
 class CreativeDirectionAudit(ApiModel):
-    items: list[CreativeDirectionAuditItem] = Field(min_length=8, max_length=16)
+    items: list[CreativeDirectionAuditItem] = Field(min_length=8, max_length=24)
     requires_revision: bool = False
-    revision_direction_ids: list[str] = Field(default_factory=list, max_length=16)
+    revision_direction_ids: list[str] = Field(default_factory=list, max_length=24)
     summary: str = Field(min_length=2, max_length=240)
     audit_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
+class CreativeDirectionOverlapGroup(ApiModel):
+    group_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
+    direction_ids: list[str] = Field(min_length=2, max_length=12)
+    repeated_visual_core: str = Field(min_length=4, max_length=240)
+    revision_direction_ids: list[str] = Field(min_length=1, max_length=11)
+    diversification_goal: str = Field(min_length=4, max_length=240)
+
+    @model_validator(mode="after")
+    def normalize_direction_ids(self) -> CreativeDirectionOverlapGroup:
+        self.direction_ids = list(dict.fromkeys(self.direction_ids))
+        self.revision_direction_ids = list(dict.fromkeys(self.revision_direction_ids))
+        if len(self.direction_ids) < 2:
+            raise ValueError("direction overlap group requires at least two directions")
+        if not set(self.revision_direction_ids).issubset(self.direction_ids):
+            raise ValueError("overlap revision ids must belong to the overlap group")
+        return self
+
+
+class CreativeDirectionDiversityAuditResponse(ApiModel):
+    groups: list[CreativeDirectionOverlapGroup] = Field(default_factory=list, max_length=12)
+    requires_revision: bool
+    revision_direction_ids: list[str] = Field(default_factory=list, max_length=24)
+    summary: str = Field(min_length=2, max_length=500)
+
+    @model_validator(mode="after")
+    def normalize_revision_ids(self) -> CreativeDirectionDiversityAuditResponse:
+        grouped_revision_ids = [
+            direction_id
+            for group in self.groups
+            for direction_id in group.revision_direction_ids
+        ]
+        self.revision_direction_ids = list(
+            dict.fromkeys([*self.revision_direction_ids, *grouped_revision_ids])
+        )
+        self.requires_revision = bool(self.revision_direction_ids)
+        return self
+
+
+class CreativeDirectionDiversityAudit(CreativeDirectionDiversityAuditResponse):
+    audit_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class CreativeDirectionPlan(ApiModel):
-    directions: list[CreativeDirection] = Field(min_length=8, max_length=16)
+    directions: list[CreativeDirection] = Field(min_length=8, max_length=32)
     source_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     template_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     landscape: CreativeDiversityLandscape | None = None
     semantic_audit: CreativeDirectionAudit | None = None
+    diversity_audit: CreativeDirectionDiversityAudit | None = None
     reused_checkpoint: bool = False
 
     @model_validator(mode="after")
@@ -997,6 +1042,8 @@ class CreativeTask(ApiModel):
     target_duration_seconds: int = Field(ge=4, le=30)
     fact_assignment: CreativeFactAssignment | None = None
     creative_direction: CreativeDirection | None = None
+    sibling_variant_index: int = Field(default=1, ge=1, le=32)
+    sibling_variant_total: int = Field(default=1, ge=1, le=32)
     # A coverage supplement uses these assigned facts as the explicit repair
     # target. The model owns the semantic realization; the Worker only carries
     # and validates stable fact IDs.
@@ -1013,6 +1060,8 @@ class CreativeTask(ApiModel):
                 raise ValueError(
                     "coverageFocusFactIds must be contained in factAssignment"
                 )
+        if self.sibling_variant_index > self.sibling_variant_total:
+            raise ValueError("siblingVariantIndex cannot exceed siblingVariantTotal")
         return self
 
 
