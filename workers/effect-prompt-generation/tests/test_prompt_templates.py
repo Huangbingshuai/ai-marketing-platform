@@ -42,7 +42,7 @@ def test_prompt_directory_only_contains_active_templates() -> None:
 def test_creative_task_renders_literal_json_inputs() -> None:
     rendered = render_prompt(
         "creative_task.user.prompt.txt",
-        task_briefs_json='[{"slotId":"slot-1","factApplications":[]}]',
+        task_briefs_json='[{"slotId":"slot-1","factApplications":[],"coverageFocusFactIds":[]}]',
         shared_prompt_content_json='"画面中不得出现促销贴纸"',
         avoid_semantic_json="[]",
         avoid_visual_json="[]",
@@ -84,6 +84,8 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "不要按六类用途分组" in task
     assert "只是软避重参考" in task
     assert "同一创意方向下的兄弟变体" in task
+    assert "coverageFocusFactIds 为空表示常规生成" in task
+    assert "创意主线的中心" in task
     assert "不得只替换形容词" in task
     assert "只评估候选，不改写正文" in evaluation
     assert "五个窄职责视角" in evaluation
@@ -98,9 +100,7 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
 
 def test_landscape_template_distinguishes_compatible_and_primary_facts() -> None:
     landscape = load_prompt("creative_landscape.system.prompt.txt")
-    assignment = load_prompt(
-        "creative_fact_territory_assignment.system.prompt.txt"
-    )
+    assignment = load_prompt("creative_fact_territory_assignment.system.prompt.txt")
     audit = load_prompt("creative_landscape_audit.system.prompt.txt")
 
     assert "requiredFactIds 本阶段保持为空" in landscape
@@ -121,6 +121,7 @@ def test_direction_and_landscape_templates_receive_density_rules() -> None:
         "creative_direction.user.prompt.txt",
         target_count="50",
         target_direction_count="13",
+        direction_output_instruction="首次输出完整方向",
         fact_density_instruction="每个方向必须自然使用 2～4 条业务事实",
         facts_json="[]",
         fact_visual_strategy_json="[]",
@@ -176,7 +177,9 @@ def test_fact_territory_assignment_receives_required_and_supporting_facts() -> N
     assert "辅助理解事实" in rendered
 
 
-def test_visual_strategy_templates_keep_direction_fact_applications_without_role_split() -> None:
+def test_visual_strategy_templates_keep_direction_fact_applications_without_role_split() -> (
+    None
+):
     compiler = load_prompt("fact_visual_strategy.system.prompt.txt")
     creative = load_prompt("creative_base.system.prompt.txt")
     evaluation = load_prompt("evaluation_base.system.prompt.txt")

@@ -308,19 +308,21 @@ class PromptGenerationPipeline:
             if task.supplement_kind in {"QUANTITY", "COVERAGE"}
         ]
         quantity_tasks = [
-            task for task in restored_creative_tasks if task.supplement_kind == "QUANTITY"
+            task
+            for task in restored_creative_tasks
+            if task.supplement_kind == "QUANTITY"
         ]
         coverage_tasks = [
-            task for task in restored_creative_tasks if task.supplement_kind == "COVERAGE"
+            task
+            for task in restored_creative_tasks
+            if task.supplement_kind == "COVERAGE"
         ]
         diversity_tasks = [
             task
             for task in restored_creative_tasks
             if task.supplement_kind == "DIVERSITY"
         ]
-        cache.replenishment_rounds = len(
-            {task.round for task in replenishment_tasks}
-        )
+        cache.replenishment_rounds = len({task.round for task in replenishment_tasks})
         cache.supplemented = cache.replenishment_rounds > 0
         cache.quantity_supplemented = bool(quantity_tasks)
         cache.quantity_supplement_count = len(quantity_tasks)
@@ -799,6 +801,7 @@ class PromptGenerationPipeline:
                         ),
                     },
                 )
+
                 async def audit_one_territory(territory: Any) -> Any:
                     for territory_audit_attempt in range(2):
                         self._reserve_ai_call(context)
@@ -812,25 +815,18 @@ class PromptGenerationPipeline:
                                     )
                                 )
                         except ProviderError as exc:
-                            if (
-                                territory_audit_attempt == 0
-                                and (
-                                    exc.retryable
-                                    or exc.error_type
-                                    == ProviderErrorType.RESPONSE_INVALID
-                                )
+                            if territory_audit_attempt == 0 and (
+                                exc.retryable
+                                or exc.error_type == ProviderErrorType.RESPONSE_INVALID
                             ):
                                 continue
                             raise
                         call_rows.append(territory_audit_call.metadata)
                         value = territory_audit_call.value
-                        if (
-                            value.territory_id == territory.territory_id
-                            and all(
-                                issue.territory_id == territory.territory_id
-                                and issue.fact_id in territory.compatible_fact_ids
-                                for issue in value.fact_issues
-                            )
+                        if value.territory_id == territory.territory_id and all(
+                            issue.territory_id == territory.territory_id
+                            and issue.fact_id in territory.compatible_fact_ids
+                            for issue in value.fact_issues
                         ):
                             return value
                         if territory_audit_attempt == 1:
@@ -985,7 +981,7 @@ class PromptGenerationPipeline:
                     )
                 except ValueError as exc:
                     revision_context = creative_direction_revision_context(
-                        call.value,
+                        direction_response,
                         application,
                         validation_error=str(exc),
                         landscape=landscape,
@@ -1024,40 +1020,74 @@ class PromptGenerationPipeline:
                         ),
                     },
                 )
-                audit = None
-                for audit_attempt in range(2):
-                    self._reserve_ai_call(context)
-                    try:
-                        async with self._ai_semaphore:
-                            audit_call = await self.provider.audit_creative_directions(
-                                application,
-                                fact_visual_strategy=visual_strategy,
-                                landscape=landscape,
-                                directions=direction_response,
-                            )
-                    except ProviderError as exc:
-                        if (
-                            audit_attempt == 0
-                            and exc.error_type == ProviderErrorType.RESPONSE_INVALID
-                        ):
-                            continue
-                        raise
-                    call_rows.append(audit_call.metadata)
-                    try:
-                        audit = validate_creative_direction_audit(
-                            audit_call.value,
-                            draft_plan,
-                            landscape,
-                        )
-                        break
-                    except ValueError as exc:
-                        if audit_attempt == 1:
-                            raise ProviderError(
-                                "AI 创意方向语义复核结构无效",
-                                retryable=False,
-                                error_type=ProviderErrorType.RESPONSE_INVALID,
-                                attempts=2,
-                            ) from exc
+
+                async def audit_direction_batch(
+                    batch: list[Any],
+                ) -> CreativeDirectionAuditResponse:
+                    for audit_attempt in range(2):
+                        self._reserve_ai_call(context)
+                        try:
+                            async with self._ai_semaphore:
+                                audit_call = (
+                                    await self.provider.audit_creative_directions(
+                                        application,
+                                        fact_visual_strategy=visual_strategy,
+                                        landscape=landscape,
+                                        directions=CreativeDirectionResponse(
+                                            directions=batch
+                                        ),
+                                    )
+                                )
+                        except ProviderError as exc:
+                            if audit_attempt == 0 and (
+                                exc.retryable
+                                or exc.error_type == ProviderErrorType.RESPONSE_INVALID
+                            ):
+                                continue
+                            raise
+                        call_rows.append(audit_call.metadata)
+                        return audit_call.value
+                    raise PipelineError("创意方向语义分批复核未返回结果")
+
+                direction_audit_batches = [
+                    list(direction_response.directions[index : index + 7])
+                    for index in range(0, len(direction_response.directions), 7)
+                ]
+                batch_audits = await asyncio.gather(
+                    *(audit_direction_batch(batch) for batch in direction_audit_batches)
+                )
+                combined_revision_ids = list(
+                    dict.fromkeys(
+                        direction_id
+                        for batch_audit in batch_audits
+                        for direction_id in batch_audit.revision_direction_ids
+                    )
+                )
+                combined_audit_response = CreativeDirectionAuditResponse(
+                    items=[
+                        item
+                        for batch_audit in batch_audits
+                        for item in batch_audit.items
+                    ],
+                    requires_revision=bool(combined_revision_ids),
+                    revision_direction_ids=combined_revision_ids,
+                    summary="；".join(
+                        batch_audit.summary for batch_audit in batch_audits
+                    )[:240],
+                )
+                try:
+                    audit = validate_creative_direction_audit(
+                        combined_audit_response,
+                        draft_plan,
+                        landscape,
+                    )
+                except ValueError as exc:
+                    raise ProviderError(
+                        "AI 创意方向语义复核结构无效",
+                        retryable=False,
+                        error_type=ProviderErrorType.RESPONSE_INVALID,
+                        attempts=2,
+                    ) from exc
                 if audit is None:
                     raise PipelineError("创意方向语义复核未能形成有效结果")
                 if audit.requires_revision:
@@ -1097,7 +1127,9 @@ class PromptGenerationPipeline:
             context,
             NodeId.COHERENT_CREATIVE_GENERATION,
             StageStatus.RUNNING,
-            "创意方案已复用，正在生成候选" if reused else "创意方案已完成，正在生成候选",
+            "创意方案已复用，正在生成候选"
+            if reused
+            else "创意方案已完成，正在生成候选",
             metadata={
                 "perceptionPhase": "CANDIDATE_GENERATION",
                 "directionCount": len(plan.directions),
@@ -1324,6 +1356,7 @@ class PromptGenerationPipeline:
                 ordinal_start=ordinal_start,
                 preferred_fact_ids=preferred_item_fact_ids,
             )
+        coverage_focus_set = set(coverage_fact_ids)
         tasks = [
             CreativeTask(
                 slot_id=f"creative-r{round_number}-c{ordinal_start + index:04d}",
@@ -1337,6 +1370,15 @@ class PromptGenerationPipeline:
                 ),
                 fact_assignment=fact_assignments[index],
                 creative_direction=(directions[index] if directions else None),
+                coverage_focus_fact_ids=(
+                    [
+                        fact_id
+                        for fact_id in fact_assignments[index].fact_ids
+                        if fact_id in coverage_focus_set
+                    ]
+                    if supplement_kind == "COVERAGE"
+                    else []
+                ),
             )
             for index in range(requested)
         ]
@@ -1999,10 +2041,7 @@ class PromptGenerationPipeline:
                 )
             ]
             content_mmr_policy = snapshot.selection_policy == "MMR_CONTENT"
-            if (
-                len(eligible_candidates) > 1
-                and content_mmr_policy
-            ):
+            if len(eligible_candidates) > 1 and content_mmr_policy:
                 if self.embedding_provider is None:
                     raise PipelineError(
                         "embedding provider is required for Prompt vector similarity"
@@ -2532,9 +2571,7 @@ class PromptGenerationPipeline:
         should_supplement = bool(pending)
         selection_failed = missing > 0 and not should_supplement
         coverage_needs_review = (
-            missing == 0
-            and bool(missing_coverage_fact_ids)
-            and not should_supplement
+            missing == 0 and bool(missing_coverage_fact_ids) and not should_supplement
         )
         if cache.embedding_stage_metadata:
             cache.embedding_stage_metadata.update(
@@ -2895,8 +2932,7 @@ def _creative_task_chunks(
             ordered = ordered[size:]
         remainders.extend(ordered)
     chunks.extend(
-        remainders[start : start + size]
-        for start in range(0, len(remainders), size)
+        remainders[start : start + size] for start in range(0, len(remainders), size)
     )
     return chunks
 

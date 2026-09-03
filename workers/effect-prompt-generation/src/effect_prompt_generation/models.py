@@ -362,9 +362,7 @@ class CreativeAverageScores(ApiModel):
 class SemanticEvaluation(ApiModel):
     status: Literal["PENDING", "VERIFIED"]
     evaluated_count: int = Field(ge=0, le=MAX_PROMPT_COUNT)
-    duplicate_group_count: int | None = Field(
-        default=None, ge=0, le=MAX_PROMPT_COUNT
-    )
+    duplicate_group_count: int | None = Field(default=None, ge=0, le=MAX_PROMPT_COUNT)
     duplicate_count: int | None = Field(default=None, ge=0, le=MAX_PROMPT_COUNT)
     duplicate_rate: float | None = Field(default=None, ge=0, le=100)
 
@@ -719,9 +717,7 @@ class CreativeLandscapeAuditResponse(ApiModel):
 
     @model_validator(mode="after")
     def normalize_revision_ids(self) -> CreativeLandscapeAuditResponse:
-        self.revision_territory_ids = list(
-            dict.fromkeys(self.revision_territory_ids)
-        )
+        self.revision_territory_ids = list(dict.fromkeys(self.revision_territory_ids))
         if self.requires_revision and not self.revision_territory_ids:
             raise ValueError("landscape audit revision requires territory ids")
         if not self.requires_revision:
@@ -816,13 +812,13 @@ class CreativeDirection(ApiModel):
 
 
 class CreativeDirectionResponse(ApiModel):
-    directions: list[CreativeDirection] = Field(min_length=8, max_length=16)
+    directions: list[CreativeDirection] = Field(min_length=1, max_length=16)
 
 
 class CreativeDirectionFactAudit(ApiModel):
     fact_id: str = Field(min_length=1, max_length=120)
     verdict: Literal["NATURAL", "WEAK", "UNSUPPORTED"]
-    reason: str = Field(min_length=2, max_length=180)
+    reason: str = Field(min_length=2, max_length=500)
 
 
 class CreativeDirectionAuditItem(ApiModel):
@@ -831,29 +827,25 @@ class CreativeDirectionAuditItem(ApiModel):
     realized_action_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
     aligned: bool
     fact_reviews: list[CreativeDirectionFactAudit] | None = None
-    issues: list[str] = Field(default_factory=list, max_length=4)
+    issues: list[str] = Field(default_factory=list)
 
     @field_validator("issues")
     @classmethod
     def clean_issues(cls, values: list[str]) -> list[str]:
         return list(
             dict.fromkeys(" ".join(item.split()) for item in values if item.strip())
-        )
+        )[:4]
 
 
 class CreativeDirectionAuditResponse(ApiModel):
-    items: list[CreativeDirectionAuditItem] = Field(min_length=8, max_length=16)
+    items: list[CreativeDirectionAuditItem] = Field(min_length=1, max_length=16)
     requires_revision: bool
     revision_direction_ids: list[str] = Field(default_factory=list, max_length=16)
-    summary: str = Field(min_length=2, max_length=240)
+    summary: str = Field(min_length=2, max_length=500)
 
     @model_validator(mode="after")
     def normalize_revision_ids(self) -> CreativeDirectionAuditResponse:
         self.revision_direction_ids = list(dict.fromkeys(self.revision_direction_ids))
-        if self.requires_revision and not self.revision_direction_ids:
-            raise ValueError("semantic audit revision requires direction ids")
-        if not self.requires_revision:
-            self.revision_direction_ids = []
         return self
 
 
@@ -984,8 +976,23 @@ class CreativeTask(ApiModel):
     target_duration_seconds: int = Field(ge=4, le=30)
     fact_assignment: CreativeFactAssignment | None = None
     creative_direction: CreativeDirection | None = None
+    # A coverage supplement uses these assigned facts as the explicit repair
+    # target. The model owns the semantic realization; the Worker only carries
+    # and validates stable fact IDs.
+    coverage_focus_fact_ids: list[str] = Field(default_factory=list, max_length=12)
     # Kept only so persisted earlier shard plans remain readable.
     preferred_fact_ids: list[str] = Field(default_factory=list, max_length=12)
+
+    @model_validator(mode="after")
+    def normalize_coverage_focus_fact_ids(self) -> CreativeTask:
+        self.coverage_focus_fact_ids = list(dict.fromkeys(self.coverage_focus_fact_ids))
+        if self.fact_assignment is not None:
+            assigned = set(self.fact_assignment.fact_ids)
+            if any(fact_id not in assigned for fact_id in self.coverage_focus_fact_ids):
+                raise ValueError(
+                    "coverageFocusFactIds must be contained in factAssignment"
+                )
+        return self
 
 
 class CreativeCandidate(ApiModel):
@@ -1027,6 +1034,7 @@ class CreativeCandidate(ApiModel):
             raise ValueError("declaredFactIds cannot be empty")
         return result
 
+
 class CreativeCandidateBatch(ApiModel):
     items: list[CreativeCandidate] = Field(min_length=1, max_length=5)
 
@@ -1047,14 +1055,17 @@ class CreativeShardPlan(ApiModel):
 class FactEvidence(ApiModel):
     fact_id: str = Field(min_length=1, max_length=120)
     evidence_text: str | None = Field(default=None, max_length=160)
-    evidence_source: Literal[
-        "CONTENT",
-        "CREATIVE_CORE",
-        "NARRATIVE",
-        "SCENE",
-        "PERSONA",
-        "PRODUCT_RELATION",
-    ] | None = None
+    evidence_source: (
+        Literal[
+            "CONTENT",
+            "CREATIVE_CORE",
+            "NARRATIVE",
+            "SCENE",
+            "PERSONA",
+            "PRODUCT_RELATION",
+        ]
+        | None
+    ) = None
     support_level: Literal["EXACT", "SEMANTIC_FULL", "PARTIAL", "NONE"] = "EXACT"
 
 

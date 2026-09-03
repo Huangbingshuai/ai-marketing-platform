@@ -67,9 +67,7 @@ def creative_direction_target_count(
             f"现有 {mandatory_fact_count} 条；请将 Prompt 总数至少调整为 "
             f"{minimum_prompt_count} 条"
         )
-    direction_capacity = (
-        MAX_CREATIVE_DIRECTION_COUNT * MAX_BUSINESS_FACTS_PER_DIRECTION
-    )
+    direction_capacity = MAX_CREATIVE_DIRECTION_COUNT * MAX_BUSINESS_FACTS_PER_DIRECTION
     if mandatory_fact_count > direction_capacity:
         raise ValueError(
             f"当前创意规划最多承载 {direction_capacity} 条业务事实，现有 "
@@ -171,8 +169,7 @@ def creative_fact_assignment_revision_context(
         "minimumSlotTotal": sum(minimum_slots.values()),
         "targetDirectionCount": expected_direction_count,
         "previousAssignments": [
-            item.model_dump(mode="json", by_alias=True)
-            for item in response.assignments
+            item.model_dump(mode="json", by_alias=True) for item in response.assignments
         ],
         "revisionInstruction": (
             "重新输出全部业务事实的完整唯一分配；修正缺失、重复、未知引用和"
@@ -213,16 +210,16 @@ def compile_creative_landscape_assignments(
     for territory in landscape.territories:
         assigned = assigned_by_territory[territory.territory_id]
         if len(assigned) > 64:
-            raise ValueError("creative fact assignment exceeded territory fact capacity")
+            raise ValueError(
+                "creative fact assignment exceeded territory fact capacity"
+            )
         assigned_fact_ids = [item.fact_id for item in assigned]
         supporting_fact_ids = [
             fact_id
             for fact_id in territory.compatible_fact_ids
             if fact_id not in assigned_fact_ids
         ][: max(0, 64 - len(assigned_fact_ids))]
-        guidance_by_id = {
-            item.fact_id: item for item in territory.fact_compatibilities
-        }
+        guidance_by_id = {item.fact_id: item for item in territory.fact_compatibilities}
         compiled_guidance = [
             CreativeTerritoryFactCompatibility(
                 fact_id=item.fact_id,
@@ -258,6 +255,8 @@ def compile_creative_landscape_assignments(
         template_hash=template_hash,
         expected_direction_count=expected_direction_count,
     )
+
+
 def validate_creative_diversity_landscape(
     response: CreativeDiversityLandscapeResponse,
     application: InsightApplicationMap,
@@ -310,15 +309,13 @@ def validate_creative_diversity_landscape(
         for territory in response.territories
         for fact_id in territory.required_fact_ids
     ):
-        raise ValueError("creative landscape required fact lacks compatibility guidance")
+        raise ValueError(
+            "creative landscape required fact lacks compatibility guidance"
+        )
     if not business_ids.issubset(set(required_ids)):
         raise ValueError("creative landscape did not assign every business fact once")
     normalized_required_ids = [
-        [
-            fact_id
-            for fact_id in territory.required_fact_ids
-            if fact_id in business_ids
-        ]
+        [fact_id for fact_id in territory.required_fact_ids if fact_id in business_ids]
         for territory in response.territories
     ]
     target_slots = [
@@ -376,9 +373,7 @@ def validate_creative_landscape_audit(
         raise ValueError("creative landscape audit must cover every territory once")
     landscape_by_id = landscape.by_id
     issue_territory_ids: set[str] = set()
-    issue_keys = [
-        (issue.territory_id, issue.fact_id) for issue in response.fact_issues
-    ]
+    issue_keys = [(issue.territory_id, issue.fact_id) for issue in response.fact_issues]
     if len(issue_keys) != len(set(issue_keys)):
         raise ValueError("creative landscape audit repeated a fact issue")
     for issue in response.fact_issues:
@@ -440,9 +435,7 @@ def apply_creative_landscape_audit(
 
     if not audit.requires_revision:
         return landscape.model_copy(update={"semantic_audit": audit})
-    issue_keys = {
-        (issue.territory_id, issue.fact_id) for issue in audit.fact_issues
-    }
+    issue_keys = {(issue.territory_id, issue.fact_id) for issue in audit.fact_issues}
     territories: list[CreativeTerritory] = []
     for territory in landscape.territories:
         removed_ids = {
@@ -486,17 +479,13 @@ def apply_creative_landscape_audit(
         fact_issues=[],
         requires_revision=False,
         revision_territory_ids=[],
-        summary=(
-            f"独立复核指出的 {len(issue_keys)} 项不自然辅助事实关系已移除"
-        ),
+        summary=(f"独立复核指出的 {len(issue_keys)} 项不自然辅助事实关系已移除"),
     )
     clean_audit = validate_creative_landscape_audit(
         clean_response,
         landscape.model_copy(update={"territories": territories}),
     )
-    payload = [
-        item.model_dump(mode="json", by_alias=True) for item in territories
-    ]
+    payload = [item.model_dump(mode="json", by_alias=True) for item in territories]
     return landscape.model_copy(
         update={
             "territories": territories,
@@ -555,12 +544,48 @@ def validate_creative_direction_plan(
         len(business_ids.intersection(direction.fact_ids)) for direction in directions
     ]
     if len(business_ids) >= len(directions) * 2:
-        if any(count < 2 for count in business_fact_counts):
+        minimum_business_facts = [
+            min(
+                2,
+                len(
+                    business_ids.intersection(
+                        landscape.by_id[direction.territory_id].compatible_fact_ids
+                    )
+                ),
+            )
+            if landscape is not None
+            else 2
+            for direction in directions
+        ]
+        if any(
+            count < minimum
+            for count, minimum in zip(
+                business_fact_counts, minimum_business_facts, strict=True
+            )
+        ):
             raise ValueError(
                 "fact-rich batches require at least two business facts per direction"
             )
     elif len(business_ids) >= len(directions):
-        if any(count < 1 for count in business_fact_counts):
+        minimum_business_facts = [
+            min(
+                1,
+                len(
+                    business_ids.intersection(
+                        landscape.by_id[direction.territory_id].compatible_fact_ids
+                    )
+                ),
+            )
+            if landscape is not None
+            else 1
+            for direction in directions
+        ]
+        if any(
+            count < minimum
+            for count, minimum in zip(
+                business_fact_counts, minimum_business_facts, strict=True
+            )
+        ):
             raise ValueError(
                 "this batch requires at least one business fact per direction"
             )
@@ -626,10 +651,9 @@ def validate_creative_direction_audit(
         if item.fact_reviews is None:
             raise ValueError("creative direction audit omitted fact reviews")
         reviewed_fact_ids = [review.fact_id for review in item.fact_reviews]
-        if (
-            len(reviewed_fact_ids) != len(set(reviewed_fact_ids))
-            or set(reviewed_fact_ids) != set(direction.fact_ids)
-        ):
+        if len(reviewed_fact_ids) != len(set(reviewed_fact_ids)) or set(
+            reviewed_fact_ids
+        ) != set(direction.fact_ids):
             raise ValueError(
                 "creative direction audit must review every applied fact exactly once"
             )
@@ -646,16 +670,29 @@ def validate_creative_direction_audit(
             revision_required_ids.add(item.direction_id)
     if any(item not in direction_ids for item in response.revision_direction_ids):
         raise ValueError("creative direction audit used an unknown revision id")
-    if revision_required_ids:
-        if not response.requires_revision:
-            raise ValueError("creative direction audit ignored a semantic issue")
-        if not revision_required_ids.issubset(response.revision_direction_ids):
-            raise ValueError("creative direction audit omitted a revision direction")
-    elif response.requires_revision:
+    normalized_revision_ids = list(
+        dict.fromkeys(
+            [
+                *response.revision_direction_ids,
+                *[
+                    direction.direction_id
+                    for direction in plan.directions
+                    if direction.direction_id in revision_required_ids
+                ],
+            ]
+        )
+    )
+    if response.requires_revision and not normalized_revision_ids:
         raise ValueError("creative direction audit requested an unsupported revision")
-    payload = response.model_dump(mode="json", by_alias=True)
+    normalized_response = response.model_copy(
+        update={
+            "requires_revision": bool(normalized_revision_ids),
+            "revision_direction_ids": normalized_revision_ids,
+        }
+    )
+    payload = normalized_response.model_dump(mode="json", by_alias=True)
     return CreativeDirectionAudit(
-        **response.model_dump(mode="python"),
+        **normalized_response.model_dump(mode="python"),
         audit_hash=_hash(payload),
     )
 
@@ -664,13 +701,26 @@ def creative_direction_audit_revision_context(
     plan: CreativeDirectionPlan,
     audit: CreativeDirectionAudit,
 ) -> dict[str, object]:
+    revision_ids = set(audit.revision_direction_ids)
     return {
-        "semanticAudit": audit.model_dump(mode="json", by_alias=True),
+        "semanticAudit": {
+            "requiresRevision": audit.requires_revision,
+            "revisionDirectionIds": audit.revision_direction_ids,
+            "items": [
+                item.model_dump(mode="json", by_alias=True)
+                for item in audit.items
+                if item.direction_id in revision_ids
+            ],
+            "summary": audit.summary,
+        },
         "previousDirections": [
-            item.model_dump(mode="json", by_alias=True) for item in plan.directions
+            item.model_dump(mode="json", by_alias=True)
+            for item in plan.directions
+            if item.direction_id in revision_ids
         ],
+        "revisionDirectionIds": audit.revision_direction_ids,
         "revisionInstruction": (
-            "依据独立语义复核重新规划完整批次，只修改被点名的事实关系、"
+            "依据独立语义复核只重新规划被点名的方向，修复其事实关系、"
             "同义改名、版图错位、多主场景或多主动作问题。事实必须转移到"
             "自然相容的版图与方向，不能为了覆盖率硬塞，也不得由系统替换事实。"
         ),
@@ -686,11 +736,12 @@ def merge_creative_direction_revision(
 
     previous_by_id = {item.direction_id: item for item in previous.directions}
     revised_by_id = {item.direction_id: item for item in revised.directions}
-    if set(previous_by_id) != set(revised_by_id):
-        raise ValueError("creative direction revision changed the direction id set")
     revision_ids = set(revision_direction_ids)
     if not revision_ids or not revision_ids.issubset(previous_by_id):
         raise ValueError("creative direction revision used an unknown revision id")
+    revised_ids = set(revised_by_id)
+    if revised_ids not in (set(previous_by_id), revision_ids):
+        raise ValueError("creative direction revision changed the direction id set")
     return CreativeDirectionResponse(
         directions=[
             revised_by_id[item.direction_id]
@@ -716,6 +767,8 @@ def creative_direction_revision_context(
     }
     invalid_fact_references = []
     invalid_direction_ids: list[str] = []
+    slot_revision_direction_ids: list[str] = []
+    slot_correction: dict[str, object] = {}
     allowed_facts_by_territory: dict[str, list[str]] = {}
     if landscape is not None:
         allowed_facts_by_territory = {
@@ -752,27 +805,140 @@ def creative_direction_revision_context(
                 for fact_id in direction.fact_ids
             )
         ]
+        expected_slots = {
+            territory.territory_id: territory.target_slots
+            for territory in landscape.territories
+        }
+        actual_slots = Counter(
+            direction.territory_id for direction in response.directions
+        )
+        deficit_slots = {
+            territory_id: expected_count - actual_slots.get(territory_id, 0)
+            for territory_id, expected_count in expected_slots.items()
+            if actual_slots.get(territory_id, 0) < expected_count
+        }
+        overflow_slots = {
+            territory_id: actual_count - expected_slots.get(territory_id, 0)
+            for territory_id, actual_count in actual_slots.items()
+            if actual_count > expected_slots.get(territory_id, 0)
+        }
+        if deficit_slots or overflow_slots:
+            for territory_id, overflow_count in overflow_slots.items():
+                overflow_directions = [
+                    direction.direction_id
+                    for direction in response.directions
+                    if direction.territory_id == territory_id
+                ]
+                slot_revision_direction_ids.extend(
+                    overflow_directions[-overflow_count:]
+                )
+            slot_correction = {
+                "expectedSlotsByTerritory": expected_slots,
+                "actualSlotsByTerritory": dict(actual_slots),
+                "deficitSlotsByTerritory": deficit_slots,
+                "overflowSlotsByTerritory": overflow_slots,
+                "movableDirectionIds": slot_revision_direction_ids,
+                "targetTerritoryOptions": {
+                    territory_id: {
+                        "remainingSlots": count,
+                        "allowedFactIds": allowed_facts_by_territory[territory_id],
+                        "allowedActionIds": [
+                            action.action_id
+                            for action in landscape.by_id[territory_id].actions
+                        ],
+                    }
+                    for territory_id, count in deficit_slots.items()
+                },
+            }
     missing_business_fact_ids = [
         fact_id for fact_id in business_ids if fact_id not in planned_ids
     ]
+    if len(business_ids) >= len(response.directions) * 2:
+        batch_minimum_business_facts = 2
+    elif len(business_ids) >= len(response.directions):
+        batch_minimum_business_facts = 1
+    else:
+        batch_minimum_business_facts = 0
+    business_id_set = set(business_ids)
+    business_fact_counts_by_direction = {
+        direction.direction_id: len(business_id_set.intersection(direction.fact_ids))
+        for direction in response.directions
+    }
+    minimum_business_facts_by_direction = {
+        direction.direction_id: min(
+            batch_minimum_business_facts,
+            len(
+                business_id_set.intersection(
+                    allowed_facts_by_territory.get(direction.territory_id, [])
+                )
+            ),
+        )
+        for direction in response.directions
+    }
+    underfilled_direction_ids = [
+        direction.direction_id
+        for direction in response.directions
+        if business_fact_counts_by_direction[direction.direction_id]
+        < minimum_business_facts_by_direction[direction.direction_id]
+    ]
+    additional_business_fact_options_by_direction = {
+        direction.direction_id: [
+            fact_id
+            for fact_id in allowed_facts_by_territory.get(direction.territory_id, [])
+            if fact_id in business_id_set and fact_id not in direction.fact_ids
+        ]
+        for direction in response.directions
+        if direction.direction_id in underfilled_direction_ids
+    }
     revision_direction_ids: list[str] = []
     if landscape is not None:
-        missing_territory_ids = {
-            territory_id
-            for territory_id, allowed_fact_ids in allowed_facts_by_territory.items()
-            if any(
-                fact_id in allowed_fact_ids
-                for fact_id in missing_business_fact_ids
+        business_fact_occurrences = Counter(
+            fact_id
+            for direction in response.directions
+            for fact_id in direction.fact_ids
+            if fact_id in business_ids
+        )
+        missing_fact_candidate_direction_ids: list[str] = []
+        for missing_fact_id in missing_business_fact_ids:
+            eligible_directions = [
+                direction
+                for direction in response.directions
+                if missing_fact_id
+                in allowed_facts_by_territory.get(direction.territory_id, [])
+            ]
+            # Keep the AI revision local.  Selecting every direction from every
+            # compatible territory made a one-fact omission turn into a full
+            # 35-fact replan, so each retry could lose a different fact.  The
+            # Worker only ranks structural edit capacity here; the model still
+            # owns which candidate receives the fact and how it is expressed.
+            eligible_directions.sort(
+                key=lambda direction: (
+                    -(
+                        max(0, 4 - len(direction.fact_ids))
+                        + sum(
+                            fact_id not in business_ids
+                            or business_fact_occurrences[fact_id] > 1
+                            for fact_id in direction.fact_ids
+                        )
+                    ),
+                    sum(
+                        fact_id in business_ids
+                        and business_fact_occurrences[fact_id] == 1
+                        for fact_id in direction.fact_ids
+                    ),
+                    len(direction.fact_ids),
+                    direction.direction_id,
+                )
             )
-        }
+            missing_fact_candidate_direction_ids.extend(
+                direction.direction_id for direction in eligible_directions[:3]
+            )
         revision_direction_ids = list(
             dict.fromkeys(
-                [
-                    direction.direction_id
-                    for direction in response.directions
-                    if direction.territory_id in missing_territory_ids
-                ]
+                missing_fact_candidate_direction_ids
                 + invalid_direction_ids
+                + slot_revision_direction_ids
+                + underfilled_direction_ids
             )
         )
     revision_direction_id_set = set(revision_direction_ids)
@@ -802,15 +968,23 @@ def creative_direction_revision_context(
     return {
         "validationError": validation_error,
         "missingBusinessFactIds": missing_business_fact_ids,
+        "businessFactCountsByDirection": business_fact_counts_by_direction,
+        "minimumBusinessFactsByDirection": minimum_business_facts_by_direction,
+        "underfilledDirectionIds": underfilled_direction_ids,
+        "additionalBusinessFactOptionsByDirection": (
+            additional_business_fact_options_by_direction
+        ),
         "revisionRequiredBusinessFactIds": revision_required_business_fact_ids,
         "revisionFactOptions": revision_fact_options,
         "revisionFactApplicationCapacity": len(revision_direction_ids) * 4,
         "previousDirections": [
             direction.model_dump(mode="json", by_alias=True)
             for direction in response.directions
+            if direction.direction_id in revision_direction_id_set
         ],
         "allowedFactIdsByTerritory": allowed_facts_by_territory,
         "invalidDirectionFactReferences": invalid_fact_references,
+        "territorySlotCorrection": slot_correction,
         "revisionDirectionIds": revision_direction_ids,
         "revisionInstruction": (
             "重新规划完整批次，让缺失事实自然进入合适方向。先把"
@@ -819,9 +993,17 @@ def creative_direction_revision_context(
             "包含这份清单；revisionFactOptions 给出每项事实可以进入的方向，"
             "由模型判断其中最自然的具体关系。添加缺失事实时不得移除清单中的"
             "其他唯一事实，可移除重复事实为单条最多 4 项的容量让路；"
+            "逐项修复 underfilledDirectionIds：每个方向最终至少达到"
+            "minimumBusinessFactsByDirection 指定的业务事实数，并只从"
+            "additionalBusinessFactOptionsByDirection 中选择自然相容的补充事实；"
+            "不得为了补足数量删除该方向已有的唯一业务事实；"
             "每个方向的 factApplications 只能引用其 territoryId 对应的"
             " allowedFactIdsByTerritory，逐项修复 invalidDirectionFactReferences；"
             "revisionDirectionIds 是本轮允许调整的方向，其他方向必须原样返回；"
+            "如果 territorySlotCorrection 非空，只能把 movableDirectionIds 中的"
+            "方向迁移到 targetTerritoryOptions，最终各空间方向数必须严格等于"
+            "expectedSlotsByTerritory；迁移后的事实和主动作必须从新空间对应的"
+            "allowedFactIds 与 allowedActionIds 中选择，创意关系由模型重新自然规划；"
             "不得只追加事实ID或由系统替换事实组合。"
         ),
     }

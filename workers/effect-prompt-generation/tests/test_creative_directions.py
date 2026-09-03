@@ -77,9 +77,7 @@ def test_creative_direction_count_scales_with_fact_density() -> None:
     assert "每个方向必须自然使用 2～4 条业务事实" in (
         creative_direction_fact_density_instruction(37, 13)
     )
-    assert "至少让 3 个不同方向" in (
-        creative_direction_fact_density_instruction(3, 8)
-    )
+    assert "至少让 3 个不同方向" in (creative_direction_fact_density_instruction(3, 8))
 
 
 def test_creative_direction_capacity_fails_before_ai_calls() -> None:
@@ -112,11 +110,15 @@ def test_one_natural_territory_can_carry_more_than_eight_business_facts() -> Non
     dense_application = application.model_copy(
         update={
             "required": [
-                fact for fact in application.required if fact.fact_id not in business_ids
+                fact
+                for fact in application.required
+                if fact.fact_id not in business_ids
             ]
             + cloned_facts,
             "adaptive": [
-                fact for fact in application.adaptive if fact.fact_id not in business_ids
+                fact
+                for fact in application.adaptive
+                if fact.fact_id not in business_ids
             ],
         }
     )
@@ -261,6 +263,197 @@ def test_direction_revision_context_names_territory_fact_boundary() -> None:
     assert context["revisionRequiredBusinessFactIds"] == []
     assert context["revisionFactApplicationCapacity"] == 4
     assert context["revisionFactOptions"] == []
+
+
+def test_direction_revision_context_identifies_structural_slot_correction() -> None:
+    from effect_prompt_generation.providers import (
+        _mock_creative_direction_response,
+        _mock_creative_landscape_response,
+    )
+
+    application = map_insight(_cluster_snapshot().insight_artifact.result)
+    landscape = validate_creative_diversity_landscape(
+        _mock_creative_landscape_response(application, direction_count=13),
+        application,
+        source_hash="a" * 64,
+        template_hash="b" * 64,
+        expected_direction_count=13,
+    )
+    response = _mock_creative_direction_response(
+        application,
+        landscape=landscape,
+        direction_count=13,
+    )
+    source = landscape.territories[0]
+    target = landscape.territories[1]
+    moved = next(
+        direction
+        for direction in response.directions
+        if direction.territory_id == target.territory_id
+    )
+    source_action = source.actions[0].action_id
+    invalid_response = response.model_copy(
+        update={
+            "directions": [
+                direction.model_copy(
+                    update={
+                        "territory_id": source.territory_id,
+                        "primary_action_id": source_action,
+                        "fact_applications": [
+                            application
+                            for application in direction.fact_applications
+                            if application.fact_id in source.compatible_fact_ids
+                        ]
+                        or [response.directions[0].fact_applications[0]],
+                    }
+                )
+                if direction.direction_id == moved.direction_id
+                else direction
+                for direction in response.directions
+            ]
+        }
+    )
+
+    context = creative_direction_revision_context(
+        invalid_response,
+        application,
+        validation_error="creative directions do not follow landscape target slots",
+        landscape=landscape,
+    )
+
+    correction = context["territorySlotCorrection"]
+    assert correction["overflowSlotsByTerritory"] == {source.territory_id: 1}
+    assert correction["deficitSlotsByTerritory"] == {target.territory_id: 1}
+    assert correction["movableDirectionIds"] == [moved.direction_id]
+    assert context["revisionDirectionIds"] == [moved.direction_id]
+    assert (
+        correction["targetTerritoryOptions"][target.territory_id]["remainingSlots"] == 1
+    )
+
+
+def test_direction_revision_context_keeps_missing_fact_replan_local() -> None:
+    from effect_prompt_generation.providers import (
+        _mock_creative_direction_response,
+        _mock_creative_landscape_response,
+    )
+
+    application = map_insight(_cluster_snapshot().insight_artifact.result)
+    landscape = validate_creative_diversity_landscape(
+        _mock_creative_landscape_response(application, direction_count=13),
+        application,
+        source_hash="a" * 64,
+        template_hash="b" * 64,
+        expected_direction_count=13,
+    )
+    response = _mock_creative_direction_response(
+        application,
+        landscape=landscape,
+        direction_count=13,
+    )
+    missing_fact_id = mandatory_business_facts(application)[-1].fact_id
+    omitted = response.model_copy(
+        update={
+            "directions": [
+                direction.model_copy(
+                    update={
+                        "fact_applications": [
+                            item
+                            for item in direction.fact_applications
+                            if item.fact_id != missing_fact_id
+                        ]
+                    }
+                )
+                for direction in response.directions
+            ]
+        }
+    )
+
+    context = creative_direction_revision_context(
+        omitted,
+        application,
+        validation_error="creative directions did not cover all usable business facts",
+        landscape=landscape,
+    )
+
+    assert context["missingBusinessFactIds"] == [missing_fact_id]
+    assert 1 <= len(context["revisionDirectionIds"]) <= 3
+    assert len(context["revisionDirectionIds"]) < len(response.directions)
+    missing_option = next(
+        item
+        for item in context["revisionFactOptions"]
+        if item["factId"] == missing_fact_id
+    )
+    assert missing_option["eligibleDirectionIds"]
+    assert set(missing_option["eligibleDirectionIds"]).issubset(
+        context["revisionDirectionIds"]
+    )
+
+
+def test_direction_revision_context_repairs_only_underfilled_directions() -> None:
+    from effect_prompt_generation.providers import (
+        _mock_creative_direction_response,
+        _mock_creative_landscape_response,
+    )
+
+    application = map_insight(_cluster_snapshot().insight_artifact.result)
+    seed_fact = mandatory_business_facts(application)[0]
+    application = application.model_copy(
+        update={
+            "adaptive": [
+                *application.adaptive,
+                *[
+                    seed_fact.model_copy(update={"fact_id": f"extra-fact-{index}"})
+                    for index in range(20)
+                ],
+            ]
+        }
+    )
+    landscape = validate_creative_diversity_landscape(
+        _mock_creative_landscape_response(application, direction_count=13),
+        application,
+        source_hash="a" * 64,
+        template_hash="b" * 64,
+        expected_direction_count=13,
+    )
+    response = _mock_creative_direction_response(application, landscape=landscape)
+    target = next(
+        direction
+        for direction in response.directions
+        if len(
+            set(
+                landscape.by_id[direction.territory_id].compatible_fact_ids
+            ).intersection(
+                fact.fact_id for fact in mandatory_business_facts(application)
+            )
+        )
+        >= 2
+    )
+    underfilled = target.model_copy(
+        update={"fact_applications": [target.fact_applications[0]]}
+    )
+    invalid_response = response.model_copy(
+        update={
+            "directions": [
+                underfilled if item.direction_id == target.direction_id else item
+                for item in response.directions
+            ]
+        }
+    )
+
+    context = creative_direction_revision_context(
+        invalid_response,
+        application,
+        validation_error=(
+            "fact-rich batches require at least two business facts per direction"
+        ),
+        landscape=landscape,
+    )
+
+    assert context["underfilledDirectionIds"] == [target.direction_id]
+    assert target.direction_id in context["revisionDirectionIds"]
+    assert context["minimumBusinessFactsByDirection"][target.direction_id] == 2
+    assert context["businessFactCountsByDirection"][target.direction_id] == 1
+    assert context["additionalBusinessFactOptionsByDirection"][target.direction_id]
 
 
 def _cluster_snapshot() -> PromptGenerationSnapshot:
@@ -612,7 +805,7 @@ async def test_independent_ai_semantic_audit_requests_direction_replanning() -> 
     shards = await pipeline.plan_creatives(runtime, round_number=0)
 
     assert shards
-    assert provider.audit_calls == 2
+    assert provider.audit_calls == 4
     assert provider.direction_calls == 2
     plan = pipeline._cache(runtime).creative_direction_plan
     assert plan is not None
@@ -638,7 +831,7 @@ async def test_repeated_semantic_audit_disagreement_becomes_advisory() -> None:
     shards = await pipeline.plan_creatives(runtime, round_number=0)
 
     assert shards
-    assert provider.audit_calls == 2
+    assert provider.audit_calls == 4
     assert provider.direction_calls == 2
     plan = pipeline._cache(runtime).creative_direction_plan
     assert plan is not None
@@ -666,9 +859,7 @@ def test_landscape_validation_is_structural_not_keyword_based() -> None:
         for fact_id in territory.required_fact_ids
     ]
     assert len(required_ids) == len(set(required_ids))
-    business_ids = {
-        fact.fact_id for fact in mandatory_business_facts(application)
-    }
+    business_ids = {fact.fact_id for fact in mandatory_business_facts(application)}
     assert set(required_ids) == business_ids
     compatible_ids = {
         fact_id
@@ -680,9 +871,7 @@ def test_landscape_validation_is_structural_not_keyword_based() -> None:
     compatible_only = CreativeDiversityLandscapeResponse(
         territories=[
             raw.territories[0].model_copy(
-                update={
-                    "required_fact_ids": raw.territories[0].required_fact_ids[1:]
-                }
+                update={"required_fact_ids": raw.territories[0].required_fact_ids[1:]}
             ),
             *raw.territories[1:],
         ]
@@ -892,9 +1081,7 @@ class StructuralThenSemanticLandscapeProvider(LandscapeAuditThenReplanningProvid
         )
 
 
-class InvalidJsonDuringSemanticReplanProvider(
-    LandscapeAuditThenReplanningProvider
-):
+class InvalidJsonDuringSemanticReplanProvider(LandscapeAuditThenReplanningProvider):
     async def plan_creative_landscape(self, *args: Any, **kwargs: Any) -> Any:
         self.landscape_calls += 1
         self.revision_contexts.append(kwargs.get("revision_context"))
@@ -980,7 +1167,9 @@ async def test_structure_repair_does_not_consume_semantic_replan_budget() -> Non
 
 
 @pytest.mark.asyncio
-async def test_invalid_landscape_json_retries_without_consuming_semantic_replan() -> None:
+async def test_invalid_landscape_json_retries_without_consuming_semantic_replan() -> (
+    None
+):
     api = PromptApi()
     provider = InvalidJsonDuringSemanticReplanProvider()
     pipeline = PromptGenerationPipeline(
@@ -1093,6 +1282,7 @@ def test_landscape_audit_cannot_hide_a_reported_fact_issue() -> None:
     )
     assert validate_creative_landscape_audit(revised, landscape).requires_revision
 
+
 def test_ai_audit_must_review_every_fact_and_request_revision_for_weak_fit() -> None:
     from effect_prompt_generation.providers import (
         _mock_creative_direction_audit,
@@ -1151,8 +1341,9 @@ def test_ai_audit_must_review_every_fact_and_request_revision_for_weak_fit() -> 
             ]
         }
     )
-    with pytest.raises(ValueError, match="ignored a semantic issue"):
-        validate_creative_direction_audit(inconsistent, plan, landscape)
+    normalized = validate_creative_direction_audit(inconsistent, plan, landscape)
+    assert normalized.requires_revision is True
+    assert normalized.revision_direction_ids == [first_item.direction_id]
 
     revised = inconsistent.model_copy(
         update={
@@ -1169,6 +1360,21 @@ def test_ai_audit_must_review_every_fact_and_request_revision_for_weak_fit() -> 
     validated = validate_creative_direction_audit(revised, plan, landscape)
     assert validated.requires_revision is True
     assert validated.revision_direction_ids == [first_item.direction_id]
+
+    batch_distribution_revision = raw_audit.model_copy(
+        update={
+            "requires_revision": True,
+            "revision_direction_ids": [first_item.direction_id],
+            "summary": "整批创意分布需要调整",
+        }
+    )
+    batch_validated = validate_creative_direction_audit(
+        batch_distribution_revision,
+        plan,
+        landscape,
+    )
+    assert batch_validated.requires_revision is True
+    assert batch_validated.revision_direction_ids == [first_item.direction_id]
 
 
 def test_direction_revision_mechanically_preserves_unflagged_directions() -> None:
@@ -1196,8 +1402,20 @@ def test_direction_revision_mechanically_preserves_unflagged_directions() -> Non
     assert merged.directions[0].creative_direction.startswith("模型修订后的方向")
     assert merged.directions[1:] == previous.directions[1:]
 
+    partial_revision = revised.model_copy(
+        update={"directions": [revised.directions[0]]}
+    )
+    partial_merged = merge_creative_direction_revision(
+        previous,
+        partial_revision,
+        [flagged_id],
+    )
+    assert partial_merged == merged
 
-def test_direction_audit_accepts_structured_direction_issue_as_revision_reason() -> None:
+
+def test_direction_audit_accepts_structured_direction_issue_as_revision_reason() -> (
+    None
+):
     from effect_prompt_generation.providers import (
         _mock_creative_direction_audit,
         _mock_creative_direction_response,
@@ -1342,6 +1560,7 @@ async def test_coverage_supplement_targets_the_missing_business_fact() -> None:
     assert all(
         task.fact_assignment is not None
         and missing_fact.fact_id in task.fact_assignment.fact_ids
+        and task.coverage_focus_fact_ids == [missing_fact.fact_id]
         and task.supplement_kind == "COVERAGE"
         for task in tasks
     )

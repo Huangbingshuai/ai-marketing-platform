@@ -74,9 +74,7 @@ CREATIVE_DIRECTION_BASE_PROMPT = "creative_direction.system.prompt.txt"
 CREATIVE_DIRECTION_TASK_PROMPT = "creative_direction.user.prompt.txt"
 CREATIVE_LANDSCAPE_BASE_PROMPT = "creative_landscape.system.prompt.txt"
 CREATIVE_LANDSCAPE_TASK_PROMPT = "creative_landscape.user.prompt.txt"
-CREATIVE_LANDSCAPE_AUDIT_BASE_PROMPT = (
-    "creative_landscape_audit.system.prompt.txt"
-)
+CREATIVE_LANDSCAPE_AUDIT_BASE_PROMPT = "creative_landscape_audit.system.prompt.txt"
 CREATIVE_LANDSCAPE_AUDIT_TASK_PROMPT = "creative_landscape_audit.user.prompt.txt"
 CREATIVE_FACT_TERRITORY_ASSIGNMENT_BASE_PROMPT = (
     "creative_fact_territory_assignment.system.prompt.txt"
@@ -566,8 +564,7 @@ class ArkResponsesProvider:
                 "visualInstruction": policy.visual_instruction,
                 "contextInstruction": policy.context_instruction,
                 "compatibleFactIds": [
-                    fact_aliases[fact_id]
-                    for fact_id in policy.compatible_fact_ids
+                    fact_aliases[fact_id] for fact_id in policy.compatible_fact_ids
                 ],
                 "forbiddenInferences": policy.forbidden_inferences,
             }
@@ -720,9 +717,7 @@ class ArkResponsesProvider:
                     len(business_facts),
                 )
             ),
-            required_facts_json=json.dumps(
-                facts, ensure_ascii=False, sort_keys=True
-            ),
+            required_facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
             supporting_facts_json=json.dumps(
                 [
                     {
@@ -764,9 +759,7 @@ class ArkResponsesProvider:
                 assignments=[
                     item.model_copy(
                         update={
-                            "fact_id": fact_ids_by_alias.get(
-                                item.fact_id, item.fact_id
-                            )
+                            "fact_id": fact_ids_by_alias.get(item.fact_id, item.fact_id)
                         }
                     )
                     for item in call.value.assignments
@@ -799,8 +792,7 @@ class ArkResponsesProvider:
                 "visualInstruction": policy.visual_instruction,
                 "contextInstruction": policy.context_instruction,
                 "compatibleFactIds": [
-                    fact_aliases[fact_id]
-                    for fact_id in policy.compatible_fact_ids
+                    fact_aliases[fact_id] for fact_id in policy.compatible_fact_ids
                 ],
                 "forbiddenInferences": policy.forbidden_inferences,
             }
@@ -896,10 +888,32 @@ class ArkResponsesProvider:
             target_count,
             business_fact_count,
         )
+        revision_direction_ids = (
+            revision_context.get("revisionDirectionIds", [])
+            if revision_context is not None
+            else []
+        )
+        if (
+            isinstance(revision_direction_ids, list)
+            and revision_direction_ids
+            and all(isinstance(item, str) for item in revision_direction_ids)
+        ):
+            direction_output_instruction = (
+                "这是局部修订。directions 数组只输出 revisionDirectionIds 中的 "
+                f"{len(revision_direction_ids)} 个方向，directionId 必须逐一对应："
+                + json.dumps(revision_direction_ids, ensure_ascii=False)
+                + "。不要输出未点名方向，系统会按稳定 ID 与上一版机械合并。"
+            )
+        else:
+            direction_output_instruction = (
+                f"这是首次规划。directions 数组必须恰好输出 {target_direction_count} "
+                "个方向。"
+            )
         prompt = render_prompt(
             CREATIVE_DIRECTION_TASK_PROMPT,
             target_count=str(target_count),
             target_direction_count=str(target_direction_count),
+            direction_output_instruction=direction_output_instruction,
             fact_density_instruction=(
                 creative_direction_fact_density_instruction(
                     business_fact_count,
@@ -997,8 +1011,7 @@ class ArkResponsesProvider:
                 "visualInstruction": policy.visual_instruction,
                 "contextInstruction": policy.context_instruction,
                 "compatibleFactIds": [
-                    fact_aliases[fact_id]
-                    for fact_id in policy.compatible_fact_ids
+                    fact_aliases[fact_id] for fact_id in policy.compatible_fact_ids
                 ],
                 "forbiddenInferences": policy.forbidden_inferences,
             }
@@ -1622,9 +1635,7 @@ def _mock_creative_landscape_response(
             retryable=False,
             error_type=ProviderErrorType.REQUEST_REJECTED,
         )
-    required_pool = list(
-        {fact.fact_id: fact for fact in application.usable}.values()
-    )
+    required_pool = list({fact.fact_id: fact for fact in application.usable}.values())
     fact_ids = [item.fact_id for item in application.usable]
     territory_count = min(
         len(_MOCK_DIRECTION_ROWS),
@@ -1639,9 +1650,7 @@ def _mock_creative_landscape_response(
     business_fact_ids = [fact.fact_id for fact in business_facts]
     compatible_by_territory = []
     for index, required_ids in enumerate(required_by_territory):
-        rotated_business_ids = (
-            business_fact_ids[index:] + business_fact_ids[:index]
-        )
+        rotated_business_ids = business_fact_ids[index:] + business_fact_ids[:index]
         rotated_ids = [*rotated_business_ids, *fact_ids]
         supporting_ids = [
             fact_id for fact_id in rotated_ids if fact_id not in required_ids
@@ -1734,19 +1743,12 @@ def _mock_creative_direction_response(
         (CreativeDimensionKey.PERSONA, CreativeDimensionKey.PRODUCT_RELATION),
         (CreativeDimensionKey.NARRATIVE, CreativeDimensionKey.SCENE),
     )
-    total_direction_count = sum(
-        item.target_slots for item in landscape.territories
-    )
+    total_direction_count = sum(item.target_slots for item in landscape.territories)
     bundle_size = min(
         4,
         max(
             1,
-            (
-                len(business_facts)
-                + total_direction_count
-                - 1
-            )
-            // total_direction_count,
+            (len(business_facts) + total_direction_count - 1) // total_direction_count,
         ),
     )
     direction_rows = [
@@ -2123,6 +2125,10 @@ def _creative_task_brief(
         "factApplications": [
             fact_application_payload(fact_id) for fact_id in assignment.fact_ids
         ],
+        "coverageFocusFactIds": [
+            (fact_aliases or {}).get(fact_id, fact_id)
+            for fact_id in task.coverage_focus_fact_ids
+        ],
         "productSnapshot": _product_snapshot(application),
         "forbiddenInferences": (
             list(
@@ -2233,9 +2239,7 @@ def _mock_creative_evaluation(
             fact_id=fact_id,
             support_level="SEMANTIC_FULL",
         )
-        for fact_id in dict.fromkeys(
-            [*candidate.declared_fact_ids, *context_fact_ids]
-        )
+        for fact_id in dict.fromkeys([*candidate.declared_fact_ids, *context_fact_ids])
         if fact_id in application.by_id
     ]
     purposes = list(FragmentType)
@@ -2244,7 +2248,9 @@ def _mock_creative_evaluation(
     if primary != FragmentType.PRODUCT_DISPLAY:
         compatible.append(FragmentType.PRODUCT_DISPLAY)
     direction = (
-        direction_plan.directions[(candidate.ordinal - 1) % len(direction_plan.directions)]
+        direction_plan.directions[
+            (candidate.ordinal - 1) % len(direction_plan.directions)
+        ]
         if direction_plan is not None
         else None
     )

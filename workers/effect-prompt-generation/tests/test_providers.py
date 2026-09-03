@@ -93,6 +93,7 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
                     fact_ids=[primary_fact.fact_id, pain_fact.fact_id],
                     assignment_hash="a" * 64,
                 ),
+                coverage_focus_fact_ids=[pain_fact.fact_id],
                 preferred_fact_ids=[primary_fact.fact_id],
             )
         ],
@@ -175,7 +176,8 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
     assert "便携杯" in prompt
     assert "普通杯盖需要双手操作" in prompt
     assert "factApplications" in prompt
-    assert "focusFact" not in prompt
+    assert "coverageFocusFactIds" in prompt
+    assert "事实曾被独立评估器判定为尚未真正落实" in prompt
     assert "productSnapshot" in prompt
     assert "visualTask" not in prompt
     assert "businessContext" not in prompt
@@ -425,8 +427,7 @@ async def test_ark_direction_audit_reviews_each_fact_and_restores_fact_ids() -> 
         landscape=landscape,
     )
     aliases = {
-        fact.fact_id: f"F{index + 1}"
-        for index, fact in enumerate(application.usable)
+        fact.fact_id: f"F{index + 1}" for index, fact in enumerate(application.usable)
     }
     seen_prompt = ""
     seen_payload = ""
