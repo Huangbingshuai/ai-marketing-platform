@@ -173,6 +173,27 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  seedance-worker:
+    profiles: ['effect-segment-render']
+    build:
+      context: ./workers/seedance-worker
+    environment:
+      INTERNAL_API_BASE_URL: http://host.docker.internal:${API_PORT:-3000}/api
+      EFFECT_SEGMENT_RENDER_WORKER_TOKEN: ${EFFECT_SEGMENT_RENDER_WORKER_TOKEN:-local-effect-segment-render-worker-token}
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      EFFECT_SEGMENT_RENDER_QUEUE: effect.segment-render.requested
+      SEGMENT_RENDER_PROVIDER: ${SEGMENT_RENDER_PROVIDER:-ark}
+      SEEDANCE_BASE_URL: ${SEEDANCE_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      SEEDANCE_API_KEY: ${SEEDANCE_API_KEY:-}
+      SEEDANCE_TIMEOUT_SECONDS: ${SEEDANCE_TIMEOUT_SECONDS:-900}
+      SEEDANCE_POLL_INTERVAL_SECONDS: ${SEEDANCE_POLL_INTERVAL_SECONDS:-5}
+      SEGMENT_RENDER_MAX_CONCURRENCY: ${SEGMENT_RENDER_MAX_CONCURRENCY:-3}
+      INTERNAL_API_TIMEOUT_SECONDS: ${INTERNAL_API_TIMEOUT_SECONDS:-60}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   postgres-data:
   redis-data:

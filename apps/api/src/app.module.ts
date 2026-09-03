@@ -11,6 +11,7 @@ import { ProjectModule } from './platform/project/project.module';
 import { WorkflowModule } from './platform/workflow/workflow.module';
 import { EffectExtractionModule } from './workflows/effect/information-extraction/effect-extraction.module';
 import { EffectPromptModule } from './workflows/effect/prompt-generation/effect-prompt.module';
+import { EffectSegmentRenderModule } from './workflows/effect/segment-render/effect-segment-render.module';
 import { EffectSourceImportModule } from './workflows/effect/source-import/effect-source-import.module';
 
 @Module({
@@ -29,6 +30,7 @@ import { EffectSourceImportModule } from './workflows/effect/source-import/effec
     EffectSourceImportModule,
     EffectExtractionModule,
     EffectPromptModule,
+    EffectSegmentRenderModule,
   ],
 })
 export class AppModule {}

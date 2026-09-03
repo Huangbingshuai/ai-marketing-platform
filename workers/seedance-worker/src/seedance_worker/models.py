@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class QueueMessage(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_version: int = Field(alias="schemaVersion")
+    project_id: str = Field(alias="projectId", min_length=1)
+    task_id: str = Field(alias="runId", min_length=1)
+    request_id: str = Field(alias="requestId", min_length=1)
+
+
+class TextContent(BaseModel):
+    type: Literal["text"]
+    text: str = Field(min_length=1)
+
+
+class ProviderRequest(BaseModel):
+    model: str = Field(min_length=1)
+    content: list[TextContent] = Field(min_length=1, max_length=1)
+    duration: int = Field(ge=1, le=30)
+    ratio: str = Field(min_length=1, max_length=20)
+    resolution: str = Field(min_length=1, max_length=20)
+
+
+class RenderSnapshot(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    prompt_id: str = Field(alias="promptId", min_length=1)
+    prompt_code: str = Field(alias="promptCode", min_length=1)
+    prompt_text: str = Field(alias="promptText", min_length=1)
+    primary_purpose: str = Field(alias="primaryPurpose", min_length=1)
+    compatible_purposes: list[str] = Field(alias="compatiblePurposes")
+    prompt_content_hash: str = Field(alias="promptContentHash", min_length=64, max_length=64)
+    shared_prompt_hash: str = Field(alias="sharedPromptHash", min_length=64, max_length=64)
+    request: ProviderRequest
+
+
+class ClaimResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    terminal: bool
+    task_id: str = Field(alias="taskId")
+    task_version: int | None = Field(alias="taskVersion")
+    attempt_token: str | None = Field(alias="attemptToken")
+    source_fingerprint: str | None = Field(alias="sourceFingerprint")
+    input: RenderSnapshot | None
+
+
+class RuntimeContext(BaseModel):
+    project_id: str
+    task_id: str
+    task_version: int
+    request_id: str
+    attempt_token: str
+
+
+class RenderOutput(BaseModel):
+    provider_task_id: str
+    content: bytes
+    file_name: str
+    mime_type: str = "video/mp4"
+    duration: int | None = None
+    ratio: str | None = None
+    resolution: str | None = None

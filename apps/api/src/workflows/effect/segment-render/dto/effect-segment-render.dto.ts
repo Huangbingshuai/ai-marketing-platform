@@ -1,0 +1,65 @@
+import { EFFECT_SEGMENT_RENDER_LIMITS } from '@ai-marketing/contracts';
+import { Type } from 'class-transformer';
+import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  IsArray,
+  IsBoolean,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
+
+export class SegmentRenderWorkspaceQueryDto {
+  @IsUUID('4') workflowRunId!: string;
+}
+
+export class StartSegmentRenderBatchDto {
+  @IsUUID('4') workflowRunId!: string;
+  @Type(() => Number) @IsInt() @Min(1) expectedPromptArtifactRevision!: number;
+  @IsString() @IsNotEmpty() @MaxLength(500) idempotencyKey!: string;
+}
+
+export class RegenerateSegmentRenderTasksDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(EFFECT_SEGMENT_RENDER_LIMITS.maxTaskIdsPerOperation)
+  @IsUUID('4', { each: true })
+  taskIds!: string[];
+  @Type(() => Number) @IsInt() @Min(1) expectedBatchRevision!: number;
+  @IsString() @IsNotEmpty() @MaxLength(500) idempotencyKey!: string;
+}
+
+export class ValidateSegmentRenderBatchDto {
+  @Type(() => Number) @IsInt() @Min(1) expectedBatchRevision!: number;
+}
+
+export class SegmentRenderWorkerProjectDto {
+  @IsUUID('4') projectId!: string;
+}
+
+export class SegmentRenderWorkerHeartbeatDto extends SegmentRenderWorkerProjectDto {
+  @Type(() => Number) @IsInt() @Min(1) taskVersion!: number;
+  @Type(() => Number) @IsInt() @Min(1) @Max(95) progress!: number;
+  @IsOptional() @IsString() @MaxLength(255) providerTaskId?: string;
+}
+
+export class SegmentRenderWorkerCompleteDto extends SegmentRenderWorkerProjectDto {
+  @Type(() => Number) @IsInt() @Min(1) taskVersion!: number;
+  @IsString() @IsNotEmpty() @MaxLength(255) providerTaskId!: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(30) duration?: number;
+  @IsOptional() @IsString() @MaxLength(20) ratio?: string;
+  @IsOptional() @IsString() @MaxLength(20) resolution?: string;
+}
+
+export class SegmentRenderWorkerFailDto extends SegmentRenderWorkerProjectDto {
+  @Type(() => Number) @IsInt() @Min(1) taskVersion!: number;
+  @IsString() @IsNotEmpty() @MaxLength(120) errorCode!: string;
+  @IsString() @IsNotEmpty() @MaxLength(1000) errorMessage!: string;
+  @Type(() => Boolean) @IsBoolean() retryable!: boolean;
+}
