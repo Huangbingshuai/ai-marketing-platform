@@ -19,7 +19,8 @@ docker compose --profile effect-extraction up -d --build effect-extraction-worke
 
 - `docling-model-init` 是一次性初始化任务，成功后的 `Exited (0)` 是正常终态。
 - `effect-extraction-worker` 是常驻消费者，必须保持运行。
-- Docling 模型位于 `docling-models` named volume，Worker 只读挂载。
+- Playwright Chromium 已并入 `effect-extraction-worker`，不再启动独立电商渲染容器。
+- Docling 模型位于 `docling-models` named volume：一次性初始化任务以 root 写入，常驻非 root Worker 在 `/models` 只读挂载。
 - Docling 使用 CPU 版 PyTorch；无明确需求不得引入 CUDA、NVIDIA 或 Triton。
 - 容器访问宿主机使用 `host.docker.internal`，内部 API 端口跟随 `API_PORT`。
 

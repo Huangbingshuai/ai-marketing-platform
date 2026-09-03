@@ -48,12 +48,6 @@ class WorkerSettings(BaseSettings):
     ark_normalization_model: str | None = Field(
         default=None, alias="ARK_NORMALIZATION_MODEL"
     )
-    commerce_renderer_url: AnyHttpUrl | None = Field(
-        default=None, alias="COMMERCE_RENDERER_URL"
-    )
-    commerce_renderer_token: SecretStr | None = Field(
-        default=None, alias="COMMERCE_RENDERER_TOKEN"
-    )
     commerce_static_connect_timeout_seconds: float = Field(
         default=5.0, alias="COMMERCE_STATIC_CONNECT_TIMEOUT_SECONDS", gt=0
     )
@@ -61,7 +55,22 @@ class WorkerSettings(BaseSettings):
         default=15.0, alias="COMMERCE_STATIC_READ_TIMEOUT_SECONDS", gt=0
     )
     commerce_renderer_timeout_seconds: float = Field(
-        default=30.0, alias="COMMERCE_RENDERER_CLIENT_TIMEOUT_SECONDS", gt=0
+        default=25.0, alias="COMMERCE_RENDERER_TIMEOUT_SECONDS", ge=1, le=60
+    )
+    commerce_renderer_max_concurrency: int = Field(
+        default=2, alias="COMMERCE_RENDERER_MAX_CONCURRENCY", ge=1, le=16
+    )
+    commerce_renderer_max_dom_bytes: int = Field(
+        default=2 * 1024 * 1024,
+        alias="COMMERCE_RENDERER_MAX_DOM_BYTES",
+        ge=1024,
+        le=8 * 1024 * 1024,
+    )
+    commerce_renderer_settle_milliseconds: int = Field(
+        default=750,
+        alias="COMMERCE_RENDERER_SETTLE_MILLISECONDS",
+        ge=0,
+        le=5_000,
     )
     max_commerce_text_chars: int = Field(
         default=80_000, alias="MAX_COMMERCE_TEXT_CHARS", ge=1_000, le=200_000
@@ -179,15 +188,6 @@ class WorkerSettings(BaseSettings):
             )
         if not self.effect_extraction_queue.strip():
             raise ValueError("EFFECT_EXTRACTION_QUEUE cannot be empty")
-        renderer_token = (
-            self.commerce_renderer_token.get_secret_value().strip()
-            if self.commerce_renderer_token is not None
-            else ""
-        )
-        if (self.commerce_renderer_url is None) != (not renderer_token):
-            raise ValueError(
-                "COMMERCE_RENDERER_URL and COMMERCE_RENDERER_TOKEN must be configured together"
-            )
         return self
 
     @property

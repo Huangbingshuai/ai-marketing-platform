@@ -11,7 +11,7 @@
 - 四个分析分支可并行，单个分支失败不得无条件拖垮全部任务。
 - `FUSION` 只融合有证据的结果并记录冲突，不臆造缺失事实。
 - `NORMALIZATION` 负责契约化输出、来源映射、警告和质量摘要。
-- 当前 COMMERCE 分支固定为 `SKIPPED`；输入中出现链接时返回可见告警，不擅自实现网页抓取。
+- COMMERCE 分支没有链接时为 `SKIPPED`；存在公开链接时先做安全静态抓取，内容不足再使用同一 Worker 进程内的 Playwright Chromium 渲染，禁止登录、验证码或平台风控绕过。
 - Graph State 保持最小：输入只需 `project_id`，输出只需 `extract_result_id`。runId、draftId、productId、requestId、attemptToken 与 sourceFingerprint 放 runtime context；Markdown、图片结果、分支输出和标准化 JSON 通过内部 API 外部化。
 
 ## 分支职责
@@ -43,6 +43,7 @@
 ## 运行时
 
 - 默认使用真实 Ark/模型 Provider；模型名称、超时和并发从配置读取。
+- Playwright Chromium 属于本节点的进程内运行时，必须与 Worker 同容器、同生命周期，不得另建业务容器或内部 HTTP 服务。
 - 默认 `ARK_MODEL=doubao-seed-2-1-turbo-260628`；文档、图片和标准化模型仅作部署级可选覆盖。正常运行只要求 API Key，不强制 Endpoint ID。
 - 缺少凭证或模型配置时 fail fast；只有显式测试开关允许 Mock。
 - Ark 使用 Responses API 的严格 JSON Schema，返回后仍需 Pydantic/共享 Schema 二次校验。只对 429、5xx 和网络超时做有限重试。

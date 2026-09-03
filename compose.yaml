@@ -67,37 +67,12 @@ services:
     build:
       context: ./workers/effect-extraction
     command: ['/app/.venv/bin/effect-extraction-download-models']
+    user: root
     environment:
-      DOCLING_ARTIFACTS_PATH: /root/.cache/docling/models
+      DOCLING_ARTIFACTS_PATH: /models
     volumes:
-      - docling-models:/root/.cache/docling/models
+      - docling-models:/models
     restart: 'no'
-
-  commerce-renderer:
-    profiles: ['effect-extraction']
-    build:
-      context: ./workers/effect-commerce-renderer
-    environment:
-      COMMERCE_RENDERER_TOKEN: ${COMMERCE_RENDERER_TOKEN:-local-commerce-renderer-token}
-      COMMERCE_RENDERER_MAX_CONCURRENCY: ${COMMERCE_RENDERER_MAX_CONCURRENCY:-2}
-      COMMERCE_RENDERER_TIMEOUT_SECONDS: ${COMMERCE_RENDERER_TIMEOUT_SECONDS:-25}
-      COMMERCE_RENDERER_MAX_DOM_BYTES: ${COMMERCE_RENDERER_MAX_DOM_BYTES:-2097152}
-    expose:
-      - '8080'
-    init: true
-    shm_size: '1gb'
-    healthcheck:
-      test:
-        [
-          'CMD',
-          '/app/.venv/bin/python',
-          '-c',
-          'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8080/health", timeout=2)',
-        ]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    restart: unless-stopped
 
   effect-extraction-worker:
     profiles: ['effect-extraction']
@@ -135,20 +110,22 @@ services:
       ARK_SEMANTIC_REASONING_EFFORT: ${ARK_SEMANTIC_REASONING_EFFORT:-minimal}
       ARK_SEMANTIC_USER_REVIEW_REASONING_EFFORT: ${ARK_SEMANTIC_USER_REVIEW_REASONING_EFFORT:-minimal}
       ARK_NORMALIZATION_MODEL: ${ARK_NORMALIZATION_MODEL:-}
-      COMMERCE_RENDERER_URL: ${COMMERCE_RENDERER_URL:-http://commerce-renderer:8080}
-      COMMERCE_RENDERER_TOKEN: ${COMMERCE_RENDERER_TOKEN:-local-commerce-renderer-token}
-      DOCLING_ARTIFACTS_PATH: /root/.cache/docling/models
+      COMMERCE_RENDERER_MAX_CONCURRENCY: ${COMMERCE_RENDERER_MAX_CONCURRENCY:-2}
+      COMMERCE_RENDERER_TIMEOUT_SECONDS: ${COMMERCE_RENDERER_TIMEOUT_SECONDS:-25}
+      COMMERCE_RENDERER_MAX_DOM_BYTES: ${COMMERCE_RENDERER_MAX_DOM_BYTES:-2097152}
+      COMMERCE_RENDERER_SETTLE_MILLISECONDS: ${COMMERCE_RENDERER_SETTLE_MILLISECONDS:-750}
+      DOCLING_ARTIFACTS_PATH: /models
       DOCLING_DEVICE: cpu
       OMP_NUM_THREADS: ${DOCLING_NUM_THREADS:-4}
     volumes:
-      - docling-models:/root/.cache/docling/models:ro
+      - docling-models:/models:ro
     depends_on:
       rabbitmq:
         condition: service_healthy
       docling-model-init:
         condition: service_completed_successfully
-      commerce-renderer:
-        condition: service_healthy
+    init: true
+    shm_size: '1gb'
     restart: unless-stopped
 
   effect-prompt-generation-worker:

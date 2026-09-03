@@ -19,7 +19,6 @@ import httpx
 from .models import ExtractionCandidate
 
 MAX_STATIC_BYTES = 3 * 1024 * 1024
-MAX_RENDERED_BYTES = 2 * 1024 * 1024
 MAX_CLEAN_TEXT_CHARS = 80_000
 MAX_REDIRECTS = 3
 MIN_USEFUL_TEXT_CHARS = 200
@@ -135,7 +134,16 @@ async def validate_public_url(
     if not host or host == "localhost" or host.endswith(".localhost"):
         raise CommerceFetchError(CommerceErrorType.URL_REJECTED)
 
-    addresses = await resolver(host, resolved_port)
+    try:
+        literal_address = ipaddress.ip_address(host)
+    except ValueError:
+        literal_address = None
+    if literal_address is not None and not literal_address.is_global:
+        raise CommerceFetchError(CommerceErrorType.URL_REJECTED)
+
+    addresses = (
+        [host] if literal_address is not None else await resolver(host, resolved_port)
+    )
     if not addresses:
         raise CommerceFetchError(CommerceErrorType.DNS_FAILED, retryable=True)
     try:
@@ -154,79 +162,6 @@ async def validate_public_url(
         (parsed.scheme.lower(), netloc, parsed.path or "/", parsed.query, "")
     )
     return ValidatedUrl(value=normalized, host=host, port=resolved_port)
-
-
-class HttpCommerceRenderer:
-    """Client for the isolated renderer; the renderer must repeat the SSRF checks itself."""
-
-    def __init__(
-        self,
-        base_url: str,
-        token: str,
-        *,
-        timeout: float = 30.0,
-        resolver: Resolver = _default_resolver,
-        transport: httpx.AsyncBaseTransport | None = None,
-    ) -> None:
-        self._base_url = base_url.rstrip("/") + "/"
-        self._token = token
-        self._timeout = timeout
-        self._resolver = resolver
-        self._transport = transport
-
-    async def render(self, url: str) -> RenderedPage:
-        started = time.perf_counter()
-        await validate_public_url(url, resolver=self._resolver)
-        try:
-            async with httpx.AsyncClient(
-                base_url=self._base_url,
-                timeout=self._timeout,
-                transport=self._transport,
-                trust_env=False,
-                headers={
-                    "authorization": f"Bearer {self._token}",
-                    "accept": "application/json",
-                },
-            ) as client:
-                response = await client.post("render", json={"url": url})
-        except httpx.TimeoutException as exc:
-            raise CommerceFetchError(
-                CommerceErrorType.TIMEOUT,
-                retryable=True,
-                elapsed_ms=_elapsed_ms(started),
-            ) from exc
-        except httpx.NetworkError as exc:
-            raise CommerceFetchError(
-                CommerceErrorType.RENDERER,
-                retryable=True,
-                elapsed_ms=_elapsed_ms(started),
-            ) from exc
-        if response.is_error:
-            raise CommerceFetchError(
-                CommerceErrorType.RENDERER,
-                retryable=response.status_code == 429 or response.status_code >= 500,
-                elapsed_ms=_elapsed_ms(started),
-            )
-        try:
-            payload: Any = response.json()
-            if isinstance(payload, Mapping) and payload.get("success") is True:
-                payload = payload.get("data")
-            if not isinstance(payload, Mapping):
-                raise ValueError("renderer payload is not an object")
-            html = payload.get("html")
-            final_url = payload.get("finalUrl", url)
-            if not isinstance(html, str) or not isinstance(final_url, str):
-                raise ValueError("renderer payload fields are invalid")
-        except (ValueError, TypeError) as exc:
-            raise CommerceFetchError(
-                CommerceErrorType.RENDERER, elapsed_ms=_elapsed_ms(started)
-            ) from exc
-        if len(html.encode("utf-8")) > MAX_RENDERED_BYTES:
-            raise CommerceFetchError(
-                CommerceErrorType.TOO_LARGE, elapsed_ms=_elapsed_ms(started)
-            )
-        await validate_public_url(final_url, resolver=self._resolver)
-        return RenderedPage(html=html, final_url=final_url)
 
 
 class HttpxCommerceFetcher:

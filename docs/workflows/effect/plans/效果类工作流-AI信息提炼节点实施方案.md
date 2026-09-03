@@ -450,15 +450,15 @@ DOCUMENT、IMAGE、NORMALIZATION 三份 Prompt 已升级至 `2.0.0`。图片节�
 
 ## 28. 2026-08-25 电商链接解析节点
 
-COMMERCE 分支已从固定 `SKIPPED` 升级为“静态抓取优先、浏览器渲染兜底、Ark 严格结构化抽取”。运行快照仍只接收当前产品的单个 `commerceUrl`，不新增数据库字段或公开 API。HTTPX 以流式方式读取最多 3 MiB 的 HTML，逐次校验最多三次重定向；优先解析 JSON-LD `Product/Offer/AggregateOffer`、OpenGraph 和商品规格，再由 Trafilatura 生成最多 80,000 字符的干净 Markdown。页面仅返回 JavaScript 空壳时，Worker 使用 Bearer Token 调用独立 `commerce-renderer` 服务，由非 root Playwright Chromium 在无 Cookie、禁止下载和 Service Worker 的独立 Context 中渲染，图片、视频和字体在请求前被屏蔽，DOM 上限 2 MiB、总超时 25 秒。
+COMMERCE 分支已从固定 `SKIPPED` 升级为“静态抓取优先、浏览器渲染兜底、Ark 严格结构化抽取”。运行快照仍只接收当前产品的单个 `commerceUrl`，不新增数据库字段或公开 API。HTTPX 以流式方式读取最多 3 MiB 的 HTML，逐次校验最多三次重定向；优先解析 JSON-LD `Product/Offer/AggregateOffer`、OpenGraph 和商品规格，再由 Trafilatura 生成最多 80,000 字符的干净 Markdown。页面仅返回 JavaScript 空壳时，Worker 使用同一进程内的 Playwright Chromium，在无 Cookie、禁止下载和 Service Worker 的独立 Context 中渲染，图片、视频和字体在请求前被屏蔽，DOM 上限 2 MiB、总超时 25 秒。
 
-Worker 和 Renderer 均只允许 HTTP/HTTPS 与 80/443 端口，拒绝 URL 凭据、私网、回环、链路本地、保留地址和云元数据地址；主页面、重定向及浏览器子请求均重新执行 DNS 公网地址校验。服务不登录、不注入 Cookie、不处理验证码，也不绕过平台风控。生产部署仍需在容器出口层阻断私网和元数据地址，作为应用校验之外的第二层保护。
+静态抓取器和进程内 Renderer 均只允许 HTTP/HTTPS 与 80/443 端口，拒绝 URL 凭据、私网、回环、链路本地、保留地址和云元数据地址；主页面、重定向及浏览器子请求均重新执行 DNS 公网地址校验。浏览器不登录、不注入 Cookie、不处理验证码，也不绕过平台风控。生产部署仍需在容器出口层阻断私网和元数据地址，作为应用校验之外的第二层保护。
 
 网页正文与结构化元数据在 Prompt 中被明确标记为不可信资料，网页内指令不得改变角色或输出契约。确定性 JSON-LD/OG 字段优先于模型推断，Ark 使用 `ExtractionCandidate.v2` 严格 JSON Schema 和 Pydantic 二次验证。`ARK_COMMERCE_MODEL` 为空时依次回退 `ARK_DOCUMENT_MODEL` 和 `ARK_MODEL`，旧环境仍只需提供 Ark API Key。原始 HTML 只存在于内存；清洗 Markdown 通过内部项目隔离、租约保护的产物接口以 `COMMERCE_MARKDOWN` 幂等写入对象存储，Graph state 和 Branch structured output 只保存候选字段、`sourceHost` 与安全诊断。
 
 状态语义固定为：无链接 `SKIPPED`；抓取和模型成功 `SUCCEEDED`；存在确定性商品字段但 AI 失败 `PARTIAL`；页面受限、不可访问或没有可用信息 `FAILED`。除内部 API 持久化失败外，电商来源失败不会中止其他并行分支。节点详情只白名单展示来源网站、商品名称、品类、价格区间、核心规格和卖点；不公开完整 URL、HTTP 状态、抓取模式、耗时、Token、模型、存储键、HTML、正文或其他内部元数据。历史无链接 Run 的旧告警在详情层隐藏，避免与“未提供商品链接，无需解析”摘要重复。
 
-新增隔离服务位于 `workers/effect-commerce-renderer`，Compose 默认以内部地址 `http://commerce-renderer:8080` 连接且不发布宿主端口。Worker 与 Renderer 镜像均已构建，Renderer 健康检查通过，Worker 已使用新镜像重建并恢复 RabbitMQ 消费。定向验证结果：Worker 54 项通过、3 项真实集成门控跳过，mypy 30 个源文件无错误；Renderer 17 项通过且无警告，严格 mypy 通过；API 电商产物、白名单投影和项目隔离测试通过。全仓 `pnpm check` 通过，包含 Lint、Prettier、TypeScript 类型检查、Contracts 9 项、API 141 项、Web 114 项测试及前后端生产构建。浏览器在全新 Vite 依赖环境中确认工作流弹窗可打开、COMMERCE 节点可点击、无链接状态只展示一次用户可理解的跳过摘要；本轮没有提交新的商品链接或触发付费 Ark 请求。
+最初实现曾使用独立 `workers/effect-commerce-renderer` HTTP 服务。2026-09-03 按“一节点一容器”运行边界将 Playwright 适配器、Chromium、超时与资源限制全部并入 `effect-extraction-worker`，删除容器间 URL、Bearer Token、8080 端口和第二个常驻进程；业务输入、COMMERCE 分支状态、提炼结果及 WorkingArtifact 提交边界均未改变。当前实现与验收记录见 `效果类AI信息提炼-单容器运行时整合计划.md`。
 
 ## 29. 2026-08-28 Seed 2.1 Turbo 图片识别尾延迟优化
 

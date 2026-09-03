@@ -1,10 +1,10 @@
 from typing import Any, cast
 
-import pytest
-from pydantic import SecretStr
+from effect_extraction.browser_renderer import PlaywrightCommerceRenderer
 
-from effect_commerce_renderer.renderer import PlaywrightRenderer
-from effect_commerce_renderer.settings import Settings
+
+async def public_resolver(host: str, port: int) -> list[str]:
+    return ["8.8.8.8"]
 
 
 class FakeRequest:
@@ -30,55 +30,64 @@ class FakeWebSocketRoute:
         self.code: int | None = None
         self.reason: str | None = None
 
-    async def close(self, *, code: int | None = None, reason: str | None = None) -> None:
+    async def close(
+        self, *, code: int | None = None, reason: str | None = None
+    ) -> None:
         self.code = code
         self.reason = reason
 
 
-class AllowPolicy:
-    async def validate(self, raw_url: str) -> object:
-        return object()
-
-
-class RejectPolicy:
-    async def validate(self, raw_url: str) -> object:
-        from effect_commerce_renderer.security import UnsafeTargetError
-
-        raise UnsafeTargetError()
-
-
-def make_renderer(policy: object) -> PlaywrightRenderer:
-    return PlaywrightRenderer(
-        Settings(token=SecretStr("0123456789abcdef")),
-        policy=cast(Any, policy),
+def make_renderer() -> PlaywrightCommerceRenderer:
+    return PlaywrightCommerceRenderer(
+        max_concurrency=2,
+        timeout_seconds=25,
+        max_dom_bytes=2 * 1024 * 1024,
+        settle_milliseconds=750,
+        resolver=public_resolver,
     )
 
 
 async def test_route_blocks_heavy_resources() -> None:
-    renderer = make_renderer(AllowPolicy())
+    renderer = make_renderer()
     route = FakeRoute()
     await renderer._handle_route(  # noqa: SLF001
         cast(Any, route),
         cast(Any, FakeRequest("https://example.com/a.png", "image")),
     )
+
     assert route.aborted is True
     assert route.continued is False
 
 
 async def test_route_blocks_unsafe_subrequest() -> None:
-    renderer = make_renderer(RejectPolicy())
+    renderer = make_renderer()
     route = FakeRoute()
     await renderer._handle_route(  # noqa: SLF001
         cast(Any, route),
         cast(Any, FakeRequest("http://127.0.0.1/internal", "xhr")),
     )
+
     assert route.aborted is True
     assert route.continued is False
 
 
+async def test_route_allows_public_lightweight_resource() -> None:
+    renderer = make_renderer()
+    route = FakeRoute()
+    await renderer._handle_route(  # noqa: SLF001
+        cast(Any, route),
+        cast(Any, FakeRequest("https://example.com/product.js", "script")),
+    )
+
+    assert route.aborted is False
+    assert route.continued is True
+
+
 async def test_websocket_connections_are_closed() -> None:
     websocket = FakeWebSocketRoute()
-    await PlaywrightRenderer._block_websocket(cast(Any, websocket))  # noqa: SLF001
+    await PlaywrightCommerceRenderer._block_websocket(  # noqa: SLF001
+        cast(Any, websocket)
+    )
 
     assert websocket.code == 1008
     assert websocket.reason == "WebSocket connections are disabled"

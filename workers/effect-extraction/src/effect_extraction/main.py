@@ -4,7 +4,8 @@ import asyncio
 import logging
 
 from .api_client import HttpInternalApi
-from .commerce import HttpCommerceRenderer, HttpxCommerceFetcher
+from .browser_renderer import PlaywrightCommerceRenderer
+from .commerce import HttpxCommerceFetcher
 from .config import WorkerSettings, get_settings
 from .consumer import ExtractionConsumer
 from .docling_parser import LocalDoclingParser
@@ -56,47 +57,49 @@ async def serve(settings: WorkerSettings) -> None:
         timeout=settings.api_timeout_seconds,
     )
     provider = _provider(settings)
-    commerce_renderer = None
-    if settings.commerce_renderer_url is not None:
-        assert settings.commerce_renderer_token is not None
-        commerce_renderer = HttpCommerceRenderer(
-            str(settings.commerce_renderer_url),
-            settings.commerce_renderer_token.get_secret_value(),
-            timeout=settings.commerce_renderer_timeout_seconds,
-        )
-    pipeline = ExtractionPipeline(
-        api=api,
-        provider=provider,
-        document_parser=LocalDoclingParser(
-            artifacts_path=settings.docling_artifacts_path,
-            max_file_size=settings.docling_max_file_size,
-            max_num_pages=settings.docling_max_num_pages,
-        ),
-        image_processor=ImageProcessor(
-            max_input_bytes=settings.image_max_input_bytes,
-            max_dimension=settings.image_max_dimension,
-            max_output_bytes=settings.image_max_output_bytes,
-        ),
-        max_document_text_chars=settings.max_document_text_chars,
-        image_max_concurrency=settings.image_max_concurrency,
-        commerce_fetcher=HttpxCommerceFetcher(
-            renderer=commerce_renderer,
-            connect_timeout=settings.commerce_static_connect_timeout_seconds,
-            read_timeout=settings.commerce_static_read_timeout_seconds,
-        ),
-        max_commerce_text_chars=settings.max_commerce_text_chars,
+    commerce_renderer = PlaywrightCommerceRenderer(
+        max_concurrency=settings.commerce_renderer_max_concurrency,
+        timeout_seconds=settings.commerce_renderer_timeout_seconds,
+        max_dom_bytes=settings.commerce_renderer_max_dom_bytes,
+        settle_milliseconds=settings.commerce_renderer_settle_milliseconds,
     )
-    consumer = ExtractionConsumer(
-        rabbitmq_url=settings.rabbitmq_url.get_secret_value(),
-        queue_name=settings.effect_extraction_queue,
-        api=api,
-        pipeline=pipeline,
-        graph=build_graph(pipeline),
-    )
+    consumer: ExtractionConsumer | None = None
     try:
+        await commerce_renderer.start()
+        pipeline = ExtractionPipeline(
+            api=api,
+            provider=provider,
+            document_parser=LocalDoclingParser(
+                artifacts_path=settings.docling_artifacts_path,
+                max_file_size=settings.docling_max_file_size,
+                max_num_pages=settings.docling_max_num_pages,
+            ),
+            image_processor=ImageProcessor(
+                max_input_bytes=settings.image_max_input_bytes,
+                max_dimension=settings.image_max_dimension,
+                max_output_bytes=settings.image_max_output_bytes,
+            ),
+            max_document_text_chars=settings.max_document_text_chars,
+            image_max_concurrency=settings.image_max_concurrency,
+            commerce_fetcher=HttpxCommerceFetcher(
+                renderer=commerce_renderer,
+                connect_timeout=settings.commerce_static_connect_timeout_seconds,
+                read_timeout=settings.commerce_static_read_timeout_seconds,
+            ),
+            max_commerce_text_chars=settings.max_commerce_text_chars,
+        )
+        consumer = ExtractionConsumer(
+            rabbitmq_url=settings.rabbitmq_url.get_secret_value(),
+            queue_name=settings.effect_extraction_queue,
+            api=api,
+            pipeline=pipeline,
+            graph=build_graph(pipeline),
+        )
         await consumer.run()
     finally:
-        await consumer.close()
+        if consumer is not None:
+            await consumer.close()
+        await commerce_renderer.close()
         await api.aclose()
         close = getattr(provider, "aclose", None)
         if close is not None:

@@ -78,8 +78,7 @@ NestJS API ───── Prisma ───── PostgreSQL
    │                   │
    │ internal API      ▼
    └──────────── Python LangGraph Workers
-                         ├─ AI 信息提炼：Docling + Ark Seed 2.1 Turbo
-                         │                 └─ commerce-renderer：隔离 Playwright Chromium
+                         ├─ AI 信息提炼：Docling + Ark + 进程内 Playwright Chromium
                          └─ Prompt 生成：事实视觉策略 + 连贯创意 + 独立评估
                                            └─ 火山正文向量 + 本地 NumPy MMR 择优
 ```
@@ -110,7 +109,7 @@ Step 02 只处理当前下拉框选中的产品，不提供批量提炼入口。
        确定性标准化与结果保存（异常时模型兜底）
 ```
 
-电商分支优先读取 JSON-LD、OpenGraph、商品正文和京东页面内嵌数据；静态内容不足时调用独立 `commerce-renderer`。没有链接时节点为 `SKIPPED`；受到登录、验证码或平台风控限制时，不尝试绕过限制，并以安全化告警继续融合其他资料。
+电商分支优先读取 JSON-LD、OpenGraph、商品正文和京东页面内嵌数据；静态内容不足时由提炼 Worker 内置的 Playwright Chromium 渲染动态 DOM。没有链接时节点为 `SKIPPED`；受到登录、验证码或平台风控限制时，不尝试绕过限制，并以安全化告警继续融合其他资料。
 
 事实字段的融合优先级为：当前人工修正/表单 > 文档 > 电商 > 图片。图片模型可根据明确画面证据保守补充卖点、痛点、受众、决策动因、营销目标和场景建议，但不能覆盖已经确认的用户事实；核心外观特征只在资料缺失时由识图补齐。图片产生的核心与次要卖点会完整进入语义整理，不再提前丢弃。语义模型统一负责跨字段归类、同义/父子/同主题关系和字段超量时的信息价值排序，并把用户提供的产品名称、品类、规格和核心外观特征作为不可修改的去重参照；Worker 只验证已有事实 ID、来源权限、字段数量与结构，不使用字符或业务关键词自行判断语义。AI 新提炼容量固定为核心卖点最多 3 项、次要卖点最多 6 项，其余营销信息列表最多 5 项；人工编辑草稿继续使用 20 项安全边界。每项图片建议直接显示在对应信息卡字段内，并标注来源图片。结构化融合结果由 Worker 确定性契约化并通过 Pydantic 校验，只有异常时才调用标准化模型兜底。
 
@@ -227,8 +226,7 @@ docker compose --profile effect-extraction up -d --build effect-extraction-worke
 
 1. 构建 CPU 版 Python Worker 镜像。
 2. 运行一次性 `docling-model-init`，把模型下载到 `docling-models` named volume。
-3. 启动仅供 Worker 访问的 `commerce-renderer` 动态页面渲染服务。
-4. 模型初始化和渲染服务健康检查通过后，启动 `effect-extraction-worker` 消费 RabbitMQ 队列。
+3. 启动内置 Playwright Chromium 的 `effect-extraction-worker`，浏览器初始化成功后开始消费 RabbitMQ 队列。
 
 `docling-model-init` 显示 `Exited (0)` 是正常行为，它是一次性初始化任务，不是常驻服务。Docling 已嵌入 Worker，不需要再单独启动一个 Docling 容器。
 
@@ -237,11 +235,10 @@ docker compose --profile effect-extraction up -d --build effect-extraction-worke
 ```powershell
 docker compose --profile effect-extraction ps
 docker compose logs --tail 100 docling-model-init
-docker compose logs --tail 100 commerce-renderer
 docker compose logs --tail 100 effect-extraction-worker
 ```
 
-Worker 和 `commerce-renderer` 应保持 `Up`，RabbitMQ 队列应出现消费者。真实 Ark 模式缺少 Key 时 Worker 会启动失败，不会静默降级为 Mock。
+`effect-extraction-worker` 应保持 `Up`，RabbitMQ 队列应出现消费者。Playwright 浏览器与 Worker 同进程启停；浏览器初始化失败或真实 Ark 模式缺少 Key 时 Worker 会启动失败，不会静默降级为 Mock。
 
 ### 5. 启动素材片段 Prompt Worker
 
@@ -297,7 +294,7 @@ pnpm db:migrate
 pnpm db:studio
 
 # Worker 容器
-docker compose --profile effect-extraction build commerce-renderer effect-extraction-worker
+docker compose --profile effect-extraction build effect-extraction-worker
 docker compose --profile effect-extraction up -d effect-extraction-worker
 docker compose logs -f effect-extraction-worker
 docker compose --profile effect-prompt-generation build effect-prompt-generation-worker
@@ -365,8 +362,7 @@ ai-marketing-platform/
 │  ├─ contracts/                   # 前后端共享契约与 JSON Schema
 │  └─ ui/                          # 共享 Vue UI 组件
 ├─ workers/
-│  ├─ effect-extraction/           # LangGraph + Docling + Ark Worker
-│  ├─ effect-commerce-renderer/    # 隔离 Playwright Chromium 渲染服务
+│  ├─ effect-extraction/           # LangGraph + Docling + Ark + Playwright Worker
 │  ├─ effect-prompt-generation/    # 连贯六维创意 Prompt LangGraph Worker
 │  ├─ seedance-worker/             # Seedance 异步 Worker
 │  └─ media-worker/                # 媒体处理 Worker
@@ -461,11 +457,10 @@ Docling 解析与 Ark 文档字段抽取是两个阶段。产品信息表的 Mar
 
 ### 电商节点信息较少或读取失败
 
-先检查 Worker 与渲染服务：
+先检查提炼 Worker：
 
 ```powershell
 docker compose --profile effect-extraction ps
-docker compose logs --tail 200 commerce-renderer
 docker compose logs --tail 200 effect-extraction-worker
 ```
 
@@ -498,7 +493,6 @@ docker compose logs --tail 200 effect-extraction-worker
 - [Prompt 视觉策略真实付费质量对比](docs/workflows/effect/evidence/Prompt视觉策略两轮真实付费质量对比-2026-08-28.md)
 - [MinIO 存储与本地部署方案](docs/workflows/effect/deployment/效果类导入素材-MinIO存储与本地部署方案.md)
 - [AI 信息提炼 Worker 说明](workers/effect-extraction/README.md)
-- [电商动态渲染服务说明](workers/effect-commerce-renderer/README.md)
 - [素材片段 Prompt Worker 说明](workers/effect-prompt-generation/README.md)
 
 ## 当前限制

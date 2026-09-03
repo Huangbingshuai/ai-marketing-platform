@@ -43,11 +43,12 @@ def _base_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "ARK_IMAGE_ADAPTIVE_HIGH_DETAIL",
         "IMAGE_MAX_DIMENSION",
         "IMAGE_MAX_CONCURRENCY",
-        "COMMERCE_RENDERER_URL",
-        "COMMERCE_RENDERER_TOKEN",
         "COMMERCE_STATIC_CONNECT_TIMEOUT_SECONDS",
         "COMMERCE_STATIC_READ_TIMEOUT_SECONDS",
-        "COMMERCE_RENDERER_CLIENT_TIMEOUT_SECONDS",
+        "COMMERCE_RENDERER_MAX_CONCURRENCY",
+        "COMMERCE_RENDERER_TIMEOUT_SECONDS",
+        "COMMERCE_RENDERER_MAX_DOM_BYTES",
+        "COMMERCE_RENDERER_SETTLE_MILLISECONDS",
         "MAX_COMMERCE_TEXT_CHARS",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -104,6 +105,10 @@ def test_default_provider_uses_seed_2_1_turbo_model_id(
     assert settings.ark_semantic_user_review_reasoning_effort == "minimal"
     assert settings.image_max_dimension == 1280
     assert settings.image_max_concurrency == 2
+    assert settings.commerce_renderer_max_concurrency == 2
+    assert settings.commerce_renderer_timeout_seconds == 25
+    assert settings.commerce_renderer_max_dom_bytes == 2 * 1024 * 1024
+    assert settings.commerce_renderer_settle_milliseconds == 750
 
 
 def test_image_retry_budget_cannot_be_smaller_than_first_attempt(
@@ -177,44 +182,22 @@ def test_commerce_model_routes_from_specific_to_document_to_base(
     assert settings.resolved_commerce_model == expected
 
 
-@pytest.mark.parametrize(
-    ("renderer_url", "renderer_token"),
-    [
-        ("http://renderer.test:8080", None),
-        (None, "renderer-token"),
-    ],
-)
-def test_renderer_url_and_token_must_be_configured_together(
-    monkeypatch: pytest.MonkeyPatch,
-    renderer_url: str | None,
-    renderer_token: str | None,
-) -> None:
-    _base_environment(monkeypatch)
-    monkeypatch.setenv("EXTRACTION_AI_PROVIDER", "mock")
-    if renderer_url is not None:
-        monkeypatch.setenv("COMMERCE_RENDERER_URL", renderer_url)
-    if renderer_token is not None:
-        monkeypatch.setenv("COMMERCE_RENDERER_TOKEN", renderer_token)
-
-    with pytest.raises(
-        ValidationError,
-        match="COMMERCE_RENDERER_URL and COMMERCE_RENDERER_TOKEN must be configured together",
-    ):
-        WorkerSettings()  # type: ignore[call-arg]
-
-
-def test_renderer_url_and_token_pair_is_accepted(
+def test_process_local_renderer_limits_are_configurable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _base_environment(monkeypatch)
     monkeypatch.setenv("EXTRACTION_AI_PROVIDER", "mock")
-    monkeypatch.setenv("COMMERCE_RENDERER_URL", "http://renderer.test:8080")
-    monkeypatch.setenv("COMMERCE_RENDERER_TOKEN", "renderer-token")
+    monkeypatch.setenv("COMMERCE_RENDERER_MAX_CONCURRENCY", "4")
+    monkeypatch.setenv("COMMERCE_RENDERER_TIMEOUT_SECONDS", "30")
+    monkeypatch.setenv("COMMERCE_RENDERER_MAX_DOM_BYTES", "4194304")
+    monkeypatch.setenv("COMMERCE_RENDERER_SETTLE_MILLISECONDS", "500")
 
     settings = WorkerSettings()  # type: ignore[call-arg]
 
-    assert str(settings.commerce_renderer_url).startswith("http://renderer.test:8080")
-    assert settings.commerce_renderer_token is not None
+    assert settings.commerce_renderer_max_concurrency == 4
+    assert settings.commerce_renderer_timeout_seconds == 30
+    assert settings.commerce_renderer_max_dom_bytes == 4 * 1024 * 1024
+    assert settings.commerce_renderer_settle_milliseconds == 500
 
 
 def test_explicit_mock_is_the_only_credential_free_provider(

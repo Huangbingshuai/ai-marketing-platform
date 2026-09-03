@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 import httpx
 import pytest
 
@@ -9,7 +7,6 @@ import effect_extraction.commerce as commerce_module
 from effect_extraction.commerce import (
     CommerceErrorType,
     CommerceFetchError,
-    HttpCommerceRenderer,
     HttpxCommerceFetcher,
     RenderedPage,
     extract_commerce_page,
@@ -368,32 +365,3 @@ async def test_jd_homepage_redirect_uses_known_public_mobile_product_page() -> N
 
     assert page.source_host == "item.m.jd.com"
     assert page.deterministic_candidate.product_name == "思香逢广东腊肠4袋1000克礼盒"
-
-
-@pytest.mark.asyncio
-async def test_renderer_client_uses_bearer_and_does_not_expose_url_in_error() -> None:
-    captured: dict[str, str] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["authorization"] = request.headers["authorization"]
-        captured["body"] = request.content.decode()
-        return httpx.Response(
-            200,
-            json={
-                "html": "<html><body>商品详情</body></html>",
-                "finalUrl": "https://shop.example/product",
-                "host": "shop.example",
-                "title": "商品",
-            },
-        )
-
-    renderer = HttpCommerceRenderer(
-        "http://renderer.test/",
-        "renderer-secret",
-        resolver=public_resolver,
-        transport=httpx.MockTransport(handler),
-    )
-    rendered = await renderer.render("https://shop.example/product")
-    assert rendered.final_url == "https://shop.example/product"
-    assert captured["authorization"] == "Bearer renderer-secret"
-    assert json.loads(captured["body"]) == {"url": "https://shop.example/product"}
