@@ -70,8 +70,8 @@ describe('effect prompt generation current layout', () => {
 
   it('uses product relation as the fourth creative dimension', () => {
     expect(pageSource).toContain('productRelation: []');
-    expect(pageSource).toContain('dimensions.productRelation');
-    expect(pageSource).toContain("dimension.key === 'productRelation'");
+    expect(pageSource).toContain("['productRelation']");
+    expect(pageSource).toContain("key !== 'productRelation'");
     expect(pageSource).toContain('查看提炼信息依据');
     expect(pageSource).toContain('itemInsightFacts(item)');
     expect(pageSource).toContain('{{ fact.value }}');
@@ -104,8 +104,10 @@ describe('effect prompt generation current layout', () => {
       expect(pageSource).toContain(handler);
     expect(pageSource).toContain('role="alertdialog"');
     expect(pageSource).toContain('@keydown.esc="closeDeleteDialog"');
-    expect(pageSource).toContain('replacementDimensions');
-    expect(pageSource).toContain('用途会根据新内容重新判断');
+    expect(pageSource).toContain('regenerationMode: regenerationMode.value');
+    expect(pageSource).toContain('生成 3 个备选');
+    expect(pageSource).toContain('采用这个方案');
+    expect(pageSource).toContain('撤销本次替换');
   });
 
   it('keeps manual editing concise without a batch-import entry', () => {

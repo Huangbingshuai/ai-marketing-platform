@@ -252,6 +252,9 @@ describe('EffectPromptService settings contract', () => {
       targetItemId: run.targetItemId,
       regenerationInstruction: '  产品更早出现  ',
       replacementDimensions: dimensions,
+      regenerationMode: 'PRESERVE_PRODUCT_RELATION',
+      regenerationReasons: ['ACTION_UNREASONABLE', 'TOO_SIMILAR'],
+      preservedDimensions: ['productRelation', 'persona'],
       expectedSettingsRevision: 2,
       expectedResultRevision: 3,
       idempotencyKey: 'regen-a',
@@ -264,6 +267,9 @@ describe('EffectPromptService settings contract', () => {
       expect.objectContaining({
         operation: 'ITEM_REGENERATE',
         regenerationInstruction: '产品更早出现',
+        regenerationMode: 'PRESERVE_PRODUCT_RELATION',
+        regenerationReasons: ['ACTION_UNREASONABLE', 'TOO_SIMILAR'],
+        preservedDimensions: ['productRelation', 'persona'],
         replacementDimensions: {
           narrative: '场景代入型',
           scene: '家庭餐桌',
@@ -420,9 +426,9 @@ describe('EffectPromptService settings contract', () => {
         evaluations,
       }),
     ]);
-    expect(output.shards.every((shard) => !('combinationPlan' in shard) && !('items' in shard))).toBe(
-      true,
-    );
+    expect(
+      output.shards.every((shard) => !('combinationPlan' in shard) && !('items' in shard)),
+    ).toBe(true);
   });
 
   it('rejects item-only regeneration fields on a batch run', async () => {

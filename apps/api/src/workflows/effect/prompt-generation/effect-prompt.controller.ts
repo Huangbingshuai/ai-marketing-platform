@@ -16,6 +16,8 @@ import {
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import {
   DeletePromptItemDto,
+  ApplyPromptRegenerationDto,
+  UndoPromptRegenerationDto,
   PromptItemDto,
   PromptResultQueryDto,
   PromptWorkspaceQueryDto,
@@ -179,6 +181,41 @@ export class EffectPromptController {
       projectId,
       resultId,
       expectedRevision(ifMatch, body.expectedRevision),
+    );
+  }
+
+  @Post('results/:resultId/regenerations/:runId/apply')
+  applyRegeneration(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('resultId', new ParseUUIDPipe({ version: '4' })) resultId: string,
+    @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string,
+    @Headers('if-match') ifMatch: string | undefined,
+    @Body() body: ApplyPromptRegenerationDto,
+  ) {
+    return this.service.applyRegenerationCandidate(
+      projectId,
+      resultId,
+      runId,
+      body.candidateId,
+      expectedRevision(ifMatch, body.expectedRevision),
+      body.idempotencyKey,
+    );
+  }
+
+  @Post('results/:resultId/regenerations/:runId/undo')
+  undoRegeneration(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('resultId', new ParseUUIDPipe({ version: '4' })) resultId: string,
+    @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string,
+    @Headers('if-match') ifMatch: string | undefined,
+    @Body() body: UndoPromptRegenerationDto,
+  ) {
+    return this.service.undoRegenerationCandidate(
+      projectId,
+      resultId,
+      runId,
+      expectedRevision(ifMatch, body.expectedRevision),
+      body.idempotencyKey,
     );
   }
 

@@ -55,12 +55,12 @@ class InputState(TypedDict):
 
 
 class OutputState(TypedDict):
-    prompt_result_id: str
+    prompt_result_id: str | None
 
 
 class GraphState(TypedDict):
     project_id: str
-    prompt_result_id: NotRequired[str]
+    prompt_result_id: NotRequired[str | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -523,11 +523,29 @@ class PromptGenerationSnapshot(ApiModel):
     selection_policy: Literal["MMR_CONTENT"]
     similarity_anchors: list[PromptItem] = Field(default_factory=list, max_length=200)
     shared_prompt: SharedPrompt | None = None
+    base_result_id: str | None = None
     base_result_revision: int | None = Field(default=None, ge=1)
     target_item: PromptItem | None = None
     target_item_index: int | None = Field(default=None, ge=0, le=199)
     replacement_dimensions: CreativeDimensions | None = None
     regeneration_instruction: str | None = Field(default=None, max_length=500)
+    regeneration_mode: (
+        Literal["PRESERVE_PRODUCT_RELATION", "NEW_CREATIVE", "CUSTOM"] | None
+    ) = None
+    regeneration_reasons: list[
+        Literal[
+            "PRODUCT_RELATION_WEAK",
+            "CREATIVE_ORDINARY",
+            "TOO_SIMILAR",
+            "SCENE_UNSUITABLE",
+            "ACTION_UNREASONABLE",
+            "CAMERA_TOO_COMPLEX",
+            "CUSTOM",
+        ]
+    ] = Field(default_factory=list, max_length=7)
+    preserved_dimensions: list[
+        Literal["narrative", "scene", "persona", "productRelation", "camera", "emotion"]
+    ] = Field(default_factory=list, max_length=6)
 
     @field_validator("regeneration_instruction")
     @classmethod
@@ -553,6 +571,9 @@ class PromptGenerationSnapshot(ApiModel):
         if self.operation == "BATCH_GENERATE" and (
             self.replacement_dimensions is not None
             or self.regeneration_instruction is not None
+            or self.regeneration_mode is not None
+            or self.regeneration_reasons
+            or self.preserved_dimensions
         ):
             raise ValueError(
                 "batch generation cannot contain item regeneration settings"
@@ -1254,7 +1275,7 @@ class ShardsResponse(ApiModel):
 
 
 class CompleteResponse(ApiModel):
-    prompt_result_id: str
+    prompt_result_id: str | None = None
 
 
 class FailurePayload(ApiModel):

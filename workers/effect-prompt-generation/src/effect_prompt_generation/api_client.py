@@ -19,7 +19,9 @@ from .models import (
 
 
 class InternalApiError(RuntimeError):
-    def __init__(self, message: str, *, retryable: bool, status_code: int | None = None) -> None:
+    def __init__(
+        self, message: str, *, retryable: bool, status_code: int | None = None
+    ) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.status_code = status_code
@@ -30,21 +32,25 @@ class InternalApi(Protocol):
     async def put_stage(self, context: RuntimeContext, output: StageOutput) -> None: ...
     async def put_shard(self, context: RuntimeContext, shard: ShardRecord) -> None: ...
     async def get_shards(self, context: RuntimeContext) -> list[ShardRecord]: ...
-    async def heartbeat(self, context: RuntimeContext, payload: ProgressPayload) -> None: ...
+    async def heartbeat(
+        self, context: RuntimeContext, payload: ProgressPayload
+    ) -> None: ...
     async def complete(
         self,
         context: RuntimeContext,
         result: PromptBatchResult | PromptBatchResult,
         *,
         execution_mode: str = "ARK",
-    ) -> str: ...
+    ) -> str | None: ...
     async def fail(self, context: RuntimeContext, payload: FailurePayload) -> None: ...
 
 
 def _unwrap(payload: Any) -> Any:
     if isinstance(payload, Mapping) and "success" in payload:
         if payload.get("success") is not True:
-            raise InternalApiError(str(payload.get("message") or "success=false"), retryable=False)
+            raise InternalApiError(
+                str(payload.get("message") or "success=false"), retryable=False
+            )
         return payload.get("data")
     return payload
 
@@ -88,7 +94,9 @@ class HttpInternalApi:
         try:
             response = await self._client.request(method, path, **kwargs)
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
-            raise InternalApiError("internal API is unavailable", retryable=True) from exc
+            raise InternalApiError(
+                "internal API is unavailable", retryable=True
+            ) from exc
         if response.is_error:
             retryable = response.status_code == 429 or response.status_code >= 500
             detail = _safe_response_message(response)
@@ -105,7 +113,9 @@ class HttpInternalApi:
         try:
             return _unwrap(response.json())
         except ValueError as exc:
-            raise InternalApiError("internal API returned invalid JSON", retryable=False) from exc
+            raise InternalApiError(
+                "internal API returned invalid JSON", retryable=False
+            ) from exc
 
     @staticmethod
     def _lease(context: RuntimeContext) -> dict[str, str]:
@@ -141,14 +151,17 @@ class HttpInternalApi:
                 "phase": shard.phase.value,
                 "status": shard.status.value,
                 "creativePlan": [
-                    item.model_dump(mode="json", by_alias=True) for item in shard.creative_plan
+                    item.model_dump(mode="json", by_alias=True)
+                    for item in shard.creative_plan
                 ],
                 "creativeItems": [
-                    item.model_dump(mode="json", by_alias=True) for item in shard.creative_items
+                    item.model_dump(mode="json", by_alias=True)
+                    for item in shard.creative_items
                 ],
                 "classificationPlan": shard.classification_plan,
                 "evaluations": [
-                    item.model_dump(mode="json", by_alias=True) for item in shard.evaluations
+                    item.model_dump(mode="json", by_alias=True)
+                    for item in shard.evaluations
                 ],
                 "warnings": [_safe_text(item, 500) for item in shard.warnings],
                 "errorCode": shard.error_code,
@@ -167,7 +180,9 @@ class HttpInternalApi:
             return [ShardRecord.model_validate(item) for item in data]
         return ShardsResponse.model_validate(data).shards
 
-    async def heartbeat(self, context: RuntimeContext, payload: ProgressPayload) -> None:
+    async def heartbeat(
+        self, context: RuntimeContext, payload: ProgressPayload
+    ) -> None:
         del payload
         await self._json(
             "PUT",
@@ -182,7 +197,7 @@ class HttpInternalApi:
         result: PromptBatchResult | PromptBatchResult,
         *,
         execution_mode: str = "ARK",
-    ) -> str:
+    ) -> str | None:
         data = await self._json(
             "POST",
             f"{self._ROOT}/runs/{context.run_id}/complete",

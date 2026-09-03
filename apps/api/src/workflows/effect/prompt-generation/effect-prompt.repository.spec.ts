@@ -903,6 +903,338 @@ describe('EffectPromptRepository', () => {
     );
   });
 
+  it('stores three regenerated options on the run without replacing the current result', async () => {
+    const completedAt = new Date('2026-08-25T00:00:00.000Z');
+    const createdAt = completedAt.toISOString();
+    const items = Array.from({ length: 3 }, (_, index) => ({
+      id: `00000000-0000-4000-8001-${String(index + 1).padStart(12, '0')}`,
+      code: `P${String(index + 1).padStart(3, '0')}`,
+      origin: 'AI' as const,
+      fragmentType: 'PRODUCT_DISPLAY' as const,
+      primaryPurpose: 'PRODUCT_DISPLAY' as const,
+      compatiblePurposes: ['PRODUCT_DISPLAY' as const],
+      classificationStatus: 'VERIFIED' as const,
+      productRelevance: 90,
+      materialTags: ['产品展示'],
+      targetDurationSeconds: 5,
+      creativeCore: `备选创意-${index}`,
+      dimensions: {
+        narrative: `叙事-${index}`,
+        scene: `场景-${index}`,
+        persona: `人物-${index}`,
+        productRelation: '已确认卖点',
+        camera: `镜头-${index}`,
+        emotion: `情绪-${index}`,
+      },
+      content: `这是第 ${index + 1} 个与商品有关且动作完整的重新生成备选。`,
+      insightBindings: [],
+      manualEdited: false,
+      createdAt,
+      updatedAt: createdAt,
+    }));
+    const candidate = recomputePromptQuality(items, DEFAULT_EFFECT_PROMPT_SETTINGS);
+    const createResult = vi.fn();
+    const stageUpsert = vi.fn().mockResolvedValue({});
+    const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([{ id: runId }]),
+      effectPromptRun: {
+        findFirst: vi.fn().mockResolvedValue({
+          ...runRecord(),
+          status: 'RUNNING',
+          attemptToken: 'attempt-a',
+          leaseExpiresAt: new Date('2026-08-25T00:02:00.000Z'),
+          inputSnapshot: {
+            projectId,
+            workflowRunId,
+            productId,
+            operation: 'ITEM_REGENERATE',
+            targetItemId: '00000000-0000-4000-8000-000000000010',
+            settings: candidate.settings,
+            insightArtifact: { id: 'insight', revision: 1, contentHash: 'hash', result: {} },
+            retainedManualItems: [],
+            selectionPolicy: 'MMR_CONTENT',
+            baseResultId: '00000000-0000-4000-8000-000000000020',
+            baseResultRevision: 1,
+          },
+          stages: [],
+          result: null,
+        }),
+        update: vi.fn().mockResolvedValue({}),
+      },
+      effectPromptResult: { create: createResult },
+      effectPromptStageOutput: { upsert: stageUpsert },
+    };
+    const repository = new EffectPromptRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await expect(
+      repository.complete(projectId, runId, 'attempt-a', candidate, completedAt),
+    ).resolves.toEqual({ kind: 'PREVIEW_COMPLETED', result: null });
+    expect(createResult).not.toHaveBeenCalled();
+    expect(stageUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ summary: '已生成 3 个单条 Prompt 备选' }),
+      }),
+    );
+  });
+
+  it('applies a selected regeneration option without changing stable item identity or duration', async () => {
+    const createdAt = '2026-08-25T00:00:00.000Z';
+    const targetItem = {
+      id: '00000000-0000-4000-8000-000000000010',
+      code: 'P010',
+      origin: 'AI' as const,
+      fragmentType: 'HOOK' as const,
+      primaryPurpose: 'HOOK' as const,
+      compatiblePurposes: ['HOOK' as const],
+      classificationStatus: 'VERIFIED' as const,
+      productRelevance: 82,
+      materialTags: ['原标签'],
+      targetDurationSeconds: 15,
+      creativeCore: '原创意',
+      dimensions: {
+        narrative: '原叙事',
+        scene: '原场景',
+        persona: '原人物',
+        productRelation: '原产品关联',
+        camera: '原镜头',
+        emotion: '原情绪',
+      },
+      content: '原 Prompt 正文',
+      insightBindings: [],
+      manualEdited: false,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const otherItem = {
+      ...targetItem,
+      id: '00000000-0000-4000-8000-000000000011',
+      code: 'P011',
+      content: '其他 Prompt 正文',
+    };
+    const candidate = {
+      ...targetItem,
+      id: '00000000-0000-4000-8000-000000000020',
+      code: 'P001',
+      primaryPurpose: 'PRODUCT_DISPLAY' as const,
+      fragmentType: 'PRODUCT_DISPLAY' as const,
+      compatiblePurposes: ['PRODUCT_DISPLAY' as const],
+      productRelevance: 94,
+      materialTags: ['候选标签'],
+      targetDurationSeconds: 5,
+      creativeCore: '新创意',
+      dimensions: { ...targetItem.dimensions, scene: '新场景', camera: '新镜头' },
+      content: '新 Prompt 正文',
+    };
+    const currentDraft = recomputePromptQuality([targetItem, otherItem], {
+      targetCount: 2,
+      defaultDurationSeconds: 15,
+    });
+    const previewDraft = recomputePromptQuality([candidate], {
+      targetCount: 1,
+      defaultDurationSeconds: 5,
+    });
+    const existing = {
+      id: '00000000-0000-4000-8000-000000000030',
+      projectId,
+      workflowRunId,
+      productId,
+      revision: 4,
+      draftResult: currentDraft,
+      manualOverrides: { added: [], edited: {}, deleted: [] },
+      savedAt: new Date(createdAt),
+      updatedAt: new Date(createdAt),
+      createdAt: new Date(createdAt),
+    };
+    const resultUpdate = vi.fn().mockImplementation(({ data }) => ({
+      ...existing,
+      revision: 5,
+      draftResult: data.draftResult,
+      manualOverrides: data.manualOverrides,
+      savedAt: data.savedAt,
+    }));
+    const stageUpdate = vi.fn().mockResolvedValue({});
+    const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([{ id: existing.id }]),
+      effectPromptResult: {
+        findFirst: vi.fn().mockResolvedValue(existing),
+        update: resultUpdate,
+      },
+      effectPromptRun: {
+        findFirst: vi.fn().mockResolvedValue(
+          runRecord({
+            status: 'COMPLETED',
+            operation: 'ITEM_REGENERATE',
+            inputSnapshot: {
+              projectId,
+              workflowRunId,
+              productId,
+              operation: 'ITEM_REGENERATE',
+              targetItemId: targetItem.id,
+              targetItem,
+              targetItemIndex: 0,
+              baseResultId: existing.id,
+              baseResultRevision: 4,
+            },
+            stages: [
+              {
+                nodeId: 'RESULT_SAVE',
+                metadata: {
+                  regenerationPreviewResult: previewDraft,
+                  appliedCandidateId: null,
+                  regenerationUndone: false,
+                },
+              },
+            ],
+          }),
+        ),
+      },
+      effectPromptStageOutput: { update: stageUpdate },
+    };
+    const repository = new EffectPromptRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await expect(
+      repository.applyRegenerationCandidate(
+        projectId,
+        existing.id,
+        runId,
+        candidate.id,
+        4,
+        'apply-1',
+      ),
+    ).resolves.toMatchObject({ kind: 'UPDATED', result: { revision: 5 } });
+
+    const saved = resultUpdate.mock.calls[0]?.[0].data.draftResult.items;
+    expect(resultUpdate.mock.calls[0]?.[0].data).toMatchObject({
+      runId,
+      sourceFingerprint: 'f'.repeat(64),
+      settingsHash: 's'.repeat(64),
+    });
+    expect(saved).toHaveLength(2);
+    expect(saved[0]).toMatchObject({
+      id: targetItem.id,
+      code: targetItem.code,
+      content: candidate.content,
+      targetDurationSeconds: targetItem.targetDurationSeconds,
+      materialTags: targetItem.materialTags,
+    });
+    expect(saved[1]).toMatchObject({ id: otherItem.id, content: otherItem.content });
+    expect(stageUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: {
+          metadata: expect.objectContaining({
+            appliedCandidateId: candidate.id,
+            appliedResultRevision: 5,
+          }),
+        },
+      }),
+    );
+  });
+
+  it('only undoes an applied regeneration when the result revision is still unchanged', async () => {
+    const createdAt = '2026-08-25T00:00:00.000Z';
+    const original = {
+      id: '00000000-0000-4000-8000-000000000010',
+      code: 'P010',
+      origin: 'AI' as const,
+      fragmentType: 'HOOK' as const,
+      primaryPurpose: 'HOOK' as const,
+      compatiblePurposes: ['HOOK' as const],
+      classificationStatus: 'VERIFIED' as const,
+      productRelevance: 82,
+      materialTags: ['原标签'],
+      targetDurationSeconds: 15,
+      creativeCore: '原创意',
+      dimensions: {
+        narrative: '原叙事',
+        scene: '原场景',
+        persona: '原人物',
+        productRelation: '原产品关联',
+        camera: '原镜头',
+        emotion: '原情绪',
+      },
+      content: '原 Prompt 正文',
+      insightBindings: [],
+      manualEdited: false,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const replacement = { ...original, content: '已采用的新正文', creativeCore: '新创意' };
+    const currentDraft = recomputePromptQuality([replacement], {
+      targetCount: 1,
+      defaultDurationSeconds: 15,
+    });
+    const existing = {
+      id: '00000000-0000-4000-8000-000000000030',
+      projectId,
+      workflowRunId,
+      productId,
+      revision: 5,
+      draftResult: currentDraft,
+      manualOverrides: { added: [], edited: {}, deleted: [] },
+      savedAt: new Date(createdAt),
+      updatedAt: new Date(createdAt),
+      createdAt: new Date(createdAt),
+    };
+    const resultUpdate = vi.fn().mockImplementation(({ data }) => ({
+      ...existing,
+      revision: 6,
+      draftResult: data.draftResult,
+      savedAt: data.savedAt,
+    }));
+    const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([{ id: existing.id }]),
+      effectPromptResult: { findFirst: vi.fn().mockResolvedValue(existing), update: resultUpdate },
+      effectPromptRun: {
+        findFirst: vi.fn().mockResolvedValue(
+          runRecord({
+            status: 'COMPLETED',
+            operation: 'ITEM_REGENERATE',
+            inputSnapshot: {
+              operation: 'ITEM_REGENERATE',
+              targetItemId: original.id,
+              targetItem: original,
+              targetItemIndex: 0,
+              baseResultId: existing.id,
+              baseResultRevision: 4,
+            },
+            stages: [
+              {
+                nodeId: 'RESULT_SAVE',
+                metadata: {
+                  appliedCandidateId: '00000000-0000-4000-8000-000000000020',
+                  appliedResultRevision: 5,
+                  regenerationUndone: false,
+                },
+              },
+            ],
+          }),
+        ),
+      },
+      effectPromptStageOutput: { update: vi.fn().mockResolvedValue({}) },
+    };
+    const repository = new EffectPromptRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await expect(
+      repository.undoRegenerationCandidate(projectId, existing.id, runId, 5, 'undo-1'),
+    ).resolves.toMatchObject({ kind: 'UPDATED', result: { revision: 6 } });
+    expect(resultUpdate.mock.calls[0]?.[0].data.draftResult.items[0]).toMatchObject({
+      id: original.id,
+      content: original.content,
+      targetDurationSeconds: original.targetDurationSeconds,
+    });
+
+    existing.revision = 7;
+    await expect(
+      repository.undoRegenerationCandidate(projectId, existing.id, runId, 5, 'undo-2'),
+    ).resolves.toEqual({ kind: 'REVISION_CONFLICT' });
+  });
+
   it('rejects stale revisions before mutating result contents', async () => {
     const update = vi.fn();
     const transaction = {
@@ -984,6 +1316,7 @@ describe('EffectPromptRepository', () => {
         workflowRunId,
         productId,
         status: 'COMPLETED',
+        result: { isNot: null },
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     });

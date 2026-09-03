@@ -6,6 +6,9 @@ import type {
   EffectPromptItem,
   EffectPromptManualOverrides,
   EffectPromptOperation,
+  EffectPromptRegenerationMode,
+  EffectPromptRegenerationReason,
+  EffectPromptDimensionKey,
   EffectPromptShardPhase,
   EffectPromptSharedPrompt,
 } from '@ai-marketing/contracts';
@@ -162,6 +165,9 @@ export type StartPromptRunInput = {
   targetItemId: string | null;
   regenerationInstruction?: string | null;
   replacementDimensions?: EffectPromptDimensions | null;
+  regenerationMode?: EffectPromptRegenerationMode | null;
+  regenerationReasons?: EffectPromptRegenerationReason[];
+  preservedDimensions?: EffectPromptDimensionKey[];
   expectedSettingsRevision: number;
   expectedResultRevision: number | null;
   idempotencyKey: string;
@@ -403,10 +409,18 @@ export class EffectPromptRepository {
           ? {
               targetItem,
               targetItemIndex,
-              replacementDimensions: input.replacementDimensions ?? targetItem.dimensions,
+              replacementDimensions: input.replacementDimensions ?? undefined,
               regenerationInstruction: input.regenerationInstruction ?? null,
+              regenerationMode: input.regenerationMode ?? 'PRESERVE_PRODUCT_RELATION',
+              regenerationReasons: [...new Set(input.regenerationReasons ?? [])],
+              preservedDimensions: [
+                ...new Set<EffectPromptDimensionKey>(
+                  input.preservedDimensions ?? ['productRelation'],
+                ),
+              ],
             }
           : {}),
+        baseResultId: latestCurrent?.id ?? null,
         baseResultRevision: latestCurrent?.revision ?? null,
       };
       const active = await transaction.effectPromptRun.findFirst({
@@ -719,11 +733,14 @@ export class EffectPromptRepository {
       `;
       const run = await transaction.effectPromptRun.findFirst({
         where: { projectId, id: runId },
-        include: { result: true },
+        include: { result: true, stages: true },
       });
       if (!run) return { kind: 'NOT_FOUND' as const };
       if (run.status === 'COMPLETED' && run.result)
         return { kind: 'COMPLETED' as const, result: run.result };
+      const snapshot = run.inputSnapshot as EffectPromptInputSnapshot;
+      if (run.status === 'COMPLETED' && snapshot.operation === 'ITEM_REGENERATE')
+        return { kind: 'PREVIEW_COMPLETED' as const, result: null };
       if (
         run.status !== 'RUNNING' ||
         run.attemptToken !== attemptToken ||
@@ -731,7 +748,6 @@ export class EffectPromptRepository {
         run.leaseExpiresAt <= now
       )
         return { kind: 'LEASE_CONFLICT' as const };
-      const snapshot = run.inputSnapshot as EffectPromptInputSnapshot;
       const generated = recomputePromptQuality(
         candidate.items,
         snapshot.settings,
@@ -739,6 +755,63 @@ export class EffectPromptRepository {
         candidate.renderProfile,
         candidate.sharedPrompt,
       );
+      if (snapshot.operation === 'ITEM_REGENERATE') {
+        if (
+          generated.items.length !== 3 ||
+          generated.items.some((item) => item.classificationStatus !== 'VERIFIED')
+        )
+          return { kind: 'INVALID_REGENERATION_PREVIEW' as const };
+        const currentStage = run.stages.find(({ nodeId }) => nodeId === 'RESULT_SAVE');
+        const currentMetadata = jsonRecord(currentStage?.metadata) ?? {};
+        await transaction.effectPromptStageOutput.upsert({
+          where: {
+            projectId_runId_nodeId: { projectId, runId, nodeId: 'RESULT_SAVE' },
+          },
+          create: {
+            projectId,
+            runId,
+            nodeId: 'RESULT_SAVE',
+            status: 'SUCCEEDED',
+            summary: '已生成 3 个单条 Prompt 备选',
+            warnings: json([]),
+            metadata: json({
+              ...currentMetadata,
+              regenerationPreviewResult: generated,
+              appliedCandidateId: null,
+              regenerationUndone: false,
+            }),
+            startedAt: now,
+            completedAt: now,
+          },
+          update: {
+            status: 'SUCCEEDED',
+            summary: '已生成 3 个单条 Prompt 备选',
+            metadata: json({
+              ...currentMetadata,
+              regenerationPreviewResult: generated,
+              appliedCandidateId: null,
+              regenerationUndone: false,
+            }),
+            errorMessage: null,
+            completedAt: now,
+          },
+        });
+        await transaction.effectPromptRun.update({
+          where: { projectId_id: { projectId, id: runId } },
+          data: {
+            status: 'COMPLETED',
+            progress: 100,
+            currentNode: 'COMPLETED',
+            attemptToken: null,
+            leaseExpiresAt: null,
+            heartbeatAt: now,
+            completedAt: now,
+            errorCode: null,
+            errorMessage: null,
+          },
+        });
+        return { kind: 'PREVIEW_COMPLETED' as const, result: null };
+      }
       const draft = recomputePromptQuality(
         mergeEffectPromptCompletionItems(generated.items, snapshot),
         snapshot.settings,
@@ -760,10 +833,7 @@ export class EffectPromptRepository {
       if (rawSemanticAudit !== undefined && rawSemanticAudit !== null && !semanticAudit)
         return { kind: 'INVALID_SEMANTIC_AUDIT' as const };
       let overrides = emptyManualOverrides();
-      if (
-        (snapshot.operation === 'ITEM_REGENERATE' || snapshot.operation === 'ITEM_EVALUATE') &&
-        snapshot.baseResultRevision !== null
-      ) {
+      if (snapshot.operation === 'ITEM_EVALUATE' && snapshot.baseResultRevision !== null) {
         const previous = await transaction.effectPromptResult.findFirst({
           where: {
             projectId,
@@ -874,6 +944,225 @@ export class EffectPromptRepository {
         },
       });
       return { kind: 'COMPLETED' as const, result };
+    });
+  }
+
+  async applyRegenerationCandidate(
+    projectId: string,
+    resultId: string,
+    runId: string,
+    candidateId: string,
+    expectedRevision: number,
+    idempotencyKey: string,
+  ) {
+    return this.prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "effect_prompt_results"
+        WHERE "projectId" = ${projectId}::uuid AND "id" = ${resultId}::uuid
+        FOR UPDATE
+      `;
+      const [existing, run] = await Promise.all([
+        transaction.effectPromptResult.findFirst({ where: { projectId, id: resultId } }),
+        transaction.effectPromptRun.findFirst({
+          where: { projectId, id: runId },
+          include: { stages: true },
+        }),
+      ]);
+      if (!existing || !run) return { kind: 'NOT_FOUND' as const };
+      const latest = await transaction.effectPromptResult.findFirst({
+        where: {
+          projectId,
+          workflowRunId: existing.workflowRunId,
+          productId: existing.productId,
+        },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      });
+      const snapshot = run.inputSnapshot as EffectPromptInputSnapshot;
+      if (
+        run.status !== 'COMPLETED' ||
+        snapshot.operation !== 'ITEM_REGENERATE' ||
+        snapshot.baseResultId !== resultId ||
+        latest?.id !== resultId ||
+        !snapshot.targetItem ||
+        snapshot.targetItemIndex === undefined
+      )
+        return { kind: 'PREVIEW_CONFLICT' as const };
+      const stage = run.stages.find(({ nodeId }) => nodeId === 'RESULT_SAVE');
+      const metadata = jsonRecord(stage?.metadata) ?? {};
+      const applyHash = workflowStateHash({ idempotencyKey, candidateId });
+      if (
+        metadata.appliedCandidateId === candidateId &&
+        metadata.applyHash === applyHash &&
+        metadata.regenerationUndone !== true
+      ) {
+        const current = parseEffectPromptBatchResult(existing.draftResult);
+        return current
+          ? { kind: 'UNCHANGED' as const, result: existing, draft: current }
+          : { kind: 'INVALID_RESULT' as const };
+      }
+      if (metadata.appliedCandidateId || metadata.regenerationUndone === true)
+        return { kind: 'PREVIEW_CONFLICT' as const };
+      if (
+        existing.revision !== expectedRevision ||
+        snapshot.baseResultRevision !== expectedRevision
+      )
+        return { kind: 'REVISION_CONFLICT' as const };
+      const current = parseEffectPromptBatchResult(existing.draftResult);
+      const preview = parseEffectPromptBatchResult(metadata.regenerationPreviewResult);
+      if (!current || !preview) return { kind: 'INVALID_RESULT' as const };
+      const candidate = preview.items.find(({ id }) => id === candidateId);
+      const index = current.items.findIndex(({ id }) => id === snapshot.targetItem!.id);
+      if (!candidate || index < 0 || candidate.classificationStatus !== 'VERIFIED')
+        return { kind: 'CANDIDATE_NOT_FOUND' as const };
+      const replacement: EffectPromptItem = {
+        ...candidate,
+        id: snapshot.targetItem.id,
+        code: snapshot.targetItem.code,
+        origin: 'AI',
+        materialTags: [...snapshot.targetItem.materialTags],
+        targetDurationSeconds: snapshot.targetItem.targetDurationSeconds,
+        manualEdited: false,
+        createdAt: snapshot.targetItem.createdAt,
+        updatedAt: new Date().toISOString(),
+      };
+      const items = [...current.items];
+      items[index] = replacement;
+      const next = recomputePromptQuality(
+        items,
+        current.settings,
+        current.metrics,
+        current.renderProfile,
+        current.sharedPrompt,
+        pendingEffectPromptSemanticEvaluation(),
+      );
+      const overrides = parseOverrides(existing.manualOverrides);
+      delete overrides.edited[snapshot.targetItem.id];
+      overrides.added = overrides.added.filter(({ id }) => id !== snapshot.targetItem!.id);
+      overrides.deleted = overrides.deleted.filter((id) => id !== snapshot.targetItem!.id);
+      const updated = await transaction.effectPromptResult.update({
+        where: { projectId_id: { projectId, id: resultId } },
+        data: {
+          runId,
+          draftResult: json(next),
+          manualOverrides: json(overrides),
+          qualityStatus: next.qualityStatus,
+          sourceFingerprint: run.sourceFingerprint,
+          settingsHash: run.settingsHash,
+          revision: { increment: 1 },
+          savedAt: new Date(),
+        },
+      });
+      await transaction.effectPromptStageOutput.update({
+        where: { projectId_runId_nodeId: { projectId, runId, nodeId: 'RESULT_SAVE' } },
+        data: {
+          metadata: json({
+            ...metadata,
+            appliedCandidateId: candidateId,
+            applyHash,
+            appliedResultRevision: updated.revision,
+            regenerationUndone: false,
+          }),
+        },
+      });
+      return { kind: 'UPDATED' as const, result: updated, draft: next };
+    });
+  }
+
+  async undoRegenerationCandidate(
+    projectId: string,
+    resultId: string,
+    runId: string,
+    expectedRevision: number,
+    idempotencyKey: string,
+  ) {
+    return this.prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "effect_prompt_results"
+        WHERE "projectId" = ${projectId}::uuid AND "id" = ${resultId}::uuid
+        FOR UPDATE
+      `;
+      const [existing, run] = await Promise.all([
+        transaction.effectPromptResult.findFirst({ where: { projectId, id: resultId } }),
+        transaction.effectPromptRun.findFirst({
+          where: { projectId, id: runId },
+          include: { stages: true },
+        }),
+      ]);
+      if (!existing || !run) return { kind: 'NOT_FOUND' as const };
+      const snapshot = run.inputSnapshot as EffectPromptInputSnapshot;
+      const stage = run.stages.find(({ nodeId }) => nodeId === 'RESULT_SAVE');
+      const metadata = jsonRecord(stage?.metadata) ?? {};
+      const undoHash = workflowStateHash({ idempotencyKey, runId });
+      if (metadata.undoHash === undoHash && metadata.regenerationUndone === true) {
+        const current = parseEffectPromptBatchResult(existing.draftResult);
+        return current
+          ? { kind: 'UNCHANGED' as const, result: existing, draft: current }
+          : { kind: 'INVALID_RESULT' as const };
+      }
+      if (
+        snapshot.operation !== 'ITEM_REGENERATE' ||
+        snapshot.baseResultId !== resultId ||
+        !snapshot.targetItem ||
+        metadata.regenerationUndone === true ||
+        typeof metadata.appliedCandidateId !== 'string' ||
+        metadata.appliedResultRevision !== expectedRevision
+      )
+        return { kind: 'PREVIEW_CONFLICT' as const };
+      if (existing.revision !== expectedRevision) return { kind: 'REVISION_CONFLICT' as const };
+      const current = parseEffectPromptBatchResult(existing.draftResult);
+      if (!current) return { kind: 'INVALID_RESULT' as const };
+      const index = current.items.findIndex(({ id }) => id === snapshot.targetItem!.id);
+      if (index < 0) return { kind: 'ITEM_NOT_FOUND' as const };
+      const items = [...current.items];
+      items[index] = snapshot.targetItem;
+      const next = recomputePromptQuality(
+        items,
+        current.settings,
+        current.metrics,
+        current.renderProfile,
+        current.sharedPrompt,
+        pendingEffectPromptSemanticEvaluation(),
+      );
+      const overrides = parseOverrides(existing.manualOverrides);
+      delete overrides.edited[snapshot.targetItem.id];
+      overrides.added = overrides.added.filter(({ id }) => id !== snapshot.targetItem!.id);
+      overrides.deleted = overrides.deleted.filter((id) => id !== snapshot.targetItem!.id);
+      if (snapshot.targetItem.origin === 'MANUAL') overrides.added.push(snapshot.targetItem);
+      else if (snapshot.targetItem.manualEdited)
+        overrides.edited[snapshot.targetItem.id] = {
+          content: snapshot.targetItem.content,
+          fragmentType: snapshot.targetItem.fragmentType,
+          primaryPurpose: snapshot.targetItem.primaryPurpose,
+          compatiblePurposes: [...snapshot.targetItem.compatiblePurposes],
+          classificationStatus: snapshot.targetItem.classificationStatus,
+          productRelevance: snapshot.targetItem.productRelevance,
+          materialTags: [...snapshot.targetItem.materialTags],
+          targetDurationSeconds: snapshot.targetItem.targetDurationSeconds,
+          creativeCore: snapshot.targetItem.creativeCore,
+          dimensions: snapshot.targetItem.dimensions,
+        };
+      const updated = await transaction.effectPromptResult.update({
+        where: { projectId_id: { projectId, id: resultId } },
+        data: {
+          draftResult: json(next),
+          manualOverrides: json(overrides),
+          qualityStatus: next.qualityStatus,
+          revision: { increment: 1 },
+          savedAt: new Date(),
+        },
+      });
+      await transaction.effectPromptStageOutput.update({
+        where: { projectId_runId_nodeId: { projectId, runId, nodeId: 'RESULT_SAVE' } },
+        data: {
+          metadata: json({
+            ...metadata,
+            undoHash,
+            undoResultRevision: updated.revision,
+            regenerationUndone: true,
+          }),
+        },
+      });
+      return { kind: 'UPDATED' as const, result: updated, draft: next };
     });
   }
 
@@ -1313,6 +1602,7 @@ export class EffectPromptRepository {
           workflowRunId: result.workflowRunId,
           productId: result.productId,
           status: 'COMPLETED',
+          result: { isNot: null },
         },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       });

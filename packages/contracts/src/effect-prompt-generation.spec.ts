@@ -12,6 +12,8 @@ import {
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_NODE_DETAIL_SECTION_KINDS,
   EFFECT_PROMPT_NODE_DETAIL_SECTION_STATES,
+  EFFECT_PROMPT_REGENERATION_MODES,
+  EFFECT_PROMPT_REGENERATION_REASONS,
   EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT,
   EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD,
   EFFECT_PROMPT_SHARD_PHASES,
@@ -113,6 +115,23 @@ describe('effect prompt generation contract', () => {
     };
     expect(request.operation).toBe('ITEM_EVALUATE');
     expect(effectPromptSettingsNodeId('product-one')).toBe('PROMPT_GENERATION:product-one');
+  });
+
+  it('supports user-directed regeneration without requiring replacement dimensions', () => {
+    const request: StartEffectPromptRunRequest = {
+      workflowRunId: 'workflow-1',
+      operation: 'ITEM_REGENERATE',
+      targetItemId: 'prompt-1',
+      regenerationMode: 'PRESERVE_PRODUCT_RELATION',
+      regenerationReasons: ['TOO_SIMILAR'],
+      preservedDimensions: ['productRelation'],
+      expectedSettingsRevision: 1,
+      expectedResultRevision: 2,
+      idempotencyKey: 'regenerate-1',
+    };
+    expect(EFFECT_PROMPT_REGENERATION_MODES).toContain(request.regenerationMode);
+    expect(EFFECT_PROMPT_REGENERATION_REASONS).toContain(request.regenerationReasons?.[0]);
+    expect(request.replacementDimensions).toBeUndefined();
   });
 
   it('keeps the canonical JSON schema aligned with purpose and score fields', () => {

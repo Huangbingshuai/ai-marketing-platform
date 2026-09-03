@@ -1,5 +1,6 @@
 import type {
   ApiResponse,
+  ApplyEffectPromptRegenerationRequest,
   EffectPromptBatchResult,
   EffectPromptFragmentType,
   GetEffectPromptNodeDetailData,
@@ -11,6 +12,7 @@ import type {
   StartEffectPromptRunData,
   StartEffectPromptRunRequest,
   UpdateEffectPromptResultData,
+  UndoEffectPromptRegenerationRequest,
   UpdateEffectPromptSharedPromptRequest,
   UpsertEffectPromptItemRequest,
   ValidateEffectPromptResultData,
@@ -183,6 +185,42 @@ export const updateEffectPromptSharedPrompt = (
     operation: '保存批次共用提示词',
     signal,
   });
+
+export const applyEffectPromptRegeneration = (
+  projectId: string,
+  resultId: string,
+  runId: string,
+  input: ApplyEffectPromptRegenerationRequest,
+  signal?: AbortSignal,
+): Promise<ApiResponse<UpdateEffectPromptResultData>> =>
+  requestJson(
+    `${basePath(projectId)}/results/${encodeURIComponent(resultId)}/regenerations/${encodeURIComponent(runId)}/apply`,
+    {
+      method: 'POST',
+      body: input,
+      headers: revisionHeaders(input.expectedRevision),
+      operation: '采用重新生成的 Prompt',
+      signal,
+    },
+  );
+
+export const undoEffectPromptRegeneration = (
+  projectId: string,
+  resultId: string,
+  runId: string,
+  input: UndoEffectPromptRegenerationRequest,
+  signal?: AbortSignal,
+): Promise<ApiResponse<UpdateEffectPromptResultData>> =>
+  requestJson(
+    `${basePath(projectId)}/results/${encodeURIComponent(resultId)}/regenerations/${encodeURIComponent(runId)}/undo`,
+    {
+      method: 'POST',
+      body: input,
+      headers: revisionHeaders(input.expectedRevision),
+      operation: '撤销 Prompt 替换',
+      signal,
+    },
+  );
 
 export const validateEffectPromptResult = (
   projectId: string,

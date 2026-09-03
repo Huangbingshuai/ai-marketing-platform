@@ -17,11 +17,11 @@ import type {
 import {
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
-  EFFECT_PROMPT_LIMITS,
 } from '@ai-marketing/contracts';
 
 import {
   addEffectPromptItem,
+  applyEffectPromptRegeneration,
   deleteEffectPromptItem,
   exportEffectPromptResult,
   getEffectPromptNodeDetail,
@@ -32,6 +32,7 @@ import {
   startEffectPromptRun,
   updateEffectPromptItem,
   updateEffectPromptSharedPrompt,
+  undoEffectPromptRegeneration,
   validateEffectPromptResult,
 } from '../api/effect-prompt-generation.api';
 
@@ -198,6 +199,41 @@ export const removeEffectPromptItem = async (
   signal?: AbortSignal,
 ): Promise<UpdateEffectPromptResultData> =>
   (await deleteEffectPromptItem(projectId, resultId, item.id, expectedRevision, signal)).data;
+
+export const applyPromptRegeneration = async (
+  projectId: string,
+  resultId: string,
+  runId: string,
+  candidateId: string,
+  expectedRevision: number,
+  signal?: AbortSignal,
+): Promise<UpdateEffectPromptResultData> =>
+  (
+    await applyEffectPromptRegeneration(
+      projectId,
+      resultId,
+      runId,
+      { candidateId, expectedRevision, idempotencyKey: createPromptIdempotencyKey() },
+      signal,
+    )
+  ).data;
+
+export const undoPromptRegeneration = async (
+  projectId: string,
+  resultId: string,
+  runId: string,
+  expectedRevision: number,
+  signal?: AbortSignal,
+): Promise<UpdateEffectPromptResultData> =>
+  (
+    await undoEffectPromptRegeneration(
+      projectId,
+      resultId,
+      runId,
+      { expectedRevision, idempotencyKey: createPromptIdempotencyKey() },
+      signal,
+    )
+  ).data;
 
 export const saveEffectPromptSharedPrompt = async (
   projectId: string,

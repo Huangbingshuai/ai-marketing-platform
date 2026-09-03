@@ -12,6 +12,9 @@ import {
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_OPERATIONS,
+  EFFECT_PROMPT_REGENERATION_MODES,
+  EFFECT_PROMPT_REGENERATION_REASONS,
+  EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_SHARD_PHASES,
   EFFECT_PROMPT_STAGE_STATUSES,
 } from '@ai-marketing/contracts';
@@ -56,8 +59,32 @@ export class StartPromptRunDto {
   @IsOptional() @IsUUID('4') targetItemId?: string;
   @IsOptional() @IsString() @MaxLength(500) regenerationInstruction?: string;
   @IsOptional() @Allow() replacementDimensions?: EffectPromptDimensions;
+  @IsOptional()
+  @IsIn([...EFFECT_PROMPT_REGENERATION_MODES])
+  regenerationMode?: (typeof EFFECT_PROMPT_REGENERATION_MODES)[number];
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(EFFECT_PROMPT_REGENERATION_REASONS.length)
+  @IsIn([...EFFECT_PROMPT_REGENERATION_REASONS], { each: true })
+  regenerationReasons?: Array<(typeof EFFECT_PROMPT_REGENERATION_REASONS)[number]>;
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(EFFECT_PROMPT_DIMENSIONS.length)
+  @IsIn(EFFECT_PROMPT_DIMENSIONS.map(({ key }) => key), { each: true })
+  preservedDimensions?: Array<(typeof EFFECT_PROMPT_DIMENSIONS)[number]['key']>;
   @Type(() => Number) @IsInt() @Min(1) expectedSettingsRevision!: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) expectedResultRevision?: number;
+  @IsString() @MaxLength(500) idempotencyKey!: string;
+}
+
+export class ApplyPromptRegenerationDto {
+  @IsUUID('4') candidateId!: string;
+  @Type(() => Number) @IsInt() @Min(1) expectedRevision!: number;
+  @IsString() @MaxLength(500) idempotencyKey!: string;
+}
+
+export class UndoPromptRegenerationDto {
+  @Type(() => Number) @IsInt() @Min(1) expectedRevision!: number;
   @IsString() @MaxLength(500) idempotencyKey!: string;
 }
 

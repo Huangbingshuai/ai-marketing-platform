@@ -34,6 +34,19 @@ export type EffectPromptInputSnapshot = {
   replacementDimensions?: EffectPromptItem['dimensions'] | undefined;
   /** Trimmed, low-priority user direction. Empty input is persisted as null. */
   regenerationInstruction?: string | null | undefined;
+  regenerationMode?: 'PRESERVE_PRODUCT_RELATION' | 'NEW_CREATIVE' | 'CUSTOM' | null | undefined;
+  regenerationReasons?: Array<
+    | 'PRODUCT_RELATION_WEAK'
+    | 'CREATIVE_ORDINARY'
+    | 'TOO_SIMILAR'
+    | 'SCENE_UNSUITABLE'
+    | 'ACTION_UNREASONABLE'
+    | 'CAMERA_TOO_COMPLEX'
+    | 'CUSTOM'
+  >;
+  preservedDimensions?: Array<keyof EffectPromptItem['dimensions']>;
+  /** Stable identity of the draft used to start an item operation. */
+  baseResultId?: string | null;
   baseResultRevision: number | null;
 };
 

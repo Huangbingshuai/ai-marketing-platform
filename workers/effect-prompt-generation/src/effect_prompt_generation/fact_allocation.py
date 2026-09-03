@@ -131,9 +131,7 @@ def allocate_creative_facts(
             ordinal=ordinal,
         )
         remaining_business_ids = [
-            fact.fact_id
-            for fact in business_facts
-            if fact.fact_id != anchor.fact_id
+            fact.fact_id for fact in business_facts if fact.fact_id != anchor.fact_id
         ]
         rotated_business_ids = (
             remaining_business_ids[(ordinal - 1) % len(remaining_business_ids) :]
@@ -152,6 +150,36 @@ def allocate_creative_facts(
         )[: min(4, max(1, len(business_facts)))]
         assignments.append(_assignment(fact_ids, ordinal=ordinal))
     return assignments
+
+
+def allocate_regeneration_facts(
+    application: InsightApplicationMap,
+    *,
+    count: int,
+    ordinal_start: int,
+    original_fact_ids: Sequence[str],
+    preserve_product_relation: bool,
+) -> list[CreativeFactAssignment]:
+    """Reuse verified facts by default; only rotate facts for an explicit fresh creative."""
+
+    verified_original = [
+        fact_id
+        for fact_id in dict.fromkeys(original_fact_ids)
+        if fact_id in application.by_id
+        and application.by_id[fact_id].policy
+        in {InsightFactPolicy.REQUIRED, InsightFactPolicy.ADAPTIVE}
+    ][:4]
+    if preserve_product_relation and verified_original:
+        return [
+            _assignment(verified_original, ordinal=ordinal_start + offset)
+            for offset in range(count)
+        ]
+    return allocate_creative_facts(
+        application,
+        count=count,
+        ordinal_start=ordinal_start,
+        preferred_fact_ids=(),
+    )
 
 
 def assignment_for_direction(

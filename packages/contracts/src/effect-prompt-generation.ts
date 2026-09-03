@@ -333,6 +333,41 @@ export const EFFECT_PROMPT_OPERATIONS = [
 ] as const;
 export type EffectPromptOperation = (typeof EFFECT_PROMPT_OPERATIONS)[number];
 
+export const EFFECT_PROMPT_REGENERATION_MODES = [
+  'PRESERVE_PRODUCT_RELATION',
+  'NEW_CREATIVE',
+  'CUSTOM',
+] as const;
+export type EffectPromptRegenerationMode = (typeof EFFECT_PROMPT_REGENERATION_MODES)[number];
+
+export const EFFECT_PROMPT_REGENERATION_REASONS = [
+  'PRODUCT_RELATION_WEAK',
+  'CREATIVE_ORDINARY',
+  'TOO_SIMILAR',
+  'SCENE_UNSUITABLE',
+  'ACTION_UNREASONABLE',
+  'CAMERA_TOO_COMPLEX',
+  'CUSTOM',
+] as const;
+export type EffectPromptRegenerationReason = (typeof EFFECT_PROMPT_REGENERATION_REASONS)[number];
+
+export type EffectPromptRegenerationCandidate = {
+  candidateId: string;
+  item: EffectPromptItem;
+  recommended: boolean;
+  highlights: string[];
+  warnings: string[];
+};
+
+export type EffectPromptRegenerationPreview = {
+  targetItemId: string;
+  baseResultId: string;
+  baseResultRevision: number;
+  candidates: EffectPromptRegenerationCandidate[];
+  canApply: boolean;
+  appliedCandidateId: string | null;
+};
+
 export const EFFECT_PROMPT_RUN_STATUSES = ['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED'] as const;
 export type EffectPromptRunStatus = (typeof EFFECT_PROMPT_RUN_STATUSES)[number];
 export const EFFECT_PROMPT_MAX_RUN_ATTEMPTS = 3;
@@ -463,6 +498,7 @@ export type EffectPromptRun = {
   errorCode: EffectPromptErrorCode | string | null;
   errorMessage: string | null;
   promptResultId: string | null;
+  regenerationPreview?: EffectPromptRegenerationPreview | null;
   nodes: EffectPromptNodeExecution[];
   createdAt: string;
   updatedAt: string;
@@ -524,6 +560,9 @@ export type StartEffectPromptRunRequest = {
   targetItemId?: string | undefined;
   regenerationInstruction?: string | undefined;
   replacementDimensions?: EffectPromptDimensions | undefined;
+  regenerationMode?: EffectPromptRegenerationMode | undefined;
+  regenerationReasons?: EffectPromptRegenerationReason[] | undefined;
+  preservedDimensions?: EffectPromptDimensionKey[] | undefined;
   expectedSettingsRevision: number;
   expectedResultRevision?: number | undefined;
   idempotencyKey: string;
@@ -773,6 +812,17 @@ export type UpdateEffectPromptResultData = {
   result: EffectPromptBatchResult;
   savedAt: string;
   unchanged: boolean;
+};
+
+export type ApplyEffectPromptRegenerationRequest = {
+  candidateId: string;
+  expectedRevision: number;
+  idempotencyKey: string;
+};
+
+export type UndoEffectPromptRegenerationRequest = {
+  expectedRevision: number;
+  idempotencyKey: string;
 };
 
 export type ValidateEffectPromptResultRequest = { expectedRevision: number };

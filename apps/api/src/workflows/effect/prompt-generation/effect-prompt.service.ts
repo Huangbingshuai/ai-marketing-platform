@@ -5,12 +5,16 @@ import type {
   EffectPromptFragmentType,
   EffectPromptItem,
   EffectPromptOperation,
+  EffectPromptRegenerationMode,
+  EffectPromptRegenerationReason,
+  EffectPromptDimensionKey,
   EffectPromptBatchResult,
   EffectPromptRenderProfile,
   EffectPromptNodeExecution,
   EffectPromptNodeId,
   EffectPromptProductState,
   EffectPromptRun,
+  EffectPromptRegenerationPreview,
   EffectPromptShardPhase,
   EffectPromptSharedPrompt,
   GetEffectPromptNodeDetailData,
@@ -177,6 +181,57 @@ const presentNodes = (record: EffectPromptRunRecord): EffectPromptNodeExecution[
     };
   });
 
+const presentRegenerationPreview = (
+  record: EffectPromptRunRecord,
+): EffectPromptRegenerationPreview | null => {
+  const snapshot = currentSnapshot(record);
+  if (snapshot?.operation !== 'ITEM_REGENERATE' || !snapshot.targetItem || !snapshot.baseResultId)
+    return null;
+  const resultStage = record.stages.find(({ nodeId }) => nodeId === 'RESULT_SAVE');
+  const metadata =
+    resultStage?.metadata &&
+    typeof resultStage.metadata === 'object' &&
+    !Array.isArray(resultStage.metadata)
+      ? (resultStage.metadata as Record<string, unknown>)
+      : null;
+  const preview = parseEffectPromptBatchResult(metadata?.regenerationPreviewResult);
+  if (!preview || preview.items.length === 0) return null;
+  const dimensionLabels = new Map(EFFECT_PROMPT_DIMENSIONS.map(({ key, label }) => [key, label]));
+  const candidates = preview.items.slice(0, 3).map((item, index) => {
+    const changed = EFFECT_PROMPT_DIMENSIONS.filter(
+      ({ key }) => item.dimensions[key].trim() !== snapshot.targetItem!.dimensions[key].trim(),
+    ).map(({ key }) => dimensionLabels.get(key) ?? key);
+    const highlights = [
+      ...(item.productRelevance >= 80 ? ['产品关联清晰'] : []),
+      ...(changed.length > 0 ? [`调整了${changed.slice(0, 3).join('、')}`] : []),
+      ...(item.primaryPurpose !== snapshot.targetItem!.primaryPurpose
+        ? ['推荐用途已重新判断']
+        : []),
+    ];
+    return {
+      candidateId: item.id,
+      item,
+      recommended: index === 0,
+      highlights: highlights.length > 0 ? highlights : ['保留原意并优化表达'],
+      warnings: item.productRelevance < 65 ? ['产品关联仍需人工确认'] : [],
+    };
+  });
+  const appliedCandidateId =
+    typeof metadata?.appliedCandidateId === 'string' ? metadata.appliedCandidateId : null;
+  return {
+    targetItemId: snapshot.targetItem.id,
+    baseResultId: snapshot.baseResultId,
+    baseResultRevision: snapshot.baseResultRevision ?? 1,
+    candidates,
+    canApply:
+      record.status === 'COMPLETED' &&
+      !record.result &&
+      !appliedCandidateId &&
+      metadata?.regenerationUndone !== true,
+    appliedCandidateId,
+  };
+};
+
 const presentRun = (record: EffectPromptRunRecord): EffectPromptRun => ({
   id: record.id,
   projectId: record.projectId,
@@ -198,6 +253,7 @@ const presentRun = (record: EffectPromptRunRecord): EffectPromptRun => ({
   errorCode: record.errorCode,
   errorMessage: record.errorMessage,
   promptResultId: record.result?.id ?? null,
+  regenerationPreview: presentRegenerationPreview(record),
   nodes: presentNodes(record),
   createdAt: record.createdAt.toISOString(),
   updatedAt: record.updatedAt.toISOString(),
@@ -552,6 +608,9 @@ export class EffectPromptService {
       targetItemId?: string;
       regenerationInstruction?: string;
       replacementDimensions?: EffectPromptDimensions;
+      regenerationMode?: EffectPromptRegenerationMode;
+      regenerationReasons?: EffectPromptRegenerationReason[];
+      preservedDimensions?: EffectPromptDimensionKey[];
       expectedSettingsRevision: number;
       expectedResultRevision?: number;
       idempotencyKey: string;
@@ -562,7 +621,11 @@ export class EffectPromptService {
     if (!idempotencyKey) throw badRequest('幂等键不能为空');
     if (
       (input.operation === 'BATCH_GENERATE' || input.operation === 'ITEM_EVALUATE') &&
-      (input.regenerationInstruction !== undefined || input.replacementDimensions !== undefined)
+      (input.regenerationInstruction !== undefined ||
+        input.replacementDimensions !== undefined ||
+        input.regenerationMode !== undefined ||
+        input.regenerationReasons !== undefined ||
+        input.preservedDimensions !== undefined)
     )
       throw badRequest(
         input.operation === 'BATCH_GENERATE'
@@ -580,6 +643,12 @@ export class EffectPromptService {
       );
     if ((input.regenerationInstruction?.trim().length ?? 0) > 500)
       throw badRequest('修改意见不能超过 500 字');
+    if (
+      input.operation === 'ITEM_REGENERATE' &&
+      input.regenerationMode === 'CUSTOM' &&
+      !input.regenerationInstruction?.trim()
+    )
+      throw badRequest('按修改意见重做时必须填写修改意见');
     if (input.replacementDimensions && !validateDimensions(input.replacementDimensions))
       throw badRequest('六维设置必须完整填写且不能超过长度限制');
     const replacementDimensions = input.replacementDimensions
@@ -596,6 +665,14 @@ export class EffectPromptService {
       targetItemId: input.targetItemId ?? null,
       regenerationInstruction,
       replacementDimensions,
+      regenerationMode: input.regenerationMode ?? null,
+      regenerationReasons: [...new Set(input.regenerationReasons ?? [])],
+      preservedDimensions: [
+        ...new Set(
+          input.preservedDimensions ??
+            (input.operation === 'ITEM_REGENERATE' ? ['productRelation' as const] : []),
+        ),
+      ],
       expectedSettingsRevision: input.expectedSettingsRevision,
       expectedResultRevision: input.expectedResultRevision ?? null,
       idempotencyKey,
@@ -785,6 +862,71 @@ export class EffectPromptService {
       savedAt: (output.result.savedAt ?? output.result.updatedAt).toISOString(),
       unchanged: output.kind === 'UNCHANGED',
     };
+  }
+
+  private presentRegenerationMutation(
+    output:
+      | Awaited<ReturnType<EffectPromptRepository['applyRegenerationCandidate']>>
+      | Awaited<ReturnType<EffectPromptRepository['undoRegenerationCandidate']>>,
+  ): UpdateEffectPromptResultData {
+    if (output.kind === 'NOT_FOUND') throw notFound('Prompt 结果或重新生成任务不存在');
+    if (output.kind === 'REVISION_CONFLICT')
+      throw conflict('Prompt 结果已被其他操作更新，请刷新后重试');
+    if (output.kind === 'PREVIEW_CONFLICT')
+      throw conflict('这组备选已经失效，请基于当前 Prompt 重新生成');
+    if (output.kind === 'CANDIDATE_NOT_FOUND') throw notFound('重新生成备选不存在');
+    if (output.kind === 'ITEM_NOT_FOUND') throw notFound('原 Prompt 不存在');
+    if (output.kind === 'INVALID_RESULT') throw conflict('Prompt 结果结构无效，请重新生成');
+    return {
+      resultId: output.result.id,
+      productId: output.result.productId,
+      revision: output.result.revision,
+      result: output.draft,
+      savedAt: (output.result.savedAt ?? output.result.updatedAt).toISOString(),
+      unchanged: output.kind === 'UNCHANGED',
+    };
+  }
+
+  async applyRegenerationCandidate(
+    projectId: string,
+    resultId: string,
+    runId: string,
+    candidateId: string,
+    expectedRevision: number,
+    idempotencyKey: string,
+  ): Promise<UpdateEffectPromptResultData> {
+    await this.projects.get(projectId);
+    if (!idempotencyKey.trim()) throw badRequest('幂等键不能为空');
+    return this.presentRegenerationMutation(
+      await this.repository.applyRegenerationCandidate(
+        projectId,
+        resultId,
+        runId,
+        candidateId,
+        expectedRevision,
+        idempotencyKey.trim(),
+      ),
+    );
+  }
+
+  async undoRegenerationCandidate(
+    projectId: string,
+    resultId: string,
+    runId: string,
+    expectedRevision: number,
+    idempotencyKey: string,
+  ): Promise<UpdateEffectPromptResultData> {
+    await this.projects.get(projectId);
+    if (!idempotencyKey.trim()) throw badRequest('幂等键不能为空');
+    return this.presentRegenerationMutation(
+      await this.repository.undoRegenerationCandidate(
+        projectId,
+        resultId,
+        runId,
+        expectedRevision,
+        idempotencyKey.trim(),
+      ),
+    );
   }
 
   async addItem(
@@ -990,7 +1132,7 @@ export class EffectPromptService {
       verified.metrics.semanticEvaluation.status === 'VERIFIED' &&
       verified.metrics.semanticEvaluation.duplicateRate !== null &&
       verified.metrics.semanticEvaluation.duplicateRate >=
-      EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT
+        EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT
     )
       warnings.push({
         code: 'SEMANTIC_DIVERSITY_CAN_BE_IMPROVED',
@@ -1275,7 +1417,9 @@ export class EffectPromptService {
     if (result.kind === 'LEASE_CONFLICT') throw conflict('Worker 租约已失效');
     if (result.kind === 'INVALID_SEMANTIC_AUDIT')
       throw badRequest('Prompt 语义评估与当前正文不一致，请重新执行评估');
-    return { promptResultId: result.result.id };
+    if (result.kind === 'INVALID_REGENERATION_PREVIEW')
+      throw badRequest('单条 Prompt 备选结果必须正好包含 3 个已评估方案');
+    return { promptResultId: result.result?.id ?? null };
   }
 
   async fail(

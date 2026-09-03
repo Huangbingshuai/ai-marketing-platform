@@ -107,7 +107,11 @@ from .creative_directions import (
     validate_creative_direction_plan,
     validate_semantic_profile,
 )
-from .fact_allocation import allocate_creative_facts, assignment_for_direction
+from .fact_allocation import (
+    allocate_creative_facts,
+    allocate_regeneration_facts,
+    assignment_for_direction,
+)
 from .visual_strategy import (
     strategy_stage_metadata,
     validate_fact_visual_strategy,
@@ -1226,7 +1230,7 @@ class PromptGenerationPipeline:
             return []
         direction_plan = await self._ensure_creative_direction_plan(context)
         selection_target = (
-            1
+            3
             if snapshot.operation == "ITEM_REGENERATE"
             else max(0, settings.target_count - len(snapshot.retained_manual_items))
         )
@@ -1349,6 +1353,17 @@ class PromptGenerationPipeline:
                 )
                 for index, direction in enumerate(directions)
             ]
+        elif snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item:
+            fact_assignments = allocate_regeneration_facts(
+                application,
+                count=requested,
+                ordinal_start=ordinal_start,
+                original_fact_ids=preferred_item_fact_ids,
+                preserve_product_relation=(
+                    snapshot.regeneration_mode != "NEW_CREATIVE"
+                    or "productRelation" in snapshot.preserved_dimensions
+                ),
+            )
         else:
             fact_assignments = allocate_creative_facts(
                 application,
@@ -1504,6 +1519,10 @@ class PromptGenerationPipeline:
                                         if snapshot.replacement_dimensions
                                         else None
                                     ),
+                                    "mode": snapshot.regeneration_mode
+                                    or "PRESERVE_PRODUCT_RELATION",
+                                    "reasons": snapshot.regeneration_reasons,
+                                    "preservedDimensions": snapshot.preserved_dimensions,
                                 }
                                 if snapshot.operation == "ITEM_REGENERATE"
                                 and snapshot.target_item
@@ -1982,8 +2001,10 @@ class PromptGenerationPipeline:
         settings = _current_settings(snapshot)
         item_operation = snapshot.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"}
         selection_target = (
-            1
-            if item_operation
+            3
+            if snapshot.operation == "ITEM_REGENERATE"
+            else 1
+            if snapshot.operation == "ITEM_EVALUATE"
             else max(0, settings.target_count - len(snapshot.retained_manual_items))
         )
         application = self._require_application(context)
@@ -2425,7 +2446,11 @@ class PromptGenerationPipeline:
             context,
             result,
             self._require_application(context),
-            settings.default_duration_seconds,
+            (
+                snapshot.target_item.target_duration_seconds
+                if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item
+                else settings.default_duration_seconds
+            ),
             fact_visual_strategy=(
                 self._required_fact_visual_strategy(context)
                 if _uses_fact_visual_strategy(snapshot)
@@ -2665,14 +2690,20 @@ class PromptGenerationPipeline:
         )
         return pending, should_supplement
 
-    async def save_result(self, context: RuntimeContext) -> str:
+    async def save_result(self, context: RuntimeContext) -> str | None:
         cache = self._cache(context)
         snapshot = self.snapshot(context)
         settings = _current_settings(snapshot)
         items = cache.accepted_items
         item_operation = snapshot.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"}
-        expected = 1 if item_operation else settings.target_count
-        if not item_operation and len(items) != expected:
+        expected = (
+            3
+            if snapshot.operation == "ITEM_REGENERATE"
+            else 1
+            if snapshot.operation == "ITEM_EVALUATE"
+            else settings.target_count
+        )
+        if snapshot.operation != "ITEM_EVALUATE" and len(items) != expected:
             exc = PipelineError(
                 f"安全候选数量不足：目标 {expected} 条，实际 {len(items)} 条"
             )
