@@ -77,6 +77,7 @@ export class EffectPromptController {
       query.pageSize,
       query.query,
       query.purpose ?? query.fragmentType,
+      query.purposeMatch,
     );
   }
 

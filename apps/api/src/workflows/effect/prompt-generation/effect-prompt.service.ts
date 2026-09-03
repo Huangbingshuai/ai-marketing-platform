@@ -6,6 +6,7 @@ import type {
   EffectPromptInsightField,
   EffectPromptItem,
   EffectPromptOperation,
+  EffectPromptPurposeMatchMode,
   EffectPromptRegenerationMode,
   EffectPromptRegenerationReason,
   EffectPromptDimensionKey,
@@ -337,8 +338,15 @@ const comparePromptItemsForDisplay = (left: EffectPromptItem, right: EffectPromp
   return left.code.localeCompare(right.code, 'zh-CN', { numeric: true });
 };
 
-const itemMatchesPurpose = (item: EffectPromptItem, purpose?: EffectPromptFragmentType): boolean =>
-  !purpose || item.primaryPurpose === purpose || item.compatiblePurposes.includes(purpose);
+const itemMatchesPurpose = (
+  item: EffectPromptItem,
+  purpose?: EffectPromptFragmentType,
+  purposeMatch: EffectPromptPurposeMatchMode = 'PRIMARY',
+): boolean =>
+  !purpose ||
+  (item.classificationStatus === 'VERIFIED' &&
+    (item.primaryPurpose === purpose ||
+      (purposeMatch === 'PRIMARY_OR_COMPATIBLE' && item.compatiblePurposes.includes(purpose))));
 
 const unknownRecord = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -779,6 +787,7 @@ export class EffectPromptService {
     pageSize: number,
     query = '',
     purpose?: EffectPromptFragmentType,
+    purposeMatch: EffectPromptPurposeMatchMode = 'PRIMARY',
   ): Promise<GetEffectPromptResultData> {
     await this.requireWorkflow(projectId, workflowRunId);
     const record = await this.repository.latestResult(projectId, workflowRunId, productId);
@@ -810,7 +819,9 @@ export class EffectPromptService {
         sharedPrompt,
       );
       const filtered = preview.items
-        .filter((item) => itemMatchesPurpose(item, purpose) && searchable(item, query))
+        .filter(
+          (item) => itemMatchesPurpose(item, purpose, purposeMatch) && searchable(item, query),
+        )
         .sort(comparePromptItemsForDisplay);
       const offset = (page - 1) * pageSize;
       return {
@@ -836,7 +847,7 @@ export class EffectPromptService {
     const draft = parseEffectPromptBatchResult(record.draftResult);
     if (!draft) throw conflict('Prompt 结果结构无效，请重新生成');
     const filtered = draft.items
-      .filter((item) => itemMatchesPurpose(item, purpose) && searchable(item, query))
+      .filter((item) => itemMatchesPurpose(item, purpose, purposeMatch) && searchable(item, query))
       .sort(comparePromptItemsForDisplay);
     const offset = (page - 1) * pageSize;
     const summary = {

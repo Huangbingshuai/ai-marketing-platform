@@ -848,7 +848,7 @@ describe('EffectPromptService settings contract', () => {
     expect(repository.mutateResult).not.toHaveBeenCalled();
   });
 
-  it('combines multi-keyword search with the existing purpose filter', async () => {
+  it('combines multi-keyword search with explicit primary or compatible purpose matching', async () => {
     const timestamp = '2026-08-25T00:00:00.000Z';
     const makeItem = (
       id: string,
@@ -891,11 +891,19 @@ describe('EffectPromptService settings contract', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
+    const pendingPain: EffectPromptItem = {
+      ...makeItem('pending-pain', 'CTA', '等待用途评估的人工内容'),
+      fragmentType: 'PAIN',
+      primaryPurpose: 'PAIN',
+      compatiblePurposes: ['PAIN'],
+      classificationStatus: 'PENDING',
+    };
     const draftResult = recomputePromptQuality(
       [
         makeItem('hook-kitchen', 'HOOK', '家庭厨房中人物拿起产品并转向镜头'),
         makeItem('hook-outdoor', 'HOOK', '户外草地上人物打开产品并转向镜头'),
         makeItem('cta-kitchen', 'CTA', '家庭厨房中人物摆放产品并展示转化字幕'),
+        pendingPain,
       ],
       DEFAULT_EFFECT_PROMPT_SETTINGS,
     );
@@ -923,6 +931,29 @@ describe('EffectPromptService settings contract', () => {
 
     expect(output.total).toBe(1);
     expect(output.items.map(({ id }) => id)).toEqual(['hook-kitchen']);
+
+    const primaryPurposeOnly = await service.result(
+      'project-a',
+      'workflow-a',
+      'product-a',
+      1,
+      10,
+      '',
+      'PAIN',
+    );
+    expect(primaryPurposeOnly.total).toBe(0);
+
+    const includingCompatiblePurpose = await service.result(
+      'project-a',
+      'workflow-a',
+      'product-a',
+      1,
+      10,
+      '',
+      'PAIN',
+      'PRIMARY_OR_COMPATIBLE',
+    );
+    expect(includingCompatiblePurpose.items.map(({ id }) => id)).toEqual(['hook-kitchen']);
 
     const businessFields = await service.result(
       'project-a',

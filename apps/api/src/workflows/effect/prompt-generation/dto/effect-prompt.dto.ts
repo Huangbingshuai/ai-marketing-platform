@@ -4,6 +4,7 @@ import type {
   EffectPromptDimensions,
   EffectPromptFragmentType,
   EffectPromptOperation,
+  EffectPromptPurposeMatchMode,
   EffectPromptShardPhase,
   EffectPromptStageStatus,
 } from '@ai-marketing/contracts';
@@ -12,6 +13,7 @@ import {
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_OPERATIONS,
+  EFFECT_PROMPT_PURPOSE_MATCH_MODES,
   EFFECT_PROMPT_REGENERATION_MODES,
   EFFECT_PROMPT_REGENERATION_REASONS,
   EFFECT_PROMPT_DIMENSIONS,
@@ -45,6 +47,9 @@ export class PromptResultQueryDto {
   @IsOptional() @IsString() @MaxLength(200) query?: string;
   @IsOptional() @IsIn([...EFFECT_PROMPT_FRAGMENT_TYPES]) fragmentType?: EffectPromptFragmentType;
   @IsOptional() @IsIn([...EFFECT_PROMPT_FRAGMENT_TYPES]) purpose?: EffectPromptFragmentType;
+  @IsOptional()
+  @IsIn([...EFFECT_PROMPT_PURPOSE_MATCH_MODES])
+  purposeMatch?: EffectPromptPurposeMatchMode;
 }
 
 export class SavePromptSettingsDto {

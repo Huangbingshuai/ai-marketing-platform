@@ -28,6 +28,7 @@ describe('effect prompt generation API', () => {
       2,
       '家庭 场景',
       'HOOK',
+      'PRIMARY_OR_COMPATIBLE',
     );
     const url = String(fetchMock.mock.calls[0]![0]);
     expect(url).toContain(
@@ -38,6 +39,18 @@ describe('effect prompt generation API', () => {
     expect(url).toContain('workflowRunId=workflow+%2F+1');
     expect(url).toContain('query=%E5%AE%B6%E5%BA%AD+%E5%9C%BA%E6%99%AF');
     expect(url).toContain('purpose=HOOK');
+    expect(url).toContain('purposeMatch=PRIMARY_OR_COMPATIBLE');
+  });
+
+  it('uses primary-purpose matching by default', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(ok()));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await getEffectPromptResult('project-1', 'workflow-1', 'product-1', 1, '', 'PAIN');
+
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).toContain('purpose=PAIN');
+    expect(url).toContain('purposeMatch=PRIMARY');
   });
 
   it('uses result CAS for edit, delete and validation mutations', async () => {

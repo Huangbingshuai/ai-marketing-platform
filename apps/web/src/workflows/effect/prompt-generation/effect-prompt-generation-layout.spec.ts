@@ -49,13 +49,17 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('await writeClipboardText(item.content)');
   });
 
-  it('shows recommendation and compatible purposes and filters by either purpose', () => {
+  it('shows recommendation and compatible purposes with primary matching as the default', () => {
     expect(pageSource).toContain('推荐：{{ fragmentTypeLabel(item.primaryPurpose) }}');
     expect(pageSource).toContain('item.compatiblePurposes');
     expect(pageSource).toContain('还适合');
     expect(pageSource).toContain('class="purpose-filter-bar"');
     expect(pageSource).toContain('togglePurposeFilter(purpose)');
     expect(pageSource).toContain('purposeFilter.value || undefined');
+    expect(pageSource).toContain('includeCompatiblePurposes');
+    expect(pageSource).toContain('包含兼容用途');
+    expect(pageSource).toContain("? 'PRIMARY_OR_COMPATIBLE' : 'PRIMARY'");
+    expect(pageSource).toContain('purposeCount(purpose)');
     expect(pageSource).not.toContain('fragmentTypeFilter');
   });
 

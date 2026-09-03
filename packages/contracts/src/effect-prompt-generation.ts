@@ -57,6 +57,9 @@ export const EFFECT_PROMPT_FRAGMENT_TYPE_LABELS: Record<EffectPromptFragmentType
   OUTRO: '片尾品牌片段',
 };
 
+export const EFFECT_PROMPT_PURPOSE_MATCH_MODES = ['PRIMARY', 'PRIMARY_OR_COMPATIBLE'] as const;
+export type EffectPromptPurposeMatchMode = (typeof EFFECT_PROMPT_PURPOSE_MATCH_MODES)[number];
+
 export type EffectPromptBatchSettings = {
   targetCount: number;
   defaultDurationSeconds: number;
@@ -552,6 +555,7 @@ export type GetEffectPromptResultQuery = {
   pageSize?: number | undefined;
   query?: string | undefined;
   purpose?: EffectPromptFragmentType | undefined;
+  purposeMatch?: EffectPromptPurposeMatchMode | undefined;
 };
 
 export type StartEffectPromptRunRequest = {

@@ -6,6 +6,7 @@ import type {
   EffectPromptInsightField,
   EffectPromptItem,
   EffectPromptNodeId,
+  EffectPromptPurposeMatchMode,
   EffectPromptRun,
   GetEffectPromptNodeDetailData,
   GetEffectPromptResultData,
@@ -108,10 +109,20 @@ export const loadEffectPromptResult = async (
   page: number,
   query: string,
   purpose?: EffectPromptFragmentType,
+  purposeMatch: EffectPromptPurposeMatchMode = 'PRIMARY',
   signal?: AbortSignal,
 ): Promise<EffectPromptViewResultData> => {
   return (
-    await getEffectPromptResult(projectId, workflowRunId, productId, page, query, purpose, signal)
+    await getEffectPromptResult(
+      projectId,
+      workflowRunId,
+      productId,
+      page,
+      query,
+      purpose,
+      purposeMatch,
+      signal,
+    )
   ).data as EffectPromptViewResultData;
 };
 

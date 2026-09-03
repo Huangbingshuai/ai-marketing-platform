@@ -141,6 +141,11 @@ describe('effect prompt quality contract', () => {
         { code: 'CLASSIFICATION_PENDING', count: 1 },
       ]),
     );
+    expect(result.metrics.purposeDistribution).toContainEqual({
+      purpose: 'PRODUCT_DISPLAY',
+      primaryCount: 1,
+      compatibleCount: 1,
+    });
     const recomputed = recomputePromptQuality(result.items, result.settings, result.metrics);
     expect(recomputed.metrics.hardIssueCounts).toEqual(result.metrics.hardIssueCounts);
   });

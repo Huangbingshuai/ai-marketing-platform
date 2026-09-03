@@ -24,7 +24,6 @@ import {
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_RENDER_CAPABILITIES,
   EFFECT_PROMPT_RENDER_CAPABILITY_KEYS,
-  EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT,
   EFFECT_PROMPT_SEMANTIC_EVALUATION_STATUSES,
   EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD,
   SEEDANCE_RATIOS,
@@ -948,10 +947,12 @@ export const recomputePromptQuality = (
   const settings = normalizeEffectPromptSettings(rawSettings);
   const items = rawItems.filter(isEffectPromptItem);
   const exactDuplicatePairs = effectPromptExactDuplicatePairs(items);
+  const classifiedItems = items.filter((item) => item.classificationStatus === 'VERIFIED');
   const purposeDistribution = EFFECT_PROMPT_FRAGMENT_TYPES.map((purpose) => ({
     purpose,
-    primaryCount: items.filter((item) => item.primaryPurpose === purpose).length,
-    compatibleCount: items.filter((item) => item.compatiblePurposes.includes(purpose)).length,
+    primaryCount: classifiedItems.filter((item) => item.primaryPurpose === purpose).length,
+    compatibleCount: classifiedItems.filter((item) => item.compatiblePurposes.includes(purpose))
+      .length,
   }));
   const hardIssueCounts = new Map<string, number>(
     (previous?.hardIssueCounts ?? [])

@@ -10,6 +10,7 @@ import type {
   EffectPromptNodeExecution,
   EffectPromptNodeId,
   EffectPromptProductState,
+  EffectPromptPurposeMatchMode,
   EffectPromptRun,
   EffectPromptRegenerationMode,
   EffectPromptRegenerationReason,
@@ -110,6 +111,7 @@ const resultData = ref<EffectPromptViewResultData | null>(null);
 const resultLoading = ref(false);
 const keyword = ref('');
 const purposeFilter = ref<EffectPromptFragmentType | ''>('');
+const includeCompatiblePurposes = ref(false);
 const page = ref(1);
 const notice = ref<Notice | null>(null);
 const itemOperation = ref<ItemOperation | null>(null);
@@ -328,6 +330,17 @@ const currentCountStats = computed(() => {
   };
 });
 const hasPromptFilters = computed(() => Boolean(keyword.value.trim() || purposeFilter.value));
+const purposeMatchMode = computed<EffectPromptPurposeMatchMode>(() =>
+  includeCompatiblePurposes.value ? 'PRIMARY_OR_COMPATIBLE' : 'PRIMARY',
+);
+const purposeCount = (purpose: EffectPromptFragmentType): number => {
+  const distribution = currentMetrics.value?.purposeDistribution.find(
+    (item) => item.purpose === purpose,
+  );
+  return includeCompatiblePurposes.value
+    ? (distribution?.compatibleCount ?? 0)
+    : (distribution?.primaryCount ?? 0);
+};
 const promptResultCountLabel = computed(() =>
   hasPromptFilters.value
     ? `找到 ${resultData.value?.total ?? 0} 条 · 批次共 ${currentCountStats.value.actualCount} 条`
@@ -529,6 +542,7 @@ const loadCurrentResult = async (): Promise<void> => {
       page.value,
       keyword.value,
       purposeFilter.value || undefined,
+      purposeMatchMode.value,
       controller.signal,
     );
     if (
@@ -733,6 +747,7 @@ watch(currentProductId, (next, previous) => {
   page.value = 1;
   keyword.value = '';
   purposeFilter.value = '';
+  includeCompatiblePurposes.value = false;
   itemMutationController?.abort();
   sharedPromptController?.abort();
   exportController?.abort();
@@ -765,7 +780,7 @@ watch(currentProductId, (next, previous) => {
   void loadCurrentResult();
 });
 watch(page, () => void loadCurrentResult());
-watch(purposeFilter, () => {
+watch([purposeFilter, includeCompatiblePurposes], () => {
   if (page.value === 1) void loadCurrentResult();
   else page.value = 1;
 });
@@ -817,7 +832,17 @@ const adjustSetting = (key: NumericPromptSetting, delta: number): void => {
 };
 
 const togglePurposeFilter = (purpose: EffectPromptFragmentType): void => {
-  purposeFilter.value = purposeFilter.value === purpose ? '' : purpose;
+  if (purposeFilter.value === purpose) {
+    purposeFilter.value = '';
+    includeCompatiblePurposes.value = false;
+  } else {
+    purposeFilter.value = purpose;
+  }
+  page.value = 1;
+};
+const clearPurposeFilter = (): void => {
+  purposeFilter.value = '';
+  includeCompatiblePurposes.value = false;
   page.value = 1;
 };
 const clearPromptSearch = (): void => {
@@ -2198,9 +2223,9 @@ onBeforeUnmount(() => {
             type="button"
             :class="{ active: purposeFilter === '' }"
             :aria-pressed="purposeFilter === ''"
-            @click="purposeFilter = ''"
+            @click="clearPurposeFilter"
           >
-            全部用途
+            全部用途 <small>{{ currentCountStats.actualCount }}</small>
           </button>
           <button
             v-for="purpose in EFFECT_PROMPT_FRAGMENT_TYPES"
@@ -2210,8 +2235,16 @@ onBeforeUnmount(() => {
             :aria-pressed="purposeFilter === purpose"
             @click="togglePurposeFilter(purpose)"
           >
-            {{ fragmentTypeLabel(purpose) }}
+            {{ fragmentTypeLabel(purpose) }} <small>{{ purposeCount(purpose) }}</small>
           </button>
+          <label
+            class="compatible-purpose-toggle"
+            :class="{ disabled: !purposeFilter }"
+            title="开启后，也会显示将该用途标记为兼容用途的 Prompt"
+          >
+            <input v-model="includeCompatiblePurposes" type="checkbox" :disabled="!purposeFilter" />
+            <span>包含兼容用途</span>
+          </label>
         </nav>
 
         <div v-if="resultLoading" class="prompt-empty-state" role="status">
@@ -3974,8 +4007,11 @@ button:disabled {
   gap: 7px;
 }
 .purpose-filter-bar button {
+  display: inline-flex;
   min-height: 30px;
   padding: 0 11px;
+  align-items: center;
+  gap: 5px;
   color: #62728a;
   background: #f7f9fc;
   border: 1px solid #e1e7f0;
@@ -3983,10 +4019,47 @@ button:disabled {
   font-size: 10px;
   font-weight: 800;
 }
+.purpose-filter-bar button small {
+  min-width: 18px;
+  padding: 1px 5px;
+  color: #8795aa;
+  background: #fff;
+  border-radius: 999px;
+  font-size: 9px;
+  line-height: 16px;
+  text-align: center;
+}
 .purpose-filter-bar button.active {
   color: #245fca;
   background: #edf4ff;
   border-color: #bcd0f5;
+}
+.purpose-filter-bar button.active small {
+  color: #245fca;
+  background: #dce9ff;
+}
+.compatible-purpose-toggle {
+  display: inline-flex;
+  min-height: 30px;
+  margin-left: auto;
+  padding: 0 4px;
+  align-items: center;
+  gap: 7px;
+  color: #5d6d84;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  user-select: none;
+}
+.compatible-purpose-toggle input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: #2f6dea;
+}
+.compatible-purpose-toggle.disabled {
+  color: #aab4c3;
+  cursor: not-allowed;
 }
 .prompt-card {
   display: grid;

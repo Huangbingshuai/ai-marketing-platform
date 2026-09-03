@@ -12,6 +12,7 @@ import {
   EFFECT_PROMPT_LIMITS,
   EFFECT_PROMPT_NODE_DETAIL_SECTION_KINDS,
   EFFECT_PROMPT_NODE_DETAIL_SECTION_STATES,
+  EFFECT_PROMPT_PURPOSE_MATCH_MODES,
   EFFECT_PROMPT_REGENERATION_MODES,
   EFFECT_PROMPT_REGENERATION_REASONS,
   EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT,
@@ -97,6 +98,10 @@ describe('effect prompt generation contract', () => {
       'PARTIAL',
       'EMPTY',
     ]);
+  });
+
+  it('publishes explicit primary and compatible purpose matching modes', () => {
+    expect(EFFECT_PROMPT_PURPOSE_MATCH_MODES).toEqual(['PRIMARY', 'PRIMARY_OR_COMPATIBLE']);
   });
 
   it('keeps resolution as a structured insight constraint', () => {

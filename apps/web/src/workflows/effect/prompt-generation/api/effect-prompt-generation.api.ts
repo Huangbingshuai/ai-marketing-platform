@@ -3,6 +3,7 @@ import type {
   ApplyEffectPromptRegenerationRequest,
   EffectPromptBatchResult,
   EffectPromptFragmentType,
+  EffectPromptPurposeMatchMode,
   GetEffectPromptNodeDetailData,
   GetEffectPromptResultData,
   GetEffectPromptRunData,
@@ -67,6 +68,7 @@ export const getEffectPromptResult = (
   page: number,
   query: string,
   purpose?: EffectPromptFragmentType,
+  purposeMatch: EffectPromptPurposeMatchMode = 'PRIMARY',
   signal?: AbortSignal,
 ): Promise<ApiResponse<GetEffectPromptResultData>> => {
   const search = new URLSearchParams({
@@ -76,6 +78,7 @@ export const getEffectPromptResult = (
   });
   if (query.trim()) search.set('query', query.trim());
   if (purpose) search.set('purpose', purpose);
+  if (purpose) search.set('purposeMatch', purposeMatch);
   return requestJson(
     `${basePath(projectId)}/products/${encodeURIComponent(productId)}/result?${search.toString()}`,
     { operation: '加载 Prompt 结果', signal },
