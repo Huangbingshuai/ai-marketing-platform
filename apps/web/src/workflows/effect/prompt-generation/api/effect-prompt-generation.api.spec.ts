@@ -26,6 +26,7 @@ describe('effect prompt generation API', () => {
       'workflow / 1',
       'product / 1',
       2,
+      20,
       '家庭 场景',
       'HOOK',
       'PRIMARY_OR_COMPATIBLE',
@@ -35,7 +36,7 @@ describe('effect prompt generation API', () => {
       '/projects/project%20%2F%201/workflows/effect/prompt-generation/products/product%20%2F%201/result',
     );
     expect(url).toContain('page=2');
-    expect(url).toContain('pageSize=10');
+    expect(url).toContain('pageSize=20');
     expect(url).toContain('workflowRunId=workflow+%2F+1');
     expect(url).toContain('query=%E5%AE%B6%E5%BA%AD+%E5%9C%BA%E6%99%AF');
     expect(url).toContain('purpose=HOOK');
@@ -46,10 +47,11 @@ describe('effect prompt generation API', () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(ok()));
     vi.stubGlobal('fetch', fetchMock);
 
-    await getEffectPromptResult('project-1', 'workflow-1', 'product-1', 1, '', 'PAIN');
+    await getEffectPromptResult('project-1', 'workflow-1', 'product-1', 1, 50, '', 'PAIN');
 
     const url = String(fetchMock.mock.calls[0]![0]);
     expect(url).toContain('purpose=PAIN');
+    expect(url).toContain('pageSize=50');
     expect(url).toContain('purposeMatch=PRIMARY');
   });
 

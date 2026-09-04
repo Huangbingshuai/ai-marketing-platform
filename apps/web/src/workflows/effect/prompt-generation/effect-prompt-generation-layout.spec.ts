@@ -73,6 +73,17 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('purposeFilter.value || undefined');
   });
 
+  it('lets users switch the number of prompts shown per page', () => {
+    expect(pageSource).toContain('v-model.number="pageSize"');
+    expect(pageSource).toContain('aria-label="每页展示数量"');
+    expect(pageSource).toContain('EFFECT_PROMPT_PAGE_SIZE_OPTIONS');
+    expect(pageSource).toContain('@change="changePageSize"');
+    expect(pageSource).toContain('pageSize.value');
+    expect(pageSource).not.toContain(
+      '<span>{{ EFFECT_PROMPT_LIMITS.pageSize }} 条/页</span',
+    );
+  });
+
   it('shows the fixed semantic duplicate-rate result without restoring a user setting', () => {
     expect(pageSource).toContain('currentSemanticDisplay');
     expect(pageSource).toContain('语义重复度 ${evaluation.duplicateRate.toFixed(1)}%');

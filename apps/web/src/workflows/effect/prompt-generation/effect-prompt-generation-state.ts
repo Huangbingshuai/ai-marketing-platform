@@ -8,6 +8,8 @@ import { EFFECT_PROMPT_LIMITS, normalizeEffectPromptSettings } from '@ai-marketi
 export { EFFECT_PROMPT_LIMITS };
 export type EffectPromptPageStatus = 'loading' | 'ready' | 'error';
 
+export const EFFECT_PROMPT_PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
+
 const hydratePromptSettings = (settings: EffectPromptBatchSettings): EffectPromptBatchSettings => ({
   targetCount: settings.targetCount,
   defaultDurationSeconds: settings.defaultDurationSeconds,
@@ -24,12 +26,18 @@ export const clonePromptSettings = (
   settings: EffectPromptBatchSettings,
 ): EffectPromptBatchSettings => hydratePromptSettings(settings);
 
-export const promptPageCount = (itemCount: number): number =>
-  Math.max(1, Math.ceil(itemCount / EFFECT_PROMPT_LIMITS.pageSize));
+export const promptPageCount = (
+  itemCount: number,
+  pageSize: number = EFFECT_PROMPT_LIMITS.pageSize,
+): number => Math.max(1, Math.ceil(itemCount / Math.max(1, Math.trunc(pageSize))));
 
-export const clampPromptPage = (page: number, itemCount: number): number => {
+export const clampPromptPage = (
+  page: number,
+  itemCount: number,
+  pageSize: number = EFFECT_PROMPT_LIMITS.pageSize,
+): number => {
   const normalizedPage = Number.isFinite(page) ? Math.max(1, Math.trunc(page)) : 1;
-  return Math.min(normalizedPage, promptPageCount(itemCount));
+  return Math.min(normalizedPage, promptPageCount(itemCount, pageSize));
 };
 
 export const isPromptRunActive = (state: EffectPromptProductState | null): boolean =>

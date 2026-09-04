@@ -66,6 +66,7 @@ export const getEffectPromptResult = (
   workflowRunId: string,
   productId: string,
   page: number,
+  pageSize: number,
   query: string,
   purpose?: EffectPromptFragmentType,
   purposeMatch: EffectPromptPurposeMatchMode = 'PRIMARY',
@@ -74,7 +75,7 @@ export const getEffectPromptResult = (
   const search = new URLSearchParams({
     workflowRunId,
     page: String(page),
-    pageSize: '10',
+    pageSize: String(pageSize),
   });
   if (query.trim()) search.set('query', query.trim());
   if (purpose) search.set('purpose', purpose);

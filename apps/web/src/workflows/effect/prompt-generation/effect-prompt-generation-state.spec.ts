@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   clampPromptPage,
+  EFFECT_PROMPT_PAGE_SIZE_OPTIONS,
   EFFECT_PROMPT_LIMITS,
   isPromptProductCommitted,
   isPromptResultQualityReady,
@@ -116,9 +117,12 @@ describe('effect prompt generation state', () => {
     });
   });
 
-  it('keeps server pagination at ten prompts per page', () => {
+  it('supports selectable server pagination sizes', () => {
     expect(EFFECT_PROMPT_LIMITS.pageSize).toBe(10);
+    expect(EFFECT_PROMPT_PAGE_SIZE_OPTIONS).toEqual([10, 20, 50, 100]);
     expect(promptPageCount(23)).toBe(3);
+    expect(promptPageCount(23, 20)).toBe(2);
+    expect(promptPageCount(100, 50)).toBe(2);
     expect(promptPageCount(0)).toBe(1);
   });
 
@@ -127,6 +131,7 @@ describe('effect prompt generation state', () => {
     expect(clampPromptPage(2, 11)).toBe(2);
     expect(clampPromptPage(3, 0)).toBe(1);
     expect(clampPromptPage(Number.NaN, 50)).toBe(1);
+    expect(clampPromptPage(5, 50, 20)).toBe(3);
   });
 
   it('uses authoritative quality metrics and commit status for progression', () => {

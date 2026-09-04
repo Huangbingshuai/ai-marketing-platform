@@ -60,6 +60,7 @@ import { buildEffectPromptGraphRows } from './effect-prompt-generation-graph';
 import {
   clampPromptPage,
   clonePromptSettings,
+  EFFECT_PROMPT_PAGE_SIZE_OPTIONS,
   isPromptProductCommitted,
   isPromptResultQualityReady,
   isPromptRunActive,
@@ -113,6 +114,7 @@ const keyword = ref('');
 const purposeFilter = ref<EffectPromptFragmentType | ''>('');
 const includeCompatiblePurposes = ref(false);
 const page = ref(1);
+const pageSize = ref(EFFECT_PROMPT_LIMITS.pageSize);
 const notice = ref<Notice | null>(null);
 const itemOperation = ref<ItemOperation | null>(null);
 const validating = ref(false);
@@ -371,7 +373,9 @@ const currentSemanticDisplay = computed(() => {
   } as const;
 });
 const currentQualityReady = computed(() => isPromptResultQualityReady(currentResult.value));
-const totalPages = computed(() => promptPageCount(resultData.value?.total ?? 0));
+const totalPages = computed(() =>
+  promptPageCount(resultData.value?.total ?? 0, pageSize.value),
+);
 const allProductsCommitted = computed(
   () =>
     activeProducts.value.length > 0 &&
@@ -514,6 +518,7 @@ const loadCurrentResult = async (): Promise<void> => {
       props.workflowRunId,
       productId,
       page.value,
+      pageSize.value,
       keyword.value,
       purposeFilter.value || undefined,
       purposeMatchMode.value,
@@ -525,7 +530,7 @@ const loadCurrentResult = async (): Promise<void> => {
       productId !== currentProductId.value
     )
       return;
-    const validPage = clampPromptPage(page.value, loaded.total);
+    const validPage = clampPromptPage(page.value, loaded.total, pageSize.value);
     if (page.value !== validPage) {
       resultData.value = loaded;
       page.value = validPage;
@@ -748,6 +753,10 @@ watch(currentProductId, (next, previous) => {
   void loadCurrentResult();
 });
 watch(page, () => void loadCurrentResult());
+const changePageSize = (): void => {
+  if (page.value === 1) void loadCurrentResult();
+  else page.value = 1;
+};
 watch([purposeFilter, includeCompatiblePurposes], () => {
   if (page.value === 1) void loadCurrentResult();
   else page.value = 1;
@@ -1195,8 +1204,8 @@ const commitEditor = async (): Promise<void> => {
     const affectedIndex = saved.affectedItemIndex ?? -1;
     page.value =
       affectedIndex >= 0
-        ? Math.floor(affectedIndex / EFFECT_PROMPT_LIMITS.pageSize) + 1
-        : promptPageCount(saved.result.items.length);
+        ? Math.floor(affectedIndex / pageSize.value) + 1
+        : promptPageCount(saved.result.items.length, pageSize.value);
     await reloadWorkspace(false);
     showNotice(
       editorMode.value === 'edit'
@@ -2226,7 +2235,7 @@ onBeforeUnmount(() => {
 
         <article v-for="(item, index) in currentItems" v-else :key="item.id" class="prompt-card">
           <span class="prompt-number">{{
-            String((page - 1) * EFFECT_PROMPT_LIMITS.pageSize + index + 1).padStart(2, '0')
+            String((page - 1) * pageSize + index + 1).padStart(2, '0')
           }}</span>
           <div class="prompt-main">
             <header>
@@ -2363,7 +2372,18 @@ onBeforeUnmount(() => {
         </article>
 
         <div class="prompt-pagination">
-          <span>{{ EFFECT_PROMPT_LIMITS.pageSize }} 条/页</span
+          <label class="prompt-page-size">
+            <select
+              v-model.number="pageSize"
+              aria-label="每页展示数量"
+              :disabled="resultLoading"
+              @change="changePageSize"
+            >
+              <option v-for="size in EFFECT_PROMPT_PAGE_SIZE_OPTIONS" :key="size" :value="size">
+                {{ size }} 条/页
+              </option>
+            </select>
+          </label
           ><button type="button" :disabled="page <= 1 || resultLoading" @click="page -= 1">
             <ChevronLeft :size="14" />上一页</button
           ><strong>第 {{ page }} / {{ totalPages }} 页</strong
@@ -4292,7 +4312,7 @@ button:disabled {
   border-top: 1px solid #f0f2f5;
   font-size: 12px;
 }
-.prompt-pagination > span,
+.prompt-page-size select,
 .prompt-pagination button {
   display: inline-flex;
   height: 40px;
@@ -4305,8 +4325,13 @@ button:disabled {
   border: 1px solid #dfe5ed;
   border-radius: 10px;
 }
-.prompt-pagination > span {
+.prompt-page-size select {
   min-width: 108px;
+  appearance: auto;
+  cursor: pointer;
+}
+.prompt-page-size select:disabled {
+  cursor: wait;
 }
 .prompt-dialog-backdrop {
   --effect-blue: #2563eb;
