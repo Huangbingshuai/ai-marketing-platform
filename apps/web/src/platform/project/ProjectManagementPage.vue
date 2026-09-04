@@ -5,7 +5,6 @@ import {
   Boxes,
   CheckCircle2,
   GitBranch,
-  Layers3,
   LoaderCircle,
   LogOut,
   Plus,
@@ -25,6 +24,7 @@ import {
 } from 'vue';
 
 import AssetDrawer from '../asset/AssetDrawer.vue';
+import richiLogoColor from '../../assets/richi-logo-color.png';
 import EffectImportNodePage from '../../workflows/effect/source-import/EffectImportNodePage.vue';
 import { createProject, listProjects } from './api/project.api';
 import {
@@ -257,7 +257,7 @@ onBeforeUnmount(() => {
   <div class="system-page">
     <header class="system-header">
       <div class="system-brand">
-        <span class="brand-mark"><Layers3 :size="20" /></span>
+        <span class="brand-mark"><img :src="richiLogoColor" alt="瑞池传媒" /></span>
         <span><strong>AI 营销素材智能生成系统</strong><small>INTERNAL CREATIVE OS</small></span>
       </div>
       <nav aria-label="业务模块">
@@ -466,14 +466,21 @@ onBeforeUnmount(() => {
   letter-spacing: 0.18em;
 }
 .brand-mark {
-  display: grid;
+  display: block;
   width: 40px;
   height: 40px;
-  place-items: center;
-  color: #fff;
-  background: var(--blue);
+  overflow: hidden;
+  flex: 0 0 auto;
+  background: #fff;
   border-radius: 11px;
-  box-shadow: 0 8px 18px #2766ed32;
+  box-shadow: 0 8px 18px #d9ab3638;
+}
+.brand-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center top;
 }
 nav {
   display: flex;
