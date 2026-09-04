@@ -258,7 +258,7 @@ onBeforeUnmount(() => {
     <header class="system-header">
       <div class="system-brand">
         <span class="brand-mark"><img :src="richiLogoColor" alt="瑞池传媒" /></span>
-        <span><strong>AI 营销素材智能生成系统</strong><small>INTERNAL CREATIVE OS</small></span>
+        <span><strong>AI 营销素材智能生成系统</strong><small>瑞池传媒</small></span>
       </div>
       <nav aria-label="业务模块">
         <button
