@@ -17,13 +17,13 @@ const completionGateFixture = (duplicate = false) => {
     'HOOK',
     'HOOK',
     'HOOK',
-    'HOOK',
-    'HOOK',
-    'PAIN',
     'PRODUCT_DISPLAY',
-    'SELLING_POINT_EXPLANATION',
+    'PRODUCT_DISPLAY',
+    'PRODUCT_DISPLAY',
+    'EFFECT',
+    'EFFECT',
     'CTA',
-    'OUTRO',
+    'CTA',
   ] as const;
   const contents = [
     '晨光厨房里，成年人拿起杯盖靠近窗边，近景缓慢推进，停在尚未揭晓的局部。',
@@ -938,7 +938,7 @@ describe('EffectPromptService settings contract', () => {
 
     const output = await service.addItem('project-a', 'result-a', 1, {
       content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
-      primaryPurpose: 'SELLING_POINT_EXPLANATION',
+      primaryPurpose: 'EFFECT',
       creativeCore: '用家常装盘突出方便搭配',
       dimensions: {
         narrative: '动作展示',
@@ -957,9 +957,9 @@ describe('EffectPromptService settings contract', () => {
     expect(output.evaluationStartError).toBeUndefined();
     expect(output.result.items.find(({ id }) => id === output.affectedItemId)).toMatchObject({
       classificationStatus: 'PENDING',
-      fragmentType: 'SELLING_POINT_EXPLANATION',
-      primaryPurpose: 'SELLING_POINT_EXPLANATION',
-      compatiblePurposes: ['SELLING_POINT_EXPLANATION'],
+      fragmentType: 'EFFECT',
+      primaryPurpose: 'EFFECT',
+      compatiblePurposes: ['EFFECT'],
       content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
       creativeCore: '用家常装盘突出方便搭配',
       dimensions: {
@@ -1028,7 +1028,7 @@ describe('EffectPromptService settings contract', () => {
       origin: 'AI' as const,
       fragmentType,
       primaryPurpose: fragmentType,
-      compatiblePurposes: id === 'hook-kitchen' ? [fragmentType, 'PAIN'] : [fragmentType],
+      compatiblePurposes: id === 'hook-kitchen' ? [fragmentType, 'EFFECT'] : [fragmentType],
       classificationStatus: 'VERIFIED' as const,
       productRelevance: 80,
       targetDurationSeconds: 5,
@@ -1058,11 +1058,11 @@ describe('EffectPromptService settings contract', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
-    const pendingPain: EffectPromptItem = {
-      ...makeItem('pending-pain', 'CTA', '等待用途评估的人工内容'),
-      fragmentType: 'PAIN',
-      primaryPurpose: 'PAIN',
-      compatiblePurposes: ['PAIN'],
+    const pendingEffect: EffectPromptItem = {
+      ...makeItem('pending-effect', 'CTA', '等待用途评估的人工内容'),
+      fragmentType: 'EFFECT',
+      primaryPurpose: 'EFFECT',
+      compatiblePurposes: ['EFFECT'],
       classificationStatus: 'PENDING',
     };
     const draftResult = recomputePromptQuality(
@@ -1070,7 +1070,7 @@ describe('EffectPromptService settings contract', () => {
         makeItem('hook-kitchen', 'HOOK', '家庭厨房中人物拿起产品并转向镜头'),
         makeItem('hook-outdoor', 'HOOK', '户外草地上人物打开产品并转向镜头'),
         makeItem('cta-kitchen', 'CTA', '家庭厨房中人物摆放产品并展示转化字幕'),
-        pendingPain,
+        pendingEffect,
       ],
       DEFAULT_EFFECT_PROMPT_SETTINGS,
     );
@@ -1106,7 +1106,7 @@ describe('EffectPromptService settings contract', () => {
       1,
       10,
       '',
-      'PAIN',
+      'EFFECT',
     );
     expect(primaryPurposeOnly.total).toBe(0);
 
@@ -1117,7 +1117,7 @@ describe('EffectPromptService settings contract', () => {
       1,
       10,
       '',
-      'PAIN',
+      'EFFECT',
       'PRIMARY_OR_COMPATIBLE',
     );
     expect(includingCompatiblePurpose.items.map(({ id }) => id)).toEqual(['hook-kitchen']);
@@ -1188,11 +1188,11 @@ describe('EffectPromptService settings contract', () => {
       [
         makeItem('cta', 'P003', 'CTA'),
         makeItem('hook-later', 'P010', 'HOOK'),
-        makeItem('outro', 'P004', 'OUTRO'),
+        makeItem('cta-close', 'P004', 'CTA'),
         makeItem('product', 'P002', 'PRODUCT_DISPLAY'),
         makeItem('hook-first', 'P001', 'HOOK'),
-        makeItem('pain', 'P005', 'PAIN'),
-        makeItem('selling-point', 'P006', 'SELLING_POINT_EXPLANATION'),
+        makeItem('hook-pain', 'P005', 'HOOK'),
+        makeItem('effect', 'P006', 'EFFECT'),
       ],
       DEFAULT_EFFECT_PROMPT_SETTINGS,
     );
@@ -1212,12 +1212,12 @@ describe('EffectPromptService settings contract', () => {
 
     expect(output.items.map(({ id }) => id)).toEqual([
       'hook-first',
+      'hook-pain',
       'hook-later',
-      'pain',
       'product',
-      'selling-point',
+      'effect',
       'cta',
-      'outro',
+      'cta-close',
     ]);
   });
 

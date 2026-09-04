@@ -134,31 +134,17 @@ class CreativeSemanticProfile(ApiModel):
 
 class FragmentType(StrEnum):
     HOOK = "HOOK"
-    PAIN = "PAIN"
     PRODUCT_DISPLAY = "PRODUCT_DISPLAY"
-    SELLING_POINT_EXPLANATION = "SELLING_POINT_EXPLANATION"
+    EFFECT = "EFFECT"
     CTA = "CTA"
-    OUTRO = "OUTRO"
 
 
 FRAGMENT_TYPE_LABELS: dict[FragmentType, str] = {
     FragmentType.HOOK: "钩子片段",
-    FragmentType.PAIN: "痛点片段",
     FragmentType.PRODUCT_DISPLAY: "产品展示片段",
-    FragmentType.SELLING_POINT_EXPLANATION: "卖点讲解片段",
+    FragmentType.EFFECT: "效果片段",
     FragmentType.CTA: "结尾转化片段",
-    FragmentType.OUTRO: "片尾品牌片段",
 }
-
-DEFAULT_FRAGMENT_COUNTS: dict[FragmentType, int] = {
-    FragmentType.HOOK: 10,
-    FragmentType.PAIN: 8,
-    FragmentType.PRODUCT_DISPLAY: 12,
-    FragmentType.SELLING_POINT_EXPLANATION: 10,
-    FragmentType.CTA: 6,
-    FragmentType.OUTRO: 4,
-}
-
 
 class EvidenceMode(StrEnum):
     VISIBLE_ATTRIBUTE = "VISIBLE_ATTRIBUTE"
@@ -311,7 +297,7 @@ class PromptItem(ApiModel):
     origin: Literal["AI", "MANUAL"]
     fragment_type: FragmentType
     primary_purpose: FragmentType
-    compatible_purposes: list[FragmentType] = Field(min_length=1, max_length=6)
+    compatible_purposes: list[FragmentType] = Field(min_length=1, max_length=4)
     classification_status: Literal["PENDING", "VERIFIED", "NEEDS_REVISION"]
     product_relevance: int = Field(ge=0, le=100)
     target_duration_seconds: int = Field(ge=4, le=30)
@@ -390,7 +376,7 @@ class PromptMetrics(ApiModel):
     replenishment_rounds: int = Field(ge=0, le=3)
     exact_duplicate_count: int = Field(ge=0)
     semantic_evaluation: SemanticEvaluation
-    purpose_distribution: list[PurposeDistribution] = Field(min_length=6, max_length=6)
+    purpose_distribution: list[PurposeDistribution] = Field(min_length=4, max_length=4)
     average_scores: CreativeAverageScores
     hard_issue_counts: list[CountMetric] = Field(default_factory=list)
     warning_counts: list[CountMetric] = Field(default_factory=list)
@@ -1209,7 +1195,7 @@ class CreativeScores(ApiModel):
 class CreativeEvaluation(ApiModel):
     slot_id: str = Field(min_length=1, max_length=160)
     primary_purpose: FragmentType
-    compatible_purposes: list[FragmentType] = Field(min_length=1, max_length=6)
+    compatible_purposes: list[FragmentType] = Field(min_length=1, max_length=4)
     fact_evidence: list[FactEvidence] = Field(default_factory=list, max_length=12)
     realized_fact_ids: list[str] = Field(default_factory=list, max_length=12)
     scores: CreativeScores

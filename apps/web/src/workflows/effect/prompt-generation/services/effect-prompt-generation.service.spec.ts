@@ -207,7 +207,7 @@ describe('effect prompt generation HTTP service', () => {
       1,
       {
         content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
-        primaryPurpose: 'SELLING_POINT_EXPLANATION',
+        primaryPurpose: 'EFFECT',
         creativeCore: '用家常装盘突出方便搭配',
         dimensions: {
           narrative: '动作展示',
@@ -225,7 +225,7 @@ describe('effect prompt generation HTTP service', () => {
     const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
     const body = JSON.parse(String(request.body)) as Record<string, unknown>;
     expect(body).toMatchObject({
-      primaryPurpose: 'SELLING_POINT_EXPLANATION',
+      primaryPurpose: 'EFFECT',
       creativeCore: '用家常装盘突出方便搭配',
       dimensions: {
         narrative: '动作展示',

@@ -81,6 +81,66 @@ describe('effect prompt quality contract', () => {
     expect(parsed?.items[0]).not.toHaveProperty('materialTags');
   });
 
+  it('projects legacy six-purpose batches into the current four-purpose contract', () => {
+    const currentItems = [item('pain'), item('selling'), item('outro')];
+    const result = recomputePromptQuality(currentItems, {
+      targetCount: 3,
+      defaultDurationSeconds: 5,
+    });
+    const legacyItems = [
+      {
+        ...currentItems[0]!,
+        fragmentType: 'PAIN',
+        primaryPurpose: 'PAIN',
+        compatiblePurposes: ['PAIN', 'HOOK'],
+      },
+      {
+        ...currentItems[1]!,
+        fragmentType: 'SELLING_POINT_EXPLANATION',
+        primaryPurpose: 'SELLING_POINT_EXPLANATION',
+        compatiblePurposes: ['SELLING_POINT_EXPLANATION', 'PRODUCT_DISPLAY'],
+      },
+      {
+        ...currentItems[2]!,
+        fragmentType: 'OUTRO',
+        primaryPurpose: 'OUTRO',
+        compatiblePurposes: ['OUTRO', 'CTA'],
+      },
+    ];
+    const parsed = parseEffectPromptBatchResult({
+      ...result,
+      items: legacyItems,
+      metrics: {
+        ...result.metrics,
+        purposeDistribution: [
+          { purpose: 'HOOK', primaryCount: 0, compatibleCount: 1 },
+          { purpose: 'PAIN', primaryCount: 1, compatibleCount: 1 },
+          { purpose: 'PRODUCT_DISPLAY', primaryCount: 0, compatibleCount: 1 },
+          { purpose: 'SELLING_POINT_EXPLANATION', primaryCount: 1, compatibleCount: 1 },
+          { purpose: 'CTA', primaryCount: 0, compatibleCount: 1 },
+          { purpose: 'OUTRO', primaryCount: 1, compatibleCount: 1 },
+        ],
+      },
+    });
+
+    expect(parsed?.items.map(({ primaryPurpose }) => primaryPurpose)).toEqual([
+      'HOOK',
+      'EFFECT',
+      'CTA',
+    ]);
+    expect(parsed?.items.map(({ compatiblePurposes }) => compatiblePurposes)).toEqual([
+      ['HOOK'],
+      ['EFFECT', 'PRODUCT_DISPLAY'],
+      ['CTA'],
+    ]);
+    expect(parsed?.metrics.purposeDistribution).toEqual([
+      { purpose: 'HOOK', primaryCount: 1, compatibleCount: 1 },
+      { purpose: 'PRODUCT_DISPLAY', primaryCount: 0, compatibleCount: 1 },
+      { purpose: 'EFFECT', primaryCount: 1, compatibleCount: 1 },
+      { purpose: 'CTA', primaryCount: 1, compatibleCount: 1 },
+    ]);
+  });
+
   it('computes exact-count, purpose and lightweight issue metrics', () => {
     const contents = [
       '厨房切面',

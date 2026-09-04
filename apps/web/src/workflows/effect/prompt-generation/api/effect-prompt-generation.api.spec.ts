@@ -47,10 +47,10 @@ describe('effect prompt generation API', () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(ok()));
     vi.stubGlobal('fetch', fetchMock);
 
-    await getEffectPromptResult('project-1', 'workflow-1', 'product-1', 1, 50, '', 'PAIN');
+    await getEffectPromptResult('project-1', 'workflow-1', 'product-1', 1, 50, '', 'EFFECT');
 
     const url = String(fetchMock.mock.calls[0]![0]);
-    expect(url).toContain('purpose=PAIN');
+    expect(url).toContain('purpose=EFFECT');
     expect(url).toContain('pageSize=50');
     expect(url).toContain('purposeMatch=PRIMARY');
   });

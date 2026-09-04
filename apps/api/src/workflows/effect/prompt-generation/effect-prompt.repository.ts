@@ -16,6 +16,8 @@ import {
   EFFECT_PROMPT_MAX_RUN_ATTEMPTS,
   EFFECT_PROMPT_RENDER_CAPABILITIES,
   effectPromptTargetCount,
+  normalizeEffectPromptFragmentType,
+  normalizeEffectPromptFragmentTypes,
   readEffectPromptSettings,
 } from '@ai-marketing/contracts';
 import { Inject, Injectable, Optional } from '@nestjs/common';
@@ -135,9 +137,25 @@ export type EffectPromptPreviewRunRecord = Prisma.EffectPromptRunGetPayload<{
 const parseOverrides = (value: unknown): EffectPromptManualOverrides => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return emptyManualOverrides();
   const source = value as Partial<EffectPromptManualOverrides>;
-  const withoutLegacyTags = <T>(entry: T): T => {
+  const withCurrentCompatibility = <T>(entry: T): T => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
-    return Object.fromEntries(Object.entries(entry).filter(([key]) => key !== 'materialTags')) as T;
+    const current = Object.fromEntries(
+      Object.entries(entry).filter(([key]) => key !== 'materialTags'),
+    ) as Record<string, unknown>;
+    const primaryPurpose = normalizeEffectPromptFragmentType(
+      current.primaryPurpose ?? current.fragmentType,
+    );
+    if (!primaryPurpose) return current as T;
+    const compatiblePurposes = normalizeEffectPromptFragmentTypes(current.compatiblePurposes);
+    return {
+      ...current,
+      fragmentType: primaryPurpose,
+      primaryPurpose,
+      compatiblePurposes: [
+        primaryPurpose,
+        ...compatiblePurposes.filter((purpose) => purpose !== primaryPurpose),
+      ],
+    } as T;
   };
   const editedSource =
     source.edited && typeof source.edited === 'object' && !Array.isArray(source.edited)
@@ -145,9 +163,9 @@ const parseOverrides = (value: unknown): EffectPromptManualOverrides => {
       : {};
   return {
     edited: Object.fromEntries(
-      Object.entries(editedSource).map(([id, item]) => [id, withoutLegacyTags(item)]),
+      Object.entries(editedSource).map(([id, item]) => [id, withCurrentCompatibility(item)]),
     ),
-    added: Array.isArray(source.added) ? source.added.map(withoutLegacyTags) : [],
+    added: Array.isArray(source.added) ? source.added.map(withCurrentCompatibility) : [],
     deleted: Array.isArray(source.deleted)
       ? source.deleted.filter((item): item is string => typeof item === 'string')
       : [],

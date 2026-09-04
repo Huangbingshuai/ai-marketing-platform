@@ -22,6 +22,7 @@ import {
   EFFECT_PROMPT_NODE_DETAIL_LIMITS,
   EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT,
   EFFECT_PROMPT_SEMANTIC_SIMILARITY_THRESHOLD,
+  normalizeEffectPromptFragmentType,
 } from '@ai-marketing/contracts';
 
 import type { EffectPromptNodeDetailRunRecord } from './effect-prompt.repository';
@@ -91,38 +92,38 @@ type Coordinate = {
 
 const GENERATION_FRAGMENT_BY_NODE: Partial<Record<string, EffectPromptFragmentType>> = {
   GENERATE_HOOK: 'HOOK',
-  GENERATE_PAIN: 'PAIN',
+  GENERATE_PAIN: 'HOOK',
   GENERATE_PRODUCT_DISPLAY: 'PRODUCT_DISPLAY',
-  GENERATE_SELLING_POINT_EXPLANATION: 'SELLING_POINT_EXPLANATION',
+  GENERATE_SELLING_POINT_EXPLANATION: 'EFFECT',
   GENERATE_CTA: 'CTA',
-  GENERATE_OUTRO: 'OUTRO',
+  GENERATE_OUTRO: 'CTA',
 };
 
 const RELATIONSHIP_FRAGMENT_BY_NODE: Partial<Record<string, EffectPromptFragmentType>> = {
   PLAN_HOOK_RELATIONSHIPS: 'HOOK',
-  PLAN_PAIN_RELATIONSHIPS: 'PAIN',
+  PLAN_PAIN_RELATIONSHIPS: 'HOOK',
   PLAN_PRODUCT_DISPLAY_RELATIONSHIPS: 'PRODUCT_DISPLAY',
-  PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS: 'SELLING_POINT_EXPLANATION',
+  PLAN_SELLING_POINT_EXPLANATION_RELATIONSHIPS: 'EFFECT',
   PLAN_CTA_RELATIONSHIPS: 'CTA',
-  PLAN_OUTRO_RELATIONSHIPS: 'OUTRO',
+  PLAN_OUTRO_RELATIONSHIPS: 'CTA',
 };
 
 const COORDINATE_FRAGMENT_BY_NODE: Partial<Record<string, EffectPromptFragmentType>> = {
   PLAN_HOOK_COORDINATES: 'HOOK',
-  PLAN_PAIN_COORDINATES: 'PAIN',
+  PLAN_PAIN_COORDINATES: 'HOOK',
   PLAN_PRODUCT_DISPLAY_COORDINATES: 'PRODUCT_DISPLAY',
-  PLAN_SELLING_POINT_EXPLANATION_COORDINATES: 'SELLING_POINT_EXPLANATION',
+  PLAN_SELLING_POINT_EXPLANATION_COORDINATES: 'EFFECT',
   PLAN_CTA_COORDINATES: 'CTA',
-  PLAN_OUTRO_COORDINATES: 'OUTRO',
+  PLAN_OUTRO_COORDINATES: 'CTA',
 };
 
 const BLUEPRINT_FRAGMENT_BY_NODE: Partial<Record<string, EffectPromptFragmentType>> = {
   GENERATE_HOOK_BLUEPRINTS: 'HOOK',
-  GENERATE_PAIN_BLUEPRINTS: 'PAIN',
+  GENERATE_PAIN_BLUEPRINTS: 'HOOK',
   GENERATE_PRODUCT_DISPLAY_BLUEPRINTS: 'PRODUCT_DISPLAY',
-  GENERATE_SELLING_POINT_EXPLANATION_BLUEPRINTS: 'SELLING_POINT_EXPLANATION',
+  GENERATE_SELLING_POINT_EXPLANATION_BLUEPRINTS: 'EFFECT',
   GENERATE_CTA_BLUEPRINTS: 'CTA',
-  GENERATE_OUTRO_BLUEPRINTS: 'OUTRO',
+  GENERATE_OUTRO_BLUEPRINTS: 'CTA',
 };
 
 const ISSUE_LABELS: Record<string, string> = {
@@ -203,10 +204,7 @@ const safeNumber = (value: unknown): number | null =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 
 const fragmentType = (value: unknown): EffectPromptFragmentType | null =>
-  typeof value === 'string' &&
-  EFFECT_PROMPT_FRAGMENT_TYPES.includes(value as EffectPromptFragmentType)
-    ? (value as EffectPromptFragmentType)
-    : null;
+  normalizeEffectPromptFragmentType(value);
 
 const dimensions = (value: unknown): EffectPromptDimensions | null => {
   if (!isRecord(value)) return null;

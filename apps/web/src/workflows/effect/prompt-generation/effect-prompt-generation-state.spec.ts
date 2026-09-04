@@ -26,7 +26,7 @@ const prompt: EffectPromptItem = {
   origin: 'AI',
   fragmentType: 'HOOK',
   primaryPurpose: 'HOOK',
-  compatiblePurposes: ['HOOK', 'PAIN'],
+  compatiblePurposes: ['HOOK', 'EFFECT'],
   classificationStatus: 'VERIFIED',
   productRelevance: 92,
   targetDurationSeconds: 5,
@@ -73,7 +73,7 @@ const batch: EffectPromptBatchResult = {
     purposeDistribution: EFFECT_PROMPT_FRAGMENT_TYPES.map((purpose) => ({
       purpose,
       primaryCount: purpose === 'HOOK' ? 50 : 0,
-      compatibleCount: purpose === 'HOOK' || purpose === 'PAIN' ? 50 : 0,
+      compatibleCount: purpose === 'HOOK' || purpose === 'EFFECT' ? 50 : 0,
     })),
     averageScores: {
       productRelevance: 92,

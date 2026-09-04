@@ -85,7 +85,7 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "逐条事实任务简报" in task
     assert "已确认的产品事实" not in task
     assert "{facts_json}" not in task
-    assert "不要按六类用途分组" in task
+    assert "不要按素材用途分组" in task
     assert "只是软避重参考" in task
     assert "同一创意方向下的兄弟变体" in task
     assert "coverageFocusFactIds 为空表示常规生成" in task
@@ -96,6 +96,10 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "GENERIC_STYLE_STACKING" in evaluation
     assert "只有事实编造、商品完全无关" in evaluation
     assert "一条素材可以有多个用途" in evaluation
+    assert "HOOK、PRODUCT_DISPLAY、EFFECT、CTA" in evaluation
+    assert "PAIN、" not in evaluation
+    assert "SELLING_POINT_EXPLANATION" not in evaluation
+    assert "OUTRO" not in evaluation
     assert "不要依赖原文字符重合" in evaluation
     assert "evidenceText 和 evidenceSource 可以省略" in evaluation
     assert "SEMANTIC_FULL" in evaluation

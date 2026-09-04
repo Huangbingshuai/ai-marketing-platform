@@ -38,24 +38,45 @@ export type EffectPromptDimensionKey = (typeof EFFECT_PROMPT_DIMENSIONS)[number]
 
 export type EffectPromptDimensions = Record<EffectPromptDimensionKey, string>;
 
-export const EFFECT_PROMPT_FRAGMENT_TYPES = [
-  'HOOK',
-  'PAIN',
-  'PRODUCT_DISPLAY',
-  'SELLING_POINT_EXPLANATION',
-  'CTA',
-  'OUTRO',
-] as const;
+export const EFFECT_PROMPT_FRAGMENT_TYPES = ['HOOK', 'PRODUCT_DISPLAY', 'EFFECT', 'CTA'] as const;
 export type EffectPromptFragmentType = (typeof EFFECT_PROMPT_FRAGMENT_TYPES)[number];
 
 export const EFFECT_PROMPT_FRAGMENT_TYPE_LABELS: Record<EffectPromptFragmentType, string> = {
   HOOK: '钩子片段',
-  PAIN: '痛点片段',
   PRODUCT_DISPLAY: '产品展示片段',
-  SELLING_POINT_EXPLANATION: '卖点讲解片段',
+  EFFECT: '效果片段',
   CTA: '结尾转化片段',
-  OUTRO: '片尾品牌片段',
 };
+
+export const EFFECT_PROMPT_LEGACY_FRAGMENT_TYPE_MAP = {
+  HOOK: 'HOOK',
+  PAIN: 'HOOK',
+  PRODUCT_DISPLAY: 'PRODUCT_DISPLAY',
+  SELLING_POINT_EXPLANATION: 'EFFECT',
+  EFFECT: 'EFFECT',
+  CTA: 'CTA',
+  OUTRO: 'CTA',
+} as const satisfies Record<string, EffectPromptFragmentType>;
+
+export const normalizeEffectPromptFragmentType = (
+  value: unknown,
+): EffectPromptFragmentType | null =>
+  typeof value === 'string'
+    ? (EFFECT_PROMPT_LEGACY_FRAGMENT_TYPE_MAP[
+        value as keyof typeof EFFECT_PROMPT_LEGACY_FRAGMENT_TYPE_MAP
+      ] ?? null)
+    : null;
+
+export const normalizeEffectPromptFragmentTypes = (values: unknown): EffectPromptFragmentType[] =>
+  Array.isArray(values)
+    ? [
+        ...new Set(
+          values
+            .map(normalizeEffectPromptFragmentType)
+            .filter((value): value is EffectPromptFragmentType => value !== null),
+        ),
+      ]
+    : [];
 
 export const EFFECT_PROMPT_PURPOSE_MATCH_MODES = ['PRIMARY', 'PRIMARY_OR_COMPATIBLE'] as const;
 export type EffectPromptPurposeMatchMode = (typeof EFFECT_PROMPT_PURPOSE_MATCH_MODES)[number];
@@ -184,21 +205,21 @@ export type EffectPromptInsightField = (typeof EFFECT_PROMPT_INSIGHT_FIELDS)[num
 export const EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES: Partial<
   Record<EffectPromptInsightField, readonly EffectPromptFragmentType[]>
 > = {
-  PRODUCT_NAME: ['PRODUCT_DISPLAY', 'SELLING_POINT_EXPLANATION', 'CTA', 'OUTRO'],
-  PRODUCT_CATEGORY: ['HOOK', 'PRODUCT_DISPLAY', 'OUTRO'],
-  CORE_SPECIFICATION: ['PRODUCT_DISPLAY', 'SELLING_POINT_EXPLANATION'],
+  PRODUCT_NAME: ['PRODUCT_DISPLAY', 'EFFECT', 'CTA'],
+  PRODUCT_CATEGORY: ['HOOK', 'PRODUCT_DISPLAY', 'CTA'],
+  CORE_SPECIFICATION: ['PRODUCT_DISPLAY', 'EFFECT'],
   PRICE_RANGE: ['CTA'],
-  VISUAL_FEATURES: ['PRODUCT_DISPLAY', 'OUTRO'],
-  CORE_SELLING_POINT: ['PRODUCT_DISPLAY', 'SELLING_POINT_EXPLANATION', 'CTA'],
-  SECONDARY_SELLING_POINT: ['SELLING_POINT_EXPLANATION'],
-  TRUST_BACKING: ['SELLING_POINT_EXPLANATION'],
-  TARGET_AUDIENCE: ['HOOK', 'PAIN', 'CTA'],
-  CORE_PAIN_POINT: ['HOOK', 'PAIN'],
-  DECISION_DRIVER: ['HOOK', 'SELLING_POINT_EXPLANATION', 'CTA'],
+  VISUAL_FEATURES: ['PRODUCT_DISPLAY', 'CTA'],
+  CORE_SELLING_POINT: ['PRODUCT_DISPLAY', 'EFFECT', 'CTA'],
+  SECONDARY_SELLING_POINT: ['EFFECT'],
+  TRUST_BACKING: ['EFFECT'],
+  TARGET_AUDIENCE: ['HOOK', 'CTA'],
+  CORE_PAIN_POINT: ['HOOK', 'EFFECT'],
+  DECISION_DRIVER: ['HOOK', 'EFFECT', 'CTA'],
   MARKETING_GOAL: ['CTA'],
-  USAGE_SCENARIO: ['HOOK', 'PAIN', 'PRODUCT_DISPLAY'],
-  PURCHASE_SCENARIO: ['HOOK', 'PAIN', 'CTA'],
-  EMOTIONAL_SCENARIO: ['HOOK', 'OUTRO'],
+  USAGE_SCENARIO: ['HOOK', 'PRODUCT_DISPLAY', 'EFFECT'],
+  PURCHASE_SCENARIO: ['HOOK', 'CTA'],
+  EMOTIONAL_SCENARIO: ['HOOK', 'CTA'],
 };
 
 export const EFFECT_PROMPT_INSIGHT_ROLES = ['PRIMARY', 'CONTEXT', 'EVIDENCE'] as const;

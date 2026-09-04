@@ -32,6 +32,8 @@ import {
   SEEDANCE_RESOLUTIONS,
   effectPromptTargetCount,
   normalizeEffectPromptSettings,
+  normalizeEffectPromptFragmentType,
+  normalizeEffectPromptFragmentTypes,
 } from '@ai-marketing/contracts';
 import type { EffectPromptInputSnapshot } from './effect-prompt.types';
 
@@ -209,7 +211,6 @@ const EXPRESSION_FIELD_PRIORITY: Record<
     'PRODUCT_CATEGORY',
     'EMOTIONAL_SCENARIO',
   ],
-  PAIN: ['CORE_PAIN_POINT', 'TARGET_AUDIENCE', 'USAGE_SCENARIO', 'PURCHASE_SCENARIO'],
   PRODUCT_DISPLAY: [
     'PRODUCT_NAME',
     'VISUAL_FEATURES',
@@ -218,7 +219,7 @@ const EXPRESSION_FIELD_PRIORITY: Record<
     'CORE_SELLING_POINT',
     'PRODUCT_CATEGORY',
   ],
-  SELLING_POINT_EXPLANATION: [
+  EFFECT: [
     'CORE_SELLING_POINT',
     'SECONDARY_SELLING_POINT',
     'VISUAL_FEATURES',
@@ -235,8 +236,10 @@ const EXPRESSION_FIELD_PRIORITY: Record<
     'TARGET_AUDIENCE',
     'PRICE_RANGE',
     'PURCHASE_SCENARIO',
+    'VISUAL_FEATURES',
+    'PRODUCT_CATEGORY',
+    'EMOTIONAL_SCENARIO',
   ],
-  OUTRO: ['PRODUCT_NAME', 'VISUAL_FEATURES', 'PRODUCT_CATEGORY', 'EMOTIONAL_SCENARIO'],
 };
 
 export const inferEffectPromptInsightBindings = (
@@ -300,18 +303,12 @@ const CAMERA_CONTEXT =
   /(?:镜头|机位|特写|近景|中景|全景|微距|俯拍|俯视|仰拍|低机位|高机位|固定|肩后|手持|跟拍|环绕|横移|移焦|聚焦|焦点|景深|主观|推近|后拉|拉远)/u;
 const HOOK_RESOLVED =
   /(?:答案(?:出现|揭晓)|揭晓(?:答案|原因)|原来是|问题(?:被|已)?解决|成功(?:打开|完成)|恢复正常|效果立刻出现)/u;
-const PAIN_RESOLVED =
-  /(?:(?:使用|拿出|换上|放入).{0,24}(?:解决|完成|恢复|顺利)|问题(?:被|已)?解决|不便消失|轻松完成)/u;
 const PRODUCT_EFFECT_LEAK =
   /(?:使用后|效果对比|前后对比|问题解决|明显改善|立刻见效|满意(?:微笑|点头)|证明(?:效果|功效))/u;
 const PACKAGED_STATE = /(?:真空袋装|袋装|包装|袋身)/u;
 const UNPACKAGED_END_STATE = /(?:最终|结束时|随后|转眼).{0,80}(?:蒸笼|盘中|碗中|切片|散装|裸露)/u;
 const PACKAGE_TRANSITION_ACTION = /(?:打开|拆开|撕开|取出|倒出|拿出)/u;
 const SAFE_AREA = /(?:留白|安全区|干净空间|简洁背景|无遮挡空间|空白墙面|空白区域|干净无遮挡)/u;
-const OUTRO_UNSTABLE =
-  /(?:快速|奔跑|跳跃|连续旋转|跟拍|跟随|手持|环绕|横移|侧移|推近|推进|靠近|后拉|拉远)/u;
-const OUTRO_SUBTLE_MOTION =
-  /(?:扶正|离开|收焦|焦点.{0,12}(?:落到|稳定|清楚)|光线.{0,12}(?:稳定|恢复)|蒸汽.{0,12}(?:变缓|减弱|停止)|背景.{0,12}(?:稳定|安静)|轻微变化)/u;
 const ABSTRACT_SELLING_POINT = /(?:工艺|配方|技术|理念|品质|匠心|专业|口感|香味|风味|酒香|回甘)/u;
 const ATTRIBUTE_SELLING_POINT = /(?:外观|颜色|材质|纹理|切面|尺寸|轻量|便携|设计)/u;
 const ATTRIBUTE_CUE = /(?:外观|表面|轮廓|颜色|材质|纹理|切面|接口|细节|受光)/u;
@@ -372,11 +369,7 @@ export const effectPromptExecutionIssues = (item: EffectPromptItem): string[] =>
   // 多时间段、镜头编号和真实剪辑词仍由 FULL_TIMELINE 硬拒绝。
   if (FULL_TIMELINE.test(content) || new Set(content.match(STRUCTURED_PHASE) ?? []).size >= 2)
     issues.push('FULL_TIMELINE_NOT_FRAGMENT');
-  if (
-    !VISIBLE_ACTION.test(content) &&
-    !(item.fragmentType === 'OUTRO' && OUTRO_SUBTLE_MOTION.test(content))
-  )
-    issues.push('NO_VISIBLE_ACTION');
+  if (!VISIBLE_ACTION.test(content)) issues.push('NO_VISIBLE_ACTION');
   if (PLACEHOLDER_TEXT.test(content)) issues.push('PLACEHOLDER_TEXT');
   if (overloadedAction(content)) issues.push('OVERLOADED_ACTION');
   if (cameraConflict(content)) issues.push('CAMERA_CONFLICT');
@@ -388,7 +381,6 @@ export const effectPromptExecutionIssues = (item: EffectPromptItem): string[] =>
   if (REFERENCE_DEPENDENCY.test(content)) issues.push('REFERENCE_DEPENDENCY');
   if ((content.match(NEGATIVE_CLAUSE) ?? []).length >= 3) issues.push('NEGATIVE_TAIL_DUPLICATION');
   if (item.fragmentType === 'HOOK' && HOOK_RESOLVED.test(content)) issues.push('HOOK_RESOLVED');
-  if (item.fragmentType === 'PAIN' && PAIN_RESOLVED.test(content)) issues.push('PAIN_RESOLVED');
   if (item.fragmentType === 'PRODUCT_DISPLAY') {
     const productName = item.insightBindings.find(
       (binding) => binding.field === 'PRODUCT_NAME',
@@ -404,29 +396,13 @@ export const effectPromptExecutionIssues = (item: EffectPromptItem): string[] =>
       issues.push('PHYSICS_BREAK');
   }
   if (
-    item.fragmentType === 'SELLING_POINT_EXPLANATION' &&
+    item.fragmentType === 'EFFECT' &&
     !ABSTRACT_SELLING_POINT.test(item.dimensions.productRelation) &&
     ATTRIBUTE_SELLING_POINT.test(item.dimensions.productRelation) &&
     !ATTRIBUTE_CUE.test(content)
   )
     issues.push('EVIDENCE_MODE_MISMATCH');
   if (item.fragmentType === 'CTA' && !SAFE_AREA.test(content)) issues.push('CTA_NO_SAFE_AREA');
-  if (item.fragmentType === 'OUTRO') {
-    if (
-      OUTRO_UNSTABLE.test(content) &&
-      !(
-        /(?:极缓慢|缓慢|轻微)/u.test(content) &&
-        /(?:停稳|完全静止|定格|稳定构图|最终静止)/u.test(content)
-      )
-    )
-      issues.push('OUTRO_UNSTABLE');
-    const introducesSellingPoint = item.insightBindings.some(
-      (binding) =>
-        ['CORE_SELLING_POINT', 'SECONDARY_SELLING_POINT'].includes(binding.field) &&
-        content.includes(binding.value),
-    );
-    if (introducesSellingPoint) issues.push('OUTRO_NEW_MESSAGE');
-  }
   return issues;
 };
 
@@ -513,15 +489,59 @@ export const isEffectPromptItem = (value: unknown): value is EffectPromptItem =>
 const withCurrentItemCompatibility = (value: unknown): unknown => {
   const item = record(value);
   if (!item) return value;
-  const current = Object.fromEntries(
+  const withoutLegacyTags = Object.fromEntries(
     Object.entries(item).filter(([key]) => key !== 'materialTags'),
   );
+  const primaryPurpose = normalizeEffectPromptFragmentType(
+    withoutLegacyTags.primaryPurpose ?? withoutLegacyTags.fragmentType,
+  );
+  const compatiblePurposes = normalizeEffectPromptFragmentTypes(
+    withoutLegacyTags.compatiblePurposes,
+  );
+  const current = primaryPurpose
+    ? {
+        ...withoutLegacyTags,
+        fragmentType: primaryPurpose,
+        primaryPurpose,
+        compatiblePurposes: [
+          primaryPurpose,
+          ...compatiblePurposes.filter((purpose) => purpose !== primaryPurpose),
+        ],
+      }
+    : withoutLegacyTags;
   const withReviewIssues =
     current.reviewIssues === undefined ? { ...current, reviewIssues: [] } : current;
   if (withReviewIssues.creativeCore !== undefined) return withReviewIssues;
   const dimensions = record(withReviewIssues.dimensions);
   const narrative = typeof dimensions?.narrative === 'string' ? dimensions.narrative.trim() : '';
   return narrative ? { ...withReviewIssues, creativeCore: narrative } : withReviewIssues;
+};
+
+const withCurrentMetricsCompatibility = (value: unknown): unknown => {
+  const metrics = record(value);
+  if (!metrics || !Array.isArray(metrics.purposeDistribution)) return value;
+  const totals = new Map(
+    EFFECT_PROMPT_FRAGMENT_TYPES.map((purpose) => [
+      purpose,
+      { primaryCount: 0, compatibleCount: 0 },
+    ]),
+  );
+  for (const value of metrics.purposeDistribution) {
+    const entry = record(value);
+    const purpose = normalizeEffectPromptFragmentType(entry?.purpose);
+    if (!entry || !purpose) continue;
+    const total = totals.get(purpose)!;
+    if (Number.isInteger(entry.primaryCount)) total.primaryCount += Number(entry.primaryCount);
+    if (Number.isInteger(entry.compatibleCount))
+      total.compatibleCount += Number(entry.compatibleCount);
+  }
+  return {
+    ...metrics,
+    purposeDistribution: EFFECT_PROMPT_FRAGMENT_TYPES.map((purpose) => ({
+      purpose,
+      ...totals.get(purpose)!,
+    })),
+  };
 };
 
 export const isEffectPromptSettings = (value: unknown): value is EffectPromptBatchSettings => {
@@ -1082,7 +1102,16 @@ export const recomputePromptQuality = (
 };
 
 export const parseEffectPromptBatchResult = (value: unknown): EffectPromptBatchResult | null => {
-  const candidate = record(value);
+  const source = record(value);
+  const candidate: Record<string, unknown> | null = source
+    ? {
+        ...source,
+        items: Array.isArray(source.items)
+          ? source.items.map(withCurrentItemCompatibility)
+          : source.items,
+        metrics: withCurrentMetricsCompatibility(source.metrics),
+      }
+    : null;
   if (
     !candidate ||
     !isEffectPromptSettings(candidate.settings) ||
@@ -1099,7 +1128,7 @@ export const parseEffectPromptBatchResult = (value: unknown): EffectPromptBatchR
       ))
   )
     return null;
-  const normalizedItems = candidate.items.map(withCurrentItemCompatibility);
+  const normalizedItems = candidate.items;
   const items = normalizedItems.filter(isEffectPromptItem);
   if (
     items.length !== normalizedItems.length ||
@@ -1134,9 +1163,7 @@ export const mergeEffectPromptCompletionItems = (
   if (!replacement) return [...snapshot.retainedManualItems];
   const targetNeedsCreativeStructure =
     target.creativeCore.trim() === '等待 AI 分析' ||
-    EFFECT_PROMPT_DIMENSIONS.some(
-      ({ key }) => target.dimensions[key].trim() === '等待 AI 分析',
-    );
+    EFFECT_PROMPT_DIMENSIONS.some(({ key }) => target.dimensions[key].trim() === '等待 AI 分析');
   const stableReplacement: EffectPromptItem =
     snapshot.operation === 'ITEM_EVALUATE'
       ? {

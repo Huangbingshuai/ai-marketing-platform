@@ -23,6 +23,8 @@ import {
   effectPromptTargetCount,
   readEffectPromptSettings,
   normalizeEffectPromptSettings,
+  normalizeEffectPromptFragmentType,
+  normalizeEffectPromptFragmentTypes,
   type StartEffectPromptRunRequest,
 } from './effect-prompt-generation';
 
@@ -103,6 +105,17 @@ describe('effect prompt generation contract', () => {
 
   it('publishes explicit primary and compatible purpose matching modes', () => {
     expect(EFFECT_PROMPT_PURPOSE_MATCH_MODES).toEqual(['PRIMARY', 'PRIMARY_OR_COMPATIBLE']);
+  });
+
+  it('publishes four current purposes and maps legacy six-purpose values', () => {
+    expect(EFFECT_PROMPT_FRAGMENT_TYPES).toEqual(['HOOK', 'PRODUCT_DISPLAY', 'EFFECT', 'CTA']);
+    expect(normalizeEffectPromptFragmentType('PAIN')).toBe('HOOK');
+    expect(normalizeEffectPromptFragmentType('SELLING_POINT_EXPLANATION')).toBe('EFFECT');
+    expect(normalizeEffectPromptFragmentType('OUTRO')).toBe('CTA');
+    expect(normalizeEffectPromptFragmentTypes(['PAIN', 'HOOK', 'OUTRO', 'CTA'])).toEqual([
+      'HOOK',
+      'CTA',
+    ]);
   });
 
   it('keeps resolution as a structured insight constraint', () => {

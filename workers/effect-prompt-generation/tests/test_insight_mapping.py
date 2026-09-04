@@ -62,7 +62,7 @@ def test_maps_every_non_empty_field_to_required_adaptive_excluded_or_constraint(
         fact
         for fact in application.adaptive
         if fact.field == InsightField.TRUST_BACKING
-    ).eligible_fragment_types == [FragmentType.SELLING_POINT_EXPLANATION]
+    ).eligible_fragment_types == [FragmentType.EFFECT]
     assert all(
         fact.policy == InsightFactPolicy.CONSTRAINT for fact in application.constraints
     )

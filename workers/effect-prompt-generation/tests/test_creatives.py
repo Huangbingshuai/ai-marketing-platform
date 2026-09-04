@@ -1730,8 +1730,8 @@ def _abstract_visual_proof_case() -> tuple[
     )
     evaluation = CreativeEvaluation(
         slot_id=candidate.slot_id,
-        primary_purpose=FragmentType.SELLING_POINT_EXPLANATION,
-        compatible_purposes=[FragmentType.SELLING_POINT_EXPLANATION],
+        primary_purpose=FragmentType.EFFECT,
+        compatible_purposes=[FragmentType.EFFECT],
         fact_evidence=[
             FactEvidence(
                 fact_id=product_fact.fact_id,
@@ -1908,8 +1908,8 @@ def test_selling_point_binding_accepts_full_semantic_support_without_character_o
     )
     evaluation = CreativeEvaluation(
         slot_id=candidate.slot_id,
-        primary_purpose=FragmentType.SELLING_POINT_EXPLANATION,
-        compatible_purposes=[FragmentType.SELLING_POINT_EXPLANATION],
+        primary_purpose=FragmentType.EFFECT,
+        compatible_purposes=[FragmentType.EFFECT],
         fact_evidence=[
             FactEvidence(fact_id=product_fact.fact_id, evidence_text="广式腊肠"),
             FactEvidence(

@@ -121,7 +121,7 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
         update={
             "compatible_purposes": [
                 prompt_item.fragment_type,
-                FragmentType.SELLING_POINT_EXPLANATION,
+                FragmentType.EFFECT,
             ]
         }
     )

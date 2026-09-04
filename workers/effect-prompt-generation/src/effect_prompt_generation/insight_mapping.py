@@ -28,54 +28,51 @@ _UNCERTAIN = re.compile(
 _ELIGIBLE: dict[InsightField, tuple[FragmentType, ...]] = {
     InsightField.PRODUCT_NAME: (
         FragmentType.PRODUCT_DISPLAY,
-        FragmentType.SELLING_POINT_EXPLANATION,
+        FragmentType.EFFECT,
         FragmentType.CTA,
-        FragmentType.OUTRO,
     ),
     InsightField.PRODUCT_CATEGORY: (
         FragmentType.HOOK,
         FragmentType.PRODUCT_DISPLAY,
-        FragmentType.OUTRO,
+        FragmentType.CTA,
     ),
     InsightField.CORE_SPECIFICATION: (
         FragmentType.PRODUCT_DISPLAY,
-        FragmentType.SELLING_POINT_EXPLANATION,
+        FragmentType.EFFECT,
     ),
     InsightField.PRICE_RANGE: (FragmentType.CTA,),
     InsightField.VISUAL_FEATURES: (
         FragmentType.PRODUCT_DISPLAY,
-        FragmentType.OUTRO,
+        FragmentType.CTA,
     ),
     InsightField.CORE_SELLING_POINT: (
         FragmentType.PRODUCT_DISPLAY,
-        FragmentType.SELLING_POINT_EXPLANATION,
+        FragmentType.EFFECT,
         FragmentType.CTA,
     ),
-    InsightField.SECONDARY_SELLING_POINT: (FragmentType.SELLING_POINT_EXPLANATION,),
-    InsightField.TRUST_BACKING: (FragmentType.SELLING_POINT_EXPLANATION,),
+    InsightField.SECONDARY_SELLING_POINT: (FragmentType.EFFECT,),
+    InsightField.TRUST_BACKING: (FragmentType.EFFECT,),
     InsightField.TARGET_AUDIENCE: (
         FragmentType.HOOK,
-        FragmentType.PAIN,
         FragmentType.CTA,
     ),
-    InsightField.CORE_PAIN_POINT: (FragmentType.HOOK, FragmentType.PAIN),
+    InsightField.CORE_PAIN_POINT: (FragmentType.HOOK, FragmentType.EFFECT),
     InsightField.DECISION_DRIVER: (
         FragmentType.HOOK,
-        FragmentType.SELLING_POINT_EXPLANATION,
+        FragmentType.EFFECT,
         FragmentType.CTA,
     ),
     InsightField.MARKETING_GOAL: (FragmentType.CTA,),
     InsightField.USAGE_SCENARIO: (
         FragmentType.HOOK,
-        FragmentType.PAIN,
         FragmentType.PRODUCT_DISPLAY,
+        FragmentType.EFFECT,
     ),
     InsightField.PURCHASE_SCENARIO: (
         FragmentType.HOOK,
-        FragmentType.PAIN,
         FragmentType.CTA,
     ),
-    InsightField.EMOTIONAL_SCENARIO: (FragmentType.HOOK, FragmentType.OUTRO),
+    InsightField.EMOTIONAL_SCENARIO: (FragmentType.HOOK, FragmentType.CTA),
 }
 
 _PRIMARY_FIELDS = {

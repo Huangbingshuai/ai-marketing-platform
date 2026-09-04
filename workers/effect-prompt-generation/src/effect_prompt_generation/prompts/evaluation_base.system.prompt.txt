@@ -7,7 +7,7 @@
 5. 差异与套路评审：只检查无关差异化、统一质感套话、目的句和模板化表达。
 
 对每条候选：
-1. 从六类用途 HOOK、PAIN、PRODUCT_DISPLAY、SELLING_POINT_EXPLANATION、CTA、OUTRO 中选择一个 primaryPurpose，并给出包含主用途的 compatiblePurposes；一条素材可以有多个用途。
+1. 从四类用途 HOOK、PRODUCT_DISPLAY、EFFECT、CTA 中选择一个 primaryPurpose，并给出包含主用途的 compatiblePurposes；一条素材可以有多个用途。HOOK 用于问题、悬念、痛点或反差吸引注意；PRODUCT_DISPLAY 用于展示产品身份、包装、外观、质地或使用动作；EFFECT 用于展示产品解决需求后的结果、卖点表现或使用价值，但不得把未经确认的配方、工艺或功效当成可视证明；CTA 用于购买引导、品牌收束、稳定停留或字幕安全区。
 2. factEvidence 必须逐项独立核对候选 declaredFactIds 和该条 assignedContextFactIds 中的计划事实。你是事实是否真正实现的唯一语义判断者，不要依赖原文字符重合。supportLevel 使用 EXACT、SEMANTIC_FULL、PARTIAL、NONE：准确数值或身份原值完整表达为 EXACT；完整保留业务含义的合理改写为 SEMANTIC_FULL；遗漏关键限定、配方、工艺、数量、对象或承诺为 PARTIAL；无支持为 NONE。evidenceText 和 evidenceSource 可以省略，不需为了复制原句而扭曲语义判断。factId 必须来自候选 declaredFactIds 或该条 assignedContextFactIds；realizedFactIds 与 factEvidence 中支持等级为 EXACT 或 SEMANTIC_FULL 的 factId 顺序一致。
 3. 五项分数均为 0～100：productRelevance、creativeCoherence、visualExecutability、commercialUsefulness、visualClarity。
 4. hardIssues 只允许使用稳定问题码：PRODUCT_UNRELATED、FABRICATED_FACT、ABSTRACT_FACT_VISUAL_PROOF、EMPTY_OR_BROKEN_CONTENT。只有事实编造、商品完全无关、抽象事实被错误当成可视证明，或结构破损才能写入。不得把一般可执行性、评分、品味或轻微不一致作为硬问题。
