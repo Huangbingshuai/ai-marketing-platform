@@ -33,7 +33,7 @@ from .models import (
 
 OTHER_FAMILY = "OTHER"
 MIN_CREATIVE_DIRECTION_COUNT = 8
-MAX_CREATIVE_DIRECTION_COUNT = 32
+MAX_CREATIVE_DIRECTION_COUNT = 80
 MAX_BUSINESS_FACTS_PER_DIRECTION = 4
 
 
@@ -49,14 +49,11 @@ def creative_direction_target_count(
     """
 
     normalized_target_count = max(1, target_count)
-    if normalized_target_count <= 50:
-        volume_target = math.ceil(normalized_target_count * 2 / 5)
-    else:
-        # Preserve the proven 50-item capacity, then grow more gradually so a
-        # large batch receives additional creative containers without making
-        # the strategy response itself unmanageably large. This yields 20,
-        # 26 and 32 directions for 50, 75 and 100 items respectively.
-        volume_target = 20 + math.ceil((normalized_target_count - 50) * 6 / 25)
+    # Direction planning is split by product territory, so large batches can
+    # carry many compact source directions without creating one oversized
+    # model response. Keeping four source directions for every five requested
+    # items limits the number of same-direction siblings before vector MMR.
+    volume_target = math.ceil(normalized_target_count * 4 / 5)
     volume_target = min(
         MAX_CREATIVE_DIRECTION_COUNT,
         max(MIN_CREATIVE_DIRECTION_COUNT, volume_target),
@@ -100,10 +97,16 @@ def creative_territory_target_range(direction_count: int) -> tuple[int, int]:
     """Return structural space capacity without interpreting product semantics."""
 
     normalized_direction_count = max(1, direction_count)
-    if normalized_direction_count >= 32:
+    if normalized_direction_count >= 64:
+        minimum = 10
+    elif normalized_direction_count >= 54:
+        minimum = 9
+    elif normalized_direction_count >= 40:
         minimum = 8
-    elif normalized_direction_count >= 26:
+    elif normalized_direction_count >= 32:
         minimum = 7
+    elif normalized_direction_count >= 20:
+        minimum = 6
     else:
         minimum = 1
     return minimum, min(10, normalized_direction_count)
@@ -309,6 +312,10 @@ def validate_creative_diversity_landscape(
     ]
     if len(set(action_ids)) != len(action_ids):
         raise ValueError("creative landscape action ids must be globally unique")
+    if len(action_ids) < expected_direction_count:
+        raise ValueError(
+            "creative landscape action capacity is lower than the direction target"
+        )
     if len(response.territories) > expected_direction_count:
         raise ValueError("creative landscape has more territories than directions")
     if any(
@@ -357,16 +364,32 @@ def validate_creative_diversity_landscape(
     ]
     if sum(target_slots) > expected_direction_count:
         raise ValueError("creative landscape required facts exceed direction capacity")
-    allocation_order = sorted(
-        range(len(response.territories)),
-        key=lambda index: (
-            -len(normalized_required_ids[index]),
-            -len(response.territories[index].compatible_fact_ids),
-            response.territories[index].territory_id,
-        ),
-    )
-    for offset in range(expected_direction_count - sum(target_slots)):
-        target_slots[allocation_order[offset % len(allocation_order)]] += 1
+    if any(
+        target_slots[index] > len(territory.actions)
+        for index, territory in enumerate(response.territories)
+    ):
+        raise ValueError(
+            "creative landscape fact load exceeds a territory action capacity"
+        )
+    for _ in range(expected_direction_count - sum(target_slots)):
+        eligible = [
+            index
+            for index, territory in enumerate(response.territories)
+            if target_slots[index] < len(territory.actions)
+        ]
+        if not eligible:
+            raise ValueError(
+                "creative landscape has no remaining action capacity for directions"
+            )
+        target_index = min(
+            eligible,
+            key=lambda index: (
+                target_slots[index] / len(response.territories[index].actions),
+                target_slots[index],
+                response.territories[index].territory_id,
+            ),
+        )
+        target_slots[target_index] += 1
     territories = [
         CreativeTerritory(
             **territory.model_dump(
@@ -547,6 +570,7 @@ def validate_creative_direction_plan(
     strategy_ids = set(fact_visual_strategy.by_id)
     directions: list[CreativeDirection] = []
     direction_ids: set[str] = set()
+    territory_action_ids: set[tuple[str, str]] = set()
     for direction in response.directions:
         if direction.direction_id in direction_ids:
             raise ValueError("creative directions repeat the same direction id")
@@ -566,6 +590,15 @@ def validate_creative_direction_plan(
                 raise ValueError(
                     "creative direction referenced an unknown territory action"
                 )
+            territory_action = (
+                direction.territory_id,
+                direction.primary_action_id,
+            )
+            if territory_action in territory_action_ids:
+                raise ValueError(
+                    "creative directions repeat a territory primary action"
+                )
+            territory_action_ids.add(territory_action)
             if any(
                 fact_id not in territory.compatible_fact_ids
                 for fact_id in direction.fact_ids
@@ -730,6 +763,44 @@ def validate_creative_direction_audit(
     )
 
 
+def validate_creative_direction_audit_batch(
+    response: CreativeDirectionAuditResponse,
+    directions: Sequence[CreativeDirection],
+    landscape: CreativeDiversityLandscape,
+) -> CreativeDirectionAuditResponse:
+    """Validate only audit identifiers before batch results are merged.
+
+    This is deliberately structural: it does not reinterpret any scene, action,
+    fact relationship or verdict produced by the AI auditor.
+    """
+
+    directions_by_id = {item.direction_id: item for item in directions}
+    audit_ids = [item.direction_id for item in response.items]
+    if len(audit_ids) != len(set(audit_ids)) or set(audit_ids) != set(directions_by_id):
+        raise ValueError(
+            "creative direction audit batch must cover every direction exactly once"
+        )
+    for item in response.items:
+        territory = landscape.by_id.get(item.realized_territory_id)
+        if territory is None:
+            raise ValueError("creative direction audit used an unknown territory")
+        if item.realized_action_id not in {
+            action.action_id for action in territory.actions
+        }:
+            raise ValueError("creative direction audit used an unknown action")
+        direction = directions_by_id[item.direction_id]
+        if item.fact_reviews is None:
+            raise ValueError("creative direction audit omitted fact reviews")
+        reviewed_fact_ids = [review.fact_id for review in item.fact_reviews]
+        if len(reviewed_fact_ids) != len(set(reviewed_fact_ids)) or set(
+            reviewed_fact_ids
+        ) != set(direction.fact_ids):
+            raise ValueError(
+                "creative direction audit must review every applied fact exactly once"
+            )
+    return response
+
+
 def validate_creative_direction_diversity_audit(
     response: CreativeDirectionDiversityAuditResponse,
     directions: Sequence[CreativeDirection],
@@ -746,14 +817,18 @@ def validate_creative_direction_diversity_audit(
             raise ValueError("creative direction diversity audit repeated a group id")
         group_ids.add(group.group_id)
         if any(item not in direction_ids for item in group.direction_ids):
-            raise ValueError("creative direction diversity audit used an unknown direction")
+            raise ValueError(
+                "creative direction diversity audit used an unknown direction"
+            )
         if proposed_ids:
             if not proposed_ids.intersection(group.direction_ids):
                 raise ValueError("supplement overlap group omitted proposed directions")
             if any(item not in proposed_ids for item in group.revision_direction_ids):
                 raise ValueError("supplement audit may only revise proposed directions")
     if any(item not in direction_ids for item in response.revision_direction_ids):
-        raise ValueError("creative direction diversity audit used an unknown revision id")
+        raise ValueError(
+            "creative direction diversity audit used an unknown revision id"
+        )
     if proposed_ids and any(
         item not in proposed_ids for item in response.revision_direction_ids
     ):
@@ -790,11 +865,16 @@ def validate_diversity_supplement_directions(
     usable_ids = {fact.fact_id for fact in application.usable}
     strategy_ids = set(fact_visual_strategy.by_id)
     existing_ids = {item.direction_id for item in existing_directions}
-    existing_texts = {item.creative_direction.casefold() for item in existing_directions}
+    existing_texts = {
+        item.creative_direction.casefold() for item in existing_directions
+    }
     supplement_ids: set[str] = set()
     supplement_texts: set[str] = set()
     for direction in response.directions:
-        if direction.direction_id in existing_ids or direction.direction_id in supplement_ids:
+        if (
+            direction.direction_id in existing_ids
+            or direction.direction_id in supplement_ids
+        ):
             raise ValueError("diversity supplement repeated a direction id")
         supplement_ids.add(direction.direction_id)
         folded_text = direction.creative_direction.casefold()
@@ -814,7 +894,8 @@ def validate_diversity_supplement_directions(
         }:
             raise ValueError("diversity supplement referenced an unknown action")
         if any(
-            fact_id not in territory.compatible_fact_ids for fact_id in direction.fact_ids
+            fact_id not in territory.compatible_fact_ids
+            for fact_id in direction.fact_ids
         ):
             raise ValueError("diversity supplement used a fact outside its territory")
     return list(response.directions)
@@ -915,6 +996,7 @@ def creative_direction_revision_context(
     }
     invalid_fact_references = []
     invalid_direction_ids: list[str] = []
+    repeated_action_direction_ids: list[str] = []
     slot_revision_direction_ids: list[str] = []
     slot_correction: dict[str, object] = {}
     allowed_facts_by_territory: dict[str, list[str]] = {}
@@ -960,6 +1042,16 @@ def creative_direction_revision_context(
         actual_slots = Counter(
             direction.territory_id for direction in response.directions
         )
+        seen_territory_actions: set[tuple[str, str]] = set()
+        for direction in response.directions:
+            territory_action = (
+                direction.territory_id,
+                direction.primary_action_id,
+            )
+            if territory_action in seen_territory_actions:
+                repeated_action_direction_ids.append(direction.direction_id)
+            else:
+                seen_territory_actions.add(territory_action)
         deficit_slots = {
             territory_id: expected_count - actual_slots.get(territory_id, 0)
             for territory_id, expected_count in expected_slots.items()
@@ -1123,6 +1215,7 @@ def creative_direction_revision_context(
                 + invalid_fact_destination_direction_ids
                 + slot_revision_direction_ids
                 + underfilled_direction_ids
+                + repeated_action_direction_ids
             )
         )
     revision_direction_id_set = set(revision_direction_ids)
@@ -1176,12 +1269,15 @@ def creative_direction_revision_context(
         "allowedFactIdsByTerritory": allowed_facts_by_territory,
         "allowedFactIdsByDirection": allowed_facts_by_direction,
         "invalidDirectionFactReferences": invalid_fact_references,
+        "repeatedPrimaryActionDirectionIds": repeated_action_direction_ids,
         "territorySlotCorrection": slot_correction,
         "revisionDirectionIds": revision_direction_ids,
         "revisionInstruction": (
             "重新规划完整批次，让缺失事实自然进入合适方向。先把"
             " revisionRequiredBusinessFactIds 当作不可丢失的覆盖清单："
             "revisionDirectionIds 中全部方向的 factApplications 合集必须完整"
+            "覆盖这些事实；同一 territoryId 内每个方向必须选择不同的"
+            "primaryActionId，不能只改动作说法。"
             "包含这份清单；revisionFactOptions 给出每项事实可以进入的方向，"
             "由模型判断其中最自然的具体关系。添加缺失事实时不得移除清单中的"
             "其他唯一事实，可移除重复事实为单条最多 4 项的容量让路；"

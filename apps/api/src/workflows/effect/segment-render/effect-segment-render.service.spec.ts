@@ -127,6 +127,10 @@ const serviceWith = (overrides: Record<string, unknown> = {}) => {
     { get: vi.fn().mockResolvedValue({ id: 'project-a', name: '项目 A' }) } as never,
     { get: vi.fn().mockReturnValue('seedance-model') } as never,
     {} as never,
+    {
+      findNodeState: vi.fn().mockResolvedValue(null),
+      saveNodeState: vi.fn(),
+    } as never,
   );
   return { service, repository };
 };
@@ -138,6 +142,7 @@ describe('EffectSegmentRenderService', () => {
     const result = await service.start('project-a', 'product-a', {
       workflowRunId: 'run-a',
       expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0,
       idempotencyKey: 'request-a',
     });
 
@@ -162,6 +167,7 @@ describe('EffectSegmentRenderService', () => {
       service.start('project-a', 'product-a', {
         workflowRunId: 'run-a',
         expectedPromptArtifactRevision: 2,
+        expectedSettingsRevision: 0,
         idempotencyKey: 'request-a',
       }),
     ).rejects.toBeInstanceOf(ConflictException);

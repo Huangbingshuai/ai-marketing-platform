@@ -416,40 +416,9 @@ const promptPreviewItems = (run: EffectPromptPreviewRunRecord): EffectPromptItem
 
 const previewRenderProfile = (snapshot: EffectPromptInputSnapshot): EffectPromptRenderProfile => {
   const profile = defaultEffectPromptRenderProfile();
-  const insight = unknownRecord(snapshot.insightArtifact.result);
-  if (!insight) return profile;
-  const ratioRaw = [insight.aspectRatio, insight.aspect_ratio].find(
-    (value): value is string => typeof value === 'string' && value.trim().length > 0,
-  );
-  const resolutionRaw =
-    typeof insight.resolution === 'string' ? insight.resolution.toLowerCase() : '';
-  const ratio = ratioRaw?.replace('：', ':');
-  const supportedRatios: EffectPromptRenderProfile['ratio'][] = [
-    '16:9',
-    '4:3',
-    '1:1',
-    '3:4',
-    '9:16',
-    '21:9',
-    'adaptive',
-  ];
-  const supportedResolutions: EffectPromptRenderProfile['resolution'][] = ['480p', '720p', '1080p'];
-  const disabledRaw = [insight.disabledElements, insight.disabled_elements].find(Array.isArray);
-  const disabledElements = Array.isArray(disabledRaw)
-    ? disabledRaw.filter(
-        (value): value is string => typeof value === 'string' && value.trim().length > 0,
-      )
-    : [];
+  const disabledElements = snapshot.settings.disabledElements ?? [];
   return {
     ...profile,
-    ratio: supportedRatios.includes(ratio as EffectPromptRenderProfile['ratio'])
-      ? (ratio as EffectPromptRenderProfile['ratio'])
-      : profile.ratio,
-    resolution: supportedResolutions.includes(
-      resolutionRaw as EffectPromptRenderProfile['resolution'],
-    )
-      ? (resolutionRaw as EffectPromptRenderProfile['resolution'])
-      : profile.resolution,
     sharedConstraints: {
       disabledElements,
       contentHash: createHash('sha256').update(JSON.stringify(disabledElements)).digest('hex'),
@@ -548,7 +517,7 @@ export class EffectPromptService {
           sourceNodeId: effectPromptSettingsNodeId(resultRecord.productId),
           sourceKey: effectPromptSettingsNodeId(resultRecord.productId),
           sourceRevision: null,
-          sourceHash: run.settingsHash,
+          sourceHash: resultRecord.settingsHash,
         },
       ],
     };
@@ -577,13 +546,32 @@ export class EffectPromptService {
           workflowRunId,
           product.id,
         );
+        const insight = await this.repository.insightArtifact(projectId, workflowRunId, product.id);
+        const legacyInsight = unknownRecord(insight?.payload);
+        const legacyStyle =
+          typeof legacyInsight?.visualStyleBaseline === 'string'
+            ? legacyInsight.visualStyleBaseline.trim()
+            : '';
+        const legacyChannel =
+          typeof legacyInsight?.deliveryChannels === 'string'
+            ? legacyInsight.deliveryChannels.trim()
+            : '';
+        const legacyDisabled = Array.isArray(legacyInsight?.disabledElements)
+          ? legacyInsight.disabledElements.filter(
+              (item): item is string => typeof item === 'string' && item.trim().length > 0,
+            )
+          : (draft?.renderProfile.sharedConstraints.disabledElements ?? []);
         const settings =
           readEffectPromptSettings(settingsNode?.state) ??
           normalizeEffectPromptSettings({
-            targetCount: EFFECT_PROMPT_LIMITS.defaultCount,
-            defaultDurationSeconds: EFFECT_PROMPT_LIMITS.defaultDurationSeconds,
+            targetCount: draft?.settings.targetCount ?? EFFECT_PROMPT_LIMITS.defaultCount,
+            defaultDurationSeconds:
+              draft?.settings.defaultDurationSeconds ?? EFFECT_PROMPT_LIMITS.defaultDurationSeconds,
+            styleMode: legacyStyle ? 'FIXED' : 'AI_AUTO',
+            styleTone: legacyStyle || null,
+            deliveryChannel: legacyChannel || '抖音',
+            disabledElements: legacyDisabled,
           });
-        const insight = await this.repository.insightArtifact(projectId, workflowRunId, product.id);
         const snapshot = resultRun?.inputSnapshot as EffectPromptInputSnapshot | undefined;
         const stale = Boolean(
           resultRecord &&
@@ -670,6 +658,28 @@ export class EffectPromptService {
       1,
     );
     if (result.conflict) throw conflict('Prompt 批次设置已在其他页面更新，请刷新后重试');
+    const latestResult = await this.repository.latestResult(projectId, workflowRunId, productId);
+    const currentDraft = latestResult
+      ? parseEffectPromptBatchResult(latestResult.draftResult)
+      : null;
+    if (
+      latestResult &&
+      currentDraft &&
+      currentDraft.settings.targetCount === normalized.targetCount &&
+      currentDraft.settings.defaultDurationSeconds === normalized.defaultDurationSeconds &&
+      currentDraft.settings.styleMode === normalized.styleMode &&
+      currentDraft.settings.styleTone === normalized.styleTone &&
+      currentDraft.settings.deliveryChannel === normalized.deliveryChannel &&
+      workflowStateHash(currentDraft.settings.disabledElements) !==
+        workflowStateHash(normalized.disabledElements)
+    ) {
+      await this.repository.mutateResult(projectId, latestResult.id, latestResult.revision, {
+        kind: 'SETTINGS',
+        settings: normalized,
+        sharedPrompt: compileEffectPromptSharedPrompt(normalized.disabledElements ?? []),
+        settingsHash: hash,
+      });
+    }
     return {
       productId,
       settings: normalized,
@@ -844,9 +854,9 @@ export class EffectPromptService {
         throw notFound('Prompt 结果不存在');
       const items = promptPreviewItems(failedRun);
       const renderProfile = previewRenderProfile(snapshot as EffectPromptInputSnapshot);
-      const sharedPrompt =
-        snapshot.sharedPrompt ??
-        compileEffectPromptSharedPrompt(renderProfile.sharedConstraints.disabledElements);
+      const sharedPrompt = compileEffectPromptSharedPrompt(
+        snapshot.settings.disabledElements ?? [],
+      );
       const preview = recomputePromptQuality(
         items,
         snapshot.settings,

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type {
   EffectPromptBatchResult,
+  EffectPromptBatchSettings,
   EffectPromptDimensions,
   EffectPromptItem,
   EffectPromptManualOverrides,
@@ -1547,7 +1548,13 @@ export class EffectPromptRepository {
           >;
         }
       | { kind: 'DELETE'; itemId: string }
-      | { kind: 'SHARED_PROMPT'; sharedPrompt: EffectPromptSharedPrompt },
+      | { kind: 'SHARED_PROMPT'; sharedPrompt: EffectPromptSharedPrompt }
+      | {
+          kind: 'SETTINGS';
+          settings: EffectPromptBatchSettings;
+          sharedPrompt: EffectPromptSharedPrompt;
+          settingsHash: string;
+        },
   ) {
     return this.prisma.$transaction(async (transaction) => {
       await transaction.$queryRaw<Array<{ id: string }>>`
@@ -1565,13 +1572,14 @@ export class EffectPromptRepository {
       const overrides = parseOverrides(existing.manualOverrides);
       const items = [...current.items];
       let semanticEvaluation = pendingEffectPromptSemanticEvaluation();
-      let semanticContentUnchanged = mutation.kind === 'SHARED_PROMPT';
+      let semanticContentUnchanged =
+        mutation.kind === 'SHARED_PROMPT' || mutation.kind === 'SETTINGS';
       if (mutation.kind === 'ADD') {
         if (items.some(({ id }) => id === mutation.item.id))
           return { kind: 'ITEM_CONFLICT' as const };
         items.push(mutation.item);
         overrides.added.push(mutation.item);
-      } else if (mutation.kind !== 'SHARED_PROMPT') {
+      } else if (mutation.kind !== 'SHARED_PROMPT' && mutation.kind !== 'SETTINGS') {
         const index = items.findIndex(({ id }) => id === mutation.itemId);
         if (index < 0) return { kind: 'ITEM_NOT_FOUND' as const };
         const previous = items[index]!;
@@ -1613,10 +1621,12 @@ export class EffectPromptRepository {
       }
       const next = recomputePromptQuality(
         items,
-        current.settings,
+        mutation.kind === 'SETTINGS' ? mutation.settings : current.settings,
         current.metrics,
         current.renderProfile,
-        mutation.kind === 'SHARED_PROMPT' ? mutation.sharedPrompt : current.sharedPrompt,
+        mutation.kind === 'SHARED_PROMPT' || mutation.kind === 'SETTINGS'
+          ? mutation.sharedPrompt
+          : current.sharedPrompt,
         semanticContentUnchanged
           ? current.metrics.semanticEvaluation
           : mutation.kind === 'DELETE'
@@ -1631,6 +1641,7 @@ export class EffectPromptRepository {
           draftResult: json(next),
           manualOverrides: json(overrides),
           qualityStatus: next.qualityStatus,
+          ...(mutation.kind === 'SETTINGS' ? { settingsHash: mutation.settingsHash } : {}),
           revision: { increment: 1 },
           savedAt: new Date(),
         },

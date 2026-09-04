@@ -590,7 +590,7 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     )
     assert mapping_stage.metadata["requiredFacts"]
     assert all("factId" not in item for item in mapping_stage.metadata["requiredFacts"])
-    assert shared_stage.metadata["compiledContent"]
+    assert shared_stage.metadata["compiledContent"] == ""
     assert creative_stage.status == "SUCCEEDED"
     assert creative_stage.metadata["candidateCount"] == 14
     assert (

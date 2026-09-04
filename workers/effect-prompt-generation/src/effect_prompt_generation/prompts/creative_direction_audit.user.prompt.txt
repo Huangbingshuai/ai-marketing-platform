@@ -10,4 +10,7 @@
 待复核创意方向：
 {creative_directions_json}
 
+上一次结构校验反馈（首次调用为空）：
+{revision_context_json}
+
 请逐条重新归类方向，并逐项复核每个 factApplication 的自然相容性，再给出整批是否需要重规划的结论。

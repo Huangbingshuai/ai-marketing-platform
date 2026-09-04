@@ -8,17 +8,12 @@ import type {
   EffectExtractionValueOrigin,
   EffectImportMode,
   EffectImportProduct,
-  EffectVideoConfig,
 } from '@ai-marketing/contracts';
 import {
   EFFECT_EXTRACTION_GRAPH_EDGES,
   EFFECT_EXTRACTION_GRAPH_NODES,
   EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
-  EFFECT_IMPORT_ASPECT_RATIOS,
-  EFFECT_IMPORT_DELIVERY_CHANNELS,
-  EFFECT_IMPORT_LIMITS,
   EFFECT_IMPORT_MATERIAL_TYPE_LABELS,
-  EFFECT_IMPORT_RESOLUTIONS,
 } from '@ai-marketing/contracts';
 import { WorkflowNodeDraftBar, WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
 import {
@@ -42,8 +37,6 @@ import {
   getWorkflowNodeState,
   putWorkflowNodeState,
 } from '../../../platform/workflow/api/workflow-working.api';
-import EffectUpwardCreatableSelect from '../source-import/components/EffectUpwardCreatableSelect.vue';
-import { EFFECT_IMPORT_PROTOTYPE_STYLE_TONES } from '../source-import/effect-import-options';
 import {
   cloneExtractionProductState,
   cloneExtractionResult,
@@ -71,7 +64,6 @@ const props = defineProps<{
   draftId: string;
   mode: EffectImportMode;
   products: EffectImportProduct[];
-  globalConfig: EffectVideoConfig;
 }>();
 
 const emit = defineEmits<{
@@ -88,7 +80,6 @@ const loading = ref(true);
 const loadingError = ref('');
 const sourceRevision = ref(0);
 const pollingErrors = ref<Record<string, string>>({});
-const newDisabledElement = ref('');
 const graphDialogOpen = ref(false);
 const graphLoading = ref(false);
 const validating = ref(false);
@@ -127,7 +118,6 @@ const sourceSignature = computed(() =>
       id: product.id,
       name: product.name,
       category: product.category,
-      effectiveConfig: product.effectiveConfig,
       materials: product.materials.map((material) => ({
         id: material.id,
         status: material.status,
@@ -141,7 +131,6 @@ const currentProduct = computed(
   () => props.products.find((product) => product.id === currentProductId.value) ?? null,
 );
 const currentState = computed(() => productStates.value[currentProductId.value] ?? null);
-const currentConfig = computed(() => currentProduct.value?.effectiveConfig ?? props.globalConfig);
 const currentStatusMeta = computed(() =>
   currentState.value
     ? EFFECT_EXTRACTION_STATUS_META[currentState.value.status]
@@ -203,7 +192,7 @@ const graphNodeDescription = (nodeId: EffectExtractionNodeId): string =>
     DOCUMENT: '读取文档中的产品信息',
     IMAGE: '识别图片中的商品信息',
     COMMERCE: '检查商品链接中的信息',
-    FORM: '读取导入节点的全局视频配置',
+    FORM: '读取导入节点中人工填写的产品名称与品类',
     FUSION: '合并不同资料中的有效信息',
     SEMANTIC_REFINEMENT: '保留用户事实，只整理图片建议并给出待确认提示',
     NORMALIZATION: '生成可继续编辑的产品信息卡',
@@ -295,7 +284,6 @@ const safeLocalFileName = (value: string | null): string =>
   (value ? value.split(/[\\/]/).at(-1)?.trim() : null) || '未命名素材';
 const localGraphDetail = (nodeId: EffectExtractionNodeId): EffectExtractionNodeDetail => {
   const product = currentProduct.value!;
-  const config = props.globalConfig;
   const execution = graphExecution(nodeId);
   const base = {
     nodeId,
@@ -413,14 +401,10 @@ const localGraphDetail = (nodeId: EffectExtractionNodeId): EffectExtractionNodeD
   if (nodeId === 'FORM') {
     return {
       ...base,
-      summary: '当前导入节点的全局视频配置',
+      summary: '当前导入节点的产品基础信息',
       fields: [
-        detailField('durationSeconds', '视频时长', `${config.durationSeconds} 秒`, '全局配置'),
-        detailField('aspectRatio', '画幅比例', config.aspectRatio, '全局配置'),
-        detailField('resolution', '分辨率', config.resolution, '全局配置'),
-        detailField('styleTone', '风格基调', config.styleTone, '全局配置'),
-        detailField('deliveryChannel', '投放渠道', config.deliveryChannel, '全局配置'),
-        detailField('disabledElements', '禁用元素', config.disabledElements, '全局配置'),
+        detailField('productName', '产品名称', product.name, '人工填写'),
+        detailField('productCategory', '产品品类', product.category, '人工填写'),
       ],
       sources: [],
     };
@@ -461,9 +445,9 @@ const emptyExtractionResult: EffectExtractionResult = {
   usageScenarios: [],
   purchaseScenarios: [],
   emotionalScenarios: [],
-  durationSeconds: props.globalConfig.durationSeconds,
-  aspectRatio: props.globalConfig.aspectRatio,
-  resolution: props.globalConfig.resolution,
+  durationSeconds: 15,
+  aspectRatio: '9:16',
+  resolution: '720p',
   deliveryChannels: '',
   disabledElements: [],
   visualStyleBaseline: '',
@@ -473,12 +457,6 @@ const baseFieldsReadonly = computed(() => !currentState.value?.result || current
 const semanticNoticeDismissDisabled = computed(
   () => baseFieldsReadonly.value || currentState.value?.saveState === 'SAVING',
 );
-const selectOptions = (values: readonly string[]) =>
-  values.map((value) => ({ label: value, value }));
-const aspectRatioOptions = selectOptions(EFFECT_IMPORT_ASPECT_RATIOS);
-const resolutionOptions = selectOptions(EFFECT_IMPORT_RESOLUTIONS);
-const deliveryChannelOptions = selectOptions(EFFECT_IMPORT_DELIVERY_CHANNELS);
-const visualStyleOptions = selectOptions(EFFECT_IMPORT_PROTOTYPE_STYLE_TONES);
 type OriginListField =
   | 'coreSellingPoints'
   | 'secondarySellingPoints'
@@ -1191,23 +1169,6 @@ const markListFieldDirty = (field: OriginListField): void => {
   markDirty();
 };
 
-type ProductionRuleField =
-  'aspectRatio' | 'deliveryChannels' | 'durationSeconds' | 'resolution' | 'visualStyleBaseline';
-
-const updateProductionRule = (field: ProductionRuleField, value: number | string): void => {
-  const result = currentState.value?.result;
-  if (!result || baseFieldsReadonly.value) return;
-  if (field === 'durationSeconds') {
-    result.durationSeconds = Math.min(
-      EFFECT_IMPORT_LIMITS.maxDurationSeconds,
-      Math.max(EFFECT_IMPORT_LIMITS.minDurationSeconds, Number(value) || 1),
-    );
-  } else {
-    result[field] = String(value);
-  }
-  markDirty();
-};
-
 const markFieldDirty = (field: keyof EffectExtractionResult): void => {
   if (currentState.value) {
     currentState.value.provenance.fieldOrigins[field] = 'USER_FACT';
@@ -1320,23 +1281,6 @@ const removeScenarioItem = async (field: ScenarioListField, index: number): Prom
   markListFieldDirty(field);
 };
 
-const addDisabledElement = (): void => {
-  const result = currentState.value?.result;
-  const value = newDisabledElement.value.trim();
-  if (!result || !value || result.disabledElements.includes(value)) return;
-  result.disabledElements.push(value);
-  newDisabledElement.value = '';
-  markDirty();
-};
-
-const removeDisabledElement = async (index: number): Promise<void> => {
-  const result = currentState.value?.result;
-  if (!result) return;
-  if (!(await confirmInformationRemoval('禁用元素', result.disabledElements[index] ?? ''))) return;
-  result.disabledElements.splice(index, 1);
-  markDirty();
-};
-
 const saveDraft = async (): Promise<boolean> => {
   clearTimeout(saveTimer);
   saveTimer = undefined;
@@ -1393,7 +1337,6 @@ const selectProduct = async (event: Event): Promise<void> => {
   if (!(await flushPendingEdits())) return;
   closeGraphDialog(false);
   currentProductId.value = nextProductId;
-  newDisabledElement.value = '';
 };
 
 watch(
@@ -1658,37 +1601,6 @@ onBeforeUnmount(() => {
             </label>
           </div>
         </section>
-        <aside class="inherit-card">
-          <span>继承自步骤 1</span>
-          <h3>统一制作规则</h3>
-          <dl>
-            <div>
-              <dt>画幅</dt>
-              <dd>{{ currentConfig.aspectRatio }}</dd>
-            </div>
-            <div>
-              <dt>时长</dt>
-              <dd>{{ currentConfig.durationSeconds }} 秒</dd>
-            </div>
-            <div>
-              <dt>分辨率</dt>
-              <dd>{{ currentConfig.resolution }}</dd>
-            </div>
-            <div>
-              <dt>风格</dt>
-              <dd>{{ currentConfig.styleTone }}</dd>
-            </div>
-            <div>
-              <dt>渠道</dt>
-              <dd>{{ currentConfig.deliveryChannel }}</dd>
-            </div>
-            <div>
-              <dt>禁用元素</dt>
-              <dd>{{ currentConfig.disabledElements.join('、') || '未设置' }}</dd>
-            </div>
-          </dl>
-          <p>此处显示资料导入节点的当前配置；下方制作规则可在本信息卡中继续调整。</p>
-        </aside>
       </div>
 
       <div
@@ -2296,102 +2208,6 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </section>
-
-        <section class="content-block production-rules-card">
-          <div class="block-heading">
-            <div>
-              <h3>全局视频配置</h3>
-              <p>初始值继承资料导入节点，可在当前信息卡中调整</p>
-            </div>
-          </div>
-          <div class="production-rule-grid">
-            <label class="field-label">
-              <span>统一时长</span>
-              <div class="production-duration-input">
-                <input
-                  :value="visibleResult.durationSeconds"
-                  type="number"
-                  :min="EFFECT_IMPORT_LIMITS.minDurationSeconds"
-                  :max="EFFECT_IMPORT_LIMITS.maxDurationSeconds"
-                  :disabled="baseFieldsReadonly"
-                  @change="
-                    updateProductionRule(
-                      'durationSeconds',
-                      ($event.target as HTMLInputElement).value,
-                    )
-                  "
-                />
-                <small>秒</small>
-              </div>
-            </label>
-            <label class="field-label">
-              <span>画幅</span>
-              <EffectUpwardCreatableSelect
-                field-label="画幅"
-                :model-value="visibleResult.aspectRatio"
-                :options="aspectRatioOptions"
-                :disabled="baseFieldsReadonly"
-                @update:model-value="updateProductionRule('aspectRatio', $event)"
-              />
-            </label>
-            <label class="field-label">
-              <span>分辨率</span>
-              <EffectUpwardCreatableSelect
-                field-label="分辨率"
-                :model-value="visibleResult.resolution"
-                :options="resolutionOptions"
-                :creatable="false"
-                :disabled="baseFieldsReadonly"
-                @update:model-value="updateProductionRule('resolution', $event)"
-              />
-            </label>
-            <label class="field-label wide">
-              <span>投放渠道</span>
-              <EffectUpwardCreatableSelect
-                field-label="投放渠道"
-                :model-value="visibleResult.deliveryChannels"
-                :options="deliveryChannelOptions"
-                :disabled="baseFieldsReadonly"
-                @update:model-value="updateProductionRule('deliveryChannels', $event)"
-              />
-            </label>
-          </div>
-          <label class="field-label">
-            <span>视觉风格基线</span>
-            <EffectUpwardCreatableSelect
-              field-label="视觉风格基线"
-              :model-value="visibleResult.visualStyleBaseline"
-              :options="visualStyleOptions"
-              :disabled="baseFieldsReadonly"
-              @update:model-value="updateProductionRule('visualStyleBaseline', $event)"
-            />
-          </label>
-          <div class="field-label disabled-field">
-            <span>合规禁用词库</span>
-            <div v-if="visibleResult.disabledElements.length" class="disabled-tags">
-              <button
-                v-for="(element, index) in visibleResult.disabledElements"
-                :key="`${element}-${index}`"
-                type="button"
-                :disabled="baseFieldsReadonly"
-                @click="removeDisabledElement(index)"
-              >
-                {{ element }} <b>×</b>
-              </button>
-            </div>
-            <div class="disabled-input-row">
-              <input
-                v-model="newDisabledElement"
-                placeholder="输入新禁用词"
-                :disabled="baseFieldsReadonly"
-                @keydown.enter.prevent="addDisabledElement"
-              />
-              <button type="button" :disabled="baseFieldsReadonly" @click="addDisabledElement">
-                添加
-              </button>
-            </div>
-          </div>
-        </section>
       </div>
 
       <WorkflowNodeDraftBar
@@ -2977,7 +2793,7 @@ button:disabled {
 }
 .product-info-layout {
   display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(240px, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
 }
 .content-block,
@@ -2987,9 +2803,8 @@ button:disabled {
   border: 1px solid #f0e2db;
   border-radius: 20px;
 }
-.product-base-card,
-.inherit-card {
-  min-height: 346px;
+.product-base-card {
+  min-height: 0;
 }
 .content-block h3,
 .inherit-card h3 {

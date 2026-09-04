@@ -108,24 +108,13 @@ export class EffectExtractionRepository {
         projectId,
         workflowRunId: workspace.workflowRunId,
         nodeId: 'SOURCE_IMPORT',
-        artifactKey: {
-          in: [
-            `source-package:${productId}`,
-            `effective-video-config:${productId}`,
-            `global-video-config:${productId}`,
-          ],
-        },
+        artifactKey: `source-package:${productId}`,
       },
     });
     const sourcePackage = artifacts.find(
       (artifact) => artifact.artifactKey === `source-package:${productId}`,
     );
-    const config =
-      artifacts.find(
-        (artifact) => artifact.artifactKey === `effective-video-config:${productId}`,
-      ) ??
-      artifacts.find((artifact) => artifact.artifactKey === `global-video-config:${productId}`);
-    if (!sourcePackage || !config) return null;
+    if (!sourcePackage) return null;
     const nodeState = await this.prisma.workflowNodeState.findUnique({
       where: {
         projectId_workflowRunId_nodeId: {
@@ -137,7 +126,6 @@ export class EffectExtractionRepository {
     });
     return {
       sourcePackageRevision: sourcePackage.revision,
-      effectiveVideoConfigRevision: config.revision,
       executionInputHash:
         nodeState?.executionInputHash ??
         '0e9561cfb83d50990a103b3896fe249a11fe27fa28985448187f93ec12116d72',
@@ -244,28 +232,16 @@ export class EffectExtractionRepository {
           workflowRunId: workspace.workflowRunId,
           nodeId: 'SOURCE_IMPORT',
           artifactKey: {
-            in: [
-              `source-package:${productId}`,
-              `effective-video-config:${productId}`,
-              `global-video-config:${productId}`,
-            ],
+            in: [`source-package:${productId}`],
           },
         },
       });
       const sourcePackage = upstreamArtifacts.find(
         (artifact) => artifact.artifactKey === `source-package:${productId}`,
       );
-      const effectiveVideoConfig =
-        upstreamArtifacts.find(
-          (artifact) => artifact.artifactKey === `effective-video-config:${productId}`,
-        ) ??
-        upstreamArtifacts.find(
-          (artifact) => artifact.artifactKey === `global-video-config:${productId}`,
-        );
       if (
         !sourcePackage ||
-        !effectiveVideoConfig ||
-        [sourcePackage, effectiveVideoConfig].some(
+        [sourcePackage].some(
           (artifact) => artifact.freshness !== 'CURRENT' || artifact.availability !== 'AVAILABLE',
         )
       )
@@ -326,20 +302,16 @@ export class EffectExtractionRepository {
         bypassImageCache: refreshImageRecognition,
         dependencySnapshot: {
           sourcePackageRevision: sourcePackage.revision,
-          effectiveVideoConfigRevision: effectiveVideoConfig.revision,
           executionInputHash:
             nodeState?.executionInputHash ??
             '0e9561cfb83d50990a103b3896fe249a11fe27fa28985448187f93ec12116d72',
         },
         dependencies: [
-          ...[sourcePackage, effectiveVideoConfig].map((artifact) => ({
+          ...[sourcePackage].map((artifact) => ({
             sourceType: 'WORKING_ARTIFACT' as const,
             sourceNodeId: artifact.nodeId,
             sourceArtifactId: artifact.id,
-            sourceKey:
-              artifact.id === effectiveVideoConfig.id
-                ? `effective-video-config:${productId}`
-                : artifact.artifactKey,
+            sourceKey: artifact.artifactKey,
             sourceRevision: artifact.revision,
           })),
           ...(nodeState

@@ -307,7 +307,7 @@ describe('presentExtractionNodeDetail', () => {
     expect(JSON.stringify(detail)).not.toContain('聚合结果不展示');
   });
 
-  it('shows only the five global video fields from the import node', () => {
+  it('shows only product identity from the import node', () => {
     const detail = presentExtractionNodeDetail(
       {
         inputSnapshot: snapshot,
@@ -327,21 +327,9 @@ describe('presentExtractionNodeDetail', () => {
       execution('FORM'),
     );
 
-    expect(detail.summary).toBe('已读取导入节点的全局视频配置');
-    expect(detail.fields.map(({ label }) => label)).toEqual([
-      '视频时长',
-      '画幅比例',
-      '风格基调',
-      '投放渠道',
-      '禁用元素',
-    ]);
-    expect(detail.fields.map(({ value }) => value)).toEqual([
-      '20 秒',
-      '1:1',
-      '烟火食欲感',
-      '视频号',
-      ['未成年人', '医疗功效'],
-    ]);
+    expect(detail.summary).toBe('已读取导入节点的产品基础信息');
+    expect(detail.fields.map(({ label }) => label)).toEqual(['产品名称', '产品品类']);
+    expect(detail.fields.map(({ value }) => value)).toEqual(['山泉气泡水', '饮料']);
     expect(JSON.stringify(detail)).not.toContain('不应展示');
     expect(JSON.stringify(detail)).not.toContain('分辨率');
     expect(JSON.stringify(detail)).not.toContain('帧率');

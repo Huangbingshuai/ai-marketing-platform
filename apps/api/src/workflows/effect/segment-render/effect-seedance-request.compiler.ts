@@ -4,6 +4,7 @@ import type {
   EffectPromptFragmentType,
   EffectPromptItem,
   EffectPromptBatchResult,
+  EffectSegmentRenderSettings,
   SeedanceRatio,
   SeedanceResolution,
 } from '@ai-marketing/contracts';
@@ -27,6 +28,7 @@ export type EffectSeedanceRequestSnapshot = {
   compatiblePurposes: EffectPromptFragmentType[];
   promptContentHash: string;
   sharedPromptHash: string;
+  renderSettingsHash: string;
   request: EffectSeedanceCreateTaskRequest;
 };
 
@@ -85,6 +87,7 @@ export const compileEffectSeedanceRequest = (
   batch: EffectPromptBatchResult,
   promptId: string,
   model: string,
+  renderSettings: EffectSegmentRenderSettings,
 ): EffectSeedanceRequestSnapshot => {
   const item = batch.items.find(({ id }) => id === promptId);
   if (!item) throw new EffectSeedanceCompileError('PROMPT_NOT_FOUND', 'Prompt 不存在');
@@ -94,7 +97,7 @@ export const compileEffectSeedanceRequest = (
       'Prompt 尚未完成用途评估，不能进入视频渲染',
     );
   if (!model.trim()) throw new EffectSeedanceCompileError('EMPTY_MODEL', 'Seedance 模型配置为空');
-  const capability = EFFECT_PROMPT_RENDER_CAPABILITIES[batch.renderProfile.capabilityKey];
+  const capability = EFFECT_PROMPT_RENDER_CAPABILITIES[renderSettings.capabilityKey];
   if (
     item.targetDurationSeconds < capability.minDurationSeconds ||
     item.targetDurationSeconds > capability.maxDurationSeconds
@@ -103,9 +106,9 @@ export const compileEffectSeedanceRequest = (
       'DURATION_UNSUPPORTED',
       `当前模型仅支持 ${capability.minDurationSeconds}～${capability.maxDurationSeconds} 秒`,
     );
-  if (!capability.ratios.includes(batch.renderProfile.ratio))
+  if (!capability.ratios.includes(renderSettings.ratio))
     throw new EffectSeedanceCompileError('RATIO_UNSUPPORTED', '当前模型不支持所选画幅');
-  if (!capability.resolutions.includes(batch.renderProfile.resolution))
+  if (!capability.resolutions.includes(renderSettings.resolution))
     throw new EffectSeedanceCompileError('RESOLUTION_UNSUPPORTED', '当前模型不支持所选分辨率');
   const sharedPromptContent =
     batch.sharedPrompt?.compiledContent ??
@@ -120,12 +123,13 @@ export const compileEffectSeedanceRequest = (
     promptContentHash: promptContentHash(item),
     sharedPromptHash:
       batch.sharedPrompt?.contentHash ?? batch.renderProfile.sharedConstraints.contentHash,
+    renderSettingsHash: createHash('sha256').update(JSON.stringify(renderSettings)).digest('hex'),
     request: {
       model: model.trim(),
       content: [{ type: 'text', text }],
       duration: item.targetDurationSeconds,
-      ratio: batch.renderProfile.ratio,
-      resolution: batch.renderProfile.resolution,
+      ratio: renderSettings.ratio,
+      resolution: renderSettings.resolution,
     },
   };
 };

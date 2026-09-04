@@ -104,21 +104,102 @@ def test_direction_diversity_audit_validation_is_idempotent() -> None:
     restored = validate_creative_direction_diversity_audit(validated, directions)
 
     assert restored == validated
-    assert creative_direction_target_count(50) == 20
-    assert creative_direction_target_count(75) == 26
-    assert creative_direction_target_count(100) == 32
-    assert creative_direction_target_count(500) == 32
+    assert creative_direction_target_count(50) == 40
+    assert creative_direction_target_count(75) == 60
+    assert creative_direction_target_count(100) == 80
+    assert creative_direction_target_count(500) == 80
 
 
 def test_large_batches_require_enough_creative_territory_capacity() -> None:
-    assert creative_territory_target_range(20) == (1, 10)
-    assert creative_territory_target_range(26) == (7, 10)
-    assert creative_territory_target_range(32) == (8, 10)
+    assert creative_territory_target_range(20) == (6, 10)
+    assert creative_territory_target_range(25) == (6, 10)
+    assert creative_territory_target_range(38) == (7, 10)
+    assert creative_territory_target_range(50) == (8, 10)
+
+
+def test_landscape_requires_one_structural_action_slot_per_direction() -> None:
+    from effect_prompt_generation.providers import _mock_creative_landscape_response
+
+    application = map_insight(_cluster_snapshot().insight_artifact.result)
+    draft = _mock_creative_landscape_response(application, direction_count=13)
+    territories = [item.model_copy(deep=True) for item in draft.territories]
+    territories[0] = territories[0].model_copy(
+        update={"actions": territories[0].actions[:1]}
+    )
+    for index in range(1, len(territories)):
+        territories[index] = territories[index].model_copy(
+            update={"actions": territories[index].actions[:1]}
+        )
+
+    with pytest.raises(ValueError, match="action capacity"):
+        validate_creative_diversity_landscape(
+            CreativeDiversityLandscapeResponse(territories=territories),
+            application,
+            source_hash="a" * 64,
+            template_hash="b" * 64,
+            expected_direction_count=13,
+        )
+
+
+def test_direction_plan_rejects_reusing_one_action_inside_a_territory() -> None:
+    from effect_prompt_generation.providers import (
+        _mock_creative_direction_response,
+        _mock_fact_visual_strategy,
+        _mock_creative_landscape_response,
+    )
+    from effect_prompt_generation.visual_strategy import validate_fact_visual_strategy
+
+    application = map_insight(_cluster_snapshot().insight_artifact.result)
+    landscape = validate_creative_diversity_landscape(
+        _mock_creative_landscape_response(application, direction_count=13),
+        application,
+        source_hash="a" * 64,
+        template_hash="b" * 64,
+        expected_direction_count=13,
+    )
+    response = _mock_creative_direction_response(
+        application,
+        landscape=landscape,
+        direction_count=13,
+    )
+    first = response.directions[0]
+    same_territory_index = next(
+        index
+        for index, direction in enumerate(response.directions[1:], start=1)
+        if direction.territory_id == first.territory_id
+    )
+    repeated = response.directions[same_territory_index].model_copy(
+        update={"primary_action_id": first.primary_action_id}
+    )
+    invalid = response.model_copy(
+        update={
+            "directions": [
+                repeated if index == same_territory_index else direction
+                for index, direction in enumerate(response.directions)
+            ]
+        }
+    )
+    visual_strategy = validate_fact_visual_strategy(
+        _mock_fact_visual_strategy(application),
+        application,
+        source_content_hash="e" * 64,
+        template_hash="f" * 64,
+    )
+
+    with pytest.raises(ValueError, match="repeat a territory primary action"):
+        validate_creative_direction_plan(
+            invalid,
+            application,
+            visual_strategy,
+            landscape=landscape,
+            source_hash="c" * 64,
+            template_hash="d" * 64,
+        )
 
 
 def test_creative_direction_count_scales_with_fact_density() -> None:
-    assert creative_direction_target_count(50, 37) == 20
-    assert creative_direction_target_count(50, 41) == 20
+    assert creative_direction_target_count(50, 37) == 40
+    assert creative_direction_target_count(50, 41) == 40
     assert creative_direction_target_count(10, 40) == 10
     assert "每个方向必须自然使用 2～4 条业务事实" in (
         creative_direction_fact_density_instruction(37, 13)
@@ -129,8 +210,8 @@ def test_creative_direction_count_scales_with_fact_density() -> None:
 def test_creative_direction_capacity_fails_before_ai_calls() -> None:
     with pytest.raises(ValueError, match="至少调整为 11 条"):
         creative_direction_target_count(10, 41)
-    with pytest.raises(ValueError, match="最多承载 128 条业务事实"):
-        creative_direction_target_count(50, 129)
+    with pytest.raises(ValueError, match="最多承载 200 条业务事实"):
+        creative_direction_target_count(50, 321)
     with pytest.raises(ValueError, match="没有可分配"):
         creative_direction_target_count(50, 0)
 
@@ -392,7 +473,9 @@ def test_direction_revision_context_names_territory_fact_boundary() -> None:
     assert context["revisionFactOptions"] == []
 
 
-def test_direction_revision_context_opens_a_valid_destination_for_business_fact() -> None:
+def test_direction_revision_context_opens_a_valid_destination_for_business_fact() -> (
+    None
+):
     from effect_prompt_generation.providers import (
         _mock_creative_direction_response,
         _mock_creative_landscape_response,
@@ -767,6 +850,8 @@ class MissingFactThenReplanningProvider(MockAiProvider):
         target_count: int,
         shared_prompt: Any,
         landscape: Any,
+        style_instruction: str,
+        delivery_channel: str,
         revision_context: dict[str, Any] | None = None,
     ) -> Any:
         self.revision_contexts.append(revision_context)
@@ -776,9 +861,14 @@ class MissingFactThenReplanningProvider(MockAiProvider):
             target_count=target_count,
             shared_prompt=shared_prompt,
             landscape=landscape,
+            style_instruction=style_instruction,
+            delivery_channel=delivery_channel,
             revision_context=revision_context,
         )
-        if revision_context is not None:
+        if (
+            revision_context is not None
+            and "missingBusinessFactIds" in revision_context
+        ):
             return call
         missing_fact_id = mandatory_business_facts(application)[-1].fact_id
         business_facts = mandatory_business_facts(application)
@@ -814,9 +904,11 @@ class SemanticAuditThenReplanningProvider(MockAiProvider):
     def __init__(self) -> None:
         self.audit_calls = 0
         self.direction_calls = 0
+        self.direction_revision_contexts: list[dict[str, Any] | None] = []
 
     async def plan_creative_directions(self, *args: Any, **kwargs: Any) -> Any:
         self.direction_calls += 1
+        self.direction_revision_contexts.append(kwargs.get("revision_context"))
         return await super().plan_creative_directions(*args, **kwargs)
 
     async def audit_creative_directions(self, *args: Any, **kwargs: Any) -> Any:
@@ -866,6 +958,56 @@ class SemanticAuditAlwaysAdvisoryProvider(SemanticAuditThenReplanningProvider):
                 summary="独立语义复核保留一项非阻断优化建议",
             ),
         )
+
+
+class UnknownAuditActionOnceProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.invalid_audit_batches = 0
+        self.repaired_audit_batches = 0
+
+    async def audit_creative_directions(self, *args: Any, **kwargs: Any) -> Any:
+        call = await super().audit_creative_directions(*args, **kwargs)
+        if kwargs.get("revision_context") is not None:
+            self.repaired_audit_batches += 1
+            return call
+        self.invalid_audit_batches += 1
+        first = call.value.items[0]
+        return replace(
+            call,
+            value=call.value.model_copy(
+                update={
+                    "items": [
+                        first.model_copy(
+                            update={"realized_action_id": "ACTION_UNKNOWN"}
+                        ),
+                        *call.value.items[1:],
+                    ]
+                }
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_unknown_audit_action_is_retried_inside_the_failed_batch() -> None:
+    provider = UnknownAuditActionOnceProvider()
+    pipeline = PromptGenerationPipeline(
+        api=PromptApi(),  # type: ignore[arg-type]
+        provider=provider,
+        embedding_provider=MockEmbeddingProvider(),
+        similarity_mode="vector",
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _cluster_snapshot())
+
+    result = await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    assert result["prompt_result_id"] == "prompt-result-current"
+    assert provider.invalid_audit_batches > 0
+    assert provider.repaired_audit_batches == provider.invalid_audit_batches
 
 
 @pytest.mark.asyncio
@@ -962,10 +1104,11 @@ async def test_fifty_target_plans_exactly_seventy_initial_candidates() -> None:
         for task in tasks
         if task.creative_direction is not None
     )
-    assert len(direction_counts) == 20
-    assert max(direction_counts.values()) <= 4
+    assert len(direction_counts) == 40
+    assert max(direction_counts.values()) <= 2
     assert all(
-        task.sibling_variant_total == direction_counts[task.creative_direction.direction_id]
+        task.sibling_variant_total
+        == direction_counts[task.creative_direction.direction_id]
         for task in tasks
         if task.creative_direction is not None
     )
@@ -1015,9 +1158,18 @@ async def test_missing_business_fact_replans_the_whole_direction_batch_with_ai()
 
     assert shards
     assert len(provider.revision_contexts) > 2
-    assert sum(item is None for item in provider.revision_contexts) > 1
-    revision_context = provider.revision_contexts[-1]
-    assert revision_context
+    assert (
+        sum(
+            bool(item and item.get("requiredDirectionSlots"))
+            for item in provider.revision_contexts
+        )
+        > 1
+    )
+    revision_context = next(
+        item
+        for item in reversed(provider.revision_contexts)
+        if item and "missingBusinessFactIds" in item
+    )
     assert revision_context["missingBusinessFactIds"]
     assert revision_context["revisionDirectionIds"]
     assert set(revision_context["missingBusinessFactIds"]).issubset(
@@ -1025,8 +1177,7 @@ async def test_missing_business_fact_replans_the_whole_direction_batch_with_ai()
     )
     assert revision_context["revisionFactOptions"]
     assert all(
-        item["eligibleDirectionIds"]
-        for item in revision_context["revisionFactOptions"]
+        item["eligibleDirectionIds"] for item in revision_context["revisionFactOptions"]
     )
     assert revision_context["revisionFactApplicationCapacity"] >= len(
         revision_context["revisionRequiredBusinessFactIds"]
@@ -1060,6 +1211,18 @@ async def test_independent_ai_semantic_audit_requests_direction_replanning() -> 
     assert shards
     assert provider.audit_calls == 4
     assert provider.direction_calls > 2
+    targeted_context = next(
+        context
+        for context in provider.direction_revision_contexts
+        if context and context.get("revisionDirectionIds")
+    )
+    assert targeted_context["requiredDirectionSlots"]
+    assert all(
+        slot["directionId"] in targeted_context["revisionDirectionIds"]
+        and slot["territoryId"]
+        and slot["primaryActionId"]
+        for slot in targeted_context["requiredDirectionSlots"]
+    )
     plan = pipeline._cache(runtime).creative_direction_plan
     assert plan is not None
     assert plan.semantic_audit is not None

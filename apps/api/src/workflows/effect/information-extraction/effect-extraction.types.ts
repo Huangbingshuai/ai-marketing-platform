@@ -44,7 +44,8 @@ export type EffectExtractionInputSnapshot = {
   bypassImageCache?: boolean;
   dependencySnapshot: {
     sourcePackageRevision: number;
-    effectiveVideoConfigRevision: number;
+    /** Present only on historical snapshots created before video settings moved downstream. */
+    effectiveVideoConfigRevision?: number;
     executionInputHash: string;
   };
   dependencies?: Array<{

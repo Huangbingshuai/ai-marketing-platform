@@ -82,6 +82,7 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "productRelation" in creative
     assert "一个主要地点" in creative
     assert "不能伪装成画面已经证明" in creative
+    assert "不能成为画面中的口播、字幕、人物台词或动作说明" in creative
     assert "逐条事实任务简报" in task
     assert "已确认的产品事实" not in task
     assert "{facts_json}" not in task
@@ -91,6 +92,7 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "coverageFocusFactIds 为空表示常规生成" in task
     assert "创意主线的中心" in task
     assert "不得只替换形容词" in task
+    assert "不要把“当前画面不证明配方/工艺/功效”" in task
     assert "只评估候选，不改写正文" in evaluation
     assert "五个窄职责视角" in evaluation
     assert "GENERIC_STYLE_STACKING" in evaluation
@@ -135,6 +137,7 @@ def test_direction_and_landscape_templates_receive_density_rules() -> None:
         fact_visual_strategy_json="[]",
         shared_prompt_json='""',
         visual_style_baseline_json='"未设置"',
+        delivery_channel_json='"抖音"',
         creative_landscape_json="[]",
         revision_context_json="{}",
     )
@@ -147,6 +150,7 @@ def test_direction_and_landscape_templates_receive_density_rules() -> None:
         fact_visual_strategy_json="[]",
         shared_prompt_json='""',
         visual_style_baseline_json='"未设置"',
+        delivery_channel_json='"抖音"',
         revision_context_json="{}",
     )
 

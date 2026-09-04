@@ -118,18 +118,16 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).not.toContain('等待异步 Worker 接收任务');
   });
 
-  it('shows all six global video fields in the form node and keeps image results per file', () => {
-    for (const label of ['视频时长', '画幅比例', '分辨率', '风格基调', '投放渠道', '禁用元素']) {
-      expect(pageSource).toContain(`'${label}'`);
-    }
-    expect(pageSource).toContain("FORM: '读取导入节点的全局视频配置'");
+  it('shows product identity in the form node and keeps image results per file', () => {
+    expect(pageSource).toContain("FORM: '读取导入节点中人工填写的产品名称与品类'");
     expect(pageSource).toContain("materialSources(['PRODUCT_IMAGE'])");
     expect(pageSource).toContain('v-for="(source, sourceIndex) in graphDetail.sources"');
-    expect(pageSource).toContain("detailField('resolution', '分辨率'");
-    expect(pageSource).not.toContain("detailField('frameRate', '帧率'");
+    expect(pageSource).toContain("detailField('productName', '产品名称'");
+    expect(pageSource).toContain("detailField('productCategory', '产品品类'");
+    expect(pageSource).not.toContain("detailField('resolution', '分辨率'");
   });
 
-  it('keeps inherited video configuration editable and only marks image-recognition additions', () => {
+  it('keeps product facts editable and only marks image-recognition additions', () => {
     expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS');
     expect(pageSource).not.toContain('EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS');
     expect(pageSource).toContain("result.coreSellingPoints.push('')");
@@ -147,14 +145,9 @@ describe('effect info extraction result layout', () => {
     ])
       expect(pageSource).toContain(field);
     expect(pageSource).toContain('暂无可验证的信任背书');
-    expect(pageSource).toContain('<h3>统一制作规则</h3>');
-    expect(pageSource).toContain('<h3>全局视频配置</h3>');
-    expect(pageSource).toContain('初始值继承资料导入节点，可在当前信息卡中调整');
-    expect(pageSource).toContain('{{ currentConfig.resolution }}');
-    expect(pageSource).toContain("currentConfig.disabledElements.join('、')");
-    expect(pageSource).toContain('updateProductionRule');
-    expect(pageSource).toContain('EffectUpwardCreatableSelect');
-    expect(pageSource).toContain('v-model="newDisabledElement"');
+    expect(pageSource).not.toContain('<h3>全局视频配置</h3>');
+    expect(pageSource).not.toContain('updateProductionRule');
+    expect(pageSource).not.toContain('v-model="newDisabledElement"');
     expect(pageSource).toContain('图片识别补充 ·');
     expect(pageSource).toContain('图片识别已完成，本次没有新增信息');
     expect(pageSource).toContain('imageRecognitionWithoutNewFacts');

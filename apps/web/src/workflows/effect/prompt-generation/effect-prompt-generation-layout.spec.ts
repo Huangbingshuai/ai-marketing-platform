@@ -39,13 +39,13 @@ describe('effect prompt generation current layout', () => {
     );
   });
 
-  it('keeps one editable shared prompt instead of splitting shared requirements', () => {
-    expect(pageSource).toContain('aria-label="共用提示词"');
-    expect(pageSource).toContain('aria-label="共用提示词内容"');
-    expect(pageSource).toContain('v-model="sharedPromptDraft"');
-    expect(pageSource).toContain('@click="saveSharedPrompt"');
+  it('keeps disabled elements as the single user-owned shared constraint input', () => {
+    expect(pageSource).toContain('<span>禁用元素</span>');
+    expect(pageSource).toContain(':value="currentDisabledElementsText"');
+    expect(pageSource).toContain('@input="updateDisabledElementsText');
     expect(pageSource).not.toContain('系统共用内容');
     expect(pageSource).not.toContain('最终共用提示词');
+    expect(pageSource).not.toContain('sharedPromptDraft');
     expect(pageSource).toContain('await writeClipboardText(item.content)');
   });
 
@@ -79,9 +79,7 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('EFFECT_PROMPT_PAGE_SIZE_OPTIONS');
     expect(pageSource).toContain('@change="changePageSize"');
     expect(pageSource).toContain('pageSize.value');
-    expect(pageSource).not.toContain(
-      '<span>{{ EFFECT_PROMPT_LIMITS.pageSize }} 条/页</span',
-    );
+    expect(pageSource).not.toContain('<span>{{ EFFECT_PROMPT_LIMITS.pageSize }} 条/页</span');
   });
 
   it('shows the fixed semantic duplicate-rate result without restoring a user setting', () => {

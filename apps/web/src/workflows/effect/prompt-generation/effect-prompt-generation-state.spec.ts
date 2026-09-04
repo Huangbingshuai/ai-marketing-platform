@@ -107,6 +107,10 @@ describe('effect prompt generation state', () => {
     ).toEqual({
       targetCount: 10,
       defaultDurationSeconds: 30,
+      styleMode: 'AI_AUTO',
+      styleTone: null,
+      deliveryChannel: '抖音',
+      disabledElements: [],
     });
     expect(normalizePromptSettings(DEFAULT_EFFECT_PROMPT_SETTINGS)).toEqual(
       DEFAULT_EFFECT_PROMPT_SETTINGS,
@@ -114,6 +118,10 @@ describe('effect prompt generation state', () => {
     expect(normalizePromptSettings({ targetCount: 101, defaultDurationSeconds: 5 })).toEqual({
       targetCount: 100,
       defaultDurationSeconds: 5,
+      styleMode: 'AI_AUTO',
+      styleTone: null,
+      deliveryChannel: '抖音',
+      disabledElements: [],
     });
   });
 

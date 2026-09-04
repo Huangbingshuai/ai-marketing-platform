@@ -1,5 +1,6 @@
 import type {
   EffectPromptFragmentType,
+  EffectPromptRenderCapabilityKey,
   SeedanceRatio,
   SeedanceResolution,
 } from './effect-prompt-generation';
@@ -10,6 +11,22 @@ export const EFFECT_SEGMENT_RENDER_API_BASE =
 
 export const EFFECT_SEGMENT_RENDER_QUEUE = 'effect.segment-render.requested' as const;
 export const EFFECT_SEGMENT_RENDER_JOB_TYPE = 'EFFECT_SEGMENT_RENDER' as const;
+export const EFFECT_SEGMENT_RENDER_SETTINGS_SCHEMA_VERSION = 1 as const;
+
+export type EffectSegmentRenderSettings = {
+  ratio: SeedanceRatio;
+  resolution: SeedanceResolution;
+  capabilityKey: EffectPromptRenderCapabilityKey;
+};
+
+export const DEFAULT_EFFECT_SEGMENT_RENDER_SETTINGS: EffectSegmentRenderSettings = {
+  ratio: '9:16',
+  resolution: '720p',
+  capabilityKey: 'SEEDANCE_2_0',
+};
+
+export const effectSegmentRenderSettingsNodeId = (productId: string): string =>
+  `SEGMENT_RENDER_SETTINGS:${productId}`;
 
 export const EFFECT_SEGMENT_RENDER_LIMITS = {
   maxTasksPerBatch: 100,
@@ -59,6 +76,7 @@ export type EffectSegmentRenderRequestSnapshot = {
   compatiblePurposes: EffectPromptFragmentType[];
   promptContentHash: string;
   sharedPromptHash: string;
+  renderSettingsHash: string;
   request: EffectSegmentRenderProviderRequest;
 };
 
@@ -127,12 +145,29 @@ export type GetEffectSegmentRenderWorkspaceData = {
   productId: string;
   promptReady: boolean;
   promptArtifactRevision: number | null;
+  settings: EffectSegmentRenderSettings;
+  settingsRevision: number | null;
   batch: EffectSegmentRenderBatch | null;
+};
+
+export type SaveEffectSegmentRenderSettingsRequest = {
+  workflowRunId: string;
+  expectedRevision: number | null;
+  settings: EffectSegmentRenderSettings;
+};
+
+export type SaveEffectSegmentRenderSettingsData = {
+  productId: string;
+  settings: EffectSegmentRenderSettings;
+  settingsRevision: number;
+  unchanged: boolean;
+  savedAt: string;
 };
 
 export type StartEffectSegmentRenderBatchRequest = {
   workflowRunId: string;
   expectedPromptArtifactRevision: number;
+  expectedSettingsRevision: number;
   idempotencyKey: string;
 };
 

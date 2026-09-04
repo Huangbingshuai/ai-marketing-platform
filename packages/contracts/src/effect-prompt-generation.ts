@@ -84,6 +84,11 @@ export type EffectPromptPurposeMatchMode = (typeof EFFECT_PROMPT_PURPOSE_MATCH_M
 export type EffectPromptBatchSettings = {
   targetCount: number;
   defaultDurationSeconds: number;
+  /** Compatibility-optional for batches created before these settings moved to Prompt. */
+  styleMode?: 'AI_AUTO' | 'FIXED';
+  styleTone?: string | null;
+  deliveryChannel?: string;
+  disabledElements?: string[];
 };
 
 export const EFFECT_PROMPT_RENDER_CAPABILITY_KEYS = [
@@ -172,6 +177,10 @@ export type EffectPromptSharedPrompt = {
 export const DEFAULT_EFFECT_PROMPT_SETTINGS: EffectPromptBatchSettings = {
   targetCount: EFFECT_PROMPT_LIMITS.defaultCount,
   defaultDurationSeconds: EFFECT_PROMPT_LIMITS.defaultDurationSeconds,
+  styleMode: 'AI_AUTO',
+  styleTone: null,
+  deliveryChannel: '抖音',
+  disabledElements: [],
 };
 
 export const EFFECT_PROMPT_ITEM_ORIGINS = ['AI', 'MANUAL'] as const;
@@ -901,6 +910,29 @@ export const normalizeEffectPromptSettings = (
     EFFECT_PROMPT_LIMITS.maxDurationSeconds,
     Math.max(EFFECT_PROMPT_LIMITS.minDurationSeconds, Math.round(input.defaultDurationSeconds)),
   ),
+  styleMode: input.styleMode === 'FIXED' ? 'FIXED' : 'AI_AUTO',
+  styleTone:
+    input.styleMode === 'FIXED' && typeof input.styleTone === 'string' && input.styleTone.trim()
+      ? input.styleTone.trim().slice(0, 120)
+      : null,
+  deliveryChannel:
+    typeof input.deliveryChannel === 'string' && input.deliveryChannel.trim()
+      ? input.deliveryChannel.trim().slice(0, 120)
+      : '抖音',
+  disabledElements: [
+    ...new Map(
+      (Array.isArray(input.disabledElements) ? input.disabledElements : [])
+        .map((value) =>
+          String(value)
+            .replace(/\s+/g, ' ')
+            .trim()
+            .replace(/[。；;，,]+$/u, ''),
+        )
+        .filter(Boolean)
+        .slice(0, 50)
+        .map((value) => [value.normalize('NFKC').toLocaleLowerCase(), value] as const),
+    ).values(),
+  ],
 });
 
 export const readEffectPromptSettings = (value: unknown): EffectPromptBatchSettings | null => {
@@ -909,5 +941,14 @@ export const readEffectPromptSettings = (value: unknown): EffectPromptBatchSetti
   const targetCount = Number(source.targetCount);
   const defaultDurationSeconds = Number(source.defaultDurationSeconds);
   if (!Number.isFinite(targetCount) || !Number.isFinite(defaultDurationSeconds)) return null;
-  return normalizeEffectPromptSettings({ targetCount, defaultDurationSeconds });
+  return normalizeEffectPromptSettings({
+    targetCount,
+    defaultDurationSeconds,
+    styleMode: source.styleMode === 'FIXED' ? 'FIXED' : 'AI_AUTO',
+    styleTone: typeof source.styleTone === 'string' ? source.styleTone : null,
+    deliveryChannel: typeof source.deliveryChannel === 'string' ? source.deliveryChannel : '抖音',
+    disabledElements: Array.isArray(source.disabledElements)
+      ? source.disabledElements.map(String)
+      : [],
+  });
 };

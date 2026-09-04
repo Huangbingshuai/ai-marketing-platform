@@ -70,10 +70,15 @@ def build_graph(
         pending = await pipeline.plan_creatives(runtime.context, round_number=0)
         if pending:
             await _gather_cancel_on_error(
-                [pipeline.generate_creative_shard(runtime.context, shard) for shard in pending]
+                [
+                    pipeline.generate_creative_shard(runtime.context, shard)
+                    for shard in pending
+                ]
             )
         await pipeline.complete_creative_generation(runtime.context, round_number=0)
-        classifications = await pipeline.plan_classification(runtime.context, round_number=0)
+        classifications = await pipeline.plan_classification(
+            runtime.context, round_number=0
+        )
         if classifications:
             await _gather_cancel_on_error(
                 [
@@ -82,7 +87,9 @@ def build_graph(
                 ]
             )
         await pipeline.complete_classification(runtime.context, round_number=0)
-        supplement, needed = await pipeline.select_creatives(runtime.context, round_number=0)
+        supplement, needed = await pipeline.select_creatives(
+            runtime.context, round_number=0
+        )
         supplement_round = 1
         while needed and supplement_round <= MAX_REPLENISHMENT_ROUNDS:
             if supplement:
@@ -136,7 +143,9 @@ def build_graph(
     )
     builder.add_node(NodeId.LOAD_AND_SNAPSHOT.value, load)
     builder.add_node(NodeId.INSIGHT_MAPPING.value, map_insight)
-    builder.add_node(NodeId.FACT_VISUAL_STRATEGY_COMPILATION.value, compile_visual_strategy)
+    builder.add_node(
+        NodeId.FACT_VISUAL_STRATEGY_COMPILATION.value, compile_visual_strategy
+    )
     builder.add_node(NodeId.SHARED_PROMPT_COMPILATION.value, compile_shared_prompt)
     builder.add_node(NodeId.COHERENT_CREATIVE_GENERATION.value, generate_and_evaluate)
     builder.add_node(NodeId.ITEM_EVALUATE.value, generate_and_evaluate)
@@ -144,7 +153,9 @@ def build_graph(
 
     builder.add_edge(START, NodeId.LOAD_AND_SNAPSHOT.value)
     builder.add_edge(NodeId.LOAD_AND_SNAPSHOT.value, NodeId.INSIGHT_MAPPING.value)
-    builder.add_edge(NodeId.INSIGHT_MAPPING.value, NodeId.FACT_VISUAL_STRATEGY_COMPILATION.value)
+    builder.add_edge(
+        NodeId.INSIGHT_MAPPING.value, NodeId.FACT_VISUAL_STRATEGY_COMPILATION.value
+    )
     builder.add_edge(
         NodeId.FACT_VISUAL_STRATEGY_COMPILATION.value,
         NodeId.SHARED_PROMPT_COMPILATION.value,
@@ -154,7 +165,9 @@ def build_graph(
         route_after_shared_prompt,
         [NodeId.COHERENT_CREATIVE_GENERATION.value, NodeId.ITEM_EVALUATE.value],
     )
-    builder.add_edge(NodeId.COHERENT_CREATIVE_GENERATION.value, NodeId.RESULT_SAVE.value)
+    builder.add_edge(
+        NodeId.COHERENT_CREATIVE_GENERATION.value, NodeId.RESULT_SAVE.value
+    )
     builder.add_edge(NodeId.ITEM_EVALUATE.value, NodeId.RESULT_SAVE.value)
     builder.add_edge(NodeId.RESULT_SAVE.value, END)
     return builder.compile()

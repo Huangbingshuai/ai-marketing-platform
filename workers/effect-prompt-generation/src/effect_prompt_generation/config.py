@@ -169,9 +169,7 @@ class WorkerSettings(BaseSettings):
             self.effect_prompt_queue.endswith(".test")
             or self.effect_prompt_queue.startswith("test.")
         ):
-            raise ValueError(
-                "PROMPT_AI_PROVIDER=mock requires an isolated test queue"
-            )
+            raise ValueError("PROMPT_AI_PROVIDER=mock requires an isolated test queue")
         return self
 
     @property
@@ -190,7 +188,10 @@ class WorkerSettings(BaseSettings):
 
     @property
     def resolved_prompt_fragment_strategy_model(self) -> str:
-        return self.ark_prompt_fragment_strategy_model or self.resolved_prompt_candidate_model
+        return (
+            self.ark_prompt_fragment_strategy_model
+            or self.resolved_prompt_candidate_model
+        )
 
     @property
     def resolved_prompt_blueprint_model(self) -> str:

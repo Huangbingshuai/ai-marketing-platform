@@ -13,6 +13,10 @@ export const EFFECT_PROMPT_PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
 const hydratePromptSettings = (settings: EffectPromptBatchSettings): EffectPromptBatchSettings => ({
   targetCount: settings.targetCount,
   defaultDurationSeconds: settings.defaultDurationSeconds,
+  styleMode: settings.styleMode ?? 'AI_AUTO',
+  styleTone: settings.styleTone ?? null,
+  deliveryChannel: settings.deliveryChannel ?? '抖音',
+  disabledElements: [...(settings.disabledElements ?? [])],
 });
 
 export const normalizePromptSettings = (

@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 
 import type {
   EffectPromptBatchResult,
+  EffectSegmentRenderSettings,
   EffectSegmentRenderBatch,
   EffectSegmentRenderRequestSnapshot,
   EffectSegmentRenderSummary,
@@ -11,7 +12,12 @@ import type {
   StartEffectSegmentRenderBatchData,
   ValidateEffectSegmentRenderBatchData,
 } from '@ai-marketing/contracts';
-import { EFFECT_SEGMENT_RENDER_LIMITS } from '@ai-marketing/contracts';
+import {
+  DEFAULT_EFFECT_SEGMENT_RENDER_SETTINGS,
+  EFFECT_PROMPT_RENDER_CAPABILITIES,
+  EFFECT_SEGMENT_RENDER_LIMITS,
+  effectSegmentRenderSettingsNodeId,
+} from '@ai-marketing/contracts';
 import {
   BadRequestException,
   ConflictException,
@@ -24,6 +30,7 @@ import { ProjectService } from '../../../platform/project/project.service';
 import { STORAGE_PORT, type StoragePort } from '../../../platform/file/storage.port';
 import {
   type WorkingArtifactUpsertInput,
+  WorkflowWorkingRepository,
   workingArtifactContentHash,
 } from '../../../platform/workflow/workflow-working.repository';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
@@ -132,7 +139,42 @@ export class EffectSegmentRenderService {
     @Inject(ProjectService) private readonly projects: ProjectService,
     @Inject(ConfigService) private readonly config: ConfigService,
     @Inject(STORAGE_PORT) private readonly storage: StoragePort,
+    @Inject(WorkflowWorkingRepository)
+    private readonly workingRepository: WorkflowWorkingRepository,
   ) {}
+
+  private settingsFromState(value: unknown): EffectSegmentRenderSettings | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const candidate = value as Partial<EffectSegmentRenderSettings>;
+    const capability = candidate.capabilityKey
+      ? EFFECT_PROMPT_RENDER_CAPABILITIES[candidate.capabilityKey]
+      : undefined;
+    if (
+      !capability ||
+      !candidate.ratio ||
+      !candidate.resolution ||
+      !capability.ratios.includes(candidate.ratio) ||
+      !capability.resolutions.includes(candidate.resolution)
+    )
+      return null;
+    return {
+      ratio: candidate.ratio,
+      resolution: candidate.resolution,
+      capabilityKey: candidate.capabilityKey!,
+    };
+  }
+
+  private legacySettings(promptPayload: unknown): EffectSegmentRenderSettings {
+    const prompt = parseEffectPromptBatchResult(promptPayload);
+    if (!prompt?.renderProfile) return { ...DEFAULT_EFFECT_SEGMENT_RENDER_SETTINGS };
+    return (
+      this.settingsFromState({
+        ratio: prompt.renderProfile.ratio,
+        resolution: prompt.renderProfile.resolution,
+        capabilityKey: prompt.renderProfile.capabilityKey,
+      }) ?? { ...DEFAULT_EFFECT_SEGMENT_RENDER_SETTINGS }
+    );
+  }
 
   private async present(record: EffectSegmentRenderBatchRecord): Promise<EffectSegmentRenderBatch> {
     const prompt = await this.repository.promptArtifact(
@@ -197,9 +239,14 @@ export class EffectSegmentRenderService {
       throw notFound('效果类工作流运行不存在');
     if (!(await this.repository.product(projectId, workflowRunId, productId)))
       throw notFound('产品不存在');
-    const [prompt, batch] = await Promise.all([
+    const [prompt, batch, settingsNode] = await Promise.all([
       this.repository.promptArtifact(projectId, workflowRunId, productId),
       this.repository.latestBatch(projectId, workflowRunId, productId),
+      this.workingRepository.findNodeState(
+        projectId,
+        workflowRunId,
+        effectSegmentRenderSettingsNodeId(productId),
+      ),
     ]);
     const promptReady = Boolean(
       prompt?.payload && prompt.freshness === 'CURRENT' && prompt.availability === 'AVAILABLE',
@@ -210,7 +257,46 @@ export class EffectSegmentRenderService {
       productId,
       promptReady,
       promptArtifactRevision: promptReady ? (prompt?.revision ?? null) : null,
+      settings:
+        this.settingsFromState(settingsNode?.state) ?? this.legacySettings(prompt?.payload ?? null),
+      settingsRevision: settingsNode?.revision ?? null,
       batch: batch ? await this.present(batch) : null,
+    };
+  }
+
+  async saveSettings(
+    projectId: string,
+    productId: string,
+    workflowRunId: string,
+    expectedRevision: number | null,
+    settings: EffectSegmentRenderSettings,
+  ) {
+    await this.projects.get(projectId);
+    if (!(await this.repository.workflowRun(projectId, workflowRunId)))
+      throw notFound('效果类工作流运行不存在');
+    if (!(await this.repository.product(projectId, workflowRunId, productId)))
+      throw notFound('产品不存在');
+    const normalized = this.settingsFromState(settings);
+    if (!normalized) throw badRequest('视频渲染设置不符合当前模型能力');
+    const hash = workflowStateHash(normalized);
+    const result = await this.workingRepository.saveNodeState(
+      projectId,
+      workflowRunId,
+      effectSegmentRenderSettingsNodeId(productId),
+      hash,
+      normalized,
+      expectedRevision,
+      1,
+      hash,
+      1,
+    );
+    if (result.conflict) throw conflict('视频渲染设置已在其他页面更新，请刷新后重试');
+    return {
+      productId,
+      settings: normalized,
+      settingsRevision: result.record.revision,
+      unchanged: result.unchanged,
+      savedAt: result.record.savedAt.toISOString(),
     };
   }
 
@@ -227,6 +313,7 @@ export class EffectSegmentRenderService {
     input: {
       workflowRunId: string;
       expectedPromptArtifactRevision: number;
+      expectedSettingsRevision: number;
       idempotencyKey: string;
     },
   ): Promise<StartEffectSegmentRenderBatchData> {
@@ -235,10 +322,15 @@ export class EffectSegmentRenderService {
     if (!idempotencyKey) throw badRequest('幂等键不能为空');
     const model = this.config.get<string>('SEEDANCE_MODEL')?.trim();
     if (!model) throw conflict('Seedance 模型尚未配置');
-    const [workflow, product, promptArtifact] = await Promise.all([
+    const [workflow, product, promptArtifact, settingsNode] = await Promise.all([
       this.repository.workflowRun(projectId, input.workflowRunId),
       this.repository.product(projectId, input.workflowRunId, productId),
       this.repository.promptArtifact(projectId, input.workflowRunId, productId),
+      this.workingRepository.findNodeState(
+        projectId,
+        input.workflowRunId,
+        effectSegmentRenderSettingsNodeId(productId),
+      ),
     ]);
     if (!workflow) throw notFound('效果类工作流运行不存在');
     if (!product) throw notFound('产品不存在');
@@ -253,8 +345,14 @@ export class EffectSegmentRenderService {
     const promptBatch = parseEffectPromptBatchResult(promptArtifact.payload);
     if (!promptBatch) throw conflict('Prompt 批次结构无效，请重新生成并校验');
     this.assertRenderablePromptBatch(promptBatch);
+    if ((settingsNode?.revision ?? 0) !== input.expectedSettingsRevision)
+      throw conflict('视频渲染设置已更新，请刷新后重试');
+    const renderSettings = settingsNode
+      ? this.settingsFromState(settingsNode.state)
+      : this.legacySettings(promptArtifact.payload);
+    if (!renderSettings) throw conflict('视频渲染设置无效，请重新保存');
     const snapshots = promptBatch.items.map((item) => {
-      const compiled = compileEffectSeedanceRequest(promptBatch, item.id, model);
+      const compiled = compileEffectSeedanceRequest(promptBatch, item.id, model, renderSettings);
       return {
         ...compiled,
         promptCode: item.code,
@@ -268,6 +366,8 @@ export class EffectSegmentRenderService {
       promptArtifactId: promptArtifact.id,
       promptArtifactRevision: promptArtifact.revision,
       promptArtifactHash: promptArtifact.contentHash,
+      renderSettings,
+      renderSettingsRevision: settingsNode?.revision ?? 0,
       snapshots,
     });
     const batchId = randomUUID();

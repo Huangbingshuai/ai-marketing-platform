@@ -218,6 +218,8 @@ class AiProvider(Protocol):
         fact_visual_strategy: FactVisualStrategy,
         shared_prompt: SharedPrompt,
         target_count: int,
+        style_instruction: str,
+        delivery_channel: str,
         revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDiversityLandscapeResponse]: ...
 
@@ -229,6 +231,8 @@ class AiProvider(Protocol):
         shared_prompt: SharedPrompt,
         landscape: CreativeDiversityLandscape,
         target_count: int,
+        style_instruction: str,
+        delivery_channel: str,
         revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDirectionResponse]: ...
 
@@ -257,6 +261,7 @@ class AiProvider(Protocol):
         fact_visual_strategy: FactVisualStrategy,
         landscape: CreativeDiversityLandscape,
         directions: CreativeDirectionResponse,
+        revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDirectionAuditResponse]: ...
 
     async def audit_creative_direction_diversity(
@@ -324,9 +329,17 @@ class MockAiProvider:
         fact_visual_strategy: FactVisualStrategy,
         shared_prompt: SharedPrompt,
         target_count: int,
+        style_instruction: str,
+        delivery_channel: str,
         revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDiversityLandscapeResponse]:
-        del fact_visual_strategy, shared_prompt, revision_context
+        del (
+            fact_visual_strategy,
+            shared_prompt,
+            revision_context,
+            style_instruction,
+            delivery_channel,
+        )
         return _mock_result(
             _mock_creative_landscape_response(
                 application,
@@ -347,14 +360,68 @@ class MockAiProvider:
         shared_prompt: SharedPrompt,
         landscape: CreativeDiversityLandscape,
         target_count: int,
+        style_instruction: str,
+        delivery_channel: str,
         revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDirectionResponse]:
-        del fact_visual_strategy, shared_prompt, revision_context
+        del fact_visual_strategy, shared_prompt, style_instruction, delivery_channel
+        response = _mock_creative_direction_response(
+            application,
+            landscape=landscape,
+        )
+        revision_direction_ids = (
+            revision_context.get("revisionDirectionIds", [])
+            if revision_context is not None
+            else []
+        )
+        if (
+            isinstance(revision_direction_ids, list)
+            and revision_direction_ids
+            and all(isinstance(item, str) for item in revision_direction_ids)
+        ):
+            directions_by_id = {
+                direction.direction_id: direction for direction in response.directions
+            }
+            response = CreativeDirectionResponse(
+                directions=[
+                    directions_by_id[direction_id]
+                    for direction_id in revision_direction_ids
+                    if direction_id in directions_by_id
+                ]
+            )
+        required_slots = (
+            revision_context.get("requiredDirectionSlots", [])
+            if revision_context is not None
+            else []
+        )
+        if isinstance(required_slots, list) and len(required_slots) == len(
+            response.directions
+        ):
+            response = CreativeDirectionResponse(
+                directions=[
+                    direction.model_copy(
+                        update={
+                            "direction_id": slot.get(
+                                "directionId", direction.direction_id
+                            ),
+                            "territory_id": slot.get(
+                                "territoryId", direction.territory_id
+                            ),
+                            "primary_action_id": slot.get(
+                                "primaryActionId", direction.primary_action_id
+                            ),
+                        }
+                    )
+                    for direction, slot in zip(
+                        response.directions,
+                        required_slots,
+                        strict=True,
+                    )
+                    if isinstance(slot, dict)
+                ]
+            )
         return _mock_result(
-            _mock_creative_direction_response(
-                application,
-                landscape=landscape,
-            ),
+            response,
             NodeId.COHERENT_CREATIVE_GENERATION.value,
             CREATIVE_DIRECTION_BASE_PROMPT,
         )
@@ -406,8 +473,9 @@ class MockAiProvider:
         fact_visual_strategy: FactVisualStrategy,
         landscape: CreativeDiversityLandscape,
         directions: CreativeDirectionResponse,
+        revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDirectionAuditResponse]:
-        del application, fact_visual_strategy
+        del application, fact_visual_strategy, revision_context
         return _mock_result(
             _mock_creative_direction_audit(landscape, directions),
             NodeId.COHERENT_CREATIVE_GENERATION.value,
@@ -457,7 +525,9 @@ class MockAiProvider:
         )
         rows = []
         for index in range(requested_direction_count):
-            base = existing_directions.directions[index % len(existing_directions.directions)]
+            base = existing_directions.directions[
+                index % len(existing_directions.directions)
+            ]
             rows.append(
                 base.model_copy(
                     update={
@@ -467,9 +537,7 @@ class MockAiProvider:
                         ),
                         "semantic_profile": base.semantic_profile.model_copy(
                             update={
-                                "scene_family": (
-                                    f"SUPPLEMENT_SCENE_{index + 1}"
-                                ),
+                                "scene_family": (f"SUPPLEMENT_SCENE_{index + 1}"),
                                 "product_action_family": (
                                     f"SUPPLEMENT_ACTION_{index + 1}"
                                 ),
@@ -662,6 +730,8 @@ class ArkResponsesProvider:
         fact_visual_strategy: FactVisualStrategy,
         shared_prompt: SharedPrompt,
         target_count: int,
+        style_instruction: str,
+        delivery_channel: str,
         revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDiversityLandscapeResponse]:
         fact_aliases, fact_ids_by_alias = _fact_alias_maps(application)
@@ -687,22 +757,12 @@ class ArkResponsesProvider:
             }
             for policy in fact_visual_strategy.policies
         ]
-        visual_style_baseline = next(
-            (
-                fact.value
-                for fact in application.constraints
-                if fact.field == InsightField.VISUAL_STYLE_BASELINE
-            ),
-            "",
-        )
         business_fact_count = len(mandatory_business_facts(application))
         target_direction_count = creative_direction_target_count(
             target_count,
             business_fact_count,
         )
-        territory_count_range = creative_territory_target_range(
-            target_direction_count
-        )
+        territory_count_range = creative_territory_target_range(target_direction_count)
         prompt = render_prompt(
             CREATIVE_LANDSCAPE_TASK_PROMPT,
             target_direction_count=str(target_direction_count),
@@ -724,8 +784,9 @@ class ArkResponsesProvider:
                 shared_prompt.compiled_content, ensure_ascii=False
             ),
             visual_style_baseline_json=json.dumps(
-                visual_style_baseline or "未设置", ensure_ascii=False
+                style_instruction, ensure_ascii=False
             ),
+            delivery_channel_json=json.dumps(delivery_channel, ensure_ascii=False),
             revision_context_json=json.dumps(
                 _remap_fact_references(revision_context or {}, fact_aliases),
                 ensure_ascii=False,
@@ -976,6 +1037,8 @@ class ArkResponsesProvider:
         shared_prompt: SharedPrompt,
         landscape: CreativeDiversityLandscape,
         target_count: int,
+        style_instruction: str,
+        delivery_channel: str,
         revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDirectionResponse]:
         fact_aliases, fact_ids_by_alias = _fact_alias_maps(application)
@@ -1005,14 +1068,6 @@ class ArkResponsesProvider:
             for policy in fact_visual_strategy.policies
             if policy.fact_id in scoped_fact_ids
         ]
-        visual_style_baseline = next(
-            (
-                fact.value
-                for fact in application.constraints
-                if fact.field == InsightField.VISUAL_STYLE_BASELINE
-            ),
-            "",
-        )
         business_fact_count = len(
             {
                 fact.fact_id
@@ -1031,16 +1086,46 @@ class ArkResponsesProvider:
             if revision_context is not None
             else []
         )
+        required_direction_slots = (
+            revision_context.get("requiredDirectionSlots", [])
+            if revision_context is not None
+            else []
+        )
         if (
             isinstance(revision_direction_ids, list)
             and revision_direction_ids
             and all(isinstance(item, str) for item in revision_direction_ids)
         ):
+            if (
+                isinstance(required_direction_slots, list)
+                and required_direction_slots
+                and all(isinstance(item, dict) for item in required_direction_slots)
+            ):
+                direction_output_instruction = (
+                    "这是局部修订。directions 数组只输出以下指定槽位，"
+                    "directionId、territoryId 与 primaryActionId 都必须原样保留，"
+                    "不得交换、重复或改用其他动作："
+                    + json.dumps(required_direction_slots, ensure_ascii=False)
+                    + "。只修订创意关系、事实组合和六维表达；不要输出未点名方向，"
+                    "系统会按稳定 ID 与上一版机械合并。"
+                )
+            else:
+                direction_output_instruction = (
+                    "这是局部修订。directions 数组只输出 revisionDirectionIds 中的 "
+                    f"{len(revision_direction_ids)} 个方向，directionId 必须逐一对应："
+                    + json.dumps(revision_direction_ids, ensure_ascii=False)
+                    + "。不要输出未点名方向，系统会按稳定 ID 与上一版机械合并。"
+                )
+        elif (
+            isinstance(required_direction_slots, list)
+            and required_direction_slots
+            and all(isinstance(item, dict) for item in required_direction_slots)
+        ):
             direction_output_instruction = (
-                "这是局部修订。directions 数组只输出 revisionDirectionIds 中的 "
-                f"{len(revision_direction_ids)} 个方向，directionId 必须逐一对应："
-                + json.dumps(revision_direction_ids, ensure_ascii=False)
-                + "。不要输出未点名方向，系统会按稳定 ID 与上一版机械合并。"
+                "这是首次分空间规划。directions 数组必须逐项对应以下方向槽位，"
+                "directionId 与 primaryActionId 必须原样使用，不得交换、重复或自选："
+                + json.dumps(required_direction_slots, ensure_ascii=False)
+                + "。每个槽位的创意关系、事实组合和六维表达仍由你自主规划。"
             )
         else:
             direction_output_instruction = (
@@ -1069,9 +1154,10 @@ class ArkResponsesProvider:
                 ensure_ascii=False,
             ),
             visual_style_baseline_json=json.dumps(
-                visual_style_baseline or "未设置",
+                style_instruction,
                 ensure_ascii=False,
             ),
+            delivery_channel_json=json.dumps(delivery_channel, ensure_ascii=False),
             creative_landscape_json=json.dumps(
                 _remap_fact_references(
                     [
@@ -1131,6 +1217,7 @@ class ArkResponsesProvider:
         fact_visual_strategy: FactVisualStrategy,
         landscape: CreativeDiversityLandscape,
         directions: CreativeDirectionResponse,
+        revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDirectionAuditResponse]:
         fact_aliases, fact_ids_by_alias = _fact_alias_maps(application)
         facts = [
@@ -1185,6 +1272,11 @@ class ArkResponsesProvider:
                 ensure_ascii=False,
                 sort_keys=True,
             ),
+            revision_context_json=json.dumps(
+                revision_context or {},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
         )
 
         call = await self._structured(
@@ -1195,7 +1287,8 @@ class ArkResponsesProvider:
             prompt_file=CREATIVE_DIRECTION_AUDIT_BASE_PROMPT,
             model=self._evaluation_model,
             # This is a batch strategy audit rather than per-item scoring. Use
-            # the strategy budget so 8-32 structured rows cannot be truncated
+            # the strategy budget so a territory-scoped structured response
+            # cannot be truncated
             # by the smaller candidate-evaluation budget.
             max_output_tokens=self._strategy_max_output_tokens,
             request_timeout=self._evaluation_timeout,
@@ -1957,6 +2050,10 @@ def _mock_creative_landscape_response(
         direction_count,
         max(minimum_territory_count, len(required_pool)),
     )
+    base_action_count, extra_action_count = divmod(
+        direction_count,
+        territory_count,
+    )
     required_by_territory = [
         [fact.fact_id for fact in business_facts[index::territory_count]]
         for index in range(territory_count)
@@ -1994,9 +2091,17 @@ def _mock_creative_landscape_response(
                 scene_boundary=f"只在{row[1]}内形成一个主要场景",
                 actions=[
                     CreativeTerritoryAction(
-                        action_id=f"ACTION_{index + 1:02d}",
-                        label=row[3],
-                        boundary=f"只以{row[3]}作为连续主动作",
+                        action_id=f"ACTION_{index + 1:02d}_{action_index + 1:02d}",
+                        label=f"{row[3]}阶段{action_index + 1}",
+                        boundary=(
+                            f"只以{row[3]}的第{action_index + 1}个可拍阶段作为连续主动作"
+                        ),
+                    )
+                    for action_index in range(
+                        max(
+                            8,
+                            base_action_count + int(index < extra_action_count),
+                        )
                     )
                 ],
                 differentiation_goal=f"通过{row[0]}区别于其他创意空间",
@@ -2124,7 +2229,7 @@ def _mock_creative_direction_response(
             CreativeDirection(
                 direction_id=f"direction-{index + 1:02d}",
                 territory_id=territory.territory_id,
-                primary_action_id=territory.actions[0].action_id,
+                primary_action_id=territory.actions[local_index].action_id,
                 fact_applications=[
                     CreativeDirectionFactApplication(
                         fact_id=fact.fact_id,

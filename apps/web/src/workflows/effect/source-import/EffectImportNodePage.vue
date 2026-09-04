@@ -74,7 +74,6 @@ import {
 } from './api/effect-import.api';
 import BatchManifestImportDialog from './components/BatchManifestImportDialog.vue';
 import EffectWorkflowCanvas from './components/EffectWorkflowCanvas.vue';
-import GlobalVideoConfigPanel from './components/GlobalVideoConfigPanel.vue';
 import ProductImportEditor from './components/ProductImportEditor.vue';
 import {
   cloneVideoConfig,
@@ -662,18 +661,6 @@ const switchMode = async (mode: EffectImportMode): Promise<void> => {
   } finally {
     endTransition();
   }
-};
-
-const updateGlobalConfig = (config: EffectVideoConfig): void => {
-  if (!draft.value || transitioning.value) return;
-  const snapshot = cloneVideoConfig(config);
-  draft.value.globalConfig = snapshot;
-  draft.value.validatedRevision = null;
-  globalDraftBuffer.edit('global', cloneVideoConfig(snapshot));
-  relockDownstreamNode();
-  saveState.value = 'dirty';
-  clearTimeout(configTimer);
-  configTimer = setTimeout(() => void flushGlobalConfig(), 1000);
 };
 
 const flushGlobalConfig = async (persistNodeState = true): Promise<boolean> => {
@@ -1477,7 +1464,7 @@ onBeforeUnmount(() => {
     <section v-else-if="pageStatus === 'loading'" class="page-state loading">
       <LoaderCircle class="spin" :size="34" />
       <h2>正在恢复资料包草稿</h2>
-      <p>加载当前项目的导入模式、产品资料和全局视频配置…</p>
+      <p>加载当前项目的导入模式和产品资料…</p>
     </section>
     <section v-else-if="pageStatus === 'error'" class="page-state error">
       <AlertCircle :size="34" />
@@ -1499,7 +1486,6 @@ onBeforeUnmount(() => {
         :draft-id="draft?.id ?? ''"
         :mode="currentMode"
         :products="draft?.products ?? []"
-        :global-config="draft?.globalConfig ?? DEFAULT_EFFECT_VIDEO_CONFIG"
         @back="selectWorkflowStep(0)"
         @next="enterPromptBoundary"
       />
@@ -1510,7 +1496,6 @@ onBeforeUnmount(() => {
         :project-id="currentProjectId"
         :workflow-run-id="workspace?.workflowRunId ?? ''"
         :products="products"
-        :global-config="draft?.globalConfig ?? DEFAULT_EFFECT_VIDEO_CONFIG"
         @back="selectWorkflowStep(1)"
         @next="selectWorkflowStep(3)"
       />
@@ -1521,7 +1506,6 @@ onBeforeUnmount(() => {
         :project-id="currentProjectId"
         :workflow-run-id="workspace?.workflowRunId ?? ''"
         :products="products"
-        :global-config="draft?.globalConfig ?? DEFAULT_EFFECT_VIDEO_CONFIG"
         @back="selectWorkflowStep(2)"
         @next="selectWorkflowStep(4)"
       />
@@ -1647,12 +1631,6 @@ onBeforeUnmount(() => {
                   @validate-link="checkCommerceLink"
                 />
               </section>
-              <GlobalVideoConfigPanel
-                :config="draft?.globalConfig ?? DEFAULT_EFFECT_VIDEO_CONFIG"
-                :disabled="transitioning || saveState === 'saving'"
-                @update:config="updateGlobalConfig"
-                @focusout="flushGlobalConfig"
-              />
             </template>
 
             <template v-else>
@@ -1729,13 +1707,6 @@ onBeforeUnmount(() => {
                   />
                 </div>
               </section>
-              <GlobalVideoConfigPanel
-                class="batch-global-config"
-                :config="draft?.globalConfig ?? DEFAULT_EFFECT_VIDEO_CONFIG"
-                :disabled="transitioning || saveState === 'saving'"
-                @update:config="updateGlobalConfig"
-                @focusout="flushGlobalConfig"
-              />
             </template>
           </div>
 
@@ -1759,7 +1730,7 @@ onBeforeUnmount(() => {
             :detail="`${currentMode === 'BATCH' ? '多产品批量导入' : '单产品导入'} · ${draft?.productCount ?? 0} 个产品 · 已自动保存到节点草稿`"
             :state="draftBarState"
             :state-label="saveStateLabel"
-            title="产品资料与视频配置草稿"
+            title="产品资料草稿"
           />
 
           <WorkflowNodeFooter
@@ -2091,7 +2062,7 @@ onBeforeUnmount(() => {
 }
 .import-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
   align-items: start;
 }
@@ -2112,13 +2083,6 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   align-self: stretch;
   grid-column: 1;
-  grid-row: 1;
-}
-.import-layout:not(.batch-mode) > :deep(.global-config-card) {
-  height: auto;
-  box-sizing: border-box;
-  align-self: stretch;
-  grid-column: 2;
   grid-row: 1;
 }
 .import-layout:not(.batch-mode) :deep(.commerce-parse) {

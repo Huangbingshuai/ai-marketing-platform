@@ -9,7 +9,14 @@
     "settings": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["targetCount", "defaultDurationSeconds"],
+      "required": [
+        "targetCount",
+        "defaultDurationSeconds",
+        "styleMode",
+        "styleTone",
+        "deliveryChannel",
+        "disabledElements"
+      ],
       "properties": {
         "targetCount": {
           "type": "integer",
@@ -20,6 +27,23 @@
           "type": "integer",
           "minimum": 4,
           "maximum": 30
+        },
+        "styleMode": {
+          "enum": ["AI_AUTO", "FIXED"]
+        },
+        "styleTone": {
+          "type": ["string", "null"],
+          "maxLength": 120
+        },
+        "deliveryChannel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "disabledElements": {
+          "type": "array",
+          "maxItems": 50,
+          "items": { "type": "string", "minLength": 1, "maxLength": 240 }
         }
       }
     },

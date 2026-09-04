@@ -12,7 +12,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import combinations
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from pydantic import ValidationError
 
@@ -104,6 +104,7 @@ from .creative_directions import (
     semantic_cluster_novelty,
     semantic_profile_distribution,
     validate_creative_direction_diversity_audit,
+    validate_creative_direction_audit_batch,
     validate_creative_direction_audit,
     validate_creative_landscape_audit,
     validate_creative_diversity_landscape,
@@ -542,15 +543,9 @@ class PromptGenerationPipeline:
             "正在编译批次共用提示词",
         )
         disabled = _normalized_disabled_elements(
-            _insight_list(
-                self.snapshot(context).insight_artifact.result,
-                "disabledElements",
-                "disabled_elements",
-            )
+            self.snapshot(context).settings.disabled_elements
         )
-        existing = self.snapshot(context).shared_prompt
-        additional = _shared_prompt_section_content(existing, "USER_ADDITIONAL")
-        prompt = _compile_shared_prompt(disabled, additional)
+        prompt = _compile_shared_prompt(disabled)
         self._cache(context).shared_prompt = prompt
         await self._stage(
             context,
@@ -561,7 +556,7 @@ class PromptGenerationPipeline:
                 "disabledElementCount": len(disabled),
                 "sectionCount": len(prompt.sections),
                 "sharedPromptGenerated": bool(prompt.compiled_content),
-                "hasUserAdditionalContent": bool(additional),
+                "hasUserAdditionalContent": False,
                 "compiledContent": prompt.compiled_content,
                 "sections": [
                     {
@@ -731,6 +726,10 @@ class PromptGenerationPipeline:
                                     fact_visual_strategy=visual_strategy,
                                     shared_prompt=shared_prompt,
                                     target_count=snapshot.settings.target_count,
+                                    style_instruction=_style_instruction(
+                                        snapshot.settings
+                                    ),
+                                    delivery_channel=snapshot.settings.delivery_channel,
                                     revision_context=landscape_revision_context,
                                 )
                             )
@@ -964,28 +963,112 @@ class PromptGenerationPipeline:
                         isinstance(revision_ids, list) and revision_ids
                     )
                     if previous_audited_response is None and not is_targeted_revision:
+                        territory_direction_slots: list[
+                            tuple[Any, list[dict[str, str]]]
+                        ] = []
+                        next_direction_ordinal = 1
+                        for territory in landscape.territories:
+                            slots = [
+                                {
+                                    "directionId": (
+                                        f"direction-{next_direction_ordinal + index:02d}"
+                                    ),
+                                    "primaryActionId": territory.actions[
+                                        index
+                                    ].action_id,
+                                }
+                                for index in range(territory.target_slots)
+                            ]
+                            territory_direction_slots.append((territory, slots))
+                            next_direction_ordinal += territory.target_slots
 
                         async def plan_territory_directions(
                             territory: Any,
+                            required_slots: list[dict[str, str]],
                         ) -> Any:
-                            self._reserve_ai_call(context)
                             scoped_landscape = landscape.model_copy(
                                 update={"territories": [territory]}
                             )
-                            async with self._ai_semaphore:
-                                return await self.provider.plan_creative_directions(
-                                    application,
-                                    fact_visual_strategy=visual_strategy,
-                                    shared_prompt=shared_prompt,
-                                    landscape=scoped_landscape,
-                                    target_count=snapshot.settings.target_count,
-                                    revision_context=revision_context,
-                                )
+                            slot_context: Mapping[str, Any] = {
+                                "requiredDirectionSlots": required_slots,
+                            }
+                            last_error: Exception | None = None
+                            for territory_attempt in range(2):
+                                self._reserve_ai_call(context)
+                                try:
+                                    async with self._ai_semaphore:
+                                        territory_call = await self.provider.plan_creative_directions(
+                                            application,
+                                            fact_visual_strategy=visual_strategy,
+                                            shared_prompt=shared_prompt,
+                                            landscape=scoped_landscape,
+                                            target_count=(
+                                                snapshot.settings.target_count
+                                            ),
+                                            style_instruction=_style_instruction(
+                                                snapshot.settings
+                                            ),
+                                            delivery_channel=snapshot.settings.delivery_channel,
+                                            revision_context=slot_context,
+                                        )
+                                    expected_actions = {
+                                        slot["directionId"]: slot["primaryActionId"]
+                                        for slot in required_slots
+                                    }
+                                    actual_directions = {
+                                        direction.direction_id: direction
+                                        for direction in territory_call.value.directions
+                                    }
+                                    if set(actual_directions) != set(expected_actions):
+                                        raise ValueError(
+                                            "territory directions did not fill the assigned slots"
+                                        )
+                                    if any(
+                                        direction.territory_id != territory.territory_id
+                                        or direction.primary_action_id
+                                        != expected_actions[direction_id]
+                                        for direction_id, direction in actual_directions.items()
+                                    ):
+                                        raise ValueError(
+                                            "territory directions changed an assigned action"
+                                        )
+                                    return territory_call
+                                except ProviderError as exc:
+                                    last_error = exc
+                                    if territory_attempt == 0 and (
+                                        exc.retryable
+                                        or exc.error_type
+                                        == ProviderErrorType.RESPONSE_INVALID
+                                    ):
+                                        continue
+                                    raise
+                                except ValueError as exc:
+                                    last_error = exc
+                                    if territory_attempt == 0:
+                                        slot_context = {
+                                            **slot_context,
+                                            "validationError": str(exc),
+                                            "revisionInstruction": (
+                                                "上一次没有逐项使用已分配的方向槽位。"
+                                                "本次必须原样填写每个 directionId 与"
+                                                "primaryActionId。"
+                                            ),
+                                        }
+                                        continue
+                                    raise ProviderError(
+                                        "AI 创意方向未按分配动作生成",
+                                        retryable=False,
+                                        error_type=(ProviderErrorType.RESPONSE_INVALID),
+                                        attempts=2,
+                                    ) from exc
+                            raise PipelineError(
+                                "创意方向分空间规划未返回结果"
+                            ) from last_error
 
                         territory_calls = await asyncio.gather(
                             *(
-                                plan_territory_directions(territory)
-                                for territory in landscape.territories
+                                plan_territory_directions(territory, slots)
+                                for territory, slots in territory_direction_slots
                             )
                         )
                         call_rows.extend(
@@ -998,16 +1081,30 @@ class PromptGenerationPipeline:
                             for direction in territory_call.value.directions
                         ]
                         direction_response = CreativeDirectionResponse(
-                            directions=[
-                                direction.model_copy(
-                                    update={
-                                        "direction_id": f"direction-{index + 1:02d}"
-                                    }
-                                )
-                                for index, direction in enumerate(merged_directions)
-                            ]
+                            directions=merged_directions
                         )
                     else:
+                        revision_call_context = dict(revision_context or {})
+                        if previous_audited_response is not None and isinstance(
+                            revision_ids, list
+                        ):
+                            previous_by_id = {
+                                direction.direction_id: direction
+                                for direction in previous_audited_response.directions
+                            }
+                            revision_call_context["requiredDirectionSlots"] = [
+                                {
+                                    "directionId": direction_id,
+                                    "territoryId": previous_by_id[
+                                        direction_id
+                                    ].territory_id,
+                                    "primaryActionId": previous_by_id[
+                                        direction_id
+                                    ].primary_action_id,
+                                }
+                                for direction_id in revision_ids
+                                if direction_id in previous_by_id
+                            ]
                         self._reserve_ai_call(context)
                         async with self._ai_semaphore:
                             call = await self.provider.plan_creative_directions(
@@ -1016,7 +1113,9 @@ class PromptGenerationPipeline:
                                 shared_prompt=shared_prompt,
                                 landscape=landscape,
                                 target_count=snapshot.settings.target_count,
-                                revision_context=revision_context,
+                                style_instruction=_style_instruction(snapshot.settings),
+                                delivery_channel=snapshot.settings.delivery_channel,
+                                revision_context=revision_call_context,
                             )
                         call_rows.append(call.metadata)
                         direction_response = call.value
@@ -1115,6 +1214,7 @@ class PromptGenerationPipeline:
                 async def audit_direction_batch(
                     batch: list[Any],
                 ) -> CreativeDirectionAuditResponse:
+                    audit_revision_context: Mapping[str, Any] | None = None
                     for audit_attempt in range(2):
                         self._reserve_ai_call(context)
                         try:
@@ -1127,6 +1227,7 @@ class PromptGenerationPipeline:
                                         directions=CreativeDirectionResponse(
                                             directions=batch
                                         ),
+                                        revision_context=audit_revision_context,
                                     )
                                 )
                         except ProviderError as exc:
@@ -1137,7 +1238,29 @@ class PromptGenerationPipeline:
                                 continue
                             raise
                         call_rows.append(audit_call.metadata)
-                        return audit_call.value
+                        try:
+                            return validate_creative_direction_audit_batch(
+                                audit_call.value,
+                                batch,
+                                landscape,
+                            )
+                        except ValueError as exc:
+                            if audit_attempt == 0:
+                                audit_revision_context = {
+                                    "validationError": str(exc),
+                                    "revisionInstruction": (
+                                        "上一次复核返回了不存在或不匹配的 ID。"
+                                        "本次必须逐字复用创意版图中的 territoryId、"
+                                        "actionId 和待复核方向中的 directionId、factId。"
+                                    ),
+                                }
+                                continue
+                            raise ProviderError(
+                                "AI 创意方向分批复核结构无效",
+                                retryable=False,
+                                error_type=ProviderErrorType.RESPONSE_INVALID,
+                                attempts=2,
+                            ) from exc
                     raise PipelineError("创意方向语义分批复核未返回结果")
 
                 direction_audit_batches = [
@@ -1306,13 +1429,14 @@ class PromptGenerationPipeline:
         visual_strategy = self._required_fact_visual_strategy(context)
         shared_prompt = self._required_shared_prompt(context)
         requested_direction_count = min(
-            4,
-            max(2, math.ceil(requested_candidate_count / 3)),
+            10,
+            max(2, math.ceil(requested_candidate_count / 2)),
+            requested_candidate_count,
         )
         revision_context: Mapping[str, Any] | None = None
         proposed: list[CreativeDirection] | None = None
         diversity_audit: CreativeDirectionDiversityAudit | None = None
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 self._reserve_ai_call(context)
                 async with self._ai_semaphore:
@@ -1357,7 +1481,7 @@ class PromptGenerationPipeline:
                     proposed_direction_ids=[item.direction_id for item in proposed],
                 )
             except (ProviderError, ValueError) as exc:
-                if attempt == 0:
+                if attempt < 2:
                     revision_context = {
                         "validationError": str(exc),
                         "revisionInstruction": (
@@ -1369,7 +1493,7 @@ class PromptGenerationPipeline:
                 return []
             if not diversity_audit.requires_revision:
                 break
-            if attempt == 0:
+            if attempt < 2:
                 revision_context = {
                     "previousDirections": [
                         item.model_dump(mode="json", by_alias=True) for item in proposed
@@ -2035,12 +2159,11 @@ class PromptGenerationPipeline:
         await self.api.put_shard(context, running)
         try:
             application = self._require_application(context)
-            infer_creative_structure = (
-                self.snapshot(context).operation == "ITEM_EVALUATE"
-                and any(
-                    _requires_creative_structure_inference(candidate)
-                    for candidate in candidates
-                )
+            infer_creative_structure = self.snapshot(
+                context
+            ).operation == "ITEM_EVALUATE" and any(
+                _requires_creative_structure_inference(candidate)
+                for candidate in candidates
             )
             assigned_context_fact_ids = {
                 candidate.slot_id: _evaluation_context_fact_ids(
@@ -2460,6 +2583,18 @@ class PromptGenerationPipeline:
                             for item in cache.creative_evaluations.values()
                             if candidate_ids is None or item.slot_id in candidate_ids
                         ]
+
+                        def direction_group(item: RankedCreative) -> str:
+                            task = cache.creative_tasks.get(item.candidate.slot_id)
+                            direction = (
+                                task.creative_direction if task is not None else None
+                            )
+                            return (
+                                direction.direction_id
+                                if direction is not None
+                                else item.candidate.slot_id
+                            )
+
                         return select_creatives(
                             candidates,
                             evaluations,
@@ -2492,6 +2627,7 @@ class PromptGenerationPipeline:
                             fixed_covered_fact_ids=fixed_covered_fact_ids,
                             quality_weight=mmr_quality_weight,
                             novelty_weight=mmr_diversity_weight,
+                            semantic_group_resolver=direction_group,
                         )
 
                     quality_baseline_result = select_creatives(
@@ -3198,7 +3334,7 @@ class PromptGenerationPipeline:
         )
         result = PromptBatchResult(
             settings=settings,
-            render_profile=_render_profile(snapshot.insight_artifact.result),
+            render_profile=_render_profile(snapshot.settings),
             shared_prompt=self._required_shared_prompt(context),
             items=[
                 item.model_copy(update={"code": f"P{index:03d}"})
@@ -3930,31 +4066,26 @@ def _compile_shared_prompt(
     )
 
 
-def _render_profile(insight: Mapping[str, object]) -> RenderProfile:
-    ratio_raw = (
-        _insight_text(insight, "aspectRatio", "aspect_ratio") or "9:16"
-    ).replace("：", ":")
-    if ratio_raw not in {"16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"}:
-        raise PipelineError(f"Seedance 不支持当前画幅：{ratio_raw}")
-    resolution_raw = (_insight_text(insight, "resolution") or "720p").lower()
-    if resolution_raw not in {"480p", "720p", "1080p"}:
-        raise PipelineError(f"Seedance 不支持当前分辨率：{resolution_raw}")
-    disabled = _normalized_disabled_elements(
-        _insight_list(insight, "disabledElements", "disabled_elements")
-    )
+def _render_profile(settings: PromptBatchSettings) -> RenderProfile:
+    # Kept only as a compatibility snapshot for existing Prompt results. The
+    # render node owns the effective Seedance ratio and resolution.
+    disabled = _normalized_disabled_elements(settings.disabled_elements)
     digest = _sha256_json(disabled)
     return RenderProfile(
-        ratio=cast(
-            Literal["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
-            ratio_raw,
-        ),
-        resolution=cast(Literal["480p", "720p", "1080p"], resolution_raw),
+        ratio="9:16",
+        resolution="720p",
         capability_key="SEEDANCE_2_0",
         shared_constraints=SharedRenderConstraints(
             disabled_elements=disabled,
             content_hash=digest,
         ),
     )
+
+
+def _style_instruction(settings: PromptBatchSettings) -> str:
+    if settings.style_mode == "FIXED" and settings.style_tone:
+        return f"整批采用{settings.style_tone}作为共享视觉基调"
+    return "AI 根据场景选择：根据已确认事实和具体场景选择合适的光线、色彩、材质与镜头质感"
 
 
 def _safe_error(exc: Exception) -> str:

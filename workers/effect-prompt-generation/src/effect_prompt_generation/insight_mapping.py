@@ -221,39 +221,6 @@ def map_insight(payload: Mapping[str, Any]) -> InsightApplicationMap:
         for value in values:
             add_value(field, value, InsightFactPolicy.REQUIRED)
 
-    add_value(
-        InsightField.SOURCE_DURATION,
-        _first(payload, "durationSeconds", "duration_seconds"),
-        InsightFactPolicy.CONSTRAINT,
-    )
-    add_value(
-        InsightField.ASPECT_RATIO,
-        _first(payload, "aspectRatio", "aspect_ratio"),
-        InsightFactPolicy.CONSTRAINT,
-    )
-    add_value(
-        InsightField.RESOLUTION,
-        _first(payload, "resolution"),
-        InsightFactPolicy.CONSTRAINT,
-    )
-    add_value(
-        InsightField.DELIVERY_CHANNELS,
-        _first(payload, "deliveryChannels", "delivery_channels"),
-        InsightFactPolicy.CONSTRAINT,
-    )
-    _add_values(
-        payload,
-        ("disabledElements", "disabled_elements"),
-        InsightField.DISABLED_ELEMENT,
-        InsightFactPolicy.CONSTRAINT,
-        add_value,
-    )
-    add_value(
-        InsightField.VISUAL_STYLE_BASELINE,
-        _first(payload, "visualStyleBaseline", "visual_style_baseline"),
-        InsightFactPolicy.CONSTRAINT,
-    )
-
     return InsightApplicationMap(
         required=_dedupe(required),
         adaptive=_dedupe(adaptive),

@@ -2,7 +2,7 @@
 
 规则：
 1. 每个新方向必须引用现有创意版图中的 territoryId、primaryActionId 和 compatibleFactIds，不得创建新事实、新版图或新动作 ID。
-2. 先理解 crowdedSceneFamilies、crowdedActionFamilies 和 existingDirections。新方向必须在主要场景、人物关系、产品主动作或镜头构成上形成实质新组合，不能只换说法、换性别、换景别名称或重复同一使用流程。
+2. 先理解 crowdedSceneFamilies、crowdedActionFamilies 和 existingDirections。新方向必须在主要场景、人物关系、产品主动作或镜头构成上形成实质新组合，不能只换说法、换性别、换景别名称或重复同一使用流程。补充方向之间优先使用不同的空间—主动作组合；确需复用现有主动作时，必须改变动作阶段、主体关系或画面结构，并能通过全批视觉复核。
 3. 每个方向只保留一个主要场景和一条连续主动作，并遵守事实视觉策略、食品常识和共用提示词。
 4. 每个方向使用 1～4 项自然相关事实，factApplications.creativeUsage 说明事实如何进入人物、需求、场景、动作或产品表达。
 5. priorityDimensions 必须恰好包含两个不同的合法维度；semanticProfile 必须诚实描述新方向的实际六轴语义。
@@ -10,4 +10,3 @@
 7. 不写时长、画幅、分辨率、共用提示词或最终 Prompt 正文。
 
 只输出严格符合 JSON Schema 的 JSON。
-

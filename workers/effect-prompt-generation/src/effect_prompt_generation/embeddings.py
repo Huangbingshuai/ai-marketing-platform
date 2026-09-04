@@ -311,7 +311,9 @@ class ContentVectorIndex:
     ) -> dict[str, str]:
         """Build stable connected-component keys for group-first selection."""
 
-        nodes = list(dict.fromkeys(item for item in entity_ids if item in self.row_by_id))
+        nodes = list(
+            dict.fromkeys(item for item in entity_ids if item in self.row_by_id)
+        )
         parent = {node: node for node in nodes}
 
         def find(node: str) -> str:

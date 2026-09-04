@@ -527,6 +527,7 @@ describe('EffectPromptService settings contract', () => {
     const repository = {
       workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }),
       products: vi.fn().mockResolvedValue([{ id: 'product-a' }]),
+      latestResult: vi.fn().mockResolvedValue(null),
     };
     const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
     const savedAt = new Date('2026-08-25T00:00:00.000Z');

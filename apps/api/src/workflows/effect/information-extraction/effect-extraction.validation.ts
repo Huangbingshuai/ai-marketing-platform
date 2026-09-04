@@ -85,12 +85,31 @@ export const canonicalHash = (value: unknown): string =>
     .digest('hex');
 
 export const extractionSourceFingerprint = (
-  snapshot: { sourceRevision: number; dependencySnapshot?: unknown } & Record<string, unknown>,
-): string =>
-  canonicalHash(
-    snapshot.dependencySnapshot ??
-      Object.fromEntries(Object.entries(snapshot).filter(([key]) => key !== 'sourceRevision')),
+  snapshot:
+    | ({ sourceRevision: number; dependencySnapshot?: unknown } & Record<string, unknown>)
+    | null
+    | undefined,
+): string => {
+  if (!snapshot) return canonicalHash({});
+  const dependencies =
+    snapshot.dependencySnapshot &&
+    typeof snapshot.dependencySnapshot === 'object' &&
+    !Array.isArray(snapshot.dependencySnapshot)
+      ? (snapshot.dependencySnapshot as Record<string, unknown>)
+      : null;
+  if (dependencies)
+    return canonicalHash({
+      sourcePackageRevision: dependencies.sourcePackageRevision,
+      executionInputHash: dependencies.executionInputHash,
+    });
+  return canonicalHash(
+    Object.fromEntries(
+      Object.entries(snapshot).filter(
+        ([key]) => !['sourceRevision', 'globalVideoConfig'].includes(key),
+      ),
+    ),
   );
+};
 
 export const isSupportedExtractionMaterial = (
   mimeType: string | null,

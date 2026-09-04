@@ -22,6 +22,8 @@ from .providers import ProviderError
 
 
 LOGGER = logging.getLogger(__name__)
+HEARTBEAT_INTERVAL_SECONDS = 30.0
+HEARTBEAT_RETRY_SECONDS = 5.0
 
 
 class PromptGenerationConsumer:
@@ -34,6 +36,8 @@ class PromptGenerationConsumer:
         pipeline: PromptGenerationPipeline,
         graph: CompiledStateGraph[GraphState, RuntimeContext, InputState, OutputState],
         max_concurrency: int = 3,
+        heartbeat_interval_seconds: float = HEARTBEAT_INTERVAL_SECONDS,
+        heartbeat_retry_seconds: float = HEARTBEAT_RETRY_SECONDS,
     ) -> None:
         self._rabbitmq_url = rabbitmq_url
         self._queue_name = queue_name
@@ -41,6 +45,8 @@ class PromptGenerationConsumer:
         self._pipeline = pipeline
         self._graph = graph
         self._max_concurrency = max_concurrency
+        self._heartbeat_interval_seconds = heartbeat_interval_seconds
+        self._heartbeat_retry_seconds = heartbeat_retry_seconds
         self._connection: AbstractRobustConnection | None = None
 
     async def run(self) -> None:
@@ -145,11 +151,34 @@ class PromptGenerationConsumer:
 
     async def _heartbeat(self, context: RuntimeContext, stop: asyncio.Event) -> None:
         while True:
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=30.0)
+            if await self._wait_for_stop(
+                stop, timeout=self._heartbeat_interval_seconds
+            ):
                 return
-            except TimeoutError:
-                await self._pipeline.heartbeat(context)
+            while True:
+                try:
+                    await self._pipeline.heartbeat(context)
+                    break
+                except InternalApiError as exc:
+                    if not exc.retryable:
+                        raise
+                    LOGGER.warning(
+                        "Prompt heartbeat temporarily unavailable run_id=%s; retrying",
+                        context.run_id,
+                    )
+                    if await self._wait_for_stop(
+                        stop, timeout=self._heartbeat_retry_seconds
+                    ):
+                        return
+
+    @staticmethod
+    async def _wait_for_stop(stop: asyncio.Event, *, timeout: float) -> bool:
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=timeout)
+        except TimeoutError:
+            return False
+        else:
+            return True
 
 
 def _retryable(exc: Exception) -> bool:

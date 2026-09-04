@@ -56,6 +56,7 @@ export type {
 } from './project';
 export * from './effect-import';
 export * from './effect-extraction';
+export * from './effect-video-settings';
 export * from './effect-prompt-generation';
 export * from './effect-segment-render';
 export * from './workflow-working';

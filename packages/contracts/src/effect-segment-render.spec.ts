@@ -37,6 +37,7 @@ describe('effect segment render contract', () => {
       compatiblePurposes: ['PRODUCT_DISPLAY'],
       promptContentHash: 'a'.repeat(64),
       sharedPromptHash: 'b'.repeat(64),
+      renderSettingsHash: 'c'.repeat(64),
       request: {
         model: 'seedance-model',
         content: [{ type: 'text', text: '一个独立视频素材片段。' }],

@@ -1,4 +1,8 @@
-import type { EffectPromptBatchResult, EffectPromptItem } from '@ai-marketing/contracts';
+import type {
+  EffectPromptBatchResult,
+  EffectPromptItem,
+  EffectSegmentRenderSettings,
+} from '@ai-marketing/contracts';
 import { DEFAULT_EFFECT_PROMPT_SETTINGS } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 
@@ -58,13 +62,23 @@ const batch = (capabilityKey: EffectPromptBatchResult['renderProfile']['capabili
   ) as EffectPromptBatchResult;
 };
 
+const renderSettings = (
+  capabilityKey: EffectSegmentRenderSettings['capabilityKey'] = 'SEEDANCE_2_0',
+  resolution: EffectSegmentRenderSettings['resolution'] = '720p',
+): EffectSegmentRenderSettings => ({ ratio: '9:16', resolution, capabilityKey });
+
 describe('effect Seedance request compiler', () => {
   it('keeps technical settings outside the visible prompt and appends shared constraints once', () => {
-    const compiled = compileEffectSeedanceRequest(batch('SEEDANCE_2_0'), item.id, 'seedance-model');
+    const compiled = compileEffectSeedanceRequest(
+      batch('SEEDANCE_2_0'),
+      item.id,
+      'seedance-model',
+      renderSettings(),
+    );
     expect(compiled.request).toMatchObject({
       duration: 5,
       ratio: '9:16',
-      resolution: '1080p',
+      resolution: '720p',
     });
     expect(compiled.request.content[0].text).toContain(
       '画面中不得出现以下内容：医疗功效；未成年人。\n保持产品外观前后一致。',
@@ -90,8 +104,18 @@ describe('effect Seedance request compiler', () => {
       },
     };
 
-    const before = compileEffectSeedanceRequest(original, item.id, 'seedance-model');
-    const after = compileEffectSeedanceRequest(changed, item.id, 'seedance-model');
+    const before = compileEffectSeedanceRequest(
+      original,
+      item.id,
+      'seedance-model',
+      renderSettings(),
+    );
+    const after = compileEffectSeedanceRequest(
+      changed,
+      item.id,
+      'seedance-model',
+      renderSettings(),
+    );
 
     expect(after.promptContentHash).not.toBe(before.promptContentHash);
     expect(after.request.content[0].text).toContain('创意主线：改为突出节庆礼赠的创意方向。');
@@ -99,7 +123,14 @@ describe('effect Seedance request compiler', () => {
   });
 
   it('rejects 1080p for Seedance 2.0 fast without silent downgrade', () => {
-    expect(() => compileEffectSeedanceRequest(batch('SEEDANCE_2_0_FAST'), item.id, 'fast')).toThrow(
+    expect(() =>
+      compileEffectSeedanceRequest(
+        batch('SEEDANCE_2_0_FAST'),
+        item.id,
+        'fast',
+        renderSettings('SEEDANCE_2_0_FAST', '1080p'),
+      ),
+    ).toThrow(
       expect.objectContaining<Partial<EffectSeedanceCompileError>>({
         code: 'RESOLUTION_UNSUPPORTED',
       }),
@@ -109,7 +140,9 @@ describe('effect Seedance request compiler', () => {
   it('rejects an item whose purpose evaluation is pending', () => {
     const current = batch('SEEDANCE_2_0');
     current.items[0] = { ...current.items[0]!, classificationStatus: 'PENDING' };
-    expect(() => compileEffectSeedanceRequest(current, item.id, 'seedance-model')).toThrow(
+    expect(() =>
+      compileEffectSeedanceRequest(current, item.id, 'seedance-model', renderSettings()),
+    ).toThrow(
       expect.objectContaining<Partial<EffectSeedanceCompileError>>({
         code: 'CLASSIFICATION_PENDING',
       }),
@@ -123,7 +156,9 @@ describe('effect Seedance request compiler', () => {
       classificationStatus: 'NEEDS_REVISION',
       reviewIssues: ['PRODUCT_UNRELATED'],
     };
-    expect(() => compileEffectSeedanceRequest(current, item.id, 'seedance-model')).toThrow(
+    expect(() =>
+      compileEffectSeedanceRequest(current, item.id, 'seedance-model', renderSettings()),
+    ).toThrow(
       expect.objectContaining<Partial<EffectSeedanceCompileError>>({
         code: 'CLASSIFICATION_PENDING',
       }),
@@ -131,12 +166,17 @@ describe('effect Seedance request compiler', () => {
   });
 
   it('checks the echoed task parameters against the immutable request snapshot', () => {
-    const snapshot = compileEffectSeedanceRequest(batch('SEEDANCE_2_0'), item.id, 'seedance-model');
+    const snapshot = compileEffectSeedanceRequest(
+      batch('SEEDANCE_2_0'),
+      item.id,
+      'seedance-model',
+      renderSettings(),
+    );
     expect(
       validateEffectSeedanceTaskResult(snapshot, {
         duration: '4',
         ratio: '16:9',
-        resolution: '720P',
+        resolution: '480P',
       }),
     ).toEqual(['DURATION_MISMATCH', 'RATIO_MISMATCH', 'RESOLUTION_MISMATCH']);
   });

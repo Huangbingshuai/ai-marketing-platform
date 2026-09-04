@@ -6,7 +6,6 @@ from effect_prompt_generation.insight_mapping import (
 )
 from effect_prompt_generation.models import (
     FragmentType,
-    InsightFactPolicy,
     InsightField,
 )
 
@@ -49,7 +48,15 @@ def test_maps_every_non_empty_field_to_required_adaptive_excluded_or_constraint(
         *application.constraints,
     ]
 
-    assert {fact.field for fact in facts} == set(InsightField)
+    legacy_video_fields = {
+        InsightField.SOURCE_DURATION,
+        InsightField.ASPECT_RATIO,
+        InsightField.RESOLUTION,
+        InsightField.DELIVERY_CHANNELS,
+        InsightField.DISABLED_ELEMENT,
+        InsightField.VISUAL_STYLE_BASELINE,
+    }
+    assert {fact.field for fact in facts} == set(InsightField) - legacy_video_fields
     assert (
         next(
             fact
@@ -63,17 +70,7 @@ def test_maps_every_non_empty_field_to_required_adaptive_excluded_or_constraint(
         for fact in application.adaptive
         if fact.field == InsightField.TRUST_BACKING
     ).eligible_fragment_types == [FragmentType.EFFECT]
-    assert all(
-        fact.policy == InsightFactPolicy.CONSTRAINT for fact in application.constraints
-    )
-    assert (
-        next(
-            fact
-            for fact in application.constraints
-            if fact.field == InsightField.RESOLUTION
-        ).value
-        == "1080p"
-    )
+    assert application.constraints == []
 
 
 def test_maps_canonical_audience_items_independently_without_reusing_summary() -> None:

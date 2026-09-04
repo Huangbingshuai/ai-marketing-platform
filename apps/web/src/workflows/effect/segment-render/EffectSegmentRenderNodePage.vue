@@ -2,9 +2,12 @@
 import type {
   EffectImportProduct,
   EffectPromptFragmentType,
-  EffectVideoConfig,
+  EffectSegmentRenderSettings,
 } from '@ai-marketing/contracts';
 import {
+  DEFAULT_EFFECT_SEGMENT_RENDER_SETTINGS,
+  EFFECT_PROMPT_RENDER_CAPABILITIES,
+  EFFECT_PROMPT_RENDER_CAPABILITY_KEYS,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
 } from '@ai-marketing/contracts';
@@ -20,6 +23,7 @@ import {
   Play,
   RefreshCw,
   Search,
+  Settings2,
   Sparkles,
   Trash2,
   X,
@@ -27,6 +31,11 @@ import {
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
+import EffectUpwardCreatableSelect from '../source-import/components/EffectUpwardCreatableSelect.vue';
+import {
+  getEffectSegmentRenderWorkspace,
+  saveEffectSegmentRenderSettings,
+} from './api/effect-segment-render.api';
 import {
   EFFECT_SEGMENT_RENDER_PAGE_SIZE,
   effectSegmentRenderPage,
@@ -52,13 +61,12 @@ const props = defineProps<{
   projectId: string;
   workflowRunId: string;
   products: EffectImportProduct[];
-  globalConfig: EffectVideoConfig;
 }>();
 
 const emit = defineEmits<{ back: []; next: [] }>();
 
 type PageStatus = 'empty' | 'error' | 'loading' | 'success';
-type Operation = 'batch' | 'delete' | 'export' | 'import' | 'retry' | null;
+type Operation = 'batch' | 'delete' | 'export' | 'import' | 'retry' | 'settings' | null;
 type Notice = { kind: 'error' | 'success' | 'warning'; text: string };
 
 const pageStatus = ref<PageStatus>('loading');
@@ -71,6 +79,36 @@ const selectedTaskIds = ref(new Set<string>());
 const operation = ref<Operation>(null);
 const validated = ref(false);
 const notice = ref<Notice | null>(null);
+const renderSettings = ref<EffectSegmentRenderSettings>({
+  ...DEFAULT_EFFECT_SEGMENT_RENDER_SETTINGS,
+});
+const renderSettingsRevision = ref<number | null>(null);
+
+const capabilityOptions = EFFECT_PROMPT_RENDER_CAPABILITY_KEYS.map((value) => ({
+  value,
+  label:
+    value === 'SEEDANCE_2_0'
+      ? 'Seedance 2.0'
+      : value === 'SEEDANCE_2_0_FAST'
+        ? 'Seedance 2.0 Fast'
+        : value === 'SEEDANCE_1_5_PRO'
+          ? 'Seedance 1.5 Pro'
+          : 'Seedance 1.0',
+}));
+const ratioOptions = computed(() =>
+  EFFECT_PROMPT_RENDER_CAPABILITIES[renderSettings.value.capabilityKey].ratios.map((value) => ({
+    value,
+    label: value === 'adaptive' ? '自适应' : value,
+  })),
+);
+const resolutionOptions = computed(() =>
+  EFFECT_PROMPT_RENDER_CAPABILITIES[renderSettings.value.capabilityKey].resolutions.map(
+    (value) => ({
+      value,
+      label: value,
+    }),
+  ),
+);
 
 const fileInput = ref<HTMLInputElement | null>(null);
 const previewTask = ref<EffectSegmentRenderTask | null>(null);
@@ -195,13 +233,18 @@ const loadCurrentWorkspace = async (): Promise<void> => {
   const controller = new AbortController();
   loadController = controller;
   try {
-    const nextWorkspace = await loadEffectSegmentRenderWorkspace(
-      context(),
-      product,
-      props.globalConfig,
-      controller.signal,
-    );
+    const [nextWorkspace, settingsResponse] = await Promise.all([
+      loadEffectSegmentRenderWorkspace(context(), product, renderSettings.value, controller.signal),
+      getEffectSegmentRenderWorkspace(
+        props.projectId,
+        props.workflowRunId,
+        product.id,
+        controller.signal,
+      ),
+    ]);
     if (generation !== loadGeneration || controller.signal.aborted) return;
+    renderSettings.value = { ...settingsResponse.data.settings };
+    renderSettingsRevision.value = settingsResponse.data.settingsRevision;
     workspace.value = nextWorkspace;
     pageStatus.value = 'success';
   } catch (error) {
@@ -210,6 +253,40 @@ const loadCurrentWorkspace = async (): Promise<void> => {
     loadError.value = safeMessage(error, '渲染工作区加载失败');
   } finally {
     if (loadController === controller) loadController = null;
+  }
+};
+
+const updateRenderSetting = async <Key extends keyof EffectSegmentRenderSettings>(
+  key: Key,
+  value: EffectSegmentRenderSettings[Key],
+): Promise<void> => {
+  const product = currentProduct.value;
+  if (!product || operation.value) return;
+  const previous = { ...renderSettings.value };
+  const next = { ...renderSettings.value, [key]: value };
+  if (key === 'capabilityKey') {
+    const capability = EFFECT_PROMPT_RENDER_CAPABILITIES[next.capabilityKey];
+    if (!capability.ratios.includes(next.ratio)) next.ratio = capability.ratios[0]!;
+    if (!capability.resolutions.includes(next.resolution))
+      next.resolution = capability.resolutions[0]!;
+  }
+  renderSettings.value = next;
+  operation.value = 'settings';
+  try {
+    const response = await saveEffectSegmentRenderSettings(props.projectId, product.id, {
+      workflowRunId: props.workflowRunId,
+      expectedRevision: renderSettingsRevision.value,
+      settings: next,
+    });
+    if (product.id !== currentProductId.value) return;
+    renderSettings.value = { ...response.data.settings };
+    renderSettingsRevision.value = response.data.settingsRevision;
+    showNotice('视频渲染设置已保存');
+  } catch (error) {
+    renderSettings.value = previous;
+    showNotice(safeMessage(error, '视频渲染设置保存失败'), 'error');
+  } finally {
+    operation.value = null;
   }
 };
 
@@ -279,7 +356,7 @@ const startBatch = async (): Promise<void> => {
     const nextWorkspace = await startEffectSegmentRenderBatch(
       context(),
       product,
-      props.globalConfig,
+      renderSettings.value,
       { signal: controller.signal, onUpdate: applyWorkspace },
     );
     if (controller.signal.aborted || currentProductId.value !== product.id) return;
@@ -323,7 +400,7 @@ const retryTasks = async (taskIds: readonly string[]): Promise<void> => {
     const nextWorkspace = await regenerateEffectSegmentRenderTasks(
       context(),
       product,
-      props.globalConfig,
+      renderSettings.value,
       taskIds,
       { signal: controller.signal, onUpdate: applyWorkspace },
     );
@@ -362,7 +439,7 @@ const requestDelete = async (taskIds: readonly string[]): Promise<void> => {
     const nextWorkspace = await deleteEffectSegmentRenderTasks(
       context(),
       product,
-      props.globalConfig,
+      renderSettings.value,
       taskIds,
       controller.signal,
     );
@@ -396,7 +473,7 @@ const importFiles = async (event: Event): Promise<void> => {
     const nextWorkspace = await importEffectSegmentRenderFiles(
       context(),
       product,
-      props.globalConfig,
+      renderSettings.value,
       files.map(({ name, size, type }) => ({ name, size, type })),
       controller.signal,
     );
@@ -530,6 +607,64 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </header>
+
+      <section class="render-settings-card" aria-labelledby="render-settings-title">
+        <div class="render-settings-card__heading">
+          <span><Settings2 :size="17" /></span>
+          <div>
+            <h3 id="render-settings-title">视频渲染设置</h3>
+            <p>画幅和分辨率只用于新的视频任务，不会让 Prompt 或提炼结果过期。</p>
+          </div>
+          <small>{{ operation === 'settings' ? '保存中…' : '已自动保存' }}</small>
+        </div>
+        <div class="render-settings-grid">
+          <label>
+            <span>模型能力</span>
+            <EffectUpwardCreatableSelect
+              field-label="模型能力"
+              :model-value="renderSettings.capabilityKey"
+              :options="capabilityOptions"
+              :creatable="false"
+              :disabled="operation !== null"
+              @update:model-value="
+                updateRenderSetting(
+                  'capabilityKey',
+                  $event as EffectSegmentRenderSettings['capabilityKey'],
+                )
+              "
+            />
+          </label>
+          <label>
+            <span>画幅</span>
+            <EffectUpwardCreatableSelect
+              field-label="画幅"
+              :model-value="renderSettings.ratio"
+              :options="ratioOptions"
+              :creatable="false"
+              :disabled="operation !== null"
+              @update:model-value="
+                updateRenderSetting('ratio', $event as EffectSegmentRenderSettings['ratio'])
+              "
+            />
+          </label>
+          <label>
+            <span>分辨率</span>
+            <EffectUpwardCreatableSelect
+              field-label="分辨率"
+              :model-value="renderSettings.resolution"
+              :options="resolutionOptions"
+              :creatable="false"
+              :disabled="operation !== null"
+              @update:model-value="
+                updateRenderSetting(
+                  'resolution',
+                  $event as EffectSegmentRenderSettings['resolution'],
+                )
+              "
+            />
+          </label>
+        </div>
+      </section>
 
       <section class="segment-stats" aria-label="渲染任务统计">
         <article class="stat-card neutral">
@@ -1014,6 +1149,62 @@ select:disabled {
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
+}
+.render-settings-card {
+  padding: 16px 18px;
+  background: linear-gradient(135deg, #f8fbff 0%, #fffaf7 100%);
+  border: 1px solid #dce6f5;
+  border-radius: 16px;
+}
+.render-settings-card__heading {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+.render-settings-card__heading > span {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  color: #2563eb;
+  background: #eaf2ff;
+  border-radius: 10px;
+}
+.render-settings-card h3,
+.render-settings-card p {
+  margin: 0;
+}
+.render-settings-card h3 {
+  color: #29384f;
+  font-size: 14px;
+}
+.render-settings-card p,
+.render-settings-card small {
+  color: #7b8aa1;
+  font-size: 11px;
+}
+.render-settings-card p {
+  margin-top: 3px;
+}
+.render-settings-card small {
+  color: #15956f;
+  font-weight: 700;
+}
+.render-settings-grid {
+  display: grid;
+  margin-top: 14px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.render-settings-grid > label {
+  display: grid;
+  gap: 7px;
+}
+.render-settings-grid > label > span {
+  color: #506078;
+  font-size: 11px;
+  font-weight: 700;
 }
 .product-switcher {
   display: flex;
@@ -1654,6 +1845,9 @@ select:disabled {
   }
 }
 @media (max-width: 980px) {
+  .render-settings-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .segment-stats,
   .segment-task-list {
     grid-template-columns: 1fr;
@@ -1680,6 +1874,9 @@ select:disabled {
     flex: 1;
   }
   .segment-stats {
+    grid-template-columns: 1fr;
+  }
+  .render-settings-grid {
     grid-template-columns: 1fr;
   }
   .segment-task-card {

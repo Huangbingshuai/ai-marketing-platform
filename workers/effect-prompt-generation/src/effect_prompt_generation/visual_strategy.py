@@ -50,14 +50,18 @@ def validate_fact_visual_strategy(
     if len(policy_ids) != len(set(policy_ids)):
         raise ValueError("fact visual strategy contains duplicate factId")
     if set(policy_ids) != set(usable_by_id):
-        raise ValueError("fact visual strategy must cover every usable fact exactly once")
+        raise ValueError(
+            "fact visual strategy must cover every usable fact exactly once"
+        )
 
     normalized: list[FactVisualPolicyDraft] = []
     for policy in response.policies:
         fact = usable_by_id[policy.fact_id]
         compatible = list(dict.fromkeys(policy.compatible_fact_ids))
         if any(fact_id not in usable_by_id for fact_id in compatible):
-            raise ValueError("fact visual strategy references an unknown compatible fact")
+            raise ValueError(
+                "fact visual strategy references an unknown compatible fact"
+            )
         compatible = [fact_id for fact_id in compatible if fact_id != policy.fact_id]
 
         usage = policy.visual_usage
@@ -116,9 +120,7 @@ def strategy_stage_metadata(
 ) -> dict[str, object]:
     facts = application.by_id
     counts = {
-        usage.value: sum(
-            policy.visual_usage == usage for policy in strategy.policies
-        )
+        usage.value: sum(policy.visual_usage == usage for policy in strategy.policies)
         for usage in FactVisualUsage
     }
     samples = []

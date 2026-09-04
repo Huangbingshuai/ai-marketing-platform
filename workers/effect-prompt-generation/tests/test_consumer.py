@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
 from pydantic import ValidationError
 
+from effect_prompt_generation.api_client import InternalApiError
 from effect_prompt_generation.consumer import PromptGenerationConsumer
 from effect_prompt_generation.models import (
     ClaimResponse,
@@ -77,6 +79,24 @@ class TrackingPipeline(PromptGenerationPipeline):
         self.unregistered = True
 
 
+class FlakyHeartbeatPipeline(TrackingPipeline):
+    def __init__(self, *, api: ConsumerApi, stop: asyncio.Event) -> None:
+        super().__init__(api=api)
+        self.stop = stop
+        self.heartbeat_count = 0
+
+    async def heartbeat(self, context: RuntimeContext) -> None:
+        self.heartbeat_count += 1
+        if self.heartbeat_count == 1:
+            raise InternalApiError("temporary outage", retryable=True)
+        self.stop.set()
+
+
+class RejectedHeartbeatPipeline(TrackingPipeline):
+    async def heartbeat(self, context: RuntimeContext) -> None:
+        raise InternalApiError("lease rejected", retryable=False, status_code=409)
+
+
 class RuntimeValidationGraph:
     async def ainvoke(self, *args: object, **kwargs: object) -> dict[str, str]:
         raise ValidationError.from_exception_data(
@@ -110,6 +130,18 @@ class FakeMessage:
 
     async def nack(self, *, requeue: bool) -> None:
         self.nacked = True
+
+
+def runtime_context(snapshot: PromptGenerationSnapshot) -> RuntimeContext:
+    return RuntimeContext(
+        run_id="run-1",
+        project_id=snapshot.project_id,
+        workflow_run_id=snapshot.workflow_run_id,
+        product_id=snapshot.product_id,
+        request_id="request-1",
+        attempt_token="attempt-token",
+        source_fingerprint="fingerprint",
+    )
 
 
 def test_prompt_queue_envelope_uses_current_shape() -> None:
@@ -217,3 +249,45 @@ async def test_retryable_message_is_requeued_once_when_failure_cannot_be_persist
 
     assert message.rejected is False
     assert message.nacked is True
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_recovers_after_retryable_internal_api_failure(
+    snapshot: PromptGenerationSnapshot,
+) -> None:
+    api = ConsumerApi(snapshot)
+    stop = asyncio.Event()
+    pipeline = FlakyHeartbeatPipeline(api=api, stop=stop)
+    consumer = PromptGenerationConsumer(
+        rabbitmq_url="amqp://unused",
+        queue_name="unused",
+        api=api,
+        pipeline=pipeline,
+        graph=RuntimeValidationGraph(),  # type: ignore[arg-type]
+        heartbeat_interval_seconds=0.001,
+        heartbeat_retry_seconds=0.001,
+    )
+
+    await consumer._heartbeat(runtime_context(snapshot), stop)
+
+    assert pipeline.heartbeat_count == 2
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_stops_on_non_retryable_lease_rejection(
+    snapshot: PromptGenerationSnapshot,
+) -> None:
+    api = ConsumerApi(snapshot)
+    pipeline = RejectedHeartbeatPipeline(api=api)
+    consumer = PromptGenerationConsumer(
+        rabbitmq_url="amqp://unused",
+        queue_name="unused",
+        api=api,
+        pipeline=pipeline,
+        graph=RuntimeValidationGraph(),  # type: ignore[arg-type]
+        heartbeat_interval_seconds=0.001,
+        heartbeat_retry_seconds=0.001,
+    )
+
+    with pytest.raises(InternalApiError, match="lease rejected"):
+        await consumer._heartbeat(runtime_context(snapshot), asyncio.Event())

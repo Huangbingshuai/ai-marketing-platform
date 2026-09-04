@@ -30,13 +30,12 @@ describe('effect import single-product prototype grid', () => {
     expect(pageSource).not.toContain('@click="downloadTemplate(\'csv\')"');
   });
 
-  it('keeps upload and global configuration in the same stretched first row', () => {
+  it('lets the product material editor fill the row without video settings', () => {
     expect(pageSource).toMatch(
       /\.import-layout:not\(\.batch-mode\)[\s\S]*:deep\(\.upload-source-card\)[\s\S]*grid-column:\s*1;[\s\S]*grid-row:\s*1;/,
     );
-    expect(pageSource).toMatch(
-      />\s*:deep\(\.global-config-card\)[\s\S]*align-self:\s*stretch;[\s\S]*grid-column:\s*2;[\s\S]*grid-row:\s*1;/,
-    );
+    expect(pageSource).toContain('grid-template-columns: minmax(0, 1fr)');
+    expect(pageSource).not.toContain('<GlobalVideoConfigPanel');
   });
 
   it('places commerce parsing and imported materials across both columns below row one', () => {
@@ -122,7 +121,7 @@ describe('effect import identity boundary', () => {
     );
     expect(pageSource).toContain('validateEffectImportDraft(');
     expect(pageSource).toContain('<WorkflowNodeDraftBar');
-    expect(pageSource).toContain('title="产品资料与视频配置草稿"');
+    expect(pageSource).toContain('title="产品资料草稿"');
     expect(pageSource).toContain('<WorkflowNodeFooter');
     expect(pageSource).toContain('next-label="下一步：AI 信息提炼"');
     expect(pageSource).toContain('@validate="validateDraft"');

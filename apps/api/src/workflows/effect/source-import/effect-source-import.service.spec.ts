@@ -220,6 +220,35 @@ describe('EffectSourceImportService', () => {
     ]);
   });
 
+  it('确认资料时只生成产品资料包工作副本，不再生成视频配置工作副本', () => {
+    const service = serviceWith() as unknown as {
+      artifactCandidates(product: {
+        id: string;
+        name: string;
+        category: string;
+        sku: string;
+        commerceUrl: string | null;
+        materials: [];
+      }): Array<{ artifactKey: string }>;
+    };
+
+    expect(
+      service.artifactCandidates({
+        id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        name: '产品',
+        category: '食品',
+        sku: '',
+        commerceUrl: null,
+        materials: [],
+      }),
+    ).toEqual([
+      {
+        artifactKey: 'source-package:cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        input: expect.any(Object),
+      },
+    ]);
+  });
+
   it('rejects a material upload before the product has a name', async () => {
     const service = serviceWith({
       product: vi.fn().mockResolvedValue({ id: 'product-1', name: '   ' }),

@@ -296,27 +296,6 @@ export class EffectSourceImportService {
     };
   }
 
-  private videoConfigInput(
-    product: EffectProductRecord,
-    globalConfig: EffectVideoConfig,
-  ): WorkingArtifactUpsertInput {
-    const productName = requiredProductName(product.name, '请先填写产品名称');
-    const effectiveConfig = mergeEffectVideoConfig(
-      globalConfig,
-      parseJson<EffectVideoConfigOverride>(product.configOverride),
-    );
-    return {
-      kind: 'STRUCTURED',
-      name: assetSafeName(`${productName} 生效视频配置`),
-      directory: 'SOURCE_MATERIALS',
-      type: 'VIDEO_CONFIG',
-      tags: assetSafeTags(productName, '生效视频配置'),
-      payload: effectiveConfig,
-      metadata: { productId: product.id, productName },
-      sourceArtifactId: product.id,
-    };
-  }
-
   private productFileLinks(
     product: EffectProductRecord,
   ): NonNullable<WorkingArtifactUpsertInput['files']> {
@@ -526,21 +505,16 @@ export class EffectSourceImportService {
       workspace.workflowRunId,
     );
     const byKey = new Map(artifacts.map((artifact) => [artifact.artifactKey, artifact]));
-    const globalConfig = parseJson<EffectVideoConfig>(record.globalConfig);
     for (const product of record.products) {
       const presented = value.products.find((item) => item.id === product.id);
       if (!presented || !normalizeProductName(product.name)) continue;
-      const candidates = this.artifactCandidates(product, globalConfig);
+      const candidates = this.artifactCandidates(product);
       const source = byKey.get(`source-package:${product.id}`);
       const config = byKey.get(`effective-video-config:${product.id}`);
       presented.sourcePackageRevision = source?.revision ?? null;
       presented.effectiveVideoConfigRevision = config?.revision ?? null;
-      if (!source || !config) presented.commitStatus = 'UNVALIDATED';
-      else if (
-        [source, config].some(
-          (artifact) => artifact.freshness !== 'CURRENT' || artifact.availability !== 'AVAILABLE',
-        )
-      )
+      if (!source) presented.commitStatus = 'UNVALIDATED';
+      else if (source.freshness !== 'CURRENT' || source.availability !== 'AVAILABLE')
         presented.commitStatus = 'STALE';
       else
         presented.commitStatus = candidates.every(
@@ -1897,8 +1871,6 @@ export class EffectSourceImportService {
           'DRAFT',
         ),
       );
-    if (!isValidConfig(draft.globalConfig))
-      issues.push(validationIssue('INVALID_VIDEO_CONFIG', '全局视频配置无效', 'DRAFT'));
     for (const product of draft.products) {
       if (!normalizeProductName(product.name))
         issues.push(
@@ -1912,13 +1884,6 @@ export class EffectSourceImportService {
           validationIssue('INVALID_COMMERCE_URL', '电商链接格式无效', 'PRODUCT', {
             productId: product.id,
             field: 'commerceUrl',
-          }),
-        );
-      if (!isValidConfig(product.effectiveConfig))
-        issues.push(
-          validationIssue('INVALID_VIDEO_CONFIG', '单品视频配置无效', 'PRODUCT', {
-            productId: product.id,
-            field: 'configOverride',
           }),
         );
       if (
@@ -1962,16 +1927,11 @@ export class EffectSourceImportService {
 
   private artifactCandidates(
     product: EffectProductRecord,
-    globalConfig: EffectVideoConfig,
   ): Array<{ artifactKey: string; input: WorkingArtifactUpsertInput }> {
     return [
       {
         artifactKey: `source-package:${product.id}`,
         input: this.sourcePackageInput(product, this.productFileLinks(product)),
-      },
-      {
-        artifactKey: `effective-video-config:${product.id}`,
-        input: this.videoConfigInput(product, globalConfig),
       },
     ];
   }
@@ -2015,15 +1975,14 @@ export class EffectSourceImportService {
         validatedAt,
       };
     }
-    const globalConfig = parseJson<EffectVideoConfig>(draftRecord.globalConfig);
     const committed = await this.repository.commitProductValidation(
       projectId,
       draftRecord.id,
       draftRecord.mode,
       workspace.workflowRunId,
       expectedRevision,
-      this.artifactCandidates(product, globalConfig),
-      draftRecord.products.flatMap((item) => this.artifactCandidates(item, globalConfig)),
+      this.artifactCandidates(product),
+      draftRecord.products.flatMap((item) => this.artifactCandidates(item)),
       issues,
     );
     if (!committed) throw conflict();
@@ -2056,9 +2015,8 @@ export class EffectSourceImportService {
     let allProductsValidated = false;
     let record: EffectDraftRecord | null;
     if (issues.length === 0) {
-      const globalConfig = parseJson<EffectVideoConfig>(draftRecord.globalConfig);
       const candidates = draftRecord.products.flatMap((product) =>
-        this.artifactCandidates(product, globalConfig),
+        this.artifactCandidates(product),
       );
       const committed = await this.repository.commitProductValidation(
         projectId,

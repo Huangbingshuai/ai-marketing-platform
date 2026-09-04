@@ -146,6 +146,7 @@ FRAGMENT_TYPE_LABELS: dict[FragmentType, str] = {
     FragmentType.CTA: "结尾转化片段",
 }
 
+
 class EvidenceMode(StrEnum):
     VISIBLE_ATTRIBUTE = "VISIBLE_ATTRIBUTE"
     USAGE_ACTION = "USAGE_ACTION"
@@ -157,6 +158,21 @@ class EvidenceMode(StrEnum):
 class PromptBatchSettings(ApiModel):
     target_count: int = Field(ge=MIN_PROMPT_COUNT, le=MAX_PROMPT_COUNT)
     default_duration_seconds: int = Field(ge=4, le=30)
+    style_mode: Literal["AI_AUTO", "FIXED"] = "AI_AUTO"
+    style_tone: str | None = Field(default=None, max_length=120)
+    delivery_channel: str = Field(default="抖音", min_length=1, max_length=120)
+    disabled_elements: list[str] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_generation_settings(self) -> PromptBatchSettings:
+        if self.style_mode == "FIXED" and not (self.style_tone or "").strip():
+            raise ValueError("FIXED style mode requires styleTone")
+        if self.style_mode == "AI_AUTO" and self.style_tone is not None:
+            raise ValueError("AI_AUTO style mode requires null styleTone")
+        normalized = _contract_disabled_elements(self.disabled_elements)
+        if normalized != self.disabled_elements:
+            raise ValueError("disabledElements must be normalized and unique")
+        return self
 
 
 class InsightField(StrEnum):
@@ -522,9 +538,7 @@ class PromptGenerationSnapshot(ApiModel):
     base_result_revision: int | None = Field(default=None, ge=1)
     target_item: PromptItem | None = None
     target_item_index: int | None = Field(default=None, ge=0, le=199)
-    regeneration_target_duration_seconds: int | None = Field(
-        default=None, ge=4, le=30
-    )
+    regeneration_target_duration_seconds: int | None = Field(default=None, ge=4, le=30)
     replacement_dimensions: CreativeDimensions | None = None
     regeneration_instruction: str | None = Field(default=None, max_length=500)
     regeneration_mode: (
@@ -661,7 +675,7 @@ class CreativeTerritoryDraft(ApiModel):
     )
     required_fact_ids: list[str] = Field(default_factory=list, max_length=64)
     scene_boundary: str = Field(min_length=4, max_length=180)
-    actions: list[CreativeTerritoryAction] = Field(min_length=1, max_length=5)
+    actions: list[CreativeTerritoryAction] = Field(min_length=1, max_length=8)
     differentiation_goal: str = Field(min_length=4, max_length=180)
 
     @model_validator(mode="before")
@@ -839,9 +853,9 @@ class CreativeDirection(ApiModel):
 
 
 class CreativeDirectionResponse(ApiModel):
-    # A large batch may use up to 32 base directions before the compact
-    # all-batch overlap audit.
-    directions: list[CreativeDirection] = Field(min_length=1, max_length=32)
+    # A large batch may use up to 80 base directions. Planning is split by
+    # territory before the compact all-batch overlap audit.
+    directions: list[CreativeDirection] = Field(min_length=1, max_length=80)
 
 
 class CreativeDirectionFactAudit(ApiModel):
@@ -867,9 +881,9 @@ class CreativeDirectionAuditItem(ApiModel):
 
 
 class CreativeDirectionAuditResponse(ApiModel):
-    items: list[CreativeDirectionAuditItem] = Field(min_length=1, max_length=32)
+    items: list[CreativeDirectionAuditItem] = Field(min_length=1, max_length=80)
     requires_revision: bool
-    revision_direction_ids: list[str] = Field(default_factory=list, max_length=32)
+    revision_direction_ids: list[str] = Field(default_factory=list, max_length=80)
     summary: str = Field(min_length=2, max_length=500)
 
     @model_validator(mode="after")
@@ -879,18 +893,18 @@ class CreativeDirectionAuditResponse(ApiModel):
 
 
 class CreativeDirectionAudit(ApiModel):
-    items: list[CreativeDirectionAuditItem] = Field(min_length=8, max_length=32)
+    items: list[CreativeDirectionAuditItem] = Field(min_length=8, max_length=80)
     requires_revision: bool = False
-    revision_direction_ids: list[str] = Field(default_factory=list, max_length=32)
+    revision_direction_ids: list[str] = Field(default_factory=list, max_length=80)
     summary: str = Field(min_length=2, max_length=240)
     audit_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
 class CreativeDirectionOverlapGroup(ApiModel):
     group_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
-    direction_ids: list[str] = Field(min_length=2, max_length=12)
+    direction_ids: list[str] = Field(min_length=2, max_length=80)
     repeated_visual_core: str = Field(min_length=4, max_length=240)
-    revision_direction_ids: list[str] = Field(min_length=1, max_length=11)
+    revision_direction_ids: list[str] = Field(min_length=1, max_length=79)
     diversification_goal: str = Field(min_length=4, max_length=240)
 
     @model_validator(mode="after")
@@ -905,9 +919,11 @@ class CreativeDirectionOverlapGroup(ApiModel):
 
 
 class CreativeDirectionDiversityAuditResponse(ApiModel):
-    groups: list[CreativeDirectionOverlapGroup] = Field(default_factory=list, max_length=12)
+    groups: list[CreativeDirectionOverlapGroup] = Field(
+        default_factory=list, max_length=40
+    )
     requires_revision: bool
-    revision_direction_ids: list[str] = Field(default_factory=list, max_length=32)
+    revision_direction_ids: list[str] = Field(default_factory=list, max_length=80)
     summary: str = Field(min_length=2, max_length=500)
 
     @model_validator(mode="after")
@@ -929,7 +945,7 @@ class CreativeDirectionDiversityAudit(CreativeDirectionDiversityAuditResponse):
 
 
 class CreativeDirectionPlan(ApiModel):
-    directions: list[CreativeDirection] = Field(min_length=8, max_length=32)
+    directions: list[CreativeDirection] = Field(min_length=8, max_length=80)
     source_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     template_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -1208,7 +1224,9 @@ class CreativeEvaluation(ApiModel):
     )
     hard_issues: list[str] = Field(default_factory=list, max_length=20)
     warnings: list[str] = Field(default_factory=list, max_length=20)
-    inferred_creative_core: str | None = Field(default=None, min_length=1, max_length=160)
+    inferred_creative_core: str | None = Field(
+        default=None, min_length=1, max_length=160
+    )
     inferred_dimensions: CreativeDimensions | None = None
 
     @field_validator("semantic_profile", mode="before")

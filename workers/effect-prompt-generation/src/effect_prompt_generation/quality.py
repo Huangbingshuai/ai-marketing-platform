@@ -86,16 +86,11 @@ def validate_creative_evaluation(
         issue
         for issue in evaluation.hard_issues
         if issue in _AI_HARD_ISSUES
-        and (
-            issue != "ABSTRACT_FACT_VISUAL_PROOF"
-            or bool(valid_visual_proof_findings)
-        )
+        and (issue != "ABSTRACT_FACT_VISUAL_PROOF" or bool(valid_visual_proof_findings))
     ]
     warnings = [
         *evaluation.warnings,
-        *[
-            issue for issue in evaluation.hard_issues if issue not in _AI_HARD_ISSUES
-        ],
+        *[issue for issue in evaluation.hard_issues if issue not in _AI_HARD_ISSUES],
     ]
     if unknown_evidence:
         warnings.append("UNKNOWN_OR_UNDECLARED_FACT")

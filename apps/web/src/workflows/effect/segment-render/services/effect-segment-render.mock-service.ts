@@ -1,8 +1,9 @@
-import type { EffectImportProduct, EffectVideoConfig } from '@ai-marketing/contracts';
-import {
-  EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
-  EFFECT_PROMPT_FRAGMENT_TYPES,
+import type {
+  EffectImportProduct,
+  EffectSegmentRenderSettings,
+  EffectVideoConfig,
 } from '@ai-marketing/contracts';
+import { EFFECT_PROMPT_FRAGMENT_TYPES } from '@ai-marketing/contracts';
 
 import type {
   EffectSegmentRenderTask,
@@ -26,16 +27,10 @@ export type EffectSegmentRenderImportedFile = {
   type: string;
 };
 
+type LegacyCompatibleRenderSettings = EffectSegmentRenderSettings | EffectVideoConfig;
+
 const workspaces = new Map<string, EffectSegmentRenderWorkspace>();
 
-const narratives = [
-  '痛点前置型',
-  '效果展示型',
-  '场景代入型',
-  '科普讲解型',
-  '对比测评型',
-  '开箱体验型',
-];
 const scenes = [
   '周末家庭厨房',
   '现代公寓开放厨房',
@@ -99,19 +94,18 @@ const safeProductName = (product: EffectImportProduct): string =>
 
 const createPromptTask = (
   product: EffectImportProduct,
-  config: EffectVideoConfig,
+  _settings: LegacyCompatibleRenderSettings,
   index: number,
 ): EffectSegmentRenderTask => {
   const sequence = index + 1;
   const fragmentType = EFFECT_PROMPT_FRAGMENT_TYPES[index % EFFECT_PROMPT_FRAGMENT_TYPES.length]!;
-  const narrative = narratives[index % narratives.length]!;
   const scene = scenes[(index * 5) % scenes.length]!;
   const persona = personas[(index * 3) % personas.length]!;
   const sellingPoint = sellingPoints[(index * 7) % sellingPoints.length]!;
   const camera = cameras[(index * 11) % cameras.length]!;
   const emotion = emotions[(index * 13) % emotions.length]!;
   const promptCode = `P${pad(sequence)}-${stableSuffix(`${product.id}:${sequence}`)}`;
-  const durationSeconds = Math.min(10, Math.max(3, Math.round(config.durationSeconds / 3)));
+  const durationSeconds = 5;
   const initialRunning = sequence > 47;
   const progressBySequence: Record<number, number> = { 48: 76, 49: 52, 50: 29 };
   const now = new Date().toISOString();
@@ -122,7 +116,7 @@ const createPromptTask = (
     productName: safeProductName(product),
     promptId: `prompt-${product.id}-${pad(sequence)}`,
     promptCode,
-    promptText: `${durationSeconds} 秒独立${EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[fragmentType]}。在${scene}由${persona}完成一个清晰可见的动作，采用${camera}，只突出“${sellingPoint}”，整体情绪${emotion}。保持${config.aspectRatio}画幅与${config.styleTone}风格，不生成完整成片时间线。`,
+    promptText: `在${scene}由${persona}完成一个清晰可见的动作，采用${camera}，只突出“${sellingPoint}”，整体情绪${emotion}，不生成完整成片时间线。`,
     fragmentType,
     durationSeconds,
     modelMatch: 'AUTO_MATCHED',
@@ -141,23 +135,23 @@ const createPromptTask = (
 const createWorkspace = (
   context: EffectSegmentRenderContext,
   product: EffectImportProduct,
-  config: EffectVideoConfig,
+  settings: LegacyCompatibleRenderSettings,
 ): EffectSegmentRenderWorkspace => ({
   ...context,
   productId: product.id,
-  tasks: Array.from({ length: 50 }, (_, index) => createPromptTask(product, config, index)),
+  tasks: Array.from({ length: 50 }, (_, index) => createPromptTask(product, settings, index)),
   updatedAt: new Date().toISOString(),
 });
 
 const getMutableWorkspace = (
   context: EffectSegmentRenderContext,
   product: EffectImportProduct,
-  config: EffectVideoConfig,
+  settings: LegacyCompatibleRenderSettings,
 ): EffectSegmentRenderWorkspace => {
   const key = workspaceKey(context, product.id);
   const existing = workspaces.get(key);
   if (existing) return existing;
-  const created = createWorkspace(context, product, config);
+  const created = createWorkspace(context, product, settings);
   workspaces.set(key, created);
   return created;
 };
@@ -175,20 +169,20 @@ const publish = (
 export const loadEffectSegmentRenderWorkspace = async (
   context: EffectSegmentRenderContext,
   product: EffectImportProduct,
-  config: EffectVideoConfig,
+  settings: LegacyCompatibleRenderSettings,
   signal?: AbortSignal,
 ): Promise<EffectSegmentRenderWorkspace> => {
   await wait(120, signal);
-  return cloneWorkspace(getMutableWorkspace(context, product, config));
+  return cloneWorkspace(getMutableWorkspace(context, product, settings));
 };
 
 export const startEffectSegmentRenderBatch = async (
   context: EffectSegmentRenderContext,
   product: EffectImportProduct,
-  config: EffectVideoConfig,
+  settings: LegacyCompatibleRenderSettings,
   options: EffectSegmentRenderOperationOptions = {},
 ): Promise<EffectSegmentRenderWorkspace> => {
-  const workspace = getMutableWorkspace(context, product, config);
+  const workspace = getMutableWorkspace(context, product, settings);
   const promptTasks = workspace.tasks.filter((task) => task.source === 'PROMPT');
   const stepDelayMs = options.stepDelayMs ?? 110;
   for (const task of promptTasks) {
@@ -255,11 +249,11 @@ export const startEffectSegmentRenderBatch = async (
 export const regenerateEffectSegmentRenderTasks = async (
   context: EffectSegmentRenderContext,
   product: EffectImportProduct,
-  config: EffectVideoConfig,
+  settings: LegacyCompatibleRenderSettings,
   taskIds: readonly string[],
   options: EffectSegmentRenderOperationOptions = {},
 ): Promise<EffectSegmentRenderWorkspace> => {
-  const workspace = getMutableWorkspace(context, product, config);
+  const workspace = getMutableWorkspace(context, product, settings);
   const selected = workspace.tasks.filter((task) => taskIds.includes(task.id));
   const stepDelayMs = options.stepDelayMs ?? 90;
   for (const task of selected) {
@@ -284,12 +278,12 @@ export const regenerateEffectSegmentRenderTasks = async (
 export const deleteEffectSegmentRenderTasks = async (
   context: EffectSegmentRenderContext,
   product: EffectImportProduct,
-  config: EffectVideoConfig,
+  settings: LegacyCompatibleRenderSettings,
   taskIds: readonly string[],
   signal?: AbortSignal,
 ): Promise<EffectSegmentRenderWorkspace> => {
   await wait(80, signal);
-  const workspace = getMutableWorkspace(context, product, config);
+  const workspace = getMutableWorkspace(context, product, settings);
   workspace.tasks = workspace.tasks.filter((task) => !taskIds.includes(task.id));
   return publish(workspace);
 };
@@ -297,12 +291,12 @@ export const deleteEffectSegmentRenderTasks = async (
 export const importEffectSegmentRenderFiles = async (
   context: EffectSegmentRenderContext,
   product: EffectImportProduct,
-  config: EffectVideoConfig,
+  settings: LegacyCompatibleRenderSettings,
   files: readonly EffectSegmentRenderImportedFile[],
   signal?: AbortSignal,
 ): Promise<EffectSegmentRenderWorkspace> => {
   await wait(100, signal);
-  const workspace = getMutableWorkspace(context, product, config);
+  const workspace = getMutableWorkspace(context, product, settings);
   const existingImported = workspace.tasks.filter((task) => task.source === 'IMPORTED').length;
   const now = new Date().toISOString();
   const imported = files.map<EffectSegmentRenderTask>((file, index) => {
@@ -316,7 +310,7 @@ export const importEffectSegmentRenderFiles = async (
       promptCode: null,
       promptText: '外部导入素材不包含来源 Prompt。',
       fragmentType: 'PRODUCT_DISPLAY',
-      durationSeconds: Math.min(10, Math.max(3, Math.round(config.durationSeconds / 3))),
+      durationSeconds: 5,
       modelMatch: 'AUTO_MATCHED',
       source: 'IMPORTED',
       sourceName: file.name,

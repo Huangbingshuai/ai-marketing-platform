@@ -29,4 +29,6 @@ coverageFocusFactIds 为空表示常规生成；非空表示这些事实曾被�
 
 productSnapshot 只负责真实性边界。creativeDirection 提供批次差异方向，priorityDimensions 是最值得变化的两个维度，avoidFamilies 是应避开的拥挤套路；不要机械复述这些字段，也不要按素材用途分组。
 
+creativeDirection、factApplications 和视觉策略中的安全说明只供你在创作时内部遵守。不要把“当前画面不证明配方/工艺/功效”“仅作商业背景”“无法视觉证明”等审核说明改写成人物口播、字幕或正文描述；若抽象事实需要作为商业背景，只自然表达已确认的产品信息、人物需求或选购语境，画面本身保持可执行即可。
+
 每条必须完整返回 declaredFactIds，且与该任务的全部 factApplications 一致。不需返回事实原文摘录或逐字证据；后续独立评估器会直接按业务语义判断事实是否实现。已有语义和视觉签名只是软避重参考，差异不能以牺牲事实、商品关联或画面逻辑为代价。

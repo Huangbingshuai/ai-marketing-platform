@@ -1,9 +1,20 @@
-import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Put,
+  Query,
+} from '@nestjs/common';
 
 // DTOs are runtime imports for Nest validation metadata.
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import {
   RegenerateSegmentRenderTasksDto,
+  SaveSegmentRenderSettingsDto,
   SegmentRenderWorkspaceQueryDto,
   StartSegmentRenderBatchDto,
   ValidateSegmentRenderBatchDto,
@@ -22,6 +33,21 @@ export class EffectSegmentRenderController {
     @Query() query: SegmentRenderWorkspaceQueryDto,
   ) {
     return this.service.workspace(projectId, query.workflowRunId, productId);
+  }
+
+  @Put('products/:productId/settings')
+  saveSettings(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('productId', new ParseUUIDPipe({ version: '4' })) productId: string,
+    @Body() body: SaveSegmentRenderSettingsDto,
+  ) {
+    return this.service.saveSettings(
+      projectId,
+      productId,
+      body.workflowRunId,
+      body.expectedRevision,
+      body.settings,
+    );
   }
 
   @Post('products/:productId/batches')

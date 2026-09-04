@@ -14,20 +14,20 @@ import type {
   EffectPromptRun,
   EffectPromptRegenerationReason,
   EffectPromptStageStatus,
-  EffectVideoConfig,
   GetEffectPromptNodeDetailData,
 } from '@ai-marketing/contracts';
 import {
   DEFAULT_EFFECT_PROMPT_SETTINGS,
+  EFFECT_DELIVERY_CHANNELS,
   EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
-  EFFECT_PROMPT_RENDER_CAPABILITIES,
   EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT,
   EFFECT_PROMPT_GRAPH_EDGES,
   EFFECT_PROMPT_GRAPH_NODE_IDS,
+  EFFECT_STYLE_TONES,
   effectPromptRunGraphEdges,
   effectPromptRunGraphNodeIds,
 } from '@ai-marketing/contracts';
@@ -56,6 +56,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 
 import { ApiClientError, isAbortError } from '../../../api/http-client';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
+import EffectUpwardCreatableSelect from '../source-import/components/EffectUpwardCreatableSelect.vue';
 import { buildEffectPromptGraphRows } from './effect-prompt-generation-graph';
 import {
   clampPromptPage,
@@ -80,7 +81,6 @@ import {
   pollEffectPromptRun,
   removeEffectPromptItem,
   saveEffectPromptItem,
-  saveEffectPromptSharedPrompt,
   savePromptSettings,
   undoPromptRegeneration,
   type EffectPromptContext,
@@ -92,7 +92,6 @@ const props = defineProps<{
   projectId: string;
   workflowRunId: string;
   products: EffectImportProduct[];
-  globalConfig: EffectVideoConfig;
 }>();
 
 const emit = defineEmits<{ back: []; next: [] }>();
@@ -106,6 +105,7 @@ const status = ref<EffectPromptPageStatus>('loading');
 const loadError = ref('');
 const productStates = ref<Record<string, EffectPromptProductState>>({});
 const settingsDrafts = ref<Record<string, EffectPromptBatchSettings>>({});
+const disabledElementsTextDrafts = ref<Record<string, string>>({});
 const settingsSaveStatuses = ref<Record<string, SaveStatus>>({});
 const currentProductId = ref('');
 const resultData = ref<EffectPromptViewResultData | null>(null);
@@ -120,9 +120,6 @@ const itemOperation = ref<ItemOperation | null>(null);
 const validating = ref(false);
 const exporting = ref(false);
 const batchStartPending = ref(false);
-const sharedPromptDraft = ref('');
-const sharedPromptDirty = ref(false);
-const sharedPromptSaving = ref(false);
 
 const graphDialogOpen = ref(false);
 const graphLoading = ref(false);
@@ -182,7 +179,6 @@ let workspaceController: AbortController | null = null;
 let resultController: AbortController | null = null;
 let operationController: AbortController | null = null;
 let itemMutationController: AbortController | null = null;
-let sharedPromptController: AbortController | null = null;
 let exportController: AbortController | null = null;
 let graphDetailController: AbortController | null = null;
 let settingsTimer: ReturnType<typeof setTimeout> | undefined;
@@ -203,16 +199,24 @@ const currentState = computed(() => productStates.value[currentProductId.value] 
 const currentSettings = computed(
   () => settingsDrafts.value[currentProductId.value] ?? DEFAULT_EFFECT_PROMPT_SETTINGS,
 );
+const styleOptions = [
+  { label: 'AI 根据场景选择', value: 'AI_AUTO' },
+  ...EFFECT_STYLE_TONES.map((value) => ({ label: value, value })),
+];
+const deliveryChannelOptions = EFFECT_DELIVERY_CHANNELS.map((value) => ({ label: value, value }));
+const currentStyleSelection = computed(() =>
+  currentSettings.value.styleMode === 'FIXED' && currentSettings.value.styleTone
+    ? currentSettings.value.styleTone
+    : 'AI_AUTO',
+);
+const currentDisabledElementsText = computed(
+  () => disabledElementsTextDrafts.value[currentProductId.value] ?? '',
+);
 const currentTargetCount = computed(() => currentSettings.value.targetCount);
-const editorDurationRange = computed(() => {
-  const capabilityKey = currentRenderProfile.value?.capabilityKey;
-  return capabilityKey
-    ? EFFECT_PROMPT_RENDER_CAPABILITIES[capabilityKey]
-    : {
-        minDurationSeconds: EFFECT_PROMPT_LIMITS.minDurationSeconds,
-        maxDurationSeconds: EFFECT_PROMPT_LIMITS.maxDurationSeconds,
-      };
-});
+const editorDurationRange = {
+  minDurationSeconds: EFFECT_PROMPT_LIMITS.minDurationSeconds,
+  maxDurationSeconds: EFFECT_PROMPT_LIMITS.maxDurationSeconds,
+};
 const currentRun = computed(() => runsByProduct.value[currentProductId.value] ?? null);
 const displayedGraphRun = computed(() => currentRun.value);
 const graphDialogDescription = '展示本次真实输入、连贯创意生成、用途评估和数量结果。';
@@ -262,11 +266,6 @@ const currentItems = computed(() => resultData.value?.items ?? []);
 const partialPreview = computed(() => resultData.value?.isPartialPreview ?? false);
 const currentMetrics = computed(
   () => currentResult.value?.metrics ?? currentState.value?.metrics ?? null,
-);
-const currentRenderProfile = computed(() => currentResult.value?.renderProfile ?? null);
-const currentSharedPrompt = computed(() => currentResult.value?.sharedPrompt ?? null);
-const currentSharedPromptContent = computed(
-  () => currentSharedPrompt.value?.compiledContent.trim() ?? '',
 );
 const insightFieldLabels: Record<EffectPromptInsightField, string> = {
   PRODUCT_NAME: '产品名称',
@@ -373,9 +372,7 @@ const currentSemanticDisplay = computed(() => {
   } as const;
 });
 const currentQualityReady = computed(() => isPromptResultQualityReady(currentResult.value));
-const totalPages = computed(() =>
-  promptPageCount(resultData.value?.total ?? 0, pageSize.value),
-);
+const totalPages = computed(() => promptPageCount(resultData.value?.total ?? 0, pageSize.value));
 const allProductsCommitted = computed(
   () =>
     activeProducts.value.length > 0 &&
@@ -490,12 +487,16 @@ const showNotice = (text: string, kind: Notice['kind'] = 'success'): void => {
 const applyWorkspace = (products: EffectPromptProductState[]): void => {
   productStates.value = Object.fromEntries(products.map((state) => [state.productId, state]));
   const drafts = { ...settingsDrafts.value };
+  const disabledDrafts = { ...disabledElementsTextDrafts.value };
   for (const state of products) {
     if (settingsSaveStatuses.value[state.productId] !== 'saving') {
-      drafts[state.productId] = clonePromptSettings(state.settings);
+      const hydratedSettings = clonePromptSettings(state.settings);
+      drafts[state.productId] = hydratedSettings;
+      disabledDrafts[state.productId] = (hydratedSettings.disabledElements ?? []).join('、');
     }
   }
   settingsDrafts.value = drafts;
+  disabledElementsTextDrafts.value = disabledDrafts;
 };
 
 const loadCurrentResult = async (): Promise<void> => {
@@ -537,8 +538,6 @@ const loadCurrentResult = async (): Promise<void> => {
       return;
     }
     resultData.value = loaded;
-    if (!sharedPromptDirty.value)
-      sharedPromptDraft.value = loaded.result.sharedPrompt?.compiledContent.trim() ?? '';
   } catch (error) {
     if (!isAbortError(error) && generation === resultGeneration)
       showNotice(safeMessage(error, 'Prompt 结果加载失败'), 'error');
@@ -691,16 +690,12 @@ watch(
     settingsControllers.clear();
     operationController?.abort();
     itemMutationController?.abort();
-    sharedPromptController?.abort();
     exportController?.abort();
     itemOperation.value = null;
     exporting.value = false;
     editorOpen.value = false;
     editorSaving.value = false;
     editorTrigger.value = null;
-    sharedPromptDirty.value = false;
-    sharedPromptSaving.value = false;
-    sharedPromptDraft.value = '';
     regenerationDialogOpen.value = false;
     regenerationCandidate.value = null;
     regenerationSaving.value = false;
@@ -725,13 +720,9 @@ watch(currentProductId, (next, previous) => {
   purposeFilter.value = '';
   includeCompatiblePurposes.value = false;
   itemMutationController?.abort();
-  sharedPromptController?.abort();
   exportController?.abort();
   itemOperation.value = null;
   exporting.value = false;
-  sharedPromptDirty.value = false;
-  sharedPromptSaving.value = false;
-  sharedPromptDraft.value = '';
   editorOpen.value = false;
   editorSaving.value = false;
   editorTrigger.value = null;
@@ -808,6 +799,41 @@ const adjustSetting = (key: NumericPromptSetting, delta: number): void => {
   queueSettingsSave();
 };
 
+const updateStyleSchedule = (value: string | number): void => {
+  const draft = settingsDrafts.value[currentProductId.value];
+  if (!draft) return;
+  const selected = String(value);
+  draft.styleMode = selected === 'AI_AUTO' ? 'AI_AUTO' : 'FIXED';
+  draft.styleTone = selected === 'AI_AUTO' ? null : selected;
+  queueSettingsSave();
+};
+
+const updateDeliveryChannel = (value: string | number): void => {
+  const draft = settingsDrafts.value[currentProductId.value];
+  if (!draft) return;
+  draft.deliveryChannel = String(value);
+  queueSettingsSave();
+};
+
+const updateDisabledElementsText = (value: string): void => {
+  disabledElementsTextDrafts.value = {
+    ...disabledElementsTextDrafts.value,
+    [currentProductId.value]: value,
+  };
+  queueSettingsSave();
+};
+
+const parsedDisabledElements = (value: string): string[] => [
+  ...new Map(
+    value
+      .split(/[、,，\n]/u)
+      .map((item) => item.replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .slice(0, 50)
+      .map((item) => [item.normalize('NFKC').toLocaleLowerCase(), item] as const),
+  ).values(),
+];
+
 const togglePurposeFilter = (purpose: EffectPromptFragmentType): void => {
   if (purposeFilter.value === purpose) {
     purposeFilter.value = '';
@@ -837,8 +863,18 @@ async function flushSettings(productId = currentProductId.value): Promise<boolea
   const state = productStates.value[productId];
   const draft = settingsDrafts.value[productId];
   if (!state || !draft) return true;
+  draft.disabledElements = parsedDisabledElements(
+    disabledElementsTextDrafts.value[productId] ?? '',
+  );
   const normalized = normalizePromptSettings(draft);
+  const disabledElementsChanged =
+    JSON.stringify(state.settings.disabledElements ?? []) !==
+    JSON.stringify(normalized.disabledElements ?? []);
   settingsDrafts.value = { ...settingsDrafts.value, [productId]: normalized };
+  disabledElementsTextDrafts.value = {
+    ...disabledElementsTextDrafts.value,
+    [productId]: (normalized.disabledElements ?? []).join('、'),
+  };
   if (
     state.settingsRevision !== null &&
     JSON.stringify(normalized) === JSON.stringify(state.settings)
@@ -868,6 +904,8 @@ async function flushSettings(productId = currentProductId.value): Promise<boolea
         },
       };
       settingsSaveStatuses.value = { ...settingsSaveStatuses.value, [productId]: 'saved' };
+      if (disabledElementsChanged && productId === currentProductId.value && state.resultId)
+        await loadCurrentResult();
       return true;
     } catch (error) {
       if (isAbortError(error)) return false;
@@ -1001,11 +1039,11 @@ const regenerateItem = async (): Promise<void> => {
     return;
   if (
     !Number.isInteger(regenerationDurationSeconds.value) ||
-    regenerationDurationSeconds.value < editorDurationRange.value.minDurationSeconds ||
-    regenerationDurationSeconds.value > editorDurationRange.value.maxDurationSeconds
+    regenerationDurationSeconds.value < editorDurationRange.minDurationSeconds ||
+    regenerationDurationSeconds.value > editorDurationRange.maxDurationSeconds
   ) {
     showNotice(
-      `片段时长需在 ${editorDurationRange.value.minDurationSeconds}～${editorDurationRange.value.maxDurationSeconds} 秒之间`,
+      `片段时长需在 ${editorDurationRange.minDurationSeconds}～${editorDurationRange.maxDurationSeconds} 秒之间`,
       'warning',
     );
     return;
@@ -1165,11 +1203,11 @@ const commitEditor = async (): Promise<void> => {
   }
   if (
     !Number.isInteger(draft.targetDurationSeconds) ||
-    draft.targetDurationSeconds < editorDurationRange.value.minDurationSeconds ||
-    draft.targetDurationSeconds > editorDurationRange.value.maxDurationSeconds
+    draft.targetDurationSeconds < editorDurationRange.minDurationSeconds ||
+    draft.targetDurationSeconds > editorDurationRange.maxDurationSeconds
   ) {
     showNotice(
-      `片段时长需在 ${editorDurationRange.value.minDurationSeconds}～${editorDurationRange.value.maxDurationSeconds} 秒之间`,
+      `片段时长需在 ${editorDurationRange.minDurationSeconds}～${editorDurationRange.maxDurationSeconds} 秒之间`,
       'warning',
     );
     return;
@@ -1261,50 +1299,6 @@ const evaluateItem = async (item: EffectPromptItem): Promise<void> => {
     }
   } finally {
     if (operationController === controller) operationController = null;
-  }
-};
-
-const resetSharedPromptDraft = (): void => {
-  sharedPromptDraft.value = currentSharedPromptContent.value;
-  sharedPromptDirty.value = false;
-};
-
-const saveSharedPrompt = async (): Promise<void> => {
-  const state = currentState.value;
-  const result = resultData.value;
-  if (
-    !state?.resultId ||
-    !result ||
-    result.revision === null ||
-    partialPreview.value ||
-    sharedPromptSaving.value ||
-    !sharedPromptDirty.value
-  )
-    return;
-  sharedPromptController?.abort();
-  const controller = new AbortController();
-  sharedPromptController = controller;
-  sharedPromptSaving.value = true;
-  const productId = state.productId;
-  const resultRevision = result.revision;
-  try {
-    await saveEffectPromptSharedPrompt(
-      props.projectId,
-      state.resultId,
-      resultRevision,
-      sharedPromptDraft.value,
-      controller.signal,
-    );
-    if (controller.signal.aborted || currentProductId.value !== productId) return;
-    sharedPromptDirty.value = false;
-    showNotice('共用提示词已保存，完成校验后更新工作副本');
-    await reloadWorkspace(false);
-  } catch (error) {
-    if (!isAbortError(error)) await handleMutationError(error, '共用提示词保存失败');
-  } finally {
-    if (sharedPromptController === controller) sharedPromptController = null;
-    if (!controller.signal.aborted || currentProductId.value === productId)
-      sharedPromptSaving.value = false;
   }
 };
 
@@ -1879,7 +1873,6 @@ onBeforeUnmount(() => {
   settingsControllers.forEach((controller) => controller.abort());
   operationController?.abort();
   itemMutationController?.abort();
-  sharedPromptController?.abort();
   exportController?.abort();
   graphDetailController?.abort();
   pollControllers.forEach(({ controller }) => controller.abort());
@@ -2072,6 +2065,42 @@ onBeforeUnmount(() => {
             </span>
             <small>{{ setting.hint }}</small>
           </label>
+          <label class="setting-card setting-card--select">
+            <span>投放渠道</span>
+            <EffectUpwardCreatableSelect
+              field-label="投放渠道"
+              :model-value="currentSettings.deliveryChannel ?? '抖音'"
+              :options="deliveryChannelOptions"
+              :disabled="currentRunning"
+              @update:model-value="updateDeliveryChannel"
+            />
+            <small>用于调整节奏和表达习惯，不会写成 Prompt 元数据</small>
+          </label>
+          <label class="setting-card setting-card--select">
+            <span>视觉风格基调</span>
+            <EffectUpwardCreatableSelect
+              field-label="视觉风格基调"
+              :model-value="currentStyleSelection"
+              :options="styleOptions"
+              :creatable="false"
+              :disabled="currentRunning"
+              @update:model-value="updateStyleSchedule"
+            />
+            <small>智能调度会按事实和场景选择视觉语言，也可固定整批风格</small>
+          </label>
+          <label class="setting-card setting-card--disabled">
+            <span>禁用元素</span>
+            <textarea
+              :value="currentDisabledElementsText"
+              rows="3"
+              maxlength="6000"
+              placeholder="例如：未成年人、绝对化用语、未经确认的品牌文字"
+              :disabled="currentRunning"
+              @input="updateDisabledElementsText(($event.target as HTMLTextAreaElement).value)"
+              @blur="flushSettings()"
+            />
+            <small>支持顿号、逗号或换行分隔；系统会去重并自动编译为批次共用约束</small>
+          </label>
         </div>
       </section>
 
@@ -2084,54 +2113,6 @@ onBeforeUnmount(() => {
             已生成并通过基础结构检查，不会覆盖上一份有效结果。当前仅支持查看和复制，重新批量生成成功后才能编辑、导出或完成校验。</span
           >
         </div>
-      </section>
-
-      <section v-if="currentRenderProfile" class="shared-prompt-panel" aria-label="共用提示词">
-        <header>
-          <div>
-            <strong>共用提示词</strong>
-            <span>生成 Prompt 时统一约束，生成视频时自动追加一次</span>
-          </div>
-          <em :class="{ dirty: sharedPromptDirty }">{{
-            partialPreview
-              ? '临时预览'
-              : sharedPromptSaving
-                ? '正在保存'
-                : sharedPromptDirty
-                  ? '有未保存修改'
-                  : '已保存'
-          }}</em>
-        </header>
-        <label class="shared-prompt-editor">
-          <textarea
-            v-model="sharedPromptDraft"
-            rows="5"
-            maxlength="60000"
-            aria-label="共用提示词内容"
-            placeholder="填写所有视频共同遵守的要求；未设置时渲染不会追加内容"
-            :disabled="partialPreview || currentRunning || sharedPromptSaving"
-            @input="sharedPromptDirty = true"
-          />
-        </label>
-        <footer v-if="!partialPreview">
-          <button
-            class="secondary-button"
-            type="button"
-            :disabled="!sharedPromptDirty || sharedPromptSaving"
-            @click="resetSharedPromptDraft"
-          >
-            取消修改
-          </button>
-          <button
-            v-if="!partialPreview"
-            class="primary-button"
-            type="button"
-            :disabled="!sharedPromptDirty || sharedPromptSaving || currentRunning"
-            @click="saveSharedPrompt"
-          >
-            <LoaderCircle v-if="sharedPromptSaving" class="spin" :size="14" />保存共用提示词
-          </button>
-        </footer>
       </section>
 
       <section class="effect-prompt-list" aria-label="Prompt 生成结果">
@@ -2382,8 +2363,7 @@ onBeforeUnmount(() => {
               <option v-for="size in EFFECT_PROMPT_PAGE_SIZE_OPTIONS" :key="size" :value="size">
                 {{ size }} 条/页
               </option>
-            </select>
-          </label
+            </select> </label
           ><button type="button" :disabled="page <= 1 || resultLoading" @click="page -= 1">
             <ChevronLeft :size="14" />上一页</button
           ><strong>第 {{ page }} / {{ totalPages }} 页</strong
@@ -3566,11 +3546,11 @@ button:disabled {
 .setting-card {
   display: grid;
   min-width: 0;
-  min-height: 62px;
-  padding: 10px 12px;
-  grid-template-columns: minmax(86px, 1fr) 140px;
-  align-items: center;
-  gap: 4px 10px;
+  min-height: 104px;
+  padding: 13px 14px;
+  grid-template-columns: 1fr;
+  align-content: start;
+  gap: 8px;
   color: #58657a;
   background: #f8fbff;
   border: 1px solid #e5eaf2;
@@ -3584,11 +3564,34 @@ button:disabled {
   grid-column: 1;
   color: #98a3b5;
   font-size: 9px;
+  line-height: 1.45;
 }
 .simple-setting-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
+}
+.setting-card--disabled {
+  min-height: auto;
+  grid-column: 1 / -1;
+}
+.setting-card--disabled textarea {
+  width: 100%;
+  min-height: 76px;
+  padding: 10px 12px;
+  box-sizing: border-box;
+  resize: vertical;
+  color: #46566f;
+  background: #fff;
+  border: 1px solid #dbe4f2;
+  border-radius: 10px;
+  outline: none;
+  font: inherit;
+  line-height: 1.6;
+}
+.setting-card--disabled textarea:focus {
+  border-color: #7da7ef;
+  box-shadow: 0 0 0 3px rgb(37 99 235 / 8%);
 }
 .simple-setting-grid .number-control {
   grid-template-columns: 32px minmax(50px, 1fr) 28px 32px;
@@ -6222,19 +6225,11 @@ button:disabled {
   .simple-setting-grid {
     grid-template-columns: 1fr;
   }
-  .shared-prompt-panel > header,
-  .shared-prompt-panel > footer {
-    align-items: stretch;
-    flex-direction: column;
-  }
-  .shared-prompt-panel > footer button {
-    width: 100%;
-  }
   .settings-heading {
     grid-column: 1;
   }
   .setting-card {
-    grid-template-columns: 1fr 140px;
+    grid-template-columns: 1fr;
   }
   .prompt-card {
     grid-template-columns: 38px minmax(0, 1fr);

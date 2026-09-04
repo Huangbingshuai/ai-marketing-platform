@@ -1,4 +1,9 @@
-import { EFFECT_SEGMENT_RENDER_LIMITS } from '@ai-marketing/contracts';
+import {
+  EFFECT_PROMPT_RENDER_CAPABILITY_KEYS,
+  EFFECT_SEGMENT_RENDER_LIMITS,
+  SEEDANCE_RATIOS,
+  SEEDANCE_RESOLUTIONS,
+} from '@ai-marketing/contracts';
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -6,6 +11,7 @@ import {
   IsArray,
   IsBoolean,
   IsInt,
+  IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -13,6 +19,7 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 
 export class SegmentRenderWorkspaceQueryDto {
@@ -22,7 +29,21 @@ export class SegmentRenderWorkspaceQueryDto {
 export class StartSegmentRenderBatchDto {
   @IsUUID('4') workflowRunId!: string;
   @Type(() => Number) @IsInt() @Min(1) expectedPromptArtifactRevision!: number;
+  @Type(() => Number) @IsInt() @Min(0) expectedSettingsRevision!: number;
   @IsString() @IsNotEmpty() @MaxLength(500) idempotencyKey!: string;
+}
+
+export class SegmentRenderSettingsDto {
+  @IsIn(SEEDANCE_RATIOS) ratio!: (typeof SEEDANCE_RATIOS)[number];
+  @IsIn(SEEDANCE_RESOLUTIONS) resolution!: (typeof SEEDANCE_RESOLUTIONS)[number];
+  @IsIn(EFFECT_PROMPT_RENDER_CAPABILITY_KEYS)
+  capabilityKey!: (typeof EFFECT_PROMPT_RENDER_CAPABILITY_KEYS)[number];
+}
+
+export class SaveSegmentRenderSettingsDto {
+  @IsUUID('4') workflowRunId!: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) expectedRevision!: number | null;
+  @ValidateNested() @Type(() => SegmentRenderSettingsDto) settings!: SegmentRenderSettingsDto;
 }
 
 export class RegenerateSegmentRenderTasksDto {

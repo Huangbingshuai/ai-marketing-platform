@@ -52,11 +52,6 @@ const CANDIDATE_FIELDS = [
   ['usageScenarios', '核心使用场景'],
   ['purchaseScenarios', '购买场景'],
   ['emotionalScenarios', '情绪共鸣场景'],
-  ['durationSeconds', '统一时长'],
-  ['aspectRatio', '画幅'],
-  ['deliveryChannels', '投放渠道'],
-  ['disabledElements', '禁用元素'],
-  ['visualStyleBaseline', '视觉风格基线'],
 ] as const;
 
 const COMMERCE_CANDIDATE_FIELDS = [
@@ -599,16 +594,12 @@ export const presentExtractionNodeDetail = (
   }
 
   if (nodeId === 'FORM') {
-    const config = snapshot.globalVideoConfig ?? snapshot.product.effectiveConfig;
     return {
       ...base,
-      summary: branch ? '已读取导入节点的全局视频配置' : '等待读取全局视频配置',
+      summary: branch ? '已读取导入节点的产品基础信息' : '等待读取产品基础信息',
       fields: fields([
-        field('durationSeconds', '视频时长', `${config.durationSeconds} 秒`, '全局配置'),
-        field('aspectRatio', '画幅比例', config.aspectRatio, '全局配置'),
-        field('styleTone', '风格基调', config.styleTone, '全局配置'),
-        field('deliveryChannel', '投放渠道', config.deliveryChannel, '全局配置'),
-        field('disabledElements', '禁用元素', config.disabledElements, '全局配置', true),
+        field('productName', '产品名称', snapshot.product.name, '人工填写'),
+        field('productCategory', '产品品类', snapshot.product.category, '人工填写'),
       ]),
       sources: [],
     };

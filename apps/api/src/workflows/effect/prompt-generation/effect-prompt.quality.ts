@@ -32,6 +32,7 @@ import {
   SEEDANCE_RESOLUTIONS,
   effectPromptTargetCount,
   normalizeEffectPromptSettings,
+  readEffectPromptSettings,
   normalizeEffectPromptFragmentType,
   normalizeEffectPromptFragmentTypes,
 } from '@ai-marketing/contracts';
@@ -546,15 +547,34 @@ const withCurrentMetricsCompatibility = (value: unknown): unknown => {
 
 export const isEffectPromptSettings = (value: unknown): value is EffectPromptBatchSettings => {
   const settings = record(value);
+  const keys = settings ? Object.keys(settings) : [];
+  const legacy = keys.length === 2;
+  const styleMode = settings?.styleMode;
+  const styleTone = settings?.styleTone;
+  const deliveryChannel = settings?.deliveryChannel;
+  const disabledElements = settings?.disabledElements;
   return Boolean(
     settings &&
-    Object.keys(settings).length === 2 &&
+    (legacy || keys.length === 6) &&
     Number.isInteger(settings.targetCount) &&
     Number(settings.targetCount) >= EFFECT_PROMPT_LIMITS.minCount &&
     Number(settings.targetCount) <= EFFECT_PROMPT_LIMITS.maxCount &&
     Number.isInteger(settings.defaultDurationSeconds) &&
     Number(settings.defaultDurationSeconds) >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
-    Number(settings.defaultDurationSeconds) <= EFFECT_PROMPT_LIMITS.maxDurationSeconds,
+    Number(settings.defaultDurationSeconds) <= EFFECT_PROMPT_LIMITS.maxDurationSeconds &&
+    (legacy ||
+      ((styleMode === 'AI_AUTO' || styleMode === 'FIXED') &&
+        (styleMode === 'AI_AUTO'
+          ? styleTone === null
+          : typeof styleTone === 'string' &&
+            styleTone.trim().length > 0 &&
+            styleTone.length <= 120) &&
+        typeof deliveryChannel === 'string' &&
+        deliveryChannel.trim().length > 0 &&
+        deliveryChannel.length <= 120 &&
+        Array.isArray(disabledElements) &&
+        disabledElements.length <= 50 &&
+        disabledElements.every((item) => typeof item === 'string' && item.trim().length > 0))),
   );
 };
 
@@ -1103,9 +1123,11 @@ export const recomputePromptQuality = (
 
 export const parseEffectPromptBatchResult = (value: unknown): EffectPromptBatchResult | null => {
   const source = record(value);
+  const compatibleSettings = readEffectPromptSettings(source?.settings);
   const candidate: Record<string, unknown> | null = source
     ? {
         ...source,
+        settings: compatibleSettings ?? source.settings,
         items: Array.isArray(source.items)
           ? source.items.map(withCurrentItemCompatibility)
           : source.items,

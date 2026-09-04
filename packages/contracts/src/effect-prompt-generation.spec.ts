@@ -37,6 +37,10 @@ describe('effect prompt generation contract', () => {
     expect(DEFAULT_EFFECT_PROMPT_SETTINGS).toEqual({
       targetCount: 50,
       defaultDurationSeconds: 5,
+      styleMode: 'AI_AUTO',
+      styleTone: null,
+      deliveryChannel: '抖音',
+      disabledElements: [],
     });
     expect(EFFECT_PROMPT_DIMENSIONS.map(({ key }) => key)).toEqual([
       'narrative',
@@ -50,6 +54,10 @@ describe('effect prompt generation contract', () => {
     expect(normalizeEffectPromptSettings({ targetCount: 999, defaultDurationSeconds: 1 })).toEqual({
       targetCount: 100,
       defaultDurationSeconds: 4,
+      styleMode: 'AI_AUTO',
+      styleTone: null,
+      deliveryChannel: '抖音',
+      disabledElements: [],
     });
     expect(EFFECT_PROMPT_LIMITS.maxCount).toBe(100);
     expect(EFFECT_PROMPT_LIMITS.maxCandidateCount).toBe(240);
@@ -57,7 +65,7 @@ describe('effect prompt generation contract', () => {
     expect(batchSchema.properties.items.maxItems).toBe(100);
   });
 
-  it('accepts only the canonical settings shape', () => {
+  it('rejects retired quota settings and upgrades the compact legacy settings shape', () => {
     expect(
       readEffectPromptSettings({
         fragmentConfigs: {
@@ -75,6 +83,10 @@ describe('effect prompt generation contract', () => {
     expect(readEffectPromptSettings({ targetCount: 50, defaultDurationSeconds: 5 })).toEqual({
       targetCount: 50,
       defaultDurationSeconds: 5,
+      styleMode: 'AI_AUTO',
+      styleTone: null,
+      deliveryChannel: '抖音',
+      disabledElements: [],
     });
   });
 
@@ -160,6 +172,10 @@ describe('effect prompt generation contract', () => {
     expect(batchSchema.properties.schemaVersion).toBeUndefined();
     expect([...batchSchema.properties.settings.required].sort()).toEqual([
       'defaultDurationSeconds',
+      'deliveryChannel',
+      'disabledElements',
+      'styleMode',
+      'styleTone',
       'targetCount',
     ]);
     expect(batchSchema.$defs.dimensions.required).toContain('productRelation');

@@ -404,7 +404,10 @@ export class EffectExtractionService {
           product.materials,
         );
         const fingerprint = await this.currentFingerprint(draft, product.id);
-        const stale = Boolean(result && result.sourceFingerprint !== fingerprint);
+        const runFingerprint = run
+          ? extractionSourceFingerprint(run.inputSnapshot as EffectExtractionInputSnapshot)
+          : '';
+        const stale = Boolean(result && runFingerprint !== fingerprint);
         const candidate = result ? await this.workingResultInput(result) : null;
         const artifact = await this.repository.insightArtifact(projectId, draftId, product.id);
         const commitStatus = !artifact
