@@ -55,10 +55,11 @@ const runRecord = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('EffectPromptRepository', () => {
-  it('loads recovery checkpoints only from the claimed run', async () => {
+  it('loads same-run recovery checkpoints even when a later shard marked the stage failed', async () => {
     const checkpoints = [
       {
-        nodeId: 'FACT_VISUAL_STRATEGY_COMPILATION',
+        nodeId: 'COHERENT_CREATIVE_GENERATION',
+        status: 'FAILED',
         metadata: { checkpoint: { sourceFingerprint: 'current-run' } },
       },
     ];
@@ -90,7 +91,6 @@ describe('EffectPromptRepository', () => {
       where: {
         projectId,
         runId,
-        status: 'SUCCEEDED',
         nodeId: {
           in: ['FACT_VISUAL_STRATEGY_COMPILATION', 'COHERENT_CREATIVE_GENERATION'],
         },

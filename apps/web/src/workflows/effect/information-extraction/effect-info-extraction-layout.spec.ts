@@ -5,11 +5,54 @@ import pageSource from './EffectInfoExtractionNodePage.vue?raw';
 
 describe('effect info extraction result layout', () => {
   it('always renders the complete extraction form and keeps ungenerated fields empty', () => {
-    expect(pageSource).toContain('class="product-info-layout"');
     expect(pageSource).toContain('class="result-grid"');
+    expect(pageSource).toContain('class="content-block product-base-card"');
     expect(pageSource).toContain("currentState.value?.result?.[field] ?? ''");
     expect(pageSource).toContain("coreSellingPoints: ['']");
     expect(pageSource).not.toContain('v-else-if="!currentState.result"');
+  });
+
+  it('lays out the product base above three parallel information layers', () => {
+    expect(pageSource).not.toContain('class="product-info-layout"');
+    expect(pageSource).toContain('grid-template-columns: repeat(3, minmax(0, 1fr));');
+    expect(pageSource).toContain("'base base base'");
+    expect(pageSource).toContain("'selling user scenario'");
+    expect(pageSource).toContain('.product-base-card {');
+    expect(pageSource).toContain('grid-area: base;');
+    expect(pageSource).toContain('class="content-block selling-layer-card"');
+    expect(pageSource).toContain('.selling-layer-card {');
+    expect(pageSource).toContain('grid-area: selling;');
+    expect(pageSource).toContain('grid-area: user;');
+    expect(pageSource).toContain('grid-area: scenario;');
+    expect(pageSource).toContain("'base'\n      'selling'\n      'user'\n      'scenario'");
+  });
+
+  it('uses section headings instead of repeating a visible prefix in every list row', () => {
+    expect(pageSource).toContain('class="selling-subheading selling-subheading--first"');
+    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS');
+    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS');
+    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_TRUST_BACKINGS');
+    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS');
+    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS');
+    expect(pageSource).toContain('建议最多 {{ EFFECT_EXTRACTION_MAX_TRUST_BACKINGS }} 个');
+    expect(pageSource).toContain('建议最多 {{ EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS }} 个');
+    expect(pageSource).toContain('建议最多 {{ EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS }} 个');
+    for (const repeatedPrefix of [
+      '核心卖点',
+      '次要卖点',
+      '信任背书',
+      '目标受众',
+      '核心痛点',
+      '决策动因',
+      '使用场景',
+      '购买场景',
+      '情绪场景',
+    ]) {
+      expect(pageSource).not.toContain(`<span>${repeatedPrefix}</span>`);
+    }
+    expect(pageSource).toContain(':aria-label="`核心卖点 ${index + 1}`"');
+    expect(pageSource).toContain(':aria-label="`情绪共鸣场景 ${index + 1}`"');
+    expect(pageSource).toContain('grid-template-columns: minmax(0, 1fr) 38px;');
   });
 
   it('uses the heading action as the only extraction trigger instead of a lower empty-state button', () => {
@@ -129,12 +172,10 @@ describe('effect info extraction result layout', () => {
 
   it('keeps product facts editable and only marks image-recognition additions', () => {
     expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS');
-    expect(pageSource).not.toContain('EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS');
     expect(pageSource).toContain("result.coreSellingPoints.push('')");
     expect(pageSource).toContain('placeholder="请输入核心卖点"');
     expect(pageSource).toContain('class="selling-add-button"');
-    expect(pageSource).toContain('.block-heading .selling-add-button');
-    expect(pageSource).not.toContain('.selling-subheading button,\n.selling-add-button');
+    expect(pageSource).not.toContain('.block-heading .selling-add-button');
     for (const field of [
       'secondarySellingPoints',
       'trustBackings',
@@ -195,7 +236,6 @@ describe('effect info extraction result layout', () => {
       expect(pageSource).toContain(`v-model="visibleResult.${field}[index]"`);
     }
     expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS');
-    expect(pageSource).not.toContain('EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS');
     expect(pageSource).not.toContain('textListValue');
     expect(pageSource).not.toContain('updateTextList');
   });

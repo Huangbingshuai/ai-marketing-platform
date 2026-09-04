@@ -271,8 +271,9 @@ onBeforeUnmount(() => {
   border-radius: 7px;
 }
 .effect-up-select__search input {
-  width: 100%;
+  width: 0;
   min-width: 0;
+  flex: 1 1 0;
   color: #26344d;
   background: transparent;
   border: 0;

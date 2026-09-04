@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from itertools import combinations
-from typing import Any, Literal, Protocol
+from typing import Any, Callable, Literal, Protocol
 
 import httpx
 import numpy as np
@@ -341,6 +341,7 @@ class ContentVectorIndex:
         selected_ids: list[str],
         *,
         threshold: float = VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD,
+        similarity_resolver: Callable[[str, str], float] | None = None,
     ) -> RedundancySummary:
         selected = [item for item in selected_ids if item in self.candidate_ids]
         anchors = list(self.anchor_ids)
@@ -360,18 +361,19 @@ class ContentVectorIndex:
                 parent[right_root] = left_root
 
         high_risk_pairs: list[tuple[str, str]] = []
+        resolve_similarity = similarity_resolver or self.similarity
         for left_index, left_id in enumerate(selected):
             for right_id in selected[left_index + 1 :]:
-                if self.similarity(left_id, right_id) >= threshold:
+                if resolve_similarity(left_id, right_id) >= threshold:
                     high_risk_pairs.append((left_id, right_id))
                     union(left_id, right_id)
             for anchor_id in anchors:
-                if self.similarity(left_id, anchor_id) >= threshold:
+                if resolve_similarity(left_id, anchor_id) >= threshold:
                     high_risk_pairs.append((left_id, anchor_id))
                     union(left_id, anchor_id)
         for left_index, left_id in enumerate(anchors):
             for right_id in anchors[left_index + 1 :]:
-                if self.similarity(left_id, right_id) >= threshold:
+                if resolve_similarity(left_id, right_id) >= threshold:
                     high_risk_pairs.append((left_id, right_id))
                     union(left_id, right_id)
 

@@ -203,6 +203,18 @@ def _remap_fact_references(value: Any, mapping: Mapping[str, str]) -> Any:
     return value
 
 
+def _visual_style_baseline_section(style_instruction: str) -> str:
+    """Render fixed-style guidance without adding constraints in auto mode."""
+    normalized = style_instruction.strip()
+    if not normalized:
+        return ""
+    return (
+        "视觉风格基调（只影响光线、色彩、材质和镜头质感，"
+        "不是固定场景模板）：\n"
+        + json.dumps(normalized, ensure_ascii=False)
+    )
+
+
 class AiProvider(Protocol):
     execution_mode: str
 
@@ -221,6 +233,7 @@ class AiProvider(Protocol):
         style_instruction: str,
         delivery_channel: str,
         revision_context: Mapping[str, Any] | None = None,
+        revision_territory_ids: Sequence[str] = (),
     ) -> AiCallResult[CreativeDiversityLandscapeResponse]: ...
 
     async def plan_creative_directions(
@@ -332,22 +345,33 @@ class MockAiProvider:
         style_instruction: str,
         delivery_channel: str,
         revision_context: Mapping[str, Any] | None = None,
+        revision_territory_ids: Sequence[str] = (),
     ) -> AiCallResult[CreativeDiversityLandscapeResponse]:
         del (
             fact_visual_strategy,
             shared_prompt,
-            revision_context,
             style_instruction,
             delivery_channel,
         )
-        return _mock_result(
-            _mock_creative_landscape_response(
-                application,
-                direction_count=creative_direction_target_count(
-                    target_count,
-                    len(mandatory_business_facts(application)),
-                ),
+        response = _mock_creative_landscape_response(
+            application,
+            direction_count=creative_direction_target_count(
+                target_count,
+                len(mandatory_business_facts(application)),
             ),
+        )
+        if revision_territory_ids:
+            requested = set(revision_territory_ids)
+            response = CreativeDiversityLandscapeResponse(
+                territories=[
+                    item
+                    for item in response.territories
+                    if item.territory_id in requested
+                ]
+            )
+        del revision_context
+        return _mock_result(
+            response,
             NodeId.COHERENT_CREATIVE_GENERATION.value,
             CREATIVE_LANDSCAPE_BASE_PROMPT,
         )
@@ -369,12 +393,40 @@ class MockAiProvider:
             application,
             landscape=landscape,
         )
+        required_slots = (
+            revision_context.get("requiredDirectionSlots", [])
+            if revision_context is not None
+            else []
+        )
         revision_direction_ids = (
             revision_context.get("revisionDirectionIds", [])
             if revision_context is not None
             else []
         )
-        if (
+        if isinstance(required_slots, list) and required_slots:
+            directions_by_slot = {
+                (direction.territory_id, direction.primary_action_id): direction
+                for direction in response.directions
+            }
+            unused_directions = iter(response.directions)
+            slot_directions: list[CreativeDirection] = []
+            for slot in required_slots:
+                if not isinstance(slot, dict):
+                    continue
+                territory_id = slot.get("territoryId")
+                primary_action_id = slot.get("primaryActionId")
+                matched = (
+                    directions_by_slot.get((territory_id, primary_action_id))
+                    if isinstance(territory_id, str)
+                    and isinstance(primary_action_id, str)
+                    else None
+                )
+                if matched is None:
+                    matched = next(unused_directions, None)
+                if matched is not None:
+                    slot_directions.append(matched)
+            response = CreativeDirectionResponse(directions=slot_directions)
+        elif (
             isinstance(revision_direction_ids, list)
             and revision_direction_ids
             and all(isinstance(item, str) for item in revision_direction_ids)
@@ -389,11 +441,6 @@ class MockAiProvider:
                     if direction_id in directions_by_id
                 ]
             )
-        required_slots = (
-            revision_context.get("requiredDirectionSlots", [])
-            if revision_context is not None
-            else []
-        )
         if isinstance(required_slots, list) and len(required_slots) == len(
             response.directions
         ):
@@ -403,6 +450,15 @@ class MockAiProvider:
                         update={
                             "direction_id": slot.get(
                                 "directionId", direction.direction_id
+                            ),
+                            # The mock builds directions from the scoped territory and
+                            # therefore restarts its local wording for every bounded
+                            # transport batch. Preserve production's global-slot
+                            # semantics in tests by making that synthetic wording
+                            # stable per assigned direction id as well.
+                            "creative_direction": (
+                                f"{direction.creative_direction} · "
+                                f"{slot.get('directionId', direction.direction_id)}"
                             ),
                             "territory_id": slot.get(
                                 "territoryId", direction.territory_id
@@ -619,7 +675,7 @@ class ArkResponsesProvider:
         strategy_max_output_tokens: int = 8192,
         candidate_max_output_tokens: int = 4096,
         fragment_strategy_max_output_tokens: int = 3072,
-        evaluation_max_output_tokens: int = 4096,
+        evaluation_max_output_tokens: int = 6144,
         reasoning_effort: str = "minimal",
         strategy_timeout: float = 180.0,
         candidate_timeout: float = 120.0,
@@ -733,6 +789,7 @@ class ArkResponsesProvider:
         style_instruction: str,
         delivery_channel: str,
         revision_context: Mapping[str, Any] | None = None,
+        revision_territory_ids: Sequence[str] = (),
     ) -> AiCallResult[CreativeDiversityLandscapeResponse]:
         fact_aliases, fact_ids_by_alias = _fact_alias_maps(application)
         facts = [
@@ -783,10 +840,17 @@ class ArkResponsesProvider:
             shared_prompt_json=json.dumps(
                 shared_prompt.compiled_content, ensure_ascii=False
             ),
-            visual_style_baseline_json=json.dumps(
-                style_instruction, ensure_ascii=False
+            visual_style_baseline_section=_visual_style_baseline_section(
+                style_instruction
             ),
             delivery_channel_json=json.dumps(delivery_channel, ensure_ascii=False),
+            output_scope_instruction=(
+                "本次是局部修订。只输出以下 territoryId，且每个恰好一次："
+                + json.dumps(list(revision_territory_ids), ensure_ascii=False)
+                + "。不要输出任何未被点名的空间；系统会按稳定 ID 与已通过空间合并。"
+                if revision_territory_ids
+                else "本次是首次规划，输出完整创意版图。"
+            ),
             revision_context_json=json.dumps(
                 _remap_fact_references(revision_context or {}, fact_aliases),
                 ensure_ascii=False,
@@ -1153,9 +1217,8 @@ class ArkResponsesProvider:
                 shared_prompt.compiled_content,
                 ensure_ascii=False,
             ),
-            visual_style_baseline_json=json.dumps(
-                style_instruction,
-                ensure_ascii=False,
+            visual_style_baseline_section=_visual_style_baseline_section(
+                style_instruction
             ),
             delivery_channel_json=json.dumps(delivery_channel, ensure_ascii=False),
             creative_landscape_json=json.dumps(
@@ -1220,6 +1283,24 @@ class ArkResponsesProvider:
         revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDirectionAuditResponse]:
         fact_aliases, fact_ids_by_alias = _fact_alias_maps(application)
+        scoped_territory_ids = {
+            item.territory_id for item in directions.directions
+        }
+        scoped_territories = [
+            item
+            for item in landscape.territories
+            if item.territory_id in scoped_territory_ids
+        ]
+        scoped_fact_ids = {
+            fact_id
+            for direction in directions.directions
+            for fact_id in direction.fact_ids
+        }
+        scoped_fact_ids.update(
+            fact_id
+            for territory in scoped_territories
+            for fact_id in territory.compatible_fact_ids
+        )
         facts = [
             {
                 "factId": fact_aliases[fact.fact_id],
@@ -1228,6 +1309,7 @@ class ArkResponsesProvider:
                 "policy": fact.policy.value,
             }
             for fact in application.usable
+            if fact.fact_id in scoped_fact_ids
         ]
         visual_policies = [
             {
@@ -1241,6 +1323,7 @@ class ArkResponsesProvider:
                 "forbiddenInferences": policy.forbidden_inferences,
             }
             for policy in fact_visual_strategy.policies
+            if policy.fact_id in scoped_fact_ids
         ]
         prompt = render_prompt(
             CREATIVE_DIRECTION_AUDIT_TASK_PROMPT,
@@ -1254,7 +1337,7 @@ class ArkResponsesProvider:
                 _remap_fact_references(
                     [
                         item.model_dump(mode="json", by_alias=True)
-                        for item in landscape.territories
+                        for item in scoped_territories
                     ],
                     fact_aliases,
                 ),
@@ -1440,6 +1523,23 @@ class ArkResponsesProvider:
                 ensure_ascii=False,
                 sort_keys=True,
             ),
+            allowed_combinations_json=json.dumps(
+                _remap_fact_references(
+                    [
+                        {
+                            "territoryId": territory.territory_id,
+                            "compatibleFactIds": territory.compatible_fact_ids,
+                            "primaryActionIds": [
+                                action.action_id for action in territory.actions
+                            ],
+                        }
+                        for territory in landscape.territories
+                    ],
+                    fact_aliases,
+                ),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
             existing_directions_json=json.dumps(
                 _remap_fact_references(
                     [
@@ -1560,7 +1660,7 @@ class ArkResponsesProvider:
             model=self._candidate_model,
             max_output_tokens=min(
                 self._candidate_max_output_tokens,
-                max(1536, len(shard.tasks) * 900),
+                _creative_output_token_budget(shard.tasks),
             ),
             request_timeout=self._candidate_timeout,
             instructions=load_prompt(creative_base_prompt),
@@ -1729,7 +1829,14 @@ class ArkResponsesProvider:
                 # Real three-item shards regularly reached the former 3,000-token
                 # ceiling. Reserve enough room for scores, fact evidence and the
                 # six-axis profile while retaining the configured hard cap.
-                max(2048, len(candidates) * 1300),
+                # ITEM_EVALUATE additionally asks the model to infer a creative
+                # core and all six dimensions. A single item therefore needs the
+                # same practical budget as a small batch; 2,048 tokens can be
+                # exhausted by reasoning before the structured JSON is complete.
+                max(
+                    4096 if infer_creative_structure else 2048,
+                    len(candidates) * 1300,
+                ),
             ),
             request_timeout=self._evaluation_timeout,
             instructions=load_prompt(EVALUATION_BASE_PROMPT),
@@ -2460,6 +2567,34 @@ def _creative_fact_assignment(
     return assignment
 
 
+_SIBLING_VARIATION_DIMENSION_PAIRS: tuple[tuple[str, str], ...] = (
+    ("NARRATIVE", "SCENE"),
+    ("PERSONA", "PRODUCT_RELATION"),
+    ("CAMERA", "EMOTION"),
+    ("NARRATIVE", "CAMERA"),
+    ("SCENE", "PERSONA"),
+    ("PRODUCT_RELATION", "EMOTION"),
+    ("NARRATIVE", "PERSONA"),
+    ("SCENE", "PRODUCT_RELATION"),
+    ("CAMERA", "PRODUCT_RELATION"),
+    ("PERSONA", "EMOTION"),
+    ("NARRATIVE", "PRODUCT_RELATION"),
+    ("SCENE", "CAMERA"),
+    ("NARRATIVE", "EMOTION"),
+    ("PERSONA", "CAMERA"),
+    ("SCENE", "EMOTION"),
+)
+
+
+def _sibling_variation_dimensions(index: int) -> list[str]:
+    """Assign only structural axes; the model still owns product semantics."""
+
+    pair = _SIBLING_VARIATION_DIMENSION_PAIRS[
+        (max(1, index) - 1) % len(_SIBLING_VARIATION_DIMENSION_PAIRS)
+    ]
+    return list(pair)
+
+
 def _creative_task_brief(
     task: CreativeTask,
     *,
@@ -2546,6 +2681,9 @@ def _creative_task_brief(
         "siblingVariation": {
             "index": task.sibling_variant_index,
             "total": task.sibling_variant_total,
+            "focusDimensions": _sibling_variation_dimensions(
+                task.sibling_variant_index
+            ),
         },
         "regenerationVariantRole": task.regeneration_variant_role,
         "factApplications": [
@@ -2610,6 +2748,21 @@ def _creative_fact_aliases(
     }
 
 
+def _creative_output_token_budget(tasks: Sequence[CreativeTask]) -> int:
+    """Reserve enough structured output space without changing call count."""
+
+    def per_item(duration_seconds: int) -> int:
+        if duration_seconds <= 8:
+            return 1_050
+        if duration_seconds <= 15:
+            return 1_250
+        if duration_seconds <= 22:
+            return 1_400
+        return 1_500
+
+    return max(1_536, sum(per_item(task.target_duration_seconds) for task in tasks))
+
+
 def _temporal_intent_for_duration(duration_seconds: int) -> dict[str, str]:
     if not 4 <= duration_seconds <= 30:
         raise ValueError("target duration must be between 4 and 30 seconds")
@@ -2617,8 +2770,13 @@ def _temporal_intent_for_duration(duration_seconds: int) -> dict[str, str]:
         return {
             "band": "SHORT_FOCUS",
             "guidance": (
-                "只围绕一个可立即看懂的视觉事件，直接进入一个主动作，并在该动作形成的清晰结果上停留。"
-                "不要在主动作后继续切换到烹饪、摆盘、品尝、递送或开箱等第二阶段。"
+                "只围绕一个可立即看懂的视觉事件。主体、商品和关键道具在首帧就位，直接完成"
+                "一个主要产品动作并停在该动作形成的清晰结果上；不要先走入、寻找或拿取后再"
+                "开始另一项使用动作，也不要切换到第二阶段。"
+            ),
+            "detailGuidance": (
+                "软参考为约 70～120 个汉字：写清首帧、一个具体主动作、镜头如何看见变化和结束状态；"
+                "若有人开口，只保留一句能在动作中自然说完的逐字台词。"
             ),
         }
     if duration_seconds <= 15:
@@ -2628,6 +2786,10 @@ def _temporal_intent_for_duration(duration_seconds: int) -> dict[str, str]:
                 "在同一主场景和同一目标下安排 2～3 个连续动作节拍，让开端、发展与结束状态"
                 "彼此衔接；不得加入第二种完整使用方法。"
             ),
+            "detailGuidance": (
+                "软参考为约 160～280 个汉字：首帧和结束状态完整，2～3 个节拍均写清主体、对象、"
+                "可见变化和镜头配合；若有口播，必须给出一至两句可直接说出的完整台词。"
+            ),
         }
     if duration_seconds <= 22:
         return {
@@ -2636,12 +2798,20 @@ def _temporal_intent_for_duration(duration_seconds: int) -> dict[str, str]:
                 "围绕同一商品、同一主场景和同一目标安排 3 个连续动作节拍，可自然改变构图"
                 "或观察角度，但不得拆成多个独立地点或完整做法。"
             ),
+            "detailGuidance": (
+                "软参考为约 240～380 个汉字：三个节拍分别承担进入、展开和收束，写清镜头随动作"
+                "发生的观察变化；口播必须是可直接表演的逐字台词，不能只写讲解主题。"
+            ),
         }
     return {
         "band": "CONNECTED_PHASES",
         "guidance": (
             "围绕同一商品、同一主场景和同一目标安排 3～4 个连续动作节拍，形成一条可实时"
             "拍完的过程；不得用慢动作、无意义停留、分屏、时间跳跃或多种完整做法填满素材。"
+        ),
+        "detailGuidance": (
+            "软参考为约 320～500 个汉字：写清首帧、3～4 个连续节拍、每个关键动作的镜头配合"
+            "以及明确结束状态；只要人物开口，就提供能按普通语速说完的完整逐字台词及同步动作。"
         ),
     }
 

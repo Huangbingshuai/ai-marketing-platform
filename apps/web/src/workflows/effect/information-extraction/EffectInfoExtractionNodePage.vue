@@ -12,7 +12,12 @@ import type {
 import {
   EFFECT_EXTRACTION_GRAPH_EDGES,
   EFFECT_EXTRACTION_GRAPH_NODES,
+  EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS,
+  EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS,
   EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
+  EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS,
+  EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS,
+  EFFECT_EXTRACTION_MAX_TRUST_BACKINGS,
   EFFECT_IMPORT_MATERIAL_TYPE_LABELS,
 } from '@ai-marketing/contracts';
 import { WorkflowNodeDraftBar, WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
@@ -1506,7 +1511,14 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div class="product-info-layout">
+      <div
+        class="result-grid"
+        :class="{
+          muted: currentState.status === 'FAILED',
+          processing: currentRunning,
+        }"
+        :aria-busy="currentRunning"
+      >
         <section
           class="content-block product-base-card"
           :class="{ processing: currentRunning }"
@@ -1601,22 +1613,15 @@ onBeforeUnmount(() => {
             </label>
           </div>
         </section>
-      </div>
-
-      <div
-        class="result-grid"
-        :class="{
-          muted: currentState.status === 'FAILED',
-          processing: currentRunning,
-        }"
-        :aria-busy="currentRunning"
-      >
-        <section class="content-block">
-          <div class="block-heading">
-            <div>
-              <h3>卖点分层</h3>
-              <p>核心卖点建议 1–3 个</p>
-            </div>
+        <section class="content-block selling-layer-card">
+          <div class="block-heading compact">
+            <div><h3>卖点分层</h3></div>
+          </div>
+          <div class="selling-subheading selling-subheading--first">
+            <strong
+              >核心卖点
+              <small>建议 1–{{ EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS }} 个</small></strong
+            >
             <button
               class="selling-add-button"
               type="button"
@@ -1640,8 +1645,8 @@ onBeforeUnmount(() => {
               :key="index"
               class="selling-point-row"
             >
-              <span>核心卖点</span>
               <input
+                :aria-label="`核心卖点 ${index + 1}`"
                 v-model="visibleResult.coreSellingPoints[index]"
                 :readonly="baseFieldsReadonly"
                 placeholder="请输入核心卖点"
@@ -1686,7 +1691,10 @@ onBeforeUnmount(() => {
               </p>
             </div>
             <div class="selling-subheading">
-              <strong>次要卖点</strong>
+              <strong
+                >次要卖点
+                <small>建议最多 {{ EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS }} 个</small></strong
+              >
               <button
                 type="button"
                 :disabled="
@@ -1704,8 +1712,8 @@ onBeforeUnmount(() => {
               :key="`secondary-${index}`"
               class="selling-point-row"
             >
-              <span>次要卖点</span>
               <input
+                :aria-label="`次要卖点 ${index + 1}`"
                 v-model="visibleResult.secondarySellingPoints[index]"
                 :readonly="baseFieldsReadonly"
                 placeholder="请输入次要卖点"
@@ -1750,7 +1758,10 @@ onBeforeUnmount(() => {
               </p>
             </div>
             <div class="selling-subheading">
-              <strong>辅助信任背书</strong>
+              <strong
+                >辅助信任背书
+                <small>建议最多 {{ EFFECT_EXTRACTION_MAX_TRUST_BACKINGS }} 个</small></strong
+              >
               <button
                 type="button"
                 :disabled="
@@ -1770,8 +1781,8 @@ onBeforeUnmount(() => {
               :key="`trust-${index}`"
               class="selling-point-row"
             >
-              <span>信任背书</span>
               <input
+                :aria-label="`辅助信任背书 ${index + 1}`"
                 v-model="visibleResult.trustBackings[index]"
                 :readonly="baseFieldsReadonly"
                 placeholder="仅填写有资料证据的背书"
@@ -1805,7 +1816,10 @@ onBeforeUnmount(() => {
             <div><h3>用户层</h3></div>
           </div>
           <div class="selling-subheading">
-            <strong>目标受众画像</strong>
+            <strong
+              >目标受众画像
+              <small>建议最多 {{ EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS }} 个</small></strong
+            >
             <button
               type="button"
               :disabled="
@@ -1824,8 +1838,8 @@ onBeforeUnmount(() => {
               :key="`audience-${index}`"
               class="selling-point-row"
             >
-              <span>目标受众</span>
               <input
+                :aria-label="`目标受众 ${index + 1}`"
                 v-model="visibleResult.targetAudiences[index]"
                 :readonly="baseFieldsReadonly"
                 placeholder="请输入目标受众"
@@ -1853,7 +1867,10 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div class="selling-subheading">
-            <strong>核心痛点</strong>
+            <strong
+              >核心痛点
+              <small>建议最多 {{ EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS }} 个</small></strong
+            >
             <button
               type="button"
               :disabled="
@@ -1872,8 +1889,8 @@ onBeforeUnmount(() => {
               :key="`pain-${index}`"
               class="selling-point-row"
             >
-              <span>核心痛点</span>
               <input
+                :aria-label="`核心痛点 ${index + 1}`"
                 v-model="visibleResult.corePainPoints[index]"
                 :readonly="baseFieldsReadonly"
                 placeholder="请输入核心痛点"
@@ -1919,7 +1936,10 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div class="selling-subheading">
-            <strong>决策动因</strong>
+            <strong
+              >决策动因
+              <small>建议最多 {{ EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS }} 个</small></strong
+            >
             <button
               type="button"
               :disabled="
@@ -1938,8 +1958,8 @@ onBeforeUnmount(() => {
               :key="`driver-${index}`"
               class="selling-point-row"
             >
-              <span>决策动因</span>
               <input
+                :aria-label="`决策动因 ${index + 1}`"
                 v-model="visibleResult.decisionDrivers[index]"
                 :readonly="baseFieldsReadonly"
                 placeholder="请输入决策动因"
@@ -2008,7 +2028,10 @@ onBeforeUnmount(() => {
             <div><h3>场景层</h3></div>
           </div>
           <div class="selling-subheading">
-            <strong>核心使用场景</strong>
+            <strong
+              >核心使用场景
+              <small>建议最多 {{ EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS }} 个</small></strong
+            >
             <button
               type="button"
               :disabled="
@@ -2027,8 +2050,8 @@ onBeforeUnmount(() => {
               :key="`usage-${index}`"
               class="selling-point-row"
             >
-              <span>使用场景</span>
               <input
+                :aria-label="`核心使用场景 ${index + 1}`"
                 v-model="visibleResult.usageScenarios[index]"
                 :readonly="baseFieldsReadonly"
                 placeholder="请输入核心使用场景"
@@ -2074,7 +2097,10 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div class="selling-subheading">
-            <strong>购买场景</strong>
+            <strong
+              >购买场景
+              <small>建议最多 {{ EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS }} 个</small></strong
+            >
             <button
               type="button"
               :disabled="
@@ -2093,8 +2119,8 @@ onBeforeUnmount(() => {
               :key="`purchase-${index}`"
               class="selling-point-row"
             >
-              <span>购买场景</span>
               <input
+                :aria-label="`购买场景 ${index + 1}`"
                 v-model="visibleResult.purchaseScenarios[index]"
                 :readonly="baseFieldsReadonly"
                 placeholder="请输入购买场景"
@@ -2140,7 +2166,10 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div class="selling-subheading">
-            <strong>情绪共鸣场景</strong>
+            <strong
+              >情绪共鸣场景
+              <small>建议最多 {{ EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS }} 个</small></strong
+            >
             <button
               type="button"
               :disabled="
@@ -2161,8 +2190,8 @@ onBeforeUnmount(() => {
               :key="`emotional-${index}`"
               class="selling-point-row"
             >
-              <span>情绪场景</span>
               <input
+                :aria-label="`情绪共鸣场景 ${index + 1}`"
                 v-model="visibleResult.emotionalScenarios[index]"
                 :readonly="baseFieldsReadonly"
                 placeholder="请输入情绪共鸣场景"
@@ -2791,11 +2820,6 @@ button:disabled {
   background: #f1f8fc;
   border: 1px solid #cfe5f2;
 }
-.product-info-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 18px;
-}
 .content-block,
 .inherit-card {
   padding: 20px;
@@ -3002,9 +3026,24 @@ select {
 .result-grid {
   display: grid;
   margin-top: 18px;
-  align-items: start;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-areas:
+    'base base base'
+    'selling user scenario';
   gap: 18px;
+}
+.product-base-card {
+  grid-area: base;
+}
+.selling-layer-card {
+  grid-area: selling;
+}
+.user-layer-card {
+  grid-area: user;
+}
+.scenario-layer-card {
+  grid-area: scenario;
 }
 .result-grid .content-block {
   min-height: 332px;
@@ -3062,8 +3101,17 @@ select {
   color: #304664;
   font-size: 13px;
 }
-.selling-subheading button,
-.block-heading .selling-add-button {
+.selling-subheading--first {
+  margin-top: 0;
+  margin-bottom: 10px;
+}
+.selling-subheading small {
+  margin-left: 4px;
+  color: #8a98ad;
+  font-size: 11px;
+  font-weight: 400;
+}
+.selling-subheading button {
   display: inline-flex;
   height: 30px;
   min-height: 30px;
@@ -3095,26 +3143,14 @@ select {
 .selling-point-row {
   display: grid;
   align-items: center;
-  grid-template-columns: 112px minmax(0, 1fr) 38px;
+  grid-template-columns: minmax(0, 1fr) 38px;
   gap: 8px;
-}
-.selling-point-row > span {
-  display: flex;
-  height: 40px;
-  align-items: center;
-  justify-content: center;
-  color: #596278;
-  background: #f8fafc;
-  border: 1px solid #dce3ec;
-  border-radius: 10px;
-  font-size: 14px;
-  font-weight: 650;
 }
 .selling-point-row em {
   max-width: min(100%, 280px);
   height: 22px;
   padding: 0;
-  grid-column: 2;
+  grid-column: 1;
   justify-self: start;
   overflow: hidden;
   color: #8057c7;
@@ -3143,7 +3179,7 @@ select {
   border-radius: 8px;
   font-size: 11px;
   line-height: 1.45;
-  grid-column: 2 / -1;
+  grid-column: 1 / -1;
 }
 .selling-point-row .semantic-fact-notice svg {
   flex: 0 0 auto;
@@ -3163,7 +3199,7 @@ select {
   background: #fff;
   border: 1px solid #dbe4f6;
   border-radius: 10px;
-  grid-column: 3;
+  grid-column: 2;
   grid-row: 1;
 }
 .selling-point-row button.semantic-fact-notice__dismiss {
@@ -3902,15 +3938,16 @@ select {
   }
 }
 @media (max-width: 860px) {
-  .product-info-layout,
   .result-grid {
     grid-template-columns: 1fr;
+    grid-template-areas:
+      'base'
+      'selling'
+      'user'
+      'scenario';
   }
 }
 @media (max-width: 620px) {
-  .selling-point-row {
-    grid-template-columns: 92px minmax(0, 1fr) 38px;
-  }
   .effect-extraction-node {
     padding: 16px;
   }

@@ -9,6 +9,8 @@ describe('effect prompt workflow node detail layout', () => {
     expect(pageSource).toContain("section.kind === 'INPUT'");
     expect(pageSource).toContain("section.kind === 'OUTPUT'");
     expect(pageSource).toContain("block.kind === 'TEXT_CONTENT'");
+    expect(pageSource).toContain('<p>{{ block.content }}</p>');
+    expect(pageSource).not.toContain('查看完整内容');
     expect(pageSource).toContain("block.kind === 'CREATIVE_SAMPLE_LIST'");
     expect(pageSource).toContain('当前服务返回的是兼容格式');
   });

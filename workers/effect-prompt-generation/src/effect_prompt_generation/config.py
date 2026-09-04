@@ -64,7 +64,7 @@ class WorkerSettings(BaseSettings):
         le=32_768,
     )
     ark_prompt_candidate_max_output_tokens: int = Field(
-        default=4096,
+        default=6144,
         alias="ARK_PROMPT_CANDIDATE_MAX_OUTPUT_TOKENS",
         ge=1024,
         le=65_536,
@@ -76,7 +76,7 @@ class WorkerSettings(BaseSettings):
         le=8192,
     )
     ark_prompt_evaluation_max_output_tokens: int = Field(
-        default=4096,
+        default=6144,
         alias="ARK_PROMPT_EVALUATION_MAX_OUTPUT_TOKENS",
         ge=1024,
         le=8192,
@@ -86,7 +86,7 @@ class WorkerSettings(BaseSettings):
     )
 
     prompt_max_concurrency: int = Field(
-        default=6, alias="PROMPT_MAX_CONCURRENCY", ge=1, le=8
+        default=4, alias="PROMPT_MAX_CONCURRENCY", ge=1, le=8
     )
     prompt_similarity_mode: Literal["vector"] = Field(
         default="vector", alias="PROMPT_SIMILARITY_MODE"

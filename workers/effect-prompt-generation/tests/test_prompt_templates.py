@@ -4,11 +4,14 @@ from pathlib import Path
 
 import pytest
 
+from effect_prompt_generation.models import PromptBatchSettings
+from effect_prompt_generation.pipeline import _style_instruction
 from effect_prompt_generation.prompt_loader import (
     load_prompt,
     load_prompt_hash,
     render_prompt,
 )
+from effect_prompt_generation.providers import _visual_style_baseline_section
 
 ACTIVE_PROMPT_FILES = {
     "creative_base.system.prompt.txt",
@@ -83,6 +86,13 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "一个主要地点" in creative
     assert "不能伪装成画面已经证明" in creative
     assert "不能成为画面中的口播、字幕、人物台词或动作说明" in creative
+    assert "导演完整度协议" in creative
+    assert "必须给出说话者可以直接说出的逐字台词" in creative
+    assert "禁止只写“讲解产品”" in creative
+    assert "首帧" in creative
+    assert "结束状态" in creative
+    assert "不是字符门禁" in creative
+    assert "严禁复用示范中的商品、地点、人物、动作或台词" in creative
     assert "逐条事实任务简报" in task
     assert "已确认的产品事实" not in task
     assert "{facts_json}" not in task
@@ -136,7 +146,7 @@ def test_direction_and_landscape_templates_receive_density_rules() -> None:
         facts_json="[]",
         fact_visual_strategy_json="[]",
         shared_prompt_json='""',
-        visual_style_baseline_json='"未设置"',
+        visual_style_baseline_section="",
         delivery_channel_json='"抖音"',
         creative_landscape_json="[]",
         revision_context_json="{}",
@@ -149,8 +159,9 @@ def test_direction_and_landscape_templates_receive_density_rules() -> None:
         facts_json="[]",
         fact_visual_strategy_json="[]",
         shared_prompt_json='""',
-        visual_style_baseline_json='"未设置"',
+        visual_style_baseline_section="",
         delivery_channel_json='"抖音"',
+        output_scope_instruction="本次是首次规划，输出完整创意版图。",
         revision_context_json="{}",
     )
 
@@ -158,7 +169,27 @@ def test_direction_and_landscape_templates_receive_density_rules() -> None:
     assert "每个方向必须自然使用 2～4 条业务事实" in direction
     assert "本批创意空间容量范围：1～10" in landscape
     assert "空间数量必须位于 1～10 之间" in landscape
+    assert "局部修订时，只返回“输出范围”点名的空间" in landscape
     assert "每 4 条事实增加一个方向槽位" in landscape
+
+
+def test_auto_style_adds_no_planning_constraint_while_fixed_style_is_preserved() -> None:
+    auto = PromptBatchSettings(
+        target_count=50,
+        default_duration_seconds=15,
+        style_mode="AI_AUTO",
+        style_tone=None,
+    )
+    fixed = auto.model_copy(
+        update={"style_mode": "FIXED", "style_tone": "清新田园"}
+    )
+
+    assert _style_instruction(auto) == ""
+    assert _visual_style_baseline_section(_style_instruction(auto)) == ""
+
+    fixed_section = _visual_style_baseline_section(_style_instruction(fixed))
+    assert "整批采用清新田园作为共享视觉基调" in fixed_section
+    assert "只影响光线、色彩、材质和镜头质感" in fixed_section
 
 
 def test_territory_audit_template_receives_real_business_inputs() -> None:

@@ -5,9 +5,11 @@ import {
   DEFAULT_EFFECT_PROMPT_SETTINGS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_LIMITS,
+  normalizeEffectPromptSettings,
 } from '@ai-marketing/contracts';
 import { describe, expect, it, vi } from 'vitest';
 
+import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import { EffectPromptService } from './effect-prompt.service';
 import { compileEffectPromptSharedPrompt, recomputePromptQuality } from './effect-prompt.quality';
 
@@ -94,6 +96,70 @@ const currentInputSnapshot = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('EffectPromptService settings contract', () => {
+  it('does not mark a completed result stale when a legacy settings state normalizes to the run settings', async () => {
+    const insightSnapshot = {
+      id: 'insight-a',
+      revision: 1,
+      contentHash: 'a'.repeat(64),
+      result: { productName: '测试产品' },
+    };
+    const legacySettings = { targetCount: 10, defaultDurationSeconds: 5 };
+    const settingsHash = workflowStateHash(normalizeEffectPromptSettings(legacySettings));
+    const result = {
+      id: 'result-a',
+      projectId: 'project-a',
+      workflowRunId: 'workflow-a',
+      productId: 'product-a',
+      runId: 'run-a',
+      revision: 1,
+      draftResult: completionGateFixture(),
+      settingsHash,
+    };
+    const run = {
+      id: 'run-a',
+      operation: 'BATCH_GENERATE',
+      status: 'COMPLETED',
+      progress: 100,
+      currentNode: 'COMPLETED',
+      errorCode: null,
+      errorMessage: null,
+      updatedAt: new Date('2026-09-04T00:00:00.000Z'),
+      inputSnapshot: currentInputSnapshot({
+        settings: legacySettings,
+        insightArtifact: insightSnapshot,
+      }),
+      result,
+      stages: [],
+    };
+    const repository = {
+      workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }),
+      products: vi.fn().mockResolvedValue([
+        { id: 'product-a', updatedAt: run.updatedAt, promptRuns: [{ id: 'run-a' }] },
+      ]),
+      run: vi.fn().mockResolvedValue(run),
+      latestResult: vi.fn(),
+      settingsNode: vi.fn().mockResolvedValue({
+        revision: 1,
+        state: legacySettings,
+        executionInputHash: 'legacy-raw-state-hash',
+      }),
+      insightArtifact: vi.fn().mockResolvedValue({
+        ...insightSnapshot,
+        payload: {},
+        freshness: 'CURRENT',
+        availability: 'AVAILABLE',
+      }),
+      promptArtifact: vi.fn().mockResolvedValue(null),
+    };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const service = new EffectPromptService(repository as never, projects as never, {} as never);
+
+    const output = await service.workspace('project-a', 'workflow-a');
+
+    expect(output.products[0]?.status).toBe('COMPLETED');
+    expect(output.products[0]?.settings).toEqual(normalizeEffectPromptSettings(legacySettings));
+  });
+
   it('rejects mock completion unless the deployment explicitly opts in', async () => {
     const previous = process.env.EFFECT_PROMPT_ALLOW_MOCK_COMPLETION;
     delete process.env.EFFECT_PROMPT_ALLOW_MOCK_COMPLETION;
@@ -810,7 +876,7 @@ describe('EffectPromptService settings contract', () => {
     expect(repository.mutateResult).not.toHaveBeenCalled();
   });
 
-  it('adds a prompt without manual dimensions and queues the exact saved item', async () => {
+  it('queues AI creative-structure autofill for the exact saved item', async () => {
     const draftResult = completionGateFixture();
     const repository = {
       result: vi.fn().mockResolvedValue({
@@ -865,12 +931,12 @@ describe('EffectPromptService settings contract', () => {
     const mutation = repository.mutateResult.mock.calls[0]?.[3];
     expect(mutation.kind).toBe('ADD');
     expect(mutation.item.dimensions).toEqual({
-      narrative: '等待 AI 分析',
-      scene: '等待 AI 分析',
-      persona: '等待 AI 分析',
-      productRelation: '等待 AI 分析',
-      camera: '等待 AI 分析',
-      emotion: '等待 AI 分析',
+      narrative: '等待 AI 自动补齐',
+      scene: '等待 AI 自动补齐',
+      persona: '等待 AI 自动补齐',
+      productRelation: '等待 AI 自动补齐',
+      camera: '等待 AI 自动补齐',
+      emotion: '等待 AI 自动补齐',
     });
     expect(output.affectedItemId).toBe(mutation.item.id);
     const displayOrder = [...output.result.items].sort((left, right) => {
@@ -894,7 +960,7 @@ describe('EffectPromptService settings contract', () => {
     });
   });
 
-  it('allows saving a pending prompt without starting AI evaluation', async () => {
+  it('accepts complete user-authored creative structure without starting AI', async () => {
     const draftResult = completionGateFixture();
     const repository = {
       result: vi.fn().mockResolvedValue({
@@ -957,7 +1023,7 @@ describe('EffectPromptService settings contract', () => {
     expect(output.evaluationRun).toBeUndefined();
     expect(output.evaluationStartError).toBeUndefined();
     expect(output.result.items.find(({ id }) => id === output.affectedItemId)).toMatchObject({
-      classificationStatus: 'PENDING',
+      classificationStatus: 'VERIFIED',
       fragmentType: 'EFFECT',
       primaryPurpose: 'EFFECT',
       compatiblePurposes: ['EFFECT'],

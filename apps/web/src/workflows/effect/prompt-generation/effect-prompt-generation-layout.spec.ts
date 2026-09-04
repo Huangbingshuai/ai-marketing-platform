@@ -15,10 +15,14 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('<h3>批次设置</h3>');
     expect(pageSource).not.toContain('仅以下参数可调');
     expect(pageSource).toMatch(/\.settings-heading\s*\{[^}]*padding:\s*0 13px;/u);
-    expect(pageSource).toContain('Prompt 总数量');
-    expect(pageSource).toContain('每批最多 ${EFFECT_PROMPT_LIMITS.maxCount} 条');
-    expect(pageSource).toContain("label: '片段时长'");
+    expect(pageSource).toContain('生成片段数');
+    expect(pageSource).not.toContain('Prompt 总数量');
+    expect(pageSource).not.toContain('每批最多 ${EFFECT_PROMPT_LIMITS.maxCount} 条');
+    expect(pageSource).toContain("label: '单条片段时长'");
     expect(pageSource).not.toContain('默认片段时长');
+    expect(pageSource).not.toContain('作为独立渲染参数，不写入 Prompt 正文');
+    expect(pageSource).not.toContain('用于调整节奏和表达习惯，不会写成 Prompt 元数据');
+    expect(pageSource).not.toContain('智能调度会按事实和场景选择视觉语言');
     expect(pageSource).toContain('currentSettings.value.targetCount');
     expect(pageSource).toContain('currentSettings.value.defaultDurationSeconds');
     for (const removed of [
@@ -37,12 +41,22 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain(
       "type NumericPromptSetting = 'targetCount' | 'defaultDurationSeconds'",
     );
+    expect(pageSource).toMatch(
+      /\.setting-card--select\s*>\s*\.effect-up-select\s*\{[^}]*grid-row:\s*1;[^}]*grid-column:\s*2;/u,
+    );
+    expect(pageSource).toMatch(
+      /\.simple-setting-grid\s+\.number-control\s*\{[^}]*height:\s*38px;[^}]*grid-row:\s*1;[^}]*grid-column:\s*2;/u,
+    );
+    expect(pageSource).toMatch(
+      /@media \(max-width:\s*1280px\)\s*\{[\s\S]*?\.simple-setting-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,/u,
+    );
   });
 
   it('keeps disabled elements as the single user-owned shared constraint input', () => {
     expect(pageSource).toContain('<span>禁用元素</span>');
     expect(pageSource).toContain(':value="currentDisabledElementsText"');
     expect(pageSource).toContain('@input="updateDisabledElementsText');
+    expect(pageSource).not.toContain('支持顿号、逗号或换行分隔');
     expect(pageSource).not.toContain('系统共用内容');
     expect(pageSource).not.toContain('最终共用提示词');
     expect(pageSource).not.toContain('sharedPromptDraft');
@@ -103,26 +117,29 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).not.toContain('卖点侧重');
   });
 
-  it('edits purpose and creative structure without automatically starting AI evaluation', () => {
+  it('places Prompt first and lets the user explicitly request AI creative-structure autofill', () => {
     expect(pageSource).toContain('创意方向与六维信息');
     expect(pageSource).toContain('这些内容会和 Prompt 正文一起约束视频生成，请保持表达一致');
     expect(pageSource).toContain('v-model="editorDraft.primaryPurpose"');
     expect(pageSource).toContain('v-model="editorDraft.creativeCore"');
     expect(pageSource).toContain('v-model="editorDraft.dimensions[dimension.key]"');
-    expect(pageSource).toContain('后续评估不会覆盖你的选择');
+    expect(pageSource).toContain('AI 自动生成不会覆盖你的选择');
     expect(pageSource).not.toContain('editorDraft.useAiAnalysis');
     expect(pageSource).not.toContain('保存后使用 AI 分析');
-    expect(pageSource).toContain('保存只更新草稿，不会调用 AI');
+    expect(pageSource).toContain('只有点击“AI 自动生成”才会调用 AI');
+    expect(pageSource).toContain('!editorDraft.content.trim()');
+    expect(pageSource).toContain('@click="autoFillEditorCreativeStructure"');
+    expect(pageSource.indexOf('class="editor-content"')).toBeLessThan(
+      pageSource.indexOf('class="editor-creative-structure"'),
+    );
     expect(pageSource).toContain('saved.affectedItemIndex');
     expect(pageSource).not.toContain('saved.result.items.findIndex');
     expect(pageSource).not.toContain('existingItemIds');
-    expect(pageSource).toContain("operation: 'ITEM_EVALUATE'");
-    expect(pageSource).toContain('targetItemId: item.id');
     expect(pageSource).toContain("item.classificationStatus === 'PENDING'");
     expect(pageSource).toContain('NEEDS_REVISION');
     expect(pageSource).toContain('需修改');
-    expect(pageSource).toContain('@click="evaluateItem(item)"');
-    expect(pageSource).toContain("item.classificationStatus === 'NEEDS_REVISION' ? '编辑后评估'");
+    expect(pageSource).not.toContain('@click="evaluateItem(item)"');
+    expect(pageSource).not.toContain('重新评估');
     expect(pageSource).toContain("editorMode === 'add' ? '添加提示词' : '编辑提示词'");
     expect(pageSource).toContain('<Pencil :size="13" />编辑');
   });
@@ -153,6 +170,24 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('生成 3 个备选');
     expect(pageSource).toContain('采用这个方案');
     expect(pageSource).toContain('撤销本次替换');
+  });
+
+  it('restores the latest completed regeneration preview after a page refresh', () => {
+    expect(pageSource).toContain(
+      'isPromptRunActive(state) || state.productId === currentProductId.value',
+    );
+    expect(pageSource).toContain('else updateRun(state.productId, run);');
+    expect(pageSource).toContain('void resumeRuns();');
+  });
+
+  it('keeps the single-item regeneration dialog compact and responsive', () => {
+    expect(pageSource).toContain('class="regeneration-heading__icon"');
+    expect(pageSource).toContain('class="regeneration-dialog-body"');
+    expect(pageSource).toContain('class="regeneration-form"');
+    expect(pageSource).toContain('{{ regenerationReasons.length }} 项已选');
+    expect(pageSource).toContain('width: min(920px, 100%);');
+    expect(pageSource).toContain('@media (max-width: 520px)');
+    expect(pageSource).toContain('grid-template-columns: repeat(2, minmax(0, 1fr));');
   });
 
   it('keeps manual editing concise without a batch-import entry', () => {

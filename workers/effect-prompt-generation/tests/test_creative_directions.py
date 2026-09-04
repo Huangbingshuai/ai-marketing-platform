@@ -17,6 +17,7 @@ from effect_prompt_generation.models import (
     CreativeCandidate,
     CreativeDimensions,
     CreativeDirectionFactApplication,
+    CreativeDirectionAuditItem,
     CreativeDirectionAuditResponse,
     CreativeDirectionDiversityAuditResponse,
     CreativeDirectionOverlapGroup,
@@ -28,14 +29,20 @@ from effect_prompt_generation.models import (
     CreativeEvaluation,
     CreativeFactTerritoryAssignment,
     CreativeFactTerritoryAssignmentResponse,
+    CreativeFactAssignment,
     CreativeScores,
     CreativeSemanticProfile,
+    CreativeTask,
+    CreativeTerritoryFactCompatibility,
     FragmentType,
     PromptGenerationSnapshot,
     PromptBatchSettings,
     StrategyCheckpoint,
 )
-from effect_prompt_generation.pipeline import PromptGenerationPipeline
+from effect_prompt_generation.pipeline import (
+    PromptGenerationPipeline,
+    _creative_task_chunks,
+)
 from effect_prompt_generation.providers import (
     CREATIVE_DIRECTION_TEMPLATE_HASH,
     MockAiProvider,
@@ -54,10 +61,12 @@ from effect_prompt_generation.creative_directions import (
     direction_allocation_bucket,
     dominant_families,
     max_cluster_share,
+    merge_creative_landscape_territory_revision,
     merge_creative_direction_revision,
     creative_direction_revision_context,
     semantic_cluster_novelty,
     validate_semantic_profile,
+    validate_creative_direction_audit_batch,
     validate_creative_direction_diversity_audit,
     validate_creative_diversity_landscape,
     validate_creative_direction_audit,
@@ -70,6 +79,93 @@ from test_creatives import PromptApi, _runtime, _snapshot
 
 def test_creative_direction_count_scales_with_batch_size() -> None:
     assert creative_direction_target_count(10) == 8
+
+
+def test_audit_transport_accepts_empty_explanatory_summaries() -> None:
+    direction_audit = CreativeDirectionAuditResponse(
+        items=[
+            CreativeDirectionAuditItem(
+                direction_id="direction-01",
+                realized_territory_id="BATHROOM_ROUTINE",
+                realized_action_id="PRESS_PUMP",
+                aligned=True,
+                fact_reviews=[],
+            )
+        ],
+        requires_revision=False,
+        summary="",
+    )
+    diversity_audit = CreativeDirectionDiversityAuditResponse(
+        groups=[],
+        requires_revision=False,
+        summary="",
+    )
+    territory_audit = CreativeTerritoryAuditResponse(
+        territory_id="BATHROOM_ROUTINE",
+        fact_issues=[],
+        summary="",
+    )
+
+    assert direction_audit.summary == "创意方向复核完成"
+    assert diversity_audit.summary == "全批方向重复复核完成"
+    assert territory_audit.summary == "创意空间复核完成"
+
+
+def test_creative_task_chunks_keep_direction_siblings_together() -> None:
+    plan = _direction_plan_for_semantic_tests()
+    directions = plan.directions[:6]
+    tasks = [
+        CreativeTask(
+            slot_id=f"slot-{index}",
+            ordinal=index + 1,
+            round=0,
+            target_duration_seconds=30,
+            fact_assignment=CreativeFactAssignment(
+                fact_ids=direction.fact_ids,
+                assignment_hash=f"{index + 1:064x}",
+            ),
+            creative_direction=direction,
+        )
+        for index, direction in enumerate([*directions, *directions])
+    ]
+
+    chunks = _creative_task_chunks(tasks, max_size=4)
+
+    assert [len(chunk) for chunk in chunks] == [4, 4, 4]
+    assert {task.slot_id for chunk in chunks for task in chunk} == {
+        task.slot_id for task in tasks
+    }
+    direction_chunk_indexes: dict[str, set[int]] = {}
+    for chunk_index, chunk in enumerate(chunks):
+        for task in chunk:
+            assert task.creative_direction is not None
+            direction_chunk_indexes.setdefault(
+                task.creative_direction.direction_id, set()
+            ).add(chunk_index)
+    assert all(len(indexes) == 1 for indexes in direction_chunk_indexes.values())
+
+
+def test_fact_compatibility_keeps_multiple_independent_unsupported_conditions() -> None:
+    compatibility = CreativeTerritoryFactCompatibility(
+        fact_id="fact-1",
+        natural_usage="作为产品成分背景",
+        unsupported_conditions=[
+            "不得用瓶身外观证明成分体系",
+            "不得用泡沫形态证明成分体系",
+        ],
+    )
+
+    assert compatibility.unsupported_conditions == [
+        "不得用瓶身外观证明成分体系",
+        "不得用泡沫形态证明成分体系",
+    ]
+    assignment = CreativeFactTerritoryAssignment(
+        fact_id="fact-1",
+        territory_id="PRODUCT_USAGE",
+        natural_usage="作为产品成分背景",
+        unsupported_conditions=compatibility.unsupported_conditions,
+    )
+    assert len(assignment.unsupported_conditions) == 2
 
 
 def test_direction_diversity_audit_validation_is_idempotent() -> None:
@@ -104,10 +200,55 @@ def test_direction_diversity_audit_validation_is_idempotent() -> None:
     restored = validate_creative_direction_diversity_audit(validated, directions)
 
     assert restored == validated
-    assert creative_direction_target_count(50) == 40
-    assert creative_direction_target_count(75) == 60
-    assert creative_direction_target_count(100) == 80
-    assert creative_direction_target_count(500) == 80
+    assert creative_direction_target_count(50) == 20
+    assert creative_direction_target_count(75) == 30
+    assert creative_direction_target_count(100) == 32
+    assert creative_direction_target_count(500) == 32
+
+
+def test_direction_audit_normalizes_action_to_its_structural_territory() -> None:
+    from effect_prompt_generation.providers import (
+        _mock_creative_direction_audit,
+        _mock_creative_direction_response,
+        _mock_creative_landscape_response,
+    )
+
+    application = map_insight(_cluster_snapshot().insight_artifact.result)
+    landscape = validate_creative_diversity_landscape(
+        _mock_creative_landscape_response(application, direction_count=13),
+        application,
+        source_hash="a" * 64,
+        template_hash="b" * 64,
+        expected_direction_count=13,
+    )
+    directions = _mock_creative_direction_response(
+        application,
+        landscape=landscape,
+        direction_count=13,
+    )
+    response = _mock_creative_direction_audit(landscape, directions)
+    first = response.items[0]
+    wrong_territory = next(
+        territory.territory_id
+        for territory in landscape.territories
+        if territory.territory_id != first.realized_territory_id
+    )
+    mismatched = response.model_copy(
+        update={
+            "items": [
+                first.model_copy(update={"realized_territory_id": wrong_territory}),
+                *response.items[1:],
+            ]
+        }
+    )
+
+    normalized = validate_creative_direction_audit_batch(
+        mismatched,
+        directions.directions,
+        landscape,
+    )
+
+    assert normalized.items[0].realized_territory_id == first.realized_territory_id
 
 
 def test_large_batches_require_enough_creative_territory_capacity() -> None:
@@ -198,8 +339,8 @@ def test_direction_plan_rejects_reusing_one_action_inside_a_territory() -> None:
 
 
 def test_creative_direction_count_scales_with_fact_density() -> None:
-    assert creative_direction_target_count(50, 37) == 40
-    assert creative_direction_target_count(50, 41) == 40
+    assert creative_direction_target_count(50, 37) == 20
+    assert creative_direction_target_count(50, 41) == 20
     assert creative_direction_target_count(10, 40) == 10
     assert "每个方向必须自然使用 2～4 条业务事实" in (
         creative_direction_fact_density_instruction(37, 13)
@@ -220,9 +361,15 @@ class CrossBatchDirectionOverlapProvider(MockAiProvider):
     def __init__(self) -> None:
         self.diversity_audit_calls = 0
         self.direction_plan_calls = 0
+        self.initial_slot_batch_sizes: list[int] = []
 
     async def plan_creative_directions(self, *args: Any, **kwargs: Any) -> Any:
         self.direction_plan_calls += 1
+        context = kwargs.get("revision_context")
+        if context and not context.get("revisionDirectionIds"):
+            slots = context.get("requiredDirectionSlots", [])
+            if slots:
+                self.initial_slot_batch_sizes.append(len(slots))
         return await super().plan_creative_directions(*args, **kwargs)
 
     async def audit_creative_direction_diversity(
@@ -287,6 +434,8 @@ async def test_global_direction_audit_can_revise_cross_batch_overlap() -> None:
     shards = await pipeline.plan_creatives(runtime, round_number=0)
 
     assert sum(len(item.tasks) for item in shards) == 70
+    assert sum(provider.initial_slot_batch_sizes) == 20
+    assert max(provider.initial_slot_batch_sizes) <= 4
     # Initial planning is split by creative territory; the overlap repair is
     # the only subsequent global direction call.
     assert provider.direction_plan_calls > 2
@@ -960,6 +1109,43 @@ class SemanticAuditAlwaysAdvisoryProvider(SemanticAuditThenReplanningProvider):
         )
 
 
+class ManyDirectionAuditThenReplanningProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.revision_batches: list[list[str]] = []
+        self.revision_started = False
+
+    async def plan_creative_directions(self, *args: Any, **kwargs: Any) -> Any:
+        context = kwargs.get("revision_context")
+        revision_ids = context.get("revisionDirectionIds", []) if context else []
+        if revision_ids:
+            self.revision_started = True
+            self.revision_batches.append(list(revision_ids))
+        return await super().plan_creative_directions(*args, **kwargs)
+
+    async def audit_creative_directions(self, *args: Any, **kwargs: Any) -> Any:
+        call = await super().audit_creative_directions(*args, **kwargs)
+        if self.revision_started:
+            return call
+        items = [
+            item.model_copy(
+                update={
+                    "aligned": False,
+                    "issues": ["与其他方向的实质画面关系重叠"],
+                }
+            )
+            for item in call.value.items
+        ]
+        return replace(
+            call,
+            value=CreativeDirectionAuditResponse(
+                items=items,
+                requires_revision=True,
+                revision_direction_ids=[item.direction_id for item in items],
+                summary="要求局部修订多个方向",
+            ),
+        )
+
+
 class UnknownAuditActionOnceProvider(MockAiProvider):
     def __init__(self) -> None:
         self.invalid_audit_batches = 0
@@ -1104,8 +1290,8 @@ async def test_fifty_target_plans_exactly_seventy_initial_candidates() -> None:
         for task in tasks
         if task.creative_direction is not None
     )
-    assert len(direction_counts) == 40
-    assert max(direction_counts.values()) <= 2
+    assert len(direction_counts) == 20
+    assert max(direction_counts.values()) <= 4
     assert all(
         task.sibling_variant_total
         == direction_counts[task.creative_direction.direction_id]
@@ -1120,21 +1306,19 @@ async def test_fifty_target_plans_exactly_seventy_initial_candidates() -> None:
             and task.creative_direction.direction_id == direction_id
         )
         assert sibling_indexes == list(range(1, sibling_total + 1))
-    sibling_coordinated_tasks = [
-        task
-        for shard in shards
-        if len(shard.tasks) > 1
-        and len(
-            {
-                task.creative_direction.direction_id
-                for task in shard.tasks
-                if task.creative_direction is not None
-            }
-        )
-        == 1
-        for task in shard.tasks
-    ]
-    assert len(sibling_coordinated_tasks) >= 52
+    assert len(shards) == 20
+    assert all(len(shard.tasks) <= 4 for shard in shards)
+    shard_indexes_by_direction: dict[str, set[int]] = {}
+    for shard_index, shard in enumerate(shards):
+        for task in shard.tasks:
+            if task.creative_direction is not None:
+                shard_indexes_by_direction.setdefault(
+                    task.creative_direction.direction_id, set()
+                ).add(shard_index)
+    assert all(
+        len(indexes) == 1
+        for direction_id, indexes in shard_indexes_by_direction.items()
+    )
 
 
 @pytest.mark.asyncio
@@ -1223,6 +1407,43 @@ async def test_independent_ai_semantic_audit_requests_direction_replanning() -> 
         and slot["primaryActionId"]
         for slot in targeted_context["requiredDirectionSlots"]
     )
+    plan = pipeline._cache(runtime).creative_direction_plan
+    assert plan is not None
+    assert plan.semantic_audit is not None
+    assert plan.semantic_audit.requires_revision is False
+
+
+@pytest.mark.asyncio
+async def test_many_audited_directions_are_revised_in_bounded_batches() -> None:
+    api = PromptApi()
+    provider = ManyDirectionAuditThenReplanningProvider()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        shard_size=5,
+    )
+    runtime = _runtime()
+    snapshot = _cluster_snapshot().model_copy(
+        update={
+            "settings": PromptBatchSettings(
+                target_count=50,
+                default_duration_seconds=15,
+            )
+        }
+    )
+    pipeline.register_snapshot(runtime, snapshot)
+    await pipeline.map_insight(runtime)
+    await pipeline.compile_fact_visual_strategy(runtime)
+    await pipeline.compile_shared_prompt(runtime)
+
+    shards = await pipeline.plan_creatives(runtime, round_number=0)
+
+    assert shards
+    assert len(provider.revision_batches) > 1
+    assert max(len(batch) for batch in provider.revision_batches) <= 4
+    revised_ids = [item for batch in provider.revision_batches for item in batch]
+    assert len(revised_ids) == len(set(revised_ids))
+    assert len(revised_ids) > 7
     plan = pipeline._cache(runtime).creative_direction_plan
     assert plan is not None
     assert plan.semantic_audit is not None
@@ -1411,11 +1632,20 @@ class LandscapeAuditThenReplanningProvider(MockAiProvider):
         self.audit_calls = 0
         self.landscape_calls = 0
         self.revision_contexts: list[dict[str, Any] | None] = []
+        self.assignment_calls = 0
+        self.assignment_revision_contexts: list[dict[str, Any] | None] = []
 
     async def plan_creative_landscape(self, *args: Any, **kwargs: Any) -> Any:
         self.landscape_calls += 1
         self.revision_contexts.append(kwargs.get("revision_context"))
         return await super().plan_creative_landscape(*args, **kwargs)
+
+    async def assign_creative_landscape_facts(
+        self, *args: Any, **kwargs: Any
+    ) -> Any:
+        self.assignment_calls += 1
+        self.assignment_revision_contexts.append(kwargs.get("revision_context"))
+        return await super().assign_creative_landscape_facts(*args, **kwargs)
 
     async def audit_creative_territory(self, *args: Any, **kwargs: Any) -> Any:
         self.audit_calls += 1
@@ -1432,11 +1662,38 @@ class LandscapeAuditThenReplanningProvider(MockAiProvider):
                     CreativeLandscapeFactIssue(
                         territory_id=territory.territory_id,
                         fact_id=fact_id,
-                        verdict="WEAK",
-                        reason="该事实与空间主动作只有口头关系",
+                        verdict="UNSUPPORTED",
+                        reason="该事实依赖资料未确认的画面条件",
                     )
                 ],
                 summary="独立复核要求修订一个创意空间",
+            ),
+        )
+
+
+class WeakTerritoryAuditProvider(LandscapeAuditThenReplanningProvider):
+    async def audit_creative_territory(self, *args: Any, **kwargs: Any) -> Any:
+        self.audit_calls += 1
+        call = await MockAiProvider.audit_creative_territory(
+            self, *args, **kwargs
+        )
+        if self.audit_calls > 1:
+            return call
+        territory = kwargs["territory"]
+        fact_id = territory.compatible_fact_ids[0]
+        return replace(
+            call,
+            value=CreativeTerritoryAuditResponse(
+                territory_id=territory.territory_id,
+                fact_issues=[
+                    CreativeLandscapeFactIssue(
+                        territory_id=territory.territory_id,
+                        fact_id=fact_id,
+                        verdict="WEAK",
+                        reason="关系可以使用，但创意承载仍可更自然",
+                    )
+                ],
+                summary="存在一项偏弱但不依赖未确认条件的关系",
             ),
         )
 
@@ -1460,54 +1717,77 @@ class TransientTerritoryAuditProvider(MockAiProvider):
 
 
 class StructuralThenSemanticLandscapeProvider(LandscapeAuditThenReplanningProvider):
-    async def plan_creative_landscape(self, *args: Any, **kwargs: Any) -> Any:
-        call = await super().plan_creative_landscape(*args, **kwargs)
-        if self.landscape_calls != 1:
+    async def assign_creative_landscape_facts(
+        self, *args: Any, **kwargs: Any
+    ) -> Any:
+        call = await super().assign_creative_landscape_facts(*args, **kwargs)
+        if self.assignment_calls != 1:
             return call
-        territories = call.value.territories
-        duplicated_fact_id = territories[0].required_fact_ids[0]
-        invalid_second = territories[1].model_copy(
-            update={
-                "required_fact_ids": [
-                    duplicated_fact_id,
-                    *territories[1].required_fact_ids,
-                ],
-                "compatible_fact_ids": list(
-                    dict.fromkeys(
-                        [duplicated_fact_id, *territories[1].compatible_fact_ids]
-                    )
-                ),
-                "fact_compatibilities": [
-                    territories[0].fact_compatibilities[0],
-                    *territories[1].fact_compatibilities,
-                ],
-            }
-        )
+        assignments = call.value.assignments
         return replace(
             call,
-            value=call.value.model_copy(
-                update={
-                    "territories": [
-                        territories[0],
-                        invalid_second,
-                        *territories[2:],
-                    ]
-                }
+            value=CreativeFactTerritoryAssignmentResponse(
+                assignments=[assignments[0], assignments[0], *assignments[2:]]
             ),
         )
 
 
 class InvalidJsonDuringSemanticReplanProvider(LandscapeAuditThenReplanningProvider):
-    async def plan_creative_landscape(self, *args: Any, **kwargs: Any) -> Any:
-        self.landscape_calls += 1
-        self.revision_contexts.append(kwargs.get("revision_context"))
-        if self.landscape_calls == 2:
+    async def assign_creative_landscape_facts(
+        self, *args: Any, **kwargs: Any
+    ) -> Any:
+        if self.assignment_calls == 1:
+            self.assignment_calls += 1
+            self.assignment_revision_contexts.append(kwargs.get("revision_context"))
             raise ProviderError(
-                "truncated landscape json",
+                "truncated fact assignment json",
                 retryable=False,
                 error_type=ProviderErrorType.RESPONSE_INVALID,
             )
-        return await MockAiProvider.plan_creative_landscape(self, *args, **kwargs)
+        return await super().assign_creative_landscape_facts(*args, **kwargs)
+
+
+class StructuralThenInvalidAssignmentProvider(LandscapeAuditThenReplanningProvider):
+    async def assign_creative_landscape_facts(
+        self, *args: Any, **kwargs: Any
+    ) -> Any:
+        if self.assignment_calls == 0:
+            call = await super().assign_creative_landscape_facts(*args, **kwargs)
+            assignments = call.value.assignments
+            return replace(
+                call,
+                value=CreativeFactTerritoryAssignmentResponse(
+                    assignments=[assignments[0], assignments[0], *assignments[2:]]
+                ),
+            )
+        if self.assignment_calls == 1:
+            self.assignment_calls += 1
+            self.assignment_revision_contexts.append(kwargs.get("revision_context"))
+            raise ProviderError(
+                "malformed fact assignment json",
+                retryable=False,
+                error_type=ProviderErrorType.RESPONSE_INVALID,
+            )
+        return await super().assign_creative_landscape_facts(*args, **kwargs)
+
+
+class TwiceTransientTerritoryAuditProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.calls: Counter[str] = Counter()
+        self.target_id: str | None = None
+
+    async def audit_creative_territory(self, *args: Any, **kwargs: Any) -> Any:
+        territory = kwargs["territory"]
+        if self.target_id is None:
+            self.target_id = territory.territory_id
+        self.calls[territory.territory_id] += 1
+        if territory.territory_id == self.target_id and self.calls[self.target_id] < 3:
+            raise ProviderError(
+                "temporary territory audit network error",
+                retryable=True,
+                error_type=ProviderErrorType.NETWORK,
+            )
+        return await super().audit_creative_territory(*args, **kwargs)
 
 
 @pytest.mark.asyncio
@@ -1529,11 +1809,39 @@ async def test_landscape_semantic_audit_replans_before_direction_generation() ->
     await pipeline.compile_shared_prompt(runtime)
     await pipeline.plan_creatives(runtime, round_number=0)
 
-    assert provider.landscape_calls == 2
+    assert provider.landscape_calls == 1
+    assert provider.assignment_calls == 2
     assert provider.audit_calls >= 2
     assert provider.revision_contexts[0] is None
-    assert provider.revision_contexts[1]
-    assert "semanticAudit" in provider.revision_contexts[1]
+    assert provider.assignment_revision_contexts[0] is None
+    assert provider.assignment_revision_contexts[1]
+    assert "semanticAudit" in provider.assignment_revision_contexts[1]
+    assert "previousAssignments" in provider.assignment_revision_contexts[1]
+
+
+@pytest.mark.asyncio
+async def test_weak_landscape_finding_is_advisory_and_does_not_replan() -> None:
+    api = PromptApi()
+    provider = WeakTerritoryAuditProvider()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        embedding_provider=MockEmbeddingProvider(),
+        similarity_mode="vector",
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _cluster_snapshot())
+
+    await pipeline.map_insight(runtime)
+    await pipeline.compile_fact_visual_strategy(runtime)
+    await pipeline.compile_shared_prompt(runtime)
+    await pipeline.plan_creatives(runtime, round_number=0)
+
+    assert provider.landscape_calls == 1
+    assert provider.assignment_calls == 1
+    assert provider.audit_calls >= 1
+    assert provider.assignment_revision_contexts == [None]
 
 
 @pytest.mark.asyncio
@@ -1577,9 +1885,12 @@ async def test_structure_repair_does_not_consume_semantic_replan_budget() -> Non
     await pipeline.compile_shared_prompt(runtime)
     await pipeline.plan_creatives(runtime, round_number=0)
 
-    assert provider.landscape_calls == 2
-    assert provider.revision_contexts[1]
-    assert "semanticAudit" in provider.revision_contexts[1]
+    assert provider.landscape_calls == 1
+    assert provider.assignment_calls == 3
+    assert provider.assignment_revision_contexts[1]
+    assert "validationError" in provider.assignment_revision_contexts[1]
+    assert provider.assignment_revision_contexts[2]
+    assert "semanticAudit" in provider.assignment_revision_contexts[2]
 
 
 @pytest.mark.asyncio
@@ -1603,12 +1914,63 @@ async def test_invalid_landscape_json_retries_without_consuming_semantic_replan(
     await pipeline.compile_shared_prompt(runtime)
     await pipeline.plan_creatives(runtime, round_number=0)
 
-    assert provider.landscape_calls == 3
-    assert provider.revision_contexts[1]
-    assert provider.revision_contexts[2]
-    assert "semanticAudit" in provider.revision_contexts[2]
-    assert provider.revision_contexts[2]["validationError"] == (
-        "上一版结构化 JSON 不完整"
+    assert provider.landscape_calls == 1
+    assert provider.assignment_calls == 3
+    assert provider.assignment_revision_contexts[1]
+    assert provider.assignment_revision_contexts[2]
+    assert "semanticAudit" in provider.assignment_revision_contexts[2]
+
+
+@pytest.mark.asyncio
+async def test_fact_assignment_invalid_json_retries_without_replanning_landscape() -> None:
+    api = PromptApi()
+    provider = StructuralThenInvalidAssignmentProvider()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        embedding_provider=MockEmbeddingProvider(),
+        similarity_mode="vector",
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _cluster_snapshot())
+
+    await pipeline.map_insight(runtime)
+    await pipeline.compile_fact_visual_strategy(runtime)
+    await pipeline.compile_shared_prompt(runtime)
+    await pipeline.plan_creatives(runtime, round_number=0)
+
+    assert provider.landscape_calls == 1
+    assert provider.assignment_calls == 4
+    assert provider.assignment_revision_contexts[1]
+    assert provider.assignment_revision_contexts[2]
+
+
+@pytest.mark.asyncio
+async def test_territory_audit_retries_twice_without_restarting_other_branches() -> None:
+    api = PromptApi()
+    provider = TwiceTransientTerritoryAuditProvider()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        embedding_provider=MockEmbeddingProvider(),
+        similarity_mode="vector",
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _cluster_snapshot())
+
+    await pipeline.map_insight(runtime)
+    await pipeline.compile_fact_visual_strategy(runtime)
+    await pipeline.compile_shared_prompt(runtime)
+    await pipeline.plan_creatives(runtime, round_number=0)
+
+    assert provider.target_id is not None
+    assert provider.calls[provider.target_id] == 3
+    assert all(
+        count == 1
+        for territory_id, count in provider.calls.items()
+        if territory_id != provider.target_id
     )
 
 
@@ -1827,6 +2189,37 @@ def test_direction_revision_mechanically_preserves_unflagged_directions() -> Non
         [flagged_id],
     )
     assert partial_merged == merged
+
+
+def test_landscape_revision_mechanically_preserves_unflagged_territories() -> None:
+    from effect_prompt_generation.providers import _mock_creative_landscape_response
+
+    application = map_insight(_cluster_snapshot().insight_artifact.result)
+    previous = _mock_creative_landscape_response(application, direction_count=13)
+    flagged_id = previous.territories[0].territory_id
+    revised_territory = previous.territories[0].model_copy(
+        update={"label": "模型局部修订后的创意空间"}
+    )
+    partial = CreativeDiversityLandscapeResponse(territories=[revised_territory])
+
+    merged = merge_creative_landscape_territory_revision(
+        previous,
+        partial,
+        [flagged_id],
+    )
+
+    assert merged.territories[0].label == "模型局部修订后的创意空间"
+    assert merged.territories[1:] == previous.territories[1:]
+    assert len(merged.territories) == len(previous.territories)
+
+    with pytest.raises(ValueError, match="every requested territory once"):
+        merge_creative_landscape_territory_revision(
+            previous,
+            CreativeDiversityLandscapeResponse(
+                territories=[previous.territories[1]]
+            ),
+            [flagged_id],
+        )
 
 
 def test_direction_audit_accepts_structured_direction_issue_as_revision_reason() -> (

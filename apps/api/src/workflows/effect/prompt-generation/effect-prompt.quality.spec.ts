@@ -412,7 +412,7 @@ describe('effect prompt quality contract', () => {
     });
   });
 
-  it('ITEM_EVALUATE preserves the user-authored purpose and creative structure', () => {
+  it('ITEM_EVALUATE autofill preserves user-authored fields and does not apply AI scoring', () => {
     const target = { ...item('target'), origin: 'MANUAL' as const, manualEdited: true };
     const evaluated = {
       ...target,
@@ -447,7 +447,7 @@ describe('effect prompt quality contract', () => {
       fragmentType: target.primaryPurpose,
       primaryPurpose: target.primaryPurpose,
       classificationStatus: 'VERIFIED',
-      productRelevance: 88,
+      productRelevance: target.productRelevance,
     });
     expect(merged[0]?.content).not.toBe(evaluated.content);
   });

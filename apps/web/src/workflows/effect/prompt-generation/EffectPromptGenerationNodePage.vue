@@ -24,6 +24,7 @@ import {
   EFFECT_PROMPT_FRAGMENT_TYPES,
   EFFECT_PROMPT_GRAPH_NODES,
   EFFECT_PROMPT_LIMITS,
+  EFFECT_PROMPT_RENDER_CAPABILITIES,
   EFFECT_PROMPT_SEMANTIC_DUPLICATE_RATE_LIMIT,
   EFFECT_PROMPT_GRAPH_EDGES,
   EFFECT_PROMPT_GRAPH_NODE_IDS,
@@ -70,6 +71,7 @@ import {
   type EffectPromptPageStatus,
 } from './effect-prompt-generation-state';
 import {
+  autoFillEffectPromptCreativeStructure,
   beginEffectPromptRun,
   applyPromptRegeneration,
   commitEffectPromptResult,
@@ -134,6 +136,7 @@ const graphCloseButton = ref<HTMLButtonElement | null>(null);
 
 const editorOpen = ref(false);
 const editorSaving = ref(false);
+const editorAutoFilling = ref(false);
 const editorMode = ref<'add' | 'edit'>('edit');
 const editorItemId = ref('');
 const editorDraft = ref<PromptItemDraft>({
@@ -213,10 +216,10 @@ const currentDisabledElementsText = computed(
   () => disabledElementsTextDrafts.value[currentProductId.value] ?? '',
 );
 const currentTargetCount = computed(() => currentSettings.value.targetCount);
-const editorDurationRange = {
-  minDurationSeconds: EFFECT_PROMPT_LIMITS.minDurationSeconds,
-  maxDurationSeconds: EFFECT_PROMPT_LIMITS.maxDurationSeconds,
-};
+const editorDurationRange = computed(() => {
+  const capabilityKey = resultData.value?.result.renderProfile.capabilityKey ?? 'SEEDANCE_2_0';
+  return EFFECT_PROMPT_RENDER_CAPABILITIES[capabilityKey];
+});
 const currentRun = computed(() => runsByProduct.value[currentProductId.value] ?? null);
 const displayedGraphRun = computed(() => currentRun.value);
 const graphDialogDescription = '展示本次真实输入、连贯创意生成、用途评估和数量结果。';
@@ -389,11 +392,6 @@ const regeneratingItemId = computed(() =>
     ? currentRun.value.targetItemId
     : null,
 );
-const evaluatingItemId = computed(() =>
-  currentRunning.value && currentRun.value?.operation === 'ITEM_EVALUATE'
-    ? currentRun.value.targetItemId
-    : null,
-);
 const currentGraphNodes = computed<EffectPromptNodeExecution[]>(() =>
   currentGraphNodeIds.value.map(
     (id) =>
@@ -463,7 +461,7 @@ const reviewIssueLabel = (issue: string): string =>
     FABRICATED_FACT: '正文包含信息卡未确认的产品事实',
     ABSTRACT_FACT_VISUAL_PROOF: '画面错误地把抽象卖点当成可直接证明的事实',
     EMPTY_OR_BROKEN_CONTENT: '正文结构不完整，暂时无法用于生成视频',
-  })[issue] ?? '这条 Prompt 需要修改后重新评估';
+  })[issue] ?? '这条 Prompt 需要修改后重新生成创意信息';
 
 const context = (): EffectPromptContext => ({
   projectId: props.projectId,
@@ -606,7 +604,7 @@ const startPolling = (productId: string, run: EffectPromptRun): void => {
       }
       const successMessage =
         run.operation === 'ITEM_EVALUATE'
-          ? 'Prompt 用途评估完成'
+          ? '创意方向与六维信息已补齐'
           : run.operation === 'ITEM_REGENERATE'
             ? '已生成 3 个 Prompt 备选，请选择采用'
             : 'Prompt 批次处理完成';
@@ -614,7 +612,7 @@ const startPolling = (productId: string, run: EffectPromptRun): void => {
         finalRun.status === 'COMPLETED'
           ? successMessage
           : finalRun.errorMessage ||
-              (run.operation === 'ITEM_EVALUATE' ? 'Prompt 用途评估失败' : 'Prompt 生成失败'),
+              (run.operation === 'ITEM_EVALUATE' ? 'AI 自动补齐失败' : 'Prompt 生成失败'),
         finalRun.status === 'COMPLETED' ? 'success' : 'error',
       );
     })
@@ -631,11 +629,17 @@ const startPolling = (productId: string, run: EffectPromptRun): void => {
 const resumeRuns = async (): Promise<void> => {
   await Promise.all(
     Object.values(productStates.value)
-      .filter((state) => isPromptRunActive(state) && state.runId)
+      .filter(
+        (state) =>
+          state.runId &&
+          (isPromptRunActive(state) || state.productId === currentProductId.value),
+      )
       .map(async (state) => {
         try {
           const run = await loadEffectPromptRun(props.projectId, state.runId!);
-          startPolling(state.productId, run);
+          if (run.status === 'QUEUED' || run.status === 'RUNNING')
+            startPolling(state.productId, run);
+          else updateRun(state.productId, run);
         } catch (error) {
           if (!isAbortError(error))
             showNotice(safeMessage(error, '恢复 Prompt 任务失败'), 'warning');
@@ -742,6 +746,7 @@ watch(currentProductId, (next, previous) => {
   graphDetail.value = null;
   graphDetailError.value = '';
   void loadCurrentResult();
+  void resumeRuns();
 });
 watch(page, () => void loadCurrentResult());
 const changePageSize = (): void => {
@@ -1039,11 +1044,11 @@ const regenerateItem = async (): Promise<void> => {
     return;
   if (
     !Number.isInteger(regenerationDurationSeconds.value) ||
-    regenerationDurationSeconds.value < editorDurationRange.minDurationSeconds ||
-    regenerationDurationSeconds.value > editorDurationRange.maxDurationSeconds
+    regenerationDurationSeconds.value < editorDurationRange.value.minDurationSeconds ||
+    regenerationDurationSeconds.value > editorDurationRange.value.maxDurationSeconds
   ) {
     showNotice(
-      `片段时长需在 ${editorDurationRange.minDurationSeconds}～${editorDurationRange.maxDurationSeconds} 秒之间`,
+      `片段时长需在 ${editorDurationRange.value.minDurationSeconds}～${editorDurationRange.value.maxDurationSeconds} 秒之间`,
       'warning',
     );
     return;
@@ -1166,8 +1171,15 @@ const openEditor = async (item?: EffectPromptItem, event?: Event): Promise<void>
     primaryPurpose: item?.primaryPurpose ?? 'PRODUCT_DISPLAY',
     creativeCore: item?.creativeCore ?? '',
     dimensions: item ? { ...item.dimensions } : emptyDimensions(),
-    targetDurationSeconds:
-      item?.targetDurationSeconds ?? currentSettings.value.defaultDurationSeconds,
+    targetDurationSeconds: item?.targetDurationSeconds
+      ? item.targetDurationSeconds
+      : Math.min(
+          editorDurationRange.value.maxDurationSeconds,
+          Math.max(
+            editorDurationRange.value.minDurationSeconds,
+            currentSettings.value.defaultDurationSeconds,
+          ),
+        ),
   };
   editorOpen.value = true;
   await nextTick();
@@ -1175,7 +1187,7 @@ const openEditor = async (item?: EffectPromptItem, event?: Event): Promise<void>
 };
 
 const closeEditor = (): void => {
-  if (editorSaving.value) return;
+  if (editorSaving.value || editorAutoFilling.value) return;
   editorOpen.value = false;
   const trigger = editorTrigger.value;
   editorTrigger.value = null;
@@ -1197,17 +1209,17 @@ const commitEditor = async (): Promise<void> => {
   ];
   const hasAnyCreativeStructure = creativeStructureValues.some((value) => value.trim());
   const hasCompleteCreativeStructure = creativeStructureValues.every((value) => value.trim());
-  if (hasAnyCreativeStructure && !hasCompleteCreativeStructure) {
-    showNotice('创意主线和六维创意信息需要全部填写，或全部留空交由 AI 分析', 'warning');
+  if (!hasAnyCreativeStructure || !hasCompleteCreativeStructure) {
+    showNotice('请完整填写创意主线和六维信息，或点击 AI 自动生成', 'warning');
     return;
   }
   if (
     !Number.isInteger(draft.targetDurationSeconds) ||
-    draft.targetDurationSeconds < editorDurationRange.minDurationSeconds ||
-    draft.targetDurationSeconds > editorDurationRange.maxDurationSeconds
+    draft.targetDurationSeconds < editorDurationRange.value.minDurationSeconds ||
+    draft.targetDurationSeconds > editorDurationRange.value.maxDurationSeconds
   ) {
     showNotice(
-      `片段时长需在 ${editorDurationRange.minDurationSeconds}～${editorDurationRange.maxDurationSeconds} 秒之间`,
+      `片段时长需在 ${editorDurationRange.value.minDurationSeconds}～${editorDurationRange.value.maxDurationSeconds} 秒之间`,
       'warning',
     );
     return;
@@ -1245,12 +1257,7 @@ const commitEditor = async (): Promise<void> => {
         ? Math.floor(affectedIndex / pageSize.value) + 1
         : promptPageCount(saved.result.items.length, pageSize.value);
     await reloadWorkspace(false);
-    showNotice(
-      editorMode.value === 'edit'
-        ? '编辑已保存，提交前请在卡片上完成评估'
-        : 'Prompt 已添加，提交前请在卡片上完成评估',
-      'success',
-    );
+    showNotice(editorMode.value === 'edit' ? 'Prompt 编辑已保存' : 'Prompt 已添加', 'success');
   } catch (error) {
     if (!isAbortError(error)) await handleMutationError(error, 'Prompt 保存失败');
   } finally {
@@ -1260,45 +1267,92 @@ const commitEditor = async (): Promise<void> => {
   }
 };
 
-const evaluateItem = async (item: EffectPromptItem): Promise<void> => {
+const autoFillEditorCreativeStructure = async (): Promise<void> => {
   const state = currentState.value;
   const result = resultData.value;
+  const draft = editorDraft.value;
   if (
-    !state ||
+    !state?.resultId ||
     !result ||
     result.revision === null ||
     state.settingsRevision === null ||
     currentRunning.value ||
-    partialPreview.value
+    partialPreview.value ||
+    editorAutoFilling.value
   )
     return;
+  if (!draft.content.trim()) {
+    showNotice('请先填写片段生成 Prompt，再使用 AI 自动生成', 'warning');
+    return;
+  }
+  if (
+    !Number.isInteger(draft.targetDurationSeconds) ||
+    draft.targetDurationSeconds < editorDurationRange.value.minDurationSeconds ||
+    draft.targetDurationSeconds > editorDurationRange.value.maxDurationSeconds
+  ) {
+    showNotice(
+      `片段时长需在 ${editorDurationRange.value.minDurationSeconds}～${editorDurationRange.value.maxDurationSeconds} 秒之间`,
+      'warning',
+    );
+    return;
+  }
   operationController?.abort();
   const controller = new AbortController();
   operationController = controller;
+  editorAutoFilling.value = true;
+  const productId = state.productId;
   try {
-    const run = await beginEffectPromptRun(
+    const saved = await autoFillEffectPromptCreativeStructure(
       props.projectId,
-      state.productId,
-      {
-        workflowRunId: props.workflowRunId,
-        operation: 'ITEM_EVALUATE',
-        targetItemId: item.id,
-        expectedSettingsRevision: state.settingsRevision,
-        expectedResultRevision: result.revision,
-      },
+      state.resultId,
+      result.revision,
+      state.settingsRevision,
+      { ...draft, dimensions: { ...draft.dimensions } },
+      editorMode.value === 'edit' ? editorItemId.value : undefined,
       controller.signal,
     );
-    updateRun(state.productId, run);
-    startPolling(state.productId, run);
+    if (controller.signal.aborted || currentProductId.value !== productId) return;
+    const itemId = saved.affectedItemId ?? editorItemId.value;
+    if (itemId) {
+      editorMode.value = 'edit';
+      editorItemId.value = itemId;
+      keyword.value = '';
+      purposeFilter.value = '';
+      includeCompatiblePurposes.value = false;
+      if (saved.affectedItemIndex !== undefined)
+        page.value = Math.floor(saved.affectedItemIndex / pageSize.value) + 1;
+    }
+    if (!itemId || !saved.evaluationRun) {
+      await reloadWorkspace(false);
+      throw new Error(saved.evaluationStartError || 'AI 自动补齐任务未能启动');
+    }
+    updateRun(productId, saved.evaluationRun);
+    const finalRun = await pollEffectPromptRun(props.projectId, saved.evaluationRun.id, {
+      signal: controller.signal,
+      onUpdate: (run) => updateRun(productId, run),
+    });
+    if (controller.signal.aborted || currentProductId.value !== productId) return;
+    updateRun(productId, finalRun);
+    await reloadWorkspace(false);
+    if (finalRun.status !== 'COMPLETED')
+      throw new Error(finalRun.errorMessage || 'AI 自动补齐失败');
+    const filled = resultData.value?.items.find((item) => item.id === itemId);
+    if (!filled) throw new Error('AI 已完成补齐，但最新 Prompt 未能载入，请刷新后重试');
+    editorDraft.value = {
+      content: filled.content,
+      primaryPurpose: filled.primaryPurpose,
+      creativeCore: filled.creativeCore,
+      dimensions: { ...filled.dimensions },
+      targetDurationSeconds: filled.targetDurationSeconds,
+    };
+    showNotice('创意方向与六维信息已自动生成', 'success');
   } catch (error) {
     if (!isAbortError(error)) {
-      showNotice(
-        safeMessage(error, 'Prompt 已保存，但用途评估未能启动，请稍后重新评估'),
-        'warning',
-      );
+      await handleMutationError(error, 'AI 自动补齐失败');
     }
   } finally {
     if (operationController === controller) operationController = null;
+    editorAutoFilling.value = false;
   }
 };
 
@@ -1494,7 +1548,7 @@ const graphDescription = (nodeId: EffectPromptNodeId): string =>
     COHERENT_CREATIVE_GENERATION: '先形成产品创意空间及其方向，再生成完整六维创意与干净正文',
     CREATIVE_EVALUATION_CLASSIFICATION: '评估产品关联和创意质量，并标注推荐用途与兼容用途',
     EXACT_SELECTION_AND_SUPPLEMENT: '按质量与差异择优，缺少时只补充仍需的数量',
-    ITEM_EVALUATE: '重新评估人工编辑内容的六维连贯性与素材用途',
+    ITEM_EVALUATE: '根据用户 Prompt 自动生成创意主线与六维信息',
     STRATEGY_PLANNING: '连接受众、痛点、场景、卖点与营销目标，形成营销关系束',
     GLOBAL_FACT_ALLOCATION: '先为六类片段分配必须事实与可选事实，避免跨职责误用',
     STRATEGY_FRAGMENT_ROUTER: '并行路由六类营销规划，并复用仍然有效的成功检查点',
@@ -1693,7 +1747,7 @@ const localGraphDetail = (nodeId: EffectPromptNodeId): NodeDetail => {
         CREATIVE_EVALUATION_CLASSIFICATION: '将输出质量判断、推荐用途和问题原因。',
         EXACT_SELECTION_AND_SUPPLEMENT: '将按质量与差异选满目标数量，必要时补充一次。',
         RESULT_SAVE: '将最佳结果保存为节点草稿，完成校验前不会提交工作副本。',
-        ITEM_EVALUATE: '将重新评估单条 Prompt 的质量和推荐用途。',
+        ITEM_EVALUATE: '将根据用户输入的 Prompt 自动补齐创意主线和六维信息。',
       } as Partial<Record<EffectPromptNodeId, string>>
     )[nodeId] ?? '执行后将在这里展示真实业务结果。';
   return {
@@ -2013,14 +2067,12 @@ onBeforeUnmount(() => {
             v-for="setting in [
               {
                 key: 'targetCount',
-                label: 'Prompt 总数量',
-                hint: `每批最多 ${EFFECT_PROMPT_LIMITS.maxCount} 条，成功批次必须与设置数量完全一致`,
+                label: '生成片段数',
                 suffix: '条',
               },
               {
                 key: 'defaultDurationSeconds',
-                label: '片段时长',
-                hint: '作为独立渲染参数，不写入 Prompt 正文',
+                label: '单条片段时长',
                 suffix: '秒',
               },
             ] as const"
@@ -2063,7 +2115,6 @@ onBeforeUnmount(() => {
                 ＋
               </button>
             </span>
-            <small>{{ setting.hint }}</small>
           </label>
           <label class="setting-card setting-card--select">
             <span>投放渠道</span>
@@ -2074,7 +2125,6 @@ onBeforeUnmount(() => {
               :disabled="currentRunning"
               @update:model-value="updateDeliveryChannel"
             />
-            <small>用于调整节奏和表达习惯，不会写成 Prompt 元数据</small>
           </label>
           <label class="setting-card setting-card--select">
             <span>视觉风格基调</span>
@@ -2086,7 +2136,6 @@ onBeforeUnmount(() => {
               :disabled="currentRunning"
               @update:model-value="updateStyleSchedule"
             />
-            <small>智能调度会按事实和场景选择视觉语言，也可固定整批风格</small>
           </label>
           <label class="setting-card setting-card--disabled">
             <span>禁用元素</span>
@@ -2099,7 +2148,6 @@ onBeforeUnmount(() => {
               @input="updateDisabledElementsText(($event.target as HTMLTextAreaElement).value)"
               @blur="flushSettings()"
             />
-            <small>支持顿号、逗号或换行分隔；系统会去重并自动编译为批次共用约束</small>
           </label>
         </div>
       </section>
@@ -2224,7 +2272,7 @@ onBeforeUnmount(() => {
               ><span
                 ><i v-if="item.manualEdited || item.origin === 'MANUAL'">人工</i
                 ><em v-if="item.classificationStatus === 'PENDING'" class="classification-pending"
-                  >正在分析</em
+                  >待补齐</em
                 ><em
                   v-else-if="item.classificationStatus === 'NEEDS_REVISION'"
                   class="classification-needs-revision"
@@ -2257,7 +2305,7 @@ onBeforeUnmount(() => {
               class="prompt-review-issues"
               role="alert"
             >
-              <strong>请编辑后重新评估</strong>
+              <strong>请编辑 Prompt 或重新生成</strong>
               <span v-for="issue in item.reviewIssues ?? []" :key="issue">{{
                 reviewIssueLabel(issue)
               }}</span>
@@ -2304,17 +2352,6 @@ onBeforeUnmount(() => {
             </details>
           </div>
           <div class="prompt-actions">
-            <button
-              v-if="!partialPreview && item.classificationStatus !== 'VERIFIED'"
-              type="button"
-              :disabled="currentRunning || itemOperation !== null"
-              @click="evaluateItem(item)"
-            >
-              <LoaderCircle v-if="evaluatingItemId === item.id" class="spin" :size="13" /><RefreshCw
-                v-else
-                :size="13"
-              />{{ item.classificationStatus === 'NEEDS_REVISION' ? '编辑后评估' : '重新评估' }}
-            </button>
             <button
               v-if="!partialPreview"
               type="button"
@@ -2450,12 +2487,12 @@ onBeforeUnmount(() => {
           <div class="editor-grid">
             <label>
               <span>片段类型</span>
-              <select v-model="editorDraft.primaryPurpose">
+              <select v-model="editorDraft.primaryPurpose" :disabled="editorAutoFilling">
                 <option v-for="type in EFFECT_PROMPT_FRAGMENT_TYPES" :key="type" :value="type">
                   {{ fragmentTypeLabel(type) }}
                 </option>
               </select>
-              <small>作为该条素材的主用途，后续评估不会覆盖你的选择。</small>
+              <small>作为该条素材的主用途，AI 自动生成不会覆盖你的选择。</small>
             </label>
             <label>
               <span>片段时长</span>
@@ -2464,6 +2501,7 @@ onBeforeUnmount(() => {
                 type="number"
                 :min="editorDurationRange.minDurationSeconds"
                 :max="editorDurationRange.maxDurationSeconds"
+                :disabled="editorAutoFilling"
               />
               <small
                 >短片只安排一个连续动作；较长时长才适合更完整的动作过程。时长作为渲染参数，不写入
@@ -2471,18 +2509,37 @@ onBeforeUnmount(() => {
               >
             </label>
           </div>
+          <label class="editor-content"
+            ><span>片段生成 Prompt</span
+            ><small>先描述一个可独立渲染的画面片段；填写后可让 AI 补齐下方创意信息。</small>
+            <textarea
+              v-model="editorDraft.content"
+              :disabled="editorAutoFilling"
+              placeholder="请写清首帧画面、单一连续动作、产品位置、运镜、光线与结束帧"
+            />
+          </label>
           <section class="editor-creative-structure">
             <header>
               <div>
                 <h3>创意方向与六维信息</h3>
                 <p>这些内容会和 Prompt 正文一起约束视频生成，请保持表达一致。</p>
               </div>
-              <span>{{ editorMode === 'add' ? '可稍后评估补齐' : '可直接编辑' }}</span>
+              <button
+                class="editor-ai-fill-button"
+                type="button"
+                :disabled="editorAutoFilling || editorSaving || !editorDraft.content.trim()"
+                @click="autoFillEditorCreativeStructure"
+              >
+                <LoaderCircle v-if="editorAutoFilling" class="spin" :size="14" />
+                <Sparkles v-else :size="14" />
+                {{ editorAutoFilling ? 'AI 生成中' : 'AI 自动生成' }}
+              </button>
             </header>
             <label class="editor-creative-core">
               <span>创意主线</span>
               <textarea
                 v-model="editorDraft.creativeCore"
+                :disabled="editorAutoFilling"
                 maxlength="160"
                 rows="2"
                 placeholder="概括这一画面片段要表达的核心创意"
@@ -2493,6 +2550,7 @@ onBeforeUnmount(() => {
                 <span>{{ dimension.label }}</span>
                 <textarea
                   v-model="editorDraft.dimensions[dimension.key]"
+                  :disabled="editorAutoFilling"
                   :maxlength="editorDimensionMaxLengths[dimension.key]"
                   rows="2"
                   :placeholder="`填写${dimension.label}`"
@@ -2500,24 +2558,21 @@ onBeforeUnmount(() => {
               </label>
             </div>
             <p class="editor-structure-hint">
-              创意主线和六维需完整填写；新增 Prompt 时也可以全部留空，由 AI 根据正文补齐。
+              可自行填写，或在上方 Prompt 完成后让 AI 自动生成；生成结果仍可继续编辑。
             </p>
           </section>
-          <label class="editor-content"
-            ><span>片段生成 Prompt</span
-            ><small>只描述一个可独立渲染的画面片段，不要写完整成片脚本或多镜头时间轴。</small>
-            <textarea
-              v-model="editorDraft.content"
-              placeholder="请写清首帧画面、单一连续动作、产品位置、运镜、光线与结束帧"
-            />
-          </label>
           <footer>
-            <p>保存只更新草稿，不会调用 AI；完成校验前可在卡片上单独评估。</p>
-            <button type="button" :disabled="editorSaving" @click="closeEditor">取消</button
+            <p>完整手填内容可直接保存；只有点击“AI 自动生成”才会调用 AI。</p>
+            <button
+              type="button"
+              :disabled="editorSaving || editorAutoFilling"
+              @click="closeEditor"
+            >
+              取消</button
             ><button
               class="primary-button"
               type="button"
-              :disabled="editorSaving"
+              :disabled="editorSaving || editorAutoFilling"
               @click="commitEditor"
             >
               <LoaderCircle v-if="editorSaving" class="spin" :size="14" />{{
@@ -2541,14 +2596,18 @@ onBeforeUnmount(() => {
           @keydown.esc="closeRegenerationDialog"
         >
           <header>
-            <div>
-              <span>单条重新生成</span>
-              <h2 id="prompt-regeneration-title">重新生成 {{ regenerationCandidate.code }}</h2>
-              <p>
-                <strong
-                  >当前推荐：{{ fragmentTypeLabel(regenerationCandidate.primaryPurpose) }}</strong
-                >
-              </p>
+            <div class="regeneration-heading">
+              <div class="regeneration-heading__icon" aria-hidden="true">
+                <Sparkles :size="20" />
+              </div>
+              <div>
+                <span>单条重新生成</span>
+                <div class="regeneration-heading__title">
+                  <h2 id="prompt-regeneration-title">重新生成 {{ regenerationCandidate.code }}</h2>
+                  <strong>{{ fragmentTypeLabel(regenerationCandidate.primaryPurpose) }}</strong>
+                </div>
+                <p>指出当前内容的问题，系统会生成 3 个不同方向供你选择。</p>
+              </div>
             </div>
             <button
               ref="regenerationCloseButton"
@@ -2560,118 +2619,133 @@ onBeforeUnmount(() => {
             </button>
           </header>
 
-          <details class="regeneration-prompt-preview">
-            <summary>查看当前 Prompt</summary>
-            <p>{{ regenerationCandidate.content }}</p>
-          </details>
+          <div class="regeneration-dialog-body">
+            <details class="regeneration-prompt-preview">
+              <summary>
+                <span>当前 Prompt</span>
+                <em>展开查看原文</em>
+              </summary>
+              <p>{{ regenerationCandidate.content }}</p>
+            </details>
 
-          <template v-if="!regenerationPreview">
-            <label class="regeneration-duration">
-              <span>片段时长</span>
-              <div>
-                <input
-                  v-model.number="regenerationDurationSeconds"
-                  type="number"
-                  :min="editorDurationRange.minDurationSeconds"
-                  :max="editorDurationRange.maxDurationSeconds"
-                  :disabled="regenerationRunning || regenerationSaving"
-                />
-                <em>秒</em>
+            <template v-if="!regenerationPreview">
+              <div class="regeneration-form">
+                <label class="regeneration-duration">
+                  <span>
+                    <strong>片段时长</strong>
+                    <small>系统会按时长控制动作量；时长作为渲染参数，不会写入 Prompt 正文。</small>
+                  </span>
+                  <div>
+                    <input
+                      v-model.number="regenerationDurationSeconds"
+                      type="number"
+                      :min="editorDurationRange.minDurationSeconds"
+                      :max="editorDurationRange.maxDurationSeconds"
+                      :disabled="regenerationRunning || regenerationSaving"
+                    />
+                    <em>秒</em>
+                  </div>
+                </label>
+
+                <section class="regeneration-section">
+                  <header>
+                    <div>
+                      <strong>哪里需要改善？</strong>
+                      <span>可多选，帮助模型理解你的真实意图。</span>
+                    </div>
+                    <em>{{ regenerationReasons.length }} 项已选</em>
+                  </header>
+                  <div class="regeneration-chip-list">
+                    <button
+                      v-for="reason in regenerationReasonOptions"
+                      :key="reason.value"
+                      type="button"
+                      :class="{ active: regenerationReasons.includes(reason.value) }"
+                      :disabled="regenerationRunning || regenerationSaving"
+                      @click="toggleRegenerationReason(reason.value)"
+                    >
+                      {{ reason.label }}
+                    </button>
+                  </div>
+                </section>
+
+                <label class="regeneration-instruction">
+                  <span>
+                    <strong>补充具体要求</strong>
+                    <em>可选</em>
+                  </span>
+                  <textarea
+                    v-model="regenerationInstruction"
+                    maxlength="500"
+                    :disabled="regenerationRunning || regenerationSaving"
+                    placeholder="例如：让产品更早出现，不要切片，改为家庭送礼场景"
+                  />
+                  <small>{{ regenerationInstruction.length }}/500</small>
+                </label>
               </div>
-              <small>系统会按时长控制动作量；时长作为渲染参数，不会写入 Prompt 正文。</small>
-            </label>
 
-            <section class="regeneration-section">
+              <div v-if="regenerationRunning" class="regeneration-running" role="status">
+                <LoaderCircle class="spin" :size="18" />
+                <div>
+                  <strong>正在生成并评估 3 个备选</strong>
+                  <span>当前 Prompt 保持不变，你也可以关闭窗口稍后再查看。</span>
+                </div>
+              </div>
+            </template>
+
+            <section v-else class="regeneration-results">
               <header>
-                <strong>哪里需要改善？</strong>
-                <span>可多选，帮助模型理解你的真实意图。</span>
+                <strong>选择一个备选方案</strong>
+                <span>推荐方案已预选，你仍可以按自己的判断选择。</span>
               </header>
-              <div class="regeneration-chip-list">
+              <div class="regeneration-candidate-tabs" role="tablist" aria-label="Prompt 备选方案">
                 <button
-                  v-for="reason in regenerationReasonOptions"
-                  :key="reason.value"
+                  v-for="(candidate, index) in regenerationPreview.candidates"
+                  :key="candidate.candidateId"
                   type="button"
-                  :class="{ active: regenerationReasons.includes(reason.value) }"
-                  :disabled="regenerationRunning || regenerationSaving"
-                  @click="toggleRegenerationReason(reason.value)"
+                  role="tab"
+                  :aria-selected="selectedRegenerationCandidateId === candidate.candidateId"
+                  :class="{ active: selectedRegenerationCandidateId === candidate.candidateId }"
+                  @click="selectedRegenerationCandidateId = candidate.candidateId"
                 >
-                  {{ reason.label }}
+                  方案 {{ index + 1 }}<em v-if="candidate.recommended">推荐</em>
                 </button>
               </div>
-            </section>
-
-            <label class="regeneration-instruction">
-              <span>具体要求 <em>可选</em></span>
-              <textarea
-                v-model="regenerationInstruction"
-                maxlength="500"
-                :disabled="regenerationRunning || regenerationSaving"
-                placeholder="例如：产品早点出现，不要切片，改成家庭送礼场景"
-              />
-              <small>{{ regenerationInstruction.length }}/500</small>
-            </label>
-
-            <div v-if="regenerationRunning" class="regeneration-running" role="status">
-              <LoaderCircle class="spin" :size="18" />
-              <div>
-                <strong>正在生成并评估 3 个备选</strong>
-                <span>当前 Prompt 保持不变，你也可以关闭窗口稍后再查看。</span>
-              </div>
-            </div>
-          </template>
-
-          <section v-else class="regeneration-results">
-            <header>
-              <strong>选择一个备选方案</strong>
-              <span>推荐方案已预选，你仍可以按自己的判断选择。</span>
-            </header>
-            <div class="regeneration-candidate-tabs" role="tablist" aria-label="Prompt 备选方案">
-              <button
-                v-for="(candidate, index) in regenerationPreview.candidates"
-                :key="candidate.candidateId"
-                type="button"
-                role="tab"
-                :aria-selected="selectedRegenerationCandidateId === candidate.candidateId"
-                :class="{ active: selectedRegenerationCandidateId === candidate.candidateId }"
-                @click="selectedRegenerationCandidateId = candidate.candidateId"
-              >
-                方案 {{ index + 1 }}<em v-if="candidate.recommended">推荐</em>
-              </button>
-            </div>
-            <article v-if="selectedRegenerationCandidate" class="regeneration-candidate-card">
-              <div class="regeneration-candidate-tags">
-                <span>{{ selectedRegenerationCandidate.item.targetDurationSeconds }} 秒</span>
-                <span v-for="tag in selectedRegenerationCandidate.highlights" :key="tag">{{
-                  tag
-                }}</span>
-                <em v-for="warning in selectedRegenerationCandidate.warnings" :key="warning">{{
-                  warning
-                }}</em>
-              </div>
-              <p>{{ selectedRegenerationCandidate.item.content }}</p>
-              <details>
-                <summary>查看创意方向与六维变化</summary>
-                <dl>
-                  <dt>创意方向</dt>
-                  <dd>
-                    <small>{{ regenerationCandidate.creativeCore }}</small>
-                    <ChevronRight :size="12" />
-                    <strong>{{ selectedRegenerationCandidate.item.creativeCore }}</strong>
-                  </dd>
-                  <template v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key">
-                    <dt>{{ dimension.label }}</dt>
+              <article v-if="selectedRegenerationCandidate" class="regeneration-candidate-card">
+                <div class="regeneration-candidate-tags">
+                  <span>{{ selectedRegenerationCandidate.item.targetDurationSeconds }} 秒</span>
+                  <span v-for="tag in selectedRegenerationCandidate.highlights" :key="tag">{{
+                    tag
+                  }}</span>
+                  <em v-for="warning in selectedRegenerationCandidate.warnings" :key="warning">{{
+                    warning
+                  }}</em>
+                </div>
+                <p>{{ selectedRegenerationCandidate.item.content }}</p>
+                <details>
+                  <summary>查看创意方向与六维变化</summary>
+                  <dl>
+                    <dt>创意方向</dt>
                     <dd>
-                      <small>{{ regenerationCandidate.dimensions[dimension.key] }}</small>
+                      <small>{{ regenerationCandidate.creativeCore }}</small>
                       <ChevronRight :size="12" />
-                      <strong>{{
-                        selectedRegenerationCandidate.item.dimensions[dimension.key]
-                      }}</strong>
+                      <strong>{{ selectedRegenerationCandidate.item.creativeCore }}</strong>
                     </dd>
-                  </template>
-                </dl>
-              </details>
-            </article>
-          </section>
+                    <template v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key">
+                      <dt>{{ dimension.label }}</dt>
+                      <dd>
+                        <small>{{ regenerationCandidate.dimensions[dimension.key] }}</small>
+                        <ChevronRight :size="12" />
+                        <strong>{{
+                          selectedRegenerationCandidate.item.dimensions[dimension.key]
+                        }}</strong>
+                      </dd>
+                    </template>
+                  </dl>
+                </details>
+              </article>
+            </section>
+          </div>
 
           <footer>
             <p>只有点击“采用这个方案”才会替换；编号和列表位置保持不变。</p>
@@ -2874,17 +2948,12 @@ onBeforeUnmount(() => {
                         <h3>{{ block.title }}</h3>
 
                         <div v-if="block.kind === 'TEXT_CONTENT'" class="node-text-content">
-                          <details>
-                            <summary>
-                              <span>查看完整内容</span><em>{{ block.content.length }} 字</em>
-                            </summary>
-                            <div v-if="block.sourceLabels.length" class="node-sample-tags">
-                              <span v-for="source in block.sourceLabels" :key="source">{{
-                                source
-                              }}</span>
-                            </div>
-                            <p>{{ block.content }}</p>
-                          </details>
+                          <div v-if="block.sourceLabels.length" class="node-sample-tags">
+                            <span v-for="source in block.sourceLabels" :key="source">{{
+                              source
+                            }}</span>
+                          </div>
+                          <p>{{ block.content }}</p>
                         </div>
 
                         <div
@@ -3546,7 +3615,7 @@ button:disabled {
 .setting-card {
   display: grid;
   min-width: 0;
-  min-height: 104px;
+  min-height: 78px;
   padding: 13px 14px;
   grid-template-columns: 1fr;
   align-content: start;
@@ -3557,14 +3626,14 @@ button:disabled {
   border-radius: 12px;
   font-size: 12px;
 }
+.setting-card:not(.setting-card--disabled) {
+  grid-template-columns: 96px minmax(0, 1fr);
+  align-content: center;
+  align-items: center;
+}
 .setting-card > span:first-child {
   font-weight: 700;
-}
-.setting-card > small {
-  grid-column: 1;
-  color: #98a3b5;
-  font-size: 9px;
-  line-height: 1.45;
+  white-space: nowrap;
 }
 .simple-setting-grid {
   display: grid;
@@ -3594,7 +3663,21 @@ button:disabled {
   box-shadow: 0 0 0 3px rgb(37 99 235 / 8%);
 }
 .simple-setting-grid .number-control {
+  height: 38px;
+  grid-row: 1;
+  grid-column: 2;
   grid-template-columns: 32px minmax(50px, 1fr) 28px 32px;
+}
+.setting-card--select > .effect-up-select {
+  grid-row: 1;
+  grid-column: 2;
+  align-self: center;
+}
+.setting-card .number-control,
+.setting-card--select > .effect-up-select {
+  width: 100%;
+  max-width: 260px;
+  justify-self: end;
 }
 .number-suffix {
   display: grid;
@@ -4362,51 +4445,79 @@ button:disabled {
   padding: 22px;
 }
 .prompt-regeneration-dialog {
-  width: min(1040px, 100%);
+  display: flex;
+  width: min(920px, 100%);
   max-height: calc(100vh - 40px);
-  padding: 24px;
-  overflow: auto;
+  padding: 0;
+  overflow: hidden;
+  flex-direction: column;
   background: #fff;
   border: 1px solid #dbe4f6;
-  border-radius: 22px;
+  border-radius: 20px;
   box-shadow: 0 24px 70px #0f172a38;
 }
 .prompt-regeneration-dialog > header {
   display: flex;
+  padding: 22px 26px 18px;
   align-items: flex-start;
   justify-content: space-between;
   gap: 18px;
+  background: linear-gradient(135deg, #fff 0%, #f7faff 100%);
+  border-bottom: 1px solid #e4ebf7;
 }
-.prompt-regeneration-dialog > header span {
+.regeneration-heading {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 13px;
+}
+.regeneration-heading__icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #2563eb;
+  background: #eaf2ff;
+  border: 1px solid #d8e6ff;
+  border-radius: 12px;
+}
+.regeneration-heading > div:last-child {
+  min-width: 0;
+}
+.regeneration-heading > div > span {
   color: #2563eb;
   font-size: 10px;
   font-weight: 900;
   letter-spacing: 0.1em;
 }
-.prompt-regeneration-dialog > header h2 {
-  margin: 4px 0 7px;
-  color: #17233a;
-  font-size: 22px;
-}
-.prompt-regeneration-dialog > header p {
+.regeneration-heading__title {
   display: flex;
-  margin: 0;
+  margin: 3px 0 5px;
   flex-wrap: wrap;
   align-items: center;
-  gap: 7px;
+  gap: 9px;
+}
+.prompt-regeneration-dialog > header h2 {
+  margin: 0;
+  color: #17233a;
+  font-size: 21px;
+  line-height: 1.25;
+}
+.regeneration-heading__title > strong {
+  padding: 4px 8px;
+  color: #1d4ed8;
+  background: #eef4ff;
+  border: 1px solid #d7e5ff;
+  border-radius: 999px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.prompt-regeneration-dialog > header p {
+  margin: 0;
   color: #738198;
   font-size: 11px;
-}
-.prompt-regeneration-dialog > header p strong,
-.prompt-regeneration-dialog > header p i {
-  padding: 4px 8px;
-  background: #f2f6ff;
-  border: 1px solid #dce7fb;
-  border-radius: 999px;
-  font-style: normal;
-}
-.prompt-regeneration-dialog > header p strong {
-  color: #1d4ed8;
+  line-height: 1.5;
 }
 .prompt-regeneration-dialog > header > button {
   display: grid;
@@ -4419,19 +4530,37 @@ button:disabled {
   border: 1px solid #dfe6f0;
   border-radius: 10px;
 }
+.regeneration-dialog-body {
+  min-height: 0;
+  padding: 18px 26px 22px;
+  overflow: auto;
+}
 .regeneration-prompt-preview {
-  margin: 18px 0 14px;
-  padding: 12px 14px;
+  margin: 0 0 14px;
+  padding: 11px 14px;
   color: #526078;
   background: #f8faff;
   border: 1px solid #e1e9f7;
-  border-radius: 13px;
+  border-radius: 12px;
 }
 .regeneration-prompt-preview summary {
+  display: flex;
   cursor: pointer;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   color: #334155;
   font-size: 12px;
   font-weight: 800;
+}
+.regeneration-prompt-preview summary::marker {
+  color: #7d8ba5;
+}
+.regeneration-prompt-preview summary em {
+  color: #8a97ab;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 500;
 }
 .regeneration-prompt-preview p {
   margin: 10px 0 0;
@@ -4618,15 +4747,33 @@ button:disabled {
 .regeneration-instruction {
   position: relative;
   display: block;
-  margin-top: 14px;
+  margin: 0;
+  padding: 15px 16px;
+  background: #fbfcff;
+  border: 1px solid #e1e9f6;
+  border-radius: 13px;
+}
+.regeneration-instruction > span {
+  display: flex;
+  margin-bottom: 8px;
+  align-items: center;
+  gap: 7px;
+}
+.regeneration-instruction > span strong {
+  color: #33415c;
+  font-size: 13px;
 }
 .regeneration-instruction > span em {
+  padding: 2px 6px;
   color: #8b97aa;
+  background: #f0f3f8;
+  border-radius: 999px;
+  font-size: 9px;
   font-style: normal;
   font-weight: 500;
 }
 .regeneration-instruction textarea {
-  min-height: 92px;
+  min-height: 86px;
   padding: 10px 12px 26px;
   resize: vertical;
   line-height: 1.65;
@@ -4640,10 +4787,13 @@ button:disabled {
 }
 .prompt-regeneration-dialog > footer {
   display: flex;
-  margin-top: 16px;
+  margin: 0;
+  padding: 15px 26px;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
+  background: #fbfcff;
+  border-top: 1px solid #e4ebf7;
 }
 .prompt-regeneration-dialog > footer p {
   margin: 0;
@@ -4665,21 +4815,43 @@ button:disabled {
 .regeneration-section,
 .regeneration-results,
 .regeneration-running {
-  margin: 0 24px 16px;
+  margin: 0;
+}
+
+.regeneration-form {
+  display: grid;
+  gap: 14px;
 }
 
 .regeneration-duration {
   display: grid;
-  grid-template-columns: minmax(110px, 1fr) 112px;
+  grid-template-columns: minmax(0, 1fr) 112px;
   align-items: center;
-  gap: 4px 16px;
-  margin: 0 24px 18px;
+  gap: 16px;
+  margin: 0;
+  padding: 14px 16px;
+  background: #fbfcff;
+  border: 1px solid #e1e9f6;
+  border-radius: 13px;
 }
 
 .regeneration-duration > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.regeneration-duration > span strong {
   color: #33415c;
   font-size: 13px;
   font-weight: 800;
+}
+
+.regeneration-duration > span small {
+  color: #7d8ba5;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.45;
 }
 
 .regeneration-duration > div {
@@ -4712,20 +4884,31 @@ button:disabled {
   font-style: normal;
 }
 
-.regeneration-duration > small {
-  grid-column: 1 / -1;
-  color: #7d8ba5;
-  font-size: 11px;
-  line-height: 1.5;
-}
-
 .regeneration-section > header,
 .regeneration-results > header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 10px;
+}
+
+.regeneration-section {
+  padding: 15px 16px;
+  background: #fbfcff;
+  border: 1px solid #e1e9f6;
+  border-radius: 13px;
+}
+
+.regeneration-section > header > div {
+  display: grid;
+  gap: 2px;
+}
+
+.regeneration-section > header strong,
+.regeneration-results > header strong {
+  color: #33415c;
+  font-size: 13px;
 }
 
 .regeneration-section > header span,
@@ -4733,6 +4916,16 @@ button:disabled {
 .regeneration-running span {
   color: #7d8ba5;
   font-size: 12px;
+}
+
+.regeneration-section > header > em {
+  padding: 4px 8px;
+  color: #65738b;
+  background: #eef2f8;
+  border-radius: 999px;
+  font-size: 10px;
+  font-style: normal;
+  white-space: nowrap;
 }
 
 .regeneration-candidate-tabs button {
@@ -4763,9 +4956,13 @@ button:disabled {
   border-radius: 999px;
   background: #f7f9fd;
   color: #60708e;
-  padding: 6px 10px;
+  padding: 7px 11px;
   font-size: 12px;
   font-style: normal;
+  transition:
+    color 150ms ease,
+    background-color 150ms ease,
+    border-color 150ms ease;
 }
 
 .regeneration-chip-list button.active {
@@ -4931,15 +5128,29 @@ button:disabled {
   font-size: 10px;
   line-height: 1.5;
 }
-.editor-creative-structure > header > span {
-  margin: 0;
-  padding: 4px 8px;
+.editor-ai-fill-button {
+  display: inline-flex;
+  min-height: 32px;
+  padding: 0 11px;
   flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   color: #2563eb;
   background: #eef4ff;
+  border: 1px solid #cfe0ff;
   border-radius: 999px;
-  font-size: 9px;
-  letter-spacing: 0;
+  font-size: 10px;
+  font-weight: 800;
+}
+.editor-ai-fill-button:hover:not(:disabled) {
+  background: #e3edff;
+  border-color: #9fbcff;
+}
+.editor-ai-fill-button:disabled {
+  color: #98a6ba;
+  background: #f1f4f8;
+  border-color: #e1e7ef;
 }
 .editor-dimension-grid {
   display: grid;
@@ -5539,7 +5750,7 @@ button:disabled {
   gap: 7px;
 }
 .node-tag-groups > div,
-.node-text-content > details,
+.node-text-content,
 .node-creative-list > details,
 .node-creative-plan-list > details,
 .node-relationship-list > article,
@@ -5557,7 +5768,6 @@ button:disabled {
   border: 1px solid #e4eaf4;
   border-radius: 9px;
 }
-.node-text-content summary,
 .node-creative-list > details > summary {
   display: flex;
   align-items: center;
@@ -5651,16 +5861,15 @@ button:disabled {
   color: #8490a2;
   font-size: 8px;
 }
-.node-text-content summary em,
 .node-creative-list > details > summary em {
   color: #6c7890;
   font-size: 8px;
   font-style: normal;
   white-space: nowrap;
 }
-.node-text-content > details > p {
+.node-text-content > p {
   max-height: 230px;
-  margin: 8px 0 0;
+  margin: 0;
   padding: 9px;
   overflow: auto;
   color: #344258;
@@ -6165,6 +6374,11 @@ button:disabled {
     transform: scale(0.78);
   }
 }
+@media (max-width: 1280px) {
+  .simple-setting-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 @media (max-width: 1100px) {
   .effect-prompt-heading,
   .effect-prompt-toolbar {
@@ -6231,6 +6445,16 @@ button:disabled {
   .setting-card {
     grid-template-columns: 1fr;
   }
+  .setting-card:not(.setting-card--disabled) {
+    grid-template-columns: 1fr;
+  }
+  .setting-card .number-control,
+  .setting-card--select > .effect-up-select {
+    grid-row: auto;
+    grid-column: 1;
+    max-width: none;
+    justify-self: stretch;
+  }
   .prompt-card {
     grid-template-columns: 38px minmax(0, 1fr);
     padding: 12px;
@@ -6253,11 +6477,30 @@ button:disabled {
     min-height: 88px;
   }
   .prompt-regeneration-dialog {
+    max-height: calc(100vh - 20px);
+    padding: 0;
+    border-radius: 16px;
+  }
+  .prompt-regeneration-dialog > header {
     padding: 18px;
   }
+  .regeneration-dialog-body {
+    padding: 14px 18px 18px;
+  }
+  .regeneration-heading__icon {
+    width: 36px;
+    height: 36px;
+  }
+  .regeneration-duration {
+    grid-template-columns: minmax(0, 1fr) 100px;
+  }
   .prompt-regeneration-dialog > footer {
+    padding: 14px 18px;
     align-items: stretch;
     flex-direction: column;
+  }
+  .prompt-regeneration-dialog > footer p {
+    text-align: center;
   }
   .prompt-regeneration-dialog > footer > div,
   .prompt-regeneration-dialog > footer button {
@@ -6304,6 +6547,33 @@ button:disabled {
   }
   .workflow-graph-dialog > footer .edge-count {
     margin-left: 0;
+  }
+}
+@media (max-width: 520px) {
+  .regeneration-heading__icon {
+    display: none;
+  }
+  .prompt-regeneration-dialog > header h2 {
+    font-size: 18px;
+  }
+  .regeneration-duration {
+    grid-template-columns: 1fr;
+  }
+  .regeneration-duration > div {
+    width: 100%;
+  }
+  .regeneration-section > header {
+    align-items: flex-start;
+  }
+  .regeneration-section > header > em {
+    display: none;
+  }
+  .regeneration-chip-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .regeneration-chip-list button {
+    min-width: 0;
   }
 }
 </style>

@@ -26,7 +26,14 @@ const record = (): EffectPromptNodeDetailRunRecord =>
     updatedAt: new Date('2026-08-31T01:00:00.000Z'),
     inputSnapshot: {
       selectionPolicy: 'MMR_CONTENT',
-      settings: { targetCount: 2, defaultDurationSeconds: 5 },
+      settings: {
+        targetCount: 10,
+        defaultDurationSeconds: 5,
+        styleMode: 'AI_AUTO',
+        styleTone: null,
+        deliveryChannel: '抖音',
+        disabledElements: ['未成年人', '虚构医疗功效'],
+      },
       insightArtifact: {
         result: {
           productName: '广式腊肠',
@@ -116,7 +123,36 @@ describe('presentEffectPromptNodeDetail', () => {
     expect(output?.summary).toContain('完成校验');
   });
 
-  it('单条评估存在硬问题时展示需修改状态', () => {
+  it('在共用提示词节点展示批次设置与最终编译正文', () => {
+    const detail = presentEffectPromptNodeDetail(record(), 'SHARED_PROMPT_COMPILATION');
+    const input = detail.sections.find(({ kind }) => kind === 'INPUT');
+    const output = detail.sections.find(({ kind }) => kind === 'OUTPUT');
+    expect(input?.fields).toContainEqual({ label: '禁用元素', value: 2 });
+    expect(input?.blocks).toContainEqual({
+      kind: 'TAG_LIST',
+      title: '批次禁用元素',
+      groups: [
+        {
+          label: '禁用元素',
+          values: ['未成年人', '虚构医疗功效'],
+          remainingCount: 0,
+        },
+      ],
+    });
+    expect(output?.blocks).toContainEqual({
+      kind: 'TEXT_CONTENT',
+      title: '最终共用提示词',
+      content: '画面中不得出现虚构医疗功效。',
+      sourceLabels: [],
+    });
+    expect(output?.fields).toContainEqual({
+      label: '使用方式',
+      value: '生成时约束创意，视频渲染时统一追加一次',
+      description: '不会写进每条 Prompt 正文',
+    });
+  });
+
+  it('单条 AI 自动补齐展示处理状态', () => {
     const base = record();
     const itemEvaluation = {
       ...base,
@@ -125,10 +161,10 @@ describe('presentEffectPromptNodeDetail', () => {
         {
           nodeId: 'ITEM_EVALUATE',
           status: 'SUCCEEDED',
-          summary: '单条 Prompt 评估完成',
+          summary: '创意主线与六维信息自动补齐完成',
           warnings: [],
           errorMessage: null,
-          metadata: { evaluatedCount: 1, classificationStatus: 'NEEDS_REVISION' },
+          metadata: { evaluatedCount: 1, classificationStatus: 'VERIFIED' },
           updatedAt: new Date('2026-08-31T01:00:00.000Z'),
         },
       ],
@@ -136,8 +172,8 @@ describe('presentEffectPromptNodeDetail', () => {
 
     const detail = presentEffectPromptNodeDetail(itemEvaluation, 'ITEM_EVALUATE');
     expect(detail.fields).toContainEqual({
-      label: '用途评估',
-      value: 'NEEDS_REVISION',
+      label: '自动补齐状态',
+      value: 'VERIFIED',
     });
   });
 

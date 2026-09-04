@@ -10,6 +10,7 @@ from .insight_mapping import mandatory_business_facts
 from .models import (
     CreativeDirection,
     CreativeDirectionAudit,
+    CreativeDirectionAuditItem,
     CreativeDirectionAuditResponse,
     CreativeDirectionDiversityAudit,
     CreativeDirectionDiversityAuditResponse,
@@ -33,7 +34,7 @@ from .models import (
 
 OTHER_FAMILY = "OTHER"
 MIN_CREATIVE_DIRECTION_COUNT = 8
-MAX_CREATIVE_DIRECTION_COUNT = 80
+MAX_CREATIVE_DIRECTION_COUNT = 32
 MAX_BUSINESS_FACTS_PER_DIRECTION = 4
 
 
@@ -49,11 +50,12 @@ def creative_direction_target_count(
     """
 
     normalized_target_count = max(1, target_count)
-    # Direction planning is split by product territory, so large batches can
-    # carry many compact source directions without creating one oversized
-    # model response. Keeping four source directions for every five requested
-    # items limits the number of same-direction siblings before vector MMR.
-    volume_target = math.ceil(normalized_target_count * 4 / 5)
+    # Directions are reusable creative umbrellas rather than one direction per
+    # candidate. Keep 50 items at 20 directions while allowing 100-item batches
+    # to use 32 directions. At that size each direction owns only four or five
+    # candidates, which keeps the source plan varied without increasing the 35
+    # candidate-generation calls used by a 140-item candidate pool.
+    volume_target = math.ceil(normalized_target_count * 2 / 5)
     volume_target = min(
         MAX_CREATIVE_DIRECTION_COUNT,
         max(MIN_CREATIVE_DIRECTION_COUNT, volume_target),
@@ -464,17 +466,46 @@ def creative_landscape_audit_revision_context(
 ) -> dict[str, object]:
     return {
         "semanticAudit": audit.model_dump(mode="json", by_alias=True),
+        "revisionTerritoryIds": audit.revision_territory_ids,
         "previousTerritories": [
             item.model_dump(mode="json", by_alias=True)
             for item in landscape.territories
         ],
         "revisionInstruction": (
-            "依据独立语义复核重新规划完整创意版图。把不自然或缺少画面条件的"
-            "事实移出原空间，放入真正能自然承载它的空间；必要时同步调整相关空间。"
+            "依据独立语义复核只修订 revisionTerritoryIds 点名的创意空间。把不自然"
+            "或缺少画面条件的事实移出原空间，放入真正能自然承载它的空间；"
             "多选项事实可以由同一空间内多个方向分别承载，不得强迫单条短片同时完成"
-            "多种动作。保持未被指出的空间稳定，不得由系统替你判断事实语义。"
+            "多种动作。未被点名的空间由系统原样保留，不得在输出中重复。"
         ),
     }
+
+
+def merge_creative_landscape_territory_revision(
+    previous: CreativeDiversityLandscapeResponse,
+    revision: CreativeDiversityLandscapeResponse,
+    revision_territory_ids: Sequence[str],
+) -> CreativeDiversityLandscapeResponse:
+    """Merge an AI-authored partial revision using stable territory IDs only."""
+
+    expected = list(dict.fromkeys(revision_territory_ids))
+    if not expected:
+        raise ValueError("creative landscape revision requires territory ids")
+    previous_by_id = {item.territory_id: item for item in previous.territories}
+    if not set(expected).issubset(previous_by_id):
+        raise ValueError("creative landscape revision used an unknown territory id")
+    revision_by_id = {item.territory_id: item for item in revision.territories}
+    if len(revision_by_id) != len(revision.territories) or set(revision_by_id) != set(
+        expected
+    ):
+        raise ValueError(
+            "creative landscape revision must return every requested territory once"
+        )
+    return CreativeDiversityLandscapeResponse(
+        territories=[
+            revision_by_id.get(item.territory_id, item)
+            for item in previous.territories
+        ]
+    )
 
 
 def apply_creative_landscape_audit(
@@ -780,25 +811,40 @@ def validate_creative_direction_audit_batch(
         raise ValueError(
             "creative direction audit batch must cover every direction exactly once"
         )
+    action_territory_by_id = {
+        action.action_id: territory.territory_id
+        for territory in landscape.territories
+        for action in territory.actions
+    }
+    normalized_items: list[CreativeDirectionAuditItem] = []
     for item in response.items:
-        territory = landscape.by_id.get(item.realized_territory_id)
-        if territory is None:
-            raise ValueError("creative direction audit used an unknown territory")
-        if item.realized_action_id not in {
-            action.action_id for action in territory.actions
-        }:
+        # actionId is globally unique in a creative landscape, so it is the
+        # structural source of truth for its owning territory. Models
+        # occasionally return a valid action with the wrong parent territory;
+        # normalizing that parent edge is identifier repair, not a Worker-side
+        # semantic judgement.
+        action_territory_id = action_territory_by_id.get(item.realized_action_id)
+        if action_territory_id is None:
             raise ValueError("creative direction audit used an unknown action")
+        normalized_item = (
+            item.model_copy(update={"realized_territory_id": action_territory_id})
+            if item.realized_territory_id != action_territory_id
+            else item
+        )
         direction = directions_by_id[item.direction_id]
-        if item.fact_reviews is None:
+        if normalized_item.fact_reviews is None:
             raise ValueError("creative direction audit omitted fact reviews")
-        reviewed_fact_ids = [review.fact_id for review in item.fact_reviews]
+        reviewed_fact_ids = [
+            review.fact_id for review in normalized_item.fact_reviews
+        ]
         if len(reviewed_fact_ids) != len(set(reviewed_fact_ids)) or set(
             reviewed_fact_ids
         ) != set(direction.fact_ids):
             raise ValueError(
                 "creative direction audit must review every applied fact exactly once"
             )
-    return response
+        normalized_items.append(normalized_item)
+    return response.model_copy(update={"items": normalized_items})
 
 
 def validate_creative_direction_diversity_audit(

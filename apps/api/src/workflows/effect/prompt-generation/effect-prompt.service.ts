@@ -89,6 +89,11 @@ const publicWarnings = (value: unknown): string[] =>
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
+const normalizedSettingsHash = (state: unknown): string | null => {
+  const settings = readEffectPromptSettings(state);
+  return settings ? workflowStateHash(settings) : null;
+};
+
 const isValidVisualStrategyCheckpoint = (
   checkpoint: unknown,
   insightContentHash: string,
@@ -448,13 +453,19 @@ const validateDimensions = (dimensions: EffectPromptDimensions): boolean =>
   );
 
 const pendingItemDimensions = (): EffectPromptDimensions => ({
-  narrative: '等待 AI 分析',
-  scene: '等待 AI 分析',
-  persona: '等待 AI 分析',
-  productRelation: '等待 AI 分析',
-  camera: '等待 AI 分析',
-  emotion: '等待 AI 分析',
+  narrative: '等待 AI 自动补齐',
+  scene: '等待 AI 自动补齐',
+  persona: '等待 AI 自动补齐',
+  productRelation: '等待 AI 自动补齐',
+  camera: '等待 AI 自动补齐',
+  emotion: '等待 AI 自动补齐',
 });
+
+const hasCompleteCreativeStructure = (input: PromptItemMutationInput): boolean =>
+  typeof input.creativeCore === 'string' &&
+  input.creativeCore.trim().length > 0 &&
+  input.dimensions !== undefined &&
+  validateDimensions(input.dimensions);
 
 type PromptItemMutationInput = {
   content: string;
@@ -581,8 +592,7 @@ export class EffectPromptService {
             snapshot?.insightArtifact.id !== insight.id ||
             snapshot.insightArtifact.revision !== insight.revision ||
             snapshot.insightArtifact.contentHash !== insight.contentHash ||
-            !settingsNode?.executionInputHash ||
-            resultRecord.settingsHash !== settingsNode.executionInputHash),
+            normalizedSettingsHash(settingsNode?.state) !== resultRecord.settingsHash),
         );
         const artifact = await this.repository.promptArtifact(projectId, workflowRunId, product.id);
         const artifactInput =
@@ -722,7 +732,7 @@ export class EffectPromptService {
       throw badRequest(
         input.operation === 'BATCH_GENERATE'
           ? '批量生成不能携带单条重生成设置'
-          : '单条评估不能携带内容重生成设置',
+          : 'AI 自动补齐不能携带内容重生成设置',
       );
     if (
       (input.operation === 'ITEM_REGENERATE' || input.operation === 'ITEM_EVALUATE') &&
@@ -730,7 +740,7 @@ export class EffectPromptService {
     )
       throw badRequest(
         input.operation === 'ITEM_EVALUATE'
-          ? '单条评估必须指定 Prompt'
+          ? 'AI 自动补齐必须指定 Prompt'
           : '单条重新生成必须指定 Prompt',
       );
     if ((input.regenerationInstruction?.trim().length ?? 0) > 500)
@@ -997,7 +1007,7 @@ export class EffectPromptService {
   ): Promise<UpdateEffectPromptResultData> {
     if (!input.evaluateAfterSave) return saved;
     if (!input.expectedSettingsRevision || !input.idempotencyKey?.trim())
-      throw badRequest('自动评估需要当前设置版本和幂等键');
+      throw badRequest('AI 自动补齐需要当前设置版本和幂等键');
     try {
       const started = await this.start(projectId, saved.productId, {
         workflowRunId,
@@ -1012,7 +1022,7 @@ export class EffectPromptService {
       if (!(error instanceof ApiHttpException)) throw error;
       return {
         ...saved,
-        evaluationStartError: 'Prompt 已保存，但自动评估未能启动，请稍后重新评估',
+        evaluationStartError: 'Prompt 已保存，但 AI 自动补齐未能启动，请稍后重试',
       };
     }
   }
@@ -1094,7 +1104,7 @@ export class EffectPromptService {
       input.evaluateAfterSave &&
       (!input.expectedSettingsRevision || !input.idempotencyKey?.trim())
     )
-      throw badRequest('自动评估需要当前设置版本和幂等键');
+      throw badRequest('AI 自动补齐需要当前设置版本和幂等键');
     const current = await this.repository.result(projectId, resultId);
     if (!current) throw notFound('Prompt 结果不存在');
     const rawDraft =
@@ -1113,12 +1123,15 @@ export class EffectPromptService {
       return Number.isFinite(number) ? Math.max(maximum, number) : maximum;
     }, 0);
     const now = new Date().toISOString();
-    const dimensions = input.dimensions
+    const dimensions = input.evaluateAfterSave
+      ? pendingItemDimensions()
+      : input.dimensions
       ? (Object.fromEntries(
           EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions![key].trim()]),
         ) as EffectPromptDimensions)
       : pendingItemDimensions();
     const primaryPurpose = input.primaryPurpose ?? 'PRODUCT_DISPLAY';
+    const creativeStructureReady = hasCompleteCreativeStructure(input);
     const item: EffectPromptItem = {
       id: randomUUID(),
       code: `P${String(maxCode + 1).padStart(3, '0')}`,
@@ -1126,10 +1139,13 @@ export class EffectPromptService {
       fragmentType: primaryPurpose,
       primaryPurpose,
       compatiblePurposes: [primaryPurpose],
-      classificationStatus: 'PENDING',
+      classificationStatus: creativeStructureReady ? 'VERIFIED' : 'PENDING',
       productRelevance: 0,
       targetDurationSeconds: input.targetDurationSeconds,
-      creativeCore: input.creativeCore?.trim() || '等待 AI 分析',
+      creativeCore:
+        input.evaluateAfterSave
+          ? '等待 AI 自动补齐'
+          : input.creativeCore?.trim() || '等待 AI 自动补齐',
       dimensions,
       content: input.content.trim(),
       insightBindings: [],
@@ -1161,7 +1177,7 @@ export class EffectPromptService {
       input.evaluateAfterSave &&
       (!input.expectedSettingsRevision || !input.idempotencyKey?.trim())
     )
-      throw badRequest('自动评估需要当前设置版本和幂等键');
+      throw badRequest('AI 自动补齐需要当前设置版本和幂等键');
     const current = await this.repository.result(projectId, resultId);
     if (!current) throw notFound('Prompt 结果不存在');
     const parsed = parseEffectPromptBatchResult(current.draftResult);
@@ -1174,11 +1190,14 @@ export class EffectPromptService {
       primaryPurpose,
       ...currentItem.compatiblePurposes.filter((purpose) => purpose !== primaryPurpose),
     ];
-    const dimensions = input.dimensions
+    const dimensions = input.evaluateAfterSave
+      ? pendingItemDimensions()
+      : input.dimensions
       ? (Object.fromEntries(
           EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions![key].trim()]),
         ) as EffectPromptDimensions)
       : currentItem.dimensions;
+    const creativeStructureReady = hasCompleteCreativeStructure(input);
     const saved = this.presentMutation(
       await this.repository.mutateResult(projectId, resultId, expectedRevision, {
         kind: 'UPDATE',
@@ -1188,10 +1207,18 @@ export class EffectPromptService {
           fragmentType: primaryPurpose,
           primaryPurpose,
           compatiblePurposes,
-          classificationStatus: 'PENDING',
+          classificationStatus:
+            input.evaluateAfterSave
+              ? 'PENDING'
+              : creativeStructureReady
+                ? 'VERIFIED'
+                : currentItem.classificationStatus,
           productRelevance: 0,
           targetDurationSeconds: input.targetDurationSeconds,
-          creativeCore: input.creativeCore?.trim() || currentItem.creativeCore,
+          creativeCore:
+            input.evaluateAfterSave
+              ? '等待 AI 自动补齐'
+              : input.creativeCore?.trim() || currentItem.creativeCore,
           dimensions,
           reviewIssues: [],
         },
@@ -1296,11 +1323,11 @@ export class EffectPromptService {
     if (effectPromptExactDuplicatePairs(verified.items) > 0)
       issues.push({ code: 'EXACT_DUPLICATE', message: '存在正文完全重复的 Prompt' });
     if (verified.items.some((item) => item.classificationStatus === 'PENDING'))
-      issues.push({ code: 'CLASSIFICATION_PENDING', message: '仍有 Prompt 尚未完成用途评估' });
+      issues.push({ code: 'CLASSIFICATION_PENDING', message: '仍有 Prompt 尚未补齐创意信息' });
     if (verified.items.some((item) => item.classificationStatus === 'NEEDS_REVISION'))
       issues.push({
         code: 'ITEM_NEEDS_REVISION',
-        message: '仍有 Prompt 存在事实或结构问题，请修改后重新评估',
+        message: '仍有 Prompt 存在事实或结构问题，请修改后重新生成创意信息',
       });
     if (
       verified.metrics.semanticEvaluation.status === 'VERIFIED' &&
@@ -1348,7 +1375,7 @@ export class EffectPromptService {
       insight.id !== snapshot.insightArtifact.id ||
       insight.revision !== snapshot.insightArtifact.revision ||
       insight.contentHash !== snapshot.insightArtifact.contentHash ||
-      settingsNode?.executionInputHash !== record.settingsHash
+      normalizedSettingsHash(settingsNode?.state) !== record.settingsHash
     )
       issues.push({ code: 'STALE_RESULT', message: '上游信息卡或 Prompt 设置已经变化' });
     if (verified.qualityStatus !== 'PASS' && issues.length === 0)
@@ -1584,7 +1611,7 @@ export class EffectPromptService {
     // shorter NEEDS_REVIEW result for inspection; explicit validation still
     // enforces exact count, PASS quality and freshness before commit.
     if (parsed.items.some((item) => item.classificationStatus !== 'VERIFIED'))
-      throw badRequest('Prompt 批次仍有内容尚未完成用途评估');
+      throw badRequest('Prompt 批次仍有内容尚未补齐创意信息');
     await this.stageOperation(projectId, runId);
     const result = await this.repository.complete(projectId, runId, attemptToken, parsed);
     if (result.kind === 'NOT_FOUND') throw notFound('Prompt 任务不存在');

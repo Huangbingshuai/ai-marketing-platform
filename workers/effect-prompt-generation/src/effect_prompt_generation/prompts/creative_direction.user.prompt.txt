@@ -13,8 +13,7 @@
 批次共用提示词（只约束，不复述）：
 {shared_prompt_json}
 
-视觉风格基调（仅作为整批视觉底色，不是固定场景模板）：
-{visual_style_baseline_json}
+{visual_style_baseline_section}
 
 投放渠道（只影响节奏和表达习惯，不得作为正文元数据复述）：
 {delivery_channel_json}

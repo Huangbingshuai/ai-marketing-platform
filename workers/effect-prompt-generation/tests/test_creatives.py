@@ -44,8 +44,10 @@ from effect_prompt_generation.pipeline import (
     PENDING_CREATIVE_STRUCTURE_TEXT,
     PipelineError,
     PromptGenerationPipeline,
+    _adaptive_mmr_quality_weight,
     _coverage_supplement_count,
     _evaluation_context_fact_ids,
+    _maximum_diversity_supplement_duplicates,
     _maximum_semantic_duplicates,
     _semantic_evaluation,
 )
@@ -116,6 +118,13 @@ def test_semantic_duplicate_limit_is_strictly_below_fifteen_percent() -> None:
     )
     assert seven.duplicate_rate == 14
     assert eight.duplicate_rate == 16
+
+
+def test_mmr_weights_rebalance_only_after_pool_redundancy_exceeds_half() -> None:
+    assert _adaptive_mmr_quality_weight(0.49) == 0.70
+    assert _adaptive_mmr_quality_weight(0.50) == 0.70
+    assert _adaptive_mmr_quality_weight(0.51) == 0.60
+    assert _adaptive_mmr_quality_weight(0.75) == 0.60
 
 
 def test_coverage_supplement_is_capped_at_twenty_percent() -> None:
@@ -421,12 +430,14 @@ class OneTransientClassificationFailureProvider(MockAiProvider):
 class BatchTruncatedClassificationProvider(MockAiProvider):
     def __init__(self) -> None:
         self.batch_calls = 0
+        self.batch_sizes: list[int] = []
         self.single_calls = 0
 
     async def evaluate_creatives(self, *args: Any, **kwargs: Any) -> Any:
         candidates = args[0]
         if len(candidates) > 1:
             self.batch_calls += 1
+            self.batch_sizes.append(len(candidates))
             raise ProviderError(
                 "test classification output truncated",
                 retryable=False,
@@ -448,6 +459,22 @@ class InvalidCreativeShardProvider(MockAiProvider):
                 "test creative response invalid",
                 retryable=False,
                 error_type=ProviderErrorType.RESPONSE_INVALID,
+            )
+        return await super().generate_creatives(*args, **kwargs)
+
+
+class TruncatedCreativeBatchProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.batch_sizes: list[int] = []
+
+    async def generate_creatives(self, *args: Any, **kwargs: Any) -> Any:
+        shard = args[0]
+        self.batch_sizes.append(len(shard.tasks))
+        if len(shard.tasks) > 2:
+            raise ProviderError(
+                "test creative output truncated",
+                retryable=False,
+                error_type=ProviderErrorType.OUTPUT_TRUNCATED,
             )
         return await super().generate_creatives(*args, **kwargs)
 
@@ -539,8 +566,8 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
         for binding in item.insight_bindings
     )
     assert Counter(item.phase.value for item in api.shards.values()) == {
-        "CREATIVE": 8,
-        "CLASSIFICATION": 5,
+        "CREATIVE": 4,
+        "CLASSIFICATION": 4,
     }
 
     creative_tasks = [
@@ -607,6 +634,35 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     assert len(semantic_audit["contentFingerprint"]) == 64
 
 
+def test_paid_diversity_supplement_only_starts_above_thirty_percent() -> None:
+    assert _maximum_diversity_supplement_duplicates(100) == 30
+    assert _maximum_diversity_supplement_duplicates(50) == 15
+
+
+@pytest.mark.asyncio
+async def test_truncated_multi_candidate_shard_splits_without_failing_the_run() -> None:
+    api = PromptApi()
+    provider = TruncatedCreativeBatchProvider()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        embedding_provider=DistinctEmbeddingProvider(),
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _snapshot())
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    assert api.result is not None
+    assert len(api.result.items) == 10
+    assert 4 in provider.batch_sizes
+    assert provider.batch_sizes.count(2) >= 6
+
+
 @pytest.mark.asyncio
 async def test_invalid_creative_shard_does_not_fail_paid_batch() -> None:
     api = PromptApi()
@@ -625,7 +681,7 @@ async def test_invalid_creative_shard_does_not_fail_paid_batch() -> None:
         context=runtime,
     )
 
-    assert provider.invalid_calls == 2
+    assert provider.invalid_calls == 10
     assert api.result is not None
     assert len(api.result.items) == 10
     failed_source_shard = api.shards["CREATIVE:0:0"]
@@ -750,7 +806,7 @@ async def test_retries_one_invalid_classification_response_inside_its_shard() ->
         context=runtime,
     )
 
-    assert provider.calls == 8
+    assert provider.calls == 6
     assert api.result is not None
     assert api.result.metrics.generated_candidate_count == 14
 
@@ -773,7 +829,9 @@ async def test_splits_truncated_classification_shard_without_failing_batch() -> 
         context=runtime,
     )
 
-    assert provider.batch_calls == 5
+    assert provider.batch_calls == 10
+    assert 4 in provider.batch_sizes
+    assert 2 in provider.batch_sizes
     assert provider.single_calls == 14
     assert api.result is not None
     assert api.result.metrics.generated_candidate_count == 14
@@ -901,7 +959,7 @@ async def test_classification_retry_keeps_stable_shard_assignments() -> None:
     classification_shards = [
         shard for shard in api.shards.values() if shard.phase.value == "CLASSIFICATION"
     ]
-    assert {shard.shard_index for shard in classification_shards} == {0, 1, 2, 3, 4}
+    assert {shard.shard_index for shard in classification_shards} == {0, 1, 2, 3}
     assert all(shard.status == "SUCCEEDED" for shard in classification_shards)
     assert sum(len(shard.evaluations) for shard in classification_shards) == 14
     assert api.result is not None
@@ -981,12 +1039,13 @@ async def test_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
         <= (api.result.metrics.generated_candidate_count)
     )
     assert selection_stage.metadata["embeddingRequestCount"] == 2
-    expected_quality_weight = (
-        0.60
-        if selection_stage.metadata["candidatePoolRedundancyRate"] > 0.50
-        else 0.70
+    expected_quality_weight = _adaptive_mmr_quality_weight(
+        selection_stage.metadata["candidatePoolContentRedundancyRate"]
     )
     assert selection_stage.metadata["mmrQualityWeight"] == expected_quality_weight
+    assert selection_stage.metadata["adaptiveMmrBasis"] == (
+        "CONTENT_VECTOR_REDUNDANCY"
+    )
     assert selection_stage.metadata["mmrDiversityWeight"] == round(
         1.0 - expected_quality_weight,
         2,
@@ -1039,6 +1098,7 @@ async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
     assert final_selection_stage.metadata["mmrQualityWeight"] == 0.60
     assert final_selection_stage.metadata["mmrDiversityWeight"] == 0.40
     assert final_selection_stage.metadata["adaptiveMmrApplied"] is True
+    assert final_selection_stage.metadata["adaptiveMmrTier"] == "HIGH"
     assert final_selection_stage.metadata["diversitySupplementDirectionCount"] == 2
     assert final_selection_stage.metadata["diversitySupplementImproved"] is False
     assert final_selection_stage.metadata["finalAccurateCount"] == 10
@@ -1288,6 +1348,10 @@ async def test_item_evaluate_preserves_user_authored_content_and_structure() -> 
         stage.node_id.value == "COHERENT_CREATIVE_GENERATION" for stage in api.stages
     )
     assert any(stage.node_id.value == "ITEM_EVALUATE" for stage in api.stages)
+    assert not any(
+        stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
+        for stage in api.stages
+    )
     result_stage = next(
         stage for stage in reversed(api.stages) if stage.node_id.value == "RESULT_SAVE"
     )
@@ -1333,7 +1397,7 @@ def test_item_evaluation_receives_all_confirmed_facts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_item_evaluate_marks_hard_issues_as_needing_revision() -> None:
+async def test_item_autofill_does_not_override_user_content_or_fragment_type() -> None:
     snapshot = _snapshot()
     now = "2026-09-03T10:00:00Z"
     target = PromptItem(
@@ -1390,15 +1454,16 @@ async def test_item_evaluate_marks_hard_issues_as_needing_revision() -> None:
         api.result.items[0].dimensions.narrative
         != PENDING_CREATIVE_STRUCTURE_TEXT
     )
-    assert api.result.items[0].classification_status == "NEEDS_REVISION"
-    assert api.result.items[0].review_issues == ["FABRICATED_FACT"]
-    assert api.result.quality_status == "NEEDS_REVIEW"
+    assert api.result.items[0].primary_purpose == target.primary_purpose
+    assert api.result.items[0].classification_status == "VERIFIED"
+    assert api.result.items[0].review_issues == []
+    assert api.result.quality_status == "PASS"
     evaluation_stage = next(
         stage
         for stage in reversed(api.stages)
         if stage.node_id.value == "ITEM_EVALUATE"
     )
-    assert evaluation_stage.metadata["classificationStatus"] == "NEEDS_REVISION"
+    assert evaluation_stage.metadata["classificationStatus"] == "VERIFIED"
 
 
 @pytest.mark.asyncio
@@ -1512,8 +1577,8 @@ async def test_does_not_replenish_when_initial_selection_already_covers_facts() 
     assert api.result.metrics.rejected_count > 0
     assert api.result.metrics.hard_issue_counts == []
     assert Counter(item.phase.value for item in api.shards.values()) == {
-        "CREATIVE": 8,
-        "CLASSIFICATION": 5,
+        "CREATIVE": 4,
+        "CLASSIFICATION": 4,
     }
     selection_stage = next(
         stage
@@ -1609,8 +1674,8 @@ async def test_candidate_ceiling_stops_repeated_low_quality_supplements() -> Non
 
     assert api.result is None
     assert Counter(item.phase.value for item in api.shards.values()) == {
-        "CREATIVE": 12,
-        "CLASSIFICATION": 7,
+        "CREATIVE": 5,
+        "CLASSIFICATION": 5,
     }
     supplement_tasks = [
         task

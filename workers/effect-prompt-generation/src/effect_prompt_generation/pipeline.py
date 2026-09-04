@@ -12,7 +12,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import combinations
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from pydantic import ValidationError
 
@@ -80,11 +80,12 @@ from .models import (
     utc_now,
 )
 from .providers import (
+    AiCallResult,
     AiProvider,
+    CREATIVE_DIRECTION_TEMPLATE_HASH,
+    FACT_VISUAL_STRATEGY_TEMPLATE_HASH,
     ProviderError,
     ProviderErrorType,
-    FACT_VISUAL_STRATEGY_TEMPLATE_HASH,
-    CREATIVE_DIRECTION_TEMPLATE_HASH,
 )
 from .creative_directions import (
     apply_creative_landscape_audit,
@@ -94,6 +95,7 @@ from .creative_directions import (
     creative_direction_audit_revision_context,
     creative_fact_assignment_revision_context,
     creative_landscape_audit_revision_context,
+    merge_creative_landscape_territory_revision,
     merge_creative_direction_revision,
     creative_direction_revision_context,
     creative_direction_target_count,
@@ -136,13 +138,24 @@ from .quality import (
 MAX_REPLENISHMENT_ROUNDS = 2
 COVERAGE_SUPPLEMENT_RATIO = 0.20
 SEMANTIC_DUPLICATE_RATE_LIMIT = 15.0
+# The 15% value remains the user-facing quality warning. A paid AI diversity
+# supplement is only worthwhile when the already-selected batch exceeds the
+# accepted large-batch protection line; otherwise MMR has already removed most
+# pool redundancy and a second planning/audit cycle adds minutes without
+# changing the saved result.
+DIVERSITY_SUPPLEMENT_TRIGGER_RATE = 30.0
+MMR_HIGH_REDUNDANCY_THRESHOLD = 0.50
+CONTENT_SIMILARITY_WEIGHT = 0.70
+SEMANTIC_CLUSTER_SIMILARITY_WEIGHT = 0.30
+DIRECTION_STRUCTURED_BATCH_SIZE = 4
 # Keep ordinary calls economical. If a three-item strict response is malformed
 # or truncated, the pipeline automatically isolates that shard into single-item
 # calls instead of failing the entire batch.
-CLASSIFICATION_SHARD_SIZE = 3
+CLASSIFICATION_SHARD_SIZE = 4
 MAX_PROCESS_EMBEDDING_CACHE_ENTRIES = 4_096
 LOGGER = logging.getLogger(__name__)
-PENDING_CREATIVE_STRUCTURE_TEXT = "等待 AI 分析"
+PENDING_CREATIVE_STRUCTURE_TEXT = "等待 AI 自动补齐"
+PENDING_CREATIVE_STRUCTURE_TEXTS = {"等待 AI 分析", PENDING_CREATIVE_STRUCTURE_TEXT}
 
 
 def _requires_creative_structure_inference(candidate: CreativeCandidate) -> bool:
@@ -155,7 +168,7 @@ def _requires_creative_structure_inference(candidate: CreativeCandidate) -> bool
         candidate.dimensions.camera,
         candidate.dimensions.emotion,
     )
-    return any(value.strip() == PENDING_CREATIVE_STRUCTURE_TEXT for value in values)
+    return any(value.strip() in PENDING_CREATIVE_STRUCTURE_TEXTS for value in values)
 
 
 class PipelineError(RuntimeError):
@@ -714,13 +727,15 @@ class PromptGenerationPipeline:
             call_rows = []
             landscape = None
             landscape_revision_context: Mapping[str, Any] | None = None
+            landscape_revision_base: CreativeDiversityLandscapeResponse | None = None
+            landscape_revision_ids: list[str] = []
             for landscape_attempt in range(4):
                 landscape_call = None
                 for structure_attempt in range(2):
                     self._reserve_ai_call(context)
                     try:
                         async with self._ai_semaphore:
-                            landscape_call = (
+                            raw_landscape_call = (
                                 await self.provider.plan_creative_landscape(
                                     application,
                                     fact_visual_strategy=visual_strategy,
@@ -731,8 +746,37 @@ class PromptGenerationPipeline:
                                     ),
                                     delivery_channel=snapshot.settings.delivery_channel,
                                     revision_context=landscape_revision_context,
+                                    revision_territory_ids=landscape_revision_ids,
                                 )
                             )
+                            if landscape_revision_base is None:
+                                landscape_call = raw_landscape_call
+                            else:
+                                landscape_call = AiCallResult(
+                                    value=merge_creative_landscape_territory_revision(
+                                        landscape_revision_base,
+                                        raw_landscape_call.value,
+                                        landscape_revision_ids,
+                                    ),
+                                    metadata=raw_landscape_call.metadata,
+                                )
+                    except ValueError as exc:
+                        if structure_attempt == 0:
+                            landscape_revision_context = {
+                                **(landscape_revision_context or {}),
+                                "validationError": str(exc),
+                                "revisionInstruction": (
+                                    "只重新输出 revisionTerritoryIds 点名的空间，"
+                                    "每个稳定 territoryId 恰好一次。"
+                                ),
+                            }
+                            continue
+                        raise ProviderError(
+                            "AI 创意空间局部修订结构无效",
+                            retryable=False,
+                            error_type=ProviderErrorType.RESPONSE_INVALID,
+                            attempts=2,
+                        ) from exc
                     except ProviderError as exc:
                         if (
                             structure_attempt == 0
@@ -750,9 +794,13 @@ class PromptGenerationPipeline:
                     raise PipelineError("创意版图结构化响应未返回结果")
                 call_rows.append(landscape_call.metadata)
                 draft_landscape = None
+                assignment_call = None
                 assignment_revision_context: Mapping[str, Any] | None = None
                 assignment_error: ValueError | None = None
-                for assignment_attempt in range(2):
+                # Keep malformed JSON or one bad structural assignment local to
+                # this small AI step. Retrying the whole RabbitMQ task would
+                # discard a valid landscape and repeat every paid planning call.
+                for assignment_attempt in range(3):
                     self._reserve_ai_call(context)
                     try:
                         async with self._ai_semaphore:
@@ -767,7 +815,7 @@ class PromptGenerationPipeline:
                             )
                     except ProviderError as exc:
                         if (
-                            assignment_attempt == 0
+                            assignment_attempt < 2
                             and exc.error_type == ProviderErrorType.RESPONSE_INVALID
                         ):
                             assignment_revision_context = {
@@ -818,6 +866,11 @@ class PromptGenerationPipeline:
                             "不要在本阶段逐条分配事实。"
                         ),
                     }
+                    # This is a whole-landscape capacity failure, not a semantic
+                    # issue scoped to named territories. Start the next attempt
+                    # from a complete response instead of merging a partial one.
+                    landscape_revision_base = None
+                    landscape_revision_ids = []
                     continue
                 await self._stage(
                     context,
@@ -835,7 +888,10 @@ class PromptGenerationPipeline:
                 )
 
                 async def audit_one_territory(territory: Any) -> Any:
-                    for territory_audit_attempt in range(2):
+                    # Each territory is an independent semantic review branch.
+                    # A brief network interruption must only retry that branch,
+                    # never restart the complete product landscape.
+                    for territory_audit_attempt in range(3):
                         self._reserve_ai_call(context)
                         try:
                             async with self._ai_semaphore:
@@ -847,7 +903,7 @@ class PromptGenerationPipeline:
                                     )
                                 )
                         except ProviderError as exc:
-                            if territory_audit_attempt == 0 and (
+                            if territory_audit_attempt < 2 and (
                                 exc.retryable
                                 or exc.error_type == ProviderErrorType.RESPONSE_INVALID
                             ):
@@ -861,47 +917,68 @@ class PromptGenerationPipeline:
                             for issue in value.fact_issues
                         ):
                             return value
-                        if territory_audit_attempt == 1:
+                        if territory_audit_attempt == 2:
                             raise ProviderError(
                                 "AI 单个创意空间语义复核结构无效",
                                 retryable=False,
                                 error_type=ProviderErrorType.RESPONSE_INVALID,
-                                attempts=2,
+                                attempts=3,
                             )
                     raise PipelineError("单个创意空间语义复核未返回结果")
 
-                territory_audits = await asyncio.gather(
-                    *(
-                        audit_one_territory(territory)
-                        for territory in draft_landscape.territories
+                async def audit_landscape(
+                    current_landscape: Any,
+                ) -> Any:
+                    territory_audits = await asyncio.gather(
+                        *(
+                            audit_one_territory(territory)
+                            for territory in current_landscape.territories
+                        )
                     )
-                )
-                fact_issues = [
-                    issue
-                    for territory_audit in territory_audits
-                    for issue in territory_audit.fact_issues
-                ]
-                revision_territory_ids = [
-                    territory_audit.territory_id
-                    for territory_audit in territory_audits
-                    if territory_audit.fact_issues
-                ]
-                landscape_audit = validate_creative_landscape_audit(
-                    CreativeLandscapeAuditResponse(
-                        reviewed_territory_ids=[
-                            item.territory_id for item in territory_audits
-                        ],
-                        fact_issues=fact_issues,
-                        requires_revision=bool(fact_issues),
-                        revision_territory_ids=revision_territory_ids,
-                        summary=(
-                            f"独立复核发现 {len(fact_issues)} 项事实与创意空间关系需调整"
-                            if fact_issues
-                            else "全部事实与产品专属创意空间自然相容"
+                    fact_issues = [
+                        issue
+                        for territory_audit in territory_audits
+                        for issue in territory_audit.fact_issues
+                    ]
+                    # WEAK is an advisory quality finding. Replanning the whole
+                    # landscape until every subjective weak-fit opinion
+                    # disappears can loop for many paid calls without making
+                    # the plan safer. Only UNSUPPORTED means the relationship
+                    # relies on an unconfirmed condition and must block.
+                    blocking_issues = [
+                        issue for issue in fact_issues if issue.verdict == "UNSUPPORTED"
+                    ]
+                    weak_issue_count = len(fact_issues) - len(blocking_issues)
+                    revision_territory_ids = [
+                        territory_audit.territory_id
+                        for territory_audit in territory_audits
+                        if any(
+                            issue.verdict == "UNSUPPORTED"
+                            for issue in territory_audit.fact_issues
+                        )
+                    ]
+                    return validate_creative_landscape_audit(
+                        CreativeLandscapeAuditResponse(
+                            reviewed_territory_ids=[
+                                item.territory_id for item in territory_audits
+                            ],
+                            fact_issues=blocking_issues,
+                            requires_revision=bool(blocking_issues),
+                            revision_territory_ids=revision_territory_ids,
+                            summary=(
+                                f"独立复核发现 {len(blocking_issues)} 项缺少事实条件的关系需调整"
+                                if blocking_issues
+                                else (
+                                    f"创意空间通过安全复核，另有 {weak_issue_count} 项偏弱关系作为质量提醒"
+                                    if weak_issue_count
+                                    else "全部事实与产品专属创意空间自然相容"
+                                )
+                            ),
                         ),
-                    ),
-                    draft_landscape,
-                )
+                        current_landscape,
+                    )
+
+                landscape_audit = await audit_landscape(draft_landscape)
                 if landscape_audit.requires_revision:
                     repaired_landscape = apply_creative_landscape_audit(
                         draft_landscape,
@@ -910,6 +987,86 @@ class PromptGenerationPipeline:
                     )
                     if repaired_landscape is not None:
                         landscape = repaired_landscape
+                        break
+                    # The space map can be sound while the separate AI fact
+                    # assignment has placed a required fact in the wrong space.
+                    # Ask that owning AI to move only the named relationships
+                    # before paying to regenerate the entire landscape. Worker
+                    # only forwards the AI audit and re-validates IDs/counts.
+                    if assignment_call is None:
+                        raise PipelineError("创意空间事实分配结果缺失")
+                    previous_assignments = assignment_call.value
+                    for reassignment_attempt in range(2):
+                        self._reserve_ai_call(context)
+                        reassignment_revision_context = {
+                            "semanticAudit": landscape_audit.model_dump(
+                                mode="json",
+                                by_alias=True,
+                            ),
+                            "previousAssignments": previous_assignments.model_dump(
+                                mode="json",
+                                by_alias=True,
+                            )["assignments"],
+                            "revisionInstruction": (
+                                "保持创意空间、场景边界和主动作不变。"
+                                "只把独立复核点名的事实移到真正自然相容的"
+                                "空间；全部业务事实仍须各输出一次，未点名"
+                                "分配尽量保持稳定。"
+                            ),
+                        }
+                        try:
+                            async with self._ai_semaphore:
+                                reassignment_call = await (
+                                    self.provider.assign_creative_landscape_facts(
+                                        application,
+                                        fact_visual_strategy=visual_strategy,
+                                        landscape=landscape_call.value,
+                                        target_count=snapshot.settings.target_count,
+                                        revision_context=(
+                                            reassignment_revision_context
+                                        ),
+                                    )
+                                )
+                        except ProviderError as exc:
+                            if reassignment_attempt == 0 and (
+                                exc.error_type == ProviderErrorType.RESPONSE_INVALID
+                            ):
+                                continue
+                            raise
+                        call_rows.append(reassignment_call.metadata)
+                        try:
+                            reassigned_landscape = (
+                                compile_creative_landscape_assignments(
+                                    landscape_call.value,
+                                    reassignment_call.value,
+                                    application,
+                                    source_hash=source_hash,
+                                    template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+                                    expected_direction_count=expected_direction_count,
+                                )
+                            )
+                        except ValueError:
+                            previous_assignments = reassignment_call.value
+                            continue
+                        landscape_audit = await audit_landscape(
+                            reassigned_landscape
+                        )
+                        if not landscape_audit.requires_revision:
+                            landscape = reassigned_landscape.model_copy(
+                                update={"semantic_audit": landscape_audit}
+                            )
+                            break
+                        repaired_landscape = apply_creative_landscape_audit(
+                            reassigned_landscape,
+                            landscape_audit,
+                            application,
+                        )
+                        if repaired_landscape is not None:
+                            landscape = repaired_landscape
+                            break
+                        draft_landscape = reassigned_landscape
+                        previous_assignments = reassignment_call.value
+                    if landscape is not None:
                         break
                     if landscape_attempt == 3:
                         raise ProviderError(
@@ -923,6 +1080,10 @@ class PromptGenerationPipeline:
                             draft_landscape,
                             landscape_audit,
                         )
+                    )
+                    landscape_revision_base = landscape_call.value
+                    landscape_revision_ids = list(
+                        landscape_audit.revision_territory_ids
                     )
                     continue
                 landscape = draft_landscape.model_copy(
@@ -979,7 +1140,25 @@ class PromptGenerationPipeline:
                                 }
                                 for index in range(territory.target_slots)
                             ]
-                            territory_direction_slots.append((territory, slots))
+                            # A large batch may allocate dozens of directions to
+                            # one valid product territory. Keep the territory
+                            # semantics intact, but bound each structured model
+                            # response so one dense space cannot hit Ark's
+                            # output-token ceiling.
+                            territory_direction_slots.extend(
+                                (
+                                    territory,
+                                    slots[
+                                        index : index
+                                        + DIRECTION_STRUCTURED_BATCH_SIZE
+                                    ],
+                                )
+                                for index in range(
+                                    0,
+                                    len(slots),
+                                    DIRECTION_STRUCTURED_BATCH_SIZE,
+                                )
+                            )
                             next_direction_ordinal += territory.target_slots
 
                         async def plan_territory_directions(
@@ -1085,14 +1264,16 @@ class PromptGenerationPipeline:
                         )
                     else:
                         revision_call_context = dict(revision_context or {})
-                        if previous_audited_response is not None and isinstance(
-                            revision_ids, list
+                        if (
+                            previous_audited_response is not None
+                            and isinstance(revision_ids, list)
+                            and revision_ids
                         ):
                             previous_by_id = {
                                 direction.direction_id: direction
                                 for direction in previous_audited_response.directions
                             }
-                            revision_call_context["requiredDirectionSlots"] = [
+                            required_revision_slots = [
                                 {
                                     "directionId": direction_id,
                                     "territoryId": previous_by_id[
@@ -1105,20 +1286,147 @@ class PromptGenerationPipeline:
                                 for direction_id in revision_ids
                                 if direction_id in previous_by_id
                             ]
-                        self._reserve_ai_call(context)
-                        async with self._ai_semaphore:
-                            call = await self.provider.plan_creative_directions(
-                                application,
-                                fact_visual_strategy=visual_strategy,
-                                shared_prompt=shared_prompt,
-                                landscape=landscape,
-                                target_count=snapshot.settings.target_count,
-                                style_instruction=_style_instruction(snapshot.settings),
-                                delivery_channel=snapshot.settings.delivery_channel,
-                                revision_context=revision_call_context,
+                            revision_batches = [
+                                revision_ids[
+                                    index : index + DIRECTION_STRUCTURED_BATCH_SIZE
+                                ]
+                                for index in range(
+                                    0,
+                                    len(revision_ids),
+                                    DIRECTION_STRUCTURED_BATCH_SIZE,
+                                )
+                            ]
+
+                            def scoped_revision_context(
+                                batch_ids: list[str],
+                            ) -> dict[str, Any]:
+                                batch_id_set = set(batch_ids)
+                                scoped = {
+                                    **revision_call_context,
+                                    "revisionDirectionIds": batch_ids,
+                                    "requiredDirectionSlots": [
+                                        slot
+                                        for slot in required_revision_slots
+                                        if slot["directionId"] in batch_id_set
+                                    ],
+                                }
+                                semantic_audit = scoped.get("semanticAudit")
+                                if isinstance(semantic_audit, dict):
+                                    scoped["semanticAudit"] = {
+                                        **semantic_audit,
+                                        "revisionDirectionIds": batch_ids,
+                                        "items": [
+                                            item
+                                            for item in semantic_audit.get("items", [])
+                                            if isinstance(item, dict)
+                                            and item.get("directionId") in batch_id_set
+                                        ],
+                                    }
+                                previous_directions = scoped.get(
+                                    "previousDirections"
+                                )
+                                if isinstance(previous_directions, list):
+                                    scoped["previousDirections"] = [
+                                        item
+                                        for item in previous_directions
+                                        if isinstance(item, dict)
+                                        and item.get("directionId") in batch_id_set
+                                    ]
+                                diversity_audit = scoped.get("diversityAudit")
+                                if isinstance(diversity_audit, dict):
+                                    scoped_groups = [
+                                        group
+                                        for group in diversity_audit.get("groups", [])
+                                        if isinstance(group, dict)
+                                        and batch_id_set.intersection(
+                                            group.get("revisionDirectionIds", [])
+                                        )
+                                    ]
+                                    scoped["diversityAudit"] = {
+                                        **diversity_audit,
+                                        "groups": scoped_groups,
+                                        "revisionDirectionIds": batch_ids,
+                                    }
+                                for key, value in list(scoped.items()):
+                                    if (
+                                        key.endswith("ByDirection")
+                                        and isinstance(value, dict)
+                                    ):
+                                        scoped[key] = {
+                                            direction_id: row
+                                            for direction_id, row in value.items()
+                                            if direction_id in batch_id_set
+                                        }
+                                return scoped
+
+                            revision_context_batches = [
+                                scoped_revision_context(batch_ids)
+                                for batch_ids in revision_batches
+                            ]
+                        else:
+                            revision_context_batches = [revision_call_context]
+
+                        async def revise_direction_batch(
+                            batch_context: Mapping[str, Any],
+                        ) -> Any:
+                            batch_slots = batch_context.get(
+                                "requiredDirectionSlots", []
                             )
-                        call_rows.append(call.metadata)
-                        direction_response = call.value
+                            batch_territory_ids = {
+                                slot.get("territoryId")
+                                for slot in batch_slots
+                                if isinstance(slot, dict)
+                                and isinstance(slot.get("territoryId"), str)
+                            }
+                            scoped_landscape = (
+                                landscape.model_copy(
+                                    update={
+                                        "territories": [
+                                            territory
+                                            for territory in landscape.territories
+                                            if territory.territory_id
+                                            in batch_territory_ids
+                                        ]
+                                    }
+                                )
+                                if batch_territory_ids
+                                else landscape
+                            )
+                            async with self._ai_semaphore:
+                                return await self.provider.plan_creative_directions(
+                                    application,
+                                    fact_visual_strategy=visual_strategy,
+                                    shared_prompt=shared_prompt,
+                                    landscape=scoped_landscape,
+                                    target_count=snapshot.settings.target_count,
+                                    style_instruction=_style_instruction(
+                                        snapshot.settings
+                                    ),
+                                    delivery_channel=(
+                                        snapshot.settings.delivery_channel
+                                    ),
+                                    revision_context=batch_context,
+                                )
+
+                        for _ in revision_context_batches:
+                            self._reserve_ai_call(context)
+                        revision_calls = await asyncio.gather(
+                            *(
+                                revise_direction_batch(batch_context)
+                                for batch_context in revision_context_batches
+                            )
+                        )
+                        call_rows.extend(
+                            revision_call.metadata
+                            for revision_call in revision_calls
+                        )
+                        direction_response = CreativeDirectionResponse(
+                            directions=[
+                                direction
+                                for revision_call in revision_calls
+                                for direction in revision_call.value.directions
+                            ]
+                        )
                 except ProviderError as exc:
                     if (
                         invalid_response_attempt < 3
@@ -1429,7 +1737,7 @@ class PromptGenerationPipeline:
         visual_strategy = self._required_fact_visual_strategy(context)
         shared_prompt = self._required_shared_prompt(context)
         requested_direction_count = min(
-            10,
+            4,
             max(2, math.ceil(requested_candidate_count / 2)),
             requested_candidate_count,
         )
@@ -1481,6 +1789,13 @@ class PromptGenerationPipeline:
                     proposed_direction_ids=[item.direction_id for item in proposed],
                 )
             except (ProviderError, ValueError) as exc:
+                LOGGER.warning(
+                    "diversity supplement direction attempt rejected attempt=%s "
+                    "error_type=%s error=%s",
+                    attempt + 1,
+                    type(exc).__name__,
+                    str(exc),
+                )
                 if attempt < 2:
                     revision_context = {
                         "validationError": str(exc),
@@ -1889,13 +2204,19 @@ class PromptGenerationPipeline:
                 "siblingCoordinatedShardCount": sum(
                     len(shard.tasks) > 1
                     and len(
+                        [
+                            task.creative_direction.direction_id
+                            for task in shard.tasks
+                            if task.creative_direction is not None
+                        ]
+                    )
+                    > len(
                         {
                             task.creative_direction.direction_id
                             for task in shard.tasks
                             if task.creative_direction is not None
                         }
                     )
-                    == 1
                     for shard in shards
                 ),
                 "factSelectionMode": "DIRECTION_FACT_APPLICATIONS",
@@ -1954,34 +2275,75 @@ class PromptGenerationPipeline:
                     }
                 )
         try:
-            for invalid_response_attempt in range(2):
-                self._reserve_ai_call(context)
-                try:
-                    async with self._ai_semaphore:
-                        call_kwargs: dict[str, Any] = {
-                            "application": self._require_application(context),
-                            "shared_prompt": self._required_shared_prompt(context),
-                            "regeneration_context": regeneration_context,
-                        }
-                        if _uses_fact_visual_strategy(snapshot):
-                            call_kwargs["fact_visual_strategy"] = (
-                                self._required_fact_visual_strategy(context)
+            call_kwargs: dict[str, Any] = {
+                "application": self._require_application(context),
+                "shared_prompt": self._required_shared_prompt(context),
+                "regeneration_context": regeneration_context,
+            }
+            if _uses_fact_visual_strategy(snapshot):
+                call_kwargs["fact_visual_strategy"] = (
+                    self._required_fact_visual_strategy(context)
+                )
+
+            async def request_candidates(
+                current_shard: CreativeShardPlan,
+            ) -> list[CreativeCandidate]:
+                for invalid_response_attempt in range(2):
+                    self._reserve_ai_call(context)
+                    try:
+                        async with self._ai_semaphore:
+                            call = await self.provider.generate_creatives(
+                                current_shard,
+                                **call_kwargs,
                             )
-                        call = await self.provider.generate_creatives(
-                            shard,
-                            **call_kwargs,
-                        )
-                    break
-                except ProviderError as exc:
-                    if (
-                        exc.error_type != ProviderErrorType.RESPONSE_INVALID
-                        or invalid_response_attempt == 1
-                    ):
+                        return call.value.items
+                    except ProviderError as exc:
+                        if (
+                            exc.error_type == ProviderErrorType.RESPONSE_INVALID
+                            and invalid_response_attempt == 0
+                        ):
+                            continue
+                        if (
+                            exc.error_type
+                            in {
+                                ProviderErrorType.OUTPUT_TRUNCATED,
+                                ProviderErrorType.RESPONSE_INCOMPLETE,
+                                ProviderErrorType.RESPONSE_INVALID,
+                            }
+                            and len(current_shard.tasks) > 1
+                        ):
+                            midpoint = math.ceil(len(current_shard.tasks) / 2)
+                            split_shards = [
+                                current_shard.model_copy(
+                                    update={"tasks": current_shard.tasks[:midpoint]}
+                                ),
+                                current_shard.model_copy(
+                                    update={"tasks": current_shard.tasks[midpoint:]}
+                                ),
+                            ]
+                            LOGGER.warning(
+                                "splitting invalid creative shard round=%s "
+                                "shard=%s task_count=%s",
+                                current_shard.round,
+                                current_shard.shard_index,
+                                len(current_shard.tasks),
+                            )
+                            split_results = await asyncio.gather(
+                                *(request_candidates(part) for part in split_shards)
+                            )
+                            return [
+                                item
+                                for split_result in split_results
+                                for item in split_result
+                            ]
                         raise
+                raise PipelineError("creative generation retry loop exhausted")
+
+            generated_items = await request_candidates(shard)
             generated_at = utc_now()
             items = [
                 item.model_copy(update={"generated_at": generated_at})
-                for item in call.value.items
+                for item in generated_items
             ]
             await self.api.put_shard(
                 context,
@@ -2234,27 +2596,37 @@ class PromptGenerationPipeline:
                                 raise
                 raise PipelineError("creative evaluation retry loop exhausted")
 
-            try:
-                evaluated_items = await request_evaluations(candidates)
-            except ProviderError as exc:
-                recoverable_structure_error = exc.error_type in {
-                    ProviderErrorType.RESPONSE_INVALID,
-                    ProviderErrorType.OUTPUT_TRUNCATED,
-                    ProviderErrorType.RESPONSE_INCOMPLETE,
-                }
-                if len(candidates) == 1 or not recoverable_structure_error:
-                    raise
-                LOGGER.warning(
-                    "splitting invalid creative evaluation shard round=%s "
-                    "shard=%s candidate_count=%s error_type=%s",
-                    shard.round,
-                    shard.shard_index,
-                    len(candidates),
-                    exc.error_type.value,
-                )
-                evaluated_items = []
-                for candidate in candidates:
-                    evaluated_items.extend(await request_evaluations([candidate]))
+            async def request_evaluations_with_split(
+                group: list[CreativeCandidate],
+            ) -> list[CreativeEvaluation]:
+                try:
+                    return await request_evaluations(group)
+                except ProviderError as exc:
+                    recoverable_structure_error = exc.error_type in {
+                        ProviderErrorType.RESPONSE_INVALID,
+                        ProviderErrorType.OUTPUT_TRUNCATED,
+                        ProviderErrorType.RESPONSE_INCOMPLETE,
+                    }
+                    if len(group) == 1 or not recoverable_structure_error:
+                        raise
+                    midpoint = max(1, len(group) // 2)
+                    LOGGER.warning(
+                        "splitting invalid creative evaluation shard round=%s "
+                        "shard=%s candidate_count=%s error_type=%s",
+                        shard.round,
+                        shard.shard_index,
+                        len(group),
+                        exc.error_type.value,
+                    )
+                    evaluated: list[CreativeEvaluation] = []
+                    for subgroup in (group[:midpoint], group[midpoint:]):
+                        if subgroup:
+                            evaluated.extend(
+                                await request_evaluations_with_split(subgroup)
+                            )
+                    return evaluated
+
+            evaluated_items = await request_evaluations_with_split(candidates)
 
             candidate_by_id = {item.slot_id: item for item in candidates}
             items = []
@@ -2393,8 +2765,17 @@ class PromptGenerationPipeline:
                 setattr(exc, "node_id", node)
                 raise
             cache.content_vector_index = content_index
+            evaluation_by_slot = {
+                evaluation.slot_id: evaluation
+                for evaluation in cache.creative_evaluations.values()
+            }
+            preliminary_similarity = _semantic_aware_similarity_resolver(
+                content_index,
+                evaluation_by_slot,
+            )
             preliminary = content_index.redundancy_summary(
-                [candidate.slot_id for candidate in eligible_candidates]
+                [candidate.slot_id for candidate in eligible_candidates],
+                similarity_resolver=preliminary_similarity,
             )
             cache.redundancy_summary = preliminary
             content_stats = content_index.stats
@@ -2433,7 +2814,11 @@ class PromptGenerationPipeline:
             context,
             node,
             StageStatus.SUCCEEDED,
-            "创意质量评估与用途分类完成",
+            (
+                "创意主线与六维信息自动补齐完成"
+                if snapshot.operation == "ITEM_EVALUATE"
+                else "创意质量评估与用途分类完成"
+            ),
             metadata={
                 "round": round_number,
                 "candidateCount": len(cache.creatives),
@@ -2458,11 +2843,7 @@ class PromptGenerationPipeline:
                 ],
                 **(
                     {
-                        "classificationStatus": (
-                            "NEEDS_REVISION"
-                            if evaluations and evaluations[0].hard_issues
-                            else "VERIFIED"
-                        )
+                        "classificationStatus": "VERIFIED"
                     }
                     if snapshot.operation == "ITEM_EVALUATE"
                     else {}
@@ -2557,16 +2938,33 @@ class PromptGenerationPipeline:
                     content_index = cache.content_vector_index
                     if content_index is None:
                         raise PipelineError("semantic evaluation index is unavailable")
-                    candidate_pool_redundancy = content_index.redundancy_summary(
+                    candidate_pool_content_redundancy = content_index.redundancy_summary(
                         [item.slot_id for item in eligible_candidates]
+                    )
+                    candidate_pool_content_redundancy_rate = round(
+                        candidate_pool_content_redundancy.redundant_candidate_count
+                        / max(1, len(eligible_candidates)),
+                        4,
+                    )
+                    evaluation_by_slot = {
+                        evaluation.slot_id: evaluation
+                        for evaluation in cache.creative_evaluations.values()
+                    }
+                    semantic_aware_similarity = _semantic_aware_similarity_resolver(
+                        content_index,
+                        evaluation_by_slot,
+                    )
+                    candidate_pool_redundancy = content_index.redundancy_summary(
+                        [item.slot_id for item in eligible_candidates],
+                        similarity_resolver=semantic_aware_similarity,
                     )
                     candidate_pool_redundancy_rate = round(
                         candidate_pool_redundancy.redundant_candidate_count
                         / max(1, len(eligible_candidates)),
                         4,
                     )
-                    mmr_quality_weight = (
-                        0.60 if candidate_pool_redundancy_rate > 0.50 else 0.70
+                    mmr_quality_weight = _adaptive_mmr_quality_weight(
+                        candidate_pool_content_redundancy_rate
                     )
                     mmr_diversity_weight = round(1.0 - mmr_quality_weight, 2)
 
@@ -2650,17 +3048,20 @@ class PromptGenerationPipeline:
                     baseline_summary = _selection_content_summary(
                         quality_baseline_result,
                         content_index,
+                        semantic_aware_similarity,
                     )
                     mmr_summary = _selection_content_summary(
                         mmr_result,
                         content_index,
+                        semantic_aware_similarity,
                     )
                     reduction_applicable, reduction = _near_duplicate_reduction(
                         baseline_summary,
                         mmr_summary,
                     )
                     mmr_redundancy = content_index.redundancy_summary(
-                        [item.candidate.slot_id for item in mmr_result.selected]
+                        [item.candidate.slot_id for item in mmr_result.selected],
+                        similarity_resolver=semantic_aware_similarity,
                     )
                     if cache.initial_redundancy_summary is None:
                         cache.initial_redundancy_summary = mmr_redundancy
@@ -2689,8 +3090,18 @@ class PromptGenerationPipeline:
                         ),
                         "mmrQualityWeight": mmr_quality_weight,
                         "mmrDiversityWeight": mmr_diversity_weight,
-                        "adaptiveMmrApplied": mmr_quality_weight == 0.60,
+                        "adaptiveMmrApplied": mmr_quality_weight < 0.70,
+                        "adaptiveMmrBasis": "CONTENT_VECTOR_REDUNDANCY",
+                        "adaptiveMmrTier": (
+                            "HIGH"
+                            if candidate_pool_content_redundancy_rate
+                            > MMR_HIGH_REDUNDANCY_THRESHOLD
+                            else "STANDARD"
+                        ),
                         "candidatePoolRedundancyRate": (candidate_pool_redundancy_rate),
+                        "candidatePoolContentRedundancyRate": (
+                            candidate_pool_content_redundancy_rate
+                        ),
                         "contentNoveltyWeight": 0.70,
                         "clusterAwareNoveltyWeight": 0.30,
                         "fixedAnchorCount": len(anchors),
@@ -2758,7 +3169,11 @@ class PromptGenerationPipeline:
                         "diversitySupplementImproved": (
                             cache.diversity_supplement_improved
                         ),
-                        "highRiskPairs": content_stats.high_risk_pairs,
+                        "highRiskPairs": _safe_high_risk_pairs(
+                            mmr_redundancy,
+                            semantic_aware_similarity,
+                            cache.creatives,
+                        ),
                     }
                     if self.similarity_mode == "vector":
                         result = mmr_result
@@ -2980,6 +3395,37 @@ class PromptGenerationPipeline:
                 else None
             ),
         )
+        if (
+            snapshot.operation == "ITEM_EVALUATE"
+            and snapshot.target_item is not None
+            and items
+        ):
+            # This operation is the asynchronous transport used by the editor's
+            # “AI 自动补齐” action. AI supplies only the missing creative core,
+            # dimensions and traceable fact bindings. The user's Prompt,
+            # duration and selected fragment type remain authoritative and the
+            # evaluator's quality/classification opinion must not overwrite them.
+            target = snapshot.target_item
+            items = [
+                items[0].model_copy(
+                    update={
+                        "id": target.id,
+                        "code": target.code,
+                        "origin": target.origin,
+                        "fragment_type": target.primary_purpose,
+                        "primary_purpose": target.primary_purpose,
+                        "compatible_purposes": [target.primary_purpose],
+                        "classification_status": "VERIFIED",
+                        "target_duration_seconds": (
+                            target.target_duration_seconds
+                        ),
+                        "content": target.content,
+                        "review_issues": [],
+                        "manual_edited": True,
+                        "created_at": target.created_at,
+                    }
+                )
+            ]
         cache.accepted_items = (
             items
             if item_operation
@@ -3024,8 +3470,8 @@ class PromptGenerationPipeline:
         )
         current_redundancy = cache.redundancy_summary
         semantic_evaluated_count = len(cache.accepted_items)
-        semantic_duplicate_limit_count = _maximum_semantic_duplicates(
-            semantic_evaluated_count
+        diversity_supplement_limit_count = (
+            _maximum_diversity_supplement_duplicates(semantic_evaluated_count)
         )
         dominant_actions = dominant_families(
             selected_evaluations,
@@ -3063,7 +3509,7 @@ class PromptGenerationPipeline:
         vector_diversity_needed = bool(
             current_redundancy is not None
             and current_redundancy.redundant_candidate_count
-            > semantic_duplicate_limit_count
+            > diversity_supplement_limit_count
         )
         diversity_findings = [
             *(["VECTOR_NEAR_DUPLICATE_EXCESS"] if vector_diversity_needed else []),
@@ -3171,6 +3617,8 @@ class PromptGenerationPipeline:
             )
             if warning
         ]
+        if snapshot.operation == "ITEM_EVALUATE":
+            return pending, should_supplement
         await self._stage(
             context,
             NodeId.EXACT_SELECTION_AND_SUPPLEMENT,
@@ -3300,7 +3748,10 @@ class PromptGenerationPipeline:
             "PASS"
             if len(items) == expected
             and all(item.classification_status == "VERIFIED" for item in items)
-            and not any(row.evaluation.hard_issues for row in selected)
+            and (
+                snapshot.operation == "ITEM_EVALUATE"
+                or not any(row.evaluation.hard_issues for row in selected)
+            )
             and (item_operation or not missing_business_fact_ids)
             else "NEEDS_REVIEW"
         )
@@ -3365,6 +3816,9 @@ class PromptGenerationPipeline:
                 "semanticDuplicateCount": semantic_evaluation.duplicate_count,
                 "semanticDuplicateRate": semantic_evaluation.duplicate_rate,
                 "semanticDuplicateRateLimit": SEMANTIC_DUPLICATE_RATE_LIMIT,
+                "diversitySupplementTriggerRateLimit": (
+                    DIVERSITY_SUPPLEMENT_TRIGGER_RATE
+                ),
                 "requiredFactCount": len(coverage.required),
                 "coveredRequiredFactCount": len(coverage.covered),
                 "missingRequiredFactCount": len(coverage.missing),
@@ -3484,7 +3938,13 @@ def _creative_task_chunks(
     *,
     max_size: int,
 ) -> list[list[CreativeTask]]:
-    """Pack sibling direction tasks together without interpreting their semantics."""
+    """Keep siblings together so the model can make their differences explicit.
+
+    Sibling variants generated in isolated requests cannot see one another and
+    repeatedly converge on the same obvious scene/action implementation.  A
+    grouped request gives the model the complete local comparison set.  This is
+    scheduling only; no product or free-text semantics are interpreted here.
+    """
 
     if not tasks:
         return []
@@ -3499,11 +3959,26 @@ def _creative_task_chunks(
         direction_groups.setdefault(direction_id, []).append(task)
 
     chunks: list[list[CreativeTask]] = []
+    residual_groups: list[list[CreativeTask]] = []
     for group in direction_groups.values():
-        ordered = sorted(group, key=lambda item: item.ordinal)
-        chunks.extend(
-            ordered[start : start + size] for start in range(0, len(ordered), size)
-        )
+        ordered_group = sorted(group, key=lambda item: item.ordinal)
+        while len(ordered_group) >= size:
+            chunks.append(ordered_group[:size])
+            ordered_group = ordered_group[size:]
+        if ordered_group:
+            residual_groups.append(ordered_group)
+
+    # Pack only the small remainders together. A sibling group is never split
+    # merely to fill a request, so variants that fit still see each other while
+    # sparse plans keep the same economical call count.
+    residual_chunk: list[CreativeTask] = []
+    for group in residual_groups:
+        if residual_chunk and len(residual_chunk) + len(group) > size:
+            chunks.append(residual_chunk)
+            residual_chunk = []
+        residual_chunk.extend(group)
+    if residual_chunk:
+        chunks.append(residual_chunk)
     return chunks
 
 
@@ -3572,10 +4047,15 @@ def _selection_vector_summary(
 def _selection_content_summary(
     selection: CreativeSelectionResult,
     vector_index: ContentVectorIndex,
+    similarity_resolver: Callable[[str, str], float] | None = None,
 ) -> dict[str, Any]:
     selected = selection.selected
     selected_ids = [item.candidate.slot_id for item in selected]
-    redundancy = vector_index.redundancy_summary(selected_ids)
+    resolve_similarity = similarity_resolver or vector_index.similarity
+    redundancy = vector_index.redundancy_summary(
+        selected_ids,
+        similarity_resolver=resolve_similarity,
+    )
     fields = (
         "narrative",
         "scene",
@@ -3601,11 +4081,11 @@ def _selection_content_summary(
         else 0.0
     )
     pair_risks = [
-        vector_index.similarity(left_id, right_id)
+        resolve_similarity(left_id, right_id)
         for left_id, right_id in combinations(selected_ids, 2)
     ]
     pair_risks.extend(
-        vector_index.similarity(selected_id, anchor_id)
+        resolve_similarity(selected_id, anchor_id)
         for selected_id in selected_ids
         for anchor_id in vector_index.anchor_ids
     )
@@ -3627,12 +4107,95 @@ def _selection_content_summary(
     }
 
 
+def _semantic_aware_similarity_resolver(
+    vector_index: ContentVectorIndex,
+    evaluations_by_slot: Mapping[str, CreativeEvaluation],
+) -> Callable[[str, str], float]:
+    """Combine content vectors with AI-owned six-axis categories.
+
+    The Worker only compares category identifiers returned by the evaluator. It
+    never infers scene or action meaning from product words or free text.
+    """
+
+    def resolve(left_id: str, right_id: str) -> float:
+        content_similarity = vector_index.similarity(left_id, right_id)
+        left = evaluations_by_slot.get(left_id)
+        right = evaluations_by_slot.get(right_id)
+        if (
+            left is None
+            or right is None
+            or left.semantic_profile is None
+            or right.semantic_profile is None
+        ):
+            return content_similarity
+        cluster_similarity = 1.0 - (
+            semantic_cluster_novelty(
+                left.semantic_profile,
+                right.semantic_profile,
+            )
+            / 100.0
+        )
+        return round(
+            CONTENT_SIMILARITY_WEIGHT * content_similarity
+            + SEMANTIC_CLUSTER_SIMILARITY_WEIGHT * cluster_similarity,
+            6,
+        )
+
+    return resolve
+
+
+def _safe_high_risk_pairs(
+    redundancy: RedundancySummary,
+    similarity_resolver: Callable[[str, str], float],
+    candidates_by_slot: Mapping[str, CreativeCandidate],
+) -> list[dict[str, int | float | bool]]:
+    ranked: list[tuple[float, str, str]] = [
+        (similarity_resolver(left_id, right_id), left_id, right_id)
+        for left_id, right_id in redundancy.high_risk_pairs
+    ]
+    result: list[dict[str, int | float | bool]] = []
+    for similarity, left_id, right_id in sorted(ranked, reverse=True)[:3]:
+        left = candidates_by_slot.get(left_id)
+        right = candidates_by_slot.get(right_id)
+        if left is None:
+            continue
+        result.append(
+            {
+                "leftOrdinal": left.ordinal,
+                "rightOrdinal": right.ordinal if right is not None else 0,
+                "rightIsAnchor": right is None,
+                "similarity": round(similarity, 4),
+            }
+        )
+    return result
+
+
+def _adaptive_mmr_quality_weight(candidate_pool_redundancy_rate: float) -> float:
+    """Shift ranking weight before a redundant pool leaks into final results.
+
+    The decision is product-agnostic and uses only vector redundancy measured
+    across the current candidate pool. Quality remains the majority signal in
+    every tier; diversity receives more influence as the pool gets denser.
+    """
+    if candidate_pool_redundancy_rate > MMR_HIGH_REDUNDANCY_THRESHOLD:
+        return 0.60
+    return 0.70
+
+
 def _maximum_semantic_duplicates(evaluated_count: int) -> int:
     if evaluated_count <= 0:
         return 0
     return max(
         0,
         math.ceil(evaluated_count * SEMANTIC_DUPLICATE_RATE_LIMIT / 100.0) - 1,
+    )
+
+
+def _maximum_diversity_supplement_duplicates(evaluated_count: int) -> int:
+    if evaluated_count <= 0:
+        return 0
+    return math.floor(
+        evaluated_count * DIVERSITY_SUPPLEMENT_TRIGGER_RATE / 100.0
     )
 
 
@@ -4085,7 +4648,11 @@ def _render_profile(settings: PromptBatchSettings) -> RenderProfile:
 def _style_instruction(settings: PromptBatchSettings) -> str:
     if settings.style_mode == "FIXED" and settings.style_tone:
         return f"整批采用{settings.style_tone}作为共享视觉基调"
-    return "AI 根据场景选择：根据已确认事实和具体场景选择合适的光线、色彩、材质与镜头质感"
+    # Auto mode intentionally adds no batch-level style requirement. Each
+    # candidate may use light, colour or texture only when its own coherent
+    # creative needs them, so common scene-to-style stereotypes do not become
+    # another source of batch repetition.
+    return ""
 
 
 def _safe_error(exc: Exception) -> str:

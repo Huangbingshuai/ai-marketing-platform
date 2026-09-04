@@ -100,7 +100,7 @@ export const startEffectPromptRun = (
       input.operation === 'ITEM_REGENERATE'
         ? '重新生成单条 Prompt'
         : input.operation === 'ITEM_EVALUATE'
-          ? '重新评估单条 Prompt'
+          ? 'AI 自动补齐创意信息'
           : '生成 Prompt 批次',
     signal,
   });

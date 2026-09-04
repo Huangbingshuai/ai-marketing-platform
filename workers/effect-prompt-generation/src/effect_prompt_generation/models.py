@@ -598,7 +598,10 @@ class PromptGenerationSnapshot(ApiModel):
             raise ValueError(
                 "batch generation cannot contain item regeneration settings"
             )
-        if len(self.retained_manual_items) > self.settings.target_count:
+        if (
+            self.operation != "ITEM_EVALUATE"
+            and len(self.retained_manual_items) > self.settings.target_count
+        ):
             raise ValueError("retained manual items exceed target count")
         return self
 
@@ -656,7 +659,7 @@ class CreativeTerritoryAction(ApiModel):
 class CreativeTerritoryFactCompatibility(ApiModel):
     fact_id: str = Field(min_length=1, max_length=120)
     natural_usage: str = Field(min_length=4, max_length=120)
-    unsupported_conditions: list[str] = Field(default_factory=list, max_length=1)
+    unsupported_conditions: list[str] = Field(default_factory=list, max_length=4)
 
     @field_validator("unsupported_conditions")
     @classmethod
@@ -720,7 +723,7 @@ class CreativeFactTerritoryAssignment(ApiModel):
     fact_id: str = Field(min_length=1, max_length=120)
     territory_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
     natural_usage: str = Field(min_length=4, max_length=120)
-    unsupported_conditions: list[str] = Field(default_factory=list, max_length=1)
+    unsupported_conditions: list[str] = Field(default_factory=list, max_length=4)
 
 
 class CreativeFactTerritoryAssignmentResponse(ApiModel):
@@ -743,7 +746,15 @@ class CreativeTerritoryAuditResponse(ApiModel):
         default_factory=list,
         max_length=64,
     )
-    summary: str = Field(min_length=2, max_length=180)
+    summary: str = Field(default="", max_length=180)
+
+    @model_validator(mode="after")
+    def normalize_summary(self) -> CreativeTerritoryAuditResponse:
+        if not self.summary.strip():
+            self.summary = (
+                "发现需调整的事实关系" if self.fact_issues else "创意空间复核完成"
+            )
+        return self
 
 
 class CreativeLandscapeAuditResponse(ApiModel):
@@ -884,11 +895,17 @@ class CreativeDirectionAuditResponse(ApiModel):
     items: list[CreativeDirectionAuditItem] = Field(min_length=1, max_length=80)
     requires_revision: bool
     revision_direction_ids: list[str] = Field(default_factory=list, max_length=80)
-    summary: str = Field(min_length=2, max_length=500)
+    summary: str = Field(default="", max_length=500)
 
     @model_validator(mode="after")
     def normalize_revision_ids(self) -> CreativeDirectionAuditResponse:
         self.revision_direction_ids = list(dict.fromkeys(self.revision_direction_ids))
+        if not self.summary.strip():
+            self.summary = (
+                "发现需修订的创意方向"
+                if self.requires_revision
+                else "创意方向复核完成"
+            )
         return self
 
 
@@ -924,7 +941,7 @@ class CreativeDirectionDiversityAuditResponse(ApiModel):
     )
     requires_revision: bool
     revision_direction_ids: list[str] = Field(default_factory=list, max_length=80)
-    summary: str = Field(min_length=2, max_length=500)
+    summary: str = Field(default="", max_length=500)
 
     @model_validator(mode="after")
     def normalize_revision_ids(self) -> CreativeDirectionDiversityAuditResponse:
@@ -937,6 +954,12 @@ class CreativeDirectionDiversityAuditResponse(ApiModel):
             dict.fromkeys([*self.revision_direction_ids, *grouped_revision_ids])
         )
         self.requires_revision = bool(self.revision_direction_ids)
+        if not self.summary.strip():
+            self.summary = (
+                "发现需分散的重复方向"
+                if self.requires_revision
+                else "全批方向重复复核完成"
+            )
         return self
 
 

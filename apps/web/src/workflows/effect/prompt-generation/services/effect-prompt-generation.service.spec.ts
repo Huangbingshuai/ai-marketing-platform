@@ -2,6 +2,7 @@ import type { EffectPromptRun, GetEffectPromptWorkspaceData } from '@ai-marketin
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  autoFillEffectPromptCreativeStructure,
   buildEffectPromptCsv,
   loadEffectPromptNodeDetail,
   loadEffectPromptWorkspace,
@@ -233,5 +234,54 @@ describe('effect prompt generation HTTP service', () => {
         productRelation: '蒸熟后直接装盘',
       },
     });
+  });
+
+  it('AI 自动补齐只提交用户 Prompt 和异步任务所需版本', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      response({
+        resultId: 'result-1',
+        productId: 'product-1',
+        revision: 2,
+        result: {},
+        savedAt: '2026-09-03T00:00:00.000Z',
+        unchanged: false,
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await autoFillEffectPromptCreativeStructure(
+      'project-1',
+      'result-1',
+      1,
+      3,
+      {
+        content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
+        primaryPurpose: 'PRODUCT_DISPLAY',
+        creativeCore: '不应发送的旧创意',
+        dimensions: {
+          narrative: '旧叙事',
+          scene: '旧场景',
+          persona: '旧人物',
+          productRelation: '旧关联',
+          camera: '旧镜头',
+          emotion: '旧情绪',
+        },
+        targetDurationSeconds: 5,
+      },
+    );
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(String(request.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      content: '餐桌上，一双手把蒸熟的广式腊肠夹入碗中。',
+      primaryPurpose: 'PRODUCT_DISPLAY',
+      targetDurationSeconds: 5,
+      expectedRevision: 1,
+      expectedSettingsRevision: 3,
+      evaluateAfterSave: true,
+    });
+    expect(body).toHaveProperty('idempotencyKey');
+    expect(body).not.toHaveProperty('creativeCore');
+    expect(body).not.toHaveProperty('dimensions');
   });
 });

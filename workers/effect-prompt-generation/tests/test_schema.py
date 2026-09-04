@@ -17,6 +17,7 @@ from effect_prompt_generation.models import (
     InsightCoverage,
     PromptBatchResult,
     PromptBatchSettings,
+    PromptGenerationSnapshot,
     PromptItem,
     PromptMetrics,
     PurposeDistribution,
@@ -26,6 +27,31 @@ from effect_prompt_generation.models import (
     SharedPromptSection,
     SharedRenderConstraints,
 )
+
+
+def test_item_evaluate_allows_retained_items_above_batch_target(
+    prompt_item: PromptItem,
+) -> None:
+    snapshot = PromptGenerationSnapshot(
+        project_id="project-current",
+        workflow_run_id="workflow-current",
+        product_id="product-current",
+        operation="ITEM_EVALUATE",
+        target_item_id=prompt_item.id,
+        target_item=prompt_item,
+        target_item_index=10,
+        settings=PromptBatchSettings(target_count=10, default_duration_seconds=5),
+        insight_artifact={
+            "id": "insight-current",
+            "revision": 1,
+            "contentHash": "sha256:current",
+            "result": {"productName": "测试商品"},
+        },
+        retained_manual_items=[prompt_item] * 11,
+        selection_policy="MMR_CONTENT",
+    )
+
+    assert len(snapshot.retained_manual_items) == 11
 
 
 def test_prompt_batch_target_count_has_a_hard_limit_of_100() -> None:

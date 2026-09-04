@@ -457,7 +457,7 @@ export const EFFECT_PROMPT_GRAPH_NODES = [
     label: '精确数量择优与补充',
     group: 'REPLENISH',
   },
-  { id: 'ITEM_EVALUATE', label: '单条创意重新评估', group: 'QUALITY' },
+  { id: 'ITEM_EVALUATE', label: 'AI 自动补齐创意信息', group: 'GENERATION' },
   { id: 'RESULT_SAVE', label: '结果保存', group: 'RESULT' },
 ] as const;
 export type EffectPromptNodeId = (typeof EFFECT_PROMPT_GRAPH_NODES)[number]['id'];
@@ -845,7 +845,7 @@ export type UpsertEffectPromptItemRequest = Pick<
   creativeCore?: string;
   dimensions?: EffectPromptDimensions;
   expectedRevision: number;
-  /** When true, saving and queueing the existing ITEM_EVALUATE flow is one API action. */
+  /** Internal compatibility flag: save the Prompt and queue asynchronous creative-structure autofill. */
   evaluateAfterSave?: boolean;
   expectedSettingsRevision?: number;
   idempotencyKey?: string;

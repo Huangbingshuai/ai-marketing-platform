@@ -191,14 +191,7 @@ export type PromptItemDraft = {
   targetDurationSeconds: number;
 };
 
-export const saveEffectPromptItem = async (
-  projectId: string,
-  resultId: string,
-  expectedRevision: number,
-  draft: PromptItemDraft,
-  itemId?: string,
-  signal?: AbortSignal,
-): Promise<UpdateEffectPromptResultData> => {
+const promptItemInput = (draft: PromptItemDraft) => {
   const { creativeCore, dimensions, ...baseDraft } = draft;
   const normalizedCreativeCore = creativeCore.trim();
   const normalizedDimensions = Object.fromEntries(
@@ -207,16 +200,49 @@ export const saveEffectPromptItem = async (
   const hasCreativeStructure =
     normalizedCreativeCore.length > 0 ||
     EFFECT_PROMPT_DIMENSIONS.some(({ key }) => normalizedDimensions[key].length > 0);
-  const promptDraft = {
+  return {
     ...baseDraft,
     ...(hasCreativeStructure
       ? { creativeCore: normalizedCreativeCore, dimensions: normalizedDimensions }
       : {}),
   };
+};
+
+export const saveEffectPromptItem = async (
+  projectId: string,
+  resultId: string,
+  expectedRevision: number,
+  draft: PromptItemDraft,
+  itemId?: string,
+  signal?: AbortSignal,
+): Promise<UpdateEffectPromptResultData> => {
   const input = {
-    ...promptDraft,
+    ...promptItemInput(draft),
     expectedRevision,
     evaluateAfterSave: false,
+  };
+  return itemId
+    ? (await updateEffectPromptItem(projectId, resultId, itemId, input, signal)).data
+    : (await addEffectPromptItem(projectId, resultId, input, signal)).data;
+};
+
+export const autoFillEffectPromptCreativeStructure = async (
+  projectId: string,
+  resultId: string,
+  expectedRevision: number,
+  expectedSettingsRevision: number,
+  draft: PromptItemDraft,
+  itemId?: string,
+  signal?: AbortSignal,
+): Promise<UpdateEffectPromptResultData> => {
+  const input = {
+    content: draft.content,
+    primaryPurpose: draft.primaryPurpose,
+    targetDurationSeconds: draft.targetDurationSeconds,
+    expectedRevision,
+    evaluateAfterSave: true,
+    expectedSettingsRevision,
+    idempotencyKey: createPromptIdempotencyKey(),
   };
   return itemId
     ? (await updateEffectPromptItem(projectId, resultId, itemId, input, signal)).data

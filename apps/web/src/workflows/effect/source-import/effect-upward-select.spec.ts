@@ -12,4 +12,10 @@ describe('upward creatable select overlay', () => {
   it('treats pointer interaction inside the teleported menu as internal', () => {
     expect(selectSource).toContain('!menu.value.contains(target)');
   });
+
+  it('lets the search input use only the space left beside the icon', () => {
+    expect(selectSource).toMatch(
+      /\.effect-up-select__search input\s*\{[^}]*width:\s*0;[^}]*min-width:\s*0;[^}]*flex:\s*1 1 0;/u,
+    );
+  });
 });

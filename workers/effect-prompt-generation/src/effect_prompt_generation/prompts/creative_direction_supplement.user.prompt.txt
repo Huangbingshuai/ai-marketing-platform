@@ -12,6 +12,9 @@
 产品专属创意版图：
 {creative_landscape_json}
 
+可直接复制的合法 ID 组合表：
+{allowed_combinations_json}
+
 现有方向：
 {existing_directions_json}
 
@@ -24,5 +27,4 @@
 全批复核后的修订上下文（首次为空）：
 {revision_context_json}
 
-directions 必须恰好输出 {requested_direction_count} 个真正新增的方向。优先使用现有批次较少出现、但与产品和事实自然相容的版图、动作与画面关系。
-
+directions 必须恰好输出 {requested_direction_count} 个真正新增的方向。每个方向先从合法 ID 组合表选择一个 territoryId，再且只能从同一行复制 primaryActionId 和 factApplications.factId；不要凭语义猜测 ID 的归属。优先使用现有批次较少出现、但与产品和事实自然相容的版图、动作与画面关系。

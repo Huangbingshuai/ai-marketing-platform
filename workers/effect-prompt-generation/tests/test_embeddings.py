@@ -113,6 +113,40 @@ def test_redundancy_summary_counts_duplicate_groups_formed_only_by_anchors() -> 
     assert summary.high_risk_candidate_ids == ()
 
 
+def test_redundancy_summary_accepts_semantic_aware_similarity() -> None:
+    index = ContentVectorIndex(
+        entity_ids=("a", "b", "c"),
+        row_by_id={"a": 0, "b": 1, "c": 2},
+        candidate_ids=("a", "b", "c"),
+        anchor_ids=(),
+        similarities=np.asarray(
+            [
+                [1.0, 0.97, 0.97],
+                [0.97, 1.0, 0.97],
+                [0.97, 0.97, 1.0],
+            ],
+            dtype=np.float32,
+        ),
+        stats=ContentEmbeddingStats(3, 0, 0, 0, 3, 3, 0, 0, 0, 0, []),
+    )
+
+    semantic_similarity = {
+        frozenset(("a", "b")): 0.68,
+        frozenset(("a", "c")): 0.94,
+        frozenset(("b", "c")): 0.68,
+    }
+    summary = index.redundancy_summary(
+        ["a", "b", "c"],
+        similarity_resolver=lambda left, right: semantic_similarity[
+            frozenset((left, right))
+        ],
+    )
+
+    assert summary.high_risk_pair_count == 1
+    assert summary.redundant_candidate_count == 1
+    assert summary.high_risk_candidate_ids == ("a", "c")
+
+
 def test_semantic_group_map_returns_stable_connected_components() -> None:
     index = ContentVectorIndex(
         entity_ids=("a", "b", "c", "d"),

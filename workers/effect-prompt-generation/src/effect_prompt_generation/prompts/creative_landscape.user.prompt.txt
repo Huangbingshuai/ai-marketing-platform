@@ -13,13 +13,15 @@
 批次共用提示词（只约束，不复述）：
 {shared_prompt_json}
 
-视觉风格基调（共享视觉语言，不是固定场景）：
-{visual_style_baseline_json}
+{visual_style_baseline_section}
 
 投放渠道（只影响节奏和表达习惯，不得作为正文元数据复述）：
 {delivery_channel_json}
 
-版图修订上下文（首次为空；如需修订则重新规划完整版图）：
+版图修订上下文（首次为空；修订时包含被点名空间和上一版信息）：
 {revision_context_json}
 
-请先规划产品专属创意版图，空间数量必须位于 {territory_count_range} 之间，且不得超过后续 {target_direction_count} 个创意方向。这个范围是大批量素材的容量要求；每个空间仍必须是与产品、受众、需求、使用、购买或品牌表达直接相关的真实业务主题，不得用同义改名、空泛地点或虚构条件凑数。不要输出 targetSlots。requiredFactIds 在本阶段必须为空；compatibleFactIds 只保留少量用于定义空间主题的事实。下一次独立 AI 调用会负责全部业务事实的唯一主承载分配；同一空间可以主承载较多自然相关事实，Worker 会按每 4 条事实增加一个方向槽位。
+输出范围：
+{output_scope_instruction}
+
+请先规划产品专属创意版图。首次规划时，空间数量必须位于 {territory_count_range} 之间，且不得超过后续 {target_direction_count} 个创意方向；局部修订时，只返回“输出范围”点名的空间，不适用完整空间数量要求。这个范围是大批量素材的容量要求；每个空间仍必须是与产品、受众、需求、使用、购买或品牌表达直接相关的真实业务主题，不得用同义改名、空泛地点或虚构条件凑数。不要输出 targetSlots。requiredFactIds 在本阶段必须为空；compatibleFactIds 只保留少量用于定义空间主题的事实。下一次独立 AI 调用会负责全部业务事实的唯一主承载分配；同一空间可以主承载较多自然相关事实，Worker 会按每 4 条事实增加一个方向槽位。

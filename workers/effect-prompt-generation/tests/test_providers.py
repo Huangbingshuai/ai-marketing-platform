@@ -9,6 +9,7 @@ from pydantic import BaseModel, ValidationError
 from effect_prompt_generation.insight_mapping import map_insight
 from effect_prompt_generation.models import (
     CreativeCandidate,
+    CreativeDirectionResponse,
     CreativeDimensions,
     CreativeFactAssignment,
     CreativeShardPlan,
@@ -21,6 +22,7 @@ from effect_prompt_generation.providers import (
     ArkResponsesProvider,
     MockAiProvider,
     ProviderError,
+    _creative_output_token_budget,
     _temporal_intent_for_duration,
     _validate_structured_output,
 )
@@ -34,10 +36,13 @@ class _StructuredEnvelope(BaseModel):
 @pytest.mark.parametrize(
     ("duration", "band", "required_text"),
     [
-        (5, "SHORT_FOCUS", "一个可立即看懂"),
+        (4, "SHORT_FOCUS", "一个可立即看懂"),
+        (8, "SHORT_FOCUS", "一个可立即看懂"),
+        (9, "COMPLETE_ACTION", "2～3 个连续动作节拍"),
         (15, "COMPLETE_ACTION", "2～3 个连续动作节拍"),
-        (20, "GRADUAL_PROCESS", "3 个连续动作节拍"),
-        (25, "CONNECTED_PHASES", "3～4 个连续动作节拍"),
+        (16, "GRADUAL_PROCESS", "3 个连续动作节拍"),
+        (22, "GRADUAL_PROCESS", "3 个连续动作节拍"),
+        (23, "CONNECTED_PHASES", "3～4 个连续动作节拍"),
         (30, "CONNECTED_PHASES", "3～4 个连续动作节拍"),
     ],
 )
@@ -51,6 +56,40 @@ def test_temporal_intent_scales_continuous_action_beats(
     assert intent["band"] == band
     assert required_text in intent["guidance"]
     assert "分屏" in intent["guidance"] or duration < 23
+    assert "软参考" in intent["detailGuidance"]
+    if duration <= 8:
+        assert "首帧就位" in intent["guidance"]
+        assert "70～120" in intent["detailGuidance"]
+
+
+@pytest.mark.parametrize(
+    ("duration", "expected"),
+    [
+        (4, 4_200),
+        (8, 4_200),
+        (9, 5_000),
+        (15, 5_000),
+        (16, 5_600),
+        (22, 5_600),
+        (23, 6_000),
+        (30, 6_000),
+    ],
+)
+def test_creative_shard_reserves_duration_appropriate_output_budget(
+    duration: int,
+    expected: int,
+) -> None:
+    tasks = [
+        CreativeTask(
+            slotId=f"slot-{index}",
+            ordinal=index,
+            round=0,
+            targetDurationSeconds=duration,
+        )
+        for index in range(1, 5)
+    ]
+
+    assert _creative_output_token_budget(tasks) == expected
 
 
 def test_ark_structured_output_rejects_non_artifact_trailing_content() -> None:
@@ -471,12 +510,12 @@ async def test_ark_direction_audit_reviews_each_fact_and_restores_fact_ids() -> 
         template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
         expected_direction_count=8,
     )
-    directions = _mock_creative_direction_response(
+    all_directions = _mock_creative_direction_response(
         application,
         landscape=landscape,
     )
     validate_creative_direction_plan(
-        directions,
+        all_directions,
         application,
         strategy,
         source_hash="3" * 64,
@@ -484,6 +523,7 @@ async def test_ark_direction_audit_reviews_each_fact_and_restores_fact_ids() -> 
         expected_direction_count=8,
         landscape=landscape,
     )
+    directions = CreativeDirectionResponse(directions=all_directions.directions[:1])
     aliases = {
         fact.fact_id: f"F{index + 1}" for index, fact in enumerate(application.usable)
     }
@@ -562,6 +602,15 @@ async def test_ark_direction_audit_reviews_each_fact_and_restores_fact_ids() -> 
     assert "factReviews" in seen_payload
     assert "单手开合" in seen_prompt
     assert all(fact.fact_id not in seen_prompt for fact in application.usable)
+    selected_territory_ids = {
+        direction.territory_id for direction in directions.directions
+    }
+    unrelated_territory = next(
+        territory
+        for territory in landscape.territories
+        if territory.territory_id not in selected_territory_ids
+    )
+    assert unrelated_territory.label not in seen_prompt
 
 
 @pytest.mark.asyncio
@@ -699,11 +748,12 @@ async def test_ark_creative_rejects_invalid_fact_usage(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("candidate_count", "expected_output_tokens"),
-    [(3, 3900), (5, 4096)],
+    ("candidate_count", "infer_creative_structure", "expected_output_tokens"),
+    [(1, True, 4096), (3, False, 3900), (5, False, 4096)],
 )
 async def test_ark_evaluation_reserves_tokens_per_candidate_with_configured_ceiling(
     candidate_count: int,
+    infer_creative_structure: bool,
     expected_output_tokens: int,
 ) -> None:
     seen: dict[str, object] = {}
@@ -778,6 +828,7 @@ async def test_ark_evaluation_reserves_tokens_per_candidate_with_configured_ceil
             candidates,
             application=application,
             target_durations={item.slot_id: 5 for item in candidates},
+            infer_creative_structure=infer_creative_structure,
         )
     finally:
         await provider.aclose()

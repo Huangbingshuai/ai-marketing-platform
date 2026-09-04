@@ -1007,11 +1007,7 @@ const nodeMetricFields = (nodeId: string, rawMetadata: unknown): EffectPromptNod
         ),
         textField(
           '用户补充',
-          metadata.hasUserAdditionalContent === true
-            ? '已应用'
-            : metadata.hasUserAdditionalContent === false
-              ? '未设置'
-              : null,
+          metadata.hasUserAdditionalContent === true ? '已应用（历史批次）' : null,
         ),
       ]);
     case 'COHERENT_CREATIVE_GENERATION':
@@ -1074,8 +1070,8 @@ const nodeMetricFields = (nodeId: string, rawMetadata: unknown): EffectPromptNod
       ]);
     case 'ITEM_EVALUATE':
       return compact([
-        numberField(metadata, 'evaluatedCount', '已评估 Prompt'),
-        enumField(metadata, 'classificationStatus', '用途评估', [
+        numberField(metadata, 'evaluatedCount', '已处理 Prompt'),
+        enumField(metadata, 'classificationStatus', '自动补齐状态', [
           'PENDING',
           'VERIFIED',
           'NEEDS_REVISION',
@@ -1851,6 +1847,16 @@ const additionalOutputFields = (
   const evaluations = evaluationRows(run);
   const result = finalResultRecord(run);
   const resultMetrics = metadataRecord(result?.metrics);
+  if (nodeId === 'SHARED_PROMPT_COMPILATION')
+    return publicText(sharedPromptData(run, metadata).compiledContent)
+      ? [
+          {
+            label: '使用方式',
+            value: '生成时约束创意，视频渲染时统一追加一次',
+            description: '不会写进每条 Prompt 正文',
+          },
+        ]
+      : [];
   if (nodeId === 'COHERENT_CREATIVE_GENERATION') {
     const creativeShards = run.shards.filter((shard) => shard.phase === 'BLUEPRINT');
     const completedShards = creativeShards.filter((shard) => shard.status === 'SUCCEEDED');
@@ -1865,7 +1871,16 @@ const additionalOutputFields = (
       { label: '当前处理中分片', value: pendingShards.length },
     ];
   }
-  if (nodeId === 'CREATIVE_EVALUATION_CLASSIFICATION' || nodeId === 'ITEM_EVALUATE')
+  if (nodeId === 'ITEM_EVALUATE')
+    return [
+      { label: '处理对象', value: '用户输入的单条 Prompt' },
+      {
+        label: '生成内容',
+        value: '创意主线与完整六维信息',
+        description: '不会改写 Prompt 正文、片段类型或时长',
+      },
+    ];
+  if (nodeId === 'CREATIVE_EVALUATION_CLASSIFICATION')
     return [
       { label: '实际完成评估', value: evaluations.length },
       { label: '通过评估', value: evaluations.filter((item) => !item.hardIssues.length).length },
@@ -2099,13 +2114,13 @@ const expectedOutputSummary: Partial<Record<EffectPromptNodeId, string>> = {
   INSIGHT_MAPPING: '将营销洞察划分为必须应用、自适应应用、排除信息和全局约束。',
   FACT_VISUAL_STRATEGY_COMPILATION:
     '将已确认事实分成可见画面任务、商业背景和禁止视觉证明的事实角色。',
-  SHARED_PROMPT_COMPILATION: '将禁用元素与用户补充内容合并为一段批次共用提示词。',
+  SHARED_PROMPT_COMPILATION: '将本批次禁用元素编译为一段批次共用提示词。',
   COHERENT_CREATIVE_GENERATION: '将生成围绕同一创意主线的六维信息与干净 Prompt 正文。',
   CREATIVE_EVALUATION_CLASSIFICATION: '将给出质量判断、推荐主用途、兼容用途和问题原因。',
   EXACT_SELECTION_AND_SUPPLEMENT:
     '将先从现有候选中按质量与差异选满目标数量；安全候选不足时补充一次，候选池仍缺必用事实时再定向补充一次。覆盖仍不足会保留足量草稿并提示人工复核。',
   RESULT_SAVE: '将最佳结果保存为节点草稿，完成校验前不会提交工作副本。',
-  ITEM_EVALUATE: '将重新评估当前条目的产品关联、质量与推荐用途。',
+  ITEM_EVALUATE: '根据用户输入的 Prompt 自动补齐创意主线与六维信息。',
 };
 
 const inputSections = (
@@ -2159,20 +2174,20 @@ const inputSections = (
       blocks: actualBlocks(run, 'INSIGHT_MAPPING'),
     };
   if (nodeId === 'SHARED_PROMPT_COMPILATION') {
-    const disabled = insightList(insight, 'disabledElements', 'disabled_elements');
+    const disabled = settings?.disabledElements ?? [];
     const existing = metadataRecord(inputSnapshot(run).sharedPrompt);
     const userContent = (Array.isArray(existing.sections) ? existing.sections : []).flatMap(
       (item) =>
         isRecord(item) && item.source === 'USER' ? [publicText(item.content, 30_000)] : [],
     );
     return {
-      summary: '接收上游禁用元素和本批次用户补充内容。',
+      summary: '接收本批次设置的禁用元素；历史批次如有用户补充内容也会一并读取。',
       fields: [
         { label: '禁用元素', value: disabled.length },
-        { label: '用户补充', value: userContent.some(Boolean) ? '已设置' : '未设置' },
+        ...(userContent.some(Boolean) ? [{ label: '用户补充', value: '已设置（历史批次）' }] : []),
       ],
       blocks: [
-        tagBlock('上游禁用元素', [tagGroup('禁用元素', disabled)]),
+        tagBlock('批次禁用元素', [tagGroup('禁用元素', disabled)]),
         textContentBlock('用户补充内容', userContent.filter(Boolean).join('\n'), ['用户补充']),
       ].filter((block): block is EffectPromptNodeDetailBlock => block !== null),
     };
@@ -2197,7 +2212,9 @@ const inputSections = (
   if (nodeId === 'CREATIVE_EVALUATION_CLASSIFICATION' || nodeId === 'ITEM_EVALUATE')
     return {
       summary:
-        nodeId === 'ITEM_EVALUATE' ? '接收待重新评估的单条 Prompt。' : '接收已生成的创意候选。',
+        nodeId === 'ITEM_EVALUATE'
+          ? '接收用户填写的单条 Prompt，正文、片段类型和时长保持不变。'
+          : '接收已生成的创意候选。',
       fields: [{ label: '待评估候选', value: samples.length }],
       blocks: [creativeSampleBlock('待评估创意样例', samples, samples.length)].filter(
         (block): block is EffectPromptNodeDetailBlock => block !== null,

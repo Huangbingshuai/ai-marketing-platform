@@ -434,7 +434,10 @@ export class EffectPromptRepository {
         input.targetItemId,
         input.operation,
       );
-      if (manualItems.length > effectPromptTargetCount(settings))
+      if (
+        input.operation !== 'ITEM_EVALUATE' &&
+        manualItems.length > effectPromptTargetCount(settings)
+      )
         return { kind: 'MANUAL_COUNT_EXCEEDED' as const };
       const snapshot: EffectPromptInputSnapshot = {
         projectId,
@@ -593,7 +596,6 @@ export class EffectPromptRepository {
         where: {
           projectId,
           runId,
-          status: 'SUCCEEDED',
           nodeId: {
             in: ['FACT_VISUAL_STRATEGY_COMPILATION', 'COHERENT_CREATIVE_GENERATION'],
           },
@@ -1703,7 +1705,12 @@ export class EffectPromptRepository {
           },
         },
       });
-      if (!insight || settingsNode?.executionInputHash !== result.settingsHash)
+      const currentSettings = readEffectPromptSettings(settingsNode?.state);
+      if (
+        !insight ||
+        !currentSettings ||
+        workflowStateHash(currentSettings) !== result.settingsHash
+      )
         return { kind: 'DEPENDENCY_CONFLICT' as const };
       if (!this.workingRepository) throw new Error('WORKFLOW_WORKING_REPOSITORY_NOT_AVAILABLE');
       const [committed] = await this.workingRepository.commitValidatedArtifactsInTransaction(

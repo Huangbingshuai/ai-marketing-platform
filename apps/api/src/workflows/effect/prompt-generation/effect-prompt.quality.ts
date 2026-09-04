@@ -1184,22 +1184,19 @@ export const mergeEffectPromptCompletionItems = (
     candidateItems.find(({ id }) => !retainedIds.has(id));
   if (!replacement) return [...snapshot.retainedManualItems];
   const targetNeedsCreativeStructure =
-    target.creativeCore.trim() === '等待 AI 分析' ||
-    EFFECT_PROMPT_DIMENSIONS.some(({ key }) => target.dimensions[key].trim() === '等待 AI 分析');
+    ['等待 AI 分析', '等待 AI 自动补齐'].includes(target.creativeCore.trim()) ||
+    EFFECT_PROMPT_DIMENSIONS.some(({ key }) =>
+      ['等待 AI 分析', '等待 AI 自动补齐'].includes(target.dimensions[key].trim()),
+    );
   const stableReplacement: EffectPromptItem =
     snapshot.operation === 'ITEM_EVALUATE'
       ? {
           ...target,
           fragmentType: target.primaryPurpose,
           primaryPurpose: target.primaryPurpose,
-          compatiblePurposes: [
-            target.primaryPurpose,
-            ...replacement.compatiblePurposes.filter(
-              (purpose) => purpose !== target.primaryPurpose,
-            ),
-          ],
-          classificationStatus: replacement.classificationStatus,
-          productRelevance: replacement.productRelevance,
+          compatiblePurposes: [target.primaryPurpose],
+          classificationStatus: 'VERIFIED',
+          productRelevance: target.productRelevance,
           creativeCore: targetNeedsCreativeStructure
             ? replacement.creativeCore
             : target.creativeCore,
@@ -1207,7 +1204,7 @@ export const mergeEffectPromptCompletionItems = (
             ? { ...replacement.dimensions }
             : { ...target.dimensions },
           insightBindings: [...replacement.insightBindings],
-          reviewIssues: [...(replacement.reviewIssues ?? [])],
+          reviewIssues: [],
           updatedAt: replacement.updatedAt,
         }
       : {
