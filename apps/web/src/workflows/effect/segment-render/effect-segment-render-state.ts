@@ -1,11 +1,13 @@
 import type { EffectPromptFragmentType } from '@ai-marketing/contracts';
 
-export const EFFECT_SEGMENT_RENDER_PAGE_SIZE = 12;
+export const EFFECT_SEGMENT_RENDER_PAGE_SIZE = 20;
 
 export type EffectSegmentRenderStatus =
-  'AUTO_RETRY' | 'COMPLETED' | 'FAILED' | 'IMPORTED' | 'QUEUED' | 'RENDERING';
+  'AUTO_RETRY' | 'COMPLETED' | 'FAILED' | 'QUEUED' | 'RENDERING';
 
-export type EffectSegmentRenderSource = 'IMPORTED' | 'PROMPT';
+export type EffectSegmentRenderSource = 'PROMPT';
+
+export type EffectSegmentRenderOrigin = 'AI_GENERATED' | 'EXTERNAL_IMPORT';
 
 export type EffectSegmentRenderBatchStatus =
   'COMPLETED' | 'NOT_STARTED' | 'PARTIAL' | 'QUEUED' | 'RUNNING';
@@ -15,13 +17,15 @@ export type EffectSegmentRenderTask = {
   renderCode: string;
   productId: string;
   productName: string;
-  promptId: string | null;
-  promptCode: string | null;
+  promptId: string;
+  promptCode: string;
   promptText: string;
   fragmentType: EffectPromptFragmentType;
+  compatibleFragmentTypes: EffectPromptFragmentType[];
   durationSeconds: number;
   modelMatch: 'AUTO_MATCHED';
   source: EffectSegmentRenderSource;
+  origin: EffectSegmentRenderOrigin;
   sourceName: string;
   status: EffectSegmentRenderStatus;
   progress: number;
@@ -51,6 +55,9 @@ export type EffectSegmentRenderSummary = {
   failed: number;
 };
 
+export const isEffectSegmentRenderExportable = (task: EffectSegmentRenderTask): boolean =>
+  task.status === 'COMPLETED';
+
 export const isEffectSegmentRenderBusy = (status: EffectSegmentRenderStatus): boolean =>
   status === 'AUTO_RETRY' || status === 'QUEUED' || status === 'RENDERING';
 
@@ -60,7 +67,7 @@ export const effectSegmentRenderSummary = (
   tasks.reduce<EffectSegmentRenderSummary>(
     (summary, task) => {
       summary.total += 1;
-      if (task.status === 'COMPLETED' || task.status === 'IMPORTED') summary.completed += 1;
+      if (task.status === 'COMPLETED') summary.completed += 1;
       else if (isEffectSegmentRenderBusy(task.status)) summary.running += 1;
       else if (task.status === 'FAILED') summary.failed += 1;
       return summary;

@@ -5,9 +5,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { effectSegmentRenderSummary } from '../effect-segment-render-state';
 import {
   clearEffectSegmentRenderMockWorkspaces,
-  deleteEffectSegmentRenderTasks,
-  exportEffectSegmentRenderTasks,
+  createEffectSegmentRenderExport,
+  deleteEffectSegmentRenderMaterials,
   importEffectSegmentRenderFiles,
+  inspectEffectSegmentRenderImports,
   loadEffectSegmentRenderWorkspace,
   regenerateEffectSegmentRenderTasks,
   startEffectSegmentRenderBatch,
@@ -70,17 +71,11 @@ describe('effect segment render mock service', () => {
   });
 
   it('isolates workspaces by project, workflow run and product', async () => {
-    const first = await startEffectSegmentRenderBatch(
+    await startEffectSegmentRenderBatch(
       context,
       product('product-1'),
       DEFAULT_EFFECT_VIDEO_CONFIG,
       { stepDelayMs: 0 },
-    );
-    await deleteEffectSegmentRenderTasks(
-      context,
-      product('product-1'),
-      DEFAULT_EFFECT_VIDEO_CONFIG,
-      [first.tasks[0]!.id],
     );
     const otherProduct = await loadEffectSegmentRenderWorkspace(
       context,
@@ -115,6 +110,10 @@ describe('effect segment render mock service', () => {
     expect(workspace.tasks.every((task) => task.promptText.includes('不生成完整成片时间线'))).toBe(
       true,
     );
+    expect(workspace.tasks.some((task) => task.compatibleFragmentTypes.length > 0)).toBe(true);
+    expect(
+      workspace.tasks.every((task) => !task.compatibleFragmentTypes.includes(task.fragmentType)),
+    ).toBe(true);
     expect(effectSegmentRenderSummary(workspace.tasks)).toEqual({
       total: 50,
       completed: 49,
@@ -172,23 +171,88 @@ describe('effect segment render mock service', () => {
     });
   });
 
-  it('imports, deletes and locally exports selected fragment metadata', async () => {
+  it('matches imported videos to prompt slots and preserves them when the batch starts', async () => {
+    const files = [
+      { name: 'product-shot.mp4', size: 1024, type: 'video/mp4', lastModified: 1 },
+      { name: 'brand-close-up.mov', size: 2048, type: 'video/quicktime', lastModified: 2 },
+    ];
+    const inspected = await inspectEffectSegmentRenderImports(
+      context,
+      product('product-1'),
+      DEFAULT_EFFECT_VIDEO_CONFIG,
+      files,
+    );
+    expect(inspected).toHaveLength(2);
+    expect(inspected.every((item) => item.promptCode)).toBe(true);
+
     const imported = await importEffectSegmentRenderFiles(
       context,
       product('product-1'),
       DEFAULT_EFFECT_VIDEO_CONFIG,
-      [{ name: '补充产品特写.mp4', size: 1024, type: 'video/mp4' }],
+      files,
     );
-    expect(imported.tasks[0]).toMatchObject({ source: 'IMPORTED', status: 'IMPORTED' });
-    const exported = exportEffectSegmentRenderTasks(product('product-1'), [imported.tasks[0]!]);
-    expect(exported.fileName).toBe('广式腊肠-AI视频片段-1条.json');
-    await expect(exported.blob.text()).resolves.toContain('IMP-001');
-    const deleted = await deleteEffectSegmentRenderTasks(
+    expect(imported.batchStatus).toBe('NOT_STARTED');
+    expect(imported.tasks).toHaveLength(2);
+    expect(imported.tasks.every((task) => task.origin === 'EXTERNAL_IMPORT')).toBe(true);
+
+    const finished = await startEffectSegmentRenderBatch(
       context,
       product('product-1'),
       DEFAULT_EFFECT_VIDEO_CONFIG,
-      [imported.tasks[0]!.id],
+      { stepDelayMs: 0 },
     );
-    expect(deleted.tasks).toHaveLength(0);
+    expect(finished.tasks).toHaveLength(50);
+    expect(finished.tasks.filter((task) => task.origin === 'EXTERNAL_IMPORT')).toHaveLength(2);
+    expect(finished.tasks.filter((task) => task.status === 'FAILED')).toHaveLength(1);
+  });
+
+  it('creates a local mock export manifest for completed materials only', async () => {
+    const workspace = await startEffectSegmentRenderBatch(
+      context,
+      product('product-1'),
+      DEFAULT_EFFECT_VIDEO_CONFIG,
+      { stepDelayMs: 0 },
+    );
+    const completed = workspace.tasks.filter((task) => task.status === 'COMPLETED').slice(0, 3);
+    const receipt = await createEffectSegmentRenderExport(
+      context,
+      product('product-1'),
+      DEFAULT_EFFECT_VIDEO_CONFIG,
+      completed.map((task) => task.id),
+      ['VIDEO_PACKAGE', 'MANIFEST_JSON'],
+    );
+    expect(receipt.taskCount).toBe(3);
+    expect(receipt.fileName).toContain('视频素材导出清单');
+    expect(JSON.parse(receipt.content)).toMatchObject({
+      mock: true,
+      requestedFormats: ['VIDEO_PACKAGE', 'MANIFEST_JSON'],
+    });
+  });
+
+  it('deletes only material results while preserving prompt slots for regeneration', async () => {
+    const workspace = await startEffectSegmentRenderBatch(
+      context,
+      product('product-1'),
+      DEFAULT_EFFECT_VIDEO_CONFIG,
+      { stepDelayMs: 0 },
+    );
+    const selected = workspace.tasks.filter((task) => task.status === 'COMPLETED').slice(0, 2);
+    const deleted = await deleteEffectSegmentRenderMaterials(
+      context,
+      product('product-1'),
+      DEFAULT_EFFECT_VIDEO_CONFIG,
+      selected.map((task) => task.id),
+    );
+    expect(deleted.tasks).toHaveLength(50);
+    expect(deleted.batchStatus).toBe('PARTIAL');
+    expect(
+      deleted.tasks.filter((task) => task.errorMessage?.includes('素材结果已删除')),
+    ).toHaveLength(2);
+    expect(effectSegmentRenderSummary(deleted.tasks)).toEqual({
+      total: 50,
+      completed: 47,
+      running: 0,
+      failed: 3,
+    });
   });
 });

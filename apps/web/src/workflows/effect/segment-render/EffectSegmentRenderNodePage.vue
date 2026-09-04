@@ -14,11 +14,12 @@ import {
 import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
 import {
   AlertCircle,
-  Boxes,
+  Check,
   ChevronLeft,
   ChevronRight,
   Download,
-  FileUp,
+  FileVideo2,
+  FolderInput,
   LoaderCircle,
   Play,
   RefreshCw,
@@ -26,11 +27,13 @@ import {
   Settings2,
   Sparkles,
   Trash2,
+  Upload,
   X,
 } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
+import { EFFECT_PROMPT_PAGE_SIZE_OPTIONS } from '../prompt-generation/effect-prompt-generation-state';
 import EffectUpwardCreatableSelect from '../source-import/components/EffectUpwardCreatableSelect.vue';
 import {
   getEffectSegmentRenderWorkspace,
@@ -42,19 +45,23 @@ import {
   effectSegmentRenderPageCount,
   effectSegmentRenderSummary,
   filterEffectSegmentRenderTasks,
+  isEffectSegmentRenderExportable,
   isEffectSegmentRenderBusy,
   type EffectSegmentRenderStatus,
   type EffectSegmentRenderTask,
   type EffectSegmentRenderWorkspace,
 } from './effect-segment-render-state';
 import {
-  deleteEffectSegmentRenderTasks,
-  exportEffectSegmentRenderTasks,
+  createEffectSegmentRenderExport,
+  deleteEffectSegmentRenderMaterials,
   importEffectSegmentRenderFiles,
+  inspectEffectSegmentRenderImports,
   loadEffectSegmentRenderWorkspace,
   regenerateEffectSegmentRenderTasks,
   startEffectSegmentRenderBatch,
   subscribeEffectSegmentRenderWorkspace,
+  type EffectSegmentRenderExportFormat,
+  type EffectSegmentRenderImportMatch,
   type EffectSegmentRenderContext,
 } from './services/effect-segment-render.mock-service';
 
@@ -68,6 +75,9 @@ const emit = defineEmits<{ back: []; next: [] }>();
 
 type PageStatus = 'empty' | 'error' | 'loading' | 'success';
 type Operation = 'batch' | 'delete' | 'export' | 'import' | 'retry' | 'settings' | null;
+type FragmentFilter = 'ABNORMAL' | 'ALL' | EffectPromptFragmentType;
+type TransferPanel = 'export' | 'import' | null;
+type ExportScope = 'ALL_COMPLETED' | 'FILTERED' | 'SELECTED';
 type Notice = { kind: 'error' | 'success' | 'warning'; text: string };
 
 const pageStatus = ref<PageStatus>('loading');
@@ -75,11 +85,22 @@ const loadError = ref('');
 const workspace = ref<EffectSegmentRenderWorkspace | null>(null);
 const currentProductId = ref('');
 const keyword = ref('');
+const fragmentFilter = ref<FragmentFilter>('ALL');
+const includeCompatiblePurposes = ref(false);
 const page = ref(1);
-const selectedTaskIds = ref(new Set<string>());
+const pageSize = ref<number>(EFFECT_SEGMENT_RENDER_PAGE_SIZE);
 const operation = ref<Operation>(null);
 const validated = ref(false);
 const notice = ref<Notice | null>(null);
+const transferPanel = ref<TransferPanel>(null);
+const selectionMode = ref(false);
+const selectedTaskIds = ref<Set<string>>(new Set());
+const importFiles = ref<File[]>([]);
+const importMatches = ref<EffectSegmentRenderImportMatch[]>([]);
+const importInput = ref<HTMLInputElement | null>(null);
+const transferCloseButton = ref<HTMLButtonElement | null>(null);
+const exportScope = ref<ExportScope>('ALL_COMPLETED');
+const exportFormats = ref<EffectSegmentRenderExportFormat[]>(['VIDEO_PACKAGE', 'MANIFEST_JSON']);
 const renderSettings = ref<EffectSegmentRenderSettings>({
   ...DEFAULT_EFFECT_SEGMENT_RENDER_SETTINGS,
 });
@@ -111,13 +132,10 @@ const resolutionOptions = computed(() =>
   ),
 );
 
-const fileInput = ref<HTMLInputElement | null>(null);
 const previewTask = ref<EffectSegmentRenderTask | null>(null);
 const promptTask = ref<EffectSegmentRenderTask | null>(null);
-const poolOpen = ref(false);
 const previewCloseButton = ref<HTMLButtonElement | null>(null);
 const promptCloseButton = ref<HTMLButtonElement | null>(null);
-const poolCloseButton = ref<HTMLButtonElement | null>(null);
 
 let dialogTrigger: HTMLElement | null = null;
 let loadController: AbortController | null = null;
@@ -138,6 +156,7 @@ const currentProduct = computed(
 const tasks = computed(() => workspace.value?.tasks ?? []);
 const summary = computed(() => effectSegmentRenderSummary(tasks.value));
 const promptTasks = computed(() => tasks.value.filter((task) => task.source === 'PROMPT'));
+const completedTasks = computed(() => tasks.value.filter(isEffectSegmentRenderExportable));
 const hasBatch = computed(
   () => Boolean(workspace.value) && workspace.value?.batchStatus !== 'NOT_STARTED',
 );
@@ -148,30 +167,57 @@ const promptCount = computed(() => workspace.value?.promptCount ?? 0);
 const missingPromptCount = computed(() =>
   Math.max(0, promptCount.value - promptTasks.value.length),
 );
-const filteredTasks = computed(() => filterEffectSegmentRenderTasks(tasks.value, keyword.value));
-const totalPages = computed(() => effectSegmentRenderPageCount(filteredTasks.value.length));
-const pagedTasks = computed(() => effectSegmentRenderPage(filteredTasks.value, page.value));
-const selectedCount = computed(() => selectedTaskIds.value.size);
-
-const canPreviewTask = (task: EffectSegmentRenderTask): boolean =>
-  task.status === 'COMPLETED' || task.status === 'IMPORTED';
-const canRetryTask = (task: EffectSegmentRenderTask): boolean =>
-  task.source === 'PROMPT' && !isEffectSegmentRenderBusy(task.status);
-const canSelectTask = (task: EffectSegmentRenderTask): boolean =>
-  !isEffectSegmentRenderBusy(task.status);
-
-const selectableFilteredTasks = computed(() => filteredTasks.value.filter(canSelectTask));
-
-const taskSequenceLabel = (task: EffectSegmentRenderTask): string => {
-  const matched = /^R-(\d+)$/u.exec(task.renderCode);
-  return matched ? String(Number.parseInt(matched[1]!, 10)) : task.renderCode;
-};
-
+const importedCount = computed(
+  () => tasks.value.filter((task) => task.origin === 'EXTERNAL_IMPORT').length,
+);
+const remainingPromptCount = computed(() => Math.max(0, promptCount.value - importedCount.value));
+const isPurposeFilter = (value: FragmentFilter): value is EffectPromptFragmentType =>
+  EFFECT_PROMPT_FRAGMENT_TYPES.includes(value as EffectPromptFragmentType);
+const filteredTasks = computed(() =>
+  filterEffectSegmentRenderTasks(tasks.value, keyword.value).filter((task) => {
+    if (fragmentFilter.value === 'ALL') return true;
+    if (fragmentFilter.value === 'ABNORMAL') return task.status === 'FAILED';
+    return (
+      task.fragmentType === fragmentFilter.value ||
+      (includeCompatiblePurposes.value &&
+        task.compatibleFragmentTypes.includes(fragmentFilter.value))
+    );
+  }),
+);
+const totalPages = computed(() =>
+  effectSegmentRenderPageCount(filteredTasks.value.length, pageSize.value),
+);
+const pagedTasks = computed(() =>
+  effectSegmentRenderPage(filteredTasks.value, page.value, pageSize.value),
+);
+const selectedTasks = computed(() =>
+  completedTasks.value.filter((task) => selectedTaskIds.value.has(task.id)),
+);
+const selectableFilteredTasks = computed(() =>
+  filteredTasks.value.filter(isEffectSegmentRenderExportable),
+);
 const allFilteredSelected = computed(
   () =>
     selectableFilteredTasks.value.length > 0 &&
     selectableFilteredTasks.value.every((task) => selectedTaskIds.value.has(task.id)),
 );
+const exportRangeTasks = computed(() => {
+  if (exportScope.value === 'SELECTED') return selectedTasks.value;
+  if (exportScope.value === 'FILTERED')
+    return filteredTasks.value.filter(isEffectSegmentRenderExportable);
+  return completedTasks.value;
+});
+
+const canPreviewTask = (task: EffectSegmentRenderTask): boolean => task.status === 'COMPLETED';
+const canRetryTask = (task: EffectSegmentRenderTask): boolean =>
+  !isEffectSegmentRenderBusy(task.status);
+
+const promptExcerpt = (promptText: string): string => {
+  const normalized = promptText.replace(/\s+/gu, ' ').trim();
+  const characters = Array.from(normalized);
+  return characters.length > 14 ? `${characters.slice(0, 14).join('')}…` : normalized;
+};
+
 const currentProductReady = computed(
   () =>
     hasBatch.value &&
@@ -181,33 +227,14 @@ const currentProductReady = computed(
     summary.value.failed === 0 &&
     operation.value === null,
 );
-const selectedTasks = computed(() =>
-  tasks.value.filter((task) => selectedTaskIds.value.has(task.id)),
-);
-const poolGroups = computed(() =>
-  EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType) => ({
-    fragmentType,
-    label: EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[fragmentType],
-    tasks: tasks.value.filter(
-      (task) =>
-        task.fragmentType === fragmentType &&
-        (task.status === 'COMPLETED' || task.status === 'IMPORTED'),
-    ),
-  })),
-);
-const selectedCanRetry = computed(
-  () => selectedTasks.value.length > 0 && selectedTasks.value.every(canRetryTask),
-);
-const selectedCanExport = computed(
-  () => selectedTasks.value.length > 0 && selectedTasks.value.every(canPreviewTask),
-);
-const selectedCanDelete = computed(
-  () => selectedTasks.value.length > 0 && selectedTasks.value.every(canSelectTask),
-);
 const startButtonLabel = computed(() => {
   if (operation.value === 'batch') return '正在创建任务…';
   if (batchActive.value) return `渲染中 ${summary.value.completed}/${summary.value.total}`;
-  return hasBatch.value ? '重新渲染全部' : `开始批量渲染（${promptCount.value}）`;
+  if (hasBatch.value)
+    return workspace.value?.batchStatus === 'COMPLETED' ? '批量渲染已完成' : '批量渲染已结束';
+  return importedCount.value
+    ? `渲染剩余片段（${remainingPromptCount.value}）`
+    : `开始批量渲染（${promptCount.value}）`;
 });
 const currentCapabilityLabel = computed(
   () =>
@@ -256,11 +283,20 @@ const applyWorkspace = (nextWorkspace: EffectSegmentRenderWorkspace): void => {
 const closeAllDialogs = (restoreFocus = false): void => {
   previewTask.value = null;
   promptTask.value = null;
-  poolOpen.value = false;
   if (!restoreFocus) {
     dialogTrigger = null;
     return;
   }
+  const trigger = dialogTrigger;
+  dialogTrigger = null;
+  void nextTick(() => trigger?.isConnected && trigger.focus());
+};
+
+const closeTransferPanel = (restoreFocus = false): void => {
+  transferPanel.value = null;
+  importFiles.value = [];
+  importMatches.value = [];
+  if (!restoreFocus) return;
   const trigger = dialogTrigger;
   dialogTrigger = null;
   void nextTick(() => trigger?.isConnected && trigger.focus());
@@ -275,9 +311,13 @@ const loadCurrentWorkspace = async (): Promise<void> => {
   unsubscribeWorkspace = null;
   operation.value = null;
   closeAllDialogs(false);
+  closeTransferPanel(false);
+  selectionMode.value = false;
   selectedTaskIds.value = new Set();
   page.value = 1;
   keyword.value = '';
+  fragmentFilter.value = 'ALL';
+  includeCompatiblePurposes.value = false;
   validated.value = false;
   if (!product || !props.projectId || !props.workflowRunId) {
     workspace.value = null;
@@ -368,36 +408,23 @@ watch(currentProductId, (next, previous) => {
   if (next !== previous) void loadCurrentWorkspace();
 });
 
-watch(keyword, () => {
+watch([keyword, fragmentFilter, includeCompatiblePurposes], () => {
   page.value = 1;
+});
+
+watch(fragmentFilter, (nextFilter) => {
+  if (!isPurposeFilter(nextFilter)) includeCompatiblePurposes.value = false;
 });
 
 watch(totalPages, (nextTotalPages) => {
   if (page.value > nextTotalPages) page.value = nextTotalPages;
 });
 
-const toggleTask = (taskId: string, checked: boolean): void => {
-  const next = new Set(selectedTaskIds.value);
-  if (checked) next.add(taskId);
-  else next.delete(taskId);
-  selectedTaskIds.value = next;
-};
-
-const toggleAllFiltered = (checked: boolean): void => {
-  const next = new Set(selectedTaskIds.value);
-  for (const task of selectableFilteredTasks.value) {
-    if (checked) next.add(task.id);
-    else next.delete(task.id);
-  }
-  selectedTaskIds.value = next;
-};
-
 const statusMeta = (status: EffectSegmentRenderStatus): { label: string; tone: string } =>
   ({
     AUTO_RETRY: { label: '自动重试', tone: 'retry' },
     COMPLETED: { label: '已完成', tone: 'success' },
     FAILED: { label: '异常', tone: 'danger' },
-    IMPORTED: { label: '已导入', tone: 'success' },
     QUEUED: { label: '排队中', tone: 'pending' },
     RENDERING: { label: '生成中', tone: 'running' },
   })[status];
@@ -405,18 +432,30 @@ const statusMeta = (status: EffectSegmentRenderStatus): { label: string; tone: s
 const fragmentTypeLabel = (fragmentType: EffectPromptFragmentType): string =>
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS[fragmentType];
 
+const fragmentTypeCount = (fragmentType: EffectPromptFragmentType): number =>
+  tasks.value.filter((task) => task.fragmentType === fragmentType).length;
+
+const clearSearch = (): void => {
+  keyword.value = '';
+};
+
+const toggleFragmentFilter = (fragmentType: EffectPromptFragmentType): void => {
+  fragmentFilter.value = fragmentFilter.value === fragmentType ? 'ALL' : fragmentType;
+};
+
+const changePageSize = (): void => {
+  page.value = 1;
+};
+
 const startBatch = async (): Promise<void> => {
   const product = currentProduct.value;
-  if (!product || operation.value || batchActive.value || !workspace.value) return;
-  const replacingBatch = hasBatch.value;
+  if (!product || operation.value || hasBatch.value || !workspace.value) return;
   if (
     !(await requestActionConfirmation({
-      eyebrow: replacingBatch ? '重新渲染全部片段' : '创建视频渲染批次',
-      title: replacingBatch
-        ? `按当前设置重新创建 ${promptCount.value} 个视频任务？`
-        : `开始生成 ${promptCount.value} 个视频素材片段？`,
-      description: `${product.name || '未命名产品'}；${currentCapabilityLabel.value}；${renderSettings.value.ratio}；${renderSettings.value.resolution}。每条 Prompt 将创建一个独立素材片段，确认后先进入排队状态。`,
-      confirmLabel: replacingBatch ? '确认重新渲染' : `创建 ${promptCount.value} 个任务`,
+      eyebrow: '创建视频渲染批次',
+      title: `开始生成剩余 ${remainingPromptCount.value} 个视频素材片段？`,
+      description: `${product.name || '未命名产品'}；${currentCapabilityLabel.value}；${renderSettings.value.ratio}；${renderSettings.value.resolution}。已导入的 ${importedCount.value} 个 Prompt 槽位会被保留，其余片段确认后进入排队状态。`,
+      confirmLabel: `创建 ${remainingPromptCount.value} 个任务`,
       tone: 'warning',
     }))
   )
@@ -426,7 +465,6 @@ const startBatch = async (): Promise<void> => {
   operationController = controller;
   operation.value = 'batch';
   validated.value = false;
-  selectedTaskIds.value = new Set();
   try {
     const nextWorkspace = await startEffectSegmentRenderBatch(
       context(),
@@ -436,7 +474,7 @@ const startBatch = async (): Promise<void> => {
     );
     if (controller.signal.aborted || currentProductId.value !== product.id) return;
     applyWorkspace(nextWorkspace);
-    showNotice(`已创建 ${nextWorkspace.promptCount} 个视频任务，正在排队渲染`);
+    showNotice(`已保留 ${importedCount.value} 个导入素材，其余视频任务正在排队渲染`);
   } catch (error) {
     if (!isAbortError(error)) showNotice(safeMessage(error, '批量渲染失败'), 'error');
   } finally {
@@ -445,16 +483,13 @@ const startBatch = async (): Promise<void> => {
   }
 };
 
-const retryTasks = async (taskIds: readonly string[]): Promise<void> => {
+const retryTask = async (taskId: string): Promise<void> => {
   const product = currentProduct.value;
-  if (!product || operation.value || !taskIds.length) return;
+  if (!product || operation.value) return;
   if (
     !(await requestActionConfirmation({
-      eyebrow: taskIds.length > 1 ? '批量重新生成' : '重新生成片段',
-      title:
-        taskIds.length > 1
-          ? `重新生成已选的 ${taskIds.length} 个视频片段？`
-          : '重新生成这个视频片段？',
+      eyebrow: '重新生成片段',
+      title: '重新生成这个视频片段？',
       description: '重新生成会替换当前片段的演示结果，原 Prompt 与渲染配置保持不变。',
       confirmLabel: '确认重新生成',
       tone: 'warning',
@@ -471,108 +506,17 @@ const retryTasks = async (taskIds: readonly string[]): Promise<void> => {
       context(),
       product,
       renderSettings.value,
-      taskIds,
+      [taskId],
       { signal: controller.signal },
     );
     if (controller.signal.aborted || currentProductId.value !== product.id) return;
     applyWorkspace(nextWorkspace);
-    selectedTaskIds.value = new Set();
-    showNotice(`已重新生成 ${taskIds.length} 个视频素材片段`);
+    showNotice('视频素材片段已重新生成');
   } catch (error) {
     if (!isAbortError(error)) showNotice(safeMessage(error, '片段重生成失败'), 'error');
   } finally {
     if (operationController === controller) operationController = null;
     if (!controller.signal.aborted || currentProductId.value === product.id) operation.value = null;
-  }
-};
-
-const requestDelete = async (taskIds: readonly string[]): Promise<void> => {
-  if (!taskIds.length || operation.value) return;
-  const product = currentProduct.value;
-  if (!product) return;
-  if (
-    !(await requestActionConfirmation({
-      eyebrow: taskIds.length > 1 ? '批量删除素材' : '删除素材',
-      title:
-        taskIds.length > 1 ? `删除已选的 ${taskIds.length} 个视频片段？` : '删除这个视频片段？',
-      description: '删除后该片段会从当前产品的素材池中移除，需要重新生成或导入才能恢复可用数量。',
-      confirmLabel: taskIds.length > 1 ? `删除 ${taskIds.length} 个片段` : '确认删除',
-      tone: 'danger',
-    }))
-  )
-    return;
-  operation.value = 'delete';
-  const controller = new AbortController();
-  operationController = controller;
-  validated.value = false;
-  try {
-    const nextWorkspace = await deleteEffectSegmentRenderTasks(
-      context(),
-      product,
-      renderSettings.value,
-      taskIds,
-      controller.signal,
-    );
-    if (controller.signal.aborted || currentProductId.value !== product.id) return;
-    applyWorkspace(nextWorkspace);
-    const nextSelected = new Set(selectedTaskIds.value);
-    taskIds.forEach((taskId) => nextSelected.delete(taskId));
-    selectedTaskIds.value = nextSelected;
-    showNotice(`已删除 ${taskIds.length} 个素材片段`, 'warning');
-  } catch (error) {
-    if (!isAbortError(error)) showNotice(safeMessage(error, '片段删除失败'), 'error');
-  } finally {
-    if (operationController === controller) operationController = null;
-    if (!controller.signal.aborted || currentProductId.value === product.id) operation.value = null;
-  }
-};
-
-const requestImport = (): void => fileInput.value?.click();
-
-const importFiles = async (event: Event): Promise<void> => {
-  const target = event.target as HTMLInputElement;
-  const product = currentProduct.value;
-  const files = [...(target.files ?? [])];
-  target.value = '';
-  if (!product || !files.length || operation.value) return;
-  operation.value = 'import';
-  validated.value = false;
-  const controller = new AbortController();
-  operationController = controller;
-  try {
-    const nextWorkspace = await importEffectSegmentRenderFiles(
-      context(),
-      product,
-      renderSettings.value,
-      files.map(({ name, size, type }) => ({ name, size, type })),
-      controller.signal,
-    );
-    if (controller.signal.aborted || currentProductId.value !== product.id) return;
-    applyWorkspace(nextWorkspace);
-    showNotice(`已导入 ${files.length} 个外部素材`);
-  } catch (error) {
-    if (!isAbortError(error)) showNotice(safeMessage(error, '素材导入失败'), 'error');
-  } finally {
-    if (operationController === controller) operationController = null;
-    if (!controller.signal.aborted || currentProductId.value === product.id) operation.value = null;
-  }
-};
-
-const exportSelected = (): void => {
-  const product = currentProduct.value;
-  if (!product || !selectedTasks.value.length || operation.value) return;
-  operation.value = 'export';
-  try {
-    const exported = exportEffectSegmentRenderTasks(product, selectedTasks.value);
-    const url = URL.createObjectURL(exported.blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = exported.fileName;
-    anchor.click();
-    requestAnimationFrame(() => URL.revokeObjectURL(url));
-    showNotice(`已导出 ${selectedTasks.value.length} 个素材片段清单`);
-  } finally {
-    operation.value = null;
   }
 };
 
@@ -588,20 +532,178 @@ const openPrompt = (task: EffectSegmentRenderTask, event: Event): void => {
   void nextTick(() => promptCloseButton.value?.focus());
 };
 
-const openPool = (event: Event): void => {
+const openTransferPanel = (panel: Exclude<TransferPanel, null>, event: Event): void => {
+  if (operation.value || (panel === 'export' && !completedTasks.value.length)) return;
   dialogTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
-  poolOpen.value = true;
-  void nextTick(() => poolCloseButton.value?.focus());
+  transferPanel.value = panel;
+  if (panel === 'export') {
+    exportScope.value = selectedTasks.value.length ? 'SELECTED' : 'ALL_COMPLETED';
+  }
+  void nextTick(() => transferCloseButton.value?.focus());
 };
+
+const inspectImportFiles = async (files: File[]): Promise<void> => {
+  const product = currentProduct.value;
+  if (!product || !files.length || operation.value) return;
+  operation.value = 'import';
+  importFiles.value = files;
+  try {
+    importMatches.value = await inspectEffectSegmentRenderImports(
+      context(),
+      product,
+      renderSettings.value,
+      files.map(({ name, size, type, lastModified }) => ({ name, size, type, lastModified })),
+    );
+  } catch (error) {
+    showNotice(safeMessage(error, '素材检查失败'), 'error');
+  } finally {
+    operation.value = null;
+  }
+};
+
+const handleImportFileChange = (event: Event): void => {
+  const input = event.currentTarget as HTMLInputElement;
+  void inspectImportFiles(Array.from(input.files ?? []));
+  input.value = '';
+};
+
+const confirmImport = async (): Promise<void> => {
+  const product = currentProduct.value;
+  const importableCount = importMatches.value.filter(
+    (match) => match.status !== 'UNMATCHED',
+  ).length;
+  if (!product || !importableCount || operation.value) return;
+  operation.value = 'import';
+  try {
+    const nextWorkspace = await importEffectSegmentRenderFiles(
+      context(),
+      product,
+      renderSettings.value,
+      importFiles.value.map(({ name, size, type, lastModified }) => ({
+        name,
+        size,
+        type,
+        lastModified,
+      })),
+    );
+    applyWorkspace(nextWorkspace);
+    closeTransferPanel(true);
+    showNotice(`已导入 ${importableCount} 个素材，并匹配到对应 Prompt 槽位`);
+  } catch (error) {
+    showNotice(safeMessage(error, '素材导入失败'), 'error');
+  } finally {
+    operation.value = null;
+  }
+};
+
+const toggleSelectionMode = (): void => {
+  selectionMode.value = !selectionMode.value;
+  if (!selectionMode.value) selectedTaskIds.value = new Set();
+};
+
+const toggleTaskSelection = (taskId: string): void => {
+  const next = new Set(selectedTaskIds.value);
+  if (next.has(taskId)) next.delete(taskId);
+  else next.add(taskId);
+  selectedTaskIds.value = next;
+};
+
+const selectAllFiltered = (): void => {
+  if (allFilteredSelected.value) {
+    const filteredIds = new Set(selectableFilteredTasks.value.map((task) => task.id));
+    selectedTaskIds.value = new Set(
+      [...selectedTaskIds.value].filter((taskId) => !filteredIds.has(taskId)),
+    );
+    return;
+  }
+  selectedTaskIds.value = new Set([
+    ...selectedTaskIds.value,
+    ...selectableFilteredTasks.value.map((task) => task.id),
+  ]);
+};
+
+const deleteSelectedMaterials = async (): Promise<void> => {
+  const product = currentProduct.value;
+  if (!product || !selectedTasks.value.length || operation.value) return;
+  const taskIds = selectedTasks.value.map((task) => task.id);
+  if (
+    !(await requestActionConfirmation({
+      eyebrow: '删除视频素材',
+      title: `删除已选择的 ${taskIds.length} 个视频素材？`,
+      description: '只删除当前素材结果，原 Prompt 槽位仍会保留并标记为异常，之后可逐条重新生成。',
+      confirmLabel: `删除 ${taskIds.length} 个素材`,
+      tone: 'danger',
+    }))
+  )
+    return;
+  operation.value = 'delete';
+  try {
+    const nextWorkspace = await deleteEffectSegmentRenderMaterials(
+      context(),
+      product,
+      renderSettings.value,
+      taskIds,
+    );
+    applyWorkspace(nextWorkspace);
+    selectionMode.value = false;
+    selectedTaskIds.value = new Set();
+    validated.value = false;
+    showNotice(`已删除 ${taskIds.length} 个素材结果，对应 Prompt 槽位已保留`, 'warning');
+  } catch (error) {
+    showNotice(safeMessage(error, '素材删除失败'), 'error');
+  } finally {
+    operation.value = null;
+  }
+};
+
+const toggleExportFormat = (format: EffectSegmentRenderExportFormat): void => {
+  const next = new Set(exportFormats.value);
+  if (next.has(format)) next.delete(format);
+  else next.add(format);
+  exportFormats.value = [...next];
+};
+
+const downloadExport = async (): Promise<void> => {
+  const product = currentProduct.value;
+  if (!product || !exportRangeTasks.value.length || !exportFormats.value.length || operation.value)
+    return;
+  operation.value = 'export';
+  try {
+    const receipt = await createEffectSegmentRenderExport(
+      context(),
+      product,
+      renderSettings.value,
+      exportRangeTasks.value.map((task) => task.id),
+      exportFormats.value,
+    );
+    const url = URL.createObjectURL(new Blob([receipt.content], { type: receipt.mimeType }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = receipt.fileName;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    closeTransferPanel(true);
+    showNotice(`已生成 ${receipt.taskCount} 个素材的 Mock 导出清单`);
+  } catch (error) {
+    showNotice(safeMessage(error, '素材导出失败'), 'error');
+  } finally {
+    operation.value = null;
+  }
+};
+
+const formatFileSize = (size: number): string =>
+  size >= 1024 * 1024
+    ? `${(size / 1024 / 1024).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(size / 1024))} KB`;
 
 const validateBatch = (): void => {
   if (!currentProductReady.value) {
     const message = !hasBatch.value
       ? '请先开始批量渲染'
       : missingPromptCount.value
-        ? `当前批次缺少 ${missingPromptCount.value} 个 Prompt 片段，请重新渲染全批`
+        ? `当前批次缺少 ${missingPromptCount.value} 个 Prompt 片段，请返回 Prompt 节点检查上游数据`
         : summary.value.failed
-          ? '请先重新生成全部异常片段'
+          ? '请逐条重新生成异常片段'
           : '仍有片段正在生成，请等待任务完成';
     showNotice(message, 'warning');
     return;
@@ -657,6 +759,9 @@ onBeforeUnmount(() => {
             <p v-if="hasBatch">
               {{ promptCount }} 条 Prompt 任务 × 每条 1 个视频素材片段，成功片段自动进入素材池
             </p>
+            <p v-else-if="importedCount">
+              已导入 {{ importedCount }} 个素材，剩余 {{ remainingPromptCount }} 条 Prompt 待渲染
+            </p>
             <p v-else>已就绪 {{ promptCount }} 条 Prompt，每条将生成 1 个视频素材片段</p>
           </div>
         </div>
@@ -669,17 +774,30 @@ onBeforeUnmount(() => {
               </option>
             </select>
           </label>
-          <button class="secondary-button" type="button" @click="openPool">
-            <Boxes :size="14" />查看 AI 渲染素材池
+          <button
+            class="secondary-button"
+            type="button"
+            :disabled="operation !== null || batchActive"
+            @click="openTransferPanel('import', $event)"
+          >
+            <FolderInput :size="14" />导入素材
+          </button>
+          <button
+            class="secondary-button"
+            type="button"
+            :disabled="operation !== null || !completedTasks.length"
+            @click="openTransferPanel('export', $event)"
+          >
+            <Download :size="14" />导出素材
           </button>
           <button
             class="primary-button start-render-button"
             type="button"
-            :disabled="operation !== null || batchActive"
+            :disabled="operation !== null || hasBatch"
             @click="startBatch"
           >
             <LoaderCircle v-if="operation === 'batch' || batchActive" class="spin" :size="14" />
-            <Play v-else :size="14" />{{ startButtonLabel }}
+            <Play v-else-if="!hasBatch" :size="14" />{{ startButtonLabel }}
           </button>
         </div>
       </header>
@@ -744,130 +862,190 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section class="segment-stats" aria-label="渲染任务统计">
-        <article class="stat-card neutral">
-          <span>任务总数</span><strong>{{ summary.total }}</strong
-          ><small>Prompt 对应队列</small>
-        </article>
-        <article class="stat-card cyan">
-          <span>已完成</span><strong>{{ summary.completed }}</strong
-          ><small>已进入素材池</small>
-        </article>
-        <article class="stat-card amber">
-          <span>生成中</span><strong>{{ summary.running }}</strong
-          ><small>含自动重试任务</small>
-        </article>
-        <article class="stat-card coral">
-          <span>异常失败</span><strong>{{ summary.failed }}</strong
-          ><small>支持单条重生成</small>
-        </article>
-      </section>
-
-      <section class="segment-task-list" aria-label="AI 视频片段任务列表">
-        <div class="segment-toolbar">
-          <label class="select-all">
-            <input
-              type="checkbox"
-              :checked="allFilteredSelected"
-              :disabled="!selectableFilteredTasks.length || operation !== null"
-              @change="toggleAllFiltered(($event.target as HTMLInputElement).checked)"
-            />
-            <span>全选</span>
-          </label>
-          <span class="selected-count"
-            >已选 {{ selectedCount }} / {{ filteredTasks.length }} 条</span
-          >
-          <div class="segment-manage">
-            <label class="segment-search">
-              <Search :size="14" />
+      <section class="segment-workspace" aria-label="AI 视频素材工作区">
+        <div class="segment-material-panel">
+          <div class="segment-toolbar">
+            <div class="prompt-search" role="search">
+              <Search :size="15" />
               <input
                 v-model="keyword"
                 type="search"
+                aria-label="搜索视频素材"
                 :disabled="!tasks.length || operation !== null"
-                placeholder="按标签或素材名称查询，例如：钩子 / 产品 / 场景"
+                placeholder="搜索编号或多个关键词，例如：R012、厨房 特写"
               />
-            </label>
-            <button type="button" :disabled="operation !== null" @click="requestImport">
-              <FileUp :size="13" />导入素材
-            </button>
+              <button
+                v-if="keyword"
+                class="prompt-search__clear"
+                type="button"
+                aria-label="清除搜索"
+                @click="clearSearch"
+              >
+                <X :size="14" />
+              </button>
+            </div>
+            <span class="prompt-result-count">{{ filteredTasks.length }} 个结果</span>
+            <span v-if="hasBatch" class="toolbar-result-stats" aria-label="视频素材生成结果">
+              <span class="success"
+                ><i></i>成功 <strong>{{ summary.completed }}</strong></span
+              >
+              <span class="danger"
+                ><i></i>异常 <strong>{{ summary.failed }}</strong></span
+              >
+            </span>
             <button
+              class="selection-mode-button"
+              :class="{ active: selectionMode }"
               type="button"
-              :disabled="!selectedCanRetry || operation !== null"
-              @click="retryTasks([...selectedTaskIds])"
+              :disabled="!completedTasks.length || operation !== null"
+              @click="toggleSelectionMode"
             >
-              <RefreshCw :size="13" />批量重新生成
-            </button>
-            <button
-              class="danger"
-              type="button"
-              :disabled="!selectedCanDelete || operation !== null"
-              @click="requestDelete([...selectedTaskIds])"
-            >
-              <Trash2 :size="13" />批量删除
+              <Check :size="14" />{{ selectionMode ? '退出选择' : '选择素材' }}
             </button>
           </div>
-          <button
-            class="batch-export-button"
-            type="button"
-            :disabled="!selectedCanExport || operation !== null"
-            @click="exportSelected"
-          >
-            <Download :size="13" />批量导出
-          </button>
-          <input
-            ref="fileInput"
-            class="visually-hidden"
-            type="file"
-            accept="video/*"
-            multiple
-            @change="importFiles"
-          />
-        </div>
 
-        <article
-          v-for="task in pagedTasks"
-          :key="task.id"
-          class="segment-task-card"
-          :class="{
-            selected: selectedTaskIds.has(task.id),
-            abnormal: task.abnormal,
-          }"
-        >
-          <input
-            class="task-checkbox"
-            type="checkbox"
-            :aria-label="`选择 ${task.renderCode}`"
-            :checked="selectedTaskIds.has(task.id)"
-            :disabled="operation !== null || !canSelectTask(task)"
-            @change="toggleTask(task.id, ($event.target as HTMLInputElement).checked)"
-          />
-          <button
-            class="video-placeholder"
-            :class="statusMeta(task.status).tone"
-            type="button"
-            :disabled="!canPreviewTask(task)"
-            :aria-label="`预览 ${task.renderCode}`"
-            @click="openPreview(task, $event)"
-          >
-            <LoaderCircle v-if="isEffectSegmentRenderBusy(task.status)" class="spin" :size="23" />
-            <Play v-else :size="25" />
-            <small>{{ task.progress }}%</small>
-          </button>
-          <div class="task-main">
-            <div class="task-title">
-              <div>
-                <strong>{{ task.productName }}视频任务 {{ taskSequenceLabel(task) }}</strong>
-                <p>
-                  {{ task.renderCode }} ·
-                  {{
-                    task.source === 'PROMPT'
-                      ? `来源 ${task.promptCode}`
-                      : `外部导入 ${task.sourceName}`
-                  }}
-                  · 1 个素材片段
-                </p>
+          <nav class="purpose-filter-bar" aria-label="按片段类型筛选视频素材">
+            <button
+              type="button"
+              :class="{ active: fragmentFilter === 'ALL' }"
+              :aria-pressed="fragmentFilter === 'ALL'"
+              @click="fragmentFilter = 'ALL'"
+            >
+              全部用途 <small>{{ tasks.length }}</small>
+            </button>
+            <button
+              v-for="fragmentType in EFFECT_PROMPT_FRAGMENT_TYPES"
+              :key="fragmentType"
+              type="button"
+              :class="{ active: fragmentFilter === fragmentType }"
+              :aria-pressed="fragmentFilter === fragmentType"
+              @click="toggleFragmentFilter(fragmentType)"
+            >
+              {{ fragmentTypeLabel(fragmentType) }}
+              <small>{{ fragmentTypeCount(fragmentType) }}</small>
+            </button>
+            <button
+              class="abnormal-purpose-filter"
+              type="button"
+              :class="{ active: fragmentFilter === 'ABNORMAL' }"
+              :aria-pressed="fragmentFilter === 'ABNORMAL'"
+              @click="fragmentFilter = fragmentFilter === 'ABNORMAL' ? 'ALL' : 'ABNORMAL'"
+            >
+              异常片段 <small>{{ summary.failed }}</small>
+            </button>
+            <label
+              class="compatible-purpose-toggle"
+              :class="{ disabled: !isPurposeFilter(fragmentFilter) }"
+              title="开启后，也会显示将该用途标记为兼容用途的视频素材"
+            >
+              <input
+                v-model="includeCompatiblePurposes"
+                type="checkbox"
+                :disabled="!isPurposeFilter(fragmentFilter)"
+              />
+              <span>包含兼容用途</span>
+            </label>
+          </nav>
+
+          <div v-if="selectionMode" class="selection-action-bar">
+            <span>已选 {{ selectedTasks.length }} 个已完成素材</span>
+            <button type="button" @click="selectAllFiltered">
+              {{ allFilteredSelected ? '取消全选' : '全选筛选结果' }}
+            </button>
+            <button
+              class="delete-selection-button"
+              type="button"
+              :disabled="!selectedTasks.length || operation !== null"
+              @click="deleteSelectedMaterials"
+            >
+              <Trash2 :size="13" />删除
+            </button>
+            <button
+              type="button"
+              :disabled="!selectedTasks.length"
+              @click="openTransferPanel('export', $event)"
+            >
+              导出所选
+            </button>
+          </div>
+
+          <div v-if="pagedTasks.length" class="segment-material-grid">
+            <article
+              v-for="task in pagedTasks"
+              :key="task.id"
+              class="segment-material-card"
+              :class="{
+                abnormal: task.abnormal,
+                selectable: selectionMode && canPreviewTask(task),
+                selected: selectedTaskIds.has(task.id),
+              }"
+              @click="selectionMode && canPreviewTask(task) && toggleTaskSelection(task.id)"
+            >
+              <label
+                v-if="selectionMode && canPreviewTask(task)"
+                class="material-checkbox"
+                @click.stop
+              >
+                <input
+                  type="checkbox"
+                  :checked="selectedTaskIds.has(task.id)"
+                  :aria-label="`选择 ${task.renderCode}`"
+                  @change.stop="toggleTaskSelection(task.id)"
+                />
+              </label>
+              <button
+                class="material-preview"
+                :class="statusMeta(task.status).tone"
+                type="button"
+                :disabled="!canPreviewTask(task)"
+                :aria-label="`${selectionMode ? '选择' : '预览'} ${task.renderCode}`"
+                @click.stop="
+                  selectionMode ? toggleTaskSelection(task.id) : openPreview(task, $event)
+                "
+              >
+                <span class="material-status-pill" :class="statusMeta(task.status).tone">
+                  {{ statusMeta(task.status).label }}
+                </span>
+                <LoaderCircle
+                  v-if="isEffectSegmentRenderBusy(task.status)"
+                  class="spin"
+                  :size="25"
+                />
+                <Play v-else :size="27" />
+                <small>{{ task.durationSeconds }}s · {{ task.progress }}%</small>
+              </button>
+              <div class="material-card-body">
+                <div class="material-card-title">
+                  <strong>{{ promptExcerpt(task.promptText) }}</strong>
+                  <span>{{ task.renderCode }}</span>
+                </div>
+                <p>{{ task.promptCode }}</p>
+                <div class="task-tags">
+                  <span class="primary-tag">{{ fragmentTypeLabel(task.fragmentType) }}</span>
+                  <span v-if="task.origin === 'EXTERNAL_IMPORT'" class="origin-tag">外部导入</span>
+                  <span v-else class="origin-tag ai">AI 生成</span>
+                </div>
+                <div
+                  v-if="task.compatibleFragmentTypes.length"
+                  class="compatible-purpose-tags"
+                  aria-label="该视频素材的兼容用途"
+                >
+                  <small>还适合</small>
+                  <span
+                    v-for="compatibleType in task.compatibleFragmentTypes"
+                    :key="compatibleType"
+                  >
+                    {{ fragmentTypeLabel(compatibleType) }}
+                  </span>
+                </div>
+                <div v-if="task.errorMessage" class="task-error" role="status">
+                  <AlertCircle :size="12" />{{ task.errorMessage }}
+                </div>
+                <div v-if="isEffectSegmentRenderBusy(task.status)" class="material-progress">
+                  <i :style="{ width: `${task.progress}%` }" />
+                </div>
               </div>
-              <div class="task-actions">
+              <footer v-if="!selectionMode" class="material-card-actions">
                 <button
                   type="button"
                   :disabled="!canPreviewTask(task)"
@@ -875,72 +1053,44 @@ onBeforeUnmount(() => {
                 >
                   即时预览
                 </button>
-                <button type="button" @click="openPrompt(task, $event)">查看提示词</button>
+                <button type="button" @click="openPrompt(task, $event)">来源 Prompt</button>
                 <button
                   type="button"
                   :disabled="operation !== null || !canRetryTask(task)"
-                  @click="retryTasks([task.id])"
+                  @click="retryTask(task.id)"
                 >
                   重新生成
                 </button>
-                <button
-                  class="danger"
-                  type="button"
-                  :disabled="operation !== null || !canSelectTask(task)"
-                  @click="requestDelete([task.id])"
-                >
-                  删除
-                </button>
-                <em :class="statusMeta(task.status).tone">{{ statusMeta(task.status).label }}</em>
-              </div>
-            </div>
-            <div class="task-tags">
-              <span class="primary-tag">{{ fragmentTypeLabel(task.fragmentType) }}</span>
-            </div>
-            <div v-if="task.errorMessage" class="task-error" role="status">
-              <AlertCircle :size="12" />{{ task.errorMessage }}
-            </div>
-            <div class="task-progress">
-              <span>{{
-                task.status === 'AUTO_RETRY'
-                  ? `自动重试 ${task.retryCount}/${task.maxAutoRetries}`
-                  : '生成进度'
-              }}</span>
-              <div>
-                <i :class="statusMeta(task.status).tone" :style="{ width: `${task.progress}%` }" />
-              </div>
-              <b>{{ task.progress }}%</b>
-            </div>
+              </footer>
+            </article>
           </div>
-        </article>
 
-        <div v-if="!hasBatch && !tasks.length" class="segment-batch-empty">
-          <span><Play :size="23" /></span>
-          <strong>尚未创建视频渲染任务</strong>
-          <p>
-            已确认 {{ promptCount }} 条片段 Prompt。开始后将创建 {{ promptCount }}
-            个任务，每条 Prompt 生成一个独立素材片段。
-          </p>
-          <button type="button" :disabled="operation !== null" @click="startBatch">
-            <Play :size="14" />开始批量渲染（{{ promptCount }}）
-          </button>
-        </div>
+          <div v-else-if="!hasBatch && !tasks.length" class="segment-batch-empty">
+            <span><Play :size="23" /></span>
+            <strong>尚未创建视频渲染任务</strong>
+            <p>已确认 {{ promptCount }} 条片段 Prompt，可从页头导入已有素材，或开始批量渲染。</p>
+          </div>
 
-        <div v-else-if="!pagedTasks.length" class="segment-empty-filter">
-          <Search :size="24" />
-          <strong>没有匹配该标签或素材名称的片段</strong>
-          <span>请调整搜索关键词。</span>
-        </div>
+          <div v-else class="segment-empty-filter">
+            <Search :size="24" />
+            <strong>没有匹配当前筛选条件的素材</strong>
+            <span>请调整关键词或片段类型。</span>
+          </div>
 
-        <div v-if="tasks.length" class="segment-pagination">
-          <span>{{ EFFECT_SEGMENT_RENDER_PAGE_SIZE }} 条/页</span>
-          <button type="button" :disabled="page <= 1" @click="page -= 1">
-            <ChevronLeft :size="14" />上一页
-          </button>
-          <strong>第 {{ page }} / {{ totalPages }} 页</strong>
-          <button type="button" :disabled="page >= totalPages" @click="page += 1">
-            下一页<ChevronRight :size="14" />
-          </button>
+          <div v-if="tasks.length" class="prompt-pagination">
+            <label class="prompt-page-size">
+              <select v-model.number="pageSize" aria-label="每页展示数量" @change="changePageSize">
+                <option v-for="size in EFFECT_PROMPT_PAGE_SIZE_OPTIONS" :key="size" :value="size">
+                  {{ size }} 条/页
+                </option>
+              </select> </label
+            ><button type="button" :disabled="page <= 1" @click="page -= 1">
+              <ChevronLeft :size="14" />上一页</button
+            ><strong>第 {{ page }} / {{ totalPages }} 页</strong
+            ><button type="button" :disabled="page >= totalPages" @click="page += 1">
+              下一页<ChevronRight :size="14" />
+            </button>
+          </div>
         </div>
       </section>
 
@@ -1056,56 +1206,205 @@ onBeforeUnmount(() => {
             <span>
               <strong>{{ promptTask.productName }} · {{ promptTask.renderCode }}</strong>
               <small
-                >{{ promptTask.promptCode ?? '外部导入' }} · 推荐用途：{{
+                >{{ promptTask.promptCode }} · 推荐用途：{{
                   fragmentTypeLabel(promptTask.fragmentType)
                 }}</small
               >
             </span>
-            <em>{{ promptTask.source === 'PROMPT' ? '来源 Prompt' : '外部素材' }}</em>
+            <em>来源 Prompt</em>
           </div>
           <pre>{{ promptTask.promptText }}</pre>
           <footer><button type="button" @click="closeAllDialogs(true)">关闭</button></footer>
         </section>
       </div>
 
-      <div v-if="poolOpen" class="segment-dialog-backdrop" @mousedown.self="closeAllDialogs(true)">
+      <div
+        v-if="transferPanel"
+        class="segment-transfer-backdrop"
+        @mousedown.self="closeTransferPanel(true)"
+      >
         <section
-          class="segment-dialog pool-dialog"
+          class="segment-transfer-drawer"
           role="dialog"
           aria-modal="true"
-          aria-labelledby="segment-pool-title"
-          @keydown.esc="closeAllDialogs(true)"
+          :aria-labelledby="
+            transferPanel === 'import' ? 'segment-import-title' : 'segment-export-title'
+          "
+          @keydown.esc="closeTransferPanel(true)"
         >
           <header>
             <div>
-              <h2 id="segment-pool-title">AI 渲染素材池</h2>
-              <p>已完成片段按 Prompt 主标签分类存储</p>
+              <span
+                ><Upload v-if="transferPanel === 'import'" :size="17" /><Download v-else :size="17"
+              /></span>
+              <div>
+                <h2
+                  :id="transferPanel === 'import' ? 'segment-import-title' : 'segment-export-title'"
+                >
+                  {{ transferPanel === 'import' ? '导入外部视频素材' : '导出视频素材' }}
+                </h2>
+                <p v-if="transferPanel === 'import'">
+                  素材必须匹配到一个 Prompt 槽位，避免形成游离素材。
+                </p>
+                <p v-else>选择导出范围和随包清单，已完成素材才会进入导出结果。</p>
+              </div>
             </div>
             <button
-              ref="poolCloseButton"
+              ref="transferCloseButton"
               type="button"
-              aria-label="关闭素材池"
-              @click="closeAllDialogs(true)"
+              aria-label="关闭素材传输面板"
+              @click="closeTransferPanel(true)"
             >
-              <X :size="16" />
+              <X :size="17" />
             </button>
           </header>
-          <div class="pool-groups">
-            <article v-for="group in poolGroups" :key="group.fragmentType">
-              <span>{{ group.label }}</span>
-              <strong>{{ group.tasks.length }}</strong>
-              <small>{{
-                group.tasks
-                  .slice(0, 3)
-                  .map((task) => task.renderCode)
-                  .join(' · ') || '暂无完成片段'
-              }}</small>
-            </article>
-          </div>
-          <footer>
-            <span>共 {{ summary.completed }} 个可用素材片段</span
-            ><button type="button" @click="closeAllDialogs(true)">关闭</button>
-          </footer>
+
+          <template v-if="transferPanel === 'import'">
+            <input
+              ref="importInput"
+              class="visually-hidden"
+              type="file"
+              accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm"
+              multiple
+              @change="handleImportFileChange"
+            />
+            <button
+              class="import-dropzone"
+              type="button"
+              :disabled="operation !== null"
+              @click="importInput?.click()"
+            >
+              <span><FileVideo2 :size="24" /></span>
+              <strong>{{
+                importFiles.length ? '继续添加视频素材' : '选择要导入的视频素材'
+              }}</strong>
+              <small>支持 MP4、MOV、WebM；文件名包含 Prompt 编号时优先精确匹配</small>
+            </button>
+            <div
+              v-if="operation === 'import' && !importMatches.length"
+              class="transfer-loading"
+              role="status"
+            >
+              <LoaderCircle class="spin" :size="17" />正在检查文件并匹配 Prompt…
+            </div>
+            <div v-else-if="importMatches.length" class="import-review-list">
+              <div class="transfer-section-heading">
+                <strong>匹配结果</strong><span>{{ importMatches.length }} 个文件</span>
+              </div>
+              <article
+                v-for="match in importMatches"
+                :key="match.id"
+                :class="match.status.toLowerCase()"
+              >
+                <span><FileVideo2 :size="16" /></span>
+                <div>
+                  <strong>{{ match.fileName }}</strong>
+                  <small
+                    >{{ formatFileSize(match.size) }} ·
+                    {{ match.promptCode ?? '未找到可用 Prompt 槽位' }}</small
+                  >
+                </div>
+                <em>
+                  {{
+                    match.status === 'MATCHED'
+                      ? '编号匹配'
+                      : match.status === 'AUTO_ASSIGNED'
+                        ? '自动分配'
+                        : match.status === 'CONFLICT'
+                          ? '将替换现有素材'
+                          : '无法导入'
+                  }}
+                </em>
+              </article>
+            </div>
+            <div class="transfer-note">
+              <AlertCircle :size="15" />
+              <p>
+                冲突素材会替换同一 Prompt 槽位的当前结果；本地 Mock
+                只记录文件信息，不上传或读取视频内容。
+              </p>
+            </div>
+            <footer>
+              <button type="button" @click="closeTransferPanel(true)">取消</button>
+              <button
+                class="primary"
+                type="button"
+                :disabled="
+                  operation !== null || !importMatches.some((match) => match.status !== 'UNMATCHED')
+                "
+                @click="confirmImport"
+              >
+                <LoaderCircle v-if="operation === 'import'" class="spin" :size="14" />确认导入
+              </button>
+            </footer>
+          </template>
+
+          <template v-else>
+            <div class="export-section">
+              <div class="transfer-section-heading">
+                <strong>导出范围</strong><span>{{ exportRangeTasks.length }} 个素材</span>
+              </div>
+              <label
+                ><input v-model="exportScope" type="radio" value="ALL_COMPLETED" />全部已完成素材
+                <small>{{ completedTasks.length }} 个</small></label
+              >
+              <label
+                ><input v-model="exportScope" type="radio" value="FILTERED" />当前筛选结果
+                <small
+                  >{{ filteredTasks.filter(isEffectSegmentRenderExportable).length }} 个</small
+                ></label
+              >
+              <label :class="{ disabled: !selectedTasks.length }"
+                ><input
+                  v-model="exportScope"
+                  type="radio"
+                  value="SELECTED"
+                  :disabled="!selectedTasks.length"
+                />已选择素材 <small>{{ selectedTasks.length }} 个</small></label
+              >
+            </div>
+            <div class="export-section">
+              <div class="transfer-section-heading">
+                <strong>导出内容</strong><span>可多选</span>
+              </div>
+              <label
+                ><input
+                  type="checkbox"
+                  :checked="exportFormats.includes('VIDEO_PACKAGE')"
+                  @change="toggleExportFormat('VIDEO_PACKAGE')"
+                />视频素材包 ZIP <small>Mock 阶段记录打包意图</small></label
+              >
+              <label
+                ><input
+                  type="checkbox"
+                  :checked="exportFormats.includes('MANIFEST_JSON')"
+                  @change="toggleExportFormat('MANIFEST_JSON')"
+                />素材清单 JSON <small>含 Prompt 与用途映射</small></label
+              >
+              <label
+                ><input
+                  type="checkbox"
+                  :checked="exportFormats.includes('FAILURE_CSV')"
+                  @change="toggleExportFormat('FAILURE_CSV')"
+                />异常明细 CSV <small>便于补录与追踪</small></label
+              >
+            </div>
+            <div class="transfer-note">
+              <AlertCircle :size="15" />
+              <p>当前前端 Mock 会下载一份结构化 JSON 清单，不生成虚假的视频文件或网络地址。</p>
+            </div>
+            <footer>
+              <button type="button" @click="closeTransferPanel(true)">取消</button>
+              <button
+                class="primary"
+                type="button"
+                :disabled="operation !== null || !exportRangeTasks.length || !exportFormats.length"
+                @click="downloadExport"
+              >
+                <LoaderCircle v-if="operation === 'export'" class="spin" :size="14" />生成导出清单
+              </button>
+            </footer>
+          </template>
         </section>
       </div>
     </Teleport>
@@ -1413,28 +1712,15 @@ select:disabled {
   border: 1px solid #e5e9f2;
   border-radius: 12px;
 }
-.select-all {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  color: #536178;
-  font-size: 12px;
-  white-space: nowrap;
-}
-.selected-count {
-  color: #7f8a9e;
-  font-size: 10px;
-  white-space: nowrap;
-}
-.segment-manage {
+.segment-filter-controls {
   display: flex;
-  margin-left: auto;
+  width: 100%;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
 }
 .segment-search {
   display: flex;
-  width: 210px;
+  width: min(360px, 100%);
   height: 32px;
   padding: 0 9px;
   align-items: center;
@@ -1456,31 +1742,25 @@ select:disabled {
   background: transparent;
   font-size: 10px;
 }
-.segment-manage button,
-.batch-export-button {
-  display: inline-flex;
-  height: 30px;
-  padding: 0 10px;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
+.segment-filter select {
+  height: 32px;
+  min-width: 142px;
+  padding: 0 30px 0 10px;
   color: #526078;
   background: #fff;
   border: 1px solid #d7dfeb;
-  border-radius: 7px;
+  border-radius: 6px;
+  outline: 0;
   font-size: 10px;
-  font-weight: 700;
-  white-space: nowrap;
 }
-.segment-manage button.danger {
-  color: #dc3f52;
-  border-color: #f0cbd0;
-}
-.batch-export-button {
-  margin-left: auto;
-  color: #fff;
-  background: #4f8df7;
+.segment-filter select:focus {
   border-color: #4f8df7;
+}
+.filtered-result-count {
+  margin-left: auto;
+  color: #7f8a9e;
+  font-size: 10px;
+  white-space: nowrap;
 }
 .segment-task-card {
   position: relative;
@@ -1488,7 +1768,7 @@ select:disabled {
   min-width: 0;
   min-height: 154px;
   padding: 14px 16px;
-  grid-template-columns: 24px 112px minmax(0, 1fr);
+  grid-template-columns: 112px minmax(0, 1fr);
   align-items: center;
   gap: 12px;
   background: #fff;
@@ -1499,17 +1779,9 @@ select:disabled {
 .segment-task-card:hover {
   border-color: #8eb2ee;
 }
-.segment-task-card.selected {
-  background: #fbfdff;
-  border-color: #75a7f4;
-}
 .segment-task-card.abnormal {
   background: #fffafa;
   border-color: #ef9ba5;
-}
-.task-checkbox {
-  align-self: start;
-  margin-top: 11px;
 }
 .video-placeholder {
   position: relative;
@@ -1722,25 +1994,6 @@ select:disabled {
   line-height: 1.75;
   text-align: center;
 }
-.segment-batch-empty button {
-  display: inline-flex;
-  height: 38px;
-  margin-top: 6px;
-  padding: 0 17px;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  color: #fff;
-  background: #2563eb;
-  border: 0;
-  border-radius: 10px;
-  box-shadow: 0 8px 18px #2563eb22;
-  font-size: 12px;
-  font-weight: 700;
-}
-.segment-batch-empty button:disabled {
-  opacity: 0.55;
-}
 .segment-empty-filter strong {
   color: #526078;
   font-size: 13px;
@@ -1916,14 +2169,12 @@ select:disabled {
   font-size: 11px;
   line-height: 1.75;
 }
-.prompt-dialog > footer,
-.pool-dialog > footer {
+.prompt-dialog > footer {
   display: flex;
   align-items: center;
   justify-content: flex-end;
 }
-.prompt-dialog > footer button,
-.pool-dialog > footer button {
+.prompt-dialog > footer button {
   height: 38px;
   padding: 0 18px;
   color: #fff;
@@ -1932,49 +2183,6 @@ select:disabled {
   border-radius: 9px;
   font-size: 12px;
   font-weight: 800;
-}
-.pool-dialog {
-  width: min(760px, 100%);
-  padding: 0 18px 18px;
-}
-.pool-groups {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-.pool-groups article {
-  padding: 14px;
-  background: #f8faff;
-  border: 1px solid #dce6f5;
-  border-radius: 12px;
-}
-.pool-groups span,
-.pool-groups strong,
-.pool-groups small {
-  display: block;
-}
-.pool-groups span {
-  color: #526078;
-  font-size: 11px;
-  font-weight: 800;
-}
-.pool-groups strong {
-  margin: 9px 0 6px;
-  color: #2563eb;
-  font-size: 24px;
-}
-.pool-groups small {
-  overflow: hidden;
-  color: #8490a4;
-  font-size: 9px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.pool-dialog > footer {
-  margin-top: 16px;
-  gap: 12px;
-  color: #718096;
-  font-size: 10px;
 }
 .spin {
   animation: segment-spin 0.75s linear infinite;
@@ -1994,10 +2202,9 @@ select:disabled {
     width: 100%;
     flex-wrap: wrap;
   }
-  .segment-manage {
+  .segment-filter-controls {
     order: 3;
     width: 100%;
-    margin-left: 0;
     flex-wrap: wrap;
   }
   .segment-search {
@@ -2041,14 +2248,14 @@ select:disabled {
   }
   .segment-task-card {
     min-height: 0;
-    grid-template-columns: 24px minmax(0, 1fr);
+    grid-template-columns: 1fr;
   }
   .video-placeholder {
     width: 100%;
-    grid-column: 2;
+    grid-column: 1;
   }
   .task-main {
-    grid-column: 2;
+    grid-column: 1;
   }
   .task-actions {
     width: 100%;
@@ -2057,18 +2264,873 @@ select:disabled {
     justify-content: flex-start;
   }
   .segment-search,
-  .segment-manage button,
-  .batch-export-button {
+  .segment-filter,
+  .segment-filter select {
     width: 100%;
   }
-  .batch-export-button {
+  .filtered-result-count {
     margin-left: 0;
-  }
-  .pool-groups {
-    grid-template-columns: 1fr;
   }
   .segment-dialog-backdrop {
     padding: 10px;
+  }
+}
+
+/* 素材画廊 */
+.segment-workspace {
+  display: grid;
+  margin-top: 14px;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 14px;
+}
+.segment-material-panel {
+  min-width: 0;
+  background: #fff;
+  border: 1px solid #dfe6f1;
+  border-radius: 15px;
+}
+.segment-material-panel {
+  overflow: hidden;
+}
+.segment-toolbar {
+  display: flex;
+  min-height: 56px;
+  padding: 9px 12px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: #f7f9fc;
+  border: 0;
+  border-bottom: 1px solid #e4e9f1;
+  border-radius: 0;
+}
+.prompt-search {
+  display: flex;
+  width: min(415px, 40%);
+  height: 40px;
+  padding: 0 12px;
+  align-items: center;
+  gap: 8px;
+  color: #7390b3;
+  background: #fff;
+  border: 1px solid #dbe4f6;
+  border-radius: 10px;
+}
+.prompt-search input {
+  min-width: 0;
+  flex: 1;
+  color: #42526a;
+  background: transparent;
+  border: 0;
+  outline: none;
+  font-size: 13px;
+}
+.prompt-search__clear {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  padding: 0;
+  place-items: center;
+  color: #7d8ba0;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+.prompt-search__clear:hover {
+  color: #2563eb;
+  background: #eef4ff;
+}
+.prompt-result-count {
+  margin-right: auto;
+  color: #8b95a5;
+  font-size: 12px;
+}
+.toolbar-result-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.toolbar-result-stats > span {
+  display: inline-flex;
+  min-height: 26px;
+  padding: 0 9px;
+  align-items: center;
+  gap: 4px;
+  color: #397761;
+  background: #eef9f4;
+  border: 1px solid #d2ebdf;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+}
+.toolbar-result-stats > span.danger {
+  color: #b5545a;
+  background: #fff3f2;
+  border-color: #f1d2cf;
+}
+.toolbar-result-stats i {
+  width: 5px;
+  height: 5px;
+  background: #27a176;
+  border-radius: 50%;
+}
+.toolbar-result-stats .danger i {
+  background: #df5b61;
+}
+.toolbar-result-stats strong {
+  font-size: 11px;
+}
+.purpose-filter-bar {
+  display: flex;
+  padding: 8px 12px 10px;
+  flex-wrap: wrap;
+  gap: 7px;
+  background: #fff;
+  border-bottom: 1px solid #edf0f5;
+}
+.purpose-filter-bar button {
+  display: inline-flex;
+  min-height: 30px;
+  padding: 0 11px;
+  align-items: center;
+  gap: 5px;
+  color: #62728a;
+  background: #f7f9fc;
+  border: 1px solid #e1e7f0;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+}
+.purpose-filter-bar button small {
+  min-width: 18px;
+  padding: 1px 5px;
+  color: #8795aa;
+  background: #fff;
+  border-radius: 999px;
+  font-size: 9px;
+  line-height: 16px;
+  text-align: center;
+}
+.purpose-filter-bar button.active {
+  color: #245fca;
+  background: #edf4ff;
+  border-color: #bcd0f5;
+}
+.purpose-filter-bar button.active small {
+  color: #245fca;
+  background: #dce9ff;
+}
+.purpose-filter-bar .abnormal-purpose-filter {
+  color: #b85a60;
+  background: #fff7f6;
+  border-color: #efd2cf;
+}
+.purpose-filter-bar .abnormal-purpose-filter.active {
+  color: #c83f49;
+  background: #fff0ef;
+  border-color: #edaeaa;
+}
+.compatible-purpose-toggle {
+  display: inline-flex;
+  min-height: 30px;
+  margin-left: auto;
+  padding: 0 4px;
+  align-items: center;
+  gap: 7px;
+  color: #5d6d84;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  user-select: none;
+}
+.compatible-purpose-toggle input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: #2f6dea;
+}
+.compatible-purpose-toggle.disabled {
+  color: #aab4c3;
+  cursor: not-allowed;
+}
+.segment-filter-controls {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+.segment-search {
+  width: min(300px, 38vw);
+}
+.segment-search,
+.segment-filter {
+  display: flex;
+  height: 36px;
+  align-items: center;
+  color: #8390a5;
+  background: #fff;
+  border: 1px solid #dbe3ef;
+  border-radius: 9px;
+}
+.segment-search svg {
+  flex: 0 0 auto;
+  margin-left: 10px;
+}
+.segment-search input,
+.segment-filter select {
+  width: 100%;
+  height: 100%;
+  color: #42526a;
+  background: transparent;
+  border: 0;
+  outline: none;
+  font-size: 10px;
+}
+.segment-search input {
+  padding: 0 10px 0 7px;
+}
+.segment-filter select {
+  min-width: 132px;
+  padding: 0 26px 0 10px;
+}
+.filtered-result-count {
+  color: #8a97aa;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.selection-mode-button,
+.selection-action-bar button {
+  display: inline-flex;
+  height: 34px;
+  padding: 0 11px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: #4f5f75;
+  background: #fff;
+  border: 1px solid #d8e1ee;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.selection-mode-button.active {
+  color: #2563eb;
+  background: #edf4ff;
+  border-color: #9ebdf9;
+}
+.selection-action-bar {
+  display: flex;
+  min-height: 43px;
+  padding: 6px 12px;
+  align-items: center;
+  gap: 8px;
+  color: #52647c;
+  background: #eff5ff;
+  border-bottom: 1px solid #d8e5fa;
+  font-size: 10px;
+}
+.selection-action-bar span {
+  margin-right: auto;
+  font-weight: 700;
+}
+.selection-action-bar button:last-child {
+  color: #fff;
+  background: #2563eb;
+  border-color: #2563eb;
+}
+.selection-action-bar .delete-selection-button {
+  color: #d14d56;
+  background: #fff;
+  border-color: #efc2c0;
+}
+.segment-material-grid {
+  display: grid;
+  padding: 12px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 11px;
+}
+.segment-material-card {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid #e1e6ee;
+  border-radius: 12px;
+  transition: 0.18s ease;
+}
+.segment-material-card:hover {
+  border-color: #aac2f2;
+  box-shadow: 0 8px 18px #315c9c13;
+  transform: translateY(-1px);
+}
+.segment-material-card.abnormal {
+  border-color: #f0b9b3;
+}
+.segment-material-card.selected {
+  border-color: #4f83ef;
+  box-shadow: 0 0 0 2px #4f83ef1f;
+}
+.segment-material-card.selectable {
+  cursor: pointer;
+}
+.material-checkbox {
+  position: absolute;
+  z-index: 3;
+  top: 10px;
+  left: 10px;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  background: #ffffffee;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px #17203330;
+}
+.material-checkbox input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #2563eb;
+}
+.material-preview {
+  position: relative;
+  display: grid;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  min-height: 112px;
+  place-items: center;
+  color: #fff;
+  background: linear-gradient(135deg, #c9514f, #ed9445);
+  border: 0;
+}
+.material-preview.running,
+.material-preview.pending,
+.material-preview.retry {
+  background: linear-gradient(135deg, #5f7cae, #7ea6df);
+}
+.material-preview.danger {
+  background: linear-gradient(135deg, #be4f55, #e2786d);
+}
+.material-preview:disabled {
+  opacity: 1;
+}
+.material-preview > svg {
+  filter: drop-shadow(0 2px 6px #17203340);
+}
+.material-preview > small {
+  position: absolute;
+  right: 9px;
+  bottom: 7px;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+}
+.material-status-pill {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 3px 7px;
+  color: #fff;
+  background: #1720337a;
+  border-radius: 999px;
+  font-size: 8px;
+  font-weight: 800;
+}
+.material-status-pill.danger {
+  background: #a72e38d9;
+}
+.material-status-pill.retry {
+  background: #b6751bd9;
+}
+.material-card-body {
+  min-height: 112px;
+  padding: 10px 11px 8px;
+}
+.material-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.material-card-title strong {
+  overflow: hidden;
+  color: #29364b;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.material-card-title span {
+  color: #9aa5b6;
+  font-size: 9px;
+}
+.material-card-body > p {
+  margin: 4px 0 8px;
+  overflow: hidden;
+  color: #8290a5;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-tags {
+  display: flex;
+  gap: 5px;
+}
+.task-tags span {
+  padding: 3px 6px;
+  border-radius: 5px;
+  font-size: 8px;
+  font-weight: 700;
+}
+.task-tags .primary-tag {
+  color: #e5505a;
+  background: #fff5f4;
+  border: 1px solid #f3b5b5;
+}
+.origin-tag {
+  color: #7d5a22;
+  background: #fff7df;
+  border: 1px solid #f1d89a;
+}
+.origin-tag.ai {
+  color: #287194;
+  background: #edf9fd;
+  border-color: #b8dfeb;
+}
+.compatible-purpose-tags {
+  display: flex;
+  margin: 7px 0 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.compatible-purpose-tags small {
+  color: #8995a8;
+  font-size: 8px;
+}
+.compatible-purpose-tags span {
+  padding: 2px 6px;
+  color: #6656a8;
+  background: #f4f1ff;
+  border: 1px solid #ded6fb;
+  border-radius: 999px;
+  font-size: 8px;
+}
+.task-error {
+  display: flex;
+  margin-top: 7px;
+  align-items: flex-start;
+  gap: 4px;
+  color: #c34850;
+  font-size: 8px;
+  line-height: 1.45;
+}
+.material-progress {
+  height: 4px;
+  margin-top: 9px;
+  overflow: hidden;
+  background: #e7ecf4;
+  border-radius: 999px;
+}
+.material-progress i {
+  display: block;
+  height: 100%;
+  background: #4f83ef;
+  border-radius: inherit;
+}
+.material-card-actions {
+  display: flex;
+  min-height: 35px;
+  padding: 0 10px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  background: #fafbfd;
+  border-top: 1px solid #edf0f5;
+}
+.material-card-actions button {
+  padding: 0;
+  color: #425679;
+  background: transparent;
+  border: 0;
+  font-size: 8px;
+  font-weight: 700;
+}
+.material-card-actions button:last-child {
+  color: #d5535b;
+}
+.segment-batch-empty,
+.segment-empty-filter {
+  display: flex;
+  min-height: 330px;
+  padding: 32px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  color: #8693a7;
+  text-align: center;
+}
+.segment-batch-empty > span {
+  display: grid;
+  width: 50px;
+  height: 50px;
+  margin-bottom: 12px;
+  place-items: center;
+  color: #2563eb;
+  background: #eaf2ff;
+  border-radius: 14px;
+}
+.segment-batch-empty strong,
+.segment-empty-filter strong {
+  color: #314058;
+  font-size: 14px;
+}
+.segment-batch-empty p,
+.segment-empty-filter span {
+  max-width: 460px;
+  margin: 7px 0 0;
+  font-size: 10px;
+  line-height: 1.7;
+}
+.segment-pagination {
+  display: flex;
+  min-height: 52px;
+  padding: 8px 12px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  border-top: 1px solid #edf0f5;
+  font-size: 9px;
+}
+.segment-pagination button {
+  height: 32px;
+  border-radius: 8px;
+}
+.prompt-pagination {
+  display: flex;
+  min-height: 61px;
+  margin-top: 2px;
+  padding: 10px 14px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  color: #7d899d;
+  border-top: 1px solid #f0f2f5;
+  font-size: 12px;
+}
+.prompt-page-size select,
+.prompt-pagination button {
+  display: inline-flex;
+  height: 40px;
+  padding: 0 12px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: #5b6679;
+  background: #fff;
+  border: 1px solid #dfe5ed;
+  border-radius: 10px;
+}
+.prompt-page-size select {
+  min-width: 108px;
+  appearance: auto;
+  cursor: pointer;
+}
+.segment-transfer-backdrop {
+  position: fixed;
+  z-index: 1450;
+  inset: 0;
+  display: flex;
+  justify-content: flex-end;
+  background: #0f172a55;
+  backdrop-filter: blur(3px);
+}
+.segment-transfer-drawer {
+  display: flex;
+  width: min(460px, 100%);
+  height: 100%;
+  padding: 0 20px;
+  overflow: auto;
+  flex-direction: column;
+  color: #34445b;
+  background: #fff;
+  box-shadow: -18px 0 55px #17203325;
+}
+.segment-transfer-drawer > header {
+  display: flex;
+  min-height: 82px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #e7ecf3;
+}
+.segment-transfer-drawer > header > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.segment-transfer-drawer > header > div > span {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #2563eb;
+  background: #eaf2ff;
+  border-radius: 10px;
+}
+.segment-transfer-drawer h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.segment-transfer-drawer header p {
+  margin: 4px 0 0;
+  color: #8793a6;
+  font-size: 9px;
+}
+.segment-transfer-drawer > header > button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #778397;
+  background: #f5f7fa;
+  border: 0;
+  border-radius: 8px;
+}
+.import-dropzone {
+  display: flex;
+  min-height: 168px;
+  margin-top: 18px;
+  padding: 20px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  color: #697991;
+  background: #f8fbff;
+  border: 1px dashed #9bbbf5;
+  border-radius: 13px;
+  text-align: center;
+}
+.import-dropzone > span {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 10px;
+  place-items: center;
+  color: #2563eb;
+  background: #e7f0ff;
+  border-radius: 14px;
+}
+.import-dropzone strong {
+  color: #35445c;
+  font-size: 12px;
+}
+.import-dropzone small {
+  margin-top: 6px;
+  color: #8a96a9;
+  font-size: 9px;
+}
+.transfer-loading {
+  display: flex;
+  min-height: 70px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: #75849a;
+  font-size: 10px;
+}
+.transfer-section-heading {
+  display: flex;
+  margin-bottom: 9px;
+  align-items: center;
+  justify-content: space-between;
+}
+.transfer-section-heading strong {
+  color: #35445c;
+  font-size: 11px;
+}
+.transfer-section-heading span {
+  color: #8b97a8;
+  font-size: 9px;
+}
+.import-review-list {
+  margin-top: 18px;
+}
+.import-review-list article {
+  display: grid;
+  padding: 10px;
+  grid-template-columns: 27px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  background: #fbfcfe;
+  border: 1px solid #e3e8f0;
+  border-radius: 9px;
+}
+.import-review-list article + article {
+  margin-top: 7px;
+}
+.import-review-list article.unmatched {
+  background: #fff7f6;
+  border-color: #f0c5c0;
+}
+.import-review-list article > span {
+  display: grid;
+  width: 27px;
+  height: 27px;
+  place-items: center;
+  color: #5c79a4;
+  background: #edf3fb;
+  border-radius: 7px;
+}
+.import-review-list strong,
+.import-review-list small {
+  display: block;
+}
+.import-review-list strong {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.import-review-list small {
+  margin-top: 3px;
+  color: #8a96a9;
+  font-size: 8px;
+}
+.import-review-list em {
+  color: #3e7e5c;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 700;
+}
+.import-review-list article.conflict em {
+  color: #b46d1b;
+}
+.import-review-list article.unmatched em {
+  color: #c24c54;
+}
+.export-section {
+  margin-top: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #edf0f4;
+}
+.export-section > label {
+  display: grid;
+  min-height: 48px;
+  padding: 8px 10px;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  color: #42526a;
+  background: #fafbfd;
+  border: 1px solid #e4e9f1;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 700;
+}
+.export-section > label + label {
+  margin-top: 7px;
+}
+.export-section input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #2563eb;
+}
+.export-section small {
+  color: #8a96a9;
+  font-size: 8px;
+  font-weight: 500;
+}
+.export-section label.disabled {
+  opacity: 0.5;
+}
+.transfer-note {
+  display: flex;
+  margin-top: 18px;
+  padding: 10px;
+  align-items: flex-start;
+  gap: 7px;
+  color: #7a6646;
+  background: #fff9eb;
+  border: 1px solid #f1dfb4;
+  border-radius: 9px;
+}
+.transfer-note svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+.transfer-note p {
+  margin: 0;
+  font-size: 9px;
+  line-height: 1.6;
+}
+.segment-transfer-drawer > footer {
+  display: flex;
+  min-height: 74px;
+  margin-top: auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid #e7ecf3;
+}
+.segment-transfer-drawer > footer button {
+  display: inline-flex;
+  height: 38px;
+  padding: 0 15px;
+  align-items: center;
+  gap: 5px;
+  color: #56657b;
+  background: #fff;
+  border: 1px solid #dbe3ee;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 800;
+}
+.segment-transfer-drawer > footer button.primary {
+  color: #fff;
+  background: #2563eb;
+  border-color: #2563eb;
+}
+@media (max-width: 900px) {
+  .segment-material-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 680px) {
+  .segment-toolbar,
+  .segment-filter-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .prompt-search,
+  .segment-search,
+  .segment-filter,
+  .segment-filter select,
+  .selection-mode-button {
+    width: 100%;
+  }
+  .segment-material-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .selection-action-bar {
+    flex-wrap: wrap;
+  }
+  .selection-action-bar span {
+    width: 100%;
+  }
+  .segment-transfer-drawer {
+    padding: 0 14px;
+  }
+}
+@media (max-width: 480px) {
+  .segment-material-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>

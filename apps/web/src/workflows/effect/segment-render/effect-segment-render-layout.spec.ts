@@ -4,98 +4,126 @@ import parentSource from '../source-import/EffectImportNodePage.vue?raw';
 import pageSource from './EffectSegmentRenderNodePage.vue?raw';
 import serviceSource from './services/effect-segment-render.mock-service.ts?raw';
 
-describe('effect segment render prototype layout', () => {
-  it('reproduces the prototype heading, four stats, management toolbar and two-column cards', () => {
+describe('effect segment render material gallery layout', () => {
+  it('uses an inline result summary and a five-column material gallery without a queue rail', () => {
     for (const marker of [
       'class="segment-heading"',
       'AI 视频片段批量渲染',
-      '查看 AI 渲染素材池',
       '开始批量渲染',
-      'class="segment-stats"',
-      '任务总数',
-      '已完成',
-      '生成中',
-      '异常失败',
-      'class="segment-toolbar"',
-      'class="segment-task-card"',
-      'class="segment-pagination"',
+      'class="toolbar-result-stats"',
+      '成功 <strong>{{ summary.completed }}</strong>',
+      '异常 <strong>{{ summary.failed }}</strong>',
+      'class="segment-material-grid"',
+      'class="segment-material-card"',
+      'class="prompt-pagination"',
     ])
       expect(pageSource).toContain(marker);
     expect(pageSource).toMatch(
-      /\.segment-task-list\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/su,
+      /\.segment-material-grid\s*\{[^}]*grid-template-columns:\s*repeat\(5,\s*minmax\(0,\s*1fr\)\)/su,
     );
-    expect(pageSource).toMatch(
-      /\.segment-task-card\s*\{[^}]*grid-template-columns:\s*24px\s+112px\s+minmax\(0,\s*1fr\)/su,
-    );
-    expect(pageSource).toContain('width: 112px');
-    expect(pageSource).toContain('height: 92px');
-    expect(pageSource).toContain('{{ EFFECT_SEGMENT_RENDER_PAGE_SIZE }} 条/页');
+    expect(pageSource).toContain('v-if="isEffectSegmentRenderBusy(task.status)"');
+    expect(pageSource).not.toContain('segment-queue-rail');
+    expect(pageSource).not.toContain('实时队列');
+    expect(pageSource).not.toContain('segment-live-summary');
+    expect(pageSource).not.toContain('live-result-counts');
+    expect(pageSource).not.toContain('class="segment-stats"');
+    expect(pageSource).not.toContain('AI 渲染素材池');
   });
 
-  it('keeps one prompt mapped to one material fragment and uses all existing fragment labels', () => {
+  it('keeps one prompt mapped to one material fragment and distinguishes imported origins', () => {
     expect(pageSource).toContain('每条 1 个视频素材片段');
-    expect(pageSource).toContain('· 1 个素材片段');
+    expect(pageSource).toContain('promptExcerpt(task.promptText)');
+    expect(pageSource).toContain('<p>{{ task.promptCode }}</p>');
+    expect(pageSource).not.toContain('{{ task.productName }}片段 {{ taskSequenceLabel(task) }}');
+    expect(pageSource).not.toContain('{{ task.promptCode }} · 每条 1 个视频素材片段');
     expect(pageSource).toContain('EFFECT_PROMPT_FRAGMENT_TYPE_LABELS');
     expect(serviceSource).toContain("source: 'PROMPT'");
-    expect(serviceSource).toContain("modelMatch: 'AUTO_MATCHED'");
+    expect(serviceSource).toContain("origin: 'AI_GENERATED'");
+    expect(serviceSource).toContain("origin: 'EXTERNAL_IMPORT'");
+    expect(serviceSource).toContain('importedByPromptId');
     expect(pageSource).not.toContain('4 个分镜片段');
     expect(serviceSource).not.toContain('完整成片脚本');
   });
 
-  it('wires search, selection, import, retry, delete, export and accessible dialogs', () => {
-    for (const handler of [
-      'toggleAllFiltered',
-      'requestImport',
-      'retryTasks([...selectedTaskIds])',
-      'requestDelete([...selectedTaskIds])',
-      'exportSelected',
-      'openPreview(task, $event)',
-      'openPrompt(task, $event)',
+  it('uses the prompt-node search and purpose filter pattern with toggleable selection actions', () => {
+    for (const marker of [
+      '导入素材',
+      '导出素材',
+      "openTransferPanel('import', $event)",
+      "openTransferPanel('export', $event)",
+      'class="segment-transfer-drawer"',
+      '选择素材',
+      'v-if="selectionMode && canPreviewTask(task)"',
+      'class="prompt-search"',
+      'class="prompt-search__clear"',
+      'class="purpose-filter-bar"',
+      '包含兼容用途',
+      'class="compatible-purpose-tags"',
+      '还适合',
+      '异常片段',
+      "allFilteredSelected ? '取消全选' : '全选筛选结果'",
+      'deleteSelectedMaterials',
+      '导出所选',
+      'retryTask(task.id)',
     ])
-      expect(pageSource).toContain(handler);
-    expect(pageSource).toContain('role="dialog"');
-    expect(pageSource).toContain('@keydown.esc="closeAllDialogs(true)"');
-    expect(pageSource).toContain('requestActionConfirmation');
-    expect(pageSource).not.toContain('deleteDialogOpen');
+      expect(pageSource).toContain(marker);
+    expect(pageSource).not.toContain('批量重新生成');
+    expect(pageSource).not.toContain('批量删除');
+    expect(pageSource).toContain('删除视频素材');
+    expect(pageSource).toContain('@keydown.esc="closeTransferPanel(true)"');
     expect(pageSource).toContain('trigger?.isConnected && trigger.focus()');
+    expect(pageSource).toContain(
+      'selectionMode ? toggleTaskSelection(task.id) : openPreview(task, $event)',
+    );
+    expect(pageSource).toContain('v-if="!selectionMode" class="material-card-actions"');
   });
 
-  it('uses the common draft and footer controls without a node-level asset save button', () => {
-    expect(pageSource).toContain('<WorkflowNodeDraftBar');
-    expect(pageSource).toContain('<WorkflowNodeFooter');
-    expect(pageSource).toContain('尚未提交真实工作副本');
-    expect(pageSource).not.toContain('保存到项目资产库');
-    expect(pageSource).not.toContain('localStorage');
+  it('copies the prompt-node pagination controls and page size options', () => {
+    expect(pageSource).toContain('class="prompt-pagination"');
+    expect(pageSource).toContain('class="prompt-page-size"');
+    expect(pageSource).toContain('EFFECT_PROMPT_PAGE_SIZE_OPTIONS');
+    expect(pageSource).toContain('@change="changePageSize"');
+    expect(pageSource).toContain('aria-label="每页展示数量"');
+    expect(pageSource).not.toContain('class="segment-pagination"');
   });
 
-  it('keeps asynchronous mock behavior in the standalone service with no network call', () => {
+  it('keeps async mock operations in the service and never performs a network request', () => {
+    for (const handler of [
+      'startEffectSegmentRenderBatch',
+      'regenerateEffectSegmentRenderTasks',
+      'inspectEffectSegmentRenderImports',
+      'importEffectSegmentRenderFiles',
+      'deleteEffectSegmentRenderMaterials',
+      'createEffectSegmentRenderExport',
+    ])
+      expect(serviceSource).toContain(handler);
     expect(serviceSource).toContain('const workspaces = new Map');
-    expect(serviceSource).toContain('startEffectSegmentRenderBatch');
-    expect(serviceSource).toContain('regenerateEffectSegmentRenderTasks');
     expect(serviceSource).toContain('自动重试已达上限');
     expect(serviceSource).not.toContain('fetch(');
     expect(pageSource).not.toContain('setInterval(');
   });
 
-  it('separates the prompt-ready empty state from a created render batch', () => {
-    expect(pageSource).toContain('尚未创建视频渲染任务');
-    expect(pageSource).toContain('开始批量渲染（{{ promptCount }}）');
-    expect(pageSource).toContain('创建视频渲染批次');
-    expect(pageSource).toContain('确认后先进入排队状态');
-    expect(pageSource).toContain("workspace.value?.batchStatus !== 'NOT_STARTED'");
-    expect(pageSource).toContain(':disabled="operation !== null || batchActive"');
+  it('shows a real initial empty state without a duplicate call to action', () => {
+    const emptyState = pageSource.match(
+      /<div v-else-if="!hasBatch && !tasks\.length" class="segment-batch-empty">[\s\S]*?<\/div>/u,
+    )?.[0];
+    expect(emptyState).toContain('尚未创建视频渲染任务');
+    expect(emptyState).toContain('从页头导入已有素材，或开始批量渲染');
+    expect(emptyState).not.toContain('<button');
     expect(serviceSource).toContain("batchStatus: 'NOT_STARTED'");
     expect(serviceSource).toContain('tasks: []');
-    expect(serviceSource).toContain("status: 'QUEUED'");
-    expect(serviceSource).not.toContain('initialRunning');
   });
 
-  it('replaces only step four and leaves later nodes on the existing placeholder', () => {
+  it('uses common workflow controls and only replaces step four', () => {
+    expect(pageSource).toContain('<WorkflowNodeDraftBar');
+    expect(pageSource).toContain('<WorkflowNodeFooter');
+    expect(pageSource).toContain('尚未提交真实工作副本');
+    expect(pageSource).not.toContain('保存到项目资产库');
+    expect(pageSource).not.toContain('localStorage');
     expect(parentSource).toContain(
       "import EffectSegmentRenderNodePage from '../segment-render/EffectSegmentRenderNodePage.vue'",
     );
     expect(parentSource).toContain('v-else-if="activeStep === 3"');
-    expect(parentSource).toContain('ref="segmentRenderNode"');
     expect(parentSource).toContain('@back="selectWorkflowStep(2)"');
     expect(parentSource).toContain('@next="selectWorkflowStep(4)"');
     expect(parentSource).toContain('v-else-if="activeDownstreamBoundary"');

@@ -21,10 +21,29 @@ export type EffectSegmentRenderOperationOptions = {
   onUpdate?: (workspace: EffectSegmentRenderWorkspace) => void;
 };
 
-export type EffectSegmentRenderImportedFile = {
+export type EffectSegmentRenderImportFile = {
   name: string;
   size: number;
   type: string;
+  lastModified: number;
+};
+
+export type EffectSegmentRenderImportMatch = {
+  id: string;
+  fileName: string;
+  size: number;
+  promptCode: string | null;
+  taskId: string | null;
+  status: 'AUTO_ASSIGNED' | 'CONFLICT' | 'MATCHED' | 'UNMATCHED';
+};
+
+export type EffectSegmentRenderExportFormat = 'FAILURE_CSV' | 'MANIFEST_JSON' | 'VIDEO_PACKAGE';
+
+export type EffectSegmentRenderExportReceipt = {
+  fileName: string;
+  mimeType: 'application/json';
+  content: string;
+  taskCount: number;
 };
 
 type LegacyCompatibleRenderSettings = EffectSegmentRenderSettings | EffectVideoConfig;
@@ -104,6 +123,15 @@ const createPromptTask = (
 ): EffectSegmentRenderTask => {
   const sequence = index + 1;
   const fragmentType = EFFECT_PROMPT_FRAGMENT_TYPES[index % EFFECT_PROMPT_FRAGMENT_TYPES.length]!;
+  const compatibleFragmentTypes =
+    index % 3 === 0
+      ? [
+          EFFECT_PROMPT_FRAGMENT_TYPES[(index + 1) % EFFECT_PROMPT_FRAGMENT_TYPES.length]!,
+          ...(index % 6 === 0
+            ? [EFFECT_PROMPT_FRAGMENT_TYPES[(index + 2) % EFFECT_PROMPT_FRAGMENT_TYPES.length]!]
+            : []),
+        ]
+      : [];
   const scene = scenes[(index * 5) % scenes.length]!;
   const persona = personas[(index * 3) % personas.length]!;
   const sellingPoint = sellingPoints[(index * 7) % sellingPoints.length]!;
@@ -121,9 +149,11 @@ const createPromptTask = (
     promptCode,
     promptText: `在${scene}由${persona}完成一个清晰可见的动作，采用${camera}，只突出“${sellingPoint}”，整体情绪${emotion}，不生成完整成片时间线。`,
     fragmentType,
+    compatibleFragmentTypes,
     durationSeconds,
     modelMatch: 'AUTO_MATCHED',
     source: 'PROMPT',
+    origin: 'AI_GENERATED',
     sourceName: promptCode,
     status: 'QUEUED',
     progress: 0,
@@ -208,7 +238,14 @@ const runMockBatch = async (
   stepDelayMs: number,
   onUpdate?: EffectSegmentRenderOperationOptions['onUpdate'],
 ): Promise<void> => {
-  const promptTasks = workspace.tasks.filter((task) => task.source === 'PROMPT');
+  const promptTasks = workspace.tasks.filter((task) => task.origin === 'AI_GENERATED');
+
+  if (!promptTasks.length) {
+    workspace.batchStatus = 'COMPLETED';
+    workspace.completedAt = new Date().toISOString();
+    publish(workspace, onUpdate);
+    return;
+  }
 
   await wait(stepDelayMs);
   workspace.batchStatus = 'RUNNING';
@@ -285,14 +322,16 @@ export const startEffectSegmentRenderBatch = async (
   )
     throw new Error('当前商品已有进行中的视频渲染批次');
 
-  const importedTasks = workspace.tasks.filter((task) => task.source === 'IMPORTED');
   const now = new Date().toISOString();
-  workspace.tasks = [
-    ...importedTasks,
-    ...Array.from({ length: workspace.promptCount }, (_, index) =>
-      createPromptTask(product, settings, index),
-    ),
-  ];
+  const importedByPromptId = new Map(
+    workspace.tasks
+      .filter((task) => task.origin === 'EXTERNAL_IMPORT')
+      .map((task) => [task.promptId, task]),
+  );
+  workspace.tasks = Array.from({ length: workspace.promptCount }, (_, index) => {
+    const planned = createPromptTask(product, settings, index);
+    return importedByPromptId.get(planned.promptId) ?? planned;
+  });
   workspace.batchStatus = 'QUEUED';
   workspace.startedAt = now;
   workspace.completedAt = null;
@@ -326,7 +365,6 @@ export const regenerateEffectSegmentRenderTasks = async (
   const workspace = getMutableWorkspace(context, product, settings);
   const selected = workspace.tasks.filter(
     (task) =>
-      task.source === 'PROMPT' &&
       taskIds.includes(task.id) &&
       task.status !== 'AUTO_RETRY' &&
       task.status !== 'QUEUED' &&
@@ -348,6 +386,8 @@ export const regenerateEffectSegmentRenderTasks = async (
     for (const task of selected) {
       task.progress = progress;
       task.status = progress === 100 ? 'COMPLETED' : 'RENDERING';
+      task.origin = 'AI_GENERATED';
+      task.sourceName = task.promptCode;
       task.updatedAt = new Date().toISOString();
     }
     publish(workspace, options.onUpdate);
@@ -363,87 +403,191 @@ export const regenerateEffectSegmentRenderTasks = async (
   return cloneWorkspace(workspace);
 };
 
-export const deleteEffectSegmentRenderTasks = async (
+const isSupportedVideoFile = (file: EffectSegmentRenderImportFile): boolean =>
+  file.type.startsWith('video/') || /\.(?:mov|mp4|webm)$/iu.test(file.name);
+
+const promptCodeFromFileName = (fileName: string): string | null =>
+  /P\d{3}-[A-Z0-9]{3}/iu.exec(fileName)?.[0]?.toUpperCase() ?? null;
+
+export const inspectEffectSegmentRenderImports = async (
   context: EffectSegmentRenderContext,
   product: EffectImportProduct,
   settings: LegacyCompatibleRenderSettings,
-  taskIds: readonly string[],
+  files: readonly EffectSegmentRenderImportFile[],
   signal?: AbortSignal,
-): Promise<EffectSegmentRenderWorkspace> => {
-  await wait(80, signal);
+): Promise<EffectSegmentRenderImportMatch[]> => {
   const workspace = getMutableWorkspace(context, product, settings);
-  workspace.tasks = workspace.tasks.filter((task) => !taskIds.includes(task.id));
-  if (
-    workspace.batchStatus !== 'NOT_STARTED' &&
-    workspace.tasks.filter((task) => task.source === 'PROMPT').length < workspace.promptCount
-  ) {
-    workspace.batchStatus = 'PARTIAL';
-    workspace.completedAt = null;
-  }
-  return publish(workspace);
+  await wait(90, signal);
+  const planned = Array.from({ length: workspace.promptCount }, (_, index) =>
+    createPromptTask(product, settings, index),
+  );
+  const existingPromptIds = new Set(workspace.tasks.map((task) => task.promptId));
+  const reservedPromptIds = new Set<string>();
+
+  return files.map((file, index) => {
+    if (!isSupportedVideoFile(file))
+      return {
+        id: `import-${file.lastModified}-${index}`,
+        fileName: file.name,
+        size: file.size,
+        promptCode: null,
+        taskId: null,
+        status: 'UNMATCHED' as const,
+      };
+    const encodedPromptCode = promptCodeFromFileName(file.name);
+    const exactTask = encodedPromptCode
+      ? planned.find((task) => task.promptCode.toUpperCase() === encodedPromptCode)
+      : undefined;
+    const fallbackTask = planned.find(
+      (task) => !existingPromptIds.has(task.promptId) && !reservedPromptIds.has(task.promptId),
+    );
+    const matchedTask = exactTask ?? fallbackTask;
+    if (!matchedTask)
+      return {
+        id: `import-${file.lastModified}-${index}`,
+        fileName: file.name,
+        size: file.size,
+        promptCode: null,
+        taskId: null,
+        status: 'UNMATCHED' as const,
+      };
+    reservedPromptIds.add(matchedTask.promptId);
+    return {
+      id: `import-${file.lastModified}-${index}`,
+      fileName: file.name,
+      size: file.size,
+      promptCode: matchedTask.promptCode,
+      taskId: matchedTask.id,
+      status: existingPromptIds.has(matchedTask.promptId)
+        ? ('CONFLICT' as const)
+        : exactTask
+          ? ('MATCHED' as const)
+          : ('AUTO_ASSIGNED' as const),
+    };
+  });
 };
 
 export const importEffectSegmentRenderFiles = async (
   context: EffectSegmentRenderContext,
   product: EffectImportProduct,
   settings: LegacyCompatibleRenderSettings,
-  files: readonly EffectSegmentRenderImportedFile[],
-  signal?: AbortSignal,
+  files: readonly EffectSegmentRenderImportFile[],
+  options: EffectSegmentRenderOperationOptions = {},
 ): Promise<EffectSegmentRenderWorkspace> => {
-  await wait(100, signal);
   const workspace = getMutableWorkspace(context, product, settings);
-  const existingImported = workspace.tasks.filter((task) => task.source === 'IMPORTED').length;
+  if (workspace.batchStatus === 'QUEUED' || workspace.batchStatus === 'RUNNING')
+    throw new Error('渲染进行中，暂不能替换或导入素材');
+  const matches = await inspectEffectSegmentRenderImports(
+    context,
+    product,
+    settings,
+    files,
+    options.signal,
+  );
+  const planned = Array.from({ length: workspace.promptCount }, (_, index) =>
+    createPromptTask(product, settings, index),
+  );
+  const nextByPromptId = new Map(workspace.tasks.map((task) => [task.promptId, task]));
   const now = new Date().toISOString();
-  const imported = files.map<EffectSegmentRenderTask>((file, index) => {
-    const sequence = existingImported + index + 1;
-    return {
-      id: `import-${product.id}-${pad(sequence)}-${stableSuffix(file.name)}`,
-      renderCode: `IMP-${pad(sequence)}`,
-      productId: product.id,
-      productName: safeProductName(product),
-      promptId: null,
-      promptCode: null,
-      promptText: '外部导入素材不包含来源 Prompt。',
-      fragmentType: 'PRODUCT_DISPLAY',
-      durationSeconds: 5,
-      modelMatch: 'AUTO_MATCHED',
-      source: 'IMPORTED',
-      sourceName: file.name,
-      status: 'IMPORTED',
+  for (const match of matches) {
+    if (!match.taskId || !match.promptCode || match.status === 'UNMATCHED') continue;
+    const base = planned.find((task) => task.id === match.taskId);
+    if (!base) continue;
+    nextByPromptId.set(base.promptId, {
+      ...base,
+      origin: 'EXTERNAL_IMPORT',
+      sourceName: match.fileName,
+      status: 'COMPLETED',
       progress: 100,
-      retryCount: 0,
-      maxAutoRetries: 0,
-      abnormal: false,
-      errorMessage: null,
       updatedAt: now,
-    };
-  });
-  workspace.tasks.unshift(...imported);
-  return publish(workspace);
+    });
+  }
+  workspace.tasks = planned
+    .map((task) => nextByPromptId.get(task.promptId))
+    .filter((task): task is EffectSegmentRenderTask => Boolean(task));
+  if (workspace.batchStatus !== 'NOT_STARTED') {
+    const completed =
+      workspace.tasks.length === workspace.promptCount &&
+      workspace.tasks.every((task) => task.status === 'COMPLETED');
+    workspace.batchStatus = completed ? 'COMPLETED' : 'PARTIAL';
+    workspace.completedAt = completed ? now : null;
+  }
+  return publish(workspace, options.onUpdate);
 };
 
-export const exportEffectSegmentRenderTasks = (
+export const deleteEffectSegmentRenderMaterials = async (
+  context: EffectSegmentRenderContext,
   product: EffectImportProduct,
-  tasks: readonly EffectSegmentRenderTask[],
-): { blob: Blob; fileName: string } => {
-  const payload = {
-    schemaVersion: 1,
-    productId: product.id,
-    productName: safeProductName(product),
-    exportedAt: new Date().toISOString(),
-    taskCount: tasks.length,
-    tasks: tasks.map((task) => ({
-      renderCode: task.renderCode,
-      promptCode: task.promptCode,
-      fragmentType: task.fragmentType,
-      durationSeconds: task.durationSeconds,
-      status: task.status,
-      source: task.source,
-    })),
-  };
+  settings: LegacyCompatibleRenderSettings,
+  taskIds: readonly string[],
+  options: EffectSegmentRenderOperationOptions = {},
+): Promise<EffectSegmentRenderWorkspace> => {
+  const workspace = getMutableWorkspace(context, product, settings);
+  if (workspace.batchStatus === 'QUEUED' || workspace.batchStatus === 'RUNNING')
+    throw new Error('渲染进行中，暂不能删除素材');
+  const selected = workspace.tasks.filter(
+    (task) => taskIds.includes(task.id) && task.status === 'COMPLETED',
+  );
+  if (!selected.length) throw new Error('没有可删除的已完成视频素材');
+  const updatedAt = new Date().toISOString();
+  for (const task of selected) {
+    task.status = 'FAILED';
+    task.progress = 0;
+    task.abnormal = true;
+    task.errorMessage = '素材结果已删除，请按需单条重新生成';
+    task.updatedAt = updatedAt;
+  }
+  if (workspace.batchStatus !== 'NOT_STARTED') {
+    workspace.batchStatus = 'PARTIAL';
+    workspace.completedAt = null;
+  }
+  return publish(workspace, options.onUpdate);
+};
+
+export const createEffectSegmentRenderExport = async (
+  context: EffectSegmentRenderContext,
+  product: EffectImportProduct,
+  settings: LegacyCompatibleRenderSettings,
+  taskIds: readonly string[],
+  formats: readonly EffectSegmentRenderExportFormat[],
+  signal?: AbortSignal,
+): Promise<EffectSegmentRenderExportReceipt> => {
+  const workspace = getMutableWorkspace(context, product, settings);
+  await wait(120, signal);
+  const selected = workspace.tasks.filter(
+    (task) => taskIds.includes(task.id) && task.status === 'COMPLETED',
+  );
+  if (!selected.length) throw new Error('当前范围没有可导出的已完成视频素材');
+  const exportedAt = new Date().toISOString();
+  const content = JSON.stringify(
+    {
+      mock: true,
+      note: '前端 Mock 导出清单，不包含真实视频二进制文件。',
+      projectId: context.projectId,
+      workflowRunId: context.workflowRunId,
+      productId: product.id,
+      productName: safeProductName(product),
+      exportedAt,
+      requestedFormats: formats,
+      materials: selected.map((task) => ({
+        renderCode: task.renderCode,
+        promptId: task.promptId,
+        promptCode: task.promptCode,
+        fragmentType: task.fragmentType,
+        compatibleFragmentTypes: task.compatibleFragmentTypes,
+        origin: task.origin,
+        sourceName: task.sourceName,
+        durationSeconds: task.durationSeconds,
+      })),
+    },
+    null,
+    2,
+  );
   return {
-    blob: new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' }),
-    fileName: `${safeProductName(product)}-AI视频片段-${tasks.length}条.json`,
+    fileName: `${safeProductName(product)}-视频素材导出清单-${Date.now()}.json`,
+    mimeType: 'application/json',
+    content,
+    taskCount: selected.length,
   };
 };
 

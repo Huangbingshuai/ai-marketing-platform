@@ -21,9 +21,11 @@ const task = (
   promptCode: `P${index}`,
   promptText: `周末家庭厨房提示词 ${index}`,
   fragmentType: 'HOOK',
+  compatibleFragmentTypes: ['PRODUCT_DISPLAY'],
   durationSeconds: 5,
   modelMatch: 'AUTO_MATCHED',
   source: 'PROMPT',
+  origin: 'AI_GENERATED',
   sourceName: `P${index}`,
   status,
   progress: status === 'COMPLETED' ? 100 : 50,
@@ -39,12 +41,11 @@ describe('effect segment render state', () => {
     expect(
       effectSegmentRenderSummary([
         task(1, 'COMPLETED'),
-        task(2, 'IMPORTED'),
-        task(3, 'RENDERING'),
-        task(4, 'AUTO_RETRY'),
-        task(5, 'FAILED'),
+        task(2, 'RENDERING'),
+        task(3, 'AUTO_RETRY'),
+        task(4, 'FAILED'),
       ]),
-    ).toEqual({ total: 5, completed: 2, running: 2, failed: 1 });
+    ).toEqual({ total: 4, completed: 1, running: 2, failed: 1 });
   });
 
   it('filters by stable id, product and prompt content', () => {
@@ -55,11 +56,11 @@ describe('effect segment render state', () => {
     expect(filterEffectSegmentRenderTasks(tasks, '不存在')).toEqual([]);
   });
 
-  it('uses twelve-item pages and safely clamps the lower page boundary', () => {
-    const tasks = Array.from({ length: 25 }, (_, index) => task(index + 1, 'COMPLETED'));
-    expect(EFFECT_SEGMENT_RENDER_PAGE_SIZE).toBe(12);
+  it('uses twenty-item pages for four five-column rows and clamps the lower boundary', () => {
+    const tasks = Array.from({ length: 41 }, (_, index) => task(index + 1, 'COMPLETED'));
+    expect(EFFECT_SEGMENT_RENDER_PAGE_SIZE).toBe(20);
     expect(effectSegmentRenderPageCount(tasks.length)).toBe(3);
-    expect(effectSegmentRenderPage(tasks, 1)).toHaveLength(12);
+    expect(effectSegmentRenderPage(tasks, 1)).toHaveLength(20);
     expect(effectSegmentRenderPage(tasks, 3)).toHaveLength(1);
     expect(effectSegmentRenderPage(tasks, 0)[0]?.id).toBe('task-1');
   });
