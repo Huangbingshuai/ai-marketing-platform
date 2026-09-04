@@ -30,6 +30,11 @@ export type EffectSegmentRenderImportedFile = {
 type LegacyCompatibleRenderSettings = EffectSegmentRenderSettings | EffectVideoConfig;
 
 const workspaces = new Map<string, EffectSegmentRenderWorkspace>();
+const activeJobs = new Map<string, Promise<void>>();
+const workspaceListeners = new Map<
+  string,
+  Set<(workspace: EffectSegmentRenderWorkspace) => void>
+>();
 
 const scenes = [
   '周末家庭厨房',
@@ -106,8 +111,6 @@ const createPromptTask = (
   const emotion = emotions[(index * 13) % emotions.length]!;
   const promptCode = `P${pad(sequence)}-${stableSuffix(`${product.id}:${sequence}`)}`;
   const durationSeconds = 5;
-  const initialRunning = sequence > 47;
-  const progressBySequence: Record<number, number> = { 48: 76, 49: 52, 50: 29 };
   const now = new Date().toISOString();
   return {
     id: `render-${product.id}-${pad(sequence)}`,
@@ -122,8 +125,8 @@ const createPromptTask = (
     modelMatch: 'AUTO_MATCHED',
     source: 'PROMPT',
     sourceName: promptCode,
-    status: initialRunning ? 'RENDERING' : 'COMPLETED',
-    progress: initialRunning ? progressBySequence[sequence]! : 100,
+    status: 'QUEUED',
+    progress: 0,
     retryCount: 0,
     maxAutoRetries: 2,
     abnormal: false,
@@ -135,13 +138,20 @@ const createPromptTask = (
 const createWorkspace = (
   context: EffectSegmentRenderContext,
   product: EffectImportProduct,
-  settings: LegacyCompatibleRenderSettings,
-): EffectSegmentRenderWorkspace => ({
-  ...context,
-  productId: product.id,
-  tasks: Array.from({ length: 50 }, (_, index) => createPromptTask(product, settings, index)),
-  updatedAt: new Date().toISOString(),
-});
+  _settings: LegacyCompatibleRenderSettings,
+): EffectSegmentRenderWorkspace => {
+  void _settings;
+  return {
+    ...context,
+    productId: product.id,
+    promptCount: 50,
+    batchStatus: 'NOT_STARTED',
+    tasks: [],
+    startedAt: null,
+    completedAt: null,
+    updatedAt: new Date().toISOString(),
+  };
+};
 
 const getMutableWorkspace = (
   context: EffectSegmentRenderContext,
@@ -163,7 +173,24 @@ const publish = (
   workspace.updatedAt = new Date().toISOString();
   const snapshot = cloneWorkspace(workspace);
   onUpdate?.(snapshot);
+  const key = workspaceKey(workspace, workspace.productId);
+  for (const listener of workspaceListeners.get(key) ?? []) listener(cloneWorkspace(snapshot));
   return snapshot;
+};
+
+export const subscribeEffectSegmentRenderWorkspace = (
+  context: EffectSegmentRenderContext,
+  productId: string,
+  listener: (workspace: EffectSegmentRenderWorkspace) => void,
+): (() => void) => {
+  const key = workspaceKey(context, productId);
+  const listeners = workspaceListeners.get(key) ?? new Set();
+  listeners.add(listener);
+  workspaceListeners.set(key, listeners);
+  return () => {
+    listeners.delete(listener);
+    if (!listeners.size) workspaceListeners.delete(key);
+  };
 };
 
 export const loadEffectSegmentRenderWorkspace = async (
@@ -176,50 +203,43 @@ export const loadEffectSegmentRenderWorkspace = async (
   return cloneWorkspace(getMutableWorkspace(context, product, settings));
 };
 
-export const startEffectSegmentRenderBatch = async (
-  context: EffectSegmentRenderContext,
-  product: EffectImportProduct,
-  settings: LegacyCompatibleRenderSettings,
-  options: EffectSegmentRenderOperationOptions = {},
-): Promise<EffectSegmentRenderWorkspace> => {
-  const workspace = getMutableWorkspace(context, product, settings);
+const runMockBatch = async (
+  workspace: EffectSegmentRenderWorkspace,
+  stepDelayMs: number,
+  onUpdate?: EffectSegmentRenderOperationOptions['onUpdate'],
+): Promise<void> => {
   const promptTasks = workspace.tasks.filter((task) => task.source === 'PROMPT');
-  const stepDelayMs = options.stepDelayMs ?? 110;
-  for (const task of promptTasks) {
-    task.status = 'QUEUED';
-    task.progress = 0;
-    task.retryCount = 0;
-    task.abnormal = false;
-    task.errorMessage = null;
-  }
-  publish(workspace, options.onUpdate);
-  await wait(stepDelayMs, options.signal);
 
-  for (const task of promptTasks) {
+  await wait(stepDelayMs);
+  workspace.batchStatus = 'RUNNING';
+  promptTasks.forEach((task, index) => {
+    if (index >= 12) return;
     task.status = 'RENDERING';
     task.progress = 18;
-  }
-  publish(workspace, options.onUpdate);
-  await wait(stepDelayMs, options.signal);
+  });
+  publish(workspace, onUpdate);
 
-  for (const task of promptTasks) task.progress = 54;
-  const retryCandidates = [promptTasks[16], promptTasks[33], promptTasks.at(-1)].filter(
-    (task): task is EffectSegmentRenderTask => Boolean(task),
-  );
-  for (const task of retryCandidates) {
+  await wait(stepDelayMs);
+  promptTasks.forEach((task, index) => {
+    task.status = index < 24 ? 'COMPLETED' : index < 42 ? 'RENDERING' : 'QUEUED';
+    task.progress = index < 24 ? 100 : index < 42 ? 54 : 0;
+    task.errorMessage = null;
+  });
+  for (const task of [promptTasks[16], promptTasks[33]]) {
+    if (!task) continue;
     task.status = 'AUTO_RETRY';
     task.progress = 38;
     task.retryCount = 1;
     task.errorMessage = '生成服务暂时繁忙，正在自动重试';
   }
-  publish(workspace, options.onUpdate);
-  await wait(stepDelayMs, options.signal);
+  publish(workspace, onUpdate);
 
-  for (const task of promptTasks) {
-    task.status = 'RENDERING';
-    task.progress = 82;
+  await wait(stepDelayMs);
+  promptTasks.forEach((task, index) => {
+    task.status = index < 42 ? 'COMPLETED' : 'RENDERING';
+    task.progress = index < 42 ? 100 : 82;
     task.errorMessage = null;
-  }
+  });
   const finalFailure = promptTasks.at(-1);
   if (finalFailure) {
     finalFailure.status = 'AUTO_RETRY';
@@ -227,15 +247,16 @@ export const startEffectSegmentRenderBatch = async (
     finalFailure.retryCount = 2;
     finalFailure.errorMessage = '第二次自动重试仍未完成';
   }
-  publish(workspace, options.onUpdate);
-  await wait(stepDelayMs, options.signal);
+  publish(workspace, onUpdate);
 
+  await wait(stepDelayMs);
+  const completedAt = new Date().toISOString();
   for (const task of promptTasks) {
     task.status = 'COMPLETED';
     task.progress = 100;
     task.abnormal = false;
     task.errorMessage = null;
-    task.updatedAt = new Date().toISOString();
+    task.updatedAt = completedAt;
   }
   if (finalFailure) {
     finalFailure.status = 'FAILED';
@@ -243,7 +264,56 @@ export const startEffectSegmentRenderBatch = async (
     finalFailure.abnormal = true;
     finalFailure.errorMessage = '自动重试已达上限，请人工单条重生成';
   }
-  return publish(workspace, options.onUpdate);
+  workspace.batchStatus = finalFailure ? 'PARTIAL' : 'COMPLETED';
+  workspace.completedAt = completedAt;
+  publish(workspace, onUpdate);
+};
+
+export const startEffectSegmentRenderBatch = async (
+  context: EffectSegmentRenderContext,
+  product: EffectImportProduct,
+  settings: LegacyCompatibleRenderSettings,
+  options: EffectSegmentRenderOperationOptions = {},
+): Promise<EffectSegmentRenderWorkspace> => {
+  const workspace = getMutableWorkspace(context, product, settings);
+  const key = workspaceKey(context, product.id);
+  ensureNotAborted(options.signal);
+  if (
+    activeJobs.has(key) ||
+    workspace.batchStatus === 'QUEUED' ||
+    workspace.batchStatus === 'RUNNING'
+  )
+    throw new Error('当前商品已有进行中的视频渲染批次');
+
+  const importedTasks = workspace.tasks.filter((task) => task.source === 'IMPORTED');
+  const now = new Date().toISOString();
+  workspace.tasks = [
+    ...importedTasks,
+    ...Array.from({ length: workspace.promptCount }, (_, index) =>
+      createPromptTask(product, settings, index),
+    ),
+  ];
+  workspace.batchStatus = 'QUEUED';
+  workspace.startedAt = now;
+  workspace.completedAt = null;
+  publish(workspace, options.onUpdate);
+
+  const stepDelayMs = options.stepDelayMs ?? 520;
+  const job = runMockBatch(workspace, stepDelayMs, options.onUpdate).finally(() => {
+    if (activeJobs.get(key) === job) activeJobs.delete(key);
+  });
+  activeJobs.set(key, job);
+
+  if (stepDelayMs === 0) await job;
+  else await wait(Math.min(80, Math.max(1, Math.floor(stepDelayMs / 4))), options.signal);
+  return cloneWorkspace(workspace);
+};
+
+export const waitForEffectSegmentRenderMockBatch = async (
+  context: EffectSegmentRenderContext,
+  productId: string,
+): Promise<void> => {
+  await activeJobs.get(workspaceKey(context, productId));
 };
 
 export const regenerateEffectSegmentRenderTasks = async (
@@ -254,8 +324,18 @@ export const regenerateEffectSegmentRenderTasks = async (
   options: EffectSegmentRenderOperationOptions = {},
 ): Promise<EffectSegmentRenderWorkspace> => {
   const workspace = getMutableWorkspace(context, product, settings);
-  const selected = workspace.tasks.filter((task) => taskIds.includes(task.id));
+  const selected = workspace.tasks.filter(
+    (task) =>
+      task.source === 'PROMPT' &&
+      taskIds.includes(task.id) &&
+      task.status !== 'AUTO_RETRY' &&
+      task.status !== 'QUEUED' &&
+      task.status !== 'RENDERING',
+  );
+  if (!selected.length) throw new Error('没有可重新生成的视频片段');
   const stepDelayMs = options.stepDelayMs ?? 90;
+  workspace.batchStatus = 'RUNNING';
+  workspace.completedAt = null;
   for (const task of selected) {
     task.status = 'RENDERING';
     task.progress = 8;
@@ -272,6 +352,14 @@ export const regenerateEffectSegmentRenderTasks = async (
     }
     publish(workspace, options.onUpdate);
   }
+  const promptTasks = workspace.tasks.filter((task) => task.source === 'PROMPT');
+  workspace.batchStatus =
+    promptTasks.length === workspace.promptCount &&
+    promptTasks.every((task) => task.status === 'COMPLETED')
+      ? 'COMPLETED'
+      : 'PARTIAL';
+  workspace.completedAt = workspace.batchStatus === 'COMPLETED' ? new Date().toISOString() : null;
+  publish(workspace, options.onUpdate);
   return cloneWorkspace(workspace);
 };
 
@@ -285,6 +373,13 @@ export const deleteEffectSegmentRenderTasks = async (
   await wait(80, signal);
   const workspace = getMutableWorkspace(context, product, settings);
   workspace.tasks = workspace.tasks.filter((task) => !taskIds.includes(task.id));
+  if (
+    workspace.batchStatus !== 'NOT_STARTED' &&
+    workspace.tasks.filter((task) => task.source === 'PROMPT').length < workspace.promptCount
+  ) {
+    workspace.batchStatus = 'PARTIAL';
+    workspace.completedAt = null;
+  }
   return publish(workspace);
 };
 
@@ -352,4 +447,8 @@ export const exportEffectSegmentRenderTasks = (
   };
 };
 
-export const clearEffectSegmentRenderMockWorkspaces = (): void => workspaces.clear();
+export const clearEffectSegmentRenderMockWorkspaces = (): void => {
+  workspaces.clear();
+  activeJobs.clear();
+  workspaceListeners.clear();
+};

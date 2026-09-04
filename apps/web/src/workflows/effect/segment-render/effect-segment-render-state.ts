@@ -7,6 +7,9 @@ export type EffectSegmentRenderStatus =
 
 export type EffectSegmentRenderSource = 'IMPORTED' | 'PROMPT';
 
+export type EffectSegmentRenderBatchStatus =
+  'COMPLETED' | 'NOT_STARTED' | 'PARTIAL' | 'QUEUED' | 'RUNNING';
+
 export type EffectSegmentRenderTask = {
   id: string;
   renderCode: string;
@@ -33,7 +36,11 @@ export type EffectSegmentRenderWorkspace = {
   projectId: string;
   workflowRunId: string;
   productId: string;
+  promptCount: number;
+  batchStatus: EffectSegmentRenderBatchStatus;
   tasks: EffectSegmentRenderTask[];
+  startedAt: string | null;
+  completedAt: string | null;
   updatedAt: string;
 };
 
@@ -68,13 +75,7 @@ export const filterEffectSegmentRenderTasks = (
   const normalized = keyword.trim().toLocaleLowerCase('zh-CN');
   if (!normalized) return [...tasks];
   return tasks.filter((task) =>
-    [
-      task.renderCode,
-      task.promptCode ?? '',
-      task.productName,
-      task.sourceName,
-      task.promptText,
-    ]
+    [task.renderCode, task.promptCode ?? '', task.productName, task.sourceName, task.promptText]
       .join(' ')
       .toLocaleLowerCase('zh-CN')
       .includes(normalized),

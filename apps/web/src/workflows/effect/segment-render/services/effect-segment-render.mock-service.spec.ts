@@ -11,6 +11,8 @@ import {
   loadEffectSegmentRenderWorkspace,
   regenerateEffectSegmentRenderTasks,
   startEffectSegmentRenderBatch,
+  subscribeEffectSegmentRenderWorkspace,
+  waitForEffectSegmentRenderMockBatch,
 } from './effect-segment-render.mock-service';
 
 const product = (id: string, name = '广式腊肠'): EffectImportProduct => ({
@@ -46,7 +48,7 @@ afterEach(() => {
 });
 
 describe('effect segment render mock service', () => {
-  it('loads fifty prompt-derived tasks without making a network request', async () => {
+  it('loads a prompt-ready workspace without creating video tasks or making a network request', async () => {
     const fetchMock = vi.fn(() => {
       throw new Error('fetch must not be called');
     });
@@ -57,25 +59,22 @@ describe('effect segment render mock service', () => {
       DEFAULT_EFFECT_VIDEO_CONFIG,
     );
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(workspace.tasks).toHaveLength(50);
+    expect(workspace).toMatchObject({ promptCount: 50, batchStatus: 'NOT_STARTED' });
+    expect(workspace.tasks).toHaveLength(0);
     expect(effectSegmentRenderSummary(workspace.tasks)).toEqual({
-      total: 50,
-      completed: 47,
-      running: 3,
+      total: 0,
+      completed: 0,
+      running: 0,
       failed: 0,
     });
-    expect(new Set(workspace.tasks.map((task) => task.promptId)).size).toBe(50);
-    expect(workspace.tasks.every((task) => task.promptId && task.promptCode)).toBe(true);
-    expect(workspace.tasks.every((task) => task.promptText.includes('不生成完整成片时间线'))).toBe(
-      true,
-    );
   });
 
   it('isolates workspaces by project, workflow run and product', async () => {
-    const first = await loadEffectSegmentRenderWorkspace(
+    const first = await startEffectSegmentRenderBatch(
       context,
       product('product-1'),
       DEFAULT_EFFECT_VIDEO_CONFIG,
+      { stepDelayMs: 0 },
     );
     await deleteEffectSegmentRenderTasks(
       context,
@@ -93,9 +92,9 @@ describe('effect segment render mock service', () => {
       product('product-1'),
       DEFAULT_EFFECT_VIDEO_CONFIG,
     );
-    expect(otherProduct.tasks).toHaveLength(50);
-    expect(otherRun.tasks).toHaveLength(50);
-    expect(otherProduct.tasks[0]?.productName).toBe('脆骨酱');
+    expect(otherProduct.tasks).toHaveLength(0);
+    expect(otherRun.tasks).toHaveLength(0);
+    expect(otherProduct).toMatchObject({ productId: 'product-2', batchStatus: 'NOT_STARTED' });
   });
 
   it('auto-retries recoverable tasks and marks the final abnormal task', async () => {
@@ -109,7 +108,13 @@ describe('effect segment render mock service', () => {
         onUpdate: (next) => updates.push(next.tasks.map((task) => task.status)),
       },
     );
+    expect(updates[0]?.every((status) => status === 'QUEUED')).toBe(true);
     expect(updates.some((statuses) => statuses.includes('AUTO_RETRY'))).toBe(true);
+    expect(workspace.batchStatus).toBe('PARTIAL');
+    expect(new Set(workspace.tasks.map((task) => task.promptId)).size).toBe(50);
+    expect(workspace.tasks.every((task) => task.promptText.includes('不生成完整成片时间线'))).toBe(
+      true,
+    );
     expect(effectSegmentRenderSummary(workspace.tasks)).toEqual({
       total: 50,
       completed: 49,
@@ -132,6 +137,39 @@ describe('effect segment render mock service', () => {
       progress: 100,
       abnormal: false,
     });
+    expect(recovered.batchStatus).toBe('COMPLETED');
+  });
+
+  it('returns queued tasks first and keeps the mock job running while the page is left', async () => {
+    const statuses: string[] = [];
+    const unsubscribe = subscribeEffectSegmentRenderWorkspace(context, 'product-1', (workspace) =>
+      statuses.push(workspace.batchStatus),
+    );
+    const queued = await startEffectSegmentRenderBatch(
+      context,
+      product('product-1'),
+      DEFAULT_EFFECT_VIDEO_CONFIG,
+      { stepDelayMs: 5 },
+    );
+    expect(queued.batchStatus).toBe('QUEUED');
+    expect(queued.tasks).toHaveLength(50);
+    expect(queued.tasks.every((task) => task.status === 'QUEUED')).toBe(true);
+    unsubscribe();
+
+    await waitForEffectSegmentRenderMockBatch(context, 'product-1');
+    const restored = await loadEffectSegmentRenderWorkspace(
+      context,
+      product('product-1'),
+      DEFAULT_EFFECT_VIDEO_CONFIG,
+    );
+    expect(statuses).toContain('QUEUED');
+    expect(restored.batchStatus).toBe('PARTIAL');
+    expect(effectSegmentRenderSummary(restored.tasks)).toEqual({
+      total: 50,
+      completed: 49,
+      running: 0,
+      failed: 1,
+    });
   });
 
   it('imports, deletes and locally exports selected fragment metadata', async () => {
@@ -151,6 +189,6 @@ describe('effect segment render mock service', () => {
       DEFAULT_EFFECT_VIDEO_CONFIG,
       [imported.tasks[0]!.id],
     );
-    expect(deleted.tasks).toHaveLength(50);
+    expect(deleted.tasks).toHaveLength(0);
   });
 });

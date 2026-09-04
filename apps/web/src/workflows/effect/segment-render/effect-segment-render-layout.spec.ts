@@ -77,6 +77,19 @@ describe('effect segment render prototype layout', () => {
     expect(pageSource).not.toContain('setInterval(');
   });
 
+  it('separates the prompt-ready empty state from a created render batch', () => {
+    expect(pageSource).toContain('尚未创建视频渲染任务');
+    expect(pageSource).toContain('开始批量渲染（{{ promptCount }}）');
+    expect(pageSource).toContain('创建视频渲染批次');
+    expect(pageSource).toContain('确认后先进入排队状态');
+    expect(pageSource).toContain("workspace.value?.batchStatus !== 'NOT_STARTED'");
+    expect(pageSource).toContain(':disabled="operation !== null || batchActive"');
+    expect(serviceSource).toContain("batchStatus: 'NOT_STARTED'");
+    expect(serviceSource).toContain('tasks: []');
+    expect(serviceSource).toContain("status: 'QUEUED'");
+    expect(serviceSource).not.toContain('initialRunning');
+  });
+
   it('replaces only step four and leaves later nodes on the existing placeholder', () => {
     expect(parentSource).toContain(
       "import EffectSegmentRenderNodePage from '../segment-render/EffectSegmentRenderNodePage.vue'",

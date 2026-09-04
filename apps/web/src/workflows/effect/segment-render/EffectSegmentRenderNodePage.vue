@@ -54,6 +54,7 @@ import {
   loadEffectSegmentRenderWorkspace,
   regenerateEffectSegmentRenderTasks,
   startEffectSegmentRenderBatch,
+  subscribeEffectSegmentRenderWorkspace,
   type EffectSegmentRenderContext,
 } from './services/effect-segment-render.mock-service';
 
@@ -121,6 +122,7 @@ const poolCloseButton = ref<HTMLButtonElement | null>(null);
 let dialogTrigger: HTMLElement | null = null;
 let loadController: AbortController | null = null;
 let operationController: AbortController | null = null;
+let unsubscribeWorkspace: (() => void) | null = null;
 let loadGeneration = 0;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -135,10 +137,30 @@ const currentProduct = computed(
 );
 const tasks = computed(() => workspace.value?.tasks ?? []);
 const summary = computed(() => effectSegmentRenderSummary(tasks.value));
+const promptTasks = computed(() => tasks.value.filter((task) => task.source === 'PROMPT'));
+const hasBatch = computed(
+  () => Boolean(workspace.value) && workspace.value?.batchStatus !== 'NOT_STARTED',
+);
+const batchActive = computed(
+  () => workspace.value?.batchStatus === 'QUEUED' || workspace.value?.batchStatus === 'RUNNING',
+);
+const promptCount = computed(() => workspace.value?.promptCount ?? 0);
+const missingPromptCount = computed(() =>
+  Math.max(0, promptCount.value - promptTasks.value.length),
+);
 const filteredTasks = computed(() => filterEffectSegmentRenderTasks(tasks.value, keyword.value));
 const totalPages = computed(() => effectSegmentRenderPageCount(filteredTasks.value.length));
 const pagedTasks = computed(() => effectSegmentRenderPage(filteredTasks.value, page.value));
 const selectedCount = computed(() => selectedTaskIds.value.size);
+
+const canPreviewTask = (task: EffectSegmentRenderTask): boolean =>
+  task.status === 'COMPLETED' || task.status === 'IMPORTED';
+const canRetryTask = (task: EffectSegmentRenderTask): boolean =>
+  task.source === 'PROMPT' && !isEffectSegmentRenderBusy(task.status);
+const canSelectTask = (task: EffectSegmentRenderTask): boolean =>
+  !isEffectSegmentRenderBusy(task.status);
+
+const selectableFilteredTasks = computed(() => filteredTasks.value.filter(canSelectTask));
 
 const taskSequenceLabel = (task: EffectSegmentRenderTask): string => {
   const matched = /^R-(\d+)$/u.exec(task.renderCode);
@@ -147,12 +169,14 @@ const taskSequenceLabel = (task: EffectSegmentRenderTask): string => {
 
 const allFilteredSelected = computed(
   () =>
-    filteredTasks.value.length > 0 &&
-    filteredTasks.value.every((task) => selectedTaskIds.value.has(task.id)),
+    selectableFilteredTasks.value.length > 0 &&
+    selectableFilteredTasks.value.every((task) => selectedTaskIds.value.has(task.id)),
 );
 const currentProductReady = computed(
   () =>
-    tasks.value.length > 0 &&
+    hasBatch.value &&
+    workspace.value?.batchStatus === 'COMPLETED' &&
+    promptTasks.value.length === promptCount.value &&
     summary.value.running === 0 &&
     summary.value.failed === 0 &&
     operation.value === null,
@@ -170,6 +194,25 @@ const poolGroups = computed(() =>
         (task.status === 'COMPLETED' || task.status === 'IMPORTED'),
     ),
   })),
+);
+const selectedCanRetry = computed(
+  () => selectedTasks.value.length > 0 && selectedTasks.value.every(canRetryTask),
+);
+const selectedCanExport = computed(
+  () => selectedTasks.value.length > 0 && selectedTasks.value.every(canPreviewTask),
+);
+const selectedCanDelete = computed(
+  () => selectedTasks.value.length > 0 && selectedTasks.value.every(canSelectTask),
+);
+const startButtonLabel = computed(() => {
+  if (operation.value === 'batch') return '正在创建任务…';
+  if (batchActive.value) return `渲染中 ${summary.value.completed}/${summary.value.total}`;
+  return hasBatch.value ? '重新渲染全部' : `开始批量渲染（${promptCount.value}）`;
+});
+const currentCapabilityLabel = computed(
+  () =>
+    capabilityOptions.find((option) => option.value === renderSettings.value.capabilityKey)
+      ?.label ?? renderSettings.value.capabilityKey,
 );
 
 const context = (): EffectSegmentRenderContext => ({
@@ -196,7 +239,18 @@ const showNotice = (text: string, kind: Notice['kind'] = 'success'): void => {
 
 const applyWorkspace = (nextWorkspace: EffectSegmentRenderWorkspace): void => {
   if (nextWorkspace.productId !== currentProductId.value) return;
+  const previousStatus = workspace.value?.batchStatus;
   workspace.value = nextWorkspace;
+  if (
+    (previousStatus === 'QUEUED' || previousStatus === 'RUNNING') &&
+    nextWorkspace.batchStatus === 'PARTIAL'
+  )
+    showNotice('批量渲染完成，异常片段已标记，请人工重生成', 'warning');
+  else if (
+    (previousStatus === 'QUEUED' || previousStatus === 'RUNNING' || previousStatus === 'PARTIAL') &&
+    nextWorkspace.batchStatus === 'COMPLETED'
+  )
+    showNotice('全部视频片段已完成并进入素材池');
 };
 
 const closeAllDialogs = (restoreFocus = false): void => {
@@ -217,6 +271,8 @@ const loadCurrentWorkspace = async (): Promise<void> => {
   const generation = ++loadGeneration;
   loadController?.abort();
   operationController?.abort();
+  unsubscribeWorkspace?.();
+  unsubscribeWorkspace = null;
   operation.value = null;
   closeAllDialogs(false);
   selectedTaskIds.value = new Set();
@@ -246,6 +302,11 @@ const loadCurrentWorkspace = async (): Promise<void> => {
     renderSettings.value = { ...settingsResponse.data.settings };
     renderSettingsRevision.value = settingsResponse.data.settingsRevision;
     workspace.value = nextWorkspace;
+    unsubscribeWorkspace = subscribeEffectSegmentRenderWorkspace(
+      context(),
+      product.id,
+      applyWorkspace,
+    );
     pageStatus.value = 'success';
   } catch (error) {
     if (isAbortError(error) || generation !== loadGeneration) return;
@@ -261,7 +322,7 @@ const updateRenderSetting = async <Key extends keyof EffectSegmentRenderSettings
   value: EffectSegmentRenderSettings[Key],
 ): Promise<void> => {
   const product = currentProduct.value;
-  if (!product || operation.value) return;
+  if (!product || operation.value || batchActive.value) return;
   const previous = { ...renderSettings.value };
   const next = { ...renderSettings.value, [key]: value };
   if (key === 'capabilityKey') {
@@ -324,7 +385,7 @@ const toggleTask = (taskId: string, checked: boolean): void => {
 
 const toggleAllFiltered = (checked: boolean): void => {
   const next = new Set(selectedTaskIds.value);
-  for (const task of filteredTasks.value) {
+  for (const task of selectableFilteredTasks.value) {
     if (checked) next.add(task.id);
     else next.delete(task.id);
   }
@@ -346,27 +407,36 @@ const fragmentTypeLabel = (fragmentType: EffectPromptFragmentType): string =>
 
 const startBatch = async (): Promise<void> => {
   const product = currentProduct.value;
-  if (!product || operation.value) return;
+  if (!product || operation.value || batchActive.value || !workspace.value) return;
+  const replacingBatch = hasBatch.value;
+  if (
+    !(await requestActionConfirmation({
+      eyebrow: replacingBatch ? '重新渲染全部片段' : '创建视频渲染批次',
+      title: replacingBatch
+        ? `按当前设置重新创建 ${promptCount.value} 个视频任务？`
+        : `开始生成 ${promptCount.value} 个视频素材片段？`,
+      description: `${product.name || '未命名产品'}；${currentCapabilityLabel.value}；${renderSettings.value.ratio}；${renderSettings.value.resolution}。每条 Prompt 将创建一个独立素材片段，确认后先进入排队状态。`,
+      confirmLabel: replacingBatch ? '确认重新渲染' : `创建 ${promptCount.value} 个任务`,
+      tone: 'warning',
+    }))
+  )
+    return;
   operationController?.abort();
   const controller = new AbortController();
   operationController = controller;
   operation.value = 'batch';
   validated.value = false;
+  selectedTaskIds.value = new Set();
   try {
     const nextWorkspace = await startEffectSegmentRenderBatch(
       context(),
       product,
       renderSettings.value,
-      { signal: controller.signal, onUpdate: applyWorkspace },
+      { signal: controller.signal },
     );
     if (controller.signal.aborted || currentProductId.value !== product.id) return;
     applyWorkspace(nextWorkspace);
-    showNotice(
-      nextWorkspace.tasks.some((task) => task.status === 'FAILED')
-        ? '批量渲染完成，异常片段已标记，请人工重生成'
-        : '批量渲染完成，片段已进入素材池',
-      nextWorkspace.tasks.some((task) => task.status === 'FAILED') ? 'warning' : 'success',
-    );
+    showNotice(`已创建 ${nextWorkspace.promptCount} 个视频任务，正在排队渲染`);
   } catch (error) {
     if (!isAbortError(error)) showNotice(safeMessage(error, '批量渲染失败'), 'error');
   } finally {
@@ -402,7 +472,7 @@ const retryTasks = async (taskIds: readonly string[]): Promise<void> => {
       product,
       renderSettings.value,
       taskIds,
-      { signal: controller.signal, onUpdate: applyWorkspace },
+      { signal: controller.signal },
     );
     if (controller.signal.aborted || currentProductId.value !== product.id) return;
     applyWorkspace(nextWorkspace);
@@ -526,10 +596,14 @@ const openPool = (event: Event): void => {
 
 const validateBatch = (): void => {
   if (!currentProductReady.value) {
-    showNotice(
-      summary.value.failed ? '请先重新生成全部异常片段' : '仍有片段正在生成，请等待任务完成',
-      'warning',
-    );
+    const message = !hasBatch.value
+      ? '请先开始批量渲染'
+      : missingPromptCount.value
+        ? `当前批次缺少 ${missingPromptCount.value} 个 Prompt 片段，请重新渲染全批`
+        : summary.value.failed
+          ? '请先重新生成全部异常片段'
+          : '仍有片段正在生成，请等待任务完成';
+    showNotice(message, 'warning');
     return;
   }
   validated.value = true;
@@ -543,6 +617,7 @@ defineExpose({ flushPendingEdits });
 onBeforeUnmount(() => {
   loadController?.abort();
   operationController?.abort();
+  unsubscribeWorkspace?.();
   if (noticeTimer) clearTimeout(noticeTimer);
 });
 </script>
@@ -579,9 +654,10 @@ onBeforeUnmount(() => {
           <span>04</span>
           <div>
             <h2 id="effect-segment-render-title">AI 视频片段批量渲染</h2>
-            <p>
-              {{ summary.total }} 条 Prompt 任务 × 每条 1 个视频素材片段，成功片段自动进入素材池
+            <p v-if="hasBatch">
+              {{ promptCount }} 条 Prompt 任务 × 每条 1 个视频素材片段，成功片段自动进入素材池
             </p>
+            <p v-else>已就绪 {{ promptCount }} 条 Prompt，每条将生成 1 个视频素材片段</p>
           </div>
         </div>
         <div class="segment-heading__actions">
@@ -599,11 +675,11 @@ onBeforeUnmount(() => {
           <button
             class="primary-button start-render-button"
             type="button"
-            :disabled="operation !== null"
+            :disabled="operation !== null || batchActive"
             @click="startBatch"
           >
-            <LoaderCircle v-if="operation === 'batch'" class="spin" :size="14" />
-            <Play v-else :size="14" />{{ operation === 'batch' ? '正在批量渲染' : '开始批量渲染' }}
+            <LoaderCircle v-if="operation === 'batch' || batchActive" class="spin" :size="14" />
+            <Play v-else :size="14" />{{ startButtonLabel }}
           </button>
         </div>
       </header>
@@ -615,7 +691,9 @@ onBeforeUnmount(() => {
             <h3 id="render-settings-title">视频渲染设置</h3>
             <p>画幅和分辨率只用于新的视频任务，不会让 Prompt 或提炼结果过期。</p>
           </div>
-          <small>{{ operation === 'settings' ? '保存中…' : '已自动保存' }}</small>
+          <small>{{
+            batchActive ? '当前批次参数已锁定' : operation === 'settings' ? '保存中…' : '已自动保存'
+          }}</small>
         </div>
         <div class="render-settings-grid">
           <label>
@@ -625,7 +703,7 @@ onBeforeUnmount(() => {
               :model-value="renderSettings.capabilityKey"
               :options="capabilityOptions"
               :creatable="false"
-              :disabled="operation !== null"
+              :disabled="operation !== null || batchActive"
               @update:model-value="
                 updateRenderSetting(
                   'capabilityKey',
@@ -641,7 +719,7 @@ onBeforeUnmount(() => {
               :model-value="renderSettings.ratio"
               :options="ratioOptions"
               :creatable="false"
-              :disabled="operation !== null"
+              :disabled="operation !== null || batchActive"
               @update:model-value="
                 updateRenderSetting('ratio', $event as EffectSegmentRenderSettings['ratio'])
               "
@@ -654,7 +732,7 @@ onBeforeUnmount(() => {
               :model-value="renderSettings.resolution"
               :options="resolutionOptions"
               :creatable="false"
-              :disabled="operation !== null"
+              :disabled="operation !== null || batchActive"
               @update:model-value="
                 updateRenderSetting(
                   'resolution',
@@ -691,7 +769,7 @@ onBeforeUnmount(() => {
             <input
               type="checkbox"
               :checked="allFilteredSelected"
-              :disabled="!filteredTasks.length || operation !== null"
+              :disabled="!selectableFilteredTasks.length || operation !== null"
               @change="toggleAllFiltered(($event.target as HTMLInputElement).checked)"
             />
             <span>全选</span>
@@ -705,6 +783,7 @@ onBeforeUnmount(() => {
               <input
                 v-model="keyword"
                 type="search"
+                :disabled="!tasks.length || operation !== null"
                 placeholder="按标签或素材名称查询，例如：钩子 / 产品 / 场景"
               />
             </label>
@@ -713,7 +792,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
-              :disabled="!selectedCount || operation !== null"
+              :disabled="!selectedCanRetry || operation !== null"
               @click="retryTasks([...selectedTaskIds])"
             >
               <RefreshCw :size="13" />批量重新生成
@@ -721,7 +800,7 @@ onBeforeUnmount(() => {
             <button
               class="danger"
               type="button"
-              :disabled="!selectedCount || operation !== null"
+              :disabled="!selectedCanDelete || operation !== null"
               @click="requestDelete([...selectedTaskIds])"
             >
               <Trash2 :size="13" />批量删除
@@ -730,7 +809,7 @@ onBeforeUnmount(() => {
           <button
             class="batch-export-button"
             type="button"
-            :disabled="!selectedCount || operation !== null"
+            :disabled="!selectedCanExport || operation !== null"
             @click="exportSelected"
           >
             <Download :size="13" />批量导出
@@ -759,18 +838,19 @@ onBeforeUnmount(() => {
             type="checkbox"
             :aria-label="`选择 ${task.renderCode}`"
             :checked="selectedTaskIds.has(task.id)"
-            :disabled="operation !== null"
+            :disabled="operation !== null || !canSelectTask(task)"
             @change="toggleTask(task.id, ($event.target as HTMLInputElement).checked)"
           />
           <button
             class="video-placeholder"
             :class="statusMeta(task.status).tone"
             type="button"
-            :disabled="task.status === 'FAILED'"
+            :disabled="!canPreviewTask(task)"
             :aria-label="`预览 ${task.renderCode}`"
             @click="openPreview(task, $event)"
           >
-            <Play :size="25" />
+            <LoaderCircle v-if="isEffectSegmentRenderBusy(task.status)" class="spin" :size="23" />
+            <Play v-else :size="25" />
             <small>{{ task.progress }}%</small>
           </button>
           <div class="task-main">
@@ -790,7 +870,7 @@ onBeforeUnmount(() => {
               <div class="task-actions">
                 <button
                   type="button"
-                  :disabled="task.status === 'FAILED'"
+                  :disabled="!canPreviewTask(task)"
                   @click="openPreview(task, $event)"
                 >
                   即时预览
@@ -798,7 +878,7 @@ onBeforeUnmount(() => {
                 <button type="button" @click="openPrompt(task, $event)">查看提示词</button>
                 <button
                   type="button"
-                  :disabled="operation !== null || isEffectSegmentRenderBusy(task.status)"
+                  :disabled="operation !== null || !canRetryTask(task)"
                   @click="retryTasks([task.id])"
                 >
                   重新生成
@@ -806,7 +886,7 @@ onBeforeUnmount(() => {
                 <button
                   class="danger"
                   type="button"
-                  :disabled="operation !== null || isEffectSegmentRenderBusy(task.status)"
+                  :disabled="operation !== null || !canSelectTask(task)"
                   @click="requestDelete([task.id])"
                 >
                   删除
@@ -834,13 +914,25 @@ onBeforeUnmount(() => {
           </div>
         </article>
 
-        <div v-if="!pagedTasks.length" class="segment-empty-filter">
+        <div v-if="!hasBatch && !tasks.length" class="segment-batch-empty">
+          <span><Play :size="23" /></span>
+          <strong>尚未创建视频渲染任务</strong>
+          <p>
+            已确认 {{ promptCount }} 条片段 Prompt。开始后将创建 {{ promptCount }}
+            个任务，每条 Prompt 生成一个独立素材片段。
+          </p>
+          <button type="button" :disabled="operation !== null" @click="startBatch">
+            <Play :size="14" />开始批量渲染（{{ promptCount }}）
+          </button>
+        </div>
+
+        <div v-else-if="!pagedTasks.length" class="segment-empty-filter">
           <Search :size="24" />
           <strong>没有匹配该标签或素材名称的片段</strong>
           <span>请调整搜索关键词。</span>
         </div>
 
-        <div class="segment-pagination">
+        <div v-if="tasks.length" class="segment-pagination">
           <span>{{ EFFECT_SEGMENT_RENDER_PAGE_SIZE }} 条/页</span>
           <button type="button" :disabled="page <= 1" @click="page -= 1">
             <ChevronLeft :size="14" />上一页
@@ -853,10 +945,20 @@ onBeforeUnmount(() => {
       </section>
 
       <WorkflowNodeDraftBar
-        :detail="`${currentProduct.name} · ${summary.total} 个素材片段 · 演示队列仅保留在当前前端会话，尚未提交真实工作副本`"
-        :state="operation || summary.running ? 'saving' : validated ? 'saved' : 'dirty'"
+        :detail="
+          hasBatch
+            ? `${currentProduct.name} · ${summary.total} 个视频任务 · 演示队列仅保留在当前前端会话，尚未提交真实工作副本`
+            : `${currentProduct.name} · 已就绪 ${promptCount} 条 Prompt · 尚未创建渲染批次`
+        "
+        :state="operation || batchActive ? 'saving' : validated ? 'saved' : 'dirty'"
         :state-label="
-          operation || summary.running ? '正在生成…' : validated ? '演示校验完成' : '当前会话已更新'
+          operation || batchActive
+            ? '正在生成…'
+            : validated
+              ? '演示校验完成'
+              : hasBatch
+                ? '当前会话已更新'
+                : '等待开始'
         "
         title="AI 视频片段批次"
       />
@@ -864,8 +966,18 @@ onBeforeUnmount(() => {
       <WorkflowNodeFooter
         back-label="上一步"
         :complete="validated"
-        :status-title="validated ? '演示批次校验完成' : '等待全部片段生成并处理异常'"
-        :status-detail="`步骤 4 / 6 · ${currentProduct.name} · ${validated ? '未写入真实工作副本' : '演示队列尚未校验'}`"
+        :status-title="
+          validated
+            ? '演示批次校验完成'
+            : !hasBatch
+              ? '等待开始批量渲染'
+              : batchActive
+                ? `正在渲染，已完成 ${summary.completed}/${summary.total}`
+                : currentProductReady
+                  ? '全部片段已完成，可完成校验'
+                  : '等待处理异常或缺失片段'
+        "
+        :status-detail="`步骤 4 / 6 · ${currentProduct.name} · ${validated ? '未写入真实工作副本' : hasBatch ? '演示队列尚未校验' : `已就绪 ${promptCount} 条 Prompt`}`"
         :validate-disabled="!currentProductReady"
         :next-disabled="!validated || operation !== null"
         next-label="下一步：模板混剪"
@@ -1569,6 +1681,7 @@ select:disabled {
   font-size: 10px;
   text-align: right;
 }
+.segment-batch-empty,
 .segment-empty-filter {
   display: flex;
   min-height: 230px;
@@ -1580,6 +1693,53 @@ select:disabled {
   color: #8792a4;
   border: 1px dashed #cbd5e1;
   border-radius: 12px;
+}
+.segment-batch-empty {
+  padding: 28px;
+  color: #79869c;
+  background: linear-gradient(145deg, #fbfdff, #fffaf6);
+  border-color: #cddcf4;
+}
+.segment-batch-empty > span {
+  display: inline-flex;
+  width: 48px;
+  height: 48px;
+  align-items: center;
+  justify-content: center;
+  color: #2563eb;
+  background: #eaf2ff;
+  border-radius: 15px;
+}
+.segment-batch-empty strong {
+  margin-top: 3px;
+  color: #253047;
+  font-size: 16px;
+}
+.segment-batch-empty p {
+  max-width: 520px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.75;
+  text-align: center;
+}
+.segment-batch-empty button {
+  display: inline-flex;
+  height: 38px;
+  margin-top: 6px;
+  padding: 0 17px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: #fff;
+  background: #2563eb;
+  border: 0;
+  border-radius: 10px;
+  box-shadow: 0 8px 18px #2563eb22;
+  font-size: 12px;
+  font-weight: 700;
+}
+.segment-batch-empty button:disabled {
+  opacity: 0.55;
 }
 .segment-empty-filter strong {
   color: #526078;
