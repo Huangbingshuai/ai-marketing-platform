@@ -362,6 +362,7 @@ class CrossBatchDirectionOverlapProvider(MockAiProvider):
         self.diversity_audit_calls = 0
         self.direction_plan_calls = 0
         self.initial_slot_batch_sizes: list[int] = []
+        self.initial_required_fact_batches: list[list[str]] = []
 
     async def plan_creative_directions(self, *args: Any, **kwargs: Any) -> Any:
         self.direction_plan_calls += 1
@@ -370,6 +371,9 @@ class CrossBatchDirectionOverlapProvider(MockAiProvider):
             slots = context.get("requiredDirectionSlots", [])
             if slots:
                 self.initial_slot_batch_sizes.append(len(slots))
+                self.initial_required_fact_batches.append(
+                    list(context.get("requiredBusinessFactIds", []))
+                )
         return await super().plan_creative_directions(*args, **kwargs)
 
     async def audit_creative_direction_diversity(
@@ -436,6 +440,18 @@ async def test_global_direction_audit_can_revise_cross_batch_overlap() -> None:
     assert sum(len(item.tasks) for item in shards) == 70
     assert sum(provider.initial_slot_batch_sizes) == 20
     assert max(provider.initial_slot_batch_sizes) <= 4
+    planned_required_fact_ids = [
+        fact_id
+        for batch in provider.initial_required_fact_batches
+        for fact_id in batch
+    ]
+    assert len(planned_required_fact_ids) == len(set(planned_required_fact_ids))
+    assert set(planned_required_fact_ids) == {
+        fact.fact_id
+        for fact in mandatory_business_facts(
+            pipeline._require_application(runtime)
+        )
+    }
     # Initial planning is split by creative territory; the overlap repair is
     # the only subsequent global direction call.
     assert provider.direction_plan_calls > 2
@@ -925,6 +941,16 @@ def test_direction_revision_context_repairs_only_underfilled_directions() -> Non
     assert context["minimumBusinessFactsByDirection"][target.direction_id] == 2
     assert context["businessFactCountsByDirection"][target.direction_id] == 1
     assert context["additionalBusinessFactOptionsByDirection"][target.direction_id]
+    assert context["preservedBusinessFactIdsByDirection"][target.direction_id] == [
+        fact_id
+        for fact_id in underfilled.fact_ids
+        if fact_id in {
+            fact.fact_id for fact in mandatory_business_facts(application)
+        }
+    ]
+    assert not set(context["revisionRequiredBusinessFactIds"]).intersection(
+        context["preservedBusinessFactIdsByDirection"][target.direction_id]
+    )
 
 
 def _cluster_snapshot() -> PromptGenerationSnapshot:
@@ -990,6 +1016,7 @@ class MissingSemanticProfileProvider(MockAiProvider):
 class MissingFactThenReplanningProvider(MockAiProvider):
     def __init__(self) -> None:
         self.revision_contexts: list[dict[str, Any] | None] = []
+        self.omission_count = 0
 
     async def plan_creative_directions(
         self,
@@ -1014,12 +1041,19 @@ class MissingFactThenReplanningProvider(MockAiProvider):
             delivery_channel=delivery_channel,
             revision_context=revision_context,
         )
-        if (
-            revision_context is not None
-            and "missingBusinessFactIds" in revision_context
-        ):
+        if self.omission_count > 0:
             return call
-        missing_fact_id = mandatory_business_facts(application)[-1].fact_id
+        required_fact_ids = (
+            revision_context.get("requiredBusinessFactIds", [])
+            if revision_context is not None
+            else []
+        )
+        missing_fact_id = (
+            required_fact_ids[0]
+            if required_fact_ids
+            else mandatory_business_facts(application)[-1].fact_id
+        )
+        self.omission_count += 1
         business_facts = mandatory_business_facts(application)
         directions = []
         for direction in call.value.directions:
@@ -1322,7 +1356,7 @@ async def test_fifty_target_plans_exactly_seventy_initial_candidates() -> None:
 
 
 @pytest.mark.asyncio
-async def test_missing_business_fact_replans_the_whole_direction_batch_with_ai() -> (
+async def test_missing_business_fact_retries_only_its_territory_batch_with_ai() -> (
     None
 ):
     api = PromptApi()
@@ -1349,23 +1383,14 @@ async def test_missing_business_fact_replans_the_whole_direction_batch_with_ai()
         )
         > 1
     )
-    revision_context = next(
+    retry_context = next(
         item
-        for item in reversed(provider.revision_contexts)
-        if item and "missingBusinessFactIds" in item
+        for item in provider.revision_contexts
+        if item and item.get("validationError")
     )
-    assert revision_context["missingBusinessFactIds"]
-    assert revision_context["revisionDirectionIds"]
-    assert set(revision_context["missingBusinessFactIds"]).issubset(
-        revision_context["revisionRequiredBusinessFactIds"]
-    )
-    assert revision_context["revisionFactOptions"]
-    assert all(
-        item["eligibleDirectionIds"] for item in revision_context["revisionFactOptions"]
-    )
-    assert revision_context["revisionFactApplicationCapacity"] >= len(
-        revision_context["revisionRequiredBusinessFactIds"]
-    )
+    assert retry_context["requiredDirectionSlots"]
+    assert retry_context["requiredBusinessFactIds"]
+    assert provider.omission_count == 1
     assert all(
         task.fact_assignment is not None
         and task.creative_direction is not None

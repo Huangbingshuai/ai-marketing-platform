@@ -38,7 +38,7 @@ class _StructuredEnvelope(BaseModel):
     [
         (4, "SHORT_FOCUS", "一个可立即看懂"),
         (8, "SHORT_FOCUS", "一个可立即看懂"),
-        (9, "COMPLETE_ACTION", "2～3 个连续动作节拍"),
+        (9, "COMPLETE_ACTION", "2 个连续动作节拍"),
         (15, "COMPLETE_ACTION", "2～3 个连续动作节拍"),
         (16, "GRADUAL_PROCESS", "3 个连续动作节拍"),
         (22, "GRADUAL_PROCESS", "3 个连续动作节拍"),
@@ -59,19 +59,19 @@ def test_temporal_intent_scales_continuous_action_beats(
     assert "软参考" in intent["detailGuidance"]
     if duration <= 8:
         assert "首帧就位" in intent["guidance"]
-        assert "70～120" in intent["detailGuidance"]
+    assert f"本次为 {duration} 秒" in intent["detailGuidance"]
 
 
 @pytest.mark.parametrize(
     ("duration", "expected"),
     [
-        (4, 4_200),
-        (8, 4_200),
-        (9, 5_000),
-        (15, 5_000),
-        (16, 5_600),
-        (22, 5_600),
-        (23, 6_000),
+        (4, 3_920),
+        (8, 4_240),
+        (9, 4_320),
+        (15, 4_800),
+        (16, 4_880),
+        (22, 5_360),
+        (23, 5_440),
         (30, 6_000),
     ],
 )

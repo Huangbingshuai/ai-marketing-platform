@@ -177,15 +177,13 @@ export const promptItemsRetainedForRun = (
   result: EffectPromptBatchResult | null,
   targetItemId: string | null,
   operation: EffectPromptOperation,
-): EffectPromptItem[] =>
-  (result?.items ?? []).filter(
-    (item) =>
-      item.id !== targetItemId &&
-      (operation === 'ITEM_REGENERATE' ||
-        operation === 'ITEM_EVALUATE' ||
-        item.origin === 'MANUAL' ||
-        item.manualEdited),
-  );
+): EffectPromptItem[] => {
+  // “重新批量生成”表示从当前已确认输入重新生成整批内容。即使旧草稿曾被
+  // 人工编辑，也不能把它们作为保留项混入新批次，否则旧时长、旧评分和旧事实
+  // 绑定会绕过本次生成与评估。单条重生成/评估仍需保留其余条目。
+  if (operation === 'BATCH_GENERATE') return [];
+  return (result?.items ?? []).filter((item) => item.id !== targetItemId);
+};
 
 export type StartPromptRunInput = {
   operation: EffectPromptOperation;

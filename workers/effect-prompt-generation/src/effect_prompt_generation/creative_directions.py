@@ -1265,6 +1265,17 @@ def creative_direction_revision_context(
             )
         )
     revision_direction_id_set = set(revision_direction_ids)
+    preserved_business_fact_ids_by_direction = {
+        direction.direction_id: [
+            fact_id
+            for fact_id in direction.fact_ids
+            if fact_id in business_id_set
+            and fact_id
+            in allowed_facts_by_territory.get(direction.territory_id, [])
+        ]
+        for direction in response.directions
+        if direction.direction_id in revision_direction_id_set
+    }
     locked_business_fact_ids = {
         fact_id
         for direction in response.directions
@@ -1272,8 +1283,16 @@ def creative_direction_revision_context(
         for fact_id in direction.fact_ids
         if fact_id in business_ids
     }
+    preserved_business_fact_ids = {
+        fact_id
+        for fact_ids in preserved_business_fact_ids_by_direction.values()
+        for fact_id in fact_ids
+    }
     revision_required_business_fact_ids = [
-        fact_id for fact_id in business_ids if fact_id not in locked_business_fact_ids
+        fact_id
+        for fact_id in business_ids
+        if fact_id not in locked_business_fact_ids
+        and fact_id not in preserved_business_fact_ids
     ]
     revision_fact_options = [
         {
@@ -1304,6 +1323,9 @@ def creative_direction_revision_context(
         "additionalBusinessFactOptionsByDirection": (
             additional_business_fact_options_by_direction
         ),
+        "preservedBusinessFactIdsByDirection": (
+            preserved_business_fact_ids_by_direction
+        ),
         "revisionRequiredBusinessFactIds": revision_required_business_fact_ids,
         "revisionFactOptions": revision_fact_options,
         "revisionFactApplicationCapacity": len(revision_direction_ids) * 4,
@@ -1330,7 +1352,8 @@ def creative_direction_revision_context(
             "逐项修复 underfilledDirectionIds：每个方向最终至少达到"
             "minimumBusinessFactsByDirection 指定的业务事实数，并只从"
             "additionalBusinessFactOptionsByDirection 中选择自然相容的补充事实；"
-            "不得为了补足数量删除该方向已有的唯一业务事实；"
+            "preservedBusinessFactIdsByDirection 已逐方向列出上一版合法业务事实，"
+            "每个被修订方向都必须原样保留这些事实，再补充或修正其他事实；"
             "每个方向的 factApplications 只能引用其 territoryId 对应的"
             " allowedFactIdsByTerritory；未迁移方向可直接按"
             " allowedFactIdsByDirection 核对，逐项修复"

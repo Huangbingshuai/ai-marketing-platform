@@ -1139,6 +1139,21 @@ class ArkResponsesProvider:
                 if fact.fact_id in scoped_fact_ids
             }
         )
+        global_business_fact_count = len(mandatory_business_facts(application))
+        global_direction_count = creative_direction_target_count(
+            target_count,
+            global_business_fact_count,
+        )
+        if global_business_fact_count >= global_direction_count * 2:
+            global_minimum_business_facts = 2
+        elif global_business_fact_count >= global_direction_count:
+            global_minimum_business_facts = 1
+        else:
+            global_minimum_business_facts = 0
+        scoped_minimum_business_facts = min(
+            global_minimum_business_facts,
+            business_fact_count,
+        )
         # The validated landscape owns the exact slot allocation. Its slot
         # total supports territory-scoped planning without changing the final
         # number of directions in the merged batch.
@@ -1150,11 +1165,81 @@ class ArkResponsesProvider:
             if revision_context is not None
             else []
         )
+        output_direction_count = target_direction_count
+        density_business_fact_count = business_fact_count
+        if (
+            isinstance(revision_direction_ids, list)
+            and revision_direction_ids
+            and all(isinstance(item, str) for item in revision_direction_ids)
+        ):
+            output_direction_count = len(revision_direction_ids)
+            revision_required_fact_ids = (
+                revision_context.get("revisionRequiredBusinessFactIds", [])
+                if revision_context is not None
+                else []
+            )
+            if isinstance(revision_required_fact_ids, list):
+                density_business_fact_count = len(
+                    {
+                        fact_id
+                        for fact_id in revision_required_fact_ids
+                        if isinstance(fact_id, str)
+                    }
+                )
         required_direction_slots = (
             revision_context.get("requiredDirectionSlots", [])
             if revision_context is not None
             else []
         )
+        required_business_fact_ids = (
+            revision_context.get("requiredBusinessFactIds", [])
+            if revision_context is not None
+            else []
+        )
+        if (
+            not revision_direction_ids
+            and isinstance(required_direction_slots, list)
+            and required_direction_slots
+            and all(isinstance(item, dict) for item in required_direction_slots)
+        ):
+            output_direction_count = len(required_direction_slots)
+            if isinstance(required_business_fact_ids, list):
+                density_business_fact_count = len(
+                    {
+                        fact_id
+                        for fact_id in required_business_fact_ids
+                        if isinstance(fact_id, str)
+                    }
+                )
+        coverage_fact_ids = (
+            revision_required_fact_ids
+            if revision_direction_ids
+            else required_business_fact_ids
+        )
+        coverage_fact_count = (
+            len({item for item in coverage_fact_ids if isinstance(item, str)})
+            if isinstance(coverage_fact_ids, list)
+            else 0
+        )
+        if coverage_fact_count and scoped_minimum_business_facts:
+            fact_density_instruction = (
+                f"本分片有 {coverage_fact_count} 条点名事实必须在输出方向的 "
+                "factApplications 合集中逐项出现；这些点名事实只需覆盖一次。"
+                f"同时每个方向至少自然使用 {scoped_minimum_business_facts} 条、"
+                "最多 4 条业务事实；达到最低密度时可复用本空间其他兼容事实，"
+                "但不得用产品名称、品类、规格或视觉特征冒充业务事实。"
+            )
+        elif coverage_fact_count:
+            fact_density_instruction = (
+                f"本分片有 {coverage_fact_count} 条点名事实必须在输出方向的 "
+                "factApplications 合集中逐项出现；由你根据主动作选择最自然的"
+                "承载方向，其余方向保持真实产品关联，不得虚构事实。"
+            )
+        else:
+            fact_density_instruction = creative_direction_fact_density_instruction(
+                density_business_fact_count,
+                output_direction_count,
+            )
         if (
             isinstance(revision_direction_ids, list)
             and revision_direction_ids
@@ -1179,6 +1264,9 @@ class ArkResponsesProvider:
                     f"{len(revision_direction_ids)} 个方向，directionId 必须逐一对应："
                     + json.dumps(revision_direction_ids, ensure_ascii=False)
                     + "。不要输出未点名方向，系统会按稳定 ID 与上一版机械合并。"
+                    "每个方向必须保留 revision_context 中"
+                    " preservedBusinessFactIdsByDirection 为该 directionId 点名的全部"
+                    "合法业务事实；这些事实不能因补足密度或覆盖其他事实而被替换。"
                 )
         elif (
             isinstance(required_direction_slots, list)
@@ -1189,7 +1277,11 @@ class ArkResponsesProvider:
                 "这是首次分空间规划。directions 数组必须逐项对应以下方向槽位，"
                 "directionId 与 primaryActionId 必须原样使用，不得交换、重复或自选："
                 + json.dumps(required_direction_slots, ensure_ascii=False)
-                + "。每个槽位的创意关系、事实组合和六维表达仍由你自主规划。"
+                + "。本分片必须共同覆盖 requiredBusinessFactIds："
+                + json.dumps(required_business_fact_ids, ensure_ascii=False)
+                + "；你需要根据每个主动作的自然关系，自主决定事实进入哪个方向，"
+                "不得遗漏，也不得为凑覆盖建立牵强关系。每个槽位的创意关系、"
+                "事实组合和六维表达仍由你自主规划。"
             )
         else:
             direction_output_instruction = (
@@ -1199,14 +1291,9 @@ class ArkResponsesProvider:
         prompt = render_prompt(
             CREATIVE_DIRECTION_TASK_PROMPT,
             target_count=str(target_count),
-            target_direction_count=str(target_direction_count),
+            target_direction_count=str(output_direction_count),
             direction_output_instruction=direction_output_instruction,
-            fact_density_instruction=(
-                creative_direction_fact_density_instruction(
-                    business_fact_count,
-                    target_direction_count,
-                )
-            ),
+            fact_density_instruction=fact_density_instruction,
             facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
             fact_visual_strategy_json=json.dumps(
                 visual_policies,
@@ -2752,13 +2839,10 @@ def _creative_output_token_budget(tasks: Sequence[CreativeTask]) -> int:
     """Reserve enough structured output space without changing call count."""
 
     def per_item(duration_seconds: int) -> int:
-        if duration_seconds <= 8:
-            return 1_050
-        if duration_seconds <= 15:
-            return 1_250
-        if duration_seconds <= 22:
-            return 1_400
-        return 1_500
+        # Keep adjacent duration settings adjacent in output capacity as well.
+        # This is only an upper budget for structured output, never a length
+        # requirement or a post-generation character gate.
+        return min(1_500, 900 + duration_seconds * 20)
 
     return max(1_536, sum(per_item(task.target_duration_seconds) for task in tasks))
 
@@ -2767,6 +2851,13 @@ def _temporal_intent_for_duration(duration_seconds: int) -> dict[str, str]:
     if not 4 <= duration_seconds <= 30:
         raise ValueError("target duration must be between 4 and 30 seconds")
     if duration_seconds <= 8:
+        lower_chars = 65 + (duration_seconds - 4) * 10
+        upper_chars = 100 + (duration_seconds - 4) * 15
+        dialogue_guidance = (
+            "默认采用无口播动作；确需开口时只保留一句极短、能与动作同步说完的逐字台词。"
+            if duration_seconds <= 5
+            else "若有人开口，只保留一句能在动作中自然说完的简短逐字台词。"
+        )
         return {
             "band": "SHORT_FOCUS",
             "guidance": (
@@ -2775,23 +2866,30 @@ def _temporal_intent_for_duration(duration_seconds: int) -> dict[str, str]:
                 "开始另一项使用动作，也不要切换到第二阶段。"
             ),
             "detailGuidance": (
-                "软参考为约 70～120 个汉字：写清首帧、一个具体主动作、镜头如何看见变化和结束状态；"
-                "若有人开口，只保留一句能在动作中自然说完的逐字台词。"
+                f"本次为 {duration_seconds} 秒，软参考约 {lower_chars}～{upper_chars} 个汉字："
+                "写清首帧、一个具体主动作、镜头如何看见变化和结束状态；"
+                f"{dialogue_guidance}"
             ),
         }
     if duration_seconds <= 15:
+        lower_chars = 120 + (duration_seconds - 9) * 7
+        upper_chars = 180 + (duration_seconds - 9) * 16
+        beat_guidance = "2 个" if duration_seconds <= 11 else "2～3 个"
         return {
             "band": "COMPLETE_ACTION",
             "guidance": (
-                "在同一主场景和同一目标下安排 2～3 个连续动作节拍，让开端、发展与结束状态"
+                f"在同一主场景和同一目标下安排 {beat_guidance}连续动作节拍，让开端、发展与结束状态"
                 "彼此衔接；不得加入第二种完整使用方法。"
             ),
             "detailGuidance": (
-                "软参考为约 160～280 个汉字：首帧和结束状态完整，2～3 个节拍均写清主体、对象、"
-                "可见变化和镜头配合；若有口播，必须给出一至两句可直接说出的完整台词。"
+                f"本次为 {duration_seconds} 秒，软参考约 {lower_chars}～{upper_chars} 个汉字："
+                f"首帧和结束状态完整，{beat_guidance}节拍均写清主体、对象、可见变化和镜头配合；"
+                "若有口播，必须给出可在本时长内自然说完的完整逐字台词。"
             ),
         }
     if duration_seconds <= 22:
+        lower_chars = 200 + (duration_seconds - 16) * 7
+        upper_chars = 300 + (duration_seconds - 16) * 13
         return {
             "band": "GRADUAL_PROCESS",
             "guidance": (
@@ -2799,10 +2897,13 @@ def _temporal_intent_for_duration(duration_seconds: int) -> dict[str, str]:
                 "或观察角度，但不得拆成多个独立地点或完整做法。"
             ),
             "detailGuidance": (
-                "软参考为约 240～380 个汉字：三个节拍分别承担进入、展开和收束，写清镜头随动作"
+                f"本次为 {duration_seconds} 秒，软参考约 {lower_chars}～{upper_chars} 个汉字："
+                "三个节拍分别承担进入、展开和收束，写清镜头随动作"
                 "发生的观察变化；口播必须是可直接表演的逐字台词，不能只写讲解主题。"
             ),
         }
+    lower_chars = 260 + (duration_seconds - 23) * 9
+    upper_chars = 380 + (duration_seconds - 23) * 17
     return {
         "band": "CONNECTED_PHASES",
         "guidance": (
@@ -2810,7 +2911,8 @@ def _temporal_intent_for_duration(duration_seconds: int) -> dict[str, str]:
             "拍完的过程；不得用慢动作、无意义停留、分屏、时间跳跃或多种完整做法填满素材。"
         ),
         "detailGuidance": (
-            "软参考为约 320～500 个汉字：写清首帧、3～4 个连续节拍、每个关键动作的镜头配合"
+            f"本次为 {duration_seconds} 秒，软参考约 {lower_chars}～{upper_chars} 个汉字："
+            "写清首帧、3～4 个连续节拍、每个关键动作的镜头配合"
             "以及明确结束状态；只要人物开口，就提供能按普通语速说完的完整逐字台词及同步动作。"
         ),
     }

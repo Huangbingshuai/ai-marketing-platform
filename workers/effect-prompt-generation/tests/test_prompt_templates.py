@@ -72,6 +72,7 @@ def test_render_prompt_reports_a_template_variable_that_was_not_supplied() -> No
 
 def test_templates_keep_creative_generation_and_evaluation_independent() -> None:
     creative = load_prompt("creative_base.system.prompt.txt")
+    direction = load_prompt("creative_direction.system.prompt.txt")
     task = load_prompt("creative_task.user.prompt.txt")
     evaluation = load_prompt("evaluation_base.system.prompt.txt")
 
@@ -93,6 +94,15 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "结束状态" in creative
     assert "不是字符门禁" in creative
     assert "严禁复用示范中的商品、地点、人物、动作或台词" in creative
+    assert "符合已确认的商品用途、使用部位和包装状态" in creative
+    assert "不得自行加入儿童或未成年人" in creative
+    assert "不得根据“袋装、瓶装、真空装”等笼统描述自行补成透明窗" in creative
+    assert "不得临场补出未确认的适用人群、比较对象、优越结论" in creative
+    assert "封闭容器只能通过已确认的泵头、瓶盖、袋口或其他开合方式取用" in creative
+    assert "更好、更快、更清爽、更耐用" in creative
+    assert "输出前逐句检查 content" in creative
+    assert "不得让滴管、吸管、刀具或手指穿过未打开的封口" in direction
+    assert "不得从规格、包装或受众偏好延伸出未确认的用量" in direction
     assert "逐条事实任务简报" in task
     assert "已确认的产品事实" not in task
     assert "{facts_json}" not in task

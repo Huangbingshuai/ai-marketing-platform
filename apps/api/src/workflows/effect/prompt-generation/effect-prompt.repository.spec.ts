@@ -181,7 +181,7 @@ describe('EffectPromptRepository', () => {
     ).toBe(true);
   });
 
-  it('retains every non-target item only for item regeneration', () => {
+  it('starts batch regeneration from scratch and retains non-target items only for item work', () => {
     const now = '2026-08-25T00:00:00.000Z';
     const items = ['one', 'target', 'three'].map((id, index) => ({
       id,
@@ -213,7 +213,9 @@ describe('EffectPromptRepository', () => {
     expect(
       promptItemsRetainedForRun(result, 'target', 'ITEM_REGENERATE').map(({ id }) => id),
     ).toEqual(['one', 'three']);
-    expect(promptItemsRetainedForRun(result, null, 'BATCH_GENERATE').map(({ id }) => id)).toEqual([
+    expect(promptItemsRetainedForRun(result, null, 'BATCH_GENERATE')).toEqual([]);
+    expect(promptItemsRetainedForRun(result, 'target', 'ITEM_EVALUATE').map(({ id }) => id)).toEqual([
+      'one',
       'three',
     ]);
   });

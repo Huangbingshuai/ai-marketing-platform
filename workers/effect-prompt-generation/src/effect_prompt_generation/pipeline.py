@@ -1113,6 +1113,15 @@ class PromptGenerationPipeline:
             previous_audited_response: CreativeDirectionResponse | None = None
             audit_revision_direction_ids: list[str] = []
             semantic_revision_count = 0
+            business_fact_ids = {
+                fact.fact_id for fact in mandatory_business_facts(application)
+            }
+            if len(business_fact_ids) >= expected_direction_count * 2:
+                minimum_business_facts_per_direction = 2
+            elif len(business_fact_ids) >= expected_direction_count:
+                minimum_business_facts_per_direction = 1
+            else:
+                minimum_business_facts_per_direction = 0
             for invalid_response_attempt in range(4):
                 try:
                     revision_ids = (
@@ -1125,7 +1134,7 @@ class PromptGenerationPipeline:
                     )
                     if previous_audited_response is None and not is_targeted_revision:
                         territory_direction_slots: list[
-                            tuple[Any, list[dict[str, str]]]
+                            tuple[Any, list[dict[str, str]], list[str]]
                         ] = []
                         next_direction_ordinal = 1
                         for territory in landscape.territories:
@@ -1140,39 +1149,77 @@ class PromptGenerationPipeline:
                                 }
                                 for index in range(territory.target_slots)
                             ]
+                            required_ids_by_slot: list[list[str]] = [
+                                [] for _ in slots
+                            ]
+                            for fact_index, fact_id in enumerate(
+                                territory.required_fact_ids
+                            ):
+                                required_ids_by_slot[
+                                    fact_index % len(required_ids_by_slot)
+                                ].append(fact_id)
                             # A large batch may allocate dozens of directions to
                             # one valid product territory. Keep the territory
                             # semantics intact, but bound each structured model
                             # response so one dense space cannot hit Ark's
                             # output-token ceiling.
-                            territory_direction_slots.extend(
-                                (
-                                    territory,
-                                    slots[
+                            for index in range(
+                                0,
+                                len(slots),
+                                DIRECTION_STRUCTURED_BATCH_SIZE,
+                            ):
+                                batch_slots = slots[
+                                    index : index + DIRECTION_STRUCTURED_BATCH_SIZE
+                                ]
+                                batch_required_fact_ids = [
+                                    fact_id
+                                    for slot_fact_ids in required_ids_by_slot[
                                         index : index
                                         + DIRECTION_STRUCTURED_BATCH_SIZE
-                                    ],
+                                    ]
+                                    for fact_id in slot_fact_ids
+                                ]
+                                territory_direction_slots.append(
+                                    (
+                                        territory,
+                                        batch_slots,
+                                        batch_required_fact_ids,
+                                    )
                                 )
-                                for index in range(
-                                    0,
-                                    len(slots),
-                                    DIRECTION_STRUCTURED_BATCH_SIZE,
-                                )
-                            )
                             next_direction_ordinal += territory.target_slots
 
                         async def plan_territory_directions(
                             territory: Any,
                             required_slots: list[dict[str, str]],
+                            required_business_fact_ids: list[str],
                         ) -> Any:
+                            scoped_territory = territory.model_copy(
+                                update={
+                                    "target_slots": len(required_slots),
+                                    "required_fact_ids": required_business_fact_ids,
+                                }
+                            )
                             scoped_landscape = landscape.model_copy(
-                                update={"territories": [territory]}
+                                update={"territories": [scoped_territory]}
                             )
                             slot_context: Mapping[str, Any] = {
                                 "requiredDirectionSlots": required_slots,
+                                "requiredBusinessFactIds": (
+                                    required_business_fact_ids
+                                ),
                             }
+                            scoped_minimum_business_facts = min(
+                                minimum_business_facts_per_direction,
+                                len(
+                                    business_fact_ids.intersection(
+                                        territory.compatible_fact_ids
+                                    )
+                                ),
+                            )
                             last_error: Exception | None = None
-                            for territory_attempt in range(2):
+                            local_validation_details: dict[str, Any] = {}
+                            for territory_attempt in range(3):
+                                local_validation_details = {}
                                 self._reserve_ai_call(context)
                                 try:
                                     async with self._ai_semaphore:
@@ -1211,10 +1258,84 @@ class PromptGenerationPipeline:
                                         raise ValueError(
                                             "territory directions changed an assigned action"
                                         )
+                                    realized_required_fact_ids = {
+                                        fact_id
+                                        for direction in actual_directions.values()
+                                        for fact_id in direction.fact_ids
+                                    }
+                                    missing_required_fact_ids = sorted(
+                                        set(required_business_fact_ids)
+                                        - realized_required_fact_ids
+                                    )
+                                    if missing_required_fact_ids:
+                                        local_validation_details = {
+                                            "missingBusinessFactIds": (
+                                                missing_required_fact_ids
+                                            ),
+                                            "previousDirections": [
+                                                direction.model_dump(
+                                                    mode="json",
+                                                    by_alias=True,
+                                                )
+                                                for direction in actual_directions.values()
+                                            ],
+                                        }
+                                        raise ValueError(
+                                            "territory direction batch omitted assigned required facts"
+                                        )
+                                    underfilled_direction_ids = [
+                                        direction.direction_id
+                                        for direction in actual_directions.values()
+                                        if len(
+                                            business_fact_ids.intersection(
+                                                direction.fact_ids
+                                            )
+                                        )
+                                        < scoped_minimum_business_facts
+                                    ]
+                                    if underfilled_direction_ids:
+                                        local_validation_details = {
+                                            "underfilledDirectionIds": (
+                                                underfilled_direction_ids
+                                            ),
+                                            "minimumBusinessFactsByDirection": {
+                                                direction_id: (
+                                                    scoped_minimum_business_facts
+                                                )
+                                                for direction_id in (
+                                                    underfilled_direction_ids
+                                                )
+                                            },
+                                            "additionalBusinessFactOptionsByDirection": {
+                                                direction_id: sorted(
+                                                    business_fact_ids.intersection(
+                                                        territory.compatible_fact_ids
+                                                    )
+                                                    - set(
+                                                        actual_directions[
+                                                            direction_id
+                                                        ].fact_ids
+                                                    )
+                                                )
+                                                for direction_id in (
+                                                    underfilled_direction_ids
+                                                )
+                                            },
+                                            "previousDirections": [
+                                                direction.model_dump(
+                                                    mode="json",
+                                                    by_alias=True,
+                                                )
+                                                for direction in actual_directions.values()
+                                            ],
+                                        }
+                                        raise ValueError(
+                                            "territory direction batch underfilled business facts"
+                                        )
                                     return territory_call
                                 except ProviderError as exc:
                                     last_error = exc
-                                    if territory_attempt == 0 and (
+                                    if territory_attempt < 2 and (
                                         exc.retryable
                                         or exc.error_type
                                         == ProviderErrorType.RESPONSE_INVALID
@@ -1223,14 +1344,22 @@ class PromptGenerationPipeline:
                                     raise
                                 except ValueError as exc:
                                     last_error = exc
-                                    if territory_attempt == 0:
+                                    if territory_attempt < 2:
                                         slot_context = {
                                             **slot_context,
+                                            **local_validation_details,
                                             "validationError": str(exc),
                                             "revisionInstruction": (
-                                                "上一次没有逐项使用已分配的方向槽位。"
+                                                "根据 validationError、previousDirections、"
+                                                "underfilledDirectionIds 与"
+                                                "additionalBusinessFactOptionsByDirection"
+                                                " 定向重组本分片。"
                                                 "本次必须原样填写每个 directionId 与"
-                                                "primaryActionId。"
+                                                "primaryActionId，并让 requiredBusinessFactIds"
+                                                " 中每个事实至少出现在一个方向的"
+                                                " factApplications 中；同时每个方向必须"
+                                                f"自然使用至少 {scoped_minimum_business_facts} "
+                                                "条业务事实。"
                                             ),
                                         }
                                         continue
@@ -1238,7 +1367,7 @@ class PromptGenerationPipeline:
                                         "AI 创意方向未按分配动作生成",
                                         retryable=False,
                                         error_type=(ProviderErrorType.RESPONSE_INVALID),
-                                        attempts=2,
+                                        attempts=3,
                                     ) from exc
                             raise PipelineError(
                                 "创意方向分空间规划未返回结果"
@@ -1246,8 +1375,12 @@ class PromptGenerationPipeline:
 
                         territory_calls = await asyncio.gather(
                             *(
-                                plan_territory_directions(territory, slots)
-                                for territory, slots in territory_direction_slots
+                                plan_territory_directions(
+                                    territory,
+                                    slots,
+                                    required_fact_ids,
+                                )
+                                for territory, slots, required_fact_ids in territory_direction_slots
                             )
                         )
                         call_rows.extend(
@@ -1296,9 +1429,106 @@ class PromptGenerationPipeline:
                                     DIRECTION_STRUCTURED_BATCH_SIZE,
                                 )
                             ]
+                            revision_fact_batch_by_id: dict[str, int] = {}
+                            raw_revision_fact_options = revision_call_context.get(
+                                "revisionFactOptions"
+                            )
+                            previous_revision_rows = revision_call_context.get(
+                                "previousDirections"
+                            )
+                            previous_revision_rows = (
+                                previous_revision_rows
+                                if isinstance(previous_revision_rows, list)
+                                else []
+                            )
+                            batch_index_by_direction = {
+                                direction_id: batch_index
+                                for batch_index, batch_ids in enumerate(
+                                    revision_batches
+                                )
+                                for direction_id in batch_ids
+                            }
+                            batch_fact_loads = [0 for _ in revision_batches]
+                            batch_fact_capacities = [
+                                len(batch_ids) * 4 for batch_ids in revision_batches
+                            ]
+                            if isinstance(raw_revision_fact_options, list):
+                                for option in raw_revision_fact_options:
+                                    if not isinstance(option, dict):
+                                        continue
+                                    option_fact_id = option.get("factId")
+                                    if not isinstance(option_fact_id, str):
+                                        continue
+                                    eligible_batch_indexes = sorted(
+                                        {
+                                            batch_index_by_direction[direction_id]
+                                            for direction_id in option.get(
+                                                "eligibleDirectionIds", []
+                                            )
+                                            if isinstance(direction_id, str)
+                                            and direction_id
+                                            in batch_index_by_direction
+                                        }
+                                    )
+                                    if not eligible_batch_indexes:
+                                        continue
+                                    existing_holder_indexes = {
+                                        batch_index_by_direction[
+                                            row.get("directionId")
+                                        ]
+                                        for row in previous_revision_rows
+                                        if isinstance(row, dict)
+                                        and isinstance(row.get("directionId"), str)
+                                        and row.get("directionId")
+                                        in batch_index_by_direction
+                                        and isinstance(
+                                            row.get("factApplications"), list
+                                        )
+                                        and any(
+                                            isinstance(application_row, dict)
+                                            and application_row.get("factId")
+                                            == option_fact_id
+                                            for application_row in row[
+                                                "factApplications"
+                                            ]
+                                        )
+                                    }
+                                    preferred_indexes = [
+                                        batch_index
+                                        for batch_index in eligible_batch_indexes
+                                        if batch_index in existing_holder_indexes
+                                    ]
+                                    candidate_indexes = (
+                                        preferred_indexes or eligible_batch_indexes
+                                    )
+                                    available_indexes = [
+                                        batch_index
+                                        for batch_index in candidate_indexes
+                                        if batch_fact_loads[batch_index]
+                                        < batch_fact_capacities[batch_index]
+                                    ]
+                                    if not available_indexes:
+                                        available_indexes = candidate_indexes
+                                    selected_batch_index = min(
+                                        available_indexes,
+                                        key=lambda batch_index: (
+                                            batch_fact_loads[batch_index]
+                                            / max(
+                                                1,
+                                                batch_fact_capacities[batch_index],
+                                            ),
+                                            batch_fact_loads[batch_index],
+                                            batch_index,
+                                        ),
+                                    )
+                                    revision_fact_batch_by_id[option_fact_id] = (
+                                        selected_batch_index
+                                    )
+                                    batch_fact_loads[selected_batch_index] += 1
 
                             def scoped_revision_context(
                                 batch_ids: list[str],
+                                batch_index: int,
                             ) -> dict[str, Any]:
                                 batch_id_set = set(batch_ids)
                                 scoped = {
@@ -1332,6 +1562,65 @@ class PromptGenerationPipeline:
                                         if isinstance(item, dict)
                                         and item.get("directionId") in batch_id_set
                                     ]
+                                # A targeted repair may be split into several
+                                # small structured calls.  Never pass the global
+                                # fact checklist to every call: a four-direction
+                                # batch cannot satisfy facts that are only
+                                # writable by another batch.  This assignment is
+                                # deliberately structural.  It chooses an
+                                # existing holder first, otherwise the first
+                                # allowed stable direction; the model still owns
+                                # the natural creative relationship and wording.
+                                revision_fact_options = scoped.get(
+                                    "revisionFactOptions"
+                                )
+                                if isinstance(revision_fact_options, list):
+                                    scoped_fact_options: list[dict[str, Any]] = []
+                                    for option in revision_fact_options:
+                                        if not isinstance(option, dict):
+                                            continue
+                                        fact_id = option.get("factId")
+                                        if (
+                                            not isinstance(fact_id, str)
+                                            or revision_fact_batch_by_id.get(fact_id)
+                                            != batch_index
+                                        ):
+                                            continue
+                                        local_eligible_ids = [
+                                            direction_id
+                                            for direction_id in option.get(
+                                                "eligibleDirectionIds", []
+                                            )
+                                            if isinstance(direction_id, str)
+                                            if direction_id in batch_id_set
+                                        ]
+                                        if not local_eligible_ids:
+                                            continue
+                                        scoped_fact_options.append(
+                                            {
+                                                **option,
+                                                "eligibleDirectionIds": local_eligible_ids,
+                                            }
+                                        )
+                                    scoped["revisionFactOptions"] = scoped_fact_options
+                                    scoped_required_fact_ids = [
+                                        option["factId"]
+                                        for option in scoped_fact_options
+                                        if isinstance(option.get("factId"), str)
+                                    ]
+                                    scoped["revisionRequiredBusinessFactIds"] = (
+                                        scoped_required_fact_ids
+                                    )
+                                    scoped["missingBusinessFactIds"] = [
+                                        fact_id
+                                        for fact_id in scoped.get(
+                                            "missingBusinessFactIds", []
+                                        )
+                                        if fact_id in scoped_required_fact_ids
+                                    ]
+                                    scoped["revisionFactApplicationCapacity"] = (
+                                        len(batch_ids) * 4
+                                    )
                                 diversity_audit = scoped.get("diversityAudit")
                                 if isinstance(diversity_audit, dict):
                                     scoped_groups = [
@@ -1360,8 +1649,10 @@ class PromptGenerationPipeline:
                                 return scoped
 
                             revision_context_batches = [
-                                scoped_revision_context(batch_ids)
-                                for batch_ids in revision_batches
+                                scoped_revision_context(batch_ids, batch_index)
+                                for batch_index, batch_ids in enumerate(
+                                    revision_batches
+                                )
                             ]
                         else:
                             revision_context_batches = [revision_call_context]
