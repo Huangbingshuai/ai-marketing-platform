@@ -1118,6 +1118,79 @@ class CreativeTask(ApiModel):
         return self
 
 
+class MaterialShotOverview(ApiModel):
+    visual_intent: str = Field(min_length=1, max_length=160)
+    visual_style: str = Field(min_length=1, max_length=120)
+    audio_direction: str = Field(min_length=1, max_length=160)
+
+
+class MaterialShotScene(ApiModel):
+    environment: str = Field(min_length=1, max_length=180)
+    lighting: str = Field(min_length=1, max_length=120)
+    initial_state: str = Field(min_length=1, max_length=240)
+
+
+class MaterialShotBeat(ApiModel):
+    sequence: int = Field(ge=1, le=6)
+    duration_weight: int = Field(default=1, ge=1, le=5)
+    framing: str = Field(min_length=1, max_length=100)
+    action: str = Field(min_length=1, max_length=320)
+    camera: str = Field(min_length=1, max_length=180)
+    visible_result: str = Field(min_length=1, max_length=200)
+    dialogue: str | None = Field(default=None, max_length=240)
+    sound: str | None = Field(default=None, max_length=160)
+
+    @field_validator("dialogue", "sound")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split()).strip()
+        if normalized.casefold() in {"null", "none", "n/a", "na"} or normalized in {
+            "无",
+            "没有",
+            "不适用",
+        }:
+            return None
+        return normalized or None
+
+
+class MaterialShotPlan(ApiModel):
+    overview: MaterialShotOverview
+    scene: MaterialShotScene
+    beats: list[MaterialShotBeat] = Field(min_length=1, max_length=6)
+    final_frame: str = Field(min_length=1, max_length=240)
+
+    @model_validator(mode="after")
+    def validate_beat_sequence(self) -> MaterialShotPlan:
+        sequence = [beat.sequence for beat in self.beats]
+        if sequence != list(range(1, len(self.beats) + 1)):
+            raise ValueError("shot plan beat sequence must be contiguous from 1")
+        return self
+
+
+class CreativeCandidateDraft(ApiModel):
+    slot_id: str = Field(min_length=1, max_length=160)
+    ordinal: int = Field(ge=1)
+    round: int = Field(ge=0, le=4)
+    creative_core: str = Field(min_length=1, max_length=160)
+    declared_fact_ids: list[str] = Field(min_length=1, max_length=12)
+    dimensions: CreativeDimensions
+    shot_plan: MaterialShotPlan
+
+    @field_validator("declared_fact_ids")
+    @classmethod
+    def unique_fact_ids(cls, values: list[str]) -> list[str]:
+        result = list(dict.fromkeys(values))
+        if not result:
+            raise ValueError("declaredFactIds cannot be empty")
+        return result
+
+
+class CreativeCandidateDraftBatch(ApiModel):
+    items: list[CreativeCandidateDraft] = Field(min_length=1, max_length=5)
+
+
 class CreativeCandidate(ApiModel):
     slot_id: str = Field(min_length=1, max_length=160)
     ordinal: int = Field(ge=1)
@@ -1125,7 +1198,8 @@ class CreativeCandidate(ApiModel):
     creative_core: str = Field(min_length=1, max_length=160)
     declared_fact_ids: list[str] = Field(min_length=1, max_length=12)
     dimensions: CreativeDimensions
-    content: str = Field(min_length=20, max_length=600)
+    content: str = Field(min_length=20, max_length=12_000)
+    shot_plan: MaterialShotPlan | None = None
     generated_at: datetime | None = None
 
     @model_validator(mode="before")

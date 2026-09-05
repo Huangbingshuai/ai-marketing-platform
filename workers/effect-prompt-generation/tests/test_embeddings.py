@@ -18,6 +18,7 @@ from effect_prompt_generation.embeddings import (
     MockEmbeddingProvider,
     build_content_vector_index,
     build_creative_vector_index,
+    candidate_content_embedding_source,
     compile_content_embedding_text,
     compile_creative_embedding_text,
 )
@@ -25,6 +26,10 @@ from effect_prompt_generation.models import (
     CreativeCandidate,
     CreativeDimensions,
     FragmentType,
+    MaterialShotBeat,
+    MaterialShotOverview,
+    MaterialShotPlan,
+    MaterialShotScene,
     PromptItem,
     SharedPrompt,
     SharedPromptSection,
@@ -171,6 +176,30 @@ def test_semantic_group_map_returns_stable_connected_components() -> None:
     assert groups["d"] != groups["a"]
 
 
+def test_semantic_group_map_uses_the_final_similarity_resolver() -> None:
+    index = ContentVectorIndex(
+        entity_ids=("a", "b", "c"),
+        row_by_id={"a": 0, "b": 1, "c": 2},
+        candidate_ids=("a", "b", "c"),
+        anchor_ids=(),
+        similarities=np.asarray(
+            [[1.0, 0.40, 0.40], [0.40, 1.0, 0.40], [0.40, 0.40, 1.0]],
+            dtype=np.float32,
+        ),
+        stats=ContentEmbeddingStats(3, 0, 0, 0, 3, 3, 0, 0, 0, 0, []),
+    )
+
+    groups = index.semantic_group_map(
+        ["a", "b", "c"],
+        similarity_resolver=lambda left, right: (
+            0.90 if frozenset((left, right)) == frozenset(("a", "b")) else 0.40
+        ),
+    )
+
+    assert groups["a"] == groups["b"]
+    assert groups["c"] != groups["a"]
+
+
 def test_embedding_text_compiler_removes_shared_tail_and_common_product_tokens() -> (
     None
 ):
@@ -196,6 +225,50 @@ def test_embedding_text_compiler_removes_shared_tail_and_common_product_tokens()
         label in creative
         for label in ("叙事：", "场景：", "人物：", "产品关联：", "镜头：", "情绪：")
     )
+
+
+def test_structured_candidate_embedding_keeps_visible_story_not_format_boilerplate() -> (
+    None
+):
+    candidate = _candidate(1).model_copy(
+        update={
+            "shot_plan": MaterialShotPlan(
+                overview=MaterialShotOverview(
+                    visualIntent="展示通勤者单手开杯",
+                    visualStyle="暖调电影质感",
+                    audioDirection="轻快音乐与环境声",
+                ),
+                scene=MaterialShotScene(
+                    environment="早高峰地铁站台",
+                    lighting="柔和侧光",
+                    initialState="通勤者手持关闭的杯子",
+                ),
+                    beats=[
+                        MaterialShotBeat(
+                            sequence=1,
+                            durationWeight=1,
+                        framing="手部近景",
+                        action="拇指按下按钮并单手打开杯盖",
+                        camera="稳定跟随",
+                        visibleResult="杯盖完全弹开",
+                        dialogue="一只手也能打开",
+                        sound="按钮轻响",
+                    )
+                ],
+                finalFrame="通勤者手持已打开的杯子走向车门",
+            )
+        }
+    )
+
+    source = candidate_content_embedding_source(candidate)
+
+    assert "早高峰地铁站台" in source
+    assert "单手打开杯盖" in source
+    assert "杯盖完全弹开" in source
+    assert "暖调电影质感" not in source
+    assert "轻快音乐" not in source
+    assert "柔和侧光" not in source
+    assert "稳定跟随" not in source
 
 
 @pytest.mark.asyncio

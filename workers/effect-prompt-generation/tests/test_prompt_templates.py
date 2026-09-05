@@ -79,44 +79,38 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert len(load_prompt_hash("creative_base.system.prompt.txt")) == 64
     assert len(load_prompt_hash("evaluation_base.system.prompt.txt")) == 64
     assert "厂商无关" in creative
-    assert "每个任务独立生成一个 creativeCore" in creative
+    assert "一次性生成同一创意下的 creativeCore、六维信息和结构化 shotPlan" in creative
     assert "declaredFactIds 必须完整返回" in creative
     assert "productSnapshot" in creative
     assert "factApplications" in creative
     assert "productRelation" in creative
     assert "一个主要地点" in creative
     assert "不能伪装成画面已经证明" in creative
-    assert "不能成为画面中的口播、字幕、人物台词或动作说明" in creative
-    assert "导演完整度协议" in creative
-    assert "必须给出说话者可以直接说出的逐字台词" in creative
+    assert "shotPlan 必须能直接交给视频模型执行" in creative
+    assert "有人开口时必须填写可以直接说出的逐字台词" in creative
+    assert "开始构思前先做真实性预检" in creative
     assert "禁止只写“讲解产品”" in creative
     assert "首帧" in creative
-    assert "结束状态" in creative
-    assert "不是字符门禁" in creative
-    assert "严禁复用示范中的商品、地点、人物、动作或台词" in creative
-    assert "符合已确认的商品用途、使用部位和包装状态" in creative
-    assert "不得自行加入儿童或未成年人" in creative
-    assert "不得根据“袋装、瓶装、真空装”等笼统描述自行补成透明窗" in creative
-    assert "不得临场补出未确认的适用人群、比较对象、优越结论" in creative
-    assert "封闭容器只能通过已确认的泵头、瓶盖、袋口或其他开合方式取用" in creative
-    assert "更好、更快、更清爽、更耐用" in creative
-    assert "输出前逐句检查 content" in creative
+    assert "节拍数量是软建议，不是配额" in creative
+    assert "禁止补造包装透明度、开启结构、取用剂量、使用频率" in creative
+    assert "只有 factApplications 明确支持未成年人时才能出现未成年人" in creative
+    assert "不输出 content" in creative
     assert "不得让滴管、吸管、刀具或手指穿过未打开的封口" in direction
     assert "不得从规格、包装或受众偏好延伸出未确认的用量" in direction
     assert "逐条事实任务简报" in task
     assert "已确认的产品事实" not in task
     assert "{facts_json}" not in task
-    assert "不要按素材用途分组" in task
-    assert "只是软避重参考" in task
-    assert "同一创意方向下的兄弟变体" in task
-    assert "coverageFocusFactIds 为空表示常规生成" in task
-    assert "创意主线的中心" in task
-    assert "不得只替换形容词" in task
-    assert "不要把“当前画面不证明配方/工艺/功效”" in task
+    assert "软避重" in task
+    assert "同一方向下的兄弟变体" in task
+    assert "coverageFocusFactIds 非空时" in task
+    assert "焦点事实放入创意主线" in task
+    assert "不能复用同一画面骨架后只换措辞" in task
+    assert "最终只返回 JSON Schema 要求的字段" in task
     assert "只评估候选，不改写正文" in evaluation
     assert "五个窄职责视角" in evaluation
     assert "GENERIC_STYLE_STACKING" in evaluation
     assert "只有事实编造、商品完全无关" in evaluation
+    assert "先做真实性预检，再评分" in evaluation
     assert "一条素材可以有多个用途" in evaluation
     assert "HOOK、PRODUCT_DISPLAY、EFFECT、CTA" in evaluation
     assert "PAIN、" not in evaluation
@@ -248,7 +242,9 @@ def test_visual_strategy_templates_keep_direction_fact_applications_without_role
     assert "factApplications" in creative
     assert "productSnapshot" in creative
     assert "factEvidence" not in creative
-    assert "productSnapshot 仅用于确认商品名称、品类、规格和外观边界" in creative
+    assert "productSnapshot 只用于确认商品名称、品类、规格、外观和包装边界" in creative
+    assert "不能把一般体验、常识或创作推断说成该商品的事实" in creative
+    assert "审核解释，都不得出现在台词、字幕或画面中" in creative
     assert "visualTask" not in creative
     assert "businessContext" not in creative
     assert "必须标记 FABRICATED_FACT" in evaluation
@@ -257,3 +253,7 @@ def test_visual_strategy_templates_keep_direction_fact_applications_without_role
     assert "Worker 只校验 factId 与枚举合法" in evaluation
     assert "factEvidence 因为画面不能证明抽象事实而标记 PARTIAL/NONE" in evaluation
     assert "不得同时写入 ABSTRACT_FACT_VISUAL_PROOF" in evaluation
+    assert "上述具体信息未被事实直接支持时属于 FABRICATED_FACT" in evaluation
+    assert "容量可用时长" in evaluation
+    assert "未成年人只有在该候选分配事实明确支持时才可出现" in evaluation
+    assert "内部审核说明" in evaluation

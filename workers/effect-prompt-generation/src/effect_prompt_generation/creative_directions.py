@@ -1044,6 +1044,8 @@ def creative_direction_revision_context(
     invalid_direction_ids: list[str] = []
     repeated_action_direction_ids: list[str] = []
     slot_revision_direction_ids: list[str] = []
+    territory_fact_candidate_direction_ids: list[str] = []
+    missing_required_fact_ids_by_territory: dict[str, list[str]] = {}
     slot_correction: dict[str, object] = {}
     allowed_facts_by_territory: dict[str, list[str]] = {}
     if landscape is not None:
@@ -1088,6 +1090,38 @@ def creative_direction_revision_context(
         actual_slots = Counter(
             direction.territory_id for direction in response.directions
         )
+        for territory in landscape.territories:
+            realized_ids = {
+                fact_id
+                for direction in response.directions
+                if direction.territory_id == territory.territory_id
+                for fact_id in direction.fact_ids
+            }
+            missing_required_ids = [
+                fact_id
+                for fact_id in territory.required_fact_ids
+                if fact_id not in realized_ids
+            ]
+            if not missing_required_ids:
+                continue
+            missing_required_fact_ids_by_territory[territory.territory_id] = (
+                missing_required_ids
+            )
+            territory_directions = [
+                direction
+                for direction in response.directions
+                if direction.territory_id == territory.territory_id
+            ]
+            territory_directions.sort(
+                key=lambda direction: (
+                    len(direction.fact_ids) >= 4,
+                    len(direction.fact_ids),
+                    direction.direction_id,
+                )
+            )
+            territory_fact_candidate_direction_ids.extend(
+                direction.direction_id for direction in territory_directions[:3]
+            )
         seen_territory_actions: set[tuple[str, str]] = set()
         for direction in response.directions:
             territory_action = (
@@ -1262,6 +1296,7 @@ def creative_direction_revision_context(
                 + slot_revision_direction_ids
                 + underfilled_direction_ids
                 + repeated_action_direction_ids
+                + territory_fact_candidate_direction_ids
             )
         )
     revision_direction_id_set = set(revision_direction_ids)
@@ -1314,6 +1349,22 @@ def creative_direction_revision_context(
         for direction in response.directions
         if direction.direction_id in revision_direction_id_set
     }
+    territory_required_fact_options = [
+        {
+            "territoryId": territory_id,
+            "factId": fact_id,
+            "eligibleDirectionIds": [
+                direction.direction_id
+                for direction in response.directions
+                if direction.direction_id in revision_direction_id_set
+                and direction.territory_id == territory_id
+                and fact_id
+                in allowed_facts_by_territory.get(territory_id, [])
+            ],
+        }
+        for territory_id, fact_ids in missing_required_fact_ids_by_territory.items()
+        for fact_id in fact_ids
+    ]
     return {
         "validationError": validation_error,
         "missingBusinessFactIds": missing_business_fact_ids,
@@ -1339,6 +1390,10 @@ def creative_direction_revision_context(
         "invalidDirectionFactReferences": invalid_fact_references,
         "repeatedPrimaryActionDirectionIds": repeated_action_direction_ids,
         "territorySlotCorrection": slot_correction,
+        "missingRequiredFactIdsByTerritory": (
+            missing_required_fact_ids_by_territory
+        ),
+        "territoryRequiredFactOptions": territory_required_fact_options,
         "revisionDirectionIds": revision_direction_ids,
         "revisionInstruction": (
             "重新规划完整批次，让缺失事实自然进入合适方向。先把"
@@ -1349,6 +1404,9 @@ def creative_direction_revision_context(
             "包含这份清单；revisionFactOptions 给出每项事实可以进入的方向，"
             "由模型判断其中最自然的具体关系。添加缺失事实时不得移除清单中的"
             "其他唯一事实，可移除重复事实为单条最多 4 项的容量让路；"
+            "同时逐项处理 territoryRequiredFactOptions：其中每个 factId 都必须"
+            "出现在同一项 territoryId 下至少一个 eligibleDirectionIds 对应方向中；"
+            "即使该事实已经出现在其他空间，也不能代替本空间的必需覆盖。"
             "逐项修复 underfilledDirectionIds：每个方向最终至少达到"
             "minimumBusinessFactsByDirection 指定的业务事实数，并只从"
             "additionalBusinessFactOptionsByDirection 中选择自然相容的补充事实；"

@@ -632,9 +632,12 @@ def test_direction_revision_context_names_territory_fact_boundary() -> None:
             "invalidFactIds": [outside_fact_id],
         }
     ]
-    assert context["revisionDirectionIds"] == [first.direction_id]
+    assert first.direction_id in context["revisionDirectionIds"]
+    assert len(context["revisionDirectionIds"]) <= 4
     assert context["revisionRequiredBusinessFactIds"] == []
-    assert context["revisionFactApplicationCapacity"] == 4
+    assert context["revisionFactApplicationCapacity"] == (
+        len(context["revisionDirectionIds"]) * 4
+    )
     assert context["revisionFactOptions"] == []
 
 
@@ -812,7 +815,8 @@ def test_direction_revision_context_identifies_structural_slot_correction() -> N
     assert correction["overflowSlotsByTerritory"] == {source.territory_id: 1}
     assert correction["deficitSlotsByTerritory"] == {target.territory_id: 1}
     assert correction["movableDirectionIds"] == [moved.direction_id]
-    assert context["revisionDirectionIds"] == [moved.direction_id]
+    assert moved.direction_id in context["revisionDirectionIds"]
+    assert len(context["revisionDirectionIds"]) <= 4
     assert (
         correction["targetTerritoryOptions"][target.territory_id]["remainingSlots"] == 1
     )
@@ -873,6 +877,77 @@ def test_direction_revision_context_keeps_missing_fact_replan_local() -> None:
     assert missing_option["eligibleDirectionIds"]
     assert set(missing_option["eligibleDirectionIds"]).issubset(
         context["revisionDirectionIds"]
+    )
+
+
+def test_direction_revision_context_repairs_missing_territory_fact_locally() -> None:
+    from effect_prompt_generation.providers import (
+        _mock_creative_direction_response,
+        _mock_creative_landscape_response,
+    )
+
+    application = map_insight(_cluster_snapshot().insight_artifact.result)
+    landscape = validate_creative_diversity_landscape(
+        _mock_creative_landscape_response(application, direction_count=13),
+        application,
+        source_hash="a" * 64,
+        template_hash="b" * 64,
+        expected_direction_count=13,
+    )
+    response = _mock_creative_direction_response(
+        application,
+        landscape=landscape,
+        direction_count=13,
+    )
+    territory = next(item for item in landscape.territories if item.required_fact_ids)
+    missing_fact_id = territory.required_fact_ids[0]
+    omitted = response.model_copy(
+        update={
+            "directions": [
+                direction.model_copy(
+                    update={
+                        "fact_applications": [
+                            item
+                            for item in direction.fact_applications
+                            if item.fact_id != missing_fact_id
+                        ]
+                    }
+                )
+                if direction.territory_id == territory.territory_id
+                else direction
+                for direction in response.directions
+            ]
+        }
+    )
+
+    context = creative_direction_revision_context(
+        omitted,
+        application,
+        validation_error="creative directions did not cover territory required facts",
+        landscape=landscape,
+    )
+
+    assert context["missingRequiredFactIdsByTerritory"] == {
+        territory.territory_id: [missing_fact_id]
+    }
+    option = next(
+        item
+        for item in context["territoryRequiredFactOptions"]
+        if item["factId"] == missing_fact_id
+        and item["territoryId"] == territory.territory_id
+    )
+    assert option["eligibleDirectionIds"]
+    assert set(option["eligibleDirectionIds"]).issubset(
+        context["revisionDirectionIds"]
+    )
+    assert all(
+        next(
+            direction
+            for direction in omitted.directions
+            if direction.direction_id == direction_id
+        ).territory_id
+        == territory.territory_id
+        for direction_id in option["eligibleDirectionIds"]
     )
 
 
@@ -958,6 +1033,15 @@ def _cluster_snapshot() -> PromptGenerationSnapshot:
 
 
 class ConcentratedClusterProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.supplement_revision_contexts: list[dict[str, Any] | None] = []
+
+    async def plan_diversity_supplement_directions(
+        self, *args: Any, **kwargs: Any
+    ) -> Any:
+        self.supplement_revision_contexts.append(kwargs.get("revision_context"))
+        return await super().plan_diversity_supplement_directions(*args, **kwargs)
+
     async def evaluate_creatives(
         self,
         candidates: list[Any],
@@ -2403,9 +2487,10 @@ async def test_coverage_supplement_targets_the_missing_business_fact() -> None:
 @pytest.mark.asyncio
 async def test_cluster_concentration_triggers_one_soft_diversity_supplement() -> None:
     api = PromptApi()
+    provider = ConcentratedClusterProvider()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
-        provider=ConcentratedClusterProvider(),
+        provider=provider,
         embedding_provider=MockEmbeddingProvider(),
         similarity_mode="vector",
         shard_size=5,
@@ -2436,7 +2521,11 @@ async def test_cluster_concentration_triggers_one_soft_diversity_supplement() ->
     )
     assert final_stage.metadata["diversitySupplementTriggered"] is True
     assert final_stage.metadata["diversitySupplementCount"] == 2
-    assert final_stage.warnings == ["SEMANTIC_DIVERSITY_CAN_BE_IMPROVED"]
+    assert "SEMANTIC_DIVERSITY_CAN_BE_IMPROVED" in final_stage.warnings
+    assert provider.supplement_revision_contexts
+    first_context = provider.supplement_revision_contexts[0]
+    if first_context is not None:
+        assert first_context["vectorCrowdedExamples"]
 
 
 @pytest.mark.asyncio

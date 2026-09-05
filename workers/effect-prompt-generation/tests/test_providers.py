@@ -65,14 +65,14 @@ def test_temporal_intent_scales_continuous_action_beats(
 @pytest.mark.parametrize(
     ("duration", "expected"),
     [
-        (4, 3_920),
-        (8, 4_240),
-        (9, 4_320),
-        (15, 4_800),
-        (16, 4_880),
-        (22, 5_360),
-        (23, 5_440),
-        (30, 6_000),
+        (4, 4_880),
+        (8, 5_360),
+        (9, 5_480),
+        (15, 6_200),
+        (16, 6_320),
+        (22, 7_440),
+        (23, 7_760),
+        (30, 9_600),
     ],
 )
 def test_creative_shard_reserves_duration_appropriate_output_budget(
@@ -90,6 +90,17 @@ def test_creative_shard_reserves_duration_appropriate_output_budget(
     ]
 
     assert _creative_output_token_budget(tasks) == expected
+
+
+def test_single_long_creative_reserves_supplement_headroom() -> None:
+    task = CreativeTask(
+        slotId="slot-1",
+        ordinal=1,
+        round=1,
+        targetDurationSeconds=30,
+    )
+
+    assert _creative_output_token_budget([task]) == 2_400
 
 
 def test_ark_structured_output_rejects_non_artifact_trailing_content() -> None:
@@ -159,6 +170,44 @@ def _shared_prompt() -> SharedPrompt:
     )
 
 
+def _shot_plan() -> dict[str, object]:
+    return {
+        "overview": {
+            "visualIntent": "通勤途中自然完成单手开杯动作",
+            "visualStyle": "真实轻快的生活记录",
+            "audioDirection": "保留开盖声与轻量环境声",
+        },
+        "scene": {
+            "environment": "早高峰地铁站台",
+            "lighting": "站台自然顶光",
+            "initialState": "成年通勤者单手拿包，另一只手握住便携杯",
+        },
+        "beats": [
+            {
+                "sequence": 1,
+                "durationWeight": 2,
+                "framing": "人物与杯子的中近景",
+                "action": "通勤者单手打开杯盖",
+                "camera": "跟随手部动作轻推",
+                "visibleResult": "杯盖完成打开并稳定停住",
+                "dialogue": None,
+                "sound": "清楚的开盖声",
+            },
+            {
+                "sequence": 2,
+                "durationWeight": 1,
+                "framing": "杯盖近景",
+                "action": "手部收住动作并将杯子保持在胸前",
+                "camera": "固定对焦杯盖",
+                "visibleResult": "打开状态与单手操作关系清晰可见",
+                "dialogue": None,
+                "sound": None,
+            },
+        ],
+        "finalFrame": "人物仍单手持杯，镜头停在打开的杯盖上",
+    }
+
+
 @pytest.mark.asyncio
 async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() -> None:
     seen: dict[str, object] = {}
@@ -204,18 +253,6 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
                     "round": 1,
                     "creativeCore": "通勤途中单手打开便携杯",
                     "declaredFactIds": [primary_fact.fact_id, pain_fact.fact_id],
-                    "factEvidence": [
-                        {
-                            "factId": primary_fact.fact_id,
-                            "evidenceText": "便携杯被单手打开",
-                            "evidenceSource": "PRODUCT_RELATION",
-                        },
-                        {
-                            "factId": pain_fact.fact_id,
-                            "evidenceText": "普通杯盖需要双手操作",
-                            "evidenceSource": "PRODUCT_RELATION",
-                        },
-                    ],
                     "dimensions": {
                         "narrative": "动作直接进入产品使用",
                         "scene": "早高峰地铁站台",
@@ -224,8 +261,7 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
                         "camera": "中近景跟随后轻推",
                         "emotion": "从容利落",
                     },
-                    "content": "早高峰地铁站台上，成年通勤者单手打开便携杯并喝水，镜头跟随后轻推至杯盖。",
-                    "generatedAt": None,
+                    "shotPlan": _shot_plan(),
                 }
             ]
         }
@@ -258,12 +294,13 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
 
     assert seen["model"] == "creative-model"
     assert seen["text"]["format"]["strict"] is True  # type: ignore[index]
-    item_schema = seen["text"]["format"]["schema"]["$defs"]["CreativeCandidate"]  # type: ignore[index]
+    item_schema = seen["text"]["format"]["schema"]["$defs"]["CreativeCandidateDraft"]  # type: ignore[index]
     assert "creativeCore" in item_schema["properties"]
     assert "factEvidence" not in item_schema["properties"]
     assert "focusFactId" not in item_schema["properties"]
     assert "dimensions" in item_schema["properties"]
-    assert "content" in item_schema["properties"]
+    assert "shotPlan" in item_schema["properties"]
+    assert "content" not in item_schema["properties"]
     assert "fragmentType" not in item_schema["properties"]
     prompt = seen["input"][0]["content"][0]["text"]  # type: ignore[index]
     assert "医疗功效" in prompt
@@ -272,7 +309,7 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
     assert "普通杯盖需要双手操作" in prompt
     assert "factApplications" in prompt
     assert "coverageFocusFactIds" in prompt
-    assert "事实曾被独立评估器判定为尚未真正落实" in prompt
+    assert "事实此前未被独立评估器确认落实" in prompt
     assert "productSnapshot" in prompt
     assert '"regenerationVariantRole": "PRESENTATION_VARIATION"' in prompt
     assert "AUTO_DIVERSE" in prompt
@@ -287,6 +324,9 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
         primary_fact.fact_id,
         pain_fact.fact_id,
     ]
+    assert "【逐秒镜头】" in call.value.items[0].content
+    assert "0–3秒" in call.value.items[0].content
+    assert call.value.items[0].shot_plan is not None
 
 
 @pytest.mark.asyncio
@@ -343,18 +383,6 @@ async def test_ark_creative_uses_slot_local_fact_aliases_and_restores_ids() -> N
                                 "round": 0,
                                 "creativeCore": "通勤途中单手打开便携杯",
                                 "declaredFactIds": ["F1", "F2"],
-                                "factEvidence": [
-                                    {
-                                        "factId": "F1",
-                                        "evidenceText": "单手打开便携杯",
-                                        "evidenceSource": "PRODUCT_RELATION",
-                                    },
-                                    {
-                                        "factId": "F2",
-                                        "evidenceText": "普通杯盖需要双手操作",
-                                        "evidenceSource": "PRODUCT_RELATION",
-                                    },
-                                ],
                                 "dimensions": {
                                     "narrative": "动作展示",
                                     "scene": "地铁站台",
@@ -363,8 +391,7 @@ async def test_ark_creative_uses_slot_local_fact_aliases_and_restores_ids() -> N
                                     "camera": "中近景跟随",
                                     "emotion": "从容利落",
                                 },
-                                "content": "地铁站台上，成年通勤者单手打开便携杯，镜头跟随杯盖动作。",
-                                "generatedAt": None,
+                                "shotPlan": _shot_plan(),
                             }
                         ]
                     },
@@ -674,39 +701,6 @@ async def test_ark_creative_rejects_invalid_fact_usage(
                     "round": 0,
                     "creativeCore": "通勤途中单手打开便携杯",
                     "declaredFactIds": declared,
-                    "factEvidence": [
-                        {
-                            "factId": primary_fact.fact_id,
-                            "evidenceText": "便携杯被单手打开",
-                            "evidenceSource": "PRODUCT_RELATION",
-                        },
-                        *(
-                            []
-                            if declared_selector == "missing-evidence"
-                            else [
-                                {
-                                    "factId": pain_fact.fact_id,
-                                    "evidenceText": (
-                                        "不存在的证据"
-                                        if declared_selector == "evidence-not-in-source"
-                                        else "普通杯盖需要双手操作"
-                                    ),
-                                    "evidenceSource": "PRODUCT_RELATION",
-                                }
-                            ]
-                        ),
-                        *(
-                            [
-                                {
-                                    "factId": unassigned_fact.fact_id,
-                                    "evidenceText": "便携杯",
-                                    "evidenceSource": "PRODUCT_RELATION",
-                                }
-                            ]
-                            if declared_selector == "unassigned"
-                            else []
-                        ),
-                    ],
                     "dimensions": {
                         "narrative": "动作直接进入产品使用",
                         "scene": "早高峰地铁站台",
@@ -715,8 +709,7 @@ async def test_ark_creative_rejects_invalid_fact_usage(
                         "camera": "中近景跟随后轻推",
                         "emotion": "从容利落",
                     },
-                    "content": "早高峰地铁站台上，成年通勤者单手打开便携杯并喝水，镜头跟随后轻推至杯盖。",
-                    "generatedAt": None,
+                    "shotPlan": _shot_plan(),
                 }
             ]
         }

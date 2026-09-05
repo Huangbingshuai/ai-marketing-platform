@@ -2032,7 +2032,37 @@ class PromptGenerationPipeline:
             max(2, math.ceil(requested_candidate_count / 2)),
             requested_candidate_count,
         )
-        revision_context: Mapping[str, Any] | None = None
+        crowded_examples = []
+        for slot_id in sorted(cache.diversity_avoid_slot_ids)[:8]:
+            candidate = cache.creatives.get(slot_id)
+            task = cache.creative_tasks.get(slot_id)
+            if candidate is None:
+                continue
+            crowded_examples.append(
+                {
+                    "directionId": (
+                        task.creative_direction.direction_id
+                        if task is not None and task.creative_direction is not None
+                        else None
+                    ),
+                    "creativeCore": candidate.creative_core,
+                    "dimensions": candidate.dimensions.model_dump(
+                        mode="json", by_alias=True
+                    ),
+                }
+            )
+        base_revision_context: dict[str, Any] = {}
+        if crowded_examples:
+            base_revision_context = {
+                "vectorCrowdedExamples": crowded_examples,
+                "revisionInstruction": (
+                    "向量比较确认这些已入选候选形成了实质近似组。补充方向应避开"
+                    "这些样例已经反复使用的主场景、人物关系和产品主动作组合，"
+                    "优先从当前产品仍然自然相容但画面关系不同的空间中规划；"
+                    "不能只换时间、人物性别、形容词、光线或景别名称。"
+                ),
+            }
+        revision_context: Mapping[str, Any] | None = base_revision_context or None
         proposed: list[CreativeDirection] | None = None
         diversity_audit: CreativeDirectionDiversityAudit | None = None
         for attempt in range(3):
@@ -2089,10 +2119,12 @@ class PromptGenerationPipeline:
                 )
                 if attempt < 2:
                     revision_context = {
+                        **base_revision_context,
                         "validationError": str(exc),
                         "revisionInstruction": (
+                            f"{base_revision_context.get('revisionInstruction', '')} "
                             "重新输出完整的补充方向结构，并保持数量、事实与版图引用合法。"
-                        ),
+                        ).strip(),
                     }
                     continue
                 cache.diversity_supplement_improved = False
@@ -2101,6 +2133,7 @@ class PromptGenerationPipeline:
                 break
             if attempt < 2:
                 revision_context = {
+                    **base_revision_context,
                     "previousDirections": [
                         item.model_dump(mode="json", by_alias=True) for item in proposed
                     ],
@@ -2109,9 +2142,10 @@ class PromptGenerationPipeline:
                         mode="json", by_alias=True
                     ),
                     "revisionInstruction": (
+                        f"{base_revision_context.get('revisionInstruction', '')} "
                         "保持补充方向 ID 和数量，按全批视觉复核改变实质画面关系；"
                         "不能只换措辞、人物性别或景别名称。"
-                    ),
+                    ).strip(),
                 }
                 continue
             cache.diversity_supplement_improved = False
@@ -2453,9 +2487,17 @@ class PromptGenerationPipeline:
                 for issue in evaluation.hard_issues
             }
         )[:20]
+        longest_duration = max(
+            (task.target_duration_seconds for task in tasks),
+            default=settings.default_duration_seconds,
+        )
+        duration_safe_shard_size = _creative_shard_size_for_duration(
+            longest_duration
+        )
+        creative_shard_size = min(duration_safe_shard_size, self.shard_size)
         task_chunks = _creative_task_chunks(
             tasks,
-            max_size=min(4, self.shard_size),
+            max_size=creative_shard_size,
         )
         shards = [
             CreativeShardPlan(
@@ -2491,7 +2533,7 @@ class PromptGenerationPipeline:
                 "completedShardCount": len(shards) - len(pending),
                 "pendingShardCount": len(pending),
                 "generatedCandidateCount": len(cache.creatives),
-                "shardSize": min(4, self.shard_size),
+                "shardSize": creative_shard_size,
                 "siblingCoordinatedShardCount": sum(
                     len(shard.tasks) > 1
                     and len(
@@ -3258,6 +3300,10 @@ class PromptGenerationPipeline:
                         candidate_pool_content_redundancy_rate
                     )
                     mmr_diversity_weight = round(1.0 - mmr_quality_weight, 2)
+                    content_group_by_slot = content_index.semantic_group_map(
+                        [item.slot_id for item in eligible_candidates],
+                        similarity_resolver=semantic_aware_similarity,
+                    )
 
                     def select_content_mmr(
                         candidate_ids: set[str] | None = None,
@@ -3273,15 +3319,10 @@ class PromptGenerationPipeline:
                             if candidate_ids is None or item.slot_id in candidate_ids
                         ]
 
-                        def direction_group(item: RankedCreative) -> str:
-                            task = cache.creative_tasks.get(item.candidate.slot_id)
-                            direction = (
-                                task.creative_direction if task is not None else None
-                            )
-                            return (
-                                direction.direction_id
-                                if direction is not None
-                                else item.candidate.slot_id
+                        def content_risk_group(item: RankedCreative) -> str:
+                            return content_group_by_slot.get(
+                                item.candidate.slot_id,
+                                item.candidate.slot_id,
                             )
 
                         return select_creatives(
@@ -3316,7 +3357,7 @@ class PromptGenerationPipeline:
                             fixed_covered_fact_ids=fixed_covered_fact_ids,
                             quality_weight=mmr_quality_weight,
                             novelty_weight=mmr_diversity_weight,
-                            semantic_group_resolver=direction_group,
+                            semantic_group_resolver=content_risk_group,
                         )
 
                     quality_baseline_result = select_creatives(
@@ -4273,6 +4314,16 @@ def _creative_task_chunks(
     return chunks
 
 
+def _creative_shard_size_for_duration(target_duration_seconds: int) -> int:
+    """Bound structured output size without changing creative instructions."""
+
+    if target_duration_seconds >= 21:
+        return 1
+    if target_duration_seconds >= 16:
+        return 2
+    return 4
+
+
 def _uses_fact_visual_strategy(snapshot: PromptGenerationSnapshot) -> bool:
     del snapshot
     return True
@@ -4426,11 +4477,15 @@ def _semantic_aware_similarity_resolver(
             )
             / 100.0
         )
-        return round(
+        blended_similarity = (
             CONTENT_SIMILARITY_WEIGHT * content_similarity
-            + SEMANTIC_CLUSTER_SIMILARITY_WEIGHT * cluster_similarity,
-            6,
+            + SEMANTIC_CLUSTER_SIMILARITY_WEIGHT * cluster_similarity
         )
+        # AI-owned semantic families may legitimately be more specific than the
+        # underlying picture (for example, morning/evening/family bathroom).
+        # They may reveal an overlap missed by the text vector, but must never
+        # dilute an already high content-vector match below the risk threshold.
+        return round(max(content_similarity, blended_similarity), 6)
 
     return resolve
 

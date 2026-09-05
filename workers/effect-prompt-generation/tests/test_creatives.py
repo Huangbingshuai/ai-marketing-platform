@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -46,10 +47,12 @@ from effect_prompt_generation.pipeline import (
     PromptGenerationPipeline,
     _adaptive_mmr_quality_weight,
     _coverage_supplement_count,
+    _creative_shard_size_for_duration,
     _evaluation_context_fact_ids,
     _maximum_diversity_supplement_duplicates,
     _maximum_semantic_duplicates,
     _semantic_evaluation,
+    _semantic_aware_similarity_resolver,
 )
 from effect_prompt_generation.providers import (
     MockAiProvider,
@@ -118,6 +121,44 @@ def test_semantic_duplicate_limit_is_strictly_below_fifteen_percent() -> None:
     )
     assert seven.duplicate_rate == 14
     assert eight.duplicate_rate == 16
+
+
+def test_semantic_families_cannot_dilute_high_content_similarity() -> None:
+    index = SimpleNamespace(similarity=lambda _left, _right: 0.90)
+    left_profile = SimpleNamespace(
+        narrative_family="使用演示",
+        scene_family="晨间浴室",
+        persona_family="独居女性",
+        product_action_family="按压起泡",
+        camera_family="手部跟拍",
+        emotion_family="清新",
+    )
+    right_profile = SimpleNamespace(
+        narrative_family="体验分享",
+        scene_family="晚间浴室",
+        persona_family="家庭成员",
+        product_action_family="冲洗泡沫",
+        camera_family="固定近景",
+        emotion_family="放松",
+    )
+    resolver = _semantic_aware_similarity_resolver(
+        index,
+        {
+            "left": SimpleNamespace(semantic_profile=left_profile),
+            "right": SimpleNamespace(semantic_profile=right_profile),
+        },
+    )
+
+    assert resolver("left", "right") == 0.90
+
+
+def test_structured_creative_shards_shrink_for_longer_durations() -> None:
+    assert _creative_shard_size_for_duration(8) == 4
+    assert _creative_shard_size_for_duration(9) == 4
+    assert _creative_shard_size_for_duration(15) == 4
+    assert _creative_shard_size_for_duration(20) == 2
+    assert _creative_shard_size_for_duration(21) == 1
+    assert _creative_shard_size_for_duration(30) == 1
 
 
 def test_mmr_weights_rebalance_only_after_pool_redundancy_exceeds_half() -> None:
@@ -1084,7 +1125,9 @@ async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
     assert api.result is not None
     assert len(api.result.items) == 10
     assert api.result.metrics.generated_candidate_count == 16
-    assert embedding_provider.input_count == 16
+    # Structurally identical visible stories share one embedding document even
+    # when they came from different compiler-formatted Prompt candidates.
+    assert 0 < embedding_provider.input_count <= 16
     final_selection_stage = next(
         stage
         for stage in reversed(api.stages)
@@ -1093,7 +1136,9 @@ async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
     assert final_selection_stage.metadata["diversitySupplementAttempted"] is True
     assert final_selection_stage.metadata["diversitySupplementTriggered"] is True
     assert final_selection_stage.metadata["diversitySupplementCount"] == 2
-    assert final_selection_stage.metadata["embeddingInputCount"] == 16
+    assert final_selection_stage.metadata["embeddingInputCount"] == (
+        embedding_provider.input_count
+    )
     assert final_selection_stage.metadata["embeddingRequestCount"] == 2
     assert final_selection_stage.metadata["mmrQualityWeight"] == 0.60
     assert final_selection_stage.metadata["mmrDiversityWeight"] == 0.40

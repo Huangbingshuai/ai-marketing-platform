@@ -21,6 +21,7 @@ import numpy.typing as npt
 
 from .models import CreativeCandidate, PromptItem, SharedPrompt
 from .quality import normalize_creative_signature
+from .shot_plan import embedding_text_without_format_headers
 
 LOGGER = logging.getLogger(__name__)
 
@@ -308,6 +309,7 @@ class ContentVectorIndex:
         entity_ids: list[str],
         *,
         threshold: float = VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD,
+        similarity_resolver: Callable[[str, str], float] | None = None,
     ) -> dict[str, str]:
         """Build stable connected-component keys for group-first selection."""
 
@@ -330,9 +332,10 @@ class ContentVectorIndex:
             canonical, merged = sorted((left_root, right_root))
             parent[merged] = canonical
 
+        resolve_similarity = similarity_resolver or self.similarity
         for left_index, left_id in enumerate(nodes):
             for right_id in nodes[left_index + 1 :]:
-                if self.similarity(left_id, right_id) >= threshold:
+                if resolve_similarity(left_id, right_id) >= threshold:
                     union(left_id, right_id)
         return {node: find(node) for node in nodes}
 
@@ -438,11 +441,14 @@ async def build_content_vector_index(
 
     for candidate in ordered_candidates:
         candidate_ids.append(candidate.slot_id)
-        register(candidate.slot_id, candidate.content)
+        register(
+            candidate.slot_id,
+            candidate_content_embedding_source(candidate),
+        )
     for anchor in ordered_anchors:
         anchor_id = f"anchor:{anchor.id}"
         anchor_ids.append(anchor_id)
-        register(anchor_id, anchor.content)
+        register(anchor_id, embedding_text_without_format_headers(anchor.content))
 
     missing = [
         (key, text) for key, text in documents.items() if key not in vector_cache
@@ -711,7 +717,9 @@ def compile_content_embedding_text(
     product_category: str | None,
     shared_prompt: SharedPrompt,
 ) -> str:
-    value = unicodedata.normalize("NFKC", content)
+    value = unicodedata.normalize(
+        "NFKC", embedding_text_without_format_headers(content)
+    )
     for section in shared_prompt.sections:
         if section.content.strip():
             value = value.replace(section.content.strip(), " ")
@@ -724,6 +732,33 @@ def compile_content_embedding_text(
         product_name=product_name,
         product_category=product_category,
     )
+
+
+def candidate_content_embedding_source(candidate: CreativeCandidate) -> str:
+    """Project a structured Prompt onto the parts that change the video itself.
+
+    Compiler headings, generic lighting adjectives and audio boilerplate should
+    not make two otherwise different videos look similar.  Conversely, scene,
+    action, visible result and final frame are the concrete choices a viewer
+    will actually see.  Older candidates without an internal shot plan keep the
+    historical cleaned-content fallback.
+    """
+
+    plan = candidate.shot_plan
+    if plan is None:
+        return embedding_text_without_format_headers(candidate.content)
+    rows = [
+        candidate.creative_core,
+        plan.overview.visual_intent,
+        plan.scene.environment,
+        plan.scene.initial_state,
+    ]
+    for beat in plan.beats:
+        rows.extend((beat.action, beat.visible_result))
+        if beat.dialogue:
+            rows.append(beat.dialogue)
+    rows.append(plan.final_frame)
+    return "\n".join(rows)
 
 
 def compile_creative_embedding_text(

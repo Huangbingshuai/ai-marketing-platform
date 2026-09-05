@@ -24,6 +24,7 @@ from .insight_mapping import mandatory_business_facts
 from .models import (
     CreativeCandidate,
     CreativeCandidateBatch,
+    CreativeCandidateDraftBatch,
     CreativeDirectionAuditItem,
     CreativeDirectionFactAudit,
     CreativeDirectionAuditResponse,
@@ -61,8 +62,13 @@ from .models import (
     InsightField,
     NodeId,
     SharedPrompt,
+    MaterialShotBeat,
+    MaterialShotOverview,
+    MaterialShotPlan,
+    MaterialShotScene,
 )
 from .prompt_loader import load_prompt, load_prompt_hash, render_prompt
+from .shot_plan import ShotPlanCompilationError, compile_material_shot_plan
 
 TModel = TypeVar("TModel", bound=BaseModel)
 LOGGER = logging.getLogger(__name__)
@@ -1740,7 +1746,7 @@ class ArkResponsesProvider:
         )
         call = await self._structured(
             prompt,
-            CreativeCandidateBatch,
+            CreativeCandidateDraftBatch,
             schema_name="effect_prompt_coherent_creative_batch",
             stage="COHERENT_CREATIVE_GENERATION",
             prompt_file=creative_base_prompt,
@@ -1781,13 +1787,24 @@ class ArkResponsesProvider:
             if unassigned or set(fact_ids) != set(assignment.fact_ids):
                 rejected_item_count += 1
                 continue
+            try:
+                content = compile_material_shot_plan(
+                    item.shot_plan,
+                    target_duration_seconds=task.target_duration_seconds,
+                )
+            except ShotPlanCompilationError:
+                rejected_item_count += 1
+                continue
             normalized.append(
-                item.model_copy(
-                    update={
-                        "ordinal": task.ordinal,
-                        "round": task.round,
-                        "declared_fact_ids": list(dict.fromkeys(fact_ids)),
-                    }
+                CreativeCandidate(
+                    slot_id=item.slot_id,
+                    ordinal=task.ordinal,
+                    round=task.round,
+                    creative_core=item.creative_core,
+                    declared_fact_ids=list(dict.fromkeys(fact_ids)),
+                    dimensions=item.dimensions,
+                    content=content,
+                    shot_plan=item.shot_plan,
                 )
             )
         if not normalized:
@@ -1806,7 +1823,7 @@ class ArkResponsesProvider:
                 len(normalized),
             )
         return AiCallResult(
-            value=call.value.model_copy(update={"items": normalized}),
+            value=CreativeCandidateBatch(items=normalized),
             metadata=call.metadata,
         )
 
@@ -1879,7 +1896,11 @@ class ArkResponsesProvider:
             candidates_json=json.dumps(
                 [
                     {
-                        "candidate": item.model_dump(mode="json", by_alias=True),
+                        "candidate": item.model_dump(
+                            mode="json",
+                            by_alias=True,
+                            exclude={"shot_plan"},
+                        ),
                         "targetDurationSeconds": target_durations[item.slot_id],
                         "assignedContextFactIds": context_by_slot.get(
                             item.slot_id,
@@ -2565,10 +2586,41 @@ def _mock_creative_candidate(
             ((task.ordinal - 1) // (len(scenes) * len(cameras))) % len(actions)
         ]
     )
-    content = (
-        f"{scene}内，{product}{action}，画面自然结合"
-        f"{'、'.join(fact.value for fact in assigned_facts)}。"
-        f"{camera}记录一个连续动作，暖色自然光突出真实质感，动作结束后主体稳定停留在画面中央。"
+    shot_plan = MaterialShotPlan(
+        overview=MaterialShotOverview(
+            visual_intent=f"用一个连续产品动作自然承载{'、'.join(fact.value for fact in assigned_facts)}",
+            visual_style="真实生活化产品素材",
+            audio_direction="保留现场动作声，背景音乐轻量克制",
+        ),
+        scene=MaterialShotScene(
+            environment=scene,
+            lighting="自然暖光清楚照亮主体与产品",
+            initial_state=f"{product}与必要道具已经位于画面中央，主体准备完成一个连续动作",
+        ),
+        beats=[
+            MaterialShotBeat(
+                sequence=1,
+                duration_weight=2,
+                framing="中近景观察主体与产品关系",
+                action=f"主体稳定完成{action}",
+                camera=camera,
+                visible_result="主要动作完成，产品状态清晰可见",
+                sound="保留与动作同步的自然现场声",
+            ),
+            MaterialShotBeat(
+                sequence=2,
+                duration_weight=1,
+                framing="产品近景",
+                action="主体收住动作并让产品稳定停留",
+                camera="镜头随动作轻微调整后固定对焦产品",
+                visible_result="产品与动作形成的结果同时留在画面中",
+            ),
+        ],
+        final_frame="主体动作结束，产品稳定停留在清楚可辨的位置，镜头完成收束",
+    )
+    content = compile_material_shot_plan(
+        shot_plan,
+        target_duration_seconds=task.target_duration_seconds,
     )
     audience_fact = next(
         (fact for fact in assigned_facts if fact.field == InsightField.TARGET_AUDIENCE),
@@ -2623,6 +2675,7 @@ def _mock_creative_candidate(
             ),
         ),
         content=content,
+        shot_plan=shot_plan,
     )
 
 
@@ -2842,7 +2895,16 @@ def _creative_output_token_budget(tasks: Sequence[CreativeTask]) -> int:
         # Keep adjacent duration settings adjacent in output capacity as well.
         # This is only an upper budget for structured output, never a length
         # requirement or a post-generation character gate.
-        return min(1_500, 900 + duration_seconds * 20)
+        # Long-form shot plans need disproportionately more room because every
+        # additional beat carries camera, action, audio and continuity fields.
+        # The former 1,500-token ceiling was enough for most initial candidates
+        # but could truncate a single 30-second diversity supplement.
+        return min(
+            2_400,
+            1_100
+            + duration_seconds * 30
+            + max(0, duration_seconds - 20) * 50,
+        )
 
     return max(1_536, sum(per_item(task.target_duration_seconds) for task in tasks))
 
