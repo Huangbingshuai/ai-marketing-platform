@@ -6,6 +6,11 @@ from typing import Literal
 from pydantic import AnyHttpUrl, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .reliability import (
+    DEFAULT_EVALUATION_INPUT_TOKEN_BUDGET,
+    validate_output_limits,
+)
+
 DEFAULT_ARK_MODEL = "doubao-seed-2-1-turbo-260628"
 DEFAULT_ARK_PROMPT_STRATEGY_MODEL = "doubao-seed-2-0-lite-260428"
 ARK_KEY_PLACEHOLDERS = {
@@ -64,7 +69,7 @@ class WorkerSettings(BaseSettings):
         le=32_768,
     )
     ark_prompt_candidate_max_output_tokens: int = Field(
-        default=6144,
+        default=8192,
         alias="ARK_PROMPT_CANDIDATE_MAX_OUTPUT_TOKENS",
         ge=1024,
         le=65_536,
@@ -87,6 +92,12 @@ class WorkerSettings(BaseSettings):
 
     prompt_max_concurrency: int = Field(
         default=4, alias="PROMPT_MAX_CONCURRENCY", ge=1, le=8
+    )
+    prompt_evaluation_input_token_budget: int = Field(
+        default=DEFAULT_EVALUATION_INPUT_TOKEN_BUDGET,
+        alias="PROMPT_EVALUATION_INPUT_TOKEN_BUDGET",
+        ge=4096,
+        le=65_536,
     )
     prompt_similarity_mode: Literal["vector"] = Field(
         default="vector", alias="PROMPT_SIMILARITY_MODE"
@@ -151,6 +162,13 @@ class WorkerSettings(BaseSettings):
             self.ark_prompt_embedding_model or ""
         ).strip() or None
         self.effect_prompt_queue = self.effect_prompt_queue.strip()
+        validate_output_limits(
+            candidate_max_output_tokens=self.ark_prompt_candidate_max_output_tokens,
+            evaluation_max_output_tokens=self.ark_prompt_evaluation_max_output_tokens,
+            evaluation_input_token_budget=(
+                self.prompt_evaluation_input_token_budget
+            ),
+        )
         if not self.effect_prompt_queue:
             raise ValueError("EFFECT_PROMPT_QUEUE cannot be empty")
         if not self.ark_model:

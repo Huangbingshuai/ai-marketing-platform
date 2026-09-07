@@ -60,7 +60,7 @@
 | NestJS API     | 相关测试 229 项通过              |
 | Vue Web        | 相关测试 152 项通过              |
 | 提炼 Worker    | 81 项通过、4 项付费/集成门控跳过 |
-| Prompt Worker  | 97 项通过、1 项付费集成门控跳过  |
+| Prompt Worker  | 219 项通过、1 项付费集成门控跳过 |
 
 `pnpm check` 已完整通过 Lint、Prettier、TypeScript 类型检查、测试和生产构建；两个 Worker 的 pytest、mypy 及 Prompt ruff 也已通过。Prompt 与信息卡页面已完成桌面和窄屏浏览器验收。自动测试默认不调用 Ark 或 Seedance 付费接口。
 
@@ -253,7 +253,7 @@ docker compose --profile effect-prompt-generation up -d --build effect-prompt-ge
 docker compose logs --tail 100 effect-prompt-generation-worker
 ```
 
-事实视觉策略、连贯创意与独立评估均通过小分片和独立输出预算执行；创意和评估每片最多 8 条，Provider 在明确结构化响应异常时只重试当前失败分片，不重跑已经成功的分片。策略阶段默认超时 180 秒，候选阶段默认超时 120 秒；运行失败不会自动切换模型。精确数量阶段使用火山正文向量和本地 NumPy MMR，不逐对远程调用。
+事实视觉策略、连贯创意与独立评估均通过小分片执行；候选生成会结合时长和实际输出 Token 上限动态收窄。评估先精简重复载荷，再同时按照输入预算、输出预算、候选时长和最大条数装箱，25～30 秒普通候选每组最多 2 条，异常长正文自动单条执行。多条结构化响应被截断或格式异常时，Worker 只把当前逻辑分片递归拆小，已经成功的分片仍可在同一 Run 中恢复；用户主动重新批量生成则创建新 Run 并从头执行。策略阶段默认超时 180 秒，候选阶段默认超时 120 秒；运行失败不会自动切换模型。精确数量阶段使用火山正文向量和本地 NumPy MMR，不逐对远程调用。
 
 仅在本地回归或自动测试中显式使用 Mock：
 
@@ -429,7 +429,7 @@ docker compose logs --tail 200 effect-extraction-worker
 
 ### Prompt 任务一直停在“等待服务接单 / 0%”
 
-先检查 `effect-prompt-generation-worker` 日志中的 claim 状态。开发环境的 API 与 Compose 已统一使用本地 Worker Token 默认值；生产环境仍必须显式配置 `EFFECT_PROMPT_WORKER_TOKEN`。当前工作流将创意生成和独立评估拆成小分片；若 Ark 明确返回输出上限截断，任务会以 `AI_OUTPUT_TRUNCATED` 停止，不会把同一个不可完成请求盲目重复三次。启用向量模式时还应确认 `ARK_PROMPT_EMBEDDING_MODEL` 已进入容器。
+先检查 `effect-prompt-generation-worker` 日志中的 claim 状态。开发环境的 API 与 Compose 已统一使用本地 Worker Token 默认值；生产环境仍必须显式配置 `EFFECT_PROMPT_WORKER_TOKEN`。当前工作流将创意生成和独立评估拆成动态小分片；若 Ark 明确返回输出上限截断，多条分片会自动二分，只有单条请求仍无法完整返回时才以 `AI_OUTPUT_TRUNCATED` 停止，不会把同一个超长请求盲目重复三次。启用向量模式时还应确认 `ARK_PROMPT_EMBEDDING_MODEL` 已进入容器。
 
 ### Prompt 任务失败后页面没有任何提示词
 

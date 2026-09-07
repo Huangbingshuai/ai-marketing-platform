@@ -26,6 +26,7 @@ from effect_prompt_generation.providers import (
     _temporal_intent_for_duration,
     _validate_structured_output,
 )
+from effect_prompt_generation.reliability import evaluation_chunks
 from effect_prompt_generation.visual_strategy import validate_fact_visual_strategy
 
 
@@ -65,14 +66,14 @@ def test_temporal_intent_scales_continuous_action_beats(
 @pytest.mark.parametrize(
     ("duration", "expected"),
     [
-        (4, 4_880),
-        (8, 5_360),
-        (9, 5_480),
-        (15, 6_200),
-        (16, 6_320),
-        (22, 7_440),
-        (23, 7_760),
-        (30, 9_600),
+        (4, 5_423),
+        (8, 5_956),
+        (9, 6_089),
+        (15, 6_889),
+        (16, 7_023),
+        (22, 8_267),
+        (23, 8_623),
+        (30, 10_667),
     ],
 )
 def test_creative_shard_reserves_duration_appropriate_output_budget(
@@ -100,7 +101,78 @@ def test_single_long_creative_reserves_supplement_headroom() -> None:
         targetDurationSeconds=30,
     )
 
-    assert _creative_output_token_budget([task]) == 2_400
+    assert _creative_output_token_budget([task]) == 2_667
+
+
+def test_evaluation_chunks_shrink_only_for_unusually_large_candidate_text() -> None:
+    def candidate(slot_id: str, content: str) -> CreativeCandidate:
+        return CreativeCandidate(
+            slot_id=slot_id,
+            ordinal=1,
+            round=0,
+            creative_core="产品在真实场景中完成一次连续动作",
+            declared_fact_ids=["fact-1"],
+            dimensions=CreativeDimensions(
+                narrative="连续动作展示",
+                scene="真实使用环境",
+                persona="成年使用者",
+                product_relation="产品参与主要动作",
+                camera="中近景跟随",
+                emotion="自然可信",
+            ),
+            content=content,
+        )
+
+    ordinary = candidate(
+        "ordinary",
+        "产品在真实场景中完成一次连续动作，镜头完整记录开始、过程与结束。",
+    )
+    large = candidate("large", "产品细节" * 3_000)
+
+    chunks = evaluation_chunks(
+        [
+            ordinary,
+            ordinary.model_copy(update={"slot_id": "ordinary-2"}),
+            large,
+            ordinary.model_copy(update={"slot_id": "ordinary-3"}),
+        ],
+        configured_max_size=4,
+        max_output_tokens=6_144,
+    )
+
+    assert [len(chunk) for chunk in chunks] == [2, 1, 1]
+
+
+def test_evaluation_chunks_limit_long_duration_to_two_candidates() -> None:
+    candidates = [
+        CreativeCandidate(
+            slot_id=f"long-{index}",
+            ordinal=index,
+            round=0,
+            creative_core="围绕同一产品完成一段连续演示",
+            declared_fact_ids=["fact-1"],
+            dimensions=CreativeDimensions(
+                narrative="连续过程展示",
+                scene="真实使用环境",
+                persona="成年使用者",
+                product_relation="产品完成主要动作",
+                camera="中近景跟随",
+                emotion="自然可信",
+            ),
+            content="产品在真实场景中完成一段连续动作，镜头记录完整过程。",
+        )
+        for index in range(1, 6)
+    ]
+
+    chunks = evaluation_chunks(
+        candidates,
+        configured_max_size=4,
+        max_output_tokens=6_144,
+        target_durations={item.slot_id: 30 for item in candidates},
+        max_input_tokens=12_000,
+    )
+
+    assert [len(chunk) for chunk in chunks] == [2, 2, 1]
 
 
 def test_ark_structured_output_rejects_non_artifact_trailing_content() -> None:
@@ -742,7 +814,7 @@ async def test_ark_creative_rejects_invalid_fact_usage(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("candidate_count", "infer_creative_structure", "expected_output_tokens"),
-    [(1, True, 4096), (3, False, 3900), (5, False, 4096)],
+    [(1, True, 4096), (3, False, 4096), (5, False, 4096)],
 )
 async def test_ark_evaluation_reserves_tokens_per_candidate_with_configured_ceiling(
     candidate_count: int,
@@ -780,11 +852,10 @@ async def test_ark_evaluation_reserves_tokens_per_candidate_with_configured_ceil
                 {
                     "slotId": item.slot_id,
                     "primaryPurpose": "PRODUCT_DISPLAY",
-                    "compatiblePurposes": ["PRODUCT_DISPLAY"],
+                    "compatiblePurposes": [],
                     "factEvidence": [
                         {"factId": product_fact.fact_id, "evidenceText": "便携杯"}
                     ],
-                    "realizedFactIds": [product_fact.fact_id],
                     "scores": {
                         "productRelevance": 95,
                         "creativeCoherence": 90,
@@ -792,8 +863,6 @@ async def test_ark_evaluation_reserves_tokens_per_candidate_with_configured_ceil
                         "commercialUsefulness": 85,
                         "visualClarity": 90,
                     },
-                    "semanticSignature": f"semantic-{item.ordinal}",
-                    "visualSignature": f"visual-{item.ordinal}",
                     "hardIssues": [],
                     "warnings": [],
                 }
@@ -827,4 +896,17 @@ async def test_ark_evaluation_reserves_tokens_per_candidate_with_configured_ceil
         await provider.aclose()
 
     assert seen["max_output_tokens"] == expected_output_tokens
+    item_schema = seen["text"]["format"]["schema"]["$defs"][  # type: ignore[index]
+        "CreativeEvaluationDraft"
+    ]
+    assert "realizedFactIds" not in item_schema["properties"]
+    assert "semanticSignature" not in item_schema["properties"]
+    assert "visualSignature" not in item_schema["properties"]
+    prompt = seen["input"][0]["content"][0]["text"]  # type: ignore[index]
+    assert '"ordinal"' not in prompt
+    assert '"round"' not in prompt
     assert len(result.value.items) == candidate_count
+    assert all(
+        item.realized_fact_ids == [product_fact.fact_id]
+        for item in result.value.items
+    )

@@ -1387,8 +1387,19 @@ class CreativeEvaluationDraft(ApiModel):
     compatible_purposes: list[FragmentType] = Field(default_factory=list, max_length=3)
     fact_evidence: list[FactEvidence] = Field(default_factory=list, max_length=8)
     scores: CreativeScores
+    semantic_profile: CreativeSemanticProfile | None = None
+    abstract_visual_proof_findings: list[AbstractVisualProofFinding] = Field(
+        default_factory=list,
+        max_length=5,
+    )
     hard_issues: list[str] = Field(default_factory=list, max_length=5)
     warnings: list[str] = Field(default_factory=list, max_length=3)
+    inferred_creative_core: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=160,
+    )
+    inferred_dimensions: CreativeDimensions | None = None
 
     @model_validator(mode="after")
     def normalize_other_purposes(self) -> CreativeEvaluationDraft:
@@ -1402,6 +1413,17 @@ class CreativeEvaluationDraft(ApiModel):
         ]
         self.hard_issues = list(dict.fromkeys(self.hard_issues))
         self.warnings = list(dict.fromkeys(self.warnings))
+        self.abstract_visual_proof_findings = list(
+            {
+                (
+                    item.fact_id,
+                    item.evidence_source,
+                    item.evidence_text,
+                    item.violated_policy,
+                ): item
+                for item in self.abstract_visual_proof_findings
+            }.values()
+        )
         return self
 
 

@@ -77,6 +77,11 @@ async def serve(settings: WorkerSettings) -> None:
         embedding_max_concurrency=settings.prompt_embedding_max_concurrency,
         ai_max_concurrency=settings.prompt_max_concurrency,
         shard_size=settings.prompt_shard_size,
+        candidate_max_output_tokens=settings.ark_prompt_candidate_max_output_tokens,
+        evaluation_max_output_tokens=settings.ark_prompt_evaluation_max_output_tokens,
+        evaluation_input_token_budget=(
+            settings.prompt_evaluation_input_token_budget
+        ),
         max_ai_calls_per_run=settings.prompt_max_ai_calls_per_run,
     )
     consumer = PromptGenerationConsumer(

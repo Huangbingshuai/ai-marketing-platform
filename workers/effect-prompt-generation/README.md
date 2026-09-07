@@ -35,7 +35,7 @@ Worker 不再把事实拆成主事实、辅助事实、视觉任务和产品锚�
 批量生成采用以下规则：
 
 - 首轮候选数为用户目标数量的 `140%`（向上取整），例如目标 50 条时先生成 70 条；需要数量或多样性补充时，候选总数最多为目标数量的 `180%`。
-- 每个创意分片最多 4 条，每个分类分片最多 3 条；分片阶段分别为 `CREATIVE` 和 `CLASSIFICATION`。真实付费回归确认 5 条详细评估仍可能返回提前结束的严格 JSON，因此在不改变评估口径的前提下缩小到 3 条。分类动态输出预算按每条 720 Token 计算、最低 1536 Token，并受 4096 的默认总上限约束。
+- 创意与分类分片都按实际预算动态规划。分类同时检查输入体量、精简结构化输出体量和目标时长：25～30 秒普通候选每组最多 2 条，异常长正文自动单条执行；多条结构异常时仍只拆分当前分片。评估请求中的事实和视觉策略按分片去重发送，模型不再重复输出可由候选结构确定性派生的事实 ID 列表及内部签名。
 - 创意与分类调用共用 `PROMPT_MAX_CONCURRENCY` 滑动并发门限；一个分片完成后立即补入下一个，但分类节点仍等待本轮全部创意分片完成后再启动。
 - 评估证据可来自干净正文，也可来自对应的创意主线、场景、人物和产品关联点字段。未知事实、缺失摘录或“摘录与事实不相符”的绑定会被删除；删除后只剩产品名或规格时，该候选不能进入最终结果。
 - 核心及次要卖点、核心痛点、目标受众和三类已确认场景均是批次必用事实。初始候选会优先让每项事实获得多个生成机会；最终选择后仍有遗漏时，Worker 会按缺失事实单独生成覆盖候选，再参与同一质量评估和择优，不会用产品名称冒充已覆盖。
@@ -86,20 +86,21 @@ Ark Responses API 在解析 JSON 前检查 `status` 与 `incomplete_details`。�
 - `ARK_PROMPT_FRAGMENT_STRATEGY_MODEL`：批次创意方向规划模型；未配置时跟随候选模型
 - `ARK_PROMPT_EVALUATION_MODEL`：当前独立质量评估与用途分类模型；未配置时跟随候选模型
 - `ARK_PROMPT_STRATEGY_MAX_OUTPUT_TOKENS`：事实视觉策略、产品创意版图、方向规划与批次方向复核的共享输出额度，默认 `8192`；Ark 会把隐藏推理和结构化正文共同计入该额度
-- `ARK_PROMPT_CANDIDATE_MAX_OUTPUT_TOKENS`，默认 `4096`
-- `ARK_PROMPT_EVALUATION_MAX_OUTPUT_TOKENS`，默认 `4096`
+- `ARK_PROMPT_CANDIDATE_MAX_OUTPUT_TOKENS`，默认 `8192`；Worker 会按时长和该上限自动缩小分片，不会让多条长镜头方案挤满一次响应
+- `ARK_PROMPT_EVALUATION_MAX_OUTPUT_TOKENS`，默认 `6144`；Worker 会按候选正文体量动态分片
+- `PROMPT_EVALUATION_INPUT_TOKEN_BUDGET`，默认 `12000`；只用于 Worker 在调用前规划评估分片，不会修改供应商模型上下文上限
 - `ARK_PROMPT_CANDIDATE_TIMEOUT_SECONDS`，默认 `120`
 - `ARK_PROMPT_EVALUATION_TIMEOUT_SECONDS`，默认 `120`
 - `ARK_PROMPT_PROVIDER_MAX_ATTEMPTS`，默认 `1`
-- `PROMPT_SIMILARITY_MODE`：`trigram|shadow|vector`；部署默认 `vector`，仅历史兼容或故障诊断时显式切回 `trigram/shadow`
+- `PROMPT_SIMILARITY_MODE`：当前固定为 `vector`
 - `ARK_PROMPT_EMBEDDING_MODEL`：火山向量 Model ID 或 Endpoint ID；当前使用 `doubao-embedding-vision-251215`；`shadow/vector` 且使用 Ark 时必填
 - `ARK_PROMPT_EMBEDDING_API_MODE`：`multimodal|text`，默认 `multimodal`；251215 必须使用 `multimodal`
 - `ARK_PROMPT_EMBEDDING_TIMEOUT_SECONDS`，默认 `30`
 - `ARK_PROMPT_EMBEDDING_MAX_ATTEMPTS`，默认 `3`
 - `PROMPT_EMBEDDING_BATCH_SIZE`，默认 `64`，最大 `256`；多模态端点会按官方上限自动收窄为 `1`
 - `PROMPT_EMBEDDING_MAX_CONCURRENCY`，默认 `8`，使用独立并发门限
-- `PROMPT_MAX_CONCURRENCY`，默认 `6`，范围 `1..8`
-- `PROMPT_SHARD_SIZE`，默认 `8`；当前创意分片会再限制为最多 4 条
+- `PROMPT_MAX_CONCURRENCY`，默认 `4`，范围 `1..8`
+- `PROMPT_SHARD_SIZE`，默认 `8`；实际候选请求会按时长与 Token 安全容量收窄为最多 4 条
 - `PROMPT_MAX_AI_CALLS_PER_RUN`，默认 `256`，仅作为异常循环保险丝
 - `INTERNAL_API_TIMEOUT_SECONDS`、`ARK_TIMEOUT_SECONDS`、`LOG_LEVEL`
 

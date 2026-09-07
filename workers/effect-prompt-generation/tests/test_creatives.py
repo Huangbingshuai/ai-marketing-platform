@@ -161,6 +161,85 @@ def test_structured_creative_shards_shrink_for_longer_durations() -> None:
     assert _creative_shard_size_for_duration(30) == 1
 
 
+def test_structured_creative_shards_follow_configured_token_limit() -> None:
+    assert (
+        _creative_shard_size_for_duration(
+            8,
+            configured_max_size=5,
+            max_output_tokens=3_000,
+        )
+        == 2
+    )
+    assert (
+        _creative_shard_size_for_duration(
+            15,
+            configured_max_size=2,
+            max_output_tokens=8_192,
+        )
+        == 2
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_preflight_rejects_an_impossible_ai_call_budget_before_shards() -> None:
+    api = PromptApi()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=MockAiProvider(),
+        max_ai_calls_per_run=20,
+    )
+    runtime = _runtime()
+    snapshot = _snapshot().model_copy(
+        update={
+            "settings": PromptBatchSettings(
+                target_count=100,
+                default_duration_seconds=30,
+            )
+        }
+    )
+    pipeline.register_snapshot(runtime, snapshot)
+
+    with pytest.raises(PipelineError, match="cannot fit the initial batch"):
+        await pipeline.load_and_snapshot(runtime)
+
+    assert api.shards == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duration_seconds", [5, 15, 20, 25, 30])
+async def test_mock_end_to_end_keeps_exact_count_across_duration_bands(
+    duration_seconds: int,
+) -> None:
+    api = PromptApi()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=MockAiProvider(),
+        embedding_provider=DistinctEmbeddingProvider(),
+        shard_size=8,
+    )
+    runtime = _runtime()
+    snapshot = _snapshot().model_copy(
+        update={
+            "settings": PromptBatchSettings(
+                target_count=10,
+                default_duration_seconds=duration_seconds,
+            )
+        }
+    )
+    pipeline.register_snapshot(runtime, snapshot)
+
+    await build_graph(pipeline).ainvoke(
+        {"project_id": runtime.project_id},
+        context=runtime,
+    )
+
+    assert api.result is not None
+    assert len(api.result.items) == 10
+    assert all(
+        item.target_duration_seconds == duration_seconds for item in api.result.items
+    )
+
+
 def test_mmr_weights_rebalance_only_after_pool_redundancy_exceeds_half() -> None:
     assert _adaptive_mmr_quality_weight(0.49) == 0.70
     assert _adaptive_mmr_quality_weight(0.50) == 0.70
@@ -876,6 +955,13 @@ async def test_splits_truncated_classification_shard_without_failing_batch() -> 
     assert provider.single_calls == 14
     assert api.result is not None
     assert api.result.metrics.generated_candidate_count == 14
+    classification_stage = next(
+        stage
+        for stage in reversed(api.stages)
+        if stage.node_id.value == "CREATIVE_EVALUATION_CLASSIFICATION"
+    )
+    assert classification_stage.metadata["evaluationCallCount"] == 24
+    assert classification_stage.metadata["splitRecoveryCount"] == 10
 
 
 def test_planned_business_facts_are_evaluated_without_product_snapshot_competing() -> None:
@@ -1683,6 +1769,20 @@ async def test_unresolved_fact_coverage_supplements_once_then_keeps_exact_draft(
     assert selection_stage.metadata["initialCandidateCount"] == 14
     assert selection_stage.metadata["cumulativeCandidateCount"] == 16
     assert "REQUIRED_FACT_COVERAGE_NEEDS_REVIEW" in selection_stage.warnings
+    result_stage = next(
+        stage
+        for stage in reversed(api.stages)
+        if stage.node_id.value == "RESULT_SAVE"
+    )
+    assert (
+        result_stage.metadata["requiredFactCount"]
+        == selection_stage.metadata["missingRequiredFactCount"]
+        + result_stage.metadata["coveredRequiredFactCount"]
+    )
+    assert (
+        result_stage.metadata["missingRequiredFactCount"]
+        == selection_stage.metadata["missingRequiredFactCount"]
+    )
 
     resumed = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]

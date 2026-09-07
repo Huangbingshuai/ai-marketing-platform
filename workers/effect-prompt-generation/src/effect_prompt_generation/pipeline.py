@@ -131,6 +131,12 @@ from .quality import (
     select_creatives,
     validate_creative_evaluation,
 )
+from .reliability import (
+    creative_shard_size,
+    evaluation_chunk_input_tokens,
+    evaluation_chunks,
+    evaluation_duration_max_size,
+)
 
 # Quantity recovery and business-fact recovery are separate concerns. Each may
 # run once; repeatedly chasing an evaluator's unresolved fact finding only
@@ -229,6 +235,12 @@ class RunCache:
     embedding_local_comparison_ms: float = 0.0
     embedding_stage_metadata: dict[str, Any] = field(default_factory=dict)
     embedding_warning: str | None = None
+    evaluation_call_count: int = 0
+    evaluation_split_recovery_count: int = 0
+    direction_repair_count: int = 0
+    final_required_fact_ids: list[str] = field(default_factory=list)
+    final_covered_fact_ids: list[str] = field(default_factory=list)
+    final_missing_fact_ids: list[str] = field(default_factory=list)
 
 
 class PromptGenerationPipeline:
@@ -243,6 +255,9 @@ class PromptGenerationPipeline:
         embedding_max_concurrency: int = 2,
         ai_max_concurrency: int = 6,
         shard_size: int = 8,
+        candidate_max_output_tokens: int = 8_192,
+        evaluation_max_output_tokens: int = 6_144,
+        evaluation_input_token_budget: int = 12_000,
         max_ai_calls_per_run: int = 256,
     ) -> None:
         self.api = api
@@ -260,6 +275,9 @@ class PromptGenerationPipeline:
         self.ai_max_concurrency = max(1, ai_max_concurrency)
         self._ai_semaphore = asyncio.Semaphore(self.ai_max_concurrency)
         self.shard_size = shard_size
+        self.candidate_max_output_tokens = candidate_max_output_tokens
+        self.evaluation_max_output_tokens = evaluation_max_output_tokens
+        self.evaluation_input_token_budget = evaluation_input_token_budget
         self.max_ai_calls_per_run = max_ai_calls_per_run
         self._snapshots: dict[str, PromptGenerationSnapshot] = {}
         self._runs: dict[str, RunCache] = {}
@@ -299,6 +317,7 @@ class PromptGenerationPipeline:
             raise PipelineError("run cache is not registered") from exc
 
     async def load_and_snapshot(self, context: RuntimeContext) -> LoadedRun:
+        preflight = self._preflight_run(context)
         await self._stage(
             context,
             NodeId.LOAD_AND_SNAPSHOT,
@@ -388,6 +407,7 @@ class PromptGenerationPipeline:
                 "retainedCount": len(snapshot.retained_manual_items),
                 "resumedCreativeShardCount": len(succeeded_creatives),
                 "resumedClassificationShardCount": len(succeeded_classifications),
+                **preflight,
                 "snapshotSummary": _short(
                     " / ".join(
                         filter(
@@ -412,6 +432,43 @@ class PromptGenerationPipeline:
         )
         await self.progress(context, 8, NodeId.LOAD_AND_SNAPSHOT)
         return loaded
+
+    def _preflight_run(self, context: RuntimeContext) -> dict[str, int | str]:
+        snapshot = self.snapshot(context)
+        if snapshot.operation != "BATCH_GENERATE":
+            return {"preflightStatus": "PASSED"}
+        settings = _current_settings(snapshot)
+        generated_target = math.ceil(
+            max(0, settings.target_count - len(snapshot.retained_manual_items)) * 1.4
+        )
+        generation_shard_size = _creative_shard_size_for_duration(
+            settings.default_duration_seconds,
+            configured_max_size=self.shard_size,
+            max_output_tokens=self.candidate_max_output_tokens,
+        )
+        generation_calls = math.ceil(generated_target / generation_shard_size)
+        planned_evaluation_shard_size = min(
+            CLASSIFICATION_SHARD_SIZE,
+            evaluation_duration_max_size(settings.default_duration_seconds),
+        )
+        evaluation_calls = math.ceil(
+            generated_target / planned_evaluation_shard_size
+        )
+        # The deterministic check reserves a small allowance for visual strategy,
+        # creative-space planning and direction audits. Supplements are protected
+        # later by the same per-run call counter because they depend on real output.
+        minimum_calls = generation_calls + evaluation_calls + 6
+        if minimum_calls > self.max_ai_calls_per_run:
+            raise PipelineError(
+                "Prompt run configuration cannot fit the initial batch within the AI call budget"
+            )
+        return {
+            "preflightStatus": "PASSED",
+            "plannedInitialCandidateCount": generated_target,
+            "plannedCreativeShardSize": generation_shard_size,
+            "plannedEvaluationShardSize": planned_evaluation_shard_size,
+            "plannedMinimumAiCallCount": minimum_calls,
+        }
 
     async def map_insight(self, context: RuntimeContext) -> InsightApplicationMap:
         await self._stage(
@@ -1218,7 +1275,7 @@ class PromptGenerationPipeline:
                             )
                             last_error: Exception | None = None
                             local_validation_details: dict[str, Any] = {}
-                            for territory_attempt in range(3):
+                            for territory_attempt in range(2):
                                 local_validation_details = {}
                                 self._reserve_ai_call(context)
                                 try:
@@ -1335,16 +1392,18 @@ class PromptGenerationPipeline:
                                     return territory_call
                                 except ProviderError as exc:
                                     last_error = exc
-                                    if territory_attempt < 2 and (
+                                    if territory_attempt < 1 and (
                                         exc.retryable
                                         or exc.error_type
                                         == ProviderErrorType.RESPONSE_INVALID
                                     ):
+                                        cache.direction_repair_count += 1
                                         continue
                                     raise
                                 except ValueError as exc:
                                     last_error = exc
-                                    if territory_attempt < 2:
+                                    if territory_attempt < 1:
+                                        cache.direction_repair_count += 1
                                         slot_context = {
                                             **slot_context,
                                             **local_validation_details,
@@ -1367,7 +1426,7 @@ class PromptGenerationPipeline:
                                         "AI 创意方向未按分配动作生成",
                                         retryable=False,
                                         error_type=(ProviderErrorType.RESPONSE_INVALID),
-                                        attempts=3,
+                                        attempts=2,
                                     ) from exc
                             raise PipelineError(
                                 "创意方向分空间规划未返回结果"
@@ -1947,6 +2006,7 @@ class PromptGenerationPipeline:
                             diversity_audit,
                         )
                         semantic_revision_count += 1
+                        cache.direction_repair_count += 1
                         continue
                     # The AI audit remains available to downstream evaluation,
                     # but repeated subjective disagreement is advisory. Worker
@@ -2492,7 +2552,9 @@ class PromptGenerationPipeline:
             default=settings.default_duration_seconds,
         )
         duration_safe_shard_size = _creative_shard_size_for_duration(
-            longest_duration
+            longest_duration,
+            configured_max_size=self.shard_size,
+            max_output_tokens=self.candidate_max_output_tokens,
         )
         creative_shard_size = min(duration_safe_shard_size, self.shard_size)
         task_chunks = _creative_task_chunks(
@@ -2534,6 +2596,7 @@ class PromptGenerationPipeline:
                 "pendingShardCount": len(pending),
                 "generatedCandidateCount": len(cache.creatives),
                 "shardSize": creative_shard_size,
+                "plannedOutputTokenLimit": self.candidate_max_output_tokens,
                 "siblingCoordinatedShardCount": sum(
                     len(shard.tasks) > 1
                     and len(
@@ -2786,21 +2849,21 @@ class PromptGenerationPipeline:
             for item in sorted(cache.creatives.values(), key=lambda row: row.ordinal)
             if item.round == round_number
         ]
+        round_candidates = [cache.creatives[item_id] for item_id in round_candidate_ids]
+        candidate_chunks = evaluation_chunks(
+            round_candidates,
+            configured_max_size=CLASSIFICATION_SHARD_SIZE,
+            max_output_tokens=self.evaluation_max_output_tokens,
+            target_durations=cache.creative_target_durations,
+            max_input_tokens=self.evaluation_input_token_budget,
+        )
         shards = [
             ClassificationShardPlan(
                 round=round_number,
                 shard_index=index,
-                candidate_ids=round_candidate_ids[
-                    start : start + CLASSIFICATION_SHARD_SIZE
-                ],
+                candidate_ids=[item.slot_id for item in chunk],
             )
-            for index, start in enumerate(
-                range(
-                    0,
-                    len(round_candidate_ids),
-                    CLASSIFICATION_SHARD_SIZE,
-                )
-            )
+            for index, chunk in enumerate(candidate_chunks)
         ]
         missing_ids = {
             candidate_id
@@ -2827,7 +2890,17 @@ class PromptGenerationPipeline:
                 "candidateCount": len(round_candidate_ids),
                 "missingCandidateCount": len(missing_ids),
                 "pendingShardCount": len(pending),
-                "shardSize": CLASSIFICATION_SHARD_SIZE,
+                "shardSize": max((len(item.candidate_ids) for item in shards), default=0),
+                "plannedShardCount": len(shards),
+                "plannedInputTokenBudget": self.evaluation_input_token_budget,
+                "plannedLargestInputTokens": max(
+                    (
+                        evaluation_chunk_input_tokens(chunk)
+                        for chunk in candidate_chunks
+                    ),
+                    default=0,
+                ),
+                "plannedOutputTokenLimit": self.evaluation_max_output_tokens,
             },
         )
         return pending
@@ -2878,6 +2951,7 @@ class PromptGenerationPipeline:
                 attempts = 2 if len(group) == 1 else 1
                 for invalid_response_attempt in range(attempts):
                     self._reserve_ai_call(context)
+                    cache.evaluation_call_count += 1
                     async with self._ai_semaphore:
                         evaluation_kwargs: dict[str, Any] = {
                             "application": application,
@@ -2943,6 +3017,7 @@ class PromptGenerationPipeline:
                     if len(group) == 1 or not recoverable_structure_error:
                         raise
                     midpoint = max(1, len(group) // 2)
+                    cache.evaluation_split_recovery_count += 1
                     LOGGER.warning(
                         "splitting invalid creative evaluation shard round=%s "
                         "shard=%s candidate_count=%s error_type=%s",
@@ -3159,6 +3234,8 @@ class PromptGenerationPipeline:
                 "acceptedCount": len(accepted),
                 "rejectedCount": len(evaluations) - len(accepted),
                 "completedShardCount": len(cache.completed_classification_shard_keys),
+                "evaluationCallCount": cache.evaluation_call_count,
+                "splitRecoveryCount": cache.evaluation_split_recovery_count,
                 "averageScores": _average_scores(
                     [item.scores for item in evaluations]
                 ).model_dump(mode="json", by_alias=True),
@@ -3775,6 +3852,13 @@ class PromptGenerationPipeline:
             for fact_id in required_fact_ids
             if fact_id not in selected_covered_fact_ids
         ]
+        cache.final_required_fact_ids = list(required_fact_ids)
+        cache.final_covered_fact_ids = [
+            fact_id
+            for fact_id in required_fact_ids
+            if fact_id in selected_covered_fact_ids
+        ]
+        cache.final_missing_fact_ids = list(missing_coverage_fact_ids)
         eligible_covered_fact_ids = {
             fact_id
             for evaluation in eligible_evaluations
@@ -4075,7 +4159,22 @@ class PromptGenerationPipeline:
         covered_fact_ids = {
             binding.fact_id for item in items for binding in item.insight_bindings
         }
-        missing_business_fact_ids = deep_business_fact_ids - covered_fact_ids
+        if not item_operation and cache.final_required_fact_ids:
+            final_required_fact_ids = list(cache.final_required_fact_ids)
+            final_covered_fact_ids = list(cache.final_covered_fact_ids)
+            final_missing_fact_ids = list(cache.final_missing_fact_ids)
+        else:
+            final_required_fact_ids = sorted(deep_business_fact_ids)
+            final_covered_fact_ids = [
+                fact_id
+                for fact_id in final_required_fact_ids
+                if fact_id in covered_fact_ids
+            ]
+            final_missing_fact_ids = [
+                fact_id
+                for fact_id in final_required_fact_ids
+                if fact_id not in covered_fact_ids
+            ]
         quality_status: Literal["PASS", "NEEDS_REVIEW"] = (
             "PASS"
             if len(items) == expected
@@ -4084,7 +4183,7 @@ class PromptGenerationPipeline:
                 snapshot.operation == "ITEM_EVALUATE"
                 or not any(row.evaluation.hard_issues for row in selected)
             )
-            and (item_operation or not missing_business_fact_ids)
+            and (item_operation or not final_missing_fact_ids)
             else "NEEDS_REVIEW"
         )
         metrics = PromptMetrics(
@@ -4151,9 +4250,9 @@ class PromptGenerationPipeline:
                 "diversitySupplementTriggerRateLimit": (
                     DIVERSITY_SUPPLEMENT_TRIGGER_RATE
                 ),
-                "requiredFactCount": len(coverage.required),
-                "coveredRequiredFactCount": len(coverage.covered),
-                "missingRequiredFactCount": len(coverage.missing),
+                "requiredFactCount": len(final_required_fact_ids),
+                "coveredRequiredFactCount": len(final_covered_fact_ids),
+                "missingRequiredFactCount": len(final_missing_fact_ids),
                 "hardRejectedCount": sum(
                     bool(item.hard_issues)
                     for item in cache.creative_evaluations.values()
@@ -4179,9 +4278,16 @@ class PromptGenerationPipeline:
                     for item in items
                 ),
                 "missingRequiredFacts": [
-                    {"field": item.field.value, "value": item.value}
-                    for item in coverage.missing
+                    {
+                        "field": self._require_application(context).by_id[fact_id].field.value,
+                        "value": self._require_application(context).by_id[fact_id].value,
+                    }
+                    for fact_id in final_missing_fact_ids
+                    if fact_id in self._require_application(context).by_id
                 ],
+                "evaluationCallCount": cache.evaluation_call_count,
+                "splitRecoveryCount": cache.evaluation_split_recovery_count,
+                "directionRepairCount": cache.direction_repair_count,
                 "semanticAudit": semantic_audit,
             },
         )
@@ -4314,14 +4420,19 @@ def _creative_task_chunks(
     return chunks
 
 
-def _creative_shard_size_for_duration(target_duration_seconds: int) -> int:
+def _creative_shard_size_for_duration(
+    target_duration_seconds: int,
+    *,
+    configured_max_size: int = 5,
+    max_output_tokens: int = 8_192,
+) -> int:
     """Bound structured output size without changing creative instructions."""
 
-    if target_duration_seconds >= 21:
-        return 1
-    if target_duration_seconds >= 16:
-        return 2
-    return 4
+    return creative_shard_size(
+        target_duration_seconds,
+        configured_max_size=configured_max_size,
+        max_output_tokens=max_output_tokens,
+    )
 
 
 def _uses_fact_visual_strategy(snapshot: PromptGenerationSnapshot) -> bool:

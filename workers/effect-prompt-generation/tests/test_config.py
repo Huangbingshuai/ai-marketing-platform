@@ -35,8 +35,9 @@ def test_mock_requires_explicit_provider_and_prompt_model_falls_back() -> None:
     assert settings.resolved_prompt_blueprint_model == "doubao-seed-2-0-lite-260428"
     assert settings.resolved_prompt_candidate_model == "doubao-seed-2-1-turbo-260628"
     assert settings.ark_prompt_strategy_max_output_tokens == 8192
-    assert settings.ark_prompt_candidate_max_output_tokens == 6144
+    assert settings.ark_prompt_candidate_max_output_tokens == 8192
     assert settings.ark_prompt_evaluation_max_output_tokens == 6144
+    assert settings.prompt_evaluation_input_token_budget == 12000
     assert settings.ark_prompt_reasoning_effort == "minimal"
     assert settings.prompt_max_ai_calls_per_run == 256
     assert settings.prompt_max_concurrency == 4
@@ -126,3 +127,16 @@ def test_mock_vector_mode_uses_explicit_mock_without_ark_model() -> None:
         PROMPT_SIMILARITY_MODE="vector",
     )
     assert settings.prompt_similarity_mode == "vector"
+
+
+def test_output_limits_fail_before_worker_consumes_a_paid_task() -> None:
+    with pytest.raises(ValidationError, match="one 30-second creative"):
+        _settings(
+            PROMPT_AI_PROVIDER="mock",
+            ARK_PROMPT_CANDIDATE_MAX_OUTPUT_TOKENS=2_399,
+        )
+    with pytest.raises(ValidationError, match="one inferred item evaluation"):
+        _settings(
+            PROMPT_AI_PROVIDER="mock",
+            ARK_PROMPT_EVALUATION_MAX_OUTPUT_TOKENS=4_095,
+        )

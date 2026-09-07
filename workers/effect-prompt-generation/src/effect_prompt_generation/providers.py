@@ -45,6 +45,8 @@ from .models import (
     CreativeDimensions,
     CreativeEvaluation,
     CreativeEvaluationBatch,
+    CreativeEvaluationDraft,
+    CreativeEvaluationDraftBatch,
     CreativeFactTerritoryAssignment,
     CreativeFactTerritoryAssignmentResponse,
     CreativeFactAssignment,
@@ -66,6 +68,10 @@ from .models import (
     MaterialShotOverview,
     MaterialShotPlan,
     MaterialShotScene,
+)
+from .reliability import (
+    creative_output_token_budget as _creative_output_token_budget,
+    evaluation_output_token_budget,
 )
 from .prompt_loader import load_prompt, load_prompt_hash, render_prompt
 from .shot_plan import ShotPlanCompilationError, compile_material_shot_plan
@@ -679,7 +685,7 @@ class ArkResponsesProvider:
         blueprint_model: str | None = None,
         evaluation_model: str | None = None,
         strategy_max_output_tokens: int = 8192,
-        candidate_max_output_tokens: int = 4096,
+        candidate_max_output_tokens: int = 8192,
         fragment_strategy_max_output_tokens: int = 3072,
         evaluation_max_output_tokens: int = 6144,
         reasoning_effort: str = "minimal",
@@ -1896,11 +1902,16 @@ class ArkResponsesProvider:
             candidates_json=json.dumps(
                 [
                     {
-                        "candidate": item.model_dump(
-                            mode="json",
-                            by_alias=True,
-                            exclude={"shot_plan"},
-                        ),
+                        "candidate": {
+                            "slotId": item.slot_id,
+                            "creativeCore": item.creative_core,
+                            "declaredFactIds": item.declared_fact_ids,
+                            "dimensions": item.dimensions.model_dump(
+                                mode="json",
+                                by_alias=True,
+                            ),
+                            "content": item.content,
+                        },
                         "targetDurationSeconds": target_durations[item.slot_id],
                         "assignedContextFactIds": context_by_slot.get(
                             item.slot_id,
@@ -1926,24 +1937,16 @@ class ArkResponsesProvider:
         )
         call = await self._structured(
             prompt,
-            CreativeEvaluationBatch,
-            schema_name="effect_prompt_creative_evaluation_batch",
+            CreativeEvaluationDraftBatch,
+            schema_name="effect_prompt_creative_evaluation_draft_batch",
             stage="CREATIVE_EVALUATION_CLASSIFICATION",
             prompt_file=EVALUATION_BASE_PROMPT,
             model=self._evaluation_model,
             max_output_tokens=min(
                 self._evaluation_max_output_tokens,
-                # Ark counts both the structured answer and reasoning tokens.
-                # Real three-item shards regularly reached the former 3,000-token
-                # ceiling. Reserve enough room for scores, fact evidence and the
-                # six-axis profile while retaining the configured hard cap.
-                # ITEM_EVALUATE additionally asks the model to infer a creative
-                # core and all six dimensions. A single item therefore needs the
-                # same practical budget as a small batch; 2,048 tokens can be
-                # exhausted by reasoning before the structured JSON is complete.
-                max(
-                    4096 if infer_creative_structure else 2048,
-                    len(candidates) * 1300,
+                evaluation_output_token_budget(
+                    candidates,
+                    infer_creative_structure=infer_creative_structure,
                 ),
             ),
             request_timeout=self._evaluation_timeout,
@@ -1958,7 +1961,19 @@ class ArkResponsesProvider:
                 attempts=call.metadata.attempts,
                 elapsed_ms=call.metadata.latency_ms,
             )
-        return call
+        candidates_by_id = {item.slot_id: item for item in candidates}
+        return AiCallResult(
+            value=CreativeEvaluationBatch(
+                items=[
+                    _compile_creative_evaluation(
+                        candidates_by_id[item.slot_id],
+                        item,
+                    )
+                    for item in call.value.items
+                ]
+            ),
+            metadata=call.metadata,
+        )
 
     async def _structured(
         self,
@@ -2888,27 +2903,6 @@ def _creative_fact_aliases(
     }
 
 
-def _creative_output_token_budget(tasks: Sequence[CreativeTask]) -> int:
-    """Reserve enough structured output space without changing call count."""
-
-    def per_item(duration_seconds: int) -> int:
-        # Keep adjacent duration settings adjacent in output capacity as well.
-        # This is only an upper budget for structured output, never a length
-        # requirement or a post-generation character gate.
-        # Long-form shot plans need disproportionately more room because every
-        # additional beat carries camera, action, audio and continuity fields.
-        # The former 1,500-token ceiling was enough for most initial candidates
-        # but could truncate a single 30-second diversity supplement.
-        return min(
-            2_400,
-            1_100
-            + duration_seconds * 30
-            + max(0, duration_seconds - 20) * 50,
-        )
-
-    return max(1_536, sum(per_item(task.target_duration_seconds) for task in tasks))
-
-
 def _temporal_intent_for_duration(duration_seconds: int) -> dict[str, str]:
     if not 4 <= duration_seconds <= 30:
         raise ValueError("target duration must be between 4 and 30 seconds")
@@ -2991,6 +2985,52 @@ def _evaluation_strategy_payload(
         for policy in strategy.policies
         if policy.fact_id in referenced_fact_ids
     ]
+
+
+def _compile_creative_evaluation(
+    candidate: CreativeCandidate,
+    draft: CreativeEvaluationDraft,
+) -> CreativeEvaluation:
+    """Add only deterministic fields omitted from the paid model response."""
+
+    supported_fact_ids = list(
+        dict.fromkeys(
+            item.fact_id
+            for item in draft.fact_evidence
+            if item.support_level in {"EXACT", "SEMANTIC_FULL"}
+        )
+    )
+    primary_and_compatible = list(
+        dict.fromkeys([draft.primary_purpose, *draft.compatible_purposes])
+    )
+    return CreativeEvaluation(
+        slot_id=draft.slot_id,
+        primary_purpose=draft.primary_purpose,
+        compatible_purposes=primary_and_compatible,
+        fact_evidence=draft.fact_evidence,
+        realized_fact_ids=supported_fact_ids,
+        scores=draft.scores,
+        semantic_signature=_normalized_text(candidate.creative_core)[:240] or "empty",
+        visual_signature=(
+            _normalized_text(
+                "|".join(
+                    (
+                        candidate.dimensions.scene,
+                        candidate.dimensions.persona,
+                        candidate.dimensions.product_relation,
+                        candidate.dimensions.camera,
+                    )
+                )
+            )[:240]
+            or "empty"
+        ),
+        semantic_profile=draft.semantic_profile,
+        abstract_visual_proof_findings=draft.abstract_visual_proof_findings,
+        hard_issues=draft.hard_issues,
+        warnings=draft.warnings,
+        inferred_creative_core=draft.inferred_creative_core,
+        inferred_dimensions=draft.inferred_dimensions,
+    )
 
 
 def _mock_creative_evaluation(
