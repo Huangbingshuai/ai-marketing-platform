@@ -1,0 +1,12 @@
+请一次性复核以下整套产品创意空间。
+
+可信事实：
+{facts_json}
+
+事实视觉使用策略：
+{fact_visual_strategy_json}
+
+待复核创意空间：
+{creative_landscape_json}
+
+请完整返回全部 territoryId。NATURAL 不写入 factIssues；WEAK 只作提醒；只有 UNSUPPORTED 才进入 revisionTerritoryIds 并令 requiresRevision=true。

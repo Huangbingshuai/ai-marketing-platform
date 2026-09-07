@@ -43,8 +43,10 @@ from .models import (
     CreativeDirectionAuditResponse,
     CreativeDirectionDiversityAudit,
     CreativeDirectionResponse,
+    CreativeDiversityLandscape,
     CreativeDiversityLandscapeResponse,
     CreativeLandscapeAuditResponse,
+    CreativeTerritory,
     CreativeTerritoryDraft,
     CreativeDimensions,
     CreativeEvaluation,
@@ -155,6 +157,12 @@ MMR_HIGH_REDUNDANCY_THRESHOLD = 0.50
 CONTENT_SIMILARITY_WEIGHT = 0.70
 SEMANTIC_CLUSTER_SIMILARITY_WEIGHT = 0.30
 DIRECTION_STRUCTURED_BATCH_SIZE = 4
+# Initial planning can safely return more rows than a targeted repair. Packing
+# several small product territories into one request avoids paying for one
+# mostly-empty structured response per territory while keeping large batches
+# below Ark's output ceiling.
+DIRECTION_PLANNING_BATCH_SIZE = 8
+DIRECTION_AUDIT_BATCH_SIZE = 12
 # Keep ordinary calls economical. If a three-item strict response is malformed
 # or truncated, the pipeline automatically isolates that shard into single-item
 # calls instead of failing the entire batch.
@@ -178,6 +186,83 @@ def _requires_creative_structure_inference(candidate: CreativeCandidate) -> bool
     return any(value.strip() in PENDING_CREATIVE_STRUCTURE_TEXTS for value in values)
 
 
+@dataclass(frozen=True)
+class DirectionPlanningBatch:
+    territories: tuple[CreativeTerritory, ...]
+    slots: tuple[dict[str, str], ...]
+    required_fact_ids: tuple[str, ...]
+
+
+def _creative_direction_planning_batches(
+    landscape: CreativeDiversityLandscape,
+    *,
+    batch_size: int = DIRECTION_PLANNING_BATCH_SIZE,
+) -> list[DirectionPlanningBatch]:
+    """Pack stable direction slots without making any semantic decisions."""
+
+    if batch_size < 1:
+        raise ValueError("direction planning batch size must be positive")
+    rows: list[tuple[CreativeTerritory, dict[str, str], list[str]]] = []
+    next_direction_ordinal = 1
+    for territory in landscape.territories:
+        slot_fact_ids: list[list[str]] = [
+            [] for _ in range(territory.target_slots)
+        ]
+        for fact_index, fact_id in enumerate(territory.required_fact_ids):
+            slot_fact_ids[fact_index % territory.target_slots].append(fact_id)
+        for slot_index in range(territory.target_slots):
+            rows.append(
+                (
+                    territory,
+                    {
+                        "directionId": (
+                            f"direction-{next_direction_ordinal + slot_index:02d}"
+                        ),
+                        "territoryId": territory.territory_id,
+                        "primaryActionId": territory.actions[slot_index].action_id,
+                    },
+                    slot_fact_ids[slot_index],
+                )
+            )
+        next_direction_ordinal += territory.target_slots
+
+    batches: list[DirectionPlanningBatch] = []
+    for start in range(0, len(rows), batch_size):
+        batch_rows = rows[start : start + batch_size]
+        scoped_rows: dict[str, list[tuple[dict[str, str], list[str]]]] = {}
+        territory_by_id: dict[str, CreativeTerritory] = {}
+        for territory, slot, fact_ids in batch_rows:
+            territory_by_id[territory.territory_id] = territory
+            scoped_rows.setdefault(territory.territory_id, []).append(
+                (slot, fact_ids)
+            )
+        scoped_territories = tuple(
+            territory_by_id[territory_id].model_copy(
+                update={
+                    "target_slots": len(territory_rows),
+                    "required_fact_ids": [
+                        fact_id
+                        for _, fact_ids in territory_rows
+                        for fact_id in fact_ids
+                    ],
+                }
+            )
+            for territory_id, territory_rows in scoped_rows.items()
+        )
+        batches.append(
+            DirectionPlanningBatch(
+                territories=scoped_territories,
+                slots=tuple(slot for _, slot, _ in batch_rows),
+                required_fact_ids=tuple(
+                    fact_id
+                    for _, _, fact_ids in batch_rows
+                    for fact_id in fact_ids
+                ),
+            )
+        )
+    return batches
+
+
 class PipelineError(RuntimeError):
     pass
 
@@ -197,6 +282,7 @@ class RunCache:
     fact_visual_strategy: FactVisualStrategy | None = None
     shared_prompt: SharedPrompt | None = None
     creative_direction_plan: CreativeDirectionPlan | None = None
+    creative_direction_call_metadata: dict[str, Any] = field(default_factory=dict)
     strategy_checkpoints: dict[NodeId, StrategyCheckpoint] = field(default_factory=dict)
     creatives: dict[str, CreativeCandidate] = field(default_factory=dict)
     creative_tasks: dict[str, CreativeTask] = field(default_factory=dict)
@@ -770,7 +856,7 @@ class PromptGenerationPipeline:
                     }
                 )
                 reused = True
-        call_metadata: dict[str, int | None] = {}
+        call_metadata: dict[str, Any] = {}
         if plan is None:
             await self._stage(
                 context,
@@ -789,6 +875,9 @@ class PromptGenerationPipeline:
                 },
             )
             call_rows = []
+            planning_call_counts: Counter[str] = Counter()
+            direction_planning_batch_count = 0
+            direction_audit_batch_count = 0
             landscape = None
             landscape_revision_context: Mapping[str, Any] | None = None
             landscape_revision_base: CreativeDiversityLandscapeResponse | None = None
@@ -797,6 +886,7 @@ class PromptGenerationPipeline:
                 landscape_call = None
                 for structure_attempt in range(2):
                     self._reserve_ai_call(context)
+                    planning_call_counts["CREATIVE_SPACE_PLANNING"] += 1
                     try:
                         async with self._ai_semaphore:
                             raw_landscape_call = (
@@ -866,6 +956,7 @@ class PromptGenerationPipeline:
                 # discard a valid landscape and repeat every paid planning call.
                 for assignment_attempt in range(3):
                     self._reserve_ai_call(context)
+                    planning_call_counts["FACT_TERRITORY_ASSIGNMENT"] += 1
                     try:
                         async with self._ai_semaphore:
                             assignment_call = (
@@ -951,86 +1042,51 @@ class PromptGenerationPipeline:
                     },
                 )
 
-                async def audit_one_territory(territory: Any) -> Any:
-                    # Each territory is an independent semantic review branch.
-                    # A brief network interruption must only retry that branch,
-                    # never restart the complete product landscape.
-                    for territory_audit_attempt in range(3):
+                async def audit_landscape(
+                    current_landscape: CreativeDiversityLandscape,
+                ) -> Any:
+                    audit_call = None
+                    validation_error: ValueError | None = None
+                    for audit_attempt in range(2):
                         self._reserve_ai_call(context)
+                        planning_call_counts["CREATIVE_SPACE_BATCH_REVIEW"] += 1
                         try:
                             async with self._ai_semaphore:
-                                territory_audit_call = (
-                                    await self.provider.audit_creative_territory(
+                                audit_call = (
+                                    await self.provider.audit_creative_landscape(
                                         application,
                                         fact_visual_strategy=visual_strategy,
-                                        territory=territory,
+                                        landscape=current_landscape,
                                     )
                                 )
                         except ProviderError as exc:
-                            if territory_audit_attempt < 2 and (
+                            if audit_attempt == 0 and (
                                 exc.retryable
                                 or exc.error_type == ProviderErrorType.RESPONSE_INVALID
                             ):
                                 continue
                             raise
-                        call_rows.append(territory_audit_call.metadata)
-                        value = territory_audit_call.value
-                        if value.territory_id == territory.territory_id and all(
-                            issue.territory_id == territory.territory_id
-                            and issue.fact_id in territory.compatible_fact_ids
-                            for issue in value.fact_issues
-                        ):
-                            return value
-                        if territory_audit_attempt == 2:
-                            raise ProviderError(
-                                "AI 单个创意空间语义复核结构无效",
-                                retryable=False,
-                                error_type=ProviderErrorType.RESPONSE_INVALID,
-                                attempts=3,
-                            )
-                    raise PipelineError("单个创意空间语义复核未返回结果")
-
-                async def audit_landscape(
-                    current_landscape: Any,
-                ) -> Any:
-                    territory_audits = await asyncio.gather(
-                        *(
-                            audit_one_territory(territory)
-                            for territory in current_landscape.territories
-                        )
-                    )
-                    fact_issues = [
-                        issue
-                        for territory_audit in territory_audits
-                        for issue in territory_audit.fact_issues
-                    ]
-                    # WEAK is an advisory quality finding. Replanning the whole
-                    # landscape until every subjective weak-fit opinion
-                    # disappears can loop for many paid calls without making
-                    # the plan safer. Only UNSUPPORTED means the relationship
-                    # relies on an unconfirmed condition and must block.
-                    blocking_issues = [
-                        issue for issue in fact_issues if issue.verdict == "UNSUPPORTED"
-                    ]
-                    weak_issue_count = len(fact_issues) - len(blocking_issues)
-                    revision_territory_ids = [
-                        territory_audit.territory_id
-                        for territory_audit in territory_audits
-                        if any(
-                            issue.verdict == "UNSUPPORTED"
-                            for issue in territory_audit.fact_issues
-                        )
-                    ]
-                    return validate_creative_landscape_audit(
-                        CreativeLandscapeAuditResponse(
-                            reviewed_territory_ids=[
-                                item.territory_id for item in territory_audits
-                            ],
+                        call_rows.append(audit_call.metadata)
+                        fact_issues = audit_call.value.fact_issues
+                        blocking_issues = [
+                            issue
+                            for issue in fact_issues
+                            if issue.verdict == "UNSUPPORTED"
+                        ]
+                        weak_issue_count = len(fact_issues) - len(blocking_issues)
+                        normalized_response = CreativeLandscapeAuditResponse(
+                            reviewed_territory_ids=(
+                                audit_call.value.reviewed_territory_ids
+                            ),
                             fact_issues=blocking_issues,
                             requires_revision=bool(blocking_issues),
-                            revision_territory_ids=revision_territory_ids,
+                            revision_territory_ids=list(
+                                dict.fromkeys(
+                                    issue.territory_id for issue in blocking_issues
+                                )
+                            ),
                             summary=(
-                                f"独立复核发现 {len(blocking_issues)} 项缺少事实条件的关系需调整"
+                                f"批量复核发现 {len(blocking_issues)} 项缺少事实条件的关系需调整"
                                 if blocking_issues
                                 else (
                                     f"创意空间通过安全复核，另有 {weak_issue_count} 项偏弱关系作为质量提醒"
@@ -1038,9 +1094,28 @@ class PromptGenerationPipeline:
                                     else "全部事实与产品专属创意空间自然相容"
                                 )
                             ),
-                        ),
-                        current_landscape,
-                    )
+                        )
+                        try:
+                            return validate_creative_landscape_audit(
+                                normalized_response,
+                                current_landscape,
+                            )
+                        except ValueError as exc:
+                            validation_error = exc
+                            if audit_attempt == 0:
+                                continue
+                            break
+                    # WEAK is an advisory quality finding. Replanning the whole
+                    # landscape until every subjective weak-fit opinion
+                    # disappears can loop for many paid calls without making
+                    # the plan safer. Only UNSUPPORTED means the relationship
+                    # relies on an unconfirmed condition and must block.
+                    raise ProviderError(
+                        "AI 创意空间批量复核结构无效",
+                        retryable=False,
+                        error_type=ProviderErrorType.RESPONSE_INVALID,
+                        attempts=2,
+                    ) from validation_error
 
                 landscape_audit = await audit_landscape(draft_landscape)
                 if landscape_audit.requires_revision:
@@ -1062,6 +1137,7 @@ class PromptGenerationPipeline:
                     previous_assignments = assignment_call.value
                     for reassignment_attempt in range(2):
                         self._reserve_ai_call(context)
+                        planning_call_counts["FACT_TERRITORY_ASSIGNMENT"] += 1
                         reassignment_revision_context = {
                             "semanticAudit": landscape_audit.model_dump(
                                 mode="json",
@@ -1197,74 +1273,26 @@ class PromptGenerationPipeline:
                         isinstance(revision_ids, list) and revision_ids
                     )
                     if previous_audited_response is None and not is_targeted_revision:
-                        territory_direction_slots: list[
-                            tuple[Any, list[dict[str, str]], list[str]]
-                        ] = []
-                        next_direction_ordinal = 1
-                        for territory in landscape.territories:
-                            slots = [
-                                {
-                                    "directionId": (
-                                        f"direction-{next_direction_ordinal + index:02d}"
-                                    ),
-                                    "primaryActionId": territory.actions[
-                                        index
-                                    ].action_id,
-                                }
-                                for index in range(territory.target_slots)
-                            ]
-                            required_ids_by_slot: list[list[str]] = [
-                                [] for _ in slots
-                            ]
-                            for fact_index, fact_id in enumerate(
-                                territory.required_fact_ids
-                            ):
-                                required_ids_by_slot[
-                                    fact_index % len(required_ids_by_slot)
-                                ].append(fact_id)
-                            # A large batch may allocate dozens of directions to
-                            # one valid product territory. Keep the territory
-                            # semantics intact, but bound each structured model
-                            # response so one dense space cannot hit Ark's
-                            # output-token ceiling.
-                            for index in range(
-                                0,
-                                len(slots),
-                                DIRECTION_STRUCTURED_BATCH_SIZE,
-                            ):
-                                batch_slots = slots[
-                                    index : index + DIRECTION_STRUCTURED_BATCH_SIZE
-                                ]
-                                batch_required_fact_ids = [
-                                    fact_id
-                                    for slot_fact_ids in required_ids_by_slot[
-                                        index : index
-                                        + DIRECTION_STRUCTURED_BATCH_SIZE
-                                    ]
-                                    for fact_id in slot_fact_ids
-                                ]
-                                territory_direction_slots.append(
-                                    (
-                                        territory,
-                                        batch_slots,
-                                        batch_required_fact_ids,
-                                    )
-                                )
-                            next_direction_ordinal += territory.target_slots
+                        direction_planning_batches = (
+                            _creative_direction_planning_batches(landscape)
+                        )
+                        direction_planning_batch_count = len(
+                            direction_planning_batches
+                        )
 
-                        async def plan_territory_directions(
-                            territory: Any,
-                            required_slots: list[dict[str, str]],
-                            required_business_fact_ids: list[str],
+                        async def plan_direction_batch(
+                            planning_batch: DirectionPlanningBatch,
                         ) -> Any:
-                            scoped_territory = territory.model_copy(
+                            scoped_landscape = landscape.model_copy(
                                 update={
-                                    "target_slots": len(required_slots),
-                                    "required_fact_ids": required_business_fact_ids,
+                                    "territories": list(
+                                        planning_batch.territories
+                                    )
                                 }
                             )
-                            scoped_landscape = landscape.model_copy(
-                                update={"territories": [scoped_territory]}
+                            required_slots = list(planning_batch.slots)
+                            required_business_fact_ids = list(
+                                planning_batch.required_fact_ids
                             )
                             slot_context: Mapping[str, Any] = {
                                 "requiredDirectionSlots": required_slots,
@@ -1272,11 +1300,31 @@ class PromptGenerationPipeline:
                                     required_business_fact_ids
                                 ),
                             }
+                            territory_by_id = scoped_landscape.by_id
+                            allowed_fact_ids_by_direction = {
+                                slot["directionId"]: list(
+                                    territory_by_id[
+                                        slot["territoryId"]
+                                    ].compatible_fact_ids
+                                )
+                                for slot in required_slots
+                            }
+                            slot_context = {
+                                **slot_context,
+                                "allowedFactIdsByDirection": (
+                                    allowed_fact_ids_by_direction
+                                ),
+                            }
+                            scoped_compatible_fact_ids = {
+                                fact_id
+                                for territory in planning_batch.territories
+                                for fact_id in territory.compatible_fact_ids
+                            }
                             scoped_minimum_business_facts = min(
                                 minimum_business_facts_per_direction,
                                 len(
                                     business_fact_ids.intersection(
-                                        territory.compatible_fact_ids
+                                        scoped_compatible_fact_ids
                                     )
                                 ),
                             )
@@ -1285,6 +1333,9 @@ class PromptGenerationPipeline:
                             for territory_attempt in range(2):
                                 local_validation_details = {}
                                 self._reserve_ai_call(context)
+                                planning_call_counts[
+                                    "CREATIVE_DIRECTION_PLANNING"
+                                ] += 1
                                 try:
                                     async with self._ai_semaphore:
                                         territory_call = await self.provider.plan_creative_directions(
@@ -1301,26 +1352,30 @@ class PromptGenerationPipeline:
                                             delivery_channel=snapshot.settings.delivery_channel,
                                             revision_context=slot_context,
                                         )
-                                    expected_actions = {
-                                        slot["directionId"]: slot["primaryActionId"]
+                                    expected_slots = {
+                                        slot["directionId"]: (
+                                            slot["territoryId"],
+                                            slot["primaryActionId"],
+                                        )
                                         for slot in required_slots
                                     }
                                     actual_directions = {
                                         direction.direction_id: direction
                                         for direction in territory_call.value.directions
                                     }
-                                    if set(actual_directions) != set(expected_actions):
+                                    if set(actual_directions) != set(expected_slots):
                                         raise ValueError(
-                                            "territory directions did not fill the assigned slots"
+                                            "direction batch did not fill the assigned slots"
                                         )
                                     if any(
-                                        direction.territory_id != territory.territory_id
+                                        direction.territory_id
+                                        != expected_slots[direction_id][0]
                                         or direction.primary_action_id
-                                        != expected_actions[direction_id]
+                                        != expected_slots[direction_id][1]
                                         for direction_id, direction in actual_directions.items()
                                     ):
                                         raise ValueError(
-                                            "territory directions changed an assigned action"
+                                            "direction batch changed an assigned territory or action"
                                         )
                                     realized_required_fact_ids = {
                                         fact_id
@@ -1378,8 +1433,10 @@ class PromptGenerationPipeline:
                                                 preserved_by_direction
                                             ),
                                             "allowedFactIdsByDirection": {
-                                                direction_id: list(
-                                                    territory.compatible_fact_ids
+                                                direction_id: (
+                                                    allowed_fact_ids_by_direction[
+                                                        direction_id
+                                                    ]
                                                 )
                                                 for direction_id in actual_directions
                                             },
@@ -1424,8 +1481,10 @@ class PromptGenerationPipeline:
                                                 preserved_by_direction
                                             ),
                                             "allowedFactIdsByDirection": {
-                                                direction_id: list(
-                                                    territory.compatible_fact_ids
+                                                direction_id: (
+                                                    allowed_fact_ids_by_direction[
+                                                        direction_id
+                                                    ]
                                                 )
                                                 for direction_id in actual_directions
                                             },
@@ -1440,7 +1499,9 @@ class PromptGenerationPipeline:
                                             "additionalBusinessFactOptionsByDirection": {
                                                 direction_id: sorted(
                                                     business_fact_ids.intersection(
-                                                        territory.compatible_fact_ids
+                                                        allowed_fact_ids_by_direction[
+                                                            direction_id
+                                                        ]
                                                     )
                                                     - set(
                                                         actual_directions[
@@ -1510,24 +1571,20 @@ class PromptGenerationPipeline:
                                 "创意方向分空间规划未返回结果"
                             ) from last_error
 
-                        territory_calls = await asyncio.gather(
+                        direction_calls = await asyncio.gather(
                             *(
-                                plan_territory_directions(
-                                    territory,
-                                    slots,
-                                    required_fact_ids,
-                                )
-                                for territory, slots, required_fact_ids in territory_direction_slots
+                                plan_direction_batch(planning_batch)
+                                for planning_batch in direction_planning_batches
                             )
                         )
                         call_rows.extend(
-                            territory_call.metadata
-                            for territory_call in territory_calls
+                            direction_call.metadata
+                            for direction_call in direction_calls
                         )
                         merged_directions = [
                             direction
-                            for territory_call in territory_calls
-                            for direction in territory_call.value.directions
+                            for direction_call in direction_calls
+                            for direction in direction_call.value.directions
                         ]
                         direction_response = CreativeDirectionResponse(
                             directions=merged_directions
@@ -1838,6 +1895,9 @@ class PromptGenerationPipeline:
 
                         for _ in revision_context_batches:
                             self._reserve_ai_call(context)
+                            planning_call_counts[
+                                "CREATIVE_DIRECTION_REVISION"
+                            ] += 1
                         revision_calls = await asyncio.gather(
                             *(
                                 revise_direction_batch(batch_context)
@@ -1953,6 +2013,7 @@ class PromptGenerationPipeline:
                     audit_revision_context: Mapping[str, Any] | None = None
                     for audit_attempt in range(2):
                         self._reserve_ai_call(context)
+                        planning_call_counts["CREATIVE_DIRECTION_REVIEW"] += 1
                         try:
                             async with self._ai_semaphore:
                                 audit_call = (
@@ -2000,13 +2061,23 @@ class PromptGenerationPipeline:
                     raise PipelineError("创意方向语义分批复核未返回结果")
 
                 direction_audit_batches = [
-                    list(direction_response.directions[index : index + 7])
-                    for index in range(0, len(direction_response.directions), 7)
+                    list(
+                        direction_response.directions[
+                            index : index + DIRECTION_AUDIT_BATCH_SIZE
+                        ]
+                    )
+                    for index in range(
+                        0,
+                        len(direction_response.directions),
+                        DIRECTION_AUDIT_BATCH_SIZE,
+                    )
                 ]
+                direction_audit_batch_count = len(direction_audit_batches)
                 batch_audits = await asyncio.gather(
                     *(audit_direction_batch(batch) for batch in direction_audit_batches)
                 )
                 self._reserve_ai_call(context)
+                planning_call_counts["CREATIVE_DIRECTION_DIVERSITY_REVIEW"] += 1
                 async with self._ai_semaphore:
                     diversity_audit_call = (
                         await self.provider.audit_creative_direction_diversity(
@@ -2101,7 +2172,15 @@ class PromptGenerationPipeline:
                 "outputTokens": sum(item.output_tokens or 0 for item in call_rows),
                 "totalTokens": sum(item.total_tokens or 0 for item in call_rows),
                 "latencyMs": sum(item.latency_ms for item in call_rows),
+                "planningAiCallCount": sum(planning_call_counts.values()),
+                "planningCallBreakdown": [
+                    {"step": key, "count": count}
+                    for key, count in sorted(planning_call_counts.items())
+                ],
+                "directionPlanningBatchCount": direction_planning_batch_count,
+                "directionAuditBatchCount": direction_audit_batch_count,
             }
+            cache.creative_direction_call_metadata = call_metadata
         cache.creative_direction_plan = plan
         priority_counts = Counter(
             dimension.value
@@ -2302,15 +2381,21 @@ class PromptGenerationPipeline:
         return proposed
 
     def _creative_direction_metadata(self, context: RuntimeContext) -> dict[str, Any]:
-        plan = self._cache(context).creative_direction_plan
+        cache = self._cache(context)
+        plan = cache.creative_direction_plan
         if plan is None:
-            return {"directionCount": 0, "priorityDimensionDistribution": []}
+            return {
+                **cache.creative_direction_call_metadata,
+                "directionCount": 0,
+                "priorityDimensionDistribution": [],
+            }
         counts = Counter(
             dimension.value
             for direction in plan.directions
             for dimension in direction.priority_dimensions
         )
         return {
+            **cache.creative_direction_call_metadata,
             "directionCount": len(plan.directions),
             "territoryCount": (
                 len(plan.landscape.territories) if plan.landscape is not None else 0

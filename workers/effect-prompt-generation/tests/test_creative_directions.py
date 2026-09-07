@@ -42,6 +42,7 @@ from effect_prompt_generation.models import (
 from effect_prompt_generation.pipeline import (
     PromptGenerationPipeline,
     _creative_task_chunks,
+    _creative_direction_planning_batches,
     _silent_material_planning_inputs,
     _visually_required_business_fact_ids,
 )
@@ -82,6 +83,118 @@ from test_creatives import PromptApi, _runtime, _snapshot
 
 def test_creative_direction_count_scales_with_batch_size() -> None:
     assert creative_direction_target_count(10) == 8
+
+
+@pytest.mark.parametrize(
+    ("direction_count", "expected_batch_sizes"),
+    [(13, [8, 5]), (20, [8, 8, 4]), (32, [8, 8, 8, 8])],
+)
+def test_direction_planning_packs_multiple_territories_into_safe_batches(
+    direction_count: int,
+    expected_batch_sizes: list[int],
+) -> None:
+    from effect_prompt_generation.providers import _mock_creative_landscape_response
+
+    application = map_insight(_cluster_snapshot().insight_artifact.result)
+    landscape = validate_creative_diversity_landscape(
+        _mock_creative_landscape_response(
+            application,
+            direction_count=direction_count,
+        ),
+        application,
+        source_hash="a" * 64,
+        template_hash="b" * 64,
+        expected_direction_count=direction_count,
+    )
+
+    batches = _creative_direction_planning_batches(landscape, batch_size=8)
+
+    assert [len(batch.slots) for batch in batches] == expected_batch_sizes
+    assert len(batches[0].territories) > 1
+    slots = [slot for batch in batches for slot in batch.slots]
+    assert (
+        len(slots)
+        == len({slot["directionId"] for slot in slots})
+        == direction_count
+    )
+    assert all(slot["territoryId"] for slot in slots)
+    assert all(slot["primaryActionId"] for slot in slots)
+    required_fact_ids = [
+        fact_id for batch in batches for fact_id in batch.required_fact_ids
+    ]
+    assert len(required_fact_ids) == len(set(required_fact_ids))
+
+
+class CountingPlanningProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.calls: Counter[str] = Counter()
+
+    async def plan_creative_landscape(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls["space"] += 1
+        return await super().plan_creative_landscape(*args, **kwargs)
+
+    async def assign_creative_landscape_facts(
+        self, *args: Any, **kwargs: Any
+    ) -> Any:
+        self.calls["assignment"] += 1
+        return await super().assign_creative_landscape_facts(*args, **kwargs)
+
+    async def audit_creative_landscape(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls["space_review"] += 1
+        return await super().audit_creative_landscape(*args, **kwargs)
+
+    async def plan_creative_directions(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls["direction"] += 1
+        return await super().plan_creative_directions(*args, **kwargs)
+
+    async def audit_creative_directions(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls["direction_review"] += 1
+        return await super().audit_creative_directions(*args, **kwargs)
+
+    async def audit_creative_direction_diversity(
+        self, *args: Any, **kwargs: Any
+    ) -> Any:
+        self.calls["diversity_review"] += 1
+        return await super().audit_creative_direction_diversity(*args, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_ten_item_normal_path_uses_six_front_planning_calls() -> None:
+    api = PromptApi()
+    provider = CountingPlanningProvider()
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _cluster_snapshot())
+    await pipeline.map_insight(runtime)
+    await pipeline.compile_fact_visual_strategy(runtime)
+    await pipeline.compile_shared_prompt(runtime)
+
+    shards = await pipeline.plan_creatives(runtime, round_number=0)
+
+    assert shards
+    assert provider.calls == Counter(
+        {
+            "space": 1,
+            "assignment": 1,
+            "space_review": 1,
+            "direction": 1,
+            "direction_review": 1,
+            "diversity_review": 1,
+        }
+    )
+    stage = next(
+        item
+        for item in reversed(api.stages)
+        if item.node_id.value == "COHERENT_CREATIVE_GENERATION"
+        and "planningAiCallCount" in item.metadata
+    )
+    assert stage.metadata["planningAiCallCount"] == 6
+    assert stage.metadata["directionPlanningBatchCount"] == 1
+    assert stage.metadata["directionAuditBatchCount"] == 1
 
 
 def test_audit_transport_accepts_empty_explanatory_summaries() -> None:
@@ -442,7 +555,7 @@ async def test_global_direction_audit_can_revise_cross_batch_overlap() -> None:
 
     assert sum(len(item.tasks) for item in shards) == 70
     assert sum(provider.initial_slot_batch_sizes) == 20
-    assert max(provider.initial_slot_batch_sizes) <= 4
+    assert max(provider.initial_slot_batch_sizes) <= 8
     planned_required_fact_ids = [
         fact_id
         for batch in provider.initial_required_fact_batches
@@ -455,9 +568,9 @@ async def test_global_direction_audit_can_revise_cross_batch_overlap() -> None:
             pipeline._required_fact_visual_strategy(runtime),
         )
     )
-    # Initial planning is split by creative territory; the overlap repair is
-    # the only subsequent global direction call.
-    assert provider.direction_plan_calls > 2
+    # Initial planning safely packs several territories per call; the overlap
+    # repair remains the only subsequent targeted direction call.
+    assert provider.direction_plan_calls == 4
     assert provider.diversity_audit_calls == 2
     plan = pipeline._cache(runtime).creative_direction_plan
     assert plan is not None
@@ -1462,13 +1575,13 @@ async def test_missing_business_fact_retries_only_its_territory_batch_with_ai() 
     shards = await pipeline.plan_creatives(runtime, round_number=0)
 
     assert shards
-    assert len(provider.revision_contexts) > 2
+    assert len(provider.revision_contexts) >= 2
     assert (
         sum(
             bool(item and item.get("requiredDirectionSlots"))
             for item in provider.revision_contexts
         )
-        > 1
+        >= 1
     )
     retry_context = next(
         item
@@ -1515,8 +1628,8 @@ async def test_independent_ai_semantic_audit_requests_direction_replanning() -> 
     shards = await pipeline.plan_creatives(runtime, round_number=0)
 
     assert shards
-    assert provider.audit_calls == 4
-    assert provider.direction_calls > 2
+    assert provider.audit_calls == 2
+    assert provider.direction_calls == 2
     targeted_context = next(
         context
         for context in provider.direction_revision_contexts
@@ -1624,8 +1737,8 @@ async def test_repeated_semantic_audit_disagreement_becomes_advisory() -> None:
     shards = await pipeline.plan_creatives(runtime, round_number=0)
 
     assert shards
-    assert provider.audit_calls == 4
-    assert provider.direction_calls > 2
+    assert provider.audit_calls == 2
+    assert provider.direction_calls == 2
     plan = pipeline._cache(runtime).creative_direction_plan
     assert plan is not None
     assert plan.semantic_audit is not None
@@ -1803,17 +1916,20 @@ class LandscapeAuditThenReplanningProvider(MockAiProvider):
         self.assignment_revision_contexts.append(kwargs.get("revision_context"))
         return await super().assign_creative_landscape_facts(*args, **kwargs)
 
-    async def audit_creative_territory(self, *args: Any, **kwargs: Any) -> Any:
+    async def audit_creative_landscape(self, *args: Any, **kwargs: Any) -> Any:
         self.audit_calls += 1
-        call = await super().audit_creative_territory(*args, **kwargs)
+        call = await super().audit_creative_landscape(*args, **kwargs)
         if self.audit_calls > 1:
             return call
-        territory = kwargs["territory"]
+        landscape = kwargs["landscape"]
+        territory = landscape.territories[0]
         fact_id = territory.compatible_fact_ids[0]
         return replace(
             call,
-            value=CreativeTerritoryAuditResponse(
-                territory_id=territory.territory_id,
+            value=CreativeLandscapeAuditResponse(
+                reviewed_territory_ids=[
+                    item.territory_id for item in landscape.territories
+                ],
                 fact_issues=[
                     CreativeLandscapeFactIssue(
                         territory_id=territory.territory_id,
@@ -1822,25 +1938,30 @@ class LandscapeAuditThenReplanningProvider(MockAiProvider):
                         reason="该事实依赖资料未确认的画面条件",
                     )
                 ],
-                summary="独立复核要求修订一个创意空间",
+                requires_revision=True,
+                revision_territory_ids=[territory.territory_id],
+                summary="批量复核要求修订一个创意空间",
             ),
         )
 
 
 class WeakTerritoryAuditProvider(LandscapeAuditThenReplanningProvider):
-    async def audit_creative_territory(self, *args: Any, **kwargs: Any) -> Any:
+    async def audit_creative_landscape(self, *args: Any, **kwargs: Any) -> Any:
         self.audit_calls += 1
-        call = await MockAiProvider.audit_creative_territory(
+        call = await MockAiProvider.audit_creative_landscape(
             self, *args, **kwargs
         )
         if self.audit_calls > 1:
             return call
-        territory = kwargs["territory"]
+        landscape = kwargs["landscape"]
+        territory = landscape.territories[0]
         fact_id = territory.compatible_fact_ids[0]
         return replace(
             call,
-            value=CreativeTerritoryAuditResponse(
-                territory_id=territory.territory_id,
+            value=CreativeLandscapeAuditResponse(
+                reviewed_territory_ids=[
+                    item.territory_id for item in landscape.territories
+                ],
                 fact_issues=[
                     CreativeLandscapeFactIssue(
                         territory_id=territory.territory_id,
@@ -1849,6 +1970,8 @@ class WeakTerritoryAuditProvider(LandscapeAuditThenReplanningProvider):
                         reason="关系可以使用，但创意承载仍可更自然",
                     )
                 ],
+                requires_revision=False,
+                revision_territory_ids=[],
                 summary="存在一项偏弱但不依赖未确认条件的关系",
             ),
         )
@@ -1856,20 +1979,17 @@ class WeakTerritoryAuditProvider(LandscapeAuditThenReplanningProvider):
 
 class TransientTerritoryAuditProvider(MockAiProvider):
     def __init__(self) -> None:
-        self.calls: Counter[str] = Counter()
-        self.failed_once = False
+        self.audit_calls = 0
 
-    async def audit_creative_territory(self, *args: Any, **kwargs: Any) -> Any:
-        territory = kwargs["territory"]
-        self.calls[territory.territory_id] += 1
-        if not self.failed_once:
-            self.failed_once = True
+    async def audit_creative_landscape(self, *args: Any, **kwargs: Any) -> Any:
+        self.audit_calls += 1
+        if self.audit_calls == 1:
             raise ProviderError(
-                "temporary territory audit timeout",
+                "temporary landscape audit timeout",
                 retryable=True,
                 error_type=ProviderErrorType.TIMEOUT,
             )
-        return await super().audit_creative_territory(*args, **kwargs)
+        return await super().audit_creative_landscape(*args, **kwargs)
 
 
 class StructuralThenSemanticLandscapeProvider(LandscapeAuditThenReplanningProvider):
@@ -1929,21 +2049,17 @@ class StructuralThenInvalidAssignmentProvider(LandscapeAuditThenReplanningProvid
 
 class TwiceTransientTerritoryAuditProvider(MockAiProvider):
     def __init__(self) -> None:
-        self.calls: Counter[str] = Counter()
-        self.target_id: str | None = None
+        self.audit_calls = 0
 
-    async def audit_creative_territory(self, *args: Any, **kwargs: Any) -> Any:
-        territory = kwargs["territory"]
-        if self.target_id is None:
-            self.target_id = territory.territory_id
-        self.calls[territory.territory_id] += 1
-        if territory.territory_id == self.target_id and self.calls[self.target_id] < 3:
+    async def audit_creative_landscape(self, *args: Any, **kwargs: Any) -> Any:
+        self.audit_calls += 1
+        if self.audit_calls == 1:
             raise ProviderError(
-                "temporary territory audit network error",
+                "temporary landscape audit network error",
                 retryable=True,
                 error_type=ProviderErrorType.NETWORK,
             )
-        return await super().audit_creative_territory(*args, **kwargs)
+        return await super().audit_creative_landscape(*args, **kwargs)
 
 
 @pytest.mark.asyncio
@@ -2001,7 +2117,7 @@ async def test_weak_landscape_finding_is_advisory_and_does_not_replan() -> None:
 
 
 @pytest.mark.asyncio
-async def test_transient_territory_audit_retries_only_failed_branch() -> None:
+async def test_transient_landscape_audit_retries_the_compact_batch_once() -> None:
     api = PromptApi()
     provider = TransientTerritoryAuditProvider()
     pipeline = PromptGenerationPipeline(
@@ -2019,13 +2135,7 @@ async def test_transient_territory_audit_retries_only_failed_branch() -> None:
     await pipeline.compile_shared_prompt(runtime)
     await pipeline.plan_creatives(runtime, round_number=0)
 
-    plan = pipeline._cache(runtime).creative_direction_plan
-    assert plan is not None
-    assert plan.landscape is not None
-    assert len(provider.calls) == len(plan.landscape.territories)
-    assert Counter(provider.calls.values()) == Counter(
-        {1: len(plan.landscape.territories) - 1, 2: 1}
-    )
+    assert provider.audit_calls == 2
 
 
 @pytest.mark.asyncio
@@ -2109,7 +2219,7 @@ async def test_fact_assignment_invalid_json_retries_without_replanning_landscape
 
 
 @pytest.mark.asyncio
-async def test_territory_audit_retries_twice_without_restarting_other_branches() -> None:
+async def test_landscape_audit_has_one_local_retry_before_task_failure() -> None:
     api = PromptApi()
     provider = TwiceTransientTerritoryAuditProvider()
     pipeline = PromptGenerationPipeline(
@@ -2127,13 +2237,7 @@ async def test_territory_audit_retries_twice_without_restarting_other_branches()
     await pipeline.compile_shared_prompt(runtime)
     await pipeline.plan_creatives(runtime, round_number=0)
 
-    assert provider.target_id is not None
-    assert provider.calls[provider.target_id] == 3
-    assert all(
-        count == 1
-        for territory_id, count in provider.calls.items()
-        if territory_id != provider.target_id
-    )
+    assert provider.audit_calls == 2
 
 
 def test_landscape_requires_ai_fact_compatibility_guidance() -> None:

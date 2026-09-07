@@ -24,6 +24,8 @@ ACTIVE_PROMPT_FILES = {
     "creative_landscape.user.prompt.txt",
     "creative_landscape_audit.system.prompt.txt",
     "creative_landscape_audit.user.prompt.txt",
+    "creative_landscape_batch_audit.system.prompt.txt",
+    "creative_landscape_batch_audit.user.prompt.txt",
     "creative_direction_audit.system.prompt.txt",
     "creative_direction_audit.user.prompt.txt",
     "creative_direction_diversity_audit.system.prompt.txt",

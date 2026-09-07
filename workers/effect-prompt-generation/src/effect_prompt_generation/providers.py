@@ -92,6 +92,12 @@ CREATIVE_LANDSCAPE_BASE_PROMPT = "creative_landscape.system.prompt.txt"
 CREATIVE_LANDSCAPE_TASK_PROMPT = "creative_landscape.user.prompt.txt"
 CREATIVE_LANDSCAPE_AUDIT_BASE_PROMPT = "creative_landscape_audit.system.prompt.txt"
 CREATIVE_LANDSCAPE_AUDIT_TASK_PROMPT = "creative_landscape_audit.user.prompt.txt"
+CREATIVE_LANDSCAPE_BATCH_AUDIT_BASE_PROMPT = (
+    "creative_landscape_batch_audit.system.prompt.txt"
+)
+CREATIVE_LANDSCAPE_BATCH_AUDIT_TASK_PROMPT = (
+    "creative_landscape_batch_audit.user.prompt.txt"
+)
 CREATIVE_FACT_TERRITORY_ASSIGNMENT_BASE_PROMPT = (
     "creative_fact_territory_assignment.system.prompt.txt"
 )
@@ -124,6 +130,10 @@ CREATIVE_DIRECTION_TEMPLATE_HASH = hashlib.sha256(
         + load_prompt(CREATIVE_LANDSCAPE_AUDIT_BASE_PROMPT)
         + "\n"
         + load_prompt(CREATIVE_LANDSCAPE_AUDIT_TASK_PROMPT)
+        + "\n"
+        + load_prompt(CREATIVE_LANDSCAPE_BATCH_AUDIT_BASE_PROMPT)
+        + "\n"
+        + load_prompt(CREATIVE_LANDSCAPE_BATCH_AUDIT_TASK_PROMPT)
         + "\n"
         + load_prompt(CREATIVE_FACT_TERRITORY_ASSIGNMENT_BASE_PROMPT)
         + "\n"
@@ -280,6 +290,14 @@ class AiProvider(Protocol):
         fact_visual_strategy: FactVisualStrategy,
         territory: CreativeTerritory,
     ) -> AiCallResult[CreativeTerritoryAuditResponse]: ...
+
+    async def audit_creative_landscape(
+        self,
+        application: InsightApplicationMap,
+        *,
+        fact_visual_strategy: FactVisualStrategy,
+        landscape: CreativeDiversityLandscape,
+    ) -> AiCallResult[CreativeLandscapeAuditResponse]: ...
 
     async def audit_creative_directions(
         self,
@@ -544,6 +562,20 @@ class MockAiProvider:
             _mock_creative_territory_audit(territory),
             NodeId.COHERENT_CREATIVE_GENERATION.value,
             CREATIVE_LANDSCAPE_AUDIT_BASE_PROMPT,
+        )
+
+    async def audit_creative_landscape(
+        self,
+        application: InsightApplicationMap,
+        *,
+        fact_visual_strategy: FactVisualStrategy,
+        landscape: CreativeDiversityLandscape,
+    ) -> AiCallResult[CreativeLandscapeAuditResponse]:
+        del application, fact_visual_strategy
+        return _mock_result(
+            _mock_creative_landscape_audit(landscape),
+            NodeId.COHERENT_CREATIVE_GENERATION.value,
+            CREATIVE_LANDSCAPE_BATCH_AUDIT_BASE_PROMPT,
         )
 
     async def audit_creative_directions(
@@ -1119,6 +1151,97 @@ class ArkResponsesProvider:
             metadata=call.metadata,
         )
 
+    async def audit_creative_landscape(
+        self,
+        application: InsightApplicationMap,
+        *,
+        fact_visual_strategy: FactVisualStrategy,
+        landscape: CreativeDiversityLandscape,
+    ) -> AiCallResult[CreativeLandscapeAuditResponse]:
+        fact_aliases, fact_ids_by_alias = _fact_alias_maps(application)
+        scoped_fact_ids = {
+            fact_id
+            for territory in landscape.territories
+            for fact_id in territory.compatible_fact_ids
+        }
+        facts = [
+            {
+                "factId": fact_aliases[fact.fact_id],
+                "field": fact.field.value,
+                "value": fact.value,
+                "policy": fact.policy.value,
+            }
+            for fact in application.usable
+            if fact.fact_id in scoped_fact_ids
+        ]
+        visual_policies = [
+            {
+                "factId": fact_aliases[policy.fact_id],
+                "visualUsage": policy.visual_usage.value,
+                "visualInstruction": policy.visual_instruction,
+                "contextInstruction": policy.context_instruction,
+                "compatibleFactIds": [
+                    fact_aliases[fact_id]
+                    for fact_id in policy.compatible_fact_ids
+                    if fact_id in fact_aliases
+                ],
+                "forbiddenInferences": policy.forbidden_inferences,
+            }
+            for policy in fact_visual_strategy.policies
+            if policy.fact_id in scoped_fact_ids
+        ]
+        prompt = render_prompt(
+            CREATIVE_LANDSCAPE_BATCH_AUDIT_TASK_PROMPT,
+            facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
+            fact_visual_strategy_json=json.dumps(
+                visual_policies,
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            creative_landscape_json=json.dumps(
+                _remap_fact_references(
+                    [
+                        territory.model_dump(mode="json", by_alias=True)
+                        for territory in landscape.territories
+                    ],
+                    fact_aliases,
+                ),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )
+        call = await self._structured(
+            prompt,
+            CreativeLandscapeAuditResponse,
+            schema_name="effect_prompt_creative_landscape_batch_audit",
+            stage=NodeId.COHERENT_CREATIVE_GENERATION.value,
+            prompt_file=CREATIVE_LANDSCAPE_BATCH_AUDIT_BASE_PROMPT,
+            model=self._evaluation_model,
+            max_output_tokens=self._strategy_max_output_tokens,
+            request_timeout=self._evaluation_timeout,
+            instructions=load_prompt(CREATIVE_LANDSCAPE_BATCH_AUDIT_BASE_PROMPT),
+        )
+        return AiCallResult(
+            value=CreativeLandscapeAuditResponse(
+                reviewed_territory_ids=call.value.reviewed_territory_ids,
+                fact_issues=[
+                    issue.model_copy(
+                        update={
+                            "fact_id": fact_ids_by_alias.get(
+                                issue.fact_id,
+                                issue.fact_id,
+                            )
+                        }
+                    )
+                    for issue in call.value.fact_issues
+                ],
+                requires_revision=call.value.requires_revision,
+                revision_territory_ids=call.value.revision_territory_ids,
+                summary=call.value.summary,
+            ),
+            metadata=call.metadata,
+        )
+
     async def plan_creative_directions(
         self,
         application: InsightApplicationMap,
@@ -1300,8 +1423,9 @@ class ArkResponsesProvider:
             and all(isinstance(item, dict) for item in required_direction_slots)
         ):
             direction_output_instruction = (
-                "这是首次分空间规划。directions 数组必须逐项对应以下方向槽位，"
-                "directionId 与 primaryActionId 必须原样使用，不得交换、重复或自选："
+                "这是首次批量规划。directions 数组必须逐项对应以下方向槽位，"
+                "directionId、territoryId 与 primaryActionId 必须原样使用，"
+                "不得交换、重复或自选："
                 + json.dumps(required_direction_slots, ensure_ascii=False)
                 + "。本分片必须共同覆盖 requiredBusinessFactIds："
                 + json.dumps(required_business_fact_ids, ensure_ascii=False)

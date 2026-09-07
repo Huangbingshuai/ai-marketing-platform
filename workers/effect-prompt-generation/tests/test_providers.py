@@ -669,6 +669,89 @@ async def test_ark_compiles_visual_usage_for_every_confirmed_fact() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ark_landscape_batch_audit_reviews_all_spaces_in_one_call() -> None:
+    from effect_prompt_generation.creative_directions import (
+        validate_creative_diversity_landscape,
+    )
+    from effect_prompt_generation.providers import (
+        CREATIVE_DIRECTION_TEMPLATE_HASH,
+        _mock_creative_landscape_response,
+        _mock_fact_visual_strategy,
+    )
+
+    application = map_insight(
+        {
+            "productName": "便携杯",
+            "productCategory": "饮水容器",
+            "coreSellingPoints": ["单手开合", "防漏杯盖"],
+            "corePainPoints": ["普通杯盖需要双手操作"],
+            "targetAudiences": ["通勤成年人"],
+            "usageScenarios": ["通勤途中饮水"],
+        }
+    )
+    strategy = validate_fact_visual_strategy(
+        _mock_fact_visual_strategy(application),
+        application,
+        source_content_hash="1" * 64,
+        template_hash="2" * 64,
+    )
+    landscape = validate_creative_diversity_landscape(
+        _mock_creative_landscape_response(application, direction_count=8),
+        application,
+        source_hash="3" * 64,
+        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+        expected_direction_count=8,
+    )
+    seen_prompts: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        seen_prompts.append(payload["input"][0]["content"][0]["text"])
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "output_text": json.dumps(
+                    {
+                        "reviewedTerritoryIds": [
+                            item.territory_id for item in landscape.territories
+                        ],
+                        "factIssues": [],
+                        "requiresRevision": False,
+                        "revisionTerritoryIds": [],
+                        "summary": "整套创意空间关系自然",
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        )
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.example/v3",
+        api_key="test-key",
+        strategy_model="strategy-model",
+        candidate_model="creative-model",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        call = await provider.audit_creative_landscape(
+            application,
+            fact_visual_strategy=strategy,
+            landscape=landscape,
+        )
+    finally:
+        await provider.aclose()
+
+    assert len(seen_prompts) == 1
+    assert call.value.reviewed_territory_ids == [
+        item.territory_id for item in landscape.territories
+    ]
+    assert all(item.label in seen_prompts[0] for item in landscape.territories)
+    assert "单手开合" in seen_prompts[0]
+    assert all(fact.fact_id not in seen_prompts[0] for fact in application.usable)
+
+
+@pytest.mark.asyncio
 async def test_ark_direction_audit_reviews_each_fact_and_restores_fact_ids() -> None:
     from effect_prompt_generation.creative_directions import (
         validate_creative_diversity_landscape,

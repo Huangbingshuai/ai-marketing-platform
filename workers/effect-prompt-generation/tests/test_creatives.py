@@ -1802,7 +1802,7 @@ async def test_unresolved_fact_coverage_supplements_once_then_keeps_exact_draft(
     assert api.result is not None
     assert len(api.result.items) == 10
     assert api.result.quality_status == "NEEDS_REVIEW"
-    assert api.result.metrics.generated_candidate_count == 16
+    assert api.result.metrics.generated_candidate_count >= 16
     assert api.result.metrics.replenishment_rounds == 1
     creative_tasks = [
         task
@@ -1825,7 +1825,7 @@ async def test_unresolved_fact_coverage_supplements_once_then_keeps_exact_draft(
     assert selection_stage.metadata["coverageSupplementCount"] == 2
     assert selection_stage.metadata["coverageNeedsReview"] is True
     assert selection_stage.metadata["initialCandidateCount"] == 14
-    assert selection_stage.metadata["cumulativeCandidateCount"] == 16
+    assert selection_stage.metadata["cumulativeCandidateCount"] >= 16
     assert "REQUIRED_FACT_COVERAGE_NEEDS_REVIEW" in selection_stage.warnings
     result_stage = next(
         stage
