@@ -1332,10 +1332,57 @@ class PromptGenerationPipeline:
                                         - realized_required_fact_ids
                                     )
                                     if missing_required_fact_ids:
+                                        required_fact_id_set = set(
+                                            required_business_fact_ids
+                                        )
+                                        preserved_by_direction = {
+                                            direction.direction_id: [
+                                                fact_id
+                                                for fact_id in direction.fact_ids
+                                                if fact_id in required_fact_id_set
+                                            ]
+                                            for direction in actual_directions.values()
+                                        }
+                                        eligible_direction_ids = [
+                                            direction.direction_id
+                                            for direction in actual_directions.values()
+                                            if len(
+                                                preserved_by_direction[
+                                                    direction.direction_id
+                                                ]
+                                            )
+                                            < 4
+                                        ]
                                         local_validation_details = {
                                             "missingBusinessFactIds": (
                                                 missing_required_fact_ids
                                             ),
+                                            "revisionDirectionIds": list(
+                                                actual_directions
+                                            ),
+                                            "revisionRequiredBusinessFactIds": list(
+                                                required_business_fact_ids
+                                            ),
+                                            "revisionFactOptions": [
+                                                {
+                                                    "factId": fact_id,
+                                                    "eligibleDirectionIds": (
+                                                        eligible_direction_ids
+                                                    ),
+                                                }
+                                                for fact_id in (
+                                                    missing_required_fact_ids
+                                                )
+                                            ],
+                                            "preservedBusinessFactIdsByDirection": (
+                                                preserved_by_direction
+                                            ),
+                                            "allowedFactIdsByDirection": {
+                                                direction_id: list(
+                                                    territory.compatible_fact_ids
+                                                )
+                                                for direction_id in actual_directions
+                                            },
                                             "previousDirections": [
                                                 direction.model_dump(
                                                     mode="json",
@@ -1358,10 +1405,30 @@ class PromptGenerationPipeline:
                                         < scoped_minimum_business_facts
                                     ]
                                     if underfilled_direction_ids:
+                                        preserved_by_direction = {
+                                            direction.direction_id: [
+                                                fact_id
+                                                for fact_id in direction.fact_ids
+                                                if fact_id in business_fact_ids
+                                            ]
+                                            for direction in actual_directions.values()
+                                        }
                                         local_validation_details = {
                                             "underfilledDirectionIds": (
                                                 underfilled_direction_ids
                                             ),
+                                            "revisionDirectionIds": list(
+                                                actual_directions
+                                            ),
+                                            "preservedBusinessFactIdsByDirection": (
+                                                preserved_by_direction
+                                            ),
+                                            "allowedFactIdsByDirection": {
+                                                direction_id: list(
+                                                    territory.compatible_fact_ids
+                                                )
+                                                for direction_id in actual_directions
+                                            },
                                             "minimumBusinessFactsByDirection": {
                                                 direction_id: (
                                                     scoped_minimum_business_facts
@@ -1419,13 +1486,17 @@ class PromptGenerationPipeline:
                                                 "根据 validationError、previousDirections、"
                                                 "underfilledDirectionIds 与"
                                                 "additionalBusinessFactOptionsByDirection"
-                                                " 定向重组本分片。"
+                                                " 定向补全本分片。"
                                                 "本次必须原样填写每个 directionId 与"
                                                 "primaryActionId，并让 requiredBusinessFactIds"
                                                 " 中每个事实至少出现在一个方向的"
                                                 " factApplications 中；同时每个方向必须"
                                                 f"自然使用至少 {scoped_minimum_business_facts} "
-                                                "条业务事实。"
+                                                "条业务事实。逐方向保留"
+                                                " preservedBusinessFactIdsByDirection 中已"
+                                                "正确承担的事实，不得为了补入一项又删除"
+                                                "另一项；缺失事实只能进入 revisionFactOptions"
+                                                " 点名且仍有容量的合法方向。"
                                             ),
                                         }
                                         continue
@@ -2010,6 +2081,7 @@ class PromptGenerationPipeline:
                         revision_context = creative_direction_audit_revision_context(
                             draft_plan,
                             audit,
+                            application,
                             diversity_audit,
                         )
                         semantic_revision_count += 1
@@ -4876,7 +4948,15 @@ def _silent_material_planning_inputs(
     projected_strategy = strategy.model_copy(
         update={
             "policies": [
-                policy
+                policy.model_copy(
+                    update={
+                        "compatible_fact_ids": [
+                            fact_id
+                            for fact_id in policy.compatible_fact_ids
+                            if fact_id in projected_ids
+                        ]
+                    }
+                )
                 for policy in strategy.policies
                 if policy.fact_id in projected_ids
             ]

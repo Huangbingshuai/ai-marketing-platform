@@ -967,9 +967,49 @@ def extend_creative_direction_plan(
 def creative_direction_audit_revision_context(
     plan: CreativeDirectionPlan,
     audit: CreativeDirectionAudit,
+    application: InsightApplicationMap,
     diversity_audit: CreativeDirectionDiversityAudit | None = None,
 ) -> dict[str, object]:
     revision_ids = set(audit.revision_direction_ids)
+    business_fact_ids = [
+        fact.fact_id for fact in mandatory_business_facts(application)
+    ]
+    business_fact_id_set = set(business_fact_ids)
+    locked_business_fact_ids = {
+        fact_id
+        for direction in plan.directions
+        if direction.direction_id not in revision_ids
+        for fact_id in direction.fact_ids
+        if fact_id in business_fact_id_set
+    }
+    revision_required_business_fact_ids = [
+        fact_id
+        for fact_id in business_fact_ids
+        if fact_id not in locked_business_fact_ids
+    ]
+    landscape = plan.landscape
+    allowed_fact_ids_by_direction = {
+        direction.direction_id: (
+            list(landscape.by_id[direction.territory_id].compatible_fact_ids)
+            if landscape is not None
+            else list(direction.fact_ids)
+        )
+        for direction in plan.directions
+        if direction.direction_id in revision_ids
+    }
+    revision_fact_options = [
+        {
+            "factId": fact_id,
+            "eligibleDirectionIds": [
+                direction.direction_id
+                for direction in plan.directions
+                if direction.direction_id in revision_ids
+                and fact_id
+                in allowed_fact_ids_by_direction.get(direction.direction_id, [])
+            ],
+        }
+        for fact_id in revision_required_business_fact_ids
+    ]
     return {
         "semanticAudit": {
             "requiresRevision": audit.requires_revision,
@@ -991,6 +1031,15 @@ def creative_direction_audit_revision_context(
             for item in plan.directions
             if item.direction_id in revision_ids
         ],
+        # A semantic revision is allowed to change relationships, but it must
+        # not accidentally delete the only remaining carrier of a mandatory
+        # business fact.  Worker only computes ID coverage and legal territory
+        # destinations here; the AI still decides the natural relationship and
+        # wording for every repaired direction.
+        "revisionRequiredBusinessFactIds": revision_required_business_fact_ids,
+        "revisionFactOptions": revision_fact_options,
+        "revisionFactApplicationCapacity": len(revision_ids) * 4,
+        "allowedFactIdsByDirection": allowed_fact_ids_by_direction,
         "revisionDirectionIds": audit.revision_direction_ids,
         "revisionInstruction": (
             "依据独立语义复核只重新规划被点名的方向，修复其事实关系、"
@@ -998,6 +1047,9 @@ def creative_direction_audit_revision_context(
             "diversityAudit 给出的方向不能只换说法，必须改变其主要场景、人物关系、"
             "产品主动作或镜头构成中的实质组合。事实必须转移到"
             "自然相容的版图与方向，不能为了覆盖率硬塞，也不得由系统替换事实。"
+            "revisionRequiredBusinessFactIds 是未修订方向无法代为保留的全批事实，"
+            "本轮输出的 factApplications 合集必须逐项覆盖；revisionFactOptions "
+            "给出每项事实可进入的合法方向，只能在这些方向中由你选择自然关系。"
         ),
     }
 

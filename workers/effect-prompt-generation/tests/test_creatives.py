@@ -27,8 +27,10 @@ from effect_prompt_generation.models import (
     CreativeFactAssignment,
     CreativeScores,
     CreativeTask,
+    FactVisualPolicyDraft,
     FactEvidence,
     FactVisualStrategy,
+    FactVisualUsage,
     FragmentType,
     InsightApplicationMap,
     InsightField,
@@ -53,6 +55,7 @@ from effect_prompt_generation.pipeline import (
     _maximum_semantic_duplicates,
     _semantic_evaluation,
     _semantic_aware_similarity_resolver,
+    _silent_material_planning_inputs,
 )
 from effect_prompt_generation.providers import (
     MockAiProvider,
@@ -862,6 +865,53 @@ async def test_visual_strategy_graph_compiles_direction_fact_plan_before_generat
     ]
     assert assignments
     assert all(1 <= len(assignment.fact_ids) <= 4 for assignment in assignments)
+
+
+def test_silent_material_projection_removes_deferred_compatible_fact_references() -> None:
+    application = map_insight(
+        {
+            "productName": "紫苏梅子酱",
+            "productCategory": "复合调味酱",
+            "coreSellingPoints": ["酸甜咸鲜复合口感", "传统配方工艺"],
+        }
+    )
+    facts = {fact.value: fact for fact in application.usable}
+    visible = facts["酸甜咸鲜复合口感"]
+    deferred = facts["传统配方工艺"]
+    policies = []
+    for fact in application.usable:
+        usage = FactVisualUsage.IDENTITY_ANCHOR
+        compatible_fact_ids: list[str] = []
+        if fact.fact_id == visible.fact_id:
+            usage = FactVisualUsage.DIRECTLY_VISIBLE
+            compatible_fact_ids = [deferred.fact_id]
+        elif fact.fact_id == deferred.fact_id:
+            usage = FactVisualUsage.FORBIDDEN_VISUAL_PROOF
+        policies.append(
+            FactVisualPolicyDraft(
+                fact_id=fact.fact_id,
+                visual_usage=usage,
+                compatible_fact_ids=compatible_fact_ids,
+            )
+        )
+    strategy = FactVisualStrategy(
+        source_content_hash="source",
+        template_hash="a" * 64,
+        strategy_hash="b" * 64,
+        policies=policies,
+    )
+
+    projected_application, projected_strategy = _silent_material_planning_inputs(
+        application,
+        strategy,
+    )
+
+    assert deferred.fact_id not in projected_application.by_id
+    assert deferred.fact_id not in projected_strategy.by_id
+    assert all(
+        deferred.fact_id not in policy.compatible_fact_ids
+        for policy in projected_strategy.policies
+    )
 
 
 @pytest.mark.asyncio

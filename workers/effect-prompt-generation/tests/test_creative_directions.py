@@ -42,6 +42,7 @@ from effect_prompt_generation.models import (
 from effect_prompt_generation.pipeline import (
     PromptGenerationPipeline,
     _creative_task_chunks,
+    _silent_material_planning_inputs,
     _visually_required_business_fact_ids,
 )
 from effect_prompt_generation.providers import (
@@ -64,6 +65,7 @@ from effect_prompt_generation.creative_directions import (
     max_cluster_share,
     merge_creative_landscape_territory_revision,
     merge_creative_direction_revision,
+    creative_direction_audit_revision_context,
     creative_direction_revision_context,
     semantic_cluster_novelty,
     validate_semantic_profile,
@@ -1475,6 +1477,16 @@ async def test_missing_business_fact_retries_only_its_territory_batch_with_ai() 
     )
     assert retry_context["requiredDirectionSlots"]
     assert retry_context["requiredBusinessFactIds"]
+    assert retry_context["revisionDirectionIds"]
+    assert retry_context["revisionRequiredBusinessFactIds"] == (
+        retry_context["requiredBusinessFactIds"]
+    )
+    assert retry_context["preservedBusinessFactIdsByDirection"]
+    assert retry_context["revisionFactOptions"]
+    assert all(
+        option["eligibleDirectionIds"]
+        for option in retry_context["revisionFactOptions"]
+    )
     assert provider.omission_count == 1
     assert all(
         task.fact_assignment is not None
@@ -1517,10 +1529,44 @@ async def test_independent_ai_semantic_audit_requests_direction_replanning() -> 
         and slot["primaryActionId"]
         for slot in targeted_context["requiredDirectionSlots"]
     )
+    required_fact_ids = set(targeted_context["revisionRequiredBusinessFactIds"])
+    assert {
+        option["factId"] for option in targeted_context["revisionFactOptions"]
+    } == required_fact_ids
+    assert all(
+        option["eligibleDirectionIds"]
+        and set(option["eligibleDirectionIds"]).issubset(
+            targeted_context["revisionDirectionIds"]
+        )
+        for option in targeted_context["revisionFactOptions"]
+    )
     plan = pipeline._cache(runtime).creative_direction_plan
     assert plan is not None
     assert plan.semantic_audit is not None
     assert plan.semantic_audit.requires_revision is False
+    projected_application, _ = _silent_material_planning_inputs(
+        pipeline._require_application(runtime),
+        pipeline._required_fact_visual_strategy(runtime),
+    )
+    all_revision_ids = [direction.direction_id for direction in plan.directions]
+    full_revision_context = creative_direction_audit_revision_context(
+        plan,
+        plan.semantic_audit.model_copy(
+            update={
+                "requires_revision": True,
+                "revision_direction_ids": all_revision_ids,
+            }
+        ),
+        projected_application,
+    )
+    assert set(full_revision_context["revisionRequiredBusinessFactIds"]) == {
+        fact.fact_id
+        for fact in mandatory_business_facts(projected_application)
+    }
+    assert all(
+        option["eligibleDirectionIds"]
+        for option in full_revision_context["revisionFactOptions"]
+    )
 
 
 @pytest.mark.asyncio

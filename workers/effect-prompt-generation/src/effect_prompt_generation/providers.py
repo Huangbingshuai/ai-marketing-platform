@@ -832,7 +832,9 @@ class ArkResponsesProvider:
                 "visualInstruction": policy.visual_instruction,
                 "contextInstruction": policy.context_instruction,
                 "compatibleFactIds": [
-                    fact_aliases[fact_id] for fact_id in policy.compatible_fact_ids
+                    fact_aliases[fact_id]
+                    for fact_id in policy.compatible_fact_ids
+                    if fact_id in fact_aliases
                 ],
                 "forbiddenInferences": policy.forbidden_inferences,
             }
