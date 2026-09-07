@@ -246,6 +246,8 @@ docker compose logs --tail 100 effect-extraction-worker
 
 ### 5. 启动素材片段 Prompt Worker
 
+Prompt 创意方向与拍摄模板已增强观众关注点、产品价值表达和镜头信息推进，使用原有字段，不增加模型调用或质量门禁。编译器仍只分配时间和排版；真实营销质量提升尚待同参数模型输出对比。见 [营销表达与镜头推进实施记录](docs/workflows/effect/plans/效果类Prompt-营销表达与镜头推进优化实施方案.md)。
+
 正常 Ark 模式：
 
 ```powershell

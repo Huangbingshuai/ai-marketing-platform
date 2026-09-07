@@ -27,6 +27,7 @@ from effect_prompt_generation.providers import (
     _validate_structured_output,
 )
 from effect_prompt_generation.reliability import evaluation_chunks
+from effect_prompt_generation.prompt_loader import load_prompt, load_prompt_hash
 from effect_prompt_generation.visual_strategy import validate_fact_visual_strategy
 
 
@@ -399,6 +400,109 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
     assert "【逐秒镜头】" in call.value.items[0].content
     assert "0–3秒" in call.value.items[0].content
     assert call.value.items[0].shot_plan is not None
+
+
+@pytest.mark.parametrize("duration", [4, 8, 15, 20, 25, 30])
+@pytest.mark.parametrize("regenerate", [False, True])
+@pytest.mark.parametrize(
+    ("product", "feature", "action", "dialogue"),
+    [
+        ("便携杯", "单手开合", "成年人拇指打开杯盖，另一只手仍提着包", "这只手就能打开"),
+        ("衬衫", "侧面口袋", "成年人将小卡片放入侧面口袋，手顺势离开", None),
+        ("调味酱", "用于蘸食", "成年人拿起一块即食食物，轻蘸碟中的酱料", "这块我蘸着吃"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_director_request_and_compilation_across_products_and_durations(
+    duration: int,
+    regenerate: bool,
+    product: str,
+    feature: str,
+    action: str,
+    dialogue: str | None,
+) -> None:
+    # Authored responses test transport/compilation, not AI creative quality.
+    application = map_insight({"productName": product, "coreSellingPoints": [feature]})
+    fact = next(item for item in application.usable if item.value == feature)
+    shot_plan = _shot_plan()
+    shot_plan.update(
+        overview={
+            "visualIntent": f"通过具体动作理解{feature}",
+            "visualStyle": "自然生活记录",
+            "audioDirection": "保留动作声，不加背景音乐",
+        },
+        scene={
+            "environment": "室内日常使用空间",
+            "lighting": "侧窗柔光使接触处可见",
+            "initialState": f"{product}和必要道具就位，成年人手部在画面内",
+        },
+        beats=[{
+            "sequence": 1,
+            "durationWeight": 1,
+            "framing": "手部与产品同框近景",
+            "action": action,
+            "camera": "固定机位，焦点从靠近的手移到实际接触处",
+            "visibleResult": "手结束动作，产品仍在原位",
+            "dialogue": dialogue,
+            "sound": "保留手与物体接触的现场声",
+        }],
+        finalFrame="手收住动作，产品与接触处仍在画面内",
+    )
+    seen: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "status": "completed",
+            "output_text": json.dumps({"items": [{
+                "slotId": "slot-1", "ordinal": 1, "round": 0,
+                "creativeCore": f"通过真实动作理解{feature}",
+                "declaredFactIds": [fact.fact_id],
+                "dimensions": {
+                    "narrative": "动作揭示细节", "scene": "室内使用空间",
+                    "persona": "成年使用者", "productRelation": feature,
+                    "camera": "固定观察与焦点转移", "emotion": "自然从容",
+                },
+                "shotPlan": shot_plan,
+            }]}, ensure_ascii=False),
+        })
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.example/v3", api_key="test-key",
+        strategy_model="strategy-model", candidate_model="creative-model",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        call = await provider.generate_creatives(
+            CreativeShardPlan(round=0, shard_index=0, tasks=[CreativeTask(
+                slot_id="slot-1", ordinal=1, round=0,
+                target_duration_seconds=duration,
+                fact_assignment=CreativeFactAssignment(
+                    fact_ids=[fact.fact_id], assignment_hash="a" * 64,
+                ),
+            )]),
+            application=application, shared_prompt=_shared_prompt(),
+            regeneration_context={"mode": "AUTO_DIVERSE", "instruction": ""}
+            if regenerate else None,
+        )
+    finally:
+        await provider.aclose()
+
+    assert len(seen) == 1
+    assert seen[0]["instructions"] == load_prompt("creative_base.system.prompt.txt")
+    assert call.metadata.template_hash == load_prompt_hash("creative_base.system.prompt.txt")
+    item = call.value.items[0]
+    assert item.shot_plan is not None
+    assert item.shot_plan.model_dump(by_alias=True) == shot_plan
+    assert item.declared_fact_ids == [fact.fact_id]
+    assert f"0–{duration}秒" in item.content
+    assert action in item.content
+    assert "焦点从靠近的手移到实际接触处" in item.content
+    assert "保留手与物体接触的现场声" in item.content
+    if dialogue is None:
+        assert "逐字台词" not in item.content
+    else:
+        assert f"逐字台词：“{dialogue}”" in item.content
 
 
 @pytest.mark.asyncio

@@ -70,6 +70,28 @@ def test_render_prompt_reports_a_template_variable_that_was_not_supplied() -> No
         )
 
 
+def test_director_guidance_uses_existing_fields_without_fixed_ad_formula() -> None:
+    creative = load_prompt("creative_base.system.prompt.txt")
+    direction = load_prompt("creative_direction.system.prompt.txt")
+    supplement = load_prompt("creative_direction_supplement.system.prompt.txt")
+
+    for template in (direction, supplement):
+        assert "谁关心什么" in template
+        assert "creativeDirection" in template
+        assert "不增加输出字段或审核门槛" in template
+    assert "不必每条都有痛点、反转、口播或购买号召" in direction
+    assert "同一连续事件允许合理切镜" in creative
+    assert "固定机位与一镜到底同样可以有力" in creative
+    assert "焦点落在哪里" in creative
+    assert "不机械循环“中景—特写—推进”" in creative
+    assert "不是当前商品事实，也不是固定脚本" in creative
+    assert "不得成为其他任务的默认内容" in creative
+    assert "无需每拍堆满微表情" in creative
+    assert "按节拍时长给自然语速留余量" in creative
+    assert "节拍数量是软建议，不是配额" in creative
+    assert "不输出 content" in creative
+
+
 def test_templates_keep_creative_generation_and_evaluation_independent() -> None:
     creative = load_prompt("creative_base.system.prompt.txt")
     direction = load_prompt("creative_direction.system.prompt.txt")
