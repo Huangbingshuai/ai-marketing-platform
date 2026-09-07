@@ -3,11 +3,11 @@ import type {
   EffectImportProduct,
   EffectPromptFragmentType,
   EffectSegmentRenderSettings,
+  SeedanceRatio,
+  SeedanceResolution,
 } from '@ai-marketing/contracts';
 import {
   DEFAULT_EFFECT_SEGMENT_RENDER_SETTINGS,
-  EFFECT_PROMPT_RENDER_CAPABILITIES,
-  EFFECT_PROMPT_RENDER_CAPABILITY_KEYS,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
 } from '@ai-marketing/contracts';
@@ -106,30 +106,76 @@ const renderSettings = ref<EffectSegmentRenderSettings>({
 });
 const renderSettingsRevision = ref<number | null>(null);
 
-const capabilityOptions = EFFECT_PROMPT_RENDER_CAPABILITY_KEYS.map((value) => ({
-  value,
-  label:
-    value === 'SEEDANCE_2_0'
-      ? 'Seedance 2.0'
-      : value === 'SEEDANCE_2_0_FAST'
-        ? 'Seedance 2.0 Fast'
-        : value === 'SEEDANCE_1_5_PRO'
-          ? 'Seedance 1.5 Pro'
-          : 'Seedance 1.0',
-}));
+type RenderModelOption = {
+  value: EffectSegmentRenderSettings['capabilityKey'];
+  label: string;
+  ratios: readonly SeedanceRatio[];
+  resolutions: readonly SeedanceResolution[];
+  defaultRatio: SeedanceRatio;
+  defaultResolution: SeedanceResolution;
+};
+
+const supportedRenderRatios = [
+  '16:9',
+  '4:3',
+  '1:1',
+  '3:4',
+  '9:16',
+  '21:9',
+  'adaptive',
+] as const satisfies readonly SeedanceRatio[];
+
+const capabilityOptions = [
+  {
+    value: 'SEEDANCE_1_5_PRO',
+    label: 'Doubao-Seedance-2.5',
+    ratios: supportedRenderRatios,
+    resolutions: ['480p', '720p'],
+    defaultRatio: 'adaptive',
+    defaultResolution: '720p',
+  },
+  {
+    value: 'SEEDANCE_2_0',
+    label: 'Doubao-Seedance-2.0',
+    ratios: supportedRenderRatios,
+    resolutions: ['480p', '720p', '1080p'],
+    defaultRatio: 'adaptive',
+    defaultResolution: '720p',
+  },
+  {
+    value: 'SEEDANCE_1_0',
+    label: 'Doubao-Seedance-2.0-mini',
+    ratios: supportedRenderRatios,
+    resolutions: ['480p', '720p'],
+    defaultRatio: 'adaptive',
+    defaultResolution: '720p',
+  },
+  {
+    value: 'SEEDANCE_2_0_FAST',
+    label: 'Doubao-Seedance-2.0-fast',
+    ratios: supportedRenderRatios,
+    resolutions: ['480p', '720p'],
+    defaultRatio: 'adaptive',
+    defaultResolution: '720p',
+  },
+] as const satisfies readonly RenderModelOption[];
+
+const selectedCapability = computed(
+  () =>
+    capabilityOptions.find(({ value }) => value === renderSettings.value.capabilityKey) ??
+    capabilityOptions[1],
+);
 const ratioOptions = computed(() =>
-  EFFECT_PROMPT_RENDER_CAPABILITIES[renderSettings.value.capabilityKey].ratios.map((value) => ({
+  selectedCapability.value.ratios.map((value) => ({
     value,
     label: value === 'adaptive' ? '自适应' : value,
   })),
 );
 const resolutionOptions = computed(() =>
-  EFFECT_PROMPT_RENDER_CAPABILITIES[renderSettings.value.capabilityKey].resolutions.map(
-    (value) => ({
-      value,
-      label: value,
-    }),
-  ),
+  selectedCapability.value.resolutions.map((value) => ({
+    value,
+    label: value,
+  })),
 );
 
 const previewTask = ref<EffectSegmentRenderTask | null>(null);
@@ -366,10 +412,12 @@ const updateRenderSetting = async <Key extends keyof EffectSegmentRenderSettings
   const previous = { ...renderSettings.value };
   const next = { ...renderSettings.value, [key]: value };
   if (key === 'capabilityKey') {
-    const capability = EFFECT_PROMPT_RENDER_CAPABILITIES[next.capabilityKey];
-    if (!capability.ratios.includes(next.ratio)) next.ratio = capability.ratios[0]!;
+    const capability: RenderModelOption =
+      capabilityOptions.find((option) => option.value === next.capabilityKey) ??
+      capabilityOptions[1];
+    if (!capability.ratios.includes(next.ratio)) next.ratio = capability.defaultRatio;
     if (!capability.resolutions.includes(next.resolution))
-      next.resolution = capability.resolutions[0]!;
+      next.resolution = capability.defaultResolution;
   }
   renderSettings.value = next;
   operation.value = 'settings';
@@ -815,9 +863,9 @@ onBeforeUnmount(() => {
         </div>
         <div class="render-settings-grid">
           <label>
-            <span>模型能力</span>
+            <span>视频模型</span>
             <EffectUpwardCreatableSelect
-              field-label="模型能力"
+              field-label="视频模型"
               :model-value="renderSettings.capabilityKey"
               :options="capabilityOptions"
               :creatable="false"

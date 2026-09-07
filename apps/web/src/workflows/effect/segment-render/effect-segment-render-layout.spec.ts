@@ -87,6 +87,24 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).not.toContain('class="segment-pagination"');
   });
 
+  it('only exposes the four approved video models and constrains dependent settings', () => {
+    for (const model of [
+      'Doubao-Seedance-2.5',
+      'Doubao-Seedance-2.0',
+      'Doubao-Seedance-2.0-mini',
+      'Doubao-Seedance-2.0-fast',
+    ])
+      expect(pageSource).toContain(`label: '${model}'`);
+    expect(pageSource).not.toContain("label: 'Seedance 1.5 Pro'");
+    expect(pageSource).not.toContain("label: 'Seedance 1.0'");
+    expect(pageSource).toContain("resolutions: ['480p', '720p', '1080p']");
+    expect(pageSource.match(/resolutions: \['480p', '720p'\]/gu)).toHaveLength(3);
+    expect(pageSource).toContain('selectedCapability.value.ratios.map');
+    expect(pageSource).toContain('selectedCapability.value.resolutions.map');
+    expect(pageSource).toContain('next.resolution = capability.defaultResolution');
+    expect(pageSource).toContain('field-label="视频模型"');
+  });
+
   it('keeps async mock operations in the service and never performs a network request', () => {
     for (const handler of [
       'startEffectSegmentRenderBatch',
