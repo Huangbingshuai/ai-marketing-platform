@@ -62,6 +62,14 @@ def test_prompt_batch_target_count_has_a_hard_limit_of_100() -> None:
         PromptBatchSettings(target_count=101, default_duration_seconds=5)
 
 
+def test_prompt_duration_has_a_hard_limit_of_15_seconds() -> None:
+    assert PromptBatchSettings(
+        target_count=10, default_duration_seconds=15
+    ).default_duration_seconds == 15
+    with pytest.raises(ValidationError):
+        PromptBatchSettings(target_count=10, default_duration_seconds=16)
+
+
 def test_prompt_item_schema_has_no_secondary_material_tags() -> None:
     schema = PromptItem.model_json_schema(by_alias=True)
 
@@ -233,6 +241,13 @@ def test_pydantic_result_matches_shared_json_schema(prompt_item: PromptItem) -> 
         / "effect-prompt-batch.schema.json"
     )
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+    assert schema["properties"]["settings"]["properties"][
+        "defaultDurationSeconds"
+    ]["maximum"] == 15
+    assert schema["$defs"]["item"]["properties"]["targetDurationSeconds"][
+        "maximum"
+    ] == 15
 
     Draft202012Validator(
         schema, format_checker=Draft202012Validator.FORMAT_CHECKER

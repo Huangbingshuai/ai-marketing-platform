@@ -3,7 +3,11 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 
-from .models import CreativeCandidate, CreativeTask
+from .models import (
+    MAX_PROMPT_DURATION_SECONDS,
+    CreativeCandidate,
+    CreativeTask,
+)
 
 
 # Ark counts the structured answer and reasoning in the same output allowance.
@@ -13,7 +17,6 @@ OUTPUT_PLANNING_UTILIZATION = 0.90
 EVALUATION_PLANNING_UTILIZATION = 0.85
 EVALUATION_INPUT_PLANNING_UTILIZATION = 0.85
 MIN_CREATIVE_OUTPUT_TOKENS = 1_536
-MIN_LONG_CREATIVE_OUTPUT_TOKENS = 2_400
 MIN_EVALUATION_OUTPUT_TOKENS = 2_048
 MIN_INFERRED_EVALUATION_OUTPUT_TOKENS = 4_096
 MIN_EVALUATION_INPUT_TOKEN_BUDGET = 4_096
@@ -25,10 +28,8 @@ def creative_item_output_tokens(duration_seconds: int) -> int:
     """Estimate one structured shot plan without imposing a text-length rule."""
 
     return min(
-        MIN_LONG_CREATIVE_OUTPUT_TOKENS,
-        1_100
-        + duration_seconds * 30
-        + max(0, duration_seconds - 20) * 50,
+        1_100 + MAX_PROMPT_DURATION_SECONDS * 30,
+        1_100 + duration_seconds * 30,
     )
 
 
@@ -48,7 +49,7 @@ def creative_shard_size(
 ) -> int:
     """Choose a shard size that agrees with the provider's real token cap."""
 
-    conservative_duration_size = 1 if duration_seconds >= 21 else 2 if duration_seconds >= 16 else 4
+    conservative_duration_size = 4
     safe_tokens = max(1, math.floor(max_output_tokens * OUTPUT_PLANNING_UTILIZATION))
     token_size = max(1, safe_tokens // creative_item_output_tokens(duration_seconds))
     return max(1, min(configured_max_size, conservative_duration_size, token_size, 5))
@@ -106,10 +107,7 @@ def evaluation_item_input_tokens(candidate: CreativeCandidate) -> int:
 def evaluation_duration_max_size(duration_seconds: int) -> int:
     """Bound cognitive load without imposing any content-length gate."""
 
-    if duration_seconds >= 25:
-        return 2
-    if duration_seconds >= 16:
-        return 3
+    del duration_seconds
     return 4
 
 
@@ -199,11 +197,12 @@ def validate_output_limits(
     evaluation_input_token_budget: int = DEFAULT_EVALUATION_INPUT_TOKEN_BUDGET,
 ) -> None:
     minimum_candidate_limit = math.ceil(
-        MIN_LONG_CREATIVE_OUTPUT_TOKENS / OUTPUT_PLANNING_UTILIZATION
+        creative_item_output_tokens(MAX_PROMPT_DURATION_SECONDS)
+        / OUTPUT_PLANNING_UTILIZATION
     )
     if candidate_max_output_tokens < minimum_candidate_limit:
         raise ValueError(
-            "ARK_PROMPT_CANDIDATE_MAX_OUTPUT_TOKENS must allow one 30-second "
+            "ARK_PROMPT_CANDIDATE_MAX_OUTPUT_TOKENS must allow one 15-second "
             "creative with response headroom"
         )
     if evaluation_max_output_tokens < MIN_INFERRED_EVALUATION_OUTPUT_TOKENS:

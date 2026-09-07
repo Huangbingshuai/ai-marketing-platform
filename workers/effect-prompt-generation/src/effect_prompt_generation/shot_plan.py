@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import re
 
-from .models import MaterialShotBeat, MaterialShotPlan
+from .models import (
+    MAX_PROMPT_DURATION_SECONDS,
+    MIN_PROMPT_DURATION_SECONDS,
+    MaterialShotBeat,
+    MaterialShotPlan,
+)
 
 _TIME_RANGE_LINE = re.compile(r"^\s*\d+\s*[–—-]\s*\d+\s*秒\s*$")
 _FORMAT_LABELS = (
     "画面目标：",
     "整体质感：",
-    "声音方向：",
     "环境：",
     "光线：",
     "首帧状态：",
@@ -16,7 +20,6 @@ _FORMAT_LABELS = (
     "画面动作：",
     "镜头执行：",
     "可见结果：",
-    "逐字台词：",
     "声音：",
 )
 
@@ -36,8 +39,12 @@ def compile_material_shot_plan(
     does not infer product meaning, rewrite actions, or add creative content.
     """
 
-    if not 4 <= target_duration_seconds <= 30:
-        raise ShotPlanCompilationError("target duration must be between 4 and 30")
+    if not (
+        MIN_PROMPT_DURATION_SECONDS
+        <= target_duration_seconds
+        <= MAX_PROMPT_DURATION_SECONDS
+    ):
+        raise ShotPlanCompilationError("target duration must be between 4 and 15")
     if len(plan.beats) > target_duration_seconds:
         raise ShotPlanCompilationError(
             "shot plan cannot contain more beats than available seconds"
@@ -51,8 +58,7 @@ def compile_material_shot_plan(
         "【视频概览】",
         (
             f"画面目标：{_sentence(plan.overview.visual_intent)} "
-            f"整体质感：{_sentence(plan.overview.visual_style)} "
-            f"声音方向：{_sentence(plan.overview.audio_direction)}"
+            f"整体质感：{_sentence(plan.overview.visual_style)}"
         ),
         "【场景与光线】",
         (
@@ -69,8 +75,6 @@ def compile_material_shot_plan(
             f"镜头执行：{_sentence(beat.camera)} "
             f"可见结果：{_sentence(beat.visible_result)}"
         )
-        if beat.dialogue:
-            detail += f" 逐字台词：“{_strip_dialogue_quotes(beat.dialogue)}”。"
         if beat.sound:
             detail += f" 声音：{_sentence(beat.sound)}"
         lines.extend((f"{start}–{end}秒", detail))
@@ -127,7 +131,3 @@ def _allocate_time_ranges(
 def _sentence(value: str) -> str:
     normalized = " ".join(value.split()).strip()
     return normalized if normalized.endswith(("。", "！", "？", ".", "!", "?")) else f"{normalized}。"
-
-
-def _strip_dialogue_quotes(value: str) -> str:
-    return value.strip().strip("“”\"'‘’").rstrip("。！？.!?")

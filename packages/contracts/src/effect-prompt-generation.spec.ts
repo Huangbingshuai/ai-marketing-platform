@@ -61,7 +61,10 @@ describe('effect prompt generation contract', () => {
     });
     expect(EFFECT_PROMPT_LIMITS.maxCount).toBe(100);
     expect(EFFECT_PROMPT_LIMITS.maxCandidateCount).toBe(240);
+    expect(EFFECT_PROMPT_LIMITS.maxDurationSeconds).toBe(15);
     expect(batchSchema.properties.settings.properties.targetCount.maximum).toBe(100);
+    expect(batchSchema.properties.settings.properties.defaultDurationSeconds.maximum).toBe(15);
+    expect(batchSchema.$defs.item.properties.targetDurationSeconds.maximum).toBe(15);
     expect(batchSchema.properties.items.maxItems).toBe(100);
   });
 

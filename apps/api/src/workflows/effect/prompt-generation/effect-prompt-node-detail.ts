@@ -130,6 +130,7 @@ const ISSUE_LABELS: Record<string, string> = {
   ABSTRACT_VISUAL: '把抽象信息伪造成可见画面证据',
   ABSTRACT_PERSONA: '受众画像被当作出镜人物',
   AUDIO_OVERREACH: '素材包含口播、旁白或背景音乐要求',
+  SPEECH_DEPENDENT_MATERIAL: '素材依赖人物口播、旁白或可辨识台词',
   BAKED_TEXT: '素材要求烧录字幕或界面文字',
   BROKEN_TEXT: '正文存在破损或占位内容',
   DIMENSION_CONFLICT: '六维差异不足',

@@ -957,6 +957,17 @@ export class EffectPromptService {
     );
   }
 
+  private validatePromptDurationRange(targetDurationSeconds: number): void {
+    if (
+      !Number.isInteger(targetDurationSeconds) ||
+      targetDurationSeconds < EFFECT_PROMPT_LIMITS.minDurationSeconds ||
+      targetDurationSeconds > EFFECT_PROMPT_LIMITS.maxDurationSeconds
+    )
+      throw badRequest(
+        `片段时长需在 ${EFFECT_PROMPT_LIMITS.minDurationSeconds}～${EFFECT_PROMPT_LIMITS.maxDurationSeconds} 秒之间`,
+      );
+  }
+
   private validateItemDuration(
     result: EffectPromptBatchResult,
     targetDurationSeconds: number,
@@ -1099,6 +1110,7 @@ export class EffectPromptService {
     input: PromptItemMutationInput,
   ): Promise<UpdateEffectPromptResultData> {
     await this.projects.get(projectId);
+    this.validatePromptDurationRange(input.targetDurationSeconds);
     if (!this.validItemInput(input)) throw badRequest('Prompt 正文、片段时长或创意结构不符合要求');
     if (
       input.evaluateAfterSave &&
@@ -1172,6 +1184,7 @@ export class EffectPromptService {
     input: PromptItemMutationInput,
   ): Promise<UpdateEffectPromptResultData> {
     await this.projects.get(projectId);
+    this.validatePromptDurationRange(input.targetDurationSeconds);
     if (!this.validItemInput(input)) throw badRequest('Prompt 正文、片段时长或创意结构不符合要求');
     if (
       input.evaluateAfterSave &&

@@ -13,7 +13,7 @@ export const EFFECT_PROMPT_LIMITS = {
   defaultCount: 50,
   minFragmentCount: 1,
   minDurationSeconds: 4,
-  maxDurationSeconds: 30,
+  maxDurationSeconds: 15,
   defaultDurationSeconds: 5,
   minSemanticDuplicateRate: 5,
   maxSemanticDuplicateRate: 15,

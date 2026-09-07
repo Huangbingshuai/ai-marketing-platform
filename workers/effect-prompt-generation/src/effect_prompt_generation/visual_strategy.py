@@ -33,7 +33,7 @@ DEFAULT_VISUAL_INSTRUCTIONS = {
 
 DEFAULT_CONTEXT_INSTRUCTIONS = {
     FactVisualUsage.CONTEXT_ONLY: "只影响场景、人物或商业方向",
-    FactVisualUsage.TEXT_ONLY: "仅通过准确文字或口播表达",
+    FactVisualUsage.TEXT_ONLY: "留给后续成片文案，不要求当前素材表达",
     FactVisualUsage.FORBIDDEN_VISUAL_PROOF: "只作商业背景，不作为视觉证明",
 }
 

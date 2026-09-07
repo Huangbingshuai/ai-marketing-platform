@@ -42,6 +42,7 @@ from effect_prompt_generation.models import (
 from effect_prompt_generation.pipeline import (
     PromptGenerationPipeline,
     _creative_task_chunks,
+    _visually_required_business_fact_ids,
 )
 from effect_prompt_generation.providers import (
     CREATIVE_DIRECTION_TEMPLATE_HASH,
@@ -119,7 +120,7 @@ def test_creative_task_chunks_keep_direction_siblings_together() -> None:
             slot_id=f"slot-{index}",
             ordinal=index + 1,
             round=0,
-            target_duration_seconds=30,
+            target_duration_seconds=15,
             fact_assignment=CreativeFactAssignment(
                 fact_ids=direction.fact_ids,
                 assignment_hash=f"{index + 1:064x}",
@@ -446,12 +447,12 @@ async def test_global_direction_audit_can_revise_cross_batch_overlap() -> None:
         for fact_id in batch
     ]
     assert len(planned_required_fact_ids) == len(set(planned_required_fact_ids))
-    assert set(planned_required_fact_ids) == {
-        fact.fact_id
-        for fact in mandatory_business_facts(
-            pipeline._require_application(runtime)
+    assert set(planned_required_fact_ids) == set(
+        _visually_required_business_fact_ids(
+            pipeline._require_application(runtime),
+            pipeline._required_fact_visual_strategy(runtime),
         )
-    }
+    )
     # Initial planning is split by creative territory; the overlap repair is
     # the only subsequent global direction call.
     assert provider.direction_plan_calls > 2
@@ -1972,7 +1973,13 @@ async def test_transient_territory_audit_retries_only_failed_branch() -> None:
     await pipeline.compile_shared_prompt(runtime)
     await pipeline.plan_creatives(runtime, round_number=0)
 
-    assert sorted(provider.calls.values()) == [1, 1, 1, 1, 1, 1, 1, 2]
+    plan = pipeline._cache(runtime).creative_direction_plan
+    assert plan is not None
+    assert plan.landscape is not None
+    assert len(provider.calls) == len(plan.landscape.territories)
+    assert Counter(provider.calls.values()) == Counter(
+        {1: len(plan.landscape.territories) - 1, 2: 1}
+    )
 
 
 @pytest.mark.asyncio

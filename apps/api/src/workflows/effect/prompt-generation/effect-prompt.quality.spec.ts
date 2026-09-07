@@ -81,6 +81,23 @@ describe('effect prompt quality contract', () => {
     expect(parsed?.items[0]).not.toHaveProperty('materialTags');
   });
 
+  it('keeps historical 16-to-30-second batches readable without accepting them as new items', () => {
+    const historicalItem = { ...item('historical'), targetDurationSeconds: 30 };
+    const current = recomputePromptQuality([item('current')], {
+      ...DEFAULT_EFFECT_PROMPT_SETTINGS,
+      targetCount: 10,
+    });
+    const parsed = parseEffectPromptBatchResult({
+      ...current,
+      settings: { ...current.settings, defaultDurationSeconds: 30 },
+      items: [historicalItem],
+    });
+
+    expect(parsed?.settings.defaultDurationSeconds).toBe(30);
+    expect(parsed?.items[0]?.targetDurationSeconds).toBe(30);
+    expect(isEffectPromptItem(historicalItem)).toBe(false);
+  });
+
   it('projects legacy six-purpose batches into the current four-purpose contract', () => {
     const currentItems = [item('pain'), item('selling'), item('outro')];
     const result = recomputePromptQuality(currentItems, {
@@ -217,7 +234,7 @@ describe('effect prompt quality contract', () => {
     );
     const result = recomputePromptQuality(
       items,
-      { targetCount: 100, defaultDurationSeconds: 25 },
+      { targetCount: 100, defaultDurationSeconds: 15 },
       undefined,
       defaultEffectPromptRenderProfile(),
       compileEffectPromptSharedPrompt([]),

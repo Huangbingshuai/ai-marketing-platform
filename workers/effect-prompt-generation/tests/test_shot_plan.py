@@ -15,7 +15,6 @@ def _plan() -> MaterialShotPlan:
         overview=MaterialShotOverview(
             visual_intent="说明成年人如何连续完成一次产品使用",
             visual_style="真实清爽的生活记录",
-            audio_direction="保留动作声和一句自然口播",
         ),
         scene=MaterialShotScene(
             environment="自然光充足的居家空间",
@@ -30,7 +29,6 @@ def _plan() -> MaterialShotPlan:
                 action="人物拿起产品并完成第一阶段动作",
                 camera="镜头随手部动作轻推",
                 visible_result="产品进入明确的使用状态",
-                dialogue="“我会先完成这一步。”",
                 sound="产品与道具接触的现场声",
             ),
             MaterialShotBeat(
@@ -51,7 +49,9 @@ def test_compiler_assigns_exact_duration_without_rewriting_plan() -> None:
 
     assert "0–5秒" in content
     assert "5–15秒" in content
-    assert "逐字台词：“我会先完成这一步”" in content
+    assert "逐字台词" not in content
+    assert "声音方向" not in content
+    assert "声音：产品与道具接触的现场声。" in content
     assert content.endswith("人物收住动作，产品和结果同时保持清晰可见。")
 
 
@@ -65,17 +65,15 @@ def test_embedding_text_removes_only_shared_format_scaffold() -> None:
     assert "人物连续完成主要使用动作" in normalized
 
 
-def test_optional_null_like_dialogue_is_not_compiled_as_literal_text() -> None:
+def test_optional_null_like_sound_is_not_compiled_as_literal_text() -> None:
     plan = _plan()
     plan.beats[0] = MaterialShotBeat.model_validate(
         {
             **plan.beats[0].model_dump(),
-            "dialogue": "null",
             "sound": "无",
         }
     )
 
     content = compile_material_shot_plan(plan, target_duration_seconds=15)
 
-    assert "逐字台词" not in content
     assert "声音：无" not in content

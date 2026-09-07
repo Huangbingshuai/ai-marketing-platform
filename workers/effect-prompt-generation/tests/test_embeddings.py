@@ -236,7 +236,6 @@ def test_structured_candidate_embedding_keeps_visible_story_not_format_boilerpla
                 overview=MaterialShotOverview(
                     visualIntent="展示通勤者单手开杯",
                     visualStyle="暖调电影质感",
-                    audioDirection="轻快音乐与环境声",
                 ),
                 scene=MaterialShotScene(
                     environment="早高峰地铁站台",
@@ -251,7 +250,6 @@ def test_structured_candidate_embedding_keeps_visible_story_not_format_boilerpla
                         action="拇指按下按钮并单手打开杯盖",
                         camera="稳定跟随",
                         visibleResult="杯盖完全弹开",
-                        dialogue="一只手也能打开",
                         sound="按钮轻响",
                     )
                 ],
@@ -266,7 +264,6 @@ def test_structured_candidate_embedding_keeps_visible_story_not_format_boilerpla
     assert "单手打开杯盖" in source
     assert "杯盖完全弹开" in source
     assert "暖调电影质感" not in source
-    assert "轻快音乐" not in source
     assert "柔和侧光" not in source
     assert "稳定跟随" not in source
 

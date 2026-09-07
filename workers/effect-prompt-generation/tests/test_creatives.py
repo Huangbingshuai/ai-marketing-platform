@@ -156,9 +156,6 @@ def test_structured_creative_shards_shrink_for_longer_durations() -> None:
     assert _creative_shard_size_for_duration(8) == 4
     assert _creative_shard_size_for_duration(9) == 4
     assert _creative_shard_size_for_duration(15) == 4
-    assert _creative_shard_size_for_duration(20) == 2
-    assert _creative_shard_size_for_duration(21) == 1
-    assert _creative_shard_size_for_duration(30) == 1
 
 
 def test_structured_creative_shards_follow_configured_token_limit() -> None:
@@ -193,7 +190,7 @@ async def test_run_preflight_rejects_an_impossible_ai_call_budget_before_shards(
         update={
             "settings": PromptBatchSettings(
                 target_count=100,
-                default_duration_seconds=30,
+                default_duration_seconds=15,
             )
         }
     )
@@ -206,7 +203,7 @@ async def test_run_preflight_rejects_an_impossible_ai_call_budget_before_shards(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("duration_seconds", [5, 15, 20, 25, 30])
+@pytest.mark.parametrize("duration_seconds", [4, 5, 8, 12, 15])
 async def test_mock_end_to_end_keeps_exact_count_across_duration_bands(
     duration_seconds: int,
 ) -> None:
@@ -697,11 +694,21 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
         for task in shard.creative_plan
     ]
     assert len(creative_tasks) == 14
+    assert (
+        sum(task.supplement_kind == "INITIAL" for task in creative_tasks) == 14
+    )
+    assert all(task.supplement_kind == "INITIAL" for task in creative_tasks)
     assert all(task.fact_assignment is not None for task in creative_tasks)
     assert all(
         1 <= len(task.fact_assignment.fact_ids) <= 4
         for task in creative_tasks
         if task.fact_assignment is not None
+    )
+    assert all(
+        not fact_id.startswith("CORE_SELLING_POINT:")
+        for task in creative_tasks
+        if task.fact_assignment is not None
+        for fact_id in task.fact_assignment.fact_ids
     )
     assert (
         len(
@@ -737,7 +744,8 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     )
     assert mapping_stage.metadata["requiredFacts"]
     assert all("factId" not in item for item in mapping_stage.metadata["requiredFacts"])
-    assert shared_stage.metadata["compiledContent"] == ""
+    assert "无口播广告素材" in shared_stage.metadata["compiledContent"]
+    assert "人物讲话" in shared_stage.metadata["compiledContent"]
     assert creative_stage.status == "SUCCEEDED"
     assert creative_stage.metadata["candidateCount"] == 14
     assert (
@@ -1903,6 +1911,50 @@ def test_worker_does_not_require_literal_overlap_for_semantic_evidence() -> None
     assert validated.hard_issues == []
     assert validated.warnings == []
     assert validated.realized_fact_ids == [fact.fact_id]
+
+
+def test_worker_preserves_ai_speech_dependency_issue_without_semantic_recheck() -> None:
+    application = map_insight({"productName": "便携杯"})
+    product_fact = next(
+        fact for fact in application.usable if fact.field == InsightField.PRODUCT_NAME
+    )
+    candidate = CreativeCandidate(
+        slot_id="candidate-speech-dependent",
+        ordinal=1,
+        round=0,
+        creative_core="人物对镜讲解便携杯",
+        declared_fact_ids=[product_fact.fact_id],
+        dimensions=CreativeDimensions(
+            narrative="人物讲解",
+            scene="通勤休息区",
+            persona="成年通勤者",
+            product_relation="手持便携杯",
+            camera="中近景固定",
+            emotion="自然",
+        ),
+        content="通勤休息区内，成年通勤者手持便携杯面对镜头连续讲话，商品价值完全依赖人物说明。",
+    )
+    evaluation = CreativeEvaluation(
+        slot_id=candidate.slot_id,
+        primary_purpose=FragmentType.PRODUCT_DISPLAY,
+        compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+        fact_evidence=[FactEvidence(fact_id=product_fact.fact_id)],
+        realized_fact_ids=[product_fact.fact_id],
+        scores=CreativeScores(
+            product_relevance=80,
+            creative_coherence=75,
+            visual_executability=80,
+            commercial_usefulness=60,
+            visual_clarity=80,
+        ),
+        semantic_signature="由评估模型生成",
+        visual_signature="由评估模型生成",
+        hard_issues=["SPEECH_DEPENDENT_MATERIAL"],
+    )
+
+    validated = validate_creative_evaluation(candidate, evaluation, application)
+
+    assert validated.hard_issues == ["SPEECH_DEPENDENT_MATERIAL"]
 
 
 def _abstract_visual_proof_case() -> tuple[

@@ -106,7 +106,7 @@ describe('effect prompt generation state', () => {
       }),
     ).toEqual({
       targetCount: 10,
-      defaultDurationSeconds: 30,
+      defaultDurationSeconds: 15,
       styleMode: 'AI_AUTO',
       styleTone: null,
       deliveryChannel: '抖音',

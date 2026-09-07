@@ -130,10 +130,10 @@ def test_mock_vector_mode_uses_explicit_mock_without_ark_model() -> None:
 
 
 def test_output_limits_fail_before_worker_consumes_a_paid_task() -> None:
-    with pytest.raises(ValidationError, match="one 30-second creative"):
+    with pytest.raises(ValidationError, match="one 15-second creative"):
         _settings(
             PROMPT_AI_PROVIDER="mock",
-            ARK_PROMPT_CANDIDATE_MAX_OUTPUT_TOKENS=2_399,
+            ARK_PROMPT_CANDIDATE_MAX_OUTPUT_TOKENS=1_722,
         )
     with pytest.raises(ValidationError, match="one inferred item evaluation"):
         _settings(

@@ -55,6 +55,7 @@ from .models import (
     FragmentType,
     FactVisualStrategy,
     FactVisualStrategyResponse,
+    FactVisualUsage,
     InsightApplicationMap,
     InsightBinding,
     InsightField,
@@ -651,8 +652,12 @@ class PromptGenerationPipeline:
         cache = self._cache(context)
         if cache.creative_direction_plan is not None:
             return cache.creative_direction_plan
-        application = self._require_application(context)
-        visual_strategy = self._required_fact_visual_strategy(context)
+        full_application = self._require_application(context)
+        full_visual_strategy = self._required_fact_visual_strategy(context)
+        application, visual_strategy = _silent_material_planning_inputs(
+            full_application,
+            full_visual_strategy,
+        )
         shared_prompt = self._required_shared_prompt(context)
         mandatory_fact_count = len(mandatory_business_facts(application))
         try:
@@ -664,7 +669,9 @@ class PromptGenerationPipeline:
             raise PipelineError(str(exc)) from exc
         source_hash = creative_direction_source_hash(
             insight_content_hash=snapshot.insight_artifact.content_hash,
-            visual_strategy_hash=visual_strategy.strategy_hash,
+            # Any upstream strategy change invalidates this Run checkpoint,
+            # including a fact moving into or out of the deferred copy-only set.
+            visual_strategy_hash=full_visual_strategy.strategy_hash,
             shared_prompt_hash=shared_prompt.content_hash,
             target_count=snapshot.settings.target_count,
             template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
@@ -2370,7 +2377,10 @@ class PromptGenerationPipeline:
             for item in snapshot.retained_manual_items
             for binding in item.insight_bindings
         )
-        batch_required_fact_ids = [fact.fact_id for fact in application.required]
+        batch_required_fact_ids = _visually_required_business_fact_ids(
+            application,
+            cache.fact_visual_strategy,
+        )
         missing_required_fact_ids = [
             fact_id
             for fact_id in batch_required_fact_ids
@@ -3280,9 +3290,10 @@ class PromptGenerationPipeline:
             else max(0, settings.target_count - len(snapshot.retained_manual_items))
         )
         application = self._require_application(context)
-        preferred_item_fact_ids = [
-            fact.fact_id for fact in mandatory_business_facts(application)
-        ]
+        preferred_item_fact_ids = _visually_required_business_fact_ids(
+            application,
+            cache.fact_visual_strategy,
+        )
         required_fact_ids = [] if item_operation else preferred_item_fact_ids
         fixed_covered_fact_ids = [
             binding.fact_id
@@ -4152,10 +4163,12 @@ class PromptGenerationPipeline:
             self._require_application(context),
             items,
         )
-        deep_business_fact_ids = {
-            fact.fact_id
-            for fact in mandatory_business_facts(self._require_application(context))
-        }
+        deep_business_fact_ids = set(
+            _visually_required_business_fact_ids(
+                self._require_application(context),
+                cache.fact_visual_strategy,
+            )
+        )
         covered_fact_ids = {
             binding.fact_id for item in items for binding in item.insight_bindings
         }
@@ -4796,6 +4809,82 @@ def _evaluation_context_fact_ids(
     )
 
 
+def _visually_required_business_fact_ids(
+    application: InsightApplicationMap,
+    strategy: FactVisualStrategy | None,
+) -> list[str]:
+    """Return business facts that a silent material clip can genuinely realize.
+
+    TEXT_ONLY and FORBIDDEN_VISUAL_PROOF facts remain available to the creative
+    planner as context, but later copy/voiceover composition owns their final
+    expression. This prevents coverage accounting from forcing speech or a
+    fabricated visual proof into the material pool.
+    """
+
+    business_facts = mandatory_business_facts(application)
+    if strategy is None:
+        return [fact.fact_id for fact in business_facts]
+    deferred_usages = {
+        FactVisualUsage.TEXT_ONLY,
+        FactVisualUsage.FORBIDDEN_VISUAL_PROOF,
+    }
+    return [
+        fact.fact_id
+        for fact in business_facts
+        if strategy.by_id.get(fact.fact_id) is not None
+        and strategy.by_id[fact.fact_id].visual_usage not in deferred_usages
+    ]
+
+
+def _silent_material_planning_inputs(
+    application: InsightApplicationMap,
+    strategy: FactVisualStrategy,
+) -> tuple[InsightApplicationMap, FactVisualStrategy]:
+    """Remove copy-only business facts from silent-material creative planning.
+
+    The full application and strategy remain cached for auditing, item evaluation
+    and downstream copy composition. This projection only prevents the landscape,
+    direction and candidate planners from treating an unfilmable statement as a
+    visual coverage obligation.
+    """
+
+    visual_business_ids = set(
+        _visually_required_business_fact_ids(application, strategy)
+    )
+    all_business_ids = {
+        fact.fact_id for fact in mandatory_business_facts(application)
+    }
+    deferred_business_ids = all_business_ids - visual_business_ids
+    if not deferred_business_ids:
+        return application, strategy
+
+    projected_application = application.model_copy(
+        update={
+            "required": [
+                fact
+                for fact in application.required
+                if fact.fact_id not in deferred_business_ids
+            ],
+            "adaptive": [
+                fact
+                for fact in application.adaptive
+                if fact.fact_id not in deferred_business_ids
+            ],
+        }
+    )
+    projected_ids = set(projected_application.by_id)
+    projected_strategy = strategy.model_copy(
+        update={
+            "policies": [
+                policy
+                for policy in strategy.policies
+                if policy.fact_id in projected_ids
+            ]
+        }
+    )
+    return projected_application, projected_strategy
+
+
 def _prompt_items(
     context: RuntimeContext,
     selection: CreativeSelectionResult,
@@ -5060,6 +5149,10 @@ def _compile_shared_prompt(
     disabled_elements: list[str], additional_content: str = ""
 ) -> SharedPrompt:
     additional = additional_content.strip()
+    material_audio_boundary = (
+        "这是供后续混剪的无口播广告素材。禁止人物讲话、旁白、人声解说、歌词、"
+        "字幕文案和可辨识说话口型；只保留与画面同步的自然环境声和产品动作声。"
+    )
     sections = [
         SharedPromptSection(
             key="DISABLED_ELEMENTS",
@@ -5068,6 +5161,14 @@ def _compile_shared_prompt(
             content=_compile_disabled_elements_prompt(disabled_elements),
             editable=False,
             source_hash=_sha256_json(disabled_elements),
+        ),
+        SharedPromptSection(
+            key="MATERIAL_AUDIO_BOUNDARY",
+            title="素材声音边界",
+            source="SYSTEM",
+            content=material_audio_boundary,
+            editable=False,
+            source_hash=_sha256_text(material_audio_boundary),
         ),
         SharedPromptSection(
             key="USER_ADDITIONAL",

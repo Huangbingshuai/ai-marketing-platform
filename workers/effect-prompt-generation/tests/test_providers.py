@@ -42,10 +42,6 @@ class _StructuredEnvelope(BaseModel):
         (8, "SHORT_FOCUS", "一个可立即看懂"),
         (9, "COMPLETE_ACTION", "2 个连续动作节拍"),
         (15, "COMPLETE_ACTION", "2～3 个连续动作节拍"),
-        (16, "GRADUAL_PROCESS", "3 个连续动作节拍"),
-        (22, "GRADUAL_PROCESS", "3 个连续动作节拍"),
-        (23, "CONNECTED_PHASES", "3～4 个连续动作节拍"),
-        (30, "CONNECTED_PHASES", "3～4 个连续动作节拍"),
     ],
 )
 def test_temporal_intent_scales_continuous_action_beats(
@@ -57,11 +53,15 @@ def test_temporal_intent_scales_continuous_action_beats(
 
     assert intent["band"] == band
     assert required_text in intent["guidance"]
-    assert "分屏" in intent["guidance"] or duration < 23
     assert "软参考" in intent["detailGuidance"]
     if duration <= 8:
         assert "首帧就位" in intent["guidance"]
     assert f"本次为 {duration} 秒" in intent["detailGuidance"]
+
+
+def test_temporal_intent_rejects_duration_above_15_seconds() -> None:
+    with pytest.raises(ValueError, match="between 4 and 15 seconds"):
+        _temporal_intent_for_duration(16)
 
 
 @pytest.mark.parametrize(
@@ -71,10 +71,6 @@ def test_temporal_intent_scales_continuous_action_beats(
         (8, 5_956),
         (9, 6_089),
         (15, 6_889),
-        (16, 7_023),
-        (22, 8_267),
-        (23, 8_623),
-        (30, 10_667),
     ],
 )
 def test_creative_shard_reserves_duration_appropriate_output_budget(
@@ -94,15 +90,15 @@ def test_creative_shard_reserves_duration_appropriate_output_budget(
     assert _creative_output_token_budget(tasks) == expected
 
 
-def test_single_long_creative_reserves_supplement_headroom() -> None:
+def test_single_max_duration_creative_reserves_supplement_headroom() -> None:
     task = CreativeTask(
         slotId="slot-1",
         ordinal=1,
         round=1,
-        targetDurationSeconds=30,
+        targetDurationSeconds=15,
     )
 
-    assert _creative_output_token_budget([task]) == 2_667
+    assert _creative_output_token_budget([task]) == 1_723
 
 
 def test_evaluation_chunks_shrink_only_for_unusually_large_candidate_text() -> None:
@@ -144,7 +140,7 @@ def test_evaluation_chunks_shrink_only_for_unusually_large_candidate_text() -> N
     assert [len(chunk) for chunk in chunks] == [2, 1, 1]
 
 
-def test_evaluation_chunks_limit_long_duration_to_two_candidates() -> None:
+def test_evaluation_chunks_allow_four_candidates_at_max_duration() -> None:
     candidates = [
         CreativeCandidate(
             slot_id=f"long-{index}",
@@ -169,11 +165,11 @@ def test_evaluation_chunks_limit_long_duration_to_two_candidates() -> None:
         candidates,
         configured_max_size=4,
         max_output_tokens=6_144,
-        target_durations={item.slot_id: 30 for item in candidates},
+        target_durations={item.slot_id: 15 for item in candidates},
         max_input_tokens=12_000,
     )
 
-    assert [len(chunk) for chunk in chunks] == [2, 2, 1]
+    assert [len(chunk) for chunk in chunks] == [4, 1]
 
 
 def test_ark_structured_output_rejects_non_artifact_trailing_content() -> None:
@@ -248,7 +244,6 @@ def _shot_plan() -> dict[str, object]:
         "overview": {
             "visualIntent": "通勤途中自然完成单手开杯动作",
             "visualStyle": "真实轻快的生活记录",
-            "audioDirection": "保留开盖声与轻量环境声",
         },
         "scene": {
             "environment": "早高峰地铁站台",
@@ -263,7 +258,6 @@ def _shot_plan() -> dict[str, object]:
                 "action": "通勤者单手打开杯盖",
                 "camera": "跟随手部动作轻推",
                 "visibleResult": "杯盖完成打开并稳定停住",
-                "dialogue": None,
                 "sound": "清楚的开盖声",
             },
             {
@@ -273,7 +267,6 @@ def _shot_plan() -> dict[str, object]:
                 "action": "手部收住动作并将杯子保持在胸前",
                 "camera": "固定对焦杯盖",
                 "visibleResult": "打开状态与单手操作关系清晰可见",
-                "dialogue": None,
                 "sound": None,
             },
         ],
@@ -400,16 +393,20 @@ async def test_ark_creative_uses_one_coherent_schema_and_shared_constraints() ->
     assert "【逐秒镜头】" in call.value.items[0].content
     assert "0–3秒" in call.value.items[0].content
     assert call.value.items[0].shot_plan is not None
+    shot_plan_schema = seen["text"]["format"]["schema"]["$defs"]["MaterialShotBeat"]  # type: ignore[index]
+    assert "dialogue" not in shot_plan_schema["properties"]
+    overview_schema = seen["text"]["format"]["schema"]["$defs"]["MaterialShotOverview"]  # type: ignore[index]
+    assert "audioDirection" not in overview_schema["properties"]
 
 
-@pytest.mark.parametrize("duration", [4, 8, 15, 20, 25, 30])
+@pytest.mark.parametrize("duration", [4, 8, 12, 15])
 @pytest.mark.parametrize("regenerate", [False, True])
 @pytest.mark.parametrize(
-    ("product", "feature", "action", "dialogue"),
+    ("product", "feature", "action"),
     [
-        ("便携杯", "单手开合", "成年人拇指打开杯盖，另一只手仍提着包", "这只手就能打开"),
-        ("衬衫", "侧面口袋", "成年人将小卡片放入侧面口袋，手顺势离开", None),
-        ("调味酱", "用于蘸食", "成年人拿起一块即食食物，轻蘸碟中的酱料", "这块我蘸着吃"),
+        ("便携杯", "单手开合", "成年人拇指打开杯盖，另一只手仍提着包"),
+        ("衬衫", "侧面口袋", "成年人将小卡片放入侧面口袋，手顺势离开"),
+        ("调味酱", "用于蘸食", "成年人拿起一块即食食物，轻蘸碟中的酱料"),
     ],
 )
 @pytest.mark.asyncio
@@ -419,7 +416,6 @@ async def test_director_request_and_compilation_across_products_and_durations(
     product: str,
     feature: str,
     action: str,
-    dialogue: str | None,
 ) -> None:
     # Authored responses test transport/compilation, not AI creative quality.
     application = map_insight({"productName": product, "coreSellingPoints": [feature]})
@@ -429,7 +425,6 @@ async def test_director_request_and_compilation_across_products_and_durations(
         overview={
             "visualIntent": f"通过具体动作理解{feature}",
             "visualStyle": "自然生活记录",
-            "audioDirection": "保留动作声，不加背景音乐",
         },
         scene={
             "environment": "室内日常使用空间",
@@ -443,7 +438,6 @@ async def test_director_request_and_compilation_across_products_and_durations(
             "action": action,
             "camera": "固定机位，焦点从靠近的手移到实际接触处",
             "visibleResult": "手结束动作，产品仍在原位",
-            "dialogue": dialogue,
             "sound": "保留手与物体接触的现场声",
         }],
         finalFrame="手收住动作，产品与接触处仍在画面内",
@@ -499,10 +493,8 @@ async def test_director_request_and_compilation_across_products_and_durations(
     assert action in item.content
     assert "焦点从靠近的手移到实际接触处" in item.content
     assert "保留手与物体接触的现场声" in item.content
-    if dialogue is None:
-        assert "逐字台词" not in item.content
-    else:
-        assert f"逐字台词：“{dialogue}”" in item.content
+    assert "逐字台词" not in item.content
+    assert "声音方向" not in item.content
 
 
 @pytest.mark.asyncio

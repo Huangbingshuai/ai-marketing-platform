@@ -418,7 +418,12 @@ export const effectPromptExactDuplicatePairs = (items: readonly EffectPromptItem
   return [...counts.values()].reduce((pairs, count) => pairs + (count * (count - 1)) / 2, 0);
 };
 
-const validBaseItem = (item: Record<string, unknown>): boolean =>
+const LEGACY_EFFECT_PROMPT_MAX_DURATION_SECONDS = 30;
+
+const validBaseItem = (
+  item: Record<string, unknown>,
+  maxDurationSeconds: number = EFFECT_PROMPT_LIMITS.maxDurationSeconds,
+): boolean =>
   Boolean(
     typeof item.id === 'string' &&
     item.id.length > 0 &&
@@ -431,7 +436,7 @@ const validBaseItem = (item: Record<string, unknown>): boolean =>
     EFFECT_PROMPT_FRAGMENT_TYPES.includes(item.fragmentType as EffectPromptFragmentType) &&
     Number.isInteger(item.targetDurationSeconds) &&
     Number(item.targetDurationSeconds) >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
-    Number(item.targetDurationSeconds) <= EFFECT_PROMPT_LIMITS.maxDurationSeconds &&
+    Number(item.targetDurationSeconds) <= maxDurationSeconds &&
     typeof item.creativeCore === 'string' &&
     item.creativeCore.trim().length > 0 &&
     item.creativeCore.length <= itemTextLimits.creativeCore &&
@@ -448,12 +453,15 @@ const validBaseItem = (item: Record<string, unknown>): boolean =>
     validDateTime(item.updatedAt),
   );
 
-export const isEffectPromptItem = (value: unknown): value is EffectPromptItem => {
+const isEffectPromptItemWithinDuration = (
+  value: unknown,
+  maxDurationSeconds: number,
+): value is EffectPromptItem => {
   const item = record(value);
   const compatiblePurposes = item?.compatiblePurposes;
   return Boolean(
     item &&
-    validBaseItem(item) &&
+    validBaseItem(item, maxDurationSeconds) &&
     validDimensions(item.dimensions) &&
     EFFECT_PROMPT_FRAGMENT_TYPES.includes(item.primaryPurpose as EffectPromptFragmentType) &&
     item.fragmentType === item.primaryPurpose &&
@@ -486,6 +494,9 @@ export const isEffectPromptItem = (value: unknown): value is EffectPromptItem =>
     [16, 17].includes(Object.keys(item).length),
   );
 };
+
+export const isEffectPromptItem = (value: unknown): value is EffectPromptItem =>
+  isEffectPromptItemWithinDuration(value, EFFECT_PROMPT_LIMITS.maxDurationSeconds);
 
 const withCurrentItemCompatibility = (value: unknown): unknown => {
   const item = record(value);
@@ -545,7 +556,10 @@ const withCurrentMetricsCompatibility = (value: unknown): unknown => {
   };
 };
 
-export const isEffectPromptSettings = (value: unknown): value is EffectPromptBatchSettings => {
+const isEffectPromptSettingsWithinDuration = (
+  value: unknown,
+  maxDurationSeconds: number,
+): value is EffectPromptBatchSettings => {
   const settings = record(value);
   const keys = settings ? Object.keys(settings) : [];
   const legacy = keys.length === 2;
@@ -561,7 +575,7 @@ export const isEffectPromptSettings = (value: unknown): value is EffectPromptBat
     Number(settings.targetCount) <= EFFECT_PROMPT_LIMITS.maxCount &&
     Number.isInteger(settings.defaultDurationSeconds) &&
     Number(settings.defaultDurationSeconds) >= EFFECT_PROMPT_LIMITS.minDurationSeconds &&
-    Number(settings.defaultDurationSeconds) <= EFFECT_PROMPT_LIMITS.maxDurationSeconds &&
+    Number(settings.defaultDurationSeconds) <= maxDurationSeconds &&
     (legacy ||
       ((styleMode === 'AI_AUTO' || styleMode === 'FIXED') &&
         (styleMode === 'AI_AUTO'
@@ -577,6 +591,9 @@ export const isEffectPromptSettings = (value: unknown): value is EffectPromptBat
         disabledElements.every((item) => typeof item === 'string' && item.trim().length > 0))),
   );
 };
+
+export const isEffectPromptSettings = (value: unknown): value is EffectPromptBatchSettings =>
+  isEffectPromptSettingsWithinDuration(value, EFFECT_PROMPT_LIMITS.maxDurationSeconds);
 
 const validIssueCounts = (value: unknown): boolean =>
   Array.isArray(value) &&
@@ -1123,7 +1140,24 @@ export const recomputePromptQuality = (
 
 export const parseEffectPromptBatchResult = (value: unknown): EffectPromptBatchResult | null => {
   const source = record(value);
-  const compatibleSettings = readEffectPromptSettings(source?.settings);
+  const sourceSettings = record(source?.settings);
+  const sourceDuration = Number(sourceSettings?.defaultDurationSeconds);
+  const isLegacyDuration =
+    Number.isInteger(sourceDuration) &&
+    sourceDuration > EFFECT_PROMPT_LIMITS.maxDurationSeconds &&
+    sourceDuration <= LEGACY_EFFECT_PROMPT_MAX_DURATION_SECONDS;
+  const normalizedSettings = readEffectPromptSettings(
+    isLegacyDuration && sourceSettings
+      ? { ...sourceSettings, defaultDurationSeconds: EFFECT_PROMPT_LIMITS.maxDurationSeconds }
+      : source?.settings,
+  );
+  const compatibleSettings =
+    isLegacyDuration && normalizedSettings
+      ? { ...normalizedSettings, defaultDurationSeconds: sourceDuration }
+      : normalizedSettings;
+  const readableMaxDuration = isLegacyDuration
+    ? LEGACY_EFFECT_PROMPT_MAX_DURATION_SECONDS
+    : EFFECT_PROMPT_LIMITS.maxDurationSeconds;
   const candidate: Record<string, unknown> | null = source
     ? {
         ...source,
@@ -1136,7 +1170,7 @@ export const parseEffectPromptBatchResult = (value: unknown): EffectPromptBatchR
     : null;
   if (
     !candidate ||
-    !isEffectPromptSettings(candidate.settings) ||
+    !isEffectPromptSettingsWithinDuration(candidate.settings, readableMaxDuration) ||
     !isEffectPromptRenderProfile(candidate.renderProfile) ||
     !Array.isArray(candidate.items) ||
     candidate.items.length > EFFECT_PROMPT_LIMITS.maxCount ||
@@ -1151,12 +1185,15 @@ export const parseEffectPromptBatchResult = (value: unknown): EffectPromptBatchR
   )
     return null;
   const normalizedItems = candidate.items;
-  const items = normalizedItems.filter(isEffectPromptItem);
+  const items = normalizedItems.filter((item) =>
+    isEffectPromptItemWithinDuration(item, readableMaxDuration),
+  );
   if (
     items.length !== normalizedItems.length ||
     new Set(items.map(({ id }) => id)).size !== items.length
   )
     return null;
+  if (isLegacyDuration) return candidate as unknown as EffectPromptBatchResult;
   return recomputePromptQuality(
     items,
     candidate.settings,

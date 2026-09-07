@@ -461,6 +461,7 @@ const reviewIssueLabel = (issue: string): string =>
     FABRICATED_FACT: '正文包含信息卡未确认的产品事实',
     ABSTRACT_FACT_VISUAL_PROOF: '画面错误地把抽象卖点当成可直接证明的事实',
     EMPTY_OR_BROKEN_CONTENT: '正文结构不完整，暂时无法用于生成视频',
+    SPEECH_DEPENDENT_MATERIAL: '素材依赖人物口播、旁白或可辨识台词，不能作为无口播片段使用',
   })[issue] ?? '这条 Prompt 需要修改后重新生成创意信息';
 
 const context = (): EffectPromptContext => ({

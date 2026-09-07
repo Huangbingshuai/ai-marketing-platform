@@ -26,7 +26,7 @@
         "defaultDurationSeconds": {
           "type": "integer",
           "minimum": 4,
-          "maximum": 30
+          "maximum": 15
         },
         "styleMode": {
           "enum": ["AI_AUTO", "FIXED"]
@@ -265,7 +265,7 @@
         "targetDurationSeconds": {
           "type": "integer",
           "minimum": 4,
-          "maximum": 30
+          "maximum": 15
         },
         "creativeCore": {
           "type": "string",

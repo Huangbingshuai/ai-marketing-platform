@@ -79,15 +79,16 @@ def test_director_guidance_uses_existing_fields_without_fixed_ad_formula() -> No
         assert "谁关心什么" in template
         assert "creativeDirection" in template
         assert "不增加输出字段或审核门槛" in template
-    assert "不必每条都有痛点、反转、口播或购买号召" in direction
+    assert "不必每条都有痛点、反转或购买号召" in direction
+    assert "不能依赖人物讲解、旁白或字幕完成产品表达" in direction
+    assert "禁止人物口播、旁白、对镜讲解和字幕文案" in direction
     assert "同一连续事件允许合理切镜" in creative
     assert "固定机位与一镜到底同样可以有力" in creative
     assert "焦点落在哪里" in creative
     assert "不机械循环“中景—特写—推进”" in creative
     assert "不是当前商品事实，也不是固定脚本" in creative
     assert "不得成为其他任务的默认内容" in creative
-    assert "无需每拍堆满微表情" in creative
-    assert "按节拍时长给自然语速留余量" in creative
+    assert "静音状态下仍能被理解" in creative
     assert "节拍数量是软建议，不是配额" in creative
     assert "不输出 content" in creative
 
@@ -109,9 +110,9 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "一个主要地点" in creative
     assert "不能伪装成画面已经证明" in creative
     assert "shotPlan 必须能直接交给视频模型执行" in creative
-    assert "有人开口时必须填写可以直接说出的逐字台词" in creative
+    assert "禁止人物讲话、对镜讲解、逐字台词" in creative
     assert "开始构思前先做真实性预检" in creative
-    assert "禁止只写“讲解产品”" in creative
+    assert "使用字面、具体、可拍的描述" in creative
     assert "首帧" in creative
     assert "节拍数量是软建议，不是配额" in creative
     assert "禁止补造包装透明度、开启结构、取用剂量、使用频率" in creative
@@ -128,6 +129,9 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "焦点事实放入创意主线" in task
     assert "不能复用同一画面骨架后只换措辞" in task
     assert "最终只返回 JSON Schema 要求的字段" in task
+    assert "TEXT_ONLY 事实只保留为后续成片文案依据" in task
+    assert "SPEECH_DEPENDENT_MATERIAL" in evaluation
+    assert "不要通过关键词机械判断" in evaluation
     assert "只评估候选，不改写正文" in evaluation
     assert "五个窄职责视角" in evaluation
     assert "GENERIC_STYLE_STACKING" in evaluation
@@ -152,7 +156,10 @@ def test_landscape_template_distinguishes_compatible_and_primary_facts() -> None
     assert "requiredFactIds 本阶段保持为空" in landscape
     assert "下一次独立 AI 调用" in landscape
     assert "不要输出 targetSlots" in landscape
-    assert "产品信息解释、原料理念、工艺故事或消费决策空间" in landscape
+    assert "产品信息、消费决策、使用、购买、情绪和人物需求" in landscape
+    assert "消费决策或品牌语境" in landscape
+    assert "TEXT_ONLY" in landscape
+    assert "后续成片文案" in landscape
     assert "不得为了覆盖把配方挂到储存" in landscape
     assert "必须分配的业务事实" in assignment
     assert "必须且只能输出一次" in assignment
@@ -266,7 +273,7 @@ def test_visual_strategy_templates_keep_direction_fact_applications_without_role
     assert "factEvidence" not in creative
     assert "productSnapshot 只用于确认商品名称、品类、规格、外观和包装边界" in creative
     assert "不能把一般体验、常识或创作推断说成该商品的事实" in creative
-    assert "审核解释，都不得出现在台词、字幕或画面中" in creative
+    assert "审核解释，都不得出现在字幕或画面中" in creative
     assert "visualTask" not in creative
     assert "businessContext" not in creative
     assert "必须标记 FABRICATED_FACT" in evaluation

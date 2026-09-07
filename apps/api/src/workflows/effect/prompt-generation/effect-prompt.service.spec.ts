@@ -1079,7 +1079,7 @@ describe('EffectPromptService settings contract', () => {
         creativeCore: draftResult.items[0]!.creativeCore,
         dimensions: draftResult.items[0]!.dimensions,
       }),
-    ).rejects.toThrow('当前视频模型支持 4～15 秒的片段时长');
+    ).rejects.toThrow('片段时长需在 4～15 秒之间');
     expect(repository.mutateResult).not.toHaveBeenCalled();
   });
 

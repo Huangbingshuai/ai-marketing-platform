@@ -22,6 +22,8 @@ from .creative_directions import (
 )
 from .insight_mapping import mandatory_business_facts
 from .models import (
+    MAX_PROMPT_DURATION_SECONDS,
+    MIN_PROMPT_DURATION_SECONDS,
     CreativeCandidate,
     CreativeCandidateBatch,
     CreativeCandidateDraftBatch,
@@ -478,12 +480,22 @@ class MockAiProvider:
                             "primary_action_id": slot.get(
                                 "primaryActionId", direction.primary_action_id
                             ),
+                            # Direction planning is transported in bounded batches.
+                            # Keep the mock's semantic families tied to the global
+                            # direction id so every batch does not restart at the
+                            # first synthetic family and accidentally look duplicate.
+                            "semantic_profile": _mock_semantic_profile_for_direction(
+                                slot.get("directionId", direction.direction_id),
+                                fallback_index=index,
+                            ),
                         }
                     )
-                    for direction, slot in zip(
-                        response.directions,
-                        required_slots,
-                        strict=True,
+                    for index, (direction, slot) in enumerate(
+                        zip(
+                            response.directions,
+                            required_slots,
+                            strict=True,
+                        )
                     )
                     if isinstance(slot, dict)
                 ]
@@ -1852,7 +1864,10 @@ class ArkResponsesProvider:
             )
         expected = {item.slot_id for item in candidates}
         if set(target_durations) != expected or any(
-            not 4 <= duration <= 30 for duration in target_durations.values()
+            not MIN_PROMPT_DURATION_SECONDS
+            <= duration
+            <= MAX_PROMPT_DURATION_SECONDS
+            for duration in target_durations.values()
         ):
             raise ProviderError(
                 "creative evaluation requires one valid target duration per candidate",
@@ -2260,6 +2275,26 @@ _MOCK_DIRECTION_ROWS = (
 )
 
 
+def _mock_semantic_profile_for_direction(
+    direction_id: object,
+    *,
+    fallback_index: int,
+) -> CreativeSemanticProfile:
+    try:
+        global_index = max(0, int(str(direction_id).rsplit("-", 1)[-1]) - 1)
+    except ValueError:
+        global_index = fallback_index
+    row = _MOCK_DIRECTION_ROWS[global_index % len(_MOCK_DIRECTION_ROWS)]
+    return CreativeSemanticProfile(
+        narrative_family=row[0],
+        scene_family=row[1],
+        persona_family=row[2],
+        product_action_family=row[3],
+        camera_family=row[4],
+        emotion_family=row[5],
+    )
+
+
 def _mock_creative_landscape_response(
     application: InsightApplicationMap,
     *,
@@ -2605,7 +2640,6 @@ def _mock_creative_candidate(
         overview=MaterialShotOverview(
             visual_intent=f"用一个连续产品动作自然承载{'、'.join(fact.value for fact in assigned_facts)}",
             visual_style="真实生活化产品素材",
-            audio_direction="保留现场动作声，背景音乐轻量克制",
         ),
         scene=MaterialShotScene(
             environment=scene,
@@ -2810,12 +2844,17 @@ def _creative_task_brief(
             if policy is not None
             else "自然融入同一创意，不得补造输入中没有的信息"
         )
+        creative_usage = direction_usage.get(
+            fact_id,
+            "结合当前条目的既有事实关系自然融入同一画面",
+        )
+        if policy is not None and policy.visual_usage == FactVisualUsage.TEXT_ONLY:
+            creative_usage = (
+                "仅作为后续成片文案依据；当前无口播素材无需复述、配字幕或视觉证明"
+            )
         return {
             **fact_payload(fact_id),
-            "creativeUsage": direction_usage.get(
-                fact_id,
-                "结合当前条目的既有事实关系自然融入同一画面",
-            ),
+            "creativeUsage": creative_usage,
             "instruction": instruction,
             "visualUsage": (
                 policy.visual_usage.value if policy is not None else "UNSPECIFIED"
@@ -2904,16 +2943,11 @@ def _creative_fact_aliases(
 
 
 def _temporal_intent_for_duration(duration_seconds: int) -> dict[str, str]:
-    if not 4 <= duration_seconds <= 30:
-        raise ValueError("target duration must be between 4 and 30 seconds")
+    if not MIN_PROMPT_DURATION_SECONDS <= duration_seconds <= MAX_PROMPT_DURATION_SECONDS:
+        raise ValueError("target duration must be between 4 and 15 seconds")
     if duration_seconds <= 8:
         lower_chars = 65 + (duration_seconds - 4) * 10
         upper_chars = 100 + (duration_seconds - 4) * 15
-        dialogue_guidance = (
-            "默认采用无口播动作；确需开口时只保留一句极短、能与动作同步说完的逐字台词。"
-            if duration_seconds <= 5
-            else "若有人开口，只保留一句能在动作中自然说完的简短逐字台词。"
-        )
         return {
             "band": "SHORT_FOCUS",
             "guidance": (
@@ -2924,52 +2958,22 @@ def _temporal_intent_for_duration(duration_seconds: int) -> dict[str, str]:
             "detailGuidance": (
                 f"本次为 {duration_seconds} 秒，软参考约 {lower_chars}～{upper_chars} 个汉字："
                 "写清首帧、一个具体主动作、镜头如何看见变化和结束状态；"
-                f"{dialogue_guidance}"
+                "依靠画面而不是台词完成表达，声音只描述环境声或动作声。"
             ),
         }
-    if duration_seconds <= 15:
-        lower_chars = 120 + (duration_seconds - 9) * 7
-        upper_chars = 180 + (duration_seconds - 9) * 16
-        beat_guidance = "2 个" if duration_seconds <= 11 else "2～3 个"
-        return {
-            "band": "COMPLETE_ACTION",
-            "guidance": (
-                f"在同一主场景和同一目标下安排 {beat_guidance}连续动作节拍，让开端、发展与结束状态"
-                "彼此衔接；不得加入第二种完整使用方法。"
-            ),
-            "detailGuidance": (
-                f"本次为 {duration_seconds} 秒，软参考约 {lower_chars}～{upper_chars} 个汉字："
-                f"首帧和结束状态完整，{beat_guidance}节拍均写清主体、对象、可见变化和镜头配合；"
-                "若有口播，必须给出可在本时长内自然说完的完整逐字台词。"
-            ),
-        }
-    if duration_seconds <= 22:
-        lower_chars = 200 + (duration_seconds - 16) * 7
-        upper_chars = 300 + (duration_seconds - 16) * 13
-        return {
-            "band": "GRADUAL_PROCESS",
-            "guidance": (
-                "围绕同一商品、同一主场景和同一目标安排 3 个连续动作节拍，可自然改变构图"
-                "或观察角度，但不得拆成多个独立地点或完整做法。"
-            ),
-            "detailGuidance": (
-                f"本次为 {duration_seconds} 秒，软参考约 {lower_chars}～{upper_chars} 个汉字："
-                "三个节拍分别承担进入、展开和收束，写清镜头随动作"
-                "发生的观察变化；口播必须是可直接表演的逐字台词，不能只写讲解主题。"
-            ),
-        }
-    lower_chars = 260 + (duration_seconds - 23) * 9
-    upper_chars = 380 + (duration_seconds - 23) * 17
+    lower_chars = 120 + (duration_seconds - 9) * 7
+    upper_chars = 180 + (duration_seconds - 9) * 16
+    beat_guidance = "2 个" if duration_seconds <= 11 else "2～3 个"
     return {
-        "band": "CONNECTED_PHASES",
+        "band": "COMPLETE_ACTION",
         "guidance": (
-            "围绕同一商品、同一主场景和同一目标安排 3～4 个连续动作节拍，形成一条可实时"
-            "拍完的过程；不得用慢动作、无意义停留、分屏、时间跳跃或多种完整做法填满素材。"
+            f"在同一主场景和同一目标下安排 {beat_guidance}连续动作节拍，让开端、发展与结束状态"
+            "彼此衔接；不得加入第二种完整使用方法。"
         ),
         "detailGuidance": (
             f"本次为 {duration_seconds} 秒，软参考约 {lower_chars}～{upper_chars} 个汉字："
-            "写清首帧、3～4 个连续节拍、每个关键动作的镜头配合"
-            "以及明确结束状态；只要人物开口，就提供能按普通语速说完的完整逐字台词及同步动作。"
+            f"首帧和结束状态完整，{beat_guidance}节拍均写清主体、对象、可见变化和镜头配合；"
+            "片段静音时也必须能看懂，声音只描述环境声或动作声。"
         ),
     }
 

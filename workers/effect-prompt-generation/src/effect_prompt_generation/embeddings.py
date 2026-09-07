@@ -755,8 +755,6 @@ def candidate_content_embedding_source(candidate: CreativeCandidate) -> str:
     ]
     for beat in plan.beats:
         rows.extend((beat.action, beat.visible_result))
-        if beat.dialogue:
-            rows.append(beat.dialogue)
     rows.append(plan.final_frame)
     return "\n".join(rows)
 

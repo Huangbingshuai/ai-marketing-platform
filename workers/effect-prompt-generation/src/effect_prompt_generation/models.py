@@ -14,6 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 MIN_PROMPT_COUNT = 10
 MAX_PROMPT_COUNT = 100
 MAX_CANDIDATE_COUNT = 240
+MIN_PROMPT_DURATION_SECONDS = 4
+MAX_PROMPT_DURATION_SECONDS = 15
 
 
 def to_camel(value: str) -> str:
@@ -157,7 +159,10 @@ class EvidenceMode(StrEnum):
 
 class PromptBatchSettings(ApiModel):
     target_count: int = Field(ge=MIN_PROMPT_COUNT, le=MAX_PROMPT_COUNT)
-    default_duration_seconds: int = Field(ge=4, le=30)
+    default_duration_seconds: int = Field(
+        ge=MIN_PROMPT_DURATION_SECONDS,
+        le=MAX_PROMPT_DURATION_SECONDS,
+    )
     style_mode: Literal["AI_AUTO", "FIXED"] = "AI_AUTO"
     style_tone: str | None = Field(default=None, max_length=120)
     delivery_channel: str = Field(default="抖音", min_length=1, max_length=120)
@@ -316,7 +321,10 @@ class PromptItem(ApiModel):
     compatible_purposes: list[FragmentType] = Field(min_length=1, max_length=4)
     classification_status: Literal["PENDING", "VERIFIED", "NEEDS_REVISION"]
     product_relevance: int = Field(ge=0, le=100)
-    target_duration_seconds: int = Field(ge=4, le=30)
+    target_duration_seconds: int = Field(
+        ge=MIN_PROMPT_DURATION_SECONDS,
+        le=MAX_PROMPT_DURATION_SECONDS,
+    )
     creative_core: str = Field(min_length=1, max_length=160)
     dimensions: CreativeDimensions
     content: str = Field(min_length=1, max_length=12_000)
@@ -538,7 +546,11 @@ class PromptGenerationSnapshot(ApiModel):
     base_result_revision: int | None = Field(default=None, ge=1)
     target_item: PromptItem | None = None
     target_item_index: int | None = Field(default=None, ge=0, le=199)
-    regeneration_target_duration_seconds: int | None = Field(default=None, ge=4, le=30)
+    regeneration_target_duration_seconds: int | None = Field(
+        default=None,
+        ge=MIN_PROMPT_DURATION_SECONDS,
+        le=MAX_PROMPT_DURATION_SECONDS,
+    )
     replacement_dimensions: CreativeDimensions | None = None
     regeneration_instruction: str | None = Field(default=None, max_length=500)
     regeneration_mode: (
@@ -1084,7 +1096,10 @@ class CreativeTask(ApiModel):
     supplement_kind: Literal["INITIAL", "QUANTITY", "COVERAGE", "DIVERSITY"] | None = (
         None
     )
-    target_duration_seconds: int = Field(ge=4, le=30)
+    target_duration_seconds: int = Field(
+        ge=MIN_PROMPT_DURATION_SECONDS,
+        le=MAX_PROMPT_DURATION_SECONDS,
+    )
     fact_assignment: CreativeFactAssignment | None = None
     creative_direction: CreativeDirection | None = None
     sibling_variant_index: int = Field(default=1, ge=1, le=32)
@@ -1121,7 +1136,6 @@ class CreativeTask(ApiModel):
 class MaterialShotOverview(ApiModel):
     visual_intent: str = Field(min_length=1, max_length=160)
     visual_style: str = Field(min_length=1, max_length=120)
-    audio_direction: str = Field(min_length=1, max_length=160)
 
 
 class MaterialShotScene(ApiModel):
@@ -1137,10 +1151,9 @@ class MaterialShotBeat(ApiModel):
     action: str = Field(min_length=1, max_length=320)
     camera: str = Field(min_length=1, max_length=180)
     visible_result: str = Field(min_length=1, max_length=200)
-    dialogue: str | None = Field(default=None, max_length=240)
     sound: str | None = Field(default=None, max_length=160)
 
-    @field_validator("dialogue", "sound")
+    @field_validator("sound")
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:
         if value is None:
