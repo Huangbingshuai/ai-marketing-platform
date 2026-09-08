@@ -126,6 +126,7 @@ from .fact_allocation import (
     assignment_for_direction,
 )
 from .direction_review import review_batches, review_hash, review_input_size
+from .supplement_recovery import retain_valid_supplements
 from .visual_strategy import (
     strategy_stage_metadata,
     validate_fact_visual_strategy,
@@ -2430,20 +2431,32 @@ class PromptGenerationPipeline:
         revision_context: Mapping[str, Any] | None = base_revision_context or None
         proposed: list[CreativeDirection] | None = None
         diversity_audit: CreativeDirectionDiversityAudit | None = None
-        for attempt in range(3):
+        retained: dict[str, CreativeDirection] = {}
+        required_ids: list[str] = []
+        existing_ids = {d.direction_id for d in plan.directions}
+        suffix = 1
+        while len(required_ids) < requested_direction_count:
+            key = f"DIVERSITY_SUPPLEMENT_{suffix}"
+            suffix += 1
+            if key not in existing_ids:
+                required_ids.append(key)
+        pending_ids = list(required_ids)
+        structure_recoveries = 0
+        semantic_revisions = 0
+        for attempt in range(4):
             try:
-                self._reserve_ai_call(context)
-                async with self._ai_semaphore:
-                    direction_call = (
-                        await self.provider.plan_diversity_supplement_directions(
+                if pending_ids:
+                    self._reserve_ai_call(context)
+                    async with self._ai_semaphore:
+                        direction_call = await self.provider.plan_diversity_supplement_directions(
                             application,
                             fact_visual_strategy=visual_strategy,
                             shared_prompt=shared_prompt,
                             landscape=landscape,
                             existing_directions=CreativeDirectionResponse(
-                                directions=plan.directions
+                                directions=[*plan.directions, *retained.values()]
                             ),
-                            requested_direction_count=requested_direction_count,
+                            requested_direction_count=len(pending_ids),
                             execution_route_count=execution_route_count,
                             crowded_scene_families=sorted(
                                 cache.diversity_avoid_scene_families
@@ -2451,11 +2464,31 @@ class PromptGenerationPipeline:
                             crowded_action_families=sorted(
                                 cache.diversity_avoid_action_families
                             ),
-                            revision_context=revision_context,
+                            revision_context={
+                                **(revision_context or {}),
+                                "requiredDirectionIds": list(pending_ids),
+                                "retainedDirectionIds": list(retained),
+                            },
                         )
+                    errors = retain_valid_supplements(
+                        direction_call.value, pending_ids=pending_ids, retained=retained,
+                        application=application, strategy=visual_strategy, landscape=landscape,
+                        existing=plan.directions, route_count=execution_route_count,
                     )
+                    pending_ids = [key for key in required_ids if key not in retained]
+                    if pending_ids:
+                        revision_context = {
+                            **base_revision_context,
+                            "directionErrors": errors,
+                            "previousDirections": [
+                                d.model_dump(mode="json", by_alias=True)
+                                for d in direction_call.value.directions
+                                if d.direction_id in pending_ids
+                            ],
+                        }
+                        raise ValueError("supplement contains unresolved direction slots")
                 proposed = validate_diversity_supplement_directions(
-                    direction_call.value,
+                    CreativeDirectionResponse(directions=[retained[key] for key in required_ids]),
                     application,
                     visual_strategy,
                     landscape=landscape,
@@ -2484,13 +2517,17 @@ class PromptGenerationPipeline:
                     type(exc).__name__,
                     str(exc),
                 )
-                if attempt < 2:
+                if structure_recoveries < 2 and attempt < 3:
+                    structure_recoveries += 1
                     revision_context = {
-                        **base_revision_context,
-                        "validationError": str(exc),
+                        **(revision_context or base_revision_context),
+                        "validationError": (
+                            str(exc) if isinstance(exc, ValueError) else exc.error_type.value
+                        ),
                         "revisionInstruction": (
                             f"{base_revision_context.get('revisionInstruction', '')} "
-                            "重新输出完整的补充方向结构，并保持数量、事实与版图引用合法。"
+                            "只输出 requiredDirectionIds 指定的待修复方向。已保留方向无需重写；"
+                            "先选空间，再从该空间的合法组合行选择事实和动作，不借用其他行的 ID。"
                         ).strip(),
                     }
                     continue
@@ -2498,11 +2535,16 @@ class PromptGenerationPipeline:
                 return []
             if not diversity_audit.requires_revision:
                 break
-            if attempt < 2:
+            if semantic_revisions < 1 and attempt < 3:
+                semantic_revisions += 1
+                pending_ids = [key for key in required_ids if key in diversity_audit.revision_direction_ids]
+                for key in pending_ids:
+                    retained.pop(key, None)
                 revision_context = {
                     **base_revision_context,
                     "previousDirections": [
                         item.model_dump(mode="json", by_alias=True) for item in proposed
+                        if item.direction_id in pending_ids
                     ],
                     "revisionDirectionIds": diversity_audit.revision_direction_ids,
                     "diversityAudit": diversity_audit.model_dump(
@@ -2510,7 +2552,7 @@ class PromptGenerationPipeline:
                     ),
                     "revisionInstruction": (
                         f"{base_revision_context.get('revisionInstruction', '')} "
-                        "保持补充方向 ID 和数量，按全批视觉复核改变实质画面关系；"
+                        "只修订 requiredDirectionIds 指定方向，保持其 ID，按全批视觉复核改变实质画面关系；"
                         "不能只换措辞、人物性别或景别名称。"
                     ).strip(),
                 }

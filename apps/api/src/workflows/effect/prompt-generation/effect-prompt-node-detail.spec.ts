@@ -358,12 +358,14 @@ describe('presentEffectPromptNodeDetail', () => {
         { label: '产品创意空间', value: 6 },
         { label: '创意方向', value: 12 },
         { label: '候选目标', value: 70 },
+        { label: '已完成分片（含恢复）', value: 7 },
         { label: '实时分片进度', value: '1/18' },
         { label: '实际完成分片', value: 1 },
         { label: '当前处理中分片', value: 1 },
       ]),
     );
     expect(JSON.stringify(detail)).not.toContain('事实 ID');
+    expect(JSON.stringify(detail)).not.toContain('开始前已恢复分片');
     expect(JSON.stringify(detail)).not.toContain('模型输入');
     expect(JSON.stringify(detail)).not.toContain('PRIVATE_REVIEW');
     expect(JSON.stringify(detail)).not.toContain('completedBatches');

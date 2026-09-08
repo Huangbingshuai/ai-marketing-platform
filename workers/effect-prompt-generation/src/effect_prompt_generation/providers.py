@@ -22,6 +22,7 @@ from .creative_directions import (
     creative_territory_target_range,
 )
 from .insight_mapping import mandatory_business_facts
+from .supplement_recovery import direction_summary
 from .models import (
     MAX_PROMPT_DURATION_SECONDS,
     MIN_PROMPT_DURATION_SECONDS,
@@ -649,19 +650,20 @@ class MockAiProvider:
             landscape,
             crowded_scene_families,
             crowded_action_families,
-            revision_context,
         )
+        requested_ids = (revision_context or {}).get("requiredDirectionIds", [])
         rows = []
         for index in range(requested_direction_count):
+            direction_id = requested_ids[index] if requested_ids else f"DIVERSITY_SUPPLEMENT_{index + 1}"
             base = existing_directions.directions[
                 index % len(existing_directions.directions)
             ]
             rows.append(
                 base.model_copy(
                     update={
-                        "direction_id": f"DIVERSITY_SUPPLEMENT_{index + 1}",
+                        "direction_id": direction_id,
                         "creative_direction": (
-                            f"补充差异方向 {index + 1}：{base.creative_direction}"
+                            f"补充差异方向 {direction_id}：{base.creative_direction}"
                         ),
                         "semantic_profile": base.semantic_profile.model_copy(
                             update={
@@ -1764,6 +1766,25 @@ class ArkResponsesProvider:
         revision_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeDirectionResponse]:
         fact_aliases, fact_ids_by_alias = _fact_alias_maps(application)
+        compact_revision = dict(revision_context or {})
+        audit = compact_revision.get("diversityAudit")
+        if isinstance(audit, dict):
+            compact_revision["diversityAudit"] = {
+                key: audit[key] for key in ("groups", "revisionDirectionIds", "summary")
+                if key in audit
+            }
+        response_schema = CreativeDirectionResponse.model_json_schema(by_alias=True)
+        response_schema["properties"]["directions"].update(
+            minItems=requested_direction_count, maxItems=requested_direction_count,
+        )
+        direction_schema = response_schema["$defs"]["CreativeDirection"]["properties"]
+        required_ids = compact_revision.get("requiredDirectionIds", [])
+        if required_ids:
+            direction_schema["directionId"]["enum"] = required_ids
+        direction_schema["territoryId"]["enum"] = list(landscape.by_id)
+        direction_schema["executionRoutes"].update(
+            minItems=execution_route_count, maxItems=execution_route_count,
+        )
         prompt = render_prompt(
             CREATIVE_DIRECTION_SUPPLEMENT_TASK_PROMPT,
             requested_direction_count=str(requested_direction_count),
@@ -1826,7 +1847,7 @@ class ArkResponsesProvider:
             existing_directions_json=json.dumps(
                 _remap_fact_references(
                     [
-                        direction.model_dump(mode="json", by_alias=True)
+                        direction_summary(direction)
                         for direction in existing_directions.directions
                     ],
                     fact_aliases,
@@ -1841,7 +1862,7 @@ class ArkResponsesProvider:
                 list(crowded_action_families), ensure_ascii=False
             ),
             revision_context_json=json.dumps(
-                _remap_fact_references(revision_context or {}, fact_aliases),
+                _remap_fact_references(compact_revision, fact_aliases),
                 ensure_ascii=False,
                 sort_keys=True,
             ),
@@ -1850,6 +1871,8 @@ class ArkResponsesProvider:
             prompt,
             CreativeDirectionResponse,
             schema_name="effect_prompt_creative_direction_supplement",
+            response_schema=response_schema,
+            item_count=requested_direction_count,
             stage=NodeId.COHERENT_CREATIVE_GENERATION.value,
             prompt_file=CREATIVE_DIRECTION_SUPPLEMENT_BASE_PROMPT,
             model=self._fragment_strategy_model,
@@ -2175,6 +2198,7 @@ class ArkResponsesProvider:
         request_timeout: float,
         instructions: str | None = None,
         item_count: int | None = None,
+        response_schema: dict[str, Any] | None = None,
     ) -> AiCallResult[TModel]:
         payload = {
             "model": model,
@@ -2188,7 +2212,7 @@ class ArkResponsesProvider:
                 "format": {
                     "type": "json_schema",
                     "name": schema_name,
-                    "schema": model_type.model_json_schema(by_alias=True),
+                    "schema": response_schema or model_type.model_json_schema(by_alias=True),
                     "strict": True,
                 }
             },
@@ -2270,7 +2294,7 @@ class ArkResponsesProvider:
                                 TypeError,
                             ) as exc:
                                 LOGGER.warning(
-                                    "Ark structured response invalid stage=%s status=%s input_tokens=%s output_tokens=%s total_tokens=%s latency_ms=%s attempts=%s",
+                                    "Ark structured response invalid stage=%s status=%s input_tokens=%s output_tokens=%s total_tokens=%s latency_ms=%s attempts=%s schema_errors=%s",
                                     stage,
                                     response_status,
                                     usage["inputTokens"],
@@ -2278,6 +2302,7 @@ class ArkResponsesProvider:
                                     usage["totalTokens"],
                                     elapsed,
                                     attempt,
+                                    _safe_schema_errors(exc, model_type),
                                 )
                                 last_error = exc
                                 error_type = ProviderErrorType.RESPONSE_INVALID
@@ -3433,6 +3458,38 @@ def _output_text(payload: Any) -> str:
 _SAFE_STRUCTURED_TRAILING_ARTIFACT = re.compile(
     r"(?:\s|[\]\}]|```|</[A-Za-z][A-Za-z0-9:_.-]*>)*\Z"
 )
+
+
+def _safe_schema_errors(exc: Exception, model_type: type[BaseModel]) -> list[dict[str, str]]:
+    """Log schema-owned paths/codes only, never values, messages or unknown keys."""
+    if not isinstance(exc, ValidationError):
+        return [{"path": "$", "code": "invalid_json"}]
+    fields: set[str] = set()
+
+    def collect(node: Any) -> None:
+        if isinstance(node, dict):
+            properties = node.get("properties", {})
+            fields.update(properties)
+            for value in node.values():
+                collect(value)
+        elif isinstance(node, list):
+            for value in node:
+                collect(value)
+
+    collect(model_type.model_json_schema(by_alias=True))
+    collect(model_type.model_json_schema(by_alias=False))
+    diagnostics = []
+    for error in exc.errors(include_input=False, include_context=False, include_url=False)[:8]:
+        path = ".".join(
+            "[]" if isinstance(part, int) else part if part in fields else "?"
+            for part in error["loc"]
+        )
+        code = str(error["type"])
+        diagnostics.append({
+            "path": path or "$",
+            "code": code if re.fullmatch(r"[a-z_]+", code) else "validation_error",
+        })
+    return diagnostics
 
 
 def _validate_structured_output(

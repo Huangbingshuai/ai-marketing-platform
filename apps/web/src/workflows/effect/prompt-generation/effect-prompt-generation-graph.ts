@@ -1,4 +1,22 @@
-import type { EffectPromptNodeId } from '@ai-marketing/contracts';
+import type { EffectPromptNodeId, EffectPromptRun } from '@ai-marketing/contracts';
+
+/** Refresh the selected stage once when it finishes, not only while it is active. */
+export const promptGraphDetailRefreshKey = (
+  run: Pick<
+    EffectPromptRun,
+    'id' | 'status' | 'attemptCount' | 'currentNode' | 'updatedAt' | 'nodes'
+  > | null,
+  nodeId: EffectPromptNodeId | null,
+): string | null => {
+  if (!run || !nodeId) return null;
+  return JSON.stringify([
+    run.id,
+    run.status,
+    run.attemptCount,
+    run.nodes.find((node) => node.nodeId === nodeId) ?? null,
+    run.currentNode === nodeId ? run.updatedAt : null,
+  ]);
+};
 
 export const buildEffectPromptGraphRows = (
   nodeIds: readonly EffectPromptNodeId[],

@@ -239,8 +239,8 @@ describe('effect prompt generation current layout', () => {
   it('shows live worker summaries and refreshes the selected running-node detail', () => {
     expect(pageSource).toContain('if (executionSummary) return executionSummary');
     expect(pageSource).toContain('graphNodeDescription(nodeId)');
-    expect(pageSource).toContain("displayedGraphRun.value?.status !== 'RUNNING'");
-    expect(pageSource).toContain('displayedGraphRun.value.currentNode !== nodeId');
+    expect(pageSource).toContain('promptGraphDetailRefreshKey(displayedGraphRun.value, selectedGraphNodeId.value)');
+    expect(pageSource).toContain('displayedGraphRun.value?.id !== runId');
     expect(pageSource).toContain('void refreshGraphDetail()');
     expect(pageSource).toContain('graphDetailRefreshTimer = setTimeout');
   });

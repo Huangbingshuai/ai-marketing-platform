@@ -139,7 +139,9 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "GENERIC_STYLE_STACKING" in evaluation
     assert "只有事实编造、商品完全无关" in evaluation
     assert "先做真实性预检，再评分" in evaluation
-    assert "一条素材可以有多个用途" in evaluation
+    assert "compatiblePurposes 只返回其他兼容用途" in evaluation
+    assert "跨节拍核对同一主体的前后状态" in evaluation
+    assert "不新增硬淘汰条件" in evaluation
     assert "HOOK、PRODUCT_DISPLAY、EFFECT、CTA" in evaluation
     assert "PAIN、" not in evaluation
     assert "SELLING_POINT_EXPLANATION" not in evaluation

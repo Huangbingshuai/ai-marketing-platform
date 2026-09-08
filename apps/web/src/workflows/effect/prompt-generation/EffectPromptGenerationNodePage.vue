@@ -58,7 +58,10 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { ApiClientError, isAbortError } from '../../../api/http-client';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
 import EffectUpwardCreatableSelect from '../source-import/components/EffectUpwardCreatableSelect.vue';
-import { buildEffectPromptGraphRows } from './effect-prompt-generation-graph';
+import {
+  buildEffectPromptGraphRows,
+  promptGraphDetailRefreshKey,
+} from './effect-prompt-generation-graph';
 import {
   clampPromptPage,
   clonePromptSettings,
@@ -1867,6 +1870,7 @@ const refreshGraphDetail = async (): Promise<void> => {
       !graphDialogOpen.value ||
       props.projectId !== projectId ||
       currentProductId.value !== productId ||
+      displayedGraphRun.value?.id !== runId ||
       selectedGraphNodeId.value !== nodeId
     )
       return;
@@ -1877,6 +1881,7 @@ const refreshGraphDetail = async (): Promise<void> => {
       !disposed &&
       props.projectId === projectId &&
       currentProductId.value === productId &&
+      displayedGraphRun.value?.id === runId &&
       selectedGraphNodeId.value === nodeId
     )
       graphDetailError.value = safeMessage(error, '节点详情加载失败');
@@ -1896,19 +1901,12 @@ watch(
   [
     () => graphDialogOpen.value,
     () => selectedGraphNodeId.value,
-    () => displayedGraphRun.value?.updatedAt,
-    () => displayedGraphRun.value?.currentNode,
+    () => promptGraphDetailRefreshKey(displayedGraphRun.value, selectedGraphNodeId.value),
   ],
   ([open, nodeId]) => {
     if (graphDetailRefreshTimer) clearTimeout(graphDetailRefreshTimer);
     graphDetailRefreshTimer = undefined;
-    if (
-      !open ||
-      !nodeId ||
-      displayedGraphRun.value?.status !== 'RUNNING' ||
-      displayedGraphRun.value.currentNode !== nodeId
-    )
-      return;
+    if (!open || !nodeId || !displayedGraphRun.value) return;
     graphDetailRefreshTimer = setTimeout(() => {
       graphDetailRefreshTimer = undefined;
       void refreshGraphDetail();

@@ -16,7 +16,7 @@
 可直接复制的合法 ID 组合表：
 {allowed_combinations_json}
 
-现有方向：
+现有方向摘要（保留每条路线的视觉事件、场景关系、产品动作及结束状态，用于全批避重）：
 {existing_directions_json}
 
 当前拥挤场景语义族：
@@ -29,3 +29,4 @@
 {revision_context_json}
 
 directions 必须恰好输出 {requested_direction_count} 个真正新增的方向。每个方向先从合法 ID 组合表选择一个 territoryId，再且只能从同一行复制 primaryActionId 和 factApplications.factId；不要凭语义猜测 ID 的归属。优先使用现有批次较少出现、但与产品和事实自然相容的版图、动作与画面关系。每个方向的 executionRoutes 必须恰好输出 {execution_route_count} 条。
+若上下文包含 requiredDirectionIds，只输出这些 ID 对应的待生成或待修复方向，逐个完整返回且不改 ID；retainedDirectionIds 中的方向已通过来源与结构校验，不得重写。数量减少表示局部修复，不表示降低创意要求。根据 directionErrors 修复该方向的合法组合，根据全批复核意见修订画面关系；不能用替换事实 ID 来冒充已修复的创意。

@@ -1033,7 +1033,7 @@ const nodeMetricFields = (nodeId: string, rawMetadata: unknown): EffectPromptNod
         numberField(metadata, 'candidateCount', '已生成候选'),
         numberField(metadata, 'generatedCandidateCount', '当前候选'),
         numberField(metadata, 'totalShardCount', '生成分片总数'),
-        numberField(metadata, 'completedShardCount', '开始前已恢复分片'),
+        numberField(metadata, 'completedShardCount', '已完成分片（含恢复）'),
         numberField(metadata, 'pendingShardCount', '本轮待生成分片'),
         textField(
           '规划复核',

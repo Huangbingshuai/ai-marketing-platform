@@ -1455,7 +1455,9 @@ class CreativeEvaluationDraft(ApiModel):
 
     slot_id: str = Field(min_length=1, max_length=160)
     primary_purpose: FragmentType
-    compatible_purposes: list[FragmentType] = Field(default_factory=list, max_length=3)
+    # Accept a primary-inclusive response too; normalization below only removes
+    # duplicate IDs/the primary ID, never infers another purpose.
+    compatible_purposes: list[FragmentType] = Field(default_factory=list, max_length=4)
     fact_evidence: list[FactEvidence] = Field(default_factory=list, max_length=8)
     scores: CreativeScores
     semantic_profile: CreativeSemanticProfile | None = None
