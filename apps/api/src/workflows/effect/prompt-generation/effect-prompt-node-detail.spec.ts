@@ -308,6 +308,10 @@ describe('presentEffectPromptNodeDetail', () => {
                 pendingShardCount: 11,
                 checkpoint: {
                   plan: {
+                    reviewProgress: {
+                      requestFingerprint: 'PRIVATE_REVIEW_FINGERPRINT',
+                      completedBatches: { privateBatch: { summary: 'PRIVATE_REVIEW_BODY' } },
+                    },
                     landscape: {
                       territories: [
                         {
@@ -361,6 +365,8 @@ describe('presentEffectPromptNodeDetail', () => {
     );
     expect(JSON.stringify(detail)).not.toContain('事实 ID');
     expect(JSON.stringify(detail)).not.toContain('模型输入');
+    expect(JSON.stringify(detail)).not.toContain('PRIVATE_REVIEW');
+    expect(JSON.stringify(detail)).not.toContain('completedBatches');
     const plan = detail.sections
       .flatMap((section) => section.blocks)
       .find((block) => block.kind === 'CREATIVE_PLAN_LIST');

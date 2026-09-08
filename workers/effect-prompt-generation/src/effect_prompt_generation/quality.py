@@ -141,6 +141,7 @@ def select_creatives(
     semantic_group_resolver: Callable[[RankedCreative], str] | None = None,
     fixed_semantic_group_ids: Sequence[str] = (),
     semantic_group_repeat_penalty: float = 0.0,
+    minimum_distinct_semantic_groups: int | None = None,
 ) -> CreativeSelectionResult:
     candidate_by_id = {item.slot_id: item for item in candidates}
     ranked = [
@@ -181,6 +182,7 @@ def select_creatives(
     selected: list[RankedCreative] = []
     remaining = list(unique)
     semantic_group_counts: Counter[str] = Counter(fixed_semantic_group_ids)
+    distinct_semantic_groups = set(fixed_semantic_group_ids)
     resolve_novelty = novelty_resolver or _creative_novelty
     novelty_by_id = {
         item.candidate.slot_id: (
@@ -232,7 +234,10 @@ def select_creatives(
             if uncovered_required.intersection(row.evaluation.realized_fact_ids)
         ]
         selection_pool = coverage_candidates or business_pool
-        if semantic_group_resolver is not None:
+        if semantic_group_resolver is not None and (
+            minimum_distinct_semantic_groups is None
+            or len(distinct_semantic_groups) < minimum_distinct_semantic_groups
+        ):
             unused_group_candidates = [
                 row
                 for row in selection_pool
@@ -253,7 +258,9 @@ def select_creatives(
         )
         selected.append(best)
         if semantic_group_resolver is not None:
-            semantic_group_counts[semantic_group_resolver(best)] += 1
+            selected_group = semantic_group_resolver(best)
+            semantic_group_counts[selected_group] += 1
+            distinct_semantic_groups.add(selected_group)
         uncovered_required.difference_update(best.evaluation.realized_fact_ids)
         remaining = [
             item

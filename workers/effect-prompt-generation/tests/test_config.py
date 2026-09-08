@@ -43,6 +43,10 @@ def test_mock_requires_explicit_provider_and_prompt_model_falls_back() -> None:
     assert settings.prompt_max_concurrency == 4
     assert settings.prompt_shard_size == 8
     assert settings.ark_prompt_strategy_timeout_seconds == 180
+    assert settings.ark_prompt_direction_review_timeout_seconds == 180
+    assert settings.ark_prompt_evaluation_timeout_seconds == 120
+    assert settings.prompt_direction_review_batch_size == 6
+    assert settings.prompt_direction_review_input_budget == 12000
     assert settings.resolved_prompt_candidate_timeout_seconds == 120
     assert settings.ark_prompt_provider_max_attempts == 1
     assert settings.resolved_prompt_evaluation_model == settings.resolved_prompt_candidate_model

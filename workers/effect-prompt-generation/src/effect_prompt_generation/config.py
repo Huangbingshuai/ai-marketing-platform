@@ -128,6 +128,15 @@ class WorkerSettings(BaseSettings):
     ark_prompt_evaluation_timeout_seconds: float = Field(
         default=120.0, alias="ARK_PROMPT_EVALUATION_TIMEOUT_SECONDS", gt=0
     )
+    ark_prompt_direction_review_timeout_seconds: float = Field(
+        default=180.0, alias="ARK_PROMPT_DIRECTION_REVIEW_TIMEOUT_SECONDS", gt=0
+    )
+    prompt_direction_review_batch_size: int = Field(
+        default=6, alias="PROMPT_DIRECTION_REVIEW_BATCH_SIZE", ge=1, le=12
+    )
+    prompt_direction_review_input_budget: int = Field(
+        default=12000, alias="PROMPT_DIRECTION_REVIEW_INPUT_BUDGET", ge=2500
+    )
     ark_prompt_provider_max_attempts: int = Field(
         default=1, alias="ARK_PROMPT_PROVIDER_MAX_ATTEMPTS", ge=1, le=3
     )

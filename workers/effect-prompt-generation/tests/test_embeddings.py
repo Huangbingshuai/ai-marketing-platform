@@ -152,7 +152,7 @@ def test_redundancy_summary_accepts_semantic_aware_similarity() -> None:
     assert summary.high_risk_candidate_ids == ("a", "c")
 
 
-def test_semantic_group_map_returns_stable_connected_components() -> None:
+def test_semantic_group_map_does_not_merge_similarity_chains() -> None:
     index = ContentVectorIndex(
         entity_ids=("a", "b", "c", "d"),
         row_by_id={"a": 0, "b": 1, "c": 2, "d": 3},
@@ -171,9 +171,39 @@ def test_semantic_group_map_returns_stable_connected_components() -> None:
     )
 
     groups = index.semantic_group_map(["d", "c", "b", "a"])
+    reordered = index.semantic_group_map(["a", "b", "c", "d"])
 
-    assert groups["a"] == groups["b"] == groups["c"]
+    assert groups == reordered
+    assert groups["a"] == groups["b"]
+    assert groups["c"] != groups["a"]
     assert groups["d"] != groups["a"]
+
+
+def test_redundancy_summary_does_not_count_transitive_neighbors_as_duplicates() -> (
+    None
+):
+    index = ContentVectorIndex(
+        entity_ids=("a", "b", "c"),
+        row_by_id={"a": 0, "b": 1, "c": 2},
+        candidate_ids=("a", "b", "c"),
+        anchor_ids=(),
+        similarities=np.asarray(
+            [
+                [1.0, 0.90, 0.10],
+                [0.90, 1.0, 0.85],
+                [0.10, 0.85, 1.0],
+            ],
+            dtype=np.float32,
+        ),
+        stats=ContentEmbeddingStats(3, 0, 0, 0, 3, 3, 0, 0, 0, 0, []),
+    )
+
+    summary = index.redundancy_summary(["a", "b", "c"])
+
+    assert summary.high_risk_pair_count == 2
+    assert summary.high_risk_group_count == 1
+    assert summary.redundant_candidate_count == 1
+    assert summary.affected_candidate_count == 2
 
 
 def test_semantic_group_map_uses_the_final_similarity_resolver() -> None:

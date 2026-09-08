@@ -813,6 +813,20 @@ class CreativeDiversityLandscape(ApiModel):
         return {item.territory_id: item for item in self.territories}
 
 
+class CreativeExecutionRoute(ApiModel):
+    """One AI-authored visual-event route for a direction sibling.
+
+    The Worker treats these values as opaque creative text.  It only preserves
+    stable route IDs and assigns different routes deterministically.
+    """
+
+    route_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
+    visual_event: str = Field(min_length=4, max_length=160)
+    scene_relation: str = Field(min_length=4, max_length=120)
+    product_action: str = Field(min_length=4, max_length=120)
+    ending_state: str = Field(min_length=4, max_length=120)
+
+
 class CreativeDirection(ApiModel):
     direction_id: str = Field(min_length=1, max_length=120)
     territory_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
@@ -825,6 +839,10 @@ class CreativeDirection(ApiModel):
     priority_dimensions: list[CreativeDimensionKey] = Field(min_length=2, max_length=2)
     semantic_profile: CreativeSemanticProfile
     avoid_families: list[str] = Field(default_factory=list, max_length=2)
+    execution_routes: list[CreativeExecutionRoute] = Field(
+        default_factory=list,
+        max_length=5,
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -868,6 +886,9 @@ class CreativeDirection(ApiModel):
         )
         if len(self.priority_dimensions) != 2:
             raise ValueError("priorityDimensions must contain two distinct dimensions")
+        route_ids = [item.route_id for item in self.execution_routes]
+        if len(route_ids) != len(set(route_ids)):
+            raise ValueError("executionRoutes must use distinct route ids")
         return self
 
     @property
@@ -947,12 +968,21 @@ class CreativeDirectionOverlapGroup(ApiModel):
         return self
 
 
+class CreativeDirectionCanonicalProfile(ApiModel):
+    direction_id: str = Field(min_length=1, max_length=120)
+    semantic_profile: CreativeSemanticProfile
+
+
 class CreativeDirectionDiversityAuditResponse(ApiModel):
     groups: list[CreativeDirectionOverlapGroup] = Field(
         default_factory=list, max_length=40
     )
     requires_revision: bool
     revision_direction_ids: list[str] = Field(default_factory=list, max_length=80)
+    canonical_profiles: list[CreativeDirectionCanonicalProfile] = Field(
+        default_factory=list,
+        max_length=80,
+    )
     summary: str = Field(default="", max_length=500)
 
     @model_validator(mode="after")
@@ -966,6 +996,11 @@ class CreativeDirectionDiversityAuditResponse(ApiModel):
             dict.fromkeys([*self.revision_direction_ids, *grouped_revision_ids])
         )
         self.requires_revision = bool(self.revision_direction_ids)
+        canonical_direction_ids = [
+            item.direction_id for item in self.canonical_profiles
+        ]
+        if len(canonical_direction_ids) != len(set(canonical_direction_ids)):
+            raise ValueError("canonical profiles must use unique direction ids")
         if not self.summary.strip():
             self.summary = (
                 "发现需分散的重复方向"
@@ -979,6 +1014,18 @@ class CreativeDirectionDiversityAudit(CreativeDirectionDiversityAuditResponse):
     audit_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
+class CreativeDirectionReviewProgress(ApiModel):
+    """Internal same-Run recovery data, never a public result or AI input."""
+
+    run_id: str
+    request_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    planning_attempt: int = Field(ge=0, le=3)
+    semantic_revision_count: int = Field(ge=0, le=1)
+    completed_batches: dict[str, CreativeDirectionAuditResponse] = Field(
+        default_factory=dict, max_length=128
+    )
+
+
 class CreativeDirectionPlan(ApiModel):
     directions: list[CreativeDirection] = Field(min_length=8, max_length=80)
     source_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -988,6 +1035,7 @@ class CreativeDirectionPlan(ApiModel):
     semantic_audit: CreativeDirectionAudit | None = None
     diversity_audit: CreativeDirectionDiversityAudit | None = None
     reused_checkpoint: bool = False
+    review_progress: CreativeDirectionReviewProgress | None = None
 
     @model_validator(mode="after")
     def unique_directions(self) -> CreativeDirectionPlan:
@@ -1102,6 +1150,7 @@ class CreativeTask(ApiModel):
     )
     fact_assignment: CreativeFactAssignment | None = None
     creative_direction: CreativeDirection | None = None
+    execution_route: CreativeExecutionRoute | None = None
     sibling_variant_index: int = Field(default=1, ge=1, le=32)
     sibling_variant_total: int = Field(default=1, ge=1, le=32)
     regeneration_variant_role: (
@@ -1130,6 +1179,15 @@ class CreativeTask(ApiModel):
                 )
         if self.sibling_variant_index > self.sibling_variant_total:
             raise ValueError("siblingVariantIndex cannot exceed siblingVariantTotal")
+        if self.execution_route is not None and self.creative_direction is None:
+            raise ValueError("executionRoute requires creativeDirection")
+        if (
+            self.execution_route is not None
+            and self.creative_direction is not None
+            and self.execution_route.route_id
+            not in {item.route_id for item in self.creative_direction.execution_routes}
+        ):
+            raise ValueError("executionRoute must belong to creativeDirection")
         return self
 
 

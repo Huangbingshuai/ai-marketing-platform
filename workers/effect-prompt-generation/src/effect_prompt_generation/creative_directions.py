@@ -36,6 +36,8 @@ OTHER_FAMILY = "OTHER"
 MIN_CREATIVE_DIRECTION_COUNT = 8
 MAX_CREATIVE_DIRECTION_COUNT = 32
 MAX_BUSINESS_FACTS_PER_DIRECTION = 4
+MIN_EXECUTION_ROUTE_COUNT = 2
+MAX_EXECUTION_ROUTE_COUNT = 5
 
 
 def creative_direction_target_count(
@@ -93,6 +95,23 @@ def creative_direction_target_count(
         math.ceil(mandatory_fact_count * 2 / 5),
     )
     return max(volume_target, coverage_target)
+
+
+def creative_execution_route_target_count(
+    candidate_count: int,
+    direction_count: int,
+) -> int:
+    """Size AI-authored sibling routes without interpreting their semantics."""
+
+    if candidate_count <= 0 or direction_count <= 0:
+        return MIN_EXECUTION_ROUTE_COUNT
+    return min(
+        MAX_EXECUTION_ROUTE_COUNT,
+        max(
+            MIN_EXECUTION_ROUTE_COUNT,
+            math.ceil(candidate_count / direction_count),
+        ),
+    )
 
 
 def creative_territory_target_range(direction_count: int) -> tuple[int, int]:
@@ -590,6 +609,7 @@ def validate_creative_direction_plan(
     source_hash: str,
     template_hash: str,
     expected_direction_count: int | None = None,
+    expected_execution_route_count: int | None = None,
     landscape: CreativeDiversityLandscape | None = None,
 ) -> CreativeDirectionPlan:
     if (
@@ -606,6 +626,13 @@ def validate_creative_direction_plan(
         if direction.direction_id in direction_ids:
             raise ValueError("creative directions repeat the same direction id")
         direction_ids.add(direction.direction_id)
+        if (
+            expected_execution_route_count is not None
+            and len(direction.execution_routes) != expected_execution_route_count
+        ):
+            raise ValueError(
+                "creative direction execution route count does not match the batch target"
+            )
         fact_ids = direction.fact_ids
         if not fact_ids or any(
             fact_id not in usable_ids or fact_id not in strategy_ids
@@ -852,6 +879,7 @@ def validate_creative_direction_diversity_audit(
     directions: Sequence[CreativeDirection],
     *,
     proposed_direction_ids: Sequence[str] = (),
+    require_canonical_profiles: bool = False,
 ) -> CreativeDirectionDiversityAudit:
     """Validate only stable IDs and response structure, never visual semantics."""
 
@@ -879,6 +907,18 @@ def validate_creative_direction_diversity_audit(
         item not in proposed_ids for item in response.revision_direction_ids
     ):
         raise ValueError("supplement audit may only revise proposed directions")
+    canonical_profile_ids = {
+        item.direction_id for item in response.canonical_profiles
+    }
+    if canonical_profile_ids and canonical_profile_ids != direction_ids:
+        raise ValueError(
+            "creative direction diversity audit canonical profiles must cover "
+            "every direction exactly once"
+        )
+    if require_canonical_profiles and canonical_profile_ids != direction_ids:
+        raise ValueError(
+            "creative direction diversity audit omitted canonical profiles"
+        )
     # The same validator is also used when a persisted checkpoint is restored.
     # In that path ``response`` is already the enriched subclass and therefore
     # carries ``audit_hash``.  Exclude it before recomputing the hash so the
@@ -903,6 +943,7 @@ def validate_diversity_supplement_directions(
     landscape: CreativeDiversityLandscape,
     existing_directions: Sequence[CreativeDirection],
     expected_direction_count: int,
+    expected_execution_route_count: int | None = None,
 ) -> list[CreativeDirection]:
     """Validate supplement structure without applying base-plan slot quotas."""
 
@@ -917,6 +958,13 @@ def validate_diversity_supplement_directions(
     supplement_ids: set[str] = set()
     supplement_texts: set[str] = set()
     for direction in response.directions:
+        if (
+            expected_execution_route_count is not None
+            and len(direction.execution_routes) != expected_execution_route_count
+        ):
+            raise ValueError(
+                "diversity supplement execution route count does not match target"
+            )
         if (
             direction.direction_id in existing_ids
             or direction.direction_id in supplement_ids

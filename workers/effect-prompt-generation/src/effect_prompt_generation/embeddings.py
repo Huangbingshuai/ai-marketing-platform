@@ -273,6 +273,13 @@ class RedundancySummary:
     redundant_candidate_count: int
     high_risk_candidate_ids: tuple[str, ...]
     high_risk_pairs: tuple[tuple[str, str], ...]
+    group_pairs: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def affected_candidate_count(self) -> int:
+        """Number of selected candidates that belong to a real duplicate group."""
+
+        return len(self.high_risk_candidate_ids)
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,33 +318,87 @@ class ContentVectorIndex:
         threshold: float = VECTOR_NEAR_DUPLICATE_RISK_THRESHOLD,
         similarity_resolver: Callable[[str, str], float] | None = None,
     ) -> dict[str, str]:
-        """Build stable connected-component keys for group-first selection."""
+        """Build deterministic complete-link groups for group-first selection.
 
-        nodes = list(
+        A connected-component calculation exaggerates repetition through chains:
+        A may resemble B and B may resemble C even though A and C are materially
+        different.  A member is therefore admitted only when it clears the risk
+        threshold against *every* existing member of the group.  The stable
+        ordering keeps restored runs and input permutations deterministic.
+        """
+
+        nodes = sorted(
             dict.fromkeys(item for item in entity_ids if item in self.row_by_id)
         )
-        parent = {node: node for node in nodes}
+        groups = self._complete_link_groups(
+            nodes,
+            threshold=threshold,
+            similarity_resolver=similarity_resolver,
+        )
+        return {
+            member: representative
+            for representative, members in groups
+            for member in members
+        }
 
-        def find(node: str) -> str:
-            while parent[node] != node:
-                parent[node] = parent[parent[node]]
-                node = parent[node]
-            return node
+    def _complete_link_groups(
+        self,
+        entity_ids: list[str],
+        *,
+        threshold: float,
+        similarity_resolver: Callable[[str, str], float] | None,
+    ) -> list[tuple[str, tuple[str, ...]]]:
+        """Cover nodes with deterministic complete-link similarity groups."""
 
-        def union(left: str, right: str) -> None:
-            left_root = find(left)
-            right_root = find(right)
-            if left_root == right_root:
-                return
-            canonical, merged = sorted((left_root, right_root))
-            parent[merged] = canonical
-
+        nodes = sorted(dict.fromkeys(entity_ids))
         resolve_similarity = similarity_resolver or self.similarity
-        for left_index, left_id in enumerate(nodes):
-            for right_id in nodes[left_index + 1 :]:
-                if resolve_similarity(left_id, right_id) >= threshold:
-                    union(left_id, right_id)
-        return {node: find(node) for node in nodes}
+        similarity_cache: dict[tuple[str, str], float] = {}
+
+        def similarity(left: str, right: str) -> float:
+            if left == right:
+                return 1.0
+            key: tuple[str, str] = (
+                (left, right) if left <= right else (right, left)
+            )
+            if key not in similarity_cache:
+                similarity_cache[key] = resolve_similarity(left, right)
+            return similarity_cache[key]
+
+        remaining = set(nodes)
+        groups: list[tuple[str, tuple[str, ...]]] = []
+        while remaining:
+            # Start with the most connected candidate so the cover is compact,
+            # then use identifiers only as a deterministic tie breaker.
+            ranked_seeds = sorted(
+                remaining,
+                key=lambda node: (
+                    -sum(
+                        1
+                        for other in remaining
+                        if other != node and similarity(node, other) >= threshold
+                    ),
+                    -sum(
+                        similarity(node, other)
+                        for other in remaining
+                        if other != node and similarity(node, other) >= threshold
+                    ),
+                    node,
+                ),
+            )
+            representative = ranked_seeds[0]
+            members = [representative]
+            candidates = sorted(
+                remaining - {representative},
+                key=lambda node: (-similarity(representative, node), node),
+            )
+            for candidate in candidates:
+                if all(
+                    similarity(candidate, member) >= threshold for member in members
+                ):
+                    members.append(candidate)
+            remaining.difference_update(members)
+            groups.append((representative, tuple(sorted(members))))
+        return groups
 
     def redundancy_summary(
         self,
@@ -349,19 +410,6 @@ class ContentVectorIndex:
         selected = [item for item in selected_ids if item in self.candidate_ids]
         anchors = list(self.anchor_ids)
         nodes = [*selected, *anchors]
-        parent = {node: node for node in nodes}
-
-        def find(node: str) -> str:
-            while parent[node] != node:
-                parent[node] = parent[parent[node]]
-                node = parent[node]
-            return node
-
-        def union(left: str, right: str) -> None:
-            left_root = find(left)
-            right_root = find(right)
-            if left_root != right_root:
-                parent[right_root] = left_root
 
         high_risk_pairs: list[tuple[str, str]] = []
         resolve_similarity = similarity_resolver or self.similarity
@@ -369,30 +417,37 @@ class ContentVectorIndex:
             for right_id in selected[left_index + 1 :]:
                 if resolve_similarity(left_id, right_id) >= threshold:
                     high_risk_pairs.append((left_id, right_id))
-                    union(left_id, right_id)
             for anchor_id in anchors:
                 if resolve_similarity(left_id, anchor_id) >= threshold:
                     high_risk_pairs.append((left_id, anchor_id))
-                    union(left_id, anchor_id)
         for left_index, left_id in enumerate(anchors):
             for right_id in anchors[left_index + 1 :]:
                 if resolve_similarity(left_id, right_id) >= threshold:
                     high_risk_pairs.append((left_id, right_id))
-                    union(left_id, right_id)
 
-        components: dict[str, set[str]] = {}
-        for node in nodes:
-            components.setdefault(find(node), set()).add(node)
+        complete_link_groups = self._complete_link_groups(
+            nodes,
+            threshold=threshold,
+            similarity_resolver=similarity_resolver,
+        )
+        components = [set(members) for _, members in complete_link_groups]
         selected_set = set(selected)
         redundant_count = 0
         group_count = 0
         high_risk_ids: set[str] = set()
-        for members in components.values():
+        group_pairs: list[tuple[str, str]] = []
+        for members in components:
             candidate_members = members & selected_set
             if len(members) > 1:
                 group_count += 1
                 high_risk_ids.update(candidate_members)
                 redundant_count += len(members) - 1
+        for representative, group_members in complete_link_groups:
+            group_pairs.extend(
+                (representative, member)
+                for member in group_members
+                if member != representative
+            )
         return RedundancySummary(
             high_risk_group_count=group_count,
             high_risk_pair_count=len(high_risk_pairs),
@@ -401,6 +456,7 @@ class ContentVectorIndex:
                 item for item in selected if item in high_risk_ids
             ),
             high_risk_pairs=tuple(high_risk_pairs),
+            group_pairs=tuple(group_pairs),
         )
 
 

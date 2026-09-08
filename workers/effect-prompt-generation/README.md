@@ -101,6 +101,9 @@ Ark Responses API 在解析 JSON 前检查 `status` 与 `incomplete_details`。�
 - `PROMPT_EVALUATION_INPUT_TOKEN_BUDGET`，默认 `12000`；只用于 Worker 在调用前规划评估分片，不会修改供应商模型上下文上限
 - `ARK_PROMPT_CANDIDATE_TIMEOUT_SECONDS`，默认 `120`
 - `ARK_PROMPT_EVALUATION_TIMEOUT_SECONDS`，默认 `120`
+- `ARK_PROMPT_DIRECTION_REVIEW_TIMEOUT_SECONDS`，默认 `180`；方向事实关系复核与全批重叠复核独立使用，普通候选评分不变。
+- `PROMPT_DIRECTION_REVIEW_BATCH_SIZE`，默认 `6`；关系复核单批最多方向数，范围 `1..12`。
+- `PROMPT_DIRECTION_REVIEW_INPUT_BUDGET`，默认 `12000`；序列化输入字符规模的保守预算（含固定指令/Schema 余量），不是供应商精确 Token 数，也不修改模型上下文上限。大输入自动拆批，单方向超预算不裁剪事实。
 - `ARK_PROMPT_PROVIDER_MAX_ATTEMPTS`，默认 `1`
 - `PROMPT_SIMILARITY_MODE`：当前固定为 `vector`
 - `ARK_PROMPT_EMBEDDING_MODEL`：火山向量 Model ID 或 Endpoint ID；当前使用 `doubao-embedding-vision-251215`；`shadow/vector` 且使用 Ark 时必填
@@ -117,6 +120,11 @@ Ark Responses API 在解析 JSON 前检查 `status` 与 `incomplete_details`。�
 旧策略、关系、坐标和蓝图配置不参与当前 Run，也不能用于恢复旧任务。
 
 ## 本地验证
+
+关系复核开始前会把已验证的空间/方向写入本 Run 的阶段检查点，并逐批保存合法审查结果。失败后只恢复同一 Run、同一输入与模板哈希、同一审查轮次的完成分片；被修改的方向或下一轮语义修订重新复核。检查点仍经 API 当前项目、有效租约与 attempt token 校验，不向公开详情展示内部审查 JSON。新建批次始终从头生成。
+
+排查超时查看安全日志的 `step`、`batch_size`、`input_chars`、`timeout_seconds`、`latency_ms`、`attempts` 与 `exception_type`。`estimated_input_units` 只表示拆批容量估算，不作为计费 Token；日志不含 Prompt 正文、原始响应或凭证。
+
 
 ```powershell
 uv run --frozen pytest -q

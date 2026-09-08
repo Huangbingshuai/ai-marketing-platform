@@ -133,9 +133,11 @@ describe('EffectPromptService settings contract', () => {
     };
     const repository = {
       workflowRun: vi.fn().mockResolvedValue({ id: 'workflow-a' }),
-      products: vi.fn().mockResolvedValue([
-        { id: 'product-a', updatedAt: run.updatedAt, promptRuns: [{ id: 'run-a' }] },
-      ]),
+      products: vi
+        .fn()
+        .mockResolvedValue([
+          { id: 'product-a', updatedAt: run.updatedAt, promptRuns: [{ id: 'run-a' }] },
+        ]),
       run: vi.fn().mockResolvedValue(run),
       latestResult: vi.fn(),
       settingsNode: vi.fn().mockResolvedValue({
@@ -248,7 +250,7 @@ describe('EffectPromptService settings contract', () => {
     expect(output.stageCheckpoints).toEqual([]);
   });
 
-  it('forwards the current run creative direction checkpoint for shard recovery', async () => {
+  it('forwards partial same-run direction reviews without losing completed batches', async () => {
     const checkpoint = {
       nodeId: 'COHERENT_CREATIVE_GENERATION',
       sourceFingerprint: 'a'.repeat(64),
@@ -260,6 +262,13 @@ describe('EffectPromptService settings contract', () => {
         planHash: 'b'.repeat(64),
         templateHash: 'c'.repeat(64),
         reusedCheckpoint: false,
+        reviewProgress: {
+          runId: 'run-a',
+          requestFingerprint: 'd'.repeat(64),
+          planningAttempt: 0,
+          semanticRevisionCount: 0,
+          completedBatches: { batchA: { items: [], requiresRevision: false } },
+        },
       },
     };
     const repository = {

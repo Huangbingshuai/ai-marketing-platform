@@ -211,6 +211,39 @@ async def test_ark_remote_protocol_disconnect_is_retryable_transport_error() -> 
     assert raised.value.error_type.value == "AI_NETWORK"
 
 
+@pytest.mark.asyncio
+async def test_timeout_log_identifies_step_without_logging_body(caplog: pytest.LogCaptureFixture) -> None:
+    calls = 0
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ReadTimeout("PRIVATE_EXCEPTION_TEXT")
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.example/v3", api_key="PRIVATE_TEST_KEY",
+        strategy_model="strategy-model", candidate_model="creative-model",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with caplog.at_level("INFO"), pytest.raises(ProviderError):
+            await provider._structured(
+                "PRIVATE_PROMPT_BODY", _StructuredEnvelope,
+                schema_name="direction_review_timeout_test",
+                stage="COHERENT_CREATIVE_GENERATION",
+                prompt_file="creative_base.system.prompt.txt", model="strategy-model",
+                max_output_tokens=128, request_timeout=180, item_count=3,
+            )
+    finally:
+        await provider.aclose()
+    assert calls == 1
+    assert "step=direction_review_timeout_test" in caplog.text
+    assert "batch_size=3" in caplog.text
+    assert "timeout_seconds=180" in caplog.text
+    assert "exception_type=ReadTimeout" in caplog.text
+    assert "PRIVATE_" not in caplog.text
+
+
 def _shared_prompt() -> SharedPrompt:
     disabled_content = "画面中不得出现以下内容：医疗功效；促销贴纸。"
     additional_content = "保持产品外观前后一致。"
@@ -807,9 +840,11 @@ async def test_ark_direction_audit_reviews_each_fact_and_restores_fact_ids() -> 
     }
     seen_prompt = ""
     seen_payload = ""
+    review_timeouts: list[float] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
         nonlocal seen_payload, seen_prompt
+        review_timeouts.append(request.extensions["timeout"]["read"])
         payload = json.loads(request.content)
         seen_payload = json.dumps(payload, ensure_ascii=False)
         seen_prompt = payload["input"][0]["content"][0]["text"]
@@ -853,6 +888,8 @@ async def test_ark_direction_audit_reviews_each_fact_and_restores_fact_ids() -> 
         api_key="test-key",
         strategy_model="strategy-model",
         candidate_model="creative-model",
+        evaluation_timeout=73,
+        direction_review_timeout=137,
         transport=httpx.MockTransport(handler),
     )
     try:
@@ -876,6 +913,8 @@ async def test_ark_direction_audit_reviews_each_fact_and_restores_fact_ids() -> 
         for review in item.fact_reviews or []
     }
     assert restored_ids == expected_ids
+    assert review_timeouts == [137]
+    assert provider._evaluation_timeout == 73
     assert "factCompatibilities" in seen_prompt
     assert "factReviews" in seen_payload
     assert "单手开合" in seen_prompt

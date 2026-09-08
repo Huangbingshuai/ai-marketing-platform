@@ -41,6 +41,7 @@ def _provider(settings: WorkerSettings) -> AiProvider:
             settings.ark_prompt_fragment_strategy_timeout_seconds
         ),
         evaluation_timeout=settings.ark_prompt_evaluation_timeout_seconds,
+        direction_review_timeout=settings.ark_prompt_direction_review_timeout_seconds,
         max_attempts=settings.ark_prompt_provider_max_attempts,
     )
 
@@ -83,6 +84,8 @@ async def serve(settings: WorkerSettings) -> None:
             settings.prompt_evaluation_input_token_budget
         ),
         max_ai_calls_per_run=settings.prompt_max_ai_calls_per_run,
+        direction_review_batch_size=settings.prompt_direction_review_batch_size,
+        direction_review_input_budget=settings.prompt_direction_review_input_budget,
     )
     consumer = PromptGenerationConsumer(
         rabbitmq_url=settings.rabbitmq_url.get_secret_value(),

@@ -50,6 +50,7 @@ from effect_prompt_generation.pipeline import (
     _adaptive_mmr_quality_weight,
     _coverage_supplement_count,
     _creative_shard_size_for_duration,
+    _diversity_supplement_count,
     _evaluation_context_fact_ids,
     _maximum_diversity_supplement_duplicates,
     _maximum_semantic_duplicates,
@@ -661,14 +662,13 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     assert result["prompt_result_id"] == "prompt-result-current"
     assert api.result is not None
     assert api.result.metrics.candidate_target_count == 14
-    assert api.result.metrics.generated_candidate_count == 14
+    assert api.result.metrics.generated_candidate_count == 16
     assert len(api.result.items) == 10
     assert all(item.creative_core for item in api.result.items)
     assert api.result.quality_status == "PASS", [
         item.field.value for item in api.result.metrics.insight_coverage.missing
     ]
     assert api.execution_mode == "MOCK"
-    assert all(item.target_duration_seconds == 5 for item in api.result.items)
     selection_stage = next(
         stage for stage in reversed(api.stages)
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
@@ -696,6 +696,7 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     assert deferred_ids.issubset(
         fact.fact_id for fact in api.result.metrics.insight_coverage.adaptive
     )
+    assert all(item.target_duration_seconds == 5 for item in api.result.items)
     assert all(item.fragment_type == item.primary_purpose for item in api.result.items)
     assert all(
         item.primary_purpose in item.compatible_purposes for item in api.result.items
@@ -713,8 +714,8 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
         for binding in item.insight_bindings
     )
     assert Counter(item.phase.value for item in api.shards.values()) == {
-        "CREATIVE": 4,
-        "CLASSIFICATION": 4,
+        "CREATIVE": 5,
+        "CLASSIFICATION": 5,
     }
 
     creative_tasks = [
@@ -723,11 +724,13 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
         if shard.phase.value == "CREATIVE"
         for task in shard.creative_plan
     ]
-    assert len(creative_tasks) == 14
+    assert len(creative_tasks) == 16
     assert (
         sum(task.supplement_kind == "INITIAL" for task in creative_tasks) == 14
     )
-    assert all(task.supplement_kind == "INITIAL" for task in creative_tasks)
+    assert (
+        sum(task.supplement_kind == "DIVERSITY" for task in creative_tasks) == 2
+    )
     assert all(task.fact_assignment is not None for task in creative_tasks)
     assert all(
         1 <= len(task.fact_assignment.fact_ids) <= 4
@@ -777,13 +780,13 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     assert "无口播广告素材" in shared_stage.metadata["compiledContent"]
     assert "人物讲话" in shared_stage.metadata["compiledContent"]
     assert creative_stage.status == "SUCCEEDED"
-    assert creative_stage.metadata["candidateCount"] == 14
+    assert creative_stage.metadata["candidateCount"] == 16
     assert (
         creative_stage.metadata["factSelectionMode"]
         == "DIRECTION_FACT_APPLICATIONS"
     )
     assert classification_stage.status == "SUCCEEDED"
-    assert classification_stage.metadata["evaluatedCount"] == 14
+    assert classification_stage.metadata["evaluatedCount"] == 16
     assert classification_stage.metadata["averageScores"]["productRelevance"] >= 0
     semantic_audit = result_stage.metadata["semanticAudit"]
     assert semantic_audit["schemaVersion"] == 1
@@ -792,9 +795,26 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     assert len(semantic_audit["contentFingerprint"]) == 64
 
 
-def test_paid_diversity_supplement_only_starts_above_thirty_percent() -> None:
-    assert _maximum_diversity_supplement_duplicates(100) == 30
-    assert _maximum_diversity_supplement_duplicates(50) == 15
+def test_paid_diversity_supplement_targets_fifteen_percent() -> None:
+    assert _maximum_diversity_supplement_duplicates(100) == 14
+    assert _maximum_diversity_supplement_duplicates(50) == 7
+
+
+def test_diversity_supplement_scales_with_independent_group_gap() -> None:
+    assert (
+        _diversity_supplement_count(
+            selection_target=50,
+            independent_group_gap=1,
+        )
+        == 10
+    )
+    assert (
+        _diversity_supplement_count(
+            selection_target=50,
+            independent_group_gap=8,
+        )
+        == 16
+    )
 
 
 @pytest.mark.asyncio
@@ -1011,9 +1031,9 @@ async def test_retries_one_invalid_classification_response_inside_its_shard() ->
         context=runtime,
     )
 
-    assert provider.calls == 6
+    assert provider.calls == 7
     assert api.result is not None
-    assert api.result.metrics.generated_candidate_count == 14
+    assert api.result.metrics.generated_candidate_count == 16
 
 
 @pytest.mark.asyncio
@@ -1034,19 +1054,19 @@ async def test_splits_truncated_classification_shard_without_failing_batch() -> 
         context=runtime,
     )
 
-    assert provider.batch_calls == 10
+    assert provider.batch_calls == 11
     assert 4 in provider.batch_sizes
     assert 2 in provider.batch_sizes
-    assert provider.single_calls == 14
+    assert provider.single_calls == 16
     assert api.result is not None
-    assert api.result.metrics.generated_candidate_count == 14
+    assert api.result.metrics.generated_candidate_count == 16
     classification_stage = next(
         stage
         for stage in reversed(api.stages)
         if stage.node_id.value == "CREATIVE_EVALUATION_CLASSIFICATION"
     )
-    assert classification_stage.metadata["evaluationCallCount"] == 24
-    assert classification_stage.metadata["splitRecoveryCount"] == 10
+    assert classification_stage.metadata["evaluationCallCount"] == 27
+    assert classification_stage.metadata["splitRecoveryCount"] == 11
 
 
 def test_planned_business_facts_are_evaluated_without_product_snapshot_competing() -> None:
@@ -1173,9 +1193,9 @@ async def test_classification_retry_keeps_stable_shard_assignments() -> None:
     ]
     assert {shard.shard_index for shard in classification_shards} == {0, 1, 2, 3}
     assert all(shard.status == "SUCCEEDED" for shard in classification_shards)
-    assert sum(len(shard.evaluations) for shard in classification_shards) == 14
+    assert sum(len(shard.evaluations) for shard in classification_shards) == 16
     assert api.result is not None
-    assert api.result.metrics.generated_candidate_count == 14
+    assert api.result.metrics.generated_candidate_count == 16
 
 
 @pytest.mark.asyncio
@@ -1295,10 +1315,10 @@ async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
 
     assert api.result is not None
     assert len(api.result.items) == 10
-    assert api.result.metrics.generated_candidate_count == 16
+    assert api.result.metrics.generated_candidate_count == 18
     # Structurally identical visible stories share one embedding document even
     # when they came from different compiler-formatted Prompt candidates.
-    assert 0 < embedding_provider.input_count <= 16
+    assert 0 < embedding_provider.input_count <= 18
     final_selection_stage = next(
         stage
         for stage in reversed(api.stages)
@@ -1306,7 +1326,7 @@ async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
     )
     assert final_selection_stage.metadata["diversitySupplementAttempted"] is True
     assert final_selection_stage.metadata["diversitySupplementTriggered"] is True
-    assert final_selection_stage.metadata["diversitySupplementCount"] == 2
+    assert final_selection_stage.metadata["diversitySupplementCount"] == 4
     assert final_selection_stage.metadata["embeddingInputCount"] == (
         embedding_provider.input_count
     )
@@ -1329,14 +1349,22 @@ async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
         for task in shard.creative_plan
         if task.supplement_kind == "DIVERSITY"
     ]
-    assert len(diversity_tasks) == 2
+    assert len(diversity_tasks) == 4
     assert {task.round for task in diversity_tasks} == {1}
     assert {
         task.creative_direction.direction_id
         for task in diversity_tasks
         if task.creative_direction is not None
     } == {"DIVERSITY_SUPPLEMENT_1", "DIVERSITY_SUPPLEMENT_2"}
-    assert all(task.sibling_variant_total == 1 for task in diversity_tasks)
+    assert {task.sibling_variant_total for task in diversity_tasks} == {2}
+    assert all(task.execution_route is not None for task in diversity_tasks)
+    assert len(
+        {
+            task.execution_route.route_id
+            for task in diversity_tasks
+            if task.execution_route is not None
+        }
+    ) == 2
 
     resumed = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -1350,7 +1378,7 @@ async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
     restored_cache = resumed._cache(runtime)
     assert restored_cache.diversity_supplement_attempted is True
     assert restored_cache.diversity_supplemented is True
-    assert restored_cache.diversity_supplement_count == 2
+    assert restored_cache.diversity_supplement_count == 4
     assert restored_cache.replenishment_rounds == 0
 
 
@@ -1788,13 +1816,13 @@ async def test_does_not_replenish_when_initial_selection_already_covers_facts() 
     assert api.result.quality_status == "PASS"
     assert len(api.result.items) == 10
     assert api.result.metrics.candidate_target_count == 14
-    assert api.result.metrics.generated_candidate_count == 14
+    assert api.result.metrics.generated_candidate_count == 18
     assert api.result.metrics.replenishment_rounds == 0
     assert api.result.metrics.rejected_count > 0
     assert api.result.metrics.hard_issue_counts == []
     assert Counter(item.phase.value for item in api.shards.values()) == {
-        "CREATIVE": 4,
-        "CLASSIFICATION": 4,
+        "CREATIVE": 5,
+        "CLASSIFICATION": 5,
     }
     selection_stage = next(
         stage
@@ -1802,8 +1830,8 @@ async def test_does_not_replenish_when_initial_selection_already_covers_facts() 
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
     assert selection_stage.metadata["initialCandidateCount"] == 14
-    assert selection_stage.metadata["cumulativeCandidateCount"] == 14
-    assert selection_stage.metadata["safeCandidateCount"] == 11
+    assert selection_stage.metadata["cumulativeCandidateCount"] == 18
+    assert selection_stage.metadata["safeCandidateCount"] == 15
     assert selection_stage.metadata["selectedCandidateCount"] == 10
     assert selection_stage.metadata["quantitySupplementTriggered"] is False
     assert selection_stage.metadata["coverageSupplementTriggered"] is False
@@ -1830,6 +1858,7 @@ async def test_unresolved_fact_coverage_supplements_once_then_keeps_exact_draft(
     assert len(api.result.items) == 10
     assert api.result.quality_status == "NEEDS_REVIEW"
     assert api.result.metrics.generated_candidate_count >= 16
+    assert api.result.metrics.insight_coverage.missing
     assert api.result.metrics.replenishment_rounds == 1
     creative_tasks = [
         task
@@ -1858,7 +1887,6 @@ async def test_unresolved_fact_coverage_supplements_once_then_keeps_exact_draft(
         stage
         for stage in reversed(api.stages)
         if stage.node_id.value == "RESULT_SAVE"
-    assert api.result.metrics.insight_coverage.missing
     )
     assert (
         result_stage.metadata["requiredFactCount"]
@@ -3005,3 +3033,57 @@ def test_semantic_group_first_selects_a_distinct_group_before_repeating() -> Non
     )
 
     assert [row.candidate.slot_id for row in result.selected] == ["a1", "b1"]
+
+
+def test_semantic_group_target_returns_remaining_slots_to_quality() -> None:
+    def candidate(slot_id: str, ordinal: int) -> CreativeCandidate:
+        return CreativeCandidate(
+            slot_id=slot_id,
+            ordinal=ordinal,
+            round=0,
+            creative_core=f"{slot_id}创意主线",
+            declared_fact_ids=["fact-product"],
+            dimensions=CreativeDimensions(
+                narrative=f"{slot_id}叙事",
+                scene=f"{slot_id}场景",
+                persona="成年人手部",
+                product_relation="产品主体动作",
+                camera="稳定近景",
+                emotion="自然真实",
+            ),
+            content=f"{slot_id}场景中，成年人围绕产品完成一条清晰连续的主体动作。",
+        )
+
+    def evaluation(item: CreativeCandidate, quality: int) -> CreativeEvaluation:
+        return CreativeEvaluation(
+            slot_id=item.slot_id,
+            primary_purpose=FragmentType.PRODUCT_DISPLAY,
+            compatible_purposes=[FragmentType.PRODUCT_DISPLAY],
+            scores=CreativeScores(
+                product_relevance=quality,
+                creative_coherence=quality,
+                visual_executability=quality,
+                commercial_usefulness=quality,
+                visual_clarity=quality,
+            ),
+            semantic_signature=item.slot_id,
+            visual_signature=item.slot_id,
+        )
+
+    candidates = [candidate("a1", 1), candidate("a2", 2), candidate("b1", 3)]
+    groups = {"a1": "group-a", "a2": "group-a", "b1": "group-b"}
+    result = select_creatives(
+        candidates,
+        [
+            evaluation(candidates[0], 98),
+            evaluation(candidates[1], 96),
+            evaluation(candidates[2], 80),
+        ],
+        target_count=2,
+        quality_weight=1.0,
+        novelty_weight=0.0,
+        semantic_group_resolver=lambda row: groups[row.candidate.slot_id],
+        minimum_distinct_semantic_groups=1,
+    )
+
+    assert [row.candidate.slot_id for row in result.selected] == ["a1", "a2"]

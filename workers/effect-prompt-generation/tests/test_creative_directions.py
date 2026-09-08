@@ -159,7 +159,7 @@ class CountingPlanningProvider(MockAiProvider):
 
 
 @pytest.mark.asyncio
-async def test_ten_item_normal_path_uses_six_front_planning_calls() -> None:
+async def test_ten_item_normal_path_sizes_relation_reviews_by_input_budget() -> None:
     api = PromptApi()
     provider = CountingPlanningProvider()
     pipeline = PromptGenerationPipeline(
@@ -176,13 +176,12 @@ async def test_ten_item_normal_path_uses_six_front_planning_calls() -> None:
     shards = await pipeline.plan_creatives(runtime, round_number=0)
 
     assert shards
-    assert provider.calls == Counter(
+    assert {key: count for key, count in provider.calls.items() if key != "direction_review"} == Counter(
         {
             "space": 1,
             "assignment": 1,
             "space_review": 1,
             "direction": 1,
-            "direction_review": 1,
             "diversity_review": 1,
         }
     )
@@ -192,9 +191,10 @@ async def test_ten_item_normal_path_uses_six_front_planning_calls() -> None:
         if item.node_id.value == "COHERENT_CREATIVE_GENERATION"
         and "planningAiCallCount" in item.metadata
     )
-    assert stage.metadata["planningAiCallCount"] == 6
+    assert stage.metadata["planningAiCallCount"] == 5 + provider.calls["direction_review"]
     assert stage.metadata["directionPlanningBatchCount"] == 1
-    assert stage.metadata["directionAuditBatchCount"] == 1
+    assert stage.metadata["directionAuditBatchCount"] == provider.calls["direction_review"]
+    assert 2 <= stage.metadata["directionAuditBatchCount"] <= 8
 
 
 def test_audit_transport_accepts_empty_explanatory_summaries() -> None:
@@ -320,6 +320,39 @@ def test_direction_diversity_audit_validation_is_idempotent() -> None:
     assert creative_direction_target_count(75) == 30
     assert creative_direction_target_count(100) == 32
     assert creative_direction_target_count(500) == 32
+
+
+def test_direction_diversity_audit_requires_full_canonical_profile_coverage() -> None:
+    from effect_prompt_generation.providers import (
+        _mock_creative_direction_response,
+        _mock_creative_landscape_response,
+    )
+
+    application = map_insight(_cluster_snapshot().insight_artifact.result)
+    landscape = validate_creative_diversity_landscape(
+        _mock_creative_landscape_response(application, direction_count=13),
+        application,
+        source_hash="a" * 64,
+        template_hash="b" * 64,
+        expected_direction_count=13,
+    )
+    directions = _mock_creative_direction_response(
+        application,
+        landscape=landscape,
+        direction_count=13,
+    ).directions
+
+    with pytest.raises(ValueError, match="omitted canonical profiles"):
+        validate_creative_direction_diversity_audit(
+            CreativeDirectionDiversityAuditResponse(
+                groups=[],
+                requires_revision=False,
+                revision_direction_ids=[],
+                summary="未发现实质重复",
+            ),
+            directions,
+            require_canonical_profiles=True,
+        )
 
 
 def test_direction_audit_normalizes_action_to_its_structural_territory() -> None:
@@ -521,6 +554,7 @@ class CrossBatchDirectionOverlapProvider(MockAiProvider):
                     ],
                     requires_revision=True,
                     revision_direction_ids=[right],
+                    canonical_profiles=result.value.canonical_profiles,
                     summary="发现一个跨分片视觉重叠组",
                 ),
                 metadata=result.metadata,
@@ -1451,7 +1485,7 @@ async def test_cluster_policy_plans_directions_and_generates_140_percent() -> No
     assert result["prompt_result_id"] == "prompt-result-current"
     assert api.result is not None
     assert api.result.metrics.candidate_target_count == 14
-    assert api.result.metrics.generated_candidate_count == 16
+    assert api.result.metrics.generated_candidate_count == 18
     assert len(api.result.items) == 10
     creative_tasks = [
         task
@@ -1461,6 +1495,7 @@ async def test_cluster_policy_plans_directions_and_generates_140_percent() -> No
     ]
     assert len(creative_tasks) == 14
     assert all(task.creative_direction is not None for task in creative_tasks)
+    assert all(task.execution_route is not None for task in creative_tasks)
     assert all(
         task.fact_assignment.fact_ids == task.creative_direction.fact_ids
         for task in creative_tasks
@@ -1628,7 +1663,7 @@ async def test_independent_ai_semantic_audit_requests_direction_replanning() -> 
     shards = await pipeline.plan_creatives(runtime, round_number=0)
 
     assert shards
-    assert provider.audit_calls == 2
+    assert 2 <= provider.audit_calls <= 16
     assert provider.direction_calls == 2
     targeted_context = next(
         context
@@ -1737,7 +1772,7 @@ async def test_repeated_semantic_audit_disagreement_becomes_advisory() -> None:
     shards = await pipeline.plan_creatives(runtime, round_number=0)
 
     assert shards
-    assert provider.audit_calls == 2
+    assert 2 <= provider.audit_calls <= 16
     assert provider.direction_calls == 2
     plan = pipeline._cache(runtime).creative_direction_plan
     assert plan is not None
@@ -2661,7 +2696,7 @@ async def test_cluster_concentration_triggers_one_soft_diversity_supplement() ->
     )
 
     assert api.result is not None
-    assert api.result.metrics.generated_candidate_count == 16
+    assert api.result.metrics.generated_candidate_count == 18
     diversity_tasks = [
         task
         for shard in api.shards.values()
@@ -2669,7 +2704,7 @@ async def test_cluster_concentration_triggers_one_soft_diversity_supplement() ->
         for task in shard.creative_plan
         if task.supplement_kind == "DIVERSITY"
     ]
-    assert len(diversity_tasks) == 2
+    assert len(diversity_tasks) == 4
     assert {task.round for task in diversity_tasks} == {1}
     final_stage = next(
         stage
@@ -2677,7 +2712,7 @@ async def test_cluster_concentration_triggers_one_soft_diversity_supplement() ->
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
     assert final_stage.metadata["diversitySupplementTriggered"] is True
-    assert final_stage.metadata["diversitySupplementCount"] == 2
+    assert final_stage.metadata["diversitySupplementCount"] == 4
     assert "SEMANTIC_DIVERSITY_CAN_BE_IMPROVED" in final_stage.warnings
     assert provider.supplement_revision_contexts
     first_context = provider.supplement_revision_contexts[0]

@@ -55,6 +55,61 @@ const runRecord = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('EffectPromptRepository', () => {
+  it.each([true, false])(
+    'preserves partial review progress only for a live attempt: %s',
+    async (live) => {
+      const checkpoint = { plan: { reviewProgress: { completedBatches: { a: { items: [] } } } } };
+      const updateMany = vi.fn().mockResolvedValue({ count: live ? 1 : 0 });
+      const upsert = vi.fn().mockResolvedValue({});
+      const findUnique = vi.fn().mockResolvedValue({ metadata: { checkpoint } });
+      const transaction = {
+        effectPromptRun: { updateMany },
+        effectPromptStageOutput: { findUnique, upsert },
+      };
+      const repository = new EffectPromptRepository({
+        $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+      } as unknown as PrismaService);
+      const now = new Date('2026-09-08T00:00:00Z');
+      expect(
+        await repository.saveStage(
+          projectId,
+          runId,
+          'attempt-current',
+          'COHERENT_CREATIVE_GENERATION',
+          {
+            status: 'RUNNING',
+            summary: '正在复核创意关系',
+            warnings: [],
+            metadata: { completed: 2 },
+          },
+          20,
+          now,
+        ),
+      ).toBe(live);
+      expect(updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            projectId,
+            id: runId,
+            attemptToken: 'attempt-current',
+            status: 'RUNNING',
+            leaseExpiresAt: { gt: now },
+          }),
+        }),
+      );
+      if (live) {
+        expect(upsert).toHaveBeenCalledWith(
+          expect.objectContaining({
+            update: expect.objectContaining({ metadata: { completed: 2, checkpoint } }),
+          }),
+        );
+      } else {
+        expect(upsert).not.toHaveBeenCalled();
+        expect(findUnique).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it('loads same-run recovery checkpoints even when a later shard marked the stage failed', async () => {
     const checkpoints = [
       {

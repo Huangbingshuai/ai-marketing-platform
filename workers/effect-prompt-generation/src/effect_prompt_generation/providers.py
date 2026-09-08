@@ -17,6 +17,7 @@ from pydantic import BaseModel, ValidationError
 
 from .creative_directions import (
     creative_direction_fact_density_instruction,
+    creative_execution_route_target_count,
     creative_direction_target_count,
     creative_territory_target_range,
 )
@@ -30,8 +31,10 @@ from .models import (
     CreativeDirectionAuditItem,
     CreativeDirectionFactAudit,
     CreativeDirectionAuditResponse,
+    CreativeDirectionCanonicalProfile,
     CreativeDirectionDiversityAuditResponse,
     CreativeDirection,
+    CreativeExecutionRoute,
     CreativeDirectionFactApplication,
     CreativeDirectionPlan,
     CreativeDirectionResponse,
@@ -326,6 +329,7 @@ class AiProvider(Protocol):
         landscape: CreativeDiversityLandscape,
         existing_directions: CreativeDirectionResponse,
         requested_direction_count: int,
+        execution_route_count: int,
         crowded_scene_families: Sequence[str],
         crowded_action_families: Sequence[str],
         revision_context: Mapping[str, Any] | None = None,
@@ -424,6 +428,10 @@ class MockAiProvider:
         response = _mock_creative_direction_response(
             application,
             landscape=landscape,
+            execution_route_count=creative_execution_route_target_count(
+                (target_count * 14 + 9) // 10,
+                sum(item.target_slots for item in landscape.territories),
+            ),
         )
         required_slots = (
             revision_context.get("requiredDirectionSlots", [])
@@ -601,12 +609,19 @@ class MockAiProvider:
         directions: CreativeDirectionResponse,
         proposed_direction_ids: Sequence[str] = (),
     ) -> AiCallResult[CreativeDirectionDiversityAuditResponse]:
-        del landscape, directions, proposed_direction_ids
+        del landscape, proposed_direction_ids
         return _mock_result(
             CreativeDirectionDiversityAuditResponse(
                 groups=[],
                 requires_revision=False,
                 revision_direction_ids=[],
+                canonical_profiles=[
+                    CreativeDirectionCanonicalProfile(
+                        direction_id=direction.direction_id,
+                        semantic_profile=direction.semantic_profile,
+                    )
+                    for direction in directions.directions
+                ],
                 summary="全批创意方向未发现实质视觉重叠",
             ),
             NodeId.COHERENT_CREATIVE_GENERATION.value,
@@ -622,6 +637,7 @@ class MockAiProvider:
         landscape: CreativeDiversityLandscape,
         existing_directions: CreativeDirectionResponse,
         requested_direction_count: int,
+        execution_route_count: int,
         crowded_scene_families: Sequence[str],
         crowded_action_families: Sequence[str],
         revision_context: Mapping[str, Any] | None = None,
@@ -655,6 +671,25 @@ class MockAiProvider:
                                 ),
                             }
                         ),
+                        "execution_routes": [
+                            CreativeExecutionRoute(
+                                route_id=f"ROUTE_{route_index + 1}",
+                                visual_event=(
+                                    f"补充方向 {index + 1} 的主视觉事件"
+                                    f"路线 {route_index + 1}"
+                                ),
+                                scene_relation=(
+                                    f"补充场景关系 {index + 1}-{route_index + 1}"
+                                ),
+                                product_action=(
+                                    f"补充产品动作 {index + 1}-{route_index + 1}"
+                                ),
+                                ending_state=(
+                                    f"补充结束状态 {index + 1}-{route_index + 1}"
+                                ),
+                            )
+                            for route_index in range(execution_route_count)
+                        ],
                     }
                 )
             )
@@ -737,6 +772,7 @@ class ArkResponsesProvider:
         candidate_timeout: float = 120.0,
         fragment_strategy_timeout: float = 120.0,
         evaluation_timeout: float = 120.0,
+        direction_review_timeout: float = 180.0,
         max_attempts: int = 1,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
@@ -758,6 +794,7 @@ class ArkResponsesProvider:
         self._candidate_timeout = candidate_timeout
         self._fragment_strategy_timeout = fragment_strategy_timeout
         self._evaluation_timeout = evaluation_timeout
+        self._direction_review_timeout = direction_review_timeout
         self._max_attempts = max(1, max_attempts)
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/") + "/",
@@ -1293,6 +1330,10 @@ class ArkResponsesProvider:
             target_count,
             global_business_fact_count,
         )
+        execution_route_count = creative_execution_route_target_count(
+            (target_count * 14 + 9) // 10,
+            global_direction_count,
+        )
         if global_business_fact_count >= global_direction_count * 2:
             global_minimum_business_facts = 2
         elif global_business_fact_count >= global_direction_count:
@@ -1442,6 +1483,7 @@ class ArkResponsesProvider:
             CREATIVE_DIRECTION_TASK_PROMPT,
             target_count=str(target_count),
             target_direction_count=str(output_direction_count),
+            execution_route_count=str(execution_route_count),
             direction_output_instruction=direction_output_instruction,
             fact_density_instruction=fact_density_instruction,
             facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
@@ -1603,6 +1645,7 @@ class ArkResponsesProvider:
             prompt,
             CreativeDirectionAuditResponse,
             schema_name="effect_prompt_creative_direction_audit",
+            item_count=len(directions.directions),
             stage=NodeId.COHERENT_CREATIVE_GENERATION.value,
             prompt_file=CREATIVE_DIRECTION_AUDIT_BASE_PROMPT,
             model=self._evaluation_model,
@@ -1611,7 +1654,7 @@ class ArkResponsesProvider:
             # cannot be truncated
             # by the smaller candidate-evaluation budget.
             max_output_tokens=self._strategy_max_output_tokens,
-            request_timeout=self._evaluation_timeout,
+            request_timeout=self._direction_review_timeout,
             instructions=load_prompt(CREATIVE_DIRECTION_AUDIT_BASE_PROMPT),
         )
         return AiCallResult(
@@ -1697,11 +1740,12 @@ class ArkResponsesProvider:
             prompt,
             CreativeDirectionDiversityAuditResponse,
             schema_name="effect_prompt_creative_direction_diversity_audit",
+            item_count=len(directions.directions),
             stage=NodeId.COHERENT_CREATIVE_GENERATION.value,
             prompt_file=CREATIVE_DIRECTION_DIVERSITY_AUDIT_BASE_PROMPT,
             model=self._evaluation_model,
             max_output_tokens=self._strategy_max_output_tokens,
-            request_timeout=self._evaluation_timeout,
+            request_timeout=self._direction_review_timeout,
             instructions=load_prompt(CREATIVE_DIRECTION_DIVERSITY_AUDIT_BASE_PROMPT),
         )
 
@@ -1714,6 +1758,7 @@ class ArkResponsesProvider:
         landscape: CreativeDiversityLandscape,
         existing_directions: CreativeDirectionResponse,
         requested_direction_count: int,
+        execution_route_count: int,
         crowded_scene_families: Sequence[str],
         crowded_action_families: Sequence[str],
         revision_context: Mapping[str, Any] | None = None,
@@ -1722,6 +1767,7 @@ class ArkResponsesProvider:
         prompt = render_prompt(
             CREATIVE_DIRECTION_SUPPLEMENT_TASK_PROMPT,
             requested_direction_count=str(requested_direction_count),
+            execution_route_count=str(execution_route_count),
             facts_json=json.dumps(
                 [
                     {
@@ -2128,6 +2174,7 @@ class ArkResponsesProvider:
         max_output_tokens: int,
         request_timeout: float,
         instructions: str | None = None,
+        item_count: int | None = None,
     ) -> AiCallResult[TModel]:
         payload = {
             "model": model,
@@ -2155,6 +2202,10 @@ class ArkResponsesProvider:
         attempts = 0
         for attempt in range(1, self._max_attempts + 1):
             attempts = attempt
+            LOGGER.info(
+                "Ark call started stage=%s step=%s batch_size=%s input_chars=%s timeout_seconds=%s attempt=%s",
+                stage, schema_name, item_count, len(prompt), request_timeout, attempt,
+            )
             try:
                 response = await self._client.post(
                     "responses", json=payload, timeout=request_timeout
@@ -2244,8 +2295,10 @@ class ArkResponsesProvider:
                                         attempt,
                                     )
                                 LOGGER.info(
-                                    "Ark call succeeded stage=%s input_tokens=%s output_tokens=%s total_tokens=%s latency_ms=%s attempts=%s",
+                                    "Ark call succeeded stage=%s step=%s batch_size=%s input_tokens=%s output_tokens=%s total_tokens=%s latency_ms=%s attempts=%s",
                                     stage,
+                                    schema_name,
+                                    item_count,
                                     usage["inputTokens"],
                                     usage["outputTokens"],
                                     usage["totalTokens"],
@@ -2288,6 +2341,11 @@ class ArkResponsesProvider:
                 min(4.0, 0.4 * (2 ** (attempt - 1))) + random.uniform(0, 0.15)
             )
         elapsed = max(0, round((time.perf_counter() - started_at) * 1000))
+        LOGGER.warning(
+            "Ark call failed stage=%s step=%s batch_size=%s input_chars=%s timeout_seconds=%s latency_ms=%s attempts=%s error_type=%s exception_type=%s",
+            stage, schema_name, item_count, len(prompt), request_timeout, elapsed,
+            attempts, error_type.value, type(last_error).__name__,
+        )
         raise ProviderError(
             _safe_provider_message(error_type),
             retryable=retryable,
@@ -2507,6 +2565,7 @@ def _mock_creative_direction_response(
     *,
     landscape: CreativeDiversityLandscape | None = None,
     direction_count: int = 8,
+    execution_route_count: int = 4,
 ) -> CreativeDirectionResponse:
     business_facts = mandatory_business_facts(application)
     if not business_facts:
@@ -2644,6 +2703,24 @@ def _mock_creative_direction_response(
                     emotion_family=row[5],
                 ),
                 avoid_families=["重复厨房切制"],
+                execution_routes=[
+                    CreativeExecutionRoute(
+                        route_id=f"ROUTE_{route_index + 1}",
+                        visual_event=(
+                            f"{row[3]}的第 {route_index + 1} 种主视觉事件"
+                        ),
+                        scene_relation=(
+                            f"{row[1]}中的第 {route_index + 1} 种场景关系"
+                        ),
+                        product_action=(
+                            f"{row[3]}的第 {route_index + 1} 种产品动作"
+                        ),
+                        ending_state=(
+                            f"{row[0]}的第 {route_index + 1} 种结束状态"
+                        ),
+                    )
+                    for route_index in range(execution_route_count)
+                ],
             )
             for index, (territory, local_index, row) in enumerate(direction_rows)
         ]
@@ -3005,6 +3082,11 @@ def _creative_task_brief(
                 task.sibling_variant_index
             ),
         },
+        "executionRoute": (
+            task.execution_route.model_dump(mode="json", by_alias=True)
+            if task.execution_route is not None
+            else None
+        ),
         "regenerationVariantRole": task.regeneration_variant_role,
         "factApplications": [
             fact_application_payload(fact_id) for fact_id in assignment.fact_ids

@@ -1,5 +1,6 @@
 目标 Prompt 数量：{target_count}
 目标创意方向数量：{target_direction_count}
+每个方向的执行路线数量：{execution_route_count}
 
 本批事实密度要求：
 {fact_density_instruction}
@@ -26,4 +27,4 @@
 
 输出范围：{direction_output_instruction}
 
-创意方向应覆盖多种合理叙事、场景、人物关系、产品动作、镜头和情绪，但不得通过虚构场景或虚构事实追求数量。
+创意方向应覆盖多种合理叙事、场景、人物关系、产品动作、镜头和情绪，但不得通过虚构场景或虚构事实追求数量。每个方向的 executionRoutes 必须恰好输出 {execution_route_count} 条，同一方向内的主视觉事件必须肉眼可辨地不同，但仍共同服务该方向的事实关系。

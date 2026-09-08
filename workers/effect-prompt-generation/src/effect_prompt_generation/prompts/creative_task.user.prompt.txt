@@ -13,7 +13,7 @@
 
 coverageFocusFactIds 非空时，表示这些事实此前未被独立评估器确认落实。本次把焦点事实放入创意主线，并让它真实改变人物需求、场景因果、选择行为、产品动作或商业收束。不要机械照抄事实原文，也不要把抽象事实变成画面证明。
 
-directionId 相同的任务是同一方向下的兄弟变体。先比较整组再分别设计：保持方向的业务关系，但按照 siblingVariation.focusDimensions 改变具体场景、主要动作、人物关系、观察角度或结束状态。不能复用同一画面骨架后只换措辞。
+directionId 相同的任务是同一方向下的兄弟变体。先比较整组再分别设计：保持方向的业务关系，但每条必须落实它自己的 executionRoute，并按照 siblingVariation.focusDimensions 改变具体镜头、人物关系或情绪表达。不能复用同一画面骨架后只换措辞。
 
 creativeDirection 提供探索方向，priorityDimensions 提供优先变化建议，avoidFamilies 提醒避开拥挤套路。它们都不是固定模板；不得为了差异牺牲事实、商品关联和物理逻辑，也不得引入与商品无关的场景。
 

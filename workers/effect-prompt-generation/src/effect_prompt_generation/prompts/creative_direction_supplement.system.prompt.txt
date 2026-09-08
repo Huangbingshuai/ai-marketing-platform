@@ -10,5 +10,6 @@
 5. priorityDimensions 必须恰好包含两个不同的合法维度；semanticProfile 必须诚实描述新方向的实际六轴语义。
 6. 首次输出使用全新的稳定 directionId。修订时保持上一版补充方向 ID 不变，只修复全批复核指出的视觉重叠。
 7. 不写时长、画幅、分辨率、共用提示词或最终 Prompt 正文。
+8. executionRoutes 为补充候选规划互不相同的主视觉事件、场景关系、产品主动作和结束状态；routeId 在当前方向内使用 `ROUTE_1`、`ROUTE_2` 等稳定值。路线不得只换人物性别、景别名称、形容词或光线。
 
 只输出严格符合 JSON Schema 的 JSON。

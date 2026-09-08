@@ -176,6 +176,7 @@ def test_direction_and_landscape_templates_receive_density_rules() -> None:
         "creative_direction.user.prompt.txt",
         target_count="50",
         target_direction_count="13",
+        execution_route_count="4",
         direction_output_instruction="首次输出完整方向",
         fact_density_instruction="每个方向必须自然使用 2～4 条业务事实",
         facts_json="[]",
