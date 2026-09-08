@@ -12,6 +12,18 @@ export type EffectSegmentRenderOrigin = 'AI_GENERATED' | 'EXTERNAL_IMPORT';
 export type EffectSegmentRenderBatchStatus =
   'COMPLETED' | 'NOT_STARTED' | 'PARTIAL' | 'QUEUED' | 'RUNNING';
 
+export type EffectSegmentRenderRepairStatus = 'FAILED' | 'QUEUED' | 'READY' | 'RENDERING';
+
+export type EffectSegmentRenderRepair = {
+  sourceVersion: number;
+  startMs: number;
+  endMs: number;
+  instruction: string;
+  status: EffectSegmentRenderRepairStatus;
+  candidateVersion: number | null;
+  errorMessage: string | null;
+};
+
 export type EffectSegmentRenderTask = {
   id: string;
   renderCode: string;
@@ -33,6 +45,8 @@ export type EffectSegmentRenderTask = {
   maxAutoRetries: number;
   abnormal: boolean;
   errorMessage: string | null;
+  activeVersion: number;
+  repair: EffectSegmentRenderRepair | null;
   updatedAt: string;
 };
 

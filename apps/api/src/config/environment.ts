@@ -29,6 +29,8 @@ export type EnvironmentVariables = {
   SEEDANCE_BASE_URL: string | undefined;
   SEEDANCE_API_KEY: string | undefined;
   SEEDANCE_MODEL: string | undefined;
+  SEEDANCE_REFERENCE_PUBLIC_BASE_URL: string | undefined;
+  SEEDANCE_REFERENCE_SIGNING_SECRET: string | undefined;
 };
 
 const requiredString = (value: unknown, key: string): string => {
@@ -113,6 +115,10 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
   const effectSegmentRenderWorkerToken =
     optionalString(raw.EFFECT_SEGMENT_RENDER_WORKER_TOKEN) ??
     (appEnvironment === 'production' ? undefined : 'local-effect-segment-render-worker-token');
+  const seedanceReferenceSigningSecret = optionalString(raw.SEEDANCE_REFERENCE_SIGNING_SECRET);
+  if (seedanceReferenceSigningSecret && seedanceReferenceSigningSecret.length < 32) {
+    throw new Error('环境变量 SEEDANCE_REFERENCE_SIGNING_SECRET 至少需要 32 个字符');
+  }
   if (appEnvironment === 'production') {
     requiredString(effectExtractionWorkerToken, 'EFFECT_EXTRACTION_WORKER_TOKEN');
     requiredString(effectPromptWorkerToken, 'EFFECT_PROMPT_WORKER_TOKEN');
@@ -155,5 +161,7 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
     SEEDANCE_BASE_URL: optionalString(raw.SEEDANCE_BASE_URL),
     SEEDANCE_API_KEY: optionalString(raw.SEEDANCE_API_KEY),
     SEEDANCE_MODEL: optionalString(raw.SEEDANCE_MODEL),
+    SEEDANCE_REFERENCE_PUBLIC_BASE_URL: optionalString(raw.SEEDANCE_REFERENCE_PUBLIC_BASE_URL),
+    SEEDANCE_REFERENCE_SIGNING_SECRET: seedanceReferenceSigningSecret,
   };
 };

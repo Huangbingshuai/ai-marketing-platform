@@ -7,7 +7,10 @@ from .models import ExtractionCandidate
 _MARKDOWN_DECORATION = re.compile(r"(?:\*\*|__|`)")
 _TABLE_SEPARATOR = re.compile(r"^:?-{3,}:?$")
 _HEADING = re.compile(r"^#{1,6}\s+(?P<title>.+?)\s*$")
-_LIST_MARKER = re.compile(r"^(?:[-*+]\s+|\d+[.)、]\s*)")
+# A decimal product specification such as ``2.5L`` is data, not a Markdown
+# numbered-list marker. ASCII list punctuation therefore requires whitespace;
+# the Chinese enumeration mark keeps supporting the common ``1、内容`` form.
+_LIST_MARKER = re.compile(r"^(?:[-*+]\s+|\d+(?:[.)]\s+|、\s*))")
 _NON_FACT_NOTE = re.compile(
     r"^(?:填写确认|用户确认|资料确认|确认说明|说明|备注|注)\s*[：:]"
 )

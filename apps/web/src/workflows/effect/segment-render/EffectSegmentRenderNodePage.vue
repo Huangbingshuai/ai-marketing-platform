@@ -53,11 +53,13 @@ import {
 } from './effect-segment-render-state';
 import {
   createEffectSegmentRenderExport,
+  decideEffectSegmentRenderRepair,
   deleteEffectSegmentRenderMaterials,
   importEffectSegmentRenderFiles,
   inspectEffectSegmentRenderImports,
   loadEffectSegmentRenderWorkspace,
   regenerateEffectSegmentRenderTasks,
+  repairEffectSegmentRenderTask,
   startEffectSegmentRenderBatch,
   subscribeEffectSegmentRenderWorkspace,
   type EffectSegmentRenderExportFormat,
@@ -74,7 +76,7 @@ const props = defineProps<{
 const emit = defineEmits<{ back: []; next: [] }>();
 
 type PageStatus = 'empty' | 'error' | 'loading' | 'success';
-type Operation = 'batch' | 'delete' | 'export' | 'import' | 'retry' | 'settings' | null;
+type Operation = 'batch' | 'delete' | 'export' | 'import' | 'repair' | 'retry' | 'settings' | null;
 type FragmentFilter = 'ABNORMAL' | 'ALL' | EffectPromptFragmentType;
 type TransferPanel = 'export' | 'import' | null;
 type ExportScope = 'ALL_COMPLETED' | 'FILTERED' | 'SELECTED';
@@ -179,9 +181,15 @@ const resolutionOptions = computed(() =>
 );
 
 const previewTask = ref<EffectSegmentRenderTask | null>(null);
+const previewVariant = ref<'ACTIVE' | 'REPAIR'>('ACTIVE');
 const promptTask = ref<EffectSegmentRenderTask | null>(null);
+const repairTask = ref<EffectSegmentRenderTask | null>(null);
+const repairStartSeconds = ref(0);
+const repairEndSeconds = ref(1);
+const repairInstruction = ref('');
 const previewCloseButton = ref<HTMLButtonElement | null>(null);
 const promptCloseButton = ref<HTMLButtonElement | null>(null);
+const repairCloseButton = ref<HTMLButtonElement | null>(null);
 
 let dialogTrigger: HTMLElement | null = null;
 let loadController: AbortController | null = null;
@@ -328,7 +336,9 @@ const applyWorkspace = (nextWorkspace: EffectSegmentRenderWorkspace): void => {
 
 const closeAllDialogs = (restoreFocus = false): void => {
   previewTask.value = null;
+  previewVariant.value = 'ACTIVE';
   promptTask.value = null;
+  repairTask.value = null;
   if (!restoreFocus) {
     dialogTrigger = null;
     return;
@@ -568,10 +578,92 @@ const retryTask = async (taskId: string): Promise<void> => {
   }
 };
 
-const openPreview = (task: EffectSegmentRenderTask, event: Event): void => {
+const openPreview = (
+  task: EffectSegmentRenderTask,
+  event: Event,
+  variant: 'ACTIVE' | 'REPAIR' = 'ACTIVE',
+): void => {
   dialogTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
   previewTask.value = task;
+  previewVariant.value = variant;
   void nextTick(() => previewCloseButton.value?.focus());
+};
+
+const openRepair = (task: EffectSegmentRenderTask, event: Event): void => {
+  if (task.status !== 'COMPLETED' || task.repair || task.durationSeconds > 15) return;
+  dialogTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  repairTask.value = task;
+  repairStartSeconds.value = 0;
+  repairEndSeconds.value = Math.min(task.durationSeconds, 2);
+  repairInstruction.value = '';
+  void nextTick(() => repairCloseButton.value?.focus());
+};
+
+const submitRepair = async (): Promise<void> => {
+  const product = currentProduct.value;
+  const task = repairTask.value;
+  if (!product || !task || operation.value) return;
+  operation.value = 'repair';
+  validated.value = false;
+  try {
+    const nextWorkspace = await repairEffectSegmentRenderTask(
+      context(),
+      product,
+      renderSettings.value,
+      task.id,
+      {
+        startMs: Math.round(repairStartSeconds.value * 1000),
+        endMs: Math.round(repairEndSeconds.value * 1000),
+        instruction: repairInstruction.value,
+      },
+      { onUpdate: applyWorkspace },
+    );
+    applyWorkspace(nextWorkspace);
+    closeAllDialogs(true);
+    showNotice('返修候选已生成，请预览后选择采用或放弃');
+  } catch (error) {
+    if (!isAbortError(error)) showNotice(safeMessage(error, '视频画面返修失败'), 'error');
+  } finally {
+    operation.value = null;
+  }
+};
+
+const decideRepair = async (
+  task: EffectSegmentRenderTask,
+  decision: 'ACCEPT' | 'DISCARD',
+): Promise<void> => {
+  const product = currentProduct.value;
+  if (!product || operation.value || !task.repair) return;
+  if (
+    !(await requestActionConfirmation({
+      eyebrow: decision === 'ACCEPT' ? '采用修复版' : '放弃修复版',
+      title: decision === 'ACCEPT' ? '用修复版替换当前素材？' : '放弃这个返修候选？',
+      description:
+        decision === 'ACCEPT'
+          ? '采用后，修复版会成为当前活动素材；节点完成校验前仍可继续调整。'
+          : '放弃后保留当前原视频，返修候选将不再可用。',
+      confirmLabel: decision === 'ACCEPT' ? '确认采用' : '确认放弃',
+      tone: 'warning',
+    }))
+  )
+    return;
+  operation.value = 'repair';
+  validated.value = false;
+  try {
+    const nextWorkspace = await decideEffectSegmentRenderRepair(
+      context(),
+      product,
+      renderSettings.value,
+      task.id,
+      decision,
+    );
+    applyWorkspace(nextWorkspace);
+    showNotice(decision === 'ACCEPT' ? '已采用修复版视频' : '已放弃返修候选');
+  } catch (error) {
+    showNotice(safeMessage(error, '处理返修候选失败'), 'error');
+  } finally {
+    operation.value = null;
+  }
 };
 
 const openPrompt = (task: EffectSegmentRenderTask, event: Event): void => {
@@ -1089,11 +1181,65 @@ onBeforeUnmount(() => {
                 <div v-if="task.errorMessage" class="task-error" role="status">
                   <AlertCircle :size="12" />{{ task.errorMessage }}
                 </div>
+                <div
+                  v-if="task.repair"
+                  class="repair-status"
+                  :class="task.repair.status.toLowerCase()"
+                >
+                  <Sparkles :size="11" />
+                  <span>
+                    {{
+                      task.repair.status === 'READY'
+                        ? '返修候选待确认'
+                        : task.repair.status === 'FAILED'
+                          ? '返修失败，原视频已保留'
+                          : `返修中 ${task.repair.startMs / 1000}-${task.repair.endMs / 1000}s`
+                    }}
+                  </span>
+                </div>
                 <div v-if="isEffectSegmentRenderBusy(task.status)" class="material-progress">
                   <i :style="{ width: `${task.progress}%` }" />
                 </div>
               </div>
               <footer v-if="!selectionMode" class="material-card-actions">
+                <template v-if="task.repair?.status === 'READY'">
+                  <button type="button" @click="openPreview(task, $event, 'REPAIR')">
+                    预览修复版
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="operation !== null"
+                    @click="decideRepair(task, 'ACCEPT')"
+                  >
+                    采用
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="operation !== null"
+                    @click="decideRepair(task, 'DISCARD')"
+                  >
+                    放弃
+                  </button>
+                </template>
+                <button
+                  v-else-if="task.repair?.status === 'FAILED'"
+                  type="button"
+                  :disabled="operation !== null"
+                  @click="decideRepair(task, 'DISCARD')"
+                >
+                  清除返修记录
+                </button>
+                <button v-else-if="task.repair" type="button" disabled>返修处理中</button>
+                <button
+                  v-else
+                  type="button"
+                  :disabled="
+                    operation !== null || task.status !== 'COMPLETED' || task.durationSeconds > 15
+                  "
+                  @click="openRepair(task, $event)"
+                >
+                  画面返修
+                </button>
                 <button
                   type="button"
                   :disabled="!canPreviewTask(task)"
@@ -1223,7 +1369,97 @@ onBeforeUnmount(() => {
             </span>
             <em>演示片段预览</em>
           </div>
-          <p class="dialog-note">该预览为本地动画占位，不调用真实视频生成或播放能力。</p>
+          <p class="dialog-note">
+            {{
+              previewVariant === 'REPAIR'
+                ? '当前预览的是返修候选；采用前不会覆盖原视频。'
+                : `当前活动版本 v${previewTask.activeVersion}；返修候选会单独保存。`
+            }}
+          </p>
+        </section>
+      </div>
+
+      <div
+        v-if="repairTask"
+        class="segment-dialog-backdrop"
+        @mousedown.self="closeAllDialogs(true)"
+      >
+        <section
+          class="segment-dialog repair-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="segment-repair-title"
+          @keydown.esc="closeAllDialogs(true)"
+        >
+          <header>
+            <div>
+              <h2 id="segment-repair-title">返修指定画面</h2>
+              <small>{{ repairTask.renderCode }} · 完整参考视频最长 15 秒</small>
+            </div>
+            <button
+              ref="repairCloseButton"
+              type="button"
+              aria-label="关闭视频返修"
+              @click="closeAllDialogs(true)"
+            >
+              <X :size="16" />
+            </button>
+          </header>
+          <div class="repair-dialog-body">
+            <p>
+              原 Prompt
+              不会改动。系统会把当前完整视频交给模型，只要求修改下面的时间段；生成结果先作为候选保存。
+            </p>
+            <div class="repair-time-fields">
+              <label>
+                <span>开始时间（秒）</span>
+                <input
+                  v-model.number="repairStartSeconds"
+                  type="number"
+                  min="0"
+                  :max="repairTask.durationSeconds"
+                  step="0.1"
+                />
+              </label>
+              <label>
+                <span>结束时间（秒）</span>
+                <input
+                  v-model.number="repairEndSeconds"
+                  type="number"
+                  min="0.1"
+                  :max="repairTask.durationSeconds"
+                  step="0.1"
+                />
+              </label>
+            </div>
+            <label class="repair-instruction-field">
+              <span>需要修改什么</span>
+              <textarea
+                v-model="repairInstruction"
+                maxlength="1000"
+                placeholder="例如：12.3 秒开始，移除台面右侧的黑色污点，保持人物、产品和镜头运动不变。"
+              />
+              <small>{{ repairInstruction.trim().length }}/1000</small>
+            </label>
+          </div>
+          <footer>
+            <button type="button" @click="closeAllDialogs(true)">取消</button>
+            <button
+              class="primary"
+              type="button"
+              :disabled="
+                operation !== null ||
+                !repairInstruction.trim() ||
+                repairStartSeconds < 0 ||
+                repairEndSeconds <= repairStartSeconds ||
+                repairEndSeconds > repairTask.durationSeconds
+              "
+              @click="submitRepair"
+            >
+              <LoaderCircle v-if="operation === 'repair'" class="spin" :size="14" />
+              {{ operation === 'repair' ? '正在生成候选…' : '生成返修候选' }}
+            </button>
+          </footer>
         </section>
       </div>
 
@@ -2232,6 +2468,96 @@ select:disabled {
   font-size: 12px;
   font-weight: 800;
 }
+.repair-dialog {
+  width: min(560px, 100%);
+  padding: 0 18px 18px;
+}
+.repair-dialog header > div small {
+  display: block;
+  margin-top: 4px;
+  color: #8793a6;
+  font-size: 10px;
+}
+.repair-dialog-body > p {
+  margin: 16px 0;
+  color: #65748a;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.repair-time-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.repair-time-fields label,
+.repair-instruction-field {
+  display: grid;
+  gap: 7px;
+  color: #485970;
+  font-size: 11px;
+  font-weight: 700;
+}
+.repair-time-fields input,
+.repair-instruction-field textarea {
+  width: 100%;
+  color: #34445b;
+  background: #fbfcfe;
+  border: 1px solid #dbe3ee;
+  border-radius: 9px;
+  outline: none;
+  font: inherit;
+  font-weight: 500;
+}
+.repair-time-fields input {
+  height: 40px;
+  padding: 0 11px;
+}
+.repair-instruction-field {
+  position: relative;
+  margin-top: 14px;
+}
+.repair-instruction-field textarea {
+  min-height: 116px;
+  padding: 11px;
+  resize: vertical;
+  line-height: 1.65;
+}
+.repair-instruction-field small {
+  position: absolute;
+  right: 9px;
+  bottom: 8px;
+  color: #98a3b3;
+  font-size: 9px;
+  font-weight: 500;
+}
+.repair-dialog > footer {
+  display: flex;
+  margin-top: 16px;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.repair-dialog > footer button {
+  display: inline-flex;
+  height: 38px;
+  padding: 0 15px;
+  align-items: center;
+  gap: 6px;
+  color: #56657b;
+  background: #fff;
+  border: 1px solid #dbe3ee;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 800;
+}
+.repair-dialog > footer button.primary {
+  color: #fff;
+  background: #2563eb;
+  border-color: #2563eb;
+}
+.repair-dialog > footer button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
 .spin {
   animation: segment-spin 0.75s linear infinite;
 }
@@ -2775,6 +3101,21 @@ select:disabled {
   font-size: 8px;
   line-height: 1.45;
 }
+.repair-status {
+  display: flex;
+  margin-top: 7px;
+  align-items: center;
+  gap: 5px;
+  color: #7653b8;
+  font-size: 8px;
+  line-height: 1.45;
+}
+.repair-status.ready {
+  color: #28755c;
+}
+.repair-status.failed {
+  color: #c34850;
+}
 .material-progress {
   height: 4px;
   margin-top: 9px;
@@ -2795,6 +3136,7 @@ select:disabled {
   align-items: center;
   justify-content: flex-end;
   gap: 9px;
+  flex-wrap: wrap;
   background: #fafbfd;
   border-top: 1px solid #edf0f5;
 }
@@ -3177,6 +3519,9 @@ select:disabled {
   }
 }
 @media (max-width: 480px) {
+  .repair-time-fields {
+    grid-template-columns: 1fr;
+  }
   .segment-material-grid {
     grid-template-columns: 1fr;
   }

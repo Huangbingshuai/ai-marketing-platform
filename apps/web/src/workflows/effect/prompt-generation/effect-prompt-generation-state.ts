@@ -8,7 +8,7 @@ import { EFFECT_PROMPT_LIMITS, normalizeEffectPromptSettings } from '@ai-marketi
 export { EFFECT_PROMPT_LIMITS };
 export type EffectPromptPageStatus = 'loading' | 'ready' | 'error';
 
-export const EFFECT_PROMPT_PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
+export const EFFECT_PROMPT_PAGE_SIZE_OPTIONS = [5, 10, 20, 50, 100] as const;
 
 const hydratePromptSettings = (settings: EffectPromptBatchSettings): EffectPromptBatchSettings => ({
   targetCount: settings.targetCount,

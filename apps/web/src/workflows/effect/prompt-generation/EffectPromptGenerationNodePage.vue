@@ -2233,10 +2233,9 @@ onBeforeUnmount(() => {
           </button>
           <label
             class="compatible-purpose-toggle"
-            :class="{ disabled: !purposeFilter }"
-            title="开启后，也会显示将该用途标记为兼容用途的 Prompt"
+            title="开启后，选择任一用途时，也会显示将该用途标记为兼容用途的 Prompt"
           >
-            <input v-model="includeCompatiblePurposes" type="checkbox" :disabled="!purposeFilter" />
+            <input v-model="includeCompatiblePurposes" type="checkbox" />
             <span>包含兼容用途</span>
           </label>
         </nav>
@@ -4091,10 +4090,6 @@ button:disabled {
   margin: 0;
   accent-color: #2f6dea;
 }
-.compatible-purpose-toggle.disabled {
-  color: #aab4c3;
-  cursor: not-allowed;
-}
 .prompt-card {
   display: grid;
   min-width: 0;
@@ -4328,10 +4323,13 @@ button:disabled {
 }
 .prompt-main > textarea {
   width: 100%;
-  min-height: 132px;
+  min-height: 260px;
   padding: 10px 14px;
   resize: none;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-color: #b9c8df #f3f6fb;
+  scrollbar-width: thin;
   color: #5b6270;
   background: #fff;
   border: 1px solid #dfe4eb;
@@ -4339,6 +4337,21 @@ button:disabled {
   font-family: inherit;
   font-size: 13px;
   line-height: 1.78;
+}
+.prompt-main > textarea::-webkit-scrollbar {
+  width: 8px;
+}
+.prompt-main > textarea::-webkit-scrollbar-track {
+  background: #f3f6fb;
+  border-radius: 999px;
+}
+.prompt-main > textarea::-webkit-scrollbar-thumb {
+  background: #b9c8df;
+  border: 2px solid #f3f6fb;
+  border-radius: 999px;
+}
+.prompt-main > textarea::-webkit-scrollbar-thumb:hover {
+  background: #8ea5c6;
 }
 .prompt-actions {
   display: grid;

@@ -21,7 +21,7 @@ export const EFFECT_PROMPT_LIMITS = {
   minVisualOverlapRate: 10,
   maxVisualOverlapRate: 20,
   defaultVisualOverlapRate: 20,
-  pageSize: 10,
+  pageSize: 5,
   maxReplenishmentRounds: 3,
   shardSize: 8,
 } as const;

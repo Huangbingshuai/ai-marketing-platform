@@ -188,6 +188,18 @@ enum EffectSegmentRenderTaskStatus {
   FAILED
 }
 
+enum EffectSegmentRenderOperationKind {
+  GENERATE
+  REPAIR
+}
+
+enum EffectSegmentRenderRepairStatus {
+  QUEUED
+  RUNNING
+  READY
+  FAILED
+}
+
 enum WorkflowRunStatus {
   ACTIVE
   PAUSED
@@ -1090,9 +1102,12 @@ model EffectSegmentRenderTask {
   renderCode         String                        @db.VarChar(120)
   sourceFingerprint  String                        @db.Char(64)
   requestSnapshot    Json
+  generationRequestSnapshot Json
+  operationKind      EffectSegmentRenderOperationKind @default(GENERATE)
   status             EffectSegmentRenderTaskStatus @default(QUEUED)
   progress           Int                           @default(0)
   renderVersion      Int                           @default(1)
+  activeOutputVersion Int?
   retryCount         Int                           @default(0)
   maxAutoRetries     Int                           @default(2)
   attemptCount       Int                           @default(0)
@@ -1106,6 +1121,21 @@ model EffectSegmentRenderTask {
   outputMimeType     String?                       @db.VarChar(120)
   outputSizeBytes    Int?
   outputContentHash  String?                       @db.Char(64)
+  repairStatus       EffectSegmentRenderRepairStatus?
+  repairSourceVersion Int?
+  repairStartMs      Int?
+  repairEndMs        Int?
+  repairRegion       Json?
+  repairInstruction  String?                       @db.VarChar(1000)
+  repairRequestHash  String?                       @db.Char(64)
+  repairCandidateFileObjectId String?               @db.Uuid
+  repairCandidateStorageKey String?                 @db.VarChar(500)
+  repairCandidateFileName String?                   @db.VarChar(255)
+  repairCandidateMimeType String?                   @db.VarChar(120)
+  repairCandidateSizeBytes Int?
+  repairCandidateContentHash String?                @db.Char(64)
+  repairCandidateVersion Int?
+  repairCandidateCreatedAt DateTime?
   errorCode          String?                       @db.VarChar(120)
   errorMessage       String?                       @db.VarChar(1000)
   queuedAt           DateTime                      @default(now())

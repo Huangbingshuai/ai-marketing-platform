@@ -130,6 +130,31 @@ async def test_internal_api_claim_and_branch_match_backend_contract() -> None:
 
 
 @pytest.mark.asyncio
+async def test_internal_api_claim_accepts_current_snapshot_without_video_config_revision() -> None:
+    payload = claim_data()
+    dependency_snapshot = payload["input"]["dependencySnapshot"]
+    dependency_snapshot.pop("effectiveVideoConfigRevision")
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"success": True, "data": payload})
+
+    api = HttpInternalApi(
+        "http://api.local/api/",
+        "worker-secret",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        claim = await api.claim("run-1", "project-1")
+    finally:
+        await api.aclose()
+
+    assert claim.input is not None
+    assert claim.input.dependency_snapshot is not None
+    assert claim.input.dependency_snapshot.effective_video_config_revision is None
+    assert claim.input.dependency_snapshot.execution_input_hash == "input-hash"
+
+
+@pytest.mark.asyncio
 async def test_internal_api_persists_specific_document_timeout_code() -> None:
     captured: dict[str, object] = {}
 

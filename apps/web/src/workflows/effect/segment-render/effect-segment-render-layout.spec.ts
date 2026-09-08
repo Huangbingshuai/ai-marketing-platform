@@ -65,6 +65,10 @@ describe('effect segment render material gallery layout', () => {
       'deleteSelectedMaterials',
       '导出所选',
       'retryTask(task.id)',
+      '画面返修',
+      '生成返修候选',
+      "decideRepair(task, 'ACCEPT')",
+      "decideRepair(task, 'DISCARD')",
     ])
       expect(pageSource).toContain(marker);
     expect(pageSource).not.toContain('批量重新生成');
@@ -113,6 +117,8 @@ describe('effect segment render material gallery layout', () => {
       'importEffectSegmentRenderFiles',
       'deleteEffectSegmentRenderMaterials',
       'createEffectSegmentRenderExport',
+      'repairEffectSegmentRenderTask',
+      'decideEffectSegmentRenderRepair',
     ])
       expect(serviceSource).toContain(handler);
     expect(serviceSource).toContain('const workspaces = new Map');

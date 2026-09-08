@@ -43,7 +43,11 @@ export class PromptWorkspaceQueryDto {
 export class PromptResultQueryDto {
   @IsUUID('4') workflowRunId!: string;
   @Type(() => Number) @IsInt() @Min(1) page = 1;
-  @Type(() => Number) @IsInt() @Min(1) @Max(100) pageSize = 10;
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize = EFFECT_PROMPT_LIMITS.pageSize;
   @IsOptional() @IsString() @MaxLength(200) query?: string;
   @IsOptional() @IsIn([...EFFECT_PROMPT_FRAGMENT_TYPES]) fragmentType?: EffectPromptFragmentType;
   @IsOptional() @IsIn([...EFFECT_PROMPT_FRAGMENT_TYPES]) purpose?: EffectPromptFragmentType;

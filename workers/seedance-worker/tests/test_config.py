@@ -35,3 +35,18 @@ def test_mock_provider_is_restricted_to_an_isolated_queue() -> None:
         EFFECT_SEGMENT_RENDER_QUEUE="test.effect.segment-render",
     )
     assert result.provider == "mock"
+
+
+def test_render_concurrency_defaults_are_split_by_workload() -> None:
+    result = settings()
+
+    assert result.max_inflight == 20
+    assert result.create_qps == 3
+    assert result.download_concurrency == 3
+    assert result.poll_interval_seconds == 8
+
+
+def test_legacy_max_concurrency_is_used_as_an_inflight_fallback() -> None:
+    result = settings(SEGMENT_RENDER_MAX_CONCURRENCY="7")
+
+    assert result.max_inflight == 7

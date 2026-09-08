@@ -6,11 +6,13 @@ import { effectSegmentRenderSummary } from '../effect-segment-render-state';
 import {
   clearEffectSegmentRenderMockWorkspaces,
   createEffectSegmentRenderExport,
+  decideEffectSegmentRenderRepair,
   deleteEffectSegmentRenderMaterials,
   importEffectSegmentRenderFiles,
   inspectEffectSegmentRenderImports,
   loadEffectSegmentRenderWorkspace,
   regenerateEffectSegmentRenderTasks,
+  repairEffectSegmentRenderTask,
   startEffectSegmentRenderBatch,
   subscribeEffectSegmentRenderWorkspace,
   waitForEffectSegmentRenderMockBatch,
@@ -253,6 +255,43 @@ describe('effect segment render mock service', () => {
       completed: 47,
       running: 0,
       failed: 3,
+    });
+  });
+
+  it('keeps the active video until a repair candidate is explicitly accepted', async () => {
+    const workspace = await startEffectSegmentRenderBatch(
+      context,
+      product('product-1'),
+      DEFAULT_EFFECT_VIDEO_CONFIG,
+      { stepDelayMs: 0 },
+    );
+    const task = workspace.tasks.find(({ status }) => status === 'COMPLETED')!;
+    const repaired = await repairEffectSegmentRenderTask(
+      context,
+      product('product-1'),
+      DEFAULT_EFFECT_VIDEO_CONFIG,
+      task.id,
+      { startMs: 1200, endMs: 2400, instruction: '移除画面瑕疵' },
+      { stepDelayMs: 0 },
+    );
+    const candidate = repaired.tasks.find(({ id }) => id === task.id)!;
+    expect(candidate.activeVersion).toBe(1);
+    expect(candidate.repair).toMatchObject({
+      status: 'READY',
+      sourceVersion: 1,
+      candidateVersion: 2,
+    });
+
+    const accepted = await decideEffectSegmentRenderRepair(
+      context,
+      product('product-1'),
+      DEFAULT_EFFECT_VIDEO_CONFIG,
+      task.id,
+      'ACCEPT',
+    );
+    expect(accepted.tasks.find(({ id }) => id === task.id)).toMatchObject({
+      activeVersion: 2,
+      repair: null,
     });
   });
 });

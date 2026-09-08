@@ -73,7 +73,10 @@ const workspaceKey = (context: EffectSegmentRenderContext, productId: string): s
 
 const cloneWorkspace = (workspace: EffectSegmentRenderWorkspace): EffectSegmentRenderWorkspace => ({
   ...workspace,
-  tasks: workspace.tasks.map((task) => ({ ...task })),
+  tasks: workspace.tasks.map((task) => ({
+    ...task,
+    repair: task.repair ? { ...task.repair } : null,
+  })),
 });
 
 const abortError = (): DOMException => new DOMException('The operation was aborted.', 'AbortError');
@@ -161,6 +164,8 @@ const createPromptTask = (
     maxAutoRetries: 2,
     abnormal: false,
     errorMessage: null,
+    activeVersion: 1,
+    repair: null,
     updatedAt: now,
   };
 };
@@ -388,6 +393,7 @@ export const regenerateEffectSegmentRenderTasks = async (
       task.status = progress === 100 ? 'COMPLETED' : 'RENDERING';
       task.origin = 'AI_GENERATED';
       task.sourceName = task.promptCode;
+      if (progress === 100) task.activeVersion += 1;
       task.updatedAt = new Date().toISOString();
     }
     publish(workspace, options.onUpdate);
@@ -401,6 +407,69 @@ export const regenerateEffectSegmentRenderTasks = async (
   workspace.completedAt = workspace.batchStatus === 'COMPLETED' ? new Date().toISOString() : null;
   publish(workspace, options.onUpdate);
   return cloneWorkspace(workspace);
+};
+
+export const repairEffectSegmentRenderTask = async (
+  context: EffectSegmentRenderContext,
+  product: EffectImportProduct,
+  settings: LegacyCompatibleRenderSettings,
+  taskId: string,
+  input: { startMs: number; endMs: number; instruction: string },
+  options: EffectSegmentRenderOperationOptions = {},
+): Promise<EffectSegmentRenderWorkspace> => {
+  const workspace = getMutableWorkspace(context, product, settings);
+  const task = workspace.tasks.find(({ id }) => id === taskId);
+  if (!task || task.status !== 'COMPLETED') throw new Error('当前视频尚未生成完成');
+  if (task.durationSeconds > 15) throw new Error('第一版返修只支持最长 15 秒的视频');
+  if (task.repair) throw new Error('当前视频已有待处理的返修任务');
+  const instruction = input.instruction.trim();
+  if (!instruction) throw new Error('请填写需要修改的画面问题');
+  if (
+    input.startMs < 0 ||
+    input.endMs - input.startMs < 100 ||
+    input.endMs > task.durationSeconds * 1000
+  )
+    throw new Error('视频返修时间范围无效');
+  task.repair = {
+    sourceVersion: task.activeVersion,
+    startMs: input.startMs,
+    endMs: input.endMs,
+    instruction,
+    status: 'QUEUED',
+    candidateVersion: null,
+    errorMessage: null,
+  };
+  publish(workspace, options.onUpdate);
+  await wait(options.stepDelayMs ?? 90, options.signal);
+  task.repair.status = 'RENDERING';
+  publish(workspace, options.onUpdate);
+  await wait(options.stepDelayMs ?? 90, options.signal);
+  task.repair.status = 'READY';
+  task.repair.candidateVersion = task.activeVersion + 1;
+  task.updatedAt = new Date().toISOString();
+  return publish(workspace, options.onUpdate);
+};
+
+export const decideEffectSegmentRenderRepair = async (
+  context: EffectSegmentRenderContext,
+  product: EffectImportProduct,
+  settings: LegacyCompatibleRenderSettings,
+  taskId: string,
+  decision: 'ACCEPT' | 'DISCARD',
+  options: EffectSegmentRenderOperationOptions = {},
+): Promise<EffectSegmentRenderWorkspace> => {
+  const workspace = getMutableWorkspace(context, product, settings);
+  const task = workspace.tasks.find(({ id }) => id === taskId);
+  if (!task?.repair || !['READY', 'FAILED'].includes(task.repair.status))
+    throw new Error('当前没有可处理的返修结果');
+  if (decision === 'ACCEPT') {
+    if (task.repair.status !== 'READY' || task.repair.candidateVersion === null)
+      throw new Error('视频返修候选尚未生成完成');
+    task.activeVersion = task.repair.candidateVersion;
+  }
+  task.repair = null;
+  task.updatedAt = new Date().toISOString();
+  return publish(workspace, options.onUpdate);
 };
 
 const isSupportedVideoFile = (file: EffectSegmentRenderImportFile): boolean =>

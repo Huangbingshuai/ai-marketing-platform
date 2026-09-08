@@ -1,6 +1,7 @@
 import {
   EFFECT_PROMPT_RENDER_CAPABILITY_KEYS,
   EFFECT_SEGMENT_RENDER_LIMITS,
+  EFFECT_SEGMENT_RENDER_REPAIR_DECISIONS,
   SEEDANCE_RATIOS,
   SEEDANCE_RESOLUTIONS,
 } from '@ai-marketing/contracts';
@@ -13,6 +14,7 @@ import {
   IsInt,
   IsIn,
   IsNotEmpty,
+  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
@@ -56,12 +58,64 @@ export class RegenerateSegmentRenderTasksDto {
   @IsString() @IsNotEmpty() @MaxLength(500) idempotencyKey!: string;
 }
 
+export class SegmentRenderRepairRegionDto {
+  @Type(() => Number) @IsNumber({ maxDecimalPlaces: 6 }) @Min(0) @Max(1) x!: number;
+  @Type(() => Number) @IsNumber({ maxDecimalPlaces: 6 }) @Min(0) @Max(1) y!: number;
+  @Type(() => Number) @IsNumber({ maxDecimalPlaces: 6 }) @Min(0) @Max(1) width!: number;
+  @Type(() => Number) @IsNumber({ maxDecimalPlaces: 6 }) @Min(0) @Max(1) height!: number;
+}
+
+export class StartSegmentRenderRepairDto {
+  @Type(() => Number) @IsInt() @Min(1) expectedBatchRevision!: number;
+  @Type(() => Number) @IsInt() @Min(1) expectedSourceVersion!: number;
+  @Type(() => Number) @IsInt() @Min(0) startMs!: number;
+  @Type(() => Number)
+  @IsInt()
+  @Min(EFFECT_SEGMENT_RENDER_LIMITS.minRepairDurationMs)
+  endMs!: number;
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(EFFECT_SEGMENT_RENDER_LIMITS.maxRepairInstructionLength)
+  instruction!: string;
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SegmentRenderRepairRegionDto)
+  region?: SegmentRenderRepairRegionDto | null;
+  @IsString() @IsNotEmpty() @MaxLength(500) idempotencyKey!: string;
+}
+
+export class DecideSegmentRenderRepairDto {
+  @Type(() => Number) @IsInt() @Min(1) expectedBatchRevision!: number;
+  @Type(() => Number) @IsInt() @Min(2) repairVersion!: number;
+  @IsIn(EFFECT_SEGMENT_RENDER_REPAIR_DECISIONS)
+  decision!: (typeof EFFECT_SEGMENT_RENDER_REPAIR_DECISIONS)[number];
+  @IsString() @IsNotEmpty() @MaxLength(500) idempotencyKey!: string;
+}
+
+export class SegmentRenderTaskContentQueryDto {
+  @IsOptional() @IsIn(['ACTIVE', 'REPAIR']) variant: 'ACTIVE' | 'REPAIR' = 'ACTIVE';
+}
+
 export class ValidateSegmentRenderBatchDto {
   @Type(() => Number) @IsInt() @Min(1) expectedBatchRevision!: number;
 }
 
 export class SegmentRenderWorkerProjectDto {
   @IsUUID('4') projectId!: string;
+}
+
+export class SegmentRenderWorkerReferenceImageQueryDto extends SegmentRenderWorkerProjectDto {
+  @Type(() => Number) @IsInt() @Min(1) taskVersion!: number;
+}
+
+export class SegmentRenderWorkerReferenceVideoUrlDto extends SegmentRenderWorkerProjectDto {
+  @Type(() => Number) @IsInt() @Min(1) taskVersion!: number;
+}
+
+export class SegmentRenderProviderVideoQueryDto {
+  @Type(() => Number) @IsInt() @Min(1) taskVersion!: number;
+  @Type(() => Number) @IsInt() @Min(1) expires!: number;
+  @IsString() @IsNotEmpty() @MaxLength(256) signature!: string;
 }
 
 export class SegmentRenderWorkerHeartbeatDto extends SegmentRenderWorkerProjectDto {
@@ -83,4 +137,6 @@ export class SegmentRenderWorkerFailDto extends SegmentRenderWorkerProjectDto {
   @IsString() @IsNotEmpty() @MaxLength(120) errorCode!: string;
   @IsString() @IsNotEmpty() @MaxLength(1000) errorMessage!: string;
   @Type(() => Boolean) @IsBoolean() retryable!: boolean;
+  @IsOptional() @IsString() @MaxLength(255) providerTaskId?: string;
+  @IsOptional() @Type(() => Boolean) @IsBoolean() resetProviderTask?: boolean;
 }

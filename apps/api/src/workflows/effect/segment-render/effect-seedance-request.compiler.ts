@@ -5,13 +5,13 @@ import type {
   EffectPromptItem,
   EffectPromptBatchResult,
   EffectSegmentRenderSettings,
+  EffectSegmentRenderInputVideo,
+  EffectSegmentRenderRepairInput,
+  EffectSegmentRenderRequestSnapshot,
   SeedanceRatio,
   SeedanceResolution,
 } from '@ai-marketing/contracts';
-import {
-  EFFECT_PROMPT_DIMENSIONS,
-  EFFECT_PROMPT_RENDER_CAPABILITIES,
-} from '@ai-marketing/contracts';
+import { EFFECT_PROMPT_RENDER_CAPABILITIES } from '@ai-marketing/contracts';
 import { compileEffectPromptSharedConstraintPrompt } from '../prompt-generation/effect-prompt.quality';
 
 export type EffectSeedanceCreateTaskRequest = {
@@ -47,6 +47,8 @@ export class EffectSeedanceCompileError extends Error {
       | 'DURATION_UNSUPPORTED'
       | 'RATIO_UNSUPPORTED'
       | 'RESOLUTION_UNSUPPORTED'
+      | 'REPAIR_RANGE_INVALID'
+      | 'REPAIR_INSTRUCTION_EMPTY'
       | 'EMPTY_MODEL',
     message: string,
   ) {
@@ -57,31 +59,67 @@ export class EffectSeedanceCompileError extends Error {
 
 const compileText = (item: EffectPromptItem, sharedPrompt: string): string => {
   const content = item.content.trim().replace(/。+$/gu, '');
-  const creativeCore = item.creativeCore.trim().replace(/。+$/gu, '');
-  const dimensions = EFFECT_PROMPT_DIMENSIONS.map(
-    ({ key, label }) => `${label}：${item.dimensions[key].trim().replace(/。+$/gu, '')}`,
-  ).join('；');
-  const structuredPrompt = [
-    `创意主线：${creativeCore}。`,
-    `六维创意信息：${dimensions}。`,
-    `片段生成 Prompt：${content}。`,
-  ].join('\n');
+  const prompt = `${content}。`;
   const shared = sharedPrompt.trim();
-  if (!shared) return structuredPrompt;
-  if (content.endsWith(shared.replace(/。+$/gu, ''))) return structuredPrompt;
-  return `${structuredPrompt}\n${shared}`;
+  if (!shared) return prompt;
+  if (content.endsWith(shared.replace(/。+$/gu, ''))) return prompt;
+  return `${prompt}\n${shared}`;
+};
+
+const seconds = (milliseconds: number): string => (milliseconds / 1000).toFixed(3);
+
+const repairRegionText = (region: EffectSegmentRenderRepairInput['region']): string => {
+  if (!region) return '未限定矩形区域，以时间段和修改要求为准';
+  const percent = (value: number): string => `${Math.round(value * 1000) / 10}%`;
+  return [
+    `左侧 ${percent(region.x)}`,
+    `顶部 ${percent(region.y)}`,
+    `宽度 ${percent(region.width)}`,
+    `高度 ${percent(region.height)}`,
+  ].join('，');
+};
+
+export const compileEffectSeedanceRepairRequest = (
+  generationSnapshot: EffectSegmentRenderRequestSnapshot,
+  inputVideo: EffectSegmentRenderInputVideo,
+  repair: EffectSegmentRenderRepairInput,
+): EffectSegmentRenderRequestSnapshot => {
+  const instruction = repair.instruction.trim();
+  if (!instruction)
+    throw new EffectSeedanceCompileError('REPAIR_INSTRUCTION_EMPTY', '视频返修要求不能为空');
+  const durationMs = generationSnapshot.request.duration * 1000;
+  if (
+    !Number.isInteger(repair.startMs) ||
+    !Number.isInteger(repair.endMs) ||
+    repair.startMs < 0 ||
+    repair.endMs <= repair.startMs ||
+    repair.endMs > durationMs
+  )
+    throw new EffectSeedanceCompileError('REPAIR_RANGE_INVALID', '视频返修时间范围超出原视频时长');
+  const text = [
+    '任务类型：基于输入的完整参考视频进行局部画面修复。',
+    `输出必须与参考视频保持相同时长（${generationSnapshot.request.duration} 秒）、画幅、分辨率、镜头顺序和时间节奏。`,
+    `仅修改时间段：[${seconds(repair.startMs)}s-${seconds(repair.endMs)}s]。`,
+    `修改区域：${repairRegionText(repair.region)}。`,
+    `修改要求：${instruction.replace(/。+$/gu, '')}。`,
+    '严格保持：除指定时间段和问题区域外，保持原视频的人物身份、人物动作、产品主体、包装文字、背景、构图、镜头运动、光影、色彩、节奏和声音不变。',
+    '不得增加或删除镜头，不得增加新人物、新商品、新文字、新字幕、新口播、新旁白或无关特效。',
+  ].join('\n');
+  return {
+    ...generationSnapshot,
+    operation: 'REPAIR',
+    inputImages: [],
+    inputVideo,
+    repair: { ...repair, instruction },
+    request: {
+      ...generationSnapshot.request,
+      content: [{ type: 'text', text }],
+    },
+  };
 };
 
 const promptContentHash = (item: EffectPromptItem): string =>
-  createHash('sha256')
-    .update(
-      JSON.stringify({
-        content: item.content,
-        creativeCore: item.creativeCore,
-        dimensions: item.dimensions,
-      }),
-    )
-    .digest('hex');
+  createHash('sha256').update(item.content.trim()).digest('hex');
 
 export const compileEffectSeedanceRequest = (
   batch: EffectPromptBatchResult,

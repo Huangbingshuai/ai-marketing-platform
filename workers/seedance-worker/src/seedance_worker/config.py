@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import AnyHttpUrl, Field, SecretStr, model_validator
+from pydantic import AliasChoices, AnyHttpUrl, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -43,14 +43,33 @@ class WorkerSettings(BaseSettings):
         default=900.0, alias="SEEDANCE_TIMEOUT_SECONDS", gt=0
     )
     poll_interval_seconds: float = Field(
-        default=5.0, alias="SEEDANCE_POLL_INTERVAL_SECONDS", gt=0, le=30
+        default=8.0, alias="SEEDANCE_POLL_INTERVAL_SECONDS", gt=0, le=30
     )
-    max_concurrency: int = Field(
-        default=3, alias="SEGMENT_RENDER_MAX_CONCURRENCY", ge=1, le=8
+    max_inflight: int = Field(
+        default=20,
+        validation_alias=AliasChoices(
+            "SEGMENT_RENDER_MAX_INFLIGHT", "SEGMENT_RENDER_MAX_CONCURRENCY"
+        ),
+        ge=1,
+        le=100,
+    )
+    create_qps: float = Field(
+        default=3.0, alias="SEGMENT_RENDER_CREATE_QPS", ge=1, le=20
+    )
+    download_concurrency: int = Field(
+        default=3,
+        alias="SEGMENT_RENDER_DOWNLOAD_CONCURRENCY",
+        ge=1,
+        le=20,
     )
     max_download_bytes: int = Field(
         default=512 * 1024 * 1024,
         alias="SEGMENT_RENDER_MAX_DOWNLOAD_BYTES",
+        ge=1,
+    )
+    reference_cache_bytes: int = Field(
+        default=128 * 1024 * 1024,
+        alias="SEGMENT_RENDER_REFERENCE_CACHE_BYTES",
         ge=1,
     )
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")

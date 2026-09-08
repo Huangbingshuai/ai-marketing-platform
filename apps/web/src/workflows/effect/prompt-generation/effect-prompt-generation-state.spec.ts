@@ -126,16 +126,16 @@ describe('effect prompt generation state', () => {
   });
 
   it('supports selectable server pagination sizes', () => {
-    expect(EFFECT_PROMPT_LIMITS.pageSize).toBe(10);
-    expect(EFFECT_PROMPT_PAGE_SIZE_OPTIONS).toEqual([10, 20, 50, 100]);
-    expect(promptPageCount(23)).toBe(3);
+    expect(EFFECT_PROMPT_LIMITS.pageSize).toBe(5);
+    expect(EFFECT_PROMPT_PAGE_SIZE_OPTIONS).toEqual([5, 10, 20, 50, 100]);
+    expect(promptPageCount(23)).toBe(5);
     expect(promptPageCount(23, 20)).toBe(2);
     expect(promptPageCount(100, 50)).toBe(2);
     expect(promptPageCount(0)).toBe(1);
   });
 
   it('clamps stale page numbers after filtering or deleting the last page', () => {
-    expect(clampPromptPage(2, 10)).toBe(1);
+    expect(clampPromptPage(3, 10)).toBe(2);
     expect(clampPromptPage(2, 11)).toBe(2);
     expect(clampPromptPage(3, 0)).toBe(1);
     expect(clampPromptPage(Number.NaN, 50)).toBe(1);

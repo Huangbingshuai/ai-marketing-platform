@@ -9,7 +9,7 @@ from aio_pika.abc import AbstractIncomingMessage, AbstractRobustConnection
 from pydantic import ValidationError
 
 from .api_client import InternalApi, InternalApiError
-from .models import QueueMessage, RuntimeContext
+from .models import QueueMessage, RenderOutput, RuntimeContext
 from .providers import ProviderError, VideoProvider
 
 
@@ -24,19 +24,21 @@ class SegmentRenderConsumer:
         queue_name: str,
         api: InternalApi,
         provider: VideoProvider,
-        max_concurrency: int = 3,
+        max_inflight: int = 20,
+        result_concurrency: int = 3,
     ) -> None:
         self._rabbitmq_url = rabbitmq_url
         self._queue_name = queue_name
         self._api = api
         self._provider = provider
-        self._max_concurrency = max_concurrency
+        self._max_inflight = max_inflight
+        self._result_slots = asyncio.Semaphore(result_concurrency)
         self._connection: AbstractRobustConnection | None = None
 
     async def run(self) -> None:
         self._connection = await aio_pika.connect_robust(self._rabbitmq_url)
         channel = await self._connection.channel()
-        await channel.set_qos(prefetch_count=self._max_concurrency)
+        await channel.set_qos(prefetch_count=self._max_inflight)
         queue = await channel.declare_queue(self._queue_name, durable=True)
         LOGGER.info("seedance worker is consuming queue=%s", self._queue_name)
         await queue.consume(self.handle)
@@ -53,6 +55,7 @@ class SegmentRenderConsumer:
     async def handle(self, message: AbstractIncomingMessage) -> None:
         request: QueueMessage | None = None
         context: RuntimeContext | None = None
+        provider_task_id: str | None = None
         try:
             try:
                 request = QueueMessage.model_validate(json.loads(message.body))
@@ -80,19 +83,41 @@ class SegmentRenderConsumer:
                 request_id=request.request_id,
                 attempt_token=claim.attempt_token,
             )
+            provider_task_id = claim.provider_task_id
 
-            async def progress(value: int, provider_task_id: str | None) -> None:
-                await self._api.heartbeat(context, value, provider_task_id)
+            async def progress(value: int, reported_provider_task_id: str | None) -> None:
+                nonlocal provider_task_id
+                if reported_provider_task_id is not None:
+                    provider_task_id = reported_provider_task_id
+                await self._api.heartbeat(context, value, reported_provider_task_id)
 
-            output = await self._provider.render(claim.input, progress)
-            await self._api.complete(context, output)
+            reference_images: list[str] = []
+            reference_video_url: str | None = None
+            if claim.provider_task_id is None:
+                await self._api.heartbeat(context, 2)
+                if claim.input.operation == "REPAIR":
+                    reference_video_url = await self._api.reference_video_url(context)
+                else:
+                    reference_images = await self._api.reference_images(
+                        context, claim.input.input_images
+                    )
+                await self._api.heartbeat(context, 5)
+            output = await self._provider.render(
+                claim.input,
+                reference_images,
+                reference_video_url,
+                progress,
+                claim.provider_task_id,
+            )
+            provider_task_id = output.provider_task_id
+            await self._complete_limited(context, output)
         except Exception as exc:
             LOGGER.exception(
                 "segment render failed task_id=%s error=%s",
                 request.task_id if request else "unknown",
                 type(exc).__name__,
             )
-            retryable, code, message_text = _safe_failure(exc)
+            retryable, code, message_text, reset_provider_task = _safe_failure(exc)
             persisted = False
             if context is not None:
                 try:
@@ -101,6 +126,8 @@ class SegmentRenderConsumer:
                         error_code=code,
                         error_message=message_text,
                         retryable=retryable,
+                        provider_task_id=provider_task_id,
+                        reset_provider_task=reset_provider_task,
                     )
                     persisted = True
                 except Exception:
@@ -115,12 +142,26 @@ class SegmentRenderConsumer:
         await message.ack()
         LOGGER.info("segment render completed task_id=%s", request.task_id)
 
+    async def _complete_limited(
+        self, context: RuntimeContext, output: RenderOutput
+    ) -> None:
+        while True:
+            try:
+                await asyncio.wait_for(self._result_slots.acquire(), timeout=30)
+                break
+            except TimeoutError:
+                await self._api.heartbeat(context, 94, output.provider_task_id)
+        try:
+            await self._api.complete(context, output)
+        finally:
+            self._result_slots.release()
 
-def _safe_failure(exc: Exception) -> tuple[bool, str, str]:
+
+def _safe_failure(exc: Exception) -> tuple[bool, str, str, bool]:
     if isinstance(exc, ProviderError):
-        return exc.retryable, exc.code, str(exc)
+        return exc.retryable, exc.code, str(exc), exc.reset_provider_task
     if isinstance(exc, InternalApiError):
-        return exc.retryable, "INTERNAL_API_ERROR", "视频渲染内部回写失败"
+        return exc.retryable, "INTERNAL_API_ERROR", "视频渲染内部回写失败", False
     if isinstance(exc, ValidationError):
-        return False, "VALIDATION_ERROR", "视频渲染数据结构校验失败"
-    return False, "WORKER_ERROR", "视频渲染 Worker 执行失败"
+        return False, "VALIDATION_ERROR", "视频渲染数据结构校验失败", False
+    return False, "WORKER_ERROR", "视频渲染 Worker 执行失败", False

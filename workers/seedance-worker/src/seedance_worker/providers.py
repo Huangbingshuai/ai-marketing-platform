@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import zlib
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 
@@ -12,16 +13,46 @@ from .models import RenderOutput, RenderSnapshot
 ProgressCallback = Callable[[int, str | None], Awaitable[None]]
 
 
+class _EvenRateLimiter:
+    def __init__(self, rate_per_second: float) -> None:
+        self._interval_seconds = 1 / rate_per_second
+        self._next_at = 0.0
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        loop = asyncio.get_running_loop()
+        async with self._lock:
+            now = loop.time()
+            scheduled_at = max(now, self._next_at)
+            self._next_at = scheduled_at + self._interval_seconds
+        delay = scheduled_at - now
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+
 class ProviderError(RuntimeError):
-    def __init__(self, code: str, message: str, *, retryable: bool) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retryable: bool,
+        reset_provider_task: bool = False,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.retryable = retryable
+        self.reset_provider_task = reset_provider_task
 
 
 class VideoProvider(Protocol):
     async def render(
-        self, snapshot: RenderSnapshot, progress: ProgressCallback
+        self,
+        snapshot: RenderSnapshot,
+        reference_images: list[str],
+        reference_video_url: str | None,
+        progress: ProgressCallback,
+        provider_task_id: str | None = None,
     ) -> RenderOutput: ...
 
     async def aclose(self) -> None: ...
@@ -43,15 +74,24 @@ class ArkSeedanceProvider:
         api_key: str,
         timeout_seconds: float,
         poll_interval_seconds: float,
+        create_qps: float,
+        download_concurrency: int,
         max_download_bytes: int,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._timeout_seconds = timeout_seconds
         self._poll_interval_seconds = poll_interval_seconds
+        self._create_limiter = _EvenRateLimiter(create_qps)
+        self._download_slots = asyncio.Semaphore(download_concurrency)
         self._max_download_bytes = max_download_bytes
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/") + "/",
-            timeout=httpx.Timeout(60.0, read=min(60.0, timeout_seconds)),
+            timeout=httpx.Timeout(
+                connect=30.0,
+                read=min(60.0, timeout_seconds),
+                write=min(300.0, timeout_seconds),
+                pool=60.0,
+            ),
             transport=transport,
             headers={
                 "authorization": "Bearer " + api_key,
@@ -67,20 +107,73 @@ class ArkSeedanceProvider:
         )
 
     async def render(
-        self, snapshot: RenderSnapshot, progress: ProgressCallback
+        self,
+        snapshot: RenderSnapshot,
+        reference_images: list[str],
+        reference_video_url: str | None,
+        progress: ProgressCallback,
+        provider_task_id: str | None = None,
     ) -> RenderOutput:
-        created = await self._request(
-            "POST",
-            "contents/generations/tasks",
-            json=snapshot.request.model_dump(mode="json"),
-        )
-        provider_task_id = _text(created.get("id"))
-        if not provider_task_id:
-            raise ProviderError(
-                "SEEDANCE_INVALID_RESPONSE",
-                "Seedance 创建任务响应缺少任务 ID",
-                retryable=False,
-            )
+        if provider_task_id is None:
+            if snapshot.operation == "REPAIR" and reference_video_url is None:
+                raise ProviderError(
+                    "REFERENCE_VIDEO_REQUIRED",
+                    "视频返修任务缺少参考视频",
+                    retryable=False,
+                )
+            payload = snapshot.request.model_dump(mode="json")
+            payload["content"] = [
+                *payload["content"],
+                *[
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image},
+                        "role": "reference_image",
+                    }
+                    for image in reference_images
+                ],
+                *(
+                    [
+                        {
+                            "type": "video_url",
+                            "video_url": {"url": reference_video_url},
+                            "role": "reference_video",
+                        }
+                    ]
+                    if reference_video_url is not None
+                    else []
+                ),
+            ]
+            try:
+                await self._create_limiter.acquire()
+                created = await self._request(
+                    "POST",
+                    "contents/generations/tasks",
+                    json=payload,
+                )
+            except ProviderError as exc:
+                if exc.retryable and exc.code != "SEEDANCE_HTTP_429":
+                    raise ProviderError(
+                        "SEEDANCE_CREATE_RESULT_UNKNOWN",
+                        "Seedance 创建任务结果未知，为避免重复计费已停止自动重试",
+                        retryable=False,
+                    ) from exc
+                raise
+            provider_task_id = _text(created.get("id"))
+            if not provider_task_id:
+                raise ProviderError(
+                    "SEEDANCE_INVALID_RESPONSE",
+                    "Seedance 创建任务响应缺少任务 ID",
+                    retryable=False,
+                )
+        else:
+            provider_task_id = provider_task_id.strip()
+            if not provider_task_id:
+                raise ProviderError(
+                    "SEEDANCE_INVALID_TASK_ID",
+                    "Seedance 任务 ID 无效",
+                    retryable=False,
+                )
         await progress(10, provider_task_id)
         deadline = asyncio.get_running_loop().time() + self._timeout_seconds
         current_progress = 15
@@ -102,7 +195,7 @@ class ArkSeedanceProvider:
                         retryable=False,
                     )
                 await progress(92, provider_task_id)
-                content, mime_type = await self._download(
+                content, mime_type = await self._download_limited(
                     output_url, progress, provider_task_id
                 )
                 content_data = _mapping(result.get("content"))
@@ -127,10 +220,33 @@ class ArkSeedanceProvider:
                     "Seedance 视频生成失败",
                     retryable=code.casefold()
                     in {"rate_limit", "timeout", "service_unavailable"},
+                    reset_provider_task=True,
                 )
             current_progress = min(88, current_progress + 3)
             await progress(current_progress, provider_task_id)
-            await asyncio.sleep(self._poll_interval_seconds)
+            await asyncio.sleep(self._poll_delay(provider_task_id))
+
+    def _poll_delay(self, provider_task_id: str) -> float:
+        bucket = zlib.crc32(provider_task_id.encode("utf-8")) % 401
+        jitter_factor = 0.8 + bucket / 1000
+        return self._poll_interval_seconds * jitter_factor
+
+    async def _download_limited(
+        self,
+        url: str,
+        progress: ProgressCallback,
+        provider_task_id: str,
+    ) -> tuple[bytes, str]:
+        while True:
+            try:
+                await asyncio.wait_for(self._download_slots.acquire(), timeout=30)
+                break
+            except TimeoutError:
+                await progress(92, provider_task_id)
+        try:
+            return await self._download(url, progress, provider_task_id)
+        finally:
+            self._download_slots.release()
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Mapping[str, Any]:
         try:
@@ -241,9 +357,15 @@ class ArkSeedanceProvider:
 
 class MockVideoProvider:
     async def render(
-        self, snapshot: RenderSnapshot, progress: ProgressCallback
+        self,
+        snapshot: RenderSnapshot,
+        reference_images: list[str],
+        reference_video_url: str | None,
+        progress: ProgressCallback,
+        provider_task_id: str | None = None,
     ) -> RenderOutput:
-        provider_task_id = "mock-" + snapshot.prompt_id
+        del reference_images, reference_video_url
+        provider_task_id = provider_task_id or "mock-" + snapshot.prompt_id
         await progress(50, provider_task_id)
         return RenderOutput(
             provider_task_id=provider_task_id,

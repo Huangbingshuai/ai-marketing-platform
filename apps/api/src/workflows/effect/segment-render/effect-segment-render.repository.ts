@@ -5,8 +5,14 @@ import {
   EFFECT_SEGMENT_RENDER_LIMITS,
   EFFECT_SEGMENT_RENDER_QUEUE,
 } from '@ai-marketing/contracts';
+import type {
+  EffectSegmentRenderInputImage,
+  EffectSegmentRenderRepairDecision,
+  EffectSegmentRenderRepairInput,
+  EffectSegmentRenderRequestSnapshot,
+} from '@ai-marketing/contracts';
 import { Inject, Injectable, Optional } from '@nestjs/common';
-import type { Prisma } from '../../../generated/prisma/client';
+import { Prisma } from '../../../generated/prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import {
   type WorkingArtifactUpsertInput,
@@ -35,6 +41,8 @@ export type EffectSegmentRenderBatchRecord = Prisma.EffectSegmentRenderBatchGetP
 export type CreateEffectSegmentRenderBatchInput = {
   batchId: string;
   promptArtifact: { id: string; revision: number; contentHash: string };
+  sourcePackage: { id: string; revision: number; contentHash: string };
+  inputImages: EffectSegmentRenderInputImage[];
   sourceFingerprint: string;
   idempotencyKey: string;
   requestHash: string;
@@ -73,6 +81,23 @@ export class EffectSegmentRenderRepository {
     });
   }
 
+  sourcePackageArtifact(projectId: string, workflowRunId: string, productId: string) {
+    return this.prisma.workingArtifact.findFirst({
+      where: {
+        projectId,
+        workflowRunId,
+        nodeId: 'SOURCE_IMPORT',
+        artifactKey: 'source-package:' + productId,
+      },
+      include: {
+        files: {
+          orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
+          include: { fileObject: true },
+        },
+      },
+    });
+  }
+
   renderArtifact(projectId: string, workflowRunId: string, productId: string) {
     return this.prisma.workingArtifact.findFirst({
       where: {
@@ -101,6 +126,16 @@ export class EffectSegmentRenderRepository {
 
   task(projectId: string, taskId: string) {
     return this.prisma.effectSegmentRenderTask.findFirst({ where: { projectId, id: taskId } });
+  }
+
+  taskById(taskId: string) {
+    return this.prisma.effectSegmentRenderTask.findUnique({ where: { id: taskId } });
+  }
+
+  fileObject(projectId: string, workflowRunId: string, fileObjectId: string) {
+    return this.prisma.fileObject.findFirst({
+      where: { projectId, workflowRunId, id: fileObjectId, status: 'AVAILABLE' },
+    });
   }
 
   async createBatch(
@@ -155,6 +190,42 @@ export class EffectSegmentRenderRepository {
           },
         });
         if (!promptArtifact) return { kind: 'PROMPT_CONFLICT' as const };
+        const sourcePackage = await transaction.workingArtifact.findFirst({
+          where: {
+            projectId,
+            workflowRunId,
+            id: input.sourcePackage.id,
+            nodeId: 'SOURCE_IMPORT',
+            artifactKey: 'source-package:' + productId,
+            revision: input.sourcePackage.revision,
+            contentHash: input.sourcePackage.contentHash,
+            freshness: 'CURRENT',
+            availability: 'AVAILABLE',
+          },
+          include: {
+            files: {
+              where: { role: 'PRODUCT_IMAGE', fileObject: { status: 'AVAILABLE' } },
+              orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
+              include: { fileObject: true },
+            },
+          },
+        });
+        if (!sourcePackage) return { kind: 'SOURCE_CONFLICT' as const };
+        const currentImages = sourcePackage.files.map(({ fileObject, sortOrder }) => ({
+          fileObjectId: fileObject.id,
+          originalFileName: fileObject.originalFileName,
+          mimeType: fileObject.mimeType.toLocaleLowerCase('en-US'),
+          sizeBytes: fileObject.sizeBytes,
+          contentHash: fileObject.sha256,
+          sortOrder,
+        }));
+        if (
+          currentImages.length !== input.inputImages.length ||
+          currentImages.some(
+            (image, index) => JSON.stringify(image) !== JSON.stringify(input.inputImages[index]),
+          )
+        )
+          return { kind: 'SOURCE_CONFLICT' as const };
         const active = await transaction.effectSegmentRenderBatch.findFirst({
           where: { projectId, workflowRunId, productId, activeKey: 'ACTIVE' },
         });
@@ -185,6 +256,7 @@ export class EffectSegmentRenderRepository {
             renderCode: task.renderCode,
             sourceFingerprint: task.sourceFingerprint,
             requestSnapshot: json(task.requestSnapshot),
+            generationRequestSnapshot: json(task.requestSnapshot),
             maxAutoRetries: EFFECT_SEGMENT_RENDER_LIMITS.maxAutoRetries,
           })),
         });
@@ -267,8 +339,33 @@ export class EffectSegmentRenderRepository {
           where: { projectId, batchId, id: { in: uniqueIds } },
         });
         if (tasks.length !== uniqueIds.length) return { kind: 'TASK_NOT_FOUND' as const };
+        const sourceSnapshot = tasks[0]?.requestSnapshot as
+          | { sourcePackage?: { artifactId?: string; revision?: number; contentHash?: string } }
+          | undefined;
+        const sourcePackage = sourceSnapshot?.sourcePackage;
+        if (
+          !sourcePackage?.artifactId ||
+          !sourcePackage.revision ||
+          !sourcePackage.contentHash ||
+          !(await transaction.workingArtifact.findFirst({
+            where: {
+              projectId,
+              workflowRunId: batch.workflowRunId,
+              id: sourcePackage.artifactId,
+              nodeId: 'SOURCE_IMPORT',
+              artifactKey: 'source-package:' + batch.productId,
+              revision: sourcePackage.revision,
+              contentHash: sourcePackage.contentHash,
+              freshness: 'CURRENT',
+              availability: 'AVAILABLE',
+            },
+          }))
+        )
+          return { kind: 'SOURCE_CONFLICT' as const };
         if (tasks.some(({ status }) => status === 'QUEUED' || status === 'RUNNING'))
           return { kind: 'TASK_ACTIVE' as const };
+        if (tasks.some(({ repairStatus }) => repairStatus !== null))
+          return { kind: 'TASK_REPAIR_PENDING' as const };
         const otherActive = await transaction.effectSegmentRenderBatch.findFirst({
           where: {
             projectId,
@@ -287,6 +384,9 @@ export class EffectSegmentRenderRepository {
             where: { projectId_id: { projectId, id: task.id } },
             data: {
               status: 'QUEUED',
+              operationKind: 'GENERATE',
+              requestSnapshot: json(task.generationRequestSnapshot),
+              sourceFingerprint: workflowStateHash(task.generationRequestSnapshot),
               progress: 0,
               renderVersion: { increment: 1 },
               retryCount: 0,
@@ -349,6 +449,315 @@ export class EffectSegmentRenderRepository {
     }
   }
 
+  async startRepair(
+    projectId: string,
+    batchId: string,
+    taskId: string,
+    expectedBatchRevision: number,
+    expectedSourceVersion: number,
+    idempotencyKey: string,
+    requestHash: string,
+    sourceFingerprint: string,
+    requestSnapshot: EffectSegmentRenderRequestSnapshot,
+    repair: EffectSegmentRenderRepairInput,
+  ) {
+    try {
+      return await this.prisma.$transaction(async (transaction) => {
+        await transaction.$queryRaw<Array<{ id: string }>>`
+          SELECT "id" FROM "effect_segment_render_batches"
+          WHERE "projectId" = ${projectId}::uuid
+            AND "id" = ${batchId}::uuid
+          FOR UPDATE
+        `;
+        const receipt = await transaction.effectSegmentRenderOperationReceipt.findUnique({
+          where: { projectId_idempotencyKey: { projectId, idempotencyKey } },
+        });
+        if (receipt)
+          return receipt.requestHash === requestHash && receipt.batchId === batchId
+            ? { kind: 'REPLAYED' as const }
+            : { kind: 'KEY_CONFLICT' as const };
+        const batch = await transaction.effectSegmentRenderBatch.findFirst({
+          where: { projectId, id: batchId },
+        });
+        if (!batch) return { kind: 'NOT_FOUND' as const };
+        if (batch.revision !== expectedBatchRevision) return { kind: 'REVISION_CONFLICT' as const };
+        const latest = await transaction.effectSegmentRenderBatch.findFirst({
+          where: { projectId, workflowRunId: batch.workflowRunId, productId: batch.productId },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        });
+        if (latest?.id !== batch.id) return { kind: 'NOT_LATEST' as const };
+        const task = await transaction.effectSegmentRenderTask.findFirst({
+          where: { projectId, batchId, id: taskId },
+        });
+        if (!task) return { kind: 'TASK_NOT_FOUND' as const };
+        if (task.status !== 'COMPLETED') return { kind: 'TASK_NOT_READY' as const };
+        if (task.repairStatus !== null || task.operationKind === 'REPAIR')
+          return { kind: 'TASK_REPAIR_PENDING' as const };
+        if (
+          task.activeOutputVersion !== expectedSourceVersion ||
+          !task.outputFileObjectId ||
+          !task.outputStorageKey ||
+          !task.outputFileName ||
+          !task.outputMimeType ||
+          task.outputSizeBytes === null ||
+          !task.outputContentHash
+        )
+          return { kind: 'SOURCE_VERSION_CONFLICT' as const };
+        const prompt = await transaction.workingArtifact.findFirst({
+          where: {
+            projectId,
+            workflowRunId: batch.workflowRunId,
+            id: batch.sourcePromptArtifactId,
+            nodeId: 'PROMPT_GENERATION',
+            artifactKey: 'prompt-batch:' + batch.productId,
+            revision: batch.sourcePromptRevision,
+            contentHash: batch.sourcePromptHash,
+            freshness: 'CURRENT',
+            availability: 'AVAILABLE',
+          },
+        });
+        if (!prompt) return { kind: 'PROMPT_CONFLICT' as const };
+        const generationSnapshot = task.generationRequestSnapshot as unknown as {
+          sourcePackage?: { artifactId?: string; revision?: number; contentHash?: string };
+        };
+        const sourcePackage = generationSnapshot.sourcePackage;
+        if (
+          !sourcePackage?.artifactId ||
+          !sourcePackage.revision ||
+          !sourcePackage.contentHash ||
+          !(await transaction.workingArtifact.findFirst({
+            where: {
+              projectId,
+              workflowRunId: batch.workflowRunId,
+              id: sourcePackage.artifactId,
+              nodeId: 'SOURCE_IMPORT',
+              artifactKey: 'source-package:' + batch.productId,
+              revision: sourcePackage.revision,
+              contentHash: sourcePackage.contentHash,
+              freshness: 'CURRENT',
+              availability: 'AVAILABLE',
+            },
+          }))
+        )
+          return { kind: 'SOURCE_CONFLICT' as const };
+        const otherActive = await transaction.effectSegmentRenderBatch.findFirst({
+          where: {
+            projectId,
+            workflowRunId: batch.workflowRunId,
+            productId: batch.productId,
+            activeKey: 'ACTIVE',
+            id: { not: batch.id },
+          },
+        });
+        if (otherActive) return { kind: 'ACTIVE_CONFLICT' as const };
+        await transaction.effectSegmentRenderOperationReceipt.create({
+          data: { projectId, batchId, idempotencyKey, requestHash },
+        });
+        await transaction.effectSegmentRenderTask.update({
+          where: { projectId_id: { projectId, id: taskId } },
+          data: {
+            operationKind: 'REPAIR',
+            status: 'QUEUED',
+            progress: 0,
+            renderVersion: { increment: 1 },
+            requestSnapshot: json(requestSnapshot),
+            sourceFingerprint,
+            retryCount: 0,
+            attemptCount: 0,
+            attemptToken: null,
+            leaseExpiresAt: null,
+            heartbeatAt: null,
+            providerTaskId: null,
+            errorCode: null,
+            errorMessage: null,
+            repairStatus: 'QUEUED',
+            repairSourceVersion: repair.sourceVersion,
+            repairStartMs: repair.startMs,
+            repairEndMs: repair.endMs,
+            repairRegion: repair.region ? json(repair.region) : Prisma.DbNull,
+            repairInstruction: repair.instruction,
+            repairRequestHash: requestHash,
+            repairCandidateFileObjectId: null,
+            repairCandidateStorageKey: null,
+            repairCandidateFileName: null,
+            repairCandidateMimeType: null,
+            repairCandidateSizeBytes: null,
+            repairCandidateContentHash: null,
+            repairCandidateVersion: null,
+            repairCandidateCreatedAt: null,
+            queuedAt: new Date(),
+            startedAt: null,
+            completedAt: null,
+          },
+        });
+        await transaction.jobOutbox.upsert({
+          where: {
+            projectId_jobType_aggregateId: {
+              projectId,
+              jobType: EFFECT_SEGMENT_RENDER_JOB_TYPE,
+              aggregateId: taskId,
+            },
+          },
+          create: {
+            projectId,
+            jobType: EFFECT_SEGMENT_RENDER_JOB_TYPE,
+            aggregateId: taskId,
+            routingKey: EFFECT_SEGMENT_RENDER_QUEUE,
+            payload: json({
+              schemaVersion: 1,
+              projectId,
+              runId: taskId,
+              requestId: randomUUID(),
+            }),
+          },
+          update: {
+            status: 'PENDING',
+            dispatchToken: null,
+            nextAttemptAt: new Date(),
+            publishedAt: null,
+            lastError: null,
+            payload: json({
+              schemaVersion: 1,
+              projectId,
+              runId: taskId,
+              requestId: randomUUID(),
+            }),
+          },
+        });
+        await transaction.effectSegmentRenderBatch.update({
+          where: { projectId_id: { projectId, id: batchId } },
+          data: { status: 'RUNNING', activeKey: 'ACTIVE', revision: { increment: 1 } },
+        });
+        return { kind: 'UPDATED' as const };
+      });
+    } catch (error) {
+      if (isUniqueConflict(error)) return { kind: 'ACTIVE_CONFLICT' as const };
+      throw error;
+    }
+  }
+
+  async decideRepair(
+    projectId: string,
+    batchId: string,
+    taskId: string,
+    expectedBatchRevision: number,
+    repairVersion: number,
+    decision: EffectSegmentRenderRepairDecision,
+    idempotencyKey: string,
+  ) {
+    const requestHash = workflowStateHash({ batchId, taskId, repairVersion, decision });
+    return this.prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "effect_segment_render_batches"
+        WHERE "projectId" = ${projectId}::uuid
+          AND "id" = ${batchId}::uuid
+        FOR UPDATE
+      `;
+      const receipt = await transaction.effectSegmentRenderOperationReceipt.findUnique({
+        where: { projectId_idempotencyKey: { projectId, idempotencyKey } },
+      });
+      if (receipt)
+        return receipt.requestHash === requestHash && receipt.batchId === batchId
+          ? { kind: 'REPLAYED' as const }
+          : { kind: 'KEY_CONFLICT' as const };
+      const batch = await transaction.effectSegmentRenderBatch.findFirst({
+        where: { projectId, id: batchId },
+      });
+      if (!batch) return { kind: 'NOT_FOUND' as const };
+      if (batch.revision !== expectedBatchRevision) return { kind: 'REVISION_CONFLICT' as const };
+      const latest = await transaction.effectSegmentRenderBatch.findFirst({
+        where: { projectId, workflowRunId: batch.workflowRunId, productId: batch.productId },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      });
+      if (latest?.id !== batch.id) return { kind: 'NOT_LATEST' as const };
+      const task = await transaction.effectSegmentRenderTask.findFirst({
+        where: { projectId, batchId, id: taskId },
+      });
+      if (!task) return { kind: 'TASK_NOT_FOUND' as const };
+      if (
+        task.operationKind !== 'REPAIR' ||
+        task.status !== 'COMPLETED' ||
+        task.renderVersion !== repairVersion ||
+        task.repairSourceVersion !== task.activeOutputVersion ||
+        (task.repairStatus !== 'READY' && task.repairStatus !== 'FAILED')
+      )
+        return { kind: 'REPAIR_CONFLICT' as const };
+      if (
+        decision === 'ACCEPT' &&
+        (task.repairStatus !== 'READY' ||
+          !task.repairCandidateFileObjectId ||
+          !task.repairCandidateStorageKey ||
+          !task.repairCandidateFileName ||
+          !task.repairCandidateMimeType ||
+          task.repairCandidateSizeBytes === null ||
+          !task.repairCandidateContentHash ||
+          task.repairCandidateVersion !== repairVersion)
+      )
+        return { kind: 'REPAIR_NOT_READY' as const };
+      await transaction.effectSegmentRenderOperationReceipt.create({
+        data: { projectId, batchId, idempotencyKey, requestHash },
+      });
+      const fileToOrphan =
+        decision === 'ACCEPT' ? task.outputFileObjectId : task.repairCandidateFileObjectId;
+      if (fileToOrphan)
+        await transaction.fileObject.updateMany({
+          where: { projectId, id: fileToOrphan },
+          data: { status: 'ORPHANED', orphanedAt: new Date() },
+        });
+      await transaction.effectSegmentRenderTask.update({
+        where: { projectId_id: { projectId, id: taskId } },
+        data: {
+          operationKind: 'GENERATE',
+          status: 'COMPLETED',
+          progress: 100,
+          requestSnapshot: json(task.generationRequestSnapshot),
+          sourceFingerprint: workflowStateHash(task.generationRequestSnapshot),
+          ...(decision === 'ACCEPT'
+            ? {
+                outputFileObjectId: task.repairCandidateFileObjectId!,
+                outputStorageKey: task.repairCandidateStorageKey!,
+                outputFileName: task.repairCandidateFileName!,
+                outputMimeType: task.repairCandidateMimeType!,
+                outputSizeBytes: task.repairCandidateSizeBytes!,
+                outputContentHash: task.repairCandidateContentHash!,
+                activeOutputVersion: repairVersion,
+              }
+            : {}),
+          retryCount: 0,
+          attemptCount: 0,
+          attemptToken: null,
+          leaseExpiresAt: null,
+          heartbeatAt: null,
+          providerTaskId: null,
+          errorCode: null,
+          errorMessage: null,
+          repairStatus: null,
+          repairSourceVersion: null,
+          repairStartMs: null,
+          repairEndMs: null,
+          repairRegion: Prisma.DbNull,
+          repairInstruction: null,
+          repairRequestHash: null,
+          repairCandidateFileObjectId: null,
+          repairCandidateStorageKey: null,
+          repairCandidateFileName: null,
+          repairCandidateMimeType: null,
+          repairCandidateSizeBytes: null,
+          repairCandidateContentHash: null,
+          repairCandidateVersion: null,
+          repairCandidateCreatedAt: null,
+          completedAt: new Date(),
+        },
+      });
+      await transaction.effectSegmentRenderBatch.update({
+        where: { projectId_id: { projectId, id: batchId } },
+        data: { revision: { increment: 1 } },
+      });
+      await this.settleBatchInTransaction(transaction, projectId, batchId, new Date());
+      return { kind: 'UPDATED' as const };
+    });
+  }
+
   async claim(projectId: string, taskId: string, now = new Date()) {
     const task = await this.prisma.effectSegmentRenderTask.findFirst({
       where: { projectId, id: taskId },
@@ -368,7 +777,8 @@ export class EffectSegmentRenderRepository {
           status: { in: ['QUEUED', 'RUNNING'] },
         },
         data: {
-          status: 'FAILED',
+          status: task.operationKind === 'REPAIR' ? 'COMPLETED' : 'FAILED',
+          ...(task.operationKind === 'REPAIR' ? { repairStatus: 'FAILED' as const } : {}),
           errorCode: 'ATTEMPTS_EXHAUSTED',
           errorMessage: '视频渲染重试次数已达上限',
           attemptToken: null,
@@ -382,7 +792,13 @@ export class EffectSegmentRenderRepository {
         data: { revision: { increment: 1 } },
       });
       await this.settleBatch(projectId, task.batchId, now);
-      return { kind: 'TERMINAL' as const, task: { ...task, status: 'FAILED' as const } };
+      return {
+        kind: 'TERMINAL' as const,
+        task: {
+          ...task,
+          status: task.operationKind === 'REPAIR' ? ('COMPLETED' as const) : ('FAILED' as const),
+        },
+      };
     }
     const attemptToken = randomUUID();
     const updated = await this.prisma.effectSegmentRenderTask.updateMany({
@@ -394,6 +810,7 @@ export class EffectSegmentRenderRepository {
       },
       data: {
         status: 'RUNNING',
+        ...(task.operationKind === 'REPAIR' ? { repairStatus: 'RUNNING' as const } : {}),
         progress: Math.max(task.progress, 1),
         attemptCount: { increment: 1 },
         attemptToken,
@@ -478,6 +895,37 @@ export class EffectSegmentRenderRepository {
         task.workflowRunId,
         { ...file, nodeId: 'SEGMENT_RENDER' },
       );
+      if (task.operationKind === 'REPAIR') {
+        const completed = await transaction.effectSegmentRenderTask.update({
+          where: { projectId_id: { projectId, id: taskId } },
+          data: {
+            status: 'COMPLETED',
+            progress: 100,
+            providerTaskId,
+            repairStatus: 'READY',
+            repairCandidateFileObjectId: fileObject.id,
+            repairCandidateStorageKey: file.storageKey,
+            repairCandidateFileName: file.originalFileName,
+            repairCandidateMimeType: file.mimeType,
+            repairCandidateSizeBytes: file.sizeBytes,
+            repairCandidateContentHash: file.sha256,
+            repairCandidateVersion: taskVersion,
+            repairCandidateCreatedAt: now,
+            attemptToken: null,
+            leaseExpiresAt: null,
+            heartbeatAt: now,
+            errorCode: null,
+            errorMessage: null,
+            completedAt: now,
+          },
+        });
+        await transaction.effectSegmentRenderBatch.update({
+          where: { projectId_id: { projectId, id: task.batchId } },
+          data: { revision: { increment: 1 } },
+        });
+        await this.settleBatchInTransaction(transaction, projectId, task.batchId, now);
+        return { kind: 'REPAIR_COMPLETED' as const, task: completed };
+      }
       if (task.outputFileObjectId && task.outputFileObjectId !== fileObject.id)
         await transaction.fileObject.updateMany({
           where: { projectId, id: task.outputFileObjectId },
@@ -495,6 +943,8 @@ export class EffectSegmentRenderRepository {
           outputMimeType: file.mimeType,
           outputSizeBytes: file.sizeBytes,
           outputContentHash: file.sha256,
+          activeOutputVersion: taskVersion,
+          operationKind: 'GENERATE',
           attemptToken: null,
           leaseExpiresAt: null,
           heartbeatAt: now,
@@ -517,7 +967,13 @@ export class EffectSegmentRenderRepository {
     taskId: string,
     attemptToken: string,
     taskVersion: number,
-    input: { errorCode: string; errorMessage: string; retryable: boolean },
+    input: {
+      errorCode: string;
+      errorMessage: string;
+      retryable: boolean;
+      providerTaskId?: string;
+      resetProviderTask?: boolean;
+    },
     now = new Date(),
   ) {
     return this.prisma.$transaction(async (transaction) => {
@@ -543,12 +999,22 @@ export class EffectSegmentRenderRepository {
         input.retryable &&
         task.retryCount < task.maxAutoRetries &&
         task.attemptCount < EFFECT_SEGMENT_RENDER_LIMITS.maxAttempts;
+      const terminalStatus =
+        !retry && task.operationKind === 'REPAIR' ? ('COMPLETED' as const) : ('FAILED' as const);
       await transaction.effectSegmentRenderTask.update({
         where: { projectId_id: { projectId, id: taskId } },
         data: {
-          status: retry ? 'QUEUED' : 'FAILED',
+          status: retry ? 'QUEUED' : terminalStatus,
+          ...(task.operationKind === 'REPAIR'
+            ? { repairStatus: retry ? ('QUEUED' as const) : ('FAILED' as const) }
+            : {}),
           progress: retry ? Math.max(1, Math.min(task.progress, 90)) : task.progress,
           ...(retry ? { retryCount: { increment: 1 } } : {}),
+          ...(retry && input.resetProviderTask
+            ? { providerTaskId: null }
+            : input.providerTaskId
+              ? { providerTaskId: input.providerTaskId }
+              : {}),
           attemptToken: null,
           leaseExpiresAt: null,
           heartbeatAt: now,
@@ -587,6 +1053,7 @@ export class EffectSegmentRenderRepository {
         retryCount: true,
         maxAutoRetries: true,
         attemptCount: true,
+        operationKind: true,
       },
       orderBy: { leaseExpiresAt: 'asc' },
       take: 50,
@@ -605,7 +1072,11 @@ export class EffectSegmentRenderRepository {
           leaseExpiresAt: { lte: now },
         },
         data: {
-          status: retry ? 'QUEUED' : 'FAILED',
+          status:
+            retry || task.operationKind !== 'REPAIR' ? (retry ? 'QUEUED' : 'FAILED') : 'COMPLETED',
+          ...(task.operationKind === 'REPAIR'
+            ? { repairStatus: retry ? ('QUEUED' as const) : ('FAILED' as const) }
+            : {}),
           ...(retry ? { retryCount: { increment: 1 } } : {}),
           attemptToken: null,
           leaseExpiresAt: null,
@@ -711,6 +1182,7 @@ export class EffectSegmentRenderRepository {
     projectId: string,
     batchId: string,
     expectedRevision: number,
+    sourcePackage: { artifactId: string; revision: number; contentHash: string },
     artifacts: Array<{ artifactKey: string; input: WorkingArtifactUpsertInput }>,
   ) {
     return this.prisma.$transaction(async (transaction) => {
@@ -742,6 +1214,20 @@ export class EffectSegmentRenderRepository {
         },
       });
       if (!prompt) return { kind: 'PROMPT_CONFLICT' as const };
+      const source = await transaction.workingArtifact.findFirst({
+        where: {
+          projectId,
+          workflowRunId: batch.workflowRunId,
+          id: sourcePackage.artifactId,
+          nodeId: 'SOURCE_IMPORT',
+          artifactKey: 'source-package:' + batch.productId,
+          revision: sourcePackage.revision,
+          contentHash: sourcePackage.contentHash,
+          freshness: 'CURRENT',
+          availability: 'AVAILABLE',
+        },
+      });
+      if (!source) return { kind: 'SOURCE_CONFLICT' as const };
       if (!this.workingRepository) throw new Error('WORKFLOW_WORKING_REPOSITORY_NOT_AVAILABLE');
       const committed = await this.workingRepository.commitValidatedArtifactsInTransaction(
         transaction,

@@ -778,7 +778,7 @@ onBeforeUnmount(() => {
               :can-resume="activeProject.id === currentProject?.id"
               @resume-node="emit('resumeNode', $event)"
             />
-            <section v-else class="asset-space">
+            <section v-else-if="view === 'current'" class="asset-space">
               <div v-if="!activeProject" class="large-state">
                 <FolderKanban :size="35" /><strong>{{ currentProjectEmptyCopy.title }}</strong>
                 <p>{{ currentProjectEmptyCopy.copy }}</p>

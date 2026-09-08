@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   compileEffectSeedanceRequest,
+  compileEffectSeedanceRepairRequest,
   type EffectSeedanceCompileError,
   validateEffectSeedanceTaskResult,
 } from './effect-seedance-request.compiler';
@@ -84,15 +85,15 @@ describe('effect Seedance request compiler', () => {
       '画面中不得出现以下内容：医疗功效；未成年人。\n保持产品外观前后一致。',
     );
     expect(compiled.request.content[0].text.match(/医疗功效/gu)).toHaveLength(1);
-    expect(compiled.request.content[0].text).toContain(`创意主线：${item.creativeCore}。`);
-    expect(compiled.request.content[0].text).toContain('叙事结构：产品入画');
-    expect(compiled.request.content[0].text).toContain('产品关联点：切面油润可见');
-    expect(compiled.request.content[0].text).toContain(`片段生成 Prompt：${item.content}`);
+    expect(compiled.request.content[0].text).toContain(item.content);
+    expect(compiled.request.content[0].text).not.toContain('创意主线：');
+    expect(compiled.request.content[0].text).not.toContain('六维创意信息：');
+    expect(compiled.request.content[0].text).not.toContain('叙事结构：');
     expect(compiled.sharedPromptHash).toBe(batch('SEEDANCE_2_0').sharedPrompt?.contentHash);
     expect(item.content).not.toContain('9:16');
   });
 
-  it('changes the prompt content fingerprint when user-authored creative structure changes', () => {
+  it('keeps the provider request and prompt fingerprint stable when only creative metadata changes', () => {
     const original = batch('SEEDANCE_2_0');
     const changed = batch('SEEDANCE_2_0');
     changed.items[0] = {
@@ -117,9 +118,8 @@ describe('effect Seedance request compiler', () => {
       renderSettings(),
     );
 
-    expect(after.promptContentHash).not.toBe(before.promptContentHash);
-    expect(after.request.content[0].text).toContain('创意主线：改为突出节庆礼赠的创意方向。');
-    expect(after.request.content[0].text).toContain('情绪基调：节庆热闹氛围');
+    expect(after.promptContentHash).toBe(before.promptContentHash);
+    expect(after.request).toEqual(before.request);
   });
 
   it('rejects 1080p for Seedance 2.0 fast without silent downgrade', () => {
@@ -179,5 +179,94 @@ describe('effect Seedance request compiler', () => {
         resolution: '480P',
       }),
     ).toEqual(['DURATION_MISMATCH', 'RATIO_MISMATCH', 'RESOLUTION_MISMATCH']);
+  });
+
+  it('compiles a full-video repair request without copying the original prompt', () => {
+    const original = compileEffectSeedanceRequest(
+      batch('SEEDANCE_2_0'),
+      item.id,
+      'seedance-model',
+      renderSettings(),
+    );
+    const generationSnapshot = {
+      ...original,
+      promptCode: item.code,
+      promptText: item.content,
+      sourcePackage: {
+        artifactId: 'source-package-1',
+        revision: 1,
+        contentHash: 'd'.repeat(64),
+      },
+      inputImages: [],
+    };
+    const compiled = compileEffectSeedanceRepairRequest(
+      generationSnapshot,
+      {
+        fileObjectId: 'video-1',
+        originalFileName: 'R-001.mp4',
+        mimeType: 'video/mp4',
+        sizeBytes: 2048,
+        contentHash: 'e'.repeat(64),
+        durationSeconds: 5,
+      },
+      {
+        sourceVersion: 1,
+        startMs: 1200,
+        endMs: 2800,
+        instruction: '修复产品瓶口变形',
+        region: { x: 0.2, y: 0.3, width: 0.25, height: 0.2 },
+      },
+    );
+
+    expect(compiled.operation).toBe('REPAIR');
+    expect(compiled.inputImages).toEqual([]);
+    expect(compiled.inputVideo?.fileObjectId).toBe('video-1');
+    expect(compiled.request.content[0].text).toContain('[1.200s-2.800s]');
+    expect(compiled.request.content[0].text).toContain('修复产品瓶口变形');
+    expect(compiled.request.content[0].text).not.toContain(item.content);
+    expect(compiled.promptText).toBe(item.content);
+  });
+
+  it('rejects a repair range outside the original video', () => {
+    const original = compileEffectSeedanceRequest(
+      batch('SEEDANCE_2_0'),
+      item.id,
+      'seedance-model',
+      renderSettings(),
+    );
+    expect(() =>
+      compileEffectSeedanceRepairRequest(
+        {
+          ...original,
+          promptCode: item.code,
+          promptText: item.content,
+          sourcePackage: {
+            artifactId: 'source-package-1',
+            revision: 1,
+            contentHash: 'd'.repeat(64),
+          },
+          inputImages: [],
+        },
+        {
+          fileObjectId: 'video-1',
+          originalFileName: 'R-001.mp4',
+          mimeType: 'video/mp4',
+          sizeBytes: 2048,
+          contentHash: 'e'.repeat(64),
+          durationSeconds: 5,
+        },
+        {
+          sourceVersion: 1,
+          startMs: 4000,
+          endMs: 6000,
+          instruction: '修复产品瓶口变形',
+          region: null,
+        },
+      ),
+    ).toThrow(
+      expect.objectContaining<Partial<EffectSeedanceCompileError>>({
+        code: 'REPAIR_RANGE_INVALID',
+      }),
+    );
   });
 });

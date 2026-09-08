@@ -117,6 +117,38 @@ def test_extracts_docling_heading_and_list_information_card() -> None:
     assert result.duration_seconds is None
 
 
+def test_preserves_decimal_specifications_in_heading_values_and_lists() -> None:
+    markdown = """
+### 产品名称
+宠物循环饮水机
+
+### 产品品类
+宠物饮水用品
+
+### 核心规格
+2.5L 容量，USB 供电
+
+### 核心卖点
+- 循环水流保持持续可见的饮水动态
+- 2.5L 容量适合日常家庭使用
+
+### 核心痛点
+- 忙碌时容易忘记查看和补充水量
+
+### 核心使用场景
+- 客厅日常饮水
+"""
+
+    result = extract_structured_document_facts(markdown)
+
+    assert result is not None
+    assert result.core_specification == "2.5L 容量，USB 供电"
+    assert result.core_selling_points == [
+        "循环水流保持持续可见的饮水动态",
+        "2.5L 容量适合日常家庭使用",
+    ]
+
+
 def test_stops_a_list_field_before_plain_confirmation_footer() -> None:
     markdown = """
 ### 产品名称

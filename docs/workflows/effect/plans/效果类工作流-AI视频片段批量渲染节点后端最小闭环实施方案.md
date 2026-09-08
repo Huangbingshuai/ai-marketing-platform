@@ -1,6 +1,6 @@
 # 效果类工作流-AI 视频片段批量渲染节点后端最小闭环实施方案
 
-- 当前状态：后端最小闭环已完成，待真实 Seedance 凭据联调
+- 当前状态：第一版并发调度已完成，待真实 Seedance 凭据联调
 - 创建时间：2026-09-03
 
 ## 目标与范围
@@ -21,12 +21,13 @@
 - 不实现外部视频导入、删除、取消、批量导出、正式资产归档和模板混剪。
 - 不实现多个视频供应商的成本/质量路由；首版只保留供应商适配器边界。
 - 不把一条 Prompt 拆成多镜头，也不在本节点合成完整成片。
-- 不对 Prompt 正文追加第二份共用约束；只使用 Prompt 批次已经编译的权威共用提示词。
+- 不把创意主线或六维信息拼接进供应商提示词，也不根据六维生成图片引用计划。
+- 不为主图、细节图、场景图做人为分配；第一版把当前产品资料包内全部受支持商品图片作为等价参考图交给每一条 Prompt。
 
 ## 节点边界与工作副本
 
-1. 直接上游是 `PROMPT_GENERATION` 节点已确认且 `CURRENT + AVAILABLE` 的 `prompt-batch:{productId}` 工作副本。
-2. 创建批次时冻结上游 `artifactId + revision + contentHash`，并为每条 Prompt 冻结 `promptId + promptContentHash + render request`。
+1. 直接业务上游是 `PROMPT_GENERATION` 节点已确认且 `CURRENT + AVAILABLE` 的 `prompt-batch:{productId}` 工作副本；参考图同时读取 `SOURCE_IMPORT` 当前 `source-package:{productId}` 的全部 `PRODUCT_IMAGE` 文件。
+2. 创建批次时冻结 Prompt 上游 `artifactId + revision + contentHash`，并为每条 Prompt 冻结 `promptId + promptContentHash + render request + 全部参考图文件 ID/哈希`。参考图快照进入每条任务，但图片二进制和 Base64 不落业务表。
 3. 页面筛选、选择和弹窗不是后端工作副本内容；任务进度、重试次数、错误和输出文件是服务端权威运行状态。
 4. 一条 Prompt 固定对应一个 `EffectSegmentRenderTask` 和一个当前素材版本；人工重生成增加素材版本，不改变 Prompt 稳定 ID。
 5. 用户点击“完成校验”后提交：
@@ -41,14 +42,17 @@
 - 启动整批必须携带稳定幂等键和预期 Prompt 工作副本 revision；同键同请求重放返回原批次，同键异请求冲突。
 - 同一 `projectId + workflowRunId + productId` 同时只允许一个活动渲染批次，由数据库部分唯一索引保证。
 - RabbitMQ 消息只包含 `schemaVersion + projectId + runId(taskId) + requestId`，完整 Prompt 与请求快照由 Worker claim 后读取。
+- 一次批次可创建 1～100 个逐 Prompt 任务。单实例 Worker 以 `prefetch = SEGMENT_RENDER_MAX_INFLIGHT` 限制供应商在途任务，默认允许 20 条同时处于创建、生成或结果传输阶段；创建 Seedance 任务另以 `SEGMENT_RENDER_CREATE_QPS` 平滑限速，默认每秒 3 条；视频结果下载另以 `SEGMENT_RENDER_DOWNLOAD_CONCURRENCY` 限制，默认 3 条。不得再用一个并发 3 的槽位覆盖任务完整生命周期。
 - 任务状态覆盖 `QUEUED / RUNNING / COMPLETED / FAILED`；对外把重新排队且有重试次数的任务展示为 `AUTO_RETRY`。
 - Worker 使用 attempt token 与 90 秒租约；旧 attempt、过期租约和旧素材版本不得覆盖新结果。
+- claim 必须返回已保存的 `providerTaskId`；租约恢复或可重试故障后，有供应商任务 ID 的任务只能恢复轮询和下载，不能再次创建 Seedance 任务。创建请求结果未知时不自动重发，避免重复计费。
 - 可重试错误最多自动重试两次；达到上限后保留安全错误码与中文错误摘要，批次允许部分失败。
 - 缺失真实 Seedance 配置时默认失败；Mock 只能在隔离测试队列上显式启用。
 
 ## 文件与安全
 
 - Worker 从供应商临时地址下载视频后，通过受保护的内部 multipart 回写接口上传，不把供应商临时 URL 保存到业务表或日志。
+- Worker 只在持有有效 attempt token 时通过内部文件接口读取冻结的参考图，并按火山方舟 `image_url + reference_image` 结构转换为 Base64 data URI；参考图内容不进入 RabbitMQ、数据库 JSON 或日志。Worker 使用按内容哈希的有界缓存，避免同一批 50～100 条任务重复读取和编码相同商品图片。
 - API 计算上传文件 SHA-256，通过现有 `StoragePort` 写入项目存储并登记 `FileObject`；页面只通过现有项目级文件内容接口访问视频。
 - Worker Token、API Key、供应商响应原文、完整 Prompt 和签名 URL不得进入日志或 RabbitMQ。
 
@@ -57,6 +61,7 @@
 - 契约测试覆盖状态、任务/批次形态和 Seedance 快照字段。
 - API 测试覆盖项目隔离、上游未确认/过期、幂等重放与冲突、活动批次唯一性、一 Prompt 一任务、租约、自动重试、旧版本回写、部分失败和无变化提交。
 - Worker 测试覆盖队列消息校验、claim、供应商成功/失败/超时、进度回写、文件上传、显式 Mock 限制和安全错误摘要。
+- 新增测试必须覆盖：供应商文本只含 Prompt 正文和一份共用禁用约束；创意主线与六维不进入请求；每条任务包含同一份全部商品图快照；Worker 为每张图生成 `reference_image`；恢复已有供应商任务时不重复 POST；50 条任务仍受本地并发上限约束。
 - 运行 Prisma 校验/生成、Contracts 与 API 类型检查、定向测试、Worker `pytest`/`mypy`、相关构建和 `git diff --check`。
 
 ## 实施结果（2026-09-03）
@@ -67,3 +72,15 @@
 - 已增加 Seedance Worker 的真实 Ark 适配器、隔离测试 Mock、临时视频下载与内部 multipart 回写；供应商临时地址和完整响应不落库、不进队列。
 - 已通过 Contracts 全量测试（23 项）、API 全量测试（263 项）、渲染 Worker 测试（6 项）、Worker mypy、全工作区类型检查、API 构建、Prisma validate/generate、Compose 配置检查、Worker 镜像构建、定向 ESLint 和 `git diff --check`。
 - 未执行真实计费视频生成：当前工作区未提供可用于测试的 `SEEDANCE_API_KEY` 和 `SEEDANCE_MODEL`。部署迁移并配置真实凭据后，需要用一条已确认 Prompt 做一次端到端联调。
+
+## 第一版真实生成调整（2026-09-07）
+
+- 供应商提示词改为“Prompt 正文 + 一份批次共用禁用约束”，明确移除创意主线与六维拼接。
+- 每条 Prompt 对应一个任务和一个视频；产品资料包内全部受支持商品图片进入每个任务的冻结参考图快照，不做主图、细节图、场景图选择计划。
+- 图片按 Worker 当前有效租约从 API 读取并转换为火山方舟支持的 Base64 `image_url`，避免依赖外网可访问的对象存储 URL。
+- 批量吞吐拆分为供应商在途上限、创建 QPS 和下载并发三个独立边界；默认单实例允许 20 条在途、每秒创建 3 条、同时下载 3 条。轮询使用约 8 秒间隔和按供应商任务 ID 计算的稳定抖动，避免集中请求。
+- 自动重试优先复用已落库的 Seedance 任务 ID；创建结果未知不自动重发，优先避免重复生成与重复计费。
+- 图片数量按模型能力校验：Seedance 2.5 最多 30 张，其他当前 Seedance 2.0 配置最多 9 张；单图严格小于 30 MiB，Base64 请求体估算超过 64 MiB 时整批拒绝，不静默丢弃图片。
+- 已通过 Contracts 全量测试（24 项）、API 全量测试（272 项）、渲染 Worker 测试（13 项）、Worker mypy、全工作区类型检查、API 定向 ESLint、Compose 配置校验、Seedance Worker 镜像构建和 `git diff --check`。
+- 未执行真实计费视频生成；需要配置真实 `SEEDANCE_API_KEY` 和 `SEEDANCE_MODEL` 后，先以一条 Prompt 完成端到端联调，再逐步放大并发。
+- 第一版 Compose 只运行一个 Seedance Worker；如果未来横向扩容多个副本，上述上限会按副本叠加，届时必须增加 Redis 账号级分布式配额，不能直接复制 Worker。

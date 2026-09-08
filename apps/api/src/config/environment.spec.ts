@@ -128,4 +128,24 @@ describe('validateEnvironment', () => {
       EFFECT_SEGMENT_RENDER_WORKER_TOKEN: 'local-effect-segment-render-worker-token',
     });
   });
+
+  it('validates the optional reference-video signing secret', () => {
+    expect(() =>
+      validateEnvironment({
+        ...validEnvironment,
+        SEEDANCE_REFERENCE_SIGNING_SECRET: 'too-short',
+      }),
+    ).toThrow('SEEDANCE_REFERENCE_SIGNING_SECRET');
+
+    expect(
+      validateEnvironment({
+        ...validEnvironment,
+        SEEDANCE_REFERENCE_PUBLIC_BASE_URL: 'https://api.example.test/api',
+        SEEDANCE_REFERENCE_SIGNING_SECRET: 'a-secure-signing-secret-with-32-characters',
+      }),
+    ).toMatchObject({
+      SEEDANCE_REFERENCE_PUBLIC_BASE_URL: 'https://api.example.test/api',
+      SEEDANCE_REFERENCE_SIGNING_SECRET: 'a-secure-signing-secret-with-32-characters',
+    });
+  });
 });

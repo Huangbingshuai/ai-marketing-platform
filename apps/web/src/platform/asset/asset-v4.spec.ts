@@ -132,6 +132,8 @@ describe('V4 asset center mapping', () => {
 
   it('separates project drafts, working artifacts, archived assets and global publication', () => {
     expect(assetDrawerSource).toContain('v-if="activeProject"');
+    expect(assetDrawerSource).toContain('v-else-if="view === \'current\'" class="asset-space"');
+    expect(assetDrawerSource).not.toContain('<section v-else class="asset-space">');
     expect(assetDrawerSource).toContain(':can-resume="activeProject.id === currentProject?.id"');
     expect(projectWorkspaceOverviewSource).toContain('工作流草稿');
     expect(projectWorkspaceOverviewSource).toContain('工作区产物');

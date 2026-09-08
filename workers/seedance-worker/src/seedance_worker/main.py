@@ -18,6 +18,8 @@ def _provider(settings: WorkerSettings) -> VideoProvider:
         api_key=settings.seedance_api_key.get_secret_value(),
         timeout_seconds=settings.seedance_timeout_seconds,
         poll_interval_seconds=settings.poll_interval_seconds,
+        create_qps=settings.create_qps,
+        download_concurrency=settings.download_concurrency,
         max_download_bytes=settings.max_download_bytes,
     )
 
@@ -27,6 +29,7 @@ async def serve(settings: WorkerSettings) -> None:
         str(settings.internal_api_base_url),
         settings.worker_token.get_secret_value(),
         timeout=settings.api_timeout_seconds,
+        reference_cache_bytes=settings.reference_cache_bytes,
     )
     provider = _provider(settings)
     consumer = SegmentRenderConsumer(
@@ -34,7 +37,8 @@ async def serve(settings: WorkerSettings) -> None:
         queue_name=settings.queue_name,
         api=api,
         provider=provider,
-        max_concurrency=settings.max_concurrency,
+        max_inflight=settings.max_inflight,
+        result_concurrency=settings.download_concurrency,
     )
     try:
         await consumer.run()

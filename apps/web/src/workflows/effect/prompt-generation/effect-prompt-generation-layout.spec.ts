@@ -72,6 +72,11 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('purposeFilter.value || undefined');
     expect(pageSource).toContain('includeCompatiblePurposes');
     expect(pageSource).toContain('包含兼容用途');
+    expect(pageSource).toContain(
+      '<input v-model="includeCompatiblePurposes" type="checkbox" />',
+    );
+    expect(pageSource).not.toContain(':disabled="!purposeFilter"');
+    expect(pageSource).not.toContain(':class="{ disabled: !purposeFilter }"');
     expect(pageSource).toContain("? 'PRIMARY_OR_COMPATIBLE' : 'PRIMARY'");
     expect(pageSource).toContain('purposeCount(purpose)');
     expect(pageSource).not.toContain('fragmentTypeFilter');
@@ -93,6 +98,9 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('EFFECT_PROMPT_PAGE_SIZE_OPTIONS');
     expect(pageSource).toContain('@change="changePageSize"');
     expect(pageSource).toContain('pageSize.value');
+    expect(pageSource).toMatch(/\.prompt-main\s*>\s*textarea\s*\{[^}]*min-height:\s*260px;/u);
+    expect(pageSource).toMatch(/\.prompt-main\s*>\s*textarea\s*\{[^}]*overflow-y:\s*auto;/u);
+    expect(pageSource).toContain('.prompt-main > textarea::-webkit-scrollbar-thumb');
     expect(pageSource).not.toContain('<span>{{ EFFECT_PROMPT_LIMITS.pageSize }} 条/页</span');
   });
 

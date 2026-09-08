@@ -31,9 +31,16 @@ export const effectSegmentRenderSettingsNodeId = (productId: string): string =>
 export const EFFECT_SEGMENT_RENDER_LIMITS = {
   maxTasksPerBatch: 100,
   maxTaskIdsPerOperation: 100,
+  maxReferenceImages: 30,
+  maxReferenceImagesSeedance20: 9,
+  maxReferenceImageBytes: 30 * 1024 * 1024 - 1,
+  maxBase64ProviderRequestBytes: 64 * 1024 * 1024,
   maxAutoRetries: 2,
   maxAttempts: 3,
   maxUploadBytes: 512 * 1024 * 1024,
+  maxReferenceVideoBytes: 50 * 1024 * 1024,
+  maxRepairInstructionLength: 1000,
+  minRepairDurationMs: 100,
 } as const;
 
 export const EFFECT_SEGMENT_RENDER_STATUSES = [
@@ -60,6 +67,8 @@ export type EffectSegmentRenderSourcePrompt = {
   contentHash: string;
 };
 
+export type EffectSegmentRenderSourcePackage = EffectSegmentRenderSourcePrompt;
+
 export type EffectSegmentRenderProviderRequest = {
   model: string;
   content: [{ type: 'text'; text: string }];
@@ -68,7 +77,41 @@ export type EffectSegmentRenderProviderRequest = {
   resolution: SeedanceResolution;
 };
 
+export type EffectSegmentRenderInputVideo = {
+  fileObjectId: string;
+  originalFileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  contentHash: string;
+  durationSeconds: number;
+};
+
+export type EffectSegmentRenderRepairRegion = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type EffectSegmentRenderRepairInput = {
+  sourceVersion: number;
+  startMs: number;
+  endMs: number;
+  instruction: string;
+  region: EffectSegmentRenderRepairRegion | null;
+};
+
+export type EffectSegmentRenderInputImage = {
+  fileObjectId: string;
+  originalFileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  contentHash: string;
+  sortOrder: number;
+};
+
 export type EffectSegmentRenderRequestSnapshot = {
+  operation?: 'GENERATE' | 'REPAIR';
   promptId: string;
   promptCode: string;
   promptText: string;
@@ -77,6 +120,10 @@ export type EffectSegmentRenderRequestSnapshot = {
   promptContentHash: string;
   sharedPromptHash: string;
   renderSettingsHash: string;
+  sourcePackage: EffectSegmentRenderSourcePackage;
+  inputImages: EffectSegmentRenderInputImage[];
+  inputVideo?: EffectSegmentRenderInputVideo | null;
+  repair?: EffectSegmentRenderRepairInput | null;
   request: EffectSegmentRenderProviderRequest;
 };
 
@@ -87,6 +134,22 @@ export type EffectSegmentRenderOutput = {
   sizeBytes: number;
   contentHash: string;
   version: number;
+};
+
+export const EFFECT_SEGMENT_RENDER_REPAIR_STATUSES = [
+  'QUEUED',
+  'RENDERING',
+  'READY',
+  'FAILED',
+] as const;
+export type EffectSegmentRenderRepairStatus =
+  (typeof EFFECT_SEGMENT_RENDER_REPAIR_STATUSES)[number];
+
+export type EffectSegmentRenderRepair = EffectSegmentRenderRepairInput & {
+  status: EffectSegmentRenderRepairStatus;
+  errorCode: string | null;
+  errorMessage: string | null;
+  candidate: EffectSegmentRenderOutput | null;
 };
 
 export type EffectSegmentRenderTask = {
@@ -111,6 +174,7 @@ export type EffectSegmentRenderTask = {
   errorMessage: string | null;
   providerTaskId: string | null;
   output: EffectSegmentRenderOutput | null;
+  repair: EffectSegmentRenderRepair | null;
   updatedAt: string;
 };
 
@@ -182,6 +246,37 @@ export type RegenerateEffectSegmentRenderTasksRequest = {
   idempotencyKey: string;
 };
 
+export type StartEffectSegmentRenderRepairRequest = {
+  expectedBatchRevision: number;
+  expectedSourceVersion: number;
+  startMs: number;
+  endMs: number;
+  instruction: string;
+  region?: EffectSegmentRenderRepairRegion | null;
+  idempotencyKey: string;
+};
+
+export type StartEffectSegmentRenderRepairData = {
+  batch: EffectSegmentRenderBatch;
+  replayed: boolean;
+};
+
+export const EFFECT_SEGMENT_RENDER_REPAIR_DECISIONS = ['ACCEPT', 'DISCARD'] as const;
+export type EffectSegmentRenderRepairDecision =
+  (typeof EFFECT_SEGMENT_RENDER_REPAIR_DECISIONS)[number];
+
+export type DecideEffectSegmentRenderRepairRequest = {
+  expectedBatchRevision: number;
+  repairVersion: number;
+  decision: EffectSegmentRenderRepairDecision;
+  idempotencyKey: string;
+};
+
+export type DecideEffectSegmentRenderRepairData = {
+  batch: EffectSegmentRenderBatch;
+  replayed: boolean;
+};
+
 export type ValidateEffectSegmentRenderBatchRequest = {
   expectedBatchRevision: number;
 };
@@ -200,7 +295,13 @@ export type EffectSegmentRenderWorkerClaimData = {
   taskVersion: number | null;
   attemptToken: string | null;
   sourceFingerprint: string | null;
+  providerTaskId: string | null;
   input: EffectSegmentRenderRequestSnapshot | null;
+};
+
+export type EffectSegmentRenderWorkerReferenceVideoUrlData = {
+  url: string;
+  expiresAt: string;
 };
 
 export type EffectSegmentRenderWorkerHeartbeatRequest = {
@@ -225,4 +326,6 @@ export type EffectSegmentRenderWorkerFailRequest = {
   errorCode: string;
   errorMessage: string;
   retryable: boolean;
+  providerTaskId?: string | undefined;
+  resetProviderTask?: boolean | undefined;
 };

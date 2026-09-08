@@ -86,7 +86,10 @@ class SnapshotProduct(ApiModel):
 
 class SnapshotDependencyRevision(ApiModel):
     source_package_revision: int
-    effective_video_config_revision: int
+    # Historical snapshots carried a separate video-config revision. Video
+    # settings are no longer an extraction input, so current API snapshots omit
+    # it while older in-flight jobs may still include it.
+    effective_video_config_revision: int | None = None
     execution_input_hash: str
 
 

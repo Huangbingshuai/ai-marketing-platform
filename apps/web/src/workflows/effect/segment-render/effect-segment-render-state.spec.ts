@@ -33,6 +33,8 @@ const task = (
   maxAutoRetries: 2,
   abnormal: status === 'FAILED',
   errorMessage: status === 'FAILED' ? '异常' : null,
+  activeVersion: 1,
+  repair: null,
   updatedAt: '2026-08-26T00:00:00.000Z',
 });
 
