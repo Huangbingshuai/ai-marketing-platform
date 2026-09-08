@@ -146,6 +146,7 @@ export type EffectSegmentRenderRepairStatus =
   (typeof EFFECT_SEGMENT_RENDER_REPAIR_STATUSES)[number];
 
 export type EffectSegmentRenderRepair = EffectSegmentRenderRepairInput & {
+  version: number;
   status: EffectSegmentRenderRepairStatus;
   errorCode: string | null;
   errorMessage: string | null;
@@ -161,6 +162,7 @@ export type EffectSegmentRenderTask = {
   promptCode: string;
   promptText: string;
   fragmentType: EffectPromptFragmentType;
+  compatiblePurposes: EffectPromptFragmentType[];
   durationSeconds: number;
   modelMatch: 'AUTO_MATCHED';
   source: 'PROMPT';
@@ -208,6 +210,7 @@ export type GetEffectSegmentRenderWorkspaceData = {
   workflowRunId: string;
   productId: string;
   promptReady: boolean;
+  promptCount: number;
   promptArtifactRevision: number | null;
   settings: EffectSegmentRenderSettings;
   settingsRevision: number | null;

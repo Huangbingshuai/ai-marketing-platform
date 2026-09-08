@@ -4,10 +4,15 @@ import type {
   DecideEffectSegmentRenderRepairRequest,
   EffectSegmentRenderBatch,
   GetEffectSegmentRenderWorkspaceData,
+  RegenerateEffectSegmentRenderTasksRequest,
   SaveEffectSegmentRenderSettingsData,
   SaveEffectSegmentRenderSettingsRequest,
   StartEffectSegmentRenderRepairData,
   StartEffectSegmentRenderRepairRequest,
+  StartEffectSegmentRenderBatchData,
+  StartEffectSegmentRenderBatchRequest,
+  ValidateEffectSegmentRenderBatchData,
+  ValidateEffectSegmentRenderBatchRequest,
 } from '@ai-marketing/contracts';
 
 import { requestJson, requestRaw } from '../../../../api/http-client';
@@ -46,6 +51,32 @@ export const getEffectSegmentRenderBatch = (
 ): Promise<ApiResponse<{ batch: EffectSegmentRenderBatch }>> =>
   requestJson(`${basePath(projectId)}/batches/${encodeURIComponent(batchId)}`, {
     operation: '加载视频渲染批次',
+    signal,
+  });
+
+export const startEffectSegmentRenderBatch = (
+  projectId: string,
+  productId: string,
+  input: StartEffectSegmentRenderBatchRequest,
+  signal?: AbortSignal,
+): Promise<ApiResponse<StartEffectSegmentRenderBatchData>> =>
+  requestJson(`${basePath(projectId)}/products/${encodeURIComponent(productId)}/batches`, {
+    method: 'POST',
+    body: input,
+    operation: '创建视频渲染批次',
+    signal,
+  });
+
+export const regenerateEffectSegmentRenderTasks = (
+  projectId: string,
+  batchId: string,
+  input: RegenerateEffectSegmentRenderTasksRequest,
+  signal?: AbortSignal,
+): Promise<ApiResponse<{ batch: EffectSegmentRenderBatch; replayed: boolean }>> =>
+  requestJson(`${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/tasks/regenerate`, {
+    method: 'POST',
+    body: input,
+    operation: '重新生成视频片段',
     signal,
   });
 
@@ -94,3 +125,16 @@ export const getEffectSegmentRenderTaskContent = (
     `${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/tasks/${encodeURIComponent(taskId)}/content?variant=${variant}`,
     { operation: variant === 'REPAIR' ? '加载视频返修候选' : '加载视频素材', signal },
   );
+
+export const validateEffectSegmentRenderBatch = (
+  projectId: string,
+  batchId: string,
+  input: ValidateEffectSegmentRenderBatchRequest,
+  signal?: AbortSignal,
+): Promise<ApiResponse<ValidateEffectSegmentRenderBatchData>> =>
+  requestJson(`${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/validate`, {
+    method: 'POST',
+    body: input,
+    operation: '完成视频渲染校验',
+    signal,
+  });

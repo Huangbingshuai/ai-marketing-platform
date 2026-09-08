@@ -29,6 +29,10 @@ export type EnvironmentVariables = {
   SEEDANCE_BASE_URL: string | undefined;
   SEEDANCE_API_KEY: string | undefined;
   SEEDANCE_MODEL: string | undefined;
+  SEEDANCE_MODEL_2_5: string | undefined;
+  SEEDANCE_MODEL_2_0: string | undefined;
+  SEEDANCE_MODEL_2_0_MINI: string | undefined;
+  SEEDANCE_MODEL_2_0_FAST: string | undefined;
   SEEDANCE_REFERENCE_PUBLIC_BASE_URL: string | undefined;
   SEEDANCE_REFERENCE_SIGNING_SECRET: string | undefined;
 };
@@ -161,6 +165,10 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
     SEEDANCE_BASE_URL: optionalString(raw.SEEDANCE_BASE_URL),
     SEEDANCE_API_KEY: optionalString(raw.SEEDANCE_API_KEY),
     SEEDANCE_MODEL: optionalString(raw.SEEDANCE_MODEL),
+    SEEDANCE_MODEL_2_5: optionalString(raw.SEEDANCE_MODEL_2_5),
+    SEEDANCE_MODEL_2_0: optionalString(raw.SEEDANCE_MODEL_2_0),
+    SEEDANCE_MODEL_2_0_MINI: optionalString(raw.SEEDANCE_MODEL_2_0_MINI),
+    SEEDANCE_MODEL_2_0_FAST: optionalString(raw.SEEDANCE_MODEL_2_0_FAST),
     SEEDANCE_REFERENCE_PUBLIC_BASE_URL: optionalString(raw.SEEDANCE_REFERENCE_PUBLIC_BASE_URL),
     SEEDANCE_REFERENCE_SIGNING_SECRET: seedanceReferenceSigningSecret,
   };

@@ -2,6 +2,7 @@
 import type {
   EffectImportProduct,
   EffectPromptFragmentType,
+  EffectSegmentRenderBatch,
   EffectSegmentRenderSettings,
   SeedanceRatio,
   SeedanceResolution,
@@ -36,14 +37,23 @@ import { requestActionConfirmation } from '../../../shared/composables/action-co
 import { EFFECT_PROMPT_PAGE_SIZE_OPTIONS } from '../prompt-generation/effect-prompt-generation-state';
 import EffectUpwardCreatableSelect from '../source-import/components/EffectUpwardCreatableSelect.vue';
 import {
+  decideEffectSegmentRenderRepair,
+  getEffectSegmentRenderBatch,
+  getEffectSegmentRenderTaskContent,
   getEffectSegmentRenderWorkspace,
+  regenerateEffectSegmentRenderTasks,
   saveEffectSegmentRenderSettings,
+  startEffectSegmentRenderBatch,
+  startEffectSegmentRenderRepair,
+  validateEffectSegmentRenderBatch,
 } from './api/effect-segment-render.api';
 import {
   EFFECT_SEGMENT_RENDER_PAGE_SIZE,
   effectSegmentRenderPage,
   effectSegmentRenderPageCount,
   effectSegmentRenderSummary,
+  effectSegmentRenderWorkspaceFromApi,
+  effectSegmentRenderWorkspaceWithBatch,
   filterEffectSegmentRenderTasks,
   isEffectSegmentRenderExportable,
   isEffectSegmentRenderBusy,
@@ -51,21 +61,6 @@ import {
   type EffectSegmentRenderTask,
   type EffectSegmentRenderWorkspace,
 } from './effect-segment-render-state';
-import {
-  createEffectSegmentRenderExport,
-  decideEffectSegmentRenderRepair,
-  deleteEffectSegmentRenderMaterials,
-  importEffectSegmentRenderFiles,
-  inspectEffectSegmentRenderImports,
-  loadEffectSegmentRenderWorkspace,
-  regenerateEffectSegmentRenderTasks,
-  repairEffectSegmentRenderTask,
-  startEffectSegmentRenderBatch,
-  subscribeEffectSegmentRenderWorkspace,
-  type EffectSegmentRenderExportFormat,
-  type EffectSegmentRenderImportMatch,
-  type EffectSegmentRenderContext,
-} from './services/effect-segment-render.mock-service';
 
 const props = defineProps<{
   projectId: string;
@@ -81,6 +76,14 @@ type FragmentFilter = 'ABNORMAL' | 'ALL' | EffectPromptFragmentType;
 type TransferPanel = 'export' | 'import' | null;
 type ExportScope = 'ALL_COMPLETED' | 'FILTERED' | 'SELECTED';
 type Notice = { kind: 'error' | 'success' | 'warning'; text: string };
+type EffectSegmentRenderExportFormat = 'FAILURE_CSV' | 'MANIFEST_JSON' | 'VIDEO_PACKAGE';
+type EffectSegmentRenderImportMatch = {
+  id: string;
+  fileName: string;
+  size: number;
+  promptCode: string | null;
+  status: 'AUTO_ASSIGNED' | 'CONFLICT' | 'MATCHED' | 'UNMATCHED';
+};
 
 const pageStatus = ref<PageStatus>('loading');
 const loadError = ref('');
@@ -182,6 +185,9 @@ const resolutionOptions = computed(() =>
 
 const previewTask = ref<EffectSegmentRenderTask | null>(null);
 const previewVariant = ref<'ACTIVE' | 'REPAIR'>('ACTIVE');
+const previewUrl = ref('');
+const previewLoading = ref(false);
+const previewError = ref('');
 const promptTask = ref<EffectSegmentRenderTask | null>(null);
 const repairTask = ref<EffectSegmentRenderTask | null>(null);
 const repairStartSeconds = ref(0);
@@ -194,7 +200,9 @@ const repairCloseButton = ref<HTMLButtonElement | null>(null);
 let dialogTrigger: HTMLElement | null = null;
 let loadController: AbortController | null = null;
 let operationController: AbortController | null = null;
-let unsubscribeWorkspace: (() => void) | null = null;
+let previewController: AbortController | null = null;
+let pollController: AbortController | null = null;
+let pollTimer: ReturnType<typeof setTimeout> | undefined;
 let loadGeneration = 0;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -221,9 +229,7 @@ const promptCount = computed(() => workspace.value?.promptCount ?? 0);
 const missingPromptCount = computed(() =>
   Math.max(0, promptCount.value - promptTasks.value.length),
 );
-const importedCount = computed(
-  () => tasks.value.filter((task) => task.origin === 'EXTERNAL_IMPORT').length,
-);
+const importedCount = computed(() => 0);
 const remainingPromptCount = computed(() => Math.max(0, promptCount.value - importedCount.value));
 const isPurposeFilter = (value: FragmentFilter): value is EffectPromptFragmentType =>
   EFFECT_PROMPT_FRAGMENT_TYPES.includes(value as EffectPromptFragmentType);
@@ -262,9 +268,9 @@ const exportRangeTasks = computed(() => {
   return completedTasks.value;
 });
 
-const canPreviewTask = (task: EffectSegmentRenderTask): boolean => task.status === 'COMPLETED';
+const canPreviewTask = (task: EffectSegmentRenderTask): boolean => Boolean(task.output);
 const canRetryTask = (task: EffectSegmentRenderTask): boolean =>
-  !isEffectSegmentRenderBusy(task.status);
+  !isEffectSegmentRenderBusy(task.status) && !task.repair;
 
 const promptExcerpt = (promptText: string): string => {
   const normalized = promptText.replace(/\s+/gu, ' ').trim();
@@ -279,11 +285,22 @@ const currentProductReady = computed(
     promptTasks.value.length === promptCount.value &&
     summary.value.running === 0 &&
     summary.value.failed === 0 &&
+    tasks.value.every((task) => !task.repair) &&
+    !workspace.value?.stale &&
     operation.value === null,
+);
+const canStartBatch = computed(
+  () =>
+    Boolean(workspace.value?.promptReady && workspace.value.promptArtifactRevision) &&
+    promptCount.value > 0 &&
+    !batchActive.value &&
+    (!hasBatch.value || Boolean(workspace.value?.stale)),
 );
 const startButtonLabel = computed(() => {
   if (operation.value === 'batch') return '正在创建任务…';
   if (batchActive.value) return `渲染中 ${summary.value.completed}/${summary.value.total}`;
+  if (!workspace.value?.promptReady) return '等待上游 Prompt 完成校验';
+  if (workspace.value?.stale) return `按最新 Prompt 重新渲染（${promptCount.value}）`;
   if (hasBatch.value)
     return workspace.value?.batchStatus === 'COMPLETED' ? '批量渲染已完成' : '批量渲染已结束';
   return importedCount.value
@@ -295,11 +312,6 @@ const currentCapabilityLabel = computed(
     capabilityOptions.find((option) => option.value === renderSettings.value.capabilityKey)
       ?.label ?? renderSettings.value.capabilityKey,
 );
-
-const context = (): EffectSegmentRenderContext => ({
-  projectId: props.projectId,
-  workflowRunId: props.workflowRunId,
-});
 
 const isAbortError = (error: unknown): boolean =>
   error instanceof DOMException ? error.name === 'AbortError' : false;
@@ -318,6 +330,47 @@ const showNotice = (text: string, kind: Notice['kind'] = 'success'): void => {
   noticeTimer = setTimeout(() => (notice.value = null), 3000);
 };
 
+const stopPolling = (): void => {
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = undefined;
+  pollController?.abort();
+  pollController = null;
+};
+
+const needsPolling = (nextWorkspace: EffectSegmentRenderWorkspace): boolean =>
+  nextWorkspace.batchStatus === 'QUEUED' ||
+  nextWorkspace.batchStatus === 'RUNNING' ||
+  nextWorkspace.tasks.some(
+    (task) => task.repair?.status === 'QUEUED' || task.repair?.status === 'RENDERING',
+  );
+
+const pollBatch = async (): Promise<void> => {
+  const current = workspace.value;
+  if (!current?.batchId || !needsPolling(current)) return;
+  const productId = current.productId;
+  const batchId = current.batchId;
+  const controller = new AbortController();
+  pollController = controller;
+  try {
+    const response = await getEffectSegmentRenderBatch(props.projectId, batchId, controller.signal);
+    if (controller.signal.aborted || productId !== currentProductId.value) return;
+    applyBatch(response.data.batch);
+  } catch (error) {
+    if (!isAbortError(error)) {
+      showNotice(safeMessage(error, '刷新视频渲染进度失败，将自动重试'), 'warning');
+      pollTimer = setTimeout(() => void pollBatch(), 5000);
+    }
+  } finally {
+    if (pollController === controller) pollController = null;
+  }
+};
+
+const schedulePolling = (nextWorkspace: EffectSegmentRenderWorkspace): void => {
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = undefined;
+  if (needsPolling(nextWorkspace)) pollTimer = setTimeout(() => void pollBatch(), 3000);
+};
+
 const applyWorkspace = (nextWorkspace: EffectSegmentRenderWorkspace): void => {
   if (nextWorkspace.productId !== currentProductId.value) return;
   const previousStatus = workspace.value?.batchStatus;
@@ -332,9 +385,27 @@ const applyWorkspace = (nextWorkspace: EffectSegmentRenderWorkspace): void => {
     nextWorkspace.batchStatus === 'COMPLETED'
   )
     showNotice('全部视频片段已完成并进入素材池');
+  validated.value = nextWorkspace.commitStatus === 'COMMITTED' && !nextWorkspace.stale;
+  schedulePolling(nextWorkspace);
+};
+
+const applyBatch = (batch: EffectSegmentRenderBatch): void => {
+  const current = workspace.value;
+  if (!current || batch.productId !== currentProductId.value) return;
+  applyWorkspace(effectSegmentRenderWorkspaceWithBatch(current, batch));
+};
+
+const clearPreview = (): void => {
+  previewController?.abort();
+  previewController = null;
+  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
+  previewUrl.value = '';
+  previewLoading.value = false;
+  previewError.value = '';
 };
 
 const closeAllDialogs = (restoreFocus = false): void => {
+  clearPreview();
   previewTask.value = null;
   previewVariant.value = 'ACTIVE';
   promptTask.value = null;
@@ -363,8 +434,7 @@ const loadCurrentWorkspace = async (): Promise<void> => {
   const generation = ++loadGeneration;
   loadController?.abort();
   operationController?.abort();
-  unsubscribeWorkspace?.();
-  unsubscribeWorkspace = null;
+  stopPolling();
   operation.value = null;
   closeAllDialogs(false);
   closeTransferPanel(false);
@@ -385,24 +455,16 @@ const loadCurrentWorkspace = async (): Promise<void> => {
   const controller = new AbortController();
   loadController = controller;
   try {
-    const [nextWorkspace, settingsResponse] = await Promise.all([
-      loadEffectSegmentRenderWorkspace(context(), product, renderSettings.value, controller.signal),
-      getEffectSegmentRenderWorkspace(
-        props.projectId,
-        props.workflowRunId,
-        product.id,
-        controller.signal,
-      ),
-    ]);
+    const settingsResponse = await getEffectSegmentRenderWorkspace(
+      props.projectId,
+      props.workflowRunId,
+      product.id,
+      controller.signal,
+    );
     if (generation !== loadGeneration || controller.signal.aborted) return;
     renderSettings.value = { ...settingsResponse.data.settings };
     renderSettingsRevision.value = settingsResponse.data.settingsRevision;
-    workspace.value = nextWorkspace;
-    unsubscribeWorkspace = subscribeEffectSegmentRenderWorkspace(
-      context(),
-      product.id,
-      applyWorkspace,
-    );
+    applyWorkspace(effectSegmentRenderWorkspaceFromApi(settingsResponse.data));
     pageStatus.value = 'success';
   } catch (error) {
     if (isAbortError(error) || generation !== loadGeneration) return;
@@ -507,13 +569,14 @@ const changePageSize = (): void => {
 
 const startBatch = async (): Promise<void> => {
   const product = currentProduct.value;
-  if (!product || operation.value || hasBatch.value || !workspace.value) return;
+  const current = workspace.value;
+  if (!product || operation.value || !current || !canStartBatch.value) return;
   if (
     !(await requestActionConfirmation({
       eyebrow: '创建视频渲染批次',
-      title: `开始生成剩余 ${remainingPromptCount.value} 个视频素材片段？`,
-      description: `${product.name || '未命名产品'}；${currentCapabilityLabel.value}；${renderSettings.value.ratio}；${renderSettings.value.resolution}。已导入的 ${importedCount.value} 个 Prompt 槽位会被保留，其余片段确认后进入排队状态。`,
-      confirmLabel: `创建 ${remainingPromptCount.value} 个任务`,
+      title: `开始生成 ${promptCount.value} 个真实视频素材片段？`,
+      description: `${product.name || '未命名产品'}；${currentCapabilityLabel.value}；${renderSettings.value.ratio}；${renderSettings.value.resolution}。确认后会提交 ${promptCount.value} 个真实 Seedance 任务并产生供应商费用。`,
+      confirmLabel: `提交 ${promptCount.value} 个真实任务`,
       tone: 'warning',
     }))
   )
@@ -524,15 +587,20 @@ const startBatch = async (): Promise<void> => {
   operation.value = 'batch';
   validated.value = false;
   try {
-    const nextWorkspace = await startEffectSegmentRenderBatch(
-      context(),
-      product,
-      renderSettings.value,
-      { signal: controller.signal },
+    const response = await startEffectSegmentRenderBatch(
+      props.projectId,
+      product.id,
+      {
+        workflowRunId: props.workflowRunId,
+        expectedPromptArtifactRevision: current.promptArtifactRevision!,
+        expectedSettingsRevision: renderSettingsRevision.value ?? 0,
+        idempotencyKey: crypto.randomUUID(),
+      },
+      controller.signal,
     );
     if (controller.signal.aborted || currentProductId.value !== product.id) return;
-    applyWorkspace(nextWorkspace);
-    showNotice(`已保留 ${importedCount.value} 个导入素材，其余视频任务正在排队渲染`);
+    applyBatch(response.data.batch);
+    showNotice(`${response.data.batch.tasks.length} 个真实视频任务已进入渲染队列`);
   } catch (error) {
     if (!isAbortError(error)) showNotice(safeMessage(error, '批量渲染失败'), 'error');
   } finally {
@@ -543,12 +611,15 @@ const startBatch = async (): Promise<void> => {
 
 const retryTask = async (taskId: string): Promise<void> => {
   const product = currentProduct.value;
-  if (!product || operation.value) return;
+  const current = workspace.value;
+  if (!product || operation.value || !current?.batchId || typeof current.batchRevision !== 'number')
+    return;
   if (
     !(await requestActionConfirmation({
       eyebrow: '重新生成片段',
       title: '重新生成这个视频片段？',
-      description: '重新生成会替换当前片段的演示结果，原 Prompt 与渲染配置保持不变。',
+      description:
+        '重新生成会提交一个新的真实 Seedance 请求，原 Prompt 与该批次冻结的渲染配置保持不变，并产生供应商费用。',
       confirmLabel: '确认重新生成',
       tone: 'warning',
     }))
@@ -560,16 +631,19 @@ const retryTask = async (taskId: string): Promise<void> => {
   operation.value = 'retry';
   validated.value = false;
   try {
-    const nextWorkspace = await regenerateEffectSegmentRenderTasks(
-      context(),
-      product,
-      renderSettings.value,
-      [taskId],
-      { signal: controller.signal },
+    const response = await regenerateEffectSegmentRenderTasks(
+      props.projectId,
+      current.batchId,
+      {
+        taskIds: [taskId],
+        expectedBatchRevision: current.batchRevision,
+        idempotencyKey: crypto.randomUUID(),
+      },
+      controller.signal,
     );
     if (controller.signal.aborted || currentProductId.value !== product.id) return;
-    applyWorkspace(nextWorkspace);
-    showNotice('视频素材片段已重新生成');
+    applyBatch(response.data.batch);
+    showNotice('视频素材片段已重新进入真实渲染队列');
   } catch (error) {
     if (!isAbortError(error)) showNotice(safeMessage(error, '片段重生成失败'), 'error');
   } finally {
@@ -583,14 +657,39 @@ const openPreview = (
   event: Event,
   variant: 'ACTIVE' | 'REPAIR' = 'ACTIVE',
 ): void => {
+  const current = workspace.value;
+  if (!current?.batchId || (variant === 'ACTIVE' ? !task.output : !task.repair?.candidate)) return;
+  clearPreview();
   dialogTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
   previewTask.value = task;
   previewVariant.value = variant;
+  previewLoading.value = true;
+  const controller = new AbortController();
+  previewController = controller;
+  void getEffectSegmentRenderTaskContent(
+    props.projectId,
+    current.batchId,
+    task.id,
+    variant,
+    controller.signal,
+  )
+    .then((response) => response.blob())
+    .then((blob) => {
+      if (controller.signal.aborted || previewTask.value?.id !== task.id) return;
+      previewUrl.value = URL.createObjectURL(blob);
+    })
+    .catch((error: unknown) => {
+      if (!isAbortError(error)) previewError.value = safeMessage(error, '视频预览加载失败');
+    })
+    .finally(() => {
+      if (previewController === controller) previewController = null;
+      if (!controller.signal.aborted) previewLoading.value = false;
+    });
   void nextTick(() => previewCloseButton.value?.focus());
 };
 
 const openRepair = (task: EffectSegmentRenderTask, event: Event): void => {
-  if (task.status !== 'COMPLETED' || task.repair || task.durationSeconds > 15) return;
+  if (!task.output || task.repair || task.durationSeconds > 15) return;
   dialogTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
   repairTask.value = task;
   repairStartSeconds.value = 0;
@@ -602,25 +701,35 @@ const openRepair = (task: EffectSegmentRenderTask, event: Event): void => {
 const submitRepair = async (): Promise<void> => {
   const product = currentProduct.value;
   const task = repairTask.value;
-  if (!product || !task || operation.value) return;
+  const current = workspace.value;
+  if (
+    !product ||
+    !task ||
+    !task.output ||
+    operation.value ||
+    !current?.batchId ||
+    typeof current.batchRevision !== 'number'
+  )
+    return;
   operation.value = 'repair';
   validated.value = false;
   try {
-    const nextWorkspace = await repairEffectSegmentRenderTask(
-      context(),
-      product,
-      renderSettings.value,
+    const response = await startEffectSegmentRenderRepair(
+      props.projectId,
+      current.batchId,
       task.id,
       {
+        expectedBatchRevision: current.batchRevision,
+        expectedSourceVersion: task.output.version,
         startMs: Math.round(repairStartSeconds.value * 1000),
         endMs: Math.round(repairEndSeconds.value * 1000),
         instruction: repairInstruction.value,
+        idempotencyKey: crypto.randomUUID(),
       },
-      { onUpdate: applyWorkspace },
     );
-    applyWorkspace(nextWorkspace);
+    applyBatch(response.data.batch);
     closeAllDialogs(true);
-    showNotice('返修候选已生成，请预览后选择采用或放弃');
+    showNotice('真实返修任务已进入队列，完成后可预览并决定是否采用');
   } catch (error) {
     if (!isAbortError(error)) showNotice(safeMessage(error, '视频画面返修失败'), 'error');
   } finally {
@@ -633,7 +742,17 @@ const decideRepair = async (
   decision: 'ACCEPT' | 'DISCARD',
 ): Promise<void> => {
   const product = currentProduct.value;
-  if (!product || operation.value || !task.repair) return;
+  const current = workspace.value;
+  const repairVersion = task.repair?.version ?? task.repair?.candidateVersion;
+  if (
+    !product ||
+    operation.value ||
+    !task.repair ||
+    !repairVersion ||
+    !current?.batchId ||
+    typeof current.batchRevision !== 'number'
+  )
+    return;
   if (
     !(await requestActionConfirmation({
       eyebrow: decision === 'ACCEPT' ? '采用修复版' : '放弃修复版',
@@ -650,14 +769,18 @@ const decideRepair = async (
   operation.value = 'repair';
   validated.value = false;
   try {
-    const nextWorkspace = await decideEffectSegmentRenderRepair(
-      context(),
-      product,
-      renderSettings.value,
+    const response = await decideEffectSegmentRenderRepair(
+      props.projectId,
+      current.batchId,
       task.id,
-      decision,
+      {
+        expectedBatchRevision: current.batchRevision,
+        repairVersion,
+        decision,
+        idempotencyKey: crypto.randomUUID(),
+      },
     );
-    applyWorkspace(nextWorkspace);
+    applyBatch(response.data.batch);
     showNotice(decision === 'ACCEPT' ? '已采用修复版视频' : '已放弃返修候选');
   } catch (error) {
     showNotice(safeMessage(error, '处理返修候选失败'), 'error');
@@ -673,32 +796,16 @@ const openPrompt = (task: EffectSegmentRenderTask, event: Event): void => {
 };
 
 const openTransferPanel = (panel: Exclude<TransferPanel, null>, event: Event): void => {
-  if (operation.value || (panel === 'export' && !completedTasks.value.length)) return;
-  dialogTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
-  transferPanel.value = panel;
-  if (panel === 'export') {
-    exportScope.value = selectedTasks.value.length ? 'SELECTED' : 'ALL_COMPLETED';
-  }
-  void nextTick(() => transferCloseButton.value?.focus());
+  void event;
+  showNotice(
+    panel === 'import' ? '真实素材导入接口尚未接入' : '真实素材批量导出接口尚未接入',
+    'warning',
+  );
 };
 
 const inspectImportFiles = async (files: File[]): Promise<void> => {
-  const product = currentProduct.value;
-  if (!product || !files.length || operation.value) return;
-  operation.value = 'import';
-  importFiles.value = files;
-  try {
-    importMatches.value = await inspectEffectSegmentRenderImports(
-      context(),
-      product,
-      renderSettings.value,
-      files.map(({ name, size, type, lastModified }) => ({ name, size, type, lastModified })),
-    );
-  } catch (error) {
-    showNotice(safeMessage(error, '素材检查失败'), 'error');
-  } finally {
-    operation.value = null;
-  }
+  void files;
+  showNotice('真实素材导入接口尚未接入', 'warning');
 };
 
 const handleImportFileChange = (event: Event): void => {
@@ -708,32 +815,7 @@ const handleImportFileChange = (event: Event): void => {
 };
 
 const confirmImport = async (): Promise<void> => {
-  const product = currentProduct.value;
-  const importableCount = importMatches.value.filter(
-    (match) => match.status !== 'UNMATCHED',
-  ).length;
-  if (!product || !importableCount || operation.value) return;
-  operation.value = 'import';
-  try {
-    const nextWorkspace = await importEffectSegmentRenderFiles(
-      context(),
-      product,
-      renderSettings.value,
-      importFiles.value.map(({ name, size, type, lastModified }) => ({
-        name,
-        size,
-        type,
-        lastModified,
-      })),
-    );
-    applyWorkspace(nextWorkspace);
-    closeTransferPanel(true);
-    showNotice(`已导入 ${importableCount} 个素材，并匹配到对应 Prompt 槽位`);
-  } catch (error) {
-    showNotice(safeMessage(error, '素材导入失败'), 'error');
-  } finally {
-    operation.value = null;
-  }
+  showNotice('真实素材导入接口尚未接入', 'warning');
 };
 
 const toggleSelectionMode = (): void => {
@@ -763,37 +845,7 @@ const selectAllFiltered = (): void => {
 };
 
 const deleteSelectedMaterials = async (): Promise<void> => {
-  const product = currentProduct.value;
-  if (!product || !selectedTasks.value.length || operation.value) return;
-  const taskIds = selectedTasks.value.map((task) => task.id);
-  if (
-    !(await requestActionConfirmation({
-      eyebrow: '删除视频素材',
-      title: `删除已选择的 ${taskIds.length} 个视频素材？`,
-      description: '只删除当前素材结果，原 Prompt 槽位仍会保留并标记为异常，之后可逐条重新生成。',
-      confirmLabel: `删除 ${taskIds.length} 个素材`,
-      tone: 'danger',
-    }))
-  )
-    return;
-  operation.value = 'delete';
-  try {
-    const nextWorkspace = await deleteEffectSegmentRenderMaterials(
-      context(),
-      product,
-      renderSettings.value,
-      taskIds,
-    );
-    applyWorkspace(nextWorkspace);
-    selectionMode.value = false;
-    selectedTaskIds.value = new Set();
-    validated.value = false;
-    showNotice(`已删除 ${taskIds.length} 个素材结果，对应 Prompt 槽位已保留`, 'warning');
-  } catch (error) {
-    showNotice(safeMessage(error, '素材删除失败'), 'error');
-  } finally {
-    operation.value = null;
-  }
+  showNotice('真实素材删除接口尚未接入', 'warning');
 };
 
 const toggleExportFormat = (format: EffectSegmentRenderExportFormat): void => {
@@ -804,31 +856,7 @@ const toggleExportFormat = (format: EffectSegmentRenderExportFormat): void => {
 };
 
 const downloadExport = async (): Promise<void> => {
-  const product = currentProduct.value;
-  if (!product || !exportRangeTasks.value.length || !exportFormats.value.length || operation.value)
-    return;
-  operation.value = 'export';
-  try {
-    const receipt = await createEffectSegmentRenderExport(
-      context(),
-      product,
-      renderSettings.value,
-      exportRangeTasks.value.map((task) => task.id),
-      exportFormats.value,
-    );
-    const url = URL.createObjectURL(new Blob([receipt.content], { type: receipt.mimeType }));
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = receipt.fileName;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    closeTransferPanel(true);
-    showNotice(`已生成 ${receipt.taskCount} 个素材的 Mock 导出清单`);
-  } catch (error) {
-    showNotice(safeMessage(error, '素材导出失败'), 'error');
-  } finally {
-    operation.value = null;
-  }
+  showNotice('真实素材批量导出接口尚未接入', 'warning');
 };
 
 const formatFileSize = (size: number): string =>
@@ -836,7 +864,7 @@ const formatFileSize = (size: number): string =>
     ? `${(size / 1024 / 1024).toFixed(1)} MB`
     : `${Math.max(1, Math.round(size / 1024))} KB`;
 
-const validateBatch = (): void => {
+const validateBatch = async (): Promise<void> => {
   if (!currentProductReady.value) {
     const message = !hasBatch.value
       ? '请先开始批量渲染'
@@ -848,8 +876,25 @@ const validateBatch = (): void => {
     showNotice(message, 'warning');
     return;
   }
-  validated.value = true;
-  showNotice('演示批次校验完成；未写入真实工作副本');
+  const current = workspace.value;
+  if (!current?.batchId || typeof current.batchRevision !== 'number') return;
+  operation.value = 'batch';
+  try {
+    const response = await validateEffectSegmentRenderBatch(props.projectId, current.batchId, {
+      expectedBatchRevision: current.batchRevision,
+    });
+    if (!response.data.valid) {
+      showNotice(response.data.issues[0]?.message ?? '视频渲染批次校验未通过', 'warning');
+      return;
+    }
+    validated.value = true;
+    await loadCurrentWorkspace();
+    showNotice(`已提交 ${response.data.artifacts.length} 个真实视频工作副本`);
+  } catch (error) {
+    showNotice(safeMessage(error, '视频渲染完成校验失败'), 'error');
+  } finally {
+    operation.value = null;
+  }
 };
 
 const flushPendingEdits = async (): Promise<boolean> => operation.value === null;
@@ -859,7 +904,8 @@ defineExpose({ flushPendingEdits });
 onBeforeUnmount(() => {
   loadController?.abort();
   operationController?.abort();
-  unsubscribeWorkspace?.();
+  stopPolling();
+  clearPreview();
   if (noticeTimer) clearTimeout(noticeTimer);
 });
 </script>
@@ -875,7 +921,7 @@ onBeforeUnmount(() => {
     <section v-if="pageStatus === 'loading'" class="segment-page-state" role="status">
       <LoaderCircle class="spin" :size="32" />
       <h2>正在恢复视频片段渲染队列</h2>
-      <p>按当前项目和商品载入 Prompt 对应的演示任务…</p>
+      <p>按当前项目和商品载入真实 Prompt 批次与 Seedance 任务…</p>
     </section>
     <section v-else-if="pageStatus === 'error'" class="segment-page-state error" role="alert">
       <AlertCircle :size="32" />
@@ -902,7 +948,10 @@ onBeforeUnmount(() => {
             <p v-else-if="importedCount">
               已导入 {{ importedCount }} 个素材，剩余 {{ remainingPromptCount }} 条 Prompt 待渲染
             </p>
-            <p v-else>已就绪 {{ promptCount }} 条 Prompt，每条将生成 1 个视频素材片段</p>
+            <p v-else-if="workspace?.promptReady">
+              已就绪 {{ promptCount }} 条 Prompt，每条将生成 1 个视频素材片段
+            </p>
+            <p v-else>上游 Prompt 尚未完成校验，当前不会创建视频任务</p>
           </div>
         </div>
         <div class="segment-heading__actions">
@@ -917,7 +966,8 @@ onBeforeUnmount(() => {
           <button
             class="secondary-button"
             type="button"
-            :disabled="operation !== null || batchActive"
+            disabled
+            title="真实素材导入后端尚未接入"
             @click="openTransferPanel('import', $event)"
           >
             <FolderInput :size="14" />导入素材
@@ -925,7 +975,8 @@ onBeforeUnmount(() => {
           <button
             class="secondary-button"
             type="button"
-            :disabled="operation !== null || !completedTasks.length"
+            disabled
+            title="真实素材批量导出后端尚未接入"
             @click="openTransferPanel('export', $event)"
           >
             <Download :size="14" />导出素材
@@ -933,11 +984,11 @@ onBeforeUnmount(() => {
           <button
             class="primary-button start-render-button"
             type="button"
-            :disabled="operation !== null || hasBatch"
+            :disabled="operation !== null || !canStartBatch"
             @click="startBatch"
           >
             <LoaderCircle v-if="operation === 'batch' || batchActive" class="spin" :size="14" />
-            <Play v-else-if="!hasBatch" :size="14" />{{ startButtonLabel }}
+            <Play v-else-if="canStartBatch" :size="14" />{{ startButtonLabel }}
           </button>
         </div>
       </header>
@@ -1095,14 +1146,16 @@ onBeforeUnmount(() => {
             <button
               class="delete-selection-button"
               type="button"
-              :disabled="!selectedTasks.length || operation !== null"
+              disabled
+              title="真实素材删除后端尚未接入"
               @click="deleteSelectedMaterials"
             >
               <Trash2 :size="13" />删除
             </button>
             <button
               type="button"
-              :disabled="!selectedTasks.length"
+              disabled
+              title="真实素材批量导出后端尚未接入"
               @click="openTransferPanel('export', $event)"
             >
               导出所选
@@ -1162,8 +1215,7 @@ onBeforeUnmount(() => {
                 <p>{{ task.promptCode }}</p>
                 <div class="task-tags">
                   <span class="primary-tag">{{ fragmentTypeLabel(task.fragmentType) }}</span>
-                  <span v-if="task.origin === 'EXTERNAL_IMPORT'" class="origin-tag">外部导入</span>
-                  <span v-else class="origin-tag ai">AI 生成</span>
+                  <span class="origin-tag ai">真实 AI 任务</span>
                 </div>
                 <div
                   v-if="task.compatibleFragmentTypes.length"
@@ -1233,9 +1285,7 @@ onBeforeUnmount(() => {
                 <button
                   v-else
                   type="button"
-                  :disabled="
-                    operation !== null || task.status !== 'COMPLETED' || task.durationSeconds > 15
-                  "
+                  :disabled="operation !== null || !task.output || task.durationSeconds > 15"
                   @click="openRepair(task, $event)"
                 >
                   画面返修
@@ -1261,8 +1311,13 @@ onBeforeUnmount(() => {
 
           <div v-else-if="!hasBatch && !tasks.length" class="segment-batch-empty">
             <span><Play :size="23" /></span>
-            <strong>尚未创建视频渲染任务</strong>
-            <p>已确认 {{ promptCount }} 条片段 Prompt，可从页头导入已有素材，或开始批量渲染。</p>
+            <strong>{{
+              workspace?.promptReady ? '尚未创建视频渲染任务' : '等待上游 Prompt 校验'
+            }}</strong>
+            <p v-if="workspace?.promptReady">
+              已确认 {{ promptCount }} 条片段 Prompt，可从页头开始提交真实批量渲染。
+            </p>
+            <p v-else>请返回 Prompt 节点完成校验，渲染节点只消费已确认的工作副本。</p>
           </div>
 
           <div v-else class="segment-empty-filter">
@@ -1291,18 +1346,22 @@ onBeforeUnmount(() => {
       <WorkflowNodeDraftBar
         :detail="
           hasBatch
-            ? `${currentProduct.name} · ${summary.total} 个视频任务 · 演示队列仅保留在当前前端会话，尚未提交真实工作副本`
-            : `${currentProduct.name} · 已就绪 ${promptCount} 条 Prompt · 尚未创建渲染批次`
+            ? `${currentProduct.name} · ${summary.total} 个真实视频任务 · 批次 revision ${workspace?.batchRevision ?? '-'}${workspace?.stale ? ' · 上游已更新' : ''}`
+            : workspace?.promptReady
+              ? `${currentProduct.name} · 已就绪 ${promptCount} 条 Prompt · 尚未创建渲染批次`
+              : `${currentProduct.name} · 等待上游 Prompt 完成校验`
         "
         :state="operation || batchActive ? 'saving' : validated ? 'saved' : 'dirty'"
         :state-label="
           operation || batchActive
             ? '正在生成…'
             : validated
-              ? '演示校验完成'
+              ? '真实工作副本已提交'
               : hasBatch
-                ? '当前会话已更新'
-                : '等待开始'
+                ? '真实批次已更新'
+                : workspace?.promptReady
+                  ? '等待开始'
+                  : '上游未确认'
         "
         title="AI 视频片段批次"
       />
@@ -1312,16 +1371,18 @@ onBeforeUnmount(() => {
         :complete="validated"
         :status-title="
           validated
-            ? '演示批次校验完成'
+            ? '真实视频批次校验完成'
             : !hasBatch
-              ? '等待开始批量渲染'
+              ? workspace?.promptReady
+                ? '等待开始批量渲染'
+                : '请先完成上游 Prompt 校验'
               : batchActive
                 ? `正在渲染，已完成 ${summary.completed}/${summary.total}`
                 : currentProductReady
                   ? '全部片段已完成，可完成校验'
                   : '等待处理异常或缺失片段'
         "
-        :status-detail="`步骤 4 / 6 · ${currentProduct.name} · ${validated ? '未写入真实工作副本' : hasBatch ? '演示队列尚未校验' : `已就绪 ${promptCount} 条 Prompt`}`"
+        :status-detail="`步骤 4 / 6 · ${currentProduct.name} · ${validated ? '真实工作副本已提交' : hasBatch ? '真实批次尚未校验' : workspace?.promptReady ? `已就绪 ${promptCount} 条 Prompt` : '等待上游确认'}`"
         :validate-disabled="!currentProductReady"
         :next-disabled="!validated || operation !== null"
         next-label="下一步：模板混剪"
@@ -1356,8 +1417,16 @@ onBeforeUnmount(() => {
             </button>
           </header>
           <div class="large-preview">
-            <Play :size="34" />
-            <small>{{ previewTask.durationSeconds }}s</small>
+            <LoaderCircle v-if="previewLoading" class="spin" :size="34" />
+            <div v-else-if="previewError" class="preview-load-error" role="alert">
+              <AlertCircle :size="28" />
+              <small>{{ previewError }}</small>
+            </div>
+            <video v-else-if="previewUrl" :src="previewUrl" controls autoplay playsinline />
+            <template v-else>
+              <Play :size="34" />
+              <small>{{ previewTask.durationSeconds }}s</small>
+            </template>
           </div>
           <div class="preview-meta">
             <span>
@@ -1367,7 +1436,7 @@ onBeforeUnmount(() => {
                 {{ fragmentTypeLabel(previewTask.fragmentType) }}</small
               >
             </span>
-            <em>演示片段预览</em>
+            <em>真实视频素材</em>
           </div>
           <p class="dialog-note">
             {{
@@ -1603,10 +1672,7 @@ onBeforeUnmount(() => {
             </div>
             <div class="transfer-note">
               <AlertCircle :size="15" />
-              <p>
-                冲突素材会替换同一 Prompt 槽位的当前结果；本地 Mock
-                只记录文件信息，不上传或读取视频内容。
-              </p>
+              <p>冲突素材会替换同一 Prompt 槽位的当前结果；真实素材导入接口尚未接入。</p>
             </div>
             <footer>
               <button type="button" @click="closeTransferPanel(true)">取消</button>
@@ -1656,7 +1722,7 @@ onBeforeUnmount(() => {
                   type="checkbox"
                   :checked="exportFormats.includes('VIDEO_PACKAGE')"
                   @change="toggleExportFormat('VIDEO_PACKAGE')"
-                />视频素材包 ZIP <small>Mock 阶段记录打包意图</small></label
+                />视频素材包 ZIP <small>真实批量导出接口尚未接入</small></label
               >
               <label
                 ><input
@@ -1675,7 +1741,7 @@ onBeforeUnmount(() => {
             </div>
             <div class="transfer-note">
               <AlertCircle :size="15" />
-              <p>当前前端 Mock 会下载一份结构化 JSON 清单，不生成虚假的视频文件或网络地址。</p>
+              <p>真实素材批量导出接口尚未接入，当前不会生成占位文件。</p>
             </div>
             <footer>
               <button type="button" @click="closeTransferPanel(true)">取消</button>
@@ -2379,6 +2445,21 @@ select:disabled {
   color: #fff;
   background: linear-gradient(135deg, #be3f4f, #f4884d);
   border-radius: 18px;
+  overflow: hidden;
+}
+.large-preview video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #111827;
+}
+.preview-load-error {
+  display: grid;
+  max-width: 360px;
+  padding: 20px;
+  gap: 10px;
+  place-items: center;
+  text-align: center;
 }
 .large-preview small {
   position: absolute;

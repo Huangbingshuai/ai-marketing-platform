@@ -78,12 +78,16 @@ const sourcePackageArtifact = {
 };
 
 const serviceWith = (overrides: Record<string, unknown> = {}) => {
+  const { configValues = {}, ...repositoryOverrides } = overrides as {
+    configValues?: Record<string, string | undefined>;
+  } & Record<string, unknown>;
   const artifact = promptArtifact();
   const repository = {
     workflowRun: vi.fn().mockResolvedValue({ id: 'run-a' }),
     product: vi.fn().mockResolvedValue({ id: 'product-a', name: '测试产品' }),
     promptArtifact: vi.fn().mockResolvedValue(artifact),
     sourcePackageArtifact: vi.fn().mockResolvedValue(sourcePackageArtifact),
+    latestBatch: vi.fn().mockResolvedValue(null),
     renderArtifact: vi.fn().mockResolvedValue(null),
     batch: vi.fn().mockResolvedValue(null),
     task: vi.fn().mockResolvedValue(null),
@@ -149,7 +153,7 @@ const serviceWith = (overrides: Record<string, unknown> = {}) => {
         }),
       ),
     startRepair: vi.fn().mockResolvedValue({ kind: 'UPDATED' }),
-    ...overrides,
+    ...repositoryOverrides,
   };
   const storage = {
     open: vi.fn(),
@@ -161,6 +165,7 @@ const serviceWith = (overrides: Record<string, unknown> = {}) => {
     { get: vi.fn().mockResolvedValue({ id: 'project-a', name: '项目 A' }) } as never,
     {
       get: vi.fn((key: string) => {
+        if (key in configValues) return configValues[key];
         if (key === 'SEEDANCE_MODEL') return 'seedance-model';
         if (key === 'SEEDANCE_REFERENCE_PUBLIC_BASE_URL') return 'https://api.example.test/api';
         if (key === 'SEEDANCE_REFERENCE_SIGNING_SECRET')
@@ -178,6 +183,19 @@ const serviceWith = (overrides: Record<string, unknown> = {}) => {
 };
 
 describe('EffectSegmentRenderService', () => {
+  it('returns the confirmed Prompt count required by the real render workspace', async () => {
+    const { service } = serviceWith();
+
+    const result = await service.workspace('project-a', 'run-a', 'product-a');
+
+    expect(result).toMatchObject({
+      promptReady: true,
+      promptCount: 1,
+      promptArtifactRevision: 3,
+      batch: null,
+    });
+  });
+
   it('freezes one render task per confirmed Prompt and appends the shared prompt once', async () => {
     const { service, repository } = serviceWith();
 
@@ -207,6 +225,22 @@ describe('EffectSegmentRenderService', () => {
       input.tasks[0].requestSnapshot.request.content[0].text.match(/保持产品外观一致/gu),
     ).toHaveLength(1);
     expect(input.tasks[0].requestSnapshot.request.content[0].text).not.toContain('创意主线：');
+  });
+
+  it('uses the official Seedance 2.0 model when no legacy model override is configured', async () => {
+    const { service, repository } = serviceWith({
+      configValues: { SEEDANCE_MODEL: undefined },
+    });
+
+    await service.start('project-a', 'product-a', {
+      workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0,
+      idempotencyKey: 'request-default-model',
+    });
+
+    const input = repository.createBatch.mock.calls[0]![3];
+    expect(input.tasks[0].requestSnapshot.request.model).toBe('doubao-seedance-2-0-260128');
   });
 
   it('rejects a stale Prompt revision before creating jobs', async () => {

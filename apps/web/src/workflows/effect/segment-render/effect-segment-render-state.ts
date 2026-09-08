@@ -1,4 +1,11 @@
-import type { EffectPromptFragmentType } from '@ai-marketing/contracts';
+import type {
+  EffectPromptFragmentType,
+  EffectSegmentRenderBatch,
+  EffectSegmentRenderOutput,
+  EffectSegmentRenderTask as ApiEffectSegmentRenderTask,
+  GetEffectSegmentRenderWorkspaceData,
+  WorkingArtifactCommitStatus,
+} from '@ai-marketing/contracts';
 
 export const EFFECT_SEGMENT_RENDER_PAGE_SIZE = 20;
 
@@ -10,18 +17,21 @@ export type EffectSegmentRenderSource = 'PROMPT';
 export type EffectSegmentRenderOrigin = 'AI_GENERATED' | 'EXTERNAL_IMPORT';
 
 export type EffectSegmentRenderBatchStatus =
-  'COMPLETED' | 'NOT_STARTED' | 'PARTIAL' | 'QUEUED' | 'RUNNING';
+  'COMPLETED' | 'FAILED' | 'NOT_STARTED' | 'PARTIAL' | 'QUEUED' | 'RUNNING';
 
 export type EffectSegmentRenderRepairStatus = 'FAILED' | 'QUEUED' | 'READY' | 'RENDERING';
 
 export type EffectSegmentRenderRepair = {
+  version?: number;
   sourceVersion: number;
   startMs: number;
   endMs: number;
   instruction: string;
   status: EffectSegmentRenderRepairStatus;
   candidateVersion: number | null;
+  candidate?: EffectSegmentRenderOutput | null;
   errorMessage: string | null;
+  errorCode?: string | null;
 };
 
 export type EffectSegmentRenderTask = {
@@ -44,7 +54,10 @@ export type EffectSegmentRenderTask = {
   retryCount: number;
   maxAutoRetries: number;
   abnormal: boolean;
+  errorCode?: string | null;
   errorMessage: string | null;
+  providerTaskId?: string | null;
+  output?: EffectSegmentRenderOutput | null;
   activeVersion: number;
   repair: EffectSegmentRenderRepair | null;
   updatedAt: string;
@@ -55,12 +68,72 @@ export type EffectSegmentRenderWorkspace = {
   workflowRunId: string;
   productId: string;
   promptCount: number;
+  promptReady?: boolean;
+  promptArtifactRevision?: number | null;
+  settingsRevision?: number | null;
+  batchId?: string | null;
+  batchRevision?: number | null;
+  stale?: boolean;
+  commitStatus?: WorkingArtifactCommitStatus | null;
   batchStatus: EffectSegmentRenderBatchStatus;
   tasks: EffectSegmentRenderTask[];
   startedAt: string | null;
   completedAt: string | null;
   updatedAt: string;
 };
+
+const effectSegmentRenderTaskFromApi = (
+  task: ApiEffectSegmentRenderTask,
+): EffectSegmentRenderTask => ({
+  ...task,
+  compatibleFragmentTypes: [...task.compatiblePurposes],
+  origin: 'AI_GENERATED',
+  activeVersion: task.output?.version ?? 1,
+  repair: task.repair
+    ? {
+        ...task.repair,
+        candidateVersion: task.repair.candidate?.version ?? null,
+      }
+    : null,
+});
+
+export const effectSegmentRenderWorkspaceFromApi = (
+  data: GetEffectSegmentRenderWorkspaceData,
+): EffectSegmentRenderWorkspace => ({
+  projectId: data.projectId,
+  workflowRunId: data.workflowRunId,
+  productId: data.productId,
+  promptCount: data.promptCount,
+  promptReady: data.promptReady,
+  promptArtifactRevision: data.promptArtifactRevision,
+  settingsRevision: data.settingsRevision,
+  batchId: data.batch?.id ?? null,
+  batchRevision: data.batch?.revision ?? null,
+  stale: data.batch?.stale ?? false,
+  commitStatus: data.batch?.commitStatus ?? null,
+  batchStatus: data.batch?.status ?? 'NOT_STARTED',
+  tasks: data.batch?.tasks.map(effectSegmentRenderTaskFromApi) ?? [],
+  startedAt: data.batch?.createdAt ?? null,
+  completedAt: data.batch?.status === 'COMPLETED' ? data.batch.updatedAt : null,
+  updatedAt: data.batch?.updatedAt ?? new Date().toISOString(),
+});
+
+export const effectSegmentRenderWorkspaceWithBatch = (
+  current: EffectSegmentRenderWorkspace,
+  batch: EffectSegmentRenderBatch,
+): EffectSegmentRenderWorkspace => ({
+  ...current,
+  productId: batch.productId,
+  batchId: batch.id,
+  batchRevision: batch.revision,
+  stale: batch.stale,
+  commitStatus: batch.commitStatus,
+  batchStatus: batch.status,
+  tasks: batch.tasks.map(effectSegmentRenderTaskFromApi),
+  startedAt: batch.createdAt,
+  completedAt: batch.status === 'COMPLETED' ? batch.updatedAt : null,
+  updatedAt: batch.updatedAt,
+});
 
 export type EffectSegmentRenderSummary = {
   total: number;

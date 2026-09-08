@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import parentSource from '../source-import/EffectImportNodePage.vue?raw';
+import apiSource from './api/effect-segment-render.api.ts?raw';
 import pageSource from './EffectSegmentRenderNodePage.vue?raw';
 import serviceSource from './services/effect-segment-render.mock-service.ts?raw';
 
@@ -30,17 +31,15 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).not.toContain('AI 渲染素材池');
   });
 
-  it('keeps one prompt mapped to one material fragment and distinguishes imported origins', () => {
+  it('keeps one prompt mapped to one real material fragment', () => {
     expect(pageSource).toContain('每条 1 个视频素材片段');
     expect(pageSource).toContain('promptExcerpt(task.promptText)');
     expect(pageSource).toContain('<p>{{ task.promptCode }}</p>');
     expect(pageSource).not.toContain('{{ task.productName }}片段 {{ taskSequenceLabel(task) }}');
     expect(pageSource).not.toContain('{{ task.promptCode }} · 每条 1 个视频素材片段');
     expect(pageSource).toContain('EFFECT_PROMPT_FRAGMENT_TYPE_LABELS');
-    expect(serviceSource).toContain("source: 'PROMPT'");
-    expect(serviceSource).toContain("origin: 'AI_GENERATED'");
-    expect(serviceSource).toContain("origin: 'EXTERNAL_IMPORT'");
-    expect(serviceSource).toContain('importedByPromptId');
+    expect(pageSource).toContain('真实 AI 任务');
+    expect(pageSource).toContain('task.output');
     expect(pageSource).not.toContain('4 个分镜片段');
     expect(serviceSource).not.toContain('完整成片脚本');
   });
@@ -73,7 +72,7 @@ describe('effect segment render material gallery layout', () => {
       expect(pageSource).toContain(marker);
     expect(pageSource).not.toContain('批量重新生成');
     expect(pageSource).not.toContain('批量删除');
-    expect(pageSource).toContain('删除视频素材');
+    expect(pageSource).toContain('真实素材删除接口尚未接入');
     expect(pageSource).toContain('@keydown.esc="closeTransferPanel(true)"');
     expect(pageSource).toContain('trigger?.isConnected && trigger.focus()');
     expect(pageSource).toContain(
@@ -109,21 +108,19 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain('field-label="视频模型"');
   });
 
-  it('keeps async mock operations in the service and never performs a network request', () => {
+  it('uses the real API for all supported render lifecycle operations', () => {
     for (const handler of [
       'startEffectSegmentRenderBatch',
       'regenerateEffectSegmentRenderTasks',
-      'inspectEffectSegmentRenderImports',
-      'importEffectSegmentRenderFiles',
-      'deleteEffectSegmentRenderMaterials',
-      'createEffectSegmentRenderExport',
-      'repairEffectSegmentRenderTask',
+      'getEffectSegmentRenderTaskContent',
+      'startEffectSegmentRenderRepair',
       'decideEffectSegmentRenderRepair',
+      'validateEffectSegmentRenderBatch',
     ])
-      expect(serviceSource).toContain(handler);
-    expect(serviceSource).toContain('const workspaces = new Map');
-    expect(serviceSource).toContain('自动重试已达上限');
-    expect(serviceSource).not.toContain('fetch(');
+      expect(apiSource).toContain(handler);
+    expect(pageSource).not.toContain("from './services/effect-segment-render.mock-service'");
+    expect(pageSource).toContain('真实 Seedance 任务');
+    expect(pageSource).toContain('pollTimer = setTimeout');
     expect(pageSource).not.toContain('setInterval(');
   });
 
@@ -132,7 +129,7 @@ describe('effect segment render material gallery layout', () => {
       /<div v-else-if="!hasBatch && !tasks\.length" class="segment-batch-empty">[\s\S]*?<\/div>/u,
     )?.[0];
     expect(emptyState).toContain('尚未创建视频渲染任务');
-    expect(emptyState).toContain('从页头导入已有素材，或开始批量渲染');
+    expect(emptyState).toContain('从页头开始提交真实批量渲染');
     expect(emptyState).not.toContain('<button');
     expect(serviceSource).toContain("batchStatus: 'NOT_STARTED'");
     expect(serviceSource).toContain('tasks: []');
@@ -141,7 +138,7 @@ describe('effect segment render material gallery layout', () => {
   it('uses common workflow controls and only replaces step four', () => {
     expect(pageSource).toContain('<WorkflowNodeDraftBar');
     expect(pageSource).toContain('<WorkflowNodeFooter');
-    expect(pageSource).toContain('尚未提交真实工作副本');
+    expect(pageSource).toContain('真实工作副本已提交');
     expect(pageSource).not.toContain('保存到项目资产库');
     expect(pageSource).not.toContain('localStorage');
     expect(parentSource).toContain(

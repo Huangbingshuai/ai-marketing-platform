@@ -16,7 +16,10 @@ PLACEHOLDER_KEYS = {
 
 class WorkerSettings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=None, case_sensitive=True, extra="ignore"
+        env_file=None,
+        case_sensitive=True,
+        env_ignore_empty=True,
+        extra="ignore",
     )
 
     internal_api_base_url: AnyHttpUrl = Field(alias="INTERNAL_API_BASE_URL")
@@ -34,7 +37,8 @@ class WorkerSettings(BaseSettings):
         alias="SEEDANCE_BASE_URL",
     )
     seedance_api_key: SecretStr | None = Field(
-        default=None, alias="SEEDANCE_API_KEY"
+        default=None,
+        validation_alias=AliasChoices("SEEDANCE_API_KEY", "ARK_API_KEY"),
     )
     api_timeout_seconds: float = Field(
         default=60.0, alias="INTERNAL_API_TIMEOUT_SECONDS", gt=0

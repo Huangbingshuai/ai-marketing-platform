@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 
 import type {
   EffectPromptBatchResult,
+  EffectPromptRenderCapabilityKey,
   EffectSegmentRenderSettings,
   EffectSegmentRenderRepairDecision,
   EffectSegmentRenderRepairRegion,
@@ -66,6 +67,15 @@ const SUPPORTED_REFERENCE_IMAGE_MIME_TYPES = new Set([
 const SUPPORTED_REFERENCE_VIDEO_MIME_TYPES = new Set(['video/mp4', 'video/quicktime']);
 // eslint-disable-next-line no-control-regex
 const INVALID_FILE_NAME_PATTERN = /[<>:"/\\|?*\u0000-\u001f]/gu;
+const SEEDANCE_MODEL_CONFIG_KEYS: Record<EffectPromptRenderCapabilityKey, string> = {
+  SEEDANCE_1_5_PRO: 'SEEDANCE_MODEL_2_5',
+  SEEDANCE_2_0: 'SEEDANCE_MODEL_2_0',
+  SEEDANCE_1_0: 'SEEDANCE_MODEL_2_0_MINI',
+  SEEDANCE_2_0_FAST: 'SEEDANCE_MODEL_2_0_FAST',
+};
+const DEFAULT_SEEDANCE_MODELS: Partial<Record<EffectPromptRenderCapabilityKey, string>> = {
+  SEEDANCE_2_0: 'doubao-seedance-2-0-260128',
+};
 
 const safeFileName = (value: string): string => {
   const name = value.trim().replace(INVALID_FILE_NAME_PATTERN, '_').slice(0, 180);
@@ -209,6 +219,7 @@ const presentTask = (
     task.repairEndMs !== null &&
     task.repairInstruction
       ? {
+          version: task.renderVersion,
           sourceVersion: task.repairSourceVersion,
           startMs: task.repairStartMs,
           endMs: task.repairEndMs,
@@ -238,6 +249,7 @@ const presentTask = (
     promptCode: task.promptCode,
     promptText: snapshot.promptText,
     fragmentType: snapshot.primaryPurpose,
+    compatiblePurposes: [...snapshot.compatiblePurposes],
     durationSeconds: snapshot.request.duration,
     modelMatch: 'AUTO_MATCHED',
     source: 'PROMPT',
@@ -276,6 +288,16 @@ export class EffectSegmentRenderService {
     @Inject(WorkflowWorkingRepository)
     private readonly workingRepository: WorkflowWorkingRepository,
   ) {}
+
+  private modelFor(capabilityKey: EffectPromptRenderCapabilityKey): string {
+    const configKey = SEEDANCE_MODEL_CONFIG_KEYS[capabilityKey];
+    const model =
+      this.config.get<string>(configKey)?.trim() ||
+      this.config.get<string>('SEEDANCE_MODEL')?.trim() ||
+      DEFAULT_SEEDANCE_MODELS[capabilityKey];
+    if (!model) throw conflict(`当前视频模型尚未配置（${configKey}）`);
+    return model;
+  }
 
   private settingsFromState(value: unknown): EffectSegmentRenderSettings | null {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -393,14 +415,16 @@ export class EffectSegmentRenderService {
         effectSegmentRenderSettingsNodeId(productId),
       ),
     ]);
+    const promptBatch = prompt?.payload ? parseEffectPromptBatchResult(prompt.payload) : null;
     const promptReady = Boolean(
-      prompt?.payload && prompt.freshness === 'CURRENT' && prompt.availability === 'AVAILABLE',
+      promptBatch && prompt?.freshness === 'CURRENT' && prompt.availability === 'AVAILABLE',
     );
     return {
       projectId,
       workflowRunId,
       productId,
       promptReady,
+      promptCount: promptReady ? (promptBatch?.items.length ?? 0) : 0,
       promptArtifactRevision: promptReady ? (prompt?.revision ?? null) : null,
       settings:
         this.settingsFromState(settingsNode?.state) ?? this.legacySettings(prompt?.payload ?? null),
@@ -465,8 +489,6 @@ export class EffectSegmentRenderService {
     await this.projects.get(projectId);
     const idempotencyKey = input.idempotencyKey.trim();
     if (!idempotencyKey) throw badRequest('幂等键不能为空');
-    const model = this.config.get<string>('SEEDANCE_MODEL')?.trim();
-    if (!model) throw conflict('Seedance 模型尚未配置');
     const [workflow, product, promptArtifact, sourcePackage, settingsNode] = await Promise.all([
       this.repository.workflowRun(projectId, input.workflowRunId),
       this.repository.product(projectId, input.workflowRunId, productId),
@@ -494,6 +516,13 @@ export class EffectSegmentRenderService {
       sourcePackage.availability !== 'AVAILABLE'
     )
       throw conflict('产品资料包尚未完成校验');
+    if ((settingsNode?.revision ?? 0) !== input.expectedSettingsRevision)
+      throw conflict('视频渲染设置已更新，请刷新后重试');
+    const renderSettings = settingsNode
+      ? this.settingsFromState(settingsNode.state)
+      : this.legacySettings(promptArtifact.payload);
+    if (!renderSettings) throw conflict('视频渲染设置无效，请重新保存');
+    const model = this.modelFor(renderSettings.capabilityKey);
     const inputImages = sourcePackage.files
       .filter(
         ({ role, fileObject }) => role === 'PRODUCT_IMAGE' && fileObject.status === 'AVAILABLE',
@@ -536,12 +565,6 @@ export class EffectSegmentRenderService {
     const promptBatch = parseEffectPromptBatchResult(promptArtifact.payload);
     if (!promptBatch) throw conflict('Prompt 批次结构无效，请重新生成并校验');
     this.assertRenderablePromptBatch(promptBatch);
-    if ((settingsNode?.revision ?? 0) !== input.expectedSettingsRevision)
-      throw conflict('视频渲染设置已更新，请刷新后重试');
-    const renderSettings = settingsNode
-      ? this.settingsFromState(settingsNode.state)
-      : this.legacySettings(promptArtifact.payload);
-    if (!renderSettings) throw conflict('视频渲染设置无效，请重新保存');
     const snapshots = promptBatch.items.map((item) => {
       const compiled = compileEffectSeedanceRequest(promptBatch, item.id, model, renderSettings);
       return {
