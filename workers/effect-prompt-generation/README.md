@@ -147,7 +147,6 @@ Ark Responses API 在解析 JSON 前检查 `status` 与 `incomplete_details`。�
 
 排查超时查看安全日志的 `step`、`batch_size`、`input_chars`、`timeout_seconds`、`latency_ms`、`attempts` 与 `exception_type`。`estimated_input_units` 只表示拆批容量估算，不作为计费 Token；日志不含 Prompt 正文、原始响应或凭证。
 
-
 ```powershell
 uv run --frozen pytest -q
 uv run --frozen mypy src
