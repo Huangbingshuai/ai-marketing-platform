@@ -336,6 +336,55 @@ describe('effect prompt quality contract', () => {
     expect(result.settings.targetCount).toBe(10);
   });
 
+  it('preserves the silent-material coverage scope through parsing and edits', () => {
+    const visible = {
+      factId: 'VISUAL_FEATURES:visible',
+      field: 'VISUAL_FEATURES' as const,
+      value: '可见产品外观',
+      valueHash: sha256('可见产品外观'),
+    };
+    const background = {
+      factId: 'CORE_SELLING_POINT:context',
+      field: 'CORE_SELLING_POINT' as const,
+      value: '仅作背景的风味信息',
+      valueHash: sha256('仅作背景的风味信息'),
+    };
+    const items = Array.from({ length: 10 }, (_, index) => ({
+      ...item(`00000000-0000-4000-8000-${String(index).padStart(12, '0')}`),
+      insightBindings: index === 0 ? [{ ...visible, role: 'PRIMARY' as const }] : [],
+    }));
+    const result = recomputePromptQuality(
+      items,
+      {
+        targetCount: 10,
+        defaultDurationSeconds: 5,
+      },
+      {
+        insightCoverage: {
+          required: [visible],
+          covered: [visible],
+          missing: [],
+          adaptive: [background],
+          deferred: [background],
+          excluded: [],
+          appliedConstraints: [],
+        },
+      },
+    );
+    const parsed = parseEffectPromptBatchResult(result);
+    expect(parsed?.qualityStatus).toBe('PASS');
+    expect(parsed?.metrics.insightCoverage.missing).toEqual([]);
+    expect(parsed?.metrics.insightCoverage.deferred).toEqual([background]);
+    const edited = recomputePromptQuality(
+      items.map((entry) => ({ ...entry, insightBindings: [] })),
+      result.settings,
+      parsed!.metrics,
+    );
+    expect(edited.qualityStatus).toBe('NEEDS_REVIEW');
+    expect(edited.metrics.insightCoverage.missing).toEqual([visible]);
+    expect(edited.metrics.insightCoverage.deferred).toEqual([background]);
+  });
+
   it('keeps semantic duplicate rate as an advisory metric', () => {
     const items = Array.from({ length: 20 }, (_, index) =>
       item(`00000000-0000-4000-8000-${String(index).padStart(12, '0')}`),

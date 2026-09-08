@@ -230,7 +230,10 @@ def map_insight(payload: Mapping[str, Any]) -> InsightApplicationMap:
 
 
 def insight_coverage(
-    application: InsightApplicationMap, items: Sequence[PromptItem]
+    application: InsightApplicationMap,
+    items: Sequence[PromptItem],
+    *,
+    required_fact_ids: Sequence[str] | None = None,
 ) -> InsightCoverage:
     covered_ids = {
         binding.fact_id
@@ -238,8 +241,20 @@ def insight_coverage(
         for binding in item.insight_bindings
         if binding.fact_id in application.by_id
     }
-    required = [_reference(fact) for fact in application.required]
-    adaptive = [_reference(fact) for fact in application.adaptive]
+    # A supplied scope is the AI visual strategy's batch requirement, including
+    # an intentionally empty scope. Keep other facts available without treating
+    # copy-only context as missing evidence in silent material clips.
+    required_ids = (
+        {fact.fact_id for fact in application.required}
+        if required_fact_ids is None
+        else set(required_fact_ids)
+    )
+    required = [
+        _reference(fact) for fact in application.usable if fact.fact_id in required_ids
+    ]
+    adaptive = [
+        _reference(fact) for fact in application.usable if fact.fact_id not in required_ids
+    ]
     return InsightCoverage(
         required=required,
         covered=[item for item in required if item.fact_id in covered_ids],

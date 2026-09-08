@@ -1089,6 +1089,8 @@ export const recomputePromptQuality = (
   );
   const insightCoverage: EffectPromptInsightCoverage = {
     ...previousCoverage,
+    // The worker scopes required facts using the AI visual policy. Deferred
+    // business context must remain advisory when completing or editing a batch.
     covered: previousCoverage.required.filter(({ factId }) => boundFactIds.has(factId)),
     missing: previousCoverage.required.filter(({ factId }) => !boundFactIds.has(factId)),
     deferred: previousCoverage.adaptive.filter(({ factId }) => !boundFactIds.has(factId)),

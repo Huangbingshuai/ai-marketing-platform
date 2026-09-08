@@ -983,6 +983,8 @@ export class EffectPromptRepository {
           status: 'SUCCEEDED',
           summary: 'Prompt 批次结果已保存',
           metadata: json({
+            ...(jsonRecord(run.stages.find(({ nodeId }) => nodeId === 'RESULT_SAVE')?.metadata) ??
+              {}),
             batchSize: draft.metrics.acceptedCount,
             qualityStatus: draft.qualityStatus,
             ...(semanticAudit ? { semanticAudit } : {}),

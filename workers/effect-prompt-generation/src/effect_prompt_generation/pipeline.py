@@ -4010,9 +4010,9 @@ class PromptGenerationPipeline:
         )
         missing = max(0, selection_target - len(items))
         selected_covered_fact_ids = {
-            fact_id
-            for row in result.selected
-            for fact_id in row.evaluation.realized_fact_ids
+            binding.fact_id
+            for item in cache.accepted_items
+            for binding in item.insight_bindings
         }
         selected_covered_fact_ids.update(fixed_covered_fact_ids)
         missing_coverage_fact_ids = [
@@ -4319,32 +4319,15 @@ class PromptGenerationPipeline:
         coverage = insight_coverage(
             self._require_application(context),
             items,
-        )
-        deep_business_fact_ids = set(
-            _visually_required_business_fact_ids(
+            required_fact_ids=_visually_required_business_fact_ids(
                 self._require_application(context),
                 cache.fact_visual_strategy,
             )
         )
-        covered_fact_ids = {
-            binding.fact_id for item in items for binding in item.insight_bindings
-        }
-        if not item_operation and cache.final_required_fact_ids:
-            final_required_fact_ids = list(cache.final_required_fact_ids)
-            final_covered_fact_ids = list(cache.final_covered_fact_ids)
-            final_missing_fact_ids = list(cache.final_missing_fact_ids)
-        else:
-            final_required_fact_ids = sorted(deep_business_fact_ids)
-            final_covered_fact_ids = [
-                fact_id
-                for fact_id in final_required_fact_ids
-                if fact_id in covered_fact_ids
-            ]
-            final_missing_fact_ids = [
-                fact_id
-                for fact_id in final_required_fact_ids
-                if fact_id not in covered_fact_ids
-            ]
+        final_required_fact_ids = [fact.fact_id for fact in coverage.required]
+        deep_business_fact_ids = set(final_required_fact_ids)
+        final_covered_fact_ids = [fact.fact_id for fact in coverage.covered]
+        final_missing_fact_ids = [fact.fact_id for fact in coverage.missing]
         quality_status: Literal["PASS", "NEEDS_REVIEW"] = (
             "PASS"
             if len(items) == expected
@@ -4498,7 +4481,7 @@ class PromptGenerationPipeline:
             isinstance(
                 exc,
                 (InternalApiError, ProviderError, EmbeddingProviderError),
-            )
+            ),
             and exc.retryable
         )
         await self.api.fail(

@@ -669,6 +669,33 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     ]
     assert api.execution_mode == "MOCK"
     assert all(item.target_duration_seconds == 5 for item in api.result.items)
+    selection_stage = next(
+        stage for stage in reversed(api.stages)
+        if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
+    )
+    save_stage = next(
+        stage for stage in reversed(api.stages)
+        if stage.node_id.value == "RESULT_SAVE"
+    )
+    assert len(api.result.metrics.insight_coverage.missing) == 0
+    assert selection_stage.metadata["missingRequiredFactCount"] == 0
+    assert save_stage.metadata["missingRequiredFactCount"] == 0
+    strategy = pipeline._cache(runtime).fact_visual_strategy
+    assert strategy is not None
+    deferred_ids = {
+        policy.fact_id
+        for policy in strategy.policies
+        if policy.visual_usage in {
+            FactVisualUsage.TEXT_ONLY, FactVisualUsage.FORBIDDEN_VISUAL_PROOF
+        }
+    }
+    assert deferred_ids
+    assert not deferred_ids.intersection(
+        fact.fact_id for fact in api.result.metrics.insight_coverage.required
+    )
+    assert deferred_ids.issubset(
+        fact.fact_id for fact in api.result.metrics.insight_coverage.adaptive
+    )
     assert all(item.fragment_type == item.primary_purpose for item in api.result.items)
     assert all(
         item.primary_purpose in item.compatible_purposes for item in api.result.items
@@ -1831,6 +1858,7 @@ async def test_unresolved_fact_coverage_supplements_once_then_keeps_exact_draft(
         stage
         for stage in reversed(api.stages)
         if stage.node_id.value == "RESULT_SAVE"
+    assert api.result.metrics.insight_coverage.missing
     )
     assert (
         result_stage.metadata["requiredFactCount"]

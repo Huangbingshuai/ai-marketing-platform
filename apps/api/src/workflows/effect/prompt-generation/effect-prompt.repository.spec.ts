@@ -214,10 +214,9 @@ describe('EffectPromptRepository', () => {
       promptItemsRetainedForRun(result, 'target', 'ITEM_REGENERATE').map(({ id }) => id),
     ).toEqual(['one', 'three']);
     expect(promptItemsRetainedForRun(result, null, 'BATCH_GENERATE')).toEqual([]);
-    expect(promptItemsRetainedForRun(result, 'target', 'ITEM_EVALUATE').map(({ id }) => id)).toEqual([
-      'one',
-      'three',
-    ]);
+    expect(
+      promptItemsRetainedForRun(result, 'target', 'ITEM_EVALUATE').map(({ id }) => id),
+    ).toEqual(['one', 'three']);
   });
   it('scopes run lookup by project and run id', async () => {
     const findFirst = vi.fn().mockResolvedValue(null);
@@ -875,6 +874,16 @@ describe('EffectPromptRepository', () => {
             baseResultRevision: null,
           },
           result: null,
+          stages: [
+            {
+              nodeId: 'RESULT_SAVE',
+              metadata: {
+                requiredFactCount: 30,
+                coveredRequiredFactCount: 30,
+                missingRequiredFactCount: 0,
+              },
+            },
+          ],
         }),
         update: vi.fn().mockResolvedValue({}),
       },
@@ -899,7 +908,15 @@ describe('EffectPromptRepository', () => {
           projectId_runId_nodeId: { projectId, runId, nodeId: 'RESULT_SAVE' },
         },
         create: expect.objectContaining({ status: 'SUCCEEDED', completedAt: now }),
-        update: expect.objectContaining({ status: 'SUCCEEDED', completedAt: now }),
+        update: expect.objectContaining({
+          status: 'SUCCEEDED',
+          completedAt: now,
+          metadata: expect.objectContaining({
+            requiredFactCount: 30,
+            coveredRequiredFactCount: 30,
+            missingRequiredFactCount: 0,
+          }),
+        }),
       }),
     );
   });

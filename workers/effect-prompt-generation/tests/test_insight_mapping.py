@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from effect_prompt_generation.insight_mapping import (
+    insight_coverage,
     mandatory_business_facts,
     map_insight,
 )
@@ -136,3 +137,28 @@ def test_excludes_uncertain_audience_items_individually() -> None:
         for fact in application.excluded
         if fact.field == InsightField.TARGET_AUDIENCE
     ] == ["待确认人群"]
+
+
+def test_coverage_preserves_context_without_requiring_it_in_silent_material() -> None:
+    application = map_insight(_card())
+    visible = next(fact for fact in application.usable if fact.value == "切面油润")
+    coverage = insight_coverage(application, [], required_fact_ids=[visible.fact_id])
+
+    assert [fact.fact_id for fact in coverage.required] == [visible.fact_id]
+    assert coverage.missing == coverage.required
+    assert "广式风味" in {fact.value for fact in coverage.deferred}
+    assert {fact.fact_id for fact in coverage.required + coverage.adaptive} == {
+        fact.fact_id for fact in application.usable
+    }
+    assert not ({fact.fact_id for fact in coverage.required} & {
+        fact.fact_id for fact in coverage.adaptive
+    })
+
+
+def test_empty_visual_requirement_does_not_restore_original_required_facts() -> None:
+    application = map_insight(_card())
+    scoped = insight_coverage(application, [], required_fact_ids=[])
+    assert scoped.required == scoped.missing == []
+    assert len(scoped.deferred) == len(application.usable)
+    legacy = insight_coverage(application, [])
+    assert len(legacy.required) == len(application.required)
