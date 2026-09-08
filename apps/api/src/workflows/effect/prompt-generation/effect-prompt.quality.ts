@@ -1097,7 +1097,10 @@ export const recomputePromptQuality = (
   };
   const metrics: EffectPromptMetrics = {
     targetCount: settings.targetCount,
-    candidateTargetCount: Math.min(240, Math.ceil(settings.targetCount * 1.2)),
+    candidateTargetCount: Math.min(
+      240,
+      previous?.candidateTargetCount ?? Math.ceil(settings.targetCount * 1.2),
+    ),
     acceptedCount: items.length,
     generatedCandidateCount: Math.max(
       previous?.generatedCandidateCount ?? items.length,

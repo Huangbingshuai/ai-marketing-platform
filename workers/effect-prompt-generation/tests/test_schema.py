@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from effect_prompt_generation.models import (
     CreativeAverageScores,
+    CreativeDirection,
     CreativeEvaluationDraft,
     CreativeEvaluationDraftBatch,
     CreativeEvaluationBatch,
@@ -27,6 +28,61 @@ from effect_prompt_generation.models import (
     SharedPromptSection,
     SharedRenderConstraints,
 )
+
+
+def test_creative_direction_trims_extra_avoidance_hints_without_semantic_rewrite() -> None:
+    direction = CreativeDirection.model_validate(
+        {
+            "directionId": "direction-1",
+            "territoryId": "PRODUCT_TEXTURE",
+            "primaryActionId": "VISIBLE_ACTION",
+            "factApplications": [
+                {
+                    "factId": "CORE_SELLING_POINT:1",
+                    "creativeUsage": "通过真实使用动作承载已确认卖点",
+                }
+            ],
+            "creativeDirection": "用一个连续动作展示产品的真实使用结果",
+            "priorityDimensions": ["NARRATIVE", "CAMERA"],
+            "semanticProfile": {
+                "narrativeFamily": "状态变化",
+                "sceneFamily": "真实使用场景",
+                "personaFamily": "成年使用者",
+                "productActionFamily": "取用产品",
+                "cameraFamily": "近景跟随",
+                "emotionFamily": "清晰可信",
+            },
+            "avoidFamilies": ["拥挤动作", "空泛展示", "重复摆拍"],
+        }
+    )
+
+    assert direction.avoid_families == ["拥挤动作", "空泛展示"]
+
+
+def test_evaluation_draft_ignores_unknown_optional_evidence_source() -> None:
+    draft = CreativeEvaluationDraft.model_validate(
+        {
+            "slotId": "creative-1",
+            "primaryPurpose": "PRODUCT_DISPLAY",
+            "compatiblePurposes": [],
+            "factEvidence": [
+                {
+                    "factId": "CORE_SELLING_POINT:1",
+                    "evidenceSource": "SHOT_PLAN",
+                    "supportLevel": "SEMANTIC_FULL",
+                }
+            ],
+            "scores": {
+                "productRelevance": 90,
+                "creativeCoherence": 90,
+                "visualExecutability": 90,
+                "commercialUsefulness": 90,
+                "visualClarity": 90,
+            },
+        }
+    )
+
+    assert draft.fact_evidence[0].evidence_source is None
 
 
 def test_item_evaluate_allows_retained_items_above_batch_target(

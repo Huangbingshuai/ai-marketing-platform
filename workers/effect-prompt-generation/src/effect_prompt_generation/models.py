@@ -858,6 +858,15 @@ class CreativeDirection(ApiModel):
             migrated["territoryId"] = "LEGACY_TERRITORY"
         if "primaryActionId" not in migrated and "primary_action_id" not in migrated:
             migrated["primaryActionId"] = "LEGACY_ACTION"
+        avoid_key = (
+            "avoidFamilies" if "avoidFamilies" in migrated else "avoid_families"
+        )
+        raw_avoid_families = migrated.get(avoid_key)
+        if isinstance(raw_avoid_families, list):
+            # Ark occasionally returns more than the requested two avoidance hints.
+            # Keeping the first two is a structural limit only; it does not ask the
+            # Worker to interpret or rewrite their business meaning.
+            migrated[avoid_key] = raw_avoid_families[:2]
         if "factApplications" in migrated or "fact_applications" in migrated:
             return migrated
         legacy_ids = list(
@@ -1341,6 +1350,24 @@ class FactEvidence(ApiModel):
         | None
     ) = None
     support_level: Literal["EXACT", "SEMANTIC_FULL", "PARTIAL", "NONE"] = "EXACT"
+
+    @field_validator("evidence_source", mode="before")
+    @classmethod
+    def discard_unknown_evidence_source(cls, value: Any) -> Any:
+        """Treat an unknown optional transport label as omitted evidence metadata."""
+
+        if value is None:
+            return None
+        normalized = str(value).strip().upper()
+        allowed = {
+            "CONTENT",
+            "CREATIVE_CORE",
+            "NARRATIVE",
+            "SCENE",
+            "PERSONA",
+            "PRODUCT_RELATION",
+        }
+        return normalized if normalized in allowed else None
 
 
 class AbstractVisualProofFinding(ApiModel):

@@ -256,6 +256,24 @@ describe('effect prompt quality contract', () => {
     });
   });
 
+  it('preserves the worker candidate target when recomputing a generated draft', () => {
+    const items = Array.from({ length: 100 }, (_, index) =>
+      item(String(index + 1), `产品创意画面 ${index + 1}`),
+    );
+    const initial = recomputePromptQuality(items, {
+      targetCount: 100,
+      defaultDurationSeconds: 15,
+    });
+    const result = recomputePromptQuality(items, initial.settings, {
+      ...initial.metrics,
+      candidateTargetCount: 140,
+      generatedCandidateCount: 160,
+    });
+
+    expect(result.metrics.candidateTargetCount).toBe(140);
+    expect(result.metrics.generatedCandidateCount).toBe(160);
+  });
+
   it('keeps evaluator hard issues as a distinct revision blocker', () => {
     const result = recomputePromptQuality(
       [
