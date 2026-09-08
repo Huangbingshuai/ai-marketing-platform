@@ -182,7 +182,9 @@ def test_structured_creative_shards_follow_configured_token_limit() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_preflight_rejects_an_impossible_ai_call_budget_before_shards() -> None:
+async def test_run_preflight_rejects_an_impossible_ai_call_budget_before_shards() -> (
+    None
+):
     api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -670,12 +672,12 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     ]
     assert api.execution_mode == "MOCK"
     selection_stage = next(
-        stage for stage in reversed(api.stages)
+        stage
+        for stage in reversed(api.stages)
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
     save_stage = next(
-        stage for stage in reversed(api.stages)
-        if stage.node_id.value == "RESULT_SAVE"
+        stage for stage in reversed(api.stages) if stage.node_id.value == "RESULT_SAVE"
     )
     assert len(api.result.metrics.insight_coverage.missing) == 0
     assert selection_stage.metadata["missingRequiredFactCount"] == 0
@@ -685,9 +687,8 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     deferred_ids = {
         policy.fact_id
         for policy in strategy.policies
-        if policy.visual_usage in {
-            FactVisualUsage.TEXT_ONLY, FactVisualUsage.FORBIDDEN_VISUAL_PROOF
-        }
+        if policy.visual_usage
+        in {FactVisualUsage.TEXT_ONLY, FactVisualUsage.FORBIDDEN_VISUAL_PROOF}
     }
     assert deferred_ids
     assert not deferred_ids.intersection(
@@ -725,12 +726,8 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
         for task in shard.creative_plan
     ]
     assert len(creative_tasks) == 16
-    assert (
-        sum(task.supplement_kind == "INITIAL" for task in creative_tasks) == 14
-    )
-    assert (
-        sum(task.supplement_kind == "DIVERSITY" for task in creative_tasks) == 2
-    )
+    assert sum(task.supplement_kind == "INITIAL" for task in creative_tasks) == 14
+    assert sum(task.supplement_kind == "DIVERSITY" for task in creative_tasks) == 2
     assert all(task.fact_assignment is not None for task in creative_tasks)
     assert all(
         1 <= len(task.fact_assignment.fact_ids) <= 4
@@ -781,10 +778,7 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     assert "人物讲话" in shared_stage.metadata["compiledContent"]
     assert creative_stage.status == "SUCCEEDED"
     assert creative_stage.metadata["candidateCount"] == 16
-    assert (
-        creative_stage.metadata["factSelectionMode"]
-        == "DIRECTION_FACT_APPLICATIONS"
-    )
+    assert creative_stage.metadata["factSelectionMode"] == "DIRECTION_FACT_APPLICATIONS"
     assert classification_stage.status == "SUCCEEDED"
     assert classification_stage.metadata["evaluatedCount"] == 16
     assert classification_stage.metadata["averageScores"]["productRelevance"] >= 0
@@ -869,7 +863,9 @@ async def test_invalid_creative_shard_does_not_fail_paid_batch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_visual_strategy_graph_compiles_direction_fact_plan_before_generation() -> None:
+async def test_visual_strategy_graph_compiles_direction_fact_plan_before_generation() -> (
+    None
+):
     api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -899,10 +895,7 @@ async def test_visual_strategy_graph_compiles_direction_fact_plan_before_generat
         for stage in reversed(api.stages)
         if stage.node_id == "COHERENT_CREATIVE_GENERATION"
     )
-    assert (
-        creative_stage.metadata["factSelectionMode"]
-        == "DIRECTION_FACT_APPLICATIONS"
-    )
+    assert creative_stage.metadata["factSelectionMode"] == "DIRECTION_FACT_APPLICATIONS"
     assignments = [
         task.fact_assignment
         for shard in api.shards.values()
@@ -914,7 +907,9 @@ async def test_visual_strategy_graph_compiles_direction_fact_plan_before_generat
     assert all(1 <= len(assignment.fact_ids) <= 4 for assignment in assignments)
 
 
-def test_silent_material_projection_removes_deferred_compatible_fact_references() -> None:
+def test_silent_material_projection_removes_deferred_compatible_fact_references() -> (
+    None
+):
     application = map_insight(
         {
             "productName": "紫苏梅子酱",
@@ -1008,7 +1003,9 @@ async def test_reports_creative_direction_stage_before_slow_ai_call() -> None:
         if stage.node_id.value == "COHERENT_CREATIVE_GENERATION"
     ]
     assert any("产品专属创意空间" in summary for summary in summaries)
-    assert any("正在复核" in summary and "产品创意空间" in summary for summary in summaries)
+    assert any(
+        "正在复核" in summary and "产品创意空间" in summary for summary in summaries
+    )
     assert any("创意方向已形成" in summary for summary in summaries)
     assert any("正在生成候选 Prompt" in summary for summary in summaries)
 
@@ -1069,7 +1066,9 @@ async def test_splits_truncated_classification_shard_without_failing_batch() -> 
     assert classification_stage.metadata["splitRecoveryCount"] == 10
 
 
-def test_planned_business_facts_are_evaluated_without_product_snapshot_competing() -> None:
+def test_planned_business_facts_are_evaluated_without_product_snapshot_competing() -> (
+    None
+):
     application = map_insight(
         {
             "productName": "便携杯",
@@ -1275,9 +1274,7 @@ async def test_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
         selection_stage.metadata["candidatePoolContentRedundancyRate"]
     )
     assert selection_stage.metadata["mmrQualityWeight"] == expected_quality_weight
-    assert selection_stage.metadata["adaptiveMmrBasis"] == (
-        "CONTENT_VECTOR_REDUNDANCY"
-    )
+    assert selection_stage.metadata["adaptiveMmrBasis"] == ("CONTENT_VECTOR_REDUNDANCY")
     assert selection_stage.metadata["mmrDiversityWeight"] == round(
         1.0 - expected_quality_weight,
         2,
@@ -1358,13 +1355,16 @@ async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
     } == {"DIVERSITY_SUPPLEMENT_1", "DIVERSITY_SUPPLEMENT_2"}
     assert {task.sibling_variant_total for task in diversity_tasks} == {2}
     assert all(task.execution_route is not None for task in diversity_tasks)
-    assert len(
-        {
-            task.execution_route.route_id
-            for task in diversity_tasks
-            if task.execution_route is not None
-        }
-    ) == 2
+    assert (
+        len(
+            {
+                task.execution_route.route_id
+                for task in diversity_tasks
+                if task.execution_route is not None
+            }
+        )
+        == 2
+    )
 
     resumed = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -1385,9 +1385,21 @@ async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
 @pytest.mark.asyncio
 async def test_rejected_diversity_directions_are_not_reported_as_generated() -> None:
     api = PromptApi()
+
+    class ObservedProvider(RejectingDiversitySupplementProvider):
+        async def plan_diversity_supplement_directions(
+            self, *args: Any, **kwargs: Any
+        ) -> Any:
+            stage = api.stages[-1]
+            assert stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
+            assert stage.status.value == "RUNNING"
+            assert stage.metadata["supplementPlanning"] is True
+            assert stage.metadata["missingCount"] == 0
+            return await super().plan_diversity_supplement_directions(*args, **kwargs)
+
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
-        provider=RejectingDiversitySupplementProvider(),
+        provider=ObservedProvider(),
         embedding_provider=IdenticalEmbeddingProvider(),
         similarity_mode="vector",
         embedding_batch_size=64,
@@ -1525,9 +1537,7 @@ async def test_vector_embedding_failure_is_retryable_and_safely_coded() -> None:
 
 
 @pytest.mark.asyncio
-async def test_item_evaluate_preserves_user_authored_content_and_structure() -> (
-    None
-):
+async def test_item_evaluate_preserves_user_authored_content_and_structure() -> None:
     snapshot = _snapshot()
     now = "2026-08-27T10:00:00Z"
     target = PromptItem(
@@ -1593,8 +1603,7 @@ async def test_item_evaluate_preserves_user_authored_content_and_structure() -> 
     )
     assert any(stage.node_id.value == "ITEM_EVALUATE" for stage in api.stages)
     assert not any(
-        stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
-        for stage in api.stages
+        stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT" for stage in api.stages
     )
     result_stage = next(
         stage for stage in reversed(api.stages) if stage.node_id.value == "RESULT_SAVE"
@@ -1694,10 +1703,7 @@ async def test_item_autofill_does_not_override_user_content_or_fragment_type() -
     assert api.result is not None
     assert api.result.items[0].content == target.content
     assert api.result.items[0].creative_core != PENDING_CREATIVE_STRUCTURE_TEXT
-    assert (
-        api.result.items[0].dimensions.narrative
-        != PENDING_CREATIVE_STRUCTURE_TEXT
-    )
+    assert api.result.items[0].dimensions.narrative != PENDING_CREATIVE_STRUCTURE_TEXT
     assert api.result.items[0].primary_purpose == target.primary_purpose
     assert api.result.items[0].classification_status == "VERIFIED"
     assert api.result.items[0].review_issues == []
@@ -1783,7 +1789,9 @@ async def test_item_regenerate_rebuilds_full_creative_with_requested_duration() 
         "reasons": ["SCENE_UNSUITABLE"],
     }
     assert provider.regeneration_contexts
-    assert all(context == expected_context for context in provider.regeneration_contexts)
+    assert all(
+        context == expected_context for context in provider.regeneration_contexts
+    )
     assert api.result is not None
     assert len(api.result.items) == 3
     assert all(item.target_duration_seconds == 12 for item in api.result.items)
@@ -1838,7 +1846,9 @@ async def test_does_not_replenish_when_initial_selection_already_covers_facts() 
 
 
 @pytest.mark.asyncio
-async def test_unresolved_fact_coverage_supplements_once_then_keeps_exact_draft() -> None:
+async def test_unresolved_fact_coverage_supplements_once_then_keeps_exact_draft() -> (
+    None
+):
     api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -1884,9 +1894,7 @@ async def test_unresolved_fact_coverage_supplements_once_then_keeps_exact_draft(
     assert selection_stage.metadata["cumulativeCandidateCount"] >= 16
     assert "REQUIRED_FACT_COVERAGE_NEEDS_REVIEW" in selection_stage.warnings
     result_stage = next(
-        stage
-        for stage in reversed(api.stages)
-        if stage.node_id.value == "RESULT_SAVE"
+        stage for stage in reversed(api.stages) if stage.node_id.value == "RESULT_SAVE"
     )
     assert (
         result_stage.metadata["requiredFactCount"]

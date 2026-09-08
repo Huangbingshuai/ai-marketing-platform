@@ -149,6 +149,14 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "OUTRO" not in evaluation
     assert "不要依赖原文字符重合" in evaluation
     assert "evidenceText 和 evidenceSource 可以省略" in evaluation
+    assert (
+        "CONTENT、CREATIVE_CORE、NARRATIVE、SCENE、PERSONA、PRODUCT_RELATION"
+        in evaluation
+    )
+    assert "不要求重复同一问题码" in evaluation
+    assert "相机与主体的相对运动" in evaluation
+    assert "先固定再明确切换/移动也不误判" in evaluation
+    assert "有初始推力不等于" in creative
     assert "SEMANTIC_FULL" in evaluation
     assert "PARTIAL" in evaluation
 
@@ -212,16 +220,16 @@ def test_direction_and_landscape_templates_receive_density_rules() -> None:
     assert "每 4 条事实增加一个方向槽位" in landscape
 
 
-def test_auto_style_adds_no_planning_constraint_while_fixed_style_is_preserved() -> None:
+def test_auto_style_adds_no_planning_constraint_while_fixed_style_is_preserved() -> (
+    None
+):
     auto = PromptBatchSettings(
         target_count=50,
         default_duration_seconds=15,
         style_mode="AI_AUTO",
         style_tone=None,
     )
-    fixed = auto.model_copy(
-        update={"style_mode": "FIXED", "style_tone": "清新田园"}
-    )
+    fixed = auto.model_copy(update={"style_mode": "FIXED", "style_tone": "清新田园"})
 
     assert _style_instruction(auto) == ""
     assert _visual_style_baseline_section(_style_instruction(auto)) == ""

@@ -93,6 +93,86 @@ const record = (): EffectPromptNodeDetailRunRecord =>
   }) as unknown as EffectPromptNodeDetailRunRecord;
 
 describe('presentEffectPromptNodeDetail', () => {
+  it.each(['RUNNING', 'FAILED', 'SUCCEEDED'])(
+    '%s 时实时分片覆盖旧阶段计数，所有详情区域保持一致',
+    (status) => {
+      const base = record();
+      const run = {
+        ...base,
+        stages: base.stages.map((stage) =>
+          stage.nodeId === 'COHERENT_CREATIVE_GENERATION'
+            ? {
+                ...stage,
+                status,
+                metadata: {
+                  generatedCandidateCount: 0,
+                  candidateCount: 0,
+                  completedShardCount: 0,
+                  pendingShardCount: 10,
+                  totalShardCount: 1,
+                },
+              }
+            : stage,
+        ),
+        shards: [
+          {
+            phase: 'BLUEPRINT',
+            status: 'SUCCEEDED',
+            combinationPlan: [
+              { slotId: 'private-slot', preferredFactIds: [], targetDurationSeconds: 15 },
+            ],
+            items: [
+              {
+                slotId: 'private-slot',
+                ordinal: 1,
+                round: 0,
+                creativeCore: '完成一次产品操作',
+                content: '使用者将产品放回桌面。',
+                declaredFactIds: [],
+                dimensions: {
+                  narrative: '操作展示',
+                  scene: '家中',
+                  persona: '成人',
+                  productRelation: '日常使用',
+                  camera: '固定近景',
+                  emotion: '自然',
+                },
+              },
+            ],
+          },
+          { phase: 'BLUEPRINT', status: 'RUNNING', items: [], combinationPlan: [] },
+          { phase: 'BLUEPRINT', status: 'FAILED', items: [], combinationPlan: [] },
+          { phase: 'PROMPT', status: 'SUCCEEDED', items: [], combinationPlan: [] },
+        ],
+      } as unknown as EffectPromptNodeDetailRunRecord;
+      const detail = presentEffectPromptNodeDetail(run, 'COHERENT_CREATIVE_GENERATION');
+      expect(detail.fields).toEqual(
+        expect.arrayContaining([
+          { label: '当前候选', value: 1 },
+          { label: '已生成候选', value: 1 },
+          { label: '已完成分片（含恢复）', value: 1 },
+          { label: '本轮待生成分片', value: 1 },
+        ]),
+      );
+      const output = detail.sections.find((s) => s.kind === 'OUTPUT')!;
+      expect(output.fields).toEqual(
+        expect.arrayContaining([
+          { label: '实际生成候选', value: 1 },
+          { label: '实时分片进度', value: '1/3' },
+        ]),
+      );
+      expect(detail.sections.find((s) => s.kind === 'EXECUTION')!.fields).toEqual(
+        expect.arrayContaining([
+          { label: '完成分片', value: 1 },
+          { label: '待处理分片', value: 1 },
+        ]),
+      );
+      expect(
+        run.stages.find((s) => s.nodeId === 'COHERENT_CREATIVE_GENERATION')!.metadata,
+      ).toMatchObject({ generatedCandidateCount: 0, completedShardCount: 0 });
+    },
+  );
+
   it.each(['ACCEPTED', 'STARTED', 'KEPT_ORIGINAL', 'WRONG_SLOT'])(
     '修复检查点 %s 的样例与评分一致且不泄露内部字段',
     (status) => {
@@ -432,7 +512,7 @@ describe('presentEffectPromptNodeDetail', () => {
         { label: '产品创意空间', value: 6 },
         { label: '创意方向', value: 12 },
         { label: '候选目标', value: 70 },
-        { label: '已完成分片（含恢复）', value: 7 },
+        { label: '已完成分片（含恢复）', value: 1 },
         { label: '实时分片进度', value: '1/18' },
         { label: '实际完成分片', value: 1 },
         { label: '当前处理中分片', value: 1 },

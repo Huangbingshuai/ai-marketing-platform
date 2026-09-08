@@ -1861,6 +1861,19 @@ const scoreFields = (scores: EffectPromptQualityScores | null): EffectPromptNode
       ]
     : [];
 
+const creativeShardProgress = (run: EffectPromptNodeDetailRunRecord, metadata: JsonRecord) => {
+  const shards = run.shards.filter(
+    (shard) => shard.phase === 'BLUEPRINT' || String(shard.phase) === 'CREATIVE',
+  );
+  return {
+    available: shards.length > 0,
+    total: Math.max(safeNumber(metadata.totalShardCount) ?? 0, shards.length),
+    completed: shards.filter((shard) => shard.status === 'SUCCEEDED').length,
+    pending: shards.filter((shard) => shard.status === 'PENDING' || shard.status === 'RUNNING')
+      .length,
+  };
+};
+
 const additionalOutputFields = (
   run: EffectPromptNodeDetailRunRecord,
   nodeId: EffectPromptNodeId,
@@ -1881,17 +1894,12 @@ const additionalOutputFields = (
         ]
       : [];
   if (nodeId === 'COHERENT_CREATIVE_GENERATION') {
-    const creativeShards = run.shards.filter((shard) => shard.phase === 'BLUEPRINT');
-    const completedShards = creativeShards.filter((shard) => shard.status === 'SUCCEEDED');
-    const pendingShards = creativeShards.filter(
-      (shard) => shard.status === 'PENDING' || shard.status === 'RUNNING',
-    );
-    const plannedShardCount = safeNumber(metadata.totalShardCount) ?? creativeShards.length;
+    const progress = creativeShardProgress(run, metadata);
     return [
       { label: '实际生成候选', value: samples.length },
-      { label: '实时分片进度', value: `${completedShards.length}/${plannedShardCount}` },
-      { label: '实际完成分片', value: completedShards.length },
-      { label: '当前处理中分片', value: pendingShards.length },
+      { label: '实时分片进度', value: `${progress.completed}/${progress.total}` },
+      { label: '实际完成分片', value: progress.completed },
+      { label: '当前处理中分片', value: progress.pending },
     ];
   }
   if (nodeId === 'ITEM_EVALUATE')
@@ -2368,12 +2376,29 @@ export const presentEffectPromptNodeDetail = (
   const terminalFailure =
     run.status === 'FAILED' && run.currentNode === nodeId && stage?.status === 'RUNNING';
   const status = terminalFailure ? 'FAILED' : (stage?.status ?? 'PENDING');
+  let metadata = metadataRecord(stage?.metadata);
+  if (nodeId === 'COHERENT_CREATIVE_GENERATION') {
+    const progress = creativeShardProgress(run, metadata);
+    if (progress.available) {
+      // Stage metadata is a start/end snapshot; persisted shards advance during
+      // execution. Use one live projection for legacy fields and all sections.
+      const candidateCount = creativeSamples(run).length;
+      metadata = {
+        ...metadata,
+        candidateCount,
+        generatedCandidateCount: candidateCount,
+        totalShardCount: progress.total,
+        completedShardCount: progress.completed,
+        pendingShardCount: progress.pending,
+      };
+    }
+  }
   return {
     nodeId,
     status,
     summary: publicText(stage?.summary, 500),
-    sections: buildDetailSections(run, nodeId, status, stage?.metadata),
-    fields: actualFields(run, nodeId, stage?.metadata),
+    sections: buildDetailSections(run, nodeId, status, metadata),
+    fields: actualFields(run, nodeId, metadata),
     blocks: actualBlocks(run, nodeId),
     warnings: issueLabels(safeStrings(stage?.warnings, 20)),
     errorMessage: terminalFailure

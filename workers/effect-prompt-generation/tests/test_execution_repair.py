@@ -51,7 +51,13 @@ class LocatedProvider(MockAiProvider):
                 item.model_copy(
                     update={
                         "scores": scores,
-                        "warnings": ["CAMERA_ACTION_MISMATCH"] if diagnosed else [],
+                        "warnings": (
+                            ["DURATION_TOO_DENSE", "SECONDARY_FACT_NOT_USED"]
+                            if self.mode == "summary-omits-code" and diagnosed
+                            else ["CAMERA_ACTION_MISMATCH"]
+                            if diagnosed
+                            else []
+                        ),
                         "execution_findings": [
                             ExecutionFinding(
                                 code="CAMERA_ACTION_MISMATCH",
@@ -112,7 +118,15 @@ async def prepared(provider: LocatedProvider) -> tuple[Any, Any, Any, Any]:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mode",
-    ["accept", "transport", "wrong-slot", "unimproved", "unlocated", "empty-review"],
+    [
+        "accept",
+        "summary-omits-code",
+        "transport",
+        "wrong-slot",
+        "unimproved",
+        "unlocated",
+        "empty-review",
+    ],
 )
 async def test_one_local_repair_preserves_original_unless_review_improves(
     mode: str,
@@ -123,10 +137,12 @@ async def test_one_local_repair_preserves_original_unless_review_improves(
     current = pipeline._cache(runtime).creatives[original.slot_id]
     assert provider.repairs == (0 if mode == "unlocated" else 1)
     assert provider.evaluations == (
-        2 if mode in {"accept", "unimproved", "empty-review"} else 1
+        2
+        if mode in {"accept", "summary-omits-code", "unimproved", "empty-review"}
+        else 1
     )
     assert not result.hard_issues
-    if mode == "accept":
+    if mode in {"accept", "summary-omits-code"}:
         assert current.content != original.content
         assert current.shot_plan.beats[0].motion_source == "使用者施力推动主体"
         assert current.creative_core == original.creative_core

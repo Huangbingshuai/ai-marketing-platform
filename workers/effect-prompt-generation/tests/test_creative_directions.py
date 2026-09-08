@@ -87,7 +87,7 @@ def test_creative_direction_count_scales_with_batch_size() -> None:
 
 @pytest.mark.parametrize(
     ("direction_count", "expected_batch_sizes"),
-    [(13, [8, 5]), (20, [8, 8, 4]), (32, [8, 8, 8, 8])],
+    [(13, [4, 4, 4, 1]), (20, [4] * 5), (32, [4] * 8)],
 )
 def test_direction_planning_packs_multiple_territories_into_safe_batches(
     direction_count: int,
@@ -107,10 +107,13 @@ def test_direction_planning_packs_multiple_territories_into_safe_batches(
         expected_direction_count=direction_count,
     )
 
-    batches = _creative_direction_planning_batches(landscape, batch_size=8)
+    # Exercise the production default, not an explicit test-only batch size.
+    # Four directions preserve all five possible routes without requesting
+    # forty long routes in a single 8192-token response.
+    batches = _creative_direction_planning_batches(landscape)
 
     assert [len(batch.slots) for batch in batches] == expected_batch_sizes
-    assert len(batches[0].territories) > 1
+    assert all(len(batch.slots) <= 4 for batch in batches)
     slots = [slot for batch in batches for slot in batch.slots]
     assert (
         len(slots)
@@ -123,6 +126,16 @@ def test_direction_planning_packs_multiple_territories_into_safe_batches(
         fact_id for batch in batches for fact_id in batch.required_fact_ids
     ]
     assert len(required_fact_ids) == len(set(required_fact_ids))
+    assert set(required_fact_ids) == {
+        fact_id
+        for territory in landscape.territories
+        for fact_id in territory.required_fact_ids
+    }
+    assert [(slot["territoryId"], slot["primaryActionId"]) for slot in slots] == [
+        (territory.territory_id, action.action_id)
+        for territory in landscape.territories
+        for action in territory.actions[:territory.target_slots]
+    ]
 
 
 class CountingPlanningProvider(MockAiProvider):
@@ -181,7 +194,7 @@ async def test_ten_item_normal_path_sizes_relation_reviews_by_input_budget() -> 
             "space": 1,
             "assignment": 1,
             "space_review": 1,
-            "direction": 1,
+            "direction": 2,
             "diversity_review": 1,
         }
     )
@@ -191,8 +204,8 @@ async def test_ten_item_normal_path_sizes_relation_reviews_by_input_budget() -> 
         if item.node_id.value == "COHERENT_CREATIVE_GENERATION"
         and "planningAiCallCount" in item.metadata
     )
-    assert stage.metadata["planningAiCallCount"] == 5 + provider.calls["direction_review"]
-    assert stage.metadata["directionPlanningBatchCount"] == 1
+    assert stage.metadata["planningAiCallCount"] == 6 + provider.calls["direction_review"]
+    assert stage.metadata["directionPlanningBatchCount"] == 2
     assert stage.metadata["directionAuditBatchCount"] == provider.calls["direction_review"]
     assert 2 <= stage.metadata["directionAuditBatchCount"] <= 8
 
@@ -589,7 +602,7 @@ async def test_global_direction_audit_can_revise_cross_batch_overlap() -> None:
 
     assert sum(len(item.tasks) for item in shards) == 70
     assert sum(provider.initial_slot_batch_sizes) == 20
-    assert max(provider.initial_slot_batch_sizes) <= 8
+    assert max(provider.initial_slot_batch_sizes) <= 4
     planned_required_fact_ids = [
         fact_id
         for batch in provider.initial_required_fact_batches
@@ -602,9 +615,8 @@ async def test_global_direction_audit_can_revise_cross_batch_overlap() -> None:
             pipeline._required_fact_visual_strategy(runtime),
         )
     )
-    # Initial planning safely packs several territories per call; the overlap
-    # repair remains the only subsequent targeted direction call.
-    assert provider.direction_plan_calls == 4
+    # Five initial four-direction calls plus one targeted overlap repair.
+    assert provider.direction_plan_calls == 6
     assert provider.diversity_audit_calls == 2
     plan = pipeline._cache(runtime).creative_direction_plan
     assert plan is not None
@@ -1664,7 +1676,7 @@ async def test_independent_ai_semantic_audit_requests_direction_replanning() -> 
 
     assert shards
     assert 2 <= provider.audit_calls <= 16
-    assert provider.direction_calls == 2
+    assert provider.direction_calls == 3  # Two initial calls plus one repair.
     targeted_context = next(
         context
         for context in provider.direction_revision_contexts
@@ -1773,7 +1785,7 @@ async def test_repeated_semantic_audit_disagreement_becomes_advisory() -> None:
 
     assert shards
     assert 2 <= provider.audit_calls <= 16
-    assert provider.direction_calls == 2
+    assert provider.direction_calls == 3  # Two initial calls plus one repair.
     plan = pipeline._cache(runtime).creative_direction_plan
     assert plan is not None
     assert plan.semantic_audit is not None

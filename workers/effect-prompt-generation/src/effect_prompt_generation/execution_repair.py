@@ -77,8 +77,8 @@ def has_execution_diagnosis(
         return False
     sequences = {beat.sequence for beat in candidate.shot_plan.beats}
     for finding in evaluation.execution_findings:
-        if finding.code not in evaluation.warnings:
-            return False
+        # Located AI findings are authoritative; the capped warning summary
+        # need not repeat every diagnosis. Only validate structural locations.
         if finding.field in {"INITIAL_STATE", "FINAL_FRAME"}:
             if finding.sequence != 0:
                 return False

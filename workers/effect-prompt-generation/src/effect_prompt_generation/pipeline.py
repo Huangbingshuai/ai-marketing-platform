@@ -165,11 +165,11 @@ MMR_HIGH_REDUNDANCY_THRESHOLD = 0.50
 CONTENT_SIMILARITY_WEIGHT = 0.70
 SEMANTIC_CLUSTER_SIMILARITY_WEIGHT = 0.30
 DIRECTION_STRUCTURED_BATCH_SIZE = 4
-# Initial planning can safely return more rows than a targeted repair. Packing
-# several small product territories into one request avoids paying for one
-# mostly-empty structured response per territory while keeping large batches
-# below Ark's output ceiling.
-DIRECTION_PLANNING_BATCH_SIZE = 8
+# Each direction now includes up to five AI-authored execution routes and their
+# event outlines. Eight directions can exhaust the 8192-token response budget
+# even with valid JSON. Bound initial calls like targeted repairs; preserve all
+# direction slots/routes and the global review rather than shorten the content.
+DIRECTION_PLANNING_BATCH_SIZE = 4
 # Keep ordinary calls economical. If a three-item strict response is malformed
 # or truncated, the pipeline automatically isolates that shard into single-item
 # calls instead of failing the entire batch.
@@ -4502,6 +4502,33 @@ class PromptGenerationPipeline:
             and snapshot.operation == "BATCH_GENERATE"
         )
         pending = []
+        if (
+            should_quantity_supplement
+            or should_coverage_supplement
+            or should_diversity_supplement
+        ):
+            # Planning may await several model calls. Publish this node before
+            # the await, rather than leaving the completed evaluator on screen.
+            await self._stage(
+                context,
+                NodeId.EXACT_SELECTION_AND_SUPPLEMENT,
+                StageStatus.RUNNING,
+                (
+                    "正在规划数量补充"
+                    if should_quantity_supplement
+                    else "正在规划缺失事实的定向补充"
+                    if should_coverage_supplement
+                    else "正在规划并复核多样性补充方向"
+                ),
+                metadata={
+                    "round": round_number,
+                    "targetCount": 1 if item_operation else settings.target_count,
+                    "acceptedCount": len(cache.accepted_items),
+                    "missingCount": missing,
+                    "missingRequiredFactCount": len(missing_coverage_fact_ids),
+                    "supplementPlanning": True,
+                },
+            )
         if should_quantity_supplement:
             pending = await self.plan_creatives(
                 context,
