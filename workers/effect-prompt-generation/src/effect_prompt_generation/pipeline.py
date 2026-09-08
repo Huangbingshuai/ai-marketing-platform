@@ -51,6 +51,7 @@ from .models import (
     CreativeTerritoryDraft,
     CreativeDimensions,
     CreativeEvaluation,
+    ExecutionRepairCheckpoint,
     CreativeScores,
     CreativeShardPlan,
     CreativeTask,
@@ -127,6 +128,11 @@ from .fact_allocation import (
 )
 from .direction_review import review_batches, review_hash, review_input_size
 from .supplement_recovery import retain_valid_supplements
+from .supplement_actions import supplement_review_landscape
+from .execution_repair import (
+    restore_execution_candidate,
+    apply_execution_patch, candidate_hash, has_execution_diagnosis, repair_improves,
+)
 from .visual_strategy import (
     strategy_stage_metadata,
     validate_fact_visual_strategy,
@@ -278,6 +284,7 @@ class LoadedRun:
 @dataclass(slots=True)
 class RunCache:
     ai_call_count: int = 0
+    execution_repair_records: dict[str, CreativeEvaluation] = field(default_factory=dict)
     total_shards: int = 0
     insight_application: InsightApplicationMap | None = None
     fact_visual_strategy: FactVisualStrategy | None = None
@@ -441,9 +448,29 @@ class PromptGenerationPipeline:
             for shard in succeeded_classifications
             for item in shard.evaluations
         }
+        durations = {task.slot_id: task.target_duration_seconds
+                     for shard in succeeded_creatives for task in shard.creative_plan}
+        invalid_classification_keys: set[str] = set()
+        for shard in shards:
+            if shard.phase != ShardPhase.CLASSIFICATION:
+                continue
+            for evaluation in shard.evaluations:
+                checkpoint = evaluation.execution_repair
+                original = cache.creatives.get(evaluation.slot_id)
+                if checkpoint is None or original is None:
+                    continue
+                restored = restore_execution_candidate(
+                    original, evaluation, duration=durations.get(original.slot_id, 5),
+                )
+                if restored is None:
+                    invalid_classification_keys.add(shard.key)
+                    cache.creative_evaluations.pop(evaluation.slot_id, None)
+                    continue
+                cache.execution_repair_records[evaluation.slot_id] = evaluation
+                cache.creatives[evaluation.slot_id] = restored
         cache.completed_creative_shard_keys = {item.key for item in succeeded_creatives}
         cache.completed_classification_shard_keys = {
-            item.key for item in succeeded_classifications
+            item.key for item in succeeded_classifications if item.key not in invalid_classification_keys
         }
         restored_creative_tasks = [
             task for shard in succeeded_creatives for task in shard.creative_plan
@@ -486,7 +513,7 @@ class PromptGenerationPipeline:
             snapshot=snapshot,
             completed_creative_shard_keys=[item.key for item in succeeded_creatives],
             completed_classification_shard_keys=[
-                item.key for item in succeeded_classifications
+                item.key for item in succeeded_classifications if item.key not in invalid_classification_keys
             ],
         )
         await self._stage(
@@ -498,7 +525,7 @@ class PromptGenerationPipeline:
                 "batchSize": snapshot.settings.target_count,
                 "retainedCount": len(snapshot.retained_manual_items),
                 "resumedCreativeShardCount": len(succeeded_creatives),
-                "resumedClassificationShardCount": len(succeeded_classifications),
+                "resumedClassificationShardCount": len(cache.completed_classification_shard_keys),
                 **preflight,
                 "snapshotSummary": _short(
                     " / ".join(
@@ -2497,10 +2524,36 @@ class PromptGenerationPipeline:
                     expected_execution_route_count=execution_route_count,
                 )
                 combined = [*plan.directions, *proposed]
+                review_landscape = supplement_review_landscape(landscape, proposed)
+                relation_revision_ids: list[str] = []
+                relation_diagnostics: list[dict[str, Any]] = []
+                if any(item.proposed_action is not None for item in proposed):
+                    # New action definitions are proposals, not trusted product
+                    # facts. Reuse the independent AI relationship reviewer.
+                    for start in range(0, len(proposed), 2):
+                        group = proposed[start:start + 2]
+                        self._reserve_ai_call(context)
+                        async with self._ai_semaphore:
+                            relation_call = await self.provider.audit_creative_directions(
+                                application, fact_visual_strategy=visual_strategy,
+                                landscape=review_landscape,
+                                directions=CreativeDirectionResponse(directions=group),
+                            )
+                        relation = validate_creative_direction_audit_batch(
+                            relation_call.value, group, review_landscape,
+                        )
+                        # The full validator derives the revision IDs exclusively
+                        # from the model's aligned/fact-review/issue verdicts.
+                        relation_audit = validate_creative_direction_audit(
+                            relation, CreativeDirectionResponse(directions=group), review_landscape,
+                        )
+                        relation_revision_ids.extend(relation_audit.revision_direction_ids)
+                        if relation_audit.requires_revision:
+                            relation_diagnostics.append(relation.model_dump(mode="json", by_alias=True))
                 self._reserve_ai_call(context)
                 async with self._ai_semaphore:
                     audit_call = await self.provider.audit_creative_direction_diversity(
-                        landscape=landscape,
+                        landscape=review_landscape,
                         directions=CreativeDirectionResponse(directions=combined),
                         proposed_direction_ids=[item.direction_id for item in proposed],
                     )
@@ -2509,21 +2562,34 @@ class PromptGenerationPipeline:
                     combined,
                     proposed_direction_ids=[item.direction_id for item in proposed],
                 )
+                if relation_revision_ids:
+                    diversity_audit = diversity_audit.model_copy(update={
+                        "requires_revision": True,
+                        "revision_direction_ids": list(dict.fromkeys([
+                            *diversity_audit.revision_direction_ids, *relation_revision_ids,
+                        ])),
+                    })
             except (ProviderError, ValueError) as exc:
+                # Pydantic error text can contain input values; keep those out
+                # of logs and retry diagnostics passed to another AI call.
+                safe_validation_error = (
+                    "supplement structured fields failed validation"
+                    if isinstance(exc, ValidationError)
+                    else exc.error_type.value if isinstance(exc, ProviderError)
+                    else str(exc)
+                )
                 LOGGER.warning(
                     "diversity supplement direction attempt rejected attempt=%s "
                     "error_type=%s error=%s",
                     attempt + 1,
                     type(exc).__name__,
-                    str(exc),
+                    safe_validation_error,
                 )
                 if structure_recoveries < 2 and attempt < 3:
                     structure_recoveries += 1
                     revision_context = {
                         **(revision_context or base_revision_context),
-                        "validationError": (
-                            str(exc) if isinstance(exc, ValueError) else exc.error_type.value
-                        ),
+                        "validationError": safe_validation_error,
                         "revisionInstruction": (
                             f"{base_revision_context.get('revisionInstruction', '')} "
                             "只输出 requiredDirectionIds 指定的待修复方向。已保留方向无需重写；"
@@ -2550,6 +2616,7 @@ class PromptGenerationPipeline:
                     "diversityAudit": diversity_audit.model_dump(
                         mode="json", by_alias=True
                     ),
+                    "relationAudits": relation_diagnostics,
                     "revisionInstruction": (
                         f"{base_revision_context.get('revisionInstruction', '')} "
                         "只修订 requiredDirectionIds 指定方向，保持其 ID，按全批视觉复核改变实质画面关系；"
@@ -3293,6 +3360,8 @@ class PromptGenerationPipeline:
             shard_index=shard.shard_index,
             status=StageStatus.RUNNING,
             classification_plan=shard.candidate_ids,
+            evaluations=[cache.execution_repair_records[item_id] for item_id in shard.candidate_ids
+                         if item_id in cache.execution_repair_records],
         )
         await self.api.put_shard(context, running)
         try:
@@ -3317,10 +3386,13 @@ class PromptGenerationPipeline:
 
             async def request_evaluations(
                 group: list[CreativeCandidate],
+                *, attempts_override: int | None = None,
+                prepaid_repair_review: bool = False,
             ) -> list[CreativeEvaluation]:
-                attempts = 2 if len(group) == 1 else 1
+                attempts = attempts_override or (2 if len(group) == 1 else 1)
                 for invalid_response_attempt in range(attempts):
-                    self._reserve_ai_call(context)
+                    if not prepaid_repair_review:
+                        self._reserve_ai_call(context)
                     cache.evaluation_call_count += 1
                     async with self._ai_semaphore:
                         evaluation_kwargs: dict[str, Any] = {
@@ -3404,7 +3476,15 @@ class PromptGenerationPipeline:
                             )
                     return evaluated
 
-            evaluated_items = await request_evaluations_with_split(candidates)
+            pending_candidates = [item for item in candidates if item.slot_id not in cache.execution_repair_records]
+            evaluated_items = (
+                await request_evaluations_with_split(pending_candidates)
+                if pending_candidates else []
+            )
+            evaluated_items.extend(
+                cache.execution_repair_records[item.slot_id] for item in candidates
+                if item.slot_id in cache.execution_repair_records
+            )
 
             candidate_by_id = {item.slot_id: item for item in candidates}
             items = []
@@ -3447,6 +3527,79 @@ class PromptGenerationPipeline:
                         ),
                     )
                 )
+            # AI diagnoses and patches; Worker only selects by explicit verdicts,
+            # numeric scores and source IDs. Persist before paying for each repair.
+            if self.snapshot(context).operation != "ITEM_EVALUATE":
+                for index, original_evaluation in enumerate(items):
+                    original = candidate_by_id[original_evaluation.slot_id]
+                    task = cache.creative_tasks.get(original.slot_id)
+                    # Keep headroom for unfinished mandatory classifications.
+                    # One call per remaining candidate is deliberately conservative.
+                    pending_core_calls = sum(
+                        item_id not in cache.creative_evaluations
+                        and item_id not in cache.execution_repair_records
+                        and item_id not in candidate_by_id
+                        for item_id in cache.creatives
+                    )
+                    if (task is None or original_evaluation.execution_repair is not None
+                            or not has_execution_diagnosis(original, original_evaluation)
+                            or cache.ai_call_count + 2 + pending_core_calls > self.max_ai_calls_per_run):
+                        continue
+                    # Reserve both calls before yielding so concurrent optional
+                    # repairs cannot spend each other's mandatory review budget.
+                    self._reserve_ai_call(context)
+                    self._reserve_ai_call(context)
+                    checkpoint = ExecutionRepairCheckpoint(
+                        original_hash=candidate_hash(original), status="STARTED",
+                    )
+                    original_evaluation = original_evaluation.model_copy(update={"execution_repair": checkpoint})
+                    items[index] = original_evaluation
+                    cache.execution_repair_records[original.slot_id] = original_evaluation
+                    await self.api.put_shard(context, running.model_copy(update={"evaluations": list(items)}))
+                    accepted = False
+                    unused_review_reservation = True
+                    try:
+                        async with self._ai_semaphore:
+                            repair_call = await self.provider.repair_creative_execution(
+                                original, task=task, findings=original_evaluation.execution_findings,
+                                application=application, shared_prompt=self._required_shared_prompt(context),
+                                fact_visual_strategy=self._required_fact_visual_strategy(context),
+                            )
+                        repaired = apply_execution_patch(original, repair_call.value,
+                            duration=cache.creative_target_durations[original.slot_id])
+                        unused_review_reservation = False
+                        review_items = await request_evaluations(
+                            [repaired], attempts_override=1, prepaid_repair_review=True,
+                        )
+                        if len(review_items) != 1:
+                            raise ValueError("repair review returned wrong item count")
+                        reviewed = review_items[0]
+                        if reviewed.slot_id != original.slot_id:
+                            raise ValueError("repair review returned wrong candidate")
+                        if cache.creative_direction_plan is not None:
+                            reviewed = complete_semantic_profile(reviewed, repaired, cache.creative_direction_plan)
+                            validate_semantic_profile(reviewed, cache.creative_direction_plan)
+                        reviewed = validate_creative_evaluation(
+                            repaired, reviewed, application,
+                            target_duration_seconds=cache.creative_target_durations[original.slot_id],
+                            contextual_fact_ids=assigned_context_fact_ids.get(original.slot_id, []),
+                        )
+                        if repair_improves(original_evaluation, reviewed):
+                            items[index] = reviewed.model_copy(update={"execution_repair": checkpoint.model_copy(
+                                update={"status": "ACCEPTED", "candidate": repaired})})
+                            candidate_by_id[original.slot_id] = repaired
+                            cache.creatives[original.slot_id] = repaired
+                            accepted = True
+                    except (ProviderError, ValueError, PipelineError) as repair_error:
+                        LOGGER.warning("execution repair kept original error_type=%s", type(repair_error).__name__)
+                    finally:
+                        if unused_review_reservation:
+                            cache.ai_call_count -= 1
+                    if not accepted:
+                        items[index] = original_evaluation.model_copy(update={"execution_repair": checkpoint.model_copy(
+                            update={"status": "KEPT_ORIGINAL"})})
+                    cache.execution_repair_records[original.slot_id] = items[index]
+                    await self.api.put_shard(context, running.model_copy(update={"evaluations": list(items)}))
             await self.api.put_shard(
                 context,
                 running.model_copy(
@@ -3463,6 +3616,8 @@ class PromptGenerationPipeline:
                 running.model_copy(
                     update={
                         "status": StageStatus.FAILED,
+                        "evaluations": [cache.execution_repair_records[item_id] for item_id in shard.candidate_ids
+                                        if item_id in cache.execution_repair_records],
                         "warnings": [_safe_error(exc)],
                         "error_code": _error_code(exc),
                         "error_message": _safe_error(exc),
@@ -3611,6 +3766,15 @@ class PromptGenerationPipeline:
                 "rejectedCount": len(evaluations) - len(accepted),
                 "completedShardCount": len(cache.completed_classification_shard_keys),
                 "evaluationCallCount": cache.evaluation_call_count,
+                "executionRepairAttemptedCount": len(cache.execution_repair_records),
+                "executionRepairAcceptedCount": sum(
+                    item.execution_repair is not None and item.execution_repair.status == "ACCEPTED"
+                    for item in cache.execution_repair_records.values()
+                ),
+                "executionRepairKeptOriginalCount": sum(
+                    item.execution_repair is not None and item.execution_repair.status != "ACCEPTED"
+                    for item in cache.execution_repair_records.values()
+                ),
                 "splitRecoveryCount": cache.evaluation_split_recovery_count,
                 "averageScores": _average_scores(
                     [item.scores for item in evaluations]

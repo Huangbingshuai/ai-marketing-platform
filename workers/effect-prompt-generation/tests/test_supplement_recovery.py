@@ -320,6 +320,7 @@ async def test_supplement_protocol_is_scoped_and_old_direction_input_is_compact(
     props = schema["$defs"]["CreativeDirection"]["properties"]
     assert props["directionId"]["enum"] == ["DIVERSITY_SUPPLEMENT_4"]
     assert props["executionRoutes"]["minItems"] == args["execution_route_count"]
+    assert "eventOutline" in schema["$defs"]["CreativeExecutionRoute"]["required"]
     prompt = seen["input"][0]["content"][0]["text"]
     old_section = prompt.split("现有方向摘要", 1)[1].split("当前拥挤场景", 1)[0]
     assert "factApplications" not in old_section

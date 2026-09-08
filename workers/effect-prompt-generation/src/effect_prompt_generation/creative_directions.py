@@ -623,6 +623,8 @@ def validate_creative_direction_plan(
     direction_ids: set[str] = set()
     territory_action_ids: set[tuple[str, str]] = set()
     for direction in response.directions:
+        if direction.proposed_action is not None:
+            raise ValueError("initial directions cannot redefine landscape actions")
         if direction.direction_id in direction_ids:
             raise ValueError("creative directions repeat the same direction id")
         direction_ids.add(direction.direction_id)
@@ -752,7 +754,7 @@ def validate_creative_direction_plan(
 
 def validate_creative_direction_audit(
     response: CreativeDirectionAuditResponse,
-    plan: CreativeDirectionPlan,
+    plan: CreativeDirectionPlan | CreativeDirectionResponse,
     landscape: CreativeDiversityLandscape,
 ) -> CreativeDirectionAudit:
     direction_ids = {item.direction_id for item in plan.directions}
@@ -947,6 +949,8 @@ def validate_diversity_supplement_directions(
 ) -> list[CreativeDirection]:
     """Validate supplement structure without applying base-plan slot quotas."""
 
+    from .supplement_actions import supplement_review_landscape
+    landscape = supplement_review_landscape(landscape, response.directions)
     if len(response.directions) != expected_direction_count:
         raise ValueError("diversity supplement direction count does not match target")
     usable_ids = {fact.fact_id for fact in application.usable}

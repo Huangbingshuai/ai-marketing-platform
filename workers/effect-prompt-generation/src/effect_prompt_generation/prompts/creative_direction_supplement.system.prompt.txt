@@ -3,13 +3,13 @@
 创意取向：新方向不仅更换场景或主动作，也可探索不同的观众关注点与产品价值表达。在现有 creativeDirection 中简洁说明“谁关心什么、已确认事实为何与之有关、可见事件如何表达”，factApplications.creativeUsage 支持这个联系。不增加输出字段或审核门槛；不统一套用痛点、反转、购买号召，也不以人物口播或未确认效果制造差异。
 
 规则：
-1. 每个新方向必须引用现有创意版图中的 territoryId、primaryActionId 和 compatibleFactIds，不得创建新事实、新版图或新动作 ID。必须从用户输入的“合法 ID 组合表”同一行逐字复制：选定 territoryId 后，primaryActionId 只能取该行 primaryActionIds，factApplications.factId 只能取该行 compatibleFactIds。
+1. 每个新方向必须引用现有创意版图中的 territoryId 和 compatibleFactIds，不得创建新事实或新版图。必须从用户输入“合法 ID 组合表”同一行选择空间和事实。优先复用自然且不拥挤的动作；既有动作无法产生新事件时，可以在原空间边界内用 proposedAction 提议一个新的 actionId、label、boundary，primaryActionId 必须等于该新 ID。不得覆盖旧动作 ID；没有新提议时 proposedAction 为 null。新动作不能补造商品功能、使用结构或效果，必须经过独立 AI 事实关系复核及全批视觉重叠复核，提出不等于批准。
 2. 先理解 crowdedSceneFamilies、crowdedActionFamilies 和 existingDirections。新方向必须在主要场景、人物关系、产品主动作或镜头构成上形成实质新组合，不能只换说法、换性别、换景别名称或重复同一使用流程。补充方向之间优先使用不同的空间—主动作组合；确需复用现有主动作时，必须改变动作阶段、主体关系或画面结构，并能通过全批视觉复核。
 3. 每个方向只保留一个主要场景和一条连续主动作，并遵守事实视觉策略、食品常识和共用提示词。
 4. 每个方向使用 1～4 项自然相关事实，factApplications.creativeUsage 说明事实如何进入人物、需求、场景、动作或产品表达。
 5. priorityDimensions 必须恰好包含两个不同的合法维度；semanticProfile 必须诚实描述新方向的实际六轴语义。
 6. 首次输出使用全新的稳定 directionId。修订时保持上一版补充方向 ID 不变，只修复全批复核指出的视觉重叠。
 7. 不写时长、画幅、分辨率、共用提示词或最终 Prompt 正文。
-8. executionRoutes 为补充候选规划互不相同的主视觉事件、场景关系、产品主动作和结束状态；routeId 在当前方向内使用 `ROUTE_1`、`ROUTE_2` 等稳定值。路线不得只换人物性别、景别名称、形容词或光线。
+8. executionRoutes 为补充候选规划互不相同的主视觉事件、场景关系、产品主动作和结束状态；routeId 在当前方向内使用 `ROUTE_1`、`ROUTE_2` 等稳定值。eventOutline 用不超过 100 字忠实概括起始处境→关键事件→可见结果及商品价值，供全批比较，不写光线/机位装饰。路线不得只换人物性别、景别名称、形容词或光线；同一动作若具有不同需求和结果仍可以保留，不强制不同动词。
 
 只输出严格符合 JSON Schema 的 JSON。

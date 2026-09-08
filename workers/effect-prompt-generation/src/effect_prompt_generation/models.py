@@ -822,6 +822,7 @@ class CreativeExecutionRoute(ApiModel):
 
     route_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
     visual_event: str = Field(min_length=4, max_length=160)
+    event_outline: str | None = Field(default=None, min_length=4, max_length=100)
     scene_relation: str = Field(min_length=4, max_length=120)
     product_action: str = Field(min_length=4, max_length=120)
     ending_state: str = Field(min_length=4, max_length=120)
@@ -831,6 +832,7 @@ class CreativeDirection(ApiModel):
     direction_id: str = Field(min_length=1, max_length=120)
     territory_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
     primary_action_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
+    proposed_action: CreativeTerritoryAction | None = None
     fact_applications: list[CreativeDirectionFactApplication] = Field(
         min_length=1,
         max_length=4,
@@ -943,7 +945,9 @@ class CreativeDirectionAuditResponse(ApiModel):
 
 
 class CreativeDirectionAudit(ApiModel):
-    items: list[CreativeDirectionAuditItem] = Field(min_length=8, max_length=80)
+    # Full plans still require 8+ directions; supplementary review batches can
+    # contain just one or two. Their exact IDs are validated against the input.
+    items: list[CreativeDirectionAuditItem] = Field(min_length=1, max_length=80)
     requires_revision: bool = False
     revision_direction_ids: list[str] = Field(default_factory=list, max_length=80)
     summary: str = Field(min_length=2, max_length=240)
@@ -1208,6 +1212,8 @@ class MaterialShotBeat(ApiModel):
     framing: str = Field(min_length=1, max_length=100)
     action: str = Field(min_length=1, max_length=320)
     camera: str = Field(min_length=1, max_length=180)
+    focus: str | None = Field(default=None, min_length=1, max_length=120)
+    motion_source: str | None = Field(default=None, min_length=1, max_length=160)
     visible_result: str = Field(min_length=1, max_length=200)
     sound: str | None = Field(default=None, max_length=160)
 
@@ -1376,6 +1382,37 @@ class CreativeScores(ApiModel):
         )
 
 
+ShotRepairField = Literal[
+    "FRAMING", "ACTION", "CAMERA", "FOCUS", "MOTION_SOURCE", "VISIBLE_RESULT",
+    "INITIAL_STATE", "FINAL_FRAME",
+]
+
+
+class ExecutionFinding(ApiModel):
+    code: Literal["CAMERA_ACTION_MISMATCH", "VISUALLY_UNEXECUTABLE"]
+    sequence: int = Field(ge=0, le=6)
+    field: ShotRepairField
+    diagnosis: str = Field(min_length=1, max_length=180)
+
+
+class ShotFieldPatch(ApiModel):
+    sequence: int = Field(ge=0, le=6)
+    field: ShotRepairField
+    value: str = Field(min_length=1, max_length=320)
+
+
+class ExecutionRepairDraft(ApiModel):
+    slot_id: str = Field(min_length=1, max_length=160)
+    patches: list[ShotFieldPatch] = Field(min_length=1, max_length=12)
+    camera_dimension: str | None = Field(default=None, min_length=1, max_length=160)
+
+
+class ExecutionRepairCheckpoint(ApiModel):
+    original_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    status: Literal["STARTED", "ACCEPTED", "KEPT_ORIGINAL"]
+    candidate: CreativeCandidate | None = None
+
+
 class CreativeEvaluation(ApiModel):
     slot_id: str = Field(min_length=1, max_length=160)
     primary_purpose: FragmentType
@@ -1392,6 +1429,8 @@ class CreativeEvaluation(ApiModel):
     )
     hard_issues: list[str] = Field(default_factory=list, max_length=20)
     warnings: list[str] = Field(default_factory=list, max_length=20)
+    execution_findings: list[ExecutionFinding] = Field(default_factory=list, max_length=3)
+    execution_repair: ExecutionRepairCheckpoint | None = None
     inferred_creative_core: str | None = Field(
         default=None, min_length=1, max_length=160
     )
@@ -1467,6 +1506,7 @@ class CreativeEvaluationDraft(ApiModel):
     )
     hard_issues: list[str] = Field(default_factory=list, max_length=5)
     warnings: list[str] = Field(default_factory=list, max_length=3)
+    execution_findings: list[ExecutionFinding] = Field(default_factory=list, max_length=3)
     inferred_creative_core: str | None = Field(
         default=None,
         min_length=1,

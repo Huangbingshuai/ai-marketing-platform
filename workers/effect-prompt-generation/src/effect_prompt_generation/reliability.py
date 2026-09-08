@@ -28,8 +28,8 @@ def creative_item_output_tokens(duration_seconds: int) -> int:
     """Estimate one structured shot plan without imposing a text-length rule."""
 
     return min(
-        1_100 + MAX_PROMPT_DURATION_SECONDS * 30,
-        1_100 + duration_seconds * 30,
+        1_350 + MAX_PROMPT_DURATION_SECONDS * 30,
+        1_350 + duration_seconds * 30,
     )
 
 
@@ -72,9 +72,9 @@ def evaluation_item_output_tokens(candidate: CreativeCandidate) -> int:
             dimensions.emotion,
         )
     )
-    # Keep the proven 1,300-token allowance for ordinary candidates. Only very
-    # large material descriptions increase the estimate and shrink the shard.
-    return 1_300 + min(300, max(0, source_characters - 1_200) // 8)
+    # Reserve short execution findings as well as scores/fact support. Actual
+    # diagnostics may be empty; this is a transport allowance, not a length rule.
+    return 1_600 + min(300, max(0, source_characters - 1_200) // 8)
 
 
 def evaluation_item_input_tokens(candidate: CreativeCandidate) -> int:

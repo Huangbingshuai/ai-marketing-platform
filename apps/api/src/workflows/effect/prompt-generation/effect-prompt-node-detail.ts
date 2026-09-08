@@ -1629,7 +1629,16 @@ const qualityScores = (value: unknown): EffectPromptQualityScores | null => {
 
 const creativeRows = (run: EffectPromptNodeDetailRunRecord): CreativeRow[] => {
   const taskBySlot = new Map<string, JsonRecord>();
+  const repairedBySlot = new Map<string, JsonRecord>();
   for (const shard of run.shards) {
+    for (const raw of Array.isArray(shard.items) ? shard.items : []) {
+      if (!isRecord(raw) || !isRecord(raw.executionRepair)) continue;
+      const checkpoint = raw.executionRepair;
+      if (checkpoint.status !== 'ACCEPTED' || !isRecord(checkpoint.candidate)) continue;
+      const slotId = publicText(raw.slotId, 160);
+      if (slotId && checkpoint.candidate.slotId === raw.slotId)
+        repairedBySlot.set(slotId, checkpoint.candidate);
+    }
     for (const raw of Array.isArray(shard.combinationPlan) ? shard.combinationPlan : []) {
       if (!isRecord(raw) || !Array.isArray(raw.preferredFactIds)) continue;
       const slotId = publicText(raw.slotId, 160);
@@ -1638,8 +1647,21 @@ const creativeRows = (run: EffectPromptNodeDetailRunRecord): CreativeRow[] => {
   }
   const rows: CreativeRow[] = [];
   for (const shard of run.shards) {
-    for (const raw of Array.isArray(shard.items) ? shard.items : []) {
-      if (!isRecord(raw) || typeof raw.creativeCore !== 'string') continue;
+    for (const source of Array.isArray(shard.items) ? shard.items : []) {
+      if (!isRecord(source) || typeof source.creativeCore !== 'string') continue;
+      const repaired = repairedBySlot.get(publicText(source.slotId, 160));
+      // The Worker atomically persists the accepted body beside its evaluation.
+      // Only project public sample fields; never expose the repair checkpoint.
+      const raw =
+        repaired &&
+        repaired.ordinal === source.ordinal &&
+        repaired.round === source.round &&
+        repaired.creativeCore === source.creativeCore &&
+        JSON.stringify(repaired.declaredFactIds) === JSON.stringify(source.declaredFactIds) &&
+        dimensions(repaired.dimensions) &&
+        publicText(repaired.content)
+          ? repaired
+          : source;
       const slotId = publicText(raw.slotId, 160);
       const ordinal = safeNumber(raw.ordinal);
       const itemDimensions = dimensions(raw.dimensions);

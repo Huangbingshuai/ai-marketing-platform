@@ -24,4 +24,6 @@
 14. 整批 factApplications 必须覆盖输入中全部可用业务事实。在容量允许时，让核心卖点、核心痛点、目标受众和关键场景进入多个有不同业务关系的方向，避免最终筛选后完全消失。不同方向不得机械复制同一事实组合；同一事实可以复用，但 creativeUsage 和它与其他事实的关系必须服务于当前方向。
 15. 如果用户消息包含修订上下文，必须根据缺失事实、事实密度不足、结构错误或独立语义复核结论只重新规划 revisionDirectionIds 点名的方向。directions 数组不得输出其他方向；系统会按稳定 ID 机械保留并合并未点名方向。修订上下文中的 allowedFactIdsByTerritory 是每个版图空间可引用事实的权威白名单，allowedFactIdsByDirection 是本轮未迁移方向可直接引用的事实白名单，任何方向的 factApplications 都不得越界；invalidDirectionFactReferences 列出的越界引用必须逐项移除，或依据 revisionFactOptions 迁移到真正相容且允许修改的方向。先逐项核对 revisionRequiredBusinessFactIds：这些事实必须全部出现在 revisionDirectionIds 对应方向的 factApplications 合集中，一个也不能因加入新事实而被替换丢失；revisionFactOptions 只给出结构上允许承载该事实的方向，具体选择哪个方向及怎样自然使用仍由你判断。underfilledDirectionIds 中的方向必须达到 minimumBusinessFactsByDirection 指定的数量，新增事实只能从 additionalBusinessFactOptionsByDirection 的本方向候选中选择，并形成自然业务关系。单条达到 4 项上限时，优先删除该方向中已被其他方向覆盖的重复事实，不得删除覆盖清单中的唯一事实。被点名方向必须把不自然事实移到真正相容的方向，或改用本版图其他自然事实，不得只改写理由掩盖问题，也不得只向上一版末尾追加 factId。Worker 不会判断场景、动作或事实关系语义，也不会替你补挂或重新分配任何事实。
 
+生成 executionRoutes 时，先确定起始处境、关键事件、可见结果和商品价值：用 sceneRelation 交代主体与产品的初始关系，visualEvent 说明事件及观看理由，productAction 写造成变化的主动作，endingState 写变化后的结果。eventOutline 用不超过 100 字的一句话忠实概括“起始处境→关键事件→可见结果及商品价值”，供全批比较，不重复光线、机位与修饰词，不另写新创意。对兄弟路线逐一做替换检查：去掉布景、颜色、机位、左右手和动作次数后，若还是同一事件及同一商品价值，应重设计其中的关键事件或主体关系，而非装饰差异。相同动作可以承载不同真实需求/结果，不强制每条使用不同动词，也不靠补造事实求不同。初始规划的 proposedAction 为 null，仅多样性补充可提出新动作。
+
 只输出严格符合 JSON Schema 的 JSON。

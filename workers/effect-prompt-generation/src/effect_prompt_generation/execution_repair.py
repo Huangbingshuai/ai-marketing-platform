@@ -1,0 +1,142 @@
+"""Mechanical patch application and model-verdict selection; no text semantics."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+
+from .models import (
+    CreativeCandidate,
+    CreativeEvaluation,
+    ExecutionRepairDraft,
+    MaterialShotPlan,
+)
+from .shot_plan import compile_material_shot_plan
+
+
+def candidate_hash(candidate: CreativeCandidate) -> str:
+    payload = candidate.model_dump(mode="json", by_alias=True, exclude={"generated_at"})
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
+
+
+def restore_execution_candidate(
+    original: CreativeCandidate,
+    evaluation: CreativeEvaluation,
+    *,
+    duration: int,
+) -> CreativeCandidate | None:
+    checkpoint = evaluation.execution_repair
+    if checkpoint is None or checkpoint.original_hash != candidate_hash(original):
+        return None
+    if checkpoint.status != "ACCEPTED":
+        return original if checkpoint.candidate is None else None
+    repaired = checkpoint.candidate
+    if repaired is None or repaired.shot_plan is None or original.shot_plan is None:
+        return None
+    # Only patched execution fields and the camera dimension may change.
+    excluded = {"shot_plan", "content", "dimensions"}
+    if original.model_dump(exclude=excluded) != repaired.model_dump(exclude=excluded):
+        return None
+    if original.dimensions.model_dump(
+        exclude={"camera"}
+    ) != repaired.dimensions.model_dump(exclude={"camera"}):
+        return None
+    if repaired.content != compile_material_shot_plan(
+        repaired.shot_plan, target_duration_seconds=duration
+    ):
+        return None
+    if len(original.shot_plan.beats) != len(repaired.shot_plan.beats):
+        return None
+    if original.shot_plan.overview != repaired.shot_plan.overview:
+        return None
+    if original.shot_plan.scene.model_dump(
+        exclude={"initial_state"}
+    ) != repaired.shot_plan.scene.model_dump(exclude={"initial_state"}):
+        return None
+    if any(
+        (left.sequence, left.duration_weight, left.sound)
+        != (right.sequence, right.duration_weight, right.sound)
+        for left, right in zip(
+            original.shot_plan.beats, repaired.shot_plan.beats, strict=True
+        )
+    ):
+        return None
+    return repaired
+
+
+def has_execution_diagnosis(
+    candidate: CreativeCandidate, evaluation: CreativeEvaluation
+) -> bool:
+    if (
+        candidate.shot_plan is None
+        or evaluation.hard_issues
+        or not evaluation.execution_findings
+    ):
+        return False
+    sequences = {beat.sequence for beat in candidate.shot_plan.beats}
+    for finding in evaluation.execution_findings:
+        if finding.code not in evaluation.warnings:
+            return False
+        if finding.field in {"INITIAL_STATE", "FINAL_FRAME"}:
+            if finding.sequence != 0:
+                return False
+        elif finding.sequence not in sequences:
+            return False
+    return True
+
+
+def apply_execution_patch(
+    candidate: CreativeCandidate,
+    draft: ExecutionRepairDraft,
+    *,
+    duration: int,
+) -> CreativeCandidate:
+    if draft.slot_id != candidate.slot_id or candidate.shot_plan is None:
+        raise ValueError("repair target does not match candidate")
+    payload = candidate.shot_plan.model_dump()
+    seen: set[tuple[int, str]] = set()
+    for patch in draft.patches:
+        key = (patch.sequence, patch.field)
+        if key in seen:
+            raise ValueError("duplicate repair field")
+        seen.add(key)
+        if patch.field in {"INITIAL_STATE", "FINAL_FRAME"}:
+            if patch.sequence != 0:
+                raise ValueError("global repair field requires sequence zero")
+            if patch.field == "INITIAL_STATE":
+                payload["scene"]["initial_state"] = patch.value
+            else:
+                payload["final_frame"] = patch.value
+        else:
+            if not 1 <= patch.sequence <= len(payload["beats"]):
+                raise ValueError("repair references unknown beat")
+            payload["beats"][patch.sequence - 1][patch.field.lower()] = patch.value
+    plan = MaterialShotPlan.model_validate(payload)
+    dimensions = candidate.dimensions.model_copy(deep=True)
+    if draft.camera_dimension is not None:
+        dimensions.camera = draft.camera_dimension
+    return candidate.model_copy(
+        update={
+            "shot_plan": plan,
+            "dimensions": dimensions,
+            "content": compile_material_shot_plan(
+                plan, target_duration_seconds=duration
+            ),
+        }
+    )
+
+
+def repair_improves(original: CreativeEvaluation, revised: CreativeEvaluation) -> bool:
+    # These are explicit AI verdicts/numeric comparisons, not Worker inference.
+    return (
+        not revised.hard_issues
+        and not revised.execution_findings
+        and not {"CAMERA_ACTION_MISMATCH", "VISUALLY_UNEXECUTABLE"}.intersection(
+            revised.warnings
+        )
+        and set(original.realized_fact_ids).issubset(revised.realized_fact_ids)
+        and revised.scores.visual_executability >= original.scores.visual_executability
+        and revised.scores.overall_quality >= original.scores.overall_quality
+    )

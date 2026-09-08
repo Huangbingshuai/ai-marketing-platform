@@ -53,6 +53,8 @@ from .models import (
     CreativeEvaluationBatch,
     CreativeEvaluationDraft,
     CreativeEvaluationDraftBatch,
+    ExecutionFinding,
+    ExecutionRepairDraft,
     CreativeFactTerritoryAssignment,
     CreativeFactTerritoryAssignmentResponse,
     CreativeFactAssignment,
@@ -86,6 +88,7 @@ TModel = TypeVar("TModel", bound=BaseModel)
 LOGGER = logging.getLogger(__name__)
 CREATIVE_BASE_PROMPT = "creative_base.system.prompt.txt"
 CREATIVE_TASK_PROMPT = "creative_task.user.prompt.txt"
+EXECUTION_REPAIR_PROMPT = "execution_repair.system.prompt.txt"
 EVALUATION_BASE_PROMPT = "evaluation_base.system.prompt.txt"
 EVALUATION_TASK_PROMPT = "evaluation_task.user.prompt.txt"
 FACT_VISUAL_STRATEGY_BASE_PROMPT = "fact_visual_strategy.system.prompt.txt"
@@ -346,6 +349,12 @@ class AiProvider(Protocol):
         regeneration_context: Mapping[str, Any] | None = None,
     ) -> AiCallResult[CreativeCandidateBatch]: ...
 
+    async def repair_creative_execution(
+        self, candidate: CreativeCandidate, *, task: CreativeTask,
+        findings: Sequence[ExecutionFinding], application: InsightApplicationMap,
+        shared_prompt: SharedPrompt, fact_visual_strategy: FactVisualStrategy,
+    ) -> AiCallResult[ExecutionRepairDraft]: ...
+
     async def evaluate_creatives(
         self,
         candidates: list[CreativeCandidate],
@@ -361,6 +370,20 @@ class AiProvider(Protocol):
 
 class MockAiProvider:
     execution_mode = "MOCK"
+
+    async def repair_creative_execution(
+        self, candidate: CreativeCandidate, *, task: CreativeTask,
+        findings: Sequence[ExecutionFinding], application: InsightApplicationMap,
+        shared_prompt: SharedPrompt, fact_visual_strategy: FactVisualStrategy,
+    ) -> AiCallResult[ExecutionRepairDraft]:
+        # Explicit fixture-only no-op; never manufacture a production repair.
+        from .models import ShotFieldPatch
+        if candidate.shot_plan is None:
+            raise ValueError("mock repair requires shot plan")
+        return _mock_result(ExecutionRepairDraft(
+            slot_id=candidate.slot_id,
+            patches=[ShotFieldPatch(sequence=1, field="CAMERA", value=candidate.shot_plan.beats[0].camera)],
+        ), "CREATIVE_EVALUATION_CLASSIFICATION", EXECUTION_REPAIR_PROMPT)
 
     async def compile_fact_visual_strategy(
         self,
@@ -1728,6 +1751,10 @@ class ArkResponsesProvider:
                         "semanticProfile": direction.semantic_profile.model_dump(
                             mode="json", by_alias=True
                         ),
+                        "executionRoutes": [
+                            {"routeId": route.route_id, "eventOutline": route.event_outline or route.visual_event}
+                            for route in direction.execution_routes
+                        ],
                     }
                     for direction in directions.directions
                 ],
@@ -1970,6 +1997,7 @@ class ArkResponsesProvider:
             ),
             request_timeout=self._candidate_timeout,
             instructions=load_prompt(creative_base_prompt),
+            response_schema=_creative_shot_response_schema(),
         )
         task_by_slot = {item.slot_id: item for item in shard.tasks}
         actual = [item.slot_id for item in call.value.items]
@@ -2038,6 +2066,30 @@ class ArkResponsesProvider:
         return AiCallResult(
             value=CreativeCandidateBatch(items=normalized),
             metadata=call.metadata,
+        )
+
+    async def repair_creative_execution(
+        self, candidate: CreativeCandidate, *, task: CreativeTask,
+        findings: Sequence[ExecutionFinding], application: InsightApplicationMap,
+        shared_prompt: SharedPrompt, fact_visual_strategy: FactVisualStrategy,
+    ) -> AiCallResult[ExecutionRepairDraft]:
+        assignment = _creative_fact_assignment(task, application)
+        prompt = json.dumps({
+            "task": _creative_task_brief(
+                task, assignment=assignment, application=application,
+                fact_visual_strategy=fact_visual_strategy,
+            ),
+            "original": candidate.model_dump(mode="json", by_alias=True, exclude={"content", "generated_at"}),
+            "findings": [item.model_dump(mode="json", by_alias=True) for item in findings],
+            "sharedPrompt": shared_prompt.compiled_content,
+        }, ensure_ascii=False, sort_keys=True)
+        return await self._structured(
+            prompt, ExecutionRepairDraft, schema_name="effect_prompt_execution_repair",
+            stage=NodeId.CREATIVE_EVALUATION_CLASSIFICATION.value,
+            prompt_file=EXECUTION_REPAIR_PROMPT, model=self._candidate_model,
+            max_output_tokens=min(self._candidate_max_output_tokens, 2048),
+            request_timeout=self._candidate_timeout,
+            instructions=load_prompt(EXECUTION_REPAIR_PROMPT),
         )
 
     async def evaluate_creatives(
@@ -2121,6 +2173,7 @@ class ArkResponsesProvider:
                                 by_alias=True,
                             ),
                             "content": item.content,
+                            "beatSequences": [beat.sequence for beat in item.shot_plan.beats] if item.shot_plan else [],
                         },
                         "targetDurationSeconds": target_durations[item.slot_id],
                         "assignedContextFactIds": context_by_slot.get(
@@ -2200,6 +2253,10 @@ class ArkResponsesProvider:
         item_count: int | None = None,
         response_schema: dict[str, Any] | None = None,
     ) -> AiCallResult[TModel]:
+        if model_type is CreativeDirectionResponse:
+            response_schema = response_schema or model_type.model_json_schema(by_alias=True)
+            route_schema = response_schema["$defs"]["CreativeExecutionRoute"]
+            route_schema["required"] = list(dict.fromkeys([*route_schema["required"], "eventOutline"]))
         payload = {
             "model": model,
             "input": [
@@ -3224,6 +3281,13 @@ def _evaluation_strategy_payload(
     ]
 
 
+def _creative_shot_response_schema() -> dict[str, Any]:
+    schema = CreativeCandidateDraftBatch.model_json_schema(by_alias=True)
+    beat = schema["$defs"]["MaterialShotBeat"]
+    beat["required"] = list(dict.fromkeys([*beat["required"], "focus", "motionSource"]))
+    return schema
+
+
 def _compile_creative_evaluation(
     candidate: CreativeCandidate,
     draft: CreativeEvaluationDraft,
@@ -3265,6 +3329,7 @@ def _compile_creative_evaluation(
         abstract_visual_proof_findings=draft.abstract_visual_proof_findings,
         hard_issues=draft.hard_issues,
         warnings=draft.warnings,
+        execution_findings=draft.execution_findings,
         inferred_creative_core=draft.inferred_creative_core,
         inferred_dimensions=draft.inferred_dimensions,
     )

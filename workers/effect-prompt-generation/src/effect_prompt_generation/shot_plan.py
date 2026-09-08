@@ -19,6 +19,8 @@ _FORMAT_LABELS = (
     "景别与角度：",
     "画面动作：",
     "镜头执行：",
+    "焦点变化：",
+    "运动来源：",
     "可见结果：",
     "声音：",
 )
@@ -72,9 +74,13 @@ def compile_material_shot_plan(
         detail = (
             f"景别与角度：{_sentence(beat.framing)} "
             f"画面动作：{_sentence(beat.action)} "
-            f"镜头执行：{_sentence(beat.camera)} "
-            f"可见结果：{_sentence(beat.visible_result)}"
+            f"镜头执行：{_sentence(beat.camera)}"
         )
+        if beat.focus:
+            detail += f" 焦点变化：{_sentence(beat.focus)}"
+        if beat.motion_source:
+            detail += f" 运动来源：{_sentence(beat.motion_source)}"
+        detail += f" 可见结果：{_sentence(beat.visible_result)}"
         if beat.sound:
             detail += f" 声音：{_sentence(beat.sound)}"
         lines.extend((f"{start}–{end}秒", detail))

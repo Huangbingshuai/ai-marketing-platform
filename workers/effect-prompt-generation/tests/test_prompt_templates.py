@@ -14,6 +14,7 @@ from effect_prompt_generation.prompt_loader import (
 from effect_prompt_generation.providers import _visual_style_baseline_section
 
 ACTIVE_PROMPT_FILES = {
+    "execution_repair.system.prompt.txt",
     "creative_base.system.prompt.txt",
     "creative_task.user.prompt.txt",
     "creative_direction.system.prompt.txt",
@@ -85,8 +86,8 @@ def test_director_guidance_uses_existing_fields_without_fixed_ad_formula() -> No
     assert "不能依赖人物讲解、旁白或字幕完成产品表达" in direction
     assert "禁止人物口播、旁白、对镜讲解和字幕文案" in direction
     assert "同一连续事件允许合理切镜" in creative
-    assert "固定机位与一镜到底同样可以有力" in creative
-    assert "焦点落在哪里" in creative
+    assert "不强迫单一机位" in creative
+    assert "focus 单独写对焦对象与转移" in creative
     assert "不机械循环“中景—特写—推进”" in creative
     assert "不是当前商品事实，也不是固定脚本" in creative
     assert "不得成为其他任务的默认内容" in creative

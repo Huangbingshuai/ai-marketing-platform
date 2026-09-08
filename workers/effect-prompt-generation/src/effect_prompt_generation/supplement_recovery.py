@@ -22,6 +22,7 @@ def direction_summary(direction: CreativeDirection) -> dict[str, Any]:
         "directionId": direction.direction_id,
         "territoryId": direction.territory_id,
         "primaryActionId": direction.primary_action_id,
+        "proposedAction": direction.proposed_action.model_dump(mode="json", by_alias=True) if direction.proposed_action else None,
         "creativeDirection": direction.creative_direction,
         "semanticProfile": direction.semantic_profile.model_dump(
             mode="json", by_alias=True
@@ -29,6 +30,7 @@ def direction_summary(direction: CreativeDirection) -> dict[str, Any]:
         "visualEvents": [
             {
                 "event": r.visual_event,
+                "eventOutline": r.event_outline,
                 "sceneRelation": r.scene_relation,
                 "productAction": r.product_action,
                 "endingState": r.ending_state,

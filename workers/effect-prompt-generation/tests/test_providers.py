@@ -67,10 +67,10 @@ def test_temporal_intent_rejects_duration_above_15_seconds() -> None:
 @pytest.mark.parametrize(
     ("duration", "expected"),
     [
-        (4, 5_423),
-        (8, 5_956),
-        (9, 6_089),
-        (15, 6_889),
+        (4, 6_534),
+        (8, 7_067),
+        (9, 7_200),
+        (15, 8_000),
     ],
 )
 def test_creative_shard_reserves_duration_appropriate_output_budget(
@@ -98,7 +98,7 @@ def test_single_max_duration_creative_reserves_supplement_headroom() -> None:
         targetDurationSeconds=15,
     )
 
-    assert _creative_output_token_budget([task]) == 1_723
+    assert _creative_output_token_budget([task]) == 2_000
 
 
 def test_evaluation_chunks_shrink_only_for_unusually_large_candidate_text() -> None:
@@ -140,7 +140,7 @@ def test_evaluation_chunks_shrink_only_for_unusually_large_candidate_text() -> N
     assert [len(chunk) for chunk in chunks] == [2, 1, 1]
 
 
-def test_evaluation_chunks_allow_four_candidates_at_max_duration() -> None:
+def test_evaluation_chunks_reserve_located_diagnostic_output_at_max_duration() -> None:
     candidates = [
         CreativeCandidate(
             slot_id=f"long-{index}",
@@ -169,7 +169,7 @@ def test_evaluation_chunks_allow_four_candidates_at_max_duration() -> None:
         max_input_tokens=12_000,
     )
 
-    assert [len(chunk) for chunk in chunks] == [4, 1]
+    assert [len(chunk) for chunk in chunks] == [3, 2]
 
 
 def test_ark_structured_output_rejects_non_artifact_trailing_content() -> None:
@@ -469,7 +469,9 @@ async def test_director_request_and_compilation_across_products_and_durations(
             "durationWeight": 1,
             "framing": "手部与产品同框近景",
             "action": action,
-            "camera": "固定机位，焦点从靠近的手移到实际接触处",
+            "camera": "固定机位",
+            "focus": "焦点从靠近的手移到实际接触处",
+            "motionSource": "成年人手部作用于产品",
             "visibleResult": "手结束动作，产品仍在原位",
             "sound": "保留手与物体接触的现场声",
         }],

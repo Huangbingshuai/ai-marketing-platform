@@ -93,6 +93,80 @@ const record = (): EffectPromptNodeDetailRunRecord =>
   }) as unknown as EffectPromptNodeDetailRunRecord;
 
 describe('presentEffectPromptNodeDetail', () => {
+  it.each(['ACCEPTED', 'STARTED', 'KEPT_ORIGINAL', 'WRONG_SLOT'])(
+    '修复检查点 %s 的样例与评分一致且不泄露内部字段',
+    (status) => {
+      const original = {
+        slotId: 'private-slot',
+        ordinal: 1,
+        round: 0,
+        creativeCore: '使用者完成一次产品操作',
+        declaredFactIds: [],
+        dimensions: {
+          narrative: '动作展示',
+          scene: '日常环境',
+          persona: '成年使用者',
+          productRelation: '产品参与使用',
+          camera: '近景',
+          emotion: '自然',
+        },
+        content: '原稿正文：主体完成一次连续操作，镜头记录完整过程。',
+      };
+      const corrected = {
+        ...original,
+        content: '修复正文：使用者施力推动主体，固定机位记录连续操作。',
+        slotId: status === 'WRONG_SLOT' ? 'another-private-slot' : original.slotId,
+      };
+      const run = {
+        ...record(),
+        shards: [
+          {
+            phase: 'CREATIVE',
+            status: 'SUCCEEDED',
+            items: [original],
+            combinationPlan: [
+              { slotId: original.slotId, preferredFactIds: [], targetDurationSeconds: 5 },
+            ],
+          },
+          {
+            phase: 'CLASSIFICATION',
+            status: 'SUCCEEDED',
+            combinationPlan: [],
+            items: [
+              {
+                slotId: original.slotId,
+                primaryPurpose: 'PRODUCT_DISPLAY',
+                compatiblePurposes: [],
+                scores: {
+                  productRelevance: 90,
+                  creativeCoherence: 90,
+                  visualExecutability: 90,
+                  commercialUsefulness: 90,
+                  visualClarity: 90,
+                },
+                hardIssues: [],
+                warnings: [],
+                executionRepair: {
+                  status: status === 'WRONG_SLOT' ? 'ACCEPTED' : status,
+                  originalHash: 'private-hash',
+                  candidate: corrected,
+                },
+                executionFindings: [{ diagnosis: 'private-diagnosis' }],
+              },
+            ],
+          },
+        ],
+      } as unknown as EffectPromptNodeDetailRunRecord;
+      const serialized = JSON.stringify(
+        presentEffectPromptNodeDetail(run, 'CREATIVE_EVALUATION_CLASSIFICATION'),
+      );
+      expect(serialized).toContain(status === 'ACCEPTED' ? '修复正文' : '原稿正文');
+      expect(serialized).not.toContain(status === 'ACCEPTED' ? '原稿正文' : '修复正文');
+      expect(serialized).not.toContain('private-');
+      expect(serialized).not.toContain('executionRepair');
+    },
+  );
+
   it.each(currentNodes)('只为当前工作流节点生成安全详情：%s', (nodeId) => {
     const detail = presentEffectPromptNodeDetail(record(), nodeId);
     expect(detail.nodeId).toBe(nodeId);
