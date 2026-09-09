@@ -528,6 +528,20 @@ class InsightArtifact(ApiModel):
     result: dict[str, Any]
 
 
+class ProductImageReference(ApiModel):
+    file_object_id: str = Field(min_length=1)
+    original_file_name: str = Field(min_length=1, max_length=255)
+    mime_type: Literal[
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/vnd.adobe.photoshop",
+        "application/octet-stream",
+    ]
+    size_bytes: int = Field(ge=1)
+    sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+
+
 class PromptGenerationSnapshot(ApiModel):
     project_id: str
     workflow_run_id: str
@@ -536,6 +550,11 @@ class PromptGenerationSnapshot(ApiModel):
     target_item_id: str | None = None
     settings: PromptBatchSettings
     insight_artifact: InsightArtifact
+    product_images: list[ProductImageReference] = Field(default_factory=list)
+    fact_visual_strategy_source_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{64}$",
+    )
     retained_manual_items: list[PromptItem] = Field(
         default_factory=list, max_length=200
     )
@@ -588,6 +607,10 @@ class PromptGenerationSnapshot(ApiModel):
 
     @model_validator(mode="after")
     def validate_operation(self) -> PromptGenerationSnapshot:
+        if self.product_images and self.fact_visual_strategy_source_hash is None:
+            raise ValueError(
+                "factVisualStrategySourceHash is required when productImages are present"
+            )
         if (
             self.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"}
             and not self.target_item_id

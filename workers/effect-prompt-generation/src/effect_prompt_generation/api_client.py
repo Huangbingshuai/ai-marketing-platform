@@ -29,6 +29,9 @@ class InternalApiError(RuntimeError):
 
 class InternalApi(Protocol):
     async def claim(self, run_id: str, project_id: str) -> ClaimResponse: ...
+    async def download_product_image(
+        self, context: RuntimeContext, file_object_id: str
+    ) -> bytes: ...
     async def put_stage(self, context: RuntimeContext, output: StageOutput) -> None: ...
     async def put_shard(self, context: RuntimeContext, shard: ShardRecord) -> None: ...
     async def get_shards(self, context: RuntimeContext) -> list[ShardRecord]: ...
@@ -126,6 +129,17 @@ class HttpInternalApi:
             "POST", f"{self._ROOT}/runs/{run_id}/claim", json={"projectId": project_id}
         )
         return ClaimResponse.model_validate(data)
+
+    async def download_product_image(
+        self, context: RuntimeContext, file_object_id: str
+    ) -> bytes:
+        response = await self._request(
+            "GET",
+            f"{self._ROOT}/runs/{context.run_id}/product-images/{file_object_id}/content",
+            params={"projectId": context.project_id},
+            headers=self._lease(context),
+        )
+        return response.content
 
     async def put_stage(self, context: RuntimeContext, output: StageOutput) -> None:
         await self._json(

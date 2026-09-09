@@ -38,7 +38,7 @@ Prompt 候选继续使用现有模型路由，不更换生成、方向规划或�
 
 ### 事实与创意链路
 
-新任务固定使用当前八节点拓扑。Worker 先把已提交营销洞察中的可用事实交给一次独立 AI 调用，编译为“产品身份锚点、可直接呈现、可通过动作呈现、仅作商业背景、仅适合文字表达、禁止视觉证明”六种角色；Worker 再校验事实引用、完整覆盖和禁止推导。每次用户重新批量生成都会重新调用模型编译策略，不复用其他 Run 的结果；只有同一 Run 因网络、租约或 Worker 故障重试时，才恢复本任务已经验证的检查点。策略不会写入公开 Prompt 结果，也不会按候选数量重复调用。
+新任务固定使用当前八节点拓扑。Worker 先把已提交营销洞察中的可用事实，以及该洞察实际消费的资料包内全部可用产品主图和细节图，交给同一次独立多模态 AI 调用，编译为“产品身份锚点、可直接呈现、可通过动作呈现、仅作商业背景、仅适合文字表达、禁止视觉证明”六种角色；Worker 再校验事实引用、完整覆盖和禁止推导。图片只帮助模型认识商品真实外形、结构、细节和可操作部位，不是新的事实来源，不能从包装文字、背景或道具推导卖点。图片不会继续传入创意方向、候选生成或评分请求，后续节点只消费已经验证的简短视觉策略。每次用户重新批量生成都会重新调用模型编译策略，不复用其他 Run 的结果；只有同一 Run 因网络、租约或 Worker 故障重试时，才恢复本任务已经验证的检查点。检查点同时绑定营销洞察内容与图片 SHA-256，命中时不重新下载图片。策略不会写入公开 Prompt 结果，也不会按候选数量重复调用。
 
 视觉策略使用规划节点的独立输出预算与超时，不与单批候选生成共享 4096 Token 上限。策略正文保持短语化，既保留跨品类判断，又避免整份事实卡在结构化 JSON 尾部被截断；Ark 返回 `incomplete_details.reason=length` 时按明确输出截断处理，不再显示旧“营销关系规划”文案或无意义重试。
 
@@ -124,6 +124,9 @@ Ark Responses API 在解析 JSON 前检查 `status` 与 `incomplete_details`。�
 - `EFFECT_PROMPT_QUEUE`，默认 `effect.prompt-generation.requested`
 - `PROMPT_AI_PROVIDER`，默认 `ark`
 - `ARK_BASE_URL`、`ARK_MODEL`
+- `ARK_PROMPT_VISUAL_STRATEGY_MODEL`：事实视觉策略的多模态模型；未配置时跟随当前候选模型
+- `ARK_PROMPT_VISUAL_STRATEGY_IMAGE_DETAIL`：商品参考图理解精度，默认 `high`
+- `PROMPT_VISUAL_REFERENCE_MAX_INPUT_BYTES`、`PROMPT_VISUAL_REFERENCE_MAX_DIMENSION`、`PROMPT_VISUAL_REFERENCE_MAX_OUTPUT_BYTES`：参考图解码与压缩安全边界，默认分别为 20 MiB、1280 像素和 4 MiB
 - `ARK_PROMPT_CANDIDATE_MODEL`：当前连贯创意生成模型；未配置时回退到 `ARK_PROMPT_MODEL`，再回退到 `ARK_MODEL`
 - `ARK_PROMPT_FRAGMENT_STRATEGY_MODEL`：批次创意方向规划模型；未配置时跟随候选模型
 - `ARK_PROMPT_EVALUATION_MODEL`：当前独立质量评估与用途分类模型；未配置时跟随候选模型

@@ -354,6 +354,105 @@ describe('EffectPromptRepository', () => {
     });
   });
 
+  it('snapshots all supported product images from the exact insight source package', async () => {
+    const sourceArtifactId = '00000000-0000-4000-8000-000000000006';
+    const imageFileId = '00000000-0000-4000-8000-000000000007';
+    const runCreate = vi.fn().mockResolvedValue(runRecord());
+    const insight = {
+      id: '00000000-0000-4000-8000-000000000005',
+      revision: 2,
+      contentHash: 'a'.repeat(64),
+      payload: { productName: '移动电源' },
+      dependencies: [
+        {
+          sourceType: 'WORKING_ARTIFACT',
+          sourceKey: `source-package:${productId}`,
+          sourceArtifactId,
+          sourceRevision: 3,
+        },
+      ],
+    };
+    const sourcePackage = {
+      id: sourceArtifactId,
+      revision: 3,
+      files: [
+        {
+          role: 'PRODUCT_IMAGE',
+          fileObject: {
+            id: imageFileId,
+            originalFileName: '产品主图.png',
+            mimeType: 'image/png',
+            sizeBytes: 1024,
+            sha256: 'b'.repeat(64),
+            status: 'AVAILABLE',
+          },
+        },
+        {
+          role: 'SOURCE_DOCUMENT',
+          fileObject: {
+            id: '00000000-0000-4000-8000-000000000008',
+            originalFileName: '资料包.docx',
+            mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            sizeBytes: 2048,
+            sha256: 'c'.repeat(64),
+            status: 'AVAILABLE',
+          },
+        },
+      ],
+    };
+    const transaction = {
+      effectPromptRun: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: runCreate,
+      },
+      effectImportProduct: { findFirst: vi.fn().mockResolvedValue({ id: productId }) },
+      workflowRun: { findFirst: vi.fn().mockResolvedValue({ id: workflowRunId }) },
+      workflowNodeState: {
+        findUnique: vi.fn().mockResolvedValue({
+          revision: 1,
+          state: DEFAULT_EFFECT_PROMPT_SETTINGS,
+        }),
+      },
+      workingArtifact: {
+        findFirst: vi.fn().mockResolvedValueOnce(insight).mockResolvedValueOnce(sourcePackage),
+      },
+      effectPromptResult: { findFirst: vi.fn().mockResolvedValue(null) },
+      jobOutbox: { create: vi.fn().mockResolvedValue({}) },
+      $queryRaw: vi.fn().mockResolvedValue([{ id: productId }]),
+    };
+    const repository = new EffectPromptRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await expect(repository.startRun(projectId, workflowRunId, productId, input)).resolves.toEqual({
+      kind: 'CREATED',
+      run: runRecord(),
+    });
+
+    const expectedImages = [
+      {
+        fileObjectId: imageFileId,
+        originalFileName: '产品主图.png',
+        mimeType: 'image/png',
+        sizeBytes: 1024,
+        sha256: 'b'.repeat(64),
+      },
+    ];
+    expect(runCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        inputSnapshot: expect.objectContaining({
+          productImages: expectedImages,
+          factVisualStrategySourceHash: workflowStateHash({
+            insightContentHash: insight.contentHash,
+            productImages: [{ fileObjectId: imageFileId, sha256: 'b'.repeat(64) }],
+          }),
+        }),
+      }),
+      include: { result: true, stages: true },
+    });
+  });
+
   it('rejects a second active run for the same product', async () => {
     const created = runRecord({
       inputSnapshot: { selectionPolicy: 'MMR_CONTENT' },
@@ -609,6 +708,54 @@ describe('EffectPromptRepository', () => {
         heartbeatAt: expect.any(Date),
         leaseExpiresAt: expect.any(Date),
       }),
+    });
+  });
+
+  it('resolves only a snapshotted product image for the active worker attempt', async () => {
+    const fileObjectId = '00000000-0000-4000-8000-000000000007';
+    const reference = {
+      fileObjectId,
+      originalFileName: '产品主图.png',
+      mimeType: 'image/png',
+      sizeBytes: 1024,
+      sha256: 'b'.repeat(64),
+    };
+    const runFindFirst = vi.fn().mockResolvedValue({
+      workflowRunId,
+      inputSnapshot: { productImages: [reference] },
+    });
+    const fileFindFirst = vi
+      .fn()
+      .mockResolvedValue({ id: fileObjectId, storageKey: 'private/key' });
+    const repository = new EffectPromptRepository({
+      effectPromptRun: { findFirst: runFindFirst },
+      fileObject: { findFirst: fileFindFirst },
+    } as unknown as PrismaService);
+
+    await expect(
+      repository.productImageSource(projectId, runId, fileObjectId, 'attempt-a'),
+    ).resolves.toEqual({
+      reference,
+      fileObject: { id: fileObjectId, storageKey: 'private/key' },
+    });
+    expect(runFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          projectId,
+          id: runId,
+          status: 'RUNNING',
+          attemptToken: 'attempt-a',
+        }),
+      }),
+    );
+    expect(fileFindFirst).toHaveBeenCalledWith({
+      where: {
+        projectId,
+        workflowRunId,
+        id: fileObjectId,
+        status: 'AVAILABLE',
+        sha256: reference.sha256,
+      },
     });
   });
 

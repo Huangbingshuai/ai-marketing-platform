@@ -92,6 +92,11 @@ from .providers import (
     ProviderError,
     ProviderErrorType,
 )
+from .product_images import (
+    PreparedProductImage,
+    ProductImageProcessingError,
+    ProductImageProcessor,
+)
 from .creative_directions import (
     apply_creative_landscape_audit,
     allocate_creative_directions,
@@ -356,6 +361,7 @@ class PromptGenerationPipeline:
         max_ai_calls_per_run: int = 256,
         direction_review_batch_size: int = 6,
         direction_review_input_budget: int = 12000,
+        product_image_processor: ProductImageProcessor | None = None,
     ) -> None:
         self.api = api
         self.provider = provider
@@ -378,6 +384,7 @@ class PromptGenerationPipeline:
         self.max_ai_calls_per_run = max_ai_calls_per_run
         self.direction_review_batch_size = direction_review_batch_size
         self.direction_review_input_budget = direction_review_input_budget
+        self.product_image_processor = product_image_processor
         self._snapshots: dict[str, PromptGenerationSnapshot] = {}
         self._runs: dict[str, RunCache] = {}
         # The worker process is long lived. Sharing the content-addressed vector cache
@@ -644,7 +651,11 @@ class PromptGenerationPipeline:
             "正在编译事实视觉使用策略",
         )
         application = self._require_application(context)
-        source_content_hash = self.snapshot(context).insight_artifact.content_hash
+        snapshot = self.snapshot(context)
+        source_content_hash = (
+            snapshot.fact_visual_strategy_source_hash
+            or snapshot.insight_artifact.content_hash
+        )
         checkpoint = self._cache(context).strategy_checkpoints.get(node)
         strategy: FactVisualStrategy | None = None
         reused = False
@@ -672,13 +683,20 @@ class PromptGenerationPipeline:
 
         call_metadata: dict[str, int | None] = {}
         if strategy is None:
+            product_images = await self._prepare_product_images(context)
             for invalid_response_attempt in range(2):
                 self._reserve_ai_call(context)
                 try:
                     async with self._ai_semaphore:
-                        call = await self.provider.compile_fact_visual_strategy(
-                            application
-                        )
+                        if product_images:
+                            call = await self.provider.compile_fact_visual_strategy(
+                                application,
+                                product_images=product_images,
+                            )
+                        else:
+                            call = await self.provider.compile_fact_visual_strategy(
+                                application
+                            )
                 except ProviderError as exc:
                     if (
                         invalid_response_attempt < 2
@@ -713,6 +731,14 @@ class PromptGenerationPipeline:
 
         self._cache(context).fact_visual_strategy = strategy
         metadata = strategy_stage_metadata(strategy, application, reused=reused)
+        metadata.update(
+            {
+                "referenceImageCount": len(snapshot.product_images),
+                "referenceMode": (
+                    "MULTIMODAL" if snapshot.product_images else "FACTS_ONLY"
+                ),
+            }
+        )
         metadata.update(call_metadata)
         await self._stage(
             context,
@@ -723,6 +749,36 @@ class PromptGenerationPipeline:
         )
         await self.progress(context, 13, node)
         return strategy
+
+    async def _prepare_product_images(
+        self,
+        context: RuntimeContext,
+    ) -> list[PreparedProductImage]:
+        references = self.snapshot(context).product_images
+        if not references:
+            return []
+        if self.product_image_processor is None:
+            raise PipelineError("商品参考图处理器未配置")
+
+        prepared: list[PreparedProductImage] = []
+        for reference in references:
+            content = await self.api.download_product_image(
+                context,
+                reference.file_object_id,
+            )
+            if len(content) != reference.size_bytes:
+                raise PipelineError("商品参考图内容长度与任务快照不一致")
+            if hashlib.sha256(content).hexdigest().casefold() != reference.sha256.casefold():
+                raise PipelineError("商品参考图内容校验失败")
+            try:
+                image = await asyncio.to_thread(
+                    self.product_image_processor.process,
+                    content,
+                )
+            except ProductImageProcessingError as exc:
+                raise PipelineError(str(exc)) from exc
+            prepared.append(image)
+        return prepared
 
     async def compile_shared_prompt(self, context: RuntimeContext) -> SharedPrompt:
         await self._stage(

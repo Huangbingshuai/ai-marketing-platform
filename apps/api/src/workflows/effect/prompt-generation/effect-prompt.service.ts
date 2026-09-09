@@ -42,9 +42,10 @@ import {
   normalizeEffectPromptSettings,
   effectPromptRunGraphNodeIds,
 } from '@ai-marketing/contracts';
-import { HttpStatus, Inject, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Optional } from '@nestjs/common';
 
 import { ApiHttpException } from '../../../common/api-http-exception';
+import { STORAGE_PORT, type StoragePort } from '../../../platform/file/storage.port';
 import { ProjectService } from '../../../platform/project/project.service';
 import {
   WorkflowWorkingRepository,
@@ -485,6 +486,7 @@ export class EffectPromptService {
     @Inject(ProjectService) private readonly projects: ProjectService,
     @Inject(WorkflowWorkingRepository)
     private readonly workingRepository: WorkflowWorkingRepository,
+    @Optional() @Inject(STORAGE_PORT) private readonly storage?: StoragePort,
   ) {}
 
   private async requireWorkflow(projectId: string, workflowRunId: string): Promise<void> {
@@ -1481,8 +1483,10 @@ export class EffectPromptService {
         : [];
     });
     const insightContentHash = result.input?.insightArtifact?.contentHash ?? '';
+    const visualStrategySourceHash =
+      result.input?.factVisualStrategySourceHash ?? insightContentHash;
     const currentRunVisualStrategy = checkpointCandidates.find((checkpoint) =>
-      isValidVisualStrategyCheckpoint(checkpoint, insightContentHash),
+      isValidVisualStrategyCheckpoint(checkpoint, visualStrategySourceHash),
     );
     const checkpoints = [
       ...checkpointCandidates.filter(
@@ -1510,6 +1514,25 @@ export class EffectPromptService {
     if ((await this.repository.heartbeat(projectId, runId, attemptToken)).count !== 1)
       throw conflict('Worker 租约已失效');
     return { accepted: true as const };
+  }
+
+  async productImageSource(
+    projectId: string,
+    runId: string,
+    fileObjectId: string,
+    attemptToken: string,
+  ) {
+    const source = await this.repository.productImageSource(
+      projectId,
+      runId,
+      fileObjectId,
+      attemptToken,
+    );
+    if (!source || !this.storage) throw notFound('Prompt 商品图片不存在或 Worker 租约已失效');
+    return {
+      reference: source.reference,
+      ...(await this.storage.open(source.fileObject.storageKey)),
+    };
   }
 
   async saveStage(

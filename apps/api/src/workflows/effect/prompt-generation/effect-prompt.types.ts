@@ -7,6 +7,14 @@ import type {
   EffectPromptSharedPrompt,
 } from '@ai-marketing/contracts';
 
+export type EffectPromptProductImageReference = {
+  fileObjectId: string;
+  originalFileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  sha256: string;
+};
+
 export type EffectPromptInputSnapshot = {
   projectId: string;
   workflowRunId: string;
@@ -20,6 +28,14 @@ export type EffectPromptInputSnapshot = {
     contentHash: string;
     result: unknown;
   };
+  /**
+   * Immutable references to the PRODUCT_IMAGE files consumed by the confirmed
+   * marketing insight. Storage locations and signed URLs never enter the Run
+   * snapshot; the active Worker lease resolves bytes through an internal API.
+   */
+  productImages?: EffectPromptProductImageReference[];
+  /** API-owned hash of the insight plus immutable product-image references. */
+  factVisualStrategySourceHash?: string;
   retainedManualItems: EffectPromptItem[];
   /** Freezes the selector implementation so an in-flight Run cannot change on resume. */
   selectionPolicy: 'MMR_CONTENT';

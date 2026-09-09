@@ -13,6 +13,7 @@ from .embeddings import (
 )
 from .graph import build_graph
 from .pipeline import PromptGenerationPipeline
+from .product_images import ProductImageProcessor
 from .providers import AiProvider, ArkResponsesProvider, MockAiProvider
 
 
@@ -28,6 +29,10 @@ def _provider(settings: WorkerSettings) -> AiProvider:
         blueprint_model=settings.resolved_prompt_blueprint_model,
         evaluation_model=settings.resolved_prompt_evaluation_model,
         candidate_model=settings.resolved_prompt_candidate_model,
+        visual_strategy_model=settings.resolved_prompt_visual_strategy_model,
+        visual_strategy_image_detail=(
+            settings.ark_prompt_visual_strategy_image_detail
+        ),
         strategy_max_output_tokens=settings.ark_prompt_strategy_max_output_tokens,
         candidate_max_output_tokens=settings.ark_prompt_candidate_max_output_tokens,
         fragment_strategy_max_output_tokens=(
@@ -86,6 +91,11 @@ async def serve(settings: WorkerSettings) -> None:
         max_ai_calls_per_run=settings.prompt_max_ai_calls_per_run,
         direction_review_batch_size=settings.prompt_direction_review_batch_size,
         direction_review_input_budget=settings.prompt_direction_review_input_budget,
+        product_image_processor=ProductImageProcessor(
+            max_input_bytes=settings.prompt_visual_reference_max_input_bytes,
+            max_dimension=settings.prompt_visual_reference_max_dimension,
+            max_output_bytes=settings.prompt_visual_reference_max_output_bytes,
+        ),
     )
     consumer = PromptGenerationConsumer(
         rabbitmq_url=settings.rabbitmq_url.get_secret_value(),

@@ -26,6 +26,7 @@ from effect_prompt_generation.providers import (
     _temporal_intent_for_duration,
     _validate_structured_output,
 )
+from effect_prompt_generation.product_images import PreparedProductImage
 from effect_prompt_generation.reliability import evaluation_chunks
 from effect_prompt_generation.prompt_loader import load_prompt, load_prompt_hash
 from effect_prompt_generation.visual_strategy import validate_fact_visual_strategy
@@ -707,6 +708,81 @@ async def test_ark_compiles_visual_usage_for_every_confirmed_fact() -> None:
     assert "F1" in payload_text
     assert "effect_prompt_fact_visual_strategy" in payload_text
     assert seen["max_output_tokens"] == 4096
+
+
+@pytest.mark.asyncio
+async def test_ark_visual_strategy_sends_all_product_images_in_one_multimodal_call() -> None:
+    application = map_insight(
+        {
+            "productName": "磁吸移动电源",
+            "visualFeatures": "云灰色圆角机身",
+            "coreSellingPoints": ["磁吸贴合"],
+        }
+    )
+    seen: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        seen.update(payload)
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "output_text": json.dumps(
+                    {
+                        "policies": [
+                            {
+                                "factId": f"F{index + 1}",
+                                "visualUsage": "DIRECTLY_VISIBLE",
+                                "visualInstruction": "按参考图展示真实外形",
+                                "contextInstruction": "",
+                                "compatibleFactIds": [],
+                                "forbiddenInferences": [],
+                            }
+                            for index, _ in enumerate(application.usable)
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        )
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.example/v3",
+        api_key="test-key",
+        strategy_model="strategy-model",
+        candidate_model="creative-model",
+        visual_strategy_model="vision-model",
+        visual_strategy_image_detail="high",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        await provider.compile_fact_visual_strategy(
+            application,
+            product_images=[
+                PreparedProductImage(
+                    data_uri="data:image/jpeg;base64,bWFpbg==",
+                ),
+                PreparedProductImage(
+                    data_uri="data:image/jpeg;base64,ZGV0YWls",
+                ),
+            ],
+        )
+    finally:
+        await provider.aclose()
+
+    assert seen["model"] == "vision-model"
+    content = seen["input"][0]["content"]  # type: ignore[index]
+    images = [item for item in content if item["type"] == "input_image"]
+    assert [item["image_url"] for item in images] == [
+        "data:image/jpeg;base64,bWFpbg==",
+        "data:image/jpeg;base64,ZGV0YWls",
+    ]
+    assert all(item["detail"] == "high" for item in images)
+    text = "\n".join(item["text"] for item in content if item["type"] == "input_text")
+    assert "商品参考图 1" in text
+    assert "商品参考图 2" in text
+    assert "图片不是新的营销事实来源" in seen["instructions"]  # type: ignore[operator]
 
 
 @pytest.mark.asyncio

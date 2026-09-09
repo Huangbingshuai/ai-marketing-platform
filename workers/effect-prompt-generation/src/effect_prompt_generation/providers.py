@@ -22,6 +22,7 @@ from .creative_directions import (
     creative_territory_target_range,
 )
 from .insight_mapping import mandatory_business_facts
+from .product_images import PreparedProductImage
 from .supplement_recovery import direction_summary
 from .models import (
     MAX_PROMPT_DURATION_SECONDS,
@@ -126,7 +127,11 @@ CREATIVE_DIRECTION_SUPPLEMENT_TASK_PROMPT = (
     "creative_direction_supplement.user.prompt.txt"
 )
 FACT_VISUAL_STRATEGY_TEMPLATE_HASH = hashlib.sha256(
-    load_prompt(FACT_VISUAL_STRATEGY_BASE_PROMPT).encode("utf-8")
+    (
+        load_prompt(FACT_VISUAL_STRATEGY_BASE_PROMPT)
+        + "\n"
+        + load_prompt(FACT_VISUAL_STRATEGY_TASK_PROMPT)
+    ).encode("utf-8")
 ).hexdigest()
 CREATIVE_DIRECTION_TEMPLATE_HASH = hashlib.sha256(
     (
@@ -252,6 +257,8 @@ class AiProvider(Protocol):
     async def compile_fact_visual_strategy(
         self,
         application: InsightApplicationMap,
+        *,
+        product_images: Sequence[PreparedProductImage] = (),
     ) -> AiCallResult[FactVisualStrategyResponse]: ...
 
     async def plan_creative_landscape(
@@ -388,7 +395,10 @@ class MockAiProvider:
     async def compile_fact_visual_strategy(
         self,
         application: InsightApplicationMap,
+        *,
+        product_images: Sequence[PreparedProductImage] = (),
     ) -> AiCallResult[FactVisualStrategyResponse]:
+        del product_images
         return _mock_result(
             _mock_fact_visual_strategy(application),
             NodeId.FACT_VISUAL_STRATEGY_COMPILATION.value,
@@ -785,6 +795,8 @@ class ArkResponsesProvider:
         api_key: str,
         strategy_model: str,
         candidate_model: str,
+        visual_strategy_model: str | None = None,
+        visual_strategy_image_detail: str = "high",
         fragment_strategy_model: str | None = None,
         blueprint_model: str | None = None,
         evaluation_model: str | None = None,
@@ -805,6 +817,12 @@ class ArkResponsesProvider:
             raise ValueError("Ark prompt models cannot be empty")
         self._strategy_model = strategy_model.strip()
         self._candidate_model = candidate_model.strip()
+        self._visual_strategy_model = (
+            visual_strategy_model or candidate_model
+        ).strip()
+        if visual_strategy_image_detail not in {"low", "high"}:
+            raise ValueError("Ark visual strategy image detail must be low or high")
+        self._visual_strategy_image_detail = visual_strategy_image_detail
         self._fragment_strategy_model = (
             fragment_strategy_model or candidate_model
         ).strip()
@@ -837,6 +855,8 @@ class ArkResponsesProvider:
     async def compile_fact_visual_strategy(
         self,
         application: InsightApplicationMap,
+        *,
+        product_images: Sequence[PreparedProductImage] = (),
     ) -> AiCallResult[FactVisualStrategyResponse]:
         fact_aliases, fact_ids_by_alias = _fact_alias_maps(application)
         facts = []
@@ -863,19 +883,37 @@ class ArkResponsesProvider:
             FACT_VISUAL_STRATEGY_TASK_PROMPT,
             facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
         )
+        input_content: list[dict[str, Any]] = [
+            {"type": "input_text", "text": prompt}
+        ]
+        for index, image in enumerate(product_images, start=1):
+            input_content.extend(
+                [
+                    {
+                        "type": "input_text",
+                        "text": f"商品参考图 {index}",
+                    },
+                    {
+                        "type": "input_image",
+                        "image_url": image.data_uri,
+                        "detail": self._visual_strategy_image_detail,
+                    },
+                ]
+            )
         call = await self._structured(
             prompt,
             FactVisualStrategyResponse,
             schema_name="effect_prompt_fact_visual_strategy",
             stage=NodeId.FACT_VISUAL_STRATEGY_COMPILATION.value,
             prompt_file=FACT_VISUAL_STRATEGY_BASE_PROMPT,
-            model=self._candidate_model,
+            model=self._visual_strategy_model,
             max_output_tokens=min(
                 self._strategy_max_output_tokens,
                 max(4096, len(facts) * 320),
             ),
             request_timeout=self._strategy_timeout,
             instructions=load_prompt(FACT_VISUAL_STRATEGY_BASE_PROMPT),
+            input_content=input_content,
         )
         return AiCallResult(
             value=FactVisualStrategyResponse(
@@ -2252,6 +2290,7 @@ class ArkResponsesProvider:
         instructions: str | None = None,
         item_count: int | None = None,
         response_schema: dict[str, Any] | None = None,
+        input_content: list[dict[str, Any]] | None = None,
     ) -> AiCallResult[TModel]:
         if model_type is CreativeDirectionResponse:
             response_schema = response_schema or model_type.model_json_schema(by_alias=True)
@@ -2260,7 +2299,12 @@ class ArkResponsesProvider:
         payload = {
             "model": model,
             "input": [
-                {"role": "user", "content": [{"type": "input_text", "text": prompt}]}
+                {
+                    "role": "user",
+                    "content": input_content
+                    if input_content is not None
+                    else [{"type": "input_text", "text": prompt}],
+                }
             ],
             "store": False,
             "max_output_tokens": max_output_tokens,
