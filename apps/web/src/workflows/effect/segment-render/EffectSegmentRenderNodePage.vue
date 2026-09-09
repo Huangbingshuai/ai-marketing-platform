@@ -299,7 +299,7 @@ const startButtonLabel = computed(() => {
   if (operation.value === 'batch') return '正在创建任务…';
   if (batchActive.value) return `渲染中 ${summary.value.completed}/${summary.value.total}`;
   if (!workspace.value?.promptReady) return '等待上游 Prompt 完成校验';
-  if (workspace.value?.stale) return `按最新 Prompt 重新渲染（${promptCount.value}）`;
+  if (workspace.value?.stale) return '按最新 Prompt 重新渲染';
   if (hasBatch.value) return '重新渲染';
   return importedCount.value
     ? `渲染剩余片段（${remainingPromptCount.value}）`
