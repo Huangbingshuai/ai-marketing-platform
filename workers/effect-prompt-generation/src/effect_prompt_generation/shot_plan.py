@@ -11,18 +11,16 @@ from .models import (
 
 _TIME_RANGE_LINE = re.compile(r"^\s*\d+\s*[–—-]\s*\d+\s*秒\s*$")
 _FORMAT_LABELS = (
-    "画面目标：",
-    "整体质感：",
-    "环境：",
+    "目标：",
+    "质感：",
+    "场景：",
     "光线：",
     "首帧状态：",
-    "景别与角度：",
-    "画面动作：",
-    "镜头执行：",
-    "焦点变化：",
-    "运动来源：",
-    "可见结果：",
-    "声音：",
+    "镜头：",
+    "焦点：",
+    "驱动：",
+    "结果：",
+    "同步声：",
 )
 
 
@@ -59,12 +57,9 @@ def compile_material_shot_plan(
     lines = [
         "【视频概览】",
         (
-            f"画面目标：{_sentence(plan.overview.visual_intent)} "
-            f"整体质感：{_sentence(plan.overview.visual_style)}"
-        ),
-        "【场景与光线】",
-        (
-            f"环境：{_sentence(plan.scene.environment)} "
+            f"目标：{_sentence(plan.overview.visual_intent)} "
+            f"质感：{_sentence(plan.overview.visual_style)} "
+            f"场景：{_sentence(plan.scene.environment)} "
             f"光线：{_sentence(plan.scene.lighting)} "
             f"首帧状态：{_sentence(plan.scene.initial_state)}"
         ),
@@ -72,17 +67,16 @@ def compile_material_shot_plan(
     ]
     for beat, (start, end) in zip(plan.beats, time_ranges, strict=True):
         detail = (
-            f"景别与角度：{_sentence(beat.framing)} "
-            f"画面动作：{_sentence(beat.action)} "
-            f"镜头执行：{_sentence(beat.camera)}"
+            f"{_sentence(beat.framing)} {_sentence(beat.action)} "
+            f"镜头：{_sentence(beat.camera)}"
         )
         if beat.focus:
-            detail += f" 焦点变化：{_sentence(beat.focus)}"
+            detail += f" 焦点：{_sentence(beat.focus)}"
         if beat.motion_source:
-            detail += f" 运动来源：{_sentence(beat.motion_source)}"
-        detail += f" 可见结果：{_sentence(beat.visible_result)}"
+            detail += f" 驱动：{_sentence(beat.motion_source)}"
+        detail += f" 结果：{_sentence(beat.visible_result)}"
         if beat.sound:
-            detail += f" 声音：{_sentence(beat.sound)}"
+            detail += f" 同步声：{_sentence(beat.sound)}"
         lines.extend((f"{start}–{end}秒", detail))
     lines.extend(("【结束画面】", _sentence(plan.final_frame)))
     return "\n".join(lines)
@@ -91,7 +85,7 @@ def compile_material_shot_plan(
 def embedding_text_without_format_headers(content: str) -> str:
     """Remove only compiler-owned labels before vector comparison."""
 
-    headers = {"【视频概览】", "【场景与光线】", "【逐秒镜头】", "【结束画面】"}
+    headers = {"【视频概览】", "【逐秒镜头】", "【结束画面】"}
     lines: list[str] = []
     for line in content.splitlines():
         stripped = line.strip()

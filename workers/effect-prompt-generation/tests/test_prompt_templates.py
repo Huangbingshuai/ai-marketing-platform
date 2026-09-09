@@ -77,6 +77,7 @@ def test_director_guidance_uses_existing_fields_without_fixed_ad_formula() -> No
     creative = load_prompt("creative_base.system.prompt.txt")
     direction = load_prompt("creative_direction.system.prompt.txt")
     supplement = load_prompt("creative_direction_supplement.system.prompt.txt")
+    task = load_prompt("creative_task.user.prompt.txt")
 
     for template in (direction, supplement):
         assert "谁关心什么" in template
@@ -85,14 +86,23 @@ def test_director_guidance_uses_existing_fields_without_fixed_ad_formula() -> No
     assert "不必每条都有痛点、反转或购买号召" in direction
     assert "不能依赖人物讲解、旁白或字幕完成产品表达" in direction
     assert "禁止人物口播、旁白、对镜讲解和字幕文案" in direction
-    assert "同一连续事件允许合理切镜" in creative
-    assert "不强迫单一机位" in creative
+    assert "同一连续事件允许必要切镜" in creative
+    assert "优先保持一种主要机位逻辑" in creative
     assert "focus 单独写对焦对象与转移" in creative
     assert "不机械循环“中景—特写—推进”" in creative
     assert "不是当前商品事实，也不是固定脚本" in creative
     assert "不得成为其他任务的默认内容" in creative
     assert "静音状态下仍能被理解" in creative
     assert "节拍数量是软建议，不是配额" in creative
+    assert "单一英雄事件" in creative
+    assert "9～15 秒通常 1～2 个" in creative
+    assert "不得为了观察内部而翻转已打开容器" in creative
+    assert "不要求生成式视频精确保证" in creative
+    assert "多人画面只保留一名主要操作者" in creative
+    assert "活动人物、活动工具、流体或柔性物体" in task
+    assert "单一英雄事件" in direction
+    assert "不要把多人轮流操作、多个工具接力" in direction
+    assert "补充差异不能靠提高执行复杂度获得" in supplement
     assert "不输出 content" in creative
 
 
