@@ -137,6 +137,20 @@ describe('effect Seedance request compiler', () => {
     );
   });
 
+  it('accepts the workflow maximum of 15 seconds for Seedance 2.0 mini', () => {
+    const current = batch('SEEDANCE_1_0');
+    current.items[0] = { ...current.items[0]!, targetDurationSeconds: 15 };
+
+    const compiled = compileEffectSeedanceRequest(
+      current,
+      item.id,
+      'doubao-seedance-2-0-mini-260615',
+      renderSettings('SEEDANCE_1_0'),
+    );
+
+    expect(compiled.request.duration).toBe(15);
+  });
+
   it('rejects an item whose purpose evaluation is pending', () => {
     const current = batch('SEEDANCE_2_0');
     current.items[0] = { ...current.items[0]!, classificationStatus: 'PENDING' };

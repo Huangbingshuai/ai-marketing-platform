@@ -41,6 +41,7 @@ import { workflowStateHash } from '../../../platform/workflow/workflow-state-has
 import {
   compileEffectSeedanceRepairRequest,
   compileEffectSeedanceRequest,
+  EffectSeedanceCompileError,
   validateEffectSeedanceTaskResult,
 } from './effect-seedance-request.compiler';
 import {
@@ -301,6 +302,15 @@ export class EffectSegmentRenderService {
         : undefined) ||
       DEFAULT_SEEDANCE_MODELS[capabilityKey];
     return model;
+  }
+
+  private compileSeedanceRequest<T>(compile: () => T): T {
+    try {
+      return compile();
+    } catch (error) {
+      if (error instanceof EffectSeedanceCompileError) throw badRequest(error.message);
+      throw error;
+    }
   }
 
   private settingsFromState(value: unknown): EffectSegmentRenderSettings | null {
@@ -570,7 +580,9 @@ export class EffectSegmentRenderService {
     if (!promptBatch) throw conflict('Prompt 批次结构无效，请重新生成并校验');
     this.assertRenderablePromptBatch(promptBatch);
     const snapshots = promptBatch.items.map((item) => {
-      const compiled = compileEffectSeedanceRequest(promptBatch, item.id, model, renderSettings);
+      const compiled = this.compileSeedanceRequest(() =>
+        compileEffectSeedanceRequest(promptBatch, item.id, model, renderSettings),
+      );
       return {
         ...compiled,
         promptCode: item.code,
@@ -767,17 +779,19 @@ export class EffectSegmentRenderService {
       instruction,
       region: normalizedRegion,
     };
-    const snapshot = compileEffectSeedanceRepairRequest(
-      generationSnapshot,
-      {
-        fileObjectId: task.outputFileObjectId,
-        originalFileName: task.outputFileName,
-        mimeType,
-        sizeBytes: task.outputSizeBytes,
-        contentHash: task.outputContentHash,
-        durationSeconds: generationSnapshot.request.duration,
-      },
-      repairInput,
+    const snapshot = this.compileSeedanceRequest(() =>
+      compileEffectSeedanceRepairRequest(
+        generationSnapshot,
+        {
+          fileObjectId: task.outputFileObjectId!,
+          originalFileName: task.outputFileName!,
+          mimeType,
+          sizeBytes: task.outputSizeBytes!,
+          contentHash: task.outputContentHash!,
+          durationSeconds: generationSnapshot.request.duration,
+        },
+        repairInput,
+      ),
     );
     const requestHash = workflowStateHash({
       batchId,

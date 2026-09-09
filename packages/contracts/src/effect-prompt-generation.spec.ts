@@ -10,6 +10,7 @@ import {
   EFFECT_PROMPT_GRAPH_NODE_IDS,
   EFFECT_PROMPT_INSIGHT_FIELDS,
   EFFECT_PROMPT_LIMITS,
+  EFFECT_PROMPT_RENDER_CAPABILITIES,
   EFFECT_PROMPT_NODE_DETAIL_SECTION_KINDS,
   EFFECT_PROMPT_NODE_DETAIL_SECTION_STATES,
   EFFECT_PROMPT_PURPOSE_MATCH_MODES,
@@ -62,6 +63,18 @@ describe('effect prompt generation contract', () => {
     expect(EFFECT_PROMPT_LIMITS.maxCount).toBe(100);
     expect(EFFECT_PROMPT_LIMITS.maxCandidateCount).toBe(240);
     expect(EFFECT_PROMPT_LIMITS.maxDurationSeconds).toBe(15);
+    expect(
+      Object.values(EFFECT_PROMPT_RENDER_CAPABILITIES).map((capability) => ({
+        key: capability.key,
+        minimum: capability.minDurationSeconds,
+        maximum: capability.maxDurationSeconds,
+      })),
+    ).toEqual([
+      { key: 'SEEDANCE_2_0', minimum: 4, maximum: 15 },
+      { key: 'SEEDANCE_2_0_FAST', minimum: 4, maximum: 15 },
+      { key: 'SEEDANCE_1_5_PRO', minimum: 4, maximum: 15 },
+      { key: 'SEEDANCE_1_0', minimum: 4, maximum: 15 },
+    ]);
     expect(EFFECT_PROMPT_LIMITS.pageSize).toBe(5);
     expect(batchSchema.properties.settings.properties.targetCount.maximum).toBe(100);
     expect(batchSchema.properties.settings.properties.defaultDurationSeconds.maximum).toBe(15);

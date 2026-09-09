@@ -133,14 +133,14 @@ export const EFFECT_PROMPT_RENDER_CAPABILITIES: Record<
   SEEDANCE_1_5_PRO: {
     key: 'SEEDANCE_1_5_PRO',
     minDurationSeconds: 4,
-    maxDurationSeconds: 12,
+    maxDurationSeconds: 15,
     ratios: SEEDANCE_RATIOS,
     resolutions: SEEDANCE_RESOLUTIONS,
   },
   SEEDANCE_1_0: {
     key: 'SEEDANCE_1_0',
-    minDurationSeconds: 2,
-    maxDurationSeconds: 12,
+    minDurationSeconds: 4,
+    maxDurationSeconds: 15,
     ratios: SEEDANCE_RATIOS,
     resolutions: SEEDANCE_RESOLUTIONS,
   },
