@@ -70,7 +70,10 @@ describe('effect segment render material gallery layout', () => {
       "decideRepair(task, 'DISCARD')",
     ])
       expect(pageSource).toContain(marker);
-    expect(pageSource).not.toContain('批量重新生成');
+    expect(pageSource).toContain("if (hasBatch.value) return '重新渲染'");
+    expect(pageSource).toContain('重新渲染全部片段');
+    expect(pageSource).toContain('再次产生供应商费用');
+    expect(pageSource).toContain('原批次数据不会删除');
     expect(pageSource).not.toContain('批量删除');
     expect(pageSource).toContain('真实素材删除接口尚未接入');
     expect(pageSource).toContain('@keydown.esc="closeTransferPanel(true)"');
