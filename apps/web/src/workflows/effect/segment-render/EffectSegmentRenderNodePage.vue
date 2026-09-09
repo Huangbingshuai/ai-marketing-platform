@@ -293,16 +293,14 @@ const canStartBatch = computed(
   () =>
     Boolean(workspace.value?.promptReady && workspace.value.promptArtifactRevision) &&
     promptCount.value > 0 &&
-    !batchActive.value &&
-    (!hasBatch.value || Boolean(workspace.value?.stale)),
+    !batchActive.value,
 );
 const startButtonLabel = computed(() => {
   if (operation.value === 'batch') return '正在创建任务…';
   if (batchActive.value) return `渲染中 ${summary.value.completed}/${summary.value.total}`;
   if (!workspace.value?.promptReady) return '等待上游 Prompt 完成校验';
   if (workspace.value?.stale) return `按最新 Prompt 重新渲染（${promptCount.value}）`;
-  if (hasBatch.value)
-    return workspace.value?.batchStatus === 'COMPLETED' ? '批量渲染已完成' : '批量渲染已结束';
+  if (hasBatch.value) return '重新渲染';
   return importedCount.value
     ? `渲染剩余片段（${remainingPromptCount.value}）`
     : `开始批量渲染（${promptCount.value}）`;
@@ -571,14 +569,25 @@ const startBatch = async (): Promise<void> => {
   const product = currentProduct.value;
   const current = workspace.value;
   if (!product || operation.value || !current || !canStartBatch.value) return;
+  const rerendering = hasBatch.value;
   if (
-    !(await requestActionConfirmation({
-      eyebrow: '创建视频渲染批次',
-      title: `开始生成 ${promptCount.value} 个真实视频素材片段？`,
-      description: `${product.name || '未命名产品'}；${currentCapabilityLabel.value}；${renderSettings.value.ratio}；${renderSettings.value.resolution}。确认后会提交 ${promptCount.value} 个真实 Seedance 任务并产生供应商费用。`,
-      confirmLabel: `提交 ${promptCount.value} 个真实任务`,
-      tone: 'warning',
-    }))
+    !(await requestActionConfirmation(
+      rerendering
+        ? {
+            eyebrow: current.stale ? '按最新 Prompt 重新渲染' : '重新渲染全部片段',
+            title: `重新生成全部 ${promptCount.value} 个视频素材片段？`,
+            description: `${product.name || '未命名产品'}；${currentCapabilityLabel.value}；${renderSettings.value.ratio}；${renderSettings.value.resolution}。确认后会创建新批次、提交 ${promptCount.value} 个真实 Seedance 任务并再次产生供应商费用。原批次数据不会删除，页面将切换到新批次；新结果完成校验后才会更新素材工作副本。`,
+            confirmLabel: `重新提交 ${promptCount.value} 个真实任务`,
+            tone: 'warning',
+          }
+        : {
+            eyebrow: '创建视频渲染批次',
+            title: `开始生成 ${promptCount.value} 个真实视频素材片段？`,
+            description: `${product.name || '未命名产品'}；${currentCapabilityLabel.value}；${renderSettings.value.ratio}；${renderSettings.value.resolution}。确认后会提交 ${promptCount.value} 个真实 Seedance 任务并产生供应商费用。`,
+            confirmLabel: `提交 ${promptCount.value} 个真实任务`,
+            tone: 'warning',
+          },
+    ))
   )
     return;
   operationController?.abort();
@@ -600,7 +609,11 @@ const startBatch = async (): Promise<void> => {
     );
     if (controller.signal.aborted || currentProductId.value !== product.id) return;
     applyBatch(response.data.batch);
-    showNotice(`${response.data.batch.tasks.length} 个真实视频任务已进入渲染队列`);
+    showNotice(
+      rerendering
+        ? `新批次已创建，${response.data.batch.tasks.length} 个真实视频任务已进入渲染队列`
+        : `${response.data.batch.tasks.length} 个真实视频任务已进入渲染队列`,
+    );
   } catch (error) {
     if (!isAbortError(error)) showNotice(safeMessage(error, '批量渲染失败'), 'error');
   } finally {
