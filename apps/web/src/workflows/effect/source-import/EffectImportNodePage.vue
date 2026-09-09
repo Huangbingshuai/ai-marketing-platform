@@ -43,8 +43,12 @@ import {
 } from '../../../platform/workflow/api/workflow-working.api';
 import { workflowNodeBaseId } from '../../../platform/workflow/workflow-node-id';
 import EffectInfoExtractionNodePage from '../information-extraction/EffectInfoExtractionNodePage.vue';
+import { prefetchEffectExtractionWorkspace } from '../information-extraction/services/effect-info-extraction.service';
 import EffectPromptGenerationNodePage from '../prompt-generation/EffectPromptGenerationNodePage.vue';
+import { prefetchEffectPromptWorkspace } from '../prompt-generation/services/effect-prompt-generation.service';
 import EffectSegmentRenderNodePage from '../segment-render/EffectSegmentRenderNodePage.vue';
+import { prefetchEffectSegmentRenderWorkspace } from '../segment-render/services/effect-segment-render-workspace.service';
+import { clearEffectWorkspacePrefetches } from '../shared/effect-workspace-prefetch';
 import {
   advanceEffectImportDraft,
   batchDeleteEffectImportProducts,
@@ -172,6 +176,9 @@ let listController: AbortController | null = null;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 let configTimer: ReturnType<typeof setTimeout> | undefined;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
+let adjacentPrefetchTimer: ReturnType<typeof setTimeout> | undefined;
+let activationSequence = 0;
+let activationQueue: Promise<void> = Promise.resolve();
 const productTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const nodeStateRevision = ref(0);
 let lastSavedNodeState = '';
@@ -228,6 +235,8 @@ const showNotice = (text: string, kind: 'error' | 'success' | 'warning' = 'succe
 const clearPendingTimers = (): void => {
   clearTimeout(configTimer);
   clearTimeout(searchTimer);
+  clearTimeout(adjacentPrefetchTimer);
+  adjacentPrefetchTimer = undefined;
   productTimers.forEach(clearTimeout);
   productTimers.clear();
 };
@@ -240,6 +249,74 @@ const beginTransition = (): void => {
 const endTransition = (): void => {
   transitionOperationCount = Math.max(0, transitionOperationCount - 1);
   transitioning.value = transitionOperationCount > 0;
+};
+
+const waitForActivationRetry = (): Promise<void> =>
+  new Promise((resolve) => globalThis.setTimeout(resolve, 600));
+
+const enqueueWorkflowNodeActivation = (
+  projectId: string,
+  workflowRunId: string,
+  nodeId: (typeof effectWorkflowNodeIds)[number],
+): void => {
+  const sequence = ++activationSequence;
+  activationQueue = activationQueue
+    .catch(() => undefined)
+    .then(async () => {
+      if (sequence !== activationSequence) return;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          await activateWorkflowNode(projectId, workflowRunId, nodeId);
+          return;
+        } catch (error) {
+          const stillCurrent =
+            sequence === activationSequence &&
+            loadedProjectId.value === projectId &&
+            workspace.value?.workflowRunId === workflowRunId;
+          if (!stillCurrent) return;
+          if (attempt === 0) {
+            await waitForActivationRetry();
+            if (sequence !== activationSequence) return;
+            continue;
+          }
+          showNotice(
+            error instanceof Error
+              ? `页面已切换，节点状态后台同步失败：${error.message}`
+              : '页面已切换，但节点状态后台同步失败，请再次切换重试',
+            'warning',
+          );
+        }
+      }
+    });
+};
+
+const scheduleAdjacentWorkspacePrefetch = (): void => {
+  clearTimeout(adjacentPrefetchTimer);
+  const projectId = loadedProjectId.value;
+  const workflowRunId = workspace.value?.workflowRunId ?? '';
+  const draftId = draft.value?.id ?? '';
+  const step = activeStep.value;
+  const productId = products.value.find((product) => product.status === 'ACTIVE')?.id ?? '';
+  if (!projectId || !workflowRunId) return;
+
+  adjacentPrefetchTimer = setTimeout(() => {
+    adjacentPrefetchTimer = undefined;
+    if (
+      loadedProjectId.value !== projectId ||
+      workspace.value?.workflowRunId !== workflowRunId ||
+      activeStep.value !== step
+    )
+      return;
+
+    const requests: Promise<unknown>[] = [];
+    if ((step === 0 || step === 2) && draftId)
+      requests.push(prefetchEffectExtractionWorkspace({ projectId, draftId }));
+    if (step === 1 || step === 3)
+      requests.push(prefetchEffectPromptWorkspace({ projectId, workflowRunId }));
+    if ((step === 2 || step === 4) && productId)
+      requests.push(prefetchEffectSegmentRenderWorkspace({ projectId, workflowRunId, productId }));
+    requests.forEach((request) => void request.catch(() => undefined));
+  }, 180);
 };
 
 const hasPendingDraftEdits = (): boolean => globalDraftBuffer.has() || productDraftBuffer.has();
@@ -526,6 +603,8 @@ const refreshRemovedProducts = async (): Promise<void> => {
 
 const loadProject = async (projectId: string): Promise<void> => {
   clearPendingTimers();
+  clearEffectWorkspacePrefetches();
+  activationSequence += 1;
   globalDraftBuffer.reset();
   productDraftBuffer.reset();
   pageController?.abort();
@@ -584,23 +663,14 @@ const loadProject = async (projectId: string): Promise<void> => {
           ? 1
           : 0;
     const activeNodeId = effectWorkflowNodeIds[activeStep.value];
-    try {
-      if (activeNodeId)
-        await activateWorkflowNode(
-          projectId,
-          workspace.value.workflowRunId,
-          activeNodeId,
-          pageController.signal,
-        );
-    } catch (error) {
-      if (!isAbortError(error))
-        showNotice(error instanceof Error ? error.message : '当前节点状态更新失败', 'error');
-    }
+    if (restoredStep < 0 && activeNodeId)
+      enqueueWorkflowNodeActivation(projectId, workspace.value.workflowRunId, activeNodeId);
     saveState.value = 'clean';
     if (workspace.value.currentMode === 'BATCH') await refreshProductList();
     await refreshRemovedProducts();
     await ensureUploadTarget();
     pageStatus.value = 'success';
+    scheduleAdjacentWorkspacePrefetch();
     const backgroundMode: EffectImportMode =
       workspace.value.currentMode === 'SINGLE' ? 'BATCH' : 'SINGLE';
     void getEffectImportDraft(projectId, backgroundMode, pageController.signal)
@@ -1355,18 +1425,14 @@ const advanceDraft = async (): Promise<void> => {
   workspace.value.currentNode = 'AI_INFO_EXTRACTION';
   workspace.value.nodeStatuses.SOURCE_IMPORT = 'COMPLETED';
   workspace.value.nodeStatuses.AI_INFO_EXTRACTION = 'AVAILABLE';
-  try {
-    await activateWorkflowNode(
-      loadedProjectId.value,
-      workspace.value.workflowRunId,
-      'INFORMATION_EXTRACTION',
-    );
-  } catch (error) {
-    showNotice(error instanceof Error ? error.message : '当前节点状态更新失败', 'error');
-    return;
-  }
   activeStep.value = 1;
   window.scrollTo({ top: 0, behavior: 'smooth' });
+  enqueueWorkflowNodeActivation(
+    loadedProjectId.value,
+    workspace.value.workflowRunId,
+    'INFORMATION_EXTRACTION',
+  );
+  scheduleAdjacentWorkspacePrefetch();
 };
 
 const selectWorkflowStep = async (step: number): Promise<void> => {
@@ -1381,14 +1447,10 @@ const selectWorkflowStep = async (step: number): Promise<void> => {
     const workflowRunId = workspace.value?.workflowRunId;
     const nodeId = effectWorkflowNodeIds[step];
     if (!workflowRunId || !nodeId) return;
-    try {
-      await activateWorkflowNode(loadedProjectId.value, workflowRunId, nodeId);
-    } catch (error) {
-      showNotice(error instanceof Error ? error.message : '当前节点状态更新失败', 'error');
-      return;
-    }
     activeStep.value = step;
     window.scrollTo({ top: 0, behavior: 'smooth' });
+    enqueueWorkflowNodeActivation(loadedProjectId.value, workflowRunId, nodeId);
+    scheduleAdjacentWorkspacePrefetch();
   } finally {
     pendingStep.value = null;
     endTransition();
@@ -1434,6 +1496,14 @@ const handleProjectSelection = async (projectId: string): Promise<void> => {
 };
 
 watch(currentProjectId, (projectId) => void handleProjectSelection(projectId), { immediate: true });
+watch(
+  () =>
+    products.value
+      .filter((product) => product.status === 'ACTIVE')
+      .map((product) => `${product.id}:${product.updatedAt}`)
+      .join('|'),
+  () => scheduleAdjacentWorkspacePrefetch(),
+);
 watch(keyword, () => {
   if (currentMode.value !== 'BATCH') return;
   clearTimeout(searchTimer);
@@ -1458,6 +1528,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', warnBeforeUnload);
   clearPendingTimers();
   clearTimeout(noticeTimer);
+  clearEffectWorkspacePrefetches();
+  activationSequence += 1;
   pageController?.abort();
   listController?.abort();
   generationGate.invalidate();
@@ -1504,7 +1576,7 @@ onBeforeUnmount(() => {
           <LoaderCircle class="spin" :size="18" />
           <span
             ><strong>正在切换到{{ pendingStepLabel }}</strong
-            ><small>保存当前草稿并同步节点状态…</small></span
+            ><small>保存当前草稿并准备目标节点…</small></span
           >
         </div>
       </Transition>

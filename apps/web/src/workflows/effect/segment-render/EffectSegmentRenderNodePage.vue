@@ -52,7 +52,6 @@ import {
   effectSegmentRenderTaskContentUrl,
   getEffectSegmentRenderBatch,
   getEffectSegmentRenderTaskContent,
-  getEffectSegmentRenderWorkspace,
   regenerateEffectSegmentRenderTasks,
   saveEffectSegmentRenderSettings,
   startEffectSegmentRenderBatch,
@@ -76,6 +75,7 @@ import {
   type EffectSegmentRenderTask,
   type EffectSegmentRenderWorkspace,
 } from './effect-segment-render-state';
+import { loadEffectSegmentRenderWorkspaceSnapshot } from './services/effect-segment-render-workspace.service';
 
 const props = defineProps<{
   projectId: string;
@@ -244,6 +244,7 @@ let nodeActive = true;
 let activatedOnce = false;
 let skipNextProductLoad = false;
 let taskVideoObserver: IntersectionObserver | null = null;
+let workspaceRevalidationTimer: ReturnType<typeof setTimeout> | undefined;
 
 const activeProducts = computed(() =>
   props.products.filter((product) => product.status === 'ACTIVE'),
@@ -597,16 +598,18 @@ const loadCurrentWorkspace = async (showLoading = true): Promise<void> => {
   const controller = new AbortController();
   loadController = controller;
   try {
-    const settingsResponse = await getEffectSegmentRenderWorkspace(
-      props.projectId,
-      props.workflowRunId,
-      product.id,
+    const snapshot = await loadEffectSegmentRenderWorkspaceSnapshot(
+      {
+        projectId: props.projectId,
+        workflowRunId: props.workflowRunId,
+        productId: product.id,
+      },
       controller.signal,
     );
     if (generation !== loadGeneration || controller.signal.aborted) return;
-    renderSettings.value = { ...settingsResponse.data.settings };
-    renderSettingsRevision.value = settingsResponse.data.settingsRevision;
-    applyWorkspace(effectSegmentRenderWorkspaceFromApi(settingsResponse.data));
+    renderSettings.value = { ...snapshot.data.settings };
+    renderSettingsRevision.value = snapshot.data.settingsRevision;
+    applyWorkspace(effectSegmentRenderWorkspaceFromApi(snapshot.data));
     pageStatus.value = 'success';
     try {
       const artifactResponse = await listWorkingArtifacts(
@@ -628,6 +631,12 @@ const loadCurrentWorkspace = async (showLoading = true): Promise<void> => {
       creativeCoreByPromptId.value = {};
       promptDetailsByPromptId.value = {};
       creativeCoreSourceKey.value = '';
+    }
+    if (snapshot.prefetched) {
+      workspaceRevalidationTimer = setTimeout(() => {
+        workspaceRevalidationTimer = undefined;
+        if (nodeActive && generation === loadGeneration) void loadCurrentWorkspace(false);
+      }, 600);
     }
   } catch (error) {
     if (isAbortError(error) || generation !== loadGeneration) return;
@@ -1090,6 +1099,8 @@ const flushPendingEdits = async (): Promise<boolean> => operation.value === null
 defineExpose({ flushPendingEdits });
 
 const stopNodeRequests = (): void => {
+  clearTimeout(workspaceRevalidationTimer);
+  workspaceRevalidationTimer = undefined;
   loadGeneration += 1;
   loadController?.abort();
   operationController?.abort();

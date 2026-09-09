@@ -81,7 +81,7 @@ import {
   loadEffectPromptNodeDetail,
   loadEffectPromptResult,
   loadEffectPromptRun,
-  loadEffectPromptWorkspace,
+  loadEffectPromptWorkspaceSnapshot,
   pollEffectPromptRun,
   removeEffectPromptItem,
   saveEffectPromptItem,
@@ -193,6 +193,7 @@ let settingsTimer: ReturnType<typeof setTimeout> | undefined;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 let graphDetailRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+let workspaceRevalidationTimer: ReturnType<typeof setTimeout> | undefined;
 const pollControllers = new Map<string, { controller: AbortController; runId: string }>();
 const settingsControllers = new Map<string, AbortController>();
 const settingsSavePromises = new Map<string, Promise<boolean>>();
@@ -668,7 +669,8 @@ async function reloadWorkspace(showLoading = true): Promise<void> {
       status.value = 'ready';
       return;
     }
-    const workspace = await loadEffectPromptWorkspace(context(), controller.signal);
+    const snapshot = await loadEffectPromptWorkspaceSnapshot(context(), controller.signal);
+    const workspace = snapshot.data;
     if (generation !== workspaceGeneration || controller.signal.aborted) return;
     workspaceHydrating = true;
     try {
@@ -678,6 +680,12 @@ async function reloadWorkspace(showLoading = true): Promise<void> {
       status.value = 'ready';
       await loadCurrentResult();
       void resumeRuns();
+      if (snapshot.prefetched) {
+        workspaceRevalidationTimer = setTimeout(() => {
+          workspaceRevalidationTimer = undefined;
+          if (nodeActive && generation === workspaceGeneration) void reloadWorkspace(false);
+        }, 600);
+      }
     } finally {
       workspaceHydrating = false;
     }
@@ -1923,6 +1931,8 @@ const flushPendingEdits = async (): Promise<boolean> => flushSettings();
 defineExpose({ flushPendingEdits });
 
 const stopNodeRequests = (): void => {
+  clearTimeout(workspaceRevalidationTimer);
+  workspaceRevalidationTimer = undefined;
   workspaceGeneration += 1;
   resultGeneration += 1;
   workspaceController?.abort();

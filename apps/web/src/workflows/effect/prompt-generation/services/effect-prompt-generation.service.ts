@@ -36,6 +36,11 @@ import {
   undoEffectPromptRegeneration,
   validateEffectPromptResult,
 } from '../api/effect-prompt-generation.api';
+import {
+  loadEffectWorkspaceSnapshot,
+  prefetchEffectWorkspace,
+  type EffectWorkspaceSnapshot,
+} from '../../shared/effect-workspace-prefetch';
 
 export type EffectPromptContext = {
   projectId: string;
@@ -85,6 +90,26 @@ export const loadEffectPromptWorkspace = async (
 ): Promise<GetEffectPromptWorkspaceData> => {
   return (await getEffectPromptWorkspace(context.projectId, context.workflowRunId, signal)).data;
 };
+
+const promptWorkspacePrefetchKey = (context: EffectPromptContext): string =>
+  `effect-prompt:${encodeURIComponent(context.projectId)}:${encodeURIComponent(context.workflowRunId)}`;
+
+export const prefetchEffectPromptWorkspace = (
+  context: EffectPromptContext,
+): Promise<GetEffectPromptWorkspaceData> =>
+  prefetchEffectWorkspace(promptWorkspacePrefetchKey(context), () =>
+    loadEffectPromptWorkspace(context),
+  );
+
+export const loadEffectPromptWorkspaceSnapshot = (
+  context: EffectPromptContext,
+  signal?: AbortSignal,
+): Promise<EffectWorkspaceSnapshot<GetEffectPromptWorkspaceData>> =>
+  loadEffectWorkspaceSnapshot(
+    promptWorkspacePrefetchKey(context),
+    (requestSignal) => loadEffectPromptWorkspace(context, requestSignal),
+    signal,
+  );
 
 export const savePromptSettings = async (
   context: EffectPromptContext,

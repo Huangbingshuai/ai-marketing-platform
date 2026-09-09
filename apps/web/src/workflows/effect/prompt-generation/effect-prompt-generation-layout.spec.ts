@@ -320,6 +320,8 @@ describe('effect prompt generation current layout', () => {
   it('reuses the warm node view without duplicating the initial product load', () => {
     expect(pageSource).toContain('workspaceHydrating = true');
     expect(pageSource).toContain('if (!nodeActive || workspaceHydrating) return;');
+    expect(pageSource).toContain('loadEffectPromptWorkspaceSnapshot(');
+    expect(pageSource).toContain('if (snapshot.prefetched)');
     expect(pageSource).toContain('onDeactivated(() => {');
     expect(pageSource).toContain('void reloadWorkspace(false);');
   });

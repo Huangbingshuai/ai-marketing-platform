@@ -81,6 +81,8 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain("{ rootMargin: '240px 0px', threshold: 0.01 }");
     expect(pageSource).toContain('v-task-video-visible="taskVideoKey(task)"');
     expect(pageSource).toContain('taskVideoUrl(task) && shouldLoadTaskVideo(task)');
+    expect(pageSource).toContain('loadEffectSegmentRenderWorkspaceSnapshot(');
+    expect(pageSource).toContain('if (snapshot.prefetched)');
     expect(pageSource).toContain('onDeactivated(() => {');
     expect(pageSource).toContain('void loadCurrentWorkspace(false);');
   });

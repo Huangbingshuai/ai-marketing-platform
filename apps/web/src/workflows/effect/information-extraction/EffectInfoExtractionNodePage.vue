@@ -66,6 +66,7 @@ import {
   loadEffectExtractionNodeDetail,
   loadEffectExtractionRun,
   loadEffectExtractionWorkspace,
+  loadEffectExtractionWorkspaceSnapshot,
   pollEffectExtractionRun,
   saveEffectExtractionResult,
   type EffectExtractionContext,
@@ -117,6 +118,7 @@ let saveController: AbortController | null = null;
 let graphController: AbortController | null = null;
 let graphDetailController: AbortController | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
+let workspaceRevalidationTimer: ReturnType<typeof setTimeout> | undefined;
 const nodeStateRevision = ref(0);
 let lastSavedNodeState = '';
 const activeRunControllers = new Map<string, { controller: AbortController; runId: string }>();
@@ -615,6 +617,8 @@ const stopProductPoll = (productId: string): void => {
 };
 
 const stopAllRequests = (): void => {
+  clearTimeout(workspaceRevalidationTimer);
+  workspaceRevalidationTimer = undefined;
   workspaceController?.abort();
   workspaceController = null;
   saveController?.abort();
@@ -892,7 +896,8 @@ const loadWorkspace = async (showLoading = true): Promise<void> => {
   if (showLoading || !Object.keys(productStates.value).length) loading.value = true;
   loadingError.value = '';
   try {
-    const workspace = await loadEffectExtractionWorkspace(context.value, controller.signal);
+    const snapshot = await loadEffectExtractionWorkspaceSnapshot(context.value, controller.signal);
+    const workspace = snapshot.data;
     if (disposed || controller.signal.aborted || generation !== loadGeneration) return;
     applyWorkspace(workspace, true);
     const overview = await getActiveWorkflowRunOverview(
@@ -918,6 +923,12 @@ const loadWorkspace = async (showLoading = true): Promise<void> => {
       currentProductId.value = props.products[0]?.id ?? '';
     }
     resumeWorkspaceRuns();
+    if (snapshot.prefetched) {
+      workspaceRevalidationTimer = setTimeout(() => {
+        workspaceRevalidationTimer = undefined;
+        if (nodeActive && generation === loadGeneration) void loadWorkspace(false);
+      }, 600);
+    }
   } catch (error) {
     if (isAbortError(error) || disposed || generation !== loadGeneration) return;
     loadingError.value = error instanceof Error ? error.message : '提炼工作区加载失败';
