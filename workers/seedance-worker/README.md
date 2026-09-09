@@ -30,3 +30,5 @@
 每条 Prompt 创建一个独立视频任务，供应商请求只包含 Prompt 正文、批次共用禁用约束和当前产品资料包的全部商品参考图。RabbitMQ 的 `prefetch` 与 `SEGMENT_RENDER_MAX_INFLIGHT` 保持一致，使等待 Seedance 的任务可以异步并行；创建请求、轮询和视频下载分别限速。参考图并发加载按内容哈希合并，避免多个任务同时重复读取和编码同一文件。任务恢复时如果 API 已保存 `providerTaskId`，Worker 只继续轮询原任务，不重复创建供应商任务。
 
 这些并发参数当前按 Worker 进程生效。Compose 第一版只运行一个实例；横向扩容前必须增加账号级分布式限流，否则多个副本会叠加供应商在途数和创建 QPS。
+
+同一个 `ARK_API_KEY` 用于全部 Seedance 模型的方舟鉴权。具体模型 ID 由 API 按页面选择写入任务快照；2.5、2.0、2.0-mini 和 2.0-fast 均有内置默认 ID，`SEEDANCE_MODEL_2_5`、`SEEDANCE_MODEL_2_0`、`SEEDANCE_MODEL_2_0_MINI`、`SEEDANCE_MODEL_2_0_FAST` 只用于显式覆盖版本。

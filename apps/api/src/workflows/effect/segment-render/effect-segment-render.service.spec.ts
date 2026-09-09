@@ -1,4 +1,8 @@
-import type { EffectPromptBatchResult, EffectPromptItem } from '@ai-marketing/contracts';
+import type {
+  EffectPromptBatchResult,
+  EffectPromptItem,
+  EffectPromptRenderCapabilityKey,
+} from '@ai-marketing/contracts';
 import { DEFAULT_EFFECT_PROMPT_SETTINGS } from '@ai-marketing/contracts';
 import { ConflictException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
@@ -78,8 +82,20 @@ const sourcePackageArtifact = {
 };
 
 const serviceWith = (overrides: Record<string, unknown> = {}) => {
-  const { configValues = {}, ...repositoryOverrides } = overrides as {
+  const {
+    configValues = {},
+    settingsNode = null,
+    ...repositoryOverrides
+  } = overrides as {
     configValues?: Record<string, string | undefined>;
+    settingsNode?: {
+      revision: number;
+      state: {
+        ratio: '9:16';
+        resolution: '720p';
+        capabilityKey: EffectPromptRenderCapabilityKey;
+      };
+    } | null;
   } & Record<string, unknown>;
   const artifact = promptArtifact();
   const repository = {
@@ -175,7 +191,7 @@ const serviceWith = (overrides: Record<string, unknown> = {}) => {
     } as never,
     storage as never,
     {
-      findNodeState: vi.fn().mockResolvedValue(null),
+      findNodeState: vi.fn().mockResolvedValue(settingsNode),
       saveNodeState: vi.fn(),
     } as never,
   );
@@ -227,21 +243,33 @@ describe('EffectSegmentRenderService', () => {
     expect(input.tasks[0].requestSnapshot.request.content[0].text).not.toContain('创意主线：');
   });
 
-  it('uses the official Seedance 2.0 model when no legacy model override is configured', async () => {
-    const { service, repository } = serviceWith({
-      configValues: { SEEDANCE_MODEL: undefined },
-    });
+  it.each([
+    ['SEEDANCE_1_5_PRO', 'doubao-seedance-2-5-260628'],
+    ['SEEDANCE_2_0', 'doubao-seedance-2-0-260128'],
+    ['SEEDANCE_1_0', 'doubao-seedance-2-0-mini-260615'],
+    ['SEEDANCE_2_0_FAST', 'doubao-seedance-2-0-fast-260128'],
+  ] satisfies ReadonlyArray<readonly [EffectPromptRenderCapabilityKey, string]>)(
+    'maps capability %s to its real Seedance model without requiring another API key',
+    async (capabilityKey, expectedModel) => {
+      const { service, repository } = serviceWith({
+        configValues: capabilityKey === 'SEEDANCE_2_0' ? { SEEDANCE_MODEL: undefined } : {},
+        settingsNode: {
+          revision: 1,
+          state: { ratio: '9:16', resolution: '720p', capabilityKey },
+        },
+      });
 
-    await service.start('project-a', 'product-a', {
-      workflowRunId: 'run-a',
-      expectedPromptArtifactRevision: 3,
-      expectedSettingsRevision: 0,
-      idempotencyKey: 'request-default-model',
-    });
+      await service.start('project-a', 'product-a', {
+        workflowRunId: 'run-a',
+        expectedPromptArtifactRevision: 3,
+        expectedSettingsRevision: 1,
+        idempotencyKey: `request-default-model-${capabilityKey}`,
+      });
 
-    const input = repository.createBatch.mock.calls[0]![3];
-    expect(input.tasks[0].requestSnapshot.request.model).toBe('doubao-seedance-2-0-260128');
-  });
+      const input = repository.createBatch.mock.calls[0]![3];
+      expect(input.tasks[0].requestSnapshot.request.model).toBe(expectedModel);
+    },
+  );
 
   it('rejects a stale Prompt revision before creating jobs', async () => {
     const { service, repository } = serviceWith();

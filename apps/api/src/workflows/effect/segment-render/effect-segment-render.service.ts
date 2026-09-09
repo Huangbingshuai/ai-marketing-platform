@@ -73,8 +73,11 @@ const SEEDANCE_MODEL_CONFIG_KEYS: Record<EffectPromptRenderCapabilityKey, string
   SEEDANCE_1_0: 'SEEDANCE_MODEL_2_0_MINI',
   SEEDANCE_2_0_FAST: 'SEEDANCE_MODEL_2_0_FAST',
 };
-const DEFAULT_SEEDANCE_MODELS: Partial<Record<EffectPromptRenderCapabilityKey, string>> = {
+const DEFAULT_SEEDANCE_MODELS: Record<EffectPromptRenderCapabilityKey, string> = {
+  SEEDANCE_1_5_PRO: 'doubao-seedance-2-5-260628',
   SEEDANCE_2_0: 'doubao-seedance-2-0-260128',
+  SEEDANCE_1_0: 'doubao-seedance-2-0-mini-260615',
+  SEEDANCE_2_0_FAST: 'doubao-seedance-2-0-fast-260128',
 };
 
 const safeFileName = (value: string): string => {
@@ -293,9 +296,10 @@ export class EffectSegmentRenderService {
     const configKey = SEEDANCE_MODEL_CONFIG_KEYS[capabilityKey];
     const model =
       this.config.get<string>(configKey)?.trim() ||
-      this.config.get<string>('SEEDANCE_MODEL')?.trim() ||
+      (capabilityKey === 'SEEDANCE_2_0'
+        ? this.config.get<string>('SEEDANCE_MODEL')?.trim()
+        : undefined) ||
       DEFAULT_SEEDANCE_MODELS[capabilityKey];
-    if (!model) throw conflict(`当前视频模型尚未配置（${configKey}）`);
     return model;
   }
 
