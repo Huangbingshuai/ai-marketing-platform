@@ -1361,6 +1361,11 @@ export class EffectPromptService {
     for (const issue of verified.metrics.hardIssueCounts.filter(({ count }) => count > 0))
       if (!issues.some(({ code }) => code === issue.code))
         issues.push({ code: issue.code, message: `仍有 ${issue.count} 条 Prompt 未满足提交条件` });
+    if (verified.metrics.insightCoverage.missing.length > 0)
+      warnings.push({
+        code: 'INSIGHT_COVERAGE_INCOMPLETE',
+        message: `仍有 ${verified.metrics.insightCoverage.missing.length} 项提炼信息未覆盖，可继续优化但不阻止提交`,
+      });
     for (const warning of verified.metrics.warningCounts.filter(({ count }) => count > 0))
       warnings.push({
         code: warning.code,
@@ -1391,8 +1396,6 @@ export class EffectPromptService {
       normalizedSettingsHash(settingsNode?.state) !== record.settingsHash
     )
       issues.push({ code: 'STALE_RESULT', message: '上游信息卡或 Prompt 设置已经变化' });
-    if (verified.qualityStatus !== 'PASS' && issues.length === 0)
-      issues.push({ code: 'QUALITY_REVIEW', message: 'Prompt 批次仍需人工调整' });
     if (issues.length)
       return {
         valid: false,
@@ -1622,7 +1625,7 @@ export class EffectPromptService {
     // Worker completion persists a domain draft rather than confirming the
     // WorkingArtifact. An exhausted supplement run may legitimately keep a
     // shorter NEEDS_REVIEW result for inspection; explicit validation still
-    // enforces exact count, PASS quality and freshness before commit.
+    // enforces exact count, structural safety and freshness before commit.
     if (parsed.items.some((item) => item.classificationStatus !== 'VERIFIED'))
       throw badRequest('Prompt 批次仍有内容尚未补齐创意信息');
     await this.stageOperation(projectId, runId);

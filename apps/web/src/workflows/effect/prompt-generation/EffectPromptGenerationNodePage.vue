@@ -67,7 +67,6 @@ import {
   clonePromptSettings,
   EFFECT_PROMPT_PAGE_SIZE_OPTIONS,
   isPromptProductCommitted,
-  isPromptResultQualityReady,
   isPromptRunActive,
   normalizePromptSettings,
   promptPageCount,
@@ -377,7 +376,6 @@ const currentSemanticDisplay = computed(() => {
       : `语义重复度 ${evaluation.duplicateRate.toFixed(1)}% · 偏高，但不影响提交`,
   } as const;
 });
-const currentQualityReady = computed(() => isPromptResultQualityReady(currentResult.value));
 const totalPages = computed(() => promptPageCount(resultData.value?.total ?? 0, pageSize.value));
 const allProductsCommitted = computed(
   () =>
@@ -1491,10 +1489,9 @@ const validatePromptBatch = async (): Promise<void> => {
     !state?.resultId ||
     !result ||
     result.revision === null ||
-    partialPreview.value ||
-    !currentQualityReady.value
+    partialPreview.value
   ) {
-    showNotice('当前批次仍存在数量偏差、重复正文、待评估条目或未通过的质量检查', 'warning');
+    showNotice('当前批次仍存在数量偏差、完全重复、待评估条目或事实与结构硬问题', 'warning');
     return;
   }
   validating.value = true;
@@ -1512,10 +1509,13 @@ const validatePromptBatch = async (): Promise<void> => {
       );
       return;
     }
+    const completedMessage = validation.allProductsValidated
+      ? '全部产品 Prompt 工作副本已更新'
+      : '当前产品 Prompt 工作副本已更新';
     showNotice(
-      validation.allProductsValidated
-        ? '全部产品 Prompt 工作副本已更新'
-        : '当前产品 Prompt 工作副本已更新',
+      validation.warnings?.length
+        ? `${completedMessage}；另有 ${validation.warnings.length} 项质量建议，可继续优化`
+        : completedMessage,
     );
     await reloadWorkspace(false);
   } catch (error) {
@@ -2435,7 +2435,7 @@ onBeforeUnmount(() => {
                   : currentState.commitStatus === 'STALE'
                     ? '上游更新，结果已过期'
                     : currentState.qualityStatus === 'NEEDS_REVIEW'
-                      ? '结果需调整'
+                      ? '有质量建议'
                       : '草稿已自动保存'
         "
         title="差异化 Prompt 批次草稿"
@@ -2448,7 +2448,14 @@ onBeforeUnmount(() => {
           allProductsCommitted ? '全部产品 Prompt 工作副本已更新' : '请逐个完成产品 Prompt 校验'
         "
         :status-detail="`步骤 3 / 6 · ${currentProduct.name} · ${currentState.commitStatus === 'COMMITTED' ? '当前工作副本' : '尚未提交工作副本'}`"
-        :validate-disabled="partialPreview || currentRunning || validating || !currentQualityReady"
+        :validate-disabled="
+          partialPreview ||
+          currentRunning ||
+          validating ||
+          !currentState.resultId ||
+          !resultData ||
+          resultData.revision === null
+        "
         :next-disabled="!allProductsCommitted || currentRunning"
         next-label="下一步：片段渲染"
         @back="emit('back')"

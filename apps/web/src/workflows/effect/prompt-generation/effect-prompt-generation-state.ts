@@ -1,8 +1,4 @@
-import type {
-  EffectPromptBatchResult,
-  EffectPromptBatchSettings,
-  EffectPromptProductState,
-} from '@ai-marketing/contracts';
+import type { EffectPromptBatchSettings, EffectPromptProductState } from '@ai-marketing/contracts';
 import { EFFECT_PROMPT_LIMITS, normalizeEffectPromptSettings } from '@ai-marketing/contracts';
 
 export { EFFECT_PROMPT_LIMITS };
@@ -47,16 +43,5 @@ export const clampPromptPage = (
 export const isPromptRunActive = (state: EffectPromptProductState | null): boolean =>
   state?.status === 'QUEUED' || state?.status === 'PROCESSING';
 
-export const isPromptResultQualityReady = (
-  result: Pick<EffectPromptBatchResult, 'metrics' | 'qualityStatus' | 'settings'> | null,
-): boolean =>
-  Boolean(
-    result &&
-    result.qualityStatus === 'PASS' &&
-    result.metrics.acceptedCount === result.settings.targetCount,
-  );
-
 export const isPromptProductCommitted = (state: EffectPromptProductState): boolean =>
-  state.status === 'COMPLETED' &&
-  state.qualityStatus === 'PASS' &&
-  state.commitStatus === 'COMMITTED';
+  state.status === 'COMPLETED' && state.commitStatus === 'COMMITTED';

@@ -1450,6 +1450,76 @@ describe('EffectPromptService settings contract', () => {
     expect(output.warnings).toEqual([]);
   });
 
+  it('allows the user to commit an exact safe batch with non-blocking coverage advice', async () => {
+    const draft = completionGateFixture();
+    const missingFact = {
+      factId: 'CORE_SELLING_POINT:missing',
+      field: 'CORE_SELLING_POINT' as const,
+      value: '尚未覆盖的卖点',
+      valueHash: 'b'.repeat(64),
+    };
+    draft.metrics.insightCoverage = {
+      ...draft.metrics.insightCoverage,
+      required: [missingFact],
+      missing: [missingFact],
+    };
+    draft.qualityStatus = 'NEEDS_REVIEW';
+    const insightSnapshot = {
+      id: 'insight-a',
+      revision: 1,
+      contentHash: 'a'.repeat(64),
+      result: { productName: '测试产品' },
+    };
+    const settings = normalizeEffectPromptSettings(draft.settings);
+    const repository = {
+      result: vi.fn().mockResolvedValue({
+        id: 'result-a',
+        projectId: 'project-a',
+        productId: 'product-a',
+        workflowRunId: 'workflow-a',
+        runId: 'run-a',
+        revision: 1,
+        draftResult: draft,
+        settingsHash: workflowStateHash(settings),
+      }),
+      run: vi.fn().mockResolvedValue({
+        id: 'run-a',
+        status: 'COMPLETED',
+        inputSnapshot: { insightArtifact: insightSnapshot },
+      }),
+      insightArtifact: vi.fn().mockResolvedValue({
+        ...insightSnapshot,
+        freshness: 'CURRENT',
+        availability: 'AVAILABLE',
+      }),
+      settingsNode: vi.fn().mockResolvedValue({ state: settings }),
+      commitValidatedResult: vi.fn().mockResolvedValue({
+        kind: 'COMMITTED',
+        artifact: {
+          artifactId: 'artifact-a',
+          artifactKey: 'prompt-batch:product-a',
+          revision: 2,
+          unchanged: false,
+        },
+      }),
+      activeRunCount: vi.fn().mockResolvedValue(0),
+    };
+    const projects = { get: vi.fn().mockResolvedValue({ id: 'project-a' }) };
+    const service = new EffectPromptService(repository as never, projects as never, {} as never);
+    vi.spyOn(service, 'workspace').mockResolvedValue({
+      products: [{ commitStatus: 'COMMITTED' }],
+    } as never);
+
+    const output = await service.validateResult('project-a', 'result-a', 1);
+
+    expect(output.valid).toBe(true);
+    expect(output.issues).toEqual([]);
+    expect(output.warnings).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'INSIGHT_COVERAGE_INCOMPLETE' })]),
+    );
+    expect(repository.commitValidatedResult).toHaveBeenCalledOnce();
+  });
+
   it('keeps exact prompt repetition as a blocking completion issue', async () => {
     const draft = completionGateFixture(true);
     const insightSnapshot = {
