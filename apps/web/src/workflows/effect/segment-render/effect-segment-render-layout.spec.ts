@@ -72,6 +72,7 @@ describe('effect segment render material gallery layout', () => {
       expect(pageSource).toContain(marker);
     expect(pageSource).toContain("if (hasBatch.value) return '重新渲染'");
     expect(pageSource).not.toContain('重新渲染（${promptCount.value}）');
+    expect(pageSource).toContain('<RefreshCw v-else-if="hasBatch && canStartBatch" :size="14" />');
     expect(pageSource).toContain('重新渲染全部片段');
     expect(pageSource).toContain('再次产生供应商费用');
     expect(pageSource).toContain('原批次数据不会删除');

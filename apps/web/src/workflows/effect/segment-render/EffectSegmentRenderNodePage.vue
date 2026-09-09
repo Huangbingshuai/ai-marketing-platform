@@ -1001,6 +1001,7 @@ onBeforeUnmount(() => {
             @click="startBatch"
           >
             <LoaderCircle v-if="operation === 'batch' || batchActive" class="spin" :size="14" />
+            <RefreshCw v-else-if="hasBatch && canStartBatch" :size="14" />
             <Play v-else-if="canStartBatch" :size="14" />{{ startButtonLabel }}
           </button>
         </div>
