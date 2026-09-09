@@ -1,4 +1,5 @@
 import type {
+  EffectPromptDimensions,
   EffectPromptFragmentType,
   EffectSegmentRenderBatch,
   EffectSegmentRenderOutput,
@@ -6,6 +7,7 @@ import type {
   GetEffectSegmentRenderWorkspaceData,
   WorkingArtifactCommitStatus,
 } from '@ai-marketing/contracts';
+import { EFFECT_PROMPT_DIMENSIONS } from '@ai-marketing/contracts';
 
 export const EFFECT_SEGMENT_RENDER_PAGE_SIZE = 20;
 
@@ -67,6 +69,8 @@ export type EffectSegmentRenderWorkspace = {
   projectId: string;
   workflowRunId: string;
   productId: string;
+  sourcePromptArtifactId: string | null;
+  sourcePromptRevision: number | null;
   promptCount: number;
   promptReady?: boolean;
   promptArtifactRevision?: number | null;
@@ -80,6 +84,11 @@ export type EffectSegmentRenderWorkspace = {
   startedAt: string | null;
   completedAt: string | null;
   updatedAt: string;
+};
+
+export type EffectSegmentRenderPromptDetails = {
+  creativeCore: string;
+  dimensions: EffectPromptDimensions;
 };
 
 const effectSegmentRenderTaskFromApi = (
@@ -103,6 +112,8 @@ export const effectSegmentRenderWorkspaceFromApi = (
   projectId: data.projectId,
   workflowRunId: data.workflowRunId,
   productId: data.productId,
+  sourcePromptArtifactId: data.batch?.sourcePrompt.artifactId ?? null,
+  sourcePromptRevision: data.batch?.sourcePrompt.revision ?? null,
   promptCount: data.promptCount,
   promptReady: data.promptReady,
   promptArtifactRevision: data.promptArtifactRevision,
@@ -124,6 +135,8 @@ export const effectSegmentRenderWorkspaceWithBatch = (
 ): EffectSegmentRenderWorkspace => ({
   ...current,
   productId: batch.productId,
+  sourcePromptArtifactId: batch.sourcePrompt.artifactId,
+  sourcePromptRevision: batch.sourcePrompt.revision,
   batchId: batch.id,
   batchRevision: batch.revision,
   stale: batch.stale,
@@ -165,14 +178,78 @@ export const effectSegmentRenderSummary = (
 export const filterEffectSegmentRenderTasks = (
   tasks: readonly EffectSegmentRenderTask[],
   keyword: string,
+  creativeCoreByPromptId: Readonly<Record<string, string>> = {},
 ): EffectSegmentRenderTask[] => {
   const normalized = keyword.trim().toLocaleLowerCase('zh-CN');
   if (!normalized) return [...tasks];
   return tasks.filter((task) =>
-    [task.renderCode, task.promptCode ?? '', task.productName, task.sourceName, task.promptText]
+    [
+      task.renderCode,
+      task.promptCode ?? '',
+      task.productName,
+      task.sourceName,
+      task.promptText,
+      creativeCoreByPromptId[task.promptId] ?? '',
+    ]
       .join(' ')
       .toLocaleLowerCase('zh-CN')
       .includes(normalized),
+  );
+};
+
+export const effectSegmentRenderCreativeCoreMap = (payload: unknown): Record<string, string> => {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return {};
+  const items = (payload as { items?: unknown }).items;
+  if (!Array.isArray(items)) return {};
+  return Object.fromEntries(
+    items.flatMap((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+      const { id, creativeCore } = item as { id?: unknown; creativeCore?: unknown };
+      if (typeof id !== 'string' || typeof creativeCore !== 'string') return [];
+      const normalized = creativeCore.replace(/\s+/gu, ' ').trim();
+      return normalized ? [[id, normalized] as const] : [];
+    }),
+  );
+};
+
+export const effectSegmentRenderPromptDetailsMap = (
+  payload: unknown,
+): Record<string, EffectSegmentRenderPromptDetails> => {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return {};
+  const items = (payload as { items?: unknown }).items;
+  if (!Array.isArray(items)) return {};
+  return Object.fromEntries(
+    items.flatMap((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+      const { id, creativeCore, dimensions } = item as {
+        id?: unknown;
+        creativeCore?: unknown;
+        dimensions?: unknown;
+      };
+      if (
+        typeof id !== 'string' ||
+        typeof creativeCore !== 'string' ||
+        !dimensions ||
+        typeof dimensions !== 'object' ||
+        Array.isArray(dimensions)
+      )
+        return [];
+      const normalizedCreativeCore = creativeCore.replace(/\s+/gu, ' ').trim();
+      const normalizedDimensions = Object.fromEntries(
+        EFFECT_PROMPT_DIMENSIONS.map(({ key }) => {
+          const value = (dimensions as Record<string, unknown>)[key];
+          return [key, typeof value === 'string' ? value.replace(/\s+/gu, ' ').trim() : ''];
+        }),
+      ) as EffectPromptDimensions;
+      if (
+        !normalizedCreativeCore ||
+        EFFECT_PROMPT_DIMENSIONS.some(({ key }) => !normalizedDimensions[key])
+      )
+        return [];
+      return [
+        [id, { creativeCore: normalizedCreativeCore, dimensions: normalizedDimensions }] as const,
+      ];
+    }),
   );
 };
 

@@ -33,7 +33,16 @@ import {
   Workflow,
   X,
 } from '@lucide/vue';
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import {
+  computed,
+  nextTick,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  onMounted,
+  ref,
+  watch,
+} from 'vue';
 
 import { ApiClientError, isAbortError, isNetworkError } from '../../../api/http-client';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
@@ -101,6 +110,8 @@ const graphTrigger = ref<HTMLButtonElement | null>(null);
 const graphCloseButton = ref<HTMLButtonElement | null>(null);
 let loadGeneration = 0;
 let disposed = false;
+let nodeActive = true;
+let activatedOnce = false;
 let workspaceController: AbortController | null = null;
 let saveController: AbortController | null = null;
 let graphController: AbortController | null = null;
@@ -871,14 +882,14 @@ const resumeWorkspaceRuns = (): void => {
   });
 };
 
-const loadWorkspace = async (): Promise<void> => {
+const loadWorkspace = async (showLoading = true): Promise<void> => {
   const generation = ++loadGeneration;
   stopAllRequests();
   closeGraphDialog(false);
   graphNodesByProduct.value = {};
   const controller = new AbortController();
   workspaceController = controller;
-  loading.value = true;
+  if (showLoading || !Object.keys(productStates.value).length) loading.value = true;
   loadingError.value = '';
   try {
     const workspace = await loadEffectExtractionWorkspace(context.value, controller.signal);
@@ -1352,7 +1363,9 @@ watch(
     () => props.mode,
     sourceSignature,
   ],
-  () => void loadWorkspace(),
+  () => {
+    if (nodeActive) void loadWorkspace();
+  },
   { immediate: true },
 );
 
@@ -1367,6 +1380,21 @@ onMounted(() => {
   window.addEventListener('keydown', handlePageKeydown);
 });
 
+onActivated(() => {
+  nodeActive = true;
+  if (!activatedOnce) {
+    activatedOnce = true;
+    return;
+  }
+  void loadWorkspace(false);
+});
+
+onDeactivated(() => {
+  nodeActive = false;
+  loadGeneration += 1;
+  stopAllRequests();
+});
+
 defineExpose({ flushPendingEdits });
 
 onBeforeUnmount(() => {
@@ -1374,6 +1402,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handlePageKeydown);
   clearTimeout(saveTimer);
   disposed = true;
+  nodeActive = false;
   loadGeneration += 1;
   stopAllRequests();
 });
@@ -1394,7 +1423,7 @@ onBeforeUnmount(() => {
       <AlertCircle :size="31" />
       <h2>AI 信息提炼加载失败</h2>
       <p>{{ loadingError }}</p>
-      <button type="button" @click="loadWorkspace"><RefreshCw :size="14" />重新加载</button>
+      <button type="button" @click="loadWorkspace()"><RefreshCw :size="14" />重新加载</button>
     </section>
     <section v-else-if="!currentProduct || !currentState" class="extraction-page-state">
       <FileText :size="31" />
@@ -1693,7 +1722,9 @@ onBeforeUnmount(() => {
             <div class="selling-subheading">
               <strong
                 >次要卖点
-                <small>建议最多 {{ EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS }} 个</small></strong
+                <small
+                  >建议最多 {{ EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS }} 个</small
+                ></strong
               >
               <button
                 type="button"

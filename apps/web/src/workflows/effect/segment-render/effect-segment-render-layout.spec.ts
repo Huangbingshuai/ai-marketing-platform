@@ -33,15 +33,56 @@ describe('effect segment render material gallery layout', () => {
 
   it('keeps one prompt mapped to one real material fragment', () => {
     expect(pageSource).toContain('每条 1 个视频素材片段');
-    expect(pageSource).toContain('promptExcerpt(task.promptText)');
+    expect(pageSource).toContain('creativeCoreForTask(task)');
+    expect(pageSource).toContain('effectSegmentRenderCreativeCoreMap(promptArtifact.payload)');
+    expect(pageSource).toContain("nodeId: 'PROMPT_GENERATION'");
+    expect(pageSource).not.toContain('promptExcerpt(task.promptText)');
     expect(pageSource).toContain('<p>{{ task.promptCode }}</p>');
     expect(pageSource).not.toContain('{{ task.productName }}片段 {{ taskSequenceLabel(task) }}');
     expect(pageSource).not.toContain('{{ task.promptCode }} · 每条 1 个视频素材片段');
     expect(pageSource).toContain('EFFECT_PROMPT_FRAGMENT_TYPE_LABELS');
-    expect(pageSource).toContain('真实 AI 任务');
+    expect(pageSource).toContain('AI 生成');
+    expect(pageSource).not.toContain('真实 AI 任务');
+    expect(pageSource).toContain('class="material-preview-video"');
+    expect(pageSource).toContain(':src="taskVideoUrl(task)"');
+    expect(pageSource).toContain('preload="metadata"');
+    expect(pageSource).toContain('@seeked="markTaskVideoReady(task)"');
+    expect(pageSource).toContain("{ 'video-ready': isTaskVideoReady(task) }");
+    expect(pageSource).toContain("{ 'is-ready': isTaskVideoReady(task) }");
     expect(pageSource).toContain('task.output');
     expect(pageSource).not.toContain('4 个分镜片段');
     expect(serviceSource).not.toContain('完整成片脚本');
+  });
+
+  it('reuses the AI-generated tag and confirmed prompt creative details in dialogs', () => {
+    expect(pageSource).toContain('class="origin-tag ai preview-origin-tag">AI 生成</span>');
+    expect(pageSource).not.toContain('真实视频素材</em>');
+    expect(pageSource).toContain('effectSegmentRenderPromptDetailsMap(promptArtifact.payload)');
+    expect(pageSource).toContain('v-if="promptTaskDetails"');
+    expect(pageSource).toContain(
+      '<pre class="source-prompt-content">{{ promptTask.promptText }}</pre>',
+    );
+    expect(pageSource).toContain('<summary>查看创意方向</summary>');
+    expect(pageSource).toContain('<summary>查看六维创意信息</summary>');
+    expect(pageSource).toContain('v-for="dimension in EFFECT_PROMPT_DIMENSIONS"');
+    expect(pageSource).toContain('promptTaskDetails.dimensions[dimension.key]');
+    expect(pageSource.indexOf('<pre class="source-prompt-content"')).toBeLessThan(
+      pageSource.indexOf('<summary>查看创意方向</summary>'),
+    );
+  });
+
+  it('resets poster-frame readiness whenever the visible material page changes', () => {
+    expect(pageSource).toContain('const pagedTaskVideoSignature = computed');
+    expect(pageSource).toContain('watch(pagedTaskVideoSignature, () => {');
+    expect(pageSource).toContain('cardVideoReadyKeys.value = new Set();');
+  });
+
+  it('loads video poster metadata only when a card approaches the viewport', () => {
+    expect(pageSource).toContain("{ rootMargin: '240px 0px', threshold: 0.01 }");
+    expect(pageSource).toContain('v-task-video-visible="taskVideoKey(task)"');
+    expect(pageSource).toContain('taskVideoUrl(task) && shouldLoadTaskVideo(task)');
+    expect(pageSource).toContain('onDeactivated(() => {');
+    expect(pageSource).toContain('void loadCurrentWorkspace(false);');
   });
 
   it('uses the prompt-node search and purpose filter pattern with toggleable selection actions', () => {
@@ -118,6 +159,7 @@ describe('effect segment render material gallery layout', () => {
       'startEffectSegmentRenderBatch',
       'regenerateEffectSegmentRenderTasks',
       'getEffectSegmentRenderTaskContent',
+      'effectSegmentRenderTaskContentUrl',
       'startEffectSegmentRenderRepair',
       'decideEffectSegmentRenderRepair',
       'validateEffectSegmentRenderBatch',
@@ -127,6 +169,14 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain('真实 Seedance 任务');
     expect(pageSource).toContain('pollTimer = setTimeout');
     expect(pageSource).not.toContain('setInterval(');
+  });
+
+  it('matches the immediate preview frame to the configured render ratio', () => {
+    expect(pageSource).toContain("configuredRatio === 'adaptive' ? '16:9' : configuredRatio");
+    expect(pageSource).toContain(':style="previewFrameStyle"');
+    expect(pageSource).toContain('aspectRatio: `${width} / ${height}`');
+    expect(pageSource).toContain('width: `min(100%, calc(62vh * ${widthToHeight}))`');
+    expect(pageSource).not.toMatch(/\.large-preview\s*\{[^}]*height:\s*250px/su);
   });
 
   it('shows a real initial empty state without a duplicate call to action', () => {
@@ -152,6 +202,6 @@ describe('effect segment render material gallery layout', () => {
     expect(parentSource).toContain('v-else-if="activeStep === 3"');
     expect(parentSource).toContain('@back="selectWorkflowStep(2)"');
     expect(parentSource).toContain('@next="selectWorkflowStep(4)"');
-    expect(parentSource).toContain('v-else-if="activeDownstreamBoundary"');
+    expect(parentSource).toContain('v-if="activeDownstreamBoundary"');
   });
 });

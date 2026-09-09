@@ -15,7 +15,7 @@ import type {
   ValidateEffectSegmentRenderBatchRequest,
 } from '@ai-marketing/contracts';
 
-import { requestJson, requestRaw } from '../../../../api/http-client';
+import { apiUrl, requestJson, requestRaw } from '../../../../api/http-client';
 
 const basePath = (projectId: string): string =>
   `/projects/${encodeURIComponent(projectId)}/workflows/effect/segment-render`;
@@ -124,6 +124,16 @@ export const getEffectSegmentRenderTaskContent = (
   requestRaw(
     `${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/tasks/${encodeURIComponent(taskId)}/content?variant=${variant}`,
     { operation: variant === 'REPAIR' ? '加载视频返修候选' : '加载视频素材', signal },
+  );
+
+export const effectSegmentRenderTaskContentUrl = (
+  projectId: string,
+  batchId: string,
+  taskId: string,
+  variant: 'ACTIVE' | 'REPAIR' = 'ACTIVE',
+): string =>
+  apiUrl(
+    `${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/tasks/${encodeURIComponent(taskId)}/content?variant=${variant}`,
   );
 
 export const validateEffectSegmentRenderBatch = (

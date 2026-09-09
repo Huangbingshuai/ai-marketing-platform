@@ -40,8 +40,10 @@ class _StructuredEnvelope(BaseModel):
     [
         (4, "SHORT_FOCUS", "一个可立即看懂"),
         (8, "SHORT_FOCUS", "一个可立即看懂"),
-        (9, "COMPLETE_ACTION", "2 个连续动作节拍"),
-        (15, "COMPLETE_ACTION", "2～3 个连续动作节拍"),
+        (9, "COMPLETE_ACTION", "1～2 个连续动作节拍"),
+        (11, "COMPLETE_ACTION", "1～2 个连续动作节拍"),
+        (12, "COMPLETE_ACTION", "1～2 个连续动作节拍"),
+        (15, "COMPLETE_ACTION", "1～2 个连续动作节拍"),
     ],
 )
 def test_temporal_intent_scales_continuous_action_beats(
@@ -56,6 +58,10 @@ def test_temporal_intent_scales_continuous_action_beats(
     assert "软参考" in intent["detailGuidance"]
     if duration <= 8:
         assert "首帧就位" in intent["guidance"]
+    else:
+        assert "结果停留并入最后一个" in intent["guidance"]
+        assert "软建议" in intent["guidance"]
+        assert "1～2 个节拍" in intent["detailGuidance"]
     assert f"本次为 {duration} 秒" in intent["detailGuidance"]
 
 

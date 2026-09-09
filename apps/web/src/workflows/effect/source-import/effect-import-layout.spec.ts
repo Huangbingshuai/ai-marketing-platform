@@ -176,6 +176,13 @@ describe('effect import commerce link placeholder', () => {
 });
 
 describe('effect import automatic draft saving', () => {
+  it('keeps visited AI nodes warm and exposes immediate switching feedback', () => {
+    expect(pageSource).toContain('<KeepAlive :max="3">');
+    expect(pageSource).toContain('pendingStep.value = step');
+    expect(pageSource).toContain('class="node-switch-progress"');
+    expect(pageSource).toContain('正在切换到{{ pendingStepLabel }}');
+  });
+
   it('activates the selected workflow node independently from node draft persistence', () => {
     expect(pageSource).toContain('activateWorkflowNode(');
     expect(pageSource).toContain('getActiveWorkflowRunOverview(');

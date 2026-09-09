@@ -3253,12 +3253,13 @@ def _temporal_intent_for_duration(duration_seconds: int) -> dict[str, str]:
         }
     lower_chars = 120 + (duration_seconds - 9) * 7
     upper_chars = 180 + (duration_seconds - 9) * 16
-    beat_guidance = "2 个" if duration_seconds <= 11 else "2～3 个"
+    beat_guidance = "1～2 个"
     return {
         "band": "COMPLETE_ACTION",
         "guidance": (
-            f"在同一主场景和同一目标下安排 {beat_guidance}连续动作节拍，让开端、发展与结束状态"
-            "彼此衔接；不得加入第二种完整使用方法。"
+            f"在同一主场景和同一目标下，通常用 {beat_guidance}连续动作节拍完成一个英雄事件。"
+            "主体、商品与必要工具在首帧就位；过程与结果自然衔接，结果停留并入最后一个"
+            "动作节拍，不另拆一拍，不为填满时长加入第二项任务。节拍数是软建议。"
         ),
         "detailGuidance": (
             f"本次为 {duration_seconds} 秒，软参考约 {lower_chars}～{upper_chars} 个汉字："

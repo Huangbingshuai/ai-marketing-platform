@@ -104,6 +104,7 @@ const listedProducts = ref<EffectImportProduct[]>([]);
 const removedProducts = ref<EffectImportRemovedProduct[]>([]);
 const saveState = ref<EffectImportSaveState>('clean');
 const transitioning = ref(false);
+const pendingStep = ref<number | null>(null);
 const uploadTargetInitializing = ref(false);
 const activeStep = ref(0);
 const infoExtractionNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
@@ -123,7 +124,20 @@ const effectWorkflowNodeIds = [
   'TEMPLATE_MIX',
   'FINAL_OUTPUT',
 ] as const;
-const activeDownstreamBoundary = computed(() => downstreamBoundaries[activeStep.value - 2]);
+const effectWorkflowNodeLabels = [
+  '资料包导入',
+  'AI 信息提炼',
+  'Prompt 生成',
+  '片段渲染',
+  '模板混剪',
+  '成片生成与批量导出',
+] as const;
+const pendingStepLabel = computed(() =>
+  pendingStep.value === null ? '' : (effectWorkflowNodeLabels[pendingStep.value] ?? '目标节点'),
+);
+const activeDownstreamBoundary = computed(() =>
+  activeStep.value >= 4 ? downstreamBoundaries[activeStep.value - 2] : undefined,
+);
 const keyword = ref('');
 const selectedProductIds = ref(new Set<string>());
 const busyMaterialIds = ref(new Set<string>());
@@ -1357,6 +1371,7 @@ const advanceDraft = async (): Promise<void> => {
 
 const selectWorkflowStep = async (step: number): Promise<void> => {
   if (step < 0 || step > 5 || step === activeStep.value || transitioning.value) return;
+  pendingStep.value = step;
   beginTransition();
   try {
     if (!(await flushPendingEdits())) {
@@ -1375,6 +1390,7 @@ const selectWorkflowStep = async (step: number): Promise<void> => {
     activeStep.value = step;
     window.scrollTo({ top: 0, behavior: 'smooth' });
   } finally {
+    pendingStep.value = null;
     endTransition();
   }
 };
@@ -1478,39 +1494,56 @@ onBeforeUnmount(() => {
     <template v-else>
       <EffectWorkflowCanvas :active-step="activeStep" @select="selectWorkflowStep" />
 
-      <EffectInfoExtractionNodePage
-        v-if="activeStep === 1"
-        ref="infoExtractionNode"
-        :project-id="currentProjectId"
-        :workflow-run-id="workspace?.workflowRunId ?? ''"
-        :draft-id="draft?.id ?? ''"
-        :mode="currentMode"
-        :products="draft?.products ?? []"
-        @back="selectWorkflowStep(0)"
-        @next="enterPromptBoundary"
-      />
+      <Transition name="node-switch">
+        <div
+          v-if="pendingStep !== null"
+          class="node-switch-progress"
+          role="status"
+          aria-live="polite"
+        >
+          <LoaderCircle class="spin" :size="18" />
+          <span
+            ><strong>正在切换到{{ pendingStepLabel }}</strong
+            ><small>保存当前草稿并同步节点状态…</small></span
+          >
+        </div>
+      </Transition>
 
-      <EffectPromptGenerationNodePage
-        v-else-if="activeStep === 2"
-        ref="promptGenerationNode"
-        :project-id="currentProjectId"
-        :workflow-run-id="workspace?.workflowRunId ?? ''"
-        :products="products"
-        @back="selectWorkflowStep(1)"
-        @next="selectWorkflowStep(3)"
-      />
+      <KeepAlive :max="3">
+        <EffectInfoExtractionNodePage
+          v-if="activeStep === 1"
+          ref="infoExtractionNode"
+          :project-id="currentProjectId"
+          :workflow-run-id="workspace?.workflowRunId ?? ''"
+          :draft-id="draft?.id ?? ''"
+          :mode="currentMode"
+          :products="draft?.products ?? []"
+          @back="selectWorkflowStep(0)"
+          @next="enterPromptBoundary"
+        />
 
-      <EffectSegmentRenderNodePage
-        v-else-if="activeStep === 3"
-        ref="segmentRenderNode"
-        :project-id="currentProjectId"
-        :workflow-run-id="workspace?.workflowRunId ?? ''"
-        :products="products"
-        @back="selectWorkflowStep(2)"
-        @next="selectWorkflowStep(4)"
-      />
+        <EffectPromptGenerationNodePage
+          v-else-if="activeStep === 2"
+          ref="promptGenerationNode"
+          :project-id="currentProjectId"
+          :workflow-run-id="workspace?.workflowRunId ?? ''"
+          :products="products"
+          @back="selectWorkflowStep(1)"
+          @next="selectWorkflowStep(3)"
+        />
 
-      <section v-else-if="activeDownstreamBoundary" class="ai-placeholder">
+        <EffectSegmentRenderNodePage
+          v-else-if="activeStep === 3"
+          ref="segmentRenderNode"
+          :project-id="currentProjectId"
+          :workflow-run-id="workspace?.workflowRunId ?? ''"
+          :products="products"
+          @back="selectWorkflowStep(2)"
+          @next="selectWorkflowStep(4)"
+        />
+      </KeepAlive>
+
+      <section v-if="activeDownstreamBoundary" class="ai-placeholder">
         <span><Sparkles :size="23" /></span>
         <small>STEP {{ String(activeStep + 1).padStart(2, '0') }}</small>
         <h2>{{ activeDownstreamBoundary.title }}</h2>
@@ -1522,7 +1555,7 @@ onBeforeUnmount(() => {
         </button>
       </section>
 
-      <template v-else>
+      <template v-else-if="activeStep === 0">
         <section class="import-workspace-card">
           <section class="node-heading">
             <span>01</span>
@@ -1791,6 +1824,47 @@ onBeforeUnmount(() => {
   border: 1px solid #dbe4f6;
   border-radius: 26px;
   box-shadow: 0 12px 34px #7a4e3b12;
+}
+.node-switch-progress {
+  position: fixed;
+  top: 144px;
+  left: 50%;
+  z-index: 1090;
+  display: flex;
+  min-width: 290px;
+  padding: 12px 16px;
+  align-items: center;
+  gap: 11px;
+  color: #23416f;
+  background: #f8fbff;
+  border: 1px solid #bfd2fa;
+  border-radius: 13px;
+  box-shadow: 0 14px 34px #173b7930;
+  transform: translateX(-50%);
+}
+.node-switch-progress > svg {
+  flex: 0 0 auto;
+  color: var(--effect-blue);
+}
+.node-switch-progress span {
+  display: grid;
+  gap: 2px;
+}
+.node-switch-progress strong {
+  font-size: 12px;
+}
+.node-switch-progress small {
+  color: #71809a;
+  font-size: 10px;
+}
+.node-switch-enter-active,
+.node-switch-leave-active {
+  transition: 0.16s ease;
+}
+.node-switch-enter-from,
+.node-switch-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -8px);
 }
 .effect-notice {
   position: fixed;

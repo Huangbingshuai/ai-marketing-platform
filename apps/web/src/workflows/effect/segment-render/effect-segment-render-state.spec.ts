@@ -4,6 +4,8 @@ import {
   EFFECT_SEGMENT_RENDER_PAGE_SIZE,
   effectSegmentRenderPage,
   effectSegmentRenderPageCount,
+  effectSegmentRenderCreativeCoreMap,
+  effectSegmentRenderPromptDetailsMap,
   effectSegmentRenderSummary,
   filterEffectSegmentRenderTasks,
   type EffectSegmentRenderTask,
@@ -55,7 +57,59 @@ describe('effect segment render state', () => {
     expect(filterEffectSegmentRenderTasks(tasks, 'R-001')).toHaveLength(1);
     expect(filterEffectSegmentRenderTasks(tasks, '提示词 2')).toHaveLength(1);
     expect(filterEffectSegmentRenderTasks(tasks, '广式腊肠')).toHaveLength(2);
+    expect(
+      filterEffectSegmentRenderTasks(tasks, '冰箱取出', {
+        'prompt-1': '从冰箱取出产品并完成开盖动作',
+      }),
+    ).toHaveLength(1);
     expect(filterEffectSegmentRenderTasks(tasks, '不存在')).toEqual([]);
+  });
+
+  it('reads normalized creative directions from the confirmed prompt artifact', () => {
+    expect(
+      effectSegmentRenderCreativeCoreMap({
+        items: [
+          { id: 'prompt-1', creativeCore: '  冰箱取出产品\n并完成开盖动作  ' },
+          { id: 'prompt-2', creativeCore: '' },
+          { id: 3, creativeCore: '无效条目' },
+        ],
+      }),
+    ).toEqual({ 'prompt-1': '冰箱取出产品 并完成开盖动作' });
+    expect(effectSegmentRenderCreativeCoreMap(null)).toEqual({});
+  });
+
+  it('reads the creative direction and six dimensions from the confirmed prompt artifact', () => {
+    expect(
+      effectSegmentRenderPromptDetailsMap({
+        items: [
+          {
+            id: 'prompt-1',
+            creativeCore: '  家庭餐桌搭配\n展示  ',
+            dimensions: {
+              narrative: '效果展示型',
+              scene: '家庭餐桌',
+              persona: '家庭采购者',
+              productRelation: '多种食物搭配',
+              camera: '近景跟拍',
+              emotion: '温馨自然',
+            },
+          },
+          { id: 'prompt-2', creativeCore: '缺少六维信息' },
+        ],
+      }),
+    ).toEqual({
+      'prompt-1': {
+        creativeCore: '家庭餐桌搭配 展示',
+        dimensions: {
+          narrative: '效果展示型',
+          scene: '家庭餐桌',
+          persona: '家庭采购者',
+          productRelation: '多种食物搭配',
+          camera: '近景跟拍',
+          emotion: '温馨自然',
+        },
+      },
+    });
   });
 
   it('uses twenty-item pages for four five-column rows and clamps the lower boundary', () => {

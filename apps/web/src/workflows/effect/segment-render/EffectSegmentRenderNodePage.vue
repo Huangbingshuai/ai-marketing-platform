@@ -9,6 +9,7 @@ import type {
 } from '@ai-marketing/contracts';
 import {
   DEFAULT_EFFECT_SEGMENT_RENDER_SETTINGS,
+  EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
 } from '@ai-marketing/contracts';
@@ -31,13 +32,24 @@ import {
   Upload,
   X,
 } from '@lucide/vue';
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import {
+  computed,
+  nextTick,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  ref,
+  watch,
+  type Directive,
+} from 'vue';
 
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
+import { listWorkingArtifacts } from '../../../platform/workflow/api/workflow-working.api';
 import { EFFECT_PROMPT_PAGE_SIZE_OPTIONS } from '../prompt-generation/effect-prompt-generation-state';
 import EffectUpwardCreatableSelect from '../source-import/components/EffectUpwardCreatableSelect.vue';
 import {
   decideEffectSegmentRenderRepair,
+  effectSegmentRenderTaskContentUrl,
   getEffectSegmentRenderBatch,
   getEffectSegmentRenderTaskContent,
   getEffectSegmentRenderWorkspace,
@@ -51,6 +63,8 @@ import {
   EFFECT_SEGMENT_RENDER_PAGE_SIZE,
   effectSegmentRenderPage,
   effectSegmentRenderPageCount,
+  effectSegmentRenderCreativeCoreMap,
+  effectSegmentRenderPromptDetailsMap,
   effectSegmentRenderSummary,
   effectSegmentRenderWorkspaceFromApi,
   effectSegmentRenderWorkspaceWithBatch,
@@ -58,6 +72,7 @@ import {
   isEffectSegmentRenderExportable,
   isEffectSegmentRenderBusy,
   type EffectSegmentRenderStatus,
+  type EffectSegmentRenderPromptDetails,
   type EffectSegmentRenderTask,
   type EffectSegmentRenderWorkspace,
 } from './effect-segment-render-state';
@@ -110,6 +125,9 @@ const renderSettings = ref<EffectSegmentRenderSettings>({
   ...DEFAULT_EFFECT_SEGMENT_RENDER_SETTINGS,
 });
 const renderSettingsRevision = ref<number | null>(null);
+const creativeCoreByPromptId = ref<Record<string, string>>({});
+const promptDetailsByPromptId = ref<Record<string, EffectSegmentRenderPromptDetails>>({});
+const creativeCoreSourceKey = ref('');
 
 type RenderModelOption = {
   value: EffectSegmentRenderSettings['capabilityKey'];
@@ -183,11 +201,28 @@ const resolutionOptions = computed(() =>
   })),
 );
 
+const previewFrameStyle = computed(() => {
+  const configuredRatio = renderSettings.value.ratio;
+  const [widthPart, heightPart] = (configuredRatio === 'adaptive' ? '16:9' : configuredRatio)
+    .split(':')
+    .map(Number);
+  const width = widthPart ?? 16;
+  const height = heightPart ?? 9;
+  const widthToHeight = width / height;
+  return {
+    aspectRatio: `${width} / ${height}`,
+    width: `min(100%, calc(62vh * ${widthToHeight}))`,
+  };
+});
+
 const previewTask = ref<EffectSegmentRenderTask | null>(null);
 const previewVariant = ref<'ACTIVE' | 'REPAIR'>('ACTIVE');
 const previewUrl = ref('');
 const previewLoading = ref(false);
 const previewError = ref('');
+const previewVideoReady = ref(false);
+const cardVideoReadyKeys = ref<Set<string>>(new Set());
+const requestedTaskVideoKeys = ref<Set<string>>(new Set());
 const promptTask = ref<EffectSegmentRenderTask | null>(null);
 const repairTask = ref<EffectSegmentRenderTask | null>(null);
 const repairStartSeconds = ref(0);
@@ -205,6 +240,10 @@ let pollController: AbortController | null = null;
 let pollTimer: ReturnType<typeof setTimeout> | undefined;
 let loadGeneration = 0;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+let nodeActive = true;
+let activatedOnce = false;
+let skipNextProductLoad = false;
+let taskVideoObserver: IntersectionObserver | null = null;
 
 const activeProducts = computed(() =>
   props.products.filter((product) => product.status === 'ACTIVE'),
@@ -233,8 +272,29 @@ const importedCount = computed(() => 0);
 const remainingPromptCount = computed(() => Math.max(0, promptCount.value - importedCount.value));
 const isPurposeFilter = (value: FragmentFilter): value is EffectPromptFragmentType =>
   EFFECT_PROMPT_FRAGMENT_TYPES.includes(value as EffectPromptFragmentType);
+const renderSourceKey = computed(() => {
+  const current = workspace.value;
+  if (!current?.sourcePromptArtifactId || current.sourcePromptRevision === null) return '';
+  return `${current.sourcePromptArtifactId}:${current.sourcePromptRevision}`;
+});
+const cardCreativeCoreByPromptId = computed<Readonly<Record<string, string>>>(() =>
+  renderSourceKey.value && renderSourceKey.value === creativeCoreSourceKey.value
+    ? creativeCoreByPromptId.value
+    : {},
+);
+const cardPromptDetailsByPromptId = computed<
+  Readonly<Record<string, EffectSegmentRenderPromptDetails>>
+>(() =>
+  renderSourceKey.value && renderSourceKey.value === creativeCoreSourceKey.value
+    ? promptDetailsByPromptId.value
+    : {},
+);
 const filteredTasks = computed(() =>
-  filterEffectSegmentRenderTasks(tasks.value, keyword.value).filter((task) => {
+  filterEffectSegmentRenderTasks(
+    tasks.value,
+    keyword.value,
+    cardCreativeCoreByPromptId.value,
+  ).filter((task) => {
     if (fragmentFilter.value === 'ALL') return true;
     if (fragmentFilter.value === 'ABNORMAL') return task.status === 'FAILED';
     return (
@@ -272,10 +332,86 @@ const canPreviewTask = (task: EffectSegmentRenderTask): boolean => Boolean(task.
 const canRetryTask = (task: EffectSegmentRenderTask): boolean =>
   !isEffectSegmentRenderBusy(task.status) && !task.repair;
 
-const promptExcerpt = (promptText: string): string => {
-  const normalized = promptText.replace(/\s+/gu, ' ').trim();
-  const characters = Array.from(normalized);
-  return characters.length > 14 ? `${characters.slice(0, 14).join('')}…` : normalized;
+const creativeCoreForTask = (task: EffectSegmentRenderTask): string =>
+  cardCreativeCoreByPromptId.value[task.promptId] ?? '创意方向待同步';
+
+const promptTaskDetails = computed(() =>
+  promptTask.value ? (cardPromptDetailsByPromptId.value[promptTask.value.promptId] ?? null) : null,
+);
+
+const taskVideoUrl = (task: EffectSegmentRenderTask): string => {
+  const batchId = workspace.value?.batchId;
+  if (!batchId || !task.output) return '';
+  return effectSegmentRenderTaskContentUrl(props.projectId, batchId, task.id);
+};
+
+const taskVideoKey = (task: EffectSegmentRenderTask): string =>
+  `${task.id}:${task.output?.version ?? task.activeVersion}`;
+
+const pagedTaskVideoSignature = computed(() =>
+  pagedTasks.value.map((task) => taskVideoKey(task)).join('|'),
+);
+
+const isTaskVideoReady = (task: EffectSegmentRenderTask): boolean =>
+  cardVideoReadyKeys.value.has(taskVideoKey(task));
+
+const shouldLoadTaskVideo = (task: EffectSegmentRenderTask): boolean =>
+  requestedTaskVideoKeys.value.has(taskVideoKey(task));
+
+const requestTaskVideo = (key: string): void => {
+  if (requestedTaskVideoKeys.value.has(key)) return;
+  const next = new Set(requestedTaskVideoKeys.value);
+  next.add(key);
+  requestedTaskVideoKeys.value = next;
+};
+
+const ensureTaskVideoObserver = (): IntersectionObserver | null => {
+  if (taskVideoObserver) return taskVideoObserver;
+  if (typeof IntersectionObserver === 'undefined') return null;
+  taskVideoObserver = new IntersectionObserver(
+    (entries, observer) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const key = (entry.target as HTMLElement).dataset.taskVideoKey;
+        if (key) requestTaskVideo(key);
+        observer.unobserve(entry.target);
+      });
+    },
+    { rootMargin: '240px 0px', threshold: 0.01 },
+  );
+  return taskVideoObserver;
+};
+
+const vTaskVideoVisible: Directive<HTMLElement, string> = {
+  mounted(element, binding) {
+    element.dataset.taskVideoKey = binding.value;
+    const observer = ensureTaskVideoObserver();
+    if (observer) observer.observe(element);
+    else requestTaskVideo(binding.value);
+  },
+  updated(element, binding) {
+    if (binding.value === binding.oldValue) return;
+    taskVideoObserver?.unobserve(element);
+    element.dataset.taskVideoKey = binding.value;
+    const observer = ensureTaskVideoObserver();
+    if (observer) observer.observe(element);
+    else requestTaskVideo(binding.value);
+  },
+  unmounted(element) {
+    taskVideoObserver?.unobserve(element);
+  },
+};
+
+const markTaskVideoReady = (task: EffectSegmentRenderTask): void => {
+  const next = new Set(cardVideoReadyKeys.value);
+  next.add(taskVideoKey(task));
+  cardVideoReadyKeys.value = next;
+};
+
+const revealVideoPosterFrame = (event: Event): void => {
+  const video = event.currentTarget;
+  if (!(video instanceof HTMLVideoElement) || !Number.isFinite(video.duration)) return;
+  video.currentTime = Math.min(0.1, video.duration / 2);
 };
 
 const currentProductReady = computed(
@@ -400,6 +536,7 @@ const clearPreview = (): void => {
   previewUrl.value = '';
   previewLoading.value = false;
   previewError.value = '';
+  previewVideoReady.value = false;
 };
 
 const closeAllDialogs = (restoreFocus = false): void => {
@@ -427,28 +564,35 @@ const closeTransferPanel = (restoreFocus = false): void => {
   void nextTick(() => trigger?.isConnected && trigger.focus());
 };
 
-const loadCurrentWorkspace = async (): Promise<void> => {
+const loadCurrentWorkspace = async (showLoading = true): Promise<void> => {
+  if (!nodeActive) return;
   const product = currentProduct.value;
   const generation = ++loadGeneration;
   loadController?.abort();
   operationController?.abort();
   stopPolling();
   operation.value = null;
-  closeAllDialogs(false);
-  closeTransferPanel(false);
-  selectionMode.value = false;
-  selectedTaskIds.value = new Set();
-  page.value = 1;
-  keyword.value = '';
-  fragmentFilter.value = 'ALL';
-  includeCompatiblePurposes.value = false;
+  if (showLoading) {
+    closeAllDialogs(false);
+    closeTransferPanel(false);
+    selectionMode.value = false;
+    selectedTaskIds.value = new Set();
+    page.value = 1;
+    keyword.value = '';
+    fragmentFilter.value = 'ALL';
+    includeCompatiblePurposes.value = false;
+  }
   validated.value = false;
+  creativeCoreByPromptId.value = {};
+  promptDetailsByPromptId.value = {};
+  creativeCoreSourceKey.value = '';
+  if (showLoading) cardVideoReadyKeys.value = new Set();
   if (!product || !props.projectId || !props.workflowRunId) {
     workspace.value = null;
     pageStatus.value = 'empty';
     return;
   }
-  pageStatus.value = 'loading';
+  if (showLoading || !workspace.value) pageStatus.value = 'loading';
   loadError.value = '';
   const controller = new AbortController();
   loadController = controller;
@@ -464,6 +608,27 @@ const loadCurrentWorkspace = async (): Promise<void> => {
     renderSettingsRevision.value = settingsResponse.data.settingsRevision;
     applyWorkspace(effectSegmentRenderWorkspaceFromApi(settingsResponse.data));
     pageStatus.value = 'success';
+    try {
+      const artifactResponse = await listWorkingArtifacts(
+        props.projectId,
+        { workflowRunId: props.workflowRunId, nodeId: 'PROMPT_GENERATION' },
+        controller.signal,
+      );
+      if (generation !== loadGeneration || controller.signal.aborted) return;
+      const promptArtifact = artifactResponse.data.items.find(
+        (artifact) => artifact.artifactKey === `prompt-batch:${product.id}`,
+      );
+      if (promptArtifact) {
+        creativeCoreByPromptId.value = effectSegmentRenderCreativeCoreMap(promptArtifact.payload);
+        promptDetailsByPromptId.value = effectSegmentRenderPromptDetailsMap(promptArtifact.payload);
+        creativeCoreSourceKey.value = `${promptArtifact.id}:${promptArtifact.revision}`;
+      }
+    } catch (error) {
+      if (isAbortError(error) || generation !== loadGeneration) return;
+      creativeCoreByPromptId.value = {};
+      promptDetailsByPromptId.value = {};
+      creativeCoreSourceKey.value = '';
+    }
   } catch (error) {
     if (isAbortError(error) || generation !== loadGeneration) return;
     pageStatus.value = 'error';
@@ -512,7 +677,9 @@ const updateRenderSetting = async <Key extends keyof EffectSegmentRenderSettings
 watch(
   [() => props.projectId, () => props.workflowRunId, activeProductSignature],
   () => {
+    if (!nodeActive) return;
     if (!activeProducts.value.some((product) => product.id === currentProductId.value)) {
+      skipNextProductLoad = true;
       currentProductId.value = activeProducts.value[0]?.id ?? '';
       void loadCurrentWorkspace();
       return;
@@ -523,7 +690,11 @@ watch(
 );
 
 watch(currentProductId, (next, previous) => {
-  if (next !== previous) void loadCurrentWorkspace();
+  if (skipNextProductLoad) {
+    skipNextProductLoad = false;
+    return;
+  }
+  if (nodeActive && next !== previous) void loadCurrentWorkspace();
 });
 
 watch([keyword, fragmentFilter, includeCompatiblePurposes], () => {
@@ -536,6 +707,10 @@ watch(fragmentFilter, (nextFilter) => {
 
 watch(totalPages, (nextTotalPages) => {
   if (page.value > nextTotalPages) page.value = nextTotalPages;
+});
+
+watch(pagedTaskVideoSignature, () => {
+  cardVideoReadyKeys.value = new Set();
 });
 
 const statusMeta = (status: EffectSegmentRenderStatus): { label: string; tone: string } =>
@@ -914,11 +1089,33 @@ const flushPendingEdits = async (): Promise<boolean> => operation.value === null
 
 defineExpose({ flushPendingEdits });
 
-onBeforeUnmount(() => {
+const stopNodeRequests = (): void => {
+  loadGeneration += 1;
   loadController?.abort();
   operationController?.abort();
   stopPolling();
   clearPreview();
+};
+
+onActivated(() => {
+  nodeActive = true;
+  if (!activatedOnce) {
+    activatedOnce = true;
+    return;
+  }
+  void loadCurrentWorkspace(false);
+});
+
+onDeactivated(() => {
+  nodeActive = false;
+  stopNodeRequests();
+});
+
+onBeforeUnmount(() => {
+  nodeActive = false;
+  stopNodeRequests();
+  taskVideoObserver?.disconnect();
+  taskVideoObserver = null;
   if (noticeTimer) clearTimeout(noticeTimer);
 });
 </script>
@@ -940,7 +1137,9 @@ onBeforeUnmount(() => {
       <AlertCircle :size="32" />
       <h2>视频片段渲染工作区加载失败</h2>
       <p>{{ loadError }}</p>
-      <button type="button" @click="loadCurrentWorkspace"><RefreshCw :size="14" />重新加载</button>
+      <button type="button" @click="loadCurrentWorkspace()">
+        <RefreshCw :size="14" />重新加载
+      </button>
     </section>
     <section v-else-if="pageStatus === 'empty' || !currentProduct" class="segment-page-state">
       <Sparkles :size="32" />
@@ -1201,8 +1400,9 @@ onBeforeUnmount(() => {
                 />
               </label>
               <button
+                v-task-video-visible="taskVideoKey(task)"
                 class="material-preview"
-                :class="statusMeta(task.status).tone"
+                :class="[statusMeta(task.status).tone, { 'video-ready': isTaskVideoReady(task) }]"
                 type="button"
                 :disabled="!canPreviewTask(task)"
                 :aria-label="`${selectionMode ? '选择' : '预览'} ${task.renderCode}`"
@@ -1210,11 +1410,29 @@ onBeforeUnmount(() => {
                   selectionMode ? toggleTaskSelection(task.id) : openPreview(task, $event)
                 "
               >
+                <video
+                  v-if="taskVideoUrl(task) && shouldLoadTaskVideo(task)"
+                  :key="taskVideoKey(task)"
+                  class="material-preview-video"
+                  :class="{ 'is-ready': isTaskVideoReady(task) }"
+                  :src="taskVideoUrl(task)"
+                  muted
+                  playsinline
+                  preload="metadata"
+                  aria-hidden="true"
+                  @loadedmetadata="revealVideoPosterFrame"
+                  @seeked="markTaskVideoReady(task)"
+                />
                 <span class="material-status-pill" :class="statusMeta(task.status).tone">
                   {{ statusMeta(task.status).label }}
                 </span>
                 <LoaderCircle
-                  v-if="isEffectSegmentRenderBusy(task.status)"
+                  v-if="
+                    isEffectSegmentRenderBusy(task.status) ||
+                    (Boolean(taskVideoUrl(task)) &&
+                      shouldLoadTaskVideo(task) &&
+                      !isTaskVideoReady(task))
+                  "
                   class="spin"
                   :size="25"
                 />
@@ -1223,13 +1441,15 @@ onBeforeUnmount(() => {
               </button>
               <div class="material-card-body">
                 <div class="material-card-title">
-                  <strong>{{ promptExcerpt(task.promptText) }}</strong>
+                  <strong :title="creativeCoreForTask(task)">{{
+                    creativeCoreForTask(task)
+                  }}</strong>
                   <span>{{ task.renderCode }}</span>
                 </div>
                 <p>{{ task.promptCode }}</p>
                 <div class="task-tags">
                   <span class="primary-tag">{{ fragmentTypeLabel(task.fragmentType) }}</span>
-                  <span class="origin-tag ai">真实 AI 任务</span>
+                  <span class="origin-tag ai">AI 生成</span>
                 </div>
                 <div
                   v-if="task.compatibleFragmentTypes.length"
@@ -1430,17 +1650,30 @@ onBeforeUnmount(() => {
               <X :size="16" />
             </button>
           </header>
-          <div class="large-preview">
+          <div class="large-preview" :style="previewFrameStyle">
             <LoaderCircle v-if="previewLoading" class="spin" :size="34" />
             <div v-else-if="previewError" class="preview-load-error" role="alert">
               <AlertCircle :size="28" />
               <small>{{ previewError }}</small>
             </div>
-            <video v-else-if="previewUrl" :src="previewUrl" controls autoplay playsinline />
+            <video
+              v-else-if="previewUrl"
+              :class="{ 'is-ready': previewVideoReady }"
+              :src="previewUrl"
+              controls
+              autoplay
+              playsinline
+              @canplay="previewVideoReady = true"
+            />
             <template v-else>
               <Play :size="34" />
               <small>{{ previewTask.durationSeconds }}s</small>
             </template>
+            <LoaderCircle
+              v-if="previewUrl && !previewVideoReady"
+              class="spin preview-video-loader"
+              :size="34"
+            />
           </div>
           <div class="preview-meta">
             <span>
@@ -1450,7 +1683,7 @@ onBeforeUnmount(() => {
                 {{ fragmentTypeLabel(previewTask.fragmentType) }}</small
               >
             </span>
-            <em>真实视频素材</em>
+            <span class="origin-tag ai preview-origin-tag">AI 生成</span>
           </div>
           <p class="dialog-note">
             {{
@@ -1580,7 +1813,20 @@ onBeforeUnmount(() => {
             </span>
             <em>来源 Prompt</em>
           </div>
-          <pre>{{ promptTask.promptText }}</pre>
+          <pre class="source-prompt-content">{{ promptTask.promptText }}</pre>
+          <details v-if="promptTaskDetails" class="source-prompt-detail">
+            <summary>查看创意方向</summary>
+            <p class="prompt-creative-core">{{ promptTaskDetails.creativeCore }}</p>
+          </details>
+          <details v-if="promptTaskDetails" class="source-prompt-detail">
+            <summary>查看六维创意信息</summary>
+            <div class="prompt-source-dimensions">
+              <span v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key">
+                <b>{{ dimension.label }}</b>
+                {{ promptTaskDetails.dimensions[dimension.key] }}
+              </span>
+            </div>
+          </details>
           <footer><button type="button" @click="closeAllDialogs(true)">关闭</button></footer>
         </section>
       </div>
@@ -2454,10 +2700,11 @@ select:disabled {
 .large-preview {
   position: relative;
   display: grid;
-  height: 250px;
+  max-width: 100%;
+  margin: 0 auto;
   place-items: center;
-  color: #fff;
-  background: linear-gradient(135deg, #be3f4f, #f4884d);
+  color: #5f7cae;
+  background: linear-gradient(135deg, #edf3fa, #e4ecf6);
   border-radius: 18px;
   overflow: hidden;
 }
@@ -2466,6 +2713,14 @@ select:disabled {
   height: 100%;
   object-fit: contain;
   background: #111827;
+  opacity: 0;
+}
+.large-preview video.is-ready {
+  opacity: 1;
+}
+.preview-video-loader {
+  position: absolute;
+  z-index: 2;
 }
 .preview-load-error {
   display: grid;
@@ -2516,6 +2771,13 @@ select:disabled {
   font-style: normal;
   white-space: nowrap;
 }
+.preview-origin-tag {
+  padding: 3px 6px;
+  border-radius: 5px;
+  font-size: 8px;
+  font-weight: 700;
+  white-space: nowrap;
+}
 .dialog-note {
   margin: 0;
   padding: 10px 12px;
@@ -2525,7 +2787,9 @@ select:disabled {
 }
 .prompt-dialog {
   width: min(620px, 100%);
+  max-height: calc(100vh - 40px);
   padding: 0 16px 16px;
+  overflow-y: auto;
 }
 .prompt-dialog-meta {
   border-bottom: 1px solid #e8edf5;
@@ -2547,6 +2811,50 @@ select:disabled {
   font-family: inherit;
   font-size: 11px;
   line-height: 1.75;
+}
+.source-prompt-detail {
+  margin: 8px 0 0;
+  color: #78869a;
+  font-size: 9px;
+}
+.source-prompt-detail summary {
+  width: max-content;
+  color: #5577a8;
+  cursor: pointer;
+  user-select: none;
+}
+.source-prompt-detail .prompt-creative-core,
+.source-prompt-detail .prompt-source-dimensions {
+  margin-top: 7px;
+}
+.prompt-creative-core {
+  margin: 0;
+  padding: 8px 10px;
+  color: #253047;
+  background: #f4f8ff;
+  border: 1px solid #cfe0ff;
+  border-radius: 7px;
+  font-size: 10px;
+  line-height: 1.6;
+}
+.prompt-source-dimensions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+.prompt-source-dimensions > span {
+  padding: 8px 9px;
+  color: #42526a;
+  background: #f4f8ff;
+  border: 1px solid #cfe0ff;
+  border-radius: 7px;
+  font-size: 9px;
+  line-height: 1.55;
+}
+.prompt-source-dimensions b {
+  display: block;
+  margin-bottom: 2px;
+  color: #2f6fed;
 }
 .prompt-dialog > footer {
   display: flex;
@@ -3075,6 +3383,26 @@ select:disabled {
   background: linear-gradient(135deg, #c9514f, #ed9445);
   border: 0;
 }
+.material-preview.success {
+  color: #5f7cae;
+  background: linear-gradient(135deg, #edf3fa, #e4ecf6);
+}
+.material-preview.success.video-ready {
+  color: #fff;
+  background: #111827;
+}
+.material-preview-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  object-fit: cover;
+  opacity: 0;
+}
+.material-preview-video.is-ready {
+  opacity: 1;
+}
 .material-preview.running,
 .material-preview.pending,
 .material-preview.retry {
@@ -3087,18 +3415,25 @@ select:disabled {
   opacity: 1;
 }
 .material-preview > svg {
+  position: relative;
+  z-index: 1;
   filter: drop-shadow(0 2px 6px #17203340);
 }
 .material-preview > small {
   position: absolute;
+  z-index: 2;
   right: 9px;
   bottom: 7px;
   color: #fff;
   font-size: 9px;
   font-weight: 800;
 }
+.material-preview.success:not(.video-ready) > small {
+  color: #66758b;
+}
 .material-status-pill {
   position: absolute;
+  z-index: 2;
   top: 8px;
   right: 8px;
   padding: 3px 7px;
@@ -3125,6 +3460,8 @@ select:disabled {
   gap: 8px;
 }
 .material-card-title strong {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   color: #29364b;
   font-size: 11px;
@@ -3608,6 +3945,9 @@ select:disabled {
   }
   .selection-action-bar span {
     width: 100%;
+  }
+  .prompt-source-dimensions {
+    grid-template-columns: 1fr;
   }
   .segment-transfer-drawer {
     padding: 0 14px;
