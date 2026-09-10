@@ -1301,7 +1301,12 @@ class PromptGenerationPipeline:
                     if assignment_call is None:
                         raise PipelineError("创意空间事实分配结果缺失")
                     previous_assignments = assignment_call.value
-                    for reassignment_attempt in range(2):
+                    reassignment_attempt = 0
+                    reassignment_structure_failures = 0
+                    # Format/ID recovery must not consume the two AI relationship
+                    # revisions. Bound it independently and retain the last valid
+                    # assignments instead of replanning the complete landscape.
+                    while reassignment_attempt < 2:
                         self._reserve_ai_call(context)
                         planning_call_counts["FACT_TERRITORY_ASSIGNMENT"] += 1
                         reassignment_revision_context = {
@@ -1334,9 +1339,10 @@ class PromptGenerationPipeline:
                                     )
                                 )
                         except ProviderError as exc:
-                            if reassignment_attempt == 0 and (
+                            if reassignment_structure_failures < 2 and (
                                 exc.error_type == ProviderErrorType.RESPONSE_INVALID
                             ):
+                                reassignment_structure_failures += 1
                                 continue
                             raise
                         call_rows.append(reassignment_call.metadata)
@@ -1351,9 +1357,17 @@ class PromptGenerationPipeline:
                                     expected_direction_count=expected_direction_count,
                                 )
                             )
-                        except ValueError:
-                            previous_assignments = reassignment_call.value
-                            continue
+                        except ValueError as exc:
+                            if reassignment_structure_failures < 2:
+                                reassignment_structure_failures += 1
+                                continue
+                            raise ProviderError(
+                                "AI 事实关系局部修订结构持续无效",
+                                retryable=False,
+                                error_type=ProviderErrorType.RESPONSE_INVALID,
+                                attempts=3,
+                            ) from exc
+                        reassignment_attempt += 1
                         landscape_audit = await audit_landscape(
                             reassigned_landscape
                         )
@@ -2374,6 +2388,17 @@ class PromptGenerationPipeline:
                         else None
                     ),
                     "creativeCore": candidate.creative_core,
+                    "visibleEvent": (
+                        {
+                            "initialState": candidate.shot_plan.scene.initial_state,
+                            "actions": [
+                                {"action": beat.action, "visibleResult": beat.visible_result}
+                                for beat in candidate.shot_plan.beats
+                            ],
+                            "finalFrame": candidate.shot_plan.final_frame,
+                        }
+                        if candidate.shot_plan is not None else None
+                    ),
                     "dimensions": candidate.dimensions.model_dump(
                         mode="json", by_alias=True
                     ),
@@ -2448,14 +2473,20 @@ class PromptGenerationPipeline:
                                 if d.direction_id in pending_ids
                             ],
                         }
-                        raise ValueError("supplement contains unresolved direction slots")
+                        if structure_recoveries < 2 or not retained:
+                            raise ValueError("supplement contains unresolved direction slots")
+                        # Recovery is exhausted, not the useful partial plan.
+                        # Only structurally valid IDs proceed to the same AI
+                        # reviews below; Worker does not approve their meaning.
+                        required_ids = [key for key in required_ids if key in retained]
+                        pending_ids = []
                 proposed = validate_diversity_supplement_directions(
                     CreativeDirectionResponse(directions=[retained[key] for key in required_ids]),
                     application,
                     visual_strategy,
                     landscape=landscape,
                     existing_directions=plan.directions,
-                    expected_direction_count=requested_direction_count,
+                    expected_direction_count=len(required_ids),
                     expected_execution_route_count=execution_route_count,
                 )
                 combined = [*plan.directions, *proposed]
@@ -2531,6 +2562,14 @@ class PromptGenerationPipeline:
                             "先选空间，再从该空间的合法组合行选择事实和动作，不借用其他行的 ID。"
                         ).strip(),
                     }
+                    continue
+                if pending_ids and retained and attempt < 3:
+                    # A whole provider response can fail after earlier calls
+                    # supplied valid slots. Review those slots once instead of
+                    # dropping them with the failed response; never retry an
+                    # AI review here or accept unreviewed content.
+                    required_ids = [key for key in required_ids if key in retained]
+                    pending_ids = []
                     continue
                 cache.diversity_supplement_improved = False
                 return []
@@ -2716,6 +2755,13 @@ class PromptGenerationPipeline:
             )
             if not supplemental_directions:
                 return []
+            # Partial recovery supplies fewer AI-authored routes. Do not fill
+            # the optional diversity pool by cycling those routes again.
+            requested = min(requested, sum(
+                len(direction.execution_routes) for direction in supplemental_directions
+            ))
+            if requested <= 0:
+                return []
             supplement_direction_ids = [
                 item.direction_id for item in supplemental_directions
             ]
@@ -2765,16 +2811,9 @@ class PromptGenerationPipeline:
                     if supplement_kind == "DIVERSITY"
                     else ()
                 ),
-                avoid_scene_families=(
-                    cache.diversity_avoid_scene_families
-                    if supplement_kind == "DIVERSITY"
-                    else ()
-                ),
-                avoid_action_families=(
-                    cache.diversity_avoid_action_families
-                    if supplement_kind == "DIVERSITY"
-                    else ()
-                ),
+                # Supplement directions already passed whole-batch AI review.
+                # A shared upper-level family must not discard those new
+                # events and force the remaining routes to repeat instead.
             )
             if direction_plan is not None
             else []
@@ -3112,9 +3151,11 @@ class PromptGenerationPipeline:
                                 current_shard.shard_index,
                                 len(current_shard.tasks),
                             )
-                            split_results = await asyncio.gather(
-                                *(request_candidates(part) for part in split_shards)
-                            )
+                            # Recovery only: do not start a paid sibling after
+                            # the first half fails. Normal shards stay concurrent.
+                            split_results = []
+                            for part in split_shards:
+                                split_results.append(await request_candidates(part))
                             return [
                                 item
                                 for split_result in split_results

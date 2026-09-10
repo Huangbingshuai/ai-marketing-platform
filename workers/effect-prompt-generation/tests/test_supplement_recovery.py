@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from dataclasses import replace
 from typing import Any
 
@@ -17,7 +18,10 @@ from effect_prompt_generation.pipeline import PromptGenerationPipeline
 from effect_prompt_generation.providers import (
     ArkResponsesProvider,
     MockAiProvider,
+    ProviderError,
+    ProviderErrorType,
     _safe_schema_errors,
+    _creative_task_brief,
 )
 from effect_prompt_generation.supplement_recovery import (
     direction_summary,
@@ -144,18 +148,169 @@ async def test_supplement_repairs_only_pending_slot_and_audits_whole_plan(
 
 
 @pytest.mark.asyncio
-async def test_repeated_structural_error_is_bounded_without_rule_fallback() -> None:
+async def test_repeated_structural_error_reviews_retained_partial_without_rule_fallback() -> None:
     provider = RepairProvider("always")
     pipeline, runtime = await ready_pipeline(provider)
     initial = pipeline._cache(runtime).creative_direction_plan
-    assert (
-        await pipeline._plan_diversity_supplement_directions(
-            runtime, initial, requested_candidate_count=8
-        )
-        == []
+    result = await pipeline._plan_diversity_supplement_directions(
+        runtime, initial, requested_candidate_count=8
     )
+    assert len(result) == 3
+    assert [d.direction_id for d in result] == [f"DIVERSITY_SUPPLEMENT_{i}" for i in range(1, 4)]
     assert [r["requested_direction_count"] for r in provider.requests] == [4, 1, 1]
+    assert provider.audited_ids[-1] == [d.direction_id for d in [*initial.directions, *result]]
+    assert pipeline._cache(runtime).diversity_supplement_direction_count == 3
+    assert pipeline._cache(runtime).creative_direction_plan.directions[:len(initial.directions)] == initial.directions
+
+
+class PartialReviewProvider(RepairProvider):
+    def __init__(self, outcome: str) -> None:
+        super().__init__("always")
+        self.outcome = outcome
+
+    async def audit_creative_direction_diversity(self, **kwargs: Any) -> Any:
+        call = await super().audit_creative_direction_diversity(**kwargs)
+        if not kwargs.get("proposed_direction_ids"):
+            return call
+        if self.outcome == "cancel":
+            raise asyncio.CancelledError()
+        if self.outcome == "invalid":
+            raise ValueError("invalid review structure")
+        return replace(call, value=call.value.model_copy(update={
+            "requires_revision": True,
+            "revision_direction_ids": list(kwargs["proposed_direction_ids"]),
+        }))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["reject", "invalid", "cancel"])
+async def test_retained_partial_cannot_bypass_ai_review(outcome: str) -> None:
+    provider = PartialReviewProvider(outcome)
+    pipeline, runtime = await ready_pipeline(provider)
+    initial = pipeline._cache(runtime).creative_direction_plan
+    if outcome == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await pipeline._plan_diversity_supplement_directions(runtime, initial, requested_candidate_count=8)
+    else:
+        assert await pipeline._plan_diversity_supplement_directions(runtime, initial, requested_candidate_count=8) == []
     assert pipeline._cache(runtime).creative_direction_plan == initial
+    assert pipeline._cache(runtime).diversity_supplement_direction_count == 0
+    assert len(provider.requests) <= 4
+
+
+class UnavailableSupplementProvider(RepairProvider):
+    async def plan_diversity_supplement_directions(self, *args: Any, **kwargs: Any) -> Any:
+        if self.failure == "whole_response" and self.requests:
+            self.requests.append(kwargs)
+            raise ProviderError("response invalid", error_type=ProviderErrorType.RESPONSE_INVALID, retryable=False)
+        call = await super().plan_diversity_supplement_directions(*args, **kwargs)
+        if self.failure == "all_invalid":
+            return replace(call, value=call.value.model_copy(update={"directions": [
+                d.model_copy(update={"territory_id": "UNKNOWN_TERRITORY"}) for d in call.value.directions
+            ]}))
+        return call
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure,expected", [("whole_response", 3), ("all_invalid", 0)])
+async def test_provider_failure_keeps_only_reviewed_valid_slots(failure: str, expected: int) -> None:
+    provider = UnavailableSupplementProvider(failure)
+    pipeline, runtime = await ready_pipeline(provider)
+    initial = pipeline._cache(runtime).creative_direction_plan
+    result = await pipeline._plan_diversity_supplement_directions(runtime, initial, requested_candidate_count=8)
+    assert len(result) == expected
+    assert len(provider.requests) == 3
+    if expected:
+        assert provider.audited_ids[-1] == [d.direction_id for d in [*initial.directions, *result]]
+    else:
+        assert provider.audited_ids == []
+        assert pipeline._cache(runtime).creative_direction_plan == initial
+
+
+@pytest.mark.asyncio
+async def test_partial_diversity_generation_does_not_cycle_routes_to_fill_optional_pool() -> None:
+    provider = RepairProvider("always")
+    pipeline, runtime = await ready_pipeline(provider)
+    shards = await pipeline.plan_creatives(runtime, round_number=1, requested_count=8, supplement_kind="DIVERSITY")
+    tasks = [task for shard in shards for task in shard.tasks]
+    assert len(tasks) == 6  # Three reviewed directions, two real routes each.
+    keys = [(task.creative_direction.direction_id, task.execution_route.route_id) for task in tasks]
+    assert len(set(keys)) == 6
+    assert all(key[0].startswith("DIVERSITY_SUPPLEMENT_") for key in keys)
+
+
+class SharedFamilyProvider(RepairProvider):
+    async def plan_diversity_supplement_directions(self, *args: Any, **kwargs: Any) -> Any:
+        call = await super().plan_diversity_supplement_directions(*args, **kwargs)
+        return replace(call, value=call.value.model_copy(update={"directions": [
+            d.model_copy(update={"semantic_profile": d.semantic_profile.model_copy(update={
+                "scene_family": "SHARED_FAMILY" if index < 2 else "ALTERNATIVE_FAMILY",
+            })}) for index, d in enumerate(call.value.directions)
+        ]}))
+
+
+@pytest.mark.asyncio
+async def test_reviewed_new_events_are_not_filtered_again_by_family_id() -> None:
+    provider = SharedFamilyProvider("always")
+    pipeline, runtime = await ready_pipeline(provider)
+    pipeline._cache(runtime).diversity_avoid_scene_families = {"SHARED_FAMILY"}
+    shards = await pipeline.plan_creatives(runtime, round_number=1, requested_count=8, supplement_kind="DIVERSITY")
+    tasks = [task for shard in shards for task in shard.tasks]
+    keys = [(task.creative_direction.direction_id, task.execution_route.route_id) for task in tasks]
+    assert len(keys) == len(set(keys)) == 6
+    assert len({direction for direction, _ in keys}) == 3
+
+
+@pytest.mark.asyncio
+async def test_supplement_receives_actual_generated_events_not_only_dimension_labels() -> None:
+    provider = RepairProvider("missing")
+    pipeline, runtime = await ready_pipeline(provider)
+    shards = await pipeline.plan_creatives(runtime, round_number=0)
+    candidates = await pipeline.generate_creative_shard(runtime, shards[0])
+    candidate = candidates[0]
+    assert candidate.shot_plan is not None
+    cache = pipeline._cache(runtime)
+    cache.diversity_avoid_slot_ids = {candidate.slot_id}
+    await pipeline._plan_diversity_supplement_directions(runtime, cache.creative_direction_plan, requested_candidate_count=8)
+    example = provider.requests[0]["revision_context"]["vectorCrowdedExamples"][0]
+    assert example["visibleEvent"] == {
+        "initialState": candidate.shot_plan.scene.initial_state,
+        "actions": [{"action": beat.action, "visibleResult": beat.visible_result} for beat in candidate.shot_plan.beats],
+        "finalFrame": candidate.shot_plan.final_frame,
+    }
+    assert "content" not in example and "sound" not in json.dumps(example)
+
+
+@pytest.mark.asyncio
+async def test_single_candidate_brief_preserves_sibling_events_without_other_directions() -> None:
+    pipeline, runtime = await ready_pipeline(MockAiProvider())
+    tasks = list(pipeline._cache(runtime).creative_tasks.values())
+    task = next(task for task in tasks if task.creative_direction is not None)
+    direction = task.creative_direction
+    assert direction is not None and len(direction.execution_routes) >= 2
+    assert task.fact_assignment is not None
+    brief = _creative_task_brief(
+        task, assignment=task.fact_assignment,
+        application=pipeline._require_application(runtime),
+        fact_visual_strategy=pipeline._required_fact_visual_strategy(runtime),
+    )
+    comparisons = brief["siblingVariation"]["routeComparisons"]
+    assert len(comparisons) == len(direction.execution_routes)
+    for route, row in zip(direction.execution_routes, comparisons, strict=True):
+        assert row == {
+            "routeId": route.route_id, "eventOutline": route.event_outline,
+            "visualEvent": route.visual_event, "sceneRelation": route.scene_relation,
+            "productAction": route.product_action, "endingState": route.ending_state,
+        }
+    assert brief["executionRoute"] == task.execution_route.model_dump(mode="json", by_alias=True)
+    assert brief["slotId"] == task.slot_id
+    assert all("factApplications" not in row and "content" not in row for row in comparisons)
+    old_task = task.model_copy(update={"creative_direction": None, "execution_route": None})
+    old_brief = _creative_task_brief(
+        old_task, assignment=task.fact_assignment,
+        application=pipeline._require_application(runtime), fact_visual_strategy=None,
+    )
+    assert old_brief["siblingVariation"]["routeComparisons"] == []
 
 
 class MixedFailureProvider(MockAiProvider):

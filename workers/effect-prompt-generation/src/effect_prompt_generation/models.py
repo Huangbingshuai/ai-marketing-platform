@@ -1250,6 +1250,14 @@ class MaterialShotBeat(ApiModel):
     visible_result: str = Field(min_length=1, max_length=200)
     sound: str | None = Field(default=None, max_length=160)
 
+    @field_validator("focus", "motion_source")
+    @classmethod
+    def normalize_optional_json_null(cls, value: str | None) -> str | None:
+        # Protocol placeholder only. Do not infer a missing focus or movement.
+        if isinstance(value, str) and value.strip().casefold() == "null":
+            return None
+        return value
+
     @field_validator("sound")
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:

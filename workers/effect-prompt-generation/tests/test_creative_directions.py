@@ -2020,6 +2020,65 @@ class LandscapeAuditThenReplanningProvider(MockAiProvider):
         )
 
 
+class LastRelationshipRevisionInvalidProvider(LandscapeAuditThenReplanningProvider):
+    def __init__(self, *, always_invalid: bool = False, broken_ids: bool = False) -> None:
+        super().__init__()
+        self.always_invalid = always_invalid
+        self.broken_ids = broken_ids
+
+    async def audit_creative_landscape(self, *args: Any, **kwargs: Any) -> Any:
+        # The first two independent reviews request a relationship revision.
+        if self.audit_calls == 1:
+            self.audit_calls = 0
+            call = await super().audit_creative_landscape(*args, **kwargs)
+            self.audit_calls = 2
+            return call
+        return await super().audit_creative_landscape(*args, **kwargs)
+
+    async def assign_creative_landscape_facts(self, *args: Any, **kwargs: Any) -> Any:
+        call = await super().assign_creative_landscape_facts(*args, **kwargs)
+        if self.assignment_calls == 3 or (self.always_invalid and self.assignment_calls > 3):
+            if self.broken_ids:
+                rows = call.value.assignments
+                return replace(call, value=CreativeFactTerritoryAssignmentResponse(
+                    assignments=[rows[0], rows[0], *rows[2:]],
+                ))
+            raise ProviderError("malformed assignment", retryable=False,
+                                error_type=ProviderErrorType.RESPONSE_INVALID)
+        return call
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('broken_ids', [False, True])
+async def test_last_relationship_revision_has_independent_structural_recovery(broken_ids: bool) -> None:
+    provider = LastRelationshipRevisionInvalidProvider(broken_ids=broken_ids)
+    pipeline = PromptGenerationPipeline(api=PromptApi(), provider=provider)
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _cluster_snapshot())
+    await pipeline.map_insight(runtime)
+    await pipeline.compile_fact_visual_strategy(runtime)
+    await pipeline.compile_shared_prompt(runtime)
+    assert await pipeline.plan_creatives(runtime, round_number=0)
+    assert provider.landscape_calls == 1
+    assert provider.assignment_calls == 4
+    assert provider.assignment_revision_contexts[2] == provider.assignment_revision_contexts[3]
+
+
+@pytest.mark.asyncio
+async def test_relationship_structural_recovery_stays_bounded() -> None:
+    provider = LastRelationshipRevisionInvalidProvider(always_invalid=True)
+    pipeline = PromptGenerationPipeline(api=PromptApi(), provider=provider)
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _cluster_snapshot())
+    await pipeline.map_insight(runtime)
+    await pipeline.compile_fact_visual_strategy(runtime)
+    await pipeline.compile_shared_prompt(runtime)
+    with pytest.raises(ProviderError):
+        await pipeline.plan_creatives(runtime, round_number=0)
+    assert provider.landscape_calls == 1
+    assert provider.assignment_calls == 5
+
+
 class WeakTerritoryAuditProvider(LandscapeAuditThenReplanningProvider):
     async def audit_creative_landscape(self, *args: Any, **kwargs: Any) -> Any:
         self.audit_calls += 1

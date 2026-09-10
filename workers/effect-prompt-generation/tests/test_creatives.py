@@ -854,7 +854,8 @@ async def test_invalid_creative_shard_does_not_fail_paid_batch() -> None:
         context=runtime,
     )
 
-    assert provider.invalid_calls == 10
+    # Two attempts at sizes 3, 2 and 1; failed first halves never launch siblings.
+    assert provider.invalid_calls == 6
     assert api.result is not None
     assert len(api.result.items) == 10
     failed_source_shard = api.shards["CREATIVE:0:0"]

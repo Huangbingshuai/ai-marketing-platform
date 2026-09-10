@@ -50,6 +50,24 @@ def test_prompt_directory_only_contains_active_templates() -> None:
     assert prompt_files == ACTIVE_PROMPT_FILES
 
 
+def test_event_diversity_is_ai_guidance_not_a_new_schema_or_product_rule() -> None:
+    landscape = load_prompt("creative_landscape.system.prompt.txt")
+    direction = load_prompt("creative_direction.system.prompt.txt")
+    task = load_prompt("creative_task.user.prompt.txt")
+    audit = load_prompt("creative_direction_diversity_audit.system.prompt.txt")
+    supplement = load_prompt("creative_direction_supplement.system.prompt.txt")
+    assert "事实条数不是独立创意数量" in landscape
+    assert "不是同一事件的替代机位" in direction
+    assert "routeComparisons" in task and "只输出当前 slotId" in task
+    assert "事件差异优先" in task and "没有 routeComparisons" in task
+    assert "sceneRelation、productAction、endingState 和 visualEvent" in audit
+    assert "归类相同不等于一定重复" in audit
+    assert "已生成的真实事件" in supplement
+    for template in (landscape, direction, task, audit, supplement):
+        assert "紫苏梅子" not in template
+        assert "广式腊肠" not in template
+
+
 def test_creative_task_renders_literal_json_inputs() -> None:
     rendered = render_prompt(
         "creative_task.user.prompt.txt",
@@ -138,10 +156,10 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "已确认的产品事实" not in task
     assert "{facts_json}" not in task
     assert "软避重" in task
-    assert "同一方向下的兄弟变体" in task
+    assert "同一方向下的兄弟素材，不是替代机位" in task
     assert "coverageFocusFactIds 非空时" in task
     assert "焦点事实放入创意主线" in task
-    assert "不能复用同一画面骨架后只换措辞" in task
+    assert "同一事件" in task and "而不是照抄后只换镜头" in task
     assert "最终只返回 JSON Schema 要求的字段" in task
     assert "TEXT_ONLY 事实只保留为后续成片文案依据" in task
     assert "SPEECH_DEPENDENT_MATERIAL" in evaluation

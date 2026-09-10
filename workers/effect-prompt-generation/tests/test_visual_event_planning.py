@@ -183,8 +183,16 @@ async def test_global_ai_reviewer_receives_every_event_outline_not_just_titles()
     for row in directions.directions:
         for route in row.execution_routes:
             assert route.event_outline in prompt
+            assert route.scene_relation in prompt
+            assert route.product_action in prompt
+            assert route.ending_state in prompt
+            assert route.visual_event in prompt
     assert '"eventOutline"' in prompt
-    assert '"sceneRelation"' not in prompt
+    assert '"sceneRelation"' in prompt
+    # The review receives event relationships, not full fact explanations or
+    # generated shot scripts; output schema and AI call count remain unchanged.
+    assert '"factApplications"' not in prompt
+    assert '"shotPlan"' not in prompt
 
 
 @pytest.mark.asyncio

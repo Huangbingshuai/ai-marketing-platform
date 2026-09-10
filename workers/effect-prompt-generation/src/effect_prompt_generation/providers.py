@@ -26,7 +26,7 @@ from .execution_refinement import (
     ExecutionEditBatch, apply_execution_edits, editable_execution_paths, execution_edit_schema,
 )
 from .product_images import PreparedProductImage
-from .supplement_recovery import direction_summary
+from .supplement_recovery import direction_summary, route_summary
 from .models import (
     MAX_PROMPT_DURATION_SECONDS,
     MIN_PROMPT_DURATION_SECONDS,
@@ -1810,7 +1810,7 @@ class ArkResponsesProvider:
                             mode="json", by_alias=True
                         ),
                         "executionRoutes": [
-                            {"routeId": route.route_id, "eventOutline": route.event_outline or route.visual_event}
+                            route_summary(route)
                             for route in direction.execution_routes
                         ],
                     }
@@ -3267,6 +3267,10 @@ def _creative_task_brief(
             "focusDimensions": _sibling_variation_dimensions(
                 task.sibling_variant_index
             ),
+            "routeComparisons": [
+                route_summary(route)
+                for route in task.creative_direction.execution_routes
+            ] if task.creative_direction is not None else [],
         },
         "executionRoute": (
             task.execution_route.model_dump(mode="json", by_alias=True)

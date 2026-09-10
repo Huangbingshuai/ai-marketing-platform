@@ -1,3 +1,5 @@
+import pytest
+
 from effect_prompt_generation.models import (
     MaterialShotBeat,
     MaterialShotOverview,
@@ -65,6 +67,28 @@ def test_embedding_text_removes_only_shared_format_scaffold() -> None:
     assert "0–5秒" not in normalized
     assert "目标：" not in normalized
     assert "人物连续完成主要使用动作" in normalized
+
+
+@pytest.mark.parametrize("value", [None, "null", " NULL "])
+def test_optional_focus_and_motion_null_are_not_compiled(value: str | None) -> None:
+    plan = _plan()
+    plan.beats[0] = MaterialShotBeat.model_validate({
+        **plan.beats[0].model_dump(), "focus": value, "motion_source": value,
+    })
+    content = compile_material_shot_plan(plan, target_duration_seconds=15)
+    assert "驱动：" not in content
+    assert "焦点：" not in content
+    assert "null" not in content.lower()
+
+
+def test_optional_fields_keep_model_authored_semantics_unchanged() -> None:
+    beat = MaterialShotBeat.model_validate({
+        **_plan().beats[0].model_dump(),
+        "focus": "屏幕上的 null 字样",
+        "motion_source": "无额外驱动，主体保持原位",
+    })
+    assert beat.focus == "屏幕上的 null 字样"
+    assert beat.motion_source == "无额外驱动，主体保持原位"
 
 
 def test_optional_null_like_sound_is_not_compiled_as_literal_text() -> None:

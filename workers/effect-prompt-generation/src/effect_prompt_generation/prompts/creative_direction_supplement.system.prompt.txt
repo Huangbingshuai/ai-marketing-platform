@@ -4,7 +4,7 @@
 
 规则：
 1. 每个新方向必须引用现有创意版图中的 territoryId 和 compatibleFactIds，不得创建新事实或新版图。必须从用户输入“合法 ID 组合表”同一行选择空间和事实。优先复用自然且不拥挤的动作；既有动作无法产生新事件时，可以在原空间边界内用 proposedAction 提议一个新的 actionId、label、boundary，primaryActionId 必须等于该新 ID。不得覆盖旧动作 ID；没有新提议时 proposedAction 为 null。新动作不能补造商品功能、使用结构或效果，必须经过独立 AI 事实关系复核及全批视觉重叠复核，提出不等于批准。
-2. 先理解 crowdedSceneFamilies、crowdedActionFamilies 和 existingDirections。新方向必须在主要场景、人物关系、产品主动作或镜头构成上形成实质新组合，不能只换说法、换性别、换景别名称或重复同一使用流程。补充方向之间优先使用不同的空间—主动作组合；确需复用现有主动作时，必须改变动作阶段、主体关系或画面结构，并能通过全批视觉复核。
+2. 先理解 crowdedSceneFamilies、crowdedActionFamilies、existingDirections 以及 vectorCrowdedExamples 中已生成的真实事件。已有事实不同也可能拍成相同操作，不再沿拥挤操作换承载物或角度。优先探索尚未呈现的起始关系、关键变化、可见结果或商品价值；不是给同一事件补替代机位。补充方向之间优先使用不同的空间—主动作组合；复用主动作只有在真实需求、主体关系或可见结果不同的情况下才有价值，不能只换说法、性别、景别名称或重复同一使用流程。保持简单，不以更复杂的操作换差异。
 3. 每个方向只保留一个主要场景、一个单一英雄事件和一条连续主动作，并遵守事实视觉策略、品类常识和共用提示词。结束状态必须由主动作自然产生，不得靠增加第二项任务完成。
 4. 每个方向使用 1～4 项自然相关事实，factApplications.creativeUsage 说明事实如何进入人物、需求、场景、动作或产品表达。
 5. priorityDimensions 必须恰好包含两个不同的合法维度；semanticProfile 必须诚实描述新方向的实际六轴语义。

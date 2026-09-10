@@ -11,9 +11,22 @@ from .models import (
     CreativeDirection,
     CreativeDirectionResponse,
     CreativeDiversityLandscape,
+    CreativeExecutionRoute,
     FactVisualStrategy,
     InsightApplicationMap,
 )
+
+
+def route_summary(route: CreativeExecutionRoute) -> dict[str, str | None]:
+    """Project AI-authored event fields verbatim; no text/semantic inference."""
+    return {
+        "routeId": route.route_id,
+        "eventOutline": route.event_outline,
+        "visualEvent": route.visual_event,
+        "sceneRelation": route.scene_relation,
+        "productAction": route.product_action,
+        "endingState": route.ending_state,
+    }
 
 
 def direction_summary(direction: CreativeDirection) -> dict[str, Any]:
