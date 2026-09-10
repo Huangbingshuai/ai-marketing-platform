@@ -13,25 +13,8 @@ SCALAR_FIELDS = (
     "core_specification",
     "price_range",
     "visual_features",
-    "target_audience",
-    "marketing_goal",
-    "duration_seconds",
-    "aspect_ratio",
-    "resolution",
-    "delivery_channels",
-    "visual_style_baseline",
 )
-LIST_FIELDS = (
-    "core_selling_points",
-    "secondary_selling_points",
-    "trust_backings",
-    "core_pain_points",
-    "decision_drivers",
-    "usage_scenarios",
-    "purchase_scenarios",
-    "emotional_scenarios",
-    "disabled_elements",
-)
+LIST_FIELDS = ("selling_points",)
 PRIORITY = (
     BranchName.FORM,
     BranchName.DOCUMENT,
@@ -56,6 +39,11 @@ def _key(value: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip().casefold()
 
 
+def _list_key(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
 def branch_candidate(output: BranchOutput) -> ExtractionCandidate | None:
     if output.candidate is not None:
         return output.candidate
@@ -77,7 +65,7 @@ def branch_candidate(output: BranchOutput) -> ExtractionCandidate | None:
         seen: set[str] = set()
         for candidate in candidates:
             for value in getattr(candidate, field) or []:
-                canonical = _key(value)
+                canonical = _list_key(value)
                 if canonical and canonical not in seen:
                     seen.add(canonical)
                     list_values.append(value.strip())
@@ -137,7 +125,7 @@ def fuse(branches: list[BranchOutput]) -> FusionResult:
         for source, candidate in ordered:
             added = False
             for value in getattr(candidate, field) or []:
-                canonical = _key(value)
+                canonical = _list_key(value)
                 if canonical and canonical not in seen:
                     seen.add(canonical)
                     list_values.append(value.strip())
@@ -148,7 +136,9 @@ def fuse(branches: list[BranchOutput]) -> FusionResult:
         if sources:
             provenance[field] = ">".join(sources)
 
-    return FusionResult(candidate=fused, provenance=provenance, warnings=_dedupe(warnings))
+    return FusionResult(
+        candidate=fused, provenance=provenance, warnings=_dedupe(warnings)
+    )
 
 
 def _dedupe(values: list[str]) -> list[str]:

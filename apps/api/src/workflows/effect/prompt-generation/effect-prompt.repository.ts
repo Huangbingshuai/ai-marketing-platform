@@ -31,6 +31,7 @@ import {
   type WorkingArtifactUpsertInput,
 } from '../../../platform/workflow/workflow-working.repository';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
+import { normalizeEffectExtractionResult } from '../information-extraction/effect-extraction.validation';
 import {
   mergeEffectPromptCompletionItems,
   parseEffectPromptBatchResult,
@@ -42,6 +43,7 @@ import {
 import {
   emptyManualOverrides,
   type EffectPromptInputSnapshot,
+  type EffectPromptProductImageReference,
   type EffectPromptShardInput,
   type EffectPromptStageInput,
 } from './effect-prompt.types';
@@ -66,6 +68,13 @@ const stageMetadataWithPreservedCheckpoint = (
 const leaseDate = (now: Date): Date => new Date(now.getTime() + 90_000);
 const parseStrings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+const PROMPT_PRODUCT_IMAGE_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/vnd.adobe.photoshop',
+  'application/octet-stream',
+]);
 
 type PersistedEffectPromptShardPhase = 'BLUEPRINT' | 'PROMPT';
 const persistedShardPhase = (phase: EffectPromptShardPhase): PersistedEffectPromptShardPhase =>
@@ -76,39 +85,12 @@ export const isAllowedReplacementSellingPoint = (
   target: Pick<EffectPromptItem, 'fragmentType' | 'dimensions'>,
   replacementSellingPoint: string,
 ): boolean => {
-  const insightRecord =
-    insight && typeof insight === 'object' && !Array.isArray(insight)
-      ? (insight as Record<string, unknown>)
-      : {};
-  const readValues = (...keys: string[]): string[] =>
-    keys.flatMap((key) => {
-      const value = insightRecord[key];
-      if (typeof value === 'string') return value.trim() ? [value.trim()] : [];
-      return Array.isArray(value)
-        ? value
-            .filter((item): item is string => typeof item === 'string')
-            .map((item) => item.trim())
-            .filter(Boolean)
-        : [];
-    });
+  const insightRecord = normalizeEffectExtractionResult(insight);
   const allowed = new Set<string>([
     target.dimensions.productRelation,
-    ...readValues(
-      'productName',
-      'product_name',
-      'productCategory',
-      'product_category',
-      'coreSellingPoints',
-      'core_selling_points',
-      'secondarySellingPoints',
-      'secondary_selling_points',
-      'corePainPoints',
-      'core_pain_points',
-      'usageScenarios',
-      'usage_scenarios',
-      'purchaseScenarios',
-      'purchase_scenarios',
-    ),
+    insightRecord.productName,
+    insightRecord.productCategory,
+    ...insightRecord.sellingPoints,
   ]);
   const normalized = replacementSellingPoint.normalize('NFC').trim();
   return [...allowed].some((value) => value.normalize('NFC').trim() === normalized);
@@ -367,8 +349,52 @@ export class EffectPromptRepository {
           freshness: 'CURRENT',
           availability: 'AVAILABLE',
         },
+        include: { dependencies: true },
       });
       if (!insight?.payload) return { kind: 'INSIGHT_NOT_READY' as const };
+      const sourcePackageDependency = (insight.dependencies ?? []).find(
+        (dependency) =>
+          dependency.sourceType === 'WORKING_ARTIFACT' &&
+          dependency.sourceKey === `source-package:${productId}` &&
+          dependency.sourceArtifactId !== null,
+      );
+      const sourcePackage = sourcePackageDependency?.sourceArtifactId
+        ? await transaction.workingArtifact.findFirst({
+            where: {
+              projectId,
+              workflowRunId,
+              id: sourcePackageDependency.sourceArtifactId,
+              ...(sourcePackageDependency.sourceRevision === null
+                ? {}
+                : { revision: sourcePackageDependency.sourceRevision }),
+              availability: 'AVAILABLE',
+            },
+            include: {
+              files: {
+                include: { fileObject: true },
+                orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
+              },
+            },
+          })
+        : null;
+      const productImages: EffectPromptProductImageReference[] = (sourcePackage?.files ?? [])
+        .filter(
+          ({ role, fileObject }) =>
+            role === 'PRODUCT_IMAGE' &&
+            fileObject.status === 'AVAILABLE' &&
+            PROMPT_PRODUCT_IMAGE_MIME_TYPES.has(fileObject.mimeType.trim().toLowerCase()),
+        )
+        .map(({ fileObject }) => ({
+          fileObjectId: fileObject.id,
+          originalFileName: fileObject.originalFileName,
+          mimeType: fileObject.mimeType.trim().toLowerCase(),
+          sizeBytes: fileObject.sizeBytes,
+          sha256: fileObject.sha256,
+        }));
+      const factVisualStrategySourceHash = workflowStateHash({
+        insightContentHash: insight.contentHash,
+        productImages: productImages.map(({ fileObjectId, sha256 }) => ({ fileObjectId, sha256 })),
+      });
       const latest = await transaction.effectPromptResult.findFirst({
         where: { projectId, workflowRunId, productId },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -448,8 +474,10 @@ export class EffectPromptRepository {
           id: insight.id,
           revision: insight.revision,
           contentHash: insight.contentHash,
-          result: insight.payload,
+          result: normalizeEffectExtractionResult(insight.payload),
         },
+        productImages,
+        factVisualStrategySourceHash,
         retainedManualItems: manualItems,
         selectionPolicy: 'MMR_CONTENT',
         similarityAnchors:
@@ -498,6 +526,7 @@ export class EffectPromptRepository {
       }
       const sourceFingerprint = workflowStateHash({
         insight: snapshot.insightArtifact,
+        productImages: snapshot.productImages,
         settingsHash,
         retainedManualItems: manualItems,
         selectionPolicy: snapshot.selectionPolicy,
@@ -621,6 +650,39 @@ export class EffectPromptRepository {
       },
       data: { heartbeatAt: now, leaseExpiresAt: leaseDate(now) },
     });
+  }
+
+  async productImageSource(
+    projectId: string,
+    runId: string,
+    fileObjectId: string,
+    attemptToken: string,
+    now = new Date(),
+  ) {
+    const run = await this.prisma.effectPromptRun.findFirst({
+      where: {
+        projectId,
+        id: runId,
+        status: 'RUNNING',
+        attemptToken,
+        leaseExpiresAt: { gt: now },
+      },
+      select: { workflowRunId: true, inputSnapshot: true },
+    });
+    if (!run) return null;
+    const snapshot = run.inputSnapshot as Partial<EffectPromptInputSnapshot>;
+    const reference = snapshot.productImages?.find((item) => item.fileObjectId === fileObjectId);
+    if (!reference) return null;
+    const fileObject = await this.prisma.fileObject.findFirst({
+      where: {
+        projectId,
+        workflowRunId: run.workflowRunId,
+        id: fileObjectId,
+        status: 'AVAILABLE',
+        sha256: reference.sha256,
+      },
+    });
+    return fileObject ? { reference, fileObject } : null;
   }
 
   async saveStage(

@@ -28,20 +28,34 @@ def claim_data() -> dict[str, object]:
             "mode": "SINGLE",
             "sourceRevision": 2,
             "globalVideoConfig": {
-                "aspectRatio": "1:1", "durationSeconds": 20, "resolution": "720P",
-                "frameRate": 25, "subtitleStrategy": "无字幕",
-                "voiceoverStrategy": "无口播", "bgmStrategy": "轻快",
-                "styleTone": "烟火食欲感", "deliveryChannel": "视频号",
+                "aspectRatio": "1:1",
+                "durationSeconds": 20,
+                "resolution": "720P",
+                "frameRate": 25,
+                "subtitleStrategy": "无字幕",
+                "voiceoverStrategy": "无口播",
+                "bgmStrategy": "轻快",
+                "styleTone": "烟火食欲感",
+                "deliveryChannel": "视频号",
                 "disabledElements": ["医疗功效"],
             },
             "product": {
-                "id": "product-1", "name": "商品", "category": "食品", "sku": "sku-1",
+                "id": "product-1",
+                "name": "商品",
+                "category": "食品",
+                "sku": "sku-1",
                 "commerceUrl": None,
                 "effectiveConfig": {
-                    "aspectRatio": "9:16", "durationSeconds": 15, "resolution": "1080P",
-                    "frameRate": 30, "subtitleStrategy": "跟随口播",
-                    "voiceoverStrategy": "AI 女声", "bgmStrategy": "自动匹配",
-                    "styleTone": "自然", "deliveryChannel": "抖音", "disabledElements": [],
+                    "aspectRatio": "9:16",
+                    "durationSeconds": 15,
+                    "resolution": "1080P",
+                    "frameRate": 30,
+                    "subtitleStrategy": "跟随口播",
+                    "voiceoverStrategy": "AI 女声",
+                    "bgmStrategy": "自动匹配",
+                    "styleTone": "自然",
+                    "deliveryChannel": "抖音",
+                    "disabledElements": [],
                 },
             },
             "materials": [],
@@ -86,8 +100,9 @@ async def test_internal_api_claim_and_branch_match_backend_contract() -> None:
             )
         return httpx.Response(200, json={"success": True, "data": {"accepted": True}})
 
-    api = HttpInternalApi("http://api.local/api/", "worker-secret",
-                          transport=httpx.MockTransport(handler))
+    api = HttpInternalApi(
+        "http://api.local/api/", "worker-secret", transport=httpx.MockTransport(handler)
+    )
     try:
         claim = await api.claim("run-1", "project-1")
         assert claim.input is not None
@@ -98,13 +113,21 @@ async def test_internal_api_claim_and_branch_match_backend_contract() -> None:
         assert claim.input.global_video_config.delivery_channel == "视频号"
         assert claim.input.bypass_image_cache is True
         context = RuntimeContext(
-            "run-1", "project-1", "draft-1", "product-1", "request-1", "attempt-1",
+            "run-1",
+            "project-1",
+            "draft-1",
+            "product-1",
+            "request-1",
+            "attempt-1",
             claim.source_fingerprint or "",
         )
         await api.put_branch(
             context,
-            BranchOutput(branch=BranchName.FORM, status=BranchStatus.SUCCEEDED,
-                         source_fingerprint=context.source_fingerprint),
+            BranchOutput(
+                branch=BranchName.FORM,
+                status=BranchStatus.SUCCEEDED,
+                source_fingerprint=context.source_fingerprint,
+            ),
         )
         storage_key = await api.upload_artifact(
             context,
@@ -117,7 +140,10 @@ async def test_internal_api_claim_and_branch_match_backend_contract() -> None:
     finally:
         await api.aclose()
     assert storage_key == "artifact/product.md"
-    assert requests[0].url.path == "/api/internal/workers/effect-extraction/runs/run-1/claim"
+    assert (
+        requests[0].url.path
+        == "/api/internal/workers/effect-extraction/runs/run-1/claim"
+    )
     assert json.loads(requests[0].content) == {"projectId": "project-1"}
     assert requests[1].headers["x-worker-token"] == "worker-secret"
     assert requests[1].headers["x-attempt-token"] == "attempt-1"
@@ -130,7 +156,9 @@ async def test_internal_api_claim_and_branch_match_backend_contract() -> None:
 
 
 @pytest.mark.asyncio
-async def test_internal_api_claim_accepts_current_snapshot_without_video_config_revision() -> None:
+async def test_internal_api_claim_accepts_current_snapshot_without_video_config_revision() -> (
+    None
+):
     payload = claim_data()
     dependency_snapshot = payload["input"]["dependencySnapshot"]
     dependency_snapshot.pop("effectiveVideoConfigRevision")
@@ -163,7 +191,12 @@ async def test_internal_api_persists_specific_document_timeout_code() -> None:
         return httpx.Response(200, json={"success": True, "data": {"accepted": True}})
 
     context = RuntimeContext(
-        "run-1", "project-1", "draft-1", "product-1", "request-1", "attempt-1",
+        "run-1",
+        "project-1",
+        "draft-1",
+        "product-1",
+        "request-1",
+        "attempt-1",
         "server-fingerprint",
     )
     api = HttpInternalApi(
@@ -258,7 +291,7 @@ async def test_internal_api_reads_and_writes_project_scoped_image_cache() -> Non
 
 
 @pytest.mark.asyncio
-async def test_internal_api_completes_with_canonical_target_audience_items() -> None:
+async def test_internal_api_completes_with_unified_selling_points() -> None:
     captured: dict[str, object] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -269,7 +302,12 @@ async def test_internal_api_completes_with_canonical_target_audience_items() -> 
         )
 
     context = RuntimeContext(
-        "run-1", "project-1", "draft-1", "product-1", "request-1", "attempt-1",
+        "run-1",
+        "project-1",
+        "draft-1",
+        "product-1",
+        "request-1",
+        "attempt-1",
         "server-fingerprint",
     )
     result = ExtractionResult(
@@ -278,22 +316,7 @@ async def test_internal_api_completes_with_canonical_target_audience_items() -> 
         core_specification="100g",
         price_range="10-20元",
         visual_features="红色包装",
-        core_selling_points=["卖点"],
-        secondary_selling_points=[],
-        trust_backings=[],
-        target_audience="家庭厨房决策者，美食爱好者；家庭厨房决策者",
-        core_pain_points=["备餐麻烦"],
-        decision_drivers=["方便"],
-        marketing_goal="促进转化",
-        usage_scenarios=["家庭佐餐"],
-        purchase_scenarios=["日常采购"],
-        emotional_scenarios=["温馨围餐"],
-        duration_seconds=20,
-        aspect_ratio="9:16",
-        resolution="1080P",
-        delivery_channels="抖音",
-        disabled_elements=[],
-        visual_style_baseline="烟火食欲感",
+        selling_points=["酸甜梅香", "适合家庭佐餐"],
     )
     api = HttpInternalApi(
         "http://api.local/api/", "worker-secret", transport=httpx.MockTransport(handler)
@@ -301,7 +324,9 @@ async def test_internal_api_completes_with_canonical_target_audience_items() -> 
     try:
         extract_result_id = await api.complete(
             context,
-            FinalizePayload(result=result, provenance={}, conflict_report=[], warnings=[]),
+            FinalizePayload(
+                result=result, provenance={}, conflict_report=[], warnings=[]
+            ),
         )
     finally:
         await api.aclose()
@@ -309,5 +334,11 @@ async def test_internal_api_completes_with_canonical_target_audience_items() -> 
     assert extract_result_id == "result-1"
     final_result = captured["result"]
     assert isinstance(final_result, dict)
-    assert final_result["targetAudience"] == "家庭厨房决策者；美食爱好者"
-    assert final_result["targetAudiences"] == ["家庭厨房决策者", "美食爱好者"]
+    assert final_result == {
+        "productCategory": "食品",
+        "productName": "商品",
+        "coreSpecification": "100g",
+        "priceRange": "10-20元",
+        "visualFeatures": "红色包装",
+        "sellingPoints": ["酸甜梅香", "适合家庭佐餐"],
+    }

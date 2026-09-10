@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import re
 from collections.abc import Sequence
 from pathlib import PurePath
 
@@ -37,24 +36,14 @@ from .models import (
 )
 from .providers import AiProvider, ProviderError, ProviderErrorType
 from .semantic_refinement import (
-    MAX_USER_FACTS_PER_FIELD,
     SEMANTIC_FIELDS,
     refine_candidate_semantics,
     semantic_fallback_metadata,
     user_only_candidate,
 )
 
-MAX_GENERATED_SECONDARY_SELLING_POINTS = 6
-MAX_GENERATED_LIST_ITEMS = 5
-SEMANTIC_RESULT_LIMITS: dict[str, int] = {
-    "core_selling_points": MAX_USER_FACTS_PER_FIELD,
-    "secondary_selling_points": MAX_USER_FACTS_PER_FIELD,
-    "core_pain_points": MAX_USER_FACTS_PER_FIELD,
-    "decision_drivers": MAX_USER_FACTS_PER_FIELD,
-    "usage_scenarios": MAX_USER_FACTS_PER_FIELD,
-    "purchase_scenarios": MAX_USER_FACTS_PER_FIELD,
-    "emotional_scenarios": MAX_USER_FACTS_PER_FIELD,
-}
+MAX_SELLING_POINTS = 100
+SEMANTIC_RESULT_LIMITS: dict[str, int] = {"selling_points": MAX_SELLING_POINTS}
 
 LOGGER = logging.getLogger(__name__)
 
@@ -196,7 +185,7 @@ class ExtractionPipeline:
                 else:
                     assert ai_call is not None
                     extracted_candidate = ai_call.value
-                document_candidate = _without_document_video_config(extracted_candidate)
+                document_candidate = extracted_candidate
                 items.append(
                     BranchItem(
                         source_id=material.id,
@@ -522,18 +511,9 @@ class ExtractionPipeline:
     async def form_branch(self, context: RuntimeContext) -> BranchOutput:
         snapshot = self._snapshot(context)
         await self._start(context, BranchName.FORM)
-        config = snapshot.global_video_config or snapshot.product.effective_config
         candidate = ExtractionCandidate.empty()
-        # Product identity remains a manual-priority fusion input, but the public FORM detail
-        # intentionally presents only the five global video fields from the import node.
         candidate.product_name = snapshot.product.name.strip() or None
         candidate.product_category = snapshot.product.category.strip() or None
-        candidate.duration_seconds = config.duration_seconds
-        candidate.aspect_ratio = _optional(config.aspect_ratio)
-        candidate.resolution = _optional(config.resolution)
-        candidate.delivery_channels = _optional(config.delivery_channel)
-        candidate.visual_style_baseline = _optional(config.style_tone)
-        candidate.disabled_elements = _strings(config.disabled_elements) or None
         return await self._save(
             context,
             BranchOutput(
@@ -542,14 +522,7 @@ class ExtractionPipeline:
                 source_fingerprint=context.source_fingerprint,
                 candidate=candidate,
                 warnings=[],
-                metadata={
-                    "durationSeconds": config.duration_seconds,
-                    "aspectRatio": config.aspect_ratio,
-                    "resolution": config.resolution,
-                    "styleTone": config.style_tone,
-                    "deliveryChannel": config.delivery_channel,
-                    "disabledElements": config.disabled_elements,
-                },
+                metadata={},
             ),
         )
 
@@ -977,27 +950,11 @@ def _strings(values: Sequence[str | None]) -> list[str]:
         if raw is None:
             continue
         value = " ".join(raw.split()).strip()
-        key = value.casefold()
+        key = value
         if value and key not in seen:
             seen.add(key)
             result.append(value)
     return result
-
-
-def _without_document_video_config(
-    candidate: ExtractionCandidate,
-) -> ExtractionCandidate:
-    sanitized = candidate.model_copy(deep=True)
-    for field in (
-        "duration_seconds",
-        "aspect_ratio",
-        "resolution",
-        "delivery_channels",
-        "disabled_elements",
-        "visual_style_baseline",
-    ):
-        setattr(sanitized, field, None)
-    return sanitized
 
 
 def _candidate_text(candidate: ExtractionCandidate | None, field: str) -> str | None:
@@ -1038,42 +995,16 @@ def _merged_items(
 def _normalize_candidate_deterministically(
     candidate: ExtractionCandidate,
 ) -> ExtractionResult:
-    core_points = _candidate_items(candidate, "core_selling_points")
-    selected_core = core_points[:3] or ["待补充"]
-    secondary_points = _strings(
-        [
-            *core_points[3:],
-            *_candidate_items(candidate, "secondary_selling_points"),
-        ]
-    )[:MAX_GENERATED_SECONDARY_SELLING_POINTS]
-    audience = _candidate_text(candidate, "target_audience")
-    audience_items = _strings(re.split(r"[\n,，、;；]+", audience or ""))[:5]
-
+    selling_points = _candidate_items(candidate, "selling_points")[:MAX_SELLING_POINTS]
+    if not selling_points:
+        raise FusionError("未提取到可用卖点，请补充产品资料后重新提炼")
     return ExtractionResult(
         product_category=_candidate_text(candidate, "product_category") or "待补充",
         product_name=_candidate_text(candidate, "product_name") or "待补充",
         core_specification=_candidate_text(candidate, "core_specification") or "待补充",
         price_range=_candidate_text(candidate, "price_range") or "待补充",
         visual_features=_candidate_text(candidate, "visual_features") or "待补充",
-        core_selling_points=selected_core,
-        secondary_selling_points=secondary_points,
-        trust_backings=_candidate_items(candidate, "trust_backings")[
-            :MAX_GENERATED_LIST_ITEMS
-        ],
-        target_audience="；".join(audience_items) or "待补充",
-        core_pain_points=_candidate_items(candidate, "core_pain_points")[:5],
-        decision_drivers=_candidate_items(candidate, "decision_drivers")[:5],
-        marketing_goal=_candidate_text(candidate, "marketing_goal") or "待补充",
-        usage_scenarios=_candidate_items(candidate, "usage_scenarios")[:5],
-        purchase_scenarios=_candidate_items(candidate, "purchase_scenarios")[:5],
-        emotional_scenarios=_candidate_items(candidate, "emotional_scenarios")[:5],
-        duration_seconds=candidate.duration_seconds or 20,
-        aspect_ratio=_candidate_text(candidate, "aspect_ratio") or "9:16",
-        resolution=_candidate_text(candidate, "resolution") or "1080p",
-        delivery_channels=_candidate_text(candidate, "delivery_channels") or "待补充",
-        disabled_elements=_candidate_items(candidate, "disabled_elements"),
-        visual_style_baseline=_candidate_text(candidate, "visual_style_baseline")
-        or "待补充",
+        selling_points=selling_points,
     )
 
 
@@ -1170,7 +1101,7 @@ def _prepare_semantic_candidate(
                 *_items_preserving_order(document, attr),
                 *_items_preserving_order(commerce, attr),
             ]
-        )[:MAX_USER_FACTS_PER_FIELD]
+        )[:MAX_SELLING_POINTS]
         image_values = _items_preserving_order(image, attr)
         setattr(prepared, attr, [*user_values, *image_values] or None)
         user_facts.extend(
@@ -1227,7 +1158,7 @@ def _prepare_semantic_candidate(
 
 
 def _semantic_value_key(value: str) -> str:
-    return " ".join(value.split()).strip().casefold()
+    return " ".join(value.split()).strip()
 
 
 def _semantic_values(
@@ -1318,90 +1249,11 @@ def _restore_authoritative_sources(
         _first_text("visual_features", document, commerce, image),
     )
 
-    user_core = _merged_items("core_selling_points", document, commerce, limit=20)
-    image_core = _candidate_items(image, "core_selling_points")
-    image_secondary = _candidate_items(image, "secondary_selling_points")
-    core_selling_points = _strings([*user_core[:3], *image_core])[:3]
-    setattr(result, "core_selling_points", core_selling_points or ["待补充"])
-
-    user_secondary_selling_points = _strings(
-        [
-            *_candidate_items(document, "secondary_selling_points"),
-            *_candidate_items(commerce, "secondary_selling_points"),
-            *user_core[3:],
-        ]
+    selling_points = _merged_items(
+        "selling_points", form, document, commerce, image, limit=MAX_SELLING_POINTS
     )
-    selected_core = {item.casefold() for item in core_selling_points}
-    image_selling_suggestions = [
-        item
-        for item in _strings([*image_core, *image_secondary])
-        if item.casefold() not in selected_core
-    ]
-    secondary_selling_points = _strings(
-        [*user_secondary_selling_points, *image_selling_suggestions]
-    )[:MAX_GENERATED_SECONDARY_SELLING_POINTS]
-    setattr(result, "secondary_selling_points", secondary_selling_points)
-    setattr(
-        result,
-        "trust_backings",
-        [
-            *_items_preserving_order(document, "trust_backings"),
-            *_items_preserving_order(commerce, "trust_backings"),
-        ][:MAX_USER_FACTS_PER_FIELD],
-    )
-
-    setattr(
-        result,
-        "target_audience",
-        _first_text("target_audience", document, commerce, image),
-    )
-    setattr(
-        result,
-        "core_pain_points",
-        _merged_items("core_pain_points", document, commerce, image, limit=5),
-    )
-    setattr(
-        result,
-        "decision_drivers",
-        _merged_items("decision_drivers", document, commerce, image, limit=5),
-    )
-    setattr(
-        result,
-        "marketing_goal",
-        _first_text("marketing_goal", document, commerce, image),
-    )
-    setattr(
-        result,
-        "usage_scenarios",
-        _merged_items("usage_scenarios", document, commerce, image, limit=5),
-    )
-    setattr(
-        result,
-        "purchase_scenarios",
-        _merged_items("purchase_scenarios", document, commerce, image, limit=5),
-    )
-    setattr(
-        result,
-        "emotional_scenarios",
-        _merged_items("emotional_scenarios", document, commerce, image, limit=5),
-    )
-
-    if form is None:
-        raise FusionError("required FORM candidate is missing")
-    setattr(result, "duration_seconds", form.duration_seconds or 20)
-    setattr(result, "aspect_ratio", _candidate_text(form, "aspect_ratio") or "9:16")
-    setattr(result, "resolution", _candidate_text(form, "resolution") or "1080p")
-    setattr(
-        result,
-        "delivery_channels",
-        _candidate_text(form, "delivery_channels") or "待补充",
-    )
-    setattr(result, "disabled_elements", _candidate_items(form, "disabled_elements"))
-    setattr(
-        result,
-        "visual_style_baseline",
-        _candidate_text(form, "visual_style_baseline") or "待补充",
-    )
+    if selling_points:
+        setattr(result, "selling_points", selling_points)
 
 
 def _restore_semantic_fields(
@@ -1414,8 +1266,7 @@ def _restore_semantic_fields(
         return
     for field, limit in SEMANTIC_RESULT_LIMITS.items():
         items = _candidate_items(semantic, field)[:limit]
-        if field == "core_selling_points" and not items:
-            setattr(result, field, ["待补充"])
+        if field == "selling_points" and not items:
             continue
         setattr(result, field, items)
 

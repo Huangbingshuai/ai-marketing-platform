@@ -72,9 +72,7 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).toContain('purposeFilter.value || undefined');
     expect(pageSource).toContain('includeCompatiblePurposes');
     expect(pageSource).toContain('包含兼容用途');
-    expect(pageSource).toContain(
-      '<input v-model="includeCompatiblePurposes" type="checkbox" />',
-    );
+    expect(pageSource).toContain('<input v-model="includeCompatiblePurposes" type="checkbox" />');
     expect(pageSource).not.toContain(':disabled="!purposeFilter"');
     expect(pageSource).not.toContain(':class="{ disabled: !purposeFilter }"');
     expect(pageSource).toContain("? 'PRIMARY_OR_COMPATIBLE' : 'PRIMARY'");
@@ -247,7 +245,9 @@ describe('effect prompt generation current layout', () => {
   it('shows live worker summaries and refreshes the selected running-node detail', () => {
     expect(pageSource).toContain('if (executionSummary) return executionSummary');
     expect(pageSource).toContain('graphNodeDescription(nodeId)');
-    expect(pageSource).toContain('promptGraphDetailRefreshKey(displayedGraphRun.value, selectedGraphNodeId.value)');
+    expect(pageSource).toContain(
+      'promptGraphDetailRefreshKey(displayedGraphRun.value, selectedGraphNodeId.value)',
+    );
     expect(pageSource).toContain('displayedGraphRun.value?.id !== runId');
     expect(pageSource).toContain('void refreshGraphDetail()');
     expect(pageSource).toContain('graphDetailRefreshTimer = setTimeout');
@@ -317,12 +317,21 @@ describe('effect prompt generation current layout', () => {
     expect(pageSource).not.toContain('currentQualityReady');
   });
 
+  it('reuses the warm node view without duplicating the initial product load', () => {
+    expect(pageSource).toContain('workspaceHydrating = true');
+    expect(pageSource).toContain('if (!nodeActive || workspaceHydrating) return;');
+    expect(pageSource).toContain('loadEffectPromptWorkspaceSnapshot(');
+    expect(pageSource).toContain('if (snapshot.prefetched)');
+    expect(pageSource).toContain('onDeactivated(() => {');
+    expect(pageSource).toContain('void reloadWorkspace(false);');
+  });
+
   it('wires only effect workflow step three', () => {
     expect(parentSource).toContain(
       "import EffectPromptGenerationNodePage from '../prompt-generation/EffectPromptGenerationNodePage.vue'",
     );
     expect(parentSource).toContain('v-else-if="activeStep === 2"');
     expect(parentSource).toContain('@next="selectWorkflowStep(3)"');
-    expect(parentSource).toContain('v-else-if="activeDownstreamBoundary"');
+    expect(parentSource).toContain('v-if="activeDownstreamBoundary"');
   });
 });

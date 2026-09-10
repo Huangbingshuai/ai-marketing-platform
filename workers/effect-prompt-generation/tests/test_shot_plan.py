@@ -51,7 +51,9 @@ def test_compiler_assigns_exact_duration_without_rewriting_plan() -> None:
     assert "5–15秒" in content
     assert "逐字台词" not in content
     assert "声音方向" not in content
-    assert "声音：产品与道具接触的现场声。" in content
+    assert "同步声：产品与道具接触的现场声。" in content
+    assert "【场景与光线】" not in content
+    assert "场景：自然光充足的居家空间。" in content
     assert content.endswith("人物收住动作，产品和结果同时保持清晰可见。")
 
 
@@ -61,7 +63,7 @@ def test_embedding_text_removes_only_shared_format_scaffold() -> None:
 
     assert "【视频概览】" not in normalized
     assert "0–5秒" not in normalized
-    assert "画面目标：" not in normalized
+    assert "目标：" not in normalized
     assert "人物连续完成主要使用动作" in normalized
 
 
@@ -76,4 +78,4 @@ def test_optional_null_like_sound_is_not_compiled_as_literal_text() -> None:
 
     content = compile_material_shot_plan(plan, target_duration_seconds=15)
 
-    assert "声音：无" not in content
+    assert "同步声：无" not in content

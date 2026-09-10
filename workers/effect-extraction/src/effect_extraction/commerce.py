@@ -685,7 +685,7 @@ def _deterministic_candidate(metadata: Mapping[str, Any]) -> ExtractionCandidate
     rating = _optional_string(metadata.get("ratingValue"))
     count = _optional_string(metadata.get("reviewCount"))
     if rating and count:
-        candidate.trust_backings = [f"页面标注评分 {rating}，评价数 {count}"]
+        candidate.selling_points = [f"页面标注评分 {rating}，评价数 {count}"]
     return candidate
 
 

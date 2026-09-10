@@ -16,36 +16,14 @@ from .models import (
 from .providers import AiProvider
 
 SEMANTIC_FIELDS: tuple[tuple[SemanticField, str], ...] = (
-    (SemanticField.CORE_SELLING_POINTS, "core_selling_points"),
-    (SemanticField.SECONDARY_SELLING_POINTS, "secondary_selling_points"),
-    (SemanticField.CORE_PAIN_POINTS, "core_pain_points"),
-    (SemanticField.DECISION_DRIVERS, "decision_drivers"),
-    (SemanticField.USAGE_SCENARIOS, "usage_scenarios"),
-    (SemanticField.PURCHASE_SCENARIOS, "purchase_scenarios"),
-    (SemanticField.EMOTIONAL_SCENARIOS, "emotional_scenarios"),
+    (SemanticField.SELLING_POINTS, "selling_points"),
 )
 SEMANTIC_REFERENCE_FIELDS = frozenset(
     {"productCategory", "productName", "coreSpecification", "visualFeatures"}
 )
 SEMANTIC_FIELD_LIMITS: dict[SemanticField, int] = {
-    SemanticField.CORE_SELLING_POINTS: 3,
-    SemanticField.SECONDARY_SELLING_POINTS: 6,
-    SemanticField.CORE_PAIN_POINTS: 5,
-    SemanticField.DECISION_DRIVERS: 5,
-    SemanticField.USAGE_SCENARIOS: 5,
-    SemanticField.PURCHASE_SCENARIOS: 5,
-    SemanticField.EMOTIONAL_SCENARIOS: 5,
+    SemanticField.SELLING_POINTS: 100,
 }
-SEMANTIC_FIELD_LAYERS: dict[SemanticField, str] = {
-    SemanticField.CORE_SELLING_POINTS: "SELLING_POINT",
-    SemanticField.SECONDARY_SELLING_POINTS: "SELLING_POINT",
-    SemanticField.CORE_PAIN_POINTS: "USER",
-    SemanticField.DECISION_DRIVERS: "USER",
-    SemanticField.USAGE_SCENARIOS: "SCENARIO",
-    SemanticField.PURCHASE_SCENARIOS: "SCENARIO",
-    SemanticField.EMOTIONAL_SCENARIOS: "SCENARIO",
-}
-MAX_USER_FACTS_PER_FIELD = 20
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,13 +241,10 @@ def _safe_suggestion_decisions(
         if row.evidence_basis == SemanticImageEvidenceBasis.INFERRED_INTENT_OR_CLAIM:
             corrections["INFERRED_SUGGESTION_KEPT"] += 1
             continue
-        moved = row.target_field.value != original["field"]
-        expected_reason = (
-            SemanticSuggestionReason.WRONG_FIELD
-            if moved
-            else SemanticSuggestionReason.INDEPENDENT_VISIBLE_FACT
-        )
-        if row.reason != expected_reason:
+        if row.target_field.value != original["field"]:
+            corrections["INVALID_KEEP_TARGET"] += 1
+            continue
+        if row.reason != SemanticSuggestionReason.INDEPENDENT_VISIBLE_FACT:
             corrections["INVALID_KEEP_REASON"] += 1
             continue
         kept_counts[row.target_field] += 1
@@ -327,17 +302,7 @@ def _safe_user_notices(
         elif related_ids:
             corrections["INVALID_RELATED_USER_FACT"] += 1
             continue
-        if notice.issue == SemanticUserFactIssue.POSSIBLE_WRONG_FIELD:
-            if notice.suggested_field is None or notice.suggested_field == fact_field:
-                corrections["INVALID_SUGGESTED_FIELD"] += 1
-                continue
-            if (
-                SEMANTIC_FIELD_LAYERS[notice.suggested_field]
-                != SEMANTIC_FIELD_LAYERS[fact_field]
-            ):
-                corrections["CROSS_LAYER_USER_NOTICE"] += 1
-                continue
-        elif notice.suggested_field is not None:
+        if notice.suggested_field is not None:
             corrections["UNEXPECTED_SUGGESTED_FIELD"] += 1
             continue
         notices.append(
@@ -416,10 +381,6 @@ def _metadata(
     corrections: Mapping[str, int] | None = None,
     validation_status: str | None = None,
 ) -> dict[str, Any]:
-    original_fields = {row["factId"]: row["field"] for row in suggestions}
-    moved_count = sum(
-        original_fields[row["factId"]] != row.get("resolvedField") for row in kept
-    )
     metadata: dict[str, Any] = {
         "inputCount": len(users) + len(suggestions),
         "outputCount": len(users) + len(kept),
@@ -428,7 +389,7 @@ def _metadata(
         "userNoticeCount": len(notices),
         "imageSuggestionInputCount": len(suggestions),
         "imageSuggestionKeptCount": len(kept),
-        "imageSuggestionMovedCount": moved_count,
+        "imageSuggestionMovedCount": 0,
         "imageSuggestionDroppedCount": len(suggestions) - len(kept),
         "userFactNotices": list(notices),
     }

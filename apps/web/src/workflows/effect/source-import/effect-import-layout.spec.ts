@@ -176,6 +176,35 @@ describe('effect import commerce link placeholder', () => {
 });
 
 describe('effect import automatic draft saving', () => {
+  it('keeps visited AI nodes warm and exposes immediate switching feedback', () => {
+    expect(pageSource).toContain('<KeepAlive :max="3">');
+    expect(pageSource).toContain('pendingStep.value = step');
+    expect(pageSource).toContain('class="node-switch-progress"');
+    expect(pageSource).toContain('正在切换到{{ pendingStepLabel }}');
+    expect(pageSource).toContain('保存当前草稿并准备目标节点…');
+  });
+
+  it('moves node activation out of the visual switching critical path', () => {
+    const switchingSource = pageSource.match(/const selectWorkflowStep = async[\s\S]*?\n\};/)?.[0];
+
+    expect(switchingSource).toBeDefined();
+    expect(switchingSource).toContain('activeStep.value = step');
+    expect(switchingSource).toContain('enqueueWorkflowNodeActivation(');
+    expect(switchingSource).not.toContain('await activateWorkflowNode(');
+    expect(pageSource).toContain('for (let attempt = 0; attempt < 2; attempt += 1)');
+    expect(pageSource).toContain('sequence !== activationSequence');
+  });
+
+  it('prefetches adjacent effect workspaces with isolated context inputs', () => {
+    expect(pageSource).toContain('scheduleAdjacentWorkspacePrefetch');
+    expect(pageSource).toContain('prefetchEffectExtractionWorkspace({ projectId, draftId })');
+    expect(pageSource).toContain('prefetchEffectPromptWorkspace({ projectId, workflowRunId })');
+    expect(pageSource).toContain(
+      'prefetchEffectSegmentRenderWorkspace({ projectId, workflowRunId, productId })',
+    );
+    expect(pageSource).toContain('clearEffectWorkspacePrefetches()');
+  });
+
   it('activates the selected workflow node independently from node draft persistence', () => {
     expect(pageSource).toContain('activateWorkflowNode(');
     expect(pageSource).toContain('getActiveWorkflowRunOverview(');

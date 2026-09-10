@@ -74,6 +74,7 @@ def test_shared_prompt_model_and_node_specific_overrides_keep_precedence() -> No
         PROMPT_AI_PROVIDER="mock",
         ARK_PROMPT_MODEL="shared-model",
         ARK_PROMPT_STRATEGY_MODEL="strategy-model",
+        ARK_PROMPT_VISUAL_STRATEGY_MODEL="visual-strategy-model",
         ARK_PROMPT_BLUEPRINT_MODEL="blueprint-model",
         ARK_PROMPT_CANDIDATE_MODEL="candidate-model",
     )
@@ -81,8 +82,19 @@ def test_shared_prompt_model_and_node_specific_overrides_keep_precedence() -> No
     assert shared.resolved_prompt_strategy_model == "shared-model"
     assert shared.resolved_prompt_candidate_model == "shared-model"
     assert specific.resolved_prompt_strategy_model == "strategy-model"
+    assert specific.resolved_prompt_visual_strategy_model == "visual-strategy-model"
     assert specific.resolved_prompt_blueprint_model == "blueprint-model"
     assert specific.resolved_prompt_candidate_model == "candidate-model"
+
+
+def test_visual_strategy_model_falls_back_to_candidate_model() -> None:
+    settings = _settings(
+        PROMPT_AI_PROVIDER="mock",
+        ARK_PROMPT_CANDIDATE_MODEL="candidate-model",
+    )
+
+    assert settings.resolved_prompt_visual_strategy_model == "candidate-model"
+    assert settings.ark_prompt_visual_strategy_image_detail == "high"
 
 
 def test_candidate_timeout_prefers_node_override_and_keeps_shared_fallback() -> None:

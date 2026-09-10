@@ -45,17 +45,14 @@ import {
   type EffectExtractionInputSnapshot,
 } from './effect-extraction.types';
 import {
-  effectExtractionDefaultsFromConfig,
   extractionSourceFingerprint,
-  isLegacyEffectExtractionResultWithoutCanonicalAudiences,
-  isLegacyEffectExtractionResultWithoutResolution,
   isSupportedExtractionMaterial,
   isEffectExtractionResult,
   manualOverrideFieldNames,
   manualOverridesForResult,
+  normalizeEditableEffectExtractionResult,
+  normalizeEffectExtractionResult,
   parseWarnings,
-  toEditableEffectExtractionResultV2,
-  toEffectExtractionResultV2,
 } from './effect-extraction.validation';
 
 const notFound = (message = 'AI 提炼实体不存在') =>
@@ -256,13 +253,10 @@ export class EffectExtractionService {
     const sourceRun = await this.repository.run(record.projectId, record.runId);
     const snapshot = sourceRun?.inputSnapshot as EffectExtractionInputSnapshot | undefined;
     const snapshotProduct = snapshot?.product;
-    if (!activeProduct || !workflow || !snapshot || !snapshotProduct?.name.trim()) return null;
-    const productName = snapshotProduct.name.trim();
-    const config = snapshot.globalVideoConfig ?? snapshotProduct.effectiveConfig;
-    const result = toEffectExtractionResultV2(
-      record.draftResult,
-      effectExtractionDefaultsFromConfig(config),
-    );
+    const result = normalizeEffectExtractionResult(record.draftResult);
+    if (!activeProduct || !workflow || !snapshot || !snapshotProduct) return null;
+    const productName = result.productName.trim();
+    if (!productName) return null;
     return {
       workflowRunId: workflow.workspace.workflowRunId,
       artifactKey: `marketing-insight:${record.productId}`,
@@ -386,19 +380,10 @@ export class EffectExtractionService {
       draft.products.map(async (product) => {
         const run = product.extractionRuns[0] ?? null;
         const result = run?.result ?? null;
-        const config = mergeEffectVideoConfig(
-          draft.globalConfig as EffectVideoConfig,
-          product.configOverride as EffectVideoConfigOverride,
-        );
-        const resultV2 = result
-          ? toEffectExtractionResultV2(
-              result.draftResult,
-              effectExtractionDefaultsFromConfig(config),
-            )
-          : null;
+        const currentResult = result ? normalizeEffectExtractionResult(result.draftResult) : null;
         const manualOverrideFields = manualOverrideFieldNames(result?.manualOverrides);
         const provenance = extractionValueProvenance(
-          resultV2,
+          currentResult,
           run?.branches ?? [],
           manualOverrideFields,
           product.materials,
@@ -433,7 +418,7 @@ export class EffectExtractionService {
           resultId: result?.id ?? null,
           resultSchemaVersion: result?.schemaVersion ?? null,
           resultRevision: result?.revision ?? null,
-          result: resultV2,
+          result: currentResult,
           provenance,
           imageRecognitionSummary: extractionImageRecognitionSummary(run?.branches ?? []),
           manualOverrideFields,
@@ -536,14 +521,10 @@ export class EffectExtractionService {
     const sourceRun = await this.repository.run(projectId, existing.runId);
     const snapshot = sourceRun?.inputSnapshot as EffectExtractionInputSnapshot | undefined;
     if (!snapshot) throw conflict('提炼输入快照不存在，请重新提炼');
-    const config = snapshot.globalVideoConfig ?? snapshot.product.effectiveConfig;
-    const generated = toEffectExtractionResultV2(
-      existing.generatedResult,
-      effectExtractionDefaultsFromConfig(config),
-    );
+    const generated = normalizeEffectExtractionResult(existing.generatedResult);
     const editableResult: EffectExtractionResult = {
       ...result,
-      disabledElements: [...new Set([...config.disabledElements, ...result.disabledElements])],
+      sellingPoints: [...result.sellingPoints],
     };
     const manualOverrides = manualOverridesForResult(generated, editableResult);
     const updated = await this.repository.updateResult(
@@ -577,11 +558,7 @@ export class EffectExtractionService {
     const sourceRun = await this.repository.run(projectId, existing.runId);
     const snapshot = sourceRun?.inputSnapshot as EffectExtractionInputSnapshot | undefined;
     if (!snapshot) throw conflict('提炼输入快照不存在，请重新提炼');
-    const config = snapshot.globalVideoConfig ?? snapshot.product.effectiveConfig;
-    const draftResult = toEditableEffectExtractionResultV2(
-      existing.draftResult,
-      effectExtractionDefaultsFromConfig(config),
-    );
+    const draftResult = normalizeEditableEffectExtractionResult(existing.draftResult);
     if (!isEffectExtractionResult(draftResult))
       return {
         valid: false,
@@ -830,13 +807,12 @@ export class EffectExtractionService {
   }
 
   async complete(projectId: string, runId: string, attemptToken: string, input: CompleteRunInput) {
-    if (
-      !isEffectExtractionResult(input.result) &&
-      !isLegacyEffectExtractionResultWithoutCanonicalAudiences(input.result) &&
-      !isLegacyEffectExtractionResultWithoutResolution(input.result)
-    )
-      throw badRequest('标准化结果不符合统一结构');
-    const result = await this.repository.complete(projectId, runId, attemptToken, input);
+    const normalizedResult = normalizeEffectExtractionResult(input.result);
+    if (!isEffectExtractionResult(normalizedResult)) throw badRequest('标准化结果不符合统一结构');
+    const result = await this.repository.complete(projectId, runId, attemptToken, {
+      ...input,
+      result: normalizedResult,
+    });
     if (result.kind === 'NOT_FOUND') throw notFound('提炼任务不存在');
     if (result.kind === 'LEASE_CONFLICT') throw conflict('Worker 租约已失效');
     await this.syncNodeStateBaseline(result.result);
@@ -891,16 +867,7 @@ type ExtractionOriginMaterial = {
 };
 
 const EXTRACTION_LIST_FIELDS = [
-  'coreSellingPoints',
-  'secondarySellingPoints',
-  'trustBackings',
-  'targetAudiences',
-  'corePainPoints',
-  'decisionDrivers',
-  'usageScenarios',
-  'purchaseScenarios',
-  'emotionalScenarios',
-  'disabledElements',
+  'sellingPoints',
 ] as const satisfies readonly (keyof EffectExtractionResult)[];
 
 const normalizeOriginValue = (value: unknown): string =>
@@ -986,16 +953,28 @@ const candidateFieldValues = (
   const values = new Set<string>();
   for (const candidate of candidates) {
     const rawFields =
-      field === 'secondarySellingPoints'
-        ? (['secondarySellingPoints', 'coreSellingPoints'] as const)
+      field === 'sellingPoints'
+        ? ([
+            'sellingPoints',
+            'coreSellingPoints',
+            'secondarySellingPoints',
+            'trustBackings',
+            'targetAudiences',
+            'targetAudience',
+            'corePainPoints',
+            'decisionDrivers',
+            'usageScenarios',
+            'purchaseScenarios',
+            'emotionalScenarios',
+          ] as const)
         : ([field] as const);
     for (const rawField of rawFields) {
       const raw =
-        rawField === 'targetAudiences'
+        rawField === 'targetAudiences' || rawField === 'targetAudience'
           ? (candidate.targetAudiences ?? candidate.targetAudience ?? candidate.target_audience)
           : (candidate[rawField] ?? candidate[snakeCaseField(rawField)]);
       const rawValues =
-        rawField === 'targetAudiences' && typeof raw === 'string'
+        (rawField === 'targetAudiences' || rawField === 'targetAudience') && typeof raw === 'string'
           ? raw.split(/[\n,，、;；]+/u)
           : Array.isArray(raw)
             ? raw
@@ -1009,46 +988,17 @@ const candidateFieldValues = (
   return values;
 };
 
-const SEMANTIC_NOTICE_FIELDS = new Set<EffectExtractionSemanticField>([
-  'coreSellingPoints',
-  'secondarySellingPoints',
-  'corePainPoints',
-  'decisionDrivers',
-  'usageScenarios',
-  'purchaseScenarios',
-  'emotionalScenarios',
-]);
+const SEMANTIC_NOTICE_FIELDS = new Set<EffectExtractionSemanticField>(['sellingPoints']);
 
 const SEMANTIC_NOTICE_ISSUES = new Set<EffectExtractionSemanticNoticeIssue>([
   'POSSIBLE_DUPLICATE',
   'POSSIBLE_OVERLAP',
-  'POSSIBLE_WRONG_FIELD',
   'AMBIGUOUS_EXPRESSION',
   'FIELD_OVER_RECOMMENDED_COUNT',
 ]);
 
-const SEMANTIC_FIELD_LABELS: Record<EffectExtractionSemanticField, string> = {
-  coreSellingPoints: '核心卖点',
-  secondarySellingPoints: '次要卖点',
-  corePainPoints: '核心痛点',
-  decisionDrivers: '决策动因',
-  usageScenarios: '核心使用场景',
-  purchaseScenarios: '购买场景',
-  emotionalScenarios: '情绪共鸣场景',
-};
-
-const SEMANTIC_FIELD_LAYERS: Record<EffectExtractionSemanticField, string> = {
-  coreSellingPoints: 'SELLING_POINT',
-  secondarySellingPoints: 'SELLING_POINT',
-  corePainPoints: 'USER',
-  decisionDrivers: 'USER',
-  usageScenarios: 'SCENARIO',
-  purchaseScenarios: 'SCENARIO',
-  emotionalScenarios: 'SCENARIO',
-};
-
 const semanticFieldFromFactId = (factId: string): EffectExtractionSemanticField | null =>
-  [...SEMANTIC_NOTICE_FIELDS].find((field) => factId.startsWith(`user-${field}-`)) ?? null;
+  factId.startsWith('user-') ? 'sellingPoints' : null;
 
 const safeSemanticValue = (value: unknown): string =>
   String(value ?? '')
@@ -1061,7 +1011,6 @@ const safeSemanticValue = (value: unknown): string =>
 const semanticNoticeMessage = (
   issue: EffectExtractionSemanticNoticeIssue,
   relatedValues: readonly string[],
-  suggestedField: EffectExtractionSemanticField | null,
   raw: Record<string, unknown>,
 ): string => {
   const related = relatedValues[0];
@@ -1069,8 +1018,6 @@ const semanticNoticeMessage = (
     return `建议处理：与“${related}”含义接近，可保留表达更准确的一条，或合并为一条。`;
   if (issue === 'POSSIBLE_OVERLAP' && related)
     return `建议处理：与“${related}”内容重叠，可合并共同信息，或补充两者的具体差异。`;
-  if (issue === 'POSSIBLE_WRONG_FIELD' && suggestedField)
-    return `建议处理：可考虑将该内容移至“${SEMANTIC_FIELD_LABELS[suggestedField]}”；如需保留当前分类，请补充归类依据。`;
   if (issue === 'FIELD_OVER_RECOMMENDED_COUNT') {
     const actualCount = Number(raw.actualCount);
     const recommendedCount = Number(raw.recommendedCount);
@@ -1095,35 +1042,21 @@ const semanticNoticesByValue = (
   for (const row of rows) {
     if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
     const raw = row as Record<string, unknown>;
-    const field = String(raw.field ?? '') as EffectExtractionSemanticField;
+    const rawField = String(raw.field ?? '');
+    const field: EffectExtractionSemanticField = 'sellingPoints';
     const issue = String(raw.issue ?? '') as EffectExtractionSemanticNoticeIssue;
     const value = safeSemanticValue(raw.value);
     const factId = String(raw.factId ?? '');
     const relatedFactIds = Array.isArray(raw.relatedFactIds) ? raw.relatedFactIds.map(String) : [];
     const requiresRelatedFact = issue === 'POSSIBLE_DUPLICATE' || issue === 'POSSIBLE_OVERLAP';
-    const suggestedField = SEMANTIC_NOTICE_FIELDS.has(
-      String(raw.suggestedField ?? '') as EffectExtractionSemanticField,
-    )
-      ? (String(raw.suggestedField) as EffectExtractionSemanticField)
-      : null;
     const relatedFields = relatedFactIds.map(semanticFieldFromFactId);
-    const wrongFieldSuggestionIsInvalid =
-      issue === 'POSSIBLE_WRONG_FIELD' &&
-      (!suggestedField ||
-        suggestedField === field ||
-        SEMANTIC_FIELD_LAYERS[suggestedField] !== SEMANTIC_FIELD_LAYERS[field]);
     if (
-      !SEMANTIC_NOTICE_FIELDS.has(field) ||
+      !rawField ||
       !SEMANTIC_NOTICE_ISSUES.has(issue) ||
       !value ||
-      !factId.startsWith(`user-${field}-`) ||
+      !factId.startsWith('user-') ||
       (requiresRelatedFact && relatedFactIds.length === 0) ||
-      relatedFields.some(
-        (relatedField) =>
-          !relatedField || SEMANTIC_FIELD_LAYERS[relatedField] !== SEMANTIC_FIELD_LAYERS[field],
-      ) ||
-      wrongFieldSuggestionIsInvalid ||
-      (issue !== 'POSSIBLE_WRONG_FIELD' && suggestedField !== null)
+      relatedFields.some((relatedField) => !relatedField)
     )
       continue;
     const relatedValues = (Array.isArray(raw.relatedValues) ? raw.relatedValues : [])
@@ -1132,8 +1065,8 @@ const semanticNoticesByValue = (
       .slice(0, 3);
     const notice: EffectExtractionSemanticNotice = {
       issue,
-      message: semanticNoticeMessage(issue, relatedValues, suggestedField, raw),
-      suggestedField,
+      message: semanticNoticeMessage(issue, relatedValues, raw),
+      suggestedField: null,
       relatedValues,
     };
     const key = `${field}:${normalizeOriginValue(value)}`;

@@ -26,6 +26,7 @@ from effect_prompt_generation.providers import (
     _temporal_intent_for_duration,
     _validate_structured_output,
 )
+from effect_prompt_generation.product_images import PreparedProductImage
 from effect_prompt_generation.reliability import evaluation_chunks
 from effect_prompt_generation.prompt_loader import load_prompt, load_prompt_hash
 from effect_prompt_generation.visual_strategy import validate_fact_visual_strategy
@@ -40,8 +41,10 @@ class _StructuredEnvelope(BaseModel):
     [
         (4, "SHORT_FOCUS", "一个可立即看懂"),
         (8, "SHORT_FOCUS", "一个可立即看懂"),
-        (9, "COMPLETE_ACTION", "2 个连续动作节拍"),
-        (15, "COMPLETE_ACTION", "2～3 个连续动作节拍"),
+        (9, "COMPLETE_ACTION", "1～2 个连续动作节拍"),
+        (11, "COMPLETE_ACTION", "1～2 个连续动作节拍"),
+        (12, "COMPLETE_ACTION", "1～2 个连续动作节拍"),
+        (15, "COMPLETE_ACTION", "1～2 个连续动作节拍"),
     ],
 )
 def test_temporal_intent_scales_continuous_action_beats(
@@ -56,6 +59,10 @@ def test_temporal_intent_scales_continuous_action_beats(
     assert "软参考" in intent["detailGuidance"]
     if duration <= 8:
         assert "首帧就位" in intent["guidance"]
+    else:
+        assert "结果停留并入最后一个" in intent["guidance"]
+        assert "软建议" in intent["guidance"]
+        assert "1～2 个节拍" in intent["detailGuidance"]
     assert f"本次为 {duration} 秒" in intent["detailGuidance"]
 
 
@@ -519,6 +526,10 @@ async def test_director_request_and_compilation_across_products_and_durations(
 
     assert len(seen) == 1
     assert seen[0]["instructions"] == load_prompt("creative_base.system.prompt.txt")
+    assert seen[0]["max_output_tokens"] >= 4096
+    request_schema = seen[0]["text"]["format"]["schema"]
+    assert request_schema["properties"]["items"]["minItems"] == 1
+    assert request_schema["properties"]["items"]["maxItems"] == 1
     assert call.metadata.template_hash == load_prompt_hash("creative_base.system.prompt.txt")
     item = call.value.items[0]
     assert item.shot_plan is not None
@@ -701,6 +712,81 @@ async def test_ark_compiles_visual_usage_for_every_confirmed_fact() -> None:
     assert "F1" in payload_text
     assert "effect_prompt_fact_visual_strategy" in payload_text
     assert seen["max_output_tokens"] == 4096
+
+
+@pytest.mark.asyncio
+async def test_ark_visual_strategy_sends_all_product_images_in_one_multimodal_call() -> None:
+    application = map_insight(
+        {
+            "productName": "磁吸移动电源",
+            "visualFeatures": "云灰色圆角机身",
+            "coreSellingPoints": ["磁吸贴合"],
+        }
+    )
+    seen: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        seen.update(payload)
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "output_text": json.dumps(
+                    {
+                        "policies": [
+                            {
+                                "factId": f"F{index + 1}",
+                                "visualUsage": "DIRECTLY_VISIBLE",
+                                "visualInstruction": "按参考图展示真实外形",
+                                "contextInstruction": "",
+                                "compatibleFactIds": [],
+                                "forbiddenInferences": [],
+                            }
+                            for index, _ in enumerate(application.usable)
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        )
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.example/v3",
+        api_key="test-key",
+        strategy_model="strategy-model",
+        candidate_model="creative-model",
+        visual_strategy_model="vision-model",
+        visual_strategy_image_detail="high",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        await provider.compile_fact_visual_strategy(
+            application,
+            product_images=[
+                PreparedProductImage(
+                    data_uri="data:image/jpeg;base64,bWFpbg==",
+                ),
+                PreparedProductImage(
+                    data_uri="data:image/jpeg;base64,ZGV0YWls",
+                ),
+            ],
+        )
+    finally:
+        await provider.aclose()
+
+    assert seen["model"] == "vision-model"
+    content = seen["input"][0]["content"]  # type: ignore[index]
+    images = [item for item in content if item["type"] == "input_image"]
+    assert [item["image_url"] for item in images] == [
+        "data:image/jpeg;base64,bWFpbg==",
+        "data:image/jpeg;base64,ZGV0YWls",
+    ]
+    assert all(item["detail"] == "high" for item in images)
+    text = "\n".join(item["text"] for item in content if item["type"] == "input_text")
+    assert "商品参考图 1" in text
+    assert "商品参考图 2" in text
+    assert "图片不是新的营销事实来源" in seen["instructions"]  # type: ignore[operator]
 
 
 @pytest.mark.asyncio

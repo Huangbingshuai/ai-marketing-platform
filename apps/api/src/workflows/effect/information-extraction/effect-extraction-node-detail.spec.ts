@@ -388,21 +388,9 @@ describe('presentExtractionNodeDetail', () => {
       { key: 'seller', label: '店铺', value: '山泉官方旗舰店', source: null },
       { key: 'deliveryPromise', label: '配送信息', value: '预计明天送达', source: null },
       {
-        key: 'coreSellingPoints',
-        label: '核心卖点',
-        value: ['0 糖', '清爽气泡'],
-        source: null,
-      },
-      {
-        key: 'secondarySellingPoints',
-        label: '其他卖点',
-        value: ['便携罐装'],
-        source: null,
-      },
-      {
-        key: 'purchaseScenarios',
-        label: '购买场景',
-        value: ['聚会囤货'],
+        key: 'sellingPoints',
+        label: '卖点',
+        value: ['0 糖', '清爽气泡', '便携罐装', '聚会囤货'],
         source: null,
       },
     ]);
@@ -518,7 +506,7 @@ describe('presentExtractionNodeDetail', () => {
     );
 
     expect(fusion.fields.find(({ key }) => key === 'productName')?.source).toBe('人工表单');
-    expect(normalized.fields.find(({ key }) => key === 'coreSellingPoints')?.source).toBe(
+    expect(normalized.fields.find(({ key }) => key === 'sellingPoints')?.source).toBe(
       '文档解析 → 图片识别',
     );
     expect(normalized.fields.find(({ key }) => key === 'revision')?.value).toBe(2);
@@ -571,9 +559,7 @@ describe('presentExtractionNodeDetail', () => {
       execution('NORMALIZATION'),
     );
 
-    expect(normalized.fields.find(({ key }) => key === 'coreSellingPoints')?.source).toBe(
-      '文档解析',
-    );
+    expect(normalized.fields.find(({ key }) => key === 'sellingPoints')?.source).toBe('文档解析');
   });
 
   it('shows semantic decisions and original expressions without leaking model diagnostics', () => {
@@ -616,7 +602,7 @@ describe('presentExtractionNodeDetail', () => {
     expect(detail.sources[0]).toMatchObject({
       name: '家庭日常佐餐需要方便、有风味的腊味食材',
       fields: [
-        expect.objectContaining({ label: '归并类型', value: '核心痛点' }),
+        expect.objectContaining({ label: '归并类型', value: '卖点' }),
         expect.objectContaining({ label: '语义关系', value: '含义相同' }),
         expect.objectContaining({ label: '处理方式', value: '合并为代表表达' }),
         expect.objectContaining({ label: '原始表达' }),

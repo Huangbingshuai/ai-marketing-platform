@@ -42,9 +42,10 @@ import {
   normalizeEffectPromptSettings,
   effectPromptRunGraphNodeIds,
 } from '@ai-marketing/contracts';
-import { HttpStatus, Inject, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Optional } from '@nestjs/common';
 
 import { ApiHttpException } from '../../../common/api-http-exception';
+import { STORAGE_PORT, type StoragePort } from '../../../platform/file/storage.port';
 import { ProjectService } from '../../../platform/project/project.service';
 import {
   WorkflowWorkingRepository,
@@ -268,12 +269,13 @@ const presentRun = (record: EffectPromptRunRecord): EffectPromptRun => ({
 });
 
 const PROMPT_INSIGHT_FIELD_LABELS: Record<EffectPromptInsightField, string> = {
+  SELLING_POINT: '卖点',
   PRODUCT_NAME: '产品名称',
   PRODUCT_CATEGORY: '产品品类',
   CORE_SPECIFICATION: '核心规格',
   PRICE_RANGE: '确认价格',
   VISUAL_FEATURES: '视觉特征',
-  CORE_SELLING_POINT: '核心卖点',
+  CORE_SELLING_POINT: '卖点',
   SECONDARY_SELLING_POINT: '次要卖点',
   TRUST_BACKING: '信任背书',
   TARGET_AUDIENCE: '目标受众',
@@ -485,6 +487,7 @@ export class EffectPromptService {
     @Inject(ProjectService) private readonly projects: ProjectService,
     @Inject(WorkflowWorkingRepository)
     private readonly workingRepository: WorkflowWorkingRepository,
+    @Optional() @Inject(STORAGE_PORT) private readonly storage?: StoragePort,
   ) {}
 
   private async requireWorkflow(projectId: string, workflowRunId: string): Promise<void> {
@@ -1138,10 +1141,10 @@ export class EffectPromptService {
     const dimensions = input.evaluateAfterSave
       ? pendingItemDimensions()
       : input.dimensions
-      ? (Object.fromEntries(
-          EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions![key].trim()]),
-        ) as EffectPromptDimensions)
-      : pendingItemDimensions();
+        ? (Object.fromEntries(
+            EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions![key].trim()]),
+          ) as EffectPromptDimensions)
+        : pendingItemDimensions();
     const primaryPurpose = input.primaryPurpose ?? 'PRODUCT_DISPLAY';
     const creativeStructureReady = hasCompleteCreativeStructure(input);
     const item: EffectPromptItem = {
@@ -1154,10 +1157,9 @@ export class EffectPromptService {
       classificationStatus: creativeStructureReady ? 'VERIFIED' : 'PENDING',
       productRelevance: 0,
       targetDurationSeconds: input.targetDurationSeconds,
-      creativeCore:
-        input.evaluateAfterSave
-          ? '等待 AI 自动补齐'
-          : input.creativeCore?.trim() || '等待 AI 自动补齐',
+      creativeCore: input.evaluateAfterSave
+        ? '等待 AI 自动补齐'
+        : input.creativeCore?.trim() || '等待 AI 自动补齐',
       dimensions,
       content: input.content.trim(),
       insightBindings: [],
@@ -1206,10 +1208,10 @@ export class EffectPromptService {
     const dimensions = input.evaluateAfterSave
       ? pendingItemDimensions()
       : input.dimensions
-      ? (Object.fromEntries(
-          EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions![key].trim()]),
-        ) as EffectPromptDimensions)
-      : currentItem.dimensions;
+        ? (Object.fromEntries(
+            EFFECT_PROMPT_DIMENSIONS.map(({ key }) => [key, input.dimensions![key].trim()]),
+          ) as EffectPromptDimensions)
+        : currentItem.dimensions;
     const creativeStructureReady = hasCompleteCreativeStructure(input);
     const saved = this.presentMutation(
       await this.repository.mutateResult(projectId, resultId, expectedRevision, {
@@ -1220,18 +1222,16 @@ export class EffectPromptService {
           fragmentType: primaryPurpose,
           primaryPurpose,
           compatiblePurposes,
-          classificationStatus:
-            input.evaluateAfterSave
-              ? 'PENDING'
-              : creativeStructureReady
-                ? 'VERIFIED'
-                : currentItem.classificationStatus,
+          classificationStatus: input.evaluateAfterSave
+            ? 'PENDING'
+            : creativeStructureReady
+              ? 'VERIFIED'
+              : currentItem.classificationStatus,
           productRelevance: 0,
           targetDurationSeconds: input.targetDurationSeconds,
-          creativeCore:
-            input.evaluateAfterSave
-              ? '等待 AI 自动补齐'
-              : input.creativeCore?.trim() || currentItem.creativeCore,
+          creativeCore: input.evaluateAfterSave
+            ? '等待 AI 自动补齐'
+            : input.creativeCore?.trim() || currentItem.creativeCore,
           dimensions,
           reviewIssues: [],
         },
@@ -1481,8 +1481,10 @@ export class EffectPromptService {
         : [];
     });
     const insightContentHash = result.input?.insightArtifact?.contentHash ?? '';
+    const visualStrategySourceHash =
+      result.input?.factVisualStrategySourceHash ?? insightContentHash;
     const currentRunVisualStrategy = checkpointCandidates.find((checkpoint) =>
-      isValidVisualStrategyCheckpoint(checkpoint, insightContentHash),
+      isValidVisualStrategyCheckpoint(checkpoint, visualStrategySourceHash),
     );
     const checkpoints = [
       ...checkpointCandidates.filter(
@@ -1510,6 +1512,25 @@ export class EffectPromptService {
     if ((await this.repository.heartbeat(projectId, runId, attemptToken)).count !== 1)
       throw conflict('Worker 租约已失效');
     return { accepted: true as const };
+  }
+
+  async productImageSource(
+    projectId: string,
+    runId: string,
+    fileObjectId: string,
+    attemptToken: string,
+  ) {
+    const source = await this.repository.productImageSource(
+      projectId,
+      runId,
+      fileObjectId,
+      attemptToken,
+    );
+    if (!source || !this.storage) throw notFound('Prompt 商品图片不存在或 Worker 租约已失效');
+    return {
+      reference: source.reference,
+      ...(await this.storage.open(source.fileObject.storageKey)),
+    };
   }
 
   async saveStage(

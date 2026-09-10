@@ -310,7 +310,7 @@ async def test_execution_fields_compile_for_durations_and_products_without_infer
         duration=duration,
     )
     assert f"AI 提供的 {product} 运动来源原文" in repaired.content
-    assert "焦点变化：AI 提供的焦点说明" in repaired.content
+    assert "焦点：AI 提供的焦点说明" in repaired.content
     assert repaired.shot_plan.beats[0].duration_weight == plan.beats[0].duration_weight
 
 

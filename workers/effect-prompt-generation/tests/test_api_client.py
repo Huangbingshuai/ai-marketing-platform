@@ -59,6 +59,34 @@ async def test_internal_api_uses_worker_and_attempt_tokens(runtime: RuntimeConte
 
 
 @pytest.mark.asyncio
+async def test_download_product_image_uses_active_attempt_lease(
+    runtime: RuntimeContext,
+) -> None:
+    seen: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=b"image-bytes")
+
+    api = HttpInternalApi(
+        "http://api.local/api",
+        "worker-token",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        content = await api.download_product_image(runtime, "file-1")
+    finally:
+        await api.aclose()
+
+    assert content == b"image-bytes"
+    assert seen[0].url.path.endswith(
+        "/internal/workers/effect-prompt-generation/runs/run-1/product-images/file-1/content"
+    )
+    assert seen[0].url.params["projectId"] == "project-1"
+    assert seen[0].headers["x-attempt-token"] == "attempt-1"
+
+
+@pytest.mark.asyncio
 async def test_get_shards_accepts_backend_run_id_envelope(runtime: RuntimeContext) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

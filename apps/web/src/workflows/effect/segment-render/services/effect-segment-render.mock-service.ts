@@ -179,6 +179,8 @@ const createWorkspace = (
   return {
     ...context,
     productId: product.id,
+    sourcePromptArtifactId: null,
+    sourcePromptRevision: null,
     promptCount: 50,
     batchStatus: 'NOT_STARTED',
     tasks: [],

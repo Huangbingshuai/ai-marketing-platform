@@ -16,23 +16,7 @@ const result: EffectExtractionResult = {
   coreSpecification: '标准规格',
   priceRange: '主流价格带',
   visualFeatures: '包装主体清晰、颜色醒目',
-  coreSellingPoints: ['卖点一'],
-  secondarySellingPoints: ['卖点二'],
-  trustBackings: [],
-  targetAudience: '目标人群',
-  targetAudiences: ['目标人群'],
-  corePainPoints: ['痛点一'],
-  decisionDrivers: ['动因一'],
-  marketingGoal: '营销目标',
-  usageScenarios: ['使用场景'],
-  purchaseScenarios: ['购买场景'],
-  emotionalScenarios: ['情绪场景'],
-  durationSeconds: 20,
-  aspectRatio: '9:16',
-  resolution: '1080p',
-  deliveryChannels: '投放渠道',
-  disabledElements: ['禁用元素'],
-  visualStyleBaseline: '品牌调性',
+  sellingPoints: ['卖点一', '适合家庭使用'],
 };
 
 const state = (status: EffectExtractionProductState['status']): EffectExtractionProductState => ({
@@ -42,7 +26,7 @@ const state = (status: EffectExtractionProductState['status']): EffectExtraction
   status,
   runId: null,
   resultId: 'result-1',
-  resultSchemaVersion: 2,
+  resultSchemaVersion: 3,
   resultRevision: 2,
   result,
   provenance: { fieldOrigins: {}, fieldSourceNames: {}, itemOrigins: {} },
@@ -74,14 +58,10 @@ describe('effect info extraction state', () => {
     expect(isExtractionRunning(state('COMPLETED'))).toBe(false);
   });
 
-  it('clones editable array fields and server warnings', () => {
+  it('clones the unified selling-point list and provenance independently', () => {
     const cloned = cloneExtractionResult(result);
-    cloned.coreSellingPoints.push('卖点二');
-    cloned.targetAudiences.push('新增人群');
-    cloned.disabledElements.push('新增禁用词');
-    expect(result.coreSellingPoints).toEqual(['卖点一']);
-    expect(result.targetAudiences).toEqual(['目标人群']);
-    expect(result.disabledElements).toEqual(['禁用元素']);
+    cloned.sellingPoints.push('卖点三');
+    expect(result.sellingPoints).toEqual(['卖点一', '适合家庭使用']);
 
     const view = toExtractionProductState({
       ...state('COMPLETED'),
@@ -89,7 +69,7 @@ describe('effect info extraction state', () => {
         fieldOrigins: {},
         fieldSourceNames: {},
         itemOrigins: {
-          coreSellingPoints: [
+          sellingPoints: [
             {
               value: '卖点一',
               origin: 'USER_FACT',
@@ -111,14 +91,12 @@ describe('effect info extraction state', () => {
       ],
     });
     view.warnings[0]!.message = '已修改';
-    view.provenance.itemOrigins.coreSellingPoints![0]!.semanticNotices![0]!.relatedValues.push(
+    view.provenance.itemOrigins.sellingPoints![0]!.semanticNotices![0]!.relatedValues.push(
       '卖点三',
     );
     expect(view.saveState).toBe('SAVED');
     expect(view.saveErrorMessage).toBeNull();
-    expect(
-      state('COMPLETED').provenance.itemOrigins.coreSellingPoints?.[0]?.semanticNotices,
-    ).toBeUndefined();
+    expect(state('COMPLETED').provenance.itemOrigins.sellingPoints).toBeUndefined();
   });
 
   it('clones the image recognition display summary independently', () => {
@@ -130,37 +108,8 @@ describe('effect info extraction state', () => {
         retainedSuggestionCount: 0,
       },
     };
-
     const cloned = cloneExtractionProductState(original);
     cloned.imageRecognitionSummary!.candidateSuggestionCount = 9;
-
     expect(original.imageRecognitionSummary.candidateSuggestionCount).toBe(12);
-  });
-
-  it('normalizes a historical uppercase resolution for the fixed selector', () => {
-    expect(cloneExtractionResult({ ...result, resolution: '1080P' }).resolution).toBe('1080p');
-  });
-
-  it('adapts a historical node draft with only a scalar target audience', () => {
-    const legacyResult: Omit<EffectExtractionResult, 'targetAudiences'> & {
-      targetAudiences?: string[];
-    } = {
-      ...result,
-      targetAudience: '25-45岁家庭厨房决策者，美食爱好者，年货送礼人群，向往粤式风味的消费者',
-    };
-    delete legacyResult.targetAudiences;
-
-    const cloned = cloneExtractionResult(legacyResult as EffectExtractionResult);
-
-    expect(cloned.targetAudiences).toEqual([
-      '25-45岁家庭厨房决策者',
-      '美食爱好者',
-      '年货送礼人群',
-      '向往粤式风味的消费者',
-    ]);
-    expect(cloned.targetAudience).toBe(
-      '25-45岁家庭厨房决策者；美食爱好者；年货送礼人群；向往粤式风味的消费者',
-    );
-    expect(cloned.targetAudiences.join(' ')).not.toContain('上班族');
   });
 });

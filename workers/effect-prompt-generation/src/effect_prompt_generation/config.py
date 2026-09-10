@@ -44,6 +44,9 @@ class WorkerSettings(BaseSettings):
     ark_prompt_strategy_model: str | None = Field(
         default=None, alias="ARK_PROMPT_STRATEGY_MODEL"
     )
+    ark_prompt_visual_strategy_model: str | None = Field(
+        default=None, alias="ARK_PROMPT_VISUAL_STRATEGY_MODEL"
+    )
     ark_prompt_candidate_model: str | None = Field(
         default=None, alias="ARK_PROMPT_CANDIDATE_MODEL"
     )
@@ -88,6 +91,24 @@ class WorkerSettings(BaseSettings):
     )
     ark_prompt_reasoning_effort: Literal["minimal", "low", "medium", "high"] = Field(
         default="minimal", alias="ARK_PROMPT_REASONING_EFFORT"
+    )
+    ark_prompt_visual_strategy_image_detail: Literal["low", "high"] = Field(
+        default="high", alias="ARK_PROMPT_VISUAL_STRATEGY_IMAGE_DETAIL"
+    )
+    prompt_visual_reference_max_input_bytes: int = Field(
+        default=20 * 1024 * 1024,
+        alias="PROMPT_VISUAL_REFERENCE_MAX_INPUT_BYTES",
+        ge=1,
+    )
+    prompt_visual_reference_max_dimension: int = Field(
+        default=1280,
+        alias="PROMPT_VISUAL_REFERENCE_MAX_DIMENSION",
+        ge=256,
+    )
+    prompt_visual_reference_max_output_bytes: int = Field(
+        default=4 * 1024 * 1024,
+        alias="PROMPT_VISUAL_REFERENCE_MAX_OUTPUT_BYTES",
+        ge=32_768,
     )
 
     prompt_max_concurrency: int = Field(
@@ -155,6 +176,9 @@ class WorkerSettings(BaseSettings):
         self.ark_prompt_strategy_model = (
             self.ark_prompt_strategy_model or ""
         ).strip() or None
+        self.ark_prompt_visual_strategy_model = (
+            self.ark_prompt_visual_strategy_model or ""
+        ).strip() or None
         self.ark_prompt_candidate_model = (
             self.ark_prompt_candidate_model or ""
         ).strip() or None
@@ -211,6 +235,13 @@ class WorkerSettings(BaseSettings):
     def resolved_prompt_candidate_model(self) -> str:
         return (
             self.ark_prompt_candidate_model or self.ark_prompt_model or self.ark_model
+        )
+
+    @property
+    def resolved_prompt_visual_strategy_model(self) -> str:
+        return (
+            self.ark_prompt_visual_strategy_model
+            or self.resolved_prompt_candidate_model
         )
 
     @property

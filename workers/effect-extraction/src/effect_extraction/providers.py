@@ -50,13 +50,7 @@ _HIGH_DETAIL_FILE_NAME = re.compile(
     re.IGNORECASE,
 )
 _SEMANTIC_NOTICE_FIELDS_BY_LAYER: dict[str, tuple[str, ...]] = {
-    "SELLING_POINT": ("coreSellingPoints", "secondarySellingPoints"),
-    "USER": ("corePainPoints", "decisionDrivers"),
-    "SCENARIO": (
-        "usageScenarios",
-        "purchaseScenarios",
-        "emotionalScenarios",
-    ),
+    "SELLING_POINT": ("sellingPoints",),
 }
 
 
@@ -188,7 +182,7 @@ class MockAiProvider:
     def image_cache_namespace(self) -> str:
         return (
             f"mock:{load_prompt_version(IMAGE_ANALYSIS_PROMPT)}:"
-            "image-visible-v3:adaptive-1:low-high"
+            "image-visible:unified-selling-points:low-high"
         )
 
     async def refine_semantics(
@@ -246,7 +240,7 @@ class MockAiProvider:
             candidate.core_specification = (
                 content[1][:240] if len(content) > 1 else None
             )
-            candidate.core_selling_points = content[2:5] or None
+            candidate.selling_points = content[2:12] or None
         return _mock_result(candidate, "DOCUMENT", DOCUMENT_EXTRACTION_PROMPT)
 
     async def analyze_image(
@@ -280,7 +274,7 @@ class MockAiProvider:
             _clean(category) if isinstance(category, str) else None
         )
         if isinstance(description, str) and (cleaned := _clean(description)):
-            candidate.secondary_selling_points = [cleaned[:240]]
+            candidate.selling_points = [cleaned[:240]]
         if candidate.product_name is None:
             lines = [_clean(line) for line in markdown.splitlines()]
             candidate.product_name = next((line[:120] for line in lines if line), None)
@@ -292,28 +286,19 @@ class MockAiProvider:
         *,
         protected_input: Mapping[str, Any] | None = None,
     ) -> AiCallResult[ExtractionResult]:
+        if not fused.selling_points:
+            raise ProviderError(
+                "未提取到可用卖点，请补充产品资料后重新提炼",
+                error_type=ProviderErrorType.RESPONSE_INVALID,
+                retryable=False,
+            )
         result = ExtractionResult(
             product_category=fused.product_category or "待补充",
             product_name=fused.product_name or "待补充",
             core_specification=fused.core_specification or "待补充",
             price_range=fused.price_range or "待补充",
             visual_features=fused.visual_features or "待补充",
-            core_selling_points=(fused.core_selling_points or ["待补充"])[0:3],
-            secondary_selling_points=(fused.secondary_selling_points or [])[0:6],
-            trust_backings=(fused.trust_backings or [])[0:5],
-            target_audience=fused.target_audience or "待补充",
-            core_pain_points=(fused.core_pain_points or [])[0:5],
-            decision_drivers=(fused.decision_drivers or [])[0:5],
-            marketing_goal=fused.marketing_goal or "待补充",
-            usage_scenarios=(fused.usage_scenarios or [])[0:5],
-            purchase_scenarios=(fused.purchase_scenarios or [])[0:5],
-            emotional_scenarios=(fused.emotional_scenarios or [])[0:5],
-            duration_seconds=fused.duration_seconds or 20,
-            aspect_ratio=fused.aspect_ratio or "9:16",
-            resolution=fused.resolution or "1080P",
-            delivery_channels=fused.delivery_channels or "待补充",
-            disabled_elements=fused.disabled_elements or [],
-            visual_style_baseline=fused.visual_style_baseline or "待补充",
+            selling_points=fused.selling_points[0:100],
         )
         return _mock_result(result, "NORMALIZATION", RESULT_NORMALIZATION_PROMPT)
 
@@ -408,7 +393,7 @@ class ArkResponsesProvider:
         prompt_version = load_prompt_version(IMAGE_ANALYSIS_PROMPT)
         return (
             f"ark:{self._image_model}:{prompt_version}:"
-            f"image-visible-v3:adaptive-{int(self._image_adaptive_high_detail)}:"
+            f"image-visible:unified-selling-points:adaptive-{int(self._image_adaptive_high_detail)}:"
             f"{self._image_detail}-high:{self._image_reasoning_effort}"
         )
 
@@ -1030,7 +1015,6 @@ def _validate_user_fact_model_review(
     if returned_ids != expected_ids or any(
         notice.issue
         not in {
-            SemanticUserFactIssue.POSSIBLE_WRONG_FIELD,
             SemanticUserFactIssue.AMBIGUOUS_EXPRESSION,
         }
         for notice in review.user_fact_notices
@@ -1134,6 +1118,16 @@ def _merge_image_visible_facts(
     for field_name in ImageVisibleFacts.model_fields:
         if field_name == "high_detail_recommended":
             merged[field_name] = False
+            continue
+        if field_name == "selling_points":
+            merged[field_name] = (
+                list(
+                    dict.fromkeys(
+                        [*(first.selling_points or []), *(refined.selling_points or [])]
+                    )
+                )
+                or None
+            )
             continue
         refined_value = getattr(refined, field_name)
         merged[field_name] = (

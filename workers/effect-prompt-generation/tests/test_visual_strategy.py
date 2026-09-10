@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+from io import BytesIO
+
 import pytest
+from PIL import Image
 
 from effect_prompt_generation.insight_mapping import InsightApplicationMap, map_insight
 from effect_prompt_generation.models import (
@@ -12,6 +16,7 @@ from effect_prompt_generation.models import (
     ProgressPayload,
     PromptBatchSettings,
     PromptGenerationSnapshot,
+    ProductImageReference,
     RuntimeContext,
     StageOutput,
     StrategyCheckpoint,
@@ -23,6 +28,10 @@ from effect_prompt_generation.providers import (
     MockAiProvider,
     ProviderError,
     ProviderErrorType,
+)
+from effect_prompt_generation.product_images import (
+    PreparedProductImage,
+    ProductImageProcessor,
 )
 from effect_prompt_generation.fact_allocation import allocate_creative_facts
 from effect_prompt_generation.visual_strategy import validate_fact_visual_strategy
@@ -231,6 +240,40 @@ class _InvalidJsonOnceProvider(_CountingProvider):
         return await MockAiProvider.compile_fact_visual_strategy(self, application)
 
 
+class _ImageStageApi(_StageApi):
+    def __init__(self, content: bytes) -> None:
+        super().__init__()
+        self.content = content
+        self.download_count = 0
+
+    async def download_product_image(
+        self,
+        context: RuntimeContext,
+        file_object_id: str,
+    ) -> bytes:
+        del context
+        assert file_object_id == "image-file-1"
+        self.download_count += 1
+        return self.content
+
+
+class _ImageProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.received_images: list[PreparedProductImage] = []
+
+    async def compile_fact_visual_strategy(
+        self,
+        application: InsightApplicationMap,
+        *,
+        product_images: list[PreparedProductImage] | tuple[PreparedProductImage, ...] = (),
+    ) -> AiCallResult[FactVisualStrategyResponse]:
+        self.received_images = list(product_images)
+        return await super().compile_fact_visual_strategy(
+            application,
+            product_images=product_images,
+        )
+
+
 @pytest.mark.asyncio
 async def test_pipeline_retries_invalid_visual_strategy_json_once() -> None:
     provider = _InvalidJsonOnceProvider()
@@ -339,3 +382,108 @@ async def test_pipeline_reuses_strategy_checkpoint_for_same_insight_hash() -> No
     assert restored.strategy_hash == strategy.strategy_hash
     assert provider.strategy_calls == 0
     assert api.stages[-1].metadata["reusedCheckpoint"] is True
+
+
+@pytest.mark.asyncio
+async def test_pipeline_downloads_and_passes_snapshotted_product_images() -> None:
+    output = BytesIO()
+    Image.new("RGB", (1200, 800), color=(120, 126, 132)).save(output, format="PNG")
+    content = output.getvalue()
+    provider = _ImageProvider()
+    api = _ImageStageApi(content)
+    pipeline = PromptGenerationPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        product_image_processor=ProductImageProcessor(
+            max_input_bytes=2_000_000,
+            max_dimension=640,
+            max_output_bytes=500_000,
+        ),
+    )
+    context = RuntimeContext(
+        run_id="run-with-image",
+        project_id="project-1",
+        workflow_run_id="workflow-1",
+        product_id="product-1",
+        request_id="request-1",
+        attempt_token="attempt-1",
+        source_fingerprint="run-source",
+    )
+    snapshot = PromptGenerationSnapshot(
+            project_id=context.project_id,
+            workflow_run_id=context.workflow_run_id,
+            product_id=context.product_id,
+            operation="BATCH_GENERATE",
+            settings=PromptBatchSettings(
+                target_count=10,
+                default_duration_seconds=5,
+            ),
+            selection_policy="MMR_CONTENT",
+            insight_artifact=InsightArtifact(
+                id="insight-1",
+                revision=1,
+                content_hash="insight-hash",
+                result={
+                    "productName": "磁吸移动电源",
+                    "visualFeatures": "云灰色圆角机身",
+                    "coreSellingPoints": ["磁吸贴合"],
+                },
+            ),
+            product_images=[
+                ProductImageReference(
+                    file_object_id="image-file-1",
+                    original_file_name="产品主图.png",
+                    mime_type="image/png",
+                    size_bytes=len(content),
+                    sha256=hashlib.sha256(content).hexdigest(),
+                )
+            ],
+            fact_visual_strategy_source_hash="a" * 64,
+        )
+    pipeline.register_snapshot(
+        context,
+        snapshot,
+    )
+
+    await pipeline.map_insight(context)
+    strategy = await pipeline.compile_fact_visual_strategy(context)
+
+    assert strategy.source_content_hash == "a" * 64
+    assert api.download_count == 1
+    assert len(provider.received_images) == 1
+    assert provider.received_images[0].data_uri.startswith("data:image/jpeg;base64,")
+    assert api.stages[-1].metadata["referenceImageCount"] == 1
+    assert api.stages[-1].metadata["referenceMode"] == "MULTIMODAL"
+
+    resumed_provider = _ImageProvider()
+    resumed_api = _ImageStageApi(content)
+    resumed = PromptGenerationPipeline(
+        api=resumed_api,  # type: ignore[arg-type]
+        provider=resumed_provider,
+        product_image_processor=ProductImageProcessor(
+            max_input_bytes=2_000_000,
+            max_dimension=640,
+            max_output_bytes=500_000,
+        ),
+    )
+    resumed.register_snapshot(
+        context,
+        snapshot,
+        [
+            StrategyCheckpoint(
+                node_id=NodeId.FACT_VISUAL_STRATEGY_COMPILATION,
+                source_fingerprint="a" * 64,
+                allocation_hash=strategy.strategy_hash,
+                template_hash=FACT_VISUAL_STRATEGY_TEMPLATE_HASH,
+                plan=strategy,
+            )
+        ],
+    )
+
+    await resumed.map_insight(context)
+    restored = await resumed.compile_fact_visual_strategy(context)
+
+    assert restored.strategy_hash == strategy.strategy_hash
+    assert resumed_api.download_count == 0
+    assert resumed_provider.received_images == []
+    assert resumed_api.stages[-1].metadata["reusedCheckpoint"] is True

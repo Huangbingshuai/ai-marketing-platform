@@ -1,5 +1,7 @@
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '/api';
 
+export const apiUrl = (path: string): string => `${apiBaseUrl}${path}`;
+
 type JsonRequestOptions = {
   body?: FormData | unknown;
   headers?: Record<string, string>;
@@ -54,7 +56,7 @@ export const requestJson = async <T>(
     headers['Content-Type'] = 'application/json';
   }
 
-  const response = await fetch(`${apiBaseUrl}${path}`, {
+  const response = await fetch(apiUrl(path), {
     method,
     headers,
     ...(signal ? { signal } : {}),
@@ -89,7 +91,7 @@ export const requestRaw = async (
   if (body !== undefined && !isFormData && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json';
   }
-  const response = await fetch(`${apiBaseUrl}${path}`, {
+  const response = await fetch(apiUrl(path), {
     method,
     headers,
     ...(signal ? { signal } : {}),
@@ -113,5 +115,4 @@ export const isAbortError = (error: unknown): boolean =>
   error instanceof DOMException && error.name === 'AbortError';
 
 export const isNetworkError = (error: unknown): boolean =>
-  error instanceof TypeError ||
-  (error instanceof DOMException && error.name === 'NetworkError');
+  error instanceof TypeError || (error instanceof DOMException && error.name === 'NetworkError');

@@ -43,8 +43,12 @@ import {
 } from '../../../platform/workflow/api/workflow-working.api';
 import { workflowNodeBaseId } from '../../../platform/workflow/workflow-node-id';
 import EffectInfoExtractionNodePage from '../information-extraction/EffectInfoExtractionNodePage.vue';
+import { prefetchEffectExtractionWorkspace } from '../information-extraction/services/effect-info-extraction.service';
 import EffectPromptGenerationNodePage from '../prompt-generation/EffectPromptGenerationNodePage.vue';
+import { prefetchEffectPromptWorkspace } from '../prompt-generation/services/effect-prompt-generation.service';
 import EffectSegmentRenderNodePage from '../segment-render/EffectSegmentRenderNodePage.vue';
+import { prefetchEffectSegmentRenderWorkspace } from '../segment-render/services/effect-segment-render-workspace.service';
+import { clearEffectWorkspacePrefetches } from '../shared/effect-workspace-prefetch';
 import {
   advanceEffectImportDraft,
   batchDeleteEffectImportProducts,
@@ -104,6 +108,7 @@ const listedProducts = ref<EffectImportProduct[]>([]);
 const removedProducts = ref<EffectImportRemovedProduct[]>([]);
 const saveState = ref<EffectImportSaveState>('clean');
 const transitioning = ref(false);
+const pendingStep = ref<number | null>(null);
 const uploadTargetInitializing = ref(false);
 const activeStep = ref(0);
 const infoExtractionNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
@@ -123,7 +128,20 @@ const effectWorkflowNodeIds = [
   'TEMPLATE_MIX',
   'FINAL_OUTPUT',
 ] as const;
-const activeDownstreamBoundary = computed(() => downstreamBoundaries[activeStep.value - 2]);
+const effectWorkflowNodeLabels = [
+  '资料包导入',
+  'AI 信息提炼',
+  'Prompt 生成',
+  '片段渲染',
+  '模板混剪',
+  '成片生成与批量导出',
+] as const;
+const pendingStepLabel = computed(() =>
+  pendingStep.value === null ? '' : (effectWorkflowNodeLabels[pendingStep.value] ?? '目标节点'),
+);
+const activeDownstreamBoundary = computed(() =>
+  activeStep.value >= 4 ? downstreamBoundaries[activeStep.value - 2] : undefined,
+);
 const keyword = ref('');
 const selectedProductIds = ref(new Set<string>());
 const busyMaterialIds = ref(new Set<string>());
@@ -158,6 +176,9 @@ let listController: AbortController | null = null;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 let configTimer: ReturnType<typeof setTimeout> | undefined;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
+let adjacentPrefetchTimer: ReturnType<typeof setTimeout> | undefined;
+let activationSequence = 0;
+let activationQueue: Promise<void> = Promise.resolve();
 const productTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const nodeStateRevision = ref(0);
 let lastSavedNodeState = '';
@@ -214,6 +235,8 @@ const showNotice = (text: string, kind: 'error' | 'success' | 'warning' = 'succe
 const clearPendingTimers = (): void => {
   clearTimeout(configTimer);
   clearTimeout(searchTimer);
+  clearTimeout(adjacentPrefetchTimer);
+  adjacentPrefetchTimer = undefined;
   productTimers.forEach(clearTimeout);
   productTimers.clear();
 };
@@ -226,6 +249,74 @@ const beginTransition = (): void => {
 const endTransition = (): void => {
   transitionOperationCount = Math.max(0, transitionOperationCount - 1);
   transitioning.value = transitionOperationCount > 0;
+};
+
+const waitForActivationRetry = (): Promise<void> =>
+  new Promise((resolve) => globalThis.setTimeout(resolve, 600));
+
+const enqueueWorkflowNodeActivation = (
+  projectId: string,
+  workflowRunId: string,
+  nodeId: (typeof effectWorkflowNodeIds)[number],
+): void => {
+  const sequence = ++activationSequence;
+  activationQueue = activationQueue
+    .catch(() => undefined)
+    .then(async () => {
+      if (sequence !== activationSequence) return;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          await activateWorkflowNode(projectId, workflowRunId, nodeId);
+          return;
+        } catch (error) {
+          const stillCurrent =
+            sequence === activationSequence &&
+            loadedProjectId.value === projectId &&
+            workspace.value?.workflowRunId === workflowRunId;
+          if (!stillCurrent) return;
+          if (attempt === 0) {
+            await waitForActivationRetry();
+            if (sequence !== activationSequence) return;
+            continue;
+          }
+          showNotice(
+            error instanceof Error
+              ? `页面已切换，节点状态后台同步失败：${error.message}`
+              : '页面已切换，但节点状态后台同步失败，请再次切换重试',
+            'warning',
+          );
+        }
+      }
+    });
+};
+
+const scheduleAdjacentWorkspacePrefetch = (): void => {
+  clearTimeout(adjacentPrefetchTimer);
+  const projectId = loadedProjectId.value;
+  const workflowRunId = workspace.value?.workflowRunId ?? '';
+  const draftId = draft.value?.id ?? '';
+  const step = activeStep.value;
+  const productId = products.value.find((product) => product.status === 'ACTIVE')?.id ?? '';
+  if (!projectId || !workflowRunId) return;
+
+  adjacentPrefetchTimer = setTimeout(() => {
+    adjacentPrefetchTimer = undefined;
+    if (
+      loadedProjectId.value !== projectId ||
+      workspace.value?.workflowRunId !== workflowRunId ||
+      activeStep.value !== step
+    )
+      return;
+
+    const requests: Promise<unknown>[] = [];
+    if ((step === 0 || step === 2) && draftId)
+      requests.push(prefetchEffectExtractionWorkspace({ projectId, draftId }));
+    if (step === 1 || step === 3)
+      requests.push(prefetchEffectPromptWorkspace({ projectId, workflowRunId }));
+    if ((step === 2 || step === 4) && productId)
+      requests.push(prefetchEffectSegmentRenderWorkspace({ projectId, workflowRunId, productId }));
+    requests.forEach((request) => void request.catch(() => undefined));
+  }, 180);
 };
 
 const hasPendingDraftEdits = (): boolean => globalDraftBuffer.has() || productDraftBuffer.has();
@@ -512,6 +603,8 @@ const refreshRemovedProducts = async (): Promise<void> => {
 
 const loadProject = async (projectId: string): Promise<void> => {
   clearPendingTimers();
+  clearEffectWorkspacePrefetches();
+  activationSequence += 1;
   globalDraftBuffer.reset();
   productDraftBuffer.reset();
   pageController?.abort();
@@ -570,23 +663,14 @@ const loadProject = async (projectId: string): Promise<void> => {
           ? 1
           : 0;
     const activeNodeId = effectWorkflowNodeIds[activeStep.value];
-    try {
-      if (activeNodeId)
-        await activateWorkflowNode(
-          projectId,
-          workspace.value.workflowRunId,
-          activeNodeId,
-          pageController.signal,
-        );
-    } catch (error) {
-      if (!isAbortError(error))
-        showNotice(error instanceof Error ? error.message : '当前节点状态更新失败', 'error');
-    }
+    if (restoredStep < 0 && activeNodeId)
+      enqueueWorkflowNodeActivation(projectId, workspace.value.workflowRunId, activeNodeId);
     saveState.value = 'clean';
     if (workspace.value.currentMode === 'BATCH') await refreshProductList();
     await refreshRemovedProducts();
     await ensureUploadTarget();
     pageStatus.value = 'success';
+    scheduleAdjacentWorkspacePrefetch();
     const backgroundMode: EffectImportMode =
       workspace.value.currentMode === 'SINGLE' ? 'BATCH' : 'SINGLE';
     void getEffectImportDraft(projectId, backgroundMode, pageController.signal)
@@ -1341,22 +1425,19 @@ const advanceDraft = async (): Promise<void> => {
   workspace.value.currentNode = 'AI_INFO_EXTRACTION';
   workspace.value.nodeStatuses.SOURCE_IMPORT = 'COMPLETED';
   workspace.value.nodeStatuses.AI_INFO_EXTRACTION = 'AVAILABLE';
-  try {
-    await activateWorkflowNode(
-      loadedProjectId.value,
-      workspace.value.workflowRunId,
-      'INFORMATION_EXTRACTION',
-    );
-  } catch (error) {
-    showNotice(error instanceof Error ? error.message : '当前节点状态更新失败', 'error');
-    return;
-  }
   activeStep.value = 1;
   window.scrollTo({ top: 0, behavior: 'smooth' });
+  enqueueWorkflowNodeActivation(
+    loadedProjectId.value,
+    workspace.value.workflowRunId,
+    'INFORMATION_EXTRACTION',
+  );
+  scheduleAdjacentWorkspacePrefetch();
 };
 
 const selectWorkflowStep = async (step: number): Promise<void> => {
   if (step < 0 || step > 5 || step === activeStep.value || transitioning.value) return;
+  pendingStep.value = step;
   beginTransition();
   try {
     if (!(await flushPendingEdits())) {
@@ -1366,15 +1447,12 @@ const selectWorkflowStep = async (step: number): Promise<void> => {
     const workflowRunId = workspace.value?.workflowRunId;
     const nodeId = effectWorkflowNodeIds[step];
     if (!workflowRunId || !nodeId) return;
-    try {
-      await activateWorkflowNode(loadedProjectId.value, workflowRunId, nodeId);
-    } catch (error) {
-      showNotice(error instanceof Error ? error.message : '当前节点状态更新失败', 'error');
-      return;
-    }
     activeStep.value = step;
     window.scrollTo({ top: 0, behavior: 'smooth' });
+    enqueueWorkflowNodeActivation(loadedProjectId.value, workflowRunId, nodeId);
+    scheduleAdjacentWorkspacePrefetch();
   } finally {
+    pendingStep.value = null;
     endTransition();
   }
 };
@@ -1418,6 +1496,14 @@ const handleProjectSelection = async (projectId: string): Promise<void> => {
 };
 
 watch(currentProjectId, (projectId) => void handleProjectSelection(projectId), { immediate: true });
+watch(
+  () =>
+    products.value
+      .filter((product) => product.status === 'ACTIVE')
+      .map((product) => `${product.id}:${product.updatedAt}`)
+      .join('|'),
+  () => scheduleAdjacentWorkspacePrefetch(),
+);
 watch(keyword, () => {
   if (currentMode.value !== 'BATCH') return;
   clearTimeout(searchTimer);
@@ -1442,6 +1528,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', warnBeforeUnload);
   clearPendingTimers();
   clearTimeout(noticeTimer);
+  clearEffectWorkspacePrefetches();
+  activationSequence += 1;
   pageController?.abort();
   listController?.abort();
   generationGate.invalidate();
@@ -1478,39 +1566,56 @@ onBeforeUnmount(() => {
     <template v-else>
       <EffectWorkflowCanvas :active-step="activeStep" @select="selectWorkflowStep" />
 
-      <EffectInfoExtractionNodePage
-        v-if="activeStep === 1"
-        ref="infoExtractionNode"
-        :project-id="currentProjectId"
-        :workflow-run-id="workspace?.workflowRunId ?? ''"
-        :draft-id="draft?.id ?? ''"
-        :mode="currentMode"
-        :products="draft?.products ?? []"
-        @back="selectWorkflowStep(0)"
-        @next="enterPromptBoundary"
-      />
+      <Transition name="node-switch">
+        <div
+          v-if="pendingStep !== null"
+          class="node-switch-progress"
+          role="status"
+          aria-live="polite"
+        >
+          <LoaderCircle class="spin" :size="18" />
+          <span
+            ><strong>正在切换到{{ pendingStepLabel }}</strong
+            ><small>保存当前草稿并准备目标节点…</small></span
+          >
+        </div>
+      </Transition>
 
-      <EffectPromptGenerationNodePage
-        v-else-if="activeStep === 2"
-        ref="promptGenerationNode"
-        :project-id="currentProjectId"
-        :workflow-run-id="workspace?.workflowRunId ?? ''"
-        :products="products"
-        @back="selectWorkflowStep(1)"
-        @next="selectWorkflowStep(3)"
-      />
+      <KeepAlive :max="3">
+        <EffectInfoExtractionNodePage
+          v-if="activeStep === 1"
+          ref="infoExtractionNode"
+          :project-id="currentProjectId"
+          :workflow-run-id="workspace?.workflowRunId ?? ''"
+          :draft-id="draft?.id ?? ''"
+          :mode="currentMode"
+          :products="draft?.products ?? []"
+          @back="selectWorkflowStep(0)"
+          @next="enterPromptBoundary"
+        />
 
-      <EffectSegmentRenderNodePage
-        v-else-if="activeStep === 3"
-        ref="segmentRenderNode"
-        :project-id="currentProjectId"
-        :workflow-run-id="workspace?.workflowRunId ?? ''"
-        :products="products"
-        @back="selectWorkflowStep(2)"
-        @next="selectWorkflowStep(4)"
-      />
+        <EffectPromptGenerationNodePage
+          v-else-if="activeStep === 2"
+          ref="promptGenerationNode"
+          :project-id="currentProjectId"
+          :workflow-run-id="workspace?.workflowRunId ?? ''"
+          :products="products"
+          @back="selectWorkflowStep(1)"
+          @next="selectWorkflowStep(3)"
+        />
 
-      <section v-else-if="activeDownstreamBoundary" class="ai-placeholder">
+        <EffectSegmentRenderNodePage
+          v-else-if="activeStep === 3"
+          ref="segmentRenderNode"
+          :project-id="currentProjectId"
+          :workflow-run-id="workspace?.workflowRunId ?? ''"
+          :products="products"
+          @back="selectWorkflowStep(2)"
+          @next="selectWorkflowStep(4)"
+        />
+      </KeepAlive>
+
+      <section v-if="activeDownstreamBoundary" class="ai-placeholder">
         <span><Sparkles :size="23" /></span>
         <small>STEP {{ String(activeStep + 1).padStart(2, '0') }}</small>
         <h2>{{ activeDownstreamBoundary.title }}</h2>
@@ -1522,7 +1627,7 @@ onBeforeUnmount(() => {
         </button>
       </section>
 
-      <template v-else>
+      <template v-else-if="activeStep === 0">
         <section class="import-workspace-card">
           <section class="node-heading">
             <span>01</span>
@@ -1791,6 +1896,47 @@ onBeforeUnmount(() => {
   border: 1px solid #dbe4f6;
   border-radius: 26px;
   box-shadow: 0 12px 34px #7a4e3b12;
+}
+.node-switch-progress {
+  position: fixed;
+  top: 144px;
+  left: 50%;
+  z-index: 1090;
+  display: flex;
+  min-width: 290px;
+  padding: 12px 16px;
+  align-items: center;
+  gap: 11px;
+  color: #23416f;
+  background: #f8fbff;
+  border: 1px solid #bfd2fa;
+  border-radius: 13px;
+  box-shadow: 0 14px 34px #173b7930;
+  transform: translateX(-50%);
+}
+.node-switch-progress > svg {
+  flex: 0 0 auto;
+  color: var(--effect-blue);
+}
+.node-switch-progress span {
+  display: grid;
+  gap: 2px;
+}
+.node-switch-progress strong {
+  font-size: 12px;
+}
+.node-switch-progress small {
+  color: #71809a;
+  font-size: 10px;
+}
+.node-switch-enter-active,
+.node-switch-leave-active {
+  transition: 0.16s ease;
+}
+.node-switch-enter-from,
+.node-switch-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -8px);
 }
 .effect-notice {
   position: fixed;

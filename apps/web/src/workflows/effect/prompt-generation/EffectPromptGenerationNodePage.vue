@@ -53,7 +53,7 @@ import {
   Workflow,
   X,
 } from '@lucide/vue';
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, ref, watch } from 'vue';
 
 import { ApiClientError, isAbortError } from '../../../api/http-client';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
@@ -81,7 +81,7 @@ import {
   loadEffectPromptNodeDetail,
   loadEffectPromptResult,
   loadEffectPromptRun,
-  loadEffectPromptWorkspace,
+  loadEffectPromptWorkspaceSnapshot,
   pollEffectPromptRun,
   removeEffectPromptItem,
   saveEffectPromptItem,
@@ -178,6 +178,9 @@ const regenerationTrigger = ref<HTMLElement | null>(null);
 const regenerationCloseButton = ref<HTMLButtonElement | null>(null);
 
 let disposed = false;
+let nodeActive = true;
+let activatedOnce = false;
+let workspaceHydrating = false;
 let workspaceGeneration = 0;
 let resultGeneration = 0;
 let workspaceController: AbortController | null = null;
@@ -190,6 +193,7 @@ let settingsTimer: ReturnType<typeof setTimeout> | undefined;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 let graphDetailRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+let workspaceRevalidationTimer: ReturnType<typeof setTimeout> | undefined;
 const pollControllers = new Map<string, { controller: AbortController; runId: string }>();
 const settingsControllers = new Map<string, AbortController>();
 const settingsSavePromises = new Map<string, Promise<boolean>>();
@@ -633,8 +637,7 @@ const resumeRuns = async (): Promise<void> => {
     Object.values(productStates.value)
       .filter(
         (state) =>
-          state.runId &&
-          (isPromptRunActive(state) || state.productId === currentProductId.value),
+          state.runId && (isPromptRunActive(state) || state.productId === currentProductId.value),
       )
       .map(async (state) => {
         try {
@@ -651,6 +654,7 @@ const resumeRuns = async (): Promise<void> => {
 };
 
 async function reloadWorkspace(showLoading = true): Promise<void> {
+  if (!nodeActive) return;
   const generation = ++workspaceGeneration;
   workspaceController?.abort();
   const controller = new AbortController();
@@ -665,14 +669,26 @@ async function reloadWorkspace(showLoading = true): Promise<void> {
       status.value = 'ready';
       return;
     }
-    const workspace = await loadEffectPromptWorkspace(context(), controller.signal);
+    const snapshot = await loadEffectPromptWorkspaceSnapshot(context(), controller.signal);
+    const workspace = snapshot.data;
     if (generation !== workspaceGeneration || controller.signal.aborted) return;
-    applyWorkspace(workspace.products);
-    if (!activeProducts.value.some(({ id }) => id === currentProductId.value))
-      currentProductId.value = activeProducts.value[0]!.id;
-    status.value = 'ready';
-    await loadCurrentResult();
-    void resumeRuns();
+    workspaceHydrating = true;
+    try {
+      applyWorkspace(workspace.products);
+      if (!activeProducts.value.some(({ id }) => id === currentProductId.value))
+        currentProductId.value = activeProducts.value[0]!.id;
+      status.value = 'ready';
+      await loadCurrentResult();
+      void resumeRuns();
+      if (snapshot.prefetched) {
+        workspaceRevalidationTimer = setTimeout(() => {
+          workspaceRevalidationTimer = undefined;
+          if (nodeActive && generation === workspaceGeneration) void reloadWorkspace(false);
+        }, 600);
+      }
+    } finally {
+      workspaceHydrating = false;
+    }
   } catch (error) {
     if (isAbortError(error) || generation !== workspaceGeneration) return;
     status.value = 'error';
@@ -690,6 +706,7 @@ const productSignature = computed(() =>
 watch(
   productSignature,
   () => {
+    if (!nodeActive) return;
     pollControllers.forEach(({ controller }) => controller.abort());
     pollControllers.clear();
     settingsControllers.forEach((controller) => controller.abort());
@@ -720,6 +737,7 @@ watch(
   { immediate: true },
 );
 watch(currentProductId, (next, previous) => {
+  if (!nodeActive || workspaceHydrating) return;
   if (previous && previous !== next) void flushSettings(previous);
   page.value = 1;
   keyword.value = '';
@@ -1485,12 +1503,7 @@ const exportBatch = async (): Promise<void> => {
 const validatePromptBatch = async (): Promise<void> => {
   const state = currentState.value;
   const result = resultData.value;
-  if (
-    !state?.resultId ||
-    !result ||
-    result.revision === null ||
-    partialPreview.value
-  ) {
+  if (!state?.resultId || !result || result.revision === null || partialPreview.value) {
     showNotice('当前批次仍存在数量偏差、完全重复、待评估条目或事实与结构硬问题', 'warning');
     return;
   }
@@ -1917,8 +1930,9 @@ watch(
 const flushPendingEdits = async (): Promise<boolean> => flushSettings();
 defineExpose({ flushPendingEdits });
 
-onBeforeUnmount(() => {
-  disposed = true;
+const stopNodeRequests = (): void => {
+  clearTimeout(workspaceRevalidationTimer);
+  workspaceRevalidationTimer = undefined;
   workspaceGeneration += 1;
   resultGeneration += 1;
   workspaceController?.abort();
@@ -1929,6 +1943,27 @@ onBeforeUnmount(() => {
   exportController?.abort();
   graphDetailController?.abort();
   pollControllers.forEach(({ controller }) => controller.abort());
+  pollControllers.clear();
+};
+
+onActivated(() => {
+  nodeActive = true;
+  if (!activatedOnce) {
+    activatedOnce = true;
+    return;
+  }
+  void reloadWorkspace(false);
+});
+
+onDeactivated(() => {
+  nodeActive = false;
+  stopNodeRequests();
+});
+
+onBeforeUnmount(() => {
+  disposed = true;
+  nodeActive = false;
+  stopNodeRequests();
   if (settingsTimer) clearTimeout(settingsTimer);
   if (searchTimer) clearTimeout(searchTimer);
   if (noticeTimer) clearTimeout(noticeTimer);

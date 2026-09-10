@@ -22,6 +22,10 @@ from .creative_directions import (
     creative_territory_target_range,
 )
 from .insight_mapping import mandatory_business_facts
+from .execution_refinement import (
+    ExecutionEditBatch, apply_execution_edits, editable_execution_paths, execution_edit_schema,
+)
+from .product_images import PreparedProductImage
 from .supplement_recovery import direction_summary
 from .models import (
     MAX_PROMPT_DURATION_SECONDS,
@@ -87,6 +91,7 @@ from .shot_plan import ShotPlanCompilationError, compile_material_shot_plan
 TModel = TypeVar("TModel", bound=BaseModel)
 LOGGER = logging.getLogger(__name__)
 CREATIVE_BASE_PROMPT = "creative_base.system.prompt.txt"
+CREATIVE_EXECUTION_PROMPT = "creative_execution.system.prompt.txt"
 CREATIVE_TASK_PROMPT = "creative_task.user.prompt.txt"
 EXECUTION_REPAIR_PROMPT = "execution_repair.system.prompt.txt"
 EVALUATION_BASE_PROMPT = "evaluation_base.system.prompt.txt"
@@ -126,7 +131,11 @@ CREATIVE_DIRECTION_SUPPLEMENT_TASK_PROMPT = (
     "creative_direction_supplement.user.prompt.txt"
 )
 FACT_VISUAL_STRATEGY_TEMPLATE_HASH = hashlib.sha256(
-    load_prompt(FACT_VISUAL_STRATEGY_BASE_PROMPT).encode("utf-8")
+    (
+        load_prompt(FACT_VISUAL_STRATEGY_BASE_PROMPT)
+        + "\n"
+        + load_prompt(FACT_VISUAL_STRATEGY_TASK_PROMPT)
+    ).encode("utf-8")
 ).hexdigest()
 CREATIVE_DIRECTION_TEMPLATE_HASH = hashlib.sha256(
     (
@@ -252,6 +261,8 @@ class AiProvider(Protocol):
     async def compile_fact_visual_strategy(
         self,
         application: InsightApplicationMap,
+        *,
+        product_images: Sequence[PreparedProductImage] = (),
     ) -> AiCallResult[FactVisualStrategyResponse]: ...
 
     async def plan_creative_landscape(
@@ -355,6 +366,12 @@ class AiProvider(Protocol):
         shared_prompt: SharedPrompt, fact_visual_strategy: FactVisualStrategy,
     ) -> AiCallResult[ExecutionRepairDraft]: ...
 
+    async def refine_creative_execution(
+        self, candidates: list[CreativeCandidate], *, shard: CreativeShardPlan,
+        application: InsightApplicationMap, shared_prompt: SharedPrompt,
+        fact_visual_strategy: FactVisualStrategy | None = None,
+    ) -> AiCallResult[CreativeCandidateBatch]: ...
+
     async def evaluate_creatives(
         self,
         candidates: list[CreativeCandidate],
@@ -370,6 +387,15 @@ class AiProvider(Protocol):
 
 class MockAiProvider:
     execution_mode = "MOCK"
+
+    async def refine_creative_execution(
+        self, candidates: list[CreativeCandidate], *, shard: CreativeShardPlan,
+        application: InsightApplicationMap, shared_prompt: SharedPrompt,
+        fact_visual_strategy: FactVisualStrategy | None = None,
+    ) -> AiCallResult[CreativeCandidateBatch]:
+        # Explicit test identity fixture, not a semantic implementation.
+        return _mock_result(CreativeCandidateBatch(items=candidates),
+                            "COHERENT_CREATIVE_GENERATION", CREATIVE_EXECUTION_PROMPT)
 
     async def repair_creative_execution(
         self, candidate: CreativeCandidate, *, task: CreativeTask,
@@ -388,7 +414,10 @@ class MockAiProvider:
     async def compile_fact_visual_strategy(
         self,
         application: InsightApplicationMap,
+        *,
+        product_images: Sequence[PreparedProductImage] = (),
     ) -> AiCallResult[FactVisualStrategyResponse]:
+        del product_images
         return _mock_result(
             _mock_fact_visual_strategy(application),
             NodeId.FACT_VISUAL_STRATEGY_COMPILATION.value,
@@ -785,6 +814,8 @@ class ArkResponsesProvider:
         api_key: str,
         strategy_model: str,
         candidate_model: str,
+        visual_strategy_model: str | None = None,
+        visual_strategy_image_detail: str = "high",
         fragment_strategy_model: str | None = None,
         blueprint_model: str | None = None,
         evaluation_model: str | None = None,
@@ -805,6 +836,12 @@ class ArkResponsesProvider:
             raise ValueError("Ark prompt models cannot be empty")
         self._strategy_model = strategy_model.strip()
         self._candidate_model = candidate_model.strip()
+        self._visual_strategy_model = (
+            visual_strategy_model or candidate_model
+        ).strip()
+        if visual_strategy_image_detail not in {"low", "high"}:
+            raise ValueError("Ark visual strategy image detail must be low or high")
+        self._visual_strategy_image_detail = visual_strategy_image_detail
         self._fragment_strategy_model = (
             fragment_strategy_model or candidate_model
         ).strip()
@@ -837,6 +874,8 @@ class ArkResponsesProvider:
     async def compile_fact_visual_strategy(
         self,
         application: InsightApplicationMap,
+        *,
+        product_images: Sequence[PreparedProductImage] = (),
     ) -> AiCallResult[FactVisualStrategyResponse]:
         fact_aliases, fact_ids_by_alias = _fact_alias_maps(application)
         facts = []
@@ -863,19 +902,37 @@ class ArkResponsesProvider:
             FACT_VISUAL_STRATEGY_TASK_PROMPT,
             facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
         )
+        input_content: list[dict[str, Any]] = [
+            {"type": "input_text", "text": prompt}
+        ]
+        for index, image in enumerate(product_images, start=1):
+            input_content.extend(
+                [
+                    {
+                        "type": "input_text",
+                        "text": f"商品参考图 {index}",
+                    },
+                    {
+                        "type": "input_image",
+                        "image_url": image.data_uri,
+                        "detail": self._visual_strategy_image_detail,
+                    },
+                ]
+            )
         call = await self._structured(
             prompt,
             FactVisualStrategyResponse,
             schema_name="effect_prompt_fact_visual_strategy",
             stage=NodeId.FACT_VISUAL_STRATEGY_COMPILATION.value,
             prompt_file=FACT_VISUAL_STRATEGY_BASE_PROMPT,
-            model=self._candidate_model,
+            model=self._visual_strategy_model,
             max_output_tokens=min(
                 self._strategy_max_output_tokens,
                 max(4096, len(facts) * 320),
             ),
             request_timeout=self._strategy_timeout,
             instructions=load_prompt(FACT_VISUAL_STRATEGY_BASE_PROMPT),
+            input_content=input_content,
         )
         return AiCallResult(
             value=FactVisualStrategyResponse(
@@ -1993,11 +2050,11 @@ class ArkResponsesProvider:
             model=self._candidate_model,
             max_output_tokens=min(
                 self._candidate_max_output_tokens,
-                _creative_output_token_budget(shard.tasks),
+                max(4096, _creative_output_token_budget(shard.tasks)),
             ),
             request_timeout=self._candidate_timeout,
             instructions=load_prompt(creative_base_prompt),
-            response_schema=_creative_shot_response_schema(),
+            response_schema=_creative_shot_response_schema(shard.tasks),
         )
         task_by_slot = {item.slot_id: item for item in shard.tasks}
         actual = [item.slot_id for item in call.value.items]
@@ -2067,6 +2124,57 @@ class ArkResponsesProvider:
             value=CreativeCandidateBatch(items=normalized),
             metadata=call.metadata,
         )
+
+    async def refine_creative_execution(
+        self, candidates: list[CreativeCandidate], *, shard: CreativeShardPlan,
+        application: InsightApplicationMap, shared_prompt: SharedPrompt,
+        fact_visual_strategy: FactVisualStrategy | None = None,
+    ) -> AiCallResult[CreativeCandidateBatch]:
+        tasks = {task.slot_id: task for task in shard.tasks}
+        originals = {item.slot_id: item for item in candidates}
+        briefs = []
+        for candidate in candidates:
+            task = tasks[candidate.slot_id]
+            assignment = _creative_fact_assignment(task, application)
+            aliases = _creative_fact_aliases(assignment)
+            draft = candidate.model_dump(mode="json", by_alias=True,
+                                         exclude={"content", "generated_at"})
+            draft["declaredFactIds"] = [aliases[key] for key in candidate.declared_fact_ids]
+            briefs.append({
+                "task": _execution_fact_brief(
+                    task, assignment=assignment, application=application,
+                    fact_visual_strategy=fact_visual_strategy, fact_aliases=aliases),
+                "draft": draft,
+                "editablePaths": editable_execution_paths(candidate),
+            })
+        call = await self._structured(
+            json.dumps({"items": briefs, "sharedPrompt": shared_prompt.compiled_content},
+                       ensure_ascii=False),
+            ExecutionEditBatch,
+            schema_name="effect_prompt_creative_execution",
+            stage="COHERENT_CREATIVE_GENERATION",
+            prompt_file=CREATIVE_EXECUTION_PROMPT,
+            model=self._candidate_model,
+            max_output_tokens=min(self._candidate_max_output_tokens,
+                                  max(4096, _creative_output_token_budget([tasks[key] for key in originals]))),
+            request_timeout=self._candidate_timeout,
+            instructions=load_prompt(CREATIVE_EXECUTION_PROMPT),
+            response_schema=execution_edit_schema(candidates),
+        )
+        actual = [item.slot_id for item in call.value.items]
+        if len(actual) != len(set(actual)) or set(actual) != set(originals):
+            raise ProviderError("execution refinement changed candidate identity/count",
+                                error_type=ProviderErrorType.RESPONSE_INVALID, retryable=False)
+        decisions = {item.slot_id: item for item in call.value.items}
+        try:
+            revised = [apply_execution_edits(
+                original, decisions[original.slot_id],
+                duration_seconds=tasks[original.slot_id].target_duration_seconds,
+            ) for original in candidates]
+        except ValueError as exc:
+            raise ProviderError("invalid execution edit structure",
+                                error_type=ProviderErrorType.RESPONSE_INVALID, retryable=False) from exc
+        return AiCallResult(value=CreativeCandidateBatch(items=revised), metadata=call.metadata)
 
     async def repair_creative_execution(
         self, candidate: CreativeCandidate, *, task: CreativeTask,
@@ -2252,6 +2360,7 @@ class ArkResponsesProvider:
         instructions: str | None = None,
         item_count: int | None = None,
         response_schema: dict[str, Any] | None = None,
+        input_content: list[dict[str, Any]] | None = None,
     ) -> AiCallResult[TModel]:
         if model_type is CreativeDirectionResponse:
             response_schema = response_schema or model_type.model_json_schema(by_alias=True)
@@ -2260,7 +2369,12 @@ class ArkResponsesProvider:
         payload = {
             "model": model,
             "input": [
-                {"role": "user", "content": [{"type": "input_text", "text": prompt}]}
+                {
+                    "role": "user",
+                    "content": input_content
+                    if input_content is not None
+                    else [{"type": "input_text", "text": prompt}],
+                }
             ],
             "store": False,
             "max_output_tokens": max_output_tokens,
@@ -3194,6 +3308,25 @@ def _creative_task_brief(
     }
 
 
+def _execution_fact_brief(
+    task: CreativeTask, *, assignment: CreativeFactAssignment,
+    application: InsightApplicationMap, fact_visual_strategy: FactVisualStrategy | None,
+    fact_aliases: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Give the edit model facts, not the upstream filming advice it must repair."""
+    brief = _creative_task_brief(task, assignment=assignment, application=application,
+                                 fact_visual_strategy=fact_visual_strategy, fact_aliases=fact_aliases)
+    return {
+        "targetDurationSeconds": task.target_duration_seconds,
+        "productSnapshot": brief["productSnapshot"],
+        "factApplications": [
+            {key: value for key, value in fact.items() if key not in {"creativeUsage", "instruction"}}
+            for fact in brief["factApplications"]
+        ],
+        "forbiddenInferences": brief["forbiddenInferences"],
+    }
+
+
 def _product_snapshot(application: InsightApplicationMap) -> dict[str, Any]:
     values_by_field = {
         field: [fact.value for fact in application.usable if fact.field == field]
@@ -3253,12 +3386,13 @@ def _temporal_intent_for_duration(duration_seconds: int) -> dict[str, str]:
         }
     lower_chars = 120 + (duration_seconds - 9) * 7
     upper_chars = 180 + (duration_seconds - 9) * 16
-    beat_guidance = "2 个" if duration_seconds <= 11 else "2～3 个"
+    beat_guidance = "1～2 个"
     return {
         "band": "COMPLETE_ACTION",
         "guidance": (
-            f"在同一主场景和同一目标下安排 {beat_guidance}连续动作节拍，让开端、发展与结束状态"
-            "彼此衔接；不得加入第二种完整使用方法。"
+            f"在同一主场景和同一目标下，通常用 {beat_guidance}连续动作节拍完成一个英雄事件。"
+            "主体、商品与必要工具在首帧就位；过程与结果自然衔接，结果停留并入最后一个"
+            "动作节拍，不另拆一拍，不为填满时长加入第二项任务。节拍数是软建议。"
         ),
         "detailGuidance": (
             f"本次为 {duration_seconds} 秒，软参考约 {lower_chars}～{upper_chars} 个汉字："
@@ -3281,8 +3415,14 @@ def _evaluation_strategy_payload(
     ]
 
 
-def _creative_shot_response_schema() -> dict[str, Any]:
+def _creative_shot_response_schema(tasks: Sequence[CreativeTask] = ()) -> dict[str, Any]:
     schema = CreativeCandidateDraftBatch.model_json_schema(by_alias=True)
+    if tasks:
+        schema["properties"]["items"].update(minItems=len(tasks), maxItems=len(tasks))
+        draft = schema["$defs"]["CreativeCandidateDraft"]["properties"]
+        draft["slotId"]["enum"] = [task.slot_id for task in tasks]
+        draft["ordinal"]["enum"] = sorted({task.ordinal for task in tasks})
+        draft["round"]["enum"] = sorted({task.round for task in tasks})
     beat = schema["$defs"]["MaterialShotBeat"]
     beat["required"] = list(dict.fromkeys([*beat["required"], "focus", "motionSource"]))
     return schema

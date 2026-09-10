@@ -181,6 +181,7 @@ class PromptBatchSettings(ApiModel):
 
 
 class InsightField(StrEnum):
+    SELLING_POINT = "SELLING_POINT"
     PRODUCT_NAME = "PRODUCT_NAME"
     PRODUCT_CATEGORY = "PRODUCT_CATEGORY"
     CORE_SPECIFICATION = "CORE_SPECIFICATION"
@@ -220,7 +221,7 @@ class InsightBindingRole(StrEnum):
 class InsightReference(ApiModel):
     fact_id: str = Field(min_length=1, max_length=120)
     field: InsightField
-    value: str = Field(min_length=1, max_length=500)
+    value: str = Field(min_length=1, max_length=1000)
     value_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
@@ -298,14 +299,14 @@ class FactVisualPolicyDraft(ApiModel):
 
 
 class FactVisualStrategyResponse(ApiModel):
-    policies: list[FactVisualPolicyDraft] = Field(min_length=1, max_length=80)
+    policies: list[FactVisualPolicyDraft] = Field(min_length=1, max_length=105)
 
 
 class FactVisualStrategy(ApiModel):
     source_content_hash: str = Field(min_length=1, max_length=128)
     template_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     strategy_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
-    policies: list[FactVisualPolicyDraft] = Field(min_length=1, max_length=80)
+    policies: list[FactVisualPolicyDraft] = Field(min_length=1, max_length=105)
 
     @property
     def by_id(self) -> dict[str, FactVisualPolicyDraft]:
@@ -528,6 +529,20 @@ class InsightArtifact(ApiModel):
     result: dict[str, Any]
 
 
+class ProductImageReference(ApiModel):
+    file_object_id: str = Field(min_length=1)
+    original_file_name: str = Field(min_length=1, max_length=255)
+    mime_type: Literal[
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/vnd.adobe.photoshop",
+        "application/octet-stream",
+    ]
+    size_bytes: int = Field(ge=1)
+    sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+
+
 class PromptGenerationSnapshot(ApiModel):
     project_id: str
     workflow_run_id: str
@@ -536,6 +551,11 @@ class PromptGenerationSnapshot(ApiModel):
     target_item_id: str | None = None
     settings: PromptBatchSettings
     insight_artifact: InsightArtifact
+    product_images: list[ProductImageReference] = Field(default_factory=list)
+    fact_visual_strategy_source_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{64}$",
+    )
     retained_manual_items: list[PromptItem] = Field(
         default_factory=list, max_length=200
     )
@@ -588,6 +608,10 @@ class PromptGenerationSnapshot(ApiModel):
 
     @model_validator(mode="after")
     def validate_operation(self) -> PromptGenerationSnapshot:
+        if self.product_images and self.fact_visual_strategy_source_hash is None:
+            raise ValueError(
+                "factVisualStrategySourceHash is required when productImages are present"
+            )
         if (
             self.operation in {"ITEM_REGENERATE", "ITEM_EVALUATE"}
             and not self.target_item_id
@@ -740,8 +764,8 @@ class CreativeFactTerritoryAssignment(ApiModel):
 
 class CreativeFactTerritoryAssignmentResponse(ApiModel):
     assignments: list[CreativeFactTerritoryAssignment] = Field(
-        min_length=1,
-        max_length=80,
+        min_length=0,
+        max_length=100,
     )
 
 
@@ -1524,7 +1548,7 @@ class CreativeEvaluationDraft(ApiModel):
     # Accept a primary-inclusive response too; normalization below only removes
     # duplicate IDs/the primary ID, never infers another purpose.
     compatible_purposes: list[FragmentType] = Field(default_factory=list, max_length=4)
-    fact_evidence: list[FactEvidence] = Field(default_factory=list, max_length=8)
+    fact_evidence: list[FactEvidence] = Field(default_factory=list, max_length=12)
     scores: CreativeScores
     semantic_profile: CreativeSemanticProfile | None = None
     abstract_visual_proof_findings: list[AbstractVisualProofFinding] = Field(

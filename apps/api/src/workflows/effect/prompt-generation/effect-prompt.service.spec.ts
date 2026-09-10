@@ -1204,7 +1204,7 @@ describe('EffectPromptService settings contract', () => {
       'product-a',
       1,
       10,
-      '果肉悬念 核心卖点 酸甜咸鲜 5秒',
+      '果肉悬念 卖点 酸甜咸鲜 5秒',
     );
     expect(businessFields.items.map(({ id }) => id)).toEqual(['hook-kitchen']);
 

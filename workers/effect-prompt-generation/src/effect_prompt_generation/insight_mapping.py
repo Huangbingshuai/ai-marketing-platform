@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import re
-import unicodedata
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
@@ -20,12 +18,8 @@ from .models import (
     PromptItem,
 )
 
-_UNCERTAIN = re.compile(
-    r"(?:需确认|待确认|待核实|未知|未提供|暂无|不确定|无法判断|可能|推测|待补充|n/?a|unknown)",
-    re.IGNORECASE,
-)
-
 _ELIGIBLE: dict[InsightField, tuple[FragmentType, ...]] = {
+    InsightField.SELLING_POINT: tuple(FragmentType),
     InsightField.PRODUCT_NAME: (
         FragmentType.PRODUCT_DISPLAY,
         FragmentType.EFFECT,
@@ -76,6 +70,7 @@ _ELIGIBLE: dict[InsightField, tuple[FragmentType, ...]] = {
 }
 
 _PRIMARY_FIELDS = {
+    InsightField.SELLING_POINT,
     InsightField.PRODUCT_NAME,
     InsightField.PRODUCT_CATEGORY,
     InsightField.CORE_SELLING_POINT,
@@ -88,15 +83,8 @@ _EVIDENCE_FIELDS = {InsightField.TRUST_BACKING}
 # These are the business facts that make a Prompt materially use the upstream
 # insight card. Product identity/specification alone is not deep coverage.
 MANDATORY_BUSINESS_FIELDS = {
+    InsightField.SELLING_POINT,
     InsightField.CORE_SELLING_POINT,
-    InsightField.SECONDARY_SELLING_POINT,
-    InsightField.TARGET_AUDIENCE,
-    InsightField.CORE_PAIN_POINT,
-    InsightField.DECISION_DRIVER,
-    InsightField.MARKETING_GOAL,
-    InsightField.USAGE_SCENARIO,
-    InsightField.PURCHASE_SCENARIO,
-    InsightField.EMOTIONAL_SCENARIO,
 }
 
 
@@ -114,12 +102,6 @@ def map_insight(payload: Mapping[str, Any]) -> InsightApplicationMap:
         value = _clean_value(raw)
         if not value:
             return None
-        if _UNCERTAIN.search(value):
-            fact = _fact(
-                field, value, InsightFactPolicy.EXCLUDED, exclusion_reason="UNCERTAIN"
-            )
-            excluded.append(fact)
-            return fact
         fact = _fact(field, value, policy)
         {
             InsightFactPolicy.REQUIRED: required,
@@ -154,72 +136,41 @@ def map_insight(payload: Mapping[str, Any]) -> InsightApplicationMap:
         InsightFactPolicy.REQUIRED,
     )
 
-    _add_values(
-        payload,
-        ("coreSellingPoints", "core_selling_points"),
-        InsightField.CORE_SELLING_POINT,
-        InsightFactPolicy.REQUIRED,
-        add_value,
-    )
-    _add_values(
-        payload,
-        ("secondarySellingPoints", "secondary_selling_points"),
-        InsightField.SECONDARY_SELLING_POINT,
-        InsightFactPolicy.REQUIRED,
-        add_value,
-    )
-    _add_values(
-        payload,
-        ("trustBackings", "trust_backings"),
-        InsightField.TRUST_BACKING,
-        InsightFactPolicy.ADAPTIVE,
-        add_value,
-    )
-    target_audiences = _values(payload, "targetAudiences", "target_audiences")
-    if target_audiences:
-        for target_audience in target_audiences:
-            add_value(
-                InsightField.TARGET_AUDIENCE,
-                target_audience,
-                InsightFactPolicy.REQUIRED,
-            )
-    else:
+    selling_points = _values(payload, "sellingPoints", "selling_points")
+    if "sellingPoints" not in payload and "selling_points" not in payload:
+        # Defensive support for already-claimed jobs created before the API read
+        # boundary started projecting the old information-card fields. Every
+        # usable value is flattened into the same current selling-point stream;
+        # the old field names do not retain priority or downstream semantics.
+        selling_points = _values(
+            payload,
+            "coreSellingPoints",
+            "core_selling_points",
+            "secondarySellingPoints",
+            "secondary_selling_points",
+            "trustBackings",
+            "trust_backings",
+            "targetAudiences",
+            "target_audiences",
+            "corePainPoints",
+            "core_pain_points",
+            "decisionDrivers",
+            "decision_drivers",
+            "usageScenarios",
+            "usage_scenarios",
+            "purchaseScenarios",
+            "purchase_scenarios",
+            "emotionalScenarios",
+            "emotional_scenarios",
+        )
+        if "targetAudiences" not in payload and "target_audiences" not in payload:
+            selling_points.extend(_values(payload, "targetAudience", "target_audience"))
+    for value in selling_points:
         add_value(
-            InsightField.TARGET_AUDIENCE,
-            _first(payload, "targetAudience", "target_audience"),
+            InsightField.SELLING_POINT,
+            value,
             InsightFactPolicy.REQUIRED,
         )
-    _add_values(
-        payload,
-        ("corePainPoints", "core_pain_points"),
-        InsightField.CORE_PAIN_POINT,
-        InsightFactPolicy.REQUIRED,
-        add_value,
-    )
-    _add_values(
-        payload,
-        ("decisionDrivers", "decision_drivers"),
-        InsightField.DECISION_DRIVER,
-        InsightFactPolicy.REQUIRED,
-        add_value,
-    )
-    add_value(
-        InsightField.MARKETING_GOAL,
-        _first(payload, "marketingGoal", "marketing_goal"),
-        InsightFactPolicy.REQUIRED,
-    )
-
-    for keys, field in (
-        (("usageScenarios", "usage_scenarios"), InsightField.USAGE_SCENARIO),
-        (("purchaseScenarios", "purchase_scenarios"), InsightField.PURCHASE_SCENARIO),
-        (
-            ("emotionalScenarios", "emotional_scenarios"),
-            InsightField.EMOTIONAL_SCENARIO,
-        ),
-    ):
-        values = _values(payload, *keys)
-        for value in values:
-            add_value(field, value, InsightFactPolicy.REQUIRED)
 
     return InsightApplicationMap(
         required=_dedupe(required),
@@ -253,7 +204,9 @@ def insight_coverage(
         _reference(fact) for fact in application.usable if fact.fact_id in required_ids
     ]
     adaptive = [
-        _reference(fact) for fact in application.usable if fact.fact_id not in required_ids
+        _reference(fact)
+        for fact in application.usable
+        if fact.fact_id not in required_ids
     ]
     return InsightCoverage(
         required=required,
@@ -381,11 +334,11 @@ def _clean_value(value: object) -> str:
         return str(value)
     if not isinstance(value, str):
         return ""
-    return " ".join(value.split())[:500]
+    return value.strip()
 
 
 def _normalized(value: str) -> str:
-    return re.sub(r"\s+", " ", unicodedata.normalize("NFC", value).strip().casefold())
+    return value.strip()
 
 
 def _dedupe(facts: Sequence[InsightFact]) -> list[InsightFact]:

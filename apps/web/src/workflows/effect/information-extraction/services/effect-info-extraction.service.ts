@@ -13,6 +13,11 @@ import {
   startEffectExtractionRun,
   updateEffectExtractionResult,
 } from '../api/effect-info-extraction.api';
+import {
+  loadEffectWorkspaceSnapshot,
+  prefetchEffectWorkspace,
+  type EffectWorkspaceSnapshot,
+} from '../../shared/effect-workspace-prefetch';
 
 export type EffectExtractionContext = {
   projectId: string;
@@ -56,6 +61,26 @@ export const loadEffectExtractionWorkspace = async (
   signal?: AbortSignal,
 ): Promise<GetEffectExtractionWorkspaceData> =>
   (await getEffectExtractionWorkspace(context.projectId, context.draftId, signal)).data;
+
+const extractionWorkspacePrefetchKey = (context: EffectExtractionContext): string =>
+  `effect-info:${encodeURIComponent(context.projectId)}:${encodeURIComponent(context.draftId)}`;
+
+export const prefetchEffectExtractionWorkspace = (
+  context: EffectExtractionContext,
+): Promise<GetEffectExtractionWorkspaceData> =>
+  prefetchEffectWorkspace(extractionWorkspacePrefetchKey(context), () =>
+    loadEffectExtractionWorkspace(context),
+  );
+
+export const loadEffectExtractionWorkspaceSnapshot = (
+  context: EffectExtractionContext,
+  signal?: AbortSignal,
+): Promise<EffectWorkspaceSnapshot<GetEffectExtractionWorkspaceData>> =>
+  loadEffectWorkspaceSnapshot(
+    extractionWorkspacePrefetchKey(context),
+    (requestSignal) => loadEffectExtractionWorkspace(context, requestSignal),
+    signal,
+  );
 
 export const beginEffectExtraction = async (
   context: EffectExtractionContext,

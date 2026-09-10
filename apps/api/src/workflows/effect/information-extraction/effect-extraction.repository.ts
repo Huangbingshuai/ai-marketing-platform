@@ -29,11 +29,10 @@ import type {
 import {
   applyEffectExtractionManualOverrides,
   canonicalHash,
-  effectExtractionDefaultsFromConfig,
   extractionSourceFingerprint,
   isSupportedExtractionMaterial,
   manualOverridesForResult,
-  toEffectExtractionResultV2,
+  normalizeEffectExtractionResult,
 } from './effect-extraction.validation';
 
 const json = (value: unknown): Prisma.InputJsonValue => value as Prisma.InputJsonValue;
@@ -260,12 +259,6 @@ export class EffectExtractionRepository {
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         select: { manualOverrides: true, generatedResult: true, draftResult: true },
       });
-      const resultDefaults = effectExtractionDefaultsFromConfig(
-        mergeEffectVideoConfig(
-          draft.globalConfig as EffectVideoConfig,
-          product.configOverride as EffectVideoConfigOverride,
-        ),
-      );
       const storedOverrides =
         previousResult?.manualOverrides &&
         typeof previousResult.manualOverrides === 'object' &&
@@ -276,8 +269,8 @@ export class EffectExtractionRepository {
         Object.keys(storedOverrides).length > 0 || !previousResult
           ? storedOverrides
           : manualOverridesForResult(
-              toEffectExtractionResultV2(previousResult.generatedResult, resultDefaults),
-              toEffectExtractionResultV2(previousResult.draftResult, resultDefaults),
+              normalizeEffectExtractionResult(previousResult.generatedResult),
+              normalizeEffectExtractionResult(previousResult.draftResult),
             );
       const snapshot: EffectExtractionInputSnapshot = {
         schemaVersion: EFFECT_EXTRACTION_SCHEMA_VERSION,
@@ -689,22 +682,11 @@ export class EffectExtractionRepository {
       )
         return { kind: 'LEASE_CONFLICT' as const };
       const snapshot = run.inputSnapshot as EffectExtractionInputSnapshot;
-      const config = snapshot.globalVideoConfig ?? snapshot.product.effectiveConfig;
-      const defaults = effectExtractionDefaultsFromConfig(config);
-      const candidate = toEffectExtractionResultV2(input.result, defaults);
+      const candidate = normalizeEffectExtractionResult(input.result);
       const generatedResult: EffectExtractionResult = {
         ...candidate,
         productName: snapshot.product.name.trim() || candidate.productName,
         productCategory: snapshot.product.category.trim() || candidate.productCategory,
-        durationSeconds: config.durationSeconds,
-        aspectRatio: config.aspectRatio,
-        resolution: config.resolution,
-        deliveryChannels: config.deliveryChannel,
-        disabledElements: [...new Set([...config.disabledElements, ...candidate.disabledElements])],
-        visualStyleBaseline:
-          config.styleTone && !candidate.visualStyleBaseline.includes(config.styleTone)
-            ? `${config.styleTone}；${candidate.visualStyleBaseline}`.replace(/；$/, '')
-            : candidate.visualStyleBaseline || config.styleTone,
       };
       const manualOverrides = snapshot.manualOverrides ?? {};
       const draftResult = applyEffectExtractionManualOverrides(generatedResult, manualOverrides);

@@ -23,23 +23,7 @@ const extractionResult = {
   coreSpecification: '100g',
   priceRange: '建议 10-20 元，需确认',
   visualFeatures: '红色包装',
-  coreSellingPoints: ['卖点一'],
-  secondarySellingPoints: [],
-  trustBackings: [],
-  targetAudience: '家庭用户',
-  targetAudiences: ['家庭用户'],
-  corePainPoints: ['备餐麻烦'],
-  decisionDrivers: ['包装便利'],
-  marketingGoal: '促进转化',
-  usageScenarios: ['家庭聚餐'],
-  purchaseScenarios: ['日常囤货'],
-  emotionalScenarios: ['家庭分享'],
-  durationSeconds: 15,
-  aspectRatio: '9:16',
-  resolution: '1080p',
-  deliveryChannels: '抖音',
-  disabledElements: ['系统禁用词'],
-  visualStyleBaseline: '烟火食欲感',
+  sellingPoints: ['卖点一', '家庭用户', '备餐麻烦', '包装便利', '家庭聚餐'],
 };
 
 const runRecord = {
@@ -367,7 +351,7 @@ describe('EffectExtractionService', () => {
                         {
                           candidate: {
                             priceRange: '20 元/袋',
-                            coreSellingPoints: ['用户卖点'],
+                            sellingPoints: ['用户卖点'],
                           },
                         },
                       ],
@@ -381,9 +365,12 @@ describe('EffectExtractionService', () => {
                           sourceId: 'image-a',
                           candidate: {
                             visualFeatures: '肥瘦颗粒分明',
-                            coreSellingPoints: ['切面纹理清晰'],
-                            secondarySellingPoints: ['外观油润有光泽', '可迁移建议'],
-                            corePainPoints: ['家庭蒸食准备费时'],
+                            sellingPoints: [
+                              '切面纹理清晰',
+                              '外观油润有光泽',
+                              '可迁移建议',
+                              '家庭蒸食准备费时',
+                            ],
                           },
                         },
                       ],
@@ -395,30 +382,21 @@ describe('EffectExtractionService', () => {
                       metadata: {
                         userFactNotices: [
                           {
-                            factId: 'user-coreSellingPoints-01',
-                            field: 'coreSellingPoints',
+                            factId: 'user-sellingPoints-01',
+                            field: 'sellingPoints',
                             value: '用户卖点',
                             issue: 'POSSIBLE_OVERLAP',
-                            relatedFactIds: ['user-secondarySellingPoints-01'],
+                            relatedFactIds: ['user-sellingPoints-02'],
                             relatedValues: ['同层次要卖点'],
                             suggestedField: null,
                           },
                           {
-                            factId: 'user-emotionalScenarios-01',
-                            field: 'emotionalScenarios',
+                            factId: 'user-sellingPoints-06',
+                            field: 'sellingPoints',
                             value: '春节团圆与送礼心意',
                             issue: 'AMBIGUOUS_EXPRESSION',
                             relatedFactIds: [],
                             relatedValues: [],
-                            suggestedField: null,
-                          },
-                          {
-                            factId: 'user-emotionalScenarios-01',
-                            field: 'emotionalScenarios',
-                            value: '春节团圆与送礼心意',
-                            issue: 'POSSIBLE_OVERLAP',
-                            relatedFactIds: ['user-corePainPoints-01'],
-                            relatedValues: ['用户层事实'],
                             suggestedField: null,
                           },
                         ],
@@ -440,16 +418,17 @@ describe('EffectExtractionService', () => {
                     productCategory: '测试品类',
                     priceRange: '20 元/袋',
                     visualFeatures: '肥瘦颗粒分明',
-                    coreSellingPoints: ['用户卖点'],
-                    secondarySellingPoints: ['切面纹理清晰', '外观油润有光泽'],
-                    corePainPoints: ['家庭蒸食准备费时'],
-                    decisionDrivers: ['可迁移建议'],
-                    emotionalScenarios: ['春节团圆与送礼心意'],
+                    sellingPoints: [
+                      '用户卖点',
+                      '切面纹理清晰',
+                      '外观油润有光泽',
+                      '家庭蒸食准备费时',
+                      '可迁移建议',
+                      '春节团圆与送礼心意',
+                    ],
                   },
                   generatedResult: extractionResult,
-                  manualOverrides: {
-                    emotionalScenarios: ['春节团圆与送礼心意'],
-                  },
+                  manualOverrides: {},
                   sourceFingerprint: 'fingerprint-a',
                 },
               },
@@ -496,7 +475,6 @@ describe('EffectExtractionService', () => {
         productName: 'USER_FACT',
         priceRange: 'USER_FACT',
         visualFeatures: 'AI_IMAGE_SUGGESTION',
-        durationSeconds: 'USER_FACT',
       },
       fieldSourceNames: {
         productName: ['资料导入表单'],
@@ -504,7 +482,7 @@ describe('EffectExtractionService', () => {
         visualFeatures: ['腊肠切面.png'],
       },
       itemOrigins: {
-        coreSellingPoints: [
+        sellingPoints: [
           {
             value: '用户卖点',
             origin: 'USER_FACT',
@@ -519,8 +497,6 @@ describe('EffectExtractionService', () => {
               },
             ],
           },
-        ],
-        secondarySellingPoints: [
           {
             value: '切面纹理清晰',
             origin: 'AI_IMAGE_SUGGESTION',
@@ -531,26 +507,20 @@ describe('EffectExtractionService', () => {
             origin: 'AI_IMAGE_SUGGESTION',
             sourceNames: ['腊肠切面.png'],
           },
-        ],
-        corePainPoints: [
           {
             value: '家庭蒸食准备费时',
             origin: 'AI_IMAGE_SUGGESTION',
             sourceNames: ['腊肠切面.png'],
           },
-        ],
-        decisionDrivers: [
           {
             value: '可迁移建议',
             origin: 'AI_IMAGE_SUGGESTION',
             sourceNames: ['腊肠切面.png'],
           },
-        ],
-        emotionalScenarios: [
           {
             value: '春节团圆与送礼心意',
             origin: 'USER_FACT',
-            sourceNames: ['人工修改'],
+            sourceNames: ['用户资料'],
             semanticNotices: [
               {
                 issue: 'AMBIGUOUS_EXPRESSION',
@@ -817,28 +787,10 @@ describe('EffectExtractionService', () => {
     expect(repository.result).not.toHaveBeenCalled();
   });
 
-  it('keeps user-selected production rules as field-level overrides', async () => {
-    const config = {
-      aspectRatio: '9:16',
-      durationSeconds: 15,
-      resolution: '1080P',
-      frameRate: 30,
-      subtitleStrategy: '跟随口播',
-      voiceoverStrategy: 'AI 女声',
-      bgmStrategy: '自动匹配',
-      styleTone: '烟火食欲感',
-      deliveryChannel: '抖音',
-      disabledElements: ['系统禁用词'],
-    };
+  it('keeps manually edited unified selling points as field-level overrides', async () => {
     const editedResult = {
       ...extractionResult,
-      coreSellingPoints: ['卖点一', '卖点二', '卖点三', '人工补充卖点'],
-      usageScenarios: ['蒸制', '煲仔饭', '炒制', '家庭聚餐', '日常佐餐', '人工补充场景'],
-      durationSeconds: 40,
-      aspectRatio: '3:4',
-      deliveryChannels: '快手',
-      visualStyleBaseline: '国潮新中式',
-      disabledElements: ['人工禁用词'],
+      sellingPoints: ['卖点一', '人工补充卖点', '适合煲仔饭'],
     };
     const repository = {
       result: vi.fn().mockResolvedValue({
@@ -847,20 +799,14 @@ describe('EffectExtractionService', () => {
         generatedResult: extractionResult,
       }),
       run: vi.fn().mockResolvedValue({
-        inputSnapshot: {
-          globalVideoConfig: config,
-          product: { effectiveConfig: config },
-        },
+        inputSnapshot: {},
       }),
       updateResult: vi.fn().mockResolvedValue({
         id: 'result-a',
         runId: 'run-a',
         productId: 'product-a',
         revision: 2,
-        draftResult: {
-          ...editedResult,
-          disabledElements: ['系统禁用词', '人工禁用词'],
-        },
+        draftResult: editedResult,
         savedAt: new Date('2026-08-25T08:00:00.000Z'),
       }),
     } as unknown as EffectExtractionRepository;
@@ -873,24 +819,10 @@ describe('EffectExtractionService', () => {
 
     const result = await service.updateResult('project-a', 'result-a', 1, editedResult);
 
-    expect(repository.updateResult).toHaveBeenCalledWith(
-      'project-a',
-      'result-a',
-      1,
-      { ...editedResult, disabledElements: ['系统禁用词', '人工禁用词'] },
-      expect.objectContaining({
-        durationSeconds: 40,
-        aspectRatio: '3:4',
-        deliveryChannels: '快手',
-        visualStyleBaseline: '国潮新中式',
-      }),
-    );
-    expect(result.result).toMatchObject({
-      durationSeconds: 40,
-      aspectRatio: '3:4',
-      deliveryChannels: '快手',
-      visualStyleBaseline: '国潮新中式',
+    expect(repository.updateResult).toHaveBeenCalledWith('project-a', 'result-a', 1, editedResult, {
+      sellingPoints: editedResult.sellingPoints,
     });
+    expect(result.result).toEqual(editedResult);
   });
 
   it('maps a stale revision to a conflict and does not create a response run', async () => {
@@ -1126,10 +1058,7 @@ describe('EffectExtractionService', () => {
     expect(storagePort.put).not.toHaveBeenCalled();
   });
 
-  it('completes a legacy schema-v2 worker result without resolution', async () => {
-    const legacyResult = Object.fromEntries(
-      Object.entries(extractionResult).filter(([key]) => key !== 'resolution'),
-    );
+  it('completes a current worker result without adding production fields', async () => {
     const storedResult = {
       id: 'result-a',
       projectId: 'project-a',
@@ -1154,7 +1083,7 @@ describe('EffectExtractionService', () => {
 
     await expect(
       service.complete('project-a', 'run-a', 'attempt-a', {
-        result: legacyResult as typeof extractionResult,
+        result: extractionResult,
         provenance: {},
         conflictReport: [],
         warnings: [],
@@ -1164,49 +1093,7 @@ describe('EffectExtractionService', () => {
       'project-a',
       'run-a',
       'attempt-a',
-      expect.objectContaining({ result: legacyResult }),
-    );
-  });
-
-  it('completes a worker result created before canonical target audience arrays', async () => {
-    const legacyResult = Object.fromEntries(
-      Object.entries(extractionResult).filter(([key]) => key !== 'targetAudiences'),
-    );
-    const storedResult = {
-      id: 'result-a',
-      projectId: 'project-a',
-      draftId: 'draft-a',
-      productId: 'product-a',
-      revision: 1,
-      draftResult: extractionResult,
-    };
-    const repository = {
-      complete: vi.fn().mockResolvedValue({ kind: 'COMPLETED', result: storedResult }),
-      workflowRunForDraft: vi.fn().mockResolvedValue(null),
-    } as unknown as EffectExtractionRepository;
-    const progressStore = {
-      delete: vi.fn().mockResolvedValue(undefined),
-    } as unknown as JobProgressStore;
-    const service = new EffectExtractionService(
-      repository,
-      projectService(),
-      progressStore,
-      storage,
-    );
-
-    await expect(
-      service.complete('project-a', 'run-a', 'attempt-a', {
-        result: legacyResult as typeof extractionResult,
-        provenance: {},
-        conflictReport: [],
-        warnings: [],
-      }),
-    ).resolves.toEqual({ extractResultId: 'result-a' });
-    expect(repository.complete).toHaveBeenCalledWith(
-      'project-a',
-      'run-a',
-      'attempt-a',
-      expect.objectContaining({ result: legacyResult }),
+      expect.objectContaining({ result: extractionResult }),
     );
   });
 });
