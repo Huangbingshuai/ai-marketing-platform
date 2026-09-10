@@ -47,6 +47,27 @@ def test_fusion_applies_priority_and_stable_deduplication() -> None:
     assert any("product_name conflict" in warning for warning in result.warnings)
 
 
+def test_fusion_caps_selling_points_across_all_sources() -> None:
+    result = fuse(
+        [
+            branch(
+                BranchName.DOCUMENT,
+                candidate(
+                    selling_points=[f"文档卖点 {index}" for index in range(1, 41)]
+                ),
+            ),
+            branch(
+                BranchName.IMAGE,
+                candidate(selling_points=["图片补充卖点"]),
+            ),
+        ]
+    )
+
+    assert result.candidate.selling_points == [
+        f"文档卖点 {index}" for index in range(1, 41)
+    ]
+
+
 def test_fusion_requires_at_least_one_usable_source() -> None:
     try:
         fuse([])

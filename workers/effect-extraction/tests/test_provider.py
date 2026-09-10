@@ -42,6 +42,11 @@ def test_extraction_result_matches_public_length_and_uniqueness_limits() -> None
         ExtractionResult(**base, selling_points=["字" * 1001])
     with pytest.raises(ValueError):
         ExtractionResult(
+            **base,
+            selling_points=[f"卖点 {index}" for index in range(1, 42)],
+        )
+    with pytest.raises(ValueError):
+        ExtractionResult(
             **{**base, "product_name": "字" * 501}, selling_points=["卖点"]
         )
 

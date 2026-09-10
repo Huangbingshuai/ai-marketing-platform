@@ -1535,7 +1535,13 @@ onBeforeUnmount(() => {
         <section class="content-block selling-layer-card">
           <div class="block-heading compact">
             <div>
-              <h3>卖点</h3>
+              <div class="selling-heading-row">
+                <h3>卖点</h3>
+                <span class="selling-point-count">
+                  {{ visibleResult.sellingPoints.length }} /
+                  {{ EFFECT_EXTRACTION_MAX_SELLING_POINTS }}
+                </span>
+              </div>
               <p>这些卖点可用于后续视频创作，您可以按需修改、添加或删除。</p>
             </div>
             <button
@@ -2416,6 +2422,26 @@ select {
 }
 .block-heading.compact {
   margin-bottom: 0;
+}
+.selling-heading-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.selling-point-count {
+  display: inline-flex;
+  min-width: 50px;
+  height: 24px;
+  padding: 0 9px;
+  align-items: center;
+  justify-content: center;
+  color: #55709a;
+  background: #f2f6fd;
+  border: 1px solid #dbe5f5;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1;
 }
 .block-heading button {
   display: inline-flex;

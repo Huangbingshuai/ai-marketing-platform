@@ -85,8 +85,12 @@ export const isSupportedExtractionMaterial = (
     mime.startsWith('image/') ||
     mime === 'application/pdf' ||
     mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    mime === 'text/markdown' ||
+    mime === 'text/plain' ||
     name.endsWith('.pdf') ||
-    name.endsWith('.docx')
+    name.endsWith('.docx') ||
+    name.endsWith('.md') ||
+    name.endsWith('.txt')
   );
 };
 

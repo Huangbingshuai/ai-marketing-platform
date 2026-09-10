@@ -151,10 +151,14 @@ describe('effect extraction validation', () => {
     expect(safeTokenEquals(undefined, 'worker-secret')).toBe(false);
   });
 
-  it('limits the extraction snapshot to images, PDF and DOCX inputs', () => {
+  it('limits the extraction snapshot to images and supported product documents', () => {
     expect(isSupportedExtractionMaterial('image/png', 'front.png')).toBe(true);
     expect(isSupportedExtractionMaterial('application/pdf', 'manual')).toBe(true);
     expect(isSupportedExtractionMaterial('application/octet-stream', 'manual.docx')).toBe(true);
+    expect(isSupportedExtractionMaterial('text/plain', 'product-article.txt')).toBe(true);
+    expect(isSupportedExtractionMaterial('application/octet-stream', 'product-article.md')).toBe(
+      true,
+    );
     expect(isSupportedExtractionMaterial('video/mp4', 'reference.mp4')).toBe(false);
   });
 });

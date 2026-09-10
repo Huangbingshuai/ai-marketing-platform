@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import asyncio
-from typing import Any
-
 import aio_pika
 from aio_pika.abc import AbstractIncomingMessage, AbstractRobustConnection
 from langgraph.graph.state import CompiledStateGraph
@@ -89,8 +87,30 @@ class ExtractionConsumer:
                 await heartbeat
             if not isinstance(result, dict) or not result.get("extract_result_id"):
                 raise PipelineError("graph completed without extract_result_id")
-        except (json.JSONDecodeError, ValidationError) as exc:
+        except json.JSONDecodeError as exc:
             logger.warning("rejecting malformed extraction message: %s", type(exc).__name__)
+            await message.reject(requeue=False)
+            return
+        except ValidationError as exc:
+            if request is None:
+                logger.warning(
+                    "rejecting malformed extraction message validation=%s",
+                    [
+                        {"loc": item.get("loc"), "type": item.get("type")}
+                        for item in exc.errors(include_input=False)
+                    ],
+                )
+                await message.reject(requeue=False)
+                return
+            logger.exception(
+                "effect extraction contract validation failed run_id=%s",
+                request.run_id,
+            )
+            if context is not None:
+                try:
+                    await self._pipeline.mark_failed(context, exc)
+                except Exception:
+                    logger.exception("failed to persist extraction validation failure")
             await message.reject(requeue=False)
             return
         except Exception as exc:

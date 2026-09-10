@@ -63,6 +63,33 @@ def test_returns_none_for_unstructured_markdown_so_ai_can_handle_it() -> None:
     )
 
 
+def test_structured_information_card_caps_selling_points_at_forty() -> None:
+    points = "\n".join(f"- 卖点 {index}" for index in range(1, 46))
+    markdown = f"""
+### 产品名称
+测试商品
+
+### 产品品类
+测试品类
+
+### 核心规格
+500g
+
+### 价格信息
+20 元
+
+### 卖点
+{points}
+"""
+
+    result = extract_structured_document_facts(markdown)
+
+    assert result is not None
+    assert len(result.selling_points or []) == 40
+    assert result.selling_points is not None
+    assert result.selling_points[-1] == "卖点 40"
+
+
 def test_extracts_docling_heading_and_list_information_card() -> None:
     markdown = """
 # 广式腊肠产品资料

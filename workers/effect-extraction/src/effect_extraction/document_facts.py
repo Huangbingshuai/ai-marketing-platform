@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from .models import ExtractionCandidate
+from .models import MAX_SELLING_POINTS, ExtractionCandidate
 
 _MARKDOWN_DECORATION = re.compile(r"(?:\*\*|__|`)")
 _TABLE_SEPARATOR = re.compile(r"^:?-{3,}:?$")
@@ -179,9 +179,9 @@ def merge_document_candidates(
                 continue
             seen.add(canonical)
             selling_points.append(cleaned)
-            if len(selling_points) == 100:
+            if len(selling_points) == MAX_SELLING_POINTS:
                 break
-        if len(selling_points) == 100:
+        if len(selling_points) == MAX_SELLING_POINTS:
             break
     merged.selling_points = selling_points or None
     return merged
@@ -292,7 +292,7 @@ def _store_value(parsed: dict[str, object], field_name: str, value: str) -> None
         existing = parsed.get(field_name)
         parsed[field_name] = _dedupe_items(
             [*(existing if isinstance(existing, list) else []), *items]
-        )
+        )[:MAX_SELLING_POINTS]
         return
 
     if field_name not in parsed:

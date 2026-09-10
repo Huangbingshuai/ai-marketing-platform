@@ -35,6 +35,7 @@ from .models import (
     ExtractionSnapshot,
     FailurePayload,
     FinalizePayload,
+    MAX_SELLING_POINTS,
     ProgressPayload,
     RuntimeContext,
     SnapshotMaterial,
@@ -47,7 +48,6 @@ from .semantic_refinement import (
     user_only_candidate,
 )
 
-MAX_SELLING_POINTS = 100
 SEMANTIC_RESULT_LIMITS: dict[str, int] = {"selling_points": MAX_SELLING_POINTS}
 
 LOGGER = logging.getLogger(__name__)
@@ -55,8 +55,10 @@ LOGGER = logging.getLogger(__name__)
 DOCUMENT_MIME_TYPES = {
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "text/markdown",
+    "text/plain",
 }
-DOCUMENT_EXTENSIONS = {".pdf", ".docx"}
+DOCUMENT_EXTENSIONS = {".pdf", ".docx", ".md", ".txt"}
 
 
 class PipelineError(RuntimeError):
@@ -162,7 +164,7 @@ class ExtractionPipeline:
                     branch=BranchName.DOCUMENT,
                     status=BranchStatus.SKIPPED,
                     source_fingerprint=context.source_fingerprint,
-                    warnings=["未提供可解析的 PDF/DOCX 文档"],
+                    warnings=["未提供可解析的 PDF、DOCX、TXT 或 Markdown 文档"],
                 ),
             )
 
@@ -1164,7 +1166,10 @@ def _prepare_semantic_candidate(
             ]
         )[:MAX_SELLING_POINTS]
         image_values = _items_preserving_order(image, attr)
-        setattr(prepared, attr, [*user_values, *image_values] or None)
+        prepared_values = _strings([*user_values, *image_values])[
+            :MAX_SELLING_POINTS
+        ]
+        setattr(prepared, attr, prepared_values or None)
         user_facts.extend(
             {
                 "factId": f"user-{field.value}-{index:02d}",

@@ -355,6 +355,36 @@ async def test_document_branch_keeps_success_when_one_file_fails() -> None:
 
 
 @pytest.mark.asyncio
+async def test_plain_text_product_document_enters_document_ai_branch() -> None:
+    api = ApiStub()
+    api.snapshot.materials = [
+        SnapshotMaterial(
+            id="article",
+            type="PRODUCT_DOCUMENT",
+            original_file_name="紫苏梅子酱产品文章.txt",
+            mime_type="text/plain",
+            size_bytes=4,
+        )
+    ]
+    provider = CountingDocumentProvider()
+    worker = ExtractionPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        document_parser=ParserStub(),
+        image_processor=ImageProcessorStub(),  # type: ignore[arg-type]
+        max_document_text_chars=1000,
+    )
+    worker.register_snapshot(CONTEXT, api.snapshot)
+
+    output = await worker.document_branch(CONTEXT)
+
+    assert output.status == BranchStatus.SUCCEEDED
+    assert provider.calls == 1
+    assert output.items[0].source_id == "article"
+    assert output.items[0].metadata["extractionMode"] == "AI_FALLBACK"
+
+
+@pytest.mark.asyncio
 async def test_structured_document_folds_old_labels_into_unified_selling_points() -> (
     None
 ):
@@ -532,9 +562,41 @@ def test_semantic_candidate_preserves_source_authority() -> None:
     }
 
 
-def test_authoritative_source_restoration_keeps_up_to_one_hundred_points() -> None:
+def test_semantic_candidate_caps_all_sources_at_forty_points() -> None:
     document = ExtractionCandidate.empty()
-    document.selling_points = [f"卖点 {index}" for index in range(1, 101)]
+    document.selling_points = [f"文档卖点 {index}" for index in range(1, 41)]
+    image = ExtractionCandidate.empty()
+    image.selling_points = ["图片补充卖点"]
+
+    candidate, user_facts, image_suggestions, _ = _prepare_semantic_candidate(
+        ExtractionCandidate.empty(),
+        [
+            BranchOutput(
+                branch=BranchName.DOCUMENT,
+                status=BranchStatus.SUCCEEDED,
+                source_fingerprint="fingerprint",
+                candidate=document,
+            ),
+            BranchOutput(
+                branch=BranchName.IMAGE,
+                status=BranchStatus.SUCCEEDED,
+                source_fingerprint="fingerprint",
+                candidate=image,
+            ),
+        ],
+        manual_overrides={},
+    )
+
+    assert candidate.selling_points == [
+        f"文档卖点 {index}" for index in range(1, 41)
+    ]
+    assert len(user_facts) == 40
+    assert [item["value"] for item in image_suggestions] == ["图片补充卖点"]
+
+
+def test_authoritative_source_restoration_keeps_up_to_forty_points() -> None:
+    document = ExtractionCandidate.empty()
+    document.selling_points = [f"卖点 {index}" for index in range(1, 41)]
     image = ExtractionCandidate.empty()
     image.selling_points = ["图片补充卖点"]
     result = type("Result", (), {})()
@@ -544,8 +606,8 @@ def test_authoritative_source_restoration_keeps_up_to_one_hundred_points() -> No
         commerce=None,
         image=image,
     )
-    assert len(result.selling_points) == 100
-    assert result.selling_points[-1] == "卖点 100"
+    assert len(result.selling_points) == 40
+    assert result.selling_points[-1] == "卖点 40"
 
 
 def test_authoritative_source_restoration_keeps_commerce_selling_points() -> None:

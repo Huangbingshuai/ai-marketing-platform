@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from io import BytesIO
+from pathlib import PurePath
 from typing import Any, Protocol, cast
 
 
@@ -34,7 +35,20 @@ class LocalDoclingParser:
             raise DocumentParseError(
                 f"document exceeds configured size limit ({len(content)} bytes)"
             )
+        if PurePath(file_name).suffix.lower() in {".md", ".txt"}:
+            return self._parse_plain_text(content, file_name)
         return await asyncio.to_thread(self._parse_sync, content, file_name)
+
+    @staticmethod
+    def _parse_plain_text(content: bytes, file_name: str) -> str:
+        for encoding in ("utf-8-sig", "gb18030"):
+            try:
+                text = content.decode(encoding).strip()
+            except UnicodeDecodeError:
+                continue
+            if text:
+                return text
+        raise DocumentParseError(f"text document is empty or undecodable: {file_name}")
 
     def _build_converter(self) -> Any:
         if self._artifacts_path:

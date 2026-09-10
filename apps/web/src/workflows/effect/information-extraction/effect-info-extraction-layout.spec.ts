@@ -30,6 +30,8 @@ describe('effect info extraction result layout', () => {
 
   it('uses one selling-point heading without row prefixes or hierarchy', () => {
     expect(pageSource).toContain('<h3>卖点</h3>');
+    expect(pageSource).toContain('class="selling-point-count"');
+    expect(pageSource).toContain('{{ visibleResult.sellingPoints.length }} /');
     expect(pageSource).toContain('这些卖点可用于后续视频创作，您可以按需修改、添加或删除。');
     expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_SELLING_POINTS');
     expect(pageSource).toContain(':aria-label="`卖点 ${index + 1}`"');
