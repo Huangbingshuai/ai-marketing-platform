@@ -26,6 +26,7 @@ import {
 } from '@ai-marketing/contracts';
 
 import type { EffectPromptNodeDetailRunRecord } from './effect-prompt.repository';
+import { normalizeEffectExtractionResult } from '../information-extraction/effect-extraction.validation';
 import {
   EFFECT_PROMPT_VISUAL_OVERLAP_THRESHOLD,
   isEffectPromptSettings,
@@ -1404,7 +1405,7 @@ const actualBlocks = (
   if (nodeId === 'LOAD_AND_SNAPSHOT') {
     blocks.push(
       tagBlock('本次使用的营销信息', [
-        tagGroup('核心卖点', insightList(insight, 'coreSellingPoints', 'core_selling_points')),
+        tagGroup('卖点', normalizeEffectExtractionResult(insight).sellingPoints),
         tagGroup('继承禁用项', insightList(insight, 'disabledElements', 'disabled_elements')),
       ]),
     );
@@ -1415,10 +1416,12 @@ const actualBlocks = (
           insightText(insight, 'productName', 'product_name'),
           insightText(insight, 'productCategory', 'product_category'),
         ]),
-        tagGroup('核心卖点', insightList(insight, 'coreSellingPoints', 'core_selling_points')),
-        tagGroup('核心痛点', insightList(insight, 'corePainPoints', 'core_pain_points')),
-        tagGroup('目标受众', [insightText(insight, 'targetAudience', 'target_audience')]),
-        tagGroup('使用场景', insightList(insight, 'usageScenarios', 'usage_scenarios')),
+        tagGroup('产品基础', [
+          insightText(insight, 'coreSpecification', 'core_specification'),
+          insightText(insight, 'priceRange', 'price_range'),
+          insightText(insight, 'visualFeatures', 'visual_features'),
+        ]),
+        tagGroup('卖点', normalizeEffectExtractionResult(insight).sellingPoints),
       ]),
     );
   } else if (nodeId === 'FACT_VISUAL_STRATEGY_COMPILATION') {
@@ -1900,6 +1903,12 @@ const additionalOutputFields = (
       { label: '实时分片进度', value: `${progress.completed}/${progress.total}` },
       { label: '实际完成分片', value: progress.completed },
       { label: '当前处理中分片', value: progress.pending },
+      ...compact([
+        numberField(metadata, 'availableSellingPointCount', '已接收卖点'),
+        numberField(metadata, 'plannedSellingPointCount', '已用于创意规划'),
+        numberField(metadata, 'unplannedSellingPointCount', '尚未用于创意规划'),
+        numberField(metadata, 'contextSellingPointCount', '仅作背景、不要求画面证明'),
+      ]),
     ];
   }
   if (nodeId === 'ITEM_EVALUATE')
@@ -2003,6 +2012,10 @@ const additionalOutputFields = (
       numberField(resultMetrics, 'targetCount', '目标数量'),
       { label: '必用事实覆盖', value: `${coveredFacts}/${requiredFacts}` },
       { label: '仍缺事实', value: missingFacts },
+      ...compact([
+        numberField(metadata, 'realizedSellingPointCount', '最终素材已体现卖点'),
+        numberField(metadata, 'contextSellingPointCount', '背景卖点（非画面覆盖要求）'),
+      ]),
       textField('质量状态', result.qualityStatus),
       textField(
         '语义重复度',
@@ -2036,8 +2049,8 @@ const metadataFactGroups = (metadata: JsonRecord): Array<ReturnType<typeof tagGr
       }),
     );
   return [
-    group('必须应用', 'requiredFacts'),
-    group('自适应应用', 'adaptiveFacts'),
+    group('已接收的产品与卖点', 'requiredFacts'),
+    group('补充事实', 'adaptiveFacts'),
     group('不参与生成', 'excludedFacts'),
     group('全局约束', 'appliedConstraints'),
   ];
@@ -2195,11 +2208,9 @@ const inputSections = (
         ...base,
         {
           label: '可用事实',
-          value: [
-            ...insightList(insight, 'coreSellingPoints', 'core_selling_points'),
-            ...insightList(insight, 'secondarySellingPoints', 'secondary_selling_points'),
-            ...insightList(insight, 'usageScenarios', 'usage_scenarios'),
-          ].length,
+          value: Object.entries(normalizeEffectExtractionResult(insight)).reduce(
+            (count, [key, value]) => count + (key === 'sellingPoints'
+              ? (value as string[]).length : typeof value === 'string' && value.trim() ? 1 : 0), 0),
         },
       ],
       blocks: actualBlocks(run, 'INSIGHT_MAPPING'),

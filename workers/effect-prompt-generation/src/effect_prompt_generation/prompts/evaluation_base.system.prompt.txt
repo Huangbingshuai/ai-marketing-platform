@@ -8,7 +8,7 @@
 
 对每条候选：
 1. 从四类用途 HOOK、PRODUCT_DISPLAY、EFFECT、CTA 中选择一个 primaryPurpose；compatiblePurposes 只返回其他兼容用途，去重且最多 3 项，不重复主用途。系统会在最终结果中加入主用途，一条素材仍可拥有全部四类用途。HOOK 用于问题、悬念、痛点或反差吸引注意；PRODUCT_DISPLAY 用于展示产品身份、包装、外观、质地或使用动作；EFFECT 用于展示产品解决需求后的结果、卖点表现或使用价值，但不得把未经确认的配方、工艺或功效当成可视证明；CTA 用于购买引导、品牌收束、稳定停留或字幕安全区。
-2. factEvidence 必须逐项独立核对候选 declaredFactIds 和该条 assignedContextFactIds 中的计划事实。你是事实是否真正实现的唯一语义判断者，不要依赖原文字符重合。supportLevel 使用 EXACT、SEMANTIC_FULL、PARTIAL、NONE：准确数值或身份原值完整表达为 EXACT；完整保留业务含义的合理改写为 SEMANTIC_FULL；遗漏关键限定、配方、工艺、数量、对象或承诺为 PARTIAL；无支持为 NONE。对于受众、痛点、决策动机、使用/购买/情绪场景和营销目标这类背景事实，只要其关键限定真实改变了人物关系、选择行为、动作因果、场景状态或商业收束，即可判为 SEMANTIC_FULL，不要求画面证明它；只有宽泛地点、普通人物、通用品类或模糊氛围时仍应判为 PARTIAL/NONE。evidenceText 和 evidenceSource 可以省略，不需为了复制原句而扭曲语义判断。factId 必须来自候选 declaredFactIds 或该条 assignedContextFactIds；系统会根据 factEvidence 的支持等级派生最终事实绑定，不要重复输出 realizedFactIds。
+2. factEvidence 必须逐项独立核对候选 declaredFactIds 和该条 assignedContextFactIds 中的计划事实。你是事实是否真正实现的唯一语义判断者，不要依赖原文字符重合。supportLevel 使用 EXACT、SEMANTIC_FULL、PARTIAL、NONE：准确数值或身份原值完整表达为 EXACT；完整保留业务含义的合理改写为 SEMANTIC_FULL；遗漏关键限定、配方、工艺、数量、对象或承诺为 PARTIAL；无支持为 NONE。统一 SELLING_POINT 不代表全部可以用画面证明：依据事实原文与 AI 视觉策略判断，不根据旧字段分类。对于其中描述受众、需求、动机或场景的背景事实，只要其关键限定真实改变了人物关系、选择行为、动作因果、场景状态或商业收束，即可判为 SEMANTIC_FULL，不要求画面证明它；只有宽泛地点、普通人物、通用品类或模糊氛围时仍应判为 PARTIAL/NONE。evidenceText 和 evidenceSource 可以省略，不需为了复制原句而扭曲语义判断。factId 必须来自候选 declaredFactIds 或该条 assignedContextFactIds；系统会根据 factEvidence 的支持等级派生最终事实绑定，不要重复输出 realizedFactIds。
 3. 五项分数均为 0～100：productRelevance、creativeCoherence、visualExecutability、commercialUsefulness、visualClarity。
 4. 先做真实性预检，再评分：逐项核对正文中具体出现的商品包装、包装文字、适用人群、体验结论、比较判断、正确剂量、使用频率、容量可用时长和使用结果。hardIssues 只允许使用稳定问题码：PRODUCT_UNRELATED、FABRICATED_FACT、ABSTRACT_FACT_VISUAL_PROOF、EMPTY_OR_BROKEN_CONTENT、SPEECH_DEPENDENT_MATERIAL。只有事实编造、商品完全无关、抽象事实被错误当成可视证明、结构破损，或素材依赖人物语音才能成立时才能写入；上述具体信息未被事实直接支持时属于 FABRICATED_FACT。未成年人只有在该候选分配事实明确支持时才可出现，否则同样属于 FABRICATED_FACT。把内部审核说明、事实策略或共用约束写成人物台词、字幕或画面说明，属于 EMPTY_OR_BROKEN_CONTENT。不得把一般可执行性、评分、品味或轻微不一致作为硬问题。
 5. warnings 只允许使用稳定问题码：DIMENSION_CONTENT_CONFLICT、GENERIC_STYLE_STACKING、PURPOSE_SENTENCE_INSTEAD_OF_VISIBLE_ACTION、CAMERA_ACTION_MISMATCH、UNRELATED_DIVERSITY_SCENE、TEMPLATE_LIKE_EXPRESSION、ORDINARY_SIMILARITY、PURPOSE_SKEW、SECONDARY_FACT_NOT_USED、DURATION_TOO_DENSE、DURATION_TOO_SPARSE、VISUALLY_UNEXECUTABLE、MULTI_SCENE_TIMELINE、COMPLETE_AD_TIMELINE。一般相似、用途偏斜、六维轻微漂移、通用正向套话、次要事实未覆盖、轻微时长不匹配、动作过多或一般可执行性问题只写 warnings 并体现在评分中。
@@ -16,7 +16,7 @@
 7. 单独出现一种合理的暖光、浅景深或推进镜头不是问题；机械堆叠多种通用质感词、且没有服务当前商品动作时才标记 GENERIC_STYLE_STACKING。
 8. 任何地点都不是天然正确或错误；只有场景与当前商品事实、人物和动作没有可解释关系，且明显为了追求差异而出现时才标记 UNRELATED_DIVERSITY_SCENE；商品完全无关时使用 PRODUCT_UNRELATED。
 9. 不要输出 semanticSignature 或 visualSignature；系统会从候选已有的创意主线和六维字段确定性生成这两个内部签名。
-10. 不因正文偶尔复述共用约束而淘汰。只输出严格符合 JSON Schema 的 JSON，五项 scores 不得缺失；warnings 最多保留 3 个主要问题码，不写自由文本原因；factEvidence 最多 8 项，不重复同一事实。字段数量限制用于简洁传输，不改变评分标准。
+10. 不因正文偶尔复述共用约束而淘汰。只输出严格符合 JSON Schema 的 JSON，五项 scores 不得缺失；warnings 最多保留 3 个主要问题码，不写自由文本原因；factEvidence 最多 12 项，不重复同一事实。字段数量限制用于简洁传输，不改变评分标准。
 11. 事实视觉策略是事实角色边界。只有你能明确判断“哪条事实、候选中的哪项表达、违反了哪项视觉策略”时，才能使用 ABSTRACT_FACT_VISUAL_PROOF。使用该问题码时必须同时在 abstractVisualProofFindings 中返回已分配的 factId、诊断摘要、所在结构字段和 violatedPolicy；无法给出完整诊断时不得写入 hardIssues。Worker 只校验 factId 与枚举合法，不检查字符位置，也不替你推断视觉语义。
     - 事实被分配给候选、作为商业背景出现，或画面只是正常展示产品外观，并不等于“用画面证明事实”。factEvidence 因为画面不能证明抽象事实而标记 PARTIAL/NONE，也不构成违规。TEXT_ONLY 事实留给后续成片文案，当前素材没有表达它也不是结构错误。
     - 只有候选明确声称某个外观、切面、人物反应或普通包装足以证实配方、精确比例、工艺、功效、口感、锁鲜或品质结论，或者虚构检测/生产/对比过程作为证明时，才使用该硬问题。

@@ -58,11 +58,13 @@ from .models import (
     FailurePayload,
     FragmentType,
     FactVisualStrategy,
+    FactVisualPolicyDraft,
     FactVisualStrategyResponse,
     FactVisualUsage,
     InsightApplicationMap,
     InsightBinding,
     InsightField,
+    InsightFactPolicy,
     NodeId,
     ProgressPayload,
     PromptBatchResult,
@@ -139,6 +141,7 @@ from .execution_repair import (
     apply_execution_patch, candidate_hash, has_execution_diagnosis, repair_improves,
 )
 from .visual_strategy import (
+    fact_visual_strategy_batches,
     strategy_stage_metadata,
     validate_fact_visual_strategy,
 )
@@ -589,7 +592,8 @@ class PromptGenerationPipeline:
         # The deterministic check reserves a small allowance for visual strategy,
         # creative-space planning and direction audits. Supplements are protected
         # later by the same per-run call counter because they depend on real output.
-        minimum_calls = generation_calls + evaluation_calls + 6
+        strategy_calls = len(fact_visual_strategy_batches(map_insight(snapshot.insight_artifact.result)))
+        minimum_calls = generation_calls + evaluation_calls + 5 + strategy_calls
         if minimum_calls > self.max_ai_calls_per_run:
             raise PipelineError(
                 "Prompt run configuration cannot fit the initial batch within the AI call budget"
@@ -617,6 +621,8 @@ class PromptGenerationPipeline:
             "提炼信息用途映射完成",
             metadata={
                 "requiredCount": len(application.required),
+                "availableFactCount": len(application.usable),
+                "sellingPointCount": sum(f.field == InsightField.SELLING_POINT for f in application.usable),
                 "adaptiveCount": len(application.adaptive),
                 "excludedCount": len(application.excluded),
                 "appliedConstraintCount": len(application.constraints),
@@ -690,50 +696,88 @@ class PromptGenerationPipeline:
         call_metadata: dict[str, int | None] = {}
         if strategy is None:
             product_images = await self._prepare_product_images(context)
-            for invalid_response_attempt in range(2):
-                self._reserve_ai_call(context)
+            batches = fact_visual_strategy_batches(application)
+            completed: dict[str, FactVisualPolicyDraft] = {}
+            # A partial checkpoint is scoped to this Run, input and template.
+            if (
+                checkpoint is not None
+                and isinstance(checkpoint.plan, FactVisualStrategy)
+                and checkpoint.source_fingerprint == source_content_hash
+                and checkpoint.template_hash == FACT_VISUAL_STRATEGY_TEMPLATE_HASH
+            ):
                 try:
-                    async with self._ai_semaphore:
-                        if product_images:
-                            call = await self.provider.compile_fact_visual_strategy(
-                                application,
-                                product_images=product_images,
-                            )
-                        else:
-                            call = await self.provider.compile_fact_visual_strategy(
-                                application
-                            )
-                except ProviderError as exc:
-                    if (
-                        invalid_response_attempt < 2
-                        and exc.error_type == ProviderErrorType.RESPONSE_INVALID
-                    ):
-                        continue
-                    raise
-                try:
-                    strategy = validate_fact_visual_strategy(
-                        call.value,
+                    partial = validate_fact_visual_strategy(
+                        FactVisualStrategyResponse(policies=checkpoint.plan.policies),
                         application,
                         source_content_hash=source_content_hash,
                         template_hash=FACT_VISUAL_STRATEGY_TEMPLATE_HASH,
+                        expected_fact_ids=[p.fact_id for p in checkpoint.plan.policies],
                     )
-                    break
-                except ValueError as exc:
-                    if invalid_response_attempt == 1:
-                        raise ProviderError(
-                            "AI 事实视觉使用策略结构或事实引用无效",
-                            retryable=False,
-                            error_type=ProviderErrorType.RESPONSE_INVALID,
-                            attempts=2,
-                        ) from exc
-            if strategy is None:
-                raise PipelineError("事实视觉使用策略未能形成有效结果")
-            call_metadata = {
-                "inputTokens": call.metadata.input_tokens,
-                "outputTokens": call.metadata.output_tokens,
-                "totalTokens": call.metadata.total_tokens,
-                "latencyMs": call.metadata.latency_ms,
-            }
+                    if partial.strategy_hash == checkpoint.allocation_hash:
+                        completed = partial.by_id
+                except ValueError:
+                    pass
+            for batch_index, fact_ids in enumerate(batches):
+                if set(fact_ids).issubset(completed):
+                    continue
+                for invalid_response_attempt in range(2):
+                    self._reserve_ai_call(context)
+                    try:
+                        async with self._ai_semaphore:
+                            options: dict[str, Any] = {}
+                            if product_images:
+                                options["product_images"] = product_images
+                            if len(batches) > 1:
+                                options["target_fact_ids"] = fact_ids
+                            call = await self.provider.compile_fact_visual_strategy(
+                                application, **options
+                            )
+                        partial = validate_fact_visual_strategy(
+                            call.value, application,
+                            source_content_hash=source_content_hash,
+                            template_hash=FACT_VISUAL_STRATEGY_TEMPLATE_HASH,
+                            expected_fact_ids=fact_ids if len(batches) > 1 else None,
+                        )
+                        break
+                    except ProviderError as exc:
+                        if invalid_response_attempt == 0 and exc.error_type == ProviderErrorType.RESPONSE_INVALID:
+                            continue
+                        raise
+                    except ValueError as exc:
+                        if invalid_response_attempt == 1:
+                            raise ProviderError(
+                                "AI 事实视觉使用策略结构或事实引用无效",
+                                retryable=False,
+                                error_type=ProviderErrorType.RESPONSE_INVALID,
+                                attempts=2,
+                            ) from exc
+                completed.update(partial.by_id)
+                for key, value in (
+                    ("inputTokens", call.metadata.input_tokens),
+                    ("outputTokens", call.metadata.output_tokens),
+                    ("totalTokens", call.metadata.total_tokens),
+                    ("latencyMs", call.metadata.latency_ms),
+                ):
+                    call_metadata[key] = (call_metadata.get(key) or 0) + (value or 0)
+                if len(batches) > 1:
+                    accumulated = validate_fact_visual_strategy(
+                        FactVisualStrategyResponse(policies=list(completed.values())),
+                        application,
+                        source_content_hash=source_content_hash,
+                        template_hash=FACT_VISUAL_STRATEGY_TEMPLATE_HASH,
+                        expected_fact_ids=list(completed),
+                    )
+                    progress_metadata = strategy_stage_metadata(accumulated, application, reused=False)
+                    progress_metadata.update({"completedShards": batch_index + 1, "totalShards": len(batches)})
+                    await self._stage(context, node, StageStatus.RUNNING,
+                                      f"事实视觉策略已完成 {len(completed)}/{len(application.usable)} 项",
+                                      metadata=progress_metadata)
+            strategy = validate_fact_visual_strategy(
+                FactVisualStrategyResponse(policies=list(completed.values())),
+                application,
+                source_content_hash=source_content_hash,
+                template_hash=FACT_VISUAL_STRATEGY_TEMPLATE_HASH,
+            )
 
         self._cache(context).fact_visual_strategy = strategy
         metadata = strategy_stage_metadata(strategy, application, reused=reused)
@@ -1386,15 +1430,6 @@ class PromptGenerationPipeline:
                 CreativeDirectionResponse(directions=review_resume.directions)
                 if review_resume is not None else None
             )
-            business_fact_ids = {
-                fact.fact_id for fact in mandatory_business_facts(application)
-            }
-            if len(business_fact_ids) >= expected_direction_count * 2:
-                minimum_business_facts_per_direction = 2
-            elif len(business_fact_ids) >= expected_direction_count:
-                minimum_business_facts_per_direction = 1
-            else:
-                minimum_business_facts_per_direction = 0
             # Count malformed/invalid responses, not successful AI reviews.
             # A single semantic replan must not consume the structural repair
             # opportunity needed if that replan drops an ID. Both loops remain
@@ -1458,19 +1493,6 @@ class PromptGenerationPipeline:
                                     allowed_fact_ids_by_direction
                                 ),
                             }
-                            scoped_compatible_fact_ids = {
-                                fact_id
-                                for territory in planning_batch.territories
-                                for fact_id in territory.compatible_fact_ids
-                            }
-                            scoped_minimum_business_facts = min(
-                                minimum_business_facts_per_direction,
-                                len(
-                                    business_fact_ids.intersection(
-                                        scoped_compatible_fact_ids
-                                    )
-                                ),
-                            )
                             last_error: Exception | None = None
                             local_validation_details: dict[str, Any] = {}
                             for territory_attempt in range(2):
@@ -1520,153 +1542,7 @@ class PromptGenerationPipeline:
                                         raise ValueError(
                                             "direction batch changed an assigned territory or action"
                                         )
-                                    realized_required_fact_ids = {
-                                        fact_id
-                                        for direction in actual_directions.values()
-                                        for fact_id in direction.fact_ids
-                                    }
-                                    missing_required_fact_ids = sorted(
-                                        set(required_business_fact_ids)
-                                        - realized_required_fact_ids
-                                    )
-                                    if missing_required_fact_ids:
-                                        required_fact_id_set = set(
-                                            required_business_fact_ids
-                                        )
-                                        preserved_by_direction = {
-                                            direction.direction_id: [
-                                                fact_id
-                                                for fact_id in direction.fact_ids
-                                                if fact_id in required_fact_id_set
-                                            ]
-                                            for direction in actual_directions.values()
-                                        }
-                                        eligible_direction_ids = [
-                                            direction.direction_id
-                                            for direction in actual_directions.values()
-                                            if len(
-                                                preserved_by_direction[
-                                                    direction.direction_id
-                                                ]
-                                            )
-                                            < 4
-                                        ]
-                                        local_validation_details = {
-                                            "missingBusinessFactIds": (
-                                                missing_required_fact_ids
-                                            ),
-                                            "revisionDirectionIds": list(
-                                                actual_directions
-                                            ),
-                                            "revisionRequiredBusinessFactIds": list(
-                                                required_business_fact_ids
-                                            ),
-                                            "revisionFactOptions": [
-                                                {
-                                                    "factId": fact_id,
-                                                    "eligibleDirectionIds": (
-                                                        eligible_direction_ids
-                                                    ),
-                                                }
-                                                for fact_id in (
-                                                    missing_required_fact_ids
-                                                )
-                                            ],
-                                            "preservedBusinessFactIdsByDirection": (
-                                                preserved_by_direction
-                                            ),
-                                            "allowedFactIdsByDirection": {
-                                                direction_id: (
-                                                    allowed_fact_ids_by_direction[
-                                                        direction_id
-                                                    ]
-                                                )
-                                                for direction_id in actual_directions
-                                            },
-                                            "previousDirections": [
-                                                direction.model_dump(
-                                                    mode="json",
-                                                    by_alias=True,
-                                                )
-                                                for direction in actual_directions.values()
-                                            ],
-                                        }
-                                        raise ValueError(
-                                            "territory direction batch omitted assigned required facts"
-                                        )
-                                    underfilled_direction_ids = [
-                                        direction.direction_id
-                                        for direction in actual_directions.values()
-                                        if len(
-                                            business_fact_ids.intersection(
-                                                direction.fact_ids
-                                            )
-                                        )
-                                        < scoped_minimum_business_facts
-                                    ]
-                                    if underfilled_direction_ids:
-                                        preserved_by_direction = {
-                                            direction.direction_id: [
-                                                fact_id
-                                                for fact_id in direction.fact_ids
-                                                if fact_id in business_fact_ids
-                                            ]
-                                            for direction in actual_directions.values()
-                                        }
-                                        local_validation_details = {
-                                            "underfilledDirectionIds": (
-                                                underfilled_direction_ids
-                                            ),
-                                            "revisionDirectionIds": list(
-                                                actual_directions
-                                            ),
-                                            "preservedBusinessFactIdsByDirection": (
-                                                preserved_by_direction
-                                            ),
-                                            "allowedFactIdsByDirection": {
-                                                direction_id: (
-                                                    allowed_fact_ids_by_direction[
-                                                        direction_id
-                                                    ]
-                                                )
-                                                for direction_id in actual_directions
-                                            },
-                                            "minimumBusinessFactsByDirection": {
-                                                direction_id: (
-                                                    scoped_minimum_business_facts
-                                                )
-                                                for direction_id in (
-                                                    underfilled_direction_ids
-                                                )
-                                            },
-                                            "additionalBusinessFactOptionsByDirection": {
-                                                direction_id: sorted(
-                                                    business_fact_ids.intersection(
-                                                        allowed_fact_ids_by_direction[
-                                                            direction_id
-                                                        ]
-                                                    )
-                                                    - set(
-                                                        actual_directions[
-                                                            direction_id
-                                                        ].fact_ids
-                                                    )
-                                                )
-                                                for direction_id in (
-                                                    underfilled_direction_ids
-                                                )
-                                            },
-                                            "previousDirections": [
-                                                direction.model_dump(
-                                                    mode="json",
-                                                    by_alias=True,
-                                                )
-                                                for direction in actual_directions.values()
-                                            ],
-                                        }
-                                        raise ValueError(
-                                            "territory direction batch underfilled business facts"
-                                        )
+                                    # Missing coverage and low fact density are advisory; never retry valid directions for them.
                                     return territory_call
                                 except ProviderError as exc:
                                     last_error = exc
@@ -1687,20 +1563,9 @@ class PromptGenerationPipeline:
                                             **local_validation_details,
                                             "validationError": str(exc),
                                             "revisionInstruction": (
-                                                "根据 validationError、previousDirections、"
-                                                "underfilledDirectionIds 与"
-                                                "additionalBusinessFactOptionsByDirection"
-                                                " 定向补全本分片。"
-                                                "本次必须原样填写每个 directionId 与"
-                                                "primaryActionId，并让 requiredBusinessFactIds"
-                                                " 中每个事实至少出现在一个方向的"
-                                                " factApplications 中；同时每个方向必须"
-                                                f"自然使用至少 {scoped_minimum_business_facts} "
-                                                "条业务事实。逐方向保留"
-                                                " preservedBusinessFactIdsByDirection 中已"
-                                                "正确承担的事实，不得为了补入一项又删除"
-                                                "另一项；缺失事实只能进入 revisionFactOptions"
-                                                " 点名且仍有容量的合法方向。"
+                                                "只修复 validationError 中的结构、稳定 ID 或动作引用错误。"
+                                                "保持本分片 directionId、territoryId、primaryActionId；"
+                                                "事实从允许目录中自然选择，不为最低密度或覆盖数字追加动作。"
                                             ),
                                         }
                                         continue
@@ -2722,8 +2587,16 @@ class PromptGenerationPipeline:
             for direction in plan.directions
             for dimension in direction.priority_dimensions
         )
+        application = self._require_application(context)
+        selling_ids = {f.fact_id for f in application.usable if f.field == InsightField.SELLING_POINT}
+        planned_ids = {fact_id for direction in plan.directions for fact_id in direction.fact_ids}
+        visual_ids = set(_visually_required_business_fact_ids(application, cache.fact_visual_strategy))
         return {
             **cache.creative_direction_call_metadata,
+            "availableSellingPointCount": len(selling_ids),
+            "plannedSellingPointCount": len(selling_ids & planned_ids),
+            "unplannedSellingPointCount": len(selling_ids - planned_ids),
+            "contextSellingPointCount": len(selling_ids - visual_ids),
             "directionCount": len(plan.directions),
             "territoryCount": (
                 len(plan.landscape.territories) if plan.landscape is not None else 0
@@ -4964,6 +4837,13 @@ class PromptGenerationPipeline:
                 "requiredFactCount": len(final_required_fact_ids),
                 "coveredRequiredFactCount": len(final_covered_fact_ids),
                 "missingRequiredFactCount": len(final_missing_fact_ids),
+                "realizedSellingPointCount": len({
+                    binding.fact_id for item in result.items for binding in item.insight_bindings
+                    if binding.field == InsightField.SELLING_POINT
+                }),
+                "contextSellingPointCount": len({
+                    fact.fact_id for fact in coverage.adaptive if fact.field == InsightField.SELLING_POINT
+                }),
                 "hardRejectedCount": sum(
                     bool(item.hard_issues)
                     for item in cache.creative_evaluations.values()
@@ -5464,6 +5344,7 @@ def _near_duplicate_reduction(
 
 
 _SEMANTIC_CONTEXT_FIELDS = {
+    InsightField.SELLING_POINT,
     InsightField.TARGET_AUDIENCE,
     InsightField.CORE_PAIN_POINT,
     InsightField.DECISION_DRIVER,
@@ -5537,6 +5418,7 @@ def _visually_required_business_fact_ids(
     if strategy is None:
         return [fact.fact_id for fact in business_facts]
     deferred_usages = {
+        FactVisualUsage.CONTEXT_ONLY,
         FactVisualUsage.TEXT_ONLY,
         FactVisualUsage.FORBIDDEN_VISUAL_PROOF,
     }
@@ -5552,57 +5434,25 @@ def _silent_material_planning_inputs(
     application: InsightApplicationMap,
     strategy: FactVisualStrategy,
 ) -> tuple[InsightApplicationMap, FactVisualStrategy]:
-    """Remove copy-only business facts from silent-material creative planning.
-
-    The full application and strategy remain cached for auditing, item evaluation
-    and downstream copy composition. This projection only prevents the landscape,
-    direction and candidate planners from treating an unfilmable statement as a
-    visual coverage obligation.
-    """
-
-    visual_business_ids = set(
-        _visually_required_business_fact_ids(application, strategy)
+    """Keep all facts as context; only change the explicit visual coverage scope."""
+    visual_ids = set(_visually_required_business_fact_ids(application, strategy))
+    business_ids = {fact.fact_id for fact in mandatory_business_facts(application)}
+    deferred_ids = business_ids - visual_ids
+    # CONTEXT_ONLY is available for creative context, never a visual proof quota.
+    deferred_ids.update(
+        fact.fact_id for fact in application.usable
+        if fact.field in {InsightField.SELLING_POINT, InsightField.CORE_SELLING_POINT}
+        and strategy.by_id[fact.fact_id].visual_usage == FactVisualUsage.CONTEXT_ONLY
     )
-    all_business_ids = {
-        fact.fact_id for fact in mandatory_business_facts(application)
-    }
-    deferred_business_ids = all_business_ids - visual_business_ids
-    if not deferred_business_ids:
-        return application, strategy
-
-    projected_application = application.model_copy(
-        update={
-            "required": [
-                fact
-                for fact in application.required
-                if fact.fact_id not in deferred_business_ids
-            ],
-            "adaptive": [
-                fact
-                for fact in application.adaptive
-                if fact.fact_id not in deferred_business_ids
-            ],
-        }
-    )
-    projected_ids = set(projected_application.by_id)
-    projected_strategy = strategy.model_copy(
-        update={
-            "policies": [
-                policy.model_copy(
-                    update={
-                        "compatible_fact_ids": [
-                            fact_id
-                            for fact_id in policy.compatible_fact_ids
-                            if fact_id in projected_ids
-                        ]
-                    }
-                )
-                for policy in strategy.policies
-                if policy.fact_id in projected_ids
-            ]
-        }
-    )
-    return projected_application, projected_strategy
+    projected = application.model_copy(update={
+        "required": [fact for fact in application.required if fact.fact_id not in deferred_ids],
+        "adaptive": [
+            *application.adaptive,
+            *[fact.model_copy(update={"policy": InsightFactPolicy.ADAPTIVE})
+              for fact in application.required if fact.fact_id in deferred_ids],
+        ],
+    })
+    return projected, strategy
 
 
 def _prompt_items(
@@ -5634,7 +5484,7 @@ def _prompt_items(
                 else 2,
                 evaluation.realized_fact_ids.index(fact_id),
             ),
-        )[:5]
+        )
         for fact_id in ordered_fact_ids:
             fact = application.by_id.get(fact_id)
             if fact is None:

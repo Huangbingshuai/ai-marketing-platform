@@ -144,7 +144,7 @@ def test_evaluation_draft_schema_excludes_worker_derived_fields() -> None:
     assert "semanticProfile" in properties
     assert "abstractVisualProofFindings" in properties
     assert properties["compatiblePurposes"]["maxItems"] == 4
-    assert properties["factEvidence"]["maxItems"] == 8
+    assert properties["factEvidence"]["maxItems"] == 12
     assert properties["hardIssues"]["maxItems"] == 5
     assert properties["warnings"]["maxItems"] == 3
 

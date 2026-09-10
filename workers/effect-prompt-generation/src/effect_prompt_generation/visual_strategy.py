@@ -44,12 +44,14 @@ def validate_fact_visual_strategy(
     *,
     source_content_hash: str,
     template_hash: str,
+    expected_fact_ids: list[str] | None = None,
 ) -> FactVisualStrategy:
     usable_by_id = {fact.fact_id: fact for fact in application.usable}
     policy_ids = [policy.fact_id for policy in response.policies]
     if len(policy_ids) != len(set(policy_ids)):
         raise ValueError("fact visual strategy contains duplicate factId")
-    if set(policy_ids) != set(usable_by_id):
+    expected_ids = set(usable_by_id) if expected_fact_ids is None else set(expected_fact_ids)
+    if not expected_ids.issubset(usable_by_id) or set(policy_ids) != expected_ids:
         raise ValueError(
             "fact visual strategy must cover every usable fact exactly once"
         )
@@ -89,7 +91,7 @@ def validate_fact_visual_strategy(
             )
         )
 
-    if not any(policy.visual_usage in VISIBLE_USAGES for policy in normalized):
+    if expected_fact_ids is None and not any(policy.visual_usage in VISIBLE_USAGES for policy in normalized):
         raise ValueError("fact visual strategy does not contain a usable visual task")
 
     payload = [
@@ -110,6 +112,22 @@ def validate_fact_visual_strategy(
         strategy_hash=strategy_hash,
         policies=normalized,
     )
+
+
+def fact_visual_strategy_batches(application: InsightApplicationMap) -> list[list[str]]:
+    """Bound output scope by count and source length, never by business meaning."""
+    batches: list[list[str]] = []
+    current: list[str] = []
+    chars = 0
+    for fact in application.usable:
+        if current and (len(current) >= 24 or chars + len(fact.value) > 12_000):
+            batches.append(current)
+            current, chars = [], 0
+        current.append(fact.fact_id)
+        chars += len(fact.value)
+    if current:
+        batches.append(current)
+    return batches
 
 
 def strategy_stage_metadata(

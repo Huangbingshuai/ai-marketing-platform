@@ -150,7 +150,7 @@ const validInsightReference = (value: unknown): value is EffectPromptInsightRefe
     EFFECT_PROMPT_INSIGHT_FIELDS.includes(reference.field as never) &&
     typeof reference.value === 'string' &&
     reference.value.trim().length > 0 &&
-    reference.value.length <= 500 &&
+    reference.value.length <= 1000 &&
     typeof reference.valueHash === 'string' &&
     /^[a-f0-9]{64}$/u.test(reference.valueHash),
   );

@@ -263,6 +263,7 @@ class AiProvider(Protocol):
         application: InsightApplicationMap,
         *,
         product_images: Sequence[PreparedProductImage] = (),
+        target_fact_ids: Sequence[str] = (),
     ) -> AiCallResult[FactVisualStrategyResponse]: ...
 
     async def plan_creative_landscape(
@@ -416,10 +417,16 @@ class MockAiProvider:
         application: InsightApplicationMap,
         *,
         product_images: Sequence[PreparedProductImage] = (),
+        target_fact_ids: Sequence[str] = (),
     ) -> AiCallResult[FactVisualStrategyResponse]:
         del product_images
+        response = _mock_fact_visual_strategy(application)
+        if target_fact_ids:
+            response = response.model_copy(update={"policies": [
+                policy for policy in response.policies if policy.fact_id in target_fact_ids
+            ]})
         return _mock_result(
-            _mock_fact_visual_strategy(application),
+            response,
             NodeId.FACT_VISUAL_STRATEGY_COMPILATION.value,
             FACT_VISUAL_STRATEGY_BASE_PROMPT,
         )
@@ -876,6 +883,7 @@ class ArkResponsesProvider:
         application: InsightApplicationMap,
         *,
         product_images: Sequence[PreparedProductImage] = (),
+        target_fact_ids: Sequence[str] = (),
     ) -> AiCallResult[FactVisualStrategyResponse]:
         fact_aliases, fact_ids_by_alias = _fact_alias_maps(application)
         facts = []
@@ -902,6 +910,10 @@ class ArkResponsesProvider:
             FACT_VISUAL_STRATEGY_TASK_PROMPT,
             facts_json=json.dumps(facts, ensure_ascii=False, sort_keys=True),
         )
+        if target_fact_ids:
+            prompt += "\n本次只为以下事实输出策略，每个恰好一次；其余事实仅供理解上下文与兼容关系：\n" + json.dumps(
+                [fact_aliases[fact_id] for fact_id in target_fact_ids], ensure_ascii=False
+            )
         input_content: list[dict[str, Any]] = [
             {"type": "input_text", "text": prompt}
         ]
@@ -928,7 +940,7 @@ class ArkResponsesProvider:
             model=self._visual_strategy_model,
             max_output_tokens=min(
                 self._strategy_max_output_tokens,
-                max(4096, len(facts) * 320),
+                max(4096, len(target_fact_ids or facts) * 320),
             ),
             request_timeout=self._strategy_timeout,
             instructions=load_prompt(FACT_VISUAL_STRATEGY_BASE_PROMPT),
@@ -1091,6 +1103,16 @@ class ArkResponsesProvider:
     ) -> AiCallResult[CreativeFactTerritoryAssignmentResponse]:
         fact_aliases, fact_ids_by_alias = _fact_alias_maps(application)
         business_facts = mandatory_business_facts(application)
+        if not business_facts:
+            return AiCallResult(
+                value=CreativeFactTerritoryAssignmentResponse(assignments=[]),
+                metadata=AiCallMetadata(
+                    stage=NodeId.COHERENT_CREATIVE_GENERATION.value,
+                    template_hash=load_prompt_hash(CREATIVE_FACT_TERRITORY_ASSIGNMENT_BASE_PROMPT),
+                    input_tokens=0, output_tokens=0, total_tokens=0,
+                    latency_ms=0, attempts=0,
+                ),
+            )
         policies_by_id = fact_visual_strategy.by_id
         facts = [
             {
@@ -1416,16 +1438,6 @@ class ArkResponsesProvider:
             (target_count * 14 + 9) // 10,
             global_direction_count,
         )
-        if global_business_fact_count >= global_direction_count * 2:
-            global_minimum_business_facts = 2
-        elif global_business_fact_count >= global_direction_count:
-            global_minimum_business_facts = 1
-        else:
-            global_minimum_business_facts = 0
-        scoped_minimum_business_facts = min(
-            global_minimum_business_facts,
-            business_fact_count,
-        )
         # The validated landscape owns the exact slot allocation. Its slot
         # total supports territory-scoped planning without changing the final
         # number of directions in the merged batch.
@@ -1493,24 +1505,13 @@ class ArkResponsesProvider:
             if isinstance(coverage_fact_ids, list)
             else 0
         )
-        if coverage_fact_count and scoped_minimum_business_facts:
-            fact_density_instruction = (
-                f"本分片有 {coverage_fact_count} 条点名事实必须在输出方向的 "
-                "factApplications 合集中逐项出现；这些点名事实只需覆盖一次。"
-                f"同时每个方向至少自然使用 {scoped_minimum_business_facts} 条、"
-                "最多 4 条业务事实；达到最低密度时可复用本空间其他兼容事实，"
-                "但不得用产品名称、品类、规格或视觉特征冒充业务事实。"
-            )
-        elif coverage_fact_count:
-            fact_density_instruction = (
-                f"本分片有 {coverage_fact_count} 条点名事实必须在输出方向的 "
-                "factApplications 合集中逐项出现；由你根据主动作选择最自然的"
-                "承载方向，其余方向保持真实产品关联，不得虚构事实。"
-            )
-        else:
-            fact_density_instruction = creative_direction_fact_density_instruction(
-                density_business_fact_count,
-                output_direction_count,
+        fact_density_instruction = creative_direction_fact_density_instruction(
+            density_business_fact_count, output_direction_count,
+        )
+        if coverage_fact_count:
+            fact_density_instruction += (
+                f"本分片有 {coverage_fact_count} 条优先覆盖事实，由你选择自然的承载方向。"
+                "不得为了逐项覆盖而虚构事实关系、塞入多项任务或复制相同创意。"
             )
         if (
             isinstance(revision_direction_ids, list)
@@ -2607,6 +2608,7 @@ def _mock_fact_visual_strategy(
             visual_instruction = "只呈现该事实中能够直接观察的外观或包装信息"
             context_instruction = ""
         elif fact.field in {
+            InsightField.SELLING_POINT,
             InsightField.USAGE_SCENARIO,
             InsightField.PURCHASE_SCENARIO,
         }:
@@ -2680,13 +2682,7 @@ def _mock_creative_landscape_response(
     *,
     direction_count: int,
 ) -> CreativeDiversityLandscapeResponse:
-    business_facts = mandatory_business_facts(application)
-    if not business_facts:
-        raise ProviderError(
-            "creative landscape planning requires confirmed business facts",
-            retryable=False,
-            error_type=ProviderErrorType.REQUEST_REJECTED,
-        )
+    business_facts = mandatory_business_facts(application) or application.usable
     required_pool = list({fact.fact_id: fact for fact in application.usable}.values())
     fact_ids = [item.fact_id for item in application.usable]
     minimum_territory_count, _ = creative_territory_target_range(direction_count)
@@ -2763,13 +2759,7 @@ def _mock_creative_direction_response(
     direction_count: int = 8,
     execution_route_count: int = 4,
 ) -> CreativeDirectionResponse:
-    business_facts = mandatory_business_facts(application)
-    if not business_facts:
-        raise ProviderError(
-            "creative direction planning requires confirmed insight facts",
-            retryable=False,
-            error_type=ProviderErrorType.REQUEST_REJECTED,
-        )
+    business_facts = mandatory_business_facts(application) or application.usable
     if landscape is None:
         draft = _mock_creative_landscape_response(
             application,

@@ -65,33 +65,13 @@ def creative_direction_target_count(
     if mandatory_fact_count is None:
         return volume_target
     if mandatory_fact_count <= 0:
-        raise ValueError(
-            "提炼信息中没有可分配的卖点、痛点、受众、动机、营销目标或场景，"
-            "请先完善并提交信息提炼结果"
-        )
-    prompt_capacity = max(1, target_count) * MAX_BUSINESS_FACTS_PER_DIRECTION
-    if mandatory_fact_count > prompt_capacity:
-        minimum_prompt_count = math.ceil(
-            mandatory_fact_count / MAX_BUSINESS_FACTS_PER_DIRECTION
-        )
-        raise ValueError(
-            f"当前 {target_count} 条 Prompt 最多承载 {prompt_capacity} 条业务事实，"
-            f"现有 {mandatory_fact_count} 条；请将 Prompt 总数至少调整为 "
-            f"{minimum_prompt_count} 条"
-        )
-    direction_capacity = MAX_CREATIVE_DIRECTION_COUNT * MAX_BUSINESS_FACTS_PER_DIRECTION
-    if mandatory_fact_count > direction_capacity:
-        raise ValueError(
-            f"当前创意规划最多承载 {direction_capacity} 条业务事实，现有 "
-            f"{mandatory_fact_count} 条；请先精简或合并提炼信息"
-        )
+        return volume_target
     # Four facts is the structural ceiling, not the creative planning target.
     # Keeping the average near 2.5 gives the AI room to build one coherent
     # relationship instead of squeezing every available slot. Worker only
     # calculates capacity; it never assigns facts to directions.
     coverage_target = min(
         MAX_CREATIVE_DIRECTION_COUNT,
-        max(1, target_count),
         math.ceil(mandatory_fact_count * 2 / 5),
     )
     return max(volume_target, coverage_target)
@@ -139,24 +119,11 @@ def creative_direction_fact_density_instruction(
 ) -> str:
     """Describe the current batch's fact-density rule to the AI planner."""
 
-    if mandatory_fact_count >= direction_count * 2:
-        return (
-            f"当前有 {mandatory_fact_count} 条必须覆盖的业务事实和 {direction_count} "
-            "个创意方向。每个方向必须自然使用 2～4 条业务事实；整批必须覆盖"
-            "全部业务事实。"
-        )
-    if mandatory_fact_count >= direction_count:
-        return (
-            f"当前有 {mandatory_fact_count} 条必须覆盖的业务事实和 {direction_count} "
-            "个创意方向。每个方向至少自然使用 1 条业务事实，可在关系自然时使用"
-            "至多 4 条；整批必须覆盖全部业务事实。"
-        )
     return (
-        f"当前只有 {mandatory_fact_count} 条必须覆盖的业务事实，但需要规划 "
-        f"{direction_count} 个创意方向。至少让 {mandatory_fact_count} 个不同方向"
-        "各自然承载业务事实，并保证整批完整覆盖；其余方向可以引用已确认的产品"
-        "名称、品类、规格或视觉特征形成产品相关创意，不得虚构新的营销事实，也"
-        "不得机械重复同一业务事实凑数。"
+        f"当前有 {mandatory_fact_count} 条适合画面承载的卖点和 {direction_count} 个创意方向。"
+        "以自然关系为前提尽量覆盖；每个方向选择少量相关事实，不要求固定搭配或最低数量。"
+        "背景事实仍可影响创意，但不要求在画面中证明。事实少时探索不同真实观看理由，"
+        "不要虚构卖点；事实多时由不同方向分担，不在单条素材中堆叠动作。"
     )
 
 
@@ -665,65 +632,7 @@ def validate_creative_direction_plan(
             ):
                 raise ValueError("creative direction used a fact outside its territory")
         directions.append(direction)
-    business_ids = {fact.fact_id for fact in mandatory_business_facts(application)}
-    business_fact_counts = [
-        len(business_ids.intersection(direction.fact_ids)) for direction in directions
-    ]
-    if len(business_ids) >= len(directions) * 2:
-        minimum_business_facts = [
-            min(
-                2,
-                len(
-                    business_ids.intersection(
-                        landscape.by_id[direction.territory_id].compatible_fact_ids
-                    )
-                ),
-            )
-            if landscape is not None
-            else 2
-            for direction in directions
-        ]
-        if any(
-            count < minimum
-            for count, minimum in zip(
-                business_fact_counts, minimum_business_facts, strict=True
-            )
-        ):
-            raise ValueError(
-                "fact-rich batches require at least two business facts per direction"
-            )
-    elif len(business_ids) >= len(directions):
-        minimum_business_facts = [
-            min(
-                1,
-                len(
-                    business_ids.intersection(
-                        landscape.by_id[direction.territory_id].compatible_fact_ids
-                    )
-                ),
-            )
-            if landscape is not None
-            else 1
-            for direction in directions
-        ]
-        if any(
-            count < minimum
-            for count, minimum in zip(
-                business_fact_counts, minimum_business_facts, strict=True
-            )
-        ):
-            raise ValueError(
-                "this batch requires at least one business fact per direction"
-            )
-    elif sum(count > 0 for count in business_fact_counts) < len(business_ids):
-        raise ValueError(
-            "sparse business facts must be distributed across distinct directions"
-        )
-    planned_ids = {
-        fact_id for direction in directions for fact_id in direction.fact_ids
-    }
-    if not business_ids.issubset(planned_ids):
-        raise ValueError("creative directions did not cover all usable business facts")
+    # Fact density and incomplete coverage are planning/quality advice, not structural failures.
     if landscape is not None:
         actual_slots = Counter(item.territory_id for item in directions)
         expected_slots = {
@@ -731,17 +640,6 @@ def validate_creative_direction_plan(
         }
         if dict(actual_slots) != expected_slots:
             raise ValueError("creative directions do not follow landscape target slots")
-        for territory in landscape.territories:
-            realized_ids = {
-                fact_id
-                for direction in directions
-                if direction.territory_id == territory.territory_id
-                for fact_id in direction.fact_ids
-            }
-            if not set(territory.required_fact_ids).issubset(realized_ids):
-                raise ValueError(
-                    "creative directions did not cover territory required facts"
-                )
     plan_payload = [item.model_dump(mode="json", by_alias=True) for item in directions]
     return CreativeDirectionPlan(
         directions=directions,
