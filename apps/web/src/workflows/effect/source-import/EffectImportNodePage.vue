@@ -5,10 +5,10 @@ import {
   type EffectImportDraft,
   type EffectImportMaterial,
   type EffectImportMaterialMutationData,
-  type EffectImportMaterialType,
   type EffectImportMode,
   type EffectImportProduct,
   type EffectImportRemovedProduct,
+  type EffectImportUploadMaterialType,
   type EffectImportWorkspace,
   type EffectManifestFormat,
   type EffectVideoConfig,
@@ -21,7 +21,6 @@ import {
   CloudUpload,
   FileSpreadsheet,
   FileText,
-  FolderInput,
   LoaderCircle,
   PackageOpen,
   Plus,
@@ -33,7 +32,7 @@ import {
 } from '@lucide/vue';
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
-import { ApiClientError, isAbortError } from '../../../api/http-client';
+import { isAbortError } from '../../../api/http-client';
 import { projectContextKey } from '../../../platform/project/project-context';
 import { requestActionConfirmation } from '../../../shared/composables/action-confirmation';
 import {
@@ -162,7 +161,6 @@ const writeQueue = createProjectWriteQueue();
 const generationGate = createEffectImportGenerationGate();
 const productDraftBuffer = createVersionedDraftBuffer<EditableProductSnapshot>();
 const globalDraftBuffer = createVersionedDraftBuffer<EffectVideoConfig>();
-const draftCache = new Map<EffectImportMode, EffectImportDraft>();
 const createClientIdempotencyKey = (): string =>
   globalThis.crypto?.randomUUID?.() ??
   `effect-import-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -192,15 +190,11 @@ const singleProduct = computed(() => draft.value?.products[0] ?? null);
 const validationErrors = computed(
   () => draft.value?.validationIssues.filter((issue) => issue.severity === 'ERROR') ?? [],
 );
-const unnamedProductCount = computed(
-  () => draft.value?.products.filter((product) => !product.name.trim()).length ?? 0,
-);
 const validatedCurrentRevision = computed(
   () =>
     Boolean(draft.value) &&
     draft.value?.validatedRevision === draft.value?.revision &&
-    validationErrors.value.length === 0 &&
-    unnamedProductCount.value === 0,
+    validationErrors.value.length === 0,
 );
 const selectedCount = computed(() => selectedProductIds.value.size);
 const failedProductCount = computed(
@@ -400,7 +394,6 @@ const syncWorkspaceSummary = (): void => {
 
 const setDraft = (value: EffectImportDraft): void => {
   draft.value = value;
-  draftCache.set(value.mode, value);
   if (value.mode === 'SINGLE' || !keyword.value) {
     listedProducts.value = value.products;
   }
@@ -612,7 +605,6 @@ const loadProject = async (projectId: string): Promise<void> => {
   generationGate.invalidate();
   workspace.value = null;
   draft.value = null;
-  draftCache.clear();
   listedProducts.value = [];
   removedProducts.value = [];
   selectedProductIds.value = new Set();
@@ -633,14 +625,22 @@ const loadProject = async (projectId: string): Promise<void> => {
   try {
     const workspaceResponse = await getEffectImportWorkspace(projectId, pageController.signal);
     if (!isCurrentContext(projectId, generation)) return;
-    workspace.value = workspaceResponse.data.workspace;
-    const draftResponse = await getEffectImportDraft(
-      projectId,
-      workspace.value.currentMode,
-      pageController.signal,
-    );
-    if (!isCurrentContext(projectId, generation)) return;
-    setDraft(draftResponse.data);
+    const loadedWorkspace = workspaceResponse.data.workspace;
+    if (loadedWorkspace.currentMode === 'BATCH') {
+      const normalized = await switchEffectImportMode(
+        projectId,
+        { mode: 'SINGLE', expectedRevision: loadedWorkspace.revision },
+        pageController.signal,
+      );
+      if (!isCurrentContext(projectId, generation)) return;
+      workspace.value = normalized.data.workspace;
+      setDraft(normalized.data.draft);
+    } else {
+      workspace.value = loadedWorkspace;
+      const draftResponse = await getEffectImportDraft(projectId, 'SINGLE', pageController.signal);
+      if (!isCurrentContext(projectId, generation)) return;
+      setDraft(draftResponse.data);
+    }
     lastSavedNodeState = JSON.stringify(nodeStateSnapshot());
     const overview = await getActiveWorkflowRunOverview(
       projectId,
@@ -666,84 +666,14 @@ const loadProject = async (projectId: string): Promise<void> => {
     if (restoredStep < 0 && activeNodeId)
       enqueueWorkflowNodeActivation(projectId, workspace.value.workflowRunId, activeNodeId);
     saveState.value = 'clean';
-    if (workspace.value.currentMode === 'BATCH') await refreshProductList();
     await refreshRemovedProducts();
     await ensureUploadTarget();
     pageStatus.value = 'success';
     scheduleAdjacentWorkspacePrefetch();
-    const backgroundMode: EffectImportMode =
-      workspace.value.currentMode === 'SINGLE' ? 'BATCH' : 'SINGLE';
-    void getEffectImportDraft(projectId, backgroundMode, pageController.signal)
-      .then((response) => {
-        if (isCurrentContext(projectId, generation)) draftCache.set(backgroundMode, response.data);
-      })
-      .catch(() => undefined);
   } catch (error) {
     if (isAbortError(error)) return;
     pageStatus.value = 'error';
     pageError.value = error instanceof Error ? error.message : '资料包工作区加载失败';
-  }
-};
-
-const switchMode = async (mode: EffectImportMode): Promise<void> => {
-  if (
-    transitioning.value ||
-    !workspace.value ||
-    mode === currentMode.value ||
-    !loadedProjectId.value ||
-    !pageController
-  )
-    return;
-  const previousMode = currentMode.value;
-  let previousDraft = draft.value;
-  let previousListedProducts = listedProducts.value;
-  const workspaceRevision = workspace.value.revision;
-  beginTransition();
-  try {
-    if (!(await flushPendingEdits()) || hasPendingDraftEdits()) {
-      showNotice('当前模式仍有未保存修改，请重试保存后再切换', 'error');
-      return;
-    }
-    previousDraft = draft.value;
-    previousListedProducts = listedProducts.value;
-    const projectId = loadedProjectId.value;
-    const generation = activeGeneration;
-    const cachedDraft = draftCache.get(mode);
-    if (cachedDraft) {
-      workspace.value.currentMode = mode;
-      keyword.value = '';
-      selectedProductIds.value = new Set();
-      setDraft(cachedDraft);
-      saveState.value = 'clean';
-    }
-    const response = await writeQueue.enqueue(projectId, () =>
-      switchEffectImportMode(
-        projectId,
-        { mode, expectedRevision: workspaceRevision },
-        pageController!.signal,
-      ),
-    );
-    if (!isCurrentContext(projectId, generation)) return;
-    workspace.value = response.data.workspace;
-    keyword.value = '';
-    selectedProductIds.value = new Set();
-    setDraft(response.data.draft);
-    saveState.value = 'clean';
-    if (mode === 'BATCH') await refreshProductList();
-    await refreshRemovedProducts();
-    await ensureUploadTarget();
-  } catch (error) {
-    if (isAbortError(error)) return;
-    if (workspace.value && previousDraft) {
-      workspace.value.currentMode = previousMode;
-      setDraft(previousDraft);
-      listedProducts.value = previousListedProducts;
-    }
-    if (error instanceof ApiClientError && error.status === 409)
-      await loadProject(loadedProjectId.value);
-    else showNotice(error instanceof Error ? error.message : '切换模式失败', 'error');
-  } finally {
-    endTransition();
   }
 };
 
@@ -1072,24 +1002,30 @@ const setCommerceLinkBusy = (productId: string, busy: boolean): void => {
   busyCommerceProductIds.value = next;
 };
 
-const uploadMaterials = async (
-  product: EffectImportProduct,
-  type: EffectImportMaterialType,
-  files: File[],
-): Promise<void> => {
-  if (type !== 'PRODUCT_IMAGE' && type !== 'PRODUCT_DOCUMENT') {
-    showNotice('当前素材类型暂不支持直接上传', 'warning');
-    return;
-  }
-  if (!product.name.trim()) {
-    showNotice('请先填写产品名称，再上传产品资料', 'warning');
+const imageUploadExtensions = new Set(['jpg', 'jpeg', 'png', 'psd', 'webp']);
+const documentUploadExtensions = new Set(['doc', 'docx', 'xls', 'xlsx', 'pdf', 'txt', 'md']);
+const resolveUploadMaterialType = (file: File): EffectImportUploadMaterialType | null => {
+  const extension = file.name.split('.').pop()?.toLocaleLowerCase('en-US') ?? '';
+  if (imageUploadExtensions.has(extension)) return 'PRODUCT_IMAGE';
+  if (documentUploadExtensions.has(extension)) return 'PRODUCT_DOCUMENT';
+  return null;
+};
+
+const uploadMaterials = async (product: EffectImportProduct, files: File[]): Promise<void> => {
+  const unsupportedFiles = files.filter((file) => resolveUploadMaterialType(file) === null);
+  if (unsupportedFiles.length) {
+    showNotice(
+      `有 ${unsupportedFiles.length} 个文件格式不受支持，请选择图片、Word、Excel、PDF 或纯文本资料`,
+      'warning',
+    );
     return;
   }
   if (!(await flushProduct(product.id))) return;
-  const busyKey = `${product.id}:${type}`;
+  const busyKey = `${product.id}:files`;
   const manifest = files.map((file) => ({
     file,
     clientFileId: crypto.randomUUID(),
+    type: resolveUploadMaterialType(file)!,
   }));
   const completionKey = crypto.randomUUID();
   let uploadSessionId = '';
@@ -1104,7 +1040,7 @@ const uploadMaterials = async (
             product.id,
             {
               expectedRevision,
-              items: manifest.map(({ file, clientFileId }) => ({
+              items: manifest.map(({ file, clientFileId, type }) => ({
                 clientFileId,
                 type,
                 originalFileName: file.name,
@@ -1160,10 +1096,6 @@ const replaceMaterialFile = async (event: Event): Promise<void> => {
   const target = replacementTarget.value;
   replacementTarget.value = null;
   if (!file || !target) return;
-  if (!target.product.name.trim()) {
-    showNotice('请先填写产品名称，再重新上传资料', 'warning');
-    return;
-  }
   if (!(await flushProduct(target.product.id))) return;
   setMaterialBusy(target.material.id, true);
   await runWrite(
@@ -1552,7 +1484,7 @@ onBeforeUnmount(() => {
     <section v-else-if="pageStatus === 'loading'" class="page-state loading">
       <LoaderCircle class="spin" :size="34" />
       <h2>正在恢复资料包草稿</h2>
-      <p>加载当前项目的导入模式和产品资料…</p>
+      <p>加载当前项目的产品资料…</p>
     </section>
     <section v-else-if="pageStatus === 'error'" class="page-state error">
       <AlertCircle :size="34" />
@@ -1633,7 +1565,7 @@ onBeforeUnmount(() => {
             <span>01</span>
             <div>
               <h1>资料包导入</h1>
-              <p>汇集商品图片、产品文本资料与电商链接，统一视频生产规格</p>
+              <p>整理产品图片、文本资料与电商链接</p>
             </div>
             <div class="save-indicator" :class="saveState">
               <CloudUpload :size="14" />{{ saveStateLabel }}
@@ -1641,28 +1573,6 @@ onBeforeUnmount(() => {
             <button type="button" @click="downloadProductPackageTemplate">
               <FileText :size="14" />下载资料包模板
             </button>
-          </section>
-
-          <section class="import-mode-segment" aria-label="导入模式">
-            <strong>导入模式</strong>
-            <div>
-              <button
-                type="button"
-                :class="{ active: currentMode === 'SINGLE' }"
-                :disabled="transitioning"
-                @click="switchMode('SINGLE')"
-              >
-                <FolderInput :size="13" />单产品导入
-              </button>
-              <button
-                type="button"
-                :class="{ active: currentMode === 'BATCH' }"
-                :disabled="transitioning"
-                @click="switchMode('BATCH')"
-              >
-                <FileSpreadsheet :size="13" />多品类批量导入
-              </button>
-            </div>
           </section>
 
           <section v-if="removedProducts.length" class="recently-removed" aria-live="polite">
@@ -1832,7 +1742,7 @@ onBeforeUnmount(() => {
           </section>
 
           <WorkflowNodeDraftBar
-            :detail="`${currentMode === 'BATCH' ? '多产品批量导入' : '单产品导入'} · ${draft?.productCount ?? 0} 个产品 · 已自动保存到节点草稿`"
+            :detail="`当前产品 · 已自动保存到节点草稿`"
             :state="draftBarState"
             :state-label="saveStateLabel"
             title="产品资料草稿"
@@ -1848,7 +1758,6 @@ onBeforeUnmount(() => {
                 `revision ${draft?.revision ?? 0}`,
                 `${draft?.productCount ?? 0} 个产品`,
                 failedProductCount ? `${failedProductCount} 个产品存在失败资料` : '',
-                unnamedProductCount ? `${unnamedProductCount} 个产品未填写名称` : '',
               ]
                 .filter(Boolean)
                 .join(' · ')
@@ -2012,21 +1921,22 @@ onBeforeUnmount(() => {
 }
 .import-workspace-card {
   margin-top: 18px;
-  padding: 22px;
-  background: #fff;
-  border: 1px solid #f0e3dc;
-  border-radius: 24px;
-  box-shadow: 0 8px 25px #7a4e3b0c;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
 .node-heading {
   display: flex;
-  min-height: 78px;
-  margin-bottom: 12px;
-  padding: 0;
+  min-height: 56px;
+  margin-bottom: 14px;
+  padding: 0 2px 14px;
   align-items: center;
-  gap: 12px;
-  background: #fff;
+  gap: 10px;
+  background: transparent;
   border: 0;
+  border-bottom: 1px solid #e9eef6;
   border-radius: 0;
   box-shadow: none;
 }
@@ -2049,10 +1959,10 @@ onBeforeUnmount(() => {
 }
 .node-heading h1 {
   color: #263247;
-  font-size: 17px;
+  font-size: 16px;
 }
 .node-heading p {
-  margin-top: 4px;
+  margin-top: 3px;
   color: #8792a4;
   font-size: 11px;
 }
@@ -2076,8 +1986,8 @@ onBeforeUnmount(() => {
 }
 .node-heading > button {
   display: inline-flex;
-  height: 34px;
-  padding: 0 12px;
+  height: 36px;
+  padding: 0 13px;
   align-items: center;
   gap: 6px;
   color: #3f5f8c;
@@ -2086,40 +1996,6 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   font-size: 10px;
   font-weight: 800;
-}
-.import-mode-segment {
-  display: flex;
-  margin: 0 0 16px;
-  align-items: center;
-  gap: 12px;
-  color: #596278;
-  font-size: 11px;
-}
-.import-mode-segment > div {
-  display: inline-flex;
-  padding: 3px;
-  background: #f5f7fa;
-  border: 1px solid #ece0da;
-  border-radius: 10px;
-}
-.import-mode-segment button {
-  display: inline-flex;
-  min-height: 30px;
-  padding: 0 12px;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  color: #66758c;
-  background: transparent;
-  border: 0;
-  border-radius: 7px;
-  font-size: 10px;
-  font-weight: 700;
-}
-.import-mode-segment button.active {
-  color: #2563eb;
-  background: #fff;
-  box-shadow: 0 3px 9px #7a4e3b12;
 }
 .recently-removed {
   margin: -4px 0 16px;
@@ -2208,9 +2084,9 @@ onBeforeUnmount(() => {
 }
 .import-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 18px;
-  align-items: start;
+  grid-template-columns: minmax(0, 1.18fr) minmax(360px, 0.82fr);
+  gap: 16px;
+  align-items: stretch;
 }
 .import-layout.batch-mode {
   grid-template-columns: 1fr;
@@ -2225,23 +2101,25 @@ onBeforeUnmount(() => {
   display: contents;
 }
 .import-layout:not(.batch-mode) :deep(.upload-source-card) {
-  height: auto;
+  min-height: 500px;
+  height: 100%;
   box-sizing: border-box;
   align-self: stretch;
   grid-column: 1;
-  grid-row: 1;
+  grid-row: 1 / span 2;
 }
 .import-layout:not(.batch-mode) :deep(.commerce-parse) {
-  grid-column: 1 / -1;
-  grid-row: 2;
+  grid-column: 2;
+  grid-row: 1;
 }
 .import-layout:not(.batch-mode) :deep(.imported-materials) {
+  min-height: 0;
+  grid-column: 2;
+  grid-row: 2;
+}
+.import-layout:not(.batch-mode) :deep(.commit-footer) {
   grid-column: 1 / -1;
   grid-row: 3;
-}
-.import-layout:not(.batch-mode) :deep(.override-footer) {
-  grid-column: 1 / -1;
-  grid-row: 4;
 }
 .upload-target-preparing {
   display: flex;
@@ -2480,9 +2358,17 @@ onBeforeUnmount(() => {
     transform: rotate(360deg);
   }
 }
-@media (max-width: 1080px) {
+@media (max-width: 1180px) {
   .import-layout {
     grid-template-columns: 1fr;
+  }
+  .import-layout:not(.batch-mode) :deep(.upload-source-card),
+  .import-layout:not(.batch-mode) :deep(.commerce-parse),
+  .import-layout:not(.batch-mode) :deep(.imported-materials),
+  .import-layout:not(.batch-mode) :deep(.commit-footer) {
+    min-height: auto;
+    grid-column: 1;
+    grid-row: auto;
   }
   .node-heading {
     flex-wrap: wrap;
@@ -2509,9 +2395,6 @@ onBeforeUnmount(() => {
   .import-workspace-card {
     padding: 14px;
     border-radius: 18px;
-  }
-  .import-mode-segment {
-    margin-left: 0;
   }
   .node-heading > div:nth-child(2) {
     width: calc(100% - 60px);

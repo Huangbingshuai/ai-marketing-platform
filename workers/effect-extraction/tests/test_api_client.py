@@ -124,7 +124,7 @@ async def test_internal_api_claim_and_branch_match_backend_contract() -> None:
         await api.put_branch(
             context,
             BranchOutput(
-                branch=BranchName.FORM,
+                branch=BranchName.DOCUMENT,
                 status=BranchStatus.SUCCEEDED,
                 source_fingerprint=context.source_fingerprint,
             ),
@@ -149,7 +149,7 @@ async def test_internal_api_claim_and_branch_match_backend_contract() -> None:
     assert requests[1].headers["x-attempt-token"] == "attempt-1"
     body = json.loads(requests[1].content)
     assert body["projectId"] == "project-1"
-    assert body["branch"] == "FORM"
+    assert body["branch"] == "DOCUMENT"
     assert body["status"] == "SUCCEEDED"
     assert requests[2].url.path.endswith("/artifacts")
     assert requests[2].headers["x-attempt-token"] == "attempt-1"

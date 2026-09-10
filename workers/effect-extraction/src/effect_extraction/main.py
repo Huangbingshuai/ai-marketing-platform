@@ -80,6 +80,8 @@ async def serve(settings: WorkerSettings) -> None:
                 max_output_bytes=settings.image_max_output_bytes,
             ),
             max_document_text_chars=settings.max_document_text_chars,
+            document_chunk_text_chars=settings.document_chunk_text_chars,
+            document_max_concurrency=settings.document_max_concurrency,
             image_max_concurrency=settings.image_max_concurrency,
             commerce_fetcher=HttpxCommerceFetcher(
                 renderer=commerce_renderer,

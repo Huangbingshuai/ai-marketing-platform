@@ -5,7 +5,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
-from .models import BranchName, BranchOutput, BranchStatus, ExtractionCandidate
+from .models import BranchName, BranchOutput, ExtractionCandidate
 
 SCALAR_FIELDS = (
     "product_category",
@@ -16,7 +16,6 @@ SCALAR_FIELDS = (
 )
 LIST_FIELDS = ("selling_points",)
 PRIORITY = (
-    BranchName.FORM,
     BranchName.DOCUMENT,
     BranchName.COMMERCE,
     BranchName.IMAGE,
@@ -75,9 +74,6 @@ def branch_candidate(output: BranchOutput) -> ExtractionCandidate | None:
 
 def fuse(branches: list[BranchOutput]) -> FusionResult:
     by_name = {branch.branch: branch for branch in branches}
-    form = by_name.get(BranchName.FORM)
-    if form is None or form.status == BranchStatus.FAILED:
-        raise FusionError("required FORM branch did not succeed")
 
     ordered: list[tuple[BranchName, ExtractionCandidate]] = []
     warnings: list[str] = []
@@ -90,6 +86,9 @@ def fuse(branches: list[BranchOutput]) -> FusionResult:
         candidate = branch_candidate(output)
         if candidate is not None:
             ordered.append((name, candidate))
+
+    if not ordered:
+        raise FusionError("no usable document, image, or commerce result")
 
     fused = ExtractionCandidate.empty()
     provenance: dict[str, str] = {}

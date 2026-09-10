@@ -27,11 +27,8 @@ class RecordingPipeline:
     async def commerce_branch(self, context: RuntimeContext) -> None:
         self.finished.add("commerce")
 
-    async def form_branch(self, context: RuntimeContext) -> None:
-        self.finished.add("form")
-
     async def fuse_sources(self, context: RuntimeContext) -> None:
-        assert self.finished == {"documents", "images", "commerce", "form"}
+        assert self.finished == {"documents", "images", "commerce"}
         self.finished.add("fusion")
 
     async def refine_semantics(self, context: RuntimeContext) -> None:

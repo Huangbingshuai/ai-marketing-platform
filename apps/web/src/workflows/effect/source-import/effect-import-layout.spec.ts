@@ -30,35 +30,54 @@ describe('effect import single-product prototype grid', () => {
     expect(pageSource).not.toContain('@click="downloadTemplate(\'csv\')"');
   });
 
-  it('lets the product material editor fill the row without video settings', () => {
+  it('uses a balanced two-column desktop workspace without video settings', () => {
     expect(pageSource).toMatch(
-      /\.import-layout:not\(\.batch-mode\)[\s\S]*:deep\(\.upload-source-card\)[\s\S]*grid-column:\s*1;[\s\S]*grid-row:\s*1;/,
+      /\.import-layout:not\(\.batch-mode\)[\s\S]*:deep\(\.upload-source-card\)[\s\S]*grid-column:\s*1;[\s\S]*grid-row:\s*1\s*\/\s*span 2;/,
     );
-    expect(pageSource).toContain('grid-template-columns: minmax(0, 1fr)');
+    expect(pageSource).toContain('grid-template-columns: minmax(0, 1.18fr) minmax(360px, 0.82fr)');
     expect(pageSource).not.toContain('<GlobalVideoConfigPanel');
   });
 
-  it('places commerce parsing and imported materials across both columns below row one', () => {
+  it('stacks commerce parsing and imported materials in the right desktop column', () => {
     expect(pageSource).toMatch(
-      /:deep\(\.commerce-parse\)[\s\S]*grid-column:\s*1\s*\/\s*-1;[\s\S]*grid-row:\s*2;/,
+      /:deep\(\.commerce-parse\)[\s\S]*grid-column:\s*2;[\s\S]*grid-row:\s*1;/,
     );
     expect(pageSource).toMatch(
-      /:deep\(\.imported-materials\)[\s\S]*grid-column:\s*1\s*\/\s*-1;[\s\S]*grid-row:\s*3;/,
+      /:deep\(\.imported-materials\)[\s\S]*grid-column:\s*2;[\s\S]*grid-row:\s*2;/,
     );
   });
 
-  it('aligns the mode switch with the cards and lets the upload zone consume available height', () => {
-    expect(pageSource).toMatch(/\.import-mode-segment\s*\{[\s\S]*margin:\s*0 0 16px;/);
+  it('removes import-mode switching and normalizes legacy batch workspaces to one product', () => {
+    expect(pageSource).not.toContain('class="import-mode-segment"');
+    expect(pageSource).not.toContain('多品类批量导入');
+    expect(pageSource).not.toContain('@click="switchMode(\'BATCH\')"');
+    expect(pageSource).toContain("if (loadedWorkspace.currentMode === 'BATCH')");
+    expect(pageSource).toContain("{ mode: 'SINGLE', expectedRevision: loadedWorkspace.revision }");
+  });
+
+  it('lets the upload zone consume the left-column height', () => {
     expect(productEditorSource).toMatch(
       /\.upload-source-card\s*\{[\s\S]*display:\s*flex;[\s\S]*flex-direction:\s*column;/,
     );
     expect(productEditorSource).toMatch(
-      /\.source-dropzone\s*\{[\s\S]*min-height:\s*160px;[\s\S]*flex:\s*1;/,
+      /\.source-dropzone\s*\{[\s\S]*min-height:\s*220px;[\s\S]*flex:\s*1;/,
     );
   });
 
-  it('keeps native file controls structurally hidden while switching modes', () => {
+  it('uses the selected balanced-layout node heading', () => {
+    expect(pageSource).toContain('<span>01</span>');
+    expect(pageSource).toContain('<h1>资料包导入</h1>');
+    expect(pageSource).toContain('整理产品图片、文本资料与电商链接');
+  });
+
+  it('merges image and document channels into one mixed-file upload entry', () => {
     expect(productEditorSource.match(/type="file"\s+hidden/g)).toHaveLength(2);
+    expect(productEditorSource).toContain('点击或将商品图片、产品文档拖拽到此处');
+    expect(productEditorSource).toContain('支持同时选择图片和文档，系统会自动识别资料类型');
+    expect(productEditorSource).toContain(':accept="unifiedUploadAccept"');
+    expect(productEditorSource).not.toContain('material-type-tabs');
+    expect(pageSource).toContain('resolveUploadMaterialType(file)!');
+    expect(pageSource).toContain('items: manifest.map(({ file, clientFileId, type }) => ({');
     expect(productEditorSource).toMatch(
       /\.source-dropzone input\[type='file'\]\s*\{[\s\S]*display:\s*none !important;/,
     );
@@ -103,11 +122,11 @@ describe('effect import prototype video configuration', () => {
 });
 
 describe('effect import identity boundary', () => {
-  it('requires a product name in both single and batch editors while leaving category to AI', () => {
-    expect(productEditorSource.match(/placeholder="请输入产品名称"/g)).toHaveLength(2);
-    expect(productEditorSource).toContain("changeField('name', $event)");
-    expect(productEditorSource).toContain(':aria-invalid="!product.name.trim()"');
-    expect(productEditorSource).toContain('请先填写产品名称，再上传产品资料');
+  it('leaves the product name to AI extraction and allows direct material upload', () => {
+    expect(productEditorSource).not.toContain('placeholder="请输入产品名称"');
+    expect(productEditorSource).not.toContain("changeField('name', $event)");
+    expect(productEditorSource).not.toContain('请先填写产品名称');
+    expect(productEditorSource).toContain('const uploadDisabled = computed(() => props.disabled)');
     expect(productEditorSource).toContain(':disabled="uploadDisabled"');
     expect(productEditorSource).not.toContain('品类');
     expect(manifestDialogSource).not.toContain('<th>产品名称</th>');
@@ -115,10 +134,7 @@ describe('effect import identity boundary', () => {
   });
 
   it('keeps next-step access locked and places whole-node validation beside next step', () => {
-    expect(pageSource).toContain('const unnamedProductCount = computed(');
-    expect(pageSource).toMatch(
-      /const validatedCurrentRevision[\s\S]*unnamedProductCount\.value === 0/,
-    );
+    expect(pageSource).not.toContain('unnamedProductCount');
     expect(pageSource).toContain('validateEffectImportDraft(');
     expect(pageSource).toContain('<WorkflowNodeDraftBar');
     expect(pageSource).toContain('title="产品资料草稿"');
@@ -127,7 +143,7 @@ describe('effect import identity boundary', () => {
     expect(pageSource).toContain('@validate="validateDraft"');
     expect(pageSource).toContain('@next="advanceDraft"');
     expect(productEditorSource).not.toContain('完成校验');
-    expect(pageSource).toContain('个产品未填写名称');
+    expect(pageSource).not.toContain('个产品未填写名称');
   });
 });
 

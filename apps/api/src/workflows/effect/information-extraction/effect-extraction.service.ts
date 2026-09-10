@@ -81,7 +81,13 @@ const safeFileName = (value: string): string =>
 
 type RunBranchRecord = {
   branch:
-    'DOCUMENT' | 'IMAGE' | 'COMMERCE' | 'FORM' | 'FUSION' | 'SEMANTIC_REFINEMENT' | 'NORMALIZATION';
+    | 'DOCUMENT'
+    | 'IMAGE'
+    | 'COMMERCE'
+    | 'FORM'
+    | 'FUSION'
+    | 'SEMANTIC_REFINEMENT'
+    | 'NORMALIZATION';
   status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'PARTIAL' | 'SKIPPED' | 'FAILED';
   warnings: unknown;
   errorCode?: string | null;
@@ -90,8 +96,8 @@ type RunBranchRecord = {
   completedAt?: Date | null;
 };
 
-const isRetiredFormCompletenessWarning = (warning: { message: string }): boolean =>
-  /^表单尚未填写.+，将由其他资料补充$/u.test(warning.message);
+const isRemovedFormWarning = (warning: { message: string }): boolean =>
+  /^表单(?:尚未填写|缺少).+/u.test(warning.message);
 
 const comparableMessage = (value: string | null | undefined): string =>
   (value ?? '').replace(/\s+/gu, ' ').trim();
@@ -103,7 +109,7 @@ const publicWarnings = (
   const excluded = new Set(excludedMessages.map(comparableMessage).filter(Boolean));
   const seen = new Set<string>();
   return parseWarnings(value).filter((warning) => {
-    if (isRetiredFormCompletenessWarning(warning)) return false;
+    if (isRemovedFormWarning(warning)) return false;
     const message = comparableMessage(warning.message);
     if (!message || excluded.has(message) || seen.has(message)) return false;
     seen.add(message);
@@ -185,11 +191,9 @@ const presentNodes = (record: {
       record.createdAt,
     );
     const warnings = publicWarnings(branch.warnings, [errorMessage, branch.errorMessage]);
-    const retiredPartial =
-      id === 'FORM' && branch.status === 'PARTIAL' && warnings.length === 0 && !branch.errorMessage;
     return {
       nodeId: id,
-      status: failedWithRun ? 'FAILED' : retiredPartial ? 'SUCCEEDED' : branch.status,
+      status: failedWithRun ? 'FAILED' : branch.status,
       warnings,
       errorMessage,
     };
@@ -667,16 +671,18 @@ export class EffectExtractionService {
     if (!records) throw conflict('Worker 租约已失效');
     return {
       runId,
-      branches: records.map((record) => ({
-        branch: record.branch,
-        status: record.status,
-        structuredOutput: record.structuredOutput,
-        textStorageKey: record.textStorageKey,
-        warnings: parseWarnings(record.warnings),
-        errorCode: record.errorCode,
-        errorMessage: record.errorMessage,
-        updatedAt: record.updatedAt.toISOString(),
-      })),
+      branches: records
+        .filter((record) => record.branch !== 'FORM')
+        .map((record) => ({
+          branch: record.branch,
+          status: record.status,
+          structuredOutput: record.structuredOutput,
+          textStorageKey: record.textStorageKey,
+          warnings: parseWarnings(record.warnings),
+          errorCode: record.errorCode,
+          errorMessage: record.errorMessage,
+          updatedAt: record.updatedAt.toISOString(),
+        })),
     };
   }
 
@@ -1095,7 +1101,6 @@ const extractionCandidateSources = (
   );
   const fallbackName = (branch: string) =>
     ({
-      FORM: '资料导入表单',
       DOCUMENT: '用户资料',
       COMMERCE: '商品链接',
       IMAGE: '产品图片',
@@ -1151,7 +1156,7 @@ const extractionValueProvenance = (
   if (!result) return provenance;
 
   const userCandidates = branches
-    .filter(({ branch }) => ['FORM', 'DOCUMENT', 'COMMERCE'].includes(branch))
+    .filter(({ branch }) => ['DOCUMENT', 'COMMERCE'].includes(branch))
     .flatMap(({ structuredOutput }) => branchCandidates(structuredOutput));
   const imageCandidates = branches
     .filter(({ branch }) => branch === 'IMAGE')
@@ -1182,7 +1187,7 @@ const extractionValueProvenance = (
       const allowedBranches =
         origin === 'AI_IMAGE_SUGGESTION'
           ? new Set(['IMAGE'])
-          : new Set(['FORM', 'DOCUMENT', 'COMMERCE']);
+          : new Set(['DOCUMENT', 'COMMERCE']);
       const names = candidateSources
         .filter((entry) => {
           if (!allowedBranches.has(entry.branch)) return false;

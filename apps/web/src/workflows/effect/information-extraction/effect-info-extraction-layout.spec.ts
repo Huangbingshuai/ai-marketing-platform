@@ -111,6 +111,11 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain("graphExecution('FUSION').errorMessage");
     expect(pageSource).toContain("graphExecution('SEMANTIC_REFINEMENT').warnings");
     expect(pageSource).toContain("graphExecution('NORMALIZATION').warnings");
+    expect(pageSource).toContain('const graphWarningSummary');
+    expect(pageSource).toContain('class="node-warning node-warning--summary"');
+    expect(pageSource).toContain('grid-template-columns: repeat(3, minmax(0, 1fr));');
+    expect(pageSource).toContain('right: 16.6667%;');
+    expect(pageSource).toContain('left: 16.6667%;');
     expect(pageSource).toContain('role="button"');
     expect(pageSource).toContain('@keydown.enter.prevent="selectGraphNode');
     expect(pageSource).toContain('class="workflow-node-detail"');
@@ -136,11 +141,11 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).not.toContain('等待异步 Worker 接收任务');
   });
 
-  it('lets document and image branches extract product identity', () => {
-    expect(pageSource).toContain("FORM: '读取资料导入节点中的结构化表单信息'");
+  it('lets document and image branches extract product identity without a form branch', () => {
+    expect(pageSource).not.toContain("FORM: '");
     expect(pageSource).toContain("materialSources(['PRODUCT_IMAGE'])");
     expect(pageSource).toContain('v-for="(source, sourceIndex) in graphDetail.sources"');
-    expect(pageSource).toContain("detailField('productCategory', '产品品类'");
+    expect(pageSource).not.toContain("nodeId === 'FORM'");
     expect(pageSource).not.toContain("detailField('productName', '产品名称', product.name");
     expect(pageSource).not.toContain("detailField('resolution', '分辨率'");
   });

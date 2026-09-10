@@ -50,7 +50,7 @@ describe('EffectExtractionRepository isolation and idempotency', () => {
                   branches: {
                     where: {
                       branch: {
-                        in: ['FORM', 'DOCUMENT', 'COMMERCE', 'IMAGE', 'SEMANTIC_REFINEMENT'],
+                        in: ['DOCUMENT', 'COMMERCE', 'IMAGE', 'SEMANTIC_REFINEMENT'],
                       },
                     },
                   },

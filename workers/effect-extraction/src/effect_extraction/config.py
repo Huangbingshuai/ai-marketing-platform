@@ -7,6 +7,7 @@ from pydantic import AnyHttpUrl, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_ARK_MODEL = "doubao-seed-2-1-turbo-260628"
+DEFAULT_ARK_DOCUMENT_MODEL = "doubao-seed-2-1-pro-260628"
 DEFAULT_ARK_SEMANTIC_MODEL = "doubao-seed-2-1-pro-260628"
 ARK_KEY_PLACEHOLDERS = {
     "replace-with-your-ark-api-key",
@@ -86,6 +87,15 @@ class WorkerSettings(BaseSettings):
     max_document_text_chars: int = Field(
         default=60_000, alias="MAX_DOCUMENT_TEXT_CHARS", ge=1_000
     )
+    document_chunk_text_chars: int = Field(
+        default=12_000,
+        alias="DOCUMENT_CHUNK_TEXT_CHARS",
+        ge=1_000,
+        le=30_000,
+    )
+    document_max_concurrency: int = Field(
+        default=2, alias="DOCUMENT_MAX_CONCURRENCY", ge=1, le=4
+    )
     image_max_input_bytes: int = Field(
         default=20 * 1024 * 1024, alias="IMAGE_MAX_INPUT_BYTES", ge=1
     )
@@ -101,13 +111,13 @@ class WorkerSettings(BaseSettings):
     )
     ark_timeout_seconds: float = Field(default=120.0, alias="ARK_TIMEOUT_SECONDS", gt=0)
     ark_document_timeout_seconds: float = Field(
-        default=45.0, alias="ARK_DOCUMENT_TIMEOUT_SECONDS", gt=0
+        default=180.0, alias="ARK_DOCUMENT_TIMEOUT_SECONDS", gt=0
     )
     ark_document_max_attempts: int = Field(
         default=1, alias="ARK_DOCUMENT_MAX_ATTEMPTS", ge=1, le=2
     )
     ark_document_max_output_tokens: int = Field(
-        default=3072, alias="ARK_DOCUMENT_MAX_OUTPUT_TOKENS", ge=256, le=8192
+        default=8192, alias="ARK_DOCUMENT_MAX_OUTPUT_TOKENS", ge=256, le=8192
     )
     ark_document_reasoning_effort: Literal["minimal", "low", "medium", "high"] = Field(
         default="minimal", alias="ARK_DOCUMENT_REASONING_EFFORT"
@@ -192,7 +202,7 @@ class WorkerSettings(BaseSettings):
 
     @property
     def resolved_document_model(self) -> str:
-        return self.ark_document_model or self.ark_model
+        return self.ark_document_model or DEFAULT_ARK_DOCUMENT_MODEL
 
     @property
     def resolved_image_model(self) -> str:

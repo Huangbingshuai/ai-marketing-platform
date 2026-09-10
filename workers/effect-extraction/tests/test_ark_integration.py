@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import os
 
 import pytest
 
-from effect_extraction.config import DEFAULT_ARK_MODEL, DEFAULT_ARK_SEMANTIC_MODEL
+from effect_extraction.config import (
+    DEFAULT_ARK_DOCUMENT_MODEL,
+    DEFAULT_ARK_MODEL,
+    DEFAULT_ARK_SEMANTIC_MODEL,
+)
+from effect_extraction.document_facts import (
+    merge_document_candidates,
+    split_document_markdown,
+)
 from effect_extraction.models import (
     ExtractionCandidate,
     ExtractionResult,
@@ -77,23 +86,8 @@ async def test_real_ark_text_image_and_normalization_contracts() -> None:
                 product_name="山泉气泡水",
                 core_specification="500ml",
                 price_range=None,
-                resolution=None,
                 visual_features="透明瓶身",
-                core_selling_points=["无糖"],
-                secondary_selling_points=None,
-                trust_backings=None,
-                target_audience="成年消费者",
-                core_pain_points=None,
-                decision_drivers=None,
-                marketing_goal="商品认知",
-                usage_scenarios=["户外"],
-                purchase_scenarios=None,
-                emotional_scenarios=None,
-                duration_seconds=20,
-                aspect_ratio="9:16",
-                delivery_channels="短视频",
-                disabled_elements=["医疗功效承诺"],
-                visual_style_baseline="清新",
+                selling_points=["无糖", "适合户外饮用"],
             )
         )
     finally:
@@ -103,10 +97,77 @@ async def test_real_ark_text_image_and_normalization_contracts() -> None:
     assert isinstance(image.value, ExtractionCandidate)
     assert isinstance(normalized.value, ExtractionResult)
     assert normalized.value.product_name.strip()
-    assert isinstance(normalized.value.core_selling_points, list)
+    assert isinstance(normalized.value.selling_points, list)
     assert document.metadata.stage == "DOCUMENT"
     assert image.metadata.stage == "IMAGE"
     assert normalized.metadata.stage == "NORMALIZATION"
+
+
+@pytest.mark.asyncio
+async def test_real_ark_extracts_selling_points_from_a_product_article() -> None:
+    api_key = _required_environment("ARK_API_KEY")
+    model = os.getenv("ARK_MODEL", DEFAULT_ARK_MODEL).strip() or DEFAULT_ARK_MODEL
+    document_model = (
+        os.getenv("ARK_DOCUMENT_MODEL", DEFAULT_ARK_DOCUMENT_MODEL).strip()
+        or DEFAULT_ARK_DOCUMENT_MODEL
+    )
+    article = """
+# 紫苏梅子酱产品介绍
+
+紫苏梅子酱是一种以梅子风味和紫苏草本香为特色的复合调味酱。相关饮食传统可见于东亚梅子腌制与调味方式。
+
+## 风味和质地
+
+入口先呈现鲜明梅子酸味，随后是柔和甜味和少量咸味，尾段保留紫苏草本香。酱体呈暗红紫色，介于果酱和浓稠酱汁之间，可见细碎梅肉与紫苏纤维，能够附着在食材表面。
+
+## 制作方式
+
+文章介绍的一种常见制作方式是将盐渍梅子清洗、去核并捣成果肉，再加入处理后的紫苏、糖和醋调和，之后加热浓缩成酱。不同商品的配方和比例可能不同。
+
+## 使用方式
+
+它可以直接蘸食炸物，也可拌入凉菜；烹饪时可刷在鸡翅或肉类表面，也可在排骨收汁阶段加入，还可与米醋和少量油调成沙拉汁。每一种方式都是不同的产品用法。
+
+## 不应作为商品卖点的页面噪声
+
+页面还出现了品牌排行榜、限时优惠和作者主观推荐。有人把紫苏相关成分延伸为抗菌、抗炎和缓解疲劳功效，但本文没有提供这款具体商品的检测报告、营养标签或功效证明。
+"""
+    chunks = split_document_markdown(article, max_chars=520)
+    provider = ArkResponsesProvider(
+        base_url=os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
+        api_key=api_key,
+        model=model,
+        document_model=document_model,
+        timeout=float(os.getenv("ARK_TIMEOUT_SECONDS", "120")),
+        document_timeout=float(os.getenv("ARK_DOCUMENT_TIMEOUT_SECONDS", "180")),
+        document_max_attempts=1,
+        document_max_output_tokens=int(
+            os.getenv("ARK_DOCUMENT_MAX_OUTPUT_TOKENS", "8192")
+        ),
+        document_reasoning_effort=os.getenv(
+            "ARK_DOCUMENT_REASONING_EFFORT", "minimal"
+        ),
+    )
+    try:
+        calls = await asyncio.gather(
+            *(
+                provider.extract_document(chunk, source_name="紫苏梅子酱产品文章.docx")
+                for chunk in chunks
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    result = merge_document_candidates([call.value for call in calls])
+    points = result.selling_points or []
+    joined = "；".join(points)
+    assert len(points) >= 8
+    assert "紫苏" in joined
+    assert "梅" in joined
+    assert any(keyword in joined for keyword in ("蘸", "凉拌", "刷", "收汁"))
+    assert not any(keyword in joined for keyword in ("抗菌", "抗炎", "缓解疲劳"))
+    assert not any(keyword in joined for keyword in ("排行榜", "限时优惠", "作者推荐"))
+    assert all(call.metadata.model == document_model for call in calls)
 
 
 @pytest.mark.asyncio

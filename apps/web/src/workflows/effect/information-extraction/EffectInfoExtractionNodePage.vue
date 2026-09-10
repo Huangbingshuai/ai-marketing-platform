@@ -205,7 +205,6 @@ const graphNodeDescription = (nodeId: EffectExtractionNodeId): string =>
     DOCUMENT: '读取文档中的产品信息',
     IMAGE: '识别图片中的商品信息',
     COMMERCE: '检查商品链接中的信息',
-    FORM: '读取资料导入节点中的结构化表单信息',
     FUSION: '合并不同资料中的有效信息',
     SEMANTIC_REFINEMENT: '保留用户事实，只整理图片建议并给出待确认提示',
     NORMALIZATION: '生成可继续编辑的产品信息卡',
@@ -277,7 +276,6 @@ const warningFieldLabels: Record<string, string> = {
   visual_style_baseline: '视觉风格基线',
 };
 const warningSourceLabels: Record<string, string> = {
-  FORM: '人工填写',
   DOCUMENT: '产品文档',
   COMMERCE: '商品链接',
   IMAGE: '商品图片',
@@ -292,6 +290,12 @@ const presentWarningMessage = (message: string): string => {
   const field = warningFieldLabels[conflict[1] ?? ''] ?? '产品信息';
   const source = warningSourceLabels[conflict[2] ?? ''] ?? '优先级更高的资料';
   return `${field}存在多种识别结果，已优先采用${source}内容`;
+};
+const graphWarningSummary = (nodeId: EffectExtractionNodeId): string => {
+  const warningCount = graphExecution(nodeId).warnings.length;
+  if (!warningCount) return '';
+  if (nodeId === 'FUSION') return `已处理 ${warningCount} 项资料差异，点击查看详情`;
+  return `有 ${warningCount} 项提示，点击查看详情`;
 };
 const safeLocalFileName = (value: string | null): string =>
   (value ? value.split(/[\\/]/).at(-1)?.trim() : null) || '未命名素材';
@@ -408,14 +412,6 @@ const localGraphDetail = (nodeId: EffectExtractionNodeId): EffectExtractionNodeD
         detailField('hasCommerceUrl', '是否提供电商链接', Boolean(product.commerceUrl)),
         detailField('commerceHost', '链接域名', safeCommerceHost(product.commerceUrl)),
       ],
-      sources: [],
-    };
-  }
-  if (nodeId === 'FORM') {
-    return {
-      ...base,
-      summary: '当前导入节点的结构化表单信息',
-      fields: [detailField('productCategory', '产品品类', product.category, '表单信息')],
       sources: [],
     };
   }
@@ -552,11 +548,6 @@ const currentActionLabel = computed(() => {
   if (currentState.value.status === 'NOT_GENERATED') return '开始 AI 提取';
   return '重新 AI 提取';
 });
-
-const stateLabel = (productId: string): string => {
-  const status = productStates.value[productId]?.status ?? 'NOT_GENERATED';
-  return EFFECT_EXTRACTION_STATUS_META[status].label;
-};
 
 const saveConflict = computed(() =>
   Boolean(currentState.value?.saveErrorMessage?.includes('其他窗口更新')),
@@ -1574,8 +1565,8 @@ onBeforeUnmount(() => {
               class="selling-point-row"
             >
               <input
-                :aria-label="`卖点 ${index + 1}`"
                 v-model="visibleResult.sellingPoints[index]"
+                :aria-label="`卖点 ${index + 1}`"
                 :readonly="baseFieldsReadonly"
                 placeholder="例如：原料、工艺、功能、口味、用法、场景或可信背书"
                 @input="markListFieldDirty('sellingPoints')"
@@ -1753,11 +1744,11 @@ onBeforeUnmount(() => {
                       {{ graphExecution(nodeId).errorMessage }}
                     </p>
                     <p
-                      v-for="(warning, index) in graphExecution(nodeId).warnings"
-                      :key="`${warning.code}-${warning.sourceId}-${index}`"
-                      class="node-warning"
+                      v-if="graphExecution(nodeId).warnings.length"
+                      class="node-warning node-warning--summary"
                     >
-                      {{ presentWarningMessage(warning.message) }}
+                      <AlertCircle :size="12" aria-hidden="true" />
+                      <span>{{ graphWarningSummary(nodeId) }}</span>
                     </p>
                   </article>
                 </div>
@@ -1788,11 +1779,11 @@ onBeforeUnmount(() => {
                     <em>{{ graphStatusMeta(graphExecution('FUSION').status).label }}</em>
                   </div>
                   <p
-                    v-for="(warning, index) in graphExecution('FUSION').warnings"
-                    :key="`${warning.code}-${index}`"
-                    class="node-warning"
+                    v-if="graphExecution('FUSION').warnings.length"
+                    class="node-warning node-warning--summary"
                   >
-                    {{ presentWarningMessage(warning.message) }}
+                    <AlertCircle :size="12" aria-hidden="true" />
+                    <span>{{ graphWarningSummary('FUSION') }}</span>
                   </p>
                   <p v-if="graphExecution('FUSION').errorMessage" class="node-error">
                     {{ graphExecution('FUSION').errorMessage }}
@@ -1825,11 +1816,11 @@ onBeforeUnmount(() => {
                     {{ graphExecution('SEMANTIC_REFINEMENT').errorMessage }}
                   </p>
                   <p
-                    v-for="(warning, index) in graphExecution('SEMANTIC_REFINEMENT').warnings"
-                    :key="`${warning.code}-${index}`"
-                    class="node-warning"
+                    v-if="graphExecution('SEMANTIC_REFINEMENT').warnings.length"
+                    class="node-warning node-warning--summary"
                   >
-                    {{ presentWarningMessage(warning.message) }}
+                    <AlertCircle :size="12" aria-hidden="true" />
+                    <span>{{ graphWarningSummary('SEMANTIC_REFINEMENT') }}</span>
                   </p>
                 </article>
 
@@ -1857,11 +1848,11 @@ onBeforeUnmount(() => {
                     {{ graphExecution('NORMALIZATION').errorMessage }}
                   </p>
                   <p
-                    v-for="(warning, index) in graphExecution('NORMALIZATION').warnings"
-                    :key="`${warning.code}-${index}`"
-                    class="node-warning"
+                    v-if="graphExecution('NORMALIZATION').warnings.length"
+                    class="node-warning node-warning--summary"
                   >
-                    {{ presentWarningMessage(warning.message) }}
+                    <AlertCircle :size="12" aria-hidden="true" />
+                    <span>{{ graphWarningSummary('NORMALIZATION') }}</span>
                   </p>
                 </article>
               </div>
@@ -2917,14 +2908,14 @@ select {
   position: relative;
   display: grid;
   padding-top: 16px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 .workflow-graph-parallel::before {
   position: absolute;
   top: 0;
-  right: 12.5%;
-  left: 12.5%;
+  right: 16.6667%;
+  left: 16.6667%;
   height: 1px;
   content: '';
   background: #b9c8df;
@@ -2952,6 +2943,21 @@ select {
 .node-warning {
   color: #956109;
   background: #fff8e8;
+}
+.node-warning--summary {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+.node-warning--summary > svg {
+  flex: 0 0 auto;
+}
+.node-warning--summary > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .node-error {
   color: #bd3346;

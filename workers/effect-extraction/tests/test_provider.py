@@ -343,7 +343,7 @@ async def test_ark_provider_routes_each_stage_and_records_usage() -> None:
         "image-model",
         "normalization-model",
     ]
-    assert requested_payloads["effect_document_candidate"]["max_output_tokens"] == 3072
+    assert requested_payloads["effect_document_candidate"]["max_output_tokens"] == 8192
     assert requested_payloads["effect_document_candidate"]["reasoning"] == {
         "effort": "minimal"
     }
@@ -557,6 +557,45 @@ async def test_ark_provider_records_safe_timeout_diagnostics(
     assert str(error) == "AI request timed out"
     assert "sensitive" not in str(error)
     assert "secret-must-not-leak" not in str(error)
+
+
+@pytest.mark.asyncio
+async def test_document_provider_recognizes_output_limit_reason_variants() -> None:
+    requests = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(
+            200,
+            json={
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens_exceeded"},
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 8192,
+                    "total_tokens": 8292,
+                    "output_tokens_details": {"reasoning_tokens": 7900},
+                },
+            },
+        )
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.test/api/v3/",
+        api_key="secret",
+        model="document-model",
+        document_max_attempts=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(ProviderError) as raised:
+            await provider.extract_document("# 商品", source_name="product.docx")
+    finally:
+        await provider.aclose()
+
+    assert requests == 1
+    assert raised.value.error_type == ProviderErrorType.OUTPUT_TRUNCATED
+    assert raised.value.retryable is False
 
 
 @pytest.mark.asyncio

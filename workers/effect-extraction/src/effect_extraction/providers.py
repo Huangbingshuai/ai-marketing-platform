@@ -317,9 +317,9 @@ class ArkResponsesProvider:
         normalization_model: str | None = None,
         timeout: float = 120.0,
         max_attempts: int = 3,
-        document_timeout: float = 45.0,
+        document_timeout: float = 180.0,
         document_max_attempts: int = 1,
-        document_max_output_tokens: int = 3072,
+        document_max_output_tokens: int = 8192,
         document_reasoning_effort: str = "minimal",
         image_timeout: float = 90.0,
         image_max_attempts: int = 2,
@@ -347,7 +347,7 @@ class ArkResponsesProvider:
         self._document_reasoning_effort = (
             document_reasoning_effort
             if document_reasoning_effort in {"minimal", "low", "medium", "high"}
-            else "minimal"
+            else "low"
         )
         self._image_timeout = max(1.0, image_timeout)
         self._image_max_attempts = max(1, image_max_attempts)
@@ -835,8 +835,23 @@ class ArkResponsesProvider:
                             last_error = RuntimeError("Ark response is incomplete")
                             last_error_type = (
                                 ProviderErrorType.OUTPUT_TRUNCATED
-                                if reason == "max_output_tokens"
+                                if _is_output_truncated_reason(reason)
                                 else ProviderErrorType.RESPONSE_INVALID
+                            )
+                            usage = _usage(response_payload)
+                            LOGGER.warning(
+                                "Ark call incomplete stage=%s model=%s prompt_version=%s "
+                                "reason=%s input_tokens=%s output_tokens=%s "
+                                "reasoning_tokens=%s total_tokens=%s attempt=%s",
+                                stage,
+                                model,
+                                prompt_version,
+                                reason or "unknown",
+                                usage["inputTokens"],
+                                usage["outputTokens"],
+                                usage["reasoningTokens"],
+                                usage["totalTokens"],
+                                attempt,
                             )
                             retryable = attempt < attempt_limit
                             raise _RetryStructuredResponse
@@ -1246,6 +1261,10 @@ def _incomplete_reason(payload: Any) -> str | None:
         return None
     reason = details.get("reason")
     return reason.strip().lower() if isinstance(reason, str) else None
+
+
+def _is_output_truncated_reason(reason: str | None) -> bool:
+    return bool(reason and reason.startswith("max_output_tokens"))
 
 
 def _mock_result(value: TResult, stage: str, prompt_file: str) -> AiCallResult[TResult]:

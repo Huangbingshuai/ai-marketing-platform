@@ -41,7 +41,7 @@ API 统一通过无版本名称的归一化入口读取结果。旧信息卡打�
 
 1. Contracts：覆盖 TypeScript 类型、JSON Schema、常量和契约测试，只暴露产品基础字段与 `sellingPoints`。
 2. API：以单一归一化函数替换带版本名称的结果适配器；同步处理 generatedResult、draftResult、manualOverrides、来源映射、更新与完成校验。
-3. Extraction Worker：保持 `LOAD_AND_SNAPSHOT → DOCUMENT / IMAGE / COMMERCE / FORM → FUSION → SEMANTIC_REFINEMENT → NORMALIZATION`；四分支统一产出基础信息和卖点，语义整理不再执行跨字段迁移。
+3. Extraction Worker：当前执行图收敛为 `LOAD_AND_SNAPSHOT → DOCUMENT / IMAGE / COMMERCE → FUSION → SEMANTIC_REFINEMENT → NORMALIZATION`；三个资料分支统一产出基础信息和卖点，语义整理不再执行跨字段迁移。
 4. Prompt Worker：产品基础继续形成身份事实，每条卖点一对一进入事实应用表；所有非空卖点均可被创意规划使用，不再从旧字段词池映射。
 5. Web：信息卡只展示“产品基础”和“卖点”两块；卖点使用无重复前缀的单列文本框，支持添加、删除、来源提示和自动保存。
 6. 文档：同步根 AGENTS、效果类工作流指南、Extraction Worker 规则和 README，删除五层信息卡与版本化业务口径。
@@ -60,7 +60,7 @@ API 统一通过无版本名称的归一化入口读取结果。旧信息卡打�
 - TypeScript、JSON Schema、Pydantic 严格一致，当前结果不能写入旧业务字段。
 - 旧信息卡的所有可用产品与营销事实都进入统一卖点，营销目标和制作参数不进入。
 - 读取转换不增加 revision；保存与重新提炼继续正确继承人工覆盖。
-- 文档、图片、电商、表单四分支和部分失败流程保持正常。
+- 文档、图片、电商三个资料分支和部分失败流程保持正常；已废弃的表单分支不再参与新任务。
 - Prompt 节点能消费全部卖点，不再依赖核心/次要/受众/痛点/场景词池。
 - 紫苏梅子酱、广式腊肠、洁面产品、磁吸移动电源和旅行箱均使用同一结构。
 - 页面覆盖加载、空态、错误、待更新、编辑、完成校验和窄屏状态。

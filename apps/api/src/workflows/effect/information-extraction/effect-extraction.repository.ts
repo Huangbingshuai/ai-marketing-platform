@@ -84,7 +84,7 @@ export class EffectExtractionRepository {
                 branches: {
                   where: {
                     branch: {
-                      in: ['FORM', 'DOCUMENT', 'COMMERCE', 'IMAGE', 'SEMANTIC_REFINEMENT'],
+                      in: ['DOCUMENT', 'COMMERCE', 'IMAGE', 'SEMANTIC_REFINEMENT'],
                     },
                   },
                 },

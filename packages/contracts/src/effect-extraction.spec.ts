@@ -61,28 +61,26 @@ describe('effect extraction contract', () => {
       'DOCUMENT',
       'IMAGE',
       'COMMERCE',
-      'FORM',
       'FUSION',
       'SEMANTIC_REFINEMENT',
       'NORMALIZATION',
     ]);
   });
 
-  it('exposes one stable execution definition for the eight-node graph', () => {
+  it('exposes one stable execution definition for the seven-node graph', () => {
     const nodeIds = EFFECT_EXTRACTION_GRAPH_NODES.map((node) => node.id);
-    expect(nodeIds).toHaveLength(8);
+    expect(nodeIds).toHaveLength(7);
     expect(new Set(nodeIds).size).toBe(nodeIds.length);
     expect(nodeIds).toEqual([
       'LOAD_AND_SNAPSHOT',
       'DOCUMENT',
       'IMAGE',
       'COMMERCE',
-      'FORM',
       'FUSION',
       'SEMANTIC_REFINEMENT',
       'NORMALIZATION',
     ]);
-    expect(EFFECT_EXTRACTION_GRAPH_EDGES).toHaveLength(10);
+    expect(EFFECT_EXTRACTION_GRAPH_EDGES).toHaveLength(8);
     expect(
       EFFECT_EXTRACTION_GRAPH_EDGES.every(
         ({ from, to }) => nodeIds.includes(from) && nodeIds.includes(to),
