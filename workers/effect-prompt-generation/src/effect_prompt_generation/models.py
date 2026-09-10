@@ -181,6 +181,7 @@ class PromptBatchSettings(ApiModel):
 
 
 class InsightField(StrEnum):
+    SELLING_POINT = "SELLING_POINT"
     PRODUCT_NAME = "PRODUCT_NAME"
     PRODUCT_CATEGORY = "PRODUCT_CATEGORY"
     CORE_SPECIFICATION = "CORE_SPECIFICATION"
@@ -220,7 +221,7 @@ class InsightBindingRole(StrEnum):
 class InsightReference(ApiModel):
     fact_id: str = Field(min_length=1, max_length=120)
     field: InsightField
-    value: str = Field(min_length=1, max_length=500)
+    value: str = Field(min_length=1, max_length=1000)
     value_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
@@ -298,14 +299,14 @@ class FactVisualPolicyDraft(ApiModel):
 
 
 class FactVisualStrategyResponse(ApiModel):
-    policies: list[FactVisualPolicyDraft] = Field(min_length=1, max_length=80)
+    policies: list[FactVisualPolicyDraft] = Field(min_length=1, max_length=105)
 
 
 class FactVisualStrategy(ApiModel):
     source_content_hash: str = Field(min_length=1, max_length=128)
     template_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     strategy_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
-    policies: list[FactVisualPolicyDraft] = Field(min_length=1, max_length=80)
+    policies: list[FactVisualPolicyDraft] = Field(min_length=1, max_length=105)
 
     @property
     def by_id(self) -> dict[str, FactVisualPolicyDraft]:
@@ -763,8 +764,8 @@ class CreativeFactTerritoryAssignment(ApiModel):
 
 class CreativeFactTerritoryAssignmentResponse(ApiModel):
     assignments: list[CreativeFactTerritoryAssignment] = Field(
-        min_length=1,
-        max_length=80,
+        min_length=0,
+        max_length=100,
     )
 
 
@@ -1547,7 +1548,7 @@ class CreativeEvaluationDraft(ApiModel):
     # Accept a primary-inclusive response too; normalization below only removes
     # duplicate IDs/the primary ID, never infers another purpose.
     compatible_purposes: list[FragmentType] = Field(default_factory=list, max_length=4)
-    fact_evidence: list[FactEvidence] = Field(default_factory=list, max_length=8)
+    fact_evidence: list[FactEvidence] = Field(default_factory=list, max_length=12)
     scores: CreativeScores
     semantic_profile: CreativeSemanticProfile | None = None
     abstract_visual_proof_findings: list[AbstractVisualProofFinding] = Field(

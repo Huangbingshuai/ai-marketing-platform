@@ -32,39 +32,30 @@ _FIELD_ALIASES = {
     "价格带": "price_range",
     "核心外观特征": "visual_features",
     "视觉特征": "visual_features",
-    "核心卖点": "core_selling_points",
-    "主要卖点": "core_selling_points",
-    "次要卖点": "secondary_selling_points",
-    "补充卖点": "secondary_selling_points",
-    "信任背书": "trust_backings",
-    "信任证明": "trust_backings",
-    "辅助信任背书": "trust_backings",
-    "目标受众画像": "target_audience",
-    "目标受众": "target_audience",
-    "核心痛点": "core_pain_points",
-    "用户痛点": "core_pain_points",
-    "决策动因": "decision_drivers",
-    "购买动因": "decision_drivers",
-    "营销目标": "marketing_goal",
-    "典型使用场景": "usage_scenarios",
-    "核心使用场景": "usage_scenarios",
-    "使用场景": "usage_scenarios",
-    "购买场景": "purchase_scenarios",
-    "情绪氛围场景": "emotional_scenarios",
-    "情绪共鸣场景": "emotional_scenarios",
-    "情绪场景": "emotional_scenarios",
+    "卖点": "selling_points",
+    "核心卖点": "selling_points",
+    "主要卖点": "selling_points",
+    "次要卖点": "selling_points",
+    "补充卖点": "selling_points",
+    "信任背书": "selling_points",
+    "信任证明": "selling_points",
+    "辅助信任背书": "selling_points",
+    "目标受众画像": "selling_points",
+    "目标受众": "selling_points",
+    "核心痛点": "selling_points",
+    "用户痛点": "selling_points",
+    "决策动因": "selling_points",
+    "购买动因": "selling_points",
+    "典型使用场景": "selling_points",
+    "核心使用场景": "selling_points",
+    "使用场景": "selling_points",
+    "购买场景": "selling_points",
+    "情绪氛围场景": "selling_points",
+    "情绪共鸣场景": "selling_points",
+    "情绪场景": "selling_points",
 }
 
-_LIST_FIELDS = {
-    "core_selling_points",
-    "secondary_selling_points",
-    "trust_backings",
-    "core_pain_points",
-    "decision_drivers",
-    "usage_scenarios",
-    "purchase_scenarios",
-    "emotional_scenarios",
-}
+_LIST_FIELDS = {"selling_points"}
 
 
 def extract_structured_document_facts(markdown: str) -> ExtractionCandidate | None:
@@ -94,13 +85,7 @@ def extract_structured_document_facts(markdown: str) -> ExtractionCandidate | No
         _store_value(parsed, field_name, value)
 
     identity_fields = {"product_category", "product_name", "core_specification"}
-    content_fields = {
-        "core_selling_points",
-        "secondary_selling_points",
-        "target_audience",
-        "core_pain_points",
-        "usage_scenarios",
-    }
+    content_fields = {"selling_points"}
     if (
         recognized_rows < 5
         or not identity_fields.intersection(parsed)
@@ -119,7 +104,9 @@ def _table_cells(line: str) -> list[str]:
     if not stripped.startswith("|") or not stripped.endswith("|"):
         return []
     cells = [_clean(cell) for cell in stripped[1:-1].split("|")]
-    if cells and all(_TABLE_SEPARATOR.fullmatch(cell.replace(" ", "")) for cell in cells):
+    if cells and all(
+        _TABLE_SEPARATOR.fullmatch(cell.replace(" ", "")) for cell in cells
+    ):
         return []
     return cells
 
@@ -160,7 +147,7 @@ def _heading_values(markdown: str) -> list[tuple[str, str]]:
             if _NON_FACT_NOTE.match(_clean(raw_value)):
                 break
             has_list_marker = _LIST_MARKER.match(raw_value) is not None
-            if field_name in _LIST_FIELDS | {"target_audience"}:
+            if field_name in _LIST_FIELDS:
                 if list_started and not has_list_marker:
                     break
                 list_started = list_started or has_list_marker
@@ -184,13 +171,6 @@ def _store_value(parsed: dict[str, object], field_name: str, value: str) -> None
         parsed[field_name] = _dedupe_items(
             [*(existing if isinstance(existing, list) else []), *items]
         )
-        return
-
-    if field_name == "target_audience":
-        items = _list_items(value)
-        normalized = "；".join(items)
-        if normalized and field_name not in parsed:
-            parsed[field_name] = normalized
         return
 
     if field_name not in parsed:
@@ -227,7 +207,7 @@ def _dedupe_items(values: list[str]) -> list[str]:
     seen: set[str] = set()
     items: list[str] = []
     for item in values:
-        normalized = re.sub(r"\s+", "", item).casefold()
+        normalized = re.sub(r"\s+", " ", item).strip()
         if normalized in seen:
             continue
         seen.add(normalized)

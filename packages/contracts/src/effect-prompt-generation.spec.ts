@@ -34,6 +34,13 @@ const batchSchema = JSON.parse(
 ) as Record<string, any>;
 
 describe('effect prompt generation contract', () => {
+  it('accepts unified selling-point references without truncating extraction text', () => {
+    expect(EFFECT_PROMPT_INSIGHT_FIELDS).toContain('SELLING_POINT');
+    expect(batchSchema.$defs.insightField.enum).toEqual([...EFFECT_PROMPT_INSIGHT_FIELDS]);
+    for (const name of ['insightReference', 'insightBinding', 'excludedInsight']) {
+      expect(batchSchema.$defs[name].properties.value.maxLength).toBe(1000);
+    }
+  });
   it('freezes the canonical settings and six coherent dimensions', () => {
     expect(DEFAULT_EFFECT_PROMPT_SETTINGS).toEqual({
       targetCount: 50,

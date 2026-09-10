@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def to_camel(value: str) -> str:
@@ -125,30 +125,18 @@ class ClaimResponse(ApiModel):
     input: ExtractionSnapshot | None = None
 
 
+SellingPoint = Annotated[str, Field(min_length=1, max_length=1000)]
+
+
 class ExtractionCandidate(ApiModel):
     """All properties are present for strict structured output; values may be null."""
 
-    product_category: str | None
-    product_name: str | None
-    core_specification: str | None
-    price_range: str | None
-    visual_features: str | None
-    core_selling_points: list[str] | None
-    secondary_selling_points: list[str] | None
-    trust_backings: list[str] | None
-    target_audience: str | None
-    core_pain_points: list[str] | None
-    decision_drivers: list[str] | None
-    marketing_goal: str | None
-    usage_scenarios: list[str] | None
-    purchase_scenarios: list[str] | None
-    emotional_scenarios: list[str] | None
-    duration_seconds: int | None
-    aspect_ratio: str | None
-    resolution: str | None
-    delivery_channels: str | None
-    disabled_elements: list[str] | None
-    visual_style_baseline: str | None
+    product_category: str | None = Field(max_length=500)
+    product_name: str | None = Field(max_length=500)
+    core_specification: str | None = Field(max_length=2000)
+    price_range: str | None = Field(max_length=1000)
+    visual_features: str | None = Field(max_length=4000)
+    selling_points: list[SellingPoint] | None = Field(default=None, max_length=100)
 
     @classmethod
     def empty(cls) -> ExtractionCandidate:
@@ -156,23 +144,13 @@ class ExtractionCandidate(ApiModel):
 
 
 class ImageVisibleFacts(ApiModel):
-    """Image facts plus conservative marketing suggestions grounded in the image."""
+    """Visible product facts grounded directly in the image."""
 
     product_category: str | None
     product_name: str | None
     core_specification: str | None
     visual_features: str | None
-    core_selling_points: list[str] | None = Field(max_length=2)
-    secondary_selling_points: list[str] | None = Field(max_length=2)
-    trust_backings: list[str] | None = Field(max_length=2)
-    target_audience: str | None = None
-    core_pain_points: list[str] | None = Field(default=None, max_length=2)
-    decision_drivers: list[str] | None = Field(default=None, max_length=2)
-    marketing_goal: str | None = None
-    usage_scenarios: list[str] | None = Field(max_length=2)
-    purchase_scenarios: list[str] | None = Field(default=None, max_length=2)
-    emotional_scenarios: list[str] | None = Field(max_length=2)
-    visual_style_baseline: str | None
+    selling_points: list[SellingPoint] | None = Field(max_length=8)
     high_detail_recommended: bool
 
     def to_candidate(self) -> ExtractionCandidate:
@@ -184,37 +162,23 @@ class ImageVisibleFacts(ApiModel):
 
 
 class ExtractionResult(ApiModel):
-    product_category: str
-    product_name: str
-    core_specification: str
-    price_range: str
-    visual_features: str
-    core_selling_points: list[str] = Field(min_length=1, max_length=20)
-    secondary_selling_points: list[str] = Field(max_length=20)
-    trust_backings: list[str] = Field(max_length=20)
-    target_audience: str
-    core_pain_points: list[str] = Field(max_length=20)
-    decision_drivers: list[str] = Field(max_length=20)
-    marketing_goal: str
-    usage_scenarios: list[str] = Field(max_length=20)
-    purchase_scenarios: list[str] = Field(max_length=20)
-    emotional_scenarios: list[str] = Field(max_length=20)
-    duration_seconds: int = Field(ge=1, le=3600)
-    aspect_ratio: str
-    resolution: str
-    delivery_channels: str
-    disabled_elements: list[str]
-    visual_style_baseline: str
+    product_category: str = Field(max_length=500)
+    product_name: str = Field(max_length=500)
+    core_specification: str = Field(max_length=2000)
+    price_range: str = Field(max_length=1000)
+    visual_features: str = Field(max_length=4000)
+    selling_points: list[SellingPoint] = Field(min_length=1, max_length=100)
+
+    @field_validator("selling_points")
+    @classmethod
+    def require_unique_selling_points(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("sellingPoints must be unique")
+        return value
 
 
 class SemanticField(StrEnum):
-    CORE_SELLING_POINTS = "coreSellingPoints"
-    SECONDARY_SELLING_POINTS = "secondarySellingPoints"
-    CORE_PAIN_POINTS = "corePainPoints"
-    DECISION_DRIVERS = "decisionDrivers"
-    USAGE_SCENARIOS = "usageScenarios"
-    PURCHASE_SCENARIOS = "purchaseScenarios"
-    EMOTIONAL_SCENARIOS = "emotionalScenarios"
+    SELLING_POINTS = "sellingPoints"
 
 
 class SemanticSuggestionDisposition(StrEnum):
@@ -242,7 +206,6 @@ class SemanticImageEvidenceBasis(StrEnum):
 class SemanticUserFactIssue(StrEnum):
     POSSIBLE_DUPLICATE = "POSSIBLE_DUPLICATE"
     POSSIBLE_OVERLAP = "POSSIBLE_OVERLAP"
-    POSSIBLE_WRONG_FIELD = "POSSIBLE_WRONG_FIELD"
     AMBIGUOUS_EXPRESSION = "AMBIGUOUS_EXPRESSION"
     FIELD_OVER_RECOMMENDED_COUNT = "FIELD_OVER_RECOMMENDED_COUNT"
 

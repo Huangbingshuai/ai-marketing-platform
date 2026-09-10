@@ -8,50 +8,34 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain('class="result-grid"');
     expect(pageSource).toContain('class="content-block product-base-card"');
     expect(pageSource).toContain("currentState.value?.result?.[field] ?? ''");
-    expect(pageSource).toContain("coreSellingPoints: ['']");
+    expect(pageSource).toContain("sellingPoints: ['']");
     expect(pageSource).not.toContain('v-else-if="!currentState.result"');
   });
 
-  it('lays out the product base above three parallel information layers', () => {
+  it('stacks product basics above a two-column selling-point layer', () => {
     expect(pageSource).not.toContain('class="product-info-layout"');
-    expect(pageSource).toContain('grid-template-columns: repeat(3, minmax(0, 1fr));');
-    expect(pageSource).toContain("'base base base'");
-    expect(pageSource).toContain("'selling user scenario'");
+    expect(pageSource).toContain('grid-template-columns: minmax(0, 1fr);');
+    expect(pageSource).toContain("grid-template-areas:\n    'base'\n    'selling';");
     expect(pageSource).toContain('.product-base-card {');
     expect(pageSource).toContain('grid-area: base;');
     expect(pageSource).toContain('class="content-block selling-layer-card"');
     expect(pageSource).toContain('.selling-layer-card {');
     expect(pageSource).toContain('grid-area: selling;');
-    expect(pageSource).toContain('grid-area: user;');
-    expect(pageSource).toContain('grid-area: scenario;');
-    expect(pageSource).toContain("'base'\n      'selling'\n      'user'\n      'scenario'");
+    expect(pageSource).toContain('.selling-points--unified {');
+    expect(pageSource).toContain('grid-template-columns: repeat(2, minmax(0, 1fr));');
+    expect(pageSource).toContain('@media (max-width: 860px) {\n  .selling-points--unified {');
+    expect(pageSource).not.toContain('grid-area: user;');
+    expect(pageSource).not.toContain('grid-area: scenario;');
   });
 
-  it('uses section headings instead of repeating a visible prefix in every list row', () => {
-    expect(pageSource).toContain('class="selling-subheading selling-subheading--first"');
-    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS');
-    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS');
-    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_TRUST_BACKINGS');
-    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS');
-    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS');
-    expect(pageSource).toContain('建议最多 {{ EFFECT_EXTRACTION_MAX_TRUST_BACKINGS }} 个');
-    expect(pageSource).toContain('建议最多 {{ EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS }} 个');
-    expect(pageSource).toContain('建议最多 {{ EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS }} 个');
-    for (const repeatedPrefix of [
-      '核心卖点',
-      '次要卖点',
-      '信任背书',
-      '目标受众',
-      '核心痛点',
-      '决策动因',
-      '使用场景',
-      '购买场景',
-      '情绪场景',
-    ]) {
-      expect(pageSource).not.toContain(`<span>${repeatedPrefix}</span>`);
-    }
-    expect(pageSource).toContain(':aria-label="`核心卖点 ${index + 1}`"');
-    expect(pageSource).toContain(':aria-label="`情绪共鸣场景 ${index + 1}`"');
+  it('uses one selling-point heading without row prefixes or hierarchy', () => {
+    expect(pageSource).toContain('<h3>卖点</h3>');
+    expect(pageSource).toContain('这些卖点可用于后续视频创作，您可以按需修改、添加或删除。');
+    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_SELLING_POINTS');
+    expect(pageSource).toContain(':aria-label="`卖点 ${index + 1}`"');
+    expect(pageSource).not.toContain('卖点分层');
+    expect(pageSource).not.toContain('>核心卖点');
+    expect(pageSource).not.toContain('>次要卖点');
     expect(pageSource).toContain('grid-template-columns: minmax(0, 1fr) 38px;');
   });
 
@@ -62,20 +46,11 @@ describe('effect info extraction result layout', () => {
     expect(pageSource.match(/@click="runCurrentExtraction"/g)).toHaveLength(3);
   });
 
-  it('shows the current product label before the selector and keeps the workflow action after it', () => {
-    const productSwitcher = pageSource.indexOf('<label class="product-switcher">');
-    const currentProductLabel = pageSource.indexOf('<span>当前商品</span>', productSwitcher);
-    const productSelect = pageSource.indexOf('<select :value="currentProductId"', productSwitcher);
-    const workflowTrigger = pageSource.indexOf(
-      'class="secondary-button workflow-graph-trigger"',
-      productSwitcher,
-    );
-
-    expect(productSwitcher).toBeGreaterThan(-1);
-    expect(currentProductLabel).toBeGreaterThan(productSwitcher);
-    expect(currentProductLabel).toBeLessThan(productSelect);
-    expect(productSelect).toBeLessThan(workflowTrigger);
-    expect(pageSource).not.toContain('<span class="visually-hidden">当前产品</span>');
+  it('uses the only active product without rendering a product selector', () => {
+    expect(pageSource).not.toContain('class="product-switcher"');
+    expect(pageSource).not.toContain('<span>当前商品</span>');
+    expect(pageSource).not.toContain('<select :value="currentProductId"');
+    expect(pageSource).toContain('class="secondary-button workflow-graph-trigger"');
   });
 
   it('runs only the selected product and exposes progress and conflict recovery', () => {
@@ -161,31 +136,25 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).not.toContain('等待异步 Worker 接收任务');
   });
 
-  it('shows product identity in the form node and keeps image results per file', () => {
-    expect(pageSource).toContain("FORM: '读取导入节点中人工填写的产品名称与品类'");
+  it('lets document and image branches extract product identity', () => {
+    expect(pageSource).toContain("FORM: '读取资料导入节点中的结构化表单信息'");
     expect(pageSource).toContain("materialSources(['PRODUCT_IMAGE'])");
     expect(pageSource).toContain('v-for="(source, sourceIndex) in graphDetail.sources"');
-    expect(pageSource).toContain("detailField('productName', '产品名称'");
     expect(pageSource).toContain("detailField('productCategory', '产品品类'");
+    expect(pageSource).not.toContain("detailField('productName', '产品名称', product.name");
     expect(pageSource).not.toContain("detailField('resolution', '分辨率'");
   });
 
   it('keeps product facts editable and only marks image-recognition additions', () => {
-    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS');
-    expect(pageSource).toContain("result.coreSellingPoints.push('')");
-    expect(pageSource).toContain('placeholder="请输入核心卖点"');
+    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_SELLING_POINTS');
+    expect(pageSource).toContain("result.sellingPoints.push('')");
+    expect(pageSource).toContain(
+      'placeholder="例如：原料、工艺、功能、口味、用法、场景或可信背书"',
+    );
     expect(pageSource).toContain('class="selling-add-button"');
     expect(pageSource).not.toContain('.block-heading .selling-add-button');
-    for (const field of [
-      'secondarySellingPoints',
-      'trustBackings',
-      'corePainPoints',
-      'decisionDrivers',
-      'purchaseScenarios',
-      'emotionalScenarios',
-    ])
-      expect(pageSource).toContain(field);
-    expect(pageSource).toContain('暂无可验证的信任背书');
+    for (const field of ['secondarySellingPoints', 'corePainPoints', 'usageScenarios'])
+      expect(pageSource).not.toContain(field);
     expect(pageSource).not.toContain('<h3>全局视频配置</h3>');
     expect(pageSource).not.toContain('updateProductionRule');
     expect(pageSource).not.toContain('v-model="newDisabledElement"');
@@ -197,12 +166,11 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain('origin-chip');
     expect(pageSource).toContain("em[data-origin='USER_FACT']");
     expect(pageSource).toContain('display: none;');
-    expect(pageSource).toContain("itemOrigin('coreSellingPoints', index)");
-    expect(pageSource).toContain("itemOrigin('usageScenarios', index)");
+    expect(pageSource).toContain("itemOrigin('sellingPoints', index)");
     expect(pageSource).toContain("fieldOrigin('priceRange')");
     expect(pageSource).toContain('semantic-fact-notice');
-    expect(pageSource).toContain("itemSemanticNotices('coreSellingPoints', index)");
-    expect(pageSource).toContain("markListFieldDirty('corePainPoints')");
+    expect(pageSource).toContain("itemSemanticNotices('sellingPoints', index)");
+    expect(pageSource).toContain("markListFieldDirty('sellingPoints')");
     expect(pageSource).toContain('delete item.semanticNotices');
     expect(pageSource).toContain('dismissSemanticNotice');
     expect(pageSource).toContain('aria-label="关闭这条建议"');
@@ -212,30 +180,21 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain('persistNodeState(false, false)');
   });
 
-  it('edits target audiences, pain points and decision drivers with the same item rows', () => {
-    expect(pageSource).toContain("addUserInsightItem('targetAudiences')");
-    expect(pageSource).toContain("addUserInsightItem('corePainPoints')");
-    expect(pageSource).toContain("addUserInsightItem('decisionDrivers')");
-    expect(pageSource).toContain('v-model="visibleResult.targetAudiences[index]"');
-    expect(pageSource).toContain('v-model="visibleResult.corePainPoints[index]"');
-    expect(pageSource).toContain('v-model="visibleResult.decisionDrivers[index]"');
-    expect(pageSource).toContain('aria-label="删除目标受众"');
-    expect(pageSource).toContain('aria-label="删除核心痛点"');
-    expect(pageSource).toContain('aria-label="删除决策动因"');
-    expect(pageSource).not.toContain('v-model="visibleResult.targetAudience"');
-    expect(pageSource).toContain('class="structured-item-list"');
-    expect(pageSource).toContain('class="field-label user-marketing-goal"');
-    expect(pageSource).not.toContain('核心痛点（每行一项）');
-    expect(pageSource).not.toContain('决策动因（每行一项）');
+  it('does not maintain separate audience, pain, decision or scenario editors', () => {
+    expect(pageSource).not.toContain('addUserInsightItem');
+    expect(pageSource).not.toContain('addScenarioItem');
+    expect(pageSource).not.toContain('class="field-label user-marketing-goal"');
+    expect(pageSource).not.toContain('class="content-block user-layer-card"');
+    expect(pageSource).not.toContain('class="content-block scenario-layer-card"');
   });
 
-  it('edits all scenario groups as individual rows instead of newline textareas', () => {
-    for (const field of ['usageScenarios', 'purchaseScenarios', 'emotionalScenarios']) {
-      expect(pageSource).toContain(`addScenarioItem('${field}')`);
-      expect(pageSource).toContain(`removeScenarioItem('${field}', index)`);
-      expect(pageSource).toContain(`v-model="visibleResult.${field}[index]"`);
-    }
-    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS');
+  it('edits every selling point as an independent row', () => {
+    expect(pageSource).toContain('v-model="visibleResult.sellingPoints[index]"');
+    expect(pageSource).toContain('@click="removeSellingPoint(index)"');
+    expect(pageSource).toContain('@click="addSellingPoint"');
+    expect(pageSource).toContain('if (value.trim() && !(await confirmInformationRemoval');
+    expect(pageSource).toContain('暂无卖点，可点击“添加”补充。');
+    expect(pageSource).not.toContain('visibleResult.sellingPoints.length <= 1');
     expect(pageSource).not.toContain('textListValue');
     expect(pageSource).not.toContain('updateTextList');
   });

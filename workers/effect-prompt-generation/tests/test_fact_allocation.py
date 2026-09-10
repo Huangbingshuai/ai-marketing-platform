@@ -16,15 +16,18 @@ def _application():
             "productCategory": "腌腊肉制品",
             "coreSpecification": "七分瘦三分肥",
             "visualFeatures": "红润油亮、切面肉粒清晰",
-            "coreSellingPoints": ["传统广式风味", "蒸制后油润有嚼劲"],
-            "secondarySellingPoints": ["切片即可搭配米饭"],
-            "targetAudience": "喜欢家常广式风味的成年人",
-            "corePainPoints": ["家常菜缺少有辨识度的风味"],
-            "decisionDrivers": ["看得见真实肉粒"],
-            "marketingGoal": "促进购买",
-            "usageScenarios": ["家庭厨房蒸制", "家宴餐桌切片分享"],
-            "purchaseScenarios": ["年节家宴备货"],
-            "emotionalScenarios": ["温暖团聚"],
+            "sellingPoints": [
+                "传统广式风味",
+                "蒸制后油润有嚼劲",
+                "切片即可搭配米饭",
+                "适合喜欢家常广式风味的成年人",
+                "为家常菜增加有辨识度的风味",
+                "切面可见真实肉粒",
+                "适合家庭厨房蒸制",
+                "适合家宴餐桌切片分享",
+                "适合年节家宴备货",
+                "营造温暖团聚的用餐氛围",
+            ],
             "disabledElements": ["医疗功效宣称"],
         }
     )
@@ -63,18 +66,7 @@ def test_fact_allocation_rotates_business_facts_across_bundles() -> None:
     expected_primary_ids = {
         fact.fact_id
         for fact in application.usable
-        if fact.field
-        in {
-            InsightField.CORE_SELLING_POINT,
-            InsightField.CORE_PAIN_POINT,
-            InsightField.DECISION_DRIVER,
-            InsightField.TARGET_AUDIENCE,
-            InsightField.USAGE_SCENARIO,
-            InsightField.PURCHASE_SCENARIO,
-            InsightField.EMOTIONAL_SCENARIO,
-            InsightField.SECONDARY_SELLING_POINT,
-            InsightField.MARKETING_GOAL,
-        }
+        if fact.field == InsightField.SELLING_POINT
     }
     assignments = allocate_creative_facts(
         application,
@@ -86,10 +78,9 @@ def test_fact_allocation_rotates_business_facts_across_bundles() -> None:
         fact_id for assignment in assignments for fact_id in assignment.fact_ids
     }
     assert expected_primary_ids.issubset(allocated_ids)
-    allocated_fields = {application.by_id[fact_id].field for fact_id in allocated_ids}
-    assert InsightField.MARKETING_GOAL in allocated_fields
-    assert InsightField.TARGET_AUDIENCE in allocated_fields
-    assert InsightField.DISABLED_ELEMENT not in allocated_fields
+    assert {application.by_id[fact_id].field for fact_id in allocated_ids} == {
+        InsightField.SELLING_POINT
+    }
 
 
 def test_fact_allocation_keeps_regeneration_preferred_binding() -> None:
@@ -97,7 +88,7 @@ def test_fact_allocation_keeps_regeneration_preferred_binding() -> None:
     preferred = next(
         fact.fact_id
         for fact in application.usable
-        if fact.field == InsightField.CORE_PAIN_POINT
+        if fact.field == InsightField.SELLING_POINT
     )
 
     assignments = allocate_creative_facts(
@@ -117,7 +108,7 @@ def test_regeneration_preserves_the_verified_fact_bundle_for_all_three_options()
     original = [
         fact.fact_id
         for fact in application.usable
-        if fact.field in {InsightField.CORE_SELLING_POINT, InsightField.USAGE_SCENARIO}
+        if fact.field == InsightField.SELLING_POINT
     ][:2]
 
     assignments = allocate_regeneration_facts(
@@ -138,7 +129,7 @@ def test_automatic_regeneration_keeps_two_fact_scopes_and_rotates_one() -> None:
     original = [
         fact.fact_id
         for fact in application.usable
-        if fact.field in {InsightField.CORE_SELLING_POINT, InsightField.USAGE_SCENARIO}
+        if fact.field == InsightField.SELLING_POINT
     ][:2]
 
     assignments = allocate_automatic_regeneration_facts(

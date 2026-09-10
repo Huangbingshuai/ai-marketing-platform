@@ -31,6 +31,7 @@ import {
   type WorkingArtifactUpsertInput,
 } from '../../../platform/workflow/workflow-working.repository';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
+import { normalizeEffectExtractionResult } from '../information-extraction/effect-extraction.validation';
 import {
   mergeEffectPromptCompletionItems,
   parseEffectPromptBatchResult,
@@ -84,39 +85,12 @@ export const isAllowedReplacementSellingPoint = (
   target: Pick<EffectPromptItem, 'fragmentType' | 'dimensions'>,
   replacementSellingPoint: string,
 ): boolean => {
-  const insightRecord =
-    insight && typeof insight === 'object' && !Array.isArray(insight)
-      ? (insight as Record<string, unknown>)
-      : {};
-  const readValues = (...keys: string[]): string[] =>
-    keys.flatMap((key) => {
-      const value = insightRecord[key];
-      if (typeof value === 'string') return value.trim() ? [value.trim()] : [];
-      return Array.isArray(value)
-        ? value
-            .filter((item): item is string => typeof item === 'string')
-            .map((item) => item.trim())
-            .filter(Boolean)
-        : [];
-    });
+  const insightRecord = normalizeEffectExtractionResult(insight);
   const allowed = new Set<string>([
     target.dimensions.productRelation,
-    ...readValues(
-      'productName',
-      'product_name',
-      'productCategory',
-      'product_category',
-      'coreSellingPoints',
-      'core_selling_points',
-      'secondarySellingPoints',
-      'secondary_selling_points',
-      'corePainPoints',
-      'core_pain_points',
-      'usageScenarios',
-      'usage_scenarios',
-      'purchaseScenarios',
-      'purchase_scenarios',
-    ),
+    insightRecord.productName,
+    insightRecord.productCategory,
+    ...insightRecord.sellingPoints,
   ]);
   const normalized = replacementSellingPoint.normalize('NFC').trim();
   return [...allowed].some((value) => value.normalize('NFC').trim() === normalized);
@@ -500,7 +474,7 @@ export class EffectPromptRepository {
           id: insight.id,
           revision: insight.revision,
           contentHash: insight.contentHash,
-          result: insight.payload,
+          result: normalizeEffectExtractionResult(insight.payload),
         },
         productImages,
         factVisualStrategySourceHash,

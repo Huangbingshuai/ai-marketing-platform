@@ -28,22 +28,17 @@ def test_fusion_applies_priority_and_stable_deduplication() -> None:
         [
             branch(
                 BranchName.IMAGE,
-                candidate(
-                    product_name="图片商品", core_selling_points=["便携", "高颜值"]
-                ),
+                candidate(product_name="图片商品", selling_points=["便携", "高颜值"]),
             ),
             branch(
                 BranchName.DOCUMENT,
-                candidate(
-                    product_name="文档商品", core_selling_points=[" 便携 ", "耐用"]
-                ),
+                candidate(product_name="文档商品", selling_points=[" 便携 ", "耐用"]),
             ),
             branch(
                 BranchName.FORM,
                 candidate(
                     product_name="人工商品",
                     product_category="饮料",
-                    resolution="720p",
                 ),
             ),
             BranchOutput(
@@ -55,9 +50,7 @@ def test_fusion_applies_priority_and_stable_deduplication() -> None:
     )
     assert result.candidate.product_name == "人工商品"
     assert result.provenance["product_name"] == "FORM"
-    assert result.candidate.resolution == "720p"
-    assert result.provenance["resolution"] == "FORM"
-    assert result.candidate.core_selling_points == ["便携", "耐用", "高颜值"]
+    assert result.candidate.selling_points == ["便携", "耐用", "高颜值"]
     assert any("product_name conflict" in warning for warning in result.warnings)
 
 

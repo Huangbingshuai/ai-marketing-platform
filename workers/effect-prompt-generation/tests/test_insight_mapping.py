@@ -5,160 +5,113 @@ from effect_prompt_generation.insight_mapping import (
     mandatory_business_facts,
     map_insight,
 )
-from effect_prompt_generation.models import (
-    FragmentType,
-    InsightField,
-)
+from effect_prompt_generation.models import InsightField
 
 
 def _card() -> dict[str, object]:
     return {
-        "productName": "广式腊肠",
-        "productCategory": "腊味",
-        "coreSpecification": "袋装",
+        "productName": "紫苏梅子酱",
+        "productCategory": "复合调味酱",
+        "coreSpecification": "220g 玻璃瓶装",
         "priceRange": "需确认",
-        "visualFeatures": "红润切面",
-        "coreSellingPoints": ["广式风味", "切面油润"],
-        "secondarySellingPoints": ["便于切配"],
-        "trustBackings": ["非遗工艺说明"],
-        "targetAudience": "家庭厨房人群；美食爱好者",
-        "targetAudiences": ["家庭厨房人群", "美食爱好者"],
-        "corePainPoints": ["年货选择困难"],
-        "decisionDrivers": ["真实切面"],
-        "marketingGoal": "引导了解产品",
-        "usageScenarios": ["煲仔饭烹饪", "蒸制"],
-        "purchaseScenarios": ["年货选购"],
-        "emotionalScenarios": ["家庭团聚"],
-        "durationSeconds": 5,
-        "aspectRatio": "3:4",
-        "resolution": "1080p",
-        "deliveryChannels": "抖音",
-        "disabledElements": ["夸大功效"],
-        "visualStyleBaseline": "温暖生活化",
+        "visualFeatures": "深红紫色酱体，可见梅肉颗粒",
+        "sellingPoints": [
+            "梅子酸味与紫苏草本香",
+            "浓稠可舀取并能挂在食材表面",
+            "适合刷制烤物",
+            "适合腌制入味",
+            "适合家庭烹饪人群",
+        ],
     }
 
 
-def test_maps_every_non_empty_field_to_required_adaptive_excluded_or_constraint() -> (
-    None
-):
+def test_current_card_maps_every_selling_point_as_an_equal_required_fact() -> None:
     application = map_insight(_card())
-    facts = [
-        *application.required,
-        *application.adaptive,
-        *application.excluded,
-        *application.constraints,
-    ]
-
-    legacy_video_fields = {
-        InsightField.SOURCE_DURATION,
-        InsightField.ASPECT_RATIO,
-        InsightField.RESOLUTION,
-        InsightField.DELIVERY_CHANNELS,
-        InsightField.DISABLED_ELEMENT,
-        InsightField.VISUAL_STYLE_BASELINE,
-    }
-    assert {fact.field for fact in facts} == set(InsightField) - legacy_video_fields
-    assert (
-        next(
-            fact
-            for fact in application.excluded
-            if fact.field == InsightField.PRICE_RANGE
-        ).exclusion_reason
-        == "UNCERTAIN"
-    )
-    assert next(
+    points = [
         fact
-        for fact in application.adaptive
-        if fact.field == InsightField.TRUST_BACKING
-    ).eligible_fragment_types == [FragmentType.EFFECT]
+        for fact in application.required
+        if fact.field == InsightField.SELLING_POINT
+    ]
+
+    assert [fact.value for fact in points] == _card()["sellingPoints"]
+    assert len({fact.fact_id for fact in points}) == 5
     assert application.constraints == []
+    assert application.excluded == []
+    assert "需确认" in {fact.value for fact in application.usable}
 
 
-def test_maps_canonical_audience_items_independently_without_reusing_summary() -> None:
-    application = map_insight(_card())
+def test_marketing_and_render_settings_are_not_product_facts() -> None:
+    card = {
+        **_card(),
+        "marketingGoal": "促进转化",
+        "durationSeconds": 15,
+        "aspectRatio": "9:16",
+        "resolution": "1080p",
+        "disabledElements": ["医疗功效"],
+    }
+    application = map_insight(card)
+    values = {fact.value for fact in [*application.usable, *application.excluded]}
 
-    audiences = [
-        fact.value
-        for fact in application.required
-        if fact.field == InsightField.TARGET_AUDIENCE
-    ]
-
-    assert audiences == ["家庭厨房人群", "美食爱好者"]
-    assert "家庭厨房人群；美食爱好者" not in audiences
-
-
-def test_marks_all_confirmed_business_facts_as_mandatory_batch_inputs() -> None:
-    application = map_insight(_card())
-
-    values = {fact.value for fact in mandatory_business_facts(application)}
-
-    assert {
-        "广式风味",
-        "切面油润",
-        "便于切配",
-        "家庭厨房人群",
-        "美食爱好者",
-        "年货选择困难",
-        "煲仔饭烹饪",
-        "蒸制",
-        "年货选购",
-        "家庭团聚",
-    }.issubset(values)
+    assert "促进转化" not in values
+    assert "15" not in values
+    assert "9:16" not in values
+    assert "1080p" not in values
+    assert "医疗功效" not in values
 
 
-def test_falls_back_to_historical_audience_summary_only_when_canonical_list_is_empty() -> (
-    None
-):
+def test_uncertain_word_does_not_let_worker_delete_a_selling_point() -> None:
     card = _card()
-    card["targetAudiences"] = []
+    card["sellingPoints"] = ["适合刷制烤物", "配料比例待确认"]
     application = map_insight(card)
 
-    audiences = [
-        fact.value
+    assert [fact.value for fact in mandatory_business_facts(application)] == [
+        "适合刷制烤物",
+        "配料比例待确认",
+    ]
+    assert application.excluded == []
+
+
+def test_old_claimed_job_is_flattened_without_preserving_old_priorities() -> None:
+    application = map_insight(
+        {
+            "productName": "广式腊肠",
+            "coreSellingPoints": ["广式甜咸风味"],
+            "secondarySellingPoints": ["真空包装"],
+            "targetAudiences": ["家庭烹饪人群"],
+            "usageScenarios": ["家庭蒸制"],
+            "marketingGoal": "促进转化",
+        }
+    )
+    points = [
+        fact
         for fact in application.required
-        if fact.field == InsightField.TARGET_AUDIENCE
+        if fact.field == InsightField.SELLING_POINT
     ]
 
-    assert audiences == ["家庭厨房人群；美食爱好者"]
+    assert [fact.value for fact in points] == [
+        "广式甜咸风味",
+        "真空包装",
+        "家庭烹饪人群",
+        "家庭蒸制",
+    ]
+    assert "促进转化" not in {fact.value for fact in application.usable}
 
 
-def test_excludes_uncertain_audience_items_individually() -> None:
-    card = _card()
-    card["targetAudiences"] = ["家庭厨房人群", "待确认人群"]
-    application = map_insight(card)
-
-    assert [
-        fact.value
-        for fact in application.required
-        if fact.field == InsightField.TARGET_AUDIENCE
-    ] == ["家庭厨房人群"]
-    assert [
-        fact.value
-        for fact in application.excluded
-        if fact.field == InsightField.TARGET_AUDIENCE
-    ] == ["待确认人群"]
-
-
-def test_coverage_preserves_context_without_requiring_it_in_silent_material() -> None:
+def test_coverage_uses_only_the_visual_strategy_scope_as_required() -> None:
     application = map_insight(_card())
-    visible = next(fact for fact in application.usable if fact.value == "切面油润")
+    visible = next(fact for fact in application.usable if fact.value == "适合刷制烤物")
     coverage = insight_coverage(application, [], required_fact_ids=[visible.fact_id])
 
     assert [fact.fact_id for fact in coverage.required] == [visible.fact_id]
     assert coverage.missing == coverage.required
-    assert "广式风味" in {fact.value for fact in coverage.deferred}
-    assert {fact.fact_id for fact in coverage.required + coverage.adaptive} == {
-        fact.fact_id for fact in application.usable
-    }
-    assert not ({fact.fact_id for fact in coverage.required} & {
-        fact.fact_id for fact in coverage.adaptive
-    })
+    assert "适合腌制入味" in {fact.value for fact in coverage.deferred}
 
 
-def test_empty_visual_requirement_does_not_restore_original_required_facts() -> None:
+def test_empty_visual_requirement_keeps_all_facts_available_without_forcing_them() -> (
+    None
+):
     application = map_insight(_card())
     scoped = insight_coverage(application, [], required_fact_ids=[])
+
     assert scoped.required == scoped.missing == []
     assert len(scoped.deferred) == len(application.usable)
-    legacy = insight_coverage(application, [])
-    assert len(legacy.required) == len(application.required)

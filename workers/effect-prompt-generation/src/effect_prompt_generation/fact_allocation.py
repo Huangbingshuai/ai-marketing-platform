@@ -14,6 +14,7 @@ from .models import (
 )
 
 _PRIMARY_FIELD_ORDER = (
+    InsightField.SELLING_POINT,
     InsightField.CORE_SELLING_POINT,
     InsightField.CORE_PAIN_POINT,
     InsightField.TARGET_AUDIENCE,

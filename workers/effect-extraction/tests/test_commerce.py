@@ -67,7 +67,7 @@ def test_extract_commerce_page_prefers_json_ld_product_facts() -> None:
     assert page.deterministic_candidate.product_category == "腊味"
     assert page.deterministic_candidate.core_specification == "净含量：500g"
     assert page.deterministic_candidate.price_range == "CNY 59"
-    assert page.deterministic_candidate.trust_backings == [
+    assert page.deterministic_candidate.selling_points == [
         "页面标注评分 4.9，评价数 1200"
     ]
     assert page.model_metadata["description"] == "六分瘦四分肥，天然肠衣"

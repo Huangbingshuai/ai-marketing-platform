@@ -3,6 +3,10 @@ import type { WorkingArtifactCommitStatus, WorkingArtifactCommitSummary } from '
 export const EFFECT_EXTRACTION_API_BASE =
   '/api/projects/:projectId/workflows/effect/information-extraction' as const;
 
+/**
+ * Transport metadata retained for the existing queue/storage protocol. The
+ * information-card business model itself is not version-branched.
+ */
 export const EFFECT_EXTRACTION_SCHEMA_VERSION = 3 as const;
 
 export const EFFECT_EXTRACTION_PRODUCT_STATUSES = [
@@ -109,17 +113,7 @@ export type EffectExtractionNodeDetail = {
   updatedAt: string | null;
 };
 
-export const EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS = 3;
-/** Final AI extraction output keeps at most six secondary selling points. */
-export const EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS = 6;
-export const EFFECT_EXTRACTION_MAX_TRUST_BACKINGS = 5;
-export const EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS = 5;
-export const EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS = 5;
-/**
- * AI normalization keeps the stricter per-field limits above. A user may append
- * additional confirmed items in the editable draft up to this shared boundary.
- */
-export const EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS = 20;
+export const EFFECT_EXTRACTION_MAX_SELLING_POINTS = 100;
 
 export type EffectExtractionResult = {
   productCategory: string;
@@ -127,25 +121,7 @@ export type EffectExtractionResult = {
   coreSpecification: string;
   priceRange: string;
   visualFeatures: string;
-  coreSellingPoints: string[];
-  secondarySellingPoints: string[];
-  trustBackings: string[];
-  /** Derived compatibility summary for historical downstream consumers. */
-  targetAudience: string;
-  /** Canonical editable audience facts. */
-  targetAudiences: string[];
-  corePainPoints: string[];
-  decisionDrivers: string[];
-  marketingGoal: string;
-  usageScenarios: string[];
-  purchaseScenarios: string[];
-  emotionalScenarios: string[];
-  durationSeconds: number;
-  aspectRatio: string;
-  resolution: string;
-  deliveryChannels: string;
-  disabledElements: string[];
-  visualStyleBaseline: string;
+  sellingPoints: string[];
 };
 
 export type EffectExtractionWarning = {
@@ -157,19 +133,11 @@ export type EffectExtractionWarning = {
 
 export type EffectExtractionValueOrigin = 'USER_FACT' | 'AI_IMAGE_SUGGESTION';
 
-export type EffectExtractionSemanticField =
-  | 'coreSellingPoints'
-  | 'secondarySellingPoints'
-  | 'corePainPoints'
-  | 'decisionDrivers'
-  | 'usageScenarios'
-  | 'purchaseScenarios'
-  | 'emotionalScenarios';
+export type EffectExtractionSemanticField = 'sellingPoints';
 
 export type EffectExtractionSemanticNoticeIssue =
   | 'POSSIBLE_DUPLICATE'
   | 'POSSIBLE_OVERLAP'
-  | 'POSSIBLE_WRONG_FIELD'
   | 'AMBIGUOUS_EXPRESSION'
   | 'FIELD_OVER_RECOMMENDED_COUNT';
 

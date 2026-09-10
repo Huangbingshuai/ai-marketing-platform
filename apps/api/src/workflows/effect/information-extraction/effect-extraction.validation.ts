@@ -1,19 +1,9 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 
-import type {
-  EffectExtractionResult,
-  EffectExtractionWarning,
-  EffectVideoConfig,
-} from '@ai-marketing/contracts';
+import type { EffectExtractionResult, EffectExtractionWarning } from '@ai-marketing/contracts';
 import {
   EFFECT_EXTRACTION_BRANCHES,
-  EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS,
-  EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS,
-  EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
-  EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS,
-  EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS,
-  EFFECT_EXTRACTION_MAX_TRUST_BACKINGS,
-  normalizeEffectImportResolution,
+  EFFECT_EXTRACTION_MAX_SELLING_POINTS,
 } from '@ai-marketing/contracts';
 
 const RESULT_KEYS = [
@@ -22,50 +12,24 @@ const RESULT_KEYS = [
   'coreSpecification',
   'priceRange',
   'visualFeatures',
+  'sellingPoints',
+] as const;
+
+const EDITABLE_RESULT_KEYS = RESULT_KEYS;
+const TARGET_AUDIENCE_SEPARATOR = /[\n,，、;；]+/u;
+const LEGACY_SELLING_POINT_FIELDS = [
   'coreSellingPoints',
   'secondarySellingPoints',
   'trustBackings',
-  'targetAudience',
   'targetAudiences',
   'corePainPoints',
   'decisionDrivers',
-  'marketingGoal',
   'usageScenarios',
   'purchaseScenarios',
   'emotionalScenarios',
-  'durationSeconds',
-  'aspectRatio',
-  'resolution',
-  'deliveryChannels',
-  'disabledElements',
-  'visualStyleBaseline',
 ] as const;
 
-const EDITABLE_RESULT_KEYS = RESULT_KEYS.filter((key) => key !== 'targetAudience');
-const TARGET_AUDIENCE_SEPARATOR = /[\n,，、;；]+/u;
-
 export type EffectExtractionManualOverrides = Partial<EffectExtractionResult>;
-
-export type EffectExtractionResultDefaults = Pick<
-  EffectExtractionResult,
-  | 'durationSeconds'
-  | 'aspectRatio'
-  | 'resolution'
-  | 'deliveryChannels'
-  | 'disabledElements'
-  | 'visualStyleBaseline'
->;
-
-export const effectExtractionDefaultsFromConfig = (
-  config: EffectVideoConfig,
-): EffectExtractionResultDefaults => ({
-  durationSeconds: config.durationSeconds,
-  aspectRatio: config.aspectRatio,
-  resolution: config.resolution,
-  deliveryChannels: config.deliveryChannel,
-  disabledElements: [...config.disabledElements],
-  visualStyleBaseline: config.styleTone,
-});
 
 const canonicalValue = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(canonicalValue);
@@ -132,7 +96,7 @@ const validString = (value: unknown, max = 5000): value is string =>
 const validStringArray = (value: unknown, maxItems: number): value is string[] =>
   Array.isArray(value) &&
   value.length <= maxItems &&
-  value.every((item) => validString(item, 1000));
+  value.every((item) => validString(item, 1000) && item.length >= 1);
 
 const compactStrings = (value: unknown, maxItems: number): string[] => {
   const input = Array.isArray(value)
@@ -145,7 +109,7 @@ const compactStrings = (value: unknown, maxItems: number): string[] => {
     .flatMap((item) => {
       if (typeof item !== 'string') return [];
       const normalized = item.trim();
-      const key = normalized.toLocaleLowerCase();
+      const key = normalized;
       if (!normalized || seen.has(key)) return [];
       seen.add(key);
       return [normalized];
@@ -156,81 +120,35 @@ const compactStrings = (value: unknown, maxItems: number): string[] => {
 const text = (record: Record<string, unknown>, key: string): string =>
   typeof record[key] === 'string' ? record[key] : '';
 
-const targetAudienceItems = (record: Record<string, unknown>): string[] => {
-  if (Array.isArray(record.targetAudiences)) {
-    return compactStrings(record.targetAudiences, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS);
-  }
-  const raw =
-    typeof record.targetAudiences === 'string'
-      ? record.targetAudiences
-      : text(record, 'targetAudience');
-  return compactStrings(
-    raw.split(TARGET_AUDIENCE_SEPARATOR),
-    EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
+const legacySellingPoints = (record: Record<string, unknown>): string[] => {
+  const values = LEGACY_SELLING_POINT_FIELDS.flatMap((field) =>
+    compactStrings(record[field], EFFECT_EXTRACTION_MAX_SELLING_POINTS),
   );
+  if (!Array.isArray(record.targetAudiences) && typeof record.targetAudience === 'string') {
+    values.push(...record.targetAudience.split(TARGET_AUDIENCE_SEPARATOR));
+  }
+  return compactStrings(values, EFFECT_EXTRACTION_MAX_SELLING_POINTS);
 };
 
-const targetAudienceSummary = (items: string[]): string => items.join('；');
-
-export const toEffectExtractionResultV2 = (
-  value: unknown,
-  defaults: EffectExtractionResultDefaults,
-): EffectExtractionResult => {
+/**
+ * The sole read boundary for current and historical information cards. It
+ * folds historical marketing fields into the current unified selling-point
+ * list without exposing a second public result type.
+ */
+export const normalizeEffectExtractionResult = (value: unknown): EffectExtractionResult => {
   const record =
     value && typeof value === 'object' && !Array.isArray(value)
       ? (value as Record<string, unknown>)
       : {};
-  const allSellingPoints = compactStrings(record.coreSellingPoints, 9);
-  // Keep persisted AI output aligned with the shared six-item generation boundary.
-  const explicitSecondary = compactStrings(
-    record.secondarySellingPoints,
-    EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS,
-  );
-  const targetAudiences = targetAudienceItems(record);
   return {
     productCategory: text(record, 'productCategory'),
     productName: text(record, 'productName'),
     coreSpecification: text(record, 'coreSpecification'),
     priceRange: text(record, 'priceRange'),
     visualFeatures: text(record, 'visualFeatures'),
-    coreSellingPoints: allSellingPoints.slice(0, EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS),
-    secondarySellingPoints: compactStrings(
-      [...allSellingPoints.slice(EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS), ...explicitSecondary],
-      EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS,
-    ),
-    trustBackings: compactStrings(record.trustBackings, EFFECT_EXTRACTION_MAX_TRUST_BACKINGS),
-    targetAudience: targetAudienceSummary(targetAudiences),
-    targetAudiences,
-    corePainPoints: compactStrings(record.corePainPoints, EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS),
-    decisionDrivers: compactStrings(record.decisionDrivers, EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS),
-    marketingGoal: text(record, 'marketingGoal'),
-    usageScenarios: compactStrings(record.usageScenarios, EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS),
-    purchaseScenarios: compactStrings(
-      record.purchaseScenarios,
-      EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS,
-    ),
-    emotionalScenarios: compactStrings(
-      record.emotionalScenarios,
-      EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS,
-    ),
-    durationSeconds:
-      Number.isInteger(record.durationSeconds) && Number(record.durationSeconds) > 0
-        ? Number(record.durationSeconds)
-        : defaults.durationSeconds,
-    aspectRatio: text(record, 'aspectRatio') || defaults.aspectRatio,
-    resolution:
-      normalizeEffectImportResolution(text(record, 'resolution')) ??
-      normalizeEffectImportResolution(defaults.resolution) ??
-      '720p',
-    deliveryChannels: text(record, 'deliveryChannels') || defaults.deliveryChannels,
-    disabledElements: compactStrings(
-      Array.isArray(record.disabledElements) ? record.disabledElements : defaults.disabledElements,
-      100,
-    ),
-    visualStyleBaseline:
-      text(record, 'visualStyleBaseline') ||
-      text(record, 'brandTone') ||
-      defaults.visualStyleBaseline,
+    sellingPoints: Array.isArray(record.sellingPoints)
+      ? compactStrings(record.sellingPoints, EFFECT_EXTRACTION_MAX_SELLING_POINTS)
+      : legacySellingPoints(record),
   };
 };
 
@@ -250,23 +168,15 @@ export const applyEffectExtractionManualOverrides = (
 ): EffectExtractionResult => {
   if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return generated;
   const record = overrides as Record<string, unknown>;
+  const hasLegacySellingPointOverride = LEGACY_SELLING_POINT_FIELDS.some((key) => key in record);
   const merged = Object.fromEntries(
     EDITABLE_RESULT_KEYS.map((key) => {
-      if (key === 'targetAudiences' && !(key in record) && 'targetAudience' in record) {
-        return [key, targetAudienceItems(record)];
-      }
+      if (key === 'sellingPoints' && !('sellingPoints' in record) && hasLegacySellingPointOverride)
+        return [key, legacySellingPoints(record)];
       return [key, key in record ? record[key] : generated[key]];
     }),
-  ) as Omit<EffectExtractionResult, 'targetAudience'>;
-  const targetAudiences = compactStrings(
-    merged.targetAudiences,
-    EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
   );
-  return {
-    ...merged,
-    targetAudience: targetAudienceSummary(targetAudiences),
-    targetAudiences,
-  };
+  return normalizeEffectExtractionResult(merged);
 };
 
 export const manualOverrideFieldNames = (value: unknown): string[] => {
@@ -275,7 +185,12 @@ export const manualOverrideFieldNames = (value: unknown): string[] => {
   return Array.from(
     new Set(
       Object.keys(value as Record<string, unknown>).flatMap((key) =>
-        key === 'targetAudience' ? ['targetAudiences'] : keys.has(key) ? [key] : [],
+        LEGACY_SELLING_POINT_FIELDS.includes(key as (typeof LEGACY_SELLING_POINT_FIELDS)[number]) ||
+        key === 'targetAudience'
+          ? ['sellingPoints']
+          : keys.has(key)
+            ? [key]
+            : [],
       ),
     ),
   ).sort();
@@ -294,101 +209,24 @@ export const isEffectExtractionResult = (value: unknown): value is EffectExtract
   if (!hasExactEffectExtractionResultKeys(value)) return false;
   const record = value;
   return (
-    validString(record.productCategory) &&
-    validString(record.productName) &&
-    validString(record.coreSpecification) &&
-    validString(record.priceRange) &&
-    validString(record.visualFeatures) &&
-    validStringArray(record.coreSellingPoints, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
-    record.coreSellingPoints.length >= 1 &&
-    validStringArray(record.secondarySellingPoints, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
-    validStringArray(record.trustBackings, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
-    validString(record.targetAudience) &&
-    validStringArray(record.targetAudiences, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
-    record.targetAudience === targetAudienceSummary(record.targetAudiences) &&
-    validStringArray(record.corePainPoints, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
-    validStringArray(record.decisionDrivers, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
-    validString(record.marketingGoal) &&
-    validStringArray(record.usageScenarios, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
-    validStringArray(record.purchaseScenarios, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
-    validStringArray(record.emotionalScenarios, EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) &&
-    Number.isInteger(record.durationSeconds) &&
-    Number(record.durationSeconds) >= 1 &&
-    Number(record.durationSeconds) <= 3600 &&
-    validString(record.aspectRatio, 50) &&
-    record.aspectRatio.length > 0 &&
-    validString(record.resolution, 50) &&
-    normalizeEffectImportResolution(record.resolution) !== null &&
-    validString(record.deliveryChannels) &&
-    validStringArray(record.disabledElements, 100) &&
-    validString(record.visualStyleBaseline) &&
-    true
+    validString(record.productCategory, 500) &&
+    validString(record.productName, 500) &&
+    validString(record.coreSpecification, 2000) &&
+    validString(record.priceRange, 1000) &&
+    validString(record.visualFeatures, 4000) &&
+    validStringArray(record.sellingPoints, EFFECT_EXTRACTION_MAX_SELLING_POINTS) &&
+    record.sellingPoints.length >= 1 &&
+    new Set(record.sellingPoints).size === record.sellingPoints.length
   );
 };
 
-export const toEditableEffectExtractionResultV2 = (
-  value: unknown,
-  defaults: EffectExtractionResultDefaults,
-): unknown => {
-  if (!hasExactEffectExtractionResultKeys(value))
-    return toEffectExtractionResultV2(value, defaults);
+export const normalizeEditableEffectExtractionResult = (value: unknown): unknown => {
+  if (!hasExactEffectExtractionResultKeys(value)) return normalizeEffectExtractionResult(value);
   if (!isEffectExtractionResult(value)) return value;
   return {
     ...value,
-    resolution: normalizeEffectImportResolution(value.resolution) ?? '720p',
-    coreSellingPoints: [...value.coreSellingPoints],
-    secondarySellingPoints: [...value.secondarySellingPoints],
-    trustBackings: [...value.trustBackings],
-    targetAudiences: [...value.targetAudiences],
-    corePainPoints: [...value.corePainPoints],
-    decisionDrivers: [...value.decisionDrivers],
-    usageScenarios: [...value.usageScenarios],
-    purchaseScenarios: [...value.purchaseScenarios],
-    emotionalScenarios: [...value.emotionalScenarios],
-    disabledElements: [...value.disabledElements],
+    sellingPoints: [...value.sellingPoints],
   };
-};
-
-/**
- * Compatibility guard for schema-v2 workers built before `resolution` became required.
- * The repository restores the authoritative resolution from the immutable input snapshot.
- */
-export const isLegacyEffectExtractionResultWithoutResolution = (
-  value: unknown,
-): value is Omit<EffectExtractionResult, 'resolution'> => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  const targetAudiences = targetAudienceItems(record);
-  return (
-    !('resolution' in record) &&
-    isEffectExtractionResult({
-      ...record,
-      targetAudience: targetAudienceSummary(targetAudiences),
-      targetAudiences,
-      resolution: '720p',
-    })
-  );
-};
-
-/**
- * Compatibility guard for workers built before target audiences became an
- * independently editable list. The repository canonicalizes the legacy
- * summary into `targetAudiences` before persisting the result.
- */
-export const isLegacyEffectExtractionResultWithoutCanonicalAudiences = (
-  value: unknown,
-): value is Omit<EffectExtractionResult, 'targetAudiences'> => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  const targetAudiences = targetAudienceItems(record);
-  return (
-    !('targetAudiences' in record) &&
-    isEffectExtractionResult({
-      ...record,
-      targetAudience: targetAudienceSummary(targetAudiences),
-      targetAudiences,
-    })
-  );
 };
 
 const safeWarningText = (value: unknown, maxLength: number): string | null => {

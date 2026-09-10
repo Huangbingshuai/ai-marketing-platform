@@ -12,12 +12,7 @@ import type {
 import {
   EFFECT_EXTRACTION_GRAPH_EDGES,
   EFFECT_EXTRACTION_GRAPH_NODES,
-  EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS,
-  EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS,
-  EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS,
-  EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS,
-  EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS,
-  EFFECT_EXTRACTION_MAX_TRUST_BACKINGS,
+  EFFECT_EXTRACTION_MAX_SELLING_POINTS,
   EFFECT_IMPORT_MATERIAL_TYPE_LABELS,
 } from '@ai-marketing/contracts';
 import { WorkflowNodeDraftBar, WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
@@ -210,7 +205,7 @@ const graphNodeDescription = (nodeId: EffectExtractionNodeId): string =>
     DOCUMENT: '读取文档中的产品信息',
     IMAGE: '识别图片中的商品信息',
     COMMERCE: '检查商品链接中的信息',
-    FORM: '读取导入节点中人工填写的产品名称与品类',
+    FORM: '读取资料导入节点中的结构化表单信息',
     FUSION: '合并不同资料中的有效信息',
     SEMANTIC_REFINEMENT: '保留用户事实，只整理图片建议并给出待确认提示',
     NORMALIZATION: '生成可继续编辑的产品信息卡',
@@ -419,11 +414,8 @@ const localGraphDetail = (nodeId: EffectExtractionNodeId): EffectExtractionNodeD
   if (nodeId === 'FORM') {
     return {
       ...base,
-      summary: '当前导入节点的产品基础信息',
-      fields: [
-        detailField('productName', '产品名称', product.name, '人工填写'),
-        detailField('productCategory', '产品品类', product.category, '人工填写'),
-      ],
+      summary: '当前导入节点的结构化表单信息',
+      fields: [detailField('productCategory', '产品品类', product.category, '表单信息')],
       sources: [],
     };
   }
@@ -452,39 +444,14 @@ const emptyExtractionResult: EffectExtractionResult = {
   coreSpecification: '',
   priceRange: '',
   visualFeatures: '',
-  coreSellingPoints: [''],
-  secondarySellingPoints: [],
-  trustBackings: [],
-  targetAudience: '',
-  targetAudiences: [],
-  corePainPoints: [],
-  decisionDrivers: [],
-  marketingGoal: '',
-  usageScenarios: [],
-  purchaseScenarios: [],
-  emotionalScenarios: [],
-  durationSeconds: 15,
-  aspectRatio: '9:16',
-  resolution: '720p',
-  deliveryChannels: '',
-  disabledElements: [],
-  visualStyleBaseline: '',
+  sellingPoints: [''],
 };
 const visibleResult = computed(() => currentState.value?.result ?? emptyExtractionResult);
 const baseFieldsReadonly = computed(() => !currentState.value?.result || currentRunning.value);
 const semanticNoticeDismissDisabled = computed(
   () => baseFieldsReadonly.value || currentState.value?.saveState === 'SAVING',
 );
-type OriginListField =
-  | 'coreSellingPoints'
-  | 'secondarySellingPoints'
-  | 'trustBackings'
-  | 'targetAudiences'
-  | 'corePainPoints'
-  | 'decisionDrivers'
-  | 'usageScenarios'
-  | 'purchaseScenarios'
-  | 'emotionalScenarios';
+type OriginListField = 'sellingPoints';
 const shouldShowOrigin = (origin: EffectExtractionValueOrigin): boolean =>
   origin === 'AI_IMAGE_SUGGESTION';
 const fieldOrigin = (field: keyof EffectExtractionResult): EffectExtractionValueOrigin =>
@@ -716,8 +683,7 @@ const applyNodeState = (value: unknown): void => {
     if (
       !current ||
       !saved?.result ||
-      !Array.isArray(saved.result.usageScenarios) ||
-      !Array.isArray(saved.result.secondarySellingPoints) ||
+      !Array.isArray(saved.result.sellingPoints) ||
       current.resultId !== saved.resultId
     )
       continue;
@@ -1217,10 +1183,9 @@ const updateProductBaseField = (field: ProductBaseField, event: Event): void => 
 
 const addSellingPoint = (): void => {
   const result = currentState.value?.result;
-  if (!result || result.coreSellingPoints.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS)
-    return;
-  result.coreSellingPoints.push('');
-  markListFieldDirty('coreSellingPoints');
+  if (!result || result.sellingPoints.length >= EFFECT_EXTRACTION_MAX_SELLING_POINTS) return;
+  result.sellingPoints.push('');
+  markListFieldDirty('sellingPoints');
 };
 
 const summarizedRemovalValue = (value: string): string => {
@@ -1239,73 +1204,11 @@ const confirmInformationRemoval = (label: string, value: string): Promise<boolea
 
 const removeSellingPoint = async (index: number): Promise<void> => {
   const result = currentState.value?.result;
-  if (!result || result.coreSellingPoints.length <= 1) return;
-  if (!(await confirmInformationRemoval('核心卖点', result.coreSellingPoints[index] ?? ''))) return;
-  result.coreSellingPoints.splice(index, 1);
-  markListFieldDirty('coreSellingPoints');
-};
-
-type AdditionalSellingField = 'secondarySellingPoints' | 'trustBackings';
-type UserInsightListField = 'targetAudiences' | 'corePainPoints' | 'decisionDrivers';
-type ScenarioListField = 'usageScenarios' | 'purchaseScenarios' | 'emotionalScenarios';
-
-const addAdditionalSellingPoint = (field: AdditionalSellingField): void => {
-  const result = currentState.value?.result;
-  if (!result || result[field].length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) return;
-  result[field].push('');
-  markListFieldDirty(field);
-};
-
-const removeAdditionalSellingPoint = async (
-  field: AdditionalSellingField,
-  index: number,
-): Promise<void> => {
-  const result = currentState.value?.result;
-  if (!result) return;
-  const label = field === 'secondarySellingPoints' ? '次要卖点' : '信任背书';
-  if (!(await confirmInformationRemoval(label, result[field][index] ?? ''))) return;
-  result[field].splice(index, 1);
-  markListFieldDirty(field);
-};
-
-const addUserInsightItem = (field: UserInsightListField): void => {
-  const result = currentState.value?.result;
-  if (!result || result[field].length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) return;
-  result[field].push('');
-  markListFieldDirty(field);
-};
-
-const removeUserInsightItem = async (field: UserInsightListField, index: number): Promise<void> => {
-  const result = currentState.value?.result;
-  if (!result) return;
-  const label: Record<UserInsightListField, string> = {
-    targetAudiences: '目标受众',
-    corePainPoints: '核心痛点',
-    decisionDrivers: '决策动因',
-  };
-  if (!(await confirmInformationRemoval(label[field], result[field][index] ?? ''))) return;
-  result[field].splice(index, 1);
-  markListFieldDirty(field);
-};
-
-const addScenarioItem = (field: ScenarioListField): void => {
-  const result = currentState.value?.result;
-  if (!result || result[field].length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS) return;
-  result[field].push('');
-  markListFieldDirty(field);
-};
-
-const removeScenarioItem = async (field: ScenarioListField, index: number): Promise<void> => {
-  const result = currentState.value?.result;
-  if (!result) return;
-  const label: Record<ScenarioListField, string> = {
-    usageScenarios: '核心使用场景',
-    purchaseScenarios: '购买场景',
-    emotionalScenarios: '情绪共鸣场景',
-  };
-  if (!(await confirmInformationRemoval(label[field], result[field][index] ?? ''))) return;
-  result[field].splice(index, 1);
-  markListFieldDirty(field);
+  const value = result?.sellingPoints[index];
+  if (!result || value === undefined) return;
+  if (value.trim() && !(await confirmInformationRemoval('卖点', value))) return;
+  result.sellingPoints.splice(index, 1);
+  markListFieldDirty('sellingPoints');
 };
 
 const saveDraft = async (): Promise<boolean> => {
@@ -1357,13 +1260,6 @@ const validateCurrentResult = async (): Promise<void> => {
 
 const loadLatestResult = (): void => {
   void loadWorkspace();
-};
-
-const selectProduct = async (event: Event): Promise<void> => {
-  const nextProductId = (event.target as HTMLSelectElement).value;
-  if (!(await flushPendingEdits())) return;
-  closeGraphDialog(false);
-  currentProductId.value = nextProductId;
 };
 
 watch(
@@ -1453,14 +1349,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="extraction-heading__actions">
-          <label class="product-switcher">
-            <span>当前商品</span>
-            <select :value="currentProductId" @change="selectProduct">
-              <option v-for="product in products" :key="product.id" :value="product.id">
-                {{ product.name || '未命名产品' }} · {{ stateLabel(product.id) }}
-              </option>
-            </select>
-          </label>
           <button
             ref="graphTrigger"
             class="secondary-button workflow-graph-trigger"
@@ -1655,65 +1543,65 @@ onBeforeUnmount(() => {
         </section>
         <section class="content-block selling-layer-card">
           <div class="block-heading compact">
-            <div><h3>卖点分层</h3></div>
-          </div>
-          <div class="selling-subheading selling-subheading--first">
-            <strong
-              >核心卖点
-              <small>建议 1–{{ EFFECT_EXTRACTION_MAX_CORE_SELLING_POINTS }} 个</small></strong
-            >
+            <div>
+              <h3>卖点</h3>
+              <p>这些卖点可用于后续视频创作，您可以按需修改、添加或删除。</p>
+            </div>
             <button
               class="selling-add-button"
               type="button"
               :disabled="
                 baseFieldsReadonly ||
-                visibleResult.coreSellingPoints.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
+                visibleResult.sellingPoints.length >= EFFECT_EXTRACTION_MAX_SELLING_POINTS
               "
               :title="
-                visibleResult.coreSellingPoints.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
-                  ? `最多添加 ${EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS} 个核心卖点`
-                  : '添加一个核心卖点'
+                visibleResult.sellingPoints.length >= EFFECT_EXTRACTION_MAX_SELLING_POINTS
+                  ? `最多添加 ${EFFECT_EXTRACTION_MAX_SELLING_POINTS} 个卖点`
+                  : '添加一个卖点'
               "
               @click="addSellingPoint"
             >
               <Plus :size="13" />添加
             </button>
           </div>
-          <div class="selling-points">
+          <div class="selling-points selling-points--unified">
+            <p v-if="!visibleResult.sellingPoints.length" class="empty-inline">
+              暂无卖点，可点击“添加”补充。
+            </p>
             <div
-              v-for="(_point, index) in visibleResult.coreSellingPoints"
+              v-for="(_point, index) in visibleResult.sellingPoints"
               :key="index"
               class="selling-point-row"
             >
               <input
-                :aria-label="`核心卖点 ${index + 1}`"
-                v-model="visibleResult.coreSellingPoints[index]"
+                :aria-label="`卖点 ${index + 1}`"
+                v-model="visibleResult.sellingPoints[index]"
                 :readonly="baseFieldsReadonly"
-                placeholder="请输入核心卖点"
-                @input="markListFieldDirty('coreSellingPoints')"
+                placeholder="例如：原料、工艺、功能、口味、用法、场景或可信背书"
+                @input="markListFieldDirty('sellingPoints')"
               />
               <em
                 class="origin-chip"
-                :data-origin="itemOrigin('coreSellingPoints', index)"
-                :title="originSourceTitle(itemSourceNames('coreSellingPoints', index))"
+                :data-origin="itemOrigin('sellingPoints', index)"
+                :title="originSourceTitle(itemSourceNames('sellingPoints', index))"
                 >{{
                   originSourceLabel(
-                    itemOrigin('coreSellingPoints', index),
-                    itemSourceNames('coreSellingPoints', index),
+                    itemOrigin('sellingPoints', index),
+                    itemSourceNames('sellingPoints', index),
                   )
                 }}</em
               >
               <button
                 type="button"
                 aria-label="删除卖点"
-                :disabled="baseFieldsReadonly || visibleResult.coreSellingPoints.length <= 1"
+                :disabled="baseFieldsReadonly"
                 @click="removeSellingPoint(index)"
               >
                 <Trash2 :size="14" />
               </button>
               <p
-                v-for="notice in itemSemanticNotices('coreSellingPoints', index)"
-                :key="notice.issue"
+                v-for="notice in itemSemanticNotices('sellingPoints', index)"
+                :key="`${notice.issue}-${notice.message}`"
                 class="semantic-fact-notice"
               >
                 <AlertCircle :size="13" />
@@ -1724,554 +1612,7 @@ onBeforeUnmount(() => {
                   aria-label="关闭这条建议"
                   title="关闭这条建议"
                   :disabled="semanticNoticeDismissDisabled"
-                  @click="dismissSemanticNotice('coreSellingPoints', index, notice)"
-                >
-                  <X :size="12" />
-                </button>
-              </p>
-            </div>
-            <div class="selling-subheading">
-              <strong
-                >次要卖点
-                <small
-                  >建议最多 {{ EFFECT_EXTRACTION_MAX_SECONDARY_SELLING_POINTS }} 个</small
-                ></strong
-              >
-              <button
-                type="button"
-                :disabled="
-                  baseFieldsReadonly ||
-                  visibleResult.secondarySellingPoints.length >=
-                    EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
-                "
-                @click="addAdditionalSellingPoint('secondarySellingPoints')"
-              >
-                <Plus :size="13" />添加
-              </button>
-            </div>
-            <div
-              v-for="(_point, index) in visibleResult.secondarySellingPoints"
-              :key="`secondary-${index}`"
-              class="selling-point-row"
-            >
-              <input
-                :aria-label="`次要卖点 ${index + 1}`"
-                v-model="visibleResult.secondarySellingPoints[index]"
-                :readonly="baseFieldsReadonly"
-                placeholder="请输入次要卖点"
-                @input="markListFieldDirty('secondarySellingPoints')"
-              />
-              <em
-                class="origin-chip"
-                :data-origin="itemOrigin('secondarySellingPoints', index)"
-                :title="originSourceTitle(itemSourceNames('secondarySellingPoints', index))"
-                >{{
-                  originSourceLabel(
-                    itemOrigin('secondarySellingPoints', index),
-                    itemSourceNames('secondarySellingPoints', index),
-                  )
-                }}</em
-              >
-              <button
-                type="button"
-                aria-label="删除次要卖点"
-                :disabled="baseFieldsReadonly"
-                @click="removeAdditionalSellingPoint('secondarySellingPoints', index)"
-              >
-                <Trash2 :size="14" />
-              </button>
-              <p
-                v-for="notice in itemSemanticNotices('secondarySellingPoints', index)"
-                :key="notice.issue"
-                class="semantic-fact-notice"
-              >
-                <AlertCircle :size="13" />
-                <span>{{ notice.message }}</span>
-                <button
-                  type="button"
-                  class="semantic-fact-notice__dismiss"
-                  aria-label="关闭这条建议"
-                  title="关闭这条建议"
-                  :disabled="semanticNoticeDismissDisabled"
-                  @click="dismissSemanticNotice('secondarySellingPoints', index, notice)"
-                >
-                  <X :size="12" />
-                </button>
-              </p>
-            </div>
-            <div class="selling-subheading">
-              <strong
-                >辅助信任背书
-                <small>建议最多 {{ EFFECT_EXTRACTION_MAX_TRUST_BACKINGS }} 个</small></strong
-              >
-              <button
-                type="button"
-                :disabled="
-                  baseFieldsReadonly ||
-                  visibleResult.trustBackings.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
-                "
-                @click="addAdditionalSellingPoint('trustBackings')"
-              >
-                <Plus :size="13" />添加
-              </button>
-            </div>
-            <p v-if="!visibleResult.trustBackings.length" class="empty-inline">
-              暂无可验证的信任背书
-            </p>
-            <div
-              v-for="(_point, index) in visibleResult.trustBackings"
-              :key="`trust-${index}`"
-              class="selling-point-row"
-            >
-              <input
-                :aria-label="`辅助信任背书 ${index + 1}`"
-                v-model="visibleResult.trustBackings[index]"
-                :readonly="baseFieldsReadonly"
-                placeholder="仅填写有资料证据的背书"
-                @input="markListFieldDirty('trustBackings')"
-              />
-              <em
-                class="origin-chip"
-                :data-origin="itemOrigin('trustBackings', index)"
-                :title="originSourceTitle(itemSourceNames('trustBackings', index))"
-                >{{
-                  originSourceLabel(
-                    itemOrigin('trustBackings', index),
-                    itemSourceNames('trustBackings', index),
-                  )
-                }}</em
-              >
-              <button
-                type="button"
-                aria-label="删除信任背书"
-                :disabled="baseFieldsReadonly"
-                @click="removeAdditionalSellingPoint('trustBackings', index)"
-              >
-                <Trash2 :size="14" />
-              </button>
-            </div>
-          </div>
-        </section>
-
-        <section class="content-block user-layer-card">
-          <div class="block-heading compact">
-            <div><h3>用户层</h3></div>
-          </div>
-          <div class="selling-subheading">
-            <strong
-              >目标受众画像
-              <small>建议最多 {{ EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS }} 个</small></strong
-            >
-            <button
-              type="button"
-              :disabled="
-                baseFieldsReadonly ||
-                visibleResult.targetAudiences.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
-              "
-              @click="addUserInsightItem('targetAudiences')"
-            >
-              <Plus :size="13" />添加
-            </button>
-          </div>
-          <div class="structured-item-list">
-            <p v-if="!visibleResult.targetAudiences.length" class="empty-inline">暂无目标受众</p>
-            <div
-              v-for="(_item, index) in visibleResult.targetAudiences"
-              :key="`audience-${index}`"
-              class="selling-point-row"
-            >
-              <input
-                :aria-label="`目标受众 ${index + 1}`"
-                v-model="visibleResult.targetAudiences[index]"
-                :readonly="baseFieldsReadonly"
-                placeholder="请输入目标受众"
-                @input="markListFieldDirty('targetAudiences')"
-              />
-              <em
-                class="origin-chip"
-                :data-origin="itemOrigin('targetAudiences', index)"
-                :title="originSourceTitle(itemSourceNames('targetAudiences', index))"
-                >{{
-                  originSourceLabel(
-                    itemOrigin('targetAudiences', index),
-                    itemSourceNames('targetAudiences', index),
-                  )
-                }}</em
-              >
-              <button
-                type="button"
-                aria-label="删除目标受众"
-                :disabled="baseFieldsReadonly"
-                @click="removeUserInsightItem('targetAudiences', index)"
-              >
-                <Trash2 :size="14" />
-              </button>
-            </div>
-          </div>
-          <div class="selling-subheading">
-            <strong
-              >核心痛点
-              <small>建议最多 {{ EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS }} 个</small></strong
-            >
-            <button
-              type="button"
-              :disabled="
-                baseFieldsReadonly ||
-                visibleResult.corePainPoints.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
-              "
-              @click="addUserInsightItem('corePainPoints')"
-            >
-              <Plus :size="13" />添加
-            </button>
-          </div>
-          <div class="structured-item-list">
-            <p v-if="!visibleResult.corePainPoints.length" class="empty-inline">暂无核心痛点</p>
-            <div
-              v-for="(_item, index) in visibleResult.corePainPoints"
-              :key="`pain-${index}`"
-              class="selling-point-row"
-            >
-              <input
-                :aria-label="`核心痛点 ${index + 1}`"
-                v-model="visibleResult.corePainPoints[index]"
-                :readonly="baseFieldsReadonly"
-                placeholder="请输入核心痛点"
-                @input="markListFieldDirty('corePainPoints')"
-              />
-              <em
-                class="origin-chip"
-                :data-origin="itemOrigin('corePainPoints', index)"
-                :title="originSourceTitle(itemSourceNames('corePainPoints', index))"
-                >{{
-                  originSourceLabel(
-                    itemOrigin('corePainPoints', index),
-                    itemSourceNames('corePainPoints', index),
-                  )
-                }}</em
-              >
-              <button
-                type="button"
-                aria-label="删除核心痛点"
-                :disabled="baseFieldsReadonly"
-                @click="removeUserInsightItem('corePainPoints', index)"
-              >
-                <Trash2 :size="14" />
-              </button>
-              <p
-                v-for="notice in itemSemanticNotices('corePainPoints', index)"
-                :key="notice.issue"
-                class="semantic-fact-notice"
-              >
-                <AlertCircle :size="13" />
-                <span>{{ notice.message }}</span>
-                <button
-                  type="button"
-                  class="semantic-fact-notice__dismiss"
-                  aria-label="关闭这条建议"
-                  title="关闭这条建议"
-                  :disabled="semanticNoticeDismissDisabled"
-                  @click="dismissSemanticNotice('corePainPoints', index, notice)"
-                >
-                  <X :size="12" />
-                </button>
-              </p>
-            </div>
-          </div>
-          <div class="selling-subheading">
-            <strong
-              >决策动因
-              <small>建议最多 {{ EFFECT_EXTRACTION_MAX_AUDIENCE_ITEMS }} 个</small></strong
-            >
-            <button
-              type="button"
-              :disabled="
-                baseFieldsReadonly ||
-                visibleResult.decisionDrivers.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
-              "
-              @click="addUserInsightItem('decisionDrivers')"
-            >
-              <Plus :size="13" />添加
-            </button>
-          </div>
-          <div class="structured-item-list">
-            <p v-if="!visibleResult.decisionDrivers.length" class="empty-inline">暂无决策动因</p>
-            <div
-              v-for="(_item, index) in visibleResult.decisionDrivers"
-              :key="`driver-${index}`"
-              class="selling-point-row"
-            >
-              <input
-                :aria-label="`决策动因 ${index + 1}`"
-                v-model="visibleResult.decisionDrivers[index]"
-                :readonly="baseFieldsReadonly"
-                placeholder="请输入决策动因"
-                @input="markListFieldDirty('decisionDrivers')"
-              />
-              <em
-                class="origin-chip"
-                :data-origin="itemOrigin('decisionDrivers', index)"
-                :title="originSourceTitle(itemSourceNames('decisionDrivers', index))"
-                >{{
-                  originSourceLabel(
-                    itemOrigin('decisionDrivers', index),
-                    itemSourceNames('decisionDrivers', index),
-                  )
-                }}</em
-              >
-              <button
-                type="button"
-                aria-label="删除决策动因"
-                :disabled="baseFieldsReadonly"
-                @click="removeUserInsightItem('decisionDrivers', index)"
-              >
-                <Trash2 :size="14" />
-              </button>
-              <p
-                v-for="notice in itemSemanticNotices('decisionDrivers', index)"
-                :key="notice.issue"
-                class="semantic-fact-notice"
-              >
-                <AlertCircle :size="13" />
-                <span>{{ notice.message }}</span>
-                <button
-                  type="button"
-                  class="semantic-fact-notice__dismiss"
-                  aria-label="关闭这条建议"
-                  title="关闭这条建议"
-                  :disabled="semanticNoticeDismissDisabled"
-                  @click="dismissSemanticNotice('decisionDrivers', index, notice)"
-                >
-                  <X :size="12" />
-                </button>
-              </p>
-            </div>
-          </div>
-          <label class="field-label user-marketing-goal">
-            <span
-              >营销目标
-              <em
-                :data-origin="fieldOrigin('marketingGoal')"
-                :title="originSourceTitle(fieldSourceNames('marketingGoal'))"
-                >{{
-                  originSourceLabel(fieldOrigin('marketingGoal'), fieldSourceNames('marketingGoal'))
-                }}</em
-              ></span
-            >
-            <textarea
-              v-model="visibleResult.marketingGoal"
-              :readonly="baseFieldsReadonly"
-              @input="markFieldDirty('marketingGoal')"
-            />
-          </label>
-        </section>
-
-        <section class="content-block scenario-layer-card">
-          <div class="block-heading compact">
-            <div><h3>场景层</h3></div>
-          </div>
-          <div class="selling-subheading">
-            <strong
-              >核心使用场景
-              <small>建议最多 {{ EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS }} 个</small></strong
-            >
-            <button
-              type="button"
-              :disabled="
-                baseFieldsReadonly ||
-                visibleResult.usageScenarios.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
-              "
-              @click="addScenarioItem('usageScenarios')"
-            >
-              <Plus :size="13" />添加
-            </button>
-          </div>
-          <div class="structured-item-list">
-            <p v-if="!visibleResult.usageScenarios.length" class="empty-inline">暂无核心使用场景</p>
-            <div
-              v-for="(_item, index) in visibleResult.usageScenarios"
-              :key="`usage-${index}`"
-              class="selling-point-row"
-            >
-              <input
-                :aria-label="`核心使用场景 ${index + 1}`"
-                v-model="visibleResult.usageScenarios[index]"
-                :readonly="baseFieldsReadonly"
-                placeholder="请输入核心使用场景"
-                @input="markListFieldDirty('usageScenarios')"
-              />
-              <em
-                class="origin-chip"
-                :data-origin="itemOrigin('usageScenarios', index)"
-                :title="originSourceTitle(itemSourceNames('usageScenarios', index))"
-                >{{
-                  originSourceLabel(
-                    itemOrigin('usageScenarios', index),
-                    itemSourceNames('usageScenarios', index),
-                  )
-                }}</em
-              >
-              <button
-                type="button"
-                aria-label="删除核心使用场景"
-                :disabled="baseFieldsReadonly"
-                @click="removeScenarioItem('usageScenarios', index)"
-              >
-                <Trash2 :size="14" />
-              </button>
-              <p
-                v-for="notice in itemSemanticNotices('usageScenarios', index)"
-                :key="notice.issue"
-                class="semantic-fact-notice"
-              >
-                <AlertCircle :size="13" />
-                <span>{{ notice.message }}</span>
-                <button
-                  type="button"
-                  class="semantic-fact-notice__dismiss"
-                  aria-label="关闭这条建议"
-                  title="关闭这条建议"
-                  :disabled="semanticNoticeDismissDisabled"
-                  @click="dismissSemanticNotice('usageScenarios', index, notice)"
-                >
-                  <X :size="12" />
-                </button>
-              </p>
-            </div>
-          </div>
-          <div class="selling-subheading">
-            <strong
-              >购买场景
-              <small>建议最多 {{ EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS }} 个</small></strong
-            >
-            <button
-              type="button"
-              :disabled="
-                baseFieldsReadonly ||
-                visibleResult.purchaseScenarios.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
-              "
-              @click="addScenarioItem('purchaseScenarios')"
-            >
-              <Plus :size="13" />添加
-            </button>
-          </div>
-          <div class="structured-item-list">
-            <p v-if="!visibleResult.purchaseScenarios.length" class="empty-inline">暂无购买场景</p>
-            <div
-              v-for="(_item, index) in visibleResult.purchaseScenarios"
-              :key="`purchase-${index}`"
-              class="selling-point-row"
-            >
-              <input
-                :aria-label="`购买场景 ${index + 1}`"
-                v-model="visibleResult.purchaseScenarios[index]"
-                :readonly="baseFieldsReadonly"
-                placeholder="请输入购买场景"
-                @input="markListFieldDirty('purchaseScenarios')"
-              />
-              <em
-                class="origin-chip"
-                :data-origin="itemOrigin('purchaseScenarios', index)"
-                :title="originSourceTitle(itemSourceNames('purchaseScenarios', index))"
-                >{{
-                  originSourceLabel(
-                    itemOrigin('purchaseScenarios', index),
-                    itemSourceNames('purchaseScenarios', index),
-                  )
-                }}</em
-              >
-              <button
-                type="button"
-                aria-label="删除购买场景"
-                :disabled="baseFieldsReadonly"
-                @click="removeScenarioItem('purchaseScenarios', index)"
-              >
-                <Trash2 :size="14" />
-              </button>
-              <p
-                v-for="notice in itemSemanticNotices('purchaseScenarios', index)"
-                :key="notice.issue"
-                class="semantic-fact-notice"
-              >
-                <AlertCircle :size="13" />
-                <span>{{ notice.message }}</span>
-                <button
-                  type="button"
-                  class="semantic-fact-notice__dismiss"
-                  aria-label="关闭这条建议"
-                  title="关闭这条建议"
-                  :disabled="semanticNoticeDismissDisabled"
-                  @click="dismissSemanticNotice('purchaseScenarios', index, notice)"
-                >
-                  <X :size="12" />
-                </button>
-              </p>
-            </div>
-          </div>
-          <div class="selling-subheading">
-            <strong
-              >情绪共鸣场景
-              <small>建议最多 {{ EFFECT_EXTRACTION_MAX_SCENARIO_ITEMS }} 个</small></strong
-            >
-            <button
-              type="button"
-              :disabled="
-                baseFieldsReadonly ||
-                visibleResult.emotionalScenarios.length >= EFFECT_EXTRACTION_MAX_EDITABLE_LIST_ITEMS
-              "
-              @click="addScenarioItem('emotionalScenarios')"
-            >
-              <Plus :size="13" />添加
-            </button>
-          </div>
-          <div class="structured-item-list">
-            <p v-if="!visibleResult.emotionalScenarios.length" class="empty-inline">
-              暂无情绪共鸣场景
-            </p>
-            <div
-              v-for="(_item, index) in visibleResult.emotionalScenarios"
-              :key="`emotional-${index}`"
-              class="selling-point-row"
-            >
-              <input
-                :aria-label="`情绪共鸣场景 ${index + 1}`"
-                v-model="visibleResult.emotionalScenarios[index]"
-                :readonly="baseFieldsReadonly"
-                placeholder="请输入情绪共鸣场景"
-                @input="markListFieldDirty('emotionalScenarios')"
-              />
-              <em
-                class="origin-chip"
-                :data-origin="itemOrigin('emotionalScenarios', index)"
-                :title="originSourceTitle(itemSourceNames('emotionalScenarios', index))"
-                >{{
-                  originSourceLabel(
-                    itemOrigin('emotionalScenarios', index),
-                    itemSourceNames('emotionalScenarios', index),
-                  )
-                }}</em
-              >
-              <button
-                type="button"
-                aria-label="删除情绪共鸣场景"
-                :disabled="baseFieldsReadonly"
-                @click="removeScenarioItem('emotionalScenarios', index)"
-              >
-                <Trash2 :size="14" />
-              </button>
-              <p
-                v-for="notice in itemSemanticNotices('emotionalScenarios', index)"
-                :key="notice.issue"
-                class="semantic-fact-notice"
-              >
-                <AlertCircle :size="13" />
-                <span>{{ notice.message }}</span>
-                <button
-                  type="button"
-                  class="semantic-fact-notice__dismiss"
-                  aria-label="关闭这条建议"
-                  title="关闭这条建议"
-                  :disabled="semanticNoticeDismissDisabled"
-                  @click="dismissSemanticNotice('emotionalScenarios', index, notice)"
+                  @click="dismissSemanticNotice('sellingPoints', index, notice)"
                 >
                   <X :size="12" />
                 </button>
@@ -2724,30 +2065,9 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
   gap: 10px;
 }
-.product-switcher {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  color: #596278;
-  font-size: 13px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-.product-switcher select {
-  width: 230px;
-  height: 40px;
-  padding: 0 32px 0 12px;
-  color: #42526a;
-  background: #fff;
-  border: 1px solid #dbe4f6;
-  border-radius: 10px;
-  outline: 0;
-  font-size: 12px;
-}
 .extraction-heading__actions .secondary-button {
   min-width: 139px;
 }
-.product-switcher select:focus,
 input:focus,
 textarea:focus {
   border-color: #7da7ef;
@@ -3068,11 +2388,11 @@ select {
 .result-grid {
   display: grid;
   margin-top: 18px;
-  align-items: stretch;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-areas:
-    'base base base'
-    'selling user scenario';
+    'base'
+    'selling';
   gap: 18px;
 }
 .product-base-card {
@@ -3081,17 +2401,8 @@ select {
 .selling-layer-card {
   grid-area: selling;
 }
-.user-layer-card {
-  grid-area: user;
-}
-.scenario-layer-card {
-  grid-area: scenario;
-}
 .result-grid .content-block {
-  min-height: 332px;
-}
-.result-grid .content-block:nth-child(-n + 2) {
-  min-height: 374px;
+  min-height: 0;
 }
 .result-grid.muted {
   opacity: 0.78;
@@ -3134,6 +2445,14 @@ select {
 .selling-points {
   display: grid;
   gap: 10px;
+}
+.selling-points--unified {
+  margin-top: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+.selling-points--unified > .empty-inline {
+  grid-column: 1 / -1;
 }
 .selling-subheading {
   display: flex;
@@ -3960,12 +3279,6 @@ select {
     justify-content: flex-start;
     flex-wrap: wrap;
   }
-  .product-switcher {
-    flex: 1;
-  }
-  .product-switcher select {
-    width: 100%;
-  }
   .workflow-graph-content {
     grid-template-columns: 1fr;
   }
@@ -3980,13 +3293,8 @@ select {
   }
 }
 @media (max-width: 860px) {
-  .result-grid {
+  .selling-points--unified {
     grid-template-columns: 1fr;
-    grid-template-areas:
-      'base'
-      'selling'
-      'user'
-      'scenario';
   }
 }
 @media (max-width: 620px) {

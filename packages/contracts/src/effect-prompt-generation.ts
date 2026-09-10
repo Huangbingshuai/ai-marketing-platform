@@ -187,6 +187,7 @@ export const EFFECT_PROMPT_ITEM_ORIGINS = ['AI', 'MANUAL'] as const;
 export type EffectPromptItemOrigin = (typeof EFFECT_PROMPT_ITEM_ORIGINS)[number];
 
 export const EFFECT_PROMPT_INSIGHT_FIELDS = [
+  'SELLING_POINT',
   'PRODUCT_NAME',
   'PRODUCT_CATEGORY',
   'CORE_SPECIFICATION',
@@ -214,6 +215,7 @@ export type EffectPromptInsightField = (typeof EFFECT_PROMPT_INSIGHT_FIELDS)[num
 export const EFFECT_PROMPT_INSIGHT_FIELD_FRAGMENT_TYPES: Partial<
   Record<EffectPromptInsightField, readonly EffectPromptFragmentType[]>
 > = {
+  SELLING_POINT: ['HOOK', 'PRODUCT_DISPLAY', 'EFFECT', 'CTA'],
   PRODUCT_NAME: ['PRODUCT_DISPLAY', 'EFFECT', 'CTA'],
   PRODUCT_CATEGORY: ['HOOK', 'PRODUCT_DISPLAY', 'CTA'],
   CORE_SPECIFICATION: ['PRODUCT_DISPLAY', 'EFFECT'],

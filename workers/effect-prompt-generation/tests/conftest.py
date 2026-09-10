@@ -69,10 +69,13 @@ def snapshot() -> PromptGenerationSnapshot:
             result={
                 "productName": "广式腊肠",
                 "productCategory": "腊味肉制品",
-                "visualFeatures": ["油润红亮切面"],
-                "coreSellingPoints": ["广式甜咸风味"],
-                "targetAudienceItems": ["家庭烹饪人群"],
-                "usageScenarios": ["家庭蒸制", "年夜饭摆盘"],
+                "visualFeatures": "油润红亮切面",
+                "sellingPoints": [
+                    "广式甜咸风味",
+                    "适合家庭烹饪人群",
+                    "适合家庭蒸制",
+                    "适合年夜饭摆盘",
+                ],
                 "aspectRatio": "9:16",
                 "resolution": "1080p",
             },

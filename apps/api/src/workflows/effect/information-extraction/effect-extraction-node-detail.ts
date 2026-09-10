@@ -42,16 +42,7 @@ const CANDIDATE_FIELDS = [
   ['coreSpecification', '核心规格'],
   ['priceRange', '价格带'],
   ['visualFeatures', '核心外观特征'],
-  ['coreSellingPoints', '核心卖点'],
-  ['secondarySellingPoints', '次要卖点'],
-  ['trustBackings', '辅助信任背书'],
-  ['targetAudience', '目标受众画像'],
-  ['corePainPoints', '核心痛点'],
-  ['decisionDrivers', '决策动因'],
-  ['marketingGoal', '营销目标'],
-  ['usageScenarios', '核心使用场景'],
-  ['purchaseScenarios', '购买场景'],
-  ['emotionalScenarios', '情绪共鸣场景'],
+  ['sellingPoints', '卖点'],
 ] as const;
 
 const COMMERCE_CANDIDATE_FIELDS = [
@@ -59,14 +50,7 @@ const COMMERCE_CANDIDATE_FIELDS = [
   ['productCategory', '品类'],
   ['priceRange', '价格区间'],
   ['coreSpecification', '核心规格'],
-  ['coreSellingPoints', '核心卖点'],
-  ['secondarySellingPoints', '其他卖点'],
-  ['trustBackings', '信任背书'],
-  ['corePainPoints', '解决需求'],
-  ['decisionDrivers', '购买理由'],
-  ['usageScenarios', '使用场景'],
-  ['purchaseScenarios', '购买场景'],
-  ['emotionalScenarios', '情感场景'],
+  ['sellingPoints', '卖点'],
 ] as const;
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -80,13 +64,16 @@ const SOURCE_LABELS: Record<string, string> = {
 };
 
 const SEMANTIC_FIELD_LABELS: Record<string, string> = {
-  coreSellingPoints: '核心卖点',
-  secondarySellingPoints: '次要卖点',
-  corePainPoints: '核心痛点',
-  decisionDrivers: '决策动因',
-  usageScenarios: '使用场景',
-  purchaseScenarios: '购买场景',
-  emotionalScenarios: '情绪场景',
+  sellingPoints: '卖点',
+  coreSellingPoints: '卖点',
+  secondarySellingPoints: '卖点',
+  trustBackings: '卖点',
+  targetAudiences: '卖点',
+  corePainPoints: '卖点',
+  decisionDrivers: '卖点',
+  usageScenarios: '卖点',
+  purchaseScenarios: '卖点',
+  emotionalScenarios: '卖点',
 };
 
 const SEMANTIC_RELATION_LABELS: Record<string, string> = {
@@ -104,6 +91,42 @@ const MATERIAL_TYPE_LABELS: Record<string, string> = {
 
 const isRecord = (value: unknown): value is JsonRecord =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const LEGACY_SELLING_POINT_FIELDS = [
+  'coreSellingPoints',
+  'secondarySellingPoints',
+  'trustBackings',
+  'targetAudiences',
+  'corePainPoints',
+  'decisionDrivers',
+  'usageScenarios',
+  'purchaseScenarios',
+  'emotionalScenarios',
+] as const;
+
+const candidateSellingPoints = (candidate: JsonRecord): string[] => {
+  const rawValues = Array.isArray(candidate.sellingPoints)
+    ? candidate.sellingPoints
+    : LEGACY_SELLING_POINT_FIELDS.flatMap((key) =>
+        Array.isArray(candidate[key]) ? candidate[key] : [],
+      );
+  const values =
+    rawValues.length > 0
+      ? rawValues
+      : typeof candidate.targetAudience === 'string'
+        ? [candidate.targetAudience]
+        : [];
+  return [...new Set(values.filter((value): value is string => typeof value === 'string'))];
+};
+
+const candidateSellingPointProvenance = (sources: JsonRecord): string | null => {
+  if (typeof sources.sellingPoints === 'string') return sources.sellingPoints;
+  const parts = LEGACY_SELLING_POINT_FIELDS.flatMap((key) =>
+    typeof sources[key] === 'string' ? sources[key].split('>') : [],
+  );
+  const unique = [...new Set(parts.filter(Boolean))];
+  return unique.length ? unique.join('>') : null;
+};
 
 const publicText = (value: unknown, maxLength = 500): string =>
   String(value ?? '')
@@ -182,8 +205,14 @@ const candidateFields = (
       field(
         key,
         label,
-        record[key] ?? record[snakeCase(key)],
-        provenanceLabel(sources[key] ?? sources[snakeCase(key)]),
+        key === 'sellingPoints'
+          ? candidateSellingPoints(record)
+          : (record[key] ?? record[snakeCase(key)]),
+        provenanceLabel(
+          key === 'sellingPoints'
+            ? candidateSellingPointProvenance(sources)
+            : (sources[key] ?? sources[snakeCase(key)]),
+        ),
         includeEmpty,
       ),
     ),
@@ -209,7 +238,12 @@ const branchDetailCandidates = (branch: DetailBranchRecord): JsonRecord[] => {
 const semanticCandidateValues = (candidates: readonly JsonRecord[], field: string): Set<string> =>
   new Set(
     candidates.flatMap((candidate) =>
-      (Array.isArray(candidate[field]) ? candidate[field] : [])
+      (field === 'sellingPoints'
+        ? candidateSellingPoints(candidate)
+        : Array.isArray(candidate[field])
+          ? candidate[field]
+          : []
+      )
         .map(semanticValueKey)
         .filter(Boolean),
     ),
@@ -244,7 +278,7 @@ const reconciledNodeDetailProvenance = (
     delete provenance[field];
     delete provenance[snakeCaseField];
     const sources: string[] = [];
-    for (const value of Array.isArray(result[field]) ? result[field] : []) {
+    for (const value of field === 'sellingPoints' ? candidateSellingPoints(result) : []) {
       const key = semanticValueKey(value);
       const source =
         authoritative.find(([, candidates]) =>
@@ -427,7 +461,9 @@ const commerceFields = (
     field('coreSpecification', '核心规格', record.coreSpecification),
     field('seller', '店铺', metadata.seller),
     field('deliveryPromise', '配送信息', metadata.deliveryPromise),
-    ...COMMERCE_CANDIDATE_FIELDS.slice(4).map(([key, label]) => field(key, label, record[key])),
+    ...COMMERCE_CANDIDATE_FIELDS.slice(4).map(([key, label]) =>
+      field(key, label, key === 'sellingPoints' ? candidateSellingPoints(record) : record[key]),
+    ),
   ]);
 };
 

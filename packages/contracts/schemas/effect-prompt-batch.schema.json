@@ -525,6 +525,7 @@
     "insightField": {
       "type": "string",
       "enum": [
+        "SELLING_POINT",
         "PRODUCT_NAME",
         "PRODUCT_CATEGORY",
         "CORE_SPECIFICATION",
@@ -564,7 +565,7 @@
         "value": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 500
+          "maxLength": 1000
         },
         "valueHash": {
           "type": "string",
@@ -588,7 +589,7 @@
         "value": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 500
+          "maxLength": 1000
         },
         "valueHash": {
           "type": "string",
@@ -615,7 +616,7 @@
         "value": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 500
+          "maxLength": 1000
         },
         "valueHash": {
           "type": "string",
