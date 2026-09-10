@@ -93,6 +93,34 @@ const record = (): EffectPromptNodeDetailRunRecord =>
   }) as unknown as EffectPromptNodeDetailRunRecord;
 
 describe('presentEffectPromptNodeDetail', () => {
+  it('projects unified selling points and counts all facts rather than preview samples', () => {
+    const run = record();
+    (run.inputSnapshot as Record<string, unknown>).insightArtifact = { result: {
+      productName: '旅行箱', productCategory: '箱包', coreSpecification: '20英寸',
+      priceRange: '399元', visualFeatures: '蓝色箱体',
+      sellingPoints: Array.from({ length: 100 }, (_, i) => `独立卖点${i}`),
+    } };
+    const mapping = JSON.stringify(presentEffectPromptNodeDetail(run, 'INSIGHT_MAPPING'));
+    expect(mapping).toContain('卖点');
+    expect(mapping).toContain('独立卖点0');
+    expect(mapping).not.toContain('核心痛点');
+    const strategy = presentEffectPromptNodeDetail(run, 'FACT_VISUAL_STRATEGY_COMPILATION');
+    expect(strategy.sections?.flatMap((section) => section.fields)).toContainEqual({
+      label: '可用事实', value: 105,
+    });
+  });
+
+  it('distinguishes received/planned/background counts without claiming final realization', () => {
+    const run = record();
+    const stage = run.stages.find((row) => row.nodeId === 'COHERENT_CREATIVE_GENERATION')!;
+    stage.metadata = { availableSellingPointCount: 100, plannedSellingPointCount: 60,
+      unplannedSellingPointCount: 40, contextSellingPointCount: 20 };
+    const detail = presentEffectPromptNodeDetail(run, 'COHERENT_CREATIVE_GENERATION');
+    const fields = detail.sections?.flatMap((section) => section.fields);
+    expect(fields).toContainEqual({ label: '已接收卖点', value: 100 });
+    expect(fields).toContainEqual({ label: '已用于创意规划', value: 60 });
+    expect(fields?.some((f) => f.label === '最终素材已体现卖点')).toBe(false);
+  });
   it.each(['RUNNING', 'FAILED', 'SUCCEEDED'])(
     '%s 时实时分片覆盖旧阶段计数，所有详情区域保持一致',
     (status) => {

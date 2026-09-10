@@ -264,7 +264,7 @@ def test_landscape_template_distinguishes_compatible_and_primary_facts() -> None
     assert "requiredFactIds 本阶段保持为空" in landscape
     assert "下一次独立 AI 调用" in landscape
     assert "不要输出 targetSlots" in landscape
-    assert "产品信息、消费决策、使用、购买、情绪和人物需求" in landscape
+    assert "当前输入只有产品基础与统一卖点列表" in landscape
     assert "消费决策或品牌语境" in landscape
     assert "TEXT_ONLY" in landscape
     assert "后续成片文案" in landscape

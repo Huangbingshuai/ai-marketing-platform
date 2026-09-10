@@ -60,6 +60,20 @@ const auditFor = (items: EffectPromptItem[], pairs: Array<[string, string]>) => 
 };
 
 describe('effect prompt quality contract', () => {
+  it('preserves unified long-text bindings and still accepts historical field names', () => {
+    const entry = item('unified');
+    entry.insightBindings = Array.from({ length: 8 }, (_, index) => ({
+      factId: `SELLING_POINT:${index}`,
+      field: 'SELLING_POINT', value: `${index}${'字'.repeat(999)}`,
+      valueHash: 'a'.repeat(64), role: 'CONTEXT',
+    }));
+    expect(isEffectPromptItem(entry)).toBe(true);
+    expect(entry.insightBindings).toHaveLength(8);
+    entry.insightBindings[0]!.field = 'CORE_SELLING_POINT';
+    expect(isEffectPromptItem(entry)).toBe(true);
+    entry.insightBindings[0]!.value += '字';
+    expect(isEffectPromptItem(entry)).toBe(false);
+  });
   it('requires purpose projection and productRelation', () => {
     expect(isEffectPromptItem(item('001'))).toBe(true);
     expect(isEffectPromptItem({ ...item('002'), fragmentType: 'HOOK' })).toBe(false);

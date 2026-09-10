@@ -345,7 +345,7 @@ class MissingPainCoverageProvider(MockAiProvider):
         pain_fact_ids = {
             fact.fact_id
             for fact in application.usable
-            if fact.field == InsightField.CORE_PAIN_POINT
+            if fact.value == "普通腊味口感偏干"
         }
         items = [
             item.model_copy(
@@ -690,7 +690,8 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
         if policy.visual_usage
         in {FactVisualUsage.TEXT_ONLY, FactVisualUsage.FORBIDDEN_VISUAL_PROOF}
     }
-    assert deferred_ids
+    # This fixture's unified selling points are all directly usable in its mock strategy.
+    assert len(strategy.policies) == len(map_insight(_snapshot().insight_artifact.result).usable)
     assert not deferred_ids.intersection(
         fact.fact_id for fact in api.result.metrics.insight_coverage.required
     )
@@ -705,7 +706,7 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     assert all("广式腊肠" in item.content for item in api.result.items)
     assert all("虚构医疗功效" not in item.content for item in api.result.items)
     assert any(
-        binding.role.value == "CONTEXT"
+        binding.field == InsightField.SELLING_POINT
         for item in api.result.items
         for binding in item.insight_bindings
     )
@@ -889,7 +890,7 @@ async def test_visual_strategy_graph_compiles_direction_fact_plan_before_generat
     )
     assert strategy_stage.status == "SUCCEEDED"
     assert strategy_stage.metadata["policyCount"] > 0
-    assert strategy_stage.metadata["usageCounts"]["FORBIDDEN_VISUAL_PROOF"] > 0
+    assert strategy_stage.metadata["usageCounts"]["ACTION_DEMONSTRABLE"] > 0
     creative_stage = next(
         stage
         for stage in reversed(api.stages)
@@ -907,7 +908,7 @@ async def test_visual_strategy_graph_compiles_direction_fact_plan_before_generat
     assert all(1 <= len(assignment.fact_ids) <= 4 for assignment in assignments)
 
 
-def test_silent_material_projection_removes_deferred_compatible_fact_references() -> (
+def test_silent_material_projection_preserves_deferred_context_and_references() -> (
     None
 ):
     application = map_insight(
@@ -948,12 +949,10 @@ def test_silent_material_projection_removes_deferred_compatible_fact_references(
         strategy,
     )
 
-    assert deferred.fact_id not in projected_application.by_id
-    assert deferred.fact_id not in projected_strategy.by_id
-    assert all(
-        deferred.fact_id not in policy.compatible_fact_ids
-        for policy in projected_strategy.policies
-    )
+    assert deferred.fact_id in projected_application.by_id
+    assert deferred.fact_id in {fact.fact_id for fact in projected_application.adaptive}
+    assert deferred.fact_id in projected_strategy.by_id
+    assert deferred.fact_id in projected_strategy.by_id[visible.fact_id].compatible_fact_ids
 
 
 @pytest.mark.asyncio
@@ -2264,7 +2263,7 @@ def test_selling_point_binding_accepts_full_semantic_support_without_character_o
     selling_fact = next(
         fact
         for fact in application.usable
-        if fact.field == InsightField.CORE_SELLING_POINT
+        if fact.field == InsightField.SELLING_POINT
     )
     candidate = CreativeCandidate(
         slot_id="candidate-semantic-selling-point",
@@ -2326,7 +2325,7 @@ def test_partial_business_fact_and_low_scores_only_create_soft_warnings() -> Non
     selling_fact = next(
         fact
         for fact in application.usable
-        if fact.field == InsightField.CORE_SELLING_POINT
+        if fact.field == InsightField.SELLING_POINT
     )
     candidate = CreativeCandidate(
         slot_id="candidate-partial-selling-point",
@@ -2391,7 +2390,7 @@ def test_worker_does_not_reinterpret_ai_context_fact_semantics() -> None:
     selling_fact = next(
         fact
         for fact in application.usable
-        if fact.field == InsightField.CORE_SELLING_POINT
+        if fact.field == InsightField.SELLING_POINT
     )
     candidate = CreativeCandidate(
         slot_id="candidate-mismatched-context",

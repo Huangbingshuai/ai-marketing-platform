@@ -503,20 +503,17 @@ def test_direction_plan_rejects_reusing_one_action_inside_a_territory() -> None:
 def test_creative_direction_count_scales_with_fact_density() -> None:
     assert creative_direction_target_count(50, 37) == 20
     assert creative_direction_target_count(50, 41) == 20
-    assert creative_direction_target_count(10, 40) == 10
-    assert "每个方向必须自然使用 2～4 条业务事实" in (
+    assert creative_direction_target_count(10, 40) == 16
+    assert "不要求固定搭配或最低数量" in (
         creative_direction_fact_density_instruction(37, 13)
     )
-    assert "至少让 3 个不同方向" in (creative_direction_fact_density_instruction(3, 8))
+    assert "不要虚构卖点" in (creative_direction_fact_density_instruction(3, 8))
 
 
-def test_creative_direction_capacity_fails_before_ai_calls() -> None:
-    with pytest.raises(ValueError, match="至少调整为 11 条"):
-        creative_direction_target_count(10, 41)
-    with pytest.raises(ValueError, match="最多承载 200 条业务事实"):
-        creative_direction_target_count(50, 321)
-    with pytest.raises(ValueError, match="没有可分配"):
-        creative_direction_target_count(50, 0)
+def test_creative_direction_capacity_does_not_block_small_material_batches() -> None:
+    assert creative_direction_target_count(10, 41) == 17
+    assert creative_direction_target_count(5, 100) == 32
+    assert creative_direction_target_count(50, 0) == 20
 
 
 class CrossBatchDirectionOverlapProvider(MockAiProvider):
@@ -1603,7 +1600,7 @@ async def test_fifty_target_plans_exactly_seventy_initial_candidates() -> None:
 
 
 @pytest.mark.asyncio
-async def test_missing_business_fact_retries_only_its_territory_batch_with_ai() -> (
+async def test_invalid_fact_replacement_still_requires_ai_to_repair_references() -> (
     None
 ):
     api = PromptApi()
@@ -1636,17 +1633,8 @@ async def test_missing_business_fact_retries_only_its_territory_batch_with_ai() 
         if item and item.get("validationError")
     )
     assert retry_context["requiredDirectionSlots"]
-    assert retry_context["requiredBusinessFactIds"]
     assert retry_context["revisionDirectionIds"]
-    assert retry_context["revisionRequiredBusinessFactIds"] == (
-        retry_context["requiredBusinessFactIds"]
-    )
-    assert retry_context["preservedBusinessFactIdsByDirection"]
-    assert retry_context["revisionFactOptions"]
-    assert all(
-        option["eligibleDirectionIds"]
-        for option in retry_context["revisionFactOptions"]
-    )
+    assert retry_context["invalidDirectionFactReferences"]
     assert provider.omission_count == 1
     assert all(
         task.fact_assignment is not None
@@ -2706,7 +2694,7 @@ async def test_coverage_supplement_targets_the_missing_business_fact() -> None:
     await pipeline.compile_shared_prompt(runtime)
     application = map_insight(snapshot.insight_artifact.result)
     missing_fact = next(
-        fact for fact in application.required if fact.field.value == "CORE_PAIN_POINT"
+        fact for fact in application.required if fact.field.value == "SELLING_POINT"
     )
 
     supplement = await pipeline.plan_creatives(
@@ -2921,14 +2909,14 @@ def test_direction_plan_rejects_unknown_facts_and_balances_allocations() -> None
             direction.model_copy(update={"fact_applications": applications})
         )
     omitted = raw.model_copy(update={"directions": omitted_directions})
-    with pytest.raises(ValueError, match="did not cover all usable business facts"):
-        validate_creative_direction_plan(
-            CreativeDirectionResponse.model_validate(omitted),
-            application,
-            strategy,
-            source_hash=source_hash,
-            template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
-        )
+    incomplete_plan = validate_creative_direction_plan(
+        CreativeDirectionResponse.model_validate(omitted),
+        application,
+        strategy,
+        source_hash=source_hash,
+        template_hash=CREATIVE_DIRECTION_TEMPLATE_HASH,
+    )
+    assert omitted_fact_id not in {fact_id for d in incomplete_plan.directions for fact_id in d.fact_ids}
 
     repeated_directions = [
         direction.model_copy(
