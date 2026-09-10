@@ -16,7 +16,7 @@ from effect_extraction.prompt_loader import (
 
 def test_effect_extraction_prompts_use_the_current_unified_contract() -> None:
     expected_versions = {
-        "document_extraction.prompt.txt": "4.0.0",
+        "document_extraction.prompt.txt": "5.0.0",
         "image_analysis.prompt.txt": "7.0.0",
         "commerce_extraction.prompt.txt": "2.0.0",
         "semantic_refinement.prompt.txt": "7.0.0",
@@ -43,6 +43,13 @@ def test_effect_extraction_prompts_use_the_current_unified_contract() -> None:
 
     assert "不区分核心或次要" in templates["document_extraction.prompt.txt"]
     assert "营销目标、时长、画幅、分辨率" in templates["document_extraction.prompt.txt"]
+    assert "产品介绍、评测文章、产品手册" in templates["document_extraction.prompt.txt"]
+    assert "忽略网页导航、页眉页脚、相关推荐、广告" in templates[
+        "document_extraction.prompt.txt"
+    ]
+    assert "医疗、保健、营养功效推导" in templates[
+        "document_extraction.prompt.txt"
+    ]
     assert (
         "不得从图片推断配方、原料比例、工艺" in templates["image_analysis.prompt.txt"]
     )

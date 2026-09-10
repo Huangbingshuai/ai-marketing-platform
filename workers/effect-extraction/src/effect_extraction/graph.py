@@ -7,7 +7,7 @@ from langgraph.runtime import Runtime
 from .models import GraphState, InputState, OutputState, RuntimeContext
 from .pipeline import ExtractionPipeline
 
-BRANCH_NODES = ("documents", "images", "commerce", "form")
+BRANCH_NODES = ("documents", "images", "commerce")
 
 
 def build_graph(
@@ -44,10 +44,6 @@ def build_graph(
         await pipeline.commerce_branch(runtime.context)
         return {}
 
-    async def form(state: GraphState, runtime: Runtime[RuntimeContext]) -> dict[str, str]:
-        await pipeline.form_branch(runtime.context)
-        return {}
-
     async def fuse_sources(
         state: GraphState, runtime: Runtime[RuntimeContext]
     ) -> dict[str, str]:
@@ -70,7 +66,6 @@ def build_graph(
     builder.add_node("documents", documents)
     builder.add_node("images", images)
     builder.add_node("commerce", commerce)
-    builder.add_node("form", form)
     builder.add_node("fuse_sources", fuse_sources)
     builder.add_node("semantic_refinement", semantic_refinement)
     builder.add_node("normalize_and_store", normalize_and_store)

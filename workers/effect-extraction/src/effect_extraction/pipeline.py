@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
 from collections.abc import Sequence
 from pathlib import PurePath
 
@@ -17,7 +18,11 @@ from .commerce import (
     merge_commerce_candidates,
 )
 from .docling_parser import DocumentParser
-from .document_facts import extract_structured_document_facts
+from .document_facts import (
+    extract_structured_document_facts,
+    merge_document_candidates,
+    split_document_markdown,
+)
 from .fusion import FusionError, branch_candidate, fuse
 from .image_processing import ImageProcessor
 from .models import (
@@ -34,7 +39,7 @@ from .models import (
     RuntimeContext,
     SnapshotMaterial,
 )
-from .providers import AiProvider, ProviderError, ProviderErrorType
+from .providers import AiCallResult, AiProvider, ProviderError, ProviderErrorType
 from .semantic_refinement import (
     SEMANTIC_FIELDS,
     refine_candidate_semantics,
@@ -67,6 +72,8 @@ class ExtractionPipeline:
         document_parser: DocumentParser,
         image_processor: ImageProcessor,
         max_document_text_chars: int,
+        document_chunk_text_chars: int = 12_000,
+        document_max_concurrency: int = 2,
         image_max_concurrency: int = 2,
         commerce_fetcher: CommerceFetcher | None = None,
         max_commerce_text_chars: int = 80_000,
@@ -76,6 +83,10 @@ class ExtractionPipeline:
         self.document_parser = document_parser
         self.image_processor = image_processor
         self.max_document_text_chars = max_document_text_chars
+        self.document_chunk_text_chars = max(
+            1_000, min(document_chunk_text_chars, max_document_text_chars)
+        )
+        self.document_max_concurrency = max(1, min(document_max_concurrency, 4))
         self.image_max_concurrency = max(1, min(image_max_concurrency, 8))
         self.commerce_fetcher = commerce_fetcher or HttpxCommerceFetcher()
         self.max_commerce_text_chars = max_commerce_text_chars
@@ -175,21 +186,42 @@ class ExtractionPipeline:
                 structured_candidate = extract_structured_document_facts(markdown)
                 truncated = len(markdown) > self.max_document_text_chars
                 model_text = markdown[: self.max_document_text_chars]
-                ai_call = None
+                ai_calls: list[AiCallResult[ExtractionCandidate]] = []
+                failed_chunk_count = 0
+                ai_elapsed_ms = 0
                 if structured_candidate is None:
-                    ai_call = await self.provider.extract_document(
-                        model_text, source_name=material.original_file_name
+                    chunks = split_document_markdown(
+                        model_text, max_chars=self.document_chunk_text_chars
+                    )
+                    (
+                        extracted_candidate,
+                        ai_calls,
+                        failed_chunk_count,
+                        ai_elapsed_ms,
+                    ) = await self._extract_document_chunks(
+                        chunks,
+                        source_name=material.original_file_name,
                     )
                 if structured_candidate is not None:
                     extracted_candidate = structured_candidate
-                else:
-                    assert ai_call is not None
-                    extracted_candidate = ai_call.value
                 document_candidate = extracted_candidate
+                warning_parts: list[str] = []
+                if structured_candidate is None and truncated:
+                    warning_parts.append(
+                        "文档超过安全处理长度，尾部内容未进入模型抽取；完整 Markdown 已保留"
+                    )
+                if failed_chunk_count:
+                    warning_parts.append(
+                        f"文档 AI 有 {failed_chunk_count} 个分片处理失败，已保留其余分片结果"
+                    )
                 items.append(
                     BranchItem(
                         source_id=material.id,
-                        status=BranchStatus.SUCCEEDED,
+                        status=(
+                            BranchStatus.PARTIAL
+                            if failed_chunk_count
+                            else BranchStatus.SUCCEEDED
+                        ),
                         candidate=document_candidate,
                         artifact_storage_key=storage_key,
                         metadata={
@@ -199,25 +231,32 @@ class ExtractionPipeline:
                                 if structured_candidate is not None
                                 else len(model_text)
                             ),
+                            "modelChunkCount": len(ai_calls) + failed_chunk_count,
+                            "successfulModelChunkCount": len(ai_calls),
+                            "failedModelChunkCount": failed_chunk_count,
                             "modelInputTruncated": (
                                 structured_candidate is None and truncated
                             ),
                             "extractionMode": (
                                 "STRUCTURED_TABLE"
                                 if structured_candidate is not None
-                                else "AI_FALLBACK"
+                                else (
+                                    "AI_DOCUMENT_CHUNKS"
+                                    if len(ai_calls) + failed_chunk_count > 1
+                                    else "AI_FALLBACK"
+                                )
                             ),
                             **(
-                                {"aiCall": ai_call.metadata.as_dict()}
-                                if ai_call is not None
+                                {
+                                    "aiCall": _summarize_document_ai_calls(
+                                        ai_calls, latency_ms=ai_elapsed_ms
+                                    )
+                                }
+                                if ai_calls
                                 else {}
                             ),
                         },
-                        warning=(
-                            "文档过长，模型候选抽取使用了受限长度文本；完整 Markdown 已保留"
-                            if structured_candidate is None and truncated
-                            else None
-                        ),
+                        warning="；".join(warning_parts) or None,
                     )
                 )
             except InternalApiError as exc:
@@ -229,6 +268,56 @@ class ExtractionPipeline:
 
         return await self._save(
             context, _aggregate(BranchName.DOCUMENT, context, items)
+        )
+
+    async def _extract_document_chunks(
+        self,
+        chunks: list[str],
+        *,
+        source_name: str,
+    ) -> tuple[
+        ExtractionCandidate,
+        list[AiCallResult[ExtractionCandidate]],
+        int,
+        int,
+    ]:
+        if not chunks:
+            raise PipelineError("document contains no extractable text")
+        semaphore = asyncio.Semaphore(self.document_max_concurrency)
+
+        async def extract(chunk: str) -> AiCallResult[ExtractionCandidate]:
+            async with semaphore:
+                return await self.provider.extract_document(
+                    chunk, source_name=source_name
+                )
+
+        started = time.perf_counter()
+        outcomes = await asyncio.gather(
+            *(extract(chunk) for chunk in chunks), return_exceptions=True
+        )
+        elapsed_ms = round((time.perf_counter() - started) * 1000)
+        calls: list[AiCallResult[ExtractionCandidate]] = []
+        failures: list[Exception] = []
+        for outcome in outcomes:
+            if isinstance(outcome, asyncio.CancelledError):
+                raise outcome
+            if isinstance(outcome, BaseException):
+                failures.append(
+                    outcome
+                    if isinstance(outcome, Exception)
+                    else RuntimeError(type(outcome).__name__)
+                )
+                continue
+            calls.append(outcome)
+        if not calls:
+            if failures:
+                raise failures[0]
+            raise PipelineError("document AI returned no chunk result")
+        return (
+            merge_document_candidates([call.value for call in calls]),
+            calls,
+            len(failures),
+            elapsed_ms,
         )
 
     async def image_branch(self, context: RuntimeContext) -> BranchOutput:
@@ -508,24 +597,6 @@ class ExtractionPipeline:
                 _commerce_failed_output(context, snapshot.product.id, exc),
             )
 
-    async def form_branch(self, context: RuntimeContext) -> BranchOutput:
-        snapshot = self._snapshot(context)
-        await self._start(context, BranchName.FORM)
-        candidate = ExtractionCandidate.empty()
-        candidate.product_name = snapshot.product.name.strip() or None
-        candidate.product_category = snapshot.product.category.strip() or None
-        return await self._save(
-            context,
-            BranchOutput(
-                branch=BranchName.FORM,
-                status=BranchStatus.SUCCEEDED,
-                source_fingerprint=context.source_fingerprint,
-                candidate=candidate,
-                warnings=[],
-                metadata={},
-            ),
-        )
-
     async def fuse_sources(self, context: RuntimeContext) -> BranchOutput:
         await self._start(context, BranchName.FUSION)
         branches = await self.api.get_branches(context)
@@ -661,11 +732,9 @@ class ExtractionPipeline:
         semantic_candidate = branch_candidate(semantic) if semantic else None
         normalized_input = semantic_candidate or fusion.candidate
         snapshot = self._snapshot(context)
-        form = by_name.get(BranchName.FORM)
         document = by_name.get(BranchName.DOCUMENT)
         commerce = by_name.get(BranchName.COMMERCE)
         image = by_name.get(BranchName.IMAGE)
-        form_candidate = branch_candidate(form) if form else None
         document_candidate = branch_candidate(document) if document else None
         commerce_candidate = branch_candidate(commerce) if commerce else None
         image_candidate = branch_candidate(image) if image else None
@@ -687,7 +756,6 @@ class ExtractionPipeline:
                 normalized_input,
                 protected_input=_protected_user_input(
                     snapshot.manual_overrides,
-                    form_candidate,
                     document_candidate,
                     commerce_candidate,
                 ),
@@ -702,7 +770,6 @@ class ExtractionPipeline:
             }
         _restore_authoritative_sources(
             result,
-            form=form_candidate,
             document=document_candidate,
             commerce=commerce_candidate,
             image=image_candidate,
@@ -718,7 +785,6 @@ class ExtractionPipeline:
         provenance = _reconciled_final_provenance(
             fused_provenance,
             result=result,
-            form=form_candidate,
             document=document_candidate,
             commerce=commerce_candidate,
             image=image_candidate,
@@ -1063,11 +1129,6 @@ def _prepare_semantic_candidate(
     """Separate immutable user facts from mutable image suggestions."""
 
     by_name = {branch.branch: branch for branch in branches}
-    form = (
-        branch_candidate(by_name[BranchName.FORM])
-        if BranchName.FORM in by_name
-        else None
-    )
     document = (
         branch_candidate(by_name[BranchName.DOCUMENT])
         if BranchName.DOCUMENT in by_name
@@ -1138,7 +1199,7 @@ def _prepare_semantic_candidate(
         value = manual_value or next(
             (
                 candidate_value
-                for candidate in (form, document, commerce)
+                for candidate in (document, commerce)
                 if (candidate_value := _candidate_text(candidate, attr)) is not None
             ),
             None,
@@ -1178,7 +1239,6 @@ def _reconciled_final_provenance(
     fused_provenance: dict[str, str],
     *,
     result: ExtractionResult,
-    form: ExtractionCandidate | None,
     document: ExtractionCandidate | None,
     commerce: ExtractionCandidate | None,
     image: ExtractionCandidate | None,
@@ -1187,7 +1247,6 @@ def _reconciled_final_provenance(
 
     provenance = dict(fused_provenance)
     authoritative_sources = (
-        (BranchName.FORM, form),
         (BranchName.DOCUMENT, document),
         (BranchName.COMMERCE, commerce),
     )
@@ -1220,7 +1279,6 @@ def _reconciled_final_provenance(
 def _restore_authoritative_sources(
     result: object,
     *,
-    form: ExtractionCandidate | None,
     document: ExtractionCandidate | None,
     commerce: ExtractionCandidate | None,
     image: ExtractionCandidate | None,
@@ -1230,12 +1288,12 @@ def _restore_authoritative_sources(
     setattr(
         result,
         "product_category",
-        _first_text("product_category", form, document, commerce, image),
+        _first_text("product_category", document, commerce, image),
     )
     setattr(
         result,
         "product_name",
-        _first_text("product_name", form, document, commerce, image),
+        _first_text("product_name", document, commerce, image),
     )
     setattr(
         result,
@@ -1250,10 +1308,33 @@ def _restore_authoritative_sources(
     )
 
     selling_points = _merged_items(
-        "selling_points", form, document, commerce, image, limit=MAX_SELLING_POINTS
+        "selling_points", document, commerce, image, limit=MAX_SELLING_POINTS
     )
     if selling_points:
         setattr(result, "selling_points", selling_points)
+
+
+def _summarize_document_ai_calls(
+    calls: list[AiCallResult[ExtractionCandidate]], *, latency_ms: int
+) -> dict[str, str | int | None]:
+    first = calls[0].metadata
+
+    def token_total(field_name: str) -> int | None:
+        values = [getattr(call.metadata, field_name) for call in calls]
+        known = [value for value in values if isinstance(value, int)]
+        return sum(known) if known else None
+
+    return {
+        "stage": first.stage,
+        "model": first.model,
+        "promptVersion": first.prompt_version,
+        "inputTokens": token_total("input_tokens"),
+        "outputTokens": token_total("output_tokens"),
+        "totalTokens": token_total("total_tokens"),
+        "latencyMs": max(0, latency_ms),
+        "attempts": sum(call.metadata.attempts for call in calls),
+        "reasoningTokens": token_total("reasoning_tokens"),
+    }
 
 
 def _restore_semantic_fields(

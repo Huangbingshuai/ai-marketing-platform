@@ -143,6 +143,18 @@ class StructuredDocumentParser:
 """
 
 
+class LongArticleParser:
+    async def parse(self, content: bytes, *, file_name: str) -> str:
+        del content, file_name
+        sections = [
+            "# 紫苏梅酱产品文章\n\n紫苏梅酱是一种复合调味酱。",
+            "## 风味与质地\n\n" + "酸甜咸鲜与紫苏草本香层层展开。" * 70,
+            "## 制作与用法\n\n" + "去核梅肉与紫苏调和成浓稠酱体。" * 70,
+            "## 尾部独特用法\n\n可作为烤肉刷酱，让酱汁附着在食材表面。",
+        ]
+        return "\n\n".join(sections)
+
+
 class ImageProcessorStub:
     def process(self, content: bytes) -> ProcessedImage:
         del content
@@ -165,6 +177,62 @@ class CountingDocumentProvider(MockAiProvider):
         self, markdown: str, *, source_name: str
     ) -> AiCallResult[ExtractionCandidate]:
         self.calls += 1
+        return await super().extract_document(markdown, source_name=source_name)
+
+
+class ArticleChunkProvider(MockAiProvider):
+    def __init__(self) -> None:
+        self.active = 0
+        self.max_active = 0
+        self.inputs: list[str] = []
+
+    async def extract_document(
+        self, markdown: str, *, source_name: str
+    ) -> AiCallResult[ExtractionCandidate]:
+        del source_name
+        self.inputs.append(markdown)
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        await asyncio.sleep(0.01)
+        self.active -= 1
+        selling_point = (
+            "可作为烤肉刷酱"
+            if "尾部独特用法" in markdown
+            else f"分片卖点-{len(self.inputs)}"
+        )
+        return AiCallResult(
+            value=ExtractionCandidate(
+                product_category="复合调味酱",
+                product_name="紫苏梅酱",
+                core_specification=None,
+                price_range=None,
+                visual_features=None,
+                selling_points=[selling_point],
+            ),
+            metadata=AiCallMetadata(
+                stage="DOCUMENT",
+                model="strong-document-model",
+                prompt_version="test-article",
+                input_tokens=100,
+                output_tokens=20,
+                total_tokens=120,
+                latency_ms=10,
+                attempts=1,
+                reasoning_tokens=5,
+            ),
+        )
+
+
+class PartiallyFailingArticleProvider(ArticleChunkProvider):
+    async def extract_document(
+        self, markdown: str, *, source_name: str
+    ) -> AiCallResult[ExtractionCandidate]:
+        if "制作与用法" in markdown:
+            raise ProviderError(
+                "AI request timed out",
+                retryable=True,
+                error_type=ProviderErrorType.TIMEOUT,
+            )
         return await super().extract_document(markdown, source_name=source_name)
 
 
@@ -319,17 +387,80 @@ async def test_structured_document_folds_old_labels_into_unified_selling_points(
 
 
 @pytest.mark.asyncio
-async def test_form_branch_only_reads_product_identity() -> None:
+async def test_unstructured_product_article_uses_sliding_chunks_and_keeps_tail() -> None:
     api = ApiStub()
-    worker = pipeline(api, MockAiProvider())
+    api.snapshot.materials = [
+        SnapshotMaterial(
+            id="article",
+            type="PRODUCT_DOCUMENT",
+            original_file_name="紫苏梅酱产品文章.docx",
+            mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            size_bytes=4,
+        )
+    ]
+    provider = ArticleChunkProvider()
+    worker = ExtractionPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        document_parser=LongArticleParser(),
+        image_processor=ImageProcessorStub(),  # type: ignore[arg-type]
+        max_document_text_chars=5_000,
+        document_chunk_text_chars=1_000,
+        document_max_concurrency=2,
+    )
     worker.register_snapshot(CONTEXT, api.snapshot)
-    output = await worker.form_branch(CONTEXT)
-    assert output.candidate is not None
-    assert output.candidate.model_dump(exclude_none=True) == {
-        "product_category": "复合调味酱",
-        "product_name": "紫苏梅子酱",
-    }
-    assert output.metadata == {}
+
+    output = await worker.document_branch(CONTEXT)
+
+    item = output.items[0]
+    assert output.status == BranchStatus.SUCCEEDED
+    assert item.candidate is not None
+    assert "可作为烤肉刷酱" in (item.candidate.selling_points or [])
+    assert len(provider.inputs) >= 3
+    assert provider.max_active == 2
+    assert item.metadata["extractionMode"] == "AI_DOCUMENT_CHUNKS"
+    assert item.metadata["modelChunkCount"] == len(provider.inputs)
+    assert item.metadata["successfulModelChunkCount"] == len(provider.inputs)
+    assert item.metadata["failedModelChunkCount"] == 0
+    assert item.metadata["modelInputTruncated"] is False
+    assert item.metadata["aiCall"]["model"] == "strong-document-model"
+    assert item.metadata["aiCall"]["inputTokens"] == 100 * len(provider.inputs)
+
+
+@pytest.mark.asyncio
+async def test_unstructured_article_keeps_successful_chunks_when_one_fails() -> None:
+    api = ApiStub()
+    api.snapshot.materials = [
+        SnapshotMaterial(
+            id="article",
+            type="PRODUCT_DOCUMENT",
+            original_file_name="产品文章.docx",
+            mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            size_bytes=4,
+        )
+    ]
+    provider = PartiallyFailingArticleProvider()
+    worker = ExtractionPipeline(
+        api=api,  # type: ignore[arg-type]
+        provider=provider,
+        document_parser=LongArticleParser(),
+        image_processor=ImageProcessorStub(),  # type: ignore[arg-type]
+        max_document_text_chars=5_000,
+        document_chunk_text_chars=1_000,
+        document_max_concurrency=2,
+    )
+    worker.register_snapshot(CONTEXT, api.snapshot)
+
+    output = await worker.document_branch(CONTEXT)
+
+    item = output.items[0]
+    assert output.status == BranchStatus.PARTIAL
+    assert item.status == BranchStatus.PARTIAL
+    assert item.candidate is not None
+    assert "可作为烤肉刷酱" in (item.candidate.selling_points or [])
+    assert item.metadata["failedModelChunkCount"] == 1
+    assert item.warning is not None
+    assert "1 个分片处理失败" in item.warning
 
 
 @pytest.mark.asyncio
@@ -409,7 +540,6 @@ def test_authoritative_source_restoration_keeps_up_to_one_hundred_points() -> No
     result = type("Result", (), {})()
     _restore_authoritative_sources(
         result,
-        form=ExtractionCandidate.empty(),
         document=document,
         commerce=None,
         image=image,
@@ -418,18 +548,17 @@ def test_authoritative_source_restoration_keeps_up_to_one_hundred_points() -> No
     assert result.selling_points[-1] == "卖点 100"
 
 
-def test_authoritative_source_restoration_keeps_form_selling_points() -> None:
-    form = ExtractionCandidate.empty()
-    form.selling_points = ["用户确认的独立卖点"]
+def test_authoritative_source_restoration_keeps_commerce_selling_points() -> None:
+    commerce = ExtractionCandidate.empty()
+    commerce.selling_points = ["商品页面确认的独立卖点"]
     result = type("Result", (), {})()
     _restore_authoritative_sources(
         result,
-        form=form,
         document=None,
-        commerce=None,
+        commerce=commerce,
         image=None,
     )
-    assert result.selling_points == ["用户确认的独立卖点"]
+    assert result.selling_points == ["商品页面确认的独立卖点"]
 
 
 def test_normalization_rejects_missing_selling_points_without_placeholder() -> None:

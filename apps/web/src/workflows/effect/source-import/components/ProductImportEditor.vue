@@ -2,21 +2,9 @@
 import {
   EFFECT_IMPORT_MATERIAL_TYPE_LABELS,
   type EffectImportMaterial,
-  type EffectImportMaterialType,
   type EffectImportProduct,
-  type EffectImportUploadMaterialType,
 } from '@ai-marketing/contracts';
-import {
-  AlertTriangle,
-  CheckCircle2,
-  FileText,
-  Image,
-  Link2,
-  Plus,
-  RefreshCw,
-  Trash2,
-  Upload,
-} from '@lucide/vue';
+import { AlertTriangle, CheckCircle2, Link2, Plus, RefreshCw, Trash2, Upload } from '@lucide/vue';
 import { computed, ref } from 'vue';
 
 const props = withDefaults(
@@ -41,43 +29,30 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   blur: [product: EffectImportProduct];
-  change: [product: EffectImportProduct, field: 'commerceUrl' | 'name', value: string];
+  change: [product: EffectImportProduct, field: 'commerceUrl', value: string];
   delete: [product: EffectImportProduct];
   deleteLink: [product: EffectImportProduct];
   deleteMaterial: [product: EffectImportProduct, material: EffectImportMaterial];
   replace: [product: EffectImportProduct, material: EffectImportMaterial];
   retry: [product: EffectImportProduct, material: EffectImportMaterial];
   select: [product: EffectImportProduct, selected: boolean];
-  upload: [product: EffectImportProduct, type: EffectImportMaterialType, files: File[]];
+  upload: [product: EffectImportProduct, files: File[]];
   validateLink: [product: EffectImportProduct];
 }>();
 
-const materialTypes: {
-  accept: string;
-  icon: typeof Image;
-  type: EffectImportUploadMaterialType;
-}[] = [
-  { type: 'PRODUCT_IMAGE', icon: Image, accept: '.jpg,.jpeg,.png,.psd,.webp' },
-  { type: 'PRODUCT_DOCUMENT', icon: FileText, accept: '.doc,.docx,.xls,.xlsx,.pdf,.txt,.md' },
-];
-const selectedMaterialType = ref<EffectImportUploadMaterialType>('PRODUCT_IMAGE');
+const unifiedUploadAccept = '.jpg,.jpeg,.png,.psd,.webp,.doc,.docx,.xls,.xlsx,.pdf,.txt,.md';
 const commerceInput = ref<HTMLInputElement | null>(null);
 const failedThumbnailIds = ref<ReadonlySet<string>>(new Set());
-const hasProductName = computed(() => props.product.name.trim().length > 0);
 const savedCommerceUrl = computed(() => props.product.commerceUrl?.trim() ?? '');
 const importedItemCount = computed(
   () => props.product.materials.length + Number(Boolean(savedCommerceUrl.value)),
 );
-const uploadDisabled = computed(() => props.disabled || !hasProductName.value);
-const selectedType = computed(() =>
-  materialTypes.find((item) => item.type === selectedMaterialType.value)!,
-);
+const uploadDisabled = computed(() => props.disabled);
 const completion = computed(() => {
-  const hasName = props.product.name.trim().length > 0;
   const hasReadyImage = props.product.materials.some(
     (item) => item.type === 'PRODUCT_IMAGE' && item.status === 'READY',
   );
-  return Number(hasName) * 50 + Number(hasReadyImage) * 50;
+  return Number(hasReadyImage) * 100;
 });
 const commitStatusLabel = computed(
   () =>
@@ -88,14 +63,13 @@ const commitStatusLabel = computed(
       STALE: '工作副本待更新',
     })[props.product.commitStatus],
 );
-const changeField = (field: 'commerceUrl' | 'name', event: Event): void =>
+const changeField = (field: 'commerceUrl', event: Event): void =>
   emit('change', props.product, field, (event.target as HTMLInputElement).value);
 const chooseFiles = (event: Event): void => {
   const input = event.target as HTMLInputElement;
   const files = Array.from(input.files ?? []);
   input.value = '';
-  if (!uploadDisabled.value && files.length)
-    emit('upload', props.product, selectedMaterialType.value, files);
+  if (!uploadDisabled.value && files.length) emit('upload', props.product, files);
 };
 const formatBytes = (value: number | null): string =>
   value === null
@@ -142,22 +116,6 @@ const statusText = (material: EffectImportMaterial): string =>
         @change="emit('select', product, ($event.target as HTMLInputElement).checked)"
       />
       <span class="batch-card-no">商品 {{ String(position).padStart(2, '0') }}</span>
-      <label class="batch-card-name">
-        <span class="visually-hidden">产品名称</span>
-        <input
-          :value="product.name"
-          :disabled="disabled"
-          type="text"
-          required
-          maxlength="120"
-          autocomplete="off"
-          placeholder="请输入产品名称"
-          aria-label="产品名称"
-          :aria-invalid="!product.name.trim()"
-          @input="changeField('name', $event)"
-          @blur="emit('blur', product)"
-        />
-      </label>
       <em class="completion-badge" :class="{ complete: completion === 100 }"
         >完整度 {{ completion }}%</em
       >
@@ -183,50 +141,16 @@ const statusText = (material: EffectImportMaterial): string =>
           <p>支持商品主图、细节图、场景图与产品文本资料</p>
         </div>
       </header>
-      <label class="product-name-field">
-        <span>产品名称 <em>*</em></span>
-        <input
-          :value="product.name"
-          :disabled="disabled"
-          type="text"
-          required
-          maxlength="120"
-          autocomplete="off"
-          placeholder="请输入产品名称"
-          :aria-invalid="!product.name.trim()"
-          @input="changeField('name', $event)"
-          @blur="emit('blur', product)"
-        />
-      </label>
-      <div class="material-type-tabs">
-        <button
-          v-for="item in materialTypes"
-          :key="item.type"
-          type="button"
-          :disabled="uploadDisabled"
-          :class="{ active: selectedMaterialType === item.type }"
-          @click="selectedMaterialType = item.type"
-        >
-          <component :is="item.icon" :size="13" />{{
-            EFFECT_IMPORT_MATERIAL_TYPE_LABELS[item.type]
-          }}
-        </button>
-      </div>
       <label class="source-dropzone" :class="{ disabled: uploadDisabled }">
         <span class="dropzone-plus"><Plus :size="25" /></span>
-        <strong
-          >点击或将{{ EFFECT_IMPORT_MATERIAL_TYPE_LABELS[selectedMaterialType] }}拖拽到此处</strong
-        >
-        <small v-if="!hasProductName">请先填写产品名称，再上传产品资料</small>
-        <small v-else
-          >当前资料类型：{{ EFFECT_IMPORT_MATERIAL_TYPE_LABELS[selectedMaterialType] }}</small
-        >
-        <small>图片支持 JPG/PNG/PSD/WebP，文档支持 Word/Excel/PDF/纯文本</small>
+        <strong>点击或将商品图片、产品文档拖拽到此处</strong>
+        <small>支持同时选择图片和文档，系统会自动识别资料类型</small>
+        <small>JPG / PNG / PSD / WebP · Word / Excel / PDF / 纯文本</small>
         <input
           type="file"
           hidden
-          :multiple="selectedMaterialType === 'PRODUCT_IMAGE'"
-          :accept="selectedType.accept"
+          multiple
+          :accept="unifiedUploadAccept"
           :disabled="uploadDisabled"
           @change="chooseFiles"
         />
@@ -234,30 +158,15 @@ const statusText = (material: EffectImportMaterial): string =>
     </section>
 
     <template v-else>
-      <div class="material-type-tabs compact">
-        <button
-          v-for="item in materialTypes"
-          :key="item.type"
-          type="button"
-          :disabled="uploadDisabled"
-          :class="{ active: selectedMaterialType === item.type }"
-          @click="selectedMaterialType = item.type"
-        >
-          {{ EFFECT_IMPORT_MATERIAL_TYPE_LABELS[item.type] }}
-        </button>
-      </div>
       <label class="source-dropzone batch-dropzone" :class="{ disabled: uploadDisabled }">
         <span class="dropzone-plus"><Plus :size="20" /></span
-        ><strong
-          >点击或拖拽上传{{ EFFECT_IMPORT_MATERIAL_TYPE_LABELS[selectedMaterialType] }}</strong
-        ><small>{{
-          hasProductName ? '支持多文件，系统将保存到当前商品资料包' : '请先填写产品名称'
-        }}</small>
+        ><strong>点击或拖拽上传图片和文档</strong
+        ><small>支持混合选择多个文件，系统会自动识别类型</small>
         <input
           type="file"
           hidden
-          :multiple="selectedMaterialType === 'PRODUCT_IMAGE'"
-          :accept="selectedType.accept"
+          multiple
+          :accept="unifiedUploadAccept"
           :disabled="uploadDisabled"
           @change="chooseFiles"
         />
@@ -435,10 +344,11 @@ const statusText = (material: EffectImportMaterial): string =>
   box-shadow: 0 0 0 1px #ffb9aa inset;
 }
 .source-card {
-  padding: 20px;
-  background: #fff;
-  border: 1px solid #f0e3dc;
-  border-radius: 20px;
+  padding: 18px;
+  background: linear-gradient(180deg, #fff 0%, #fdfefe 100%);
+  border: 1px solid #e4eaf3;
+  border-radius: 18px;
+  box-shadow: 0 10px 28px #2945660d;
 }
 .panel-heading,
 .batch-card-head,
@@ -448,15 +358,15 @@ const statusText = (material: EffectImportMaterial): string =>
   align-items: center;
 }
 .panel-heading {
-  margin-bottom: 16px;
+  margin-bottom: 14px;
   align-items: flex-start;
   gap: 11px;
 }
 .panel-heading-icon {
   display: grid;
-  width: 40px;
-  height: 40px;
-  flex: 0 0 40px;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
   place-items: center;
   color: #d84c4f;
   background: #fff0ed;
@@ -472,7 +382,7 @@ const statusText = (material: EffectImportMaterial): string =>
 }
 .panel-heading h3 {
   color: #263247;
-  font-size: 15px;
+  font-size: 14px;
 }
 .panel-heading p {
   margin-top: 4px;
@@ -482,42 +392,6 @@ const statusText = (material: EffectImportMaterial): string =>
 .upload-source-card {
   display: flex;
   flex-direction: column;
-}
-.product-name-field {
-  display: grid;
-  gap: 7px;
-}
-.product-name-field span {
-  color: #4d596f;
-  font-size: 11px;
-  font-weight: 700;
-}
-.product-name-field em {
-  color: #d84c4f;
-  font-style: normal;
-}
-.product-name-field input,
-.batch-card-name input {
-  width: 100%;
-  box-sizing: border-box;
-  color: #263247;
-  background: #fff;
-  border: 1px solid #e2d9d4;
-  outline: none;
-}
-.product-name-field input {
-  height: 40px;
-  padding: 0 12px;
-  border-radius: 10px;
-  font-size: 12px;
-}
-.product-name-field input:focus,
-.batch-card-name input:focus {
-  border-color: #93b4ff;
-  box-shadow: 0 0 0 3px #2563eb10;
-}
-.product-name-field input[aria-invalid='true'] {
-  border-color: #f2c9bd;
 }
 .commerce-input-row input {
   width: 100%;
@@ -531,51 +405,29 @@ const statusText = (material: EffectImportMaterial): string =>
   border-color: #93b4ff;
   box-shadow: 0 0 0 3px #2563eb10;
 }
-.material-type-tabs {
-  display: grid;
-  margin: 15px 0 10px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
-}
-.material-type-tabs button {
-  display: inline-flex;
-  min-height: 34px;
-  padding: 0 8px;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  color: #687386;
-  background: #fff;
-  border: 1px solid #eaded7;
-  border-radius: 9px;
-  font-size: 10px;
-  font-weight: 700;
-}
-.material-type-tabs button.active {
-  color: #d84c4f;
-  background: #fff5f1;
-  border-color: #ffb9aa;
-}
 .source-dropzone {
   position: relative;
   display: flex;
-  min-height: 160px;
-  padding: 20px;
+  min-height: 220px;
+  margin-top: 14px;
+  padding: 24px;
   box-sizing: border-box;
+  flex: 1;
   align-items: center;
   justify-content: center;
   flex-direction: column;
-  gap: 7px;
+  gap: 8px;
   color: #667085;
-  background: #fcfdff;
-  border: 1px dashed #e6cfc4;
-  border-radius: 16px;
+  background: linear-gradient(145deg, #fffafa 0%, #f8fbff 100%);
+  border: 1px dashed #efbcae;
+  border-radius: 15px;
   text-align: center;
   cursor: pointer;
 }
 .source-dropzone:hover {
-  background: #fffaf8;
+  background: linear-gradient(145deg, #fff7f4 0%, #f4f8ff 100%);
   border-color: #ff9e8b;
+  box-shadow: 0 10px 24px #d84c4f0d;
 }
 .source-dropzone.disabled {
   cursor: not-allowed;
@@ -590,16 +442,18 @@ const statusText = (material: EffectImportMaterial): string =>
 }
 .dropzone-plus {
   display: grid;
-  width: 48px;
-  height: 48px;
-  margin-bottom: 4px;
+  width: 52px;
+  height: 52px;
+  margin-bottom: 3px;
   place-items: center;
   color: #2563eb;
-  background: #fff0ed;
+  background: #fff;
+  border: 1px solid #f4d7ce;
   border-radius: 50%;
+  box-shadow: 0 8px 18px #b94a3514;
 }
 .source-dropzone strong {
-  color: #596278;
+  color: #40506a;
   font-size: 13px;
 }
 .source-dropzone small {
@@ -610,7 +464,7 @@ const statusText = (material: EffectImportMaterial): string =>
   margin-bottom: 13px;
 }
 .commerce-input-row {
-  min-height: 42px;
+  min-height: 44px;
   padding-left: 12px;
   gap: 8px;
   color: #98a1b1;
@@ -628,7 +482,7 @@ const statusText = (material: EffectImportMaterial): string =>
 }
 .commerce-input-row button {
   align-self: stretch;
-  min-width: 92px;
+  min-width: 88px;
   padding: 0 15px;
   color: #fff;
   background: #2563eb;
@@ -640,7 +494,7 @@ const statusText = (material: EffectImportMaterial): string =>
   background: #9db7e8;
 }
 .imported-materials > header {
-  margin-bottom: 10px;
+  margin-bottom: 12px;
   justify-content: space-between;
 }
 .imported-materials > header strong,
@@ -674,15 +528,20 @@ const statusText = (material: EffectImportMaterial): string =>
 }
 .material-file-row {
   display: flex;
-  min-height: 44px;
+  min-height: 54px;
   margin-top: 8px;
   padding: 7px 9px;
   box-sizing: border-box;
   align-items: center;
   gap: 8px;
-  background: #fff;
-  border: 1px solid #f0e3dc;
+  background: #fbfcfe;
+  border: 1px solid #e7ebf2;
   border-radius: 12px;
+}
+.material-file-row:hover {
+  background: #fff;
+  border-color: #d7e0ee;
+  box-shadow: 0 5px 14px #2945660a;
 }
 .file-extension {
   min-width: 38px;
@@ -806,31 +665,6 @@ const statusText = (material: EffectImportMaterial): string =>
   font-size: 10px;
   font-weight: 800;
 }
-.batch-card-name {
-  min-width: 0;
-  flex: 1;
-}
-.batch-card-name input {
-  height: 30px;
-  padding: 0 9px;
-  border-radius: 8px;
-  font-size: 11px;
-  font-weight: 700;
-}
-.batch-card-name input[aria-invalid='true'] {
-  background: #fffaf8;
-  border-color: #f2c9bd;
-}
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
 .completion-badge {
   padding: 3px 7px;
   color: #8a611b;
@@ -862,17 +696,9 @@ const statusText = (material: EffectImportMaterial): string =>
 .batch-identity {
   grid-template-columns: 1.2fr 0.8fr;
 }
-.material-type-tabs.compact {
-  margin: 0;
-  gap: 5px;
-}
-.material-type-tabs.compact button {
-  min-height: 28px;
-  padding: 0 5px;
-  font-size: 9px;
-}
 .batch-dropzone {
   min-height: 118px;
+  margin-top: 0;
   padding: 12px;
   background: #fff;
   border-radius: 12px;
@@ -900,11 +726,8 @@ input:disabled {
   }
 }
 @media (max-width: 780px) {
-  .material-type-tabs {
-    grid-template-columns: repeat(2, 1fr);
-  }
   .source-dropzone {
-    min-height: 210px;
+    min-height: 190px;
   }
   .completion-badge {
     display: none;

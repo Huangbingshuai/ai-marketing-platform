@@ -339,17 +339,13 @@ describe('EffectExtractionService', () => {
                 sourceFingerprint: 'fingerprint-a',
                 branches: [
                   {
-                    branch: 'FORM',
-                    structuredOutput: {
-                      candidate: { productName: '测试产品', productCategory: '测试品类' },
-                    },
-                  },
-                  {
                     branch: 'DOCUMENT',
                     structuredOutput: {
                       items: [
                         {
                           candidate: {
+                            productName: '测试产品',
+                            productCategory: '测试品类',
                             priceRange: '20 元/袋',
                             sellingPoints: ['用户卖点'],
                           },
@@ -477,7 +473,7 @@ describe('EffectExtractionService', () => {
         visualFeatures: 'AI_IMAGE_SUGGESTION',
       },
       fieldSourceNames: {
-        productName: ['资料导入表单'],
+        productName: ['用户资料'],
         priceRange: ['用户资料'],
         visualFeatures: ['腊肠切面.png'],
       },
@@ -584,12 +580,6 @@ describe('EffectExtractionService', () => {
             warnings: [],
             errorMessage: null,
           },
-          {
-            branch: 'FORM',
-            status: 'FAILED',
-            warnings: [],
-            errorMessage: '表单缺少产品名称或品类',
-          },
         ],
       }),
     } as unknown as EffectExtractionRepository;
@@ -616,10 +606,7 @@ describe('EffectExtractionService', () => {
     expect(result.run.nodes.find((node) => node.nodeId === 'COMMERCE')).toMatchObject({
       status: 'SKIPPED',
     });
-    expect(result.run.nodes.find((node) => node.nodeId === 'FORM')).toMatchObject({
-      status: 'FAILED',
-      errorMessage: '表单缺少产品名称或品类',
-    });
+    expect(result.run.nodes.some((node) => node.nodeId === ('FORM' as never))).toBe(false);
     expect(JSON.stringify(result)).not.toContain('must-not-leak');
     expect(JSON.stringify(result)).not.toContain('private/source.md');
   });
@@ -705,7 +692,7 @@ describe('EffectExtractionService', () => {
     expect(JSON.stringify(document)).not.toContain('Ark structured-output request failed');
   });
 
-  it('presents legacy form-completeness warnings as a successful global-config node', async () => {
+  it('hides historical form branches and their obsolete warnings', async () => {
     const retiredWarning = {
       code: 'SOURCE_WARNING',
       message: '表单尚未填写品类，将由其他资料补充',
@@ -744,10 +731,7 @@ describe('EffectExtractionService', () => {
     const result = await service.run('project-a', 'run-a');
 
     expect(result.run.warnings).toEqual([]);
-    expect(result.run.nodes.find((node) => node.nodeId === 'FORM')).toMatchObject({
-      status: 'SUCCEEDED',
-      warnings: [],
-    });
+    expect(result.run.nodes.some((node) => node.nodeId === ('FORM' as never))).toBe(false);
     expect(result.run.nodes.find((node) => node.nodeId === 'FUSION')).toMatchObject({
       status: 'SUCCEEDED',
       warnings: [],

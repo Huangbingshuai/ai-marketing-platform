@@ -12,7 +12,13 @@ import type { EffectExtractionInputSnapshot } from './effect-extraction.types';
 
 type DetailBranchRecord = {
   branch:
-    'DOCUMENT' | 'IMAGE' | 'COMMERCE' | 'FORM' | 'FUSION' | 'SEMANTIC_REFINEMENT' | 'NORMALIZATION';
+    | 'DOCUMENT'
+    | 'IMAGE'
+    | 'COMMERCE'
+    | 'FORM'
+    | 'FUSION'
+    | 'SEMANTIC_REFINEMENT'
+    | 'NORMALIZATION';
   status: EffectExtractionNodeStatus;
   structuredOutput?: unknown;
   updatedAt: Date;
@@ -54,7 +60,6 @@ const COMMERCE_CANDIDATE_FIELDS = [
 ] as const;
 
 const SOURCE_LABELS: Record<string, string> = {
-  FORM: '人工表单',
   DOCUMENT: '文档解析',
   COMMERCE: '电商抓取',
   IMAGE: '图片识别',
@@ -258,7 +263,7 @@ const reconciledNodeDetailProvenance = (
   const branches = record.branches ?? [];
   if (!branches.some(({ branch }) => branch === 'SEMANTIC_REFINEMENT')) return provenance;
   const result = isRecord(candidate) ? candidate : {};
-  const authoritative = (['FORM', 'DOCUMENT', 'COMMERCE'] as const).map(
+  const authoritative = (['DOCUMENT', 'COMMERCE'] as const).map(
     (branchName) =>
       [
         branchName,
@@ -625,18 +630,6 @@ export const presentExtractionNodeDetail = (
       warnings: execution.status === 'SKIPPED' ? [] : base.warnings,
       summary: commerceSummary(execution.status),
       fields: visibleFields,
-      sources: [],
-    };
-  }
-
-  if (nodeId === 'FORM') {
-    return {
-      ...base,
-      summary: branch ? '已读取导入节点的产品基础信息' : '等待读取产品基础信息',
-      fields: fields([
-        field('productName', '产品名称', snapshot.product.name, '人工填写'),
-        field('productCategory', '产品品类', snapshot.product.category, '人工填写'),
-      ]),
       sources: [],
     };
   }

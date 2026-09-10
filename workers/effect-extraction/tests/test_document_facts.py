@@ -1,4 +1,9 @@
-from effect_extraction.document_facts import extract_structured_document_facts
+from effect_extraction.document_facts import (
+    extract_structured_document_facts,
+    merge_document_candidates,
+    split_document_markdown,
+)
+from effect_extraction.models import ExtractionCandidate
 
 
 def test_extracts_user_facts_from_information_card_table_without_video_config() -> None:
@@ -221,3 +226,69 @@ def test_treats_explicit_empty_values_as_missing_facts() -> None:
 
     assert result is not None
     assert result.selling_points == ["真实卖点", "选择困难", "家庭餐桌"]
+
+
+def test_splits_product_article_on_headings_and_paragraphs() -> None:
+    markdown = """
+# 紫苏梅酱全攻略
+
+紫苏梅酱是一种复合调味酱。
+
+## 风味与质地
+
+入口先有梅子酸味，随后呈现柔和甜味和紫苏草本香。
+
+## 多种用法
+
+- 可直接蘸食炸物。
+- 可作为烤肉刷酱。
+- 可与米醋混合制作沙拉汁。
+"""
+
+    chunks = split_document_markdown(markdown, max_chars=70)
+
+    assert len(chunks) >= 2
+    assert all(len(chunk) <= 70 for chunk in chunks)
+    assert "## 风味与质地" in chunks[0]
+    assert "入口先有梅子酸味" in chunks[0]
+    assert "## 多种用法" in "\n".join(chunks)
+    assert "可与米醋混合制作沙拉汁" in chunks[-1]
+
+
+def test_splits_a_single_oversized_paragraph_without_dropping_tail() -> None:
+    markdown = "第一句描述产品。" + "第二段连续说明没有空行。" * 12 + "尾部独特卖点。"
+
+    chunks = split_document_markdown(markdown, max_chars=50)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 50 for chunk in chunks)
+    assert "尾部独特卖点。" in "".join(chunks)
+
+
+def test_merges_document_chunks_in_source_order_and_deduplicates_points() -> None:
+    first = ExtractionCandidate(
+        product_category="复合调味酱",
+        product_name="紫苏梅酱",
+        core_specification=None,
+        price_range=None,
+        visual_features="紫红色浓稠酱体",
+        selling_points=["梅子酸味先出现", "可直接蘸食炸物"],
+    )
+    second = ExtractionCandidate(
+        product_category=None,
+        product_name="不应覆盖的后文称呼",
+        core_specification=None,
+        price_range=None,
+        visual_features=None,
+        selling_points=["梅子酸味先出现", "可作为烤肉刷酱"],
+    )
+
+    merged = merge_document_candidates([first, second])
+
+    assert merged.product_name == "紫苏梅酱"
+    assert merged.visual_features == "紫红色浓稠酱体"
+    assert merged.selling_points == [
+        "梅子酸味先出现",
+        "可直接蘸食炸物",
+        "可作为烤肉刷酱",
+    ]

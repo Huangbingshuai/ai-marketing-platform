@@ -307,34 +307,6 @@ describe('presentExtractionNodeDetail', () => {
     expect(JSON.stringify(detail)).not.toContain('聚合结果不展示');
   });
 
-  it('shows only product identity from the import node', () => {
-    const detail = presentExtractionNodeDetail(
-      {
-        inputSnapshot: snapshot,
-        updatedAt: new Date('2026-08-24T00:01:00.000Z'),
-        branches: [
-          {
-            branch: 'FORM',
-            status: 'SUCCEEDED',
-            structuredOutput: {
-              candidate: { productName: '不应展示', productCategory: '不应展示' },
-            },
-            updatedAt: new Date('2026-08-24T00:01:00.000Z'),
-          },
-        ],
-      },
-      'FORM',
-      execution('FORM'),
-    );
-
-    expect(detail.summary).toBe('已读取导入节点的产品基础信息');
-    expect(detail.fields.map(({ label }) => label)).toEqual(['产品名称', '产品品类']);
-    expect(detail.fields.map(({ value }) => value)).toEqual(['山泉气泡水', '饮料']);
-    expect(JSON.stringify(detail)).not.toContain('不应展示');
-    expect(JSON.stringify(detail)).not.toContain('分辨率');
-    expect(JSON.stringify(detail)).not.toContain('帧率');
-  });
-
   it('projects only user-facing commerce fields and never leaks crawler internals', () => {
     const detail = presentExtractionNodeDetail(
       {
@@ -484,13 +456,15 @@ describe('presentExtractionNodeDetail', () => {
           updatedAt: new Date('2026-08-24T00:02:00.000Z'),
           structuredOutput: {
             candidate: { productName: '山泉气泡水', coreSellingPoints: ['无糖', '清爽'] },
-            metadata: { provenance: { productName: 'FORM', coreSellingPoints: 'DOCUMENT>IMAGE' } },
+            metadata: {
+              provenance: { productName: 'DOCUMENT', coreSellingPoints: 'DOCUMENT>IMAGE' },
+            },
           },
         },
       ],
       result: {
         draftResult: { productName: '山泉气泡水', coreSellingPoints: ['无糖', '清爽'] },
-        provenance: { productName: 'FORM', coreSellingPoints: 'DOCUMENT>IMAGE' },
+        provenance: { productName: 'DOCUMENT', coreSellingPoints: 'DOCUMENT>IMAGE' },
         conflictReport: [],
         revision: 2,
         savedAt: new Date('2026-08-24T00:03:00.000Z'),
@@ -505,7 +479,7 @@ describe('presentExtractionNodeDetail', () => {
       execution('NORMALIZATION'),
     );
 
-    expect(fusion.fields.find(({ key }) => key === 'productName')?.source).toBe('人工表单');
+    expect(fusion.fields.find(({ key }) => key === 'productName')?.source).toBe('文档解析');
     expect(normalized.fields.find(({ key }) => key === 'sellingPoints')?.source).toBe(
       '文档解析 → 图片识别',
     );

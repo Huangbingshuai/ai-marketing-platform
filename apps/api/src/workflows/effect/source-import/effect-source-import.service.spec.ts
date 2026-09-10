@@ -179,31 +179,25 @@ describe('EffectSourceImportService', () => {
 
     const documentXml = readZipEntry(template.buffer, 'word/document.xml').toString('utf8');
     const informationCardFields = [
-      '品类',
+      '产品品类',
       '产品名称',
       '核心规格',
       '价格带',
       '核心外观特征',
-      '核心卖点',
-      '次要卖点',
-      '辅助信任背书',
-      '目标受众画像',
-      '核心痛点',
-      '决策动因',
-      '营销目标',
-      '核心使用场景',
-      '购买场景',
-      '情绪共鸣场景',
+      '卖点填写说明',
+      '卖点',
     ];
-    expect(documentXml).not.toContain('<w:tbl');
-    expect(documentXml.match(/w:pStyle w:val="Heading1"/g)).toHaveLength(4);
-    expect(documentXml.match(/w:pStyle w:val="Heading2"/g)).toHaveLength(
-      informationCardFields.length,
-    );
+    expect(documentXml).toContain('<w:tbl');
+    expect(documentXml.match(/w:pStyle w:val="Heading1"/g)).toHaveLength(3);
+    expect(documentXml).not.toContain('w:pStyle w:val="Heading2"');
     for (const field of informationCardFields) expect(documentXml).toContain(field);
+    for (const legacyField of ['核心卖点', '次要卖点', '目标受众画像', '核心痛点', '营销目标'])
+      expect(documentXml).not.toContain(`<w:t>${legacyField}</w:t>`);
+    expect(documentXml).toContain('[卖点 1]');
+    expect(documentXml).toContain('[卖点 8]');
   });
 
-  it('把产品名称作为资料导入节点必填项，品类仍交给 AI 提炼', () => {
+  it('产品名称和品类均交给 AI 提炼，不作为资料导入校验项', () => {
     const service = serviceWith() as unknown as {
       collectValidation(draft: EffectImportDraft): Array<{ field?: string | null }>;
     };
@@ -211,13 +205,7 @@ describe('EffectSourceImportService', () => {
     draft.products[0]!.name = '';
     draft.products[0]!.category = '';
 
-    expect(service.collectValidation(draft)).toEqual([
-      expect.objectContaining({
-        code: 'REQUIRED_FIELD',
-        field: 'name',
-        productId: draft.products[0]!.id,
-      }),
-    ]);
+    expect(service.collectValidation(draft)).toEqual([]);
   });
 
   it('确认资料时只生成产品资料包工作副本，不再生成视频配置工作副本', () => {
@@ -249,23 +237,22 @@ describe('EffectSourceImportService', () => {
     ]);
   });
 
-  it('rejects a material upload before the product has a name', async () => {
-    const service = serviceWith({
-      product: vi.fn().mockResolvedValue({ id: 'product-1', name: '   ' }),
-    });
-    vi.spyOn(service, 'getDraft').mockResolvedValue(draftValue());
+  it('产品名称尚未提炼时仍可构建资料包工作副本', () => {
+    const service = serviceWith() as unknown as {
+      sourcePackageInput(
+        product: ReturnType<typeof publishableDraft>['products'][number],
+        files: [],
+      ): {
+        name: string;
+        payload: { productName: string };
+      };
+    };
+    const product = publishableDraft().products[0]!;
+    product.name = '';
 
-    await expect(
-      service.uploadMaterial(
-        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-        'BATCH',
-        'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-        { type: 'PRODUCT_IMAGE', expectedRevision: 3 },
-        undefined,
-      ),
-    ).rejects.toMatchObject({
-      status: 400,
-      response: { code: 'VALIDATION_ERROR', message: '请先填写产品名称，再上传产品资料' },
+    expect(service.sourcePackageInput(product, [])).toMatchObject({
+      name: '产品原始资料包',
+      payload: { productName: '' },
     });
   });
 

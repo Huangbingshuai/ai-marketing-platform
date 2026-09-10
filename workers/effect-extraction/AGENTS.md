@@ -6,9 +6,9 @@
 
 提炼流程保持：
 
-`LOAD_AND_SNAPSHOT → DOCUMENT / IMAGE / COMMERCE / FORM → FUSION → SEMANTIC_REFINEMENT → NORMALIZATION`
+`LOAD_AND_SNAPSHOT → DOCUMENT / IMAGE / COMMERCE → FUSION → SEMANTIC_REFINEMENT → NORMALIZATION`
 
-- 四个分析分支可并行，单个分支失败不得无条件拖垮全部任务。
+- 三个分析分支可并行，单个分支失败不得无条件拖垮全部任务。
 - `FUSION` 只融合有证据的结果并记录冲突，不臆造缺失事实。
 - `NORMALIZATION` 负责契约化输出、来源映射、警告和质量摘要。
 - COMMERCE 分支没有链接时为 `SKIPPED`；存在公开链接时先做安全静态抓取，内容不足再使用同一 Worker 进程内的 Playwright Chromium 渲染，禁止登录、验证码或平台风控绕过。
@@ -19,13 +19,12 @@
 - DOCUMENT：商品文档、Brief、规格、卖点和限制。
 - IMAGE：包装、产品外观、可见文字、场景与视觉特征。
 - COMMERCE：结构化商品字段、渠道信息、价格/规格等明确事实。
-- FORM：用户在页面确认或补充的结构化配置；明确人工输入优先级。
 
 事实冲突时保留来源和冲突警告。人工确认字段可覆盖自动提取，但必须保存覆盖前值与来源，不可悄悄改写历史证据。
 
 来源优先级固定为：
 
-`当前人工修正 > 当前用户表单配置 > 文档明确事实 > 图片明确事实 > AI 策略推断`
+`当前人工修正 > 文档明确事实 > 电商明确事实 > 图片明确事实 > AI 策略推断`
 
 产品名、规格、配方、产地、认证、功效、销量与信任背书等硬事实不得推断。价格带、人群、痛点、营销目标、场景、渠道与视觉策略只允许基于证据保守建议，并明确标为建议或待确认。
 
@@ -45,12 +44,12 @@
 
 - 默认使用真实 Ark/模型 Provider；模型名称、超时和并发从配置读取。
 - Playwright Chromium 属于本节点的进程内运行时，必须与 Worker 同容器、同生命周期，不得另建业务容器或内部 HTTP 服务。
-- 默认 `ARK_MODEL=doubao-seed-2-1-turbo-260628`；文档、图片和标准化模型仅作部署级可选覆盖。正常运行只要求 API Key，不强制 Endpoint ID。
+- 默认 `ARK_MODEL=doubao-seed-2-1-turbo-260628`；普通产品文档默认使用 `doubao-seed-2-1-pro-260628`，`ARK_DOCUMENT_MODEL` 可作部署级覆盖；图片和标准化模型继续使用各自可选覆盖。正常运行只要求 API Key，不强制 Endpoint ID。
 - 缺少凭证或模型配置时 fail fast；只有显式测试开关允许 Mock。
 - Ark 使用 Responses API 的严格 JSON Schema，返回后仍需 Pydantic/共享 Schema 二次校验。只对 429、5xx 和网络超时做有限重试。
 - 文档解析运行时（如 Docling）与 Compose 依赖必须固定版本并有健康检查。
 
 ## 测试
 
-- 覆盖四分支全成功、单分支失败、多分支冲突、空输入、模型非法结构、取消和重试。
+- 覆盖三分支全成功、单分支失败、多分支冲突、空输入、模型非法结构、取消和重试。
 - 覆盖人工覆盖、来源追踪、部分结果和规范化内容指纹。

@@ -34,13 +34,6 @@ def test_fusion_applies_priority_and_stable_deduplication() -> None:
                 BranchName.DOCUMENT,
                 candidate(product_name="文档商品", selling_points=[" 便携 ", "耐用"]),
             ),
-            branch(
-                BranchName.FORM,
-                candidate(
-                    product_name="人工商品",
-                    product_category="饮料",
-                ),
-            ),
             BranchOutput(
                 branch=BranchName.COMMERCE,
                 status=BranchStatus.SKIPPED,
@@ -48,16 +41,16 @@ def test_fusion_applies_priority_and_stable_deduplication() -> None:
             ),
         ]
     )
-    assert result.candidate.product_name == "人工商品"
-    assert result.provenance["product_name"] == "FORM"
+    assert result.candidate.product_name == "文档商品"
+    assert result.provenance["product_name"] == "DOCUMENT"
     assert result.candidate.selling_points == ["便携", "耐用", "高颜值"]
     assert any("product_name conflict" in warning for warning in result.warnings)
 
 
-def test_fusion_requires_form_branch() -> None:
+def test_fusion_requires_at_least_one_usable_source() -> None:
     try:
         fuse([])
     except Exception as exc:
-        assert "FORM" in str(exc)
+        assert "document, image, or commerce" in str(exc)
     else:
-        raise AssertionError("fusion should fail without FORM")
+        raise AssertionError("fusion should fail without a usable source")

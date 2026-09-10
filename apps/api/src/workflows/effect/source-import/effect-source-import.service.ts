@@ -275,10 +275,9 @@ export class EffectSourceImportService {
     files: NonNullable<WorkingArtifactUpsertInput['files']>,
   ): WorkingArtifactUpsertInput {
     const productName = normalizeProductName(product.name);
-    if (!productName) throw badRequest('请先填写产品名称，再上传产品资料');
     return {
       kind: 'STRUCTURED',
-      name: assetSafeName(`${productName} 原始资料包`),
+      name: assetSafeName(productName ? `${productName} 原始资料包` : '产品原始资料包'),
       directory: 'SOURCE_MATERIALS',
       type: 'SOURCE_MATERIAL',
       tags: assetSafeTags(productName, product.category, product.sku),
@@ -290,7 +289,7 @@ export class EffectSourceImportService {
         commerceUrl: product.commerceUrl,
         completeness: files.length ? 'WORKING' : 'INCOMPLETE',
       },
-      metadata: { productId: product.id, productName },
+      metadata: { productId: product.id, ...(productName ? { productName } : {}) },
       files,
       sourceArtifactId: product.id,
     };
@@ -951,7 +950,7 @@ export class EffectSourceImportService {
     const draft = await this.getDraft(projectId, modeValue);
     const product = await this.repository.product(projectId, draft.id, productId);
     if (!product) throw notFound();
-    const productName = requiredProductName(product.name, '请先填写产品名称，再上传产品资料');
+    const productName = normalizeProductName(product.name) || '待提炼产品';
     const project = await this.projectService.get(projectId);
     try {
       const validFile = await this.assertMaterialFile(file, input.type);
@@ -1084,7 +1083,6 @@ export class EffectSourceImportService {
     if (draft.revision !== input.expectedRevision) throw conflict();
     const product = await this.repository.product(projectId, draft.id, productId);
     if (!product) throw notFound();
-    requiredProductName(product.name, '请先填写产品名称，再上传产品资料');
     if (!Array.isArray(input.items) || input.items.length === 0 || input.items.length > 100)
       throw badRequest('批量上传文件清单无效');
     const clientIds = new Set<string>();
@@ -1155,7 +1153,7 @@ export class EffectSourceImportService {
           workflow: 'EFFECT',
           lifecycle: 'staging',
           productId: product.id,
-          productName: requiredProductName(product.name),
+          productName: normalizeProductName(product.name) || '待提炼产品',
           category: item.type === 'PRODUCT_IMAGE' ? '商品图片' : '产品文档',
           originalFileName: safeFileName(validFile.originalname),
         },
@@ -1273,7 +1271,7 @@ export class EffectSourceImportService {
     const current = await this.repository.material(projectId, productId, materialId);
     const product = await this.repository.product(projectId, draft.id, productId);
     if (!current || !product) throw notFound();
-    const productName = requiredProductName(product.name, '请先填写产品名称，再重新上传资料');
+    const productName = normalizeProductName(product.name) || '待提炼产品';
     const project = await this.projectService.get(projectId);
     try {
       const validFile = await this.assertMaterialFile(file, current.type);
@@ -1872,13 +1870,6 @@ export class EffectSourceImportService {
         ),
       );
     for (const product of draft.products) {
-      if (!normalizeProductName(product.name))
-        issues.push(
-          validationIssue('REQUIRED_FIELD', '请填写产品名称', 'PRODUCT', {
-            productId: product.id,
-            field: 'name',
-          }),
-        );
       if (product.commerceUrl && !normalizedCommerceUrl(product.commerceUrl))
         issues.push(
           validationIssue('INVALID_COMMERCE_URL', '电商链接格式无效', 'PRODUCT', {
