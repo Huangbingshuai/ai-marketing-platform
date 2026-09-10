@@ -1730,6 +1730,46 @@ async def test_independent_ai_semantic_audit_requests_direction_replanning() -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_revision_count", [3, 4])
+async def test_semantic_replanning_does_not_spend_structural_recovery_budget(
+    monkeypatch: pytest.MonkeyPatch, invalid_revision_count: int,
+) -> None:
+    import effect_prompt_generation.pipeline as pipeline_module
+    from effect_prompt_generation.providers import ProviderError
+
+    provider = SemanticAuditThenReplanningProvider()
+    original_validate = pipeline_module.validate_creative_direction_plan
+    failures = 0
+
+    def validate_with_invalid_revision(*args: Any, **kwargs: Any) -> Any:
+        nonlocal failures
+        if provider.direction_calls >= 3 and failures < invalid_revision_count:
+            failures += 1
+            raise ValueError("creative directions did not cover all usable business facts")
+        return original_validate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        pipeline_module, "validate_creative_direction_plan", validate_with_invalid_revision,
+    )
+    pipeline = PromptGenerationPipeline(
+        api=PromptApi(),  # type: ignore[arg-type]
+        provider=provider,
+        shard_size=5,
+    )
+    runtime = _runtime()
+    pipeline.register_snapshot(runtime, _cluster_snapshot())
+    await pipeline.map_insight(runtime)
+    await pipeline.compile_fact_visual_strategy(runtime)
+    await pipeline.compile_shared_prompt(runtime)
+    if invalid_revision_count == 4:
+        with pytest.raises(ProviderError, match="结构或事实引用无效"):
+            await pipeline.plan_creatives(runtime, round_number=0)
+    else:
+        assert await pipeline.plan_creatives(runtime, round_number=0)
+    assert failures == invalid_revision_count
+
+
+@pytest.mark.asyncio
 async def test_many_audited_directions_are_revised_in_bounded_batches() -> None:
     api = PromptApi()
     provider = ManyDirectionAuditThenReplanningProvider()

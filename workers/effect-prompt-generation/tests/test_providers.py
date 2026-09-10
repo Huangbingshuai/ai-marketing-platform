@@ -526,6 +526,10 @@ async def test_director_request_and_compilation_across_products_and_durations(
 
     assert len(seen) == 1
     assert seen[0]["instructions"] == load_prompt("creative_base.system.prompt.txt")
+    assert seen[0]["max_output_tokens"] >= 4096
+    request_schema = seen[0]["text"]["format"]["schema"]
+    assert request_schema["properties"]["items"]["minItems"] == 1
+    assert request_schema["properties"]["items"]["maxItems"] == 1
     assert call.metadata.template_hash == load_prompt_hash("creative_base.system.prompt.txt")
     item = call.value.items[0]
     assert item.shot_plan is not None

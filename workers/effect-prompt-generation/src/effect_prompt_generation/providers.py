@@ -22,6 +22,9 @@ from .creative_directions import (
     creative_territory_target_range,
 )
 from .insight_mapping import mandatory_business_facts
+from .execution_refinement import (
+    ExecutionEditBatch, apply_execution_edits, editable_execution_paths, execution_edit_schema,
+)
 from .product_images import PreparedProductImage
 from .supplement_recovery import direction_summary
 from .models import (
@@ -88,6 +91,7 @@ from .shot_plan import ShotPlanCompilationError, compile_material_shot_plan
 TModel = TypeVar("TModel", bound=BaseModel)
 LOGGER = logging.getLogger(__name__)
 CREATIVE_BASE_PROMPT = "creative_base.system.prompt.txt"
+CREATIVE_EXECUTION_PROMPT = "creative_execution.system.prompt.txt"
 CREATIVE_TASK_PROMPT = "creative_task.user.prompt.txt"
 EXECUTION_REPAIR_PROMPT = "execution_repair.system.prompt.txt"
 EVALUATION_BASE_PROMPT = "evaluation_base.system.prompt.txt"
@@ -362,6 +366,12 @@ class AiProvider(Protocol):
         shared_prompt: SharedPrompt, fact_visual_strategy: FactVisualStrategy,
     ) -> AiCallResult[ExecutionRepairDraft]: ...
 
+    async def refine_creative_execution(
+        self, candidates: list[CreativeCandidate], *, shard: CreativeShardPlan,
+        application: InsightApplicationMap, shared_prompt: SharedPrompt,
+        fact_visual_strategy: FactVisualStrategy | None = None,
+    ) -> AiCallResult[CreativeCandidateBatch]: ...
+
     async def evaluate_creatives(
         self,
         candidates: list[CreativeCandidate],
@@ -377,6 +387,15 @@ class AiProvider(Protocol):
 
 class MockAiProvider:
     execution_mode = "MOCK"
+
+    async def refine_creative_execution(
+        self, candidates: list[CreativeCandidate], *, shard: CreativeShardPlan,
+        application: InsightApplicationMap, shared_prompt: SharedPrompt,
+        fact_visual_strategy: FactVisualStrategy | None = None,
+    ) -> AiCallResult[CreativeCandidateBatch]:
+        # Explicit test identity fixture, not a semantic implementation.
+        return _mock_result(CreativeCandidateBatch(items=candidates),
+                            "COHERENT_CREATIVE_GENERATION", CREATIVE_EXECUTION_PROMPT)
 
     async def repair_creative_execution(
         self, candidate: CreativeCandidate, *, task: CreativeTask,
@@ -2031,11 +2050,11 @@ class ArkResponsesProvider:
             model=self._candidate_model,
             max_output_tokens=min(
                 self._candidate_max_output_tokens,
-                _creative_output_token_budget(shard.tasks),
+                max(4096, _creative_output_token_budget(shard.tasks)),
             ),
             request_timeout=self._candidate_timeout,
             instructions=load_prompt(creative_base_prompt),
-            response_schema=_creative_shot_response_schema(),
+            response_schema=_creative_shot_response_schema(shard.tasks),
         )
         task_by_slot = {item.slot_id: item for item in shard.tasks}
         actual = [item.slot_id for item in call.value.items]
@@ -2105,6 +2124,57 @@ class ArkResponsesProvider:
             value=CreativeCandidateBatch(items=normalized),
             metadata=call.metadata,
         )
+
+    async def refine_creative_execution(
+        self, candidates: list[CreativeCandidate], *, shard: CreativeShardPlan,
+        application: InsightApplicationMap, shared_prompt: SharedPrompt,
+        fact_visual_strategy: FactVisualStrategy | None = None,
+    ) -> AiCallResult[CreativeCandidateBatch]:
+        tasks = {task.slot_id: task for task in shard.tasks}
+        originals = {item.slot_id: item for item in candidates}
+        briefs = []
+        for candidate in candidates:
+            task = tasks[candidate.slot_id]
+            assignment = _creative_fact_assignment(task, application)
+            aliases = _creative_fact_aliases(assignment)
+            draft = candidate.model_dump(mode="json", by_alias=True,
+                                         exclude={"content", "generated_at"})
+            draft["declaredFactIds"] = [aliases[key] for key in candidate.declared_fact_ids]
+            briefs.append({
+                "task": _execution_fact_brief(
+                    task, assignment=assignment, application=application,
+                    fact_visual_strategy=fact_visual_strategy, fact_aliases=aliases),
+                "draft": draft,
+                "editablePaths": editable_execution_paths(candidate),
+            })
+        call = await self._structured(
+            json.dumps({"items": briefs, "sharedPrompt": shared_prompt.compiled_content},
+                       ensure_ascii=False),
+            ExecutionEditBatch,
+            schema_name="effect_prompt_creative_execution",
+            stage="COHERENT_CREATIVE_GENERATION",
+            prompt_file=CREATIVE_EXECUTION_PROMPT,
+            model=self._candidate_model,
+            max_output_tokens=min(self._candidate_max_output_tokens,
+                                  max(4096, _creative_output_token_budget([tasks[key] for key in originals]))),
+            request_timeout=self._candidate_timeout,
+            instructions=load_prompt(CREATIVE_EXECUTION_PROMPT),
+            response_schema=execution_edit_schema(candidates),
+        )
+        actual = [item.slot_id for item in call.value.items]
+        if len(actual) != len(set(actual)) or set(actual) != set(originals):
+            raise ProviderError("execution refinement changed candidate identity/count",
+                                error_type=ProviderErrorType.RESPONSE_INVALID, retryable=False)
+        decisions = {item.slot_id: item for item in call.value.items}
+        try:
+            revised = [apply_execution_edits(
+                original, decisions[original.slot_id],
+                duration_seconds=tasks[original.slot_id].target_duration_seconds,
+            ) for original in candidates]
+        except ValueError as exc:
+            raise ProviderError("invalid execution edit structure",
+                                error_type=ProviderErrorType.RESPONSE_INVALID, retryable=False) from exc
+        return AiCallResult(value=CreativeCandidateBatch(items=revised), metadata=call.metadata)
 
     async def repair_creative_execution(
         self, candidate: CreativeCandidate, *, task: CreativeTask,
@@ -3238,6 +3308,25 @@ def _creative_task_brief(
     }
 
 
+def _execution_fact_brief(
+    task: CreativeTask, *, assignment: CreativeFactAssignment,
+    application: InsightApplicationMap, fact_visual_strategy: FactVisualStrategy | None,
+    fact_aliases: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Give the edit model facts, not the upstream filming advice it must repair."""
+    brief = _creative_task_brief(task, assignment=assignment, application=application,
+                                 fact_visual_strategy=fact_visual_strategy, fact_aliases=fact_aliases)
+    return {
+        "targetDurationSeconds": task.target_duration_seconds,
+        "productSnapshot": brief["productSnapshot"],
+        "factApplications": [
+            {key: value for key, value in fact.items() if key not in {"creativeUsage", "instruction"}}
+            for fact in brief["factApplications"]
+        ],
+        "forbiddenInferences": brief["forbiddenInferences"],
+    }
+
+
 def _product_snapshot(application: InsightApplicationMap) -> dict[str, Any]:
     values_by_field = {
         field: [fact.value for fact in application.usable if fact.field == field]
@@ -3326,8 +3415,14 @@ def _evaluation_strategy_payload(
     ]
 
 
-def _creative_shot_response_schema() -> dict[str, Any]:
+def _creative_shot_response_schema(tasks: Sequence[CreativeTask] = ()) -> dict[str, Any]:
     schema = CreativeCandidateDraftBatch.model_json_schema(by_alias=True)
+    if tasks:
+        schema["properties"]["items"].update(minItems=len(tasks), maxItems=len(tasks))
+        draft = schema["$defs"]["CreativeCandidateDraft"]["properties"]
+        draft["slotId"]["enum"] = [task.slot_id for task in tasks]
+        draft["ordinal"]["enum"] = sorted({task.ordinal for task in tasks})
+        draft["round"]["enum"] = sorted({task.round for task in tasks})
     beat = schema["$defs"]["MaterialShotBeat"]
     beat["required"] = list(dict.fromkeys([*beat["required"], "focus", "motionSource"]))
     return schema

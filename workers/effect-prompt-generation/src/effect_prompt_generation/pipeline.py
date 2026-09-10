@@ -289,6 +289,7 @@ class LoadedRun:
 @dataclass(slots=True)
 class RunCache:
     ai_call_count: int = 0
+    pending_execution_drafts: dict[str, ShardRecord] = field(default_factory=dict)
     execution_repair_records: dict[str, CreativeEvaluation] = field(default_factory=dict)
     total_shards: int = 0
     insight_application: InsightApplicationMap | None = None
@@ -445,6 +446,11 @@ class PromptGenerationPipeline:
             and item.phase == ShardPhase.CLASSIFICATION
         ]
         cache = self._cache(context)
+        cache.pending_execution_drafts = {
+            shard.key: shard for shard in shards
+            if shard.phase == ShardPhase.CREATIVE
+            and shard.status != StageStatus.SUCCEEDED and shard.creative_items
+        }
         cache.creatives = {
             item.slot_id: item
             for shard in succeeded_creatives
@@ -1389,9 +1395,14 @@ class PromptGenerationPipeline:
                 minimum_business_facts_per_direction = 1
             else:
                 minimum_business_facts_per_direction = 0
-            for invalid_response_attempt in range(
-                resume_progress.planning_attempt if resume_progress else 0, 4
-            ):
+            # Count malformed/invalid responses, not successful AI reviews.
+            # A single semantic replan must not consume the structural repair
+            # opportunity needed if that replan drops an ID. Both loops remain
+            # bounded and every provider call still uses the Run call budget.
+            invalid_response_attempt = (
+                resume_progress.planning_attempt if resume_progress else 0
+            )
+            while invalid_response_attempt < 4:
                 try:
                     revision_ids = (
                         revision_context.get("revisionDirectionIds", [])
@@ -2060,6 +2071,7 @@ class PromptGenerationPipeline:
                                 " 同时重新输出完整的创意方向 JSON。"
                             ).strip(),
                         }
+                        invalid_response_attempt += 1
                         continue
                     raise
                 if previous_audited_response is not None:
@@ -2081,6 +2093,7 @@ class PromptGenerationPipeline:
                             **(revision_context or {}),
                             "validationError": str(exc),
                         }
+                        invalid_response_attempt += 1
                         continue
                 try:
                     draft_plan = validate_creative_direction_plan(
@@ -2123,6 +2136,7 @@ class PromptGenerationPipeline:
                             error_type=ProviderErrorType.RESPONSE_INVALID,
                             attempts=4,
                         ) from exc
+                    invalid_response_attempt += 1
                     continue
                 direction_audit_batches = review_batches(
                     direction_response.directions, application, visual_strategy,
@@ -2371,7 +2385,7 @@ class PromptGenerationPipeline:
                     update={"diversity_audit": diversity_audit}
                 )
                 if audit.requires_revision:
-                    if semantic_revision_count == 0 and invalid_response_attempt < 3:
+                    if semantic_revision_count == 0:
                         previous_audited_response = direction_response
                         audit_revision_direction_ids = list(
                             audit.revision_direction_ids
@@ -3130,12 +3144,19 @@ class PromptGenerationPipeline:
         context: RuntimeContext,
         shard: CreativeShardPlan,
     ) -> list[CreativeCandidate]:
+        cached_draft = self._cache(context).pending_execution_drafts.get(shard.key)
+        draft_items = (
+            cached_draft.creative_items
+            if cached_draft is not None and cached_draft.creative_plan == shard.tasks
+            else []
+        )
         running = ShardRecord(
             phase=ShardPhase.CREATIVE,
             round=shard.round,
             shard_index=shard.shard_index,
             status=StageStatus.RUNNING,
             creative_plan=shard.tasks,
+            creative_items=draft_items,
         )
         await self.api.put_shard(context, running)
         snapshot = self.snapshot(context)
@@ -3163,6 +3184,7 @@ class PromptGenerationPipeline:
                         "preservedDimensions": snapshot.preserved_dimensions,
                     }
                 )
+        execution_refinement_started = False
         try:
             call_kwargs: dict[str, Any] = {
                 "application": self._require_application(context),
@@ -3228,7 +3250,55 @@ class PromptGenerationPipeline:
                         raise
                 raise PipelineError("creative generation retry loop exhausted")
 
-            generated_items = await request_candidates(shard)
+            generated_items = draft_items or await request_candidates(shard)
+            if generated_items:
+                # Persist model-authored draft before the second paid call. Failed
+                # refinement resumes here, never as a successful unreviewed shard.
+                running = running.model_copy(update={"creative_items": generated_items})
+                self._cache(context).pending_execution_drafts[shard.key] = running
+                await self.api.put_shard(context, running)
+                execution_refinement_started = True
+
+                async def refine_candidates(candidates: list[CreativeCandidate]) -> list[CreativeCandidate]:
+                    candidate_ids = {item.slot_id for item in candidates}
+                    refinement_shard = shard.model_copy(update={
+                        "tasks": [task for task in shard.tasks if task.slot_id in candidate_ids],
+                    })
+                    for attempt in range(2):
+                        self._reserve_ai_call(context)
+                        try:
+                            async with self._ai_semaphore:
+                                refined = await self.provider.refine_creative_execution(
+                                    candidates, shard=refinement_shard,
+                                    application=self._require_application(context),
+                                    shared_prompt=self._required_shared_prompt(context),
+                                    fact_visual_strategy=call_kwargs.get("fact_visual_strategy"),
+                                )
+                            # Do not trust even a provider adapter to alter identity.
+                            revised = refined.value.items
+                            if (len(revised) != len(candidates)
+                                    or {item.slot_id for item in revised} != candidate_ids):
+                                raise ProviderError("execution refinement count mismatch",
+                                    error_type=ProviderErrorType.RESPONSE_INVALID, retryable=False)
+                            return revised
+                        except ProviderError as error:
+                            if error.error_type == ProviderErrorType.RESPONSE_INVALID and attempt == 0:
+                                continue
+                            if error.error_type in {
+                                ProviderErrorType.OUTPUT_TRUNCATED,
+                                ProviderErrorType.RESPONSE_INCOMPLETE,
+                                ProviderErrorType.RESPONSE_INVALID,
+                            } and len(candidates) > 1:
+                                midpoint = math.ceil(len(candidates) / 2)
+                                # Recovery only: do not leave a paid sibling call
+                                # running after the first half has failed.
+                                parts = [await refine_candidates(candidates[:midpoint]),
+                                         await refine_candidates(candidates[midpoint:])]
+                                return [item for part in parts for item in part]
+                            raise
+                    raise PipelineError("execution refinement retry loop exhausted")
+
+                generated_items = await refine_candidates(generated_items)
             generated_at = utc_now()
             items = [
                 item.model_copy(update={"generated_at": generated_at})
@@ -3242,6 +3312,7 @@ class PromptGenerationPipeline:
             )
             cache = self._cache(context)
             cache.creatives.update({item.slot_id: item for item in items})
+            cache.pending_execution_drafts.pop(shard.key, None)
             cache.completed_creative_shard_keys.add(shard.key)
             return items
         except Exception as exc:
@@ -3253,6 +3324,7 @@ class PromptGenerationPipeline:
             setattr(exc, "node_id", node_id)
             if (
                 snapshot.operation == "BATCH_GENERATE"
+                and not execution_refinement_started
                 and isinstance(exc, ProviderError)
                 and exc.error_type == ProviderErrorType.RESPONSE_INVALID
             ):
