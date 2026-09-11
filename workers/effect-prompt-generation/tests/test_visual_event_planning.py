@@ -239,7 +239,7 @@ async def test_ark_local_repair_uses_bounded_structured_call_and_original_constr
     finally:
         await provider.aclose()
     assert seen["model"] == "candidate-test"
-    assert seen["max_output_tokens"] == 2048
+    assert seen["max_output_tokens"] == 6144
     payload = json.loads(seen["input"][0]["content"][0]["text"])
     assert payload["original"]["slotId"] == candidate.slot_id
     assert "content" not in payload["original"]

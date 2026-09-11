@@ -447,12 +447,11 @@ class MockAiProvider:
         shared_prompt: SharedPrompt, fact_visual_strategy: FactVisualStrategy,
     ) -> AiCallResult[ExecutionRepairDraft]:
         # Explicit fixture-only no-op; never manufacture a production repair.
-        from .models import ShotFieldPatch
         if candidate.shot_plan is None:
             raise ValueError("mock repair requires shot plan")
         return _mock_result(ExecutionRepairDraft(
             slot_id=candidate.slot_id,
-            patches=[ShotFieldPatch(sequence=1, field="CAMERA", value=candidate.shot_plan.beats[0].camera)],
+            shot_plan=candidate.shot_plan,
         ), "CREATIVE_EVALUATION_CLASSIFICATION", EXECUTION_REPAIR_PROMPT)
 
     async def compile_fact_visual_strategy(
@@ -2297,7 +2296,7 @@ class ArkResponsesProvider:
             prompt, ExecutionRepairDraft, schema_name="effect_prompt_execution_repair",
             stage=NodeId.CREATIVE_EVALUATION_CLASSIFICATION.value,
             prompt_file=EXECUTION_REPAIR_PROMPT, model=self._candidate_model,
-            max_output_tokens=min(self._candidate_max_output_tokens, 2048),
+            max_output_tokens=min(self._candidate_max_output_tokens, 6144),
             request_timeout=self._candidate_timeout,
             instructions=load_prompt(EXECUTION_REPAIR_PROMPT),
         )

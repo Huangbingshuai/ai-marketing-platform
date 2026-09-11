@@ -1481,15 +1481,9 @@ class ExecutionFinding(ApiModel):
     diagnosis: str = Field(min_length=1, max_length=180)
 
 
-class ShotFieldPatch(ApiModel):
-    sequence: int = Field(ge=0, le=6)
-    field: ShotRepairField
-    value: str = Field(min_length=1, max_length=320)
-
-
 class ExecutionRepairDraft(ApiModel):
     slot_id: str = Field(min_length=1, max_length=160)
-    patches: list[ShotFieldPatch] = Field(min_length=1, max_length=12)
+    shot_plan: MaterialShotPlan
     camera_dimension: str | None = Field(default=None, min_length=1, max_length=160)
 
 

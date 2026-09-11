@@ -80,25 +80,24 @@ class LocatedProvider(MockAiProvider):
                 "repair timed out", error_type=ProviderErrorType.TIMEOUT, retryable=True
             )
         call = await super().repair_creative_execution(candidate, **kwargs)
+        assert candidate.shot_plan is not None
+        first = candidate.shot_plan.beats[0].model_copy(
+            update={
+                "camera": "固定机位，不跟随主体平移",
+                "focus": "焦点落在主体接触面",
+                "motion_source": "使用者施力推动主体",
+            }
+        )
+        plan = candidate.shot_plan.model_copy(
+            update={"beats": [first, *candidate.shot_plan.beats[1:]]}
+        )
         return replace(
             call,
             value=ExecutionRepairDraft(
                 slot_id="wrong-slot"
                 if self.mode == "wrong-slot"
                 else candidate.slot_id,
-                patches=[
-                    {
-                        "sequence": 1,
-                        "field": "CAMERA",
-                        "value": "固定机位，不跟随主体平移",
-                    },
-                    {"sequence": 1, "field": "FOCUS", "value": "焦点落在主体接触面"},
-                    {
-                        "sequence": 1,
-                        "field": "MOTION_SOURCE",
-                        "value": "使用者施力推动主体",
-                    },
-                ],
+                shot_plan=plan,
                 camera_dimension="固定机位，主体运动",
             ),
         )
@@ -256,17 +255,12 @@ async def test_patch_and_checkpoint_reject_only_structural_mismatches() -> None:
     await resumed.load_and_snapshot(runtime)
     assert shard.key not in resumed._cache(runtime).completed_classification_shard_keys
     assert original.slot_id not in resumed._cache(runtime).creative_evaluations
-    for patches in [
-        [{"sequence": 6, "field": "CAMERA", "value": "arbitrary text"}],
-        [{"sequence": 1, "field": "FINAL_FRAME", "value": "arbitrary text"}],
-        [{"sequence": 1, "field": "CAMERA", "value": "x"}] * 2,
-    ]:
-        with pytest.raises(ValueError):
-            apply_execution_patch(
-                original,
-                ExecutionRepairDraft(slot_id=original.slot_id, patches=patches),
-                duration=5,
-            )
+    with pytest.raises(ValueError):
+        apply_execution_patch(
+            original,
+            ExecutionRepairDraft(slot_id="other", shot_plan=original.shot_plan),
+            duration=5,
+        )
 
 
 @pytest.mark.asyncio
@@ -294,18 +288,17 @@ async def test_execution_fields_compile_for_durations_and_products_without_infer
         )
         == original.content
     )
+    first = plan.beats[0].model_copy(
+        update={
+            "motion_source": f"AI 提供的 {product} 运动来源原文",
+            "focus": "AI 提供的焦点说明",
+        }
+    )
     repaired = apply_execution_patch(
         original,
         ExecutionRepairDraft(
             slot_id=original.slot_id,
-            patches=[
-                {
-                    "sequence": 1,
-                    "field": "MOTION_SOURCE",
-                    "value": f"AI 提供的 {product} 运动来源原文",
-                },
-                {"sequence": 1, "field": "FOCUS", "value": "AI 提供的焦点说明"},
-            ],
+            shot_plan=plan.model_copy(update={"beats": [first, *plan.beats[1:]]}),
         ),
         duration=duration,
     )

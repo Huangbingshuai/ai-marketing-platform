@@ -144,7 +144,7 @@ from .supplement_recovery import retain_valid_supplements
 from .supplement_actions import supplement_review_landscape
 from .execution_repair import (
     restore_execution_candidate,
-    apply_execution_patch, candidate_hash, has_execution_diagnosis, repair_improves,
+    apply_execution_rewrite, candidate_hash, has_execution_diagnosis, repair_improves,
 )
 from .visual_strategy import (
     fact_visual_strategy_batches,
@@ -3409,8 +3409,9 @@ class PromptGenerationPipeline:
                     f"仍有 {len(shard.tasks) - len(generated_items)} 条结构无效；有效候选继续完成执行修订"
                 ]})
             if generated_items:
-                # Persist model-authored draft before the second paid call. Failed
-                # refinement resumes here, never as a successful unreviewed shard.
+                # Persist the model-authored draft before the independent final
+                # execution pass. A failed pass resumes from this checkpoint and
+                # never exposes an unreviewed candidate as a successful shard.
                 running = running.model_copy(update={"creative_items": generated_items})
                 self._cache(context).pending_execution_drafts[shard.key] = running
                 await self.api.put_shard(context, running)
@@ -3426,42 +3427,61 @@ class PromptGenerationPipeline:
                     },
                 )
 
-                async def refine_candidates(candidates: list[CreativeCandidate]) -> list[CreativeCandidate]:
+                async def refine_candidates(
+                    candidates: list[CreativeCandidate],
+                ) -> list[CreativeCandidate]:
                     candidate_ids = {item.slot_id for item in candidates}
                     refinement_shard = shard.model_copy(update={
-                        "tasks": [task for task in shard.tasks if task.slot_id in candidate_ids],
+                        "tasks": [
+                            task for task in shard.tasks
+                            if task.slot_id in candidate_ids
+                        ],
                     })
                     for attempt in range(2):
                         self._reserve_ai_call(context)
                         try:
                             async with self._ai_semaphore:
                                 refined = await self.provider.refine_creative_execution(
-                                    candidates, shard=refinement_shard,
+                                    candidates,
+                                    shard=refinement_shard,
                                     application=self._require_application(context),
                                     shared_prompt=self._required_shared_prompt(context),
-                                    fact_visual_strategy=call_kwargs.get("fact_visual_strategy"),
+                                    fact_visual_strategy=call_kwargs.get(
+                                        "fact_visual_strategy"
+                                    ),
                                     product_images=call_kwargs.get("product_images", ()),
                                 )
-                            # Do not trust even a provider adapter to alter identity.
                             revised = refined.value.items
-                            if (len(revised) != len(candidates)
-                                    or {item.slot_id for item in revised} != candidate_ids):
-                                raise ProviderError("execution refinement count mismatch",
-                                    error_type=ProviderErrorType.RESPONSE_INVALID, retryable=False)
+                            if (
+                                len(revised) != len(candidates)
+                                or {item.slot_id for item in revised} != candidate_ids
+                            ):
+                                raise ProviderError(
+                                    "execution refinement count mismatch",
+                                    error_type=ProviderErrorType.RESPONSE_INVALID,
+                                    retryable=False,
+                                )
                             return revised
                         except ProviderError as error:
-                            if error.error_type == ProviderErrorType.RESPONSE_INVALID and attempt == 0:
+                            if (
+                                error.error_type == ProviderErrorType.RESPONSE_INVALID
+                                and attempt == 0
+                            ):
                                 continue
-                            if error.error_type in {
-                                ProviderErrorType.OUTPUT_TRUNCATED,
-                                ProviderErrorType.RESPONSE_INCOMPLETE,
-                                ProviderErrorType.RESPONSE_INVALID,
-                            } and len(candidates) > 1:
+                            if (
+                                error.error_type
+                                in {
+                                    ProviderErrorType.OUTPUT_TRUNCATED,
+                                    ProviderErrorType.RESPONSE_INCOMPLETE,
+                                    ProviderErrorType.RESPONSE_INVALID,
+                                }
+                                and len(candidates) > 1
+                            ):
                                 midpoint = math.ceil(len(candidates) / 2)
-                                # Recovery only: do not leave a paid sibling call
-                                # running after the first half has failed.
-                                parts = [await refine_candidates(candidates[:midpoint]),
-                                         await refine_candidates(candidates[midpoint:])]
+                                parts = [
+                                    await refine_candidates(candidates[:midpoint]),
+                                    await refine_candidates(candidates[midpoint:]),
+                                ]
                                 return [item for part in parts for item in part]
                             raise
                     raise PipelineError("execution refinement retry loop exhausted")
@@ -3839,9 +3859,9 @@ class PromptGenerationPipeline:
                         and item_id not in candidate_by_id
                         for item_id in cache.creatives
                     )
-                    # Material candidates have a whole-clip final writer before
-                    # classification. Never apply a narrower post-score patch
-                    # that can leave overview/dimensions out of sync.
+                    # New material candidates already went through the whole-clip
+                    # final editor before scoring. Scoring must not become a second
+                    # writer for that current path.
                     if (task is None or task.material_brief is not None
                             or original_evaluation.execution_repair is not None
                             or not has_execution_diagnosis(original, original_evaluation)
@@ -3858,6 +3878,20 @@ class PromptGenerationPipeline:
                     items[index] = original_evaluation
                     cache.execution_repair_records[original.slot_id] = original_evaluation
                     await self.api.put_shard(context, running.model_copy(update={"evaluations": list(items)}))
+                    await self._stage(
+                        context,
+                        node,
+                        StageStatus.RUNNING,
+                        "发现明确画面执行问题，正在整段修订并复评",
+                        metadata={
+                            "round": shard.round,
+                            "perceptionPhase": "DIAGNOSED_EXECUTION_REWRITE",
+                            "candidateCount": len(candidates),
+                            "executionRepairAttemptedCount": len(
+                                cache.execution_repair_records
+                            ),
+                        },
+                    )
                     accepted = False
                     unused_review_reservation = True
                     try:
@@ -3867,7 +3901,7 @@ class PromptGenerationPipeline:
                                 application=application, shared_prompt=self._required_shared_prompt(context),
                                 fact_visual_strategy=self._required_fact_visual_strategy(context),
                             )
-                        repaired = apply_execution_patch(original, repair_call.value,
+                        repaired = apply_execution_rewrite(original, repair_call.value,
                             duration=cache.creative_target_durations[original.slot_id])
                         unused_review_reservation = False
                         review_items = await request_evaluations(
