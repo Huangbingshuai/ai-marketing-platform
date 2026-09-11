@@ -3859,10 +3859,12 @@ class PromptGenerationPipeline:
                         and item_id not in candidate_by_id
                         for item_id in cache.creatives
                     )
-                    # New material candidates already went through the whole-clip
-                    # final editor before scoring. Scoring must not become a second
-                    # writer for that current path.
-                    if (task is None or task.material_brief is not None
+                    # The independent pre-score editor may legitimately KEEP a
+                    # candidate that the evaluator later diagnoses. In that case
+                    # the evaluator's located findings become the input to one
+                    # whole-plan rewrite; this is not the removed sparse patch
+                    # path. Manual candidates still remain immutable.
+                    if (task is None
                             or original_evaluation.execution_repair is not None
                             or not has_execution_diagnosis(original, original_evaluation)
                             or cache.ai_call_count + 2 + pending_core_calls > self.max_ai_calls_per_run):

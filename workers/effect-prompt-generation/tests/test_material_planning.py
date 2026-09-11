@@ -10,7 +10,7 @@ import pytest
 from effect_prompt_generation.graph import build_graph
 from effect_prompt_generation.models import (
     CreativeCandidateDraft, FactEvidence, MaterialPlanResponse, PromptBatchSettings,
-    StrategyCheckpoint, ExecutionFinding, StageStatus,
+    StrategyCheckpoint, ExecutionFinding, ExecutionRepairDraft, StageStatus,
 )
 from effect_prompt_generation.execution_refinement import ExecutionEditDecision, apply_execution_edits
 from effect_prompt_generation.pipeline import PromptGenerationPipeline
@@ -91,8 +91,12 @@ async def test_generic_product_graph_has_final_execution_edit_without_old_planni
 
 
 @pytest.mark.asyncio
-async def test_material_final_edit_precedes_scoring_and_is_last_writer() -> None:
+async def test_material_final_edit_allows_one_located_whole_plan_rewrite() -> None:
     class FinalEditor(TrackingProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.repairs = 0
+
         async def refine_creative_execution(self, candidates: Any, **kwargs: Any) -> Any:
             call = await super().refine_creative_execution(candidates, **kwargs)
             revised = []
@@ -110,23 +114,41 @@ async def test_material_final_edit_precedes_scoring_and_is_last_writer() -> None
             return replace(call, value=call.value.model_copy(update={"items": revised}))
 
         async def evaluate_creatives(self, candidates: Any, **kwargs: Any) -> Any:
-            assert all("模型修订后的观察位置" in item.content for item in candidates)
-            assert all(item.dimensions.camera == "模型同步后的镜头维度" for item in candidates)
+            assert all(
+                "模型修订后的观察位置" in item.content
+                or "评分后根据定位问题重写的固定观察位置" in item.content
+                for item in candidates
+            )
             call = await super().evaluate_creatives(candidates, **kwargs)
             return replace(call, value=call.value.model_copy(update={"items": [
                 row.model_copy(update={"execution_findings": [ExecutionFinding(
                     code="CAMERA_ACTION_MISMATCH", sequence=1, field="CAMERA", diagnosis="opaque remaining concern",
-                )]}) for row in call.value.items
+                )] if candidate.dimensions.camera == "模型同步后的镜头维度" else []})
+                for candidate, row in zip(candidates, call.value.items, strict=True)
             ]}))
 
-        async def repair_creative_execution(self, *args: Any, **kwargs: Any) -> Any:
-            raise AssertionError("scoring must not rewrite a material after the final writer")
+        async def repair_creative_execution(self, candidate: Any, **kwargs: Any) -> Any:
+            self.repairs += 1
+            call = await super().repair_creative_execution(candidate, **kwargs)
+            assert candidate.shot_plan is not None
+            first = candidate.shot_plan.beats[0].model_copy(
+                update={"camera": "评分后根据定位问题重写的固定观察位置"}
+            )
+            return replace(call, value=ExecutionRepairDraft(
+                slot_id=candidate.slot_id,
+                shot_plan=candidate.shot_plan.model_copy(
+                    update={"beats": [first, *candidate.shot_plan.beats[1:]]}
+                ),
+                camera_dimension="评分后整段修订镜头",
+            ))
 
-    pipeline, runtime, _ = await ready(10, 10, FinalEditor())
+    provider = FinalEditor()
+    pipeline, runtime, _ = await ready(10, 10, provider)
     await build_graph(pipeline).ainvoke({"project_id": runtime.project_id}, context=runtime)
     assert len(pipeline.api.result.items) == 10
-    assert all(item.dimensions.camera == "模型同步后的镜头维度" for item in pipeline.api.result.items)
-    assert not pipeline._cache(runtime).execution_repair_records
+    assert all(item.dimensions.camera == "评分后整段修订镜头" for item in pipeline.api.result.items)
+    assert provider.repairs == 10
+    assert len(pipeline._cache(runtime).execution_repair_records) == 10
 
 
 @pytest.mark.asyncio
