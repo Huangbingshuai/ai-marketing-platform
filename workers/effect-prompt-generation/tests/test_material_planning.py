@@ -10,7 +10,8 @@ import pytest
 from effect_prompt_generation.graph import build_graph
 from effect_prompt_generation.models import (
     ClassificationShardPlan, CreativeCandidateDraft, FactEvidence, MaterialPlanResponse, PromptBatchSettings,
-    StrategyCheckpoint, ExecutionFinding, ExecutionRepairDraft,
+    StrategyCheckpoint, ExecutionAuditBatch, ExecutionAuditItem, ExecutionFinding,
+    ExecutionRepairDraft,
 )
 from effect_prompt_generation.pipeline import PromptGenerationPipeline
 from effect_prompt_generation.product_images import PreparedProductImage
@@ -99,19 +100,20 @@ async def test_material_execution_is_rewritten_only_after_ai_diagnosis() -> None
             return replace(call, value=call.value.model_copy(update={"items": [
                 row.model_copy(update={
                     "scores": row.scores.model_copy(update={"visual_executability": 70}),
+                    "execution_audit_recommended": True,
                 }) for row in call.value.items
             ]}))
 
         async def audit_creative_execution(self, candidates: Any, **kwargs: Any) -> Any:
             call = await super().audit_creative_execution(candidates, **kwargs)
             self.audit_calls += 1
-            return replace(call, value=call.value.model_copy(update={"items": [
-                row.model_copy(update={"findings": [ExecutionFinding(
+            return replace(call, value=ExecutionAuditBatch(items=[
+                ExecutionAuditItem(slot_id=row.slot_id, findings=[ExecutionFinding(
                         code="CAMERA_ACTION_MISMATCH", sequence=1,
                         field="CAMERA", diagnosis="相机同时固定与推进",
-                    )] if self.audit_calls == 1 else []})
-                for row in call.value.items
-            ]}))
+                    )] if self.audit_calls == 1 else [])
+                for row in candidates
+            ]))
 
         async def repair_creative_execution(self, candidate: Any, **kwargs: Any) -> Any:
             self.repair_calls += 1
@@ -148,13 +150,14 @@ async def test_material_execution_is_rewritten_only_after_ai_diagnosis() -> None
 
 @pytest.mark.asyncio
 @pytest.mark.asyncio
-async def test_material_preflight_counts_execution_edit_and_exact_initial_pool() -> None:
+async def test_material_preflight_counts_model_screened_audit_as_optional() -> None:
     pipeline, runtime, _ = await ready(50, 3)
     budget = pipeline._preflight_run(runtime)
     assert budget["plannedInitialCandidateCount"] == 50
     generation_calls = (50 + budget["plannedCreativeShardSize"] - 1) // budget["plannedCreativeShardSize"]
     evaluation_calls = (50 + budget["plannedEvaluationShardSize"] - 1) // budget["plannedEvaluationShardSize"]
-    assert budget["plannedMinimumAiCallCount"] >= generation_calls + evaluation_calls * 2 + 3
+    assert budget["plannedMinimumAiCallCount"] >= generation_calls + evaluation_calls + 3
+    assert budget["plannedMinimumAiCallCount"] < generation_calls + evaluation_calls * 2 + 3
 
 
 @pytest.mark.asyncio

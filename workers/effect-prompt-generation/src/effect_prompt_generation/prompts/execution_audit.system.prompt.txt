@@ -13,8 +13,9 @@
 9. 食品与操作安全：刚出炉、沸腾或高温器具不能无过渡徒手触碰；需要完整熟制的过程不能在几秒内完成。已在 initialState 明确为成品的食物可以直接展示或食用。
 
 输出规则：
-- 每条候选必须返回一次 slotId；没有明确问题时 findings=[]。
-- 有问题时最多返回 5 条可定位 findings。code 只用 CAMERA_ACTION_MISMATCH 或 VISUALLY_UNEXECUTABLE。
+- 使用紧凑输出：只返回确实存在明确问题的候选；通过审查的候选不要返回 item。整批均通过时返回 items=[]。系统会把未返回的候选确定性恢复为 findings=[]。
+- 有问题时每个 slotId 最多返回 5 条可定位 findings。code 只用 CAMERA_ACTION_MISMATCH 或 VISUALLY_UNEXECUTABLE。
+- slotId 只能来自输入，不能重复，也不能遗漏任何已确诊问题的候选。
 - sequence 对应输入节拍；initialState 或 finalFrame 使用 0。
 - field 只用 FRAMING、ACTION、CAMERA、FOCUS、MOTION_SOURCE、VISIBLE_RESULT、INITIAL_STATE、FINAL_FRAME。
 - diagnosis 必须写清“当前状态/要求”与“冲突或缺口”，例如手被什么占用、工具为何做不到、哪个结果缺少驱动、哪两个相机要求冲突；不要给改写方案。

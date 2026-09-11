@@ -189,7 +189,11 @@ def test_ark_structured_output_rejects_non_artifact_trailing_content() -> None:
 
 @pytest.mark.asyncio
 async def test_ark_remote_protocol_disconnect_is_retryable_transport_error() -> None:
+    calls = 0
+
     async def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
         raise httpx.RemoteProtocolError("server disconnected")
 
     provider = ArkResponsesProvider(
@@ -197,6 +201,7 @@ async def test_ark_remote_protocol_disconnect_is_retryable_transport_error() -> 
         api_key="test-key",
         strategy_model="strategy-model",
         candidate_model="creative-model",
+        max_attempts=2,
         transport=httpx.MockTransport(handler),
     )
     try:
@@ -216,6 +221,8 @@ async def test_ark_remote_protocol_disconnect_is_retryable_transport_error() -> 
 
     assert raised.value.retryable is True
     assert raised.value.error_type.value == "AI_NETWORK"
+    assert raised.value.attempts == 2
+    assert calls == 2
 
 
 @pytest.mark.asyncio
@@ -1169,6 +1176,7 @@ async def test_ark_evaluation_reserves_tokens_per_candidate_with_configured_ceil
                         "commercialUsefulness": 85,
                         "visualClarity": 90,
                     },
+                    "executionAuditRecommended": False,
                     "hardIssues": [],
                     "warnings": [],
                 }
@@ -1208,6 +1216,7 @@ async def test_ark_evaluation_reserves_tokens_per_candidate_with_configured_ceil
     assert "realizedFactIds" not in item_schema["properties"]
     assert "semanticSignature" not in item_schema["properties"]
     assert "visualSignature" not in item_schema["properties"]
+    assert "executionAuditRecommended" in item_schema["required"]
     prompt = seen["input"][0]["content"][0]["text"]  # type: ignore[index]
     assert '"ordinal"' not in prompt
     assert '"round"' not in prompt
@@ -1216,3 +1225,51 @@ async def test_ark_evaluation_reserves_tokens_per_candidate_with_configured_ceil
         item.realized_fact_ids == [product_fact.fact_id]
         for item in result.value.items
     )
+    assert all(not item.execution_audit_recommended for item in result.value.items)
+
+
+@pytest.mark.asyncio
+async def test_ark_execution_audit_accepts_compact_problem_only_response() -> None:
+    seen: dict[str, object] = {}
+    candidate = CreativeCandidate(
+        slot_id="creative-1",
+        ordinal=1,
+        round=0,
+        creative_core="展示便携杯",
+        declared_fact_ids=["fact-1"],
+        dimensions=CreativeDimensions(
+            narrative="动作展示",
+            scene="办公桌",
+            persona="成年使用者",
+            product_relation="便携杯作为主体",
+            camera="固定近景",
+            emotion="清爽",
+        ),
+        content="成年使用者把便携杯稳定放在办公桌上，固定近景持续呈现杯身与桌面的接触状态。",
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"status": "completed", "output_text": '{"items":[]}'},
+        )
+
+    provider = ArkResponsesProvider(
+        base_url="https://ark.example/v3",
+        api_key="test-key",
+        strategy_model="strategy-model",
+        candidate_model="creative-model",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await provider.audit_creative_execution(
+            [candidate], target_durations={candidate.slot_id: 5}
+        )
+    finally:
+        await provider.aclose()
+
+    assert result.value.items == []
+    assert seen["max_output_tokens"] == 2048
+    schema = seen["text"]["format"]["schema"]  # type: ignore[index]
+    assert schema["properties"]["items"]["minItems"] == 0

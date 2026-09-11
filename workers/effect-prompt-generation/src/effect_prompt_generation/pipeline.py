@@ -173,7 +173,7 @@ from .reliability import (
 # run once; repeatedly chasing an evaluator's unresolved fact finding only
 # amplifies model variance and cost.
 MAX_REPLENISHMENT_ROUNDS = 2
-MAX_EXECUTION_REPAIR_ATTEMPTS = 2
+MAX_EXECUTION_REPAIR_ATTEMPTS = 1
 COVERAGE_SUPPLEMENT_RATIO = 0.20
 SEMANTIC_DUPLICATE_RATE_LIMIT = 15.0
 # Diversity recovery and the user-visible quality target use one boundary.
@@ -619,11 +619,11 @@ class PromptGenerationPipeline:
         evaluation_calls = math.ceil(
             settings.target_count / planned_evaluation_shard_size
         )
-        # Every classification shard has one broad quality evaluation and one
-        # focused physical-execution audit. Optional rewrite/review calls are
-        # excluded; supplements/recovery share the same run counter.
+        # Every classification shard has one broad quality evaluation. Focused
+        # execution audits are optional and model-screened, like repair/review
+        # calls; supplements/recovery share the same run counter.
         strategy_calls = len(fact_visual_strategy_batches(map_insight(snapshot.insight_artifact.result)))
-        minimum_calls = generation_calls + evaluation_calls * 2 + math.ceil(generated_target / 20) + strategy_calls
+        minimum_calls = generation_calls + evaluation_calls + math.ceil(generated_target / 20) + strategy_calls
         if minimum_calls > self.max_ai_calls_per_run:
             raise PipelineError(
                 "Prompt run configuration cannot fit the initial batch within the AI call budget"
@@ -3646,6 +3646,7 @@ class PromptGenerationPipeline:
                 group: list[CreativeCandidate],
                 *, attempts_override: int | None = None,
                 prepaid_repair_review: bool = False,
+                fact_scope_ids: Sequence[str] | None = None,
             ) -> list[CreativeEvaluation]:
                 attempts = attempts_override or (2 if len(group) == 1 else 1)
                 for invalid_response_attempt in range(attempts):
@@ -3679,6 +3680,8 @@ class PromptGenerationPipeline:
                             evaluation_kwargs["fact_visual_strategy"] = (
                                 self._required_fact_visual_strategy(context)
                             )
+                        if fact_scope_ids is not None:
+                            evaluation_kwargs["fact_scope_ids"] = fact_scope_ids
                         try:
                             call = await self.provider.evaluate_creatives(
                                 group,
@@ -3752,8 +3755,12 @@ class PromptGenerationPipeline:
                             for candidate in group
                         },
                     )
-                return {
+                findings_by_slot = {
                     item.slot_id: list(item.findings) for item in call.value.items
+                }
+                return {
+                    candidate.slot_id: findings_by_slot.get(candidate.slot_id, [])
+                    for candidate in group
                 }
 
             async def request_execution_audit_with_split(
@@ -3846,6 +3853,7 @@ class PromptGenerationPipeline:
                 if (
                     item.slot_id in pending_slot_ids
                     and not item.hard_issues
+                    and item.execution_audit_recommended
                     and candidate_by_id[item.slot_id].shot_plan is not None
                 )
             ]
@@ -3912,14 +3920,6 @@ class PromptGenerationPipeline:
                     ):
                         items[index] = original_evaluation.model_copy(
                             update={
-                                "hard_issues": list(
-                                    dict.fromkeys(
-                                        [
-                                            *original_evaluation.hard_issues,
-                                            "UNRESOLVED_EXECUTION",
-                                        ]
-                                    )
-                                ),
                                 "warnings": list(
                                     dict.fromkeys(
                                         [
@@ -4011,10 +4011,22 @@ class PromptGenerationPipeline:
                                 "execution repair exhausted with physical findings"
                             )
                         unused_repair_reservations -= 1
+                        repair_fact_scope_ids = list(
+                            dict.fromkeys(
+                                [
+                                    *original.declared_fact_ids,
+                                    *assigned_context_fact_ids.get(
+                                        original.slot_id, []
+                                    ),
+                                    *original_evaluation.realized_fact_ids,
+                                ]
+                            )
+                        )
                         review_items = await request_evaluations(
                             [repaired],
                             attempts_override=1,
                             prepaid_repair_review=True,
+                            fact_scope_ids=repair_fact_scope_ids,
                         )
                         if len(review_items) != 1:
                             raise ValueError("repair review returned wrong item count")
@@ -4073,14 +4085,6 @@ class PromptGenerationPipeline:
                             update={
                                 "execution_repair": checkpoint.model_copy(
                                     update={"status": "KEPT_ORIGINAL"}
-                                ),
-                                "hard_issues": list(
-                                    dict.fromkeys(
-                                        [
-                                            *original_evaluation.hard_issues,
-                                            "UNRESOLVED_EXECUTION",
-                                        ]
-                                    )
                                 ),
                                 "warnings": list(
                                     dict.fromkeys(
@@ -4258,6 +4262,10 @@ class PromptGenerationPipeline:
             if item.execution_repair is not None
             and item.execution_repair.status == "KEPT_ORIGINAL"
         ]
+        execution_audit_recommended_count = sum(
+            item.execution_audit_recommended and item.execution_repair is None
+            for item in evaluations
+        ) + len(completed_execution_repairs)
         await self._stage(
             context,
             node,
@@ -4276,12 +4284,16 @@ class PromptGenerationPipeline:
                 "completedShardCount": len(cache.completed_classification_shard_keys),
                 "evaluationCallCount": cache.evaluation_call_count,
                 "executionAuditCallCount": cache.execution_audit_call_count,
+                "executionAuditRecommendedCount": (
+                    execution_audit_recommended_count
+                ),
                 # This count is recoverable from persisted evaluation records,
                 # unlike provider-call counters which restart with a new task
                 # attempt. It represents initial reviews plus post-repair
                 # reviews, not vendor request internals.
                 "executionAuditCandidateCount": (
-                    len(evaluations) + len(completed_execution_repairs)
+                    execution_audit_recommended_count
+                    + len(completed_execution_repairs)
                 ),
                 "executionRepairAttemptedCount": len(
                     completed_execution_repairs

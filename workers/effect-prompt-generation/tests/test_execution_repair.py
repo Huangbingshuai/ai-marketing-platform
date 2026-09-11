@@ -14,6 +14,8 @@ from effect_prompt_generation.execution_repair import (
 )
 from effect_prompt_generation.models import (
     ClassificationShardPlan,
+    ExecutionAuditBatch,
+    ExecutionAuditItem,
     ExecutionFinding,
     ExecutionRepairCheckpoint,
     ExecutionRepairDraft,
@@ -36,8 +38,11 @@ class LocatedProvider(MockAiProvider):
         self.evaluations = 0
         self.audits = 0
         self.repairs = 0
+        self.fact_scopes: list[list[str] | None] = []
 
     async def evaluate_creatives(self, *args: Any, **kwargs: Any) -> Any:
+        scope = kwargs.get("fact_scope_ids")
+        self.fact_scopes.append(list(scope) if scope is not None else None)
         call = await super().evaluate_creatives(*args, **kwargs)
         self.evaluations += 1
         if self.evaluations > 1 and self.mode == "empty-review":
@@ -61,6 +66,10 @@ class LocatedProvider(MockAiProvider):
                     update={
                         "scores": scores,
                         "warnings": ["DURATION_TOO_DENSE"] if diagnosed else [],
+                        "execution_audit_recommended": (
+                            self.evaluations == 1
+                            and self.mode != "not-recommended"
+                        ),
                         "execution_findings": [],
                     }
                 )
@@ -75,9 +84,9 @@ class LocatedProvider(MockAiProvider):
             or (self.mode == "two-pass" and self.audits == 2)
         ) and self.mode != "unlocated"
         rows = [
-            item.model_copy(
-                update={
-                    "findings": [
+            ExecutionAuditItem(
+                slot_id=item.slot_id,
+                findings=[
                         ExecutionFinding(
                             code="CAMERA_ACTION_MISMATCH",
                             sequence=1,
@@ -85,13 +94,11 @@ class LocatedProvider(MockAiProvider):
                             diagnosis="同一节拍机位固定与机位移动互相冲突",
                         )
                     ]
-                    if diagnosed
-                    else []
-                }
+                    if diagnosed else [],
             )
-            for item in call.value.items
+            for item in args[0]
         ]
-        return replace(call, value=call.value.model_copy(update={"items": rows}))
+        return replace(call, value=ExecutionAuditBatch(items=rows))
 
     async def repair_creative_execution(self, candidate: Any, **kwargs: Any) -> Any:
         self.repairs += 1
@@ -141,6 +148,51 @@ async def prepared(provider: LocatedProvider) -> tuple[Any, Any, Any, Any]:
 
 
 @pytest.mark.asyncio
+async def test_only_ai_screened_candidates_enter_execution_audit() -> None:
+    class ScreeningProvider(MockAiProvider):
+        def __init__(self) -> None:
+            self.audited_slot_ids: list[str] = []
+
+        async def evaluate_creatives(self, *args: Any, **kwargs: Any) -> Any:
+            call = await super().evaluate_creatives(*args, **kwargs)
+            rows = [
+                item.model_copy(
+                    update={"execution_audit_recommended": index == 0}
+                )
+                for index, item in enumerate(call.value.items)
+            ]
+            return replace(
+                call, value=call.value.model_copy(update={"items": rows})
+            )
+
+        async def audit_creative_execution(
+            self, candidates: Any, **kwargs: Any
+        ) -> Any:
+            self.audited_slot_ids.extend(item.slot_id for item in candidates)
+            return await super().audit_creative_execution(candidates, **kwargs)
+
+    provider = ScreeningProvider()
+    pipeline, runtime = await ready_pipeline(provider)
+    creative_shard = (await pipeline.plan_creatives(runtime, round_number=0))[0]
+    candidates = await pipeline.generate_creative_shard(runtime, creative_shard)
+    selected = candidates[:2]
+    await pipeline.evaluate_classification_shard(
+        runtime,
+        ClassificationShardPlan(
+            round=0,
+            shard_index=0,
+            candidate_ids=[item.slot_id for item in selected],
+        ),
+    )
+
+    assert provider.audited_slot_ids == [selected[0].slot_id]
+    assert all(
+        not item.execution_findings
+        for item in pipeline._cache(runtime).creative_evaluations.values()
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mode",
     [
@@ -152,24 +204,22 @@ async def prepared(provider: LocatedProvider) -> tuple[Any, Any, Any, Any]:
         "unimproved",
         "unlocated",
         "empty-review",
+        "not-recommended",
     ],
 )
-async def test_diagnosed_candidate_is_repaired_or_removed_from_selection(
+async def test_diagnosed_candidate_is_repaired_or_preserved_with_warning(
     mode: str,
 ) -> None:
     provider = LocatedProvider(mode)
     pipeline, runtime, original, shard = await prepared(provider)
     result = (await pipeline.evaluate_classification_shard(runtime, shard))[0]
     current = pipeline._cache(runtime).creatives[original.slot_id]
-    assert provider.repairs == (
-        0 if mode == "unlocated" else 2 if mode == "two-pass" else 1
-    )
+    assert provider.repairs == (0 if mode in {"unlocated", "not-recommended"} else 1)
     assert provider.evaluations == (
         2
         if mode
         in {
             "accept",
-            "two-pass",
             "summary-omits-code",
             "unimproved",
             "empty-review",
@@ -177,13 +227,19 @@ async def test_diagnosed_candidate_is_repaired_or_removed_from_selection(
         else 1
     )
     assert provider.audits == (
-        3
-        if mode == "two-pass"
-        else 2
-        if mode in {"accept", "summary-omits-code", "unimproved", "empty-review"}
+        2
+        if mode in {
+            "accept",
+            "two-pass",
+            "summary-omits-code",
+            "unimproved",
+            "empty-review",
+        }
+        else 0
+        if mode == "not-recommended"
         else 1
     )
-    if mode in {"accept", "two-pass", "summary-omits-code"}:
+    if mode in {"accept", "summary-omits-code"}:
         assert not result.hard_issues
         assert current.content != original.content
         assert current.shot_plan.beats[0].motion_source == "使用者施力推动主体"
@@ -193,15 +249,19 @@ async def test_diagnosed_candidate_is_repaired_or_removed_from_selection(
         assert current.declared_fact_ids == original.declared_fact_ids
         assert result.execution_repair.status == "ACCEPTED"
         assert restore_execution_candidate(original, result, duration=5) == current
+        assert provider.fact_scopes[0] is None
+        assert provider.fact_scopes[1] is not None
+        assert set(original.declared_fact_ids).issubset(provider.fact_scopes[1])
     else:
         assert current == original
-        if mode == "unlocated":
+        if mode in {"unlocated", "not-recommended"}:
             assert not result.hard_issues
             assert "CAMERA_ACTION_MISMATCH" not in result.warnings
         else:
-            assert "UNRESOLVED_EXECUTION" in result.hard_issues
+            assert not result.hard_issues
             assert "CAMERA_ACTION_MISMATCH" in result.warnings
-        if mode != "unlocated":
+            assert "EXECUTION_REPAIR_UNRESOLVED" in result.warnings
+        if mode not in {"unlocated", "not-recommended"}:
             assert result.execution_repair.status == "KEPT_ORIGINAL"
     calls = (provider.repairs, provider.evaluations, provider.audits)
     resumed = PromptGenerationPipeline(api=pipeline.api, provider=provider)
@@ -264,7 +324,11 @@ async def test_manual_task_never_rewrites_user_content() -> None:
     assert provider.repairs == 0
     assert pipeline._cache(runtime).creatives[original.slot_id] == original
     result = pipeline._cache(runtime).creative_evaluations[original.slot_id]
-    assert "UNRESOLVED_EXECUTION" in result.hard_issues
+    assert not result.hard_issues
+    assert "EXECUTION_REPAIR_UNAVAILABLE" in result.warnings
+    result = pipeline._cache(runtime).creative_evaluations[original.slot_id]
+    assert not result.hard_issues
+    assert "EXECUTION_REPAIR_UNAVAILABLE" in result.warnings
 
 
 @pytest.mark.asyncio

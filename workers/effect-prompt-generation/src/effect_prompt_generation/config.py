@@ -115,7 +115,7 @@ class WorkerSettings(BaseSettings):
     )
 
     prompt_max_concurrency: int = Field(
-        default=4, alias="PROMPT_MAX_CONCURRENCY", ge=1, le=8
+        default=2, alias="PROMPT_MAX_CONCURRENCY", ge=1, le=8
     )
     prompt_evaluation_input_token_budget: int = Field(
         default=DEFAULT_EVALUATION_INPUT_TOKEN_BUDGET,
@@ -162,7 +162,7 @@ class WorkerSettings(BaseSettings):
         default=12000, alias="PROMPT_DIRECTION_REVIEW_INPUT_BUDGET", ge=2500
     )
     ark_prompt_provider_max_attempts: int = Field(
-        default=1, alias="ARK_PROMPT_PROVIDER_MAX_ATTEMPTS", ge=1, le=3
+        default=3, alias="ARK_PROMPT_PROVIDER_MAX_ATTEMPTS", ge=1, le=3
     )
     ark_prompt_embedding_timeout_seconds: float = Field(
         default=30.0, alias="ARK_PROMPT_EMBEDDING_TIMEOUT_SECONDS", gt=0

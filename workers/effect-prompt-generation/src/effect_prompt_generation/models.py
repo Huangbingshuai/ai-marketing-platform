@@ -1489,7 +1489,9 @@ class ExecutionAuditItem(ApiModel):
 
 
 class ExecutionAuditBatch(ApiModel):
-    items: list[ExecutionAuditItem] = Field(min_length=1, max_length=10)
+    # Compact protocol: passing candidates are omitted. The caller restores an
+    # empty finding list for every requested slot that is not returned.
+    items: list[ExecutionAuditItem] = Field(default_factory=list, max_length=10)
 
 
 class ExecutionRepairDraft(ApiModel):
@@ -1520,6 +1522,9 @@ class CreativeEvaluation(ApiModel):
     )
     hard_issues: list[str] = Field(default_factory=list, max_length=20)
     warnings: list[str] = Field(default_factory=list, max_length=20)
+    # This decision belongs to the evaluator. Older persisted evaluations
+    # default to True so a resumed historical Run never silently skips review.
+    execution_audit_recommended: bool = True
     execution_findings: list[ExecutionFinding] = Field(default_factory=list, max_length=5)
     execution_repair: ExecutionRepairCheckpoint | None = None
     inferred_creative_core: str | None = Field(
@@ -1597,6 +1602,7 @@ class CreativeEvaluationDraft(ApiModel):
     )
     hard_issues: list[str] = Field(default_factory=list, max_length=5)
     warnings: list[str] = Field(default_factory=list, max_length=3)
+    execution_audit_recommended: bool = True
     execution_findings: list[ExecutionFinding] = Field(default_factory=list, max_length=5)
     inferred_creative_core: str | None = Field(
         default=None,

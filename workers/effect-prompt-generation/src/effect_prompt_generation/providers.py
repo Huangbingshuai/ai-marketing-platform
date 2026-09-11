@@ -59,7 +59,6 @@ from .models import (
     CreativeEvaluationDraft,
     CreativeEvaluationDraftBatch,
     ExecutionAuditBatch,
-    ExecutionAuditItem,
     ExecutionFinding,
     ExecutionRepairDraft,
     CreativeFactTerritoryAssignment,
@@ -403,6 +402,7 @@ class AiProvider(Protocol):
         fact_visual_strategy: FactVisualStrategy | None = None,
         direction_plan: CreativeDirectionPlan | None = None,
         infer_creative_structure: bool = False,
+        fact_scope_ids: Sequence[str] | None = None,
     ) -> AiCallResult[CreativeEvaluationBatch]: ...
 
 
@@ -449,14 +449,9 @@ class MockAiProvider:
         *,
         target_durations: Mapping[str, int],
     ) -> AiCallResult[ExecutionAuditBatch]:
-        del target_durations
+        del candidates, target_durations
         return _mock_result(
-            ExecutionAuditBatch(
-                items=[
-                    ExecutionAuditItem(slot_id=item.slot_id, findings=[])
-                    for item in candidates
-                ]
-            ),
+            ExecutionAuditBatch(items=[]),
             "CREATIVE_EVALUATION_CLASSIFICATION",
             EXECUTION_AUDIT_PROMPT,
         )
@@ -840,8 +835,9 @@ class MockAiProvider:
         fact_visual_strategy: FactVisualStrategy | None = None,
         direction_plan: CreativeDirectionPlan | None = None,
         infer_creative_structure: bool = False,
+        fact_scope_ids: Sequence[str] | None = None,
     ) -> AiCallResult[CreativeEvaluationBatch]:
-        del target_durations
+        del target_durations, fact_scope_ids
         context_by_slot = assigned_context_fact_ids or {}
         return _mock_result(
             CreativeEvaluationBatch(
@@ -2246,9 +2242,10 @@ class ArkResponsesProvider:
                 error_type=ProviderErrorType.REQUEST_REJECTED,
             )
         schema = ExecutionAuditBatch.model_json_schema(by_alias=True)
-        schema["properties"]["items"].update(
-            minItems=len(candidates), maxItems=len(candidates)
+        schema["required"] = list(
+            dict.fromkeys([*schema.get("required", []), "items"])
         )
+        schema["properties"]["items"].update(minItems=0, maxItems=len(candidates))
         schema["$defs"]["ExecutionAuditItem"]["properties"]["slotId"][
             "enum"
         ] = sorted(expected)
@@ -2279,16 +2276,16 @@ class ArkResponsesProvider:
             model=self._evaluation_model,
             max_output_tokens=min(
                 self._evaluation_max_output_tokens,
-                max(1024, len(candidates) * 900),
+                max(2048, len(candidates) * 900),
             ),
             request_timeout=self._evaluation_timeout,
             instructions=load_prompt(EXECUTION_AUDIT_PROMPT),
             response_schema=schema,
         )
         actual = [item.slot_id for item in call.value.items]
-        if len(actual) != len(set(actual)) or set(actual) != expected:
+        if len(actual) != len(set(actual)) or not set(actual).issubset(expected):
             raise ProviderError(
-                "AI execution audit has missing, duplicate, or unknown slotId",
+                "AI execution audit has duplicate or unknown slotId",
                 retryable=False,
                 error_type=ProviderErrorType.RESPONSE_INVALID,
                 attempts=call.metadata.attempts,
@@ -2330,6 +2327,7 @@ class ArkResponsesProvider:
         fact_visual_strategy: FactVisualStrategy | None = None,
         direction_plan: CreativeDirectionPlan | None = None,
         infer_creative_structure: bool = False,
+        fact_scope_ids: Sequence[str] | None = None,
     ) -> AiCallResult[CreativeEvaluationBatch]:
         if not candidates or len(candidates) > 10:
             raise ProviderError(
@@ -2363,8 +2361,30 @@ class ArkResponsesProvider:
                 retryable=False,
                 error_type=ProviderErrorType.REQUEST_REJECTED,
             )
-        # Planned sources are guidance, not the universe of legitimate evidence.
-        referenced = {fact.fact_id for fact in application.usable}
+        all_referenced = {fact.fact_id for fact in application.usable}
+        if fact_scope_ids is None:
+            # Planned sources are guidance, not the universe of legitimate
+            # evidence during normal batch evaluation.
+            referenced = all_referenced
+        else:
+            # A post-repair review only needs facts already attached to this
+            # candidate. This is a mechanical ID scope, not Worker semantics.
+            referenced = set(dict.fromkeys(fact_scope_ids))
+            if not referenced or not referenced.issubset(all_referenced):
+                raise ProviderError(
+                    "creative evaluation received an invalid fact scope",
+                    retryable=False,
+                    error_type=ProviderErrorType.REQUEST_REJECTED,
+                )
+            if any(
+                not set(context_by_slot.get(slot_id, [])).issubset(referenced)
+                for slot_id in expected
+            ):
+                raise ProviderError(
+                    "creative evaluation fact scope omits assigned context",
+                    retryable=False,
+                    error_type=ProviderErrorType.REQUEST_REJECTED,
+                )
         facts = [
             application.by_id[fact_id].model_dump(
                 mode="json",
@@ -2422,6 +2442,15 @@ class ArkResponsesProvider:
                 sort_keys=True,
             ),
         )
+        response_schema = CreativeEvaluationDraftBatch.model_json_schema(
+            by_alias=True
+        )
+        draft_schema = response_schema["$defs"]["CreativeEvaluationDraft"]
+        draft_schema["required"] = list(
+            dict.fromkeys(
+                [*draft_schema.get("required", []), "executionAuditRecommended"]
+            )
+        )
         call = await self._structured(
             prompt,
             CreativeEvaluationDraftBatch,
@@ -2438,6 +2467,7 @@ class ArkResponsesProvider:
             ),
             request_timeout=self._evaluation_timeout,
             instructions=load_prompt(EVALUATION_BASE_PROMPT),
+            response_schema=response_schema,
         )
         actual = [item.slot_id for item in call.value.items]
         if len(actual) != len(set(actual)) or set(actual) != expected:
@@ -3585,6 +3615,7 @@ def _compile_creative_evaluation(
         abstract_visual_proof_findings=draft.abstract_visual_proof_findings,
         hard_issues=draft.hard_issues,
         warnings=draft.warnings,
+        execution_audit_recommended=draft.execution_audit_recommended,
         execution_findings=draft.execution_findings,
         inferred_creative_core=draft.inferred_creative_core,
         inferred_dimensions=draft.inferred_dimensions,
@@ -3646,6 +3677,7 @@ def _mock_creative_evaluation(
         semantic_profile=(direction.semantic_profile if direction else None),
         hard_issues=[] if evidence else ["PRODUCT_UNRELATED"],
         warnings=[],
+        execution_audit_recommended=False,
         inferred_creative_core=(
             f"围绕用户正文呈现{candidate.dimensions.product_relation}"
             if infer_creative_structure

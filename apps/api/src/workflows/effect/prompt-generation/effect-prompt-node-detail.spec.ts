@@ -100,15 +100,18 @@ describe('presentEffectPromptNodeDetail', () => {
     stage.metadata = {
       perceptionPhase: 'DIAGNOSED_EXECUTION_REWRITE',
       executionRepairAttemptedCount: 3,
+      executionAuditRecommendedCount: 4,
       executionAuditCandidateCount: 6,
       executionRepairAcceptedCount: 2,
       executionRepairUnresolvedCount: 1,
     };
     const detail = presentEffectPromptNodeDetail(run, 'CREATIVE_EVALUATION_CLASSIFICATION');
     expect(detail.fields).toContainEqual({ label: '执行修订尝试', value: 3 });
+    expect(detail.fields).toContainEqual({ label: 'AI 建议专职审片', value: 4 });
     expect(detail.fields).toContainEqual({ label: '专职执行审片条次', value: 6 });
     expect(detail.fields).toContainEqual({ label: '复评后采用修订', value: 2 });
-    expect(detail.fields).toContainEqual({ label: '未修复并移出候选', value: 1 });
+    expect(detail.fields).toContainEqual({ label: '修订后仍保留提醒', value: 1 });
+    expect(JSON.stringify(detail)).not.toContain('未修复并移出候选');
     expect(JSON.stringify(detail)).toContain('修订有明确执行问题的素材并复评');
   });
 

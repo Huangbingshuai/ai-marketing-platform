@@ -147,6 +147,10 @@ def test_commercial_camera_guidance_is_motivated_and_vendor_independent() -> Non
     assert "相对运动：分别确定相机、主体和焦点谁在动" in repair
     assert "每条 finding 当作必须关闭的验收项" in repair
     assert "物理上能否执行由专职审片员判断" in evaluation
+    assert "executionAuditRecommended" in evaluation
+    assert "执行可疑信号" in evaluation
+    assert "不要求你已经确认违规" in evaluation
+    assert "不要为了节省调用而漏掉" in evaluation
     assert "不输出定位诊断" in evaluation
 
     combined = f"{creative}\n{task}\n{audit}\n{repair}\n{evaluation}"
@@ -209,6 +213,9 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "compatiblePurposes 只返回其他兼容用途" in evaluation
     assert "专职 AI 审片员独立诊断" in evaluation
     assert "executionFindings 必须返回 []" in evaluation
+    assert "整批均通过时返回 items=[]" in load_prompt(
+        "execution_audit.system.prompt.txt"
+    )
     assert "HOOK、PRODUCT_DISPLAY、EFFECT、CTA" in evaluation
     assert "PAIN、" not in evaluation
     assert "SELLING_POINT_EXPLANATION" not in evaluation
@@ -267,6 +274,9 @@ def test_route_execution_suggestions_do_not_override_safe_creative_intent() -> N
     assert "不得增加新卖点、产品结构、功效、使用方式或包装信息" in repair
     assert "完整连贯的新 shotPlan" in repair
     assert "可以重组节拍数量、顺序和 durationWeight" in repair
+    assert "最小可执行改法" in repair
+    assert "一个代表性对象或一小块区域" in repair
+    assert "不是逐字保留旧动作数量" in repair
 
 
 def test_creative_guidance_is_compact_and_explains_support_and_observer_relationships() -> None:
