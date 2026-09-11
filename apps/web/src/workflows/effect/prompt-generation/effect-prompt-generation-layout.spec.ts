@@ -229,6 +229,8 @@ describe('effect prompt generation current layout', () => {
   });
 
   it('renders the current batch graph without version or history controls', () => {
+    expect(pageSource).toContain('生成后由 AI 全量修正动作、镜头与画面衔接，再进入评分');
+    expect(pageSource).toContain('再由 AI 完成整段画面执行修正');
     for (const nodeId of [
       'LOAD_AND_SNAPSHOT',
       'INSIGHT_MAPPING',

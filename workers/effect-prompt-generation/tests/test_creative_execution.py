@@ -176,6 +176,10 @@ def test_execution_template_handles_causes_without_keyword_worker_rules() -> Non
     assert "不理解语义" in template
     assert "不要找到第一处问题就停止" in template
     assert "从头到尾复读一次完整片段" in template
+    assert "真实时间" in template
+    assert "评分前最后一个改写者" in template
+    assert "/dimensions" in template
+    assert "无图仍可" in template
 
 
 @pytest.mark.asyncio

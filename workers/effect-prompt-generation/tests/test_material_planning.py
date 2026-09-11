@@ -10,8 +10,9 @@ import pytest
 from effect_prompt_generation.graph import build_graph
 from effect_prompt_generation.models import (
     CreativeCandidateDraft, FactEvidence, MaterialPlanResponse, PromptBatchSettings,
-    StrategyCheckpoint,
+    StrategyCheckpoint, ExecutionFinding, StageStatus,
 )
+from effect_prompt_generation.execution_refinement import ExecutionEditDecision, apply_execution_edits
 from effect_prompt_generation.pipeline import PromptGenerationPipeline
 from effect_prompt_generation.product_images import PreparedProductImage
 from effect_prompt_generation.providers import (
@@ -39,7 +40,7 @@ class TrackingProvider(MockAiProvider):
 
     async def refine_creative_execution(self, *args: Any, **kwargs: Any) -> Any:
         self.refinements += 1
-        raise AssertionError("normal material generation must not rewrite every candidate")
+        return await super().refine_creative_execution(*args, **kwargs)
 
 
 async def ready(count: int = 10, facts: int = 6, provider: Any = None, name: str = "通用商品") -> tuple[Any, Any, Any]:
@@ -80,13 +81,116 @@ async def test_fact_first_counts_combinations_and_expansion(count: int, facts: i
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("product", ["紫苏梅子酱", "广式腊肠", "洗发露", "磁吸移动电源", "旅行箱"])
-async def test_generic_product_graph_has_no_planning_or_pre_edit_layers(product: str) -> None:
+async def test_generic_product_graph_has_final_execution_edit_without_old_planning(product: str) -> None:
     pipeline, runtime, provider = await ready(10, 10, name=product)
     await build_graph(pipeline).ainvoke({"project_id": runtime.project_id}, context=runtime)
     assert len(pipeline.api.result.items) == 10
     assert pipeline.api.result.metrics.candidate_target_count == 10
-    assert provider.refinements == 0
+    assert provider.refinements == 3
     assert pipeline._cache(runtime).creative_direction_plan is None
+
+
+@pytest.mark.asyncio
+async def test_material_final_edit_precedes_scoring_and_is_last_writer() -> None:
+    class FinalEditor(TrackingProvider):
+        async def refine_creative_execution(self, candidates: Any, **kwargs: Any) -> Any:
+            call = await super().refine_creative_execution(candidates, **kwargs)
+            revised = []
+            for original in candidates:
+                decision = ExecutionEditDecision.model_validate({
+                    "slotId": original.slot_id, "decision": "REPAIR",
+                    "conflicts": [{"paths": ["/shotPlan/beats/0/camera"], "reason": "opaque AI verdict"}],
+                    "replacements": [
+                        {"path": "/shotPlan/beats/0/camera", "value": "模型修订后的观察位置"},
+                        {"path": "/dimensions/camera", "value": "模型同步后的镜头维度"},
+                        {"path": "/creativeCore", "value": "模型保留商品价值后的连贯事件"},
+                    ],
+                })
+                revised.append(apply_execution_edits(original, decision, duration_seconds=15))
+            return replace(call, value=call.value.model_copy(update={"items": revised}))
+
+        async def evaluate_creatives(self, candidates: Any, **kwargs: Any) -> Any:
+            assert all("模型修订后的观察位置" in item.content for item in candidates)
+            assert all(item.dimensions.camera == "模型同步后的镜头维度" for item in candidates)
+            call = await super().evaluate_creatives(candidates, **kwargs)
+            return replace(call, value=call.value.model_copy(update={"items": [
+                row.model_copy(update={"execution_findings": [ExecutionFinding(
+                    code="CAMERA_ACTION_MISMATCH", sequence=1, field="CAMERA", diagnosis="opaque remaining concern",
+                )]}) for row in call.value.items
+            ]}))
+
+        async def repair_creative_execution(self, *args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("scoring must not rewrite a material after the final writer")
+
+    pipeline, runtime, _ = await ready(10, 10, FinalEditor())
+    await build_graph(pipeline).ainvoke({"project_id": runtime.project_id}, context=runtime)
+    assert len(pipeline.api.result.items) == 10
+    assert all(item.dimensions.camera == "模型同步后的镜头维度" for item in pipeline.api.result.items)
+    assert not pipeline._cache(runtime).execution_repair_records
+
+
+@pytest.mark.asyncio
+async def test_material_final_edit_failure_resumes_without_regeneration() -> None:
+    from test_creative_execution import RefinementProvider
+    provider = RefinementProvider()
+    pipeline, runtime, _ = await ready(10, 3, provider)
+    shard = (await pipeline.plan_creatives(runtime, round_number=0))[0]
+    provider.fail = True
+    with pytest.raises(ProviderError):
+        await pipeline.generate_creative_shard(runtime, shard)
+    persisted = pipeline.api.shards[shard.key]
+    assert persisted.status == StageStatus.FAILED
+    assert len(persisted.creative_items) == len(shard.tasks)
+    assert not pipeline._cache(runtime).creatives
+    resumed = PromptGenerationPipeline(api=pipeline.api, provider=provider)
+    resumed.register_snapshot(runtime, pipeline.snapshot(runtime))
+    await resumed.load_and_snapshot(runtime)
+    await resumed.map_insight(runtime)
+    await resumed.compile_fact_visual_strategy(runtime)
+    await resumed.compile_shared_prompt(runtime)
+    provider.fail = False
+    await resumed.generate_creative_shard(runtime, shard)
+    assert provider.generations == 1
+    assert provider.refinements == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("images", [False, True])
+async def test_final_editor_receives_product_images_and_can_keep_original(images: bool) -> None:
+    pipeline, runtime, mock = await ready(10, 3)
+    shard = (await pipeline.plan_creatives(runtime, round_number=0))[0]
+    candidates = (await mock.generate_creatives(shard, application=pipeline._require_application(runtime),
+        shared_prompt=pipeline._required_shared_prompt(runtime))).value.items
+    captured = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        captured.append(payload)
+        return httpx.Response(200, json={"status": "completed", "output_text": json.dumps({"items": [
+            {"slotId": c.slot_id, "decision": "KEEP", "conflicts": [], "replacements": []}
+            for c in candidates
+        ]})})
+
+    provider = ArkResponsesProvider(base_url="https://ark.example/v3", api_key="test",
+        candidate_model="turbo", strategy_model="turbo", transport=httpx.MockTransport(handler))
+    try:
+        result = await provider.refine_creative_execution(candidates, shard=shard,
+            application=pipeline._require_application(runtime), shared_prompt=pipeline._required_shared_prompt(runtime),
+            product_images=[PreparedProductImage(data_uri="data:image/jpeg;base64,dGVzdA==")] if images else ())
+        assert result.value.items == candidates
+    finally:
+        await provider.aclose()
+    assert sum(item["type"] == "input_image" for item in captured[0]["input"][0]["content"]) == int(images)
+
+
+@pytest.mark.asyncio
+async def test_material_preflight_counts_execution_edit_and_exact_initial_pool() -> None:
+    pipeline, runtime, _ = await ready(50, 3)
+    budget = pipeline._preflight_run(runtime)
+    assert budget["plannedInitialCandidateCount"] == 50
+    generation_calls = (50 + budget["plannedCreativeShardSize"] - 1) // budget["plannedCreativeShardSize"]
+    evaluation_calls = (50 + budget["plannedEvaluationShardSize"] - 1) // budget["plannedEvaluationShardSize"]
+    assert budget["plannedMinimumAiCallCount"] >= 2 * generation_calls + evaluation_calls + 3
 
 
 @pytest.mark.asyncio

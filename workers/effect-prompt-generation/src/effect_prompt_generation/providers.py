@@ -391,6 +391,7 @@ class AiProvider(Protocol):
         self, candidates: list[CreativeCandidate], *, shard: CreativeShardPlan,
         application: InsightApplicationMap, shared_prompt: SharedPrompt,
         fact_visual_strategy: FactVisualStrategy | None = None,
+        product_images: Sequence[PreparedProductImage] = (),
     ) -> AiCallResult[CreativeCandidateBatch]: ...
 
     async def evaluate_creatives(
@@ -434,6 +435,7 @@ class MockAiProvider:
         self, candidates: list[CreativeCandidate], *, shard: CreativeShardPlan,
         application: InsightApplicationMap, shared_prompt: SharedPrompt,
         fact_visual_strategy: FactVisualStrategy | None = None,
+        product_images: Sequence[PreparedProductImage] = (),
     ) -> AiCallResult[CreativeCandidateBatch]:
         # Explicit test identity fixture, not a semantic implementation.
         return _mock_result(CreativeCandidateBatch(items=candidates),
@@ -2222,6 +2224,7 @@ class ArkResponsesProvider:
         self, candidates: list[CreativeCandidate], *, shard: CreativeShardPlan,
         application: InsightApplicationMap, shared_prompt: SharedPrompt,
         fact_visual_strategy: FactVisualStrategy | None = None,
+        product_images: Sequence[PreparedProductImage] = (),
     ) -> AiCallResult[CreativeCandidateBatch]:
         tasks = {task.slot_id: task for task in shard.tasks}
         originals = {item.slot_id: item for item in candidates}
@@ -2240,9 +2243,10 @@ class ArkResponsesProvider:
                 "draft": draft,
                 "editablePaths": editable_execution_paths(candidate),
             })
+        prompt = json.dumps({"items": briefs, "sharedPrompt": shared_prompt.compiled_content},
+                            ensure_ascii=False)
         call = await self._structured(
-            json.dumps({"items": briefs, "sharedPrompt": shared_prompt.compiled_content},
-                       ensure_ascii=False),
+            prompt,
             ExecutionEditBatch,
             schema_name="effect_prompt_creative_execution",
             stage="COHERENT_CREATIVE_GENERATION",
@@ -2253,6 +2257,11 @@ class ArkResponsesProvider:
             request_timeout=self._candidate_timeout,
             instructions=load_prompt(CREATIVE_EXECUTION_PROMPT),
             response_schema=execution_edit_schema(candidates),
+            input_content=[{"type": "input_text", "text": prompt}, *[
+                {"type": "input_image", "image_url": image.data_uri,
+                 "detail": self._visual_strategy_image_detail}
+                for image in product_images
+            ]],
         )
         actual = [item.slot_id for item in call.value.items]
         if len(actual) != len(set(actual)) or set(actual) != set(originals):

@@ -583,9 +583,7 @@ class PromptGenerationPipeline:
         if snapshot.operation != "BATCH_GENERATE":
             return {"preflightStatus": "PASSED"}
         settings = _current_settings(snapshot)
-        generated_target = math.ceil(
-            max(0, settings.target_count - len(snapshot.retained_manual_items)) * 1.4
-        )
+        generated_target = max(0, settings.target_count - len(snapshot.retained_manual_items))
         generation_shard_size = _creative_shard_size_for_duration(
             settings.default_duration_seconds,
             configured_max_size=self.shard_size,
@@ -597,13 +595,12 @@ class PromptGenerationPipeline:
             evaluation_duration_max_size(settings.default_duration_seconds),
         )
         evaluation_calls = math.ceil(
-            generated_target / planned_evaluation_shard_size
+            settings.target_count / planned_evaluation_shard_size
         )
-        # The deterministic check reserves a small allowance for visual strategy,
-        # creative-space planning and direction audits. Supplements are protected
-        # later by the same per-run call counter because they depend on real output.
+        # One execution edit per generation shard, plus paged material planning.
+        # Supplements/recovery still use the same per-run call counter.
         strategy_calls = len(fact_visual_strategy_batches(map_insight(snapshot.insight_artifact.result)))
-        minimum_calls = generation_calls + evaluation_calls + 5 + strategy_calls
+        minimum_calls = 2 * generation_calls + evaluation_calls + math.ceil(generated_target / 20) + strategy_calls
         if minimum_calls > self.max_ai_calls_per_run:
             raise PipelineError(
                 "Prompt run configuration cannot fit the initial batch within the AI call budget"
@@ -3411,13 +3408,23 @@ class PromptGenerationPipeline:
                 running = running.model_copy(update={"warnings": [
                     f"仍有 {len(shard.tasks) - len(generated_items)} 条结构无效；有效候选继续完成执行修订"
                 ]})
-            if generated_items and not all(task.material_brief is not None for task in shard.tasks):
+            if generated_items:
                 # Persist model-authored draft before the second paid call. Failed
                 # refinement resumes here, never as a successful unreviewed shard.
                 running = running.model_copy(update={"creative_items": generated_items})
                 self._cache(context).pending_execution_drafts[shard.key] = running
                 await self.api.put_shard(context, running)
                 execution_refinement_started = True
+                await self._stage(
+                    context, NodeId.COHERENT_CREATIVE_GENERATION, StageStatus.RUNNING,
+                    "正在执行 AI 全量画面修正，完成后进入评分",
+                    metadata={
+                        **self._creative_direction_metadata(context),
+                        "perceptionPhase": "EXECUTION_REFINEMENT",
+                        "executionRefinementRequired": True,
+                        "executionRefinementCompletedCount": len(self._cache(context).creatives),
+                    },
+                )
 
                 async def refine_candidates(candidates: list[CreativeCandidate]) -> list[CreativeCandidate]:
                     candidate_ids = {item.slot_id for item in candidates}
@@ -3433,6 +3440,7 @@ class PromptGenerationPipeline:
                                     application=self._require_application(context),
                                     shared_prompt=self._required_shared_prompt(context),
                                     fact_visual_strategy=call_kwargs.get("fact_visual_strategy"),
+                                    product_images=call_kwargs.get("product_images", ()),
                                 )
                             # Do not trust even a provider adapter to alter identity.
                             revised = refined.value.items
@@ -3543,7 +3551,7 @@ class PromptGenerationPipeline:
             context,
             node,
             StageStatus.SUCCEEDED,
-            "连贯六维创意生成完成",
+            "素材创意生成与 AI 全量画面修正完成",
             metadata={
                 "perceptionPhase": "CANDIDATE_GENERATION_COMPLETE",
                 "round": round_number,
@@ -3556,6 +3564,8 @@ class PromptGenerationPipeline:
                 "candidateCount": len(cache.creatives),
                 "roundCandidateCount": len(round_items),
                 "completedShardCount": len(cache.completed_creative_shard_keys),
+                "executionRefinementRequired": True,
+                "executionRefinementCompletedCount": len(cache.creatives),
                 "supplemented": cache.supplemented,
                 "factSelectionMode": "DIRECTION_FACT_APPLICATIONS",
                 **self._creative_direction_metadata(context),
@@ -3829,7 +3839,11 @@ class PromptGenerationPipeline:
                         and item_id not in candidate_by_id
                         for item_id in cache.creatives
                     )
-                    if (task is None or original_evaluation.execution_repair is not None
+                    # Material candidates have a whole-clip final writer before
+                    # classification. Never apply a narrower post-score patch
+                    # that can leave overview/dimensions out of sync.
+                    if (task is None or task.material_brief is not None
+                            or original_evaluation.execution_repair is not None
                             or not has_execution_diagnosis(original, original_evaluation)
                             or cache.ai_call_count + 2 + pending_core_calls > self.max_ai_calls_per_run):
                         continue
