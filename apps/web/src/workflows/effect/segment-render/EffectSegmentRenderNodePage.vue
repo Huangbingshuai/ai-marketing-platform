@@ -22,6 +22,7 @@ import {
   FileVideo2,
   FolderInput,
   LoaderCircle,
+  Pause,
   Play,
   RefreshCw,
   Search,
@@ -201,7 +202,7 @@ const resolutionOptions = computed(() =>
   })),
 );
 
-const previewFrameStyle = computed(() => {
+const effectSegmentRenderFrameStyle = (maxHeightVh: number) => {
   const configuredRatio = renderSettings.value.ratio;
   const [widthPart, heightPart] = (configuredRatio === 'adaptive' ? '16:9' : configuredRatio)
     .split(':')
@@ -211,9 +212,12 @@ const previewFrameStyle = computed(() => {
   const widthToHeight = width / height;
   return {
     aspectRatio: `${width} / ${height}`,
-    width: `min(100%, calc(62vh * ${widthToHeight}))`,
+    width: `min(100%, calc(${maxHeightVh}vh * ${widthToHeight}))`,
   };
-});
+};
+
+const previewFrameStyle = computed(() => effectSegmentRenderFrameStyle(62));
+const repairFrameStyle = computed(() => effectSegmentRenderFrameStyle(44));
 
 const previewTask = ref<EffectSegmentRenderTask | null>(null);
 const previewVariant = ref<'ACTIVE' | 'REPAIR'>('ACTIVE');
@@ -229,9 +233,20 @@ const repairTask = ref<EffectSegmentRenderTask | null>(null);
 const repairStartSeconds = ref(0);
 const repairEndSeconds = ref(1);
 const repairInstruction = ref('');
+const repairVideo = ref<HTMLVideoElement | null>(null);
+const repairRangePlaying = ref(false);
 const previewCloseButton = ref<HTMLButtonElement | null>(null);
 const promptCloseButton = ref<HTMLButtonElement | null>(null);
 const repairCloseButton = ref<HTMLButtonElement | null>(null);
+
+const repairSelectionStyle = computed(() => {
+  const duration = repairTask.value?.durationSeconds ?? 0;
+  if (duration <= 0) return { left: '0%', right: '100%' };
+  return {
+    left: `${(repairStartSeconds.value / duration) * 100}%`,
+    right: `${Math.max(0, ((duration - repairEndSeconds.value) / duration) * 100)}%`,
+  };
+});
 
 let dialogTrigger: HTMLElement | null = null;
 let loadController: AbortController | null = null;
@@ -571,6 +586,7 @@ const applyBatch = (batch: EffectSegmentRenderBatch): void => {
 };
 
 const clearPreview = (): void => {
+  repairRangePlaying.value = false;
   previewController?.abort();
   previewController = null;
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
@@ -901,17 +917,14 @@ const retryTask = async (taskId: string): Promise<void> => {
   }
 };
 
-const openPreview = (
+const loadPreviewVideo = (
   task: EffectSegmentRenderTask,
-  event: Event,
-  variant: 'ACTIVE' | 'REPAIR' = 'ACTIVE',
+  variant: 'ACTIVE' | 'REPAIR',
+  owner: 'preview' | 'repair',
 ): void => {
   const current = workspace.value;
   if (!current?.batchId || (variant === 'ACTIVE' ? !task.output : !task.repair?.candidate)) return;
   clearPreview();
-  dialogTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
-  previewTask.value = task;
-  previewVariant.value = variant;
   previewLoading.value = true;
   const controller = new AbortController();
   previewController = controller;
@@ -924,7 +937,8 @@ const openPreview = (
   )
     .then((response) => response.blob())
     .then((blob) => {
-      if (controller.signal.aborted || previewTask.value?.id !== task.id) return;
+      const ownerTask = owner === 'preview' ? previewTask.value : repairTask.value;
+      if (controller.signal.aborted || ownerTask?.id !== task.id) return;
       previewUrl.value = URL.createObjectURL(blob);
     })
     .catch((error: unknown) => {
@@ -934,6 +948,17 @@ const openPreview = (
       if (previewController === controller) previewController = null;
       if (!controller.signal.aborted) previewLoading.value = false;
     });
+};
+
+const openPreview = (
+  task: EffectSegmentRenderTask,
+  event: Event,
+  variant: 'ACTIVE' | 'REPAIR' = 'ACTIVE',
+): void => {
+  dialogTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  previewTask.value = task;
+  previewVariant.value = variant;
+  loadPreviewVideo(task, variant, 'preview');
   void nextTick(() => previewCloseButton.value?.focus());
 };
 
@@ -944,7 +969,70 @@ const openRepair = (task: EffectSegmentRenderTask, event: Event): void => {
   repairStartSeconds.value = 0;
   repairEndSeconds.value = Math.min(task.durationSeconds, 2);
   repairInstruction.value = '';
+  loadPreviewVideo(task, 'ACTIVE', 'repair');
   void nextTick(() => repairCloseButton.value?.focus());
+};
+
+const formatRepairTime = (seconds: number): string => `${seconds.toFixed(1)}s`;
+
+const seekRepairVideo = (seconds: number): void => {
+  const video = repairVideo.value;
+  if (!video || !Number.isFinite(video.duration)) return;
+  video.pause();
+  repairRangePlaying.value = false;
+  video.currentTime = Math.min(Math.max(seconds, 0), video.duration);
+};
+
+const updateRepairStart = (event: Event): void => {
+  const input = event.currentTarget;
+  if (!(input instanceof HTMLInputElement)) return;
+  const duration = repairTask.value?.durationSeconds ?? 0;
+  const value = Number(input.value);
+  const next = Math.min(
+    Math.max(Number.isFinite(value) ? value : 0, 0),
+    Math.max(0, duration - 0.1),
+  );
+  if (next >= repairEndSeconds.value)
+    repairEndSeconds.value = Math.min(duration, Number((next + 0.1).toFixed(1)));
+  repairStartSeconds.value = next;
+  seekRepairVideo(repairStartSeconds.value);
+};
+
+const updateRepairEnd = (event: Event): void => {
+  const input = event.currentTarget;
+  if (!(input instanceof HTMLInputElement)) return;
+  const duration = repairTask.value?.durationSeconds ?? 0;
+  const value = Number(input.value);
+  const next = Math.max(Math.min(Number.isFinite(value) ? value : duration, duration), 0.1);
+  if (next <= repairStartSeconds.value)
+    repairStartSeconds.value = Math.max(0, Number((next - 0.1).toFixed(1)));
+  repairEndSeconds.value = next;
+  seekRepairVideo(repairEndSeconds.value);
+};
+
+const toggleRepairRangePreview = async (): Promise<void> => {
+  const video = repairVideo.value;
+  if (!video || !previewVideoReady.value) return;
+  if (repairRangePlaying.value) {
+    video.pause();
+    repairRangePlaying.value = false;
+    return;
+  }
+  video.currentTime = repairStartSeconds.value;
+  repairRangePlaying.value = true;
+  try {
+    await video.play();
+  } catch {
+    repairRangePlaying.value = false;
+  }
+};
+
+const stopRepairRangePreviewAtEnd = (): void => {
+  const video = repairVideo.value;
+  if (!video || !repairRangePlaying.value || video.currentTime < repairEndSeconds.value) return;
+  video.pause();
+  video.currentTime = repairEndSeconds.value;
+  repairRangePlaying.value = false;
 };
 
 const submitRepair = async (): Promise<void> => {
@@ -1787,37 +1875,92 @@ onBeforeUnmount(() => {
           </header>
           <div class="repair-dialog-body">
             <p>
-              原 Prompt
-              不会改动。系统会把当前完整视频交给模型，只要求修改下面的时间段；生成结果先作为候选保存。
+              在视频下方拖动前后指针选择问题画面，再填写该范围内需要修改的内容。原 Prompt
+              不会改动，生成结果会先作为候选保存。
             </p>
-            <div class="repair-time-fields">
-              <label>
-                <span>开始时间（秒）</span>
+            <div class="large-preview repair-video-preview" :style="repairFrameStyle">
+              <LoaderCircle v-if="previewLoading" class="spin" :size="34" />
+              <div v-else-if="previewError" class="preview-load-error" role="alert">
+                <AlertCircle :size="28" />
+                <small>{{ previewError }}</small>
+              </div>
+              <video
+                v-else-if="previewUrl"
+                ref="repairVideo"
+                :class="{ 'is-ready': previewVideoReady }"
+                :src="previewUrl"
+                controls
+                playsinline
+                @canplay="previewVideoReady = true"
+                @timeupdate="stopRepairRangePreviewAtEnd"
+                @pause="repairRangePlaying = false"
+                @ended="repairRangePlaying = false"
+              />
+              <template v-else>
+                <Play :size="34" />
+                <small>{{ repairTask.durationSeconds }}s</small>
+              </template>
+              <LoaderCircle
+                v-if="previewUrl && !previewVideoReady"
+                class="spin preview-video-loader"
+                :size="34"
+              />
+            </div>
+            <div class="repair-range-editor">
+              <div class="repair-range-heading">
+                <span>选择返修范围</span>
+                <strong
+                  >{{ formatRepairTime(repairStartSeconds) }} —
+                  {{ formatRepairTime(repairEndSeconds) }}</strong
+                >
+              </div>
+              <div class="repair-range-track" aria-label="返修时间范围">
+                <span class="repair-range-selection" :style="repairSelectionStyle"></span>
                 <input
-                  v-model.number="repairStartSeconds"
-                  type="number"
+                  class="repair-range-input repair-range-input-start"
+                  type="range"
                   min="0"
                   :max="repairTask.durationSeconds"
                   step="0.1"
+                  :value="repairStartSeconds"
+                  :disabled="!previewVideoReady"
+                  :aria-valuetext="formatRepairTime(repairStartSeconds)"
+                  aria-label="返修范围开始位置"
+                  @input="updateRepairStart"
                 />
-              </label>
-              <label>
-                <span>结束时间（秒）</span>
                 <input
-                  v-model.number="repairEndSeconds"
-                  type="number"
-                  min="0.1"
+                  class="repair-range-input repair-range-input-end"
+                  type="range"
+                  min="0"
                   :max="repairTask.durationSeconds"
                   step="0.1"
+                  :value="repairEndSeconds"
+                  :disabled="!previewVideoReady"
+                  :aria-valuetext="formatRepairTime(repairEndSeconds)"
+                  aria-label="返修范围结束位置"
+                  @input="updateRepairEnd"
                 />
-              </label>
+              </div>
+              <div class="repair-range-footer">
+                <span>0.0s</span>
+                <button
+                  type="button"
+                  :disabled="!previewVideoReady"
+                  @click="toggleRepairRangePreview"
+                >
+                  <Pause v-if="repairRangePlaying" :size="13" />
+                  <Play v-else :size="13" />
+                  {{ repairRangePlaying ? '停止预览' : '预览选中范围' }}
+                </button>
+                <span>{{ formatRepairTime(repairTask.durationSeconds) }}</span>
+              </div>
             </div>
             <label class="repair-instruction-field">
-              <span>需要修改什么</span>
+              <span>这个范围内需要修改什么</span>
               <textarea
                 v-model="repairInstruction"
                 maxlength="1000"
-                placeholder="例如：12.3 秒开始，移除台面右侧的黑色污点，保持人物、产品和镜头运动不变。"
+                placeholder="例如：移除台面右侧的黑色污点，保持人物、产品和镜头运动不变。"
               />
               <small>{{ repairInstruction.trim().length }}/1000</small>
             </label>
@@ -1829,6 +1972,7 @@ onBeforeUnmount(() => {
               type="button"
               :disabled="
                 operation !== null ||
+                !previewVideoReady ||
                 !repairInstruction.trim() ||
                 repairStartSeconds < 0 ||
                 repairEndSeconds <= repairStartSeconds ||
@@ -2850,8 +2994,10 @@ select:disabled {
   font-weight: 800;
 }
 .repair-dialog {
-  width: min(560px, 100%);
+  width: min(680px, 100%);
+  max-height: calc(100vh - 40px);
   padding: 0 18px 18px;
+  overflow-y: auto;
 }
 .repair-dialog header > div small {
   display: block;
@@ -2865,12 +3011,9 @@ select:disabled {
   font-size: 11px;
   line-height: 1.7;
 }
-.repair-time-fields {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+.repair-video-preview {
+  box-shadow: inset 0 0 0 1px #dbe4f0;
 }
-.repair-time-fields label,
 .repair-instruction-field {
   display: grid;
   gap: 7px;
@@ -2878,7 +3021,6 @@ select:disabled {
   font-size: 11px;
   font-weight: 700;
 }
-.repair-time-fields input,
 .repair-instruction-field textarea {
   width: 100%;
   color: #34445b;
@@ -2889,9 +3031,140 @@ select:disabled {
   font: inherit;
   font-weight: 500;
 }
-.repair-time-fields input {
-  height: 40px;
-  padding: 0 11px;
+.repair-range-editor {
+  width: min(100%, 620px);
+  margin: 15px auto 0;
+  padding: 12px 14px 10px;
+  background: #f8faff;
+  border: 1px solid #dce6f6;
+  border-radius: 11px;
+}
+.repair-range-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #52627a;
+  font-size: 11px;
+  font-weight: 700;
+}
+.repair-range-heading strong {
+  color: #2563eb;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.repair-range-track {
+  position: relative;
+  height: 28px;
+  margin-top: 8px;
+}
+.repair-range-track::before,
+.repair-range-selection {
+  position: absolute;
+  top: 10px;
+  height: 8px;
+  border-radius: 999px;
+  content: '';
+}
+.repair-range-track::before {
+  right: 0;
+  left: 0;
+  background: #dfe7f2;
+}
+.repair-range-selection {
+  z-index: 1;
+  background: #4f7ff1;
+}
+.repair-range-input {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  pointer-events: none;
+  appearance: none;
+  background: transparent;
+  outline: none;
+}
+.repair-range-input-end {
+  z-index: 3;
+}
+.repair-range-input::-webkit-slider-runnable-track {
+  height: 8px;
+  background: transparent;
+}
+.repair-range-input::-webkit-slider-thumb {
+  width: 16px;
+  height: 24px;
+  margin-top: -8px;
+  pointer-events: auto;
+  appearance: none;
+  cursor: ew-resize;
+  background: #fff;
+  border: 3px solid #2563eb;
+  border-radius: 6px;
+  box-shadow: 0 2px 7px #1d4ed840;
+}
+.repair-range-input::-moz-range-track {
+  height: 8px;
+  background: transparent;
+  border: 0;
+}
+.repair-range-input::-moz-range-thumb {
+  width: 12px;
+  height: 20px;
+  pointer-events: auto;
+  cursor: ew-resize;
+  background: #fff;
+  border: 3px solid #2563eb;
+  border-radius: 6px;
+  box-shadow: 0 2px 7px #1d4ed840;
+}
+.repair-range-input:focus-visible::-webkit-slider-thumb {
+  outline: 3px solid #93b4ff;
+  outline-offset: 2px;
+}
+.repair-range-input:focus-visible::-moz-range-thumb {
+  outline: 3px solid #93b4ff;
+  outline-offset: 2px;
+}
+.repair-range-input:disabled::-webkit-slider-thumb {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.repair-range-input:disabled::-moz-range-thumb {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.repair-range-footer {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 10px;
+  color: #8a97aa;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+.repair-range-footer > span:last-child {
+  text-align: right;
+}
+.repair-range-footer button {
+  display: inline-flex;
+  height: 29px;
+  padding: 0 10px;
+  align-items: center;
+  gap: 5px;
+  color: #2f63bd;
+  background: #fff;
+  border: 1px solid #cddcf5;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 800;
+}
+.repair-range-footer button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 .repair-instruction-field {
   position: relative;
@@ -3924,8 +4197,10 @@ select:disabled {
   }
 }
 @media (max-width: 480px) {
-  .repair-time-fields {
-    grid-template-columns: 1fr;
+  .repair-range-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
   }
   .segment-material-grid {
     grid-template-columns: 1fr;

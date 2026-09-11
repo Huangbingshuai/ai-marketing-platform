@@ -103,6 +103,23 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain('void loadCurrentWorkspace(false);');
   });
 
+  it('selects the repair interval with video-backed range handles instead of time fields', () => {
+    expect(pageSource).toContain('class="large-preview repair-video-preview"');
+    expect(pageSource).toContain('ref="repairVideo"');
+    expect(pageSource).toContain('class="repair-range-input repair-range-input-start"');
+    expect(pageSource).toContain('class="repair-range-input repair-range-input-end"');
+    expect(pageSource).toContain('aria-label="返修范围开始位置"');
+    expect(pageSource).toContain('aria-label="返修范围结束位置"');
+    expect(pageSource.match(/:disabled="!previewVideoReady"/gu)).toHaveLength(3);
+    expect(pageSource).toContain('@timeupdate="stopRepairRangePreviewAtEnd"');
+    expect(pageSource).toContain('toggleRepairRangePreview');
+    expect(pageSource).toContain('这个范围内需要修改什么');
+    expect(pageSource).not.toContain('开始时间（秒）');
+    expect(pageSource).not.toContain('结束时间（秒）');
+    expect(pageSource).toContain('startMs: Math.round(repairStartSeconds.value * 1000)');
+    expect(pageSource).toContain('endMs: Math.round(repairEndSeconds.value * 1000)');
+  });
+
   it('uses the prompt-node search and purpose filter pattern with toggleable selection actions', () => {
     for (const marker of [
       '导入素材',
@@ -192,8 +209,11 @@ describe('effect segment render material gallery layout', () => {
   it('matches the immediate preview frame to the configured render ratio', () => {
     expect(pageSource).toContain("configuredRatio === 'adaptive' ? '16:9' : configuredRatio");
     expect(pageSource).toContain(':style="previewFrameStyle"');
+    expect(pageSource).toContain(':style="repairFrameStyle"');
     expect(pageSource).toContain('aspectRatio: `${width} / ${height}`');
-    expect(pageSource).toContain('width: `min(100%, calc(62vh * ${widthToHeight}))`');
+    expect(pageSource).toContain('width: `min(100%, calc(${maxHeightVh}vh * ${widthToHeight}))`');
+    expect(pageSource).toContain('effectSegmentRenderFrameStyle(62)');
+    expect(pageSource).toContain('effectSegmentRenderFrameStyle(44)');
     expect(pageSource).not.toMatch(/\.large-preview\s*\{[^}]*height:\s*250px/su);
   });
 
