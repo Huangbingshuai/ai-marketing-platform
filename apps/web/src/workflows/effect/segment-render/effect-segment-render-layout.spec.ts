@@ -110,9 +110,17 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain('class="repair-range-input repair-range-input-end"');
     expect(pageSource).toContain('aria-label="返修范围开始位置"');
     expect(pageSource).toContain('aria-label="返修范围结束位置"');
-    expect(pageSource.match(/:disabled="!previewVideoReady"/gu)).toHaveLength(3);
+    expect(pageSource.match(/:disabled="!previewVideoReady"/gu)).toHaveLength(7);
     expect(pageSource).toContain('@timeupdate="stopRepairRangePreviewAtEnd"');
     expect(pageSource).toContain('toggleRepairRangePreview');
+    expect(pageSource).toContain('@pointerdown="selectRepairBoundaryAtTrack"');
+    expect(pageSource).toContain('@click="selectRepairBoundary(\'start\')"');
+    expect(pageSource).toContain('@click="selectRepairBoundary(\'end\')"');
+    expect(pageSource).toContain('@click="setRepairBoundaryFromCurrentFrame(\'start\')"');
+    expect(pageSource).toContain('@click="setRepairBoundaryFromCurrentFrame(\'end\')"');
+    expect(pageSource).toContain('@click="nudgeRepairBoundary(-0.1)"');
+    expect(pageSource).toContain('@click="nudgeRepairBoundary(0.1)"');
+    expect(pageSource).toContain('当前画面');
     expect(pageSource).toContain('这个范围内需要修改什么');
     expect(pageSource).not.toContain('开始时间（秒）');
     expect(pageSource).not.toContain('结束时间（秒）');

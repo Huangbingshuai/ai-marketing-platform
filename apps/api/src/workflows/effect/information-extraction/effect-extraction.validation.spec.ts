@@ -1,6 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { EFFECT_EXTRACTION_MAX_SELLING_POINTS } from '@ai-marketing/contracts';
-
 import {
   applyEffectExtractionManualOverrides,
   canonicalHash,
@@ -62,12 +60,9 @@ describe('effect extraction validation', () => {
     expect(
       isEffectExtractionResult({
         ...validResult,
-        sellingPoints: Array.from(
-          { length: EFFECT_EXTRACTION_MAX_SELLING_POINTS + 1 },
-          (_, index) => `卖点${index + 1}`,
-        ),
+        sellingPoints: Array.from({ length: 41 }, (_, index) => `卖点${index + 1}`),
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('folds historical business fields into one stable selling-point list', () => {

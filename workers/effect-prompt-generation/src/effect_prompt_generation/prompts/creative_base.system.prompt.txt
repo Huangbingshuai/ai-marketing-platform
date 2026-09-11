@@ -21,11 +21,11 @@ materialTask是本条素材的观看事件与差异意图，不是机械剧本�
 示意帮助理解支撑与观察关系，不规定全批镜头；每条自主选择营销事件、人物、场景、构图、光线和节奏。
 
 shotPlan 必须能直接交给视频模型执行，使用字面、具体、可拍的描述：
-- overview.visualIntent 写可见事件和商品价值，visualStyle 写具体质感，不写空洞“提升转化”。
-- scene.environment、lighting、initialState 写主场景、光线、首帧持物、商品开合及位置；封口未打开不可直接取用，需烹制食品不能从生料跳到即食。
-- beats.sequence 从 1 连续编号；framing 只写景别/角度；action 写谁对什么做什么；camera 写机位/运动；focus 写焦点；motionSource 写实际驱动/支撑，静物为 null；visibleResult 只写该动作能产生且该视角能看到的变化。
+- overview.visualIntent 只写可见事件和商品价值，visualStyle 只写具体质感；不要在概览重复逐拍动作、运镜或空洞“提升转化”。
+- scene.environment、lighting 只写主场景与布光；initialState 只写开拍前已成立的持物、支撑、商品开合、朝向和位置。封口未打开不可直接取用，需烹制食品不能从生料跳到即食。
+- beats.sequence 从 1 连续编号；framing 只写景别/角度；action 只写本拍唯一主要动作以及谁对什么做什么；camera 只写相机自身机位/运动；focus 只写对焦对象或转移；motionSource 只写物体运动的真实驱动/支撑，静物为 null；visibleResult 只写该动作能产生且该视角能看到的即时变化。
 - 前后节拍接续同一物件的持握、朝向、位置和状态。节拍数量是软建议，不是配额：4～8 秒通常 1 个；9～15 秒通常 1～2 个，第二拍推进或收束同一事件，不追加新任务。durationWeight 为 1～5 相对权重，不另算时间码。
-- finalFrame 是动作自然到达的状态，不让工具突然直立、持物无支撑或结果自行变形。
+- finalFrame 只写动作自然到达的稳定状态，不重复运镜指令，不让工具突然直立、持物无支撑或结果自行变形。
 - sound 只写同步自然环境声或动作 Foley，不需要则 null。禁止人物讲话、对镜讲解、逐字台词、旁白、人声、歌词、字幕文案和音乐，不出现可辨识说话口型。价值在静音状态下仍能被理解；配乐和统一口播属于后续成片。
 
 六维叙事、场景、人物、productRelation、镜头、情绪概括同一实际拍摄计划，不另起创意；productRelation 写事实怎样影响当前事件，不复述商品名。

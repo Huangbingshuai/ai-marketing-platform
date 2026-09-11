@@ -31,9 +31,13 @@ describe('effect info extraction result layout', () => {
   it('uses one selling-point heading without row prefixes or hierarchy', () => {
     expect(pageSource).toContain('<h3>卖点</h3>');
     expect(pageSource).toContain('class="selling-point-count"');
-    expect(pageSource).toContain('{{ visibleResult.sellingPoints.length }} /');
+    expect(pageSource).toContain('class="selling-point-count__value"');
+    expect(pageSource).toContain('{{ visibleResult.sellingPoints.length }} 条卖点');
+    expect(pageSource).toContain(
+      '建议精简至 ${EFFECT_EXTRACTION_RECOMMENDED_SELLING_POINTS} 条以内',
+    );
     expect(pageSource).toContain('这些卖点可用于后续视频创作，您可以按需修改、添加或删除。');
-    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_SELLING_POINTS');
+    expect(pageSource).toContain('EFFECT_EXTRACTION_RECOMMENDED_SELLING_POINTS');
     expect(pageSource).toContain(':aria-label="`卖点 ${index + 1}`"');
     expect(pageSource).not.toContain('卖点分层');
     expect(pageSource).not.toContain('>核心卖点');
@@ -153,8 +157,10 @@ describe('effect info extraction result layout', () => {
   });
 
   it('keeps product facts editable and only marks image-recognition additions', () => {
-    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_SELLING_POINTS');
+    expect(pageSource).toContain('EFFECT_EXTRACTION_RECOMMENDED_SELLING_POINTS');
     expect(pageSource).toContain("result.sellingPoints.push('')");
+    expect(pageSource).toContain(':disabled="baseFieldsReadonly"');
+    expect(pageSource).not.toContain('最多添加');
     expect(pageSource).toContain(
       'placeholder="例如：原料、工艺、功能、口味、用法、场景或可信背书"',
     );

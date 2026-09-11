@@ -35,7 +35,6 @@ from .models import (
     ExtractionSnapshot,
     FailurePayload,
     FinalizePayload,
-    MAX_SELLING_POINTS,
     ProgressPayload,
     RuntimeContext,
     SnapshotMaterial,
@@ -47,8 +46,6 @@ from .semantic_refinement import (
     semantic_fallback_metadata,
     user_only_candidate,
 )
-
-SEMANTIC_RESULT_LIMITS: dict[str, int] = {"selling_points": MAX_SELLING_POINTS}
 
 LOGGER = logging.getLogger(__name__)
 
@@ -1049,7 +1046,6 @@ def _first_text(field: str, *candidates: ExtractionCandidate | None) -> str:
 def _merged_items(
     field: str,
     *candidates: ExtractionCandidate | None,
-    limit: int,
 ) -> list[str]:
     return _strings(
         [
@@ -1057,13 +1053,13 @@ def _merged_items(
             for candidate in candidates
             for item in _candidate_items(candidate, field)
         ]
-    )[:limit]
+    )
 
 
 def _normalize_candidate_deterministically(
     candidate: ExtractionCandidate,
 ) -> ExtractionResult:
-    selling_points = _candidate_items(candidate, "selling_points")[:MAX_SELLING_POINTS]
+    selling_points = _candidate_items(candidate, "selling_points")
     if not selling_points:
         raise FusionError("未提取到可用卖点，请补充产品资料后重新提炼")
     return ExtractionResult(
@@ -1164,11 +1160,9 @@ def _prepare_semantic_candidate(
                 *_items_preserving_order(document, attr),
                 *_items_preserving_order(commerce, attr),
             ]
-        )[:MAX_SELLING_POINTS]
+        )
         image_values = _items_preserving_order(image, attr)
-        prepared_values = _strings([*user_values, *image_values])[
-            :MAX_SELLING_POINTS
-        ]
+        prepared_values = _strings([*user_values, *image_values])
         setattr(prepared, attr, prepared_values or None)
         user_facts.extend(
             {
@@ -1312,9 +1306,7 @@ def _restore_authoritative_sources(
         _first_text("visual_features", document, commerce, image),
     )
 
-    selling_points = _merged_items(
-        "selling_points", document, commerce, image, limit=MAX_SELLING_POINTS
-    )
+    selling_points = _merged_items("selling_points", document, commerce, image)
     if selling_points:
         setattr(result, "selling_points", selling_points)
 
@@ -1350,8 +1342,8 @@ def _restore_semantic_fields(
 
     if semantic is None:
         return
-    for field, limit in SEMANTIC_RESULT_LIMITS.items():
-        items = _candidate_items(semantic, field)[:limit]
+    for _, field in SEMANTIC_FIELDS:
+        items = _candidate_items(semantic, field)
         if field == "selling_points" and not items:
             continue
         setattr(result, field, items)

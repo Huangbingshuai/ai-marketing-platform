@@ -126,6 +126,7 @@ const loadProjects = async (): Promise<void> => {
     const response = await loadProjectListWithRetry(
       () => listProjects({}, controller.signal),
       controller.signal,
+      { continueWithLastDelay: true },
     );
     if (controller.signal.aborted) return;
     projects.value = response.data;

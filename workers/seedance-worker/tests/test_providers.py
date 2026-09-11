@@ -213,6 +213,101 @@ async def test_provider_sends_a_reference_video_for_repair() -> None:
     assert not any(item["type"] == "image_url" for item in create_body["content"])
 
 
+async def test_provider_reuses_the_source_ark_task_for_exact_editing() -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.method == "POST":
+            return httpx.Response(200, json={"id": "provider-repair"})
+        if request.url.host == "files.example.test":
+            return httpx.Response(
+                200, content=b"video", headers={"content-type": "video/mp4"}
+            )
+        if request.url.path.endswith("/provider-source"):
+            return httpx.Response(
+                200,
+                json={
+                    "status": "succeeded",
+                    "content": {
+                        "video_url": "https://source.example.test/original.mp4"
+                    },
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "status": "succeeded",
+                "content": {"video_url": "https://files.example.test/repaired.mp4"},
+            },
+        )
+
+    repair_data = snapshot().model_dump(by_alias=True)
+    repair_data.update(
+        {
+            "operation": "REPAIR",
+            "inputImages": [],
+            "inputVideo": {
+                "fileObjectId": "video-a",
+                "providerTaskId": "provider-source",
+                "originalFileName": "source.mp4",
+                "mimeType": "video/mp4",
+                "sizeBytes": 1024,
+                "contentHash": "f" * 64,
+                "durationSeconds": 5,
+            },
+            "repair": {
+                "sourceVersion": 1,
+                "startMs": 1000,
+                "endMs": 2000,
+                "instruction": "移除画面瑕疵",
+                "region": None,
+            },
+            "request": {
+                "model": "doubao-seedance-2-5-260628",
+                "content": [{"type": "text", "text": "仅修复指定范围"}],
+                "duration": 5,
+                "ratio": "9:16",
+                "resolution": "720p",
+            },
+        }
+    )
+    repair = RenderSnapshot.model_validate(repair_data)
+    provider = ArkSeedanceProvider(
+        base_url="https://ark.example.test/api/v3",
+        api_key="secret",
+        timeout_seconds=10,
+        poll_interval_seconds=0.001,
+        create_qps=1000,
+        download_concurrency=2,
+        max_download_bytes=1024,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        await provider.render(
+            repair,
+            [],
+            None,
+            lambda value, task_id: _record([], value, task_id),
+        )
+    finally:
+        await provider.aclose()
+
+    assert calls[0].method == "GET"
+    assert calls[0].url.path.endswith("/provider-source")
+    create_request = next(request for request in calls if request.method == "POST")
+    create_body = json.loads(create_request.content)
+    assert create_body["model"] == "doubao-seedance-2-5-260628"
+    assert create_body["omni_reference_task_type"] == "edit"
+    assert create_body["duration"] == -1
+    assert create_body["ratio"] == "adaptive"
+    assert create_body["content"][1] == {
+        "type": "video_url",
+        "video_url": {"url": "https://source.example.test/original.mp4"},
+        "role": "reference_video",
+    }
+
+
 async def test_create_rate_limiter_spaces_concurrent_submissions() -> None:
     limiter = _EvenRateLimiter(20)
     started: list[float] = []

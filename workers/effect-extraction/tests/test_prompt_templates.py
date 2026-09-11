@@ -16,11 +16,11 @@ from effect_extraction.prompt_loader import (
 
 def test_effect_extraction_prompts_use_the_current_unified_contract() -> None:
     expected_versions = {
-        "document_extraction.prompt.txt": "6.1.0",
+        "document_extraction.prompt.txt": "6.2.0",
         "image_analysis.prompt.txt": "7.0.0",
         "commerce_extraction.prompt.txt": "2.0.0",
         "semantic_refinement.prompt.txt": "7.0.0",
-        "semantic_image_suggestion_review.prompt.txt": "2.0.0",
+        "semantic_image_suggestion_review.prompt.txt": "2.1.0",
         "result_normalization.prompt.txt": "4.0.0",
     }
     templates = {
@@ -50,7 +50,8 @@ def test_effect_extraction_prompts_use_the_current_unified_contract() -> None:
     assert "医疗、保健、营养和成分功效推导" in templates[
         "document_extraction.prompt.txt"
     ]
-    assert "最多 40 项" in templates["document_extraction.prompt.txt"]
+    assert "40 是质量建议，不是截断上限" in templates["document_extraction.prompt.txt"]
+    assert "则全部输出" in templates["document_extraction.prompt.txt"]
     assert "宁可少而有效" in templates["document_extraction.prompt.txt"]
     assert "竞品品牌" in templates["document_extraction.prompt.txt"]
     assert "所有竞品名称" in templates["document_extraction.prompt.txt"]
@@ -63,6 +64,9 @@ def test_effect_extraction_prompts_use_the_current_unified_contract() -> None:
         "targetField` 必须为 `sellingPoints"
         in templates["semantic_image_suggestion_review.prompt.txt"]
     )
+    assert "不是信息卡的总数上限" in templates[
+        "semantic_image_suggestion_review.prompt.txt"
+    ]
     assert "同一个 `sellingPoints` 字段" in templates["semantic_refinement.prompt.txt"]
 
     candidate_fields = ExtractionCandidate.model_json_schema(by_alias=True)[

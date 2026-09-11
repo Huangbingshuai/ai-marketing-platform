@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { EFFECT_EXTRACTION_MAX_SELLING_POINTS } from '@ai-marketing/contracts';
 
 import {
   cloneExtractionProductState,
@@ -100,14 +99,14 @@ describe('effect info extraction state', () => {
     expect(state('COMPLETED').provenance.itemOrigins.sellingPoints).toBeUndefined();
   });
 
-  it('caps a restored historical draft at the current selling-point limit', () => {
+  it('preserves every selling point when restoring a historical draft', () => {
     const restored = cloneExtractionResult({
       ...result,
       sellingPoints: Array.from({ length: 43 }, (_, index) => `卖点 ${index + 1}`),
     });
 
-    expect(restored.sellingPoints).toHaveLength(EFFECT_EXTRACTION_MAX_SELLING_POINTS);
-    expect(restored.sellingPoints.at(-1)).toBe('卖点 40');
+    expect(restored.sellingPoints).toHaveLength(43);
+    expect(restored.sellingPoints.at(-1)).toBe('卖点 43');
   });
 
   it('clones the image recognition display summary independently', () => {

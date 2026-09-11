@@ -1024,7 +1024,6 @@ const nodeMetricFields = (nodeId: string, rawMetadata: unknown): EffectPromptNod
               CREATIVE_DIRECTION_PLANNING: '规划批次创意方向',
               CREATIVE_DIRECTION_REVIEW: '复核创意关系',
               CANDIDATE_GENERATION: '生成候选 Prompt',
-              EXECUTION_REFINEMENT: 'AI 全量画面修正（分片并行）',
               CANDIDATE_GENERATION_COMPLETE: '候选生成完成',
             } as Record<string, string>
           )[typeof metadata.perceptionPhase === 'string' ? metadata.perceptionPhase : ''],
@@ -1032,13 +1031,6 @@ const nodeMetricFields = (nodeId: string, rawMetadata: unknown): EffectPromptNod
         numberField(metadata, 'targetCount', '目标创意'),
         numberField(metadata, 'materialTaskCount', '卖点素材任务'),
         numberField(metadata, 'referenceImageCount', '生成参考商品图片'),
-        ...(metadata.executionRefinementRequired === true
-          ? compact([
-              textField('画面修正方式', '逐条由 AI 检查整段动作、镜头与画面衔接，再进入评分'),
-              numberField(metadata, 'executionRefinementCompletedCount', '已完成画面修正'),
-              textField('修正说明', '完成表示已执行修正，不代表实际视频零故障'),
-            ])
-          : []),
         numberField(metadata, 'territoryCount', '产品创意空间'),
         numberField(metadata, 'directionCount', '创意方向'),
         numberField(metadata, 'candidateTargetCount', '候选目标'),
@@ -1061,9 +1053,19 @@ const nodeMetricFields = (nodeId: string, rawMetadata: unknown): EffectPromptNod
       ]);
     case 'CREATIVE_EVALUATION_CLASSIFICATION':
       return compact([
+        textField(
+          '当前步骤',
+          metadata.perceptionPhase === 'DIAGNOSED_EXECUTION_REWRITE'
+            ? '修订有明确执行问题的素材并复评'
+            : null,
+        ),
         numberField(metadata, 'evaluatedCount', '已评估创意'),
         numberField(metadata, 'acceptedCount', '通过评估'),
         numberField(metadata, 'rejectedCount', '未通过评估'),
+        numberField(metadata, 'executionAuditCandidateCount', '专职执行审片条次'),
+        numberField(metadata, 'executionRepairAttemptedCount', '执行修订尝试'),
+        numberField(metadata, 'executionRepairAcceptedCount', '复评后采用修订'),
+        numberField(metadata, 'executionRepairUnresolvedCount', '未修复并移出候选'),
         numberField(metadata, 'semanticEvaluatedCount', '语义评估数量'),
         numberField(metadata, 'semanticDuplicateGroupCount', '重复组'),
         numberField(metadata, 'semanticDuplicateCount', '重复条目'),
@@ -2457,20 +2459,6 @@ export const presentEffectPromptNodeDetail = (
         totalShardCount: progress.total,
         completedShardCount: progress.completed,
         pendingShardCount: progress.pending,
-        ...(metadata.executionRefinementRequired === true
-          ? {
-              // Failed/running shards may contain saved, unrefined drafts.
-              // Only successful generation shards have completed the AI editor.
-              executionRefinementCompletedCount: creativeRows({
-                ...run,
-                shards: run.shards.filter(
-                  (shard) =>
-                    (shard.phase === 'BLUEPRINT' || String(shard.phase) === 'CREATIVE') &&
-                    shard.status === 'SUCCEEDED',
-                ),
-              }).length,
-            }
-          : {}),
       };
     }
   }

@@ -60,6 +60,7 @@ import { requestActionConfirmation } from '../../../shared/composables/action-co
 import EffectUpwardCreatableSelect from '../source-import/components/EffectUpwardCreatableSelect.vue';
 import {
   buildEffectPromptGraphRows,
+  promptGraphDetailContentKey,
   promptGraphDetailRefreshKey,
 } from './effect-prompt-generation-graph';
 import {
@@ -265,11 +266,7 @@ const selectedGraphNodeIsActive = computed(
     displayedGraphRun.value?.status === 'RUNNING' &&
     displayedGraphRun.value.currentNode === selectedGraphNodeId.value,
 );
-const currentGraphDetailUpdatedAt = computed(() =>
-  selectedGraphNodeIsActive.value
-    ? displayedGraphRun.value?.updatedAt
-    : graphDetail.value?.updatedAt,
-);
+const currentGraphDetailUpdatedAt = computed(() => graphDetail.value?.updatedAt);
 const currentResult = computed(() => resultData.value?.result ?? null);
 const currentItems = computed(() => resultData.value?.items ?? []);
 const partialPreview = computed(() => resultData.value?.isPartialPreview ?? false);
@@ -1564,7 +1561,7 @@ const graphDescription = (nodeId: EffectPromptNodeId): string =>
       '判断哪些事实可以成为画面任务，哪些只作为商业背景或禁止视觉证明',
     SHARED_PROMPT_COMPILATION: '编译本批次生成与渲染共同使用的提示词',
     COHERENT_CREATIVE_GENERATION:
-      '按卖点安排素材任务，生成后由 AI 全量修正动作、镜头与画面衔接，再进入评分',
+      '按卖点生成结构化素材创意，再由下一阶段 AI 审片并只修订确诊的执行问题',
     CREATIVE_EVALUATION_CLASSIFICATION: '评估产品关联和创意质量，并标注推荐用途与兼容用途',
     EXACT_SELECTION_AND_SUPPLEMENT: '按质量与差异择优，缺少时只补充仍需的数量',
     ITEM_EVALUATE: '根据用户 Prompt 自动生成创意主线与六维信息',
@@ -1861,7 +1858,7 @@ const refreshGraphDetail = async (): Promise<void> => {
   const projectId = props.projectId;
   if (!nodeId || !productId) return;
 
-  graphDetail.value = localGraphDetail(nodeId);
+  if (graphDetail.value?.nodeId !== nodeId) graphDetail.value = localGraphDetail(nodeId);
   graphDetailError.value = '';
   const runId = displayedGraphRun.value?.id;
   graphDetailController?.abort();
@@ -1889,7 +1886,11 @@ const refreshGraphDetail = async (): Promise<void> => {
       selectedGraphNodeId.value !== nodeId
     )
       return;
-    graphDetail.value = detail;
+    if (
+      !graphDetail.value ||
+      promptGraphDetailContentKey(graphDetail.value) !== promptGraphDetailContentKey(detail)
+    )
+      graphDetail.value = detail;
   } catch (error) {
     if (
       !isAbortError(error) &&
@@ -1918,10 +1919,11 @@ watch(
     () => selectedGraphNodeId.value,
     () => promptGraphDetailRefreshKey(displayedGraphRun.value, selectedGraphNodeId.value),
   ],
-  ([open, nodeId]) => {
+  ([open, nodeId, refreshKey], [, previousNodeId, previousRefreshKey]) => {
     if (graphDetailRefreshTimer) clearTimeout(graphDetailRefreshTimer);
     graphDetailRefreshTimer = undefined;
     if (!open || !nodeId || !displayedGraphRun.value) return;
+    if (nodeId !== previousNodeId || refreshKey === previousRefreshKey) return;
     graphDetailRefreshTimer = setTimeout(() => {
       graphDetailRefreshTimer = undefined;
       void refreshGraphDetail();
@@ -2912,7 +2914,11 @@ onBeforeUnmount(() => {
                     <RefreshCw :class="{ spin: graphDetailLoading }" :size="14" />
                   </button>
                 </header>
-                <div v-if="graphDetailLoading" class="node-detail-message loading" role="status">
+                <div
+                  v-if="graphDetailLoading && !graphDetail"
+                  class="node-detail-message loading"
+                  role="status"
+                >
                   <LoaderCircle class="spin" :size="13" />正在同步节点真实结果…
                 </div>
                 <div v-if="graphDetailError" class="node-detail-message error" role="alert">

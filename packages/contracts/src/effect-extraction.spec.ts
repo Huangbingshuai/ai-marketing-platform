@@ -7,7 +7,7 @@ import {
   EFFECT_EXTRACTION_BRANCHES,
   EFFECT_EXTRACTION_GRAPH_EDGES,
   EFFECT_EXTRACTION_GRAPH_NODES,
-  EFFECT_EXTRACTION_MAX_SELLING_POINTS,
+  EFFECT_EXTRACTION_RECOMMENDED_SELLING_POINTS,
   EFFECT_EXTRACTION_PRODUCT_STATUSES,
   EFFECT_EXTRACTION_SCHEMA_VERSION,
   type EffectExtractionImageRecognitionSummary,
@@ -50,7 +50,8 @@ describe('effect extraction contract', () => {
     expect(Object.keys(result).sort()).toEqual([...schema.required].sort());
     expect(schema.additionalProperties).toBe(false);
     expect(schema.$defs.sellingPoints?.minItems).toBeUndefined();
-    expect(schema.$defs.sellingPoints?.maxItems).toBe(EFFECT_EXTRACTION_MAX_SELLING_POINTS);
+    expect(schema.$defs.sellingPoints?.maxItems).toBeUndefined();
+    expect(EFFECT_EXTRACTION_RECOMMENDED_SELLING_POINTS).toBe(40);
   });
 
   it('keeps stable transport metadata and branch names without business version branching', () => {

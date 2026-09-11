@@ -3,7 +3,6 @@ import type {
   EffectExtractionProductStatus,
   EffectExtractionResult,
 } from '@ai-marketing/contracts';
-import { EFFECT_EXTRACTION_MAX_SELLING_POINTS } from '@ai-marketing/contracts';
 
 export type { EffectExtractionResult } from '@ai-marketing/contracts';
 
@@ -29,7 +28,7 @@ export const EFFECT_EXTRACTION_STATUS_META: Record<
 export const cloneExtractionResult = (value: EffectExtractionResult): EffectExtractionResult => {
   return {
     ...value,
-    sellingPoints: value.sellingPoints.slice(0, EFFECT_EXTRACTION_MAX_SELLING_POINTS),
+    sellingPoints: [...value.sellingPoints],
   };
 };
 

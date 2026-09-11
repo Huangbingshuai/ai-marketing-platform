@@ -91,6 +91,7 @@ type Operation = 'batch' | 'delete' | 'export' | 'import' | 'repair' | 'retry' |
 type FragmentFilter = 'ABNORMAL' | 'ALL' | EffectPromptFragmentType;
 type TransferPanel = 'export' | 'import' | null;
 type ExportScope = 'ALL_COMPLETED' | 'FILTERED' | 'SELECTED';
+type RepairBoundary = 'end' | 'start';
 type Notice = { kind: 'error' | 'success' | 'warning'; text: string };
 type EffectSegmentRenderExportFormat = 'FAILURE_CSV' | 'MANIFEST_JSON' | 'VIDEO_PACKAGE';
 type EffectSegmentRenderImportMatch = {
@@ -235,6 +236,8 @@ const repairEndSeconds = ref(1);
 const repairInstruction = ref('');
 const repairVideo = ref<HTMLVideoElement | null>(null);
 const repairRangePlaying = ref(false);
+const repairCurrentSeconds = ref(0);
+const repairActiveBoundary = ref<RepairBoundary>('start');
 const previewCloseButton = ref<HTMLButtonElement | null>(null);
 const promptCloseButton = ref<HTMLButtonElement | null>(null);
 const repairCloseButton = ref<HTMLButtonElement | null>(null);
@@ -587,6 +590,7 @@ const applyBatch = (batch: EffectSegmentRenderBatch): void => {
 
 const clearPreview = (): void => {
   repairRangePlaying.value = false;
+  repairCurrentSeconds.value = 0;
   previewController?.abort();
   previewController = null;
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
@@ -969,6 +973,8 @@ const openRepair = (task: EffectSegmentRenderTask, event: Event): void => {
   repairStartSeconds.value = 0;
   repairEndSeconds.value = Math.min(task.durationSeconds, 2);
   repairInstruction.value = '';
+  repairCurrentSeconds.value = 0;
+  repairActiveBoundary.value = 'start';
   loadPreviewVideo(task, 'ACTIVE', 'repair');
   void nextTick(() => repairCloseButton.value?.focus());
 };
@@ -977,25 +983,38 @@ const formatRepairTime = (seconds: number): string => `${seconds.toFixed(1)}s`;
 
 const seekRepairVideo = (seconds: number): void => {
   const video = repairVideo.value;
+  const duration = repairTask.value?.durationSeconds ?? 0;
+  const next = Math.min(Math.max(seconds, 0), duration);
+  repairCurrentSeconds.value = next;
   if (!video || !Number.isFinite(video.duration)) return;
   video.pause();
   repairRangePlaying.value = false;
-  video.currentTime = Math.min(Math.max(seconds, 0), video.duration);
+  video.currentTime = Math.min(next, video.duration);
+};
+
+const setRepairBoundary = (boundary: RepairBoundary, seconds: number): void => {
+  const duration = repairTask.value?.durationSeconds ?? 0;
+  repairActiveBoundary.value = boundary;
+  if (boundary === 'start') {
+    const next = Math.min(Math.max(seconds, 0), Math.max(0, duration - 0.1));
+    if (next >= repairEndSeconds.value)
+      repairEndSeconds.value = Math.min(duration, Number((next + 0.1).toFixed(1)));
+    repairStartSeconds.value = Number(next.toFixed(1));
+    seekRepairVideo(repairStartSeconds.value);
+    return;
+  }
+  const next = Math.max(Math.min(seconds, duration), Math.min(duration, 0.1));
+  if (next <= repairStartSeconds.value)
+    repairStartSeconds.value = Math.max(0, Number((next - 0.1).toFixed(1)));
+  repairEndSeconds.value = Number(next.toFixed(1));
+  seekRepairVideo(repairEndSeconds.value);
 };
 
 const updateRepairStart = (event: Event): void => {
   const input = event.currentTarget;
   if (!(input instanceof HTMLInputElement)) return;
-  const duration = repairTask.value?.durationSeconds ?? 0;
   const value = Number(input.value);
-  const next = Math.min(
-    Math.max(Number.isFinite(value) ? value : 0, 0),
-    Math.max(0, duration - 0.1),
-  );
-  if (next >= repairEndSeconds.value)
-    repairEndSeconds.value = Math.min(duration, Number((next + 0.1).toFixed(1)));
-  repairStartSeconds.value = next;
-  seekRepairVideo(repairStartSeconds.value);
+  setRepairBoundary('start', Number.isFinite(value) ? value : 0);
 };
 
 const updateRepairEnd = (event: Event): void => {
@@ -1003,11 +1022,41 @@ const updateRepairEnd = (event: Event): void => {
   if (!(input instanceof HTMLInputElement)) return;
   const duration = repairTask.value?.durationSeconds ?? 0;
   const value = Number(input.value);
-  const next = Math.max(Math.min(Number.isFinite(value) ? value : duration, duration), 0.1);
-  if (next <= repairStartSeconds.value)
-    repairStartSeconds.value = Math.max(0, Number((next - 0.1).toFixed(1)));
-  repairEndSeconds.value = next;
-  seekRepairVideo(repairEndSeconds.value);
+  setRepairBoundary('end', Number.isFinite(value) ? value : duration);
+};
+
+const selectRepairBoundary = (boundary: RepairBoundary): void => {
+  repairActiveBoundary.value = boundary;
+  seekRepairVideo(boundary === 'start' ? repairStartSeconds.value : repairEndSeconds.value);
+};
+
+const selectRepairBoundaryAtTrack = (event: PointerEvent): void => {
+  if (event.target instanceof HTMLInputElement) return;
+  const track = event.currentTarget;
+  const duration = repairTask.value?.durationSeconds ?? 0;
+  if (!(track instanceof HTMLElement) || duration <= 0) return;
+  const rect = track.getBoundingClientRect();
+  const ratio = Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1);
+  const seconds = Number((ratio * duration).toFixed(1));
+  const boundary =
+    Math.abs(seconds - repairStartSeconds.value) <= Math.abs(seconds - repairEndSeconds.value)
+      ? 'start'
+      : 'end';
+  setRepairBoundary(boundary, seconds);
+};
+
+const setRepairBoundaryFromCurrentFrame = (boundary: RepairBoundary): void =>
+  setRepairBoundary(boundary, repairVideo.value?.currentTime ?? repairCurrentSeconds.value);
+
+const nudgeRepairBoundary = (offsetSeconds: number): void => {
+  const current =
+    repairActiveBoundary.value === 'start' ? repairStartSeconds.value : repairEndSeconds.value;
+  setRepairBoundary(repairActiveBoundary.value, current + offsetSeconds);
+};
+
+const handleRepairVideoReady = (): void => {
+  previewVideoReady.value = true;
+  repairCurrentSeconds.value = Number((repairVideo.value?.currentTime ?? 0).toFixed(1));
 };
 
 const toggleRepairRangePreview = async (): Promise<void> => {
@@ -1029,7 +1078,9 @@ const toggleRepairRangePreview = async (): Promise<void> => {
 
 const stopRepairRangePreviewAtEnd = (): void => {
   const video = repairVideo.value;
-  if (!video || !repairRangePlaying.value || video.currentTime < repairEndSeconds.value) return;
+  if (!video) return;
+  repairCurrentSeconds.value = Number(video.currentTime.toFixed(1));
+  if (!repairRangePlaying.value || video.currentTime < repairEndSeconds.value) return;
   video.pause();
   video.currentTime = repairEndSeconds.value;
   repairRangePlaying.value = false;
@@ -1891,7 +1942,7 @@ onBeforeUnmount(() => {
                 :src="previewUrl"
                 controls
                 playsinline
-                @canplay="previewVideoReady = true"
+                @canplay="handleRepairVideoReady"
                 @timeupdate="stopRepairRangePreviewAtEnd"
                 @pause="repairRangePlaying = false"
                 @ended="repairRangePlaying = false"
@@ -1909,15 +1960,32 @@ onBeforeUnmount(() => {
             <div class="repair-range-editor">
               <div class="repair-range-heading">
                 <span>选择返修范围</span>
-                <strong
-                  >{{ formatRepairTime(repairStartSeconds) }} —
-                  {{ formatRepairTime(repairEndSeconds) }}</strong
-                >
+                <div class="repair-boundary-buttons">
+                  <button
+                    type="button"
+                    :class="{ active: repairActiveBoundary === 'start' }"
+                    @click="selectRepairBoundary('start')"
+                  >
+                    起点 <strong>{{ formatRepairTime(repairStartSeconds) }}</strong>
+                  </button>
+                  <button
+                    type="button"
+                    :class="{ active: repairActiveBoundary === 'end' }"
+                    @click="selectRepairBoundary('end')"
+                  >
+                    终点 <strong>{{ formatRepairTime(repairEndSeconds) }}</strong>
+                  </button>
+                </div>
               </div>
-              <div class="repair-range-track" aria-label="返修时间范围">
+              <div
+                class="repair-range-track"
+                aria-label="返修时间范围，点击轨道可移动最近的指针"
+                @pointerdown="selectRepairBoundaryAtTrack"
+              >
                 <span class="repair-range-selection" :style="repairSelectionStyle"></span>
                 <input
                   class="repair-range-input repair-range-input-start"
+                  :class="{ active: repairActiveBoundary === 'start' }"
                   type="range"
                   min="0"
                   :max="repairTask.durationSeconds"
@@ -1930,6 +1998,7 @@ onBeforeUnmount(() => {
                 />
                 <input
                   class="repair-range-input repair-range-input-end"
+                  :class="{ active: repairActiveBoundary === 'end' }"
                   type="range"
                   min="0"
                   :max="repairTask.durationSeconds"
@@ -1953,6 +2022,43 @@ onBeforeUnmount(() => {
                   {{ repairRangePlaying ? '停止预览' : '预览选中范围' }}
                 </button>
                 <span>{{ formatRepairTime(repairTask.durationSeconds) }}</span>
+              </div>
+              <div class="repair-current-toolbar">
+                <span
+                  >当前画面 <strong>{{ formatRepairTime(repairCurrentSeconds) }}</strong></span
+                >
+                <div>
+                  <button
+                    type="button"
+                    :disabled="!previewVideoReady"
+                    @click="setRepairBoundaryFromCurrentFrame('start')"
+                  >
+                    设为起点
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="!previewVideoReady"
+                    @click="setRepairBoundaryFromCurrentFrame('end')"
+                  >
+                    设为终点
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="!previewVideoReady"
+                    :aria-label="`${repairActiveBoundary === 'start' ? '起点' : '终点'}后退 0.1 秒`"
+                    @click="nudgeRepairBoundary(-0.1)"
+                  >
+                    −0.1s
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="!previewVideoReady"
+                    :aria-label="`${repairActiveBoundary === 'start' ? '起点' : '终点'}前进 0.1 秒`"
+                    @click="nudgeRepairBoundary(0.1)"
+                  >
+                    +0.1s
+                  </button>
+                </div>
               </div>
             </div>
             <label class="repair-instruction-field">
@@ -3053,10 +3159,31 @@ select:disabled {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
+.repair-boundary-buttons {
+  display: flex;
+  gap: 6px;
+}
+.repair-boundary-buttons button {
+  height: 30px;
+  padding: 0 9px;
+  color: #65748a;
+  background: #fff;
+  border: 1px solid #d5e0f0;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 700;
+}
+.repair-boundary-buttons button.active {
+  color: #1f57ba;
+  background: #edf4ff;
+  border-color: #7fa7f8;
+  box-shadow: 0 0 0 2px #dce8ff;
+}
 .repair-range-track {
   position: relative;
   height: 28px;
   margin-top: 8px;
+  cursor: pointer;
 }
 .repair-range-track::before,
 .repair-range-selection {
@@ -3073,6 +3200,7 @@ select:disabled {
 }
 .repair-range-selection {
   z-index: 1;
+  pointer-events: none;
   background: #4f7ff1;
 }
 .repair-range-input {
@@ -3088,16 +3216,19 @@ select:disabled {
   outline: none;
 }
 .repair-range-input-end {
-  z-index: 3;
+  z-index: 2;
+}
+.repair-range-input.active {
+  z-index: 4;
 }
 .repair-range-input::-webkit-slider-runnable-track {
   height: 8px;
   background: transparent;
 }
 .repair-range-input::-webkit-slider-thumb {
-  width: 16px;
-  height: 24px;
-  margin-top: -8px;
+  width: 19px;
+  height: 26px;
+  margin-top: -9px;
   pointer-events: auto;
   appearance: none;
   cursor: ew-resize;
@@ -3112,8 +3243,8 @@ select:disabled {
   border: 0;
 }
 .repair-range-input::-moz-range-thumb {
-  width: 12px;
-  height: 20px;
+  width: 15px;
+  height: 22px;
   pointer-events: auto;
   cursor: ew-resize;
   background: #fff;
@@ -3165,6 +3296,50 @@ select:disabled {
 .repair-range-footer button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
+}
+.repair-current-toolbar {
+  display: flex;
+  margin-top: 9px;
+  padding-top: 9px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid #e1e8f3;
+}
+.repair-current-toolbar > span {
+  color: #718096;
+  font-size: 9px;
+  white-space: nowrap;
+}
+.repair-current-toolbar > span strong {
+  margin-left: 3px;
+  color: #253d69;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.repair-current-toolbar > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+.repair-current-toolbar button {
+  height: 28px;
+  padding: 0 8px;
+  color: #45638f;
+  background: #fff;
+  border: 1px solid #d2deef;
+  border-radius: 7px;
+  font-size: 9px;
+  font-weight: 700;
+}
+.repair-current-toolbar button:hover:not(:disabled) {
+  color: #1f5ec8;
+  border-color: #8aaff5;
+}
+.repair-current-toolbar button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 .repair-instruction-field {
   position: relative;
@@ -4201,6 +4376,20 @@ select:disabled {
     align-items: flex-start;
     flex-direction: column;
     gap: 4px;
+  }
+  .repair-boundary-buttons,
+  .repair-current-toolbar > div {
+    width: 100%;
+  }
+  .repair-boundary-buttons button {
+    flex: 1;
+  }
+  .repair-current-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .repair-current-toolbar > div {
+    justify-content: flex-start;
   }
   .segment-material-grid {
     grid-template-columns: 1fr;

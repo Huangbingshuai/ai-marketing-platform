@@ -1481,15 +1481,20 @@ class ExecutionFinding(ApiModel):
     diagnosis: str = Field(min_length=1, max_length=180)
 
 
-class ShotFieldPatch(ApiModel):
-    sequence: int = Field(ge=0, le=6)
-    field: ShotRepairField
-    value: str = Field(min_length=1, max_length=320)
+class ExecutionAuditItem(ApiModel):
+    """Model-owned physical execution diagnosis for one complete shot plan."""
+
+    slot_id: str = Field(min_length=1, max_length=160)
+    findings: list[ExecutionFinding] = Field(default_factory=list, max_length=5)
+
+
+class ExecutionAuditBatch(ApiModel):
+    items: list[ExecutionAuditItem] = Field(min_length=1, max_length=10)
 
 
 class ExecutionRepairDraft(ApiModel):
     slot_id: str = Field(min_length=1, max_length=160)
-    patches: list[ShotFieldPatch] = Field(min_length=1, max_length=12)
+    shot_plan: MaterialShotPlan
     camera_dimension: str | None = Field(default=None, min_length=1, max_length=160)
 
 
@@ -1515,7 +1520,7 @@ class CreativeEvaluation(ApiModel):
     )
     hard_issues: list[str] = Field(default_factory=list, max_length=20)
     warnings: list[str] = Field(default_factory=list, max_length=20)
-    execution_findings: list[ExecutionFinding] = Field(default_factory=list, max_length=3)
+    execution_findings: list[ExecutionFinding] = Field(default_factory=list, max_length=5)
     execution_repair: ExecutionRepairCheckpoint | None = None
     inferred_creative_core: str | None = Field(
         default=None, min_length=1, max_length=160
@@ -1592,7 +1597,7 @@ class CreativeEvaluationDraft(ApiModel):
     )
     hard_issues: list[str] = Field(default_factory=list, max_length=5)
     warnings: list[str] = Field(default_factory=list, max_length=3)
-    execution_findings: list[ExecutionFinding] = Field(default_factory=list, max_length=3)
+    execution_findings: list[ExecutionFinding] = Field(default_factory=list, max_length=5)
     inferred_creative_core: str | None = Field(
         default=None,
         min_length=1,

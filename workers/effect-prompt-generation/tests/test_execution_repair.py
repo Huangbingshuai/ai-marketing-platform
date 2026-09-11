@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from effect_prompt_generation.execution_repair import (
-    apply_execution_patch,
+    apply_execution_rewrite,
     candidate_hash,
     has_execution_diagnosis,
     repair_improves,
@@ -34,6 +34,7 @@ class LocatedProvider(MockAiProvider):
     def __init__(self, mode: str = "accept") -> None:
         self.mode = mode
         self.evaluations = 0
+        self.audits = 0
         self.repairs = 0
 
     async def evaluate_creatives(self, *args: Any, **kwargs: Any) -> Any:
@@ -45,32 +46,51 @@ class LocatedProvider(MockAiProvider):
         for item in call.value.items:
             diagnosed = self.evaluations == 1 or self.mode == "unimproved"
             scores = item.scores.model_copy(
-                update={"visual_executability": 70 if diagnosed else 95}
+                update={
+                    "visual_executability": (
+                        60
+                        if self.mode == "unimproved" and self.evaluations > 1
+                        else 70
+                        if diagnosed
+                        else 95
+                    )
+                }
             )
             rows.append(
                 item.model_copy(
                     update={
                         "scores": scores,
-                        "warnings": (
-                            ["DURATION_TOO_DENSE", "SECONDARY_FACT_NOT_USED"]
-                            if self.mode == "summary-omits-code" and diagnosed
-                            else ["CAMERA_ACTION_MISMATCH"]
-                            if diagnosed
-                            else []
-                        ),
-                        "execution_findings": [
-                            ExecutionFinding(
-                                code="CAMERA_ACTION_MISMATCH",
-                                sequence=1,
-                                field="CAMERA",
-                                diagnosis="同一节拍机位固定与机位移动互相冲突",
-                            )
-                        ]
-                        if diagnosed and self.mode != "unlocated"
-                        else [],
+                        "warnings": ["DURATION_TOO_DENSE"] if diagnosed else [],
+                        "execution_findings": [],
                     }
                 )
             )
+        return replace(call, value=call.value.model_copy(update={"items": rows}))
+
+    async def audit_creative_execution(self, *args: Any, **kwargs: Any) -> Any:
+        call = await super().audit_creative_execution(*args, **kwargs)
+        self.audits += 1
+        diagnosed = (
+            self.audits == 1
+            or (self.mode == "two-pass" and self.audits == 2)
+        ) and self.mode != "unlocated"
+        rows = [
+            item.model_copy(
+                update={
+                    "findings": [
+                        ExecutionFinding(
+                            code="CAMERA_ACTION_MISMATCH",
+                            sequence=1,
+                            field="CAMERA",
+                            diagnosis="同一节拍机位固定与机位移动互相冲突",
+                        )
+                    ]
+                    if diagnosed
+                    else []
+                }
+            )
+            for item in call.value.items
+        ]
         return replace(call, value=call.value.model_copy(update={"items": rows}))
 
     async def repair_creative_execution(self, candidate: Any, **kwargs: Any) -> Any:
@@ -80,25 +100,30 @@ class LocatedProvider(MockAiProvider):
                 "repair timed out", error_type=ProviderErrorType.TIMEOUT, retryable=True
             )
         call = await super().repair_creative_execution(candidate, **kwargs)
+        first = candidate.shot_plan.beats[0].model_copy(
+            update={
+                "camera": "固定机位，不跟随主体平移",
+                "focus": "焦点落在主体接触面",
+                "motion_source": "使用者施力推动主体",
+            }
+        )
+        second = first.model_copy(
+            update={
+                "sequence": 2,
+                "duration_weight": 2,
+                "action": "使用者停止施力，主体自然停住",
+                "visible_result": "主体在支撑面上稳定停住",
+            }
+        )
         return replace(
             call,
             value=ExecutionRepairDraft(
                 slot_id="wrong-slot"
                 if self.mode == "wrong-slot"
                 else candidate.slot_id,
-                patches=[
-                    {
-                        "sequence": 1,
-                        "field": "CAMERA",
-                        "value": "固定机位，不跟随主体平移",
-                    },
-                    {"sequence": 1, "field": "FOCUS", "value": "焦点落在主体接触面"},
-                    {
-                        "sequence": 1,
-                        "field": "MOTION_SOURCE",
-                        "value": "使用者施力推动主体",
-                    },
-                ],
+                shot_plan=candidate.shot_plan.model_copy(
+                    update={"beats": [first, second]}
+                ),
                 camera_dimension="固定机位，主体运动",
             ),
         )
@@ -120,6 +145,7 @@ async def prepared(provider: LocatedProvider) -> tuple[Any, Any, Any, Any]:
     "mode",
     [
         "accept",
+        "two-pass",
         "summary-omits-code",
         "transport",
         "wrong-slot",
@@ -128,39 +154,62 @@ async def prepared(provider: LocatedProvider) -> tuple[Any, Any, Any, Any]:
         "empty-review",
     ],
 )
-async def test_one_local_repair_preserves_original_unless_review_improves(
+async def test_diagnosed_candidate_is_repaired_or_removed_from_selection(
     mode: str,
 ) -> None:
     provider = LocatedProvider(mode)
     pipeline, runtime, original, shard = await prepared(provider)
     result = (await pipeline.evaluate_classification_shard(runtime, shard))[0]
     current = pipeline._cache(runtime).creatives[original.slot_id]
-    assert provider.repairs == (0 if mode == "unlocated" else 1)
+    assert provider.repairs == (
+        0 if mode == "unlocated" else 2 if mode == "two-pass" else 1
+    )
     assert provider.evaluations == (
         2
+        if mode
+        in {
+            "accept",
+            "two-pass",
+            "summary-omits-code",
+            "unimproved",
+            "empty-review",
+        }
+        else 1
+    )
+    assert provider.audits == (
+        3
+        if mode == "two-pass"
+        else 2
         if mode in {"accept", "summary-omits-code", "unimproved", "empty-review"}
         else 1
     )
-    assert not result.hard_issues
-    if mode in {"accept", "summary-omits-code"}:
+    if mode in {"accept", "two-pass", "summary-omits-code"}:
+        assert not result.hard_issues
         assert current.content != original.content
         assert current.shot_plan.beats[0].motion_source == "使用者施力推动主体"
+        assert len(current.shot_plan.beats) == 2
+        assert current.shot_plan.beats[1].duration_weight == 2
         assert current.creative_core == original.creative_core
         assert current.declared_fact_ids == original.declared_fact_ids
         assert result.execution_repair.status == "ACCEPTED"
         assert restore_execution_candidate(original, result, duration=5) == current
     else:
         assert current == original
-        assert result.warnings == ["CAMERA_ACTION_MISMATCH"]
+        if mode == "unlocated":
+            assert not result.hard_issues
+            assert "CAMERA_ACTION_MISMATCH" not in result.warnings
+        else:
+            assert "UNRESOLVED_EXECUTION" in result.hard_issues
+            assert "CAMERA_ACTION_MISMATCH" in result.warnings
         if mode != "unlocated":
             assert result.execution_repair.status == "KEPT_ORIGINAL"
-    calls = (provider.repairs, provider.evaluations)
+    calls = (provider.repairs, provider.evaluations, provider.audits)
     resumed = PromptGenerationPipeline(api=pipeline.api, provider=provider)
     resumed.register_snapshot(runtime, _snapshot())
     await resumed.load_and_snapshot(runtime)
     assert resumed._cache(runtime).creatives[original.slot_id] == current
     assert shard.key in resumed._cache(runtime).completed_classification_shard_keys
-    assert (provider.repairs, provider.evaluations) == calls
+    assert (provider.repairs, provider.evaluations, provider.audits) == calls
 
 
 @pytest.mark.asyncio
@@ -168,10 +217,17 @@ async def test_attempt_marker_survives_interruption_before_repair_result() -> No
     provider = LocatedProvider()
     pipeline, runtime, original, shard = await prepared(provider)
 
-    async def interrupted(*args: Any, **kwargs: Any) -> Any:
-        raise KeyboardInterrupt("simulated process exit")
+    original_repair = provider.repair_creative_execution
+    interrupted_once = False
 
-    provider.repair_creative_execution = interrupted
+    async def interrupted_then_resume(*args: Any, **kwargs: Any) -> Any:
+        nonlocal interrupted_once
+        if not interrupted_once:
+            interrupted_once = True
+            raise KeyboardInterrupt("simulated process exit")
+        return await original_repair(*args, **kwargs)
+
+    provider.repair_creative_execution = interrupted_then_resume
     with pytest.raises(KeyboardInterrupt):
         await pipeline.evaluate_classification_shard(runtime, shard)
     stored = pipeline.api.shards[shard.key]
@@ -180,6 +236,12 @@ async def test_attempt_marker_survives_interruption_before_repair_result() -> No
     resumed = PromptGenerationPipeline(api=pipeline.api, provider=provider)
     resumed.register_snapshot(runtime, _snapshot())
     await resumed.load_and_snapshot(runtime)
+    assert shard.key not in resumed._cache(runtime).completed_classification_shard_keys
+    restored_diagnosis = resumed._cache(runtime).execution_repair_records[
+        original.slot_id
+    ]
+    assert restored_diagnosis.execution_repair is None
+    assert restored_diagnosis.execution_findings
     resumed._cache(runtime).insight_application = pipeline._cache(
         runtime
     ).insight_application
@@ -187,9 +249,10 @@ async def test_attempt_marker_survives_interruption_before_repair_result() -> No
     resumed._cache(runtime).fact_visual_strategy = pipeline._cache(
         runtime
     ).fact_visual_strategy
-    await resumed.evaluate_classification_shard(runtime, shard)
-    assert provider.evaluations == 1
-    assert resumed._cache(runtime).creatives[original.slot_id] == original
+    result = (await resumed.evaluate_classification_shard(runtime, shard))[0]
+    assert provider.evaluations == 2
+    assert result.execution_repair.status == "ACCEPTED"
+    assert resumed._cache(runtime).creatives[original.slot_id] != original
 
 
 @pytest.mark.asyncio
@@ -200,6 +263,8 @@ async def test_manual_task_never_rewrites_user_content() -> None:
     await pipeline.evaluate_classification_shard(runtime, shard)
     assert provider.repairs == 0
     assert pipeline._cache(runtime).creatives[original.slot_id] == original
+    result = pipeline._cache(runtime).creative_evaluations[original.slot_id]
+    assert "UNRESOLVED_EXECUTION" in result.hard_issues
 
 
 @pytest.mark.asyncio
@@ -217,7 +282,7 @@ async def test_optional_repair_does_not_consume_remaining_mandatory_evaluation_b
 
 
 @pytest.mark.asyncio
-async def test_patch_and_checkpoint_reject_only_structural_mismatches() -> None:
+async def test_full_rewrite_and_checkpoint_reject_identity_or_content_mismatches() -> None:
     pipeline, runtime, original, shard = await prepared(LocatedProvider())
     review = (await pipeline.evaluate_classification_shard(runtime, shard))[0]
     assert has_execution_diagnosis(original, review) is False
@@ -256,17 +321,15 @@ async def test_patch_and_checkpoint_reject_only_structural_mismatches() -> None:
     await resumed.load_and_snapshot(runtime)
     assert shard.key not in resumed._cache(runtime).completed_classification_shard_keys
     assert original.slot_id not in resumed._cache(runtime).creative_evaluations
-    for patches in [
-        [{"sequence": 6, "field": "CAMERA", "value": "arbitrary text"}],
-        [{"sequence": 1, "field": "FINAL_FRAME", "value": "arbitrary text"}],
-        [{"sequence": 1, "field": "CAMERA", "value": "x"}] * 2,
-    ]:
-        with pytest.raises(ValueError):
-            apply_execution_patch(
-                original,
-                ExecutionRepairDraft(slot_id=original.slot_id, patches=patches),
-                duration=5,
-            )
+    with pytest.raises(ValueError):
+        apply_execution_rewrite(
+            original,
+            ExecutionRepairDraft(
+                slot_id="other",
+                shot_plan=original.shot_plan,
+            ),
+            duration=5,
+        )
 
 
 @pytest.mark.asyncio
@@ -294,18 +357,22 @@ async def test_execution_fields_compile_for_durations_and_products_without_infer
         )
         == original.content
     )
-    repaired = apply_execution_patch(
+    repaired = apply_execution_rewrite(
         original,
         ExecutionRepairDraft(
             slot_id=original.slot_id,
-            patches=[
-                {
-                    "sequence": 1,
-                    "field": "MOTION_SOURCE",
-                    "value": f"AI 提供的 {product} 运动来源原文",
-                },
-                {"sequence": 1, "field": "FOCUS", "value": "AI 提供的焦点说明"},
-            ],
+            shot_plan=plan.model_copy(
+                update={
+                    "beats": [
+                        plan.beats[0].model_copy(
+                            update={
+                                "motion_source": f"AI 提供的 {product} 运动来源原文",
+                                "focus": "AI 提供的焦点说明",
+                            }
+                        )
+                    ]
+                }
+            ),
         ),
         duration=duration,
     )

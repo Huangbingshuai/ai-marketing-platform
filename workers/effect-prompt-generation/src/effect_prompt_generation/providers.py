@@ -23,9 +23,6 @@ from .creative_directions import (
     creative_territory_target_range,
 )
 from .insight_mapping import mandatory_business_facts
-from .execution_refinement import (
-    ExecutionEditBatch, apply_execution_edits, editable_execution_paths, execution_edit_schema,
-)
 from .product_images import PreparedProductImage
 from .supplement_recovery import direction_summary, route_summary
 from .models import (
@@ -61,6 +58,8 @@ from .models import (
     CreativeEvaluationBatch,
     CreativeEvaluationDraft,
     CreativeEvaluationDraftBatch,
+    ExecutionAuditBatch,
+    ExecutionAuditItem,
     ExecutionFinding,
     ExecutionRepairDraft,
     CreativeFactTerritoryAssignment,
@@ -95,9 +94,9 @@ from .shot_plan import ShotPlanCompilationError, compile_material_shot_plan
 TModel = TypeVar("TModel", bound=BaseModel)
 LOGGER = logging.getLogger(__name__)
 CREATIVE_BASE_PROMPT = "creative_base.system.prompt.txt"
-CREATIVE_EXECUTION_PROMPT = "creative_execution.system.prompt.txt"
 CREATIVE_TASK_PROMPT = "creative_task.user.prompt.txt"
 EXECUTION_REPAIR_PROMPT = "execution_repair.system.prompt.txt"
+EXECUTION_AUDIT_PROMPT = "execution_audit.system.prompt.txt"
 EVALUATION_BASE_PROMPT = "evaluation_base.system.prompt.txt"
 EVALUATION_TASK_PROMPT = "evaluation_task.user.prompt.txt"
 FACT_VISUAL_STRATEGY_BASE_PROMPT = "fact_visual_strategy.system.prompt.txt"
@@ -381,18 +380,18 @@ class AiProvider(Protocol):
         product_images: Sequence[PreparedProductImage] = (),
     ) -> AiCallResult[CreativeCandidateBatch]: ...
 
+    async def audit_creative_execution(
+        self,
+        candidates: list[CreativeCandidate],
+        *,
+        target_durations: Mapping[str, int],
+    ) -> AiCallResult[ExecutionAuditBatch]: ...
+
     async def repair_creative_execution(
         self, candidate: CreativeCandidate, *, task: CreativeTask,
         findings: Sequence[ExecutionFinding], application: InsightApplicationMap,
         shared_prompt: SharedPrompt, fact_visual_strategy: FactVisualStrategy,
     ) -> AiCallResult[ExecutionRepairDraft]: ...
-
-    async def refine_creative_execution(
-        self, candidates: list[CreativeCandidate], *, shard: CreativeShardPlan,
-        application: InsightApplicationMap, shared_prompt: SharedPrompt,
-        fact_visual_strategy: FactVisualStrategy | None = None,
-        product_images: Sequence[PreparedProductImage] = (),
-    ) -> AiCallResult[CreativeCandidateBatch]: ...
 
     async def evaluate_creatives(
         self,
@@ -431,29 +430,36 @@ class MockAiProvider:
 
     execution_mode = "MOCK"
 
-    async def refine_creative_execution(
-        self, candidates: list[CreativeCandidate], *, shard: CreativeShardPlan,
-        application: InsightApplicationMap, shared_prompt: SharedPrompt,
-        fact_visual_strategy: FactVisualStrategy | None = None,
-        product_images: Sequence[PreparedProductImage] = (),
-    ) -> AiCallResult[CreativeCandidateBatch]:
-        # Explicit test identity fixture, not a semantic implementation.
-        return _mock_result(CreativeCandidateBatch(items=candidates),
-                            "COHERENT_CREATIVE_GENERATION", CREATIVE_EXECUTION_PROMPT)
-
     async def repair_creative_execution(
         self, candidate: CreativeCandidate, *, task: CreativeTask,
         findings: Sequence[ExecutionFinding], application: InsightApplicationMap,
         shared_prompt: SharedPrompt, fact_visual_strategy: FactVisualStrategy,
     ) -> AiCallResult[ExecutionRepairDraft]:
         # Explicit fixture-only no-op; never manufacture a production repair.
-        from .models import ShotFieldPatch
         if candidate.shot_plan is None:
             raise ValueError("mock repair requires shot plan")
         return _mock_result(ExecutionRepairDraft(
             slot_id=candidate.slot_id,
-            patches=[ShotFieldPatch(sequence=1, field="CAMERA", value=candidate.shot_plan.beats[0].camera)],
+            shot_plan=candidate.shot_plan,
         ), "CREATIVE_EVALUATION_CLASSIFICATION", EXECUTION_REPAIR_PROMPT)
+
+    async def audit_creative_execution(
+        self,
+        candidates: list[CreativeCandidate],
+        *,
+        target_durations: Mapping[str, int],
+    ) -> AiCallResult[ExecutionAuditBatch]:
+        del target_durations
+        return _mock_result(
+            ExecutionAuditBatch(
+                items=[
+                    ExecutionAuditItem(slot_id=item.slot_id, findings=[])
+                    for item in candidates
+                ]
+            ),
+            "CREATIVE_EVALUATION_CLASSIFICATION",
+            EXECUTION_AUDIT_PROMPT,
+        )
 
     async def compile_fact_visual_strategy(
         self,
@@ -2220,63 +2226,75 @@ class ArkResponsesProvider:
             metadata=call.metadata,
         )
 
-    async def refine_creative_execution(
-        self, candidates: list[CreativeCandidate], *, shard: CreativeShardPlan,
-        application: InsightApplicationMap, shared_prompt: SharedPrompt,
-        fact_visual_strategy: FactVisualStrategy | None = None,
-        product_images: Sequence[PreparedProductImage] = (),
-    ) -> AiCallResult[CreativeCandidateBatch]:
-        tasks = {task.slot_id: task for task in shard.tasks}
-        originals = {item.slot_id: item for item in candidates}
-        briefs = []
-        for candidate in candidates:
-            task = tasks[candidate.slot_id]
-            assignment = _creative_fact_assignment(task, application)
-            aliases = _creative_fact_aliases(assignment)
-            draft = candidate.model_dump(mode="json", by_alias=True,
-                                         exclude={"content", "generated_at"})
-            draft["declaredFactIds"] = [aliases[key] for key in candidate.declared_fact_ids]
-            briefs.append({
-                "task": _execution_fact_brief(
-                    task, assignment=assignment, application=application,
-                    fact_visual_strategy=fact_visual_strategy, fact_aliases=aliases),
-                "draft": draft,
-                "editablePaths": editable_execution_paths(candidate),
-            })
-        prompt = json.dumps({"items": briefs, "sharedPrompt": shared_prompt.compiled_content},
-                            ensure_ascii=False)
+    async def audit_creative_execution(
+        self,
+        candidates: list[CreativeCandidate],
+        *,
+        target_durations: Mapping[str, int],
+    ) -> AiCallResult[ExecutionAuditBatch]:
+        if not candidates or len(candidates) > 10:
+            raise ProviderError(
+                "creative execution audit batch must contain between one and ten items",
+                retryable=False,
+                error_type=ProviderErrorType.REQUEST_REJECTED,
+            )
+        expected = {item.slot_id for item in candidates}
+        if set(target_durations) != expected:
+            raise ProviderError(
+                "creative execution audit requires one duration per candidate",
+                retryable=False,
+                error_type=ProviderErrorType.REQUEST_REJECTED,
+            )
+        schema = ExecutionAuditBatch.model_json_schema(by_alias=True)
+        schema["properties"]["items"].update(
+            minItems=len(candidates), maxItems=len(candidates)
+        )
+        schema["$defs"]["ExecutionAuditItem"]["properties"]["slotId"][
+            "enum"
+        ] = sorted(expected)
         call = await self._structured(
-            prompt,
-            ExecutionEditBatch,
-            schema_name="effect_prompt_creative_execution",
-            stage="COHERENT_CREATIVE_GENERATION",
-            prompt_file=CREATIVE_EXECUTION_PROMPT,
-            model=self._candidate_model,
-            max_output_tokens=min(self._candidate_max_output_tokens,
-                                  max(4096, _creative_output_token_budget([tasks[key] for key in originals]))),
-            request_timeout=self._candidate_timeout,
-            instructions=load_prompt(CREATIVE_EXECUTION_PROMPT),
-            response_schema=execution_edit_schema(candidates),
-            input_content=[{"type": "input_text", "text": prompt}, *[
-                {"type": "input_image", "image_url": image.data_uri,
-                 "detail": self._visual_strategy_image_detail}
-                for image in product_images
-            ]],
+            json.dumps(
+                {
+                    "items": [
+                        {
+                            "slotId": item.slot_id,
+                            "targetDurationSeconds": target_durations[item.slot_id],
+                            "creativeCore": item.creative_core,
+                            "shotPlan": item.shot_plan.model_dump(
+                                mode="json", by_alias=True
+                            )
+                            if item.shot_plan is not None
+                            else None,
+                        }
+                        for item in candidates
+                    ]
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            ExecutionAuditBatch,
+            schema_name="effect_prompt_execution_audit_batch",
+            stage=NodeId.CREATIVE_EVALUATION_CLASSIFICATION.value,
+            prompt_file=EXECUTION_AUDIT_PROMPT,
+            model=self._evaluation_model,
+            max_output_tokens=min(
+                self._evaluation_max_output_tokens,
+                max(1024, len(candidates) * 900),
+            ),
+            request_timeout=self._evaluation_timeout,
+            instructions=load_prompt(EXECUTION_AUDIT_PROMPT),
+            response_schema=schema,
         )
         actual = [item.slot_id for item in call.value.items]
-        if len(actual) != len(set(actual)) or set(actual) != set(originals):
-            raise ProviderError("execution refinement changed candidate identity/count",
-                                error_type=ProviderErrorType.RESPONSE_INVALID, retryable=False)
-        decisions = {item.slot_id: item for item in call.value.items}
-        try:
-            revised = [apply_execution_edits(
-                original, decisions[original.slot_id],
-                duration_seconds=tasks[original.slot_id].target_duration_seconds,
-            ) for original in candidates]
-        except ValueError as exc:
-            raise ProviderError("invalid execution edit structure",
-                                error_type=ProviderErrorType.RESPONSE_INVALID, retryable=False) from exc
-        return AiCallResult(value=CreativeCandidateBatch(items=revised), metadata=call.metadata)
+        if len(actual) != len(set(actual)) or set(actual) != expected:
+            raise ProviderError(
+                "AI execution audit has missing, duplicate, or unknown slotId",
+                retryable=False,
+                error_type=ProviderErrorType.RESPONSE_INVALID,
+                attempts=call.metadata.attempts,
+                elapsed_ms=call.metadata.latency_ms,
+            )
+        return call
 
     async def repair_creative_execution(
         self, candidate: CreativeCandidate, *, task: CreativeTask,
@@ -2297,7 +2315,7 @@ class ArkResponsesProvider:
             prompt, ExecutionRepairDraft, schema_name="effect_prompt_execution_repair",
             stage=NodeId.CREATIVE_EVALUATION_CLASSIFICATION.value,
             prompt_file=EXECUTION_REPAIR_PROMPT, model=self._candidate_model,
-            max_output_tokens=min(self._candidate_max_output_tokens, 2048),
+            max_output_tokens=min(self._candidate_max_output_tokens, 6144),
             request_timeout=self._candidate_timeout,
             instructions=load_prompt(EXECUTION_REPAIR_PROMPT),
         )
@@ -3406,25 +3424,6 @@ def _creative_task_brief(
              "priorityDimensions": [key.value for key in task.material_brief.priority_dimensions]}
             if task.material_brief is not None else None
         ),
-    }
-
-
-def _execution_fact_brief(
-    task: CreativeTask, *, assignment: CreativeFactAssignment,
-    application: InsightApplicationMap, fact_visual_strategy: FactVisualStrategy | None,
-    fact_aliases: Mapping[str, str] | None = None,
-) -> dict[str, Any]:
-    """Give the edit model facts, not the upstream filming advice it must repair."""
-    brief = _creative_task_brief(task, assignment=assignment, application=application,
-                                 fact_visual_strategy=fact_visual_strategy, fact_aliases=fact_aliases)
-    return {
-        "targetDurationSeconds": task.target_duration_seconds,
-        "productSnapshot": brief["productSnapshot"],
-        "factApplications": [
-            {key: value for key, value in fact.items() if key not in {"creativeUsage", "instruction"}}
-            for fact in brief["factApplications"]
-        ],
-        "forbiddenInferences": brief["forbiddenInferences"],
     }
 
 

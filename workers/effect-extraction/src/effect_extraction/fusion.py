@@ -5,12 +5,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
-from .models import (
-    MAX_SELLING_POINTS,
-    BranchName,
-    BranchOutput,
-    ExtractionCandidate,
-)
+from .models import BranchName, BranchOutput, ExtractionCandidate
 
 SCALAR_FIELDS = (
     "product_category",
@@ -73,10 +68,6 @@ def branch_candidate(output: BranchOutput) -> ExtractionCandidate | None:
                 if canonical and canonical not in seen:
                     seen.add(canonical)
                     list_values.append(value.strip())
-                    if len(list_values) >= MAX_SELLING_POINTS:
-                        break
-            if len(list_values) >= MAX_SELLING_POINTS:
-                break
         setattr(merged, field, list_values or None)
     return merged
 
@@ -138,12 +129,8 @@ def fuse(branches: list[BranchOutput]) -> FusionResult:
                     seen.add(canonical)
                     list_values.append(value.strip())
                     added = True
-                    if len(list_values) >= MAX_SELLING_POINTS:
-                        break
             if added:
                 sources.append(source.value)
-            if len(list_values) >= MAX_SELLING_POINTS:
-                break
         setattr(fused, field, list_values or None)
         if sources:
             provenance[field] = ">".join(sources)

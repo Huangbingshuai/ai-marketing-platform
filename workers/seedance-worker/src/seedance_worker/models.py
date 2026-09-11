@@ -50,6 +50,9 @@ class InputVideo(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     file_object_id: str = Field(alias="fileObjectId", min_length=1)
+    provider_task_id: str | None = Field(
+        default=None, alias="providerTaskId", min_length=1, max_length=255
+    )
     original_file_name: str = Field(alias="originalFileName", min_length=1)
     mime_type: Literal["video/mp4", "video/quicktime"] = Field(alias="mimeType")
     size_bytes: int = Field(alias="sizeBytes", ge=1, le=50 * 1024 * 1024)

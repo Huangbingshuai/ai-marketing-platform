@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from typing import Any, Protocol
 
@@ -93,13 +94,28 @@ class HttpInternalApi:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        try:
-            response = await self._client.request(method, path, **kwargs)
-        except (httpx.TimeoutException, httpx.NetworkError) as exc:
-            raise InternalApiError(
-                "internal API is unavailable", retryable=True
-            ) from exc
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        retry_transient: bool = True,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        network_attempts = 5 if retry_transient else 1
+        response: httpx.Response | None = None
+        for attempt in range(network_attempts):
+            try:
+                response = await self._client.request(method, path, **kwargs)
+                break
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                if attempt == network_attempts - 1:
+                    raise InternalApiError(
+                        "internal API is unavailable", retryable=True
+                    ) from exc
+                await asyncio.sleep(0.25 * (2**attempt))
+        if response is None:  # pragma: no cover - the loop always returns or raises
+            raise InternalApiError("internal API is unavailable", retryable=True)
         if response.is_error:
             retryable = response.status_code == 429 or response.status_code >= 500
             detail = _safe_response_message(response)
@@ -111,8 +127,20 @@ class HttpInternalApi:
             )
         return response
 
-    async def _json(self, method: str, path: str, **kwargs: Any) -> Any:
-        response = await self._request(method, path, **kwargs)
+    async def _json(
+        self,
+        method: str,
+        path: str,
+        *,
+        retry_transient: bool = True,
+        **kwargs: Any,
+    ) -> Any:
+        response = await self._request(
+            method,
+            path,
+            retry_transient=retry_transient,
+            **kwargs,
+        )
         try:
             return _unwrap(response.json())
         except ValueError as exc:
@@ -126,7 +154,10 @@ class HttpInternalApi:
 
     async def claim(self, run_id: str, project_id: str) -> ClaimResponse:
         data = await self._json(
-            "POST", f"{self._ROOT}/runs/{run_id}/claim", json={"projectId": project_id}
+            "POST",
+            f"{self._ROOT}/runs/{run_id}/claim",
+            retry_transient=False,
+            json={"projectId": project_id},
         )
         return ClaimResponse.model_validate(data)
 

@@ -141,6 +141,36 @@ async def test_image_selling_points_are_kept_or_dropped_without_field_movement()
 
 
 @pytest.mark.asyncio
+async def test_recommended_count_does_not_drop_an_independent_image_fact() -> None:
+    users = [
+        fact(f"user-selling-{index:02d}", f"用户卖点 {index}", "USER_FACT")
+        for index in range(1, 42)
+    ]
+    image = fact("image-selling-01", "瓶内可见完整梅肉颗粒", "IMAGE_SUGGESTION")
+    provider = SemanticProvider(
+        SemanticRefinementDecision(
+            suggestion_decisions=[keep("image-selling-01")], user_fact_notices=[]
+        )
+    )
+
+    result = await refine_candidate_semantics(
+        ExtractionCandidate.empty(),
+        provider=provider,  # type: ignore[arg-type]
+        user_facts=users,
+        image_suggestions=[image],
+    )
+
+    assert len(result.candidate.selling_points or []) == 42
+    assert result.candidate.selling_points is not None
+    assert result.candidate.selling_points[-1] == "瓶内可见完整梅肉颗粒"
+    assert provider.remaining_capacity == {"sellingPoints": 1}
+    assert result.metadata["userFactNotices"][-1]["issue"] == (
+        SemanticUserFactIssue.FIELD_OVER_RECOMMENDED_COUNT.value
+    )
+    assert result.metadata["userFactNotices"][-1]["recommendedCount"] == 40
+
+
+@pytest.mark.asyncio
 async def test_image_inference_cannot_be_kept_as_a_fact() -> None:
     image = fact("image-selling-01", "具有保健功效", "IMAGE_SUGGESTION")
     unsafe_keep = SemanticSuggestionDecision(

@@ -332,15 +332,7 @@ const searchable = (item: EffectPromptItem, query: string): boolean => {
   return tokens.every((token) => searchableText.includes(token));
 };
 
-const fragmentDisplayOrder = new Map(
-  EFFECT_PROMPT_FRAGMENT_TYPES.map((fragmentType, index) => [fragmentType, index]),
-);
-
 const comparePromptItemsForDisplay = (left: EffectPromptItem, right: EffectPromptItem): number => {
-  const fragmentOrder =
-    (fragmentDisplayOrder.get(left.fragmentType) ?? EFFECT_PROMPT_FRAGMENT_TYPES.length) -
-    (fragmentDisplayOrder.get(right.fragmentType) ?? EFFECT_PROMPT_FRAGMENT_TYPES.length);
-  if (fragmentOrder !== 0) return fragmentOrder;
   return left.code.localeCompare(right.code, 'zh-CN', { numeric: true });
 };
 
@@ -1461,7 +1453,10 @@ export class EffectPromptService {
       resultId: record.id,
       revision: record.revision,
       exportedAt: new Date().toISOString(),
-      result: draft,
+      result: {
+        ...draft,
+        items: [...draft.items].sort(comparePromptItemsForDisplay),
+      },
     };
   }
 

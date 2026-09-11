@@ -93,59 +93,24 @@ const record = (): EffectPromptNodeDetailRunRecord =>
   }) as unknown as EffectPromptNodeDetailRunRecord;
 
 describe('presentEffectPromptNodeDetail', () => {
-  it.each(['RUNNING', 'FAILED', 'SUCCEEDED'])(
-    '画面修正 %s 只统计已成功分片，不把保存的草稿冒充修正完成',
-    (status) => {
-      const run = record();
-      const stage = run.stages.find((s) => s.nodeId === 'COHERENT_CREATIVE_GENERATION')!;
-      stage.status = status as typeof stage.status;
-      stage.metadata = {
-        perceptionPhase: 'EXECUTION_REFINEMENT',
-        executionRefinementRequired: true,
-        executionRefinementCompletedCount: 99,
-      };
-      const candidate = (ordinal: number) => ({
-        slotId: `private-${ordinal}`,
-        ordinal,
-        round: 0,
-        creativeCore: '一次放回动作',
-        content: '成人将产品放回支架。',
-        declaredFactIds: [],
-        dimensions: {
-          narrative: '动作展示',
-          scene: '家中',
-          persona: '成人',
-          productRelation: '便于放置',
-          camera: '固定近景',
-          emotion: '轻松',
-        },
-      });
-      run.shards = [
-        ...['SUCCEEDED', 'RUNNING', 'FAILED'].map((shardStatus, index) => ({
-          phase: 'BLUEPRINT',
-          status: shardStatus,
-          items: [candidate(index + 1)],
-          combinationPlan: [
-            { slotId: `private-${index + 1}`, preferredFactIds: [], targetDurationSeconds: 15 },
-          ],
-        })),
-      ] as unknown as typeof run.shards;
-      const detail = presentEffectPromptNodeDetail(run, 'COHERENT_CREATIVE_GENERATION');
-      expect(detail.fields).toContainEqual({ label: '已完成画面修正', value: 1 });
-      expect(detail.sections.find((s) => s.kind === 'OUTPUT')!.fields).toContainEqual({
-        label: '已完成画面修正',
-        value: 1,
-      });
-      expect(JSON.stringify(detail)).toContain('不代表实际视频零故障');
-      expect(JSON.stringify(detail)).not.toContain('private-');
-      stage.metadata = {};
-      expect(
-        presentEffectPromptNodeDetail(run, 'COHERENT_CREATIVE_GENERATION').fields.some(
-          (field) => field.label === '已完成画面修正',
-        ),
-      ).toBe(false);
-    },
-  );
+  it('在评分节点展示诊断驱动的整段修订进度', () => {
+    const run = record();
+    const stage = run.stages.find((s) => s.nodeId === 'CREATIVE_EVALUATION_CLASSIFICATION')!;
+    stage.status = 'RUNNING';
+    stage.metadata = {
+      perceptionPhase: 'DIAGNOSED_EXECUTION_REWRITE',
+      executionRepairAttemptedCount: 3,
+      executionAuditCandidateCount: 6,
+      executionRepairAcceptedCount: 2,
+      executionRepairUnresolvedCount: 1,
+    };
+    const detail = presentEffectPromptNodeDetail(run, 'CREATIVE_EVALUATION_CLASSIFICATION');
+    expect(detail.fields).toContainEqual({ label: '执行修订尝试', value: 3 });
+    expect(detail.fields).toContainEqual({ label: '专职执行审片条次', value: 6 });
+    expect(detail.fields).toContainEqual({ label: '复评后采用修订', value: 2 });
+    expect(detail.fields).toContainEqual({ label: '未修复并移出候选', value: 1 });
+    expect(JSON.stringify(detail)).toContain('修订有明确执行问题的素材并复评');
+  });
 
   it('projects unified selling points and counts all facts rather than preview samples', () => {
     const run = record();

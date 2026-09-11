@@ -125,7 +125,6 @@ class ClaimResponse(ApiModel):
     input: ExtractionSnapshot | None = None
 
 
-MAX_SELLING_POINTS = 40
 SellingPoint = Annotated[str, Field(min_length=1, max_length=1000)]
 
 
@@ -137,9 +136,7 @@ class ExtractionCandidate(ApiModel):
     core_specification: str | None = Field(max_length=2000)
     price_range: str | None = Field(max_length=1000)
     visual_features: str | None = Field(max_length=4000)
-    selling_points: list[SellingPoint] | None = Field(
-        default=None, max_length=MAX_SELLING_POINTS
-    )
+    selling_points: list[SellingPoint] | None = None
 
     @classmethod
     def empty(cls) -> ExtractionCandidate:
@@ -170,9 +167,7 @@ class ExtractionResult(ApiModel):
     core_specification: str = Field(max_length=2000)
     price_range: str = Field(max_length=1000)
     visual_features: str = Field(max_length=4000)
-    selling_points: list[SellingPoint] = Field(
-        min_length=1, max_length=MAX_SELLING_POINTS
-    )
+    selling_points: list[SellingPoint] = Field(min_length=1)
 
     @field_validator("selling_points")
     @classmethod

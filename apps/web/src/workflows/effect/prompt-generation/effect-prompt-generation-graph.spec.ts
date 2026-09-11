@@ -4,14 +4,39 @@ import {
   effectPromptRunGraphEdges,
   effectPromptRunGraphNodeIds,
   type EffectPromptRun,
+  type GetEffectPromptNodeDetailData,
 } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 import { nextTick, ref, watch } from 'vue';
 
 import {
   buildEffectPromptGraphRows,
+  promptGraphDetailContentKey,
   promptGraphDetailRefreshKey,
 } from './effect-prompt-generation-graph';
+
+describe('prompt node detail stability', () => {
+  const detail: GetEffectPromptNodeDetailData['detail'] = {
+    nodeId: 'COHERENT_CREATIVE_GENERATION',
+    status: 'RUNNING',
+    summary: '正在生成素材创意',
+    sections: [],
+    fields: [],
+    blocks: [],
+    warnings: [],
+    errorMessage: null,
+    updatedAt: '2026-09-11T06:00:00Z',
+  };
+
+  it('ignores heartbeat-only timestamps but detects meaningful content changes', () => {
+    expect(promptGraphDetailContentKey({ ...detail, updatedAt: '2026-09-11T06:00:10Z' })).toBe(
+      promptGraphDetailContentKey(detail),
+    );
+    expect(promptGraphDetailContentKey({ ...detail, summary: '已生成 10 条素材创意' })).not.toBe(
+      promptGraphDetailContentKey(detail),
+    );
+  });
+});
 
 describe('selected prompt node detail refresh', () => {
   const active = (): Pick<

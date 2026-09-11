@@ -28,7 +28,7 @@ from effect_extraction.providers import (
 )
 
 
-def test_extraction_result_matches_public_length_and_uniqueness_limits() -> None:
+def test_extraction_result_preserves_large_lists_but_enforces_item_quality() -> None:
     base = {
         "product_category": "食品",
         "product_name": "商品",
@@ -40,11 +40,11 @@ def test_extraction_result_matches_public_length_and_uniqueness_limits() -> None
         ExtractionResult(**base, selling_points=["重复卖点", "重复卖点"])
     with pytest.raises(ValueError):
         ExtractionResult(**base, selling_points=["字" * 1001])
-    with pytest.raises(ValueError):
-        ExtractionResult(
-            **base,
-            selling_points=[f"卖点 {index}" for index in range(1, 42)],
-        )
+    result = ExtractionResult(
+        **base,
+        selling_points=[f"卖点 {index}" for index in range(1, 42)],
+    )
+    assert len(result.selling_points) == 41
     with pytest.raises(ValueError):
         ExtractionResult(
             **{**base, "product_name": "字" * 501}, selling_points=["卖点"]

@@ -448,7 +448,7 @@ export const EFFECT_PROMPT_GRAPH_NODES = [
     group: 'PLANNING',
   },
   { id: 'SHARED_PROMPT_COMPILATION', label: '共用提示词编译', group: 'PLANNING' },
-  { id: 'COHERENT_CREATIVE_GENERATION', label: '素材创意生成与画面修正', group: 'GENERATION' },
+  { id: 'COHERENT_CREATIVE_GENERATION', label: '素材创意生成', group: 'GENERATION' },
   {
     id: 'CREATIVE_EVALUATION_CLASSIFICATION',
     label: '创意评估与用途分类',

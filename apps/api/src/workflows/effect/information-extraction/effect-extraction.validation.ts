@@ -1,10 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 
 import type { EffectExtractionResult, EffectExtractionWarning } from '@ai-marketing/contracts';
-import {
-  EFFECT_EXTRACTION_BRANCHES,
-  EFFECT_EXTRACTION_MAX_SELLING_POINTS,
-} from '@ai-marketing/contracts';
+import { EFFECT_EXTRACTION_BRANCHES } from '@ai-marketing/contracts';
 
 const RESULT_KEYS = [
   'productCategory',
@@ -97,41 +94,35 @@ export const isSupportedExtractionMaterial = (
 const validString = (value: unknown, max = 5000): value is string =>
   typeof value === 'string' && value.length <= max;
 
-const validStringArray = (value: unknown, maxItems: number): value is string[] =>
-  Array.isArray(value) &&
-  value.length <= maxItems &&
-  value.every((item) => validString(item, 1000) && item.length >= 1);
+const validStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => validString(item, 1000) && item.length >= 1);
 
-const compactStrings = (value: unknown, maxItems: number): string[] => {
+const compactStrings = (value: unknown): string[] => {
   const input = Array.isArray(value)
     ? value
     : typeof value === 'string' && value.trim()
       ? [value]
       : [];
   const seen = new Set<string>();
-  return input
-    .flatMap((item) => {
-      if (typeof item !== 'string') return [];
-      const normalized = item.trim();
-      const key = normalized;
-      if (!normalized || seen.has(key)) return [];
-      seen.add(key);
-      return [normalized];
-    })
-    .slice(0, maxItems);
+  return input.flatMap((item) => {
+    if (typeof item !== 'string') return [];
+    const normalized = item.trim();
+    const key = normalized;
+    if (!normalized || seen.has(key)) return [];
+    seen.add(key);
+    return [normalized];
+  });
 };
 
 const text = (record: Record<string, unknown>, key: string): string =>
   typeof record[key] === 'string' ? record[key] : '';
 
 const legacySellingPoints = (record: Record<string, unknown>): string[] => {
-  const values = LEGACY_SELLING_POINT_FIELDS.flatMap((field) =>
-    compactStrings(record[field], EFFECT_EXTRACTION_MAX_SELLING_POINTS),
-  );
+  const values = LEGACY_SELLING_POINT_FIELDS.flatMap((field) => compactStrings(record[field]));
   if (!Array.isArray(record.targetAudiences) && typeof record.targetAudience === 'string') {
     values.push(...record.targetAudience.split(TARGET_AUDIENCE_SEPARATOR));
   }
-  return compactStrings(values, EFFECT_EXTRACTION_MAX_SELLING_POINTS);
+  return compactStrings(values);
 };
 
 /**
@@ -151,7 +142,7 @@ export const normalizeEffectExtractionResult = (value: unknown): EffectExtractio
     priceRange: text(record, 'priceRange'),
     visualFeatures: text(record, 'visualFeatures'),
     sellingPoints: Array.isArray(record.sellingPoints)
-      ? compactStrings(record.sellingPoints, EFFECT_EXTRACTION_MAX_SELLING_POINTS)
+      ? compactStrings(record.sellingPoints)
       : legacySellingPoints(record),
   };
 };
@@ -218,7 +209,7 @@ export const isEffectExtractionResult = (value: unknown): value is EffectExtract
     validString(record.coreSpecification, 2000) &&
     validString(record.priceRange, 1000) &&
     validString(record.visualFeatures, 4000) &&
-    validStringArray(record.sellingPoints, EFFECT_EXTRACTION_MAX_SELLING_POINTS) &&
+    validStringArray(record.sellingPoints) &&
     record.sellingPoints.length >= 1 &&
     new Set(record.sellingPoints).size === record.sellingPoints.length
   );

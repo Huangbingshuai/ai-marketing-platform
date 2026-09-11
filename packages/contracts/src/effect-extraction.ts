@@ -109,7 +109,7 @@ export type EffectExtractionNodeDetail = {
   updatedAt: string | null;
 };
 
-export const EFFECT_EXTRACTION_MAX_SELLING_POINTS = 40;
+export const EFFECT_EXTRACTION_RECOMMENDED_SELLING_POINTS = 40;
 
 export type EffectExtractionResult = {
   productCategory: string;

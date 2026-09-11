@@ -83,10 +83,13 @@ export const compileEffectSeedanceRepairRequest = (
   generationSnapshot: EffectSegmentRenderRequestSnapshot,
   inputVideo: EffectSegmentRenderInputVideo,
   repair: EffectSegmentRenderRepairInput,
+  repairModel: string,
 ): EffectSegmentRenderRequestSnapshot => {
   const instruction = repair.instruction.trim();
   if (!instruction)
     throw new EffectSeedanceCompileError('REPAIR_INSTRUCTION_EMPTY', '视频返修要求不能为空');
+  const model = repairModel.trim();
+  if (!model) throw new EffectSeedanceCompileError('EMPTY_MODEL', 'Seedance 返修模型配置为空');
   const durationMs = generationSnapshot.request.duration * 1000;
   if (
     !Number.isInteger(repair.startMs) ||
@@ -113,6 +116,7 @@ export const compileEffectSeedanceRepairRequest = (
     repair: { ...repair, instruction },
     request: {
       ...generationSnapshot.request,
+      model,
       content: [{ type: 'text', text }],
     },
   };

@@ -562,7 +562,7 @@ def test_semantic_candidate_preserves_source_authority() -> None:
     }
 
 
-def test_semantic_candidate_caps_all_sources_at_forty_points() -> None:
+def test_semantic_candidate_preserves_all_sources_beyond_recommended_count() -> None:
     document = ExtractionCandidate.empty()
     document.selling_points = [f"文档卖点 {index}" for index in range(1, 41)]
     image = ExtractionCandidate.empty()
@@ -588,13 +588,14 @@ def test_semantic_candidate_caps_all_sources_at_forty_points() -> None:
     )
 
     assert candidate.selling_points == [
-        f"文档卖点 {index}" for index in range(1, 41)
+        *[f"文档卖点 {index}" for index in range(1, 41)],
+        "图片补充卖点",
     ]
     assert len(user_facts) == 40
     assert [item["value"] for item in image_suggestions] == ["图片补充卖点"]
 
 
-def test_authoritative_source_restoration_keeps_up_to_forty_points() -> None:
+def test_authoritative_source_restoration_preserves_all_points() -> None:
     document = ExtractionCandidate.empty()
     document.selling_points = [f"卖点 {index}" for index in range(1, 41)]
     image = ExtractionCandidate.empty()
@@ -606,8 +607,8 @@ def test_authoritative_source_restoration_keeps_up_to_forty_points() -> None:
         commerce=None,
         image=image,
     )
-    assert len(result.selling_points) == 40
-    assert result.selling_points[-1] == "卖点 40"
+    assert len(result.selling_points) == 41
+    assert result.selling_points[-1] == "图片补充卖点"
 
 
 def test_authoritative_source_restoration_keeps_commerce_selling_points() -> None:

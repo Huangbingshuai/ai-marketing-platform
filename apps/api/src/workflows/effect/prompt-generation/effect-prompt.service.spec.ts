@@ -948,13 +948,9 @@ describe('EffectPromptService settings contract', () => {
       emotion: '等待 AI 自动补齐',
     });
     expect(output.affectedItemId).toBe(mutation.item.id);
-    const displayOrder = [...output.result.items].sort((left, right) => {
-      const fragmentTypes = [...EFFECT_PROMPT_FRAGMENT_TYPES];
-      return (
-        fragmentTypes.indexOf(left.fragmentType) - fragmentTypes.indexOf(right.fragmentType) ||
-        left.code.localeCompare(right.code, 'zh-CN', { numeric: true })
-      );
-    });
+    const displayOrder = [...output.result.items].sort((left, right) =>
+      left.code.localeCompare(right.code, 'zh-CN', { numeric: true }),
+    );
     expect(output.affectedItemIndex).toBe(
       displayOrder.findIndex(({ id }) => id === mutation.item.id),
     );
@@ -1229,7 +1225,7 @@ describe('EffectPromptService settings contract', () => {
     expect(allTermsRequired.total).toBe(0);
   });
 
-  it('groups the default result list by fragment workflow order before pagination', async () => {
+  it('sorts the default result list by stable Prompt code before pagination', async () => {
     const timestamp = '2026-08-25T00:00:00.000Z';
     const makeItem = (
       id: string,
@@ -1286,14 +1282,14 @@ describe('EffectPromptService settings contract', () => {
 
     const output = await service.result('project-a', 'workflow-a', 'product-a', 1, 10);
 
-    expect(output.items.map(({ id }) => id)).toEqual([
-      'hook-first',
-      'hook-pain',
-      'hook-later',
-      'product',
-      'effect',
-      'cta',
-      'cta-close',
+    expect(output.items.map(({ code }) => code)).toEqual([
+      'P001',
+      'P002',
+      'P003',
+      'P004',
+      'P005',
+      'P006',
+      'P010',
     ]);
   });
 
