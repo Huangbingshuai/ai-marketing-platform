@@ -230,9 +230,11 @@ describe('effect Seedance request compiler', () => {
         instruction: '修复产品瓶口变形',
         region: { x: 0.2, y: 0.3, width: 0.25, height: 0.2 },
       },
+      'doubao-seedance-2-5-260628',
     );
 
     expect(compiled.operation).toBe('REPAIR');
+    expect(compiled.request.model).toBe('doubao-seedance-2-5-260628');
     expect(compiled.inputImages).toEqual([]);
     expect(compiled.inputVideo?.fileObjectId).toBe('video-1');
     expect(compiled.request.content[0].text).toContain('[1.200s-2.800s]');
@@ -276,6 +278,7 @@ describe('effect Seedance request compiler', () => {
           instruction: '修复产品瓶口变形',
           region: null,
         },
+        'doubao-seedance-2-5-260628',
       ),
     ).toThrow(
       expect.objectContaining<Partial<EffectSeedanceCompileError>>({

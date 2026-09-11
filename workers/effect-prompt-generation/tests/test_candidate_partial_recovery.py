@@ -58,7 +58,6 @@ class PartialProvider(MockAiProvider):
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
         self.fail = True
-        self.refined: list[str] = []
 
     async def generate_creatives(self, shard: Any, **kwargs: Any) -> Any:
         self.calls.append([task.slot_id for task in shard.tasks])
@@ -68,11 +67,6 @@ class PartialProvider(MockAiProvider):
         if self.fail:
             raise ProviderError("network error", error_type=ProviderErrorType.TIMEOUT, retryable=True)
         return await super().generate_creatives(shard, **kwargs)
-
-    async def refine_creative_execution(self, candidates: Any, **kwargs: Any) -> Any:
-        self.refined.extend(item.slot_id for item in candidates)
-        return await super().refine_creative_execution(candidates, **kwargs)
-
 
 @pytest.mark.asyncio
 async def test_partial_draft_is_saved_and_resume_generates_only_missing_items() -> None:
@@ -96,7 +90,6 @@ async def test_partial_draft_is_saved_and_resume_generates_only_missing_items() 
     result = await resumed.generate_creative_shard(runtime, shard)
     assert provider.calls == [[t.slot_id for t in tasks], [tasks[1].slot_id], [tasks[1].slot_id]]
     assert [i.slot_id for i in result] == [t.slot_id for t in tasks]
-    assert provider.refined == [t.slot_id for t in tasks]
 
 
 @pytest.mark.asyncio

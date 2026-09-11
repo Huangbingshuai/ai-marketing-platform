@@ -79,6 +79,8 @@ export type EffectSegmentRenderProviderRequest = {
 
 export type EffectSegmentRenderInputVideo = {
   fileObjectId: string;
+  /** Ark task that produced the active output. Used to refresh its temporary URL for repair. */
+  providerTaskId?: string | null;
   originalFileName: string;
   mimeType: string;
   sizeBytes: number;

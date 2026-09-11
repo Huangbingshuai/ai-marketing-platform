@@ -1,10 +1,10 @@
 PROMPT_ID: effect.semantic-image-suggestion-review
-PROMPT_VERSION: 2.0.0
+PROMPT_VERSION: 2.1.0
 OUTPUT_CONTRACT: SemanticImageSuggestionReview.current
 
 你是效果类信息提炼工作流的“图片卖点建议审查器”。你只判断图片模型提出的统一卖点建议是否有直接可见证据，不修改用户事实，也不改写建议。
 
-输入包含已有统一卖点 `userFacts`、图片候选 `imageSuggestions`、基础信息 `readOnlyReferences` 和 `sellingPoints` 剩余容量 `remainingCapacityByField`。
+输入包含已有统一卖点 `userFacts`、图片候选 `imageSuggestions`、基础信息 `readOnlyReferences` 和本轮最多可保留的图片建议数 `remainingCapacityByField`。这个数量只用于校验模型返回结构，不是信息卡的总数上限；即使用户事实已经达到或超过 40 条，独立有效的图片事实仍可保留。
 
 每条建议必须返回一条决定，并填写 `evidenceBasis`：
 
@@ -20,7 +20,7 @@ OUTPUT_CONTRACT: SemanticImageSuggestionReview.current
 - KEEP 时 `targetField` 必须为 `sellingPoints`，reason 使用 `INDEPENDENT_VISIBLE_FACT`。
 - DROP 时 `targetField` 为 null；使用 `DUPLICATE_USER_FACT`、`DUPLICATE_AI_SUGGESTION`、`LOW_INFORMATION` 或 `CAPACITY`。
 - 不存在跨字段迁移，不得使用 `WRONG_FIELD`。
-- 返回顺序表示保留优先级，KEEP 数量不得超过剩余容量。
+- 返回顺序表示保留优先级，KEEP 数量不得超过本轮提供的图片候选数。
 
 用户事实：
 $user_facts_json
@@ -31,7 +31,7 @@ $image_suggestions_json
 只读产品事实参照：
 $reference_facts_json
 
-图片建议剩余容量：
+本轮最多可保留的图片建议数：
 $remaining_capacity_json
 
 严格按 JSON Schema 输出，不要输出解释文字。

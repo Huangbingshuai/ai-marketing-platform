@@ -96,7 +96,11 @@ class SegmentRenderConsumer:
             if claim.provider_task_id is None:
                 await self._api.heartbeat(context, 2)
                 if claim.input.operation == "REPAIR":
-                    reference_video_url = await self._api.reference_video_url(context)
+                    if (
+                        claim.input.input_video is None
+                        or claim.input.input_video.provider_task_id is None
+                    ):
+                        reference_video_url = await self._api.reference_video_url(context)
                 else:
                     reference_images = await self._api.reference_images(
                         context, claim.input.input_images

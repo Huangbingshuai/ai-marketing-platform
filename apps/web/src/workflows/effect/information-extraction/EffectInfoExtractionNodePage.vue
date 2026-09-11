@@ -12,7 +12,7 @@ import type {
 import {
   EFFECT_EXTRACTION_GRAPH_EDGES,
   EFFECT_EXTRACTION_GRAPH_NODES,
-  EFFECT_EXTRACTION_MAX_SELLING_POINTS,
+  EFFECT_EXTRACTION_RECOMMENDED_SELLING_POINTS,
   EFFECT_IMPORT_MATERIAL_TYPE_LABELS,
 } from '@ai-marketing/contracts';
 import { WorkflowNodeDraftBar, WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
@@ -24,6 +24,7 @@ import {
   LoaderCircle,
   Plus,
   RefreshCw,
+  Sparkles,
   Trash2,
   Workflow,
   X,
@@ -1174,7 +1175,7 @@ const updateProductBaseField = (field: ProductBaseField, event: Event): void => 
 
 const addSellingPoint = (): void => {
   const result = currentState.value?.result;
-  if (!result || result.sellingPoints.length >= EFFECT_EXTRACTION_MAX_SELLING_POINTS) return;
+  if (!result) return;
   result.sellingPoints.push('');
   markListFieldDirty('sellingPoints');
 };
@@ -1425,7 +1426,7 @@ onBeforeUnmount(() => {
           <p>
             已分析 {{ imageRecognitionWithoutNewFacts.processedImageCount }} 张图片，产生
             {{ imageRecognitionWithoutNewFacts.candidateSuggestionCount }}
-            条候选信息；经与已有资料和字段容量核对，没有需要新增到信息卡的图片补充。
+            条候选信息；经与已有资料逐条核对，没有需要新增到信息卡的图片补充。
           </p>
         </div>
       </div>
@@ -1537,9 +1538,27 @@ onBeforeUnmount(() => {
             <div>
               <div class="selling-heading-row">
                 <h3>卖点</h3>
-                <span class="selling-point-count">
-                  {{ visibleResult.sellingPoints.length }} /
-                  {{ EFFECT_EXTRACTION_MAX_SELLING_POINTS }}
+                <span
+                  class="selling-point-count"
+                  :class="{
+                    'selling-point-count--over':
+                      visibleResult.sellingPoints.length >
+                      EFFECT_EXTRACTION_RECOMMENDED_SELLING_POINTS,
+                  }"
+                >
+                  <span class="selling-point-count__icon"><Sparkles :size="12" /></span>
+                  <span class="selling-point-count__value">
+                    {{ visibleResult.sellingPoints.length }} 条卖点
+                  </span>
+                  <span class="selling-point-count__divider" aria-hidden="true"></span>
+                  <span class="selling-point-count__hint">
+                    {{
+                      visibleResult.sellingPoints.length >
+                      EFFECT_EXTRACTION_RECOMMENDED_SELLING_POINTS
+                        ? `建议精简至 ${EFFECT_EXTRACTION_RECOMMENDED_SELLING_POINTS} 条以内`
+                        : `建议 ${EFFECT_EXTRACTION_RECOMMENDED_SELLING_POINTS} 条以内`
+                    }}
+                  </span>
                 </span>
               </div>
               <p>这些卖点可用于后续视频创作，您可以按需修改、添加或删除。</p>
@@ -1547,15 +1566,8 @@ onBeforeUnmount(() => {
             <button
               class="selling-add-button"
               type="button"
-              :disabled="
-                baseFieldsReadonly ||
-                visibleResult.sellingPoints.length >= EFFECT_EXTRACTION_MAX_SELLING_POINTS
-              "
-              :title="
-                visibleResult.sellingPoints.length >= EFFECT_EXTRACTION_MAX_SELLING_POINTS
-                  ? `最多添加 ${EFFECT_EXTRACTION_MAX_SELLING_POINTS} 个卖点`
-                  : '添加一个卖点'
-              "
+              :disabled="baseFieldsReadonly"
+              title="添加一个卖点"
               @click="addSellingPoint"
             >
               <Plus :size="13" />添加
@@ -2426,22 +2438,58 @@ select {
 .selling-heading-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .selling-point-count {
   display: inline-flex;
-  min-width: 50px;
-  height: 24px;
-  padding: 0 9px;
+  min-height: 28px;
+  padding: 3px 10px 3px 6px;
   align-items: center;
-  justify-content: center;
-  color: #55709a;
-  background: #f2f6fd;
-  border: 1px solid #dbe5f5;
+  gap: 7px;
+  color: #5c7193;
+  background: linear-gradient(135deg, #f8faff 0%, #eef4ff 100%);
+  border: 1px solid #d9e5fb;
   border-radius: 999px;
   font-size: 11px;
-  font-weight: 750;
+  font-weight: 650;
   line-height: 1;
+  box-shadow: 0 3px 10px rgba(51, 101, 202, 0.06);
+}
+.selling-point-count__icon {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  color: #3267d6;
+  background: #e4edff;
+  border-radius: 6px;
+}
+.selling-point-count__value {
+  color: #29436d;
+  font-weight: 800;
+}
+.selling-point-count__divider {
+  width: 1px;
+  height: 12px;
+  background: #cfdbef;
+}
+.selling-point-count--over {
+  color: #94600b;
+  background: linear-gradient(135deg, #fffcf4 0%, #fff3d8 100%);
+  border-color: #f1d18c;
+  box-shadow: 0 3px 10px rgba(193, 126, 17, 0.08);
+}
+.selling-point-count--over .selling-point-count__icon {
+  color: #ad6e05;
+  background: #ffe8b5;
+}
+.selling-point-count--over .selling-point-count__value {
+  color: #7f520a;
+}
+.selling-point-count--over .selling-point-count__divider {
+  background: #e8c87f;
 }
 .block-heading button {
   display: inline-flex;

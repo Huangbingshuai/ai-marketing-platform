@@ -336,7 +336,12 @@ describe('EffectSegmentRenderService', () => {
   });
 
   it('creates a repair task from the active video without reusing generation images or Prompt', async () => {
-    const { service, repository } = serviceWith();
+    const { service, repository } = serviceWith({
+      configValues: {
+        SEEDANCE_REFERENCE_PUBLIC_BASE_URL: undefined,
+        SEEDANCE_REFERENCE_SIGNING_SECRET: undefined,
+      },
+    });
     await service.start('project-a', 'product-a', {
       workflowRunId: 'run-a',
       expectedPromptArtifactRevision: 3,
@@ -351,6 +356,7 @@ describe('EffectSegmentRenderService', () => {
       activeOutputVersion: 1,
       generationRequestSnapshot: task.requestSnapshot,
       repairStatus: null,
+      providerTaskId: 'provider-source-task',
       outputFileObjectId: '33333333-3333-4333-8333-333333333333',
       outputStorageKey: 'staging/source.mp4',
       outputFileName: 'P001.mp4',
@@ -376,6 +382,7 @@ describe('EffectSegmentRenderService', () => {
       inputImages: [],
       inputVideo: {
         fileObjectId: '33333333-3333-4333-8333-333333333333',
+        providerTaskId: 'provider-source-task',
         durationSeconds: 5,
       },
       repair: {
@@ -386,6 +393,7 @@ describe('EffectSegmentRenderService', () => {
       },
     });
     expect(repairSnapshot.request.content[0].text).toContain('[1.200s-2.600s]');
+    expect(repairSnapshot.request.model).toBe('doubao-seedance-2-5-260628');
     expect(repairSnapshot.request.content[0].text).not.toContain(item.content);
   });
 

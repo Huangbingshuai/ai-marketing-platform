@@ -699,6 +699,14 @@ export class EffectSegmentRenderRepository {
       });
       const fileToOrphan =
         decision === 'ACCEPT' ? task.outputFileObjectId : task.repairCandidateFileObjectId;
+      const repairSnapshot = task.requestSnapshot as unknown as {
+        inputVideo?: { providerTaskId?: unknown };
+      };
+      const sourceProviderTaskId =
+        typeof repairSnapshot.inputVideo?.providerTaskId === 'string' &&
+        repairSnapshot.inputVideo.providerTaskId.trim()
+          ? repairSnapshot.inputVideo.providerTaskId.trim()
+          : null;
       if (fileToOrphan)
         await transaction.fileObject.updateMany({
           where: { projectId, id: fileToOrphan },
@@ -728,7 +736,7 @@ export class EffectSegmentRenderRepository {
           attemptToken: null,
           leaseExpiresAt: null,
           heartbeatAt: null,
-          providerTaskId: null,
+          providerTaskId: decision === 'ACCEPT' ? task.providerTaskId : sourceProviderTaskId,
           errorCode: null,
           errorMessage: null,
           repairStatus: null,

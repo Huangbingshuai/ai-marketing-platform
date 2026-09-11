@@ -30,6 +30,12 @@ def restore_execution_candidate(
     checkpoint = evaluation.execution_repair
     if checkpoint is None or checkpoint.original_hash != candidate_hash(original):
         return None
+    if checkpoint.status == "STARTED":
+        # A process may stop after persisting the checkpoint but before the
+        # replacement and both reviews finish.  Treat that shard as incomplete
+        # so a later attempt reruns it instead of silently accepting the
+        # original candidate as if the repair had completed.
+        return None
     if checkpoint.status != "ACCEPTED":
         return original if checkpoint.candidate is None else None
     repaired = checkpoint.candidate
@@ -103,6 +109,10 @@ apply_execution_patch = apply_execution_rewrite
 
 def repair_improves(original: CreativeEvaluation, revised: CreativeEvaluation) -> bool:
     # These are explicit AI verdicts/numeric comparisons, not Worker inference.
+    # A second model scoring pass is noisy.  Requiring every revised score to
+    # equal or exceed the original caused physically corrected plans to be
+    # discarded for one- or two-point fluctuations.  Keep strict quality floors
+    # and bounded regression instead; the focused audit must still be clean.
     return (
         not revised.hard_issues
         and not revised.execution_findings
@@ -110,6 +120,16 @@ def repair_improves(original: CreativeEvaluation, revised: CreativeEvaluation) -
             revised.warnings
         )
         and set(original.realized_fact_ids).issubset(revised.realized_fact_ids)
-        and revised.scores.visual_executability >= original.scores.visual_executability
-        and revised.scores.overall_quality >= original.scores.overall_quality
+        and revised.scores.product_relevance
+        >= max(65, original.scores.product_relevance - 5)
+        and revised.scores.creative_coherence
+        >= max(60, original.scores.creative_coherence - 5)
+        and revised.scores.visual_executability
+        >= max(60, original.scores.visual_executability - 5)
+        and revised.scores.commercial_usefulness
+        >= max(60, original.scores.commercial_usefulness - 5)
+        and revised.scores.visual_clarity
+        >= max(55, original.scores.visual_clarity - 5)
+        and revised.scores.overall_quality
+        >= max(70, original.scores.overall_quality - 4)
     )

@@ -730,15 +730,6 @@ export class EffectSegmentRenderService {
     const normalizedRegion =
       input.region === undefined || input.region === null ? null : repairRegion(input.region);
     if (input.region && !normalizedRegion) throw badRequest('视频返修框选区域无效');
-    const publicBaseUrl = this.config.get<string>('SEEDANCE_REFERENCE_PUBLIC_BASE_URL')?.trim();
-    const signingSecret = this.config.get<string>('SEEDANCE_REFERENCE_SIGNING_SECRET')?.trim();
-    if (!publicBaseUrl || !signingSecret) throw conflict('Seedance 参考视频访问地址尚未配置');
-    try {
-      const parsed = new URL(publicBaseUrl);
-      if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('invalid protocol');
-    } catch {
-      throw conflict('Seedance 参考视频访问地址配置无效');
-    }
     const record = await this.repository.batch(projectId, batchId);
     if (!record) throw notFound('视频渲染批次不存在');
     const task = record.tasks.find(({ id }) => id === taskId);
@@ -756,6 +747,19 @@ export class EffectSegmentRenderService {
     if (task.repairStatus !== null) throw conflict('当前视频已有待处理的返修任务');
     if (task.activeOutputVersion !== input.expectedSourceVersion)
       throw conflict('当前采用的视频版本已更新，请刷新后重试');
+    const sourceProviderTaskId = task.providerTaskId?.trim() || null;
+    if (!sourceProviderTaskId) {
+      const publicBaseUrl = this.config.get<string>('SEEDANCE_REFERENCE_PUBLIC_BASE_URL')?.trim();
+      const signingSecret = this.config.get<string>('SEEDANCE_REFERENCE_SIGNING_SECRET')?.trim();
+      if (!publicBaseUrl || !signingSecret)
+        throw conflict('当前视频无法从 Ark 复用，请先配置 Seedance 参考视频公网访问地址');
+      try {
+        const parsed = new URL(publicBaseUrl);
+        if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('invalid protocol');
+      } catch {
+        throw conflict('Seedance 参考视频访问地址配置无效');
+      }
+    }
     const generationSnapshot = requestSnapshot(task.generationRequestSnapshot);
     const durationMs = generationSnapshot.request.duration * 1000;
     if (generationSnapshot.request.duration > 15)
@@ -784,6 +788,7 @@ export class EffectSegmentRenderService {
         generationSnapshot,
         {
           fileObjectId: task.outputFileObjectId!,
+          providerTaskId: sourceProviderTaskId,
           originalFileName: task.outputFileName!,
           mimeType,
           sizeBytes: task.outputSizeBytes!,
@@ -791,6 +796,7 @@ export class EffectSegmentRenderService {
           durationSeconds: generationSnapshot.request.duration,
         },
         repairInput,
+        this.modelFor('SEEDANCE_1_5_PRO'),
       ),
     );
     const requestHash = workflowStateHash({

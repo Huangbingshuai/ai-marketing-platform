@@ -115,13 +115,21 @@ class ArkSeedanceProvider:
         provider_task_id: str | None = None,
     ) -> RenderOutput:
         if provider_task_id is None:
-            if snapshot.operation == "REPAIR" and reference_video_url is None:
-                raise ProviderError(
-                    "REFERENCE_VIDEO_REQUIRED",
-                    "视频返修任务缺少参考视频",
-                    retryable=False,
+            if snapshot.operation == "REPAIR":
+                reference_video_url = await self._repair_reference_video_url(
+                    snapshot, reference_video_url
                 )
             payload = snapshot.request.model_dump(mode="json")
+            if snapshot.operation == "REPAIR":
+                # Seedance 2.5 exact video editing requires adaptive ratio and lets
+                # the provider preserve the input duration.
+                payload.update(
+                    {
+                        "omni_reference_task_type": "edit",
+                        "duration": -1,
+                        "ratio": "adaptive",
+                    }
+                )
             payload["content"] = [
                 *payload["content"],
                 *[
@@ -225,6 +233,35 @@ class ArkSeedanceProvider:
             current_progress = min(88, current_progress + 3)
             await progress(current_progress, provider_task_id)
             await asyncio.sleep(self._poll_delay(provider_task_id))
+
+    async def _repair_reference_video_url(
+        self, snapshot: RenderSnapshot, fallback_url: str | None
+    ) -> str:
+        source_task_id = (
+            snapshot.input_video.provider_task_id
+            if snapshot.input_video is not None
+            else None
+        )
+        if source_task_id is not None:
+            source = await self._request(
+                "GET", "contents/generations/tasks/" + source_task_id
+            )
+            status = (_text(source.get("status")) or "").casefold()
+            source_url = self._output_url(source)
+            if status not in {"succeeded", "completed", "success"} or not source_url:
+                raise ProviderError(
+                    "SEEDANCE_SOURCE_VIDEO_UNAVAILABLE",
+                    "Seedance 原视频任务已不可复用",
+                    retryable=False,
+                )
+            return source_url
+        if fallback_url is not None:
+            return fallback_url
+        raise ProviderError(
+            "REFERENCE_VIDEO_REQUIRED",
+            "视频返修任务缺少参考视频",
+            retryable=False,
+        )
 
     def _poll_delay(self, provider_task_id: str) -> float:
         bucket = zlib.crc32(provider_task_id.encode("utf-8")) % 401

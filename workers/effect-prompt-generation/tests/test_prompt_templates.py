@@ -16,8 +16,8 @@ from effect_prompt_generation.providers import _visual_style_baseline_section
 ACTIVE_PROMPT_FILES = {
     "material_creative.user.prompt.txt",
     "material_planning.system.prompt.txt",
-    "creative_execution.system.prompt.txt",
     "execution_repair.system.prompt.txt",
+    "execution_audit.system.prompt.txt",
     "creative_base.system.prompt.txt",
     "creative_task.user.prompt.txt",
     "creative_direction.system.prompt.txt",
@@ -130,28 +130,26 @@ def test_director_guidance_uses_existing_fields_without_fixed_ad_formula() -> No
 def test_commercial_camera_guidance_is_motivated_and_vendor_independent() -> None:
     creative = load_prompt("creative_base.system.prompt.txt")
     task = load_prompt("creative_task.user.prompt.txt")
-    refinement = load_prompt("creative_execution.system.prompt.txt")
+    audit = load_prompt("execution_audit.system.prompt.txt")
     repair = load_prompt("execution_repair.system.prompt.txt")
     evaluation = load_prompt("evaluation_base.system.prompt.txt")
 
-    assert "每条只保留一种主导观察策略" in creative
-    assert "看不到新信息就不移动" in creative
-    assert "六维写固定机位时全部节拍保持固定" in creative
-    assert "需要等待加工、固化、充电、干燥、烹制或装配" in creative
-    assert "camera 写清起点、路径速度、主体关系和结束观察位" in creative
-    assert "相机与主体同时复杂运动" in creative
+    assert "每个镜头段落统一确定相机与主体谁动" in creative
+    assert "相邻段落换观察面，明确切镜或连续路径" in creative
+    assert "相机与主体同步绕转未必揭示新面" in creative
+    assert "9～15 秒通常 1～2 个" in creative
+    assert "camera 只写相机自身机位/运动" in creative
     assert "镜头不是独立装饰" in task
-    assert "清楚的固定镜头应 KEEP" in refinement
-    assert "结束位置确实看得到 visibleResult" in refinement
-    assert "相机一致性必须逐字段核对" in refinement
-    assert "不能因为被拆成两个节拍就压进目标时长" in refinement
-    assert "为了“高级感”堆叠推进、环绕、变焦与转焦" in refinement
-    assert "相对运动与镜头动机" in repair
-    assert "镜头技巧本身不增加商业价值" in evaluation
-    assert "相机移动没有带来新的商品信息" in evaluation
-    assert "不新增硬淘汰条件" in evaluation
+    assert "固定机位不能同时推进或平移" in audit
+    assert "从当前机位确实可见" in audit
+    assert "没有等待足够时间" in audit
+    assert "不要给改写方案" in audit
+    assert "相对运动：分别确定相机、主体和焦点谁在动" in repair
+    assert "每条 finding 当作必须关闭的验收项" in repair
+    assert "物理上能否执行由专职审片员判断" in evaluation
+    assert "不输出定位诊断" in evaluation
 
-    combined = f"{creative}\n{task}\n{refinement}\n{repair}\n{evaluation}"
+    combined = f"{creative}\n{task}\n{audit}\n{repair}\n{evaluation}"
     for forbidden in (
         "AI-HIVE",
         "fal-ai",
@@ -209,8 +207,8 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert "只有事实编造、商品完全无关" in evaluation
     assert "先做真实性预检，再评分" in evaluation
     assert "compatiblePurposes 只返回其他兼容用途" in evaluation
-    assert "跨节拍核对同一主体的前后状态" in evaluation
-    assert "不新增硬淘汰条件" in evaluation
+    assert "专职 AI 审片员独立诊断" in evaluation
+    assert "executionFindings 必须返回 []" in evaluation
     assert "HOOK、PRODUCT_DISPLAY、EFFECT、CTA" in evaluation
     assert "PAIN、" not in evaluation
     assert "SELLING_POINT_EXPLANATION" not in evaluation
@@ -221,9 +219,11 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
         "CONTENT、CREATIVE_CORE、NARRATIVE、SCENE、PERSONA、PRODUCT_RELATION"
         in evaluation
     )
-    assert "不要求重复同一问题码" in evaluation
-    assert "相机与主体的相对运动" in evaluation
-    assert "先固定再明确切换/移动也不误判" in evaluation
+    audit = load_prompt("execution_audit.system.prompt.txt")
+    assert "状态账本" in audit
+    assert "手与工具账本" in audit
+    assert "相机账本" in audit
+    assert "不使用商品关键词、字符包含或正则匹配" in audit
     assert "有初始推力不等于" in creative
     assert "SEMANTIC_FULL" in evaluation
     assert "PARTIAL" in evaluation
@@ -237,6 +237,7 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
         "creative_direction_supplement.system.prompt.txt",
         "creative_base.system.prompt.txt",
         "creative_task.user.prompt.txt",
+        "execution_audit.system.prompt.txt",
         "execution_repair.system.prompt.txt",
     ],
 )
@@ -263,7 +264,9 @@ def test_route_execution_suggestions_do_not_override_safe_creative_intent() -> N
     assert "发生冲突时保留业务意图、改掉拍法" in task
     assert "双手支撑同一个物体是正常操作" in creative
     assert "多种用法是批次覆盖目标" in creative
-    assert "task 中 executionRoute 的拍摄方法不是事实" in repair
+    assert "不得增加新卖点、产品结构、功效、使用方式或包装信息" in repair
+    assert "完整连贯的新 shotPlan" in repair
+    assert "可以重组节拍数量、顺序和 durationWeight" in repair
 
 
 def test_creative_guidance_is_compact_and_explains_support_and_observer_relationships() -> None:
@@ -289,7 +292,7 @@ def test_direction_ai_reviews_actual_routes_without_new_worker_semantic_gate() -
     assert "未写持握、支撑、机位和运动路径不构成问题" in audit
 
 
-def test_intent_planning_does_not_lock_execution_and_editing_remains_sparse() -> None:
+def test_intent_planning_does_not_lock_execution_and_repair_rewrites_one_plan() -> None:
     for name in ["creative_landscape.system.prompt.txt", "creative_direction.system.prompt.txt",
                  "creative_direction_supplement.system.prompt.txt"]:
         prompt = load_prompt(name)
@@ -302,13 +305,13 @@ def test_intent_planning_does_not_lock_execution_and_editing_remains_sparse() ->
     assert "尤其工具从接触处撤离后才能闭合" in generation
     assert "每个镜头段落统一确定" in generation
     assert "固定并变焦、转焦" in generation
-    editing = load_prompt("creative_execution.system.prompt.txt")
-    assert "没有明确执行冲突时 decision=KEEP" in editing
-    assert "未涉及的字段不要返回" in editing
-    assert "多物体同时存在并不等于冲突" in editing
-    assert "系统只按路径替换，不理解语义" in editing
-    assert "不凭空添加机械臂" in editing
-    for name in ["creative_base.system.prompt.txt", "creative_execution.system.prompt.txt"]:
+    editing = load_prompt("execution_repair.system.prompt.txt")
+    assert "已经由独立评分模型定位过问题" in editing
+    assert "完整连贯的新 shotPlan" in editing
+    assert "可以重组节拍数量、顺序和 durationWeight" in editing
+    assert "Worker" not in editing
+    assert "不要另起场景" in editing
+    for name in ["creative_base.system.prompt.txt", "execution_repair.system.prompt.txt"]:
         assert "紫苏梅子" not in load_prompt(name)
         assert "广式腊肠" not in load_prompt(name)
 

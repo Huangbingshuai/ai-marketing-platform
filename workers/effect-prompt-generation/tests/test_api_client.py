@@ -228,3 +228,60 @@ async def test_internal_api_error_does_not_echo_non_json_body() -> None:
 
     assert str(caught.value) == "internal API returned HTTP 502"
     assert caught.value.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_idempotent_internal_write_retries_transient_connection_loss(
+    runtime: RuntimeContext,
+) -> None:
+    attempts = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise httpx.ConnectError("temporary local API restart", request=request)
+        return httpx.Response(200, json={"success": True, "data": {}})
+
+    api = HttpInternalApi(
+        "http://api.local/api",
+        "worker-token",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        await api.put_shard(
+            runtime,
+            ShardRecord(
+                phase=ShardPhase.CLASSIFICATION,
+                round=0,
+                shard_index=0,
+                status=StageStatus.RUNNING,
+            ),
+        )
+    finally:
+        await api.aclose()
+
+    assert attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_claim_does_not_retry_unknown_network_outcome() -> None:
+    attempts = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ConnectError("claim response lost", request=request)
+
+    api = HttpInternalApi(
+        "http://api.local/api",
+        "worker-token",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(InternalApiError):
+            await api.claim("run-1", "project-1")
+    finally:
+        await api.aclose()
+
+    assert attempts == 1

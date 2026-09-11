@@ -9,10 +9,9 @@ import pytest
 
 from effect_prompt_generation.graph import build_graph
 from effect_prompt_generation.models import (
-    CreativeCandidateDraft, FactEvidence, MaterialPlanResponse, PromptBatchSettings,
-    StrategyCheckpoint, ExecutionFinding, ExecutionRepairDraft, StageStatus,
+    ClassificationShardPlan, CreativeCandidateDraft, FactEvidence, MaterialPlanResponse, PromptBatchSettings,
+    StrategyCheckpoint, ExecutionFinding, ExecutionRepairDraft,
 )
-from effect_prompt_generation.execution_refinement import ExecutionEditDecision, apply_execution_edits
 from effect_prompt_generation.pipeline import PromptGenerationPipeline
 from effect_prompt_generation.product_images import PreparedProductImage
 from effect_prompt_generation.providers import (
@@ -26,7 +25,6 @@ from test_creatives import PromptApi, DistinctEmbeddingProvider, _runtime, _snap
 class TrackingProvider(MockAiProvider):
     def __init__(self) -> None:
         self.plans: list[dict[str, Any]] = []
-        self.refinements = 0
 
     async def plan_materials(self, *args: Any, **kwargs: Any) -> Any:
         self.plans.append(kwargs)
@@ -37,11 +35,6 @@ class TrackingProvider(MockAiProvider):
 
     async def plan_creative_directions(self, *args: Any, **kwargs: Any) -> Any:
         raise AssertionError("new material path must not plan directions")
-
-    async def refine_creative_execution(self, *args: Any, **kwargs: Any) -> Any:
-        self.refinements += 1
-        return await super().refine_creative_execution(*args, **kwargs)
-
 
 async def ready(count: int = 10, facts: int = 6, provider: Any = None, name: str = "通用商品") -> tuple[Any, Any, Any]:
     snapshot = _snapshot()
@@ -81,130 +74,79 @@ async def test_fact_first_counts_combinations_and_expansion(count: int, facts: i
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("product", ["紫苏梅子酱", "广式腊肠", "洗发露", "磁吸移动电源", "旅行箱"])
-async def test_generic_product_graph_has_final_execution_edit_without_old_planning(product: str) -> None:
+async def test_generic_product_graph_generates_without_old_planning_or_blind_edit(product: str) -> None:
     pipeline, runtime, provider = await ready(10, 10, name=product)
     await build_graph(pipeline).ainvoke({"project_id": runtime.project_id}, context=runtime)
     assert len(pipeline.api.result.items) == 10
     assert pipeline.api.result.metrics.candidate_target_count == 10
-    assert provider.refinements == 3
     assert pipeline._cache(runtime).creative_direction_plan is None
 
 
 @pytest.mark.asyncio
-async def test_material_final_edit_allows_one_located_whole_plan_rewrite() -> None:
-    class FinalEditor(TrackingProvider):
+async def test_material_execution_is_rewritten_only_after_ai_diagnosis() -> None:
+    class DiagnosticRepairProvider(TrackingProvider):
         def __init__(self) -> None:
             super().__init__()
-            self.repairs = 0
-
-        async def refine_creative_execution(self, candidates: Any, **kwargs: Any) -> Any:
-            call = await super().refine_creative_execution(candidates, **kwargs)
-            revised = []
-            for original in candidates:
-                decision = ExecutionEditDecision.model_validate({
-                    "slotId": original.slot_id, "decision": "REPAIR",
-                    "conflicts": [{"paths": ["/shotPlan/beats/0/camera"], "reason": "opaque AI verdict"}],
-                    "replacements": [
-                        {"path": "/shotPlan/beats/0/camera", "value": "模型修订后的观察位置"},
-                        {"path": "/dimensions/camera", "value": "模型同步后的镜头维度"},
-                        {"path": "/creativeCore", "value": "模型保留商品价值后的连贯事件"},
-                    ],
-                })
-                revised.append(apply_execution_edits(original, decision, duration_seconds=15))
-            return replace(call, value=call.value.model_copy(update={"items": revised}))
+            self.evaluation_calls = 0
+            self.audit_calls = 0
+            self.repair_calls = 0
 
         async def evaluate_creatives(self, candidates: Any, **kwargs: Any) -> Any:
-            assert all(
-                "模型修订后的观察位置" in item.content
-                or "评分后根据定位问题重写的固定观察位置" in item.content
-                for item in candidates
-            )
             call = await super().evaluate_creatives(candidates, **kwargs)
+            self.evaluation_calls += 1
+            if self.evaluation_calls != 1:
+                return call
             return replace(call, value=call.value.model_copy(update={"items": [
-                row.model_copy(update={"execution_findings": [ExecutionFinding(
-                    code="CAMERA_ACTION_MISMATCH", sequence=1, field="CAMERA", diagnosis="opaque remaining concern",
-                )] if candidate.dimensions.camera == "模型同步后的镜头维度" else []})
-                for candidate, row in zip(candidates, call.value.items, strict=True)
+                row.model_copy(update={
+                    "scores": row.scores.model_copy(update={"visual_executability": 70}),
+                }) for row in call.value.items
+            ]}))
+
+        async def audit_creative_execution(self, candidates: Any, **kwargs: Any) -> Any:
+            call = await super().audit_creative_execution(candidates, **kwargs)
+            self.audit_calls += 1
+            return replace(call, value=call.value.model_copy(update={"items": [
+                row.model_copy(update={"findings": [ExecutionFinding(
+                        code="CAMERA_ACTION_MISMATCH", sequence=1,
+                        field="CAMERA", diagnosis="相机同时固定与推进",
+                    )] if self.audit_calls == 1 else []})
+                for row in call.value.items
             ]}))
 
         async def repair_creative_execution(self, candidate: Any, **kwargs: Any) -> Any:
-            self.repairs += 1
+            self.repair_calls += 1
+            plan = candidate.shot_plan.model_copy(update={
+                "beats": [candidate.shot_plan.beats[0].model_copy(update={
+                    "camera": "固定机位观察主体动作",
+                    "duration_weight": 2,
+                })],
+            })
             call = await super().repair_creative_execution(candidate, **kwargs)
-            assert candidate.shot_plan is not None
-            first = candidate.shot_plan.beats[0].model_copy(
-                update={"camera": "评分后根据定位问题重写的固定观察位置"}
-            )
             return replace(call, value=ExecutionRepairDraft(
                 slot_id=candidate.slot_id,
-                shot_plan=candidate.shot_plan.model_copy(
-                    update={"beats": [first, *candidate.shot_plan.beats[1:]]}
-                ),
-                camera_dimension="评分后整段修订镜头",
+                shot_plan=plan,
+                camera_dimension="固定机位观察",
             ))
 
-    provider = FinalEditor()
-    pipeline, runtime, _ = await ready(10, 10, provider)
-    await build_graph(pipeline).ainvoke({"project_id": runtime.project_id}, context=runtime)
-    assert len(pipeline.api.result.items) == 10
-    assert all(item.dimensions.camera == "评分后整段修订镜头" for item in pipeline.api.result.items)
-    assert provider.repairs == 10
-    assert len(pipeline._cache(runtime).execution_repair_records) == 10
-
-
-@pytest.mark.asyncio
-async def test_material_final_edit_failure_resumes_without_regeneration() -> None:
-    from test_creative_execution import RefinementProvider
-    provider = RefinementProvider()
+    provider = DiagnosticRepairProvider()
     pipeline, runtime, _ = await ready(10, 3, provider)
     shard = (await pipeline.plan_creatives(runtime, round_number=0))[0]
-    provider.fail = True
-    with pytest.raises(ProviderError):
-        await pipeline.generate_creative_shard(runtime, shard)
-    persisted = pipeline.api.shards[shard.key]
-    assert persisted.status == StageStatus.FAILED
-    assert len(persisted.creative_items) == len(shard.tasks)
-    assert not pipeline._cache(runtime).creatives
-    resumed = PromptGenerationPipeline(api=pipeline.api, provider=provider)
-    resumed.register_snapshot(runtime, pipeline.snapshot(runtime))
-    await resumed.load_and_snapshot(runtime)
-    await resumed.map_insight(runtime)
-    await resumed.compile_fact_visual_strategy(runtime)
-    await resumed.compile_shared_prompt(runtime)
-    provider.fail = False
-    await resumed.generate_creative_shard(runtime, shard)
-    assert provider.generations == 1
-    assert provider.refinements == 2
+    candidates = await pipeline.generate_creative_shard(runtime, shard)
+    await pipeline.evaluate_classification_shard(
+        runtime,
+        ClassificationShardPlan(
+            round=0,
+            shard_index=0,
+            candidate_ids=[candidates[0].slot_id],
+        ),
+    )
+    assert provider.repair_calls == 1
+    assert provider.evaluation_calls == 2
+    assert provider.audit_calls == 2
+    assert pipeline._cache(runtime).creatives[candidates[0].slot_id].dimensions.camera == "固定机位观察"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("images", [False, True])
-async def test_final_editor_receives_product_images_and_can_keep_original(images: bool) -> None:
-    pipeline, runtime, mock = await ready(10, 3)
-    shard = (await pipeline.plan_creatives(runtime, round_number=0))[0]
-    candidates = (await mock.generate_creatives(shard, application=pipeline._require_application(runtime),
-        shared_prompt=pipeline._required_shared_prompt(runtime))).value.items
-    captured = []
-
-    async def handler(request: httpx.Request) -> httpx.Response:
-        payload = json.loads(request.content)
-        captured.append(payload)
-        return httpx.Response(200, json={"status": "completed", "output_text": json.dumps({"items": [
-            {"slotId": c.slot_id, "decision": "KEEP", "conflicts": [], "replacements": []}
-            for c in candidates
-        ]})})
-
-    provider = ArkResponsesProvider(base_url="https://ark.example/v3", api_key="test",
-        candidate_model="turbo", strategy_model="turbo", transport=httpx.MockTransport(handler))
-    try:
-        result = await provider.refine_creative_execution(candidates, shard=shard,
-            application=pipeline._require_application(runtime), shared_prompt=pipeline._required_shared_prompt(runtime),
-            product_images=[PreparedProductImage(data_uri="data:image/jpeg;base64,dGVzdA==")] if images else ())
-        assert result.value.items == candidates
-    finally:
-        await provider.aclose()
-    assert sum(item["type"] == "input_image" for item in captured[0]["input"][0]["content"]) == int(images)
-
-
 @pytest.mark.asyncio
 async def test_material_preflight_counts_execution_edit_and_exact_initial_pool() -> None:
     pipeline, runtime, _ = await ready(50, 3)
@@ -212,7 +154,7 @@ async def test_material_preflight_counts_execution_edit_and_exact_initial_pool()
     assert budget["plannedInitialCandidateCount"] == 50
     generation_calls = (50 + budget["plannedCreativeShardSize"] - 1) // budget["plannedCreativeShardSize"]
     evaluation_calls = (50 + budget["plannedEvaluationShardSize"] - 1) // budget["plannedEvaluationShardSize"]
-    assert budget["plannedMinimumAiCallCount"] >= 2 * generation_calls + evaluation_calls + 3
+    assert budget["plannedMinimumAiCallCount"] >= generation_calls + evaluation_calls * 2 + 3
 
 
 @pytest.mark.asyncio

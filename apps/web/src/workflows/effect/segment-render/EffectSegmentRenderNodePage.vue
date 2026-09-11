@@ -9,7 +9,6 @@ import type {
 } from '@ai-marketing/contracts';
 import {
   DEFAULT_EFFECT_SEGMENT_RENDER_SETTINGS,
-  EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
 } from '@ai-marketing/contracts';
@@ -23,6 +22,7 @@ import {
   FileVideo2,
   FolderInput,
   LoaderCircle,
+  Pause,
   Play,
   RefreshCw,
   Search,
@@ -47,6 +47,7 @@ import { requestActionConfirmation } from '../../../shared/composables/action-co
 import { listWorkingArtifacts } from '../../../platform/workflow/api/workflow-working.api';
 import { EFFECT_PROMPT_PAGE_SIZE_OPTIONS } from '../prompt-generation/effect-prompt-generation-state';
 import EffectUpwardCreatableSelect from '../source-import/components/EffectUpwardCreatableSelect.vue';
+import EffectSegmentRenderSourcePrompt from './components/EffectSegmentRenderSourcePrompt.vue';
 import {
   decideEffectSegmentRenderRepair,
   effectSegmentRenderTaskContentUrl,
@@ -90,6 +91,7 @@ type Operation = 'batch' | 'delete' | 'export' | 'import' | 'repair' | 'retry' |
 type FragmentFilter = 'ABNORMAL' | 'ALL' | EffectPromptFragmentType;
 type TransferPanel = 'export' | 'import' | null;
 type ExportScope = 'ALL_COMPLETED' | 'FILTERED' | 'SELECTED';
+type RepairBoundary = 'end' | 'start';
 type Notice = { kind: 'error' | 'success' | 'warning'; text: string };
 type EffectSegmentRenderExportFormat = 'FAILURE_CSV' | 'MANIFEST_JSON' | 'VIDEO_PACKAGE';
 type EffectSegmentRenderImportMatch = {
@@ -201,7 +203,7 @@ const resolutionOptions = computed(() =>
   })),
 );
 
-const previewFrameStyle = computed(() => {
+const effectSegmentRenderFrameStyle = (maxHeightVh: number) => {
   const configuredRatio = renderSettings.value.ratio;
   const [widthPart, heightPart] = (configuredRatio === 'adaptive' ? '16:9' : configuredRatio)
     .split(':')
@@ -211,9 +213,12 @@ const previewFrameStyle = computed(() => {
   const widthToHeight = width / height;
   return {
     aspectRatio: `${width} / ${height}`,
-    width: `min(100%, calc(62vh * ${widthToHeight}))`,
+    width: `min(100%, calc(${maxHeightVh}vh * ${widthToHeight}))`,
   };
-});
+};
+
+const previewFrameStyle = computed(() => effectSegmentRenderFrameStyle(62));
+const repairFrameStyle = computed(() => effectSegmentRenderFrameStyle(44));
 
 const previewTask = ref<EffectSegmentRenderTask | null>(null);
 const previewVariant = ref<'ACTIVE' | 'REPAIR'>('ACTIVE');
@@ -222,15 +227,29 @@ const previewLoading = ref(false);
 const previewError = ref('');
 const previewVideoReady = ref(false);
 const cardVideoReadyKeys = ref<Set<string>>(new Set());
+const cardVideoPosterUrls = ref<Map<string, string>>(new Map());
 const requestedTaskVideoKeys = ref<Set<string>>(new Set());
 const promptTask = ref<EffectSegmentRenderTask | null>(null);
 const repairTask = ref<EffectSegmentRenderTask | null>(null);
 const repairStartSeconds = ref(0);
 const repairEndSeconds = ref(1);
 const repairInstruction = ref('');
+const repairVideo = ref<HTMLVideoElement | null>(null);
+const repairRangePlaying = ref(false);
+const repairCurrentSeconds = ref(0);
+const repairActiveBoundary = ref<RepairBoundary>('start');
 const previewCloseButton = ref<HTMLButtonElement | null>(null);
 const promptCloseButton = ref<HTMLButtonElement | null>(null);
 const repairCloseButton = ref<HTMLButtonElement | null>(null);
+
+const repairSelectionStyle = computed(() => {
+  const duration = repairTask.value?.durationSeconds ?? 0;
+  if (duration <= 0) return { left: '0%', right: '100%' };
+  return {
+    left: `${(repairStartSeconds.value / duration) * 100}%`,
+    right: `${Math.max(0, ((duration - repairEndSeconds.value) / duration) * 100)}%`,
+  };
+});
 
 let dialogTrigger: HTMLElement | null = null;
 let loadController: AbortController | null = null;
@@ -245,6 +264,8 @@ let activatedOnce = false;
 let skipNextProductLoad = false;
 let taskVideoObserver: IntersectionObserver | null = null;
 let workspaceRevalidationTimer: ReturnType<typeof setTimeout> | undefined;
+
+const TASK_VIDEO_POSTER_MAX_WIDTH = 480;
 
 const activeProducts = computed(() =>
   props.products.filter((product) => product.status === 'ACTIVE'),
@@ -340,6 +361,12 @@ const promptTaskDetails = computed(() =>
   promptTask.value ? (cardPromptDetailsByPromptId.value[promptTask.value.promptId] ?? null) : null,
 );
 
+const previewTaskDetails = computed(() =>
+  previewTask.value
+    ? (cardPromptDetailsByPromptId.value[previewTask.value.promptId] ?? null)
+    : null,
+);
+
 const taskVideoUrl = (task: EffectSegmentRenderTask): string => {
   const batchId = workspace.value?.batchId;
   if (!batchId || !task.output) return '';
@@ -349,17 +376,17 @@ const taskVideoUrl = (task: EffectSegmentRenderTask): string => {
 const taskVideoKey = (task: EffectSegmentRenderTask): string =>
   `${task.id}:${task.output?.version ?? task.activeVersion}`;
 
-const pagedTaskVideoSignature = computed(() =>
-  pagedTasks.value.map((task) => taskVideoKey(task)).join('|'),
-);
-
 const isTaskVideoReady = (task: EffectSegmentRenderTask): boolean =>
   cardVideoReadyKeys.value.has(taskVideoKey(task));
+
+const taskVideoPosterUrl = (task: EffectSegmentRenderTask): string =>
+  cardVideoPosterUrls.value.get(taskVideoKey(task)) ?? '';
 
 const shouldLoadTaskVideo = (task: EffectSegmentRenderTask): boolean =>
   requestedTaskVideoKeys.value.has(taskVideoKey(task));
 
 const requestTaskVideo = (key: string): void => {
+  if (cardVideoPosterUrls.value.has(key) || cardVideoReadyKeys.value.has(key)) return;
   if (requestedTaskVideoKeys.value.has(key)) return;
   const next = new Set(requestedTaskVideoKeys.value);
   next.add(key);
@@ -404,15 +431,46 @@ const vTaskVideoVisible: Directive<HTMLElement, string> = {
 };
 
 const markTaskVideoReady = (task: EffectSegmentRenderTask): void => {
+  const key = taskVideoKey(task);
   const next = new Set(cardVideoReadyKeys.value);
-  next.add(taskVideoKey(task));
+  next.add(key);
   cardVideoReadyKeys.value = next;
 };
 
-const revealVideoPosterFrame = (event: Event): void => {
+const captureTaskVideoPoster = (task: EffectSegmentRenderTask, event: Event): void => {
+  const video = event.currentTarget;
+  if (!(video instanceof HTMLVideoElement) || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA)
+    return;
+  markTaskVideoReady(task);
+  const key = taskVideoKey(task);
+  if (cardVideoPosterUrls.value.has(key) || video.videoWidth < 1 || video.videoHeight < 1) return;
+  try {
+    const scale = Math.min(1, TASK_VIDEO_POSTER_MAX_WIDTH / video.videoWidth);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const poster = canvas.toDataURL('image/jpeg', 0.76);
+    const posters = new Map(cardVideoPosterUrls.value);
+    posters.set(key, poster);
+    cardVideoPosterUrls.value = posters;
+  } catch {
+    // The decoded video can still be shown when a browser blocks canvas extraction.
+  }
+};
+
+const revealVideoPosterFrame = (task: EffectSegmentRenderTask, event: Event): void => {
   const video = event.currentTarget;
   if (!(video instanceof HTMLVideoElement) || !Number.isFinite(video.duration)) return;
-  video.currentTime = Math.min(0.1, video.duration / 2);
+  if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) captureTaskVideoPoster(task, event);
+  const targetTime = Math.min(0.1, video.duration / 2);
+  if (Math.abs(video.currentTime - targetTime) < 0.01) {
+    captureTaskVideoPoster(task, event);
+    return;
+  }
+  video.currentTime = targetTime;
 };
 
 const currentProductReady = computed(
@@ -531,6 +589,8 @@ const applyBatch = (batch: EffectSegmentRenderBatch): void => {
 };
 
 const clearPreview = (): void => {
+  repairRangePlaying.value = false;
+  repairCurrentSeconds.value = 0;
   previewController?.abort();
   previewController = null;
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
@@ -718,9 +778,21 @@ watch(totalPages, (nextTotalPages) => {
   if (page.value > nextTotalPages) page.value = nextTotalPages;
 });
 
-watch(pagedTaskVideoSignature, () => {
-  cardVideoReadyKeys.value = new Set();
-});
+watch(
+  () => tasks.value.map((task) => taskVideoKey(task)).join('|'),
+  () => {
+    const currentKeys = new Set(tasks.value.map((task) => taskVideoKey(task)));
+    cardVideoReadyKeys.value = new Set(
+      [...cardVideoReadyKeys.value].filter((key) => currentKeys.has(key)),
+    );
+    cardVideoPosterUrls.value = new Map(
+      [...cardVideoPosterUrls.value].filter(([key]) => currentKeys.has(key)),
+    );
+    requestedTaskVideoKeys.value = new Set(
+      [...requestedTaskVideoKeys.value].filter((key) => currentKeys.has(key)),
+    );
+  },
+);
 
 const statusMeta = (status: EffectSegmentRenderStatus): { label: string; tone: string } =>
   ({
@@ -849,17 +921,14 @@ const retryTask = async (taskId: string): Promise<void> => {
   }
 };
 
-const openPreview = (
+const loadPreviewVideo = (
   task: EffectSegmentRenderTask,
-  event: Event,
-  variant: 'ACTIVE' | 'REPAIR' = 'ACTIVE',
+  variant: 'ACTIVE' | 'REPAIR',
+  owner: 'preview' | 'repair',
 ): void => {
   const current = workspace.value;
   if (!current?.batchId || (variant === 'ACTIVE' ? !task.output : !task.repair?.candidate)) return;
   clearPreview();
-  dialogTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
-  previewTask.value = task;
-  previewVariant.value = variant;
   previewLoading.value = true;
   const controller = new AbortController();
   previewController = controller;
@@ -872,7 +941,8 @@ const openPreview = (
   )
     .then((response) => response.blob())
     .then((blob) => {
-      if (controller.signal.aborted || previewTask.value?.id !== task.id) return;
+      const ownerTask = owner === 'preview' ? previewTask.value : repairTask.value;
+      if (controller.signal.aborted || ownerTask?.id !== task.id) return;
       previewUrl.value = URL.createObjectURL(blob);
     })
     .catch((error: unknown) => {
@@ -882,6 +952,17 @@ const openPreview = (
       if (previewController === controller) previewController = null;
       if (!controller.signal.aborted) previewLoading.value = false;
     });
+};
+
+const openPreview = (
+  task: EffectSegmentRenderTask,
+  event: Event,
+  variant: 'ACTIVE' | 'REPAIR' = 'ACTIVE',
+): void => {
+  dialogTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  previewTask.value = task;
+  previewVariant.value = variant;
+  loadPreviewVideo(task, variant, 'preview');
   void nextTick(() => previewCloseButton.value?.focus());
 };
 
@@ -892,7 +973,117 @@ const openRepair = (task: EffectSegmentRenderTask, event: Event): void => {
   repairStartSeconds.value = 0;
   repairEndSeconds.value = Math.min(task.durationSeconds, 2);
   repairInstruction.value = '';
+  repairCurrentSeconds.value = 0;
+  repairActiveBoundary.value = 'start';
+  loadPreviewVideo(task, 'ACTIVE', 'repair');
   void nextTick(() => repairCloseButton.value?.focus());
+};
+
+const formatRepairTime = (seconds: number): string => `${seconds.toFixed(1)}s`;
+
+const seekRepairVideo = (seconds: number): void => {
+  const video = repairVideo.value;
+  const duration = repairTask.value?.durationSeconds ?? 0;
+  const next = Math.min(Math.max(seconds, 0), duration);
+  repairCurrentSeconds.value = next;
+  if (!video || !Number.isFinite(video.duration)) return;
+  video.pause();
+  repairRangePlaying.value = false;
+  video.currentTime = Math.min(next, video.duration);
+};
+
+const setRepairBoundary = (boundary: RepairBoundary, seconds: number): void => {
+  const duration = repairTask.value?.durationSeconds ?? 0;
+  repairActiveBoundary.value = boundary;
+  if (boundary === 'start') {
+    const next = Math.min(Math.max(seconds, 0), Math.max(0, duration - 0.1));
+    if (next >= repairEndSeconds.value)
+      repairEndSeconds.value = Math.min(duration, Number((next + 0.1).toFixed(1)));
+    repairStartSeconds.value = Number(next.toFixed(1));
+    seekRepairVideo(repairStartSeconds.value);
+    return;
+  }
+  const next = Math.max(Math.min(seconds, duration), Math.min(duration, 0.1));
+  if (next <= repairStartSeconds.value)
+    repairStartSeconds.value = Math.max(0, Number((next - 0.1).toFixed(1)));
+  repairEndSeconds.value = Number(next.toFixed(1));
+  seekRepairVideo(repairEndSeconds.value);
+};
+
+const updateRepairStart = (event: Event): void => {
+  const input = event.currentTarget;
+  if (!(input instanceof HTMLInputElement)) return;
+  const value = Number(input.value);
+  setRepairBoundary('start', Number.isFinite(value) ? value : 0);
+};
+
+const updateRepairEnd = (event: Event): void => {
+  const input = event.currentTarget;
+  if (!(input instanceof HTMLInputElement)) return;
+  const duration = repairTask.value?.durationSeconds ?? 0;
+  const value = Number(input.value);
+  setRepairBoundary('end', Number.isFinite(value) ? value : duration);
+};
+
+const selectRepairBoundary = (boundary: RepairBoundary): void => {
+  repairActiveBoundary.value = boundary;
+  seekRepairVideo(boundary === 'start' ? repairStartSeconds.value : repairEndSeconds.value);
+};
+
+const selectRepairBoundaryAtTrack = (event: PointerEvent): void => {
+  if (event.target instanceof HTMLInputElement) return;
+  const track = event.currentTarget;
+  const duration = repairTask.value?.durationSeconds ?? 0;
+  if (!(track instanceof HTMLElement) || duration <= 0) return;
+  const rect = track.getBoundingClientRect();
+  const ratio = Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1);
+  const seconds = Number((ratio * duration).toFixed(1));
+  const boundary =
+    Math.abs(seconds - repairStartSeconds.value) <= Math.abs(seconds - repairEndSeconds.value)
+      ? 'start'
+      : 'end';
+  setRepairBoundary(boundary, seconds);
+};
+
+const setRepairBoundaryFromCurrentFrame = (boundary: RepairBoundary): void =>
+  setRepairBoundary(boundary, repairVideo.value?.currentTime ?? repairCurrentSeconds.value);
+
+const nudgeRepairBoundary = (offsetSeconds: number): void => {
+  const current =
+    repairActiveBoundary.value === 'start' ? repairStartSeconds.value : repairEndSeconds.value;
+  setRepairBoundary(repairActiveBoundary.value, current + offsetSeconds);
+};
+
+const handleRepairVideoReady = (): void => {
+  previewVideoReady.value = true;
+  repairCurrentSeconds.value = Number((repairVideo.value?.currentTime ?? 0).toFixed(1));
+};
+
+const toggleRepairRangePreview = async (): Promise<void> => {
+  const video = repairVideo.value;
+  if (!video || !previewVideoReady.value) return;
+  if (repairRangePlaying.value) {
+    video.pause();
+    repairRangePlaying.value = false;
+    return;
+  }
+  video.currentTime = repairStartSeconds.value;
+  repairRangePlaying.value = true;
+  try {
+    await video.play();
+  } catch {
+    repairRangePlaying.value = false;
+  }
+};
+
+const stopRepairRangePreviewAtEnd = (): void => {
+  const video = repairVideo.value;
+  if (!video) return;
+  repairCurrentSeconds.value = Number(video.currentTime.toFixed(1));
+  if (!repairRangePlaying.value || video.currentTime < repairEndSeconds.value) return;
+  video.pause();
+  video.currentTime = repairEndSeconds.value;
+  repairRangePlaying.value = false;
 };
 
 const submitRepair = async (): Promise<void> => {
@@ -1178,14 +1369,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="segment-heading__actions">
-          <label class="product-switcher">
-            <span>当前商品</span>
-            <select v-model="currentProductId" :disabled="operation !== null">
-              <option v-for="product in activeProducts" :key="product.id" :value="product.id">
-                {{ product.name || '未命名产品' }}
-              </option>
-            </select>
-          </label>
           <button
             class="secondary-button"
             type="button"
@@ -1421,8 +1604,15 @@ onBeforeUnmount(() => {
                   selectionMode ? toggleTaskSelection(task.id) : openPreview(task, $event)
                 "
               >
+                <img
+                  v-if="taskVideoPosterUrl(task)"
+                  class="material-preview-video is-ready"
+                  :src="taskVideoPosterUrl(task)"
+                  alt=""
+                  aria-hidden="true"
+                />
                 <video
-                  v-if="taskVideoUrl(task) && shouldLoadTaskVideo(task)"
+                  v-else-if="taskVideoUrl(task) && shouldLoadTaskVideo(task)"
                   :key="taskVideoKey(task)"
                   class="material-preview-video"
                   :class="{ 'is-ready': isTaskVideoReady(task) }"
@@ -1431,19 +1621,15 @@ onBeforeUnmount(() => {
                   playsinline
                   preload="metadata"
                   aria-hidden="true"
-                  @loadedmetadata="revealVideoPosterFrame"
-                  @seeked="markTaskVideoReady(task)"
+                  @loadedmetadata="revealVideoPosterFrame(task, $event)"
+                  @loadeddata="captureTaskVideoPoster(task, $event)"
+                  @seeked="captureTaskVideoPoster(task, $event)"
                 />
                 <span class="material-status-pill" :class="statusMeta(task.status).tone">
                   {{ statusMeta(task.status).label }}
                 </span>
                 <LoaderCircle
-                  v-if="
-                    isEffectSegmentRenderBusy(task.status) ||
-                    (Boolean(taskVideoUrl(task)) &&
-                      shouldLoadTaskVideo(task) &&
-                      !isTaskVideoReady(task))
-                  "
+                  v-if="isEffectSegmentRenderBusy(task.status)"
                   class="spin"
                   :size="25"
                 />
@@ -1696,6 +1882,12 @@ onBeforeUnmount(() => {
             </span>
             <span class="origin-tag ai preview-origin-tag">AI 生成</span>
           </div>
+          <EffectSegmentRenderSourcePrompt
+            :details="previewTaskDetails"
+            :prompt-text="previewTask.promptText"
+            compact
+            heading="来源 Prompt"
+          />
           <p class="dialog-note">
             {{
               previewVariant === 'REPAIR'
@@ -1734,37 +1926,147 @@ onBeforeUnmount(() => {
           </header>
           <div class="repair-dialog-body">
             <p>
-              原 Prompt
-              不会改动。系统会把当前完整视频交给模型，只要求修改下面的时间段；生成结果先作为候选保存。
+              在视频下方拖动前后指针选择问题画面，再填写该范围内需要修改的内容。原 Prompt
+              不会改动，生成结果会先作为候选保存。
             </p>
-            <div class="repair-time-fields">
-              <label>
-                <span>开始时间（秒）</span>
+            <div class="large-preview repair-video-preview" :style="repairFrameStyle">
+              <LoaderCircle v-if="previewLoading" class="spin" :size="34" />
+              <div v-else-if="previewError" class="preview-load-error" role="alert">
+                <AlertCircle :size="28" />
+                <small>{{ previewError }}</small>
+              </div>
+              <video
+                v-else-if="previewUrl"
+                ref="repairVideo"
+                :class="{ 'is-ready': previewVideoReady }"
+                :src="previewUrl"
+                controls
+                playsinline
+                @canplay="handleRepairVideoReady"
+                @timeupdate="stopRepairRangePreviewAtEnd"
+                @pause="repairRangePlaying = false"
+                @ended="repairRangePlaying = false"
+              />
+              <template v-else>
+                <Play :size="34" />
+                <small>{{ repairTask.durationSeconds }}s</small>
+              </template>
+              <LoaderCircle
+                v-if="previewUrl && !previewVideoReady"
+                class="spin preview-video-loader"
+                :size="34"
+              />
+            </div>
+            <div class="repair-range-editor">
+              <div class="repair-range-heading">
+                <span>选择返修范围</span>
+                <div class="repair-boundary-buttons">
+                  <button
+                    type="button"
+                    :class="{ active: repairActiveBoundary === 'start' }"
+                    @click="selectRepairBoundary('start')"
+                  >
+                    起点 <strong>{{ formatRepairTime(repairStartSeconds) }}</strong>
+                  </button>
+                  <button
+                    type="button"
+                    :class="{ active: repairActiveBoundary === 'end' }"
+                    @click="selectRepairBoundary('end')"
+                  >
+                    终点 <strong>{{ formatRepairTime(repairEndSeconds) }}</strong>
+                  </button>
+                </div>
+              </div>
+              <div
+                class="repair-range-track"
+                aria-label="返修时间范围，点击轨道可移动最近的指针"
+                @pointerdown="selectRepairBoundaryAtTrack"
+              >
+                <span class="repair-range-selection" :style="repairSelectionStyle"></span>
                 <input
-                  v-model.number="repairStartSeconds"
-                  type="number"
+                  class="repair-range-input repair-range-input-start"
+                  :class="{ active: repairActiveBoundary === 'start' }"
+                  type="range"
                   min="0"
                   :max="repairTask.durationSeconds"
                   step="0.1"
+                  :value="repairStartSeconds"
+                  :disabled="!previewVideoReady"
+                  :aria-valuetext="formatRepairTime(repairStartSeconds)"
+                  aria-label="返修范围开始位置"
+                  @input="updateRepairStart"
                 />
-              </label>
-              <label>
-                <span>结束时间（秒）</span>
                 <input
-                  v-model.number="repairEndSeconds"
-                  type="number"
-                  min="0.1"
+                  class="repair-range-input repair-range-input-end"
+                  :class="{ active: repairActiveBoundary === 'end' }"
+                  type="range"
+                  min="0"
                   :max="repairTask.durationSeconds"
                   step="0.1"
+                  :value="repairEndSeconds"
+                  :disabled="!previewVideoReady"
+                  :aria-valuetext="formatRepairTime(repairEndSeconds)"
+                  aria-label="返修范围结束位置"
+                  @input="updateRepairEnd"
                 />
-              </label>
+              </div>
+              <div class="repair-range-footer">
+                <span>0.0s</span>
+                <button
+                  type="button"
+                  :disabled="!previewVideoReady"
+                  @click="toggleRepairRangePreview"
+                >
+                  <Pause v-if="repairRangePlaying" :size="13" />
+                  <Play v-else :size="13" />
+                  {{ repairRangePlaying ? '停止预览' : '预览选中范围' }}
+                </button>
+                <span>{{ formatRepairTime(repairTask.durationSeconds) }}</span>
+              </div>
+              <div class="repair-current-toolbar">
+                <span
+                  >当前画面 <strong>{{ formatRepairTime(repairCurrentSeconds) }}</strong></span
+                >
+                <div>
+                  <button
+                    type="button"
+                    :disabled="!previewVideoReady"
+                    @click="setRepairBoundaryFromCurrentFrame('start')"
+                  >
+                    设为起点
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="!previewVideoReady"
+                    @click="setRepairBoundaryFromCurrentFrame('end')"
+                  >
+                    设为终点
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="!previewVideoReady"
+                    :aria-label="`${repairActiveBoundary === 'start' ? '起点' : '终点'}后退 0.1 秒`"
+                    @click="nudgeRepairBoundary(-0.1)"
+                  >
+                    −0.1s
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="!previewVideoReady"
+                    :aria-label="`${repairActiveBoundary === 'start' ? '起点' : '终点'}前进 0.1 秒`"
+                    @click="nudgeRepairBoundary(0.1)"
+                  >
+                    +0.1s
+                  </button>
+                </div>
+              </div>
             </div>
             <label class="repair-instruction-field">
-              <span>需要修改什么</span>
+              <span>这个范围内需要修改什么</span>
               <textarea
                 v-model="repairInstruction"
                 maxlength="1000"
-                placeholder="例如：12.3 秒开始，移除台面右侧的黑色污点，保持人物、产品和镜头运动不变。"
+                placeholder="例如：移除台面右侧的黑色污点，保持人物、产品和镜头运动不变。"
               />
               <small>{{ repairInstruction.trim().length }}/1000</small>
             </label>
@@ -1776,6 +2078,7 @@ onBeforeUnmount(() => {
               type="button"
               :disabled="
                 operation !== null ||
+                !previewVideoReady ||
                 !repairInstruction.trim() ||
                 repairStartSeconds < 0 ||
                 repairEndSeconds <= repairStartSeconds ||
@@ -1824,20 +2127,10 @@ onBeforeUnmount(() => {
             </span>
             <em>来源 Prompt</em>
           </div>
-          <pre class="source-prompt-content">{{ promptTask.promptText }}</pre>
-          <details v-if="promptTaskDetails" class="source-prompt-detail">
-            <summary>查看创意方向</summary>
-            <p class="prompt-creative-core">{{ promptTaskDetails.creativeCore }}</p>
-          </details>
-          <details v-if="promptTaskDetails" class="source-prompt-detail">
-            <summary>查看六维创意信息</summary>
-            <div class="prompt-source-dimensions">
-              <span v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key">
-                <b>{{ dimension.label }}</b>
-                {{ promptTaskDetails.dimensions[dimension.key] }}
-              </span>
-            </div>
-          </details>
+          <EffectSegmentRenderSourcePrompt
+            :details="promptTaskDetails"
+            :prompt-text="promptTask.promptText"
+          />
           <footer><button type="button" @click="closeAllDialogs(true)">关闭</button></footer>
         </section>
       </div>
@@ -2237,24 +2530,6 @@ select:disabled {
   color: #506078;
   font-size: 11px;
   font-weight: 700;
-}
-.product-switcher {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  color: #596278;
-  font-size: 13px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-.product-switcher select {
-  width: 178px;
-  height: 40px;
-  padding: 0 34px 0 13px;
-  color: #42526a;
-  background: #fff;
-  border: 1px solid #dbe4f6;
-  border-radius: 10px;
 }
 .secondary-button {
   min-width: 171px;
@@ -2809,64 +3084,6 @@ select:disabled {
   color: #3473d4;
   background: #edf4ff;
 }
-.prompt-dialog pre {
-  max-height: 310px;
-  margin: 12px 0;
-  padding: 14px;
-  overflow: auto;
-  color: #42526a;
-  white-space: pre-wrap;
-  background: #f8fafc;
-  border: 1px solid #e4e9f1;
-  border-radius: 10px;
-  font-family: inherit;
-  font-size: 11px;
-  line-height: 1.75;
-}
-.source-prompt-detail {
-  margin: 8px 0 0;
-  color: #78869a;
-  font-size: 9px;
-}
-.source-prompt-detail summary {
-  width: max-content;
-  color: #5577a8;
-  cursor: pointer;
-  user-select: none;
-}
-.source-prompt-detail .prompt-creative-core,
-.source-prompt-detail .prompt-source-dimensions {
-  margin-top: 7px;
-}
-.prompt-creative-core {
-  margin: 0;
-  padding: 8px 10px;
-  color: #253047;
-  background: #f4f8ff;
-  border: 1px solid #cfe0ff;
-  border-radius: 7px;
-  font-size: 10px;
-  line-height: 1.6;
-}
-.prompt-source-dimensions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
-}
-.prompt-source-dimensions > span {
-  padding: 8px 9px;
-  color: #42526a;
-  background: #f4f8ff;
-  border: 1px solid #cfe0ff;
-  border-radius: 7px;
-  font-size: 9px;
-  line-height: 1.55;
-}
-.prompt-source-dimensions b {
-  display: block;
-  margin-bottom: 2px;
-  color: #2f6fed;
-}
 .prompt-dialog > footer {
   display: flex;
   align-items: center;
@@ -2883,8 +3100,10 @@ select:disabled {
   font-weight: 800;
 }
 .repair-dialog {
-  width: min(560px, 100%);
+  width: min(680px, 100%);
+  max-height: calc(100vh - 40px);
   padding: 0 18px 18px;
+  overflow-y: auto;
 }
 .repair-dialog header > div small {
   display: block;
@@ -2898,12 +3117,9 @@ select:disabled {
   font-size: 11px;
   line-height: 1.7;
 }
-.repair-time-fields {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+.repair-video-preview {
+  box-shadow: inset 0 0 0 1px #dbe4f0;
 }
-.repair-time-fields label,
 .repair-instruction-field {
   display: grid;
   gap: 7px;
@@ -2911,7 +3127,6 @@ select:disabled {
   font-size: 11px;
   font-weight: 700;
 }
-.repair-time-fields input,
 .repair-instruction-field textarea {
   width: 100%;
   color: #34445b;
@@ -2922,9 +3137,209 @@ select:disabled {
   font: inherit;
   font-weight: 500;
 }
-.repair-time-fields input {
-  height: 40px;
-  padding: 0 11px;
+.repair-range-editor {
+  width: min(100%, 620px);
+  margin: 15px auto 0;
+  padding: 12px 14px 10px;
+  background: #f8faff;
+  border: 1px solid #dce6f6;
+  border-radius: 11px;
+}
+.repair-range-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #52627a;
+  font-size: 11px;
+  font-weight: 700;
+}
+.repair-range-heading strong {
+  color: #2563eb;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.repair-boundary-buttons {
+  display: flex;
+  gap: 6px;
+}
+.repair-boundary-buttons button {
+  height: 30px;
+  padding: 0 9px;
+  color: #65748a;
+  background: #fff;
+  border: 1px solid #d5e0f0;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 700;
+}
+.repair-boundary-buttons button.active {
+  color: #1f57ba;
+  background: #edf4ff;
+  border-color: #7fa7f8;
+  box-shadow: 0 0 0 2px #dce8ff;
+}
+.repair-range-track {
+  position: relative;
+  height: 28px;
+  margin-top: 8px;
+  cursor: pointer;
+}
+.repair-range-track::before,
+.repair-range-selection {
+  position: absolute;
+  top: 10px;
+  height: 8px;
+  border-radius: 999px;
+  content: '';
+}
+.repair-range-track::before {
+  right: 0;
+  left: 0;
+  background: #dfe7f2;
+}
+.repair-range-selection {
+  z-index: 1;
+  pointer-events: none;
+  background: #4f7ff1;
+}
+.repair-range-input {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  pointer-events: none;
+  appearance: none;
+  background: transparent;
+  outline: none;
+}
+.repair-range-input-end {
+  z-index: 2;
+}
+.repair-range-input.active {
+  z-index: 4;
+}
+.repair-range-input::-webkit-slider-runnable-track {
+  height: 8px;
+  background: transparent;
+}
+.repair-range-input::-webkit-slider-thumb {
+  width: 19px;
+  height: 26px;
+  margin-top: -9px;
+  pointer-events: auto;
+  appearance: none;
+  cursor: ew-resize;
+  background: #fff;
+  border: 3px solid #2563eb;
+  border-radius: 6px;
+  box-shadow: 0 2px 7px #1d4ed840;
+}
+.repair-range-input::-moz-range-track {
+  height: 8px;
+  background: transparent;
+  border: 0;
+}
+.repair-range-input::-moz-range-thumb {
+  width: 15px;
+  height: 22px;
+  pointer-events: auto;
+  cursor: ew-resize;
+  background: #fff;
+  border: 3px solid #2563eb;
+  border-radius: 6px;
+  box-shadow: 0 2px 7px #1d4ed840;
+}
+.repair-range-input:focus-visible::-webkit-slider-thumb {
+  outline: 3px solid #93b4ff;
+  outline-offset: 2px;
+}
+.repair-range-input:focus-visible::-moz-range-thumb {
+  outline: 3px solid #93b4ff;
+  outline-offset: 2px;
+}
+.repair-range-input:disabled::-webkit-slider-thumb {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.repair-range-input:disabled::-moz-range-thumb {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.repair-range-footer {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 10px;
+  color: #8a97aa;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+.repair-range-footer > span:last-child {
+  text-align: right;
+}
+.repair-range-footer button {
+  display: inline-flex;
+  height: 29px;
+  padding: 0 10px;
+  align-items: center;
+  gap: 5px;
+  color: #2f63bd;
+  background: #fff;
+  border: 1px solid #cddcf5;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 800;
+}
+.repair-range-footer button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.repair-current-toolbar {
+  display: flex;
+  margin-top: 9px;
+  padding-top: 9px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid #e1e8f3;
+}
+.repair-current-toolbar > span {
+  color: #718096;
+  font-size: 9px;
+  white-space: nowrap;
+}
+.repair-current-toolbar > span strong {
+  margin-left: 3px;
+  color: #253d69;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.repair-current-toolbar > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+.repair-current-toolbar button {
+  height: 28px;
+  padding: 0 8px;
+  color: #45638f;
+  background: #fff;
+  border: 1px solid #d2deef;
+  border-radius: 7px;
+  font-size: 9px;
+  font-weight: 700;
+}
+.repair-current-toolbar button:hover:not(:disabled) {
+  color: #1f5ec8;
+  border-color: #8aaff5;
+}
+.repair-current-toolbar button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 .repair-instruction-field {
   position: relative;
@@ -3019,14 +3434,9 @@ select:disabled {
     border-radius: 20px;
   }
   .segment-heading__actions,
-  .product-switcher,
-  .product-switcher select,
   .secondary-button,
   .start-render-button {
     width: 100%;
-  }
-  .product-switcher select {
-    flex: 1;
   }
   .segment-stats {
     grid-template-columns: 1fr;
@@ -3957,16 +4367,29 @@ select:disabled {
   .selection-action-bar span {
     width: 100%;
   }
-  .prompt-source-dimensions {
-    grid-template-columns: 1fr;
-  }
   .segment-transfer-drawer {
     padding: 0 14px;
   }
 }
 @media (max-width: 480px) {
-  .repair-time-fields {
-    grid-template-columns: 1fr;
+  .repair-range-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .repair-boundary-buttons,
+  .repair-current-toolbar > div {
+    width: 100%;
+  }
+  .repair-boundary-buttons button {
+    flex: 1;
+  }
+  .repair-current-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .repair-current-toolbar > div {
+    justify-content: flex-start;
   }
   .segment-material-grid {
     grid-template-columns: 1fr;

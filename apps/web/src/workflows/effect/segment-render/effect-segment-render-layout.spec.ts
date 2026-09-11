@@ -2,10 +2,17 @@ import { describe, expect, it } from 'vitest';
 
 import parentSource from '../source-import/EffectImportNodePage.vue?raw';
 import apiSource from './api/effect-segment-render.api.ts?raw';
+import sourcePromptSource from './components/EffectSegmentRenderSourcePrompt.vue?raw';
 import pageSource from './EffectSegmentRenderNodePage.vue?raw';
 import serviceSource from './services/effect-segment-render.mock-service.ts?raw';
 
 describe('effect segment render material gallery layout', () => {
+  it('uses the only active product without rendering a product selector', () => {
+    expect(pageSource).not.toContain('class="product-switcher"');
+    expect(pageSource).not.toContain('<span>当前商品</span>');
+    expect(pageSource).not.toContain('<select v-model="currentProductId"');
+  });
+
   it('uses an inline result summary and a five-column material gallery without a queue rail', () => {
     for (const marker of [
       'class="segment-heading"',
@@ -46,7 +53,7 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain('class="material-preview-video"');
     expect(pageSource).toContain(':src="taskVideoUrl(task)"');
     expect(pageSource).toContain('preload="metadata"');
-    expect(pageSource).toContain('@seeked="markTaskVideoReady(task)"');
+    expect(pageSource).toContain('@seeked="captureTaskVideoPoster(task, $event)"');
     expect(pageSource).toContain("{ 'video-ready': isTaskVideoReady(task) }");
     expect(pageSource).toContain("{ 'is-ready': isTaskVideoReady(task) }");
     expect(pageSource).toContain('task.output');
@@ -58,23 +65,32 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain('class="origin-tag ai preview-origin-tag">AI 生成</span>');
     expect(pageSource).not.toContain('真实视频素材</em>');
     expect(pageSource).toContain('effectSegmentRenderPromptDetailsMap(promptArtifact.payload)');
-    expect(pageSource).toContain('v-if="promptTaskDetails"');
-    expect(pageSource).toContain(
-      '<pre class="source-prompt-content">{{ promptTask.promptText }}</pre>',
+    expect(pageSource.match(/<EffectSegmentRenderSourcePrompt/gu)).toHaveLength(2);
+    expect(pageSource).toContain(':prompt-text="previewTask.promptText"');
+    expect(pageSource).toContain(':details="previewTaskDetails"');
+    expect(pageSource).toContain('heading="来源 Prompt"');
+    expect(pageSource).toContain(':prompt-text="promptTask.promptText"');
+    expect(pageSource).toContain(':details="promptTaskDetails"');
+    expect(sourcePromptSource).toContain(
+      '<pre class="source-prompt-content">{{ promptText }}</pre>',
     );
-    expect(pageSource).toContain('<summary>查看创意方向</summary>');
-    expect(pageSource).toContain('<summary>查看六维创意信息</summary>');
-    expect(pageSource).toContain('v-for="dimension in EFFECT_PROMPT_DIMENSIONS"');
-    expect(pageSource).toContain('promptTaskDetails.dimensions[dimension.key]');
-    expect(pageSource.indexOf('<pre class="source-prompt-content"')).toBeLessThan(
-      pageSource.indexOf('<summary>查看创意方向</summary>'),
+    expect(sourcePromptSource).toContain('<summary>查看创意方向</summary>');
+    expect(sourcePromptSource).toContain('<summary>查看六维创意信息</summary>');
+    expect(sourcePromptSource).toContain('v-for="dimension in EFFECT_PROMPT_DIMENSIONS"');
+    expect(sourcePromptSource).toContain('details.dimensions[dimension.key]');
+    expect(sourcePromptSource.indexOf('<pre class="source-prompt-content"')).toBeLessThan(
+      sourcePromptSource.indexOf('<summary>查看创意方向</summary>'),
     );
   });
 
-  it('resets poster-frame readiness whenever the visible material page changes', () => {
-    expect(pageSource).toContain('const pagedTaskVideoSignature = computed');
-    expect(pageSource).toContain('watch(pagedTaskVideoSignature, () => {');
-    expect(pageSource).toContain('cardVideoReadyKeys.value = new Set();');
+  it('caches decoded poster frames across material page changes', () => {
+    expect(pageSource).toContain('const cardVideoPosterUrls = ref<Map<string, string>>(new Map())');
+    expect(pageSource).toContain('const captureTaskVideoPoster =');
+    expect(pageSource).toContain("canvas.toDataURL('image/jpeg', 0.76)");
+    expect(pageSource).toContain('v-if="taskVideoPosterUrl(task)"');
+    expect(pageSource).not.toContain('const pagedTaskVideoSignature = computed');
+    expect(pageSource).toContain('v-if="isEffectSegmentRenderBusy(task.status)"');
+    expect(pageSource).not.toContain('!isTaskVideoReady(task))');
   });
 
   it('loads video poster metadata only when a card approaches the viewport', () => {
@@ -85,6 +101,31 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain('if (snapshot.prefetched)');
     expect(pageSource).toContain('onDeactivated(() => {');
     expect(pageSource).toContain('void loadCurrentWorkspace(false);');
+  });
+
+  it('selects the repair interval with video-backed range handles instead of time fields', () => {
+    expect(pageSource).toContain('class="large-preview repair-video-preview"');
+    expect(pageSource).toContain('ref="repairVideo"');
+    expect(pageSource).toContain('class="repair-range-input repair-range-input-start"');
+    expect(pageSource).toContain('class="repair-range-input repair-range-input-end"');
+    expect(pageSource).toContain('aria-label="返修范围开始位置"');
+    expect(pageSource).toContain('aria-label="返修范围结束位置"');
+    expect(pageSource.match(/:disabled="!previewVideoReady"/gu)).toHaveLength(7);
+    expect(pageSource).toContain('@timeupdate="stopRepairRangePreviewAtEnd"');
+    expect(pageSource).toContain('toggleRepairRangePreview');
+    expect(pageSource).toContain('@pointerdown="selectRepairBoundaryAtTrack"');
+    expect(pageSource).toContain('@click="selectRepairBoundary(\'start\')"');
+    expect(pageSource).toContain('@click="selectRepairBoundary(\'end\')"');
+    expect(pageSource).toContain('@click="setRepairBoundaryFromCurrentFrame(\'start\')"');
+    expect(pageSource).toContain('@click="setRepairBoundaryFromCurrentFrame(\'end\')"');
+    expect(pageSource).toContain('@click="nudgeRepairBoundary(-0.1)"');
+    expect(pageSource).toContain('@click="nudgeRepairBoundary(0.1)"');
+    expect(pageSource).toContain('当前画面');
+    expect(pageSource).toContain('这个范围内需要修改什么');
+    expect(pageSource).not.toContain('开始时间（秒）');
+    expect(pageSource).not.toContain('结束时间（秒）');
+    expect(pageSource).toContain('startMs: Math.round(repairStartSeconds.value * 1000)');
+    expect(pageSource).toContain('endMs: Math.round(repairEndSeconds.value * 1000)');
   });
 
   it('uses the prompt-node search and purpose filter pattern with toggleable selection actions', () => {
@@ -176,8 +217,11 @@ describe('effect segment render material gallery layout', () => {
   it('matches the immediate preview frame to the configured render ratio', () => {
     expect(pageSource).toContain("configuredRatio === 'adaptive' ? '16:9' : configuredRatio");
     expect(pageSource).toContain(':style="previewFrameStyle"');
+    expect(pageSource).toContain(':style="repairFrameStyle"');
     expect(pageSource).toContain('aspectRatio: `${width} / ${height}`');
-    expect(pageSource).toContain('width: `min(100%, calc(62vh * ${widthToHeight}))`');
+    expect(pageSource).toContain('width: `min(100%, calc(${maxHeightVh}vh * ${widthToHeight}))`');
+    expect(pageSource).toContain('effectSegmentRenderFrameStyle(62)');
+    expect(pageSource).toContain('effectSegmentRenderFrameStyle(44)');
     expect(pageSource).not.toMatch(/\.large-preview\s*\{[^}]*height:\s*250px/su);
   });
 

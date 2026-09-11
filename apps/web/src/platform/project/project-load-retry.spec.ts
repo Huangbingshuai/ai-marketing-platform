@@ -48,6 +48,25 @@ describe('project list startup retry', () => {
     expect(wait).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps checking with the final delay while the local API is still starting', async () => {
+    const request = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce({ status: 503 })
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValue('ready');
+    const wait = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      loadProjectListWithRetry(request, new AbortController().signal, {
+        continueWithLastDelay: true,
+        delays: [100],
+        wait,
+      }),
+    ).resolves.toBe('ready');
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(wait.mock.calls.map(([delay]) => delay)).toEqual([100, 100]);
+  });
+
   it('only treats network and temporary HTTP failures as retryable', () => {
     expect(isRetryableProjectLoadError(new TypeError('fetch failed'))).toBe(true);
     expect(isRetryableProjectLoadError({ status: 408 })).toBe(true);

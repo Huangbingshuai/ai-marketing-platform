@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import viteConfigSource from '../../../../vite.config.ts?raw';
 import pageSource from './EffectInfoExtractionNodePage.vue?raw';
 
+const normalizedPageSource = pageSource.replace(/\r\n?/gu, '\n');
+
 describe('effect info extraction result layout', () => {
   it('always renders the complete extraction form and keeps ungenerated fields empty', () => {
     expect(pageSource).toContain('class="result-grid"');
@@ -15,7 +17,7 @@ describe('effect info extraction result layout', () => {
   it('stacks product basics above a two-column selling-point layer', () => {
     expect(pageSource).not.toContain('class="product-info-layout"');
     expect(pageSource).toContain('grid-template-columns: minmax(0, 1fr);');
-    expect(pageSource).toContain("grid-template-areas:\n    'base'\n    'selling';");
+    expect(normalizedPageSource).toContain("grid-template-areas:\n    'base'\n    'selling';");
     expect(pageSource).toContain('.product-base-card {');
     expect(pageSource).toContain('grid-area: base;');
     expect(pageSource).toContain('class="content-block selling-layer-card"');
@@ -23,7 +25,9 @@ describe('effect info extraction result layout', () => {
     expect(pageSource).toContain('grid-area: selling;');
     expect(pageSource).toContain('.selling-points--unified {');
     expect(pageSource).toContain('grid-template-columns: repeat(2, minmax(0, 1fr));');
-    expect(pageSource).toContain('@media (max-width: 860px) {\n  .selling-points--unified {');
+    expect(normalizedPageSource).toContain(
+      '@media (max-width: 860px) {\n  .selling-points--unified {',
+    );
     expect(pageSource).not.toContain('grid-area: user;');
     expect(pageSource).not.toContain('grid-area: scenario;');
   });
@@ -31,9 +35,13 @@ describe('effect info extraction result layout', () => {
   it('uses one selling-point heading without row prefixes or hierarchy', () => {
     expect(pageSource).toContain('<h3>卖点</h3>');
     expect(pageSource).toContain('class="selling-point-count"');
-    expect(pageSource).toContain('{{ visibleResult.sellingPoints.length }} /');
+    expect(pageSource).toContain('class="selling-point-count__value"');
+    expect(pageSource).toContain('{{ visibleResult.sellingPoints.length }} 条卖点');
+    expect(pageSource).toContain(
+      '建议精简至 ${EFFECT_EXTRACTION_RECOMMENDED_SELLING_POINTS} 条以内',
+    );
     expect(pageSource).toContain('这些卖点可用于后续视频创作，您可以按需修改、添加或删除。');
-    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_SELLING_POINTS');
+    expect(pageSource).toContain('EFFECT_EXTRACTION_RECOMMENDED_SELLING_POINTS');
     expect(pageSource).toContain(':aria-label="`卖点 ${index + 1}`"');
     expect(pageSource).not.toContain('卖点分层');
     expect(pageSource).not.toContain('>核心卖点');
@@ -153,8 +161,10 @@ describe('effect info extraction result layout', () => {
   });
 
   it('keeps product facts editable and only marks image-recognition additions', () => {
-    expect(pageSource).toContain('EFFECT_EXTRACTION_MAX_SELLING_POINTS');
+    expect(pageSource).toContain('EFFECT_EXTRACTION_RECOMMENDED_SELLING_POINTS');
     expect(pageSource).toContain("result.sellingPoints.push('')");
+    expect(pageSource).toContain(':disabled="baseFieldsReadonly"');
+    expect(pageSource).not.toContain('最多添加');
     expect(pageSource).toContain(
       'placeholder="例如：原料、工艺、功能、口味、用法、场景或可信背书"',
     );

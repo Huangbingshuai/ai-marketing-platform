@@ -21,8 +21,8 @@ SEMANTIC_FIELDS: tuple[tuple[SemanticField, str], ...] = (
 SEMANTIC_REFERENCE_FIELDS = frozenset(
     {"productCategory", "productName", "coreSpecification", "visualFeatures"}
 )
-SEMANTIC_FIELD_LIMITS: dict[SemanticField, int] = {
-    SemanticField.SELLING_POINTS: 100,
+SEMANTIC_FIELD_RECOMMENDED_COUNTS: dict[SemanticField, int] = {
+    SemanticField.SELLING_POINTS: 40,
 }
 
 
@@ -55,7 +55,7 @@ async def refine_candidate_semantics(
     if len(all_ids) != len(set(all_ids)):
         raise ValueError("semantic fact ids must be unique")
 
-    remaining_capacity = _remaining_capacity(users)
+    available_suggestion_counts = _available_suggestion_counts(suggestions)
     structural_notices = _over_limit_notices(users)
     if not suggestions and len(users) < 2:
         refined = _candidate_with_facts(candidate, users, [])
@@ -75,13 +75,14 @@ async def refine_candidate_semantics(
         image_suggestions=suggestions,
         reference_facts=references,
         remaining_capacity_by_field={
-            field.value: capacity for field, capacity in remaining_capacity.items()
+            field.value: count
+            for field, count in available_suggestion_counts.items()
         },
     )
     kept, decision_corrections = _safe_suggestion_decisions(
         ai_call.value,
         suggestions=suggestions,
-        remaining_capacity=remaining_capacity,
+        remaining_capacity=available_suggestion_counts,
     )
     model_notices, notice_corrections = _safe_user_notices(
         ai_call.value,
@@ -194,16 +195,13 @@ def _validated_reference_rows(
     return accepted
 
 
-def _remaining_capacity(
-    users: Sequence[Mapping[str, str]],
+def _available_suggestion_counts(
+    suggestions: Sequence[Mapping[str, str]],
 ) -> dict[SemanticField, int]:
     counts = {field: 0 for field, _ in SEMANTIC_FIELDS}
-    for row in users:
+    for row in suggestions:
         counts[SemanticField(row["field"])] += 1
-    return {
-        field: max(0, SEMANTIC_FIELD_LIMITS[field] - counts[field])
-        for field, _ in SEMANTIC_FIELDS
-    }
+    return counts
 
 
 def _safe_suggestion_decisions(
@@ -332,7 +330,7 @@ def _over_limit_notices(
         by_field.setdefault(SemanticField(row["field"]), []).append(row)
     notices: list[dict[str, Any]] = []
     for field, rows in by_field.items():
-        if len(rows) <= SEMANTIC_FIELD_LIMITS[field]:
+        if len(rows) <= SEMANTIC_FIELD_RECOMMENDED_COUNTS[field]:
             continue
         first = rows[0]
         notices.append(
@@ -345,7 +343,7 @@ def _over_limit_notices(
                 "relatedValues": [],
                 "suggestedField": None,
                 "actualCount": len(rows),
-                "recommendedCount": SEMANTIC_FIELD_LIMITS[field],
+                "recommendedCount": SEMANTIC_FIELD_RECOMMENDED_COUNTS[field],
             }
         )
     return notices

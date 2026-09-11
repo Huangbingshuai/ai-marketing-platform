@@ -36,6 +36,7 @@ const waitForRetry = (delayMs: number, signal: AbortSignal): Promise<void> =>
   });
 
 type ProjectLoadRetryOptions = {
+  continueWithLastDelay?: boolean;
   delays?: readonly number[];
   wait?: (delayMs: number, signal: AbortSignal) => Promise<void>;
 };
@@ -43,7 +44,11 @@ type ProjectLoadRetryOptions = {
 export const loadProjectListWithRetry = async <T>(
   request: () => Promise<T>,
   signal: AbortSignal,
-  { delays = PROJECT_LOAD_RETRY_DELAYS_MS, wait = waitForRetry }: ProjectLoadRetryOptions = {},
+  {
+    continueWithLastDelay = false,
+    delays = PROJECT_LOAD_RETRY_DELAYS_MS,
+    wait = waitForRetry,
+  }: ProjectLoadRetryOptions = {},
 ): Promise<T> => {
   let retryIndex = 0;
   while (true) {
@@ -51,8 +56,10 @@ export const loadProjectListWithRetry = async <T>(
     try {
       return await request();
     } catch (error) {
-      if (!isRetryableProjectLoadError(error) || retryIndex >= delays.length) throw error;
-      await wait(delays[retryIndex]!, signal);
+      if (!isRetryableProjectLoadError(error) || delays.length === 0) throw error;
+      if (!continueWithLastDelay && retryIndex >= delays.length) throw error;
+      const delay = delays[Math.min(retryIndex, delays.length - 1)]!;
+      await wait(delay, signal);
       retryIndex += 1;
     }
   }

@@ -202,14 +202,13 @@ async def test_ark_local_repair_uses_bounded_structured_call_and_original_constr
     mock = LocatedProvider()
     pipeline, runtime, candidate, _ = await prepared(mock)
     cache = pipeline._cache(runtime)
-    evaluation = await mock.evaluate_creatives(
+    audit = await mock.audit_creative_execution(
         [candidate],
-        application=cache.insight_application,
         target_durations={candidate.slot_id: 5},
     )
     args = dict(
         task=cache.creative_tasks[candidate.slot_id],
-        findings=evaluation.value.items[0].execution_findings,
+        findings=audit.value.items[0].findings,
         application=cache.insight_application,
         shared_prompt=cache.shared_prompt,
         fact_visual_strategy=cache.fact_visual_strategy,
@@ -240,6 +239,7 @@ async def test_ark_local_repair_uses_bounded_structured_call_and_original_constr
         await provider.aclose()
     assert seen["model"] == "candidate-test"
     assert seen["max_output_tokens"] == 6144
+    assert "shotPlan" in seen["text"]["format"]["schema"]["properties"]
     payload = json.loads(seen["input"][0]["content"][0]["text"])
     assert payload["original"]["slotId"] == candidate.slot_id
     assert "content" not in payload["original"]

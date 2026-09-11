@@ -1,4 +1,23 @@
-import type { EffectPromptNodeId, EffectPromptRun } from '@ai-marketing/contracts';
+import type {
+  EffectPromptNodeId,
+  EffectPromptRun,
+  GetEffectPromptNodeDetailData,
+} from '@ai-marketing/contracts';
+
+type PromptGraphNodeDetail = GetEffectPromptNodeDetailData['detail'];
+
+/** Ignore heartbeat-only timestamps so the detail panel is not rebuilt on every poll. */
+export const promptGraphDetailContentKey = (detail: PromptGraphNodeDetail): string =>
+  JSON.stringify([
+    detail.nodeId,
+    detail.status,
+    detail.summary,
+    detail.sections,
+    detail.fields,
+    detail.blocks,
+    detail.warnings,
+    detail.errorMessage,
+  ]);
 
 /** Refresh the selected stage once when it finishes, not only while it is active. */
 export const promptGraphDetailRefreshKey = (
