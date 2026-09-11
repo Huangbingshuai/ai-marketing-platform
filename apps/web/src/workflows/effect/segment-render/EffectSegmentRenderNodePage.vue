@@ -9,7 +9,6 @@ import type {
 } from '@ai-marketing/contracts';
 import {
   DEFAULT_EFFECT_SEGMENT_RENDER_SETTINGS,
-  EFFECT_PROMPT_DIMENSIONS,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
 } from '@ai-marketing/contracts';
@@ -47,6 +46,7 @@ import { requestActionConfirmation } from '../../../shared/composables/action-co
 import { listWorkingArtifacts } from '../../../platform/workflow/api/workflow-working.api';
 import { EFFECT_PROMPT_PAGE_SIZE_OPTIONS } from '../prompt-generation/effect-prompt-generation-state';
 import EffectUpwardCreatableSelect from '../source-import/components/EffectUpwardCreatableSelect.vue';
+import EffectSegmentRenderSourcePrompt from './components/EffectSegmentRenderSourcePrompt.vue';
 import {
   decideEffectSegmentRenderRepair,
   effectSegmentRenderTaskContentUrl,
@@ -222,6 +222,7 @@ const previewLoading = ref(false);
 const previewError = ref('');
 const previewVideoReady = ref(false);
 const cardVideoReadyKeys = ref<Set<string>>(new Set());
+const cardVideoPosterUrls = ref<Map<string, string>>(new Map());
 const requestedTaskVideoKeys = ref<Set<string>>(new Set());
 const promptTask = ref<EffectSegmentRenderTask | null>(null);
 const repairTask = ref<EffectSegmentRenderTask | null>(null);
@@ -245,6 +246,8 @@ let activatedOnce = false;
 let skipNextProductLoad = false;
 let taskVideoObserver: IntersectionObserver | null = null;
 let workspaceRevalidationTimer: ReturnType<typeof setTimeout> | undefined;
+
+const TASK_VIDEO_POSTER_MAX_WIDTH = 480;
 
 const activeProducts = computed(() =>
   props.products.filter((product) => product.status === 'ACTIVE'),
@@ -340,6 +343,12 @@ const promptTaskDetails = computed(() =>
   promptTask.value ? (cardPromptDetailsByPromptId.value[promptTask.value.promptId] ?? null) : null,
 );
 
+const previewTaskDetails = computed(() =>
+  previewTask.value
+    ? (cardPromptDetailsByPromptId.value[previewTask.value.promptId] ?? null)
+    : null,
+);
+
 const taskVideoUrl = (task: EffectSegmentRenderTask): string => {
   const batchId = workspace.value?.batchId;
   if (!batchId || !task.output) return '';
@@ -349,17 +358,17 @@ const taskVideoUrl = (task: EffectSegmentRenderTask): string => {
 const taskVideoKey = (task: EffectSegmentRenderTask): string =>
   `${task.id}:${task.output?.version ?? task.activeVersion}`;
 
-const pagedTaskVideoSignature = computed(() =>
-  pagedTasks.value.map((task) => taskVideoKey(task)).join('|'),
-);
-
 const isTaskVideoReady = (task: EffectSegmentRenderTask): boolean =>
   cardVideoReadyKeys.value.has(taskVideoKey(task));
+
+const taskVideoPosterUrl = (task: EffectSegmentRenderTask): string =>
+  cardVideoPosterUrls.value.get(taskVideoKey(task)) ?? '';
 
 const shouldLoadTaskVideo = (task: EffectSegmentRenderTask): boolean =>
   requestedTaskVideoKeys.value.has(taskVideoKey(task));
 
 const requestTaskVideo = (key: string): void => {
+  if (cardVideoPosterUrls.value.has(key) || cardVideoReadyKeys.value.has(key)) return;
   if (requestedTaskVideoKeys.value.has(key)) return;
   const next = new Set(requestedTaskVideoKeys.value);
   next.add(key);
@@ -404,15 +413,46 @@ const vTaskVideoVisible: Directive<HTMLElement, string> = {
 };
 
 const markTaskVideoReady = (task: EffectSegmentRenderTask): void => {
+  const key = taskVideoKey(task);
   const next = new Set(cardVideoReadyKeys.value);
-  next.add(taskVideoKey(task));
+  next.add(key);
   cardVideoReadyKeys.value = next;
 };
 
-const revealVideoPosterFrame = (event: Event): void => {
+const captureTaskVideoPoster = (task: EffectSegmentRenderTask, event: Event): void => {
+  const video = event.currentTarget;
+  if (!(video instanceof HTMLVideoElement) || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA)
+    return;
+  markTaskVideoReady(task);
+  const key = taskVideoKey(task);
+  if (cardVideoPosterUrls.value.has(key) || video.videoWidth < 1 || video.videoHeight < 1) return;
+  try {
+    const scale = Math.min(1, TASK_VIDEO_POSTER_MAX_WIDTH / video.videoWidth);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const poster = canvas.toDataURL('image/jpeg', 0.76);
+    const posters = new Map(cardVideoPosterUrls.value);
+    posters.set(key, poster);
+    cardVideoPosterUrls.value = posters;
+  } catch {
+    // The decoded video can still be shown when a browser blocks canvas extraction.
+  }
+};
+
+const revealVideoPosterFrame = (task: EffectSegmentRenderTask, event: Event): void => {
   const video = event.currentTarget;
   if (!(video instanceof HTMLVideoElement) || !Number.isFinite(video.duration)) return;
-  video.currentTime = Math.min(0.1, video.duration / 2);
+  if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) captureTaskVideoPoster(task, event);
+  const targetTime = Math.min(0.1, video.duration / 2);
+  if (Math.abs(video.currentTime - targetTime) < 0.01) {
+    captureTaskVideoPoster(task, event);
+    return;
+  }
+  video.currentTime = targetTime;
 };
 
 const currentProductReady = computed(
@@ -718,9 +758,21 @@ watch(totalPages, (nextTotalPages) => {
   if (page.value > nextTotalPages) page.value = nextTotalPages;
 });
 
-watch(pagedTaskVideoSignature, () => {
-  cardVideoReadyKeys.value = new Set();
-});
+watch(
+  () => tasks.value.map((task) => taskVideoKey(task)).join('|'),
+  () => {
+    const currentKeys = new Set(tasks.value.map((task) => taskVideoKey(task)));
+    cardVideoReadyKeys.value = new Set(
+      [...cardVideoReadyKeys.value].filter((key) => currentKeys.has(key)),
+    );
+    cardVideoPosterUrls.value = new Map(
+      [...cardVideoPosterUrls.value].filter(([key]) => currentKeys.has(key)),
+    );
+    requestedTaskVideoKeys.value = new Set(
+      [...requestedTaskVideoKeys.value].filter((key) => currentKeys.has(key)),
+    );
+  },
+);
 
 const statusMeta = (status: EffectSegmentRenderStatus): { label: string; tone: string } =>
   ({
@@ -1178,14 +1230,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="segment-heading__actions">
-          <label class="product-switcher">
-            <span>当前商品</span>
-            <select v-model="currentProductId" :disabled="operation !== null">
-              <option v-for="product in activeProducts" :key="product.id" :value="product.id">
-                {{ product.name || '未命名产品' }}
-              </option>
-            </select>
-          </label>
           <button
             class="secondary-button"
             type="button"
@@ -1421,8 +1465,15 @@ onBeforeUnmount(() => {
                   selectionMode ? toggleTaskSelection(task.id) : openPreview(task, $event)
                 "
               >
+                <img
+                  v-if="taskVideoPosterUrl(task)"
+                  class="material-preview-video is-ready"
+                  :src="taskVideoPosterUrl(task)"
+                  alt=""
+                  aria-hidden="true"
+                />
                 <video
-                  v-if="taskVideoUrl(task) && shouldLoadTaskVideo(task)"
+                  v-else-if="taskVideoUrl(task) && shouldLoadTaskVideo(task)"
                   :key="taskVideoKey(task)"
                   class="material-preview-video"
                   :class="{ 'is-ready': isTaskVideoReady(task) }"
@@ -1431,19 +1482,15 @@ onBeforeUnmount(() => {
                   playsinline
                   preload="metadata"
                   aria-hidden="true"
-                  @loadedmetadata="revealVideoPosterFrame"
-                  @seeked="markTaskVideoReady(task)"
+                  @loadedmetadata="revealVideoPosterFrame(task, $event)"
+                  @loadeddata="captureTaskVideoPoster(task, $event)"
+                  @seeked="captureTaskVideoPoster(task, $event)"
                 />
                 <span class="material-status-pill" :class="statusMeta(task.status).tone">
                   {{ statusMeta(task.status).label }}
                 </span>
                 <LoaderCircle
-                  v-if="
-                    isEffectSegmentRenderBusy(task.status) ||
-                    (Boolean(taskVideoUrl(task)) &&
-                      shouldLoadTaskVideo(task) &&
-                      !isTaskVideoReady(task))
-                  "
+                  v-if="isEffectSegmentRenderBusy(task.status)"
                   class="spin"
                   :size="25"
                 />
@@ -1696,6 +1743,12 @@ onBeforeUnmount(() => {
             </span>
             <span class="origin-tag ai preview-origin-tag">AI 生成</span>
           </div>
+          <EffectSegmentRenderSourcePrompt
+            :details="previewTaskDetails"
+            :prompt-text="previewTask.promptText"
+            compact
+            heading="来源 Prompt"
+          />
           <p class="dialog-note">
             {{
               previewVariant === 'REPAIR'
@@ -1824,20 +1877,10 @@ onBeforeUnmount(() => {
             </span>
             <em>来源 Prompt</em>
           </div>
-          <pre class="source-prompt-content">{{ promptTask.promptText }}</pre>
-          <details v-if="promptTaskDetails" class="source-prompt-detail">
-            <summary>查看创意方向</summary>
-            <p class="prompt-creative-core">{{ promptTaskDetails.creativeCore }}</p>
-          </details>
-          <details v-if="promptTaskDetails" class="source-prompt-detail">
-            <summary>查看六维创意信息</summary>
-            <div class="prompt-source-dimensions">
-              <span v-for="dimension in EFFECT_PROMPT_DIMENSIONS" :key="dimension.key">
-                <b>{{ dimension.label }}</b>
-                {{ promptTaskDetails.dimensions[dimension.key] }}
-              </span>
-            </div>
-          </details>
+          <EffectSegmentRenderSourcePrompt
+            :details="promptTaskDetails"
+            :prompt-text="promptTask.promptText"
+          />
           <footer><button type="button" @click="closeAllDialogs(true)">关闭</button></footer>
         </section>
       </div>
@@ -2237,24 +2280,6 @@ select:disabled {
   color: #506078;
   font-size: 11px;
   font-weight: 700;
-}
-.product-switcher {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  color: #596278;
-  font-size: 13px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-.product-switcher select {
-  width: 178px;
-  height: 40px;
-  padding: 0 34px 0 13px;
-  color: #42526a;
-  background: #fff;
-  border: 1px solid #dbe4f6;
-  border-radius: 10px;
 }
 .secondary-button {
   min-width: 171px;
@@ -2809,64 +2834,6 @@ select:disabled {
   color: #3473d4;
   background: #edf4ff;
 }
-.prompt-dialog pre {
-  max-height: 310px;
-  margin: 12px 0;
-  padding: 14px;
-  overflow: auto;
-  color: #42526a;
-  white-space: pre-wrap;
-  background: #f8fafc;
-  border: 1px solid #e4e9f1;
-  border-radius: 10px;
-  font-family: inherit;
-  font-size: 11px;
-  line-height: 1.75;
-}
-.source-prompt-detail {
-  margin: 8px 0 0;
-  color: #78869a;
-  font-size: 9px;
-}
-.source-prompt-detail summary {
-  width: max-content;
-  color: #5577a8;
-  cursor: pointer;
-  user-select: none;
-}
-.source-prompt-detail .prompt-creative-core,
-.source-prompt-detail .prompt-source-dimensions {
-  margin-top: 7px;
-}
-.prompt-creative-core {
-  margin: 0;
-  padding: 8px 10px;
-  color: #253047;
-  background: #f4f8ff;
-  border: 1px solid #cfe0ff;
-  border-radius: 7px;
-  font-size: 10px;
-  line-height: 1.6;
-}
-.prompt-source-dimensions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
-}
-.prompt-source-dimensions > span {
-  padding: 8px 9px;
-  color: #42526a;
-  background: #f4f8ff;
-  border: 1px solid #cfe0ff;
-  border-radius: 7px;
-  font-size: 9px;
-  line-height: 1.55;
-}
-.prompt-source-dimensions b {
-  display: block;
-  margin-bottom: 2px;
-  color: #2f6fed;
-}
 .prompt-dialog > footer {
   display: flex;
   align-items: center;
@@ -3019,14 +2986,9 @@ select:disabled {
     border-radius: 20px;
   }
   .segment-heading__actions,
-  .product-switcher,
-  .product-switcher select,
   .secondary-button,
   .start-render-button {
     width: 100%;
-  }
-  .product-switcher select {
-    flex: 1;
   }
   .segment-stats {
     grid-template-columns: 1fr;
@@ -3956,9 +3918,6 @@ select:disabled {
   }
   .selection-action-bar span {
     width: 100%;
-  }
-  .prompt-source-dimensions {
-    grid-template-columns: 1fr;
   }
   .segment-transfer-drawer {
     padding: 0 14px;
