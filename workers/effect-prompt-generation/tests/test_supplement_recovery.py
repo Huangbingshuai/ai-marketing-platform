@@ -14,7 +14,7 @@ from effect_prompt_generation.models import (
     CreativeDirectionResponse,
     FragmentType,
 )
-from effect_prompt_generation.pipeline import PromptGenerationPipeline
+from historical_planning import HistoricalPlanningPipeline as PromptGenerationPipeline
 from effect_prompt_generation.providers import (
     ArkResponsesProvider,
     MockAiProvider,
@@ -347,6 +347,76 @@ class MixedFailureProvider(MockAiProvider):
         return call
 
 
+class FinalRepairFailureProvider(MixedFailureProvider):
+    async def plan_diversity_supplement_directions(self, *args: Any, **kwargs: Any) -> Any:
+        if len(self.requests) >= 2:
+            self.requests.append(kwargs)
+            raise ProviderError(
+                "response invalid", error_type=ProviderErrorType.RESPONSE_INVALID,
+                retryable=False,
+            )
+        return await super().plan_diversity_supplement_directions(*args, **kwargs)
+
+
+class FinalSalvageReviewFailureProvider(FinalRepairFailureProvider):
+    def __init__(self, outcome: str) -> None:
+        super().__init__()
+        self.outcome = outcome
+
+    async def audit_creative_direction_diversity(self, **kwargs: Any) -> Any:
+        call = await super().audit_creative_direction_diversity(**kwargs)
+        if kwargs.get("proposed_direction_ids") and self.audit_count == 2:
+            if self.outcome == "cancel":
+                raise asyncio.CancelledError
+            if self.outcome == "invalid":
+                raise ProviderError(
+                    "invalid review", error_type=ProviderErrorType.RESPONSE_INVALID,
+                    retryable=False,
+                )
+            return replace(call, value=call.value.model_copy(update={
+                "requires_revision": True,
+                "revision_direction_ids": list(kwargs["proposed_direction_ids"]),
+            }))
+        return call
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["reject", "invalid", "cancel"])
+async def test_final_salvage_still_cannot_bypass_ai_or_cancellation(outcome: str) -> None:
+    provider = FinalSalvageReviewFailureProvider(outcome)
+    pipeline, runtime = await ready_pipeline(provider)
+    cache = pipeline._cache(runtime)
+    original = cache.creative_direction_plan
+    if outcome == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await pipeline._plan_diversity_supplement_directions(
+                runtime, original, requested_candidate_count=8,
+            )
+    else:
+        assert await pipeline._plan_diversity_supplement_directions(
+            runtime, original, requested_candidate_count=8,
+        ) == []
+    assert len(provider.requests) == 4
+    assert cache.creative_direction_plan == original
+    assert cache.diversity_supplement_direction_count == 0
+
+
+@pytest.mark.asyncio
+async def test_last_failed_replacement_still_reviews_retained_directions() -> None:
+    provider = FinalRepairFailureProvider()
+    pipeline, runtime = await ready_pipeline(provider)
+    result = await pipeline._plan_diversity_supplement_directions(
+        runtime, pipeline._cache(runtime).creative_direction_plan,
+        requested_candidate_count=8,
+    )
+    assert [row.direction_id for row in result] == [
+        "DIVERSITY_SUPPLEMENT_2", "DIVERSITY_SUPPLEMENT_3", "DIVERSITY_SUPPLEMENT_4",
+    ]
+    assert len(provider.requests) == 4  # Fifth pass reviews only, never generates.
+    assert provider.audit_count == 2  # Kept subset has independent AI approval.
+    assert pipeline._cache(runtime).diversity_supplement_direction_count == 3
+
+
 @pytest.mark.asyncio
 async def test_structure_recovery_does_not_consume_ai_semantic_revision() -> None:
     provider = MixedFailureProvider()
@@ -474,7 +544,8 @@ async def test_supplement_protocol_is_scoped_and_old_direction_input_is_compact(
     )
     props = schema["$defs"]["CreativeDirection"]["properties"]
     assert props["directionId"]["enum"] == ["DIVERSITY_SUPPLEMENT_4"]
-    assert props["executionRoutes"]["minItems"] == args["execution_route_count"]
+    assert props["executionRoutes"]["minItems"] == 1
+    assert props["executionRoutes"]["maxItems"] == 5
     assert "eventOutline" in schema["$defs"]["CreativeExecutionRoute"]["required"]
     prompt = seen["input"][0]["content"][0]["text"]
     old_section = prompt.split("现有方向摘要", 1)[1].split("当前拥挤场景", 1)[0]

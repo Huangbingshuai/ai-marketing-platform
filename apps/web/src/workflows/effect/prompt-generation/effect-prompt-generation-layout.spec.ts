@@ -11,6 +11,13 @@ describe('effect prompt generation current layout', () => {
     expect(viteConfigSource).toContain("exclude: ['@ai-marketing/contracts']");
   });
 
+  it('uses the only active product without rendering a product selector', () => {
+    expect(pageSource).not.toContain('class="product-switcher"');
+    expect(pageSource).not.toContain('<span>当前商品</span>');
+    expect(pageSource).not.toContain('<select v-model="currentProductId">');
+    expect(pageSource).toContain('class="secondary-button workflow-graph-trigger"');
+  });
+
   it('only exposes total count and one shared duration as batch settings', () => {
     expect(pageSource).toContain('<h3>批次设置</h3>');
     expect(pageSource).not.toContain('仅以下参数可调');

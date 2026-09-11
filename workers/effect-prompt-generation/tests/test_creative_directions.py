@@ -40,12 +40,12 @@ from effect_prompt_generation.models import (
     StrategyCheckpoint,
 )
 from effect_prompt_generation.pipeline import (
-    PromptGenerationPipeline,
     _creative_task_chunks,
     _creative_direction_planning_batches,
     _silent_material_planning_inputs,
     _visually_required_business_fact_ids,
 )
+from historical_planning import HistoricalPlanningPipeline as PromptGenerationPipeline
 from effect_prompt_generation.providers import (
     CREATIVE_DIRECTION_TEMPLATE_HASH,
     MockAiProvider,

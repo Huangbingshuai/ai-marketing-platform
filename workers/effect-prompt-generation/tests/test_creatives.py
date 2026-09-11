@@ -500,7 +500,7 @@ class DirectionStageTrackingProvider(MockAiProvider):
         self.api = api
         self.saw_running_stage_before_call = False
 
-    async def plan_creative_directions(self, *args: Any, **kwargs: Any) -> Any:
+    async def plan_materials(self, *args: Any, **kwargs: Any) -> Any:
         stage = next(
             (
                 item
@@ -512,10 +512,9 @@ class DirectionStageTrackingProvider(MockAiProvider):
         self.saw_running_stage_before_call = (
             stage is not None
             and stage.status.value == "RUNNING"
-            and "正在规划" in stage.summary
-            and "创意方向" in stage.summary
+            and stage.metadata["perceptionPhase"] == "MATERIAL_TASK_PLANNING"
         )
-        return await super().plan_creative_directions(*args, **kwargs)
+        return await super().plan_materials(*args, **kwargs)
 
 
 class OneClassificationFailureProvider(MockAiProvider):
@@ -645,7 +644,7 @@ def _runtime() -> RuntimeContext:
 
 
 @pytest.mark.asyncio
-async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
+async def test_graph_generates_exact_fact_tasks_then_selects_exact_count() -> None:
     api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -663,8 +662,8 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
 
     assert result["prompt_result_id"] == "prompt-result-current"
     assert api.result is not None
-    assert api.result.metrics.candidate_target_count == 14
-    assert api.result.metrics.generated_candidate_count == 16
+    assert api.result.metrics.candidate_target_count == 10
+    assert api.result.metrics.generated_candidate_count == 10
     assert len(api.result.items) == 10
     assert all(item.creative_core for item in api.result.items)
     assert api.result.quality_status == "PASS", [
@@ -716,8 +715,8 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
         for binding in item.insight_bindings
     )
     assert Counter(item.phase.value for item in api.shards.values()) == {
-        "CREATIVE": 5,
-        "CLASSIFICATION": 6,
+        "CREATIVE": 3,
+        "CLASSIFICATION": 4,
     }
 
     creative_tasks = [
@@ -726,9 +725,9 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
         if shard.phase.value == "CREATIVE"
         for task in shard.creative_plan
     ]
-    assert len(creative_tasks) == 16
-    assert sum(task.supplement_kind == "INITIAL" for task in creative_tasks) == 14
-    assert sum(task.supplement_kind == "DIVERSITY" for task in creative_tasks) == 2
+    assert len(creative_tasks) == 10
+    assert sum(task.supplement_kind == "INITIAL" for task in creative_tasks) == 10
+    assert sum(task.supplement_kind == "DIVERSITY" for task in creative_tasks) == 0
     assert all(task.fact_assignment is not None for task in creative_tasks)
     assert all(
         1 <= len(task.fact_assignment.fact_ids) <= 4
@@ -778,10 +777,10 @@ async def test_graph_generates_140_percent_then_selects_exact_count() -> None:
     assert "无口播广告素材" in shared_stage.metadata["compiledContent"]
     assert "人物讲话" in shared_stage.metadata["compiledContent"]
     assert creative_stage.status == "SUCCEEDED"
-    assert creative_stage.metadata["candidateCount"] == 16
-    assert creative_stage.metadata["factSelectionMode"] == "DIRECTION_FACT_APPLICATIONS"
+    assert creative_stage.metadata["candidateCount"] == 10
+    assert creative_stage.metadata["factSelectionMode"] == "MATERIAL_TASKS"
     assert classification_stage.status == "SUCCEEDED"
-    assert classification_stage.metadata["evaluatedCount"] == 16
+    assert classification_stage.metadata["evaluatedCount"] == 10
     assert classification_stage.metadata["averageScores"]["productRelevance"] >= 0
     semantic_audit = result_stage.metadata["semanticAudit"]
     assert semantic_audit["schemaVersion"] == 1
@@ -833,7 +832,7 @@ async def test_truncated_multi_candidate_shard_splits_without_failing_the_run() 
     assert api.result is not None
     assert len(api.result.items) == 10
     assert 4 in provider.batch_sizes
-    assert provider.batch_sizes.count(2) >= 6
+    assert provider.batch_sizes.count(2) == 5
 
 
 @pytest.mark.asyncio
@@ -854,8 +853,9 @@ async def test_invalid_creative_shard_does_not_fail_paid_batch() -> None:
         context=runtime,
     )
 
-    # Two attempts at sizes 3, 2 and 1; failed first halves never launch siblings.
-    assert provider.invalid_calls == 6
+    # Two attempts at each recovery node: 3, 2, 1, 1, 1. A permanently
+    # invalid item must not prevent the remaining sibling tasks being attempted.
+    assert provider.invalid_calls == 14
     assert api.result is not None
     assert len(api.result.items) == 10
     failed_source_shard = api.shards["CREATIVE:0:0"]
@@ -897,7 +897,7 @@ async def test_visual_strategy_graph_compiles_direction_fact_plan_before_generat
         for stage in reversed(api.stages)
         if stage.node_id == "COHERENT_CREATIVE_GENERATION"
     )
-    assert creative_stage.metadata["factSelectionMode"] == "DIRECTION_FACT_APPLICATIONS"
+    assert creative_stage.metadata["factSelectionMode"] == "MATERIAL_TASKS"
     assignments = [
         task.fact_assignment
         for shard in api.shards.values()
@@ -1002,12 +1002,9 @@ async def test_reports_creative_direction_stage_before_slow_ai_call() -> None:
         for stage in api.stages
         if stage.node_id.value == "COHERENT_CREATIVE_GENERATION"
     ]
-    assert any("产品专属创意空间" in summary for summary in summaries)
-    assert any(
-        "正在复核" in summary and "产品创意空间" in summary for summary in summaries
-    )
-    assert any("创意方向已形成" in summary for summary in summaries)
-    assert any("正在生成候选 Prompt" in summary for summary in summaries)
+    assert any("正在安排卖点素材任务" in summary for summary in summaries)
+    assert any("正在生成六维与Prompt" in summary for summary in summaries)
+    assert not any("创意空间" in summary for summary in summaries)
 
 
 @pytest.mark.asyncio
@@ -1028,9 +1025,9 @@ async def test_retries_one_invalid_classification_response_inside_its_shard() ->
         context=runtime,
     )
 
-    assert provider.calls == 8
+    assert provider.calls == 6
     assert api.result is not None
-    assert api.result.metrics.generated_candidate_count == 16
+    assert api.result.metrics.generated_candidate_count == 10
 
 
 @pytest.mark.asyncio
@@ -1051,19 +1048,19 @@ async def test_splits_truncated_classification_shard_without_failing_batch() -> 
         context=runtime,
     )
 
-    assert provider.batch_calls == 10
+    assert provider.batch_calls == 6
     assert 3 in provider.batch_sizes
     assert 2 in provider.batch_sizes
-    assert provider.single_calls == 16
+    assert provider.single_calls == 10
     assert api.result is not None
-    assert api.result.metrics.generated_candidate_count == 16
+    assert api.result.metrics.generated_candidate_count == 10
     classification_stage = next(
         stage
         for stage in reversed(api.stages)
         if stage.node_id.value == "CREATIVE_EVALUATION_CLASSIFICATION"
     )
-    assert classification_stage.metadata["evaluationCallCount"] == 26
-    assert classification_stage.metadata["splitRecoveryCount"] == 10
+    assert classification_stage.metadata["evaluationCallCount"] == 16
+    assert classification_stage.metadata["splitRecoveryCount"] == 6
 
 
 def test_planned_business_facts_are_evaluated_without_product_snapshot_competing() -> (
@@ -1190,11 +1187,11 @@ async def test_classification_retry_keeps_stable_shard_assignments() -> None:
     classification_shards = [
         shard for shard in api.shards.values() if shard.phase.value == "CLASSIFICATION"
     ]
-    assert {shard.shard_index for shard in classification_shards} == {0, 1, 2, 3, 4}
+    assert {shard.shard_index for shard in classification_shards} == {0, 1, 2, 3}
     assert all(shard.status == "SUCCEEDED" for shard in classification_shards)
-    assert sum(len(shard.evaluations) for shard in classification_shards) == 16
+    assert sum(len(shard.evaluations) for shard in classification_shards) == 10
     assert api.result is not None
-    assert api.result.metrics.generated_candidate_count == 16
+    assert api.result.metrics.generated_candidate_count == 10
 
 
 @pytest.mark.asyncio
@@ -1312,10 +1309,10 @@ async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
 
     assert api.result is not None
     assert len(api.result.items) == 10
-    assert api.result.metrics.generated_candidate_count == 18
+    assert api.result.metrics.generated_candidate_count == 12
     # Structurally identical visible stories share one embedding document even
     # when they came from different compiler-formatted Prompt candidates.
-    assert 0 < embedding_provider.input_count <= 18
+    assert 0 < embedding_provider.input_count <= 12
     final_selection_stage = next(
         stage
         for stage in reversed(api.stages)
@@ -1323,7 +1320,7 @@ async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
     )
     assert final_selection_stage.metadata["diversitySupplementAttempted"] is True
     assert final_selection_stage.metadata["diversitySupplementTriggered"] is True
-    assert final_selection_stage.metadata["diversitySupplementCount"] == 4
+    assert final_selection_stage.metadata["diversitySupplementCount"] == 2
     assert final_selection_stage.metadata["embeddingInputCount"] == (
         embedding_provider.input_count
     )
@@ -1332,7 +1329,7 @@ async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
     assert final_selection_stage.metadata["mmrDiversityWeight"] == 0.40
     assert final_selection_stage.metadata["adaptiveMmrApplied"] is True
     assert final_selection_stage.metadata["adaptiveMmrTier"] == "HIGH"
-    assert final_selection_stage.metadata["diversitySupplementDirectionCount"] == 2
+    assert final_selection_stage.metadata["diversitySupplementDirectionCount"] == 0
     assert final_selection_stage.metadata["diversitySupplementImproved"] is False
     assert final_selection_stage.metadata["finalAccurateCount"] == 10
     assert final_selection_stage.warnings == [
@@ -1346,25 +1343,10 @@ async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
         for task in shard.creative_plan
         if task.supplement_kind == "DIVERSITY"
     ]
-    assert len(diversity_tasks) == 4
+    assert len(diversity_tasks) == 2
     assert {task.round for task in diversity_tasks} == {1}
-    assert {
-        task.creative_direction.direction_id
-        for task in diversity_tasks
-        if task.creative_direction is not None
-    } == {"DIVERSITY_SUPPLEMENT_1", "DIVERSITY_SUPPLEMENT_2"}
-    assert {task.sibling_variant_total for task in diversity_tasks} == {2}
-    assert all(task.execution_route is not None for task in diversity_tasks)
-    assert (
-        len(
-            {
-                task.execution_route.route_id
-                for task in diversity_tasks
-                if task.execution_route is not None
-            }
-        )
-        == 2
-    )
+    assert all(task.material_brief is not None for task in diversity_tasks)
+    assert all(task.creative_direction is None and task.execution_route is None for task in diversity_tasks)
 
     resumed = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -1378,12 +1360,14 @@ async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
     restored_cache = resumed._cache(runtime)
     assert restored_cache.diversity_supplement_attempted is True
     assert restored_cache.diversity_supplemented is True
-    assert restored_cache.diversity_supplement_count == 4
+    assert restored_cache.diversity_supplement_count == 2
     assert restored_cache.replenishment_rounds == 0
 
 
 @pytest.mark.asyncio
 async def test_rejected_diversity_directions_are_not_reported_as_generated() -> None:
+    from historical_planning import HistoricalPlanningPipeline
+
     api = PromptApi()
 
     class ObservedProvider(RejectingDiversitySupplementProvider):
@@ -1397,7 +1381,7 @@ async def test_rejected_diversity_directions_are_not_reported_as_generated() -> 
             assert stage.metadata["missingCount"] == 0
             return await super().plan_diversity_supplement_directions(*args, **kwargs)
 
-    pipeline = PromptGenerationPipeline(
+    pipeline = HistoricalPlanningPipeline(
         api=api,  # type: ignore[arg-type]
         provider=ObservedProvider(),
         embedding_provider=IdenticalEmbeddingProvider(),
@@ -1804,7 +1788,7 @@ async def test_item_regenerate_rebuilds_full_creative_with_requested_duration() 
 
 
 @pytest.mark.asyncio
-async def test_does_not_replenish_when_initial_selection_already_covers_facts() -> None:
+async def test_quantity_supplement_only_replaces_rejected_initial_tasks() -> None:
     api = PromptApi()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
@@ -1823,25 +1807,25 @@ async def test_does_not_replenish_when_initial_selection_already_covers_facts() 
     assert api.result is not None
     assert api.result.quality_status == "PASS"
     assert len(api.result.items) == 10
-    assert api.result.metrics.candidate_target_count == 14
-    assert api.result.metrics.generated_candidate_count == 18
-    assert api.result.metrics.replenishment_rounds == 0
+    assert api.result.metrics.candidate_target_count == 10
+    assert api.result.metrics.generated_candidate_count == 13
+    assert api.result.metrics.replenishment_rounds == 1
     assert api.result.metrics.rejected_count > 0
     assert api.result.metrics.hard_issue_counts == []
     assert Counter(item.phase.value for item in api.shards.values()) == {
-        "CREATIVE": 5,
-        "CLASSIFICATION": 7,
+        "CREATIVE": 4,
+        "CLASSIFICATION": 5,
     }
     selection_stage = next(
         stage
         for stage in reversed(api.stages)
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
-    assert selection_stage.metadata["initialCandidateCount"] == 14
-    assert selection_stage.metadata["cumulativeCandidateCount"] == 18
-    assert selection_stage.metadata["safeCandidateCount"] == 15
+    assert selection_stage.metadata["initialCandidateCount"] == 10
+    assert selection_stage.metadata["cumulativeCandidateCount"] == 13
+    assert selection_stage.metadata["safeCandidateCount"] == 10
     assert selection_stage.metadata["selectedCandidateCount"] == 10
-    assert selection_stage.metadata["quantitySupplementTriggered"] is False
+    assert selection_stage.metadata["quantitySupplementTriggered"] is True
     assert selection_stage.metadata["coverageSupplementTriggered"] is False
 
 
@@ -1867,7 +1851,7 @@ async def test_unresolved_fact_coverage_supplements_once_then_keeps_exact_draft(
     assert api.result is not None
     assert len(api.result.items) == 10
     assert api.result.quality_status == "NEEDS_REVIEW"
-    assert api.result.metrics.generated_candidate_count >= 16
+    assert api.result.metrics.generated_candidate_count == 12
     assert api.result.metrics.insight_coverage.missing
     assert api.result.metrics.replenishment_rounds == 1
     creative_tasks = [
@@ -1890,8 +1874,8 @@ async def test_unresolved_fact_coverage_supplements_once_then_keeps_exact_draft(
     assert selection_stage.metadata["coverageSupplementTriggered"] is True
     assert selection_stage.metadata["coverageSupplementCount"] == 2
     assert selection_stage.metadata["coverageNeedsReview"] is True
-    assert selection_stage.metadata["initialCandidateCount"] == 14
-    assert selection_stage.metadata["cumulativeCandidateCount"] >= 16
+    assert selection_stage.metadata["initialCandidateCount"] == 10
+    assert selection_stage.metadata["cumulativeCandidateCount"] == 12
     assert "REQUIRED_FACT_COVERAGE_NEEDS_REVIEW" in selection_stage.warnings
     result_stage = next(
         stage for stage in reversed(api.stages) if stage.node_id.value == "RESULT_SAVE"
@@ -1941,8 +1925,8 @@ async def test_candidate_ceiling_stops_repeated_low_quality_supplements() -> Non
 
     assert api.result is None
     assert Counter(item.phase.value for item in api.shards.values()) == {
-        "CREATIVE": 5,
-        "CLASSIFICATION": 7,
+        "CREATIVE": 6,
+        "CLASSIFICATION": 8,
     }
     supplement_tasks = [
         task

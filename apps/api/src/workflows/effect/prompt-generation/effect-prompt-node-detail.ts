@@ -1019,6 +1019,7 @@ const nodeMetricFields = (nodeId: string, rawMetadata: unknown): EffectPromptNod
           (
             {
               CREATIVE_SPACE_PLANNING: '规划产品创意空间',
+              MATERIAL_TASK_PLANNING: '安排卖点素材任务',
               CREATIVE_SPACE_REVIEW: '复核产品创意空间',
               CREATIVE_DIRECTION_PLANNING: '规划批次创意方向',
               CREATIVE_DIRECTION_REVIEW: '复核创意关系',
@@ -1028,6 +1029,8 @@ const nodeMetricFields = (nodeId: string, rawMetadata: unknown): EffectPromptNod
           )[typeof metadata.perceptionPhase === 'string' ? metadata.perceptionPhase : ''],
         ),
         numberField(metadata, 'targetCount', '目标创意'),
+        numberField(metadata, 'materialTaskCount', '卖点素材任务'),
+        numberField(metadata, 'referenceImageCount', '生成参考商品图片'),
         numberField(metadata, 'territoryCount', '产品创意空间'),
         numberField(metadata, 'directionCount', '创意方向'),
         numberField(metadata, 'candidateTargetCount', '候选目标'),
@@ -1041,7 +1044,10 @@ const nodeMetricFields = (nodeId: string, rawMetadata: unknown): EffectPromptNod
           metadata.semanticReviewPassed === true
             ? '已通过'
             : metadata.semanticReviewPassed === false
-              ? '待通过'
+              ? metadata.perceptionPhase === 'CANDIDATE_GENERATION' ||
+                metadata.perceptionPhase === 'CANDIDATE_GENERATION_COMPLETE'
+                ? '已复核，仍有优化提醒'
+                : '待通过'
               : null,
         ),
       ]);
@@ -1830,6 +1836,39 @@ const textContentBlock = (
     : null;
 };
 
+const materialTaskBlocks = (
+  run: EffectPromptNodeDetailRunRecord,
+  metadata: Record<string, unknown>,
+): EffectPromptNodeDetailBlock[] => {
+  const checkpoint = isRecord(metadata.checkpoint) ? metadata.checkpoint : {};
+  const plan = isRecord(checkpoint.plan) ? checkpoint.plan : {};
+  const tasks = (Array.isArray(plan.rounds) ? plan.rounds : []).flatMap((round) =>
+    isRecord(round) && Array.isArray(round.tasks) ? round.tasks.filter(isRecord) : [],
+  );
+  const lookup = factValueLookup(run);
+  const visible = tasks.slice(0, EFFECT_PROMPT_NODE_DETAIL_LIMITS.maxSamples);
+  return [
+    ...visible.map((task, index) =>
+      textContentBlock(
+        `素材任务 ${String(index + 1).padStart(2, '0')}`,
+        [publicText(task.visualEvent, 1000), publicText(task.difference, 500)]
+          .filter(Boolean)
+          .join('\n'),
+        (Array.isArray(task.factIds) ? task.factIds : [])
+          .filter((id): id is string => typeof id === 'string')
+          .map((id) => displayFact(lookup, id)),
+      ),
+    ),
+    tasks.length
+      ? textContentBlock(
+          '任务展示范围',
+          `共 ${tasks.length} 条，其余 ${tasks.length - visible.length} 条未展开`,
+          [],
+        )
+      : null,
+  ].filter((block): block is EffectPromptNodeDetailBlock => block !== null);
+};
+
 const averageQualityScores = (rows: EvaluationRow[]): EffectPromptQualityScores | null => {
   if (!rows.length) return null;
   const total = rows.reduce(
@@ -2113,6 +2152,7 @@ const outputBlocks = (
     blocks.push(textContentBlock('最终共用提示词', prompt.compiledContent, sectionLabels));
   } else if (nodeId === 'COHERENT_CREATIVE_GENERATION') {
     blocks.push(
+      ...materialTaskBlocks(run, metadata),
       creativePlanBlock(metadata),
       creativeSampleBlock('真实创意候选样例', samples, samples.length),
     );
@@ -2209,8 +2249,15 @@ const inputSections = (
         {
           label: '可用事实',
           value: Object.entries(normalizeEffectExtractionResult(insight)).reduce(
-            (count, [key, value]) => count + (key === 'sellingPoints'
-              ? (value as string[]).length : typeof value === 'string' && value.trim() ? 1 : 0), 0),
+            (count, [key, value]) =>
+              count +
+              (key === 'sellingPoints'
+                ? (value as string[]).length
+                : typeof value === 'string' && value.trim()
+                  ? 1
+                  : 0),
+            0,
+          ),
         },
       ],
       blocks: actualBlocks(run, 'INSIGHT_MAPPING'),

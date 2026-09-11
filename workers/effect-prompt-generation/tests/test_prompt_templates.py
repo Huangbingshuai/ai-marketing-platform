@@ -14,6 +14,8 @@ from effect_prompt_generation.prompt_loader import (
 from effect_prompt_generation.providers import _visual_style_baseline_section
 
 ACTIVE_PROMPT_FILES = {
+    "material_creative.user.prompt.txt",
+    "material_planning.system.prompt.txt",
     "creative_execution.system.prompt.txt",
     "execution_repair.system.prompt.txt",
     "creative_base.system.prompt.txt",
@@ -135,7 +137,8 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert len(load_prompt_hash("evaluation_base.system.prompt.txt")) == 64
     assert "厂商无关" in creative
     assert "一次性生成同一创意下的 creativeCore、六维信息和结构化 shotPlan" in creative
-    assert "declaredFactIds 必须完整返回" in creative
+    assert "原样复制当前任务给出的 declaredFactIds 数组" in creative
+    assert "哪些事实最终实现由后续独立评估判断" in creative
     assert "productSnapshot" in creative
     assert "factApplications" in creative
     assert "productRelation" in creative

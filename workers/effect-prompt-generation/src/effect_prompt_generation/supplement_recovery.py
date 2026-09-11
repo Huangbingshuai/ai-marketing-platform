@@ -62,7 +62,7 @@ def retain_valid_supplements(
     strategy: FactVisualStrategy,
     landscape: CreativeDiversityLandscape,
     existing: Sequence[CreativeDirection],
-    route_count: int,
+    route_count: int | None,
 ) -> dict[str, str]:
     """Keep valid slots; never change a fact, territory, action or creative text."""
     counts = Counter(d.direction_id for d in response.directions)
@@ -73,6 +73,9 @@ def retain_valid_supplements(
             continue  # unrequested output cannot overwrite a retained direction
         if counts[key] != 1:
             errors[key] = "DUPLICATE_DIRECTION_ID"
+            continue
+        if not direction.execution_routes:
+            errors[key] = "MISSING_EVENT_ROUTES"
             continue
         try:
             validate_diversity_supplement_directions(

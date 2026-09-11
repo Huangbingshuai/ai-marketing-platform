@@ -1563,7 +1563,7 @@ const graphDescription = (nodeId: EffectPromptNodeId): string =>
     FACT_VISUAL_STRATEGY_COMPILATION:
       '判断哪些事实可以成为画面任务，哪些只作为商业背景或禁止视觉证明',
     SHARED_PROMPT_COMPILATION: '编译本批次生成与渲染共同使用的提示词',
-    COHERENT_CREATIVE_GENERATION: '先形成产品创意空间及其方向，再生成完整六维创意与干净正文',
+    COHERENT_CREATIVE_GENERATION: '先按已确认卖点安排素材任务，再生成连贯六维创意与干净正文',
     CREATIVE_EVALUATION_CLASSIFICATION: '评估产品关联和创意质量，并标注推荐用途与兼容用途',
     EXACT_SELECTION_AND_SUPPLEMENT: '按质量与差异择优，缺少时只补充仍需的数量',
     ITEM_EVALUATE: '根据用户 Prompt 自动生成创意主线与六维信息',
@@ -2008,14 +2008,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="effect-prompt-heading__actions">
-          <label class="product-switcher">
-            <span>当前商品</span>
-            <select v-model="currentProductId">
-              <option v-for="product in activeProducts" :key="product.id" :value="product.id">
-                {{ product.name || '未命名产品' }}
-              </option>
-            </select>
-          </label>
           <button
             ref="graphTrigger"
             class="secondary-button workflow-graph-trigger"
@@ -3569,24 +3561,6 @@ button:disabled {
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
-}
-.product-switcher {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  color: #596278;
-  font-size: 13px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-.product-switcher select {
-  width: 230px;
-  height: 40px;
-  padding: 0 34px 0 13px;
-  color: #42526a;
-  background: #fff;
-  border: 1px solid #dbe4f6;
-  border-radius: 10px;
 }
 .effect-prompt-heading__actions .secondary-button {
   min-width: 139px;
@@ -6481,14 +6455,9 @@ button:disabled {
     border-radius: 20px;
   }
   .effect-prompt-heading__actions,
-  .product-switcher,
-  .product-switcher select,
   .secondary-button,
   .heading-generate-button {
     width: 100%;
-  }
-  .product-switcher select {
-    flex: 1;
   }
   .effect-prompt-settings,
   .simple-setting-grid {

@@ -95,6 +95,9 @@ class WorkerSettings(BaseSettings):
     ark_prompt_visual_strategy_image_detail: Literal["low", "high"] = Field(
         default="high", alias="ARK_PROMPT_VISUAL_STRATEGY_IMAGE_DETAIL"
     )
+    prompt_candidate_product_images: bool = Field(
+        default=True, alias="PROMPT_CANDIDATE_PRODUCT_IMAGES"
+    )
     prompt_visual_reference_max_input_bytes: int = Field(
         default=20 * 1024 * 1024,
         alias="PROMPT_VISUAL_REFERENCE_MAX_INPUT_BYTES",

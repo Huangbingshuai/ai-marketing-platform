@@ -61,11 +61,8 @@ def validate_creative_evaluation(
     del target_duration_seconds
     if evaluation.slot_id != candidate.slot_id:
         raise ValueError("creative evaluation changed slotId")
-    declared = set(candidate.declared_fact_ids)
-    contextual = {
-        fact_id for fact_id in contextual_fact_ids if fact_id in application.by_id
-    }
-    allowed_evidence = declared | contextual
+    del contextual_fact_ids
+    allowed_evidence = {fact.fact_id for fact in application.usable}
     valid_evidence = [
         evidence
         for evidence in evaluation.fact_evidence
@@ -94,7 +91,7 @@ def validate_creative_evaluation(
         *[issue for issue in evaluation.hard_issues if issue not in _AI_HARD_ISSUES],
     ]
     if unknown_evidence:
-        warnings.append("UNKNOWN_OR_UNDECLARED_FACT")
+        warnings.append("UNKNOWN_FACT")
     if (
         "ABSTRACT_FACT_VISUAL_PROOF" in evaluation.hard_issues
         and not valid_visual_proof_findings

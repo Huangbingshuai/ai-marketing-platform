@@ -1437,6 +1437,7 @@ def allocate_creative_directions(
     preferred_direction_ids: Sequence[str] = (),
     avoid_scene_families: Iterable[str] = (),
     avoid_action_families: Iterable[str] = (),
+    respect_route_capacity: bool = False,
 ) -> list[CreativeDirection]:
     if count <= 0:
         return []
@@ -1464,7 +1465,16 @@ def allocate_creative_directions(
     buckets = list(grouped)
     bucket_start = max(0, ordinal_start - 1) % len(buckets)
     buckets = [*buckets[bucket_start:], *buckets[:bucket_start]]
-    direction_cap = math.ceil(count / len(directions))
+    # Current initial/diversity pools consume each AI-authored event at most
+    # once. Historical callers and explicit quantity recovery retain the old
+    # count-first allocation. No route text is interpreted here.
+    direction_caps = {
+        row.direction_id: (len(row.execution_routes) if respect_route_capacity
+                           else math.ceil(count / len(directions)))
+        for row in directions
+    }
+    if respect_route_capacity:
+        count = min(count, sum(direction_caps.values()))
     direction_counts: Counter[str] = Counter()
     bucket_counts: Counter[tuple[str, str]] = Counter()
     bucket_offsets: Counter[tuple[str, str]] = Counter()
@@ -1475,7 +1485,7 @@ def allocate_creative_directions(
             bucket
             for bucket in buckets
             if any(
-                direction_counts[row.direction_id] < direction_cap
+                direction_counts[row.direction_id] < direction_caps[row.direction_id]
                 for row in grouped[bucket]
             )
         ]
@@ -1496,7 +1506,7 @@ def allocate_creative_directions(
         cursor = (buckets.index(bucket) + 1) % len(buckets)
         rows = grouped[bucket]
         eligible_rows = [
-            row for row in rows if direction_counts[row.direction_id] < direction_cap
+            row for row in rows if direction_counts[row.direction_id] < direction_caps[row.direction_id]
         ]
         minimum_direction_load = min(
             direction_counts[row.direction_id] for row in eligible_rows
