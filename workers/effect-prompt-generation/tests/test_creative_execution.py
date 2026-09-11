@@ -174,6 +174,12 @@ def test_execution_template_handles_causes_without_keyword_worker_rules() -> Non
     assert "decision=KEEP" in template
     assert "只修改这些字段" in template
     assert "不理解语义" in template
+    assert "不要找到第一处问题就停止" in template
+    assert "从头到尾复读一次完整片段" in template
+    assert "真实时间" in template
+    assert "评分前最后一个改写者" in template
+    assert "/dimensions" in template
+    assert "无图仍可" in template
 
 
 @pytest.mark.asyncio
@@ -242,6 +248,33 @@ async def test_linked_edits_and_optional_null_preserve_all_unmentioned_fields() 
     expected["shotPlan"]["beats"][0]["sound"] = None
     expected["content"] = result.content
     assert result.model_dump(mode="json", by_alias=True) == expected
+
+
+@pytest.mark.asyncio
+async def test_linked_camera_and_terminal_edits_apply_across_entire_clip() -> None:
+    mock = MockAiProvider()
+    pipeline, runtime = await ready_pipeline(mock)
+    shard = (await pipeline.plan_creatives(runtime, round_number=0))[0]
+    original = (await mock.generate_creatives(shard, application=pipeline._require_application(runtime),
+        shared_prompt=pipeline._required_shared_prompt(runtime))).value.items[0]
+    assert original.shot_plan is not None
+    beats = original.shot_plan.beats
+    replacements = [
+        {"path": f"/shotPlan/beats/{index}/camera", "value": f"模型提供的第 {index + 1} 段观察方案"}
+        for index in range(len(beats))
+    ] + [{"path": "/shotPlan/finalFrame", "value": "模型提供的连贯终态"}]
+    edit = ExecutionEditDecision.model_validate({"slotId": original.slot_id, "decision": "REPAIR",
+        "conflicts": [{"paths": [r["path"] for r in replacements], "reason": "opaque model finding"}],
+        "replacements": replacements})
+    revised = apply_execution_edits(original, edit, duration_seconds=15)
+    assert revised.shot_plan is not None
+    for index, beat in enumerate(revised.shot_plan.beats):
+        assert beat.camera == replacements[index]["value"]
+        assert beat.action == beats[index].action
+        assert beat.duration_weight == beats[index].duration_weight
+    assert revised.shot_plan.final_frame == replacements[-1]["value"]
+    assert revised.declared_fact_ids == original.declared_fact_ids
+    assert revised.creative_core == original.creative_core
 
 
 @pytest.mark.asyncio

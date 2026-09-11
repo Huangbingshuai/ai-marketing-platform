@@ -14,6 +14,8 @@ from effect_prompt_generation.prompt_loader import (
 from effect_prompt_generation.providers import _visual_style_baseline_section
 
 ACTIVE_PROMPT_FILES = {
+    "material_creative.user.prompt.txt",
+    "material_planning.system.prompt.txt",
     "creative_execution.system.prompt.txt",
     "execution_repair.system.prompt.txt",
     "creative_base.system.prompt.txt",
@@ -125,6 +127,42 @@ def test_director_guidance_uses_existing_fields_without_fixed_ad_formula() -> No
     assert "不输出 content" in creative
 
 
+def test_commercial_camera_guidance_is_motivated_and_vendor_independent() -> None:
+    creative = load_prompt("creative_base.system.prompt.txt")
+    task = load_prompt("creative_task.user.prompt.txt")
+    refinement = load_prompt("creative_execution.system.prompt.txt")
+    repair = load_prompt("execution_repair.system.prompt.txt")
+    evaluation = load_prompt("evaluation_base.system.prompt.txt")
+
+    assert "每条只保留一种主导观察策略" in creative
+    assert "看不到新信息就不移动" in creative
+    assert "六维写固定机位时全部节拍保持固定" in creative
+    assert "需要等待加工、固化、充电、干燥、烹制或装配" in creative
+    assert "camera 写清起点、路径速度、主体关系和结束观察位" in creative
+    assert "相机与主体同时复杂运动" in creative
+    assert "镜头不是独立装饰" in task
+    assert "清楚的固定镜头应 KEEP" in refinement
+    assert "结束位置确实看得到 visibleResult" in refinement
+    assert "相机一致性必须逐字段核对" in refinement
+    assert "不能因为被拆成两个节拍就压进目标时长" in refinement
+    assert "为了“高级感”堆叠推进、环绕、变焦与转焦" in refinement
+    assert "相对运动与镜头动机" in repair
+    assert "镜头技巧本身不增加商业价值" in evaluation
+    assert "相机移动没有带来新的商品信息" in evaluation
+    assert "不新增硬淘汰条件" in evaluation
+
+    combined = f"{creative}\n{task}\n{refinement}\n{repair}\n{evaluation}"
+    for forbidden in (
+        "AI-HIVE",
+        "fal-ai",
+        "Seedance 2.0",
+        "9:16",
+        "1080p",
+        "resolution",
+    ):
+        assert forbidden not in combined
+
+
 def test_templates_keep_creative_generation_and_evaluation_independent() -> None:
     creative = load_prompt("creative_base.system.prompt.txt")
     direction = load_prompt("creative_direction.system.prompt.txt")
@@ -135,7 +173,8 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
     assert len(load_prompt_hash("evaluation_base.system.prompt.txt")) == 64
     assert "厂商无关" in creative
     assert "一次性生成同一创意下的 creativeCore、六维信息和结构化 shotPlan" in creative
-    assert "declaredFactIds 必须完整返回" in creative
+    assert "原样复制当前任务给出的 declaredFactIds 数组" in creative
+    assert "哪些事实最终实现由后续独立评估判断" in creative
     assert "productSnapshot" in creative
     assert "factApplications" in creative
     assert "productRelation" in creative

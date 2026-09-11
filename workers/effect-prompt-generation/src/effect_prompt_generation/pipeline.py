@@ -34,6 +34,10 @@ from .embeddings import (
     build_creative_vector_index,
 )
 from .models import (
+    MaterialBatchPlan,
+    MaterialBrief,
+    MaterialPlanRound,
+    CreativeFactAssignment,
     ClassificationShardPlan,
     CountMetric,
     CreativeAverageScores,
@@ -94,6 +98,8 @@ from .providers import (
     ProviderError,
     ProviderErrorType,
 )
+from .material_planning import validate_material_tasks
+from .prompt_loader import load_prompt
 from .product_images import (
     PreparedProductImage,
     ProductImageProcessingError,
@@ -138,7 +144,7 @@ from .supplement_recovery import retain_valid_supplements
 from .supplement_actions import supplement_review_landscape
 from .execution_repair import (
     restore_execution_candidate,
-    apply_execution_patch, candidate_hash, has_execution_diagnosis, repair_improves,
+    apply_execution_rewrite, candidate_hash, has_execution_diagnosis, repair_improves,
 )
 from .visual_strategy import (
     fact_visual_strategy_batches,
@@ -291,6 +297,8 @@ class LoadedRun:
 
 @dataclass(slots=True)
 class RunCache:
+    material_plan: MaterialBatchPlan | None = None
+    prepared_product_images: list[PreparedProductImage] | None = None
     ai_call_count: int = 0
     pending_execution_drafts: dict[str, ShardRecord] = field(default_factory=dict)
     execution_repair_records: dict[str, CreativeEvaluation] = field(default_factory=dict)
@@ -366,6 +374,7 @@ class PromptGenerationPipeline:
         direction_review_batch_size: int = 6,
         direction_review_input_budget: int = 12000,
         product_image_processor: ProductImageProcessor | None = None,
+        candidate_product_images: bool = True,
     ) -> None:
         self.api = api
         self.provider = provider
@@ -389,6 +398,7 @@ class PromptGenerationPipeline:
         self.direction_review_batch_size = direction_review_batch_size
         self.direction_review_input_budget = direction_review_input_budget
         self.product_image_processor = product_image_processor
+        self.candidate_product_images = candidate_product_images
         self._snapshots: dict[str, PromptGenerationSnapshot] = {}
         self._runs: dict[str, RunCache] = {}
         # The worker process is long lived. Sharing the content-addressed vector cache
@@ -573,9 +583,7 @@ class PromptGenerationPipeline:
         if snapshot.operation != "BATCH_GENERATE":
             return {"preflightStatus": "PASSED"}
         settings = _current_settings(snapshot)
-        generated_target = math.ceil(
-            max(0, settings.target_count - len(snapshot.retained_manual_items)) * 1.4
-        )
+        generated_target = max(0, settings.target_count - len(snapshot.retained_manual_items))
         generation_shard_size = _creative_shard_size_for_duration(
             settings.default_duration_seconds,
             configured_max_size=self.shard_size,
@@ -587,13 +595,12 @@ class PromptGenerationPipeline:
             evaluation_duration_max_size(settings.default_duration_seconds),
         )
         evaluation_calls = math.ceil(
-            generated_target / planned_evaluation_shard_size
+            settings.target_count / planned_evaluation_shard_size
         )
-        # The deterministic check reserves a small allowance for visual strategy,
-        # creative-space planning and direction audits. Supplements are protected
-        # later by the same per-run call counter because they depend on real output.
+        # One execution edit per generation shard, plus paged material planning.
+        # Supplements/recovery still use the same per-run call counter.
         strategy_calls = len(fact_visual_strategy_batches(map_insight(snapshot.insight_artifact.result)))
-        minimum_calls = generation_calls + evaluation_calls + 5 + strategy_calls
+        minimum_calls = 2 * generation_calls + evaluation_calls + math.ceil(generated_target / 20) + strategy_calls
         if minimum_calls > self.max_ai_calls_per_run:
             raise PipelineError(
                 "Prompt run configuration cannot fit the initial batch within the AI call budget"
@@ -804,6 +811,9 @@ class PromptGenerationPipeline:
         self,
         context: RuntimeContext,
     ) -> list[PreparedProductImage]:
+        cache = self._cache(context)
+        if cache.prepared_product_images is not None:
+            return cache.prepared_product_images
         references = self.snapshot(context).product_images
         if not references:
             return []
@@ -828,6 +838,7 @@ class PromptGenerationPipeline:
             except ProductImageProcessingError as exc:
                 raise PipelineError(str(exc)) from exc
             prepared.append(image)
+        cache.prepared_product_images = prepared
         return prepared
 
     async def compile_shared_prompt(self, context: RuntimeContext) -> SharedPrompt:
@@ -891,15 +902,9 @@ class PromptGenerationPipeline:
             )
         except ValueError as exc:
             raise PipelineError(str(exc)) from exc
-        expected_execution_route_count = creative_execution_route_target_count(
-            math.ceil(snapshot.settings.target_count * 1.4),
-            expected_direction_count,
-        )
-        validated_execution_route_count = (
-            expected_execution_route_count
-            if self.provider.execution_mode == "ARK"
-            else None
-        )
+        # The AI decides each direction's useful event count (1..5); there is
+        # no equal per-direction quota. The provider wire schema checks shape.
+        validated_execution_route_count = None
         source_hash = creative_direction_source_hash(
             insight_content_hash=snapshot.insight_artifact.content_hash,
             # Any upstream strategy change invalidates this Run checkpoint,
@@ -2430,7 +2435,10 @@ class PromptGenerationPipeline:
         pending_ids = list(required_ids)
         structure_recoveries = 0
         semantic_revisions = 0
-        for attempt in range(4):
+        # Four generation/revision attempts, plus one review-only salvage pass.
+        # The fifth pass cannot generate: only the pending/retained error branch
+        # below enters it after clearing pending_ids. AI must still approve it.
+        for attempt in range(5):
             try:
                 if pending_ids:
                     self._reserve_ai_call(context)
@@ -2460,7 +2468,7 @@ class PromptGenerationPipeline:
                     errors = retain_valid_supplements(
                         direction_call.value, pending_ids=pending_ids, retained=retained,
                         application=application, strategy=visual_strategy, landscape=landscape,
-                        existing=plan.directions, route_count=execution_route_count,
+                        existing=plan.directions, route_count=None,
                     )
                     pending_ids = [key for key in required_ids if key not in retained]
                     if pending_ids:
@@ -2487,7 +2495,7 @@ class PromptGenerationPipeline:
                     landscape=landscape,
                     existing_directions=plan.directions,
                     expected_direction_count=len(required_ids),
-                    expected_execution_route_count=execution_route_count,
+                    expected_execution_route_count=None,
                 )
                 combined = [*plan.directions, *proposed]
                 review_landscape = supplement_review_landscape(landscape, proposed)
@@ -2563,7 +2571,7 @@ class PromptGenerationPipeline:
                         ).strip(),
                     }
                     continue
-                if pending_ids and retained and attempt < 3:
+                if pending_ids and retained and attempt < 4:
                     # A whole provider response can fail after earlier calls
                     # supplied valid slots. Review those slots once instead of
                     # dropping them with the failed response; never retry an
@@ -2614,6 +2622,20 @@ class PromptGenerationPipeline:
 
     def _creative_direction_metadata(self, context: RuntimeContext) -> dict[str, Any]:
         cache = self._cache(context)
+        if cache.material_plan is not None:
+            selling_ids = {fact.fact_id for fact in self._require_application(context).usable
+                           if fact.field == InsightField.SELLING_POINT}
+            briefs = [row for entry in cache.material_plan.rounds for row in entry.tasks]
+            planned = {key for row in briefs for key in row.fact_ids}
+            visual = set(_visually_required_business_fact_ids(self._require_application(context), cache.fact_visual_strategy))
+            counts = Counter(key.value for row in briefs for key in row.priority_dimensions)
+            return {"factSelectionMode": "MATERIAL_TASKS", "materialTaskCount": len(briefs),
+                    "referenceImageCount": len(self.snapshot(context).product_images) if self.candidate_product_images else 0,
+                    "availableSellingPointCount": len(selling_ids),
+                    "plannedSellingPointCount": len(selling_ids & planned),
+                    "unplannedSellingPointCount": len((selling_ids & visual) - planned),
+                    "contextSellingPointCount": len(selling_ids - visual),
+                    "priorityDimensionDistribution": [{"dimension": key, "count": count} for key, count in counts.items()]}
         plan = cache.creative_direction_plan
         if plan is None:
             return {
@@ -2659,7 +2681,178 @@ class PromptGenerationPipeline:
             ],
         }
 
+    async def _plan_material_round(
+        self, context: RuntimeContext, *, round_number: int, count: int,
+        coverage_fact_ids: Sequence[str] = (),
+    ) -> list[MaterialBrief]:
+        cache = self._cache(context)
+        snapshot = self.snapshot(context)
+        application = self._require_application(context)
+        template_hash = hashlib.sha256(load_prompt("material_planning.system.prompt.txt").encode()).hexdigest()
+        source_hash = review_hash({
+            "runId": context.run_id, "source": context.source_fingerprint,
+            "insight": snapshot.insight_artifact.content_hash,
+            "settings": snapshot.settings.model_dump(mode="json", by_alias=True),
+            "visualStrategy": self._required_fact_visual_strategy(context).strategy_hash,
+            "shared": self._required_shared_prompt(context).content_hash,
+            "images": [image.sha256 for image in snapshot.product_images],
+            "candidateProductImages": self.candidate_product_images,
+            "template": template_hash,
+        })
+        checkpoint = cache.strategy_checkpoints.get(NodeId.COHERENT_CREATIVE_GENERATION)
+        if cache.material_plan is None:
+            if (checkpoint is not None and isinstance(checkpoint.plan, MaterialBatchPlan)
+                    and checkpoint.source_fingerprint == source_hash
+                    and checkpoint.template_hash == template_hash
+                    and checkpoint.allocation_hash == review_hash(checkpoint.plan.model_dump(mode="json", by_alias=True))):
+                cache.material_plan = checkpoint.plan
+            else:
+                cache.material_plan = MaterialBatchPlan(source_hash=source_hash, template_hash=template_hash)
+        plan = cache.material_plan
+        if plan.source_hash != source_hash:
+            raise PipelineError("素材任务输入已变化，请重新创建批次")
+        request_hash = review_hash({"count": count, "round": round_number, "coverage": sorted(coverage_fact_ids)})
+        current = next((row for row in plan.rounds if row.round == round_number), None)
+        if current is not None and current.request_hash != request_hash:
+            raise PipelineError("素材补充任务与已保存检查点不一致")
+        if current is None:
+            current = MaterialPlanRound(round=round_number, request_hash=request_hash, tasks=[])
+            plan.rounds.append(current)
+        expected_ids = [f"M{round_number}_{index + 1:03d}" for index in range(count)]
+        existing_ids = [row.task_id for row in current.tasks]
+        if existing_ids != expected_ids[:len(existing_ids)]:
+            raise PipelineError("素材任务检查点编号无效")
+        required = list(coverage_fact_ids) or _visually_required_business_fact_ids(application, cache.fact_visual_strategy)
+        retained = {binding.fact_id for item in snapshot.retained_manual_items for binding in item.insight_bindings}
+        # One planning pass, mechanically paged to bound structured output size.
+        # Each call sees all facts and preceding events; no fixed creative quotas.
+        while len(current.tasks) < count:
+            ids = expected_ids[len(current.tasks):len(current.tasks) + 20]
+            existing = [row for entry in plan.rounds for row in entry.tasks]
+            # Assignment in an earlier round does not mean the fact was realized.
+            assigned = {key for row in current.tasks for key in row.fact_ids}
+            if round_number == 0:
+                assigned |= retained
+            repair = {
+                "missingFactIds": list(coverage_fact_ids),
+                "diversityFindings": list(cache.diversity_supplement_reasons),
+                "overusedSceneFamilies": sorted(cache.diversity_avoid_scene_families),
+                "overusedActionFamilies": sorted(cache.diversity_avoid_action_families),
+                "evaluations": [
+                    {"taskId": candidate.slot_id, "creativeCore": candidate.creative_core,
+                     "hardIssues": evaluation.hard_issues, "warnings": evaluation.warnings,
+                     "factEvidence": [item.model_dump(mode="json", by_alias=True) for item in evaluation.fact_evidence]}
+                    for candidate in cache.creatives.values()
+                    if (evaluation := cache.creative_evaluations.get(candidate.slot_id)) is not None
+                ] if round_number else [],
+            }
+            await self._stage(context, NodeId.COHERENT_CREATIVE_GENERATION, StageStatus.RUNNING,
+                              f"正在安排卖点素材任务 {len(current.tasks)}/{count}",
+                              metadata={"perceptionPhase": "MATERIAL_TASK_PLANNING", "materialTaskCount": len(current.tasks), "targetCount": count})
+            for attempt in range(2):
+                self._reserve_ai_call(context)
+                try:
+                    async with self._ai_semaphore:
+                        call = await self.provider.plan_materials(
+                            application, task_ids=ids,
+                            fact_visual_strategy=self._required_fact_visual_strategy(context),
+                            shared_prompt=self._required_shared_prompt(context),
+                            remaining_fact_ids=[key for key in required if key not in assigned],
+                            existing_tasks=existing,
+                            settings={**snapshot.settings.model_dump(mode="json", by_alias=True),
+                                      "remainingTaskCount": count - len(current.tasks),
+                                      "currentPageCount": len(ids)},
+                            repair_context=repair,
+                        )
+                    rows = validate_material_tasks(call.value, application, ids)
+                    break
+                except (ValueError, ProviderError) as exc:
+                    if isinstance(exc, ProviderError) and exc.error_type not in {
+                        ProviderErrorType.RESPONSE_INVALID, ProviderErrorType.OUTPUT_TRUNCATED,
+                        ProviderErrorType.RESPONSE_INCOMPLETE,
+                    }:
+                        raise
+                    if attempt:
+                        raise ProviderError("素材任务安排结构无效", retryable=False,
+                                            error_type=ProviderErrorType.RESPONSE_INVALID) from exc
+            current.tasks.extend(rows)
+            saved = StrategyCheckpoint(node_id=NodeId.COHERENT_CREATIVE_GENERATION,
+                source_fingerprint=source_hash, template_hash=template_hash,
+                allocation_hash=review_hash(plan.model_dump(mode="json", by_alias=True)), plan=plan)
+            cache.strategy_checkpoints[NodeId.COHERENT_CREATIVE_GENERATION] = saved
+            await self._stage(context, NodeId.COHERENT_CREATIVE_GENERATION, StageStatus.RUNNING,
+                f"已安排 {len(current.tasks)}/{count} 条素材任务",
+                metadata={"checkpoint": saved.model_dump(mode="json", by_alias=True),
+                          "perceptionPhase": "MATERIAL_TASK_PLANNING", "materialTaskCount": len(current.tasks),
+                          "targetCount": count, "plannedFactCount": len({key for row in current.tasks for key in row.fact_ids})})
+        return current.tasks
+
     async def plan_creatives(
+        self, context: RuntimeContext, *, round_number: int,
+        missing_count: int | None = None, requested_count: int | None = None,
+        supplement_kind: Literal["QUANTITY", "COVERAGE", "DIVERSITY"] = "QUANTITY",
+        coverage_fact_ids: Sequence[str] = (),
+    ) -> list[CreativeShardPlan]:
+        snapshot = self.snapshot(context)
+        if snapshot.operation != "BATCH_GENERATE":
+            return await self._plan_legacy_item_creatives(context, round_number=round_number,
+                missing_count=missing_count, requested_count=requested_count,
+                supplement_kind=supplement_kind, coverage_fact_ids=coverage_fact_ids)
+        cache = self._cache(context)
+        target = max(0, snapshot.settings.target_count - len(snapshot.retained_manual_items))
+        count = target if round_number == 0 else min(
+            requested_count or missing_count or 0,
+            max(missing_count or 0, math.ceil(target * 0.2)),
+        )
+        if count <= 0 or round_number > 1:
+            return []
+        briefs = await self._plan_material_round(context, round_number=round_number,
+                                               count=count, coverage_fact_ids=coverage_fact_ids)
+        tasks = [CreativeTask(
+            slot_id=f"{context.run_id}:material:{brief.task_id}",
+            ordinal=round_number * snapshot.settings.target_count + index + 1,
+            round=round_number, supplement_kind="INITIAL" if round_number == 0 else supplement_kind,
+            target_duration_seconds=snapshot.settings.default_duration_seconds,
+            fact_assignment=CreativeFactAssignment(fact_ids=brief.fact_ids, assignment_hash=review_hash(brief.fact_ids)),
+            material_brief=brief,
+            coverage_focus_fact_ids=[key for key in brief.fact_ids if key in coverage_fact_ids][:12],
+        ) for index, brief in enumerate(briefs)]
+        cache.creative_tasks.update({row.slot_id: row for row in tasks})
+        cache.creative_target_durations.update({row.slot_id: row.target_duration_seconds for row in tasks})
+        if round_number == 0:
+            cache.candidate_target_count = count
+        else:
+            cache.supplemented = True
+            cache.replenishment_rounds = 1
+            cache.quantity_supplemented = supplement_kind == "QUANTITY"
+            cache.coverage_supplemented = bool(coverage_fact_ids)
+            cache.quantity_supplement_count = count if cache.quantity_supplemented else 0
+            cache.coverage_supplement_count = count if cache.coverage_supplemented else 0
+            cache.diversity_supplemented = supplement_kind == "DIVERSITY"
+            cache.diversity_supplement_attempted = cache.diversity_supplemented
+            cache.diversity_supplement_count = count if cache.diversity_supplemented else 0
+        size = _creative_shard_size_for_duration(snapshot.settings.default_duration_seconds,
+            configured_max_size=self.shard_size, max_output_tokens=self.candidate_max_output_tokens)
+        selected = cache.selected_creatives.selected if cache.selected_creatives else []
+        shards = [CreativeShardPlan(round=round_number, shard_index=index, tasks=chunk,
+            avoid_semantic_signatures=[row.evaluation.semantic_signature for row in selected],
+            avoid_visual_signatures=[row.evaluation.visual_signature for row in selected],
+        ) for index, chunk in enumerate(_creative_task_chunks(tasks, max_size=size))]
+        pending = [row for row in shards if row.key not in cache.completed_creative_shard_keys]
+        # Prepare once before parallel candidate calls; no per-shard downloads.
+        if self.candidate_product_images:
+            await self._prepare_product_images(context)
+        await self._stage(context, NodeId.COHERENT_CREATIVE_GENERATION, StageStatus.RUNNING if pending else StageStatus.SUCCEEDED,
+            "卖点素材任务已安排，正在生成六维与Prompt" if pending else "素材候选已恢复",
+            metadata={"perceptionPhase": "CANDIDATE_GENERATION", "factSelectionMode": "MATERIAL_TASKS",
+                      "round": round_number, "materialTaskCount": count, "candidateTargetCount": count,
+                      "totalShardCount": len(shards), "completedShardCount": len(shards) - len(pending),
+                      "generatedCandidateCount": len(cache.creatives),
+                      "referenceImageCount": len(snapshot.product_images) if self.candidate_product_images else 0,
+                      "plannedFactCount": len({key for row in briefs for key in row.fact_ids})})
+        return pending
+
+    async def _plan_legacy_item_creatives(
         self,
         context: RuntimeContext,
         *,
@@ -2814,6 +3007,10 @@ class PromptGenerationPipeline:
                 # Supplement directions already passed whole-batch AI review.
                 # A shared upper-level family must not discard those new
                 # events and force the remaining routes to repeat instead.
+                respect_route_capacity=(
+                    (round_number == 0 or supplement_kind == "DIVERSITY")
+                    and all(d.execution_routes for d in direction_plan.directions)
+                ),
             )
             if direction_plan is not None
             else []
@@ -2836,6 +3033,10 @@ class PromptGenerationPipeline:
                 for direction in directions
             ]
         if directions:
+            if len(directions) < requested:
+                LOGGER.info("AI event capacity limits candidate pool requested=%s planned=%s round=%s",
+                            requested, len(directions), round_number)
+                requested = len(directions)
             fact_assignments = [
                 assignment_for_direction(
                     direction,
@@ -3098,6 +3299,17 @@ class PromptGenerationPipeline:
                 )
         execution_refinement_started = False
         try:
+            available_drafts = {item.slot_id: item for item in draft_items}
+
+            async def persist_drafts(items: list[CreativeCandidate]) -> None:
+                nonlocal running
+                available_drafts.update({item.slot_id: item for item in items})
+                ordered = [available_drafts[task.slot_id] for task in shard.tasks
+                           if task.slot_id in available_drafts]
+                running = running.model_copy(update={"creative_items": ordered})
+                self._cache(context).pending_execution_drafts[shard.key] = running
+                await self.api.put_shard(context, running)
+
             call_kwargs: dict[str, Any] = {
                 "application": self._require_application(context),
                 "shared_prompt": self._required_shared_prompt(context),
@@ -3107,11 +3319,18 @@ class PromptGenerationPipeline:
                 call_kwargs["fact_visual_strategy"] = (
                     self._required_fact_visual_strategy(context)
                 )
+            if self.candidate_product_images and snapshot.product_images:
+                call_kwargs["product_images"] = await self._prepare_product_images(context)
 
             async def request_candidates(
                 current_shard: CreativeShardPlan,
             ) -> list[CreativeCandidate]:
+                pending_tasks = [task for task in current_shard.tasks
+                                 if task.slot_id not in available_drafts]
                 for invalid_response_attempt in range(2):
+                    if not pending_tasks:
+                        break
+                    current_shard = current_shard.model_copy(update={"tasks": pending_tasks})
                     self._reserve_ai_call(context)
                     try:
                         async with self._ai_semaphore:
@@ -3119,7 +3338,23 @@ class PromptGenerationPipeline:
                                 current_shard,
                                 **call_kwargs,
                             )
-                        return call.value.items
+                        requested_ids = {task.slot_id for task in pending_tasks}
+                        returned_ids = [item.slot_id for item in call.value.items]
+                        if (len(returned_ids) != len(set(returned_ids))
+                                or not set(returned_ids) <= requested_ids):
+                            raise ProviderError("creative response identity mismatch",
+                                                error_type=ProviderErrorType.RESPONSE_INVALID,
+                                                retryable=False)
+                        await persist_drafts(call.value.items)
+                        pending_tasks = [task for task in pending_tasks
+                                         if task.slot_id not in available_drafts]
+                        if not pending_tasks:
+                            break
+                        if invalid_response_attempt == 0:
+                            continue
+                        raise ProviderError("creative response still has missing items",
+                                            error_type=ProviderErrorType.RESPONSE_INVALID,
+                                            retryable=False)
                     except ProviderError as exc:
                         if (
                             exc.error_type == ProviderErrorType.RESPONSE_INVALID
@@ -3133,15 +3368,15 @@ class PromptGenerationPipeline:
                                 ProviderErrorType.RESPONSE_INCOMPLETE,
                                 ProviderErrorType.RESPONSE_INVALID,
                             }
-                            and len(current_shard.tasks) > 1
+                            and len(pending_tasks) > 1
                         ):
-                            midpoint = math.ceil(len(current_shard.tasks) / 2)
+                            midpoint = math.ceil(len(pending_tasks) / 2)
                             split_shards = [
                                 current_shard.model_copy(
-                                    update={"tasks": current_shard.tasks[:midpoint]}
+                                    update={"tasks": pending_tasks[:midpoint]}
                                 ),
                                 current_shard.model_copy(
-                                    update={"tasks": current_shard.tasks[midpoint:]}
+                                    update={"tasks": pending_tasks[midpoint:]}
                                 ),
                             ]
                             LOGGER.warning(
@@ -3151,63 +3386,102 @@ class PromptGenerationPipeline:
                                 current_shard.shard_index,
                                 len(current_shard.tasks),
                             )
-                            # Recovery only: do not start a paid sibling after
-                            # the first half fails. Normal shards stay concurrent.
-                            split_results = []
+                            # Sequential recovery has no orphan calls. Permanent
+                            # row errors are isolated; cancellation/network errors
+                            # still propagate before starting another sibling.
                             for part in split_shards:
-                                split_results.append(await request_candidates(part))
-                            return [
-                                item
-                                for split_result in split_results
-                                for item in split_result
-                            ]
+                                await request_candidates(part)
+                            break
+                        if (snapshot.operation == "BATCH_GENERATE"
+                                and exc.error_type == ProviderErrorType.RESPONSE_INVALID):
+                            LOGGER.warning("creative item recovery exhausted round=%s shard=%s missing=%s",
+                                           shard.round, shard.shard_index, len(pending_tasks))
+                            break
                         raise
-                raise PipelineError("creative generation retry loop exhausted")
+                return [available_drafts[task.slot_id] for task in current_shard.tasks
+                        if task.slot_id in available_drafts]
 
-            generated_items = draft_items or await request_candidates(shard)
+            await request_candidates(shard)
+            generated_items = [available_drafts[task.slot_id] for task in shard.tasks
+                               if task.slot_id in available_drafts]
+            if len(generated_items) < len(shard.tasks):
+                running = running.model_copy(update={"warnings": [
+                    f"仍有 {len(shard.tasks) - len(generated_items)} 条结构无效；有效候选继续完成执行修订"
+                ]})
             if generated_items:
-                # Persist model-authored draft before the second paid call. Failed
-                # refinement resumes here, never as a successful unreviewed shard.
+                # Persist the model-authored draft before the independent final
+                # execution pass. A failed pass resumes from this checkpoint and
+                # never exposes an unreviewed candidate as a successful shard.
                 running = running.model_copy(update={"creative_items": generated_items})
                 self._cache(context).pending_execution_drafts[shard.key] = running
                 await self.api.put_shard(context, running)
                 execution_refinement_started = True
+                await self._stage(
+                    context, NodeId.COHERENT_CREATIVE_GENERATION, StageStatus.RUNNING,
+                    "正在执行 AI 全量画面修正，完成后进入评分",
+                    metadata={
+                        **self._creative_direction_metadata(context),
+                        "perceptionPhase": "EXECUTION_REFINEMENT",
+                        "executionRefinementRequired": True,
+                        "executionRefinementCompletedCount": len(self._cache(context).creatives),
+                    },
+                )
 
-                async def refine_candidates(candidates: list[CreativeCandidate]) -> list[CreativeCandidate]:
+                async def refine_candidates(
+                    candidates: list[CreativeCandidate],
+                ) -> list[CreativeCandidate]:
                     candidate_ids = {item.slot_id for item in candidates}
                     refinement_shard = shard.model_copy(update={
-                        "tasks": [task for task in shard.tasks if task.slot_id in candidate_ids],
+                        "tasks": [
+                            task for task in shard.tasks
+                            if task.slot_id in candidate_ids
+                        ],
                     })
                     for attempt in range(2):
                         self._reserve_ai_call(context)
                         try:
                             async with self._ai_semaphore:
                                 refined = await self.provider.refine_creative_execution(
-                                    candidates, shard=refinement_shard,
+                                    candidates,
+                                    shard=refinement_shard,
                                     application=self._require_application(context),
                                     shared_prompt=self._required_shared_prompt(context),
-                                    fact_visual_strategy=call_kwargs.get("fact_visual_strategy"),
+                                    fact_visual_strategy=call_kwargs.get(
+                                        "fact_visual_strategy"
+                                    ),
+                                    product_images=call_kwargs.get("product_images", ()),
                                 )
-                            # Do not trust even a provider adapter to alter identity.
                             revised = refined.value.items
-                            if (len(revised) != len(candidates)
-                                    or {item.slot_id for item in revised} != candidate_ids):
-                                raise ProviderError("execution refinement count mismatch",
-                                    error_type=ProviderErrorType.RESPONSE_INVALID, retryable=False)
+                            if (
+                                len(revised) != len(candidates)
+                                or {item.slot_id for item in revised} != candidate_ids
+                            ):
+                                raise ProviderError(
+                                    "execution refinement count mismatch",
+                                    error_type=ProviderErrorType.RESPONSE_INVALID,
+                                    retryable=False,
+                                )
                             return revised
                         except ProviderError as error:
-                            if error.error_type == ProviderErrorType.RESPONSE_INVALID and attempt == 0:
+                            if (
+                                error.error_type == ProviderErrorType.RESPONSE_INVALID
+                                and attempt == 0
+                            ):
                                 continue
-                            if error.error_type in {
-                                ProviderErrorType.OUTPUT_TRUNCATED,
-                                ProviderErrorType.RESPONSE_INCOMPLETE,
-                                ProviderErrorType.RESPONSE_INVALID,
-                            } and len(candidates) > 1:
+                            if (
+                                error.error_type
+                                in {
+                                    ProviderErrorType.OUTPUT_TRUNCATED,
+                                    ProviderErrorType.RESPONSE_INCOMPLETE,
+                                    ProviderErrorType.RESPONSE_INVALID,
+                                }
+                                and len(candidates) > 1
+                            ):
                                 midpoint = math.ceil(len(candidates) / 2)
-                                # Recovery only: do not leave a paid sibling call
-                                # running after the first half has failed.
-                                parts = [await refine_candidates(candidates[:midpoint]),
-                                         await refine_candidates(candidates[midpoint:])]
+                                parts = [
+                                    await refine_candidates(candidates[:midpoint]),
+                                    await refine_candidates(candidates[midpoint:]),
+                                ]
                                 return [item for part in parts for item in part]
                             raise
                     raise PipelineError("execution refinement retry loop exhausted")
@@ -3297,7 +3571,7 @@ class PromptGenerationPipeline:
             context,
             node,
             StageStatus.SUCCEEDED,
-            "连贯六维创意生成完成",
+            "素材创意生成与 AI 全量画面修正完成",
             metadata={
                 "perceptionPhase": "CANDIDATE_GENERATION_COMPLETE",
                 "round": round_number,
@@ -3310,6 +3584,8 @@ class PromptGenerationPipeline:
                 "candidateCount": len(cache.creatives),
                 "roundCandidateCount": len(round_items),
                 "completedShardCount": len(cache.completed_creative_shard_keys),
+                "executionRefinementRequired": True,
+                "executionRefinementCompletedCount": len(cache.creatives),
                 "supplemented": cache.supplemented,
                 "factSelectionMode": "DIRECTION_FACT_APPLICATIONS",
                 **self._creative_direction_metadata(context),
@@ -3583,7 +3859,13 @@ class PromptGenerationPipeline:
                         and item_id not in candidate_by_id
                         for item_id in cache.creatives
                     )
-                    if (task is None or original_evaluation.execution_repair is not None
+                    # The independent pre-score editor may legitimately KEEP a
+                    # candidate that the evaluator later diagnoses. In that case
+                    # the evaluator's located findings become the input to one
+                    # whole-plan rewrite; this is not the removed sparse patch
+                    # path. Manual candidates still remain immutable.
+                    if (task is None
+                            or original_evaluation.execution_repair is not None
                             or not has_execution_diagnosis(original, original_evaluation)
                             or cache.ai_call_count + 2 + pending_core_calls > self.max_ai_calls_per_run):
                         continue
@@ -3598,6 +3880,20 @@ class PromptGenerationPipeline:
                     items[index] = original_evaluation
                     cache.execution_repair_records[original.slot_id] = original_evaluation
                     await self.api.put_shard(context, running.model_copy(update={"evaluations": list(items)}))
+                    await self._stage(
+                        context,
+                        node,
+                        StageStatus.RUNNING,
+                        "发现明确画面执行问题，正在整段修订并复评",
+                        metadata={
+                            "round": shard.round,
+                            "perceptionPhase": "DIAGNOSED_EXECUTION_REWRITE",
+                            "candidateCount": len(candidates),
+                            "executionRepairAttemptedCount": len(
+                                cache.execution_repair_records
+                            ),
+                        },
+                    )
                     accepted = False
                     unused_review_reservation = True
                     try:
@@ -3607,7 +3903,7 @@ class PromptGenerationPipeline:
                                 application=application, shared_prompt=self._required_shared_prompt(context),
                                 fact_visual_strategy=self._required_fact_visual_strategy(context),
                             )
-                        repaired = apply_execution_patch(original, repair_call.value,
+                        repaired = apply_execution_rewrite(original, repair_call.value,
                             duration=cache.creative_target_durations[original.slot_id])
                         unused_review_reservation = False
                         review_items = await request_evaluations(
@@ -4543,6 +4839,13 @@ class PromptGenerationPipeline:
             and round_number < MAX_REPLENISHMENT_ROUNDS
             and snapshot.operation == "BATCH_GENERATE"
         )
+        if cache.material_plan is not None:
+            # Exactly one combined recovery pass, never three independent loops.
+            should_quantity_supplement = missing > 0 and round_number == 0
+            should_coverage_supplement = (not should_quantity_supplement and bool(pool_missing_coverage_fact_ids)
+                                          and round_number == 0)
+            should_diversity_supplement = (not should_quantity_supplement and not should_coverage_supplement
+                                          and bool(diversity_findings) and round_number == 0)
         pending = []
         if (
             should_quantity_supplement
@@ -4576,6 +4879,9 @@ class PromptGenerationPipeline:
                 context,
                 round_number=round_number + 1,
                 missing_count=missing,
+                requested_count=(min(selection_target, max(missing, math.ceil(selection_target * 0.2)))
+                                 if cache.material_plan is not None else None),
+                coverage_fact_ids=pool_missing_coverage_fact_ids if cache.material_plan is not None else (),
             )
         elif should_coverage_supplement:
             coverage_supplement_count = _coverage_supplement_count(

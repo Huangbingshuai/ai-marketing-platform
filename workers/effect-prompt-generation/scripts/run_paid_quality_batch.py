@@ -13,6 +13,7 @@ import re
 import statistics
 import sys
 import time
+import unicodedata
 from typing import Any
 from uuid import uuid4
 
@@ -32,7 +33,6 @@ from effect_prompt_generation.models import (
 )
 from effect_prompt_generation.pipeline import PromptGenerationPipeline
 from effect_prompt_generation.providers import AiCallMetadata, ProviderError
-from effect_prompt_generation.quality import trigram_dice
 
 
 STYLE_PHRASES = (
@@ -176,6 +176,22 @@ class TrackingProvider:
             **kwargs,
         )
 
+    async def plan_materials(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._tracked(
+            "COHERENT_CREATIVE_GENERATION",
+            self.delegate.plan_materials,
+            *args,
+            **kwargs,
+        )
+
+    async def refine_creative_execution(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._tracked(
+            "COHERENT_CREATIVE_GENERATION",
+            self.delegate.refine_creative_execution,
+            *args,
+            **kwargs,
+        )
+
     async def evaluate_creatives(self, *args: Any, **kwargs: Any) -> Any:
         return await self._tracked(
             "CREATIVE_EVALUATION_CLASSIFICATION",
@@ -214,17 +230,46 @@ def _normalize(value: str) -> str:
     return re.sub(r"\s+", "", value).casefold()
 
 
+def _trigram_dice(left: str, right: str) -> float:
+    def semantic_text(value: str) -> str:
+        normalized = unicodedata.normalize("NFC", value).strip().casefold()
+        return "".join(
+            character
+            for character in normalized
+            if not character.isspace()
+            and unicodedata.category(character)[0] not in {"P", "S"}
+        )
+
+    def ngrams(value: str, size: int = 3) -> set[str]:
+        if not value:
+            return set()
+        if len(value) < size:
+            return {value}
+        return {value[index : index + size] for index in range(len(value) - size + 1)}
+
+    left_grams = ngrams(semantic_text(left))
+    right_grams = ngrams(semantic_text(right))
+    if not left_grams and not right_grams:
+        return 1.0
+    if not left_grams or not right_grams:
+        return 0.0
+    return 2.0 * len(left_grams & right_grams) / (
+        len(left_grams) + len(right_grams)
+    )
+
+
 def _summary(
     result: PromptBatchResult,
     api: LocalApi,
     calls: list[Any],
     failed_calls: list[dict[str, Any]],
     elapsed_seconds: float,
+    product_name: str | None = None,
 ) -> dict[str, Any]:
     items = result.items
     contents = [item.content for item in items]
     pair_scores = [
-        trigram_dice(contents[left], contents[right])
+        _trigram_dice(contents[left], contents[right])
         for left in range(len(contents))
         for right in range(left + 1, len(contents))
     ]
@@ -275,33 +320,6 @@ def _summary(
         overall_scores.append(evaluation.scores.overall_quality)
     bottom_size = max(1, len(overall_scores) // 10)
     bottom_scores = sorted(overall_scores)[:bottom_size]
-    combined_texts = [
-        " ".join(
-            (
-                item.dimensions.product_relation,
-                item.dimensions.narrative,
-                item.content,
-            )
-        )
-        for item in items
-    ]
-    abstract_visual_proof = {
-        "noStarchVisibleProof": sum(
-            1
-            for content in combined_texts
-            if "纯猪肉无淀粉" in content
-            and any(
-                term in content
-                for term in ("肉纤维", "粉面感", "淀粉感", "没有粉质", "无粉质")
-            )
-        ),
-        "processVisibleProof": sum(
-            1
-            for content in combined_texts
-            if "广府糖酒腌制工艺" in content
-            and any(term in content for term in ("光泽证明", "证明工艺", "可见糖酒", "腌制痕迹"))
-        ),
-    }
     warning_counts = Counter(
         warning
         for evaluation in evaluations
@@ -338,8 +356,11 @@ def _summary(
         "averageTrigramSimilarity": round(statistics.fmean(pair_scores), 4)
         if pair_scores
         else 0.0,
-        "productAnchorMentionCount": sum(
-            1 for content in contents if "广式腊肠" in content or "腊肠" in content
+        "productAnchor": product_name,
+        "productAnchorMentionCount": (
+            sum(1 for content in contents if product_name in content)
+            if product_name
+            else None
         ),
         "primaryPurposeDistribution": dict(sorted(purpose_counts.items())),
         "dimensionUniqueCounts": dimension_uniques,
@@ -354,7 +375,6 @@ def _summary(
         "warningCounts": dict(sorted(warning_counts.items())),
         "genericStylePhraseCounts": dict(sorted(style_counts.items())),
         "genericStyleStackItemCount": style_stack_items,
-        "abstractVisualProofRisks": abstract_visual_proof,
         "arkCallCount": len(calls),
         "arkFailedCallCount": len(failed_calls),
         "arkAttemptedCallCount": len(calls) + len(failed_calls),
@@ -386,6 +406,12 @@ async def _run(args: argparse.Namespace) -> None:
     if args.analyze_full_only:
         payload = json.loads(raw_snapshot)
         result = PromptBatchResult.model_validate(payload["result"])
+        product_name = (
+            payload.get("snapshot", {})
+            .get("insightArtifact", {})
+            .get("result", {})
+            .get("productName")
+        )
         api = LocalApi()
         api.shards = {
             shard.key: shard
@@ -398,6 +424,7 @@ async def _run(args: argparse.Namespace) -> None:
             calls,
             payload.get("failedCalls", []),
             0.0,
+            product_name,
         )
         output_dir = Path(args.output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -448,11 +475,25 @@ async def _run(args: argparse.Namespace) -> None:
     )
     pipeline.register_snapshot(context, snapshot)
     started = time.monotonic()
+    graph = build_graph(pipeline)
+    run_attempt = 0
     try:
-        await build_graph(pipeline).ainvoke(
-            {"project_id": context.project_id},
-            context=context,
-        )
+        while True:
+            run_attempt += 1
+            try:
+                await graph.ainvoke(
+                    {"project_id": context.project_id},
+                    context=context,
+                )
+                break
+            except ProviderError as error:
+                if not error.retryable or run_attempt >= 3:
+                    raise
+                print(
+                    "paid quality run retrying from persisted local shards "
+                    f"attempt={run_attempt + 1}/3 error_type={error.error_type.value}",
+                    flush=True,
+                )
     finally:
         await provider.aclose()
         if embedding_provider is not None:
@@ -471,8 +512,16 @@ async def _run(args: argparse.Namespace) -> None:
         "shards": [item.model_dump(mode="json", by_alias=True) for item in api.shards.values()],
         "calls": [asdict(item) for item in provider.calls],
         "failedCalls": provider.failures,
+        "runAttemptCount": run_attempt,
     }
-    summary = _summary(api.result, api, provider.calls, provider.failures, elapsed)
+    summary = _summary(
+        api.result,
+        api,
+        provider.calls,
+        provider.failures,
+        elapsed,
+        snapshot.insight_artifact.result.get("productName"),
+    )
     (output_dir / "full.json").write_text(
         json.dumps(full_payload, ensure_ascii=False, indent=2),
         encoding="utf-8",

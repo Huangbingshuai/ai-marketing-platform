@@ -8,12 +8,13 @@ import random
 import re
 import time
 from collections.abc import Mapping, Sequence
+from collections import Counter
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Generic, Protocol, TypeVar
 
 import httpx
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from .creative_directions import (
     creative_direction_fact_density_instruction,
@@ -28,10 +29,13 @@ from .execution_refinement import (
 from .product_images import PreparedProductImage
 from .supplement_recovery import direction_summary, route_summary
 from .models import (
+    MaterialBrief,
+    MaterialPlanResponse,
     MAX_PROMPT_DURATION_SECONDS,
     MIN_PROMPT_DURATION_SECONDS,
     CreativeCandidate,
     CreativeCandidateBatch,
+    CreativeCandidateDraft,
     CreativeCandidateDraftBatch,
     CreativeDirectionAuditItem,
     CreativeDirectionFactAudit,
@@ -174,6 +178,13 @@ CREATIVE_DIRECTION_TEMPLATE_HASH = hashlib.sha256(
 ).hexdigest()
 
 
+class CreativeDraftEnvelope(BaseModel):
+    """Wire envelope only; every row still passes CreativeCandidateDraft."""
+
+    model_config = {"extra": "forbid"}
+    items: list[Any] = Field(min_length=1, max_length=5)
+
+
 class ProviderErrorType(StrEnum):
     TIMEOUT = "AI_TIMEOUT"
     NETWORK = "AI_NETWORK"
@@ -256,6 +267,14 @@ def _visual_style_baseline_section(style_instruction: str) -> str:
 
 
 class AiProvider(Protocol):
+    async def plan_materials(
+        self, application: InsightApplicationMap, *, task_ids: Sequence[str],
+        fact_visual_strategy: FactVisualStrategy, shared_prompt: SharedPrompt,
+        remaining_fact_ids: Sequence[str], existing_tasks: Sequence[MaterialBrief] = (),
+        settings: Mapping[str, Any] | None = None,
+        repair_context: Mapping[str, Any] | None = None,
+    ) -> AiCallResult[MaterialPlanResponse]: ...
+
     execution_mode: str
 
     async def compile_fact_visual_strategy(
@@ -359,6 +378,7 @@ class AiProvider(Protocol):
         shared_prompt: SharedPrompt,
         fact_visual_strategy: FactVisualStrategy | None = None,
         regeneration_context: Mapping[str, Any] | None = None,
+        product_images: Sequence[PreparedProductImage] = (),
     ) -> AiCallResult[CreativeCandidateBatch]: ...
 
     async def repair_creative_execution(
@@ -371,6 +391,7 @@ class AiProvider(Protocol):
         self, candidates: list[CreativeCandidate], *, shard: CreativeShardPlan,
         application: InsightApplicationMap, shared_prompt: SharedPrompt,
         fact_visual_strategy: FactVisualStrategy | None = None,
+        product_images: Sequence[PreparedProductImage] = (),
     ) -> AiCallResult[CreativeCandidateBatch]: ...
 
     async def evaluate_creatives(
@@ -387,12 +408,34 @@ class AiProvider(Protocol):
 
 
 class MockAiProvider:
+    async def plan_materials(
+        self, application: InsightApplicationMap, *, task_ids: Sequence[str],
+        fact_visual_strategy: FactVisualStrategy, shared_prompt: SharedPrompt,
+        remaining_fact_ids: Sequence[str], existing_tasks: Sequence[MaterialBrief] = (),
+        settings: Mapping[str, Any] | None = None,
+        repair_context: Mapping[str, Any] | None = None,
+    ) -> AiCallResult[MaterialPlanResponse]:
+        del fact_visual_strategy, shared_prompt, settings, repair_context
+        facts = list(remaining_fact_ids) or [fact.fact_id for fact in mandatory_business_facts(application)]
+        facts = facts or [fact.fact_id for fact in application.usable]
+        if not facts:
+            raise ProviderError("no confirmed facts", retryable=False)
+        return _mock_result(MaterialPlanResponse(tasks=[
+            MaterialBrief(task_id=task_id,
+                fact_ids=facts[index::len(task_ids)] or [facts[(index + len(existing_tasks)) % len(facts)]],
+                visual_event=f"测试素材事件{len(existing_tasks) + index + 1}：展示已确认的使用价值",
+                difference=f"测试独立观看变化{len(existing_tasks) + index + 1}",
+                priority_dimensions=[])
+            for index, task_id in enumerate(task_ids)
+        ]), "COHERENT_CREATIVE_GENERATION", "material_planning.system.prompt.txt")
+
     execution_mode = "MOCK"
 
     async def refine_creative_execution(
         self, candidates: list[CreativeCandidate], *, shard: CreativeShardPlan,
         application: InsightApplicationMap, shared_prompt: SharedPrompt,
         fact_visual_strategy: FactVisualStrategy | None = None,
+        product_images: Sequence[PreparedProductImage] = (),
     ) -> AiCallResult[CreativeCandidateBatch]:
         # Explicit test identity fixture, not a semantic implementation.
         return _mock_result(CreativeCandidateBatch(items=candidates),
@@ -404,12 +447,11 @@ class MockAiProvider:
         shared_prompt: SharedPrompt, fact_visual_strategy: FactVisualStrategy,
     ) -> AiCallResult[ExecutionRepairDraft]:
         # Explicit fixture-only no-op; never manufacture a production repair.
-        from .models import ShotFieldPatch
         if candidate.shot_plan is None:
             raise ValueError("mock repair requires shot plan")
         return _mock_result(ExecutionRepairDraft(
             slot_id=candidate.slot_id,
-            patches=[ShotFieldPatch(sequence=1, field="CAMERA", value=candidate.shot_plan.beats[0].camera)],
+            shot_plan=candidate.shot_plan,
         ), "CREATIVE_EVALUATION_CLASSIFICATION", EXECUTION_REPAIR_PROMPT)
 
     async def compile_fact_visual_strategy(
@@ -768,6 +810,7 @@ class MockAiProvider:
         shared_prompt: SharedPrompt,
         fact_visual_strategy: FactVisualStrategy | None = None,
         regeneration_context: Mapping[str, Any] | None = None,
+        product_images: Sequence[PreparedProductImage] = (),
     ) -> AiCallResult[CreativeCandidateBatch]:
         del shared_prompt, regeneration_context
         items = [
@@ -812,6 +855,42 @@ class MockAiProvider:
 
 
 class ArkResponsesProvider:
+    async def plan_materials(
+        self, application: InsightApplicationMap, *, task_ids: Sequence[str],
+        fact_visual_strategy: FactVisualStrategy, shared_prompt: SharedPrompt,
+        remaining_fact_ids: Sequence[str], existing_tasks: Sequence[MaterialBrief] = (),
+        settings: Mapping[str, Any] | None = None,
+        repair_context: Mapping[str, Any] | None = None,
+    ) -> AiCallResult[MaterialPlanResponse]:
+        aliases, originals = _fact_alias_maps(application)
+        payload = {
+            "taskIds": list(task_ids), "settings": dict(settings or {}),
+            "facts": [{"factId": fact.fact_id, "field": fact.field.value, "value": fact.value}
+                      for fact in application.usable],
+            "visualPolicies": [row.model_dump(mode="json", by_alias=True)
+                               for row in fact_visual_strategy.policies],
+            "remainingFactIds": list(remaining_fact_ids),
+            "existingTasks": [row.model_dump(mode="json", by_alias=True) for row in existing_tasks],
+            "repairContext": dict(repair_context or {}),
+            "sharedPrompt": shared_prompt.compiled_content,
+        }
+        schema = MaterialPlanResponse.model_json_schema(by_alias=True)
+        schema["properties"]["tasks"].update(minItems=len(task_ids), maxItems=len(task_ids))
+        schema["$defs"]["MaterialBrief"]["properties"]["taskId"]["enum"] = list(task_ids)
+        call = await self._structured(
+            json.dumps(_remap_fact_references(payload, aliases), ensure_ascii=False),
+            MaterialPlanResponse, schema_name="effect_prompt_material_tasks",
+            stage=NodeId.COHERENT_CREATIVE_GENERATION.value,
+            prompt_file="material_planning.system.prompt.txt", model=self._fragment_strategy_model,
+            max_output_tokens=self._strategy_max_output_tokens,
+            request_timeout=self._fragment_strategy_timeout,
+            instructions=load_prompt("material_planning.system.prompt.txt"), response_schema=schema,
+        )
+        return AiCallResult(value=MaterialPlanResponse(tasks=[
+            row.model_copy(update={"fact_ids": [originals.get(key, key) for key in row.fact_ids]})
+            for row in call.value.tasks
+        ]), metadata=call.metadata)
+
     execution_mode = "ARK"
 
     def __init__(
@@ -1552,7 +1631,10 @@ class ArkResponsesProvider:
                 "不得交换、重复或自选："
                 + json.dumps(required_direction_slots, ensure_ascii=False)
                 + "。本分片必须共同覆盖 requiredBusinessFactIds："
-                + json.dumps(required_business_fact_ids, ensure_ascii=False)
+                + json.dumps(
+                    _remap_fact_references(required_business_fact_ids, fact_aliases),
+                    ensure_ascii=False,
+                )
                 + "；你需要根据每个主动作的自然关系，自主决定事实进入哪个方向，"
                 "不得遗漏，也不得为凑覆盖建立牵强关系。每个槽位的创意关系、"
                 "事实组合和六维表达仍由你自主规划。"
@@ -1604,6 +1686,7 @@ class ArkResponsesProvider:
             prompt,
             CreativeDirectionResponse,
             schema_name="effect_prompt_creative_direction_plan",
+            response_schema=_direction_event_capacity_schema(),
             stage=NodeId.COHERENT_CREATIVE_GENERATION.value,
             prompt_file=CREATIVE_DIRECTION_BASE_PROMPT,
             model=self._fragment_strategy_model,
@@ -1611,6 +1694,7 @@ class ArkResponsesProvider:
             request_timeout=self._strategy_timeout,
             instructions=load_prompt(CREATIVE_DIRECTION_BASE_PROMPT),
         )
+        _validate_direction_event_capacity(call.value)
         return AiCallResult(
             value=CreativeDirectionResponse(
                 directions=[
@@ -1867,9 +1951,7 @@ class ArkResponsesProvider:
         if required_ids:
             direction_schema["directionId"]["enum"] = required_ids
         direction_schema["territoryId"]["enum"] = list(landscape.by_id)
-        direction_schema["executionRoutes"].update(
-            minItems=execution_route_count, maxItems=execution_route_count,
-        )
+        direction_schema["executionRoutes"].update(minItems=1, maxItems=5)
         prompt = render_prompt(
             CREATIVE_DIRECTION_SUPPLEMENT_TASK_PROMPT,
             requested_direction_count=str(requested_direction_count),
@@ -1997,6 +2079,7 @@ class ArkResponsesProvider:
         shared_prompt: SharedPrompt,
         fact_visual_strategy: FactVisualStrategy | None = None,
         regeneration_context: Mapping[str, Any] | None = None,
+        product_images: Sequence[PreparedProductImage] = (),
     ) -> AiCallResult[CreativeCandidateBatch]:
         assignments = {
             task.slot_id: _creative_fact_assignment(task, application)
@@ -2016,7 +2099,11 @@ class ArkResponsesProvider:
             )
             for task in shard.tasks
         ]
-        creative_task_prompt = CREATIVE_TASK_PROMPT
+        creative_task_prompt = (
+            "material_creative.user.prompt.txt"
+            if all(task.material_brief is not None for task in shard.tasks)
+            else CREATIVE_TASK_PROMPT
+        )
         creative_base_prompt = CREATIVE_BASE_PROMPT
         prompt = render_prompt(
             creative_task_prompt,
@@ -2044,7 +2131,7 @@ class ArkResponsesProvider:
         )
         call = await self._structured(
             prompt,
-            CreativeCandidateDraftBatch,
+            CreativeDraftEnvelope,
             schema_name="effect_prompt_coherent_creative_batch",
             stage="COHERENT_CREATIVE_GENERATION",
             prompt_file=creative_base_prompt,
@@ -2056,20 +2143,29 @@ class ArkResponsesProvider:
             request_timeout=self._candidate_timeout,
             instructions=load_prompt(creative_base_prompt),
             response_schema=_creative_shot_response_schema(shard.tasks),
+            input_content=[{"type": "input_text", "text": prompt}, *[
+                {"type": "input_image", "image_url": image.data_uri,
+                 "detail": self._visual_strategy_image_detail}
+                for image in product_images
+            ]],
         )
         task_by_slot = {item.slot_id: item for item in shard.tasks}
-        actual = [item.slot_id for item in call.value.items]
-        if len(actual) != len(set(actual)) or set(actual) != set(task_by_slot):
-            raise ProviderError(
-                "AI coherent creative response has missing, duplicate, or unknown slotId",
-                retryable=False,
-                error_type=ProviderErrorType.RESPONSE_INVALID,
-                attempts=call.metadata.attempts,
-                elapsed_ms=call.metadata.latency_ms,
-            )
+        # Keep the provider's strict response schema; validate each returned row
+        # independently so a broken sibling cannot destroy a valid draft.
+        identities = Counter(row.get("slotId") for row in call.value.items
+                             if isinstance(row, dict) and isinstance(row.get("slotId"), str))
         normalized: list[CreativeCandidate] = []
-        rejected_item_count = 0
-        for item in call.value.items:
+        rejections: Counter[str] = Counter()
+        for row in call.value.items:
+            try:
+                item = CreativeCandidateDraft.model_validate(row)
+            except ValidationError as exc:
+                for error in exc.errors(include_input=False, include_url=False):
+                    rejections[f"SCHEMA_{error['type']}"] += 1
+                continue
+            if item.slot_id not in task_by_slot or identities[item.slot_id] != 1:
+                rejections["UNKNOWN_OR_DUPLICATE_SLOT"] += 1
+                continue
             task = task_by_slot[item.slot_id]
             assignment = assignments[item.slot_id]
             aliases = fact_aliases_by_slot[item.slot_id]
@@ -2084,7 +2180,7 @@ class ArkResponsesProvider:
                 fact_id for fact_id in fact_ids if fact_id not in assignment.fact_ids
             ]
             if unassigned or set(fact_ids) != set(assignment.fact_ids):
-                rejected_item_count += 1
+                rejections["ASSIGNED_FACT_IDS_MISMATCH"] += 1
                 continue
             try:
                 content = compile_material_shot_plan(
@@ -2092,7 +2188,7 @@ class ArkResponsesProvider:
                     target_duration_seconds=task.target_duration_seconds,
                 )
             except ShotPlanCompilationError:
-                rejected_item_count += 1
+                rejections["SHOT_PLAN_STRUCTURE_INVALID"] += 1
                 continue
             normalized.append(
                 CreativeCandidate(
@@ -2106,6 +2202,10 @@ class ArkResponsesProvider:
                     shot_plan=item.shot_plan,
                 )
             )
+        missing_count = len(task_by_slot) - len(normalized)
+        if missing_count:
+            LOGGER.warning("creative candidate structure recovery needed accepted=%s missing=%s reasons=%s",
+                           len(normalized), missing_count, dict(rejections))
         if not normalized:
             raise ProviderError(
                 "AI coherent creative response contained no valid candidate",
@@ -2113,13 +2213,6 @@ class ArkResponsesProvider:
                 error_type=ProviderErrorType.RESPONSE_INVALID,
                 attempts=call.metadata.attempts,
                 elapsed_ms=call.metadata.latency_ms,
-            )
-        if rejected_item_count:
-            LOGGER.warning(
-                "discarded invalid creative candidates stage=%s rejected=%s accepted=%s",
-                NodeId.COHERENT_CREATIVE_GENERATION.value,
-                rejected_item_count,
-                len(normalized),
             )
         return AiCallResult(
             value=CreativeCandidateBatch(items=normalized),
@@ -2130,6 +2223,7 @@ class ArkResponsesProvider:
         self, candidates: list[CreativeCandidate], *, shard: CreativeShardPlan,
         application: InsightApplicationMap, shared_prompt: SharedPrompt,
         fact_visual_strategy: FactVisualStrategy | None = None,
+        product_images: Sequence[PreparedProductImage] = (),
     ) -> AiCallResult[CreativeCandidateBatch]:
         tasks = {task.slot_id: task for task in shard.tasks}
         originals = {item.slot_id: item for item in candidates}
@@ -2148,9 +2242,10 @@ class ArkResponsesProvider:
                 "draft": draft,
                 "editablePaths": editable_execution_paths(candidate),
             })
+        prompt = json.dumps({"items": briefs, "sharedPrompt": shared_prompt.compiled_content},
+                            ensure_ascii=False)
         call = await self._structured(
-            json.dumps({"items": briefs, "sharedPrompt": shared_prompt.compiled_content},
-                       ensure_ascii=False),
+            prompt,
             ExecutionEditBatch,
             schema_name="effect_prompt_creative_execution",
             stage="COHERENT_CREATIVE_GENERATION",
@@ -2161,6 +2256,11 @@ class ArkResponsesProvider:
             request_timeout=self._candidate_timeout,
             instructions=load_prompt(CREATIVE_EXECUTION_PROMPT),
             response_schema=execution_edit_schema(candidates),
+            input_content=[{"type": "input_text", "text": prompt}, *[
+                {"type": "input_image", "image_url": image.data_uri,
+                 "detail": self._visual_strategy_image_detail}
+                for image in product_images
+            ]],
         )
         actual = [item.slot_id for item in call.value.items]
         if len(actual) != len(set(actual)) or set(actual) != set(originals):
@@ -2196,7 +2296,7 @@ class ArkResponsesProvider:
             prompt, ExecutionRepairDraft, schema_name="effect_prompt_execution_repair",
             stage=NodeId.CREATIVE_EVALUATION_CLASSIFICATION.value,
             prompt_file=EXECUTION_REPAIR_PROMPT, model=self._candidate_model,
-            max_output_tokens=min(self._candidate_max_output_tokens, 2048),
+            max_output_tokens=min(self._candidate_max_output_tokens, 6144),
             request_timeout=self._candidate_timeout,
             instructions=load_prompt(EXECUTION_REPAIR_PROMPT),
         )
@@ -2244,12 +2344,8 @@ class ArkResponsesProvider:
                 retryable=False,
                 error_type=ProviderErrorType.REQUEST_REJECTED,
             )
-        referenced = {
-            fact_id for item in candidates for fact_id in item.declared_fact_ids
-        }
-        referenced.update(
-            fact_id for fact_ids in context_by_slot.values() for fact_id in fact_ids
-        )
+        # Planned sources are guidance, not the universe of legitimate evidence.
+        referenced = {fact.fact_id for fact in application.usable}
         facts = [
             application.by_id[fact_id].model_dump(
                 mode="json",
@@ -3281,6 +3377,10 @@ def _creative_task_brief(
         "factApplications": [
             fact_application_payload(fact_id) for fact_id in assignment.fact_ids
         ],
+        # Copyable task-source metadata, not a model judgment that all facts
+        # have been visibly realized. The independent evaluator decides that.
+        "declaredFactIds": [(fact_aliases or {}).get(fact_id, fact_id)
+                            for fact_id in assignment.fact_ids],
         "coverageFocusFactIds": [
             (fact_aliases or {}).get(fact_id, fact_id)
             for fact_id in task.coverage_focus_fact_ids
@@ -3299,6 +3399,12 @@ def _creative_task_brief(
             )
         ),
         "creativeDirection": direction_payload,
+        "materialTask": (
+            {"visualEvent": task.material_brief.visual_event,
+             "difference": task.material_brief.difference,
+             "priorityDimensions": [key.value for key in task.material_brief.priority_dimensions]}
+            if task.material_brief is not None else None
+        ),
     }
 
 
@@ -3407,6 +3513,22 @@ def _evaluation_strategy_payload(
         for policy in strategy.policies
         if policy.fact_id in referenced_fact_ids
     ]
+
+
+def _direction_event_capacity_schema() -> dict[str, Any]:
+    """New model output needs at least one event; old checkpoints stay readable."""
+    schema = CreativeDirectionResponse.model_json_schema(by_alias=True)
+    schema["$defs"]["CreativeDirection"]["properties"]["executionRoutes"].update(
+        minItems=1, maxItems=5,
+    )
+    return schema
+
+
+def _validate_direction_event_capacity(response: CreativeDirectionResponse) -> None:
+    # Provider output only; do not invalidate historical route-less checkpoints.
+    if any(not direction.execution_routes for direction in response.directions):
+        raise ProviderError("creative direction omitted event routes",
+                            error_type=ProviderErrorType.RESPONSE_INVALID, retryable=False)
 
 
 def _creative_shot_response_schema(tasks: Sequence[CreativeTask] = ()) -> dict[str, Any]:

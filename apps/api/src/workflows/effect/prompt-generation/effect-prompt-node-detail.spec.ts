@@ -93,33 +93,129 @@ const record = (): EffectPromptNodeDetailRunRecord =>
   }) as unknown as EffectPromptNodeDetailRunRecord;
 
 describe('presentEffectPromptNodeDetail', () => {
+  it.each(['RUNNING', 'FAILED', 'SUCCEEDED'])(
+    '画面修正 %s 只统计已成功分片，不把保存的草稿冒充修正完成',
+    (status) => {
+      const run = record();
+      const stage = run.stages.find((s) => s.nodeId === 'COHERENT_CREATIVE_GENERATION')!;
+      stage.status = status as typeof stage.status;
+      stage.metadata = {
+        perceptionPhase: 'EXECUTION_REFINEMENT',
+        executionRefinementRequired: true,
+        executionRefinementCompletedCount: 99,
+      };
+      const candidate = (ordinal: number) => ({
+        slotId: `private-${ordinal}`,
+        ordinal,
+        round: 0,
+        creativeCore: '一次放回动作',
+        content: '成人将产品放回支架。',
+        declaredFactIds: [],
+        dimensions: {
+          narrative: '动作展示',
+          scene: '家中',
+          persona: '成人',
+          productRelation: '便于放置',
+          camera: '固定近景',
+          emotion: '轻松',
+        },
+      });
+      run.shards = [
+        ...['SUCCEEDED', 'RUNNING', 'FAILED'].map((shardStatus, index) => ({
+          phase: 'BLUEPRINT',
+          status: shardStatus,
+          items: [candidate(index + 1)],
+          combinationPlan: [
+            { slotId: `private-${index + 1}`, preferredFactIds: [], targetDurationSeconds: 15 },
+          ],
+        })),
+      ] as unknown as typeof run.shards;
+      const detail = presentEffectPromptNodeDetail(run, 'COHERENT_CREATIVE_GENERATION');
+      expect(detail.fields).toContainEqual({ label: '已完成画面修正', value: 1 });
+      expect(detail.sections.find((s) => s.kind === 'OUTPUT')!.fields).toContainEqual({
+        label: '已完成画面修正',
+        value: 1,
+      });
+      expect(JSON.stringify(detail)).toContain('不代表实际视频零故障');
+      expect(JSON.stringify(detail)).not.toContain('private-');
+      stage.metadata = {};
+      expect(
+        presentEffectPromptNodeDetail(run, 'COHERENT_CREATIVE_GENERATION').fields.some(
+          (field) => field.label === '已完成画面修正',
+        ),
+      ).toBe(false);
+    },
+  );
+
   it('projects unified selling points and counts all facts rather than preview samples', () => {
     const run = record();
-    (run.inputSnapshot as Record<string, unknown>).insightArtifact = { result: {
-      productName: '旅行箱', productCategory: '箱包', coreSpecification: '20英寸',
-      priceRange: '399元', visualFeatures: '蓝色箱体',
-      sellingPoints: Array.from({ length: 100 }, (_, i) => `独立卖点${i}`),
-    } };
+    (run.inputSnapshot as Record<string, unknown>).insightArtifact = {
+      result: {
+        productName: '旅行箱',
+        productCategory: '箱包',
+        coreSpecification: '20英寸',
+        priceRange: '399元',
+        visualFeatures: '蓝色箱体',
+        sellingPoints: Array.from({ length: 100 }, (_, i) => `独立卖点${i}`),
+      },
+    };
     const mapping = JSON.stringify(presentEffectPromptNodeDetail(run, 'INSIGHT_MAPPING'));
     expect(mapping).toContain('卖点');
     expect(mapping).toContain('独立卖点0');
     expect(mapping).not.toContain('核心痛点');
     const strategy = presentEffectPromptNodeDetail(run, 'FACT_VISUAL_STRATEGY_COMPILATION');
     expect(strategy.sections?.flatMap((section) => section.fields)).toContainEqual({
-      label: '可用事实', value: 105,
+      label: '可用事实',
+      value: 105,
     });
   });
 
   it('distinguishes received/planned/background counts without claiming final realization', () => {
     const run = record();
     const stage = run.stages.find((row) => row.nodeId === 'COHERENT_CREATIVE_GENERATION')!;
-    stage.metadata = { availableSellingPointCount: 100, plannedSellingPointCount: 60,
-      unplannedSellingPointCount: 40, contextSellingPointCount: 20 };
+    stage.metadata = {
+      availableSellingPointCount: 100,
+      plannedSellingPointCount: 60,
+      unplannedSellingPointCount: 40,
+      contextSellingPointCount: 20,
+    };
     const detail = presentEffectPromptNodeDetail(run, 'COHERENT_CREATIVE_GENERATION');
     const fields = detail.sections?.flatMap((section) => section.fields);
     expect(fields).toContainEqual({ label: '已接收卖点', value: 100 });
     expect(fields).toContainEqual({ label: '已用于创意规划', value: 60 });
     expect(fields?.some((f) => f.label === '最终素材已体现卖点')).toBe(false);
+  });
+  it('projects three safe material tasks without exposing checkpoint identifiers', () => {
+    const run = record();
+    const stage = run.stages.find((row) => row.nodeId === 'COHERENT_CREATIVE_GENERATION')!;
+    stage.metadata = {
+      perceptionPhase: 'MATERIAL_TASK_PLANNING',
+      materialTaskCount: 50,
+      referenceImageCount: 3,
+      checkpoint: {
+        sourceFingerprint: 'private-fingerprint',
+        plan: {
+          rounds: [
+            {
+              round: 0,
+              tasks: Array.from({ length: 50 }, (_, i) => ({
+                taskId: `private-task-${i}`,
+                factIds: ['private-fact'],
+                visualEvent: `真实素材事件${i + 1}`,
+                difference: '不同观看价值',
+              })),
+            },
+          ],
+        },
+      },
+    };
+    const detail = presentEffectPromptNodeDetail(run, 'COHERENT_CREATIVE_GENERATION');
+    const output = detail.sections?.find((section) => section.kind === 'OUTPUT');
+    const tasks = output?.blocks.filter((block) => block.title.startsWith('素材任务 '));
+    expect(tasks).toHaveLength(3);
+    expect(JSON.stringify(output)).toContain('共 50 条，其余 47 条未展开');
+    expect(JSON.stringify(detail)).not.toContain('private-');
+    expect(JSON.stringify(detail)).not.toContain('CREATIVE_PLAN_LIST');
   });
   it.each(['RUNNING', 'FAILED', 'SUCCEEDED'])(
     '%s 时实时分片覆盖旧阶段计数，所有详情区域保持一致',
@@ -466,6 +562,28 @@ describe('presentEffectPromptNodeDetail', () => {
         },
       ]),
     );
+  });
+
+  it.each([
+    ['CREATIVE_DIRECTION_REVIEW', false, '待通过'],
+    ['CANDIDATE_GENERATION', false, '已复核，仍有优化提醒'],
+    ['CANDIDATE_GENERATION_COMPLETE', false, '已复核，仍有优化提醒'],
+    ['CANDIDATE_GENERATION_COMPLETE', true, '已通过'],
+  ])('如实展示规划复核状态：%s / %s', (perceptionPhase, semanticReviewPassed, expected) => {
+    const base = record();
+    const current = {
+      ...base,
+      stages: base.stages.map((stage) =>
+        stage.nodeId === 'COHERENT_CREATIVE_GENERATION'
+          ? { ...stage, metadata: { perceptionPhase, semanticReviewPassed } }
+          : stage,
+      ),
+    } as unknown as EffectPromptNodeDetailRunRecord;
+    const detail = presentEffectPromptNodeDetail(current, 'COHERENT_CREATIVE_GENERATION');
+    expect(detail.sections.flatMap((section) => section.fields)).toContainEqual({
+      label: '规划复核',
+      value: expected,
+    });
   });
 
   it('展示创意空间、方向和真实分片进度，不暴露内部规划内容', () => {

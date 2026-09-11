@@ -51,10 +51,10 @@ async def test_split_recovery_does_not_leave_paid_sibling_after_failure(failure:
     else:
         result = await pipeline.generate_creative_shard(runtime, shard)
         assert [item.slot_id for item in result] == (
-            [task.slot_id for task in tasks] if failure == "none" else []
+            [task.slot_id for task in tasks] if failure == "none" else [tasks[1].slot_id]
         )
     # Yield to expose abandoned gather siblings: no new calls may outlive return.
     calls_at_return = list(provider.calls)
     await asyncio.sleep(0)
     assert provider.calls == calls_at_return
-    assert ((tasks[1].slot_id,) in provider.calls) is (failure == "none")
+    assert ((tasks[1].slot_id,) in provider.calls) is (failure in {"none", "invalid"})

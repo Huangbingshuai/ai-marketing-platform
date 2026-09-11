@@ -1,4 +1,4 @@
-"""Mechanical patch application and model-verdict selection; no text semantics."""
+"""Mechanical full-plan replacement and model-verdict selection; no text semantics."""
 
 from __future__ import annotations
 
@@ -35,7 +35,8 @@ def restore_execution_candidate(
     repaired = checkpoint.candidate
     if repaired is None or repaired.shot_plan is None or original.shot_plan is None:
         return None
-    # Only patched execution fields and the camera dimension may change.
+    # The AI may reorganize the complete shot plan. Identity, facts, the
+    # creative intent and the other five dimensions remain immutable here.
     excluded = {"shot_plan", "content", "dimensions"}
     if original.model_dump(exclude=excluded) != repaired.model_dump(exclude=excluded):
         return None
@@ -45,22 +46,6 @@ def restore_execution_candidate(
         return None
     if repaired.content != compile_material_shot_plan(
         repaired.shot_plan, target_duration_seconds=duration
-    ):
-        return None
-    if len(original.shot_plan.beats) != len(repaired.shot_plan.beats):
-        return None
-    if original.shot_plan.overview != repaired.shot_plan.overview:
-        return None
-    if original.shot_plan.scene.model_dump(
-        exclude={"initial_state"}
-    ) != repaired.shot_plan.scene.model_dump(exclude={"initial_state"}):
-        return None
-    if any(
-        (left.sequence, left.duration_weight, left.sound)
-        != (right.sequence, right.duration_weight, right.sound)
-        for left, right in zip(
-            original.shot_plan.beats, repaired.shot_plan.beats, strict=True
-        )
     ):
         return None
     return repaired
@@ -87,7 +72,7 @@ def has_execution_diagnosis(
     return True
 
 
-def apply_execution_patch(
+def apply_execution_rewrite(
     candidate: CreativeCandidate,
     draft: ExecutionRepairDraft,
     *,
@@ -95,25 +80,7 @@ def apply_execution_patch(
 ) -> CreativeCandidate:
     if draft.slot_id != candidate.slot_id or candidate.shot_plan is None:
         raise ValueError("repair target does not match candidate")
-    payload = candidate.shot_plan.model_dump()
-    seen: set[tuple[int, str]] = set()
-    for patch in draft.patches:
-        key = (patch.sequence, patch.field)
-        if key in seen:
-            raise ValueError("duplicate repair field")
-        seen.add(key)
-        if patch.field in {"INITIAL_STATE", "FINAL_FRAME"}:
-            if patch.sequence != 0:
-                raise ValueError("global repair field requires sequence zero")
-            if patch.field == "INITIAL_STATE":
-                payload["scene"]["initial_state"] = patch.value
-            else:
-                payload["final_frame"] = patch.value
-        else:
-            if not 1 <= patch.sequence <= len(payload["beats"]):
-                raise ValueError("repair references unknown beat")
-            payload["beats"][patch.sequence - 1][patch.field.lower()] = patch.value
-    plan = MaterialShotPlan.model_validate(payload)
+    plan = MaterialShotPlan.model_validate(draft.shot_plan)
     dimensions = candidate.dimensions.model_copy(deep=True)
     if draft.camera_dimension is not None:
         dimensions.camera = draft.camera_dimension
@@ -126,6 +93,12 @@ def apply_execution_patch(
             ),
         }
     )
+
+
+# Temporary import compatibility for code outside the current pipeline. The
+# current flow always supplies a complete replacement plan, never sparse text
+# patches.
+apply_execution_patch = apply_execution_rewrite
 
 
 def repair_improves(original: CreativeEvaluation, revised: CreativeEvaluation) -> bool:

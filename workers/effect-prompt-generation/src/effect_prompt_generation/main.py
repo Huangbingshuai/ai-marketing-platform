@@ -91,6 +91,7 @@ async def serve(settings: WorkerSettings) -> None:
         max_ai_calls_per_run=settings.prompt_max_ai_calls_per_run,
         direction_review_batch_size=settings.prompt_direction_review_batch_size,
         direction_review_input_budget=settings.prompt_direction_review_input_budget,
+        candidate_product_images=settings.prompt_candidate_product_images,
         product_image_processor=ProductImageProcessor(
             max_input_bytes=settings.prompt_visual_reference_max_input_bytes,
             max_dimension=settings.prompt_visual_reference_max_dimension,

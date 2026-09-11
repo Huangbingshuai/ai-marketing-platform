@@ -1019,15 +1019,26 @@ const nodeMetricFields = (nodeId: string, rawMetadata: unknown): EffectPromptNod
           (
             {
               CREATIVE_SPACE_PLANNING: '规划产品创意空间',
+              MATERIAL_TASK_PLANNING: '安排卖点素材任务',
               CREATIVE_SPACE_REVIEW: '复核产品创意空间',
               CREATIVE_DIRECTION_PLANNING: '规划批次创意方向',
               CREATIVE_DIRECTION_REVIEW: '复核创意关系',
               CANDIDATE_GENERATION: '生成候选 Prompt',
+              EXECUTION_REFINEMENT: 'AI 全量画面修正（分片并行）',
               CANDIDATE_GENERATION_COMPLETE: '候选生成完成',
             } as Record<string, string>
           )[typeof metadata.perceptionPhase === 'string' ? metadata.perceptionPhase : ''],
         ),
         numberField(metadata, 'targetCount', '目标创意'),
+        numberField(metadata, 'materialTaskCount', '卖点素材任务'),
+        numberField(metadata, 'referenceImageCount', '生成参考商品图片'),
+        ...(metadata.executionRefinementRequired === true
+          ? compact([
+              textField('画面修正方式', '逐条由 AI 检查整段动作、镜头与画面衔接，再进入评分'),
+              numberField(metadata, 'executionRefinementCompletedCount', '已完成画面修正'),
+              textField('修正说明', '完成表示已执行修正，不代表实际视频零故障'),
+            ])
+          : []),
         numberField(metadata, 'territoryCount', '产品创意空间'),
         numberField(metadata, 'directionCount', '创意方向'),
         numberField(metadata, 'candidateTargetCount', '候选目标'),
@@ -1041,7 +1052,10 @@ const nodeMetricFields = (nodeId: string, rawMetadata: unknown): EffectPromptNod
           metadata.semanticReviewPassed === true
             ? '已通过'
             : metadata.semanticReviewPassed === false
-              ? '待通过'
+              ? metadata.perceptionPhase === 'CANDIDATE_GENERATION' ||
+                metadata.perceptionPhase === 'CANDIDATE_GENERATION_COMPLETE'
+                ? '已复核，仍有优化提醒'
+                : '待通过'
               : null,
         ),
       ]);
@@ -1830,6 +1844,39 @@ const textContentBlock = (
     : null;
 };
 
+const materialTaskBlocks = (
+  run: EffectPromptNodeDetailRunRecord,
+  metadata: Record<string, unknown>,
+): EffectPromptNodeDetailBlock[] => {
+  const checkpoint = isRecord(metadata.checkpoint) ? metadata.checkpoint : {};
+  const plan = isRecord(checkpoint.plan) ? checkpoint.plan : {};
+  const tasks = (Array.isArray(plan.rounds) ? plan.rounds : []).flatMap((round) =>
+    isRecord(round) && Array.isArray(round.tasks) ? round.tasks.filter(isRecord) : [],
+  );
+  const lookup = factValueLookup(run);
+  const visible = tasks.slice(0, EFFECT_PROMPT_NODE_DETAIL_LIMITS.maxSamples);
+  return [
+    ...visible.map((task, index) =>
+      textContentBlock(
+        `素材任务 ${String(index + 1).padStart(2, '0')}`,
+        [publicText(task.visualEvent, 1000), publicText(task.difference, 500)]
+          .filter(Boolean)
+          .join('\n'),
+        (Array.isArray(task.factIds) ? task.factIds : [])
+          .filter((id): id is string => typeof id === 'string')
+          .map((id) => displayFact(lookup, id)),
+      ),
+    ),
+    tasks.length
+      ? textContentBlock(
+          '任务展示范围',
+          `共 ${tasks.length} 条，其余 ${tasks.length - visible.length} 条未展开`,
+          [],
+        )
+      : null,
+  ].filter((block): block is EffectPromptNodeDetailBlock => block !== null);
+};
+
 const averageQualityScores = (rows: EvaluationRow[]): EffectPromptQualityScores | null => {
   if (!rows.length) return null;
   const total = rows.reduce(
@@ -2113,6 +2160,7 @@ const outputBlocks = (
     blocks.push(textContentBlock('最终共用提示词', prompt.compiledContent, sectionLabels));
   } else if (nodeId === 'COHERENT_CREATIVE_GENERATION') {
     blocks.push(
+      ...materialTaskBlocks(run, metadata),
       creativePlanBlock(metadata),
       creativeSampleBlock('真实创意候选样例', samples, samples.length),
     );
@@ -2159,7 +2207,8 @@ const expectedOutputSummary: Partial<Record<EffectPromptNodeId, string>> = {
   FACT_VISUAL_STRATEGY_COMPILATION:
     '将已确认事实分成可见画面任务、商业背景和禁止视觉证明的事实角色。',
   SHARED_PROMPT_COMPILATION: '将本批次禁用元素编译为一段批次共用提示词。',
-  COHERENT_CREATIVE_GENERATION: '将生成围绕同一创意主线的六维信息与干净 Prompt 正文。',
+  COHERENT_CREATIVE_GENERATION:
+    '将按卖点安排素材任务，生成六维信息与正文，并由 AI 完成整段画面执行修正后进入评分。',
   CREATIVE_EVALUATION_CLASSIFICATION: '将给出质量判断、推荐主用途、兼容用途和问题原因。',
   EXACT_SELECTION_AND_SUPPLEMENT:
     '将先从现有候选中按质量与差异选满目标数量；安全候选不足时补充一次，候选池仍缺必用事实时再定向补充一次。覆盖仍不足会保留足量草稿并提示人工复核。',
@@ -2209,8 +2258,15 @@ const inputSections = (
         {
           label: '可用事实',
           value: Object.entries(normalizeEffectExtractionResult(insight)).reduce(
-            (count, [key, value]) => count + (key === 'sellingPoints'
-              ? (value as string[]).length : typeof value === 'string' && value.trim() ? 1 : 0), 0),
+            (count, [key, value]) =>
+              count +
+              (key === 'sellingPoints'
+                ? (value as string[]).length
+                : typeof value === 'string' && value.trim()
+                  ? 1
+                  : 0),
+            0,
+          ),
         },
       ],
       blocks: actualBlocks(run, 'INSIGHT_MAPPING'),
@@ -2401,6 +2457,20 @@ export const presentEffectPromptNodeDetail = (
         totalShardCount: progress.total,
         completedShardCount: progress.completed,
         pendingShardCount: progress.pending,
+        ...(metadata.executionRefinementRequired === true
+          ? {
+              // Failed/running shards may contain saved, unrefined drafts.
+              // Only successful generation shards have completed the AI editor.
+              executionRefinementCompletedCount: creativeRows({
+                ...run,
+                shards: run.shards.filter(
+                  (shard) =>
+                    (shard.phase === 'BLUEPRINT' || String(shard.phase) === 'CREATIVE') &&
+                    shard.status === 'SUCCEEDED',
+                ),
+              }).length,
+            }
+          : {}),
       };
     }
   }

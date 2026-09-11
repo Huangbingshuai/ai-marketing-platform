@@ -11,6 +11,13 @@ describe('effect prompt generation current layout', () => {
     expect(viteConfigSource).toContain("exclude: ['@ai-marketing/contracts']");
   });
 
+  it('uses the only active product without rendering a product selector', () => {
+    expect(pageSource).not.toContain('class="product-switcher"');
+    expect(pageSource).not.toContain('<span>当前商品</span>');
+    expect(pageSource).not.toContain('<select v-model="currentProductId">');
+    expect(pageSource).toContain('class="secondary-button workflow-graph-trigger"');
+  });
+
   it('only exposes total count and one shared duration as batch settings', () => {
     expect(pageSource).toContain('<h3>批次设置</h3>');
     expect(pageSource).not.toContain('仅以下参数可调');
@@ -222,6 +229,8 @@ describe('effect prompt generation current layout', () => {
   });
 
   it('renders the current batch graph without version or history controls', () => {
+    expect(pageSource).toContain('生成后由 AI 全量修正动作、镜头与画面衔接，再进入评分');
+    expect(pageSource).toContain('再由 AI 完成整段画面执行修正');
     for (const nodeId of [
       'LOAD_AND_SNAPSHOT',
       'INSIGHT_MAPPING',

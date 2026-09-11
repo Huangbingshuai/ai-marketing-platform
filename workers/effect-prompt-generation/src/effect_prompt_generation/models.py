@@ -1099,16 +1099,42 @@ class CreativeDirectionPlan(ApiModel):
         }
 
 
+class MaterialBrief(ApiModel):
+    """One AI-authored material task, not a territory/direction quota."""
+
+    task_id: str = Field(min_length=1, max_length=80)
+    fact_ids: list[str] = Field(min_length=1, max_length=100)
+    visual_event: str = Field(min_length=4, max_length=240)
+    difference: str = Field(min_length=4, max_length=160)
+    priority_dimensions: list[CreativeDimensionKey] = Field(default_factory=list, max_length=3)
+
+
+class MaterialPlanResponse(ApiModel):
+    tasks: list[MaterialBrief] = Field(min_length=1, max_length=100)
+
+
+class MaterialPlanRound(ApiModel):
+    round: int = Field(ge=0, le=4)
+    request_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    tasks: list[MaterialBrief] = Field(max_length=100)
+
+
+class MaterialBatchPlan(ApiModel):
+    source_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    template_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    rounds: list[MaterialPlanRound] = Field(default_factory=list, max_length=5)
+
+
 class StrategyCheckpoint(ApiModel):
     node_id: NodeId
     source_fingerprint: str = Field(min_length=1, max_length=128)
     allocation_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     template_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
-    plan: FactVisualStrategy | CreativeDirectionPlan
+    plan: FactVisualStrategy | CreativeDirectionPlan | MaterialBatchPlan
 
 
 class CreativeFactAssignment(ApiModel):
-    fact_ids: list[str] = Field(min_length=1, max_length=8)
+    fact_ids: list[str] = Field(min_length=1, max_length=100)
     assignment_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
 
     @model_validator(mode="before")
@@ -1186,6 +1212,7 @@ class CreativeTask(ApiModel):
         le=MAX_PROMPT_DURATION_SECONDS,
     )
     fact_assignment: CreativeFactAssignment | None = None
+    material_brief: MaterialBrief | None = None
     creative_direction: CreativeDirection | None = None
     execution_route: CreativeExecutionRoute | None = None
     sibling_variant_index: int = Field(default=1, ge=1, le=32)
@@ -1292,7 +1319,7 @@ class CreativeCandidateDraft(ApiModel):
     ordinal: int = Field(ge=1)
     round: int = Field(ge=0, le=4)
     creative_core: str = Field(min_length=1, max_length=160)
-    declared_fact_ids: list[str] = Field(min_length=1, max_length=12)
+    declared_fact_ids: list[str] = Field(min_length=1, max_length=100)
     dimensions: CreativeDimensions
     shot_plan: MaterialShotPlan
 
@@ -1314,7 +1341,7 @@ class CreativeCandidate(ApiModel):
     ordinal: int = Field(ge=1)
     round: int = Field(ge=0, le=4)
     creative_core: str = Field(min_length=1, max_length=160)
-    declared_fact_ids: list[str] = Field(min_length=1, max_length=12)
+    declared_fact_ids: list[str] = Field(min_length=1, max_length=100)
     dimensions: CreativeDimensions
     content: str = Field(min_length=20, max_length=12_000)
     shot_plan: MaterialShotPlan | None = None
@@ -1454,15 +1481,9 @@ class ExecutionFinding(ApiModel):
     diagnosis: str = Field(min_length=1, max_length=180)
 
 
-class ShotFieldPatch(ApiModel):
-    sequence: int = Field(ge=0, le=6)
-    field: ShotRepairField
-    value: str = Field(min_length=1, max_length=320)
-
-
 class ExecutionRepairDraft(ApiModel):
     slot_id: str = Field(min_length=1, max_length=160)
-    patches: list[ShotFieldPatch] = Field(min_length=1, max_length=12)
+    shot_plan: MaterialShotPlan
     camera_dimension: str | None = Field(default=None, min_length=1, max_length=160)
 
 
@@ -1556,7 +1577,7 @@ class CreativeEvaluationDraft(ApiModel):
     # Accept a primary-inclusive response too; normalization below only removes
     # duplicate IDs/the primary ID, never infers another purpose.
     compatible_purposes: list[FragmentType] = Field(default_factory=list, max_length=4)
-    fact_evidence: list[FactEvidence] = Field(default_factory=list, max_length=12)
+    fact_evidence: list[FactEvidence] = Field(default_factory=list, max_length=100)
     scores: CreativeScores
     semantic_profile: CreativeSemanticProfile | None = None
     abstract_visual_proof_findings: list[AbstractVisualProofFinding] = Field(
