@@ -11,9 +11,12 @@ from pydantic import ValidationError
 from effect_prompt_generation.models import (
     CreativeAverageScores,
     CreativeDirection,
+    CreativeEvaluation,
     CreativeEvaluationDraft,
     CreativeEvaluationDraftBatch,
     CreativeEvaluationBatch,
+    CreativeScores,
+    FactEvidence,
     FragmentType,
     InsightCoverage,
     PromptBatchResult,
@@ -144,9 +147,72 @@ def test_evaluation_draft_schema_excludes_worker_derived_fields() -> None:
     assert "semanticProfile" in properties
     assert "abstractVisualProofFindings" in properties
     assert properties["compatiblePurposes"]["maxItems"] == 4
-    assert properties["factEvidence"]["maxItems"] == 100
+    assert properties["factEvidence"]["maxItems"] == 16
     assert properties["hardIssues"]["maxItems"] == 5
     assert properties["warnings"]["maxItems"] == 3
+
+
+def test_evaluation_models_share_public_fact_binding_capacity() -> None:
+    draft_schema = CreativeEvaluationDraftBatch.model_json_schema(by_alias=True)
+    draft_properties = draft_schema["$defs"]["CreativeEvaluationDraft"]["properties"]
+    evaluation_schema = CreativeEvaluationBatch.model_json_schema(by_alias=True)
+    evaluation_properties = evaluation_schema["$defs"]["CreativeEvaluation"]["properties"]
+
+    assert draft_properties["factEvidence"]["maxItems"] == 16
+    assert evaluation_properties["factEvidence"]["maxItems"] == 16
+    assert evaluation_properties["realizedFactIds"]["maxItems"] == 16
+
+
+def test_evaluation_accepts_the_failed_run_shape_without_losing_evidence() -> None:
+    evidence = [
+        FactEvidence(
+            factId=f"SELLING_POINT:{index}",
+            supportLevel="SEMANTIC_FULL" if index < 14 else "PARTIAL",
+        )
+        for index in range(16)
+    ]
+
+    evaluation = CreativeEvaluation(
+        slotId="shampoo-material-1",
+        primaryPurpose="PRODUCT_DISPLAY",
+        compatiblePurposes=["PRODUCT_DISPLAY"],
+        factEvidence=evidence,
+        realizedFactIds=[item.fact_id for item in evidence[:14]],
+        scores=CreativeScores(
+            productRelevance=90,
+            creativeCoherence=90,
+            visualExecutability=90,
+            commercialUsefulness=90,
+            visualClarity=90,
+        ),
+        semanticSignature="shampoo-material",
+        visualSignature="bathroom-close-up",
+    )
+
+    assert len(evaluation.fact_evidence) == 16
+    assert len(evaluation.realized_fact_ids) == 14
+
+
+def test_evaluation_draft_rejects_more_than_public_binding_capacity() -> None:
+    payload = {
+        "slotId": "shampoo-material-1",
+        "primaryPurpose": "PRODUCT_DISPLAY",
+        "compatiblePurposes": [],
+        "factEvidence": [
+            {"factId": f"SELLING_POINT:{index}", "supportLevel": "PARTIAL"}
+            for index in range(17)
+        ],
+        "scores": {
+            "productRelevance": 90,
+            "creativeCoherence": 90,
+            "visualExecutability": 90,
+            "commercialUsefulness": 90,
+            "visualClarity": 90,
+        },
+    }
+
+    with pytest.raises(ValidationError):
+        CreativeEvaluationDraft.model_validate(payload)
 
 
 def test_evaluation_schema_requires_auditable_visual_proof_findings() -> None:

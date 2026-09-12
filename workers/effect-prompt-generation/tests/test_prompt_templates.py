@@ -217,6 +217,8 @@ def test_templates_keep_creative_generation_and_evaluation_independent() -> None
         "execution_audit.system.prompt.txt"
     )
     assert "HOOK、PRODUCT_DISPLAY、EFFECT、CTA" in evaluation
+    assert "factEvidence 最多 16 项" in evaluation
+    assert "不得为了填满数量把整批事实目录都绑定到单条素材" in evaluation
     assert "PAIN、" not in evaluation
     assert "SELLING_POINT_EXPLANATION" not in evaluation
     assert "OUTRO" not in evaluation

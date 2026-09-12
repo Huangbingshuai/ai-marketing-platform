@@ -1510,8 +1510,11 @@ class CreativeEvaluation(ApiModel):
     slot_id: str = Field(min_length=1, max_length=160)
     primary_purpose: FragmentType
     compatible_purposes: list[FragmentType] = Field(min_length=1, max_length=4)
-    fact_evidence: list[FactEvidence] = Field(default_factory=list, max_length=12)
-    realized_fact_ids: list[str] = Field(default_factory=list, max_length=12)
+    # Keep the evaluator, persisted evaluation and public Prompt item on the
+    # same per-item capacity.  The previous 12/100/16 mismatch allowed Ark to
+    # return a valid draft that could not be converted into this model.
+    fact_evidence: list[FactEvidence] = Field(default_factory=list, max_length=16)
+    realized_fact_ids: list[str] = Field(default_factory=list, max_length=16)
     scores: CreativeScores
     semantic_signature: str = Field(min_length=1, max_length=240)
     visual_signature: str = Field(min_length=1, max_length=240)
@@ -1593,7 +1596,10 @@ class CreativeEvaluationDraft(ApiModel):
     # Accept a primary-inclusive response too; normalization below only removes
     # duplicate IDs/the primary ID, never infers another purpose.
     compatible_purposes: list[FragmentType] = Field(default_factory=list, max_length=4)
-    fact_evidence: list[FactEvidence] = Field(default_factory=list, max_length=100)
+    # A 15-second material should never need to bind the complete batch fact
+    # catalogue.  Sixteen matches the public insightBindings capacity while
+    # still leaving ample room for planned and additionally realized facts.
+    fact_evidence: list[FactEvidence] = Field(default_factory=list, max_length=16)
     scores: CreativeScores
     semantic_profile: CreativeSemanticProfile | None = None
     abstract_visual_proof_findings: list[AbstractVisualProofFinding] = Field(
