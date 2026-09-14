@@ -47,6 +47,7 @@ import EffectPromptGenerationNodePage from '../prompt-generation/EffectPromptGen
 import { prefetchEffectPromptWorkspace } from '../prompt-generation/services/effect-prompt-generation.service';
 import EffectSegmentRenderNodePage from '../segment-render/EffectSegmentRenderNodePage.vue';
 import { prefetchEffectSegmentRenderWorkspace } from '../segment-render/services/effect-segment-render-workspace.service';
+import EffectTemplateMixNodePage from '../template-mix/EffectTemplateMixNodePage.vue';
 import { clearEffectWorkspacePrefetches } from '../shared/effect-workspace-prefetch';
 import {
   advanceEffectImportDraft,
@@ -113,6 +114,7 @@ const activeStep = ref(0);
 const infoExtractionNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
 const promptGenerationNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
 const segmentRenderNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
+const templateMixNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
 const downstreamBoundaries = [
   { title: 'Prompt 生成', description: '批量生成差异化提示词' },
   { title: '片段渲染', description: 'AI 视频片段批量渲染' },
@@ -139,7 +141,7 @@ const pendingStepLabel = computed(() =>
   pendingStep.value === null ? '' : (effectWorkflowNodeLabels[pendingStep.value] ?? '目标节点'),
 );
 const activeDownstreamBoundary = computed(() =>
-  activeStep.value >= 4 ? downstreamBoundaries[activeStep.value - 2] : undefined,
+  activeStep.value === 5 ? downstreamBoundaries[3] : undefined,
 );
 const keyword = ref('');
 const selectedProductIds = ref(new Set<string>());
@@ -794,6 +796,8 @@ async function flushPendingEdits(): Promise<boolean> {
     return promptGenerationNode.value.flushPendingEdits();
   if (activeStep.value === 3 && segmentRenderNode.value)
     return segmentRenderNode.value.flushPendingEdits();
+  if (activeStep.value === 4 && templateMixNode.value)
+    return templateMixNode.value.flushPendingEdits();
   return true;
 }
 
@@ -1513,7 +1517,7 @@ onBeforeUnmount(() => {
         </div>
       </Transition>
 
-      <KeepAlive :max="3">
+      <KeepAlive :max="4">
         <EffectInfoExtractionNodePage
           v-if="activeStep === 1"
           ref="infoExtractionNode"
@@ -1544,6 +1548,17 @@ onBeforeUnmount(() => {
           :products="products"
           @back="selectWorkflowStep(2)"
           @next="selectWorkflowStep(4)"
+        />
+
+        <EffectTemplateMixNodePage
+          v-else-if="activeStep === 4"
+          :key="`${currentProjectId}:${workspace?.workflowRunId ?? ''}`"
+          ref="templateMixNode"
+          :project-id="currentProjectId"
+          :workflow-run-id="workspace?.workflowRunId ?? ''"
+          :products="products"
+          @back="selectWorkflowStep(3)"
+          @next="selectWorkflowStep(5)"
         />
       </KeepAlive>
 

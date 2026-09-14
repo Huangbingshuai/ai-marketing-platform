@@ -13,6 +13,7 @@ import { EffectExtractionModule } from './workflows/effect/information-extractio
 import { EffectPromptModule } from './workflows/effect/prompt-generation/effect-prompt.module';
 import { EffectSegmentRenderModule } from './workflows/effect/segment-render/effect-segment-render.module';
 import { EffectSourceImportModule } from './workflows/effect/source-import/effect-source-import.module';
+import { EffectTemplateMixModule } from './workflows/effect/template-mix/effect-template-mix.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { EffectSourceImportModule } from './workflows/effect/source-import/effec
     EffectExtractionModule,
     EffectPromptModule,
     EffectSegmentRenderModule,
+    EffectTemplateMixModule,
   ],
 })
 export class AppModule {}
