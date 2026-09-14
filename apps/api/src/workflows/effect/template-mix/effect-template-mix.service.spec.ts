@@ -66,7 +66,11 @@ const draft = (): EffectTemplateMixDraft => ({
 
 const source = {
   id: sourceId,
+  nodeId: 'SEGMENT_RENDER',
   artifactKey: 'render-clip:task-1',
+  kind: 'FILE',
+  name: '钩子视频片段',
+  contentUrl: '/api/projects/project/workflow-artifacts/' + sourceId + '/content',
   revision: 2,
   availability: 'AVAILABLE',
   freshness: 'CURRENT',
@@ -82,7 +86,14 @@ const source = {
 const harness = () => {
   const working = {
     getNodeState: vi.fn().mockResolvedValue({ revision: 7, state: draft() }),
+    getNodeStateOrNull: vi.fn().mockResolvedValue({ revision: 7, state: draft() }),
     listArtifacts: vi.fn().mockResolvedValue({ items: [source], total: 1 }),
+    putNodeState: vi.fn().mockImplementation((_project, _run, _node, input) =>
+      Promise.resolve({
+        nodeState: { revision: 8, state: input.state },
+        unchanged: false,
+      }),
+    ),
     commitValidatedArtifacts: vi.fn().mockResolvedValue([
       {
         artifact: { id: templateId, artifactKey: 'mix-template:' + templateId, revision: 1 },
@@ -135,5 +146,59 @@ describe('EffectTemplateMixService', () => {
     await expect(service.validate('project', 'run', 7, templateId)).rejects.toMatchObject({
       status: 409,
     });
+  });
+
+  it('assembles the dedicated workspace from the node draft and confirmed render clips', async () => {
+    const { service } = harness();
+    const result = await service.workspace('project', 'run');
+    expect(result.draftRevision).toBe(7);
+    expect(result.materials).toEqual([
+      expect.objectContaining({ id: sourceId, artifactRevision: 2, available: true }),
+    ]);
+  });
+
+  it('creates and fills exactly one project inside the requested template', async () => {
+    const { service, working } = harness();
+    const state = draft();
+    state.templates[0]!.workspace.variants = [];
+    working.getNodeState.mockResolvedValue({ revision: 7, state });
+
+    const result = await service.createVariant('project', 'run', templateId, 7);
+
+    expect(result.draft.templates[0]!.workspace.variants).toHaveLength(1);
+    expect(result.draft.templates[0]!.workspace.variants[0]!.bindings[slotId]).toBe(sourceId);
+    expect(working.putNodeState).toHaveBeenCalledWith(
+      'project',
+      'run',
+      'TEMPLATE_MIX',
+      expect.objectContaining({ expectedRevision: 7 }),
+    );
+  });
+
+  it('rejects a server mutation based on a stale draft revision', async () => {
+    const { service, working } = harness();
+    await expect(
+      service.refillVariant('project', 'run', templateId, variantId, 6),
+    ).rejects.toMatchObject({
+      status: 409,
+    });
+    expect(working.putNodeState).not.toHaveBeenCalled();
+  });
+
+  it('applies an edited project only inside the requested template', async () => {
+    const { service, working } = harness();
+    const state = draft();
+    const isolatedId = 'c61347b7-af3c-4667-a474-25a5c9bb00c1';
+    state.templates.push({
+      id: isolatedId,
+      workspace: JSON.parse(JSON.stringify(state.templates[0]!.workspace)),
+    });
+    state.templates[0]!.workspace.variants[0]!.slots[0]!.duration = 2;
+    working.getNodeState.mockResolvedValue({ revision: 7, state });
+
+    const result = await service.applyVariant('project', 'run', templateId, variantId, true, 7);
+
+    expect(result.draft.templates[0]!.workspace.template.slots[0]!.duration).toBe(2);
+    expect(result.draft.templates[1]!.workspace.template.slots[0]!.duration).toBe(3);
   });
 });

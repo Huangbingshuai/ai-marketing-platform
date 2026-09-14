@@ -26,7 +26,10 @@ import {
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 
 import {
+  applyEffectTemplateMixVariant,
+  createEffectTemplateMixVariant,
   loadEffectTemplateMixWorkspace,
+  refillEffectTemplateMixVariant,
   saveEffectTemplateMixDraft,
   serializeEffectTemplateMixDraft,
   validateEffectTemplateMix,
@@ -37,13 +40,10 @@ import {
   EFFECT_TEMPLATE_MIX_TRANSITIONS,
   cloneMix,
   createEffectTemplateMixEntry,
-  createEffectTemplateMixVariant,
   effectTemplateMixTiming,
-  fillEffectTemplateMixVariant,
   formatEffectTemplateMixTime,
   markEffectTemplateMixChanged,
   moveEffectTemplateMixSlot,
-  syncEffectTemplateMixVariants,
 } from './effect-template-mix-state';
 
 const props = defineProps<{
@@ -65,6 +65,7 @@ const uiByTemplate = reactive<Record<string, TemplateUi>>({});
 const view = ref<'CONFIG' | 'EDITOR'>('CONFIG');
 const saveState = ref<'dirty' | 'saved' | 'saving'>('saved');
 const validating = ref(false);
+const mutating = ref(false);
 const resourceTab = ref<'AUDIO' | 'MATERIAL' | 'TEXT' | 'TRANSITION'>('MATERIAL');
 const keyword = ref('');
 const playing = ref(false);
@@ -229,28 +230,33 @@ const initializeUi = (): void => {
     };
   }
 };
+const installWorkspaceData = (
+  data: Awaited<ReturnType<typeof loadEffectTemplateMixWorkspace>>['data'],
+): void => {
+  catalog.value = data.draft.templates.map((entry) => hydrate(entry, data.materials));
+  draftRevision.value = data.draftRevision;
+  activeTemplateId.value =
+    catalog.value.find(({ id }) => id === data.draft.activeTemplateId)?.id ??
+    catalog.value[0]?.id ??
+    '';
+  Object.keys(committedVersions).forEach((key) => delete committedVersions[key]);
+  data.commits
+    .filter(({ stale }) => !stale)
+    .forEach(({ templateId, editVersion }) => (committedVersions[templateId] = editVersion));
+  initializeUi();
+};
 const load = async (): Promise<void> => {
   controller?.abort();
   controller = new AbortController();
   pageState.value = 'LOADING';
   try {
     if (!props.projectId || !props.workflowRunId) throw new Error('当前工作流运行尚未准备好');
-    const data = await loadEffectTemplateMixWorkspace(
+    const response = await loadEffectTemplateMixWorkspace(
       props.projectId,
       props.workflowRunId,
       controller.signal,
     );
-    catalog.value = data.draft.templates.map((entry) => hydrate(entry, data.materials));
-    draftRevision.value = data.draftRevision;
-    activeTemplateId.value =
-      catalog.value.find(({ id }) => id === data.draft.activeTemplateId)?.id ??
-      catalog.value[0]?.id ??
-      '';
-    Object.keys(committedVersions).forEach((key) => delete committedVersions[key]);
-    data.commits
-      .filter(({ stale }) => !stale)
-      .forEach(({ templateId, editVersion }) => (committedVersions[templateId] = editVersion));
-    initializeUi();
+    installWorkspaceData(response.data);
     pageState.value = 'READY';
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') return;
@@ -270,7 +276,7 @@ const persist = async (keepalive = false): Promise<boolean> => {
       serializeEffectTemplateMixDraft(catalog.value, activeTemplateId.value),
       keepalive,
     );
-    draftRevision.value = result.data.nodeState.revision;
+    draftRevision.value = result.data.draftRevision;
     saveState.value = 'saved';
     return true;
   } catch (error) {
@@ -308,25 +314,42 @@ const selectTemplate = (id: string): void => {
   resourceTab.value = 'MATERIAL';
   scheduleSave();
 };
-const addVariant = (): void => {
-  if (!workspace.value || !activeUi.value) return;
-  const variant = createEffectTemplateMixVariant(workspace.value);
-  workspace.value.variants.push(variant);
-  workspace.value.editVersion += 1;
-  activeUi.value.selectedVariantId = variant.id;
-  activeUi.value.selectedSlotId = variant.slots[0]?.id ?? '';
-  view.value = 'EDITOR';
-  scheduleSave();
-  showNotice(
-    variant.conflictSlotIds.length
-      ? '工程已创建，但素材不足，请补齐缺口'
-      : '已创建一个真实时间轴工程',
-    variant.conflictSlotIds.length ? 'warning' : 'success',
-  );
+const addVariant = async (): Promise<void> => {
+  if (!workspace.value || !activeUi.value || mutating.value) return;
+  if (!(await flushPendingEdits()) || draftRevision.value === null) return;
+  const templateId = activeTemplateId.value;
+  mutating.value = true;
+  try {
+    const result = await createEffectTemplateMixVariant(
+      props.projectId,
+      props.workflowRunId,
+      draftRevision.value,
+      templateId,
+    );
+    installWorkspaceData(result.data);
+    const entry = catalog.value.find(({ id }) => id === templateId);
+    const variant = entry?.workspace.variants.at(-1);
+    if (variant && uiByTemplate[templateId]) {
+      uiByTemplate[templateId].selectedVariantId = variant.id;
+      uiByTemplate[templateId].selectedSlotId = variant.slots[0]?.id ?? '';
+    }
+    view.value = 'EDITOR';
+    saveState.value = 'saved';
+    showNotice(
+      variant?.conflictSlotIds.length
+        ? '工程已创建，但素材不足，请补齐缺口'
+        : '已在服务端创建并填充时间轴工程',
+      variant?.conflictSlotIds.length ? 'warning' : 'success',
+    );
+  } catch (error) {
+    showNotice(error instanceof Error ? error.message : '创建成片工程失败', 'error');
+  } finally {
+    mutating.value = false;
+  }
 };
 const enterEditor = (): void => {
   if (workspace.value?.variants.length) view.value = 'EDITOR';
-  else addVariant();
+  else void addVariant();
 };
 const selectVariant = (id: string): void => {
   if (!activeUi.value || !workspace.value) return;
@@ -373,7 +396,6 @@ const changeTemplate = (): void => {
   }
   if (selectedVariant.value) {
     markEffectTemplateMixChanged(workspace.value, selectedVariant.value.id);
-    fillEffectTemplateMixVariant(workspace.value, selectedVariant.value);
   } else {
     workspace.value.template.editVersion += 1;
     workspace.value.editVersion += 1;
@@ -419,40 +441,74 @@ const changeTransition = (transition: EffectTemplateMixTransition): void => {
   selectedSlot.value.transition = transition;
   bump();
 };
-const refill = (): void => {
-  if (!workspace.value || !selectedVariant.value) return;
-  fillEffectTemplateMixVariant(workspace.value, selectedVariant.value);
-  bump();
-  showNotice(
-    selectedVariant.value.conflictSlotIds.length
-      ? '重新填充完成，仍有素材缺口'
-      : '未锁定槽位已重新填充',
-    selectedVariant.value.conflictSlotIds.length ? 'warning' : 'success',
-  );
+const refill = async (): Promise<void> => {
+  if (!workspace.value || !selectedVariant.value || mutating.value) return;
+  if (!(await flushPendingEdits()) || draftRevision.value === null) return;
+  const templateId = activeTemplateId.value;
+  const variantId = selectedVariant.value.id;
+  mutating.value = true;
+  try {
+    const result = await refillEffectTemplateMixVariant(
+      props.projectId,
+      props.workflowRunId,
+      draftRevision.value,
+      templateId,
+      variantId,
+    );
+    installWorkspaceData(result.data);
+    if (uiByTemplate[templateId]) uiByTemplate[templateId].selectedVariantId = variantId;
+    const variant = catalog.value
+      .find(({ id }) => id === templateId)
+      ?.workspace.variants.find(({ id }) => id === variantId);
+    saveState.value = 'saved';
+    showNotice(
+      variant?.conflictSlotIds.length
+        ? '服务端重新填充完成，仍有素材缺口'
+        : '未锁定槽位已由服务端重新填充',
+      variant?.conflictSlotIds.length ? 'warning' : 'success',
+    );
+  } catch (error) {
+    showNotice(error instanceof Error ? error.message : '重新填充失败', 'error');
+  } finally {
+    mutating.value = false;
+  }
 };
-const overwrite = (sync: boolean): void => {
-  if (!workspace.value || !selectedVariant.value) return;
-  workspace.value.template.slots = cloneMix(selectedVariant.value.slots);
-  workspace.value.template.editVersion += 1;
-  workspace.value.editVersion += 1;
-  selectedVariant.value.appliedTemplateVersion = workspace.value.template.editVersion;
-  selectedVariant.value.status = 'CURRENT';
-  workspace.value.variants
-    .filter(({ id }) => id !== selectedVariant.value?.id)
-    .forEach((item) => (item.status = 'PENDING'));
-  const result = sync
-    ? syncEffectTemplateMixVariants(workspace.value, selectedVariant.value.id)
-    : null;
-  overwriteOpen.value = false;
-  scheduleSave();
-  showNotice(
-    result?.conflicts
-      ? '已同步，但部分工程仍有素材缺口'
-      : sync
-        ? '已更新模板并同步其他工程'
-        : '已更新模板，其他工程等待同步',
-    result?.conflicts ? 'warning' : 'success',
-  );
+const overwrite = async (sync: boolean): Promise<void> => {
+  if (!workspace.value || !selectedVariant.value || mutating.value) return;
+  if (!(await flushPendingEdits()) || draftRevision.value === null) return;
+  const templateId = activeTemplateId.value;
+  const variantId = selectedVariant.value.id;
+  mutating.value = true;
+  try {
+    const result = await applyEffectTemplateMixVariant(
+      props.projectId,
+      props.workflowRunId,
+      draftRevision.value,
+      templateId,
+      variantId,
+      sync,
+    );
+    installWorkspaceData(result.data);
+    if (uiByTemplate[templateId]) uiByTemplate[templateId].selectedVariantId = variantId;
+    const conflicts =
+      catalog.value
+        .find(({ id }) => id === templateId)
+        ?.workspace.variants.reduce((sum, variant) => sum + variant.conflictSlotIds.length, 0) ?? 0;
+    overwriteOpen.value = false;
+    saveState.value = 'saved';
+    showNotice(
+      conflicts
+        ? '已同步，但部分工程仍有素材缺口'
+        : sync
+          ? '已更新模板并同步其他工程'
+          : '已更新模板，其他工程等待同步',
+      conflicts ? 'warning' : 'success',
+    );
+  } catch (error) {
+    showNotice(error instanceof Error ? error.message : '更新模板失败', 'error');
+  } finally {
+    mutating.value = false;
+  }
 };
 const addCaption = (): void => {
   if (!selectedVariant.value || !selectedSlot.value) return;
@@ -703,7 +759,7 @@ defineExpose({ flushPendingEdits });
             </div>
             <button
               class="button primary"
-              :disabled="!workspace.template.name.trim()"
+              :disabled="!workspace.template.name.trim() || mutating"
               @click="enterEditor"
             >
               <WandSparkles :size="15" />{{
@@ -735,7 +791,9 @@ defineExpose({ flushPendingEdits });
             "
           >
             返回模板配置</button
-          ><button class="button primary" @click="openOverwrite">更新模板配置</button>
+          ><button class="button primary" :disabled="mutating" @click="openOverwrite">
+            更新模板配置
+          </button>
         </header>
         <div class="workbench-main">
           <aside class="resources">
@@ -888,7 +946,9 @@ defineExpose({ flushPendingEdits });
           <aside class="projects">
             <header>
               <strong>成片项目</strong
-              ><button class="button compact" @click="addVariant"><Plus :size="13" />新增</button>
+              ><button class="button compact" :disabled="mutating" @click="addVariant">
+                <Plus :size="13" />新增
+              </button>
             </header>
             <div>
               <article
@@ -951,7 +1011,8 @@ defineExpose({ flushPendingEdits });
         </div>
         <div class="tools">
           <b>时间轴工具</b
-          ><button class="tool-pill" @click="refill"><Sparkles :size="13" />重新智能填充</button
+          ><button class="tool-pill" :disabled="mutating" @click="refill">
+            <Sparkles :size="13" />{{ mutating ? '处理中…' : '重新智能填充' }}</button
           ><button disabled title="字幕自动对齐服务尚未接入">字幕对齐</button
           ><button disabled title="音频节拍服务尚未接入">BGM 卡点</button
           ><span>替换素材或拖动视频片段调整当前工程顺序</span>
@@ -1078,9 +1139,10 @@ defineExpose({ flushPendingEdits });
             <p>成片时长由各槽位时长实时累加。</p>
           </main>
           <footer>
-            <button class="button" @click="closeCreate">取消</button
-            ><button
-              class="button primary"
+            <button type="button" class="button" @click="closeCreate">取消</button>
+            <button
+              type="button"
+              class="button primary modal-submit"
               :disabled="!newTemplateName.trim()"
               @click="addTemplate"
             >
@@ -1107,8 +1169,10 @@ defineExpose({ flushPendingEdits });
             <p>同步时只更新「{{ workspace.template.name }}」下的其他工程，并保留人工选择素材。</p>
           </main>
           <footer>
-            <button class="button" @click="overwrite(false)">仅更新模板</button
-            ><button class="button primary" @click="overwrite(true)">更新并同步其他工程</button>
+            <button class="button" :disabled="mutating" @click="overwrite(false)">仅更新模板</button
+            ><button class="button primary" :disabled="mutating" @click="overwrite(true)">
+              更新并同步其他工程
+            </button>
           </footer>
         </section>
       </div></Teleport
@@ -1149,8 +1213,8 @@ defineExpose({ flushPendingEdits });
 }
 .primary {
   color: #fff;
-  background: var(--blue);
-  border-color: var(--blue);
+  background: var(--blue, #2563eb);
+  border-color: var(--blue, #2563eb);
 }
 button:disabled {
   cursor: not-allowed;
@@ -1872,8 +1936,15 @@ button:disabled {
 }
 .modal > footer {
   justify-content: flex-end;
+  flex-wrap: wrap;
   border: 0;
   border-top: 1px solid #e2e8f0;
+}
+.modal > footer .modal-submit {
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-width: 108px;
+  visibility: visible;
 }
 @media (max-width: 1050px) {
   .workbench-main {

@@ -1,7 +1,10 @@
 import type {
   EffectTemplateMixDraft,
+  EffectTemplateMixMaterial,
   EffectTemplateMixSlot,
   EffectTemplateMixVariant,
+  EffectTemplateMixWorkspace,
+  EffectTemplateMixWorkspaceData,
   ValidateEffectTemplateMixData,
   WorkingArtifact,
 } from '@ai-marketing/contracts';
@@ -10,6 +13,7 @@ import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { ApiHttpException } from '../../../common/api-http-exception';
 import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import type { WorkingArtifactUpsertInput } from '../../../platform/workflow/workflow-working.repository';
+import { applyVariantToTemplate, createVariant, fillVariant } from './effect-template-mix.domain';
 
 const object = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -18,7 +22,42 @@ const object = (value: unknown): Record<string, unknown> | null =>
 
 const draftOf = (value: unknown): EffectTemplateMixDraft => {
   const draft = object(value);
-  if (draft?.schemaVersion !== 1 || !Array.isArray(draft.templates)) {
+  const templates = Array.isArray(draft?.templates) ? draft.templates : null;
+  const valid =
+    draft?.schemaVersion === 1 &&
+    typeof draft.activeTemplateId === 'string' &&
+    templates !== null &&
+    templates.length <= 50 &&
+    new Set(templates.map((entry) => object(entry)?.id)).size === templates.length &&
+    templates.every((rawEntry) => {
+      const entry = object(rawEntry);
+      const workspace = object(entry?.workspace);
+      const template = object(workspace?.template);
+      return (
+        typeof entry?.id === 'string' &&
+        entry.id.length > 0 &&
+        Number.isInteger(workspace?.editVersion) &&
+        typeof template?.name === 'string' &&
+        Number.isInteger(template.editVersion) &&
+        Array.isArray(template.slots) &&
+        Array.isArray(workspace?.variants) &&
+        workspace.variants.length <= 100 &&
+        workspace.variants.every((rawVariant) => {
+          const variant = object(rawVariant);
+          return (
+            typeof variant?.id === 'string' &&
+            Array.isArray(variant.slots) &&
+            object(variant.bindings) !== null &&
+            object(variant.bindingRevisions) !== null &&
+            object(variant.offsets) !== null &&
+            Array.isArray(variant.manualSlotIds) &&
+            Array.isArray(variant.conflictSlotIds) &&
+            Array.isArray(variant.captions)
+          );
+        })
+      );
+    });
+  if (!valid) {
     throw new ApiHttpException(
       '混剪草稿版本无效，请刷新后重试',
       HttpStatus.BAD_REQUEST,
@@ -27,6 +66,12 @@ const draftOf = (value: unknown): EffectTemplateMixDraft => {
   }
   return value as EffectTemplateMixDraft;
 };
+
+const emptyDraft = (): EffectTemplateMixDraft => ({
+  schemaVersion: 1,
+  templates: [],
+  activeTemplateId: '',
+});
 
 const slotsValid = (slots: EffectTemplateMixSlot[]): boolean =>
   slots.length > 0 &&
@@ -56,12 +101,147 @@ const clipSupports = (artifact: WorkingArtifact, purpose: string): boolean => {
   );
 };
 
+const materialPurpose = (value: unknown): EffectTemplateMixMaterial['purpose'] | null => {
+  if (
+    value === 'HOOK' ||
+    value === 'EFFECT' ||
+    value === 'PRODUCT_DISPLAY' ||
+    value === 'END_CONVERSION'
+  ) {
+    return value;
+  }
+  return null;
+};
+
+const materialFrom = (artifact: WorkingArtifact): EffectTemplateMixMaterial | null => {
+  if (
+    artifact.nodeId !== 'SEGMENT_RENDER' ||
+    !artifact.artifactKey.startsWith('render-clip:') ||
+    artifact.kind !== 'FILE' ||
+    !artifact.contentUrl
+  ) {
+    return null;
+  }
+  const data = payload(artifact);
+  const duration = Number(data.durationSeconds);
+  if (!Number.isFinite(duration) || duration <= 0) return null;
+  const primaryPurpose = materialPurpose(data.primaryPurpose);
+  if (!primaryPurpose) return null;
+  const compatiblePurposes = Array.isArray(data.compatiblePurposes)
+    ? [
+        ...new Set(
+          data.compatiblePurposes
+            .map(materialPurpose)
+            .filter((item): item is EffectTemplateMixMaterial['purpose'] => Boolean(item)),
+        ),
+      ]
+    : [];
+  return {
+    id: artifact.id,
+    artifactId: artifact.id,
+    artifactKey: artifact.artifactKey,
+    artifactRevision: artifact.revision,
+    fileObjectId: typeof data.fileObjectId === 'string' ? data.fileObjectId : '',
+    contentHash: typeof data.contentHash === 'string' ? data.contentHash : '',
+    contentUrl: artifact.contentUrl,
+    code: typeof data.renderCode === 'string' ? data.renderCode : artifact.name,
+    name: artifact.name.replace(/\s+视频片段$/u, ''),
+    duration,
+    purpose: primaryPurpose,
+    compatiblePurposes,
+    ratio: typeof data.ratio === 'string' ? data.ratio : '',
+    resolution: typeof data.resolution === 'string' ? data.resolution : '',
+    available: artifact.availability === 'AVAILABLE' && artifact.freshness === 'CURRENT',
+  };
+};
+
 @Injectable()
 export class EffectTemplateMixService {
   constructor(
     @Inject(WorkflowWorkingService)
     private readonly working: WorkflowWorkingService,
   ) {}
+
+  async workspace(
+    projectId: string,
+    workflowRunId: string,
+  ): Promise<EffectTemplateMixWorkspaceData> {
+    const [nodeState, artifactData] = await Promise.all([
+      this.working.getNodeStateOrNull(projectId, workflowRunId, 'TEMPLATE_MIX'),
+      this.working.listArtifacts(projectId, { workflowRunId }),
+    ]);
+    return this.toWorkspaceData(
+      nodeState ? draftOf(nodeState.state) : emptyDraft(),
+      nodeState?.revision ?? null,
+      artifactData.items,
+    );
+  }
+
+  async saveDraft(
+    projectId: string,
+    workflowRunId: string,
+    expectedRevision: number | null,
+    value: unknown,
+  ): Promise<EffectTemplateMixWorkspaceData> {
+    const draft = draftOf(value);
+    const result = await this.working.putNodeState(projectId, workflowRunId, 'TEMPLATE_MIX', {
+      expectedRevision,
+      schemaVersion: 1,
+      state: draft,
+    });
+    const artifacts = await this.working.listArtifacts(projectId, { workflowRunId });
+    return this.toWorkspaceData(draft, result.nodeState.revision, artifacts.items);
+  }
+
+  async createVariant(
+    projectId: string,
+    workflowRunId: string,
+    templateId: string,
+    expectedRevision: number,
+  ): Promise<EffectTemplateMixWorkspaceData> {
+    return this.mutate(projectId, workflowRunId, expectedRevision, templateId, (workspace) => {
+      if (workspace.variants.length >= 100) {
+        throw new ApiHttpException(
+          '单个模板最多保留 100 个成片工程',
+          HttpStatus.BAD_REQUEST,
+          'VALIDATION_ERROR',
+        );
+      }
+      const variant = createVariant(workspace);
+      workspace.variants.push(variant);
+      workspace.editVersion += 1;
+    });
+  }
+
+  async refillVariant(
+    projectId: string,
+    workflowRunId: string,
+    templateId: string,
+    variantId: string,
+    expectedRevision: number,
+  ): Promise<EffectTemplateMixWorkspaceData> {
+    return this.mutate(projectId, workflowRunId, expectedRevision, templateId, (workspace) => {
+      const variant = workspace.variants.find(({ id }) => id === variantId);
+      if (!variant) this.notFound('当前成片工程不存在');
+      fillVariant(workspace, variant!);
+      workspace.editVersion += 1;
+    });
+  }
+
+  async applyVariant(
+    projectId: string,
+    workflowRunId: string,
+    templateId: string,
+    sourceVariantId: string,
+    syncOtherVariants: boolean,
+    expectedRevision: number,
+  ): Promise<EffectTemplateMixWorkspaceData> {
+    return this.mutate(projectId, workflowRunId, expectedRevision, templateId, (workspace) => {
+      const variant = workspace.variants.find(({ id }) => id === sourceVariantId);
+      if (!variant) this.notFound('当前成片工程不存在');
+      applyVariantToTemplate(workspace, variant!, syncOtherVariants);
+    });
+  }
 
   async validate(
     projectId: string,
@@ -174,6 +354,78 @@ export class EffectTemplateMixService {
         unchanged,
       })),
     };
+  }
+
+  private async mutate(
+    projectId: string,
+    workflowRunId: string,
+    expectedRevision: number,
+    templateId: string,
+    mutation: (workspace: EffectTemplateMixWorkspace) => void,
+  ): Promise<EffectTemplateMixWorkspaceData> {
+    const [nodeState, artifactData] = await Promise.all([
+      this.working.getNodeState(projectId, workflowRunId, 'TEMPLATE_MIX'),
+      this.working.listArtifacts(projectId, { workflowRunId }),
+    ]);
+    if (nodeState.revision !== expectedRevision) {
+      throw new ApiHttpException(
+        '混剪草稿已在其他页面更新，请刷新后重试',
+        HttpStatus.CONFLICT,
+        'CONFLICT',
+      );
+    }
+    const draft = draftOf(nodeState.state);
+    const entry = draft.templates.find(({ id }) => id === templateId);
+    if (!entry) this.notFound('当前混剪模板不存在');
+    const workspace: EffectTemplateMixWorkspace = {
+      ...entry!.workspace,
+      materials: artifactData.items
+        .map(materialFrom)
+        .filter((item): item is EffectTemplateMixMaterial => Boolean(item)),
+    };
+    mutation(workspace);
+    entry!.workspace = {
+      editVersion: workspace.editVersion,
+      template: workspace.template,
+      variants: workspace.variants,
+    };
+    const saved = await this.working.putNodeState(projectId, workflowRunId, 'TEMPLATE_MIX', {
+      expectedRevision,
+      schemaVersion: 1,
+      state: draft,
+    });
+    return this.toWorkspaceData(draft, saved.nodeState.revision, artifactData.items);
+  }
+
+  private toWorkspaceData(
+    draft: EffectTemplateMixDraft,
+    draftRevision: number | null,
+    artifacts: WorkingArtifact[],
+  ): EffectTemplateMixWorkspaceData {
+    const materials = artifacts
+      .map(materialFrom)
+      .filter((item): item is EffectTemplateMixMaterial => Boolean(item));
+    const commits = artifacts
+      .filter(
+        ({ nodeId, artifactKey }) =>
+          nodeId === 'TEMPLATE_MIX' && artifactKey.startsWith('mix-template:'),
+      )
+      .map((artifact) => {
+        const data = payload(artifact);
+        const template = object(data.template);
+        return {
+          templateId: String(data.templateId ?? artifact.artifactKey.slice('mix-template:'.length)),
+          revision: artifact.revision,
+          contentHash: '',
+          stale: artifact.freshness === 'STALE',
+          editVersion: Number(data.workspaceVersion ?? template?.editVersion ?? 0),
+        };
+      });
+    return { draft, draftRevision, materials, commits };
+  }
+
+  private notFound(message: string): never {
+    throw new ApiHttpException(message, HttpStatus.NOT_FOUND, 'ASSET_NOT_FOUND');
   }
 
   private validateVariant(

@@ -13,7 +13,12 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain("from './api/effect-template-mix.api'");
     expect(pageSource).toContain('loadEffectTemplateMixWorkspace');
     expect(pageSource).toContain('saveEffectTemplateMixDraft');
+    expect(pageSource).toContain('createEffectTemplateMixVariant');
+    expect(pageSource).toContain('refillEffectTemplateMixVariant');
+    expect(pageSource).toContain('applyEffectTemplateMixVariant');
     expect(pageSource).toContain('validateEffectTemplateMix');
+    expect(pageSource).not.toMatch(/\bfillEffectTemplateMixVariant\b/u);
+    expect(pageSource).not.toContain('syncEffectTemplateMixVariants');
     expect(pageSource).not.toMatch(/Mock|MOCK|createEffectTemplateMixMock/u);
   });
   it('keeps configuration and refinement as separate views', () => {
@@ -30,5 +35,11 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain("pageState === 'ERROR'");
     expect(pageSource).toContain('还没有混剪模板');
     expect(pageSource).toContain(':src="selectedMaterial.contentUrl"');
+  });
+  it('keeps the new-template primary action visibly available', () => {
+    expect(pageSource).toContain('class="button primary modal-submit"');
+    expect(pageSource).toContain('创建模板');
+    expect(pageSource).toContain('type="button"');
+    expect(pageSource).toContain('var(--blue, #2563eb)');
   });
 });

@@ -88,8 +88,19 @@ export type EffectTemplateMixWorkspaceData = {
   }[];
 };
 export type SaveEffectTemplateMixRequest = {
+  workflowRunId: string;
   expectedRevision: number | null;
   draft: EffectTemplateMixDraft;
 };
-export type ValidateEffectTemplateMixRequest = { expectedRevision: number; templateId: string };
+export type EffectTemplateMixRevisionRequest = {
+  workflowRunId: string;
+  expectedRevision: number;
+};
+export type ApplyEffectTemplateMixVariantRequest = EffectTemplateMixRevisionRequest & {
+  sourceVariantId: string;
+  syncOtherVariants: boolean;
+};
+export type ValidateEffectTemplateMixRequest = EffectTemplateMixRevisionRequest & {
+  templateId: string;
+};
 export type ValidateEffectTemplateMixData = { artifacts: WorkingArtifactCommitSummary[] };
