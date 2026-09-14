@@ -84,7 +84,7 @@ class WorkerSettings(BaseSettings):
         le=8192,
     )
     ark_prompt_evaluation_max_output_tokens: int = Field(
-        default=6144,
+        default=8192,
         alias="ARK_PROMPT_EVALUATION_MAX_OUTPUT_TOKENS",
         ge=1024,
         le=8192,
@@ -115,7 +115,7 @@ class WorkerSettings(BaseSettings):
     )
 
     prompt_max_concurrency: int = Field(
-        default=2, alias="PROMPT_MAX_CONCURRENCY", ge=1, le=8
+        default=4, alias="PROMPT_MAX_CONCURRENCY", ge=1, le=8
     )
     prompt_evaluation_input_token_budget: int = Field(
         default=DEFAULT_EVALUATION_INPUT_TOKEN_BUDGET,

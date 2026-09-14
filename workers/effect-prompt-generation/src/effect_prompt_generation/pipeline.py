@@ -17,6 +17,8 @@ from typing import Any, Callable, Literal
 from pydantic import ValidationError
 
 from .api_client import InternalApi, InternalApiError
+from .execution_correction import apply_execution_corrections
+from .scheduling import AiConcurrencyLimiter
 from .insight_mapping import (
     insight_coverage,
     mandatory_business_facts,
@@ -302,6 +304,8 @@ class LoadedRun:
 
 @dataclass(slots=True)
 class RunCache:
+    next_classification_index: int = 0
+    pending_classifications: list[ClassificationShardPlan] = field(default_factory=list)
     material_plan: MaterialBatchPlan | None = None
     prepared_product_images: list[PreparedProductImage] | None = None
     ai_call_count: int = 0
@@ -371,10 +375,10 @@ class PromptGenerationPipeline:
         similarity_mode: Literal["shadow", "vector"] = "vector",
         embedding_batch_size: int = 64,
         embedding_max_concurrency: int = 2,
-        ai_max_concurrency: int = 6,
+        ai_max_concurrency: int = 4,
         shard_size: int = 8,
         candidate_max_output_tokens: int = 8_192,
-        evaluation_max_output_tokens: int = 6_144,
+        evaluation_max_output_tokens: int = 8_192,
         evaluation_input_token_budget: int = 12_000,
         max_ai_calls_per_run: int = 256,
         direction_review_batch_size: int = 6,
@@ -395,7 +399,7 @@ class PromptGenerationPipeline:
         self.embedding_batch_size = embedding_batch_size
         self.embedding_max_concurrency = embedding_max_concurrency
         self.ai_max_concurrency = max(1, ai_max_concurrency)
-        self._ai_semaphore = asyncio.Semaphore(self.ai_max_concurrency)
+        self._ai_semaphore = AiConcurrencyLimiter(self.ai_max_concurrency)
         self.shard_size = shard_size
         self.candidate_max_output_tokens = candidate_max_output_tokens
         self.evaluation_max_output_tokens = evaluation_max_output_tokens
@@ -465,6 +469,16 @@ class PromptGenerationPipeline:
             and item.phase == ShardPhase.CLASSIFICATION
         ]
         cache = self._cache(context)
+        cache.next_classification_index = 1 + max(
+            (shard.shard_index for shard in shards if shard.phase == ShardPhase.CLASSIFICATION),
+            default=-1,
+        )
+        cache.pending_classifications = [
+            ClassificationShardPlan(round=shard.round, shard_index=shard.shard_index,
+                                    candidate_ids=shard.classification_plan)
+            for shard in shards if shard.phase == ShardPhase.CLASSIFICATION
+            and shard.status != StageStatus.SUCCEEDED and shard.classification_plan
+        ]
         cache.pending_execution_drafts = {
             shard.key: shard for shard in shards
             if shard.phase == ShardPhase.CREATIVE
@@ -623,7 +637,8 @@ class PromptGenerationPipeline:
         # execution audits are optional and model-screened, like repair/review
         # calls; supplements/recovery share the same run counter.
         strategy_calls = len(fact_visual_strategy_batches(map_insight(snapshot.insight_artifact.result)))
-        minimum_calls = generation_calls + evaluation_calls + math.ceil(generated_target / 20) + strategy_calls
+        correction_calls = generation_calls if snapshot.operation == "BATCH_GENERATE" else 0
+        minimum_calls = generation_calls + correction_calls + evaluation_calls + math.ceil(generated_target / 20) + strategy_calls
         if minimum_calls > self.max_ai_calls_per_run:
             raise PipelineError(
                 "Prompt run configuration cannot fit the initial batch within the AI call budget"
@@ -3292,11 +3307,109 @@ class PromptGenerationPipeline:
         )
         return pending
 
+    def reduce_ai_concurrency(self) -> None:
+        self._ai_semaphore.reduce_after_rate_limit()
+
+    async def _correct_execution(
+        self, context: RuntimeContext, candidates: list[CreativeCandidate],
+    ) -> list[CreativeCandidate]:
+        if not candidates:
+            return []
+        cache = self._cache(context)
+        self._reserve_ai_call(context)
+        try:
+            async with self._ai_semaphore:
+                call = await self.provider.correct_creative_execution(
+                    candidates, tasks=[cache.creative_tasks[item.slot_id] for item in candidates],
+                    application=self._require_application(context),
+                    shared_prompt=self._required_shared_prompt(context),
+                    fact_visual_strategy=self._required_fact_visual_strategy(context),
+                )
+            return apply_execution_corrections(candidates, call.value, cache.creative_target_durations)
+        except (ProviderError, ValueError) as exc:
+            splittable = isinstance(exc, ValueError) or (
+                isinstance(exc, ProviderError) and exc.error_type in {
+                    ProviderErrorType.RESPONSE_INVALID, ProviderErrorType.OUTPUT_TRUNCATED,
+                    ProviderErrorType.RESPONSE_INCOMPLETE,
+                }
+            )
+            if splittable and len(candidates) > 1:
+                midpoint = math.ceil(len(candidates) / 2)
+                first = await self._correct_execution(context, candidates[:midpoint])
+                return first + await self._correct_execution(context, candidates[midpoint:])
+            if isinstance(exc, ProviderError):
+                raise
+            # Do not let generation's invalid-row recovery silently skip a
+            # mandatory correction. Raw drafts remain available for this Run.
+            raise PipelineError("画面执行修正未完成，已保留生成草稿") from exc
+
+    async def classify_ready_candidates(
+        self, context: RuntimeContext, candidates: list[CreativeCandidate], *, round_number: int,
+    ) -> None:
+        cache = self._cache(context)
+        missing = [item for item in candidates if item.slot_id not in cache.creative_evaluations]
+        by_id = {item.slot_id: item for item in missing}
+        resumed = [shard for shard in cache.pending_classifications
+                   if shard.round == round_number and set(shard.candidate_ids) <= set(by_id)]
+        for shard in resumed:
+            cache.pending_classifications.remove(shard)
+            for item_id in shard.candidate_ids:
+                by_id.pop(item_id)
+            await self.evaluate_classification_shard(context, shard)
+        missing = list(by_id.values())
+        chunks = evaluation_chunks(
+            missing, configured_max_size=CLASSIFICATION_SHARD_SIZE,
+            max_output_tokens=self.evaluation_max_output_tokens,
+            target_durations=cache.creative_target_durations,
+            max_input_tokens=self.evaluation_input_token_budget,
+        )
+        for chunk in chunks:
+            index = cache.next_classification_index
+            cache.next_classification_index += 1
+            await self._stage(
+                context, NodeId.CREATIVE_EVALUATION_CLASSIFICATION, StageStatus.RUNNING,
+                "已完成分片正在评分，其余分片继续生成与修正",
+                metadata={"round": round_number, "candidateCount": len(cache.creatives),
+                          "evaluatedCandidateCount": len(cache.creative_evaluations),
+                          "plannedOutputTokenLimit": self.evaluation_max_output_tokens},
+            )
+            await self.evaluate_classification_shard(context, ClassificationShardPlan(
+                round=round_number, shard_index=index,
+                candidate_ids=[item.slot_id for item in chunk],
+            ))
+
+    async def restored_round_candidates(
+        self, context: RuntimeContext, *, round_number: int,
+    ) -> list[CreativeCandidate]:
+        cache = self._cache(context)
+        restored: list[CreativeCandidate] = []
+        for record in await self.api.get_shards(context):
+            if (record.phase != ShardPhase.CREATIVE or record.round != round_number
+                    or record.status != StageStatus.SUCCEEDED):
+                continue
+            missing = [item for item in record.creative_items
+                       if item.slot_id not in cache.creative_evaluations]
+            if missing and "已完成独立画面执行修正" not in record.warnings:
+                corrected = await self._correct_execution(context, missing)
+                replacements = {item.slot_id: item for item in corrected}
+                record = record.model_copy(update={
+                    "creative_items": [replacements.get(item.slot_id, item) for item in record.creative_items],
+                    "warnings": [*record.warnings, "已完成独立画面执行修正"],
+                })
+                await self.api.put_shard(context, record)
+                cache.creatives.update(replacements)
+                missing = corrected
+            restored.extend(missing)
+        return restored
+
     async def generate_creative_shard(
         self,
         context: RuntimeContext,
         shard: CreativeShardPlan,
     ) -> list[CreativeCandidate]:
+        cache = self._cache(context)
+        cache.creative_tasks.update({task.slot_id: task for task in shard.tasks})
+        cache.creative_target_durations.update({task.slot_id: task.target_duration_seconds for task in shard.tasks})
         cached_draft = self._cache(context).pending_execution_drafts.get(shard.key)
         draft_items = (
             cached_draft.creative_items
@@ -3314,6 +3427,7 @@ class PromptGenerationPipeline:
         await self.api.put_shard(context, running)
         snapshot = self.snapshot(context)
         regeneration_context: dict[str, Any] | None = None
+        correction_started = False
         if snapshot.operation == "ITEM_REGENERATE" and snapshot.target_item:
             regeneration_context = {
                 "instruction": snapshot.regeneration_instruction or "",
@@ -3443,8 +3557,15 @@ class PromptGenerationPipeline:
             await request_candidates(shard)
             generated_items = [available_drafts[task.slot_id] for task in shard.tasks
                                if task.slot_id in available_drafts]
+            if snapshot.operation == "BATCH_GENERATE":
+                correction_started = True
+                generated_items = await self._correct_execution(context, generated_items)
+                running = running.model_copy(update={
+                    "warnings": [*running.warnings, "已完成独立画面执行修正"],
+                })
             if len(generated_items) < len(shard.tasks):
                 running = running.model_copy(update={"warnings": [
+                    *running.warnings,
                     f"仍有 {len(shard.tasks) - len(generated_items)} 条结构无效；有效候选继续进入质量评估"
                 ]})
             generated_at = utc_now()
@@ -3472,6 +3593,7 @@ class PromptGenerationPipeline:
             setattr(exc, "node_id", node_id)
             if (
                 snapshot.operation == "BATCH_GENERATE"
+                and not correction_started
                 and isinstance(exc, ProviderError)
                 and exc.error_type == ProviderErrorType.RESPONSE_INVALID
             ):
@@ -3905,7 +4027,7 @@ class PromptGenerationPipeline:
 
             # AI diagnoses and rewrites; Worker only selects by explicit model
             # verdicts, numeric scores and source IDs. Persist before each repair.
-            if self.snapshot(context).operation != "ITEM_EVALUATE":
+            if self.snapshot(context).operation == "ITEM_REGENERATE":
                 for index, original_evaluation in enumerate(items):
                     original = candidate_by_id[original_evaluation.slot_id]
                     task = cache.creative_tasks.get(original.slot_id)

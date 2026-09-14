@@ -7,7 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
 
-from .models import GraphState, InputState, NodeId, OutputState, RuntimeContext
+from .models import CreativeShardPlan, GraphState, InputState, NodeId, OutputState, RuntimeContext
 from .pipeline import MAX_REPLENISHMENT_ROUNDS, PromptGenerationPipeline
 
 
@@ -26,6 +26,36 @@ async def _gather_cancel_on_error(calls: list[Awaitable[object]]) -> None:
 def build_graph(
     pipeline: PromptGenerationPipeline,
 ) -> CompiledStateGraph[GraphState, RuntimeContext, InputState, OutputState]:
+    async def process_round(
+        context: RuntimeContext, pending: list[CreativeShardPlan], round_number: int,
+    ) -> None:
+        if pipeline.snapshot(context).operation == "BATCH_GENERATE":
+            # Bound entire shard chains, not just HTTP calls: an early shard
+            # can reach correction/scoring without queuing behind all producers.
+            chains = asyncio.Semaphore(pipeline.ai_max_concurrency)
+            restored = await pipeline.restored_round_candidates(context, round_number=round_number)
+
+            async def process_shard(shard: CreativeShardPlan) -> None:
+                async with chains:
+                    items = await pipeline.generate_creative_shard(context, shard)
+                    await pipeline.classify_ready_candidates(context, items, round_number=round_number)
+
+            await _gather_cancel_on_error([
+                pipeline.classify_ready_candidates(context, restored, round_number=round_number),
+                *(process_shard(shard) for shard in pending),
+            ])
+            await pipeline.complete_creative_generation(context, round_number=round_number)
+        else:
+            await _gather_cancel_on_error([
+                pipeline.generate_creative_shard(context, shard) for shard in pending
+            ])
+            await pipeline.complete_creative_generation(context, round_number=round_number)
+            classifications = await pipeline.plan_classification(context, round_number=round_number)
+            await _gather_cancel_on_error([
+                pipeline.evaluate_classification_shard(context, shard) for shard in classifications
+            ])
+        await pipeline.complete_classification(context, round_number=round_number)
+
     async def load(
         state: GraphState, runtime: Runtime[RuntimeContext]
     ) -> dict[str, object]:
@@ -68,53 +98,13 @@ def build_graph(
     ) -> dict[str, object]:
         del state
         pending = await pipeline.plan_creatives(runtime.context, round_number=0)
-        if pending:
-            await _gather_cancel_on_error(
-                [
-                    pipeline.generate_creative_shard(runtime.context, shard)
-                    for shard in pending
-                ]
-            )
-        await pipeline.complete_creative_generation(runtime.context, round_number=0)
-        classifications = await pipeline.plan_classification(
-            runtime.context, round_number=0
-        )
-        if classifications:
-            await _gather_cancel_on_error(
-                [
-                    pipeline.evaluate_classification_shard(runtime.context, shard)
-                    for shard in classifications
-                ]
-            )
-        await pipeline.complete_classification(runtime.context, round_number=0)
+        await process_round(runtime.context, pending, 0)
         supplement, needed = await pipeline.select_creatives(
             runtime.context, round_number=0
         )
         supplement_round = 1
         while needed and supplement_round <= MAX_REPLENISHMENT_ROUNDS:
-            if supplement:
-                await _gather_cancel_on_error(
-                    [
-                        pipeline.generate_creative_shard(runtime.context, shard)
-                        for shard in supplement
-                    ]
-                )
-            await pipeline.complete_creative_generation(
-                runtime.context, round_number=supplement_round
-            )
-            classifications = await pipeline.plan_classification(
-                runtime.context, round_number=supplement_round
-            )
-            if classifications:
-                await _gather_cancel_on_error(
-                    [
-                        pipeline.evaluate_classification_shard(runtime.context, shard)
-                        for shard in classifications
-                    ]
-                )
-            await pipeline.complete_classification(
-                runtime.context, round_number=supplement_round
-            )
+            await process_round(runtime.context, supplement, supplement_round)
             supplement, needed = await pipeline.select_creatives(
                 runtime.context, round_number=supplement_round
             )

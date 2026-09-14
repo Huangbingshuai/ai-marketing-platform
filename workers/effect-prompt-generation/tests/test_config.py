@@ -36,11 +36,11 @@ def test_mock_requires_explicit_provider_and_prompt_model_falls_back() -> None:
     assert settings.resolved_prompt_candidate_model == "doubao-seed-2-1-turbo-260628"
     assert settings.ark_prompt_strategy_max_output_tokens == 8192
     assert settings.ark_prompt_candidate_max_output_tokens == 8192
-    assert settings.ark_prompt_evaluation_max_output_tokens == 6144
+    assert settings.ark_prompt_evaluation_max_output_tokens == 8192
     assert settings.prompt_evaluation_input_token_budget == 12000
     assert settings.ark_prompt_reasoning_effort == "minimal"
     assert settings.prompt_max_ai_calls_per_run == 256
-    assert settings.prompt_max_concurrency == 2
+    assert settings.prompt_max_concurrency == 4
     assert settings.prompt_shard_size == 8
     assert settings.ark_prompt_strategy_timeout_seconds == 180
     assert settings.ark_prompt_direction_review_timeout_seconds == 180

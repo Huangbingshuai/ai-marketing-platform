@@ -141,7 +141,7 @@ async def test_generic_product_graph_generates_without_old_planning_or_blind_edi
 
 
 @pytest.mark.asyncio
-async def test_material_execution_is_rewritten_only_after_ai_diagnosis() -> None:
+async def test_material_execution_keeps_focused_audit_without_post_score_repair_loop() -> None:
     class DiagnosticRepairProvider(TrackingProvider):
         def __init__(self) -> None:
             super().__init__()
@@ -199,10 +199,11 @@ async def test_material_execution_is_rewritten_only_after_ai_diagnosis() -> None
             candidate_ids=[candidates[0].slot_id],
         ),
     )
-    assert provider.repair_calls == 1
-    assert provider.evaluation_calls == 2
-    assert provider.audit_calls == 2
-    assert pipeline._cache(runtime).creatives[candidates[0].slot_id].dimensions.camera == "固定机位观察"
+    assert provider.repair_calls == 0
+    assert provider.evaluation_calls == 1
+    assert provider.audit_calls == 1
+    assert pipeline._cache(runtime).creatives[candidates[0].slot_id] == candidates[0]
+    assert pipeline._cache(runtime).creative_evaluations[candidates[0].slot_id].execution_findings
 
 
 @pytest.mark.asyncio
@@ -213,8 +214,8 @@ async def test_material_preflight_counts_model_screened_audit_as_optional() -> N
     assert budget["plannedInitialCandidateCount"] == 50
     generation_calls = (50 + budget["plannedCreativeShardSize"] - 1) // budget["plannedCreativeShardSize"]
     evaluation_calls = (50 + budget["plannedEvaluationShardSize"] - 1) // budget["plannedEvaluationShardSize"]
-    assert budget["plannedMinimumAiCallCount"] >= generation_calls + evaluation_calls + 3
-    assert budget["plannedMinimumAiCallCount"] < generation_calls + evaluation_calls * 2 + 3
+    assert budget["plannedMinimumAiCallCount"] >= 2 * generation_calls + evaluation_calls + 3
+    assert budget["plannedMinimumAiCallCount"] < 2 * generation_calls + evaluation_calls * 2 + 3
 
 
 @pytest.mark.asyncio

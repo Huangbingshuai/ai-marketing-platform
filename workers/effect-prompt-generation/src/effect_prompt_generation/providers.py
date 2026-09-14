@@ -7,7 +7,7 @@ import logging
 import random
 import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from collections import Counter
 from dataclasses import dataclass
 from enum import StrEnum
@@ -23,6 +23,7 @@ from .creative_directions import (
     creative_territory_target_range,
 )
 from .insight_mapping import mandatory_business_facts
+from .execution_correction import ExecutionCorrectionBatch, ExecutionCorrectionItem
 from .product_images import PreparedProductImage
 from .supplement_recovery import direction_summary, route_summary
 from .models import (
@@ -95,6 +96,7 @@ LOGGER = logging.getLogger(__name__)
 CREATIVE_BASE_PROMPT = "creative_base.system.prompt.txt"
 CREATIVE_TASK_PROMPT = "creative_task.user.prompt.txt"
 EXECUTION_REPAIR_PROMPT = "execution_repair.system.prompt.txt"
+EXECUTION_CORRECTION_PROMPT = "execution_correction.system.prompt.txt"
 EXECUTION_AUDIT_PROMPT = "execution_audit.system.prompt.txt"
 EVALUATION_BASE_PROMPT = "evaluation_base.system.prompt.txt"
 EVALUATION_TASK_PROMPT = "evaluation_task.user.prompt.txt"
@@ -265,6 +267,12 @@ def _visual_style_baseline_section(style_instruction: str) -> str:
 
 
 class AiProvider(Protocol):
+    async def correct_creative_execution(
+        self, candidates: list[CreativeCandidate], *, tasks: Sequence[CreativeTask],
+        application: InsightApplicationMap, shared_prompt: SharedPrompt,
+        fact_visual_strategy: FactVisualStrategy,
+    ) -> AiCallResult[ExecutionCorrectionBatch]: ...
+
     async def plan_materials(
         self, application: InsightApplicationMap, *, task_ids: Sequence[str],
         fact_visual_strategy: FactVisualStrategy, shared_prompt: SharedPrompt,
@@ -407,6 +415,18 @@ class AiProvider(Protocol):
 
 
 class MockAiProvider:
+    async def correct_creative_execution(
+        self, candidates: list[CreativeCandidate], *, tasks: Sequence[CreativeTask],
+        application: InsightApplicationMap, shared_prompt: SharedPrompt,
+        fact_visual_strategy: FactVisualStrategy,
+    ) -> AiCallResult[ExecutionCorrectionBatch]:
+        return _mock_result(
+            ExecutionCorrectionBatch(items=[
+                ExecutionCorrectionItem(slot_id=item.slot_id, changed=False)
+                for item in candidates
+            ]), NodeId.COHERENT_CREATIVE_GENERATION.value, EXECUTION_CORRECTION_PROMPT,
+        )
+
     async def plan_materials(
         self, application: InsightApplicationMap, *, task_ids: Sequence[str],
         fact_visual_strategy: FactVisualStrategy, shared_prompt: SharedPrompt,
@@ -858,6 +878,39 @@ class MockAiProvider:
 
 
 class ArkResponsesProvider:
+    async def correct_creative_execution(
+        self, candidates: list[CreativeCandidate], *, tasks: Sequence[CreativeTask],
+        application: InsightApplicationMap, shared_prompt: SharedPrompt,
+        fact_visual_strategy: FactVisualStrategy,
+    ) -> AiCallResult[ExecutionCorrectionBatch]:
+        by_id = {task.slot_id: task for task in tasks}
+        schema = ExecutionCorrectionBatch.model_json_schema(by_alias=True)
+        schema["properties"]["items"].update(minItems=len(candidates), maxItems=len(candidates))
+        schema["$defs"]["ExecutionCorrectionItem"]["properties"]["slotId"]["enum"] = [
+            item.slot_id for item in candidates
+        ]
+        payload = {
+            "items": [{
+                "task": _creative_task_brief(
+                    by_id[item.slot_id],
+                    assignment=_creative_fact_assignment(by_id[item.slot_id], application),
+                    application=application, fact_visual_strategy=fact_visual_strategy,
+                ),
+                "original": item.model_dump(mode="json", by_alias=True,
+                                            exclude={"content", "generated_at"}),
+            } for item in candidates],
+            "sharedPrompt": shared_prompt.compiled_content,
+        }
+        return await self._structured(
+            json.dumps(payload, ensure_ascii=False), ExecutionCorrectionBatch,
+            schema_name="effect_prompt_execution_correction",
+            stage=NodeId.COHERENT_CREATIVE_GENERATION.value,
+            prompt_file=EXECUTION_CORRECTION_PROMPT, model=self._candidate_model,
+            max_output_tokens=self._candidate_max_output_tokens,
+            request_timeout=self._candidate_timeout,
+            instructions=load_prompt(EXECUTION_CORRECTION_PROMPT), response_schema=schema,
+        )
+
     async def plan_materials(
         self, application: InsightApplicationMap, *, task_ids: Sequence[str],
         fact_visual_strategy: FactVisualStrategy, shared_prompt: SharedPrompt,
@@ -915,7 +968,7 @@ class ArkResponsesProvider:
         strategy_max_output_tokens: int = 8192,
         candidate_max_output_tokens: int = 8192,
         fragment_strategy_max_output_tokens: int = 3072,
-        evaluation_max_output_tokens: int = 6144,
+        evaluation_max_output_tokens: int = 8192,
         reasoning_effort: str = "minimal",
         strategy_timeout: float = 180.0,
         candidate_timeout: float = 120.0,
@@ -924,10 +977,12 @@ class ArkResponsesProvider:
         direction_review_timeout: float = 180.0,
         max_attempts: int = 1,
         transport: httpx.AsyncBaseTransport | None = None,
+        on_rate_limit: Callable[[], None] | None = None,
     ) -> None:
         if not strategy_model.strip() or not candidate_model.strip():
             raise ValueError("Ark prompt models cannot be empty")
         self._strategy_model = strategy_model.strip()
+        self.on_rate_limit = on_rate_limit
         self._candidate_model = candidate_model.strip()
         self._visual_strategy_model = (
             visual_strategy_model or candidate_model
@@ -2664,6 +2719,8 @@ class ArkResponsesProvider:
                                     ),
                                 )
                 elif response.status_code == 429:
+                    if self.on_rate_limit is not None:
+                        self.on_rate_limit()
                     last_error, error_type, retryable = (
                         RuntimeError("rate limited"),
                         ProviderErrorType.RATE_LIMIT,

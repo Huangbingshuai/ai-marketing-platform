@@ -140,6 +140,9 @@ async def prepared(provider: LocatedProvider) -> tuple[Any, Any, Any, Any]:
     pipeline, runtime = await ready_pipeline(provider)
     shards = await pipeline.plan_creatives(runtime, round_number=0)
     await pipeline.generate_creative_shard(runtime, shards[0])
+    # These regression cases exercise the retained single-item repair path;
+    # new batches are corrected before scoring (test_execution_correction).
+    pipeline.snapshot(runtime).operation = "ITEM_REGENERATE"
     candidate = next(iter(pipeline._cache(runtime).creatives.values()))
     shard = ClassificationShardPlan(
         round=0, shard_index=0, candidate_ids=[candidate.slot_id]
@@ -265,7 +268,7 @@ async def test_diagnosed_candidate_is_repaired_or_preserved_with_warning(
             assert result.execution_repair.status == "KEPT_ORIGINAL"
     calls = (provider.repairs, provider.evaluations, provider.audits)
     resumed = PromptGenerationPipeline(api=pipeline.api, provider=provider)
-    resumed.register_snapshot(runtime, _snapshot())
+    resumed.register_snapshot(runtime, pipeline.snapshot(runtime))
     await resumed.load_and_snapshot(runtime)
     assert resumed._cache(runtime).creatives[original.slot_id] == current
     assert shard.key in resumed._cache(runtime).completed_classification_shard_keys
@@ -294,7 +297,7 @@ async def test_attempt_marker_survives_interruption_before_repair_result() -> No
     assert stored.status == StageStatus.RUNNING
     assert stored.evaluations[0].execution_repair.status == "STARTED"
     resumed = PromptGenerationPipeline(api=pipeline.api, provider=provider)
-    resumed.register_snapshot(runtime, _snapshot())
+    resumed.register_snapshot(runtime, pipeline.snapshot(runtime))
     await resumed.load_and_snapshot(runtime)
     assert shard.key not in resumed._cache(runtime).completed_classification_shard_keys
     restored_diagnosis = resumed._cache(runtime).execution_repair_records[

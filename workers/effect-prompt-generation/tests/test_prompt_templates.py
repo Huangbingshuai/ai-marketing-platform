@@ -14,6 +14,7 @@ from effect_prompt_generation.prompt_loader import (
 from effect_prompt_generation.providers import _visual_style_baseline_section
 
 ACTIVE_PROMPT_FILES = {
+    "execution_correction.system.prompt.txt",
     "material_creative.user.prompt.txt",
     "material_planning.system.prompt.txt",
     "execution_repair.system.prompt.txt",

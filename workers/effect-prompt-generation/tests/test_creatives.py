@@ -716,7 +716,7 @@ async def test_graph_generates_exact_fact_tasks_then_selects_exact_count() -> No
     )
     assert Counter(item.phase.value for item in api.shards.values()) == {
         "CREATIVE": 3,
-        "CLASSIFICATION": 4,
+        "CLASSIFICATION": 3,
     }
 
     creative_tasks = [
@@ -1029,7 +1029,7 @@ async def test_retries_one_invalid_classification_response_inside_its_shard() ->
         context=runtime,
     )
 
-    assert provider.calls == 6
+    assert provider.calls == 5
     assert api.result is not None
     assert api.result.metrics.generated_candidate_count == 10
 
@@ -1052,8 +1052,8 @@ async def test_splits_truncated_classification_shard_without_failing_batch() -> 
         context=runtime,
     )
 
-    assert provider.batch_calls == 6
-    assert 3 in provider.batch_sizes
+    assert provider.batch_calls == 7
+    assert 4 in provider.batch_sizes
     assert 2 in provider.batch_sizes
     assert provider.single_calls == 10
     assert api.result is not None
@@ -1063,8 +1063,8 @@ async def test_splits_truncated_classification_shard_without_failing_batch() -> 
         for stage in reversed(api.stages)
         if stage.node_id.value == "CREATIVE_EVALUATION_CLASSIFICATION"
     )
-    assert classification_stage.metadata["evaluationCallCount"] == 16
-    assert classification_stage.metadata["splitRecoveryCount"] == 6
+    assert classification_stage.metadata["evaluationCallCount"] == 17
+    assert classification_stage.metadata["splitRecoveryCount"] == 7
 
 
 def test_planned_business_facts_are_evaluated_without_product_snapshot_competing() -> (
@@ -1191,7 +1191,7 @@ async def test_classification_retry_keeps_stable_shard_assignments() -> None:
     classification_shards = [
         shard for shard in api.shards.values() if shard.phase.value == "CLASSIFICATION"
     ]
-    assert {shard.shard_index for shard in classification_shards} == {0, 1, 2, 3}
+    assert {shard.shard_index for shard in classification_shards} == {0, 1, 2}
     assert all(shard.status == "SUCCEEDED" for shard in classification_shards)
     assert sum(len(shard.evaluations) for shard in classification_shards) == 10
     assert api.result is not None
@@ -1831,7 +1831,7 @@ async def test_quantity_supplement_only_replaces_rejected_initial_tasks() -> Non
     assert api.result.metrics.hard_issue_counts == []
     assert Counter(item.phase.value for item in api.shards.values()) == {
         "CREATIVE": 4,
-        "CLASSIFICATION": 5,
+        "CLASSIFICATION": 4,
     }
     selection_stage = next(
         stage
@@ -1943,7 +1943,7 @@ async def test_candidate_ceiling_stops_repeated_low_quality_supplements() -> Non
     assert api.result is None
     assert Counter(item.phase.value for item in api.shards.values()) == {
         "CREATIVE": 6,
-        "CLASSIFICATION": 8,
+        "CLASSIFICATION": 6,
     }
     supplement_tasks = [
         task

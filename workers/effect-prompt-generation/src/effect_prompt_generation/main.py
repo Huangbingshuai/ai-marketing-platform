@@ -98,6 +98,8 @@ async def serve(settings: WorkerSettings) -> None:
             max_output_bytes=settings.prompt_visual_reference_max_output_bytes,
         ),
     )
+    if isinstance(provider, ArkResponsesProvider):
+        provider.on_rate_limit = pipeline.reduce_ai_concurrency
     consumer = PromptGenerationConsumer(
         rabbitmq_url=settings.rabbitmq_url.get_secret_value(),
         queue_name=settings.effect_prompt_queue,
