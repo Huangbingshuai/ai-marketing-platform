@@ -86,6 +86,7 @@ describe('effect prompt generation contract', () => {
     expect(EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_1_5_PRO.resolutions).toEqual([
       '480p',
       '720p',
+      '1080p',
     ]);
     expect(batchSchema.properties.settings.properties.targetCount.maximum).toBe(100);
     expect(batchSchema.properties.settings.properties.defaultDurationSeconds.maximum).toBe(15);
