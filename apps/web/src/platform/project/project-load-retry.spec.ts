@@ -5,7 +5,7 @@ import { isRetryableProjectLoadError, loadProjectListWithRetry } from './project
 describe('project list startup retry', () => {
   it('retries transient startup failures and resolves without a manual refresh', async () => {
     const request = vi
-      .fn<() => Promise<string>>()
+      .fn<(_: AbortSignal) => Promise<string>>()
       .mockRejectedValueOnce({ status: 502 })
       .mockRejectedValueOnce(new TypeError('fetch failed'))
       .mockResolvedValue('ready');
@@ -48,23 +48,27 @@ describe('project list startup retry', () => {
     expect(wait).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps checking with the final delay while the local API is still starting', async () => {
-    const request = vi
-      .fn<() => Promise<string>>()
-      .mockRejectedValueOnce({ status: 503 })
-      .mockRejectedValueOnce(new TypeError('fetch failed'))
-      .mockResolvedValue('ready');
+  it('times out a hanging request and stops after the retry budget', async () => {
+    vi.useFakeTimers();
+    const request = vi.fn(
+      (signal: AbortSignal) =>
+        new Promise<string>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+        }),
+    );
     const wait = vi.fn().mockResolvedValue(undefined);
+    const promise = loadProjectListWithRetry(request, new AbortController().signal, {
+      attemptTimeoutMs: 10,
+      delays: [100],
+      wait,
+    });
+    const assertion = expect(promise).rejects.toThrow('项目列表请求超时');
 
-    await expect(
-      loadProjectListWithRetry(request, new AbortController().signal, {
-        continueWithLastDelay: true,
-        delays: [100],
-        wait,
-      }),
-    ).resolves.toBe('ready');
-    expect(request).toHaveBeenCalledTimes(3);
-    expect(wait.mock.calls.map(([delay]) => delay)).toEqual([100, 100]);
+    await vi.advanceTimersByTimeAsync(20);
+    await assertion;
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(wait).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
   });
 
   it('only treats network and temporary HTTP failures as retryable', () => {

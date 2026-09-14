@@ -47,7 +47,6 @@ export type EffectSegmentRenderTask = {
   fragmentType: EffectPromptFragmentType;
   compatibleFragmentTypes: EffectPromptFragmentType[];
   durationSeconds: number;
-  modelMatch: 'AUTO_MATCHED';
   source: EffectSegmentRenderSource;
   origin: EffectSegmentRenderOrigin;
   sourceName: string;
@@ -96,7 +95,6 @@ const effectSegmentRenderTaskFromApi = (
 ): EffectSegmentRenderTask => ({
   ...task,
   compatibleFragmentTypes: [...task.compatiblePurposes],
-  origin: 'AI_GENERATED',
   activeVersion: task.output?.version ?? 1,
   repair: task.repair
     ? {

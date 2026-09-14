@@ -1,3 +1,4 @@
+import type { EffectSegmentRenderBatch } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -7,6 +8,7 @@ import {
   effectSegmentRenderCreativeCoreMap,
   effectSegmentRenderPromptDetailsMap,
   effectSegmentRenderSummary,
+  effectSegmentRenderWorkspaceWithBatch,
   filterEffectSegmentRenderTasks,
   type EffectSegmentRenderTask,
 } from './effect-segment-render-state';
@@ -25,7 +27,6 @@ const task = (
   fragmentType: 'HOOK',
   compatibleFragmentTypes: ['PRODUCT_DISPLAY'],
   durationSeconds: 5,
-  modelMatch: 'AUTO_MATCHED',
   source: 'PROMPT',
   origin: 'AI_GENERATED',
   sourceName: `P${index}`,
@@ -41,6 +42,53 @@ const task = (
 });
 
 describe('effect segment render state', () => {
+  it('preserves whether a completed slot came from AI generation or external import', () => {
+    const current = {
+      projectId: 'project-1',
+      workflowRunId: 'run-1',
+      productId: 'product-1',
+      sourcePromptArtifactId: null,
+      sourcePromptRevision: null,
+      promptCount: 1,
+      batchStatus: 'NOT_STARTED' as const,
+      tasks: [],
+      startedAt: null,
+      completedAt: null,
+      updatedAt: '2026-08-26T00:00:00.000Z',
+    };
+    const imported = task(1, 'COMPLETED');
+    imported.origin = 'EXTERNAL_IMPORT';
+    const batch = {
+      id: 'batch-1',
+      projectId: current.projectId,
+      workflowRunId: current.workflowRunId,
+      productId: current.productId,
+      productName: imported.productName,
+      sourcePrompt: { artifactId: 'artifact-1', revision: 1, contentHash: 'a'.repeat(64) },
+      status: 'COMPLETED',
+      stale: false,
+      revision: 2,
+      commitStatus: 'DRAFT_CHANGED',
+      workingArtifactRevision: 1,
+      summary: { total: 1, completed: 1, running: 0, failed: 0 },
+      tasks: [
+        {
+          ...imported,
+          compatiblePurposes: imported.compatibleFragmentTypes,
+          sourceName: 'P001-import.mp4',
+          output: null,
+          repair: null,
+        },
+      ],
+      createdAt: current.updatedAt,
+      updatedAt: current.updatedAt,
+    } as EffectSegmentRenderBatch;
+
+    expect(effectSegmentRenderWorkspaceWithBatch(current, batch).tasks[0]?.origin).toBe(
+      'EXTERNAL_IMPORT',
+    );
+  });
+
   it('summarizes completed, running and abnormal tasks', () => {
     expect(
       effectSegmentRenderSummary([

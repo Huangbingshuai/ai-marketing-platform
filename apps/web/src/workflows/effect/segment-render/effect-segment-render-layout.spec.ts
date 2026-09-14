@@ -54,6 +54,10 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain(':src="taskVideoUrl(task)"');
     expect(pageSource).toContain('preload="metadata"');
     expect(pageSource).toContain('@seeked="captureTaskVideoPoster(task, $event)"');
+    expect(pageSource).toContain('const TASK_VIDEO_POSTER_CAPTURE_SECONDS = 0.5;');
+    expect(pageSource).not.toContain(
+      'video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) captureTaskVideoPoster(task, event)',
+    );
     expect(pageSource).toContain("{ 'video-ready': isTaskVideoReady(task) }");
     expect(pageSource).toContain("{ 'is-ready': isTaskVideoReady(task) }");
     expect(pageSource).toContain('task.output');
@@ -62,7 +66,9 @@ describe('effect segment render material gallery layout', () => {
   });
 
   it('reuses the AI-generated tag and confirmed prompt creative details in dialogs', () => {
-    expect(pageSource).toContain('class="origin-tag ai preview-origin-tag">AI 生成</span>');
+    expect(pageSource).toContain(
+      "previewTask.origin === 'EXTERNAL_IMPORT' ? '外部导入' : 'AI 生成'",
+    );
     expect(pageSource).not.toContain('真实视频素材</em>');
     expect(pageSource).toContain('effectSegmentRenderPromptDetailsMap(promptArtifact.payload)');
     expect(pageSource.match(/<EffectSegmentRenderSourcePrompt/gu)).toHaveLength(2);
@@ -83,19 +89,27 @@ describe('effect segment render material gallery layout', () => {
     );
   });
 
-  it('caches decoded poster frames across material page changes', () => {
+  it('uses server posters and asynchronously caches legacy decoded frames', () => {
     expect(pageSource).toContain('const cardVideoPosterUrls = ref<Map<string, string>>(new Map())');
     expect(pageSource).toContain('const captureTaskVideoPoster =');
-    expect(pageSource).toContain("canvas.toDataURL('image/jpeg', 0.76)");
+    expect(pageSource).toContain('canvas.toBlob(');
+    expect(pageSource).toContain('URL.createObjectURL(blob)');
+    expect(pageSource).toContain("'POSTER'");
+    expect(pageSource).toContain('task.output.poster.version');
     expect(pageSource).toContain('v-if="taskVideoPosterUrl(task)"');
+    expect(pageSource).toContain('loading="lazy"');
+    expect(pageSource).toContain('decoding="async"');
     expect(pageSource).not.toContain('const pagedTaskVideoSignature = computed');
     expect(pageSource).toContain('v-if="isEffectSegmentRenderBusy(task.status)"');
     expect(pageSource).not.toContain('!isTaskVideoReady(task))');
   });
 
-  it('loads video poster metadata only when a card approaches the viewport', () => {
+  it('limits legacy video poster decoding to cards approaching the viewport', () => {
     expect(pageSource).toContain("{ rootMargin: '240px 0px', threshold: 0.01 }");
-    expect(pageSource).toContain('v-task-video-visible="taskVideoKey(task)"');
+    expect(pageSource).toContain(
+      'v-task-video-visible="taskVideoPosterUrl(task) ? \'\' : taskVideoKey(task)"',
+    );
+    expect(pageSource).toContain('const TASK_VIDEO_FALLBACK_CONCURRENCY = 3');
     expect(pageSource).toContain('taskVideoUrl(task) && shouldLoadTaskVideo(task)');
     expect(pageSource).toContain('loadEffectSegmentRenderWorkspaceSnapshot(');
     expect(pageSource).toContain('if (snapshot.prefetched)');
@@ -161,7 +175,12 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain('再次产生供应商费用');
     expect(pageSource).toContain('原批次数据不会删除');
     expect(pageSource).not.toContain('批量删除');
-    expect(pageSource).toContain('真实素材删除接口尚未接入');
+    expect(pageSource).toContain('deleteEffectSegmentRenderMaterials');
+    expect(pageSource).toContain('importEffectSegmentRenderMaterials');
+    expect(pageSource).toContain('exportEffectSegmentRenderMaterials');
+    expect(pageSource).not.toContain('尚未接入');
+    expect(pageSource).not.toContain('AUTO_MATCHED');
+    expect(pageSource).not.toContain('modelMatch');
     expect(pageSource).toContain('@keydown.esc="closeTransferPanel(true)"');
     expect(pageSource).toContain('trigger?.isConnected && trigger.focus()');
     expect(pageSource).toContain(
@@ -189,8 +208,12 @@ describe('effect segment render material gallery layout', () => {
       expect(pageSource).toContain(`label: '${model}'`);
     expect(pageSource).not.toContain("label: 'Seedance 1.5 Pro'");
     expect(pageSource).not.toContain("label: 'Seedance 1.0'");
-    expect(pageSource).toContain("resolutions: ['480p', '720p', '1080p']");
-    expect(pageSource.match(/resolutions: \['480p', '720p'\]/gu)).toHaveLength(3);
+    expect(pageSource).toContain(
+      'resolutions: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_2_0.resolutions',
+    );
+    expect(pageSource).toContain(
+      'resolutions: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_1_5_PRO.resolutions',
+    );
     expect(pageSource).toContain('selectedCapability.value.ratios.map');
     expect(pageSource).toContain('selectedCapability.value.resolutions.map');
     expect(pageSource).toContain('next.resolution = capability.defaultResolution');
@@ -212,6 +235,7 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain('真实 Seedance 任务');
     expect(pageSource).toContain('pollTimer = setTimeout');
     expect(pageSource).not.toContain('setInterval(');
+    expect(pageSource).toContain("'VIDEO',\n    output.version");
   });
 
   it('matches the immediate preview frame to the configured render ratio', () => {

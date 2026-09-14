@@ -1,5 +1,6 @@
 import {
   EFFECT_PROMPT_RENDER_CAPABILITY_KEYS,
+  EFFECT_SEGMENT_RENDER_EXPORT_FORMATS,
   EFFECT_SEGMENT_RENDER_LIMITS,
   EFFECT_SEGMENT_RENDER_REPAIR_DECISIONS,
   SEEDANCE_RATIOS,
@@ -94,6 +95,38 @@ export class DecideSegmentRenderRepairDto {
 
 export class SegmentRenderTaskContentQueryDto {
   @IsOptional() @IsIn(['ACTIVE', 'REPAIR']) variant: 'ACTIVE' | 'REPAIR' = 'ACTIVE';
+  @IsOptional() @IsIn(['VIDEO', 'POSTER']) kind: 'VIDEO' | 'POSTER' = 'VIDEO';
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) version?: number;
+}
+
+export class ImportSegmentRenderMaterialsDto {
+  @Type(() => Number) @IsInt() @Min(1) expectedBatchRevision!: number;
+  @IsString() @IsNotEmpty() @MaxLength(500) idempotencyKey!: string;
+  @IsString() @IsNotEmpty() @MaxLength(20_000) mappings!: string;
+}
+
+export class DeleteSegmentRenderMaterialsDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(EFFECT_SEGMENT_RENDER_LIMITS.maxTaskIdsPerOperation)
+  @IsUUID('4', { each: true })
+  taskIds!: string[];
+  @Type(() => Number) @IsInt() @Min(1) expectedBatchRevision!: number;
+  @IsString() @IsNotEmpty() @MaxLength(500) idempotencyKey!: string;
+}
+
+export class ExportSegmentRenderMaterialsDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(EFFECT_SEGMENT_RENDER_LIMITS.maxTaskIdsPerOperation)
+  @IsUUID('4', { each: true })
+  taskIds!: string[];
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(EFFECT_SEGMENT_RENDER_EXPORT_FORMATS.length)
+  @IsIn(EFFECT_SEGMENT_RENDER_EXPORT_FORMATS, { each: true })
+  formats!: (typeof EFFECT_SEGMENT_RENDER_EXPORT_FORMATS)[number][];
+  @Type(() => Number) @IsInt() @Min(1) expectedBatchRevision!: number;
 }
 
 export class ValidateSegmentRenderBatchDto {

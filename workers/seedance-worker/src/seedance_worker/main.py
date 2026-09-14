@@ -54,6 +54,10 @@ def main() -> None:
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    # httpx logs the complete request URL at INFO. Ark output URLs are signed
+    # object-storage links, so emitting them would disclose temporary secrets.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     asyncio.run(serve(settings))
 
 

@@ -13,11 +13,11 @@ import {
   Put,
   Query,
   Res,
-  UploadedFile,
+  UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { AnyFilesInterceptor } from '@nestjs/platform-express';
 import { RawResponse } from '../../../common/raw-response.decorator';
 import { UploadTemporaryFileCleanupInterceptor } from '../../../platform/file/upload-temporary-file-cleanup.interceptor';
 // DTOs are runtime imports for Nest validation metadata.
@@ -99,8 +99,8 @@ export class EffectSegmentRenderWorkerController {
 
   @Post('tasks/:taskId/complete')
   @UseInterceptors(
-    FileInterceptor('file', {
-      limits: { files: 1, fileSize: EFFECT_SEGMENT_RENDER_LIMITS.maxUploadBytes },
+    AnyFilesInterceptor({
+      limits: { files: 2, fileSize: EFFECT_SEGMENT_RENDER_LIMITS.maxUploadBytes },
     }),
     UploadTemporaryFileCleanupInterceptor,
   )
@@ -108,9 +108,9 @@ export class EffectSegmentRenderWorkerController {
     @Param('taskId', new ParseUUIDPipe({ version: '4' })) taskId: string,
     @Headers('x-attempt-token') attemptToken: string,
     @Body() body: SegmentRenderWorkerCompleteDto,
-    @UploadedFile() file: UploadedSegmentRenderFile | undefined,
+    @UploadedFiles() files: UploadedSegmentRenderFile[] | undefined,
   ) {
-    return this.service.complete(body.projectId, taskId, attemptToken, body, file);
+    return this.service.complete(body.projectId, taskId, attemptToken, body, files);
   }
 
   @Post('tasks/:taskId/fail')

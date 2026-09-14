@@ -131,6 +131,12 @@ class RuntimeContext(BaseModel):
     attempt_token: str
 
 
+class RenderPoster(BaseModel):
+    content: bytes
+    file_name: str
+    mime_type: str = "image/jpeg"
+
+
 class RenderOutput(BaseModel):
     provider_task_id: str
     content: bytes
@@ -139,3 +145,4 @@ class RenderOutput(BaseModel):
     duration: int | None = None
     ratio: str | None = None
     resolution: str | None = None
+    poster: RenderPoster | None = None

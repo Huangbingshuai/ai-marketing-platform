@@ -31,6 +31,7 @@ export const effectSegmentRenderSettingsNodeId = (productId: string): string =>
 export const EFFECT_SEGMENT_RENDER_LIMITS = {
   maxTasksPerBatch: 100,
   maxTaskIdsPerOperation: 100,
+  maxImportFilesPerOperation: 100,
   maxReferenceImages: 30,
   maxReferenceImagesSeedance20: 9,
   maxReferenceImageBytes: 30 * 1024 * 1024 - 1,
@@ -38,6 +39,7 @@ export const EFFECT_SEGMENT_RENDER_LIMITS = {
   maxAutoRetries: 2,
   maxAttempts: 3,
   maxUploadBytes: 512 * 1024 * 1024,
+  maxPosterBytes: 2 * 1024 * 1024,
   maxReferenceVideoBytes: 50 * 1024 * 1024,
   maxRepairInstructionLength: 1000,
   minRepairDurationMs: 100,
@@ -51,6 +53,9 @@ export const EFFECT_SEGMENT_RENDER_STATUSES = [
   'RENDERING',
 ] as const;
 export type EffectSegmentRenderStatus = (typeof EFFECT_SEGMENT_RENDER_STATUSES)[number];
+
+export const EFFECT_SEGMENT_RENDER_ORIGINS = ['AI_GENERATED', 'EXTERNAL_IMPORT'] as const;
+export type EffectSegmentRenderOrigin = (typeof EFFECT_SEGMENT_RENDER_ORIGINS)[number];
 
 export const EFFECT_SEGMENT_RENDER_BATCH_STATUSES = [
   'QUEUED',
@@ -129,13 +134,17 @@ export type EffectSegmentRenderRequestSnapshot = {
   request: EffectSegmentRenderProviderRequest;
 };
 
-export type EffectSegmentRenderOutput = {
+export type EffectSegmentRenderPoster = {
   fileObjectId: string;
   originalFileName: string;
   mimeType: string;
   sizeBytes: number;
   contentHash: string;
   version: number;
+};
+
+export type EffectSegmentRenderOutput = EffectSegmentRenderPoster & {
+  poster: EffectSegmentRenderPoster | null;
 };
 
 export const EFFECT_SEGMENT_RENDER_REPAIR_STATUSES = [
@@ -166,8 +175,8 @@ export type EffectSegmentRenderTask = {
   fragmentType: EffectPromptFragmentType;
   compatiblePurposes: EffectPromptFragmentType[];
   durationSeconds: number;
-  modelMatch: 'AUTO_MATCHED';
   source: 'PROMPT';
+  origin: EffectSegmentRenderOrigin;
   sourceName: string;
   status: EffectSegmentRenderStatus;
   progress: number;
@@ -249,6 +258,42 @@ export type RegenerateEffectSegmentRenderTasksRequest = {
   taskIds: string[];
   expectedBatchRevision: number;
   idempotencyKey: string;
+};
+
+export type EffectSegmentRenderImportMapping = {
+  fileIndex: number;
+  taskId: string;
+};
+
+export type ImportEffectSegmentRenderMaterialsRequest = {
+  expectedBatchRevision: number;
+  idempotencyKey: string;
+  mappings: EffectSegmentRenderImportMapping[];
+};
+
+export type ImportEffectSegmentRenderMaterialsData = {
+  batch: EffectSegmentRenderBatch;
+  importedCount: number;
+  replayed: boolean;
+};
+
+export type DeleteEffectSegmentRenderMaterialsRequest = {
+  taskIds: string[];
+  expectedBatchRevision: number;
+  idempotencyKey: string;
+};
+
+export const EFFECT_SEGMENT_RENDER_EXPORT_FORMATS = [
+  'VIDEO_PACKAGE',
+  'MANIFEST_JSON',
+  'FAILURE_CSV',
+] as const;
+export type EffectSegmentRenderExportFormat = (typeof EFFECT_SEGMENT_RENDER_EXPORT_FORMATS)[number];
+
+export type ExportEffectSegmentRenderMaterialsRequest = {
+  taskIds: string[];
+  formats: EffectSegmentRenderExportFormat[];
+  expectedBatchRevision: number;
 };
 
 export type StartEffectSegmentRenderRepairRequest = {

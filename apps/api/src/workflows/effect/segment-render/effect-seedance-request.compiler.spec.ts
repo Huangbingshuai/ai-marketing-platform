@@ -195,6 +195,33 @@ describe('effect Seedance request compiler', () => {
     ).toEqual(['DURATION_MISMATCH', 'RATIO_MISMATCH', 'RESOLUTION_MISMATCH']);
   });
 
+  it('accepts small adaptive ratio rounding for a repair result only', () => {
+    const generation = compileEffectSeedanceRequest(
+      batch('SEEDANCE_2_0'),
+      item.id,
+      'seedance-model',
+      renderSettings(),
+    );
+    expect(
+      validateEffectSeedanceTaskResult(generation, {
+        duration: 5,
+        ratio: '121:211',
+        resolution: generation.request.resolution,
+      }),
+    ).toEqual(['RATIO_MISMATCH']);
+
+    expect(
+      validateEffectSeedanceTaskResult(
+        { ...generation, operation: 'REPAIR' },
+        {
+          duration: 5,
+          ratio: '121:211',
+          resolution: generation.request.resolution,
+        },
+      ),
+    ).toEqual([]);
+  });
+
   it('compiles a full-video repair request without copying the original prompt', () => {
     const original = compileEffectSeedanceRequest(
       batch('SEEDANCE_2_0'),
@@ -239,8 +266,54 @@ describe('effect Seedance request compiler', () => {
     expect(compiled.inputVideo?.fileObjectId).toBe('video-1');
     expect(compiled.request.content[0].text).toContain('[1.200s-2.800s]');
     expect(compiled.request.content[0].text).toContain('修复产品瓶口变形');
+    expect(compiled.request.content[0].text).toContain('最高优先级');
+    expect(compiled.request.content[0].text).toContain('必须产生肉眼可见');
+    expect(compiled.request.content[0].text).toContain('保持要求不得削弱或抵消用户修改');
+    expect(compiled.request.content[0].text).not.toContain('光影、色彩');
     expect(compiled.request.content[0].text).not.toContain(item.content);
     expect(compiled.promptText).toBe(item.content);
+  });
+
+  it('does not invent a spatial constraint when the user did not select a region', () => {
+    const original = compileEffectSeedanceRequest(
+      batch('SEEDANCE_2_0'),
+      item.id,
+      'seedance-model',
+      renderSettings(),
+    );
+    const compiled = compileEffectSeedanceRepairRequest(
+      {
+        ...original,
+        promptCode: item.code,
+        promptText: item.content,
+        sourcePackage: {
+          artifactId: 'source-package-1',
+          revision: 1,
+          contentHash: 'd'.repeat(64),
+        },
+        inputImages: [],
+      },
+      {
+        fileObjectId: 'video-1',
+        originalFileName: 'R-001.mp4',
+        mimeType: 'video/mp4',
+        sizeBytes: 2048,
+        contentHash: 'e'.repeat(64),
+        durationSeconds: 5,
+      },
+      {
+        sourceVersion: 1,
+        startMs: 0,
+        endMs: 5000,
+        instruction: '让酱汁颜色明显变深',
+        region: null,
+      },
+      'doubao-seedance-2-5-260628',
+    );
+
+    expect(compiled.request.content[0].text).not.toContain('修改区域');
+    expect(compiled.request.content[0].text).not.toContain('未限定矩形区域');
+    expect(compiled.request.content[0].text).toContain('让酱汁颜色明显变深');
   });
 
   it('rejects a repair range outside the original video', () => {

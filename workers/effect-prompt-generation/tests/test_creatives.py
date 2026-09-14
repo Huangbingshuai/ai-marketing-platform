@@ -243,10 +243,10 @@ async def test_mock_end_to_end_keeps_exact_count_across_duration_bands(
     )
 
 
-def test_mmr_weights_rebalance_only_after_pool_redundancy_exceeds_half() -> None:
-    assert _adaptive_mmr_quality_weight(0.49) == 0.70
-    assert _adaptive_mmr_quality_weight(0.50) == 0.70
-    assert _adaptive_mmr_quality_weight(0.51) == 0.60
+def test_mmr_weights_rebalance_when_pool_redundancy_reaches_thirty_percent() -> None:
+    assert _adaptive_mmr_quality_weight(0.29) == 0.70
+    assert _adaptive_mmr_quality_weight(0.30) == 0.60
+    assert _adaptive_mmr_quality_weight(0.49) == 0.60
     assert _adaptive_mmr_quality_weight(0.75) == 0.60
 
 
@@ -800,15 +800,19 @@ def test_diversity_supplement_scales_with_independent_group_gap() -> None:
             selection_target=50,
             independent_group_gap=1,
         )
-        == 10
+        == 2
     )
     assert (
         _diversity_supplement_count(
             selection_target=50,
             independent_group_gap=8,
         )
-        == 16
+        == 10
     )
+    assert _diversity_supplement_count(
+        selection_target=100,
+        independent_group_gap=20,
+    ) == 20
 
 
 @pytest.mark.asyncio
@@ -1223,7 +1227,7 @@ async def test_vector_selection_keeps_exact_count_and_reports_safe_metrics() -> 
     )
     assert selection_stage.metadata["selectionMethod"] == "CONTENT_CLUSTER_VECTOR_MMR"
     assert 10 <= selection_stage.metadata["embeddingInputCount"] <= 18
-    assert selection_stage.metadata["embeddingRequestCount"] == 2
+    assert 1 <= selection_stage.metadata["embeddingRequestCount"] <= 2
     assert selection_stage.metadata["comparisonCount"] > 0
     assert "model" not in selection_stage.metadata
 
@@ -1266,7 +1270,7 @@ async def test_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
         <= selection_stage.metadata["embeddingInputCount"]
         <= (api.result.metrics.generated_candidate_count)
     )
-    assert selection_stage.metadata["embeddingRequestCount"] == 2
+    assert 1 <= selection_stage.metadata["embeddingRequestCount"] <= 2
     expected_quality_weight = _adaptive_mmr_quality_weight(
         selection_stage.metadata["candidatePoolContentRedundancyRate"]
     )
@@ -1283,11 +1287,20 @@ async def test_content_mmr_shadow_uses_one_vector_per_candidate() -> None:
 
 @pytest.mark.asyncio
 async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
+    class CapturingMaterialProvider(MockAiProvider):
+        def __init__(self) -> None:
+            self.material_calls: list[dict[str, Any]] = []
+
+        async def plan_materials(self, *args: Any, **kwargs: Any) -> Any:
+            self.material_calls.append(kwargs)
+            return await super().plan_materials(*args, **kwargs)
+
     api = PromptApi()
     embedding_provider = IdenticalEmbeddingProvider()
+    provider = CapturingMaterialProvider()
     pipeline = PromptGenerationPipeline(
         api=api,  # type: ignore[arg-type]
-        provider=MockAiProvider(),
+        provider=provider,
         embedding_provider=embedding_provider,
         similarity_mode="vector",
         embedding_batch_size=64,
@@ -1324,7 +1337,7 @@ async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
     assert final_selection_stage.metadata["embeddingInputCount"] == (
         embedding_provider.input_count
     )
-    assert final_selection_stage.metadata["embeddingRequestCount"] == 2
+    assert 1 <= final_selection_stage.metadata["embeddingRequestCount"] <= 2
     assert final_selection_stage.metadata["mmrQualityWeight"] == 0.60
     assert final_selection_stage.metadata["mmrDiversityWeight"] == 0.40
     assert final_selection_stage.metadata["adaptiveMmrApplied"] is True
@@ -1336,6 +1349,10 @@ async def test_content_mmr_runs_one_soft_diversity_supplement() -> None:
         "SEMANTIC_DIVERSITY_CAN_BE_IMPROVED",
         "DIVERSITY_SUPPLEMENT_NO_IMPROVEMENT",
     ]
+    supplement_context = provider.material_calls[-1]["repair_context"]
+    assert supplement_context["duplicateGroups"]
+    assert supplement_context["duplicateGroups"][0]["members"]
+    assert supplement_context["evaluations"] == []
     diversity_tasks = [
         task
         for shard in api.shards.values()

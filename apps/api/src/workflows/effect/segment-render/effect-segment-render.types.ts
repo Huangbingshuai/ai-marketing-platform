@@ -19,8 +19,14 @@ export type EffectSegmentRenderStoredFile = {
 };
 
 export type UploadedSegmentRenderFile = {
+  fieldname: string;
   path: string;
   originalname: string;
   mimetype: string;
   size: number;
+};
+
+export type EffectSegmentRenderImportedFile = {
+  taskId: string;
+  file: EffectSegmentRenderStoredFile;
 };

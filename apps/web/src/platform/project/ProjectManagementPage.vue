@@ -124,9 +124,8 @@ const loadProjects = async (): Promise<void> => {
   projectsError.value = '';
   try {
     const response = await loadProjectListWithRetry(
-      () => listProjects({}, controller.signal),
+      (attemptSignal) => listProjects({}, attemptSignal),
       controller.signal,
-      { continueWithLastDelay: true },
     );
     if (controller.signal.aborted) return;
     projects.value = response.data;
@@ -259,7 +258,9 @@ onBeforeUnmount(() => {
     <header class="system-header">
       <div class="system-brand">
         <span class="brand-mark"><img :src="richiLogoColor" alt="瑞池传媒" /></span>
-        <span><strong>AI 营销素材智能生成系统</strong><small>RICH MEDIA · AI MARKETING</small></span>
+        <span
+          ><strong>AI 营销素材智能生成系统</strong><small>RICH MEDIA · AI MARKETING</small></span
+        >
       </div>
       <nav aria-label="业务模块">
         <button
@@ -315,7 +316,8 @@ onBeforeUnmount(() => {
         </span>
         <h2>{{ projectBinding.label }}</h2>
         <p>{{ activeWorkflowMeta.description }}</p>
-        <small>工作流可以自由切换；创建或绑定项目后再加载项目数据。</small>
+        <small v-if="projectBinding.state === 'error'">{{ projectsError }}</small>
+        <small v-else>工作流可以自由切换；创建或绑定项目后再加载项目数据。</small>
         <button v-if="projectBinding.state === 'empty'" type="button" @click="openCreateModal">
           <Plus :size="15" />新建项目
         </button>

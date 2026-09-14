@@ -114,10 +114,11 @@ class ArkSeedanceProvider:
         progress: ProgressCallback,
         provider_task_id: str | None = None,
     ) -> RenderOutput:
+        deadline = asyncio.get_running_loop().time() + self._timeout_seconds
         if provider_task_id is None:
             if snapshot.operation == "REPAIR":
                 reference_video_url = await self._repair_reference_video_url(
-                    snapshot, reference_video_url
+                    snapshot, reference_video_url, deadline
                 )
             payload = snapshot.request.model_dump(mode="json")
             if snapshot.operation == "REPAIR":
@@ -183,16 +184,31 @@ class ArkSeedanceProvider:
                     retryable=False,
                 )
         await progress(10, provider_task_id)
-        deadline = asyncio.get_running_loop().time() + self._timeout_seconds
         current_progress = 15
+        consecutive_poll_failures = 0
         while True:
             if asyncio.get_running_loop().time() >= deadline:
                 raise ProviderError(
                     "SEEDANCE_TIMEOUT", "Seedance 视频生成超时", retryable=True
                 )
-            result = await self._request(
-                "GET", "contents/generations/tasks/" + provider_task_id
-            )
+            try:
+                result = await self._request(
+                    "GET", "contents/generations/tasks/" + provider_task_id
+                )
+            except ProviderError as exc:
+                if not exc.retryable:
+                    raise
+                consecutive_poll_failures += 1
+                # A successful create response means the provider task already
+                # exists and may be billable.  Network/DNS/5xx failures while
+                # reading its status must stay inside this polling loop so an
+                # outer task retry cannot accidentally exhaust its retry budget.
+                await progress(current_progress, provider_task_id)
+                await self._sleep_before_read_retry(
+                    provider_task_id, consecutive_poll_failures, deadline
+                )
+                continue
+            consecutive_poll_failures = 0
             status = (_text(result.get("status")) or "").casefold()
             if status in {"succeeded", "completed", "success"}:
                 output_url = self._output_url(result)
@@ -235,7 +251,10 @@ class ArkSeedanceProvider:
             await asyncio.sleep(self._poll_delay(provider_task_id))
 
     async def _repair_reference_video_url(
-        self, snapshot: RenderSnapshot, fallback_url: str | None
+        self,
+        snapshot: RenderSnapshot,
+        fallback_url: str | None,
+        deadline: float,
     ) -> str:
         source_task_id = (
             snapshot.input_video.provider_task_id
@@ -243,8 +262,9 @@ class ArkSeedanceProvider:
             else None
         )
         if source_task_id is not None:
-            source = await self._request(
-                "GET", "contents/generations/tasks/" + source_task_id
+            source = await self._read_task_with_retry(
+                source_task_id,
+                deadline,
             )
             status = (_text(source.get("status")) or "").casefold()
             source_url = self._output_url(source)
@@ -262,6 +282,35 @@ class ArkSeedanceProvider:
             "视频返修任务缺少参考视频",
             retryable=False,
         )
+
+    async def _read_task_with_retry(
+        self, provider_task_id: str, deadline: float
+    ) -> Mapping[str, Any]:
+        failure_count = 0
+        while True:
+            try:
+                return await self._request(
+                    "GET", "contents/generations/tasks/" + provider_task_id
+                )
+            except ProviderError as exc:
+                if not exc.retryable:
+                    raise
+                failure_count += 1
+                await self._sleep_before_read_retry(
+                    provider_task_id, failure_count, deadline
+                )
+
+    async def _sleep_before_read_retry(
+        self, provider_task_id: str, failure_count: int, deadline: float
+    ) -> None:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise ProviderError(
+                "SEEDANCE_TIMEOUT", "Seedance 视频生成超时", retryable=True
+            )
+        base_delay = self._poll_delay(provider_task_id)
+        delay = min(30.0, base_delay * (2 ** min(failure_count - 1, 3)))
+        await asyncio.sleep(min(delay, remaining))
 
     def _poll_delay(self, provider_task_id: str) -> float:
         bucket = zlib.crc32(provider_task_id.encode("utf-8")) % 401

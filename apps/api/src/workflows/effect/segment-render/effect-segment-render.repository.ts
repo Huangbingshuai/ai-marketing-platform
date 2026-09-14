@@ -20,11 +20,29 @@ import {
 } from '../../../platform/workflow/workflow-working.repository';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import type {
+  EffectSegmentRenderImportedFile,
   EffectSegmentRenderStoredFile,
   EffectSegmentRenderTaskCreateInput,
 } from './effect-segment-render.types';
 
 const json = (value: unknown): Prisma.InputJsonValue => value as Prisma.InputJsonValue;
+const posterFileObjectId = (value: Prisma.JsonValue | null): string | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const fileObjectId = (value as Prisma.JsonObject).fileObjectId;
+  return typeof fileObjectId === 'string' ? fileObjectId : null;
+};
+const posterMetadata = (
+  file: EffectSegmentRenderStoredFile,
+  version: number,
+): Prisma.InputJsonValue =>
+  json({
+    fileObjectId: file.id,
+    originalFileName: file.originalFileName,
+    mimeType: file.mimeType,
+    sizeBytes: file.sizeBytes,
+    contentHash: file.sha256,
+    version,
+  });
 const leaseDate = (now: Date): Date => new Date(now.getTime() + 90_000);
 const isUniqueConflict = (error: unknown): boolean =>
   typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002';
@@ -57,6 +75,58 @@ export class EffectSegmentRenderRepository {
     @Inject(WorkflowWorkingRepository)
     private readonly workingRepository?: WorkflowWorkingRepository,
   ) {}
+
+  private async inputConflict(
+    transaction: Prisma.TransactionClient,
+    projectId: string,
+    batch: {
+      workflowRunId: string;
+      productId: string;
+      sourcePromptArtifactId: string;
+      sourcePromptRevision: number;
+      sourcePromptHash: string;
+    },
+    requestSnapshot: Prisma.JsonValue | undefined,
+  ): Promise<'PROMPT' | 'SOURCE' | null> {
+    const prompt = await transaction.workingArtifact.findFirst({
+      where: {
+        projectId,
+        workflowRunId: batch.workflowRunId,
+        id: batch.sourcePromptArtifactId,
+        nodeId: 'PROMPT_GENERATION',
+        artifactKey: 'prompt-batch:' + batch.productId,
+        revision: batch.sourcePromptRevision,
+        contentHash: batch.sourcePromptHash,
+        freshness: 'CURRENT',
+        availability: 'AVAILABLE',
+      },
+    });
+    if (!prompt) return 'PROMPT';
+    const snapshot = requestSnapshot as
+      | { sourcePackage?: { artifactId?: string; revision?: number; contentHash?: string } }
+      | undefined;
+    const source = snapshot?.sourcePackage;
+    if (
+      !source?.artifactId ||
+      !source.revision ||
+      !source.contentHash ||
+      !(await transaction.workingArtifact.findFirst({
+        where: {
+          projectId,
+          workflowRunId: batch.workflowRunId,
+          id: source.artifactId,
+          nodeId: 'SOURCE_IMPORT',
+          artifactKey: 'source-package:' + batch.productId,
+          revision: source.revision,
+          contentHash: source.contentHash,
+          freshness: 'CURRENT',
+          availability: 'AVAILABLE',
+        },
+      }))
+    )
+      return 'SOURCE';
+    return null;
+  }
 
   workflowRun(projectId: string, workflowRunId: string) {
     return this.prisma.workflowRun.findFirst({
@@ -449,6 +519,232 @@ export class EffectSegmentRenderRepository {
     }
   }
 
+  async importMaterials(
+    projectId: string,
+    batchId: string,
+    imports: EffectSegmentRenderImportedFile[],
+    expectedBatchRevision: number,
+    idempotencyKey: string,
+  ) {
+    const requestHash = workflowStateHash({
+      batchId,
+      imports: imports
+        .map(({ taskId, file }) => ({ taskId, sha256: file.sha256, sizeBytes: file.sizeBytes }))
+        .sort((left, right) => left.taskId.localeCompare(right.taskId)),
+    });
+    return this.prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "effect_segment_render_batches"
+        WHERE "projectId" = ${projectId}::uuid AND "id" = ${batchId}::uuid
+        FOR UPDATE
+      `;
+      const receipt = await transaction.effectSegmentRenderOperationReceipt.findUnique({
+        where: { projectId_idempotencyKey: { projectId, idempotencyKey } },
+      });
+      if (receipt)
+        return receipt.requestHash === requestHash && receipt.batchId === batchId
+          ? { kind: 'REPLAYED' as const }
+          : { kind: 'KEY_CONFLICT' as const };
+      const batch = await transaction.effectSegmentRenderBatch.findFirst({
+        where: { projectId, id: batchId },
+      });
+      if (!batch) return { kind: 'NOT_FOUND' as const };
+      if (batch.revision !== expectedBatchRevision) return { kind: 'REVISION_CONFLICT' as const };
+      if (batch.status === 'QUEUED' || batch.status === 'RUNNING')
+        return { kind: 'BATCH_ACTIVE' as const };
+      const latest = await transaction.effectSegmentRenderBatch.findFirst({
+        where: { projectId, workflowRunId: batch.workflowRunId, productId: batch.productId },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      });
+      if (latest?.id !== batch.id) return { kind: 'NOT_LATEST' as const };
+      const uniqueTaskIds = [...new Set(imports.map(({ taskId }) => taskId))];
+      if (uniqueTaskIds.length !== imports.length) return { kind: 'TASK_CONFLICT' as const };
+      const tasks = await transaction.effectSegmentRenderTask.findMany({
+        where: { projectId, batchId, id: { in: uniqueTaskIds } },
+      });
+      if (tasks.length !== uniqueTaskIds.length) return { kind: 'TASK_NOT_FOUND' as const };
+      const inputConflict = await this.inputConflict(
+        transaction,
+        projectId,
+        batch,
+        tasks[0]?.requestSnapshot,
+      );
+      if (inputConflict === 'PROMPT') return { kind: 'PROMPT_CONFLICT' as const };
+      if (inputConflict === 'SOURCE') return { kind: 'SOURCE_CONFLICT' as const };
+      if (tasks.some(({ repairStatus }) => repairStatus !== null))
+        return { kind: 'TASK_REPAIR_PENDING' as const };
+      if (!this.workingRepository) throw new Error('WORKFLOW_WORKING_REPOSITORY_NOT_AVAILABLE');
+      await transaction.effectSegmentRenderOperationReceipt.create({
+        data: { projectId, batchId, idempotencyKey, requestHash },
+      });
+      const taskById = new Map(tasks.map((task) => [task.id, task]));
+      for (const imported of imports) {
+        const task = taskById.get(imported.taskId)!;
+        const fileObject = await this.workingRepository.upsertFileObjectInTransaction(
+          transaction,
+          projectId,
+          batch.workflowRunId,
+          { ...imported.file, nodeId: 'SEGMENT_RENDER' },
+        );
+        const oldFileIds = [
+          task.outputFileObjectId,
+          posterFileObjectId(task.outputPoster),
+          task.repairCandidateFileObjectId,
+          posterFileObjectId(task.repairCandidatePoster),
+        ].filter((id): id is string => Boolean(id && id !== fileObject.id));
+        if (oldFileIds.length)
+          await transaction.fileObject.updateMany({
+            where: { projectId, id: { in: oldFileIds } },
+            data: { status: 'ORPHANED', orphanedAt: new Date() },
+          });
+        const version = task.renderVersion + 1;
+        await transaction.effectSegmentRenderTask.update({
+          where: { projectId_id: { projectId, id: task.id } },
+          data: {
+            status: 'COMPLETED',
+            operationKind: 'GENERATE',
+            progress: 100,
+            renderVersion: version,
+            activeOutputVersion: version,
+            retryCount: 0,
+            attemptCount: 0,
+            attemptToken: null,
+            leaseExpiresAt: null,
+            heartbeatAt: null,
+            providerTaskId: null,
+            outputFileObjectId: fileObject.id,
+            outputStorageKey: imported.file.storageKey,
+            outputFileName: imported.file.originalFileName,
+            outputMimeType: imported.file.mimeType,
+            outputSizeBytes: imported.file.sizeBytes,
+            outputContentHash: imported.file.sha256,
+            outputPoster: Prisma.DbNull,
+            repairStatus: null,
+            repairSourceVersion: null,
+            repairStartMs: null,
+            repairEndMs: null,
+            repairInstruction: null,
+            repairRegion: Prisma.DbNull,
+            repairCandidateFileObjectId: null,
+            repairCandidateStorageKey: null,
+            repairCandidateFileName: null,
+            repairCandidateMimeType: null,
+            repairCandidateSizeBytes: null,
+            repairCandidateContentHash: null,
+            repairCandidatePoster: Prisma.DbNull,
+            repairCandidateVersion: null,
+            repairCandidateCreatedAt: null,
+            errorCode: null,
+            errorMessage: null,
+            startedAt: null,
+            completedAt: new Date(),
+          },
+        });
+      }
+      await transaction.effectSegmentRenderBatch.update({
+        where: { projectId_id: { projectId, id: batchId } },
+        data: { revision: { increment: 1 }, committedAt: null },
+      });
+      await this.settleBatchInTransaction(transaction, projectId, batchId, new Date());
+      return { kind: 'UPDATED' as const };
+    });
+  }
+
+  async deleteMaterials(
+    projectId: string,
+    batchId: string,
+    taskIds: string[],
+    expectedBatchRevision: number,
+    idempotencyKey: string,
+  ) {
+    const uniqueTaskIds = [...new Set(taskIds)].sort();
+    const requestHash = workflowStateHash({ batchId, taskIds: uniqueTaskIds });
+    return this.prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "effect_segment_render_batches"
+        WHERE "projectId" = ${projectId}::uuid AND "id" = ${batchId}::uuid
+        FOR UPDATE
+      `;
+      const receipt = await transaction.effectSegmentRenderOperationReceipt.findUnique({
+        where: { projectId_idempotencyKey: { projectId, idempotencyKey } },
+      });
+      if (receipt)
+        return receipt.requestHash === requestHash && receipt.batchId === batchId
+          ? { kind: 'REPLAYED' as const }
+          : { kind: 'KEY_CONFLICT' as const };
+      const batch = await transaction.effectSegmentRenderBatch.findFirst({
+        where: { projectId, id: batchId },
+      });
+      if (!batch) return { kind: 'NOT_FOUND' as const };
+      if (batch.revision !== expectedBatchRevision) return { kind: 'REVISION_CONFLICT' as const };
+      if (batch.status === 'QUEUED' || batch.status === 'RUNNING')
+        return { kind: 'BATCH_ACTIVE' as const };
+      const latest = await transaction.effectSegmentRenderBatch.findFirst({
+        where: { projectId, workflowRunId: batch.workflowRunId, productId: batch.productId },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      });
+      if (latest?.id !== batch.id) return { kind: 'NOT_LATEST' as const };
+      const tasks = await transaction.effectSegmentRenderTask.findMany({
+        where: { projectId, batchId, id: { in: uniqueTaskIds } },
+      });
+      if (tasks.length !== uniqueTaskIds.length) return { kind: 'TASK_NOT_FOUND' as const };
+      const inputConflict = await this.inputConflict(
+        transaction,
+        projectId,
+        batch,
+        tasks[0]?.requestSnapshot,
+      );
+      if (inputConflict === 'PROMPT') return { kind: 'PROMPT_CONFLICT' as const };
+      if (inputConflict === 'SOURCE') return { kind: 'SOURCE_CONFLICT' as const };
+      if (
+        tasks.some(
+          ({ status, outputFileObjectId }) => status !== 'COMPLETED' || !outputFileObjectId,
+        )
+      )
+        return { kind: 'TASK_CONFLICT' as const };
+      if (tasks.some(({ repairStatus }) => repairStatus !== null))
+        return { kind: 'TASK_REPAIR_PENDING' as const };
+      await transaction.effectSegmentRenderOperationReceipt.create({
+        data: { projectId, batchId, idempotencyKey, requestHash },
+      });
+      const fileIds = tasks.flatMap((task) =>
+        [task.outputFileObjectId, posterFileObjectId(task.outputPoster)].filter(
+          (id): id is string => Boolean(id),
+        ),
+      );
+      if (fileIds.length)
+        await transaction.fileObject.updateMany({
+          where: { projectId, id: { in: fileIds } },
+          data: { status: 'ORPHANED', orphanedAt: new Date() },
+        });
+      await transaction.effectSegmentRenderTask.updateMany({
+        where: { projectId, batchId, id: { in: uniqueTaskIds } },
+        data: {
+          status: 'FAILED',
+          progress: 0,
+          providerTaskId: null,
+          outputFileObjectId: null,
+          outputStorageKey: null,
+          outputFileName: null,
+          outputMimeType: null,
+          outputSizeBytes: null,
+          outputContentHash: null,
+          outputPoster: Prisma.DbNull,
+          activeOutputVersion: null,
+          errorCode: 'MATERIAL_DELETED',
+          errorMessage: '素材已删除，可重新生成或导入替代素材',
+          completedAt: new Date(),
+        },
+      });
+      await transaction.effectSegmentRenderBatch.update({
+        where: { projectId_id: { projectId, id: batchId } },
+        data: { revision: { increment: 1 }, committedAt: null },
+      });
+      await this.settleBatchInTransaction(transaction, projectId, batchId, new Date());
+      return { kind: 'UPDATED' as const };
+    });
+  }
+
   async startRepair(
     projectId: string,
     batchId: string,
@@ -583,6 +879,7 @@ export class EffectSegmentRenderRepository {
             repairCandidateMimeType: null,
             repairCandidateSizeBytes: null,
             repairCandidateContentHash: null,
+            repairCandidatePoster: Prisma.DbNull,
             repairCandidateVersion: null,
             repairCandidateCreatedAt: null,
             queuedAt: new Date(),
@@ -697,8 +994,10 @@ export class EffectSegmentRenderRepository {
       await transaction.effectSegmentRenderOperationReceipt.create({
         data: { projectId, batchId, idempotencyKey, requestHash },
       });
-      const fileToOrphan =
-        decision === 'ACCEPT' ? task.outputFileObjectId : task.repairCandidateFileObjectId;
+      const filesToOrphan = [
+        decision === 'ACCEPT' ? task.outputFileObjectId : task.repairCandidateFileObjectId,
+        posterFileObjectId(decision === 'ACCEPT' ? task.outputPoster : task.repairCandidatePoster),
+      ].filter((fileObjectId): fileObjectId is string => Boolean(fileObjectId));
       const repairSnapshot = task.requestSnapshot as unknown as {
         inputVideo?: { providerTaskId?: unknown };
       };
@@ -707,9 +1006,9 @@ export class EffectSegmentRenderRepository {
         repairSnapshot.inputVideo.providerTaskId.trim()
           ? repairSnapshot.inputVideo.providerTaskId.trim()
           : null;
-      if (fileToOrphan)
+      if (filesToOrphan.length)
         await transaction.fileObject.updateMany({
-          where: { projectId, id: fileToOrphan },
+          where: { projectId, id: { in: filesToOrphan } },
           data: { status: 'ORPHANED', orphanedAt: new Date() },
         });
       await transaction.effectSegmentRenderTask.update({
@@ -728,6 +1027,7 @@ export class EffectSegmentRenderRepository {
                 outputMimeType: task.repairCandidateMimeType!,
                 outputSizeBytes: task.repairCandidateSizeBytes!,
                 outputContentHash: task.repairCandidateContentHash!,
+                outputPoster: task.repairCandidatePoster ?? Prisma.DbNull,
                 activeOutputVersion: repairVersion,
               }
             : {}),
@@ -752,6 +1052,7 @@ export class EffectSegmentRenderRepository {
           repairCandidateMimeType: null,
           repairCandidateSizeBytes: null,
           repairCandidateContentHash: null,
+          repairCandidatePoster: Prisma.DbNull,
           repairCandidateVersion: null,
           repairCandidateCreatedAt: null,
           completedAt: new Date(),
@@ -873,6 +1174,7 @@ export class EffectSegmentRenderRepository {
     taskVersion: number,
     providerTaskId: string,
     file: EffectSegmentRenderStoredFile,
+    poster?: EffectSegmentRenderStoredFile,
     now = new Date(),
   ) {
     return this.prisma.$transaction(async (transaction) => {
@@ -903,6 +1205,14 @@ export class EffectSegmentRenderRepository {
         task.workflowRunId,
         { ...file, nodeId: 'SEGMENT_RENDER' },
       );
+      const posterFileObject = poster
+        ? await this.workingRepository.upsertFileObjectInTransaction(
+            transaction,
+            projectId,
+            task.workflowRunId,
+            { ...poster, nodeId: 'SEGMENT_RENDER' },
+          )
+        : null;
       if (task.operationKind === 'REPAIR') {
         const completed = await transaction.effectSegmentRenderTask.update({
           where: { projectId_id: { projectId, id: taskId } },
@@ -917,6 +1227,10 @@ export class EffectSegmentRenderRepository {
             repairCandidateMimeType: file.mimeType,
             repairCandidateSizeBytes: file.sizeBytes,
             repairCandidateContentHash: file.sha256,
+            repairCandidatePoster:
+              poster && posterFileObject
+                ? posterMetadata({ ...poster, id: posterFileObject.id }, taskVersion)
+                : Prisma.DbNull,
             repairCandidateVersion: taskVersion,
             repairCandidateCreatedAt: now,
             attemptToken: null,
@@ -934,9 +1248,15 @@ export class EffectSegmentRenderRepository {
         await this.settleBatchInTransaction(transaction, projectId, task.batchId, now);
         return { kind: 'REPAIR_COMPLETED' as const, task: completed };
       }
-      if (task.outputFileObjectId && task.outputFileObjectId !== fileObject.id)
+      const oldOutputFileIds = [
+        task.outputFileObjectId && task.outputFileObjectId !== fileObject.id
+          ? task.outputFileObjectId
+          : null,
+        posterFileObjectId(task.outputPoster),
+      ].filter((fileObjectId): fileObjectId is string => Boolean(fileObjectId));
+      if (oldOutputFileIds.length)
         await transaction.fileObject.updateMany({
-          where: { projectId, id: task.outputFileObjectId },
+          where: { projectId, id: { in: oldOutputFileIds } },
           data: { status: 'ORPHANED', orphanedAt: now },
         });
       const completed = await transaction.effectSegmentRenderTask.update({
@@ -951,6 +1271,10 @@ export class EffectSegmentRenderRepository {
           outputMimeType: file.mimeType,
           outputSizeBytes: file.sizeBytes,
           outputContentHash: file.sha256,
+          outputPoster:
+            poster && posterFileObject
+              ? posterMetadata({ ...poster, id: posterFileObject.id }, taskVersion)
+              : Prisma.DbNull,
           activeOutputVersion: taskVersion,
           operationKind: 'GENERATE',
           attemptToken: null,

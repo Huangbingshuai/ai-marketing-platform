@@ -154,7 +154,6 @@ const createPromptTask = (
     fragmentType,
     compatibleFragmentTypes,
     durationSeconds,
-    modelMatch: 'AUTO_MATCHED',
     source: 'PROMPT',
     origin: 'AI_GENERATED',
     sourceName: promptCode,

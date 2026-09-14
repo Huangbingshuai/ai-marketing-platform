@@ -1494,7 +1494,7 @@ async def test_cluster_policy_plans_directions_and_generates_140_percent() -> No
     assert result["prompt_result_id"] == "prompt-result-current"
     assert api.result is not None
     assert api.result.metrics.candidate_target_count == 14
-    assert api.result.metrics.generated_candidate_count == 18
+    assert api.result.metrics.generated_candidate_count == 16
     assert len(api.result.items) == 10
     creative_tasks = [
         task
@@ -2795,7 +2795,7 @@ async def test_cluster_concentration_triggers_one_soft_diversity_supplement() ->
     )
 
     assert api.result is not None
-    assert api.result.metrics.generated_candidate_count == 18
+    assert api.result.metrics.generated_candidate_count == 16
     diversity_tasks = [
         task
         for shard in api.shards.values()
@@ -2803,7 +2803,7 @@ async def test_cluster_concentration_triggers_one_soft_diversity_supplement() ->
         for task in shard.creative_plan
         if task.supplement_kind == "DIVERSITY"
     ]
-    assert len(diversity_tasks) == 4
+    assert len(diversity_tasks) == 2
     assert {task.round for task in diversity_tasks} == {1}
     final_stage = next(
         stage
@@ -2811,7 +2811,7 @@ async def test_cluster_concentration_triggers_one_soft_diversity_supplement() ->
         if stage.node_id.value == "EXACT_SELECTION_AND_SUPPLEMENT"
     )
     assert final_stage.metadata["diversitySupplementTriggered"] is True
-    assert final_stage.metadata["diversitySupplementCount"] == 4
+    assert final_stage.metadata["diversitySupplementCount"] == 2
     assert "SEMANTIC_DIVERSITY_CAN_BE_IMPROVED" in final_stage.warnings
     assert provider.supplement_revision_contexts
     first_context = provider.supplement_revision_contexts[0]

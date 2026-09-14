@@ -3,7 +3,11 @@ import type {
   DecideEffectSegmentRenderRepairData,
   DecideEffectSegmentRenderRepairRequest,
   EffectSegmentRenderBatch,
+  DeleteEffectSegmentRenderMaterialsRequest,
+  ExportEffectSegmentRenderMaterialsRequest,
   GetEffectSegmentRenderWorkspaceData,
+  ImportEffectSegmentRenderMaterialsData,
+  ImportEffectSegmentRenderMaterialsRequest,
   RegenerateEffectSegmentRenderTasksRequest,
   SaveEffectSegmentRenderSettingsData,
   SaveEffectSegmentRenderSettingsRequest,
@@ -80,6 +84,52 @@ export const regenerateEffectSegmentRenderTasks = (
     signal,
   });
 
+export const importEffectSegmentRenderMaterials = (
+  projectId: string,
+  batchId: string,
+  input: ImportEffectSegmentRenderMaterialsRequest,
+  files: readonly File[],
+  signal?: AbortSignal,
+): Promise<ApiResponse<ImportEffectSegmentRenderMaterialsData>> => {
+  const body = new FormData();
+  body.append('expectedBatchRevision', String(input.expectedBatchRevision));
+  body.append('idempotencyKey', input.idempotencyKey);
+  body.append('mappings', JSON.stringify(input.mappings));
+  files.forEach((file) => body.append('files', file, file.name));
+  return requestJson(`${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/tasks/import`, {
+    method: 'POST',
+    body,
+    operation: '导入视频素材',
+    signal,
+  });
+};
+
+export const deleteEffectSegmentRenderMaterials = (
+  projectId: string,
+  batchId: string,
+  input: DeleteEffectSegmentRenderMaterialsRequest,
+  signal?: AbortSignal,
+): Promise<ApiResponse<{ batch: EffectSegmentRenderBatch; replayed: boolean }>> =>
+  requestJson(`${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/tasks/delete`, {
+    method: 'POST',
+    body: input,
+    operation: '删除视频素材',
+    signal,
+  });
+
+export const exportEffectSegmentRenderMaterials = (
+  projectId: string,
+  batchId: string,
+  input: ExportEffectSegmentRenderMaterialsRequest,
+  signal?: AbortSignal,
+): Promise<Response> =>
+  requestRaw(`${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/export`, {
+    method: 'POST',
+    body: input,
+    operation: '导出视频素材',
+    signal,
+  });
+
 export const startEffectSegmentRenderRepair = (
   projectId: string,
   batchId: string,
@@ -119,10 +169,11 @@ export const getEffectSegmentRenderTaskContent = (
   batchId: string,
   taskId: string,
   variant: 'ACTIVE' | 'REPAIR',
+  version?: number,
   signal?: AbortSignal,
 ): Promise<Response> =>
   requestRaw(
-    `${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/tasks/${encodeURIComponent(taskId)}/content?variant=${variant}`,
+    `${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/tasks/${encodeURIComponent(taskId)}/content?variant=${variant}&kind=VIDEO${version ? `&version=${version}` : ''}`,
     { operation: variant === 'REPAIR' ? '加载视频返修候选' : '加载视频素材', signal },
   );
 
@@ -131,9 +182,11 @@ export const effectSegmentRenderTaskContentUrl = (
   batchId: string,
   taskId: string,
   variant: 'ACTIVE' | 'REPAIR' = 'ACTIVE',
+  kind: 'VIDEO' | 'POSTER' = 'VIDEO',
+  version?: number,
 ): string =>
   apiUrl(
-    `${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/tasks/${encodeURIComponent(taskId)}/content?variant=${variant}`,
+    `${basePath(projectId)}/batches/${encodeURIComponent(batchId)}/tasks/${encodeURIComponent(taskId)}/content?variant=${variant}&kind=${kind}${version ? `&version=${version}` : ''}`,
   );
 
 export const validateEffectSegmentRenderBatch = (

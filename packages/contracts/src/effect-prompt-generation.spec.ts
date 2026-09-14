@@ -83,6 +83,10 @@ describe('effect prompt generation contract', () => {
       { key: 'SEEDANCE_1_0', minimum: 4, maximum: 15 },
     ]);
     expect(EFFECT_PROMPT_LIMITS.pageSize).toBe(5);
+    expect(EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_1_5_PRO.resolutions).toEqual([
+      '480p',
+      '720p',
+    ]);
     expect(batchSchema.properties.settings.properties.targetCount.maximum).toBe(100);
     expect(batchSchema.properties.settings.properties.defaultDurationSeconds.maximum).toBe(15);
     expect(batchSchema.$defs.item.properties.targetDurationSeconds.maximum).toBe(15);

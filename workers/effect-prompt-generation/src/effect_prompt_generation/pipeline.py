@@ -180,7 +180,7 @@ SEMANTIC_DUPLICATE_RATE_LIMIT = 15.0
 # A second, looser trigger allowed a 30% result to stop even though the page
 # correctly reported that the 15% target was not met.
 DIVERSITY_SUPPLEMENT_TRIGGER_RATE = SEMANTIC_DUPLICATE_RATE_LIMIT
-MMR_HIGH_REDUNDANCY_THRESHOLD = 0.50
+MMR_HIGH_REDUNDANCY_THRESHOLD = 0.30
 CONTENT_SIMILARITY_WEIGHT = 0.70
 SEMANTIC_CLUSTER_SIMILARITY_WEIGHT = 0.30
 DIRECTION_STRUCTURED_BATCH_SIZE = 4
@@ -2706,6 +2706,7 @@ class PromptGenerationPipeline:
 
     async def _plan_material_round(
         self, context: RuntimeContext, *, round_number: int, count: int,
+        supplement_kind: Literal["QUANTITY", "COVERAGE", "DIVERSITY"] = "QUANTITY",
         coverage_fact_ids: Sequence[str] = (),
     ) -> list[MaterialBrief]:
         cache = self._cache(context)
@@ -2753,21 +2754,29 @@ class PromptGenerationPipeline:
             ids = expected_ids[len(current.tasks):len(current.tasks) + 20]
             existing = [row for entry in plan.rounds for row in entry.tasks]
             # Assignment in an earlier round does not mean the fact was realized.
-            assigned = {key for row in current.tasks for key in row.fact_ids}
+            # A supporting fact does not count as having received its own
+            # material. Rotation is based only on the explicit primary fact.
+            assigned = {row.primary_fact_id for row in current.tasks}
             if round_number == 0:
                 assigned |= retained
+            remaining_primary_ids = [key for key in required if key not in assigned]
             repair = {
                 "missingFactIds": list(coverage_fact_ids),
                 "diversityFindings": list(cache.diversity_supplement_reasons),
                 "overusedSceneFamilies": sorted(cache.diversity_avoid_scene_families),
                 "overusedActionFamilies": sorted(cache.diversity_avoid_action_families),
+                "duplicateGroups": (
+                    _material_duplicate_group_context(cache, limit=count)
+                    if supplement_kind == "DIVERSITY"
+                    else []
+                ),
                 "evaluations": [
                     {"taskId": candidate.slot_id, "creativeCore": candidate.creative_core,
                      "hardIssues": evaluation.hard_issues, "warnings": evaluation.warnings,
                      "factEvidence": [item.model_dump(mode="json", by_alias=True) for item in evaluation.fact_evidence]}
                     for candidate in cache.creatives.values()
                     if (evaluation := cache.creative_evaluations.get(candidate.slot_id)) is not None
-                ] if round_number else [],
+                ] if round_number and supplement_kind == "COVERAGE" else [],
             }
             await self._stage(context, NodeId.COHERENT_CREATIVE_GENERATION, StageStatus.RUNNING,
                               f"正在安排卖点素材任务 {len(current.tasks)}/{count}",
@@ -2780,14 +2789,21 @@ class PromptGenerationPipeline:
                             application, task_ids=ids,
                             fact_visual_strategy=self._required_fact_visual_strategy(context),
                             shared_prompt=self._required_shared_prompt(context),
-                            remaining_fact_ids=[key for key in required if key not in assigned],
+                            remaining_fact_ids=remaining_primary_ids,
                             existing_tasks=existing,
                             settings={**snapshot.settings.model_dump(mode="json", by_alias=True),
                                       "remainingTaskCount": count - len(current.tasks),
-                                      "currentPageCount": len(ids)},
+                                      "currentPageCount": len(ids),
+                                      "maxFactsPerTask": 2,
+                                      "primaryFactIndex": 0},
                             repair_context=repair,
                         )
-                    rows = validate_material_tasks(call.value, application, ids)
+                    rows = validate_material_tasks(
+                        call.value,
+                        application,
+                        ids,
+                        remaining_primary_ids,
+                    )
                     break
                 except (ValueError, ProviderError) as exc:
                     if isinstance(exc, ProviderError) and exc.error_type not in {
@@ -2830,7 +2846,8 @@ class PromptGenerationPipeline:
         if count <= 0 or round_number > 1:
             return []
         briefs = await self._plan_material_round(context, round_number=round_number,
-                                               count=count, coverage_fact_ids=coverage_fact_ids)
+                                               count=count, supplement_kind=supplement_kind,
+                                               coverage_fact_ids=coverage_fact_ids)
         tasks = [CreativeTask(
             slot_id=f"{context.run_id}:material:{brief.task_id}",
             ordinal=round_number * snapshot.settings.target_count + index + 1,
@@ -4583,7 +4600,7 @@ class PromptGenerationPipeline:
                         "adaptiveMmrTier": (
                             "HIGH"
                             if candidate_pool_content_redundancy_rate
-                            > MMR_HIGH_REDUNDANCY_THRESHOLD
+                            >= MMR_HIGH_REDUNDANCY_THRESHOLD
                             else "STANDARD"
                         ),
                         "candidatePoolRedundancyRate": (candidate_pool_redundancy_rate),
@@ -5762,6 +5779,68 @@ def _safe_high_risk_pairs(
     return result
 
 
+def _material_duplicate_group_context(
+    cache: RunCache,
+    *,
+    limit: int,
+) -> list[dict[str, object]]:
+    """Project measured vector groups into compact AI repair context.
+
+    Group membership comes entirely from the content vector index. The Worker
+    neither names the scene/action nor interprets why the items are similar; it
+    only joins already-known task and candidate text so the planning model can
+    design a genuinely different replacement event.
+    """
+
+    summary = cache.redundancy_summary
+    if summary is None or limit <= 0:
+        return []
+    members_by_representative: dict[str, list[str]] = {}
+    for representative, member in summary.group_pairs:
+        group = members_by_representative.setdefault(
+            representative,
+            [representative],
+        )
+        if member not in group:
+            group.append(member)
+
+    ranked_groups = sorted(
+        members_by_representative.values(),
+        key=lambda members: (-len(members), members[0]),
+    )
+    result: list[dict[str, object]] = []
+    for members in ranked_groups:
+        projected: list[dict[str, str]] = []
+        for slot_id in members[:3]:
+            candidate = cache.creatives.get(slot_id)
+            task = cache.creative_tasks.get(slot_id)
+            if candidate is None:
+                continue
+            brief = task.material_brief if task is not None else None
+            projected.append(
+                {
+                    "materialTaskId": brief.task_id if brief is not None else "",
+                    "creativeCore": _short(candidate.creative_core, 100),
+                    "visualEvent": (
+                        _short(brief.visual_event, 140) if brief is not None else ""
+                    ),
+                    "contentExcerpt": _short(candidate.content, 240),
+                }
+            )
+        if not projected:
+            continue
+        result.append(
+            {
+                "group": f"G{len(result) + 1:03d}",
+                "measuredMemberCount": len(members),
+                "members": projected,
+            }
+        )
+        if len(result) >= limit:
+            break
+    return result
+
+
 def _adaptive_mmr_quality_weight(candidate_pool_redundancy_rate: float) -> float:
     """Shift ranking weight before a redundant pool leaks into final results.
 
@@ -5769,7 +5848,7 @@ def _adaptive_mmr_quality_weight(candidate_pool_redundancy_rate: float) -> float
     across the current candidate pool. Quality remains the majority signal in
     every tier; diversity receives more influence as the pool gets denser.
     """
-    if candidate_pool_redundancy_rate > MMR_HIGH_REDUNDANCY_THRESHOLD:
+    if candidate_pool_redundancy_rate >= MMR_HIGH_REDUNDANCY_THRESHOLD:
         return 0.60
     return 0.70
 
@@ -5792,10 +5871,8 @@ def _diversity_supplement_count(
 
     if selection_target <= 0 or independent_group_gap <= 0:
         return 0
-    return max(
-        math.ceil(selection_target * 0.20),
-        independent_group_gap * 2,
-    )
+    supplement_limit = math.ceil(selection_target * 0.20)
+    return min(supplement_limit, max(1, independent_group_gap * 2))
 
 
 def _maximum_diversity_supplement_duplicates(evaluated_count: int) -> int:

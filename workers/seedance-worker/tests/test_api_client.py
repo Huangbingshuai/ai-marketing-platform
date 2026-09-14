@@ -6,7 +6,7 @@ import hashlib
 import httpx
 
 from seedance_worker.api_client import HttpInternalApi
-from seedance_worker.models import InputImage, RuntimeContext
+from seedance_worker.models import InputImage, RenderOutput, RenderPoster, RuntimeContext
 
 
 async def test_reference_images_are_verified_and_reused_from_the_bounded_cache() -> None:
@@ -94,3 +94,40 @@ async def test_reference_video_url_is_requested_with_the_active_lease() -> None:
     assert calls[0].method == "POST"
     assert calls[0].url.path.endswith("/tasks/task-a/reference-video-url")
     assert calls[0].read().decode() == '{"projectId":"project-a","taskVersion":2}'
+
+
+async def test_complete_uploads_video_and_optional_poster_together() -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"completed": True, "fileObjectId": "video-a"})
+
+    api = HttpInternalApi(
+        "https://api.example.test/api",
+        "worker-token",
+        transport=httpx.MockTransport(handler),
+    )
+    context = RuntimeContext(
+        project_id="project-a",
+        task_id="task-a",
+        task_version=3,
+        request_id="request-a",
+        attempt_token="attempt-a",
+    )
+    output = RenderOutput(
+        provider_task_id="provider-a",
+        content=b"video-content",
+        file_name="P001.mp4",
+        poster=RenderPoster(content=b"poster-content", file_name="P001-poster.jpg"),
+    )
+    try:
+        await api.complete(context, output)
+    finally:
+        await api.aclose()
+
+    body = calls[0].read()
+    assert b'name="file"; filename="P001.mp4"' in body
+    assert b'name="poster"; filename="P001-poster.jpg"' in body
+    assert b"video-content" in body
+    assert b"poster-content" in body

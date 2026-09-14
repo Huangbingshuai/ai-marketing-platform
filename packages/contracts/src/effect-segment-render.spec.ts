@@ -4,7 +4,9 @@ import {
   EFFECT_SEGMENT_RENDER_BATCH_STATUSES,
   EFFECT_SEGMENT_RENDER_JOB_TYPE,
   EFFECT_SEGMENT_RENDER_LIMITS,
+  EFFECT_SEGMENT_RENDER_ORIGINS,
   EFFECT_SEGMENT_RENDER_QUEUE,
+  EFFECT_SEGMENT_RENDER_EXPORT_FORMATS,
   EFFECT_SEGMENT_RENDER_REPAIR_DECISIONS,
   EFFECT_SEGMENT_RENDER_REPAIR_STATUSES,
   EFFECT_SEGMENT_RENDER_STATUSES,
@@ -17,6 +19,8 @@ describe('effect segment render contract', () => {
     expect(EFFECT_SEGMENT_RENDER_JOB_TYPE).toBe('EFFECT_SEGMENT_RENDER');
     expect(EFFECT_SEGMENT_RENDER_LIMITS.maxAutoRetries).toBe(2);
     expect(EFFECT_SEGMENT_RENDER_LIMITS.maxAttempts).toBe(3);
+    expect(EFFECT_SEGMENT_RENDER_LIMITS.maxPosterBytes).toBe(2 * 1024 * 1024);
+    expect(EFFECT_SEGMENT_RENDER_LIMITS.maxImportFilesPerOperation).toBe(100);
   });
 
   it('covers page-facing task and batch states', () => {
@@ -28,6 +32,12 @@ describe('effect segment render contract', () => {
       'RENDERING',
     ]);
     expect(EFFECT_SEGMENT_RENDER_BATCH_STATUSES).toContain('PARTIAL');
+    expect(EFFECT_SEGMENT_RENDER_ORIGINS).toEqual(['AI_GENERATED', 'EXTERNAL_IMPORT']);
+    expect(EFFECT_SEGMENT_RENDER_EXPORT_FORMATS).toEqual([
+      'VIDEO_PACKAGE',
+      'MANIFEST_JSON',
+      'FAILURE_CSV',
+    ]);
   });
 
   it('keeps one immutable provider request per prompt', () => {

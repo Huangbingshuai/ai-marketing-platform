@@ -8,7 +8,7 @@
 已有素材的视觉参考：{avoid_visual_json}
 已发现问题：{rejection_reasons_json}
 
-按每条 materialTask 的观看事件和产品价值，一次生成 creativeCore、六维与完整 shotPlan。事实是边界，visualEvent 是创作意图，difference 和 priorityDimensions 是变化建议，不是固定剧本。不再规划空间、方向或兄弟路线。默认一条任务形成一个可独立剪辑的无口播素材；若任务组合了事实，只让它们共同服务一个连贯事件，不把每项事实各演一遍。
+按每条 materialTask 的观看事件和产品价值，一次生成 creativeCore、六维与完整 shotPlan。factIds第一项是唯一主卖点，所有动作与可见结果都围绕它；第二项如有只是让同一事件成立的辅助背景，不为它另开镜头或动作。事实是边界，visualEvent 是创作意图，difference 和 priorityDimensions 是变化建议，不是固定剧本。不再规划空间、方向或兄弟路线。默认一条任务形成一个可独立剪辑的无口播素材。
 
 不要让视频模型猜发生了什么：交代能支持动作的首帧状态、谁怎样操作、镜头实际观察的部位，以及有意义的可见结果。自行选择适合时长的镜头数量与节奏，不把每条拍成一样的中景转特写。不依赖人物讲解、字幕、配乐或口型；商品价值需要在静音观看时仍可理解。
 

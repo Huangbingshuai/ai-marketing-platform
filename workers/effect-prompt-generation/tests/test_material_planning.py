@@ -8,11 +8,13 @@ import httpx
 import pytest
 
 from effect_prompt_generation.graph import build_graph
+from effect_prompt_generation.insight_mapping import map_insight
 from effect_prompt_generation.models import (
-    ClassificationShardPlan, CreativeCandidateDraft, FactEvidence, MaterialPlanResponse, PromptBatchSettings,
+    ClassificationShardPlan, CreativeCandidateDraft, FactEvidence, MaterialBrief, MaterialPlanResponse, PromptBatchSettings,
     StrategyCheckpoint, ExecutionAuditBatch, ExecutionAuditItem, ExecutionFinding,
     ExecutionRepairDraft,
 )
+from effect_prompt_generation.material_planning import validate_material_tasks
 from effect_prompt_generation.pipeline import PromptGenerationPipeline
 from effect_prompt_generation.product_images import PreparedProductImage
 from effect_prompt_generation.providers import (
@@ -68,9 +70,64 @@ async def test_fact_first_counts_combinations_and_expansion(count: int, facts: i
     assert len({task.slot_id for task in tasks}) == count
     assert all(task.material_brief is not None and task.creative_direction is None for task in tasks)
     required = {fact.fact_id for fact in pipeline._require_application(runtime).usable if fact.field.value == "SELLING_POINT"}
-    assert required <= {key for task in tasks for key in task.fact_assignment.fact_ids}
+    primary = {task.material_brief.primary_fact_id for task in tasks if task.material_brief is not None}
+    assert len(primary & required) == min(len(required), count)
+    assert all(len(task.fact_assignment.fact_ids) <= 2 for task in tasks)
     assert all(len(call["task_ids"]) <= 20 for call in provider.plans)
+    assert all(call["settings"]["maxFactsPerTask"] == 2 for call in provider.plans)
     assert all(not task.execution_route for task in tasks)
+
+
+def test_new_material_task_rejects_more_than_primary_and_support_fact() -> None:
+    application = map_insight({
+        "productName": "通用商品",
+        "productCategory": "日常用品",
+        "coreSpecification": "标准规格",
+        "priceRange": "",
+        "visualFeatures": "明确外观",
+        "sellingPoints": ["卖点一", "卖点二", "卖点三"],
+    })
+    selling_ids = [fact.fact_id for fact in application.usable if fact.field.value == "SELLING_POINT"]
+    response = MaterialPlanResponse(tasks=[MaterialBrief(
+        task_id="M0_001",
+        fact_ids=selling_ids,
+        visual_event="展示一个可执行的商品使用事件",
+        difference="与已有素材形成实质观看差异",
+    )])
+    with pytest.raises(ValueError, match="one primary and one supporting fact"):
+        validate_material_tasks(response, application, ["M0_001"])
+
+
+def test_new_material_page_must_rotate_remaining_primary_facts() -> None:
+    application = map_insight({
+        "productName": "通用商品",
+        "productCategory": "日常用品",
+        "coreSpecification": "标准规格",
+        "priceRange": "",
+        "visualFeatures": "明确外观",
+        "sellingPoints": ["卖点一", "卖点二"],
+    })
+    selling_ids = [
+        fact.fact_id
+        for fact in application.usable
+        if fact.field.value == "SELLING_POINT"
+    ]
+    response = MaterialPlanResponse(tasks=[
+        MaterialBrief(
+            task_id=task_id,
+            fact_ids=[selling_ids[0]],
+            visual_event=f"展示可执行的商品使用事件{index}",
+            difference=f"形成实质观看差异{index}",
+        )
+        for index, task_id in enumerate(("M0_001", "M0_002"), start=1)
+    ])
+    with pytest.raises(ValueError, match="rotate remaining primary facts"):
+        validate_material_tasks(
+            response,
+            application,
+            ["M0_001", "M0_002"],
+            selling_ids,
+        )
 
 
 @pytest.mark.asyncio

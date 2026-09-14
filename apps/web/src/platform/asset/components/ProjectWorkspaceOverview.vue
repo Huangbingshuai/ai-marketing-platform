@@ -32,6 +32,11 @@ import { latestWorkflowNodeStateMap, workflowNodeBaseId } from '../../workflow/w
 import { listAssets, listAssetVersions } from '../api/asset.api';
 import { SPACE_LABELS, WORKFLOW_META, typeLabel } from '../asset-v4';
 import AssetPreview from './AssetPreview.vue';
+import {
+  aggregateWorkspaceArtifacts,
+  isRenderBatchArtifact,
+  renderBatchClipCount,
+} from './project-workspace-artifacts';
 
 const props = withDefaults(
   defineProps<{
@@ -76,6 +81,7 @@ const latestState = computed(
       (left, right) => Date.parse(right.savedAt) - Date.parse(left.savedAt),
     )[0],
 );
+const visibleArtifacts = computed(() => aggregateWorkspaceArtifacts(artifacts.value));
 const currentNodeIndex = computed(() => {
   const index = workflowNodes.value.findIndex(
     (node) => node.id === workflowNodeBaseId(run.value?.currentNodeId ?? latestState.value?.nodeId),
@@ -127,12 +133,18 @@ const nodeStatus = (definition: WorkflowNodeDefinition): string => {
 };
 
 const artifactSummary = (artifact: WorkingArtifact): string => {
+  if (isRenderBatchArtifact(artifact)) return `${renderBatchClipCount(artifact)} 条已完成视频素材`;
   if (artifact.kind === 'FILE')
     return artifact.originalFileName || artifact.mimeType || '文件工作副本';
   const value = artifact.payload;
   if (!value || typeof value !== 'object') return '结构化工作副本';
   const text = JSON.stringify(value);
   return text.length > 90 ? `${text.slice(0, 90)}…` : text;
+};
+
+const openArtifact = (artifact: WorkingArtifact): void => {
+  if (!props.canResume || !isRenderBatchArtifact(artifact)) return;
+  emit('resumeNode', 'SEGMENT_RENDER');
 };
 
 const artifactStateLabel = (artifact: WorkingArtifact): string => {
@@ -301,14 +313,23 @@ onBeforeUnmount(() => controller?.abort());
               <h3>工作区产物</h3>
               <p>最新工作副本，不进入跨项目选择器</p>
             </div>
-            <b>{{ artifacts.length }}</b>
+            <b>{{ visibleArtifacts.length }}</b>
           </header>
-          <div v-if="!artifacts.length" class="section-empty">
+          <div v-if="!visibleArtifacts.length" class="section-empty">
             <FolderClock :size="27" /><strong>暂无工作区产物</strong>
             <p>上传或生成成功后会自动维护最新副本。</p>
           </div>
           <div v-else class="artifact-grid">
-            <article v-for="artifact in artifacts" :key="artifact.id">
+            <article
+              v-for="artifact in visibleArtifacts"
+              :key="artifact.id"
+              :class="{ actionable: isRenderBatchArtifact(artifact) && canResume }"
+              :role="isRenderBatchArtifact(artifact) && canResume ? 'button' : undefined"
+              :tabindex="isRenderBatchArtifact(artifact) && canResume ? 0 : undefined"
+              @click="openArtifact(artifact)"
+              @keydown.enter.prevent="openArtifact(artifact)"
+              @keydown.space.prevent="openArtifact(artifact)"
+            >
               <div
                 class="working-preview"
                 :class="{ package: artifact.type === 'SOURCE_MATERIAL' }"
@@ -321,6 +342,9 @@ onBeforeUnmount(() => controller?.abort());
                 <FileText v-else :size="32" />
                 <span v-if="artifact.type === 'SOURCE_MATERIAL'">
                   {{ artifact.fileCount }} 个文件
+                </span>
+                <span v-else-if="isRenderBatchArtifact(artifact)">
+                  {{ renderBatchClipCount(artifact) }} 条
                 </span>
               </div>
               <div class="artifact-copy">
@@ -352,7 +376,10 @@ onBeforeUnmount(() => controller?.abort());
                         artifact.freshness === 'STALE' || artifact.availability !== 'AVAILABLE',
                     }"
                     >{{ artifactStateLabel(artifact) }}</em
-                  ><b>尚未归档</b>
+                  ><b>尚未归档</b
+                  ><span v-if="isRenderBatchArtifact(artifact) && canResume" class="artifact-open"
+                    >进入素材池 <ArrowRight :size="10"
+                  /></span>
                 </footer>
               </div>
             </article>
@@ -650,6 +677,20 @@ onBeforeUnmount(() => controller?.abort());
   border-radius: 12px;
   background: #fbfcff;
 }
+.artifact-grid article.actionable {
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+.artifact-grid article.actionable:hover,
+.artifact-grid article.actionable:focus-visible {
+  border-color: #9bbcf5;
+  box-shadow: 0 7px 18px rgb(37 99 235 / 10%);
+  outline: none;
+  transform: translateY(-1px);
+}
 .working-preview,
 .archived-list :deep(.asset-preview) {
   width: 72px;
@@ -776,6 +817,14 @@ onBeforeUnmount(() => controller?.abort());
 .artifact-copy footer b {
   background: #edf3ff;
   color: #2563eb;
+}
+.artifact-copy footer .artifact-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  background: #e7efff;
+  color: #1d5bd0;
 }
 .section-empty {
   display: flex;

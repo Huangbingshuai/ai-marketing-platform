@@ -317,18 +317,25 @@ class HttpInternalApi:
             data["ratio"] = output.ratio
         if output.resolution is not None:
             data["resolution"] = output.resolution
+        files: dict[str, tuple[str, bytes, str]] = {
+            "file": (
+                output.file_name,
+                output.content,
+                output.mime_type,
+            )
+        }
+        if output.poster is not None:
+            files["poster"] = (
+                output.poster.file_name,
+                output.poster.content,
+                output.poster.mime_type,
+            )
         await self._request(
             "POST",
             self._ROOT + "/tasks/" + context.task_id + "/complete",
             headers=self._lease(context),
             data=data,
-            files={
-                "file": (
-                    output.file_name,
-                    output.content,
-                    output.mime_type,
-                )
-            },
+            files=files,
         )
 
     async def fail(

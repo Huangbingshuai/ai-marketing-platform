@@ -1092,61 +1092,63 @@ model EffectSegmentRenderBatch {
 }
 
 model EffectSegmentRenderTask {
-  id                 String                        @id @default(uuid()) @db.Uuid
-  projectId          String                        @db.Uuid
-  workflowRunId      String                        @db.Uuid
-  productId          String                        @db.Uuid
-  batchId            String                        @db.Uuid
-  promptId           String                        @db.Uuid
-  promptCode         String                        @db.VarChar(120)
-  renderCode         String                        @db.VarChar(120)
-  sourceFingerprint  String                        @db.Char(64)
-  requestSnapshot    Json
-  generationRequestSnapshot Json
-  operationKind      EffectSegmentRenderOperationKind @default(GENERATE)
-  status             EffectSegmentRenderTaskStatus @default(QUEUED)
-  progress           Int                           @default(0)
-  renderVersion      Int                           @default(1)
-  activeOutputVersion Int?
-  retryCount         Int                           @default(0)
-  maxAutoRetries     Int                           @default(2)
-  attemptCount       Int                           @default(0)
-  attemptToken       String?                       @db.Uuid
-  leaseExpiresAt     DateTime?
-  heartbeatAt        DateTime?
-  providerTaskId     String?                       @db.VarChar(255)
-  outputFileObjectId String?                       @db.Uuid
-  outputStorageKey   String?                       @db.VarChar(500)
-  outputFileName     String?                       @db.VarChar(255)
-  outputMimeType     String?                       @db.VarChar(120)
-  outputSizeBytes    Int?
-  outputContentHash  String?                       @db.Char(64)
-  repairStatus       EffectSegmentRenderRepairStatus?
-  repairSourceVersion Int?
-  repairStartMs      Int?
-  repairEndMs        Int?
-  repairRegion       Json?
-  repairInstruction  String?                       @db.VarChar(1000)
-  repairRequestHash  String?                       @db.Char(64)
-  repairCandidateFileObjectId String?               @db.Uuid
-  repairCandidateStorageKey String?                 @db.VarChar(500)
-  repairCandidateFileName String?                   @db.VarChar(255)
-  repairCandidateMimeType String?                   @db.VarChar(120)
-  repairCandidateSizeBytes Int?
-  repairCandidateContentHash String?                @db.Char(64)
-  repairCandidateVersion Int?
-  repairCandidateCreatedAt DateTime?
-  errorCode          String?                       @db.VarChar(120)
-  errorMessage       String?                       @db.VarChar(1000)
-  queuedAt           DateTime                      @default(now())
-  startedAt          DateTime?
-  completedAt        DateTime?
-  createdAt          DateTime                      @default(now())
-  updatedAt          DateTime                      @updatedAt
-  project            Project                       @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  workflowRun        WorkflowRun                   @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
-  product            EffectImportProduct           @relation(fields: [projectId, workflowRunId, productId], references: [projectId, workflowRunId, id], onDelete: Cascade)
-  batch              EffectSegmentRenderBatch      @relation(fields: [projectId, batchId], references: [projectId, id], onDelete: Cascade)
+  id                          String                           @id @default(uuid()) @db.Uuid
+  projectId                   String                           @db.Uuid
+  workflowRunId               String                           @db.Uuid
+  productId                   String                           @db.Uuid
+  batchId                     String                           @db.Uuid
+  promptId                    String                           @db.Uuid
+  promptCode                  String                           @db.VarChar(120)
+  renderCode                  String                           @db.VarChar(120)
+  sourceFingerprint           String                           @db.Char(64)
+  requestSnapshot             Json
+  generationRequestSnapshot   Json
+  operationKind               EffectSegmentRenderOperationKind @default(GENERATE)
+  status                      EffectSegmentRenderTaskStatus    @default(QUEUED)
+  progress                    Int                              @default(0)
+  renderVersion               Int                              @default(1)
+  activeOutputVersion         Int?
+  retryCount                  Int                              @default(0)
+  maxAutoRetries              Int                              @default(2)
+  attemptCount                Int                              @default(0)
+  attemptToken                String?                          @db.Uuid
+  leaseExpiresAt              DateTime?
+  heartbeatAt                 DateTime?
+  providerTaskId              String?                          @db.VarChar(255)
+  outputFileObjectId          String?                          @db.Uuid
+  outputStorageKey            String?                          @db.VarChar(500)
+  outputFileName              String?                          @db.VarChar(255)
+  outputMimeType              String?                          @db.VarChar(120)
+  outputSizeBytes             Int?
+  outputContentHash           String?                          @db.Char(64)
+  outputPoster                Json?
+  repairStatus                EffectSegmentRenderRepairStatus?
+  repairSourceVersion         Int?
+  repairStartMs               Int?
+  repairEndMs                 Int?
+  repairRegion                Json?
+  repairInstruction           String?                          @db.VarChar(1000)
+  repairRequestHash           String?                          @db.Char(64)
+  repairCandidateFileObjectId String?                          @db.Uuid
+  repairCandidateStorageKey   String?                          @db.VarChar(500)
+  repairCandidateFileName     String?                          @db.VarChar(255)
+  repairCandidateMimeType     String?                          @db.VarChar(120)
+  repairCandidateSizeBytes    Int?
+  repairCandidateContentHash  String?                          @db.Char(64)
+  repairCandidatePoster       Json?
+  repairCandidateVersion      Int?
+  repairCandidateCreatedAt    DateTime?
+  errorCode                   String?                          @db.VarChar(120)
+  errorMessage                String?                          @db.VarChar(1000)
+  queuedAt                    DateTime                         @default(now())
+  startedAt                   DateTime?
+  completedAt                 DateTime?
+  createdAt                   DateTime                         @default(now())
+  updatedAt                   DateTime                         @updatedAt
+  project                     Project                          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workflowRun                 WorkflowRun                      @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
+  product                     EffectImportProduct              @relation(fields: [projectId, workflowRunId, productId], references: [projectId, workflowRunId, id], onDelete: Cascade)
+  batch                       EffectSegmentRenderBatch         @relation(fields: [projectId, batchId], references: [projectId, id], onDelete: Cascade)
 
   @@unique([projectId, id])
   @@unique([projectId, batchId, promptId])

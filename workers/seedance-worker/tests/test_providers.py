@@ -144,6 +144,54 @@ async def test_provider_resumes_existing_task_without_creating_a_duplicate() -> 
     assert any(request.url.path.endswith("/provider-existing") for request in calls)
 
 
+async def test_provider_keeps_polling_an_existing_task_after_transient_network_errors() -> None:
+    calls: list[httpx.Request] = []
+    poll_attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal poll_attempts
+        calls.append(request)
+        if request.url.host == "files.example.test":
+            return httpx.Response(
+                200, content=b"video", headers={"content-type": "video/mp4"}
+            )
+        poll_attempts += 1
+        if poll_attempts <= 2:
+            raise httpx.ConnectError("temporary dns failure", request=request)
+        return httpx.Response(
+            200,
+            json={
+                "status": "succeeded",
+                "content": {"video_url": "https://files.example.test/output.mp4"},
+            },
+        )
+
+    provider = ArkSeedanceProvider(
+        base_url="https://ark.example.test/api/v3",
+        api_key="secret",
+        timeout_seconds=10,
+        poll_interval_seconds=0.001,
+        create_qps=1000,
+        download_concurrency=2,
+        max_download_bytes=1024,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        output = await provider.render(
+            snapshot(),
+            [],
+            None,
+            lambda value, task_id: _record([], value, task_id),
+            "provider-existing",
+        )
+    finally:
+        await provider.aclose()
+
+    assert output.content == b"video"
+    assert poll_attempts == 3
+    assert not any(request.method == "POST" for request in calls)
+
+
 async def test_provider_sends_a_reference_video_for_repair() -> None:
     calls: list[httpx.Request] = []
 
@@ -306,6 +354,88 @@ async def test_provider_reuses_the_source_ark_task_for_exact_editing() -> None:
         "video_url": {"url": "https://source.example.test/original.mp4"},
         "role": "reference_video",
     }
+
+
+async def test_provider_retries_source_lookup_before_creating_one_repair_task() -> None:
+    calls: list[httpx.Request] = []
+    source_attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal source_attempts
+        calls.append(request)
+        if request.url.host == "files.example.test":
+            return httpx.Response(
+                200, content=b"video", headers={"content-type": "video/mp4"}
+            )
+        if request.url.path.endswith("/provider-source"):
+            source_attempts += 1
+            if source_attempts == 1:
+                raise httpx.ConnectError("temporary dns failure", request=request)
+            return httpx.Response(
+                200,
+                json={
+                    "status": "succeeded",
+                    "content": {
+                        "video_url": "https://source.example.test/original.mp4"
+                    },
+                },
+            )
+        if request.method == "POST":
+            return httpx.Response(200, json={"id": "provider-repair"})
+        return httpx.Response(
+            200,
+            json={
+                "status": "succeeded",
+                "content": {"video_url": "https://files.example.test/repaired.mp4"},
+            },
+        )
+
+    repair_data = snapshot().model_dump(by_alias=True)
+    repair_data.update(
+        {
+            "operation": "REPAIR",
+            "inputImages": [],
+            "inputVideo": {
+                "fileObjectId": "video-a",
+                "providerTaskId": "provider-source",
+                "originalFileName": "source.mp4",
+                "mimeType": "video/mp4",
+                "sizeBytes": 1024,
+                "contentHash": "f" * 64,
+                "durationSeconds": 5,
+            },
+            "repair": {
+                "sourceVersion": 1,
+                "startMs": 1000,
+                "endMs": 2000,
+                "instruction": "移除画面瑕疵",
+                "region": None,
+            },
+        }
+    )
+    provider = ArkSeedanceProvider(
+        base_url="https://ark.example.test/api/v3",
+        api_key="secret",
+        timeout_seconds=10,
+        poll_interval_seconds=0.001,
+        create_qps=1000,
+        download_concurrency=2,
+        max_download_bytes=1024,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        output = await provider.render(
+            RenderSnapshot.model_validate(repair_data),
+            [],
+            None,
+            lambda value, task_id: _record([], value, task_id),
+        )
+    finally:
+        await provider.aclose()
+
+    assert output.content == b"video"
+    assert source_attempts == 2
+    assert sum(request.method == "POST" for request in calls) == 1
 
 
 async def test_create_rate_limiter_spaces_concurrent_submissions() -> None:

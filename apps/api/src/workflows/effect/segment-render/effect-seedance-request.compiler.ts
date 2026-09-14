@@ -99,14 +99,16 @@ export const compileEffectSeedanceRepairRequest = (
     repair.endMs > durationMs
   )
     throw new EffectSeedanceCompileError('REPAIR_RANGE_INVALID', '视频返修时间范围超出原视频时长');
+  const normalizedInstruction = instruction.replace(/。+$/gu, '');
   const text = [
     '任务类型：基于输入的完整参考视频进行局部画面修复。',
-    `输出必须与参考视频保持相同时长（${generationSnapshot.request.duration} 秒）、画幅、分辨率、镜头顺序和时间节奏。`,
-    `仅修改时间段：[${seconds(repair.startMs)}s-${seconds(repair.endMs)}s]。`,
-    `修改区域：${repairRegionText(repair.region)}。`,
-    `修改要求：${instruction.replace(/。+$/gu, '')}。`,
-    '严格保持：除指定时间段和问题区域外，保持原视频的人物身份、人物动作、产品主体、包装文字、背景、构图、镜头运动、光影、色彩、节奏和声音不变。',
-    '不得增加或删除镜头，不得增加新人物、新商品、新文字、新字幕、新口播、新旁白或无关特效。',
+    `用户修改要求（最高优先级，必须产生肉眼可见且直接对应要求的变化）：${normalizedInstruction}。`,
+    `修改时间段：[${seconds(repair.startMs)}s-${seconds(repair.endMs)}s]。`,
+    ...(repair.region ? [`修改区域：${repairRegionText(repair.region)}。`] : []),
+    `输出时长保持 ${generationSnapshot.request.duration} 秒，并沿用参考视频的画幅、分辨率、镜头顺序和时间节奏。`,
+    '仅对用户要求直接涉及的画面内容进行修改，其余内容尽量沿用参考视频；保持要求不得削弱或抵消用户修改。',
+    '不要新增与返修无关的镜头、人物、商品、文字、字幕、口播、旁白或特效。',
+    '如果修改目标与参考视频看起来基本相同，视为未完成返修。',
   ].join('\n');
   return {
     ...generationSnapshot,
@@ -177,13 +179,18 @@ export const compileEffectSeedanceRequest = (
 };
 
 export const validateEffectSeedanceTaskResult = (
-  snapshot: EffectSeedanceRequestSnapshot,
+  snapshot: EffectSeedanceRequestSnapshot & {
+    operation?: EffectSegmentRenderRequestSnapshot['operation'];
+  },
   result: EffectSeedanceTaskResult,
 ): Array<'DURATION_MISMATCH' | 'RATIO_MISMATCH' | 'RESOLUTION_MISMATCH'> => {
   const issues: Array<'DURATION_MISMATCH' | 'RATIO_MISMATCH' | 'RESOLUTION_MISMATCH'> = [];
   if (result.duration !== undefined && Number(result.duration) !== snapshot.request.duration)
     issues.push('DURATION_MISMATCH');
-  if (result.ratio !== undefined && result.ratio.replace('：', ':') !== snapshot.request.ratio)
+  if (
+    result.ratio !== undefined &&
+    !ratioMatches(snapshot.request.ratio, result.ratio, snapshot.operation === 'REPAIR')
+  )
     issues.push('RATIO_MISMATCH');
   if (
     result.resolution !== undefined &&
@@ -191,4 +198,24 @@ export const validateEffectSeedanceTaskResult = (
   )
     issues.push('RESOLUTION_MISMATCH');
   return issues;
+};
+
+const ratioMatches = (
+  expected: string,
+  actual: string,
+  allowAdaptiveRounding: boolean,
+): boolean => {
+  const normalizedExpected = expected.replace('：', ':');
+  const normalizedActual = actual.replace('：', ':');
+  if (normalizedExpected === normalizedActual) return true;
+  if (!allowAdaptiveRounding) return false;
+  const parse = (value: string): number | null => {
+    const [width, height, ...rest] = value.split(':').map(Number);
+    if (rest.length || !width || !height || width <= 0 || height <= 0) return null;
+    return width / height;
+  };
+  const expectedValue = parse(normalizedExpected);
+  const actualValue = parse(normalizedActual);
+  if (expectedValue === null || actualValue === null) return false;
+  return Math.abs(actualValue / expectedValue - 1) <= 0.03;
 };

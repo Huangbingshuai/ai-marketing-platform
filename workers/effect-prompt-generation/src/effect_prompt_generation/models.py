@@ -1103,10 +1103,22 @@ class MaterialBrief(ApiModel):
     """One AI-authored material task, not a territory/direction quota."""
 
     task_id: str = Field(min_length=1, max_length=80)
+    # Keep the persisted model permissive enough to read checkpoints created by
+    # older runs. New provider responses are structurally capped at two facts by
+    # the request schema and validate_material_tasks: index 0 is the primary
+    # selling point, index 1 (when present) is only supporting context.
     fact_ids: list[str] = Field(min_length=1, max_length=100)
     visual_event: str = Field(min_length=4, max_length=240)
     difference: str = Field(min_length=4, max_length=160)
     priority_dimensions: list[CreativeDimensionKey] = Field(default_factory=list, max_length=3)
+
+    @property
+    def primary_fact_id(self) -> str:
+        return self.fact_ids[0]
+
+    @property
+    def supporting_fact_ids(self) -> list[str]:
+        return self.fact_ids[1:]
 
 
 class MaterialPlanResponse(ApiModel):

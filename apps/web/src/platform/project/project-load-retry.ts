@@ -1,6 +1,7 @@
 import { isAbortError } from '../../api/http-client';
 
-export const PROJECT_LOAD_RETRY_DELAYS_MS = [300, 700, 1_500, 3_000, 5_000] as const;
+export const PROJECT_LOAD_RETRY_DELAYS_MS = [300, 700, 1_500] as const;
+export const PROJECT_LOAD_ATTEMPT_TIMEOUT_MS = 4_000;
 
 type RetryableHttpError = {
   status?: unknown;
@@ -36,16 +37,57 @@ const waitForRetry = (delayMs: number, signal: AbortSignal): Promise<void> =>
   });
 
 type ProjectLoadRetryOptions = {
-  continueWithLastDelay?: boolean;
+  attemptTimeoutMs?: number;
   delays?: readonly number[];
   wait?: (delayMs: number, signal: AbortSignal) => Promise<void>;
 };
 
+const runAttempt = <T>(
+  request: (signal: AbortSignal) => Promise<T>,
+  parentSignal: AbortSignal,
+  timeoutMs: number,
+): Promise<T> =>
+  new Promise((resolve, reject) => {
+    const controller = new AbortController();
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const cleanup = (): void => {
+      if (timer) clearTimeout(timer);
+      parentSignal.removeEventListener('abort', handleParentAbort);
+    };
+    const finish = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const handleParentAbort = (): void => {
+      controller.abort(parentSignal.reason);
+      finish(() => reject(abortError()));
+    };
+
+    parentSignal.addEventListener('abort', handleParentAbort, { once: true });
+    if (parentSignal.aborted) {
+      handleParentAbort();
+      return;
+    }
+    timer = setTimeout(() => {
+      controller.abort();
+      finish(() => reject(new TypeError('项目列表请求超时')));
+    }, timeoutMs);
+
+    request(controller.signal).then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
+
 export const loadProjectListWithRetry = async <T>(
-  request: () => Promise<T>,
+  request: (signal: AbortSignal) => Promise<T>,
   signal: AbortSignal,
   {
-    continueWithLastDelay = false,
+    attemptTimeoutMs = PROJECT_LOAD_ATTEMPT_TIMEOUT_MS,
     delays = PROJECT_LOAD_RETRY_DELAYS_MS,
     wait = waitForRetry,
   }: ProjectLoadRetryOptions = {},
@@ -54,11 +96,12 @@ export const loadProjectListWithRetry = async <T>(
   while (true) {
     if (signal.aborted) throw abortError();
     try {
-      return await request();
+      return await runAttempt(request, signal, attemptTimeoutMs);
     } catch (error) {
+      if (signal.aborted) throw abortError();
       if (!isRetryableProjectLoadError(error) || delays.length === 0) throw error;
-      if (!continueWithLastDelay && retryIndex >= delays.length) throw error;
-      const delay = delays[Math.min(retryIndex, delays.length - 1)]!;
+      if (retryIndex >= delays.length) throw error;
+      const delay = delays[retryIndex]!;
       await wait(delay, signal);
       retryIndex += 1;
     }

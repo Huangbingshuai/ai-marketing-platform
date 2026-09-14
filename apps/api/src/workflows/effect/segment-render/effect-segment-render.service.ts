@@ -1,12 +1,16 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 
+import { ZipArchive } from 'archiver';
 import type {
   EffectPromptBatchResult,
   EffectPromptRenderCapabilityKey,
+  EffectSegmentRenderExportFormat,
+  EffectSegmentRenderImportMapping,
   EffectSegmentRenderSettings,
   EffectSegmentRenderRepairDecision,
   EffectSegmentRenderRepairRegion,
+  EffectSegmentRenderPoster,
   EffectSegmentRenderBatch,
   EffectSegmentRenderRequestSnapshot,
   EffectSegmentRenderSourcePackage,
@@ -55,6 +59,7 @@ const notFound = (message: string): NotFoundException => new NotFoundException(m
 const conflict = (message: string): ConflictException => new ConflictException(message);
 const badRequest = (message: string): BadRequestException => new BadRequestException(message);
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const SUPPORTED_REFERENCE_IMAGE_MIME_TYPES = new Set([
   'image/gif',
   'image/bmp',
@@ -98,6 +103,31 @@ const safeSignatureEquals = (actual: string, expected: string): boolean => {
   return (
     actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer)
   );
+};
+
+const renderPoster = (value: unknown, version: number): EffectSegmentRenderPoster | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const poster = value as Record<string, unknown>;
+  if (
+    typeof poster.fileObjectId !== 'string' ||
+    typeof poster.originalFileName !== 'string' ||
+    typeof poster.mimeType !== 'string' ||
+    typeof poster.sizeBytes !== 'number' ||
+    !Number.isSafeInteger(poster.sizeBytes) ||
+    poster.sizeBytes < 1 ||
+    typeof poster.contentHash !== 'string' ||
+    !SHA256_PATTERN.test(poster.contentHash) ||
+    poster.version !== version
+  )
+    return null;
+  return {
+    fileObjectId: poster.fileObjectId,
+    originalFileName: poster.originalFileName,
+    mimeType: poster.mimeType,
+    sizeBytes: poster.sizeBytes,
+    contentHash: poster.contentHash,
+    version,
+  };
 };
 
 const parseByteRange = (
@@ -216,6 +246,12 @@ const presentTask = (
     task.repairCandidateContentHash &&
     task.repairCandidateVersion !== null &&
     SHA256_PATTERN.test(task.repairCandidateContentHash);
+  const activeOutputVersion = task.activeOutputVersion ?? task.renderVersion;
+  const outputPoster = renderPoster(task.outputPoster, activeOutputVersion);
+  const repairPoster =
+    task.repairCandidateVersion === null
+      ? null
+      : renderPoster(task.repairCandidatePoster, task.repairCandidateVersion);
   const repair =
     task.repairStatus &&
     task.repairSourceVersion !== null &&
@@ -240,6 +276,7 @@ const presentTask = (
                 sizeBytes: task.repairCandidateSizeBytes!,
                 contentHash: task.repairCandidateContentHash!,
                 version: task.repairCandidateVersion!,
+                poster: repairPoster,
               }
             : null,
         }
@@ -255,9 +292,9 @@ const presentTask = (
     fragmentType: snapshot.primaryPurpose,
     compatiblePurposes: [...snapshot.compatiblePurposes],
     durationSeconds: snapshot.request.duration,
-    modelMatch: 'AUTO_MATCHED',
     source: 'PROMPT',
-    sourceName: task.promptCode,
+    origin: hasOutput && !task.providerTaskId ? 'EXTERNAL_IMPORT' : 'AI_GENERATED',
+    sourceName: hasOutput && !task.providerTaskId ? task.outputFileName! : task.promptCode,
     status,
     progress: task.progress,
     retryCount: task.retryCount,
@@ -273,7 +310,8 @@ const presentTask = (
           mimeType: task.outputMimeType!,
           sizeBytes: task.outputSizeBytes!,
           contentHash: task.outputContentHash!,
-          version: task.activeOutputVersion ?? task.renderVersion,
+          version: activeOutputVersion,
+          poster: outputPoster,
         }
       : null,
     repair,
@@ -706,6 +744,278 @@ export class EffectSegmentRenderService {
     return { batch: await this.present(record), replayed: result.kind === 'REPLAYED' };
   }
 
+  async importMaterials(
+    projectId: string,
+    batchId: string,
+    input: { expectedBatchRevision: number; idempotencyKey: string; mappings: string },
+    files: UploadedSegmentRenderFile[] | undefined,
+  ): Promise<{ batch: EffectSegmentRenderBatch; importedCount: number; replayed: boolean }> {
+    const project = await this.projects.get(projectId);
+    const idempotencyKey = input.idempotencyKey.trim();
+    if (!idempotencyKey) throw badRequest('幂等键不能为空');
+    const uploads = files ?? [];
+    if (!uploads.length || uploads.length > EFFECT_SEGMENT_RENDER_LIMITS.maxImportFilesPerOperation)
+      throw badRequest('请选择需要导入的视频素材');
+    let mappings: EffectSegmentRenderImportMapping[];
+    try {
+      const value = JSON.parse(input.mappings) as unknown;
+      if (!Array.isArray(value)) throw new Error('INVALID_MAPPINGS');
+      mappings = value as EffectSegmentRenderImportMapping[];
+    } catch {
+      throw badRequest('素材与 Prompt 槽位的匹配关系无效');
+    }
+    if (
+      mappings.length !== uploads.length ||
+      mappings.length > EFFECT_SEGMENT_RENDER_LIMITS.maxImportFilesPerOperation ||
+      mappings.some(
+        ({ fileIndex, taskId }) =>
+          !Number.isSafeInteger(fileIndex) ||
+          fileIndex < 0 ||
+          fileIndex >= uploads.length ||
+          typeof taskId !== 'string' ||
+          !UUID_V4_PATTERN.test(taskId),
+      ) ||
+      new Set(mappings.map(({ fileIndex }) => fileIndex)).size !== mappings.length ||
+      new Set(mappings.map(({ taskId }) => taskId)).size !== mappings.length
+    )
+      throw badRequest('每个视频必须唯一匹配一个 Prompt 槽位');
+    const batch = await this.repository.batch(projectId, batchId);
+    if (!batch) throw notFound('视频渲染批次不存在');
+    const productName = batch.product.name.trim() || '未命名产品';
+    const storedImports: Array<{
+      taskId: string;
+      file: {
+        id: string;
+        originalFileName: string;
+        mimeType: string;
+        sizeBytes: number;
+        storageKey: string;
+        sha256: string;
+      };
+    }> = [];
+    try {
+      for (const mapping of mappings) {
+        const upload = uploads[mapping.fileIndex]!;
+        const displayName = safeFileName(upload.originalname || 'imported-video.mp4');
+        const reportedMimeType = upload.mimetype.trim().toLocaleLowerCase('en-US');
+        const inferredMimeType = /\.mov$/iu.test(displayName)
+          ? 'video/quicktime'
+          : /\.webm$/iu.test(displayName)
+            ? 'video/webm'
+            : /\.mp4$/iu.test(displayName)
+              ? 'video/mp4'
+              : reportedMimeType;
+        const mimeType =
+          reportedMimeType && reportedMimeType !== 'application/octet-stream'
+            ? reportedMimeType
+            : inferredMimeType;
+        if (!['video/mp4', 'video/quicktime', 'video/webm'].includes(mimeType))
+          throw badRequest(`文件 ${displayName} 不是支持的视频格式`);
+        if (upload.size < 1 || upload.size > EFFECT_SEGMENT_RENDER_LIMITS.maxUploadBytes)
+          throw badRequest(`文件 ${displayName} 的大小不符合限制`);
+        const sha256 = await fileSha256(upload.path);
+        const stored = await this.storage.put({
+          projectId,
+          stream: createReadStream(upload.path),
+          sizeBytes: upload.size,
+          contentType: mimeType,
+          keyContext: {
+            projectName: project.name,
+            workflow: 'EFFECT',
+            lifecycle: 'staging',
+            productId: batch.productId,
+            productName,
+            category: '外部视频素材',
+            originalFileName: displayName,
+          },
+        });
+        storedImports.push({
+          taskId: mapping.taskId,
+          file: {
+            id: randomUUID(),
+            originalFileName: displayName,
+            mimeType,
+            sizeBytes: stored.sizeBytes,
+            storageKey: stored.key,
+            sha256,
+          },
+        });
+      }
+      const result = await this.repository.importMaterials(
+        projectId,
+        batchId,
+        storedImports,
+        input.expectedBatchRevision,
+        idempotencyKey,
+      );
+      if (result.kind === 'NOT_FOUND') throw notFound('视频渲染批次不存在');
+      if (result.kind === 'REVISION_CONFLICT') throw conflict('视频渲染批次已更新，请刷新后重试');
+      if (result.kind === 'BATCH_ACTIVE') throw conflict('批次渲染中，暂不能导入素材');
+      if (result.kind === 'NOT_LATEST') throw conflict('只能向当前最新批次导入素材');
+      if (result.kind === 'PROMPT_CONFLICT')
+        throw conflict('Prompt 批次已更新，请重新创建渲染批次');
+      if (result.kind === 'SOURCE_CONFLICT') throw conflict('产品资料包已更新，请重新创建渲染批次');
+      if (result.kind === 'TASK_NOT_FOUND') throw notFound('匹配的 Prompt 槽位不存在');
+      if (result.kind === 'TASK_CONFLICT') throw conflict('同一 Prompt 槽位不能重复匹配');
+      if (result.kind === 'TASK_REPAIR_PENDING')
+        throw conflict('目标素材存在待处理返修，请先采用或放弃返修结果');
+      if (result.kind === 'KEY_CONFLICT') throw conflict('幂等键已用于其他素材导入请求');
+      if (result.kind === 'REPLAYED') {
+        await Promise.all(
+          storedImports.map(({ file }) =>
+            this.storage.delete(file.storageKey).catch(() => undefined),
+          ),
+        );
+        storedImports.length = 0;
+      } else {
+        storedImports.length = 0;
+      }
+      const updated = await this.repository.batch(projectId, batchId);
+      if (!updated) throw notFound('视频渲染批次不存在');
+      return {
+        batch: await this.present(updated),
+        importedCount: mappings.length,
+        replayed: result.kind === 'REPLAYED',
+      };
+    } finally {
+      if (storedImports.length)
+        await Promise.all(
+          storedImports.map(({ file }) =>
+            this.storage.delete(file.storageKey).catch(() => undefined),
+          ),
+        );
+    }
+  }
+
+  async deleteMaterials(
+    projectId: string,
+    batchId: string,
+    taskIds: string[],
+    expectedBatchRevision: number,
+    idempotencyKeyValue: string,
+  ): Promise<{ batch: EffectSegmentRenderBatch; replayed: boolean }> {
+    await this.projects.get(projectId);
+    const idempotencyKey = idempotencyKeyValue.trim();
+    if (!idempotencyKey) throw badRequest('幂等键不能为空');
+    const uniqueTaskIds = [...new Set(taskIds)];
+    if (
+      !uniqueTaskIds.length ||
+      uniqueTaskIds.length > EFFECT_SEGMENT_RENDER_LIMITS.maxTaskIdsPerOperation
+    )
+      throw badRequest('请选择需要删除的视频素材');
+    const result = await this.repository.deleteMaterials(
+      projectId,
+      batchId,
+      uniqueTaskIds,
+      expectedBatchRevision,
+      idempotencyKey,
+    );
+    if (result.kind === 'NOT_FOUND') throw notFound('视频渲染批次不存在');
+    if (result.kind === 'REVISION_CONFLICT') throw conflict('视频渲染批次已更新，请刷新后重试');
+    if (result.kind === 'BATCH_ACTIVE') throw conflict('批次渲染中，暂不能删除素材');
+    if (result.kind === 'NOT_LATEST') throw conflict('只能删除当前最新批次的素材');
+    if (result.kind === 'PROMPT_CONFLICT') throw conflict('Prompt 批次已更新，请重新创建渲染批次');
+    if (result.kind === 'SOURCE_CONFLICT') throw conflict('产品资料包已更新，请重新创建渲染批次');
+    if (result.kind === 'TASK_NOT_FOUND') throw notFound('所选视频素材不存在');
+    if (result.kind === 'TASK_CONFLICT') throw conflict('只能删除已完成的视频素材');
+    if (result.kind === 'TASK_REPAIR_PENDING')
+      throw conflict('所选素材存在待处理返修，请先采用或放弃返修结果');
+    if (result.kind === 'KEY_CONFLICT') throw conflict('幂等键已用于其他素材删除请求');
+    const updated = await this.repository.batch(projectId, batchId);
+    if (!updated) throw notFound('视频渲染批次不存在');
+    return { batch: await this.present(updated), replayed: result.kind === 'REPLAYED' };
+  }
+
+  async exportMaterials(
+    projectId: string,
+    batchId: string,
+    taskIds: string[],
+    formats: EffectSegmentRenderExportFormat[],
+    expectedBatchRevision: number,
+  ) {
+    await this.projects.get(projectId);
+    const record = await this.repository.batch(projectId, batchId);
+    if (!record) throw notFound('视频渲染批次不存在');
+    if (record.revision !== expectedBatchRevision)
+      throw conflict('视频渲染批次已更新，请刷新后重试');
+    const uniqueTaskIds = [...new Set(taskIds)];
+    const selected = record.tasks.filter(({ id }) => uniqueTaskIds.includes(id));
+    if (!uniqueTaskIds.length || selected.length !== uniqueTaskIds.length)
+      throw notFound('导出范围内的视频任务不存在');
+    const requestedFormats = new Set(formats);
+    if (!requestedFormats.size) throw badRequest('请选择至少一种导出内容');
+    const presented = selected.map((task) => presentTask(task, record.product.name));
+    const archive = new ZipArchive({ zlib: { level: 6 } });
+    let entryCount = 0;
+    if (requestedFormats.has('VIDEO_PACKAGE')) {
+      for (const task of selected) {
+        if (
+          task.status !== 'COMPLETED' ||
+          !task.outputFileObjectId ||
+          !task.outputStorageKey ||
+          !task.outputFileName
+        )
+          continue;
+        const fileObject = await this.repository.fileObject(
+          projectId,
+          record.workflowRunId,
+          task.outputFileObjectId,
+        );
+        if (!fileObject || fileObject.storageKey !== task.outputStorageKey) continue;
+        const stored = await this.storage.open(fileObject.storageKey);
+        archive.append(stored.stream, {
+          name: `videos/${task.renderCode}-${safeFileName(task.outputFileName)}`,
+        });
+        entryCount += 1;
+      }
+    }
+    if (requestedFormats.has('MANIFEST_JSON')) {
+      archive.append(
+        Buffer.from(
+          JSON.stringify(
+            {
+              schemaVersion: 1,
+              batchId: record.id,
+              productId: record.productId,
+              sourcePrompt: {
+                artifactId: record.sourcePromptArtifactId,
+                revision: record.sourcePromptRevision,
+                contentHash: record.sourcePromptHash,
+              },
+              exportedAt: new Date().toISOString(),
+              tasks: presented,
+            },
+            null,
+            2,
+          ),
+          'utf8',
+        ),
+        { name: 'manifest.json' },
+      );
+      entryCount += 1;
+    }
+    if (requestedFormats.has('FAILURE_CSV')) {
+      const csvCell = (value: unknown): string => `"${String(value ?? '').replace(/"/gu, '""')}"`;
+      const rows = [
+        ['renderCode', 'promptCode', 'errorCode', 'errorMessage'],
+        ...presented
+          .filter(({ status }) => status === 'FAILED')
+          .map((task) => [task.renderCode, task.promptCode, task.errorCode, task.errorMessage]),
+      ];
+      archive.append(
+        Buffer.from('\ufeff' + rows.map((row) => row.map(csvCell).join(',')).join('\r\n')),
+        { name: 'failures.csv' },
+      );
+      entryCount += 1;
+    }
+    if (!entryCount) throw badRequest('当前范围没有可导出的已完成视频素材');
+    void archive.finalize().catch((error: unknown) => archive.destroy(error as Error));
+    return {
+      stream: archive,
+      fileName: `${safeFileName(record.product.name || '未命名产品')}-视频素材-${Date.now()}.zip`,
+    };
+  }
+
   async startRepair(
     projectId: string,
     batchId: string,
@@ -1057,12 +1367,14 @@ export class EffectSegmentRenderService {
     batchId: string,
     taskId: string,
     variant: 'ACTIVE' | 'REPAIR',
+    kind: 'VIDEO' | 'POSTER',
+    expectedVersion?: number,
     rangeHeader?: string,
   ) {
     await this.projects.get(projectId);
     const task = await this.repository.task(projectId, taskId);
     if (!task || task.batchId !== batchId) throw notFound('视频渲染任务不存在');
-    const metadata =
+    const videoMetadata =
       variant === 'REPAIR'
         ? {
             fileObjectId: task.repairCandidateFileObjectId,
@@ -1078,7 +1390,20 @@ export class EffectSegmentRenderService {
             sizeBytes: task.outputSizeBytes,
             contentHash: task.outputContentHash,
           };
+    const version = variant === 'REPAIR' ? task.repairCandidateVersion : task.activeOutputVersion;
+    if (expectedVersion !== undefined && version !== expectedVersion)
+      throw conflict('视频输出版本已更新，请刷新后重试');
+    const posterMetadata =
+      version === null
+        ? null
+        : renderPoster(
+            variant === 'REPAIR' ? task.repairCandidatePoster : task.outputPoster,
+            version,
+          );
+    const metadata = kind === 'POSTER' ? posterMetadata : videoMetadata;
+    if (kind === 'POSTER' && !metadata) throw notFound('视频首帧预览不存在');
     if (
+      !metadata ||
       !metadata.fileObjectId ||
       !metadata.originalFileName ||
       !metadata.mimeType ||
@@ -1097,10 +1422,11 @@ export class EffectSegmentRenderService {
       fileObject.sizeBytes !== metadata.sizeBytes
     )
       throw conflict('视频文件已失效');
-    const range = parseByteRange(rangeHeader, fileObject.sizeBytes);
+    const range = kind === 'VIDEO' ? parseByteRange(rangeHeader, fileObject.sizeBytes) : undefined;
     return {
       mimeType: metadata.mimeType,
       originalFileName: metadata.originalFileName,
+      contentHash: metadata.contentHash,
       partial: Boolean(range),
       ...(await this.storage.open(fileObject.storageKey, range)),
     };
@@ -1138,7 +1464,7 @@ export class EffectSegmentRenderService {
       ratio?: string;
       resolution?: string;
     },
-    file: UploadedSegmentRenderFile | undefined,
+    files: UploadedSegmentRenderFile[] | undefined,
   ): Promise<{ completed: true; fileObjectId: string }> {
     if (!attemptToken) throw conflict('视频渲染任务租约无效');
     const providerTaskId = input.providerTaskId.trim();
@@ -1159,11 +1485,25 @@ export class EffectSegmentRenderService {
       task.attemptToken !== attemptToken
     )
       throw conflict('视频渲染任务租约或版本已失效');
+    const uploadedFiles = files ?? [];
+    if (
+      uploadedFiles.some((item) => item.fieldname !== 'file' && item.fieldname !== 'poster') ||
+      uploadedFiles.filter((item) => item.fieldname === 'file').length > 1 ||
+      uploadedFiles.filter((item) => item.fieldname === 'poster').length > 1
+    )
+      throw badRequest('视频渲染输出文件字段无效');
+    const file = uploadedFiles.find((item) => item.fieldname === 'file');
+    const poster = uploadedFiles.find((item) => item.fieldname === 'poster');
     if (!file || file.size < 1) throw badRequest('视频渲染输出文件为空');
     if (file.size > EFFECT_SEGMENT_RENDER_LIMITS.maxUploadBytes)
       throw badRequest('视频渲染输出文件过大');
     const mimeType = file.mimetype.trim().toLocaleLowerCase('en-US');
     if (!mimeType.startsWith('video/')) throw badRequest('视频渲染输出文件类型无效');
+    const posterMimeType = poster?.mimetype.trim().toLocaleLowerCase('en-US');
+    if (poster && (poster.size < 1 || poster.size > EFFECT_SEGMENT_RENDER_LIMITS.maxPosterBytes))
+      throw badRequest('视频首帧预览文件大小无效');
+    if (poster && posterMimeType !== 'image/jpeg' && posterMimeType !== 'image/webp')
+      throw badRequest('视频首帧预览文件类型无效');
     const snapshot = requestSnapshot(task.requestSnapshot);
     const issues = validateEffectSeedanceTaskResult(snapshot, {
       ...(input.duration !== undefined ? { duration: input.duration } : {}),
@@ -1193,6 +1533,51 @@ export class EffectSegmentRenderService {
         originalFileName,
       },
     });
+    let storedPoster:
+      | {
+          id: string;
+          originalFileName: string;
+          mimeType: string;
+          sizeBytes: number;
+          storageKey: string;
+          sha256: string;
+        }
+      | undefined;
+    try {
+      if (poster && posterMimeType) {
+        const posterSha256 = await fileSha256(poster.path);
+        const posterFileName = safeFileName(
+          poster.originalname ||
+            task.renderCode + '-v' + String(task.renderVersion) + '-poster.jpg',
+        );
+        const posterStored = await this.storage.put({
+          projectId,
+          stream: createReadStream(poster.path),
+          sizeBytes: poster.size,
+          contentType: posterMimeType,
+          keyContext: {
+            projectName: project.name,
+            workflow: 'EFFECT',
+            lifecycle: 'staging',
+            productId: task.productId,
+            productName: product.name.trim() || '未命名产品',
+            category: 'AI视频首帧',
+            originalFileName: posterFileName,
+          },
+        });
+        storedPoster = {
+          id: randomUUID(),
+          originalFileName: posterFileName,
+          mimeType: posterMimeType,
+          sizeBytes: posterStored.sizeBytes,
+          storageKey: posterStored.key,
+          sha256: posterSha256,
+        };
+      }
+    } catch (error) {
+      await this.storage.delete(stored.key).catch(() => undefined);
+      throw error;
+    }
     let committed = false;
     try {
       const result = await this.repository.complete(
@@ -1209,6 +1594,7 @@ export class EffectSegmentRenderService {
           storageKey: stored.key,
           sha256,
         },
+        storedPoster,
       );
       if (result.kind === 'NOT_FOUND') throw notFound('视频渲染任务不存在');
       if (result.kind === 'LEASE_CONFLICT') throw conflict('视频渲染任务租约或版本已失效');
@@ -1220,7 +1606,10 @@ export class EffectSegmentRenderService {
       if (!fileObjectId) throw conflict('视频渲染输出文件不存在');
       return { completed: true, fileObjectId };
     } finally {
-      if (!committed) await this.storage.delete(stored.key).catch(() => undefined);
+      if (!committed) {
+        await this.storage.delete(stored.key).catch(() => undefined);
+        if (storedPoster) await this.storage.delete(storedPoster.storageKey).catch(() => undefined);
+      }
     }
   }
 

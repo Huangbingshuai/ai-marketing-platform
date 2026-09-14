@@ -4,7 +4,7 @@ import type {
   EffectPromptRenderCapabilityKey,
 } from '@ai-marketing/contracts';
 import { DEFAULT_EFFECT_PROMPT_SETTINGS } from '@ai-marketing/contracts';
-import { ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 
 import { EffectSegmentRenderService } from './effect-segment-render.service';
@@ -169,6 +169,8 @@ const serviceWith = (overrides: Record<string, unknown> = {}) => {
         }),
       ),
     startRepair: vi.fn().mockResolvedValue({ kind: 'UPDATED' }),
+    importMaterials: vi.fn().mockResolvedValue({ kind: 'UPDATED' }),
+    deleteMaterials: vi.fn().mockResolvedValue({ kind: 'UPDATED' }),
     ...repositoryOverrides,
   };
   const storage = {
@@ -199,6 +201,96 @@ const serviceWith = (overrides: Record<string, unknown> = {}) => {
 };
 
 describe('EffectSegmentRenderService', () => {
+  it('rejects ambiguous external-import mappings before storing files', async () => {
+    const { service, storage } = serviceWith();
+
+    await expect(
+      service.importMaterials(
+        'project-a',
+        '55555555-5555-4555-8555-555555555555',
+        {
+          expectedBatchRevision: 1,
+          idempotencyKey: 'import-a',
+          mappings: JSON.stringify([
+            { fileIndex: 0, taskId: '11111111-1111-4111-8111-111111111111' },
+            { fileIndex: 0, taskId: '22222222-2222-4222-8222-222222222222' },
+          ]),
+        },
+        [
+          {
+            fieldname: 'files',
+            path: 'unused.mp4',
+            originalname: 'P001.mp4',
+            mimetype: 'video/mp4',
+            size: 1024,
+          },
+          {
+            fieldname: 'files',
+            path: 'unused-2.mp4',
+            originalname: 'P002.mp4',
+            mimetype: 'video/mp4',
+            size: 1024,
+          },
+        ],
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(storage.put).not.toHaveBeenCalled();
+  });
+
+  it('deletes completed outputs through the revision-checked repository operation', async () => {
+    const { service, repository } = serviceWith();
+    await service.start('project-a', 'product-a', {
+      workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0,
+      idempotencyKey: 'request-delete-source',
+    });
+    const created = await repository.createBatch.mock.results[0]!.value;
+    repository.batch.mockResolvedValue(created.batch);
+
+    const result = await service.deleteMaterials(
+      'project-a',
+      created.batch.id,
+      [created.batch.tasks[0].id],
+      1,
+      'delete-a',
+    );
+
+    expect(repository.deleteMaterials).toHaveBeenCalledWith(
+      'project-a',
+      created.batch.id,
+      [created.batch.tasks[0].id],
+      1,
+      'delete-a',
+    );
+    expect(result.replayed).toBe(false);
+  });
+
+  it('streams a ZIP manifest for the selected task range', async () => {
+    const { service, repository } = serviceWith();
+    await service.start('project-a', 'product-a', {
+      workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0,
+      idempotencyKey: 'request-export-source',
+    });
+    const created = await repository.createBatch.mock.results[0]!.value;
+    repository.batch.mockResolvedValue(created.batch);
+
+    const exported = await service.exportMaterials(
+      'project-a',
+      created.batch.id,
+      [created.batch.tasks[0].id],
+      ['MANIFEST_JSON'],
+      1,
+    );
+    const chunks: Buffer[] = [];
+    for await (const chunk of exported.stream) chunks.push(Buffer.from(chunk));
+
+    expect(Buffer.concat(chunks).subarray(0, 2).toString()).toBe('PK');
+    expect(exported.fileName).toContain('测试产品-视频素材-');
+  });
+
   it('returns the confirmed Prompt count required by the real render workspace', async () => {
     const { service } = serviceWith();
 
@@ -483,6 +575,70 @@ describe('EffectSegmentRenderService', () => {
     );
     expect(content).toMatchObject({ partial: true, start: 10, end: 19, contentLength: 10 });
     expect(storage.open).toHaveBeenCalledWith('staging/source.mp4', { start: 10, end: 19 });
+  });
+
+  it('serves a versioned poster without opening the video body', async () => {
+    const { service, repository, storage } = serviceWith();
+    await service.start('project-a', 'product-a', {
+      workflowRunId: 'run-a',
+      expectedPromptArtifactRevision: 3,
+      expectedSettingsRevision: 0,
+      idempotencyKey: 'request-poster-source',
+    });
+    const created = await repository.createBatch.mock.results[0]!.value;
+    const task = created.batch.tasks[0];
+    Object.assign(task, {
+      status: 'COMPLETED',
+      activeOutputVersion: 1,
+      outputFileObjectId: '33333333-3333-4333-8333-333333333333',
+      outputFileName: 'P001.mp4',
+      outputMimeType: 'video/mp4',
+      outputSizeBytes: 1024,
+      outputContentHash: 'e'.repeat(64),
+      outputPoster: {
+        fileObjectId: '44444444-4444-4444-8444-444444444444',
+        originalFileName: 'P001-poster.jpg',
+        mimeType: 'image/jpeg',
+        sizeBytes: 128,
+        contentHash: 'f'.repeat(64),
+        version: 1,
+      },
+    });
+    repository.task.mockResolvedValue(task);
+    repository.fileObject.mockResolvedValue({
+      id: task.outputPoster.fileObjectId,
+      originalFileName: task.outputPoster.originalFileName,
+      mimeType: task.outputPoster.mimeType,
+      sizeBytes: task.outputPoster.sizeBytes,
+      sha256: task.outputPoster.contentHash,
+      storageKey: 'staging/P001-poster.jpg',
+    });
+    storage.open.mockResolvedValue({
+      stream: Readable.from([Buffer.alloc(128)]),
+      sizeBytes: 128,
+      start: 0,
+      end: 127,
+      contentLength: 128,
+    });
+
+    const content = await service.taskContent(
+      'project-a',
+      created.batch.id,
+      task.id,
+      'ACTIVE',
+      'POSTER',
+      1,
+    );
+
+    expect(content).toMatchObject({
+      mimeType: 'image/jpeg',
+      contentHash: 'f'.repeat(64),
+      partial: false,
+    });
+    expect(storage.open).toHaveBeenCalledWith('staging/P001-poster.jpg', undefined);
+    await expect(
+      service.taskContent('project-a', created.batch.id, task.id, 'ACTIVE', 'POSTER', 2),
+    ).rejects.toBeInstanceOf(ConflictException);
   });
 });
 import { Readable } from 'node:stream';

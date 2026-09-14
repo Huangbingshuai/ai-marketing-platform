@@ -3,12 +3,14 @@ import type {
   EffectImportProduct,
   EffectPromptFragmentType,
   EffectSegmentRenderBatch,
+  EffectSegmentRenderExportFormat,
   EffectSegmentRenderSettings,
   SeedanceRatio,
   SeedanceResolution,
 } from '@ai-marketing/contracts';
 import {
   DEFAULT_EFFECT_SEGMENT_RENDER_SETTINGS,
+  EFFECT_PROMPT_RENDER_CAPABILITIES,
   EFFECT_PROMPT_FRAGMENT_TYPE_LABELS,
   EFFECT_PROMPT_FRAGMENT_TYPES,
 } from '@ai-marketing/contracts';
@@ -50,9 +52,11 @@ import EffectUpwardCreatableSelect from '../source-import/components/EffectUpwar
 import EffectSegmentRenderSourcePrompt from './components/EffectSegmentRenderSourcePrompt.vue';
 import {
   decideEffectSegmentRenderRepair,
+  deleteEffectSegmentRenderMaterials,
   effectSegmentRenderTaskContentUrl,
+  exportEffectSegmentRenderMaterials,
   getEffectSegmentRenderBatch,
-  getEffectSegmentRenderTaskContent,
+  importEffectSegmentRenderMaterials,
   regenerateEffectSegmentRenderTasks,
   saveEffectSegmentRenderSettings,
   startEffectSegmentRenderBatch,
@@ -90,12 +94,13 @@ type PageStatus = 'empty' | 'error' | 'loading' | 'success';
 type Operation = 'batch' | 'delete' | 'export' | 'import' | 'repair' | 'retry' | 'settings' | null;
 type FragmentFilter = 'ABNORMAL' | 'ALL' | EffectPromptFragmentType;
 type TransferPanel = 'export' | 'import' | null;
-type ExportScope = 'ALL_COMPLETED' | 'FILTERED' | 'SELECTED';
+type ExportScope = 'ALL_TASKS' | 'FILTERED' | 'SELECTED';
 type RepairBoundary = 'end' | 'start';
 type Notice = { kind: 'error' | 'success' | 'warning'; text: string };
-type EffectSegmentRenderExportFormat = 'FAILURE_CSV' | 'MANIFEST_JSON' | 'VIDEO_PACKAGE';
 type EffectSegmentRenderImportMatch = {
   id: string;
+  fileIndex: number;
+  taskId: string | null;
   fileName: string;
   size: number;
   promptCode: string | null;
@@ -121,7 +126,7 @@ const importFiles = ref<File[]>([]);
 const importMatches = ref<EffectSegmentRenderImportMatch[]>([]);
 const importInput = ref<HTMLInputElement | null>(null);
 const transferCloseButton = ref<HTMLButtonElement | null>(null);
-const exportScope = ref<ExportScope>('ALL_COMPLETED');
+const exportScope = ref<ExportScope>('ALL_TASKS');
 const exportFormats = ref<EffectSegmentRenderExportFormat[]>(['VIDEO_PACKAGE', 'MANIFEST_JSON']);
 const renderSettings = ref<EffectSegmentRenderSettings>({
   ...DEFAULT_EFFECT_SEGMENT_RENDER_SETTINGS,
@@ -140,46 +145,36 @@ type RenderModelOption = {
   defaultResolution: SeedanceResolution;
 };
 
-const supportedRenderRatios = [
-  '16:9',
-  '4:3',
-  '1:1',
-  '3:4',
-  '9:16',
-  '21:9',
-  'adaptive',
-] as const satisfies readonly SeedanceRatio[];
-
 const capabilityOptions = [
   {
     value: 'SEEDANCE_1_5_PRO',
     label: 'Doubao-Seedance-2.5',
-    ratios: supportedRenderRatios,
-    resolutions: ['480p', '720p'],
+    ratios: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_1_5_PRO.ratios,
+    resolutions: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_1_5_PRO.resolutions,
     defaultRatio: 'adaptive',
     defaultResolution: '720p',
   },
   {
     value: 'SEEDANCE_2_0',
     label: 'Doubao-Seedance-2.0',
-    ratios: supportedRenderRatios,
-    resolutions: ['480p', '720p', '1080p'],
+    ratios: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_2_0.ratios,
+    resolutions: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_2_0.resolutions,
     defaultRatio: 'adaptive',
     defaultResolution: '720p',
   },
   {
     value: 'SEEDANCE_1_0',
     label: 'Doubao-Seedance-2.0-mini',
-    ratios: supportedRenderRatios,
-    resolutions: ['480p', '720p'],
+    ratios: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_1_0.ratios,
+    resolutions: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_1_0.resolutions,
     defaultRatio: 'adaptive',
     defaultResolution: '720p',
   },
   {
     value: 'SEEDANCE_2_0_FAST',
     label: 'Doubao-Seedance-2.0-fast',
-    ratios: supportedRenderRatios,
-    resolutions: ['480p', '720p'],
+    ratios: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_2_0_FAST.ratios,
+    resolutions: EFFECT_PROMPT_RENDER_CAPABILITIES.SEEDANCE_2_0_FAST.resolutions,
     defaultRatio: 'adaptive',
     defaultResolution: '720p',
   },
@@ -229,6 +224,7 @@ const previewVideoReady = ref(false);
 const cardVideoReadyKeys = ref<Set<string>>(new Set());
 const cardVideoPosterUrls = ref<Map<string, string>>(new Map());
 const requestedTaskVideoKeys = ref<Set<string>>(new Set());
+const failedServerPosterKeys = ref<Set<string>>(new Set());
 const promptTask = ref<EffectSegmentRenderTask | null>(null);
 const repairTask = ref<EffectSegmentRenderTask | null>(null);
 const repairStartSeconds = ref(0);
@@ -254,7 +250,6 @@ const repairSelectionStyle = computed(() => {
 let dialogTrigger: HTMLElement | null = null;
 let loadController: AbortController | null = null;
 let operationController: AbortController | null = null;
-let previewController: AbortController | null = null;
 let pollController: AbortController | null = null;
 let pollTimer: ReturnType<typeof setTimeout> | undefined;
 let loadGeneration = 0;
@@ -266,6 +261,11 @@ let taskVideoObserver: IntersectionObserver | null = null;
 let workspaceRevalidationTimer: ReturnType<typeof setTimeout> | undefined;
 
 const TASK_VIDEO_POSTER_MAX_WIDTH = 480;
+const TASK_VIDEO_POSTER_CAPTURE_SECONDS = 0.5;
+const TASK_VIDEO_FALLBACK_CONCURRENCY = 3;
+const taskVideoLoadQueue: string[] = [];
+const activeTaskVideoLoads = new Set<string>();
+const taskVideoPosterCaptures = new Set<string>();
 
 const activeProducts = computed(() =>
   props.products.filter((product) => product.status === 'ACTIVE'),
@@ -290,8 +290,6 @@ const promptCount = computed(() => workspace.value?.promptCount ?? 0);
 const missingPromptCount = computed(() =>
   Math.max(0, promptCount.value - promptTasks.value.length),
 );
-const importedCount = computed(() => 0);
-const remainingPromptCount = computed(() => Math.max(0, promptCount.value - importedCount.value));
 const isPurposeFilter = (value: FragmentFilter): value is EffectPromptFragmentType =>
   EFFECT_PROMPT_FRAGMENT_TYPES.includes(value as EffectPromptFragmentType);
 const renderSourceKey = computed(() => {
@@ -345,9 +343,8 @@ const allFilteredSelected = computed(
 );
 const exportRangeTasks = computed(() => {
   if (exportScope.value === 'SELECTED') return selectedTasks.value;
-  if (exportScope.value === 'FILTERED')
-    return filteredTasks.value.filter(isEffectSegmentRenderExportable);
-  return completedTasks.value;
+  if (exportScope.value === 'FILTERED') return filteredTasks.value;
+  return tasks.value;
 });
 
 const canPreviewTask = (task: EffectSegmentRenderTask): boolean => Boolean(task.output);
@@ -370,7 +367,14 @@ const previewTaskDetails = computed(() =>
 const taskVideoUrl = (task: EffectSegmentRenderTask): string => {
   const batchId = workspace.value?.batchId;
   if (!batchId || !task.output) return '';
-  return effectSegmentRenderTaskContentUrl(props.projectId, batchId, task.id);
+  return effectSegmentRenderTaskContentUrl(
+    props.projectId,
+    batchId,
+    task.id,
+    'ACTIVE',
+    'VIDEO',
+    task.output.version,
+  );
 };
 
 const taskVideoKey = (task: EffectSegmentRenderTask): string =>
@@ -379,18 +383,64 @@ const taskVideoKey = (task: EffectSegmentRenderTask): string =>
 const isTaskVideoReady = (task: EffectSegmentRenderTask): boolean =>
   cardVideoReadyKeys.value.has(taskVideoKey(task));
 
-const taskVideoPosterUrl = (task: EffectSegmentRenderTask): string =>
-  cardVideoPosterUrls.value.get(taskVideoKey(task)) ?? '';
+const taskVideoPosterUrl = (task: EffectSegmentRenderTask): string => {
+  const key = taskVideoKey(task);
+  const fallbackPoster = cardVideoPosterUrls.value.get(key);
+  if (fallbackPoster) return fallbackPoster;
+  const batchId = workspace.value?.batchId;
+  if (!batchId || !task.output?.poster || failedServerPosterKeys.value.has(key)) return '';
+  return effectSegmentRenderTaskContentUrl(
+    props.projectId,
+    batchId,
+    task.id,
+    'ACTIVE',
+    'POSTER',
+    task.output.poster.version,
+  );
+};
 
 const shouldLoadTaskVideo = (task: EffectSegmentRenderTask): boolean =>
   requestedTaskVideoKeys.value.has(taskVideoKey(task));
 
-const requestTaskVideo = (key: string): void => {
-  if (cardVideoPosterUrls.value.has(key) || cardVideoReadyKeys.value.has(key)) return;
-  if (requestedTaskVideoKeys.value.has(key)) return;
+const setTaskVideoRequested = (key: string, requested: boolean): void => {
   const next = new Set(requestedTaskVideoKeys.value);
-  next.add(key);
+  if (requested) next.add(key);
+  else next.delete(key);
   requestedTaskVideoKeys.value = next;
+};
+
+const drainTaskVideoLoadQueue = (): void => {
+  while (activeTaskVideoLoads.size < TASK_VIDEO_FALLBACK_CONCURRENCY && taskVideoLoadQueue.length) {
+    const key = taskVideoLoadQueue.shift();
+    if (!key || cardVideoPosterUrls.value.has(key) || cardVideoReadyKeys.value.has(key)) continue;
+    activeTaskVideoLoads.add(key);
+    setTaskVideoRequested(key, true);
+  }
+};
+
+const finishTaskVideoLoad = (key: string): void => {
+  activeTaskVideoLoads.delete(key);
+  setTaskVideoRequested(key, false);
+  drainTaskVideoLoadQueue();
+};
+
+const cancelTaskVideoLoad = (key: string): void => {
+  if (!key) return;
+  const queuedIndex = taskVideoLoadQueue.indexOf(key);
+  if (queuedIndex >= 0) taskVideoLoadQueue.splice(queuedIndex, 1);
+  if (activeTaskVideoLoads.has(key)) finishTaskVideoLoad(key);
+};
+
+const requestTaskVideo = (key: string): void => {
+  if (!key || cardVideoPosterUrls.value.has(key) || cardVideoReadyKeys.value.has(key)) return;
+  if (
+    requestedTaskVideoKeys.value.has(key) ||
+    activeTaskVideoLoads.has(key) ||
+    taskVideoLoadQueue.includes(key)
+  )
+    return;
+  taskVideoLoadQueue.push(key);
+  drainTaskVideoLoadQueue();
 };
 
 const ensureTaskVideoObserver = (): IntersectionObserver | null => {
@@ -427,6 +477,7 @@ const vTaskVideoVisible: Directive<HTMLElement, string> = {
   },
   unmounted(element) {
     taskVideoObserver?.unobserve(element);
+    cancelTaskVideoLoad(element.dataset.taskVideoKey ?? '');
   },
 };
 
@@ -443,29 +494,58 @@ const captureTaskVideoPoster = (task: EffectSegmentRenderTask, event: Event): vo
     return;
   markTaskVideoReady(task);
   const key = taskVideoKey(task);
-  if (cardVideoPosterUrls.value.has(key) || video.videoWidth < 1 || video.videoHeight < 1) return;
+  if (cardVideoPosterUrls.value.has(key) || taskVideoPosterCaptures.has(key)) return;
+  if (video.videoWidth < 1 || video.videoHeight < 1) {
+    finishTaskVideoLoad(key);
+    return;
+  }
+  taskVideoPosterCaptures.add(key);
   try {
     const scale = Math.min(1, TASK_VIDEO_POSTER_MAX_WIDTH / video.videoWidth);
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
     canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
     const context = canvas.getContext('2d');
-    if (!context) return;
+    if (!context) {
+      taskVideoPosterCaptures.delete(key);
+      finishTaskVideoLoad(key);
+      return;
+    }
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const poster = canvas.toDataURL('image/jpeg', 0.76);
-    const posters = new Map(cardVideoPosterUrls.value);
-    posters.set(key, poster);
-    cardVideoPosterUrls.value = posters;
+    canvas.toBlob(
+      (blob) => {
+        if (blob) {
+          const posters = new Map(cardVideoPosterUrls.value);
+          posters.set(key, URL.createObjectURL(blob));
+          cardVideoPosterUrls.value = posters;
+        }
+        taskVideoPosterCaptures.delete(key);
+        finishTaskVideoLoad(key);
+      },
+      'image/jpeg',
+      0.76,
+    );
   } catch {
     // The decoded video can still be shown when a browser blocks canvas extraction.
+    taskVideoPosterCaptures.delete(key);
+    finishTaskVideoLoad(key);
   }
+};
+
+const handleTaskVideoLoadError = (task: EffectSegmentRenderTask): void => {
+  finishTaskVideoLoad(taskVideoKey(task));
+};
+
+const handleTaskPosterError = (task: EffectSegmentRenderTask): void => {
+  const next = new Set(failedServerPosterKeys.value);
+  next.add(taskVideoKey(task));
+  failedServerPosterKeys.value = next;
 };
 
 const revealVideoPosterFrame = (task: EffectSegmentRenderTask, event: Event): void => {
   const video = event.currentTarget;
   if (!(video instanceof HTMLVideoElement) || !Number.isFinite(video.duration)) return;
-  if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) captureTaskVideoPoster(task, event);
-  const targetTime = Math.min(0.1, video.duration / 2);
+  const targetTime = Math.min(TASK_VIDEO_POSTER_CAPTURE_SECONDS, video.duration / 2);
   if (Math.abs(video.currentTime - targetTime) < 0.01) {
     captureTaskVideoPoster(task, event);
     return;
@@ -496,9 +576,7 @@ const startButtonLabel = computed(() => {
   if (!workspace.value?.promptReady) return '等待上游 Prompt 完成校验';
   if (workspace.value?.stale) return '按最新 Prompt 重新渲染';
   if (hasBatch.value) return '重新渲染';
-  return importedCount.value
-    ? `渲染剩余片段（${remainingPromptCount.value}）`
-    : `开始批量渲染（${promptCount.value}）`;
+  return `开始批量渲染（${promptCount.value}）`;
 });
 const currentCapabilityLabel = computed(
   () =>
@@ -591,9 +669,7 @@ const applyBatch = (batch: EffectSegmentRenderBatch): void => {
 const clearPreview = (): void => {
   repairRangePlaying.value = false;
   repairCurrentSeconds.value = 0;
-  previewController?.abort();
-  previewController = null;
-  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
+  if (previewUrl.value.startsWith('blob:')) URL.revokeObjectURL(previewUrl.value);
   previewUrl.value = '';
   previewLoading.value = false;
   previewError.value = '';
@@ -778,6 +854,12 @@ watch(totalPages, (nextTotalPages) => {
   if (page.value > nextTotalPages) page.value = nextTotalPages;
 });
 
+watch(page, () => {
+  taskVideoLoadQueue.splice(0);
+  activeTaskVideoLoads.clear();
+  requestedTaskVideoKeys.value = new Set();
+});
+
 watch(
   () => tasks.value.map((task) => taskVideoKey(task)).join('|'),
   () => {
@@ -785,8 +867,14 @@ watch(
     cardVideoReadyKeys.value = new Set(
       [...cardVideoReadyKeys.value].filter((key) => currentKeys.has(key)),
     );
-    cardVideoPosterUrls.value = new Map(
-      [...cardVideoPosterUrls.value].filter(([key]) => currentKeys.has(key)),
+    const retainedPosters = new Map<string, string>();
+    cardVideoPosterUrls.value.forEach((url, key) => {
+      if (currentKeys.has(key)) retainedPosters.set(key, url);
+      else URL.revokeObjectURL(url);
+    });
+    cardVideoPosterUrls.value = retainedPosters;
+    failedServerPosterKeys.value = new Set(
+      [...failedServerPosterKeys.value].filter((key) => currentKeys.has(key)),
     );
     requestedTaskVideoKeys.value = new Set(
       [...requestedTaskVideoKeys.value].filter((key) => currentKeys.has(key)),
@@ -921,37 +1009,25 @@ const retryTask = async (taskId: string): Promise<void> => {
   }
 };
 
-const loadPreviewVideo = (
-  task: EffectSegmentRenderTask,
-  variant: 'ACTIVE' | 'REPAIR',
-  owner: 'preview' | 'repair',
-): void => {
+const loadPreviewVideo = (task: EffectSegmentRenderTask, variant: 'ACTIVE' | 'REPAIR'): void => {
   const current = workspace.value;
-  if (!current?.batchId || (variant === 'ACTIVE' ? !task.output : !task.repair?.candidate)) return;
+  const output = variant === 'ACTIVE' ? task.output : task.repair?.candidate;
+  if (!current?.batchId || !output) return;
   clearPreview();
-  previewLoading.value = true;
-  const controller = new AbortController();
-  previewController = controller;
-  void getEffectSegmentRenderTaskContent(
+  previewUrl.value = effectSegmentRenderTaskContentUrl(
     props.projectId,
     current.batchId,
     task.id,
     variant,
-    controller.signal,
-  )
-    .then((response) => response.blob())
-    .then((blob) => {
-      const ownerTask = owner === 'preview' ? previewTask.value : repairTask.value;
-      if (controller.signal.aborted || ownerTask?.id !== task.id) return;
-      previewUrl.value = URL.createObjectURL(blob);
-    })
-    .catch((error: unknown) => {
-      if (!isAbortError(error)) previewError.value = safeMessage(error, '视频预览加载失败');
-    })
-    .finally(() => {
-      if (previewController === controller) previewController = null;
-      if (!controller.signal.aborted) previewLoading.value = false;
-    });
+    'VIDEO',
+    output.version,
+  );
+  previewLoading.value = false;
+};
+
+const handlePreviewVideoError = (): void => {
+  previewVideoReady.value = false;
+  previewError.value = '视频预览加载失败，请稍后重试';
 };
 
 const openPreview = (
@@ -962,7 +1038,7 @@ const openPreview = (
   dialogTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
   previewTask.value = task;
   previewVariant.value = variant;
-  loadPreviewVideo(task, variant, 'preview');
+  loadPreviewVideo(task, variant);
   void nextTick(() => previewCloseButton.value?.focus());
 };
 
@@ -975,7 +1051,7 @@ const openRepair = (task: EffectSegmentRenderTask, event: Event): void => {
   repairInstruction.value = '';
   repairCurrentSeconds.value = 0;
   repairActiveBoundary.value = 'start';
-  loadPreviewVideo(task, 'ACTIVE', 'repair');
+  loadPreviewVideo(task, 'ACTIVE');
   void nextTick(() => repairCloseButton.value?.focus());
 };
 
@@ -1184,26 +1260,105 @@ const openPrompt = (task: EffectSegmentRenderTask, event: Event): void => {
 };
 
 const openTransferPanel = (panel: Exclude<TransferPanel, null>, event: Event): void => {
-  void event;
-  showNotice(
-    panel === 'import' ? '真实素材导入接口尚未接入' : '真实素材批量导出接口尚未接入',
-    'warning',
-  );
+  const current = workspace.value;
+  if (!current?.batchId || typeof current.batchRevision !== 'number') {
+    showNotice('请先创建视频渲染批次，再进行素材操作', 'warning');
+    return;
+  }
+  if (panel === 'import' && batchActive.value) {
+    showNotice('当前批次正在渲染，完成后才能导入替代素材', 'warning');
+    return;
+  }
+  dialogTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  if (panel === 'export' && exportScope.value === 'SELECTED' && !selectedTasks.value.length)
+    exportScope.value = 'ALL_TASKS';
+  transferPanel.value = panel;
+  if (panel === 'import') {
+    importFiles.value = [];
+    importMatches.value = [];
+  }
+  void nextTick(() => transferCloseButton.value?.focus());
 };
 
-const inspectImportFiles = async (files: File[]): Promise<void> => {
-  void files;
-  showNotice('真实素材导入接口尚未接入', 'warning');
+const inspectImportFiles = (files: File[]): void => {
+  const acceptedFiles = files
+    .filter(
+      (file) =>
+        ['video/mp4', 'video/quicktime', 'video/webm'].includes(file.type) ||
+        /\.(?:mp4|mov|webm)$/iu.test(file.name),
+    )
+    .slice(0, 100);
+  const reservedTaskIds = new Set<string>();
+  const matches = acceptedFiles.map<EffectSegmentRenderImportMatch>((file, fileIndex) => {
+    const promptCode = file.name
+      .match(/(?:^|[^a-z0-9])(P\d{3})(?:[^a-z0-9]|$)/iu)?.[1]
+      ?.toUpperCase();
+    const exactTask = promptCode
+      ? tasks.value.find(
+          (task) => task.promptCode.toUpperCase() === promptCode && !reservedTaskIds.has(task.id),
+        )
+      : undefined;
+    const availableTask =
+      exactTask ??
+      tasks.value.find((task) => !task.output && !task.repair && !reservedTaskIds.has(task.id));
+    if (availableTask) reservedTaskIds.add(availableTask.id);
+    return {
+      id: `${fileIndex}:${file.name}:${file.size}`,
+      fileIndex,
+      taskId: availableTask?.id ?? null,
+      fileName: file.name,
+      size: file.size,
+      promptCode: availableTask?.promptCode ?? promptCode ?? null,
+      status: !availableTask
+        ? 'UNMATCHED'
+        : exactTask
+          ? exactTask.output
+            ? 'CONFLICT'
+            : 'MATCHED'
+          : 'AUTO_ASSIGNED',
+    };
+  });
+  importFiles.value = acceptedFiles;
+  importMatches.value = matches;
+  if (acceptedFiles.length !== files.length)
+    showNotice('已忽略不支持的文件；仅支持 MP4、MOV 和 WebM，单次最多 100 个', 'warning');
 };
 
 const handleImportFileChange = (event: Event): void => {
   const input = event.currentTarget as HTMLInputElement;
-  void inspectImportFiles(Array.from(input.files ?? []));
+  inspectImportFiles([...importFiles.value, ...Array.from(input.files ?? [])]);
   input.value = '';
 };
 
 const confirmImport = async (): Promise<void> => {
-  showNotice('真实素材导入接口尚未接入', 'warning');
+  const current = workspace.value;
+  if (operation.value || !current?.batchId || typeof current.batchRevision !== 'number') return;
+  const matched = importMatches.value.filter(
+    (match): match is EffectSegmentRenderImportMatch & { taskId: string } =>
+      match.status !== 'UNMATCHED' && Boolean(match.taskId),
+  );
+  if (!matched.length) return;
+  operation.value = 'import';
+  try {
+    const files = matched.map((match) => importFiles.value[match.fileIndex]!);
+    const response = await importEffectSegmentRenderMaterials(
+      props.projectId,
+      current.batchId,
+      {
+        expectedBatchRevision: current.batchRevision,
+        idempotencyKey: crypto.randomUUID(),
+        mappings: matched.map((match, fileIndex) => ({ fileIndex, taskId: match.taskId })),
+      },
+      files,
+    );
+    applyBatch(response.data.batch);
+    closeTransferPanel(false);
+    showNotice(`已导入 ${response.data.importedCount} 个视频素材`);
+  } catch (error) {
+    showNotice(safeMessage(error, '视频素材导入失败'), 'error');
+  } finally {
+    operation.value = null;
+  }
 };
 
 const toggleSelectionMode = (): void => {
@@ -1233,7 +1388,40 @@ const selectAllFiltered = (): void => {
 };
 
 const deleteSelectedMaterials = async (): Promise<void> => {
-  showNotice('真实素材删除接口尚未接入', 'warning');
+  const current = workspace.value;
+  if (
+    operation.value ||
+    !selectedTasks.value.length ||
+    !current?.batchId ||
+    typeof current.batchRevision !== 'number'
+  )
+    return;
+  if (
+    !(await requestActionConfirmation({
+      eyebrow: '删除素材',
+      title: `删除已选择的 ${selectedTasks.value.length} 个视频素材？`,
+      description: '删除后对应 Prompt 槽位会标记为异常，可重新生成或导入替代素材。',
+      confirmLabel: '确认删除',
+      tone: 'danger',
+    }))
+  )
+    return;
+  operation.value = 'delete';
+  try {
+    const response = await deleteEffectSegmentRenderMaterials(props.projectId, current.batchId, {
+      taskIds: selectedTasks.value.map(({ id }) => id),
+      expectedBatchRevision: current.batchRevision,
+      idempotencyKey: crypto.randomUUID(),
+    });
+    applyBatch(response.data.batch);
+    selectedTaskIds.value = new Set();
+    selectionMode.value = false;
+    showNotice('所选素材已删除，对应 Prompt 槽位可重新生成');
+  } catch (error) {
+    showNotice(safeMessage(error, '视频素材删除失败'), 'error');
+  } finally {
+    operation.value = null;
+  }
 };
 
 const toggleExportFormat = (format: EffectSegmentRenderExportFormat): void => {
@@ -1244,7 +1432,41 @@ const toggleExportFormat = (format: EffectSegmentRenderExportFormat): void => {
 };
 
 const downloadExport = async (): Promise<void> => {
-  showNotice('真实素材批量导出接口尚未接入', 'warning');
+  const current = workspace.value;
+  if (
+    operation.value ||
+    !exportRangeTasks.value.length ||
+    !exportFormats.value.length ||
+    !current?.batchId ||
+    typeof current.batchRevision !== 'number'
+  )
+    return;
+  operation.value = 'export';
+  try {
+    const response = await exportEffectSegmentRenderMaterials(props.projectId, current.batchId, {
+      taskIds: exportRangeTasks.value.map(({ id }) => id),
+      formats: exportFormats.value,
+      expectedBatchRevision: current.batchRevision,
+    });
+    const blob = await response.blob();
+    const disposition = response.headers.get('content-disposition') ?? '';
+    const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/iu)?.[1];
+    const fileName = encodedName
+      ? decodeURIComponent(encodedName)
+      : `${currentProduct.value?.name ?? '视频素材'}-导出.zip`;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    link.click();
+    URL.revokeObjectURL(url);
+    closeTransferPanel(false);
+    showNotice('视频素材导出包已生成');
+  } catch (error) {
+    showNotice(safeMessage(error, '视频素材导出失败'), 'error');
+  } finally {
+    operation.value = null;
+  }
 };
 
 const formatFileSize = (size: number): string =>
@@ -1297,6 +1519,9 @@ const stopNodeRequests = (): void => {
   operationController?.abort();
   stopPolling();
   clearPreview();
+  taskVideoLoadQueue.splice(0);
+  activeTaskVideoLoads.clear();
+  requestedTaskVideoKeys.value = new Set();
 };
 
 onActivated(() => {
@@ -1318,6 +1543,8 @@ onBeforeUnmount(() => {
   stopNodeRequests();
   taskVideoObserver?.disconnect();
   taskVideoObserver = null;
+  cardVideoPosterUrls.value.forEach((url) => URL.revokeObjectURL(url));
+  cardVideoPosterUrls.value = new Map();
   if (noticeTimer) clearTimeout(noticeTimer);
 });
 </script>
@@ -1359,9 +1586,6 @@ onBeforeUnmount(() => {
             <p v-if="hasBatch">
               {{ promptCount }} 条 Prompt 任务 × 每条 1 个视频素材片段，成功片段自动进入素材池
             </p>
-            <p v-else-if="importedCount">
-              已导入 {{ importedCount }} 个素材，剩余 {{ remainingPromptCount }} 条 Prompt 待渲染
-            </p>
             <p v-else-if="workspace?.promptReady">
               已就绪 {{ promptCount }} 条 Prompt，每条将生成 1 个视频素材片段
             </p>
@@ -1372,8 +1596,7 @@ onBeforeUnmount(() => {
           <button
             class="secondary-button"
             type="button"
-            disabled
-            title="真实素材导入后端尚未接入"
+            :disabled="!hasBatch || batchActive || operation !== null"
             @click="openTransferPanel('import', $event)"
           >
             <FolderInput :size="14" />导入素材
@@ -1381,8 +1604,7 @@ onBeforeUnmount(() => {
           <button
             class="secondary-button"
             type="button"
-            disabled
-            title="真实素材批量导出后端尚未接入"
+            :disabled="!tasks.length || operation !== null"
             @click="openTransferPanel('export', $event)"
           >
             <Download :size="14" />导出素材
@@ -1553,17 +1775,18 @@ onBeforeUnmount(() => {
             <button
               class="delete-selection-button"
               type="button"
-              disabled
-              title="真实素材删除后端尚未接入"
+              :disabled="!selectedTasks.length || operation !== null"
               @click="deleteSelectedMaterials"
             >
               <Trash2 :size="13" />删除
             </button>
             <button
               type="button"
-              disabled
-              title="真实素材批量导出后端尚未接入"
-              @click="openTransferPanel('export', $event)"
+              :disabled="!selectedTasks.length || operation !== null"
+              @click="
+                exportScope = 'SELECTED';
+                openTransferPanel('export', $event);
+              "
             >
               导出所选
             </button>
@@ -1594,7 +1817,7 @@ onBeforeUnmount(() => {
                 />
               </label>
               <button
-                v-task-video-visible="taskVideoKey(task)"
+                v-task-video-visible="taskVideoPosterUrl(task) ? '' : taskVideoKey(task)"
                 class="material-preview"
                 :class="[statusMeta(task.status).tone, { 'video-ready': isTaskVideoReady(task) }]"
                 type="button"
@@ -1609,7 +1832,10 @@ onBeforeUnmount(() => {
                   class="material-preview-video is-ready"
                   :src="taskVideoPosterUrl(task)"
                   alt=""
+                  loading="lazy"
+                  decoding="async"
                   aria-hidden="true"
+                  @error="handleTaskPosterError(task)"
                 />
                 <video
                   v-else-if="taskVideoUrl(task) && shouldLoadTaskVideo(task)"
@@ -1624,6 +1850,7 @@ onBeforeUnmount(() => {
                   @loadedmetadata="revealVideoPosterFrame(task, $event)"
                   @loadeddata="captureTaskVideoPoster(task, $event)"
                   @seeked="captureTaskVideoPoster(task, $event)"
+                  @error="handleTaskVideoLoadError(task)"
                 />
                 <span class="material-status-pill" :class="statusMeta(task.status).tone">
                   {{ statusMeta(task.status).label }}
@@ -1646,7 +1873,11 @@ onBeforeUnmount(() => {
                 <p>{{ task.promptCode }}</p>
                 <div class="task-tags">
                   <span class="primary-tag">{{ fragmentTypeLabel(task.fragmentType) }}</span>
-                  <span class="origin-tag ai">AI 生成</span>
+                  <span
+                    class="origin-tag"
+                    :class="task.origin === 'EXTERNAL_IMPORT' ? 'external' : 'ai'"
+                    >{{ task.origin === 'EXTERNAL_IMPORT' ? '外部导入' : 'AI 生成' }}</span
+                  >
                 </div>
                 <div
                   v-if="task.compatibleFragmentTypes.length"
@@ -1861,6 +2092,7 @@ onBeforeUnmount(() => {
               autoplay
               playsinline
               @canplay="previewVideoReady = true"
+              @error="handlePreviewVideoError"
             />
             <template v-else>
               <Play :size="34" />
@@ -1880,7 +2112,11 @@ onBeforeUnmount(() => {
                 {{ fragmentTypeLabel(previewTask.fragmentType) }}</small
               >
             </span>
-            <span class="origin-tag ai preview-origin-tag">AI 生成</span>
+            <span
+              class="origin-tag preview-origin-tag"
+              :class="previewTask.origin === 'EXTERNAL_IMPORT' ? 'external' : 'ai'"
+              >{{ previewTask.origin === 'EXTERNAL_IMPORT' ? '外部导入' : 'AI 生成' }}</span
+            >
           </div>
           <EffectSegmentRenderSourcePrompt
             :details="previewTaskDetails"
@@ -1943,6 +2179,7 @@ onBeforeUnmount(() => {
                 controls
                 playsinline
                 @canplay="handleRepairVideoReady"
+                @error="handlePreviewVideoError"
                 @timeupdate="stopRepairRangePreviewAtEnd"
                 @pause="repairRangePlaying = false"
                 @ended="repairRangePlaying = false"
@@ -2236,7 +2473,7 @@ onBeforeUnmount(() => {
             </div>
             <div class="transfer-note">
               <AlertCircle :size="15" />
-              <p>冲突素材会替换同一 Prompt 槽位的当前结果；真实素材导入接口尚未接入。</p>
+              <p>冲突素材会替换同一 Prompt 槽位的当前结果；替换后仍可单条重新生成。</p>
             </div>
             <footer>
               <button type="button" @click="closeTransferPanel(true)">取消</button>
@@ -2259,14 +2496,12 @@ onBeforeUnmount(() => {
                 <strong>导出范围</strong><span>{{ exportRangeTasks.length }} 个素材</span>
               </div>
               <label
-                ><input v-model="exportScope" type="radio" value="ALL_COMPLETED" />全部已完成素材
-                <small>{{ completedTasks.length }} 个</small></label
+                ><input v-model="exportScope" type="radio" value="ALL_TASKS" />当前批次全部任务
+                <small>{{ tasks.length }} 个</small></label
               >
               <label
                 ><input v-model="exportScope" type="radio" value="FILTERED" />当前筛选结果
-                <small
-                  >{{ filteredTasks.filter(isEffectSegmentRenderExportable).length }} 个</small
-                ></label
+                <small>{{ filteredTasks.length }} 个</small></label
               >
               <label :class="{ disabled: !selectedTasks.length }"
                 ><input
@@ -2286,7 +2521,7 @@ onBeforeUnmount(() => {
                   type="checkbox"
                   :checked="exportFormats.includes('VIDEO_PACKAGE')"
                   @change="toggleExportFormat('VIDEO_PACKAGE')"
-                />视频素材包 ZIP <small>真实批量导出接口尚未接入</small></label
+                />视频素材包 ZIP <small>仅包含已完成视频</small></label
               >
               <label
                 ><input
@@ -2305,7 +2540,7 @@ onBeforeUnmount(() => {
             </div>
             <div class="transfer-note">
               <AlertCircle :size="15" />
-              <p>真实素材批量导出接口尚未接入，当前不会生成占位文件。</p>
+              <p>所选内容统一打包为 ZIP；异常明细只记录当前范围内的失败任务。</p>
             </div>
             <footer>
               <button type="button" @click="closeTransferPanel(true)">取消</button>
@@ -2315,7 +2550,7 @@ onBeforeUnmount(() => {
                 :disabled="operation !== null || !exportRangeTasks.length || !exportFormats.length"
                 @click="downloadExport"
               >
-                <LoaderCircle v-if="operation === 'export'" class="spin" :size="14" />生成导出清单
+                <LoaderCircle v-if="operation === 'export'" class="spin" :size="14" />生成导出包
               </button>
             </footer>
           </template>
@@ -3925,6 +4160,11 @@ select:disabled {
   color: #287194;
   background: #edf9fd;
   border-color: #b8dfeb;
+}
+.origin-tag.external {
+  color: #7d5a22;
+  background: #fff7df;
+  border-color: #f1d89a;
 }
 .compatible-purpose-tags {
   display: flex;

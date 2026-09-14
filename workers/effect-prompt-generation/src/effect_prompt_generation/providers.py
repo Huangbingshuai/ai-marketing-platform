@@ -421,7 +421,7 @@ class MockAiProvider:
             raise ProviderError("no confirmed facts", retryable=False)
         return _mock_result(MaterialPlanResponse(tasks=[
             MaterialBrief(task_id=task_id,
-                fact_ids=facts[index::len(task_ids)] or [facts[(index + len(existing_tasks)) % len(facts)]],
+                fact_ids=[facts[index % len(facts)]],
                 visual_event=f"测试素材事件{len(existing_tasks) + index + 1}：展示已确认的使用价值",
                 difference=f"测试独立观看变化{len(existing_tasks) + index + 1}",
                 priority_dimensions=[])
@@ -880,6 +880,10 @@ class ArkResponsesProvider:
         schema = MaterialPlanResponse.model_json_schema(by_alias=True)
         schema["properties"]["tasks"].update(minItems=len(task_ids), maxItems=len(task_ids))
         schema["$defs"]["MaterialBrief"]["properties"]["taskId"]["enum"] = list(task_ids)
+        # Persisted checkpoints stay backward readable, while every new Ark
+        # response is structurally limited to one primary fact plus at most one
+        # indispensable supporting fact.
+        schema["$defs"]["MaterialBrief"]["properties"]["factIds"]["maxItems"] = 2
         call = await self._structured(
             json.dumps(_remap_fact_references(payload, aliases), ensure_ascii=False),
             MaterialPlanResponse, schema_name="effect_prompt_material_tasks",

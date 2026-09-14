@@ -135,7 +135,7 @@ export const EFFECT_PROMPT_RENDER_CAPABILITIES: Record<
     minDurationSeconds: 4,
     maxDurationSeconds: 15,
     ratios: SEEDANCE_RATIOS,
-    resolutions: SEEDANCE_RESOLUTIONS,
+    resolutions: ['480p', '720p'],
   },
   SEEDANCE_1_0: {
     key: 'SEEDANCE_1_0',

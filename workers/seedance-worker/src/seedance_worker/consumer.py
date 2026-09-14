@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from .api_client import InternalApi, InternalApiError
 from .models import QueueMessage, RenderOutput, RuntimeContext
 from .providers import ProviderError, VideoProvider
+from .video_processing import postprocess_render_output
 
 
 LOGGER = logging.getLogger(__name__)
@@ -113,6 +114,7 @@ class SegmentRenderConsumer:
                 progress,
                 claim.provider_task_id,
             )
+            output = await postprocess_render_output(output)
             provider_task_id = output.provider_task_id
             await self._complete_limited(context, output)
         except Exception as exc:

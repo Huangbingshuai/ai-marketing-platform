@@ -4,6 +4,8 @@
 
 默认使用真实 `ark` Provider，缺少 `SEEDANCE_API_KEY` 时启动失败。Mock 只能显式设置 `SEGMENT_RENDER_PROVIDER=mock`，并且队列必须是隔离测试队列。
 
+真实 MP4 下载完成后，Worker 会调用随镜像安装的 `ffmpeg` 执行无损 faststart 整理，并生成 480px 宽的 JPEG 首帧预览。后处理失败不会把已经生成成功的视频判为失败，API 和前端会兼容没有首帧的历史或降级结果。
+
 关键环境变量：
 
 - `INTERNAL_API_BASE_URL`
