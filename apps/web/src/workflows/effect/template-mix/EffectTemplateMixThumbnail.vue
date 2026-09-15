@@ -34,7 +34,13 @@ watch(
 </script>
 
 <template>
-  <img v-if="thumbnailUrl" :src="thumbnailUrl" :alt="alt" draggable="false" />
+  <img
+    v-if="thumbnailUrl"
+    :src="thumbnailUrl"
+    :alt="alt"
+    draggable="false"
+    @dragstart.prevent
+  />
   <span v-else class="thumbnail-loading" aria-hidden="true"><Film :size="16" /></span>
 </template>
 
@@ -45,6 +51,10 @@ img,
   height: 100%;
   display: block;
   object-fit: cover;
+}
+img {
+  user-select: none;
+  -webkit-user-drag: none;
 }
 .thumbnail-loading {
   display: grid;

@@ -12,6 +12,8 @@ export type EffectTemplateMixSlot = {
   /** Seconds; timeline boundaries are derived from duration. */
   duration: number;
   transition: EffectTemplateMixTransition;
+  /** Seconds of overlap represented by the transition junction; optional for schema-v1 history. */
+  transitionDuration?: number;
 };
 export type EffectTemplateMixMaterial = {
   id: string;
@@ -55,6 +57,9 @@ export type EffectTemplateMixVariant = {
   bindings: Record<string, string>;
   bindingRevisions: Record<string, number>;
   offsets: Record<string, number>;
+  /** Optional editor layout; absent values use the template's sequential layout. */
+  timelineStarts?: Record<string, number>;
+  videoLanes?: Record<string, number>;
   /** Optional for schema-v1 compatibility; missing values are historical/manual bindings. */
   bindingMetadata?: Record<string, EffectTemplateMixBindingMetadata>;
   manualSlotIds: string[];

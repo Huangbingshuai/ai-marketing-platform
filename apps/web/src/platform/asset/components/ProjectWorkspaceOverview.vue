@@ -82,6 +82,9 @@ const latestState = computed(
     )[0],
 );
 const visibleArtifacts = computed(() => aggregateWorkspaceArtifacts(artifacts.value));
+const renderBatchArtifact = computed(() =>
+  visibleArtifacts.value.find(isRenderBatchArtifact) ?? null,
+);
 const currentNodeIndex = computed(() => {
   const index = workflowNodes.value.findIndex(
     (node) => node.id === workflowNodeBaseId(run.value?.currentNodeId ?? latestState.value?.nodeId),
@@ -124,6 +127,18 @@ const formatTime = (value: string | null): string =>
 
 const nodeLabel = (nodeId: string): string =>
   workflowNodes.value.find((node) => node.id === nodeId)?.label ?? nodeId;
+
+const hasNodeContent = (definition: WorkflowNodeDefinition): boolean =>
+  stateByNode.value.has(definition.id) ||
+  (definition.id === 'SEGMENT_RENDER' && renderBatchArtifact.value !== null);
+
+const nodeDetail = (definition: WorkflowNodeDefinition): string => {
+  const state = stateByNode.value.get(definition.id);
+  if (state) return `revision ${state.revision} · ${formatTime(state.savedAt)}`;
+  if (definition.id === 'SEGMENT_RENDER' && renderBatchArtifact.value)
+    return `已确认 ${renderBatchClipCount(renderBatchArtifact.value)} 条视频素材`;
+  return '暂无已保存内容';
+};
 
 const nodeStatus = (definition: WorkflowNodeDefinition): string => {
   const state = stateByNode.value.get(definition.id);
@@ -179,13 +194,8 @@ const load = async (): Promise<void> => {
   archivedAssets.value = [];
   versionsByAsset.value = {};
   try {
-    const [overviewResponse, artifactResponse, assetResponse] = await Promise.all([
+    const [overviewResponse, assetResponse] = await Promise.all([
       getActiveWorkflowRunOverview(props.project.id, props.workflow, props.space, request.signal),
-      listWorkingArtifacts(
-        props.project.id,
-        { workflow: props.workflow, space: props.space },
-        request.signal,
-      ),
       listAssets(
         props.project.id,
         { workflow: props.workflow, space: props.space, page: 1, pageSize: 96 },
@@ -195,7 +205,15 @@ const load = async (): Promise<void> => {
     if (request.signal.aborted || requestGeneration !== generation) return;
     run.value = overviewResponse.data.run;
     nodeStates.value = overviewResponse.data.nodeStates;
-    artifacts.value = artifactResponse.data.items;
+    const artifactResponse = run.value
+      ? await listWorkingArtifacts(
+          props.project.id,
+          { workflow: props.workflow, space: props.space, workflowRunId: run.value.id },
+          request.signal,
+        )
+      : null;
+    if (request.signal.aborted || requestGeneration !== generation) return;
+    artifacts.value = artifactResponse?.data.items ?? [];
     archivedAssets.value = assetResponse.data.items;
     const versionEntries = await Promise.all(
       assetResponse.data.items.map(async (asset) => {
@@ -284,21 +302,18 @@ onBeforeUnmount(() => controller?.abort());
               type="button"
               :class="{ active: definition.id === activeNodeId }"
               :aria-current="definition.id === activeNodeId ? 'step' : undefined"
-              :disabled="!stateByNode.has(definition.id) || !canResume"
+              :disabled="!hasNodeContent(definition) || !canResume"
               @click="emit('resumeNode', definition.id)"
             >
               <span class="step-index">{{ index + 1 }}</span>
               <span
                 ><strong>{{ definition.label }}</strong
-                ><small v-if="stateByNode.get(definition.id)"
-                  >revision {{ stateByNode.get(definition.id)?.revision }} ·
-                  {{ formatTime(stateByNode.get(definition.id)?.savedAt ?? null) }}</small
-                ><small v-else>暂无已保存内容</small></span
+                ><small>{{ nodeDetail(definition) }}</small></span
               >
               <em :class="{ active: definition.id === activeNodeId }">{{
                 nodeStatus(definition)
               }}</em>
-              <ArrowRight v-if="stateByNode.has(definition.id) && canResume" :size="14" />
+              <ArrowRight v-if="hasNodeContent(definition) && canResume" :size="14" />
             </button>
           </div>
           <p v-if="run && !canResume" class="resume-hint">

@@ -3,6 +3,7 @@ import workflowSource from '../source-import/EffectImportNodePage.vue?raw';
 import pageSource from './EffectTemplateMixNodePage.vue?raw';
 import thumbnailCacheSource from './effect-template-mix-thumbnail-cache.ts?raw';
 import thumbnailSource from './EffectTemplateMixThumbnail.vue?raw';
+import filmstripSource from './EffectTemplateMixFilmstrip.vue?raw';
 import timelineSource from './EffectTemplateMixTimeline.vue?raw';
 
 describe('effect template mix workbench layout', () => {
@@ -59,12 +60,61 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('!targetVariantId ||');
     expect(pageSource).toContain('material-pagination');
     expect(pageSource).toContain('displayedMaterials');
+    expect(pageSource).toContain('align-self: stretch');
+    expect(pageSource).toContain('height: 100%;\n  display: flex;\n  flex-direction: column;');
+    expect(pageSource).toContain('flex: 1 1 auto');
     expect(timelineSource).toContain(
-      "const tracks: VisibleTrack[] = ['CAPTION', 'VIDEO', 'VOICE', 'BGM'];",
+      "const trackOrder = ref<VisibleTrack[]>(['CAPTION', 'VIDEO']);",
+    );
+    expect(timelineSource).toContain(
+      "const orderedTracks = computed<VisibleTrack[]>(() => [...trackOrder.value, 'AUDIO'])",
     );
     expect(timelineSource).toContain('未配置字幕');
-    expect(timelineSource).toContain('未配置口播');
-    expect(timelineSource).toContain('未配置 BGM');
+    expect(timelineSource).toContain('未配置音频');
+    expect(timelineSource).toContain("type VisibleTrack = 'AUDIO' | 'CAPTION' | 'VIDEO'");
+    expect(timelineSource).not.toContain('@dragstart="onTrackDragStart($event, track)"');
+    expect(timelineSource).toContain('@scroll="syncTrackScroll(\'HEADERS\')"');
+    expect(timelineSource).toContain('@scroll="syncTrackScroll(\'VIEWPORT\')"');
+    expect(timelineSource).toContain('const syncTrackScroll');
+    expect(timelineSource).toContain('const draggedTimelineEnd = computed');
+    expect(timelineSource).toContain('draggedTimelineEnd.value');
+    expect(timelineSource).toContain('const duration = Math.max(0, timelineDuration.value)');
+    expect(timelineSource).not.toContain('+ majorTickSeconds.value;');
+    expect(timelineSource).toContain('overflow: auto;');
+    expect(timelineSource).toContain("'moveClip'");
+    expect(timelineSource).toContain("'moveClips'");
+    expect(timelineSource).toContain('selectionModifier');
+    expect(timelineSource).toContain('!drag.selectionModifier');
+    expect(timelineSource).toContain('draggingGroupDelta');
+    expect(timelineSource).toContain('clipDrag?.selectedSlotIds.length === 1');
+    expect(pageSource).toContain('const moveTimelineClips');
+    expect(pageSource).toContain('@move-clips="moveTimelineClips"');
+    expect(timelineSource).toContain('videoLanes');
+    expect(pageSource).toContain('primeUpcomingTimelinePlayer');
+    expect(pageSource).toContain('primedTimelinePlayers');
+    expect(pageSource).toContain('positionedTimelinePlayers');
+    expect(pageSource).toContain('syncPlayingVideoFrame');
+    expect(pageSource).not.toContain('drift > 0.12');
+    expect(pageSource).toContain('preload="metadata"');
+    expect(pageSource).toContain("otherVideo.preload = slotId === slot.id ? 'auto' : 'metadata'");
+    expect(pageSource).toContain('scheduleSeekSync');
+    expect(pageSource).toContain('seekSyncRequestId');
+    expect(pageSource).toContain('resolveTimelinePlacement');
+    expect(pageSource).toContain('overlapsTimelineClip');
+    expect(pageSource).toContain('prefer an empty lane above it');
+    expect(pageSource).toContain('beginMaterialPointerDrag');
+    expect(pageSource).toContain("className = 'material-drag-ghost'");
+    expect(pageSource).toContain('draggable="false"');
+    expect(pageSource).toContain('@dragstart.capture="onNativeImageDragStart"');
+    expect(pageSource).toContain('lane: variant.videoLanes?.[range.id] ?? 0');
+    expect(pageSource).toContain('coverMaterial(variant)');
+    expect(pageSource).toContain('封面');
+    expect(pageSource).toContain('occupiedEnds');
+    expect(pageSource).toContain('variantDuration(variant)');
+    expect(pageSource).toContain('captureDisplayedFrame');
+    expect(pageSource).toContain('player-transition-frame');
+    expect(pageSource).not.toContain('resource-tabs-count');
+    expect(pageSource).toContain('grid-template-columns: repeat(7, minmax(0, 1fr));');
     expect(pageSource).not.toContain('初次生成数量');
   });
   it('renders loading, empty, error and real-media states', () => {
@@ -86,16 +136,19 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('materialColumnCount.value * 3');
     expect(pageSource).toContain('EffectTemplateMixThumbnail');
   });
-  it('renders a Jianying-style filmstrip track and overlay playhead', () => {
+  it('renders a compact Jianying-style track and overlay playhead', () => {
     expect(timelineSource).not.toContain("from 'vue-timeline-editor'");
-    expect(timelineSource).toContain('class="clip-filmstrip"');
+    expect(timelineSource).toContain('class="clip-mini-preview"');
     expect(timelineSource).toContain('EffectTemplateMixWaveform');
     expect(timelineSource).toContain(':trim-start="activeTrimOffset(slot.id)"');
     expect(timelineSource).not.toContain('Math.sin');
-    expect(timelineSource).toContain('EffectTemplateMixThumbnail');
+    expect(timelineSource).toContain('EffectTemplateMixFilmstrip');
+    expect(filmstripSource).toContain('class="mix-filmstrip"');
+    expect(filmstripSource).toContain('frameCount');
     expect(timelineSource).not.toContain('frameUrl(materialForSlot');
     expect(timelineSource).toContain('class="timeline-playhead"');
     expect(timelineSource).toContain('class="playhead-handle"');
+    expect(timelineSource).toContain('Keep the ghost under the pointer while dragging');
     expect(timelineSource).toContain('@pointerdown="onRulerPointerDown"');
     expect(timelineSource).toContain('@pointerdown="onClipPointerDown($event, slot.id)"');
     expect(timelineSource).toContain('@pointerdown="onPlayheadPointerDown"');
@@ -108,9 +161,9 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).toContain("emit('trimSlot'");
     expect(timelineSource).toContain("emit('undo')");
     expect(timelineSource).toContain("emit('redo')");
-    expect(pageSource).toContain('@dragstart="beginMaterialDrag($event, material)"');
+    expect(pageSource).toContain('@pointerdown="beginMaterialPointerDrag($event, material)"');
     expect(pageSource).toContain('@assign-material="assignDroppedMaterial"');
-    expect(pageSource).toContain('@click="previewLibraryMaterial(material)"');
+    expect(pageSource).toContain('@click="onMaterialCardClick(material)"');
     expect(pageSource).toContain('togglePreviewPlayback');
     expect(pageSource).toContain('aria-label="调整素材库宽度"');
     expect(pageSource).toContain("startPaneResize($event, 'LEFT')");
@@ -129,6 +182,7 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).toContain('@pointerdown="startTimelineResize"');
     expect(timelineSource).toContain("'--track-header-width': `${trackHeaderWidth.value}px`");
     expect(timelineSource).toContain("'--timeline-height': `${props.height}px`");
+    expect(timelineSource).toContain('min-height: 220px');
     expect(timelineSource).not.toContain('draggable="true"');
     const selectSlotBlock = pageSource.slice(
       pageSource.indexOf('const selectSlot'),
@@ -193,12 +247,18 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('type="button"');
     expect(pageSource).toContain('var(--blue, #2563eb)');
   });
-  it('retains real timeline frames across zoom, redraw and variant changes', () => {
-    expect(timelineSource).toContain('const count = 8');
-    expect(timelineSource).toContain('const sourceStart = props.variant?.offsets[slot.id] ?? 0');
-    expect(timelineSource).toContain('materialForSlot(slot.id)!.contentHash');
+  it('retains real material thumbnails outside the compact timeline', () => {
+    expect(pageSource).toContain('EffectTemplateMixThumbnail');
     expect(thumbnailSource).toContain('retainEffectTemplateMixThumbnail');
     expect(thumbnailSource).toContain('releaseEffectTemplateMixThumbnail');
+    expect(thumbnailSource).toContain('-webkit-user-drag: none');
+    expect(thumbnailSource).toContain('@dragstart.prevent');
+    expect(pageSource).toContain('.thumb :deep(img)');
+    expect(pageSource).toContain('pointer-events: none');
+    expect(pageSource).toContain('beginMaterialPointerDrag');
+    expect(pageSource).toContain("className = 'material-drag-ghost'");
+    expect(pageSource).toContain('draggable="false"');
+    expect(timelineSource).toContain('is-material-pointer-target');
     expect(thumbnailCacheSource).toContain('!pinCounts.has(key)');
     expect(thumbnailCacheSource).toContain('retryAfter.set(key');
     expect(thumbnailCacheSource).toContain("video.addEventListener('canplay', capture)");

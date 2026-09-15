@@ -29,6 +29,61 @@ export const EFFECT_TEMPLATE_MIX_TRANSITIONS: readonly EffectTemplateMixTransiti
   '闪白',
   '缩放',
 ];
+export const EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION = 0.9;
+export const EFFECT_TEMPLATE_MIX_TRANSITION_LIBRARY = [
+  {
+    id: '叠化',
+    label: '叠化',
+    category: '热门',
+    description: '柔和叠加两个片段',
+    previewClass: 'is-dissolve',
+  },
+  {
+    id: '推镜',
+    label: '推镜 II',
+    category: '热门',
+    description: '镜头推进衔接',
+    previewClass: 'is-push',
+  },
+  {
+    id: '闪白',
+    label: '闪白',
+    category: '热门',
+    description: '高亮闪白切换',
+    previewClass: 'is-flash',
+  },
+  {
+    id: '缩放',
+    label: '缩放',
+    category: '动感',
+    description: '快速缩放转场',
+    previewClass: 'is-zoom',
+  },
+  {
+    id: '硬切',
+    label: '硬切',
+    category: '基础',
+    description: '无过渡直接切换',
+    previewClass: 'is-cut',
+  },
+] as const satisfies readonly {
+  id: EffectTemplateMixTransition;
+  label: string;
+  category: string;
+  description: string;
+  previewClass: string;
+}[];
+export const effectTemplateMixTransitionDuration = (
+  slot: EffectTemplateMixSlot,
+  previousSlot?: EffectTemplateMixSlot,
+): number => {
+  if (slot.transition === '硬切' || !previousSlot) return 0;
+  const max = Math.min(5, slot.duration, previousSlot?.duration ?? slot.duration);
+  const value = Number.isFinite(slot.transitionDuration)
+    ? Number(slot.transitionDuration)
+    : EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION;
+  return Math.max(0.1, Math.min(max, value));
+};
 export const cloneMix = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 export const createEffectTemplateMixEntry = (name: string): EffectTemplateMixTemplateEntry => {
   const roles: EffectTemplateMixRole[] = [
@@ -63,6 +118,7 @@ export const createEffectTemplateMixEntry = (name: string): EffectTemplateMixTem
           label: EFFECT_TEMPLATE_MIX_ROLE_LABELS[role],
           duration: 3,
           transition: '硬切',
+          transitionDuration: 0,
         })),
       },
     },

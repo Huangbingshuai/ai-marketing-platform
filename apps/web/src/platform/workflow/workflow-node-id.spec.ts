@@ -22,6 +22,7 @@ describe('workflow node id projection', () => {
   it('projects product-scoped node ids onto the visible workflow node', () => {
     expect(workflowNodeBaseId('PROMPT_GENERATION:product-a')).toBe('PROMPT_GENERATION');
     expect(workflowNodeBaseId('PROMPT_GENERATION')).toBe('PROMPT_GENERATION');
+    expect(workflowNodeBaseId('SEGMENT_RENDER_SETTINGS:product-a')).toBe('SEGMENT_RENDER');
   });
 
   it('uses the latest product-scoped state for the visible workflow node', () => {

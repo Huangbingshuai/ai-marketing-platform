@@ -4,6 +4,7 @@ import {
   cloneMix,
   createEffectTemplateMixEntry,
   effectTemplateMixTiming,
+  effectTemplateMixTransitionDuration,
   formatEffectTemplateMixTime,
   markEffectTemplateMixChanged,
   moveEffectTemplateMixSlot,
@@ -66,5 +67,15 @@ describe('effect template mix presentation state', () => {
     const moved = moveEffectTemplateMixSlot(slots, slots[0]!.id, 1);
     expect(moved[1]!.id).toBe(slots[0]!.id);
     expect(slots[0]!.id).not.toBe(moved[0]!.id);
+  });
+
+  it('clamps transition duration to the adjacent slot lengths', () => {
+    const slots = workspace().template.slots.slice(0, 2);
+    slots[0]!.duration = 1.4;
+    slots[1]!.duration = 2.2;
+    slots[1]!.transition = '叠化';
+    slots[1]!.transitionDuration = 4;
+    expect(effectTemplateMixTransitionDuration(slots[1]!, slots[0]!)).toBe(1.4);
+    expect(effectTemplateMixTransitionDuration(slots[0]!)).toBe(0);
   });
 });

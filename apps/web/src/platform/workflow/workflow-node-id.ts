@@ -1,9 +1,14 @@
 import type { WorkflowNodeState } from '@ai-marketing/contracts';
 
+const VISIBLE_NODE_ALIASES: Readonly<Record<string, string>> = {
+  SEGMENT_RENDER_SETTINGS: 'SEGMENT_RENDER',
+};
+
 export const workflowNodeBaseId = (nodeId: string | null | undefined): string | null => {
   const value = nodeId?.trim();
   if (!value) return null;
-  return value.split(':', 1)[0] ?? value;
+  const baseId = value.split(':', 1)[0] ?? value;
+  return VISIBLE_NODE_ALIASES[baseId] ?? baseId;
 };
 
 export const latestWorkflowNodeStateMap = (

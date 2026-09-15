@@ -14,8 +14,12 @@ import { WorkflowNodeDraftBar, WorkflowNodeFooter, WorkflowRunProgress } from '@
 import {
   AlertCircle,
   ArrowLeft,
+  AudioLines,
+  Blend,
   Bot,
+  Captions,
   CheckCircle2,
+  Clapperboard,
   Film,
   Focus,
   Layers3,
@@ -28,7 +32,6 @@ import {
   Plus,
   Search,
   Sparkles,
-  Type,
   WandSparkles,
   Workflow,
   X,
@@ -49,10 +52,12 @@ import {
 } from './api/effect-template-mix.api';
 import {
   EFFECT_TEMPLATE_MIX_ROLE_LABELS,
+  EFFECT_TEMPLATE_MIX_TRANSITION_LIBRARY,
   EFFECT_TEMPLATE_MIX_TRANSITIONS,
   cloneMix,
   createEffectTemplateMixEntry,
   effectTemplateMixTiming,
+  effectTemplateMixTransitionDuration,
   formatEffectTemplateMixTime,
   markEffectTemplateMixChanged,
   moveEffectTemplateMixSlot,
@@ -103,9 +108,29 @@ const aiStageLabels: Record<EffectTemplateMixAiRun['stage'], string> = {
 };
 const resourceTab = ref<'AUDIO' | 'MATERIAL' | 'TEXT' | 'TRANSITION'>('MATERIAL');
 const keyword = ref('');
+const transitionKeyword = ref('');
+const activeTransitionSlotId = ref('');
+const transitionPreviewDurations = reactive<Record<string, number>>({});
+const transitionCategoriesExpanded = ref(true);
+const clearTransitionPreviews = (): void => {
+  Object.keys(transitionPreviewDurations).forEach((slotId) => {
+    delete transitionPreviewDurations[slotId];
+  });
+};
 const materialRoleFilter = ref<'ALL' | EffectTemplateMixRole>('ALL');
 const materialPage = ref(1);
 const draggingMaterialId = ref('');
+const materialPointerDrag = ref<{
+  materialId: string;
+  startX: number;
+  startY: number;
+  clientX: number;
+  clientY: number;
+  active: boolean;
+  targetSlotId: string;
+} | null>(null);
+let materialDragGhost: HTMLElement | null = null;
+let suppressMaterialClick = false;
 const auditionMaterial = ref<EffectTemplateMixMaterial | null>(null);
 const auditionPlayer = ref<HTMLVideoElement | null>(null);
 const auditionPlaying = ref(false);
@@ -125,15 +150,28 @@ const notice = ref<Notice | null>(null);
 const newTemplateName = ref('新品跑量模板');
 const displayedTimelineSlotId = ref('');
 const playerUnavailableSlotId = ref('');
+const transitionFrame = ref('');
 const timelinePlayers = new Map<string, HTMLVideoElement>();
+const primedTimelinePlayers = new WeakSet<HTMLVideoElement>();
+const positionedTimelinePlayers = new WeakSet<HTMLVideoElement>();
 const workbenchMain = ref<HTMLElement | null>(null);
 const materialGrid = ref<HTMLElement | null>(null);
 const materialGridWidth = ref(0);
-const leftPaneWidth = ref(340);
+const leftPaneWidth = ref(600);
 const rightPaneWidth = ref(270);
 const topPaneHeight = ref(480);
 const timelineHeight = ref(260);
 const compactWorkbench = ref(false);
+const resetWorkbenchDefaults = (): void => {
+  resourceTab.value = 'MATERIAL';
+  keyword.value = '';
+  transitionKeyword.value = '';
+  materialRoleFilter.value = 'ALL';
+  materialPage.value = 1;
+  activeTransitionSlotId.value = '';
+  clearTransitionPreviews();
+  transitionCategoriesExpanded.value = true;
+};
 const resizingPane = ref<'LEFT' | 'RIGHT' | null>(null);
 const resizingEditorHeight = ref<{
   startClientY: number;
@@ -162,6 +200,9 @@ let pendingSave: Promise<boolean> | undefined;
 let playbackAnimationFrame: number | undefined;
 let playbackAnchorMilliseconds = 0;
 let playbackAnchorSeconds = 0;
+let activePlaybackSlotId = '';
+let pendingSeekSyncFrame: number | undefined;
+let seekSyncRequestId = 0;
 let materialGridResizeObserver: ResizeObserver | null = null;
 let materialGridResizeFrame: number | undefined;
 const pollTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -233,18 +274,70 @@ const selectedSlot = computed(() => {
   const selected = slots.find(({ id }) => id === activeUi.value?.selectedSlotId) ?? null;
   return view.value === 'EDITOR' ? selected : (selected ?? slots[0] ?? null);
 });
+const selectedTransitionInfo = computed(() => {
+  const variant = selectedVariant.value;
+  const slot = variant?.slots.find(({ id }) => id === activeTransitionSlotId.value) ?? null;
+  if (!variant || !slot) return null;
+  const index = variant.slots.findIndex(({ id }) => id === slot.id);
+  if (index <= 0 || slot.transition === '硬切') return null;
+  const previous = variant.slots[index - 1];
+  if (!previous) return null;
+  return {
+    name: slot.transition,
+    slotId: slot.id,
+    duration:
+      transitionPreviewDurations[slot.id] ?? effectTemplateMixTransitionDuration(slot, previous),
+    max: Math.min(5, slot.duration, previous.duration),
+  };
+});
+const filteredTransitions = computed(() => {
+  const query = transitionKeyword.value.trim().toLowerCase();
+  return EFFECT_TEMPLATE_MIX_TRANSITION_LIBRARY.filter((item) => {
+    if (item.category !== '热门') return false;
+    if (!query) return true;
+    return `${item.label} ${item.description} ${item.category}`.toLowerCase().includes(query);
+  });
+});
 const templateTiming = computed(() =>
   effectTemplateMixTiming(workspace.value?.template.slots ?? []),
 );
-const currentTiming = computed(() => effectTemplateMixTiming(selectedVariant.value?.slots ?? []));
-const currentDuration = computed(() =>
-  selectedVariant.value ? currentTiming.value.duration : templateTiming.value.duration,
-);
+const currentTiming = computed(() => {
+  const variant = selectedVariant.value;
+  const base = effectTemplateMixTiming(variant?.slots ?? []);
+  if (!variant) return base;
+  const slots = base.slots.map((range) => {
+    const start = Math.max(0, variant.timelineStarts?.[range.id] ?? range.start);
+    const duration = range.end - range.start;
+    return { id: range.id, start, end: start + duration };
+  });
+  return {
+    duration: Math.max(base.duration, ...slots.map(({ end }) => end)),
+    slots,
+  };
+});
 const materialForSlot = (
   slotId: string,
   variant: EffectTemplateMixVariant | null = selectedVariant.value,
 ): EffectTemplateMixMaterial | null =>
   workspace.value?.materials.find(({ id }) => id === variant?.bindings[slotId]) ?? null;
+const variantDuration = (variant: EffectTemplateMixVariant): number => {
+  const timing = effectTemplateMixTiming(variant.slots);
+  const occupiedEnds = timing.slots
+    .map((range) => {
+      const start = Math.max(0, variant.timelineStarts?.[range.id] ?? range.start);
+      return { id: range.id, end: start + (range.end - range.start) };
+    })
+    .filter(({ id }) => Boolean(materialForSlot(id, variant)))
+    .map(({ end }) => end);
+  return occupiedEnds.length ? Math.max(...occupiedEnds) : 0;
+};
+const currentDuration = computed(() => {
+  const variant = selectedVariant.value;
+  if (!variant) return templateTiming.value.duration;
+  return variantDuration(variant);
+});
+const coverMaterial = (variant: EffectTemplateMixVariant): EffectTemplateMixMaterial | null =>
+  variant.slots.map((slot) => materialForSlot(slot.id, variant)).find(Boolean) ?? null;
 const selectedMaterial = computed(() =>
   selectedSlot.value ? materialForSlot(selectedSlot.value.id) : null,
 );
@@ -257,11 +350,25 @@ const materialUsageLabel = (materialId: string): string => {
 const previewSlot = computed(() => {
   const variant = selectedVariant.value;
   if (!variant?.slots.length) return null;
-  const safeTime = Math.min(Math.max(0, playhead.value), currentDuration.value);
-  const index = currentTiming.value.slots.findIndex(
-    ({ start, end }) => safeTime >= start && safeTime < end,
+  // Keep the playhead's public time at the exact project end, but resolve the
+  // visible frame one video tick before the clip boundary so the final frame
+  // remains visible instead of falling through to the blackout layer.
+  const safeTime = Math.min(
+    Math.max(0, playhead.value),
+    Math.max(0, currentDuration.value - 1 / TIMELINE_FPS),
   );
-  return variant.slots[index < 0 ? Math.max(0, variant.slots.length - 1) : index] ?? null;
+  const candidates = currentTiming.value.slots
+    .map((range, index) => ({
+      index,
+      lane: variant.videoLanes?.[range.id] ?? 0,
+      range,
+    }))
+    .filter(({ range }) => safeTime >= range.start && safeTime < range.end)
+    .sort(
+      (left, right) =>
+        left.lane - right.lane || right.range.start - left.range.start || right.index - left.index,
+    );
+  return candidates.length ? (variant.slots[candidates[0]!.index] ?? null) : null;
 });
 const previewRange = computed(() =>
   previewSlot.value
@@ -562,6 +669,8 @@ const hydrate = (
     variant.slots ||= cloneMix(next.workspace.template.slots);
     variant.bindingRevisions ||= {};
     variant.offsets ||= {};
+    variant.timelineStarts ||= {};
+    variant.videoLanes ||= {};
     variant.bindingMetadata ||= {};
     variant.captions ||= [];
     variant.originalVolume ??= 1;
@@ -630,6 +739,7 @@ const finishAiRun = async (run: EffectTemplateMixAiRun): Promise<void> => {
       entry?.workspace.variants.find(({ id }) => id === variantId)?.slots[0]?.id ?? '';
   }
   activeTemplateId.value = run.templateId;
+  resetWorkbenchDefaults();
   view.value = 'EDITOR';
   saveState.value = 'saved';
   const entry = catalog.value.find(({ id }) => id === run.templateId);
@@ -712,6 +822,7 @@ const load = async (): Promise<void> => {
               ?.id ?? '')
           : '';
       }
+      resetWorkbenchDefaults();
       view.value = 'EDITOR';
     }
     for (const run of running ?? []) void pollAiRun(run.id);
@@ -876,6 +987,35 @@ const detectMaterialAudio = (
 };
 const activeTimelinePlayer = (): HTMLVideoElement | null =>
   previewSlot.value ? (timelinePlayers.get(previewSlot.value.id) ?? null) : null;
+const primeUpcomingTimelinePlayer = (range: { id: string; end: number }): void => {
+  const upcoming = currentTiming.value.slots
+    .filter(
+      (candidate) =>
+        candidate.id !== range.id &&
+        candidate.start >= range.end &&
+        Boolean(materialForSlot(candidate.id)),
+    )
+    .sort((left, right) => left.start - right.start)[0];
+  if (!upcoming) return;
+  const video = timelinePlayers.get(upcoming.id);
+  if (!video) return;
+  if (!primedTimelinePlayers.has(video)) {
+    video.preload = 'auto';
+    video.load();
+    primedTimelinePlayers.add(video);
+  }
+  if (!positionedTimelinePlayers.has(video) && video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+    const targetTime = selectedVariant.value?.offsets[upcoming.id] ?? 0;
+    try {
+      if (Math.abs(video.currentTime - targetTime) > 1 / TIMELINE_FPS) {
+        video.currentTime = targetTime;
+      }
+      positionedTimelinePlayers.add(video);
+    } catch {
+      // Metadata may be replaced while a source is loading; the ready callback retries.
+    }
+  }
+};
 const pauseTimelinePlayers = (exceptSlotId = ''): void => {
   for (const [slotId, video] of timelinePlayers) {
     if (slotId !== exceptSlotId) video.pause();
@@ -886,6 +1026,25 @@ const closeMaterialPreview = (): void => {
   auditionPlaying.value = false;
   auditionMaterial.value = null;
   auditionTime.value = 0;
+};
+const captureDisplayedFrame = (): string => {
+  const slotId = displayedTimelineSlotId.value;
+  const video = slotId ? timelinePlayers.get(slotId) : null;
+  if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return '';
+  try {
+    const scale = Math.min(1, 640 / Math.max(video.videoWidth, 1));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    const context = canvas.getContext('2d');
+    if (!context) return '';
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/jpeg', 0.82);
+  } catch {
+    // Cross-origin media without CORS cannot be copied to a canvas. In that
+    // case the normal video readiness path remains the fallback.
+    return '';
+  }
 };
 const previewLibraryMaterial = async (material: EffectTemplateMixMaterial): Promise<void> => {
   playing.value = false;
@@ -909,10 +1068,10 @@ const selectTemplate = (id: string): void => {
   pauseTimelinePlayers();
   closeMaterialPreview();
   stopPlaybackClock();
+  transitionFrame.value = '';
   activeTemplateId.value = id;
   clearTimelineHistory();
-  keyword.value = '';
-  resourceTab.value = 'MATERIAL';
+  resetWorkbenchDefaults();
   scheduleSave();
 };
 const enterEditor = (): void => {
@@ -920,18 +1079,21 @@ const enterEditor = (): void => {
   pauseTimelinePlayers();
   closeMaterialPreview();
   stopPlaybackClock();
-  resourceTab.value = 'MATERIAL';
-  keyword.value = '';
+  transitionFrame.value = '';
+  resetWorkbenchDefaults();
   playhead.value = 0;
   clearTimelineHistory();
   view.value = 'EDITOR';
 };
 const selectVariant = (id: string): void => {
   if (!activeUi.value || !workspace.value) return;
+  transitionFrame.value = captureDisplayedFrame();
   playing.value = false;
   pauseTimelinePlayers();
   closeMaterialPreview();
   stopPlaybackClock();
+  activeTransitionSlotId.value = '';
+  clearTransitionPreviews();
   activeUi.value.selectedVariantId = id;
   activeUi.value.selectedSlotId =
     workspace.value.variants.find((item) => item.id === id)?.slots[0]?.id ?? '';
@@ -944,11 +1106,14 @@ const leaveEditor = (): void => {
   pauseTimelinePlayers();
   closeMaterialPreview();
   stopPlaybackClock();
+  transitionFrame.value = '';
   view.value = 'CONFIG';
 };
 const selectSlot = (id: string): void => {
   if (!activeUi.value) return;
   closeMaterialPreview();
+  activeTransitionSlotId.value = '';
+  clearTransitionPreviews();
   activeUi.value.selectedSlotId = id;
 };
 const applyMaterialToSlot = (material: EffectTemplateMixMaterial, slotId: string): void => {
@@ -981,18 +1146,93 @@ const applyMaterialToSlot = (material: EffectTemplateMixMaterial, slotId: string
   if (activeUi.value) activeUi.value.selectedSlotId = slot.id;
   bump();
 };
-const beginMaterialDrag = (event: DragEvent, material: EffectTemplateMixMaterial): void => {
-  if (!selectedVariant.value || !event.dataTransfer) {
-    event.preventDefault();
-    return;
-  }
-  draggingMaterialId.value = material.id;
-  event.dataTransfer.effectAllowed = 'copy';
-  event.dataTransfer.setData('application/x-effect-template-mix-material', material.id);
-  event.dataTransfer.setData('text/plain', material.id);
+const clearMaterialPointerTarget = (): void => {
+  document
+    .querySelectorAll<HTMLElement>('.video-clip.is-material-pointer-target')
+    .forEach((element) => {
+      element.classList.remove('is-material-pointer-target');
+    });
 };
-const endMaterialDrag = (): void => {
+const updateMaterialPointerTarget = (clientX: number, clientY: number): string => {
+  const element = document
+    .elementFromPoint(clientX, clientY)
+    ?.closest<HTMLElement>('.video-track [data-slot-id]');
+  const slotId = element?.dataset.slotId ?? '';
+  clearMaterialPointerTarget();
+  if (element && slotId) element.classList.add('is-material-pointer-target');
+  return slotId;
+};
+const removeMaterialPointerListeners = (): void => {
+  window.removeEventListener('pointermove', onMaterialPointerMove);
+  window.removeEventListener('pointerup', onMaterialPointerUp);
+  window.removeEventListener('pointercancel', onMaterialPointerUp);
+};
+const onMaterialPointerMove = (event: PointerEvent): void => {
+  const drag = materialPointerDrag.value;
+  if (!drag) return;
+  drag.clientX = event.clientX;
+  drag.clientY = event.clientY;
+  if (!drag.active && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 5) {
+    drag.active = true;
+    draggingMaterialId.value = drag.materialId;
+  }
+  if (!drag.active) return;
+  event.preventDefault();
+  if (materialDragGhost) {
+    materialDragGhost.style.transform = `translate3d(${event.clientX + 14}px, ${event.clientY + 14}px, 0)`;
+  }
+  drag.targetSlotId = updateMaterialPointerTarget(event.clientX, event.clientY);
+};
+const onMaterialPointerUp = (): void => {
+  const drag = materialPointerDrag.value;
+  if (!drag) return;
+  removeMaterialPointerListeners();
+  materialPointerDrag.value = null;
   draggingMaterialId.value = '';
+  materialDragGhost?.remove();
+  materialDragGhost = null;
+  clearMaterialPointerTarget();
+  if (!drag.active) return;
+  suppressMaterialClick = true;
+  window.setTimeout(() => (suppressMaterialClick = false), 0);
+  if (drag.targetSlotId) assignDroppedMaterial(drag.materialId, drag.targetSlotId);
+};
+const beginMaterialPointerDrag = (
+  event: PointerEvent,
+  material: EffectTemplateMixMaterial,
+): void => {
+  if (event.button !== 0 || !selectedVariant.value) return;
+  materialPointerDrag.value = {
+    materialId: material.id,
+    startX: event.clientX,
+    startY: event.clientY,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    active: false,
+    targetSlotId: '',
+  };
+  materialDragGhost = document.createElement('div');
+  materialDragGhost.className = 'material-drag-ghost';
+  materialDragGhost.textContent = `拖入 ${material.code}`;
+  materialDragGhost.setAttribute('aria-hidden', 'true');
+  document.body.appendChild(materialDragGhost);
+  materialDragGhost.style.transform = `translate3d(${event.clientX + 14}px, ${event.clientY + 14}px, 0)`;
+  window.addEventListener('pointermove', onMaterialPointerMove, { passive: false });
+  window.addEventListener('pointerup', onMaterialPointerUp, { once: true });
+  window.addEventListener('pointercancel', onMaterialPointerUp, { once: true });
+};
+const onMaterialCardClick = (material: EffectTemplateMixMaterial): void => {
+  if (suppressMaterialClick) return;
+  void previewLibraryMaterial(material);
+};
+// Firefox may still promote an <img> into a native drag ghost even when its
+// parent card is marked draggable=false. Keep image dragging disabled at the
+// workbench boundary while leaving clip-level track dragging intact.
+const onNativeImageDragStart = (event: DragEvent): void => {
+  const target = event.target;
+  if (target instanceof HTMLImageElement || (target instanceof Element && target.closest('img'))) {
+    event.preventDefault();
+  }
 };
 const assignDroppedMaterial = (materialId: string, slotId: string): void => {
   const material = workspace.value?.materials.find(({ id }) => id === materialId);
@@ -1041,10 +1281,13 @@ const changeTimelineTrimStart = (slotId: string, raw: number): void => {
 };
 const changeTemplate = (): void => {
   if (!workspace.value) return;
-  for (const slot of workspace.value.template.slots) {
+  for (const [index, slot] of workspace.value.template.slots.entries()) {
     slot.duration = Number.isFinite(Number(slot.duration))
       ? Math.min(120, Math.max(0.1, Math.round(Number(slot.duration) * 10) / 10))
       : 0.1;
+    const previous = workspace.value.template.slots[index - 1];
+    slot.transitionDuration =
+      slot.transition === '硬切' ? 0 : effectTemplateMixTransitionDuration(slot, previous);
   }
   if (selectedVariant.value) {
     markEffectTemplateMixChanged(workspace.value, selectedVariant.value.id);
@@ -1073,6 +1316,102 @@ const moveProjectSlot = (slotId: string, targetId: string): void => {
   selectedVariant.value.slots.splice(to, 0, slot!);
   bump();
 };
+const overlapsTimelineClip = (
+  start: number,
+  duration: number,
+  otherStart: number,
+  otherEnd: number,
+): boolean =>
+  start < otherEnd - 1 / TIMELINE_FPS && start + duration > otherStart + 1 / TIMELINE_FPS;
+const resolveTimelinePlacement = (
+  variant: EffectTemplateMixVariant,
+  slotId: string,
+  requestedStart: number,
+  requestedLane: number,
+  excludedSlotIds: ReadonlySet<string> = new Set(),
+): { start: number; lane: number } => {
+  const slot = variant.slots.find(({ id }) => id === slotId);
+  if (!slot) return { start: requestedStart, lane: requestedLane };
+  const ranges = currentTiming.value.slots
+    .filter(({ id }) => id !== slotId && !excludedSlotIds.has(id))
+    .map((range) => ({
+      ...range,
+      lane: variant.videoLanes?.[range.id] ?? 0,
+    }));
+  const requestedDuration = Math.max(0.1, slot.duration);
+  const isBlocked = (start: number, lane: number): boolean =>
+    ranges.some(
+      (range) =>
+        range.lane === lane &&
+        overlapsTimelineClip(start, requestedDuration, range.start, range.end),
+    );
+  if (!isBlocked(requestedStart, requestedLane)) {
+    return { start: requestedStart, lane: requestedLane };
+  }
+
+  // If the user drops onto an occupied clip, prefer an empty lane above it.
+  for (let lane = requestedLane - 1; lane >= 0; lane -= 1) {
+    if (!isBlocked(requestedStart, lane)) return { start: requestedStart, lane };
+  }
+
+  // If no upper lane is available, append after the blocking clips instead of
+  // covering them. This also walks through adjacent clips until a free gap is found.
+  let appendedStart = requestedStart;
+  const laneRanges = ranges
+    .filter(({ lane }) => lane === requestedLane)
+    .sort((left, right) => left.start - right.start);
+  let blocker = laneRanges.find((range) =>
+    overlapsTimelineClip(appendedStart, requestedDuration, range.start, range.end),
+  );
+  while (blocker) {
+    appendedStart = blocker.end;
+    blocker = laneRanges.find((range) =>
+      overlapsTimelineClip(appendedStart, requestedDuration, range.start, range.end),
+    );
+  }
+  return { start: appendedStart, lane: requestedLane };
+};
+type TimelineClipMove = { slotId: string; start: number; lane: number };
+
+const moveTimelineClips = (moves: TimelineClipMove[]): void => {
+  const variant = selectedVariant.value;
+  if (!variant || !moves.length) return;
+  const excludedSlotIds = new Set(moves.map(({ slotId }) => slotId));
+  const resolvedMoves = moves.flatMap(({ slotId, start, lane }) => {
+    const slot = variant.slots.find(({ id }) => id === slotId);
+    if (!slot) return [];
+    const nextStart = Math.max(0, Math.round(start * 30) / 30);
+    const nextLane = Math.max(0, Math.min(2, Math.round(lane)));
+    const resolved = resolveTimelinePlacement(
+      variant,
+      slotId,
+      nextStart,
+      nextLane,
+      excludedSlotIds,
+    );
+    const currentStart =
+      variant.timelineStarts?.[slotId] ??
+      effectTemplateMixTiming(variant.slots).slots.find(({ id }) => id === slotId)?.start ??
+      0;
+    const currentLane = variant.videoLanes?.[slotId] ?? 0;
+    const resolvedStart = Math.max(0, Math.round(resolved.start * 30) / 30);
+    const resolvedLane = Math.max(0, Math.min(2, Math.round(resolved.lane)));
+    return resolvedStart === currentStart && resolvedLane === currentLane
+      ? []
+      : [{ slotId, start: resolvedStart, lane: resolvedLane }];
+  });
+  if (!resolvedMoves.length) return;
+  rememberTimelineEdit();
+  variant.timelineStarts ??= {};
+  variant.videoLanes ??= {};
+  for (const move of resolvedMoves) {
+    variant.timelineStarts[move.slotId] = move.start;
+    variant.videoLanes[move.slotId] = move.lane;
+  }
+  bump();
+};
+const moveTimelineClip = (slotId: string, start: number, lane: number): void =>
+  moveTimelineClips([{ slotId, start, lane }]);
 const changeProjectDuration = (raw: string): void => {
   if (!selectedSlot.value || !selectedVariant.value) return;
   const duration = Math.round(Number(raw) * 10) / 10;
@@ -1090,12 +1429,60 @@ const changeProjectDuration = (raw: string): void => {
   selectedSlot.value.duration = duration;
   bump();
 };
+const changeTransitionForSlot = (slotId: string, transition: EffectTemplateMixTransition): void => {
+  const variant = selectedVariant.value;
+  const slot = variant?.slots.find(({ id }) => id === slotId);
+  if (!variant || !slot) return;
+  const index = variant.slots.findIndex(({ id }) => id === slot.id);
+  if (slot.transition === transition) return;
+  rememberTimelineEdit();
+  slot.transition = transition;
+  slot.transitionDuration =
+    transition === '硬切' ? 0 : effectTemplateMixTransitionDuration(slot, variant.slots[index - 1]);
+  bump();
+};
 const changeTransition = (transition: EffectTemplateMixTransition): void => {
   if (!selectedSlot.value) return;
-  if (selectedSlot.value.transition === transition) return;
+  changeTransitionForSlot(selectedSlot.value.id, transition);
+};
+const previewTransitionDuration = (slotId: string, duration: number): void => {
+  transitionPreviewDurations[slotId] = duration;
+};
+const changeTransitionDuration = (slotId: string, raw: string | number): void => {
+  delete transitionPreviewDurations[slotId];
+  const variant = selectedVariant.value;
+  const index = variant?.slots.findIndex(({ id }) => id === slotId) ?? -1;
+  const slot = index >= 0 ? variant?.slots[index] : undefined;
+  const previous = index > 0 ? variant?.slots[index - 1] : undefined;
+  if (!variant || !slot || !previous || slot.transition === '硬切') return;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return;
+  const max = Math.min(5, slot.duration, previous.duration);
+  const nextValue = Math.max(0.1, Math.min(max, Math.round(parsed * 10) / 10));
+  const currentValue = effectTemplateMixTransitionDuration(slot, previous);
+  if (nextValue === currentValue && slot.transitionDuration === nextValue) return;
   rememberTimelineEdit();
-  selectedSlot.value.transition = transition;
+  slot.transitionDuration = nextValue;
   bump();
+};
+const openTransitionPanel = (slotId: string): void => {
+  selectSlot(slotId);
+  activeTransitionSlotId.value = slotId;
+  transitionKeyword.value = '';
+  resourceTab.value = 'TRANSITION';
+};
+const selectResourceTab = (tab: 'AUDIO' | 'MATERIAL' | 'TEXT' | 'TRANSITION'): void => {
+  resourceTab.value = tab;
+  if (tab !== 'TRANSITION') {
+    activeTransitionSlotId.value = '';
+    clearTransitionPreviews();
+  }
+};
+const beginTransitionDrag = (event: DragEvent, transition: EffectTemplateMixTransition): void => {
+  if (!event.dataTransfer) return;
+  event.dataTransfer.effectAllowed = 'copy';
+  event.dataTransfer.setData('application/x-effect-transition', transition);
+  event.dataTransfer.setData('text/plain', transition);
 };
 const startAiFill = async (target: EffectTemplateMixVariant | null): Promise<void> => {
   if (!workspace.value || mutating.value || activeAiRun.value) return;
@@ -1220,10 +1607,64 @@ const quantizeTimelineTime = (raw: number): number =>
 const stopPlaybackClock = (): void => {
   if (playbackAnimationFrame !== undefined) cancelAnimationFrame(playbackAnimationFrame);
   playbackAnimationFrame = undefined;
+  activePlaybackSlotId = '';
 };
 const resetPlaybackClock = (): void => {
   playbackAnchorMilliseconds = performance.now();
   playbackAnchorSeconds = playhead.value;
+};
+const syncPlayingVideoFrame = (): void => {
+  const slot = previewSlot.value;
+  const range = previewRange.value;
+  const material = previewMaterial.value;
+  if (!slot || !range || !selectedVariant.value || !material) {
+    pauseTimelinePlayers();
+    displayedTimelineSlotId.value = '';
+    playerUnavailableSlotId.value = '';
+    activePlaybackSlotId = '';
+    return;
+  }
+  const video = timelinePlayers.get(slot.id);
+  if (!video) {
+    displayedTimelineSlotId.value = '';
+    return;
+  }
+  const visibleProjectTime = Math.min(
+    playhead.value,
+    Math.max(range.start, range.end - 1 / TIMELINE_FPS),
+  );
+  const sourceTime =
+    (selectedVariant.value.offsets[slot.id] ?? 0) + visibleProjectTime - range.start;
+  const switchedSlot = activePlaybackSlotId !== slot.id;
+  const needsSlotSeek = switchedSlot || !positionedTimelinePlayers.has(video);
+  if (switchedSlot) {
+    activePlaybackSlotId = slot.id;
+    displayedTimelineSlotId.value = '';
+    pauseTimelinePlayers(slot.id);
+    for (const [slotId, otherVideo] of timelinePlayers) {
+      otherVideo.preload = slotId === slot.id ? 'auto' : 'metadata';
+    }
+    video.preload = 'auto';
+  }
+  if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+    // Seek only when entering a clip. During playback the browser's native
+    // media clock owns frame delivery; correcting currentTime from our RAF on
+    // every drift would turn normal decode jitter into visible stutter.
+    if (needsSlotSeek) {
+      try {
+        video.currentTime = Math.max(0, sourceTime);
+        positionedTimelinePlayers.add(video);
+      } catch {
+        // Metadata can be replaced while a source is loading; the ready callback retries.
+      }
+    }
+  }
+  if (switchedSlot) primeUpcomingTimelinePlayer(range);
+  if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+    playerUnavailableSlotId.value = '';
+    displayedTimelineSlotId.value = slot.id;
+    if (video.paused) void video.play().catch(() => undefined);
+  }
 };
 const updatePlaybackFrame = (now: number): void => {
   if (!playing.value) {
@@ -1239,6 +1680,7 @@ const updatePlaybackFrame = (now: number): void => {
     return;
   }
   playhead.value = next;
+  syncPlayingVideoFrame();
   playbackAnimationFrame = requestAnimationFrame(updatePlaybackFrame);
 };
 const startPlaybackClock = (): void => {
@@ -1247,42 +1689,66 @@ const startPlaybackClock = (): void => {
   playbackAnimationFrame = requestAnimationFrame(updatePlaybackFrame);
 };
 const syncPlayerToPlayhead = async (resume = false): Promise<void> => {
-  await nextTick();
-  const slot = previewSlot.value;
-  const range = previewRange.value;
-  const material = previewMaterial.value;
-  if (!slot || !range || !selectedVariant.value || !material) {
-    pauseTimelinePlayers();
-    displayedTimelineSlotId.value = '';
-    playerUnavailableSlotId.value = '';
-    return;
-  }
-  const video = activeTimelinePlayer();
-  if (!video) return;
-  pauseTimelinePlayers(slot.id);
-  const sourceTime = (selectedVariant.value.offsets[slot.id] ?? 0) + playhead.value - range.start;
-  if (Number.isFinite(sourceTime) && Math.abs(video.currentTime - sourceTime) > 1 / TIMELINE_FPS) {
-    // Keep the last decoded frame visible while the replacement clip seeks.
-    video.currentTime = Math.max(0, sourceTime);
-  }
-  if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !video.seeking) {
-    playerUnavailableSlotId.value = '';
-    displayedTimelineSlotId.value = slot.id;
-  }
-  if (resume && video.paused) {
-    try {
-      await video.play();
-    } catch {
-      // The project clock remains authoritative. A temporarily unavailable source
-      // is rendered as black while the playhead continues through the timeline.
+  const requestId = ++seekSyncRequestId;
+  const apply = (): boolean => {
+    if (requestId !== seekSyncRequestId) return true;
+    const slot = previewSlot.value;
+    const range = previewRange.value;
+    const material = previewMaterial.value;
+    if (!slot || !range || !selectedVariant.value || !material) {
+      pauseTimelinePlayers();
+      displayedTimelineSlotId.value = '';
+      playerUnavailableSlotId.value = '';
+      return true;
     }
-  }
+    const video = activeTimelinePlayer();
+    // The slot may have just mounted after a variant switch. Ask the caller to
+    // retry after Vue flushes once, but never keep an old seek request alive.
+    if (!video) return false;
+    pauseTimelinePlayers(slot.id);
+    const visibleProjectTime = Math.min(
+      playhead.value,
+      Math.max(range.start, range.end - 1 / TIMELINE_FPS),
+    );
+    const sourceTime =
+      (selectedVariant.value.offsets[slot.id] ?? 0) + visibleProjectTime - range.start;
+    if (
+      Number.isFinite(sourceTime) &&
+      Math.abs(video.currentTime - sourceTime) > 1 / TIMELINE_FPS
+    ) {
+      try {
+        video.currentTime = Math.max(0, sourceTime);
+      } catch {
+        // Metadata may be replaced while a source is loading; the ready callback retries.
+      }
+    }
+    primeUpcomingTimelinePlayer(range);
+    if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !video.seeking) {
+      playerUnavailableSlotId.value = '';
+      displayedTimelineSlotId.value = slot.id;
+      transitionFrame.value = '';
+    }
+    if (resume && video.paused) {
+      void video.play().catch(() => undefined);
+    }
+    return true;
+  };
+  if (apply()) return;
+  await nextTick();
+  if (requestId === seekSyncRequestId) apply();
+};
+const scheduleSeekSync = (): void => {
+  if (pendingSeekSyncFrame !== undefined) return;
+  pendingSeekSyncFrame = requestAnimationFrame(() => {
+    pendingSeekSyncFrame = undefined;
+    void syncPlayerToPlayhead(playing.value);
+  });
 };
 const seek = (raw: number): void => {
   closeMaterialPreview();
   playhead.value = quantizeTimelineTime(raw);
   if (playing.value) resetPlaybackClock();
-  void syncPlayerToPlayhead(playing.value);
+  scheduleSeekSync();
 };
 const seekPreview = (raw: number): void => {
   const value = Math.max(0, Math.min(previewDuration.value, raw));
@@ -1314,9 +1780,11 @@ const onTimelinePlayerReady = (slotId: string): void => {
   detectMaterialAudio(materialForSlot(slotId), video);
   playerUnavailableSlotId.value = '';
   displayedTimelineSlotId.value = slotId;
-  // Readiness callbacks may arrive repeatedly during decoding. Re-seeking here to
-  // the advancing project clock would create a permanent seek/buffer loop.
-  if (playing.value && video.paused) void video.play().catch(() => undefined);
+  transitionFrame.value = '';
+  // Readiness callbacks may arrive repeatedly during decoding. The project RAF
+  // advances the timeline while the active media element owns frame delivery.
+  if (playing.value) syncPlayingVideoFrame();
+  else void syncPlayerToPlayhead(false);
 };
 const onTimelinePlayerError = (slotId: string): void => {
   if (previewSlot.value?.id !== slotId) return;
@@ -1504,10 +1972,18 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   stopPlaybackClock();
+  if (pendingSeekSyncFrame !== undefined) cancelAnimationFrame(pendingSeekSyncFrame);
+  pendingSeekSyncFrame = undefined;
+  seekSyncRequestId += 1;
   stopPaneResize();
   stopEditorHeightResize();
   pauseTimelinePlayers();
   timelinePlayers.clear();
+  removeMaterialPointerListeners();
+  materialPointerDrag.value = null;
+  materialDragGhost?.remove();
+  materialDragGhost = null;
+  clearMaterialPointerTarget();
   materialGridResizeObserver?.disconnect();
   if (materialGridResizeFrame !== undefined) cancelAnimationFrame(materialGridResizeFrame);
   window.removeEventListener('resize', updateWorkbenchMode);
@@ -1653,7 +2129,11 @@ defineExpose({ flushPendingEdits });
         </div>
       </section>
 
-      <section v-else-if="view === 'EDITOR' && workspace" class="panel workbench">
+      <section
+        v-else-if="view === 'EDITOR' && workspace"
+        class="panel workbench"
+        @dragstart.capture="onNativeImageDragStart"
+      >
         <header class="workbench-head">
           <div class="brand">
             <span>AI</span>
@@ -1718,33 +2198,30 @@ defineExpose({ flushPendingEdits });
             <nav class="resource-tabs">
               <button
                 :class="{ active: resourceTab === 'MATERIAL' }"
-                @click="resourceTab = 'MATERIAL'"
+                @click="selectResourceTab('MATERIAL')"
               >
-                <Sparkles :size="14" />素材</button
+                <Clapperboard :size="14" />素材</button
               ><button
                 :class="{ active: resourceTab === 'AUDIO' }"
                 :disabled="!selectedVariant"
-                @click="resourceTab = 'AUDIO'"
+                @click="selectResourceTab('AUDIO')"
               >
-                <Music2 :size="14" />音频</button
+                <AudioLines :size="14" />音频</button
               ><button
                 :class="{ active: resourceTab === 'TEXT' }"
                 :disabled="!selectedVariant"
-                @click="resourceTab = 'TEXT'"
+                @click="selectResourceTab('TEXT')"
               >
-                <Type :size="14" />字幕</button
+                <Captions :size="14" />字幕</button
               ><button
                 :class="{ active: resourceTab === 'TRANSITION' }"
                 :disabled="!selectedVariant"
-                @click="resourceTab = 'TRANSITION'"
+                @click="selectResourceTab('TRANSITION')"
               >
-                ◇ 转场
+                <Blend :size="14" />转场
               </button>
             </nav>
-            <template v-if="resourceTab === 'MATERIAL'"
-              ><header>
-                <strong>素材库</strong><small>{{ filteredMaterials.length }} 条可用素材</small>
-              </header>
+            <template v-if="resourceTab === 'MATERIAL'">
               <label class="search"
                 ><Search :size="13" /><input v-model="keyword" placeholder="搜索素材或标签"
               /></label>
@@ -1778,10 +2255,9 @@ defineExpose({ flushPendingEdits });
                     disabled: !selectedVariant,
                     dragging: draggingMaterialId === material.id,
                   }"
-                  :draggable="Boolean(selectedVariant)"
-                  @click="previewLibraryMaterial(material)"
-                  @dragend="endMaterialDrag"
-                  @dragstart="beginMaterialDrag($event, material)"
+                  draggable="false"
+                  @click="onMaterialCardClick(material)"
+                  @pointerdown="beginMaterialPointerDrag($event, material)"
                 >
                   <div class="thumb">
                     <EffectTemplateMixThumbnail
@@ -1855,17 +2331,81 @@ defineExpose({ flushPendingEdits });
                 <p v-if="!selectedVariant.captions.length">选择一个槽位后添加字幕。</p>
               </div></template
             >
-            <template v-else-if="resourceTab === 'TRANSITION' && selectedVariant"
-              ><header><strong>当前片段转场</strong></header>
-              <div class="transition-grid">
-                <button
-                  v-for="item in EFFECT_TEMPLATE_MIX_TRANSITIONS"
-                  :key="item"
-                  :class="{ active: item === selectedSlot?.transition }"
-                  @click="changeTransition(item)"
-                >
-                  ◇ {{ item }}
-                </button>
+            <template v-else-if="resourceTab === 'TRANSITION' && selectedVariant">
+              <div class="transition-browser">
+                <aside class="transition-categories" aria-label="转场分类">
+                  <button
+                    class="transition-category-title"
+                    type="button"
+                    :aria-expanded="transitionCategoriesExpanded"
+                    aria-controls="transition-category-list"
+                    aria-label="展开或收起转场效果分类"
+                    @click="transitionCategoriesExpanded = !transitionCategoriesExpanded"
+                  >
+                    <span
+                      class="transition-category-toggle"
+                      :class="{ expanded: transitionCategoriesExpanded }"
+                      aria-hidden="true"
+                    >
+                      ▸
+                    </span>
+                    转场效果
+                  </button>
+                  <div
+                    v-show="transitionCategoriesExpanded"
+                    id="transition-category-list"
+                    class="transition-category-list"
+                  >
+                    <button
+                      v-for="category in [
+                        '热门',
+                        '叠化',
+                        '幻灯片',
+                        '运镜',
+                        '最新',
+                        '模糊',
+                        '光效',
+                        '拍摄',
+                        '扭曲',
+                      ]"
+                      :key="category"
+                      class="transition-category"
+                      :class="{ active: category === '热门' }"
+                      :disabled="category !== '热门'"
+                      type="button"
+                      :title="category === '热门' ? '当前分类' : '更多转场分类即将支持'"
+                    >
+                      {{ category }}
+                    </button>
+                  </div>
+                </aside>
+                <div class="transition-library">
+                  <label class="transition-search"
+                    ><Search :size="13" /><input
+                      v-model="transitionKeyword"
+                      placeholder="搜索转场名称/元素"
+                  /></label>
+                  <h4>热门</h4>
+                  <div class="transition-card-grid">
+                    <button
+                      v-for="item in filteredTransitions"
+                      :key="item.id"
+                      class="transition-card"
+                      :class="{ active: item.id === selectedSlot?.transition }"
+                      type="button"
+                      draggable="true"
+                      @dragstart="beginTransitionDrag($event, item.id)"
+                      @click="changeTransition(item.id)"
+                    >
+                      <span class="transition-preview" :class="item.previewClass">
+                        <i v-if="item.id !== '硬切'">↔</i>
+                      </span>
+                      <strong>{{ item.label }}</strong>
+                      <small>{{ item.description }}</small>
+                    </button>
+                  </div>
+                  <p v-if="!filteredTransitions.length" class="resource-empty">没有匹配的转场</p>
+                </div>
               </div></template
             >
             <div v-else class="resource-empty">
@@ -1895,6 +2435,13 @@ defineExpose({ flushPendingEdits });
             </header>
             <div class="stage-space" :class="{ 'is-zoomed': previewZoom > 100 }">
               <div class="stage" :class="{ landscape: stageAspectRatio >= 1 }" :style="stageStyle">
+                <img
+                  v-if="transitionFrame"
+                  class="player-transition-frame"
+                  :src="transitionFrame"
+                  alt=""
+                  aria-hidden="true"
+                />
                 <video
                   v-if="auditionMaterial"
                   ref="auditionPlayer"
@@ -1902,6 +2449,7 @@ defineExpose({ flushPendingEdits });
                   :src="auditionMaterial.contentUrl"
                   playsinline
                   preload="auto"
+                  draggable="false"
                   @ended="onAuditionEnded"
                   @loadedmetadata="onAuditionTime"
                   @pause="auditionPlaying = false"
@@ -1918,7 +2466,8 @@ defineExpose({ flushPendingEdits });
                     }"
                     :src="materialForSlot(slot.id)?.contentUrl"
                     playsinline
-                    preload="auto"
+                    preload="metadata"
+                    draggable="false"
                     @canplay="onTimelinePlayerReady(slot.id)"
                     @seeked="onTimelinePlayerReady(slot.id)"
                     @loadedmetadata="onTimelinePlayerReady(slot.id)"
@@ -2080,9 +2629,10 @@ defineExpose({ flushPendingEdits });
           <div
             class="pane-resizer pane-resizer-right"
             role="separator"
-            aria-label="调整成片项目宽度"
+            aria-label="调整成片项目宽度与列数"
             aria-orientation="vertical"
             :aria-valuenow="rightPaneWidth"
+            title="左右拖动调整成片项目宽度与每行列数"
             @pointerdown="startPaneResize($event, 'RIGHT')"
           >
             <span />
@@ -2115,11 +2665,19 @@ defineExpose({ flushPendingEdits });
                 :class="{ active: variant.id === selectedVariant?.id }"
                 @click="selectVariant(variant.id)"
               >
-                <span class="cover">{{ String(index + 1).padStart(2, '0') }}</span>
+                <span class="cover">
+                  <EffectTemplateMixThumbnail
+                    v-if="coverMaterial(variant)"
+                    :source="coverMaterial(variant)!.contentUrl"
+                    :version="`${coverMaterial(variant)!.artifactRevision}:${coverMaterial(variant)!.contentHash}`"
+                    :alt="`${variant.name} 封面`"
+                  />
+                  <b v-else>{{ String(index + 1).padStart(2, '0') }}</b>
+                </span>
                 <div>
                   <b>{{ variant.name }}</b
                   ><small
-                    >{{ effectTemplateMixTiming(variant.slots).duration.toFixed(1) }}s ·
+                    >{{ variantDuration(variant).toFixed(1) }}s ·
                     {{
                       variant.conflictSlotIds.length
                         ? variant.conflictSlotIds.length + ' 个缺口'
@@ -2143,9 +2701,15 @@ defineExpose({ flushPendingEdits });
             </div>
           </aside>
         </div>
-        <div v-if="selectedSlot && selectedVariant" class="slot-settings">
-          <b>{{ EFFECT_TEMPLATE_MIX_ROLE_LABELS[selectedSlot.role] }}</b
-          ><label
+        <div
+          v-if="selectedSlot && selectedVariant"
+          class="slot-settings"
+          :class="{ 'is-transition-only': selectedTransitionInfo }"
+        >
+          <b v-if="!selectedTransitionInfo">{{
+            EFFECT_TEMPLATE_MIX_ROLE_LABELS[selectedSlot.role]
+          }}</b
+          ><label v-if="!selectedTransitionInfo"
             >时长
             <input
               :value="selectedSlot.duration"
@@ -2156,7 +2720,7 @@ defineExpose({ flushPendingEdits });
               @change="changeProjectDuration(($event.target as HTMLInputElement).value)"
             />
             秒</label
-          ><label v-if="selectedMaterial"
+          ><label v-if="!selectedTransitionInfo && selectedMaterial"
             >截取起点
             <input
               :value="selectedVariant.offsets[selectedSlot.id] ?? 0"
@@ -2167,13 +2731,13 @@ defineExpose({ flushPendingEdits });
               @change="changeTrimStart(($event.target as HTMLInputElement).value)"
             />
             秒</label
-          ><span v-if="selectedMaterial" class="trim-range"
+          ><span v-if="!selectedTransitionInfo && selectedMaterial" class="trim-range"
             >截取 {{ (selectedVariant.offsets[selectedSlot.id] ?? 0).toFixed(1) }}s —
             {{
               ((selectedVariant.offsets[selectedSlot.id] ?? 0) + selectedSlot.duration).toFixed(1)
             }}s</span
           ><span
-            v-if="selectedBindingMetadata?.source === 'AI'"
+            v-if="!selectedTransitionInfo && selectedBindingMetadata?.source === 'AI'"
             class="ai-binding-note"
             :title="
               selectedBindingMetadata.classificationReason || selectedBindingMetadata.trimReason
@@ -2181,25 +2745,46 @@ defineExpose({ flushPendingEdits });
             ><Bot :size="12" />AI 匹配
             {{ selectedBindingMetadata.matchScore?.toFixed(2) ?? '—' }}</span
           ><span
-            v-if="selectedVariant.bindingMetadata?.[selectedSlot.id]?.matchLevel === 'LOW_MATCH'"
+            v-if="
+              !selectedTransitionInfo &&
+              selectedVariant.bindingMetadata?.[selectedSlot.id]?.matchLevel === 'LOW_MATCH'
+            "
             class="low-match-note"
             :title="selectedVariant.bindingMetadata?.[selectedSlot.id]?.classificationReason"
             >低匹配补位</span
-          ><label
-            >转场
-            <select
-              :value="selectedSlot.transition"
-              @change="
-                changeTransition(
-                  ($event.target as HTMLSelectElement).value as EffectTemplateMixTransition,
+          ><span v-if="selectedTransitionInfo" class="transition-name"
+            >转场：{{ selectedTransitionInfo.name }}</span
+          ><label v-if="selectedTransitionInfo" class="transition-duration-control"
+            >转场时长
+            <input
+              :value="selectedTransitionInfo.duration"
+              type="range"
+              min=".1"
+              :max="selectedTransitionInfo.max"
+              step=".1"
+              @input="
+                changeTransitionDuration(
+                  selectedTransitionInfo.slotId,
+                  ($event.target as HTMLInputElement).value,
                 )
               "
-            >
-              <option v-for="item in EFFECT_TEMPLATE_MIX_TRANSITIONS" :key="item">
-                {{ item }}
-              </option>
-            </select></label
-          ><span>{{ pendingCount ? pendingCount + ' 个同模板工程待同步' : '模板工程已同步' }}</span>
+            /><input
+              :value="selectedTransitionInfo.duration.toFixed(1)"
+              type="number"
+              min=".1"
+              :max="selectedTransitionInfo.max"
+              step=".1"
+              @change="
+                changeTransitionDuration(
+                  selectedTransitionInfo.slotId,
+                  ($event.target as HTMLInputElement).value,
+                )
+              "
+            />
+            秒</label
+          ><span v-if="!selectedTransitionInfo">{{
+            pendingCount ? pendingCount + ' 个同模板工程待同步' : '模板工程已同步'
+          }}</span>
         </div>
         <div
           class="editor-horizontal-resizer"
@@ -2226,11 +2811,17 @@ defineExpose({ flushPendingEdits });
           :selected-slot-id="selectedSlot?.id ?? ''"
           :variant="selectedVariant"
           @reorder-slot="moveProjectSlot"
+          @move-clip="moveTimelineClip"
+          @move-clips="moveTimelineClips"
           @assign-material="assignDroppedMaterial"
+          @apply-transition="changeTransitionForSlot"
+          @open-transition="openTransitionPanel"
           @redo="redoTimelineEdit"
           @seek="seek"
           @select-slot="selectSlot"
           @trim-slot="changeTimelineTrimStart"
+          @preview-transition-duration="previewTransitionDuration"
+          @update-transition-duration="changeTransitionDuration"
           @undo="undoTimelineEdit"
         />
       </section>
@@ -2731,8 +3322,11 @@ button:disabled {
 }
 .workbench-main {
   display: grid;
-  grid-template-columns: 340px 7px minmax(420px, 1fr) 7px 270px;
+  grid-template-columns: 600px 7px minmax(420px, 1fr) 7px 270px;
   height: 480px;
+}
+.workbench-main > * {
+  min-height: 0;
 }
 .workbench-main.is-resizing,
 .workbench-main.is-resizing * {
@@ -2775,11 +3369,15 @@ button:disabled {
   background: #fff;
 }
 .resource-tabs {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-start;
+  overflow: hidden;
   border-bottom: 1px solid #e2e8f0;
 }
 .resource-tabs button {
+  flex: 0 1 86px;
+  min-width: 54px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2811,7 +3409,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 5px;
-  margin: 0 12px 8px;
+  margin: 10px 12px 8px;
   padding: 0 8px;
   border: 1px solid #dce5f0;
   border-radius: 7px;
@@ -2823,25 +3421,28 @@ button:disabled {
   outline: 0;
 }
 .material-role-filters {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   flex: none;
   gap: 5px;
   margin: 0 12px 8px;
-  overflow-x: auto;
-  scrollbar-width: thin;
 }
 .material-role-filters button {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  flex: none;
+  justify-content: center;
+  min-width: 0;
   gap: 4px;
   min-height: 25px;
-  padding: 0 8px;
+  padding: 0 4px;
   border: 1px solid #dce5f0;
-  border-radius: 999px;
+  border-radius: 5px;
   color: #52647e;
   background: #fff;
   font-size: 9px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   cursor: pointer;
 }
 .material-role-filters button.active {
@@ -2910,6 +3511,28 @@ button:disabled {
   height: 72px;
   overflow: hidden;
   background: #e8eef6;
+}
+.thumb :deep(img) {
+  /* Firefox otherwise starts a native image drag before the card handler can
+     install its tiny cross-browser drag image. */
+  pointer-events: none;
+}
+.material-drag-ghost {
+  position: fixed;
+  z-index: 1000;
+  width: max-content;
+  max-width: 180px;
+  padding: 6px 9px;
+  border: 1px solid #93c5fd;
+  border-radius: 6px;
+  color: #1d4ed8;
+  background: #eff6ff;
+  box-shadow: 0 8px 18px #1e3a8a24;
+  font-size: 11px;
+  font-weight: 700;
+  pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
 }
 .thumb svg {
   position: absolute;
@@ -3023,6 +3646,188 @@ button:disabled {
   background: #eff6ff;
   border-color: #93c5fd;
 }
+.transition-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 12px;
+  padding: 0 9px;
+  height: 32px;
+  border: 1px solid #dce5f0;
+  border-radius: 7px;
+  color: #7890ae;
+  background: #fff;
+}
+.transition-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  color: #304c70;
+  background: transparent;
+  font-size: 11px;
+}
+.transition-search input::placeholder {
+  color: #9aabc0;
+}
+.transition-browser {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  background: #f5f8fc;
+}
+.transition-categories {
+  width: 100px;
+  flex: none;
+  overflow: auto;
+  padding: 9px 7px 12px;
+  border-right: 1px solid #dce5f0;
+  background: #f5f8fc;
+}
+.transition-category-title,
+.transition-category {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 0;
+  color: #607895;
+  background: transparent;
+  text-align: left;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.transition-category-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 5px;
+  color: #2563eb;
+  font-weight: 700;
+  cursor: pointer;
+}
+.transition-category-title span {
+  color: #2563eb;
+  font-size: 10px;
+}
+.transition-category-toggle {
+  display: inline-flex;
+  width: 10px;
+  justify-content: center;
+  transition: transform 140ms ease;
+}
+.transition-category-toggle.expanded {
+  transform: rotate(90deg);
+}
+.transition-category-list {
+  display: flex;
+  flex-direction: column;
+}
+.transition-category {
+  margin-top: 2px;
+  cursor: pointer;
+}
+.transition-category:hover:not(:disabled),
+.transition-category.active {
+  color: #2563eb;
+  background: transparent;
+}
+.transition-category:disabled {
+  color: #7890ae;
+  cursor: default;
+}
+.transition-library {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 10px 12px 14px;
+  color: #294668;
+  background: #f8fafc;
+}
+.transition-library h4 {
+  margin: 0 0 9px;
+  color: #294668;
+  font-size: 12px;
+}
+.transition-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+.transition-card {
+  min-width: 0;
+  padding: 0 0 6px;
+  overflow: hidden;
+  border: 1px solid #dce5f0;
+  border-radius: 7px;
+  color: #4c6687;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+}
+.transition-card:hover {
+  border-color: #93b7ee;
+  background: #f8fbff;
+}
+.transition-card.active {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 1px #2563eb33;
+}
+.transition-preview {
+  display: grid;
+  place-items: center;
+  height: 70px;
+  margin-bottom: 5px;
+  overflow: hidden;
+  color: #fff;
+  font-size: 21px;
+  font-style: normal;
+}
+.transition-preview.is-dissolve {
+  background: linear-gradient(90deg, #657889, #ecf2f4 50%, #445565);
+}
+.transition-preview.is-push {
+  background: linear-gradient(120deg, #405a76 0 40%, #d8e7f2 40% 56%, #849ab0 56%);
+}
+.transition-preview.is-flash {
+  background: radial-gradient(circle, #fff 0 12%, #ffe8a8 30%, #4b5f77 76%);
+}
+.transition-preview.is-zoom {
+  background: radial-gradient(circle, #f1d6ba 0 14%, #6283a0 38%, #273747 78%);
+}
+.transition-preview.is-cut {
+  background: linear-gradient(90deg, #506072 0 48%, #16181d 48% 52%, #a0b2bf 52%);
+}
+.transition-card strong,
+.transition-card small {
+  display: block;
+  overflow: hidden;
+  padding: 0 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.transition-card strong {
+  color: #294668;
+  font-size: 11px;
+}
+.transition-card small {
+  margin-top: 2px;
+  color: #7890ae;
+  font-size: 9px;
+}
+.transition-duration-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.transition-duration-control input[type='range'] {
+  width: 90px;
+  accent-color: #2563eb;
+}
+.transition-duration-control input[type='number'] {
+  width: 52px;
+}
 .caption-list {
   display: grid;
   align-content: start;
@@ -3064,6 +3869,7 @@ button:disabled {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
+  min-height: 0;
   padding: 0;
   overflow: hidden;
   color: #334155;
@@ -3100,6 +3906,8 @@ button:disabled {
   place-items: center;
   width: auto;
   max-width: 100%;
+  min-width: 0;
+  min-height: 0;
   height: 100%;
   max-height: 100%;
   overflow: hidden;
@@ -3112,6 +3920,15 @@ button:disabled {
 .stage.landscape {
   width: 100%;
   height: auto;
+}
+.player-transition-frame {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
 }
 .stage video {
   position: absolute;
@@ -3454,6 +4271,11 @@ button:disabled {
 }
 .projects {
   min-width: 0;
+  min-height: 0;
+  align-self: stretch;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 .projects > header {
   display: flex;
@@ -3463,15 +4285,26 @@ button:disabled {
   border-bottom: 1px solid #e2e8f0;
 }
 .projects > div {
-  height: 346px;
+  min-height: 0;
+  flex: 1 1 auto;
+  padding: 8px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  align-content: start;
+  gap: 6px;
   overflow: auto;
 }
 .projects article {
   display: grid;
-  grid-template-columns: 38px 1fr auto;
+  grid-template-columns: 32px minmax(0, 1fr);
+  grid-template-rows: auto auto;
   align-items: center;
-  gap: 8px;
-  padding: 9px;
+  gap: 2px 6px;
+  min-width: 0;
+  min-height: 62px;
+  padding: 6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 7px;
   border-bottom: 1px solid #edf1f6;
   cursor: pointer;
 }
@@ -3481,15 +4314,26 @@ button:disabled {
 .cover {
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 50px;
+  width: 32px;
+  height: 42px;
+  grid-row: 1 / span 2;
   color: #fff;
   background: #334155;
   border-radius: 5px;
+  overflow: hidden;
+}
+.cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 .projects article div {
   display: grid;
   min-width: 0;
+}
+.projects article em {
+  grid-column: 2;
+  justify-self: start;
 }
 .projects article b {
   overflow: hidden;
@@ -3533,6 +4377,10 @@ button:disabled {
   border-top: 1px solid #e2e8f0;
   font-size: 11px;
 }
+.slot-settings.is-transition-only {
+  gap: 14px;
+  justify-content: flex-start;
+}
 .editor-horizontal-resizer {
   height: 10px;
   position: relative;
@@ -3570,9 +4418,17 @@ button:disabled {
 .slot-settings input {
   width: 65px;
 }
+.slot-settings.is-transition-only .transition-duration-control input[type='number'] {
+  width: 64px;
+}
 .slot-settings > span {
   margin-left: auto;
   color: #64748b;
+}
+.slot-settings > span.transition-name {
+  margin-left: 0;
+  color: #1e4f91;
+  font-weight: 700;
 }
 .ai-run-card {
   display: flex;
@@ -4120,12 +4976,14 @@ button:disabled {
   }
   .projects {
     grid-column: 1/3;
-    height: 180px;
+    height: max-content;
+    max-height: 180px;
   }
   .projects > div {
-    height: 130px;
+    height: auto;
+    max-height: 130px;
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 @media (max-width: 760px) {
@@ -4159,7 +5017,8 @@ button:disabled {
     min-height: 360px;
   }
   .projects > div {
-    display: block;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .slot-settings {
     flex-wrap: wrap;

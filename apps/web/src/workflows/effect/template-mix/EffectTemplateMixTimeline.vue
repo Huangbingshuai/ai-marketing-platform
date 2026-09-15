@@ -2,6 +2,7 @@
 import type {
   EffectTemplateMixMaterial,
   EffectTemplateMixSlot,
+  EffectTemplateMixTransition,
   EffectTemplateMixVariant,
 } from '@ai-marketing/contracts';
 import {
@@ -26,9 +27,10 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 
 import {
   EFFECT_TEMPLATE_MIX_ROLE_LABELS,
-  effectTemplateMixTiming,
+  EFFECT_TEMPLATE_MIX_TRANSITIONS,
+  effectTemplateMixTransitionDuration,
 } from './effect-template-mix-state';
-import EffectTemplateMixThumbnail from './EffectTemplateMixThumbnail.vue';
+import EffectTemplateMixFilmstrip from './EffectTemplateMixFilmstrip.vue';
 import EffectTemplateMixWaveform from './EffectTemplateMixWaveform.vue';
 
 const props = withDefaults(
@@ -48,18 +50,31 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   assignMaterial: [materialId: string, slotId: string];
+  applyTransition: [slotId: string, transition: EffectTemplateMixTransition];
+  moveClip: [slotId: string, start: number, lane: number];
+  moveClips: [moves: Array<{ slotId: string; start: number; lane: number }>];
+  openTransition: [slotId: string];
   redo: [];
   reorderSlot: [slotId: string, targetSlotId: string];
   seek: [seconds: number];
   selectSlot: [slotId: string];
   trimSlot: [slotId: string, trimStartSeconds: number];
+  previewTransitionDuration: [slotId: string, duration: number];
+  updateTransitionDuration: [slotId: string, duration: number];
   undo: [];
 }>();
 
-type VisibleTrack = 'BGM' | 'CAPTION' | 'VIDEO' | 'VOICE';
+type VisibleTrack = 'AUDIO' | 'CAPTION' | 'VIDEO';
 type ClipDragState = {
+  currentLane: number;
+  currentStart: number;
   currentClientX: number;
+  currentClientY: number;
   grabOffset: number;
+  initialLanes: Record<string, number>;
+  initialStarts: Record<string, number>;
+  selectedSlotIds: string[];
+  selectionModifier: boolean;
   slotId: string;
   startClientX: number;
   started: boolean;
@@ -82,8 +97,17 @@ type TimelineResizeState = {
   startClientX: number;
   startValue: number;
 };
+type TransitionDragState = {
+  currentDuration: number;
+  initialDuration: number;
+  moved: boolean;
+  side: 'LEFT' | 'RIGHT';
+  slotId: string;
+  startClientX: number;
+};
 
-const tracks: VisibleTrack[] = ['CAPTION', 'VIDEO', 'VOICE', 'BGM'];
+const trackOrder = ref<VisibleTrack[]>(['CAPTION', 'VIDEO']);
+const orderedTracks = computed<VisibleTrack[]>(() => [...trackOrder.value, 'AUDIO']);
 const viewport = ref<HTMLElement | null>(null);
 const canvas = ref<HTMLElement | null>(null);
 const videoTrack = ref<HTMLElement | null>(null);
@@ -95,28 +119,74 @@ const timelineResize = ref<TimelineResizeState | null>(null);
 const scrubbing = ref(false);
 const snapEnabled = ref(true);
 const clipDrag = ref<ClipDragState | null>(null);
+const transitionDrag = ref<TransitionDragState | null>(null);
+const suppressTransitionClick = ref(false);
+const transitionDropSlotId = ref('');
 const trimDrag = ref<TrimDragState | null>(null);
 const marquee = ref<MarqueeState | null>(null);
 const materialDropSlotId = ref('');
 const selectedClipIds = ref<string[]>([]);
+const trackHeaders = ref<HTMLElement | null>(null);
 const trackLocked = reactive<Record<VisibleTrack, boolean>>({
-  BGM: false,
+  AUDIO: false,
   CAPTION: false,
   VIDEO: false,
-  VOICE: false,
 });
 const trackVisible = reactive<Record<VisibleTrack, boolean>>({
-  BGM: true,
+  AUDIO: true,
   CAPTION: true,
   VIDEO: true,
-  VOICE: true,
 });
-const trackMuted = reactive<Record<'BGM' | 'VOICE', boolean>>({ BGM: false, VOICE: false });
+const trackMuted = reactive<Record<'AUDIO', boolean>>({ AUDIO: false });
 let resizeObserver: ResizeObserver | null = null;
 
-const timing = computed(() => effectTemplateMixTiming(props.variant?.slots ?? []));
 const materialById = computed(() => new Map(props.materials.map((item) => [item.id, item])));
-const timelineDuration = computed(() => Math.max(0.1, props.duration));
+const sequentialStarts = computed(() => {
+  const starts: Record<string, number> = {};
+  let cursor = 0;
+  for (const slot of props.variant?.slots ?? []) {
+    starts[slot.id] = cursor;
+    cursor += Math.max(0, slot.duration);
+  }
+  return starts;
+});
+const clipStart = (slotId: string): number =>
+  Math.max(0, props.variant?.timelineStarts?.[slotId] ?? sequentialStarts.value[slotId] ?? 0);
+const clipLane = (slotId: string): number =>
+  Math.max(0, Math.min(2, props.variant?.videoLanes?.[slotId] ?? 0));
+const videoLaneCount = computed(() =>
+  Math.max(
+    2,
+    Math.min(3, 1 + Math.max(0, ...(props.variant?.slots ?? []).map(({ id }) => clipLane(id)))),
+  ),
+);
+const layoutSlots = computed(() =>
+  (props.variant?.slots ?? []).map((slot) => {
+    const start = clipStart(slot.id);
+    return { id: slot.id, start, end: start + Math.max(0, slot.duration) };
+  }),
+);
+const draggedTimelineEnd = computed(() => {
+  const drag = clipDrag.value;
+  if (!drag?.started || drag.selectedSlotIds.length === 0) return 0;
+  const startDelta = drag.currentStart - (drag.initialStarts[drag.slotId] ?? drag.currentStart);
+  return Math.max(
+    0,
+    ...drag.selectedSlotIds.map((slotId) => {
+      const slot = props.variant?.slots.find((item) => item.id === slotId);
+      if (!slot) return 0;
+      return (drag.initialStarts[slotId] ?? clipStart(slotId)) + startDelta + slot.duration;
+    }),
+  );
+});
+const timelineDuration = computed(() =>
+  Math.max(
+    0.1,
+    props.duration,
+    draggedTimelineEnd.value,
+    ...layoutSlots.value.map(({ end }) => end),
+  ),
+);
 const canvasWidth = computed(() =>
   Math.max(viewportWidth.value, timelineDuration.value * pixelsPerSecond.value + 96),
 );
@@ -134,12 +204,13 @@ const majorTickSeconds = computed(() => {
 });
 const minorTickSeconds = computed(() => majorTickSeconds.value / 5);
 const majorTicks = computed(() => {
+  const duration = Math.max(0, timelineDuration.value);
+  const interval = majorTickSeconds.value;
   const ticks: number[] = [];
-  const end =
-    Math.ceil(timelineDuration.value / majorTickSeconds.value) * majorTickSeconds.value +
-    majorTickSeconds.value;
-  for (let second = 0; second <= end; second += majorTickSeconds.value)
+  for (let second = 0; second <= duration + 0.0001; second += interval)
     ticks.push(Math.round(second * 1000) / 1000);
+  const last = ticks.at(-1) ?? 0;
+  if (duration - last > 0.0001) ticks.push(Math.round(duration * 1000) / 1000);
   return ticks;
 });
 const marqueeStyle = computed(() => {
@@ -157,34 +228,95 @@ const marqueeStyle = computed(() => {
 const draggedSlot = computed(() =>
   props.variant?.slots.find(({ id }) => id === clipDrag.value?.slotId),
 );
+const draggingGroupDelta = computed(() => {
+  const drag = clipDrag.value;
+  if (!drag?.started) return null;
+  return {
+    lane: drag.currentLane - (drag.initialLanes[drag.slotId] ?? drag.currentLane),
+    start: drag.currentStart - (drag.initialStarts[drag.slotId] ?? drag.currentStart),
+  };
+});
 const dragGhostStyle = computed(() => {
   const drag = clipDrag.value;
-  const element = viewport.value;
   const slot = draggedSlot.value;
-  if (!drag?.started || !element || !slot) return null;
-  const bounds = element.getBoundingClientRect();
+  if (!drag?.started || !slot) return null;
   const width = slot.duration * pixelsPerSecond.value;
   const left = Math.max(
     0,
-    Math.min(
-      canvasWidth.value - width,
-      drag.currentClientX - bounds.left + element.scrollLeft - drag.grabOffset,
-    ),
+    Math.min(canvasWidth.value - width, drag.currentStart * pixelsPerSecond.value),
   );
-  return { left: `${left}px`, width: `${Math.max(24, width)}px` };
+  return {
+    left: `${left}px`,
+    top: `${7 + drag.currentLane * 70}px`,
+    width: `${Math.max(24, width)}px`,
+  };
 });
 const dropGuideLeft = computed(() => {
-  const target = timing.value.slots.find(({ id }) => id === clipDrag.value?.targetSlotId);
-  return target ? target.start * pixelsPerSecond.value : null;
+  const target = layoutSlots.value.find(({ id }) => id === clipDrag.value?.targetSlotId);
+  if (!target || !clipDrag.value?.started) return null;
+  const distance = Math.min(
+    Math.abs(clipDrag.value.currentStart - target.start),
+    Math.abs(clipDrag.value.currentStart - target.end),
+  );
+  return snapEnabled.value && distance <= 7 / pixelsPerSecond.value
+    ? target.start * pixelsPerSecond.value
+    : null;
 });
 
 const materialForSlot = (slotId: string): EffectTemplateMixMaterial | null => {
   const materialId = props.variant?.bindings[slotId];
   return materialId ? (materialById.value.get(materialId) ?? null) : null;
 };
+const setVideoTrackElement = (element: unknown): void => {
+  const candidates = Array.isArray(element) ? element : [element];
+  videoTrack.value =
+    candidates.find((candidate): candidate is HTMLElement => candidate instanceof HTMLElement) ??
+    null;
+};
 
 const rangeForSlot = (slotId: string): { start: number; end: number } | null =>
-  timing.value.slots.find((item) => item.id === slotId) ?? null;
+  layoutSlots.value.find((item) => item.id === slotId) ?? null;
+
+const transitionDurationFor = (slotId: string): number => {
+  const slots = props.variant?.slots ?? [];
+  const index = slots.findIndex(({ id }) => id === slotId);
+  const slot = index >= 0 ? slots[index] : null;
+  if (!slot || index === 0) return 0;
+  return effectTemplateMixTransitionDuration(slot, slots[index - 1]);
+};
+
+const transitionStyle = (slot: EffectTemplateMixSlot): Record<string, string> => {
+  const range = rangeForSlot(slot.id);
+  const activeDrag = transitionDrag.value?.slotId === slot.id ? transitionDrag.value : null;
+  const duration = activeDrag?.currentDuration ?? transitionDurationFor(slot.id);
+  const isHardCut = slot.transition === '硬切';
+  return {
+    left: `${(range?.start ?? 0) * pixelsPerSecond.value}px`,
+    top: `${7 + clipLane(slot.id) * 70}px`,
+    width: isHardCut ? '8px' : `${Math.max(32, duration * pixelsPerSecond.value)}px`,
+  };
+};
+
+const clipStyle = (slot: EffectTemplateMixSlot): Record<string, string> => {
+  const range = rangeForSlot(slot.id);
+  const drag = clipDrag.value;
+  const delta = draggingGroupDelta.value;
+  const isDraggedSelection = Boolean(delta) && Boolean(drag?.selectedSlotIds.includes(slot.id));
+  const start = isDraggedSelection
+    ? Math.max(0, (drag?.initialStarts[slot.id] ?? range?.start ?? 0) + (delta?.start ?? 0))
+    : (range?.start ?? 0);
+  const lane = isDraggedSelection
+    ? Math.max(
+        0,
+        Math.min(2, (drag?.initialLanes[slot.id] ?? clipLane(slot.id)) + (delta?.lane ?? 0)),
+      )
+    : clipLane(slot.id);
+  return {
+    left: `${start * pixelsPerSecond.value}px`,
+    top: `${7 + lane * 70}px`,
+    width: `${Math.max(24, slot.duration * pixelsPerSecond.value)}px`,
+  };
+};
 
 const formatRulerTime = (seconds: number): string => {
   const safe = Math.max(0, seconds);
@@ -214,23 +346,6 @@ const activeTrimOffset = (slotId: string): number =>
     ? trimDrag.value.currentOffset
     : (props.variant?.offsets[slotId] ?? 0);
 
-const thumbnailTimes = (slot: EffectTemplateMixSlot): number[] => {
-  const material = materialForSlot(slot.id);
-  if (!material) return [];
-  // Keep sample timestamps independent of zoom so mounted film frames never
-  // change keys or disappear while resizing the timeline.
-  const count = 8;
-  // A drag preview changes continuously; retain the committed strip until the
-  // final trim is saved so all eight frames do not flicker on every pointer move.
-  const sourceStart = props.variant?.offsets[slot.id] ?? 0;
-  return Array.from({ length: count }, (_, index) =>
-    Math.min(
-      Math.max(0, material.duration - 0.04),
-      sourceStart + ((index + 0.5) / count) * slot.duration,
-    ),
-  );
-};
-
 const waveformBarCount = (slot: EffectTemplateMixSlot): number =>
   Math.max(28, Math.min(240, Math.ceil((slot.duration * pixelsPerSecond.value) / 2)));
 
@@ -243,7 +358,7 @@ const snapTime = (seconds: number): number => {
   const targets = [
     0,
     timelineDuration.value,
-    ...timing.value.slots.flatMap(({ start, end }) => [start, end]),
+    ...layoutSlots.value.flatMap(({ start, end }) => [start, end]),
   ];
   return targets.reduce(
     (best, target) =>
@@ -268,12 +383,12 @@ const slotIdFromDragEvent = (event: DragEvent): string => {
     event.target instanceof Element ? event.target.closest<HTMLElement>('[data-slot-id]') : null;
   if (target?.dataset.slotId) return target.dataset.slotId;
   const element = viewport.value;
-  if (!element || !timing.value.slots.length) return '';
+  if (!element || !layoutSlots.value.length) return '';
   const bounds = element.getBoundingClientRect();
   const time = (event.clientX - bounds.left + element.scrollLeft) / pixelsPerSecond.value;
   return (
-    timing.value.slots.find(({ start, end }) => time >= start && time < end)?.id ??
-    timing.value.slots.at(-1)?.id ??
+    layoutSlots.value.find(({ start, end }) => time >= start && time < end)?.id ??
+    layoutSlots.value.at(-1)?.id ??
     ''
   );
 };
@@ -315,14 +430,74 @@ const onMaterialDrop = (event: DragEvent): void => {
   emit('assignMaterial', materialId, slotId);
 };
 
+const syncTrackScroll = (source: 'HEADERS' | 'VIEWPORT'): void => {
+  const sourceElement = source === 'HEADERS' ? trackHeaders.value : viewport.value;
+  const targetElement = source === 'HEADERS' ? viewport.value : trackHeaders.value;
+  if (!sourceElement || !targetElement) return;
+  if (Math.abs(targetElement.scrollTop - sourceElement.scrollTop) > 0.5) {
+    targetElement.scrollTop = sourceElement.scrollTop;
+  }
+};
+
+const startTransitionResize = (event: PointerEvent, slotId: string): void => {
+  if (event.button !== 0 || trackLocked.VIDEO) return;
+  const slots = props.variant?.slots ?? [];
+  const index = slots.findIndex(({ id }) => id === slotId);
+  const slot = index >= 0 ? slots[index] : null;
+  if (!slot || index === 0 || slot.transition === '硬切') return;
+  const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  const side = event.clientX <= bounds.left + bounds.width / 2 ? 'LEFT' : 'RIGHT';
+  event.preventDefault();
+  event.stopPropagation();
+  emit('openTransition', slotId);
+  const initialDuration = transitionDurationFor(slotId);
+  transitionDrag.value = {
+    currentDuration: initialDuration,
+    initialDuration,
+    moved: false,
+    side,
+    slotId,
+    startClientX: event.clientX,
+  };
+  addWindowPointerListeners();
+};
+
+const openTransition = (slotId: string): void => {
+  if (suppressTransitionClick.value) {
+    suppressTransitionClick.value = false;
+    return;
+  }
+  emit('openTransition', slotId);
+};
+const onTransitionDragOver = (event: DragEvent, slotId: string): void => {
+  if (trackLocked.VIDEO) return;
+  const types = event.dataTransfer?.types ?? [];
+  if (!types.includes('application/x-effect-transition')) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+  transitionDropSlotId.value = slotId;
+};
+const onTransitionDragLeave = (slotId: string): void => {
+  if (transitionDropSlotId.value === slotId) transitionDropSlotId.value = '';
+};
+const onTransitionDrop = (event: DragEvent, slotId: string): void => {
+  const transition = event.dataTransfer?.getData('application/x-effect-transition') ?? '';
+  transitionDropSlotId.value = '';
+  if (!EFFECT_TEMPLATE_MIX_TRANSITIONS.includes(transition as EffectTemplateMixTransition)) return;
+  event.preventDefault();
+  emit('applyTransition', slotId, transition as EffectTemplateMixTransition);
+};
+
 const addWindowPointerListeners = (): void => {
   window.addEventListener('pointermove', onWindowPointerMove);
   window.addEventListener('pointerup', onWindowPointerUp, { once: true });
+  window.addEventListener('pointercancel', onWindowPointerUp, { once: true });
 };
 
 const removeWindowPointerListeners = (): void => {
   window.removeEventListener('pointermove', onWindowPointerMove);
   window.removeEventListener('pointerup', onWindowPointerUp);
+  window.removeEventListener('pointercancel', onWindowPointerUp);
 };
 
 const onRulerPointerDown = (event: PointerEvent): void => {
@@ -361,22 +536,41 @@ const onClipPointerDown = (event: PointerEvent, slotId: string): void => {
   if (event.button !== 0 || trackLocked.VIDEO) return;
   event.preventDefault();
   event.stopPropagation();
+  timelineShell.value?.focus({ preventScroll: true });
   if (event.ctrlKey || event.metaKey) {
     const next = selectedClipIds.value.includes(slotId)
       ? selectedClipIds.value.filter((id) => id !== slotId)
       : [...selectedClipIds.value, slotId];
     setSelection(next);
-  } else if (!selectedClipIds.value.includes(slotId) || selectedClipIds.value.length > 1) {
+  } else if (!selectedClipIds.value.includes(slotId)) {
     setSelection([slotId]);
   }
   const element = viewport.value;
   const range = rangeForSlot(slotId);
   if (!element || !range) return;
   const bounds = element.getBoundingClientRect();
+  const selectedSlotIds = selectedClipIds.value.includes(slotId)
+    ? [...selectedClipIds.value]
+    : [slotId];
+  const initialStarts: Record<string, number> = {};
+  const initialLanes: Record<string, number> = {};
+  for (const selectedId of selectedSlotIds) {
+    const selectedRange = rangeForSlot(selectedId);
+    if (!selectedRange) continue;
+    initialStarts[selectedId] = selectedRange.start;
+    initialLanes[selectedId] = clipLane(selectedId);
+  }
   clipDrag.value = {
+    currentLane: clipLane(slotId),
+    currentStart: range.start,
     currentClientX: event.clientX,
+    currentClientY: event.clientY,
     grabOffset:
       event.clientX - bounds.left + element.scrollLeft - range.start * pixelsPerSecond.value,
+    initialLanes,
+    initialStarts,
+    selectedSlotIds,
+    selectionModifier: event.ctrlKey || event.metaKey,
     slotId,
     startClientX: event.clientX,
     started: false,
@@ -403,6 +597,7 @@ const beginTrim = (event: PointerEvent, slotId: string): void => {
 const onTrackPointerDown = (event: PointerEvent, track: VisibleTrack): void => {
   if (event.button !== 0 || event.target !== event.currentTarget || trackLocked[track]) return;
   event.preventDefault();
+  timelineShell.value?.focus({ preventScroll: true });
   setSelection([]);
   seekFromClientX(event.clientX);
   if (track === 'VIDEO') {
@@ -417,21 +612,49 @@ const onTrackPointerDown = (event: PointerEvent, track: VisibleTrack): void => {
   }
 };
 
-const updateDragTarget = (clientX: number): void => {
+const updateDragTarget = (clientX: number, clientY: number): void => {
   const drag = clipDrag.value;
   const element = viewport.value;
-  if (!drag || !element || !timing.value.slots.length) return;
+  if (!drag || !element || !layoutSlots.value.length) return;
   const bounds = element.getBoundingClientRect();
+  const rawStart = Math.max(
+    0,
+    (clientX - bounds.left + element.scrollLeft - drag.grabOffset) / pixelsPerSecond.value,
+  );
   const time = (clientX - bounds.left + element.scrollLeft) / pixelsPerSecond.value;
-  drag.targetSlotId = timing.value.slots.reduce((best, candidate) => {
+  drag.currentStart = rawStart;
+  drag.targetSlotId = layoutSlots.value.reduce((best, candidate) => {
     const bestCenter = (best.start + best.end) / 2;
     const candidateCenter = (candidate.start + candidate.end) / 2;
     return Math.abs(candidateCenter - time) < Math.abs(bestCenter - time) ? candidate : best;
-  }, timing.value.slots[0]!).id;
+  }, layoutSlots.value[0]!).id;
+  if (snapEnabled.value) {
+    const snapThreshold = 7 / pixelsPerSecond.value;
+    const draggedSelection = new Set(drag.selectedSlotIds);
+    const candidates = [
+      0,
+      timelineDuration.value,
+      ...layoutSlots.value
+        .filter(({ id }) => !draggedSelection.has(id))
+        .flatMap(({ start, end }) => [start, end]),
+    ];
+    const snapped = candidates.find((candidate) => Math.abs(candidate - rawStart) <= snapThreshold);
+    if (snapped !== undefined) drag.currentStart = snapped;
+  }
+  const videoBounds = videoTrack.value?.getBoundingClientRect();
+  if (videoBounds && clientYInVideoTrack(clientY, videoBounds)) {
+    drag.currentLane = Math.max(0, Math.min(2, Math.floor((clientY - videoBounds.top) / 70)));
+  }
+  // Keep the ghost under the pointer while dragging, even when it temporarily
+  // overlaps another clip. The parent resolves the final placement on pointerup,
+  // matching Jianying's forgiving drag interaction instead of fighting the cursor.
   const edge = 40;
   if (clientX < bounds.left + edge) element.scrollLeft -= 16;
   if (clientX > bounds.right - edge) element.scrollLeft += 16;
 };
+
+const clientYInVideoTrack = (clientY: number, bounds: DOMRect): boolean =>
+  clientY >= bounds.top && clientY <= bounds.bottom;
 
 const updateMarqueeSelection = (): void => {
   const box = marquee.value;
@@ -477,10 +700,26 @@ function onWindowPointerMove(event: PointerEvent): void {
     seekFromClientX(event.clientX);
     return;
   }
+  if (transitionDrag.value) {
+    const drag = transitionDrag.value;
+    const slots = props.variant?.slots ?? [];
+    const index = slots.findIndex(({ id }) => id === drag.slotId);
+    const slot = index >= 0 ? slots[index] : null;
+    if (!slot || index === 0) return;
+    const delta =
+      ((event.clientX - drag.startClientX) / pixelsPerSecond.value) *
+      (drag.side === 'LEFT' ? -1 : 1);
+    const maxDuration = Math.min(5, slot.duration, slots[index - 1]?.duration ?? slot.duration);
+    drag.currentDuration = Math.max(0.1, Math.min(maxDuration, drag.initialDuration + delta));
+    drag.moved = Math.abs(event.clientX - drag.startClientX) > 3;
+    emit('previewTransitionDuration', drag.slotId, drag.currentDuration);
+    return;
+  }
   if (clipDrag.value) {
     clipDrag.value.currentClientX = event.clientX;
     if (Math.abs(event.clientX - clipDrag.value.startClientX) > 4) clipDrag.value.started = true;
-    if (clipDrag.value.started) updateDragTarget(event.clientX);
+    clipDrag.value.currentClientY = event.clientY;
+    if (clipDrag.value.started) updateDragTarget(event.clientX, event.clientY);
     return;
   }
   if (trimDrag.value) {
@@ -510,12 +749,44 @@ function onWindowPointerMove(event: PointerEvent): void {
 }
 
 function onWindowPointerUp(): void {
-  if (clipDrag.value?.started && clipDrag.value.targetSlotId !== clipDrag.value.slotId)
-    emit('reorderSlot', clipDrag.value.slotId, clipDrag.value.targetSlotId);
+  const transition = transitionDrag.value;
+  if (transition?.moved) {
+    suppressTransitionClick.value = true;
+    window.setTimeout(() => {
+      suppressTransitionClick.value = false;
+    }, 120);
+    emit('updateTransitionDuration', transition.slotId, transition.currentDuration);
+  } else if (transition) {
+    openTransition(transition.slotId);
+  }
+  const drag = clipDrag.value;
+  if (drag?.started) {
+    const startDelta = drag.currentStart - (drag.initialStarts[drag.slotId] ?? drag.currentStart);
+    const laneDelta = drag.currentLane - (drag.initialLanes[drag.slotId] ?? drag.currentLane);
+    const moves = drag.selectedSlotIds
+      .filter((slotId) => drag.initialStarts[slotId] !== undefined)
+      .map((slotId) => ({
+        slotId,
+        start: (drag.initialStarts[slotId] ?? 0) + startDelta,
+        lane: (drag.initialLanes[slotId] ?? 0) + laneDelta,
+      }));
+    if (moves.length > 1) emit('moveClips', moves);
+    else if (moves[0]) emit('moveClip', moves[0].slotId, moves[0].start, moves[0].lane);
+    // A plain click on one item in a multi-selection collapses the selection;
+    // an actual drag keeps the whole group selected for the next operation.
+  } else if (
+    drag &&
+    !drag.selectionModifier &&
+    drag.selectedSlotIds.length > 1 &&
+    drag.selectedSlotIds.includes(drag.slotId)
+  ) {
+    setSelection([drag.slotId]);
+  }
   if (trimDrag.value) emit('trimSlot', trimDrag.value.slotId, trimDrag.value.currentOffset);
   if (marquee.value?.moved) emit('selectSlot', selectedClipIds.value.at(-1) ?? '');
   scrubbing.value = false;
   clipDrag.value = null;
+  transitionDrag.value = null;
   trimDrag.value = null;
   marquee.value = null;
   timelineResize.value = null;
@@ -547,8 +818,8 @@ const onWheel = (event: WheelEvent): void => {
     setZoom(pixelsPerSecond.value * factor, event.clientX);
     return;
   }
-  element.scrollLeft +=
-    Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+  if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) element.scrollTop += event.deltaY;
+  else element.scrollLeft += event.deltaX;
 };
 
 const fitTimeline = async (): Promise<void> => {
@@ -561,6 +832,13 @@ const fitTimeline = async (): Promise<void> => {
 
 const updateViewportWidth = (): void => {
   viewportWidth.value = viewport.value?.clientWidth ?? 0;
+};
+
+const onTimelineKeydown = (event: KeyboardEvent): void => {
+  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'a') return;
+  event.preventDefault();
+  event.stopPropagation();
+  setSelection(props.variant?.slots.map(({ id }) => id) ?? []);
 };
 
 watch(
@@ -597,11 +875,13 @@ onBeforeUnmount(() => {
   <section
     ref="timelineShell"
     class="mix-timeline-shell"
+    tabindex="0"
     :class="{
       'is-scrubbing': scrubbing,
       'is-resizing-track-header': timelineResize,
     }"
     :style="timelineShellStyle"
+    @keydown="onTimelineKeydown"
   >
     <header class="timeline-toolstrip">
       <div class="timeline-tools">
@@ -639,7 +919,7 @@ onBeforeUnmount(() => {
         </button>
         <span class="timeline-time">{{ formatTimecode(playhead) }}</span>
         <span class="timeline-hint"
-          >素材可直接拖入 · 点击标尺定位 · 拖动片段换位 · 拖边调整源截取</span
+          >素材可直接拖入 · 点击标尺定位 · 拖动片段换位 · 滚动查看上下轨道 · 拖边调整源截取</span
         >
       </div>
       <div class="zoom-controls" aria-label="时间轴缩放">
@@ -674,23 +954,20 @@ onBeforeUnmount(() => {
     </header>
 
     <div class="timeline-workarea">
-      <div class="track-headers">
+      <div ref="trackHeaders" class="track-headers" @scroll="syncTrackScroll('HEADERS')">
         <span class="ruler-corner" />
-        <template v-for="track in tracks" :key="track">
-          <div class="track-header" :class="[`track-${track.toLowerCase()}`]">
+        <template v-for="track in orderedTracks" :key="track">
+          <div
+            class="track-header"
+            :class="`track-${track.toLowerCase()}`"
+            :style="track === 'VIDEO' ? { height: `${videoLaneCount * 70 + 6}px` } : undefined"
+          >
             <div class="track-name">
               <Film v-if="track === 'VIDEO'" :size="14" />
               <Captions v-else-if="track === 'CAPTION'" :size="14" />
-              <Volume2 v-else-if="track === 'VOICE'" :size="14" />
-              <Music2 v-else :size="14" />
+              <Volume2 v-else :size="14" />
               <span>{{
-                track === 'VIDEO'
-                  ? '主视频'
-                  : track === 'CAPTION'
-                    ? '字幕'
-                    : track === 'VOICE'
-                      ? '口播'
-                      : 'BGM'
+                track === 'VIDEO' ? '主视频' : track === 'CAPTION' ? '字幕' : '音频'
               }}</span>
             </div>
             <div class="track-actions">
@@ -711,12 +988,12 @@ onBeforeUnmount(() => {
                 <EyeOff v-else :size="12" />
               </button>
               <button
-                v-if="track === 'VOICE' || track === 'BGM'"
+                v-if="track === 'AUDIO'"
                 type="button"
-                :title="trackMuted[track] ? '取消静音' : '静音轨道'"
-                @click="trackMuted[track] = !trackMuted[track]"
+                :title="trackMuted.AUDIO ? '取消静音' : '静音轨道'"
+                @click="trackMuted.AUDIO = !trackMuted.AUDIO"
               >
-                <VolumeX v-if="trackMuted[track]" :size="12" />
+                <VolumeX v-if="trackMuted.AUDIO" :size="12" />
                 <Volume2 v-else :size="12" />
               </button>
             </div>
@@ -739,7 +1016,12 @@ onBeforeUnmount(() => {
         <span />
       </div>
 
-      <div ref="viewport" class="timeline-viewport" @wheel="onWheel">
+      <div
+        ref="viewport"
+        class="timeline-viewport"
+        @scroll="syncTrackScroll('VIEWPORT')"
+        @wheel="onWheel"
+      >
         <div ref="canvas" class="timeline-canvas" :style="{ width: `${canvasWidth}px` }">
           <div
             class="time-ruler"
@@ -759,163 +1041,175 @@ onBeforeUnmount(() => {
             </span>
           </div>
 
-          <div
-            class="timeline-track caption-track"
-            :class="{ 'is-hidden': !trackVisible.CAPTION, 'is-locked': trackLocked.CAPTION }"
-            @pointerdown="onTrackPointerDown($event, 'CAPTION')"
-          >
+          <template v-for="track in trackOrder" :key="`canvas:${track}`">
             <div
-              v-for="caption in variant?.captions ?? []"
-              :key="caption.id"
-              class="caption-clip"
-              :style="{
-                left: `${caption.start * pixelsPerSecond}px`,
-                width: `${Math.max(14, (caption.end - caption.start) * pixelsPerSecond)}px`,
-              }"
+              v-if="track === 'CAPTION'"
+              class="timeline-track caption-track"
+              :class="{ 'is-hidden': !trackVisible.CAPTION, 'is-locked': trackLocked.CAPTION }"
+              @pointerdown="onTrackPointerDown($event, 'CAPTION')"
             >
-              {{ caption.text }}
-            </div>
-            <span v-if="!variant?.captions.length" class="track-empty-copy">未配置字幕</span>
-          </div>
-
-          <div
-            ref="videoTrack"
-            class="timeline-track video-track"
-            :class="{ 'is-hidden': !trackVisible.VIDEO, 'is-locked': trackLocked.VIDEO }"
-            @dragleave="onMaterialDragLeave"
-            @dragover="onMaterialDragOver"
-            @drop="onMaterialDrop"
-            @pointerdown="onTrackPointerDown($event, 'VIDEO')"
-          >
-            <template v-if="variant">
-              <article
-                v-for="slot in variant.slots"
-                :key="slot.id"
-                class="video-clip"
-                :class="{
-                  'is-selected': selectedClipIds.includes(slot.id),
-                  'is-dragging': clipDrag?.slotId === slot.id && clipDrag.started,
-                  'is-low': variant.bindingMetadata?.[slot.id]?.matchLevel === 'LOW_MATCH',
-                  'is-missing':
-                    !materialForSlot(slot.id) || variant.conflictSlotIds.includes(slot.id),
-                  'is-material-target': materialDropSlotId === slot.id,
-                }"
+              <div
+                v-for="caption in variant?.captions ?? []"
+                :key="caption.id"
+                class="caption-clip"
                 :style="{
-                  left: `${(rangeForSlot(slot.id)?.start ?? 0) * pixelsPerSecond}px`,
-                  width: `${Math.max(24, slot.duration * pixelsPerSecond)}px`,
+                  left: `${caption.start * pixelsPerSecond}px`,
+                  width: `${Math.max(14, (caption.end - caption.start) * pixelsPerSecond)}px`,
                 }"
-                :data-slot-id="slot.id"
-                @pointerdown="onClipPointerDown($event, slot.id)"
               >
-                <template v-if="materialForSlot(slot.id)">
-                  <div class="clip-filmstrip" aria-hidden="true">
-                    <EffectTemplateMixThumbnail
-                      v-for="time in thumbnailTimes(slot)"
-                      :key="`${slot.id}:${time}`"
+                {{ caption.text }}
+              </div>
+              <span v-if="!variant?.captions.length" class="track-empty-copy">未配置字幕</span>
+            </div>
+
+            <div
+              v-else
+              :ref="setVideoTrackElement"
+              class="timeline-track video-track"
+              :style="{ height: `${videoLaneCount * 70 + 6}px` }"
+              :class="{ 'is-hidden': !trackVisible.VIDEO, 'is-locked': trackLocked.VIDEO }"
+              @dragleave="onMaterialDragLeave"
+              @dragover="onMaterialDragOver"
+              @drop="onMaterialDrop"
+              @pointerdown="onTrackPointerDown($event, 'VIDEO')"
+            >
+              <template v-if="variant">
+                <article
+                  v-for="slot in variant.slots"
+                  :key="slot.id"
+                  class="video-clip"
+                  :class="{
+                    'is-selected': selectedClipIds.includes(slot.id),
+                    'is-dragging':
+                      clipDrag?.slotId === slot.id &&
+                      clipDrag.started &&
+                      clipDrag.selectedSlotIds.length === 1,
+                    'is-low': variant.bindingMetadata?.[slot.id]?.matchLevel === 'LOW_MATCH',
+                    'is-missing':
+                      !materialForSlot(slot.id) || variant.conflictSlotIds.includes(slot.id),
+                    'is-material-target': materialDropSlotId === slot.id,
+                  }"
+                  :style="{
+                    ...clipStyle(slot),
+                  }"
+                  :data-slot-id="slot.id"
+                  @pointerdown="onClipPointerDown($event, slot.id)"
+                >
+                  <template v-if="materialForSlot(slot.id)">
+                    <div class="clip-mini-preview" aria-hidden="true">
+                      <EffectTemplateMixFilmstrip
+                        :source="materialForSlot(slot.id)!.contentUrl"
+                        :source-duration="materialForSlot(slot.id)!.duration"
+                        :duration="slot.duration"
+                        :trim-start="activeTrimOffset(slot.id)"
+                        :version="`${materialForSlot(slot.id)!.artifactRevision}:${materialForSlot(slot.id)!.contentHash}`"
+                      />
+                    </div>
+                    <div class="clip-info">
+                      <b>{{ materialForSlot(slot.id)?.code }}</b>
+                      <span>{{ EFFECT_TEMPLATE_MIX_ROLE_LABELS[slot.role] }}</span>
+                      <em v-if="variant.bindingMetadata?.[slot.id]?.matchLevel === 'LOW_MATCH'"
+                        >低匹配</em
+                      >
+                    </div>
+                    <EffectTemplateMixWaveform
+                      :bar-count="waveformBarCount(slot)"
+                      :duration="slot.duration"
                       :source="materialForSlot(slot.id)!.contentUrl"
-                      :time="time"
-                      :version="`${materialForSlot(slot.id)!.artifactRevision}:${materialForSlot(slot.id)!.contentHash}`"
+                      :trim-start="activeTrimOffset(slot.id)"
                     />
-                  </div>
-                  <div class="clip-info">
-                    <b>{{ materialForSlot(slot.id)?.code }}</b>
-                    <span>{{ EFFECT_TEMPLATE_MIX_ROLE_LABELS[slot.role] }}</span>
-                    <em v-if="variant.bindingMetadata?.[slot.id]?.matchLevel === 'LOW_MATCH'"
-                      >低匹配</em
+                  </template>
+                  <div v-else class="missing-copy">
+                    <b>待补素材</b>
+                    <span
+                      >{{ EFFECT_TEMPLATE_MIX_ROLE_LABELS[slot.role] }} · {{ slot.duration }}s</span
                     >
                   </div>
-                  <EffectTemplateMixWaveform
-                    :bar-count="waveformBarCount(slot)"
-                    :duration="slot.duration"
-                    :source="materialForSlot(slot.id)!.contentUrl"
-                    :trim-start="activeTrimOffset(slot.id)"
+                  <button
+                    v-if="selectedClipIds.includes(slot.id) && materialForSlot(slot.id)"
+                    class="trim-handle trim-left"
+                    type="button"
+                    title="拖动调整源视频截取起点，槽位时长保持不变"
+                    aria-label="调整源视频截取起点"
+                    @pointerdown="beginTrim($event, slot.id)"
                   />
-                </template>
-                <div v-else class="missing-copy">
-                  <b>待补素材</b>
-                  <span
-                    >{{ EFFECT_TEMPLATE_MIX_ROLE_LABELS[slot.role] }} · {{ slot.duration }}s</span
-                  >
+                  <button
+                    v-if="selectedClipIds.includes(slot.id) && materialForSlot(slot.id)"
+                    class="trim-handle trim-right"
+                    type="button"
+                    title="拖动调整源视频截取起点，槽位时长保持不变"
+                    aria-label="调整源视频截取起点"
+                    @pointerdown="beginTrim($event, slot.id)"
+                  />
+                  <span v-if="trimDrag?.slotId === slot.id" class="trim-tooltip">
+                    源 {{ trimDrag.currentOffset.toFixed(2) }}s —
+                    {{ (trimDrag.currentOffset + slot.duration).toFixed(2) }}s
+                  </span>
+                </article>
+                <button
+                  v-for="slot in variant.slots.slice(1)"
+                  :key="`transition:${slot.id}`"
+                  class="transition-junction"
+                  :class="{
+                    'is-hard-cut': slot.transition === '硬切',
+                    'is-active': selectedSlotId === slot.id || transitionDrag?.slotId === slot.id,
+                    'is-transition-target': transitionDropSlotId === slot.id,
+                  }"
+                  :style="transitionStyle(slot)"
+                  type="button"
+                  :title="`转场：${slot.transition} · ${transitionDurationFor(slot.id).toFixed(1)} 秒 · 拖动左右边缘调整时长`"
+                  @pointerdown="startTransitionResize($event, slot.id)"
+                  @dragover="onTransitionDragOver($event, slot.id)"
+                  @dragleave="onTransitionDragLeave(slot.id)"
+                  @drop="onTransitionDrop($event, slot.id)"
+                  @click.stop="openTransition(slot.id)"
+                >
+                  <span aria-hidden="true">◀▶</span>
+                </button>
+                <div
+                  v-if="dragGhostStyle && draggedSlot && clipDrag?.selectedSlotIds.length === 1"
+                  class="drag-ghost"
+                  :style="dragGhostStyle"
+                >
+                  <b>{{ materialForSlot(draggedSlot.id)?.code ?? '待补素材' }}</b>
+                  <span>{{ EFFECT_TEMPLATE_MIX_ROLE_LABELS[draggedSlot.role] }}</span>
                 </div>
-                <button
-                  v-if="selectedClipIds.includes(slot.id) && materialForSlot(slot.id)"
-                  class="trim-handle trim-left"
-                  type="button"
-                  title="拖动调整源视频截取起点，槽位时长保持不变"
-                  aria-label="调整源视频截取起点"
-                  @pointerdown="beginTrim($event, slot.id)"
+                <span
+                  v-if="dropGuideLeft !== null && clipDrag?.started"
+                  class="snap-guide"
+                  :style="{ left: `${dropGuideLeft}px` }"
                 />
-                <button
-                  v-if="selectedClipIds.includes(slot.id) && materialForSlot(slot.id)"
-                  class="trim-handle trim-right"
-                  type="button"
-                  title="拖动调整源视频截取起点，槽位时长保持不变"
-                  aria-label="调整源视频截取起点"
-                  @pointerdown="beginTrim($event, slot.id)"
-                />
-                <span v-if="trimDrag?.slotId === slot.id" class="trim-tooltip">
-                  源 {{ trimDrag.currentOffset.toFixed(2) }}s —
-                  {{ (trimDrag.currentOffset + slot.duration).toFixed(2) }}s
-                </span>
-              </article>
-              <button
-                v-for="slot in variant.slots.slice(1)"
-                :key="`transition:${slot.id}`"
-                class="transition-junction"
-                :class="{ 'is-hard-cut': slot.transition === '硬切' }"
-                :style="{ left: `${(rangeForSlot(slot.id)?.start ?? 0) * pixelsPerSecond}px` }"
-                type="button"
-                :title="`转场：${slot.transition}`"
-                @pointerdown.stop
-                @click.stop="setSelection([slot.id])"
-              />
-              <div v-if="dragGhostStyle && draggedSlot" class="drag-ghost" :style="dragGhostStyle">
-                <b>{{ materialForSlot(draggedSlot.id)?.code ?? '待补素材' }}</b>
-                <span>{{ EFFECT_TEMPLATE_MIX_ROLE_LABELS[draggedSlot.role] }}</span>
+              </template>
+              <div v-else class="timeline-empty-state">
+                <Film :size="20" />
+                <b>等待 AI 智能填充</b>
+                <span>任务成功后，六段素材会按模板顺序自动上轨</span>
               </div>
-              <span
-                v-if="dropGuideLeft !== null && clipDrag?.started"
-                class="snap-guide"
-                :style="{ left: `${dropGuideLeft}px` }"
-              />
-            </template>
-            <div v-else class="timeline-empty-state">
-              <Film :size="20" />
-              <b>等待 AI 智能填充</b>
-              <span>任务成功后，六段素材会按模板顺序自动上轨</span>
             </div>
-          </div>
+          </template>
 
           <div
-            class="timeline-track voice-track"
-            :class="{ 'is-hidden': !trackVisible.VOICE, 'is-locked': trackLocked.VOICE }"
-            @pointerdown="onTrackPointerDown($event, 'VOICE')"
+            class="timeline-track audio-track"
+            :class="{ 'is-hidden': !trackVisible.AUDIO, 'is-locked': trackLocked.AUDIO }"
+            @pointerdown="onTrackPointerDown($event, 'AUDIO')"
           >
             <div
               v-if="variant?.voice"
-              class="audio-clip"
-              :class="{ 'is-muted': trackMuted.VOICE }"
+              class="audio-clip voice-clip"
+              :class="{ 'is-muted': trackMuted.AUDIO }"
               :style="{ width: `${timelineDuration * pixelsPerSecond}px` }"
             >
               <Volume2 :size="13" />{{ variant.voice.name }}
             </div>
-            <span v-else class="track-empty-copy">未配置口播</span>
-          </div>
-
-          <div
-            class="timeline-track bgm-track"
-            :class="{ 'is-hidden': !trackVisible.BGM, 'is-locked': trackLocked.BGM }"
-            @pointerdown="onTrackPointerDown($event, 'BGM')"
-          >
             <div
               v-if="variant?.bgm"
-              class="audio-clip"
-              :class="{ 'is-muted': trackMuted.BGM }"
+              class="audio-clip bgm-clip"
+              :class="{ 'is-muted': trackMuted.AUDIO }"
               :style="{ width: `${timelineDuration * pixelsPerSecond}px` }"
             >
               <Music2 :size="13" />{{ variant.bgm.name }}
             </div>
-            <span v-else class="track-empty-copy">未配置 BGM</span>
+            <span v-if="!variant?.voice && !variant?.bgm" class="track-empty-copy">未配置音频</span>
           </div>
 
           <div
@@ -1031,6 +1325,7 @@ onBeforeUnmount(() => {
 }
 .timeline-workarea {
   height: var(--timeline-height, 220px);
+  min-height: 220px;
   display: grid;
   grid-template-columns: var(--track-header-width, 120px) 7px minmax(0, 1fr);
   overflow: hidden;
@@ -1039,8 +1334,14 @@ onBeforeUnmount(() => {
 .track-headers {
   position: relative;
   z-index: 30;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: #f8fafd;
+  scrollbar-width: none;
+}
+.track-headers::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 .track-header-resizer {
   position: relative;
@@ -1072,8 +1373,12 @@ onBeforeUnmount(() => {
 }
 .ruler-corner {
   height: 30px;
+  position: sticky;
+  z-index: 20;
+  top: 0;
   display: block;
   border-bottom: 1px solid var(--timeline-border);
+  background: #f8fafd;
 }
 .track-header {
   box-sizing: border-box;
@@ -1085,7 +1390,14 @@ onBeforeUnmount(() => {
   color: #65758d;
   font-size: 11px;
 }
+.track-header.track-audio {
+  cursor: default;
+}
 .track-header.track-video {
+  height: 76px;
+  color: #263b59;
+}
+.track-header.track-audio {
   height: 76px;
   color: #263b59;
 }
@@ -1108,7 +1420,7 @@ onBeforeUnmount(() => {
 }
 .timeline-viewport {
   min-width: 0;
-  overflow: auto hidden;
+  overflow: auto;
   background: var(--timeline-bg);
   overscroll-behavior: contain;
   scrollbar-color: #b8c5d8 #edf2f8;
@@ -1116,6 +1428,7 @@ onBeforeUnmount(() => {
 }
 .timeline-viewport::-webkit-scrollbar {
   height: 8px;
+  width: 8px;
 }
 .timeline-viewport::-webkit-scrollbar-track {
   background: #edf2f8;
@@ -1125,13 +1438,15 @@ onBeforeUnmount(() => {
   background: #b8c5d8;
 }
 .timeline-canvas {
-  min-height: 100%;
+  min-height: 220px;
   position: relative;
 }
 .time-ruler {
   box-sizing: border-box;
   height: 30px;
-  position: relative;
+  position: sticky;
+  z-index: 20;
+  top: 0;
   border-bottom: 1px solid var(--timeline-border);
   cursor: ew-resize;
   background-image:
@@ -1156,6 +1471,7 @@ onBeforeUnmount(() => {
     auto 8px,
     auto 13px;
   background-repeat: repeat-x;
+  background-color: #fbfcfe;
 }
 .major-tick {
   position: absolute;
@@ -1174,6 +1490,10 @@ onBeforeUnmount(() => {
   background: #fbfcfe;
 }
 .timeline-track.video-track {
+  height: 76px;
+  background: #f7f9fc;
+}
+.timeline-track.audio-track {
   height: 76px;
   background: #f7f9fc;
 }
@@ -1202,12 +1522,28 @@ onBeforeUnmount(() => {
   overflow: visible;
   border: 1px solid #8fb7ee;
   border-radius: 3px;
-  background: #dbeafe;
+  background: #e8f1ff;
   cursor: grab;
   transition:
     border-color 100ms ease,
     box-shadow 100ms ease,
     opacity 100ms ease;
+}
+.video-track::before,
+.video-track::after {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  content: '';
+}
+.video-track::before {
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 69px,
+    #dce5f1 69px,
+    #dce5f1 70px
+  );
 }
 .video-clip:active {
   cursor: grabbing;
@@ -1240,31 +1576,37 @@ onBeforeUnmount(() => {
   background: #dbeafe;
   box-shadow: 0 0 0 4px #bfdbfeaa;
 }
-.clip-filmstrip {
-  height: 42px;
-  display: flex;
+.video-clip.is-material-pointer-target {
+  z-index: 12;
+  border-color: #2563eb;
+  background: #dbeafe;
+  box-shadow: 0 0 0 3px #bfdbfe88;
+}
+.clip-mini-preview {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  position: relative;
+  height: 21px;
   overflow: hidden;
   border-radius: 2px 2px 0 0;
-  background: #dce8f7;
-}
-.clip-filmstrip > * {
-  min-width: 0;
-  flex: 1 1 0;
+  background: #d7e5f8;
   pointer-events: none;
-  filter: saturate(0.94) brightness(0.97);
+  contain: paint;
+  clip-path: inset(0 round 2px 2px 0 0);
 }
 .clip-info {
-  height: 42px;
-  padding: 4px 6px;
+  height: 21px;
+  padding: 2px 7px 1px;
   position: absolute;
-  inset: 0 0 auto;
+  inset: 21px 0 auto;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 5px;
   overflow: hidden;
-  background: linear-gradient(180deg, rgba(29, 78, 155, 0.76), transparent 72%);
-  color: #fff;
-  text-shadow: 0 1px 2px #24456f;
+  background: rgba(232, 241, 255, 0.96);
+  color: #1e4f91;
   pointer-events: none;
 }
 .clip-info b,
@@ -1277,12 +1619,12 @@ onBeforeUnmount(() => {
   font-size: 10px;
 }
 .clip-info span {
-  color: #e8f2ff;
+  color: #52729f;
   font-size: 9px;
 }
 .clip-info em {
   margin-left: auto;
-  color: #ffd6b8;
+  color: #b45309;
   font-size: 8px;
   font-style: normal;
 }
@@ -1338,31 +1680,86 @@ onBeforeUnmount(() => {
   transform: translateX(-50%);
 }
 .transition-junction {
-  width: 16px;
-  height: 16px;
+  box-sizing: border-box;
+  min-width: 32px;
   position: absolute;
   z-index: 7;
-  top: 30px;
+  top: 7px;
+  height: 55px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 0;
-  border: 1px solid #8ba7cc;
+  border: 1px solid rgba(226, 230, 234, 0.68);
   border-radius: 3px;
-  background: #eef4fc;
-  color: transparent;
-  cursor: pointer;
-  transform: translateX(-50%) rotate(45deg);
+  background: rgba(123, 131, 138, 0.48);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 16px;
+  cursor: ew-resize;
+  transform: translateX(-50%);
+}
+.transition-junction::before,
+.transition-junction::after {
+  display: none;
+  width: 3px;
+  height: 22px;
+  position: absolute;
+  top: 16px;
+  border-radius: 2px;
+  background: #f8fafc;
+  content: '';
+  opacity: 0.95;
+}
+.transition-junction::before {
+  left: -2px;
+}
+.transition-junction::after {
+  right: -2px;
+}
+.transition-junction span {
+  display: inline-block;
+  letter-spacing: -3px;
+  pointer-events: none;
 }
 .transition-junction:hover {
   border-color: #2563eb;
-  background: #dbeafe;
+  background: rgba(104, 113, 120, 0.6);
+}
+.transition-junction.is-active {
+  border-color: rgba(248, 250, 252, 0.9);
+  background: rgba(123, 131, 138, 0.78);
+  box-shadow: 0 0 0 1px rgba(100, 116, 139, 0.42);
+  color: #fff;
+}
+.transition-junction.is-active::before,
+.transition-junction.is-active::after {
+  display: block;
+}
+.transition-junction.is-active:hover {
+  background: rgba(104, 113, 120, 0.86);
+}
+.transition-junction.is-transition-target {
+  border-color: #2563eb;
+  background: rgba(100, 124, 150, 0.68);
+  box-shadow: 0 0 0 3px #93c5fd88;
+  color: #fff;
+  cursor: copy;
 }
 .transition-junction.is-hard-cut {
   width: 8px;
-  height: 22px;
+  min-width: 8px;
+  height: 55px;
   border: 0;
   border-radius: 0;
   background: #9aabc2;
+  color: transparent;
+  cursor: pointer;
   opacity: 0.55;
   transform: translateX(-50%);
+}
+.transition-junction.is-hard-cut::before,
+.transition-junction.is-hard-cut::after {
+  display: none;
 }
 .drag-ghost {
   box-sizing: border-box;
@@ -1424,6 +1821,15 @@ onBeforeUnmount(() => {
   border: 1px solid #83c4a5;
   background: #e8f7ef;
   color: #27684a;
+}
+.audio-clip.voice-clip {
+  top: 7px;
+}
+.audio-clip.bgm-clip {
+  top: 41px;
+  border-color: #9bb5dd;
+  background: #eaf1ff;
+  color: #315890;
 }
 .audio-clip.is-muted {
   opacity: 0.42;
