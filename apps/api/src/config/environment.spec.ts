@@ -105,7 +105,7 @@ describe('validateEnvironment', () => {
       }),
     ).toThrow('EFFECT_SEGMENT_RENDER_WORKER_TOKEN');
 
-    expect(
+    expect(() =>
       validateEnvironment({
         ...validEnvironment,
         APP_ENV: 'production',
@@ -113,11 +113,23 @@ describe('validateEnvironment', () => {
         EFFECT_PROMPT_WORKER_TOKEN: 'production-prompt-worker-secret',
         EFFECT_SEGMENT_RENDER_WORKER_TOKEN: 'production-render-worker-secret',
       }),
+    ).toThrow('EFFECT_TEMPLATE_MIX_WORKER_TOKEN');
+
+    expect(
+      validateEnvironment({
+        ...validEnvironment,
+        APP_ENV: 'production',
+        EFFECT_EXTRACTION_WORKER_TOKEN: 'production-worker-secret',
+        EFFECT_PROMPT_WORKER_TOKEN: 'production-prompt-worker-secret',
+        EFFECT_SEGMENT_RENDER_WORKER_TOKEN: 'production-render-worker-secret',
+        EFFECT_TEMPLATE_MIX_WORKER_TOKEN: 'production-template-mix-worker-secret',
+      }),
     ).toMatchObject({
       APP_ENV: 'production',
       EFFECT_EXTRACTION_WORKER_TOKEN: 'production-worker-secret',
       EFFECT_PROMPT_WORKER_TOKEN: 'production-prompt-worker-secret',
       EFFECT_SEGMENT_RENDER_WORKER_TOKEN: 'production-render-worker-secret',
+      EFFECT_TEMPLATE_MIX_WORKER_TOKEN: 'production-template-mix-worker-secret',
     });
   });
 
@@ -126,6 +138,7 @@ describe('validateEnvironment', () => {
       EFFECT_EXTRACTION_WORKER_TOKEN: 'local-effect-extraction-worker-token',
       EFFECT_PROMPT_WORKER_TOKEN: 'local-effect-prompt-worker-token',
       EFFECT_SEGMENT_RENDER_WORKER_TOKEN: 'local-effect-segment-render-worker-token',
+      EFFECT_TEMPLATE_MIX_WORKER_TOKEN: 'local-effect-template-mix-worker-token',
     });
   });
 

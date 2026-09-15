@@ -138,6 +138,8 @@ export type WorkingArtifact = {
   sourceRunId: string | null;
   sourceArtifactId: string | null;
   revision: number;
+  /** Semantic hash of the confirmed working artifact payload and file identity. */
+  contentHash?: string;
   freshness: WorkingArtifactFreshness;
   availability: WorkingArtifactAvailability;
   dependencies: WorkingArtifactDependency[];

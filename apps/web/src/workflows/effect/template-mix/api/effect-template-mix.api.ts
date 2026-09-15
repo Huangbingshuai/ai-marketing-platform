@@ -1,6 +1,7 @@
 import type {
   ApiResponse,
   EffectTemplateMixDraft,
+  EffectTemplateMixAiRun,
   EffectTemplateMixTemplateEntry,
   EffectTemplateMixWorkspaceData,
   ValidateEffectTemplateMixData,
@@ -51,35 +52,48 @@ export const saveEffectTemplateMixDraft = (
     keepalive,
   });
 
-export const createEffectTemplateMixVariant = (
+export const createEffectTemplateMixAiRun = (
   projectId: string,
   workflowRunId: string,
   expectedRevision: number,
   templateId: string,
-): Promise<ApiResponse<EffectTemplateMixWorkspaceData>> =>
-  requestJson(basePath(projectId) + '/templates/' + encodeURIComponent(templateId) + '/variants', {
-    method: 'POST',
-    operation: '创建混剪工程',
-    body: { workflowRunId, expectedRevision },
-  });
-
-export const refillEffectTemplateMixVariant = (
-  projectId: string,
-  workflowRunId: string,
-  expectedRevision: number,
-  templateId: string,
-  variantId: string,
-): Promise<ApiResponse<EffectTemplateMixWorkspaceData>> =>
+  targetVariantId?: string,
+): Promise<ApiResponse<EffectTemplateMixAiRun>> =>
   requestJson(
-    basePath(projectId) +
-      '/templates/' +
-      encodeURIComponent(templateId) +
-      '/variants/' +
-      encodeURIComponent(variantId) +
-      '/refill',
+    basePath(projectId) + '/templates/' + encodeURIComponent(templateId) + '/ai-fill-runs',
     {
       method: 'POST',
-      operation: '重新智能填充',
+      operation: targetVariantId ? '重新智能填充' : 'AI 智能填充',
+      body: {
+        workflowRunId,
+        expectedRevision,
+        idempotencyKey: crypto.randomUUID(),
+        ...(targetVariantId ? { targetVariantId } : {}),
+      },
+    },
+  );
+
+export const getEffectTemplateMixAiRun = (
+  projectId: string,
+  runId: string,
+  signal?: AbortSignal,
+): Promise<ApiResponse<EffectTemplateMixAiRun>> =>
+  requestJson(basePath(projectId) + '/ai-fill-runs/' + encodeURIComponent(runId), {
+    operation: '读取智能填充进度',
+    signal,
+  });
+
+export const composeEffectTemplateMixVariants = (
+  projectId: string,
+  workflowRunId: string,
+  expectedRevision: number,
+  templateId: string,
+): Promise<ApiResponse<EffectTemplateMixWorkspaceData>> =>
+  requestJson(
+    basePath(projectId) + '/templates/' + encodeURIComponent(templateId) + '/algorithm-variants',
+    {
+      method: 'POST',
+      operation: '算法批量组合成片工程',
       body: { workflowRunId, expectedRevision },
     },
   );

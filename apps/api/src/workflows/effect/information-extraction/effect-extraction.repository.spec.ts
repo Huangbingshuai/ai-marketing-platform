@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { PrismaService } from '../../../database/prisma.service';
 import { EffectExtractionRepository } from './effect-extraction.repository';
+import { extractionSourceFingerprint } from './effect-extraction.validation';
 
 const runRecord = (overrides: Record<string, unknown> = {}) => ({
   id: '00000000-0000-4000-8000-000000000101',
@@ -142,6 +143,126 @@ describe('EffectExtractionRepository isolation and idempotency', () => {
         'click-1',
       ),
     ).resolves.toEqual({ kind: 'KEY_CONFLICT' });
+  });
+
+  it('does not carry a whole selling-point override into a changed source package', async () => {
+    const projectId = '00000000-0000-4000-8000-000000000201';
+    const draftId = '00000000-0000-4000-8000-000000000301';
+    const productId = '00000000-0000-4000-8000-000000000401';
+    const dependencySnapshot = {
+      sourcePackageRevision: 4,
+      executionInputHash: '0e9561cfb83d50990a103b3896fe249a11fe27fa28985448187f93ec12116d72',
+    };
+    const create = vi.fn().mockImplementation(({ data }) =>
+      Promise.resolve(
+        runRecord({
+          ...data,
+          inputSnapshot: data.inputSnapshot,
+          sourceFingerprint: data.sourceFingerprint,
+        }),
+      ),
+    );
+    const transaction = {
+      effectExtractionRun: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        findFirst: vi.fn().mockResolvedValue(null),
+        create,
+      },
+      $queryRaw: vi.fn().mockResolvedValue([{ id: productId }]),
+      effectImportDraft: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: draftId,
+          projectId,
+          revision: 3,
+          validatedRevision: 3,
+          status: 'COMPLETED',
+          mode: 'SINGLE',
+          globalConfig: {
+            aspectRatio: '9:16',
+            durationSeconds: 15,
+            resolution: '1080P',
+            frameRate: 30,
+            subtitleStrategy: '跟随口播',
+            voiceoverStrategy: 'AI 女声',
+            bgmStrategy: '自动匹配',
+            styleTone: '清爽明亮',
+            deliveryChannel: '抖音',
+            disabledElements: [],
+          },
+          products: [
+            {
+              id: productId,
+              name: '',
+              category: '',
+              sku: '',
+              commerceUrl: null,
+              configOverride: {},
+              materials: [],
+            },
+          ],
+        }),
+      },
+      effectImportWorkspace: {
+        findUnique: vi.fn().mockResolvedValue({
+          workflowRunId: '00000000-0000-4000-8000-000000000501',
+        }),
+      },
+      workingArtifact: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: '00000000-0000-4000-8000-000000000601',
+            nodeId: 'SOURCE_IMPORT',
+            artifactKey: `source-package:${productId}`,
+            revision: dependencySnapshot.sourcePackageRevision,
+            freshness: 'CURRENT',
+            availability: 'AVAILABLE',
+          },
+        ]),
+      },
+      workflowNodeState: { findUnique: vi.fn().mockResolvedValue(null) },
+      effectExtractionResult: {
+        findFirst: vi.fn().mockResolvedValue({
+          sourceFingerprint: extractionSourceFingerprint({
+            sourceRevision: 2,
+            dependencySnapshot: { ...dependencySnapshot, sourcePackageRevision: 3 },
+          }),
+          generatedResult: {
+            productCategory: '食品',
+            productName: '旧名称',
+            coreSpecification: '旧规格',
+            priceRange: '旧价格',
+            visualFeatures: '旧外观',
+            sellingPoints: ['旧生成卖点'],
+          },
+          draftResult: {
+            productCategory: '食品',
+            productName: '人工名称',
+            coreSpecification: '旧规格',
+            priceRange: '旧价格',
+            visualFeatures: '旧外观',
+            sellingPoints: ['旧人工卖点'],
+          },
+          manualOverrides: {
+            productName: '人工名称',
+            sellingPoints: ['旧人工卖点'],
+          },
+        }),
+      },
+      effectExtractionBranchOutput: { createMany: vi.fn().mockResolvedValue({ count: 6 }) },
+      jobOutbox: { create: vi.fn().mockResolvedValue({ id: 'outbox-a' }) },
+    };
+    const repository = new EffectExtractionRepository({
+      $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+    } as unknown as PrismaService);
+
+    await expect(
+      repository.startRun(projectId, draftId, productId, 3, 'changed-source'),
+    ).resolves.toMatchObject({
+      kind: 'CREATED',
+    });
+    const inputSnapshot = create.mock.calls[0]?.[0].data.inputSnapshot;
+    expect(inputSnapshot.manualOverrides).toEqual({ productName: '人工名称' });
+    expect(inputSnapshot.dependencySnapshot).toEqual(dependencySnapshot);
   });
 
   it('requires the current project-scoped lease when serving source material', async () => {

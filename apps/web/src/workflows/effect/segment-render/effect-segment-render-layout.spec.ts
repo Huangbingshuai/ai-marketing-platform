@@ -235,7 +235,11 @@ describe('effect segment render material gallery layout', () => {
     expect(pageSource).toContain('真实 Seedance 任务');
     expect(pageSource).toContain('pollTimer = setTimeout');
     expect(pageSource).not.toContain('setInterval(');
-    expect(pageSource).toContain("'VIDEO',\n    output.version");
+    expect(pageSource).toContain('getEffectSegmentRenderTaskContent(');
+    expect(pageSource).toContain('.then((response) => response.blob())');
+    expect(pageSource).toContain('previewController?.abort()');
+    expect(pageSource).toContain("loadPreviewVideo(task, variant, 'preview')");
+    expect(pageSource).toContain("loadPreviewVideo(task, 'ACTIVE', 'repair')");
   });
 
   it('matches the immediate preview frame to the configured render ratio', () => {

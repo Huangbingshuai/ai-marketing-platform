@@ -4,6 +4,7 @@ import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Put, Query } from '@
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import {
   ApplyEffectTemplateMixVariantDto,
+  CreateEffectTemplateMixAiRunDto,
   EffectTemplateMixRevisionDto,
   EffectTemplateMixWorkspaceQueryDto,
   SaveEffectTemplateMixDraftDto,
@@ -44,6 +45,44 @@ export class EffectTemplateMixController {
       templateId,
       body.expectedRevision,
     );
+  }
+
+  @Post('templates/:templateId/ai-fill-runs')
+  createAiRun(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('templateId', new ParseUUIDPipe({ version: '4' })) templateId: string,
+    @Body() body: CreateEffectTemplateMixAiRunDto,
+  ) {
+    return this.service.createAiRun(
+      projectId,
+      body.workflowRunId,
+      templateId,
+      body.expectedRevision,
+      body.idempotencyKey,
+      body.targetVariantId,
+    );
+  }
+
+  @Post('templates/:templateId/algorithm-variants')
+  composeVariants(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('templateId', new ParseUUIDPipe({ version: '4' })) templateId: string,
+    @Body() body: EffectTemplateMixRevisionDto,
+  ) {
+    return this.service.composeVariants(
+      projectId,
+      body.workflowRunId,
+      templateId,
+      body.expectedRevision,
+    );
+  }
+
+  @Get('ai-fill-runs/:runId')
+  aiRun(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string,
+  ) {
+    return this.service.aiRun(projectId, runId);
   }
 
   @Post('templates/:templateId/variants/:variantId/refill')

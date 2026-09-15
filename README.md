@@ -2,11 +2,11 @@
 
 公司内部使用的 AI 营销视频素材生产平台。系统以项目为隔离边界，统一管理产品资料、营销洞察、Prompt、生成任务、工作副本和归档资产。
 
-当前优先建设效果类黄金链路，已完成公共项目底座、资料包导入、AI 信息提炼和素材片段 Prompt 生成；视频渲染、模板混剪和成片导出仍按工作流顺序继续开发。
+当前优先建设效果类黄金链路：资料导入、AI 信息提炼和片段级 Prompt 生成已落地；视频渲染具备真实异步任务及返修后端，模板混剪具备正式工作台、异步智能填充与草稿/提交边界，成片输出仍待开发。
 
 > 文档状态：与当前工作区实现同步
 >
-> 最后更新：2026-09-08
+> 最后更新：2026-09-15
 
 ## 当前进度
 
@@ -16,21 +16,21 @@
       ├─ 01 资料包导入        已完成
       ├─ 02 AI 信息提炼       已完成
       ├─ 03 Prompt            已完成
-      ├─ 04 渲染              待开发
-      ├─ 05 混剪              待开发
+      ├─ 04 渲染              开发中
+      ├─ 05 混剪              开发中
       └─ 06 导出              待开发
 ```
 
 当前六个业务节点的真实实现边界：
 
-| 节点           | 状态   | 当前权威产物与提交边界                                                                                                  |
-| -------------- | ------ | ----------------------------------------------------------------------------------------------------------------------- |
-| 01 资料包导入  | 已完成 | 完成校验后提交每个产品的 `source-package:{productId}`，只维护商品资料、图片、文档和电商链接。                           |
-| 02 AI 信息提炼 | 已完成 | 生成“产品基础 + 统一卖点”信息卡；完成校验后提交 `marketing-insight:{productId}`。                                       |
-| 03 Prompt 生成 | 已完成 | 维护数量、时长、视觉风格基调、渠道和禁用元素，生成连贯六维素材 Prompt 批次；完成校验后提交 `prompt-batch:{productId}`。 |
-| 04 视频渲染    | 开发中 | 独立维护画幅、分辨率和 Seedance 能力，读取已提交 Prompt 并编译不可变请求快照；完整异步渲染仍在完善。                    |
-| 05 模板混剪    | 待开发 | 尚未实现素材池智能填充、成片工程和时间轴精修。                                                                          |
-| 06 成片输出    | 待开发 | 尚未实现最终合成、质量管理和批量导出。                                                                                  |
+| 节点           | 状态   | 当前权威产物与提交边界                                                                                                     |
+| -------------- | ------ | -------------------------------------------------------------------------------------------------------------------------- |
+| 01 资料包导入  | 已完成 | 完成校验后提交每个产品的 `source-package:{productId}`，只维护商品资料、图片、文档和电商链接。                              |
+| 02 AI 信息提炼 | 已完成 | 生成“产品基础 + 统一卖点”信息卡；完成校验后提交 `marketing-insight:{productId}`。                                          |
+| 03 Prompt 生成 | 已完成 | 维护数量、时长、视觉风格基调、渠道和禁用元素，生成连贯六维素材 Prompt 批次；完成校验后提交 `prompt-batch:{productId}`。    |
+| 04 视频渲染    | 开发中 | 独立维护画幅、分辨率和 Seedance 能力；已具备真实异步任务、片段版本和整段参考视频返修后端，素材工作区仍需完全接入真实批次。 |
+| 05 模板混剪    | 开发中 | 读取同 Run 已确认素材池；模板配置、正式精修工作台、异步 Prompt 归槽/智能填充、时间轴草稿及人工校验提交已接入。             |
+| 06 成片输出    | 待开发 | 尚未实现最终合成、质量管理和批量导出。                                                                                     |
 
 已经落地的核心能力：
 
@@ -39,6 +39,8 @@
 - 效果类单产品/批量资料包导入、图片与文档上传、revision 并发控制和刷新恢复。
 - RabbitMQ Outbox 可靠投递、Redis 进度缓存、任务租约和重复消息恢复。
 - Python 3.12 + LangGraph AI 提炼 Worker。
+- Seedance 素材片段异步渲染、租约恢复与候选返修；渲染前端仍有 Mock 工作区边界，不代表整个渲染节点已经验收完成。
+- 模板混剪独立 Worker：按原始 Prompt 对六槽位评分、唯一素材匹配、视频抽帧和 AI 截取起点；正式时间轴工作台支持人工精修，智能填充只写草稿。
 - 独立 Prompt 生成 Worker：可信事实与视觉策略、卖点素材任务、连贯六维与镜头生成、独立质量评估与多用途分类、精确数量择优和一次定向补充。
 - Prompt 批次严格匹配用户设置的总数量；钩子、产品展示、效果、结尾转化四类是生成后的推荐/兼容用途标签，不是生成配额或独立生产线。
 - Prompt 生成只维护一套八阶段工作流，不再通过代码版本或图版本选择不同执行路径。
@@ -52,11 +54,15 @@
 
 ### 当前验证基线
 
+2026-09-15：本次提交前回归 Contracts 26 项、API 324 项、Web 221 项、模板混剪 Worker 4 项；信息提炼 Worker 104 项通过、6 项跳过，系统临时目录拒绝访问的 1 项在受控目录复验通过。API/Web 类型检查与生产构建、模板混剪 Worker 和信息提炼 Worker mypy、仓库 ESLint 通过。全仓 Prettier 检查仍包含既有文档与本地缓存的格式告警；本次新增文档及 lint 修复文件通过单独格式检查。这些结果不等同于模板混剪真实付费端到端验收。
+
+2026-09-14：紫苏梅子酱项目在正式浏览器执行 100 条 × 15 秒真实 Prompt 批次，20 分 32 秒完成，首轮 100 条加 8 条补充候选，最终 100/100、语义重复度 14%、质量结论通过；页面刷新确认结果与草稿恢复，未完成校验或视频渲染。详见 [Prompt 分片提速方案](docs/workflows/effect/plans/效果类Prompt-分片流水与画面修正提速方案.md)。该批次仍有画面可执行性与镜头动作软提醒，不能据此宣称视频画面无故障。
+
 2026-09-10：AI 信息提炼已收敛为“产品基础 + 统一卖点”信息卡。历史营销字段在 API 读取边界确定性折叠，不回写旧记录；Prompt Worker 逐条消费统一卖点。Contracts 26 项、API 293 项、Web 201 项、Extraction Worker 92 项和 Prompt Worker 371 项自动测试通过；真实历史山茶花信息卡已完成桌面双栏与窄屏单栏浏览器回归，本次未调用付费模型。详见 [统一卖点改造计划](docs/workflows/effect/plans/效果类AI信息提炼-统一卖点改造计划.md)。
 
 2026-09-08：同一份紫苏梅子酱已确认信息、100 条 × 15 秒设置完成三轮真实 Ark 浏览器回归。最终语义重复度从对照批次的 29% 依次降至 20%、14% 和 13%，三轮均精确保存 100 条并覆盖 26/26 项必用事实。最新一轮从头生成 140 条候选，并经事实补充和多样性补充形成 162 条候选后择优 100 条；硬问题淘汰为 0，AI 加权平均质量为 92.80。该结果证明当前结构恢复、事实覆盖、数量保存和浏览器刷新/导出链路可工作，但最新一轮仍有 23 条“15 秒动作过密”软提醒，因此不能据此宣称镜头执行质量已经全面达标。详见 [Prompt 视觉事件修复付费续测报告](docs/workflows/effect/plans/效果类Prompt-视觉事件修复付费续测报告.md)。
 
-2026-09-08：Prompt 关系复核采用独立 180 秒超时，并按输入规模和最多 6 个方向拆批；同一次任务的已完成复核分片支持断点恢复，新批次仍从头生成，不改变模型、评分或事实语义规则。配置与验证见 [关系复核超时与断点恢复修复](docs/workflows/effect/plans/效果类Prompt-关系复核超时与断点恢复修复.md)。
+历史方向/关系复核方案仅作为设计记录；当前 Prompt 新批次按已确认卖点直接安排精确数量的素材任务，不执行该规划分支。
 
 2026-08-28 基于当前工作区代码完成全量自动回归：
 
@@ -83,10 +89,12 @@ NestJS API ───── Prisma ───── PostgreSQL
    │  └─ RabbitMQ：异步任务消息
    │                   │
    │ internal API      ▼
-   └──────────── Python LangGraph Workers
+   └──────────── Python Workers
                          ├─ AI 信息提炼：Docling + Ark + 进程内 Playwright Chromium
-                         └─ Prompt 生成：事实视觉策略 + 连贯创意 + 独立评估
-                                           └─ 火山正文向量 + 本地 NumPy MMR 择优
+                         ├─ Prompt 生成：事实视觉策略 + 连贯创意 + 独立评估
+                         │                 └─ 火山正文向量 + 本地 NumPy MMR 择优
+                         ├─ 素材渲染：Seedance 异步任务与返修
+                         └─ 模板混剪：Prompt 归槽 + 唯一匹配 + 抽帧/截取
 ```
 
 边界约束：
@@ -109,7 +117,7 @@ Step 02 只处理当前下拉框选中的产品，不提供批量提炼入口。
              ↓ 等待三分支完成
           多源融合
              ↓
-       语义整理与字段归类
+       语义整理与图片建议复核
              ↓
        确定性标准化与结果保存（异常时模型兜底）
 ```
@@ -274,6 +282,17 @@ Remove-Item Env:PROMPT_AI_PROVIDER
 
 启动付费回归前必须先检查容器的 `PROMPT_AI_PROVIDER`，避免根目录 `.env` 中的 `ark` 配置被意外继承。Mock 与 Ark 使用相同的结构化响应契约，但 Mock 结果不能代替真实模型质量验收。
 
+### 6. 启动模板混剪 Worker
+
+模板混剪前需先提交 Prompt 批次和可用渲染素材片段。配置真实 `ARK_API_KEY`，并在共享环境设置独立的 `EFFECT_TEMPLATE_MIX_WORKER_TOKEN`。模板编辑不调用模型；用户在精修工作台主动触发“AI 智能填充”才创建异步任务：
+
+```powershell
+docker compose --profile effect-template-mix up -d --build effect-template-mix-worker
+docker compose logs --tail 100 effect-template-mix-worker
+```
+
+Worker 对原始 Prompt 与六槽位评分，执行唯一素材匹配、视频抽帧和截取起点选择。任务成功只写节点草稿；经用户“完成校验”才提交混剪模板与时间轴工程工作副本。该节点不编码成片；见 [模板混剪实施方案](docs/workflows/effect/plans/效果类模板混剪-正式前端实施方案.md) 和 [Worker 说明](workers/effect-template-mix/README.md)。
+
 ## 默认访问地址
 
 | 服务            | 地址                               |
@@ -312,6 +331,8 @@ docker compose logs -f effect-extraction-worker
 docker compose --profile effect-prompt-generation build effect-prompt-generation-worker
 docker compose --profile effect-prompt-generation up -d effect-prompt-generation-worker
 docker compose logs -f effect-prompt-generation-worker
+docker compose --profile effect-template-mix up -d --build effect-template-mix-worker
+docker compose logs -f effect-template-mix-worker
 ```
 
 Python Worker 本地验证：
@@ -330,6 +351,15 @@ Set-Location workers/effect-prompt-generation
 uv sync --dev
 uv run pytest
 uv run ruff check src tests
+uv run mypy src
+```
+
+模板混剪 Worker 本地验证：
+
+```powershell
+Set-Location workers/effect-template-mix
+uv sync --dev
+uv run pytest
 uv run mypy src
 ```
 
@@ -377,6 +407,7 @@ ai-marketing-platform/
 │  ├─ effect-extraction/           # LangGraph + Docling + Ark + Playwright Worker
 │  ├─ effect-prompt-generation/    # 连贯六维创意 Prompt LangGraph Worker
 │  ├─ seedance-worker/             # Seedance 异步 Worker
+│  ├─ effect-template-mix/         # 六槽位分类与视频截取 Worker
 │  └─ media-worker/                # 媒体处理 Worker
 ├─ infrastructure/minio/           # 固定版本的本地 MinIO 镜像
 ├─ references/prototypes/          # 冻结原型
@@ -507,6 +538,7 @@ docker compose logs --tail 200 effect-extraction-worker
 - [MinIO 存储与本地部署方案](docs/workflows/effect/deployment/效果类导入素材-MinIO存储与本地部署方案.md)
 - [AI 信息提炼 Worker 说明](workers/effect-extraction/README.md)
 - [素材片段 Prompt Worker 说明](workers/effect-prompt-generation/README.md)
+- [模板混剪 Worker 说明](workers/effect-template-mix/README.md)
 
 ## 当前限制
 
@@ -516,4 +548,4 @@ docker compose logs --tail 200 effect-extraction-worker
 - 当前“产品基础 + 统一卖点”信息卡的自动化回归已完成；Prompt 视觉事件链路已完成三轮真实 Ark 浏览器回归。重复度、事实覆盖和精确数量达到本轮目标，但 15 秒动作密度仍是已知质量风险；后续任何付费复验仍需显式授权。
 - Prompt 结果页会展示批次语义重复度，固定以 82% 相似关系聚合重复组；达到或超过 15% 时显示质量建议，但不阻止用户完成校验。数量偏差、正文完全重复、待评估条目、事实或结构硬问题仍会阻止提交。缺少可信向量评估的历史结果只显示“待评估”，不会伪造为 0%。2026-08-31 的 50 条真实付费联调在生成 70 条候选后由用户中止，未产生最终重复度或新工作副本；候选阶段 70/70 与商品相关，形成 69 条创意主线、61 种镜头表达和 35 种人物表达。
 - Mock Provider 只允许测试或显式本地配置使用，生产默认 Ark 且缺少 Key 时立即失败。
-- Seedance 素材片段渲染已完成真实异步任务、商品参考图输入、租约恢复、并发限流和最长 15 秒完整参考视频返修后端闭环；正式前端已提供返修交互与 API 客户端，但素材任务工作区仍沿用既有 Mock 数据边界，尚未整体切换到真实批次。模板混剪和成片导出尚未进入当前实现范围。
+- Seedance 素材片段渲染已完成真实异步任务、商品参考图输入、租约恢复、并发限流和最长 15 秒完整参考视频返修后端闭环；正式前端已提供返修交互与 API 客户端，但素材任务工作区仍沿用既有 Mock 数据边界，尚未整体切换到真实批次。模板混剪已接入正式工作台和异步智能填充，仍须通过同 Run 真实素材池、浏览器宽窄屏和 Worker 端到端验收；成片输出尚未进入当前实现范围。

@@ -32,6 +32,7 @@ import {
   extractionSourceFingerprint,
   isSupportedExtractionMaterial,
   manualOverridesForResult,
+  manualOverridesForRerun,
   normalizeEffectExtractionResult,
 } from './effect-extraction.validation';
 
@@ -254,10 +255,25 @@ export class EffectExtractionRepository {
           },
         },
       });
+      const dependencySnapshot = {
+        sourcePackageRevision: sourcePackage.revision,
+        executionInputHash:
+          nodeState?.executionInputHash ??
+          '0e9561cfb83d50990a103b3896fe249a11fe27fa28985448187f93ec12116d72',
+      };
+      const currentSourceFingerprint = extractionSourceFingerprint({
+        sourceRevision: draft.revision,
+        dependencySnapshot,
+      });
       const previousResult = await transaction.effectExtractionResult.findFirst({
         where: { projectId, draftId, productId },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-        select: { manualOverrides: true, generatedResult: true, draftResult: true },
+        select: {
+          manualOverrides: true,
+          generatedResult: true,
+          draftResult: true,
+          sourceFingerprint: true,
+        },
       });
       const storedOverrides =
         previousResult?.manualOverrides &&
@@ -265,13 +281,18 @@ export class EffectExtractionRepository {
         !Array.isArray(previousResult.manualOverrides)
           ? (previousResult.manualOverrides as Partial<EffectExtractionResult>)
           : {};
-      const inheritedOverrides =
+      const previousOverrides =
         Object.keys(storedOverrides).length > 0 || !previousResult
           ? storedOverrides
           : manualOverridesForResult(
               normalizeEffectExtractionResult(previousResult.generatedResult),
               normalizeEffectExtractionResult(previousResult.draftResult),
             );
+      const inheritedOverrides = manualOverridesForRerun(
+        previousOverrides,
+        Boolean(previousResult && previousResult.sourceFingerprint !== currentSourceFingerprint),
+        previousResult?.generatedResult,
+      );
       const snapshot: EffectExtractionInputSnapshot = {
         schemaVersion: EFFECT_EXTRACTION_SCHEMA_VERSION,
         projectId,
@@ -293,12 +314,7 @@ export class EffectExtractionRepository {
         materials,
         manualOverrides: inheritedOverrides,
         bypassImageCache: refreshImageRecognition,
-        dependencySnapshot: {
-          sourcePackageRevision: sourcePackage.revision,
-          executionInputHash:
-            nodeState?.executionInputHash ??
-            '0e9561cfb83d50990a103b3896fe249a11fe27fa28985448187f93ec12116d72',
-        },
+        dependencySnapshot,
         dependencies: [
           ...[sourcePackage].map((artifact) => ({
             sourceType: 'WORKING_ARTIFACT' as const,

@@ -691,6 +691,9 @@ const persistNodeState = async (keepalive = false, saveResult = true): Promise<b
   if (!props.projectId || !props.workflowRunId) return true;
   const productId = currentProductId.value;
   const current = productId ? productStates.value[productId] : null;
+  if (saveResult && current && isExtractionRunning(current)) return true;
+  const savingResultId = current?.resultId ?? null;
+  const savingResultRevision = current?.resultRevision ?? null;
   let state = nodeStatePayload();
   let serialized = JSON.stringify(state);
   if (
@@ -712,6 +715,13 @@ const persistNodeState = async (keepalive = false, saveResult = true): Promise<b
         current.result,
         controller.signal,
       );
+      const latest = productStates.value[productId];
+      if (
+        !latest ||
+        latest.resultId !== savingResultId ||
+        latest.resultRevision !== savingResultRevision
+      )
+        return true;
       patchProductState(productId, {
         resultRevision: saved.revision,
         result: cloneExtractionResult(saved.result),
@@ -808,6 +818,10 @@ const monitorProductRun = async (
       },
     });
     if (terminal.status === 'COMPLETED') {
+      clearTimeout(saveTimer);
+      saveTimer = undefined;
+      saveController?.abort();
+      saveController = null;
       await refreshProductFromWorkspace(productId, controller.signal);
       const saved = await getWorkflowNodeState(
         props.projectId,
@@ -913,6 +927,10 @@ const runCurrentExtraction = async (): Promise<void> => {
   )
     return;
   if (!(await flushPendingEdits())) return;
+  clearTimeout(saveTimer);
+  saveTimer = undefined;
+  saveController?.abort();
+  saveController = null;
   const previousState = cloneExtractionProductState(state);
   stopProductPoll(product.id);
   const controller = new AbortController();

@@ -539,7 +539,6 @@ def test_semantic_candidate_preserves_source_authority() -> None:
                 candidate=image,
             ),
         ],
-        manual_overrides={},
     )
     assert candidate.selling_points == [
         "梅子酸甜",
@@ -584,7 +583,6 @@ def test_semantic_candidate_preserves_all_sources_beyond_recommended_count() -> 
                 candidate=image,
             ),
         ],
-        manual_overrides={},
     )
 
     assert candidate.selling_points == [

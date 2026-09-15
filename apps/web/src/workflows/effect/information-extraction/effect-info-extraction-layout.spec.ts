@@ -226,6 +226,17 @@ describe('effect info extraction result layout', () => {
     );
   });
 
+  it('does not let an old result save overwrite a rerun result', () => {
+    expect(pageSource).toContain(
+      'if (saveResult && current && isExtractionRunning(current)) return true',
+    );
+    expect(pageSource).toContain('const savingResultId = current?.resultId ?? null');
+    expect(pageSource).toContain('const savingResultRevision = current?.resultRevision ?? null');
+    expect(pageSource).toContain('latest.resultId !== savingResultId');
+    expect(pageSource).toContain('latest.resultRevision !== savingResultRevision');
+    expect(pageSource).toContain('saveController?.abort()');
+  });
+
   it('loads contracts source directly in the Vite dev server', () => {
     expect(viteConfigSource).toContain("'@ai-marketing/contracts': contractsSource");
     expect(viteConfigSource).toContain("exclude: ['@ai-marketing/contracts']");

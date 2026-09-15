@@ -6,6 +6,7 @@ import {
   isEffectExtractionResult,
   isSupportedExtractionMaterial,
   manualOverridesForResult,
+  manualOverridesForRerun,
   normalizeEditableEffectExtractionResult,
   normalizeEffectExtractionResult,
   safeTokenEquals,
@@ -138,6 +139,28 @@ describe('effect extraction validation', () => {
     const overrides = manualOverridesForResult(validResult, draft);
     expect(overrides).toEqual({ sellingPoints: ['人工卖点'] });
     expect(applyEffectExtractionManualOverrides(validResult, overrides)).toEqual(draft);
+  });
+
+  it('keeps selling-point overrides only when rerunning the same source package', () => {
+    const overrides = {
+      productName: '人工产品名',
+      sellingPoints: ['旧资料人工卖点'],
+      coreSellingPoints: ['历史旧字段卖点'],
+    };
+
+    expect(manualOverridesForRerun(overrides, false)).toEqual(overrides);
+    expect(
+      manualOverridesForRerun(overrides, false, {
+        ...validResult,
+        sellingPoints: ['旧资料人工卖点'],
+      }),
+    ).toEqual({
+      productName: '人工产品名',
+      coreSellingPoints: ['历史旧字段卖点'],
+    });
+    expect(manualOverridesForRerun(overrides, true)).toEqual({
+      productName: '人工产品名',
+    });
   });
 
   it('compares worker tokens without accepting missing or different values', () => {

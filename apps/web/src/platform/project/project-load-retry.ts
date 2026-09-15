@@ -1,6 +1,9 @@
 import { isAbortError } from '../../api/http-client';
 
-export const PROJECT_LOAD_RETRY_DELAYS_MS = [300, 700, 1_500] as const;
+// The API and Prisma connection start in parallel with Vite during local development.
+// Keep retrying through the normal cold-start window so the whole workspace does not
+// fall into the error state just because the first request raced the API bootstrap.
+export const PROJECT_LOAD_RETRY_DELAYS_MS = [300, 700, 1_500, 3_000, 5_000] as const;
 export const PROJECT_LOAD_ATTEMPT_TIMEOUT_MS = 4_000;
 
 type RetryableHttpError = {
@@ -50,7 +53,10 @@ const runAttempt = <T>(
   new Promise((resolve, reject) => {
     const controller = new AbortController();
     let settled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timer = setTimeout(() => {
+      controller.abort();
+      finish(() => reject(new TypeError('项目列表请求超时')));
+    }, timeoutMs);
 
     const cleanup = (): void => {
       if (timer) clearTimeout(timer);
@@ -72,11 +78,6 @@ const runAttempt = <T>(
       handleParentAbort();
       return;
     }
-    timer = setTimeout(() => {
-      controller.abort();
-      finish(() => reject(new TypeError('项目列表请求超时')));
-    }, timeoutMs);
-
     request(controller.signal).then(
       (value) => finish(() => resolve(value)),
       (error: unknown) => finish(() => reject(error)),

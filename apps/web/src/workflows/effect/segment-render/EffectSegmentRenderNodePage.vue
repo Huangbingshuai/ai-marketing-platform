@@ -55,6 +55,7 @@ import {
   deleteEffectSegmentRenderMaterials,
   effectSegmentRenderTaskContentUrl,
   exportEffectSegmentRenderMaterials,
+  getEffectSegmentRenderTaskContent,
   getEffectSegmentRenderBatch,
   importEffectSegmentRenderMaterials,
   regenerateEffectSegmentRenderTasks,
@@ -251,6 +252,7 @@ let dialogTrigger: HTMLElement | null = null;
 let loadController: AbortController | null = null;
 let operationController: AbortController | null = null;
 let pollController: AbortController | null = null;
+let previewController: AbortController | null = null;
 let pollTimer: ReturnType<typeof setTimeout> | undefined;
 let loadGeneration = 0;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -667,6 +669,8 @@ const applyBatch = (batch: EffectSegmentRenderBatch): void => {
 };
 
 const clearPreview = (): void => {
+  previewController?.abort();
+  previewController = null;
   repairRangePlaying.value = false;
   repairCurrentSeconds.value = 0;
   if (previewUrl.value.startsWith('blob:')) URL.revokeObjectURL(previewUrl.value);
@@ -1009,20 +1013,39 @@ const retryTask = async (taskId: string): Promise<void> => {
   }
 };
 
-const loadPreviewVideo = (task: EffectSegmentRenderTask, variant: 'ACTIVE' | 'REPAIR'): void => {
+const loadPreviewVideo = (
+  task: EffectSegmentRenderTask,
+  variant: 'ACTIVE' | 'REPAIR',
+  owner: 'preview' | 'repair',
+): void => {
   const current = workspace.value;
   const output = variant === 'ACTIVE' ? task.output : task.repair?.candidate;
   if (!current?.batchId || !output) return;
   clearPreview();
-  previewUrl.value = effectSegmentRenderTaskContentUrl(
+  previewLoading.value = true;
+  const controller = new AbortController();
+  previewController = controller;
+  void getEffectSegmentRenderTaskContent(
     props.projectId,
     current.batchId,
     task.id,
     variant,
-    'VIDEO',
     output.version,
-  );
-  previewLoading.value = false;
+    controller.signal,
+  )
+    .then((response) => response.blob())
+    .then((blob) => {
+      const ownerTask = owner === 'preview' ? previewTask.value : repairTask.value;
+      if (controller.signal.aborted || ownerTask?.id !== task.id) return;
+      previewUrl.value = URL.createObjectURL(blob);
+    })
+    .catch((error: unknown) => {
+      if (!isAbortError(error)) previewError.value = safeMessage(error, '视频预览加载失败');
+    })
+    .finally(() => {
+      if (previewController === controller) previewController = null;
+      if (!controller.signal.aborted) previewLoading.value = false;
+    });
 };
 
 const handlePreviewVideoError = (): void => {
@@ -1038,7 +1061,7 @@ const openPreview = (
   dialogTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
   previewTask.value = task;
   previewVariant.value = variant;
-  loadPreviewVideo(task, variant);
+  loadPreviewVideo(task, variant, 'preview');
   void nextTick(() => previewCloseButton.value?.focus());
 };
 
@@ -1051,7 +1074,7 @@ const openRepair = (task: EffectSegmentRenderTask, event: Event): void => {
   repairInstruction.value = '';
   repairCurrentSeconds.value = 0;
   repairActiveBoundary.value = 'start';
-  loadPreviewVideo(task, 'ACTIVE');
+  loadPreviewVideo(task, 'ACTIVE', 'repair');
   void nextTick(() => repairCloseButton.value?.focus());
 };
 

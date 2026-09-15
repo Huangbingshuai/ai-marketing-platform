@@ -124,6 +124,7 @@ const toArtifact = (record: WorkingArtifactRecord): WorkingArtifact => {
     sourceRunId: record.sourceRunId,
     sourceArtifactId: record.sourceArtifactId,
     revision: record.revision,
+    contentHash: record.contentHash,
     freshness: record.freshness,
     availability: record.availability,
     dependencies: record.dependencies.map((dependency) => ({

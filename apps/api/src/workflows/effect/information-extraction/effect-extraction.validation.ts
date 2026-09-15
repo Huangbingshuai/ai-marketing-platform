@@ -13,6 +13,13 @@ const RESULT_KEYS = [
 ] as const;
 
 const EDITABLE_RESULT_KEYS = RESULT_KEYS;
+const SOURCE_STABLE_OVERRIDE_KEYS = [
+  'productCategory',
+  'productName',
+  'coreSpecification',
+  'priceRange',
+  'visualFeatures',
+] as const;
 const TARGET_AUDIENCE_SEPARATOR = /[\n,，、;；]+/u;
 const LEGACY_SELLING_POINT_FIELDS = [
   'coreSellingPoints',
@@ -156,6 +163,38 @@ export const manualOverridesForResult = (
       canonicalHash(generated[key]) === canonicalHash(draft[key]) ? [] : [[key, draft[key]]],
     ),
   ) as EffectExtractionManualOverrides;
+
+/**
+ * A selling-point override replaces the whole list, so carrying it across a
+ * changed source package would hide newly uploaded document facts. Base-field
+ * corrections remain useful across source revisions; list overrides only
+ * survive a rerun of the exact same source fingerprint. A list identical to
+ * generatedResult is redundant and is discarded as well. This also repairs
+ * results produced before generatedResult was separated from manual drafts.
+ */
+export const manualOverridesForRerun = (
+  overrides: unknown,
+  sourceChanged: boolean,
+  generatedResult?: unknown,
+): EffectExtractionManualOverrides => {
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return {};
+  const record = overrides as Record<string, unknown>;
+  const next = { ...record };
+  const generated =
+    generatedResult && typeof generatedResult === 'object' && !Array.isArray(generatedResult)
+      ? (generatedResult as Record<string, unknown>)
+      : null;
+  if (
+    Array.isArray(next.sellingPoints) &&
+    Array.isArray(generated?.sellingPoints) &&
+    canonicalHash(next.sellingPoints) === canonicalHash(generated.sellingPoints)
+  )
+    delete next.sellingPoints;
+  if (!sourceChanged) return next as EffectExtractionManualOverrides;
+  return Object.fromEntries(
+    SOURCE_STABLE_OVERRIDE_KEYS.flatMap((key) => (key in next ? [[key, next[key]]] : [])),
+  ) as EffectExtractionManualOverrides;
+};
 
 export const applyEffectExtractionManualOverrides = (
   generated: EffectExtractionResult,

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import { EffectTemplateMixService } from './effect-template-mix.service';
+import type { EffectTemplateMixAiRepository } from './effect-template-mix-ai.repository';
 
 const templateId = '3c2504a0-b21a-4a7d-b486-14495c73bdf4';
 const variantId = '01795c3c-4726-405b-bbc9-28137f768fff';
@@ -116,6 +117,57 @@ const harness = () => {
 };
 
 describe('EffectTemplateMixService', () => {
+  it('saves algorithmic combinations as a draft without committing downstream artifacts', async () => {
+    const { service, working } = harness();
+    const state = draft();
+    const entry = state.templates[0]!.workspace;
+    const secondSlot = {
+      ...entry.template.slots[0]!,
+      id: '9b93d456-6c23-4d70-b97c-a41b624f002e',
+      role: 'TRANSFORMATION' as const,
+    };
+    entry.template.slots.push(secondSlot);
+    const clips = [
+      sourceId,
+      'c3be972a-752d-4abe-9966-9c7858560083',
+      '79aa15c5-e7f6-485d-941e-0346d8084c1d',
+      '8b534cd4-ddd7-4c4b-b64c-ac8ebae44561',
+    ];
+    const first = entry.variants[0]!;
+    first.slots.push(secondSlot);
+    first.bindings[secondSlot.id] = clips[2]!;
+    first.bindingRevisions[secondSlot.id] = 2;
+    first.offsets[secondSlot.id] = 0;
+    const metadata = {
+      source: 'AI' as const,
+      matchScore: 0.8,
+      matchLevel: 'NORMAL' as const,
+      classificationReason: 'Prompt',
+      trimReason: '关键帧',
+    };
+    first.bindingMetadata = { [slotId]: metadata, [secondSlot.id]: metadata };
+    const sibling = structuredClone(first);
+    sibling.id = '487fda04-a97a-4243-bace-0b16de67e0ee';
+    sibling.bindings[slotId] = clips[1]!;
+    sibling.bindings[secondSlot.id] = clips[3]!;
+    entry.variants.push(sibling);
+    working.getNodeState.mockResolvedValue({ revision: 7, state });
+    working.listArtifacts.mockResolvedValue({
+      items: clips.map((id) => ({ ...source, id, contentUrl: `/content/${id}` })),
+      total: 4,
+    });
+
+    const result = await service.composeVariants('project', 'run', templateId, 7);
+    const variants = result.draft.templates[0]!.workspace.variants;
+    expect(variants).toHaveLength(4);
+    expect(
+      new Set(
+        variants.map((variant) => `${variant.bindings[slotId]}|${variant.bindings[secondSlot.id]}`),
+      ).size,
+    ).toBe(4);
+    expect(working.putNodeState).toHaveBeenCalled();
+    expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
+  });
   it('commits a template and timeline with the exact consumed clip revision', async () => {
     const { service, working } = harness();
     const result = await service.validate('project', 'run', 7, templateId);
@@ -200,5 +252,196 @@ describe('EffectTemplateMixService', () => {
 
     expect(result.draft.templates[0]!.workspace.template.slots[0]!.duration).toBe(2);
     expect(result.draft.templates[1]!.workspace.template.slots[0]!.duration).toBe(3);
+  });
+
+  it('freezes original Prompt text without forwarding upstream purpose recommendations', async () => {
+    const state = draft();
+    const roles = [
+      'HOOK',
+      'PAIN_POINT',
+      'PRODUCT',
+      'SELLING_POINT',
+      'TRANSFORMATION',
+      'END',
+    ] as const;
+    state.templates[0]!.workspace.template.slots = roles.map((role, index) => ({
+      id: `slot-${index}`,
+      label: role,
+      role,
+      purpose:
+        role === 'HOOK'
+          ? 'HOOK'
+          : role === 'END'
+            ? 'END_CONVERSION'
+            : role === 'PRODUCT'
+              ? 'PRODUCT_DISPLAY'
+              : 'EFFECT',
+      duration: 3,
+      transition: '硬切',
+    }));
+    state.templates[0]!.workspace.variants = [];
+    const now = new Date();
+    const promptArtifact = {
+      id: 'prompt-artifact',
+      nodeId: 'PROMPT_GENERATION',
+      artifactKey: 'prompt-batch:product',
+      revision: 2,
+      contentHash: 'p'.repeat(64),
+      payload: {
+        items: roles.map((_, index) => ({
+          id: `prompt-${index}`,
+          content: `原始画面 Prompt ${index}`,
+        })),
+      },
+    };
+    const clips = roles.map((_, index) => ({
+      id: `material-${index}`,
+      nodeId: 'SEGMENT_RENDER',
+      artifactKey: `render-clip:${index}`,
+      revision: 3,
+      contentHash: String(index).repeat(64),
+      storageKey: `video/${index}.mp4`,
+      name: `素材 ${index} 视频片段`,
+      payload: {
+        promptId: `prompt-${index}`,
+        renderCode: `V${index}`,
+        durationSeconds: 5,
+        contentHash: 'v'.repeat(64),
+        fileObjectId: `file-${index}`,
+        primaryPurpose: 'HOOK',
+        compatiblePurposes: ['HOOK'],
+      },
+    }));
+    const working = {
+      getNodeState: vi.fn().mockResolvedValue({ revision: 7, state }),
+    };
+    const create = vi.fn().mockImplementation((input) =>
+      Promise.resolve({
+        kind: 'CREATED',
+        run: {
+          id: 'run-id',
+          templateId,
+          targetVariantId: null,
+          outputVariantId: null,
+          status: 'QUEUED',
+          stage: 'CLASSIFYING',
+          progress: 0,
+          errorCode: null,
+          errorMessage: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+        input,
+      }),
+    );
+    const aiRepository = {
+      sourceArtifacts: vi.fn().mockResolvedValue([promptArtifact, ...clips]),
+      listRecent: vi.fn().mockResolvedValue([]),
+      create,
+    };
+    const service = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+      aiRepository as unknown as EffectTemplateMixAiRepository,
+    );
+
+    await service.createAiRun('project', 'run', templateId, 7, 'key');
+
+    const snapshot = create.mock.calls[0]![0].snapshot;
+    expect(snapshot.materials[0]).toMatchObject({ prompt: '原始画面 Prompt 0' });
+    expect(JSON.stringify(snapshot)).not.toContain('primaryPurpose');
+    expect(JSON.stringify(snapshot)).not.toContain('compatiblePurposes');
+  });
+
+  it('persists a partial Prompt-classification shard for lease-safe resume', async () => {
+    const materialId = 'material-1';
+    const classifications = [
+      {
+        materialId,
+        scores: {
+          HOOK: 0.9,
+          PAIN_POINT: 0.1,
+          PRODUCT: 0.2,
+          SELLING_POINT: 0.3,
+          TRANSFORMATION: 0.4,
+          END: 0.1,
+        },
+        reasons: {
+          HOOK: 'Prompt 中存在开场动作',
+          PAIN_POINT: '未明显体现痛点',
+          PRODUCT: '产品可见',
+          SELLING_POINT: '卖点较弱',
+          TRANSFORMATION: '没有结果对比',
+          END: '没有收尾动作',
+        },
+      },
+    ];
+    const aiRepository = {
+      find: vi.fn().mockResolvedValue({
+        status: 'RUNNING',
+        attemptToken: 'attempt-token',
+        inputSnapshot: {
+          materials: [{ id: materialId }, { id: 'material-2' }],
+        },
+      }),
+      saveClassificationCheckpoint: vi.fn().mockResolvedValue({
+        kind: 'SAVED',
+        classifications,
+        progress: 20,
+      }),
+    };
+    const service = new EffectTemplateMixService(
+      {} as WorkflowWorkingService,
+      aiRepository as unknown as EffectTemplateMixAiRepository,
+    );
+
+    await expect(
+      service.checkpointAiClassifications('project', 'run', 'attempt-token', classifications),
+    ).resolves.toEqual({ classifications, progress: 20 });
+    expect(aiRepository.saveClassificationCheckpoint).toHaveBeenCalledWith(
+      'project',
+      'run',
+      'attempt-token',
+      classifications,
+    );
+  });
+
+  it('persists partial AI trim results for batch resume', async () => {
+    const trims = [
+      {
+        variantIndex: 1,
+        slotId,
+        materialId: sourceId,
+        trimStartSeconds: 0.5,
+        trimReason: '动作完整',
+      },
+    ];
+    const aiRepository = {
+      find: vi.fn().mockResolvedValue({
+        status: 'RUNNING',
+        attemptToken: 'attempt-token',
+        inputSnapshot: { materials: [{ id: sourceId, duration: 4 }] },
+        selectionResult: [
+          {
+            variantIndex: 1,
+            slotId,
+            materialId: sourceId,
+            duration: 3,
+          },
+        ],
+      }),
+      saveTrimCheckpoint: vi.fn().mockResolvedValue({
+        kind: 'SAVED',
+        trims,
+        progress: 72,
+      }),
+    };
+    const service = new EffectTemplateMixService(
+      {} as WorkflowWorkingService,
+      aiRepository as unknown as EffectTemplateMixAiRepository,
+    );
+
+    await expect(
+      service.checkpointAiTrims('project', 'run', 'attempt-token', trims),
+    ).resolves.toEqual({ trims, progress: 72 });
   });
 });

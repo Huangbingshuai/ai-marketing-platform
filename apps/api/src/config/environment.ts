@@ -21,6 +21,7 @@ export type EnvironmentVariables = {
   EFFECT_EXTRACTION_WORKER_TOKEN: string | undefined;
   EFFECT_PROMPT_WORKER_TOKEN: string | undefined;
   EFFECT_SEGMENT_RENDER_WORKER_TOKEN: string | undefined;
+  EFFECT_TEMPLATE_MIX_WORKER_TOKEN: string | undefined;
   TOS_ENDPOINT: string | undefined;
   TOS_REGION: string | undefined;
   TOS_BUCKET: string | undefined;
@@ -119,6 +120,9 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
   const effectSegmentRenderWorkerToken =
     optionalString(raw.EFFECT_SEGMENT_RENDER_WORKER_TOKEN) ??
     (appEnvironment === 'production' ? undefined : 'local-effect-segment-render-worker-token');
+  const effectTemplateMixWorkerToken =
+    optionalString(raw.EFFECT_TEMPLATE_MIX_WORKER_TOKEN) ??
+    (appEnvironment === 'production' ? undefined : 'local-effect-template-mix-worker-token');
   const seedanceReferenceSigningSecret = optionalString(raw.SEEDANCE_REFERENCE_SIGNING_SECRET);
   if (seedanceReferenceSigningSecret && seedanceReferenceSigningSecret.length < 32) {
     throw new Error('环境变量 SEEDANCE_REFERENCE_SIGNING_SECRET 至少需要 32 个字符');
@@ -127,6 +131,7 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
     requiredString(effectExtractionWorkerToken, 'EFFECT_EXTRACTION_WORKER_TOKEN');
     requiredString(effectPromptWorkerToken, 'EFFECT_PROMPT_WORKER_TOKEN');
     requiredString(effectSegmentRenderWorkerToken, 'EFFECT_SEGMENT_RENDER_WORKER_TOKEN');
+    requiredString(effectTemplateMixWorkerToken, 'EFFECT_TEMPLATE_MIX_WORKER_TOKEN');
   }
 
   return {
@@ -157,6 +162,7 @@ export const validateEnvironment = (raw: Record<string, unknown>): EnvironmentVa
     EFFECT_EXTRACTION_WORKER_TOKEN: effectExtractionWorkerToken,
     EFFECT_PROMPT_WORKER_TOKEN: effectPromptWorkerToken,
     EFFECT_SEGMENT_RENDER_WORKER_TOKEN: effectSegmentRenderWorkerToken,
+    EFFECT_TEMPLATE_MIX_WORKER_TOKEN: effectTemplateMixWorkerToken,
     TOS_ENDPOINT: optionalString(raw.TOS_ENDPOINT),
     TOS_REGION: optionalString(raw.TOS_REGION),
     TOS_BUCKET: optionalString(raw.TOS_BUCKET),

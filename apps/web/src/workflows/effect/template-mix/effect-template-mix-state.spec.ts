@@ -31,6 +31,11 @@ const variant = (value: EffectTemplateMixWorkspace, id: string): EffectTemplateM
 });
 
 describe('effect template mix presentation state', () => {
+  it('keeps a new template without a project until AI fill completes', () => {
+    const value = workspace();
+    expect(value.variants).toEqual([]);
+  });
+
   it('derives contiguous ranges and a real-time total', () => {
     const slots = workspace().template.slots.slice(0, 3);
     slots[0]!.duration = 4;

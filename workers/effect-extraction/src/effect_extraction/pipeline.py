@@ -626,12 +626,10 @@ class ExtractionPipeline:
         )
         if fusion is None or fusion.candidate is None:
             raise FusionError("fusion output is missing")
-        snapshot = self._snapshot(context)
         semantic_candidate, user_facts, image_suggestions, reference_facts = (
             _prepare_semantic_candidate(
                 fusion.candidate,
                 branches,
-                manual_overrides=snapshot.manual_overrides,
             )
         )
         fallback_candidate = user_only_candidate(semantic_candidate, user_facts)
@@ -730,7 +728,6 @@ class ExtractionPipeline:
         semantic = by_name.get(BranchName.SEMANTIC_REFINEMENT)
         semantic_candidate = branch_candidate(semantic) if semantic else None
         normalized_input = semantic_candidate or fusion.candidate
-        snapshot = self._snapshot(context)
         document = by_name.get(BranchName.DOCUMENT)
         commerce = by_name.get(BranchName.COMMERCE)
         image = by_name.get(BranchName.IMAGE)
@@ -754,7 +751,6 @@ class ExtractionPipeline:
             ai_call = await self.provider.normalize(
                 normalized_input,
                 protected_input=_protected_user_input(
-                    snapshot.manual_overrides,
                     document_candidate,
                     commerce_candidate,
                 ),
@@ -1086,38 +1082,9 @@ def _items_preserving_order(
     return result
 
 
-def _manual_items(
-    manual_overrides: dict[str, object],
-    *,
-    field: str,
-    alias: str,
-) -> list[str] | None:
-    sentinel = object()
-    raw = manual_overrides.get(alias, manual_overrides.get(field, sentinel))
-    if raw is sentinel or not isinstance(raw, list):
-        return None
-    values = [" ".join(str(item).split()).strip() for item in raw]
-    return [value for value in values if value]
-
-
-def _manual_text(
-    manual_overrides: dict[str, object],
-    *,
-    field: str,
-    alias: str,
-) -> str | None:
-    raw = manual_overrides.get(alias, manual_overrides.get(field))
-    if not isinstance(raw, str):
-        return None
-    value = " ".join(raw.split()).strip()
-    return value or None
-
-
 def _prepare_semantic_candidate(
     fusion_candidate: ExtractionCandidate,
     branches: Sequence[BranchOutput],
-    *,
-    manual_overrides: dict[str, object],
 ) -> tuple[
     ExtractionCandidate,
     list[dict[str, str]],
@@ -1148,19 +1115,10 @@ def _prepare_semantic_candidate(
     image_suggestions: list[dict[str, str]] = []
     reference_facts: list[dict[str, str]] = []
     for field, attr in SEMANTIC_FIELDS:
-        manual_values = _manual_items(
-            manual_overrides,
-            field=attr,
-            alias=field.value,
-        )
-        user_values = (
-            manual_values
-            if manual_values is not None
-            else [
-                *_items_preserving_order(document, attr),
-                *_items_preserving_order(commerce, attr),
-            ]
-        )
+        user_values = [
+            *_items_preserving_order(document, attr),
+            *_items_preserving_order(commerce, attr),
+        ]
         image_values = _items_preserving_order(image, attr)
         prepared_values = _strings([*user_values, *image_values])
         setattr(prepared, attr, prepared_values or None)
@@ -1190,12 +1148,7 @@ def _prepare_semantic_candidate(
         ("visualFeatures", "visual_features"),
     )
     for alias, attr in reference_fields:
-        manual_value = _manual_text(
-            manual_overrides,
-            field=attr,
-            alias=alias,
-        )
-        value = manual_value or next(
+        value = next(
             (
                 candidate_value
                 for candidate in (document, commerce)
@@ -1350,7 +1303,6 @@ def _restore_semantic_fields(
 
 
 def _protected_user_input(
-    manual_overrides: dict[str, object],
     *candidates: ExtractionCandidate | None,
 ) -> dict[str, object]:
     protected: dict[str, object] = {}
@@ -1360,5 +1312,4 @@ def _protected_user_input(
         for key, value in candidate.model_dump(mode="json", by_alias=True).items():
             if value not in (None, [], ""):
                 protected.setdefault(key, value)
-    protected.update(manual_overrides)
     return protected

@@ -6,7 +6,14 @@ import type {
 } from '@ai-marketing/contracts';
 import { describe, expect, it } from 'vitest';
 
-import { applyVariantToTemplate, createVariant, fillVariant } from './effect-template-mix.domain';
+import {
+  applyVariantToTemplate,
+  composeAlgorithmicVariants,
+  createVariant,
+  fillVariant,
+  maximumWeightedAiSelection,
+  maximumWeightedAiSelectionBatch,
+} from './effect-template-mix.domain';
 
 const material = (
   id: string,
@@ -59,6 +66,47 @@ const workspace = (): EffectTemplateMixWorkspace => ({
 });
 
 describe('effect template mix domain', () => {
+  it('recombines cached AI trims into distinct projects while balancing reuse', () => {
+    const value = workspace();
+    value.materials = [
+      ...[0, 1, 2].map((index) => material(`hook-${index}`, 'HOOK')),
+      ...[0, 1, 2].map((index) => material(`effect-${index}`, 'EFFECT')),
+    ];
+    for (let index = 0; index < 3; index += 1) {
+      const variant = createVariant(value);
+      variant.bindings = { 'slot-hook': `hook-${index}`, 'slot-effect': `effect-${index}` };
+      variant.bindingRevisions = { 'slot-hook': 3, 'slot-effect': 3 };
+      variant.offsets = { 'slot-hook': 0.25, 'slot-effect': 0.5 };
+      variant.bindingMetadata = Object.fromEntries(
+        value.template.slots.map((slot) => [
+          slot.id,
+          {
+            source: 'AI',
+            matchScore: 0.8,
+            matchLevel: 'NORMAL',
+            classificationReason: 'Prompt 归槽',
+            trimReason: '关键帧',
+          },
+        ]),
+      );
+      value.variants.push(variant);
+    }
+    const created = composeAlgorithmicVariants(value, 6);
+    expect(created).toHaveLength(6);
+    const all = [...value.variants, ...created];
+    expect(
+      new Set(
+        all.map((variant) =>
+          value.template.slots.map((slot) => variant.bindings[slot.id]).join('|'),
+        ),
+      ).size,
+    ).toBe(9);
+    expect(created.every((variant) => new Set(Object.values(variant.bindings)).size === 2)).toBe(
+      true,
+    );
+    expect(created[0]!.offsets).toEqual({ 'slot-hook': 0.25, 'slot-effect': 0.5 });
+    expect(created[0]!.bindingMetadata?.['slot-hook']?.source).toBe('AI');
+  });
   it('uses maximum matching, records exact revisions and never repeats a clip', () => {
     const value = workspace();
     const result = createVariant(value);
@@ -96,5 +144,67 @@ describe('effect template mix domain', () => {
     expect(sibling.slots[0]!.duration).toBe(2);
     expect(sibling.bindings['slot-hook']).toBe(fixed);
     expect(sibling.status).toBe('SYNCED');
+  });
+
+  it('uses global AI scores, keeps materials unique and marks low-match fill', () => {
+    const slots = workspace().template.slots;
+    const materials = [material('one', 'HOOK'), material('two', 'EFFECT')];
+    const result = maximumWeightedAiSelection(slots, materials, [
+      {
+        materialId: 'one',
+        scores: {
+          HOOK: 0.9,
+          PAIN_POINT: 0,
+          PRODUCT: 0,
+          SELLING_POINT: 0,
+          TRANSFORMATION: 0.8,
+          END: 0,
+        },
+        reasons: { HOOK: '开场动作直接', TRANSFORMATION: '可表现结果' },
+      },
+      {
+        materialId: 'two',
+        scores: {
+          HOOK: 0.55,
+          PAIN_POINT: 0,
+          PRODUCT: 0,
+          SELLING_POINT: 0,
+          TRANSFORMATION: 0.1,
+          END: 0,
+        },
+        reasons: { HOOK: '只能低分补位', TRANSFORMATION: '结果不明显' },
+      },
+    ]);
+    expect(result?.map(({ materialId }) => materialId)).toEqual(['two', 'one']);
+    expect(result?.[0]?.matchLevel).toBe('LOW_MATCH');
+    expect(new Set(result?.map(({ materialId }) => materialId)).size).toBe(2);
+  });
+
+  it('builds as many non-repeating AI output groups as the material pool allows', () => {
+    const slots = workspace().template.slots;
+    const materials = [
+      material('one', 'HOOK'),
+      material('two', 'EFFECT'),
+      material('three', 'HOOK'),
+      material('four', 'EFFECT'),
+    ];
+    const classifications = materials.map((item, index) => ({
+      materialId: item.id,
+      scores: {
+        HOOK: index % 2 === 0 ? 0.9 : 0.2,
+        PAIN_POINT: index % 2 === 1 ? 0.9 : 0.2,
+        PRODUCT: 0,
+        SELLING_POINT: 0,
+        TRANSFORMATION: 0,
+        END: 0,
+      },
+      reasons: {},
+    }));
+
+    const groups = maximumWeightedAiSelectionBatch(slots, materials, classifications);
+
+    expect(groups).toHaveLength(2);
+    expect(groups.flat().map(({ variantIndex }) => variantIndex)).toEqual([0, 0, 1, 1]);
+    expect(new Set(groups.flat().map(({ materialId }) => materialId))).toHaveProperty('size', 4);
   });
 });

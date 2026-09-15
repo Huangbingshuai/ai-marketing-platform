@@ -39,6 +39,13 @@ export type EffectTemplateMixAudio = {
   offset: number;
   volume: number;
 };
+export type EffectTemplateMixBindingMetadata = {
+  source: 'AI' | 'MANUAL';
+  matchScore?: number;
+  matchLevel?: 'NORMAL' | 'LOW_MATCH';
+  classificationReason?: string;
+  trimReason?: string;
+};
 export type EffectTemplateMixVariant = {
   id: string;
   name: string;
@@ -48,6 +55,8 @@ export type EffectTemplateMixVariant = {
   bindings: Record<string, string>;
   bindingRevisions: Record<string, number>;
   offsets: Record<string, number>;
+  /** Optional for schema-v1 compatibility; missing values are historical/manual bindings. */
+  bindingMetadata?: Record<string, EffectTemplateMixBindingMetadata>;
   manualSlotIds: string[];
   conflictSlotIds: string[];
   status: 'CURRENT' | 'PENDING' | 'SYNCED';
@@ -56,6 +65,34 @@ export type EffectTemplateMixVariant = {
   bgm: EffectTemplateMixAudio | null;
   voice: EffectTemplateMixAudio | null;
   originalVolume: number;
+};
+export type EffectTemplateMixAiRunStatus =
+  'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+export type EffectTemplateMixAiRunStage =
+  'CLASSIFYING' | 'MATCHING' | 'SAMPLING' | 'TRIMMING' | 'COMPLETED';
+export type EffectTemplateMixAiRun = {
+  id: string;
+  templateId: string;
+  targetVariantId: string | null;
+  outputVariantId: string | null;
+  status: EffectTemplateMixAiRunStatus;
+  stage: EffectTemplateMixAiRunStage;
+  progress: number;
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+export type EffectTemplateMixMaterialClassification = {
+  materialId: string;
+  role: EffectTemplateMixRole;
+  matchScore: number;
+};
+export type EffectTemplateMixClassificationPool = {
+  templateId: string;
+  runId: string;
+  templateEditVersion: number;
+  items: EffectTemplateMixMaterialClassification[];
 };
 export type EffectTemplateMixTemplate = {
   name: string;
@@ -86,6 +123,9 @@ export type EffectTemplateMixWorkspaceData = {
     stale: boolean;
     editVersion: number;
   }[];
+  aiRuns: EffectTemplateMixAiRun[];
+  /** Latest classification pool whose template and upstream revisions are still current. */
+  classificationPools: EffectTemplateMixClassificationPool[];
 };
 export type SaveEffectTemplateMixRequest = {
   workflowRunId: string;
@@ -104,3 +144,31 @@ export type ValidateEffectTemplateMixRequest = EffectTemplateMixRevisionRequest 
   templateId: string;
 };
 export type ValidateEffectTemplateMixData = { artifacts: WorkingArtifactCommitSummary[] };
+export type CreateEffectTemplateMixAiRunRequest = EffectTemplateMixRevisionRequest & {
+  targetVariantId?: string;
+  idempotencyKey: string;
+};
+export type EffectTemplateMixAiClassification = {
+  materialId: string;
+  scores: Record<EffectTemplateMixRole, number>;
+  reasons: Partial<Record<EffectTemplateMixRole, string>>;
+};
+export type EffectTemplateMixAiSelection = {
+  /** Zero-based output group; absent means the historical single-output group. */
+  variantIndex?: number;
+  slotId: string;
+  role: EffectTemplateMixRole;
+  materialId: string;
+  matchScore: number;
+  matchLevel: 'NORMAL' | 'LOW_MATCH';
+  classificationReason: string;
+  duration: number;
+};
+export type EffectTemplateMixAiTrim = {
+  /** Zero-based output group; absent means the historical single-output group. */
+  variantIndex?: number;
+  slotId: string;
+  materialId: string;
+  trimStartSeconds: number;
+  trimReason: string;
+};
