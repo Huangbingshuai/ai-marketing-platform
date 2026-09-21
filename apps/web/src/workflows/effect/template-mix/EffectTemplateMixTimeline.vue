@@ -469,23 +469,68 @@ const openTransition = (slotId: string): void => {
   }
   emit('openTransition', slotId);
 };
-const onTransitionDragOver = (event: DragEvent, slotId: string): void => {
-  if (trackLocked.VIDEO) return;
-  const types = event.dataTransfer?.types ?? [];
-  if (!types.includes('application/x-effect-transition')) return;
+const transitionDragActive = (event: DragEvent): boolean =>
+  Boolean(
+    props.variant &&
+    !trackLocked.VIDEO &&
+    event.dataTransfer?.types.includes('application/x-effect-transition'),
+  );
+const transitionTargetSlotIdFromClientX = (clientX: number): string => {
+  const slots = props.variant?.slots ?? [];
+  const element = viewport.value;
+  if (!element || slots.length < 2) return '';
+  const bounds = element.getBoundingClientRect();
+  const time = (clientX - bounds.left + element.scrollLeft) / pixelsPerSecond.value;
+  let bestId = '';
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (let index = 1; index < slots.length; index += 1) {
+    const slot = slots[index]!;
+    const range = rangeForSlot(slot.id);
+    if (!range) continue;
+    const distance = Math.abs(range.start - time);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestId = slot.id;
+    }
+  }
+  return bestId;
+};
+const onTransitionDragOver = (event: DragEvent): void => {
+  if (!transitionDragActive(event)) return;
   event.preventDefault();
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
-  transitionDropSlotId.value = slotId;
+  transitionDropSlotId.value = transitionTargetSlotIdFromClientX(event.clientX);
 };
-const onTransitionDragLeave = (slotId: string): void => {
-  if (transitionDropSlotId.value === slotId) transitionDropSlotId.value = '';
-};
-const onTransitionDrop = (event: DragEvent, slotId: string): void => {
-  const transition = event.dataTransfer?.getData('application/x-effect-transition') ?? '';
+const onTransitionDragLeave = (event: DragEvent): void => {
+  const current = event.currentTarget;
+  if (
+    current instanceof Node &&
+    event.relatedTarget instanceof Node &&
+    current.contains(event.relatedTarget)
+  )
+    return;
   transitionDropSlotId.value = '';
+};
+const onTransitionDrop = (event: DragEvent): void => {
+  const transition = event.dataTransfer?.getData('application/x-effect-transition') ?? '';
+  const slotId = transitionTargetSlotIdFromClientX(event.clientX) || transitionDropSlotId.value;
+  transitionDropSlotId.value = '';
+  if (!slotId) return;
   if (!EFFECT_TEMPLATE_MIX_TRANSITIONS.includes(transition as EffectTemplateMixTransition)) return;
   event.preventDefault();
   emit('applyTransition', slotId, transition as EffectTemplateMixTransition);
+};
+const onTrackDragOver = (event: DragEvent): void => {
+  onMaterialDragOver(event);
+  onTransitionDragOver(event);
+};
+const onTrackDragLeave = (event: DragEvent): void => {
+  onMaterialDragLeave(event);
+  onTransitionDragLeave(event);
+};
+const onTrackDrop = (event: DragEvent): void => {
+  onMaterialDrop(event);
+  onTransitionDrop(event);
 };
 
 const addWindowPointerListeners = (): void => {
@@ -1068,9 +1113,9 @@ onBeforeUnmount(() => {
               class="timeline-track video-track"
               :style="{ height: `${videoLaneCount * 70 + 6}px` }"
               :class="{ 'is-hidden': !trackVisible.VIDEO, 'is-locked': trackLocked.VIDEO }"
-              @dragleave="onMaterialDragLeave"
-              @dragover="onMaterialDragOver"
-              @drop="onMaterialDrop"
+              @dragleave="onTrackDragLeave"
+              @dragover="onTrackDragOver"
+              @drop="onTrackDrop"
               @pointerdown="onTrackPointerDown($event, 'VIDEO')"
             >
               <template v-if="variant">
@@ -1159,9 +1204,6 @@ onBeforeUnmount(() => {
                   type="button"
                   :title="`转场：${slot.transition} · ${transitionDurationFor(slot.id).toFixed(1)} 秒 · 拖动左右边缘调整时长`"
                   @pointerdown="startTransitionResize($event, slot.id)"
-                  @dragover="onTransitionDragOver($event, slot.id)"
-                  @dragleave="onTransitionDragLeave(slot.id)"
-                  @drop="onTransitionDrop($event, slot.id)"
                   @click.stop="openTransition(slot.id)"
                 >
                   <span aria-hidden="true">◀▶</span>

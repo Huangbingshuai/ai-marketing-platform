@@ -17,9 +17,9 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain("from './api/effect-template-mix.api'");
     expect(pageSource).toContain('loadEffectTemplateMixWorkspace');
     expect(pageSource).toContain('saveEffectTemplateMixDraft');
+    expect(pageSource).toContain('createEmptyEffectTemplateMixVariant');
     expect(pageSource).toContain('createEffectTemplateMixAiRun');
     expect(pageSource).toContain('getEffectTemplateMixAiRun');
-    expect(pageSource).not.toContain('createEmptyEffectTemplateMixVariant');
     expect(pageSource).toContain('大模型按 Prompt 归槽');
     expect(pageSource).toContain('changeTrimStart');
     expect(pageSource).toContain('applyEffectTemplateMixVariant');
@@ -28,6 +28,14 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).not.toContain('syncEffectTemplateMixVariants');
     expect(pageSource).not.toMatch(/Mock|MOCK|createEffectTemplateMixMock/u);
   });
+  it('creates an empty film project separately from AI operations', () => {
+    expect(pageSource).toContain('<Plus :size="13" />新建成片');
+    expect(pageSource).toContain('@click="createEmptyVariant"');
+    expect(pageSource).toContain('智能成片包装');
+    expect(pageSource).toContain('<Workflow :size="13" />查看工作流');
+    expect(pageSource).toContain('智能成片包装将在后续接入口播、配乐与字幕生成');
+    expect(pageSource).not.toContain('<Plus :size="13" />AI 智能填充');
+  });
   it('keeps configuration and refinement as separate views', () => {
     expect(pageSource).toContain('进入精修工作台');
     expect(pageSource).not.toContain('智能填充并进入精修');
@@ -35,9 +43,8 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('成片精修工作台');
     expect(pageSource).toContain('AI 智能填充');
     expect(pageSource).toContain('尚未生成成片工程');
-    expect(pageSource).toContain('后续可用算法复用六槽素材');
-    expect(pageSource).toContain('算法批量组合');
-    expect(pageSource).toContain('composeEffectTemplateMixVariants');
+    expect(pageSource).not.toContain('算法批量组合');
+    expect(pageSource).not.toContain('composeEffectTemplateMixVariants');
     expect(pageSource).toContain('aria-label="AI 归槽素材筛选"');
     expect(pageSource).toContain('materialRoleOptions');
     expect(pageSource).toContain('selectMaterialRole(option.role)');
@@ -130,6 +137,9 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).not.toContain('@timeupdate="onTime"');
     expect(pageSource).toContain('preload="auto"');
     expect(pageSource).toContain('visibleTimelineSlotIds.has(slot.id)');
+    expect(pageSource).toContain('{{ workspace.variants.length }} 个');
+    expect(pageSource).toContain('const variantDisplayName');
+    expect(pageSource).toContain("成片 ${String(index + 1).padStart(2, '0')}");
     expect(pageSource).not.toContain('class="player-label"');
     expect(pageSource).toContain(':style="stageStyle"');
     expect(pageSource).toContain('const materialPageSize = computed');
@@ -172,7 +182,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('同一成片不能重复使用');
     expect(pageSource).toContain('aria-label="关闭提示"');
     expect(timelineSource).toContain("emit('assignMaterial', materialId, slotId)");
-    expect(timelineSource).toContain('@dragover="onMaterialDragOver"');
+    expect(timelineSource).toContain('@dragover="onTrackDragOver"');
     expect(timelineSource).toContain("'is-material-target': materialDropSlotId === slot.id");
     expect(timelineSource).toContain('translate3d(${playheadLeft}px, 0, 0)');
     expect(timelineSource).toContain('--timeline-bg: #f6f8fc');

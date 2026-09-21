@@ -52,6 +52,21 @@ export const saveEffectTemplateMixDraft = (
     keepalive,
   });
 
+export const createEmptyEffectTemplateMixVariant = (
+  projectId: string,
+  workflowRunId: string,
+  expectedRevision: number,
+  templateId: string,
+): Promise<ApiResponse<EffectTemplateMixWorkspaceData>> =>
+  requestJson(
+    basePath(projectId) + '/templates/' + encodeURIComponent(templateId) + '/empty-variants',
+    {
+      method: 'POST',
+      operation: '新建空成片工程',
+      body: { workflowRunId, expectedRevision },
+    },
+  );
+
 export const createEffectTemplateMixAiRun = (
   projectId: string,
   workflowRunId: string,
@@ -82,21 +97,6 @@ export const getEffectTemplateMixAiRun = (
     operation: '读取智能填充进度',
     signal,
   });
-
-export const composeEffectTemplateMixVariants = (
-  projectId: string,
-  workflowRunId: string,
-  expectedRevision: number,
-  templateId: string,
-): Promise<ApiResponse<EffectTemplateMixWorkspaceData>> =>
-  requestJson(
-    basePath(projectId) + '/templates/' + encodeURIComponent(templateId) + '/algorithm-variants',
-    {
-      method: 'POST',
-      operation: '算法批量组合成片工程',
-      body: { workflowRunId, expectedRevision },
-    },
-  );
 
 export const applyEffectTemplateMixVariant = (
   projectId: string,

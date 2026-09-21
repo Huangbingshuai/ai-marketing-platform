@@ -43,8 +43,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 
 import {
   applyEffectTemplateMixVariant,
-  composeEffectTemplateMixVariants,
   createEffectTemplateMixAiRun,
+  createEmptyEffectTemplateMixVariant,
   getEffectTemplateMixAiRun,
   loadEffectTemplateMixWorkspace,
   saveEffectTemplateMixDraft,
@@ -203,6 +203,7 @@ let playbackAnimationFrame: number | undefined;
 let playbackAnchorMilliseconds = 0;
 let playbackAnchorSeconds = 0;
 let activePlaybackSlotId = '';
+let activeTransitionSignature = '';
 let pendingSeekSyncFrame: number | undefined;
 let seekSyncRequestId = 0;
 let materialGridResizeObserver: ResizeObserver | null = null;
@@ -395,6 +396,8 @@ const activeTransitionPreview = computed<ActiveTransitionPreview | null>(() => {
     if (!incomingRange || !outgoingRange) continue;
     const duration = effectTemplateMixTransitionDuration(incomingSlot, outgoingSlot);
     if (duration <= 0) continue;
+    // Centered transition: the duration is split evenly, half on the outgoing
+    // clip's tail and half on the incoming clip's head around the cut point.
     const start = Math.max(outgoingRange.start, incomingRange.start - duration / 2);
     const end = Math.min(
       currentDuration.value,
@@ -406,7 +409,10 @@ const activeTransitionPreview = computed<ActiveTransitionPreview | null>(() => {
       end,
       incomingSlot,
       outgoingSlot,
-      progress: Math.max(0, Math.min(1, (safeTime - start) / Math.max(end - start, 1 / TIMELINE_FPS))),
+      progress: Math.max(
+        0,
+        Math.min(1, (safeTime - start) / Math.max(end - start, 1 / TIMELINE_FPS)),
+      ),
       start,
       transition: incomingSlot.transition,
     };
@@ -577,6 +583,9 @@ const selectedBindingMetadata = computed(() =>
 const pendingCount = computed(
   () => workspace.value?.variants.filter(({ status }) => status === 'PENDING').length ?? 0,
 );
+const variantDisplayName = (_variant: EffectTemplateMixVariant, index: number): string =>
+  `成片 ${String(index + 1).padStart(2, '0')}`;
+const variantTemplateLabel = computed(() => workspace.value?.template.name?.trim() || '当前模板');
 const complete = computed(
   () =>
     Boolean(workspace.value?.variants.length) &&
@@ -1075,13 +1084,21 @@ const timelineSourceTime = (slotId: string): number | null => {
   const offset = selectedVariant.value?.offsets[slotId] ?? 0;
   return Math.max(0, Math.min(material.duration - 1 / TIMELINE_FPS, offset + elapsed));
 };
-const syncTimelineVideo = (slotId: string, resume: boolean): HTMLVideoElement | null => {
+const syncTimelineVideo = (
+  slotId: string,
+  resume: boolean,
+  seekMode: 'drift' | 'once' = 'drift',
+): HTMLVideoElement | null => {
   const video = timelinePlayers.get(slotId);
   const sourceTime = timelineSourceTime(slotId);
   if (!video || sourceTime === null) return null;
   if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
-    const needsSeek = !positionedTimelinePlayers.has(video);
-    if (needsSeek || Math.abs(video.currentTime - sourceTime) > 1 / TIMELINE_FPS) {
+    const needsSeek =
+      seekMode === 'once'
+        ? !positionedTimelinePlayers.has(video)
+        : !positionedTimelinePlayers.has(video) ||
+          Math.abs(video.currentTime - sourceTime) > 1 / TIMELINE_FPS;
+    if (needsSeek) {
       try {
         video.currentTime = sourceTime;
         positionedTimelinePlayers.add(video);
@@ -1253,6 +1270,18 @@ const applyMaterialToSlot = (material: EffectTemplateMixMaterial, slotId: string
   if (!variant.manualSlotIds.includes(slot.id)) variant.manualSlotIds.push(slot.id);
   variant.conflictSlotIds = variant.conflictSlotIds.filter((id) => id !== slot.id);
   if (activeUi.value) activeUi.value.selectedSlotId = slot.id;
+  bump();
+};
+const removeMaterialFromSlot = (slotId: string): void => {
+  const variant = selectedVariant.value;
+  const slot = variant?.slots.find(({ id }) => id === slotId);
+  if (!variant || !slot || !variant.bindings[slot.id]) return;
+  rememberTimelineEdit();
+  delete variant.bindings[slot.id];
+  delete variant.bindingRevisions[slot.id];
+  delete variant.offsets[slot.id];
+  if (variant.bindingMetadata) delete variant.bindingMetadata[slot.id];
+  variant.manualSlotIds = variant.manualSlotIds.filter((id) => id !== slot.id);
   bump();
 };
 const clearMaterialPointerTarget = (): void => {
@@ -1554,6 +1583,31 @@ const changeTransition = (transition: EffectTemplateMixTransition): void => {
   if (!selectedSlot.value) return;
   changeTransitionForSlot(selectedSlot.value.id, transition);
 };
+const removeTransitionFromSlot = (slotId: string): void => {
+  const variant = selectedVariant.value;
+  const slot = variant?.slots.find(({ id }) => id === slotId);
+  if (!variant || !slot) return;
+  const index = variant.slots.findIndex(({ id }) => id === slot.id);
+  if (index <= 0 || slot.transition === '硬切') return;
+  rememberTimelineEdit();
+  slot.transition = '硬切';
+  slot.transitionDuration = 0;
+  activeTransitionSlotId.value = '';
+  bump();
+};
+const deleteSelectedTimelineItem = (): void => {
+  const variant = selectedVariant.value;
+  if (!variant) return;
+  const transitionSlotId = activeTransitionSlotId.value;
+  const transitionSlot = variant.slots.find(({ id }) => id === transitionSlotId);
+  if (transitionSlot && transitionSlot.transition !== '硬切') {
+    removeTransitionFromSlot(transitionSlotId);
+    return;
+  }
+  const slotId = activeUi.value?.selectedSlotId ?? '';
+  const slot = variant.slots.find(({ id }) => id === slotId);
+  if (slot && variant.bindings[slot.id]) removeMaterialFromSlot(slot.id);
+};
 const previewTransitionDuration = (slotId: string, duration: number): void => {
   transitionPreviewDurations[slotId] = duration;
 };
@@ -1593,6 +1647,44 @@ const beginTransitionDrag = (event: DragEvent, transition: EffectTemplateMixTran
   event.dataTransfer.setData('application/x-effect-transition', transition);
   event.dataTransfer.setData('text/plain', transition);
 };
+const createEmptyVariant = async (): Promise<void> => {
+  if (!workspace.value || mutating.value || activeAiRun.value) return;
+  if (!(await flushPendingEdits()) || draftRevision.value === null) return;
+  const templateId = activeTemplateId.value;
+  const previousIds = new Set(workspace.value.variants.map(({ id }) => id));
+  mutating.value = true;
+  try {
+    const response = await createEmptyEffectTemplateMixVariant(
+      props.projectId,
+      props.workflowRunId,
+      draftRevision.value,
+      templateId,
+    );
+    installWorkspaceData(response.data);
+    activeTemplateId.value = templateId;
+    const entry = catalog.value.find(({ id }) => id === templateId);
+    const created = entry?.workspace.variants.find(({ id }) => !previousIds.has(id));
+    const ui = uiByTemplate[templateId];
+    if (created && ui) {
+      ui.selectedVariantId = created.id;
+      ui.selectedSlotId = created.slots[0]?.id ?? '';
+    }
+    saveState.value = 'saved';
+    showNotice('已新建空成片，可从左侧素材库拖入画面');
+  } catch (error) {
+    showNotice(error instanceof Error ? error.message : '新建成片失败', 'error');
+  } finally {
+    mutating.value = false;
+  }
+};
+const showPackagingPlaceholder = (target: 'ACTION' | 'WORKFLOW'): void => {
+  showNotice(
+    target === 'ACTION'
+      ? '智能成片包装将在后续接入口播、配乐与字幕生成'
+      : '智能成片包装工作流将在后续版本开放',
+    'warning',
+  );
+};
 const startAiFill = async (target: EffectTemplateMixVariant | null): Promise<void> => {
   if (!workspace.value || mutating.value || activeAiRun.value) return;
   if (!(await flushPendingEdits()) || draftRevision.value === null) return;
@@ -1623,31 +1715,6 @@ const startAiFill = async (target: EffectTemplateMixVariant | null): Promise<voi
   }
 };
 const refill = (): void => void startAiFill(selectedVariant.value);
-const createVariantWithAi = (): void => void startAiFill(null);
-const composeVariants = async (): Promise<void> => {
-  if (!workspace.value || mutating.value || activeAiRun.value) return;
-  if (!(await flushPendingEdits()) || draftRevision.value === null) return;
-  const templateId = activeTemplateId.value;
-  const previousCount = workspace.value.variants.length;
-  mutating.value = true;
-  try {
-    const response = await composeEffectTemplateMixVariants(
-      props.projectId,
-      props.workflowRunId,
-      draftRevision.value,
-      templateId,
-    );
-    installWorkspaceData(response.data);
-    showNotice(
-      `已用归槽与 AI 截取素材组合 ${workspace.value!.variants.length - previousCount} 条不同成片，未重复调用模型`,
-      'success',
-    );
-  } catch (error) {
-    showNotice(error instanceof Error ? error.message : '算法组合失败', 'error');
-  } finally {
-    mutating.value = false;
-  }
-};
 const retryFailedAiRun = (): void => {
   const run = failedAiRun.value;
   if (run?.targetVariantId && activeUi.value) {
@@ -1717,6 +1784,7 @@ const stopPlaybackClock = (): void => {
   if (playbackAnimationFrame !== undefined) cancelAnimationFrame(playbackAnimationFrame);
   playbackAnimationFrame = undefined;
   activePlaybackSlotId = '';
+  activeTransitionSignature = '';
 };
 const resetPlaybackClock = (): void => {
   playbackAnchorMilliseconds = performance.now();
@@ -1727,8 +1795,19 @@ const syncPlayingVideoFrame = (): void => {
   if (transition) {
     const activeIds = [transition.outgoingSlot.id, transition.incomingSlot.id];
     pauseTimelinePlayers(activeIds);
-    const outgoing = syncTimelineVideo(transition.outgoingSlot.id, true);
-    const incoming = syncTimelineVideo(transition.incomingSlot.id, true);
+    const signature = `${transition.outgoingSlot.id}->${transition.incomingSlot.id}`;
+    const entering = activeTransitionSignature !== signature;
+    if (entering) activeTransitionSignature = signature;
+    const outgoing = syncTimelineVideo(
+      transition.outgoingSlot.id,
+      true,
+      entering ? 'drift' : 'once',
+    );
+    const incoming = syncTimelineVideo(
+      transition.incomingSlot.id,
+      true,
+      entering ? 'drift' : 'once',
+    );
     if (!outgoing && !incoming) {
       displayedTimelineSlotId.value = '';
       return;
@@ -1837,7 +1916,10 @@ const syncPlayerToPlayhead = async (resume = false): Promise<void> => {
         playerUnavailableSlotId.value = '';
         displayedTimelineSlotId.value = transition.incomingSlot.id;
         transitionFrame.value = '';
-      } else if (outgoing?.readyState && outgoing.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      } else if (
+        outgoing?.readyState &&
+        outgoing.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+      ) {
         playerUnavailableSlotId.value = '';
         displayedTimelineSlotId.value = transition.outgoingSlot.id;
       }
@@ -2051,6 +2133,11 @@ const onEditorKeydown = (event: KeyboardEvent): void => {
   if (event.code === 'Space') {
     event.preventDefault();
     togglePreviewPlayback();
+    return;
+  }
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    event.preventDefault();
+    deleteSelectedTimelineItem();
     return;
   }
   if (event.key.toLocaleLowerCase() === 'f') {
@@ -2296,11 +2383,16 @@ defineExpose({ flushPendingEdits });
             <button
               class="button primary"
               type="button"
-              :disabled="mutating || Boolean(activeAiRun) || workspace.materials.length < 6"
+              :disabled="
+                mutating ||
+                Boolean(activeAiRun) ||
+                !selectedVariant ||
+                workspace.materials.length < 6
+              "
               @click="refill"
             >
               <Bot :size="15" />{{
-                activeAiRun ? '智能填充中…' : selectedVariant ? '重新智能填充' : 'AI 智能填充'
+                activeAiRun ? '智能填充中…' : selectedVariant ? '重新智能填充' : '智能填充'
               }}
             </button>
             <button
@@ -2609,8 +2701,7 @@ defineExpose({ flushPendingEdits });
                     :ref="(element) => setTimelinePlayer(slot.id, element)"
                     class="timeline-stage-video"
                     :class="{
-                      'is-visible':
-                        !auditionMaterial && visibleTimelineSlotIds.has(slot.id),
+                      'is-visible': !auditionMaterial && visibleTimelineSlotIds.has(slot.id),
                     }"
                     :style="timelinePlayerStyle(slot.id)"
                     :src="materialForSlot(slot.id)?.contentUrl"
@@ -2648,7 +2739,7 @@ defineExpose({ flushPendingEdits });
                 <div v-if="!selectedVariant && !auditionMaterial" class="player-empty">
                   <Film :size="34" />
                   <b>尚未生成成片</b>
-                  <span>点击右上角“AI 智能填充”开始生成时间轴工程</span>
+                  <span>点击右侧“新建成片”，再从素材库拖入画面</span>
                 </div>
               </div>
             </div>
@@ -2794,24 +2885,39 @@ defineExpose({ flushPendingEdits });
           </div>
           <aside class="projects">
             <header>
-              <strong>成片项目</strong
-              ><button
-                class="button compact"
-                :disabled="
-                  mutating ||
-                  Boolean(activeAiRun) ||
-                  workspace.variants.length >= 100 ||
-                  workspace.materials.length < 6
-                "
-                :title="
-                  workspace.variants.length
-                    ? '复用已归槽并经 AI 裁剪的素材，算法组合至 100 条不同工程'
-                    : '先运行 AI 智能填充建立素材裁剪池'
-                "
-                @click="workspace.variants.length ? composeVariants() : createVariantWithAi()"
-              >
-                <Plus :size="13" />{{ workspace.variants.length ? '算法批量组合' : 'AI 智能填充' }}
-              </button>
+              <div class="projects-title">
+                <strong>成片项目</strong>
+                <span class="project-count">{{ workspace.variants.length }} 个</span>
+              </div>
+              <small class="projects-subtitle">{{ variantTemplateLabel }} · 可精修成片</small>
+              <div class="project-actions">
+                <button
+                  class="button compact"
+                  type="button"
+                  :disabled="!selectedVariant"
+                  title="后续将支持为当前成片生成口播、配乐和字幕"
+                  @click="showPackagingPlaceholder('ACTION')"
+                >
+                  <Sparkles :size="13" />智能成片包装
+                </button>
+                <button
+                  class="button compact"
+                  type="button"
+                  title="查看智能成片包装的后续工作流"
+                  @click="showPackagingPlaceholder('WORKFLOW')"
+                >
+                  <Workflow :size="13" />查看工作流
+                </button>
+                <button
+                  class="button compact primary"
+                  type="button"
+                  :disabled="mutating || Boolean(activeAiRun) || workspace.variants.length >= 100"
+                  title="新建一个不包含任何素材的空成片工程"
+                  @click="createEmptyVariant"
+                >
+                  <Plus :size="13" />新建成片
+                </button>
+              </div>
             </header>
             <div>
               <article
@@ -2825,33 +2931,34 @@ defineExpose({ flushPendingEdits });
                     v-if="coverMaterial(variant)"
                     :source="coverMaterial(variant)!.contentUrl"
                     :version="`${coverMaterial(variant)!.artifactRevision}:${coverMaterial(variant)!.contentHash}`"
-                    :alt="`${variant.name} 封面`"
+                    :alt="`${variantDisplayName(variant, index)} 封面`"
                   />
                   <b v-else>{{ String(index + 1).padStart(2, '0') }}</b>
                 </span>
                 <div>
-                  <b>{{ variant.name }}</b
-                  ><small
-                    >{{ variantDuration(variant).toFixed(1) }}s ·
-                    {{
-                      variant.conflictSlotIds.length
-                        ? variant.conflictSlotIds.length + ' 个缺口'
-                        : '时间轴完整'
-                    }}</small
-                  >
+                  <b>{{ variantDisplayName(variant, index) }}</b
+                  ><small>
+                    <span
+                      >{{ variantDuration(variant).toFixed(1) }}s ·
+                      {{
+                        variant.conflictSlotIds.length
+                          ? variant.conflictSlotIds.length + ' 个缺口'
+                          : '完整'
+                      }}</span
+                    ><em>{{
+                      variant.status === 'PENDING'
+                        ? '待同步'
+                        : variant.conflictSlotIds.length
+                          ? '待补齐'
+                          : '可精修'
+                    }}</em>
+                  </small>
                 </div>
-                <em>{{
-                  variant.status === 'PENDING'
-                    ? '待同步'
-                    : variant.conflictSlotIds.length
-                      ? '待补齐'
-                      : '可精修'
-                }}</em>
               </article>
               <div v-if="!workspace.variants.length" class="project-empty">
                 <Film :size="24" />
                 <b>还没有成片工程</b>
-                <span>先运行 AI 归槽与裁剪；后续可用算法复用六槽素材，批量组合不同成片。</span>
+                <span>点击“新建成片”创建空工程，再从素材库拖入需要的画面。</span>
               </div>
             </div>
           </aside>
@@ -4458,10 +4565,51 @@ button:disabled {
 }
 .projects > header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
   padding: 11px;
   border-bottom: 1px solid #e2e8f0;
+}
+.projects > header > strong {
+  flex: 0 0 auto;
+}
+.projects-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.project-count {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  color: #2563eb;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+}
+.projects-subtitle {
+  overflow: hidden;
+  color: #64748b;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9px;
+}
+.project-actions {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 5px;
+}
+.project-actions .button {
+  width: 100%;
+  justify-content: center;
+  white-space: nowrap;
+}
+.project-actions .primary {
+  grid-column: 1 / -1;
 }
 .projects > div {
   min-height: 0;
@@ -4510,23 +4658,36 @@ button:disabled {
   display: grid;
   min-width: 0;
 }
-.projects article em {
-  grid-column: 2;
-  justify-self: start;
-}
 .projects article b {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 11px;
 }
-.projects article small,
-.projects article em {
+.projects article small {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
   color: #64748b;
   font-size: 9px;
+  line-height: 1.25;
+}
+.projects article small > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .projects article em {
+  flex: 0 0 auto;
+  padding: 1px 4px;
   color: #b45309;
+  background: #fff7ed;
+  border-radius: 3px;
+  font-size: 8px;
+  font-style: normal;
+  white-space: nowrap;
 }
 .project-empty {
   height: 100%;

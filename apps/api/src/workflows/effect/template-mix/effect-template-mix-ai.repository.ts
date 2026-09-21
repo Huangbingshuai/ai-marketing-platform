@@ -363,10 +363,9 @@ export class EffectTemplateMixAiRepository {
       const existing = Array.isArray(run.trimResult) ? (run.trimResult as unknown[]) : [];
       const byKey = new Map<string, unknown>();
       for (const item of [...existing, ...trims]) {
-        const value = item as { variantIndex?: unknown; slotId?: unknown };
-        if (typeof value.slotId !== 'string') continue;
-        const index = typeof value.variantIndex === 'number' ? value.variantIndex : 0;
-        byKey.set(`${index}:${value.slotId}`, item);
+        const value = item as { materialId?: unknown };
+        if (typeof value.materialId !== 'string') continue;
+        byKey.set(value.materialId, item);
       }
       const merged = [...byKey.values()];
       const selections = Array.isArray(run.selectionResult) ? run.selectionResult.length : 0;

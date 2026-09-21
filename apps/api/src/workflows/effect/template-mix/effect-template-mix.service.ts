@@ -25,11 +25,13 @@ import type { WorkingArtifactUpsertInput } from '../../../platform/workflow/work
 import {
   applyVariantToTemplate,
   balancedSlotAssignment,
-  composeAlgorithmicVariants,
+  buildAssignedPools,
+  createEmptyVariant,
   createVariant,
+  enumerateAssignedVariants,
   fillVariant,
   maximumWeightedAiSelection,
-  maximumWeightedAiSelectionBatch,
+  selectAssignedVariant,
 } from './effect-template-mix.domain';
 import { EffectTemplateMixAiRepository } from './effect-template-mix-ai.repository';
 import type { EffectTemplateMixAiSnapshot } from './effect-template-mix-ai.types';
@@ -145,8 +147,7 @@ const classificationsValid = (
   );
 };
 
-const aiResultKey = (value: { variantIndex?: number; slotId: string }): string =>
-  `${value.variantIndex ?? 0}:${value.slotId}`;
+const aiResultKey = (value: { materialId: string }): string => value.materialId;
 
 const classificationSlotSignature = (
   slots: Array<{ role: EffectTemplateMixRole; label: string }>,
@@ -471,11 +472,13 @@ export class EffectTemplateMixService {
       (slot) => !lockedBindings.some((binding) => binding.slotId === slot.id),
     );
     const lockedIds = new Set(lockedBindings.map(({ materialId }) => materialId));
-    if (!target) {
-      entry!.workspace.variants.forEach((variant) =>
-        Object.values(variant.bindings).forEach((materialId) => lockedIds.add(materialId)),
+    const existingVariantBindings = entry!.workspace.variants
+      .filter((variant) => variant.id !== targetVariantId)
+      .map((variant) =>
+        slots
+          .map((slot) => ({ slotId: slot.id, materialId: variant.bindings[slot.id] ?? '' }))
+          .filter(({ materialId }) => Boolean(materialId) && materialById.has(materialId)),
       );
-    }
     const durationFeasible = maximumWeightedAiSelection(
       unlockedSlots.map((slot) => ({ ...slot, purpose: 'HOOK', transition: '硬切' })),
       materials.map(({ id, duration }) => ({ id, duration, available: true })),
@@ -511,8 +514,9 @@ export class EffectTemplateMixService {
       },
       draftRevision: expectedRevision,
       targetVariantId: targetVariantId ?? null,
-      maxOutputVariants: target ? 1 : Math.min(20, 100 - entry!.workspace.variants.length),
+      maxOutputVariants: target ? 1 : 100 - entry!.workspace.variants.length,
       lockedBindings,
+      existingVariantBindings,
       reuseCounts: Object.fromEntries(
         materials.map((material) => [
           material.id,
@@ -671,13 +675,7 @@ export class EffectTemplateMixService {
       );
     const lockedSlotIds = new Set(snapshot.lockedBindings.map(({ slotId }) => slotId));
     const lockedMaterialIds = new Set(snapshot.lockedBindings.map(({ materialId }) => materialId));
-    const slots = snapshot.template.slots
-      .filter(({ id }) => !lockedSlotIds.has(id))
-      .map((slot) => ({
-        ...slot,
-        purpose: 'HOOK' as const,
-        transition: '硬切' as const,
-      }));
+    const slots = snapshot.template.slots.filter(({ id }) => !lockedSlotIds.has(id));
     const materials = snapshot.materials.map(({ id, duration }) => ({
       id,
       duration,
@@ -686,37 +684,47 @@ export class EffectTemplateMixService {
     const reuseCounts = new Map(Object.entries(snapshot.reuseCounts ?? {}));
     let selections: EffectTemplateMixAiSelection[];
     if (snapshot.targetVariantId) {
-      const selected = maximumWeightedAiSelection(
+      selections = selectAssignedVariant(
         slots,
         materials,
         classifications,
         lockedMaterialIds,
         reuseCounts,
       );
-      selections = selected?.map((item) => ({ ...item, variantIndex: 0 })) ?? [];
+      if (selections.length !== slots.length)
+        throw new ApiHttpException(
+          '部分槽位归槽素材不足，无法完成重新智能填充',
+          HttpStatus.BAD_REQUEST,
+          'VALIDATION_ERROR',
+        );
     } else {
-      const alreadyUsed = new Set(
-        Object.entries(snapshot.reuseCounts ?? {})
-          .filter(([, count]) => count > 0)
-          .map(([materialId]) => materialId),
-      );
-      selections = maximumWeightedAiSelectionBatch(
+      const pools = buildAssignedPools(slots, materials, classifications);
+      const bottleneck = slots.find((slot) => !(pools.get(slot.role)?.length));
+      if (bottleneck)
+        throw new ApiHttpException(
+          `「${bottleneck.label}」槽位归槽素材不足，无法生成完整成片，请补充该槽位方向的素材`,
+          HttpStatus.BAD_REQUEST,
+          'VALIDATION_ERROR',
+        );
+      const variants = enumerateAssignedVariants(
         slots,
         materials,
         classifications,
-        alreadyUsed,
-        reuseCounts,
-        snapshot.maxOutputVariants ?? 20,
-      ).flat();
-    }
-    if (!selections.length)
-      throw new ApiHttpException(
-        snapshot.targetVariantId
-          ? '无法为六个槽位选出互不重复且时长足够的素材'
-          : '剩余未使用素材不足以再生成一条完整成片',
-        HttpStatus.BAD_REQUEST,
-        'VALIDATION_ERROR',
+        snapshot.existingVariantBindings ?? [],
+        snapshot.maxOutputVariants ?? 0,
       );
+      const trimPlan = new Map<string, EffectTemplateMixAiSelection>();
+      for (const variant of variants) {
+        for (const selection of variant) trimPlan.set(selection.materialId, selection);
+      }
+      selections = [...trimPlan.values()];
+      if (!selections.length)
+        throw new ApiHttpException(
+          '剩余素材不足以再生成一条完整成片',
+          HttpStatus.BAD_REQUEST,
+          'VALIDATION_ERROR',
+        );
+    }
     const saved = await this.aiRuns!.saveSelection(
       projectId,
       runId,
@@ -795,8 +803,11 @@ export class EffectTemplateMixService {
       throw new ApiHttpException('智能填充任务租约已失效', HttpStatus.CONFLICT, 'CONFLICT');
     const snapshot = run.inputSnapshot as unknown as EffectTemplateMixAiSnapshot;
     const selections = run.selectionResult as unknown as EffectTemplateMixAiSelection[];
+    const classifications = run.classificationResult as unknown as EffectTemplateMixAiClassification[];
     if (!Array.isArray(selections))
       throw new ApiHttpException('智能填充尚未完成素材匹配', HttpStatus.CONFLICT, 'CONFLICT');
+    if (!Array.isArray(classifications) || !classificationsValid(snapshot, classifications, true))
+      throw new ApiHttpException('Prompt 归槽结果缺失或无效', HttpStatus.CONFLICT, 'CONFLICT');
     const trimByKey = new Map(trims.map((item) => [aiResultKey(item), item]));
     if (
       new Set(selections.map(aiResultKey)).size !== selections.length ||
@@ -860,29 +871,34 @@ export class EffectTemplateMixService {
         'CONFLICT',
       );
     if (snapshot.targetVariantId && !currentTarget) this.notFound('当前成片工程不存在');
-    const groupedSelections = new Map<number, EffectTemplateMixAiSelection[]>();
-    for (const selection of selections) {
-      const index = selection.variantIndex ?? 0;
-      const group = groupedSelections.get(index) ?? [];
-      group.push(selection);
-      groupedSelections.set(index, group);
-    }
-    const orderedGroups = [...groupedSelections.entries()].sort(([left], [right]) => left - right);
-    if (
-      !orderedGroups.length ||
-      orderedGroups.some(([index], position) => index !== position) ||
-      orderedGroups.some(([, group]) => {
-        const expectedCount = snapshot.targetVariantId
-          ? currentSlots.length - snapshot.lockedBindings.length
-          : currentSlots.length;
-        return (
-          group.length !== expectedCount ||
-          new Set(group.map(({ slotId }) => slotId)).size !== group.length ||
-          new Set(group.map(({ materialId }) => materialId)).size !== group.length
+    const materials = snapshot.materials.map(({ id, duration }) => ({
+      id,
+      duration,
+      available: true,
+    }));
+    const lockedSlotIds = new Set(snapshot.lockedBindings.map(({ slotId }) => slotId));
+    const unlockedSlots = currentSlots.filter(({ id }) => !lockedSlotIds.has(id));
+    const variantSelections: EffectTemplateMixAiSelection[][] = snapshot.targetVariantId
+      ? [
+          selectAssignedVariant(
+            unlockedSlots,
+            materials,
+            classifications,
+            new Set(snapshot.lockedBindings.map(({ materialId }) => materialId)),
+            new Map(Object.entries(snapshot.reuseCounts ?? {})),
+          ),
+        ]
+      : enumerateAssignedVariants(
+          unlockedSlots,
+          materials,
+          classifications,
+          snapshot.existingVariantBindings ?? [],
+          snapshot.maxOutputVariants ?? 0,
         );
-      }) ||
-      (snapshot.targetVariantId && orderedGroups.length !== 1) ||
-      (!snapshot.targetVariantId && entry!.workspace.variants.length + orderedGroups.length > 100)
+    if (
+      !variantSelections.length ||
+      (snapshot.targetVariantId && variantSelections[0]!.length !== unlockedSlots.length) ||
+      (!snapshot.targetVariantId && entry!.workspace.variants.length + variantSelections.length > 100)
     )
       throw new ApiHttpException(
         'AI 成片批次结构无效或超过模板工程上限',
@@ -891,12 +907,12 @@ export class EffectTemplateMixService {
       );
     const outputVariantIds: string[] = [];
     let draftChanged = false;
-    for (const [variantIndex, group] of orderedGroups) {
+    for (const group of variantSelections) {
       let variant = currentTarget;
       const previousVariantHash = variant ? workflowStateHash(variant) : null;
       if (!variant) {
         variant = {
-          id: variantIndex === 0 ? run.id : randomUUID(),
+          id: outputVariantIds.length === 0 ? run.id : randomUUID(),
           name: entry!.workspace.template.name + ' · ' + (entry!.workspace.variants.length + 1),
           appliedTemplateVersion: entry!.workspace.template.editVersion,
           slots: JSON.parse(
@@ -918,8 +934,8 @@ export class EffectTemplateMixService {
         entry!.workspace.variants.push(variant);
       }
       variant.bindingMetadata ??= {};
-      const unlockedSlotIds = new Set(group.map(({ slotId }) => slotId));
-      for (const slotId of unlockedSlotIds) {
+      const slotIdsToSet = new Set(group.map(({ slotId }) => slotId));
+      for (const slotId of slotIdsToSet) {
         delete variant.bindings[slotId];
         delete variant.bindingRevisions[slotId];
         delete variant.offsets[slotId];
@@ -1011,27 +1027,21 @@ export class EffectTemplateMixService {
     });
   }
 
-  async composeVariants(
+  async createEmptyVariant(
     projectId: string,
     workflowRunId: string,
     templateId: string,
     expectedRevision: number,
   ): Promise<EffectTemplateMixWorkspaceData> {
     return this.mutate(projectId, workflowRunId, expectedRevision, templateId, (workspace) => {
-      if (workspace.variants.length >= 100)
+      if (workspace.variants.length >= 100) {
         throw new ApiHttpException(
-          '当前模板已达到 100 个成片工程上限',
+          '单个模板最多保留 100 个成片工程',
           HttpStatus.BAD_REQUEST,
           'VALIDATION_ERROR',
         );
-      const variants = composeAlgorithmicVariants(workspace);
-      if (!variants.length)
-        throw new ApiHttpException(
-          '尚无可复用的六槽 AI 裁剪素材，请先完成智能填充',
-          HttpStatus.BAD_REQUEST,
-          'VALIDATION_ERROR',
-        );
-      workspace.variants.push(...variants);
+      }
+      workspace.variants.push(createEmptyVariant(workspace));
       workspace.editVersion += 1;
     });
   }

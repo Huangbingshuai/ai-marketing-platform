@@ -11,11 +11,13 @@ import { describe, expect, it } from 'vitest';
 import {
   applyVariantToTemplate,
   balancedSlotAssignment,
-  composeAlgorithmicVariants,
+  buildAssignedPools,
+  createEmptyVariant,
   createVariant,
+  enumerateAssignedVariants,
   fillVariant,
   maximumWeightedAiSelection,
-  maximumWeightedAiSelectionBatch,
+  selectAssignedVariant,
 } from './effect-template-mix.domain';
 
 const material = (
@@ -92,47 +94,16 @@ const balancedClassification = (
 ): EffectTemplateMixAiClassification => ({ materialId, scores, reasons: {} });
 
 describe('effect template mix domain', () => {
-  it('recombines cached AI trims into distinct projects while balancing reuse', () => {
+  it('creates a genuinely empty project even when matching materials exist', () => {
     const value = workspace();
-    value.materials = [
-      ...[0, 1, 2].map((index) => material(`hook-${index}`, 'HOOK')),
-      ...[0, 1, 2].map((index) => material(`effect-${index}`, 'EFFECT')),
-    ];
-    for (let index = 0; index < 3; index += 1) {
-      const variant = createVariant(value);
-      variant.bindings = { 'slot-hook': `hook-${index}`, 'slot-effect': `effect-${index}` };
-      variant.bindingRevisions = { 'slot-hook': 3, 'slot-effect': 3 };
-      variant.offsets = { 'slot-hook': 0.25, 'slot-effect': 0.5 };
-      variant.bindingMetadata = Object.fromEntries(
-        value.template.slots.map((slot) => [
-          slot.id,
-          {
-            source: 'AI',
-            matchScore: 0.8,
-            matchLevel: 'NORMAL',
-            classificationReason: 'Prompt 归槽',
-            trimReason: '关键帧',
-          },
-        ]),
-      );
-      value.variants.push(variant);
-    }
-    const created = composeAlgorithmicVariants(value, 6);
-    expect(created).toHaveLength(6);
-    const all = [...value.variants, ...created];
-    expect(
-      new Set(
-        all.map((variant) =>
-          value.template.slots.map((slot) => variant.bindings[slot.id]).join('|'),
-        ),
-      ).size,
-    ).toBe(9);
-    expect(created.every((variant) => new Set(Object.values(variant.bindings)).size === 2)).toBe(
-      true,
-    );
-    expect(created[0]!.offsets).toEqual({ 'slot-hook': 0.25, 'slot-effect': 0.5 });
-    expect(created[0]!.bindingMetadata?.['slot-hook']?.source).toBe('AI');
+    const result = createEmptyVariant(value);
+    expect(result.slots).toEqual(value.template.slots);
+    expect(result.bindings).toEqual({});
+    expect(result.bindingRevisions).toEqual({});
+    expect(result.offsets).toEqual({});
+    expect(result.conflictSlotIds).toEqual([]);
   });
+
   it('uses maximum matching, records exact revisions and never repeats a clip', () => {
     const value = workspace();
     const result = createVariant(value);
@@ -206,32 +177,93 @@ describe('effect template mix domain', () => {
     expect(new Set(result?.map(({ materialId }) => materialId)).size).toBe(2);
   });
 
-  it('builds as many non-repeating AI output groups as the material pool allows', () => {
-    const slots = workspace().template.slots;
-    const materials = [
-      material('one', 'HOOK'),
-      material('two', 'EFFECT'),
-      material('three', 'HOOK'),
-      material('four', 'EFFECT'),
-    ];
-    const classifications = materials.map((item, index) => ({
-      materialId: item.id,
-      scores: {
-        HOOK: index % 2 === 0 ? 0.9 : 0.2,
-        PAIN_POINT: index % 2 === 1 ? 0.9 : 0.2,
-        PRODUCT: 0,
-        SELLING_POINT: 0,
-        TRANSFORMATION: 0,
-        END: 0,
-      },
-      reasons: {},
-    }));
+  const sixSlots = (): Array<{ id: string; role: EffectTemplateMixRole; duration: number }> => [
+    { id: 'slot-hook', role: 'HOOK', duration: 3 },
+    { id: 'slot-pain', role: 'PAIN_POINT', duration: 3 },
+    { id: 'slot-product', role: 'PRODUCT', duration: 3 },
+    { id: 'slot-selling', role: 'SELLING_POINT', duration: 3 },
+    { id: 'slot-transform', role: 'TRANSFORMATION', duration: 3 },
+    { id: 'slot-end', role: 'END', duration: 3 },
+  ];
 
-    const groups = maximumWeightedAiSelectionBatch(slots, materials, classifications);
+  const assignedSetup = (perRole: number) => {
+    const slots = sixSlots();
+    const materials: Array<{ id: string; duration: number; available: boolean }> = [];
+    const classifications: EffectTemplateMixAiClassification[] = [];
+    for (const slot of slots) {
+      for (let index = 0; index < perRole; index += 1) {
+        const id = `${slot.role.toLowerCase()}-${index}`;
+        materials.push({ id, duration: 4, available: true });
+        classifications.push({
+          materialId: id,
+          scores: { ...zeroScores(), [slot.role]: 0.9 },
+          reasons: {},
+        });
+      }
+    }
+    return { slots, materials, classifications };
+  };
 
-    expect(groups).toHaveLength(2);
-    expect(groups.flat().map(({ variantIndex }) => variantIndex)).toEqual([0, 0, 1, 1]);
-    expect(new Set(groups.flat().map(({ materialId }) => materialId))).toHaveProperty('size', 4);
+  it('hard-assigns every clip to exactly one role and never borrows across slots', () => {
+    const { slots, materials, classifications } = assignedSetup(3);
+    const pools = buildAssignedPools(slots, materials, classifications);
+    const seen = new Set<string>();
+    for (const items of pools.values()) {
+      for (const item of items) expect(seen.has(item.materialId)).toBe(false);
+      for (const item of items) seen.add(item.materialId);
+    }
+    expect(seen.size).toBe(18);
+    for (const slot of slots) expect(pools.get(slot.role)).toHaveLength(3);
+    const variants = enumerateAssignedVariants(slots, materials, classifications, [], 100);
+    for (const variant of variants) {
+      expect(variant).toHaveLength(6);
+      for (const selection of variant) {
+        const slot = slots.find(({ id }) => id === selection.slotId)!;
+        expect(selection.role).toBe(slot.role);
+      }
+    }
+  });
+
+  it('reuses clips across variants while keeping pairwise overlap within budget', () => {
+    const { slots, materials, classifications } = assignedSetup(3);
+    const variants = enumerateAssignedVariants(slots, materials, classifications, [], 100);
+    expect(variants.length).toBeGreaterThan(3);
+    for (let left = 0; left < variants.length; left += 1) {
+      for (let right = left + 1; right < variants.length; right += 1) {
+        const bindings = new Map(
+          variants[left]!.map(({ slotId, materialId }) => [slotId, materialId]),
+        );
+        const shared = variants[right]!.filter(
+          ({ slotId, materialId }) => bindings.get(slotId) === materialId,
+        ).length;
+        expect(shared).toBeLessThanOrEqual(2);
+      }
+    }
+  });
+
+  it('returns no variants when a slot role has no assigned clips', () => {
+    const { slots, materials, classifications } = assignedSetup(3);
+    const withoutEnd = materials.filter(({ id }) => !id.startsWith('end-'));
+    const withoutEndClassifications = classifications.filter(
+      ({ materialId }) => !materialId.startsWith('end-'),
+    );
+    expect(buildAssignedPools(slots, withoutEnd, withoutEndClassifications).get('END')).toHaveLength(
+      0,
+    );
+    expect(
+      enumerateAssignedVariants(slots, withoutEnd, withoutEndClassifications, [], 100),
+    ).toEqual([]);
+  });
+
+  it('fills a single variant drawing only from each role own pool', () => {
+    const { slots, materials, classifications } = assignedSetup(3);
+    const selections = selectAssignedVariant(slots, materials, classifications);
+    expect(selections).toHaveLength(6);
+    expect(new Set(selections.map(({ materialId }) => materialId)).size).toBe(6);
+    for (const selection of selections) {
+      const slot = slots.find(({ id }) => id === selection.slotId)!;
+      expect(selection.role).toBe(slot.role);
+    }
   });
 
   it('assigns every material to exactly one valid role', () => {

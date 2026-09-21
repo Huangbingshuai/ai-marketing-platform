@@ -22,6 +22,8 @@ export type EffectTemplateMixAiSnapshot = {
     artifactRevision: number;
     offset: number;
   }>;
+  /** Per existing variant, the (slotId, materialId) bindings that seed pairwise reuse budget. */
+  existingVariantBindings: Array<Array<{ slotId: string; materialId: string }>>;
   reuseCounts: Record<string, number>;
   promptArtifacts: Array<{
     id: string;

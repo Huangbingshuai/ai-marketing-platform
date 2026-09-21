@@ -47,7 +47,16 @@ class InternalApi:
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             raise ApiError("internal API unavailable", retryable=True) from exc
         if response.status_code >= 400:
-            raise ApiError("internal API rejected request", retryable=response.status_code >= 500)
+            message = "internal API rejected request"
+            try:
+                data = response.json()
+                if isinstance(data, Mapping):
+                    value = data.get("message")
+                    if isinstance(value, str) and value.strip():
+                        message = value.strip()
+            except Exception:
+                pass
+            raise ApiError(message, retryable=response.status_code >= 500)
         return _unwrap(response.json()) if response.content else None
 
     async def claim(self, project_id: str, run_id: str) -> Claim:

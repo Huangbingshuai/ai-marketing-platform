@@ -117,57 +117,6 @@ const harness = () => {
 };
 
 describe('EffectTemplateMixService', () => {
-  it('saves algorithmic combinations as a draft without committing downstream artifacts', async () => {
-    const { service, working } = harness();
-    const state = draft();
-    const entry = state.templates[0]!.workspace;
-    const secondSlot = {
-      ...entry.template.slots[0]!,
-      id: '9b93d456-6c23-4d70-b97c-a41b624f002e',
-      role: 'TRANSFORMATION' as const,
-    };
-    entry.template.slots.push(secondSlot);
-    const clips = [
-      sourceId,
-      'c3be972a-752d-4abe-9966-9c7858560083',
-      '79aa15c5-e7f6-485d-941e-0346d8084c1d',
-      '8b534cd4-ddd7-4c4b-b64c-ac8ebae44561',
-    ];
-    const first = entry.variants[0]!;
-    first.slots.push(secondSlot);
-    first.bindings[secondSlot.id] = clips[2]!;
-    first.bindingRevisions[secondSlot.id] = 2;
-    first.offsets[secondSlot.id] = 0;
-    const metadata = {
-      source: 'AI' as const,
-      matchScore: 0.8,
-      matchLevel: 'NORMAL' as const,
-      classificationReason: 'Prompt',
-      trimReason: '关键帧',
-    };
-    first.bindingMetadata = { [slotId]: metadata, [secondSlot.id]: metadata };
-    const sibling = structuredClone(first);
-    sibling.id = '487fda04-a97a-4243-bace-0b16de67e0ee';
-    sibling.bindings[slotId] = clips[1]!;
-    sibling.bindings[secondSlot.id] = clips[3]!;
-    entry.variants.push(sibling);
-    working.getNodeState.mockResolvedValue({ revision: 7, state });
-    working.listArtifacts.mockResolvedValue({
-      items: clips.map((id) => ({ ...source, id, contentUrl: `/content/${id}` })),
-      total: 4,
-    });
-
-    const result = await service.composeVariants('project', 'run', templateId, 7);
-    const variants = result.draft.templates[0]!.workspace.variants;
-    expect(variants).toHaveLength(4);
-    expect(
-      new Set(
-        variants.map((variant) => `${variant.bindings[slotId]}|${variant.bindings[secondSlot.id]}`),
-      ).size,
-    ).toBe(4);
-    expect(working.putNodeState).toHaveBeenCalled();
-    expect(working.commitValidatedArtifacts).not.toHaveBeenCalled();
-  });
   it('commits a template and timeline with the exact consumed clip revision', async () => {
     const { service, working } = harness();
     const result = await service.validate('project', 'run', 7, templateId);
@@ -225,6 +174,21 @@ describe('EffectTemplateMixService', () => {
       'TEMPLATE_MIX',
       expect.objectContaining({ expectedRevision: 7 }),
     );
+  });
+
+  it('creates an empty project without deterministically filling any slot', async () => {
+    const { service, working } = harness();
+    const state = draft();
+    state.templates[0]!.workspace.variants = [];
+    working.getNodeState.mockResolvedValue({ revision: 7, state });
+
+    const result = await service.createEmptyVariant('project', 'run', templateId, 7);
+    const created = result.draft.templates[0]!.workspace.variants[0]!;
+
+    expect(created.bindings).toEqual({});
+    expect(created.bindingRevisions).toEqual({});
+    expect(created.offsets).toEqual({});
+    expect(created.conflictSlotIds).toEqual([]);
   });
 
   it('rejects a server mutation based on a stale draft revision', async () => {

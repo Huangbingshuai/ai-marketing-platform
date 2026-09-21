@@ -47,6 +47,20 @@ export class EffectTemplateMixController {
     );
   }
 
+  @Post('templates/:templateId/empty-variants')
+  createEmptyVariant(
+    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
+    @Param('templateId', new ParseUUIDPipe({ version: '4' })) templateId: string,
+    @Body() body: EffectTemplateMixRevisionDto,
+  ) {
+    return this.service.createEmptyVariant(
+      projectId,
+      body.workflowRunId,
+      templateId,
+      body.expectedRevision,
+    );
+  }
+
   @Post('templates/:templateId/ai-fill-runs')
   createAiRun(
     @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
@@ -60,20 +74,6 @@ export class EffectTemplateMixController {
       body.expectedRevision,
       body.idempotencyKey,
       body.targetVariantId,
-    );
-  }
-
-  @Post('templates/:templateId/algorithm-variants')
-  composeVariants(
-    @Param('projectId', new ParseUUIDPipe({ version: '4' })) projectId: string,
-    @Param('templateId', new ParseUUIDPipe({ version: '4' })) templateId: string,
-    @Body() body: EffectTemplateMixRevisionDto,
-  ) {
-    return this.service.composeVariants(
-      projectId,
-      body.workflowRunId,
-      templateId,
-      body.expectedRevision,
     );
   }
 

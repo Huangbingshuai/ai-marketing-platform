@@ -173,7 +173,7 @@ class Consumer:
                 TrimOutput.model_validate(item) for item in checkpoint.get("trims") or []
             ]
             def trim_key(item: Selection | TrimOutput) -> str:
-                return f"{item.variantIndex}:{item.slotId}"
+                return item.materialId
             trims_by_key = {trim_key(item): item for item in restored_trims}
             pending_selections = [
                 (index, selection)
@@ -243,8 +243,13 @@ class Consumer:
             LOGGER.exception("template mix task failed error=%s", type(exc).__name__)
             if runtime:
                 retryable = isinstance(exc, (ApiError, ProviderError)) and exc.retryable
+                message = "智能填充服务暂时不可用，请重试" if retryable else "智能填充结果无效，请检查素材后重试"
+                if not retryable and isinstance(exc, (ApiError, ProviderError)):
+                    detail = str(exc)
+                    if detail and detail not in ("internal API rejected request", "internal API unavailable"):
+                        message = detail
                 try:
-                    await self.api.fail(runtime, "AI_TASK_FAILED", "智能填充服务暂时不可用，请重试" if retryable else "智能填充结果无效，请检查素材后重试", retryable)
+                    await self.api.fail(runtime, "AI_TASK_FAILED", message, retryable)
                 except Exception:
                     LOGGER.exception("failed to persist template mix error")
                     await message.nack(requeue=not message.redelivered)

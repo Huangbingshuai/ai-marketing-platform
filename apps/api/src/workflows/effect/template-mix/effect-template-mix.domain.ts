@@ -93,138 +93,31 @@ export const fillVariant = (
   }
 };
 
+export const createEmptyVariant = (
+  workspace: EffectTemplateMixWorkspace,
+): EffectTemplateMixVariant => ({
+  id: randomUUID(),
+  name: workspace.template.name + ' · ' + (workspace.variants.length + 1),
+  appliedTemplateVersion: workspace.template.editVersion,
+  slots: clone(workspace.template.slots),
+  bindings: {},
+  bindingRevisions: {},
+  offsets: {},
+  bindingMetadata: {},
+  manualSlotIds: [],
+  conflictSlotIds: [],
+  status: 'CURRENT',
+  captions: [],
+  subtitleStyle: 'standard',
+  bgm: null,
+  voice: null,
+  originalVolume: 1,
+});
+
 export const createVariant = (workspace: EffectTemplateMixWorkspace): EffectTemplateMixVariant => {
-  const variant: EffectTemplateMixVariant = {
-    id: randomUUID(),
-    name: workspace.template.name + ' · ' + (workspace.variants.length + 1),
-    appliedTemplateVersion: workspace.template.editVersion,
-    slots: clone(workspace.template.slots),
-    bindings: {},
-    bindingRevisions: {},
-    offsets: {},
-    bindingMetadata: {},
-    manualSlotIds: [],
-    conflictSlotIds: [],
-    status: 'CURRENT',
-    captions: [],
-    subtitleStyle: 'standard',
-    bgm: null,
-    voice: null,
-    originalVolume: 1,
-  };
+  const variant = createEmptyVariant(workspace);
   fillVariant(workspace, variant);
   return variant;
-};
-
-/** Recombine validated AI trims without spending another model call. */
-export const composeAlgorithmicVariants = (
-  workspace: EffectTemplateMixWorkspace,
-  limit = 100 - workspace.variants.length,
-): EffectTemplateMixVariant[] => {
-  const slots = workspace.template.slots;
-  type Candidate = {
-    material: EffectTemplateMixMaterial;
-    offset: number;
-    metadata: NonNullable<EffectTemplateMixVariant['bindingMetadata']>[string];
-  };
-  const materials = new Map(workspace.materials.map((material) => [material.id, material]));
-  const pools = slots.map((slot) => {
-    const byMaterial = new Map<string, Candidate>();
-    for (const variant of workspace.variants) {
-      const sourceSlot = variant.slots.find(({ id }) => id === slot.id);
-      const material = materials.get(variant.bindings[slot.id] ?? '');
-      const metadata = variant.bindingMetadata?.[slot.id];
-      const offset = variant.offsets[slot.id] ?? 0;
-      if (
-        sourceSlot?.role !== slot.role ||
-        !material?.available ||
-        variant.bindingRevisions[slot.id] !== material.artifactRevision ||
-        metadata?.source !== 'AI' ||
-        !Number.isFinite(offset) ||
-        offset < 0 ||
-        material.duration + 0.001 < offset + slot.duration
-      )
-        continue;
-      const previous = byMaterial.get(material.id);
-      if (!previous || (metadata.matchScore ?? 0) > (previous.metadata.matchScore ?? 0))
-        byMaterial.set(material.id, { material, offset, metadata });
-    }
-    return [...byMaterial.values()].sort((left, right) =>
-      left.material.id.localeCompare(right.material.id),
-    );
-  });
-  if (pools.some((pool) => pool.length === 0)) return [];
-
-  const signature = (variant: EffectTemplateMixVariant): string =>
-    slots.map((slot) => variant.bindings[slot.id] ?? '').join('|');
-  const seen = new Set(workspace.variants.map(signature));
-  const usage = slots.map((slot) => {
-    const counts = new Map<string, number>();
-    for (const variant of workspace.variants) {
-      const id = variant.bindings[slot.id];
-      if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
-    }
-    return counts;
-  });
-  const tieBreak = (id: string, index: number, salt: number, slotIndex: number): number => {
-    let value = 2166136261;
-    const key = `${id}:${index}:${salt}:${slotIndex}`;
-    for (let position = 0; position < key.length; position += 1)
-      value = Math.imul(value ^ key.charCodeAt(position), 16777619);
-    return value >>> 0;
-  };
-  const created: EffectTemplateMixVariant[] = [];
-  for (let index = 0; index < Math.max(0, limit); index += 1) {
-    let picks: Candidate[] | null = null;
-    for (let salt = 0; salt < 500; salt += 1) {
-      const used = new Set<string>();
-      const attempt: Candidate[] = [];
-      for (let slotIndex = 0; slotIndex < slots.length; slotIndex += 1) {
-        const pool = pools[slotIndex]!;
-        const ordered = [...pool].sort(
-          (left, right) =>
-            (usage[slotIndex]!.get(left.material.id) ?? 0) -
-              (usage[slotIndex]!.get(right.material.id) ?? 0) ||
-            // Deterministic shuffling of equally used clips avoids cyclic duplicate tuples.
-            tieBreak(left.material.id, index, salt, slotIndex) -
-              tieBreak(right.material.id, index, salt, slotIndex) ||
-            (right.metadata.matchScore ?? 0) - (left.metadata.matchScore ?? 0),
-        );
-        const candidate = ordered.find(({ material }) => !used.has(material.id));
-        if (!candidate) break;
-        used.add(candidate.material.id);
-        attempt.push(candidate);
-      }
-      if (attempt.length !== slots.length) continue;
-      const key = attempt.map(({ material }) => material.id).join('|');
-      if (!seen.has(key)) {
-        seen.add(key);
-        picks = attempt;
-        break;
-      }
-    }
-    if (!picks) break;
-    const variant = createVariant(workspace);
-    variant.name =
-      workspace.template.name + ' · ' + (workspace.variants.length + created.length + 1);
-    variant.bindings = {};
-    variant.bindingRevisions = {};
-    variant.offsets = {};
-    variant.bindingMetadata = {};
-    variant.conflictSlotIds = [];
-    for (let slotIndex = 0; slotIndex < slots.length; slotIndex += 1) {
-      const slot = slots[slotIndex]!;
-      const pick = picks[slotIndex]!;
-      variant.bindings[slot.id] = pick.material.id;
-      variant.bindingRevisions[slot.id] = pick.material.artifactRevision;
-      variant.offsets[slot.id] = pick.offset;
-      variant.bindingMetadata[slot.id] = clone(pick.metadata);
-      const counts = usage[slotIndex]!;
-      counts.set(pick.material.id, (counts.get(pick.material.id) ?? 0) + 1);
-    }
-    created.push(variant);
-  }
-  return created;
 };
 
 export const maximumWeightedAiSelection = (
@@ -283,31 +176,178 @@ export const maximumWeightedAiSelection = (
     });
 };
 
-export const maximumWeightedAiSelectionBatch = (
-  slots: EffectTemplateMixSlot[],
+type AssignedPoolItem = {
+  materialId: string;
+  duration: number;
+  matchScore: number;
+  reason: string;
+};
+
+const toSelection = (
+  slot: { id: string; role: EffectTemplateMixRole; duration: number },
+  item: AssignedPoolItem,
+): EffectTemplateMixAiSelection => ({
+  slotId: slot.id,
+  role: slot.role,
+  materialId: item.materialId,
+  matchScore: item.matchScore,
+  matchLevel: item.matchScore < 0.6 ? 'LOW_MATCH' : 'NORMAL',
+  classificationReason: item.reason,
+  duration: slot.duration,
+});
+
+/**
+ * Hard-assign every classified material to exactly one slot role, then build a
+ * duration-feasible, score-sorted candidate pool per role. Matching may only draw
+ * from the role's own pool — cross-slot borrowing is forbidden.
+ */
+export const buildAssignedPools = (
+  slots: Array<{ id: string; role: EffectTemplateMixRole; duration: number }>,
   materials: Array<Pick<EffectTemplateMixMaterial, 'id' | 'duration' | 'available'>>,
   classifications: EffectTemplateMixAiClassification[],
-  unavailableMaterialIds: ReadonlySet<string> = new Set(),
-  reuseCounts: ReadonlyMap<string, number> = new Map(),
-  maxGroups = 20,
-): EffectTemplateMixAiSelection[][] => {
-  const consumed = new Set(unavailableMaterialIds);
-  const groups: EffectTemplateMixAiSelection[][] = [];
-  while (groups.length < Math.max(0, maxGroups)) {
-    const selection = maximumWeightedAiSelection(
-      slots,
-      materials,
-      classifications,
-      consumed,
-      reuseCounts,
-    );
-    if (!selection) break;
-    const variantIndex = groups.length;
-    const group = selection.map((item) => ({ ...item, variantIndex }));
-    groups.push(group);
-    group.forEach(({ materialId }) => consumed.add(materialId));
+  lockedMaterialIds: ReadonlySet<string> = new Set(),
+): Map<EffectTemplateMixRole, AssignedPoolItem[]> => {
+  const byMaterial = new Map(materials.map((material) => [material.id, material]));
+  const eligible = classifications.filter((item) => {
+    const material = byMaterial.get(item.materialId);
+    return Boolean(material?.available) && !lockedMaterialIds.has(item.materialId);
+  });
+  const assignment = balancedSlotAssignment(
+    slots.map((slot) => slot.role),
+    eligible,
+  );
+  const slotByRole = new Map(slots.map((slot) => [slot.role, slot]));
+  const pools = new Map<EffectTemplateMixRole, AssignedPoolItem[]>(
+    slots.map((slot) => [slot.role, []]),
+  );
+  for (const item of eligible) {
+    const role = assignment.get(item.materialId);
+    if (!role) continue;
+    const slot = slotByRole.get(role);
+    const material = byMaterial.get(item.materialId)!;
+    if (!slot || material.duration + 0.001 < slot.duration) continue;
+    pools.get(role)!.push({
+      materialId: item.materialId,
+      duration: material.duration,
+      matchScore: item.scores[role],
+      reason: item.reasons?.[role]?.trim() || '模型未提供说明',
+    });
   }
-  return groups;
+  for (const items of pools.values()) {
+    items.sort(
+      (left, right) =>
+        right.matchScore - left.matchScore || left.materialId.localeCompare(right.materialId),
+    );
+  }
+  return pools;
+};
+
+/**
+ * Fill a single target variant's unlocked slots, each drawing only from its own
+ * hard-assigned pool. A material is eligible for exactly one role, and roles are
+ * distinct across slots, so no cross-slot collision can occur within one variant.
+ */
+export const selectAssignedVariant = (
+  slots: Array<{ id: string; role: EffectTemplateMixRole; duration: number }>,
+  materials: Array<Pick<EffectTemplateMixMaterial, 'id' | 'duration' | 'available'>>,
+  classifications: EffectTemplateMixAiClassification[],
+  lockedMaterialIds: ReadonlySet<string> = new Set(),
+  reuseCounts: ReadonlyMap<string, number> = new Map(),
+): EffectTemplateMixAiSelection[] => {
+  const pools = buildAssignedPools(slots, materials, classifications, lockedMaterialIds);
+  const selections: EffectTemplateMixAiSelection[] = [];
+  for (const slot of slots) {
+    const pool = pools.get(slot.role) ?? [];
+    if (!pool.length) continue;
+    const best = pool.reduce((current, item) => {
+      const currentAdjusted = current.matchScore - (reuseCounts.get(current.materialId) ?? 0) * 0.02;
+      const adjusted = item.matchScore - (reuseCounts.get(item.materialId) ?? 0) * 0.02;
+      return adjusted > currentAdjusted ? item : current;
+    });
+    selections.push(toSelection(slot, best));
+  }
+  return selections;
+};
+
+/** Default pairwise overlap budget: two variants may share at most two slots' clips. */
+export const MAX_SLOT_REUSE_OVERLAP = 2;
+
+/**
+ * Enumerate as many six-slot variants as the material pool allows, reusing clips
+ * across variants while guaranteeing any two variants share at most `maxOverlap`
+ * same-slot clips. The hard slot assignment collapses "撞一个槽位" into "共享一条素材",
+ * because a clip can only ever appear on its assigned slot.
+ *
+ * Existing variants seed the collision sets so newly generated projects stay within
+ * budget against what is already on the timeline, and least-used clips are preferred to
+ * spread reuse before any clip needs to be shared a third time.
+ */
+export const enumerateAssignedVariants = (
+  slots: Array<{ id: string; role: EffectTemplateMixRole; duration: number }>,
+  materials: Array<Pick<EffectTemplateMixMaterial, 'id' | 'duration' | 'available'>>,
+  classifications: EffectTemplateMixAiClassification[],
+  existingGroups: ReadonlyArray<ReadonlyArray<{ slotId: string; materialId: string }>> = [],
+  maxVariants = 0,
+  maxOverlap = MAX_SLOT_REUSE_OVERLAP,
+): EffectTemplateMixAiSelection[][] => {
+  const pools = buildAssignedPools(slots, materials, classifications);
+  if (slots.some((slot) => !(pools.get(slot.role)?.length))) return [];
+  const bindingKey = (slotId: string, materialId: string): string => `${slotId}:${materialId}`;
+  const allSets = existingGroups.map(
+    (group) => new Set(group.map(({ slotId, materialId }) => bindingKey(slotId, materialId))),
+  );
+  const usage = new Map<string, number>();
+  const results: EffectTemplateMixAiSelection[][] = [];
+
+  const buildOne = (): EffectTemplateMixAiSelection[] | null => {
+    const chosen: EffectTemplateMixAiSelection[] = [];
+    const overlap = allSets.map(() => 0);
+    const orderedPools = slots.map((slot) =>
+      [...pools.get(slot.role)!].sort(
+        (left, right) =>
+          (usage.get(left.materialId) ?? 0) - (usage.get(right.materialId) ?? 0) ||
+          right.matchScore - left.matchScore ||
+          left.materialId.localeCompare(right.materialId),
+      ),
+    );
+    const search = (slotIndex: number): boolean => {
+      if (slotIndex === slots.length) return true;
+      const slot = slots[slotIndex]!;
+      for (const item of orderedPools[slotIndex]!) {
+        const key = bindingKey(slot.id, item.materialId);
+        let blocked = false;
+        for (let setIndex = 0; setIndex < allSets.length; setIndex += 1) {
+          if (allSets[setIndex]!.has(key) && overlap[setIndex]! >= maxOverlap) {
+            blocked = true;
+            break;
+          }
+        }
+        if (blocked) continue;
+        for (let setIndex = 0; setIndex < allSets.length; setIndex += 1) {
+          if (allSets[setIndex]!.has(key)) overlap[setIndex]! += 1;
+        }
+        chosen.push(toSelection(slot, item));
+        if (search(slotIndex + 1)) return true;
+        chosen.pop();
+        for (let setIndex = 0; setIndex < allSets.length; setIndex += 1) {
+          if (allSets[setIndex]!.has(key)) overlap[setIndex]! -= 1;
+        }
+      }
+      return false;
+    };
+    return search(0) ? chosen : null;
+  };
+
+  while (results.length < Math.max(0, maxVariants)) {
+    const variant = buildOne();
+    if (!variant) break;
+    allSets.push(
+      new Set(variant.map(({ slotId, materialId }) => bindingKey(slotId, materialId))),
+    );
+    for (const { materialId } of variant) usage.set(materialId, (usage.get(materialId) ?? 0) + 1);
+    results.push(variant);
+  }
+  return results;
 };
 
 /**
