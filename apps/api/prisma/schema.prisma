@@ -318,6 +318,7 @@ model Project {
   effectSegmentRenderTasks   EffectSegmentRenderTask[]
   effectSegmentRenderOps     EffectSegmentRenderOperationReceipt[]
   effectTemplateMixAiRuns    EffectTemplateMixAiRun[]
+  effectPackagingRuns       EffectPackagingRun[]
   jobOutboxEntries           JobOutbox[]
   effectExtractionFileHolds  EffectExtractionFileHold[]
   workflowRuns               WorkflowRun[]
@@ -403,6 +404,7 @@ model WorkflowRun {
   effectSegmentRenderBatches EffectSegmentRenderBatch[]
   effectSegmentRenderTasks   EffectSegmentRenderTask[]
   effectTemplateMixAiRuns    EffectTemplateMixAiRun[]
+  effectPackagingRuns       EffectPackagingRun[]
 
   @@unique([projectId, workflow, workflowSpace, activeKey])
   @@unique([projectId, id])
@@ -489,6 +491,7 @@ model FileObject {
   artifactLinks    WorkingArtifactFile[]
   materials        EffectImportMaterial[]
   uploadItems      EffectImportUploadItem[]
+  packagingFiles   EffectPackagingFile[]
 
   @@unique([projectId, storageKey])
   @@unique([projectId, id])
@@ -1230,4 +1233,66 @@ model EffectTemplateMixAiRun {
   @@index([projectId, workflowRunId, templateId, createdAt])
   @@index([status, leaseExpiresAt])
   @@map("effect_template_mix_ai_runs")
+}
+
+model EffectPackagingRun {
+  id String @id @default(uuid()) @db.Uuid
+  projectId String @db.Uuid
+  workflowRunId String @db.Uuid
+  templateId String @db.Uuid
+  idempotencyKey String @db.VarChar(500)
+  requestHash String @db.Char(64)
+  status String @default("QUEUED") @db.VarChar(20)
+  attemptToken String? @db.Uuid
+  attemptCount Int @default(0)
+  leaseExpiresAt DateTime?
+  createdAt DateTime @default(now())
+  startedAt DateTime?
+  completedAt DateTime?
+  updatedAt DateTime @updatedAt
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workflowRun WorkflowRun @relation(fields: [projectId, workflowRunId], references: [projectId, id], onDelete: Cascade)
+  items EffectPackagingItem[]
+  @@unique([projectId, id])
+  @@unique([projectId, idempotencyKey])
+  @@index([projectId, workflowRunId, templateId, createdAt])
+  @@index([status, leaseExpiresAt])
+  @@map("effect_packaging_runs")
+}
+
+model EffectPackagingItem {
+  id String @id @default(uuid()) @db.Uuid
+  projectId String @db.Uuid
+  runId String @db.Uuid
+  variantId String @db.Uuid
+  name String
+  shardIndex Int
+  sourceTimelineHash String @db.Char(64)
+  snapshot Json
+  status String @default("QUEUED") @db.VarChar(20)
+  stage String @default("SNAPSHOT") @db.VarChar(20)
+  checkpoint Json @default("{}")
+  errorMessage String?
+  startedAt DateTime?
+  completedAt DateTime?
+  updatedAt DateTime @updatedAt
+  run EffectPackagingRun @relation(fields: [projectId, runId], references: [projectId, id], onDelete: Cascade)
+  files EffectPackagingFile[]
+  @@unique([projectId, id])
+  @@unique([projectId, runId, variantId])
+  @@index([projectId, variantId])
+  @@map("effect_packaging_items")
+}
+
+model EffectPackagingFile {
+  id String @id @default(uuid()) @db.Uuid
+  projectId String @db.Uuid
+  itemId String @db.Uuid
+  fileObjectId String @db.Uuid
+  role String @db.VarChar(80)
+  item EffectPackagingItem @relation(fields: [projectId, itemId], references: [projectId, id], onDelete: Cascade)
+  fileObject FileObject @relation(fields: [projectId, fileObjectId], references: [projectId, id], onDelete: Restrict)
+  @@unique([projectId, itemId, role])
+  @@index([projectId, fileObjectId])
+  @@map("effect_packaging_files")
 }

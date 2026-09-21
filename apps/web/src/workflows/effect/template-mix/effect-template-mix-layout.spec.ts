@@ -33,7 +33,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('@click="createEmptyVariant"');
     expect(pageSource).toContain('智能成片包装');
     expect(pageSource).toContain('<Workflow :size="13" />查看工作流');
-    expect(pageSource).toContain('智能成片包装将在后续接入口播、配乐与字幕生成');
+    expect(pageSource).toContain('智能成片包装真实任务进度');
     expect(pageSource).not.toContain('<Plus :size="13" />AI 智能填充');
   });
   it('keeps configuration and refinement as separate views', () => {
@@ -67,6 +67,9 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('!targetVariantId ||');
     expect(pageSource).toContain('material-pagination');
     expect(pageSource).toContain('displayedMaterials');
+    expect(pageSource).toContain('查看 Prompt');
+    expect(pageSource).toContain('replaceMaterialInSelectedSlot');
+    expect(pageSource).toContain('EffectSegmentRenderSourcePrompt');
     expect(pageSource).toContain('align-self: stretch');
     expect(pageSource).toContain('height: 100%;\n  display: flex;\n  flex-direction: column;');
     expect(pageSource).toContain('flex: 1 1 auto');

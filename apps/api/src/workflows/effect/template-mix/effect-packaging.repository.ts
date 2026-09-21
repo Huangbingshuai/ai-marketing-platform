@@ -1,0 +1,305 @@
+import { Injectable, Inject, ConflictException } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { PrismaService } from '../../../database/prisma.service';
+import type { Prisma } from '../../../generated/prisma/client';
+import type {
+  PackagingCheckpoint,
+  PackagingSnapshot,
+  PackagingStage,
+} from '@ai-marketing/contracts';
+import { packagingShardIndexes } from '@ai-marketing/contracts';
+import {
+  EFFECT_TEMPLATE_MIX_QUEUE,
+  EFFECT_TEMPLATE_MIX_JOB_TYPE,
+} from '../../../platform/job/job.constants';
+
+const json = (value: unknown) => JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+const lease = () => new Date(Date.now() + 120_000);
+export const PACKAGING_INCLUDE = {
+  items: { orderBy: [{ shardIndex: 'asc' as const }, { id: 'asc' as const }] },
+};
+
+@Injectable()
+export class EffectPackagingRepository {
+  constructor(@Inject(PrismaService) readonly db: PrismaService) {}
+
+  get(projectId: string, id: string) {
+    return this.db.effectPackagingRun.findFirst({
+      where: { projectId, id },
+      include: PACKAGING_INCLUDE,
+    });
+  }
+  list(projectId: string, workflowRunId: string, templateId: string) {
+    return this.db.effectPackagingRun.findMany({
+      where: { projectId, workflowRunId, templateId },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+      include: PACKAGING_INCLUDE,
+    });
+  }
+  private enqueue(tx: Prisma.TransactionClient, projectId: string, runId: string) {
+    return tx.jobOutbox.create({
+      data: {
+        projectId,
+        aggregateId: runId,
+        jobType: EFFECT_TEMPLATE_MIX_JOB_TYPE,
+        routingKey: EFFECT_TEMPLATE_MIX_QUEUE,
+        payload: {
+          schemaVersion: 2,
+          taskType: 'PACKAGING',
+          projectId,
+          runId,
+          requestId: randomUUID(),
+        },
+      },
+    });
+  }
+  create(input: {
+    projectId: string;
+    workflowRunId: string;
+    templateId: string;
+    idempotencyKey: string;
+    requestHash: string;
+    snapshots: PackagingSnapshot[];
+    checkpoints: PackagingCheckpoint[];
+  }) {
+    const shards = packagingShardIndexes(input.snapshots);
+    return this.db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${input.projectId + ':' + input.workflowRunId + ':' + input.templateId}))`;
+      const replay = await tx.effectPackagingRun.findUnique({
+        where: {
+          projectId_idempotencyKey: {
+            projectId: input.projectId,
+            idempotencyKey: input.idempotencyKey,
+          },
+        },
+      });
+      if (replay) {
+        if (replay.requestHash !== input.requestHash)
+          throw new ConflictException('幂等键对应的包装请求已改变');
+        return replay.id;
+      }
+      if (
+        await tx.effectPackagingRun.count({
+          where: {
+            projectId: input.projectId,
+            workflowRunId: input.workflowRunId,
+            templateId: input.templateId,
+            status: { in: ['QUEUED', 'RUNNING'] },
+          },
+        })
+      )
+        throw new ConflictException('当前模板已有包装任务运行中');
+      const run = await tx.effectPackagingRun.create({
+        data: {
+          projectId: input.projectId,
+          workflowRunId: input.workflowRunId,
+          templateId: input.templateId,
+          idempotencyKey: input.idempotencyKey,
+          requestHash: input.requestHash,
+          items: {
+            create: input.snapshots.map((snapshot, index) => ({
+              projectId: input.projectId,
+              variantId: snapshot.variant.id,
+              name: snapshot.variant.name,
+              shardIndex: shards[index]!,
+              sourceTimelineHash: snapshot.sourceTimelineHash,
+              snapshot: json(snapshot),
+              checkpoint: json(input.checkpoints[index] ?? {}),
+            })),
+          },
+        },
+      });
+      await this.enqueue(tx, input.projectId, run.id);
+      return run.id;
+    });
+  }
+  claim(projectId: string, id: string) {
+    return this.db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM effect_packaging_runs WHERE id=${id}::uuid AND "projectId"=${projectId}::uuid FOR UPDATE`;
+      const run = await tx.effectPackagingRun.findFirst({
+        where: { projectId, id },
+        include: PACKAGING_INCLUDE,
+      });
+      if (!run || !['QUEUED', 'RUNNING'].includes(run.status)) return { terminal: true };
+      if (run.status === 'RUNNING' && run.leaseExpiresAt && run.leaseExpiresAt > new Date())
+        return { terminal: true };
+      const attemptToken = randomUUID();
+      await tx.effectPackagingRun.update({
+        where: { id },
+        data: {
+          status: 'RUNNING',
+          attemptToken,
+          attemptCount: { increment: 1 },
+          leaseExpiresAt: lease(),
+          startedAt: run.startedAt ?? new Date(),
+        },
+      });
+      return { terminal: false, attemptToken, items: run.items };
+    });
+  }
+  async recoverExpired() {
+    const rows = await this.db.effectPackagingRun.findMany({
+      where: { status: 'RUNNING', leaseExpiresAt: { lt: new Date() } },
+      take: 50,
+    });
+    for (const row of rows)
+      await this.db.$transaction(async (tx) => {
+        const changed = await tx.effectPackagingRun.updateMany({
+          where: { id: row.id, status: 'RUNNING', leaseExpiresAt: { lt: new Date() } },
+          data: { status: 'QUEUED', attemptToken: null, leaseExpiresAt: null },
+        });
+        if (changed.count) await this.enqueue(tx, row.projectId, row.id);
+      });
+  }
+  async authorized(projectId: string, id: string, attemptToken: string) {
+    if (
+      !attemptToken ||
+      !(await this.db.effectPackagingRun.count({
+        where: {
+          id,
+          projectId,
+          status: 'RUNNING',
+          attemptToken,
+          leaseExpiresAt: { gt: new Date() },
+        },
+      }))
+    )
+      throw new ConflictException('包装任务租约已失效');
+  }
+  async heartbeat(projectId: string, id: string, attemptToken: string) {
+    if (!attemptToken) throw new ConflictException('包装任务租约已失效');
+    const result = await this.db.effectPackagingRun.updateMany({
+      where: {
+        id,
+        projectId,
+        status: 'RUNNING',
+        attemptToken,
+        leaseExpiresAt: { gt: new Date() },
+      },
+      data: { leaseExpiresAt: lease() },
+    });
+    if (result.count !== 1) throw new ConflictException('包装任务租约已失效');
+    return { accepted: true };
+  }
+  checkpoint(
+    projectId: string,
+    runId: string,
+    token: string,
+    itemId: string,
+    stage: PackagingStage,
+    checkpoint: PackagingCheckpoint,
+    errorMessage?: string,
+  ) {
+    return this.db.$transaction(async (tx) => {
+      const renewed = await tx.effectPackagingRun.updateMany({
+        where: {
+          projectId,
+          id: runId,
+          status: 'RUNNING',
+          attemptToken: token || '00000000-0000-0000-0000-000000000000',
+          leaseExpiresAt: { gt: new Date() },
+        },
+        data: { leaseExpiresAt: lease() },
+      });
+      if (renewed.count !== 1) throw new ConflictException('包装任务租约已失效');
+      const item = await tx.effectPackagingItem.findFirst({
+        where: { id: itemId, projectId, runId },
+      });
+      if (!item) throw new ConflictException('包装成片不存在');
+      if (item.status === 'COMPLETED') return { accepted: true };
+      const old = item.checkpoint as PackagingCheckpoint;
+      const next = { ...old, ...checkpoint, voices: { ...old.voices, ...checkpoint.voices } };
+      await tx.effectPackagingItem.update({
+        where: { id: itemId },
+        data: {
+          stage,
+          checkpoint: json(next),
+          status: errorMessage ? 'FAILED' : stage === 'READY' ? 'COMPLETED' : 'RUNNING',
+          errorMessage: errorMessage ?? null,
+          startedAt: item.startedAt ?? new Date(),
+          completedAt: errorMessage || stage === 'READY' ? new Date() : null,
+        },
+      });
+      return { accepted: true };
+    });
+  }
+  finish(projectId: string, id: string, token: string) {
+    return this.db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM effect_packaging_runs WHERE id=${id}::uuid AND "projectId"=${projectId}::uuid FOR UPDATE`;
+      const run = await tx.effectPackagingRun.findFirst({
+        where: {
+          id,
+          projectId,
+          status: 'RUNNING',
+          attemptToken: token,
+          leaseExpiresAt: { gt: new Date() },
+        },
+        include: { items: true },
+      });
+      if (!run) throw new ConflictException('包装任务租约已失效');
+      if (run.items.some((i) => ['QUEUED', 'RUNNING'].includes(i.status)))
+        throw new ConflictException('包装任务仍有未完成成片');
+      const count = run.items.filter((i) => i.status === 'COMPLETED').length;
+      await tx.effectPackagingRun.update({
+        where: { id },
+        data: {
+          status: count === run.items.length ? 'COMPLETED' : count ? 'PARTIAL' : 'FAILED',
+          completedAt: new Date(),
+          attemptToken: null,
+          leaseExpiresAt: null,
+        },
+      });
+      return { accepted: true };
+    });
+  }
+  cancel(projectId: string, id: string) {
+    return this.db.$transaction(async (tx) => {
+      const changed = await tx.effectPackagingRun.updateMany({
+        where: { id, projectId, status: { in: ['QUEUED', 'RUNNING'] } },
+        data: {
+          status: 'CANCELLED',
+          completedAt: new Date(),
+          attemptToken: null,
+          leaseExpiresAt: null,
+        },
+      });
+      if (changed.count)
+        await tx.effectPackagingItem.updateMany({
+          where: { projectId, runId: id, status: { in: ['QUEUED', 'RUNNING'] } },
+          data: { status: 'CANCELLED' },
+        });
+      return { accepted: true };
+    });
+  }
+  retry(projectId: string, id: string) {
+    return this.db.$transaction(async (tx) => {
+      const run = await tx.effectPackagingRun.findFirst({ where: { projectId, id } });
+      if (!run) throw new ConflictException('包装任务不存在');
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${projectId + ':' + run.workflowRunId + ':' + run.templateId}))`;
+      if (!['FAILED', 'PARTIAL', 'CANCELLED'].includes(run.status))
+        throw new ConflictException('当前任务不可重试');
+      if (
+        await tx.effectPackagingRun.count({
+          where: {
+            projectId,
+            workflowRunId: run.workflowRunId,
+            templateId: run.templateId,
+            status: { in: ['QUEUED', 'RUNNING'] },
+          },
+        })
+      )
+        throw new ConflictException('当前模板已有运行任务');
+      await tx.effectPackagingItem.updateMany({
+        where: { projectId, runId: id, status: { not: 'COMPLETED' } },
+        data: { status: 'QUEUED', errorMessage: null, completedAt: null },
+      });
+      await tx.effectPackagingRun.update({
+        where: { id },
+        data: { status: 'QUEUED', completedAt: null, attemptToken: null, leaseExpiresAt: null },
+      });
+      await this.enqueue(tx, projectId, id);
+      return { accepted: true };
+    });
+  }
+}

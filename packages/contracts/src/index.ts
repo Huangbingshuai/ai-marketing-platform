@@ -61,3 +61,4 @@ export * from './effect-prompt-generation';
 export * from './effect-segment-render';
 export * from './workflow-working';
 export * from './effect-template-mix';
+export * from './effect-template-mix-packaging';

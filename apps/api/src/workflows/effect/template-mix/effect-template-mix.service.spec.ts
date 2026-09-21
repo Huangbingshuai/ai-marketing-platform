@@ -158,6 +158,48 @@ describe('EffectTemplateMixService', () => {
     ]);
   });
 
+  it('exposes the source Prompt on each confirmed material', async () => {
+    const prompt = {
+      id: 'prompt-artifact',
+      nodeId: 'PROMPT_GENERATION',
+      artifactKey: 'prompt-batch:product',
+      revision: 3,
+      contentHash: 'prompt-hash',
+      payload: {
+        items: [
+          {
+            id: 'prompt-1',
+            code: 'P-001',
+            content: '展示腊肠切片的油润质感',
+            creativeCore: '暖色餐桌上的产品特写',
+          },
+        ],
+      },
+    } as unknown as WorkingArtifact;
+    const render = {
+      ...source,
+      payload: {
+        ...(source.payload as Record<string, unknown>),
+        promptId: 'prompt-1',
+      },
+    } as WorkingArtifact;
+    const working = {
+      getNodeStateOrNull: vi.fn().mockResolvedValue({ revision: 7, state: draft() }),
+      listArtifacts: vi.fn().mockResolvedValue({ items: [prompt, render], total: 2 }),
+    };
+    const service = new EffectTemplateMixService(
+      working as unknown as WorkflowWorkingService,
+    );
+
+    const result = await service.workspace('project', 'run');
+
+    expect(result.materials[0]).toMatchObject({
+      promptCode: 'P-001',
+      promptText: '展示腊肠切片的油润质感',
+      promptCreativeCore: '暖色餐桌上的产品特写',
+    });
+  });
+
   it('creates and fills exactly one project inside the requested template', async () => {
     const { service, working } = harness();
     const state = draft();

@@ -10,6 +10,7 @@ import type {
   EffectTemplateMixTemplateEntry,
   EffectTemplateMixTransition,
   EffectTemplateMixVariant,
+  PackagingItem,
 } from '@ai-marketing/contracts';
 import { WorkflowNodeDraftBar, WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
 import {
@@ -66,6 +67,8 @@ import {
 import { effectTemplateMixTransitionPresentation } from './effect-template-mix-transition';
 import EffectTemplateMixThumbnail from './EffectTemplateMixThumbnail.vue';
 import EffectTemplateMixTimeline from './EffectTemplateMixTimeline.vue';
+import EffectTemplateMixPackaging from './EffectTemplateMixPackaging.vue';
+import EffectSegmentRenderSourcePrompt from '../segment-render/components/EffectSegmentRenderSourcePrompt.vue';
 
 const props = defineProps<{
   products: EffectImportProduct[];
@@ -81,6 +84,8 @@ const errorMessage = ref('');
 const catalog = ref<EffectTemplateMixTemplateEntry[]>([]);
 const activeTemplateId = ref('');
 const draftRevision = ref<number | null>(null);
+const packagingPanel = ref<InstanceType<typeof EffectTemplateMixPackaging> | null>(null);
+const selectedPackaging = ref<PackagingItem | null>(null);
 const committedVersions = reactive<Record<string, number>>({});
 const uiByTemplate = reactive<Record<string, TemplateUi>>({});
 const view = ref<'CONFIG' | 'EDITOR'>('CONFIG');
@@ -134,6 +139,7 @@ const materialPointerDrag = ref<{
 let materialDragGhost: HTMLElement | null = null;
 let suppressMaterialClick = false;
 const auditionMaterial = ref<EffectTemplateMixMaterial | null>(null);
+const promptMaterial = ref<EffectTemplateMixMaterial | null>(null);
 const auditionPlayer = ref<HTMLVideoElement | null>(null);
 const auditionPlaying = ref(false);
 const auditionTime = ref(0);
@@ -193,6 +199,7 @@ const timelineUndoStack = ref<TimelineEditSnapshot[]>([]);
 const timelineRedoStack = ref<TimelineEditSnapshot[]>([]);
 const createNameInput = ref<HTMLInputElement | null>(null);
 const dialogTrigger = ref<HTMLElement | null>(null);
+const promptCloseButton = ref<HTMLButtonElement | null>(null);
 const workflowTrigger = ref<HTMLButtonElement | null>(null);
 const workflowCloseButton = ref<HTMLButtonElement | null>(null);
 let controller: AbortController | undefined;
@@ -725,6 +732,32 @@ const closeOverwrite = async (): Promise<void> => {
   overwriteOpen.value = false;
   await nextTick();
   dialogTrigger.value?.focus();
+};
+const openMaterialPrompt = async (
+  material: EffectTemplateMixMaterial,
+  event?: Event,
+): Promise<void> => {
+  if (!material.promptText) {
+    showNotice('当前素材没有可回溯的 Prompt', 'warning');
+    return;
+  }
+  if (event?.currentTarget instanceof HTMLElement) dialogTrigger.value = event.currentTarget;
+  promptMaterial.value = material;
+  await nextTick();
+  promptCloseButton.value?.focus();
+};
+const closeMaterialPrompt = async (): Promise<void> => {
+  promptMaterial.value = null;
+  await nextTick();
+  dialogTrigger.value?.focus();
+};
+const replaceMaterialInSelectedSlot = (material: EffectTemplateMixMaterial): void => {
+  const slot = selectedSlot.value;
+  if (!selectedVariant.value || !slot) {
+    showNotice('请先点击时间轴上的素材槽位，再执行替换', 'warning');
+    return;
+  }
+  applyMaterialToSlot(material, slot.id);
 };
 const openWorkflowDialog = async (event?: Event): Promise<void> => {
   if (event?.currentTarget instanceof HTMLButtonElement)
@@ -1678,13 +1711,9 @@ const createEmptyVariant = async (): Promise<void> => {
   }
 };
 const showPackagingPlaceholder = (target: 'ACTION' | 'WORKFLOW'): void => {
-  showNotice(
-    target === 'ACTION'
-      ? '智能成片包装将在后续接入口播、配乐与字幕生成'
-      : '智能成片包装工作流将在后续版本开放',
-    'warning',
-  );
+  void packagingPanel.value?.open(target);
 };
+const preparePackaging = async (): Promise<number | null> => (await flushPendingEdits()) ? draftRevision.value : null;
 const startAiFill = async (target: EffectTemplateMixVariant | null): Promise<void> => {
   if (!workspace.value || mutating.value || activeAiRun.value) return;
   if (!(await flushPendingEdits()) || draftRevision.value === null) return;
@@ -2110,6 +2139,7 @@ const onEditorKeydown = (event: KeyboardEvent): void => {
     createOpen.value ||
     overwriteOpen.value ||
     workflowDialogOpen.value ||
+    packagingPanel.value?.visible ||
     event.defaultPrevented
   )
     return;
@@ -2522,7 +2552,31 @@ defineExpose({ flushPendingEdits });
                         }}
                       </span>
                     </div>
-                    <small>{{ material.code }} · {{ material.duration.toFixed(1) }} 秒</small>
+                    <div class="material-card-actions">
+                      <button
+                        type="button"
+                        class="material-action"
+                        :disabled="!material.promptText"
+                        @pointerdown.stop
+                        @click.stop="openMaterialPrompt(material, $event)"
+                      >
+                        查看 Prompt
+                      </button>
+                      <button
+                        type="button"
+                        class="material-action material-action-primary"
+                        :disabled="!selectedVariant || !selectedSlot"
+                        :title="
+                          selectedSlot
+                            ? `将素材放入${selectedSlot.label}`
+                            : '请先点击时间轴上的槽位'
+                        "
+                        @pointerdown.stop
+                        @click.stop="replaceMaterialInSelectedSlot(material)"
+                      >
+                        替换槽位
+                      </button>
+                    </div>
                     <em>{{
                       !selectedVariant
                         ? '等待 AI 创建成片工程'
@@ -2895,7 +2949,7 @@ defineExpose({ flushPendingEdits });
                   class="button compact"
                   type="button"
                   :disabled="!selectedVariant"
-                  title="后续将支持为当前成片生成口播、配乐和字幕"
+                  title="为本模板下全部完整成片生成口播、配乐和字幕"
                   @click="showPackagingPlaceholder('ACTION')"
                 >
                   <Sparkles :size="13" />智能成片包装
@@ -2903,7 +2957,7 @@ defineExpose({ flushPendingEdits });
                 <button
                   class="button compact"
                   type="button"
-                  title="查看智能成片包装的后续工作流"
+                  title="查看智能成片包装真实任务进度"
                   @click="showPackagingPlaceholder('WORKFLOW')"
                 >
                   <Workflow :size="13" />查看工作流
@@ -2924,6 +2978,17 @@ defineExpose({ flushPendingEdits });
                 v-for="(variant, index) in workspace.variants"
                 :key="variant.id"
                 :class="{ active: variant.id === selectedVariant?.id }"
+                :title="`${variantDisplayName(variant, index)} · ${variantDuration(variant).toFixed(1)}s · ${
+                  variant.conflictSlotIds.length
+                    ? variant.conflictSlotIds.length + ' 个缺口'
+                    : '时间轴完整'
+                } · ${
+                  variant.status === 'PENDING'
+                    ? '待同步'
+                    : variant.conflictSlotIds.length
+                      ? '待补齐'
+                      : '可精修'
+                }`"
                 @click="selectVariant(variant.id)"
               >
                 <span class="cover">
@@ -2935,24 +3000,23 @@ defineExpose({ flushPendingEdits });
                   />
                   <b v-else>{{ String(index + 1).padStart(2, '0') }}</b>
                 </span>
-                <div>
-                  <b>{{ variantDisplayName(variant, index) }}</b
-                  ><small>
-                    <span
-                      >{{ variantDuration(variant).toFixed(1) }}s ·
-                      {{
-                        variant.conflictSlotIds.length
-                          ? variant.conflictSlotIds.length + ' 个缺口'
-                          : '完整'
-                      }}</span
-                    ><em>{{
+                <div class="project-card-info">
+                  <b>{{ variantDisplayName(variant, index) }}</b>
+                  <small class="project-duration">{{ variantDuration(variant).toFixed(0) }}s</small>
+                  <span
+                    class="project-status"
+                    :class="{
+                      pending: variant.status === 'PENDING',
+                      incomplete: variant.conflictSlotIds.length > 0,
+                    }"
+                    :title="
                       variant.status === 'PENDING'
                         ? '待同步'
                         : variant.conflictSlotIds.length
                           ? '待补齐'
                           : '可精修'
-                    }}</em>
-                  </small>
+                    "
+                  />
                 </div>
               </article>
               <div v-if="!workspace.variants.length" class="project-empty">
@@ -3063,7 +3127,20 @@ defineExpose({ flushPendingEdits });
         >
           <span />
         </div>
+        <EffectTemplateMixPackaging
+          ref="packagingPanel"
+          :project-id="projectId"
+          :workflow-run-id="workflowRunId"
+          :template-id="activeTemplateId"
+          :variants="workspace.variants"
+          :selected-variant-id="selectedVariant?.id ?? ''"
+          :prepare="preparePackaging"
+          :playhead="playhead"
+          :playing="playing"
+          @selected="selectedPackaging = $event"
+        />
         <EffectTemplateMixTimeline
+          :packaging="selectedPackaging?.stale ? null : selectedPackaging"
           :can-redo="canRedoTimeline"
           :can-undo="canUndoTimeline"
           :duration="currentDuration"
@@ -3181,6 +3258,48 @@ defineExpose({ flushPendingEdits });
             ><button class="button primary" :disabled="mutating" @click="overwrite(true)">
               更新并同步其他工程
             </button>
+          </footer>
+        </section>
+      </div>
+      <div
+        v-if="promptMaterial"
+        class="mask material-prompt-mask"
+        @mousedown.self="closeMaterialPrompt"
+      >
+        <section
+          class="modal material-prompt-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="mix-material-prompt-title"
+          @keydown.esc="closeMaterialPrompt"
+        >
+          <header>
+            <div>
+              <h3 id="mix-material-prompt-title">素材来源 Prompt</h3>
+              <p>
+                {{ promptMaterial.name }} · {{ promptMaterial.promptCode || promptMaterial.code }}
+              </p>
+            </div>
+            <button
+              ref="promptCloseButton"
+              type="button"
+              aria-label="关闭素材 Prompt"
+              @click="closeMaterialPrompt"
+            >
+              <X :size="18" />
+            </button>
+          </header>
+          <main>
+            <EffectSegmentRenderSourcePrompt
+              :prompt-text="promptMaterial.promptText || '暂无 Prompt 原文'"
+              :heading="promptMaterial.promptCreativeCore ? '来源 Prompt' : ''"
+            />
+            <p v-if="promptMaterial.promptCreativeCore" class="material-prompt-core">
+              <strong>创意方向</strong>{{ promptMaterial.promptCreativeCore }}
+            </p>
+          </main>
+          <footer>
+            <button type="button" class="button" @click="closeMaterialPrompt">关闭</button>
           </footer>
         </section>
       </div>
@@ -3851,9 +3970,36 @@ button:disabled {
   white-space: nowrap;
   font-size: 10px;
 }
-.material-copy small {
-  color: #64748b;
-  font-size: 9px;
+.material-card-actions {
+  display: flex;
+  min-width: 0;
+  gap: 4px;
+  margin-top: 3px;
+}
+.material-action {
+  min-width: 0;
+  flex: 1;
+  height: 20px;
+  padding: 0 4px;
+  overflow: hidden;
+  color: #52647e;
+  background: #f8fafc;
+  border: 1px solid #dce5f0;
+  border-radius: 4px;
+  font-size: 8px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.material-action-primary {
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+.material-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 .material-copy em {
   margin-top: 2px;
@@ -3880,6 +4026,33 @@ button:disabled {
   background: #fff;
   border: 1px solid #dce5f0;
   border-radius: 7px;
+}
+.material-prompt-modal {
+  width: min(640px, calc(100vw - 32px));
+}
+.material-prompt-modal main {
+  min-height: 0;
+  max-height: min(62vh, 540px);
+  overflow: auto;
+}
+.material-prompt-modal :deep(.source-prompt-content) {
+  max-height: 360px;
+  margin-top: 4px;
+}
+.material-prompt-core {
+  margin: 0;
+  padding: 10px 12px;
+  color: #42526a;
+  background: #f4f8ff;
+  border: 1px solid #cfe0ff;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.material-prompt-core strong {
+  display: block;
+  margin-bottom: 3px;
+  color: #2f6fed;
 }
 .resource-empty {
   display: grid;
@@ -4614,22 +4787,25 @@ button:disabled {
 .projects > div {
   min-height: 0;
   flex: 1 1 auto;
-  padding: 8px;
+  padding: 6px;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  grid-auto-rows: 48px;
   align-content: start;
-  gap: 6px;
+  justify-content: stretch;
+  gap: 4px;
   overflow: auto;
 }
 .projects article {
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr);
-  grid-template-rows: auto auto;
+  grid-template-columns: 36px minmax(0, 1fr);
+  grid-template-rows: auto;
   align-items: center;
-  gap: 2px 6px;
+  gap: 2px 5px;
   min-width: 0;
-  min-height: 62px;
-  padding: 6px;
+  min-height: 48px;
+  width: 100%;
+  padding: 4px;
   border: 1px solid #e2e8f0;
   border-radius: 7px;
   border-bottom: 1px solid #edf1f6;
@@ -4641,9 +4817,9 @@ button:disabled {
 .cover {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 42px;
-  grid-row: 1 / span 2;
+  width: 36px;
+  height: 38px;
+  grid-row: 1;
   color: #fff;
   background: #334155;
   border-radius: 5px;
@@ -4655,39 +4831,38 @@ button:disabled {
   object-fit: cover;
 }
 .projects article div {
-  display: grid;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
 }
 .projects article b {
+  min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 11px;
 }
-.projects article small {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 4px;
-  color: #64748b;
-  font-size: 9px;
-  line-height: 1.25;
-}
-.projects article small > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.projects article em {
+.project-duration {
   flex: 0 0 auto;
-  padding: 1px 4px;
-  color: #b45309;
-  background: #fff7ed;
-  border-radius: 3px;
-  font-size: 8px;
-  font-style: normal;
+  color: #64748b;
+  font-size: 10px;
+  line-height: 1;
   white-space: nowrap;
+}
+.project-status {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #22c55e;
+}
+.project-status.pending {
+  background: #f59e0b;
+}
+.project-status.incomplete {
+  background: #ef4444;
 }
 .project-empty {
   height: 100%;

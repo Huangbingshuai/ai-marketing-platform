@@ -16,6 +16,7 @@ from .models import Classification, Material, QueueMessage, Runtime, Selection, 
 from .provider import ArkProvider, ProviderError
 from .reliability import classification_chunks
 from .video import sample_frames
+from .packaging import PackagingHandler
 
 LOGGER = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -45,6 +46,7 @@ class Consumer:
         classification_input_token_budget: int,
         classification_max_output_tokens: int,
         ai_max_concurrency: int,
+        packaging: PackagingHandler | None = None,
     ) -> None:
         self.rabbitmq_url = rabbitmq_url
         self.queue = queue
@@ -55,6 +57,7 @@ class Consumer:
         self.classification_input_token_budget = classification_input_token_budget
         self.classification_max_output_tokens = classification_max_output_tokens
         self.ai_max_concurrency = ai_max_concurrency
+        self.packaging = packaging
         self.connection: AbstractRobustConnection | None = None
 
     async def run(self) -> None:
@@ -71,6 +74,17 @@ class Consumer:
             await self.connection.close()
 
     async def handle(self, message: AbstractIncomingMessage) -> None:
+        try:
+            envelope = json.loads(message.body)
+        except (ValueError, UnicodeDecodeError):
+            await message.ack()
+            return
+        if isinstance(envelope, dict) and envelope.get('schemaVersion') == 2 and envelope.get('taskType') == 'PACKAGING':
+            if self.packaging is None:
+                await message.nack(requeue=False)
+                return
+            await self.packaging.handle(message, envelope)
+            return
         runtime: Runtime | None = None
         heartbeat_task: asyncio.Task[None] | None = None
         heartbeat_stage = "CLASSIFYING"
@@ -243,13 +257,13 @@ class Consumer:
             LOGGER.exception("template mix task failed error=%s", type(exc).__name__)
             if runtime:
                 retryable = isinstance(exc, (ApiError, ProviderError)) and exc.retryable
-                message = "智能填充服务暂时不可用，请重试" if retryable else "智能填充结果无效，请检查素材后重试"
+                error_message = "智能填充服务暂时不可用，请重试" if retryable else "智能填充结果无效，请检查素材后重试"
                 if not retryable and isinstance(exc, (ApiError, ProviderError)):
                     detail = str(exc)
                     if detail and detail not in ("internal API rejected request", "internal API unavailable"):
-                        message = detail
+                        error_message = detail
                 try:
-                    await self.api.fail(runtime, "AI_TASK_FAILED", message, retryable)
+                    await self.api.fail(runtime, "AI_TASK_FAILED", error_message, retryable)
                 except Exception:
                     LOGGER.exception("failed to persist template mix error")
                     await message.nack(requeue=not message.redelivered)

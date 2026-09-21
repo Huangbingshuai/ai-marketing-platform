@@ -5,6 +5,8 @@ from .api import InternalApi
 from .config import get_settings
 from .consumer import Consumer
 from .provider import ArkProvider
+from .packaging import PackagingHandler
+from .packaging_provider import PackagingProvider
 
 
 async def serve() -> None:
@@ -18,6 +20,8 @@ async def serve() -> None:
         settings.ark_max_output_tokens,
         settings.ark_reasoning_effort,
     )
+    packaging_provider = PackagingProvider(settings.tts_api_key.get_secret_value(), settings.tts_speaker,
+        settings.tts_resource_id, settings.music_access_key.get_secret_value(), settings.music_secret_key.get_secret_value(), settings.music_action)
     consumer = Consumer(
         settings.rabbitmq_url.get_secret_value(),
         settings.queue_name,
@@ -28,6 +32,7 @@ async def serve() -> None:
         settings.classification_input_token_budget,
         settings.ark_max_output_tokens,
         settings.ai_max_concurrency,
+        PackagingHandler(api, provider, packaging_provider, settings.max_video_bytes),
     )
     try:
         await consumer.run()
@@ -35,6 +40,7 @@ async def serve() -> None:
         await consumer.close()
         await api.close()
         await provider.close()
+        await packaging_provider.close()
 
 
 def main() -> None:

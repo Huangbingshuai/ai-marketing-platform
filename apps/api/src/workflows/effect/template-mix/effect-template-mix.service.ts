@@ -16,6 +16,7 @@ import type {
 } from '@ai-marketing/contracts';
 import { HttpStatus, Inject, Injectable, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { packagingTimelineDuration, packagingVisualVariant } from '@ai-marketing/contracts';
 
 import { ApiHttpException } from '../../../common/api-http-exception';
 import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
@@ -35,6 +36,8 @@ import {
 } from './effect-template-mix.domain';
 import { EffectTemplateMixAiRepository } from './effect-template-mix-ai.repository';
 import type { EffectTemplateMixAiSnapshot } from './effect-template-mix-ai.types';
+import { EffectPackagingRepository } from './effect-packaging.repository';
+import { visualHash } from './effect-packaging.domain';
 
 const object = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -198,7 +201,46 @@ const materialPurpose = (value: unknown): EffectTemplateMixMaterial['purpose'] |
   return null;
 };
 
-const materialFrom = (artifact: WorkingArtifact): EffectTemplateMixMaterial | null => {
+type MaterialPromptSource = {
+  code: string;
+  content: string;
+  creativeCore?: string;
+};
+
+const promptSourcesFromArtifacts = (
+  artifacts: readonly WorkingArtifact[],
+): Map<string, MaterialPromptSource> => {
+  const sources = new Map<string, MaterialPromptSource>();
+  for (const artifact of artifacts) {
+    if (
+      artifact.nodeId !== 'PROMPT_GENERATION' ||
+      !artifact.artifactKey.startsWith('prompt-batch:')
+    )
+      continue;
+    const items = payload(artifact).items;
+    if (!Array.isArray(items)) continue;
+    for (const raw of items) {
+      const item = object(raw);
+      const id = typeof item?.id === 'string' ? item.id : '';
+      const content = typeof item?.content === 'string' ? item.content.trim() : '';
+      if (!id || !content) continue;
+      const code = typeof item?.code === 'string' ? item.code : '';
+      const creativeCore =
+        typeof item?.creativeCore === 'string' && item.creativeCore.trim()
+          ? item.creativeCore.trim()
+          : undefined;
+      const source: MaterialPromptSource = { code, content };
+      if (creativeCore) source.creativeCore = creativeCore;
+      sources.set(id, source);
+    }
+  }
+  return sources;
+};
+
+const materialFrom = (
+  artifact: WorkingArtifact,
+  promptSources: ReadonlyMap<string, MaterialPromptSource> = new Map(),
+): EffectTemplateMixMaterial | null => {
   if (
     artifact.nodeId !== 'SEGMENT_RENDER' ||
     !artifact.artifactKey.startsWith('render-clip:') ||
@@ -212,6 +254,8 @@ const materialFrom = (artifact: WorkingArtifact): EffectTemplateMixMaterial | nu
   if (!Number.isFinite(duration) || duration <= 0) return null;
   const primaryPurpose = materialPurpose(data.primaryPurpose);
   if (!primaryPurpose) return null;
+  const promptId = typeof data.promptId === 'string' ? data.promptId : '';
+  const prompt = promptId ? promptSources.get(promptId) : undefined;
   const compatiblePurposes = Array.isArray(data.compatiblePurposes)
     ? [
         ...new Set(
@@ -237,6 +281,9 @@ const materialFrom = (artifact: WorkingArtifact): EffectTemplateMixMaterial | nu
     ratio: typeof data.ratio === 'string' ? data.ratio : '',
     resolution: typeof data.resolution === 'string' ? data.resolution : '',
     available: artifact.availability === 'AVAILABLE' && artifact.freshness === 'CURRENT',
+    ...(prompt?.code ? { promptCode: prompt.code } : {}),
+    ...(prompt?.content ? { promptText: prompt.content } : {}),
+    ...(prompt?.creativeCore ? { promptCreativeCore: prompt.creativeCore } : {}),
   };
 };
 
@@ -286,6 +333,7 @@ export class EffectTemplateMixService {
     @Inject(EffectTemplateMixAiRepository)
     private readonly aiRuns?: EffectTemplateMixAiRepository,
     @Optional() @Inject(STORAGE_PORT) private readonly storage?: StoragePort,
+    @Optional() @Inject(EffectPackagingRepository) private readonly packaging?: EffectPackagingRepository,
   ) {}
 
   async workspace(
@@ -1189,11 +1237,11 @@ export class EffectTemplateMixService {
           directory: 'EDITING_PROJECTS',
           type: 'TIMELINE_PROJECT',
           tags: ['效果类', '时间轴工程'],
-          payload: { schemaVersion: 1, templateId, templateVersion: template.editVersion, variant },
+          payload: { schemaVersion: 1, templateId, templateVersion: template.editVersion, variant: packagingVisualVariant(variant) },
           metadata: {
             templateId,
             variantId: variant.id,
-            durationSeconds: variant.slots.reduce((sum, slot) => sum + slot.duration, 0),
+            durationSeconds: packagingTimelineDuration(variant),
           },
           dependencies: dependenciesFor(new Set(Object.values(variant.bindings))),
         },
@@ -1205,6 +1253,31 @@ export class EffectTemplateMixService {
       'TEMPLATE_MIX',
       inputs,
     );
+    // Preserve historical manual audio/subtitles at the same explicit confirmation boundary.
+    // Never overwrite a generated package with legacy editor fields.
+    const legacy = variants.filter(v => v.voice || v.bgm || v.captions.length);
+    if (legacy.length && this.packaging) {
+      const existing = (await this.working.listArtifacts(projectId, { workflowRunId, nodeId: 'TEMPLATE_MIX' })).items;
+      for (const variant of legacy) {
+        const key = `timeline-package:${templateId}:${variant.id}`;
+        const previous = existing.find(a => a.artifactKey === key);
+        if (previous && object(previous.payload)?.legacy !== true) continue;
+        const visual = committed.find(c => c.artifact.artifactKey === `timeline-project:${templateId}:${variant.id}`)?.artifact;
+        if (!visual) continue;
+        const ids = [variant.voice?.fileObjectId, variant.bgm?.fileObjectId].filter((id): id is string => Boolean(id));
+        const files = await this.packaging.db.fileObject.findMany({ where: { projectId, workflowRunId, id: { in: ids }, status: 'AVAILABLE' } });
+        if (files.length !== new Set(ids).size) throw new ApiHttpException('历史包装音频不存在，请检查后重新校验', HttpStatus.CONFLICT, 'CONFLICT');
+        const migrated = await this.working.commitValidatedArtifacts(projectId, workflowRunId, 'TEMPLATE_MIX', [{ artifactKey: key, input: {
+          kind: 'STRUCTURED', name: `${variant.name} · 人工包装`, directory: 'EDITING_PROJECTS', type: 'TIMELINE_PROJECT',
+          payload: { schemaVersion: 1, legacy: true, templateId, variantId: variant.id, sourceTimelineHash: visualHash(variant),
+            visualArtifactId: visual.id, visualRevision: visual.revision, captions: variant.captions, subtitleStyle: variant.subtitleStyle,
+            voice: variant.voice, bgm: variant.bgm, originalVolume: variant.originalVolume },
+          files: files.map((f, sortOrder) => ({ fileObjectId: f.id, role: f.id === variant.bgm?.fileObjectId ? 'BGM' : 'VOICE', sortOrder, originalFileName: f.originalFileName, mimeType: f.mimeType, sha256: f.sha256 })),
+          dependencies: [{ sourceType: 'WORKING_ARTIFACT', sourceNodeId: 'TEMPLATE_MIX', sourceArtifactId: visual.id, sourceKey: visual.artifactKey, sourceRevision: visual.revision, sourceHash: visual.contentHash ?? null }],
+        } }]);
+        committed.push(...migrated);
+      }
+    }
     return {
       artifacts: committed.map(({ artifact, unchanged }) => ({
         artifactId: artifact.id,
@@ -1238,10 +1311,11 @@ export class EffectTemplateMixService {
     const draft = draftOf(nodeState.state);
     const entry = draft.templates.find(({ id }) => id === templateId);
     if (!entry) this.notFound('当前混剪模板不存在');
+    const promptSources = promptSourcesFromArtifacts(artifactData.items);
     const workspace: EffectTemplateMixWorkspace = {
       ...entry!.workspace,
       materials: artifactData.items
-        .map(materialFrom)
+        .map((artifact) => materialFrom(artifact, promptSources))
         .filter((item): item is EffectTemplateMixMaterial => Boolean(item)),
     };
     mutation(workspace);
@@ -1271,8 +1345,9 @@ export class EffectTemplateMixService {
     aiRunRecords: EffectTemplateMixAiRunRecord[] = [],
     classificationSources: EffectTemplateMixClassificationSource[] = [],
   ): EffectTemplateMixWorkspaceData {
+    const promptSources = promptSourcesFromArtifacts(artifacts);
     const materials = artifacts
-      .map(materialFrom)
+      .map((artifact) => materialFrom(artifact, promptSources))
       .filter((item): item is EffectTemplateMixMaterial => Boolean(item));
     const commits = artifacts
       .filter(

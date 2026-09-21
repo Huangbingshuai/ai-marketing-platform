@@ -622,7 +622,8 @@ export class WorkflowWorkingRepository {
         transaction.effectImportMaterial.count({ where: { projectId, fileObjectId } }),
         transaction.effectImportUploadItem.count({ where: { projectId, fileObjectId } }),
       ]);
-      if (artifactLinks + materials + uploadItems === 0) orphanedFileObjectIds.push(fileObjectId);
+      const packagingFiles = await transaction.effectPackagingFile.count({ where: { projectId, fileObjectId } });
+      if (artifactLinks + materials + uploadItems + packagingFiles === 0) orphanedFileObjectIds.push(fileObjectId);
     }
     if (orphanedFileObjectIds.length)
       await transaction.fileObject.updateMany({
@@ -834,7 +835,7 @@ export class WorkflowWorkingRepository {
         const fileObjectIds = record.files.map((item) => item.fileObjectId);
         if (fileObjectIds.length)
           await transaction.fileObject.updateMany({
-            where: { projectId, id: { in: fileObjectIds } },
+            where: { projectId, id: { in: fileObjectIds }, packagingFiles: { none: {} } },
             data: { status: 'ORPHANED', orphanedAt: new Date() },
           });
       }

@@ -42,6 +42,10 @@ export type EffectTemplateMixMaterial = {
   ratio: string;
   resolution: string;
   available: boolean;
+  /** Original Prompt metadata is revealed only from the explicit material action. */
+  promptCode?: string;
+  promptText?: string;
+  promptCreativeCore?: string;
 };
 export type EffectTemplateMixCaption = { id: string; text: string; start: number; end: number };
 export type EffectTemplateMixAudio = {

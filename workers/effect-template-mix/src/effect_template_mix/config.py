@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     )
     max_video_bytes: int = Field(default=512 * 1024 * 1024, alias="TEMPLATE_MIX_MAX_VIDEO_BYTES", ge=1)
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    tts_api_key: SecretStr = Field(default=SecretStr(''), alias='VOLC_TTS_API_KEY')
+    tts_speaker: str = Field(default='', alias='VOLC_TTS_SPEAKER')
+    tts_resource_id: str = Field(default='seed-tts-2.0', alias='VOLC_TTS_RESOURCE_ID')
+    music_access_key: SecretStr = Field(default=SecretStr(''), alias='VOLC_MUSIC_ACCESS_KEY')
+    music_secret_key: SecretStr = Field(default=SecretStr(''), alias='VOLC_MUSIC_SECRET_KEY')
+    music_action: Literal['GenBGM', 'GenBGMForTime'] = Field(default='GenBGMForTime', alias='VOLC_MUSIC_ACTION')
 
     @model_validator(mode="after")
     def validate_real_provider(self) -> "Settings":
