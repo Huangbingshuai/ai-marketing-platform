@@ -116,7 +116,9 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('prefer an empty lane above it');
     expect(pageSource).toContain('beginMaterialPointerDrag');
     expect(pageSource).toContain("className = 'material-drag-ghost'");
-    expect(pageSource).toContain('draggable="false"');
+    expect(pageSource).toContain(':draggable="Boolean(selectedVariant)"');
+    expect(pageSource).toContain('@dragstart="beginMaterialDrag($event, material)"');
+    expect(pageSource).toContain('@dragend="endMaterialDrag"');
     expect(pageSource).toContain('@dragstart.capture="onNativeImageDragStart"');
     expect(pageSource).toContain('lane: variant.videoLanes?.[range.id] ?? 0');
     expect(pageSource).toContain('coverMaterial(variant)');

@@ -1478,7 +1478,10 @@ const beginMaterialPointerDrag = (
   event: PointerEvent,
   material: EffectTemplateMixMaterial,
 ): void => {
-  if (event.button !== 0 || !selectedVariant.value) return;
+  // Mouse drags use the browser's native drag/drop path below. Keep the
+  // pointer implementation for touch/pen input, where HTML5 drag is not
+  // consistently available.
+  if (event.button !== 0 || event.pointerType === 'mouse' || !selectedVariant.value) return;
   materialPointerDrag.value = {
     materialId: material.id,
     startX: event.clientX,
@@ -1498,16 +1501,32 @@ const beginMaterialPointerDrag = (
   window.addEventListener('pointerup', onMaterialPointerUp, { once: true });
   window.addEventListener('pointercancel', onMaterialPointerUp, { once: true });
 };
+const beginMaterialDrag = (event: DragEvent, material: EffectTemplateMixMaterial): void => {
+  if (!selectedVariant.value || !event.dataTransfer) {
+    event.preventDefault();
+    return;
+  }
+  draggingMaterialId.value = material.id;
+  event.dataTransfer.effectAllowed = 'copy';
+  event.dataTransfer.setData('application/x-effect-template-mix-material', material.id);
+  event.dataTransfer.setData('text/plain', material.id);
+};
+const endMaterialDrag = (): void => {
+  draggingMaterialId.value = '';
+};
 const onMaterialCardClick = (material: EffectTemplateMixMaterial): void => {
   if (suppressMaterialClick) return;
   void previewLibraryMaterial(material);
 };
-// Firefox may still promote an <img> into a native drag ghost even when its
-// parent card is marked draggable=false. Keep image dragging disabled at the
-// workbench boundary while leaving clip-level track dragging intact.
+// Firefox may still promote an <img> into a native drag ghost. Keep image
+// dragging disabled at the workbench boundary while allowing material cards
+// to use the native drag/drop path.
 const onNativeImageDragStart = (event: DragEvent): void => {
   const target = event.target;
-  if (target instanceof HTMLImageElement || (target instanceof Element && target.closest('img'))) {
+  if (
+    (target instanceof HTMLImageElement || (target instanceof Element && target.closest('img'))) &&
+    !(target instanceof Element && target.closest('.material-grid article'))
+  ) {
     event.preventDefault();
   }
 };
@@ -2630,9 +2649,11 @@ defineExpose({ flushPendingEdits });
                     disabled: !selectedVariant,
                     dragging: draggingMaterialId === material.id,
                   }"
-                  draggable="false"
+                  :draggable="Boolean(selectedVariant)"
                   @click="onMaterialCardClick(material)"
                   @pointerdown="beginMaterialPointerDrag($event, material)"
+                  @dragstart="beginMaterialDrag($event, material)"
+                  @dragend="endMaterialDrag"
                 >
                   <div class="thumb">
                     <EffectTemplateMixThumbnail
