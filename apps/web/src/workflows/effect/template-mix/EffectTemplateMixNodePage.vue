@@ -573,18 +573,27 @@ const selectMaterialRole = (role: 'ALL' | EffectTemplateMixRole): void => {
   const slot = selectedVariant.value?.slots.find((item) => item.role === role);
   if (slot) activeUi.value.selectedSlotId = slot.id;
 };
+const compareMaterialsByName = (
+  left: EffectTemplateMixMaterial,
+  right: EffectTemplateMixMaterial,
+): number =>
+  left.name.localeCompare(right.name, 'zh-CN', { numeric: true, sensitivity: 'base' }) ||
+  left.code.localeCompare(right.code, 'zh-CN', { numeric: true, sensitivity: 'base' }) ||
+  left.id.localeCompare(right.id);
 const filteredMaterials = computed(() => {
   const slot = selectedSlot.value;
   if (!workspace.value) return [];
   const search = keyword.value.trim().toLocaleLowerCase('zh-CN');
-  return workspace.value.materials.filter(
-    (item) =>
-      item.available &&
-      (materialRoleFilter.value === 'ALL' ||
-        classificationByRoleAndMaterial.value.has(`${materialRoleFilter.value}:${item.id}`)) &&
-      (!slot || item.duration + 0.001 >= slot.duration) &&
-      (!search || (item.name + item.code).toLocaleLowerCase('zh-CN').includes(search)),
-  );
+  return workspace.value.materials
+    .filter(
+      (item) =>
+        item.available &&
+        (materialRoleFilter.value === 'ALL' ||
+          classificationByRoleAndMaterial.value.has(`${materialRoleFilter.value}:${item.id}`)) &&
+        (!slot || item.duration + 0.001 >= slot.duration) &&
+        (!search || (item.name + item.code).toLocaleLowerCase('zh-CN').includes(search)),
+    )
+    .sort(compareMaterialsByName);
 });
 const materialColumnCount = computed(() => {
   const availableWidth = Math.max(142, materialGridWidth.value - 24);

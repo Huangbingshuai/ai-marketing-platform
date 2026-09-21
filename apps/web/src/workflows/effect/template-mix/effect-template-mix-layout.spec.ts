@@ -71,6 +71,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('openMaterialSlotPicker');
     expect(pageSource).toContain('moveMaterialToSlot');
     expect(pageSource).toContain('EffectSegmentRenderSourcePrompt');
+    expect(pageSource).toContain('compareMaterialsByName');
     expect(pageSource).toContain('align-self: stretch');
     expect(pageSource).toContain('height: 100%;\n  display: flex;\n  flex-direction: column;');
     expect(pageSource).toContain('flex: 1 1 auto');
