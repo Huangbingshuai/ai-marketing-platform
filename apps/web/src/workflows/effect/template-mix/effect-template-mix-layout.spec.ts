@@ -68,7 +68,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('material-pagination');
     expect(pageSource).toContain('displayedMaterials');
     expect(pageSource).toContain('查看 Prompt');
-    expect(pageSource).toContain('replaceMaterialSlot');
+    expect(pageSource).toContain('openMaterialSlotPicker');
     expect(pageSource).toContain('moveMaterialToSlot');
     expect(pageSource).toContain('EffectSegmentRenderSourcePrompt');
     expect(pageSource).toContain('align-self: stretch');

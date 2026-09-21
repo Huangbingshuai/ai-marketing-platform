@@ -140,6 +140,7 @@ let materialDragGhost: HTMLElement | null = null;
 let suppressMaterialClick = false;
 const auditionMaterial = ref<EffectTemplateMixMaterial | null>(null);
 const promptMaterial = ref<EffectTemplateMixMaterial | null>(null);
+const slotMoveMaterial = ref<EffectTemplateMixMaterial | null>(null);
 const auditionPlayer = ref<HTMLVideoElement | null>(null);
 const auditionPlaying = ref(false);
 const auditionTime = ref(0);
@@ -200,6 +201,7 @@ const timelineRedoStack = ref<TimelineEditSnapshot[]>([]);
 const createNameInput = ref<HTMLInputElement | null>(null);
 const dialogTrigger = ref<HTMLElement | null>(null);
 const promptCloseButton = ref<HTMLButtonElement | null>(null);
+const slotMoveCloseButton = ref<HTMLButtonElement | null>(null);
 const workflowTrigger = ref<HTMLButtonElement | null>(null);
 const workflowCloseButton = ref<HTMLButtonElement | null>(null);
 let controller: AbortController | undefined;
@@ -351,6 +353,19 @@ const coverMaterial = (variant: EffectTemplateMixVariant): EffectTemplateMixMate
 const selectedMaterial = computed(() =>
   selectedSlot.value ? materialForSlot(selectedSlot.value.id) : null,
 );
+const slotMoveSourceLabel = computed(() => {
+  const materialId = slotMoveMaterial.value?.id;
+  const variant = selectedVariant.value;
+  return (
+    variant?.slots.find((slot) => variant.bindings[slot.id] === materialId)?.label || '未分配'
+  );
+});
+const slotMoveOptions = computed(() => {
+  const variant = selectedVariant.value;
+  return variant
+    ? variant.slots.map((slot) => ({ slot, materialId: variant.bindings[slot.id] ?? '' }))
+    : [];
+});
 const materialUsageLabel = (materialId: string): string => {
   const variant = selectedVariant.value;
   if (!variant) return '';
@@ -751,13 +766,29 @@ const closeMaterialPrompt = async (): Promise<void> => {
   await nextTick();
   dialogTrigger.value?.focus();
 };
-const replaceMaterialSlot = (material: EffectTemplateMixMaterial): void => {
-  const slot = selectedSlot.value;
-  if (!selectedVariant.value || !slot) {
-    showNotice('请先选择要更换的素材槽位', 'warning');
+const openMaterialSlotPicker = async (
+  material: EffectTemplateMixMaterial,
+  event?: Event,
+): Promise<void> => {
+  if (!selectedVariant.value) {
+    showNotice('请先创建成片工程，再更换素材槽位', 'warning');
     return;
   }
-  moveMaterialToSlot(material, slot.id);
+  if (event?.currentTarget instanceof HTMLElement) dialogTrigger.value = event.currentTarget;
+  slotMoveMaterial.value = material;
+  await nextTick();
+  slotMoveCloseButton.value?.focus();
+};
+const closeMaterialSlotPicker = async (): Promise<void> => {
+  slotMoveMaterial.value = null;
+  await nextTick();
+  dialogTrigger.value?.focus();
+};
+const chooseMaterialSlot = async (slotId: string): Promise<void> => {
+  const material = slotMoveMaterial.value;
+  if (!material) return;
+  moveMaterialToSlot(material, slotId);
+  await closeMaterialSlotPicker();
 };
 const openWorkflowDialog = async (event?: Event): Promise<void> => {
   if (event?.currentTarget instanceof HTMLButtonElement)
@@ -2631,14 +2662,10 @@ defineExpose({ flushPendingEdits });
                       <button
                         type="button"
                         class="material-action material-action-primary"
-                        :disabled="!selectedVariant || !selectedSlot"
-                        :title="
-                          selectedSlot
-                            ? `将素材更换到${selectedSlot.label}`
-                            : '请先选择要更换的素材槽位'
-                        "
+                        :disabled="!selectedVariant"
+                        title="选择另一个素材槽位，可与目标槽位素材交换"
                         @pointerdown.stop
-                        @click.stop="replaceMaterialSlot(material)"
+                        @click.stop="openMaterialSlotPicker(material, $event)"
                       >
                         更换槽位
                       </button>
@@ -3357,6 +3384,55 @@ defineExpose({ flushPendingEdits });
           </main>
           <footer>
             <button type="button" class="button" @click="closeMaterialPrompt">关闭</button>
+          </footer>
+        </section>
+      </div>
+      <div
+        v-if="slotMoveMaterial && selectedVariant"
+        class="mask material-slot-mask"
+        @mousedown.self="closeMaterialSlotPicker"
+      >
+        <section
+          class="modal material-slot-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="mix-material-slot-title"
+          @keydown.esc="closeMaterialSlotPicker"
+        >
+          <header>
+            <div>
+              <h3 id="mix-material-slot-title">更换素材槽位</h3>
+              <p>
+                {{ slotMoveMaterial.name }} 当前位于
+                {{ slotMoveSourceLabel }}
+              </p>
+            </div>
+            <button
+              ref="slotMoveCloseButton"
+              type="button"
+              aria-label="关闭素材槽位选择"
+              @click="closeMaterialSlotPicker"
+            >
+              <X :size="18" />
+            </button>
+          </header>
+          <main class="material-slot-options">
+            <button
+              v-for="option in slotMoveOptions"
+              :key="option.slot.id"
+              type="button"
+              :disabled="option.materialId === slotMoveMaterial.id"
+              @click="chooseMaterialSlot(option.slot.id)"
+            >
+              <span>
+                <strong>{{ option.slot.label }}</strong>
+                <small>{{ option.materialId ? '已有素材，将交换槽位' : '空槽位' }}</small>
+              </span>
+              <ArrowLeft :size="14" />
+            </button>
+          </main>
+          <footer>
+            <button type="button" class="button" @click="closeMaterialSlotPicker">取消</button>
           </footer>
         </section>
       </div>
@@ -4101,6 +4177,46 @@ button:disabled {
   display: block;
   margin-bottom: 3px;
   color: #2f6fed;
+}
+.material-slot-modal {
+  width: min(480px, calc(100vw - 32px));
+}
+.material-slot-options {
+  display: grid;
+  gap: 7px;
+  max-height: min(52vh, 380px);
+  overflow: auto;
+}
+.material-slot-options > button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 48px;
+  padding: 8px 11px;
+  color: #334155;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #dce5f0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.material-slot-options > button:hover:not(:disabled) {
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-color: #93c5fd;
+}
+.material-slot-options > button:disabled {
+  color: #94a3b8;
+  background: #f8fafc;
+}
+.material-slot-options span {
+  display: grid;
+  gap: 3px;
+}
+.material-slot-options small {
+  color: #7b8aa0;
+  font-size: 9px;
 }
 .resource-empty {
   display: grid;
