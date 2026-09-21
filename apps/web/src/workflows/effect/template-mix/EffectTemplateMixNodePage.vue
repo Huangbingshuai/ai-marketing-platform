@@ -751,10 +751,10 @@ const closeMaterialPrompt = async (): Promise<void> => {
   await nextTick();
   dialogTrigger.value?.focus();
 };
-const replaceMaterialInSelectedSlot = (material: EffectTemplateMixMaterial): void => {
+const replaceMaterialSlot = (material: EffectTemplateMixMaterial): void => {
   const slot = selectedSlot.value;
   if (!selectedVariant.value || !slot) {
-    showNotice('请先点击时间轴上的素材槽位，再执行替换', 'warning');
+    showNotice('请先选择要更换的素材槽位', 'warning');
     return;
   }
   applyMaterialToSlot(material, slot.id);
@@ -1299,7 +1299,10 @@ const applyMaterialToSlot = (material: EffectTemplateMixMaterial, slotId: string
   variant.bindingRevisions[slot.id] = material.artifactRevision;
   variant.offsets[slot.id] = 0;
   variant.bindingMetadata ??= {};
-  variant.bindingMetadata[slot.id] = { source: 'MANUAL', trimReason: '人工替换素材' };
+  variant.bindingMetadata[slot.id] = {
+    source: 'MANUAL',
+    classificationReason: '人工更换素材槽位',
+  };
   if (!variant.manualSlotIds.includes(slot.id)) variant.manualSlotIds.push(slot.id);
   variant.conflictSlotIds = variant.conflictSlotIds.filter((id) => id !== slot.id);
   if (activeUi.value) activeUi.value.selectedSlotId = slot.id;
@@ -2568,24 +2571,15 @@ defineExpose({ flushPendingEdits });
                         :disabled="!selectedVariant || !selectedSlot"
                         :title="
                           selectedSlot
-                            ? `将素材放入${selectedSlot.label}`
-                            : '请先点击时间轴上的槽位'
+                            ? `将素材归入${selectedSlot.label}`
+                            : '请先选择要更换的素材槽位'
                         "
                         @pointerdown.stop
-                        @click.stop="replaceMaterialInSelectedSlot(material)"
+                        @click.stop="replaceMaterialSlot(material)"
                       >
-                        替换槽位
+                        更换槽位
                       </button>
                     </div>
-                    <em>{{
-                      !selectedVariant
-                        ? '等待 AI 创建成片工程'
-                        : auditionMaterial?.id === material.id
-                          ? '正在播放器中预览'
-                          : materialUsageLabel(material.id)
-                            ? '已用于：' + materialUsageLabel(material.id)
-                            : '点击预览 · 拖到时间轴使用'
-                    }}</em>
                   </div>
                 </article>
               </div>
@@ -3962,9 +3956,7 @@ button:disabled {
   color: #a45318;
   background: #fff1dc;
 }
-.material-copy b,
-.material-copy small,
-.material-copy em {
+.material-copy b {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4000,13 +3992,6 @@ button:disabled {
 .material-action:disabled {
   cursor: not-allowed;
   opacity: 0.45;
-}
-.material-copy em {
-  margin-top: 2px;
-  color: #2563eb;
-  font-size: 8px;
-  font-style: normal;
-  font-weight: 700;
 }
 .material-pagination {
   display: flex;
