@@ -1,6 +1,22 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
-import { AlertCircle, CheckCircle2, LoaderCircle, Sparkles, X } from '@lucide/vue';
+import {
+  AlertCircle,
+  ArrowLeft,
+  CheckCircle2,
+  LoaderCircle,
+  Sparkles,
+  Workflow,
+  X,
+} from '@lucide/vue';
+import { WorkflowRunProgress } from '@ai-marketing/ui';
+import {
+  packagingProgress,
+  packagingStageDetails,
+  packagingStageState,
+} from './effect-packaging-progress';
+import type { PackagingStage } from './effect-packaging-progress';
+import { packagingPlaybackError } from './effect-packaging-audio';
 import {
   PACKAGING_STAGES,
   PACKAGING_STAGE_LABELS,
@@ -25,16 +41,19 @@ const props = defineProps<{
   playhead: number;
   playing: boolean;
 }>();
-const emit = defineEmits<{ selected: [item: PackagingItem | null] }>();
+const emit = defineEmits<{ selected: [item: PackagingItem | null]; preview: [enabled: boolean] }>();
 const dialog = ref<HTMLDialogElement | null>(null);
 const visible = ref(false),
   busy = ref(false),
   loading = ref(false);
-const error = ref(''),
-  message = ref(''),
+const starting = ref(false);
+const requestError = ref(''),
+  loadError = ref('');
+const error = computed(() => requestError.value || loadError.value);
+const message = ref(''),
   runs = ref<PackagingRun[]>([]),
   chosenRun = ref('');
-const tab = ref<'ACTION' | 'WORKFLOW'>('ACTION');
+const selectedStage = ref<PackagingStage | null>(null);
 const detailId = ref('');
 let controller: AbortController | null = null,
   timer: ReturnType<typeof setTimeout> | null = null;
@@ -50,6 +69,39 @@ const completeCount = computed(
     props.variants.filter((v) => v.slots.length && v.slots.every((s) => v.bindings[s.id])).length,
 );
 const active = computed(() => runs.value.some((r) => ['QUEUED', 'RUNNING'].includes(r.status)));
+const progressRun = computed(
+  () => runs.value.find((r) => ['QUEUED', 'RUNNING'].includes(r.status)) ?? runs.value[0],
+);
+const progress = computed(() => packagingProgress(progressRun.value));
+const progressSummary = computed(() => {
+  if (starting.value && !active.value) return '智能成片包装 · 正在提交任务…';
+  const value = progressRun.value;
+  if (!value) return '';
+  const item = value.items.find((i) => i.status === 'RUNNING');
+  return `智能成片包装 · ${item ? PACKAGING_STAGE_LABELS[item.stage] : statusLabel[value.status]} · 阶段进度 ${progress.value}%`;
+});
+const stageState = (stage: PackagingStage) => packagingStageState(run.value?.items ?? [], stage);
+const stageItems = computed(() =>
+  !selectedStage.value
+    ? []
+    : (run.value?.items.filter(
+        (item) =>
+          item.stage === selectedStage.value ||
+          item.status === 'COMPLETED' ||
+          PACKAGING_STAGES.indexOf(item.stage) > PACKAGING_STAGES.indexOf(selectedStage.value!),
+      ) ?? []),
+);
+const shardStates = computed(() =>
+  [...new Set(run.value?.items.map((i) => i.shardIndex) ?? [])].map((index) => {
+    const items = run.value!.items.filter((i) => i.shardIndex === index);
+    return {
+      index,
+      total: items.length,
+      completed: items.filter((i) => i.status === 'COMPLETED').length,
+      failed: items.filter((i) => i.status === 'FAILED').length,
+    };
+  }),
+);
 const statusLabel: Record<string, string> = {
   QUEUED: '排队中',
   RUNNING: '处理中',
@@ -95,12 +147,12 @@ async function refresh() {
     );
     if (version !== generation) return;
     runs.value = response.data;
-    error.value = '';
+    loadError.value = '';
     if (!response.data.some((r) => r.id === chosenRun.value))
       chosenRun.value = response.data[0]?.id ?? '';
   } catch (reason) {
     if (version === generation && !(reason instanceof DOMException && reason.name === 'AbortError'))
-      error.value = reason instanceof Error ? reason.message : '读取包装失败';
+      loadError.value = reason instanceof Error ? reason.message : '读取包装失败';
   } finally {
     if (version === generation) {
       loading.value = false;
@@ -109,7 +161,17 @@ async function refresh() {
   }
 }
 async function open(mode: 'ACTION' | 'WORKFLOW') {
-  tab.value = mode;
+  if (mode === 'ACTION') {
+    if (busy.value || active.value || loading.value) return;
+    if (!completeCount.value) {
+      requestError.value = '请先完成至少一条成片的画面时间轴，空成片不参与包装';
+      return;
+    }
+    await create();
+    return;
+  }
+  chosenRun.value = progressRun.value?.id ?? '';
+  selectedStage.value = null;
   visible.value = true;
   message.value = '';
   await nextTick();
@@ -120,50 +182,57 @@ function close() {
   visible.value = false;
   dialog.value?.close();
 }
-defineExpose({ open, visible });
+defineExpose({ open, visible, busy, active, loading, starting });
 async function execute(action: () => Promise<unknown>) {
   if (busy.value) return;
   const version = generation;
   busy.value = true;
-  error.value = '';
+  requestError.value = '';
   message.value = '';
   try {
     await action();
     if (version === generation) await refresh();
   } catch (reason) {
-    if (version === generation) error.value = reason instanceof Error ? reason.message : '操作失败';
+    if (version === generation)
+      requestError.value = reason instanceof Error ? reason.message : '操作失败';
   } finally {
     if (version === generation) busy.value = false;
   }
 }
 async function create(variantId?: string, component: PackagingComponent = 'ALL') {
+  if (busy.value) return;
   const context = {
     generation,
     path: base.value,
     templateId: props.templateId,
     workflowRunId: props.workflowRunId,
   };
-  await execute(async () => {
-    const expectedRevision = await props.prepare();
-    if (context.generation !== generation) return;
-    if (expectedRevision === null) throw new Error('请先保存时间轴草稿');
-    const body = { workflowRunId: context.workflowRunId, expectedRevision, variantId, component };
-    const fingerprint = JSON.stringify(body);
-    if (pendingCreate?.fingerprint !== fingerprint)
-      pendingCreate = { fingerprint, key: crypto.randomUUID() };
-    const response = await requestJson<ApiResponse<PackagingRun>>(
-      `${context.path}/templates/${context.templateId}/packaging-runs`,
-      {
-        method: 'POST',
-        operation: '创建包装任务',
-        body: { ...body, idempotencyKey: pendingCreate.key },
-      },
-    );
-    if (context.generation !== generation) return;
-    pendingCreate = null;
-    chosenRun.value = response.data.id;
-    tab.value = 'WORKFLOW';
-  });
+  starting.value = true;
+  try {
+    await execute(async () => {
+      const expectedRevision = await props.prepare();
+      if (context.generation !== generation) return;
+      if (expectedRevision === null) throw new Error('请先保存时间轴草稿');
+      const body = { workflowRunId: context.workflowRunId, expectedRevision, variantId, component };
+      const fingerprint = JSON.stringify(body);
+      if (pendingCreate?.fingerprint !== fingerprint)
+        pendingCreate = { fingerprint, key: crypto.randomUUID() };
+      const response = await requestJson<ApiResponse<PackagingRun>>(
+        `${context.path}/templates/${context.templateId}/packaging-runs`,
+        {
+          method: 'POST',
+          operation: '创建包装任务',
+          body: { ...body, idempotencyKey: pendingCreate.key },
+        },
+      );
+      if (context.generation !== generation) return;
+      pendingCreate = null;
+      chosenRun.value = response.data.id;
+      runs.value = [response.data, ...runs.value.filter((r) => r.id !== response.data.id)];
+    });
+  } finally {
+    if (context.generation === generation) starting.value = false;
+  }
 }
 async function command(action: 'cancel' | 'retry') {
   if (!run.value) return;
@@ -193,6 +262,7 @@ async function confirm(item: PackagingItem) {
 const voiceElement = ref<HTMLAudioElement | null>(null),
   musicElement = ref<HTMLAudioElement | null>(null);
 const previewEnabled = ref(false);
+watch(previewEnabled, (enabled) => emit('preview', enabled));
 const currentVoice = computed(() =>
   selected.value && !selected.value.stale
     ? Object.values(selected.value.checkpoint.voices ?? {}).find(
@@ -222,11 +292,26 @@ function syncAudio() {
       audio === currentMusic.value && currentVoice.value
         ? Math.min(audio.volume, 0.08)
         : audio.volume;
-    if (element.paused)
-      void element.play().catch(() => {
+    if (element.paused) {
+      const version = generation;
+      const fileId = audio.fileObjectId;
+      const isMusic = element === musicElement.value;
+      void element.play().catch((reason: unknown) => {
+        const current = isMusic ? currentMusic.value : currentVoice.value;
+        const bound = isMusic ? musicElement.value : voiceElement.value;
+        const warning = packagingPlaybackError(
+          reason,
+          version === generation &&
+            previewEnabled.value &&
+            props.playing &&
+            bound === element &&
+            current?.fileObjectId === fileId,
+        );
+        if (!warning) return;
         previewEnabled.value = false;
-        error.value = '浏览器阻止音频播放，请再次开启试听';
+        requestError.value = warning;
       });
+    }
   }
 }
 watch(
@@ -248,7 +333,10 @@ watch(
     runs.value = [];
     chosenRun.value = '';
     pendingCreate = null;
+    requestError.value = '';
+    loadError.value = '';
     busy.value = false;
+    starting.value = false;
     close();
     previewEnabled.value = false;
     if (props.templateId) void refresh();
@@ -265,200 +353,286 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="packaging-strip">
-    <Sparkles :size="14" /><span>口播 · 配乐 · 字幕</span>
-    <span v-if="selected">{{
-      selected.stale ? '画面已变更，包装待更新' : statusLabel[selected.status]
-    }}</span>
-    <span v-else>未生成包装</span>
-    <button
-      v-if="selected?.status === 'COMPLETED' && !selected.stale"
-      :aria-pressed="previewEnabled"
-      @click="previewEnabled = !previewEnabled"
-    >
+  <WorkflowRunProgress
+    v-if="starting || progressRun"
+    class="packaging-progress"
+    :progress="starting && !active ? 0 : progress"
+    :summary="progressSummary"
+    :attempt-label="
+      progressRun
+        ? `已完成 ${progressRun.counts.completed} / ${progressRun.counts.total} 条 · ${progressRun.counts.shards} 个分片`
+        : `本次覆盖 ${completeCount} 条完整成片`
+    "
+    :warning="
+      error ||
+      (progressRun?.counts.failed ? `${progressRun.counts.failed} 条失败，请查看当前工作流` : '')
+    "
+    action-label="查看当前工作流"
+    @show-details="open('WORKFLOW')"
+  />
+  <div v-if="error && !visible && !progressRun && !busy" class="notice error" role="alert">
+    <AlertCircle :size="16" />{{ error }}<button @click="refresh">重新读取</button>
+  </div>
+  <div v-if="selected?.status === 'COMPLETED' && !selected.stale" class="packaging-strip">
+    <Sparkles :size="14" /><span>口播 · 配乐 · 字幕 · 草稿就绪</span>
+    <button :aria-pressed="previewEnabled" @click="previewEnabled = !previewEnabled">
       {{ previewEnabled ? '关闭同步试听' : '开启同步试听' }}
     </button>
-    <button @click="open('WORKFLOW')">查看包装</button>
-    <audio
-      v-if="currentVoice"
-      ref="voiceElement"
-      :src="fileUrl(currentVoice.fileObjectId)"
-      preload="auto"
-      @loadedmetadata="syncAudio"
-    />
-    <audio
-      v-if="currentMusic"
-      ref="musicElement"
-      :src="fileUrl(currentMusic.fileObjectId)"
-      preload="auto"
-      @loadedmetadata="syncAudio"
-    />
+    <button @click="open('WORKFLOW')">查看包装结果</button>
   </div>
+  <audio
+    v-if="currentVoice"
+    :key="currentVoice.fileObjectId"
+    ref="voiceElement"
+    :src="fileUrl(currentVoice.fileObjectId)"
+    preload="auto"
+    @loadedmetadata="syncAudio"
+  />
+  <audio
+    v-if="currentMusic"
+    :key="currentMusic.fileObjectId"
+    ref="musicElement"
+    :src="fileUrl(currentMusic.fileObjectId)"
+    preload="auto"
+    @loadedmetadata="syncAudio"
+  />
   <dialog
     ref="dialog"
-    class="packaging-dialog"
+    class="packaging-dialog workflow-dialog"
     aria-labelledby="packaging-title"
     @close="visible = false"
     @click="$event.target === dialog && close()"
   >
     <header>
-      <div>
-        <small>SMART PACKAGING WORKFLOW</small>
-        <h2 id="packaging-title">智能成片包装</h2>
-        <p>为每条完整成片生成口播、专属纯音乐与同步字幕，确认后交给成片输出。</p>
+      <div class="workflow-graph-title">
+        <span>SMART PACKAGING WORKFLOW</span>
+        <h2 id="packaging-title">智能成片包装工作流</h2>
+        <p>查看本次视觉理解、口播策划、配音、音乐和字幕的真实执行状态。</p>
       </div>
-      <button aria-label="关闭包装工作流" @click="close"><X :size="20" /></button>
+      <button class="workflow-graph-close" aria-label="关闭包装工作流" @click="close">
+        <X :size="18" />
+      </button>
     </header>
     <div v-if="error" class="notice error" role="alert">
       <AlertCircle :size="16" />{{ error
       }}<button :disabled="busy" @click="refresh">重新读取</button>
     </div>
     <div v-if="message" class="notice success" role="status">{{ message }}</div>
-    <section v-if="tab === 'ACTION'" class="strategy">
-      <h3>本次覆盖 {{ completeCount }} 条完整成片</h3>
-      <p>
-        空成片不参与。逐条理解镜头，仅使用已确认的商品事实策划口播；逐句配音，按真实音频时长对齐字幕。音乐为无人声纯器乐，自动裁切或循环并降低音量。
-      </p>
-      <p>
-        将调用火山视觉、豆包配音和 AI
-        音乐服务，产生服务费用。不会修改画面时间轴，也不会直接输出最终视频。
-      </p>
+    <div
+      class="workflow-version-notice"
+      :class="`is-${active ? 'running' : run?.status === 'COMPLETED' ? 'success' : run?.counts.failed ? 'danger' : 'waiting'}`"
+    >
+      <LoaderCircle v-if="loading || active" :size="15" />
+      <AlertCircle v-else-if="run?.counts.failed" :size="15" />
+      <CheckCircle2 v-else-if="run?.status === 'COMPLETED'" :size="15" />
+      <Sparkles v-else :size="15" />
+      <span>
+        <strong>{{
+          loading
+            ? '正在读取真实任务状态…'
+            : run
+              ? `本次包装${statusLabel[run.status]}`
+              : error
+                ? '任务状态暂不可用'
+                : '当前模板尚未执行智能成片包装'
+        }}</strong>
+        {{
+          run
+            ? `成功 ${run.counts.completed} / ${run.counts.total} · 失败 ${run.counts.failed} · 过期 ${run.items.filter((i) => i.stale).length} · ${run.counts.shards} 个分片`
+            : '下方展示包装流程；返回工作台点击“智能成片包装”后显示真实执行进度。'
+        }}
+      </span>
+    </div>
+    <div v-if="run" class="summary">
+      <select v-model="chosenRun" aria-label="选择包装批次">
+        <option v-for="r in runs" :key="r.id" :value="r.id">
+          {{ new Date(r.createdAt).toLocaleString() }} · {{ statusLabel[r.status] }}
+        </option>
+      </select>
       <button
-        class="primary"
-        :disabled="busy || loading || active || !completeCount"
-        @click="create()"
+        v-if="['QUEUED', 'RUNNING'].includes(run.status)"
+        :disabled="busy"
+        @click="command('cancel')"
       >
-        <Sparkles :size="16" />{{ busy ? '正在创建…' : '确认并生成全部包装' }}
+        取消任务
       </button>
-      <button @click="tab = 'WORKFLOW'">查看已有任务</button>
-    </section>
-    <section v-else class="workflow-body">
-      <div v-if="loading" class="empty"><LoaderCircle :size="20" />正在读取真实任务状态…</div>
-      <div v-else-if="!run" class="empty">
-        尚未创建包装任务。<button @click="tab = 'ACTION'">配置本次包装</button>
-      </div>
-      <template v-else>
-        <div class="summary">
-          <select v-model="chosenRun" aria-label="选择包装批次">
-            <option v-for="r in runs" :key="r.id" :value="r.id">
-              {{ new Date(r.createdAt).toLocaleString() }} · {{ statusLabel[r.status] }}
-            </option>
-          </select>
-          <span
-            >成功 {{ run.counts.completed }} / {{ run.counts.total }} · 失败
-            {{ run.counts.failed }} · 过期 {{ run.counts.stale }} ·
-            {{ run.counts.shards }} 个分片</span
-          >
+      <button
+        v-else-if="['FAILED', 'PARTIAL', 'CANCELLED'].includes(run.status)"
+        :disabled="busy || active || run.items.some((i) => i.stale)"
+        @click="command('retry')"
+      >
+        恢复未完成项
+      </button>
+    </div>
+    <main class="workflow-graph-content">
+      <div class="workflow-graph-canvas" aria-label="智能成片包装执行图">
+        <template v-for="(stage, index) in PACKAGING_STAGES" :key="stage">
+          <div v-if="index" class="workflow-connector" aria-hidden="true"><i /></div>
           <button
-            v-if="['QUEUED', 'RUNNING'].includes(run.status)"
-            :disabled="busy"
-            @click="command('cancel')"
+            class="workflow-graph-node"
+            :class="`is-${stageState(stage).tone}`"
+            type="button"
+            :aria-pressed="selectedStage === stage"
+            @click="selectedStage = stage"
           >
-            取消任务
+            <span class="workflow-node-dot" />
+            <span
+              ><strong>{{ PACKAGING_STAGE_LABELS[stage] }}</strong
+              ><small
+                >{{ packagingStageDetails[stage].description
+                }}<template v-if="run">
+                  · {{ stageState(stage).completed }} / {{ run.items.length }} 完成</template
+                ></small
+              ></span
+            >
+            <em>{{ stageState(stage).label }}</em>
           </button>
+        </template>
+      </div>
+      <aside class="workflow-node-detail" aria-live="polite">
+        <div v-if="!selectedStage" class="workflow-node-detail-empty">
+          <Workflow :size="30" /><strong>选择节点查看真实状态</strong>
+          <p>点击左侧节点查看本阶段输入、输出和各成片执行情况。</p>
+        </div>
+        <template v-else>
+          <header class="workflow-node-detail-header">
+            <div>
+              <span>NODE DETAIL</span><strong>{{ PACKAGING_STAGE_LABELS[selectedStage] }}</strong>
+            </div>
+          </header>
+          <div class="workflow-node-detail-status">
+            <em :class="`is-${stageState(selectedStage).tone}`">{{
+              stageState(selectedStage).label
+            }}</em
+            ><span
+              ><small>本阶段完成</small
+              ><b>{{ stageState(selectedStage).completed }} / {{ run?.items.length ?? 0 }}</b></span
+            >
+          </div>
+          <p class="workflow-node-summary">
+            {{ packagingStageDetails[selectedStage].description }}
+          </p>
+          <section class="workflow-detail-block is-input">
+            <span>INPUT</span><strong>本阶段输入</strong>
+            <p>{{ packagingStageDetails[selectedStage].input }}</p>
+          </section>
+          <section class="workflow-detail-block is-output">
+            <span>OUTPUT</span><strong>本阶段输出</strong>
+            <p>{{ packagingStageDetails[selectedStage].output }}</p>
+          </section>
+          <section v-if="run" class="workflow-detail-block">
+            <span>EXECUTION</span><strong>成片执行情况</strong>
+            <p>
+              执行中 {{ stageState(selectedStage).running }} · 失败
+              {{ stageState(selectedStage).failed }} · 取消
+              {{ stageState(selectedStage).cancelled }}
+            </p>
+            <p v-if="!stageItems.length">本阶段尚未执行。</p>
+            <ul class="stage-items">
+              <li v-for="item in stageItems" :key="item.id">
+                <b>{{ item.name }}</b
+                ><span>{{
+                  item.stale
+                    ? '已过期'
+                    : item.stage === selectedStage
+                      ? statusLabel[item.status]
+                      : '本阶段已完成'
+                }}</span
+                ><small v-if="item.stage === selectedStage && item.errorMessage" class="error">{{
+                  item.errorMessage
+                }}</small>
+              </li>
+            </ul>
+          </section>
+        </template>
+      </aside>
+    </main>
+    <details v-if="run" class="packaging-results">
+      <summary>成片结果与分片进度 · {{ run.items.length }} 条成片</summary>
+      <div class="shard-list">
+        <span v-for="shard in shardStates" :key="shard.index"
+          >分片 {{ shard.index + 1 }} · 完成 {{ shard.completed }}/{{ shard.total }} · 失败
+          {{ shard.failed }}</span
+        >
+      </div>
+      <div class="results">
+        <div class="item-list">
           <button
-            v-else-if="['FAILED', 'PARTIAL', 'CANCELLED'].includes(run.status)"
-            :disabled="busy || active || !!run.counts.stale"
-            @click="command('retry')"
+            v-for="item in run.items"
+            :key="item.id"
+            :class="{ selected: detail?.id === item.id }"
+            @click="detailId = item.id"
           >
-            恢复未完成项
+            <strong>{{ item.name }}</strong
+            ><small
+              >分片 {{ item.shardIndex + 1 }} ·
+              {{ item.stale ? '已过期' : statusLabel[item.status] }} ·
+              {{ PACKAGING_STAGE_LABELS[item.stage] }}</small
+            >
           </button>
         </div>
-        <ol class="stage-graph" aria-label="包装流程阶段">
-          <li
-            v-for="stage in PACKAGING_STAGES"
-            :key="stage"
-            :class="{
-              running: run.items.some((i) => i.stage === stage && i.status === 'RUNNING'),
-              failed: run.items.some((i) => i.stage === stage && i.status === 'FAILED'),
-              done: run.items.every((i) => i.status === 'COMPLETED' || PACKAGING_STAGES.indexOf(i.stage) > PACKAGING_STAGES.indexOf(stage)),
-            }"
-          >
-            <span>{{ PACKAGING_STAGE_LABELS[stage] }}</span
-            ><small
-              >{{
-                run.items.filter(
-                  (i) =>
-                    i.status === 'COMPLETED' ||
-                    PACKAGING_STAGES.indexOf(i.stage) > PACKAGING_STAGES.indexOf(stage),
-                ).length
-              }}
-              / {{ run.counts.total }} 完成</small
+        <section v-if="detail" class="detail">
+          <h3>{{ detail.name }}</h3>
+          <p v-if="detail.errorMessage" class="error" role="alert">{{ detail.errorMessage }}</p>
+          <p v-if="detail.stale" class="error">来源已变更，请重新生成；旧包装不可确认或输出。</p>
+          <div class="actions">
+            <button :disabled="busy || active" @click="create(detail.variantId)">重做整条</button
+            ><button
+              v-for="entry in [
+                ['VOICE', '口播'],
+                ['MUSIC', '音乐'],
+                ['CAPTIONS', '字幕'],
+              ] as const"
+              :key="entry[0]"
+              :disabled="
+                busy ||
+                active ||
+                detail.stale ||
+                !['COMPLETED', 'FAILED', 'CANCELLED'].includes(detail.status)
+              "
+              @click="create(detail.variantId, entry[0])"
             >
-          </li>
-        </ol>
-        <div class="results">
-          <div class="item-list">
-            <button
-              v-for="item in run.items"
-              :key="item.id"
-              :class="{ selected: detail?.id === item.id }"
-              @click="detailId = item.id"
-            >
-              <strong>{{ item.name }}</strong
-              ><small
-                >分片 {{ item.shardIndex + 1 }} ·
-                {{ item.stale ? '已过期' : statusLabel[item.status] }} ·
-                {{ PACKAGING_STAGE_LABELS[item.stage] }}</small
-              >
+              重做{{ entry[1] }}
             </button>
           </div>
-          <section v-if="detail" class="detail">
-            <h3>{{ detail.name }}</h3>
-            <p v-if="detail.errorMessage" class="error" role="alert">{{ detail.errorMessage }}</p>
-            <p v-if="detail.stale" class="error">来源已变更，请重新生成；旧包装不可确认或输出。</p>
-            <div class="actions">
-              <button :disabled="busy || active" @click="create(detail.variantId)">重做整条</button
-              ><button
-                v-for="entry in [
-                  ['VOICE', '口播'],
-                  ['MUSIC', '音乐'],
-                  ['CAPTIONS', '字幕'],
-                ] as const"
-                :key="entry[0]"
-                :disabled="busy || active || detail.stale || !['COMPLETED', 'FAILED', 'CANCELLED'].includes(detail.status)"
-                @click="create(detail.variantId, entry[0])"
-              >
-                重做{{ entry[1] }}
-              </button>
-            </div>
-            <div v-for="line in detail.checkpoint.script" :key="line.id" class="line">
-              <p>{{ line.text }}</p>
-              <small>引用 {{ line.factIds.length }} 条确认事实</small
-              ><audio
-                v-if="detail.checkpoint.voices?.[line.id]"
-                controls
-                preload="none"
-                :src="fileUrl(detail.checkpoint.voices[line.id]!.fileObjectId)"
-              />
-            </div>
-            <div v-if="detail.checkpoint.music" class="line">
-              <strong>专属纯音乐</strong
-              ><audio
-                controls
-                preload="none"
-                :src="fileUrl(detail.checkpoint.music.fileObjectId)"
-              />
-            </div>
-            <div v-if="detail.checkpoint.captions?.length" class="captions">
-              <h4>同步字幕</h4>
-              <p v-for="c in detail.checkpoint.captions" :key="c.id">
-                <time>{{ c.start.toFixed(2) }}–{{ c.end.toFixed(2) }}s</time>{{ c.text }}
-              </p>
-            </div>
-            <button
-              class="primary"
-              :disabled="busy || detail.stale || detail.status !== 'COMPLETED'"
-              @click="confirm(detail)"
-            >
-              <CheckCircle2 :size="16" />完成包装校验</button
-            ><small class="hint"
-              >请先完成画面时间轴校验。此处只提交包装工作副本，不编码最终成片。</small
-            >
-          </section>
-        </div>
-      </template>
-    </section>
+          <div v-for="line in detail.checkpoint.script" :key="line.id" class="line">
+            <p>{{ line.text }}</p>
+            <small>引用 {{ line.factIds.length }} 条确认事实</small
+            ><audio
+              v-if="detail.checkpoint.voices?.[line.id]"
+              controls
+              preload="none"
+              :src="fileUrl(detail.checkpoint.voices[line.id]!.fileObjectId)"
+            />
+          </div>
+          <div v-if="detail.checkpoint.music" class="line">
+            <strong>专属纯音乐</strong
+            ><audio controls preload="none" :src="fileUrl(detail.checkpoint.music.fileObjectId)" />
+          </div>
+          <div v-if="detail.checkpoint.captions?.length" class="captions">
+            <h4>同步字幕</h4>
+            <p v-for="c in detail.checkpoint.captions" :key="c.id">
+              <time>{{ c.start.toFixed(2) }}–{{ c.end.toFixed(2) }}s</time>{{ c.text }}
+            </p>
+          </div>
+          <button
+            class="primary"
+            :disabled="busy || detail.stale || detail.status !== 'COMPLETED'"
+            @click="confirm(detail)"
+          >
+            <CheckCircle2 :size="16" />完成包装校验</button
+          ><small class="hint"
+            >请先完成画面时间轴校验。此处只提交包装工作副本，不编码最终成片。</small
+          >
+        </section>
+      </div>
+    </details>
+    <footer>
+      <span><i class="running" />执行中</span><span><i class="success" />已完成</span
+      ><span><i />等待中</span><span><i class="danger" />失败</span>
+      <span class="workflow-edge-count">6 条执行边</span>
+      <button type="button" @click="close"><ArrowLeft :size="14" />返回工作区</button>
+    </footer>
   </dialog>
 </template>
 
@@ -513,7 +687,7 @@ select:focus-visible {
 .packaging-dialog::backdrop {
   background: #18305266;
 }
-header {
+.packaging-dialog > header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -531,25 +705,15 @@ h3 {
 p {
   line-height: 1.7;
 }
-header p {
+.packaging-dialog > header p {
   margin: 6px 0 0;
   font-size: 13px;
   color: #6881a6;
 }
-header small {
+.packaging-dialog > header small {
   color: #7190b7;
   letter-spacing: 1px;
   font-size: 10px;
-}
-.strategy,
-.workflow-body {
-  padding: 22px;
-}
-.strategy > button {
-  margin-right: 10px;
-}
-.strategy p {
-  color: #607a9d;
 }
 .notice {
   display: flex;
@@ -572,6 +736,7 @@ header small {
   gap: 12px;
   flex-wrap: wrap;
   font-size: 12px;
+  padding: 14px 20px 0;
 }
 select {
   padding: 8px;
@@ -581,41 +746,6 @@ select {
   color: #33567f;
   max-width: 100%;
 }
-.stage-graph {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 10px;
-  padding: 0;
-  margin: 20px 0;
-  list-style: none;
-}
-.stage-graph li {
-  position: relative;
-  border: 1px solid #dce5f3;
-  background: #f6f9fe;
-  border-radius: 9px;
-  padding: 14px 7px;
-  font-size: 12px;
-  text-align: center;
-}
-.stage-graph li + li::before {
-  content: '›';
-  position: absolute;
-  left: -9px;
-  color: #7798c2;
-}
-.stage-graph small {
-  display: block;
-  color: #7c92b3;
-  margin-top: 7px;
-  font-size: 10px;
-}
-.stage-graph .running {
-  border-color: #588af2;
-  background: #eaf2ff;
-}
-.stage-graph .done { background: #f0faf5; border-color: #bcdccb; }
-.stage-graph .failed { background: #fff4f4; border-color: #efb9c1; }
 .results {
   display: grid;
   grid-template-columns: 235px minmax(0, 1fr);
@@ -695,13 +825,74 @@ time {
   .item-list {
     max-height: 150px;
   }
-  .stage-graph {
-    grid-template-columns: repeat(3, 1fr);
-  }
-  header,
-  .strategy,
-  .workflow-body {
+  .packaging-dialog > header {
     padding: 14px;
   }
 }
+.packaging-progress {
+  margin: 8px 12px;
+  flex-shrink: 0;
+}
+.packaging-dialog {
+  max-width: calc(100vw - 32px);
+}
+.packaging-dialog > footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.packaging-results {
+  margin: 0 20px 16px;
+  border: 1px solid #dbe4f6;
+  border-radius: 12px;
+  background: white;
+}
+.packaging-results > summary {
+  cursor: pointer;
+  padding: 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #33415a;
+}
+.packaging-results > .results {
+  margin: 0 14px 14px;
+}
+.shard-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 0 14px 14px;
+  font-size: 11px;
+  color: #60708a;
+}
+.shard-list span {
+  padding: 6px 9px;
+  background: #f4f8ff;
+  border-radius: 6px;
+}
+.stage-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 190px;
+  overflow: auto;
+}
+.stage-items li {
+  display: flex;
+  align-items: start;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 8px 0;
+  border-bottom: 1px solid #edf1f7;
+  font-size: 10px;
+}
+.stage-items li b {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.stage-items li small {
+  flex-basis: 100%;
+}
 </style>
+<style scoped src="./effect-template-mix-workflow.css"></style>

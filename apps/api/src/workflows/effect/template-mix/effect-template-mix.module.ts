@@ -11,11 +11,19 @@ import { EffectTemplateMixWorkerGuard } from './effect-template-mix-worker.guard
 import { EffectTemplateMixLeaseRecovery } from './effect-template-mix-lease-recovery';
 import { EffectPackagingRepository } from './effect-packaging.repository';
 import { EffectPackagingService } from './effect-packaging.service';
-import { EffectPackagingController, EffectPackagingWorkerController } from './effect-packaging.controller';
+import {
+  EffectPackagingController,
+  EffectPackagingWorkerController,
+} from './effect-packaging.controller';
 
 @Module({
   imports: [WorkflowModule, FileModule, JobModule],
-  controllers: [EffectTemplateMixController, EffectTemplateMixWorkerController, EffectPackagingController, EffectPackagingWorkerController],
+  controllers: [
+    EffectTemplateMixController,
+    EffectTemplateMixWorkerController,
+    EffectPackagingController,
+    EffectPackagingWorkerController,
+  ],
   providers: [
     EffectTemplateMixService,
     EffectTemplateMixAiRepository,

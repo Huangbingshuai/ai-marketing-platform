@@ -37,14 +37,24 @@ const makeRun = (): PackagingRun => ({
   id: 'qa-run',
   workflowRunId: 'qa-workflow',
   templateId: 'qa-template',
-  status: mode.value === 'FAILED' ? 'FAILED' : 'COMPLETED',
+  status: ['FAILED', 'COMMAND_ERROR'].includes(mode.value)
+    ? 'FAILED'
+    : mode.value === 'RUNNING'
+      ? 'RUNNING'
+      : mode.value === 'QUEUED'
+        ? 'QUEUED'
+        : 'COMPLETED',
   createdAt: '2026-09-21T07:00:00.000Z',
   startedAt: '2026-09-21T07:00:01.000Z',
   completedAt: '2026-09-21T07:00:31.000Z',
   counts: {
     total: 10,
-    completed: mode.value === 'FAILED' ? 0 : 10,
-    failed: mode.value === 'FAILED' ? 10 : 0,
+    completed: ['FAILED', 'COMMAND_ERROR', 'QUEUED'].includes(mode.value)
+      ? 0
+      : mode.value === 'RUNNING'
+        ? 2
+        : 10,
+    failed: ['FAILED', 'COMMAND_ERROR'].includes(mode.value) ? 10 : 0,
     stale: mode.value === 'STALE' ? 10 : 0,
     shards: 3,
   },
@@ -55,10 +65,28 @@ const makeRun = (): PackagingRun => ({
     shardIndex: Math.floor(index / 4),
     sourceTimelineHash: 'qa-hash',
     sourceVisualTimeline: packagingVisualTimeline(v),
-    status: mode.value === 'FAILED' ? 'FAILED' : 'COMPLETED',
-    stage: mode.value === 'FAILED' ? 'MUSIC' : 'READY',
+    status: ['FAILED', 'COMMAND_ERROR'].includes(mode.value)
+      ? 'FAILED'
+      : mode.value === 'QUEUED'
+        ? 'QUEUED'
+        : mode.value === 'RUNNING' && index >= 2
+          ? index === 2
+            ? 'RUNNING'
+            : 'QUEUED'
+          : 'COMPLETED',
+    stage: ['FAILED', 'COMMAND_ERROR'].includes(mode.value)
+      ? 'MUSIC'
+      : mode.value === 'QUEUED'
+        ? 'SNAPSHOT'
+        : mode.value === 'RUNNING' && index >= 2
+          ? index === 2
+            ? 'VOICE'
+            : 'SNAPSHOT'
+          : 'READY',
     stale: mode.value === 'STALE',
-    errorMessage: mode.value === 'FAILED' ? '音乐服务配置缺失（显式回归测试数据）' : null,
+    errorMessage: ['FAILED', 'COMMAND_ERROR'].includes(mode.value)
+      ? '音乐服务配置缺失（显式回归测试数据）'
+      : null,
     startedAt: '2026-09-21T07:00:01.000Z',
     completedAt: '2026-09-21T07:00:31.000Z',
     checkpoint: {
@@ -87,7 +115,15 @@ window.fetch = async (input, init) => {
     return new Response(JSON.stringify({ message: '模拟网络错误，不代表后端故障' }), {
       status: 503,
     });
-  if (init?.method === 'POST') mutationCount.value++;
+  if (init?.method === 'POST') {
+    mutationCount.value++;
+    if (mode.value === 'COMMAND_ERROR')
+      return new Response(JSON.stringify({ message: '模拟恢复失败：轮询成功不得清除此错误' }), {
+        status: 500,
+      });
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    if (mode.value === 'EMPTY') mode.value = 'QUEUED';
+  }
   return new Response(
     JSON.stringify({
       success: true,
@@ -109,7 +145,17 @@ createApp({
           h(
             'nav',
             { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px' },
-            ['COMPLETED', 'FAILED', 'EMPTY', 'STALE', 'LOADING', 'ERROR'].map((value) =>
+            [
+              'COMPLETED',
+              'RUNNING',
+              'QUEUED',
+              'FAILED',
+              'EMPTY',
+              'STALE',
+              'LOADING',
+              'ERROR',
+              'COMMAND_ERROR',
+            ].map((value) =>
               h(
                 'button',
                 {
@@ -122,7 +168,14 @@ createApp({
               ),
             ),
           ),
-          h('button', { onClick: () => panel.value?.open('ACTION') }, '打开批量确认'),
+          h(
+            'button',
+            {
+              disabled: panel.value?.busy || panel.value?.active || panel.value?.loading,
+              onClick: () => panel.value?.open('ACTION'),
+            },
+            '智能成片包装',
+          ),
           h('button', { onClick: () => panel.value?.open('WORKFLOW') }, '打开包装工作流'),
           h(Packaging, {
             key: fixtureKey.value,

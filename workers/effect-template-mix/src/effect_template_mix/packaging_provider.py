@@ -6,6 +6,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -13,6 +14,8 @@ from urllib.parse import urlencode, urlsplit
 from uuid import uuid4
 
 import httpx
+
+LOGGER = logging.getLogger(__name__)
 
 
 class PackagingError(RuntimeError):
@@ -91,7 +94,17 @@ class PackagingProvider:
         if response.is_error:
             raise PackagingError('火山纯音乐请求失败，请核查服务权限或任务状态')
         value = response.json()
-        if value.get('Code') != 0 or value.get('ResponseMetadata', {}).get('Error'):
+        metadata = value.get('ResponseMetadata') or {}
+        error = metadata.get('Error') or {}
+        if value.get('Code') != 0 or error:
+            # Do not expose supplier response text, signed URLs or credentials.
+            def safe_code(raw: Any) -> str:
+                text = str(raw or '')
+                return text if re.fullmatch(r'[a-zA-Z0-9_.:-]{0,160}', text) else 'redacted'
+            LOGGER.warning('packaging music rejected action=%s code=%s error_code=%s request_id=%s',
+                action, safe_code(value.get('Code')), safe_code(error.get('Code')), safe_code(metadata.get('RequestId')))
+            if value.get('Code') == 200028 or error.get('Code') == 'APINoSource':
+                raise PackagingError('火山音乐账号未找到可用服务资源（200028/APINoSource），请核查 AK 所属账号、音乐服务开通和计费模式')
             raise PackagingError('火山纯音乐服务返回失败')
         result = value.get('Result')
         if not isinstance(result, dict):

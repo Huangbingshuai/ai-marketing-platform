@@ -295,7 +295,7 @@ const transitionStyle = (slot: EffectTemplateMixSlot): Record<string, string> =>
   return {
     left: `${(range?.start ?? 0) * pixelsPerSecond.value}px`,
     top: `${7 + clipLane(slot.id) * 70}px`,
-    width: isHardCut ? '8px' : `${Math.max(32, duration * pixelsPerSecond.value)}px`,
+    width: isHardCut ? '8px' : `${Math.max(16, duration * pixelsPerSecond.value)}px`,
   };
 };
 
@@ -1106,7 +1106,11 @@ onBeforeUnmount(() => {
               >
                 {{ caption.text }}
               </div>
-              <span v-if="!packaging?.checkpoint.captions?.length && !variant?.captions.length" class="track-empty-copy">未配置字幕</span>
+              <span
+                v-if="!packaging?.checkpoint.captions?.length && !variant?.captions.length"
+                class="track-empty-copy"
+                >未配置字幕</span
+              >
             </div>
 
             <div
@@ -1253,12 +1257,31 @@ onBeforeUnmount(() => {
             >
               <Music2 :size="13" />{{ variant.bgm.name }}
             </div>
-            <div v-for="(audio, id) in packaging?.checkpoint.voices ?? {}" :key="id" class="audio-clip voice-clip"
-              :style="{ left: `${audio.start * pixelsPerSecond}px`, width: `${Math.max(14, audio.duration * pixelsPerSecond)}px` }"
-              :title="packaging?.checkpoint.script?.find(line => line.id === id)?.text"><Volume2 :size="13" />口播草稿</div>
-            <div v-if="packaging?.checkpoint.music" class="audio-clip bgm-clip"
-              :style="{ left: `${packaging.checkpoint.music.start * pixelsPerSecond}px`, width: `${packaging.checkpoint.music.duration * pixelsPerSecond}px` }"><Music2 :size="13" />纯音乐草稿</div>
-            <span v-if="!packaging && !variant?.voice && !variant?.bgm" class="track-empty-copy">未配置音频</span>
+            <div
+              v-for="(audio, id) in packaging?.checkpoint.voices ?? {}"
+              :key="id"
+              class="audio-clip voice-clip"
+              :style="{
+                left: `${audio.start * pixelsPerSecond}px`,
+                width: `${Math.max(14, audio.duration * pixelsPerSecond)}px`,
+              }"
+              :title="packaging?.checkpoint.script?.find((line) => line.id === id)?.text"
+            >
+              <Volume2 :size="13" />口播草稿
+            </div>
+            <div
+              v-if="packaging?.checkpoint.music"
+              class="audio-clip bgm-clip"
+              :style="{
+                left: `${packaging.checkpoint.music.start * pixelsPerSecond}px`,
+                width: `${packaging.checkpoint.music.duration * pixelsPerSecond}px`,
+              }"
+            >
+              <Music2 :size="13" />纯音乐草稿
+            </div>
+            <span v-if="!packaging && !variant?.voice && !variant?.bgm" class="track-empty-copy"
+              >未配置音频</span
+            >
           </div>
 
           <div
@@ -1730,7 +1753,7 @@ onBeforeUnmount(() => {
 }
 .transition-junction {
   box-sizing: border-box;
-  min-width: 32px;
+  min-width: 16px;
   position: absolute;
   z-index: 7;
   top: 7px;

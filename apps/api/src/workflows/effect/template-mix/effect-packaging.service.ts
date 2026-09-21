@@ -15,6 +15,8 @@ import type {
   PackagingRun,
   PackagingSnapshot,
   PackagingStage,
+  EffectTemplateMixWorkspaceData,
+  WorkingArtifact,
 } from '@ai-marketing/contracts';
 import { packagingVisualTimeline } from '@ai-marketing/contracts';
 import { EffectPackagingRepository } from './effect-packaging.repository';
@@ -145,6 +147,13 @@ export class EffectPackagingService {
     const artifacts = (
       await this.working.listArtifacts(projectId, { workflowRunId: run.workflowRunId })
     ).items;
+    return this.present(run, workspace, artifacts);
+  }
+  private present(
+    run: NonNullable<Awaited<ReturnType<EffectPackagingRepository['get']>>>,
+    workspace: EffectTemplateMixWorkspaceData,
+    artifacts: WorkingArtifact[],
+  ): PackagingRun {
     const variants =
       workspace.draft.templates.find((t) => t.id === run.templateId)?.workspace.variants ?? [];
     const items = run.items.map((i) => {
@@ -182,7 +191,7 @@ export class EffectPackagingService {
       };
     });
     return {
-      id,
+      id: run.id,
       templateId: run.templateId,
       workflowRunId: run.workflowRunId,
       status: run.status as PackagingRun['status'],
@@ -200,9 +209,12 @@ export class EffectPackagingService {
     };
   }
   async list(projectId: string, workflowRunId: string, templateId: string) {
-    await this.working.getNodeState(projectId, workflowRunId, 'TEMPLATE_MIX');
-    const runs = await this.repo.list(projectId, workflowRunId, templateId);
-    return Promise.all(runs.map((r) => this.get(projectId, r.id)));
+    const [workspace, artifacts, runs] = await Promise.all([
+      this.mix.workspace(projectId, workflowRunId),
+      this.working.listArtifacts(projectId, { workflowRunId }),
+      this.repo.list(projectId, workflowRunId, templateId),
+    ]);
+    return runs.map((run) => this.present(run, workspace, artifacts.items));
   }
   async retry(projectId: string, id: string) {
     const run = await this.get(projectId, id);

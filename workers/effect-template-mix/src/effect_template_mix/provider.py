@@ -1,6 +1,9 @@
 import asyncio
 import base64
 import json
+import logging
+import re
+import time
 from collections.abc import Mapping
 from typing import Any, TypeVar
 
@@ -11,6 +14,7 @@ from .models import ClassificationResult, Material, Slot, TrimChoice
 from .reliability import classification_output_token_budget
 
 T = TypeVar("T", bound=BaseModel)
+LOGGER = logging.getLogger(__name__)
 
 
 class ProviderError(RuntimeError):
@@ -111,6 +115,7 @@ class ArkProvider:
         name: str,
         *,
         max_output_tokens: int,
+        max_attempts: int = 2,
     ) -> T:
         payload = {
             "model": self.model,
@@ -121,10 +126,17 @@ class ArkProvider:
             "text": {"format": {"type": "json_schema", "name": name, "schema": output.model_json_schema(), "strict": True}},
         }
         last: Exception | None = None
-        for _ in range(2):
+        for _ in range(max_attempts):
             try:
+                started = time.monotonic()
                 async with asyncio.timeout(self.request_timeout):
                     response = await self.client.post("responses", json=payload)
+                if name.startswith('packaging_'):
+                    request_id = response.headers.get('x-request-id', '')
+                    if not re.fullmatch(r'[a-zA-Z0-9_.:-]{0,160}', request_id):
+                        request_id = 'redacted'
+                    LOGGER.info('packaging model stage=%s status=%s elapsed=%.3f request_id=%s',
+                        name, response.status_code, time.monotonic() - started, request_id)
                 if response.is_error:
                     raise ProviderError("AI 服务暂时不可用", retryable=response.status_code >= 500 or response.status_code == 429)
                 response_payload = response.json()
@@ -140,6 +152,10 @@ class ArkProvider:
             except (TimeoutError, httpx.TimeoutException, httpx.NetworkError) as exc:
                 last = exc
             except (ValueError, ValidationError, json.JSONDecodeError) as exc:
+                if name.startswith('packaging_'):
+                    # Error input/ctx can contain model text; record only mechanical field locations.
+                    fields = [str(error['loc']) for error in exc.errors(include_input=False, include_context=False)] if isinstance(exc, ValidationError) else []
+                    LOGGER.warning('packaging model invalid stage=%s type=%s fields=%s', name, type(exc).__name__, fields)
                 last = exc
         raise ProviderError(
             "AI 返回结构无效",

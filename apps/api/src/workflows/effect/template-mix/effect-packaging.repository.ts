@@ -38,19 +38,39 @@ export class EffectPackagingRepository {
     });
   }
   private enqueue(tx: Prisma.TransactionClient, projectId: string, runId: string) {
-    return tx.jobOutbox.create({
-      data: {
+    const payload = {
+      schemaVersion: 2,
+      taskType: 'PACKAGING',
+      projectId,
+      runId,
+      requestId: randomUUID(),
+    };
+    // One durable outbox row per run: retries and lease recovery re-arm that row.
+    // Clearing dispatchToken also fences acknowledgements from its previous delivery.
+    return tx.jobOutbox.upsert({
+      where: {
+        projectId_jobType_aggregateId: {
+          projectId,
+          jobType: EFFECT_TEMPLATE_MIX_JOB_TYPE,
+          aggregateId: runId,
+        },
+      },
+      create: {
         projectId,
         aggregateId: runId,
         jobType: EFFECT_TEMPLATE_MIX_JOB_TYPE,
         routingKey: EFFECT_TEMPLATE_MIX_QUEUE,
-        payload: {
-          schemaVersion: 2,
-          taskType: 'PACKAGING',
-          projectId,
-          runId,
-          requestId: randomUUID(),
-        },
+        payload,
+      },
+      update: {
+        payload,
+        routingKey: EFFECT_TEMPLATE_MIX_QUEUE,
+        status: 'PENDING',
+        attempts: 0,
+        dispatchToken: null,
+        nextAttemptAt: new Date(),
+        publishedAt: null,
+        lastError: null,
       },
     });
   }
@@ -65,7 +85,8 @@ export class EffectPackagingRepository {
   }) {
     const shards = packagingShardIndexes(input.snapshots);
     return this.db.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${input.projectId + ':' + input.workflowRunId + ':' + input.templateId}))`;
+      // Advisory locks return PostgreSQL void; execute without deserializing a result row.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.projectId + ':' + input.workflowRunId + ':' + input.templateId}))`;
       const replay = await tx.effectPackagingRun.findUnique({
         where: {
           projectId_idempotencyKey: {
@@ -99,7 +120,6 @@ export class EffectPackagingRepository {
           requestHash: input.requestHash,
           items: {
             create: input.snapshots.map((snapshot, index) => ({
-              projectId: input.projectId,
               variantId: snapshot.variant.id,
               name: snapshot.variant.name,
               shardIndex: shards[index]!,
@@ -276,7 +296,7 @@ export class EffectPackagingRepository {
     return this.db.$transaction(async (tx) => {
       const run = await tx.effectPackagingRun.findFirst({ where: { projectId, id } });
       if (!run) throw new ConflictException('包装任务不存在');
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${projectId + ':' + run.workflowRunId + ':' + run.templateId}))`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${projectId + ':' + run.workflowRunId + ':' + run.templateId}))`;
       if (!['FAILED', 'PARTIAL', 'CANCELLED'].includes(run.status))
         throw new ConflictException('当前任务不可重试');
       if (

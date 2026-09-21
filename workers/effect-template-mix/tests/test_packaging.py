@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from effect_template_mix.api import InternalApi
-from effect_template_mix.packaging import PackagingHandler
+from effect_template_mix.packaging import PackagingHandler, ScriptAudit, ScriptAuditIssue, ScriptOutput, ScriptRow, VisionOutput, plan_script, script_structure_issues, shorten_voice_line, valid_vision
 from effect_template_mix.packaging_media import pcm_wav, visible_intervals
 from effect_template_mix.packaging_provider import PackagingError, PackagingProvider, signed_headers
 from effect_template_mix.provider import ArkProvider
@@ -76,6 +76,32 @@ async def test_music_pending_statuses(status: int) -> None:
     await adapter.close()
 
 
+async def test_music_missing_service_reports_actionable_safe_error(caplog: Any) -> None:
+    adapter = provider(lambda _: httpx.Response(200, json={'Code': 200028, 'Message': 'secret-original-response',
+        'ResponseMetadata': {'RequestId': 'safe-request-id', 'Error': {'Code': 'APINoSource', 'Message': 'secret'}}}))
+    with pytest.raises(PackagingError, match='AK 所属账号.*计费模式'):
+        await adapter.submit_music('纯器乐', 32)
+    assert 'safe-request-id' in caplog.text
+    assert 'secret' not in caplog.text
+    await adapter.close()
+
+
+async def test_paid_script_request_does_not_hide_extra_transport_attempts() -> None:
+    calls = 0
+    def response(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={'output_text': 'not-json'})
+    ark = ArkProvider('https://test.invalid', 'key', 'model', 1, 8192, 'minimal')
+    await ark.client.aclose()
+    ark.client = httpx.AsyncClient(base_url='https://test.invalid/', transport=httpx.MockTransport(response))
+    from effect_template_mix.provider import ProviderError
+    with pytest.raises(ProviderError):
+        await ark.structured([], ScriptOutput, 'packaging_script', max_output_tokens=8192, max_attempts=1)
+    assert calls == 1
+    await ark.close()
+
+
 @pytest.mark.parametrize('song', [{'Lyrics': '歌词', 'AudioUrl': 'https://v1-default.douyinvod.com/a'}, {'AudioUrl': 'http://127.0.0.1/a'}, {'AudioUrl': 'https://evil.test/a'}])
 async def test_music_rejects_lyrics_and_nonofficial_downloads(song: dict[str, str]) -> None:
     adapter = provider(lambda _: httpx.Response(200, json={'Code': 0, 'Result': {'Status': 2, 'SongDetail': song}}))
@@ -99,6 +125,81 @@ def item() -> dict[str, Any]:
         'vision': [{'start': 0, 'end': 10, 'description': '镜头'}],
         'script': [{'id': 'line-1', 'text': '口播', 'start': 1, 'end': 5, 'factIds': ['f']}], 'musicBrief': '纯器乐',
         'music': {'fileObjectId': 'music', 'start': 0, 'duration': 10, 'volume': .12}}}
+
+
+def script_result(**updates: Any) -> ScriptOutput:
+    line = {'id': 'line-1', 'text': '已确认事实', 'start': 0, 'end': 4, 'factIds': ['facts:0']}
+    return ScriptOutput.model_validate({'lines': [{**line, **updates}], 'musicBrief': '轻快纯器乐'})
+
+
+def script_snapshot() -> dict[str, Any]:
+    return {'duration': 10, 'clips': [], 'facts': [{'id': 'facts:0', 'text': '已确认事实'}]}
+
+
+@pytest.mark.parametrize(('start', 'end', 'description', 'valid'), [
+    (0, 32, '画面动作', True), (-1, 3, '画面', False), (29, 35, '画面', False),
+    (3, 3, '画面', False), (0, float('nan'), '画面', False), (0, 3, '', False),
+])
+def test_vision_intervals_are_validated_before_api_write(start: float, end: float, description: str, valid: bool) -> None:
+    result = VisionOutput.model_validate({'scenes': [{'start': start, 'end': end, 'description': description}]})
+    assert valid_vision(result, 32) is valid
+
+
+@pytest.mark.parametrize(('updates', 'code'), [
+    ({'factIds': []}, 'FACT_REFERENCE'),
+    ({'factIds': ['invented']}, 'FACT_REFERENCE'),
+    ({'start': -1}, 'TIME_BOUNDARY'),
+    ({'end': 11}, 'TIME_BOUNDARY'),
+    ({'end': float('nan')}, 'TIME_BOUNDARY'),
+    ({'id': '句1'}, 'LINE_ID'),
+    ({'text': ''}, 'LINE_TEXT'),
+])
+def test_script_preflight_rejects_bad_structure(updates: dict[str, Any], code: str) -> None:
+    assert code in script_structure_issues(script_result(**updates), script_snapshot())
+
+
+async def test_script_repairs_missing_fact_ids_before_paying_for_audit() -> None:
+    ark = AsyncMock(spec=ArkProvider)
+    ark.structured.side_effect = [script_result(factIds=[]), script_result(),
+        ScriptAudit(supported=True, coherent=True, issues=[])]
+    guard = AsyncMock()
+    result = await plan_script(ark, script_snapshot(), [], guard)
+    assert result.lines[0].factIds == ['facts:0']
+    assert [call.args[2] for call in ark.structured.call_args_list] == ['packaging_script', 'packaging_script', 'packaging_audit']
+    repaired = json.loads(ark.structured.call_args_list[1].args[0][0]['text'])
+    assert repaired['revision']['issues'] == ['FACT_REFERENCE']
+    assert guard.await_count == 3
+
+
+async def test_script_repairs_audit_rejection_once_without_relaxing_facts() -> None:
+    ark = AsyncMock(spec=ArkProvider)
+    issue = ScriptAuditIssue(lineId='line-1', code='INCORRECT_FACT_REFERENCE', explanation='引用指向另一事实', correction='只使用正确事实的原样 ID')
+    ark.structured.side_effect = [script_result(), ScriptAudit(supported=False, coherent=True, issues=[issue]),
+        script_result(), ScriptAudit(supported=True, coherent=True, issues=[])]
+    await plan_script(ark, script_snapshot(), [], AsyncMock())
+    revised = json.loads(ark.structured.call_args_list[2].args[0][0]['text'])
+    assert revised['confirmedFacts'] == script_snapshot()['facts']
+    assert revised['revision']['issues'] == ['INCORRECT_FACT_REFERENCE']
+    assert revised['revision']['audit'][0]['correction'] == issue.correction
+    assert ark.structured.await_count == 4
+
+
+async def test_script_repeated_audit_failure_stops_with_safe_reason() -> None:
+    ark = AsyncMock(spec=ArkProvider)
+    issue = ScriptAuditIssue(lineId='line-1', code='UNSUPPORTED_FACT', explanation='无确认依据', correction='删除这条声称')
+    ark.structured.side_effect = [script_result(), ScriptAudit(supported=False, coherent=True, issues=[issue])] * 2
+    with pytest.raises(PackagingError, match='一次修正.*商品声明缺少事实支持'):
+        await plan_script(ark, script_snapshot(), [], AsyncMock())
+    assert ark.structured.await_count == 4
+
+
+async def test_script_cancel_before_revision_stops_new_model_requests() -> None:
+    ark = AsyncMock(spec=ArkProvider)
+    ark.structured.return_value = script_result(factIds=[])
+    guard = AsyncMock(side_effect=[None, RuntimeError('cancelled')])
+    with pytest.raises(RuntimeError, match='cancelled'):
+        await plan_script(ark, script_snapshot(), [], guard)
+    assert ark.structured.await_count == 1
 
 
 async def test_item_resume_skips_saved_voice_and_creates_exact_captions() -> None:
@@ -132,9 +233,56 @@ async def test_tts_overrun_is_not_silently_truncated() -> None:
     api = AsyncMock(spec=InternalApi)
     adapter = AsyncMock(spec=PackagingProvider)
     adapter.voice.return_value = b'\0\0' * 24_000 * 12
-    with pytest.raises(PackagingError, match='真实配音超出'):
-        await PackagingHandler(api, AsyncMock(spec=ArkProvider), adapter, 1000).process_item('/run', {}, 'project', item())
+    ark = AsyncMock(spec=ArkProvider)
+    row = item()
+    row['snapshot']['facts'] = [{'id': 'f', 'text': '事实'}]
+    ark.structured.side_effect = [ScriptRow(**{**row['checkpoint']['script'][0], 'text': '短句'}),
+                                  ScriptAudit(supported=True, coherent=True, issues=[])]
+    with pytest.raises(PackagingError, match='缩句一次后仍超出'):
+        await PackagingHandler(api, ark, adapter, 1000).process_item('/run', {}, 'project', row)
+    assert adapter.voice.await_count == 2
     assert not any(call.args[0] == 'POST' for call in api.request.call_args_list)
+
+
+async def test_voice_fit_keeps_existing_audio_and_aligns_caption_to_measured_repair() -> None:
+    api = AsyncMock(spec=InternalApi)
+    api.request.return_value = {'fileObjectId': 'repaired-voice'}
+    adapter = AsyncMock(spec=PackagingProvider)
+    adapter.voice.side_effect = [b'\0\0' * 24_000 * 12, b'\0\0' * 24_000 * 2]
+    ark = AsyncMock(spec=ArkProvider)
+    row = item()
+    row['snapshot']['facts'] = [{'id': 'f', 'text': '事实'}]
+    previous = {'id': 'previous', 'text': '前句', 'start': 0, 'end': .8, 'factIds': ['f']}
+    row['checkpoint']['script'].insert(0, previous)
+    row['checkpoint']['voices'] = {'previous': {'fileObjectId': 'saved', 'start': 0, 'duration': .5, 'volume': 1}}
+    ark.structured.side_effect = [ScriptRow(**{**row['checkpoint']['script'][1], 'text': '短句'}),
+                                  ScriptAudit(supported=True, coherent=True, issues=[])]
+    await PackagingHandler(api, ark, adapter, 1000).process_item('/run', {}, 'project', row)
+    assert row['stage'] == 'READY'
+    assert row['checkpoint']['script'][0] == previous
+    assert row['checkpoint']['voices']['previous']['fileObjectId'] == 'saved'
+    assert row['checkpoint']['captions'][1] == {'id': 'line-1', 'text': '短句', 'start': 1, 'end': 3}
+    assert ark.structured.await_count == 2
+    adapter.submit_music.assert_not_called()
+
+
+@pytest.mark.parametrize('change', [{'id': 'different'}, {'start': 2}, {'factIds': ['invented']}])
+async def test_voice_fit_rejects_changed_identity_timing_and_facts(change: dict[str, Any]) -> None:
+    row = item()
+    ark = AsyncMock(spec=ArkProvider)
+    ark.structured.return_value = ScriptRow(**{**row['checkpoint']['script'][0], **change})
+    with pytest.raises(PackagingError, match='身份、时间或来源'):
+        await shorten_voice_line(ark, row['snapshot'], row['checkpoint'], 0, 12, 9, AsyncMock())
+    assert ark.structured.await_count == 1
+
+
+async def test_voice_fit_cancel_before_model_does_not_pay() -> None:
+    row = item()
+    ark = AsyncMock(spec=ArkProvider)
+    with pytest.raises(RuntimeError, match='cancelled'):
+        await shorten_voice_line(ark, row['snapshot'], row['checkpoint'], 0, 12, 9,
+                                 AsyncMock(side_effect=RuntimeError('cancelled')))
+    ark.structured.assert_not_called()
 
 
 @pytest.mark.parametrize('count', [1, 10, 100])

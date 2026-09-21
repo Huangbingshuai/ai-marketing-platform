@@ -333,7 +333,9 @@ export class EffectTemplateMixService {
     @Inject(EffectTemplateMixAiRepository)
     private readonly aiRuns?: EffectTemplateMixAiRepository,
     @Optional() @Inject(STORAGE_PORT) private readonly storage?: StoragePort,
-    @Optional() @Inject(EffectPackagingRepository) private readonly packaging?: EffectPackagingRepository,
+    @Optional()
+    @Inject(EffectPackagingRepository)
+    private readonly packaging?: EffectPackagingRepository,
   ) {}
 
   async workspace(
@@ -579,7 +581,9 @@ export class EffectTemplateMixService {
       materials,
     };
     const promptSignature = (value: EffectTemplateMixAiSnapshot): string =>
-      workflowStateHash([...value.promptArtifacts].sort((left, right) => left.id.localeCompare(right.id)));
+      workflowStateHash(
+        [...value.promptArtifacts].sort((left, right) => left.id.localeCompare(right.id)),
+      );
     const cachedClassifications = new Map<string, EffectTemplateMixAiClassification>();
     for (const previous of previousRuns) {
       if (
@@ -600,7 +604,9 @@ export class EffectTemplateMixService {
         !classificationsValid(previousSnapshot, rows, true)
       )
         continue;
-      const oldMaterials = new Map(previousSnapshot.materials.map((material) => [material.id, material]));
+      const oldMaterials = new Map(
+        previousSnapshot.materials.map((material) => [material.id, material]),
+      );
       const oldRows = new Map(rows.map((row) => [row.materialId, row]));
       for (const material of snapshot.materials) {
         if (cachedClassifications.has(material.id)) continue;
@@ -645,7 +651,9 @@ export class EffectTemplateMixService {
       requestHash,
       inputHash,
       snapshot,
-      ...(reusableClassifications.length ? { initialClassifications: reusableClassifications } : {}),
+      ...(reusableClassifications.length
+        ? { initialClassifications: reusableClassifications }
+        : {}),
       ...(reusableCheckpoint
         ? {
             initialSelections: reusableCheckpoint.selectionResult as unknown[],
@@ -747,7 +755,7 @@ export class EffectTemplateMixService {
         );
     } else {
       const pools = buildAssignedPools(slots, materials, classifications);
-      const bottleneck = slots.find((slot) => !(pools.get(slot.role)?.length));
+      const bottleneck = slots.find((slot) => !pools.get(slot.role)?.length);
       if (bottleneck)
         throw new ApiHttpException(
           `「${bottleneck.label}」槽位归槽素材不足，无法生成完整成片，请补充该槽位方向的素材`,
@@ -851,7 +859,8 @@ export class EffectTemplateMixService {
       throw new ApiHttpException('智能填充任务租约已失效', HttpStatus.CONFLICT, 'CONFLICT');
     const snapshot = run.inputSnapshot as unknown as EffectTemplateMixAiSnapshot;
     const selections = run.selectionResult as unknown as EffectTemplateMixAiSelection[];
-    const classifications = run.classificationResult as unknown as EffectTemplateMixAiClassification[];
+    const classifications =
+      run.classificationResult as unknown as EffectTemplateMixAiClassification[];
     if (!Array.isArray(selections))
       throw new ApiHttpException('智能填充尚未完成素材匹配', HttpStatus.CONFLICT, 'CONFLICT');
     if (!Array.isArray(classifications) || !classificationsValid(snapshot, classifications, true))
@@ -946,7 +955,8 @@ export class EffectTemplateMixService {
     if (
       !variantSelections.length ||
       (snapshot.targetVariantId && variantSelections[0]!.length !== unlockedSlots.length) ||
-      (!snapshot.targetVariantId && entry!.workspace.variants.length + variantSelections.length > 100)
+      (!snapshot.targetVariantId &&
+        entry!.workspace.variants.length + variantSelections.length > 100)
     )
       throw new ApiHttpException(
         'AI 成片批次结构无效或超过模板工程上限',
@@ -1237,7 +1247,12 @@ export class EffectTemplateMixService {
           directory: 'EDITING_PROJECTS',
           type: 'TIMELINE_PROJECT',
           tags: ['效果类', '时间轴工程'],
-          payload: { schemaVersion: 1, templateId, templateVersion: template.editVersion, variant: packagingVisualVariant(variant) },
+          payload: {
+            schemaVersion: 1,
+            templateId,
+            templateVersion: template.editVersion,
+            variant: packagingVisualVariant(variant),
+          },
           metadata: {
             templateId,
             variantId: variant.id,
@@ -1255,26 +1270,79 @@ export class EffectTemplateMixService {
     );
     // Preserve historical manual audio/subtitles at the same explicit confirmation boundary.
     // Never overwrite a generated package with legacy editor fields.
-    const legacy = variants.filter(v => v.voice || v.bgm || v.captions.length);
+    const legacy = variants.filter((v) => v.voice || v.bgm || v.captions.length);
     if (legacy.length && this.packaging) {
-      const existing = (await this.working.listArtifacts(projectId, { workflowRunId, nodeId: 'TEMPLATE_MIX' })).items;
+      const existing = (
+        await this.working.listArtifacts(projectId, { workflowRunId, nodeId: 'TEMPLATE_MIX' })
+      ).items;
       for (const variant of legacy) {
         const key = `timeline-package:${templateId}:${variant.id}`;
-        const previous = existing.find(a => a.artifactKey === key);
+        const previous = existing.find((a) => a.artifactKey === key);
         if (previous && object(previous.payload)?.legacy !== true) continue;
-        const visual = committed.find(c => c.artifact.artifactKey === `timeline-project:${templateId}:${variant.id}`)?.artifact;
+        const visual = committed.find(
+          (c) => c.artifact.artifactKey === `timeline-project:${templateId}:${variant.id}`,
+        )?.artifact;
         if (!visual) continue;
-        const ids = [variant.voice?.fileObjectId, variant.bgm?.fileObjectId].filter((id): id is string => Boolean(id));
-        const files = await this.packaging.db.fileObject.findMany({ where: { projectId, workflowRunId, id: { in: ids }, status: 'AVAILABLE' } });
-        if (files.length !== new Set(ids).size) throw new ApiHttpException('历史包装音频不存在，请检查后重新校验', HttpStatus.CONFLICT, 'CONFLICT');
-        const migrated = await this.working.commitValidatedArtifacts(projectId, workflowRunId, 'TEMPLATE_MIX', [{ artifactKey: key, input: {
-          kind: 'STRUCTURED', name: `${variant.name} · 人工包装`, directory: 'EDITING_PROJECTS', type: 'TIMELINE_PROJECT',
-          payload: { schemaVersion: 1, legacy: true, templateId, variantId: variant.id, sourceTimelineHash: visualHash(variant),
-            visualArtifactId: visual.id, visualRevision: visual.revision, captions: variant.captions, subtitleStyle: variant.subtitleStyle,
-            voice: variant.voice, bgm: variant.bgm, originalVolume: variant.originalVolume },
-          files: files.map((f, sortOrder) => ({ fileObjectId: f.id, role: f.id === variant.bgm?.fileObjectId ? 'BGM' : 'VOICE', sortOrder, originalFileName: f.originalFileName, mimeType: f.mimeType, sha256: f.sha256 })),
-          dependencies: [{ sourceType: 'WORKING_ARTIFACT', sourceNodeId: 'TEMPLATE_MIX', sourceArtifactId: visual.id, sourceKey: visual.artifactKey, sourceRevision: visual.revision, sourceHash: visual.contentHash ?? null }],
-        } }]);
+        const ids = [variant.voice?.fileObjectId, variant.bgm?.fileObjectId].filter(
+          (id): id is string => Boolean(id),
+        );
+        const files = await this.packaging.db.fileObject.findMany({
+          where: { projectId, workflowRunId, id: { in: ids }, status: 'AVAILABLE' },
+        });
+        if (files.length !== new Set(ids).size)
+          throw new ApiHttpException(
+            '历史包装音频不存在，请检查后重新校验',
+            HttpStatus.CONFLICT,
+            'CONFLICT',
+          );
+        const migrated = await this.working.commitValidatedArtifacts(
+          projectId,
+          workflowRunId,
+          'TEMPLATE_MIX',
+          [
+            {
+              artifactKey: key,
+              input: {
+                kind: 'STRUCTURED',
+                name: `${variant.name} · 人工包装`,
+                directory: 'EDITING_PROJECTS',
+                type: 'TIMELINE_PROJECT',
+                payload: {
+                  schemaVersion: 1,
+                  legacy: true,
+                  templateId,
+                  variantId: variant.id,
+                  sourceTimelineHash: visualHash(variant),
+                  visualArtifactId: visual.id,
+                  visualRevision: visual.revision,
+                  captions: variant.captions,
+                  subtitleStyle: variant.subtitleStyle,
+                  voice: variant.voice,
+                  bgm: variant.bgm,
+                  originalVolume: variant.originalVolume,
+                },
+                files: files.map((f, sortOrder) => ({
+                  fileObjectId: f.id,
+                  role: f.id === variant.bgm?.fileObjectId ? 'BGM' : 'VOICE',
+                  sortOrder,
+                  originalFileName: f.originalFileName,
+                  mimeType: f.mimeType,
+                  sha256: f.sha256,
+                })),
+                dependencies: [
+                  {
+                    sourceType: 'WORKING_ARTIFACT',
+                    sourceNodeId: 'TEMPLATE_MIX',
+                    sourceArtifactId: visual.id,
+                    sourceKey: visual.artifactKey,
+                    sourceRevision: visual.revision,
+                    sourceHash: visual.contentHash ?? null,
+                  },
+                ],
+              },
+            },
+          ],
+        );
         committed.push(...migrated);
       }
     }

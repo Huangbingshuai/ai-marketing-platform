@@ -216,9 +216,9 @@ export const effectTemplateMixTransitionDuration = (
 ): number => {
   if (slot.transition === '硬切' || !previousSlot) return 0;
   const max = Math.min(5, slot.duration, previousSlot?.duration ?? slot.duration);
-  const value = Number.isFinite(slot.transitionDuration)
-    ? Number(slot.transitionDuration)
-    : EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION;
+  const configured = Number(slot.transitionDuration);
+  const value =
+    configured > 0 ? configured : EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION;
   return Math.max(0.1, Math.min(max, value));
 };
 export const cloneMix = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;

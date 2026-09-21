@@ -30,12 +30,10 @@ function harness() {
     payload: { sourceTimelineHash: visualHash(v), visualArtifactId: 'visual', visualRevision: 2 },
   };
   const mix = {
-    workspace: vi
-      .fn()
-      .mockResolvedValue({
-        draftRevision: 1,
-        draft: { templates: [{ id: 't', workspace: { variants: [v] } }] },
-      }),
+    workspace: vi.fn().mockResolvedValue({
+      draftRevision: 1,
+      draft: { templates: [{ id: 't', workspace: { variants: [v] } }] },
+    }),
   };
   const working = { listArtifacts: vi.fn().mockResolvedValue({ items: [visual, packaging] }) };
   const repo = {

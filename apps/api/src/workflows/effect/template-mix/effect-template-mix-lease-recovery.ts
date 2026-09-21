@@ -16,7 +16,9 @@ export class EffectTemplateMixLeaseRecovery implements OnModuleInit, OnModuleDes
   constructor(
     @Inject(EffectTemplateMixAiRepository)
     private readonly repository: EffectTemplateMixAiRepository,
-    @Optional() @Inject(EffectPackagingRepository) private readonly packaging?: EffectPackagingRepository,
+    @Optional()
+    @Inject(EffectPackagingRepository)
+    private readonly packaging?: EffectPackagingRepository,
   ) {}
   onModuleInit(): void {
     this.timer = setInterval(() => void this.recover(), 15_000);

@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PrismaService } from '../../../database/prisma.service';
+import type { PackagingSnapshot } from '@ai-marketing/contracts';
 import { EffectPackagingRepository } from './effect-packaging.repository';
 
 function harness() {
   const db = {
     $queryRaw: vi.fn(),
+    $executeRaw: vi.fn().mockResolvedValue(1),
     effectPackagingRun: {
       findFirst: vi.fn(),
       findUnique: vi.fn(),
@@ -15,7 +17,7 @@ function harness() {
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     effectPackagingItem: { findFirst: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
-    jobOutbox: { create: vi.fn() },
+    jobOutbox: { upsert: vi.fn() },
   };
   const repo = new EffectPackagingRepository({
     ...db,
@@ -24,6 +26,31 @@ function harness() {
   return { db, repo };
 }
 describe('packaging lease and durable task repository', () => {
+  it('inherits composite run/project relation fields for nested items', async () => {
+    const { db, repo } = harness();
+    const snapshot = {
+      duration: 32,
+      variant: { id: 'variant', name: '成片 01' },
+      sourceTimelineHash: 'hash',
+      facts: [],
+      clips: [],
+      dependencies: [],
+    } as unknown as PackagingSnapshot;
+    await repo.create({
+      projectId: 'p',
+      workflowRunId: 'w',
+      templateId: 't',
+      idempotencyKey: 'k',
+      requestHash: 'hash',
+      snapshots: [snapshot],
+      checkpoints: [{}],
+    });
+    const data = db.effectPackagingRun.create.mock.calls[0]![0].data;
+    expect(data.projectId).toBe('p');
+    expect(data.items.create[0]).toMatchObject({ variantId: 'variant', shardIndex: 0 });
+    expect(data.items.create[0]).not.toHaveProperty('projectId');
+    expect(data.items.create[0]).not.toHaveProperty('runId');
+  });
   it('idempotent replay does not enqueue again, changed request is rejected', async () => {
     const { db, repo } = harness();
     db.effectPackagingRun.findUnique.mockResolvedValue({ id: 'run', requestHash: 'same' });
@@ -37,7 +64,12 @@ describe('packaging lease and durable task repository', () => {
       checkpoints: [],
     };
     expect(await repo.create(input)).toBe('run');
-    expect(db.jobOutbox.create).not.toHaveBeenCalled();
+    expect(db.$executeRaw).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.stringContaining('pg_advisory_xact_lock')]),
+      'p:w:t',
+    );
+    expect(db.$queryRaw).not.toHaveBeenCalled();
+    expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
     await expect(repo.create({ ...input, requestHash: 'different' })).rejects.toThrow('幂等');
   });
   it('uses the existing queue with an explicit schema-2 discriminator', async () => {
@@ -51,9 +83,9 @@ describe('packaging lease and durable task repository', () => {
       snapshots: [],
       checkpoints: [],
     });
-    expect(db.jobOutbox.create).toHaveBeenCalledWith(
+    expect(db.jobOutbox.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({
+        create: expect.objectContaining({
           routingKey: 'effect.template-mix.requested',
           payload: expect.objectContaining({
             schemaVersion: 2,
@@ -84,8 +116,45 @@ describe('packaging lease and durable task repository', () => {
     const { db, repo } = harness();
     db.effectPackagingRun.findMany.mockResolvedValue([{ id: 'r', projectId: 'p' }]);
     await repo.recoverExpired();
-    expect(db.jobOutbox.create).toHaveBeenCalledOnce();
+    expect(db.jobOutbox.upsert).toHaveBeenCalledOnce();
+    expect(db.jobOutbox.upsert.mock.calls[0]![0].update).toMatchObject({
+      status: 'PENDING',
+      dispatchToken: null,
+      publishedAt: null,
+    });
     expect(db.effectPackagingItem.updateMany).not.toHaveBeenCalled();
+  });
+  it('retry re-arms the unique outbox row while retaining successful items and checkpoints', async () => {
+    const { db, repo } = harness();
+    db.effectPackagingRun.findFirst.mockResolvedValue({
+      id: 'r',
+      workflowRunId: 'w',
+      templateId: 't',
+      status: 'CANCELLED',
+    });
+    await repo.retry('p', 'r');
+    expect(db.jobOutbox.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          projectId_jobType_aggregateId: {
+            projectId: 'p',
+            jobType: 'EFFECT_TEMPLATE_MIX',
+            aggregateId: 'r',
+          },
+        },
+        update: expect.objectContaining({
+          status: 'PENDING',
+          attempts: 0,
+          dispatchToken: null,
+          publishedAt: null,
+          lastError: null,
+        }),
+      }),
+    );
+    expect(db.effectPackagingItem.updateMany).toHaveBeenCalledWith({
+      where: { projectId: 'p', runId: 'r', status: { not: 'COMPLETED' } },
+      data: { status: 'QUEUED', errorMessage: null, completedAt: null },
+    });
   });
   it('cancel invalidates the attempt and only cancels unfinished items', async () => {
     const { db, repo } = harness();
