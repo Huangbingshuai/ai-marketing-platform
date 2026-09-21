@@ -11,6 +11,7 @@ from typing import Any, Literal
 from collections.abc import Awaitable, Callable
 from uuid import UUID
 
+import httpx
 from aio_pika.abc import AbstractIncomingMessage
 from pydantic import BaseModel, ConfigDict
 
@@ -106,6 +107,8 @@ async def plan_script(ark: ArkProvider, snapshot: dict[str, Any], vision: Any,
             '每句必须绑定至少一个 confirmedFacts 的原样完整 id，不可缩写、编造或留空。不要生成无事实关联的泛泛套话。',
             '每句是简短完整句，按照时间顺序，不重叠，0 <= start < end <= duration；id 使用 line-1 等唯一 ASCII ID。',
             '每秒最多约三字，预留约20%静默，少讲几个事实也不能捏造或挤满时间。',
+            '先从真实镜头里挑最容易与确认事实关联的少数内容组织整条叙事，不追求逐槽位都有一句。',
+            '每句估算所需时间至少为中文字数/3+0.5秒，下一句 start 与本句 start 的间隔不能小于它；最后一句必须提前预留完整朗读时间，宁可省略收尾句。',
             '不得把推荐吃法写成镜头已实际呈现，不把画面内容当作产品功效证明。',
             '不要额外添加确认事实没有的绝对化、效果承诺或口感评价；不要为每个镜头强造一个商品卖点。',
             'musicBrief 用中文写纯器乐曲风、乐器、情绪与节奏，无歌词、无人声、不仿制音乐人，不指定时长。',
@@ -223,7 +226,10 @@ class PackagingHandler:
                             json={'projectId': project_id, 'stage': item['stage'], 'checkpoint': {}, 'errorMessage': '包装来源或结果校验失败，请检查时间轴后重试'})
                     except Exception as exc:
                         LOGGER.warning('packaging item failed item=%s error=%s', item['id'], type(exc).__name__)
-                        reason = str(exc) if isinstance(exc, PackagingError) else '包装生成失败，请检查配置或重试本条成片'
+                        reason = str(exc) if isinstance(exc, PackagingError) else (
+                            '包装服务响应超时，已保留成功步骤，请恢复未完成项'
+                            if isinstance(exc, (TimeoutError, httpx.TimeoutException))
+                            else '包装生成失败，请检查配置或重试本条成片')
                         await self.api.request('PUT', f"{root}/items/{item['id']}/checkpoint", headers=headers,
                             json={'projectId': project_id, 'stage': item['stage'], 'checkpoint': {}, 'errorMessage': reason})
                 await self.api.request('POST', f'{root}/finish', headers=headers, json={'projectId': project_id})

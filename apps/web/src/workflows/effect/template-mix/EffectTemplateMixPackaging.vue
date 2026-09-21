@@ -48,8 +48,9 @@ const visible = ref(false),
   loading = ref(false);
 const starting = ref(false);
 const requestError = ref(''),
-  loadError = ref('');
-const error = computed(() => requestError.value || loadError.value);
+  loadError = ref(''),
+  previewError = ref('');
+const error = computed(() => requestError.value || loadError.value || previewError.value);
 const message = ref(''),
   runs = ref<PackagingRun[]>([]),
   chosenRun = ref('');
@@ -262,7 +263,10 @@ async function confirm(item: PackagingItem) {
 const voiceElement = ref<HTMLAudioElement | null>(null),
   musicElement = ref<HTMLAudioElement | null>(null);
 const previewEnabled = ref(false);
-watch(previewEnabled, (enabled) => emit('preview', enabled));
+watch(previewEnabled, (enabled) => {
+  if (enabled) previewError.value = '';
+  emit('preview', enabled);
+});
 const currentVoice = computed(() =>
   selected.value && !selected.value.stale
     ? Object.values(selected.value.checkpoint.voices ?? {}).find(
@@ -309,7 +313,7 @@ function syncAudio() {
         );
         if (!warning) return;
         previewEnabled.value = false;
-        requestError.value = warning;
+        previewError.value = warning;
       });
     }
   }
@@ -335,6 +339,7 @@ watch(
     pendingCreate = null;
     requestError.value = '';
     loadError.value = '';
+    previewError.value = '';
     busy.value = false;
     starting.value = false;
     close();
