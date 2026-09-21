@@ -757,7 +757,7 @@ const replaceMaterialSlot = (material: EffectTemplateMixMaterial): void => {
     showNotice('请先选择要更换的素材槽位', 'warning');
     return;
   }
-  applyMaterialToSlot(material, slot.id);
+  moveMaterialToSlot(material, slot.id);
 };
 const openWorkflowDialog = async (event?: Event): Promise<void> => {
   if (event?.currentTarget instanceof HTMLButtonElement)
@@ -1274,6 +1274,69 @@ const selectSlot = (id: string): void => {
   activeTransitionSlotId.value = '';
   clearTransitionPreviews();
   activeUi.value.selectedSlotId = id;
+};
+const moveMaterialToSlot = (material: EffectTemplateMixMaterial, targetSlotId: string): void => {
+  const variant = selectedVariant.value;
+  const targetSlot = variant?.slots.find(({ id }) => id === targetSlotId);
+  if (!variant || !targetSlot) return;
+  const sourceSlot = variant.slots.find(({ id }) => variant.bindings[id] === material.id) ?? null;
+  if (sourceSlot?.id === targetSlot.id) {
+    showNotice(`${material.code} 已经在${targetSlot.label}`, 'warning');
+    return;
+  }
+  const targetMaterialId = variant.bindings[targetSlot.id];
+  const targetMaterial = targetMaterialId
+    ? (workspace.value?.materials.find(({ id }) => id === targetMaterialId) ?? null)
+    : null;
+  if (!sourceSlot && targetMaterial) {
+    showNotice(`${targetSlot.label} 已有素材，请先选择一个空槽位`, 'warning');
+    return;
+  }
+  if (material.duration < targetSlot.duration) {
+    showNotice('素材短于目标槽位时长，请先缩短目标槽位', 'warning');
+    return;
+  }
+  if (sourceSlot && targetMaterial && targetMaterial.duration < sourceSlot.duration) {
+    showNotice('原目标素材不满足交换后的槽位时长，无法更换', 'warning');
+    return;
+  }
+  rememberTimelineEdit();
+  if (sourceSlot && targetMaterial) {
+    variant.bindings[sourceSlot.id] = targetMaterial.id;
+    variant.bindingRevisions[sourceSlot.id] = targetMaterial.artifactRevision;
+    variant.offsets[sourceSlot.id] = 0;
+    variant.bindingMetadata ??= {};
+    variant.bindingMetadata[sourceSlot.id] = {
+      source: 'MANUAL',
+      classificationReason: '人工交换素材槽位',
+    };
+    if (!variant.manualSlotIds.includes(sourceSlot.id)) variant.manualSlotIds.push(sourceSlot.id);
+  } else if (sourceSlot) {
+    delete variant.bindings[sourceSlot.id];
+    delete variant.bindingRevisions[sourceSlot.id];
+    delete variant.offsets[sourceSlot.id];
+    if (variant.bindingMetadata) delete variant.bindingMetadata[sourceSlot.id];
+    variant.manualSlotIds = variant.manualSlotIds.filter((id) => id !== sourceSlot.id);
+  }
+  variant.bindings[targetSlot.id] = material.id;
+  variant.bindingRevisions[targetSlot.id] = material.artifactRevision;
+  variant.offsets[targetSlot.id] = 0;
+  variant.bindingMetadata ??= {};
+  variant.bindingMetadata[targetSlot.id] = {
+    source: 'MANUAL',
+    classificationReason: sourceSlot && targetMaterial ? '人工交换素材槽位' : '人工移动素材槽位',
+  };
+  if (!variant.manualSlotIds.includes(targetSlot.id)) variant.manualSlotIds.push(targetSlot.id);
+  variant.conflictSlotIds = variant.conflictSlotIds.filter(
+    (id) => id !== targetSlot.id && (!sourceSlot || id !== sourceSlot.id),
+  );
+  if (activeUi.value) activeUi.value.selectedSlotId = targetSlot.id;
+  bump();
+  showNotice(
+    sourceSlot && targetMaterial
+      ? `已将${material.name}与${targetSlot.label}素材交换槽位`
+      : `已将${material.name}移动到${targetSlot.label}`,
+  );
 };
 const applyMaterialToSlot = (material: EffectTemplateMixMaterial, slotId: string): void => {
   const variant = selectedVariant.value;
@@ -2571,7 +2634,7 @@ defineExpose({ flushPendingEdits });
                         :disabled="!selectedVariant || !selectedSlot"
                         :title="
                           selectedSlot
-                            ? `将素材归入${selectedSlot.label}`
+                            ? `将素材更换到${selectedSlot.label}`
                             : '请先选择要更换的素材槽位'
                         "
                         @pointerdown.stop
