@@ -15,6 +15,7 @@ export type EffectTemplateMixTransition =
   | '翻转'
   | '圆形展开'
   | '模糊溶解';
+export const EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION = 1;
 export type EffectTemplateMixSlot = {
   id: string;
   label: string;

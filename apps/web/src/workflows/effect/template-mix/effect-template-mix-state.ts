@@ -6,7 +6,9 @@ import type {
   EffectTemplateMixWorkspace,
   EffectTemplateMixTemplateEntry,
 } from '@ai-marketing/contracts';
+import { EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION } from '@ai-marketing/contracts';
 export type * from '@ai-marketing/contracts';
+export { EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION } from '@ai-marketing/contracts';
 
 export const EFFECT_TEMPLATE_MIX_ROLE_LABELS: Record<EffectTemplateMixRole, string> = {
   END: '片尾转化',
@@ -35,7 +37,6 @@ export const EFFECT_TEMPLATE_MIX_TRANSITIONS: readonly EffectTemplateMixTransiti
   '圆形展开',
   '模糊溶解',
 ];
-export const EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION = 0.9;
 export const EFFECT_TEMPLATE_MIX_TRANSITION_LIBRARY = [
   {
     id: '叠化',

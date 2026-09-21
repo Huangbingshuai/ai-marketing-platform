@@ -81,6 +81,15 @@ describe('effect template mix presentation state', () => {
     expect(effectTemplateMixTransitionDuration(slots[0]!)).toBe(0);
   });
 
+  it('uses one second as the default duration for every non-cut transition', () => {
+    const slots = workspace().template.slots.slice(0, 2);
+    slots[0]!.duration = 3;
+    slots[1]!.duration = 3;
+    slots[1]!.transition = '闪白';
+    delete slots[1]!.transitionDuration;
+    expect(effectTemplateMixTransitionDuration(slots[1]!, slots[0]!)).toBe(1);
+  });
+
   it('exposes the popular transition set in the shared editor state', () => {
     expect(EFFECT_TEMPLATE_MIX_TRANSITIONS).toEqual(
       expect.arrayContaining(['擦除', '左滑', '上推', '翻转', '圆形展开']),

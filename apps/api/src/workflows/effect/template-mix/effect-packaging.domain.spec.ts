@@ -107,6 +107,13 @@ describe('packaging snapshots and validation', () => {
     expect(frozen.duration).toBe(15);
     expect(frozen.clips[0]?.start).toBe(5);
   });
+  it('uses one second for a non-cut transition without an explicit duration', () => {
+    const v = variant();
+    v.slots[0]!.transition = '叠化';
+    delete v.slots[0]!.transitionDuration;
+    const frozen = packagingSnapshot(v, materials, sources());
+    expect(frozen.clips[0]?.transitionDuration).toBe(1);
+  });
   it('does not change the visual hash or confirmed payload for audio/subtitle edits', () => {
     const a = variant(),
       b = variant();

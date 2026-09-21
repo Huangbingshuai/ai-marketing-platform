@@ -1,4 +1,5 @@
 import {
+  EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION,
   packagingTimelineClips,
   packagingTimelineDuration,
   packagingVisualTimeline,
@@ -87,7 +88,9 @@ export function packagingSnapshot(
       duration: slot.duration,
       prompt,
       transition: slot.transition,
-      transitionDuration: slot.transitionDuration ?? 0,
+      transitionDuration:
+        slot.transitionDuration ??
+        (slot.transition === '硬切' ? 0 : EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION),
     };
   });
   const facts = [...used.values()]
