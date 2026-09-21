@@ -4500,6 +4500,51 @@ button:disabled {
 .transition-preview.is-shrink {
   background: radial-gradient(circle, #d8e7f2 0 27%, #506b86 29% 100%);
 }
+.transition-preview.is-circle-spread {
+  background: radial-gradient(circle, #d8e7f2 0 22%, #506b86 24% 100%);
+}
+.transition-preview.is-linear-wipe {
+  background: linear-gradient(105deg, #d8e7f2 0 46%, #506b86 47% 100%);
+}
+.transition-preview.is-four-corners {
+  background: radial-gradient(circle, #d8e7f2 0 34%, #506b86 36% 100%);
+  clip-path: inset(4% round 12px);
+}
+.transition-preview.is-split {
+  background: linear-gradient(90deg, #506b86 0 46%, #d8e7f2 46% 54%, #506b86 54% 100%);
+}
+.transition-preview.is-mirror {
+  background: linear-gradient(135deg, #506b86 0 48%, #d8e7f2 49% 51%, #506b86 52% 100%);
+}
+.transition-preview.is-page-turn {
+  background: linear-gradient(90deg, #d8e7f2 0 48%, #506b86 50% 100%);
+  transform: perspective(180px) rotateY(-12deg);
+}
+.transition-preview.is-cube {
+  background: linear-gradient(90deg, #506b86 0 48%, #d8e7f2 48% 52%, #40566b 52% 100%);
+  transform: perspective(180px) rotateY(-10deg);
+}
+.transition-preview.is-zoom-blur {
+  background: radial-gradient(circle at 55% 42%, #d8e7f2 0 19%, #8199ac 39%, #506b86 78%);
+  filter: blur(0.4px);
+}
+.transition-preview.is-color-flash {
+  background: linear-gradient(110deg, #506b86 0 22%, #f472b6 35%, #fef08a 50%, #67e8f9 65%, #506b86 82%);
+}
+.transition-preview.is-noise-dissolve {
+  background:
+    radial-gradient(circle at 25% 35%, #d8e7f2 0 3px, transparent 4px),
+    radial-gradient(circle at 70% 65%, #273747 0 3px, transparent 4px),
+    #506b86;
+  background-size: 18px 18px, 23px 23px, auto;
+}
+.transition-preview.is-liquid {
+  background: radial-gradient(ellipse at 45% 52%, #d8e7f2 0 18%, #8da3b6 38%, #506b86 72%);
+  border-radius: 42% 58% 55% 45% / 48% 42% 58% 52%;
+}
+.transition-preview.is-diagonal-wipe {
+  background: linear-gradient(135deg, #d8e7f2 0 46%, #506b86 47% 100%);
+}
 .transition-preview.is-cut {
   background: linear-gradient(90deg, #506072 0 48%, #16181d 48% 52%, #a0b2bf 52%);
 }

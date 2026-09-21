@@ -102,6 +102,10 @@ describe('effect template mix presentation state', () => {
         '旋转',
         '像素化',
         '波纹',
+        '圆形扩散',
+        '翻页',
+        '立方体',
+        '噪点溶解',
       ]),
     );
     expect(EFFECT_TEMPLATE_MIX_TRANSITION_LIBRARY.filter((item) => item.category === '热门'))
@@ -112,6 +116,8 @@ describe('effect template mix presentation state', () => {
           expect.objectContaining({ id: '旋转' }),
           expect.objectContaining({ id: '像素化' }),
           expect.objectContaining({ id: '波纹' }),
+          expect.objectContaining({ id: '翻页' }),
+          expect.objectContaining({ id: '液体扭曲' }),
         ]),
       );
   });

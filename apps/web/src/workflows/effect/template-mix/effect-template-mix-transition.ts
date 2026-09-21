@@ -259,6 +259,159 @@ export const effectTemplateMixTransitionPresentation = (
           transform: `scale(${1.18 - progress * 0.18})`,
         },
       };
+    case '圆形扩散':
+      return {
+        outgoing: { opacity: '1' },
+        incoming: {
+          opacity: '1',
+          clipPath: `circle(${Math.max(0.1, progress * 100)}% at 50% 50%)`,
+        },
+      };
+    case '线性擦除': {
+      const edge = progress * 100;
+      return {
+        outgoing: { opacity: '1' },
+        incoming: {
+          opacity: '1',
+          clipPath: `polygon(0 0, ${edge}% 0, ${Math.min(100, edge + 18)}% 100%, 0 100%)`,
+        },
+      };
+    }
+    case '四角汇聚': {
+      const inset = (1 - progress) * 50;
+      return {
+        outgoing: { opacity: '1' },
+        incoming: {
+          opacity: '1',
+          clipPath: `inset(${inset}% round ${Math.max(0, inset)}%)`,
+        },
+      };
+    }
+    case '分割':
+      return {
+        outgoing: {
+          opacity: outgoingOpacity,
+          transform: `scaleX(${1 - progress})`,
+          transformOrigin: '50% 50%',
+        },
+        incoming: {
+          opacity: incomingOpacity,
+          transform: `scaleX(${progress})`,
+          transformOrigin: '50% 50%',
+        },
+      };
+    case '镜像':
+      return {
+        outgoing: {
+          opacity: outgoingOpacity,
+          transform: `perspective(900px) rotateY(${progress * 180}deg)`,
+          backfaceVisibility: 'hidden',
+        },
+        incoming: {
+          opacity: incomingOpacity,
+          transform: `perspective(900px) rotateY(${(1 - progress) * -180}deg)`,
+          backfaceVisibility: 'hidden',
+        },
+      };
+    case '翻页':
+      return {
+        outgoing: {
+          opacity: outgoingOpacity,
+          transform: `perspective(700px) rotateY(${progress * -90}deg)`,
+          transformOrigin: '100% 50%',
+          backfaceVisibility: 'hidden',
+        },
+        incoming: {
+          opacity: incomingOpacity,
+          transform: `perspective(700px) rotateY(${(1 - progress) * 90}deg)`,
+          transformOrigin: '0% 50%',
+          backfaceVisibility: 'hidden',
+        },
+      };
+    case '立方体':
+      return {
+        outgoing: {
+          opacity: outgoingOpacity,
+          transform: `perspective(700px) rotateY(${progress * -90}deg) translateZ(${progress * 20}px)`,
+          transformOrigin: '100% 50%',
+        },
+        incoming: {
+          opacity: incomingOpacity,
+          transform: `perspective(700px) rotateY(${(1 - progress) * 90}deg) translateZ(${(1 - progress) * 20}px)`,
+          transformOrigin: '0% 50%',
+        },
+      };
+    case '放大模糊':
+      return {
+        outgoing: {
+          opacity: outgoingOpacity,
+          transform: `scale(${1 + progress * 0.35})`,
+          filter: `blur(${progress * 12}px)`,
+        },
+        incoming: {
+          opacity: incomingOpacity,
+          transform: `scale(${0.65 + progress * 0.35})`,
+          filter: `blur(${(1 - progress) * 12}px)`,
+        },
+      };
+    case '彩色闪光':
+      return {
+        outgoing: { opacity: outgoingOpacity },
+        incoming: { opacity: incomingOpacity },
+        overlay: {
+          opacity: String(Math.sin(progress * Math.PI) * 0.68),
+          background:
+            'linear-gradient(110deg, transparent 18%, #f472b6 38%, #fef08a 50%, #67e8f9 62%, transparent 82%)',
+          mixBlendMode: 'screen',
+        },
+      };
+    case '噪点溶解':
+      return {
+        outgoing: {
+          opacity: outgoingOpacity,
+          filter: `contrast(${1 + progress * 0.45}) saturate(${1 - progress * 0.25})`,
+        },
+        incoming: {
+          opacity: incomingOpacity,
+          filter: `contrast(${1 + (1 - progress) * 0.45}) saturate(${1 - (1 - progress) * 0.25})`,
+        },
+        overlay: {
+          opacity: String(Math.sin(progress * Math.PI) * 0.42),
+          background:
+            'repeating-radial-gradient(circle at 17% 23%, #fff 0 1px, transparent 1px 4px), repeating-radial-gradient(circle at 73% 64%, #0b1724 0 1px, transparent 1px 5px)',
+          mixBlendMode: 'screen',
+        },
+      };
+    case '液体扭曲': {
+      const wave = Math.sin(progress * Math.PI) * 5;
+      return {
+        outgoing: {
+          opacity: outgoingOpacity,
+          transform: `scale(${1 + progress * 0.08}) skew(${wave}deg, ${wave * 0.4}deg)`,
+          filter: `blur(${progress * 4}px) saturate(${1 + progress * 0.6})`,
+        },
+        incoming: {
+          opacity: incomingOpacity,
+          transform: `scale(${0.92 + progress * 0.08}) skew(${-wave}deg, ${-wave * 0.4}deg)`,
+          filter: `blur(${(1 - progress) * 4}px) saturate(${1 + (1 - progress) * 0.6})`,
+        },
+        overlay: {
+          opacity: String(Math.sin(progress * Math.PI) * 0.2),
+          background: 'radial-gradient(ellipse at 50% 50%, #dbeafe 0 18%, transparent 65%)',
+          mixBlendMode: 'screen',
+        },
+      };
+    }
+    case '斜向擦除': {
+      const edge = progress * 100;
+      return {
+        outgoing: { opacity: '1' },
+        incoming: {
+          opacity: '1',
+          clipPath: `polygon(0 0, ${edge}% 0, 100% ${Math.max(0, edge - 22)}%, 100% 100%, 0 100%)`,
+        },
+      };
+    }
     case '叠化':
       return crossfade;
     case '硬切':

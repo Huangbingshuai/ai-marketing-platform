@@ -25,7 +25,19 @@ export type EffectTemplateMixTransition =
   | '色差'
   | '波纹'
   | '闪黑'
-  | '缩小';
+  | '缩小'
+  | '圆形扩散'
+  | '线性擦除'
+  | '四角汇聚'
+  | '分割'
+  | '镜像'
+  | '翻页'
+  | '立方体'
+  | '放大模糊'
+  | '彩色闪光'
+  | '噪点溶解'
+  | '液体扭曲'
+  | '斜向擦除';
 export const EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION = 1;
 export type EffectTemplateMixSlot = {
   id: string;

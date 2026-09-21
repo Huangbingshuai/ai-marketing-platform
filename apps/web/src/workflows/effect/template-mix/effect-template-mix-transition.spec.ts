@@ -36,4 +36,15 @@ describe('effect template mix transition presentation', () => {
     expect(diamond.incoming.clipPath).toContain('50%');
     expect(glitch.overlay?.mixBlendMode).toBe('screen');
   });
+
+  it('supports the extended geometric and texture transition set', () => {
+    const spread = effectTemplateMixTransitionPresentation('圆形扩散', 0.5);
+    const page = effectTemplateMixTransitionPresentation('翻页', 0.5);
+    const liquid = effectTemplateMixTransitionPresentation('液体扭曲', 0.5);
+    const wipe = effectTemplateMixTransitionPresentation('斜向擦除', 0.5);
+    expect(spread.incoming.clipPath).toContain('circle');
+    expect(page.outgoing.transform).toContain('perspective');
+    expect(liquid.outgoing.filter).toContain('saturate');
+    expect(wipe.incoming.clipPath).toContain('polygon');
+  });
 });
