@@ -27,4 +27,13 @@ describe('effect template mix transition presentation', () => {
     expect(start.incoming.clipPath).toContain('100%');
     expect(end.incoming.clipPath).toContain('0%');
   });
+
+  it('supports the additional popular directional and shader-inspired transitions', () => {
+    const right = effectTemplateMixTransitionPresentation('右滑', 0.5);
+    const diamond = effectTemplateMixTransitionPresentation('菱形展开', 0.5);
+    const glitch = effectTemplateMixTransitionPresentation('故障', 0.5);
+    expect(right.incoming.transform).toContain('-50%');
+    expect(diamond.incoming.clipPath).toContain('50%');
+    expect(glitch.overlay?.mixBlendMode).toBe('screen');
+  });
 });

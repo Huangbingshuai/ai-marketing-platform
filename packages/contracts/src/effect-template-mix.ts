@@ -14,7 +14,18 @@ export type EffectTemplateMixTransition =
   | '擦除'
   | '翻转'
   | '圆形展开'
-  | '模糊溶解';
+  | '模糊溶解'
+  | '右滑'
+  | '下推'
+  | '旋转'
+  | '百叶窗'
+  | '菱形展开'
+  | '像素化'
+  | '故障'
+  | '色差'
+  | '波纹'
+  | '闪黑'
+  | '缩小';
 export const EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION = 1;
 export type EffectTemplateMixSlot = {
   id: string;

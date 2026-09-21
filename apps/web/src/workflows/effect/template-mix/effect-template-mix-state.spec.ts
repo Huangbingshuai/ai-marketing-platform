@@ -92,13 +92,26 @@ describe('effect template mix presentation state', () => {
 
   it('exposes the popular transition set in the shared editor state', () => {
     expect(EFFECT_TEMPLATE_MIX_TRANSITIONS).toEqual(
-      expect.arrayContaining(['擦除', '左滑', '上推', '翻转', '圆形展开']),
+      expect.arrayContaining([
+        '擦除',
+        '左滑',
+        '上推',
+        '翻转',
+        '圆形展开',
+        '右滑',
+        '旋转',
+        '像素化',
+        '波纹',
+      ]),
     );
     expect(EFFECT_TEMPLATE_MIX_TRANSITION_LIBRARY.filter((item) => item.category === '热门'))
       .toEqual(
         expect.arrayContaining([
           expect.objectContaining({ id: '擦除' }),
           expect.objectContaining({ id: '圆形展开' }),
+          expect.objectContaining({ id: '旋转' }),
+          expect.objectContaining({ id: '像素化' }),
+          expect.objectContaining({ id: '波纹' }),
         ]),
       );
   });

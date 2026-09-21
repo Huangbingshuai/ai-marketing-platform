@@ -4443,6 +4443,43 @@ button:disabled {
 .transition-preview.is-blur {
   background: radial-gradient(circle at 65% 38%, #eef5f7 0 18%, #a4b7c5 32%, #40566b 85%);
 }
+.transition-preview.is-slide-right {
+  background: linear-gradient(90deg, #506b86 0 48%, #d8e7f2 48% 100%);
+}
+.transition-preview.is-slide-down {
+  background: linear-gradient(0deg, #506b86 0 48%, #d8e7f2 48% 100%);
+}
+.transition-preview.is-rotate {
+  background: conic-gradient(from 45deg, #d8e7f2, #506b86, #d8e7f2, #506b86, #d8e7f2);
+}
+.transition-preview.is-blinds {
+  background: repeating-linear-gradient(90deg, #506b86 0 9px, #d8e7f2 9px 13px);
+}
+.transition-preview.is-diamond {
+  background: linear-gradient(45deg, #506b86 0 49%, #d8e7f2 49% 51%, #506b86 51%);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+.transition-preview.is-pixel {
+  background:
+    repeating-linear-gradient(0deg, #506b86 0 8px, #7f98ad 8px 10px),
+    repeating-linear-gradient(90deg, transparent 0 8px, #d8e7f2 8px 10px);
+  background-blend-mode: screen;
+}
+.transition-preview.is-glitch {
+  background: repeating-linear-gradient(0deg, #ef476f 0 7px, #273747 7px 13px, #22d3ee 13px 18px);
+}
+.transition-preview.is-chromatic {
+  background: linear-gradient(90deg, #ef4444 0 35%, #506b86 35% 65%, #22d3ee 65%);
+}
+.transition-preview.is-ripple {
+  background: radial-gradient(circle, transparent 0 12%, #d8e7f2 14% 19%, transparent 21% 29%, #506b86 31% 100%);
+}
+.transition-preview.is-black-flash {
+  background: radial-gradient(circle, #506b86 0 18%, #05070b 20% 54%, #d8e7f2 56%);
+}
+.transition-preview.is-shrink {
+  background: radial-gradient(circle, #d8e7f2 0 27%, #506b86 29% 100%);
+}
 .transition-preview.is-cut {
   background: linear-gradient(90deg, #506072 0 48%, #16181d 48% 52%, #a0b2bf 52%);
 }
