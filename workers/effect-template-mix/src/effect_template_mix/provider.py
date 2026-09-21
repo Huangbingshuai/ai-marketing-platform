@@ -26,16 +26,42 @@ class ProviderError(RuntimeError):
         self.split_recommended = split_recommended
 
 
+SLOT_ROLE_DESCRIPTIONS: dict[str, str] = {
+    "HOOK": "开头抓眼球、制造好奇或冲击的画面（动作、特写、反差、悬念）",
+    "PAIN_POINT": "表现目标用户使用产品前的困扰、不便或负面状态，唤起改变现状的动机",
+    "PRODUCT": "产品外观、质感、细节的清晰展示",
+    "SELLING_POINT": "突出产品核心卖点或优势（工艺、材质、功能、对比优势）",
+    "TRANSFORMATION": "使用后的结果、前后对比或成果展示",
+    "END": "品牌露出、行动号召、收束升华",
+}
+
+
 def classification_payload(slots: list[Slot], materials: list[Material]) -> dict[str, Any]:
     """Frozen classifier input boundary: only slot semantics and original Prompt text."""
     return {
-        "task": "仅按每条原始视频 Prompt 的画面语义，对六种槽位分别评分。不要猜测任何未提供的推荐用途。",
-        "slots": [{"role": slot.role, "label": slot.label} for slot in slots],
+        "task": (
+            "评估每条原始视频 Prompt 描述的画面作为各槽位镜头的适配程度。"
+            "允许间接相关，给出 0 到 1 的连续分。"
+            "只依据 Prompt 画面语义与槽位定义判断，不要猜测任何未提供的推荐用途。"
+        ),
+        "slots": [
+            {
+                "role": slot.role,
+                "label": slot.label,
+                "description": SLOT_ROLE_DESCRIPTIONS.get(slot.role, slot.label),
+            }
+            for slot in slots
+        ],
         "materials": [
             {"materialId": material.id, "code": material.code, "prompt": material.prompt}
             for material in materials
         ],
-        "rules": ["每个分数为0到1", "每个素材必须输出六个分数", "理由简短且只引用Prompt画面语义"],
+        "rules": [
+            "每个分数为 0 到 1 的连续值",
+            "每个素材必须输出六个分数",
+            "按适配程度分档：0=完全无关，0.1-0.3=弱相关，0.4-0.6=可勉强使用，0.7+=直接契合",
+            "理由简短且只引用 Prompt 画面语义与槽位定义",
+        ],
     }
 
 

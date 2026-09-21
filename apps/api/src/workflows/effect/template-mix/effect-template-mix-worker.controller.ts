@@ -16,7 +16,9 @@ import {
 } from '@nestjs/common';
 import { RawResponse } from '../../../common/raw-response.decorator';
 import { fileContentDisposition } from '../../../platform/file/content-disposition';
-import type {
+// Worker body DTOs must remain runtime values for Nest validation metadata.
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
+import {
   EffectTemplateMixWorkerClassificationDto,
   EffectTemplateMixWorkerCompleteDto,
   EffectTemplateMixWorkerFailDto,

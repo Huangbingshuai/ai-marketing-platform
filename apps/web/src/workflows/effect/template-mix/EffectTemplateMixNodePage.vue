@@ -6,6 +6,7 @@ import type {
   EffectTemplateMixDraft,
   EffectTemplateMixMaterial,
   EffectTemplateMixRole,
+  EffectTemplateMixSlot,
   EffectTemplateMixTemplateEntry,
   EffectTemplateMixTransition,
   EffectTemplateMixVariant,
@@ -62,6 +63,7 @@ import {
   markEffectTemplateMixChanged,
   moveEffectTemplateMixSlot,
 } from './effect-template-mix-state';
+import { effectTemplateMixTransitionPresentation } from './effect-template-mix-transition';
 import EffectTemplateMixThumbnail from './EffectTemplateMixThumbnail.vue';
 import EffectTemplateMixTimeline from './EffectTemplateMixTimeline.vue';
 
@@ -157,7 +159,7 @@ const positionedTimelinePlayers = new WeakSet<HTMLVideoElement>();
 const workbenchMain = ref<HTMLElement | null>(null);
 const materialGrid = ref<HTMLElement | null>(null);
 const materialGridWidth = ref(0);
-const leftPaneWidth = ref(600);
+const leftPaneWidth = ref(480);
 const rightPaneWidth = ref(270);
 const topPaneHeight = ref(480);
 const timelineHeight = ref(260);
@@ -181,7 +183,7 @@ const resizingEditorHeight = ref<{
 const TIMELINE_FPS = 30;
 const LEFT_PANE_MIN_WIDTH = 230;
 const LEFT_PANE_MAX_WIDTH = 680;
-const CENTER_PANE_MIN_WIDTH = 420;
+const CENTER_PANE_MIN_WIDTH = 380;
 const AUDIO_METER_LEVELS = [2, 4, 3] as const;
 type TimelineEditSnapshot = {
   selectedSlotId: string;
@@ -369,6 +371,79 @@ const previewSlot = computed(() => {
         left.lane - right.lane || right.range.start - left.range.start || right.index - left.index,
     );
   return candidates.length ? (variant.slots[candidates[0]!.index] ?? null) : null;
+});
+type ActiveTransitionPreview = {
+  duration: number;
+  end: number;
+  incomingSlot: EffectTemplateMixSlot;
+  outgoingSlot: EffectTemplateMixSlot;
+  progress: number;
+  start: number;
+  transition: EffectTemplateMixTransition;
+};
+const activeTransitionPreview = computed<ActiveTransitionPreview | null>(() => {
+  const variant = selectedVariant.value;
+  if (!variant) return null;
+  const ranges = currentTiming.value.slots;
+  const safeTime = Math.max(0, Math.min(playhead.value, currentDuration.value));
+  for (let index = 1; index < variant.slots.length; index += 1) {
+    const incomingSlot = variant.slots[index]!;
+    if (incomingSlot.transition === '硬切') continue;
+    const outgoingSlot = variant.slots[index - 1]!;
+    const incomingRange = ranges.find(({ id }) => id === incomingSlot.id);
+    const outgoingRange = ranges.find(({ id }) => id === outgoingSlot.id);
+    if (!incomingRange || !outgoingRange) continue;
+    const duration = effectTemplateMixTransitionDuration(incomingSlot, outgoingSlot);
+    if (duration <= 0) continue;
+    const start = Math.max(outgoingRange.start, incomingRange.start - duration / 2);
+    const end = Math.min(
+      currentDuration.value,
+      Math.max(start + 1 / TIMELINE_FPS, incomingRange.start + duration / 2),
+    );
+    if (safeTime < start || safeTime >= end) continue;
+    return {
+      duration: end - start,
+      end,
+      incomingSlot,
+      outgoingSlot,
+      progress: Math.max(0, Math.min(1, (safeTime - start) / Math.max(end - start, 1 / TIMELINE_FPS))),
+      start,
+      transition: incomingSlot.transition,
+    };
+  }
+  return null;
+});
+const visibleTimelineSlotIds = computed(() => {
+  const transition = activeTransitionPreview.value;
+  return transition
+    ? new Set([transition.outgoingSlot.id, transition.incomingSlot.id])
+    : new Set(previewSlot.value ? [previewSlot.value.id] : []);
+});
+const timelinePlayerStyle = (slotId: string): Record<string, string> => {
+  const transition = activeTransitionPreview.value;
+  if (!transition) {
+    return { opacity: slotId === previewSlot.value?.id ? '1' : '0' };
+  }
+  const presentation = effectTemplateMixTransitionPresentation(
+    transition.transition,
+    transition.progress,
+  );
+  const style =
+    slotId === transition.outgoingSlot.id
+      ? presentation.outgoing
+      : slotId === transition.incomingSlot.id
+        ? presentation.incoming
+        : { opacity: '0' };
+  return { ...style, zIndex: slotId === transition.incomingSlot.id ? '3' : '2' };
+};
+const transitionOverlayStyle = computed<Record<string, string> | undefined>(() => {
+  const transition = activeTransitionPreview.value;
+  if (!transition) return undefined;
+  const presentation = effectTemplateMixTransitionPresentation(
+    transition.transition,
+    transition.progress,
+  );
+  return presentation.overlay;
 });
 const previewRange = computed(() =>
   previewSlot.value
@@ -987,6 +1062,39 @@ const detectMaterialAudio = (
 };
 const activeTimelinePlayer = (): HTMLVideoElement | null =>
   previewSlot.value ? (timelinePlayers.get(previewSlot.value.id) ?? null) : null;
+const timelinePlaybackStart = (slotId: string): number => {
+  const transition = activeTransitionPreview.value;
+  if (transition?.incomingSlot.id === slotId) return transition.start;
+  return currentTiming.value.slots.find(({ id }) => id === slotId)?.start ?? 0;
+};
+const timelineSourceTime = (slotId: string): number | null => {
+  const slot = selectedVariant.value?.slots.find(({ id }) => id === slotId);
+  const material = materialForSlot(slotId);
+  if (!slot || !material) return null;
+  const elapsed = Math.max(0, playhead.value - timelinePlaybackStart(slotId));
+  const offset = selectedVariant.value?.offsets[slotId] ?? 0;
+  return Math.max(0, Math.min(material.duration - 1 / TIMELINE_FPS, offset + elapsed));
+};
+const syncTimelineVideo = (slotId: string, resume: boolean): HTMLVideoElement | null => {
+  const video = timelinePlayers.get(slotId);
+  const sourceTime = timelineSourceTime(slotId);
+  if (!video || sourceTime === null) return null;
+  if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+    const needsSeek = !positionedTimelinePlayers.has(video);
+    if (needsSeek || Math.abs(video.currentTime - sourceTime) > 1 / TIMELINE_FPS) {
+      try {
+        video.currentTime = sourceTime;
+        positionedTimelinePlayers.add(video);
+      } catch {
+        // Metadata can be replaced while a source is loading; the ready callback retries.
+      }
+    }
+  }
+  if (resume && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.paused) {
+    void video.play().catch(() => undefined);
+  }
+  return video;
+};
 const primeUpcomingTimelinePlayer = (range: { id: string; end: number }): void => {
   const upcoming = currentTiming.value.slots
     .filter(
@@ -1016,9 +1124,10 @@ const primeUpcomingTimelinePlayer = (range: { id: string; end: number }): void =
     }
   }
 };
-const pauseTimelinePlayers = (exceptSlotId = ''): void => {
+const pauseTimelinePlayers = (exceptSlotId: string | string[] = ''): void => {
+  const keep = new Set(Array.isArray(exceptSlotId) ? exceptSlotId : [exceptSlotId]);
   for (const [slotId, video] of timelinePlayers) {
-    if (slotId !== exceptSlotId) video.pause();
+    if (!keep.has(slotId)) video.pause();
   }
 };
 const closeMaterialPreview = (): void => {
@@ -1614,6 +1723,23 @@ const resetPlaybackClock = (): void => {
   playbackAnchorSeconds = playhead.value;
 };
 const syncPlayingVideoFrame = (): void => {
+  const transition = activeTransitionPreview.value;
+  if (transition) {
+    const activeIds = [transition.outgoingSlot.id, transition.incomingSlot.id];
+    pauseTimelinePlayers(activeIds);
+    const outgoing = syncTimelineVideo(transition.outgoingSlot.id, true);
+    const incoming = syncTimelineVideo(transition.incomingSlot.id, true);
+    if (!outgoing && !incoming) {
+      displayedTimelineSlotId.value = '';
+      return;
+    }
+    activePlaybackSlotId = transition.incomingSlot.id;
+    if (incoming?.readyState && incoming.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      playerUnavailableSlotId.value = '';
+      displayedTimelineSlotId.value = transition.incomingSlot.id;
+    }
+    return;
+  }
   const slot = previewSlot.value;
   const range = previewRange.value;
   const material = previewMaterial.value;
@@ -1701,6 +1827,22 @@ const syncPlayerToPlayhead = async (resume = false): Promise<void> => {
       playerUnavailableSlotId.value = '';
       return true;
     }
+    const transition = activeTransitionPreview.value;
+    if (transition) {
+      const activeIds = [transition.outgoingSlot.id, transition.incomingSlot.id];
+      pauseTimelinePlayers(activeIds);
+      const outgoing = syncTimelineVideo(transition.outgoingSlot.id, resume);
+      const incoming = syncTimelineVideo(transition.incomingSlot.id, resume);
+      if (incoming?.readyState && incoming.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        playerUnavailableSlotId.value = '';
+        displayedTimelineSlotId.value = transition.incomingSlot.id;
+        transitionFrame.value = '';
+      } else if (outgoing?.readyState && outgoing.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        playerUnavailableSlotId.value = '';
+        displayedTimelineSlotId.value = transition.outgoingSlot.id;
+      }
+      return true;
+    }
     const video = activeTimelinePlayer();
     // The slot may have just mounted after a variant switch. Ask the caller to
     // retry after Vue flushes once, but never keep an old seek request alive.
@@ -1774,7 +1916,12 @@ const togglePlay = async (): Promise<void> => {
   await syncPlayerToPlayhead(true);
 };
 const onTimelinePlayerReady = (slotId: string): void => {
-  if (auditionMaterial.value || previewSlot.value?.id !== slotId) return;
+  const transition = activeTransitionPreview.value;
+  const isVisibleSlot =
+    previewSlot.value?.id === slotId ||
+    transition?.incomingSlot.id === slotId ||
+    transition?.outgoingSlot.id === slotId;
+  if (auditionMaterial.value || !isVisibleSlot) return;
   const video = timelinePlayers.get(slotId);
   if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
   detectMaterialAudio(materialForSlot(slotId), video);
@@ -2462,8 +2609,10 @@ defineExpose({ flushPendingEdits });
                     :ref="(element) => setTimelinePlayer(slot.id, element)"
                     class="timeline-stage-video"
                     :class="{
-                      'is-visible': !auditionMaterial && displayedTimelineSlotId === slot.id,
+                      'is-visible':
+                        !auditionMaterial && visibleTimelineSlotIds.has(slot.id),
                     }"
+                    :style="timelinePlayerStyle(slot.id)"
                     :src="materialForSlot(slot.id)?.contentUrl"
                     playsinline
                     preload="metadata"
@@ -2475,6 +2624,12 @@ defineExpose({ flushPendingEdits });
                     @error="onTimelinePlayerError(slot.id)"
                   />
                 </template>
+                <div
+                  v-if="activeTransitionPreview && transitionOverlayStyle"
+                  class="player-transition-overlay"
+                  :style="transitionOverlayStyle"
+                  aria-hidden="true"
+                />
                 <div
                   v-if="selectedVariant && !auditionMaterial && !previewMaterial"
                   class="player-blackout"
@@ -3322,7 +3477,7 @@ button:disabled {
 }
 .workbench-main {
   display: grid;
-  grid-template-columns: 600px 7px minmax(420px, 1fr) 7px 270px;
+  grid-template-columns: 480px 7px minmax(380px, 1fr) 7px 270px;
   height: 480px;
 }
 .workbench-main > * {
@@ -3796,6 +3951,24 @@ button:disabled {
 .transition-preview.is-zoom {
   background: radial-gradient(circle, #f1d6ba 0 14%, #6283a0 38%, #273747 78%);
 }
+.transition-preview.is-slide-left {
+  background: linear-gradient(90deg, #d8e7f2 0 48%, #506b86 48% 100%);
+}
+.transition-preview.is-slide-up {
+  background: linear-gradient(0deg, #d8e7f2 0 48%, #506b86 48% 100%);
+}
+.transition-preview.is-wipe {
+  background: linear-gradient(110deg, #506b86 0 42%, #edf4f8 42% 62%, #a3b7c8 62% 100%);
+}
+.transition-preview.is-circle {
+  background: radial-gradient(circle, #f5f8fb 0 25%, #506b86 27% 100%);
+}
+.transition-preview.is-flip {
+  background: linear-gradient(90deg, #334a63 0 48%, #dce8f0 48% 52%, #8ca3b6 52%);
+}
+.transition-preview.is-blur {
+  background: radial-gradient(circle at 65% 38%, #eef5f7 0 18%, #a4b7c5 32%, #40566b 85%);
+}
 .transition-preview.is-cut {
   background: linear-gradient(90deg, #506072 0 48%, #16181d 48% 52%, #a0b2bf 52%);
 }
@@ -3930,6 +4103,12 @@ button:disabled {
   object-fit: cover;
   pointer-events: none;
 }
+.player-transition-overlay {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
+  pointer-events: none;
+}
 .stage video {
   position: absolute;
   inset: 0;
@@ -3952,7 +4131,7 @@ button:disabled {
 }
 .player-source-error {
   position: absolute;
-  z-index: 4;
+  z-index: 5;
   inset: 0;
   display: grid;
   place-items: center;

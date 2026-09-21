@@ -37,7 +37,7 @@ class Settings(BaseSettings):
         ge=4_096,
     )
     ai_max_concurrency: int = Field(
-        default=2,
+        default=4,
         alias="TEMPLATE_MIX_AI_MAX_CONCURRENCY",
         ge=1,
         le=4,

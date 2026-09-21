@@ -28,6 +28,12 @@ export const EFFECT_TEMPLATE_MIX_TRANSITIONS: readonly EffectTemplateMixTransiti
   '推镜',
   '闪白',
   '缩放',
+  '左滑',
+  '上推',
+  '擦除',
+  '翻转',
+  '圆形展开',
+  '模糊溶解',
 ];
 export const EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION = 0.9;
 export const EFFECT_TEMPLATE_MIX_TRANSITION_LIBRARY = [
@@ -58,6 +64,48 @@ export const EFFECT_TEMPLATE_MIX_TRANSITION_LIBRARY = [
     category: '动感',
     description: '快速缩放转场',
     previewClass: 'is-zoom',
+  },
+  {
+    id: '左滑',
+    label: '左滑',
+    category: '热门',
+    description: '画面向左滑动衔接',
+    previewClass: 'is-slide-left',
+  },
+  {
+    id: '上推',
+    label: '上推',
+    category: '热门',
+    description: '上下推移切换',
+    previewClass: 'is-slide-up',
+  },
+  {
+    id: '擦除',
+    label: '擦除',
+    category: '热门',
+    description: '方向擦除进入下一幕',
+    previewClass: 'is-wipe',
+  },
+  {
+    id: '圆形展开',
+    label: '圆形展开',
+    category: '热门',
+    description: '圆形遮罩展开画面',
+    previewClass: 'is-circle',
+  },
+  {
+    id: '翻转',
+    label: '翻转',
+    category: '动感',
+    description: '立体翻转进入下一幕',
+    previewClass: 'is-flip',
+  },
+  {
+    id: '模糊溶解',
+    label: '模糊溶解',
+    category: '动感',
+    description: '柔和模糊叠化',
+    previewClass: 'is-blur',
   },
   {
     id: '硬切',

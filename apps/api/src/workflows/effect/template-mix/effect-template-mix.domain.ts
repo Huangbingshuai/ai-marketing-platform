@@ -2,6 +2,7 @@ import type {
   EffectTemplateMixAiClassification,
   EffectTemplateMixAiSelection,
   EffectTemplateMixMaterial,
+  EffectTemplateMixRole,
   EffectTemplateMixSlot,
   EffectTemplateMixVariant,
   EffectTemplateMixWorkspace,
@@ -307,6 +308,53 @@ export const maximumWeightedAiSelectionBatch = (
     group.forEach(({ materialId }) => consumed.add(materialId));
   }
   return groups;
+};
+
+/**
+ * Soft penalty subtracted from a role's raw score for every clip the role already holds
+ * above its fair share. Tune this to trade off matching quality against balance: a larger
+ * value pushes marginal clips into their second-best role sooner.
+ */
+export const BALANCED_SLOT_PENALTY = 0.05;
+
+/**
+ * Assign every material to exactly one slot role while discouraging extreme skew.
+ *
+ * The classifier emits six independent scores per material, so a naive argmax can pile
+ * every clip into a single role and starve the others. This greedy pass keeps the
+ * highest-confidence materials on their preferred role but subtracts a penalty for each
+ * clip a role already holds above its fair share, pushing marginal clips to their
+ * next-best role. It is a best-effort balance, not a hard quota: callers should still
+ * surface a warning when a role ends up with too few clips.
+ */
+export const balancedSlotAssignment = (
+  roles: readonly EffectTemplateMixRole[],
+  classifications: EffectTemplateMixAiClassification[],
+): Map<string, EffectTemplateMixRole> => {
+  const targetPerSlot = classifications.length / Math.max(1, roles.length);
+  const counts = new Map<EffectTemplateMixRole, number>(roles.map((role) => [role, 0]));
+  const assignment = new Map<string, EffectTemplateMixRole>();
+  const ordered = [...classifications].sort((left, right) => {
+    const peak = (item: EffectTemplateMixAiClassification): number =>
+      Math.max(...roles.map((role) => item.scores[role] ?? Number.NEGATIVE_INFINITY));
+    return peak(right) - peak(left) || left.materialId.localeCompare(right.materialId);
+  });
+  for (const item of ordered) {
+    let bestRole: EffectTemplateMixRole = roles[0]!;
+    let bestScore = Number.NEGATIVE_INFINITY;
+    for (const role of roles) {
+      const raw = item.scores[role];
+      if (!Number.isFinite(raw)) continue;
+      const adjusted = raw - BALANCED_SLOT_PENALTY * ((counts.get(role) ?? 0) - targetPerSlot);
+      if (adjusted > bestScore) {
+        bestScore = adjusted;
+        bestRole = role;
+      }
+    }
+    assignment.set(item.materialId, bestRole);
+    counts.set(bestRole, (counts.get(bestRole) ?? 0) + 1);
+  }
+  return assignment;
 };
 
 export const applyVariantToTemplate = (

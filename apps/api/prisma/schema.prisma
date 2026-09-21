@@ -1211,6 +1211,7 @@ model EffectTemplateMixAiRun {
   progress              Int                          @default(0)
   attemptCount          Int                          @default(0)
   maxAttempts           Int                          @default(2)
+  unclaimedRecoveryCount Int                          @default(0)
   attemptToken          String?                      @db.Uuid
   leaseExpiresAt        DateTime?
   heartbeatAt           DateTime?

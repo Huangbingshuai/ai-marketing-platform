@@ -3,7 +3,18 @@ import type { WorkingArtifactCommitSummary } from './workflow-working';
 export type EffectTemplateMixPurpose = 'EFFECT' | 'END_CONVERSION' | 'HOOK' | 'PRODUCT_DISPLAY';
 export type EffectTemplateMixRole =
   'END' | 'HOOK' | 'PAIN_POINT' | 'PRODUCT' | 'SELLING_POINT' | 'TRANSFORMATION';
-export type EffectTemplateMixTransition = '叠化' | '推镜' | '闪白' | '硬切' | '缩放';
+export type EffectTemplateMixTransition =
+  | '叠化'
+  | '推镜'
+  | '闪白'
+  | '硬切'
+  | '缩放'
+  | '左滑'
+  | '上推'
+  | '擦除'
+  | '翻转'
+  | '圆形展开'
+  | '模糊溶解';
 export type EffectTemplateMixSlot = {
   id: string;
   label: string;

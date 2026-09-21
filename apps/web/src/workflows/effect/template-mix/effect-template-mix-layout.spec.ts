@@ -129,7 +129,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('requestAnimationFrame(updatePlaybackFrame)');
     expect(pageSource).not.toContain('@timeupdate="onTime"');
     expect(pageSource).toContain('preload="auto"');
-    expect(pageSource).toContain('displayedTimelineSlotId === slot.id');
+    expect(pageSource).toContain('visibleTimelineSlotIds.has(slot.id)');
     expect(pageSource).not.toContain('class="player-label"');
     expect(pageSource).toContain(':style="stageStyle"');
     expect(pageSource).toContain('const materialPageSize = computed');
@@ -232,7 +232,7 @@ describe('effect template mix workbench layout', () => {
   });
   it('allows a three-column material pane while preserving the player width', () => {
     expect(pageSource).toContain('const LEFT_PANE_MAX_WIDTH = 680');
-    expect(pageSource).toContain('const CENTER_PANE_MIN_WIDTH = 420');
+    expect(pageSource).toContain('const CENTER_PANE_MIN_WIDTH = 380');
     expect(pageSource).toContain(
       'bounds.width - rightPaneWidth.value - CENTER_PANE_MIN_WIDTH - 14',
     );

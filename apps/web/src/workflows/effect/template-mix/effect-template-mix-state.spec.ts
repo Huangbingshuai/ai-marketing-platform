@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   cloneMix,
   createEffectTemplateMixEntry,
+  EFFECT_TEMPLATE_MIX_TRANSITIONS,
+  EFFECT_TEMPLATE_MIX_TRANSITION_LIBRARY,
   effectTemplateMixTiming,
   effectTemplateMixTransitionDuration,
   formatEffectTemplateMixTime,
@@ -77,5 +79,18 @@ describe('effect template mix presentation state', () => {
     slots[1]!.transitionDuration = 4;
     expect(effectTemplateMixTransitionDuration(slots[1]!, slots[0]!)).toBe(1.4);
     expect(effectTemplateMixTransitionDuration(slots[0]!)).toBe(0);
+  });
+
+  it('exposes the popular transition set in the shared editor state', () => {
+    expect(EFFECT_TEMPLATE_MIX_TRANSITIONS).toEqual(
+      expect.arrayContaining(['擦除', '左滑', '上推', '翻转', '圆形展开']),
+    );
+    expect(EFFECT_TEMPLATE_MIX_TRANSITION_LIBRARY.filter((item) => item.category === '热门'))
+      .toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: '擦除' }),
+          expect.objectContaining({ id: '圆形展开' }),
+        ]),
+      );
   });
 });

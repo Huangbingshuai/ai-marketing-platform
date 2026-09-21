@@ -1,6 +1,8 @@
 import type {
+  EffectTemplateMixAiClassification,
   EffectTemplateMixMaterial,
   EffectTemplateMixPurpose,
+  EffectTemplateMixRole,
   EffectTemplateMixVariant,
   EffectTemplateMixWorkspace,
 } from '@ai-marketing/contracts';
@@ -8,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   applyVariantToTemplate,
+  balancedSlotAssignment,
   composeAlgorithmicVariants,
   createVariant,
   fillVariant,
@@ -64,6 +67,29 @@ const workspace = (): EffectTemplateMixWorkspace => ({
   variants: [],
   materials: [material('flex', 'HOOK', ['EFFECT']), material('hook-only', 'HOOK')],
 });
+
+const ROLES = [
+  'HOOK',
+  'PAIN_POINT',
+  'PRODUCT',
+  'SELLING_POINT',
+  'TRANSFORMATION',
+  'END',
+] as const;
+
+const zeroScores = (): Record<EffectTemplateMixRole, number> => ({
+  HOOK: 0,
+  PAIN_POINT: 0,
+  PRODUCT: 0,
+  SELLING_POINT: 0,
+  TRANSFORMATION: 0,
+  END: 0,
+});
+
+const balancedClassification = (
+  materialId: string,
+  scores: Record<EffectTemplateMixRole, number>,
+): EffectTemplateMixAiClassification => ({ materialId, scores, reasons: {} });
 
 describe('effect template mix domain', () => {
   it('recombines cached AI trims into distinct projects while balancing reuse', () => {
@@ -206,5 +232,44 @@ describe('effect template mix domain', () => {
     expect(groups).toHaveLength(2);
     expect(groups.flat().map(({ variantIndex }) => variantIndex)).toEqual([0, 0, 1, 1]);
     expect(new Set(groups.flat().map(({ materialId }) => materialId))).toHaveProperty('size', 4);
+  });
+
+  it('assigns every material to exactly one valid role', () => {
+    const classifications = Array.from({ length: 18 }, (_, index) =>
+      balancedClassification(`m${index}`, { ...zeroScores(), HOOK: 0.9 - index * 0.01, END: 0.85 }),
+    );
+    const assignment = balancedSlotAssignment(ROLES, classifications);
+    expect(assignment.size).toBe(18);
+    for (const role of assignment.values()) expect(ROLES).toContain(role);
+  });
+
+  it('spreads nearly-tied materials across roles instead of piling into one', () => {
+    const classifications = Array.from({ length: 30 }, (_, index) =>
+      balancedClassification(`m${index}`, {
+        ...zeroScores(),
+        HOOK: 0.55,
+        PAIN_POINT: 0.5,
+        PRODUCT: 0.5,
+        SELLING_POINT: 0.5,
+        TRANSFORMATION: 0.5,
+        END: 0.5,
+      }),
+    );
+    const assignment = balancedSlotAssignment(ROLES, classifications);
+    const counts = new Map<EffectTemplateMixRole, number>();
+    for (const role of assignment.values()) counts.set(role, (counts.get(role) ?? 0) + 1);
+    expect(Math.max(...counts.values())).toBeLessThan(10);
+  });
+
+  it('keeps a material with a clear best role on that role', () => {
+    const classifications = ROLES.map((role, index) => {
+      const scores = zeroScores();
+      scores[role] = 0.9;
+      return balancedClassification(`m${index}`, scores);
+    });
+    const assignment = balancedSlotAssignment(ROLES, classifications);
+    ROLES.forEach((role, index) => {
+      expect(assignment.get(`m${index}`)).toBe(role);
+    });
   });
 });

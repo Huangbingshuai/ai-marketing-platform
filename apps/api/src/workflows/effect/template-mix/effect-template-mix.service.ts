@@ -24,6 +24,7 @@ import { STORAGE_PORT, type StoragePort } from '../../../platform/file/storage.p
 import type { WorkingArtifactUpsertInput } from '../../../platform/workflow/workflow-working.repository';
 import {
   applyVariantToTemplate,
+  balancedSlotAssignment,
   composeAlgorithmicVariants,
   createVariant,
   fillVariant,
@@ -525,28 +526,47 @@ export class EffectTemplateMixService {
       promptArtifacts: [...promptDependencies.values()],
       materials,
     };
-    const classificationSignature = (value: EffectTemplateMixAiSnapshot): string =>
-      workflowStateHash({
-        slots: classificationSlotSignature(value.template.slots),
-        materials: value.materials.map(({ id, code, prompt }) => ({ id, code, prompt })),
-      });
-    const reusableClassifications = previousRuns.find((previous) => {
+    const promptSignature = (value: EffectTemplateMixAiSnapshot): string =>
+      workflowStateHash([...value.promptArtifacts].sort((left, right) => left.id.localeCompare(right.id)));
+    const cachedClassifications = new Map<string, EffectTemplateMixAiClassification>();
+    for (const previous of previousRuns) {
       if (
         previous.status !== 'COMPLETED' ||
         previous.templateId !== templateId ||
         !Array.isArray(previous.classificationResult)
       )
-        return false;
+        continue;
       const previousSnapshot = previous.inputSnapshot as unknown as EffectTemplateMixAiSnapshot;
-      return (
-        classificationSignature(previousSnapshot) === classificationSignature(snapshot) &&
-        classificationsValid(
-          snapshot,
-          previous.classificationResult as unknown as EffectTemplateMixAiClassification[],
-          true,
+      const rows = previous.classificationResult as unknown as EffectTemplateMixAiClassification[];
+      if (
+        !Array.isArray(previousSnapshot.template?.slots) ||
+        !Array.isArray(previousSnapshot.materials) ||
+        !Array.isArray(previousSnapshot.promptArtifacts) ||
+        classificationSlotSignature(previousSnapshot.template.slots) !==
+          classificationSlotSignature(snapshot.template.slots) ||
+        promptSignature(previousSnapshot) !== promptSignature(snapshot) ||
+        !classificationsValid(previousSnapshot, rows, true)
+      )
+        continue;
+      const oldMaterials = new Map(previousSnapshot.materials.map((material) => [material.id, material]));
+      const oldRows = new Map(rows.map((row) => [row.materialId, row]));
+      for (const material of snapshot.materials) {
+        if (cachedClassifications.has(material.id)) continue;
+        const oldMaterial = oldMaterials.get(material.id);
+        const row = oldRows.get(material.id);
+        if (
+          oldMaterial &&
+          row &&
+          workflowStateHash(oldMaterial) === workflowStateHash(material) &&
+          classificationsValid({ ...snapshot, materials: [material] }, [row], true)
         )
-      );
-    })?.classificationResult as EffectTemplateMixAiClassification[] | undefined;
+          cachedClassifications.set(material.id, row);
+      }
+    }
+    const reusableClassifications = snapshot.materials.flatMap((material) => {
+      const cached = cachedClassifications.get(material.id);
+      return cached ? [cached] : [];
+    });
     const inputHash = workflowStateHash(snapshot);
     const reusableCheckpoint = previousRuns.find(
       (previous) =>
@@ -573,7 +593,7 @@ export class EffectTemplateMixService {
       requestHash,
       inputHash,
       snapshot,
-      ...(reusableClassifications ? { initialClassifications: reusableClassifications } : {}),
+      ...(reusableClassifications.length ? { initialClassifications: reusableClassifications } : {}),
       ...(reusableCheckpoint
         ? {
             initialSelections: reusableCheckpoint.selectionResult as unknown[],
@@ -1300,12 +1320,14 @@ export class EffectTemplateMixService {
         })
       )
         continue;
+      const assignment = balancedSlotAssignment(AI_MIX_ROLES, classifications);
       classificationPools.push({
         templateId: run.templateId,
         runId: run.id,
         templateEditVersion: entry.workspace.template.editVersion,
-        items: AI_MIX_ROLES.flatMap((role) => {
-          const ranked = classifications
+        items: AI_MIX_ROLES.flatMap((role) =>
+          classifications
+            .filter(({ materialId }) => assignment.get(materialId) === role)
             .map((classification) => ({
               materialId: classification.materialId,
               role,
@@ -1315,38 +1337,8 @@ export class EffectTemplateMixService {
               (left, right) =>
                 right.matchScore - left.matchScore ||
                 left.materialId.localeCompare(right.materialId),
-            );
-          const normal = ranked.filter(({ matchScore }) => matchScore >= 0.6);
-          const usedByAi = new Set(
-            entry.workspace.variants.flatMap((variant) =>
-              variant.slots
-                .filter(
-                  (slot) =>
-                    slot.role === role && variant.bindingMetadata?.[slot.id]?.source === 'AI',
-                )
-                .map((slot) => ({ id: variant.bindings[slot.id], slotId: slot.id }))
-                .filter(({ id, slotId }) =>
-                  Boolean(
-                    id &&
-                    activeMaterials.some(
-                      (material) =>
-                        material.id === id &&
-                        material.artifactRevision === variant.bindingRevisions[slotId],
-                    ),
-                  ),
-                )
-                .map(({ id }) => id!),
             ),
-          );
-          const base = normal.length ? normal : ranked.slice(0, Math.min(6, ranked.length));
-          const baseIds = new Set(base.map(({ materialId }) => materialId));
-          return [
-            ...base,
-            ...ranked.filter(
-              ({ materialId }) => usedByAi.has(materialId) && !baseIds.has(materialId),
-            ),
-          ];
-        }),
+        ),
       });
       pooledTemplates.add(run.templateId);
     }
