@@ -98,6 +98,8 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).toContain('const visiblePrimaryTracks = computed');
     expect(timelineSource).toContain('const hasCaptionTrack = computed');
     expect(timelineSource).toContain('const hasAudioTrack = computed');
+    expect(timelineSource).toContain('const hasCaptionTrack = computed(() => true);');
+    expect(timelineSource).toContain('const hasAudioTrack = computed(() => true);');
     expect(timelineSource).toContain('const assignIntervalLanes');
     expect(timelineSource).not.toContain('Math.max(2,');
     expect(timelineSource).not.toContain('未配置字幕');
@@ -144,7 +146,12 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('overlapsTimelineClip');
     expect(pageSource).toContain('prefer an empty lane above it');
     expect(pageSource).toContain('normalizeVariantVideoLanes');
+    expect(pageSource).toContain('clearDetachedTransitions');
+    expect(pageSource).toContain('remainsAttached');
     expect(pageSource).toContain('insertLaneAt');
+    expect(pageSource).toContain('if (requestedLane < 0)');
+    expect(timelineSource).toContain('drag.currentLane = -1');
+    expect(timelineSource).toContain('Math.hypot(');
     expect(pageSource).toContain('beginMaterialPointerDrag');
     expect(pageSource).toContain("className = 'material-drag-ghost'");
     expect(pageSource).toContain(':draggable="Boolean(selectedVariant)"');

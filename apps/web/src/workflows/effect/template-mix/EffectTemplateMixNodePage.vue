@@ -838,11 +838,18 @@ const installWorkspaceData = (
     catalog.value.find(({ id }) => id === data.draft.activeTemplateId)?.id ??
     catalog.value[0]?.id ??
     '';
+  let detachedTransitionChanged = false;
+  const activeEntryForCleanup = catalog.value.find(({ id }) => id === activeTemplateId.value);
+  for (const variant of activeEntryForCleanup?.workspace.variants ?? []) {
+    normalizeVariantVideoLanes(variant);
+    detachedTransitionChanged = clearDetachedTransitions(variant) || detachedTransitionChanged;
+  }
   Object.keys(committedVersions).forEach((key) => delete committedVersions[key]);
   data.commits
     .filter(({ stale }) => !stale)
     .forEach(({ templateId, editVersion }) => (committedVersions[templateId] = editVersion));
   initializeUi();
+  if (detachedTransitionChanged) scheduleSave();
   aiRuns.value = data.aiRuns ?? [];
   classificationPools.value = data.classificationPools ?? [];
 };
@@ -1379,6 +1386,7 @@ const moveMaterialToSlot = (material: EffectTemplateMixMaterial, targetSlotId: s
   variant.conflictSlotIds = variant.conflictSlotIds.filter(
     (id) => id !== targetSlot.id && (!sourceSlot || id !== sourceSlot.id),
   );
+  clearDetachedTransitions(variant);
   if (activeUi.value) activeUi.value.selectedSlotId = targetSlot.id;
   resetTimelinePlayerState();
   bump();
@@ -1418,6 +1426,7 @@ const applyMaterialToSlot = (material: EffectTemplateMixMaterial, slotId: string
   };
   if (!variant.manualSlotIds.includes(slot.id)) variant.manualSlotIds.push(slot.id);
   variant.conflictSlotIds = variant.conflictSlotIds.filter((id) => id !== slot.id);
+  clearDetachedTransitions(variant);
   if (activeUi.value) activeUi.value.selectedSlotId = slot.id;
   resetTimelinePlayerState();
   bump();
@@ -1432,6 +1441,7 @@ const removeMaterialFromSlot = (slotId: string): void => {
   delete variant.offsets[slot.id];
   if (variant.bindingMetadata) delete variant.bindingMetadata[slot.id];
   variant.manualSlotIds = variant.manualSlotIds.filter((id) => id !== slot.id);
+  clearDetachedTransitions(variant);
   resetTimelinePlayerState();
   bump();
 };
@@ -1712,6 +1722,7 @@ const moveProjectSlot = (slotId: string, targetId: string): void => {
   rememberTimelineEdit();
   const [slot] = selectedVariant.value.slots.splice(from, 1);
   selectedVariant.value.slots.splice(to, 0, slot!);
+  clearDetachedTransitions(selectedVariant.value);
   bump();
 };
 const overlapsTimelineClip = (
@@ -1738,6 +1749,34 @@ const normalizeVariantVideoLanes = (variant: EffectTemplateMixVariant): void => 
     variant.videoLanes[slot.id] = laneMap.get(rawLane) ?? 0;
   }
 };
+const clearDetachedTransitions = (variant: EffectTemplateMixVariant): boolean => {
+  const baseRanges = effectTemplateMixTiming(variant.slots).slots;
+  const ranges = baseRanges.map((range) => {
+    const start = Math.max(0, variant.timelineStarts?.[range.id] ?? range.start);
+    return { ...range, start, end: start + (range.end - range.start) };
+  });
+  const laneFor = (slotId: string): number =>
+    Math.max(0, Math.round(variant.videoLanes?.[slotId] ?? 0));
+  let changed = false;
+  for (let index = 1; index < variant.slots.length; index += 1) {
+    const slot = variant.slots[index]!;
+    if (slot.transition === '硬切') continue;
+    const previousSlot = variant.slots[index - 1]!;
+    const currentRange = ranges[index];
+    const previousRange = ranges[index - 1];
+    const remainsAttached =
+      Boolean(materialForSlot(slot.id, variant)) &&
+      Boolean(materialForSlot(previousSlot.id, variant)) &&
+      laneFor(slot.id) === laneFor(previousSlot.id) &&
+      Math.abs(currentRange!.start - previousRange!.end) <= 1 / TIMELINE_FPS;
+    if (!remainsAttached) {
+      slot.transition = '硬切';
+      slot.transitionDuration = 0;
+      changed = true;
+    }
+  }
+  return changed;
+};
 type TimelinePlacement = { insertLaneAt?: number; lane: number; start: number };
 const resolveTimelinePlacement = (
   variant: EffectTemplateMixVariant,
@@ -1748,6 +1787,9 @@ const resolveTimelinePlacement = (
 ): TimelinePlacement => {
   const slot = variant.slots.find(({ id }) => id === slotId);
   if (!slot) return { start: requestedStart, lane: requestedLane };
+  if (requestedLane < 0) {
+    return { insertLaneAt: 0, start: requestedStart, lane: 0 };
+  }
   const ranges = currentTiming.value.slots
     .filter(
       ({ id }) =>
@@ -1791,7 +1833,7 @@ const moveTimelineClips = (moves: TimelineClipMove[]): void => {
     const slot = variant.slots.find(({ id }) => id === slotId);
     if (!slot) return [];
     const nextStart = Math.max(0, Math.round(start * 30) / 30);
-    const nextLane = Math.max(0, Math.round(lane));
+    const nextLane = Math.round(lane);
     const resolved = resolveTimelinePlacement(
       variant,
       slotId,
@@ -1810,9 +1852,11 @@ const moveTimelineClips = (moves: TimelineClipMove[]): void => {
         insertLaneAt === null ? resolved.insertLaneAt : Math.min(insertLaneAt, resolved.insertLaneAt);
     }
     const resolvedLane = Math.max(0, Math.round(resolved.lane));
-    return resolvedStart === currentStart && resolvedLane === currentLane
-      ? []
-      : [{ slotId, start: resolvedStart, lane: resolvedLane }];
+    const shouldApplyMove =
+      resolved.insertLaneAt !== undefined ||
+      resolvedStart !== currentStart ||
+      resolvedLane !== currentLane;
+    return shouldApplyMove ? [{ slotId, start: resolvedStart, lane: resolvedLane }] : [];
   });
   if (!resolvedMoves.length) return;
   rememberTimelineEdit();
@@ -1830,6 +1874,7 @@ const moveTimelineClips = (moves: TimelineClipMove[]): void => {
     variant.videoLanes[move.slotId] = move.lane;
   }
   normalizeVariantVideoLanes(variant);
+  clearDetachedTransitions(variant);
   resetTimelinePlayerState();
   bump();
 };

@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict
 from .api import ApiError, InternalApi
 from .packaging_media import analysis_preview, music_wav, pcm_wav, visible_intervals
 from .packaging_provider import MusicRateLimited, PackagingError, PackagingProvider
-from .provider import ArkProvider, ProviderError
+from .provider import ArkProvider, ProviderError, ProviderOutputError
 
 LOGGER = logging.getLogger(__name__)
 
@@ -114,7 +114,14 @@ async def understand_frames(ark: ArkProvider, snapshot: dict[str, Any], frames: 
         content.extend({'type': 'input_image', 'image_url': 'data:image/jpeg;base64,' + base64.b64encode(data).decode()} for _, data in group)
         for attempt in range(2):
             await before_request()
-            result = await ark.structured(content, FrameVisionOutput, 'packaging_vision', max_output_tokens=4096, max_attempts=1)
+            try:
+                result = await ark.structured(content, FrameVisionOutput, 'packaging_vision', max_output_tokens=4096, max_attempts=1)
+            except ProviderOutputError:
+                if attempt:
+                    raise PackagingError('视觉返回格式修正一次后仍无效，请重试本条')
+                content = [*content, {'type': 'input_text', 'text':
+                    '上次响应未通过 JSON 结构校验。仅返回符合给定 schema 的 JSON 对象，不要代码块或额外说明。'}]
+                continue
             if (len(result.frames) == len(group) and {row.frameIndex for row in result.frames} == set(range(len(group)))
                     and all(0 < len(row.description.strip()) <= 2000 for row in result.frames)):
                 break

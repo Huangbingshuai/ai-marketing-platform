@@ -8,7 +8,10 @@ import pytest
 from effect_template_mix.packaging import submit_music_safely
 from effect_template_mix.packaging_provider import MusicRateLimited, PackagingError, PackagingProvider
 from effect_template_mix.packaging import FrameVisionOutput
-from effect_template_mix.provider import ArkProvider, ProviderError
+from effect_template_mix.provider import ArkProvider, ProviderError, ProviderOutputError
+from effect_template_mix.api import InternalApi
+from effect_template_mix.packaging import PackagingHandler
+from effect_template_mix.packaging import understand_frames
 
 
 @pytest.mark.parametrize('task_id', [None, 'possibly-created'])
@@ -75,3 +78,46 @@ async def test_submission_recovery_preserves_uncertainty_and_checks_cancel(failu
         assert adapter.submit_music.await_count == (3 if failure == 'exhausted' else 1)
         assert cp['musicSubmissionPending'] == (failure in ('timeout', 'malformed'))
         assert 'musicTaskId' not in cp
+
+
+async def test_query_rate_limit_reuses_saved_task_without_paid_resubmit(monkeypatch: Any) -> None:
+    api = AsyncMock(spec=InternalApi)
+    api.request.return_value = {'fileObjectId': 'saved-music'}
+    adapter = AsyncMock(spec=PackagingProvider)
+    adapter.query_music.side_effect = [MusicRateLimited('限流'), 'https://v1-default.douyinvod.com/music']
+    adapter.download_music.return_value = b'source'
+    monkeypatch.setattr('effect_template_mix.packaging.music_wav', AsyncMock(return_value=b'wav'))
+    monkeypatch.setattr('effect_template_mix.packaging.asyncio.sleep', AsyncMock())
+    row = {'id': 'item', 'stage': 'MUSIC', 'snapshot': {'duration': 43}, 'checkpoint': {
+        'vision': [{'start': 0, 'end': 43, 'description': '画面'}],
+        'script': [{'id': 'line', 'text': '口播', 'start': 0, 'end': 5, 'factIds': ['f']}],
+        'voices': {'line': {'fileObjectId': 'voice', 'start': 0, 'duration': 2, 'volume': 1}},
+        'musicTaskId': 'existing-task', 'musicSubmissionPending': False}}
+    await PackagingHandler(api, AsyncMock(spec=ArkProvider), adapter, 1000).process_item('/run', {}, 'project', row)
+    adapter.submit_music.assert_not_called()
+    assert adapter.query_music.await_count == 2
+    assert all(call.args == ('existing-task',) for call in adapter.query_music.await_args_list)
+    assert row['stage'] == 'READY'
+
+
+@pytest.mark.parametrize('recovered', [True, False])
+async def test_vision_malformed_response_gets_one_bounded_structural_repair(recovered: bool) -> None:
+    ark = AsyncMock(spec=ArkProvider)
+    invalid = ProviderOutputError('invalid', retryable=False, split_recommended=True)
+    valid = FrameVisionOutput.model_validate({'frames': [{'frameIndex': 0, 'description': '画面'}]})
+    ark.structured.side_effect = [invalid, valid if recovered else invalid]
+    guard = AsyncMock()
+    if recovered:
+        assert await understand_frames(ark, {'duration': 1, 'clips': []}, [(.5, b'frame')], guard)
+    else:
+        with pytest.raises(PackagingError, match='修正一次后仍无效'):
+            await understand_frames(ark, {'duration': 1, 'clips': []}, [(.5, b'frame')], guard)
+    assert ark.structured.await_count == 2 and guard.await_count == 2
+
+
+async def test_vision_structural_repair_does_not_retry_transport_failure() -> None:
+    ark = AsyncMock(spec=ArkProvider)
+    ark.structured.side_effect = ProviderError('timeout', retryable=True)
+    with pytest.raises(ProviderError):
+        await understand_frames(ark, {'duration': 1, 'clips': []}, [(.5, b'frame')], AsyncMock())
+    assert ark.structured.await_count == 1

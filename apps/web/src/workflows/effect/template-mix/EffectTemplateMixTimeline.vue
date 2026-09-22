@@ -86,6 +86,7 @@ type ClipDragState = {
   selectionModifier: boolean;
   slotId: string;
   startClientX: number;
+  startClientY: number;
   started: boolean;
   targetSlotId: string;
 };
@@ -277,7 +278,7 @@ const dragGhostStyle = computed(() => {
   );
   return {
     left: `${left}px`,
-    top: `${7 + drag.currentLane * 70}px`,
+    top: `${7 + Math.max(0, drag.currentLane) * 70}px`,
     width: `${Math.max(24, width)}px`,
   };
 });
@@ -357,8 +358,11 @@ const audioLaneById = computed(() =>
   ),
 );
 const audioLaneCount = computed(() => Math.max(1, audioLaneById.value.size ? Math.max(...audioLaneById.value.values()) + 1 : 1));
-const hasCaptionTrack = computed(() => timelineCaptions.value.length > 0);
-const hasAudioTrack = computed(() => timelineAudios.value.length > 0);
+// Keep one baseline caption/audio lane visible like a conventional editor.
+// Additional lanes are added by the interval packer when clips overlap; only
+// those dynamically-created lanes should disappear when no longer occupied.
+const hasCaptionTrack = computed(() => true);
+const hasAudioTrack = computed(() => true);
 const trackHeight = (track: VisibleTrack): number =>
   track === 'VIDEO'
     ? videoLaneCount.value * 70 + 6
@@ -775,6 +779,7 @@ const onClipPointerDown = (event: PointerEvent, slotId: string): void => {
     selectionModifier: event.ctrlKey || event.metaKey,
     slotId,
     startClientX: event.clientX,
+    startClientY: event.clientY,
     started: false,
     targetSlotId: slotId,
   };
@@ -874,8 +879,14 @@ const updateDragTarget = (clientX: number, clientY: number): void => {
     if (snapped !== undefined) drag.currentStart = snapped;
   }
   const videoBounds = videoTrack.value?.getBoundingClientRect();
-  if (videoBounds && clientYInVideoTrack(clientY, videoBounds)) {
-    drag.currentLane = Math.max(0, Math.floor((clientY - videoBounds.top) / 70));
+  if (videoBounds) {
+    if (clientY < videoBounds.top) {
+      // Dropping above the first visible lane asks the parent to insert a new
+      // top lane instead of silently clamping the move back onto lane 0.
+      drag.currentLane = -1;
+    } else if (clientYInVideoTrack(clientY, videoBounds)) {
+      drag.currentLane = Math.max(0, Math.floor((clientY - videoBounds.top) / 70));
+    }
   }
   // Keep the ghost under the pointer while dragging, even when it temporarily
   // overlaps another clip. The parent resolves the final placement on pointerup,
@@ -949,8 +960,15 @@ function onWindowPointerMove(event: PointerEvent): void {
   }
   if (clipDrag.value) {
     clipDrag.value.currentClientX = event.clientX;
-    if (Math.abs(event.clientX - clipDrag.value.startClientX) > 4) clipDrag.value.started = true;
     clipDrag.value.currentClientY = event.clientY;
+    if (
+      Math.hypot(
+        event.clientX - clipDrag.value.startClientX,
+        event.clientY - clipDrag.value.startClientY,
+      ) > 4
+    ) {
+      clipDrag.value.started = true;
+    }
     if (clipDrag.value.started) updateDragTarget(event.clientX, event.clientY);
     return;
   }

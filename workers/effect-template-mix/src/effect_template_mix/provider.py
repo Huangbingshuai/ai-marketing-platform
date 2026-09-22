@@ -30,6 +30,10 @@ class ProviderError(RuntimeError):
         self.split_recommended = split_recommended
 
 
+class ProviderOutputError(ProviderError):
+    """A received model response failed mechanical JSON/schema validation."""
+
+
 SLOT_ROLE_DESCRIPTIONS: dict[str, str] = {
     "HOOK": "开头抓眼球、制造好奇、冲击或情绪共鸣的画面（动作、特写、反差、悬念、诱人瞬间）",
     "PAIN_POINT": "唤起目标用户的需求、渴望、困扰或不满足感——既包括使用前的困扰与负面状态，也包括「想要、缺少、还没得到」的欲望与期待",
@@ -163,7 +167,8 @@ class ArkProvider:
                     fields = [str(error['loc']) for error in exc.errors(include_input=False, include_context=False)] if isinstance(exc, ValidationError) else []
                     LOGGER.warning('packaging model invalid stage=%s type=%s fields=%s', name, type(exc).__name__, fields)
                 last = exc
-        raise ProviderError(
+        error_type = ProviderOutputError if isinstance(last, ValueError) else ProviderError
+        raise error_type(
             ("AI 服务响应超时，已保留成功步骤，请恢复未完成项"
              if isinstance(last, (TimeoutError, httpx.TimeoutException)) else
              "AI 服务连接中断，已保留成功步骤，请恢复未完成项"
