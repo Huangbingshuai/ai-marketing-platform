@@ -77,7 +77,7 @@ const executionSummary = computed(() => {
   const e = value.execution;
   const base = `已完成 ${value.counts.completed} / ${value.counts.total} 条 · ${value.counts.shards} 个分片`;
   if (!e) return base;
-  const eta = e.estimatedRemainingSeconds === null ? '' : ` · 预计剩余 ${Math.ceil(e.estimatedRemainingSeconds / 60)} 分钟${e.estimateBasis === 'BASELINE' ? '（初始估算）' : ''}`;
+  const eta = e.estimatedRemainingSeconds === null ? (active.value && e.delayed ? ' · 暂无可靠完成时间' : '') : ` · 预计剩余 ${Math.ceil(e.estimatedRemainingSeconds / 60)} 分钟${e.estimateBasis === 'BASELINE' ? '（初始估算）' : ''}`;
   return `${base} · 排队 ${e.queued} · 运行 ${e.running}${eta}${e.delayed ? ' · 当前吞吐低于目标或存在失败' : ''}`;
 });
 const progressSummary = computed(() => {

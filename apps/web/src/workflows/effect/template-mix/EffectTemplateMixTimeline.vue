@@ -128,7 +128,6 @@ type TransitionDragState = {
 };
 
 const trackOrder = ref<VisibleTrack[]>(['CAPTION', 'VIDEO']);
-const orderedTracks = computed<VisibleTrack[]>(() => [...trackOrder.value, 'AUDIO']);
 const viewport = ref<HTMLElement | null>(null);
 const canvas = ref<HTMLElement | null>(null);
 const videoTrack = ref<HTMLElement | null>(null);
@@ -174,13 +173,22 @@ const sequentialStarts = computed(() => {
 });
 const clipStart = (slotId: string): number =>
   Math.max(0, props.variant?.timelineStarts?.[slotId] ?? sequentialStarts.value[slotId] ?? 0);
-const clipLane = (slotId: string): number =>
-  Math.max(0, Math.min(2, props.variant?.videoLanes?.[slotId] ?? 0));
+const rawClipLane = (slotId: string): number =>
+  Math.max(0, Math.round(props.variant?.videoLanes?.[slotId] ?? 0));
+const occupiedVideoLaneValues = computed(() => {
+  const lanes = new Set<number>();
+  for (const slot of props.variant?.slots ?? []) {
+    if (materialForSlot(slot.id)) lanes.add(rawClipLane(slot.id));
+  }
+  return [...lanes].sort((left, right) => left - right);
+});
+const clipLane = (slotId: string): number => {
+  const rawLane = rawClipLane(slotId);
+  const index = occupiedVideoLaneValues.value.indexOf(rawLane);
+  return index >= 0 ? index : 0;
+};
 const videoLaneCount = computed(() =>
-  Math.max(
-    2,
-    Math.min(3, 1 + Math.max(0, ...(props.variant?.slots ?? []).map(({ id }) => clipLane(id)))),
-  ),
+  Math.max(1, occupiedVideoLaneValues.value.length, (clipDrag.value?.currentLane ?? 0) + 1),
 );
 const layoutSlots = computed(() =>
   (props.variant?.slots ?? []).map((slot) => {
@@ -289,6 +297,81 @@ const materialForSlot = (slotId: string): EffectTemplateMixMaterial | null => {
   const materialId = props.variant?.bindings[slotId];
   return materialId ? (materialById.value.get(materialId) ?? null) : null;
 };
+type TimelineInterval = { end: number; id: string; start: number };
+const assignIntervalLanes = (items: TimelineInterval[]): Map<string, number> => {
+  const laneEnds: number[] = [];
+  const lanes = new Map<string, number>();
+  for (const item of [...items].sort((left, right) => left.start - right.start || left.id.localeCompare(right.id))) {
+    const lane = laneEnds.findIndex((end) => end <= item.start + 1 / props.fps);
+    const nextLane = lane >= 0 ? lane : laneEnds.length;
+    laneEnds[nextLane] = item.end;
+    lanes.set(item.id, nextLane);
+  }
+  return lanes;
+};
+const timelineCaptions = computed(() =>
+  props.packaging?.checkpoint.captions ?? props.variant?.captions ?? [],
+);
+const captionLaneById = computed(() =>
+  assignIntervalLanes(
+    timelineCaptions.value.map((caption) => ({
+      id: caption.id,
+      start: Math.max(0, caption.start),
+      end: Math.max(caption.start, caption.end),
+    })),
+  ),
+);
+const captionLaneCount = computed(() => Math.max(1, captionLaneById.value.size ? Math.max(...captionLaneById.value.values()) + 1 : 1));
+const timelineAudios = computed(() => {
+  if (props.packaging) {
+    const voices = Object.entries(props.packaging.checkpoint.voices ?? {}).map(([id, audio]) => ({
+      id: `voice:${id}`,
+      start: audio.start,
+      duration: audio.duration,
+      kind: 'VOICE' as const,
+      label: '口播草稿',
+    }));
+    const music = props.packaging.checkpoint.music
+      ? [{
+          id: 'music',
+          start: props.packaging.checkpoint.music.start,
+          duration: props.packaging.checkpoint.music.duration,
+          kind: 'MUSIC' as const,
+          label: '纯音乐草稿',
+        }]
+      : [];
+    return [...voices, ...music];
+  }
+  return [
+    ...(props.variant?.voice ? [{ id: 'voice', start: props.variant.voice.start, duration: props.variant.voice.duration, kind: 'VOICE' as const, label: props.variant.voice.name }] : []),
+    ...(props.variant?.bgm ? [{ id: 'music', start: props.variant.bgm.start, duration: props.variant.bgm.duration, kind: 'MUSIC' as const, label: props.variant.bgm.name }] : []),
+  ];
+});
+const audioLaneById = computed(() =>
+  assignIntervalLanes(
+    timelineAudios.value.map((audio) => ({
+      id: audio.id,
+      start: Math.max(0, audio.start),
+      end: Math.max(audio.start, audio.start + audio.duration),
+    })),
+  ),
+);
+const audioLaneCount = computed(() => Math.max(1, audioLaneById.value.size ? Math.max(...audioLaneById.value.values()) + 1 : 1));
+const hasCaptionTrack = computed(() => timelineCaptions.value.length > 0);
+const hasAudioTrack = computed(() => timelineAudios.value.length > 0);
+const trackHeight = (track: VisibleTrack): number =>
+  track === 'VIDEO'
+    ? videoLaneCount.value * 70 + 6
+    : (track === 'CAPTION' ? captionLaneCount.value : audioLaneCount.value) * 34 + 6;
+const orderedTracks = computed<VisibleTrack[]>(() => {
+  const tracks: VisibleTrack[] = [...trackOrder.value, 'AUDIO'];
+  return tracks.filter(
+    (track) => track === 'VIDEO' || (track === 'CAPTION' ? hasCaptionTrack.value : hasAudioTrack.value),
+  );
+});
+const visiblePrimaryTracks = computed(() =>
+  trackOrder.value.filter((track) => track === 'VIDEO' || hasCaptionTrack.value),
+);
 const setVideoTrackElement = (element: unknown): void => {
   const candidates = Array.isArray(element) ? element : [element];
   videoTrack.value =
@@ -298,6 +381,19 @@ const setVideoTrackElement = (element: unknown): void => {
 
 const rangeForSlot = (slotId: string): { start: number; end: number } | null =>
   layoutSlots.value.find((item) => item.id === slotId) ?? null;
+
+const edgeTrimBlocked = (slotId: string, side: 'LEFT' | 'RIGHT'): boolean => {
+  const range = rangeForSlot(slotId);
+  if (!range) return true;
+  const threshold = 1 / props.fps;
+  return layoutSlots.value.some((candidate) => {
+    if (candidate.id === slotId || !materialForSlot(candidate.id)) return false;
+    if (side === 'LEFT') {
+      return candidate.start < range.start - threshold || candidate.end <= range.start + threshold;
+    }
+    return candidate.start >= range.end - threshold || candidate.end > range.end + threshold;
+  });
+};
 
 const transitionDurationFor = (slotId: string): number => {
   const slots = props.variant?.slots ?? [];
@@ -333,7 +429,7 @@ const clipStyle = (slot: EffectTemplateMixSlot): Record<string, string> => {
   const lane = isDraggedSelection
     ? Math.max(
         0,
-        Math.min(2, (drag?.initialLanes[slot.id] ?? clipLane(slot.id)) + (delta?.lane ?? 0)),
+        (drag?.initialLanes[slot.id] ?? clipLane(slot.id)) + (delta?.lane ?? 0),
       )
     : clipLane(slot.id);
   return {
@@ -616,6 +712,30 @@ const setSelection = (slotIds: string[]): void => {
 
 const onClipPointerDown = (event: PointerEvent, slotId: string): void => {
   if (event.button !== 0 || trackLocked.VIDEO) return;
+  const edgeHandle =
+    event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>('.edge-trim-handle')
+      : null;
+  if (edgeHandle?.disabled) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+  const clipElement = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  if (clipElement) {
+    const bounds = clipElement.getBoundingClientRect();
+    const edgeThreshold = Math.min(12, Math.max(4, bounds.width * 0.2));
+    const nearLeftEdge = event.clientX <= bounds.left + edgeThreshold;
+    const nearRightEdge = event.clientX >= bounds.right - edgeThreshold;
+    if (
+      (nearLeftEdge && edgeTrimBlocked(slotId, 'LEFT')) ||
+      (nearRightEdge && edgeTrimBlocked(slotId, 'RIGHT'))
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+  }
   event.preventDefault();
   event.stopPropagation();
   timelineShell.value?.focus({ preventScroll: true });
@@ -684,7 +804,7 @@ const beginEdgeTrim = (
   if (event.button !== 0 || trackLocked.VIDEO) return;
   const slot = props.variant?.slots.find(({ id }) => id === slotId);
   const material = slot ? materialForSlot(slotId) : null;
-  if (!slot || !material) return;
+  if (!slot || !material || edgeTrimBlocked(slotId, side)) return;
   event.preventDefault();
   event.stopPropagation();
   setSelection([slotId]);
@@ -755,7 +875,7 @@ const updateDragTarget = (clientX: number, clientY: number): void => {
   }
   const videoBounds = videoTrack.value?.getBoundingClientRect();
   if (videoBounds && clientYInVideoTrack(clientY, videoBounds)) {
-    drag.currentLane = Math.max(0, Math.min(2, Math.floor((clientY - videoBounds.top) / 70)));
+    drag.currentLane = Math.max(0, Math.floor((clientY - videoBounds.top) / 70));
   }
   // Keep the ghost under the pointer while dragging, even when it temporarily
   // overlaps another clip. The parent resolves the final placement on pointerup,
@@ -1122,7 +1242,7 @@ onBeforeUnmount(() => {
           <div
             class="track-header"
             :class="`track-${track.toLowerCase()}`"
-            :style="track === 'VIDEO' ? { height: `${videoLaneCount * 70 + 6}px` } : undefined"
+            :style="{ height: `${trackHeight(track)}px` }"
           >
             <div class="track-name">
               <Film v-if="track === 'VIDEO'" :size="14" />
@@ -1203,36 +1323,33 @@ onBeforeUnmount(() => {
             </span>
           </div>
 
-          <template v-for="track in trackOrder" :key="`canvas:${track}`">
+          <template v-for="track in visiblePrimaryTracks" :key="`canvas:${track}`">
             <div
               v-if="track === 'CAPTION'"
               class="timeline-track caption-track"
+              :style="{ height: `${trackHeight('CAPTION')}px` }"
               :class="{ 'is-hidden': !trackVisible.CAPTION, 'is-locked': trackLocked.CAPTION }"
               @pointerdown="onTrackPointerDown($event, 'CAPTION')"
             >
               <div
-                v-for="caption in packaging?.checkpoint.captions ?? variant?.captions ?? []"
+                v-for="caption in timelineCaptions"
                 :key="caption.id"
                 class="caption-clip"
                 :style="{
                   left: `${caption.start * pixelsPerSecond}px`,
                   width: `${Math.max(14, (caption.end - caption.start) * pixelsPerSecond)}px`,
+                  top: `${5 + (captionLaneById.get(caption.id) ?? 0) * 34}px`,
                 }"
-              >
+                >
                 {{ caption.text }}
               </div>
-              <span
-                v-if="!packaging?.checkpoint.captions?.length && !variant?.captions.length"
-                class="track-empty-copy"
-                >未配置字幕</span
-              >
             </div>
 
             <div
               v-else
               :ref="setVideoTrackElement"
               class="timeline-track video-track"
-              :style="{ height: `${videoLaneCount * 70 + 6}px` }"
+              :style="{ height: `${trackHeight('VIDEO')}px` }"
               :class="{ 'is-hidden': !trackVisible.VIDEO, 'is-locked': trackLocked.VIDEO }"
               @dragleave="onTrackDragLeave"
               @dragover="onTrackDragOver"
@@ -1271,6 +1388,12 @@ onBeforeUnmount(() => {
                         :version="`${materialForSlot(slot.id)!.artifactRevision}:${materialForSlot(slot.id)!.contentHash}`"
                       />
                     </div>
+                    <time
+                      class="clip-duration-badge"
+                      :aria-label="`素材时长 ${formatTimecode(activeSlotDuration(slot.id))}`"
+                    >
+                      {{ formatTimecode(activeSlotDuration(slot.id)) }}
+                    </time>
                     <div class="clip-info">
                       <b>{{ materialForSlot(slot.id)?.code }}</b>
                       <span>{{ EFFECT_TEMPLATE_MIX_ROLE_LABELS[slot.role] }}</span>
@@ -1294,17 +1417,37 @@ onBeforeUnmount(() => {
                   <button
                     v-if="selectedClipIds.includes(slot.id) && materialForSlot(slot.id)"
                     class="edge-trim-handle edge-trim-left"
+                    :class="{ 'is-disabled': edgeTrimBlocked(slot.id, 'LEFT') }"
                     type="button"
-                    title="拖动左边缘调整素材起点和时长"
-                    aria-label="拖动左边缘调整素材起点和时长"
+                    :disabled="edgeTrimBlocked(slot.id, 'LEFT')"
+                    :title="
+                      edgeTrimBlocked(slot.id, 'LEFT')
+                        ? '左侧已有素材，无法调整左边缘'
+                        : '拖动左边缘调整素材起点和时长'
+                    "
+                    :aria-label="
+                      edgeTrimBlocked(slot.id, 'LEFT')
+                        ? '左侧已有素材，无法调整左边缘'
+                        : '拖动左边缘调整素材起点和时长'
+                    "
                     @pointerdown="beginEdgeTrim($event, slot.id, 'LEFT')"
                   />
                   <button
                     v-if="selectedClipIds.includes(slot.id) && materialForSlot(slot.id)"
                     class="edge-trim-handle edge-trim-right"
+                    :class="{ 'is-disabled': edgeTrimBlocked(slot.id, 'RIGHT') }"
                     type="button"
-                    title="拖动右边缘调整素材时长"
-                    aria-label="拖动右边缘调整素材时长"
+                    :disabled="edgeTrimBlocked(slot.id, 'RIGHT')"
+                    :title="
+                      edgeTrimBlocked(slot.id, 'RIGHT')
+                        ? '右侧已有素材，无法调整右边缘'
+                        : '拖动右边缘调整素材时长'
+                    "
+                    :aria-label="
+                      edgeTrimBlocked(slot.id, 'RIGHT')
+                        ? '右侧已有素材，无法调整右边缘'
+                        : '拖动右边缘调整素材时长'
+                    "
                     @pointerdown="beginEdgeTrim($event, slot.id, 'RIGHT')"
                   />
                   <span v-if="edgeTrimDrag?.slotId === slot.id" class="trim-tooltip">
@@ -1353,7 +1496,9 @@ onBeforeUnmount(() => {
           </template>
 
           <div
+            v-if="hasAudioTrack"
             class="timeline-track audio-track"
+            :style="{ height: `${trackHeight('AUDIO')}px` }"
             :class="{ 'is-hidden': !trackVisible.AUDIO, 'is-locked': trackLocked.AUDIO }"
             @pointerdown="onTrackPointerDown($event, 'AUDIO')"
           >
@@ -1361,7 +1506,11 @@ onBeforeUnmount(() => {
               v-if="variant?.voice && !packaging"
               class="audio-clip voice-clip"
               :class="{ 'is-muted': trackMuted.AUDIO }"
-              :style="{ width: `${timelineDuration * pixelsPerSecond}px` }"
+              :style="{
+                left: `${variant.voice.start * pixelsPerSecond}px`,
+                top: `${5 + (audioLaneById.get('voice') ?? 0) * 34}px`,
+                width: `${Math.max(14, variant.voice.duration * pixelsPerSecond)}px`,
+              }"
             >
               <Volume2 :size="13" />{{ variant.voice.name }}
             </div>
@@ -1369,7 +1518,11 @@ onBeforeUnmount(() => {
               v-if="variant?.bgm && !packaging"
               class="audio-clip bgm-clip"
               :class="{ 'is-muted': trackMuted.AUDIO }"
-              :style="{ width: `${timelineDuration * pixelsPerSecond}px` }"
+              :style="{
+                left: `${variant.bgm.start * pixelsPerSecond}px`,
+                top: `${5 + (audioLaneById.get('music') ?? 0) * 34}px`,
+                width: `${Math.max(14, variant.bgm.duration * pixelsPerSecond)}px`,
+              }"
             >
               <Music2 :size="13" />{{ variant.bgm.name }}
             </div>
@@ -1379,6 +1532,7 @@ onBeforeUnmount(() => {
               class="audio-clip voice-clip"
               :style="{
                 left: `${audio.start * pixelsPerSecond}px`,
+                top: `${5 + (audioLaneById.get(`voice:${id}`) ?? 0) * 34}px`,
                 width: `${Math.max(14, audio.duration * pixelsPerSecond)}px`,
               }"
               :title="packaging?.checkpoint.script?.find((line) => line.id === id)?.text"
@@ -1390,14 +1544,12 @@ onBeforeUnmount(() => {
               class="audio-clip bgm-clip"
               :style="{
                 left: `${packaging.checkpoint.music.start * pixelsPerSecond}px`,
+                top: `${5 + (audioLaneById.get('music') ?? 0) * 34}px`,
                 width: `${packaging.checkpoint.music.duration * pixelsPerSecond}px`,
               }"
             >
               <Music2 :size="13" />纯音乐草稿
             </div>
-            <span v-if="!packaging && !variant?.voice && !variant?.bgm" class="track-empty-copy"
-              >未配置音频</span
-            >
           </div>
 
           <div
@@ -1784,6 +1936,26 @@ onBeforeUnmount(() => {
   contain: paint;
   clip-path: inset(0 round 2px 2px 0 0);
 }
+.clip-duration-badge {
+  box-sizing: border-box;
+  max-width: calc(100% - 6px);
+  position: absolute;
+  z-index: 2;
+  top: 3px;
+  right: 3px;
+  padding: 1px 4px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  border-radius: 2px;
+  background: rgba(15, 23, 42, 0.78);
+  color: #fff;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  line-height: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
 .clip-info {
   height: 21px;
   padding: 2px 7px 1px;
@@ -1855,6 +2027,17 @@ onBeforeUnmount(() => {
 .video-clip:has(.edge-trim-handle:focus-visible) .edge-trim-handle {
   opacity: 1;
   background: #2563eb;
+}
+.edge-trim-handle.is-disabled,
+.edge-trim-handle:disabled {
+  border-color: rgba(255, 255, 255, 0.66);
+  background: rgba(100, 116, 139, 0.7);
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+.edge-trim-handle.is-disabled:hover,
+.edge-trim-handle:disabled:hover {
+  background: rgba(100, 116, 139, 0.7);
 }
 .edge-trim-left {
   left: 1px;

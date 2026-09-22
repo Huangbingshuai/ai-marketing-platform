@@ -42,7 +42,7 @@ const nodes = [
     label: '导出',
     status: '就绪',
     title: '成片生成与批量导出',
-    description: '查看生成进度，支持单选、全选、分页管理与批量导出',
+    description: '渲染已统一确认的成片，查看进度、恢复失败项、分页播放与下载',
   },
 ] as const;
 

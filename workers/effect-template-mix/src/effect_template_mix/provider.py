@@ -153,6 +153,9 @@ class ArkProvider:
             except ProviderError:
                 raise
             except (TimeoutError, httpx.TimeoutException, httpx.NetworkError) as exc:
+                if name.startswith('packaging_'):
+                    LOGGER.warning('packaging model transport failed stage=%s type=%s elapsed=%.3f',
+                        name, type(exc).__name__, time.monotonic() - started)
                 last = exc
             except (ValueError, ValidationError, json.JSONDecodeError) as exc:
                 if name.startswith('packaging_'):
@@ -161,7 +164,10 @@ class ArkProvider:
                     LOGGER.warning('packaging model invalid stage=%s type=%s fields=%s', name, type(exc).__name__, fields)
                 last = exc
         raise ProviderError(
-            "AI 返回结构无效",
+            ("AI 服务响应超时，已保留成功步骤，请恢复未完成项"
+             if isinstance(last, (TimeoutError, httpx.TimeoutException)) else
+             "AI 服务连接中断，已保留成功步骤，请恢复未完成项"
+             if isinstance(last, httpx.NetworkError) else "AI 返回结构无效"),
             retryable=isinstance(last, (TimeoutError, httpx.TimeoutException, httpx.NetworkError)),
             split_recommended=isinstance(
                 last,

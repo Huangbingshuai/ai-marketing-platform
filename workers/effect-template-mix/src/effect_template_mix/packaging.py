@@ -17,10 +17,34 @@ from pydantic import BaseModel, ConfigDict
 
 from .api import ApiError, InternalApi
 from .packaging_media import analysis_preview, music_wav, pcm_wav, visible_intervals
-from .packaging_provider import PackagingError, PackagingProvider
+from .packaging_provider import MusicRateLimited, PackagingError, PackagingProvider
 from .provider import ArkProvider, ProviderError
 
 LOGGER = logging.getLogger(__name__)
+
+
+async def submit_music_safely(provider: PackagingProvider, checkpoint: dict[str, Any], duration: float,
+                              save: Callable[[str, dict[str, Any]], Awaitable[None]],
+                              guard: Callable[[], Awaitable[None]], attempts: int = 3,
+                              backoff_seconds: float = 5) -> str:
+    if checkpoint.get('musicSubmissionPending'):
+        raise PackagingError('音乐提交结果不明，不会重复计费；请先核查火山控制台，再手动重做音乐')
+    for attempt in range(attempts):
+        await guard()
+        await save('MUSIC', {'musicSubmissionPending': True})
+        try:
+            task_id = await provider.submit_music(checkpoint['musicBrief'], duration)
+        except MusicRateLimited:
+            # Only the adapter's exact, explicit rejection is safe to resubmit.
+            # Timeouts, transport errors and malformed responses stay pending.
+            await save('MUSIC', {'musicSubmissionPending': False})
+            if attempt + 1 == attempts:
+                raise
+            await asyncio.sleep(backoff_seconds * (2 ** attempt))
+        else:
+            await save('MUSIC', {'musicTaskId': task_id, 'musicSubmissionPending': False})
+            return task_id
+    raise PackagingError('音乐重试次数配置无效')
 
 
 class VisionRow(BaseModel):
@@ -403,16 +427,17 @@ class PackagingHandler:
             if not cp.get('music'):
                 await save('MUSIC', {})
                 if not cp.get('musicTaskId'):
-                    if cp.get('musicSubmissionPending'):
-                        raise PackagingError('音乐提交结果不明，不会重复计费；请先核查火山控制台，再手动重做音乐')
-                    await save('MUSIC', {'musicSubmissionPending': True})
-                    await guard()
-                    task_id = await self.provider.submit_music(cp['musicBrief'], snapshot['duration'])
-                    await save('MUSIC', {'musicTaskId': task_id, 'musicSubmissionPending': False})
+                    await submit_music_safely(self.provider, cp, snapshot['duration'], save, guard)
                 async with asyncio.timeout(1800):
                     while True:
                         await guard()
-                        url = await self.provider.query_music(cp['musicTaskId'])
+                        try:
+                            url = await self.provider.query_music(cp['musicTaskId'])
+                        except MusicRateLimited:
+                            # Query is read-only; keep the saved TaskID and bounded
+                            # polling deadline, rather than submitting another song.
+                            await asyncio.sleep(10)
+                            continue
                         if url:
                             break
                         await asyncio.sleep(5)

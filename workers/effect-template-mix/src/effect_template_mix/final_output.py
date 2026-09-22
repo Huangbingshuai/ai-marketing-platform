@@ -135,8 +135,9 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
         if transition != '硬切' and length >= 1 / 30:
             if transition not in TRANSITIONS:
                 raise PackagingError('不支持的转场类型')
-            filters += [f'[{current}]tpad=stop_mode=clone:stop_duration={length / 2}[pad{index}]',
-                f'[v{index}]tpad=start_mode=clone:start_duration={length / 2}[incoming{index}]',
+            # FFmpeg 7 tpad/concat can clear frame_rate (1/0); xfade requires CFR.
+            filters += [f'[{current}]fps=30,tpad=stop_mode=clone:stop_duration={length / 2},fps=30,settb=AVTB[pad{index}]',
+                f'[v{index}]fps=30,tpad=start_mode=clone:start_duration={length / 2},fps=30,settb=AVTB[incoming{index}]',
                 f'[pad{index}][incoming{index}]xfade=transition={TRANSITIONS[transition]}:duration={length}:offset={start - length / 2}[join{index}]']
         else:
             filters += [f'[{current}][v{index}]concat=n=2:v=1:a=0[join{index}]']
@@ -165,6 +166,8 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
     result = await probe(output)
     if abs(float(result['format']['duration']) - duration) > .1:
         raise PackagingError('最终视频时长与时间轴不一致')
+    if any(abs(float(s.get('duration', 0)) - duration) > .1 for s in result['streams'] if s.get('codec_type') == 'video'):
+        raise PackagingError('画面轨道提前结束，禁止用音频时长伪装完整成片')
     if not any(s.get('codec_name') == 'h264' for s in result['streams']) or not any(s.get('codec_name') == 'aac' for s in result['streams']):
         raise PackagingError('最终视频编码校验失败')
     await progress(95)
@@ -226,8 +229,12 @@ class FinalOutputHandler:
                 pending = iter(i for i in claim['items'] if i['status'] != 'COMPLETED')
                 async def consume() -> None:
                     for item in pending:
-                        async with asyncio.timeout(2400):
-                            await execute(item)
+                        try:
+                            async with asyncio.timeout(2400):
+                                await execute(item)
+                        except TimeoutError:
+                            await self.api.request('PUT', f"{root}/items/{item['id']}/progress", headers=headers,
+                                json={'projectId': project_id, 'progress': 0, 'errorMessage': '单条成片输出超过 40 分钟，已停止并保留其他成功结果'})
                 async with asyncio.TaskGroup() as group:
                     for _ in range(2):
                         group.create_task(consume())

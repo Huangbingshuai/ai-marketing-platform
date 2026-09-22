@@ -2,6 +2,7 @@
 
 No automatic retry of paid submissions: an ambiguous result requires reconciliation.
 """
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -20,6 +21,10 @@ LOGGER = logging.getLogger(__name__)
 
 class PackagingError(RuntimeError):
     """Only sanitized, user-readable messages may cross the API boundary."""
+
+
+class MusicRateLimited(PackagingError):
+    """An explicit rejection without a TaskID, not an ambiguous paid submission."""
 
 
 def signed_headers(action: str, body: bytes, access_key: str, secret_key: str,
@@ -43,10 +48,16 @@ def signed_headers(action: str, body: bytes, access_key: str, secret_key: str,
 
 class PackagingProvider:
     def __init__(self, tts_key: str, speaker: str, resource_id: str, access_key: str,
-                 secret_key: str, music_action: str, client: httpx.AsyncClient | None = None) -> None:
+                 secret_key: str, music_action: str, client: httpx.AsyncClient | None = None,
+                 music_min_interval: float = 1.1) -> None:
         self.tts_key, self.speaker, self.resource_id = tts_key, speaker, resource_id
         self.access_key, self.secret_key, self.music_action = access_key, secret_key, music_action
         self.client = client or httpx.AsyncClient(timeout=120, follow_redirects=False)
+        # One shared adapter serves all item tasks. Space submit AND query starts;
+        # an item semaphore alone does not prevent four simultaneous API requests.
+        self.music_min_interval = max(0, music_min_interval)
+        self._music_lock = asyncio.Lock()
+        self._music_next_request = 0.0
 
     def require_configuration(self) -> None:
         if not self.tts_key or not self.speaker:
@@ -88,6 +99,10 @@ class PackagingProvider:
         return b''.join(chunks)
 
     async def music_request(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        async with self._music_lock:
+            loop = asyncio.get_running_loop()
+            await asyncio.sleep(max(0, self._music_next_request - loop.time()))
+            self._music_next_request = loop.time() + self.music_min_interval
         body = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode()
         response = await self.client.post('https://open.volcengineapi.com/', params={'Action': action, 'Version': '2024-08-12'},
             headers=signed_headers(action, body, self.access_key, self.secret_key), content=body)
@@ -103,6 +118,10 @@ class PackagingProvider:
                 return text if re.fullmatch(r'[a-zA-Z0-9_.:-]{0,160}', text) else 'redacted'
             LOGGER.warning('packaging music rejected action=%s code=%s error_code=%s request_id=%s',
                 action, safe_code(value.get('Code')), safe_code(error.get('Code')), safe_code(metadata.get('RequestId')))
+            result = value.get('Result')
+            if (value.get('Code') == 200023 and error.get('Code') == 'APIOutOfQps'
+                    and (result is None or isinstance(result, dict) and not result.get('TaskID'))):
+                raise MusicRateLimited('火山音乐请求被限流拒绝，已保留成功步骤，可恢复未完成项')
             if value.get('Code') == 200028 or error.get('Code') == 'APINoSource':
                 raise PackagingError('火山音乐账号未找到可用服务资源（200028/APINoSource），请核查 AK 所属账号、音乐服务开通和计费模式')
             raise PackagingError('火山纯音乐服务返回失败')

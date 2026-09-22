@@ -94,11 +94,14 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).toContain(
       "const trackOrder = ref<VisibleTrack[]>(['CAPTION', 'VIDEO']);",
     );
-    expect(timelineSource).toContain(
-      "const orderedTracks = computed<VisibleTrack[]>(() => [...trackOrder.value, 'AUDIO'])",
-    );
-    expect(timelineSource).toContain('未配置字幕');
-    expect(timelineSource).toContain('未配置音频');
+    expect(timelineSource).toContain('const orderedTracks = computed<VisibleTrack[]>(() => {');
+    expect(timelineSource).toContain('const visiblePrimaryTracks = computed');
+    expect(timelineSource).toContain('const hasCaptionTrack = computed');
+    expect(timelineSource).toContain('const hasAudioTrack = computed');
+    expect(timelineSource).toContain('const assignIntervalLanes');
+    expect(timelineSource).not.toContain('Math.max(2,');
+    expect(timelineSource).not.toContain('未配置字幕');
+    expect(timelineSource).not.toContain('未配置音频');
     expect(timelineSource).toContain("type VisibleTrack = 'AUDIO' | 'CAPTION' | 'VIDEO'");
     expect(timelineSource).not.toContain('@dragstart="onTrackDragStart($event, track)"');
     expect(timelineSource).toContain('@scroll="syncTrackScroll(\'HEADERS\')"');
@@ -122,6 +125,16 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('primedTimelinePlayers');
     expect(pageSource).toContain('positionedTimelinePlayers');
     expect(pageSource).toContain('syncPlayingVideoFrame');
+    expect(pageSource).toContain('const timelinePlaybackStart = (slotId: string): number => {');
+    expect(pageSource).toContain("slot.transition === '硬切'");
+    expect(pageSource).toContain('effectTemplateMixTransitionDuration(slot, previousSlot)');
+    expect(pageSource).not.toContain('if (transition?.incomingSlot.id === slotId) return transition.start;');
+    expect(pageSource).toContain('video.readyState === HTMLMediaElement.HAVE_NOTHING');
+    expect(pageSource).toContain('video.src');
+    expect(pageSource).toContain('!primedTimelinePlayers.has(video)');
+    expect(pageSource).toContain('const sourceTime = timelineSourceTime(slot.id);');
+    expect(pageSource).toContain('const resetTimelinePlayerState = (): void => {');
+    expect(pageSource).toContain('positionedTimelinePlayers = new WeakSet<HTMLVideoElement>();');
     expect(pageSource).not.toContain('drift > 0.12');
     expect(pageSource).toContain('preload="metadata"');
     expect(pageSource).toContain("otherVideo.preload = slotId === slot.id ? 'auto' : 'metadata'");
@@ -130,6 +143,8 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('resolveTimelinePlacement');
     expect(pageSource).toContain('overlapsTimelineClip');
     expect(pageSource).toContain('prefer an empty lane above it');
+    expect(pageSource).toContain('normalizeVariantVideoLanes');
+    expect(pageSource).toContain('insertLaneAt');
     expect(pageSource).toContain('beginMaterialPointerDrag');
     expect(pageSource).toContain("className = 'material-drag-ghost'");
     expect(pageSource).toContain(':draggable="Boolean(selectedVariant)"');
@@ -195,7 +210,15 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).toContain('class="edge-trim-handle edge-trim-left"');
     expect(timelineSource).toContain('class="edge-trim-handle edge-trim-right"');
     expect(timelineSource).toContain('const beginEdgeTrim');
+    expect(timelineSource).toContain('const edgeTrimBlocked');
+    expect(timelineSource).toContain("event.target.closest<HTMLButtonElement>('.edge-trim-handle')");
+    expect(timelineSource).toContain('if (edgeHandle?.disabled)');
+    expect(timelineSource).toContain('const edgeThreshold = Math.min(12');
+    expect(timelineSource).toContain(":disabled=\"edgeTrimBlocked(slot.id, 'LEFT')\"");
+    expect(timelineSource).toContain(":disabled=\"edgeTrimBlocked(slot.id, 'RIGHT')\"");
     expect(timelineSource).toContain("'resizeSlot'");
+    expect(timelineSource).toContain('class="clip-duration-badge"');
+    expect(timelineSource).toContain('formatTimecode(activeSlotDuration(slot.id))');
     expect(timelineSource).toContain('Keep the ghost under the pointer while dragging');
     expect(timelineSource).toContain('@pointerdown="onRulerPointerDown"');
     expect(timelineSource).toContain('@pointerdown="onClipPointerDown($event, slot.id)"');
@@ -216,6 +239,8 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('aria-label="调整素材库宽度"');
     expect(pageSource).toContain("startPaneResize($event, 'LEFT')");
     expect(pageSource).toContain('@resize-slot="resizeTimelineSlot"');
+    expect(pageSource).toContain('const hasMaterialOnSide = variant.slots.some');
+    expect(pageSource).toContain('if (hasMaterialOnSide) return;');
     expect(pageSource).toContain('repeat(auto-fill, minmax(142px, 1fr))');
     expect(pageSource).toContain('materialUsageLabel(material.id)');
     expect(pageSource).toContain('同一成片不能重复使用');

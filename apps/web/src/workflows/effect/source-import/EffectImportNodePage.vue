@@ -17,7 +17,6 @@ import {
 import { WorkflowNodeDraftBar, WorkflowNodeFooter } from '@ai-marketing/ui';
 import {
   AlertCircle,
-  ArrowLeft,
   CloudUpload,
   FileSpreadsheet,
   FileText,
@@ -27,7 +26,6 @@ import {
   RotateCcw,
   RefreshCw,
   Search,
-  Sparkles,
   Trash2,
 } from '@lucide/vue';
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue';
@@ -116,12 +114,6 @@ const infoExtractionNode = ref<{ flushPendingEdits: () => Promise<boolean> } | n
 const promptGenerationNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
 const segmentRenderNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
 const templateMixNode = ref<{ flushPendingEdits: () => Promise<boolean> } | null>(null);
-const downstreamBoundaries = [
-  { title: 'Prompt 生成', description: '批量生成差异化提示词' },
-  { title: '片段渲染', description: 'AI 视频片段批量渲染' },
-  { title: '自动混剪', description: '模板化自动混剪' },
-  { title: '校验与导出', description: '质量校验与成片导出' },
-] as const;
 const effectWorkflowNodeIds = [
   'SOURCE_IMPORT',
   'INFORMATION_EXTRACTION',
@@ -141,7 +133,6 @@ const effectWorkflowNodeLabels = [
 const pendingStepLabel = computed(() =>
   pendingStep.value === null ? '' : (effectWorkflowNodeLabels[pendingStep.value] ?? '目标节点'),
 );
-const activeDownstreamBoundary = computed(() => undefined as (typeof downstreamBoundaries)[number] | undefined);
 const keyword = ref('');
 const selectedProductIds = ref(new Set<string>());
 const busyMaterialIds = ref(new Set<string>());
@@ -1568,19 +1559,7 @@ onBeforeUnmount(() => {
         />
       </KeepAlive>
 
-      <section v-if="activeDownstreamBoundary" class="ai-placeholder">
-        <span><Sparkles :size="23" /></span>
-        <small>STEP {{ String(activeStep + 1).padStart(2, '0') }}</small>
-        <h2>{{ activeDownstreamBoundary.title }}</h2>
-        <p>
-          {{ activeDownstreamBoundary.description }}。该节点可自由进入，业务内容不在本次开发范围内。
-        </p>
-        <button type="button" @click="selectWorkflowStep(activeStep - 1)">
-          <ArrowLeft :size="14" />返回上一节点
-        </button>
-      </section>
-
-      <template v-else-if="activeStep === 0">
+      <template v-if="activeStep === 0">
         <section class="import-workspace-card">
           <section class="node-heading">
             <span>01</span>

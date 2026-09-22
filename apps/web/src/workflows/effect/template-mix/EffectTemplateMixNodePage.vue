@@ -164,8 +164,8 @@ const displayedTimelineSlotId = ref('');
 const playerUnavailableSlotId = ref('');
 const transitionFrame = ref('');
 const timelinePlayers = new Map<string, HTMLVideoElement>();
-const primedTimelinePlayers = new WeakSet<HTMLVideoElement>();
-const positionedTimelinePlayers = new WeakSet<HTMLVideoElement>();
+let primedTimelinePlayers = new WeakSet<HTMLVideoElement>();
+let positionedTimelinePlayers = new WeakSet<HTMLVideoElement>();
 const workbenchMain = ref<HTMLElement | null>(null);
 const materialGrid = ref<HTMLElement | null>(null);
 const materialGridWidth = ref(0);
@@ -263,6 +263,7 @@ const restoreTimelineSnapshot = (snapshot: TimelineEditSnapshot): void => {
   variants.splice(index, 1, cloneMix(snapshot.variant));
   if (activeUi.value) activeUi.value.selectedSlotId = snapshot.selectedSlotId;
   playhead.value = Math.min(playhead.value, currentDuration.value);
+  resetTimelinePlayerState();
   bump();
 };
 const undoTimelineEdit = (): void => {
@@ -830,6 +831,7 @@ const installWorkspaceData = (
   data: Awaited<ReturnType<typeof loadEffectTemplateMixWorkspace>>['data'],
 ): void => {
   clearTimelineHistory();
+  resetTimelinePlayerState();
   catalog.value = data.draft.templates.map((entry) => hydrate(entry, data.materials));
   draftRevision.value = data.draftRevision;
   activeTemplateId.value =
@@ -1093,6 +1095,13 @@ const setTimelinePlayer = (slotId: string, element: unknown): void => {
     timelinePlayers.set(slotId, element);
   } else timelinePlayers.delete(slotId);
 };
+const resetTimelinePlayerState = (): void => {
+  primedTimelinePlayers = new WeakSet<HTMLVideoElement>();
+  positionedTimelinePlayers = new WeakSet<HTMLVideoElement>();
+  activePlaybackSlotId = '';
+  activeTransitionSignature = '';
+  for (const video of timelinePlayers.values()) video.pause();
+};
 type AudioDetectableVideo = HTMLVideoElement & {
   audioTracks?: { length: number };
   mozHasAudio?: boolean;
@@ -1121,10 +1130,20 @@ const detectMaterialAudio = (
 };
 const activeTimelinePlayer = (): HTMLVideoElement | null =>
   previewSlot.value ? (timelinePlayers.get(previewSlot.value.id) ?? null) : null;
+// A centered transition starts the incoming media before its nominal cut. Keep
+// that same origin after the transition so the native video clock never jumps
+// back to the clip's first frame when the transition layer is removed.
 const timelinePlaybackStart = (slotId: string): number => {
-  const transition = activeTransitionPreview.value;
-  if (transition?.incomingSlot.id === slotId) return transition.start;
-  return currentTiming.value.slots.find(({ id }) => id === slotId)?.start ?? 0;
+  const variant = selectedVariant.value;
+  const slotIndex = variant?.slots.findIndex(({ id }) => id === slotId) ?? -1;
+  const range = currentTiming.value.slots.find(({ id }) => id === slotId);
+  if (!variant || slotIndex <= 0 || !range) return range?.start ?? 0;
+  const slot = variant.slots[slotIndex];
+  const previousSlot = variant.slots[slotIndex - 1];
+  const previousRange = currentTiming.value.slots.find(({ id }) => id === previousSlot?.id);
+  if (!slot || !previousSlot || !previousRange || slot.transition === '硬切') return range.start;
+  const duration = effectTemplateMixTransitionDuration(slot, previousSlot);
+  return Math.max(previousRange.start, range.start - duration / 2);
 };
 const timelineSourceTime = (slotId: string): number | null => {
   const slot = selectedVariant.value?.slots.find(({ id }) => id === slotId);
@@ -1142,6 +1161,15 @@ const syncTimelineVideo = (
   const video = timelinePlayers.get(slotId);
   const sourceTime = timelineSourceTime(slotId);
   if (!video || sourceTime === null) return null;
+  if (
+    video.readyState === HTMLMediaElement.HAVE_NOTHING &&
+    video.src &&
+    !primedTimelinePlayers.has(video)
+  ) {
+    video.preload = 'auto';
+    video.load();
+    primedTimelinePlayers.add(video);
+  }
   if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
     const needsSeek =
       seekMode === 'once'
@@ -1242,6 +1270,7 @@ const previewLibraryMaterial = async (material: EffectTemplateMixMaterial): Prom
 const selectTemplate = (id: string): void => {
   playing.value = false;
   pauseTimelinePlayers();
+  resetTimelinePlayerState();
   closeMaterialPreview();
   stopPlaybackClock();
   transitionFrame.value = '';
@@ -1253,6 +1282,7 @@ const selectTemplate = (id: string): void => {
 const enterEditor = (): void => {
   playing.value = false;
   pauseTimelinePlayers();
+  resetTimelinePlayerState();
   closeMaterialPreview();
   stopPlaybackClock();
   transitionFrame.value = '';
@@ -1266,6 +1296,7 @@ const selectVariant = (id: string): void => {
   transitionFrame.value = captureDisplayedFrame();
   playing.value = false;
   pauseTimelinePlayers();
+  resetTimelinePlayerState();
   closeMaterialPreview();
   stopPlaybackClock();
   activeTransitionSlotId.value = '';
@@ -1280,6 +1311,7 @@ const selectVariant = (id: string): void => {
 const leaveEditor = (): void => {
   playing.value = false;
   pauseTimelinePlayers();
+  resetTimelinePlayerState();
   closeMaterialPreview();
   stopPlaybackClock();
   transitionFrame.value = '';
@@ -1348,6 +1380,7 @@ const moveMaterialToSlot = (material: EffectTemplateMixMaterial, targetSlotId: s
     (id) => id !== targetSlot.id && (!sourceSlot || id !== sourceSlot.id),
   );
   if (activeUi.value) activeUi.value.selectedSlotId = targetSlot.id;
+  resetTimelinePlayerState();
   bump();
   showNotice(
     sourceSlot && targetMaterial
@@ -1386,6 +1419,7 @@ const applyMaterialToSlot = (material: EffectTemplateMixMaterial, slotId: string
   if (!variant.manualSlotIds.includes(slot.id)) variant.manualSlotIds.push(slot.id);
   variant.conflictSlotIds = variant.conflictSlotIds.filter((id) => id !== slot.id);
   if (activeUi.value) activeUi.value.selectedSlotId = slot.id;
+  resetTimelinePlayerState();
   bump();
 };
 const removeMaterialFromSlot = (slotId: string): void => {
@@ -1398,6 +1432,7 @@ const removeMaterialFromSlot = (slotId: string): void => {
   delete variant.offsets[slot.id];
   if (variant.bindingMetadata) delete variant.bindingMetadata[slot.id];
   variant.manualSlotIds = variant.manualSlotIds.filter((id) => id !== slot.id);
+  resetTimelinePlayerState();
   bump();
 };
 const clearMaterialPointerTarget = (): void => {
@@ -1567,6 +1602,12 @@ const resizeTimelineSlot = (
   const offset = Math.round(Number(rawOffset) * 1000) / 1000;
   const start = Math.round(Number(rawStart) * TIMELINE_FPS) / TIMELINE_FPS;
   if (![duration, offset, start].every(Number.isFinite)) return;
+  const slotIndex = variant.slots.findIndex(({ id }) => id === slotId);
+  const hasMaterialOnSide = variant.slots.some((candidate, index) => {
+    if (candidate.id === slotId || !materialForSlot(candidate.id, variant)) return false;
+    return side === 'LEFT' ? index < slotIndex : index > slotIndex;
+  });
+  if (hasMaterialOnSide) return;
   const nextOffset = Math.min(
     Math.max(0, offset),
     Math.max(0, Math.round((material.duration - 0.1) * 1000) / 1000),
@@ -1581,7 +1622,6 @@ const resizeTimelineSlot = (
     variant.timelineStarts?.[slotId] ??
     effectTemplateMixTiming(variant.slots).slots.find(({ id }) => id === slotId)?.start ??
     0;
-  const slotIndex = variant.slots.findIndex(({ id }) => id === slotId);
   const hadExplicitTimelineStarts = Boolean(
     variant.timelineStarts && Object.keys(variant.timelineStarts).length,
   );
@@ -1619,6 +1659,7 @@ const resizeTimelineSlot = (
     trimReason: side === 'LEFT' ? '人工调整左边缘时长' : '人工调整右边缘时长',
   };
   if (activeUi.value) activeUi.value.selectedSlotId = slotId;
+  resetTimelinePlayerState();
   bump();
 };
 const changeTemplate = (): void => {
@@ -1680,17 +1721,40 @@ const overlapsTimelineClip = (
   otherEnd: number,
 ): boolean =>
   start < otherEnd - 1 / TIMELINE_FPS && start + duration > otherStart + 1 / TIMELINE_FPS;
+const normalizeVariantVideoLanes = (variant: EffectTemplateMixVariant): void => {
+  variant.videoLanes ??= {};
+  const used = [...new Set(
+    variant.slots
+      .filter((slot) => Boolean(materialForSlot(slot.id, variant)))
+      .map((slot) => Math.max(0, Math.round(variant.videoLanes?.[slot.id] ?? 0))),
+  )].sort((left, right) => left - right);
+  const laneMap = new Map(used.map((lane, index) => [lane, index]));
+  for (const slot of variant.slots) {
+    if (!materialForSlot(slot.id, variant)) {
+      delete variant.videoLanes[slot.id];
+      continue;
+    }
+    const rawLane = Math.max(0, Math.round(variant.videoLanes[slot.id] ?? 0));
+    variant.videoLanes[slot.id] = laneMap.get(rawLane) ?? 0;
+  }
+};
+type TimelinePlacement = { insertLaneAt?: number; lane: number; start: number };
 const resolveTimelinePlacement = (
   variant: EffectTemplateMixVariant,
   slotId: string,
   requestedStart: number,
   requestedLane: number,
   excludedSlotIds: ReadonlySet<string> = new Set(),
-): { start: number; lane: number } => {
+): TimelinePlacement => {
   const slot = variant.slots.find(({ id }) => id === slotId);
   if (!slot) return { start: requestedStart, lane: requestedLane };
   const ranges = currentTiming.value.slots
-    .filter(({ id }) => id !== slotId && !excludedSlotIds.has(id))
+    .filter(
+      ({ id }) =>
+        id !== slotId &&
+        !excludedSlotIds.has(id) &&
+        Boolean(materialForSlot(id, variant)),
+    )
     .map((range) => ({
       ...range,
       lane: variant.videoLanes?.[range.id] ?? 0,
@@ -1711,34 +1775,23 @@ const resolveTimelinePlacement = (
     if (!isBlocked(requestedStart, lane)) return { start: requestedStart, lane };
   }
 
-  // If no upper lane is available, append after the blocking clips instead of
-  // covering them. This also walks through adjacent clips until a free gap is found.
-  let appendedStart = requestedStart;
-  const laneRanges = ranges
-    .filter(({ lane }) => lane === requestedLane)
-    .sort((left, right) => left.start - right.start);
-  let blocker = laneRanges.find((range) =>
-    overlapsTimelineClip(appendedStart, requestedDuration, range.start, range.end),
-  );
-  while (blocker) {
-    appendedStart = blocker.end;
-    blocker = laneRanges.find((range) =>
-      overlapsTimelineClip(appendedStart, requestedDuration, range.start, range.end),
-    );
-  }
-  return { start: appendedStart, lane: requestedLane };
+  // There is no free lane above the requested one. Insert a new lane at the
+  // requested position and shift the existing clips down instead of covering.
+  return { insertLaneAt: requestedLane, start: requestedStart, lane: requestedLane };
 };
 type TimelineClipMove = { slotId: string; start: number; lane: number };
 
 const moveTimelineClips = (moves: TimelineClipMove[]): void => {
   const variant = selectedVariant.value;
   if (!variant || !moves.length) return;
+  normalizeVariantVideoLanes(variant);
   const excludedSlotIds = new Set(moves.map(({ slotId }) => slotId));
+  let insertLaneAt: number | null = null;
   const resolvedMoves = moves.flatMap(({ slotId, start, lane }) => {
     const slot = variant.slots.find(({ id }) => id === slotId);
     if (!slot) return [];
     const nextStart = Math.max(0, Math.round(start * 30) / 30);
-    const nextLane = Math.max(0, Math.min(2, Math.round(lane)));
+    const nextLane = Math.max(0, Math.round(lane));
     const resolved = resolveTimelinePlacement(
       variant,
       slotId,
@@ -1752,7 +1805,11 @@ const moveTimelineClips = (moves: TimelineClipMove[]): void => {
       0;
     const currentLane = variant.videoLanes?.[slotId] ?? 0;
     const resolvedStart = Math.max(0, Math.round(resolved.start * 30) / 30);
-    const resolvedLane = Math.max(0, Math.min(2, Math.round(resolved.lane)));
+    if (resolved.insertLaneAt !== undefined) {
+      insertLaneAt =
+        insertLaneAt === null ? resolved.insertLaneAt : Math.min(insertLaneAt, resolved.insertLaneAt);
+    }
+    const resolvedLane = Math.max(0, Math.round(resolved.lane));
     return resolvedStart === currentStart && resolvedLane === currentLane
       ? []
       : [{ slotId, start: resolvedStart, lane: resolvedLane }];
@@ -1761,10 +1818,19 @@ const moveTimelineClips = (moves: TimelineClipMove[]): void => {
   rememberTimelineEdit();
   variant.timelineStarts ??= {};
   variant.videoLanes ??= {};
+  if (insertLaneAt !== null) {
+    for (const candidate of variant.slots) {
+      if (excludedSlotIds.has(candidate.id) || !materialForSlot(candidate.id, variant)) continue;
+      const lane = Math.max(0, Math.round(variant.videoLanes[candidate.id] ?? 0));
+      if (lane >= insertLaneAt) variant.videoLanes[candidate.id] = lane + 1;
+    }
+  }
   for (const move of resolvedMoves) {
     variant.timelineStarts[move.slotId] = move.start;
     variant.videoLanes[move.slotId] = move.lane;
   }
+  normalizeVariantVideoLanes(variant);
+  resetTimelinePlayerState();
   bump();
 };
 const moveTimelineClip = (slotId: string, start: number, lane: number): void =>
@@ -1784,6 +1850,7 @@ const changeProjectDuration = (raw: string): void => {
   if (selectedSlot.value.duration === duration) return;
   rememberTimelineEdit();
   selectedSlot.value.duration = duration;
+  resetTimelinePlayerState();
   bump();
 };
 const changeTransitionForSlot = (slotId: string, transition: EffectTemplateMixTransition): void => {
@@ -1796,6 +1863,7 @@ const changeTransitionForSlot = (slotId: string, transition: EffectTemplateMixTr
   slot.transition = transition;
   slot.transitionDuration =
     transition === '硬切' ? 0 : effectTemplateMixTransitionDuration(slot, variant.slots[index - 1]);
+  resetTimelinePlayerState();
   bump();
 };
 const changeTransition = (transition: EffectTemplateMixTransition): void => {
@@ -1812,6 +1880,7 @@ const removeTransitionFromSlot = (slotId: string): void => {
   slot.transition = '硬切';
   slot.transitionDuration = 0;
   activeTransitionSlotId.value = '';
+  resetTimelinePlayerState();
   bump();
 };
 const deleteSelectedTimelineItem = (): void => {
@@ -2051,12 +2120,7 @@ const syncPlayingVideoFrame = (): void => {
     displayedTimelineSlotId.value = '';
     return;
   }
-  const visibleProjectTime = Math.min(
-    playhead.value,
-    Math.max(range.start, range.end - 1 / TIMELINE_FPS),
-  );
-  const sourceTime =
-    (selectedVariant.value.offsets[slot.id] ?? 0) + visibleProjectTime - range.start;
+  const sourceTime = timelineSourceTime(slot.id) ?? 0;
   const switchedSlot = activePlaybackSlotId !== slot.id;
   const needsSlotSeek = switchedSlot || !positionedTimelinePlayers.has(video);
   if (switchedSlot) {
@@ -2147,14 +2211,9 @@ const syncPlayerToPlayhead = async (resume = false): Promise<void> => {
     // retry after Vue flushes once, but never keep an old seek request alive.
     if (!video) return false;
     pauseTimelinePlayers(slot.id);
-    const visibleProjectTime = Math.min(
-      playhead.value,
-      Math.max(range.start, range.end - 1 / TIMELINE_FPS),
-    );
-    const sourceTime =
-      (selectedVariant.value.offsets[slot.id] ?? 0) + visibleProjectTime - range.start;
+    const sourceTime = timelineSourceTime(slot.id);
     if (
-      Number.isFinite(sourceTime) &&
+      sourceTime !== null &&
       Math.abs(video.currentTime - sourceTime) > 1 / TIMELINE_FPS
     ) {
       try {
@@ -3388,9 +3447,9 @@ defineExpose({ flushPendingEdits });
       <WorkflowNodeFooter
         v-if="view === 'EDITOR' && workspace"
         back-label="上一步"
-        :complete="validated"
+        :complete="validated && packagingReady"
         :status-title="
-          validated
+          validated && packagingReady
             ? '当前模板已确认'
             : pendingCount
               ? '仍有工程待同步'

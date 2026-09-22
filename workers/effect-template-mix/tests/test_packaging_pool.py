@@ -57,3 +57,50 @@ async def test_cancel_drains_children() -> None:
     with pytest.raises(asyncio.CancelledError):
         await task
     assert count == 0
+
+
+async def test_100_fake_provider_items_resume_without_repeating_saved_requests() -> None:
+    class RateLimited(Exception):
+        pass
+
+    class FakeProvider:
+        active = 0
+        maximum = 0
+        limited_once = False
+
+        def __init__(self) -> None:
+            self.calls: dict[tuple[int, str], int] = {}
+
+        async def request(self, item_id: int, stage: str) -> str:
+            key = (item_id, stage)
+            self.calls[key] = self.calls.get(key, 0) + 1
+            self.active += 1
+            self.maximum = max(self.maximum, self.active)
+            try:
+                await asyncio.sleep(.001 if stage != 'music' else .002)
+                if item_id == 7 and stage == 'voice' and not self.limited_once:
+                    self.limited_once = True
+                    raise RateLimited()
+                return f'{item_id}:{stage}:saved'
+            finally:
+                self.active -= 1
+
+    provider = FakeProvider()
+    rows: list[dict[str, Any]] = [{'id': i, 'shardIndex': i // 4, 'status': 'QUEUED', 'checkpoint': {}} for i in range(100)]
+
+    async def execute(item: dict[str, Any]) -> None:
+        try:
+            for stage in ('vision', 'script', 'voice', 'music'):
+                if stage not in item['checkpoint']:
+                    item['checkpoint'][stage] = await provider.request(item['id'], stage)
+            item['status'] = 'COMPLETED'
+        except RateLimited:
+            item['status'] = 'FAILED'
+
+    await run_packaging_shards(rows, 4, execute)
+    assert sum(r['status'] == 'COMPLETED' for r in rows) == 99
+    await run_packaging_shards(rows, 4, execute)
+    assert all(r['status'] == 'COMPLETED' for r in rows)
+    assert provider.maximum == 4 and provider.active == 0
+    assert all(provider.calls[(i, 'music')] == 1 for i in range(100))
+    assert provider.calls[(7, 'vision')] == provider.calls[(7, 'script')] == 1

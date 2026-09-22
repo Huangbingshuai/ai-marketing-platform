@@ -394,7 +394,8 @@ async def test_one_consumer_routes_legacy_and_packaging_without_cross_claims() -
     api = AsyncMock(spec=InternalApi)
     api.claim.return_value = SimpleNamespace(terminal=True)
     packaging = AsyncMock(spec=PackagingHandler)
-    worker = Consumer('amqp://test', 'effect.template-mix.requested', api, AsyncMock(spec=ArkProvider), 1000, 10, 16000, 8192, 2, packaging)
+    final_output = AsyncMock()
+    worker = Consumer('amqp://test', 'effect.template-mix.requested', api, AsyncMock(spec=ArkProvider), 1000, 10, 16000, 8192, 2, packaging, final_output)
     legacy = AsyncMock()
     legacy.body = json.dumps({'schemaVersion': 1, 'projectId': 'p', 'runId': 'r', 'requestId': 'id'}).encode()
     await worker.handle(legacy)
@@ -403,5 +404,11 @@ async def test_one_consumer_routes_legacy_and_packaging_without_cross_claims() -
     modern = AsyncMock()
     modern.body = json.dumps({'schemaVersion': 2, 'taskType': 'PACKAGING', 'projectId': 'p', 'runId': 'r2', 'requestId': 'id2'}).encode()
     await worker.handle(modern)
+    packaging.handle.assert_awaited_once()
+    assert api.claim.await_count == 1
+    output = AsyncMock()
+    output.body = json.dumps({'schemaVersion': 2, 'taskType': 'FINAL_OUTPUT', 'projectId': 'p', 'runId': 'r3', 'requestId': 'id3'}).encode()
+    await worker.handle(output)
+    final_output.handle.assert_awaited_once()
     packaging.handle.assert_awaited_once()
     assert api.claim.await_count == 1
