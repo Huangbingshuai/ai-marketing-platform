@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import tempfile
+import unicodedata
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from pathlib import Path
@@ -66,7 +67,42 @@ def ass_time(value: float) -> str:
     return f'{ticks // 360000}:{ticks // 6000 % 60:02d}:{ticks // 100 % 60:02d}.{ticks % 100:02d}'
 
 
-def captions_ass(captions: list[dict[str, Any]], width: int, height: int, duration: float) -> str:
+def escape_ass(text: str) -> str:
+    return text.replace('\\', '＼').replace('{', '｛').replace('}', '｝').replace('\r', '').replace('\n', '\\N')
+
+
+def em_width(char: str) -> float:
+    return 1.0 if unicodedata.east_asian_width(char) in 'WF' else 0.5
+
+
+def wrap_caption(text: str, limit_em: float) -> list[str]:
+    """Greedy wrap to `limit_em` ems, honouring existing newlines as hard breaks.
+
+    libass only breaks at spaces, so a CJK caption would run off the frame entirely if we
+    left wrapping to it. Breaking here keeps the render identical across libass builds.
+    """
+    lines: list[str] = []
+    for hard in text.split('\n'):
+        line, used = '', 0.0
+        for char in hard:
+            step = em_width(char)
+            if line and used + step > limit_em:
+                # Prefer a space so Latin words stay whole; CJK has none and breaks anywhere.
+                cut = line.rfind(' ')
+                if cut > 0:
+                    lines.append(line[:cut])
+                    line, used = line[cut + 1:], sum(em_width(c) for c in line[cut + 1:])
+                else:
+                    lines.append(line)
+                    line, used = '', 0.0
+            line += char
+            used += step
+        lines.append(line)
+    return lines
+
+
+def captions_ass(captions: list[dict[str, Any]], width: int, height: int, duration: float,
+                 boxes: dict[str, dict[str, float]] | None = None) -> str:
     header = f'''[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -78,14 +114,28 @@ Style: Default,Noto Sans CJK SC,{max(24, round(width / 22))},&H00FFFFFF,&H00FFFF
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
+    boxes = boxes or {}
     previous = 0.0
     for row in captions:
         start, end = row['start'], row['end']
         if not (math.isfinite(start) and math.isfinite(end) and previous <= start < end <= duration + .001):
             raise PackagingError('字幕越界或重叠')
         previous = end
-        text = str(row['text']).replace('\\', '＼').replace('{', '｛').replace('}', '｝').replace('\r', '').replace('\n', '\\N')
-        header += f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Default,,0,0,0,,{text}\n"
+        raw = str(row['text'])
+        # A caption without an id simply has no editor geometry and keeps the default style.
+        box = boxes.get(str(row.get('id', '')))
+        if not box:
+            header += f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Default,,0,0,0,,{escape_ass(raw)}\n"
+            continue
+        size = max(8, round(max(24, round(width / 22)) * float(box['scale'])))
+        wrap = max(1, round(float(box['width']) * width))
+        # Slack for real font metrics, so libass never decides a line is a pixel too wide.
+        lines = wrap_caption(raw, max(1.0, wrap / size * 0.98))
+        left = max(0, min(round(float(box['x']) * width - wrap / 2), width - wrap))
+        block = round(len(lines) * size * 1.35)
+        bottom = max(0, min(round(float(box['y']) * height), max(0, height - block)))
+        text = f'{{\\fs{size}}}' + '\\N'.join(escape_ass(line) for line in lines)
+        header += f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Default,,{left},{width - wrap - left},{bottom},,{text}\n"
     return header
 
 
@@ -144,20 +194,58 @@ async def render(snapshot: dict[str, Any], files: dict[str, Path], directory: Pa
         current = f'join{index}'
     original_volume = max(0, min(1, float(snapshot['originalVolume'])))
     filters += [''.join(f'[{index}:a]' for index in range(len(segments))) + f'concat=n={len(segments)}:v=0:a=1,volume={original_volume}[original]']
+    # Editor edits may trim the source head (`offset`) and move clips along the timeline;
+    # pipeline writes stay canonical, so absent keys mean the frozen timeline geometry.
     voices = list(cp['voices'].values())
     for index, voice in enumerate(voices):
         actual = float(media[voice['fileObjectId']]['format']['duration'])
-        if abs(actual - voice['duration']) > .05 or voice['start'] + actual > duration + .001:
+        offset = float(voice.get('offset', 0.0))
+        start = float(voice['start'])
+        length = float(voice['duration'])
+        if (not math.isfinite(offset) or offset < 0 or not math.isfinite(start) or start < 0
+                or not math.isfinite(length) or length <= 0
+                or offset + length > actual + .05 or start + length > duration + .001):
             raise PackagingError('口播真实音频时长与包装不一致')
+        # Editor-only and optional: a line the editor never touched carries no fade keys at all.
+        fade_in = float(voice.get('fadeIn', 0.0) or 0.0)
+        fade_out = float(voice.get('fadeOut', 0.0) or 0.0)
+        if (not math.isfinite(fade_in) or not math.isfinite(fade_out)
+                or fade_in < 0 or fade_out < 0 or fade_in + fade_out > length + .05):
+            raise PackagingError('口播淡入淡出时长无效')
         inputs += ['-i', str(files[voice['fileObjectId']])]
-        filters += [f'[{len(segments) + index}:a]aresample=48000,volume={voice["volume"]},adelay={round(voice["start"] * 1000)}:all=1[voice{index}]']
-    inputs += ['-stream_loop', '-1', '-i', str(files[cp['music']['fileObjectId']])]
+        # Trim the head, re-zero timestamps, then shift to the timeline position. The fades go after
+        # `adelay` so their coordinates are timeline seconds, and only when set — that keeps an
+        # untouched line's filter byte-identical to the pre-fade pipeline.
+        fades = (f',afade=t=in:st={start}:d={fade_in}' if fade_in > 0 else '') + (
+            f',afade=t=out:st={start + length - fade_out}:d={fade_out}' if fade_out > 0 else '')
+        filters += [f'[{len(segments) + index}:a]aresample=48000,atrim=start={offset}:duration={length},'
+            f'asetpts=PTS-STARTPTS,volume={voice["volume"]},adelay={round(start * 1000)}:all=1{fades}[voice{index}]']
+    music = cp['music']
+    music_offset = float(music.get('offset', 0.0))
+    music_start = float(music.get('start', 0.0))
+    music_length = float(music.get('duration', duration))
+    if (not math.isfinite(music_offset) or music_offset < 0 or not math.isfinite(music_start) or music_start < 0
+            or not math.isfinite(music_length) or music_length <= 0
+            or music_start + music_length > duration + .001):
+        raise PackagingError('纯音乐时间范围与包装不一致')
+    inputs += ['-stream_loop', '-1', '-i', str(files[music['fileObjectId']])]
     # Time-window ducking is deterministic, including silent PCM and gaps.
-    windows = '+'.join(f'between(t,{v["start"]},{v["start"] + v["duration"]})' for v in voices) or '0'
+    windows = '+'.join(f'between(t,{float(v["start"])},{float(v["start"]) + float(v["duration"])})' for v in voices) or '0'
     music_index = len(segments) + len(voices)
-    filters += [f"[{music_index}:a]aresample=48000,atrim=duration={duration},volume='{cp['music']['volume']}*if(gt({windows},0),0.35,1)':eval=frame,afade=t=in:d=0.5,afade=t=out:st={max(0, duration - .5)}:d=0.5[music]",
+    # Ducking and fades run after `adelay`, so their time coordinates are timeline seconds.
+    # The 0.5s easing is the pipeline default: a checkpoint the editor never touched has no fade
+    # keys, and the fallback keeps its rendered audio identical to the pre-fade pipeline.
+    fade_in = float(music.get('fadeIn', min(0.5, music_length / 2)) or 0.0)
+    fade_out = float(music.get('fadeOut', min(0.5, music_length / 2)) or 0.0)
+    if (not math.isfinite(fade_in) or not math.isfinite(fade_out)
+            or fade_in < 0 or fade_out < 0 or fade_in + fade_out > music_length + .05):
+        raise PackagingError('纯音乐淡入淡出时长无效')
+    filters += [f"[{music_index}:a]aresample=48000,atrim=start={music_offset},asetpts=PTS-STARTPTS,atrim=duration={music_length},"
+        f"adelay={round(music_start * 1000)}:all=1,volume='{music['volume']}*if(gt({windows},0),0.35,1)':eval=frame,"
+        f"afade=t=in:st={music_start}:d={fade_in},afade=t=out:st={music_start + music_length - fade_out}:d={fade_out}[music]",
         '[original][music]' + ''.join(f'[voice{i}]' for i in range(len(voices))) + f'amix=inputs={2 + len(voices)}:normalize=0:duration=longest,alimiter=limit=0.95,atrim=duration={duration}[audio]']
-    (directory / 'captions.ass').write_text(captions_ass(cp['captions'], width, height, duration), encoding='utf-8')
+    (directory / 'captions.ass').write_text(
+        captions_ass(cp['captions'], width, height, duration, cp.get('captionBoxes')), encoding='utf-8')
     filters += [f'[{current}]subtitles=captions.ass,format=yuv420p[video]']
     output = directory / 'final.mp4'
     await progress(50)

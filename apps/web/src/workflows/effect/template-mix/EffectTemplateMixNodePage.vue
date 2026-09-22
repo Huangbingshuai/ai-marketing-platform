@@ -2,6 +2,7 @@
 import type {
   EffectImportProduct,
   EffectTemplateMixAiRun,
+  EffectTemplateMixCaption,
   EffectTemplateMixClassificationPool,
   EffectTemplateMixDraft,
   EffectTemplateMixMaterial,
@@ -10,6 +11,10 @@ import type {
   EffectTemplateMixTemplateEntry,
   EffectTemplateMixTransition,
   EffectTemplateMixVariant,
+  PackagingAudio,
+  PackagingAudioEdit,
+  PackagingCaptionBox,
+  PackagingCheckpoint,
   PackagingItem,
 } from '@ai-marketing/contracts';
 import { WorkflowNodeDraftBar, WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
@@ -51,6 +56,7 @@ import {
   saveEffectTemplateMixDraft,
   serializeEffectTemplateMixDraft,
   completeEffectTemplateMixPackaging,
+  updateEffectPackagingAudio,
 } from './api/effect-template-mix.api';
 import {
   EFFECT_TEMPLATE_MIX_ROLE_LABELS,
@@ -150,6 +156,9 @@ const auditionTime = ref(0);
 const playing = ref(false);
 const playhead = ref(0);
 const playerPanel = ref<HTMLElement | null>(null);
+const stageElement = ref<HTMLElement | null>(null);
+/** The render burns captions at roughly 1/22 of the video width, so the preview matches. */
+const stageCaptionFontSize = ref(14);
 const playerMenu = ref<'DISPLAY' | null>(null);
 const previewZoom = ref(100);
 const playerFullscreen = ref(false);
@@ -220,6 +229,8 @@ let pendingSeekSyncFrame: number | undefined;
 let seekSyncRequestId = 0;
 let materialGridResizeObserver: ResizeObserver | null = null;
 let materialGridResizeFrame: number | undefined;
+let stageResizeObserver: ResizeObserver | null = null;
+let stageResizeFrame: number | undefined;
 const pollTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const pollControllers = new Map<string, AbortController>();
 
@@ -516,6 +527,16 @@ const previewHasAudibleTrack = computed(() =>
     previewIsPlaying.value && stageMaterial.value && materialAudioPresence[stageMaterial.value.id],
   ),
 );
+/** Captions are burned into the render, so the stage has to show them at the same clock. */
+const previewCaption = computed(() => {
+  const packaging = selectedPackaging.value;
+  if (!packagingPreviewEnabled.value || !packaging || packaging.stale || auditionMaterial.value)
+    return undefined;
+  return (packaging.checkpoint.captions ?? []).find(
+    (caption) =>
+      previewCurrentTime.value >= caption.start && previewCurrentTime.value < caption.end,
+  );
+});
 const formatPlayerTimecode = (seconds: number): string => {
   const totalFrames = Math.max(
     0,
@@ -1004,6 +1025,610 @@ const scheduleSave = (): void => {
 const bump = (): void => {
   if (workspace.value) workspace.value.editVersion += 1;
   scheduleSave();
+};
+
+/**
+ * Packaging audio lives on the server-owned checkpoint, so edits are diffed
+ * against the last confirmed copy and PUT separately from the workflow draft.
+ */
+type PackagingAudioTarget =
+  | { kind: 'CAPTION'; key: string }
+  | { kind: 'MUSIC' }
+  | { kind: 'VOICE'; key: string };
+const packagingAudioTarget = (clipId: string): PackagingAudioTarget | null => {
+  if (clipId.startsWith('caption:')) return { kind: 'CAPTION', key: clipId.slice(8) };
+  if (clipId === 'music') return { kind: 'MUSIC' };
+  if (clipId.startsWith('voice:')) return { kind: 'VOICE', key: clipId.slice(6) };
+  return null;
+};
+const packagingAudio = (
+  checkpoint: PackagingCheckpoint,
+  target: PackagingAudioTarget,
+): PackagingAudio | undefined =>
+  target.kind === 'MUSIC'
+    ? checkpoint.music
+    : target.kind === 'VOICE'
+      ? checkpoint.voices?.[target.key]
+      : undefined;
+/**
+ * The pipeline's own music easing, used whenever the editor has not set one. Mirrors the fallback
+ * in the worker's `final_output.py`, so a clip nobody touched keeps rendering exactly as before.
+ */
+const MUSIC_DEFAULT_FADE = 0.5;
+/** Music sits under narration, so it gets a much lower ceiling than a spoken line. */
+const audioVolumeMax = (kind: 'MUSIC' | 'VOICE'): number => (kind === 'MUSIC' ? 0.3 : 1);
+/** The fade that will really be rendered; absent means the pipeline default, not zero. */
+const audioFade = (
+  audio: PackagingAudio,
+  kind: 'MUSIC' | 'VOICE',
+  edge: 'fadeIn' | 'fadeOut',
+): number => audio[edge] ?? (kind === 'MUSIC' ? Math.min(MUSIC_DEFAULT_FADE, audio.duration / 2) : 0);
+const sameAudio = (left: PackagingAudio, right: PackagingAudio, kind: 'MUSIC' | 'VOICE'): boolean =>
+  left.start === right.start &&
+  left.volume === right.volume &&
+  left.duration === right.duration &&
+  (left.offset ?? 0) === (right.offset ?? 0) &&
+  // Compared as effective seconds: dragging the music fade from its 0.5s default down to 0 is a
+  // real edit, but "absent" and "0.5" would look identical if the raw fields were compared.
+  audioFade(left, kind, 'fadeIn') === audioFade(right, kind, 'fadeIn') &&
+  audioFade(left, kind, 'fadeOut') === audioFade(right, kind, 'fadeOut');
+const sameBox = (left: PackagingCaptionBox, right: PackagingCaptionBox): boolean =>
+  left.x === right.x && left.y === right.y && left.width === right.width && left.scale === right.scale;
+const audioEdit = (audio: PackagingAudio, kind: 'MUSIC' | 'VOICE'): PackagingAudioEdit => ({
+  start: audio.start,
+  offset: audio.offset ?? 0,
+  duration: audio.duration,
+  volume: audio.volume,
+  // Spelled out rather than left absent: the server reads absent as "pipeline default", so an
+  // editor who deliberately pulled the fade to 0 has to say so or it would spring back to 0.5s.
+  fadeIn: audioFade(audio, kind, 'fadeIn'),
+  fadeOut: audioFade(audio, kind, 'fadeOut'),
+});
+const audioDiff = (current: PackagingCheckpoint, baseline: PackagingCheckpoint) => {
+  const voices: Record<string, PackagingAudioEdit> = {};
+  for (const [id, audio] of Object.entries(current.voices ?? {})) {
+    const before = baseline.voices?.[id];
+    if (!before || sameAudio(before, audio, 'VOICE')) continue;
+    voices[id] = audioEdit(audio, 'VOICE');
+  }
+  const music =
+    current.music && baseline.music && !sameAudio(baseline.music, current.music, 'MUSIC')
+      ? audioEdit(current.music, 'MUSIC')
+      : null;
+  const captions =
+    JSON.stringify(current.captions ?? []) === JSON.stringify(baseline.captions ?? [])
+      ? null
+      : (current.captions ?? []).map(({ id, text, start, end }) => ({ id, text, start, end }));
+  // Only the boxes this editor touched, so an unrelated drag never rewrites the others.
+  const boxes: Record<string, PackagingCaptionBox> = {};
+  for (const [id, box] of Object.entries(current.captionBoxes ?? {})) {
+    const before = baseline.captionBoxes?.[id];
+    if (!before || !sameBox(before, box)) boxes[id] = box;
+  }
+  if (!Object.keys(voices).length && !music && !captions && !Object.keys(boxes).length) return null;
+  return { voices, music, captions, boxes };
+};
+/** Unsaved local geometry, always owned by one item so diffs never cross items. */
+let audioBaseline: {
+  itemId: string;
+  checkpoint: PackagingCheckpoint;
+  updatedAt: string;
+} | null = null;
+let audioTimer: ReturnType<typeof setTimeout> | undefined;
+let audioInFlight = false;
+let audioResend = false;
+const cloneCheckpoint = (checkpoint: PackagingCheckpoint): PackagingCheckpoint =>
+  JSON.parse(JSON.stringify(checkpoint)) as PackagingCheckpoint;
+/** The packaging panel polls the server; the editor keeps only geometry it has not saved yet. */
+const onPackagingSelected = (item: PackagingItem | null): void => {
+  const current = selectedPackaging.value;
+  if (item && current && item.id === current.id) {
+    if (audioBaseline?.itemId !== item.id) {
+      selectedPackaging.value = item;
+      return;
+    }
+    selectedPackaging.value = {
+      ...item,
+      checkpoint: current.checkpoint,
+      updatedAt: current.updatedAt,
+    };
+    return;
+  }
+  // Leaving an item mid-debounce: persist its edit instead of dropping it silently.
+  if (current && audioBaseline?.itemId === current.id) void flushAudioEdit();
+  selectedPackaging.value = item;
+};
+const scheduleAudioEdit = (): void => {
+  clearTimeout(audioTimer);
+  audioTimer = setTimeout(() => void flushAudioEdit(), 250);
+};
+const flushAudioEdit = async (): Promise<void> => {
+  if (audioInFlight) {
+    audioResend = true;
+    return;
+  }
+  const item = selectedPackaging.value;
+  const baseline = audioBaseline;
+  if (!item || !baseline || baseline.itemId !== item.id) return;
+  const diff = audioDiff(item.checkpoint, baseline.checkpoint);
+  if (!diff) {
+    audioBaseline = null;
+    return;
+  }
+  const targetId = item.id;
+  audioInFlight = true;
+  try {
+    const response = await updateEffectPackagingAudio(props.projectId, item.runId, targetId, {
+      expectedUpdatedAt: baseline.updatedAt,
+      ...(Object.keys(diff.voices).length ? { voices: diff.voices } : {}),
+      ...(diff.music ? { music: diff.music } : {}),
+      ...(diff.captions ? { captions: diff.captions } : {}),
+      ...(Object.keys(diff.boxes).length ? { boxes: diff.boxes } : {}),
+    });
+    const current = selectedPackaging.value;
+    if (current?.id !== targetId) {
+      // The editor moved on; only the item that was just saved loses its baseline.
+      if (audioBaseline?.itemId === targetId) audioBaseline = null;
+      return;
+    }
+    current.updatedAt = response.data.updatedAt;
+    // Adopt the server copy only when the editor has no newer local geometry.
+    if (!audioDiff(current.checkpoint, response.data.checkpoint)) {
+      current.checkpoint = response.data.checkpoint;
+      audioBaseline = null;
+    } else {
+      audioBaseline = {
+        itemId: targetId,
+        checkpoint: response.data.checkpoint,
+        updatedAt: current.updatedAt,
+      };
+      audioResend = true;
+    }
+  } catch (error) {
+    const current = selectedPackaging.value;
+    if (current?.id === targetId) {
+      current.checkpoint = baseline.checkpoint;
+      current.updatedAt = baseline.updatedAt;
+    }
+    if (audioBaseline?.itemId === targetId) audioBaseline = null;
+    showNotice(error instanceof Error ? error.message : '音频编辑保存失败', 'error');
+  } finally {
+    audioInFlight = false;
+    if (audioResend) {
+      audioResend = false;
+      scheduleAudioEdit();
+    }
+  }
+};
+const editPackagingAudio = (mutate: (checkpoint: PackagingCheckpoint) => void): void => {
+  const item = selectedPackaging.value;
+  if (!item || !item.runId || item.status !== 'COMPLETED') {
+    showNotice('包装尚未完成，无法编辑音频轨道', 'warning');
+    return;
+  }
+  if (audioBaseline?.itemId !== item.id) {
+    audioBaseline = {
+      itemId: item.id,
+      checkpoint: cloneCheckpoint(item.checkpoint),
+      updatedAt: item.updatedAt,
+    };
+  }
+  mutate(item.checkpoint);
+  scheduleAudioEdit();
+};
+const movePackagingAudio = (clipId: string, start: number): void => {
+  const target = packagingAudioTarget(clipId);
+  if (!target) return;
+  editPackagingAudio((checkpoint) => {
+    if (target.kind === 'CAPTION') {
+      const caption = checkpoint.captions?.find((c) => c.id === target.key);
+      if (caption) {
+        const length = caption.end - caption.start;
+        caption.start = start;
+        caption.end = start + length;
+      }
+      return;
+    }
+    const audio = packagingAudio(checkpoint, target);
+    if (audio) audio.start = start;
+  });
+};
+/** `side` is redundant: the caller already resolved start/offset/duration. */
+const resizePackagingAudio = (
+  clipId: string,
+  _side: 'LEFT' | 'RIGHT',
+  start: number,
+  offset: number,
+  duration: number,
+): void => {
+  const target = packagingAudioTarget(clipId);
+  if (!target) return;
+  editPackagingAudio((checkpoint) => {
+    if (target.kind === 'CAPTION') {
+      const caption = checkpoint.captions?.find((c) => c.id === target.key);
+      if (caption) {
+        caption.start = start;
+        caption.end = start + duration;
+      }
+      return;
+    }
+    const audio = packagingAudio(checkpoint, target);
+    if (audio) {
+      audio.start = start;
+      audio.offset = offset;
+      audio.duration = duration;
+    }
+  });
+};
+const changePackagingAudioVolume = (clipId: string, volume: number): void => {
+  const target = packagingAudioTarget(clipId);
+  if (!target || target.kind === 'CAPTION') return;
+  editPackagingAudio((checkpoint) => {
+    const audio = packagingAudio(checkpoint, target);
+    if (audio) audio.volume = volume;
+  });
+};
+/**
+ * The timeline owns the selection; the editor row above it mirrors the selected caption. A whole
+ * set can be selected at once, so geometry edits reach every caption in it.
+ */
+const selectedCaptionIds = ref<string[]>([]);
+/** The text editor and font stepper speak about one caption, so they need exactly one. */
+const selectedCaptionId = computed(() =>
+  selectedCaptionIds.value.length === 1 ? selectedCaptionIds.value[0]! : null,
+);
+const captionTextInput = ref<HTMLInputElement | null>(null);
+const onAudioClipSelected = (clipId: string | null): void => {
+  // Captions arrive as a whole set on their own event, so this one only handles voice and music.
+  if (clipId?.startsWith('caption:')) return;
+  selectedCaptionIds.value = [];
+};
+const onCaptionClipsSelected = (captionIds: string[]): void => {
+  selectedCaptionIds.value = captionIds;
+};
+/**
+ * Voice and music clips the timeline has selected. The row above the timeline speaks about the
+ * whole set the same way the caption font stepper does: the pointer's clip is the standard and the
+ * rest take its values, rather than the set sliding by the standard's delta.
+ */
+const selectedAudioClipIds = ref<string[]>([]);
+const onAudioClipsSelected = (clipIds: string[]): void => {
+  selectedAudioClipIds.value = clipIds;
+};
+/** The timeline owns its own selection, so clearing it from out here needs its own handle. */
+const timelineRef = ref<{ clearSelection: () => void } | null>(null);
+/**
+ * Clicking anywhere in the player other than the picture itself clears the selection, the way a
+ * blank click does in the timeline. The picture is exempt: it is the material, not empty space.
+ */
+const onPlayerPanelPointerDown = (event: PointerEvent): void => {
+  const target = event.target;
+  if (!(target instanceof Element) || target.closest('.stage')) return;
+  selectedCaptionIds.value = [];
+  timelineRef.value?.clearSelection();
+};
+const editingCaption = computed(() => {
+  const packaging = selectedPackaging.value;
+  if (!packaging || packaging.stale || !selectedCaptionId.value) return null;
+  return (
+    packaging.checkpoint.captions?.find((c) => c.id === selectedCaptionId.value) ?? null
+  );
+});
+const changeCaptionText = (event: Event): void => {
+  const value = (event.target as HTMLInputElement).value;
+  const captionId = selectedCaptionId.value;
+  if (!captionId) return;
+  editPackagingAudio((checkpoint) => {
+    const caption = checkpoint.captions?.find((c) => c.id === captionId);
+    if (caption) caption.text = value;
+  });
+};
+// Clicking a caption card opens its text editor, so the caret lands where the user looked.
+watch(editingCaption, (caption) => {
+  if (!caption) return;
+  void nextTick(() => captionTextInput.value?.focus({ preventScroll: true }));
+});
+/** Matches the burned-in default: bottom-centre, wrapping at 90% of the frame width. */
+const DEFAULT_CAPTION_BOX: PackagingCaptionBox = { x: 0.5, y: 0.08, width: 0.9, scale: 1 };
+const CAPTION_SNAP = 0.015;
+/** Width of the invisible left/right grab zones that stretch the frame instead of moving it. */
+const CAPTION_EDGE_GRAB = 10;
+const captionBox = (id: string): PackagingCaptionBox =>
+  selectedPackaging.value?.checkpoint.captionBoxes?.[id] ?? DEFAULT_CAPTION_BOX;
+/** Geometry lands on the checkpoint, so it is only offered once packaging has finished. */
+const captionEditable = computed(() => selectedPackaging.value?.status === 'COMPLETED');
+/** The caption the font stepper reads its current size from: the lone one, or the set's first. */
+const captionScaleTarget = computed(() => {
+  if (!captionEditable.value) return null;
+  return editingCaption.value?.id ?? selectedCaptionIds.value[0] ?? null;
+});
+const captionFontSize = computed(() => {
+  const target = captionScaleTarget.value;
+  return target
+    ? Math.max(11, Math.round(stageCaptionFontSize.value * captionBox(target).scale))
+    : stageCaptionFontSize.value;
+});
+const captionBoxStyle = (id: string): Record<string, string> => {
+  const box = captionBox(id);
+  return {
+    left: `${(box.x - box.width / 2) * 100}%`,
+    width: `${box.width * 100}%`,
+    bottom: `${box.y * 100}%`,
+    fontSize: `${Math.max(11, Math.round(stageCaptionFontSize.value * box.scale))}px`,
+  };
+};
+/**
+ * The audio row reads its values from the first selected clip — the standard — and every step is
+ * written to the whole set. The standard is whichever clip the pointer reached first, so a group
+ * of voiceovers converges on one volume and one pair of fades in a single click.
+ */
+const audioStandard = computed<{ kind: 'MUSIC' | 'VOICE'; audio: PackagingAudio } | null>(() => {
+  const packaging = selectedPackaging.value;
+  if (!packaging || packaging.status !== 'COMPLETED') return null;
+  for (const clipId of selectedAudioClipIds.value) {
+    const target = packagingAudioTarget(clipId);
+    if (!target || target.kind === 'CAPTION') continue;
+    const audio = packagingAudio(packaging.checkpoint, target);
+    if (audio) return { kind: target.kind, audio };
+  }
+  return null;
+});
+/** Percent, so the stepper reads the same way the timeline's volume handle does. */
+const audioStandardVolume = computed(() => {
+  const standard = audioStandard.value;
+  return standard ? Math.round(standard.audio.volume * 100) : 0;
+});
+/** One decimal, matching the 0.1s step, so the readout always moves when the button does. */
+const audioStandardFade = (edge: 'fadeIn' | 'fadeOut'): string => {
+  const standard = audioStandard.value;
+  return standard ? audioFade(standard.audio, standard.kind, edge).toFixed(1) : '0.0';
+};
+type CaptionDragMode = 'MOVE' | 'LEFT' | 'RIGHT' | 'SCALE';
+/** Snapped alignment lines, so the drag reads like an editor instead of free-floating. */
+const captionGuideX = ref<number | null>(null);
+const captionGuideY = ref<number | null>(null);
+/**
+ * The stage clips its overflow, so a line drawn exactly on the far border would fall outside it;
+ * pulling it in by its own width puts it on the border instead. The width comes from the same
+ * custom property the line is drawn with.
+ */
+const captionGuideOffset = (value: number): string =>
+  `calc(${value * 100}%${value >= 1 ? ' - var(--caption-guide-width)' : ''})`;
+let captionDrag: {
+  id: string;
+  mode: CaptionDragMode;
+  startX: number;
+  startY: number;
+  /** Starting geometry of every caption that moves with this drag, keyed by caption id. */
+  boxes: Record<string, PackagingCaptionBox>;
+  bounds: DOMRect;
+  height: number;
+  /** Visible frame size, which is what actually reaches a border — the wrap box is wider. */
+  frameWidth: number;
+  /** Client Y of the frame's bottom edge, which the corner drag scales the text away from. */
+  frameBottom: number;
+  moved: boolean;
+} | null = null;
+/**
+ * Picks the first alignment target within the snap threshold, and reports which guide line to
+ * draw. Ordered by preference, so a box dragged near the middle prefers the centre line.
+ */
+const snapAxis = (
+  value: number,
+  candidates: Array<{ target: number; guide: number }>,
+  threshold: number,
+): { value: number; guide: number | null } => {
+  for (const { target, guide } of candidates) {
+    if (Math.abs(value - target) <= threshold) return { value: target, guide };
+  }
+  return { value, guide: null };
+};
+/**
+ * Three lines can sit within a hair of each other once the caption nearly fills the frame — the
+ * centre and both borders collapse together — and their snap zones would then merge into one that
+ * no drag can escape, which reads as "it snapped and now it is stuck". Holding the threshold to a
+ * third of the gap between neighbouring targets keeps a free strip between every pair, so the
+ * caption always has somewhere to rest and can be dragged back off a line.
+ */
+const snapThreshold = (span: number): number => Math.min(CAPTION_SNAP, Math.max(0, span) / 3);
+/**
+ * The frame has no side handles, so which part of it was grabbed decides move versus stretch.
+ * The zones straddle the edges rather than extending inwards, so clicking the empty wrap space
+ * beside a short caption still moves it instead of stretching it.
+ */
+const captionDragMode = (clientX: number, rect: DOMRect): CaptionDragMode => {
+  // A frame too narrow for three grab zones could never be moved, so it only ever moves.
+  if (rect.width < CAPTION_EDGE_GRAB * 3) return 'MOVE';
+  if (clientX >= rect.left - CAPTION_EDGE_GRAB && clientX <= rect.left + CAPTION_EDGE_GRAB) {
+    return 'LEFT';
+  }
+  if (clientX >= rect.right - CAPTION_EDGE_GRAB && clientX <= rect.right + CAPTION_EDGE_GRAB) {
+    return 'RIGHT';
+  }
+  return 'MOVE';
+};
+const onCaptionBoxPointerDown = (event: PointerEvent, forced?: CaptionDragMode): void => {
+  const caption = previewCaption.value;
+  const box = (event.currentTarget as HTMLElement | null)?.closest<HTMLElement>(
+    '.player-caption-box',
+  );
+  const stage = stageElement.value;
+  if (!caption || !box || !stage || event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.ctrlKey || event.metaKey) {
+    // A modifier click only edits the selection, so it never starts a drag.
+    selectedCaptionIds.value = selectedCaptionIds.value.includes(caption.id)
+      ? selectedCaptionIds.value.filter((id) => id !== caption.id)
+      : [...selectedCaptionIds.value, caption.id];
+    return;
+  }
+  // Clicking one of several selected captions keeps the set, so the whole group can be dragged.
+  if (!selectedCaptionIds.value.includes(caption.id)) selectedCaptionIds.value = [caption.id];
+  if (!captionEditable.value) return;
+  const bounds = stage.getBoundingClientRect();
+  if (!bounds.width || !bounds.height) return;
+  const rect = box.getBoundingClientRect();
+  // The frame is what the user sees, so its edges — not the wider wrap box — own the grab zones.
+  const frame = box.querySelector<HTMLElement>('.player-caption')?.getBoundingClientRect() ?? rect;
+  const mode = forced ?? captionDragMode(event.clientX, frame);
+  // Wrap width belongs to one caption's own text, so a stretch never reaches the rest of the set.
+  const ids = mode === 'LEFT' || mode === 'RIGHT' ? [caption.id] : selectedCaptionIds.value;
+  box.setPointerCapture(event.pointerId);
+  captionDrag = {
+    id: caption.id,
+    mode,
+    startX: event.clientX,
+    startY: event.clientY,
+    boxes: Object.fromEntries(ids.map((id) => [id, { ...captionBox(id) }])),
+    bounds,
+    height: rect.height / bounds.height,
+    frameWidth: frame.width / bounds.width,
+    frameBottom: frame.bottom,
+    moved: false,
+  };
+};
+const onCaptionBoxPointerMove = (event: PointerEvent): void => {
+  const drag = captionDrag;
+  if (!drag) return;
+  const rawX = event.clientX - drag.startX;
+  const rawY = event.clientY - drag.startY;
+  if (!drag.moved && Math.hypot(rawX, rawY) <= 4) return;
+  drag.moved = true;
+  const dx = rawX / drag.bounds.width;
+  const dy = -rawY / drag.bounds.height;
+  const origin = drag.boxes[drag.id]!;
+  const next: Record<string, PackagingCaptionBox> = {};
+  captionGuideX.value = null;
+  captionGuideY.value = null;
+  if (drag.mode === 'SCALE') {
+    // Proportional, the way a corner resize works everywhere: the frame's bottom edge is the
+    // anchor, so pulling the dot up away from it enlarges the text and pushing it back shrinks it.
+    const startDistance = Math.max(1, drag.frameBottom - drag.startY);
+    const distance = Math.max(1, drag.frameBottom - event.clientY);
+    const scale = Math.min(4, Math.max(0.25, (origin.scale * distance) / startDistance));
+    for (const [id, box] of Object.entries(drag.boxes)) next[id] = { ...box, scale };
+  } else if (drag.mode === 'MOVE') {
+    // Clamped and snapped on the visible frame, not the wrap box: the text hugs its glyphs, so
+    // the box's edges would stop it well short of the border and the line would never appear.
+    const half = Math.min(0.5, drag.frameWidth / 2);
+    // Five snap lines, as in CapCut: the player's four borders plus the middle column. It is the
+    // caption's own edge that lands on a border, so those targets are shifted by half the frame
+    // width across and by the full block height up. The middle column wins when both are in range.
+    const across = snapAxis(
+      Math.min(Math.max(origin.x + dx, half), 1 - half),
+      [
+        { target: 0.5, guide: 0.5 },
+        { target: half, guide: 0 },
+        { target: 1 - half, guide: 1 },
+      ],
+      snapThreshold(0.5 - half),
+    );
+    // A block taller than the frame cannot reach the top border, so the ceiling collapses to the
+    // floor rather than inverting the clamp.
+    const down = snapAxis(
+      Math.min(Math.max(origin.y + dy, 0), Math.max(0, 1 - drag.height)),
+      [
+        { target: 0, guide: 0 },
+        { target: 1 - drag.height, guide: 1 },
+      ],
+      snapThreshold(1 - drag.height),
+    );
+    captionGuideX.value = across.guide;
+    captionGuideY.value = down.guide;
+    // The grabbed caption is the standard: the rest of the set takes its position and its font
+    // size outright, rather than sliding by the same amount. A group is only ever as aligned as
+    // this gesture makes it, so one drag lines up both where the captions sit and how big they are.
+    for (const id of Object.keys(drag.boxes)) {
+      next[id] = { ...drag.boxes[id]!, x: across.value, y: down.value, scale: origin.scale };
+    }
+  } else {
+    // The opposite edge stays put, so stretching only ever grows one side. Wrap width is a
+    // property of this caption's own text, so a stretch never reaches the rest of the set.
+    const left = origin.x - origin.width / 2;
+    const right = origin.x + origin.width / 2;
+    let width =
+      drag.mode === 'RIGHT'
+        ? Math.min(Math.max(origin.width + dx, 0.1), 1 - left)
+        : Math.min(Math.max(origin.width - dx, 0.1), right);
+    if (drag.mode === 'RIGHT' && Math.abs(left + width - 1) <= CAPTION_SNAP) {
+      width = 1 - left;
+      captionGuideX.value = 1;
+    } else if (drag.mode === 'LEFT' && Math.abs(right - width) <= CAPTION_SNAP) {
+      width = right;
+      captionGuideX.value = 0;
+    }
+    next[drag.id] = {
+      ...origin,
+      width,
+      x: drag.mode === 'RIGHT' ? left + width / 2 : right - width / 2,
+    };
+  }
+  editPackagingAudio((checkpoint) => {
+    checkpoint.captionBoxes = { ...(checkpoint.captionBoxes ?? {}), ...next };
+  });
+};
+const onCaptionBoxPointerUp = (event: PointerEvent): void => {
+  const box = (event.currentTarget as HTMLElement | null)?.closest<HTMLElement>(
+    '.player-caption-box',
+  );
+  if (box?.hasPointerCapture(event.pointerId)) box.releasePointerCapture(event.pointerId);
+  captionDrag = null;
+  captionGuideX.value = null;
+  captionGuideY.value = null;
+};
+/** Steps by one rendered pixel so the control reads in the same units the preview shows. */
+const changeCaptionScale = (step: number): void => {
+  const target = captionScaleTarget.value;
+  if (!target || !captionEditable.value) return;
+  const base = stageCaptionFontSize.value;
+  const scale = Math.min(4, Math.max(0.25, (captionFontSize.value + step) / base));
+  // A set holds one size, so every selected caption takes the stepped value.
+  const ids = selectedCaptionIds.value.length ? selectedCaptionIds.value : [target];
+  editPackagingAudio((checkpoint) => {
+    const boxes = { ...(checkpoint.captionBoxes ?? {}) };
+    for (const id of ids) boxes[id] = { ...captionBox(id), scale };
+    checkpoint.captionBoxes = boxes;
+  });
+};
+/** Steps the volume of every selected clip from the standard's value. */
+const changeAudioVolumeStep = (step: number): void => {
+  const standard = audioStandard.value;
+  if (!standard) return;
+  const stepped = standard.audio.volume + step;
+  editPackagingAudio((checkpoint) => {
+    for (const clipId of selectedAudioClipIds.value) {
+      const target = packagingAudioTarget(clipId);
+      if (!target || target.kind === 'CAPTION') continue;
+      const audio = packagingAudio(checkpoint, target);
+      // Each clip clamps against its own ceiling, so a music bed caught in a mixed selection
+      // lands under 0.3 even when the standard is a full-volume narration line.
+      if (audio) audio.volume = Math.min(audioVolumeMax(target.kind), Math.max(0, stepped));
+    }
+  });
+};
+/**
+ * Steps one fade edge on every selected clip. The two edges share the clip's length, so the
+ * stepped value is capped by what the other edge leaves — and each clip re-caps it against its own
+ * duration, which matters when the set holds clips of different lengths.
+ */
+const changeAudioFadeStep = (edge: 'fadeIn' | 'fadeOut', step: number): void => {
+  const standard = audioStandard.value;
+  if (!standard) return;
+  const other = edge === 'fadeIn' ? 'fadeOut' : 'fadeIn';
+  const limit = Math.max(0, standard.audio.duration - audioFade(standard.audio, standard.kind, other));
+  const stepped = Math.min(limit, Math.max(0, audioFade(standard.audio, standard.kind, edge) + step));
+  editPackagingAudio((checkpoint) => {
+    for (const clipId of selectedAudioClipIds.value) {
+      const target = packagingAudioTarget(clipId);
+      if (!target || target.kind === 'CAPTION') continue;
+      const audio = packagingAudio(checkpoint, target);
+      if (!audio) continue;
+      const ceiling = Math.max(0, audio.duration - audioFade(audio, target.kind, other));
+      // Rounded to the step's own precision, so repeated clicks cannot drift into 0.30000000000004.
+      audio[edge] = Math.round(Math.min(stepped, ceiling) * 100) / 100;
+    }
+  });
 };
 const updateWorkbenchMode = (): void => {
   compactWorkbench.value = window.innerWidth <= 1050;
@@ -1938,7 +2563,6 @@ const deleteSelectedTimelineItem = (): void => {
   if (!variant) return;
   const transitionSlotId = activeTransitionSlotId.value;
   const transitionSlot = variant.slots.find(({ id }) => id === transitionSlotId);
-  console.log('[del] transitionSlotId=', transitionSlotId, 'selectedSlotId=', activeUi.value?.selectedSlotId, 'transition=', transitionSlot?.transition);
   if (transitionSlot && transitionSlot.transition !== '硬切') {
     removeTransitionFromSlot(transitionSlotId);
     return;
@@ -2466,7 +3090,6 @@ const onEditorKeydown = (event: KeyboardEvent): void => {
     return;
   }
   if (event.key === 'Delete' || event.key === 'Backspace') {
-    console.log('[del] keydown', event.key, 'target=', target?.tagName, target?.className, 'defaultPrevented=', event.defaultPrevented);
     event.preventDefault();
     deleteSelectedTimelineItem();
     return;
@@ -2524,6 +3147,26 @@ watch(materialGrid, (element) => {
   });
   materialGridResizeObserver.observe(element);
 });
+watch(stageElement, (element) => {
+  stageResizeObserver?.disconnect();
+  stageResizeObserver = null;
+  if (stageResizeFrame !== undefined) cancelAnimationFrame(stageResizeFrame);
+  stageResizeFrame = undefined;
+  const measure = (): void => {
+    const size = element ? Math.max(11, Math.round(element.clientWidth / 22)) : 14;
+    if (size !== stageCaptionFontSize.value) stageCaptionFontSize.value = size;
+  };
+  measure();
+  if (!element) return;
+  stageResizeObserver = new ResizeObserver(() => {
+    if (stageResizeFrame !== undefined) cancelAnimationFrame(stageResizeFrame);
+    stageResizeFrame = requestAnimationFrame(() => {
+      stageResizeFrame = undefined;
+      measure();
+    });
+  });
+  stageResizeObserver.observe(element);
+});
 watch(materialColumnCount, () => (materialPage.value = 1));
 watch(materialPageCount, (count) => {
   if (materialPage.value > count) materialPage.value = count;
@@ -2550,6 +3193,10 @@ onBeforeUnmount(() => {
   materialDragGhost = null;
   clearMaterialPointerTarget();
   materialGridResizeObserver?.disconnect();
+  stageResizeObserver?.disconnect();
+  stageResizeObserver = null;
+  if (stageResizeFrame !== undefined) cancelAnimationFrame(stageResizeFrame);
+  stageResizeFrame = undefined;
   if (materialGridResizeFrame !== undefined) cancelAnimationFrame(materialGridResizeFrame);
   window.removeEventListener('resize', updateWorkbenchMode);
   controller?.abort();
@@ -3012,7 +3659,12 @@ defineExpose({ flushPendingEdits });
           >
             <span />
           </div>
-          <section ref="playerPanel" class="player-panel" @click="playerMenu = null">
+          <section
+            ref="playerPanel"
+            class="player-panel"
+            @click="playerMenu = null"
+            @pointerdown="onPlayerPanelPointerDown"
+          >
             <header>
               <strong>播放器</strong
               ><span
@@ -3021,7 +3673,12 @@ defineExpose({ flushPendingEdits });
               >
             </header>
             <div class="stage-space" :class="{ 'is-zoomed': previewZoom > 100 }">
-              <div class="stage" :class="{ landscape: stageAspectRatio >= 1 }" :style="stageStyle">
+              <div
+                ref="stageElement"
+                class="stage"
+                :class="{ landscape: stageAspectRatio >= 1 }"
+                :style="stageStyle"
+              >
                 <img
                   v-if="transitionFrame"
                   class="player-transition-frame"
@@ -3089,6 +3746,40 @@ defineExpose({ flushPendingEdits });
                 >
                   当前视频素材暂时无法读取，请恢复素材服务后刷新
                 </div>
+                <div
+                  v-if="previewCaption"
+                  class="player-caption-box"
+                  :class="{ 'is-selected': selectedCaptionIds.includes(previewCaption.id) }"
+                  :style="captionBoxStyle(previewCaption.id)"
+                  @pointercancel="onCaptionBoxPointerUp"
+                  @pointerdown="onCaptionBoxPointerDown"
+                  @pointermove="onCaptionBoxPointerMove"
+                  @pointerup="onCaptionBoxPointerUp"
+                >
+                  <div class="player-caption">
+                    {{ previewCaption.text }}
+                    <button
+                      v-if="captionEditable && selectedCaptionIds.includes(previewCaption.id)"
+                      type="button"
+                      class="caption-scale-handle"
+                      title="向上拖动放大字幕，向下拖动缩小字幕"
+                      aria-label="拖动调整字幕字号"
+                      @pointerdown.stop="onCaptionBoxPointerDown($event, 'SCALE')"
+                    />
+                  </div>
+                </div>
+                <div
+                  v-if="captionGuideX !== null"
+                  class="caption-guide is-vertical"
+                  :style="{ left: captionGuideOffset(captionGuideX) }"
+                  aria-hidden="true"
+                />
+                <div
+                  v-if="captionGuideY !== null"
+                  class="caption-guide is-horizontal"
+                  :style="{ bottom: captionGuideOffset(captionGuideY) }"
+                  aria-hidden="true"
+                />
                 <div v-if="!selectedVariant && !auditionMaterial" class="player-empty">
                   <Film :size="34" />
                   <b>尚未生成成片</b>
@@ -3443,12 +4134,136 @@ defineExpose({ flushPendingEdits });
             :prepare="preparePackaging"
             :playhead="playhead"
             :playing="playing"
-            @selected="selectedPackaging = $event"
+            @selected="onPackagingSelected"
             @preview="packagingPreviewEnabled = $event"
             @ready="packagingReady = $event"
           />
         </div>
+        <div v-if="editingCaption" class="caption-text-editor">
+          <Captions :size="14" aria-hidden="true" />
+          <span class="caption-text-time"
+            >{{ formatEffectTemplateMixTime(editingCaption.start) }} —
+            {{ formatEffectTemplateMixTime(editingCaption.end) }}</span
+          >
+          <input
+            ref="captionTextInput"
+            :value="editingCaption.text"
+            maxlength="500"
+            placeholder="输入字幕文本"
+            aria-label="字幕文本"
+            @input="changeCaptionText"
+          />
+          <span class="caption-font-size">
+            <button
+              type="button"
+              aria-label="减小字号"
+              :disabled="!captionEditable"
+              @click="changeCaptionScale(-1)"
+            >
+              −
+            </button>
+            <span>字号 {{ captionFontSize }}</span>
+            <button
+              type="button"
+              aria-label="增大字号"
+              :disabled="!captionEditable"
+              @click="changeCaptionScale(1)"
+            >
+              ＋
+            </button>
+          </span>
+        </div>
+        <div v-else-if="selectedCaptionIds.length > 1" class="caption-text-editor">
+          <Captions :size="14" aria-hidden="true" />
+          <span class="caption-text-time">已选中 {{ selectedCaptionIds.length }} 条字幕</span>
+          <span class="caption-font-size">
+            <button
+              type="button"
+              aria-label="减小字号"
+              :disabled="!captionEditable"
+              @click="changeCaptionScale(-1)"
+            >
+              −
+            </button>
+            <span>字号 {{ captionFontSize }}</span>
+            <button
+              type="button"
+              aria-label="增大字号"
+              :disabled="!captionEditable"
+              @click="changeCaptionScale(1)"
+            >
+              ＋
+            </button>
+          </span>
+        </div>
+        <div v-else-if="audioStandard" class="audio-edit-row">
+          <AudioLines :size="14" aria-hidden="true" />
+          <span class="audio-edit-label">
+            {{ audioStandard.kind === 'MUSIC' ? '纯音乐' : '口播' }}
+            <template v-if="selectedAudioClipIds.length > 1">
+              · 已选中 {{ selectedAudioClipIds.length }} 条
+            </template>
+          </span>
+          <span class="audio-stepper">
+            <button
+              type="button"
+              aria-label="减小音量"
+              :disabled="!captionEditable"
+              @click="changeAudioVolumeStep(-0.05)"
+            >
+              −
+            </button>
+            <span>音量 {{ audioStandardVolume }}%</span>
+            <button
+              type="button"
+              aria-label="增大音量"
+              :disabled="!captionEditable"
+              @click="changeAudioVolumeStep(0.05)"
+            >
+              ＋
+            </button>
+          </span>
+          <span class="audio-stepper">
+            <button
+              type="button"
+              aria-label="减小淡入"
+              :disabled="!captionEditable"
+              @click="changeAudioFadeStep('fadeIn', -0.1)"
+            >
+              −
+            </button>
+            <span>淡入 {{ audioStandardFade('fadeIn') }}s</span>
+            <button
+              type="button"
+              aria-label="增大淡入"
+              :disabled="!captionEditable"
+              @click="changeAudioFadeStep('fadeIn', 0.1)"
+            >
+              ＋
+            </button>
+          </span>
+          <span class="audio-stepper">
+            <button
+              type="button"
+              aria-label="减小淡出"
+              :disabled="!captionEditable"
+              @click="changeAudioFadeStep('fadeOut', -0.1)"
+            >
+              −
+            </button>
+            <span>淡出 {{ audioStandardFade('fadeOut') }}s</span>
+            <button
+              type="button"
+              aria-label="增大淡出"
+              :disabled="!captionEditable"
+              @click="changeAudioFadeStep('fadeOut', 0.1)"
+            >
+              ＋
+            </button>
+          </span>
+        </div>
         <EffectTemplateMixTimeline
+          ref="timelineRef"
           :packaging="selectedPackaging?.stale ? null : selectedPackaging"
           :can-redo="canRedoTimeline"
           :can-undo="canUndoTimeline"
@@ -3456,9 +4271,16 @@ defineExpose({ flushPendingEdits });
           :height="timelineHeight"
           :materials="workspace.materials"
           :playhead="playhead"
+          :project-id="projectId"
+          :selected-audio-clip-id="
+            selectedCaptionId ? `caption:${selectedCaptionId}` : null
+          "
           :selected-slot-id="selectedSlot?.id ?? ''"
           :variant="selectedVariant"
           @reorder-slot="moveProjectSlot"
+          @change-audio-volume="changePackagingAudioVolume"
+          @move-audio-clip="movePackagingAudio"
+          @resize-audio-clip="resizePackagingAudio"
           @move-clip="moveTimelineClip"
           @move-clips="moveTimelineClips"
           @assign-material="assignDroppedMaterial"
@@ -3466,6 +4288,9 @@ defineExpose({ flushPendingEdits });
           @open-transition="openTransitionPanel"
           @redo="redoTimelineEdit"
           @seek="seek"
+          @select-audio-clip="onAudioClipSelected"
+          @select-audio-clips="onAudioClipsSelected"
+          @select-caption-clips="onCaptionClipsSelected"
           @select-slot="selectSlot"
           @trim-slot="changeTimelineTrimStart"
           @resize-slot="resizeTimelineSlot"
@@ -4936,6 +5761,79 @@ button:disabled {
   z-index: 2;
   opacity: 1;
 }
+/* Mirrors the burned-in ASS subtitle: the box is the wrap width, so stretching it reads
+   directly as "how wide the caption may wrap". Flex lets the text inside hug its own glyphs
+   within that width, which is what the white frame is drawn around. */
+.player-caption-box {
+  position: absolute;
+  z-index: 4;
+  display: flex;
+  justify-content: center;
+}
+.player-caption {
+  position: relative;
+  /* A flex item refuses to shrink below its longest word by default, which let a long caption
+     overflow the wrap box and grow as wide as the stage — leaving no room to drag it sideways. */
+  min-width: 0;
+  color: #fff;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  text-align: center;
+  text-shadow:
+    0 1px 0 #181818,
+    0 -1px 0 #181818,
+    1px 0 0 #181818,
+    -1px 0 0 #181818,
+    0 0 4px rgba(0, 0, 0, 0.85);
+  outline-offset: 2px;
+  pointer-events: none;
+}
+/* A solid dot marks the frame's top-left corner; dragging it away from the bottom edge scales
+   the caption. It re-enables pointer events the caption text itself switches off. */
+.caption-scale-handle {
+  position: absolute;
+  top: -5px;
+  left: -5px;
+  width: 11px;
+  height: 11px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.45);
+  border-radius: 50%;
+  background: #fff;
+  cursor: nwse-resize;
+  touch-action: none;
+  pointer-events: auto;
+}
+/* The white frame hugs the caption itself rather than the whole wrap width, and only while this
+   caption is the selected one. The box carries no handles: its own edge grab zones, measured on
+   the text frame, do the stretching. */
+.player-caption-box.is-selected {
+  cursor: move;
+  touch-action: none;
+}
+.player-caption-box.is-selected .player-caption {
+  outline: 2px solid #fff;
+}
+/* Green is reserved for the snap lines the player's borders draw, never for the caption frame.
+   The width lives here alone so the edge offset below cannot drift away from it. */
+.caption-guide {
+  --caption-guide-width: 2px;
+  position: absolute;
+  z-index: 5;
+  background: #22c55e;
+  pointer-events: none;
+}
+.caption-guide.is-vertical {
+  top: 0;
+  bottom: 0;
+  width: var(--caption-guide-width);
+}
+.caption-guide.is-horizontal {
+  right: 0;
+  left: 0;
+  height: var(--caption-guide-width);
+}
 .player-blackout {
   position: absolute;
   z-index: 3;
@@ -5470,6 +6368,123 @@ button:disabled {
 .editor-horizontal-resizer:hover span,
 .editor-horizontal-resizer.active span {
   background: #2563eb;
+}
+/* Sits in the gap between the workbench and the timeline, only while a caption is picked. */
+.caption-text-editor {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 14px;
+  border-top: 1px solid #d8e1ee;
+  background: #fbf6f4;
+  color: #8c3b2e;
+}
+.caption-text-time {
+  flex: none;
+  color: #94a3b8;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.caption-text-editor input {
+  min-width: 0;
+  flex: 1;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid #d5a77d;
+  border-radius: 4px;
+  background: #fff;
+  color: #7c3327;
+  font-size: 12px;
+}
+.caption-text-editor input:focus {
+  border-color: #2563eb;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.18);
+}
+/* Sits right next to the text box, so sizing reads as part of editing the caption. */
+.caption-font-size {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  color: #8c3b2e;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.caption-font-size button {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid #d5a77d;
+  border-radius: 4px;
+  background: #fff;
+  color: #8c3b2e;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.caption-font-size button:hover:not(:disabled) {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+.caption-font-size button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+/* Same row and rhythm as the caption font stepper, in a cool palette so the two never read alike. */
+.audio-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 4px 12px;
+  border: 1px solid #bfd3e8;
+  border-radius: 8px;
+  background: #f4f8fc;
+  color: #2c4a6b;
+}
+.audio-edit-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: #33587f;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audio-stepper {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  color: #2c4a6b;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.audio-stepper button {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid #a9c3dd;
+  border-radius: 4px;
+  background: #fff;
+  color: #2c4a6b;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.audio-stepper button:hover:not(:disabled) {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+.audio-stepper button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 .slot-settings label {
   display: flex;

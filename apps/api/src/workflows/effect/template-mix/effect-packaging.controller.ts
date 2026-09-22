@@ -15,14 +15,21 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Type } from 'class-transformer';
 import {
+  IsArray,
   IsIn,
+  IsISO8601,
+  IsNumber,
   IsObject,
   IsOptional,
   IsString,
   IsUUID,
+  Max,
   MaxLength,
+  Min,
   MinLength,
+  ValidateNested,
 } from 'class-validator';
 import type {
   PackagingCheckpoint,
@@ -53,6 +60,40 @@ export class PackagingCheckpointDto extends EffectTemplateMixWorkerProjectDto {
   @IsIn(PACKAGING_STAGES) stage!: PackagingStage;
   @IsObject() checkpoint!: PackagingCheckpoint;
   @IsOptional() @IsString() @MaxLength(300) errorMessage?: string;
+}
+/** Only geometry and volume are accepted; file identity stays server-owned. */
+export class PackagingAudioEditDto {
+  @Type(() => Number) @IsNumber() @Min(0) start!: number;
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0) offset?: number;
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0) duration?: number;
+  @Type(() => Number) @IsNumber() @Min(0) @Max(1) volume!: number;
+  /** Editor-only; absent keeps the pipeline default (`final_output.py`), so old clients stay valid. */
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0) fadeIn?: number;
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0) fadeOut?: number;
+}
+export class PackagingCaptionEditDto {
+  @IsString() @MinLength(1) @MaxLength(50) id!: string;
+  @IsString() @MinLength(1) @MaxLength(500) text!: string;
+  @Type(() => Number) @IsNumber() @Min(0) start!: number;
+  @Type(() => Number) @IsNumber() @Min(0) end!: number;
+}
+/** Normalised caption geometry; ranges mirror the domain check that backs this up. */
+export class PackagingCaptionBoxDto {
+  @Type(() => Number) @IsNumber() @Min(0) @Max(1) x!: number;
+  @Type(() => Number) @IsNumber() @Min(0) @Max(1) y!: number;
+  @Type(() => Number) @IsNumber() @Min(0.1) @Max(1) width!: number;
+  @Type(() => Number) @IsNumber() @Min(0.25) @Max(4) scale!: number;
+}
+export class UpdatePackagingAudioDto {
+  @IsISO8601() expectedUpdatedAt!: string;
+  @IsOptional() @IsObject() voices?: Record<string, PackagingAudioEditDto>;
+  @IsOptional() @ValidateNested() @Type(() => PackagingAudioEditDto) music?: PackagingAudioEditDto;
+  @IsOptional() @IsObject() boxes?: Record<string, PackagingCaptionBoxDto>;
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => PackagingCaptionEditDto)
+  captions?: PackagingCaptionEditDto[];
 }
 const uuid = new ParseUUIDPipe({ version: '4' });
 
@@ -87,6 +128,15 @@ export class EffectPackagingController {
   @Post('packaging-runs/:runId/retry')
   retry(@Param('projectId', uuid) projectId: string, @Param('runId', uuid) runId: string) {
     return this.service.retry(projectId, runId);
+  }
+  @Put('packaging-runs/:runId/items/:itemId/audio')
+  updateAudio(
+    @Param('projectId', uuid) projectId: string,
+    @Param('runId', uuid) runId: string,
+    @Param('itemId', uuid) itemId: string,
+    @Body() body: UpdatePackagingAudioDto,
+  ) {
+    return this.service.updateAudio(projectId, runId, itemId, body);
   }
   @Get('templates/:templateId/variants/:variantId/output-inputs')
   outputInputs(

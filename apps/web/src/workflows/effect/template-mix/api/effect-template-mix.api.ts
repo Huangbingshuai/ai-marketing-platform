@@ -4,6 +4,8 @@ import type {
   EffectTemplateMixAiRun,
   EffectTemplateMixTemplateEntry,
   EffectTemplateMixWorkspaceData,
+  PackagingItem,
+  UpdatePackagingAudioRequest,
   ValidateEffectTemplateMixData,
 } from '@ai-marketing/contracts';
 
@@ -133,3 +135,20 @@ export const completeEffectTemplateMixPackaging = (
   method: 'POST', operation: '完成全部包装并进入成片输出',
   body: { workflowRunId, expectedRevision, idempotencyKey },
 });
+
+/** Editor audio geometry is persisted on the packaging item, not the workflow draft. */
+export const updateEffectPackagingAudio = (
+  projectId: string,
+  runId: string,
+  itemId: string,
+  body: UpdatePackagingAudioRequest,
+): Promise<ApiResponse<PackagingItem>> =>
+  requestJson(
+    basePath(projectId) +
+      '/packaging-runs/' +
+      encodeURIComponent(runId) +
+      '/items/' +
+      encodeURIComponent(itemId) +
+      '/audio',
+    { method: 'PUT', operation: '保存音频轨道编辑', body },
+  );

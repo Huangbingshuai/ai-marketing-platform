@@ -18,6 +18,42 @@ def test_caption_escaping_and_bounds() -> None:
         captions_ass([{'text': '商品', 'start': .2, 'end': 1.2}], 720, 960, 1)
 
 
+def test_editor_reworded_subtitle_burns_its_own_text_not_the_narration() -> None:
+    # The editor may reword a caption while the spoken line keeps its original script text.
+    ass = captions_ass([{'text': '限时五折', 'start': .2, 'end': .9}], 720, 960, 1)
+    assert '限时五折' in ass and '商品' not in ass
+    assert 'Style: Default' in ass and ',2,' in ass  # bottom-centre alignment is unchanged
+
+
+def test_caption_box_moves_wraps_and_scales_one_event() -> None:
+    caption = [{'id': 'a1', 'text': '限时五折优惠活动今天最后一天抓紧时间下单抢购', 'start': .2, 'end': .9}]
+    # 0.25 of 720 puts the block centre at 180; a 0.4 wrap is 288px, so margins are 36/396.
+    line = [row for row in captions_ass(caption, 720, 1280, 1, {'a1': {'x': .25, 'y': .08, 'width': .4, 'scale': 1}}).splitlines() if row.startswith('Dialogue')][0]
+    assert line.startswith('Dialogue: 0,0:00:00.20,0:00:00.90,Default,,36,396,102,,')
+    assert '\\N' in line  # CJK is wrapped here because libass itself only breaks at spaces
+    assert line.count('\\N') >= 1 and line.endswith('抢购')
+    # Font scale is relative to the pipeline default of width / 22.
+    big = [row for row in captions_ass(caption, 720, 1280, 1, {'a1': {'x': .5, 'y': .5, 'width': .9, 'scale': 2}}).splitlines() if row.startswith('Dialogue')][0]
+    assert '{\\fs66}' in big and ',640,,' in big
+
+
+def test_caption_without_a_box_keeps_the_pipeline_style_byte_for_byte() -> None:
+    caption = [{'id': 'a1', 'text': '本地测试字幕', 'start': .2, 'end': .9}]
+    plain = captions_ass(caption, 720, 960, 1)
+    assert plain == captions_ass(caption, 720, 960, 1, {})
+    # An editor box for a caption that is not in this list must not leak onto it.
+    assert plain == captions_ass(caption, 720, 960, 1, {'other': {'x': .5, 'y': .5, 'width': .9, 'scale': 2}})
+    assert ',0,0,0,,' in plain and '\\fs' not in plain
+
+
+def test_caption_box_never_leaves_the_frame() -> None:
+    caption = [{'id': 'a1', 'text': '限时五折优惠活动今天最后一天抓紧时间下单抢购', 'start': .2, 'end': .9}]
+    line = [row for row in captions_ass(caption, 720, 1280, 1, {'a1': {'x': 1, 'y': 1, 'width': 1, 'scale': 4}}).splitlines() if row.startswith('Dialogue')][0]
+    left, right, bottom = (int(value) for value in line.split(',,')[1].split(',')[:3])
+    assert left == 0 and right == 0  # a full-width box is pinned inside the frame
+    assert 0 <= bottom <= 1280
+
+
 @pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required for real local rendering')
 @pytest.mark.parametrize('transition', ['硬切', *final_output.TRANSITIONS, '六镜头混合'])
 async def test_real_h264_aac_render_has_exact_duration_audio_and_last_frame(tmp_path: Path, monkeypatch: Any, transition: str) -> None:
@@ -68,3 +104,101 @@ async def test_completed_output_is_not_rendered_again() -> None:
     await FinalOutputHandler(api, 1000).handle(message, {'projectId': '11111111-1111-4111-8111-111111111111', 'runId': '22222222-2222-4222-8222-222222222222'})
     message.ack.assert_awaited_once()
     assert not any('/video' in call.args[1] for call in api.request.call_args_list)
+
+
+def snapshot_with_audio(voices: dict[str, Any], music: dict[str, Any]) -> dict[str, Any]:
+    clips = [{'fileObjectId': 'a', 'start': 0, 'duration': 4, 'offset': 0, 'lane': 0, 'transition': '硬切', 'transitionDuration': 0}]
+    return {'timeline': {'duration': 4, 'clips': clips}, 'aspectRatio': '4:3', 'originalVolume': .15,
+        'packaging': {'voices': voices, 'music': music, 'captions': [{'text': '本地测试字幕', 'start': .2, 'end': .5}]}}
+
+
+def capture_filters(monkeypatch: Any) -> list[str]:
+    """Record the final filter graph instead of shelling out to FFmpeg."""
+    captured: list[str] = []
+    async def fake_encode(args: list[str], cwd: Path) -> None:
+        if '-filter_complex' in args:
+            captured.extend(args[args.index('-filter_complex') + 1].split(';'))
+    async def fake_probe(path: Path) -> dict[str, Any]:
+        return {'format': {'duration': '4.0'}, 'streams': [
+            {'codec_type': 'video', 'codec_name': 'h264', 'duration': '4.0'},
+            {'codec_type': 'audio', 'codec_name': 'aac', 'duration': '4.0'}]}
+    monkeypatch.setattr(final_output, 'encode', fake_encode)
+    monkeypatch.setattr(final_output, 'probe', fake_probe)
+    return captured
+
+
+async def test_edited_voice_and_music_geometry_reaches_the_filter_graph(tmp_path: Path, monkeypatch: Any) -> None:
+    """Trimmed voices and moved/trimmed BGM must keep ducking and fades on the timeline."""
+    filters = capture_filters(monkeypatch)
+    snapshot = snapshot_with_audio(
+        {'line': {'fileObjectId': 'voice', 'start': 1.2, 'duration': .5, 'volume': .8, 'offset': .2}},
+        {'fileObjectId': 'music', 'start': 1.0, 'duration': 1.5, 'volume': .12, 'offset': .5})
+    await render(snapshot, {'a': tmp_path / 'a.mp4', 'voice': tmp_path / 'voice.wav',
+        'music': tmp_path / 'music.wav'}, tmp_path, AsyncMock())
+    voice = next(f for f in filters if f.endswith('[voice0]'))
+    music = next(f for f in filters if f.endswith('[music]'))
+    assert 'atrim=start=0.2:duration=0.5,asetpts=PTS-STARTPTS,volume=0.8,adelay=1200:all=1' in voice
+    assert 'atrim=start=0.5,asetpts=PTS-STARTPTS,atrim=duration=1.5,adelay=1000:all=1' in music
+    # Fades and ducking run after `adelay`, so they use timeline seconds.
+    assert 'between(t,1.2,1.7)' in music
+    assert 'afade=t=in:st=1.0:d=0.5' in music and 'afade=t=out:st=2.0:d=0.5' in music
+
+
+async def test_editor_fades_reach_the_filter_graph_in_timeline_seconds(tmp_path: Path, monkeypatch: Any) -> None:
+    """Editor fades override the pipeline default; the music fallback stays 0.5s."""
+    filters = capture_filters(monkeypatch)
+    snapshot = snapshot_with_audio(
+        {'line': {'fileObjectId': 'voice', 'start': 1.2, 'duration': .5, 'volume': .8,
+            'fadeIn': .1, 'fadeOut': .2}},
+        {'fileObjectId': 'music', 'start': 1.0, 'duration': 1.5, 'volume': .12,
+            'fadeIn': .3, 'fadeOut': .4})
+    await render(snapshot, {'a': tmp_path / 'a.mp4', 'voice': tmp_path / 'voice.wav',
+        'music': tmp_path / 'music.wav'}, tmp_path, AsyncMock())
+    voice = next(f for f in filters if f.endswith('[voice0]'))
+    music = next(f for f in filters if f.endswith('[music]'))
+    # Timeline seconds, not source seconds: the narration sits at 1.2 for .5s.
+    assert 'adelay=1200:all=1,afade=t=in:st=1.2:d=0.1,afade=t=out:st=1.5:d=0.2[voice0]' in voice
+    assert 'afade=t=in:st=1.0:d=0.3' in music and 'afade=t=out:st=2.1:d=0.4' in music
+
+
+async def test_untouched_audio_keeps_the_pre_fade_filter_graph(tmp_path: Path, monkeypatch: Any) -> None:
+    """A checkpoint with no fade keys must render exactly as it did before fades existed."""
+    filters = capture_filters(monkeypatch)
+    snapshot = snapshot_with_audio(
+        {'line': {'fileObjectId': 'voice', 'start': 1.2, 'duration': .5, 'volume': .8, 'offset': .2}},
+        {'fileObjectId': 'music', 'start': 1.0, 'duration': 1.5, 'volume': .12, 'offset': .5})
+    await render(snapshot, {'a': tmp_path / 'a.mp4', 'voice': tmp_path / 'voice.wav',
+        'music': tmp_path / 'music.wav'}, tmp_path, AsyncMock())
+    voice = next(f for f in filters if f.endswith('[voice0]'))
+    music = next(f for f in filters if f.endswith('[music]'))
+    assert voice.endswith('adelay=1200:all=1[voice0]') and 'afade' not in voice
+    # The music bed falls back to min(0.5, length / 2).
+    assert 'afade=t=in:st=1.0:d=0.5' in music and 'afade=t=out:st=2.0:d=0.5' in music
+
+
+@pytest.mark.parametrize('fade', [{'fadeIn': -.1}, {'fadeOut': -.1}, {'fadeIn': float('nan')},
+    {'fadeIn': 0.4, 'fadeOut': 0.4}])
+async def test_unusable_fades_are_rejected(tmp_path: Path, monkeypatch: Any, fade: dict[str, float]) -> None:
+    capture_filters(monkeypatch)
+    files = {'a': tmp_path / 'a.mp4', 'voice': tmp_path / 'voice.wav', 'music': tmp_path / 'music.wav'}
+    snapshot = snapshot_with_audio(
+        {'line': {'fileObjectId': 'voice', 'start': 1.2, 'duration': .5, 'volume': .8, **fade}},
+        {'fileObjectId': 'music', 'start': 0, 'duration': 4, 'volume': .12})
+    with pytest.raises(PackagingError):
+        await render(snapshot, files, tmp_path, AsyncMock())
+
+
+async def test_audio_geometry_beyond_the_frozen_timeline_is_rejected(tmp_path: Path, monkeypatch: Any) -> None:
+    capture_filters(monkeypatch)
+    over_voice = snapshot_with_audio(
+        {'line': {'fileObjectId': 'voice', 'start': 3.8, 'duration': .5, 'volume': 1, 'offset': 0}},
+        {'fileObjectId': 'music', 'start': 0, 'duration': 4, 'volume': .12})
+    with pytest.raises(PackagingError):
+        await render(over_voice, {'a': tmp_path / 'a.mp4', 'voice': tmp_path / 'voice.wav',
+            'music': tmp_path / 'music.wav'}, tmp_path, AsyncMock())
+    over_music = snapshot_with_audio(
+        {'line': {'fileObjectId': 'voice', 'start': .3, 'duration': .5, 'volume': 1}},
+        {'fileObjectId': 'music', 'start': 2.0, 'duration': 4, 'volume': .12})
+    with pytest.raises(PackagingError):
+        await render(over_music, {'a': tmp_path / 'a.mp4', 'voice': tmp_path / 'voice.wav',
+            'music': tmp_path / 'music.wav'}, tmp_path, AsyncMock())

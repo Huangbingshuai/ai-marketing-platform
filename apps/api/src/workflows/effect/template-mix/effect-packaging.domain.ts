@@ -21,6 +21,14 @@ const record = (value: unknown): Record<string, unknown> =>
 export const visualHash = (variant: EffectTemplateMixVariant) =>
   workflowStateHash(packagingVisualTimeline(variant));
 
+/** Read legacy frozen hashes without rewriting checkpoints or revisions. */
+export function matchesVisualHash(variant: EffectTemplateMixVariant, hash: string | undefined,
+  frozen?: EffectTemplateMixVariant): boolean {
+  if (visualHash(variant) === hash) return true;
+  if (!frozen || visualHash(variant) !== visualHash(frozen)) return false;
+  return workflowStateHash({ ...packagingVisualTimeline(frozen), videoLanes: frozen.videoLanes ?? {} }) === hash;
+}
+
 export function packagingSnapshot(
   variant: EffectTemplateMixVariant,
   materials: EffectTemplateMixMaterial[],
@@ -134,6 +142,11 @@ export function validatePackagingCheckpoint(
   snapshot: PackagingSnapshot,
   checkpoint: PackagingCheckpoint,
   ready = false,
+  /**
+   * Editor edits may move audio freely and decouple captions from their voice.
+   * Worker writes stay canonical (`edited = false`) so pipeline output cannot drift.
+   */
+  edited = false,
 ): void {
   const fail = () => {
     throw new BadRequestException('包装结果结构、来源或时间边界无效');
@@ -144,6 +157,22 @@ export function validatePackagingCheckpoint(
     start >= 0 &&
     end > start &&
     end <= snapshot.duration + 0.001;
+  /**
+   * Fades are editor-only and optional, so an absent field is legal — the pipeline default applies.
+   * When one is present it has to be a real duration that fits inside the clip, or the render would
+   * be asked to fade in and out of the same sample.
+   */
+  const fades = (audio: { duration: number; fadeIn?: number; fadeOut?: number }) => {
+    const fadeIn = audio.fadeIn ?? 0;
+    const fadeOut = audio.fadeOut ?? 0;
+    return (
+      Number.isFinite(fadeIn) &&
+      Number.isFinite(fadeOut) &&
+      fadeIn >= 0 &&
+      fadeOut >= 0 &&
+      fadeIn + fadeOut <= audio.duration + 0.05
+    );
+  };
   const facts = new Set(snapshot.facts.map((f) => f.id));
   if (
     Object.keys(checkpoint).some(
@@ -155,6 +184,7 @@ export function validatePackagingCheckpoint(
           'voices',
           'music',
           'captions',
+          'captionBoxes',
           'musicTaskId',
           'musicSubmissionPending',
         ].includes(k),
@@ -226,41 +256,85 @@ export function validatePackagingCheckpoint(
       const index = checkpoint.script?.findIndex((s) => s.id === id) ?? -1;
       const line = checkpoint.script?.[index];
       const limit = checkpoint.script?.[index + 1]?.start ?? snapshot.duration;
+      const offset = audio?.offset ?? 0;
       if (
         !line ||
         !audio ||
-        audio.start !== line.start ||
+        !Number.isFinite(offset) ||
+        offset < 0 ||
         !interval(audio.start, audio.start + audio.duration) ||
-        audio.start + audio.duration > limit + 0.001 ||
+        (!edited && (audio.start !== line.start || audio.start + audio.duration > limit + 0.001)) ||
         !Number.isFinite(audio.volume) ||
         audio.volume < 0 ||
-        audio.volume > 1
+        audio.volume > 1 ||
+        !fades(audio)
       )
         fail();
     }
-  if (
-    checkpoint.music &&
-    (!interval(checkpoint.music.start, checkpoint.music.start + checkpoint.music.duration) ||
-      checkpoint.music.start !== 0 ||
-      Math.abs(checkpoint.music.duration - snapshot.duration) > 0.05 ||
+  if (checkpoint.music) {
+    const offset = checkpoint.music.offset ?? 0;
+    if (
+      !Number.isFinite(offset) ||
+      offset < 0 ||
+      !interval(checkpoint.music.start, checkpoint.music.start + checkpoint.music.duration) ||
+      (!edited &&
+        (checkpoint.music.start !== 0 ||
+          Math.abs(checkpoint.music.duration - snapshot.duration) > 0.05)) ||
       !Number.isFinite(checkpoint.music.volume) ||
       checkpoint.music.volume < 0 ||
-      checkpoint.music.volume > 0.3)
-  )
-    fail();
+      checkpoint.music.volume > 0.3 ||
+      !fades(checkpoint.music)
+    )
+      fail();
+  }
   if (checkpoint.captions) {
     if (!Array.isArray(checkpoint.captions)) fail();
     if (new Set(checkpoint.captions.map((c) => c.id)).size !== checkpoint.captions.length) fail();
+    let previousEnd = 0;
     for (const c of checkpoint.captions) {
       const script = checkpoint.script?.find((s) => s.id === c.id),
         audio = checkpoint.voices?.[c.id];
       if (
         !script ||
         !audio ||
-        c.text !== script.text ||
-        c.start !== audio.start ||
-        Math.abs(c.end - c.start - audio.duration) > 0.002 ||
+        typeof c.text !== 'string' ||
+        !c.text.trim() ||
+        c.text.length > 500 ||
+        // The editor may reword a subtitle without rewriting the narration it is voiced from.
+        (!edited && c.text !== script.text) ||
+        (!edited &&
+          (c.start !== audio.start || Math.abs(c.end - c.start - audio.duration) > 0.002)) ||
         !interval(c.start, c.end)
+      )
+        fail();
+      // Edited captions move independently, so they must stay sorted and non-overlapping.
+      if (edited && c.start < previousEnd - 0.001) fail();
+      previousEnd = Math.max(previousEnd, c.end);
+    }
+  }
+  if (checkpoint.captionBoxes) {
+    const boxes = Object.entries(checkpoint.captionBoxes);
+    // A component redo drops the caption list while these stay, so an id is checked for
+    // shape only; a box that matches no caption is ignored at render time.
+    if (boxes.length > 500) fail();
+    for (const [id, box] of boxes) {
+      if (
+        !/^[a-zA-Z0-9_-]{1,50}$/.test(id) ||
+        !box ||
+        typeof box !== 'object' ||
+        Object.keys(box).some((k) => !['x', 'y', 'width', 'scale'].includes(k)) ||
+        !Number.isFinite(box.x) ||
+        !Number.isFinite(box.y) ||
+        !Number.isFinite(box.width) ||
+        !Number.isFinite(box.scale) ||
+        box.x < 0 ||
+        box.x > 1 ||
+        box.y < 0 ||
+        box.y > 1 ||
+        box.width < 0.1 ||
+        box.width > 1 ||
+        box.scale < 0.25 ||
+        box.scale > 4
       )
         fail();
     }
@@ -274,4 +348,40 @@ export function validatePackagingCheckpoint(
       checkpoint.captions?.length !== checkpoint.script.length)
   )
     fail();
+}
+
+/**
+ * Restore pipeline-canonical audio geometry before a partial redo reuses an edited
+ * checkpoint; the worker write path validates with the strict (unedited) rules.
+ */
+export function canonicalizeCheckpoint(
+  snapshot: PackagingSnapshot,
+  checkpoint: PackagingCheckpoint,
+): PackagingCheckpoint {
+  const voices = checkpoint.voices
+    ? Object.fromEntries(
+        Object.entries(checkpoint.voices).map(([id, audio]) => {
+          const line = checkpoint.script?.find((s) => s.id === id);
+          return [id, { ...audio, start: line?.start ?? audio.start, offset: 0 }];
+        }),
+      )
+    : checkpoint.voices;
+  const music = checkpoint.music
+    ? { ...checkpoint.music, start: 0, duration: snapshot.duration, offset: 0 }
+    : checkpoint.music;
+  const captions = checkpoint.captions
+    ? [...checkpoint.captions]
+        .sort((left, right) => left.start - right.start)
+        .map((caption) => {
+          const audio = voices?.[caption.id];
+          return audio
+            ? { ...caption, start: audio.start, end: audio.start + audio.duration }
+            : caption;
+        })
+    : checkpoint.captions;
+  const canonical: PackagingCheckpoint = { ...checkpoint };
+  if (voices) canonical.voices = voices;
+  if (music) canonical.music = music;
+  if (captions) canonical.captions = captions;
+  return canonical;
 }

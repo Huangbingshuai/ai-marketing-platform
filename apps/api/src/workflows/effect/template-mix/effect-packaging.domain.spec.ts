@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { packagingShardIndexes, packagingVisualVariant } from '@ai-marketing/contracts';
+import { packagingShardIndexes, packagingVisualVariant, packagingVisualTimeline } from '@ai-marketing/contracts';
+import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import type {
   EffectTemplateMixMaterial,
   EffectTemplateMixVariant,
@@ -7,9 +8,11 @@ import type {
   WorkingArtifact,
 } from '@ai-marketing/contracts';
 import {
+  canonicalizeCheckpoint,
   packagingSnapshot,
   validatePackagingCheckpoint,
   visualHash,
+  matchesVisualHash,
 } from './effect-packaging.domain';
 
 const variant = (): EffectTemplateMixVariant => ({
@@ -124,6 +127,17 @@ describe('packaging snapshots and validation', () => {
     b.offsets.s = 1;
     expect(visualHash(a)).not.toBe(visualHash(b));
   });
+  it('treats explicit default lanes as unchanged and reads legacy frozen hashes safely', () => {
+    const implicit = variant();
+    const explicit = { ...variant(), videoLanes: { s: 0 } };
+    expect(visualHash(implicit)).toBe(visualHash(explicit));
+    const legacy = workflowStateHash({ ...packagingVisualTimeline(explicit), videoLanes: { s: 0 } });
+    expect(matchesVisualHash(implicit, legacy, explicit)).toBe(true);
+    expect(matchesVisualHash(explicit, legacy, explicit)).toBe(true);
+    expect(matchesVisualHash(implicit, 'forged', explicit)).toBe(false);
+    expect(matchesVisualHash({ ...explicit, videoLanes: { s: 1 } }, legacy, explicit)).toBe(false);
+    expect(matchesVisualHash({ ...explicit, offsets: { s: 1 } }, legacy, explicit)).toBe(false);
+  });
   it.each([1, 10, 100])(
     'groups %i variants with stable identities and bounded capacity',
     (count) => {
@@ -164,6 +178,136 @@ describe('packaging snapshots and validation', () => {
     loud.music!.volume = 1;
     expect(() => validatePackagingCheckpoint(snapshot(), loud)).toThrow();
   });
+  it('accepts editor-trimmed and moved audio while the worker path stays strict', () => {
+    const edited: PackagingCheckpoint = {
+      ...checkpoint(),
+      script: [
+        { id: 'line-1', text: '商品', start: 0, end: 4, factIds: ['facts:0'] },
+        { id: 'line-2', text: '卖点', start: 5, end: 9, factIds: ['facts:5'] },
+      ],
+      voices: {
+        'line-1': { fileObjectId: 'voice', start: 5.5, duration: 2.4, volume: 0.6, offset: 0.3 },
+        'line-2': { fileObjectId: 'voice', start: 8, duration: 1, volume: 1, offset: 0 },
+      },
+      music: { fileObjectId: 'music', start: 2, duration: 6, volume: 0.2, offset: 1 },
+      // Captions decouple from their voice: they only need to stay sorted and disjoint.
+      captions: [
+        { id: 'line-1', text: '商品', start: 5.5, end: 7.9 },
+        { id: 'line-2', text: '卖点', start: 8, end: 9 },
+      ],
+    };
+    expect(() => validatePackagingCheckpoint(snapshot(), edited, true, true)).not.toThrow();
+    expect(() => validatePackagingCheckpoint(snapshot(), edited, true)).toThrow();
+  });
+  it('rejects edited audio or captions that leave the frozen timeline', () => {
+    const overVoice = checkpoint();
+    overVoice.voices!['line-1'] = { fileObjectId: 'voice', start: 8.5, duration: 2.4, volume: 1 };
+    expect(() => validatePackagingCheckpoint(snapshot(), overVoice, true, true)).toThrow();
+    const overMusic = checkpoint();
+    overMusic.music = { fileObjectId: 'music', start: 5, duration: 6, volume: 0.2 };
+    expect(() => validatePackagingCheckpoint(snapshot(), overMusic, true, true)).toThrow();
+    const negative = checkpoint();
+    negative.voices!['line-1'] = {
+      fileObjectId: 'voice',
+      start: 1,
+      duration: 2.4,
+      volume: 1,
+      offset: -0.5,
+    };
+    expect(() => validatePackagingCheckpoint(snapshot(), negative, true, true)).toThrow();
+  });
+  it('accepts editor fades that fit inside the clip and keeps them through a redo', () => {
+    const faded = checkpoint();
+    faded.voices!['line-1'] = {
+      fileObjectId: 'voice',
+      start: 0,
+      duration: 2.4,
+      volume: 1,
+      fadeIn: 0.4,
+      fadeOut: 0.6,
+    };
+    faded.music = { fileObjectId: 'music', start: 0, duration: 10, volume: 0.12, fadeIn: 0.5, fadeOut: 0.5 };
+    expect(() => validatePackagingCheckpoint(snapshot(), faded, true)).not.toThrow();
+    expect(canonicalizeCheckpoint(snapshot(), faded).voices!['line-1']).toMatchObject({
+      fadeIn: 0.4,
+      fadeOut: 0.6,
+    });
+    expect(canonicalizeCheckpoint(snapshot(), faded).music).toMatchObject({ fadeIn: 0.5, fadeOut: 0.5 });
+  });
+  it('rejects fades that are negative, non-finite or longer than the clip', () => {
+    // `fadeIn + fadeOut` is checked against the clip, so the 2.4s narration rejects a pair the
+    // 10s music bed accepts. Every one of these is unbounded on both, though.
+    for (const fade of [
+      { fadeIn: -0.1 },
+      { fadeOut: -0.1 },
+      { fadeIn: Number.NaN },
+      { fadeOut: Number.POSITIVE_INFINITY },
+    ]) {
+      const voice = checkpoint();
+      voice.voices!['line-1'] = { fileObjectId: 'voice', start: 0, duration: 2.4, volume: 1, ...fade };
+      expect(() => validatePackagingCheckpoint(snapshot(), voice)).toThrow();
+      const music = checkpoint();
+      music.music = { fileObjectId: 'music', start: 0, duration: 10, volume: 0.12, ...fade };
+      expect(() => validatePackagingCheckpoint(snapshot(), music)).toThrow();
+    }
+    const overlong = checkpoint();
+    overlong.voices!['line-1'] = {
+      fileObjectId: 'voice',
+      start: 0,
+      duration: 2.4,
+      volume: 1,
+      fadeIn: 1.5,
+      fadeOut: 1.5,
+    };
+    expect(() => validatePackagingCheckpoint(snapshot(), overlong)).toThrow();
+  });
+  it('rejects captions that overlap after independent movement', () => {
+    const overlapping: PackagingCheckpoint = {
+      ...checkpoint(),
+      script: [
+        { id: 'line-1', text: '商品', start: 0, end: 4, factIds: ['facts:0'] },
+        { id: 'line-2', text: '卖点', start: 5, end: 9, factIds: ['facts:5'] },
+      ],
+      voices: {
+        'line-1': { fileObjectId: 'voice', start: 5, duration: 3, volume: 1 },
+        'line-2': { fileObjectId: 'voice', start: 8, duration: 1, volume: 1 },
+      },
+      captions: [
+        { id: 'line-1', text: '商品', start: 5, end: 8 },
+        { id: 'line-2', text: '卖点', start: 7.5, end: 9 },
+      ],
+    };
+    expect(() => validatePackagingCheckpoint(snapshot(), overlapping, true, true)).toThrow();
+  });
+  it('restores pipeline-canonical geometry before a partial redo', () => {
+    const edited = checkpoint();
+    edited.voices!['line-1'] = {
+      fileObjectId: 'voice',
+      start: 5.5,
+      duration: 2.4,
+      volume: 0.6,
+      offset: 0.3,
+    };
+    edited.music = { fileObjectId: 'music', start: 2, duration: 6, volume: 0.2, offset: 1 };
+    edited.captions = [{ id: 'line-1', text: '商品', start: 5.5, end: 7.9 }];
+    const canonical = canonicalizeCheckpoint(snapshot(), edited);
+    expect(canonical.voices!['line-1']).toEqual({
+      fileObjectId: 'voice',
+      start: 0,
+      duration: 2.4,
+      volume: 0.6,
+      offset: 0,
+    });
+    expect(canonical.music).toEqual({
+      fileObjectId: 'music',
+      start: 0,
+      duration: 10,
+      volume: 0.2,
+      offset: 0,
+    });
+    expect(canonical.captions).toEqual([{ id: 'line-1', text: '商品', start: 0, end: 2.4 }]);
+    expect(() => validatePackagingCheckpoint(snapshot(), canonical, true)).not.toThrow();
+  });
   it('rejects malformed / unbounded checkpoint fields', () => {
     expect(() =>
       validatePackagingCheckpoint(snapshot(), {
@@ -176,5 +320,56 @@ describe('packaging snapshots and validation', () => {
     expect(() =>
       validatePackagingCheckpoint(snapshot(), { secret: 'leak' } as PackagingCheckpoint),
     ).toThrow();
+  });
+  it('lets the editor reword a subtitle without rewriting the narration it is voiced from', () => {
+    const reworded = checkpoint();
+    reworded.captions![0]!.text = '限时五折';
+    expect(() => validatePackagingCheckpoint(snapshot(), reworded, true, true)).not.toThrow();
+    // The worker still writes captions straight from the script line it voiced.
+    expect(() => validatePackagingCheckpoint(snapshot(), reworded, true)).toThrow();
+  });
+  it('rejects blank or unbounded subtitle text on every path', () => {
+    const blank = checkpoint();
+    blank.captions![0]!.text = '   ';
+    expect(() => validatePackagingCheckpoint(snapshot(), blank, true, true)).toThrow();
+    const endless = checkpoint();
+    endless.captions![0]!.text = '字'.repeat(501);
+    expect(() => validatePackagingCheckpoint(snapshot(), endless, true, true)).toThrow();
+  });
+  it('accepts editor caption geometry on both paths and bounds it', () => {
+    const placed = checkpoint();
+    placed.captionBoxes = { 'line-1': { x: 0.25, y: 0.4, width: 0.6, scale: 1.5 } };
+    expect(() => validatePackagingCheckpoint(snapshot(), placed, true, true)).not.toThrow();
+    expect(() => validatePackagingCheckpoint(snapshot(), placed, true)).not.toThrow();
+    for (const box of [
+      { x: 1.5, y: 0.4, width: 0.6, scale: 1 },
+      { x: 0.5, y: -0.1, width: 0.6, scale: 1 },
+      { x: 0.5, y: 0.4, width: 0.05, scale: 1 },
+      { x: 0.5, y: 0.4, width: 0.6, scale: 5 },
+      { x: Number.NaN, y: 0.4, width: 0.6, scale: 1 },
+    ]) {
+      const bad = checkpoint();
+      bad.captionBoxes = { 'line-1': box };
+      expect(() => validatePackagingCheckpoint(snapshot(), bad, true, true)).toThrow();
+    }
+  });
+  it('keeps caption geometry through a component redo and rejects forged keys', () => {
+    // A redo drops `captions` while the worker regenerates them; the geometry must survive.
+    const redo: PackagingCheckpoint = checkpoint();
+    delete redo.captions;
+    redo.captionBoxes = { 'line-1': { x: 0.25, y: 0.4, width: 0.6, scale: 1.5 } };
+    expect(() => validatePackagingCheckpoint(snapshot(), redo)).not.toThrow();
+    expect(canonicalizeCheckpoint(snapshot(), redo).captionBoxes).toEqual(redo.captionBoxes);
+    // Ids follow the same shape rule as script line ids.
+    for (const id of ['', 'a b', 'x'.repeat(51)]) {
+      const forged = checkpoint();
+      forged.captionBoxes = { [id]: { x: 0.5, y: 0.5, width: 0.5, scale: 1 } };
+      expect(() => validatePackagingCheckpoint(snapshot(), forged)).toThrow();
+    }
+    const unknownKey = checkpoint();
+    unknownKey.captionBoxes = {
+      'line-1': { x: 0.5, y: 0.5, width: 0.5, scale: 1, extra: 1 } as never,
+    };
+    expect(() => validatePackagingCheckpoint(snapshot(), unknownKey)).toThrow();
   });
 });

@@ -16,7 +16,12 @@ function harness() {
       update: vi.fn(),
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
-    effectPackagingItem: { findFirst: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
+    effectPackagingItem: {
+      findFirst: vi.fn(),
+      findFirstOrThrow: vi.fn(),
+      update: vi.fn(),
+      updateMany: vi.fn(),
+    },
     jobOutbox: { upsert: vi.fn() },
   };
   const repo = new EffectPackagingRepository({
@@ -155,6 +160,22 @@ describe('packaging lease and durable task repository', () => {
       where: { projectId: 'p', runId: 'r', status: { not: 'COMPLETED' } },
       data: { status: 'QUEUED', errorMessage: null, completedAt: null },
     });
+  });
+  it('locks editor audio edits by updatedAt and rejects lost updates', async () => {
+    const { db, repo } = harness();
+    db.effectPackagingItem.updateMany.mockResolvedValue({ count: 1 });
+    db.effectPackagingItem.findFirstOrThrow.mockResolvedValue({ id: 'i' });
+    await repo.updateCheckpoint('p', 'i', { musicTaskId: 'x' }, '2026-01-01T00:00:00.000Z');
+    expect(db.effectPackagingItem.updateMany).toHaveBeenCalledWith({
+      where: { id: 'i', projectId: 'p', updatedAt: new Date('2026-01-01T00:00:00.000Z') },
+      data: { checkpoint: { musicTaskId: 'x' } },
+    });
+    db.effectPackagingItem.updateMany.mockResolvedValue({ count: 0 });
+    await expect(repo.updateCheckpoint('p', 'i', {}, '2026-01-01T00:00:00.000Z')).rejects.toThrow(
+      '已被修改',
+    );
+    await expect(repo.updateCheckpoint('p', 'i', {}, 'not-a-date')).rejects.toThrow('已被修改');
+    expect(db.effectPackagingItem.findFirstOrThrow).toHaveBeenCalledTimes(1);
   });
   it('cancel invalidates the attempt and only cancels unfinished items', async () => {
     const { db, repo } = harness();

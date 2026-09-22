@@ -12,10 +12,12 @@ import type {
   CreatePackagingRequest,
   EffectTemplateMixVariant,
   PackagingCheckpoint,
+  PackagingItem,
   PackagingRun,
   PackagingSnapshot,
   PackagingStage,
   EffectTemplateMixWorkspaceData,
+  UpdatePackagingAudioRequest,
   WorkingArtifact,
 } from '@ai-marketing/contracts';
 import { packagingVisualTimeline } from '@ai-marketing/contracts';
@@ -26,10 +28,39 @@ import { WorkflowWorkingService } from '../../../platform/workflow/workflow-work
 import { STORAGE_PORT, type StoragePort } from '../../../platform/file/storage.port';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import {
+  canonicalizeCheckpoint,
   packagingSnapshot,
   validatePackagingCheckpoint,
-  visualHash,
+  matchesVisualHash,
 } from './effect-packaging.domain';
+
+type PackagingRunRow = NonNullable<Awaited<ReturnType<EffectPackagingRepository['get']>>>;
+
+/**
+ * The editor's fades for one audio clip, rebuilt field by field so a client cannot smuggle anything
+ * else in. A field the editor never sent stays absent rather than becoming 0: absent means "pipeline
+ * default", and inventing a 0 here would silently drop the music bed's easing.
+ */
+function fadeFields(
+  duration: number,
+  audio: { fadeIn?: number; fadeOut?: number },
+  edit: { fadeIn?: number; fadeOut?: number },
+): { fadeIn?: number; fadeOut?: number } {
+  const fadeIn = edit.fadeIn ?? audio.fadeIn ?? 0;
+  const fadeOut = edit.fadeOut ?? audio.fadeOut ?? 0;
+  if (
+    !Number.isFinite(fadeIn) ||
+    !Number.isFinite(fadeOut) ||
+    fadeIn < 0 ||
+    fadeOut < 0 ||
+    fadeIn + fadeOut > duration + 0.05
+  )
+    throw new BadRequestException('淡入淡出时长超出音频长度');
+  return {
+    ...(edit.fadeIn !== undefined ? { fadeIn } : {}),
+    ...(edit.fadeOut !== undefined ? { fadeOut } : {}),
+  };
+}
 
 async function wavDuration(path: string, size: number): Promise<number> {
   const handle = await open(path, 'r');
@@ -107,7 +138,8 @@ export class EffectPackagingService {
         .find(
           (i) =>
             i.variantId === body.variantId &&
-            i.sourceTimelineHash === snapshots[0]!.sourceTimelineHash &&
+            matchesVisualHash(snapshots[0]!.variant, i.sourceTimelineHash,
+              (i.snapshot as unknown as PackagingSnapshot).variant) &&
             (i.snapshot as unknown as PackagingSnapshot).dependencies.every((d) =>
               artifacts.some(
                 (a) =>
@@ -116,7 +148,15 @@ export class EffectPackagingService {
             ),
         );
       if (!previous) throw new ConflictException('没有可复用的当前包装，请先生成完整包装');
-      const cp = structuredClone(previous.checkpoint) as PackagingCheckpoint;
+      // Keep legacy file lineage for semantically identical frozen visuals.
+      snapshots[0]!.sourceTimelineHash = previous.sourceTimelineHash;
+      snapshots[0]!.variant = (previous.snapshot as unknown as PackagingSnapshot).variant;
+      // A previous run may carry editor-edited geometry; restore pipeline-canonical
+      // audio before the worker write path re-validates it strictly.
+      const cp = canonicalizeCheckpoint(
+        snapshots[0]!,
+        structuredClone(previous.checkpoint) as PackagingCheckpoint,
+      );
       if (body.component === 'VOICE') {
         delete cp.script;
         delete cp.voices;
@@ -150,14 +190,14 @@ export class EffectPackagingService {
     ).items;
     return this.present(run, workspace, artifacts);
   }
-  private present(
-    run: NonNullable<Awaited<ReturnType<EffectPackagingRepository['get']>>>,
+  private presentItems(
+    run: PackagingRunRow,
     workspace: EffectTemplateMixWorkspaceData,
     artifacts: WorkingArtifact[],
-  ): PackagingRun {
+  ): PackagingItem[] {
     const variants =
       workspace.draft.templates.find((t) => t.id === run.templateId)?.workspace.variants ?? [];
-    const items = run.items.map((i) => {
+    return run.items.map((i) => {
       const snapshot = i.snapshot as unknown as PackagingSnapshot;
       const variant = variants.find((v) => v.id === i.variantId);
       const checkpoint = { ...(i.checkpoint as PackagingCheckpoint) };
@@ -165,6 +205,7 @@ export class EffectPackagingService {
       delete checkpoint.musicSubmissionPending;
       return {
         id: i.id,
+        runId: run.id,
         variantId: i.variantId,
         name: i.name,
         shardIndex: i.shardIndex,
@@ -175,7 +216,7 @@ export class EffectPackagingService {
         checkpoint,
         stale:
           !variant ||
-          visualHash(variant) !== i.sourceTimelineHash ||
+          !matchesVisualHash(variant, i.sourceTimelineHash, snapshot.variant) ||
           snapshot.dependencies.some(
             (d) =>
               !artifacts.some(
@@ -189,8 +230,16 @@ export class EffectPackagingService {
         errorMessage: i.errorMessage,
         startedAt: i.startedAt?.toISOString() ?? null,
         completedAt: i.completedAt?.toISOString() ?? null,
+        updatedAt: i.updatedAt.toISOString(),
       };
     });
+  }
+  private present(
+    run: PackagingRunRow,
+    workspace: EffectTemplateMixWorkspaceData,
+    artifacts: WorkingArtifact[],
+  ): PackagingRun {
+    const items = this.presentItems(run, workspace, artifacts);
     return {
       id: run.id,
       templateId: run.templateId,
@@ -211,6 +260,101 @@ export class EffectPackagingService {
       },
     };
   }
+  /** Editor audio edits: only geometry/volume are trusted, never the client's file identity. */
+  async updateAudio(
+    projectId: string,
+    runId: string,
+    itemId: string,
+    body: UpdatePackagingAudioRequest,
+  ): Promise<PackagingItem> {
+    const raw = await this.repo.get(projectId, runId);
+    const item = raw?.items.find((i) => i.id === itemId);
+    if (!raw || !item) throw new NotFoundException('包装成片不存在');
+    if (item.status !== 'COMPLETED') throw new ConflictException('包装尚未完成，无法编辑音频');
+    const workspace = await this.mix.workspace(projectId, raw.workflowRunId);
+    const artifacts = (
+      await this.working.listArtifacts(projectId, { workflowRunId: raw.workflowRunId })
+    ).items;
+    const snapshot = item.snapshot as unknown as PackagingSnapshot;
+    const variant = workspace.draft.templates
+      .find((t) => t.id === raw.templateId)
+      ?.workspace.variants.find((v) => v.id === item.variantId);
+    if (
+      !variant ||
+      !matchesVisualHash(variant, item.sourceTimelineHash, snapshot.variant) ||
+      snapshot.dependencies.some(
+        (d) =>
+          !artifacts.some(
+            (a) =>
+              a.id === d.artifactId &&
+              a.revision === d.revision &&
+              a.freshness === 'CURRENT' &&
+              a.availability === 'AVAILABLE',
+          ),
+      )
+    )
+      throw new ConflictException('源时间轴已改变，请重新生成包装后再编辑音频');
+    const old = item.checkpoint as PackagingCheckpoint;
+    let voices = old.voices;
+    if (body.voices) {
+      voices = { ...(old.voices ?? {}) };
+      for (const [id, edit] of Object.entries(body.voices)) {
+        const current = Object.hasOwn(voices, id) ? voices[id] : undefined;
+        if (!current) throw new BadRequestException('口播音频不存在');
+        const offset = edit.offset ?? 0;
+        const length = edit.duration ?? current.duration;
+        // The stored copy is canonical, so its head offset plus length is the real source tail.
+        const available = (current.offset ?? 0) + current.duration;
+        if (offset < 0 || length <= 0 || offset + length > available + 0.05)
+          throw new BadRequestException('口播裁剪超出真实音频长度');
+        voices[id] = {
+          ...current,
+          start: edit.start,
+          volume: edit.volume,
+          offset,
+          duration: length,
+          ...fadeFields(length, current, edit),
+        };
+      }
+    }
+    let music = old.music;
+    if (body.music) {
+      if (!old.music) throw new BadRequestException('纯音乐音频不存在');
+      const offset = body.music.offset ?? 0;
+      const length = body.music.duration ?? old.music.duration;
+      if (offset < 0 || length <= 0) throw new BadRequestException('纯音乐裁剪长度无效');
+      music = {
+        ...old.music,
+        start: body.music.start,
+        volume: body.music.volume,
+        offset,
+        duration: length,
+        ...fadeFields(length, old.music, body.music),
+      };
+    }
+    const captions = body.captions
+      ? [...body.captions]
+          .sort((left, right) => left.start - right.start)
+          .map(({ id, text, start, end }) => ({ id, text, start, end }))
+      : old.captions;
+    let captionBoxes = old.captionBoxes;
+    if (body.boxes) {
+      captionBoxes = { ...(old.captionBoxes ?? {}) };
+      for (const [id, box] of Object.entries(body.boxes)) {
+        if (!captions?.some((c) => c.id === id)) throw new BadRequestException('字幕不存在');
+        // Rebuilt field by field so a client cannot smuggle extra keys into the checkpoint.
+        captionBoxes[id] = { x: box.x, y: box.y, width: box.width, scale: box.scale };
+      }
+    }
+    const next: PackagingCheckpoint = { ...old };
+    if (voices) next.voices = voices;
+    if (music) next.music = music;
+    if (captions) next.captions = captions;
+    if (captionBoxes) next.captionBoxes = captionBoxes;
+    validatePackagingCheckpoint(snapshot, next, true, true);
+    const saved = await this.repo.updateCheckpoint(projectId, itemId, next, body.expectedUpdatedAt);
+    return this.presentItems({ ...raw, items: [saved] }, workspace, artifacts)[0]!;
+  }
   async list(projectId: string, workflowRunId: string, templateId: string) {
     const [workspace, artifacts, runs] = await Promise.all([
       this.mix.workspace(projectId, workflowRunId),
@@ -221,7 +365,7 @@ export class EffectPackagingService {
   }
   async retry(projectId: string, id: string) {
     const run = await this.get(projectId, id);
-    if (run.items.some((i) => i.stale))
+    if (run.items.some((i) => i.status !== 'COMPLETED' && i.stale))
       throw new ConflictException('源时间轴已改变，请创建新的包装任务');
     return this.repo.retry(projectId, id);
   }
@@ -403,9 +547,10 @@ export class EffectPackagingService {
       packaging.freshness !== 'CURRENT' ||
       visual.availability !== 'AVAILABLE' ||
       packaging.availability !== 'AVAILABLE' ||
-      payload?.sourceTimelineHash !== visualHash(variant) ||
-      payload.visualArtifactId !== visual.id ||
-      payload.visualRevision !== visual.revision
+      !matchesVisualHash(variant, payload?.sourceTimelineHash,
+        (visual.payload as { variant?: EffectTemplateMixVariant } | undefined)?.variant) ||
+      payload?.visualArtifactId !== visual.id ||
+      payload?.visualRevision !== visual.revision
     )
       throw new ConflictException('画面或包装未确认、已过期；成片输出不可消费');
     return { visual, packaging };

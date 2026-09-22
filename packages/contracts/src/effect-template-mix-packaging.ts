@@ -41,6 +41,53 @@ export type PackagingAudio = {
   duration: number;
   start: number;
   volume: number;
+  /** Seconds trimmed from the source head; absent means 0 (pipeline canonical). */
+  offset?: number;
+  /**
+   * Seconds of fade at the clip head; absent means "pipeline default", which is 0 for a narration
+   * line and `min(0.5, duration / 2)` for the music bed (see the worker's `final_output.py`).
+   */
+  fadeIn?: number;
+  /** Seconds of fade at the clip tail; absent means the same pipeline default as `fadeIn`. */
+  fadeOut?: number;
+};
+
+/** Editor-authored geometry for one packaged audio clip. */
+export type PackagingAudioEdit = {
+  start: number;
+  offset?: number;
+  /** Trimmed length; bounded by the server-known source tail, so it cannot be forged. */
+  duration?: number;
+  volume: number;
+  fadeIn?: number;
+  fadeOut?: number;
+};
+/**
+ * Where one caption sits in the frame. Values are normalised so a box survives a change
+ * of output size; absent means "pipeline default" (bottom-centred, 40px margins).
+ *
+ * Kept beside `captions` instead of on them because a component redo regenerates the
+ * caption list, while the editor's geometry has to survive it.
+ */
+export type PackagingCaptionBox = {
+  /** Centre of the text block, as a fraction of frame width (0–1). */
+  x: number;
+  /** Distance from the frame bottom to the block bottom, as a fraction of height (0–1). */
+  y: number;
+  /** Wrap width as a fraction of frame width (0.1–1). */
+  width: number;
+  /** Font scale; 1 is the pipeline default (frame width / 22). */
+  scale: number;
+};
+export type UpdatePackagingAudioRequest = {
+  expectedUpdatedAt: string;
+  /** Keyed by script line id. */
+  voices?: Record<string, PackagingAudioEdit>;
+  music?: PackagingAudioEdit;
+  /** Full replacement; the server sorts by start and rejects overlaps. */
+  captions?: EffectTemplateMixCaption[];
+  /** Keyed by caption id; merged into the stored boxes, so only edited ones are sent. */
+  boxes?: Record<string, PackagingCaptionBox>;
 };
 export type PackagingLine = {
   id: string;
@@ -59,6 +106,8 @@ export type PackagingCheckpoint = {
   voices?: Record<string, PackagingAudio>;
   music?: PackagingAudio;
   captions?: EffectTemplateMixCaption[];
+  /** Editor-authored caption geometry, keyed by caption id. Untouched by component redos. */
+  captionBoxes?: Record<string, PackagingCaptionBox>;
 };
 export type PackagingSnapshot = {
   sourceTimelineHash: string;
@@ -76,6 +125,8 @@ export type PackagingSnapshot = {
 };
 export type PackagingItem = {
   id: string;
+  /** Owning run, so editors can address the item without re-listing runs. */
+  runId: string;
   variantId: string;
   name: string;
   shardIndex: number;
@@ -88,6 +139,8 @@ export type PackagingItem = {
   errorMessage: string | null;
   startedAt: string | null;
   completedAt: string | null;
+  /** Optimistic-lock token for editor audio edits. */
+  updatedAt: string;
 };
 export type PackagingRun = {
   id: string;
@@ -137,7 +190,9 @@ export function packagingVisualTimeline(variant: EffectTemplateMixVariant) {
     bindingRevisions: variant.bindingRevisions,
     offsets: variant.offsets,
     timelineStarts: variant.timelineStarts ?? {},
-    videoLanes: variant.videoLanes ?? {},
+    // Missing lane and explicit lane 0 render identically. Editor normalization
+    // must not invalidate already-paid packaging or confirmed visual sources.
+    videoLanes: Object.fromEntries(Object.entries(variant.videoLanes ?? {}).filter(([, lane]) => lane !== 0)),
   };
 }
 export function packagingVisualVariant(variant: EffectTemplateMixVariant) {

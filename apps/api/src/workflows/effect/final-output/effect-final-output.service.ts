@@ -25,7 +25,7 @@ import {
   EFFECT_TEMPLATE_MIX_QUEUE,
 } from '../../../platform/job/job.constants';
 import { EffectTemplateMixService } from '../template-mix/effect-template-mix.service';
-import { validatePackagingCheckpoint, visualHash } from '../template-mix/effect-packaging.domain';
+import { matchesVisualHash, validatePackagingCheckpoint, visualHash } from '../template-mix/effect-packaging.domain';
 
 const json = (value: unknown) => JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 const lease = () => new Date(Date.now() + 120_000);
@@ -148,12 +148,14 @@ export class EffectFinalOutputService {
           if (
             !item ||
             item.status !== 'COMPLETED' ||
-            item.sourceTimelineHash !== visualHash(variant)
+            !matchesVisualHash(variant, item.sourceTimelineHash,
+              (item.snapshot as unknown as PackagingSnapshot).variant)
           )
             throw new ConflictException(`${variant.name} 包装缺失、失败或过期；必须全部成功后提交`);
           const snapshot = item.snapshot as unknown as PackagingSnapshot;
           const checkpoint = item.checkpoint as PackagingCheckpoint;
-          validatePackagingCheckpoint(snapshot, checkpoint, true);
+          // Accept editor-edited audio geometry; worker writes stay strictly validated.
+          validatePackagingCheckpoint(snapshot, checkpoint, true, true);
           if (
             snapshot.dependencies.some(
               (d) =>
@@ -248,7 +250,7 @@ export class EffectFinalOutputService {
                     schemaVersion: 1,
                     templateId,
                     variantId: row.item.variantId,
-                    sourceTimelineHash: row.item.sourceTimelineHash,
+                    sourceTimelineHash: visualHash(row.snapshot.variant),
                     visualArtifactId: visual.id,
                     visualRevision: visual.revision,
                     duration: row.snapshot.duration,
@@ -281,7 +283,7 @@ export class EffectFinalOutputService {
           const packaging = packageResult[0]!.record;
           const firstClip = row.snapshot.clips[0]!;
           const snapshot: FinalOutputSnapshot = {
-            timeline: row.snapshot,
+            timeline: { ...row.snapshot, sourceTimelineHash: visualHash(row.snapshot.variant) },
             packaging: cp,
             dependencies: [
               ...dependencies,
@@ -451,7 +453,7 @@ export class EffectFinalOutputService {
     const variant = draft?.templates
       ?.find((t) => t.id === templateId)
       ?.workspace.variants.find((v) => v.id === snapshot.timeline.variant.id);
-    if (!variant || visualHash(variant) !== snapshot.timeline.sourceTimelineHash)
+    if (!variant || !matchesVisualHash(variant, snapshot.timeline.sourceTimelineHash, snapshot.timeline.variant))
       throw new ConflictException('画面草稿已改变，请回模板混剪恢复');
     const ids = [
       ...new Set([

@@ -1,5 +1,10 @@
+import { ConflictException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
-import type { EffectTemplateMixVariant } from '@ai-marketing/contracts';
+import type {
+  EffectTemplateMixVariant,
+  PackagingCheckpoint,
+  PackagingRun,
+} from '@ai-marketing/contracts';
 import type { StoragePort } from '../../../platform/file/storage.port';
 import type { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import type { EffectTemplateMixService } from './effect-template-mix.service';
@@ -38,6 +43,8 @@ function harness() {
   const working = { listArtifacts: vi.fn().mockResolvedValue({ items: [visual, packaging] }) };
   const repo = {
     get: vi.fn(),
+    retry: vi.fn().mockResolvedValue({ status: 'QUEUED' }),
+    updateCheckpoint: vi.fn(),
     db: { effectPackagingRun: { findUnique: vi.fn().mockResolvedValue(null) } },
   };
   const service = new EffectPackagingService(
@@ -48,7 +55,54 @@ function harness() {
   );
   return { service, mix, working, repo, visual, packaging };
 }
+/** A finished item whose checkpoint matches the canonical worker output. */
+function completedItem() {
+  const checkpoint: PackagingCheckpoint = {
+    vision: [{ start: 0, end: 10, description: '画面动作' }],
+    script: [{ id: 'line-1', text: '商品', start: 0, end: 4, factIds: ['f'] }],
+    voices: { 'line-1': { fileObjectId: 'voice', start: 0, duration: 2.4, volume: 1 } },
+    music: { fileObjectId: 'music', start: 0, duration: 10, volume: 0.12 },
+    captions: [{ id: 'line-1', text: '商品', start: 0, end: 2.4 }],
+  };
+  return {
+    id: 'item',
+    variantId: 'v',
+    name: '成片 01',
+    shardIndex: 0,
+    sourceTimelineHash: visualHash(v),
+    snapshot: {
+      sourceTimelineHash: visualHash(v),
+      duration: 10,
+      variant: v,
+      clips: [],
+      facts: [{ id: 'f', text: '商品', artifactId: 'a', revision: 1 }],
+      dependencies: [],
+    },
+    checkpoint,
+    status: 'COMPLETED',
+    stage: 'READY',
+    stale: false,
+    errorMessage: null,
+    startedAt: null,
+    completedAt: null,
+    updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+  };
+}
+function completedRun() {
+  return { id: 'run', workflowRunId: 'w', templateId: 't', items: [completedItem()] };
+}
 describe('packaging service output boundary', () => {
+  it('recovers missing entries without retrying an unrelated completed stale entry', async () => {
+    const { service, repo } = harness();
+    const get = vi.spyOn(service, 'get').mockResolvedValue({ items: [
+      { status: 'COMPLETED', stale: true }, { status: 'FAILED', stale: false },
+    ] } as PackagingRun);
+    await service.retry('p', 'r');
+    expect(repo.retry).toHaveBeenCalledWith('p', 'r');
+    get.mockResolvedValue({ items: [{ status: 'FAILED', stale: true }] } as PackagingRun);
+    await expect(service.retry('p', 'r')).rejects.toThrow('源时间轴');
+    expect(repo.retry).toHaveBeenCalledTimes(1);
+  });
   it('consumes exactly two confirmed copies', async () => {
     const { service, visual, packaging } = harness();
     expect(await service.outputInputs('p', 'w', 't', 'v')).toEqual({ visual, packaging });
@@ -79,5 +133,193 @@ describe('packaging service output boundary', () => {
     await expect(
       service.create('p', 't', { workflowRunId: 'w', expectedRevision: 1, idempotencyKey: 'key' }),
     ).rejects.toThrow('完整成片');
+  });
+  it('persists editor audio geometry while keeping file identity server-owned', async () => {
+    const { service, repo } = harness();
+    const item = completedItem();
+    repo.get.mockResolvedValue({ ...completedRun(), items: [item] });
+    const saved = completedItem();
+    saved.updatedAt = new Date('2026-01-01T00:00:01.000Z');
+    repo.updateCheckpoint.mockResolvedValue(saved);
+    const result = await service.updateAudio('p', 'run', 'item', {
+      expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
+      voices: {
+        'line-1': {
+          start: 5,
+          offset: 0.2,
+          duration: 2.2,
+          volume: 0.4,
+          fileObjectId: 'forged',
+        } as never,
+      },
+      music: { start: 1, offset: 0.5, duration: 6, volume: 0.2 },
+    });
+    expect(repo.updateCheckpoint).toHaveBeenCalledWith(
+      'p',
+      'item',
+      {
+        ...item.checkpoint,
+        voices: {
+          'line-1': { fileObjectId: 'voice', start: 5, duration: 2.2, volume: 0.4, offset: 0.2 },
+        },
+        music: { fileObjectId: 'music', start: 1, duration: 6, volume: 0.2, offset: 0.5 },
+      },
+      '2026-01-01T00:00:00.000Z',
+    );
+    expect(result.id).toBe('item');
+    expect(result.updatedAt).toBe('2026-01-01T00:00:01.000Z');
+  });
+  it('stores editor fades and never invents a 0 where the client sent none', async () => {
+    const { service, repo } = harness();
+    const item = completedItem();
+    // The music bed already carries an editor fade; the narration does not.
+    item.checkpoint.music = { fileObjectId: 'music', start: 0, duration: 10, volume: 0.12, fadeIn: 0.3 };
+    repo.get.mockResolvedValue({ ...completedRun(), items: [item] });
+    repo.updateCheckpoint.mockResolvedValue(completedItem());
+    await service.updateAudio('p', 'run', 'item', {
+      expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
+      voices: {
+        'line-1': { start: 0, offset: 0, duration: 2.4, volume: 0.8, fadeIn: 0.4, fadeOut: 0.6 },
+      },
+      music: { start: 0, offset: 0, duration: 10, volume: 0.12 },
+    });
+    const [, , written] = repo.updateCheckpoint.mock.calls[0]!;
+    expect(written.voices['line-1']).toEqual({
+      fileObjectId: 'voice',
+      start: 0,
+      duration: 2.4,
+      volume: 0.8,
+      offset: 0,
+      fadeIn: 0.4,
+      fadeOut: 0.6,
+    });
+    // Absent stays absent, so the worker keeps applying its own default easing.
+    expect(written.music).not.toHaveProperty('fadeOut');
+    // A stored fade survives an edit that does not mention it.
+    expect(written.music.fadeIn).toBe(0.3);
+  });
+  it('rejects fades longer than the clip and writes nothing', async () => {
+    const { service, repo } = harness();
+    repo.get.mockResolvedValue(completedRun());
+    await expect(
+      service.updateAudio('p', 'run', 'item', {
+        expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
+        voices: {
+          'line-1': { start: 0, offset: 0, duration: 2.4, volume: 1, fadeIn: 1.5, fadeOut: 1.5 },
+        },
+      }),
+    ).rejects.toThrow('淡入淡出时长超出音频长度');
+    expect(repo.updateCheckpoint).not.toHaveBeenCalled();
+  });
+  it('rejects trims that would invent audio the source never had', async () => {
+    const { service, repo } = harness();
+    repo.get.mockResolvedValue(completedRun());
+    await expect(
+      service.updateAudio('p', 'run', 'item', {
+        expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
+        voices: { 'line-1': { start: 0, offset: 0.5, duration: 2.4, volume: 1 } },
+      }),
+    ).rejects.toThrow('超出真实音频长度');
+    expect(repo.updateCheckpoint).not.toHaveBeenCalled();
+  });
+  it('sorts a caption replacement and rejects unknown audio ids', async () => {
+    const { service, repo } = harness();
+    repo.get.mockResolvedValue(completedRun());
+    const saved = completedItem();
+    saved.checkpoint.captions = [{ id: 'line-1', text: '商品', start: 1, end: 3.4 }];
+    repo.updateCheckpoint.mockResolvedValue(saved);
+    await service.updateAudio('p', 'run', 'item', {
+      expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
+      captions: [{ id: 'line-1', text: '商品', start: 1, end: 3.4 }],
+    });
+    expect(repo.updateCheckpoint).toHaveBeenCalledWith(
+      'p',
+      'item',
+      expect.objectContaining({ captions: [{ id: 'line-1', text: '商品', start: 1, end: 3.4 }] }),
+      '2026-01-01T00:00:00.000Z',
+    );
+    await expect(
+      service.updateAudio('p', 'run', 'item', {
+        expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
+        voices: { ghost: { start: 1, volume: 0.5 } },
+      }),
+    ).rejects.toThrow('口播音频不存在');
+  });
+  it('persists a reworded subtitle without touching the narration it is voiced from', async () => {
+    const { service, repo } = harness();
+    const item = completedItem();
+    repo.get.mockResolvedValue({ ...completedRun(), items: [item] });
+    const saved = completedItem();
+    saved.checkpoint.captions = [{ id: 'line-1', text: '限时五折', start: 0, end: 2.4 }];
+    repo.updateCheckpoint.mockResolvedValue(saved);
+    await service.updateAudio('p', 'run', 'item', {
+      expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
+      captions: [{ id: 'line-1', text: '限时五折', start: 0, end: 2.4 }],
+    });
+    const [, , written] = repo.updateCheckpoint.mock.calls[0]!;
+    expect(written.captions).toEqual([{ id: 'line-1', text: '限时五折', start: 0, end: 2.4 }]);
+    // The spoken line keeps the text it was synthesized from.
+    expect(written.script[0].text).toBe('商品');
+    expect(written.voices['line-1'].fileObjectId).toBe('voice');
+  });
+  it('merges editor caption geometry and strips anything the client should not own', async () => {
+    const { service, repo } = harness();
+    const item = completedItem();
+    item.checkpoint.captions = [{ id: 'line-1', text: '商品', start: 0, end: 2.4 }];
+    item.checkpoint.captionBoxes = { 'line-1': { x: 0.5, y: 0.08, width: 0.9, scale: 1 } };
+    repo.get.mockResolvedValue({ ...completedRun(), items: [item] });
+    const saved = completedItem();
+    saved.checkpoint.captions = item.checkpoint.captions;
+    saved.checkpoint.captionBoxes = { 'line-1': { x: 0.25, y: 0.4, width: 0.6, scale: 1.5 } };
+    repo.updateCheckpoint.mockResolvedValue(saved);
+    await service.updateAudio('p', 'run', 'item', {
+      expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
+      boxes: { 'line-1': { x: 0.25, y: 0.4, width: 0.6, scale: 1.5 } },
+    });
+    const [, , written] = repo.updateCheckpoint.mock.calls[0]!;
+    expect(written.captionBoxes).toEqual({
+      'line-1': { x: 0.25, y: 0.4, width: 0.6, scale: 1.5 },
+    });
+    // Captions themselves are untouched by a geometry-only edit.
+    expect(written.captions).toEqual([{ id: 'line-1', text: '商品', start: 0, end: 2.4 }]);
+  });
+  it('rejects caption geometry for a caption that does not exist', async () => {
+    const { service, repo } = harness();
+    repo.get.mockResolvedValue(completedRun());
+    await expect(
+      service.updateAudio('p', 'run', 'item', {
+        expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
+        boxes: { ghost: { x: 0.5, y: 0.5, width: 0.5, scale: 1 } },
+      }),
+    ).rejects.toThrow('字幕不存在');
+    expect(repo.updateCheckpoint).not.toHaveBeenCalled();
+  });
+  it('refuses to edit unfinished or stale packaging', async () => {
+    const { service, repo } = harness();
+    const running = completedItem();
+    running.status = 'RUNNING';
+    repo.get.mockResolvedValue({ ...completedRun(), items: [running] });
+    await expect(
+      service.updateAudio('p', 'run', 'item', { expectedUpdatedAt: '2026-01-01T00:00:00.000Z' }),
+    ).rejects.toThrow('尚未完成');
+    const changed = completedItem();
+    changed.sourceTimelineHash = 'changed';
+    repo.get.mockResolvedValue({ ...completedRun(), items: [changed] });
+    await expect(
+      service.updateAudio('p', 'run', 'item', { expectedUpdatedAt: '2026-01-01T00:00:00.000Z' }),
+    ).rejects.toThrow('源时间轴');
+    expect(repo.updateCheckpoint).not.toHaveBeenCalled();
+  });
+  it('surfaces optimistic-lock conflicts instead of retrying the write', async () => {
+    const { service, repo } = harness();
+    repo.get.mockResolvedValue(completedRun());
+    repo.updateCheckpoint.mockRejectedValue(new ConflictException('包装结果已被修改，请刷新'));
+    await expect(
+      service.updateAudio('p', 'run', 'item', {
+        expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
+        music: { start: 1, duration: 6, volume: 0.2 },
+      }),
+    ).rejects.toThrow('已被修改');
+    expect(repo.updateCheckpoint).toHaveBeenCalledTimes(1);
   });
 });

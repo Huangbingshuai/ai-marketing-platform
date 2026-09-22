@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type {
   EffectTemplateMixVariant,
   FinalOutputSnapshot,
+  PackagingCheckpoint,
   PackagingSnapshot,
 } from '@ai-marketing/contracts';
 import type { PrismaService } from '../../../database/prisma.service';
@@ -188,6 +189,32 @@ describe('atomic full packaging completion', () => {
     await service.complete('p', 't', request);
     expect(working.commitValidatedArtifactsInTransaction).not.toHaveBeenCalled();
     expect(db.jobOutbox.upsert).not.toHaveBeenCalled();
+  });
+  it('accepts editor-edited audio and renders it as a distinct output run', async () => {
+    const canonical = harness();
+    await canonical.service.complete('p', 't', request);
+    const baseline = canonical.db.effectFinalOutputRun.create.mock.calls[0]![0].data.inputHash;
+
+    const edited = harness();
+    const checkpoint = edited.rows[0]!.checkpoint as PackagingCheckpoint;
+    checkpoint.voices!['line'] = {
+      fileObjectId: 'voice',
+      start: 3,
+      duration: 1.5,
+      volume: 0.4,
+      offset: 0.5,
+    };
+    checkpoint.music = { fileObjectId: 'music', start: 1, duration: 6, volume: 0.2, offset: 0.5 };
+    checkpoint.captions = [{ id: 'line', start: 3.2, end: 4.7, text: '商品' }];
+    await edited.service.complete('p', 't', request);
+    expect(edited.db.effectFinalOutputRun.create).toHaveBeenCalledOnce();
+    const created = edited.db.effectFinalOutputRun.create.mock.calls[0]![0].data;
+    expect(created.inputHash).not.toBe(baseline);
+    const item = created.items.create[0] as { snapshot: FinalOutputSnapshot };
+    expect(item.snapshot.packaging.voices!['line']).toMatchObject({ start: 3, offset: 0.5 });
+    expect(item.snapshot.packaging.captions).toEqual([
+      { id: 'line', start: 3.2, end: 4.7, text: '商品' },
+    ]);
   });
   it('rejects reused idempotency keys for different requests', async () => {
     const { service, db } = harness();

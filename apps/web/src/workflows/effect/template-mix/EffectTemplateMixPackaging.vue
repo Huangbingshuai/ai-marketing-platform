@@ -594,7 +594,7 @@ onBeforeUnmount(() => {
       </button>
       <button
         v-else-if="run && ['FAILED', 'PARTIAL', 'CANCELLED'].includes(run.status)"
-        :disabled="busy || active || run.items.some((i) => i.stale)"
+        :disabled="busy || active || run.items.some((i) => i.status !== 'COMPLETED' && i.stale)"
         type="button"
         @click="command('retry')"
       >

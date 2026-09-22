@@ -260,6 +260,25 @@ export class EffectPackagingRepository {
       return { accepted: true };
     });
   }
+  /**
+   * Editor audio edits land after completion, so this bypasses the worker lease path
+   * and instead uses `updatedAt` as an optimistic lock.
+   */
+  async updateCheckpoint(
+    projectId: string,
+    itemId: string,
+    checkpoint: PackagingCheckpoint,
+    expectedUpdatedAt: string,
+  ) {
+    const expected = new Date(expectedUpdatedAt);
+    if (Number.isNaN(expected.getTime())) throw new ConflictException('包装结果已被修改，请刷新');
+    const result = await this.db.effectPackagingItem.updateMany({
+      where: { id: itemId, projectId, updatedAt: expected },
+      data: { checkpoint: json(checkpoint) },
+    });
+    if (result.count !== 1) throw new ConflictException('包装结果已被修改，请刷新');
+    return this.db.effectPackagingItem.findFirstOrThrow({ where: { id: itemId, projectId } });
+  }
   finish(projectId: string, id: string, token: string) {
     return this.db.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM effect_packaging_runs WHERE id=${id}::uuid AND "projectId"=${projectId}::uuid FOR UPDATE`;
