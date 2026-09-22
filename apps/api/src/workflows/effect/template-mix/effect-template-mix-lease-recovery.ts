@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { EffectTemplateMixAiRepository } from './effect-template-mix-ai.repository';
 import { EffectPackagingRepository } from './effect-packaging.repository';
+import { EffectFinalOutputService } from '../final-output/effect-final-output.service';
 
 @Injectable()
 export class EffectTemplateMixLeaseRecovery implements OnModuleInit, OnModuleDestroy {
@@ -19,6 +20,7 @@ export class EffectTemplateMixLeaseRecovery implements OnModuleInit, OnModuleDes
     @Optional()
     @Inject(EffectPackagingRepository)
     private readonly packaging?: EffectPackagingRepository,
+    @Optional() @Inject(EffectFinalOutputService) private readonly output?: EffectFinalOutputService,
   ) {}
   onModuleInit(): void {
     this.timer = setInterval(() => void this.recover(), 15_000);
@@ -31,6 +33,7 @@ export class EffectTemplateMixLeaseRecovery implements OnModuleInit, OnModuleDes
     try {
       await this.repository.recoverExpired();
       await this.packaging?.recoverExpired();
+      await this.output?.recoverExpired();
     } catch (error) {
       this.logger.error(
         '模板混剪任务恢复失败：' + (error instanceof Error ? error.name : 'UNKNOWN'),

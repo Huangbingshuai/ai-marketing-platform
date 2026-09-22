@@ -126,3 +126,10 @@ export const validateEffectTemplateMix = (
     operation: '提交混剪工程',
     body: { workflowRunId, expectedRevision, templateId },
   });
+
+export const completeEffectTemplateMixPackaging = (
+  projectId: string, workflowRunId: string, expectedRevision: number, templateId: string, idempotencyKey: string,
+) => requestJson(basePath(projectId) + '/templates/' + encodeURIComponent(templateId) + '/complete-packaging', {
+  method: 'POST', operation: '完成全部包装并进入成片输出',
+  body: { workflowRunId, expectedRevision, idempotencyKey },
+});

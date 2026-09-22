@@ -3,9 +3,6 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import {
   AlertCircle,
   ArrowLeft,
-  CheckCircle2,
-  LoaderCircle,
-  Sparkles,
   Workflow,
   X,
 } from '@lucide/vue';
@@ -41,7 +38,7 @@ const props = defineProps<{
   playhead: number;
   playing: boolean;
 }>();
-const emit = defineEmits<{ selected: [item: PackagingItem | null]; preview: [enabled: boolean] }>();
+const emit = defineEmits<{ selected: [item: PackagingItem | null]; preview: [enabled: boolean]; ready: [ready: boolean] }>();
 const dialog = ref<HTMLDialogElement | null>(null);
 const visible = ref(false),
   busy = ref(false),
@@ -73,7 +70,16 @@ const active = computed(() => runs.value.some((r) => ['QUEUED', 'RUNNING'].inclu
 const progressRun = computed(
   () => runs.value.find((r) => ['QUEUED', 'RUNNING'].includes(r.status)) ?? runs.value[0],
 );
-const progress = computed(() => packagingProgress(progressRun.value));
+const progress = computed(() => progressRun.value?.execution?.progressPercent ?? packagingProgress(progressRun.value));
+const executionSummary = computed(() => {
+  const value = progressRun.value;
+  if (!value) return `本次覆盖 ${completeCount.value} 条完整成片`;
+  const e = value.execution;
+  const base = `已完成 ${value.counts.completed} / ${value.counts.total} 条 · ${value.counts.shards} 个分片`;
+  if (!e) return base;
+  const eta = e.estimatedRemainingSeconds === null ? '' : ` · 预计剩余 ${Math.ceil(e.estimatedRemainingSeconds / 60)} 分钟${e.estimateBasis === 'BASELINE' ? '（初始估算）' : ''}`;
+  return `${base} · 排队 ${e.queued} · 运行 ${e.running}${eta}${e.delayed ? ' · 当前吞吐低于目标或存在失败' : ''}`;
+});
 const progressSummary = computed(() => {
   if (starting.value && !active.value) return '智能成片包装 · 正在提交任务…';
   const value = progressRun.value;
@@ -134,6 +140,11 @@ const detail = computed(
 );
 const fileUrl = (id: string) => apiUrl(`/projects/${props.projectId}/file-objects/${id}/content`);
 watch(selected, (item) => emit('selected', item), { immediate: true });
+const allReady = computed(() => !active.value && !loadError.value && props.variants.length > 0 && props.variants.every((v) => {
+  const item = runs.value.flatMap((r) => r.items).find((i) => i.variantId === v.id);
+  return item && item.status === 'COMPLETED' && !currentItem(item).stale;
+}));
+watch(allReady, (ready) => emit('ready', ready), { immediate: true });
 
 async function refresh() {
   const version = generation;
@@ -244,45 +255,47 @@ async function command(action: 'cancel' | 'retry') {
     }),
   );
 }
-async function confirm(item: PackagingItem) {
-  const context = { generation, path: base.value, runId: run.value?.id };
-  await execute(async () => {
-    const revision = await props.prepare();
-    if (context.generation !== generation || !context.runId) return;
-    if (revision === null) throw new Error('请先保存时间轴');
-    await requestJson(`${context.path}/packaging-runs/${context.runId}/items/${item.id}/confirm`, {
-      method: 'POST',
-      operation: '确认包装',
-    });
-    if (context.generation !== generation) return;
-    message.value = '包装工作副本已确认，可由成片输出节点消费';
-  });
-}
 
 // Use the player clock without writing packaging fields back into the visual draft.
 const voiceElement = ref<HTMLAudioElement | null>(null),
   musicElement = ref<HTMLAudioElement | null>(null);
-const previewEnabled = ref(false);
-watch(previewEnabled, (enabled) => {
-  if (enabled) previewError.value = '';
-  emit('preview', enabled);
-});
+// The main player owns all track playback. Only a failed play attempt blocks
+// audio until the next player gesture; there is no separate audition switch.
+const playbackBlocked = ref(false);
+const previewAvailable = computed(
+  () => selected.value?.status === 'COMPLETED' && !selected.value.stale,
+);
+watch(
+  () => !playbackBlocked.value && previewAvailable.value,
+  (enabled) => {
+    if (enabled) previewError.value = '';
+    emit('preview', enabled);
+  },
+  { immediate: true },
+);
+watch(
+  () => [props.playing, props.selectedVariantId],
+  () => {
+    playbackBlocked.value = false;
+    previewError.value = '';
+  },
+);
 const currentVoice = computed(() =>
-  selected.value && !selected.value.stale
+  selected.value && previewAvailable.value
     ? Object.values(selected.value.checkpoint.voices ?? {}).find(
         (a) => props.playhead >= a.start && props.playhead < a.start + a.duration,
       )
     : undefined,
 );
 const currentMusic = computed(() =>
-  selected.value && !selected.value.stale ? selected.value.checkpoint.music : undefined,
+  selected.value && previewAvailable.value ? selected.value.checkpoint.music : undefined,
 );
 function syncAudio() {
   for (const [element, audio] of [
     [voiceElement.value, currentVoice.value],
     [musicElement.value, currentMusic.value],
   ] as const) {
-    if (!element || !audio || !previewEnabled.value || !props.playing) {
+    if (!element || !audio || playbackBlocked.value || !props.playing) {
       element?.pause();
       continue;
     }
@@ -306,13 +319,13 @@ function syncAudio() {
         const warning = packagingPlaybackError(
           reason,
           version === generation &&
-            previewEnabled.value &&
+            !playbackBlocked.value &&
             props.playing &&
             bound === element &&
             current?.fileObjectId === fileId,
         );
         if (!warning) return;
-        previewEnabled.value = false;
+        playbackBlocked.value = true;
         previewError.value = warning;
       });
     }
@@ -322,7 +335,7 @@ watch(
   () => [
     props.playhead,
     props.playing,
-    previewEnabled.value,
+    playbackBlocked.value,
     currentVoice.value?.fileObjectId,
     currentMusic.value?.fileObjectId,
   ],
@@ -343,7 +356,7 @@ watch(
     busy.value = false;
     starting.value = false;
     close();
-    previewEnabled.value = false;
+    playbackBlocked.value = false;
     if (props.templateId) void refresh();
   },
   { immediate: true },
@@ -359,15 +372,11 @@ onBeforeUnmount(() => {
 
 <template>
   <WorkflowRunProgress
-    v-if="starting || progressRun"
+    v-if="starting || active"
     class="packaging-progress"
     :progress="starting && !active ? 0 : progress"
     :summary="progressSummary"
-    :attempt-label="
-      progressRun
-        ? `已完成 ${progressRun.counts.completed} / ${progressRun.counts.total} 条 · ${progressRun.counts.shards} 个分片`
-        : `本次覆盖 ${completeCount} 条完整成片`
-    "
+    :attempt-label="executionSummary"
     :warning="
       error ||
       (progressRun?.counts.failed ? `${progressRun.counts.failed} 条失败，请查看当前工作流` : '')
@@ -377,13 +386,6 @@ onBeforeUnmount(() => {
   />
   <div v-if="error && !visible && !progressRun && !busy" class="notice error" role="alert">
     <AlertCircle :size="16" />{{ error }}<button @click="refresh">重新读取</button>
-  </div>
-  <div v-if="selected?.status === 'COMPLETED' && !selected.stale" class="packaging-strip">
-    <Sparkles :size="14" /><span>口播 · 配乐 · 字幕 · 草稿就绪</span>
-    <button :aria-pressed="previewEnabled" @click="previewEnabled = !previewEnabled">
-      {{ previewEnabled ? '关闭同步试听' : '开启同步试听' }}
-    </button>
-    <button @click="open('WORKFLOW')">查看包装结果</button>
   </div>
   <audio
     v-if="currentVoice"
@@ -423,52 +425,6 @@ onBeforeUnmount(() => {
       }}<button :disabled="busy" @click="refresh">重新读取</button>
     </div>
     <div v-if="message" class="notice success" role="status">{{ message }}</div>
-    <div
-      class="workflow-version-notice"
-      :class="`is-${active ? 'running' : run?.status === 'COMPLETED' ? 'success' : run?.counts.failed ? 'danger' : 'waiting'}`"
-    >
-      <LoaderCircle v-if="loading || active" :size="15" />
-      <AlertCircle v-else-if="run?.counts.failed" :size="15" />
-      <CheckCircle2 v-else-if="run?.status === 'COMPLETED'" :size="15" />
-      <Sparkles v-else :size="15" />
-      <span>
-        <strong>{{
-          loading
-            ? '正在读取真实任务状态…'
-            : run
-              ? `本次包装${statusLabel[run.status]}`
-              : error
-                ? '任务状态暂不可用'
-                : '当前模板尚未执行智能成片包装'
-        }}</strong>
-        {{
-          run
-            ? `成功 ${run.counts.completed} / ${run.counts.total} · 失败 ${run.counts.failed} · 过期 ${run.items.filter((i) => i.stale).length} · ${run.counts.shards} 个分片`
-            : '下方展示包装流程；返回工作台点击“智能成片包装”后显示真实执行进度。'
-        }}
-      </span>
-    </div>
-    <div v-if="run" class="summary">
-      <select v-model="chosenRun" aria-label="选择包装批次">
-        <option v-for="r in runs" :key="r.id" :value="r.id">
-          {{ new Date(r.createdAt).toLocaleString() }} · {{ statusLabel[r.status] }}
-        </option>
-      </select>
-      <button
-        v-if="['QUEUED', 'RUNNING'].includes(run.status)"
-        :disabled="busy"
-        @click="command('cancel')"
-      >
-        取消任务
-      </button>
-      <button
-        v-else-if="['FAILED', 'PARTIAL', 'CANCELLED'].includes(run.status)"
-        :disabled="busy || active || run.items.some((i) => i.stale)"
-        @click="command('retry')"
-      >
-        恢复未完成项
-      </button>
-    </div>
     <main class="workflow-graph-content">
       <div class="workflow-graph-canvas" aria-label="智能成片包装执行图">
         <template v-for="(stage, index) in PACKAGING_STAGES" :key="stage">
@@ -620,15 +576,7 @@ onBeforeUnmount(() => {
               <time>{{ c.start.toFixed(2) }}–{{ c.end.toFixed(2) }}s</time>{{ c.text }}
             </p>
           </div>
-          <button
-            class="primary"
-            :disabled="busy || detail.stale || detail.status !== 'COMPLETED'"
-            @click="confirm(detail)"
-          >
-            <CheckCircle2 :size="16" />完成包装校验</button
-          ><small class="hint"
-            >请先完成画面时间轴校验。此处只提交包装工作副本，不编码最终成片。</small
-          >
+          <small class="hint">全部成片就绪后，在节点底部统一完成校验并进入成片输出。</small>
         </section>
       </div>
     </details>
@@ -636,23 +584,28 @@ onBeforeUnmount(() => {
       <span><i class="running" />执行中</span><span><i class="success" />已完成</span
       ><span><i />等待中</span><span><i class="danger" />失败</span>
       <span class="workflow-edge-count">6 条执行边</span>
+      <button
+        v-if="run && ['QUEUED', 'RUNNING'].includes(run.status)"
+        :disabled="busy"
+        type="button"
+        @click="command('cancel')"
+      >
+        取消任务
+      </button>
+      <button
+        v-else-if="run && ['FAILED', 'PARTIAL', 'CANCELLED'].includes(run.status)"
+        :disabled="busy || active || run.items.some((i) => i.stale)"
+        type="button"
+        @click="command('retry')"
+      >
+        恢复未完成项
+      </button>
       <button type="button" @click="close"><ArrowLeft :size="14" />返回工作区</button>
     </footer>
   </dialog>
 </template>
 
 <style scoped>
-.packaging-strip {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 14px;
-  border-block: 1px solid #dbe5f5;
-  background: #f7faff;
-  color: #5274a5;
-  font-size: 12px;
-  flex-wrap: wrap;
-}
 button {
   display: inline-flex;
   align-items: center;

@@ -99,6 +99,19 @@ export type PackagingRun = {
   completedAt: string | null;
   items: PackagingItem[];
   counts: { total: number; completed: number; failed: number; stale: number; shards: number };
+  execution?: PackagingExecution;
+};
+export type PackagingExecution = {
+  progressPercent: number;
+  queued: number;
+  running: number;
+  completed: number;
+  elapsedSeconds: number;
+  throughputPerMinute: number | null;
+  estimatedRemainingSeconds: number | null;
+  estimateBasis: 'BASELINE' | 'OBSERVED' | 'TERMINAL';
+  delayed: boolean;
+  shards: { index: number; total: number; completed: number; running: number; failed: number }[];
 };
 export type CreatePackagingRequest = {
   workflowRunId: string;
@@ -158,25 +171,7 @@ export function packagingTimelineDuration(variant: EffectTemplateMixVariant): nu
   );
 }
 
-/** Mechanical capacity grouping only; no semantic allocation. */
+/** Scheduling groups, not combined model prompts: each item keeps its own token budget. */
 export function packagingShardIndexes(snapshots: PackagingSnapshot[]): number[] {
-  let shard = 0,
-    count = 0,
-    seconds = 0,
-    tokens = 0;
-  return snapshots.map((snapshot) => {
-    const estimate =
-      Math.ceil(JSON.stringify({ facts: snapshot.facts, clips: snapshot.clips }).length / 2) +
-      2_000;
-    if (count && (count >= 4 || seconds + snapshot.duration > 240 || tokens + estimate > 24_000)) {
-      shard++;
-      count = 0;
-      seconds = 0;
-      tokens = 0;
-    }
-    count++;
-    seconds += snapshot.duration;
-    tokens += estimate;
-    return shard;
-  });
+  return snapshots.map((_, index) => Math.floor(index / 4));
 }

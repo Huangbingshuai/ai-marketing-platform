@@ -42,7 +42,7 @@ import type {
   ValidateEffectImportProductData,
 } from '@ai-marketing/contracts';
 
-import { requestJson, requestRaw } from '../../../../api/http-client';
+import { isNetworkError, requestJson, requestRaw } from '../../../../api/http-client';
 
 const basePath = (projectId: string): string =>
   `/projects/${encodeURIComponent(projectId)}/workflows/effect/source-import`;
@@ -54,14 +54,51 @@ const revisionHeaders = (revision: number): Record<string, string> => ({
   'If-Match': String(revision),
 });
 
-export const getEffectImportWorkspace = (
+const WORKSPACE_RETRY_DELAYS_MS = [150, 450, 900, 1800] as const;
+
+const isTransientWorkspaceError = (error: unknown): boolean => {
+  if (isNetworkError(error)) return true;
+  if (typeof error !== 'object' || error === null || !('status' in error)) return false;
+  const status = (error as { status?: unknown }).status;
+  return status === 502 || status === 503 || status === 504;
+};
+
+const waitForWorkspaceRetry = (delayMs: number, signal?: AbortSignal): Promise<void> => {
+  if (signal?.aborted) {
+    return Promise.reject(new DOMException('工作区加载已取消', 'AbortError'));
+  }
+  return new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onAbort = (): void => {
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(new DOMException('工作区加载已取消', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+  });
+};
+
+export const getEffectImportWorkspace = async (
   projectId: string,
   signal?: AbortSignal,
-): Promise<ApiResponse<GetEffectImportWorkspaceData>> =>
-  requestJson(`${basePath(projectId)}`, {
-    operation: '加载资料包工作区',
-    signal,
-  });
+): Promise<ApiResponse<GetEffectImportWorkspaceData>> => {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await requestJson(`${basePath(projectId)}`, {
+        operation: '加载资料包工作区',
+        signal,
+      });
+    } catch (error) {
+      const delay = WORKSPACE_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined || !isTransientWorkspaceError(error)) throw error;
+      await waitForWorkspaceRetry(delay, signal);
+    }
+  }
+};
 
 export const switchEffectImportMode = (
   projectId: string,

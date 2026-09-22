@@ -32,8 +32,8 @@ import {
   Pause,
   Play,
   Plus,
+  RefreshCw,
   Search,
-  Sparkles,
   WandSparkles,
   Workflow,
   X,
@@ -50,7 +50,7 @@ import {
   loadEffectTemplateMixWorkspace,
   saveEffectTemplateMixDraft,
   serializeEffectTemplateMixDraft,
-  validateEffectTemplateMix,
+  completeEffectTemplateMixPackaging,
 } from './api/effect-template-mix.api';
 import {
   EFFECT_TEMPLATE_MIX_ROLE_LABELS,
@@ -87,6 +87,8 @@ const draftRevision = ref<number | null>(null);
 const packagingPanel = ref<InstanceType<typeof EffectTemplateMixPackaging> | null>(null);
 const selectedPackaging = ref<PackagingItem | null>(null);
 const packagingPreviewEnabled = ref(false);
+const packagingReady = ref(false);
+let completionKey: { signature: string; key: string } | null = null;
 const committedVersions = reactive<Record<string, number>>({});
 const uiByTemplate = reactive<Record<string, TemplateUi>>({});
 const view = ref<'CONFIG' | 'EDITOR'>('CONFIG');
@@ -637,6 +639,7 @@ const complete = computed(
 const canValidate = computed(
   () =>
     complete.value &&
+    packagingReady.value &&
     !pendingCount.value &&
     saveState.value === 'saved' &&
     draftRevision.value !== null,
@@ -706,33 +709,6 @@ const workflowStageTone = (stage: EffectTemplateMixAiRun['stage']): string =>
   ({ done: 'success', failed: 'danger', pending: 'pending', running: 'running' })[
     workflowStageState(stage)
   ];
-const workflowNotice = computed(() => {
-  const run = workflowRunForDisplay.value;
-  if (!run)
-    return {
-      tone: 'pending',
-      title: '当前成片工程尚未执行智能填充',
-      detail: '下方展示当前流程。点击“AI 智能填充”后，节点会显示本次真实执行状态。',
-    };
-  if (run.status === 'FAILED')
-    return {
-      tone: 'danger',
-      title: '本次智能填充执行失败',
-      detail: run.errorMessage || '请选择失败节点查看阶段说明，修正素材条件后可重新执行。',
-    };
-  if (run.status === 'QUEUED' || run.status === 'RUNNING')
-    return {
-      tone: 'running',
-      title: `${aiStageLabels[run.stage]} · ${run.progress}%`,
-      detail: '任务在后台继续执行，关闭面板或刷新页面都不会丢失真实进度。',
-    };
-  return {
-    tone: 'success',
-    title: '本次智能填充已生成时间轴工程',
-    detail: '六个片段已进入视频轨，可关闭面板继续人工精修和完成校验。',
-  };
-});
-
 const showNotice = (text: string, kind: Notice['kind'] = 'success'): void => {
   notice.value = { text, kind };
   clearTimeout(noticeTimer);
@@ -1576,12 +1552,86 @@ const changeTimelineTrimStart = (slotId: string, raw: number): void => {
   if (activeUi.value) activeUi.value.selectedSlotId = slot.id;
   bump();
 };
+const resizeTimelineSlot = (
+  slotId: string,
+  side: 'LEFT' | 'RIGHT',
+  rawStart: number,
+  rawOffset: number,
+  rawDuration: number,
+): void => {
+  const variant = selectedVariant.value;
+  const slot = variant?.slots.find(({ id }) => id === slotId);
+  const material = slot ? materialForSlot(slot.id) : null;
+  if (!variant || !slot || !material) return;
+  const duration = Math.round(Number(rawDuration) * 1000) / 1000;
+  const offset = Math.round(Number(rawOffset) * 1000) / 1000;
+  const start = Math.round(Number(rawStart) * TIMELINE_FPS) / TIMELINE_FPS;
+  if (![duration, offset, start].every(Number.isFinite)) return;
+  const nextOffset = Math.min(
+    Math.max(0, offset),
+    Math.max(0, Math.round((material.duration - 0.1) * 1000) / 1000),
+  );
+  const minimumDuration = Math.min(0.1, material.duration);
+  const maximumDuration = Math.max(minimumDuration, material.duration - nextOffset);
+  const nextDuration = Math.min(
+    Math.max(minimumDuration, duration),
+    Math.round(maximumDuration * 1000) / 1000,
+  );
+  const currentStart =
+    variant.timelineStarts?.[slotId] ??
+    effectTemplateMixTiming(variant.slots).slots.find(({ id }) => id === slotId)?.start ??
+    0;
+  const slotIndex = variant.slots.findIndex(({ id }) => id === slotId);
+  const hadExplicitTimelineStarts = Boolean(
+    variant.timelineStarts && Object.keys(variant.timelineStarts).length,
+  );
+  const originalRanges = effectTemplateMixTiming(variant.slots).slots;
+  const nextStart = Math.max(0, start);
+  if (
+    nextDuration === slot.duration &&
+    nextOffset === (variant.offsets[slotId] ?? 0) &&
+    nextStart === currentStart
+  )
+    return;
+  rememberTimelineEdit();
+  slot.duration = nextDuration;
+  variant.offsets[slotId] = nextOffset;
+  if (!hadExplicitTimelineStarts) {
+    variant.timelineStarts = {};
+    let cursor = 0;
+    for (const [index, currentSlot] of variant.slots.entries()) {
+      if (index < slotIndex) {
+        cursor = originalRanges[index]?.start ?? cursor;
+      } else if (index === slotIndex) {
+        cursor = nextStart;
+      } else {
+        cursor += variant.slots[index - 1]?.duration ?? 0;
+      }
+      variant.timelineStarts[currentSlot.id] = Math.max(0, cursor);
+    }
+  } else if (side === 'LEFT' || variant.timelineStarts?.[slotId] !== undefined) {
+    variant.timelineStarts ??= {};
+    variant.timelineStarts[slotId] = nextStart;
+  }
+  variant.bindingMetadata ??= {};
+  variant.bindingMetadata[slotId] = {
+    ...(variant.bindingMetadata[slotId] ?? { source: 'MANUAL' }),
+    trimReason: side === 'LEFT' ? '人工调整左边缘时长' : '人工调整右边缘时长',
+  };
+  if (activeUi.value) activeUi.value.selectedSlotId = slotId;
+  bump();
+};
 const changeTemplate = (): void => {
   if (!workspace.value) return;
   for (const [index, slot] of workspace.value.template.slots.entries()) {
     slot.duration = Number.isFinite(Number(slot.duration))
       ? Math.min(120, Math.max(0.1, Math.round(Number(slot.duration) * 10) / 10))
       : 0.1;
+    if (index === 0) {
+      slot.transition = '硬切';
+      slot.transitionDuration = 0;
+      continue;
+    }
     const previous = workspace.value.template.slots[index - 1];
     slot.transitionDuration =
       slot.transition === '硬切' ? 0 : effectTemplateMixTransitionDuration(slot, previous);
@@ -1593,6 +1643,16 @@ const changeTemplate = (): void => {
     workspace.value.editVersion += 1;
   }
   scheduleSave();
+};
+const templateTransitionForRow = (index: number): EffectTemplateMixSlot | null =>
+  workspace.value?.template.slots[index + 1] ?? null;
+const changeTemplateTransition = (index: number, event: Event): void => {
+  const transitionSlot = templateTransitionForRow(index);
+  if (!transitionSlot) return;
+  const transition = (event.target as HTMLSelectElement).value as EffectTemplateMixTransition;
+  if (!EFFECT_TEMPLATE_MIX_TRANSITIONS.includes(transition)) return;
+  transitionSlot.transition = transition;
+  changeTemplate();
 };
 const moveTemplateSlot = (id: string, direction: -1 | 1): void => {
   if (!workspace.value) return;
@@ -2230,18 +2290,18 @@ const validateDraft = async (): Promise<void> => {
   if (!activeEntry.value || draftRevision.value === null || !canValidate.value) return;
   validating.value = true;
   try {
-    const result = await validateEffectTemplateMix(
+    const signature = `${props.projectId}:${props.workflowRunId}:${activeEntry.value.id}:${draftRevision.value}`;
+    if (completionKey?.signature !== signature) completionKey = { signature, key: crypto.randomUUID() };
+    await completeEffectTemplateMixPackaging(
       props.projectId,
       props.workflowRunId,
       draftRevision.value,
       activeEntry.value.id,
+      completionKey.key,
     );
     committedVersions[activeEntry.value.id] = activeEntry.value.workspace.editVersion;
-    showNotice(
-      result.data.artifacts.some(({ unchanged }) => !unchanged)
-        ? '模板和时间轴工程已提交'
-        : '内容未变化，沿用当前版本',
-    );
+    showNotice('全部视觉与包装已提交，正在进入成片输出');
+    emit('next');
   } catch (error) {
     showNotice(error instanceof Error ? error.message : '提交失败', 'error');
   } finally {
@@ -2418,11 +2478,16 @@ defineExpose({ flushPendingEdits });
     </section>
     <template v-else>
       <header v-if="view === 'CONFIG'" class="config-head">
-        <div>
-          <h1>混剪模板</h1>
-          <p>配置模板后进入精修工作台，每个模板独立管理成片工程。</p>
+        <div class="config-head__title">
+          <span>05</span>
+          <div>
+            <h1>混剪模板</h1>
+            <p>按模板规则批量搭建成片工程，再逐条进入时间轴精修</p>
+          </div>
         </div>
-        <button class="button" @click="openCreate"><Plus :size="15" />新建模板</button>
+        <div class="config-head__actions">
+          <button class="button" @click="openCreate"><Plus :size="15" />新建模板</button>
+        </div>
       </header>
       <section v-if="view === 'CONFIG' && !activeEntry" class="page-state">
         <Layers3 :size="38" />
@@ -2473,7 +2538,7 @@ defineExpose({ flushPendingEdits });
           <div class="slot-table">
             <div class="slot-heading">
               <span>槽位 / 顺序</span><span>时间区间（自动）</span><span>时长（秒）</span
-              ><span>转场</span>
+              ><span>转场衔接</span>
             </div>
             <div v-for="(slot, index) in workspace.template.slots" :key="slot.id" class="slot-row">
               <div class="slot-name">
@@ -2497,11 +2562,18 @@ defineExpose({ flushPendingEdits });
                 max="120"
                 step=".1"
                 @change="changeTemplate"
-              /><select v-model="slot.transition" @change="changeTemplate">
-                <option v-for="item in EFFECT_TEMPLATE_MIX_TRANSITIONS" :key="item">
-                  {{ item }}
-                </option>
-              </select>
+              /><template v-if="index < workspace.template.slots.length - 1">
+                <select
+                  :value="templateTransitionForRow(index)?.transition ?? '硬切'"
+                  :aria-label="`${EFFECT_TEMPLATE_MIX_ROLE_LABELS[slot.role]}到下一槽位的转场`"
+                  @change="changeTemplateTransition(index, $event)"
+                >
+                  <option v-for="item in EFFECT_TEMPLATE_MIX_TRANSITIONS" :key="item">
+                    {{ item }}
+                  </option>
+                </select>
+              </template>
+              <span v-else class="slot-transition-empty">—</span>
             </div>
           </div>
           <footer>
@@ -2532,7 +2604,7 @@ defineExpose({ flushPendingEdits });
       >
         <header class="workbench-head">
           <div class="brand">
-            <span>AI</span>
+            <span aria-hidden="true"><Film :size="18" /></span>
             <div><strong>成片精修工作台</strong><small>修改自动保存到当前模板工程</small></div>
           </div>
           <div class="current">
@@ -2548,12 +2620,13 @@ defineExpose({ flushPendingEdits });
               :disabled="
                 mutating ||
                 Boolean(activeAiRun) ||
-                !selectedVariant ||
                 workspace.materials.length < 6
               "
               @click="refill"
             >
-              <Bot :size="15" />{{
+              <LoaderCircle v-if="activeAiRun" class="spin" :size="15" />
+              <RefreshCw v-else-if="selectedVariant" :size="15" />
+              {{
                 activeAiRun ? '智能填充中…' : selectedVariant ? '重新智能填充' : '智能填充'
               }}
             </button>
@@ -2572,16 +2645,7 @@ defineExpose({ flushPendingEdits });
             </button>
           </div>
         </header>
-        <WorkflowRunProgress
-          v-if="activeAiRun"
-          class="mix-run-progress"
-          :progress="activeAiRun.progress"
-          :summary="aiStageLabels[activeAiRun.stage]"
-          attempt-label="完成后自动把六个片段铺入当前视频轨"
-          action-label="查看当前工作流"
-          @show-details="openWorkflowDialog"
-        />
-        <div v-else-if="failedAiRun" class="ai-run-card editor-run failed" role="alert">
+        <div v-if="failedAiRun" class="ai-run-card editor-run failed" role="alert">
           <AlertCircle :size="18" />
           <div>
             <b>智能填充失败</b><span>{{ failedAiRun.errorMessage || '请检查素材后重试。' }}</span>
@@ -3083,8 +3147,15 @@ defineExpose({ flushPendingEdits });
                   title="为本模板下全部完整成片生成口播、配乐和字幕，将调用付费 AI 服务"
                   @click="openPackaging('ACTION')"
                 >
-                  <Sparkles :size="13" />{{
-                    packagingPanel?.busy || packagingPanel?.active ? '成片包装中…' : '智能成片包装'
+                  <LoaderCircle
+                    v-if="packagingPanel?.busy || packagingPanel?.active || packagingPanel?.loading"
+                    class="spin"
+                    :size="13"
+                  />
+                  <RefreshCw v-else :size="13" />{{
+                    packagingPanel?.busy || packagingPanel?.active || packagingPanel?.loading
+                      ? '成片包装中…'
+                      : '智能成片包装'
                   }}
                 </button>
                 <button
@@ -3106,7 +3177,7 @@ defineExpose({ flushPendingEdits });
                 </button>
               </div>
             </header>
-            <div>
+            <div :class="{ 'is-empty': !workspace.variants.length }">
               <article
                 v-for="(variant, index) in workspace.variants"
                 :key="variant.id"
@@ -3168,28 +3239,11 @@ defineExpose({ flushPendingEdits });
           <b v-if="!selectedTransitionInfo">{{
             EFFECT_TEMPLATE_MIX_ROLE_LABELS[selectedSlot.role]
           }}</b
-          ><label v-if="!selectedTransitionInfo"
-            >时长
-            <input
-              :value="selectedSlot.duration"
-              type="number"
-              min=".1"
-              max="120"
-              step=".1"
-              @change="changeProjectDuration(($event.target as HTMLInputElement).value)"
-            />
-            秒</label
-          ><label v-if="!selectedTransitionInfo && selectedMaterial"
-            >截取起点
-            <input
-              :value="selectedVariant.offsets[selectedSlot.id] ?? 0"
-              type="number"
-              min="0"
-              :max="Math.max(0, selectedMaterial.duration - selectedSlot.duration)"
-              step=".1"
-              @change="changeTrimStart(($event.target as HTMLInputElement).value)"
-            />
-            秒</label
+          ><span v-if="!selectedTransitionInfo" class="slot-readonly-control"
+            ><span>时长</span><b>{{ selectedSlot.duration }}</b><span>秒</span></span
+          ><span v-if="!selectedTransitionInfo && selectedMaterial" class="slot-readonly-control"
+            ><span>截取起点</span
+            ><b>{{ selectedVariant.offsets[selectedSlot.id] ?? 0 }}</b><span>秒</span></span
           ><span v-if="!selectedTransitionInfo && selectedMaterial" class="trim-range"
             >截取 {{ (selectedVariant.offsets[selectedSlot.id] ?? 0).toFixed(1) }}s —
             {{
@@ -3260,19 +3314,31 @@ defineExpose({ flushPendingEdits });
         >
           <span />
         </div>
-        <EffectTemplateMixPackaging
-          ref="packagingPanel"
-          :project-id="projectId"
-          :workflow-run-id="workflowRunId"
-          :template-id="activeTemplateId"
-          :variants="workspace.variants"
-          :selected-variant-id="selectedVariant?.id ?? ''"
-          :prepare="preparePackaging"
-          :playhead="playhead"
-          :playing="playing"
-          @selected="selectedPackaging = $event"
-          @preview="packagingPreviewEnabled = $event"
-        />
+        <div class="editor-workflow-progress">
+          <WorkflowRunProgress
+            v-if="activeAiRun"
+            class="mix-run-progress"
+            :progress="activeAiRun.progress"
+            :summary="aiStageLabels[activeAiRun.stage]"
+            attempt-label="完成后自动把六个片段铺入当前视频轨"
+            action-label="查看当前工作流"
+            @show-details="openWorkflowDialog"
+          />
+          <EffectTemplateMixPackaging
+            ref="packagingPanel"
+            :project-id="projectId"
+            :workflow-run-id="workflowRunId"
+            :template-id="activeTemplateId"
+            :variants="workspace.variants"
+            :selected-variant-id="selectedVariant?.id ?? ''"
+            :prepare="preparePackaging"
+            :playhead="playhead"
+            :playing="playing"
+            @selected="selectedPackaging = $event"
+            @preview="packagingPreviewEnabled = $event"
+            @ready="packagingReady = $event"
+          />
+        </div>
         <EffectTemplateMixTimeline
           :packaging="selectedPackaging?.stale ? null : selectedPackaging"
           :can-redo="canRedoTimeline"
@@ -3293,6 +3359,7 @@ defineExpose({ flushPendingEdits });
           @seek="seek"
           @select-slot="selectSlot"
           @trim-slot="changeTimelineTrimStart"
+          @resize-slot="resizeTimelineSlot"
           @preview-transition-duration="previewTransitionDuration"
           @update-transition-duration="changeTransitionDuration"
           @undo="undoTimelineEdit"
@@ -3328,7 +3395,7 @@ defineExpose({ flushPendingEdits });
             : pendingCount
               ? '仍有工程待同步'
               : complete
-                ? '可完成校验'
+                ? packagingReady ? '全部成片包装就绪' : '请等待全部成片包装成功且未过期'
                 : '请先补齐所有素材槽位'
         "
         :status-detail="'步骤 5 / 6 · ' + workspace.template.name"
@@ -3336,6 +3403,8 @@ defineExpose({ flushPendingEdits });
         :validating="validating"
         :next-disabled="!validated || validating"
         next-label="下一步：成片输出"
+        validate-label="完成校验并进入成片输出"
+        :show-next="false"
         @back="emit('back')"
         @validate="validateDraft"
         @next="emit('next')"
@@ -3512,16 +3581,19 @@ defineExpose({ flushPendingEdits });
               <X :size="18" />
             </button>
           </header>
-          <div class="workflow-version-notice" :class="`is-${workflowNotice.tone}`">
-            <LoaderCircle v-if="workflowNotice.tone === 'running'" class="spin" :size="15" />
-            <AlertCircle v-else-if="workflowNotice.tone === 'danger'" :size="15" />
-            <CheckCircle2 v-else-if="workflowNotice.tone === 'success'" :size="15" />
-            <Sparkles v-else :size="15" />
-            <span>
-              <strong>{{ workflowNotice.title }}</strong>
-              {{ workflowNotice.detail }}
-            </span>
-          </div>
+          <WorkflowRunProgress
+            v-if="activeAiRun"
+            class="mix-workflow-progress"
+            :progress="activeAiRun.progress"
+            :summary="
+              activeAiRun.status === 'QUEUED'
+                ? '正在等待智能填充服务接单'
+                : aiStageLabels[activeAiRun.stage]
+            "
+            attempt-label="任务在后台继续执行，关闭面板或刷新页面都不会丢失真实进度。"
+            action-label="关闭工作流"
+            @show-details="closeWorkflowDialog"
+          />
           <main class="workflow-graph-content">
             <div class="workflow-graph-canvas" aria-label="智能填充执行图">
               <template v-for="(stage, index) in aiStageOrder" :key="stage">
@@ -3609,12 +3681,12 @@ defineExpose({ flushPendingEdits });
 <style scoped>
 .mix-node {
   --blue: #2563eb;
-  margin-top: 18px;
-  padding: 12px;
+  margin-top: 14px;
+  padding: 10px;
   color: #17233a;
-  background: #f4f7fb;
+  background: linear-gradient(180deg, #f7faff 0%, #f2f6fb 100%);
   border: 1px solid #dbe4f2;
-  border-radius: 20px;
+  border-radius: 18px;
 }
 .panel {
   min-width: 0;
@@ -3650,22 +3722,63 @@ button:disabled {
   height: 28px;
   padding: 0 9px;
 }
-.config-head,
 .workbench-head {
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 8px 4px 16px;
 }
-.config-head > div,
+.config-head {
+  display: flex;
+  min-height: 50px;
+  margin-bottom: 18px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 0 2px;
+}
+.config-head__title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 14px;
+}
+.config-head__title > span {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  place-items: center;
+  color: #d67b16;
+  background: #fff5e7;
+  border-radius: 14px;
+  font-size: 13px;
+  font-weight: 900;
+}
+.config-head__title > div,
 .current {
   flex: 1;
 }
-.config-head h1 {
-  margin: 0 0 4px;
-  font-size: 22px;
+.config-head h1,
+.config-head p {
+  margin: 0;
 }
-.config-head p,
+.config-head h1 {
+  color: #172033;
+  font-size: 21px;
+}
+.config-head p {
+  margin-top: 5px;
+  color: #7d899d;
+  font-size: 13px;
+}
+.config-head__actions {
+  display: flex;
+  margin-left: auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
 .page-state p {
   margin: 0;
   color: #64748b;
@@ -3695,8 +3808,8 @@ button:disabled {
 }
 .config-layout {
   display: grid;
-  grid-template-columns: 245px 1fr;
-  gap: 12px;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 10px;
 }
 .template-list {
   display: flex;
@@ -3733,7 +3846,8 @@ button:disabled {
   margin-top: auto;
 }
 .config-panel {
-  padding: 18px;
+  padding: 14px;
+  box-shadow: 0 4px 14px rgb(30 64 175 / 4%);
 }
 .config-panel > header,
 .config-panel > footer {
@@ -3746,16 +3860,18 @@ button:disabled {
   margin: 0;
 }
 .config-panel p {
-  margin: 4px 0;
+  margin: 3px 0;
   color: #64748b;
   font-size: 12px;
 }
 .config-panel > header > span {
-  padding: 9px;
-  background: #f8fafc;
+  padding: 7px 9px;
+  color: #475569;
+  background: #f8fbff;
   border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  border-radius: 999px;
   font-size: 12px;
+  white-space: nowrap;
 }
 .config-panel > header b {
   color: #1d4ed8;
@@ -3763,7 +3879,7 @@ button:disabled {
 .name-field {
   display: grid;
   gap: 5px;
-  margin: 17px 0 13px;
+  margin: 12px 0 10px;
   font-size: 12px;
   font-weight: 700;
 }
@@ -3783,14 +3899,15 @@ button:disabled {
   border: 1px solid #e2e8f0;
   border-radius: 10px;
   overflow: hidden;
+  background: #fff;
 }
 .slot-heading,
 .slot-row {
   display: grid;
-  grid-template-columns: minmax(210px, 1.3fr) minmax(160px, 1fr) 100px 105px;
+  grid-template-columns: minmax(210px, 1.3fr) minmax(160px, 1fr) 92px 110px;
   align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
+  gap: 8px;
+  padding: 7px 10px;
 }
 .slot-heading {
   color: #64748b;
@@ -3801,6 +3918,9 @@ button:disabled {
 .slot-row {
   border-top: 1px solid #edf1f6;
 }
+.slot-row:hover {
+  background: #fbfdff;
+}
 .slot-name {
   display: flex;
   align-items: center;
@@ -3809,11 +3929,12 @@ button:disabled {
 .slot-name > b {
   display: grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
+  width: 23px;
+  height: 23px;
   color: #1d4ed8;
   background: #dbeafe;
-  border-radius: 6px;
+  border-radius: 7px;
+  font-size: 12px;
 }
 .slot-name span {
   flex: 1;
@@ -3821,18 +3942,25 @@ button:disabled {
   font-weight: 700;
 }
 .slot-name button {
-  width: 25px;
-  height: 25px;
+  width: 23px;
+  height: 23px;
   background: #fff;
   border: 1px solid #dce5f0;
   border-radius: 5px;
+  color: #475569;
 }
 .slot-row code {
   color: #64748b;
   font-size: 11px;
 }
+.slot-transition-empty {
+  color: #94a3b8;
+  font-size: 18px;
+  text-align: center;
+}
 .config-panel > footer {
-  margin-top: 15px;
+  margin-top: 11px;
+  padding-top: 2px;
 }
 .warning {
   color: #b45309 !important;
@@ -5073,9 +5201,16 @@ button:disabled {
   gap: 5px;
 }
 .project-actions .button {
+  display: inline-flex;
+  align-items: center;
   width: 100%;
   justify-content: center;
+  gap: 6px;
+  line-height: 1;
   white-space: nowrap;
+}
+.project-actions .button svg {
+  flex: 0 0 auto;
 }
 .project-actions .primary {
   grid-column: 1 / -1;
@@ -5091,6 +5226,11 @@ button:disabled {
   justify-content: stretch;
   gap: 4px;
   overflow: auto;
+}
+.projects > div.is-empty {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
 }
 .projects article {
   display: grid;
@@ -5161,6 +5301,7 @@ button:disabled {
   background: #ef4444;
 }
 .project-empty {
+  width: 100%;
   height: 100%;
   padding: 28px 18px;
   display: grid;
@@ -5225,6 +5366,28 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 5px;
+}
+.slot-readonly-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 0 !important;
+  color: #475569;
+  white-space: nowrap;
+}
+.slot-readonly-control b {
+  display: inline-flex;
+  min-width: 42px;
+  height: 28px;
+  padding: 0 8px;
+  align-items: center;
+  justify-content: center;
+  color: #334155;
+  background: #f8fafc;
+  border: 1px solid #dbe4f0;
+  border-radius: 7px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
 }
 .slot-settings input {
   width: 65px;
@@ -5448,6 +5611,17 @@ button:disabled {
   }
 }
 @media (max-width: 760px) {
+  .config-head {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .config-head__title {
+    flex: 1 1 100%;
+  }
+  .config-head__actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
   .config-layout {
     grid-template-columns: 1fr;
   }
@@ -5494,7 +5668,7 @@ button:disabled {
   .workflow-dialog > header {
     padding: 16px;
   }
-  .workflow-version-notice,
+  .mix-workflow-progress,
   .workflow-graph-canvas,
   .workflow-node-detail {
     margin-right: 12px;

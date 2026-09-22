@@ -58,6 +58,13 @@ const emit = defineEmits<{
   openTransition: [slotId: string];
   redo: [];
   reorderSlot: [slotId: string, targetSlotId: string];
+  resizeSlot: [
+    slotId: string,
+    side: 'LEFT' | 'RIGHT',
+    start: number,
+    trimStartSeconds: number,
+    duration: number,
+  ];
   seek: [seconds: number];
   selectSlot: [slotId: string];
   trimSlot: [slotId: string, trimStartSeconds: number];
@@ -85,6 +92,18 @@ type ClipDragState = {
 type TrimDragState = {
   currentOffset: number;
   originalOffset: number;
+  slotId: string;
+  startClientX: number;
+};
+type EdgeTrimDragState = {
+  currentDuration: number;
+  currentOffset: number;
+  currentStart: number;
+  initialDuration: number;
+  initialOffset: number;
+  initialStart: number;
+  moved: boolean;
+  side: 'LEFT' | 'RIGHT';
   slotId: string;
   startClientX: number;
 };
@@ -125,6 +144,7 @@ const transitionDrag = ref<TransitionDragState | null>(null);
 const suppressTransitionClick = ref(false);
 const transitionDropSlotId = ref('');
 const trimDrag = ref<TrimDragState | null>(null);
+const edgeTrimDrag = ref<EdgeTrimDragState | null>(null);
 const marquee = ref<MarqueeState | null>(null);
 const materialDropSlotId = ref('');
 const selectedClipIds = ref<string[]>([]);
@@ -164,8 +184,8 @@ const videoLaneCount = computed(() =>
 );
 const layoutSlots = computed(() =>
   (props.variant?.slots ?? []).map((slot) => {
-    const start = clipStart(slot.id);
-    return { id: slot.id, start, end: start + Math.max(0, slot.duration) };
+    const start = activeClipStart(slot.id);
+    return { id: slot.id, start, end: start + Math.max(0, activeSlotDuration(slot.id)) };
   }),
 );
 const draggedTimelineEnd = computed(() => {
@@ -301,10 +321,13 @@ const transitionStyle = (slot: EffectTemplateMixSlot): Record<string, string> =>
 
 const clipStyle = (slot: EffectTemplateMixSlot): Record<string, string> => {
   const range = rangeForSlot(slot.id);
+  const edgeTrim = edgeTrimDrag.value?.slotId === slot.id ? edgeTrimDrag.value : null;
   const drag = clipDrag.value;
   const delta = draggingGroupDelta.value;
   const isDraggedSelection = Boolean(delta) && Boolean(drag?.selectedSlotIds.includes(slot.id));
-  const start = isDraggedSelection
+  const start = edgeTrim
+    ? edgeTrim.currentStart
+    : isDraggedSelection
     ? Math.max(0, (drag?.initialStarts[slot.id] ?? range?.start ?? 0) + (delta?.start ?? 0))
     : (range?.start ?? 0);
   const lane = isDraggedSelection
@@ -316,7 +339,7 @@ const clipStyle = (slot: EffectTemplateMixSlot): Record<string, string> => {
   return {
     left: `${start * pixelsPerSecond.value}px`,
     top: `${7 + lane * 70}px`,
-    width: `${Math.max(24, slot.duration * pixelsPerSecond.value)}px`,
+    width: `${Math.max(24, (edgeTrim?.currentDuration ?? slot.duration) * pixelsPerSecond.value)}px`,
   };
 };
 
@@ -344,12 +367,24 @@ const formatTimecode = (seconds: number): string => {
 };
 
 const activeTrimOffset = (slotId: string): number =>
-  trimDrag.value?.slotId === slotId
+  edgeTrimDrag.value?.slotId === slotId
+    ? edgeTrimDrag.value.currentOffset
+    : trimDrag.value?.slotId === slotId
     ? trimDrag.value.currentOffset
     : (props.variant?.offsets[slotId] ?? 0);
 
+const activeSlotDuration = (slotId: string): number =>
+  edgeTrimDrag.value?.slotId === slotId
+    ? edgeTrimDrag.value.currentDuration
+    : (props.variant?.slots.find((slot) => slot.id === slotId)?.duration ?? 0);
+
+const activeClipStart = (slotId: string): number =>
+  edgeTrimDrag.value?.slotId === slotId
+    ? edgeTrimDrag.value.currentStart
+    : clipStart(slotId);
+
 const waveformBarCount = (slot: EffectTemplateMixSlot): number =>
-  Math.max(28, Math.min(240, Math.ceil((slot.duration * pixelsPerSecond.value) / 2)));
+  Math.max(28, Math.min(240, Math.ceil((activeSlotDuration(slot.id) * pixelsPerSecond.value) / 2)));
 
 const quantizeToFrame = (seconds: number): number => Math.round(seconds * props.fps) / props.fps;
 
@@ -641,6 +676,36 @@ const beginTrim = (event: PointerEvent, slotId: string): void => {
   addWindowPointerListeners();
 };
 
+const beginEdgeTrim = (
+  event: PointerEvent,
+  slotId: string,
+  side: 'LEFT' | 'RIGHT',
+): void => {
+  if (event.button !== 0 || trackLocked.VIDEO) return;
+  const slot = props.variant?.slots.find(({ id }) => id === slotId);
+  const material = slot ? materialForSlot(slotId) : null;
+  if (!slot || !material) return;
+  event.preventDefault();
+  event.stopPropagation();
+  setSelection([slotId]);
+  const initialOffset = Math.max(0, props.variant?.offsets[slotId] ?? 0);
+  const initialStart = clipStart(slotId);
+  edgeTrimDrag.value = {
+    currentDuration: slot.duration,
+    currentOffset: initialOffset,
+    currentStart: initialStart,
+    initialDuration: slot.duration,
+    initialOffset,
+    initialStart,
+    moved: false,
+    side,
+    slotId,
+    startClientX: event.clientX,
+  };
+  (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
+  addWindowPointerListeners();
+};
+
 const onTrackPointerDown = (event: PointerEvent, track: VisibleTrack): void => {
   if (event.button !== 0 || event.target !== event.currentTarget || trackLocked[track]) return;
   event.preventDefault();
@@ -783,6 +848,44 @@ function onWindowPointerMove(event: PointerEvent): void {
     );
     return;
   }
+  if (edgeTrimDrag.value) {
+    const drag = edgeTrimDrag.value;
+    const slot = props.variant?.slots.find(({ id }) => id === drag.slotId);
+    const material = slot ? materialForSlot(slot.id) : null;
+    if (!slot || !material) return;
+    const delta = quantizeToFrame(
+      (event.clientX - drag.startClientX) / pixelsPerSecond.value,
+    );
+    const minimumDuration = Math.min(0.1, material.duration);
+    const sourceEnd = drag.initialOffset + drag.initialDuration;
+    if (drag.side === 'LEFT') {
+      const requestedOffset = Math.max(
+        0,
+        Math.min(sourceEnd - minimumDuration, drag.initialOffset + delta),
+      );
+      const requestedDuration = sourceEnd - requestedOffset;
+      const maxTimelineDuration = drag.initialDuration + drag.initialStart;
+      const currentDuration = Math.max(
+        minimumDuration,
+        Math.min(requestedDuration, maxTimelineDuration),
+      );
+      drag.currentDuration = currentDuration;
+      drag.currentOffset = sourceEnd - currentDuration;
+      drag.currentStart = Math.max(
+        0,
+        drag.initialStart + drag.initialDuration - currentDuration,
+      );
+    } else {
+      drag.currentOffset = drag.initialOffset;
+      drag.currentDuration = Math.max(
+        minimumDuration,
+        Math.min(material.duration - drag.initialOffset, drag.initialDuration + delta),
+      );
+      drag.currentStart = drag.initialStart;
+    }
+    drag.moved = Math.abs(event.clientX - drag.startClientX) > 2;
+    return;
+  }
   if (marquee.value) {
     marquee.value.currentClientX = event.clientX;
     marquee.value.currentClientY = event.clientY;
@@ -830,11 +933,23 @@ function onWindowPointerUp(): void {
     setSelection([drag.slotId]);
   }
   if (trimDrag.value) emit('trimSlot', trimDrag.value.slotId, trimDrag.value.currentOffset);
+  const edgeTrim = edgeTrimDrag.value;
+  if (edgeTrim?.moved) {
+    emit(
+      'resizeSlot',
+      edgeTrim.slotId,
+      edgeTrim.side,
+      edgeTrim.currentStart,
+      edgeTrim.currentOffset,
+      edgeTrim.currentDuration,
+    );
+  }
   if (marquee.value?.moved) emit('selectSlot', selectedClipIds.value.at(-1) ?? '');
   scrubbing.value = false;
   clipDrag.value = null;
   transitionDrag.value = null;
   trimDrag.value = null;
+  edgeTrimDrag.value = null;
   marquee.value = null;
   timelineResize.value = null;
   removeWindowPointerListeners();
@@ -965,8 +1080,8 @@ onBeforeUnmount(() => {
           <Magnet :size="15" />
         </button>
         <span class="timeline-time">{{ formatTimecode(playhead) }}</span>
-        <span class="timeline-hint"
-          >素材可直接拖入 · 点击标尺定位 · 拖动片段换位 · 滚动查看上下轨道 · 拖边调整源截取</span
+          <span class="timeline-hint"
+          >素材可直接拖入 · 点击标尺定位 · 拖动片段换位 · 滚动查看上下轨道 · 拖边恢复素材时长</span
         >
       </div>
       <div class="zoom-controls" aria-label="时间轴缩放">
@@ -1151,7 +1266,7 @@ onBeforeUnmount(() => {
                       <EffectTemplateMixFilmstrip
                         :source="materialForSlot(slot.id)!.contentUrl"
                         :source-duration="materialForSlot(slot.id)!.duration"
-                        :duration="slot.duration"
+                        :duration="activeSlotDuration(slot.id)"
                         :trim-start="activeTrimOffset(slot.id)"
                         :version="`${materialForSlot(slot.id)!.artifactRevision}:${materialForSlot(slot.id)!.contentHash}`"
                       />
@@ -1165,7 +1280,7 @@ onBeforeUnmount(() => {
                     </div>
                     <EffectTemplateMixWaveform
                       :bar-count="waveformBarCount(slot)"
-                      :duration="slot.duration"
+                      :duration="activeSlotDuration(slot.id)"
                       :source="materialForSlot(slot.id)!.contentUrl"
                       :trim-start="activeTrimOffset(slot.id)"
                     />
@@ -1178,23 +1293,24 @@ onBeforeUnmount(() => {
                   </div>
                   <button
                     v-if="selectedClipIds.includes(slot.id) && materialForSlot(slot.id)"
-                    class="trim-handle trim-left"
+                    class="edge-trim-handle edge-trim-left"
                     type="button"
-                    title="拖动调整源视频截取起点，槽位时长保持不变"
-                    aria-label="调整源视频截取起点"
-                    @pointerdown="beginTrim($event, slot.id)"
+                    title="拖动左边缘调整素材起点和时长"
+                    aria-label="拖动左边缘调整素材起点和时长"
+                    @pointerdown="beginEdgeTrim($event, slot.id, 'LEFT')"
                   />
                   <button
                     v-if="selectedClipIds.includes(slot.id) && materialForSlot(slot.id)"
-                    class="trim-handle trim-right"
+                    class="edge-trim-handle edge-trim-right"
                     type="button"
-                    title="拖动调整源视频截取起点，槽位时长保持不变"
-                    aria-label="调整源视频截取起点"
-                    @pointerdown="beginTrim($event, slot.id)"
+                    title="拖动右边缘调整素材时长"
+                    aria-label="拖动右边缘调整素材时长"
+                    @pointerdown="beginEdgeTrim($event, slot.id, 'RIGHT')"
                   />
-                  <span v-if="trimDrag?.slotId === slot.id" class="trim-tooltip">
-                    源 {{ trimDrag.currentOffset.toFixed(2) }}s —
-                    {{ (trimDrag.currentOffset + slot.duration).toFixed(2) }}s
+                  <span v-if="edgeTrimDrag?.slotId === slot.id" class="trim-tooltip">
+                    源 {{ edgeTrimDrag.currentOffset.toFixed(2) }}s —
+                    {{ (edgeTrimDrag.currentOffset + edgeTrimDrag.currentDuration).toFixed(2) }}s
+                    · {{ edgeTrimDrag.currentDuration.toFixed(2) }}s
                   </span>
                 </article>
                 <button
@@ -1717,24 +1833,34 @@ onBeforeUnmount(() => {
   font-size: 9px;
   white-space: nowrap;
 }
-.trim-handle {
-  width: 10px;
-  height: 18px;
+.edge-trim-handle {
+  width: 8px;
+  height: 34px;
   position: absolute;
   z-index: 8;
   top: 50%;
-  border: 2px solid #fff;
-  border-radius: 999px;
-  background: #2563eb;
-  box-shadow: 0 0 0 1px #1d4ed8;
+  padding: 0;
+  border: 2px solid rgba(255, 255, 255, 0.95);
+  border-radius: 3px;
+  background: rgba(37, 99, 235, 0.82);
+  box-shadow: 0 0 0 1px rgba(29, 78, 216, 0.85);
   cursor: ew-resize;
+  touch-action: none;
+  opacity: 0.5;
   transform: translateY(-50%);
+  transition: opacity 100ms ease, background 100ms ease;
 }
-.trim-left {
-  left: -6px;
+.edge-trim-handle:hover,
+.video-clip.is-selected .edge-trim-handle,
+.video-clip:has(.edge-trim-handle:focus-visible) .edge-trim-handle {
+  opacity: 1;
+  background: #2563eb;
 }
-.trim-right {
-  right: -6px;
+.edge-trim-left {
+  left: 1px;
+}
+.edge-trim-right {
+  right: 1px;
 }
 .trim-tooltip {
   position: absolute;

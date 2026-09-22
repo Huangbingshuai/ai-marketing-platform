@@ -29,13 +29,25 @@ export class EffectPackagingRepository {
       include: PACKAGING_INCLUDE,
     });
   }
-  list(projectId: string, workflowRunId: string, templateId: string) {
-    return this.db.effectPackagingRun.findMany({
+  async list(projectId: string, workflowRunId: string, templateId: string) {
+    const latest = await this.db.effectPackagingItem.findMany({
+      where: { projectId, run: { workflowRunId, templateId } },
+      orderBy: [{ run: { createdAt: 'desc' } }, { id: 'desc' }], distinct: ['variantId'],
+      select: { id: true, runId: true },
+    });
+    const recent = await this.db.effectPackagingRun.findMany({
       where: { projectId, workflowRunId, templateId },
       orderBy: { createdAt: 'desc' },
       take: 20,
       include: PACKAGING_INCLUDE,
     });
+    const recentIds = new Set(recent.map((r) => r.id));
+    const extraIds = [...new Set(latest.map((i) => i.runId))].filter((id) => !recentIds.has(id));
+    const older = extraIds.length ? await this.db.effectPackagingRun.findMany({
+      where: { projectId, workflowRunId, templateId, id: { in: extraIds } }, orderBy: { createdAt: 'desc' },
+      include: { items: { where: { id: { in: latest.map((i) => i.id) } }, orderBy: [{ shardIndex: 'asc' }, { id: 'asc' }] } },
+    }) : [];
+    return [...recent, ...older];
   }
   private enqueue(tx: Prisma.TransactionClient, projectId: string, runId: string) {
     const payload = {
@@ -155,7 +167,11 @@ export class EffectPackagingRepository {
           startedAt: run.startedAt ?? new Date(),
         },
       });
-      return { terminal: false, attemptToken, items: run.items };
+      await tx.effectPackagingItem.updateMany({
+        where: { projectId, runId: id, status: { not: 'COMPLETED' } },
+        data: { status: 'QUEUED', errorMessage: null },
+      });
+      return { terminal: false, attemptToken, items: run.items.map((item) => item.status === 'COMPLETED' ? item : { ...item, status: 'QUEUED' }) };
     });
   }
   async recoverExpired() {

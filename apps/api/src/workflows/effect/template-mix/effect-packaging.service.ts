@@ -19,6 +19,7 @@ import type {
   WorkingArtifact,
 } from '@ai-marketing/contracts';
 import { packagingVisualTimeline } from '@ai-marketing/contracts';
+import { packagingExecution } from './effect-packaging.metrics';
 import { EffectPackagingRepository } from './effect-packaging.repository';
 import { EffectTemplateMixService } from './effect-template-mix.service';
 import { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
@@ -199,6 +200,8 @@ export class EffectPackagingService {
       startedAt: run.startedAt?.toISOString() ?? null,
       completedAt: run.completedAt?.toISOString() ?? null,
       items,
+      execution: packagingExecution(items, run.startedAt, run.completedAt, run.status,
+        Number(process.env.TEMPLATE_MIX_AI_MAX_CONCURRENCY) || 4),
       counts: {
         total: items.length,
         completed: items.filter((i) => i.status === 'COMPLETED').length,
@@ -370,84 +373,6 @@ export class EffectPackagingService {
       await this.storage.delete(stored.key).catch(() => undefined);
       throw error;
     }
-  }
-  async confirm(projectId: string, runId: string, itemId: string) {
-    const run = await this.get(projectId, runId),
-      item = run.items.find((i) => i.id === itemId);
-    if (!item || item.stale || item.status !== 'COMPLETED')
-      throw new ConflictException('仅可确认已完成且未过期的包装');
-    const raw = (await this.repo.get(projectId, runId))!.items.find((i) => i.id === itemId)!;
-    const snapshot = raw.snapshot as unknown as PackagingSnapshot;
-    validatePackagingCheckpoint(snapshot, item.checkpoint, true);
-    const artifacts = (
-      await this.working.listArtifacts(projectId, { workflowRunId: run.workflowRunId })
-    ).items;
-    const visual = artifacts.find(
-      (a) => a.artifactKey === `timeline-project:${run.templateId}:${item.variantId}`,
-    );
-    const payload = visual?.payload as { variant?: EffectTemplateMixVariant } | undefined;
-    if (
-      !visual ||
-      visual.freshness !== 'CURRENT' ||
-      !payload?.variant ||
-      visualHash(payload.variant) !== item.sourceTimelineHash
-    )
-      throw new ConflictException('请先完成当前画面时间轴的校验，再确认包装');
-    const ids = [...Object.values(item.checkpoint.voices ?? {}), item.checkpoint.music!].map(
-      (a) => a.fileObjectId,
-    );
-    const files = await this.repo.db.fileObject.findMany({
-      where: { projectId, workflowRunId: run.workflowRunId, id: { in: ids }, status: 'AVAILABLE' },
-    });
-    if (files.length !== new Set(ids).size) throw new ConflictException('包装音频已失效');
-    return this.working.commitValidatedArtifacts(projectId, run.workflowRunId, 'TEMPLATE_MIX', [
-      {
-        artifactKey: `timeline-package:${run.templateId}:${item.variantId}`,
-        input: {
-          kind: 'STRUCTURED',
-          name: `${item.name} · 智能包装`,
-          directory: 'EDITING_PROJECTS',
-          type: 'TIMELINE_PROJECT',
-          payload: {
-            schemaVersion: 1,
-            templateId: run.templateId,
-            variantId: item.variantId,
-            sourceTimelineHash: item.sourceTimelineHash,
-            visualArtifactId: visual.id,
-            visualRevision: visual.revision,
-            duration: snapshot.duration,
-            ...item.checkpoint,
-            mix: { originalVolume: 0.15, bgmVolume: 0.12, ducking: true },
-            subtitleStyle: 'standard',
-          },
-          files: files.map((f, sortOrder) => ({
-            fileObjectId: f.id,
-            role: f.id === item.checkpoint.music!.fileObjectId ? 'BGM' : 'VOICE',
-            sortOrder,
-            originalFileName: f.originalFileName,
-            mimeType: f.mimeType,
-            sha256: f.sha256,
-          })),
-          dependencies: [
-            ...snapshot.dependencies,
-            {
-              artifactId: visual.id,
-              artifactKey: visual.artifactKey,
-              revision: visual.revision,
-              contentHash: visual.contentHash ?? '',
-              nodeId: visual.nodeId,
-            },
-          ].map((d) => ({
-            sourceType: 'WORKING_ARTIFACT',
-            sourceNodeId: d.nodeId,
-            sourceArtifactId: d.artifactId,
-            sourceKey: d.artifactKey,
-            sourceRevision: d.revision,
-            sourceHash: d.contentHash,
-          })),
-        },
-      },
-    ]);
   }
   /** The output node consumes both confirmed copies. This does not encode a final video. */
   async outputInputs(

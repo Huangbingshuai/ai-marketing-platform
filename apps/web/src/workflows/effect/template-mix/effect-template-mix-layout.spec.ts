@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import workflowSource from '../source-import/EffectImportNodePage.vue?raw';
 import pageSource from './EffectTemplateMixNodePage.vue?raw';
+import packagingSource from './EffectTemplateMixPackaging.vue?raw';
 import thumbnailCacheSource from './effect-template-mix-thumbnail-cache.ts?raw';
 import thumbnailSource from './EffectTemplateMixThumbnail.vue?raw';
 import filmstripSource from './EffectTemplateMixFilmstrip.vue?raw';
@@ -23,7 +24,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('大模型按 Prompt 归槽');
     expect(pageSource).toContain('changeTrimStart');
     expect(pageSource).toContain('applyEffectTemplateMixVariant');
-    expect(pageSource).toContain('validateEffectTemplateMix');
+    expect(pageSource).toContain('completeEffectTemplateMixPackaging');
     expect(pageSource).not.toMatch(/\bfillEffectTemplateMixVariant\b/u);
     expect(pageSource).not.toContain('syncEffectTemplateMixVariants');
     expect(pageSource).not.toMatch(/Mock|MOCK|createEffectTemplateMixMock/u);
@@ -41,7 +42,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).not.toContain('智能填充并进入精修');
     expect(pageSource).toContain('返回模板配置');
     expect(pageSource).toContain('成片精修工作台');
-    expect(pageSource).toContain('AI 智能填充');
+    expect(pageSource).toContain('智能填充');
     expect(pageSource).toContain('尚未生成成片工程');
     expect(pageSource).not.toContain('算法批量组合');
     expect(pageSource).not.toContain('composeEffectTemplateMixVariants');
@@ -52,11 +53,26 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).not.toContain('class="slot-tabs"');
     expect(pageSource).not.toContain('class="tools"');
     expect(pageSource).toContain('EffectTemplateMixTimeline');
+    expect(pageSource).toContain('workspace.materials.length < 6');
+    expect(pageSource).not.toContain('!selectedVariant ||\n                workspace.materials.length < 6');
+    expect(pageSource).toContain(
+      '<LoaderCircle v-if="activeAiRun" class="spin" :size="15" />',
+    );
+    expect(pageSource).toContain('<RefreshCw v-else-if="selectedVariant" :size="15" />');
+    expect(pageSource).not.toContain('<Play v-else :size="15" />{{');
     expect(pageSource).toContain('WorkflowRunProgress');
+    expect(pageSource).toContain('class="editor-workflow-progress"');
+    expect(pageSource).toContain('class="mix-run-progress"');
+    expect(packagingSource).toContain('v-if="starting || active"');
+    expect(packagingSource).toContain('class="workflow-graph-content"');
+    expect(packagingSource).not.toContain('class="workflow-version-notice"');
+    expect(packagingSource).not.toContain('class="summary"');
     expect(pageSource).toContain('查看当前工作流');
     expect(pageSource).toContain('@show-details="openWorkflowDialog"');
     expect(pageSource).toContain('TEMPLATE MIX WORKFLOW');
     expect(pageSource).toContain('class="workflow-graph-content"');
+    expect(pageSource).toContain('class="mix-workflow-progress"');
+    expect(pageSource).not.toContain('class="workflow-version-notice"');
     expect(pageSource).toContain('class="workflow-graph-canvas"');
     expect(pageSource).toContain('class="workflow-graph-node"');
     expect(pageSource).toContain('class="workflow-node-detail"');
@@ -130,11 +146,22 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).not.toContain('resource-tabs-count');
     expect(pageSource).toContain('grid-template-columns: repeat(7, minmax(0, 1fr));');
     expect(pageSource).not.toContain('初次生成数量');
+    expect(pageSource).toContain('templateTransitionForRow');
+    expect(pageSource).toContain('index < workspace.template.slots.length - 1');
+    expect(pageSource).toContain('class="slot-transition-empty"');
+    expect(pageSource).not.toContain('v-model="slot.transition"');
+    expect(pageSource).toContain('class="slot-readonly-control"');
+    expect(pageSource).not.toContain('@change="changeProjectDuration');
+    expect(pageSource).not.toContain('@change="changeTrimStart');
   });
   it('renders loading, empty, error and real-media states', () => {
     expect(pageSource).toContain("pageState === 'LOADING'");
     expect(pageSource).toContain("pageState === 'ERROR'");
     expect(pageSource).toContain('还没有混剪模板');
+    expect(pageSource).toContain(":class=\"{ 'is-empty': !workspace.variants.length }\"");
+    expect(pageSource).toContain('.projects > div.is-empty');
+    expect(pageSource).toContain('.project-actions .button svg');
+    expect(pageSource).toContain('line-height: 1;');
     expect(pageSource).toContain(':src="materialForSlot(slot.id)?.contentUrl"');
     expect(pageSource).toContain(':src="auditionMaterial.contentUrl"');
     expect(pageSource).toContain('const previewSlot = computed');
@@ -165,6 +192,10 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).not.toContain('frameUrl(materialForSlot');
     expect(timelineSource).toContain('class="timeline-playhead"');
     expect(timelineSource).toContain('class="playhead-handle"');
+    expect(timelineSource).toContain('class="edge-trim-handle edge-trim-left"');
+    expect(timelineSource).toContain('class="edge-trim-handle edge-trim-right"');
+    expect(timelineSource).toContain('const beginEdgeTrim');
+    expect(timelineSource).toContain("'resizeSlot'");
     expect(timelineSource).toContain('Keep the ghost under the pointer while dragging');
     expect(timelineSource).toContain('@pointerdown="onRulerPointerDown"');
     expect(timelineSource).toContain('@pointerdown="onClipPointerDown($event, slot.id)"');
@@ -184,6 +215,7 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('togglePreviewPlayback');
     expect(pageSource).toContain('aria-label="调整素材库宽度"');
     expect(pageSource).toContain("startPaneResize($event, 'LEFT')");
+    expect(pageSource).toContain('@resize-slot="resizeTimelineSlot"');
     expect(pageSource).toContain('repeat(auto-fill, minmax(142px, 1fr))');
     expect(pageSource).toContain('materialUsageLabel(material.id)');
     expect(pageSource).toContain('同一成片不能重复使用');

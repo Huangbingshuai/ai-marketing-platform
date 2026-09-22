@@ -1,9 +1,65 @@
+import { DEFAULT_EFFECT_VIDEO_CONFIG } from '@ai-marketing/contracts';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { PrismaService } from '../../../database/prisma.service';
 import { EffectSourceImportRepository } from './effect-source-import.repository';
 
 describe('EffectSourceImportRepository project isolation', () => {
+  it('initializes the active run and workspace through idempotent upserts', async () => {
+    const workflowRunUpsert = vi.fn().mockResolvedValue({ id: 'run-a' });
+    const workspaceUpsert = vi.fn().mockResolvedValue({
+      id: 'workspace-a',
+      workflowRunId: 'run-a',
+    });
+    const transaction = {
+      effectImportWorkspace: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        upsert: workspaceUpsert,
+        findUniqueOrThrow: vi.fn().mockResolvedValue({ id: 'workspace-a' }),
+      },
+      workflowRun: {
+        upsert: workflowRunUpsert,
+        update: vi.fn().mockResolvedValue({}),
+      },
+      effectImportDraft: { createMany: vi.fn().mockResolvedValue({ count: 2 }) },
+    };
+    const repository = new EffectSourceImportRepository(
+      {
+        $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+      } as unknown as PrismaService,
+      {} as never,
+    );
+
+    await repository.initialize('project-a', DEFAULT_EFFECT_VIDEO_CONFIG);
+
+    expect(workflowRunUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          projectId_workflow_workflowSpace_activeKey: {
+            projectId: 'project-a',
+            workflow: 'EFFECT',
+            workflowSpace: 'EFFECT',
+            activeKey: 'ACTIVE',
+          },
+        },
+      }),
+    );
+    expect(workspaceUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { projectId: 'project-a' },
+        create: { projectId: 'project-a', workflowRunId: 'run-a' },
+      }),
+    );
+    expect(transaction.effectImportDraft.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skipDuplicates: true,
+        data: expect.arrayContaining([
+          expect.objectContaining({ projectId: 'project-a', workspaceId: 'workspace-a' }),
+        ]),
+      }),
+    );
+  });
+
   it('scopes product lookup by project and draft', async () => {
     const findFirst = vi.fn().mockResolvedValue(null);
     const repository = new EffectSourceImportRepository(

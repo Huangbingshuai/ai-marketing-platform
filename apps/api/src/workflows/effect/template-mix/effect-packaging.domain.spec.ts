@@ -138,14 +138,14 @@ describe('packaging snapshots and validation', () => {
         expect(shards.filter((i) => i === shard).length).toBeLessThanOrEqual(4);
     },
   );
-  it('splits by duration and token capacity, not just count', () => {
+  it('keeps scheduling groups stable while model requests remain per-item', () => {
     const long = { ...snapshot(), duration: 200 };
-    expect(packagingShardIndexes([long, long])).toEqual([0, 1]);
+    expect(packagingShardIndexes([long, long])).toEqual([0, 0]);
     const large = {
       ...snapshot(),
       facts: [{ ...snapshot().facts[0]!, text: '事实'.repeat(20_000) }],
     };
-    expect(packagingShardIndexes([large, large])).toEqual([0, 1]);
+    expect(packagingShardIndexes([large, large])).toEqual([0, 0]);
   });
   it('accepts captions based on actual audio length', () =>
     expect(() => validatePackagingCheckpoint(snapshot(), checkpoint(), true)).not.toThrow());

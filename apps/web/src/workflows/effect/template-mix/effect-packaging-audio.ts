@@ -4,6 +4,6 @@ export function packagingPlaybackError(reason: unknown, stillCurrent: boolean): 
   const name = reason && typeof reason === 'object' && 'name' in reason ? reason.name : '';
   if (name === 'AbortError') return null;
   return name === 'NotAllowedError'
-    ? '浏览器阻止音频播放，请再次开启试听'
-    : '包装音频暂时无法播放，请重新开启试听';
+    ? '浏览器阻止音频播放，请暂停后重新点击播放器的播放按钮'
+    : '包装音频暂时无法播放，请暂停后重新点击播放器的播放按钮';
 }

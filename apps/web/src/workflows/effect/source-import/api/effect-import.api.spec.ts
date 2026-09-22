@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   deleteEffectImportProduct,
   downloadEffectProductPackageTemplate,
+  getEffectImportWorkspace,
   listEffectImportProducts,
   previewEffectManifest,
   updateEffectImportDraft,
@@ -17,6 +18,24 @@ const ok = (): Response =>
   });
 
 describe('effect import API', () => {
+  it('retries transient proxy failures while loading the workspace', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ message: 'Bad Gateway' }), { status: 502 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ message: 'Bad Gateway' }), { status: 502 }),
+      )
+      .mockResolvedValueOnce(ok());
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getEffectImportWorkspace('project-a')).resolves.toMatchObject({
+      success: true,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it('uses one /api prefix and encodes project search parameters', async () => {
     const fetchMock = vi.fn().mockImplementation(async () => ok());
     vi.stubGlobal('fetch', fetchMock);

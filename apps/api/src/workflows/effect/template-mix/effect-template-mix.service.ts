@@ -1134,12 +1134,12 @@ export class EffectTemplateMixService {
     });
   }
 
-  async validate(
+  async prepareValidation(
     projectId: string,
     workflowRunId: string,
     expectedRevision: number,
     templateId: string,
-  ): Promise<ValidateEffectTemplateMixData> {
+  ) {
     const nodeState = await this.working.getNodeState(projectId, workflowRunId, 'TEMPLATE_MIX');
     if (nodeState.revision !== expectedRevision) {
       throw new ApiHttpException(
@@ -1262,6 +1262,12 @@ export class EffectTemplateMixService {
         },
       });
     }
+    return { inputs, variants };
+  }
+
+  async validate(projectId: string, workflowRunId: string, expectedRevision: number,
+    templateId: string): Promise<ValidateEffectTemplateMixData> {
+    const { inputs, variants } = await this.prepareValidation(projectId, workflowRunId, expectedRevision, templateId);
     const committed = await this.working.commitValidatedArtifacts(
       projectId,
       workflowRunId,

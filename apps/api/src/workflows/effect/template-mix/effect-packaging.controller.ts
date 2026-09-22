@@ -88,14 +88,6 @@ export class EffectPackagingController {
   retry(@Param('projectId', uuid) projectId: string, @Param('runId', uuid) runId: string) {
     return this.service.retry(projectId, runId);
   }
-  @Post('packaging-runs/:runId/items/:itemId/confirm')
-  confirm(
-    @Param('projectId', uuid) projectId: string,
-    @Param('runId', uuid) runId: string,
-    @Param('itemId', uuid) itemId: string,
-  ) {
-    return this.service.confirm(projectId, runId, itemId);
-  }
   @Get('templates/:templateId/variants/:variantId/output-inputs')
   outputInputs(
     @Param('projectId', uuid) projectId: string,

@@ -141,6 +141,9 @@ class ArkProvider:
                     raise ProviderError("AI 服务暂时不可用", retryable=response.status_code >= 500 or response.status_code == 429)
                 response_payload = response.json()
                 if response_payload.get("status") == "incomplete":
+                    if name.startswith('packaging_'):
+                        LOGGER.warning('packaging model incomplete stage=%s token_budget=%s request_id=%s',
+                            name, payload['max_output_tokens'], request_id)
                     raise ProviderError(
                         "AI 输出超过当前分片容量",
                         retryable=False,

@@ -630,7 +630,7 @@ export class WorkflowWorkingRepository {
     }
     if (orphanedFileObjectIds.length)
       await transaction.fileObject.updateMany({
-        where: { projectId, id: { in: orphanedFileObjectIds } },
+        where: { projectId, id: { in: orphanedFileObjectIds }, finalOutputItems: { none: {} } },
         data: { status: 'ORPHANED', orphanedAt: new Date() },
       });
     if (previous)
@@ -838,7 +838,7 @@ export class WorkflowWorkingRepository {
         const fileObjectIds = record.files.map((item) => item.fileObjectId);
         if (fileObjectIds.length)
           await transaction.fileObject.updateMany({
-            where: { projectId, id: { in: fileObjectIds }, packagingFiles: { none: {} } },
+            where: { projectId, id: { in: fileObjectIds }, packagingFiles: { none: {} }, finalOutputItems: { none: {} } },
             data: { status: 'ORPHANED', orphanedAt: new Date() },
           });
       }

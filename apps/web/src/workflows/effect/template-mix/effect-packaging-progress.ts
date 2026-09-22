@@ -17,7 +17,7 @@ export const packagingStageDetails: Record<
     output: '对应时间段的画面描述，不推断新的商品事实',
   },
   SCRIPT: {
-    description: '根据确认事实策划并校验口播',
+    description: '根据确认事实策划口播，仅做结构与时间校验',
     input: '画面描述、已确认商品事实与原始创意上下文',
     output: '带事实引用及时间安排的分句口播文案',
   },
@@ -39,7 +39,7 @@ export const packagingStageDetails: Record<
   READY: {
     description: '保存可试听、可确认的包装草稿',
     input: '口播、配音、音乐与同步字幕',
-    output: '等待人工完成包装校验，不直接编码最终成片',
+    output: '全部成片就绪后，在节点底部统一提交并进入成片输出',
   },
 };
 

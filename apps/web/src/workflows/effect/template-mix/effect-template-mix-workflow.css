@@ -29,6 +29,10 @@
   color: #718096;
   font-size: 11px;
 }
+.mix-workflow-progress {
+  margin: 14px 20px 0;
+  border-radius: 11px;
+}
 .workflow-graph-close {
   display: grid;
   width: 34px;
@@ -40,47 +44,6 @@
   background: #f6f8fc !important;
   border: 1px solid #e2e8f0;
   border-radius: 9px;
-}
-.workflow-version-notice {
-  display: flex;
-  margin: 14px 20px 0;
-  padding: 11px 13px;
-  align-items: flex-start;
-  gap: 9px;
-  color: #536178;
-  background: #eef5ff;
-  border: 1px solid #d5e5ff;
-  border-radius: 11px;
-  font-size: 10px;
-  line-height: 1.6;
-}
-.workflow-version-notice svg {
-  flex: none;
-  margin-top: 1px;
-  color: #2563eb;
-}
-.workflow-version-notice strong {
-  display: block;
-  color: #28446f;
-  font-size: 11px;
-}
-.workflow-version-notice.is-danger {
-  color: #8f3040;
-  background: #fff1f2;
-  border-color: #fecdd3;
-}
-.workflow-version-notice.is-danger svg,
-.workflow-version-notice.is-danger strong {
-  color: #bd3346;
-}
-.workflow-version-notice.is-success {
-  color: #28705c;
-  background: #ecf9f4;
-  border-color: #ccecdf;
-}
-.workflow-version-notice.is-success svg,
-.workflow-version-notice.is-success strong {
-  color: #0f8a68;
 }
 .workflow-graph-content {
   display: grid;

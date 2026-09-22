@@ -11,6 +11,8 @@ import { EffectTemplateMixWorkerGuard } from './effect-template-mix-worker.guard
 import { EffectTemplateMixLeaseRecovery } from './effect-template-mix-lease-recovery';
 import { EffectPackagingRepository } from './effect-packaging.repository';
 import { EffectPackagingService } from './effect-packaging.service';
+import { EffectFinalOutputService } from '../final-output/effect-final-output.service';
+import { EffectFinalOutputController, EffectFinalOutputWorkerController } from '../final-output/effect-final-output.controller';
 import {
   EffectPackagingController,
   EffectPackagingWorkerController,
@@ -23,6 +25,8 @@ import {
     EffectTemplateMixWorkerController,
     EffectPackagingController,
     EffectPackagingWorkerController,
+    EffectFinalOutputController,
+    EffectFinalOutputWorkerController,
   ],
   providers: [
     EffectTemplateMixService,
@@ -31,6 +35,7 @@ import {
     EffectTemplateMixLeaseRecovery,
     EffectPackagingRepository,
     EffectPackagingService,
+    EffectFinalOutputService,
   ],
 })
 export class EffectTemplateMixModule {}

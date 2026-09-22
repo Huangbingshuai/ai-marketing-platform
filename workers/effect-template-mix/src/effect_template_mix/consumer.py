@@ -17,6 +17,7 @@ from .provider import ArkProvider, ProviderError
 from .reliability import classification_chunks
 from .video import sample_frames
 from .packaging import PackagingHandler
+from .final_output import FinalOutputHandler
 
 LOGGER = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -47,6 +48,7 @@ class Consumer:
         classification_max_output_tokens: int,
         ai_max_concurrency: int,
         packaging: PackagingHandler | None = None,
+        final_output: FinalOutputHandler | None = None,
     ) -> None:
         self.rabbitmq_url = rabbitmq_url
         self.queue = queue
@@ -58,6 +60,7 @@ class Consumer:
         self.classification_max_output_tokens = classification_max_output_tokens
         self.ai_max_concurrency = ai_max_concurrency
         self.packaging = packaging
+        self.final_output = final_output
         self.connection: AbstractRobustConnection | None = None
 
     async def run(self) -> None:
@@ -84,6 +87,12 @@ class Consumer:
                 await message.nack(requeue=False)
                 return
             await self.packaging.handle(message, envelope)
+            return
+        if isinstance(envelope, dict) and envelope.get('schemaVersion') == 2 and envelope.get('taskType') == 'FINAL_OUTPUT':
+            if self.final_output is None:
+                await message.nack(requeue=False)
+                return
+            await self.final_output.handle(message, envelope)
             return
         runtime: Runtime | None = None
         heartbeat_task: asyncio.Task[None] | None = None

@@ -7,6 +7,7 @@ from .consumer import Consumer
 from .provider import ArkProvider
 from .packaging import PackagingHandler
 from .packaging_provider import PackagingProvider
+from .final_output import FinalOutputHandler
 
 
 async def serve() -> None:
@@ -32,7 +33,8 @@ async def serve() -> None:
         settings.classification_input_token_budget,
         settings.ark_max_output_tokens,
         settings.ai_max_concurrency,
-        PackagingHandler(api, provider, packaging_provider, settings.max_video_bytes),
+        PackagingHandler(api, provider, packaging_provider, settings.max_video_bytes, settings.ai_max_concurrency),
+        FinalOutputHandler(api, settings.max_video_bytes),
     )
     try:
         await consumer.run()

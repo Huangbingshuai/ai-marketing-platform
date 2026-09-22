@@ -48,6 +48,7 @@ import { prefetchEffectPromptWorkspace } from '../prompt-generation/services/eff
 import EffectSegmentRenderNodePage from '../segment-render/EffectSegmentRenderNodePage.vue';
 import { prefetchEffectSegmentRenderWorkspace } from '../segment-render/services/effect-segment-render-workspace.service';
 import EffectTemplateMixNodePage from '../template-mix/EffectTemplateMixNodePage.vue';
+import EffectFinalOutputNodePage from '../final-output/EffectFinalOutputNodePage.vue';
 import { clearEffectWorkspacePrefetches } from '../shared/effect-workspace-prefetch';
 import {
   advanceEffectImportDraft,
@@ -140,9 +141,7 @@ const effectWorkflowNodeLabels = [
 const pendingStepLabel = computed(() =>
   pendingStep.value === null ? '' : (effectWorkflowNodeLabels[pendingStep.value] ?? '目标节点'),
 );
-const activeDownstreamBoundary = computed(() =>
-  activeStep.value === 5 ? downstreamBoundaries[3] : undefined,
-);
+const activeDownstreamBoundary = computed(() => undefined as (typeof downstreamBoundaries)[number] | undefined);
 const keyword = ref('');
 const selectedProductIds = ref(new Set<string>());
 const busyMaterialIds = ref(new Set<string>());
@@ -1559,6 +1558,13 @@ onBeforeUnmount(() => {
           :products="products"
           @back="selectWorkflowStep(3)"
           @next="selectWorkflowStep(5)"
+        />
+        <EffectFinalOutputNodePage
+          v-else-if="activeStep === 5"
+          :key="`output:${currentProjectId}:${workspace?.workflowRunId ?? ''}`"
+          :project-id="currentProjectId"
+          :workflow-run-id="workspace?.workflowRunId ?? ''"
+          @back="selectWorkflowStep(4)"
         />
       </KeepAlive>
 

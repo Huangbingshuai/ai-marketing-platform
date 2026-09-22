@@ -11,11 +11,12 @@ import httpx
 import pytest
 
 from effect_template_mix.api import InternalApi
-from effect_template_mix.packaging import PackagingHandler, ScriptAudit, ScriptAuditIssue, ScriptOutput, ScriptRow, VisionOutput, plan_script, script_structure_issues, shorten_voice_line, valid_vision
+from effect_template_mix.packaging import PackagingHandler, ScriptOutput, ScriptRow, VisionOutput, plan_script, script_structure_issues, shorten_voice_line, valid_vision, vision_frame_windows, valid_frame_vision
 from effect_template_mix.packaging_media import pcm_wav, visible_intervals
 from effect_template_mix.packaging_provider import PackagingError, PackagingProvider, signed_headers
 from effect_template_mix.provider import ArkProvider
 from effect_template_mix.consumer import Consumer
+from effect_template_mix.packaging import FrameVisionOutput, NarrationPlan, materialize_script, narration_windows, understand_frames
 from types import SimpleNamespace
 
 
@@ -102,6 +103,20 @@ async def test_paid_script_request_does_not_hide_extra_transport_attempts() -> N
     await ark.close()
 
 
+async def test_incomplete_packaging_script_reports_safe_capacity_reason(caplog: Any) -> None:
+    ark = ArkProvider('https://test.invalid', 'secret-key', 'model', 1, 8192, 'minimal')
+    await ark.client.aclose()
+    ark.client = httpx.AsyncClient(base_url='https://test.invalid/', transport=httpx.MockTransport(
+        lambda _: httpx.Response(200, json={'status': 'incomplete', 'output_text': 'private-response'},
+                                headers={'x-request-id': 'audit-id'})))
+    from effect_template_mix.provider import ProviderError
+    with pytest.raises(ProviderError, match='超过当前分片容量'):
+        await ark.structured([], ScriptOutput, 'packaging_script', max_output_tokens=8192, max_attempts=1)
+    assert 'token_budget=8192' in caplog.text and 'audit-id' in caplog.text
+    assert 'private-response' not in caplog.text and 'secret-key' not in caplog.text
+    await ark.close()
+
+
 @pytest.mark.parametrize('song', [{'Lyrics': '歌词', 'AudioUrl': 'https://v1-default.douyinvod.com/a'}, {'AudioUrl': 'http://127.0.0.1/a'}, {'AudioUrl': 'https://evil.test/a'}])
 async def test_music_rejects_lyrics_and_nonofficial_downloads(song: dict[str, str]) -> None:
     adapter = provider(lambda _: httpx.Response(200, json={'Code': 0, 'Result': {'Status': 2, 'SongDetail': song}}))
@@ -127,6 +142,42 @@ def item() -> dict[str, Any]:
         'music': {'fileObjectId': 'music', 'start': 0, 'duration': 10, 'volume': .12}}}
 
 
+async def test_vision_assigns_exact_windows_even_when_model_returns_reverse_order() -> None:
+    ark = AsyncMock(spec=ArkProvider)
+    ark.structured.return_value = FrameVisionOutput.model_validate({'frames': [
+        {'frameIndex': 1, 'description': '后图'}, {'frameIndex': 0, 'description': '前图'}]})
+    guard = AsyncMock()
+    result = await understand_frames(ark, {'duration': 4, 'clips': []}, [(1, b'a'), (3, b'b')], guard)
+    assert result == [{'start': 0, 'end': 2, 'description': '前图'}, {'start': 2, 'end': 4, 'description': '后图'}]
+    guard.assert_awaited_once()
+    assert ark.structured.call_args.kwargs['max_attempts'] == 1
+
+
+async def test_vision_repairs_duplicate_ids_once_without_accepting_guessed_times() -> None:
+    ark = AsyncMock(spec=ArkProvider)
+    invalid = FrameVisionOutput.model_validate({'frames': [{'frameIndex': 0, 'description': '重复'}] * 2})
+    valid = FrameVisionOutput.model_validate({'frames': [
+        {'frameIndex': 0, 'description': '前图'}, {'frameIndex': 1, 'description': '后图'}]})
+    ark.structured.side_effect = [invalid, valid]
+    guard = AsyncMock()
+    result = await understand_frames(ark, {'duration': 4, 'clips': []}, [(1, b'a'), (3, b'b')], guard)
+    assert len(result) == 2 and guard.await_count == 2
+    ark.structured.side_effect = [invalid, invalid]
+    with pytest.raises(PackagingError, match='修正后仍无效'):
+        await understand_frames(ark, {'duration': 4, 'clips': []}, [(1, b'a'), (3, b'b')], guard)
+    assert ark.structured.await_count == 4
+
+
+async def test_vision_cancellation_between_groups_prevents_next_paid_request() -> None:
+    ark = AsyncMock(spec=ArkProvider)
+    ark.structured.return_value = FrameVisionOutput.model_validate({'frames': [
+        {'frameIndex': i, 'description': '帧'} for i in range(8)]})
+    guard = AsyncMock(side_effect=[None, RuntimeError('cancelled')])
+    with pytest.raises(RuntimeError, match='cancelled'):
+        await understand_frames(ark, {'duration': 9, 'clips': []}, [(i + .5, b'a') for i in range(9)], guard)
+    assert ark.structured.await_count == 1
+
+
 def script_result(**updates: Any) -> ScriptOutput:
     line = {'id': 'line-1', 'text': '已确认事实', 'start': 0, 'end': 4, 'factIds': ['facts:0']}
     return ScriptOutput.model_validate({'lines': [{**line, **updates}], 'musicBrief': '轻快纯器乐'})
@@ -136,6 +187,37 @@ def script_snapshot() -> dict[str, Any]:
     return {'duration': 10, 'clips': [], 'facts': [{'id': 'facts:0', 'text': '已确认事实'}]}
 
 
+def plan_result(**updates: Any) -> NarrationPlan:
+    return NarrationPlan.model_validate({'lines': [{'id': 'line-1', 'windowIndex': 0,
+        'text': '已确认事实', 'factIds': ['facts:0'], **updates}], 'musicBrief': '轻快纯器乐'})
+
+
+def test_narration_window_materialization_has_no_model_timing_or_order_dependency() -> None:
+    windows = narration_windows(32)
+    assert len(windows) == 4 and windows[0]['maxCharacters'] == 22
+    plan = NarrationPlan(lines=[*plan_result(windowIndex=3).lines, *plan_result(id='line-2', windowIndex=0).lines], musicBrief='纯音乐')
+    result = materialize_script(plan, windows)
+    assert [(r.start, r.end) for r in result.lines] == [(0, 8), (24, 32)]
+
+
+@pytest.mark.parametrize('index', [-1, 4])
+def test_narration_invalid_window_is_not_silently_clamped(index: int) -> None:
+    with pytest.raises(PackagingError, match='重复或越界'):
+        materialize_script(plan_result(windowIndex=index), narration_windows(32))
+
+
+async def test_narration_duplicate_windows_get_one_mechanical_repair() -> None:
+    ark = AsyncMock(spec=ArkProvider)
+    duplicate = NarrationPlan(lines=[*plan_result().lines, *plan_result(id='line-2').lines], musicBrief='纯音乐')
+    ark.structured.side_effect = [duplicate, plan_result()]
+    result = await plan_script(ark, script_snapshot(), [], AsyncMock())
+    assert result.lines[0].start == 0 and result.lines[0].end == 10
+    assert [call.args[2] for call in ark.structured.call_args_list] == ['packaging_script', 'packaging_script']
+    ark.structured.side_effect = [duplicate, duplicate]
+    with pytest.raises(PackagingError, match='窗口编号重复或越界'):
+        await plan_script(ark, script_snapshot(), [], AsyncMock())
+
+
 @pytest.mark.parametrize(('start', 'end', 'description', 'valid'), [
     (0, 32, '画面动作', True), (-1, 3, '画面', False), (29, 35, '画面', False),
     (3, 3, '画面', False), (0, float('nan'), '画面', False), (0, 3, '', False),
@@ -143,6 +225,23 @@ def script_snapshot() -> dict[str, Any]:
 def test_vision_intervals_are_validated_before_api_write(start: float, end: float, description: str, valid: bool) -> None:
     result = VisionOutput.model_validate({'scenes': [{'start': start, 'end': end, 'description': description}]})
     assert valid_vision(result, 32) is valid
+
+
+def test_frame_windows_cover_real_cuts_without_overlap_or_cross_group_extension() -> None:
+    snapshot = {'duration': 32, 'clips': [{'start': 0, 'duration': 29, 'lane': 0}, {'start': 29, 'duration': 3, 'lane': 0}]}
+    windows = vision_frame_windows(snapshot, [1, 10, 28, 30.5, 30.667])
+    assert windows == [(0, 5.5), (5.5, 19), (19, 29), (29, 30.5835), (30.5835, 32)]
+    result = VisionOutput.model_validate({'scenes': [{'start': a, 'end': b, 'description': '对应帧'} for a, b in windows]})
+    assert valid_frame_vision(result, 32, windows)
+    result.scenes[2].end = 32  # Historical bug: pizza extended over the final rice-food clip.
+    assert not valid_frame_vision(result, 32, windows)
+
+
+def test_frame_windows_reject_missing_coverage_and_description_rows() -> None:
+    snapshot = {'duration': 5, 'clips': [{'start': 1, 'duration': 4, 'lane': 0}]}
+    with pytest.raises(PackagingError, match='未覆盖'):
+        vision_frame_windows(snapshot, [2])
+    assert not valid_frame_vision(VisionOutput(scenes=[]), 5, [(0, 1)])
 
 
 @pytest.mark.parametrize(('updates', 'code'), [
@@ -158,48 +257,33 @@ def test_script_preflight_rejects_bad_structure(updates: dict[str, Any], code: s
     assert code in script_structure_issues(script_result(**updates), script_snapshot())
 
 
-async def test_script_repairs_missing_fact_ids_before_paying_for_audit() -> None:
+async def test_script_repairs_missing_fact_ids_without_audit() -> None:
     ark = AsyncMock(spec=ArkProvider)
-    ark.structured.side_effect = [script_result(factIds=[]), script_result(),
-        ScriptAudit(supported=True, coherent=True, issues=[])]
+    ark.structured.side_effect = [plan_result(factIds=[]), plan_result()]
     guard = AsyncMock()
     result = await plan_script(ark, script_snapshot(), [], guard)
     assert result.lines[0].factIds == ['facts:0']
-    assert [call.args[2] for call in ark.structured.call_args_list] == ['packaging_script', 'packaging_script', 'packaging_audit']
+    assert [call.args[2] for call in ark.structured.call_args_list] == ['packaging_script', 'packaging_script']
     repaired = json.loads(ark.structured.call_args_list[1].args[0][0]['text'])
     assert repaired['revision']['issues'] == ['FACT_REFERENCE']
-    assert guard.await_count == 3
-
-
-async def test_script_repairs_audit_rejection_once_without_relaxing_facts() -> None:
-    ark = AsyncMock(spec=ArkProvider)
-    issue = ScriptAuditIssue(lineId='line-1', code='INCORRECT_FACT_REFERENCE', explanation='引用指向另一事实', correction='只使用正确事实的原样 ID')
-    ark.structured.side_effect = [script_result(), ScriptAudit(supported=False, coherent=True, issues=[issue]),
-        script_result(), ScriptAudit(supported=True, coherent=True, issues=[])]
-    await plan_script(ark, script_snapshot(), [], AsyncMock())
-    revised = json.loads(ark.structured.call_args_list[2].args[0][0]['text'])
-    assert revised['confirmedFacts'] == script_snapshot()['facts']
-    assert revised['revision']['issues'] == ['INCORRECT_FACT_REFERENCE']
-    assert revised['revision']['audit'][0]['correction'] == issue.correction
-    assert ark.structured.await_count == 4
-
-
-async def test_script_repeated_audit_failure_stops_with_safe_reason() -> None:
-    ark = AsyncMock(spec=ArkProvider)
-    issue = ScriptAuditIssue(lineId='line-1', code='UNSUPPORTED_FACT', explanation='无确认依据', correction='删除这条声称')
-    ark.structured.side_effect = [script_result(), ScriptAudit(supported=False, coherent=True, issues=[issue])] * 2
-    with pytest.raises(PackagingError, match='一次修正.*商品声明缺少事实支持'):
-        await plan_script(ark, script_snapshot(), [], AsyncMock())
-    assert ark.structured.await_count == 4
+    assert guard.await_count == 2
 
 
 async def test_script_cancel_before_revision_stops_new_model_requests() -> None:
     ark = AsyncMock(spec=ArkProvider)
-    ark.structured.return_value = script_result(factIds=[])
+    ark.structured.return_value = plan_result(factIds=[])
     guard = AsyncMock(side_effect=[None, RuntimeError('cancelled')])
     with pytest.raises(RuntimeError, match='cancelled'):
         await plan_script(ark, script_snapshot(), [], guard)
     assert ark.structured.await_count == 1
+
+
+def test_planning_capacity_uses_next_start_but_does_not_reject_measured_saved_audio() -> None:
+    from effect_template_mix.packaging import speech_capacity_issues
+    script = script_result(text='这是超过短窗口的较长中文口播句子', start=8, end=10)
+    assert speech_capacity_issues(script, 10) == ['SPEECH_CAPACITY']
+    assert script_structure_issues(script, script_snapshot()) == []
+    assert speech_capacity_issues(script_result(text='简短解说', start=1, end=8), 10) == []
 
 
 async def test_item_resume_skips_saved_voice_and_creates_exact_captions() -> None:
@@ -236,8 +320,7 @@ async def test_tts_overrun_is_not_silently_truncated() -> None:
     ark = AsyncMock(spec=ArkProvider)
     row = item()
     row['snapshot']['facts'] = [{'id': 'f', 'text': '事实'}]
-    ark.structured.side_effect = [ScriptRow(**{**row['checkpoint']['script'][0], 'text': '短句'}),
-                                  ScriptAudit(supported=True, coherent=True, issues=[])]
+    ark.structured.side_effect = [ScriptRow(**{**row['checkpoint']['script'][0], 'text': '短句'})]
     with pytest.raises(PackagingError, match='缩句一次后仍超出'):
         await PackagingHandler(api, ark, adapter, 1000).process_item('/run', {}, 'project', row)
     assert adapter.voice.await_count == 2
@@ -255,14 +338,14 @@ async def test_voice_fit_keeps_existing_audio_and_aligns_caption_to_measured_rep
     previous = {'id': 'previous', 'text': '前句', 'start': 0, 'end': .8, 'factIds': ['f']}
     row['checkpoint']['script'].insert(0, previous)
     row['checkpoint']['voices'] = {'previous': {'fileObjectId': 'saved', 'start': 0, 'duration': .5, 'volume': 1}}
-    ark.structured.side_effect = [ScriptRow(**{**row['checkpoint']['script'][1], 'text': '短句'}),
-                                  ScriptAudit(supported=True, coherent=True, issues=[])]
+    ark.structured.side_effect = [ScriptRow(**{**row['checkpoint']['script'][1], 'text': '短句'})]
     await PackagingHandler(api, ark, adapter, 1000).process_item('/run', {}, 'project', row)
     assert row['stage'] == 'READY'
     assert row['checkpoint']['script'][0] == previous
     assert row['checkpoint']['voices']['previous']['fileObjectId'] == 'saved'
     assert row['checkpoint']['captions'][1] == {'id': 'line-1', 'text': '短句', 'start': 1, 'end': 3}
-    assert ark.structured.await_count == 2
+    assert ark.structured.await_count == 1
+    assert ark.structured.call_args.args[2] == 'packaging_voice_fit'
     adapter.submit_music.assert_not_called()
 
 

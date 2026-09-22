@@ -9,6 +9,8 @@ withDefaults(
     statusTitle: string;
     validateDisabled?: boolean;
     validating?: boolean;
+    validateLabel?: string;
+    showNext?: boolean;
   }>(),
   {
     backLabel: '',
@@ -16,6 +18,8 @@ withDefaults(
     nextDisabled: false,
     validateDisabled: false,
     validating: false,
+    validateLabel: '完成校验',
+    showNext: true,
   },
 );
 
@@ -67,9 +71,10 @@ defineEmits<{
           <circle cx="12" cy="12" r="9" />
           <path d="m8.5 12 2.2 2.2 4.8-5" />
         </svg>
-        {{ validating ? '正在校验…' : '完成校验' }}
+        {{ validating ? '正在校验…' : validateLabel }}
       </button>
       <button
+        v-if="showNext"
         class="workflow-node-footer__next"
         type="button"
         :disabled="nextDisabled"

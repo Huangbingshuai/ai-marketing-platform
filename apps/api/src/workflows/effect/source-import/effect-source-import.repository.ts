@@ -76,23 +76,40 @@ export class EffectSourceImportRepository {
 
   async initialize(projectId: string, config: EffectVideoConfig): Promise<EffectWorkspaceRecord> {
     return this.prisma.$transaction(async (transaction) => {
-      let workspace = await transaction.effectImportWorkspace.findUnique({ where: { projectId } });
-      if (!workspace) {
-        const workflowRunId = randomUUID();
-        await transaction.workflowRun.create({
-          data: {
-            id: workflowRunId,
+      const existingWorkspace = await transaction.effectImportWorkspace.findUnique({
+        where: { projectId },
+        select: { workflowRunId: true },
+      });
+      let workflowRunId = existingWorkspace?.workflowRunId;
+      if (!workflowRunId) {
+        const workflowRun = await transaction.workflowRun.upsert({
+          where: {
+            projectId_workflow_workflowSpace_activeKey: {
+              projectId,
+              workflow: 'EFFECT',
+              workflowSpace: 'EFFECT',
+              activeKey: 'ACTIVE',
+            },
+          },
+          create: {
+            id: randomUUID(),
             projectId,
             workflow: 'EFFECT',
             workflowSpace: 'EFFECT',
           },
+          update: { status: 'ACTIVE', lastActiveAt: new Date() },
+          select: { id: true },
         });
-        workspace = await transaction.effectImportWorkspace.create({
-          data: { projectId, workflowRunId },
-        });
+        workflowRunId = workflowRun.id;
       }
+      const workspace = await transaction.effectImportWorkspace.upsert({
+        where: { projectId },
+        create: { projectId, workflowRunId },
+        update: { updatedAt: new Date() },
+        select: { id: true, workflowRunId: true },
+      });
       await transaction.workflowRun.update({
-        where: { id: workspace.workflowRunId },
+        where: { projectId_id: { projectId, id: workspace.workflowRunId } },
         data: { status: 'ACTIVE', lastActiveAt: new Date() },
       });
       await transaction.effectImportDraft.createMany({
