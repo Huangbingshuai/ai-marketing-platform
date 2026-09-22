@@ -1784,11 +1784,15 @@ const resolveTimelinePlacement = (
   requestedStart: number,
   requestedLane: number,
   excludedSlotIds: ReadonlySet<string> = new Set(),
+  forceInsertLane = false,
 ): TimelinePlacement => {
   const slot = variant.slots.find(({ id }) => id === slotId);
   if (!slot) return { start: requestedStart, lane: requestedLane };
   if (requestedLane < 0) {
     return { insertLaneAt: 0, start: requestedStart, lane: 0 };
+  }
+  if (forceInsertLane) {
+    return { insertLaneAt: requestedLane, start: requestedStart, lane: requestedLane };
   }
   const ranges = currentTiming.value.slots
     .filter(
@@ -1834,18 +1838,19 @@ const moveTimelineClips = (moves: TimelineClipMove[]): void => {
     if (!slot) return [];
     const nextStart = Math.max(0, Math.round(start * 30) / 30);
     const nextLane = Math.round(lane);
+    const currentLane = Math.max(0, Math.round(variant.videoLanes?.[slotId] ?? 0));
     const resolved = resolveTimelinePlacement(
       variant,
       slotId,
       nextStart,
       nextLane,
       excludedSlotIds,
+      nextLane < currentLane,
     );
     const currentStart =
       variant.timelineStarts?.[slotId] ??
       effectTemplateMixTiming(variant.slots).slots.find(({ id }) => id === slotId)?.start ??
       0;
-    const currentLane = variant.videoLanes?.[slotId] ?? 0;
     const resolvedStart = Math.max(0, Math.round(resolved.start * 30) / 30);
     if (resolved.insertLaneAt !== undefined) {
       insertLaneAt =

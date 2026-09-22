@@ -150,6 +150,8 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('remainsAttached');
     expect(pageSource).toContain('insertLaneAt');
     expect(pageSource).toContain('if (requestedLane < 0)');
+    expect(pageSource).toContain('forceInsertLane');
+    expect(pageSource).toContain('nextLane < currentLane');
     expect(timelineSource).toContain('drag.currentLane = -1');
     expect(timelineSource).toContain('Math.hypot(');
     expect(pageSource).toContain('beginMaterialPointerDrag');
