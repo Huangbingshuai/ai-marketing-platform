@@ -357,7 +357,7 @@ const toAiRun = (run: {
     const item = materialById.get(id ?? '');
     return item ? [item.code, item.name].filter(Boolean).join(' · ') : '素材';
   };
-  const stageDetails: EffectTemplateMixAiRun['stageDetails'] = {
+  const stageDetails: NonNullable<EffectTemplateMixAiRun['stageDetails']> = {
     CLASSIFYING: {
       completed: Math.min(classifications.length, materials.length),
       total: materials.length,

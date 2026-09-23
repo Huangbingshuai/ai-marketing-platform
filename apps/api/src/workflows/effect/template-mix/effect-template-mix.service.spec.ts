@@ -161,19 +161,19 @@ describe('EffectTemplateMixService', () => {
 
     const run = await service.aiRun('project', 'run-id');
 
-    expect(run.stageDetails.CLASSIFYING).toMatchObject({ completed: 3, total: 5 });
-    expect(run.stageDetails.CLASSIFYING?.inputSamples).toEqual([
+    expect(run.stageDetails?.CLASSIFYING).toMatchObject({ completed: 3, total: 5 });
+    expect(run.stageDetails?.CLASSIFYING?.inputSamples).toEqual([
       'R-1 · 素材 1',
       'R-2 · 素材 2',
       'R-3 · 素材 3',
       'R-4 · 素材 4',
     ]);
-    expect(run.stageDetails.MATCHING).toMatchObject({ completed: 1, total: 1 });
-    expect(run.stageDetails.SAMPLING).toMatchObject({ completed: 1, total: 2 });
-    expect(run.stageDetails.TRIMMING?.outputSamples).toEqual([
+    expect(run.stageDetails?.MATCHING).toMatchObject({ completed: 1, total: 1 });
+    expect(run.stageDetails?.SAMPLING).toMatchObject({ completed: 1, total: 2 });
+    expect(run.stageDetails?.TRIMMING?.outputSamples).toEqual([
       'R-1 · 素材 1 · 从 1.3 秒截取',
     ]);
-    expect(run.stageDetails.COMPLETED).toMatchObject({ completed: 0, total: 1 });
+    expect(run.stageDetails?.COMPLETED).toMatchObject({ completed: 0, total: 1 });
   });
 
   it('preserves untouched legacy 3-second slots while rejecting newly edited ones', async () => {

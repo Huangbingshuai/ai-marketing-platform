@@ -153,7 +153,7 @@ export type EffectTemplateMixAiRun = {
   status: EffectTemplateMixAiRunStatus;
   stage: EffectTemplateMixAiRunStage;
   progress: number;
-  stageDetails: Partial<Record<EffectTemplateMixAiRunStage, EffectTemplateMixAiStageDetail>>;
+  stageDetails?: Partial<Record<EffectTemplateMixAiRunStage, EffectTemplateMixAiStageDetail>>;
   errorCode: string | null;
   errorMessage: string | null;
   createdAt: string;
