@@ -63,10 +63,8 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).not.toContain('class="tools"');
     expect(pageSource).toContain('EffectTemplateMixTimeline');
     expect(pageSource).toContain('const videoTrackMuted = ref(false);');
-    expect(pageSource).toContain('const voiceTrackMuted = ref(false);');
-    expect(pageSource).toContain('const musicTrackMuted = ref(false);');
-    expect(pageSource).toContain(':voice-muted="voiceTrackMuted"');
-    expect(pageSource).toContain(':music-muted="musicTrackMuted"');
+    expect(pageSource).toContain('const audioTrackMuted = ref(false);');
+    expect(pageSource).toContain(':audio-muted="audioTrackMuted"');
     expect(pageSource).toContain('@toggle-audio-mute="setTimelineTrackMute"');
     expect(pageSource).toContain('startPlaybackAudio');
     expect(pageSource).toContain('workspace.materials.length < 6');
@@ -117,7 +115,7 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).toContain('const visiblePrimaryTracks = computed');
     expect(timelineSource).toContain('const hasCaptionTrack = computed');
     expect(timelineSource).toContain('const hasCaptionTrack = computed(() => true);');
-    expect(timelineSource).toContain("const audioTracks: TimelineAudioKind[] = ['VOICE', 'MUSIC'];");
+    expect(timelineSource).toContain("const audioTracks: VisibleTrack[] = ['AUDIO'];");
     expect(timelineSource).toContain('const assignIntervalLanes');
     // The old fixed three-lane grid is gone, and no empty row is reserved either: lanes are
     // compacted, and the row a downward drag reaches for exists only while that drag is live.
@@ -125,10 +123,9 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).not.toContain('Math.min(3,');
     expect(timelineSource).not.toContain('未配置字幕');
     expect(timelineSource).not.toContain('未配置音频');
-    expect(timelineSource).toContain("type VisibleTrack = 'CAPTION' | 'MUSIC' | 'VIDEO' | 'VOICE'");
-    expect(timelineSource).toContain('voiceMuted?: boolean');
-    expect(timelineSource).toContain('musicMuted?: boolean');
-    expect(timelineSource).toContain("toggleAudioMute: [kind: TimelineAudioKind | 'VIDEO', muted: boolean]");
+    expect(timelineSource).toContain("type VisibleTrack = 'AUDIO' | 'CAPTION' | 'VIDEO'");
+    expect(timelineSource).toContain('audioMuted?: boolean');
+    expect(timelineSource).toContain("toggleAudioMute: [kind: 'AUDIO' | 'VIDEO', muted: boolean]");
     expect(timelineSource).toContain("emit('toggleAudioMute', track,");
     expect(timelineSource).not.toContain('@dragstart="onTrackDragStart($event, track)"');
     expect(timelineSource).toContain('@scroll="syncTrackScroll(\'HEADERS\')"');
@@ -308,7 +305,7 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).toContain("emit('assignMaterial', materialId, slotId)");
     expect(timelineSource).toContain('@dragover="onTrackDragOver"');
     expect(timelineSource).toContain("'is-material-target': materialDropSlotId === slot.id");
-    expect(timelineSource).toContain('translate3d(${playheadLeft}px, 0, 0)');
+    expect(timelineSource).toContain('playheadElement.value.style.transform = `translate3d(${left}px, 0, 0)`;');
     expect(timelineSource).toContain('--timeline-bg: #f6f8fc');
     expect(pageSource).toContain('aria-label="调整预览区与时间轴高度"');
     expect(pageSource).toContain('@pointerdown="startEditorHeightResize"');
@@ -542,7 +539,7 @@ describe('effect template mix workbench layout', () => {
     expect(timelineSource).toContain('const captionTrack = ref<HTMLElement | null>(null);');
     expect(timelineSource).toContain(':ref="setCaptionTrackElement"');
     expect(timelineSource).toContain('captionTrack.value');
-    expect(timelineSource).toContain("track === 'VIDEO' || track === 'CAPTION' || track === 'VOICE' || track === 'MUSIC'");
+    expect(timelineSource).toContain("track === 'VIDEO' || track === 'CAPTION' || track === 'AUDIO'");
     expect(timelineSource).toContain('selectCaptionClips: [captionIds: string[]];');
     expect(timelineSource).toContain('if (event.ctrlKey || event.metaKey) {');
     expect(timelineSource).toContain('const captionGroupIds = (draggedId: string): string[]');
@@ -582,15 +579,12 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('已选中 {{ selectedCaptionIds.length }} 条字幕');
     expect(pageSource).toContain('selectedCaptionIds.includes(previewCaption.id)');
   });
-  it('marquees the independent voice/music lanes and adjusts an audio group as one', () => {
-    expect(timelineSource).toContain('const voiceTrack = ref<HTMLElement | null>(null);');
-    expect(timelineSource).toContain('const musicTrack = ref<HTMLElement | null>(null);');
+  it('marquees the combined audio lane and adjusts an audio group as one', () => {
+    expect(timelineSource).toContain('const audioTrack = ref<HTMLElement | null>(null);');
     expect(timelineSource).toContain(':ref="(element) => setAudioTrackElement(track, element)"');
-    expect(timelineSource).toContain('const setAudioTrackElement = (kind: TimelineAudioKind, element: unknown): void');
-    // Each audio lane marquees only its own kind.
-    expect(timelineSource).toContain("box?.track === 'VOICE'");
-    expect(timelineSource).toContain("box?.track === 'MUSIC'");
-    expect(timelineSource).toContain('.filter((audio) => audio.kind === box.track)');
+    expect(timelineSource).toContain('const setAudioTrackElement = (_kind: VisibleTrack, element: unknown): void');
+    expect(timelineSource).toContain("box?.track === 'AUDIO'");
+    expect(timelineSource).toContain('timelineAudios.value.map((audio) => ({');
     expect(timelineSource).toContain('const audioGroupIds = (): string[]');
     expect(timelineSource).toContain(
       "selectedAudioIds.value.filter((id) => !id.startsWith('caption:'))",
@@ -775,11 +769,10 @@ describe('effect template mix workbench layout', () => {
       "'.time-ruler, .timeline-playhead, [data-slot-id], [data-audio-id], .selection-marquee'",
     );
     expect(timelineSource).toContain('const clearSelection = (): void');
-    expect(timelineSource).toContain('defineExpose({ clearSelection })');
+    expect(timelineSource).toContain('defineExpose({ clearSelection, setPlaybackNeedle, startPlaybackNeedle, stopPlaybackNeedle });');
     expect(pageSource).toContain('timelineRef.value?.clearSelection()');
-    expect(pageSource).toContain(
-      'const timelineRef = ref<{ clearSelection: () => void } | null>(null);',
-    );
+    expect(pageSource).toContain('const timelineRef = ref<{');
+    expect(pageSource).toContain('clearSelection: () => void;');
   });
   it('sizes the track area so the lanes scroll instead of being clipped', () => {
     // The toolstrip lives inside the height the editor allots, so it has to come out of the tracks.
