@@ -128,7 +128,7 @@ export class EffectPackagingService {
         v.slots.every((s) => v.bindings[s.id]),
     );
     if (!variants.length) throw new BadRequestException('没有可包装的完整成片');
-    if (body.component && body.component !== 'ALL' && !body.variantId)
+    if (body.component && !['ALL', 'CAPTIONS'].includes(body.component) && !body.variantId)
       throw new BadRequestException('局部重做必须选择一条成片');
     if (body.slotId && (!body.variantId || body.component !== 'VOICE' ||
       !variants[0]?.slots.some((s) => s.id === body.slotId)))
@@ -159,13 +159,13 @@ export class EffectPackagingService {
       });
       if (rows.length) checkpoints[index]!.slotVision = Object.fromEntries(rows);
     });
-    if (body.component && body.component !== 'ALL') {
+    if (body.component && body.component !== 'ALL') for (const [index, variant] of variants.entries()) {
       const previous = history
         .flatMap((r) => r.items)
         .find(
           (i) =>
-            i.variantId === body.variantId &&
-            matchesVisualHash(snapshots[0]!.variant, i.sourceTimelineHash,
+            i.variantId === variant.id &&
+            matchesVisualHash(snapshots[index]!.variant, i.sourceTimelineHash,
               (i.snapshot as unknown as PackagingSnapshot).variant) &&
             (i.snapshot as unknown as PackagingSnapshot).dependencies.every((d) =>
               artifacts.some(
@@ -178,26 +178,28 @@ export class EffectPackagingService {
       if ((previous.checkpoint as PackagingCheckpoint).narrationLayoutVersion !== 'SLOT_V1')
         throw new ConflictException('旧版整片口播请重做整条包装，不能局部套用槽位规则');
       // Keep legacy file lineage for semantically identical frozen visuals.
-      snapshots[0]!.sourceTimelineHash = previous.sourceTimelineHash;
-      snapshots[0]!.variant = (previous.snapshot as unknown as PackagingSnapshot).variant;
+      snapshots[index]!.sourceTimelineHash = previous.sourceTimelineHash;
+      snapshots[index]!.variant = (previous.snapshot as unknown as PackagingSnapshot).variant;
       if (body.component !== 'VOICE') {
         const frozenVoice = (previous.snapshot as unknown as PackagingSnapshot).voiceProfile;
-        if (frozenVoice) snapshots[0]!.voiceProfile = frozenVoice;
+        if (frozenVoice) snapshots[index]!.voiceProfile = frozenVoice;
       }
       // A previous run may carry editor-edited geometry; restore pipeline-canonical
       // audio before the worker write path re-validates it strictly.
-      const cp = body.slotId ? structuredClone(previous.checkpoint) as PackagingCheckpoint : canonicalizeCheckpoint(
-        snapshots[0]!, structuredClone(previous.checkpoint) as PackagingCheckpoint);
+      const cp = body.slotId || body.component === 'CAPTIONS'
+        ? structuredClone(previous.checkpoint) as PackagingCheckpoint : canonicalizeCheckpoint(
+        snapshots[index]!, structuredClone(previous.checkpoint) as PackagingCheckpoint);
+      if (body.component === 'CAPTIONS') snapshots[index]!.redoCaptionsOnly = true;
       delete cp.automaticRetries; // A user-requested component redo is a new task, not a resume.
       if (body.component === 'VOICE') {
         if (body.slotId) {
           if (cp.narrationMetrics) delete cp.narrationMetrics[body.slotId];
           if (cp.voiceFitAttempts) delete cp.voiceFitAttempts[body.slotId];
-          snapshots[0]!.redoSlotId = body.slotId;
+          snapshots[index]!.redoSlotId = body.slotId;
           const removed = new Set(cp.script?.filter((s) => s.slotId === body.slotId).map((s) => s.id));
           cp.script = (cp.script ?? []).filter((s) => s.slotId !== body.slotId);
           cp.voices = Object.fromEntries(Object.entries(cp.voices ?? {}).filter(([id]) => !removed.has(id)));
-          cp.captions = (cp.captions ?? []).filter((c) => !removed.has(c.id));
+          cp.captions = (cp.captions ?? []).filter((c) => !removed.has(c.voiceLineId ?? c.id));
         } else {
           delete cp.narrationMetrics;
           delete cp.voiceFitAttempts;
@@ -212,7 +214,7 @@ export class EffectPackagingService {
         delete cp.musicSubmissionPending;
       }
       if (body.component === 'CAPTIONS') delete cp.captions;
-      checkpoints[0] = cp;
+      checkpoints[index] = cp;
     }
     const id = await this.repo.create({
       projectId,
@@ -294,7 +296,9 @@ export class EffectPackagingService {
       completedAt: run.completedAt?.toISOString() ?? null,
       items,
       execution: packagingExecution(items, run.startedAt, run.completedAt, run.status,
-        Number(process.env.TEMPLATE_MIX_AI_MAX_CONCURRENCY) || 4),
+        Number(process.env.TEMPLATE_MIX_AI_MAX_CONCURRENCY) || 4, Date.now(),
+        run.items.length > 0 && run.items.every((item) =>
+          (item.snapshot as unknown as PackagingSnapshot).redoCaptionsOnly)),
       counts: {
         total: items.length,
         completed: items.filter((i) => i.status === 'COMPLETED').length,
@@ -379,7 +383,9 @@ export class EffectPackagingService {
     const captions = body.captions
       ? [...body.captions]
           .sort((left, right) => left.start - right.start)
-          .map(({ id, text, start, end }) => ({ id, text, start, end }))
+          .map(({ id, voiceLineId, segmentIndex, segmentCount, text, start, end }) => ({
+            id, ...(voiceLineId ? { voiceLineId, segmentIndex, segmentCount } : {}), text, start, end,
+          }))
       : old.captions;
     let captionBoxes = old.captionBoxes;
     if (body.boxes) {
@@ -396,8 +402,18 @@ export class EffectPackagingService {
     if (captions) next.captions = captions;
     if (old.narrationLayoutVersion === 'SLOT_V1' && body.voices && !body.captions && next.captions)
       next.captions = next.captions.map((c) => {
-        const voice = voices?.[c.id];
-        return body.voices?.[c.id] && voice ? { ...c, start: voice.start, end: voice.start + voice.duration } : c;
+        const lineId = c.voiceLineId ?? c.id;
+        const voice = voices?.[lineId];
+        if (!body.voices?.[lineId] || !voice) return c;
+        if (!old.captionLayoutVersion)
+          return { ...c, start: voice.start, end: voice.start + voice.duration };
+        const previous = old.voices?.[lineId];
+        if (!previous) return c;
+        const scale = voice.duration / previous.duration;
+        return { ...c,
+          start: voice.start + (c.start - previous.start) * scale,
+          end: voice.start + (c.end - previous.start) * scale,
+        };
       });
     if (captionBoxes) next.captionBoxes = captionBoxes;
     validatePackagingCheckpoint(snapshot, next, true, true);
@@ -449,7 +465,7 @@ export class EffectPackagingService {
     const { snapshot } = await this.workerItem(projectId, runId, token, itemId);
     const old = item.checkpoint as PackagingCheckpoint;
     const next = { ...old, ...patch, voices: { ...old.voices, ...patch.voices } };
-    validatePackagingCheckpoint(snapshot, next, stage === 'READY', !!snapshot.redoSlotId);
+    validatePackagingCheckpoint(snapshot, next, stage === 'READY', !!snapshot.redoSlotId || !!snapshot.redoCaptionsOnly);
     const ids = [...Object.values(next.voices ?? {}), ...(next.music ? [next.music] : [])].map(
       (a) => a.fileObjectId,
     );
@@ -472,9 +488,24 @@ export class EffectPackagingService {
     return this.repo.checkpoint(projectId, runId, token, itemId, stage, patch);
   }
   async content(projectId: string, runId: string, token: string, itemId: string, fileId: string) {
-    const { snapshot } = await this.workerItem(projectId, runId, token, itemId);
-    if (!snapshot.clips.some((c) => c.fileObjectId === fileId))
-      throw new NotFoundException('素材不属于冻结时间轴');
+    const { snapshot, item, run } = await this.workerItem(projectId, runId, token, itemId);
+    const sourceVideo = snapshot.clips.some((c) => c.fileObjectId === fileId);
+    const savedVoice = Object.values((item.checkpoint as PackagingCheckpoint).voices ?? {})
+      .some((voice) => voice.fileObjectId === fileId);
+    const ownedVoice = savedVoice && Boolean(await this.repo.db.effectPackagingFile.count({
+      where: {
+        projectId,
+        fileObjectId: fileId,
+        role: { startsWith: 'voice-' },
+        item: {
+          variantId: item.variantId,
+          sourceTimelineHash: item.sourceTimelineHash,
+          run: { workflowRunId: run.workflowRunId, templateId: run.templateId },
+        },
+      },
+    }));
+    if (!sourceVideo && !ownedVoice)
+      throw new NotFoundException('素材不属于当前成片');
     return this.working.fileObjectContent(projectId, fileId);
   }
   async upload(
@@ -558,7 +589,7 @@ export class EffectPackagingService {
           role === 'music'
             ? { ...cp, music: audio }
             : { ...cp, voices: { ...cp.voices, [lineId]: audio } };
-        validatePackagingCheckpoint(snapshot, checkpoint, false, !!snapshot.redoSlotId);
+        validatePackagingCheckpoint(snapshot, checkpoint, false, !!snapshot.redoSlotId || !!snapshot.redoCaptionsOnly);
         await tx.effectPackagingItem.update({
           where: { id: itemId },
           data: { checkpoint: JSON.parse(JSON.stringify(checkpoint)) },

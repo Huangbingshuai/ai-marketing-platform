@@ -20,7 +20,7 @@ async def test_recovery_preserves_successful_steps_and_music_task() -> None:
 
 @pytest.mark.parametrize('initial, calls', [(0, 3), (1, 2), (2, 1)])
 async def test_budget_survives_restart(initial: int, calls: int) -> None:
-    item = {'id': 'item', 'stage': 'VOICE', 'checkpoint': {'automaticRetries': initial}}
+    item: dict[str, Any] = {'id': 'item', 'stage': 'VOICE', 'checkpoint': {'automaticRetries': initial}}
     process = AsyncMock(side_effect=ProviderError('temporary', retryable=True))
     with pytest.raises(ProviderError):
         await recover_packaging_item(item, process, AsyncMock(), 0)

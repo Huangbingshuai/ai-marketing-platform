@@ -158,6 +158,9 @@ export type PackagingLine = {
   factIds: string[];
 };
 export type PackagingCheckpoint = {
+  /** Absent for historical one-caption-per-voice packages, which remain playable. */
+  /** V2 keeps enumeration commas and splits only sentence punctuation. */
+  captionLayoutVersion?: 'SEGMENT_V1' | 'SEGMENT_V2';
   narrationMetrics?: Record<string, SlotNarrationMetrics>;
   /** Bounded item recovery budget, retained across worker restarts. */
   automaticRetries?: number;
@@ -165,7 +168,7 @@ export type PackagingCheckpoint = {
   voiceFitAttempts?: Record<string, 1>;
   slotVision?: Record<string, { key: string; description: string }>;
   timings?: Record<string, { preprocessingSeconds?: number; visionSeconds?: number;
-    scriptSeconds?: number; voiceSeconds?: number; musicWaitSeconds?: number;
+    scriptSeconds?: number; scriptRepairSlots?: number; voiceSeconds?: number; musicWaitSeconds?: number;
     localQueueSeconds?: number;
     cacheHit?: boolean }>;
   /** Persist before polling. Unknown submission outcomes must never be auto-resubmitted. */
@@ -185,6 +188,8 @@ export type PackagingSnapshot = {
   voiceProfile?: EffectVoiceSelection;
   narrationLayoutVersion?: 'SLOT_V1';
   redoSlotId?: string;
+  /** Subtitle-only redo reuses saved editor audio geometry without synthesizing again. */
+  redoCaptionsOnly?: boolean;
   sourceTimelineHash: string;
   duration: number;
   variant: EffectTemplateMixVariant;
@@ -258,8 +263,8 @@ export const PACKAGING_NARRATION_LAYOUT = 'SLOT_V1' as const;
 /** Pure mechanical preflight shared by server and editor. */
 export function packagingSlotBoundaryError(variant: EffectTemplateMixVariant): string | null {
   const rows = packagingTimelineClips(variant).sort((a, b) => a.start - b.start);
-  if (rows.some(({ slot }) => !Number.isFinite(slot.duration) || slot.duration < 3 || slot.duration > 15))
-    return '槽位时长必须为 3–15 秒';
+  if (rows.some(({ slot }) => !Number.isFinite(slot.duration) || slot.duration < 4 || slot.duration > 15))
+    return '槽位时长必须为 4–15 秒';
   if (new Set(rows.map((r) => r.slot.id)).size !== rows.length) return '槽位编号重复';
   if (rows.some((r, i) => !Number.isFinite(r.start) || r.start < 0 || (i > 0 && r.start < rows[i - 1]!.end - 0.001)))
     return '槽位口播边界冲突，请调整时间轴';

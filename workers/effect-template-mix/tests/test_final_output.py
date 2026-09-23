@@ -25,6 +25,19 @@ def test_editor_reworded_subtitle_burns_its_own_text_not_the_narration() -> None
     assert 'Style: Default' in ass and ',2,' in ass  # bottom-centre alignment is unchanged
 
 
+def test_segmented_subtitles_burn_as_two_separate_events() -> None:
+    captions = [
+        {'id': 'caption-a', 'voiceLineId': 'slot-a', 'segmentIndex': 0, 'segmentCount': 2,
+         'text': '新鲜出锅', 'start': .2, 'end': 1.1},
+        {'id': 'caption-b', 'voiceLineId': 'slot-a', 'segmentIndex': 1, 'segmentCount': 2,
+         'text': '趁热享用', 'start': 1.1, 'end': 2.1},
+    ]
+    events = [line for line in captions_ass(captions, 720, 960, 3).splitlines() if line.startswith('Dialogue:')]
+    assert len(events) == 2
+    assert events[0].endswith('新鲜出锅') and events[1].endswith('趁热享用')
+    assert '，' not in ''.join(events)
+
+
 def test_caption_box_moves_wraps_and_scales_one_event() -> None:
     caption = [{'id': 'a1', 'text': '限时五折优惠活动今天最后一天抓紧时间下单抢购', 'start': .2, 'end': .9}]
     # 0.25 of 720 puts the block centre at 180; a 0.4 wrap is 288px, so margins are 36/396.

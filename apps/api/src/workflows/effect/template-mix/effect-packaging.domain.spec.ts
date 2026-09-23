@@ -110,13 +110,68 @@ describe('slot-bound narration layout', () => {
     cp.script![0]!.end = 10;
     return { frozen, cp };
   };
-  it.each([3, 15])('accepts %s-second slots', (duration) => {
+  const segmented = () => {
+    const { frozen, cp } = current();
+    cp.captionLayoutVersion = 'SEGMENT_V1';
+    cp.script![0]!.text = '第一句，第二句。';
+    cp.captions = [
+      { id: 'caption-a', voiceLineId: 'line-1', segmentIndex: 0, segmentCount: 2,
+        text: '第一句', start: 0, end: 1.2 },
+      { id: 'caption-b', voiceLineId: 'line-1', segmentIndex: 1, segmentCount: 2,
+        text: '第二句', start: 1.2, end: 2.4 },
+    ];
+    return { frozen, cp };
+  };
+  const segmentedV2 = () => {
+    const { frozen, cp } = segmented();
+    cp.captionLayoutVersion = 'SEGMENT_V2';
+    cp.script![0]!.text = '腊肠、米饭，趁热吃！';
+    cp.captions![0]!.text = '腊肠、米饭';
+    cp.captions![1]!.text = '趁热吃';
+    return { frozen, cp };
+  };
+  it('accepts several punctuation-free subtitles for one saved voice', () => {
+    const { frozen, cp } = segmented();
+    expect(() => requireSlotPackaging(frozen, cp)).not.toThrow();
+    expect(canonicalizeCheckpoint(frozen, cp).captions).toEqual(cp.captions);
+  });
+  it('rejects punctuation, missing text, wrong parent, overlap and crossing the voice', () => {
+    for (const [index, change] of [
+      (cp: PackagingCheckpoint) => { cp.captions![0]!.text = '第一句，'; },
+      (cp: PackagingCheckpoint) => { cp.captions!.pop(); },
+      (cp: PackagingCheckpoint) => { cp.captions![1]!.voiceLineId = 'unknown'; },
+      (cp: PackagingCheckpoint) => { cp.captions![1]!.start = 1; },
+      (cp: PackagingCheckpoint) => { cp.captions![1]!.end = 2.5; },
+    ].entries()) {
+      const { frozen, cp } = segmented();
+      change(cp);
+      expect(() => requireSlotPackaging(frozen, cp), `invalid segment case ${index}`).toThrow();
+    }
+  });
+  it('allows a partial segmented checkpoint until missing slot subtitles are generated', () => {
+    const { frozen, cp } = segmented();
+    cp.captions = [];
+    expect(() => validatePackagingCheckpoint(frozen, cp)).not.toThrow();
+    expect(() => requireSlotPackaging(frozen, cp)).toThrow();
+  });
+  it('keeps enumeration commas in V2 and requires adjacent punctuation-split cards', () => {
+    const { frozen, cp } = segmentedV2();
+    expect(() => requireSlotPackaging(frozen, cp)).not.toThrow();
+    for (const text of ['腊肠，米饭', '腊肠!米饭', '腊肠？米饭', '腊肠。米饭']) {
+      cp.captions![0]!.text = text;
+      expect(() => requireSlotPackaging(frozen, cp)).toThrow();
+    }
+    cp.captions![0]!.text = '腊肠、米饭';
+    cp.captions![1]!.start = 1.3;
+    expect(() => requireSlotPackaging(frozen, cp)).toThrow();
+  });
+  it.each([4, 15])('accepts %s-second slots', (duration) => {
     const v = variant(); v.slots[0]!.duration = duration;
     expect(packagingSnapshot(v, materials, sources()).clips[0]!.duration).toBe(duration);
   });
-  it.each([2.99, 15.01, NaN])('rejects %s-second slots before paid work', (duration) => {
+  it.each([3.99, 15.01, NaN])('rejects %s-second slots before paid work', (duration) => {
     const v = variant(); v.slots[0]!.duration = duration;
-    expect(() => packagingSnapshot(v, materials, sources())).toThrow('3–15');
+    expect(() => packagingSnapshot(v, materials, sources())).toThrow('4–15');
   });
   it('rejects overlap across different visual lanes', () => {
     const v = variant();
@@ -237,6 +292,13 @@ describe('packaging snapshots and validation', () => {
   });
   it('accepts captions based on actual audio length', () =>
     expect(() => validatePackagingCheckpoint(snapshot(), checkpoint(), true)).not.toThrow());
+  it('accepts an integer count of repaired script slots and rejects forged timing metrics', () => {
+    const cp = checkpoint();
+    cp.timings = { _item: { scriptSeconds: 18.5, scriptRepairSlots: 1 } };
+    expect(() => validatePackagingCheckpoint(snapshot(), cp)).not.toThrow();
+    cp.timings._item!.scriptRepairSlots = 1.5;
+    expect(() => validatePackagingCheckpoint(snapshot(), cp)).toThrow();
+  });
   it('rejects missing components, fabricated facts, duplicate captions and clipped speech', () => {
     expect(() => validatePackagingCheckpoint(snapshot(), {}, true)).toThrow();
     const cp = checkpoint();

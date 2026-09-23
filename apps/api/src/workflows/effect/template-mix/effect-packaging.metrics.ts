@@ -8,6 +8,7 @@ export function packagingExecution(
   status: string,
   concurrency = 4,
   now = Date.now(),
+  captionsOnly = false,
 ): PackagingExecution {
   const terminal = !['QUEUED', 'RUNNING'].includes(status);
   const elapsed = startedAt
@@ -15,18 +16,23 @@ export function packagingExecution(
     : 0;
   const completed = items.filter((i) => i.status === 'COMPLETED');
   // A rolling completion interval includes slow in-flight work; do not extrapolate only fast items.
-  const windowStart = Math.max(startedAt?.getTime() ?? now, now - 300_000);
+  const windowStart = Math.max(startedAt?.getTime() ?? now, now - (captionsOnly ? 60_000 : 300_000));
   const recent = completed.filter((i) => i.completedAt && Date.parse(i.completedAt) >= windowStart);
   const observed = recent.length >= 2 && now > windowStart;
   const stalled = !terminal && elapsed > 160 && !recent.length;
-  const rate = observed ? (recent.length * 60_000) / (now - windowStart) : stalled ? 0 : null;
+  // A retry can reuse the original run's startedAt. For a local caption-only redo,
+  // measure the recent completion burst rather than counting the earlier failed attempt.
+  const observedStart = captionsOnly && observed
+    ? Math.max(windowStart, Math.min(...recent.map((i) => Date.parse(i.completedAt!))) - 20_000)
+    : windowStart;
+  const rate = observed ? (recent.length * 60_000) / (now - observedStart) : stalled ? 0 : null;
   const pending = items.filter((i) => ['QUEUED', 'RUNNING'].includes(i.status)).length;
   const estimate =
     terminal || stalled
       ? null
       : rate
         ? Math.ceil((pending / rate) * 60)
-        : Math.ceil(pending / Math.max(1, Math.min(4, concurrency))) * 80;
+        : Math.ceil(pending / Math.max(1, Math.min(4, concurrency))) * (captionsOnly ? 8 : 80);
   return {
     performance: packagingPerformance(items),
     progressPercent: items.length

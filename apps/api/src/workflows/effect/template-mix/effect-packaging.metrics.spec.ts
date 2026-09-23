@@ -48,6 +48,17 @@ describe('server packaging throughput', () => {
       throughputPerMinute: null,
     });
   });
+  it('uses a short local baseline for subtitle-only work and ignores a failed attempt in its rate', () => {
+    const items = rows();
+    expect(packagingExecution(items, null, null, 'QUEUED', 4, 300_000, true).estimatedRemainingSeconds).toBe(200);
+    for (const item of items.slice(0, 20)) {
+      item.status = 'COMPLETED';
+      item.completedAt = new Date(290_000).toISOString();
+    }
+    const result = packagingExecution(items, new Date(0), null, 'RUNNING', 4, 300_000, true);
+    expect(result.estimatedRemainingSeconds).toBeLessThan(200);
+    expect(result.estimateBasis).toBe('OBSERVED');
+  });
   it('rolling observed slowdown reports delay instead of promising the target', () => {
     const items = rows();
     for (const i of items.slice(0, 4)) {

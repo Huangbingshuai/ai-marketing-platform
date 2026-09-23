@@ -17,7 +17,7 @@ from effect_template_mix.packaging_media import pcm_wav, visible_intervals
 from effect_template_mix.packaging_provider import PackagingError, PackagingProvider, signed_headers
 from effect_template_mix.provider import ArkProvider
 from effect_template_mix.consumer import Consumer
-from effect_template_mix.packaging import FrameVisionOutput, NarrationPlan, materialize_script, narration_windows, understand_frames
+from effect_template_mix.packaging import FrameVisionOutput, NarrationPlan, NarrationRepair, materialize_script, narration_windows, run_packaging_shards, understand_frames
 from types import SimpleNamespace
 
 
@@ -194,18 +194,30 @@ def script_snapshot() -> dict[str, Any]:
 
 def plan_result(**updates: Any) -> NarrationPlan:
     return NarrationPlan.model_validate({'lines': [{'id': 'line-1', 'slotId': 's1',
-        'text': '依据已确认商品信息，结合当前画面自然讲解。', 'factIds': ['facts:0'], **updates}], 'musicBrief': '轻快纯器乐'})
+        'text': '依据已确认商品信息，结合当前画面自然讲解这款商品的真实特点。', 'factIds': ['facts:0'], **updates}], 'musicBrief': '轻快纯器乐'})
 
 
 def test_narration_window_materialization_has_no_model_timing_or_order_dependency() -> None:
     snapshot = script_snapshot()
-    snapshot['clips'].append({'slotId': 's2', 'start': 10, 'duration': 3})
+    snapshot['clips'].append({'slotId': 's2', 'start': 10, 'duration': 4})
     snapshot['variant']['slots'].append({'id': 's2', 'role': 'END'})
     windows = narration_windows(snapshot)
-    assert len(windows) == 2 and windows[0]['maxCharacters'] == 28
+    assert len(windows) == 2 and windows[0]['maxCharacters'] == 39
     plan = NarrationPlan(lines=[*plan_result(slotId='s2').lines, *plan_result(id='line-2').lines], musicBrief='纯音乐')
     result = materialize_script(plan, windows)
-    assert [(r.start, r.end) for r in result.lines] == [(0, 10), (10, 13)]
+    assert [(r.start, r.end) for r in result.lines] == [(0, 10), (10, 14)]
+
+
+@pytest.mark.parametrize(('duration', 'valid'), [(3.999, False), (4, True), (15, True), (15.001, False)])
+def test_narration_window_four_second_minimum(duration: float, valid: bool) -> None:
+    snapshot = script_snapshot()
+    snapshot['clips'][0]['duration'] = duration
+    snapshot['duration'] = duration
+    if valid:
+        assert narration_windows(snapshot)[0]['end'] == duration
+    else:
+        with pytest.raises(PackagingError, match='4–15'):
+            narration_windows(snapshot)
 
 
 @pytest.mark.parametrize('index', [-1, 4])
@@ -217,13 +229,22 @@ def test_narration_invalid_window_is_not_silently_clamped(index: int) -> None:
 async def test_narration_duplicate_windows_get_one_mechanical_repair() -> None:
     ark = AsyncMock(spec=ArkProvider)
     duplicate = NarrationPlan(lines=[*plan_result().lines, *plan_result(id='line-2').lines], musicBrief='纯音乐')
-    ark.structured.side_effect = [duplicate, plan_result()]
+    ark.structured.side_effect = [duplicate, NarrationRepair(lines=plan_result().lines)]
     result = await plan_script(ark, script_snapshot(), [], AsyncMock())
     assert result.lines[0].start == 0 and result.lines[0].end == 10
-    assert [call.args[2] for call in ark.structured.call_args_list] == ['packaging_script', 'packaging_script']
-    ark.structured.side_effect = [duplicate, duplicate]
-    with pytest.raises(PackagingError, match='槽位口播缺失'):
+    assert [call.args[2] for call in ark.structured.call_args_list] == ['packaging_script', 'packaging_script_repair']
+    ark.structured.side_effect = [duplicate, NarrationRepair(lines=duplicate.lines)]
+    with pytest.raises(PackagingError, match='定点修正未覆盖'):
         await plan_script(ark, script_snapshot(), [], AsyncMock())
+
+
+async def test_narration_ignores_extra_unbound_model_row_without_losing_real_slot() -> None:
+    ark = AsyncMock(spec=ArkProvider)
+    ark.structured.return_value = NarrationPlan(lines=[*plan_result().lines,
+        *plan_result(id='unexpected', slotId='not-a-real-slot').lines], musicBrief='纯器乐')
+    result = await plan_script(ark, script_snapshot(), [], AsyncMock())
+    assert [line.slotId for line in result.lines] == ['s1']
+    assert ark.structured.await_count == 1
 
 
 @pytest.mark.parametrize(('start', 'end', 'description', 'valid'), [
@@ -267,14 +288,49 @@ def test_script_preflight_rejects_bad_structure(updates: dict[str, Any], code: s
 
 async def test_script_repairs_missing_fact_ids_without_audit() -> None:
     ark = AsyncMock(spec=ArkProvider)
-    ark.structured.side_effect = [plan_result(factIds=[]), plan_result()]
+    ark.structured.side_effect = [plan_result(factIds=[]), NarrationRepair(lines=plan_result().lines)]
     guard = AsyncMock()
     result = await plan_script(ark, script_snapshot(), [], guard)
     assert result.lines[0].factIds == ['facts:0']
-    assert [call.args[2] for call in ark.structured.call_args_list] == ['packaging_script', 'packaging_script']
+    assert [call.args[2] for call in ark.structured.call_args_list] == ['packaging_script', 'packaging_script_repair']
     repaired = json.loads(ark.structured.call_args_list[1].args[0][0]['text'])
-    assert repaired['revision']['issues'] == ['FACT_REFERENCE']
+    assert repaired['narrationWindows'][0]['slotId'] == 's1'
+    assert repaired['measuredCharacters'][0]['slotId'] == 's1'
+    assert repaired['validationErrors'][0]['reason'] == 'FACT_IDS'
     assert guard.await_count == 2
+
+
+async def test_short_slot_text_is_soft_guidance_not_a_paid_repair_trigger() -> None:
+    snapshot = script_snapshot()
+    snapshot['duration'] = 20
+    snapshot['clips'].append({'slotId': 's2', 'start': 10, 'duration': 10})
+    snapshot['variant']['slots'].append({'id': 's2', 'role': 'PRODUCT'})
+    good = plan_result().lines[0]
+    short = good.model_copy(update={'id': 'line-2', 'slotId': 's2', 'text': '太短'})
+    ark = AsyncMock(spec=ArkProvider)
+    ark.structured.return_value = NarrationPlan(lines=[good, short], musicBrief='纯器乐')
+    diagnostics: dict[str, int] = {}
+    result = await plan_script(ark, snapshot, [], AsyncMock(), diagnostics)
+    assert result.lines[0].text == good.text
+    assert result.lines[1].text == '太短'
+    assert [(r.start, r.end) for r in result.lines] == [(0, 10), (10, 20)]
+    assert ark.structured.await_count == 1
+    assert diagnostics == {'scriptRepairSlots': 0}
+
+
+async def test_script_second_repair_only_revisits_remaining_invalid_fact_slot() -> None:
+    ark = AsyncMock(spec=ArkProvider)
+    short = plan_result(factIds=['invented'])
+    still_short = NarrationRepair(lines=plan_result(factIds=[]).lines)
+    complete = NarrationRepair(lines=plan_result().lines)
+    ark.structured.side_effect = [short, still_short, complete]
+    result = await plan_script(ark, script_snapshot(), [], AsyncMock())
+    assert result.lines[0].text == complete.lines[0].text
+    assert [call.args[2] for call in ark.structured.call_args_list] == [
+        'packaging_script', 'packaging_script_repair', 'packaging_script_repair']
+    second_input = json.loads(ark.structured.call_args_list[2].args[0][0]['text'])
+    assert second_input['repairAttempt'] == 2
+    assert second_input['validationErrors'][0]['reason'] == 'FACT_IDS'
 
 
 async def test_script_cancel_before_revision_stops_new_model_requests() -> None:
@@ -286,12 +342,10 @@ async def test_script_cancel_before_revision_stops_new_model_requests() -> None:
     assert ark.structured.await_count == 1
 
 
-def test_planning_capacity_uses_next_start_but_does_not_reject_measured_saved_audio() -> None:
-    from effect_template_mix.packaging import speech_capacity_issues
+def test_planning_length_is_soft_but_slot_boundaries_remain_hard() -> None:
+    assert script_structure_issues(script_result(text='简短解说'), script_snapshot()) == []
     script = script_result(text='这是超过短窗口的较长中文口播句子', start=8, end=10)
-    assert speech_capacity_issues(script, 10) == ['SPEECH_CAPACITY']
     assert script_structure_issues(script, script_snapshot()) == ['TIME_BOUNDARY']
-    assert speech_capacity_issues(script_result(text='简短解说', start=1, end=8), 10) == []
 
 
 async def test_item_resume_skips_saved_voice_and_creates_exact_captions() -> None:
@@ -305,8 +359,49 @@ async def test_item_resume_skips_saved_voice_and_creates_exact_captions() -> Non
     adapter.voice.assert_not_called()
     adapter.submit_music.assert_not_called()
     ark.structured.assert_not_called()
-    assert row['checkpoint']['captions'] == [{'id': 'line-1', 'text': '口播', 'start': 1, 'end': 3.123}]
+    assert row['checkpoint']['captionLayoutVersion'] == 'SEGMENT_V2'
+    assert row['checkpoint']['captions'] == [{
+        'id': row['checkpoint']['captions'][0]['id'], 'voiceLineId': 'line-1',
+        'segmentIndex': 0, 'segmentCount': 1,
+        'text': '口播', 'start': 1, 'end': 3.123}]
     assert row['stage'] == 'READY'
+
+
+async def test_music_wait_overlaps_tts_and_reuses_both_checkpoints(monkeypatch: Any) -> None:
+    from effect_template_mix import packaging
+    api = AsyncMock(spec=InternalApi)
+    api.request.return_value = {'fileObjectId': 'saved-audio'}
+    adapter = AsyncMock(spec=PackagingProvider)
+    voice_started, music_started = asyncio.Event(), asyncio.Event()
+
+    async def voice(_: str) -> bytes:
+        voice_started.set()
+        await asyncio.wait_for(music_started.wait(), 1)
+        return b'\0\0' * 24_000 * 2
+
+    async def submit_music(_: str, __: float) -> str:
+        music_started.set()
+        await asyncio.wait_for(voice_started.wait(), 1)
+        return 'task-1'
+
+    adapter.voice.side_effect = voice
+    adapter.submit_music.side_effect = submit_music
+    adapter.query_music.return_value = 'https://example.test/music.wav'
+    adapter.download_music.return_value = b'music'
+
+    async def converted(*_: Any) -> bytes:
+        return b'RIFF-test-wav'
+
+    monkeypatch.setattr(packaging, 'music_wav', converted)
+    row = item()
+    row['checkpoint'].pop('music')
+    worker = PackagingHandler(api, AsyncMock(spec=ArkProvider), adapter, 1000)
+    await asyncio.wait_for(worker.process_item('/run', {}, 'project', row), 2)
+    assert row['stage'] == 'READY'
+    assert row['checkpoint']['musicTaskId'] == 'task-1'
+    assert len(row['checkpoint']['voices']) == 1
+    await worker.process_item('/run', {}, 'project', row)
+    assert adapter.submit_music.await_count == adapter.voice.await_count == 1
 
 
 async def test_unknown_music_submission_never_auto_resubmits() -> None:
@@ -328,7 +423,7 @@ async def test_tts_overrun_is_not_silently_truncated() -> None:
     ark = AsyncMock(spec=ArkProvider)
     row = item()
     row['snapshot']['facts'] = [{'id': 'f', 'text': '事实'}]
-    ark.structured.side_effect = [ScriptRow(**{**row['checkpoint']['script'][0], 'text': '短句'})]
+    ark.structured.side_effect = [ScriptRow(**{**row['checkpoint']['script'][0], 'text': '播'})]
     with pytest.raises(PackagingError, match='缩句一次后仍超出'):
         await PackagingHandler(api, ark, adapter, 1000).process_item('/run', {}, 'project', row)
     assert adapter.voice.await_count == 2
@@ -343,19 +438,22 @@ async def test_voice_fit_keeps_existing_audio_and_aligns_caption_to_measured_rep
     ark = AsyncMock(spec=ArkProvider)
     row = item()
     row['snapshot']['facts'] = [{'id': 'f', 'text': '事实'}]
-    row['snapshot']['clips'][0]['start'] = 3
-    row['checkpoint']['script'][0].update(start=3, end=7)
-    row['snapshot']['clips'].insert(0, {'slotId': 'previous', 'start': 0, 'duration': 3})
+    row['snapshot']['clips'][0]['start'] = 4
+    row['checkpoint']['script'][0].update(start=4, end=8)
+    row['snapshot']['clips'].insert(0, {'slotId': 'previous', 'start': 0, 'duration': 4})
     row['snapshot']['variant']['slots'].insert(0, {'id': 'previous', 'role': 'HOOK'})
-    previous = {'id': 'previous', 'slotId': 'previous', 'text': '前句', 'start': 0, 'end': 3, 'factIds': ['f']}
+    previous = {'id': 'previous', 'slotId': 'previous', 'text': '前句', 'start': 0, 'end': 4, 'factIds': ['f']}
     row['checkpoint']['script'].insert(0, previous)
     row['checkpoint']['voices'] = {'previous': {'fileObjectId': 'saved', 'start': 0, 'duration': .5, 'volume': 1}}
-    ark.structured.side_effect = [ScriptRow(**{**row['checkpoint']['script'][1], 'text': '短句'})]
+    ark.structured.side_effect = [ScriptRow(**{**row['checkpoint']['script'][1], 'text': '播'})]
     await PackagingHandler(api, ark, adapter, 1000).process_item('/run', {}, 'project', row)
     assert row['stage'] == 'READY'
     assert row['checkpoint']['script'][0] == previous
     assert row['checkpoint']['voices']['previous']['fileObjectId'] == 'saved'
-    assert row['checkpoint']['captions'][1] == {'id': 'line-1', 'text': '短句', 'start': 3, 'end': 5}
+    assert row['checkpoint']['captions'][1] == {
+        'id': row['checkpoint']['captions'][1]['id'], 'voiceLineId': 'line-1',
+        'segmentIndex': 0, 'segmentCount': 1,
+        'text': '播', 'start': 4, 'end': 6}
     assert ark.structured.await_count == 1
     assert ark.structured.call_args.args[2] == 'packaging_voice_fit'
     adapter.submit_music.assert_not_called()
@@ -393,6 +491,35 @@ async def test_run_resume_handles_each_missing_item_only(count: int) -> None:
     assert worker.process_item.await_count == (count + 1) // 2
     message.ack.assert_awaited_once()
     message.nack.assert_not_called()
+
+
+async def test_hundred_items_refill_four_global_slots_without_shard_barriers() -> None:
+    active = maximum = 0
+    launched: list[int] = []
+    finished: list[int] = []
+    later_before_first_finished = False
+    release_first = asyncio.Event()
+
+    async def execute(row: dict[str, Any]) -> None:
+        nonlocal active, maximum, later_before_first_finished
+        active += 1
+        maximum = max(maximum, active)
+        launched.append(row['index'])
+        if row['index'] >= 4 and 0 not in finished:
+            later_before_first_finished = True
+            release_first.set()
+        if row['index'] == 0:
+            await release_first.wait()
+        else:
+            await asyncio.sleep(0)
+        active -= 1
+        finished.append(row['index'])
+
+    rows = [{'index': i, 'shardIndex': i // 4, 'status': 'QUEUED'} for i in range(100)]
+    await asyncio.wait_for(run_packaging_shards(rows, 4, execute), 2)
+    assert maximum == 4
+    assert len(launched) == len(set(launched)) == 100
+    assert later_before_first_finished  # Later shards start before a slow first item finishes.
 
 
 async def test_missing_configuration_fails_without_calling_ark() -> None:

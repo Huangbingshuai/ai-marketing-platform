@@ -223,7 +223,11 @@ export function validatePackagingCheckpoint(
   };
   const facts = new Set(snapshot.facts.map((f) => f.id));
   const slotLayout = checkpoint.narrationLayoutVersion === 'SLOT_V1';
+  const segmentedCaptions = checkpoint.captionLayoutVersion === 'SEGMENT_V1' ||
+    checkpoint.captionLayoutVersion === 'SEGMENT_V2';
+  const captionsV2 = checkpoint.captionLayoutVersion === 'SEGMENT_V2';
   if (checkpoint.narrationLayoutVersion !== undefined && !slotLayout) fail();
+  if (checkpoint.captionLayoutVersion !== undefined && (!segmentedCaptions || !slotLayout)) fail();
   if (snapshot.narrationLayoutVersion === 'SLOT_V1' && !slotLayout) fail();
   if (slotLayout) {
     const boundaryError = packagingSlotBoundaryError(snapshot.variant);
@@ -240,6 +244,7 @@ export function validatePackagingCheckpoint(
           'music',
           'captions',
           'captionBoxes',
+          'captionLayoutVersion',
           'musicTaskId',
           'musicSubmissionPending',
           'narrationLayoutVersion', 'slotVision', 'timings', 'voiceFitAttempts', 'automaticRetries', 'narrationMetrics',
@@ -274,6 +279,7 @@ export function validatePackagingCheckpoint(
       if (!row || typeof row !== 'object') fail();
       for (const [key, value] of Object.entries(row)) {
         if (key === 'cacheHit') { if (typeof value !== 'boolean') fail(); }
+        else if (key === 'scriptRepairSlots') { if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) fail(); }
         else if (!['preprocessingSeconds', 'visionSeconds', 'scriptSeconds', 'voiceSeconds', 'musicWaitSeconds', 'localQueueSeconds'].includes(key) ||
           typeof value !== 'number' || !Number.isFinite(value) || value < 0) fail();
       }
@@ -386,29 +392,51 @@ export function validatePackagingCheckpoint(
   }
   if (checkpoint.captions) {
     if (!Array.isArray(checkpoint.captions)) fail();
+    if (checkpoint.captions.length > 500) fail();
     if (new Set(checkpoint.captions.map((c) => c.id)).size !== checkpoint.captions.length) fail();
     let previousEnd = 0;
+    const segmentsByLine = new Map<string, typeof checkpoint.captions>();
     for (const c of checkpoint.captions) {
-      const script = checkpoint.script?.find((s) => s.id === c.id),
-        audio = checkpoint.voices?.[c.id];
+      const lineId = segmentedCaptions ? c.voiceLineId : c.id;
+      const script = checkpoint.script?.find((s) => s.id === lineId),
+        audio = lineId ? checkpoint.voices?.[lineId] : undefined;
       if (
         !script ||
         !audio ||
+        (segmentedCaptions && (typeof c.voiceLineId !== 'string' || !/^[a-zA-Z0-9_-]{1,50}$/.test(c.id) ||
+          !Number.isSafeInteger(c.segmentIndex) || !Number.isSafeInteger(c.segmentCount) ||
+          c.segmentIndex! < 0 || c.segmentCount! < 1 || c.segmentCount! > 500)) ||
         typeof c.text !== 'string' ||
         !c.text.trim() ||
         c.text.length > 500 ||
+        (segmentedCaptions && (captionsV2 ? /[，,。.!！？?；;：:…]/u : /\p{P}/u).test(c.text)) ||
         // The editor may reword a subtitle without rewriting the narration it is voiced from.
-        (!edited && c.text !== script.text) ||
-        ((slotLayout || !edited) &&
+        (!segmentedCaptions && !edited && c.text !== script.text) ||
+        (!segmentedCaptions && (slotLayout || !edited) &&
           (c.start !== audio.start || Math.abs(c.end - c.start - audio.duration) > 0.002)) ||
+        (segmentedCaptions && (c.start < audio.start - 0.001 || c.end > audio.start + audio.duration + 0.001)) ||
         !interval(c.start, c.end)
         || (slotLayout && (c.start < (script?.start ?? 0) || c.end > (script?.end ?? 0) + 0.001))
       )
         fail();
-      // Edited captions move independently, so they must stay sorted and non-overlapping.
-      if (edited && c.start < previousEnd - 0.001) fail();
+      // Segments must never show together, even on the Worker write path.
+      if ((edited || segmentedCaptions) && c.start < previousEnd - 0.001) fail();
       previousEnd = Math.max(previousEnd, c.end);
+      if (segmentedCaptions) {
+        const parts = segmentsByLine.get(lineId!) ?? [];
+        parts.push(c);
+        segmentsByLine.set(lineId!, parts);
+      }
     }
+    if (segmentedCaptions && checkpoint.script?.some((line) => {
+      const parts = segmentsByLine.get(line.id);
+      return (ready && !parts?.length) || (parts?.length && (
+        parts.some((part, index) => part.segmentIndex !== index || part.segmentCount !== parts.length) ||
+        (captionsV2 && parts.some((part, index) => index > 0 &&
+          Math.abs(part.start - parts[index - 1]!.end) > 0.001)) ||
+        (!edited && parts.map((part) => part.text).join('').replace(/\s/gu, '') !==
+          line.text.replace(captionsV2 ? /[，,。.!！？?；;：:…\s]/gu : /[\p{P}\s]/gu, ''))));
+    })) fail();
   }
   if (checkpoint.captionBoxes) {
     const boxes = Object.entries(checkpoint.captionBoxes);
@@ -443,7 +471,9 @@ export function validatePackagingCheckpoint(
       !checkpoint.script?.length ||
       !checkpoint.music ||
       checkpoint.script.some((s) => !checkpoint.voices?.[s.id]) ||
-      checkpoint.captions?.length !== checkpoint.script.length)
+      (segmentedCaptions
+        ? !checkpoint.captions?.length
+        : checkpoint.captions?.length !== checkpoint.script.length))
   )
     fail();
 }
@@ -477,10 +507,14 @@ export function canonicalizeCheckpoint(
     ? [...checkpoint.captions]
         .sort((left, right) => left.start - right.start)
         .map((caption) => {
-          const audio = voices?.[caption.id];
-          return audio
-            ? { ...caption, start: audio.start, end: audio.start + audio.duration }
-            : caption;
+          const lineId = checkpoint.captionLayoutVersion ? caption.voiceLineId : caption.id;
+          const audio = lineId ? voices?.[lineId] : undefined;
+          if (!audio) return caption;
+          if (!checkpoint.captionLayoutVersion)
+            return { ...caption, start: audio.start, end: audio.start + audio.duration };
+          const previous = checkpoint.voices?.[lineId!];
+          const shift = audio.start - (previous?.start ?? audio.start);
+          return { ...caption, start: caption.start + shift, end: caption.end + shift };
         })
     : checkpoint.captions;
   const canonical: PackagingCheckpoint = { ...checkpoint };

@@ -13,26 +13,26 @@ from effect_template_mix.packaging_provider import PackagingProvider, PackagingE
 from effect_template_mix.provider import ArkProvider
 
 
-def snapshot(duration: float = 3) -> dict[str, Any]:
+def snapshot(duration: float = 4) -> dict[str, Any]:
     return {'duration': duration, 'narrationLayoutVersion': 'SLOT_V1', 'facts': [{'id': 'f', 'text': '事实'}],
         'variant': {'slots': [{'id': 's', 'role': 'HOOK'}]},
         'clips': [{'slotId': 's', 'contentHash': 'hash', 'fileObjectId': 'file', 'start': 0, 'duration': duration, 'offset': 1}]}
 
 
-@pytest.mark.parametrize('duration', [3, 15])
+@pytest.mark.parametrize('duration', [4, 15])
 def test_valid_slot_edges(duration: float) -> None:
     assert narration_windows(snapshot(duration))[0]['end'] == duration
 
 
-@pytest.mark.parametrize('duration', [2.99, 15.01, float('nan')])
+@pytest.mark.parametrize('duration', [3.99, 15.01, float('nan')])
 def test_invalid_duration(duration: float) -> None:
-    with pytest.raises(PackagingError, match='3–15'):
+    with pytest.raises(PackagingError, match='4–15'):
         narration_windows(snapshot(duration))
 
 
 def test_overlap_is_rejected_without_lane_escape() -> None:
     value = snapshot()
-    value['clips'].append({**value['clips'][0], 'slotId': 's2', 'start': 2, 'lane': 1})
+    value['clips'].append({**value['clips'][0], 'slotId': 's2', 'start': 3, 'lane': 1})
     value['variant']['slots'].append({'id': 's2', 'role': 'END'})
     with pytest.raises(PackagingError, match='边界冲突'):
         narration_windows(value)
@@ -41,7 +41,7 @@ def test_overlap_is_rejected_without_lane_escape() -> None:
 def test_cache_key_changes_on_trim_or_content_but_not_timeline_position() -> None:
     clip = snapshot()['clips'][0]
     assert slot_vision_key(clip) == slot_vision_key({**clip, 'start': 22, 'slotId': 'another'})
-    for update in ({'offset': 2}, {'duration': 4}, {'contentHash': 'changed'}):
+    for update in ({'offset': 2}, {'duration': 5}, {'contentHash': 'changed'}):
         assert slot_vision_key(clip) != slot_vision_key({**clip, **update})
 
 
@@ -94,13 +94,13 @@ async def test_global_tts_pool_bounds_calls_and_retains_successful_slots() -> No
     provider.voice.side_effect = voice
     worker = PackagingHandler(api, AsyncMock(spec=ArkProvider), provider, 1000)
     value = snapshot()
-    value['duration'] = 18
+    value['duration'] = 24
     value['variant']['slots'] = [{'id': str(i), 'role': 'PRODUCT'} for i in range(6)]
-    value['clips'] = [{**snapshot()['clips'][0], 'slotId': str(i), 'start': i * 3} for i in range(6)]
-    rows = [{'id': f'line-{i}', 'slotId': str(i), 'text': '短句', 'start': i * 3, 'end': i * 3 + 3, 'factIds': ['f']} for i in range(6)]
-    item = {'id': 'one', 'stage': 'VOICE', 'snapshot': value, 'checkpoint': {
+    value['clips'] = [{**snapshot()['clips'][0], 'slotId': str(i), 'start': i * 4} for i in range(6)]
+    rows = [{'id': f'line-{i}', 'slotId': str(i), 'text': '短句', 'start': i * 4, 'end': i * 4 + 4, 'factIds': ['f']} for i in range(6)]
+    item: dict[str, Any] = {'id': 'one', 'stage': 'VOICE', 'snapshot': value, 'checkpoint': {
         'narrationLayoutVersion': 'SLOT_V1', 'vision': [{'description': '画面'}], 'script': rows,
-        'musicBrief': '器乐', 'music': {'fileObjectId': 'music', 'start': 0, 'duration': 18, 'volume': .12}}}
+        'musicBrief': '器乐', 'music': {'fileObjectId': 'music', 'start': 0, 'duration': 24, 'volume': .12}}}
     other = copy.deepcopy(item)
     await asyncio.gather(worker.process_item('/r', {}, 'p', item), worker.process_item('/r', {}, 'p', other))
     assert maximum == 4 and provider.voice.await_count == 12
