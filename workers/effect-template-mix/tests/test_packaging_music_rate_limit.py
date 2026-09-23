@@ -88,9 +88,11 @@ async def test_query_rate_limit_reuses_saved_task_without_paid_resubmit(monkeypa
     adapter.download_music.return_value = b'source'
     monkeypatch.setattr('effect_template_mix.packaging.music_wav', AsyncMock(return_value=b'wav'))
     monkeypatch.setattr('effect_template_mix.packaging.asyncio.sleep', AsyncMock())
-    row = {'id': 'item', 'stage': 'MUSIC', 'snapshot': {'duration': 43}, 'checkpoint': {
+    row = {'id': 'item', 'stage': 'MUSIC', 'snapshot': {'duration': 43, 'narrationLayoutVersion': 'SLOT_V1',
+        'variant': {'slots': [{'id': 's', 'role': 'PRODUCT'}]}, 'clips': [{'slotId': 's', 'start': 0, 'duration': 5}]}, 'checkpoint': {
+        'narrationLayoutVersion': 'SLOT_V1',
         'vision': [{'start': 0, 'end': 43, 'description': '画面'}],
-        'script': [{'id': 'line', 'text': '口播', 'start': 0, 'end': 5, 'factIds': ['f']}],
+        'script': [{'id': 'line', 'slotId': 's', 'text': '口播', 'start': 0, 'end': 5, 'factIds': ['f']}],
         'voices': {'line': {'fileObjectId': 'voice', 'start': 0, 'duration': 2, 'volume': 1}},
         'musicTaskId': 'existing-task', 'musicSubmissionPending': False}}
     await PackagingHandler(api, AsyncMock(spec=ArkProvider), adapter, 1000).process_item('/run', {}, 'project', row)

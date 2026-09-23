@@ -1,8 +1,10 @@
 import {
   EFFECT_TEMPLATE_MIX_TRANSITION_DEFAULT_DURATION,
+  PACKAGING_AUDIO_GAIN_CEILING,
   packagingTimelineClips,
   packagingTimelineDuration,
   packagingVisualTimeline,
+  packagingSlotBoundaryError,
 } from '@ai-marketing/contracts';
 import type {
   EffectTemplateMixMaterial,
@@ -12,6 +14,7 @@ import type {
   WorkingArtifact,
 } from '@ai-marketing/contracts';
 import { BadRequestException } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 
 const record = (value: unknown): Record<string, unknown> =>
@@ -20,6 +23,10 @@ const record = (value: unknown): Record<string, unknown> =>
     : {};
 export const visualHash = (variant: EffectTemplateMixVariant) =>
   workflowStateHash(packagingVisualTimeline(variant));
+
+export const slotVisionKey = (clip: PackagingSnapshot['clips'][number]) =>
+  createHash('sha256').update(JSON.stringify(['slot-frames-3-320-v1', clip.contentHash,
+    clip.offset.toFixed(6), clip.duration.toFixed(6)])).digest('hex');
 
 /** Read legacy frozen hashes without rewriting checkpoints or revisions. */
 export function matchesVisualHash(variant: EffectTemplateMixVariant, hash: string | undefined,
@@ -34,6 +41,8 @@ export function packagingSnapshot(
   materials: EffectTemplateMixMaterial[],
   artifacts: WorkingArtifact[],
 ): PackagingSnapshot {
+  const boundaryError = packagingSlotBoundaryError(variant);
+  if (boundaryError) throw new BadRequestException(boundaryError);
   if (
     !variant.slots.length ||
     variant.slots.length > 30 ||
@@ -122,6 +131,7 @@ export function packagingSnapshot(
   if (!facts.length)
     throw new BadRequestException('缺少素材所消费的已确认商品信息，不能生成商品口播');
   return {
+    narrationLayoutVersion: 'SLOT_V1',
     sourceTimelineHash: visualHash(variant),
     duration: packagingTimelineDuration(variant),
     variant,
@@ -174,6 +184,13 @@ export function validatePackagingCheckpoint(
     );
   };
   const facts = new Set(snapshot.facts.map((f) => f.id));
+  const slotLayout = checkpoint.narrationLayoutVersion === 'SLOT_V1';
+  if (checkpoint.narrationLayoutVersion !== undefined && !slotLayout) fail();
+  if (snapshot.narrationLayoutVersion === 'SLOT_V1' && !slotLayout) fail();
+  if (slotLayout) {
+    const boundaryError = packagingSlotBoundaryError(snapshot.variant);
+    if (boundaryError) throw new BadRequestException(boundaryError);
+  }
   if (
     Object.keys(checkpoint).some(
       (k) =>
@@ -187,10 +204,32 @@ export function validatePackagingCheckpoint(
           'captionBoxes',
           'musicTaskId',
           'musicSubmissionPending',
+          'narrationLayoutVersion', 'slotVision', 'timings', 'voiceFitAttempts', 'automaticRetries',
         ].includes(k),
     )
   )
     fail();
+  if (checkpoint.automaticRetries !== undefined &&
+      (!Number.isInteger(checkpoint.automaticRetries) || checkpoint.automaticRetries < 0 || checkpoint.automaticRetries > 2)) fail();
+  if (checkpoint.slotVision) {
+    for (const [slotId, row] of Object.entries(checkpoint.slotVision))
+      if (!snapshot.clips.some((c) => c.slotId === slotId) || !row ||
+          row.key !== slotVisionKey(snapshot.clips.find((c) => c.slotId === slotId)!) || typeof row.description !== 'string' ||
+          !row.description.trim() || row.description.length > 2000) fail();
+  }
+  if (checkpoint.voiceFitAttempts && Object.entries(checkpoint.voiceFitAttempts).some(([id, count]) =>
+    !snapshot.clips.some((c) => c.slotId === id) || count !== 1)) fail();
+  if (checkpoint.timings) {
+    for (const [id, row] of Object.entries(checkpoint.timings)) {
+      if (id !== '_item' && !snapshot.clips.some((c) => c.slotId === id)) fail();
+      if (!row || typeof row !== 'object') fail();
+      for (const [key, value] of Object.entries(row)) {
+        if (key === 'cacheHit') { if (typeof value !== 'boolean') fail(); }
+        else if (!['preprocessingSeconds', 'visionSeconds', 'scriptSeconds', 'voiceSeconds', 'musicWaitSeconds', 'localQueueSeconds'].includes(key) ||
+          typeof value !== 'number' || !Number.isFinite(value) || value < 0) fail();
+      }
+    }
+  }
   if (
     checkpoint.musicTaskId !== undefined &&
     (typeof checkpoint.musicTaskId !== 'string' ||
@@ -225,13 +264,20 @@ export function validatePackagingCheckpoint(
   if (checkpoint.script) {
     if (
       !Array.isArray(checkpoint.script) ||
-      !checkpoint.script.length ||
+      (!checkpoint.script.length && (!slotLayout || ready)) ||
       checkpoint.script.length > 200
     )
       fail();
     const ids = new Set<string>();
+    const slots = new Set<string>();
     let end = 0;
     for (const row of checkpoint.script) {
+      if (slotLayout) {
+        const clip = snapshot.clips.find((c) => c.slotId === row.slotId);
+        if (!clip || !row.slotId || slots.has(row.slotId) ||
+          row.start !== clip.start || Math.abs(row.end - clip.start - clip.duration) > 0.001) fail();
+        slots.add(row.slotId!);
+      }
       if (
         !row ||
         typeof row.id !== 'string' ||
@@ -250,12 +296,13 @@ export function validatePackagingCheckpoint(
       ids.add(row.id);
       end = row.end;
     }
+    if (slotLayout && ready && slots.size !== snapshot.clips.length) fail();
   }
   if (checkpoint.voices)
     for (const [id, audio] of Object.entries(checkpoint.voices)) {
       const index = checkpoint.script?.findIndex((s) => s.id === id) ?? -1;
       const line = checkpoint.script?.[index];
-      const limit = checkpoint.script?.[index + 1]?.start ?? snapshot.duration;
+      const limit = slotLayout ? (line?.end ?? 0) : (checkpoint.script?.[index + 1]?.start ?? snapshot.duration);
       const offset = audio?.offset ?? 0;
       if (
         !line ||
@@ -263,10 +310,11 @@ export function validatePackagingCheckpoint(
         !Number.isFinite(offset) ||
         offset < 0 ||
         !interval(audio.start, audio.start + audio.duration) ||
+        (slotLayout && (audio.start < (line?.start ?? 0) || audio.start + audio.duration > limit + 0.001)) ||
         (!edited && (audio.start !== line.start || audio.start + audio.duration > limit + 0.001)) ||
         !Number.isFinite(audio.volume) ||
         audio.volume < 0 ||
-        audio.volume > 1 ||
+        audio.volume > PACKAGING_AUDIO_GAIN_CEILING ||
         !fades(audio)
       )
         fail();
@@ -282,7 +330,7 @@ export function validatePackagingCheckpoint(
           Math.abs(checkpoint.music.duration - snapshot.duration) > 0.05)) ||
       !Number.isFinite(checkpoint.music.volume) ||
       checkpoint.music.volume < 0 ||
-      checkpoint.music.volume > 0.3 ||
+      checkpoint.music.volume > PACKAGING_AUDIO_GAIN_CEILING ||
       !fades(checkpoint.music)
     )
       fail();
@@ -302,9 +350,10 @@ export function validatePackagingCheckpoint(
         c.text.length > 500 ||
         // The editor may reword a subtitle without rewriting the narration it is voiced from.
         (!edited && c.text !== script.text) ||
-        (!edited &&
+        ((slotLayout || !edited) &&
           (c.start !== audio.start || Math.abs(c.end - c.start - audio.duration) > 0.002)) ||
         !interval(c.start, c.end)
+        || (slotLayout && (c.start < (script?.start ?? 0) || c.end > (script?.end ?? 0) + 0.001))
       )
         fail();
       // Edited captions move independently, so they must stay sorted and non-overlapping.
@@ -348,6 +397,12 @@ export function validatePackagingCheckpoint(
       checkpoint.captions?.length !== checkpoint.script.length)
   )
     fail();
+}
+
+export function requireSlotPackaging(snapshot: PackagingSnapshot, checkpoint: PackagingCheckpoint): void {
+  if (checkpoint.narrationLayoutVersion !== 'SLOT_V1')
+    throw new BadRequestException('旧版整片口播仅可播放，请按槽位重新包装后进入成片输出');
+  validatePackagingCheckpoint(snapshot, checkpoint, true, true);
 }
 
 /**

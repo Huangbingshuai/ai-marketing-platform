@@ -19,7 +19,7 @@ function harness(count = 1) {
       ({
         id: `v${i}`,
         name: `成片${i}`,
-        slots: [],
+        slots: [{ id: 's', role: 'PRODUCT', label: '产品', duration: 10, transition: '硬切' }],
         bindings: {},
         bindingRevisions: {},
         offsets: {},
@@ -44,7 +44,7 @@ function harness(count = 1) {
       variant: v,
       sourceTimelineHash: visualHash(v),
       duration: 10,
-      clips: [{ fileObjectId: 'video' }],
+      clips: [{ slotId: 's', start: 0, duration: 10, fileObjectId: 'video' }],
       facts: [{ id: 'f', text: '确认事实' }],
       dependencies: [
         {
@@ -57,8 +57,9 @@ function harness(count = 1) {
       ],
     } as PackagingSnapshot,
     checkpoint: {
+      narrationLayoutVersion: 'SLOT_V1' as const,
       vision: [{ start: 0, end: 10, description: '画面' }],
-      script: [{ id: 'line', start: 0, end: 4, text: '商品', factIds: ['f'] }],
+      script: [{ id: 'line', slotId: 's', start: 0, end: 10, text: '商品', factIds: ['f'] }],
       voices: { line: { fileObjectId: 'voice', start: 0, duration: 2, volume: 1 } },
       music: { fileObjectId: 'music', start: 0, duration: 10, volume: 0.12 },
       captions: [{ id: 'line', start: 0, end: 2, text: '商品' }],
@@ -205,7 +206,7 @@ describe('atomic full packaging completion', () => {
       offset: 0.5,
     };
     checkpoint.music = { fileObjectId: 'music', start: 1, duration: 6, volume: 0.2, offset: 0.5 };
-    checkpoint.captions = [{ id: 'line', start: 3.2, end: 4.7, text: '商品' }];
+    checkpoint.captions = [{ id: 'line', start: 3, end: 4.5, text: '商品' }];
     await edited.service.complete('p', 't', request);
     expect(edited.db.effectFinalOutputRun.create).toHaveBeenCalledOnce();
     const created = edited.db.effectFinalOutputRun.create.mock.calls[0]![0].data;
@@ -213,7 +214,7 @@ describe('atomic full packaging completion', () => {
     const item = created.items.create[0] as { snapshot: FinalOutputSnapshot };
     expect(item.snapshot.packaging.voices!['line']).toMatchObject({ start: 3, offset: 0.5 });
     expect(item.snapshot.packaging.captions).toEqual([
-      { id: 'line', start: 3.2, end: 4.7, text: '商品' },
+      { id: 'line', start: 3, end: 4.5, text: '商品' },
     ]);
   });
   it('rejects reused idempotency keys for different requests', async () => {

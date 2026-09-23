@@ -11,7 +11,6 @@ async def test_stable_shards_run_at_most_four_and_skip_success(count: int) -> No
     rows = [{'id': i, 'shardIndex': i // 4, 'status': 'COMPLETED' if i % 7 == 0 else 'QUEUED'} for i in range(count)]
     async def execute(item: dict[str, Any]) -> None:
         nonlocal active, maximum
-        assert all(r['id'] in done or r['status'] == 'COMPLETED' for r in rows if r['shardIndex'] < item['shardIndex'])
         active += 1
         maximum = max(maximum, active)
         await asyncio.sleep(.001)
@@ -22,6 +21,17 @@ async def test_stable_shards_run_at_most_four_and_skip_success(count: int) -> No
     if count == 100:
         assert maximum == 4
     assert sorted(done) == [r['id'] for r in rows if r['status'] != 'COMPLETED']
+
+
+async def test_next_shard_starts_before_slowest_previous_item_finishes() -> None:
+    released = asyncio.Event()
+    async def execute(item: dict[str, Any]) -> None:
+        if item['id'] == 0:
+            await asyncio.wait_for(released.wait(), 1)
+        if item['id'] == 4:
+            released.set()
+    await run_packaging_shards([{'id': i, 'shardIndex': i // 4, 'status': 'QUEUED'} for i in range(8)], 4, execute)
+    assert released.is_set()
 
 
 async def test_lease_failure_cancels_inflight_and_never_starts_next_shard() -> None:

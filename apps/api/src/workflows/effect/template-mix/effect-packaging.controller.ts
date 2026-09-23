@@ -36,7 +36,7 @@ import type {
   PackagingComponent,
   PackagingStage,
 } from '@ai-marketing/contracts';
-import { PACKAGING_STAGES } from '@ai-marketing/contracts';
+import { PACKAGING_AUDIO_GAIN_CEILING, PACKAGING_STAGES } from '@ai-marketing/contracts';
 import { pipeline } from 'node:stream/promises';
 import type { ServerResponse } from 'node:http';
 import { RawResponse } from '../../../common/raw-response.decorator';
@@ -55,6 +55,7 @@ export class CreatePackagingDto extends EffectTemplateMixRevisionDto {
   @IsString() @MinLength(1) @MaxLength(500) idempotencyKey!: string;
   @IsOptional() @IsUUID('4') variantId?: string;
   @IsOptional() @IsIn(['ALL', 'VOICE', 'MUSIC', 'CAPTIONS']) component?: PackagingComponent;
+  @IsOptional() @IsString() @MinLength(1) @MaxLength(100) slotId?: string;
 }
 export class PackagingCheckpointDto extends EffectTemplateMixWorkerProjectDto {
   @IsIn(PACKAGING_STAGES) stage!: PackagingStage;
@@ -66,7 +67,8 @@ export class PackagingAudioEditDto {
   @Type(() => Number) @IsNumber() @Min(0) start!: number;
   @IsOptional() @Type(() => Number) @IsNumber() @Min(0) offset?: number;
   @IsOptional() @Type(() => Number) @IsNumber() @Min(0) duration?: number;
-  @Type(() => Number) @IsNumber() @Min(0) @Max(1) volume!: number;
+  // Up to the shared +20 dB ceiling (10× gain), so the editor's dB row can reach its own top end.
+  @Type(() => Number) @IsNumber() @Min(0) @Max(PACKAGING_AUDIO_GAIN_CEILING) volume!: number;
   /** Editor-only; absent keeps the pipeline default (`final_output.py`), so old clients stay valid. */
   @IsOptional() @Type(() => Number) @IsNumber() @Min(0) fadeIn?: number;
   @IsOptional() @Type(() => Number) @IsNumber() @Min(0) fadeOut?: number;

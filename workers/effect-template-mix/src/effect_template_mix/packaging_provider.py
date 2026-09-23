@@ -27,6 +27,10 @@ class MusicRateLimited(PackagingError):
     """An explicit rejection without a TaskID, not an ambiguous paid submission."""
 
 
+class PackagingTransientError(PackagingError):
+    """A recoverable request failure; never overrides ambiguous music-submit protection."""
+
+
 def signed_headers(action: str, body: bytes, access_key: str, secret_key: str,
                    now: datetime | None = None) -> dict[str, str]:
     timestamp = (now or datetime.now(timezone.utc)).strftime('%Y%m%dT%H%M%SZ')
@@ -78,6 +82,8 @@ class PackagingProvider:
         async with self.client.stream('POST', 'https://openspeech.bytedance.com/api/v3/tts/unidirectional/sse',
                                       headers=headers, json=payload) as response:
             if response.is_error:
+                if response.status_code == 429 or response.status_code >= 500:
+                    raise PackagingTransientError('豆包配音暂时限流或不可用，正在自动恢复')
                 raise PackagingError('豆包配音请求失败，请检查服务权限和音色配置')
             async for line in response.aiter_lines():
                 if not line.startswith('data:'):
@@ -95,7 +101,7 @@ class PackagingProvider:
                         raise PackagingError('单句配音超过容量上限')
                     chunks.append(chunk)
         if not complete or not size or size % 2:
-            raise PackagingError('配音流未完整结束，请重试本条口播')
+            raise PackagingTransientError('配音流未完整结束，正在自动恢复')
         return b''.join(chunks)
 
     async def music_request(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -107,6 +113,8 @@ class PackagingProvider:
         response = await self.client.post('https://open.volcengineapi.com/', params={'Action': action, 'Version': '2024-08-12'},
             headers=signed_headers(action, body, self.access_key, self.secret_key), content=body)
         if response.is_error:
+            if action == 'QuerySong' and (response.status_code == 429 or response.status_code >= 500):
+                raise PackagingTransientError('音乐查询暂时不可用，保留原任务自动恢复')
             raise PackagingError('火山纯音乐请求失败，请核查服务权限或任务状态')
         value = response.json()
         metadata = value.get('ResponseMetadata') or {}
@@ -162,6 +170,8 @@ class PackagingProvider:
         # Never send API credentials to the result CDN or follow a redirect to an arbitrary host.
         async with self.client.stream('GET', url) as response:
             if response.status_code != 200:
+                if response.status_code == 429 or response.status_code >= 500:
+                    raise PackagingTransientError('音乐下载暂时不可用，保留原任务自动恢复')
                 raise PackagingError('音乐转存下载失败')
             chunks: list[bytes] = []
             size = 0

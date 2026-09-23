@@ -1,9 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import type { PackagingItem, PackagingSnapshot } from '@ai-marketing/contracts';
 import { packagingShardIndexes } from '@ai-marketing/contracts';
-import { packagingExecution } from './effect-packaging.metrics';
+import { packagingExecution, packagingPerformance } from './effect-packaging.metrics';
 
 describe('server packaging throughput', () => {
+  it('reports persisted measurements and does not count a batched script once per slot', () => {
+    const items = [{ checkpoint: { timings: {
+      _item: { scriptSeconds: 12, musicWaitSeconds: 20 },
+      a: { scriptSeconds: 6, voiceSeconds: 2, cacheHit: true, localQueueSeconds: .5 },
+      b: { scriptSeconds: 6, voiceSeconds: 4, cacheHit: false, preprocessingSeconds: 1 },
+    } } }] as unknown as PackagingItem[];
+    const result = packagingPerformance(items);
+    expect(result.cacheHitRate).toBe(.5);
+    expect(result.stages.scriptSeconds).toEqual({ samples: 1, p50Seconds: 12, p95Seconds: 12, totalSeconds: 12 });
+    expect(result.stages.voiceSeconds?.p95Seconds).toBe(4);
+    expect(result.stages.localQueueSeconds?.totalSeconds).toBe(.5);
+    expect(packagingPerformance([]).cacheHitRate).toBeNull();
+  });
   it.each([1, 10, 100])(
     'stable four-item shards for %i including long and fact-heavy inputs',
     (count) => {

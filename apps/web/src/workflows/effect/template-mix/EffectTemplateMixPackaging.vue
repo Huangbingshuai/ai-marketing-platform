@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import {
   AlertCircle,
   ArrowLeft,
@@ -18,9 +18,11 @@ import {
   PACKAGING_STAGES,
   PACKAGING_STAGE_LABELS,
   packagingVisualTimeline,
+  packagingSlotBoundaryError,
 } from '@ai-marketing/contracts';
 import type {
   ApiResponse,
+  EffectTemplateMixAudio,
   EffectTemplateMixVariant,
   PackagingComponent,
   PackagingItem,
@@ -37,6 +39,9 @@ const props = defineProps<{
   prepare: () => Promise<number | null>;
   playhead: number;
   playing: boolean;
+  /** Shared with the two independent timeline audio-track controls. */
+  voiceMuted: boolean;
+  musicMuted: boolean;
 }>();
 const emit = defineEmits<{ selected: [item: PackagingItem | null]; preview: [enabled: boolean]; ready: [ready: boolean] }>();
 const dialog = ref<HTMLDialogElement | null>(null);
@@ -135,6 +140,13 @@ const selected = computed(() => {
   if (!item || !variant) return null;
   return currentItem(item);
 });
+const selectedVariant = computed(() =>
+  props.variants.find((variant) => variant.id === props.selectedVariantId),
+);
+const boundaryError = computed(() => {
+  const variant = props.variants.find((v) => v.id === props.selectedVariantId);
+  return variant ? packagingSlotBoundaryError(variant) : null;
+});
 const detail = computed(
   () => run.value?.items.find((i) => i.id === detailId.value) ?? run.value?.items[0],
 );
@@ -142,7 +154,8 @@ const fileUrl = (id: string) => apiUrl(`/projects/${props.projectId}/file-object
 watch(selected, (item) => emit('selected', item), { immediate: true });
 const allReady = computed(() => !active.value && !loadError.value && props.variants.length > 0 && props.variants.every((v) => {
   const item = runs.value.flatMap((r) => r.items).find((i) => i.variantId === v.id);
-  return item && item.status === 'COMPLETED' && !currentItem(item).stale;
+  return item && item.status === 'COMPLETED' && !currentItem(item).stale &&
+    item.checkpoint.narrationLayoutVersion === 'SLOT_V1' && !packagingSlotBoundaryError(v);
 }));
 watch(allReady, (ready) => emit('ready', ready), { immediate: true });
 
@@ -194,7 +207,16 @@ function close() {
   visible.value = false;
   dialog.value?.close();
 }
-defineExpose({ open, visible, busy, active, loading, starting });
+defineExpose({
+  open,
+  visible,
+  busy,
+  active,
+  loading,
+  starting,
+  startPlaybackAudio,
+  stopPlaybackAudio,
+});
 async function execute(action: () => Promise<unknown>) {
   if (busy.value) return;
   const version = generation;
@@ -211,7 +233,7 @@ async function execute(action: () => Promise<unknown>) {
     if (version === generation) busy.value = false;
   }
 }
-async function create(variantId?: string, component: PackagingComponent = 'ALL') {
+async function create(variantId?: string, component: PackagingComponent = 'ALL', slotId?: string) {
   if (busy.value) return;
   const context = {
     generation,
@@ -225,7 +247,7 @@ async function create(variantId?: string, component: PackagingComponent = 'ALL')
       const expectedRevision = await props.prepare();
       if (context.generation !== generation) return;
       if (expectedRevision === null) throw new Error('请先保存时间轴草稿');
-      const body = { workflowRunId: context.workflowRunId, expectedRevision, variantId, component };
+      const body = { workflowRunId: context.workflowRunId, expectedRevision, variantId, component, slotId };
       const fingerprint = JSON.stringify(body);
       if (pendingCreate?.fingerprint !== fingerprint)
         pendingCreate = { fingerprint, key: crypto.randomUUID() };
@@ -261,12 +283,17 @@ const voiceElement = ref<HTMLAudioElement | null>(null),
   musicElement = ref<HTMLAudioElement | null>(null);
 // The main player owns all track playback. Only a failed play attempt blocks
 // audio until the next player gesture; there is no separate audition switch.
-const playbackBlocked = ref(false);
-const previewAvailable = computed(
-  () => selected.value?.status === 'COMPLETED' && !selected.value.stale,
-);
+const playbackBlocked = reactive({ MUSIC: false, VOICE: false });
+const previewAvailable = computed(() => {
+  const item = selected.value;
+  // Stale only describes the saved visual snapshot. It must not silence already-generated audio
+  // while the user is editing the timeline.
+  return Boolean(
+    (item && item.status === 'COMPLETED') || selectedVariant.value?.voice || selectedVariant.value?.bgm,
+  );
+});
 watch(
-  () => !playbackBlocked.value && previewAvailable.value,
+  previewAvailable,
   (enabled) => {
     if (enabled) previewError.value = '';
     emit('preview', enabled);
@@ -276,39 +303,61 @@ watch(
 watch(
   () => [props.playing, props.selectedVariantId],
   () => {
-    playbackBlocked.value = false;
+    playbackBlocked.MUSIC = false;
+    playbackBlocked.VOICE = false;
     previewError.value = '';
   },
 );
-const currentVoice = computed(() =>
-  selected.value && previewAvailable.value
-    ? Object.values(selected.value.checkpoint.voices ?? {}).find(
-        (a) => props.playhead >= a.start && props.playhead < a.start + a.duration,
-      )
-    : undefined,
-);
-const currentMusic = computed(() =>
-  selected.value && previewAvailable.value ? selected.value.checkpoint.music : undefined,
-);
-function syncAudio() {
-  for (const [element, audio] of [
-    [voiceElement.value, currentVoice.value],
-    [musicElement.value, currentMusic.value],
+type PreviewAudio = {
+  fileObjectId: string;
+  duration: number;
+  start: number;
+  volume: number;
+  offset?: number;
+};
+const currentVoice = computed<PreviewAudio | undefined>(() => {
+  if (!previewAvailable.value) return undefined;
+  const slotVoice = Object.values(selected.value?.checkpoint.voices ?? {}).find(
+    (audio) => props.playhead >= audio.start && props.playhead < audio.start + audio.duration,
+  );
+  if (slotVoice) return slotVoice;
+  // Legacy packaging stored one whole-film voice on the variant instead of a slot-keyed
+  // checkpoint. Keep that already-generated audio playable while the user repackages it.
+  if (!selected.value || selected.value.checkpoint.narrationLayoutVersion !== 'SLOT_V1') {
+    return selectedVariant.value?.voice as EffectTemplateMixAudio | undefined;
+  }
+  return undefined;
+});
+const currentMusic = computed<PreviewAudio | undefined>(() => {
+  if (!previewAvailable.value) return undefined;
+  if (selected.value?.checkpoint.music) return selected.value.checkpoint.music;
+  if (!selected.value || selected.value.checkpoint.narrationLayoutVersion !== 'SLOT_V1') {
+    return selectedVariant.value?.bgm as EffectTemplateMixAudio | undefined;
+  }
+  return undefined;
+});
+function syncAudio(forcePlayback = false) {
+  for (const [kind, element, audio, muted] of [
+    ['VOICE', voiceElement.value, currentVoice.value, props.voiceMuted],
+    ['MUSIC', musicElement.value, currentMusic.value, props.musicMuted],
   ] as const) {
-    if (!element || !audio || playbackBlocked.value || !props.playing) {
+    if (!element || !audio || playbackBlocked[kind] || (!props.playing && !forcePlayback)) {
       element?.pause();
       continue;
     }
-    const time = props.playhead - audio.start;
-    if (time < 0 || time >= audio.duration) {
+    element.muted = muted;
+    if (muted) {
       element.pause();
       continue;
     }
+    const timelineTime = props.playhead - audio.start;
+    if (timelineTime < 0 || timelineTime >= audio.duration) {
+      element.pause();
+      continue;
+    }
+    const time = timelineTime + Math.max(0, audio.offset ?? 0);
     if (Math.abs(element.currentTime - time) > 0.2) element.currentTime = time;
-    element.volume =
-      audio === currentMusic.value && currentVoice.value
-        ? Math.min(audio.volume, 0.08)
-        : audio.volume;
+    element.volume = Math.max(0, Math.min(1, audio.volume));
     if (element.paused) {
       const version = generation;
       const fileId = audio.fileObjectId;
@@ -319,23 +368,37 @@ function syncAudio() {
         const warning = packagingPlaybackError(
           reason,
           version === generation &&
-            !playbackBlocked.value &&
+            !playbackBlocked[kind] &&
             props.playing &&
             bound === element &&
             current?.fileObjectId === fileId,
         );
         if (!warning) return;
-        playbackBlocked.value = true;
+        playbackBlocked[kind] = true;
         previewError.value = warning;
       });
     }
   }
 }
+/** Start packaged audio directly from the player's user gesture. */
+function startPlaybackAudio() {
+  playbackBlocked.MUSIC = false;
+  playbackBlocked.VOICE = false;
+  previewError.value = '';
+  syncAudio(true);
+}
+function stopPlaybackAudio() {
+  voiceElement.value?.pause();
+  musicElement.value?.pause();
+}
 watch(
   () => [
     props.playhead,
     props.playing,
-    playbackBlocked.value,
+    props.voiceMuted,
+    props.musicMuted,
+    playbackBlocked.VOICE,
+    playbackBlocked.MUSIC,
     currentVoice.value?.fileObjectId,
     currentMusic.value?.fileObjectId,
   ],
@@ -356,7 +419,8 @@ watch(
     busy.value = false;
     starting.value = false;
     close();
-    playbackBlocked.value = false;
+    playbackBlocked.MUSIC = false;
+    playbackBlocked.VOICE = false;
     if (props.templateId) void refresh();
   },
   { immediate: true },
@@ -371,6 +435,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <div v-if="boundaryError" class="notice error" role="alert">{{ boundaryError }}</div>
   <WorkflowRunProgress
     v-if="starting || active"
     class="packaging-progress"
@@ -384,7 +449,7 @@ onBeforeUnmount(() => {
     action-label="查看当前工作流"
     @show-details="open('WORKFLOW')"
   />
-  <div v-if="error && !visible && !progressRun && !busy" class="notice error" role="alert">
+  <div v-if="error && !visible && !active && !busy" class="notice error" role="alert">
     <AlertCircle :size="16" />{{ error }}<button @click="refresh">重新读取</button>
   </div>
   <audio
@@ -393,7 +458,7 @@ onBeforeUnmount(() => {
     ref="voiceElement"
     :src="fileUrl(currentVoice.fileObjectId)"
     preload="auto"
-    @loadedmetadata="syncAudio"
+    @loadedmetadata="syncAudio()"
   />
   <audio
     v-if="currentMusic"
@@ -401,7 +466,7 @@ onBeforeUnmount(() => {
     ref="musicElement"
     :src="fileUrl(currentMusic.fileObjectId)"
     preload="auto"
-    @loadedmetadata="syncAudio"
+    @loadedmetadata="syncAudio()"
   />
   <dialog
     ref="dialog"
@@ -510,6 +575,14 @@ onBeforeUnmount(() => {
     </main>
     <details v-if="run" class="packaging-results">
       <summary>成片结果与分片进度 · {{ run.items.length }} 条成片</summary>
+      <p>{{ executionSummary }}</p>
+      <div v-if="run.execution?.performance" class="shard-list">
+        <span>视觉缓存 {{ run.execution.performance.cacheHits }}/{{ run.execution.performance.cacheLookups }} 命中</span>
+        <span v-for="(stage, name) in run.execution.performance.stages" :key="name">
+          {{ ({ preprocessingSeconds: '媒体读取与预处理', visionSeconds: '视觉请求（槽位分摊）', scriptSeconds: '策划请求', voiceSeconds: '配音及缩句请求', musicWaitSeconds: '音乐提交与供应商等待', localQueueSeconds: '本地并发排队' } as Record<string, string>)[name] }}
+          · P50 {{ stage.p50Seconds.toFixed(1) }}s / P95 {{ stage.p95Seconds.toFixed(1) }}s
+        </span>
+      </div>
       <div class="shard-list">
         <span v-for="shard in shardStates" :key="shard.index"
           >分片 {{ shard.index + 1 }} · 完成 {{ shard.completed }}/{{ shard.total }} · 失败
@@ -549,6 +622,7 @@ onBeforeUnmount(() => {
                 busy ||
                 active ||
                 detail.stale ||
+                detail.checkpoint.narrationLayoutVersion !== 'SLOT_V1' ||
                 !['COMPLETED', 'FAILED', 'CANCELLED'].includes(detail.status)
               "
               @click="create(detail.variantId, entry[0])"
@@ -557,7 +631,9 @@ onBeforeUnmount(() => {
             </button>
           </div>
           <div v-for="line in detail.checkpoint.script" :key="line.id" class="line">
+            <strong v-if="line.slotId">{{ detail.sourceVisualTimeline.slots.find(s => s.id === line.slotId)?.label }} · {{ line.start }}–{{ line.end }}s</strong>
             <p>{{ line.text }}</p>
+            <button v-if="line.slotId" :disabled="busy || active || detail.stale" @click="create(detail.variantId, 'VOICE', line.slotId)">重做此槽位口播</button>
             <small>引用 {{ line.factIds.length }} 条确认事实</small
             ><audio
               v-if="detail.checkpoint.voices?.[line.id]"

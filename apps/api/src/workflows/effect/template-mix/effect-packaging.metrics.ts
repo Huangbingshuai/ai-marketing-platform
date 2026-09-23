@@ -28,6 +28,7 @@ export function packagingExecution(
         ? Math.ceil((pending / rate) * 60)
         : Math.ceil(pending / Math.max(1, Math.min(4, concurrency))) * 80;
   return {
+    performance: packagingPerformance(items),
     progressPercent: items.length
       ? Math.floor(
           (items.reduce(
@@ -66,4 +67,26 @@ export function packagingExecution(
         };
       }),
   };
+}
+
+export function packagingPerformance(items: PackagingItem[]): NonNullable<PackagingExecution['performance']> {
+  const values: Record<string, number[]> = {};
+  let cacheHits = 0, cacheLookups = 0;
+  for (const item of items) {
+    for (const [id, row] of Object.entries(item.checkpoint?.timings ?? {})) {
+      if (row.cacheHit !== undefined) { cacheLookups++; if (row.cacheHit) cacheHits++; }
+      for (const [stage, seconds] of Object.entries(row)) {
+        // Script is one batched request, count once, not once per returned slot.
+        if (stage === 'cacheHit' || typeof seconds !== 'number' || !Number.isFinite(seconds) ||
+          (stage === 'scriptSeconds' && id !== '_item')) continue;
+        (values[stage] ??= []).push(seconds);
+      }
+    }
+  }
+  return { cacheHits, cacheLookups, cacheHitRate: cacheLookups ? cacheHits / cacheLookups : null,
+    stages: Object.fromEntries(Object.entries(values).map(([key, samples]) => {
+      samples.sort((a, b) => a - b);
+      return [key, { samples: samples.length, p50Seconds: samples[Math.ceil(samples.length * .5) - 1]!,
+        p95Seconds: samples[Math.ceil(samples.length * .95) - 1]!, totalSeconds: samples.reduce((a, b) => a + b, 0) }];
+    })) };
 }

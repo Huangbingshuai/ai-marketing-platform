@@ -25,7 +25,7 @@ import {
   EFFECT_TEMPLATE_MIX_QUEUE,
 } from '../../../platform/job/job.constants';
 import { EffectTemplateMixService } from '../template-mix/effect-template-mix.service';
-import { matchesVisualHash, validatePackagingCheckpoint, visualHash } from '../template-mix/effect-packaging.domain';
+import { matchesVisualHash, requireSlotPackaging, visualHash } from '../template-mix/effect-packaging.domain';
 
 const json = (value: unknown) => JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 const lease = () => new Date(Date.now() + 120_000);
@@ -155,7 +155,7 @@ export class EffectFinalOutputService {
           const snapshot = item.snapshot as unknown as PackagingSnapshot;
           const checkpoint = item.checkpoint as PackagingCheckpoint;
           // Accept editor-edited audio geometry; worker writes stay strictly validated.
-          validatePackagingCheckpoint(snapshot, checkpoint, true, true);
+          requireSlotPackaging(snapshot, checkpoint);
           if (
             snapshot.dependencies.some(
               (d) =>
@@ -424,6 +424,7 @@ export class EffectFinalOutputService {
     templateId: string,
     snapshot: FinalOutputSnapshot,
   ) {
+    requireSlotPackaging(snapshot.timeline, snapshot.packaging);
     const deps = snapshot.dependencies;
     const rows = await tx.workingArtifact.findMany({
       where: { projectId, workflowRunId, id: { in: deps.map((d) => d.artifactId) } },

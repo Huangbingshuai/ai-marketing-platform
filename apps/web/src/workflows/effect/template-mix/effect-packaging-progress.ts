@@ -13,18 +13,18 @@ export const packagingStageDetails: Record<
   },
   VISION: {
     description: '理解镜头内容、动作与画面节奏',
-    input: '按时间轴生成的低清预览与关键帧',
-    output: '对应时间段的画面描述，不推断新的商品事实',
+    input: '从各槽位原素材截取的低清代表帧；相同截取复用缓存',
+    output: '各槽位独立的画面描述，不推断新的商品事实',
   },
   SCRIPT: {
     description: '根据确认事实策划口播，仅做结构与时间校验',
     input: '画面描述、已确认商品事实与原始创意上下文',
-    output: '带事实引用及时间安排的分句口播文案',
+    output: '每槽位恰好一条完整口播，绑定事实引用和自身时间边界',
   },
   VOICE: {
-    description: '逐句生成配音并校验实际时长',
+    description: '受控并发生成槽位配音，超时仅同槽位缩句一次',
     input: '校验通过的口播文案与可用时间范围',
-    output: '逐句配音音频、实际时长及时间轴起点',
+    output: '不跨素材的槽位配音、实际时长及时间轴起点',
   },
   MUSIC: {
     description: '生成专属纯音乐并适配成片时长',

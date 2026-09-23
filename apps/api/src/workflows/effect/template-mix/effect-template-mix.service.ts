@@ -108,8 +108,8 @@ const slotsValid = (slots: EffectTemplateMixSlot[]): boolean =>
       label.trim().length > 0 &&
       label.length <= 80 &&
       Number.isFinite(duration) &&
-      duration >= 0.1 &&
-      duration <= 120,
+      duration >= 3 &&
+      duration <= 15,
   );
 
 const AI_MIX_ROLES = [
@@ -244,8 +244,7 @@ const materialFrom = (
   if (
     artifact.nodeId !== 'SEGMENT_RENDER' ||
     !artifact.artifactKey.startsWith('render-clip:') ||
-    artifact.kind !== 'FILE' ||
-    !artifact.contentUrl
+    artifact.kind !== 'FILE'
   ) {
     return null;
   }
@@ -256,6 +255,15 @@ const materialFrom = (
   if (!primaryPurpose) return null;
   const promptId = typeof data.promptId === 'string' ? data.promptId : '';
   const prompt = promptId ? promptSources.get(promptId) : undefined;
+  const fileObjectId = typeof data.fileObjectId === 'string' ? data.fileObjectId : '';
+  // Render artifacts keep the same output in their FileObject relation. Prefer that
+  // stable file endpoint over the artifact aggregate endpoint so old artifacts remain
+  // playable after their working-artifact freshness changes.
+  const fileContentUrl = (artifact.files ?? []).find(
+    (file) => file.fileObjectId === fileObjectId || file.id === fileObjectId,
+  )?.contentUrl;
+  const contentUrl = fileContentUrl ?? artifact.contentUrl;
+  if (!contentUrl) return null;
   const compatiblePurposes = Array.isArray(data.compatiblePurposes)
     ? [
         ...new Set(
@@ -270,9 +278,9 @@ const materialFrom = (
     artifactId: artifact.id,
     artifactKey: artifact.artifactKey,
     artifactRevision: artifact.revision,
-    fileObjectId: typeof data.fileObjectId === 'string' ? data.fileObjectId : '',
+    fileObjectId,
     contentHash: typeof data.contentHash === 'string' ? data.contentHash : '',
-    contentUrl: artifact.contentUrl,
+    contentUrl,
     code: typeof data.renderCode === 'string' ? data.renderCode : artifact.name,
     name: artifact.name.replace(/\s+视频片段$/u, ''),
     duration,
@@ -364,6 +372,10 @@ export class EffectTemplateMixService {
     value: unknown,
   ): Promise<EffectTemplateMixWorkspaceData> {
     const draft = draftOf(value);
+    if (draft.templates.some(({ workspace }) => !slotsValid(workspace.template.slots) ||
+      workspace.variants.some((variant) => !slotsValid(variant.slots))))
+      throw new ApiHttpException('槽位时长必须为 3–15 秒，且槽位编号不可重复',
+        HttpStatus.BAD_REQUEST, 'VALIDATION_ERROR');
     const result = await this.working.putNodeState(projectId, workflowRunId, 'TEMPLATE_MIX', {
       expectedRevision,
       schemaVersion: 1,

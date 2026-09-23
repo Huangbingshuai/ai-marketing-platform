@@ -11,6 +11,7 @@ import type { EffectTemplateMixService } from './effect-template-mix.service';
 import type { EffectPackagingRepository } from './effect-packaging.repository';
 import { EffectPackagingService } from './effect-packaging.service';
 import { visualHash } from './effect-packaging.domain';
+import * as packagingDomain from './effect-packaging.domain';
 
 const v = {
   id: 'v',
@@ -32,7 +33,7 @@ function harness() {
     artifactKey: 'timeline-package:t:v',
     availability: 'AVAILABLE',
     freshness: 'CURRENT',
-    payload: { sourceTimelineHash: visualHash(v), visualArtifactId: 'visual', visualRevision: 2 },
+    payload: { narrationLayoutVersion: 'SLOT_V1', sourceTimelineHash: visualHash(v), visualArtifactId: 'visual', visualRevision: 2 },
   };
   const mix = {
     workspace: vi.fn().mockResolvedValue({
@@ -45,6 +46,8 @@ function harness() {
     get: vi.fn(),
     retry: vi.fn().mockResolvedValue({ status: 'QUEUED' }),
     updateCheckpoint: vi.fn(),
+    list: vi.fn().mockResolvedValue([]),
+    create: vi.fn().mockResolvedValue('new-run'),
     db: { effectPackagingRun: { findUnique: vi.fn().mockResolvedValue(null) } },
   };
   const service = new EffectPackagingService(
@@ -92,14 +95,44 @@ function completedRun() {
   return { id: 'run', workflowRunId: 'w', templateId: 't', items: [completedItem()] };
 }
 describe('packaging service output boundary', () => {
+  it('redo of one slot preserves other text, edited audio, captions and music exactly', async () => {
+    const { service, repo, mix } = harness();
+    const variant = { ...v, slots: [{ id: 'a', duration: 3 }, { id: 'b', duration: 3 }], bindings: { a: '1', b: '2' } } as unknown as EffectTemplateMixVariant;
+    const hash = visualHash(variant);
+    const frozen = { ...completedItem().snapshot, variant, sourceTimelineHash: hash, narrationLayoutVersion: 'SLOT_V1' as const };
+    const cp: PackagingCheckpoint = {
+      narrationLayoutVersion: 'SLOT_V1',
+      script: [
+        { id: 'a', slotId: 'a', text: '第一句', start: 0, end: 3, factIds: ['f'] },
+        { id: 'b', slotId: 'b', text: '第二句', start: 3, end: 6, factIds: ['f'] },
+      ],
+      voices: { a: { fileObjectId: 'a', start: 0, duration: 2, volume: 1 },
+        b: { fileObjectId: 'b', start: 3.2, duration: 1, offset: .2, volume: .5, fadeOut: .2 } },
+      captions: [{ id: 'a', text: '第一句', start: 0, end: 2 }, { id: 'b', text: '编辑字幕', start: 3.2, end: 4.2 }],
+      music: { fileObjectId: 'bgm', start: 1, duration: 5, volume: .1, offset: 2 },
+    };
+    mix.workspace.mockResolvedValue({ draftRevision: 1, draft: { templates: [{ id: 't', workspace: { variants: [variant] } }] } });
+    repo.list.mockResolvedValue([{ items: [{ variantId: 'v', sourceTimelineHash: hash, snapshot: frozen, checkpoint: cp }] }]);
+    vi.spyOn(service, 'get').mockResolvedValue({} as PackagingRun);
+    const snap = vi.spyOn(packagingDomain, 'packagingSnapshot').mockReturnValue(frozen);
+    try {
+      await service.create('p', 't', { workflowRunId: 'w', expectedRevision: 1, idempotencyKey: 'k', variantId: 'v', component: 'VOICE', slotId: 'a' });
+      const next = repo.create.mock.calls[0]![0];
+      expect(next.snapshots[0].redoSlotId).toBe('a');
+      expect(next.checkpoints[0].script).toEqual([cp.script![1]]);
+      expect(next.checkpoints[0].voices).toEqual({ b: cp.voices!.b });
+      expect(next.checkpoints[0].captions).toEqual([cp.captions![1]]);
+      expect(next.checkpoints[0].music).toEqual(cp.music);
+    } finally { snap.mockRestore(); }
+  });
   it('recovers missing entries without retrying an unrelated completed stale entry', async () => {
     const { service, repo } = harness();
     const get = vi.spyOn(service, 'get').mockResolvedValue({ items: [
-      { status: 'COMPLETED', stale: true }, { status: 'FAILED', stale: false },
+      { status: 'COMPLETED', stale: true }, { status: 'FAILED', stale: false, checkpoint: { narrationLayoutVersion: 'SLOT_V1' } },
     ] } as PackagingRun);
     await service.retry('p', 'r');
     expect(repo.retry).toHaveBeenCalledWith('p', 'r');
-    get.mockResolvedValue({ items: [{ status: 'FAILED', stale: true }] } as PackagingRun);
+    get.mockResolvedValue({ items: [{ status: 'FAILED', stale: true, checkpoint: { narrationLayoutVersion: 'SLOT_V1' } }] } as PackagingRun);
     await expect(service.retry('p', 'r')).rejects.toThrow('源时间轴');
     expect(repo.retry).toHaveBeenCalledTimes(1);
   });

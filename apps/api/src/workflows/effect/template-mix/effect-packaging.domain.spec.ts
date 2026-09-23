@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { packagingShardIndexes, packagingVisualVariant, packagingVisualTimeline } from '@ai-marketing/contracts';
+import {
+  PACKAGING_AUDIO_GAIN_CEILING,
+  packagingShardIndexes,
+  packagingVisualVariant,
+  packagingVisualTimeline,
+} from '@ai-marketing/contracts';
 import { workflowStateHash } from '../../../platform/workflow/workflow-state-hash';
 import type {
   EffectTemplateMixMaterial,
@@ -13,6 +18,8 @@ import {
   validatePackagingCheckpoint,
   visualHash,
   matchesVisualHash,
+  requireSlotPackaging,
+  slotVisionKey,
 } from './effect-packaging.domain';
 
 const variant = (): EffectTemplateMixVariant => ({
@@ -75,13 +82,80 @@ const sources = () => [
   ),
   artifact('facts', 'marketing-insight:f', { productName: '商品', sellingPoints: ['已确认卖点'] }),
 ];
-const snapshot = () => packagingSnapshot(variant(), materials, sources());
+const snapshot = () => {
+  const frozen = packagingSnapshot(variant(), materials, sources());
+  delete frozen.narrationLayoutVersion; // Legacy playback/editor regression fixtures.
+  return frozen;
+};
 const checkpoint = (): PackagingCheckpoint => ({
   vision: [{ start: 0, end: 10, description: '画面动作' }],
   script: [{ id: 'line-1', text: '商品', start: 0, end: 4, factIds: ['facts:0'] }],
   voices: { 'line-1': { fileObjectId: 'voice', start: 0, duration: 2.4, volume: 1 } },
   music: { fileObjectId: 'music', start: 0, duration: 10, volume: 0.12 },
   captions: [{ id: 'line-1', text: '商品', start: 0, end: 2.4 }],
+});
+
+describe('slot-bound narration layout', () => {
+  it.each([0, 1, 2])('accepts durable retry count %s', (automaticRetries) => {
+    expect(() => validatePackagingCheckpoint(snapshot(), { automaticRetries })).not.toThrow();
+  });
+  it.each([-1, 3, 0.5, NaN])('rejects invalid retry count %s', (automaticRetries) => {
+    expect(() => validatePackagingCheckpoint(snapshot(), { automaticRetries })).toThrow();
+  });
+  const current = () => {
+    const frozen = packagingSnapshot(variant(), materials, sources());
+    const cp = checkpoint();
+    cp.narrationLayoutVersion = 'SLOT_V1';
+    cp.script![0]!.slotId = 's';
+    cp.script![0]!.end = 10;
+    return { frozen, cp };
+  };
+  it.each([3, 15])('accepts %s-second slots', (duration) => {
+    const v = variant(); v.slots[0]!.duration = duration;
+    expect(packagingSnapshot(v, materials, sources()).clips[0]!.duration).toBe(duration);
+  });
+  it.each([2.99, 15.01, NaN])('rejects %s-second slots before paid work', (duration) => {
+    const v = variant(); v.slots[0]!.duration = duration;
+    expect(() => packagingSnapshot(v, materials, sources())).toThrow('3–15');
+  });
+  it('rejects overlap across different visual lanes', () => {
+    const v = variant();
+    v.slots.push({ ...v.slots[0]!, id: 's2' });
+    v.timelineStarts = { s: 0, s2: 9 }; v.videoLanes = { s2: 1 };
+    expect(() => packagingSnapshot(v, materials, sources())).toThrow('槽位口播边界冲突');
+  });
+  it('requires exactly one valid line per slot at completion', () => {
+    const { frozen, cp } = current();
+    expect(() => requireSlotPackaging(frozen, cp)).not.toThrow();
+    for (const lines of [[], [{ ...cp.script![0]!, slotId: 'unknown' }],
+      [cp.script![0]!, { ...cp.script![0]!, id: 'duplicate' }]])
+      expect(() => requireSlotPackaging(frozen, { ...cp, script: lines })).toThrow();
+  });
+  it('allows the empty intermediate checkpoint when redoing the only slot, but never ready', () => {
+    const { frozen, cp } = current();
+    cp.script = []; cp.voices = {}; cp.captions = [];
+    expect(() => validatePackagingCheckpoint(frozen, cp)).not.toThrow();
+    expect(() => requireSlotPackaging(frozen, cp)).toThrow();
+  });
+  it('does not let edited voice or subtitle borrow a following gap', () => {
+    const { frozen, cp } = current();
+    frozen.duration = 20;
+    cp.voices!['line-1']!.start = 9;
+    expect(() => validatePackagingCheckpoint(frozen, cp, true, true)).toThrow();
+    cp.voices!['line-1']!.start = 0;
+    cp.captions![0]!.end = 11;
+    expect(() => validatePackagingCheckpoint(frozen, cp, true, true)).toThrow();
+  });
+  it('keeps legacy playback validation but refuses legacy output', () => {
+    expect(() => validatePackagingCheckpoint(snapshot(), checkpoint(), true)).not.toThrow();
+    expect(() => requireSlotPackaging(snapshot(), checkpoint())).toThrow('旧版');
+  });
+  it('cache identity ignores timeline placement but changes with trim and content', () => {
+    const clip = current().frozen.clips[0]!;
+    expect(slotVisionKey(clip)).toBe(slotVisionKey({ ...clip, start: 20, slotId: 'other' }));
+    expect(slotVisionKey(clip)).not.toBe(slotVisionKey({ ...clip, offset: 1 }));
+    expect(slotVisionKey(clip)).not.toBe(slotVisionKey({ ...clip, contentHash: 'changed' }));
+  });
 });
 
 describe('packaging snapshots and validation', () => {
@@ -174,9 +248,19 @@ describe('packaging snapshots and validation', () => {
     const short = checkpoint();
     short.captions![0]!.end = 2;
     expect(() => validatePackagingCheckpoint(snapshot(), short)).toThrow();
+  });
+  it('accepts a boosted level up to the shared ceiling and nothing past it', () => {
+    // One ceiling covers the narration and the music bed alike, matching the editor row's +20 dB.
     const loud = checkpoint();
-    loud.music!.volume = 1;
-    expect(() => validatePackagingCheckpoint(snapshot(), loud)).toThrow();
+    loud.music!.volume = PACKAGING_AUDIO_GAIN_CEILING;
+    loud.voices!['line-1']!.volume = PACKAGING_AUDIO_GAIN_CEILING;
+    expect(() => validatePackagingCheckpoint(snapshot(), loud, true, true)).not.toThrow();
+    const over = checkpoint();
+    over.music!.volume = PACKAGING_AUDIO_GAIN_CEILING + 0.01;
+    expect(() => validatePackagingCheckpoint(snapshot(), over, true, true)).toThrow();
+    const negative = checkpoint();
+    negative.voices!['line-1']!.volume = -0.01;
+    expect(() => validatePackagingCheckpoint(snapshot(), negative, true, true)).toThrow();
   });
   it('accepts editor-trimmed and moved audio while the worker path stays strict', () => {
     const edited: PackagingCheckpoint = {

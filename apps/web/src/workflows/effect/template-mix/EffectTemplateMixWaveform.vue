@@ -16,12 +16,28 @@ const props = withDefaults(
     tone?: 'VIDEO' | 'VOICE' | 'MUSIC';
     /** `fill` paints over the whole audio clip instead of a bottom strip. */
     layout?: 'strip' | 'fill';
+    /** Effective fade at the clip head, in seconds; the bars ramp up across it. */
+    fadeIn?: number;
+    /** Effective fade at the clip tail, in seconds; the bars ramp down across it. */
+    fadeOut?: number;
+    /** Linear track gain. The waveform grows from the baseline as the user raises volume. */
+    gain?: number;
   }>(),
-  { tone: 'VIDEO', layout: 'strip' },
+  { tone: 'VIDEO', layout: 'strip', fadeIn: 0, fadeOut: 0, gain: 1 },
 );
 
 const source = computed(() => props.source);
 const waveform = useEffectTemplateMixWaveform(source);
+/**
+ * The gain the renderer will apply at a given point in the clip, as a linear ramp across each
+ * fade. Fades are timeline seconds measured from the clip's head, so the same number drives both
+ * this envelope and the worker's `afade`, and what you see here is what gets encoded.
+ */
+const envelope = (offset: number): number => {
+  const rise = props.fadeIn > 0 ? offset / props.fadeIn : 1;
+  const fall = props.fadeOut > 0 ? (props.duration - offset) / props.fadeOut : 1;
+  return Math.max(0, Math.min(1, rise, fall));
+};
 const visibleBars = computed(() => {
   const decoded = waveform.value;
   if (!decoded || decoded.status !== 'READY' || !decoded.samples.length || decoded.duration <= 0)
@@ -43,7 +59,8 @@ const visibleBars = computed(() => {
     let peak = 0;
     for (let cursor = bucketStart; cursor < bucketEnd; cursor += 1)
       peak = Math.max(peak, decoded.samples[cursor] ?? 0);
-    return peak;
+    // Read at the bar's midpoint, which is where a ramp drawn across the bar looks centred.
+    return peak * envelope(((index + 0.5) / count) * props.duration) * Math.max(0, props.gain);
   });
 });
 const status = computed(() => waveform.value?.status ?? 'LOADING');
@@ -89,7 +106,7 @@ watch(source, (nextSource) => requestEffectTemplateMixWaveform(nextSource), { im
   left: 0;
   padding: 2px 3px;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 1px;
   overflow: hidden;
   border-top: 1px solid var(--wave-border);
@@ -121,7 +138,7 @@ watch(source, (nextSource) => requestEffectTemplateMixWaveform(nextSource), { im
   position: absolute;
   right: 0;
   left: 0;
-  top: 50%;
+  bottom: 2px;
   background: var(--wave-line);
   content: '';
 }
@@ -159,6 +176,9 @@ watch(source, (nextSource) => requestEffectTemplateMixWaveform(nextSource), { im
 .clip-waveform.is-layout-fill::after {
   background: var(--wave-line-solid);
   opacity: 0.45;
+}
+.clip-waveform.is-layout-fill i {
+  max-height: calc(100% - 5px);
 }
 .clip-waveform.is-layout-fill i {
   max-width: 3px;

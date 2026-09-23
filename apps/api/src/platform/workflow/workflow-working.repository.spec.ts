@@ -7,6 +7,61 @@ const defaultExecutionInputHash =
   '0e9561cfb83d50990a103b3896fe249a11fe27fa28985448187f93ec12116d72';
 
 describe('WorkflowWorkingRepository', () => {
+  it.each(['save', 'replace', 'hash-normalization'])(
+    'does not invalidate confirmed Prompt or clips for settings %s',
+    async (operation) => {
+      const state = { targetCount: 100 };
+      const transaction = {
+        workflowRun: {
+          findFirst: vi.fn().mockResolvedValue({ id: 'run-a' }),
+          update: vi.fn(),
+        },
+        workflowNodeState: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: 'state-a',
+            revision: 2,
+            contentHash: operation === 'hash-normalization' ? 'new-hash' : 'old-hash',
+            executionInputHash: 'old-execution',
+            executionInputSchemaVersion: 1,
+            state: { targetCount: 50 },
+          }),
+          update: vi.fn().mockResolvedValue({ id: 'state-a', revision: 3 }),
+        },
+        workingArtifact: { updateMany: vi.fn() },
+        workingArtifactDependency: { findMany: vi.fn() },
+      };
+      const repository = new WorkflowWorkingRepository({
+        $transaction: (callback: (client: typeof transaction) => unknown) => callback(transaction),
+      } as unknown as PrismaService);
+      if (operation === 'replace')
+        await repository.replaceNodeState(
+          'project-a',
+          'run-a',
+          'PROMPT_GENERATION:product-a',
+          'new-hash',
+          state,
+          1,
+          'new-execution',
+          1,
+        );
+      else
+        await repository.saveNodeState(
+          'project-a',
+          'run-a',
+          'PROMPT_GENERATION:product-a',
+          'new-hash',
+          state,
+          2,
+          1,
+          'new-execution',
+          1,
+        );
+      expect(transaction.workflowNodeState.update).toHaveBeenCalled();
+      expect(transaction.workingArtifactDependency.findMany).not.toHaveBeenCalled();
+      expect(transaction.workingArtifact.updateMany).not.toHaveBeenCalled();
+    },
+  );
+
   it('loads an active workflow overview with project isolation and its node states', async () => {
     const findFirst = vi.fn().mockResolvedValue(null);
     const repository = new WorkflowWorkingRepository({

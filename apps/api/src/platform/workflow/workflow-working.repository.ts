@@ -750,6 +750,10 @@ export class WorkflowWorkingRepository {
     workflowRunId: string,
     nodeId: string,
   ): Promise<void> {
+    // Prompt settings describe a future generation attempt, not a new confirmed
+    // batch. Keep the recorded execution hash for provenance/claim validation,
+    // but invalidate delivered clips only when the confirmed artifact changes.
+    if (nodeId.startsWith('PROMPT_GENERATION:')) return;
     const dependencies = await transaction.workingArtifactDependency.findMany({
       where: {
         projectId,

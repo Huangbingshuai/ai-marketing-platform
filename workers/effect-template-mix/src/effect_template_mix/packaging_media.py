@@ -87,3 +87,17 @@ async def analysis_preview(snapshot: dict[str, Any], paths: dict[str, Path], dir
             raise PackagingError('分析预览抽帧失败')
         frames.append((time, output.read_bytes()))
     return frames
+
+
+async def slot_frames(clip: dict[str, Any], path: Path, directory: Path) -> list[bytes]:
+    """Seek original footage directly; no proxy encode or concatenation."""
+    frames = []
+    for index, fraction in enumerate((.15, .5, .85)):
+        output = directory / f'frame-{index}.jpg'
+        await ffmpeg('-ss', str(clip['offset'] + clip['duration'] * fraction), '-i', str(path),
+            '-frames:v', '1', '-vf', 'scale=320:320:force_original_aspect_ratio=decrease',
+            '-q:v', '5', '-y', str(output))
+        if not output.exists():
+            raise PackagingError('槽位原素材抽帧失败')
+        frames.append(output.read_bytes())
+    return frames

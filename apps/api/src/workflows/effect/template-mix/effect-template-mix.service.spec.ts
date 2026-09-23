@@ -158,6 +158,40 @@ describe('EffectTemplateMixService', () => {
     ]);
   });
 
+  it('uses the stable output FileObject URL when an older render artifact also exposes one', async () => {
+    const { service, working } = harness();
+    working.listArtifacts.mockResolvedValue({
+      items: [
+        {
+          ...source,
+          files: [
+            {
+              id: 'file-1',
+              fileObjectId: 'file-1',
+              role: 'SEGMENT_CLIP',
+              sortOrder: 0,
+              originalFileName: 'clip.mp4',
+              mimeType: 'video/mp4',
+              sizeBytes: 1,
+              sha256: 'sha',
+              previewKind: 'VIDEO',
+              previewUrl: '/api/projects/project/file-objects/file-1/content',
+              contentUrl: '/api/projects/project/file-objects/file-1/content',
+              downloadUrl: '/api/projects/project/file-objects/file-1/content?download=true',
+            },
+          ],
+        } as unknown as WorkingArtifact,
+      ],
+      total: 1,
+    });
+
+    const result = await service.workspace('project', 'run');
+
+    expect(result.materials[0]?.contentUrl).toBe(
+      '/api/projects/project/file-objects/file-1/content',
+    );
+  });
+
   it('exposes the source Prompt on each confirmed material', async () => {
     const prompt = {
       id: 'prompt-artifact',

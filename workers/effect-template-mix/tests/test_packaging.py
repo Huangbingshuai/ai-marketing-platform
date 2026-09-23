@@ -136,9 +136,12 @@ def test_caption_duration_comes_from_pcm_and_layer_priority_matches_player() -> 
 
 
 def item() -> dict[str, Any]:
-    return {'id': 'item', 'stage': 'VOICE', 'snapshot': {'duration': 10, 'clips': [], 'facts': []}, 'checkpoint': {
+    return {'id': 'item', 'stage': 'VOICE', 'snapshot': {'narrationLayoutVersion': 'SLOT_V1',
+        'variant': {'slots': [{'id': 's1', 'role': 'PRODUCT'}]},
+        'duration': 10, 'clips': [{'slotId': 's1', 'start': 1, 'duration': 4}], 'facts': []}, 'checkpoint': {
+        'narrationLayoutVersion': 'SLOT_V1',
         'vision': [{'start': 0, 'end': 10, 'description': '镜头'}],
-        'script': [{'id': 'line-1', 'text': '口播', 'start': 1, 'end': 5, 'factIds': ['f']}], 'musicBrief': '纯器乐',
+        'script': [{'id': 'line-1', 'slotId': 's1', 'text': '口播', 'start': 1, 'end': 5, 'factIds': ['f']}], 'musicBrief': '纯器乐',
         'music': {'fileObjectId': 'music', 'start': 0, 'duration': 10, 'volume': .12}}}
 
 
@@ -179,31 +182,35 @@ async def test_vision_cancellation_between_groups_prevents_next_paid_request() -
 
 
 def script_result(**updates: Any) -> ScriptOutput:
-    line = {'id': 'line-1', 'text': '已确认事实', 'start': 0, 'end': 4, 'factIds': ['facts:0']}
+    line = {'id': 'line-1', 'slotId': 's1', 'text': '已确认事实', 'start': 0, 'end': 10, 'factIds': ['facts:0']}
     return ScriptOutput.model_validate({'lines': [{**line, **updates}], 'musicBrief': '轻快纯器乐'})
 
 
 def script_snapshot() -> dict[str, Any]:
-    return {'duration': 10, 'clips': [], 'facts': [{'id': 'facts:0', 'text': '已确认事实'}]}
+    return {'duration': 10, 'variant': {'slots': [{'id': 's1', 'role': 'PRODUCT'}]},
+        'clips': [{'slotId': 's1', 'start': 0, 'duration': 10}], 'facts': [{'id': 'facts:0', 'text': '已确认事实'}]}
 
 
 def plan_result(**updates: Any) -> NarrationPlan:
-    return NarrationPlan.model_validate({'lines': [{'id': 'line-1', 'windowIndex': 0,
+    return NarrationPlan.model_validate({'lines': [{'id': 'line-1', 'slotId': 's1',
         'text': '已确认事实', 'factIds': ['facts:0'], **updates}], 'musicBrief': '轻快纯器乐'})
 
 
 def test_narration_window_materialization_has_no_model_timing_or_order_dependency() -> None:
-    windows = narration_windows(32)
-    assert len(windows) == 4 and windows[0]['maxCharacters'] == 22
-    plan = NarrationPlan(lines=[*plan_result(windowIndex=3).lines, *plan_result(id='line-2', windowIndex=0).lines], musicBrief='纯音乐')
+    snapshot = script_snapshot()
+    snapshot['clips'].append({'slotId': 's2', 'start': 10, 'duration': 3})
+    snapshot['variant']['slots'].append({'id': 's2', 'role': 'END'})
+    windows = narration_windows(snapshot)
+    assert len(windows) == 2 and windows[0]['maxCharacters'] == 28
+    plan = NarrationPlan(lines=[*plan_result(slotId='s2').lines, *plan_result(id='line-2').lines], musicBrief='纯音乐')
     result = materialize_script(plan, windows)
-    assert [(r.start, r.end) for r in result.lines] == [(0, 8), (24, 32)]
+    assert [(r.start, r.end) for r in result.lines] == [(0, 10), (10, 13)]
 
 
 @pytest.mark.parametrize('index', [-1, 4])
 def test_narration_invalid_window_is_not_silently_clamped(index: int) -> None:
-    with pytest.raises(PackagingError, match='重复或越界'):
-        materialize_script(plan_result(windowIndex=index), narration_windows(32))
+    with pytest.raises(PackagingError, match='槽位'):
+        materialize_script(plan_result(slotId=str(index)), narration_windows(script_snapshot()))
 
 
 async def test_narration_duplicate_windows_get_one_mechanical_repair() -> None:
@@ -214,7 +221,7 @@ async def test_narration_duplicate_windows_get_one_mechanical_repair() -> None:
     assert result.lines[0].start == 0 and result.lines[0].end == 10
     assert [call.args[2] for call in ark.structured.call_args_list] == ['packaging_script', 'packaging_script']
     ark.structured.side_effect = [duplicate, duplicate]
-    with pytest.raises(PackagingError, match='窗口编号重复或越界'):
+    with pytest.raises(PackagingError, match='槽位口播缺失'):
         await plan_script(ark, script_snapshot(), [], AsyncMock())
 
 
@@ -282,7 +289,7 @@ def test_planning_capacity_uses_next_start_but_does_not_reject_measured_saved_au
     from effect_template_mix.packaging import speech_capacity_issues
     script = script_result(text='这是超过短窗口的较长中文口播句子', start=8, end=10)
     assert speech_capacity_issues(script, 10) == ['SPEECH_CAPACITY']
-    assert script_structure_issues(script, script_snapshot()) == []
+    assert script_structure_issues(script, script_snapshot()) == ['TIME_BOUNDARY']
     assert speech_capacity_issues(script_result(text='简短解说', start=1, end=8), 10) == []
 
 
@@ -335,7 +342,11 @@ async def test_voice_fit_keeps_existing_audio_and_aligns_caption_to_measured_rep
     ark = AsyncMock(spec=ArkProvider)
     row = item()
     row['snapshot']['facts'] = [{'id': 'f', 'text': '事实'}]
-    previous = {'id': 'previous', 'text': '前句', 'start': 0, 'end': .8, 'factIds': ['f']}
+    row['snapshot']['clips'][0]['start'] = 3
+    row['checkpoint']['script'][0].update(start=3, end=7)
+    row['snapshot']['clips'].insert(0, {'slotId': 'previous', 'start': 0, 'duration': 3})
+    row['snapshot']['variant']['slots'].insert(0, {'id': 'previous', 'role': 'HOOK'})
+    previous = {'id': 'previous', 'slotId': 'previous', 'text': '前句', 'start': 0, 'end': 3, 'factIds': ['f']}
     row['checkpoint']['script'].insert(0, previous)
     row['checkpoint']['voices'] = {'previous': {'fileObjectId': 'saved', 'start': 0, 'duration': .5, 'volume': 1}}
     ark.structured.side_effect = [ScriptRow(**{**row['checkpoint']['script'][1], 'text': '短句'})]
@@ -343,7 +354,7 @@ async def test_voice_fit_keeps_existing_audio_and_aligns_caption_to_measured_rep
     assert row['stage'] == 'READY'
     assert row['checkpoint']['script'][0] == previous
     assert row['checkpoint']['voices']['previous']['fileObjectId'] == 'saved'
-    assert row['checkpoint']['captions'][1] == {'id': 'line-1', 'text': '短句', 'start': 1, 'end': 3}
+    assert row['checkpoint']['captions'][1] == {'id': 'line-1', 'text': '短句', 'start': 3, 'end': 5}
     assert ark.structured.await_count == 1
     assert ark.structured.call_args.args[2] == 'packaging_voice_fit'
     adapter.submit_music.assert_not_called()

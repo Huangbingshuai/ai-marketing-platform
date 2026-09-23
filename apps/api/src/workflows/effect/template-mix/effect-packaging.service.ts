@@ -32,6 +32,7 @@ import {
   packagingSnapshot,
   validatePackagingCheckpoint,
   matchesVisualHash,
+  slotVisionKey,
 } from './effect-packaging.domain';
 
 type PackagingRunRow = NonNullable<Awaited<ReturnType<EffectPackagingRepository['get']>>>;
@@ -126,13 +127,25 @@ export class EffectPackagingService {
     if (!variants.length) throw new BadRequestException('没有可包装的完整成片');
     if (body.component && body.component !== 'ALL' && !body.variantId)
       throw new BadRequestException('局部重做必须选择一条成片');
+    if (body.slotId && (!body.variantId || body.component !== 'VOICE' ||
+      !variants[0]?.slots.some((s) => s.id === body.slotId)))
+      throw new BadRequestException('单槽位重做必须选择当前成片中的口播槽位');
     const artifacts = (
       await this.working.listArtifacts(projectId, { workflowRunId: body.workflowRunId })
     ).items;
     const snapshots = variants.map((v) => packagingSnapshot(v, workspace.materials, artifacts));
-    const checkpoints: PackagingCheckpoint[] = snapshots.map(() => ({}));
+    const checkpoints: PackagingCheckpoint[] = snapshots.map(() => ({ narrationLayoutVersion: 'SLOT_V1' }));
+    const history = await this.repo.list(projectId, body.workflowRunId, templateId);
+    const visionCache = new Map(history.flatMap((r) => r.items).flatMap((i) =>
+      Object.values((i.checkpoint as PackagingCheckpoint).slotVision ?? {}).map((v) => [v.key, v] as const)));
+    snapshots.forEach((snapshot, index) => {
+      const rows = snapshot.clips.flatMap((clip) => {
+        const cached = visionCache.get(slotVisionKey(clip));
+        return cached ? [[clip.slotId, cached] as const] : [];
+      });
+      if (rows.length) checkpoints[index]!.slotVision = Object.fromEntries(rows);
+    });
     if (body.component && body.component !== 'ALL') {
-      const history = await this.repo.list(projectId, body.workflowRunId, templateId);
       const previous = history
         .flatMap((r) => r.items)
         .find(
@@ -148,19 +161,30 @@ export class EffectPackagingService {
             ),
         );
       if (!previous) throw new ConflictException('没有可复用的当前包装，请先生成完整包装');
+      if ((previous.checkpoint as PackagingCheckpoint).narrationLayoutVersion !== 'SLOT_V1')
+        throw new ConflictException('旧版整片口播请重做整条包装，不能局部套用槽位规则');
       // Keep legacy file lineage for semantically identical frozen visuals.
       snapshots[0]!.sourceTimelineHash = previous.sourceTimelineHash;
       snapshots[0]!.variant = (previous.snapshot as unknown as PackagingSnapshot).variant;
       // A previous run may carry editor-edited geometry; restore pipeline-canonical
       // audio before the worker write path re-validates it strictly.
-      const cp = canonicalizeCheckpoint(
-        snapshots[0]!,
-        structuredClone(previous.checkpoint) as PackagingCheckpoint,
-      );
+      const cp = body.slotId ? structuredClone(previous.checkpoint) as PackagingCheckpoint : canonicalizeCheckpoint(
+        snapshots[0]!, structuredClone(previous.checkpoint) as PackagingCheckpoint);
+      delete cp.automaticRetries; // A user-requested component redo is a new task, not a resume.
       if (body.component === 'VOICE') {
-        delete cp.script;
-        delete cp.voices;
-        delete cp.captions;
+        if (body.slotId) {
+          if (cp.voiceFitAttempts) delete cp.voiceFitAttempts[body.slotId];
+          snapshots[0]!.redoSlotId = body.slotId;
+          const removed = new Set(cp.script?.filter((s) => s.slotId === body.slotId).map((s) => s.id));
+          cp.script = (cp.script ?? []).filter((s) => s.slotId !== body.slotId);
+          cp.voices = Object.fromEntries(Object.entries(cp.voices ?? {}).filter(([id]) => !removed.has(id)));
+          cp.captions = (cp.captions ?? []).filter((c) => !removed.has(c.id));
+        } else {
+          delete cp.voiceFitAttempts;
+          delete cp.script;
+          delete cp.voices;
+          delete cp.captions;
+        }
       }
       if (body.component === 'MUSIC') {
         delete cp.music;
@@ -350,6 +374,11 @@ export class EffectPackagingService {
     if (voices) next.voices = voices;
     if (music) next.music = music;
     if (captions) next.captions = captions;
+    if (old.narrationLayoutVersion === 'SLOT_V1' && body.voices && !body.captions && next.captions)
+      next.captions = next.captions.map((c) => {
+        const voice = voices?.[c.id];
+        return body.voices?.[c.id] && voice ? { ...c, start: voice.start, end: voice.start + voice.duration } : c;
+      });
     if (captionBoxes) next.captionBoxes = captionBoxes;
     validatePackagingCheckpoint(snapshot, next, true, true);
     const saved = await this.repo.updateCheckpoint(projectId, itemId, next, body.expectedUpdatedAt);
@@ -365,6 +394,8 @@ export class EffectPackagingService {
   }
   async retry(projectId: string, id: string) {
     const run = await this.get(projectId, id);
+    if (run.items.some((i) => i.status !== 'COMPLETED' && i.checkpoint?.narrationLayoutVersion !== 'SLOT_V1'))
+      throw new ConflictException('旧版任务不能恢复，请按槽位重新包装');
     if (run.items.some((i) => i.status !== 'COMPLETED' && i.stale))
       throw new ConflictException('源时间轴已改变，请创建新的包装任务');
     return this.repo.retry(projectId, id);
@@ -398,7 +429,7 @@ export class EffectPackagingService {
     const { snapshot } = await this.workerItem(projectId, runId, token, itemId);
     const old = item.checkpoint as PackagingCheckpoint;
     const next = { ...old, ...patch, voices: { ...old.voices, ...patch.voices } };
-    validatePackagingCheckpoint(snapshot, next, stage === 'READY');
+    validatePackagingCheckpoint(snapshot, next, stage === 'READY', !!snapshot.redoSlotId);
     const ids = [...Object.values(next.voices ?? {}), ...(next.music ? [next.music] : [])].map(
       (a) => a.fileObjectId,
     );
@@ -506,7 +537,7 @@ export class EffectPackagingService {
           role === 'music'
             ? { ...cp, music: audio }
             : { ...cp, voices: { ...cp.voices, [lineId]: audio } };
-        validatePackagingCheckpoint(snapshot, checkpoint);
+        validatePackagingCheckpoint(snapshot, checkpoint, false, !!snapshot.redoSlotId);
         await tx.effectPackagingItem.update({
           where: { id: itemId },
           data: { checkpoint: JSON.parse(JSON.stringify(checkpoint)) },
@@ -553,6 +584,8 @@ export class EffectPackagingService {
       payload?.visualRevision !== visual.revision
     )
       throw new ConflictException('画面或包装未确认、已过期；成片输出不可消费');
+    if ((packaging.payload as PackagingCheckpoint).narrationLayoutVersion !== 'SLOT_V1')
+      throw new ConflictException('旧版整片口播仅可播放，请按槽位重新包装后进入成片输出');
     return { visual, packaging };
   }
 }

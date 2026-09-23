@@ -52,6 +52,56 @@ export type PackagingAudio = {
   fadeOut?: number;
 };
 
+/**
+ * The music bed's own easing, in seconds, when the editor has not set one. The worker
+ * (`final_output.py`) halves it for a very short bed, so this is a ceiling rather than a fixed value.
+ */
+export const EFFECT_TEMPLATE_MIX_MUSIC_FADE_DEFAULT = 0.5;
+/**
+ * The fade that will actually be rendered, in seconds. Absent means "pipeline default" — 0 for a
+ * narration line, `min(0.5, duration / 2)` for the music bed — so the editor and the timeline read
+ * the same number the worker will use instead of guessing at a missing field.
+ */
+export function packagingAudioFade(
+  audio: { duration: number; fadeIn?: number; fadeOut?: number },
+  kind: 'MUSIC' | 'VOICE',
+  edge: 'fadeIn' | 'fadeOut',
+): number {
+  return (
+    audio[edge] ??
+    (kind === 'MUSIC' ? Math.min(EFFECT_TEMPLATE_MIX_MUSIC_FADE_DEFAULT, audio.duration / 2) : 0)
+  );
+}
+/**
+ * The volume scale the editor's dB row, the timeline's level line and the server's validation all
+ * share. A gain is stored (0–1 and above), dB is what an editor reasons in, and the floor is the
+ * same value the worker renders as silence — which is why it is shown as `-∞` rather than as -60.
+ */
+export const PACKAGING_AUDIO_DB_FLOOR = -60;
+export const PACKAGING_AUDIO_DB_CEILING = 20;
+/** The gain the top of the scale stands for (10× = +20 dB), and the loudest the server accepts. */
+export const PACKAGING_AUDIO_GAIN_CEILING = 10 ** (PACKAGING_AUDIO_DB_CEILING / 20);
+/** Gain → dB, folding anything at or under the floor onto the floor so silence reads as `-∞`. */
+export function packagingAudioToDb(gain: number): number {
+  return gain > 0
+    ? Math.max(PACKAGING_AUDIO_DB_FLOOR, 20 * Math.log10(gain))
+    : PACKAGING_AUDIO_DB_FLOOR;
+}
+export function packagingAudioFromDb(db: number): number {
+  return db <= PACKAGING_AUDIO_DB_FLOOR ? 0 : 10 ** (db / 20);
+}
+/** Where a gain sits on the scale, 0–1, so a level line drawn in dB matches the dB row. */
+export function packagingAudioLevel(volume: number): number {
+  return Math.min(
+    1,
+    Math.max(
+      0,
+      (packagingAudioToDb(volume) - PACKAGING_AUDIO_DB_FLOOR) /
+        (PACKAGING_AUDIO_DB_CEILING - PACKAGING_AUDIO_DB_FLOOR),
+    ),
+  );
+}
+
 /** Editor-authored geometry for one packaged audio clip. */
 export type PackagingAudioEdit = {
   start: number;
@@ -91,16 +141,27 @@ export type UpdatePackagingAudioRequest = {
 };
 export type PackagingLine = {
   id: string;
+  /** Absent only in legacy whole-film narration, which remains playable. */
+  slotId?: string;
   text: string;
   start: number;
   end: number;
   factIds: string[];
 };
 export type PackagingCheckpoint = {
+  /** Bounded item recovery budget, retained across worker restarts. */
+  automaticRetries?: number;
+  narrationLayoutVersion?: 'SLOT_V1';
+  voiceFitAttempts?: Record<string, 1>;
+  slotVision?: Record<string, { key: string; description: string }>;
+  timings?: Record<string, { preprocessingSeconds?: number; visionSeconds?: number;
+    scriptSeconds?: number; voiceSeconds?: number; musicWaitSeconds?: number;
+    localQueueSeconds?: number;
+    cacheHit?: boolean }>;
   /** Persist before polling. Unknown submission outcomes must never be auto-resubmitted. */
   musicTaskId?: string;
   musicSubmissionPending?: boolean;
-  vision?: { start: number; end: number; description: string }[];
+  vision?: { slotId?: string; start: number; end: number; description: string }[];
   script?: PackagingLine[];
   musicBrief?: string;
   voices?: Record<string, PackagingAudio>;
@@ -110,6 +171,8 @@ export type PackagingCheckpoint = {
   captionBoxes?: Record<string, PackagingCaptionBox>;
 };
 export type PackagingSnapshot = {
+  narrationLayoutVersion?: 'SLOT_V1';
+  redoSlotId?: string;
   sourceTimelineHash: string;
   duration: number;
   variant: EffectTemplateMixVariant;
@@ -155,6 +218,8 @@ export type PackagingRun = {
   execution?: PackagingExecution;
 };
 export type PackagingExecution = {
+  performance?: { cacheHits: number; cacheLookups: number; cacheHitRate: number | null;
+    stages: Record<string, { samples: number; p50Seconds: number; p95Seconds: number; totalSeconds: number }> };
   progressPercent: number;
   queued: number;
   running: number;
@@ -172,7 +237,20 @@ export type CreatePackagingRequest = {
   idempotencyKey: string;
   variantId?: string;
   component?: PackagingComponent;
+  slotId?: string;
 };
+
+export const PACKAGING_NARRATION_LAYOUT = 'SLOT_V1' as const;
+/** Pure mechanical preflight shared by server and editor. */
+export function packagingSlotBoundaryError(variant: EffectTemplateMixVariant): string | null {
+  const rows = packagingTimelineClips(variant).sort((a, b) => a.start - b.start);
+  if (rows.some(({ slot }) => !Number.isFinite(slot.duration) || slot.duration < 3 || slot.duration > 15))
+    return '槽位时长必须为 3–15 秒';
+  if (new Set(rows.map((r) => r.slot.id)).size !== rows.length) return '槽位编号重复';
+  if (rows.some((r, i) => !Number.isFinite(r.start) || r.start < 0 || (i > 0 && r.start < rows[i - 1]!.end - 0.001)))
+    return '槽位口播边界冲突，请调整时间轴';
+  return null;
+}
 export type PackagingQueueMessage = {
   schemaVersion: 2;
   taskType: 'PACKAGING';
@@ -192,7 +270,9 @@ export function packagingVisualTimeline(variant: EffectTemplateMixVariant) {
     timelineStarts: variant.timelineStarts ?? {},
     // Missing lane and explicit lane 0 render identically. Editor normalization
     // must not invalidate already-paid packaging or confirmed visual sources.
-    videoLanes: Object.fromEntries(Object.entries(variant.videoLanes ?? {}).filter(([, lane]) => lane !== 0)),
+    videoLanes: Object.fromEntries(
+      Object.entries(variant.videoLanes ?? {}).filter(([, lane]) => lane !== 0),
+    ),
   };
 }
 export function packagingVisualVariant(variant: EffectTemplateMixVariant) {

@@ -17,7 +17,20 @@ import type {
   PackagingCheckpoint,
   PackagingItem,
 } from '@ai-marketing/contracts';
-import { WorkflowNodeDraftBar, WorkflowNodeFooter, WorkflowRunProgress } from '@ai-marketing/ui';
+import {
+  PACKAGING_AUDIO_DB_CEILING,
+  PACKAGING_AUDIO_DB_FLOOR,
+  packagingAudioFade,
+  packagingAudioFromDb,
+  packagingAudioToDb,
+} from '@ai-marketing/contracts';
+import {
+  ParameterAdjustList,
+  WorkflowNodeDraftBar,
+  WorkflowNodeFooter,
+  WorkflowRunProgress,
+} from '@ai-marketing/ui';
+import type { ParameterAdjustItem } from '@ai-marketing/ui';
 import {
   AlertCircle,
   ArrowLeft,
@@ -154,6 +167,21 @@ const auditionPlayer = ref<HTMLVideoElement | null>(null);
 const auditionPlaying = ref(false);
 const auditionTime = ref(0);
 const playing = ref(false);
+/** Player-owned track controls mirror the timeline header buttons. */
+const videoTrackMuted = ref(false);
+const voiceTrackMuted = ref(false);
+const musicTrackMuted = ref(false);
+const videoTrackVisible = ref(true);
+const captionTrackVisible = ref(true);
+const setTimelineTrackMute = (track: 'MUSIC' | 'VIDEO' | 'VOICE', muted: boolean): void => {
+  if (track === 'VIDEO') videoTrackMuted.value = muted;
+  else if (track === 'VOICE') voiceTrackMuted.value = muted;
+  else musicTrackMuted.value = muted;
+};
+const setTimelineTrackVisibility = (track: 'CAPTION' | 'VIDEO', visible: boolean): void => {
+  if (track === 'VIDEO') videoTrackVisible.value = visible;
+  else captionTrackVisible.value = visible;
+};
 const playhead = ref(0);
 const playerPanel = ref<HTMLElement | null>(null);
 const stageElement = ref<HTMLElement | null>(null);
@@ -522,17 +550,47 @@ const previewDuration = computed(() =>
 const previewIsPlaying = computed(() =>
   auditionMaterial.value ? auditionPlaying.value : playing.value,
 );
+const previewHasPackagingAudio = computed(() => {
+  if (auditionMaterial.value) return false;
+  const current = previewCurrentTime.value;
+  const checkpoint = selectedPackaging.value?.checkpoint;
+  const hasPackagedAudio = Boolean(
+    checkpoint &&
+      (checkpoint.narrationLayoutVersion === 'SLOT_V1' ||
+        Object.keys(checkpoint.voices ?? {}).length ||
+        checkpoint.music),
+  );
+  const active = (audio: { duration: number; start: number; volume: number } | null | undefined) =>
+    Boolean(
+      audio &&
+        audio.volume > 0 &&
+        current >= audio.start &&
+        current < audio.start + audio.duration,
+    );
+  if (hasPackagedAudio) {
+    const voice = !voiceTrackMuted.value && Object.values(checkpoint?.voices ?? {}).some(active);
+    const music = !musicTrackMuted.value && active(checkpoint?.music);
+    return voice || music;
+  }
+  return (
+    (!voiceTrackMuted.value && active(selectedVariant.value?.voice)) ||
+    (!musicTrackMuted.value && active(selectedVariant.value?.bgm))
+  );
+});
 const previewHasAudibleTrack = computed(() =>
   Boolean(
-    previewIsPlaying.value && stageMaterial.value && materialAudioPresence[stageMaterial.value.id],
+    previewIsPlaying.value &&
+      ((!videoTrackMuted.value &&
+        stageMaterial.value &&
+        materialAudioPresence[stageMaterial.value.id]) ||
+        previewHasPackagingAudio.value),
   ),
 );
 /** Captions are burned into the render, so the stage has to show them at the same clock. */
 const previewCaption = computed(() => {
-  const packaging = selectedPackaging.value;
-  if (!packagingPreviewEnabled.value || !packaging || packaging.stale || auditionMaterial.value)
-    return undefined;
-  return (packaging.checkpoint.captions ?? []).find(
+  if (!captionTrackVisible.value || auditionMaterial.value) return undefined;
+  const captions = selectedPackaging.value?.checkpoint.captions ?? selectedVariant.value?.captions ?? [];
+  return captions.find(
     (caption) =>
       previewCurrentTime.value >= caption.start && previewCurrentTime.value < caption.end,
   );
@@ -602,6 +660,7 @@ const compareMaterialsByName = (
   left: EffectTemplateMixMaterial,
   right: EffectTemplateMixMaterial,
 ): number =>
+  Number(right.available) - Number(left.available) ||
   left.name.localeCompare(right.name, 'zh-CN', { numeric: true, sensitivity: 'base' }) ||
   left.code.localeCompare(right.code, 'zh-CN', { numeric: true, sensitivity: 'base' }) ||
   left.id.localeCompare(right.id);
@@ -612,7 +671,6 @@ const filteredMaterials = computed(() => {
   return workspace.value.materials
     .filter(
       (item) =>
-        item.available &&
         (materialRoleFilter.value === 'ALL' ||
           classificationByRoleAndMaterial.value.has(`${materialRoleFilter.value}:${item.id}`)) &&
         (!slot || item.duration + 0.001 >= slot.duration) &&
@@ -1051,18 +1109,18 @@ const packagingAudio = (
       ? checkpoint.voices?.[target.key]
       : undefined;
 /**
- * The pipeline's own music easing, used whenever the editor has not set one. Mirrors the fallback
- * in the worker's `final_output.py`, so a clip nobody touched keeps rendering exactly as before.
+ * The volume row is shown in dB — how an editor reasons about a level — while the checkpoint keeps
+ * the gain the worker multiplies by. The scale is shared with the timeline and the server's own
+ * check, so the loudest the row reaches is exactly the gain the domain accepts.
  */
-const MUSIC_DEFAULT_FADE = 0.5;
-/** Music sits under narration, so it gets a much lower ceiling than a spoken line. */
-const audioVolumeMax = (kind: 'MUSIC' | 'VOICE'): number => (kind === 'MUSIC' ? 0.3 : 1);
-/** The fade that will really be rendered; absent means the pipeline default, not zero. */
-const audioFade = (
-  audio: PackagingAudio,
-  kind: 'MUSIC' | 'VOICE',
-  edge: 'fadeIn' | 'fadeOut',
-): number => audio[edge] ?? (kind === 'MUSIC' ? Math.min(MUSIC_DEFAULT_FADE, audio.duration / 2) : 0);
+const AUDIO_DB_FLOOR = PACKAGING_AUDIO_DB_FLOOR;
+const audioToDb = packagingAudioToDb;
+const audioFromDb = packagingAudioFromDb;
+/**
+ * The longest fade the row offers. A clip can never hold more than its own length — the server
+ * rejects a pair whose sum exceeds it — so each edge is also capped by what the other edge leaves.
+ */
+const AUDIO_FADE_MAX = 6.1;
 const sameAudio = (left: PackagingAudio, right: PackagingAudio, kind: 'MUSIC' | 'VOICE'): boolean =>
   left.start === right.start &&
   left.volume === right.volume &&
@@ -1070,8 +1128,8 @@ const sameAudio = (left: PackagingAudio, right: PackagingAudio, kind: 'MUSIC' | 
   (left.offset ?? 0) === (right.offset ?? 0) &&
   // Compared as effective seconds: dragging the music fade from its 0.5s default down to 0 is a
   // real edit, but "absent" and "0.5" would look identical if the raw fields were compared.
-  audioFade(left, kind, 'fadeIn') === audioFade(right, kind, 'fadeIn') &&
-  audioFade(left, kind, 'fadeOut') === audioFade(right, kind, 'fadeOut');
+  packagingAudioFade(left, kind, 'fadeIn') === packagingAudioFade(right, kind, 'fadeIn') &&
+  packagingAudioFade(left, kind, 'fadeOut') === packagingAudioFade(right, kind, 'fadeOut');
 const sameBox = (left: PackagingCaptionBox, right: PackagingCaptionBox): boolean =>
   left.x === right.x && left.y === right.y && left.width === right.width && left.scale === right.scale;
 const audioEdit = (audio: PackagingAudio, kind: 'MUSIC' | 'VOICE'): PackagingAudioEdit => ({
@@ -1081,8 +1139,8 @@ const audioEdit = (audio: PackagingAudio, kind: 'MUSIC' | 'VOICE'): PackagingAud
   volume: audio.volume,
   // Spelled out rather than left absent: the server reads absent as "pipeline default", so an
   // editor who deliberately pulled the fade to 0 has to say so or it would spring back to 0.5s.
-  fadeIn: audioFade(audio, kind, 'fadeIn'),
-  fadeOut: audioFade(audio, kind, 'fadeOut'),
+  fadeIn: packagingAudioFade(audio, kind, 'fadeIn'),
+  fadeOut: packagingAudioFade(audio, kind, 'fadeOut'),
 });
 const audioDiff = (current: PackagingCheckpoint, baseline: PackagingCheckpoint) => {
   const voices: Record<string, PackagingAudioEdit> = {};
@@ -1206,6 +1264,12 @@ const editPackagingAudio = (mutate: (checkpoint: PackagingCheckpoint) => void): 
     showNotice('包装尚未完成，无法编辑音频轨道', 'warning');
     return;
   }
+  // The server rejects a write against a checkpoint whose timeline has moved on, so say why here
+  // instead of letting the request come back as a conflict.
+  if (item.stale) {
+    showNotice('时间轴已改变，当前包装已过期，请重新生成包装后再编辑', 'warning');
+    return;
+  }
   if (audioBaseline?.itemId !== item.id) {
     audioBaseline = {
       itemId: item.id,
@@ -1308,11 +1372,9 @@ const onPlayerPanelPointerDown = (event: PointerEvent): void => {
   timelineRef.value?.clearSelection();
 };
 const editingCaption = computed(() => {
-  const packaging = selectedPackaging.value;
-  if (!packaging || packaging.stale || !selectedCaptionId.value) return null;
-  return (
-    packaging.checkpoint.captions?.find((c) => c.id === selectedCaptionId.value) ?? null
-  );
+  if (!selectedCaptionId.value) return null;
+  const captions = selectedPackaging.value?.checkpoint.captions ?? selectedVariant.value?.captions ?? [];
+  return captions.find((caption) => caption.id === selectedCaptionId.value) ?? null;
 });
 const changeCaptionText = (event: Event): void => {
   const value = (event.target as HTMLInputElement).value;
@@ -1335,8 +1397,13 @@ const CAPTION_SNAP = 0.015;
 const CAPTION_EDGE_GRAB = 10;
 const captionBox = (id: string): PackagingCaptionBox =>
   selectedPackaging.value?.checkpoint.captionBoxes?.[id] ?? DEFAULT_CAPTION_BOX;
-/** Geometry lands on the checkpoint, so it is only offered once packaging has finished. */
-const captionEditable = computed(() => selectedPackaging.value?.status === 'COMPLETED');
+/**
+ * Geometry lands on the checkpoint, so it is only offered once packaging has finished and still
+ * matches the timeline — a stale checkpoint is shown on the timeline but never written to.
+ */
+const captionEditable = computed(
+  () => selectedPackaging.value?.status === 'COMPLETED' && !selectedPackaging.value.stale,
+);
 /** The caption the font stepper reads its current size from: the lone one, or the set's first. */
 const captionScaleTarget = computed(() => {
   if (!captionEditable.value) return null;
@@ -1373,15 +1440,106 @@ const audioStandard = computed<{ kind: 'MUSIC' | 'VOICE'; audio: PackagingAudio 
   }
   return null;
 });
-/** Percent, so the stepper reads the same way the timeline's volume handle does. */
-const audioStandardVolume = computed(() => {
+/**
+ * The rows handed to the parameter list. Each fade's ceiling is what the *other* fade leaves, so
+ * the two can never be dragged into a pair the clip cannot hold — the invariant is carried by the
+ * ranges instead of by a rejection after the fact.
+ */
+const audioParamItems = computed<ParameterAdjustItem[]>(() => {
   const standard = audioStandard.value;
-  return standard ? Math.round(standard.audio.volume * 100) : 0;
+  if (!standard) return [];
+  const length = standard.audio.duration;
+  const fadeIn = packagingAudioFade(standard.audio, standard.kind, 'fadeIn');
+  const fadeOut = packagingAudioFade(standard.audio, standard.kind, 'fadeOut');
+  return [
+    // dB, so the row reads the way a level is normally described. The bottom of the scale is silence,
+    // which is why it is marked `-∞`; 0 dB is unity gain and is marked so it can be found again.
+    {
+      key: 'volume',
+      label: '音量',
+      unit: 'dB',
+      min: AUDIO_DB_FLOOR,
+      max: PACKAGING_AUDIO_DB_CEILING,
+      step: 1,
+      default: 0,
+      marks: [
+        { value: AUDIO_DB_FLOOR, label: '-∞' },
+        { value: 0, label: '0dB' },
+      ],
+    },
+    {
+      key: 'fadeIn',
+      label: '淡入',
+      unit: 's',
+      min: 0,
+      max: Math.min(AUDIO_FADE_MAX, Math.max(0, length - fadeOut)),
+      step: 0.1,
+    },
+    {
+      key: 'fadeOut',
+      label: '淡出',
+      unit: 's',
+      min: 0,
+      max: Math.min(AUDIO_FADE_MAX, Math.max(0, length - fadeIn)),
+      step: 0.1,
+    },
+  ];
 });
-/** One decimal, matching the 0.1s step, so the readout always moves when the button does. */
-const audioStandardFade = (edge: 'fadeIn' | 'fadeOut'): string => {
+/** The standard's own numbers, in the rows' units, so the list and the checkpoint agree. */
+const audioParamValues = computed<Record<string, number>>(() => {
   const standard = audioStandard.value;
-  return standard ? audioFade(standard.audio, standard.kind, edge).toFixed(1) : '0.0';
+  if (!standard) return {};
+  return {
+    // Whole dB, matching the row's 1 dB step, so a value that came from a gain lands on the grid.
+    volume: Math.round(audioToDb(standard.audio.volume)),
+    fadeIn: packagingAudioFade(standard.audio, standard.kind, 'fadeIn'),
+    fadeOut: packagingAudioFade(standard.audio, standard.kind, 'fadeOut'),
+  };
+});
+/**
+ * Applies the list's numbers to every selected clip, so the set converges on the standard the row
+ * was showing. Only the row that actually moved is written: the list reports all three numbers on
+ * every gesture, and taking the untouched ones along would mean a fade nudge silently reset a gain,
+ * or invented a fade on the edge nobody asked about.
+ */
+const onAudioParamsChange = (values: Record<string, number>): void => {
+  const standard = audioStandard.value;
+  if (!standard) return;
+  const db = values.volume ?? Math.round(audioToDb(standard.audio.volume));
+  const volumeTouched = Math.abs(audioToDb(standard.audio.volume) - db) >= 0.5;
+  const fadeInTouched =
+    (values.fadeIn ?? 0) !== packagingAudioFade(standard.audio, standard.kind, 'fadeIn');
+  const fadeOutTouched =
+    (values.fadeOut ?? 0) !== packagingAudioFade(standard.audio, standard.kind, 'fadeOut');
+  if (!volumeTouched && !fadeInTouched && !fadeOutTouched) return;
+  editPackagingAudio((checkpoint) => {
+    for (const clipId of selectedAudioClipIds.value) {
+      const target = packagingAudioTarget(clipId);
+      if (!target || target.kind === 'CAPTION') continue;
+      const audio = packagingAudio(checkpoint, target);
+      if (!audio) continue;
+      if (volumeTouched) {
+        // One ceiling for every kind: the row's own top end, which the server accepts as-is.
+        audio.volume = audioFromDb(
+          Math.min(PACKAGING_AUDIO_DB_CEILING, Math.max(AUDIO_DB_FLOOR, db)),
+        );
+      }
+      // A clip shorter than the standard cannot hold the same fade, so each one keeps the other
+      // edge it already has and caps this one by what is left — never past its own end.
+      if (fadeInTouched) {
+        const room = Math.max(0, audio.duration - packagingAudioFade(audio, target.kind, 'fadeOut'));
+        const fadeIn = Math.min(values.fadeIn ?? 0, room);
+        if (fadeIn !== packagingAudioFade(audio, target.kind, 'fadeIn'))
+          audio.fadeIn = Math.round(fadeIn * 100) / 100;
+      }
+      if (fadeOutTouched) {
+        const room = Math.max(0, audio.duration - packagingAudioFade(audio, target.kind, 'fadeIn'));
+        const fadeOut = Math.min(values.fadeOut ?? 0, room);
+        if (fadeOut !== packagingAudioFade(audio, target.kind, 'fadeOut'))
+          audio.fadeOut = Math.round(fadeOut * 100) / 100;
+      }
+    }
+  });
 };
 type CaptionDragMode = 'MOVE' | 'LEFT' | 'RIGHT' | 'SCALE';
 /** Snapped alignment lines, so the drag reads like an editor instead of free-floating. */
@@ -1589,45 +1747,6 @@ const changeCaptionScale = (step: number): void => {
     const boxes = { ...(checkpoint.captionBoxes ?? {}) };
     for (const id of ids) boxes[id] = { ...captionBox(id), scale };
     checkpoint.captionBoxes = boxes;
-  });
-};
-/** Steps the volume of every selected clip from the standard's value. */
-const changeAudioVolumeStep = (step: number): void => {
-  const standard = audioStandard.value;
-  if (!standard) return;
-  const stepped = standard.audio.volume + step;
-  editPackagingAudio((checkpoint) => {
-    for (const clipId of selectedAudioClipIds.value) {
-      const target = packagingAudioTarget(clipId);
-      if (!target || target.kind === 'CAPTION') continue;
-      const audio = packagingAudio(checkpoint, target);
-      // Each clip clamps against its own ceiling, so a music bed caught in a mixed selection
-      // lands under 0.3 even when the standard is a full-volume narration line.
-      if (audio) audio.volume = Math.min(audioVolumeMax(target.kind), Math.max(0, stepped));
-    }
-  });
-};
-/**
- * Steps one fade edge on every selected clip. The two edges share the clip's length, so the
- * stepped value is capped by what the other edge leaves — and each clip re-caps it against its own
- * duration, which matters when the set holds clips of different lengths.
- */
-const changeAudioFadeStep = (edge: 'fadeIn' | 'fadeOut', step: number): void => {
-  const standard = audioStandard.value;
-  if (!standard) return;
-  const other = edge === 'fadeIn' ? 'fadeOut' : 'fadeIn';
-  const limit = Math.max(0, standard.audio.duration - audioFade(standard.audio, standard.kind, other));
-  const stepped = Math.min(limit, Math.max(0, audioFade(standard.audio, standard.kind, edge) + step));
-  editPackagingAudio((checkpoint) => {
-    for (const clipId of selectedAudioClipIds.value) {
-      const target = packagingAudioTarget(clipId);
-      if (!target || target.kind === 'CAPTION') continue;
-      const audio = packagingAudio(checkpoint, target);
-      if (!audio) continue;
-      const ceiling = Math.max(0, audio.duration - audioFade(audio, target.kind, other));
-      // Rounded to the step's own precision, so repeated clicks cannot drift into 0.30000000000004.
-      audio[edge] = Math.round(Math.min(stepped, ceiling) * 100) / 100;
-    }
   });
 };
 const updateWorkbenchMode = (): void => {
@@ -2179,10 +2298,7 @@ const onNativeImageDragStart = (event: DragEvent): void => {
 };
 const assignDroppedMaterial = (materialId: string, slotId: string): void => {
   const material = workspace.value?.materials.find(({ id }) => id === materialId);
-  if (!material) {
-    showNotice('拖入的素材已失效，请刷新素材库', 'warning');
-    return;
-  }
+  if (!material) return;
   applyMaterialToSlot(material, slotId);
 };
 const changeTrimStart = (raw: string): void => {
@@ -2245,10 +2361,11 @@ const resizeTimelineSlot = (
   if (hasMaterialOnSide) return;
   const nextOffset = Math.min(
     Math.max(0, offset),
-    Math.max(0, Math.round((material.duration - 0.1) * 1000) / 1000),
+    Math.max(0, Math.round((material.duration - 3) * 1000) / 1000),
   );
-  const minimumDuration = Math.min(0.1, material.duration);
-  const maximumDuration = Math.max(minimumDuration, material.duration - nextOffset);
+  if (material.duration < 3) return;
+  const minimumDuration = 3;
+  const maximumDuration = Math.min(15, Math.max(minimumDuration, material.duration - nextOffset));
   const nextDuration = Math.min(
     Math.max(minimumDuration, duration),
     Math.round(maximumDuration * 1000) / 1000,
@@ -2301,8 +2418,8 @@ const changeTemplate = (): void => {
   if (!workspace.value) return;
   for (const [index, slot] of workspace.value.template.slots.entries()) {
     slot.duration = Number.isFinite(Number(slot.duration))
-      ? Math.min(120, Math.max(0.1, Math.round(Number(slot.duration) * 10) / 10))
-      : 0.1;
+      ? Math.min(15, Math.max(3, Math.round(Number(slot.duration) * 10) / 10))
+      : 3;
     if (index === 0) {
       slot.transition = '硬切';
       slot.transitionDuration = 0;
@@ -2430,7 +2547,7 @@ const resolveTimelinePlacement = (
       ...range,
       lane: variant.videoLanes?.[range.id] ?? 0,
     }));
-  const requestedDuration = Math.max(0.1, slot.duration);
+  const requestedDuration = Math.max(3, Math.min(15, slot.duration));
   const isBlocked = (start: number, lane: number): boolean =>
     ranges.some(
       (range) =>
@@ -2514,7 +2631,10 @@ const changeProjectDuration = (raw: string): void => {
   if (!selectedSlot.value || !selectedVariant.value) return;
   const duration = Math.round(Number(raw) * 10) / 10;
   const material = materialForSlot(selectedSlot.value.id);
-  if (!Number.isFinite(duration) || duration < 0.1 || duration > 120) return;
+  if (!Number.isFinite(duration) || duration < 3 || duration > 15) {
+    showNotice('槽位时长必须为 3–15 秒', 'warning');
+    return;
+  }
   if (
     material &&
     duration + (selectedVariant.value.offsets[selectedSlot.value.id] ?? 0) > material.duration
@@ -2938,12 +3058,16 @@ const togglePlay = async (): Promise<void> => {
   closeMaterialPreview();
   if (playing.value) {
     pauseTimelinePlayers();
+    packagingPanel.value?.stopPlaybackAudio();
     playing.value = false;
     stopPlaybackClock();
     return;
   }
   if (playhead.value >= currentDuration.value - 1 / TIMELINE_FPS) seek(0);
   playing.value = true;
+  // Start packaged audio before the async video seek so the browser still treats it as the
+  // player's user gesture. The child continues syncing it to the shared playhead afterwards.
+  packagingPanel.value?.startPlaybackAudio();
   startPlaybackClock();
   await syncPlayerToPlayhead(true);
 };
@@ -2969,9 +3093,6 @@ const onTimelinePlayerError = (slotId: string): void => {
   if (previewSlot.value?.id !== slotId) return;
   playerUnavailableSlotId.value = slotId;
   displayedTimelineSlotId.value = '';
-  playing.value = false;
-  stopPlaybackClock();
-  showNotice('视频素材服务不可用，请恢复后端并刷新页面', 'error');
 };
 const onTimelinePlayerTimeUpdate = (slotId: string): void => {
   detectMaterialAudio(materialForSlot(slotId), timelinePlayers.get(slotId) ?? null);
@@ -3314,8 +3435,8 @@ defineExpose({ flushPendingEdits });
               ><input
                 v-model.number="slot.duration"
                 type="number"
-                min=".1"
-                max="120"
+                min="3"
+                max="15"
                 step=".1"
                 @change="changeTemplate"
               /><template v-if="index < workspace.template.slots.length - 1">
@@ -3706,7 +3827,7 @@ defineExpose({ flushPendingEdits });
                     :ref="(element) => setTimelinePlayer(slot.id, element)"
                     class="timeline-stage-video"
                     :class="{
-                      'is-visible': !auditionMaterial && visibleTimelineSlotIds.has(slot.id),
+                      'is-visible': videoTrackVisible && !auditionMaterial && visibleTimelineSlotIds.has(slot.id),
                     }"
                     :style="timelinePlayerStyle(slot.id)"
                     :src="materialForSlot(slot.id)?.contentUrl"
@@ -3716,6 +3837,7 @@ defineExpose({ flushPendingEdits });
                         : (selectedVariant?.originalVolume ?? 1)
                     "
                     playsinline
+                    :muted="videoTrackMuted"
                     preload="metadata"
                     draggable="false"
                     @canplay="onTimelinePlayerReady(slot.id)"
@@ -3732,20 +3854,10 @@ defineExpose({ flushPendingEdits });
                   aria-hidden="true"
                 />
                 <div
-                  v-if="selectedVariant && !auditionMaterial && !previewMaterial"
+                  v-if="selectedVariant && !auditionMaterial && (!videoTrackVisible || !previewMaterial)"
                   class="player-blackout"
-                  aria-label="素材缺口黑屏"
+                  :aria-label="videoTrackVisible ? '素材缺口黑屏' : '视频轨道已隐藏'"
                 />
-                <div
-                  v-if="
-                    selectedVariant &&
-                    !auditionMaterial &&
-                    playerUnavailableSlotId === previewSlot?.id
-                  "
-                  class="player-source-error"
-                >
-                  当前视频素材暂时无法读取，请恢复素材服务后刷新
-                </div>
                 <div
                   v-if="previewCaption"
                   class="player-caption-box"
@@ -4134,6 +4246,8 @@ defineExpose({ flushPendingEdits });
             :prepare="preparePackaging"
             :playhead="playhead"
             :playing="playing"
+            :voice-muted="voiceTrackMuted"
+            :music-muted="musicTrackMuted"
             @selected="onPackagingSelected"
             @preview="packagingPreviewEnabled = $event"
             @ready="packagingReady = $event"
@@ -4148,6 +4262,7 @@ defineExpose({ flushPendingEdits });
           <input
             ref="captionTextInput"
             :value="editingCaption.text"
+            :disabled="!captionEditable"
             maxlength="500"
             placeholder="输入字幕文本"
             aria-label="字幕文本"
@@ -4204,67 +4319,21 @@ defineExpose({ flushPendingEdits });
               · 已选中 {{ selectedAudioClipIds.length }} 条
             </template>
           </span>
-          <span class="audio-stepper">
-            <button
-              type="button"
-              aria-label="减小音量"
-              :disabled="!captionEditable"
-              @click="changeAudioVolumeStep(-0.05)"
-            >
-              −
-            </button>
-            <span>音量 {{ audioStandardVolume }}%</span>
-            <button
-              type="button"
-              aria-label="增大音量"
-              :disabled="!captionEditable"
-              @click="changeAudioVolumeStep(0.05)"
-            >
-              ＋
-            </button>
-          </span>
-          <span class="audio-stepper">
-            <button
-              type="button"
-              aria-label="减小淡入"
-              :disabled="!captionEditable"
-              @click="changeAudioFadeStep('fadeIn', -0.1)"
-            >
-              −
-            </button>
-            <span>淡入 {{ audioStandardFade('fadeIn') }}s</span>
-            <button
-              type="button"
-              aria-label="增大淡入"
-              :disabled="!captionEditable"
-              @click="changeAudioFadeStep('fadeIn', 0.1)"
-            >
-              ＋
-            </button>
-          </span>
-          <span class="audio-stepper">
-            <button
-              type="button"
-              aria-label="减小淡出"
-              :disabled="!captionEditable"
-              @click="changeAudioFadeStep('fadeOut', -0.1)"
-            >
-              −
-            </button>
-            <span>淡出 {{ audioStandardFade('fadeOut') }}s</span>
-            <button
-              type="button"
-              aria-label="增大淡出"
-              :disabled="!captionEditable"
-              @click="changeAudioFadeStep('fadeOut', 0.1)"
-            >
-              ＋
-            </button>
-          </span>
+          <ParameterAdjustList
+            class="audio-edit-params"
+            :disabled="!captionEditable"
+            :items="audioParamItems"
+            :model-value="audioParamValues"
+            @update:model-value="onAudioParamsChange"
+          />
         </div>
+        <!-- A stale item is passed through rather than nulled: its captions and voice/BGM blocks
+             are the arrangement the user is looking at, and hiding them the moment a lane moves
+             reads as "my materials vanished". The timeline marks them stale and keeps them
+             read-only instead. -->
         <EffectTemplateMixTimeline
           ref="timelineRef"
-          :packaging="selectedPackaging?.stale ? null : selectedPackaging"
+          :packaging="selectedPackaging"
           :can-redo="canRedoTimeline"
           :can-undo="canUndoTimeline"
           :duration="currentDuration"
@@ -4272,6 +4341,11 @@ defineExpose({ flushPendingEdits });
           :materials="workspace.materials"
           :playhead="playhead"
           :project-id="projectId"
+          :voice-muted="voiceTrackMuted"
+          :music-muted="musicTrackMuted"
+          :video-muted="videoTrackMuted"
+          :video-visible="videoTrackVisible"
+          :caption-visible="captionTrackVisible"
           :selected-audio-clip-id="
             selectedCaptionId ? `caption:${selectedCaptionId}` : null
           "
@@ -4290,6 +4364,8 @@ defineExpose({ flushPendingEdits });
           @seek="seek"
           @select-audio-clip="onAudioClipSelected"
           @select-audio-clips="onAudioClipsSelected"
+          @toggle-audio-mute="setTimelineTrackMute"
+          @toggle-track-visibility="setTimelineTrackVisibility"
           @select-caption-clips="onCaptionClipsSelected"
           @select-slot="selectSlot"
           @trim-slot="changeTimelineTrimStart"
@@ -5840,18 +5916,6 @@ button:disabled {
   inset: 0;
   background: #000;
 }
-.player-source-error {
-  position: absolute;
-  z-index: 5;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  text-align: center;
-  color: #334155;
-  background: #f1f5f9;
-  font-size: 12px;
-}
 .player-empty {
   position: relative;
   z-index: 3;
@@ -6434,57 +6498,44 @@ button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
 }
-/* Same row and rhythm as the caption font stepper, in a cool palette so the two never read alike. */
+/* Sits where the caption font stepper does, in a cool palette so the two never read alike. One line
+   for all three numbers, so it takes no more height than the caption row it swaps with. */
 .audio-edit-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 40px;
-  padding: 4px 12px;
+  gap: 8px;
+  padding: 2px 10px;
   border: 1px solid #bfd3e8;
-  border-radius: 8px;
+  border-radius: 6px;
   background: #f4f8fc;
   color: #2c4a6b;
+  font-size: 11px;
 }
 .audio-edit-label {
-  flex: 1;
-  min-width: 0;
+  flex: none;
+  max-width: 7em;
   overflow: hidden;
   color: #33587f;
-  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.audio-stepper {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 4px;
-  color: #2c4a6b;
-  font-size: 11px;
+/* The list owns the interaction and its own structure; this only feeds it the palette and room. */
+.audio-edit-params {
+  flex: 1;
+  min-width: 0;
+  --parameter-accent: #2563eb;
+  --parameter-field-border: 1px solid #a9c3dd;
+  --parameter-field-background: #fff;
+  --parameter-label-width: 2.4em;
+  --parameter-row-gap: 10px;
+  --parameter-column-gap: 5px;
+  --parameter-slider-height: 14px;
+  --parameter-input-width: 3em;
+  --parameter-step-width: 14px;
+  --parameter-step-height: 9px;
+  --parameter-step-font-size: 6px;
+  --parameter-mark-font-size: 8px;
   font-variant-numeric: tabular-nums;
-}
-.audio-stepper button {
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 1px solid #a9c3dd;
-  border-radius: 4px;
-  background: #fff;
-  color: #2c4a6b;
-  font-size: 12px;
-  line-height: 1;
-  cursor: pointer;
-}
-.audio-stepper button:hover:not(:disabled) {
-  border-color: #2563eb;
-  color: #2563eb;
-}
-.audio-stepper button:disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
 }
 .slot-settings label {
   display: flex;

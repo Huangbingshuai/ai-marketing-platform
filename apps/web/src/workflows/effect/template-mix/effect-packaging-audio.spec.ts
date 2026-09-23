@@ -8,21 +8,42 @@ describe('packaging audio playback wiring', () => {
     expect(packagingSource).not.toContain('packaging-strip');
     expect(packagingSource).not.toContain('静音口播与配乐');
     expect(packagingSource).not.toContain('开启同步试听');
+    expect(packagingSource).not.toContain('旧版整片口播');
   });
-  it('only enables completed, current packaging and immediately informs the source-audio mix', () => {
-    expect(packagingSource).toContain(
-      "selected.value?.status === 'COMPLETED' && !selected.value.stale",
-    );
-    expect(packagingSource).toContain('() => !playbackBlocked.value && previewAvailable.value');
+  it('keeps completed and legacy variant audio available while the visual draft changes', () => {
+    expect(packagingSource).toContain("item.status === 'COMPLETED'");
+    expect(packagingSource).toContain('selectedVariant.value?.voice');
+    expect(packagingSource).toContain('selectedVariant.value?.bgm');
+    expect(packagingSource).toContain('previewAvailable,');
     expect(packagingSource).toMatch(/emit\('preview', enabled\);[\s\S]*?immediate: true/);
   });
   it('keeps playback and error recovery controlled by the main player', () => {
-    expect(packagingSource).toContain('playbackBlocked.value || !props.playing');
+    expect(packagingSource).toContain(
+      'playbackBlocked[kind] || (!props.playing && !forcePlayback)',
+    );
     expect(packagingSource).toContain('() => [props.playing, props.selectedVariantId]');
-    expect(packagingSource).toContain('playbackBlocked.value = false');
-    expect(packagingSource).toContain('const time = props.playhead - audio.start');
+    expect(packagingSource).toContain('playbackBlocked.MUSIC = false');
+    expect(packagingSource).toContain('playbackBlocked.VOICE = false');
+    expect(packagingSource).toContain('const timelineTime = props.playhead - audio.start');
+    expect(packagingSource).toContain('timelineTime + Math.max(0, audio.offset ?? 0)');
     expect(packagingSource).toContain('element?.pause()');
     expect(packagingSource).not.toMatch(/<audio[^>]*\bautoplay\b/);
+  });
+  it('shares independent voice/music mute state and starts audio from the player gesture', () => {
+    expect(packagingSource).toContain('voiceMuted: boolean');
+    expect(packagingSource).toContain('musicMuted: boolean');
+    expect(packagingSource).toContain("['VOICE', voiceElement.value, currentVoice.value, props.voiceMuted]");
+    expect(packagingSource).toContain("['MUSIC', musicElement.value, currentMusic.value, props.musicMuted]");
+    expect(packagingSource).toContain('element.muted = muted');
+    expect(packagingSource).toContain('function startPlaybackAudio()');
+    expect(packagingSource).toContain('syncAudio(true)');
+    expect(packagingSource).toContain('startPlaybackAudio');
+  });
+  it('keeps legacy whole-film narration playable while repackaging', () => {
+    expect(packagingSource).toContain("narrationLayoutVersion !== 'SLOT_V1'");
+    expect(packagingSource).toContain('selectedVariant.value?.voice');
+    expect(packagingSource).toContain('selectedVariant.value?.bgm');
+    expect(packagingSource).toContain('previewAvailable');
   });
 });
 
