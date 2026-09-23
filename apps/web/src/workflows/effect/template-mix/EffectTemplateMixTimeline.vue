@@ -715,11 +715,10 @@ const transitionStyle = (slot: EffectTemplateMixSlot): Record<string, string> =>
   const range = rangeForSlot(slot.id);
   const activeDrag = transitionDrag.value?.slotId === slot.id ? transitionDrag.value : null;
   const duration = activeDrag?.currentDuration ?? transitionDurationFor(slot.id);
-  const isHardCut = slot.transition === '硬切';
   return {
     left: `${(range?.start ?? 0) * pixelsPerSecond.value}px`,
     top: `${7 + clipLane(slot.id) * 70}px`,
-    width: isHardCut ? '8px' : `${Math.max(16, duration * pixelsPerSecond.value)}px`,
+    width: `${Math.max(16, duration * pixelsPerSecond.value)}px`,
   };
 };
 
@@ -2326,11 +2325,10 @@ onBeforeUnmount(() => {
                   </span>
                 </article>
                 <button
-                  v-for="slot in variant.slots.slice(1)"
+                  v-for="slot in variant.slots.slice(1).filter((slot) => slot.transition !== '硬切')"
                   :key="`transition:${slot.id}`"
                   class="transition-junction"
                   :class="{
-                    'is-hard-cut': slot.transition === '硬切',
                     'is-active': selectedSlotId === slot.id || transitionDrag?.slotId === slot.id,
                     'is-transition-target': transitionDropSlotId === slot.id,
                   }"
@@ -3055,22 +3053,6 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 3px #93c5fd88;
   color: #fff;
   cursor: copy;
-}
-.transition-junction.is-hard-cut {
-  width: 8px;
-  min-width: 8px;
-  height: 55px;
-  border: 0;
-  border-radius: 0;
-  background: #9aabc2;
-  color: transparent;
-  cursor: pointer;
-  opacity: 0.55;
-  transform: translateX(-50%);
-}
-.transition-junction.is-hard-cut::before,
-.transition-junction.is-hard-cut::after {
-  display: none;
 }
 .drag-ghost {
   box-sizing: border-box;

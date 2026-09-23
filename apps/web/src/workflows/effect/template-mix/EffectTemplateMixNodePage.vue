@@ -363,7 +363,7 @@ const selectedTransitionInfo = computed(() => {
 const filteredTransitions = computed(() => {
   const query = transitionKeyword.value.trim().toLowerCase();
   return EFFECT_TEMPLATE_MIX_TRANSITION_LIBRARY.filter((item) => {
-    if (item.category !== '热门') return false;
+    if (item.id !== '硬切' && item.category !== '热门') return false;
     if (!query) return true;
     return `${item.label} ${item.description} ${item.category}`.toLowerCase().includes(query);
   });
@@ -3873,8 +3873,8 @@ defineExpose({ flushPendingEdits });
                   :aria-label="`${EFFECT_TEMPLATE_MIX_ROLE_LABELS[slot.role]}到下一槽位的转场`"
                   @change="changeTemplateTransition(index, $event)"
                 >
-                  <option v-for="item in EFFECT_TEMPLATE_MIX_TRANSITIONS" :key="item">
-                    {{ item }}
+                  <option v-for="item in EFFECT_TEMPLATE_MIX_TRANSITIONS" :key="item" :value="item">
+                    {{ item === '硬切' ? '无转场' : item }}
                   </option>
                 </select>
               </template>
@@ -4167,7 +4167,7 @@ defineExpose({ flushPendingEdits });
                       v-model="transitionKeyword"
                       placeholder="搜索转场名称/元素"
                   /></label>
-                  <h4>热门</h4>
+                  <h4>转场效果</h4>
                   <div class="transition-card-grid">
                     <button
                       v-for="item in filteredTransitions"

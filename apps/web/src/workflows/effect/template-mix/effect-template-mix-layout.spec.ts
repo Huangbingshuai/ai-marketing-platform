@@ -9,6 +9,15 @@ import timelineSource from './EffectTemplateMixTimeline.vue?raw';
 import waveformSource from './EffectTemplateMixWaveform.vue?raw';
 
 describe('effect template mix workbench layout', () => {
+  it('leaves the transition track empty at a direct cut while keeping drop-to-add available', () => {
+    expect(timelineSource).toContain(
+      "variant.slots.slice(1).filter((slot) => slot.transition !== '硬切')",
+    );
+    expect(timelineSource).not.toContain('is-hard-cut');
+    expect(timelineSource).toContain('onTransitionDrop(event)');
+    expect(pageSource).toContain("item === '硬切' ? '无转场' : item");
+    expect(pageSource).toContain("item.id !== '硬切' && item.category !== '热门'");
+  });
   it('mounts in the fifth workflow step', () => {
     expect(workflowSource).toContain(
       "import EffectTemplateMixNodePage from '../template-mix/EffectTemplateMixNodePage.vue'",

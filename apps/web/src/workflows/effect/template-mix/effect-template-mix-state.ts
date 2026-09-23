@@ -294,9 +294,9 @@ export const EFFECT_TEMPLATE_MIX_TRANSITION_LIBRARY = [
   },
   {
     id: '硬切',
-    label: '硬切',
+    label: '无转场',
     category: '基础',
-    description: '无过渡直接切换',
+    description: '镜头直接切换，不添加转场效果',
     previewClass: 'is-cut',
   },
 ] as const satisfies readonly {

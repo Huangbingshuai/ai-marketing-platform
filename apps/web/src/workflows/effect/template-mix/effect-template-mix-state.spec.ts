@@ -91,6 +91,9 @@ describe('effect template mix presentation state', () => {
   });
 
   it('exposes the popular transition set in the shared editor state', () => {
+    expect(EFFECT_TEMPLATE_MIX_TRANSITION_LIBRARY).toContainEqual(
+      expect.objectContaining({ id: '硬切', label: '无转场' }),
+    );
     expect(EFFECT_TEMPLATE_MIX_TRANSITIONS).toEqual(
       expect.arrayContaining([
         '擦除',
