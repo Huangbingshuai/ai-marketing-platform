@@ -4,9 +4,18 @@ import { WorkflowNodeFooter } from '@ai-marketing/ui';
 import type { EffectTemplateMixVariant } from '@ai-marketing/contracts';
 import Packaging from '../../src/workflows/effect/template-mix/EffectTemplateMixPackaging.vue';
 import Output from '../../src/workflows/effect/final-output/EffectFinalOutputNodePage.vue';
-const scenario = ref('running'),
-  step = ref('packaging'),
+const scenario = ref('ready'),
+  step = ref('output'),
   ready = ref(false);
+const scenarioLabels: Record<string, string> = {
+  empty: '空状态',
+  pending: '待渲染',
+  running: '运行中',
+  failed: '部分失败',
+  ready: '已完成',
+  stale: '来源过期',
+  error: '服务错误',
+};
 const packaging = ref<InstanceType<typeof Packaging>>();
 const variants = Array.from(
   { length: 100 },
@@ -28,14 +37,14 @@ function change(mode: string) {
 </script>
 <template>
   <main style="max-width: 1200px; margin: 20px auto; font-family: system-ui; color: #24354f">
-    <h2>隔离测试数据 · 100 条 · 不连接数据库或付费供应商</h2>
+    <h2>成片输出演示数据 · 100 条 · 隔离环境，不连接数据库或付费供应商</h2>
     <nav style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px">
       <button
-        v-for="s in ['empty', 'running', 'failed', 'ready', 'stale', 'error']"
+        v-for="s in ['empty', 'pending', 'running', 'failed', 'ready', 'stale', 'error']"
         :key="s"
         @click="change(s)"
       >
-        {{ s }}
+        {{ scenarioLabels[s] }}
       </button>
       <button @click="step = 'packaging'">包装测试</button
       ><button @click="step = 'output'">输出测试</button>
