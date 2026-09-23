@@ -349,7 +349,7 @@ export const createEffectTemplateMixEntry = (name: string): EffectTemplateMixTem
           role,
           purpose: purposes[index]!,
           label: EFFECT_TEMPLATE_MIX_ROLE_LABELS[role],
-          duration: 3,
+          duration: 4,
           transition: '硬切',
           transitionDuration: 0,
         })),

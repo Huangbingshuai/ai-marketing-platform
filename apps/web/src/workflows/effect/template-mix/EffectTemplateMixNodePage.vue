@@ -865,6 +865,12 @@ const workflowStageTone = (stage: EffectTemplateMixAiRun['stage']): string =>
   ({ done: 'success', failed: 'danger', pending: 'pending', running: 'running' })[
     workflowStageState(stage)
   ];
+const workflowStageDetail = (stage: EffectTemplateMixAiRun['stage']) =>
+  workflowRunForDisplay.value?.stageDetails?.[stage] ?? null;
+const workflowStageProgress = (stage: EffectTemplateMixAiRun['stage']): string => {
+  const detail = workflowStageDetail(stage);
+  return detail ? `${detail.completed}/${detail.total}` : '—';
+};
 const showNotice = (text: string, kind: Notice['kind'] = 'success'): void => {
   notice.value = { text, kind };
   clearTimeout(noticeTimer);
@@ -1245,7 +1251,8 @@ const audioDiff = (current: PackagingCheckpoint, baseline: PackagingCheckpoint) 
   const captions =
     JSON.stringify(current.captions ?? []) === JSON.stringify(baseline.captions ?? [])
       ? null
-      : (current.captions ?? []).map(({ id, text, start, end }) => ({ id, text, start, end }));
+      : (current.captions ?? []).map(({ id, voiceLineId, segmentIndex, segmentCount, text, start, end }) =>
+          ({ id, ...(voiceLineId ? { voiceLineId, segmentIndex, segmentCount } : {}), text, start, end }));
   // Only the boxes this editor touched, so an unrelated drag never rewrites the others.
   const boxes: Record<string, PackagingCaptionBox> = {};
   for (const [id, box] of Object.entries(current.captionBoxes ?? {})) {
@@ -2632,10 +2639,10 @@ const resizeTimelineSlot = (
   if (hasMaterialOnSide) return;
   const nextOffset = Math.min(
     Math.max(0, offset),
-    Math.max(0, Math.round((material.duration - 3) * 1000) / 1000),
+    Math.max(0, Math.round((material.duration - 4) * 1000) / 1000),
   );
-  if (material.duration < 3) return;
-  const minimumDuration = 3;
+  if (material.duration < 4) return;
+  const minimumDuration = 4;
   const maximumDuration = Math.min(15, Math.max(minimumDuration, material.duration - nextOffset));
   const nextDuration = Math.min(
     Math.max(minimumDuration, duration),
@@ -2689,8 +2696,8 @@ const changeTemplate = (): void => {
   if (!workspace.value) return;
   for (const [index, slot] of workspace.value.template.slots.entries()) {
     slot.duration = Number.isFinite(Number(slot.duration))
-      ? Math.min(15, Math.max(3, Math.round(Number(slot.duration) * 10) / 10))
-      : 3;
+      ? Math.min(15, Math.max(4, Math.round(Number(slot.duration) * 10) / 10))
+      : 4;
     if (index === 0) {
       slot.transition = '硬切';
       slot.transitionDuration = 0;
@@ -2818,7 +2825,7 @@ const resolveTimelinePlacement = (
       ...range,
       lane: variant.videoLanes?.[range.id] ?? 0,
     }));
-  const requestedDuration = Math.max(3, Math.min(15, slot.duration));
+  const requestedDuration = Math.max(4, Math.min(15, slot.duration));
   const isBlocked = (start: number, lane: number): boolean =>
     ranges.some(
       (range) =>
@@ -2902,8 +2909,8 @@ const changeProjectDuration = (raw: string): void => {
   if (!selectedSlot.value || !selectedVariant.value) return;
   const duration = Math.round(Number(raw) * 10) / 10;
   const material = materialForSlot(selectedSlot.value.id);
-  if (!Number.isFinite(duration) || duration < 3 || duration > 15) {
-    showNotice('槽位时长必须为 3–15 秒', 'warning');
+  if (!Number.isFinite(duration) || duration < 4 || duration > 15) {
+    showNotice('槽位时长必须为 4–15 秒', 'warning');
     return;
   }
   if (
@@ -3853,7 +3860,7 @@ defineExpose({ flushPendingEdits });
               ><input
                 v-model.number="slot.duration"
                 type="number"
-                min="3"
+                min="4"
                 max="15"
                 step=".1"
                 @change="changeTemplate"
@@ -5031,19 +5038,6 @@ defineExpose({ flushPendingEdits });
               <X :size="18" />
             </button>
           </header>
-          <WorkflowRunProgress
-            v-if="activeAiRun"
-            class="mix-workflow-progress"
-            :progress="activeAiRun.progress"
-            :summary="
-              activeAiRun.status === 'QUEUED'
-                ? '正在等待智能填充服务接单'
-                : aiStageLabels[activeAiRun.stage]
-            "
-            attempt-label="任务在后台继续执行，关闭面板或刷新页面都不会丢失真实进度。"
-            action-label="关闭工作流"
-            @show-details="closeWorkflowDialog"
-          />
           <main class="workflow-graph-content">
             <div class="workflow-graph-canvas" aria-label="智能填充执行图">
               <template v-for="(stage, index) in aiStageOrder" :key="stage">
@@ -5059,6 +5053,7 @@ defineExpose({ flushPendingEdits });
                   <span>
                     <strong>{{ aiStageLabels[stage] }}</strong>
                     <small>{{ aiStageDescriptions[stage] }}</small>
+                    <small class="workflow-node-progress">处理进度 {{ workflowStageProgress(stage) }}</small>
                   </span>
                   <em>{{ workflowStageStatusLabel(stage) }}</em>
                 </button>
@@ -5085,8 +5080,8 @@ defineExpose({ flushPendingEdits });
                     {{ workflowStageStatusLabel(selectedWorkflowStage) }}
                   </em>
                   <span v-if="workflowRunForDisplay">
-                    <small>任务进度</small>
-                    <b>{{ workflowRunForDisplay.progress }}%</b>
+                    <small>本节点处理进度</small>
+                    <b>{{ workflowStageProgress(selectedWorkflowStage) }}</b>
                   </span>
                 </div>
                 <p class="workflow-node-summary">
@@ -5094,13 +5089,19 @@ defineExpose({ flushPendingEdits });
                 </p>
                 <section class="workflow-detail-block is-input">
                   <span>INPUT</span>
-                  <strong>本阶段输入</strong>
+                  <strong>本阶段实际输入（最多展示 4 项）</strong>
                   <p>{{ aiStageInputs[selectedWorkflowStage] }}</p>
+                  <ul v-if="workflowStageDetail(selectedWorkflowStage)?.inputSamples.length">
+                    <li v-for="(sample, sampleIndex) in workflowStageDetail(selectedWorkflowStage)?.inputSamples" :key="`input-${sampleIndex}`">{{ sample }}</li>
+                  </ul>
                 </section>
                 <section class="workflow-detail-block is-output">
                   <span>OUTPUT</span>
-                  <strong>本阶段输出</strong>
+                  <strong>本阶段实际结果（最多展示 4 项）</strong>
                   <p>{{ aiStageOutputs[selectedWorkflowStage] }}</p>
+                  <ul v-if="workflowStageDetail(selectedWorkflowStage)?.outputSamples.length">
+                    <li v-for="(sample, sampleIndex) in workflowStageDetail(selectedWorkflowStage)?.outputSamples" :key="`output-${sampleIndex}`">{{ sample }}</li>
+                  </ul>
                 </section>
                 <section class="workflow-detail-block is-boundary">
                   <span>BOUNDARY</span>
@@ -5118,9 +5119,6 @@ defineExpose({ flushPendingEdits });
             <span><i />等待中</span>
             <span><i class="danger" />失败</span>
             <span class="workflow-edge-count">4 条执行边</span>
-            <button type="button" @click="closeWorkflowDialog">
-              <ArrowLeft :size="14" />返回工作区
-            </button>
           </footer>
         </section>
       </div></Teleport
@@ -7338,7 +7336,6 @@ button:disabled {
   .workflow-dialog > header {
     padding: 16px;
   }
-  .mix-workflow-progress,
   .workflow-graph-canvas,
   .workflow-node-detail {
     margin-right: 12px;

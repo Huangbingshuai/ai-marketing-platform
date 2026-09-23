@@ -71,7 +71,17 @@ export type EffectTemplateMixMaterial = {
   promptText?: string;
   promptCreativeCore?: string;
 };
-export type EffectTemplateMixCaption = { id: string; text: string; start: number; end: number };
+export type EffectTemplateMixCaption = {
+  id: string;
+  /** New segmented captions share one saved narration clip; absent in historical packages. */
+  voiceLineId?: string;
+  /** Stable order and expected count make a missing subtitle detectable after editor rewording. */
+  segmentIndex?: number;
+  segmentCount?: number;
+  text: string;
+  start: number;
+  end: number;
+};
 export type EffectTemplateMixAudio = {
   fileObjectId: string;
   name: string;
@@ -127,6 +137,14 @@ export type EffectTemplateMixAiRunStatus =
   'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
 export type EffectTemplateMixAiRunStage =
   'CLASSIFYING' | 'MATCHING' | 'SAMPLING' | 'TRIMMING' | 'COMPLETED';
+export type EffectTemplateMixAiStageDetail = {
+  /** Exact persisted work units; never inferred from the run's overall percentage. */
+  completed: number;
+  total: number;
+  inputSamples: string[];
+  outputSamples: string[];
+};
+export type EffectTemplateMixSamplingCheckpoint = { materialIds: string[] };
 export type EffectTemplateMixAiRun = {
   id: string;
   templateId: string;
@@ -135,6 +153,7 @@ export type EffectTemplateMixAiRun = {
   status: EffectTemplateMixAiRunStatus;
   stage: EffectTemplateMixAiRunStage;
   progress: number;
+  stageDetails: Partial<Record<EffectTemplateMixAiRunStage, EffectTemplateMixAiStageDetail>>;
   errorCode: string | null;
   errorMessage: string | null;
   createdAt: string;

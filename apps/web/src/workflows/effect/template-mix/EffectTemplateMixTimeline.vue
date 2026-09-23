@@ -1628,8 +1628,8 @@ function onWindowPointerMove(event: PointerEvent): void {
     const delta = quantizeToFrame(
       (event.clientX - drag.startClientX) / pixelsPerSecond.value,
     );
-    if (material.duration < 3) return;
-    const minimumDuration = 3;
+    if (material.duration < 4) return;
+    const minimumDuration = 4;
     const sourceEnd = drag.initialOffset + drag.initialDuration;
     if (drag.side === 'LEFT') {
       const requestedOffset = Math.max(

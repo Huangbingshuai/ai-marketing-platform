@@ -38,6 +38,14 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('智能成片包装真实任务进度');
     expect(pageSource).not.toContain('<Plus :size="13" />AI 智能填充');
   });
+  it('keeps the smart-fill workflow as a read-only, per-node progress view', () => {
+    expect(pageSource).not.toContain('class="mix-workflow-progress"');
+    expect(pageSource).not.toContain('action-label="关闭工作流"');
+    expect(pageSource).not.toContain('返回工作区');
+    expect(pageSource).toContain('workflowStageProgress(stage)');
+    expect(pageSource).toContain('本阶段实际输入（最多展示 4 项）');
+    expect(pageSource).toContain('本阶段实际结果（最多展示 4 项）');
+  });
   it('keeps configuration and refinement as separate views', () => {
     expect(pageSource).toContain('进入精修工作台');
     expect(pageSource).not.toContain('智能填充并进入精修');
@@ -79,13 +87,16 @@ describe('effect template mix workbench layout', () => {
     expect(pageSource).toContain('@show-details="openWorkflowDialog"');
     expect(pageSource).toContain('TEMPLATE MIX WORKFLOW');
     expect(pageSource).toContain('class="workflow-graph-content"');
-    expect(pageSource).toContain('class="mix-workflow-progress"');
+    expect(pageSource).not.toContain('class="mix-workflow-progress"');
+    expect(pageSource).not.toContain('action-label="关闭工作流"');
     expect(pageSource).not.toContain('class="workflow-version-notice"');
     expect(pageSource).toContain('class="workflow-graph-canvas"');
     expect(pageSource).toContain('class="workflow-graph-node"');
     expect(pageSource).toContain('class="workflow-node-detail"');
     expect(pageSource).toContain('4 条执行边');
-    expect(pageSource).toContain('返回工作区');
+    expect(pageSource).toContain('workflowStageProgress(stage)');
+    expect(pageSource).toContain('本阶段实际输入（最多展示 4 项）');
+    expect(pageSource).toContain('本阶段实际结果（最多展示 4 项）');
     expect(pageSource).toContain("view.value = 'EDITOR'");
     expect(pageSource).toContain('if (resumedRun)');
     expect(pageSource).toContain('!targetVariantId ||');

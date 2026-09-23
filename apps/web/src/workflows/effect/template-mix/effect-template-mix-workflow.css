@@ -29,10 +29,6 @@
   color: #718096;
   font-size: 11px;
 }
-.mix-workflow-progress {
-  margin: 14px 20px 0;
-  border-radius: 11px;
-}
 .workflow-graph-close {
   display: grid;
   width: 34px;
@@ -84,6 +80,10 @@
   color: #7d899f;
   font-size: 9px;
   line-height: 1.5;
+}
+.workflow-graph-node .workflow-node-progress {
+  color: #315a9d;
+  font-weight: 750;
 }
 .workflow-graph-node em {
   padding: 4px 7px;
@@ -262,6 +262,24 @@
   margin: 5px 0 0;
   font-size: 9px;
   line-height: 1.65;
+}
+.workflow-detail-block ul {
+  display: grid;
+  margin: 7px 0 0;
+  padding: 0;
+  gap: 5px;
+  list-style: none;
+}
+.workflow-detail-block li {
+  padding: 5px 7px;
+  overflow: hidden;
+  color: #52617a;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: #fff;
+  border: 1px solid #e7edf5;
+  border-radius: 6px;
+  font-size: 9px;
 }
 .workflow-dialog > footer {
   padding: 13px 20px 18px;

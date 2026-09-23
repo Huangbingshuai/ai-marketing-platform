@@ -27,7 +27,7 @@ const draft = (): EffectTemplateMixDraft => ({
               label: '片头钩子',
               role: 'HOOK',
               purpose: 'HOOK',
-              duration: 3,
+              duration: 4,
               transition: '硬切',
             },
           ],
@@ -43,7 +43,7 @@ const draft = (): EffectTemplateMixDraft => ({
                 label: '片头钩子',
                 role: 'HOOK',
                 purpose: 'HOOK',
-                duration: 3,
+                duration: 4,
                 transition: '硬切',
               },
             ],
@@ -117,6 +117,84 @@ const harness = () => {
 };
 
 describe('EffectTemplateMixService', () => {
+  it('projects persisted stage shard counts and a few real inputs and outputs', async () => {
+    const now = new Date('2026-09-23T04:00:00.000Z');
+    const inputSnapshot = {
+      materials: Array.from({ length: 5 }, (_, index) => ({
+        id: `material-${index + 1}`,
+        code: `R-${index + 1}`,
+        name: `素材 ${index + 1}`,
+      })),
+      template: { slots: [{ id: slotId, label: '片头钩子' }] },
+    };
+    const repository = {
+      find: vi.fn().mockResolvedValue({
+        id: 'run-id',
+        templateId,
+        targetVariantId: null,
+        outputVariantId: null,
+        status: 'RUNNING',
+        stage: 'CLASSIFYING',
+        progress: 45,
+        errorCode: null,
+        errorMessage: null,
+        createdAt: now,
+        updatedAt: now,
+        inputSnapshot,
+        classificationResult: [
+          { materialId: 'material-1' },
+          { materialId: 'material-2' },
+          { materialId: 'material-3' },
+        ],
+        selectionResult: [
+          { materialId: 'material-1', slotId },
+          { materialId: 'material-2', slotId },
+        ],
+        samplingResult: ['material-1'],
+        trimResult: [{ materialId: 'material-1', trimStartSeconds: 1.25 }],
+      }),
+    };
+    const service = new EffectTemplateMixService(
+      {} as unknown as WorkflowWorkingService,
+      repository as unknown as EffectTemplateMixAiRepository,
+    );
+
+    const run = await service.aiRun('project', 'run-id');
+
+    expect(run.stageDetails.CLASSIFYING).toMatchObject({ completed: 3, total: 5 });
+    expect(run.stageDetails.CLASSIFYING?.inputSamples).toEqual([
+      'R-1 · 素材 1',
+      'R-2 · 素材 2',
+      'R-3 · 素材 3',
+      'R-4 · 素材 4',
+    ]);
+    expect(run.stageDetails.MATCHING).toMatchObject({ completed: 1, total: 1 });
+    expect(run.stageDetails.SAMPLING).toMatchObject({ completed: 1, total: 2 });
+    expect(run.stageDetails.TRIMMING?.outputSamples).toEqual([
+      'R-1 · 素材 1 · 从 1.3 秒截取',
+    ]);
+    expect(run.stageDetails.COMPLETED).toMatchObject({ completed: 0, total: 1 });
+  });
+
+  it('preserves untouched legacy 3-second slots while rejecting newly edited ones', async () => {
+    const { service, working } = harness();
+    const legacy = draft();
+    legacy.templates[0]!.workspace.template.slots[0]!.duration = 3;
+    legacy.templates[0]!.workspace.variants[0]!.slots[0]!.duration = 3;
+    working.getNodeStateOrNull.mockResolvedValue({ revision: 7, state: legacy });
+    const unchanged = JSON.parse(JSON.stringify(legacy)) as EffectTemplateMixDraft;
+    unchanged.templates[0]!.workspace.template.name = '更新名称';
+    await expect(service.saveDraft('project', 'run', 7, unchanged)).resolves.toBeDefined();
+    unchanged.templates[0]!.workspace.template.slots[0]!.label = '新钩子';
+    await expect(service.saveDraft('project', 'run', 7, unchanged)).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('allows the first 4-second draft without a previous node state', async () => {
+    const { service, working } = harness();
+    working.getNodeStateOrNull.mockResolvedValue(null);
+    await expect(service.saveDraft('project', 'run', null, draft())).resolves.toBeDefined();
+  });
+
   it('commits a template and timeline with the exact consumed clip revision', async () => {
     const { service, working } = harness();
     const result = await service.validate('project', 'run', 7, templateId);
@@ -285,13 +363,13 @@ describe('EffectTemplateMixService', () => {
       id: isolatedId,
       workspace: JSON.parse(JSON.stringify(state.templates[0]!.workspace)),
     });
-    state.templates[0]!.workspace.variants[0]!.slots[0]!.duration = 2;
+    state.templates[0]!.workspace.variants[0]!.slots[0]!.duration = 5;
     working.getNodeState.mockResolvedValue({ revision: 7, state });
 
     const result = await service.applyVariant('project', 'run', templateId, variantId, true, 7);
 
-    expect(result.draft.templates[0]!.workspace.template.slots[0]!.duration).toBe(2);
-    expect(result.draft.templates[1]!.workspace.template.slots[0]!.duration).toBe(3);
+    expect(result.draft.templates[0]!.workspace.template.slots[0]!.duration).toBe(5);
+    expect(result.draft.templates[1]!.workspace.template.slots[0]!.duration).toBe(4);
   });
 
   it('freezes original Prompt text without forwarding upstream purpose recommendations', async () => {
@@ -316,7 +394,7 @@ describe('EffectTemplateMixService', () => {
             : role === 'PRODUCT'
               ? 'PRODUCT_DISPLAY'
               : 'EFFECT',
-      duration: 3,
+      duration: 4,
       transition: '硬切',
     }));
     state.templates[0]!.workspace.variants = [];
@@ -445,6 +523,35 @@ describe('EffectTemplateMixService', () => {
     );
   });
 
+  it('persists only selected-material sampling checkpoints', async () => {
+    const materialId = 'material-1';
+    const aiRepository = {
+      find: vi.fn().mockResolvedValue({
+        status: 'RUNNING',
+        attemptToken: 'attempt-token',
+        selectionResult: [{ materialId }],
+      }),
+      saveSamplingCheckpoint: vi.fn().mockResolvedValue({ kind: 'SAVED', materialIds: [materialId] }),
+    };
+    const service = new EffectTemplateMixService(
+      {} as unknown as WorkflowWorkingService,
+      aiRepository as unknown as EffectTemplateMixAiRepository,
+    );
+
+    await expect(
+      service.checkpointAiSampling('project', 'run', 'attempt-token', [materialId]),
+    ).resolves.toEqual({ materialIds: [materialId] });
+    expect(aiRepository.saveSamplingCheckpoint).toHaveBeenCalledWith(
+      'project',
+      'run',
+      'attempt-token',
+      [materialId],
+    );
+    await expect(
+      service.checkpointAiSampling('project', 'run', 'attempt-token', ['unselected']),
+    ).rejects.toThrow('关键帧进度分片无效');
+  });
+
   it('persists partial AI trim results for batch resume', async () => {
     const trims = [
       {
@@ -459,13 +566,13 @@ describe('EffectTemplateMixService', () => {
       find: vi.fn().mockResolvedValue({
         status: 'RUNNING',
         attemptToken: 'attempt-token',
-        inputSnapshot: { materials: [{ id: sourceId, duration: 4 }] },
+        inputSnapshot: { materials: [{ id: sourceId, duration: 5 }] },
         selectionResult: [
           {
             variantIndex: 1,
             slotId,
             materialId: sourceId,
-            duration: 3,
+            duration: 4,
           },
         ],
       }),
