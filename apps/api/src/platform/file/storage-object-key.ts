@@ -1,6 +1,6 @@
 import { extname } from 'node:path';
 
-import type { StoragePutInput } from './storage.port';
+import type { SharedStoragePutInput, StoragePutInput } from './storage.port';
 
 const LIFECYCLE_SEGMENTS: Record<StoragePutInput['keyContext']['lifecycle'], string> = {
   staging: '01-working',
@@ -59,4 +59,21 @@ export const buildStorageObjectKey = (
     cleanSegment(keyContext.category, '其他资料'),
     fileName,
   ].join('/');
+};
+
+export const buildSharedStorageObjectKey = (
+  input: Pick<SharedStoragePutInput, 'collection' | 'assetId' | 'version' | 'extension'>,
+  objectId: string,
+): string => {
+  const pathSegments = {
+    collection: input.collection,
+    assetId: input.assetId,
+    version: input.version,
+    extension: input.extension,
+  };
+  for (const [label, value] of Object.entries(pathSegments)) {
+    if (!/^[a-zA-Z0-9_.-]{1,120}$/.test(value) || value === '.' || value === '..')
+      throw new Error(`Invalid shared storage ${label}`);
+  }
+  return `shared/${input.collection}/${input.assetId}/${input.version}/${objectId}.${input.extension.toLowerCase()}`;
 };

@@ -8,13 +8,14 @@ import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import type {
+  SharedStoragePutInput,
   StoragePort,
   StoragePutInput,
   StorageRange,
   StoredObject,
   StoredStream,
 } from './storage.port';
-import { buildStorageObjectKey } from './storage-object-key';
+import { buildSharedStorageObjectKey, buildStorageObjectKey } from './storage-object-key';
 
 export const DEFAULT_LOCAL_STORAGE_ROOT = resolve(__dirname, '../../../../../.local-storage');
 
@@ -57,6 +58,25 @@ export class LocalStorageAdapter implements StoragePort {
       if (!written.isFile() || written.size !== input.sizeBytes) {
         throw new Error('Stored file size does not match upload metadata');
       }
+      await rename(temporaryPath, finalPath);
+      return { key, sizeBytes: written.size };
+    } catch (error) {
+      await rm(temporaryPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async putShared(input: SharedStoragePutInput): Promise<StoredObject> {
+    const key = buildSharedStorageObjectKey(input, randomUUID());
+    const finalPath = this.objectPath(key);
+    const temporaryPath = this.objectPath(`tmp/storage-${randomUUID()}.part`);
+    await mkdir(resolve(finalPath, '..'), { recursive: true });
+    await mkdir(resolve(temporaryPath, '..'), { recursive: true });
+    try {
+      await pipeline(input.stream, createWriteStream(temporaryPath, { flags: 'wx' }));
+      const written = await stat(temporaryPath);
+      if (!written.isFile() || written.size !== input.sizeBytes)
+        throw new Error('Stored file size does not match upload metadata');
       await rename(temporaryPath, finalPath);
       return { key, sizeBytes: written.size };
     } catch (error) {

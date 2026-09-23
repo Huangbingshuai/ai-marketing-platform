@@ -100,6 +100,32 @@ describe('MinioStorageAdapter', () => {
     );
   });
 
+  it('writes shared samples without attaching project ownership metadata', async () => {
+    const minio = client();
+    const adapter = new MinioStorageAdapter(config(), minio);
+    const stored = await adapter.putShared({
+      collection: 'effect-voices',
+      assetId: 'vivi',
+      version: 'seed-tts-2.0-1',
+      extension: 'wav',
+      stream: Readable.from('abcdef'),
+      sizeBytes: 6,
+      contentType: 'audio/wav',
+    });
+    expect(stored.key).toMatch(/^shared\/effect-voices\/vivi\/seed-tts-2.0-1\//);
+    expect(minio.putObject).toHaveBeenCalledWith(
+      'ai-marketing-assets',
+      stored.key,
+      expect.any(Readable),
+      6,
+      expect.objectContaining({
+        'Content-Type': 'audio/wav',
+        'x-amz-meta-asset-id': 'vivi',
+      }),
+    );
+    expect(vi.mocked(minio.putObject).mock.calls[0]?.[4]).not.toHaveProperty('x-amz-meta-project-id');
+  });
+
   it('supports complete and ranged reads with strict bounds', async () => {
     const minio = client();
     const adapter = new MinioStorageAdapter(config(), minio);

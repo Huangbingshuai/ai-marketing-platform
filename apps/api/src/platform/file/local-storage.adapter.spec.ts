@@ -74,6 +74,33 @@ describe('LocalStorageAdapter', () => {
     await expect(adapter.open('../outside')).rejects.toThrow('outside');
   });
 
+  it('stores shared catalog objects outside project directories', async () => {
+    const stored = await adapter.putShared({
+      collection: 'effect-voices',
+      assetId: 'vivi',
+      version: 'seed-tts-2.0-1',
+      extension: 'wav',
+      stream: Readable.from('sample'),
+      sizeBytes: 6,
+      contentType: 'audio/wav',
+    });
+    expect(stored.key).toMatch(
+      /^shared\/effect-voices\/vivi\/seed-tts-2.0-1\/[0-9a-f-]{36}\.wav$/,
+    );
+    const opened = await adapter.open(stored.key);
+    await expect(readAll(opened.stream)).resolves.toBe('sample');
+    await expect(
+      adapter.putShared({
+        collection: '../outside',
+        assetId: 'vivi',
+        version: 'v1',
+        extension: 'wav',
+        stream: Readable.from('sample'),
+        sizeBytes: 6,
+      }),
+    ).rejects.toThrow('Invalid shared storage');
+  });
+
   it('removes incomplete temporary files when the declared size is wrong', async () => {
     await expect(
       adapter.put({

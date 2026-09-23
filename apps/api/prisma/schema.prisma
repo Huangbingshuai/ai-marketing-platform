@@ -1212,6 +1212,7 @@ model EffectTemplateMixAiRun {
   inputSnapshot         Json
   classificationResult  Json?
   selectionResult       Json?
+  samplingResult        Json?
   trimResult            Json?
   expectedDraftRevision Int
   templateEditVersion   Int
@@ -1275,6 +1276,36 @@ model EffectVoicePreviewRequest {
   preview EffectVoicePreview @relation(fields: [projectId, previewId], references: [projectId, id], onDelete: Cascade, map: "effect_voice_preview_requests_preview_fkey")
   @@id([projectId, idempotencyKey])
   @@map("effect_voice_preview_requests")
+}
+
+model EffectVoiceCatalogSample {
+  id        String   @id @default(uuid()) @db.Uuid
+  profileId String   @db.VarChar(80)
+  version   String   @db.VarChar(100)
+  storageKey String  @db.VarChar(500)
+  sha256    String   @db.Char(64)
+  sizeBytes Int
+  mimeType  String   @db.VarChar(120)
+  duration  Float
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([profileId, version])
+  @@unique([storageKey])
+  @@map("effect_voice_catalog_samples")
+}
+
+model EffectVoiceCatalogSampleAttempt {
+  id        String   @id @default(uuid()) @db.Uuid
+  profileId String   @db.VarChar(80)
+  version   String   @db.VarChar(100)
+  status    String   @default("SUBMITTED_UNKNOWN") @db.VarChar(24)
+  errorCode String?  @db.VarChar(80)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([profileId, version])
+  @@map("effect_voice_catalog_sample_attempts")
 }
 
 model EffectPackagingRun {

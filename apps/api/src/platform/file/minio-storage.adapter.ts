@@ -6,13 +6,14 @@ import { Client } from 'minio';
 
 import type { LocalStorageAdapter } from './local-storage.adapter';
 import type {
+  SharedStoragePutInput,
   StoragePort,
   StoragePutInput,
   StorageRange,
   StoredObject,
   StoredStream,
 } from './storage.port';
-import { buildStorageObjectKey } from './storage-object-key';
+import { buildSharedStorageObjectKey, buildStorageObjectKey } from './storage-object-key';
 
 export type MinioClient = Pick<
   Client,
@@ -88,6 +89,29 @@ export class MinioStorageAdapter implements StoragePort, OnModuleInit {
       if (metadata.size !== input.sizeBytes) {
         throw new Error('Stored file size does not match upload metadata');
       }
+      return { key, sizeBytes: metadata.size };
+    } catch (error) {
+      if (uploaded) await client.removeObject(bucket, key).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async putShared(input: SharedStoragePutInput): Promise<StoredObject> {
+    await this.ensureBucket();
+    const { client, bucket } = this.active();
+    const key = buildSharedStorageObjectKey(input, randomUUID());
+    let uploaded = false;
+    try {
+      await client.putObject(bucket, key, input.stream, input.sizeBytes, {
+        'Content-Type': input.contentType ?? 'application/octet-stream',
+        'x-amz-meta-collection': input.collection,
+        'x-amz-meta-asset-id': input.assetId,
+        'x-amz-meta-version': input.version,
+      });
+      uploaded = true;
+      const metadata = await client.statObject(bucket, key);
+      if (metadata.size !== input.sizeBytes)
+        throw new Error('Stored file size does not match upload metadata');
       return { key, sizeBytes: metadata.size };
     } catch (error) {
       if (uploaded) await client.removeObject(bucket, key).catch(() => undefined);

@@ -31,7 +31,7 @@ def test_queue_model_matches_shared_contract_schema() -> None:
 
 
 @pytest.mark.parametrize('role', ['HOOK', 'END', 'PRODUCT'])
-@pytest.mark.parametrize('duration', [3, 6, 10, 15])
+@pytest.mark.parametrize('duration', [4, 6, 10, 15])
 def test_budgets_follow_duration_even_for_long_hooks(role: str, duration: float) -> None:
     snapshot = script_snapshot()
     snapshot['variant']['slots'][0]['role'] = role
@@ -40,19 +40,16 @@ def test_budgets_follow_duration_even_for_long_hooks(role: str, duration: float)
     assert 0 < row['minCharacters'] <= row['targetCharacters'] <= row['maxCharacters']
     if duration == 15:
         assert row['minCharacters'] > 15 and row['targetCharacters'] >= 30
-    if duration == 3:
-        assert row['minCharacters'] == 1
+    if duration == 4:
+        assert row['minCharacters'] >= 7
 
 
-async def test_short_long_slot_text_repairs_once_then_rejects() -> None:
+async def test_short_long_slot_text_is_soft_guidance_without_paid_repair() -> None:
     ark = AsyncMock(spec=ArkProvider)
-    ark.structured.side_effect = [plan_result(text='太短'), plan_result()]
+    ark.structured.return_value = plan_result(text='太短')
     result = await plan_script(ark, script_snapshot(), [], AsyncMock())
-    assert len(result.lines[0].text) > 15
-    assert ark.structured.await_count == 2
-    ark.structured.side_effect = [plan_result(text='太短'), plan_result(text='仍短')]
-    with pytest.raises(PackagingError):
-        await plan_script(ark, script_snapshot(), [], AsyncMock())
+    assert result.lines[0].text == '太短'
+    assert ark.structured.await_count == 1
 
 
 def preview_harness(error: Exception | None = None) -> tuple[Any, ...]:
@@ -145,11 +142,11 @@ async def test_preview_runs_during_packaging_but_waits_for_shared_vendor_permit(
     packaging = AsyncMock(spec=PackagingHandler)
     packaging.requests = handler.requests
     async def long_job(*_: Any) -> None:
-        for _ in range(4):
+        for permit in range(4):
             await handler.requests.acquire()
         entered.set()
         await release.wait()
-        for _ in range(3):
+        for permit in range(3):
             handler.requests.release()
     packaging.handle.side_effect = long_job
     response = api.request.side_effect

@@ -62,6 +62,164 @@ export class EffectVoiceService {
       ),
     );
   }
+  async catalogSampleTargets() {
+    const selections = this.catalog.workerSelections();
+    const saved = await this.repo.db.effectVoiceCatalogSample.findMany({
+      select: { profileId: true, version: true },
+    });
+    const savedKeys = new Set(saved.map((row) => `${row.profileId}:${row.version}`));
+    const attempted = await this.repo.db.effectVoiceCatalogSampleAttempt.findMany({
+      select: { profileId: true, version: true, status: true, errorCode: true },
+    });
+    const attemptByKey = new Map(
+      attempted.map((row) => [`${row.profileId}:${row.version}`, row]),
+    );
+    return selections.map(({ id, name, version, speaker, resourceId }) => ({
+      id,
+      name,
+      version,
+      speaker,
+      resourceId,
+      sampleAvailable: savedKeys.has(`${id}:${version}`),
+      attemptStatus: attemptByKey.get(`${id}:${version}`)?.status ?? null,
+      attemptErrorCode: attemptByKey.get(`${id}:${version}`)?.errorCode ?? null,
+    }));
+  }
+  async claimCatalogSample(profileId: string, version: string) {
+    const profile = this.catalog.selection(profileId);
+    if (profile.version !== version) throw new ConflictException('音色版本已变化，请重新读取目录');
+    const sample = await this.repo.db.effectVoiceCatalogSample.findUnique({
+      where: { profileId_version: { profileId, version } },
+      select: { id: true },
+    });
+    if (sample) return { claimed: false, sampleAvailable: true };
+    const previousAttempt = await this.repo.db.effectVoiceCatalogSampleAttempt.findUnique({
+      where: { profileId_version: { profileId, version } },
+      select: { status: true, errorCode: true },
+    });
+    if (previousAttempt?.status === 'FAILED' && previousAttempt.errorCode === 'UPLOAD_FAILED') {
+      const reclaimed = await this.repo.db.effectVoiceCatalogSampleAttempt.updateMany({
+        where: { profileId, version, status: 'FAILED', errorCode: 'UPLOAD_FAILED' },
+        data: { status: 'RUNNING', errorCode: null },
+      });
+      return { claimed: reclaimed.count === 1, sampleAvailable: false };
+    }
+    try {
+      await this.repo.db.effectVoiceCatalogSampleAttempt.create({
+        data: { profileId, version, status: 'RUNNING' },
+      });
+      return { claimed: true, sampleAvailable: false };
+    } catch {
+      const existing = await this.repo.db.effectVoiceCatalogSampleAttempt.findUnique({
+        where: { profileId_version: { profileId, version } },
+        select: { status: true },
+      });
+      if (existing) return { claimed: false, sampleAvailable: false, attemptStatus: existing.status };
+      throw new ConflictException('试听样本登记失败');
+    }
+  }
+  async failCatalogSample(profileId: string, version: string, code: string) {
+    const profile = this.catalog.selection(profileId);
+    if (profile.version !== version) throw new ConflictException('音色版本已变化，请重新读取目录');
+    const changed = await this.repo.db.effectVoiceCatalogSampleAttempt.updateMany({
+      where: { profileId, version, status: 'RUNNING' },
+      data: { status: code === 'SUBMISSION_UNKNOWN' ? code : 'FAILED', errorCode: code },
+    });
+    if (!changed.count) throw new ConflictException('试听样本调用已登记或完成');
+    return { accepted: true };
+  }
+  async uploadCatalogSample(
+    profileId: string,
+    version: string,
+    file: { path: string; size: number } | undefined,
+  ) {
+    if (!file || file.size > 10 * 1024 * 1024) throw new BadRequestException('试听文件无效');
+    const profile = this.catalog.selection(profileId);
+    if (profile.version !== version) throw new ConflictException('音色版本已变化，请重新读取目录');
+    const duration = await wavDuration(file.path, file.size);
+    if (duration <= 0 || duration > 60) throw new BadRequestException('试听音频时长无效');
+    const hash = createHash('sha256');
+    for await (const chunk of createReadStream(file.path)) hash.update(chunk);
+    const sha256 = hash.digest('hex');
+    const current = await this.repo.db.effectVoiceCatalogSample.findUnique({
+      where: { profileId_version: { profileId, version } },
+    });
+    if (current) {
+      if (current.sha256 !== sha256) throw new ConflictException('该版本试听已保存，不能覆盖');
+      return { profileId, version, sampleAvailable: true };
+    }
+    const stored = await this.storage.putShared({
+      collection: 'effect-voices',
+      assetId: profileId,
+      version: createHash('sha256').update(version).digest('hex').slice(0, 24),
+      extension: 'wav',
+      stream: createReadStream(file.path),
+      sizeBytes: file.size,
+      contentType: 'audio/wav',
+    });
+    try {
+      const result = await this.repo.db.$transaction(async (tx) => {
+        const attempt = await tx.effectVoiceCatalogSampleAttempt.findUnique({
+          where: { profileId_version: { profileId, version } },
+        });
+        if (!attempt || attempt.status !== 'RUNNING')
+          throw new ConflictException('试听样本生成未登记或已结束');
+        const current = await tx.effectVoiceCatalogSample.findUnique({
+          where: { profileId_version: { profileId, version } },
+        });
+        if (current) {
+          if (current.sha256 !== sha256) throw new ConflictException('该版本试听已保存，不能覆盖');
+        } else {
+          await tx.effectVoiceCatalogSample.create({
+            data: {
+              profileId,
+              version,
+              storageKey: stored.key,
+              sha256,
+              sizeBytes: file.size,
+              mimeType: 'audio/wav',
+              duration,
+            },
+          });
+        }
+        await tx.effectVoiceCatalogSampleAttempt.update({
+          where: { profileId_version: { profileId, version } },
+          data: { status: 'COMPLETED', errorCode: null },
+        });
+        return { profileId, version, sampleAvailable: true };
+      });
+      const persisted = await this.repo.db.effectVoiceCatalogSample.findUniqueOrThrow({
+        where: { profileId_version: { profileId, version } },
+      });
+      if (persisted.storageKey !== stored.key) await this.storage.delete(stored.key).catch(() => undefined);
+      return result;
+    } catch (error) {
+      await this.storage.delete(stored.key).catch(() => undefined);
+      throw error;
+    }
+  }
+  async catalogSampleContent(
+    projectId: string,
+    workflowRunId: string,
+    templateId: string,
+    profileId: string,
+    version: string,
+  ) {
+    await this.scope(projectId, workflowRunId, templateId);
+    const profile = this.catalog.selection(profileId);
+    if (profile.version !== version) throw new NotFoundException('试听样本不存在');
+    const sample = await this.repo.db.effectVoiceCatalogSample.findUnique({
+      where: { profileId_version: { profileId, version } },
+    });
+    if (!sample) throw new NotFoundException('该音色试听尚未准备好');
+    const stored = await this.storage.open(sample.storageKey);
+    return {
+      stream: stored.stream,
+      contentLength: stored.contentLength,
+      mimeType: sample.mimeType,
+      sha256: sample.sha256,
+    };
+  }
   async list(projectId: string, workflowRunId: string, templateId: string) {
     await this.scope(projectId, workflowRunId, templateId);
     return (await this.repo.list(projectId, workflowRunId, templateId)).map((r) => this.present(r));

@@ -29,6 +29,19 @@ function database() {
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     effectVoicePreviewRequest: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn() },
+    effectVoiceCatalogSample: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findUnique: vi.fn().mockResolvedValue(null),
+      findUniqueOrThrow: vi.fn(),
+      create: vi.fn(),
+    },
+    effectVoiceCatalogSampleAttempt: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findUnique: vi.fn().mockResolvedValue(null),
+      create: vi.fn().mockResolvedValue({ status: 'RUNNING' }),
+      update: vi.fn(),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
     jobOutbox: { upsert: vi.fn() },
     $executeRaw: vi.fn(),
     $transaction: vi.fn(),
@@ -47,12 +60,24 @@ const input = {
 };
 
 describe('curated voice catalog', () => {
-  it('only exposes verified enabled voices and no provider configuration', () => {
+  it('loads all 99 account-listed TTS 2.0 voices and preserves the existing Vivi profile ID', () => {
+    const catalog = new EffectVoiceCatalogService();
+    const visible = catalog.publicCatalog();
+    expect(visible.profiles).toHaveLength(99);
+    expect(new Set(visible.profiles.map((voice) => voice.id)).size).toBe(99);
+    expect(visible.profiles.every((voice) => !/\s*2\.0$/i.test(voice.name))).toBe(true);
+    expect(visible.defaultId).toBe('vivi');
+    expect(catalog.selection('zh_male_guanggaojieshuo_uranus_bigtts')).toMatchObject({
+      speaker: 'zh_male_guanggaojieshuo_uranus_bigtts',
+      resourceId: 'seed-tts-2.0',
+    });
+  });
+  it('only exposes enabled voices and no provider configuration', () => {
     const catalog = new EffectVoiceCatalogService();
     expect(catalog.publicCatalog().profiles[0]).not.toHaveProperty('speaker');
-    expect(catalog.publicCatalog(new Set([`${profile.id}:${profile.version}`])).profiles).toEqual(
-      [],
-    );
+    const disabled = catalog.publicCatalog(new Set([`${profile.id}:${profile.version}`]));
+    expect(disabled.profiles).toHaveLength(98);
+    expect(disabled.profiles.some((voice) => voice.id === profile.id)).toBe(false);
     expect(() => readVoiceCatalog(JSON.stringify([{ ...profile, enabled: true }]))).toThrow(
       '验证记录',
     );
@@ -152,6 +177,115 @@ describe('preview persistence', () => {
 });
 
 describe('preview service', () => {
+  it('returns only enabled generation targets and resumes from shared sample state', async () => {
+    const db = database(),
+      repo = new EffectVoiceRepository(db as unknown as PrismaService);
+    db.effectVoiceCatalogSample.findMany.mockResolvedValue([
+      { profileId: 'vivi', version: 'seed-tts-2.0:1' },
+    ]);
+    db.effectVoiceCatalogSampleAttempt.findMany.mockResolvedValue([
+      {
+        profileId: 'saturn_zh_female_cancan_tob',
+        version: 'seed-tts-2.0:1',
+        status: 'SUBMISSION_UNKNOWN',
+      },
+    ]);
+    const service = new EffectVoiceService(
+      repo,
+      new EffectVoiceCatalogService(),
+      {} as EffectTemplateMixService,
+      {} as StoragePort,
+    );
+    const targets = await service.catalogSampleTargets();
+    expect(targets).toHaveLength(99);
+    expect(targets.find((target) => target.id === 'vivi')).toMatchObject({
+      sampleAvailable: true,
+      attemptStatus: null,
+    });
+    expect(targets.find((target) => target.id === 'saturn_zh_female_cancan_tob')).toMatchObject({
+      sampleAvailable: false,
+      attemptStatus: 'SUBMISSION_UNKNOWN',
+    });
+    expect(targets[0]).toHaveProperty('speaker');
+  });
+  it('validates project scope and version before opening a shared sample', async () => {
+    const db = database(),
+      repo = new EffectVoiceRepository(db as unknown as PrismaService);
+    db.effectVoiceCatalogSample.findUnique.mockResolvedValue({
+      storageKey: 'shared/effect-voices/vivi/seed-tts-2.0-1/file.wav',
+      mimeType: 'audio/wav',
+      sha256: 'a'.repeat(64),
+    });
+    const mix = { workspace: vi.fn().mockResolvedValue({ draft: { templates: [{ id: 't' }] } }) };
+    const storage = { open: vi.fn().mockResolvedValue({ stream: 'audio', contentLength: 8 }) };
+    const service = new EffectVoiceService(
+      repo,
+      new EffectVoiceCatalogService(),
+      mix as unknown as EffectTemplateMixService,
+      storage as unknown as StoragePort,
+    );
+    await expect(
+      service.catalogSampleContent('p', 'w', 't', 'vivi', 'seed-tts-2.0:1'),
+    ).resolves.toMatchObject({
+      stream: 'audio',
+      contentLength: 8,
+      mimeType: 'audio/wav',
+    });
+    await expect(
+      service.catalogSampleContent('p', 'w', 'wrong', 'vivi', 'seed-tts-2.0:1'),
+    ).rejects.toThrow('模板不存在');
+    await expect(
+      service.catalogSampleContent('p', 'w', 't', 'vivi', 'old-version'),
+    ).rejects.toThrow('样本不存在');
+    expect(storage.open).toHaveBeenCalledOnce();
+  });
+  it('claims each paid catalog sample version once', async () => {
+    const db = database(),
+      service = new EffectVoiceService(
+        new EffectVoiceRepository(db as unknown as PrismaService),
+        new EffectVoiceCatalogService(),
+        {} as EffectTemplateMixService,
+        {} as StoragePort,
+      );
+    await expect(service.claimCatalogSample('vivi', 'seed-tts-2.0:1')).resolves.toEqual({
+      claimed: true,
+      sampleAvailable: false,
+    });
+    db.effectVoiceCatalogSampleAttempt.create.mockRejectedValueOnce(new Error('unique conflict'));
+    db.effectVoiceCatalogSampleAttempt.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ status: 'RUNNING' });
+    await expect(service.claimCatalogSample('vivi', 'seed-tts-2.0:1')).resolves.toMatchObject({
+      claimed: false,
+      attemptStatus: 'RUNNING',
+    });
+  });
+  it('allows a paid retry only after an explicitly recorded sample-upload failure', async () => {
+    const db = database(),
+      service = new EffectVoiceService(
+        new EffectVoiceRepository(db as unknown as PrismaService),
+        new EffectVoiceCatalogService(),
+        {} as EffectTemplateMixService,
+        {} as StoragePort,
+      );
+    db.effectVoiceCatalogSampleAttempt.findUnique.mockResolvedValue({
+      status: 'FAILED',
+      errorCode: 'UPLOAD_FAILED',
+    });
+    await expect(service.claimCatalogSample('vivi', 'seed-tts-2.0:1')).resolves.toEqual({
+      claimed: true,
+      sampleAvailable: false,
+    });
+    expect(db.effectVoiceCatalogSampleAttempt.updateMany).toHaveBeenCalledWith({
+      where: {
+        profileId: 'vivi',
+        version: 'seed-tts-2.0:1',
+        status: 'FAILED',
+        errorCode: 'UPLOAD_FAILED',
+      },
+      data: { status: 'RUNNING', errorCode: null },
+    });
+  });
   it('freezes fixed sample and provider selection; rejects wrong template before querying records', async () => {
     const db = database(),
       repo = new EffectVoiceRepository(db as unknown as PrismaService);

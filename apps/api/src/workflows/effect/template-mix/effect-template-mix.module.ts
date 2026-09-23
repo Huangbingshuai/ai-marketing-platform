@@ -14,7 +14,11 @@ import { EffectPackagingService } from './effect-packaging.service';
 import { EffectVoiceCatalogService } from './effect-voice.catalog';
 import { EffectVoiceRepository } from './effect-voice.repository';
 import { EffectVoiceService } from './effect-voice.service';
-import { EffectVoiceController, EffectVoiceWorkerController } from './effect-voice.controller';
+import {
+  EffectVoiceCatalogSampleWorkerController,
+  EffectVoiceController,
+  EffectVoiceWorkerController,
+} from './effect-voice.controller';
 import { EffectFinalOutputService } from '../final-output/effect-final-output.service';
 import { EffectFinalOutputController, EffectFinalOutputWorkerController } from '../final-output/effect-final-output.controller';
 import {
@@ -31,6 +35,7 @@ import {
     EffectPackagingWorkerController,
     EffectVoiceController,
     EffectVoiceWorkerController,
+    EffectVoiceCatalogSampleWorkerController,
     EffectFinalOutputController,
     EffectFinalOutputWorkerController,
   ],

@@ -175,6 +175,9 @@ it.skipIf(process.env.EFFECT_OUTPUT_DATABASE_TEST !== '1')(
                 uploaded += 1;
                 return { key: `test/${projectId}/final.mp4`, sizeBytes: input.sizeBytes };
               },
+              putShared: async () => {
+                throw new Error('This transaction test never uploads shared media');
+              },
               delete: async () => undefined,
               open: async () => {
                 throw new Error('This transaction test never downloads source media');

@@ -16,6 +16,16 @@ export type StoragePutInput = {
   };
 };
 
+export type SharedStoragePutInput = {
+  collection: string;
+  assetId: string;
+  version: string;
+  extension: string;
+  stream: Readable;
+  sizeBytes: number;
+  contentType?: string;
+};
+
 export type StoredObject = {
   key: string;
   sizeBytes: number;
@@ -36,6 +46,7 @@ export type StoredStream = {
 
 export interface StoragePort {
   put(input: StoragePutInput): Promise<StoredObject>;
+  putShared(input: SharedStoragePutInput): Promise<StoredObject>;
   open(key: string, range?: StorageRange): Promise<StoredStream>;
   delete(key: string): Promise<void>;
 }
