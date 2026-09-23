@@ -98,11 +98,61 @@ const checkpoint = (): PackagingCheckpoint => ({
 });
 
 describe('slot-bound narration layout', () => {
+  it('accepts a six-slot confirmed package with segmented captions and detached source audio', () => {
+    const v = variant();
+    v.slots = Array.from({ length: 6 }, (_, index) => ({
+      ...v.slots[0]!, id: `s${index}`, duration: 4,
+      transition: index === 0 ? '硬切' as const : '叠化' as const,
+      transitionDuration: index === 0 ? 0 : 1,
+    }));
+    v.bindings = Object.fromEntries(v.slots.map((slot, index) => [slot.id, `m${index}`]));
+    v.bindingRevisions = Object.fromEntries(v.slots.map((slot) => [slot.id, 1]));
+    v.offsets = Object.fromEntries(v.slots.map((slot) => [slot.id, 0.25]));
+    v.detachedAudios = [{ id: 'detached', sourceSlotId: 's2', fileObjectId: 'video2',
+      name: '动作声', start: 8, offset: 0.25, duration: 4, volume: 0.4 }];
+    const clips = Array.from({ length: 6 }, (_, index) => ({ ...materials[0]!,
+      id: `m${index}`, artifactId: `clip${index}`, fileObjectId: `video${index}` }));
+    const artifacts = [
+      ...Array.from({ length: 6 }, (_, index) => artifact(`clip${index}`, `render-clip:${index}`,
+        { promptId: 'p' }, 'prompt')),
+      ...sources().slice(1),
+    ];
+    const frozen = packagingSnapshot(v, clips, artifacts);
+    const cp: PackagingCheckpoint = {
+      narrationLayoutVersion: 'SLOT_V1', captionLayoutVersion: 'SEGMENT_V3',
+      vision: v.slots.map((_, index) => ({ start: index * 4, end: index * 4 + 4,
+        description: '产品动作' })),
+      script: v.slots.map((slot, index) => ({ id: `line${index}`, slotId: slot.id,
+        text: '商品，真好', start: index * 4, end: index * 4 + 4, factIds: ['facts:0'] })),
+      voices: Object.fromEntries(v.slots.map((_, index) => [`line${index}`, {
+        fileObjectId: `voice${index}`, start: index * 4, duration: 1,
+        segmentFrames: [12000, 12000], volume: 1,
+      }])),
+      captions: v.slots.flatMap((_, index) => [{ id: `c${index}a`, voiceLineId: `line${index}`,
+        segmentIndex: 0, segmentCount: 2, text: '商品', start: index * 4,
+        end: index * 4 + 0.5 }, { id: `c${index}b`, voiceLineId: `line${index}`,
+        segmentIndex: 1, segmentCount: 2, text: '真好', start: index * 4 + 0.5,
+        end: index * 4 + 1 }]),
+      music: { fileObjectId: 'music', start: 0, duration: 24, volume: 0.12 },
+    };
+    expect(frozen.duration).toBe(24);
+    expect(frozen.clips).toHaveLength(6);
+    expect(() => requireSlotPackaging(frozen, cp)).not.toThrow();
+  });
   it.each([0, 1, 2])('accepts durable retry count %s', (automaticRetries) => {
     expect(() => validatePackagingCheckpoint(snapshot(), { automaticRetries })).not.toThrow();
   });
   it.each([-1, 3, 0.5, NaN])('rejects invalid retry count %s', (automaticRetries) => {
     expect(() => validatePackagingCheckpoint(snapshot(), { automaticRetries })).toThrow();
+  });
+  it('accepts one automatic voice recovery only for a frozen slot', () => {
+    const { frozen, cp } = current();
+    cp.voiceSlotRetries = { s: 1 };
+    expect(() => validatePackagingCheckpoint(frozen, cp)).not.toThrow();
+    cp.voiceSlotRetries = { missing: 1 };
+    expect(() => validatePackagingCheckpoint(frozen, cp)).toThrow();
+    cp.voiceSlotRetries = { s: 2 as 1 };
+    expect(() => validatePackagingCheckpoint(frozen, cp)).toThrow();
   });
   const current = () => {
     const frozen = packagingSnapshot(variant(), materials, sources());
@@ -166,6 +216,23 @@ describe('slot-bound narration layout', () => {
     cp.captions![0]!.text = '腊肠、米饭';
     cp.captions![1]!.start = 1.3;
     expect(() => requireSlotPackaging(frozen, cp)).toThrow();
+  });
+  it('validates V3 subtitles against actual PCM segment frames', () => {
+    const { frozen, cp } = segmentedV2();
+    cp.captionLayoutVersion = 'SEGMENT_V3';
+    cp.voices!['line-1']!.segmentFrames = [24_000, 33_600];
+    cp.captions![0]!.end = 1;
+    cp.captions![1]!.start = 1;
+    expect(() => validatePackagingCheckpoint(frozen, cp, true)).not.toThrow();
+    cp.captions![0]!.end = 1.2;
+    cp.captions![1]!.start = 1.2;
+    expect(() => validatePackagingCheckpoint(frozen, cp, true)).toThrow();
+    cp.captions![0]!.end = 1;
+    cp.captions![1]!.start = 1;
+    cp.voices!['line-1']!.segmentFrames = [24_000, 24_000];
+    expect(() => validatePackagingCheckpoint(frozen, cp, true)).toThrow();
+    cp.voices!['line-1']!.segmentFrames = [57_600];
+    expect(() => validatePackagingCheckpoint(frozen, cp, true)).toThrow();
   });
   it.each([4, 15])('accepts %s-second slots', (duration) => {
     const v = variant(); v.slots[0]!.duration = duration;

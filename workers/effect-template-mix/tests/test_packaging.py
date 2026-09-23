@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import copy
+import hashlib
 import io
 import json
 import wave
@@ -423,11 +424,56 @@ async def test_tts_overrun_is_not_silently_truncated() -> None:
     ark = AsyncMock(spec=ArkProvider)
     row = item()
     row['snapshot']['facts'] = [{'id': 'f', 'text': '事实'}]
-    ark.structured.side_effect = [ScriptRow(**{**row['checkpoint']['script'][0], 'text': '播'})]
+    ark.structured.side_effect = [
+        ScriptRow(**{**row['checkpoint']['script'][0], 'text': '播'}),
+        NarrationPlan.model_validate({'lines': [{'id': 'replanned', 'slotId': 's1', 'text': '新句',
+            'factIds': ['f']}], 'musicBrief': '纯器乐'}),
+        ScriptRow(**{**row['checkpoint']['script'][0],
+            'id': 'slot-' + hashlib.sha256(b's1').hexdigest()[:24], 'text': '新'}),
+    ]
     with pytest.raises(PackagingError, match='缩句一次后仍超出'):
         await PackagingHandler(api, ark, adapter, 1000).process_item('/run', {}, 'project', row)
-    assert adapter.voice.await_count == 2
+    assert adapter.voice.await_count == 4
+    assert ark.structured.await_count == 3
+    assert row['checkpoint']['voiceSlotRetries'] == {'s1': 1}
     assert not any(call.args[0] == 'POST' for call in api.request.call_args_list)
+
+
+async def test_voice_fit_auto_replans_only_failed_slot_and_preserves_siblings() -> None:
+    api = AsyncMock(spec=InternalApi)
+    api.request.return_value = {'fileObjectId': 'saved-voice'}
+    adapter = AsyncMock(spec=PackagingProvider)
+    calls: list[str] = []
+
+    async def voice(text: str, **_: Any) -> bytes:
+        calls.append(text)
+        return b'\0\0' * 24_000 * (12 if text in ('超长的口播文案', '缩短口播') else 2)
+
+    adapter.voice.side_effect = voice
+    ark = AsyncMock(spec=ArkProvider)
+    row = item()
+    row['snapshot']['facts'] = [{'id': 'f', 'text': '事实'}]
+    row['checkpoint']['script'][0]['text'] = '超长的口播文案'
+    row['snapshot']['variant']['slots'].append({'id': 's2', 'role': 'END'})
+    row['snapshot']['clips'].append({'slotId': 's2', 'start': 5, 'duration': 4})
+    row['checkpoint']['script'].append({'id': 'line-2', 'slotId': 's2', 'text': '已存口播',
+        'start': 5, 'end': 9, 'factIds': ['f']})
+    row['checkpoint']['voices'] = {'line-2': {'fileObjectId': 'existing', 'start': 5,
+        'duration': 1, 'volume': 1, 'segmentFrames': [24_000]}}
+    ark.structured.side_effect = [
+        ScriptRow(**{**row['checkpoint']['script'][0], 'text': '缩短口播'}),
+        NarrationPlan.model_validate({'lines': [{'id': 'replanned', 'slotId': 's1', 'text': '新短句',
+            'factIds': ['f']}], 'musicBrief': '纯器乐'}),
+    ]
+    await PackagingHandler(api, ark, adapter, 1000).process_item('/run', {}, 'project', row)
+    assert row['stage'] == 'READY'
+    assert calls == ['超长的口播文案', '缩短口播', '新短句']
+    assert row['checkpoint']['voiceSlotRetries'] == {'s1': 1}
+    assert row['checkpoint']['voices']['line-2']['fileObjectId'] == 'existing'
+    assert row['checkpoint']['music']['fileObjectId'] == 'music'
+    assert row['checkpoint']['script'][0]['text'] == '新短句'
+    assert row['checkpoint']['captionLayoutVersion'] == 'SEGMENT_V3'
+    adapter.submit_music.assert_not_called()
 
 
 async def test_voice_fit_keeps_existing_audio_and_aligns_caption_to_measured_repair() -> None:

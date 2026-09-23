@@ -9,7 +9,7 @@ import type { StoragePort } from '../../../platform/file/storage.port';
 import type { WorkflowWorkingService } from '../../../platform/workflow/workflow-working.service';
 import type { EffectTemplateMixService } from './effect-template-mix.service';
 import type { EffectPackagingRepository } from './effect-packaging.repository';
-import { EffectPackagingService } from './effect-packaging.service';
+import { EffectPackagingService, parseVoiceSegmentFrames } from './effect-packaging.service';
 import { visualHash } from './effect-packaging.domain';
 import * as packagingDomain from './effect-packaging.domain';
 
@@ -20,6 +20,16 @@ const v = {
   bindingRevisions: {},
   offsets: {},
 } as unknown as EffectTemplateMixVariant;
+describe('voice segment upload boundaries', () => {
+  it('accepts only sample counts that exactly cover the uploaded WAV', () => {
+    expect(parseVoiceSegmentFrames('[24000,48000]', 3)).toEqual([24000, 48000]);
+    expect(parseVoiceSegmentFrames(undefined, 3)).toBeUndefined();
+    for (const value of ['[24000,24000]', '[0,72000]', '[1.5,71998.5]', '["24000",48000]',
+      '{}', 'broken']) {
+      expect(() => parseVoiceSegmentFrames(value, 3)).toThrow('边界与音频不一致');
+    }
+  });
+});
 function harness() {
   const visual = {
     id: 'visual',
@@ -208,6 +218,7 @@ describe('packaging service output boundary', () => {
         b: { fileObjectId: 'b', start: 3.2, duration: 1, offset: .2, volume: .5, fadeOut: .2 } },
       captions: [{ id: 'a', text: '第一句', start: 0, end: 2 }, { id: 'b', text: '编辑字幕', start: 3.2, end: 4.2 }],
       music: { fileObjectId: 'bgm', start: 1, duration: 5, volume: .1, offset: 2 },
+      voiceSlotRetries: { a: 1, b: 1 },
     };
     mix.workspace.mockResolvedValue({ draftRevision: 1, draft: { templates: [{ id: 't', workspace: { template: {}, variants: [variant] } }] } });
     repo.list.mockResolvedValue([{ items: [{ variantId: 'v', sourceTimelineHash: hash, snapshot: frozen, checkpoint: cp }] }]);
@@ -222,6 +233,7 @@ describe('packaging service output boundary', () => {
       expect(next.checkpoints[0].voices).toEqual({ b: cp.voices!.b });
       expect(next.checkpoints[0].captions).toEqual([cp.captions![1]]);
       expect(next.checkpoints[0].music).toEqual(cp.music);
+      expect(next.checkpoints[0].voiceSlotRetries).toEqual({ b: 1 });
     } finally { snap.mockRestore(); }
   });
   it.each(['MUSIC', 'CAPTIONS'] as const)('redo %s preserves the original voice despite the new template choice', async (component) => {

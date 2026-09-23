@@ -226,8 +226,10 @@ export function validatePackagingCheckpoint(
   const facts = new Set(snapshot.facts.map((f) => f.id));
   const slotLayout = checkpoint.narrationLayoutVersion === 'SLOT_V1';
   const segmentedCaptions = checkpoint.captionLayoutVersion === 'SEGMENT_V1' ||
-    checkpoint.captionLayoutVersion === 'SEGMENT_V2';
-  const captionsV2 = checkpoint.captionLayoutVersion === 'SEGMENT_V2';
+    checkpoint.captionLayoutVersion === 'SEGMENT_V2' || checkpoint.captionLayoutVersion === 'SEGMENT_V3';
+  const captionsV2 = checkpoint.captionLayoutVersion === 'SEGMENT_V2' ||
+    checkpoint.captionLayoutVersion === 'SEGMENT_V3';
+  const captionsV3 = checkpoint.captionLayoutVersion === 'SEGMENT_V3';
   if (checkpoint.narrationLayoutVersion !== undefined && !slotLayout) fail();
   if (checkpoint.captionLayoutVersion !== undefined && (!segmentedCaptions || !slotLayout)) fail();
   if (snapshot.narrationLayoutVersion === 'SLOT_V1' && !slotLayout) fail();
@@ -249,7 +251,7 @@ export function validatePackagingCheckpoint(
           'captionLayoutVersion',
           'musicTaskId',
           'musicSubmissionPending',
-          'narrationLayoutVersion', 'slotVision', 'timings', 'voiceFitAttempts', 'automaticRetries', 'narrationMetrics',
+          'narrationLayoutVersion', 'slotVision', 'timings', 'voiceFitAttempts', 'voiceSlotRetries', 'automaticRetries', 'narrationMetrics',
         ].includes(k),
     )
   )
@@ -274,6 +276,8 @@ export function validatePackagingCheckpoint(
           !row.description.trim() || row.description.length > 2000) fail();
   }
   if (checkpoint.voiceFitAttempts && Object.entries(checkpoint.voiceFitAttempts).some(([id, count]) =>
+    !snapshot.clips.some((c) => c.slotId === id) || count !== 1)) fail();
+  if (checkpoint.voiceSlotRetries && Object.entries(checkpoint.voiceSlotRetries).some(([id, count]) =>
     !snapshot.clips.some((c) => c.slotId === id) || count !== 1)) fail();
   if (checkpoint.timings) {
     for (const [id, row] of Object.entries(checkpoint.timings)) {
@@ -375,6 +379,10 @@ export function validatePackagingCheckpoint(
         !fades(audio)
       )
         fail();
+      if (audio.segmentFrames &&
+        (!Array.isArray(audio.segmentFrames) || !audio.segmentFrames.length || audio.segmentFrames.length > 500 ||
+          audio.segmentFrames.some((frames) => !Number.isSafeInteger(frames) || frames <= 0) ||
+          Math.abs(audio.segmentFrames.reduce((sum, frames) => sum + frames, 0) / 24_000 - audio.duration) > .001)) fail();
     }
   if (checkpoint.music) {
     const offset = checkpoint.music.offset ?? 0;
@@ -432,12 +440,20 @@ export function validatePackagingCheckpoint(
     }
     if (segmentedCaptions && checkpoint.script?.some((line) => {
       const parts = segmentsByLine.get(line.id);
+      const audio = checkpoint.voices?.[line.id];
       return (ready && !parts?.length) || (parts?.length && (
         parts.some((part, index) => part.segmentIndex !== index || part.segmentCount !== parts.length) ||
         (captionsV2 && parts.some((part, index) => index > 0 &&
           Math.abs(part.start - parts[index - 1]!.end) > 0.001)) ||
         (!edited && parts.map((part) => part.text).join('').replace(/\s/gu, '') !==
-          line.text.replace(captionsV2 ? /[，,。.!！？?；;：:…\s]/gu : /[\p{P}\s]/gu, ''))));
+          line.text.replace(captionsV2 ? /[，,。.!！？?；;：:…\s]/gu : /[\p{P}\s]/gu, '')) ||
+        (captionsV3 && (!audio?.segmentFrames || parts.length !== audio.segmentFrames.length ||
+          (!edited && parts.some((part, index) => {
+            const startFrames = audio.segmentFrames!.slice(0, index).reduce((sum, n) => sum + n, 0);
+            const endFrames = startFrames + audio.segmentFrames![index]!;
+            return Math.abs(part.start - (audio.start + startFrames / 24_000)) > .001 ||
+              Math.abs(part.end - (audio.start + endFrames / 24_000)) > .001;
+          }))))));
     })) fail();
   }
   if (checkpoint.captionBoxes) {
@@ -478,6 +494,7 @@ export function validatePackagingCheckpoint(
         : checkpoint.captions?.length !== checkpoint.script.length))
   )
     fail();
+  if (ready && captionsV3 && checkpoint.script?.some((line) => !checkpoint.voices?.[line.id]?.segmentFrames)) fail();
 }
 
 export function requireSlotPackaging(snapshot: PackagingSnapshot, checkpoint: PackagingCheckpoint): void {

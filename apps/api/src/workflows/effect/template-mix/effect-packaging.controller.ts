@@ -57,6 +57,9 @@ export class CreatePackagingDto extends EffectTemplateMixRevisionDto {
   @IsOptional() @IsIn(['ALL', 'VOICE', 'MUSIC', 'CAPTIONS']) component?: PackagingComponent;
   @IsOptional() @IsString() @MinLength(1) @MaxLength(100) slotId?: string;
 }
+export class PackagingAudioUploadDto extends EffectTemplateMixWorkerProjectDto {
+  @IsOptional() @IsString() @MaxLength(2500) segmentFrames?: string;
+}
 export class PackagingCheckpointDto extends EffectTemplateMixWorkerProjectDto {
   @IsIn(PACKAGING_STAGES) stage!: PackagingStage;
   @IsObject() checkpoint!: PackagingCheckpoint;
@@ -217,9 +220,9 @@ export class EffectPackagingWorkerController {
     @Param('itemId', uuid) itemId: string,
     @Param('role') role: string,
     @Headers('x-attempt-token') token: string,
-    @Body() body: EffectTemplateMixWorkerProjectDto,
+    @Body() body: PackagingAudioUploadDto,
     @UploadedFile() file: { path: string; size: number } | undefined,
   ) {
-    return this.service.upload(body.projectId, runId, token, itemId, role, file);
+    return this.service.upload(body.projectId, runId, token, itemId, role, file, body.segmentFrames);
   }
 }

@@ -51,6 +51,8 @@ export type PackagingAudio = {
   voiceProfile?: EffectVoiceSelection;
   fileObjectId: string;
   duration: number;
+  /** Exact 24 kHz PCM frame count for each punctuation-delimited TTS clip, in caption order. */
+  segmentFrames?: number[];
   start: number;
   volume: number;
   /** Seconds trimmed from the source head; absent means 0 (pipeline canonical). */
@@ -162,13 +164,15 @@ export type PackagingLine = {
 };
 export type PackagingCheckpoint = {
   /** Absent for historical one-caption-per-voice packages, which remain playable. */
-  /** V2 keeps enumeration commas and splits only sentence punctuation. */
-  captionLayoutVersion?: 'SEGMENT_V1' | 'SEGMENT_V2';
+  /** V3 uses the actual PCM frame boundaries of separately synthesized clauses. */
+  captionLayoutVersion?: 'SEGMENT_V1' | 'SEGMENT_V2' | 'SEGMENT_V3';
   narrationMetrics?: Record<string, SlotNarrationMetrics>;
   /** Bounded item recovery budget, retained across worker restarts. */
   automaticRetries?: number;
   narrationLayoutVersion?: 'SLOT_V1';
   voiceFitAttempts?: Record<string, 1>;
+  /** One automatic fresh-script recovery per frozen slot after measured TTS still overruns. */
+  voiceSlotRetries?: Record<string, 1>;
   slotVision?: Record<string, { key: string; description: string }>;
   timings?: Record<string, { preprocessingSeconds?: number; visionSeconds?: number;
     scriptSeconds?: number; scriptRepairSlots?: number; voiceSeconds?: number; musicWaitSeconds?: number;

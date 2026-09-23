@@ -96,6 +96,20 @@ export async function wavDuration(path: string, size: number): Promise<number> {
   }
 }
 
+export function parseVoiceSegmentFrames(value: string | undefined, duration: number): number[] | undefined {
+  if (value === undefined) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed) || !parsed.length || parsed.length > 500 ||
+        parsed.some((frames: unknown) => !Number.isSafeInteger(frames) || Number(frames) <= 0) ||
+        Math.abs(parsed.reduce<number>((sum, frames: number) => sum + frames, 0) / 24_000 - duration) > .001)
+      throw new Error('invalid segments');
+    return parsed as number[];
+  } catch {
+    throw new BadRequestException('口播片段边界与音频不一致');
+  }
+}
+
 @Injectable()
 export class EffectPackagingService {
   constructor(
@@ -195,6 +209,7 @@ export class EffectPackagingService {
         if (body.slotId) {
           if (cp.narrationMetrics) delete cp.narrationMetrics[body.slotId];
           if (cp.voiceFitAttempts) delete cp.voiceFitAttempts[body.slotId];
+          if (cp.voiceSlotRetries) delete cp.voiceSlotRetries[body.slotId];
           snapshots[index]!.redoSlotId = body.slotId;
           const removed = new Set(cp.script?.filter((s) => s.slotId === body.slotId).map((s) => s.id));
           cp.script = (cp.script ?? []).filter((s) => s.slotId !== body.slotId);
@@ -203,6 +218,7 @@ export class EffectPackagingService {
         } else {
           delete cp.narrationMetrics;
           delete cp.voiceFitAttempts;
+          delete cp.voiceSlotRetries;
           delete cp.script;
           delete cp.voices;
           delete cp.captions;
@@ -535,11 +551,15 @@ export class EffectPackagingService {
     itemId: string,
     role: string,
     file: { path: string; size: number } | undefined,
+    segmentFramesJson?: string,
   ) {
     const { run, snapshot } = await this.workerItem(projectId, runId, token, itemId);
     if (!file || file.size > 100 * 1024 * 1024 || !/^(music|voice-[a-zA-Z0-9_-]{1,50})$/.test(role))
       throw new BadRequestException('包装音频无效');
     const duration = await wavDuration(file.path, file.size);
+    if (segmentFramesJson !== undefined && role === 'music')
+      throw new BadRequestException('音乐不支持口播片段边界');
+    const segmentFrames = parseVoiceSegmentFrames(segmentFramesJson, duration);
     const hash = createHash('sha256');
     for await (const chunk of createReadStream(file.path)) hash.update(chunk);
     const sha256 = hash.digest('hex');
@@ -602,6 +622,7 @@ export class EffectPackagingService {
           ...(role !== 'music' && snapshot.voiceProfile ? { voiceProfile: snapshot.voiceProfile } : {}),
           fileObjectId: created.id,
           duration,
+          ...(segmentFrames ? { segmentFrames } : {}),
           start: role === 'music' ? 0 : (line?.start ?? -1),
           volume: role === 'music' ? 0.12 : 1,
         };
